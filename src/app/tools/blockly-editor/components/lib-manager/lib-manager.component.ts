@@ -111,9 +111,8 @@ export class LibManagerComponent {
   async installLib(lib) {
     lib.state = 'installing';
     this.message.loading(`${lib.nickname} Installing...`);
-    let registry = 'https://registry.openjumper.cn';
     await this.uiService.openTerminal();
-    await this.terminalService.sendCmd(`npm config set @aily-project:registry ${registry}`);
+    this.projectService.checkRegistry();
     this.terminalService.sendCmd(`npm install ${lib.name}@${lib.version}`).then(async () => {
       await this.checkInstalled();
       lib.state = 'default';

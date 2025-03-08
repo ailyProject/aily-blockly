@@ -3,13 +3,17 @@ const { ipcMain } = require("electron");
 const pty = require("@lydell/node-pty");
 
 // 匹配 PowerShell 提示符: PS D:\path>   以后需要匹配mac os和linux的提示符（陈吕洲 2025.3.4）
-const promptRegex = /PS [A-Z]:(\\[^\\]+)+>/g;
+const promptKey = 'PS_AILY:: ';
+const promptRegex = new RegExp(`${promptKey}$`);
 const terminals = new Map();
 
 // 清除ANSI转义序列的函数
 function stripAnsiEscapeCodes(text) {
   // 匹配所有ANSI转义序列
-  return text.replace(/\x1B\[(?:[0-9]{1,3}(?:;[0-9]{1,3})*)?[m|K|h|l|H|A-Z]/g, '');
+  return text.replace(/\x1b\[(\?25h|\?25l)/g, '')
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/\x1b]0;.*?\x07/g, '')
+    .replace(/[\x00-\x1F]/g, '');
 }
 
 function registerTerminalHandlers(mainWindow) {
@@ -49,6 +53,12 @@ function registerTerminalHandlers(mainWindow) {
           resolve({ pid: ptyProcess.pid });
         }
       });
+
+      ptyProcess.write(
+        `function prompt { "${promptKey}" }\n` +
+        `Clear-Host\n` +
+        `Write-Host "${promptKey}" -NoNewline\n\r`
+      );
     });
   });
 
@@ -88,10 +98,11 @@ function registerTerminalHandlers(mainWindow) {
         // 临时数据处理函数
         const dataHandler = (e) => {
           // 累积所有输出
-          commandOutput += e;
+          commandOutput += stripAnsiEscapeCodes(e);
 
           // 检查是否检测到命令提示符，表示命令已完成
-          if (promptRegex.test(commandOutput)) {
+          if (promptRegex.test(commandOutput.slice(-20))) {
+            console.log('[命令执行] 结束');
             clearTimeout(commandTimeout);
             ptyProcess.removeListener('data', dataHandler);
             // 移除命令提示符部分，只保留命令输出
@@ -100,7 +111,7 @@ function registerTerminalHandlers(mainWindow) {
             if (lastPromptIndex > 0) {
               commandOutput = commandOutput.substring(0, lastPromptIndex);
             }
-            resolve(stripAnsiEscapeCodes(commandOutput.trim()));
+            resolve(commandOutput.trim());
           }
         };
 
@@ -113,7 +124,7 @@ function registerTerminalHandlers(mainWindow) {
         // 设置超时保护
         commandTimeout = setTimeout(() => {
           ptyProcess.removeListener('data', dataHandler);
-          resolve(stripAnsiEscapeCodes(commandOutput));
+          resolve(commandOutput);
         }, 120000); // 默认120秒超时
       } catch (error) {
         reject(error.message || '执行命令失败');

@@ -48,7 +48,7 @@ export class ProjectService {
     // });
   }
 
-  // 初始化UI服务，这个init函数仅供main-window使用  
+  // 初始化UI服务，这个init函数仅供main-window使用
   init(): void {
     if (this.electronService.isElectron) {
       this.isMainWindow = true;
@@ -76,12 +76,11 @@ export class ProjectService {
     const appDataPath = window['path'].getAppData();
     const projectPath = newProjectData.path + newProjectData.name
     const boardPackage = newProjectData.board.name + '@' + newProjectData.board.version;
-    const registry = 'https://registry.openjumper.cn';
 
     this.uiService.updateState({ state: 'doing', text: '正在创建项目...' });
     // 1. 检查开发板module是否存在, 不存在则安装
     await this.uiService.openTerminal();
-    await this.terminalService.sendCmd(`npm config set @aily-project:registry ${registry}`);
+    this.checkRegistry();
     await this.terminalService.sendCmd(`npm install ${boardPackage} --prefix ${appDataPath}`);
     // 2. 创建项目目录，复制开发板module中的template到项目目录
     const templatePath = `${appDataPath}/node_modules/${newProjectData.board.name}/template`;
@@ -105,7 +104,6 @@ export class ProjectService {
   // 打开项目
   async projectOpen(projectPath) {
     this.stateSubject.next('loading');
-    const registry = 'https://registry.openjumper.cn';
     this.uiService.updateState({ state: 'doing', text: '正在打开项目...' });
     // this.uiService.
     // 0. 判断路径是否存在
@@ -122,13 +120,14 @@ export class ProjectService {
     // 添加到最近打开的项目
     this.addRecentlyProject({ name: packageJson.name, path: projectPath });
     this.currentPackageData = packageJson;
-    
+
     // 将当前项目路径添加到currentProject
     this.currentProject = projectPath;
-  
+
     // 1. 终端进入项目目录
     await this.uiService.openTerminal();
-    await this.terminalService.sendCmd(`npm config set @aily-project:registry ${registry}`);
+    // await this.terminalService.sendCmd(`npm config set @aily-project:registry ${registry}`);
+    this.checkRegistry();
     console.log('currentPid: ', this.terminalService.currentPid);
     await this.terminalService.sendCmd(`cd ${projectPath}`);
     // 2. 安装项目依赖
@@ -174,6 +173,18 @@ export class ProjectService {
     this.uiService.updateState({ state: 'doing', text: board + '安装成功',timeout:9999999999 });
     // 9. 安装开发板依赖（开发板依赖要编译时才用到，用户可以先编程，开发板依赖在后台安装）
     this.stateSubject.next('loaded');
+  }
+
+  checkRegistry() {
+    const registry = 'https://registry.openjumper.cn';
+    // await this.terminalService.sendCmd(`npm config set @aily-project:registry ${registry}`);
+    this.isExistsAndWrite(`${this.currentProject}/.npmrc`, `@aily-project:registry=${registry}`);
+  }
+
+  isExistsAndWrite(filePath: string, content: string) {
+    if (!window['file'].existsSync(filePath)) {
+      window['file'].writeFileSync(filePath, content);
+    }
   }
 
   // 保存项目

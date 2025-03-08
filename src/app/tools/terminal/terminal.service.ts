@@ -44,6 +44,7 @@ export class TerminalService {
     return new Promise(async (resolve, reject) => {
       window['terminal'].sendInputAsync({ pid: this.currentPid, input: input + '\r' })
         .then(output => {
+          console.log('执行结果:', output);
           resolve(output);
         })
         .catch(err => {
