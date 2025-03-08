@@ -1,3 +1,5 @@
+// 这个文件要作废，不要使用这个文件  陈吕洲 2025.2.27
+
 // 处理json文件中的generator部分
 export function processingJsonGenerator(blockJson) {
     if (blockJson.generator) {

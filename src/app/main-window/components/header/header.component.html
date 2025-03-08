@@ -1,0 +1,62 @@
+<div class="header-box">
+  <!-- <div class="logo-box ccenter">aily.</div> -->
+  <div class="menu ccenter" (click)="openMenu()">
+    <div class="btn ccenter" nz-tooltip nzTooltipTitle="菜单">
+      <i class="fa-regular fa-bars"></i>
+    </div>
+  </div>
+
+  @if(loaded){
+  <div class="board ccenter" nz-tooltip nzTooltipTitle="端口选择" (click)="openPortList()">
+    {{currentBoard}}
+    @if(currentPort){
+    ({{currentPort}})
+    }@else{
+    (-)
+    }
+    <div class="down ccenter"><i class="fa-regular fa-angle-down"></i></div>
+  </div>
+  }
+  <div class="null-box drag" (dblclick)="maximize()"></div>
+  <div class="project-box ccenter">{{ projectData.name }}</div>
+  <div class="toolbox">
+    @for (zone of headerBtns; track $index) {
+    <div class="zone ccenter">
+      @for (btn of zone; track $index) {
+      @if (btn.type === 'act-btn') {
+      <!-- 对于编译、上传等按钮，使用 act-btn 组件 -->
+      <app-act-btn [icon]="btn.icon" [color]="btn.color" [(state)]="btn.state" nz-tooltip
+        nzTooltipTitle="{{ btn.name }}" (click)="onClick(btn)"></app-act-btn>
+      }@else{
+      <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ btn.name }}" (click)="onClick(btn)"
+        [ngStyle]="{ color: btn.color ? btn.color : '' }" [ngClass]="{ selected: isOpenTool(btn) }">
+        <i class="{{ btn.icon }}"></i>
+        @if (btn.more) {
+        <div class="more ccenter">{{ btn.more }}</div>
+        }
+      </div>
+      } }
+    </div>
+    }
+  </div>
+  <div class="win-btns">
+    <div class="btn ccenter minimize" (click)="minimize()">
+      <i class="fa-regular fa-minus"></i>
+    </div>
+    <div class="btn ccenter maximize" (click)="maximize()">
+      <i class="fa-regular fa-square"></i>
+    </div>
+    <div class="btn ccenter close" (click)="close()">
+      <i class="fa-regular fa-xmark"></i>
+    </div>
+  </div>
+</div>
+<!-- menu -->
+@if (showMenu) {
+<app-menu [menuList]="headerMenu" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"></app-menu>
+}
+<!-- device port list -->
+@if (showPortList) {
+<app-menu class="ports" [position]="{x:40,y:40}" [width]="260" [menuList]="portList" (closeEvent)="closePortList()"
+  [keywords]="boardKeywords" (itemClickEvent)="selectPort($event)"></app-menu>
+}

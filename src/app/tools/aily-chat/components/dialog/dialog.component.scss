@@ -1,12 +1,5 @@
 .dialog-box {
     display: flex;
-    
-    ::ng-deep {
-        .function {
-            padding: 5px 10px;
-            border-bottom: 1px solid #bbb;
-        }
-    }
 }
 
 nz-avatar {
@@ -17,19 +10,18 @@ nz-avatar {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    margin: 15px 15px 0 15px;
-    background: #ddd;
+    margin: 5px 10px 5px 10px;
+    background: #555;
     width: 100%;
     min-height: 44px;
     border-radius: 0 10px 10px 10px;
     position: relative;
-    // padding-bottom: 10px;
 
     .tail {
         width: 0;
         height: 0;
         border-bottom: 10px solid transparent;
-        border-right: 10px solid #ddd;
+        border-right: 10px solid #555;
         position: absolute;
         top: 0px;
         left: -9px;
@@ -85,15 +77,15 @@ nz-avatar {
     flex-direction: row-reverse;
 
     .bubble {
-        margin: 15px 15px 0 15px;
-        background: #c6def1;
+        margin: 5px 10px 5px 10px;
+        background: #365f7e;
         border-radius: 10px 0 10px 10px;
 
         .tail {
             border-bottom: none;
             border-right: none;
             border-bottom: 10px solid transparent;
-            border-left: 10px solid #c6def1;
+            border-left: 10px solid #365f7e;
             left: auto;
             right: -9px !important;
         }
@@ -154,7 +146,7 @@ nz-avatar {
         blockquote {
             margin-top: 1em;
             margin-bottom: 1em;
-            font-size: 16px;
+            font-size: 14px;
         }
 
         ul,
@@ -307,7 +299,7 @@ nz-avatar {
         p {
             margin-top: 5px;
             margin-bottom: 5px;
-            font-size: 16px;
+            font-size: 14px;
         }
     }
 }
@@ -330,85 +322,6 @@ nz-avatar {
     margin: 0 15px 15px 15px;
     border-top: 1px solid #bbb;
     color: #646464;
-}
-
-.unlogin {
-    position: absolute;
-    top: 15px;
-    right: 15px
-}
-
-.user-selector {
-    display: flex;
-    align-items: center;
-    margin: -10px 0 10px 15px;
-
-    // &:first-child {
-    //     // margin: -10px 0 20px 15px;
-    //     margin: 0 0 5px 15px;
-    // }
-
-    .btns {
-        display: flex;
-        flex-wrap: wrap;
-        background-color: #eee;
-        min-height: 40px;
-        border-radius: 25px;
-        padding: 5px;
-
-        &.disabled {
-            opacity: 0.6;
-        }
-
-        >div {
-            cursor: pointer;
-            min-width: 80px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 5px 15px;
-
-            &.selected {
-                background: #007bff;
-                border-radius: 20px;
-                color: #FFF;
-            }
-        }
-
-    }
-
-    i {
-        cursor: pointer;
-        margin-left: 10px;
-        font-size: 20px;
-        opacity: 0.5;
-
-        &:hover {
-            color: #007bff;
-            opacity: 0.8;
-        }
-    }
-
-    input{
-        background: transparent;
-        border: none;
-        outline: none;
-        padding: 0 10px;
-        width: 100%;
-    }
-}
-
-.selector-box {
-    margin-top: -10px;
-    >div{
-        margin: 5px 15px 5px 15px;
-    }
-}
-
-@media (max-width: 768px) {
-    .mobile-hide {
-        display: none;
-    }
 }
 
 .image-box {

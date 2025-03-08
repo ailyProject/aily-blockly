@@ -1,0 +1,26 @@
+<div class="item">
+  <div class="time">{{ data.time }}</div>
+  <div class="dir">{{ data.dir }}</div>
+  @if (mode == 1) {
+    <div
+      class="data vsfont"
+      [ngClass]="{ send: data.dir == '>', error: data.data.includes('error:') }"
+    >
+      {{ data.data }}
+      <span class="zf">/r</span>
+      <span class="zf">/n</span>
+    </div>
+  } @else {
+    <div class="data vsfont">{{ data.source }}</div>
+  }
+</div>
+
+@if (showMenu) {
+  <app-menu
+    [menuList]="rightMenu"
+    [position]="position"
+    [width]="120"
+    (closeEvent)="closeMenu()"
+    (itemClickEvent)="menuClick($event)"
+  ></app-menu>
+}

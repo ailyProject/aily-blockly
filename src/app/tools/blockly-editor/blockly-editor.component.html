@@ -1,5 +1,5 @@
 <blockly-main></blockly-main>
 <app-project-btn (click)="openProjectManager()"></app-project-btn>
-<!-- @if (showProjectManager) {
-<app-project-manager></app-project-manager>
-} -->
+@if (showProjectManager) {
+<app-lib-manager (close)="showProjectManager=false"></app-lib-manager>
+}

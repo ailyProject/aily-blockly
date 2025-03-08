@@ -16,11 +16,12 @@ export class AppComponent {
 
   constructor(
     private translate: TranslateService,
-    private electronService: ElectronService,
+    private electronService: ElectronService
   ) {
     this.translate.addLangs(['zh', 'en']);
     this.translate.setDefaultLang('zh');
     this.translate.use('zh');
     this.electronService.init();
+
   }
 }

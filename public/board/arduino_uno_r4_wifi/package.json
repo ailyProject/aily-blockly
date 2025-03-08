@@ -1,0 +1,18 @@
+{
+  "name": "arduino_uno_r4_minima",
+  "version": "1.3.2",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "unzip": "unzip -o -d $HOME/.arduino15/packages/arduino/hardware/avr/1.8.5/ $HOME/.arduino15/packages/arduino/hardware/avr/1.8.5/avr/cores/arduino.zip"
+  },
+  "author": "",
+  "license": "ISC",
+  "libDependencies": {},
+  "boardDependencies": {
+    "@aily-project/compiler/arm-none-eabi-gcc": "7.2.1",
+    "@aily-project/tool/bossac": "1.9.1",
+    "@aily-project/sdk/renesas_uno": "1.3.2"
+  }
+}

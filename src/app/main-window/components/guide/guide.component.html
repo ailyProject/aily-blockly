@@ -1,0 +1,42 @@
+<div class="guide-box ccenter">
+  <div class="left-box">
+    <div class="stitle">
+      aily blockly IDE
+      <div class="version">ver {{version}}</div>
+    </div>
+    <div class="title">开始</div>
+    @if (showMenu) {
+    <div class="menu-box">
+      @for (item of guideMenu; track $index) {
+      @if (item.sep) {
+      <div class="sep"></div>
+      } @else {
+      <div class="btn link" (click)="onMenuClick(item)">
+        <div class="icon ccenter">
+          <i class="{{ item.icon }}"></i>
+        </div>
+        <div class="text">{{ item.name }}</div>
+      </div>
+      }
+      }
+    </div>
+    }
+    @if(recentlyProjects.length > 0) {
+    <div class="title">最近</div>
+    <div class="menu-box">
+      @for(project of recentlyProjects; track $index) {
+      <div class="project btn link" (click)="openProjectByPath(project)">
+        {{project.name}}
+        <div class="path ellipsis">{{project.path}}</div>
+      </div>
+      }
+      <!-- <div class="project btn link" (click)="showMore=true">
+        更多...
+      </div> -->
+    </div>
+    }
+  </div>
+  <div class="right-box ccenter">
+    <iframe src="https://ide.clz.me/" frameborder="0" allowpopups="true" class="pp"></iframe>
+  </div>
+</div>

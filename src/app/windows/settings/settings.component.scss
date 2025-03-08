@@ -1,0 +1,108 @@
+@import "../project-new/project-new.component.scss";
+
+.type-btn {
+  height: 48px;
+  display: flex;
+  align-items: center;
+
+  .icon {
+    width: 24px;
+    height: 24px;
+  }
+
+  &.selected {
+    color: #348ce9;
+  }
+}
+
+.langs {
+  display: flex;
+  .lang {
+    flex-direction: column;
+    font-size: 12px;
+    width: 80px;
+    cursor: pointer;
+    img {
+      width: 28px;
+    }
+
+    opacity: 0.3;
+
+    &:first-child {
+      margin-left: 0;
+    }
+
+    &.selected {
+      opacity: 1;
+    }
+  }
+}
+
+// .theme-selector {
+//   display: flex;
+//   align-items: center;
+//   margin-bottom: 10px;
+
+//   .btn {
+//     width: 100px;
+//     height: 30px;
+//     flex-direction: column;
+//     font-size: 12px;
+//     i {
+//       font-size: 30px;
+//       margin-bottom: 3px;
+//     }
+//   }
+// }
+
+.instructions {
+  height: 40px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  // padding-left: 10px;
+  // border-bottom: 1px solid #43494b;
+  margin-top: 20px;
+  &:first-child {
+    margin-top: 0;
+  }
+}
+
+textarea{
+  background: #363636;
+}
+
+.registry {
+  height: 100%;
+}
+
+.serach-box {
+  height: 40px;
+  margin-bottom: 10px;
+}
+
+.board-list {
+  height: 100%;
+  border-radius: 5px;
+  padding: 0 5px 0 10px;
+  position: relative;
+  overflow: auto;
+
+  .board-item {
+    border-bottom: 1px solid #43494b;
+    display: flex;
+    align-items: center;
+    padding: 3px 0;
+
+    .version {
+      margin-left: 5px;
+      color: #868686;
+    }
+
+    .btns {
+      position: absolute;
+      right: 10px;
+      display: flex;
+    }
+  }
+}

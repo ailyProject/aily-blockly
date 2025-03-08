@@ -1,0 +1,108 @@
+<app-sub-window [title]="'新建项目'" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content">
+      <div class="left">
+        <div class="left-inner">
+          <!-- <div class="step" (click)="currentStep=0">
+                        1. 选择开发板
+                    </div>
+                    <div class="step" (click)="currentStep=1">
+                        2. 创建项目
+                    </div> -->
+          <nz-steps [nzCurrent]="currentStep" nzDirection="vertical" nzSize="small">
+            <nz-step nzTitle="选择开发板"></nz-step>
+            <nz-step nzTitle="基本设定"></nz-step>
+            <nz-step nzTitle="创建项目" [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
+          </nz-steps>
+          <ng-template #iconTemplate><i class="fa-duotone fa-solid fa-spinner-third"></i></ng-template>
+        </div>
+      </div>
+      <div class="right">
+        @if (currentStep == 0) {
+        <div class="right-inner">
+          <div class="board-selector sscroll">
+            @for (board of boardList; track board.name) {
+            <div class="board ccenter btn" [ngClass]="{ selected: currentBoard == board }" (click)="selectBoard(board)">
+              <div class="img-box">
+                <img [src]="'http://blockly.openjumper.cn/img/'+board.img" />
+              </div>
+              <div class="name">{{ board.nickname }}</div>
+            </div>
+            }
+          </div>
+          <div class="desc-box">
+            <div class="title">
+              开发板介绍
+              <div class="doc btn link" (click)="openUrl(currentBoard.url)">
+                阅读文档
+              </div>
+            </div>
+            @if (currentBoard) {
+            <div class="content">{{ currentBoard.description }}</div>
+            }
+          </div>
+        </div>
+        } @else {
+        <!-- 基本设定页面 -->
+        <div class="right-inner">
+          <div class="item">
+            <div>开发板:</div>
+            <nz-input-group [nzSuffix]="suffixIconSearch">
+              <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
+            </nz-input-group>
+            <ng-template #suffixIconSearch>
+              <i class="fa-light fa-at"></i>
+            </ng-template>
+            <nz-select [(ngModel)]="newProjectData.board.version">
+              @for (version of boardVersionList; track version) {
+              <nz-option [nzValue]="version" [nzLabel]="version"></nz-option>
+              }
+            </nz-select>
+          </div>
+          <div class="item">
+            <div>项目名称:</div>
+            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
+            @if(showIsExist){
+            <div class="error animate__animated animate__faster animate__fadeInDown">项目名称已存在，请修改</div>
+            }
+          </div>
+          <div class="item">
+            <div>保存路径:</div>
+            <nz-input-group [nzAddOnAfter]="addOnAfterTemplate">
+              <input nz-input [(ngModel)]="newProjectData.path" [disabled]="true" />
+            </nz-input-group>
+            <ng-template #addOnAfterTemplate>
+              <div class="btn ccenter ffull" (click)="selectFolder()">
+                <i class="fa-light fa-folder"></i>
+              </div>
+            </ng-template>
+          </div>
+        </div>
+        }
+      </div>
+    </div>
+    <div class="window-footer">
+      <div class="btns">
+        @if (currentStep == 0) {
+        <button nz-button nzType="primary" (click)="nextStep()">
+          下一步
+        </button>
+        } @else {
+        @if (currentStep == 1) {
+        <button nz-button nzType="default" (click)="currentStep = 0">
+          上一步
+        </button>
+        <button nz-button nzType="primary" [disabled]="showIsExist" (click)="createProject()">
+          创建项目
+        </button>
+        }
+        }
+        @if (currentStep == 2) {
+        <button nz-button nzType="default" nzLoading>
+          正在创建
+        </button>
+        }
+      </div>
+    </div>
+  </div>
+</app-sub-window>

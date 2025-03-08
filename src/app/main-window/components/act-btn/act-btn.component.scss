@@ -1,0 +1,76 @@
+.act-btn {
+    width: 38px;
+    height: 38px;
+    transform: all 0.3s;
+    position: relative;
+
+    .qq {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid;
+    }
+
+    .qq2 {
+        // border-color: rgba(255, 0, 0, 0.6) !important;
+        border-color: rgba(255, 255, 255, 0.2);
+        position: absolute;
+    }
+
+    >div {
+        width: 100%;
+        height: 100%;
+
+        i {
+            font-size: 19px;
+        }
+
+        &.lloading {
+            i.fa-spinner-third {
+                font-size: 22px;
+            }
+        }
+
+        // 编译
+        .fa-check {
+            font-size: 14px;
+            margin-top: 2px;
+            color: #006adc;
+        }
+
+        // 运行
+        .fa-play {
+            font-size: 14px;
+            margin-left: 2px;
+            margin-top: 0.5px;
+            color: #009600;
+        }
+
+        // 调试
+        .fa-rocket {
+            font-size: 13px;
+            margin-top: 1px;
+            margin-left: -2px;
+            color: #f18800;
+        }
+
+        .fa-xmark {
+            color: red;
+            font-size: 14px;
+            margin-left: -1px;
+            margin-top: 1px;
+        }
+
+        .fa-face-smile {
+            font-size: 22px;
+        }
+
+        .fa-face-smile-wink {
+            font-size: 22px;
+        }
+
+        .fa-exclamation {
+            color: rgb(255, 119, 0);
+        }
+    }
+}

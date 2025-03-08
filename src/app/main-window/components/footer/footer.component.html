@@ -1,0 +1,38 @@
+<div class="footer-box">
+  <!-- 打开的窗口就显示图标在这里 -->
+  <!-- <div class="btn ccenter">
+    <i class="fa-light fa-rectangle-code"></i>
+  </div>
+  <div class="btn ccenter">
+    <i class="fa-light fa-rectangle-list"></i>
+  </div> -->
+
+  <!-- 这里显示状态，如保存中，项目加载中，正在安装xxx等 -->
+  @if(actionData){
+  <div class="state ccenter">
+    @switch(actionData.state){
+    @case('doing'){
+    <div class="icon lloading ccenter">
+      <i class="fa-duotone fa-solid fa-loader"></i>
+    </div>
+    }
+    @case('error'){
+    <div class="icon ccenter">
+      <i class="fa-light fa-circle-xmark"></i>
+    </div>
+    }
+    @case('warn'){
+    <div class="icon ccenter">
+      <i class="fa-light fa-triangle-exclamation"></i>
+    </div>
+    }
+    @case('done'){
+    <div class="icon ccenter">
+      <i class="fa-light fa-circle-check"></i>
+    </div>
+    }
+    }
+    {{ actionData.text }}
+  </div>
+  }
+</div>

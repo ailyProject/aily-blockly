@@ -1,0 +1,40 @@
+.item {
+  display: flex;
+  line-height: 24px;
+  padding: 1px 3px;
+
+  &:hover{
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+  }
+
+  .time {
+    flex-shrink: 0;
+    color: #999;
+  }
+
+  .dir {
+    color: #999;
+    margin: 0 10px 0 5px;
+  }
+
+  .data {
+    // display: flex;
+  }
+
+  .send {
+    color: rgb(133, 200, 255);
+  }
+
+  .error {
+    color: rgb(182, 0, 0);
+  }
+
+  .zf {
+    width: 14px;
+    height: 20px;
+    background: rgba(255, 140, 0, 0.3);
+    color: #fff;
+    margin: 0 2px;
+  }
+}

@@ -1,0 +1,47 @@
+$footer-height: 30px;
+$footer-inner-height: 28px;
+
+.footer-box {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  height: $footer-height;
+  background: #2b2d30;
+  border-top: 2px solid #222427;
+  position: relative;
+}
+
+.btn {
+  width: $footer-inner-height;
+  height: $footer-inner-height;
+
+  &:hover {
+    background: #3b3d40;
+  }
+}
+
+.state {
+  position: absolute;
+  top: 0;
+  right: 10px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+
+  .icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .fa-circle-xmark{
+    color: rgb(210, 0, 0);
+  }
+
+  .fa-triangle-exclamation{
+    color: rgb(255, 136, 0);
+  }
+
+  .fa-circle-check{
+    color: rgb(0, 200, 0);
+  }
+}

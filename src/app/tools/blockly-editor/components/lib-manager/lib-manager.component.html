@@ -1,0 +1,56 @@
+<div class="lib-manager-box">
+    <div class="header">
+        <div class="btn ccenter" (click)="back()" nz-tooltip nzTooltipTitle="返回">
+            <i class="fa-regular fa-chevron-left"></i>
+        </div>
+        <nz-input-group nzSearch [nzAddOnAfter]="suffixIconButton" [nzSize]="'small'">
+            <input type="text" nz-input placeholder="搜索库" [(ngModel)]="keyword" (ngModelChange)="search($event)" />
+        </nz-input-group>
+        <ng-template #suffixIconButton>
+            <button nz-button nzType="primary" nzSearch [nzSize]="'small'" style="height: 24px;">
+                <i class="fa-regular fa-magnifying-glass"></i>
+            </button>
+        </ng-template>
+        <div class="tag-list">
+            @for (tag of tagList; track tag) {
+            <nz-tag>{{ tag }}</nz-tag>
+            }
+        </div>
+    </div>
+    <div class="lib-list">
+        @for( lib of LibraryList;track lib.name ) {
+        <div class="lib-item">
+            <div class="name ellipsis">{{lib.nickname}}<span>{{lib.author}}</span></div>
+            <div class="desc ellipsis">{{lib.description}}</div>
+            <div class="footer">
+                <div class="version">
+                    <nz-select [(ngModel)]="lib.version" [nzSize]="'small'" (nzOnSearch)="getVerisons(lib)">
+                        @if (!loading) {
+                        @for (version of lib.versionList; track version) {
+                        <nz-option [nzValue]="version" [nzLabel]="version"></nz-option>
+                        }
+                        } @else {
+                        <nz-option nzDisabled nzCustomContent>
+                            <div class="icon lloading ccenter" style="margin-left: -10px;">
+                                <i class="fa-duotone fa-solid fa-loader" style="margin-right: 10px;"></i>
+                                <!-- Loading... -->
+                            </div>
+                        </nz-option>
+                        }
+                    </nz-select>
+                </div>
+                <div class="btns">
+                    @if(isInstalled(lib)) {
+                    <button nz-button nzType="default" nzSize="small" [disabled]="true">已安装</button>
+                    <button nz-button nzType="text" nzDanger nzSize="small" (click)="removeLib(lib)"
+                        [disabled]="lib.state=='uninstalling'">移除</button>
+                    }@else{
+                    <button nz-button nzType="primary" nzSize="small" (click)="installLib(lib)"
+                        [disabled]="lib.state=='installing'">安装</button>
+                    }
+                </div>
+            </div>
+        </div>
+        }
+    </div>
+</div>

@@ -1,68 +1,160 @@
-<div class="window-box">
-    <div class="settings">
+@if (currentUrl == "/serial-monitor") {
+  <app-sub-window
+    [title]="windowInfo"
+    [winBtns]="['go-main', 'minimize', 'maximize', 'close']"
+  >
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+  </app-sub-window>
+} @else {
+  <app-tool-container
+    [title]="windowInfo"
+    [path]="'/serial-monitor'"
+    (closeEvent)="close()"
+  >
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+  </app-tool-container>
+}
+<ng-template #windowBoxTemplate>
+  <div class="window-box">
+    <div class="left-bar">
+      <div
+        class="btn ccenter selected"
+        nz-tooltip
+        nzTooltipTitle="基础设置"
+        nzTooltipPlacement="left"
+      >
+        <i class="fa-light fa-gear"></i>
+      </div>
+      <div
+        class="btn ccenter"
+        nz-tooltip
+        nzTooltipTitle="图表显示"
+        nzTooltipPlacement="left"
+      >
+        <i class="fa-light fa-chart-line"></i>
+      </div>
+      <div
+        class="btn ccenter"
+        nz-tooltip
+        nzTooltipTitle="调试辅助"
+        nzTooltipPlacement="left"
+      >
+        <i class="fa-light fa-bug"></i>
+      </div>
+      <div
+        class="btn ccenter"
+        nz-tooltip
+        nzTooltipTitle="自动化"
+        nzTooltipPlacement="left"
+      >
+        <i class="fa-light fa-code-branch"></i>
+      </div>
+      <div
+        class="btn ccenter"
+        nz-tooltip
+        nzTooltipTitle="高亮设置"
+        nzTooltipPlacement="left"
+      >
+        <i class="fa-light fa-paint-roller"></i>
+      </div>
+    </div>
+    <div class="main-box">
+      <div class="settings">
         <div class="line">
-            <div class="item">
-                <div class="text">串口</div>
-                <div class="port ccenter">
-                    <div>COM9</div>
-                    <div class="btn ccenter" (click)="openPortList()"><i class="fa-light fa-plug"></i></div>
-                    <div class="btn ccenter"><i class="fa-brands fa-bluetooth"></i></div>
-                </div>
-
+          <div class="item">
+            <div class="text">串口</div>
+            <div class="port ccenter">
+              <div>COM9</div>
+              <div class="btn ccenter" (click)="openPortList()">
+                <i class="fa-light fa-plug"></i>
+              </div>
+              <div class="btn ccenter">
+                <i class="fa-brands fa-bluetooth"></i>
+              </div>
             </div>
-            <div class="item">
-                <div class="text">波特率</div>
-                <nz-select [(ngModel)]="baudRate" [nzSize]="'small'">
-                    <nz-option nzValue="115200" nzLabel="115200"></nz-option>
-                </nz-select>
-            </div>
-            <div class="more ccenter" (click)="openMore()">
-                <i class="fa-light fa-circle-chevron-down"></i>
-            </div>
+          </div>
+          <div class="item">
+            <div class="text">波特率</div>
+            <nz-select [(ngModel)]="baudRate" [nzSize]="'small'">
+              <nz-option nzValue="115200" nzLabel="115200"></nz-option>
+            </nz-select>
+          </div>
+          <div>
+            <!-- <button nz-button [nzSize]="'small'" nzType="primary">Open</button> -->
+            <nz-switch [(ngModel)]="switchValue"></nz-switch>
+          </div>
+          <!-- <div>
+            <button nz-button [nzSize]="'small'" nzType="primary" (click)="send('DTR')">DTR</button>
+            <button nz-button [nzSize]="'small'" nzType="primary" (click)="send('RTS')">RTS</button>
+          </div> -->
+          <!-- <div class="more ccenter" (click)="openMore()">
+            <i class="fa-light fa-circle-chevron-down"></i>
+          </div> -->
         </div>
-    </div>
-    <div class="monitor">
-        <div class="r-box">
-
+      </div>
+      <div class="monitor">
+        <div class="r-box sscroll">
+          @for (item of dataList; track $index) {
+            <app-data-item [data]="item"></app-data-item>
+          }
         </div>
         <div class="btns">
-            <div class="btn ccenter" nz-tooltip nzTooltipTitle="自动滚动">
-                <i class="fa-light fa-arrow-down-to-line"></i>
-            </div>
-            <div class="btn ccenter" nz-tooltip nzTooltipTitle="自动换行">
-                <i class="fa-light fa-arrow-turn-down-left"></i>
-            </div>
-            <div class="btn ccenter" nz-tooltip nzTooltipTitle="时间戳">
-                <i class="fa-light fa-timer"></i>
-            </div>
-            <div class="btn ccenter" nz-tooltip nzTooltipTitle="HEX显示">
-                <i class="fa-light fa-rectangle-terminal"></i>
-            </div>
-            <div class="btn ccenter" nz-tooltip nzTooltipTitle="异常捕获">
-                <i class="fa-light fa-spider-web"></i>
-            </div>
-            <div class="btn ccenter right2" nz-tooltip nzTooltipTitle="导出数据">
-                <i class="fa-light fa-download"></i>
-            </div>
-            <div class="btn ccenter right" nz-tooltip nzTooltipTitle="清除屏幕">
-                <i class="fa-light fa-trash-can"></i>
-            </div>
+          <div class="btn ccenter hex" nz-tooltip nzTooltipTitle="HEX显示">
+            <i class="fa-thin fa-rectangle"></i>
+            <div>Hex</div>
+          </div>
+          <div class="btn ccenter" nz-tooltip nzTooltipTitle="自动换行">
+            <i class="fa-light fa-arrow-turn-down-left"></i>
+          </div>
+          <div class="btn ccenter" nz-tooltip nzTooltipTitle="自动滚动">
+            <i class="fa-light fa-arrow-down-to-line"></i>
+          </div>
+          <div class="btn ccenter" nz-tooltip nzTooltipTitle="时间戳">
+            <i class="fa-light fa-timer"></i>
+          </div>
+          <div class="btn ccenter right3" nz-tooltip nzTooltipTitle="搜索">
+            <i class="fa-light fa-magnifying-glass"></i>
+          </div>
+          <div class="btn ccenter right2" nz-tooltip nzTooltipTitle="导出">
+            <i class="fa-light fa-download"></i>
+          </div>
+          <div class="btn ccenter right" nz-tooltip nzTooltipTitle="清除">
+            <i class="fa-light fa-trash-can"></i>
+          </div>
         </div>
-    </div>
-    <div class="sender">
+      </div>
+      <div
+        class="sender"
+        nz-resizable
+        [style.height.px]="bottomHeight"
+        [nzMaxHeight]="500"
+        [nzMinHeight]="180"
+        (nzResize)="onContentResize($event)"
+      >
+        <nz-resize-handle nzDirection="top">
+          <div class="line"></div>
+        </nz-resize-handle>
         <div class="s-box">
-            <textarea nz-input placeholder="Controlled autosize" [nzAutosize]="{ minRows: 3, maxRows: 5 }"></textarea>
-            <div class="btn ccenter">
-                <i class="fa-light fa-paper-plane"></i>
+          <textarea
+            class="sscroll vsfont"
+            nz-input
+            [(ngModel)]="inputValue"
+          ></textarea>
+          <div class="btns">
+            <div class="btn ccenter hex" nz-tooltip nzTooltipTitle="HEX显示">
+              <i class="fa-thin fa-rectangle"></i>
+              <div>Hex</div>
             </div>
-        </div>
-        <div class="btns">
-            <div class="btn ccenter" nz-tooltip nzTooltipTitle="HEX显示">
-                <i class="fa-light fa-rectangle-terminal"></i>
+            <div class="btn ccenter enter" nz-tooltip nzTooltipTitle="回车发送">
+              <i class="fa-light fa-arrow-turn-down-left"></i>
             </div>
             <div class="btn ccenter right" nz-tooltip nzTooltipTitle="发送文件">
-                <i class="fa-light fa-file"></i>
+              <i class="fa-light fa-file-export"></i>
             </div>
+            <button nz-button nzType="primary" (click)="send()">发送</button>
+          </div>
         </div>
+      </div>
     </div>
-</div>
+  </div>
+</ng-template>

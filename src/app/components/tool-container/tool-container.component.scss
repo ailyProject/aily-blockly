@@ -1,0 +1,35 @@
+.tool-container {
+  background: #2b2d30;
+  height: 100%;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  height: 30px;
+
+  .title {
+    padding-left: 10px;
+  }
+
+  .tool-btns {
+    display: flex;
+    .btn {
+      width: 30px;
+      height: 30px;
+
+      &:hover {
+        background: #3a3c3f;
+      }
+    }
+
+    .fa-arrow-up-right-from-square {
+      font-size: 12px;
+    }
+  }
+}
+
+.content {
+  height: calc(100% - 30px);
+  background: #323437;
+}

@@ -1,0 +1,29 @@
+<div class="tool-container">
+  <div class="header">
+    <div class="title ccenter">
+      {{ title }}
+    </div>
+    <div class="tool-btns">
+      <!-- <div class="btn ccenter" (click)="copy()">
+        <i class="fa-light fa-copy"></i>
+      </div>
+      <div class="btn ccenter" (click)="refresh()">
+        <i class="fa-light fa-arrows-rotate"></i>
+      </div>
+      <div class="btn ccenter" (click)="trash()">
+        <i class="fa-light fa-trash"></i>
+      </div> -->
+      @if (path) {
+        <div class="btn ccenter" (click)="openWindow()">
+          <i class="fa-light fa-arrow-up-right-from-square"></i>
+        </div>
+      }
+      <div class="btn ccenter" (click)="close()">
+        <i class="fa-light fa-xmark"></i>
+      </div>
+    </div>
+  </div>
+  <div class="content">
+    <ng-content></ng-content>
+  </div>
+</div>

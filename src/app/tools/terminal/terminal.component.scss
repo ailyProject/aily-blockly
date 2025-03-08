@@ -1,10 +1,73 @@
-.terminal-box{
-    height: 100%;
-    width: 100%;
-    position: absolute;
+@import "../../components/tool-container/tool-container.component.scss";
 
-    >div{
-        height: 100%;
-        width: 100%; 
-    }
+.content{
+  overflow: hidden;
 }
+
+.terminal-box {
+  height: 100%;
+  width: 100%;
+
+  ::ng-deep {
+    .terminal {
+      height: 100%;
+    }
+
+    .xterm {
+      padding: 10px;
+    }
+
+    .xterm-viewport{
+      scrollbar-width: thin !important;
+      scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+    }
+  }
+}
+
+nz-tabset {
+  ::ng-deep {
+    nz-tabs-nav {
+      height: 30px;
+      margin: 0 !important;
+    }
+
+    .ant-tabs-tab {
+      font-size: 12px !important;
+      margin: 0 !important;
+
+      button {
+        padding: 0 10px;
+        color: #a5a5a5;
+      }
+    }
+
+    .ant-tabs-ink-bar {
+      height: 1px !important;
+    }
+
+    .ant-tabs-tab-active {
+      button {
+        color: #fff !important;
+      }
+    }
+  }
+
+  &.ant-tabs-editable-card {
+    ::ng-deep {
+      button {
+        padding: 0 !important;
+        color: #a5a5a5;
+      }
+
+      .ant-tabs-tab {
+        padding: 8px;
+      }
+
+      .ant-tabs-tab-remove {
+        margin-right: -2px;
+        margin-left: 4px;
+      }
+    }
+  }
+}
+

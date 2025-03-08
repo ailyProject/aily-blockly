@@ -1,8 +1,75 @@
 [
-    "arduino_uno",
-    "arduino_mega",
-    "esp32c3",
-    "esp32s3",
-    "raspberrypi_pico",
-    "wifiduino32"
+  {
+    "value": "@aily-project/board-arduino_uno",
+    "name": "Arduino UNO R3",
+    "version": "1.0.1",
+    "img": "board/arduino_uno/arduino_uno.png",
+    "desc": "Arduino UNO R3 是一款基于ATmega328P的开源电子原型平台，包含数字I/O口14个（其中6个支持PWM输出），模拟输入口6个，16MHz晶振，USB接口，电源接口，ICSP接口等。",
+    "url":"https://arduino.me/s/board?aid=698",
+    "brand":"Arduino"
+  },
+  {
+    "value": "@aily-project/board-arduino_mega",
+    "name": "Arduino MEGA",
+    "version": "1.0.0",
+    "img": "board/arduino_mega/arduino_mega.png",
+    "desc": "Arduino MEGA 是一款基于ATmega2560的开源电子原型平台，包含数字I/O口54个（其中14个支持PWM输出），模拟输入口16个，16MHz晶振，USB接口，电源接口，ICSP接口等。",
+    "url":"https://arduino.me/s/board?aid=699",
+    "brand":"Arduino"
+  },
+  {
+    "value": "@aily-project/board-arduino_uno_r4_minima",
+    "name": "Arduino UNO R4 Minima",
+    "version": "1.0.0",
+    "img": "board/arduino_uno_r4_minima/arduino_uno_r4_minima.png",
+    "desc": "Arduino MEGA 是一款基于ATmega2560的开源电子原型平台，包含数字I/O口54个（其中14个支持PWM输出），模拟输入口16个，16MHz晶振，USB接口，电源接口，ICSP接口等。",
+    "url":"https://arduino.me/s/board?aid=1461",
+    "brand":"Espressif"
+  },
+  {
+    "value": "@aily-project/board-esp32c3",
+    "name": "esp32c3",
+    "version": "1.0.0",
+    "img": "board/esp32c3/esp32c3.png",
+    "desc": "esp32c3 是一款基于ESP32-C3的开源电子原型平台，包含数字I/O口14个（其中6个支持PWM输出），模拟输入口6个，2.4GHz Wi-Fi，蓝牙5.0，USB接口，电源接口，ICSP接口等。",
+    "url":"https://arduino.me",
+    "brand":"Espressif"
+  },
+  {
+    "value": "@aily-project/board-wifiduino32",
+    "name": "Wifiduino32",
+    "version": "1.0.0",
+    "img": "board/wifiduino32/wifiduino32.png",
+    "desc": "Wifiduino32 是一款基于ESP32的开源电子原型平台，包含数字I/O口38个（其中6个支持PWM输出），模拟输入口6个，2.4GHz Wi-Fi，蓝牙4.2，USB接口，电源接口，ICSP接口等。",
+    "url":"https://arduino.me",
+    "brand":"OpenJumper"
+  },
+  {
+    "value": "@aily-project/board-raspberrypi_pico",
+    "name": "RaspberryPi Pico",
+    "version": "1.0.0",
+    "img": "board/raspberrypi_pico/raspberrypi_pico.png",
+    "desc": "RaspberryPi Pico 是一款基于RP2040的开源电子原型平台，包含数字I/O口26个（其中16个支持PWM输出），模拟输入口3个，133MHz主频，USB接口，电源接口，ICSP接口等。",
+    "url":"https://arduino.me",
+    "brand":"RaspberryPi"
+  },
+  {
+    "value": "@aily-project/board-raspberrypi_pico",
+    "name": "XIAO ESP32C3",
+    "version": "1.0.0",
+    "img": "board/xiao_esp32c3/xiao_esp32c3.png",
+    "desc": "Seeed Studio XIAO ESP32C3 - RISC-V tiny MCU board with Wi-Fi and Bluetooth5.0, battery charge supported, power efficiency and rich Interface",
+    "url":"https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html",
+    "brand":"Seeed Studio"
+  },
+  {
+    "value": "@aily-project/board-raspberrypi_pico",
+    "name": "XIAO ESP32S3",
+    "version": "1.0.0",
+    "img": "board/xiao_esp32s3/xiao_esp32s3.png",
+    "desc": "Seeed Studio XIAO ESP32S3 - 2.4GHz WiFi, BLE 5.0, 8MB PSRAM, 8MB FLASH, Dual-core, battery charge supported, power efficiency and rich Interface, ideal for Smart Homes, IoT, Wearable Devices, Robotics",
+    "url":"https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html",
+    "brand":"Seeed Studio"
+    
+  }
 ]

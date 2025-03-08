@@ -1,14 +1,23 @@
 import { Component, ElementRef, ViewChild } from '@angular/core';
-import { InnerWindowComponent } from '../../components/inner-window/inner-window.component';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { FormsModule } from '@angular/forms';
-import { InputBoxComponent } from './components/input-box/input-box.component';
 import { DialogComponent } from './components/dialog/dialog.component';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
+import { UiService } from '../../services/ui.service';
+import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 
 @Component({
   selector: 'app-aily-chat',
-  imports: [NzInputModule, FormsModule, DialogComponent],
+  imports: [
+    NzInputModule,
+    FormsModule,
+    DialogComponent,
+    NzButtonModule,
+    ToolContainerComponent,
+    NzResizableModule
+  ],
   templateUrl: './aily-chat.component.html',
   styleUrl: './aily-chat.component.scss',
 })
@@ -42,12 +51,36 @@ export class AilyChatComponent {
     {
       content:
         'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
+    },    {
+      content:
+        'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
+    },
+    {
+      content:
+        'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
+    },
+    {
+      content:
+        'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
+    },    {
+      content:
+        'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
+    },
+    {
+      content:
+        'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
+    },
+    {
+      content:
+        'The weather in Beijing today is sunny, with a maximum temperature of 30 degrees and a minimum temperature of 20 degrees.',
     },
   ];
   inputValue =
     '帮我生成一组流水灯功能的代码块，包含开后流水灯、关闭流水灯两个块。在开发板的D2~D13引脚上均连接有LED开后流水灯功能块，可以指定流水灯速度，调用后即开启流水关闭流水灯功能块，调用后即停止流水灯。';
 
-  constructor() {}
+  constructor(
+    private uiService: UiService
+  ) {}
 
   ngOnInit() {}
 
@@ -62,6 +95,15 @@ export class AilyChatComponent {
     //   this.dragHandle.nativeElement.addEventListener('mouseup', this.handleMouseUp);
     // });
     this.scrollToBottom(true);
+  }
+
+  bottomHeight = 180;
+  onContentResize({ height }: NzResizeEvent): void {
+    this.bottomHeight = height!;
+  }
+
+  close() {
+    this.uiService.closeTool('aily-chat');
   }
 
   // private handleMouseMove = (e: MouseEvent) => {
@@ -135,11 +177,11 @@ export class AilyChatComponent {
 
     const segments = this.splitContent(content);
 
-    const contentList = [];
+    const contentList: any = [];
 
     const ruleView = /```blockly\s([\s\S]*?)\s```/;
     segments.forEach((match, index) => {
-      const exec = ruleView.exec(match);
+      const exec: any = ruleView.exec(match);
       if (exec) {
         try {
           const data = JSON.parse(exec[1]);
@@ -191,7 +233,7 @@ export class AilyChatComponent {
     }).then();
   }
 
-  splitContent(content) {
+  splitContent(content: any) {
     // 正则表达式，匹配```blockly到下一个```之间的内容
     const regex = /```blockly([\s\S]*?)```/g;
 
@@ -199,7 +241,7 @@ export class AilyChatComponent {
     const matches = content.match(regex);
 
     // 处理匹配结果，将每次```blockly前面的内容也作为一个分段
-    let segments = [];
+    let segments: any = [];
     let lastIndex = 0;
 
     if (matches) {

@@ -11,6 +11,7 @@
 /node_modules
 npm-debug.log
 yarn-error.log
+/child/node
 
 # IDEs and editors
 .idea/
@@ -41,3 +42,6 @@ testem.log
 # System files
 .DS_Store
 Thumbs.db
+temp
+child/node*
+!child/node*.7z

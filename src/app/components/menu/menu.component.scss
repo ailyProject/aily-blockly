@@ -1,0 +1,47 @@
+.menu-box {
+  background: #2b2d30;
+  border-radius: 5px;
+  position: fixed;
+  z-index: 999;
+  flex-direction: column;
+  padding: 3px 0;
+
+  .menu-item {
+    padding: 0 10px;
+    height: 30px;
+    justify-content: flex-start;
+    margin: 0 3px;
+    border-radius: 5px;
+    cursor: pointer;
+    color: #ddd;
+
+    .icon {
+      width: 20px;
+      margin-right: 10px;
+      flex-shrink: 0;
+    }
+
+    .text {
+      margin-left: 10px;
+      white-space: nowrap;
+      color: #999;
+      flex-shrink: 1;
+    }
+
+    &:hover {
+      background: #405e8d;
+    }
+
+    &.highlight {
+      .icon {
+        color: #f7ce42;
+      }
+    }
+  }
+
+  .sep {
+    height: 1px;
+    background: #444;
+    margin: 2px 0;
+  }
+}

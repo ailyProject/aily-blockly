@@ -25,6 +25,7 @@
           "builder": "@angular-devkit/build-angular:application",
           "options": {
             "outputPath": "dist/aily-blockly",
+            "preserveSymlinks": true,
             "index": "src/index.html",
             "browser": "src/main.ts",
             "polyfills": ["zone.js"],
@@ -44,16 +45,12 @@
                 "glob": "**/*",
                 "input": "./node_modules/monaco-editor/min/vs",
                 "output": "/assets/vs"
-              },
-              {
-                "glob": "**/*",
-                "input": "./node_modules/@ant-design/icons-angular/src/inline-svg/",
-                "output": "/assets/"
               }
             ],
             "styles": [
               "src/styles.scss",
               "node_modules/ng-zorro-antd/ng-zorro-antd.dark.css",
+              "node_modules/ng-zorro-antd/resizable/style/index.less",
               "node_modules/ng-zorro-antd/code-editor/style/index.css",
               "node_modules/angular2-draggable/css/resizable.min.css",
               "node_modules/animate.css/animate.min.css",

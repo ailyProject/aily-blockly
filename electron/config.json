@@ -1,0 +1,18 @@
+{
+  "lang": "zh_CN",
+  "theme": "default",
+  "font": "default",
+  "project_path": "%HOMEPATH%/Documents/aily-project",
+  "package_path": "%HOMEPATH%/Documents/aily-project",
+  "npm_registry": ["https://registry.openjumper.cn"],
+  "board_list":["https://blockly.openjumper.cn/boards.json"],
+  "lib_list":["https://blockly.openjumper.cn/libraries.json"],
+  "compile": {
+    "verbose": true,
+    "warnings": "error"
+  },
+  "upload": {
+    "verbose": true,
+    "warnings": "error"
+  }
+}

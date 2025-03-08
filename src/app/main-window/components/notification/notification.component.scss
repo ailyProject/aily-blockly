@@ -1,0 +1,36 @@
+.notification-box {
+    position: fixed;
+    bottom: 44px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    background: rgba(15, 15, 15, 0.8);
+    padding: 15px;
+    border-radius: 10px;
+    box-shadow: 0 0 5px 0 rgba(0, 0, 0, 0.1);
+
+    .text-box {
+        margin-left: 15px;
+
+        >div:last-child {
+            margin-top: 5px;
+            color: #999;
+        }
+    }
+
+    &:hover {
+        .btn {
+            visibility: visible;
+        }
+    }
+
+    .btn {
+        visibility: hidden;
+        width: 40px;
+        height: 40px;
+        position: absolute;
+        right: 0px;
+        top: 0px;
+        font-size: 20px;
+    }
+}

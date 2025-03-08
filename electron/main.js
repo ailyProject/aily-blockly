@@ -1,84 +1,165 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain } from "electron";
-import path from "path";
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import * as pty from "@lydell/node-pty";
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron");
+
 
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
+process.env.DEV = serve;
+
+// ipc handlers模块
+const { registerTerminalHandlers } = require("./terminal");
+const { registerBoardHandlers } = require("./board");
+const { registerWindowHandlers } = require("./window");
+const { registerNpmHandlers } = require("./npm");
+// 这个不知道还用不用  
+// const { registerProjectHandlers } = require("./project");
 
 let mainWindow;
-let tray;
+
+// 获取系统默认的应用数据目录
+function getAppDataPath() {
+  let home = os.homedir();
+  let path;
+  if (process.platform === "win32") {
+    path = home + "\\AppData\\Local\\aily-project";
+  } else if (process.platform === "darwin") {
+    path = home + "/Library/Application Support/aily-project";
+  } else {
+    path = home + "/.config/aily-project";
+  }
+  if (!require("fs").existsSync(path)) {
+    require("fs").mkdirSync(path, { recursive: true });
+  }
+  return path;
+}
+
+// 执行7z解压缩操作
+function unzip7z(zippath, destpath) {
+  const child_process = require("child_process");
+  const child = child_process.spawnSync("7za.exe", ["x", zippath, "-o" + destpath]);
+  console.log("unzip7z: ", child.stdout.toString());
+}
+
+// 检查Node
+function checkNodePath(childPath) {
+  // 检查是否存在node环境
+  const nodePath = path.join(childPath, "node");
+  if (!fs.existsSync(nodePath)) {
+    // node zip文件路径
+    const nodeZipPath = path.join(childPath, "node-v9.11.2-win-x64.7z")
+    // node unzip路径
+    const nodeDestPath = childPath
+    // 执行解压缩操作
+    try {
+      unzip7z(nodeZipPath, nodeDestPath)
+      // 重命名解压后的文件夹
+      const nodeDir = path.join(nodeDestPath, path.basename(nodeZipPath, path.extname(nodeZipPath)))
+      fs.renameSync(nodeDir, nodePath)
+    } catch (err) {
+      console.err("Node init error, err: ", err)
+    }
+  }
+}
+
+// 环境变量加载
+function loadEnv() {
+  // 将child目录添加到环境变量PATH中
+  const childPath = path.join(__dirname, "..", "child")
+  process.env.PATH = childPath + path.delimiter + process.env.PATH;
+  
+  // node环境加载
+  checkNodePath(childPath)
+
+  const nodePath = path.join(childPath, "node")
+  // 将node环境的路径配置在系统PATH环境的最前面，以实现优先调用内置的node环境
+  process.env.PATH = nodePath + path.delimiter + process.env.PATH;
+
+  // 读取同级目录下的config.json文件
+  const confContent = require("fs").readFileSync(
+    path.join(__dirname, "config.json"),
+  );
+  const conf = JSON.parse(confContent);
+
+  console.log("conf: ", conf);
+
+  // app data path
+  process.env.AILY_APPDATA_PATH = getAppDataPath();
+  // npm registry
+  process.env.AILY_NPM_REGISTRY = conf["npm_registry"][0];
+  // 全局npm包路径
+  process.env.AILY_NPM_PREFIX = process.env.AILY_APPDATA_PATH;
+  // 默认全局编译器路径
+  process.env.AILY_COMPILER_PATH = path.join(
+    process.env.AILY_APPDATA_PATH,
+    "compiler",
+  );
+  // 默认全局烧录器路径
+  process.env.AILY_TOOL_PATH = path.join(process.env.AILY_APPDATA_PATH, "tool");
+  // 默认全局SDK路径
+  process.env.AILY_SDK_PATH = path.join(process.env.AILY_APPDATA_PATH, "sdk");
+}
+
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
-    height: 740,
-    show: true, // 不显示主窗口，实现“后台运行”的效果
+    height: 780,
+    frame: false,
+    minWidth: 1200,
+    minHeight: 780,
+    autoHideMenuBar: true,
+    transparent: true,
+    alwaysOnTop: false,
     webPreferences: {
       nodeIntegration: true,
-      // contextIsolation: false,
       webSecurity: false,
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
   if (serve) {
     mainWindow.loadURL("http://localhost:4200");
+    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(`renderer/index.html`);
+    // mainWindow.webContents.openDevTools();
   }
 
   // 当主窗口被关闭时，进行相应的处理
   mainWindow.on("closed", () => {
     mainWindow = null;
+    app.quit();
   });
+
+  try {
+    loadEnv();
+  } catch (error) {
+    console.error("loadEnv error: ", error);
+  }
+
+  // 注册ipc handlers
+  // registerProjectHandlers(mainWindow);
+  registerTerminalHandlers(mainWindow);
+  registerBoardHandlers(mainWindow);
+  registerWindowHandlers(mainWindow);
+  registerNpmHandlers(mainWindow);
 }
 
-function createTray() {
-  // 指定托盘图标，路径可替换为实际图标路径
-  const iconPath = path.join(__dirname, "tray_icon.png");
-  tray = new Tray(iconPath);
-
-  // 系统托盘菜单
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: "显示主窗口",
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-        }
-      },
-    },
-    {
-      label: "退出",
-      click: () => {
-        app.quit();
-      },
-    },
-  ]);
-
-  tray.setToolTip("这是一个后台运行的示例应用");
-  tray.setContextMenu(contextMenu);
-
-  // 点击托盘图标自动显示/隐藏主窗口
-  tray.on("click", () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.hide();
-      } else {
-        mainWindow.show();
-      }
-    }
-  });
-}
-
-// 当 Electron 完成初始化并准备好创建浏览器窗口时调用
 app.on("ready", () => {
   createWindow();
-  //   createTray();
+  // 这个用于双击实现窗口最大化，之后调
+  // setInterval(() => {
+  //   const cursorPos = screen.getCursorScreenPoint(); // 全局鼠标坐标
+  //   const winPos = mainWindow.getBounds();             // 窗口在屏幕中的位置和大小
+
+  //   // 计算鼠标在窗口中的位置
+  //   const relativeX = cursorPos.x - winPos.x;
+  //   const relativeY = cursorPos.y - winPos.y;
+  //   // console.log('鼠标在窗口中的位置：', relativeX, relativeY);
+  // }, 1000);
 });
 
 // 当所有窗口都被关闭时退出应用（macOS 除外）
@@ -95,89 +176,33 @@ app.on("activate", () => {
   }
 });
 
-// 终端相关(dev)
-const terminals = new Map();
-ipcMain.on("terminal-create", (event, args) => {
-  const shell = process.env[process.platform === "win32" ? "COMSPEC" : "SHELL"];
-  const ptyProcess = pty.spawn(shell, [], {
-    name: "xterm-color",
-    cols: 80,
-    rows: 30,
-    cwd: process.env.HOME,
-    env: process.env,
-  });
-
-  ptyProcess.on("data", (data) => {
-    mainWindow.webContents.send("terminal-data", data);
-  });
-
-  ipcMain.on("terminal-input", (event, input) => {
-    ptyProcess.write(input);
-  });
-
-  // 关闭终端
-  ipcMain.on("terminal-close", (event) => {
-    ptyProcess.kill();
-  });
-});
-
-// 多窗口相关(dev)
-ipcMain.on("window-new", (event, data) => {
-  const subWindow = new BrowserWindow({
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      sandbox: true,
-    },
-  });
-
-  if (serve) {
-    subWindow.loadURL("http://localhost:4200/sub");
-  } else {
-    subWindow.loadFile(`renderer/index.html`, { hash: `#/sub` });
-  }
-
-  subWindow.on("closed", () => {
-    subWindow.close();
-    childWindows.delete(child);
-  });
-
-  // childWindows.add(child);
-});
-
-ipcMain.on("window-minimize", () => {
-  if (mainWindow) {
-    mainWindow.minimize();
-  }
-});
-
-ipcMain.on("window-maximize", () => {
-  if (mainWindow) {
-    if (mainWindow.isMaximized()) {
-      mainWindow.unmaximize();
-    } else {
-      mainWindow.maximize();
-    }
-  }
-});
-
-ipcMain.on("window-close", () => {
-  if (mainWindow) {
-    mainWindow.close();
-    app.quit();
-  }
-});
-
-// 窗口间消息转发
-ipcMain.on("send-to-child", (event, message) => {
-  childWindows.forEach((child) =>
-    child.webContents.send("message-from-main", message),
-  );
-});
-
 // 项目管理相关
-ipcMain.handle("project-new", (event) => {
-  const projectPath = createTemporaryProject();
-  event.returnValue = projectPath;
-  console.log("project-new path", projectPath);
+ipcMain.handle("select-folder", async (event, data) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(senderWindow, {
+    defaultPath: data.path,
+    properties: ["openDirectory"],
+  });
+  if (result.canceled) {
+    return data.path;
+  }
+  return result.filePaths[0];
+});
+
+// 环境变量
+ipcMain.handle("env-set", (event, data) => {
+  process.env[data.key] = data.value;
+})
+
+ipcMain.handle("env-get", (event, key) => {
+  return process.env[key];
+})
+
+// 用于嵌入的iframe打开外部链接
+app.on('web-contents-created', (event, contents) => {
+  // 处理iframe中的链接点击
+  contents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' }; // 阻止在Electron中打开
+  });
 });

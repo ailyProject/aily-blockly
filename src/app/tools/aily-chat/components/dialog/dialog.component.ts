@@ -100,7 +100,7 @@ export class DialogComponent implements OnInit {
   reg = /[。|；|?|!|.]/g;
 
   ngAfterViewInit(): void {
-    console.log(this.data.contentList);
+    // console.log(this.data.contentList);
     if (this.data.subject) {
       this.data.subject.subscribe(
         (res: any) => {

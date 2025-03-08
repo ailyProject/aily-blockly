@@ -1,3 +1,23 @@
-<div class="terminal-box">
-    <div #terminal></div>
+<div class="tool-container">
+  <div class="header">
+    <nz-tabset [nzSize]="'small'" [(nzSelectedIndex)]="selectedTabIndex">
+      <nz-tab nzTitle="终端"></nz-tab>
+      <nz-tab nzTitle="编译"></nz-tab>
+      <nz-tab nzTitle="错误"></nz-tab>
+      <nz-tab nzTitle="日志"></nz-tab>
+    </nz-tabset>
+    <div class="tool-btns">
+      <div class="btn ccenter" (click)="trash()">
+        <i class="fa-light fa-broom-wide"></i>
+      </div>
+      <div class="btn ccenter" (click)="close()">
+        <i class="fa-light fa-xmark"></i>
+      </div>
+    </div>
+  </div>
+  <div class="content">
+    <div class="terminal-box" #terminal></div>
+    <div class="compile"></div>
+    <div class="error"></div>
+  </div>
 </div>

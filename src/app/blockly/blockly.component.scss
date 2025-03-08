@@ -1,101 +1,65 @@
 .blocklyBox {
-  width: 100%;
-  height: 100%;
+    width: 100%;
+    height: 100%;
 
-  ::ng-deep {
-    .blocklyToolboxDiv {
-      width: 180px;
-      background: rgb(37, 52, 96);
-      border-right: 1px solid #e0e0e0;
-      padding: 0;
 
-      $radius: 30px;
+    ::ng-deep {
+        .blocklyToolboxDiv {
+            width: 180px;
+            background: #323232;
+            border-right: 1px solid #E0E0E0;
+            padding: 0;
+            scrollbar-width: thin !important;
+            scrollbar-color: rgba(255, 255, 255, 0.2) transparent; 
 
-      .blocklyToolboxCategory {
-        .blocklyTreeRow {
-          height: 60px;
-          display: flex;
-          align-items: center;
-          cursor: pointer;
-          width: calc(100% - 10px);
-          //transition: all 0.3s; // 会跟相邻hover效果冲突
-          margin-bottom: 0;
-          color: #fff;
-          position: relative;
-          margin-left: 10px;
-          border-radius: 10px 0 0 10px;
+            .blocklyToolboxCategory {
+                .blocklyTreeRow {
+                    height: 40px;
+                    display: flex;
+                    align-items: center;
+                    cursor: pointer;
+                    width: 100%;
+                    transition: all 0.3s;
+                    margin-bottom: 0;
+                }
 
-          &:hover {
-            z-index: 30;
-          }
+                .blocklyTreeSelected {
+                    background: #929292 !important;
+                }
+
+                .blocklyTreeRowContentContainer {
+                    display: flex;
+                    align-items: center;
+
+                    .tbc-icon-box {
+                        font-size: 16px;
+                        width: 40px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+
+                }
+
+            }
         }
 
-        .blocklyTreeSelected {
-          background: rgb(206, 209, 218) !important;
-          color: rgb(44, 94, 251) !important;
-
-          &:before,
-          &:after {
-            content: "";
-            display: inline-block;
-            width: $radius;
-            height: $radius;
-            background-color: rgb(206, 209, 218);
-            position: absolute;
-            right: 0;
-            z-index: 10;
-          }
-
-          &:before {
-            top: -$radius;
-          }
-
-          &:after {
-            bottom: -$radius;
-          }
-
-          .blocklyTreeRowContentContainer {
-            &:before,
-            &:after {
-              content: "";
-              display: inline-block;
-              width: $radius;
-              height: $radius;
-              background-color: rgb(37, 52, 96);
-              position: absolute;
-              right: 0;
-              z-index: 20;
-            }
-
-            &:before {
-              top: -$radius;
-              border-bottom-right-radius: 100%;
-            }
-
-            &:after {
-              bottom: -$radius;
-              border-top-right-radius: 100%;
-            }
-          }
-
-          .blocklyTreeLabel {
-            color: inherit !important;
-          }
-        }
-
-        .blocklyTreeRowContentContainer {
-          display: flex;
-          align-items: center;
-
-          .tbc-icon-box {
-            font-size: 16px;
-            width: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-        }
-      }
     }
-  }
+}
+
+.testbtn{
+    position: absolute;
+    top: 100px;
+    right: 100px;
+    z-index: 999;
+    width: 80px;
+    height: 80px;
+    background: rgb(177, 8, 8);
+    color: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+
+    &:hover{
+        background: rgb(212, 48, 48);
+    }
 }

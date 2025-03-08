@@ -1,8 +1,55 @@
-<div class="main">
-    <app-header></app-header>
-    <div class="mid-box">
-      <app-blockly-editor></app-blockly-editor>
-      <div *ngIf="showRbox" style="background: red;width: 300px;height: 100%;"></div>
-    </div>
-    <app-footer (click)="openRbox()"></app-footer>
+<div class="main-window-box bborder">
+  <app-header></app-header>
+  <div class="content-box">
+    <nz-layout>
+      <nz-content>
+        <div class="middle-box">
+          <ngx-simplebar [options]="options">
+            @if (loaded) {
+            <app-blockly-editor></app-blockly-editor>
+            } @else {
+            <app-guide></app-guide>
+            }
+          </ngx-simplebar>
+        </div>
+        @if (showBbox) {
+        <div nz-resizable class="resizable-box" [style.height.px]="bottomHeight" [nzMaxHeight]="500" [nzMinHeight]="50"
+          (nzResize)="onContentResize($event)">
+          <nz-resize-handle nzDirection="top" nzCursorType="grid">
+            <div class="content-resize-line"></div>
+          </nz-resize-handle>
+          <div class="bottom-box">
+            <app-terminal [tab]="terminalTab"></app-terminal>
+          </div>
+        </div>
+        }
+      </nz-content>
+      @if (showRbox) {
+      <nz-sider [nzWidth]="siderWidth" nz-resizable [nzMinWidth]="50" [nzMaxWidth]="600"
+        (nzResize)="onSideResize($event)">
+        <nz-resize-handle nzDirection="left" nzCursorType="grid">
+          <div class="sider-resize-line"></div>
+        </nz-resize-handle>
+        <div class="right-box">
+          <!-- <app-tool-container (closeEvent)="closeRightBox()"> -->
+          @switch (topTool) {
+          @case ("code-viewer") {
+          <app-code-viewer></app-code-viewer>
+          }
+          @case ("serial-monitor") {
+          <app-serial-monitor></app-serial-monitor>
+          }
+          @case ("aily-chat") {
+          <app-aily-chat></app-aily-chat>
+          }
+          }
+          <!-- </app-tool-container> -->
+        </div>
+      </nz-sider>
+      }
+    </nz-layout>
   </div>
+
+  <app-footer></app-footer>
+</div>
+<app-notification></app-notification>

@@ -1,165 +1,265 @@
 .window-box {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+  position: relative;
+  display: flex;
+  height: 100%;
+}
+
+.left-bar {
+  width: 45px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  border-right: 1px solid #444;
+
+  .btn {
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    color: #aaa;
+
+    &:hover {
+      color: #fff;
+    }
+
+    &.selected {
+      color: #fff;
+    }
+  }
+}
+
+.main-box {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
 }
 
 .settings {
-    background: #444;
-    padding: 5px 10px;
+  background: #444;
+  padding: 0 10px;
+  margin: 10px;
+  border-radius: 5px;
 
-    .line {
-        display: flex;
+  .line {
+    display: flex;
+    align-items: center;
+  }
+
+  .item {
+    display: flex;
+    align-items: center;
+    color: #eee;
+    position: relative;
+    height: 40px;
+    font-size: 12px;
+
+    .text {
+      padding: 0 10px;
+      flex-shrink: 0;
     }
 
-    .item {
-        display: flex;
-        align-items: center;
-        color: #EEE;
-        position: relative;
-        height: 28px;
-        font-size: 12px;
-
-        .text {
-            padding:0 10px;
-            flex-shrink: 0;
-        }
-
-        &:first-child{
-            .text {
-                padding-left:0;
-            }
-        }
-
-        .port {
-            height: 24px;
-            width: 100px;
-            background-color: #fff;
-            border: 1px solid #d9d9d9;
-            border-radius: 2px;
-            position: relative;
-            display: flex;
-            justify-content: flex-start;
-            padding-left: 10px;
-            color: #444;
-            font-size: 14px;
-
-            .btn {
-                width: 20px;
-                height: 24px;
-                position: absolute;
-                right: 0;
-                color: rgb(0, 96, 160);
-
-                &:nth-child(2) {
-                    right: 20px;
-                }
-
-                &:hover {
-                    color: rgb(0, 140, 233);
-                }
-            }
-        }
-
-        nz-select {
-            width: 120px;
-        }
+    &:first-child {
+      .text {
+        padding-left: 0;
+      }
     }
 
-    .more {
-        width: 36px;
-        height: 28px;
-        font-size: 20px;
-        color: #EEE;
-        cursor: pointer;
-        justify-content: flex-end;
+    .port {
+      height: 24px;
+      width: 100px;
+      background-color: #fff;
+      border: 1px solid #d9d9d9;
+      border-radius: 2px;
+      position: relative;
+      display: flex;
+      justify-content: flex-start;
+      padding-left: 10px;
+      color: #444;
+      font-size: 14px;
+
+      .btn {
+        width: 20px;
+        height: 24px;
         position: absolute;
-        right: 10px;
+        right: 0;
+        color: rgb(0, 96, 160);
+
+        &:nth-child(2) {
+          right: 20px;
+        }
 
         &:hover {
-            color: #FFF;
+          color: rgb(0, 140, 233);
         }
-
+      }
     }
+
+    nz-select {
+      width: 120px;
+    }
+  }
+
+  .more {
+    width: 36px;
+    height: 28px;
+    font-size: 20px;
+    color: #eee;
+    cursor: pointer;
+    justify-content: flex-end;
+    position: absolute;
+    right: 10px;
+
+    &:hover {
+      color: #fff;
+    }
+  }
 }
 
 .monitor {
-    // background: red;
-    position: relative;
-    flex-grow: 1;
+  // background: red;
+  position: relative;
+  flex-grow: 1;
 
-    .r-box {
-        height: calc(100% - 28px);
-        // background: #555;
+  .r-box {
+    height: calc(100% - 52px);
+    background: #292929;
+    border-radius: 5px;
+    margin: 10px;
+    padding: 5px 10px;
+    overflow-y: auto;
+  }
+
+  .btns {
+    position: absolute;
+    bottom: 5px;
+    width: 100%;
+    display: flex;
+    height: 32px;
+    padding: 0 10px;
+    margin-top: -5px;
+    .right {
+      position: absolute;
+      right: 10px;
     }
 
-    .btns {
-        position: absolute;
-        bottom: 0;
+    .right2 {
+      position: absolute;
+      right: 42px;
     }
+
+    .right3 {
+      position: absolute;
+      right: 74px;
+    }
+  }
+}
+
+.btn {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  color: #eee;
+
+  &:hover {
+    color: #fff;
+  }
 }
 
 .sender {
-    background: #444;
+  position: relative;
+  flex-shrink: 0;
+
+  .s-box {
+    width: 100%;
+    height: 100%;
+    padding: 10px 10px 5px 10px;
     position: relative;
 
-    .s-box {
-        display: flex;
-        width: 100%;
-        padding: 5px 10px;
-
-        .btn {
-            width: 36px;
-            font-size: 20px;
-            color: #EEE;
-            justify-content: flex-end;
-
-            &:hover {
-                color: #FFF;
-            }
-        }
+    textarea {
+      background: #292929;
+      border-radius: 5px;
+      height: calc(100% - 40px);
+      resize: none;
     }
 
     .btns {
-        position: relative;
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 5px;
+      position: relative;
     }
+
+    .turn {
+      &.on {
+        background: #444;
+      }
+    }
+
+    .hex {
+      position: absolute;
+      left: 0;
+    }
+
+    .enter {
+      position: absolute;
+      left: 32px;
+    }
+
+    button {
+      margin-left: 10px;
+    }
+  }
 }
 
-
-
-.btns {
-    display: flex;
-    width: 100%;
-    background: #555;
-    color: #EEE;
+.hex {
+  .fa-rectangle {
+    font-size: 24px;
+  }
+  > div {
     position: absolute;
-    bottom: 0;
-
-    .btn {
-        width: 28px;
-        height: 28px;
-        position: relative;
-
-        &:hover {
-            color: #FFF;
-        }
-
-        &.right2 {
-            position: absolute;
-            right: 28px;
-        }
-
-        &.right {
-            position: absolute;
-            right: 0;
-        }
-
-        .text {
-            font-size: 10px;
-            transform: scale(0.9);
-            position: absolute;
-            left: 12px;
-        }
-    }
+    font-size: 10px;
+  }
 }
+
+nz-resize-handle {
+  .line {
+    margin-top: 5px;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+}
+// .btns {
+//   display: flex;
+//   width: 100%;
+//   background: #555;
+//   color: #eee;
+//   position: absolute;
+//   bottom: 0;
+
+//   .btn {
+//     width: 28px;
+//     height: 28px;
+//     position: relative;
+
+//     &:hover {
+//       color: #fff;
+//     }
+
+//     &.right2 {
+//       position: absolute;
+//       right: 28px;
+//     }
+
+//     &.right {
+//       position: absolute;
+//       right: 0;
+//     }
+
+//     .text {
+//       font-size: 10px;
+//       transform: scale(0.9);
+//       position: absolute;
+//       left: 12px;
+//     }
+//   }
+// }

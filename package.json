@@ -11,10 +11,20 @@
     },
     "files": [
       "!**/*",
-      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
       {
         "from": "dist/aily-blockly/browser",
-        "to": "renderer"
+        "to": "app/renderer"
+      },
+      {
+        "from": "electron",
+        "to": "app/electron"
+      },
+      {
+        "from": "child",
+        "to": "app/child"
       }
     ],
     "win": {
@@ -44,6 +54,7 @@
     "@angular/platform-browser-dynamic": "^19.0.0",
     "@angular/router": "^19.0.0",
     "@ctrl/tinycolor": "^4.1.0",
+    "@lydell/node-pty": "^1.1.0",
     "@microsoft/fetch-event-source": "^2.0.1",
     "@ngx-translate/core": "^16.0.3",
     "@xterm/addon-clipboard": "^0.1.0",
@@ -51,14 +62,15 @@
     "@xterm/xterm": "^5.5.0",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
-    "blockly": "^11.1.1",
+    "blockly": "^11.2.1",
     "lightweight-charts": "^4.2.2",
-    "marked": "^15.0.5",
+    "marked": "^15.0.7",
     "marked-highlight": "^2.2.1",
     "monaco-editor": "^0.52.2",
     "ng-zorro-antd": "^19.0.1",
     "rxjs": "~7.8.0",
     "shiki": "^1.26.1",
+    "simplebar-angular": "^3.3.0",
     "tslib": "^2.3.0",
     "zone.js": "~0.15.0"
   },

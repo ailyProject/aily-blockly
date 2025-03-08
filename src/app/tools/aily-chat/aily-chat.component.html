@@ -1,22 +1,32 @@
-<div class="window-box">
-  <div class="dialog-list" #chatContainer>
-    <div class="chat-list" #chatList>
-      @for (item of list; track item) {
-        <aily-dialog [data]="item"></aily-dialog>
-      }
+<app-tool-container [title]="'AI助手'" (closeEvent)="close()">
+  <div class="window-box">
+    <div class="dialog-list sscroll" #chatContainer>
+      <div #chatList>
+        @for (item of list; track item) {
+          <aily-dialog [data]="item"></aily-dialog>
+        }
+      </div>
     </div>
-  </div>
-  <div class="sender">
-    <div class="s-box">
-      <textarea
-        nz-input
-        placeholder="Controlled autosize"
-        [nzAutosize]="{ minRows: 3, maxRows: 5 }"
-        [(ngModel)]="inputValue"
-      ></textarea>
-      <div class="btn ccenter">
-        <i class="fa-light fa-paper-plane" (click)="send()"></i>
+    <div
+      class="sender"
+      nz-resizable
+      [style.height.px]="bottomHeight"
+      [nzMaxHeight]="500"
+      [nzMinHeight]="180"
+      (nzResize)="onContentResize($event)"
+    >
+      <nz-resize-handle nzDirection="top">
+        <div class="line"></div>
+      </nz-resize-handle>
+      <div class="s-box">
+        <textarea class="sscroll" nz-input [(ngModel)]="inputValue"></textarea>
+        <div class="btns">
+          <div class="btn ccenter">
+            <i class="fa-light fa-microphone"></i>
+          </div>
+          <button nz-button nzType="primary" (click)="send()">发送</button>
+        </div>
       </div>
     </div>
   </div>
-</div>
+</app-tool-container>

@@ -2,8 +2,9 @@ body {
   width: 100vw;
   height: 100vh;
   margin: 0;
+  font-family: "MiSans Regular", "FiraCode Regular" !important;
   overflow: hidden;
-  font-family: "MiSans Regular", sans-serif;
+  background: transparent !important;
 }
 
 .ccenter {
@@ -14,12 +15,28 @@ body {
 
 @font-face {
   font-family: "MiSans Regular";
-  src: url("/fonts/MiSans-Regular.woff2") format("woff2");
+  src: url("../public/fonts/MiSans-Regular.woff2") format("woff2");
   font-display: swap;
 }
 
-.btn{
+.ant-message {
+  top: 40px !important;
+
+  .ant-message-notice-content {
+    border-radius: 25px;
+  }
+}
+
+.btn {
   cursor: pointer;
+
+  &.link {
+    color: rgb(30, 124, 211);
+
+    &:hover {
+      color: rgb(75, 151, 221);
+    }
+  }
 }
 
 .llight {
@@ -29,4 +46,48 @@ body {
 .ddark {
   $bbackground: #2b2d30;
   $lline: #222427;
+}
+
+.sscroll {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.bborder {
+  border: 1px solid #505050;
+}
+
+.vsfont {
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.ellipsis {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ffull {
+  width: 100%;
+  height: 100%;
+}
+
+.lloading {
+  .fa-spinner-third {
+    animation: rotate45 2s steps(60, end) infinite;
+  }
+
+  .fa-loader {
+    animation: rotate45 1s steps(8, end) infinite;
+  }
+
+  @keyframes rotate45 {
+    from {
+      transform: rotate(0deg);
+    }
+
+    to {
+      transform: rotate(360deg);
+    }
+  }
 }

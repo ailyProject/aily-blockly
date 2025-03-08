@@ -1,0 +1,12 @@
+{
+    "MENU": {
+        "PROJECT_NEW": "新建项目",
+        "PROJECT_OPEN": "打开项目",
+        "PROJECT_SAVE": "保存项目",
+        "BUILD": "编译",
+        "RUN": "上传",
+        "STOP": "停止",
+        "CODE": "查看代码",
+        "TOOL_SERIAL": "串口工具"
+    }
+}

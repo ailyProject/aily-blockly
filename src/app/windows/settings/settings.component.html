@@ -1,0 +1,130 @@
+<app-sub-window [title]="'设置'" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content">
+      <div class="left">
+        <div class="left-inner">
+          @for (item of items; track item.name) {
+            <div
+              class="type-btn btn"
+              (click)="selectType(item)"
+              [ngClass]="{ selected: item.name === currentType.name }"
+            >
+              <div class="icon ccenter"><i class="{{ item.icon }}"></i></div>
+              {{ item.name }}
+            </div>
+          }
+        </div>
+      </div>
+      <div class="right">
+        @switch (currentType.name) {
+          @case ("基础设置") {
+            <div class="right-inner">
+              <div class="item">
+                <div>项目文件夹:</div>
+                <input nz-input [(ngModel)]="data.project_path" />
+              </div>
+              <div class="item">
+                <div>语言:</div>
+                <div class="langs">
+                  <div class="lang ccenter" [ngClass]="{ selected: true }">
+                    <img src="i18n/zh_cn/zh_cn.jpg" alt="" srcset="" />
+                    <span>中文</span>
+                  </div>
+                  <div class="lang ccenter">
+                    <img src="i18n/zh_hk/zh_hk.jpg" alt="" srcset="" />
+                    <span>中文(繁體)</span>
+                  </div>
+                  <div class="lang ccenter">
+                    <img src="i18n/en/en.jpg" alt="" srcset="" />
+                    <span>English</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          }
+          @case ("主题设置") {
+            <div class="right-inner">
+              <div class="item">
+                <div>界面主题:</div>
+                <nz-radio-group
+                  [(ngModel)]="UiThemeValue"
+                  nzButtonStyle="solid"
+                >
+                  <label nz-radio-button nzValue="dark">Dark</label>
+                  <label nz-radio-button nzValue="light">Light</label>
+                </nz-radio-group>
+              </div>
+              <div class="item">
+                <div>blockly主题:</div>
+                <nz-radio-group
+                  [(ngModel)]="blocklyThemeValue"
+                  nzButtonStyle="solid"
+                >
+                  <label nz-radio-button nzValue="default">现代</label>
+                  <label nz-radio-button nzValue="classics">经典</label>
+                </nz-radio-group>
+              </div>
+            </div>
+          }
+          @case ("仓库设置") {
+            <div class="right-inner">
+              <div class="instructions">仓库url管理（一行一个）</div>
+              <textarea
+                class="registry"
+                nz-input
+                [(ngModel)]="npmRegistryListStr"
+              ></textarea>
+              <div class="instructions">开发板列表</div>
+              <textarea
+                class="registry"
+                nz-input
+                [(ngModel)]="npmRegistryListStr"
+              ></textarea>
+              <div class="instructions">库列表</div>
+              <textarea
+                class="registry"
+                nz-input
+                [(ngModel)]="npmRegistryListStr"
+              ></textarea>
+            </div>
+          }
+          @case ("开发板管理") {
+            <div class="right-inner">
+              <div class="serach-box">
+                <nz-input-group [nzSuffix]="suffixIconSearch">
+                  <input type="text" nz-input placeholder="搜索开发板" />
+                </nz-input-group>
+                <ng-template #suffixIconSearch>
+                  <i class="fa-regular fa-magnifying-glass"></i>
+                </ng-template>
+              </div>
+              <div class="board-list sscroll bborder">
+                @for (board of boardList; track $index) {
+                  <div class="board-item">
+                    <div>{{ board.name }}</div>
+                    <div class="version">&#64;{{ board.version }}</div>
+                    <div class="btns">
+                      @if (board.installed) {
+                        <div class="btn link">卸载</div>
+                      } @else {
+                        <div class="btn link">安装</div>
+                      }
+                      <!-- <div class="btn link">安装</div> -->
+                      <!-- <div class="btn link">移除</div> -->
+                    </div>
+                  </div>
+                }
+              </div>
+            </div>
+          }
+        }
+      </div>
+    </div>
+    <div class="window-footer">
+      <div class="btns">
+        <button nz-button nzType="default" (click)="cancel()">取消</button>
+        <button nz-button nzType="primary" (click)="apply()">应用</button>
+      </div>
+    </div>
+  </div>
+</app-sub-window>

@@ -1,0 +1,42 @@
+<div class="act-btn ccenter" [ngClass]="{'disabled': disabled}" (click)="onClick()">
+    @switch(state){
+    @case('default'){
+    <div class="ccenter">
+        <div class="qq ccenter" [ngStyle]="{'color': color,'border-color': color}">
+            <i class="{{icon}}"></i>
+        </div>
+    </div>
+    }
+    @case('doing'){
+    <div class="lloading ccenter">
+        <div class="icon ccenter" [ngStyle]="{'color': color}">
+            <i class="{{icon}}"></i>
+        </div>
+        <div class="qq qq2 ccenter" [ngStyle]="{'color': color}">
+            <i class="fa-regular fa-spinner-third"></i>
+        </div>
+    </div>
+    }
+    @case('done'){
+    <div class="ccenter">
+        @if (toWink) {
+        <i class="fa-regular fa-face-smile-wink"  [ngStyle]="{'color': color}"></i>
+        }@else{
+        <i class="fa-regular fa-face-smile"  [ngStyle]="{'color': color}"></i>
+        }
+    </div>
+    }
+    @case('error'){
+    <div class="ccenter">
+        <div class="qq ccenter" [ngStyle]="{'border-color': 'red'}">
+            <i class="fa-light fa-xmark"></i>
+        </div>
+    </div>
+    }
+    @case('warn'){
+    <div class="ccenter">
+        <i class="fa-light fa-triangle-exclamation"></i>
+    </div>
+    }
+    }
+</div>

@@ -1,14 +1,14 @@
-import { Component } from '@angular/core';
-import { HeaderComponent } from '../../components/header/header.component';
+import { ChangeDetectorRef, Component } from '@angular/core';
 import { BlocklyComponent } from '../../blockly/blockly.component';
 import { ProjectBtnComponent } from '../../components/project-btn/project-btn.component';
+import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 
 @Component({
   selector: 'app-blockly-editor',
   imports: [
-    HeaderComponent,
     BlocklyComponent,
-    ProjectBtnComponent
+    ProjectBtnComponent,
+    LibManagerComponent
   ],
   templateUrl: './blockly-editor.component.html',
   styleUrl: './blockly-editor.component.scss'
@@ -16,7 +16,12 @@ import { ProjectBtnComponent } from '../../components/project-btn/project-btn.co
 export class BlocklyEditorComponent {
   showProjectManager = false;
 
+  constructor(
+    private cd: ChangeDetectorRef
+  ) { }
+
   openProjectManager() {
     this.showProjectManager = !this.showProjectManager;
+    this.cd.detectChanges();
   }
 }
