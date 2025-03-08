@@ -35,7 +35,7 @@ export class UiService {
   ) { }
 
 
-  // 初始化UI服务，这个init函数仅供main-window使用  
+  // 初始化UI服务，这个init函数仅供main-window使用
   init(): void {
     if (this.electronService.isElectron) {
       this.isMainWindow = true;
@@ -114,7 +114,12 @@ export class UiService {
         this.actionSubject.next({ action: 'open', type: 'terminal', data });
         this.terminalIsOpen = true;
         setTimeout(() => {
-          resolve({ pid: this.terminalService.currentPid });
+          const intervalId = setInterval(() => {
+            if (this.terminalService.currentPid) {
+              clearInterval(intervalId);
+              resolve({ pid: this.terminalService.currentPid });
+            }
+          }, 100);
         }, 1000);
       } else {
         // 其它窗口调用
