@@ -2,6 +2,7 @@ import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzIconModule } from 'ng-zorro-antd/icon';
+import { ChatCommunicationService } from '../../../../services/chat-communication.service';
 
 export interface ButtonData {
     text: string;
@@ -24,6 +25,9 @@ export class AilyButtonViewerComponent {
     @Output() buttonClick = new EventEmitter<ButtonData>();
 
     buttons: ButtonData[] = [];
+
+    constructor(private chatService: ChatCommunicationService) {
+    }
 
     /**
      * 设置组件数据
@@ -88,8 +92,11 @@ export class AilyButtonViewerComponent {
         // 发射事件
         this.buttonClick.emit(button);
 
-        // 根据 action 执行相应的操作
-        this.executeAction(button);
+        // 直接往大模型发送按钮点击的消息
+        this.chatService.sendTextToChat(`${button.text}`, { sender: 'button', type: 'help', cover: false });
+
+        // // 根据 action 执行相应的操作
+        // this.executeAction(button);
     }
 
     /**
@@ -117,6 +124,9 @@ export class AilyButtonViewerComponent {
         console.log('Executing create project action');
         // TODO: 实现创建项目的具体逻辑
         // 可能需要调用服务或路由跳转
+
+        // 直接往大模型发送创建项目的消息
+        this.chatService.sendTextToChat('创建新项目', { sender: 'button', type: 'help', autoSend: true });
     }
 
     /**

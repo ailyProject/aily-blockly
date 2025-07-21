@@ -47,11 +47,10 @@ export class AilyStateViewerComponent implements OnInit, OnDestroy {
     this.data = data;
     this.processData();
   }
-
   /**
    * 处理数据
    */
-  private processData(): void {
+  processData(): void {
     if (!this.data) {
       this.errorMessage = '没有可显示的数据';
       return;

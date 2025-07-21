@@ -8,8 +8,8 @@
       <div class="text ellipsis">{{libraryInfo.description}}</div>
     </div>
     <div class="action-btns ccenter">
-      <div class="btn ccenter"><i class="fa-regular fa-book"></i></div>
-      <div class="btn ccenter"><i class="fa-regular fa-plus"></i></div>
+      <div class="btn ccenter" (click)="viewDocumentation()"><i class="fa-regular fa-book"></i></div>
+      <div class="btn ccenter" (click)="installLibrary()"><i class="fa-regular fa-plus"></i></div>
     </div>
   </div>
   <!-- @if (errorMessage) {

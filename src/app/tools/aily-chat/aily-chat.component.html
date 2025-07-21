@@ -20,8 +20,8 @@
     <!-- 对话内容 -->
     <div class="dialog-list" #chatContainer>
       @if(list.length > 0){
-      <ngx-simplebar [options]="options">
-        <div class="dialogs" #chatList>
+      <ngx-simplebar #simplebarRef [options]="options">
+        <div class="dialogs">
           @for (item of list; track item) {
           <aily-dialog [data]="item"></aily-dialog>
           }
@@ -57,14 +57,14 @@
             (keydown)="onKeyDown($event)"></textarea>
         </div>
         <div class="btns">
-          <div class="btn ccenter enter" nz-tooltip nzTooltipTitle="添加文件" (click)="addFile()">
+          <!-- <div class="btn ccenter enter" nz-tooltip nzTooltipTitle="添加文件" (click)="addFile()">
             <i class="fa-light fa-file-plus"></i>
-          </div>
+          </div> -->
           <!-- <div class="btn ccenter enter right3" nz-tooltip nzTooltipTitle="语音输入">
             <i class="fa-light fa-microphone"></i>
           </div> -->
-          <button class="right ccenter" nz-button nzType="primary" nz-tooltip
-            [nzTooltipTitle]="true?'Enter':'Ctrl+Enter'" (click)="send()">
+          <button class="right ccenter" nz-button nzType="primary" nz-tooltip [nzTooltipTitle]="'Ctrl+Enter'"
+            (click)="send()">
             发送
           </button>
         </div>

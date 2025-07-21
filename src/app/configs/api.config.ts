@@ -1,6 +1,7 @@
 // const SERVER_URL: string = "http://localhost:8000";
 const SERVER_URL: string = '';
-const SERVER_API_URL: string = 'http://114.132.150.141:8000';
+// const SERVER_API_URL: string = 'http://114.132.150.141:8000';
+const SERVER_API_URL: string = 'http://127.0.0.1:8000';
 
 export const API = {
   projectList: `${SERVER_URL}/-/verdaccio/data/packages`,

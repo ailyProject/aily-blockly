@@ -5,6 +5,7 @@ export interface ChatTextOptions {
   sender?: string;
   type?: string;
   cover?: boolean;  // 是否覆盖之前的内容
+  autoSend?: boolean; // 是否自动发送
 }
 
 export interface ChatTextMessage {

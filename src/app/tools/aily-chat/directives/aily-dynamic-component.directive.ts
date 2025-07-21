@@ -31,7 +31,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
     private elementRef: ElementRef,
     private viewContainerRef: ViewContainerRef,
     private injector: Injector
-  ) {}
+  ) { }
 
   ngOnInit() {
     // 初始化时扫描一次
@@ -47,7 +47,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const element = node as Element;
               if (element.querySelector?.('.aily-code-block-placeholder') ||
-                  element.classList?.contains('aily-code-block-placeholder')) {
+                element.classList?.contains('aily-code-block-placeholder')) {
                 shouldScan = true;
               }
             }
@@ -83,7 +83,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
    */
   private scanAndReplaceComponents(): void {
     const placeholders = this.elementRef.nativeElement.querySelectorAll('.aily-code-block-placeholder');
-    
+
     placeholders.forEach((placeholder: HTMLElement) => {
       try {
         this.replacePlaceholderWithComponent(placeholder);
@@ -92,8 +92,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
         this.showErrorPlaceholder(placeholder, error);
       }
     });
-  }
-  /**
+  }  /**
    * 替换占位符为真正的组件
    */
   private replacePlaceholderWithComponent(placeholder: HTMLElement): void {
@@ -107,13 +106,32 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
 
     if (!encodedData) {
       throw new Error('Missing aily-data attribute');
-    }    // 解码数据
+    }
+
+    // 解码数据
     let componentData;
     try {
       const decodedData = safeBase64Decode(encodedData);
       componentData = JSON.parse(decodedData);
     } catch (error) {
       throw new Error(`Failed to decode component data: ${error.message}`);
+    }
+
+    // 对于 aily-state 组件，检查是否已存在相同 ID 的组件
+    if (ailyType === 'aily-state' && componentData.id) {
+      console.log('查找现有的 aily-state 组件:', componentData.id);
+      const existingComponent = this.findExistingStateComponent(componentData.id);
+      if (existingComponent) {
+        console.log('组件已存在, 更新数据:', componentData.id);        // 更新现有组件数据
+        this.updateExistingComponent(existingComponent, componentData);
+        // 移除占位符的父级元素
+        try {
+          placeholder.parentElement?.parentElement?.remove();
+        } catch (e) {
+          console.error('Error removing placeholder parent element:', e);
+        }
+        return;
+      }
     }
 
     // 获取对应的组件类型
@@ -126,6 +144,11 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
     const componentContainer = document.createElement('div');
     componentContainer.className = `aily-component-container ${ailyType}-container`;
     componentContainer.setAttribute('data-component-id', componentId || '');
+
+    // 对于 aily-state 组件，设置 ID 属性以便后续查找
+    if (ailyType === 'aily-state' && componentData.id) {
+      componentContainer.setAttribute('data-state-id', componentData.id);
+    }
 
     // 创建 Angular 组件
     const componentRef = this.viewContainerRef.createComponent(ComponentType, {
@@ -150,7 +173,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
     this.componentRefs.push(componentRef);
 
     console.log(`Successfully created ${ailyType} component:`, componentData);
-  }  /**
+  }/**
    * 获取组件类型
    */
   private getComponentType(ailyType: string): Type<any> | null {
@@ -198,5 +221,57 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
     `;
 
     placeholder.parentNode?.replaceChild(errorContainer, placeholder);
+  }
+
+  /**
+   * 查找已存在的 aily-state 组件
+   */
+  private findExistingStateComponent(stateId: string): { container: HTMLElement, componentRef: ComponentRef<any> } | null {
+    // 在 DOM 中查找具有相同 state-id 的容器
+    const existingContainer = this.elementRef.nativeElement.querySelector(
+      `.aily-state-container[data-state-id="${stateId}"]`
+    ) as HTMLElement;
+
+    if (!existingContainer) {
+      return null;
+    }
+
+    // 查找对应的组件引用
+    const componentRef = this.componentRefs.find(ref => {
+      // 检查组件的 DOM 元素是否在找到的容器中
+      return existingContainer.contains(ref.location.nativeElement);
+    });
+
+    if (!componentRef) {
+      return null;
+    }
+
+    return {
+      container: existingContainer,
+      componentRef: componentRef
+    };
+  }
+
+  /**
+   * 更新现有组件的数据
+   */
+  private updateExistingComponent(existingComponent: { container: HTMLElement, componentRef: ComponentRef<any> }, newData: any): void {
+    const { componentRef } = existingComponent;
+
+    // 更新组件数据
+    if (componentRef.instance && typeof componentRef.instance.setData === 'function') {
+      componentRef.instance.setData(newData);
+    } else if (componentRef.instance) {
+      // 尝试直接设置 data 属性
+      (componentRef.instance as any).data = newData;
+
+      // 如果组件有 processData 方法，调用它来重新处理数据
+      if (typeof (componentRef.instance as any).processData === 'function') {
+        (componentRef.instance as any).processData();
+      }
+    }
+
+    // 触发变更检测
+    componentRef.changeDetectorRef.detectChanges();
   }
 }

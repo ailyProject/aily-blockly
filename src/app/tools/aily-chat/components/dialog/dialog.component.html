@@ -1,9 +1,9 @@
 <div class="dialog-box" [ngClass]="{ 'user': data.role=='user' }">
   <div class="username">
     @if(data.role=='user'){
-    奈何col
+    me
     }@else {
-    aily
+    <i class="fa-light fa-user-astronaut"></i>&nbsp;&nbsp;aily
     }
   </div>
   @if(data.state=='thinking'){

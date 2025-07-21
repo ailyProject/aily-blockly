@@ -2,6 +2,8 @@ import { Component, Input, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { ConfigService } from '../../../../services/config.service';
+import { ChatCommunicationService } from '../../../../services/chat-communication.service';
+
 
 export interface AilyBoardData {
   type: 'aily-board';
@@ -34,7 +36,8 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
   }
 
   constructor(
-    private configService: ConfigService
+    private configService: ConfigService,
+    private chatService: ChatCommunicationService
   ) { }
 
   ngOnInit() {
@@ -129,8 +132,9 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
   installBoard(): void {
     if (!this.boardInfo?.name) return;
     
-    // TODO: 实现开发板安装逻辑
+    // 实现开发板安装逻辑
     console.log('Installing board:', this.boardInfo.name);
+    this.chatService.sendTextToChat(`安装开发板: ${this.boardInfo.name}`, { sender: 'board', type: 'install', autoSend: true });
   }
 
   /**

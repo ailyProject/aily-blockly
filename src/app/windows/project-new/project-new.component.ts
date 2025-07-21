@@ -8,7 +8,6 @@ import { NzStepsModule } from 'ng-zorro-antd/steps';
 import { ElectronService } from '../../services/electron.service';
 import { ProjectService } from '../../services/project.service';
 import { ConfigService } from '../../services/config.service';
-import { generateDateString } from '../../func/func';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { NpmService } from '../../services/npm.service';
 import { NzTagModule } from 'ng-zorro-antd/tag';
@@ -81,7 +80,7 @@ export class ProjectNewComponent {
     this.newProjectData.board.nickname = this.currentBoard.nickname;
     this.newProjectData.board.name = this.currentBoard.name;
     this.newProjectData.board.version = this.currentBoard.version;
-    this.newProjectData.name = this.generateUniqueProjectName();
+    this.newProjectData.name = this.projectService.generateUniqueProjectName(this.newProjectData.path)
   }
 
   process(array) {
@@ -161,39 +160,6 @@ export class ProjectNewComponent {
     this.electronService.openUrl(url);
   }
 
-  generateUniqueProjectName(prefix = 'project_'): string {
-    const baseDateStr = generateDateString();
-    prefix = prefix + baseDateStr;
-
-    // 尝试使用字母后缀 a-z
-    for (let charCode = 97; charCode <= 122; charCode++) {
-      const suffix = String.fromCharCode(charCode);
-      const projectName: string = prefix + suffix;
-      const projectPath = this.newProjectData.path + pt + projectName;
-
-      if (!window['path'].isExists(projectPath)) {
-        return projectName;
-      }
-    }
-
-    // 如果所有字母都已使用，则使用数字后缀
-    let numberSuffix = 0;
-    while (true) {
-      const projectName = prefix + 'a' + numberSuffix;
-      const projectPath = this.newProjectData.path + pt + projectName;
-
-      if (!window['path'].isExists(projectPath)) {
-        return projectName;
-      }
-
-      numberSuffix++;
-
-      // 安全检查，防止无限循环
-      if (numberSuffix > 1000) {
-        return prefix + 'a' + Date.now(); // 极端情况下使用时间戳
-      }
-    }
-  }
 }
 
 
