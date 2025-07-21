@@ -15,8 +15,14 @@
             scrollbar-width: thin !important;
             scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 
+            .blocklyTreeIcon {
+                width: 40px;
+            }
+
             .blocklyToolboxContents {
-                padding-bottom: 30px;
+                .blocklyTreeSeparator {
+                    display: none;
+                }
             }
 
             .blocklyToolboxCategory {
@@ -61,6 +67,20 @@
                     }
                 }
 
+                &:last-child {
+                    padding-bottom: 70px;
+                }
+            }
+
+            .blocklyTreeIcon {
+                background: rgba(255, 255, 255, 0.85);
+                mask: url('../../../public/imgs/chevron-right.svg') no-repeat center center;
+                mask-size: contain;
+                transition: transform 0.3s ease;
+
+                &.blocklyTreeIconOpen {
+                    transform: rotate(90deg);
+                }
             }
         }
 

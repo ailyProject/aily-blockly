@@ -1,12 +1,14 @@
 <div class="footer-box">
   <!-- 打开的窗口就显示图标在这里 -->
-  <!-- <div class="btn ccenter">
-    <i class="fa-light fa-rectangle-code"></i>
+  @for(item of FOOTER_BTNS; track item.name) {
+  <div class="btn ccenter" 
+       [class.active]="isButtonActive(item)" 
+       nzTooltipTitle="{{item.text}}" 
+       nz-tooltip 
+       (click)="process(item)">
+    <i class="{{item.icon}}"></i>
   </div>
-  <div class="btn ccenter">
-    <i class="fa-light fa-rectangle-list"></i>
-  </div> -->
-
+  }
   <!-- 这里显示状态，如保存中，项目加载中，正在安装xxx等 -->
   @if(actionData){
   <div class="state ccenter">

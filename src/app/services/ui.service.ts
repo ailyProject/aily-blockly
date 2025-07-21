@@ -26,6 +26,8 @@ export class UiService {
 
   // 用来记录terminal是否打开
   terminalIsOpen = false;
+  // 当前选中的底部面板tab
+  currentBottomTab = '';
   theme = 'dark';
   isMainWindow = false;
 
@@ -48,14 +50,14 @@ export class UiService {
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         console.log('window-receive', message);
         let data;
-        if (message.data.action == 'open-terminal') {
-          data = await this.openTerminal();
-          // console.log('open-terminal', pid);
-        } else if (message.data.action == 'close-terminal') {
-          this.closeTerminal();
-        } else {
-          return;
-        }
+        // if (message.data.action == 'open-terminal') {
+        //   data = await this.openTerminal();
+        //   // console.log('open-terminal', pid);
+        // } else if (message.data.action == 'close-terminal') {
+        //   this.closeTerminal();
+        // } else {
+        //   return;
+        // }
         // 反馈完成结果
         if (message.messageId) {
           window['ipcRenderer'].send('main-window-response', {
@@ -91,10 +93,10 @@ export class UiService {
 
   // 如果其它组件/程序要打开工具，调用这个方法
   openTool(name: string) {
-    if (name == 'terminal') {
-      this.openTerminal();
-      return;
-    }
+    // if (name == 'terminal') {
+    //   this.openTerminal();
+    //   return;
+    // }
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.openToolList.push(name);
     this.actionSubject.next({ action: 'open', type: 'tool', data: name });
@@ -117,18 +119,34 @@ export class UiService {
     this.openToolList = [];
   }
 
-  turnTerminal(data) {
-    if (this.terminalIsOpen) {
+  turnBottomSider(data = 'default') {
+    if (this.terminalIsOpen && this.currentBottomTab === data) {
+      // 如果底部面板已经打开且当前选中的就是要打开的tab，则关闭面板
       this.closeTerminal();
+    } else if (this.terminalIsOpen) {
+      // 如果底部面板已经打开但选中的不是要打开的tab，则切换到指定的tab
+      this.switchBottomSiderTab(data);
     } else {
-      this.openTerminal(data);
+      // 如果底部面板未打开，则打开面板并显示指定的组件
+      this.openBottomSider(data);
     }
   }
 
-  async openTerminal(data = 'default'): Promise<{ pid: number }> {
+  // 切换底部面板的tab
+  switchBottomSiderTab(data: string) {
+    this.currentBottomTab = data;
+    if (this.isMainWindow) {
+      this.actionSubject.next({ action: 'switch-tab', type: 'bottom-sider', data });
+    } else {
+      window['iWindow'].send({ to: 'main', data: { action: 'switch-terminal-tab', tab: data } });
+    }
+  }
+
+  async openBottomSider(data = 'default'): Promise<{ pid: number }> {
     return new Promise(async (resolve, reject) => {
+      this.currentBottomTab = data;
       if (this.isMainWindow) {
-        this.actionSubject.next({ action: 'open', type: 'terminal', data });
+        this.actionSubject.next({ action: 'open', type: 'bottom-sider', data });
         this.terminalIsOpen = true;
         const intervalId = setInterval(() => {
           if (this.terminalService.currentPid) {
@@ -139,7 +157,7 @@ export class UiService {
       } else {
         // 其它窗口调用
         let { pid } = await window['iWindow'].send({ to: 'main', data: { action: 'open-terminal' } });
-        console.log('open-terminal', pid);
+        // console.log('open-terminal', pid);
         resolve({ pid });
       }
     });
@@ -147,16 +165,12 @@ export class UiService {
 
   closeTerminal() {
     if (this.isMainWindow) {
-      this.actionSubject.next({ action: 'close', type: 'terminal' });
+      this.actionSubject.next({ action: 'close', type: 'bottom-sider' });
       this.terminalIsOpen = false;
+      this.currentBottomTab = '';
     } else {
       window['iWindow'].send({ to: 'main', data: { action: 'close-terminal' } });
     }
-  }
-
-  // 清空终端
-  clearTerminal() {
-    // this.actionSubject.next({ action: 'clear-terminal' });
   }
 
   // 更新footer右下角的状态

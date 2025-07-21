@@ -256,24 +256,30 @@ function parseCommand(command: string): string[] {
     const char = command[i];
 
     if ((char === '"' || char === "'") && !inQuotes) {
+      // 开始引号，进入引号模式并添加引号字符
       inQuotes = true;
       quoteChar = char;
+      current += char;
     } else if (char === quoteChar && inQuotes) {
+      // 结束引号，退出引号模式并添加引号字符
       inQuotes = false;
       quoteChar = '';
+      current += char;
     } else if (char === ' ' && !inQuotes) {
-      if (current.trim()) {
-        result.push(current.trim());
+      // 只有在非引号状态下的空格才作为分隔符
+      if (current.length > 0) {
+        result.push(current);
         current = '';
       }
     } else {
+      // 添加普通字符（引号内的空格也会被添加）
       current += char;
     }
   }
 
-  if (current.trim()) {
-    result.push(current.trim());
+  // 添加最后一个参数
+  if (current.length > 0) {
+    result.push(current);
   }
-
   return result;
 }

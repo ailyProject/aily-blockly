@@ -4,6 +4,7 @@ import { Buffer } from 'buffer';
 import { ProjectService } from '../../services/project.service';
 import { ElectronService } from '../../services/electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { ConfigService } from '../../services/config.service';
 
 // 声明Electron API全局接口
 declare global {
@@ -57,7 +58,8 @@ export class SerialMonitorService {
   constructor(
     private projectService: ProjectService,
     private electronService: ElectronService,
-    private message: NzMessageService
+    private message: NzMessageService,
+    private configService: ConfigService
   ) {
     this.loadQuickSendList();
   }
@@ -434,17 +436,16 @@ export class SerialMonitorService {
   }
 
   saveQuickSendList() {
-    // 保存到localStorage中
-    const data = JSON.stringify(this.quickSendList);
-    localStorage.setItem('quickSendList', data);
+    // 保存到ConfigService中
+    this.configService.data.quickSendList = this.quickSendList;
+    this.configService.save();
   }
 
   loadQuickSendList() {
-    // 从localStorage中加载
-    const data = localStorage.getItem('quickSendList');
-    if (data) {
+    // 从ConfigService中加载
+    if (this.configService.data?.quickSendList) {
       try {
-        this.quickSendList = JSON.parse(data);
+        this.quickSendList = this.configService.data.quickSendList;
       } catch (e) {
         console.error('解析快速发送列表失败:', e);
       }

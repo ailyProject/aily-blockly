@@ -23,7 +23,7 @@ import './custom-field/field-angle180';
 import './custom-field/field-angle';
 import '@blockly/field-colour-hsv-sliders';
 
-import {Multiselect} from '@mit-app-inventor/blockly-plugin-workspace-multiselect';
+import { Multiselect } from './plugins/workspace-multiselect/index.js';
 import { PromptDialogComponent } from './components/prompt-dialog/prompt-dialog.component.js';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { ConfigService } from '../services/config.service';
@@ -181,6 +181,13 @@ export class BlocklyComponent {
     });
   }
 
+  ngOnDestroy(): void {
+    // 清理定时器
+    if (this.codeGenerationTimer) {
+      clearTimeout(this.codeGenerationTimer);
+    }
+  }
+
   ngAfterViewInit(): void {
     // this.blocklyService.init();
     setTimeout(async () => {
@@ -225,6 +232,8 @@ export class BlocklyComponent {
       })(console.error);
 
       Blockly.setLocale(<any>zhHans);
+      // 在工作区创建前设置 block registry 拦截
+      this.setupBlockRegistryInterception();
       // 获取当前blockly渲染器
       this.options.renderer = this.configData.blockly.renderer || 'thrasos';
 
@@ -300,14 +309,15 @@ export class BlocklyComponent {
       (window as any)['Blockly'] = Blockly;
       this.workspace.addChangeListener((event) => {
         try {
-          let code = arduinoGenerator.workspaceToCode(this.workspace);
-          this.blocklyService.codeSubject.next(code);
+          this.codeGeneration();
         } catch (error) {
           // 仅在开发环境下打印错误，避免用户看到错误
           console.debug('代码生成时出现错误，可能是某些块尚未注册：', error);
           // 错误发生时不更新代码
         }
       });
+
+      this.initLanguage();
     }, 100);
   }
 
@@ -334,6 +344,49 @@ export class BlocklyComponent {
         }
       });
     });
+  }
+
+  initLanguage() {
+    Blockly.Msg["CROSS_TAB_COPY"] = "复制到指定位置";
+  }
+
+  setupBlockRegistryInterception(): void {
+    const originalGetClass = Blockly.registry.getClass;
+
+    Blockly.registry.getClass = function (type: string, name: string, opt_throwIfMissing?: boolean) {
+
+      // 对于未注册的 block，也可以在这里处理
+      try {
+        return originalGetClass.call(Blockly.registry, type, name, opt_throwIfMissing);
+      } catch (error) {
+        if (type === Blockly.registry.Type.name) {
+          console.log(`Block 类型 "${name}" 未注册`);
+          this.showBlockRestrictionMessage(name);
+          return null;
+        }
+        throw error;
+      }
+    }.bind(this);
+  }
+
+  private codeGenerationTimer: any = null;
+  codeGeneration(): void {
+    // 清除之前的定时器
+    if (this.codeGenerationTimer) {
+      clearTimeout(this.codeGenerationTimer);
+    }
+
+    // 设置新的定时器，1秒后执行代码生成
+    this.codeGenerationTimer = setTimeout(() => {
+      try {
+        const code = arduinoGenerator.workspaceToCode(this.workspace);
+        this.blocklyService.codeSubject.next(code);
+      } catch (error) {
+        // 仅在开发环境下打印错误，避免用户看到错误
+        console.error('代码生成时出现错误，可能是某些块尚未注册：', error);
+        // 错误发生时不更新代码
+      }
+    }, 500); // 500毫秒防抖延迟
   }
 }
 

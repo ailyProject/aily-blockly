@@ -11,6 +11,7 @@ import { NzModalService } from 'ng-zorro-antd/modal';
 import { SerialDialogComponent } from '../main-window/components/serial-dialog/serial-dialog.component';
 import { CmdOutput, CmdService } from './cmd.service';
 import { LogService } from './log.service';
+import { NpmService } from './npm.service';
 
 @Injectable({
   providedIn: 'root'
@@ -19,7 +20,6 @@ export class UploaderService {
 
   constructor(
     private projectService: ProjectService,
-    private uiService: UiService,
     private serialService: SerialService,
     private message: NzMessageService,
     private blocklyService: BlocklyService,
@@ -27,7 +27,8 @@ export class UploaderService {
     private noticeService: NoticeService,
     private modal: NzModalService,
     private cmdService: CmdService,
-    private logService: LogService
+    private logService: LogService,
+    private npmService: NpmService,
   ) { }
 
   private uploadInProgress = false;
@@ -79,6 +80,12 @@ export class UploaderService {
         if (this.uploadInProgress) {
           this.message.warning('上传中，请稍后');
           reject({ state: 'warn', text: '上传中，请稍后' });
+          return;
+        }
+
+        if (this.npmService.isInstalling) {
+          this.message.warning('相关依赖正在安装中，请稍后再试');
+          reject({ state: 'warn', text: '依赖安装中，请稍后' });
           return;
         }
 
@@ -190,6 +197,43 @@ export class UploaderService {
         let lastProgress = 0;
 
         let errorText = '';
+
+        // 获取和解析项目编译参数
+        let buildProperties = '';
+        try {
+          const projectConfig = await this.projectService.getProjectConfig();
+          if (projectConfig) {
+            const buildPropertyParams: string[] = [];
+
+            // 遍历配置对象，解析编译参数
+            Object.values(projectConfig).forEach((configSection: any) => {
+              if (configSection && typeof configSection === 'object') {
+                // 遍历每个配置段（如 build、upload 等）
+                Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
+                  // 排除upload等非编译相关的配置段
+                  if (sectionKey == 'build') return;
+                  if (sectionValue && typeof sectionValue === 'object') {
+                    // 遍历具体的配置项
+                    Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
+                      buildPropertyParams.push(`--upload-property ${sectionKey}.${key}=${value}`);
+                    });
+                  }
+                });
+              }
+            });
+
+            buildProperties = buildPropertyParams.join(' ');
+            if (buildProperties) {
+              buildProperties = ' ' + buildProperties; // 在前面添加空格
+            }
+          }
+        } catch (error) {
+          console.warn('获取项目配置失败:', error);
+        }
+
+        // 将buildProperties添加到compilerParam中
+        uploadParam += buildProperties;
+
         const uploadCmd = `arduino-cli.exe ${uploadParam} --input-dir ${buildPath} --board-path ${sdkPath} --tools-path ${toolsPath} --verbose`;
 
         this.uploadInProgress = true;

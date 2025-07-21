@@ -1,6 +1,6 @@
 <div class="example-list">
     @for( subject of subjectList;track $index) {
-    <div class="example-item" [routerLink]="['/main/playground/s' + '/' + subject.nickname]">
+    <div class="example-item" [routerLink]="['/main/playground/s/' + subject.name.replace('@aily-project/','')]">
         <div class="img-box">
             <img [src]="resourceUrl + subject.img" alt="" (error)="onImgError($event)" />
         </div>

@@ -6,8 +6,9 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Location } from '@angular/common';
-import { SUBJECT_LIST } from './data';
+import { SUBJECT_LIST } from './test-data';
 import { Router, RouterModule } from '@angular/router';
+import { PlaygroundService } from './playground.service';
 
 @Component({
   selector: 'app-playground',
@@ -31,12 +32,20 @@ export class PlaygroundComponent {
   constructor(
     private router: Router,
     private location: Location,
-    private translate: TranslateService
+    private translate: TranslateService,
+    private playgroundService: PlaygroundService
   ) {
 
   }
 
   ngOnInit() {
+    // 在组件初始化时加载示例数据
+    this.playgroundService.loadExamplesList().then(() => {
+      console.log('示例数据加载完成');
+    }).catch(error => {
+      console.error('加载示例数据失败:', error);
+    });
+
     // 使用翻译初始化标签列表
     this.tagList = [
       this.translate.instant('显示全部'),

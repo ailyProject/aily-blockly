@@ -24,6 +24,12 @@
         "EXAMPLES": "예제 프로그램",
         "UPDATE": "업데이트 확인"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "업로드 속도",
+        "FLASH_MODE": "플래시 모드",
+        "FLASH_SIZE": "플래시 크기",
+        "PARTITION_SCHEME": "파티션 스킴"
+    },
     "GUIDE": {
         "START": "시작",
         "RECENTLY": "최근"
@@ -35,7 +41,7 @@
             "THEME": "테마 설정",
             "COMPILATION": "컴파일 설정",
             "REPOSITORY": "저장소 설정",
-            "BOARD_MANAGEMENT": "개발 보드 관리"
+            "DEPENDENCIES": "글로벌 종속성"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "프로젝트 폴더",
@@ -57,6 +63,7 @@
         "SEARCH_LIBRARY": "라이브러리 검색",
         "INSTALLED": "설치됨",
         "CORE_LIBRARY": "코어 라이브러리",
+        "IMPORT_LIBRARY": "로컬 라이브러리 가져오기",
         "INSTALL": "설치",
         "INSTALLED_TEXT": "설치됨",
         "REMOVE": "제거",

@@ -51,6 +51,7 @@ $header-inner-height: 38px;
     position: absolute;
     width: 10vw;
     left: 45vw;
+    min-width: 150px;
   }
 
   .toolbox {
@@ -105,7 +106,8 @@ $header-inner-height: 38px;
   background: red;
   border-radius: 10px;
   height: 12px;
-  padding: 1px 5px;
+  padding: 0 5px;
+  padding-top: 1px;
 }
 
 .win-btns {

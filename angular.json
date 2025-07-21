@@ -59,6 +59,9 @@
               "node_modules/angular2-draggable/css/resizable.min.css",
               "node_modules/@xterm/xterm/css/xterm.css",
               "node_modules/cropperjs/dist/cropper.css"
+            ],
+            "scripts": [
+              "node_modules/pinyin-pro/dist/index.js"
             ]
           },
           "configurations": {

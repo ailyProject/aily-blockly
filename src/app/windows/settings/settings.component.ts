@@ -58,7 +58,7 @@ export class SettingsComponent {
       icon: 'fa-light fa-book-bookmark'
     },
     {
-      name: 'SETTINGS.SECTIONS.BOARD_MANAGEMENT',
+      name: 'SETTINGS.SECTIONS.DEPENDENCIES',
       icon: 'fa-light fa-layer-group'
     },
     {
@@ -75,7 +75,11 @@ export class SettingsComponent {
   boardOperations = {};
 
   get boardList() {
-    return this.settingsService.boardList;
+    return this.settingsService.boardList.concat(
+      this.settingsService.toolList,
+      this.settingsService.sdkList,
+      this.settingsService.compilerList
+    );;
   }
 
   get langList() {
@@ -113,8 +117,12 @@ export class SettingsComponent {
 
   async updateBoardList() {
     const platform = this.configService.data.platform;
-    this.appdata_path = this.configService.data.appdata_path[platform].replace('%HOMEPATH%', window['path'].getUserHome());
-    this.settingsService.getBoardList(this.appdata_path, this.configService.data.npm_registry[0]);
+    // this.appdata_path = this.configService.data.appdata_path[platform].replace('%HOMEPATH%', window['path'].getUserHome());
+    this.appdata_path = window['path'].getAppData();
+    // this.settingsService.getBoardList(this.appdata_path, this.configService.data.npm_registry[0]);
+    this.settingsService.getToolList(this.appdata_path, this.configService.data.npm_registry[0]);
+    this.settingsService.getSdkList(this.appdata_path, this.configService.data.npm_registry[0]);
+    this.settingsService.getCompilerList(this.appdata_path, this.configService.data.npm_registry[0]);
   }
 
   selectLang(lang) {

@@ -5,7 +5,7 @@
         </div>
         <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
             <input type="text" nz-input [placeholder]="'LIB_MANAGER.SEARCH_LIBRARY' | translate" [(ngModel)]="keyword"
-                (ngModelChange)="search()" />
+                spellcheck="false" (ngModelChange)="search()" />
         </nz-input-group>
         <ng-template #suffixIconSearch>
             @if(keyword.length > 0){
@@ -24,19 +24,26 @@
                 }}</nz-tag>
             <nz-tag (click)="keyword='核心库';search()">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
         </div>
+        <div class="import">
+            <button nz-button nzType="primary" nzSize="small" (click)="importLib()" [nz-tooltip]
+                [nzTooltipTitle]="'LIB_MANAGER.IMPORT_LIBRARY' | translate">
+                <i class="fa-light fa-plus"></i>
+            </button>
+        </div>
     </div>
     <div class="lib-list">
         @for( lib of libraryList;track lib.name ) {
-        <div class="lib-item">
-            @if(lib.tested){
+        <div class="lib-item" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">
+            <!-- @if(lib.tested){
             <div class="state"></div>
-            }
+            } -->
             <div class="name ellipsis">{{lib.nickname}}
-                @if(!lib.tested){
-                <span class="error">(未测试通过)</span>
-                }@else{
-                <span>{{lib.author}}</span>
+                @if(lib.tested){
+                <i class="fa-regular fa-badge-check"></i>
+                }@else {
+                <i class="fa-regular fa-circle-exclamation"></i>
                 }
+                <span>{{lib.author}}</span>
             </div>
             <div class="desc ellipsis">
                 <div class="icon ccenter">
@@ -50,7 +57,8 @@
             </div>
             <div class="footer">
                 <div class="version">
-                    <nz-select [(ngModel)]="lib.version" [nzSize]="'small'" (nzOnSearch)="getVerisons(lib)">
+                    {{'version: '+lib.version}}
+                    <!-- <nz-select [(ngModel)]="lib.version" [nzSize]="'small'" (nzOnSearch)="getVerisons(lib)">
                         @if (!loading) {
                         @for (version of lib.versionList; track version) {
                         <nz-option [nzValue]="version" [nzLabel]="version"></nz-option>
@@ -62,17 +70,38 @@
                             </div>
                         </nz-option>
                         }
-                    </nz-select>
+                    </nz-select> -->
                 </div>
                 <div class="btns">
-                    @if(isInstalled(lib)) {
-                    <button nz-button nzType="default" nzSize="small" [disabled]="true">{{ 'LIB_MANAGER.INSTALLED_TEXT'
-                        | translate }}</button>
-                    <button nz-button nzType="text" nzDanger nzSize="small" (click)="removeLib(lib)"
-                        [disabled]="lib.state=='uninstalling'">{{ 'LIB_MANAGER.REMOVE' | translate }}</button>
+                    @if (lib.example) {
+                    <button nz-button nzSize="small" style="margin-right: 5px;"
+                        (click)="openExample(lib.example)">示例</button>
+                    }
+                    @if(lib.state=='installed') {
+                    <button nz-button nzType="text" nzSize="small" [disabled]="true">
+                        {{ 'LIB_MANAGER.INSTALLED_TEXT' | translate }}
+                    </button>
+                    <button nz-button nzType="default" nzDanger nzSize="small" (click)="removeLib(lib)">
+                        {{'LIB_MANAGER.REMOVE' | translate }}
+                    </button>
+                    }@else if(lib.state=='uninstalling'){
+                    <button nz-button nzType="default" nzDanger nzSize="small" [disabled]="true">
+                        <div class="icon lloading ccenter">
+                            <i class="fa-duotone fa-solid fa-loader"></i>
+                        </div>
+                        {{'LIB_MANAGER.REMOVE' | translate }}
+                    </button>
+                    }@else if(lib.state=='installing'){
+                    <button nz-button nzType="primary" nzSize="small" [disabled]="true">
+                        <div class="icon lloading ccenter">
+                            <i class="fa-duotone fa-solid fa-loader"></i>
+                        </div>
+                        {{'LIB_MANAGER.INSTALL' | translate }}
+                    </button>
                     }@else{
-                    <button nz-button nzType="primary" nzSize="small" (click)="installLib(lib)"
-                        [disabled]="lib.state=='installing'">{{ 'LIB_MANAGER.INSTALL' | translate }}</button>
+                    <button nz-button nzType="primary" nzSize="small" (click)="installLib(lib)">
+                        {{ 'LIB_MANAGER.INSTALL'| translate }}
+                    </button>
                     }
                 </div>
             </div>

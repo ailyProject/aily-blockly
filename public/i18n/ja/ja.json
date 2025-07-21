@@ -24,6 +24,12 @@
         "EXAMPLES": "サンプルプログラム",
         "UPDATE": "アップデートを確認"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "書き込み速度",
+        "FLASH_MODE": "フラッシュモード",
+        "FLASH_SIZE": "フラッシュサイズ",
+        "PARTITION_SCHEME": "パーティション方式"
+    },
     "GUIDE": {
         "START": "スタート",
         "RECENTLY": "最近"
@@ -35,7 +41,7 @@
             "THEME": "テーマ設定",
             "COMPILATION": "コンパイル設定",
             "REPOSITORY": "リポジトリ設定",
-            "BOARD_MANAGEMENT": "ボード管理"
+            "DEPENDENCIES": "グローバル依存関係"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "プロジェクトフォルダ",
@@ -61,12 +67,16 @@
         "SEARCH_LIBRARY": "ライブラリを検索",
         "INSTALLED": "インストール済み",
         "CORE_LIBRARY": "コアライブラリ",
+        "IMPORT_LIBRARY": "ローカルライブラリをインポート",
         "INSTALL": "インストール",
         "INSTALLED_TEXT": "インストール済み",
         "REMOVE": "削除",
         "INSTALLING": "インストール中",
         "UNINSTALLING": "アンインストール中",
         "UNINSTALLED": "アンインストール済み",
+        "IMPORTING": "インポート中",
+        "IMPORTED": "インポート成功",
+        "IMPORT_FAILED": "インポート失敗",
         "SENSORS": "センサー",
         "ACTUATORS": "アクチュエーター",
         "COMMUNICATION": "通信",

@@ -24,6 +24,12 @@
         "EXAMPLES": "Exemples",
         "UPDATE": "Vérifier les mises à jour"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "Vitesse de téléchargement",
+        "FLASH_MODE": "Mode Flash",
+        "FLASH_SIZE": "Taille Flash",
+        "PARTITION_SCHEME": "Schéma de partition"
+    },
     "GUIDE": {
         "START": "Démarrer",
         "RECENTLY": "Récent"
@@ -35,7 +41,7 @@
             "THEME": "Paramètres de Thème",
             "COMPILATION": "Paramètres de Compilation",
             "REPOSITORY": "Paramètres de Dépôt",
-            "BOARD_MANAGEMENT": "Gestion des Cartes"
+            "DEPENDENCIES": "Dépendances Globales"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Dossier du Projet",
@@ -86,12 +92,16 @@
         "SEARCH_LIBRARY": "Rechercher une bibliothèque",
         "INSTALLED": "Installé",
         "CORE_LIBRARY": "Bibliothèque centrale",
+        "IMPORT_LIBRARY": "Importer une bibliothèque locale",
         "INSTALL": "Installer",
         "INSTALLED_TEXT": "Installé",
         "REMOVE": "Supprimer",
         "INSTALLING": "Installation en cours",
         "UNINSTALLING": "Désinstallation en cours",
         "UNINSTALLED": "Désinstallé",
+        "IMPORTING": "Importation en cours",
+        "IMPORTED": "Importation réussie",
+        "IMPORT_FAILED": "Échec de l'importation",
         "SENSORS": "Capteurs",
         "ACTUATORS": "Actionneurs",
         "COMMUNICATION": "Communication",

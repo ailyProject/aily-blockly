@@ -63,8 +63,51 @@ export class ElectronService {
     return window['fs'].isFile(path);
   }
 
+  // 调用浏览器打开url
   openUrl(url) {
     window['other'].openByBrowser(url);
+  }
+
+  // 改变窗口title
+  setTitle(title: string) {
+    document.title = title;
+  }
+
+  // 打开一个新的实例窗口
+  openNewInStance(route, queryParams = null) {
+    let target = {
+      route
+    }
+    if (queryParams) {
+      target['queryParams'] = queryParams
+    }
+    window['ipcRenderer'].invoke('open-new-instance', target);
+    // 基本用法 - 只传递路由
+    // await window.electronAPI.ipcRenderer.invoke('open-new-instance', {
+    //   route: 'main/blockly-editor'
+    // });
+
+    // // 高级用法 - 传递路由和查询参数
+    // await window.electronAPI.ipcRenderer.invoke('open-new-instance', {
+    //   route: 'main/blockly-editor',
+    //   queryParams: {
+    //     path: '/path/to/project',
+    //     mode: 'edit',
+    //     theme: 'dark'
+    //   }
+    // });
+
+    // // 处理返回结果
+    // const result = await window.electronAPI.ipcRenderer.invoke('open-new-instance', {
+    //   route: 'main/settings',
+    //   queryParams: { tab: 'general' }
+    // });
+
+    // if (result.success) {
+    //   console.log('新实例已启动，PID:', result.pid);
+    // } else {
+    //   console.error('启动失败:', result.error);
+    // }
   }
 
 }

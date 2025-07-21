@@ -24,6 +24,12 @@
         "EXAMPLES": "範例程式",
         "UPDATE": "檢查更新"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "燒錄速度",
+        "FLASH_MODE": "閃存模式",
+        "FLASH_SIZE": "閃存大小",
+        "PARTITION_SCHEME": "分區方案"
+    },
     "GUIDE": {
         "START": "開始",
         "RECENTLY": "最近",
@@ -47,7 +53,7 @@
             "THEME": "主題設定",
             "COMPILATION": "編譯設定",
             "REPOSITORY": "倉庫設定",
-            "BOARD_MANAGEMENT": "開發板管理",
+            "DEPENDENCIES": "全域依賴",
             "MCP": "MCP",
             "DEVMODE": "開發者模式"
         },
@@ -101,6 +107,7 @@
         "ALL": "所有庫",
         "INSTALLED": "已安裝",
         "CORE_LIBRARY": "核心函式庫",
+        "IMPORT_LIBRARY": "導入本地庫",
         "INSTALL": "安裝",
         "INSTALLED_TEXT": "已安裝",
         "REMOVE": "移除",

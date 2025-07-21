@@ -51,7 +51,12 @@ export class BlocklyEditorComponent {
     this.activatedRoute.queryParams.subscribe(params => {
       if (params['path']) {
         console.log('project path', params['path']);
-        this.loadProject(params['path']);
+        try {
+          this.loadProject(params['path']);
+        } catch (error) {
+          console.error('加载项目失败', error);
+          this.message.error('加载项目失败，请检查项目文件是否完整');
+        }
       } else {
         this.message.error('没有找到项目路径');
       }
@@ -59,6 +64,7 @@ export class BlocklyEditorComponent {
   }
 
   ngOnDestroy(): void {
+    this.electronService.setTitle('aily blockly');
     this.blocklyService.reset();
   }
 
@@ -66,6 +72,8 @@ export class BlocklyEditorComponent {
     await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+    this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
+    this.projectService.currentPackageData = packageJson;
     // 添加到最近打开的项目
     this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
     // 设置当前项目路径和package.json数据
@@ -80,25 +88,15 @@ export class BlocklyEditorComponent {
     }
     // 3. 加载开发板module中的board.json
     this.uiService.updateFooterState({ state: 'doing', text: '正在加载开发板配置' });
-    const boardModule = Object.keys(packageJson.dependencies).find(dep => dep.startsWith('@aily-project/board-'));
-    console.log('boardModule: ', boardModule);
-    let boardJsonPath = projectPath + '/node_modules/' + boardModule + '/board.json';
-    const boardJson = JSON.parse(this.electronService.readFile(boardJsonPath));
+    const boardJson = await this.projectService.getBoardJson();
     this.blocklyService.boardConfig = boardJson;
     this.projectService.currentBoardConfig = boardJson;
+    console.log('boardConfig', boardJson);
     window['boardConfig'] = boardJson;
     // 4. 加载blockly library
-    const libraryModuleList = Object.keys(packageJson.dependencies).filter(dep => dep.startsWith('@aily-project/lib-'));
-    // 遍历libraryModuleList，让包含@aily-project/lib-core-的模块在最前面
-    libraryModuleList.sort((a, b) => {
-      if (a.startsWith('@aily-project/lib-core-') && !b.startsWith('@aily-project/lib-core-')) {
-        return -1;
-      } else if (!a.startsWith('@aily-project/lib-core-') && b.startsWith('@aily-project/lib-core-')) {
-        return 1;
-      } else {
-        return 0;
-      }
-    });
+    this.uiService.updateFooterState({ state: 'doing', text: '正在加载blockly库' });
+    // 获取项目目录下的所有blockly库
+    let libraryModuleList = (await this.npmService.getAllInstalledLibraries(projectPath)).map(item => item.name);
     for (let index = 0; index < libraryModuleList.length; index++) {
       const libPackageName = libraryModuleList[index];
       this.uiService.updateFooterState({ state: 'doing', text: '正在加载' + libPackageName });
@@ -115,7 +113,7 @@ export class BlocklyEditorComponent {
 
     // 7. 后台安装开发板依赖
     // this.installBoardDependencies();
-    this.npmService.installBoardDependencies(packageJson)
+    this.npmService.installBoardDeps()
       .then(() => {
         console.log('install board dependencies success');
       })

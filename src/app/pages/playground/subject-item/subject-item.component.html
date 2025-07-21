@@ -20,9 +20,16 @@
                         <div class="text">{{item?.description}}</div>
 
                         <nz-button-group [nzSize]="'small'">
-                            <button nz-button nzType="primary" [nzSize]="'small'" (click)="loadExample(item?.path)">
+                            @if(!item.loading){
+                            <button nz-button nzType="primary" [nzSize]="'small'" [disabled]="hasAnyItemLoading"
+                                (click)="loadExample(item?.path)">
                                 加载程序
                             </button>
+                            }@else {
+                            <button nz-button nzType="default" [nzSize]="'small'" nzLoading>
+                                加载中...
+                            </button>
+                            }
                             <button nz-button [nzSize]="'small'" (click)="openUrl(item?.url)">
                                 查看教程
                             </button>

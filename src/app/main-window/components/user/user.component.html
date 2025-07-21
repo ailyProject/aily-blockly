@@ -1,0 +1,29 @@
+<div class="menu-container" (click)="closeEvent.emit()">
+    <div class="menu-box bborder" #menuBox [ngStyle]="{ right: 3 + 'px', top: position.y + 'px' ,'width': width + 'px'}"
+        (click)="$event.stopPropagation()">
+        <div class="content">
+            <div class="title">aily Blocky Service</div>
+            <div class="text">
+                登录后即可使用本软件提供的相关服务
+                <a (click)="more()">了解更多</a>
+            </div>
+            <button nz-button nzType="primary" (click)="more()">登录/注册</button>
+        </div>
+
+        <!-- <div class="user-menu">
+            <div class="user-item" (click)="onLogin()">
+                <i class="fa-regular fa-user"></i>
+                <span>登录</span>
+            </div>
+            <div class="user-item" (click)="onRegister()">
+                <i class="fa-regular fa-user-plus"></i>
+                <span>注册</span>
+            </div>
+            <div class="divider"></div>
+            <div class="user-item" (click)="onSettings()">
+                <i class="fa-regular fa-gear"></i>
+                <span>设置</span>
+            </div>
+        </div> -->
+    </div>
+</div>

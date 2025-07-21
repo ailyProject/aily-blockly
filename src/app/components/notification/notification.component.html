@@ -41,7 +41,7 @@
             @if (data.state=='doing'&& data.stop) {
             <div class="btn link red" (click)="stop()">终止</div>
             }
-            @if (data.state=='error'&& data.detail) {
+            @if (data.detail) {
             <div class="btn link" (click)="view()">查看详情</div>
             <!-- <div class="btn link" (click)="askAI()">AI助理</div> -->
             }

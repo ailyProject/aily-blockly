@@ -5,6 +5,7 @@ import { ElectronService } from './electron.service';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UpdateDialogComponent } from '../main-window/components/update-dialog/update-dialog.component';
 import { version } from '../../../package.json';
+import { ConfigService } from './config.service';
 
 @Injectable({
   providedIn: 'root',
@@ -24,7 +25,8 @@ export class UpdateService {
   constructor(
     private electronService: ElectronService,
     // private message: NzMessageService,
-    private modal: NzModalService
+    private modal: NzModalService,
+    private configService: ConfigService
   ) { }
 
   init() {
@@ -48,7 +50,7 @@ export class UpdateService {
           if (skippedVersions.includes(status.info.version)) {
             // console.log(`已跳过版本 ${status.info.version}，不再提示`);
             break;
-          }          
+          }
           // 判断是否已下载，如果已下载则直接显示安装对话框
           if (status.info.isDownloaded) {
             this.showUpdateDialog(status.info, true);
@@ -79,8 +81,7 @@ export class UpdateService {
     // 应用启动时检查更新
     setTimeout(() => {
       this.checkForUpdates();
-    }, 3000);
-
+    }, 5000);
   }
 
   checkForUpdates() {
@@ -108,18 +109,19 @@ export class UpdateService {
     const skippedVersions = this.getSkippedVersions();
     if (!skippedVersions.includes(version)) {
       skippedVersions.push(version);
-      localStorage.setItem('skippedVersions', JSON.stringify(skippedVersions));
+      this.configService.data.skippedVersions = skippedVersions;
+      this.configService.save();
       // console.log(`已将版本 ${version} 添加到跳过列表`);
     }
   }
 
   private getSkippedVersions(): string[] {
-    const stored = localStorage.getItem('skippedVersions');
-    return stored ? JSON.parse(stored) : [];
+    return this.configService.data?.skippedVersions || [];
   }
 
   clearSkipVersions() {
-    localStorage.removeItem('skippedVersions');
+    this.configService.data.skippedVersions = [];
+    this.configService.save();
   }
 
   dialogActionSubscription;

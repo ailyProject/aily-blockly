@@ -18,6 +18,11 @@ $footer-inner-height: 28px;
   &:hover {
     background: #3b3d40;
   }
+
+  &.active {
+    background: #007acc;
+    color: #ffffff;
+  }
 }
 
 .state {

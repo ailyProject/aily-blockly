@@ -53,7 +53,7 @@
           </div>
         </div> -->
         <div class="input-box">
-          <textarea class="sscroll" spellcheck="false" nz-input [(ngModel)]="inputValue"
+          <textarea #chatTextarea class="sscroll" spellcheck="false" nz-input [(ngModel)]="inputValue"
             (keydown)="onKeyDown($event)"></textarea>
         </div>
         <div class="btns">

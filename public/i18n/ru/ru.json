@@ -24,6 +24,12 @@
         "EXAMPLES": "Примеры программ",
         "UPDATE": "Проверить обновления"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "Скорость загрузки",
+        "FLASH_MODE": "Режим Flash",
+        "FLASH_SIZE": "Размер Flash",
+        "PARTITION_SCHEME": "Схема разделов"
+    },
     "GUIDE": {
         "START": "Начать",
         "RECENTLY": "Недавние"
@@ -35,7 +41,7 @@
             "THEME": "Настройки темы",
             "COMPILATION": "Настройки компиляции",
             "REPOSITORY": "Настройки репозитория",
-            "BOARD_MANAGEMENT": "Управление платами"
+            "DEPENDENCIES": "Глобальные зависимости"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Папка проекта",
@@ -86,6 +92,7 @@
         "SEARCH_LIBRARY": "Поиск библиотек",
         "INSTALLED": "Установлено",
         "CORE_LIBRARY": "Основная библиотека",
+        "IMPORT_LIBRARY": "Импорт локальной библиотеки",
         "INSTALL": "Установить",
         "INSTALLED_TEXT": "Установлено",
         "REMOVE": "Удалить",

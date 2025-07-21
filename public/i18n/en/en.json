@@ -24,6 +24,12 @@
         "EXAMPLES": "Examples",
         "UPDATE": "Check for Updates"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "Upload Speed",
+        "FLASH_MODE": "Flash Mode",
+        "FLASH_SIZE": "Flash Size",
+        "PARTITION_SCHEME": "Partition Scheme"
+    },
     "GUIDE": {
         "START": "Start",
         "RECENTLY": "Recent",
@@ -47,7 +53,7 @@
             "THEME": "Theme Settings",
             "COMPILATION": "Compilation Settings",
             "REPOSITORY": "Repository Settings",
-            "BOARD_MANAGEMENT": "Board Management",
+            "DEPENDENCIES": "Global Dependencies",
             "MCP": "MCP",
             "DEVMODE": "Developer Mode"
         },
@@ -101,12 +107,16 @@
         "ALL": "All Libraries",
         "INSTALLED": "Installed",
         "CORE_LIBRARY": "Core Library",
+        "IMPORT_LIBRARY": "Import Local Library",
         "INSTALL": "Install",
         "INSTALLED_TEXT": "Installed",
         "REMOVE": "Remove",
         "INSTALLING": "Installing",
         "UNINSTALLING": "Uninstalling",
         "UNINSTALLED": "Uninstalled",
+        "IMPORTING": "Importing",
+        "IMPORTED": "Import Successful",
+        "IMPORT_FAILED": "Import Failed",
         "SENSORS": "Sensors",
         "ACTUATORS": "Actuators",
         "COMMUNICATION": "Communication",

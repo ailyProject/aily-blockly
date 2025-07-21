@@ -1,3 +1,117 @@
+/* 确保元素显示占满容器 */
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 工具栏样式 */
+.simulator-toolbar {
+  padding: 10px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  gap: 10px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btn-primary {
+  background-color: #007bff;
+  color: white;
+}
+
+.btn-secondary {
+  background-color: #6c757d;
+  color: white;
+}
+
+.btn-info {
+  background-color: #17a2b8;
+  color: white;
+}
+
+.btn:hover {
+  opacity: 0.8;
+}
+
+/* 模拟器容器 */
+.simulator-container {
+  position: relative;
+  width: 100%;
+  height: calc(100% - 60px); /* 减去工具栏高度 */
+}
+
+.paper-container {
+  width: 100%;
+  height: 100%;
+  background-color: #ffffff;
+  border: 1px solid #ddd;
+}
+
+/* JSON输入对话框样式 */
+.json-input-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.dialog-content {
+  position: relative;
+  background-color: white;
+  border-radius: 8px;
+  padding: 20px;
+  width: 80%;
+  max-width: 600px;
+  max-height: 80%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.dialog-content h3 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  color: #333;
+}
+
+.dialog-content textarea {
+  width: 100%;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 300px;
+}
+
+.dialog-buttons {
+  margin-top: 15px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 /* 允许用户在自定义元素内选择文本 */
 g[data-type="example.ArduinoElement"] {
   -webkit-user-select: text;
@@ -8,9 +122,15 @@ g[data-type="example.ArduinoElement"] div {
   cursor: auto;
 }
 
-/* 确保元素显示占满容器 */
-:host {
-  display: block;
-  width: 100%;
-  height: 100%;
+/* JointJS连接线样式 */
+.joint-link {
+  cursor: pointer;
+}
+
+.joint-link .connection {
+  stroke-width: 2;
+}
+
+.joint-link .marker-target {
+  fill: #333;
 }

@@ -49,19 +49,33 @@
             flex-direction: column;
             overflow: hidden;
 
-            .state {
-                position: absolute;
-                width: 5px;
-                height: 100%;
-                top: 0px;
-                left: 0px;
-                background: rgba(0, 119, 6, 0.5);
-            }
+            // .state {
+            //     position: absolute;
+            //     width: 5px;
+            //     height: 100%;
+            //     top: 0px;
+            //     left: 0px;
+            //     background: rgba(0, 119, 6, 0.5);
+            // }
 
             .name {
                 display: flex;
-                align-items: flex-end;
+                align-items: center;
+                // align-items: flex-end;
                 height: 20px;
+
+                i {
+                    margin-left: 10px;
+                    font-size: 15px;
+
+                    &.fa-badge-check {
+                        color: #007706;
+                    }
+
+                    &.fa-circle-exclamation {
+                        color: #cfaa04;
+                    }
+                }
 
                 span {
                     position: absolute;
@@ -106,6 +120,14 @@
 
                 .btns {
                     display: flex;
+
+                    button {
+                        display: flex;
+
+                        i {
+                            margin-right: 5px;
+                        }
+                    }
                 }
             }
 
@@ -117,11 +139,17 @@
 
 .tag-list {
     white-space: nowrap;
+
     nz-tag {
         cursor: pointer;
     }
 }
 
-.error{
+.error {
     color: rgb(133, 8, 8) !important;
+}
+
+.import {
+    position: absolute;
+    right: 10px;
 }

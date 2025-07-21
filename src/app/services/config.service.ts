@@ -129,4 +129,16 @@ interface AppConfig {
   blockly: {
     renderer: string; // Blockly渲染器
   }
+
+  /** 串口监视器快速发送列表 */
+  quickSendList?: Array<{ name: string, type: "signal" | "text" | "hex", data: string }>;
+
+  /** 最近打开的项目列表 */
+  recentlyProjects?: Array<{ name: string, path: string }>;
+
+  /** 当前选择的语言 */
+  selectedLanguage?: string;
+
+  /** 跳过更新的版本列表 */
+  skippedVersions?: string[];
 }

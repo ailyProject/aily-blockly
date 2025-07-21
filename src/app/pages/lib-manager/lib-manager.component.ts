@@ -15,6 +15,7 @@ import { BlocklyService } from '../../blockly/blockly.service';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { CompatibleDialogComponent } from './components/compatible-dialog/compatible-dialog.component';
 import { CmdOutput, CmdService } from '../../services/cmd.service';
+import { ElectronService } from '../../services/electron.service';
 
 @Component({
   selector: 'app-lib-manager',
@@ -53,7 +54,8 @@ export class LibManagerComponent {
     private cd: ChangeDetectorRef,
     private translate: TranslateService,
     private modal: NzModalService,
-    private cmdService: CmdService
+    private cmdService: CmdService,
+    private electronService: ElectronService
   ) { }
 
   ngOnInit() {
@@ -63,39 +65,57 @@ export class LibManagerComponent {
       this.translate.instant('LIB_MANAGER.ACTUATORS'),
       this.translate.instant('LIB_MANAGER.COMMUNICATION'),
       this.translate.instant('LIB_MANAGER.DISPLAY'),
-      this.translate.instant('LIB_MANAGER.SOUND'),
+      // this.translate.instant('LIB_MANAGER.SOUND'),
       this.translate.instant('LIB_MANAGER.STORAGE'),
       this.translate.instant('LIB_MANAGER.ROBOT'),
       this.translate.instant('LIB_MANAGER.AI'),
       this.translate.instant('LIB_MANAGER.IOT'),
-      this.translate.instant('LIB_MANAGER.OTHERS')
     ];
 
     this.configService.loadLibraryList().then(async (data: any) => {
       this._libraryList = this.process(data);
-      this.libraryList = JSON.parse(JSON.stringify(this._libraryList));
-      this.checkInstalled();
+      // this.libraryList = JSON.parse(JSON.stringify(this._libraryList));
+      this.libraryList = await this.checkInstalled();
+      console.log('初始库列表：', this.libraryList);
     });
   }
 
-  async checkInstalled() {
-    // 获取已经安装的包，用于在界面上显示"移除"按钮
-    this.installedPackageList = await this.npmService.getInstalledPackageList(this.projectService.currentProjectPath);
-    for (let index = 0; index < this._libraryList.length; index++) {
-      const item = this._libraryList[index];
-      if (this.isInstalled(item)) {
-        item['state'] = 'installed';
-        item['fulltext'] = `已安装${item.name.includes('lib-core-') ? '核心库' : ''}${item.nickname}${item.description}${item.keywords}${item.brand}${item.author}`.replace(/\s/g, '').toLowerCase();
-      } else {
-        item['state'] = 'default';
-        item['fulltext'] = item.fulltext.replace('已安装', '');
-      }
+  async checkInstalled(libraryList = null) {
+    if (libraryList === null) {
+      libraryList = JSON.parse(JSON.stringify(this._libraryList));
     }
-    this.cd.detectChanges();
-  }
+    // 获取已经安装的包，用于在界面上显示"移除"按钮
+    let installedLibraries = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
+    installedLibraries = installedLibraries.map(item => {
+      item['state'] = 'installed';
+      item['fulltext'] = `installed${item.name}${item.nickname}${item.keywords}${item.description}${item.brand}`.replace(/\s/g, '').toLowerCase();
+      return item;
+    });
 
-  isInstalled(lib) {
-    return this.installedPackageList.indexOf(lib.name + '@' + lib.version) > -1
+    // console.log('所有库列表：', libraryList);
+    // console.log('已安装的库列表：', installedLibraries);
+    // 遍历installedLibraries, 如果this.libraryList存在name相同的库，则将installedLibraries中的库合并到this.libraryList中
+    libraryList.forEach(lib => {
+      const installedLib = installedLibraries.find(installed => installed.name === lib.name);
+      if (installedLib) {
+        Object.assign(lib, installedLib);
+      }else {
+        lib.state = 'default'; // 如果没有安装，则设置状态为默认
+      }
+    });
+
+    // 将只存在于installedLibraries中但不在libraryList中的库添加到libraryList中
+    installedLibraries.forEach(installedLib => {
+      const existsInLibraryList = libraryList.find(lib => lib.name === installedLib.name);
+      if (!existsInLibraryList) {
+        // 为新添加的库设置默认属性
+        installedLib['versionList'] = [installedLib.version];
+        libraryList.push(installedLib);
+      }
+    });
+
+    // console.log('合并后的库列表：', libraryList);
+    return libraryList;
   }
 
   // 处理库列表数据，为显示做准备
@@ -107,12 +127,12 @@ export class LibManagerComponent {
       // 为状态做准备
       item['state'] = 'default'; // default, installed, installing, uninstalling
       // 为全文搜索做准备
-      item['fulltext'] = `${item.name.includes('lib-core-') ? '核心库' : ''}${item.nickname}${item.description}${item.keywords}${item.brand}${item.author}`.replace(/\s/g, '').toLowerCase();
+      item['fulltext'] = `${item.name}${item.nickname}${item.keywords}${item.description}${item.brand}`.replace(/\s/g, '').toLowerCase();
     }
     return array;
   }
 
-  search(keyword = this.keyword) {
+  async search(keyword = this.keyword) {
     if (keyword) {
       keyword = keyword.replace(/\s/g, '').toLowerCase();
 
@@ -121,14 +141,27 @@ export class LibManagerComponent {
       const coreLibKey = this.translate.instant('LIB_MANAGER.CORE_LIBRARY').toLowerCase();
 
       if (keyword === installedKey) {
-        keyword = '已安装';
+        keyword = 'installed';
       } else if (keyword === coreLibKey) {
-        keyword = '核心库';
+        keyword = 'lib-core-';
+      } else if (keyword === 'ai') {
+        keyword = 'artificialintelligence';
       }
 
-      this.libraryList = this._libraryList.filter((item) => item.fulltext.includes(keyword));
+      // 使用indexOf过滤并记录关键词位置，然后按位置排序
+      let libraryList = await this.checkInstalled();
+      const matchedItems = libraryList
+        .map(item => {
+          const index = item.fulltext.indexOf(keyword);
+          return { item, index };
+        })
+        .filter(({ index }) => index !== -1)
+        .sort((a, b) => a.index - b.index)
+        .map(({ item }) => item);
+
+      this.libraryList = matchedItems;
     } else {
-      this.libraryList = JSON.parse(JSON.stringify(this._libraryList));
+      this.libraryList = await this.checkInstalled();
     }
   }
 
@@ -153,14 +186,25 @@ export class LibManagerComponent {
     }
     // console.log('当前项目路径：', this.projectService.currentProjectPath);
 
+    let packageList_old = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
+    console.log('当前已安装的库列表：', packageList_old);
+
     lib.state = 'installing';
     this.message.loading(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.INSTALLING')}...`);
     this.output = '';
     await this.cmdService.runAsync(`npm install ${lib.name}@${lib.version}`, this.projectService.currentProjectPath)
-    await this.checkInstalled();
-    lib.state = 'default';
+    this.libraryList = await this.checkInstalled(this.libraryList);
+    // lib.state = 'default';
     this.message.success(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.INSTALLED')}`);
-    this.blocklyService.loadLibrary(lib.name, this.projectService.currentProjectPath);
+
+    let packageList_new = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
+    console.log('新的已安装的库列表：', packageList_new);
+    // 比对相较于旧的已安装库列表，找出新增的库
+    const newPackages = packageList_new.filter(pkg => !packageList_old.some(oldPkg => oldPkg.name === pkg.name && oldPkg.version === pkg.version));
+    console.log('新增的库：', newPackages);
+    for (const pkg of newPackages) {
+      this.blocklyService.loadLibrary(pkg.name, this.projectService.currentProjectPath);
+    }
   }
 
   async removeLib(lib) {
@@ -171,8 +215,8 @@ export class LibManagerComponent {
     this.blocklyService.removeLibrary(libPackagePath);
     this.output = '';
     await this.cmdService.runAsync(`npm uninstall ${lib.name}`, this.projectService.currentProjectPath);
-    await this.checkInstalled();
-    lib.state = 'default';
+    this.libraryList = await this.checkInstalled(this.libraryList);
+    // lib.state = 'default';
     this.message.success(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.UNINSTALLED')}`);
   }
 
@@ -223,6 +267,66 @@ export class LibManagerComponent {
       });
     });
   }
+
+  openExample(packageName) {
+    this.electronService.openNewInStance('/main/playground/s/' + packageName.replace('@aily-project/', ''))
+  }
+
+  async importLib() {
+    try {
+      // 弹出文件夹选择对话框
+      const folderPath = await window['ipcRenderer'].invoke('select-folder', {
+        path: this.projectService.currentProjectPath,
+      });
+
+      // 如果用户取消选择，返回
+      if (!folderPath || folderPath === this.projectService.currentProjectPath) {
+        return;
+      }
+
+      // console.log('选择的文件夹路径：', folderPath);
+
+      // 检查选择的路径下是否有package.json、block.json、generator.js文件
+      const hasPackageJson = await this.electronService.exists(folderPath + '/package.json');
+      const hasBlockJson = await this.electronService.exists(folderPath + '/block.json');
+      const hasGeneratorJs = await this.electronService.exists(folderPath + '/generator.js');
+
+      if (!hasPackageJson || !hasBlockJson || !hasGeneratorJs) {
+        this.message.error(`${this.translate.instant('LIB_MANAGER.IMPORT_FAILED')}: 该路径下不是aily blockly库`);
+        return;
+      }
+
+      this.message.loading(`${this.translate.instant('LIB_MANAGER.IMPORTING')}...`);
+
+      // 获取安装前的库列表
+      let packageList_old = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
+      console.log('导入前已安装的库列表：', packageList_old);
+
+      // 使用 npm install 安装本地库
+      await this.cmdService.runAsync(`npm install "${folderPath}"`, this.projectService.currentProjectPath);
+
+      // 重新检查已安装的库
+      await this.checkInstalled();
+
+      this.message.success(`${this.translate.instant('LIB_MANAGER.IMPORTED')}`);
+
+      // 获取安装后的库列表并加载新增的库
+      let packageList_new = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
+      // console.log('导入后已安装的库列表：', packageList_new);
+
+      // 比对相较于旧的已安装库列表，找出新增的库
+      const newPackages = packageList_new.filter(pkg => !packageList_old.some(oldPkg => oldPkg.name === pkg.name && oldPkg.version === pkg.version));
+      // console.log('新导入的库：', newPackages);
+
+      // 加载新增的库到 Blockly
+      for (const pkg of newPackages) {
+        this.blocklyService.loadLibrary(pkg.name, this.projectService.currentProjectPath);
+      }
+    } catch (error) {
+      console.error('导入库失败：', error);
+      this.message.error(`${this.translate.instant('LIB_MANAGER.IMPORT_FAILED')}: ${error.message || error}`);
+    }
+  }
 }
 
 interface PackageInfo {
@@ -244,5 +348,6 @@ interface PackageInfo {
   "brand"?: string,
   "fulltext"?: string,
   tested: boolean,
-  state: 'default' | 'installed' | 'installing' | 'uninstalling'
+  state: 'default' | 'installed' | 'installing' | 'uninstalling',
+  example?: string
 }

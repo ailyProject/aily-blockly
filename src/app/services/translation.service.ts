@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { HttpClient } from '@angular/common/http';
 import { lastValueFrom } from 'rxjs';
+import { ConfigService } from './config.service';
 
 export interface Locale {
   name: string;
@@ -20,7 +21,8 @@ export class TranslationService {
 
   constructor(
     private translate: TranslateService,
-    private http: HttpClient
+    private http: HttpClient,
+    private configService: ConfigService
   ) {
   }
 
@@ -85,11 +87,12 @@ export class TranslationService {
 
     // 使用该语言
     this.translate.use(lang);
-    localStorage.setItem('language', lang);
+    this.configService.data.selectedLanguage = lang;
+    this.configService.save();
     return lang;
   }
 
   getSelectedLanguage() {
-    return localStorage.getItem('language') || this.translate.getDefaultLang();
+    return this.configService.data?.selectedLanguage || this.translate.getDefaultLang();
   }
 }

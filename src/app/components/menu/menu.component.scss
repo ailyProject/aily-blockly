@@ -1,3 +1,7 @@
+.menu-container {
+  position: relative;
+}
+
 .menu-box {
   background: #2b2d30;
   border-radius: 5px;
@@ -14,6 +18,7 @@
     border-radius: 5px;
     cursor: pointer;
     color: #ddd;
+    position: relative;
 
     .name {
       white-space: nowrap;
@@ -36,6 +41,10 @@
       background: #405e8d;
     }
 
+    &.active{
+      background: #405e8d;
+    }
+
     &.disabled:hover {
       background: transparent;
     }
@@ -49,11 +58,37 @@
     &.disabled {
       opacity: 0.6;
     }
+
+    .arrow {
+      position: absolute;
+      right: 10px;
+    }
+
+    .check {
+      position: absolute;
+      right: 5px;
+      color: #f7ce42;
+    }
   }
 
   .sep {
     height: 1px;
     background: #444;
     margin: 2px 0;
+  }
+}
+
+// 独立的子菜单样式
+.submenu-box {
+  min-width: 100px;
+  box-shadow: 0 0 5px #111;
+  z-index: 1000;
+  
+  &.show {
+    display: flex;
+  }
+
+  .name{
+    padding-right: 20px;
   }
 }

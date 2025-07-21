@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "author": "aily",
+  "editor": "simulator",
+  "parts": [
+    {
+      "id": "uno1",
+      "type": "wokwi-arduino-uno",
+      "left": 200,
+      "top": 300
+    },
+    {
+      "id": "led1",
+      "type": "wokwi-led",
+      "left": 50,
+      "top": 50,
+      "attrs": {
+        "color": "red"
+      }
+    },
+    {
+      "id": "led2",
+      "type": "wokwi-led",
+      "left": 150,
+      "top": 50,
+      "attrs": {
+        "color": "green"
+      }
+    },
+    {
+      "id": "led3",
+      "type": "wokwi-led",
+      "left": 250,
+      "top": 50,
+      "attrs": {
+        "color": "blue"
+      }
+    },
+    {
+      "id": "buzzer1",
+      "type": "wokwi-buzzer",
+      "left": 350,
+      "top": 50
+    },
+    {
+      "id": "button1",
+      "type": "wokwi-pushbutton",
+      "left": 450,
+      "top": 50
+    },
+    {
+      "id": "dht1",
+      "type": "wokwi-dht22",
+      "left": 550,
+      "top": 50
+    },
+    {
+      "id": "ultrasonic1",
+      "type": "wokwi-hc-sr04",
+      "left": 650,
+      "top": 50
+    }
+  ],
+  "connections": [
+    ["uno1:13", "led1:anode", "#FF0000"],
+    ["uno1:GND", "led1:cathode", "#000000"],
+    ["uno1:12", "led2:anode", "#00FF00"],
+    ["uno1:GND2", "led2:cathode", "#000000"],
+    ["uno1:11", "led3:anode", "#0000FF"],
+    ["uno1:GND", "led3:cathode", "#000000"],
+    ["uno1:8", "buzzer1:1", "#FFA500"],
+    ["uno1:GND", "buzzer1:2", "#000000"],
+    ["uno1:2", "button1:1.l", "#FFFF00"],
+    ["uno1:GND", "button1:2.l", "#000000"],
+    ["uno1:5V", "dht1:VCC", "#FF0000"],
+    ["uno1:7", "dht1:SDA", "#0000FF"],
+    ["uno1:GND", "dht1:GND", "#000000"],
+    ["uno1:5V", "ultrasonic1:VCC", "#FF0000"],
+    ["uno1:6", "ultrasonic1:TRIG", "#FFFF00"],
+    ["uno1:5", "ultrasonic1:ECHO", "#00FFFF"],
+    ["uno1:GND", "ultrasonic1:GND", "#000000"]
+  ]
+}

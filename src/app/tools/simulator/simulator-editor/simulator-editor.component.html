@@ -1,10 +1,22 @@
-<!-- <wokwi-led color="red" pin="13"></wokwi-led>
-<wokwi-led color="green" pin="12"></wokwi-led>
-<wokwi-led color="blue" pin="11"></wokwi-led>
-<wokwi-arduino-uno></wokwi-arduino-uno>
-<wokwi-arduino-mega></wokwi-arduino-mega>
-<wokwi-hc-sr04></wokwi-hc-sr04>
-<wokwi-dht22></wokwi-dht22>
-<wokwi-lcd1602></wokwi-lcd1602>
-<wokwi-ssd1306></wokwi-ssd1306> -->
-<div #paper></div>
+<div class="simulator-toolbar">
+  <button (click)="loadFromJson()" class="btn btn-primary">加载JSON配置</button>
+  <button (click)="clearSimulator()" class="btn btn-secondary">清空</button>
+  <button (click)="exportToJson()" class="btn btn-info">导出JSON</button>
+</div>
+
+<div class="simulator-container">
+  <div #paper class="paper-container"></div>
+  
+  <!-- JSON输入对话框 -->
+  <div class="json-input-dialog" *ngIf="showJsonDialog">
+    <div class="dialog-backdrop" (click)="closeJsonDialog()"></div>
+    <div class="dialog-content">
+      <h3>输入硬件连接JSON配置</h3>
+      <textarea [(ngModel)]="jsonInput" placeholder="请输入JSON配置..." rows="20"></textarea>
+      <div class="dialog-buttons">
+        <button (click)="parseAndLoadJson()" class="btn btn-primary">加载</button>
+        <button (click)="closeJsonDialog()" class="btn btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
+</div>

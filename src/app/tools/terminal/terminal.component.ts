@@ -1,80 +1,41 @@
-import { Component, ElementRef, Input, SimpleChanges, ViewChild } from '@angular/core';
+import { Component, ElementRef, ViewChild } from '@angular/core';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { ElectronService } from '../../services/electron.service';
 import { UiService } from '../../services/ui.service';
 import { ProjectService } from '../../services/project.service';
-import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { TerminalService } from './terminal.service';
 import { CommonModule } from '@angular/common';
-import { LogService } from '../../services/log.service';
-import { SimplebarAngularComponent, SimplebarAngularModule } from 'simplebar-angular';
-import { AnsiPipe } from './ansi.pipe';
 
 @Component({
   selector: 'app-terminal',
-  imports: [CommonModule, NzTabsModule, SimplebarAngularModule, AnsiPipe],
+  imports: [CommonModule],
   templateUrl: './terminal.component.html',
   styleUrl: './terminal.component.scss',
 })
 export class TerminalComponent {
-  @Input() tab = 'default'; //error,info,log
-  selectedTabIndex = 0;
-
   @ViewChild('terminal') terminalEl: ElementRef;
-  @ViewChild(SimplebarAngularComponent) simplebar: SimplebarAngularComponent;
 
   terminal;
   fitAddon;
   clipboardAddon;
-
-  get logList() {
-    return this.logService.list;
-  }
-
-  options = {
-    autoHide: true,
-    clickOnTrack: true,
-    scrollbarMinSize: 50,
-  };
-
 
   constructor(
     private electronService: ElectronService,
     private uiService: UiService,
     private projectService: ProjectService,
     private terminalService: TerminalService,
-    private logService: LogService
   ) { }
 
   close() {
     this.uiService.closeTool('terminal');
   }
 
-  trash() {
-    if (this.selectedTabIndex == 1) {
-      this.logService.clear();
-      return
-    }
+  clear() {
     this.terminal.write('\x1bc');
     if (this.electronService.isElectron) {
       this.terminalService.send('clear\r');
-    }
-  }
-
-  ngOnChanges(changes: SimpleChanges): void {
-    if (changes['tab']) {
-      switch (this.tab) {
-        case 'default':
-          this.selectedTabIndex = 0;
-          break;
-        case 'error':
-          this.selectedTabIndex = 1;
-          break;
-        default:
-          break;
-      }
     }
   }
 
@@ -103,15 +64,6 @@ export class TerminalComponent {
 
     window['terminal'].onData((data) => {
       this.terminal.write(data);
-    })
-
-    setTimeout(() => this.scrollToBottom(), 100);
-    this.logService.stateSubject.subscribe((opts) => {
-      console.log('logService stateSubject', opts);
-      
-      console.log(opts.timestamp);
-      
-      setTimeout(() => this.scrollToBottom(), 100);
     })
   }
 
@@ -198,15 +150,5 @@ export class TerminalComponent {
 
   closeNodePty() {
     this.terminalService.close();
-  }
-
-  view(item) {
-
-  }
-
-  private scrollToBottom(): void {
-    if (this.simplebar.SimpleBar) {
-      this.simplebar.SimpleBar.getScrollElement().scrollTop = this.simplebar.SimpleBar.getScrollElement().scrollHeight;
-    }
   }
 }

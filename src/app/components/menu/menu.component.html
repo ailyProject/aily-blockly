@@ -1,19 +1,40 @@
-<div class="menu-box bborder" #menuBox
-  [ngStyle]="{ left: position.x + 'px', top: position.y + 'px' ,'width': width + 'px'}">
-  @for (item of menuList; track $index) {
-  @if (item.sep) {
-  <div class="sep"></div>
-  } @else {
-  @if(showInRouter(item)){
-  <div class="menu-item ccenter" (click)="itemClick(item)"
-    [ngClass]="{'highlight': isHighlight(item.text), 'disabled': item.disabled}">
-    @if(item.icon){
-    <div class="icon ccenter"><i class="{{ item.icon }}"></i></div>
+<div class="menu-container">
+  <div class="menu-box bborder" #menuBox
+    [ngStyle]="{ left: position.x + 'px', top: position.y + 'px' ,'width': width + 'px'}">
+    @for (item of menuList; track $index) {
+    @if (item.sep) {
+    <div class="sep"></div>
+    } @else {
+    @if((item.children && item.children.length > 0)||(!item.children&&showInRouter(item))){
+    <div class="menu-item ccenter" #menuItem (click)="itemClick(item)" (mouseenter)="showSubMenu($event, $index)"
+      (mouseleave)="hideSubMenu($event, $index)"
+      [ngClass]="{'highlight': isHighlight(item.text), 'disabled': item.disabled ,'active':activeSubmenuIndex == $index}">
+      @if(item.icon){
+      <div class="icon ccenter"><i class="{{ item.icon }}"></i></div>
+      }
+      <div class="name ellipsis">{{ item.name | translate }}</div>
+      <div class="text ellipsis">{{ item.text }}</div>
+      @if(item.children){
+      <div class="arrow"><i class="fa-light fa-chevron-right"></i></div>
+      }
+    </div>
     }
-    <div class="name ellipsis">{{ item.name | translate }}</div>
-    <div class="text ellipsis">{{ item.text }}</div>
+    }
+    }
   </div>
-  }
-  }
+  <!-- 子菜单放在主菜单外部 -->
+  @if(activeSubmenuIndex !== null && menuList[activeSubmenuIndex]?.children) {
+  <div class="submenu-box menu-box bborder" #submenuBox [ngClass]="{'show': activeSubmenuIndex !== null}"
+    [ngStyle]="submenuPosition" (mouseenter)="keepSubMenuOpen(activeSubmenuIndex)"
+    (mouseleave)="hideSubMenu($event, activeSubmenuIndex)">
+    @for (subItem of menuList[activeSubmenuIndex].children; track $index) {
+    <div class="menu-item ccenter" (click)="subItemClick($event,subItem)">
+      <div class="name ellipsis">{{ subItem.name }}</div>
+      @if(subItem.check){
+      <div class="check"><i class="fa-light fa-circle-check"></i></div>
+      }
+    </div>
+    }
+  </div>
   }
 </div>

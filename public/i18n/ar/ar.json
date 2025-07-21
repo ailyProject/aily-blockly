@@ -24,6 +24,12 @@
         "EXAMPLES": "أمثلة",
         "UPDATE": "التحقق من وجود تحديثات"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "سرعة الرفع",
+        "FLASH_MODE": "وضع الفلاش",
+        "FLASH_SIZE": "حجم الفلاش",
+        "PARTITION_SCHEME": "مخطط التقسيم"
+    },
     "GUIDE": {
         "START": "البدء",
         "RECENTLY": "مؤخرًا"
@@ -35,7 +41,7 @@
             "THEME": "إعدادات المظهر",
             "COMPILATION": "إعدادات التجميع",
             "REPOSITORY": "إعدادات المستودع",
-            "BOARD_MANAGEMENT": "إدارة اللوحات"
+            "DEPENDENCIES": "التبعيات العامة"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "مجلد المشروع",
@@ -86,6 +92,7 @@
         "SEARCH_LIBRARY": "بحث في المكتبات",
         "INSTALLED": "مثبت",
         "CORE_LIBRARY": "مكتبة أساسية",
+        "IMPORT_LIBRARY": "استيراد مكتبة محلية",
         "INSTALL": "تثبيت",
         "INSTALLED_TEXT": "مثبت",
         "REMOVE": "إزالة",

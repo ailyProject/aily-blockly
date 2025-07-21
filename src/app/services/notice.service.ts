@@ -20,14 +20,13 @@ export class NoticeService {
   update(opts: NoticeOptions) {
     opts['showDetail'] = false;
     this.stateSubject.next(opts);
-    // if (opts.state === 'error') {
-    //   // this.noticeList.push(opts)
-    this.logService.update({
-      title: opts.title,
-      detail: opts.detail,
-      state: opts.state,
-    })
-    // }
+    if (opts.detail) {
+      this.logService.update({
+        title: opts.title,
+        detail: opts.detail,
+        state: opts.state,
+      })
+    }
   }
 
   clear() {

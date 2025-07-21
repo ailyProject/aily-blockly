@@ -24,6 +24,12 @@
         "EXAMPLES": "Ejemplos",
         "UPDATE": "Buscar actualizaciones"
     },
+    "ESP32": {
+        "UPLOAD_SPEED": "Velocidad de subida",
+        "FLASH_MODE": "Modo Flash",
+        "FLASH_SIZE": "Tamaño Flash",
+        "PARTITION_SCHEME": "Esquema de partición"
+    },
     "GUIDE": {
         "START": "Inicio",
         "RECENTLY": "Reciente"
@@ -35,7 +41,7 @@
             "THEME": "Configuración de Tema",
             "COMPILATION": "Configuración de Compilación",
             "REPOSITORY": "Configuración de Repositorio",
-            "BOARD_MANAGEMENT": "Gestión de Placas"
+            "DEPENDENCIES": "Dependencias Globales"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Carpeta de Proyecto",
@@ -86,6 +92,7 @@
         "SEARCH_LIBRARY": "Buscar biblioteca",
         "INSTALLED": "Instalado",
         "CORE_LIBRARY": "Biblioteca central",
+        "IMPORT_LIBRARY": "Importar biblioteca local",
         "INSTALL": "Instalar",
         "INSTALLED_TEXT": "Instalado",
         "REMOVE": "Eliminar",

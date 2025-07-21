@@ -141,7 +141,7 @@ export class NotificationComponent {
   view() {
     console.log('viewDetail');
     console.log(this.data);
-    this.uiService.openTerminal('error');
+    this.uiService.openBottomSider('log');
   }
 
   askAI() {

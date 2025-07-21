@@ -6,12 +6,101 @@ const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 
+// 隔离用户数据目录：为每个实例生成唯一的用户数据目录。如果此处不隔离，会导致启动第二个实例时，要等待几秒才会出现窗口
+function setupUniqueUserDataPath() {
+  const timestamp = Date.now();
+  const randomId = Math.random().toString(36).substring(2, 8);
+  const instanceId = `${timestamp}-${randomId}`;
+
+  const originalUserDataPath = app.getPath('userData');
+  const uniqueUserDataPath = path.join(originalUserDataPath, 'instances', instanceId);
+
+  // 设置唯一的用户数据目录
+  app.setPath('userData', uniqueUserDataPath);
+  console.log('启用实例隔离，设置实例用户数据目录:', uniqueUserDataPath);
+
+  // 确保目录存在
+  if (!fs.existsSync(uniqueUserDataPath)) {
+    fs.mkdirSync(uniqueUserDataPath, { recursive: true });
+  }
+  return uniqueUserDataPath;
+}
+
+// 在应用初始化之前设置独立的用户数据目录
+setupUniqueUserDataPath();
+
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
 app.commandLine.appendSwitch('enable-features', 'V8LazyCodeGeneration,V8CacheOptions');
 
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
 process.env.DEV = serve;
+
+// 文件关联处理
+let pendingFileToOpen = null;
+let pendingRoute = null;
+let pendingQueryParams = null;
+
+// 处理命令行参数中的 .abi 文件和路由参数
+function handleCommandLineArgs(argv) {
+  // 处理 .abi 文件
+  const abiFile = argv.find(arg => arg.endsWith('.abi') && fs.existsSync(arg));
+  if (abiFile) {
+    const resolvedPath = path.resolve(abiFile);
+    pendingFileToOpen = path.dirname(resolvedPath);
+    console.log('Found .abi file to open:', resolvedPath);
+    console.log('Project directory:', pendingFileToOpen);
+    return true;
+  }
+
+  // 处理路由参数
+  const routeArg = argv.find(arg => arg.startsWith('--route='));
+  if (routeArg) {
+    pendingRoute = routeArg.replace('--route=', '');
+    console.log('Found route parameter:', pendingRoute);
+  }
+
+  // 处理查询参数
+  const queryArg = argv.find(arg => arg.startsWith('--query='));
+  if (queryArg) {
+    try {
+      const queryString = queryArg.replace('--query=', '');
+      pendingQueryParams = JSON.parse(decodeURIComponent(queryString));
+      console.log('Found query parameters:', pendingQueryParams);
+    } catch (error) {
+      console.error('解析查询参数失败:', error);
+    }
+  }
+
+  return !!(abiFile || routeArg || queryArg);
+}
+
+// 在应用启动时处理命令行参数
+handleCommandLineArgs(process.argv);
+
+// macOS下处理文件打开
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  if (filePath.endsWith('.abi') && fs.existsSync(filePath)) {
+    const projectDir = path.dirname(path.resolve(filePath));
+    console.log('macOS open-file:', filePath);
+    console.log('Project directory:', projectDir);
+
+    if (mainWindow && mainWindow.webContents) {
+      // 直接导航到对应路由
+      const routePath = `main/blockly-editor?path=${encodeURIComponent(projectDir)}`;
+      console.log('Navigating to route:', routePath);
+
+      if (serve) {
+        mainWindow.loadURL(`http://localhost:4200/#/${routePath}`);
+      } else {
+        mainWindow.loadFile(`renderer/index.html`, { hash: `#/${routePath}` });
+      }
+    } else {
+      pendingFileToOpen = projectDir;
+    }
+  }
+});
 
 // ipc handlers模块
 const { registerTerminalHandlers } = require("./terminal");
@@ -30,10 +119,10 @@ function loadEnv() {
   // 将child目录添加到环境变量PATH中
   const childPath = path.join(__dirname, "..", "child")
   const nodePath = path.join(childPath, "node")
-  
+
   // 只保留PowerShell路径，移除其他系统PATH
   let customPath = nodePath + path.delimiter + childPath;
-  
+
   if (isWin32) {
     // 添加必要的系统路径
     const systemPaths = [
@@ -42,7 +131,7 @@ function loadEnv() {
       'C:\\Program Files\\PowerShell\\7', // PowerShell 7 (如果存在)
       'C:\\Windows'
     ];
-    
+
     // 检查路径是否存在，只添加存在的路径
     systemPaths.forEach(sysPath => {
       if (fs.existsSync(sysPath)) {
@@ -50,10 +139,10 @@ function loadEnv() {
       }
     });
   }
-  
+
   // 完全替换PATH
   process.env.PATH = customPath;
-  
+
   // 读取同级目录下的config.json文件
   const configPath = path.join(__dirname, "config.json");
   const conf = JSON.parse(fs.readFileSync(configPath));
@@ -129,6 +218,7 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     ...windowBounds,
+    show: false,
     minWidth: 800,
     minHeight: 600,
     frame: false,
@@ -141,10 +231,51 @@ function createWindow() {
     },
   });
 
-  if (serve) {
-    mainWindow.loadURL("http://localhost:4200");
+  // 当页面准备好显示时，再显示窗口
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+  });
+
+  // 根据是否有待打开的项目路径或路由参数来决定加载的页面
+  let targetUrl = null;
+
+  if (pendingFileToOpen) {
+    const routePath = `main/blockly-editor?path=${encodeURIComponent(pendingFileToOpen)}`;
+    console.log('Loading with project path:', routePath);
+    targetUrl = `#/${routePath}`;
+    pendingFileToOpen = null;
+  } else if (pendingRoute) {
+    // 构建路由URL
+    let routePath = pendingRoute;
+
+    // 如果有查询参数，添加到路由中
+    if (pendingQueryParams) {
+      const queryString = new URLSearchParams();
+      Object.keys(pendingQueryParams).forEach(key => {
+        queryString.append(key, pendingQueryParams[key]);
+      });
+      routePath += (routePath.includes('?') ? '&' : '?') + queryString.toString();
+    }
+
+    console.log('Loading with custom route:', routePath);
+    targetUrl = `#/${routePath}`;
+    pendingRoute = null;
+    pendingQueryParams = null;
+  }
+
+  // 加载页面
+  if (targetUrl) {
+    if (serve) {
+      mainWindow.loadURL(`http://localhost:4200/${targetUrl}`);
+    } else {
+      mainWindow.loadFile(`renderer/index.html`, { hash: targetUrl });
+    }
   } else {
-    mainWindow.loadFile(`renderer/index.html`);
+    if (serve) {
+      mainWindow.loadURL("http://localhost:4200");
+    } else {
+      mainWindow.loadFile(`renderer/index.html`);
+    }
   }
 
   // 当主窗口被关闭时，进行相应的处理
@@ -160,18 +291,14 @@ function createWindow() {
   }
 
   // 注册ipc handlers
-  setTimeout(() => {
-    registerTerminalHandlers(mainWindow);
-    registerWindowHandlers(mainWindow);
-    registerNpmHandlers(mainWindow);
-    registerUpdaterHandlers(mainWindow);
-    registerCmdHandlers(mainWindow);
-  }, 500);
-
+  registerUpdaterHandlers(mainWindow);
+  registerTerminalHandlers(mainWindow);
+  registerWindowHandlers(mainWindow);
+  registerNpmHandlers(mainWindow);
+  registerCmdHandlers(mainWindow);
 }
 
 app.on("ready", () => {
-  // 先加载环境变量
   try {
     loadEnv();
   } catch (error) {
@@ -257,6 +384,57 @@ ipcMain.handle("env-get", (event, key) => {
   return process.env[key];
 })
 
+// 打开新实例
+ipcMain.handle("open-new-instance", async (event, data) => {
+  try {
+    const { route, queryParams } = data || {};
+
+    // 构建命令行参数
+    const args = [];
+
+    // 如果有路由参数，将其作为环境变量传递
+    if (route) {
+      args.push(`--route=${route}`);
+    }
+
+    // 如果有查询参数，将其序列化后传递
+    if (queryParams) {
+      args.push(`--query=${encodeURIComponent(JSON.stringify(queryParams))}`);
+    }
+
+    // 启动新实例
+    const { spawn } = require('child_process');
+    const execPath = process.execPath;
+    const appPath = __dirname;
+
+    // 构建完整的启动参数
+    const spawnArgs = [appPath, ...args];
+
+    console.log('启动新实例:', execPath, spawnArgs);
+
+    const child = spawn(execPath, spawnArgs, {
+      detached: true,
+      stdio: 'ignore'
+    });
+
+    // 分离子进程，使其独立运行
+    child.unref();
+
+    return {
+      success: true,
+      pid: child.pid,
+      message: '新实例已启动'
+    };
+
+  } catch (error) {
+    console.error('启动新实例失败:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+})
+
 // 用于嵌入的iframe打开外部链接
 app.on('web-contents-created', (event, contents) => {
   // 处理iframe中的链接点击
@@ -271,7 +449,6 @@ ipcMain.on("setting-changed", (event, data) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
   mainWindow.webContents.send("setting-changed", data);
 });
-
 
 // 记录窗口大小和位置，用于下次打开时恢复
 function windowMoveResizeListener() {
@@ -316,3 +493,33 @@ function getConfWindowBounds() {
   }
   return bounds;
 }
+
+// 清理过期的实例目录（可选功能）
+function cleanupOldInstances() {
+  try {
+    const originalUserDataPath = app.getPath('userData').replace(/[/\\]instances[/\\][^/\\]+$/, '');
+    const instancesDir = path.join(originalUserDataPath, 'instances');
+
+    if (!fs.existsSync(instancesDir)) {
+      return;
+    }
+
+    const now = Date.now();
+    const maxAge = 24 * 60 * 60 * 1000; // 24小时
+
+    fs.readdirSync(instancesDir).forEach(instanceId => {
+      const instancePath = path.join(instancesDir, instanceId);
+      const stats = fs.statSync(instancePath);
+
+      // 如果实例目录超过24小时未使用，则删除
+      if (now - stats.mtime.getTime() > maxAge) {
+        fs.rmSync(instancePath, { recursive: true, force: true });
+        console.log('已清理过期实例目录:', instancePath);
+      }
+    });
+  } catch (error) {
+    console.error('清理实例目录时出错:', error);
+  }
+}
+
+cleanupOldInstances();

@@ -16,13 +16,21 @@ import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
 import { TranslateModule } from '@ngx-translate/core';
 import { UpdateService } from '../../../services/update.service';
-import { NavigationEnd, Router } from '@angular/router';
-import { filter } from 'rxjs/operators';
+import { Router } from '@angular/router';
 import { ElectronService } from '../../../services/electron.service';
+import { UserComponent } from '../user/user.component';
+import { ConfigService } from '../../../services/config.service';
 
 @Component({
   selector: 'app-header',
-  imports: [CommonModule, NzToolTipModule, MenuComponent, ActBtnComponent, TranslateModule],
+  imports: [
+    CommonModule,
+    NzToolTipModule,
+    MenuComponent,
+    ActBtnComponent,
+    UserComponent,
+    TranslateModule
+  ],
   templateUrl: './header.component.html',
   styleUrl: './header.component.scss',
 })
@@ -51,7 +59,7 @@ export class HeaderComponent {
   }
 
   get currentBoard() {
-    return this.projectData.board;
+    return this.projectService.currentBoardConfig?.name;
   }
 
   currentUrl = null;
@@ -71,10 +79,11 @@ export class HeaderComponent {
     private modal: NzModalService,
     private updateService: UpdateService,
     private router: Router,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private configService: ConfigService
   ) { }
 
-  ngAfterViewInit() {
+  async ngAfterViewInit() {
     this.projectService.stateSubject.subscribe((state) => {
       if (state == 'loaded' || state == 'saved') {
         // 将headerMenu中有disabled的按钮置为可用
@@ -95,6 +104,7 @@ export class HeaderComponent {
     });
 
     this.listenShortcutKeys();
+
   }
 
   showMenu = false;
@@ -107,7 +117,7 @@ export class HeaderComponent {
   }
 
   showPortList = false;
-  portList: PortItem[] = []
+  configList: PortItem[] = []
   boardKeywords = []; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
   openPortList() {
     let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
@@ -121,17 +131,19 @@ export class HeaderComponent {
     this.cd.detectChanges();
   }
 
-  selectPort(portItem) {
-    this.currentPort = portItem.name;
+  selectPort(item) {
+    if (item.action) {
+      this.process(item)
+      return
+    }
+    this.currentPort = item.name;
     this.closePortList();
   }
 
   async getDevicePortList() {
-
-    let portList0 = await this.serialService.getSerialPorts();
+    let portList0: IMenuItem[] = await this.serialService.getSerialPorts();
     if (portList0.length == 0) {
-      // this.message.warning('没有找到可用的设备，请检查连接');
-      this.portList = [
+      portList0 = [
         {
           name: 'Device not found',
           text: '',
@@ -140,14 +152,34 @@ export class HeaderComponent {
           disabled: true,
         }
       ];
-    } else {
-      this.portList = portList0;
     }
+    // 添加ESP32相关配置选项
+    if (this.projectService.currentBoardConfig['core'].indexOf('esp32') > -1) {
+      let temp = this.projectService.currentBoardConfig['type'].split(':');
+      let board = temp[temp.length - 1];
+      let esp32config = await this.projectService.updateEsp32ConfigMenu(board);
+      if (esp32config) {
+        portList0 = portList0.concat(esp32config)
+      }
+      // console.log('ESP32配置选项:', esp32config);
+    }
+
+    // 添加切换开发板功能
+    let boardList = await this.configService.loadBoardList();
+    boardList = this.convertBoardListFormat(boardList);
+    portList0.push({ sep: true });
+    portList0.push({
+      name: '切换开发板',
+      icon: 'fa-light fa-layer-group',
+      action: 'board-select',
+      children: boardList
+    })
+    this.configList = portList0;
     this.cd.detectChanges();
   }
 
-  onClick(item) {
-    this.process(item);
+  onClick(item, event = null) {
+    this.process(item, event);
   }
 
   isOpenTool(btn) {
@@ -191,7 +223,7 @@ export class HeaderComponent {
 
   updateSubscription: any = null;
 
-  async process(item: IMenuItem) {
+  async process(item: IMenuItem, event = null) {
     switch (item.action) {
       case 'project-new':
         if (this.isLoaded()) { // 只在已加载项目时检查
@@ -229,9 +261,9 @@ export class HeaderComponent {
       case 'tool-open':
         this.uiService.turnTool(item.data);
         break;
-      case 'terminal':
-        this.uiService.turnTerminal(item.data);
-        break;
+      // case 'terminal':
+      //   this.uiService.turnTerminal(item.data);
+      //   break;
       case 'compile':
         if (item.state === 'doing') return;
         item.state = 'doing';
@@ -239,7 +271,6 @@ export class HeaderComponent {
           item.state = 'done';
         }).catch(err => {
           console.error("编译失败: ", err);
-          // item.state = 'error';
           if (err.state) item.state = err.state;
         })
         break;
@@ -276,10 +307,19 @@ export class HeaderComponent {
         break;
       case 'example-open':
         if (this.isLoaded()) { // 只在已加载项目时检查
-          const canContinue = await this.checkUnsavedChanges('new');
-          if (!canContinue) return;
+          this.electronService.openNewInStance('/main/playground')
+        } else {
+          this.router.navigate(['/main/playground']);
         }
-        this.router.navigate(['/main/playground']);
+        break;
+      case 'user-auth':
+        if (event) {
+          this.calculateUserPosition(event);
+        }
+        this.showUser = !this.showUser;
+        break;
+      case 'board-select':
+        console.log('board-select');
         break;
       default:
         console.log('未处理的操作:', item.action);
@@ -460,6 +500,83 @@ export class HeaderComponent {
       }
     }
   }
+
+  // 选择子菜单项-修改编译上传配置
+  async selectSubItem(subItem: IMenuItem) {
+    console.log('选择子菜单项:', subItem);
+    // 切换开发板
+    if (subItem.key === "BoardType") {
+      this.projectService.changeBoard(subItem.data.board);
+      this.showPortList = false;
+    } else {
+      let packageJson = await this.projectService.getPackageJson();
+      packageJson['projectConfig'] = packageJson['projectConfig'] || {};
+      packageJson['projectConfig'][subItem.key] = subItem.data;
+      // 更新项目配置
+      this.projectService.setPackageJson(packageJson);
+    }
+  }
+
+  showUser = false;
+  userPosition = { x: 0, y: 40 };
+
+  // 计算用户组件的显示位置
+  calculateUserPosition(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const rect = target.getBoundingClientRect();
+
+    // 计算用户组件的位置，使其显示在点击元素的下方
+    this.userPosition = {
+      x: rect.left + 10, // 向左偏移一些，使其更好对齐
+      y: 40
+    };
+
+    // 确保用户组件不会超出窗口边界
+    const windowWidth = window.innerWidth;
+    const userComponentWidth = 260; // 用户组件的宽度
+
+    if (this.userPosition.x + userComponentWidth > windowWidth) {
+      this.userPosition.x = windowWidth - userComponentWidth - 3;
+    }
+
+    if (this.userPosition.x < 0) {
+      this.userPosition.x = 10;
+    }
+  }
+
+  closeUser() {
+    this.showUser = false;
+  }
+
+  /**
+   * 将开发板列表转换为菜单格式
+   * @param boardList 原始开发板列表
+   * @returns 转换后的菜单格式列表
+   */
+  convertBoardListFormat(boardList: any[]): any[] {
+    console.log('转换开发板列表格式:', boardList);
+    return boardList
+      // .filter(board => !board.disabled) // 过滤掉被禁用的开发板
+      .map(board => ({
+        name: board.nickname || board.name, // 使用昵称，如果没有则使用name
+        key: "BoardType",
+        data: {
+          board: {
+            name: board.name,
+            nickname: board.nickname,
+            version: board.version,
+            description: board.description,
+            author: board.author,
+            brand: board.brand,
+            url: board.url,
+            compatibility: board.compatibility,
+            img: board.img
+          }
+        },
+        check: false
+      }));
+  }
+
 }
 
 export interface RunState {
