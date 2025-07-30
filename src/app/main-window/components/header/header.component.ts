@@ -555,7 +555,11 @@ export class HeaderComponent {
    */
   convertBoardListFormat(boardList: any[]): any[] {
     console.log('转换开发板列表格式:', boardList);
+    const currentBoardName = this.projectService.currentBoardConfig?.name;
+    console.log('当前开发板名称:', currentBoardName);
+    
     return boardList
+      .filter(board => board.nickname !== currentBoardName) // 过滤掉当前已选的开发板
       // .filter(board => !board.disabled) // 过滤掉被禁用的开发板
       .map(board => ({
         name: board.nickname || board.name, // 使用昵称，如果没有则使用name

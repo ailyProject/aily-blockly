@@ -4,6 +4,7 @@ import { SubWindowComponent } from '../../components/sub-window/sub-window.compo
 import { Router } from '@angular/router';
 import { SimulatorEditorComponent } from './simulator-editor/simulator-editor.component';
 import { CommonModule } from '@angular/common';
+import { UiService } from '../../services/ui.service';
 
 @Component({
   selector: 'app-simulator',
@@ -21,7 +22,8 @@ export class SimulatorComponent {
   currentUrl;
 
   constructor(
-    private router: Router
+    private router: Router,
+    private uiService: UiService
   ) {
 
   }
@@ -31,7 +33,7 @@ export class SimulatorComponent {
   }
 
   close() {
-
+    this.uiService.closeTool('simulator');
   }
 
 

@@ -19,6 +19,7 @@
         "SETTINGS": "Configurações",
         "ABOUT": "Sobre o software",
         "GITHUB": "Github",
+        "FEEDBACK": "Comentários",
         "EXIT": "Sair",
         "USER_MANUAL": "Manual do usuário",
         "EXAMPLES": "Programas de exemplo",
@@ -52,7 +53,6 @@
             "REPOSITORY_URLS": "URLs de repositório",
             "BOARD_LIST": "Lista de placas",
             "LIBRARY_LIST": "Lista de bibliotecas",
-            "SEARCH_BOARD": "Pesquisar placas",
             "INSTALL": "Instalar",
             "UNINSTALL": "Desinstalar"
         },
@@ -71,6 +71,7 @@
         "BOARD": {
             "SEARCH": "Pesquisar placas",
             "READ_DOC": "Ler documentação",
+            "ADD_BOARD": "Adicionar placa",
             "DEV": "dev"
         },
         "FORM": {
@@ -93,6 +94,8 @@
         "INSTALLED": "Instalado",
         "CORE_LIBRARY": "Biblioteca central",
         "IMPORT_LIBRARY": "Importar biblioteca local",
+        "DEV_HELP": "Ajuda desenvolvimento",
+        "REPORT_ISSUE": "Relatar problema",
         "INSTALL": "Instalar",
         "INSTALLED_TEXT": "Instalado",
         "REMOVE": "Remover",

@@ -147,7 +147,6 @@
     justify-content: flex-start;
 
     img {
-      width: 80px;
       height: 80px;
     }
 
@@ -207,9 +206,17 @@
   margin-bottom: 10px;
 
   nz-input-group {
-    width: 150px;
-    flex-grow: 1;
+    width: 180px;
+    // flex-grow: 1;
     margin-right: 10px;
+  }
+
+  .btns{
+    position: absolute;
+    right: 5px;
+    i{
+      margin-right: 5px;
+    }
   }
 }
 

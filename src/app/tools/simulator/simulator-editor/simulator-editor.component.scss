@@ -1,136 +1,227 @@
-/* 确保元素显示占满容器 */
-:host {
-  display: block;
-  width: 100%;
-  height: 100%;
+.simulator-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #f5f5f5;
 }
 
-/* 工具栏样式 */
 .simulator-toolbar {
-  padding: 10px;
-  background-color: #f5f5f5;
-  border-bottom: 1px solid #ddd;
   display: flex;
-  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  gap: 20px;
+  flex-wrap: wrap;
+
+  .toolbar-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    
+    h4 {
+      margin: 0 12px 0 0;
+      font-size: 14px;
+      color: #666;
+      white-space: nowrap;
+    }
+  }
+
+  .connection-info {
+    background: #fff3cd;
+    padding: 8px 12px;
+    border-radius: 4px;
+    border: 1px solid #ffeaa7;
+    
+    h4 {
+      color: #856404;
+    }
+    
+    p {
+      margin: 4px 0;
+      font-size: 12px;
+      color: #856404;
+    }
+  }
 }
 
 .btn {
   padding: 8px 16px;
   border: none;
   border-radius: 4px;
+  font-size: 12px;
   cursor: pointer;
-  font-size: 14px;
-}
-
-.btn-primary {
-  background-color: #007bff;
-  color: white;
-}
-
-.btn-secondary {
-  background-color: #6c757d;
-  color: white;
-}
-
-.btn-info {
-  background-color: #17a2b8;
-  color: white;
-}
-
-.btn:hover {
-  opacity: 0.8;
-}
-
-/* 模拟器容器 */
-.simulator-container {
-  position: relative;
-  width: 100%;
-  height: calc(100% - 60px); /* 减去工具栏高度 */
-}
-
-.paper-container {
-  width: 100%;
-  height: 100%;
-  background-color: #ffffff;
-  border: 1px solid #ddd;
-}
-
-/* JSON输入对话框样式 */
-.json-input-dialog {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 1000;
+  transition: all 0.2s;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+
+  &:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+
+  &.btn-primary {
+    background: #2196F3;
+    color: white;
+    
+    &:hover {
+      background: #1976D2;
+    }
+  }
+
+  &.btn-secondary {
+    background: #6c757d;
+    color: white;
+    
+    &:hover {
+      background: #5a6268;
+    }
+  }
+
+  &.btn-warning {
+    background: #FF9800;
+    color: white;
+    
+    &:hover {
+      background: #F57C00;
+    }
+  }
+
+  &.btn-info {
+    background: #17a2b8;
+    color: white;
+    
+    &:hover {
+      background: #138496;
+    }
+  }
+
+  &.btn-danger {
+    background: #dc3545;
+    color: white;
+    
+    &:hover {
+      background: #c82333;
+    }
+  }
+
+  &.btn-sm {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
 }
 
-.dialog-backdrop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0, 0, 0, 0.5);
-}
-
-.dialog-content {
+.simulator-container {
+  flex: 1;
   position: relative;
-  background-color: white;
-  border-radius: 8px;
-  padding: 20px;
-  width: 80%;
-  max-width: 600px;
-  max-height: 80%;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  background: #fff;
+  background-image: 
+    radial-gradient(circle, #e0e0e0 1px, transparent 1px);
+  background-size: 20px 20px;
+  cursor: crosshair;
+
+  // Konva容器样式
+  canvas {
+    border: none;
+    outline: none;
+  }
 }
 
-.dialog-content h3 {
-  margin-top: 0;
-  margin-bottom: 15px;
-  color: #333;
-}
-
-.dialog-content textarea {
-  width: 100%;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  padding: 10px;
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
-  resize: vertical;
-  min-height: 300px;
-}
-
-.dialog-buttons {
-  margin-top: 15px;
+.simulator-status {
   display: flex;
-  gap: 10px;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-top: 1px solid #ddd;
+  font-size: 12px;
+
+  .status-info {
+    display: flex;
+    gap: 16px;
+    
+    span {
+      color: #666;
+      
+      &:before {
+        content: "• ";
+        color: #28a745;
+      }
+    }
+  }
+
+  .help-text {
+    color: #999;
+  }
 }
 
-/* 允许用户在自定义元素内选择文本 */
-g[data-type="example.ArduinoElement"] {
-  -webkit-user-select: text;
-  user-select: text;
+// 组件图标样式
+.icon-arduino::before { content: "🔧"; }
+.icon-temp::before { content: "🌡️"; }
+.icon-led::before { content: "💡"; }
+.icon-clear::before { content: "🗑️"; }
+.icon-export::before { content: "📄"; }
+
+// 响应式设计
+@media (max-width: 768px) {
+  .simulator-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    
+    .toolbar-section {
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+  }
+  
+  .simulator-status {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
 }
 
-g[data-type="example.ArduinoElement"] div {
-  cursor: auto;
+// 拖拽时的视觉反馈
+.konvajs-content {
+  .dragging {
+    opacity: 0.8;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+  }
 }
 
-/* JointJS连接线样式 */
-.joint-link {
+// 连接状态时的鼠标样式
+.connecting {
+  cursor: crosshair !important;
+  
+  * {
+    cursor: crosshair !important;
+  }
+}
+
+// 组件悬停效果（通过类名控制）
+.component-hover {
+  filter: brightness(1.1);
+  transform: scale(1.02);
+}
+
+// 引脚连接状态样式
+.pin-connected {
+  filter: brightness(1.3);
+}
+
+.pin-hover {
+  filter: brightness(1.2) drop-shadow(0 0 4px rgba(0,255,0,0.8));
+}
+
+// 连接线样式
+.connection-line {
   cursor: pointer;
-}
-
-.joint-link .connection {
-  stroke-width: 2;
-}
-
-.joint-link .marker-target {
-  fill: #333;
+  
+  &:hover {
+    filter: drop-shadow(0 0 3px rgba(255,87,34,0.8));
+  }
 }

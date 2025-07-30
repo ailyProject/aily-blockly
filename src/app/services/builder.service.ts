@@ -50,10 +50,9 @@ export class BuilderService {
       text: errorMessage,
       detail: errorMessage,
       state: 'error',
-      setTimeout: 55000
+      setTimeout: 600000
     });
 
-    this.cmdService.kill(this.streamId || '');
     this.passed = false;
     this.isErrored = true;
     this.buildInProgress = false;
@@ -81,7 +80,7 @@ export class BuilderService {
           progress: 0,
           setTimeout: 0,
           stop: () => {
-            this.cancelBuild();
+            this.cancel();
           }
         });
 
@@ -355,7 +354,7 @@ export class BuilderService {
         // 将buildProperties添加到compilerParam中
         compilerParam += buildProperties;
 
-        const compileCommand = `arduino-cli.exe ${compilerParam} --jobs 0 --libraries '${librariesPath}' --board-path '${this.sdkPath}' --compile-path '${this.compilerPath}' --tools-path '${this.toolsPath}' --output-dir '${this.buildPath}' --log-level debug '${sketchFilePath}'${buildProperties} --verbose`;
+        const compileCommand = `aily-arduino-cli.exe ${compilerParam} --jobs 0 --libraries '${librariesPath}' --board-path '${this.sdkPath}' --compile-path '${this.compilerPath}' --tools-path '${this.toolsPath}' --output-dir '${this.buildPath}' --log-level debug '${sketchFilePath}'${buildProperties} --verbose`;
         
         const title = `编译 ${boardJson.name}`;
         const completeTitle = `编译完成`;
@@ -366,6 +365,10 @@ export class BuilderService {
         let completeLines = '';
         let lastStdErr = '';
         let isBuildText = false;
+        let outputComplete = false;
+        let flashInfo = '';
+        let ramInfo = '';
+        let lastLogLines: string[] = [];
 
         this.cmdService.run(compileCommand, null, false).subscribe({
           next: (output: CmdOutput) => {
@@ -373,7 +376,9 @@ export class BuilderService {
             this.streamId = output.streamId;
 
             if (!this.isErrored && output.type == 'stderr') {
-              lastStdErr = output.data || ""
+              if (output.data) {
+                lastStdErr = output.data.trim();
+              }
             }
 
             if (output.data) {
@@ -389,7 +394,7 @@ export class BuilderService {
 
                 lines.forEach((line: string) => {
                   // 处理每一行输出
-                  const trimmedLine = line.trim();
+                  let trimmedLine = line.trim();
 
                   if (!trimmedLine) return; // 如果行为空，则跳过处理
 
@@ -454,7 +459,7 @@ export class BuilderService {
                       progress: lastProgress,
                       setTimeout: 0,
                       stop: () => {
-                        this.cancelBuild();
+                        this.cancel();
                       }
                     });
                   }
@@ -464,9 +469,23 @@ export class BuilderService {
                     this.buildCompleted = true;
                   }
 
-                  if (!isProgress && !isBuildText) {
+                  if (!isProgress && !isBuildText) { 
                     // 如果不是进度信息，则直接更新日志
-                    this.logService.update({ "detail": trimmedLine, "state": "doing" });
+                    // 判断是否包含:Global variables use 9 bytes (0%) of dynamic memory, leaving 2039 bytes for local variables. Maximum is 2048 bytes.
+                    if (trimmedLine.includes('Global variables use')) {
+                      outputComplete = true;
+                      this.logService.update({ "detail": trimmedLine, "state": "done" });
+                    } else {
+                      if (!outputComplete) {
+                        this.logService.update({ "detail": trimmedLine, "state": "doing" });
+                      }
+                    }
+                    
+                    // 收集最后的几行日志用于提取固件信息
+                    lastLogLines.push(trimmedLine);
+                    if (lastLogLines.length > 30) {
+                      lastLogLines.shift(); // 保持最后30行
+                    }
                   }
                 });
               } else {
@@ -491,19 +510,23 @@ export class BuilderService {
                 text: '编译失败',
                 detail: lastStdErr,
                 state: 'error',
-                setTimeout: 55000
+                setTimeout: 600000
               });
               // this.logService.update({ title: "编译失败", detail: lastStdErr, state: 'error' });
               this.buildInProgress = false;
               this.passed = false;
+              // 终止Arduino CLI进程
+              this.cmdService.killArduinoCli();
               reject({ state: 'error', text: '编译失败' });
             } else if (this.buildCompleted) {
               console.log('编译命令执行完成');
-              this.noticeService.update({ title: completeTitle, text: "编译完成", state: 'done', setTimeout: 55000 });
+              // 提取flash和ram信息
+              const displayText = this.extractFirmwareInfo(lastLogLines);
+              this.noticeService.update({ title: completeTitle, text: displayText, state: 'done', setTimeout: 600000 });
               this.buildInProgress = false;
               this.passed = true;
               resolve({ state: 'done', text: '编译完成' });
-            } else {
+            } else if (this.cancelled) {
               console.warn("编译中断")
               this.noticeService.update({
                 title: "编译已取消",
@@ -513,8 +536,23 @@ export class BuilderService {
               });
               this.buildInProgress = false;
               this.passed = false;
-              this.cancelled = true;
+              // 终止Arduino CLI进程
+              this.cmdService.killArduinoCli();
               reject({ state: 'warn', text: '编译已取消' });
+            } else {
+              console.warn('编译命令未完成，可能是由于超时或其他原因');
+              this.noticeService.update({
+                title: "编译失败",
+                text: lastStdErr.slice(0, 30) + "..." || '编译未完成',
+                detail: lastStdErr,
+                state: 'error',
+                setTimeout: 600000
+              });
+              this.buildInProgress = false;
+              this.passed = false;
+              // 终止Arduino CLI进程
+              this.cmdService.killArduinoCli();
+              reject({ state: 'warn', text: '编译未完成' });
             }
           }
         })
@@ -527,9 +565,38 @@ export class BuilderService {
   }
 
   /**
+   * 从编译日志中提取固件信息
+   * @param logLines 编译日志行数组
+   * @returns 格式化的固件使用情况文本
+   */
+  private extractFirmwareInfo(logLines: string[]): string {
+    // console.log("logLines: ", logLines);
+    const logText = logLines.join(' ');    
+    // 提取flash信息：Sketch uses 2706878 bytes (86%) of program storage space. Maximum is 3145728 bytes.
+    const flashMatch = logText.match(/Sketch uses (\d+) bytes \((\d+)%\) of program storage space\.\s*Maximum is (\d+) bytes/);
+    // 提取ram信息：Global variables use 47628 bytes (14%) of dynamic memory, leaving 280052 bytes for local variables. Maximum is 327680 bytes.
+    const ramMatch = logText.match(/Global variables use (\d+) bytes \((\d+)%\) of dynamic memory.*?Maximum is (\d+) bytes/);
+    
+    if (flashMatch && ramMatch) {
+      const flashUsed = flashMatch[1];
+      const flashPercent = flashMatch[2];
+      const flashMax = flashMatch[3];
+      
+      const ramUsed = ramMatch[1];
+      const ramPercent = ramMatch[2];
+      const ramMax = ramMatch[3];
+      
+      return `Flash use ${flashPercent}%   Ram use ${ramPercent}%`;
+    }
+    
+    return "编译完成";
+  }
+
+  /**
  * 取消当前编译过程
  */
-  cancelBuild() {
+  cancel() {
+    this.cancelled = true;
     this.cmdService.kill(this.streamId || '');
   }
 }

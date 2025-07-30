@@ -173,16 +173,22 @@ export let HEADER_MENU: IMenuItem[] = [
     icon: 'fa-light fa-books',
   },
   {
-    name: 'MENU.ABOUT',
+    name: 'MENU.FEEDBACK',
     action: 'browser-open',
-    data: { type: 'other', action: 'openByBrowser', url: 'https://aily.pro' },
-    icon: 'fa-light fa-globe-pointer',
+    data: { type: 'other', action: 'openByBrowser', url: 'https://github.com/ailyProject/aily-blockly/issues' },
+    icon: 'fa-light fa-messages-question',
   },
   {
     name: 'MENU.GITHUB',
     action: 'browser-open',
     data: { type: 'other', action: 'openByBrowser', url: 'https://github.com/ailyProject/aily-blockly' },
     icon: 'fa-brands fa-github-alt',
+  },
+  {
+    name: 'MENU.ABOUT',
+    action: 'browser-open',
+    data: { type: 'other', action: 'openByBrowser', url: 'https://aily.pro' },
+    icon: 'fa-light fa-globe-pointer',
   },
   {
     sep: true,

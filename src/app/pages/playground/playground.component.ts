@@ -6,9 +6,9 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Location } from '@angular/common';
-import { SUBJECT_LIST } from './test-data';
 import { Router, RouterModule } from '@angular/router';
 import { PlaygroundService } from './playground.service';
+import { ElectronService } from '../../services/electron.service';
 
 @Component({
   selector: 'app-playground',
@@ -33,7 +33,8 @@ export class PlaygroundComponent {
     private router: Router,
     private location: Location,
     private translate: TranslateService,
-    private playgroundService: PlaygroundService
+    private playgroundService: PlaygroundService,
+    private electronService: ElectronService
   ) {
 
   }
@@ -56,7 +57,7 @@ export class PlaygroundComponent {
       this.translate.instant('机器人'),
     ];
 
-    // this.exampleList = SUBJECT_LIST
+    this.electronService.setTitle('aily blockly - Playground');
   }
 
   keyword: string = '';

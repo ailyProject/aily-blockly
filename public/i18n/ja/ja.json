@@ -19,6 +19,7 @@
         "SETTINGS": "設定",
         "ABOUT": "このソフトウェアについて",
         "GITHUB": "Github",
+        "FEEDBACK": "フィードバック",
         "EXIT": "終了",
         "USER_MANUAL": "ユーザーマニュアル",
         "EXAMPLES": "サンプルプログラム",
@@ -52,7 +53,6 @@
             "REPOSITORY_URLS": "リポジトリアドレス",
             "BOARD_LIST": "ボードリスト",
             "LIBRARY_LIST": "ライブラリリスト",
-            "SEARCH_BOARD": "ボードを検索",
             "INSTALL": "インストール",
             "UNINSTALL": "アンインストール"
         },
@@ -68,6 +68,8 @@
         "INSTALLED": "インストール済み",
         "CORE_LIBRARY": "コアライブラリ",
         "IMPORT_LIBRARY": "ローカルライブラリをインポート",
+        "DEV_HELP": "開発ヘルプ",
+        "REPORT_ISSUE": "問題報告",
         "INSTALL": "インストール",
         "INSTALLED_TEXT": "インストール済み",
         "REMOVE": "削除",
@@ -99,6 +101,7 @@
         "BOARD": {
             "SEARCH": "ボードを検索",
             "READ_DOC": "ドキュメントを読む",
+            "ADD_BOARD": "ボードを追加",
             "DEV": "開発"
         },
         "FORM": {

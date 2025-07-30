@@ -1,34 +1,40 @@
-import { Component, CUSTOM_ELEMENTS_SCHEMA, ElementRef, ViewChild } from '@angular/core';
+import { Component, CUSTOM_ELEMENTS_SCHEMA, ElementRef, ViewChild, AfterViewInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import "@wokwi/elements";
-import { dia, shapes, util } from '@joint/core';
-import { ELEMENTS_CONFIG } from './elements.config';
-import { getPinLayout } from './pin-layout.config';
-import { v4 as uuidv4 } from 'uuid'; // 需要添加uuid依赖包
+import Konva from 'konva';
 import { SimulatorService } from './simulator.service';
 
-// 硬件连接配置接口
-export interface HardwareConfig {
-  version: number;
-  author: string;
-  editor: string;
-  parts: Part[];
-  connections: Connection[];
-}
-
-export interface Part {
+// 组件类型定义
+interface Pin {
   id: string;
-  type: string;
-  left: number;
-  top: number;
-  attrs?: Record<string, any>;
+  x: number;
+  y: number;
+  type: 'digital' | 'analog' | 'power' | 'ground';
+  label: string;
+  connected: boolean;
+  circle?: Konva.Circle;
 }
 
-export interface Connection extends Array<string> {
-  0: string; // 源引脚，格式：part_id:pin_name
-  1: string; // 目标引脚，格式：part_id:pin_name
-  2: string; // 连接线颜色
+interface CircuitComponent {
+  id: string;
+  type: 'arduino' | 'temperature' | 'led' | 'resistor';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pins: Pin[];
+  shape?: Konva.Group;
+  element?: HTMLElement;
+}
+
+interface Connection {
+  id: string;
+  fromComponent: string;
+  fromPin: string;
+  toComponent: string;
+  toPin: string;
+  line?: Konva.Line;
 }
 
 @Component({
@@ -38,562 +44,833 @@ export interface Connection extends Array<string> {
   styleUrl: './simulator-editor.component.scss',
   schemas: [CUSTOM_ELEMENTS_SCHEMA]
 })
-export class SimulatorEditorComponent {
-  @ViewChild('paper', { static: true }) paperContainer!: ElementRef<HTMLDivElement>;
-  private graph!: dia.Graph;
-  private paper!: dia.Paper;
+export class SimulatorEditorComponent implements AfterViewInit, OnDestroy {
+  @ViewChild('simulatorContainer', { static: false }) containerRef!: ElementRef<HTMLDivElement>;
 
-  // 元素ID到JointJS元素的映射
-  private elementMap: Map<string, dia.Element> = new Map();
-  // 连接线映射
-  private connectionMap: Map<string, dia.Link> = new Map();
-
-  // UI控制
-  showJsonDialog = false;
-  jsonInput = '';
-
-  // 当前加载的硬件配置
-  private currentConfig: HardwareConfig | null = null;
+  private stage!: Konva.Stage;
+  private layer!: Konva.Layer;
+  public components: Map<string, CircuitComponent> = new Map();
+  public connections: Map<string, Connection> = new Map();
+  
+  // 连接状态
+  public isConnecting = false;
+  private currentConnection: {
+    fromComponent: string;
+    fromPin: string;
+    tempLine?: Konva.Line;
+  } | null = null;
 
   constructor(
     private simulatorService: SimulatorService
   ) { }
 
-  ngOnInit() {
-    this.initializeJoint();
-    this.setupPinStateListener();
-    this.loadDefaultExample();
+  ngAfterViewInit() {
+    this.initializeStage();
   }
 
-  // 初始化JointJS画布
-  private initializeJoint() {
-    const namespace = shapes;
+  ngOnDestroy() {
+    // 清理@wokwi组件
+    for (const [id, component] of this.components) {
+      if (component.element && component.element.parentNode) {
+        component.element.parentNode.removeChild(component.element);
+      }
+    }
+    
+    // 清理事件监听器
+    window.removeEventListener('resize', this.handleResize.bind(this));
+    
+    if (this.stage) {
+      this.stage.destroy();
+    }
+  }
 
-    this.graph = new dia.Graph({}, { cellNamespace: namespace });
-
-    this.paper = new dia.Paper({
-      el: this.paperContainer.nativeElement,
-      model: this.graph,
-      width: '100%',
-      height: '100%',
-      background: { color: '#f9f9f9' },
-      cellViewNamespace: namespace,
-      preventDefaultViewAction: false,
-      gridSize: 10,
-      drawGrid: true
+  private initializeStage() {
+    const container = this.containerRef.nativeElement;
+    
+    this.stage = new Konva.Stage({
+      container: container,
+      width: container.offsetWidth,
+      height: container.offsetHeight,
+      draggable: false
     });
+
+    this.layer = new Konva.Layer();
+    this.stage.add(this.layer);
+
+    // 监听画布点击事件（取消连接）
+    this.stage.on('click', (e) => {
+      if (e.target === this.stage) {
+        this.cancelConnection();
+      }
+    });
+
+    // 窗口大小变化时调整画布
+    window.addEventListener('resize', this.handleResize.bind(this));
   }
 
-  // 加载默认示例
-  private loadDefaultExample() {
-    const defaultConfig: HardwareConfig = {
-      version: 1,
-      author: "aily",
-      editor: "simulator",
-      parts: [
-        {
-          id: "uno1",
-          type: "wokwi-arduino-uno",
-          left: 100,
-          top: 200
-        },
-        {
-          id: "led1",
-          type: "wokwi-led",
-          left: 100,
-          top: 50,
-          attrs: {
-            color: "red"
-          }
-        },
-        {
-          id: "buzzer1",
-          type: "wokwi-buzzer",
-          left: 250,
-          top: 50
-        }
-      ],
-      connections: [
-        ["uno1:13", "led1:anode", "#FF0000"],
-        ["uno1:GND", "led1:cathode", "#000000"],
-        ["uno1:8", "buzzer1:1", "#FFA500"],
-        ["uno1:GND2", "buzzer1:2", "#000000"]
+  private handleResize() {
+    const container = this.containerRef.nativeElement;
+    this.stage.width(container.offsetWidth);
+    this.stage.height(container.offsetHeight);
+  }
+
+  // 添加组件
+  addComponent(type: string, x: number, y: number) {
+    const componentId = `${type}_${Date.now()}`;
+    
+    let component: CircuitComponent;
+    
+    switch (type) {
+      case 'arduino':
+        component = this.createArduinoComponent(componentId, x, y);
+        break;
+      case 'temperature':
+        component = this.createTemperatureComponent(componentId, x, y);
+        break;
+      case 'led':
+        component = this.createLEDComponent(componentId, x, y);
+        break;
+      default:
+        return;
+    }
+
+    this.components.set(componentId, component);
+    this.createComponentShape(component);
+  }
+
+  private createArduinoComponent(id: string, x: number, y: number): CircuitComponent {
+    return {
+      id,
+      type: 'arduino',
+      x,
+      y,
+      width: 320,
+      height: 180,
+      pins: [
+        // 左侧引脚排列 (顶部)
+        { id: 'RESET', x: 40, y: 10, type: 'digital', label: 'RESET', connected: false },
+        { id: '3V3', x: 60, y: 10, type: 'power', label: '3.3V', connected: false },
+        { id: '5V', x: 80, y: 10, type: 'power', label: '5V', connected: false },
+        { id: 'GND1', x: 100, y: 10, type: 'ground', label: 'GND', connected: false },
+        { id: 'GND2', x: 120, y: 10, type: 'ground', label: 'GND', connected: false },
+        { id: 'VIN', x: 140, y: 10, type: 'power', label: 'VIN', connected: false },
+        
+        // 右侧引脚排列 (顶部)
+        { id: 'A0', x: 180, y: 10, type: 'analog', label: 'A0', connected: false },
+        { id: 'A1', x: 200, y: 10, type: 'analog', label: 'A1', connected: false },
+        { id: 'A2', x: 220, y: 10, type: 'analog', label: 'A2', connected: false },
+        { id: 'A3', x: 240, y: 10, type: 'analog', label: 'A3', connected: false },
+        { id: 'A4', x: 260, y: 10, type: 'analog', label: 'A4 (SDA)', connected: false },
+        { id: 'A5', x: 280, y: 10, type: 'analog', label: 'A5 (SCL)', connected: false },
+        
+        // 左侧引脚排列 (底部)
+        { id: 'D0', x: 40, y: 170, type: 'digital', label: 'D0 (RX)', connected: false },
+        { id: 'D1', x: 60, y: 170, type: 'digital', label: 'D1 (TX)', connected: false },
+        { id: 'D2', x: 80, y: 170, type: 'digital', label: 'D2', connected: false },
+        { id: 'D3', x: 100, y: 170, type: 'digital', label: 'D3 (PWM)', connected: false },
+        { id: 'D4', x: 120, y: 170, type: 'digital', label: 'D4', connected: false },
+        { id: 'D5', x: 140, y: 170, type: 'digital', label: 'D5 (PWM)', connected: false },
+        { id: 'D6', x: 160, y: 170, type: 'digital', label: 'D6 (PWM)', connected: false },
+        { id: 'D7', x: 180, y: 170, type: 'digital', label: 'D7', connected: false },
+        
+        // 右侧引脚排列 (底部)
+        { id: 'D8', x: 200, y: 170, type: 'digital', label: 'D8', connected: false },
+        { id: 'D9', x: 220, y: 170, type: 'digital', label: 'D9 (PWM)', connected: false },
+        { id: 'D10', x: 240, y: 170, type: 'digital', label: 'D10 (PWM)', connected: false },
+        { id: 'D11', x: 260, y: 170, type: 'digital', label: 'D11 (PWM)', connected: false },
+        { id: 'D12', x: 280, y: 170, type: 'digital', label: 'D12', connected: false },
+        { id: 'D13', x: 300, y: 170, type: 'digital', label: 'D13 (LED)', connected: false },
+        
+        // ICSP引脚 (右上角)
+        { id: 'ICSP_MISO', x: 240, y: 30, type: 'digital', label: 'MISO', connected: false },
+        { id: 'ICSP_VCC', x: 260, y: 30, type: 'power', label: '5V', connected: false },
+        { id: 'ICSP_SCK', x: 240, y: 45, type: 'digital', label: 'SCK', connected: false },
+        { id: 'ICSP_MOSI', x: 260, y: 45, type: 'digital', label: 'MOSI', connected: false },
+        { id: 'ICSP_RESET', x: 280, y: 30, type: 'digital', label: 'RST', connected: false },
+        { id: 'ICSP_GND', x: 280, y: 45, type: 'ground', label: 'GND', connected: false },
+        
+        // AREF引脚 (顶部右侧)
+        { id: 'AREF', x: 160, y: 10, type: 'analog', label: 'AREF', connected: false }
       ]
     };
-
-    this.loadHardwareConfig(defaultConfig);
   }
 
-  // JSON对话框控制方法
-  loadFromJson() {
-    this.showJsonDialog = true;
-    // 如果当前有配置就显示当前配置，否则显示示例
-    if (this.currentConfig) {
-      this.jsonInput = JSON.stringify(this.currentConfig, null, 2);
-    } else {
-      // 提供一个示例配置
-      const exampleConfig = {
-        "version": 1,
-        "author": "aily",
-        "editor": "simulator",
-        "parts": [
-          {
-            "id": "uno1",
-            "type": "wokwi-arduino-uno",
-            "left": 200,
-            "top": 300
-          },
-          {
-            "id": "led1",
-            "type": "wokwi-led",
-            "left": 100,
-            "top": 50,
-            "attrs": {
-              "color": "red"
-            }
-          }
-        ],
-        "connections": [
-          ["uno1:13", "led1:anode", "#FF0000"],
-          ["uno1:GND", "led1:cathode", "#000000"]
-        ]
-      };
-      this.jsonInput = JSON.stringify(exampleConfig, null, 2);
-    }
-  }
-
-  closeJsonDialog() {
-    this.showJsonDialog = false;
-  }
-
-  parseAndLoadJson() {
-    try {
-      const config = JSON.parse(this.jsonInput) as HardwareConfig;
-      
-      // 基本验证
-      if (!this.validateConfig(config)) {
-        alert('配置格式不正确，请检查必需的字段');
-        return;
-      }
-      
-      this.loadHardwareConfig(config);
-      this.closeJsonDialog();
-    } catch (error) {
-      alert('JSON格式错误：' + (error as Error).message);
-    }
-  }
-
-  // 验证配置格式
-  private validateConfig(config: any): config is HardwareConfig {
-    if (!config || typeof config !== 'object') {
-      return false;
-    }
-    
-    if (!config.parts || !Array.isArray(config.parts)) {
-      return false;
-    }
-    
-    if (!config.connections || !Array.isArray(config.connections)) {
-      return false;
-    }
-    
-    // 验证parts格式
-    for (const part of config.parts) {
-      if (!part.id || !part.type || typeof part.left !== 'number' || typeof part.top !== 'number') {
-        return false;
-      }
-    }
-    
-    // 验证connections格式
-    for (const connection of config.connections) {
-      if (!Array.isArray(connection) || connection.length !== 3) {
-        return false;
-      }
-    }
-    
-    return true;
-  }
-
-  clearSimulator() {
-    this.graph.clear();
-    this.elementMap.clear();
-    this.connectionMap.clear();
-    this.currentConfig = null;
-  }
-
-  exportToJson() {
-    if (this.currentConfig) {
-      const dataStr = JSON.stringify(this.currentConfig, null, 2);
-      const dataBlob = new Blob([dataStr], { type: 'application/json' });
-      const url = URL.createObjectURL(dataBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'hardware-config.json';
-      link.click();
-      URL.revokeObjectURL(url);
-    }
-  }
-
-  // 加载硬件配置
-  private loadHardwareConfig(config: HardwareConfig) {
-    this.clearSimulator();
-    this.currentConfig = config;
-
-    // 首先加载所有零件
-    config.parts.forEach(part => {
-      this.loadPart(part);
-    });
-
-    // 然后创建连接
-    config.connections.forEach(connection => {
-      this.createConnection(connection);
-    });
-
-    // 设置模拟器使用的开发板
-    const arduinoBoard = config.parts.find(p => p.type.includes('arduino'));
-    if (arduinoBoard) {
-      this.simulatorService.setBoard(arduinoBoard.type);
-    }
-  }
-
-  // 加载单个零件
-  private loadPart(part: Part) {
-    const element = this.loadWokwiElement(
-      part.type,
-      { x: part.left, y: part.top },
-      part.attrs || {}
-    );
-    
-    // 设置元素的自定义ID
-    element.prop('partId', part.id);
-    this.elementMap.set(part.id, element);
-  }
-
-  // 创建连接
-  private createConnection(connection: Connection) {
-    const [sourceSpec, targetSpec, color] = connection;
-    
-    // 解析连接规格（格式：part_id:pin_name）
-    const [sourcePartId, sourcePin] = sourceSpec.split(':');
-    const [targetPartId, targetPin] = targetSpec.split(':');
-
-    const sourceElement = this.elementMap.get(sourcePartId);
-    const targetElement = this.elementMap.get(targetPartId);
-
-    if (!sourceElement || !targetElement) {
-      console.error(`无法找到连接的元素: ${sourcePartId} 或 ${targetPartId}`);
-      console.log('可用元素:', Array.from(this.elementMap.keys()));
-      return;
-    }
-
-    console.log(`创建连接: ${sourceSpec} -> ${targetSpec}, 颜色: ${color}`);
-
-    // 获取连接点位置
-    const sourcePoint = this.getPinPosition(sourceElement, sourcePin);
-    const targetPoint = this.getPinPosition(targetElement, targetPin);
-
-    console.log('源位置:', sourcePoint, '目标位置:', targetPoint);
-
-    // 创建连接线
-    const link = new shapes.standard.Link({
-      source: { 
-        id: sourceElement.id, 
-        anchor: sourcePoint.anchor,
-        connectionPoint: sourcePoint.connectionPoint
-      },
-      target: { 
-        id: targetElement.id, 
-        anchor: targetPoint.anchor,
-        connectionPoint: targetPoint.connectionPoint
-      },
-      attrs: {
-        line: {
-          stroke: color,
-          strokeWidth: 2,
-          strokeDasharray: '0',
-          targetMarker: {
-            type: 'path',
-            d: 'M 10 -5 0 0 10 5 z',
-            fill: color
-          }
-        }
-      },
-      connector: { name: 'rounded' },
-      router: { name: 'orthogonal' }
-    });
-
-    link.addTo(this.graph);
-    
-    // 保存连接线引用
-    const connectionId = `${sourceSpec}-${targetSpec}`;
-    this.connectionMap.set(connectionId, link);
-
-    console.log(`连接已创建: ${connectionId}`);
-  }
-
-  // 获取引脚位置（使用配置文件）
-  private getPinPosition(element: dia.Element, pinName: string): { anchor: any, connectionPoint: any } {
-    const elementType = element.get('type').split('.')[1].replace('Element', '').toLowerCase();
-    
-    // 从配置文件获取引脚布局
-    const pinLayout = getPinLayout(elementType, pinName);
-    if (pinLayout) {
-      return pinLayout;
-    }
-    
-    // 如果没有找到配置，尝试常见的引脚名称映射
-    if (elementType === 'wokwi-arduino-uno') {
-      return this.getArduinoUnoPinPosition(pinName);
-    } else if (elementType === 'wokwi-led') {
-      return this.getLedPinPosition(pinName);
-    } else if (elementType === 'wokwi-buzzer') {
-      return this.getBuzzerPinPosition(pinName);
-    }
-    
-    // 默认返回中心点
+  private createTemperatureComponent(id: string, x: number, y: number): CircuitComponent {
     return {
-      anchor: { name: 'center' },
-      connectionPoint: { name: 'boundary' }
+      id,
+      type: 'temperature',
+      x,
+      y,
+      width: 80,
+      height: 60,
+      pins: [
+        { id: 'VCC', x: 10, y: 50, type: 'power', label: 'VCC', connected: false },
+        { id: 'OUT', x: 40, y: 50, type: 'analog', label: 'OUT', connected: false },
+        { id: 'GND', x: 70, y: 50, type: 'ground', label: 'GND', connected: false }
+      ]
     };
   }
 
-  // Arduino UNO 引脚位置映射
-  private getArduinoUnoPinPosition(pinName: string): { anchor: any, connectionPoint: any } {
-    const pinPositions: Record<string, any> = {
-      // 数字引脚（右侧）
-      '0': { anchor: { name: 'right', args: { dy: -80 } }, connectionPoint: { name: 'boundary' } },
-      '1': { anchor: { name: 'right', args: { dy: -70 } }, connectionPoint: { name: 'boundary' } },
-      '2': { anchor: { name: 'right', args: { dy: -60 } }, connectionPoint: { name: 'boundary' } },
-      '3': { anchor: { name: 'right', args: { dy: -50 } }, connectionPoint: { name: 'boundary' } },
-      '4': { anchor: { name: 'right', args: { dy: -40 } }, connectionPoint: { name: 'boundary' } },
-      '5': { anchor: { name: 'right', args: { dy: -30 } }, connectionPoint: { name: 'boundary' } },
-      '6': { anchor: { name: 'right', args: { dy: -20 } }, connectionPoint: { name: 'boundary' } },
-      '7': { anchor: { name: 'right', args: { dy: -10 } }, connectionPoint: { name: 'boundary' } },
-      '8': { anchor: { name: 'right', args: { dy: 10 } }, connectionPoint: { name: 'boundary' } },
-      '9': { anchor: { name: 'right', args: { dy: 20 } }, connectionPoint: { name: 'boundary' } },
-      '10': { anchor: { name: 'right', args: { dy: 30 } }, connectionPoint: { name: 'boundary' } },
-      '11': { anchor: { name: 'right', args: { dy: 40 } }, connectionPoint: { name: 'boundary' } },
-      '12': { anchor: { name: 'right', args: { dy: 50 } }, connectionPoint: { name: 'boundary' } },
-      '13': { anchor: { name: 'right', args: { dy: 60 } }, connectionPoint: { name: 'boundary' } },
-      'GND': { anchor: { name: 'right', args: { dy: 70 } }, connectionPoint: { name: 'boundary' } },
-      'AREF': { anchor: { name: 'right', args: { dy: 80 } }, connectionPoint: { name: 'boundary' } },
-      // 模拟引脚（左侧）
-      'A0': { anchor: { name: 'left', args: { dy: 80 } }, connectionPoint: { name: 'boundary' } },
-      'A1': { anchor: { name: 'left', args: { dy: 70 } }, connectionPoint: { name: 'boundary' } },
-      'A2': { anchor: { name: 'left', args: { dy: 60 } }, connectionPoint: { name: 'boundary' } },
-      'A3': { anchor: { name: 'left', args: { dy: 50 } }, connectionPoint: { name: 'boundary' } },
-      'A4': { anchor: { name: 'left', args: { dy: 40 } }, connectionPoint: { name: 'boundary' } },
-      'A5': { anchor: { name: 'left', args: { dy: 30 } }, connectionPoint: { name: 'boundary' } },
-      // 电源引脚
-      'VIN': { anchor: { name: 'left', args: { dy: -80 } }, connectionPoint: { name: 'boundary' } },
-      '5V': { anchor: { name: 'left', args: { dy: -60 } }, connectionPoint: { name: 'boundary' } },
-      '3V3': { anchor: { name: 'left', args: { dy: -40 } }, connectionPoint: { name: 'boundary' } },
+  private createLEDComponent(id: string, x: number, y: number): CircuitComponent {
+    return {
+      id,
+      type: 'led',
+      x,
+      y,
+      width: 60,
+      height: 40,
+      pins: [
+        { id: 'A', x: 10, y: 30, type: 'digital', label: 'A', connected: false },
+        { id: 'K', x: 50, y: 30, type: 'digital', label: 'K', connected: false }
+      ]
     };
-
-    return pinPositions[pinName] || { anchor: { name: 'center' }, connectionPoint: { name: 'boundary' } };
   }
 
-  // LED 引脚位置映射
-  private getLedPinPosition(pinName: string): { anchor: any, connectionPoint: any } {
-    const pinPositions: Record<string, any> = {
-      'anode': { anchor: { name: 'top' }, connectionPoint: { name: 'boundary' } },
-      'cathode': { anchor: { name: 'bottom' }, connectionPoint: { name: 'boundary' } }
-    };
+  private createComponentShape(component: CircuitComponent) {
+    const group = new Konva.Group({
+      x: component.x,
+      y: component.y,
+      draggable: true
+    });
 
-    return pinPositions[pinName] || { anchor: { name: 'center' }, connectionPoint: { name: 'boundary' } };
-  }
+    // 创建@wokwi/elements组件的容器
+    const foreignObject = this.createWokwiComponent(component);
+    
+    // 创建组件背景（用于Konva交互）
+    const rect = new Konva.Rect({
+      width: component.width,
+      height: component.height,
+      fill: 'transparent',
+      stroke: '#333',
+      strokeWidth: 2,
+      cornerRadius: 5,
+      opacity: 0.1
+    });
 
-  // 蜂鸣器引脚位置映射
-  private getBuzzerPinPosition(pinName: string): { anchor: any, connectionPoint: any } {
-    const pinPositions: Record<string, any> = {
-      'pos': { anchor: { name: 'left' }, connectionPoint: { name: 'boundary' } },
-      'neg': { anchor: { name: 'right' }, connectionPoint: { name: 'boundary' } }
-    };
+    // 创建组件标签
+    const label = new Konva.Text({
+      x: 10,
+      y: component.height + 10,
+      text: component.type.toUpperCase(),
+      fontSize: 12,
+      fontFamily: 'Arial',
+      fill: '#333'
+    });
 
-    return pinPositions[pinName] || { anchor: { name: 'center' }, connectionPoint: { name: 'boundary' } };
-  }
+    group.add(rect);
+    group.add(label);
 
-  // 监听引脚状态变化
-  private setupPinStateListener() {
-    this.simulatorService.pinStateChange.subscribe(pinState => {
-      // 更新所有使用该引脚的元素
-      this.elementMap.forEach((element, id) => {
-        const elementType = element.get('type').split('.')[1].replace('Element', '').toLowerCase();
-
-        // 获取组件ID属性
-        const componentId = element.prop('componentId');
-        if (!componentId) return;
-
-        // 更新Wokwi元素属性
-        // 这里需要根据不同元素类型进行自定义处理
-        if (elementType === 'wokwi-led') {
-          // 如果是LED元素，更新其状态
-          this.updateWokwiElementState(element, pinState);
-        } else if (elementType === 'wokwi-buzzer') {
-          // 如果是蜂鸣器，更新其状态
-          this.updateWokwiElementState(element, pinState);
-        }
-        // 添加其他元素类型的处理...
+    // 创建引脚
+    component.pins.forEach(pin => {
+      const circle = new Konva.Circle({
+        x: pin.x,
+        y: pin.y,
+        radius: 8,
+        fill: pin.connected ? '#4CAF50' : this.getPinColor(pin.type),
+        stroke: '#000',
+        strokeWidth: 2
       });
-    });
-  }
 
-  // 更新Wokwi元素的状态
-  private updateWokwiElementState(element: dia.Element, pinState: any) {
-    // 获取元素的DOM引用
-    const elementId = element.id;
-    const elementView = this.paper.findViewByModel(elementId);
-    if (!elementView) return;
+      const pinLabel = new Konva.Text({
+        x: pin.x - 15,
+        y: pin.y - 20,
+        text: pin.label,
+        fontSize: 10,
+        fontFamily: 'Arial',
+        fill: '#000',
+        align: 'center'
+      });
 
-    // 获取foreignObject中的Wokwi元素
-    const wokwiElement = elementView.el.querySelector('foreignObject > *') as any;
-    if (!wokwiElement) return;
+      // 引脚点击事件
+      circle.on('click', (e) => {
+        e.cancelBubble = true;
+        this.handlePinClick(component.id, pin.id);
+      });
 
-    // 根据元素类型来设置属性
-    const elementType = element.get('type').split('.')[1].replace('Element', '').toLowerCase();
+      circle.on('mouseenter', () => {
+        circle.scale({ x: 1.3, y: 1.3 });
+        circle.fill(pin.connected ? '#81C784' : '#FFC107');
+        document.body.style.cursor = 'pointer';
+        this.layer.batchDraw();
+      });
 
-    if (elementType === 'wokwi-led') {
-      // LED亮灭取决于引脚状态
-      if (wokwiElement.getAttribute('pin') === pinState.pin) {
-        wokwiElement.setAttribute('value', pinState.value ? 'true' : 'false');
-      }
-    } else if (elementType === 'wokwi-buzzer') {
-      // 蜂鸣器状态设置
-      if (wokwiElement.getAttribute('pin') === pinState.pin) {
-        wokwiElement.setAttribute('value', pinState.value ? 'true' : 'false');
-      }
-    }
-    // 添加其他元素类型的处理...
-  }
+      circle.on('mouseleave', () => {
+        circle.scale({ x: 1, y: 1 });
+        circle.fill(pin.connected ? '#4CAF50' : this.getPinColor(pin.type));
+        document.body.style.cursor = 'default';
+        this.layer.batchDraw();
+      });
 
-  /**
-   * 加载Wokwi元素并创建JointJS元素
-   * @param elementType 元素类型，如'wokwi-led'、'wokwi-arduino-uno'等
-   * @param position 位置{x, y}
-   * @param props 元素属性，如LED的color、pin等
-   * @param options 可选配置项
-   * @returns 创建的JointJS元素
-   */
-  loadWokwiElement(
-    elementType: string,
-    position: { x: number, y: number },
-    props: Record<string, any> = {},
-    options: {
-      size?: { width: number, height: number },
-      autoResize?: boolean,
-      padding?: number,
-      backgroundColor?: string
-    } = {}
-  ): dia.Element {
-    // 生成组件唯一ID
-    const componentId = uuidv4();
-
-    // 默认选项
-    const defaultOptions = {
-      autoResize: true,
-      padding: 10,
-      backgroundColor: 'transparent'
-    };
-
-    const mergedOptions = { ...defaultOptions, ...options };
-
-    // 将componentId添加到属性中
-    const allProps = { ...props, 'data-component-id': componentId };
-
-    // 创建属性字符串
-    const propsString = Object.entries(allProps)
-      .map(([key, value]) => `${key}="${value}"`)
-      .join(' ');
-
-    // 创建元素定义
-    const elementName = elementType.charAt(0).toUpperCase() + elementType.slice(1) + 'Element';
-    const CustomElement = dia.Element.define(`example.${elementName}`, {
-      attrs: {
-        body: {
-          width: 'calc(w)',
-          height: 'calc(h)',
-          fill: 'transparent',
-        },
-        foreignObject: {
-          width: `calc(w)`,
-          height: `calc(h)`,
-        }
-      },
-      componentId: componentId // 保存组件ID到元素属性
-    }, {
-      markup: util.svg`
-        <rect @selector="body"/>
-        <foreignObject @selector="foreignObject">
-            <${elementType} ${propsString}></${elementType}>
-        </foreignObject>
-      `
+      pin.circle = circle;
+      group.add(circle);
+      group.add(pinLabel);
     });
 
-    // 创建元素实例
-    const element = new CustomElement();
-    element.position(position.x, position.y);
+    // 拖拽事件
+    group.on('dragstart', () => {
+      group.opacity(0.8);
+      this.layer.batchDraw();
+    });
 
-    // 获取元素配置尺寸
-    const p = ELEMENTS_CONFIG[elementType.toLowerCase()];
-    if (p) {
-      const size = { width: p.width, height: p.height };
-      element.resize(size.width, size.height);
-    } else {
-      console.warn(`未找到元素配置: ${elementType}`);
-    }
+    group.on('dragmove', () => {
+      component.x = group.x();
+      component.y = group.y();
+      this.updateComponentElement(component);
+      this.updateConnectionLines(component.id);
+    });
 
-    // 添加到图表
-    element.addTo(this.graph);
+    group.on('dragend', () => {
+      group.opacity(1);
+      this.layer.batchDraw();
+    });
 
-    // 向模拟器服务注册组件
-    if (elementType !== 'wokwi-arduino-uno') { // 开发板本身不需要注册
-      // 提取引脚配置
-      const pinConfig: Record<string, string> = {};
-      if (props['pin']) {
-        pinConfig['pin'] = props['pin'];
+    // 组件悬停效果
+    group.on('mouseenter', () => {
+      if (!group.isDragging()) {
+        rect.opacity(0.2);
+        this.layer.batchDraw();
       }
+    });
 
-      // 注册组件
-      this.simulatorService.registerComponent(componentId, elementType, pinConfig);
+    group.on('mouseleave', () => {
+      rect.opacity(0.1);
+      this.layer.batchDraw();
+    });
+
+    component.shape = group;
+    this.layer.add(group);
+    this.layer.draw();
+
+    // 将@wokwi组件添加到DOM
+    if (foreignObject) {
+      this.containerRef.nativeElement.appendChild(foreignObject);
+      component.element = foreignObject;
+      this.updateComponentElement(component);
+    }
+  }
+
+  private createWokwiComponent(component: CircuitComponent): HTMLElement | null {
+    let element: HTMLElement;
+
+    switch (component.type) {
+      case 'arduino':
+        element = document.createElement('wokwi-arduino-uno');
+        break;
+      case 'temperature':
+        element = document.createElement('wokwi-tmp36');
+        break;
+      case 'led':
+        element = document.createElement('wokwi-led');
+        (element as any).color = 'red';
+        break;
+      default:
+        return null;
     }
 
-    // 添加事件监听
-    this.setupElementEventListeners(element, elementType, componentId, props);
-
+    element.style.position = 'absolute';
+    element.style.pointerEvents = 'none';
+    element.style.zIndex = '1';
+    
     return element;
   }
 
-  // 设置元素事件监听器
-  private setupElementEventListeners(element: dia.Element, elementType: string, componentId: string, props: any) {
-    // 这里添加针对不同元素类型的事件监听
-    // 例如按钮的点击、开关的切换等
+  private updateComponentElement(component: CircuitComponent) {
+    if (component.element) {
+      const containerRect = this.containerRef.nativeElement.getBoundingClientRect();
+      const stageRect = this.stage.container().getBoundingClientRect();
+      
+      component.element.style.left = `${component.x + (stageRect.left - containerRect.left)}px`;
+      component.element.style.top = `${component.y + (stageRect.top - containerRect.top)}px`;
+    }
+  }
 
-    // 为按钮元素添加点击事件
-    if (elementType === 'wokwi-pushbutton') {
-      const pin = props.pin;
-      if (pin) {
-        const buttonView = this.paper.findViewByModel(element.id);
-        if (buttonView) {
-          buttonView.el.addEventListener('mousedown', () => {
-            // 按钮按下，设置引脚为高电平
-            this.simulatorService.setPinState(pin, true);
-          });
+  private getComponentColor(type: string): string {
+    switch (type) {
+      case 'arduino': return '#2196F3';
+      case 'temperature': return '#FF9800';
+      case 'led': return '#4CAF50';
+      default: return '#9E9E9E';
+    }
+  }
 
-          buttonView.el.addEventListener('mouseup', () => {
-            // 按钮释放，设置引脚为低电平
-            this.simulatorService.setPinState(pin, false);
-          });
+  private getPinColor(type: string): string {
+    switch (type) {
+      case 'digital': return '#2196F3';
+      case 'analog': return '#FF9800';
+      case 'power': return '#F44336';
+      case 'ground': return '#424242';
+      default: return '#9E9E9E';
+    }
+  }
+
+  private handlePinClick(componentId: string, pinId: string) {
+    if (!this.isConnecting) {
+      // 开始连接
+      this.startConnection(componentId, pinId);
+    } else {
+      // 完成连接
+      this.completeConnection(componentId, pinId);
+    }
+  }
+
+  private startConnection(componentId: string, pinId: string) {
+    const component = this.components.get(componentId);
+    if (!component) return;
+
+    const pin = component.pins.find(p => p.id === pinId);
+    if (!pin || pin.connected) return;
+
+    this.isConnecting = true;
+    this.currentConnection = {
+      fromComponent: componentId,
+      fromPin: pinId
+    };
+
+    // 创建临时连线
+    const startPos = this.getPinGlobalPosition(component, pin);
+    const tempLine = new Konva.Line({
+      points: [startPos.x, startPos.y, startPos.x, startPos.y],
+      stroke: '#FF0000',
+      strokeWidth: 2,
+      dash: [5, 5]
+    });
+
+    this.currentConnection.tempLine = tempLine;
+    this.layer.add(tempLine);
+
+    // 跟随鼠标移动
+    this.stage.on('mousemove', this.handleMouseMove.bind(this));
+  }
+
+  private handleMouseMove() {
+    if (!this.currentConnection?.tempLine) return;
+
+    const pos = this.stage.getPointerPosition();
+    if (!pos) return;
+
+    const line = this.currentConnection.tempLine;
+    const points = line.points();
+    line.points([points[0], points[1], pos.x, pos.y]);
+    this.layer.batchDraw();
+  }
+
+  private completeConnection(toComponentId: string, toPinId: string) {
+    if (!this.currentConnection) return;
+
+    const fromComponent = this.components.get(this.currentConnection.fromComponent);
+    const toComponent = this.components.get(toComponentId);
+
+    if (!fromComponent || !toComponent) {
+      this.cancelConnection();
+      return;
+    }
+
+    const fromPin = fromComponent.pins.find(p => p.id === this.currentConnection!.fromPin);
+    const toPin = toComponent.pins.find(p => p.id === toPinId);
+
+    if (!fromPin || !toPin || fromPin.connected || toPin.connected) {
+      this.cancelConnection();
+      return;
+    }
+
+    // 创建连接
+    const connectionId = `${this.currentConnection.fromComponent}_${this.currentConnection.fromPin}_${toComponentId}_${toPinId}`;
+    
+    const connection: Connection = {
+      id: connectionId,
+      fromComponent: this.currentConnection.fromComponent,
+      fromPin: this.currentConnection.fromPin,
+      toComponent: toComponentId,
+      toPin: toPinId
+    };
+
+    this.createConnectionLine(connection);
+    this.connections.set(connectionId, connection);
+
+    // 更新引脚状态
+    fromPin.connected = true;
+    toPin.connected = true;
+
+    this.cancelConnection();
+  }
+
+  public cancelConnection() {
+    if (this.currentConnection?.tempLine) {
+      this.currentConnection.tempLine.destroy();
+    }
+    
+    this.currentConnection = null;
+    this.isConnecting = false;
+    this.stage.off('mousemove');
+    this.layer.batchDraw();
+  }
+
+  private createConnectionLine(connection: Connection) {
+    const fromComponent = this.components.get(connection.fromComponent);
+    const toComponent = this.components.get(connection.toComponent);
+
+    if (!fromComponent || !toComponent) return;
+
+    const fromPin = fromComponent.pins.find(p => p.id === connection.fromPin);
+    const toPin = toComponent.pins.find(p => p.id === connection.toPin);
+
+    if (!fromPin || !toPin) return;
+
+    const startPos = this.getPinGlobalPosition(fromComponent, fromPin);
+    const endPos = this.getPinGlobalPosition(toComponent, toPin);
+
+    // 计算避障路径
+    const pathPoints = this.calculateAvoidancePath(startPos, endPos, fromComponent, toComponent);
+
+    // 创建连接线
+    const line = new Konva.Line({
+      points: pathPoints,
+      stroke: this.getConnectionColor(fromPin.type, toPin.type),
+      strokeWidth: 3,
+      lineCap: 'round',
+      lineJoin: 'round',
+      tension: 0.2, // 添加曲线张力使路径更平滑
+      shadowColor: 'rgba(0,0,0,0.3)',
+      shadowBlur: 2,
+      shadowOffset: { x: 1, y: 1 }
+    });
+
+    // 添加点击删除功能
+    line.on('click', (e) => {
+      e.cancelBubble = true;
+      this.showConnectionMenu(connection, e.evt.clientX, e.evt.clientY);
+    });
+
+    line.on('mouseenter', () => {
+      line.stroke('#FF5722');
+      line.strokeWidth(4);
+      document.body.style.cursor = 'pointer';
+      this.layer.batchDraw();
+    });
+
+    line.on('mouseleave', () => {
+      line.stroke(this.getConnectionColor(fromPin.type, toPin.type));
+      line.strokeWidth(3);
+      document.body.style.cursor = 'default';
+      this.layer.batchDraw();
+    });
+
+    connection.line = line;
+    this.layer.add(line);
+    this.layer.batchDraw();
+
+    // 更新引脚视觉状态
+    if (fromPin.circle) {
+      fromPin.circle.fill('#4CAF50');
+    }
+    if (toPin.circle) {
+      toPin.circle.fill('#4CAF50');
+    }
+  }
+
+  private getConnectionColor(fromPinType: string, toPinType: string): string {
+    // 根据引脚类型返回不同颜色
+    if (fromPinType === 'power' || toPinType === 'power') return '#F44336';
+    if (fromPinType === 'ground' || toPinType === 'ground') return '#424242';
+    if (fromPinType === 'analog' || toPinType === 'analog') return '#FF9800';
+    return '#4CAF50'; // digital
+  }
+
+  private showConnectionMenu(connection: Connection, x: number, y: number) {
+    // 简单的确认删除对话框
+    const result = confirm('是否删除此连接？');
+    if (result) {
+      this.removeConnection(connection.id);
+    }
+  }
+
+  private getPinGlobalPosition(component: CircuitComponent, pin: Pin) {
+    return {
+      x: component.x + pin.x,
+      y: component.y + pin.y
+    };
+  }
+
+  private calculateAvoidancePath(start: {x: number, y: number}, end: {x: number, y: number}, 
+                                 fromComponent: CircuitComponent, toComponent: CircuitComponent): number[] {
+    // 高级避障算法：A*路径查找的简化版本
+    const obstacles = this.getObstacles(fromComponent, toComponent);
+    
+    if (obstacles.length === 0) {
+      // 没有障碍物，直接连接
+      return [start.x, start.y, end.x, end.y];
+    }
+
+    // 计算避障路径
+    const path = this.findPath(start, end, obstacles);
+    
+    // 平滑路径
+    return this.smoothPath(path);
+  }
+
+  private getObstacles(excludeComp1: CircuitComponent, excludeComp2: CircuitComponent) {
+    const obstacles: {x: number, y: number, width: number, height: number}[] = [];
+    
+    for (const [id, component] of this.components) {
+      if (id === excludeComp1.id || id === excludeComp2.id) continue;
+      
+      obstacles.push({
+        x: component.x - 10, // 增加边距
+        y: component.y - 10,
+        width: component.width + 20,
+        height: component.height + 20
+      });
+    }
+    
+    return obstacles;
+  }
+
+  private findPath(start: {x: number, y: number}, end: {x: number, y: number}, 
+                   obstacles: {x: number, y: number, width: number, height: number}[]): {x: number, y: number}[] {
+    // 简化的A*算法
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    
+    // 检查直线路径是否被阻挡
+    if (!this.pathBlocked(start, end, obstacles)) {
+      return [start, end];
+    }
+    
+    // 尝试L形路径
+    const midPoint1 = { x: end.x, y: start.y };
+    const midPoint2 = { x: start.x, y: end.y };
+    
+    // 尝试第一种L形路径
+    if (!this.pathBlocked(start, midPoint1, obstacles) && 
+        !this.pathBlocked(midPoint1, end, obstacles)) {
+      return [start, midPoint1, end];
+    }
+    
+    // 尝试第二种L形路径
+    if (!this.pathBlocked(start, midPoint2, obstacles) && 
+        !this.pathBlocked(midPoint2, end, obstacles)) {
+      return [start, midPoint2, end];
+    }
+    
+    // 使用更复杂的绕行路径
+    return this.findComplexPath(start, end, obstacles);
+  }
+
+  private pathBlocked(start: {x: number, y: number}, end: {x: number, y: number}, 
+                     obstacles: {x: number, y: number, width: number, height: number}[]): boolean {
+    for (const obstacle of obstacles) {
+      if (this.lineIntersectsRect(start, end, {
+        x1: obstacle.x,
+        y1: obstacle.y,
+        x2: obstacle.x + obstacle.width,
+        y2: obstacle.y + obstacle.height
+      })) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private findComplexPath(start: {x: number, y: number}, end: {x: number, y: number}, 
+                         obstacles: {x: number, y: number, width: number, height: number}[]): {x: number, y: number}[] {
+    // 找到最大的障碍物，绕过它
+    let maxObstacle = obstacles[0];
+    for (const obstacle of obstacles) {
+      if ((obstacle.width * obstacle.height) > (maxObstacle.width * maxObstacle.height)) {
+        maxObstacle = obstacle;
+      }
+    }
+    
+    if (!maxObstacle) return [start, end];
+    
+    // 计算绕行点
+    const margin = 20;
+    const obstacleCenter = {
+      x: maxObstacle.x + maxObstacle.width / 2,
+      y: maxObstacle.y + maxObstacle.height / 2
+    };
+    
+    let waypoint: {x: number, y: number};
+    
+    // 根据起点和终点的相对位置选择绕行方向
+    if (start.x < obstacleCenter.x && end.x > obstacleCenter.x) {
+      // 从左到右，选择上方或下方绕行
+      if (Math.abs(start.y - maxObstacle.y) < Math.abs(start.y - (maxObstacle.y + maxObstacle.height))) {
+        waypoint = { x: obstacleCenter.x, y: maxObstacle.y - margin };
+      } else {
+        waypoint = { x: obstacleCenter.x, y: maxObstacle.y + maxObstacle.height + margin };
+      }
+    } else if (start.y < obstacleCenter.y && end.y > obstacleCenter.y) {
+      // 从上到下，选择左方或右方绕行
+      if (Math.abs(start.x - maxObstacle.x) < Math.abs(start.x - (maxObstacle.x + maxObstacle.width))) {
+        waypoint = { x: maxObstacle.x - margin, y: obstacleCenter.y };
+      } else {
+        waypoint = { x: maxObstacle.x + maxObstacle.width + margin, y: obstacleCenter.y };
+      }
+    } else {
+      // 默认右上方绕行
+      waypoint = { 
+        x: maxObstacle.x + maxObstacle.width + margin, 
+        y: maxObstacle.y - margin 
+      };
+    }
+    
+    return [start, waypoint, end];
+  }
+
+  private smoothPath(path: {x: number, y: number}[]): number[] {
+    if (path.length <= 2) {
+      return path.flatMap(p => [p.x, p.y]);
+    }
+    
+    // 将路径转换为贝塞尔曲线点
+    const points: number[] = [];
+    
+    for (let i = 0; i < path.length; i++) {
+      if (i === 0) {
+        points.push(path[i].x, path[i].y);
+      } else if (i === path.length - 1) {
+        points.push(path[i].x, path[i].y);
+      } else {
+        // 在转折点添加圆角
+        const prev = path[i - 1];
+        const curr = path[i];
+        const next = path[i + 1];
+        
+        const radius = 15;
+        const d1 = Math.sqrt((curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2);
+        const d2 = Math.sqrt((next.x - curr.x) ** 2 + (next.y - curr.y) ** 2);
+        
+        const r1 = Math.min(radius, d1 / 2);
+        const r2 = Math.min(radius, d2 / 2);
+        
+        const p1 = {
+          x: curr.x - (curr.x - prev.x) * r1 / d1,
+          y: curr.y - (curr.y - prev.y) * r1 / d1
+        };
+        
+        const p2 = {
+          x: curr.x + (next.x - curr.x) * r2 / d2,
+          y: curr.y + (next.y - curr.y) * r2 / d2
+        };
+        
+        points.push(p1.x, p1.y, curr.x, curr.y, p2.x, p2.y);
+      }
+    }
+    
+    return points;
+  }
+
+  private checkComponentOverlap(start: {x: number, y: number}, end: {x: number, y: number}, 
+                               fromComponent: CircuitComponent, toComponent: CircuitComponent): boolean {
+    // 简单检查：如果线段会穿过其他组件则需要避障
+    for (const [id, component] of this.components) {
+      if (id === fromComponent.id || id === toComponent.id) continue;
+
+      const rect = {
+        x1: component.x,
+        y1: component.y,
+        x2: component.x + component.width,
+        y2: component.y + component.height
+      };
+
+      if (this.lineIntersectsRect(start, end, rect)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private lineIntersectsRect(start: {x: number, y: number}, end: {x: number, y: number}, 
+                            rect: {x1: number, y1: number, x2: number, y2: number}): boolean {
+    // 简化的线段与矩形相交检测
+    return !(end.x < rect.x1 || start.x > rect.x2 || end.y < rect.y1 || start.y > rect.y2);
+  }
+
+  private updateConnectionLines(componentId: string) {
+    for (const [id, connection] of this.connections) {
+      if (connection.fromComponent === componentId || connection.toComponent === componentId) {
+        // 重新计算连线路径
+        if (connection.line) {
+          connection.line.destroy();
+        }
+        this.createConnectionLine(connection);
+      }
+    }
+  }
+
+  private removeConnection(connectionId: string) {
+    const connection = this.connections.get(connectionId);
+    if (!connection) return;
+
+    // 移除连线
+    if (connection.line) {
+      connection.line.destroy();
+    }
+
+    // 更新引脚状态
+    const fromComponent = this.components.get(connection.fromComponent);
+    const toComponent = this.components.get(connection.toComponent);
+
+    if (fromComponent) {
+      const fromPin = fromComponent.pins.find(p => p.id === connection.fromPin);
+      if (fromPin) {
+        fromPin.connected = false;
+        if (fromPin.circle) {
+          fromPin.circle.fill(this.getPinColor(fromPin.type));
         }
       }
     }
 
-    // 可添加其他元素类型的事件处理...
+    if (toComponent) {
+      const toPin = toComponent.pins.find(p => p.id === connection.toPin);
+      if (toPin) {
+        toPin.connected = false;
+        if (toPin.circle) {
+          toPin.circle.fill(this.getPinColor(toPin.type));
+        }
+      }
+    }
+
+    this.connections.delete(connectionId);
+    this.layer.batchDraw();
   }
 
-  // 连接两个元素
-  connectParts(source: dia.Element, sourcePin: string, target: dia.Element, targetPin: string) {
-    // 连线逻辑实现
-    // 例如创建连接两个元件的导线
-    // 这需要根据实际UI设计来实现
+  // 清空画布
+  clearAll() {
+    // 移除所有@wokwi组件
+    for (const [id, component] of this.components) {
+      if (component.element && component.element.parentNode) {
+        component.element.parentNode.removeChild(component.element);
+      }
+    }
+    
+    this.components.clear();
+    this.connections.clear();
+    this.cancelConnection();
+    this.layer.destroyChildren();
+    this.layer.draw();
+  }
+
+  // 导出连接信息
+  exportConnections() {
+    const exportData = {
+      components: Array.from(this.components.values()).map(comp => ({
+        id: comp.id,
+        type: comp.type,
+        x: comp.x,
+        y: comp.y
+      })),
+      connections: Array.from(this.connections.values()).map(conn => ({
+        id: conn.id,
+        fromComponent: conn.fromComponent,
+        fromPin: conn.fromPin,
+        toComponent: conn.toComponent,
+        toPin: conn.toPin
+      }))
+    };
+
+    console.log('Circuit Export:', exportData);
+    // 这里可以添加保存到文件的逻辑
   }
 }

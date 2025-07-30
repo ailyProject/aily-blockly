@@ -17,6 +17,14 @@
         z-index: 99;
         background: #222;
 
+        .btns {
+            position: absolute;
+            right: 10px;
+            i{
+                margin-right: 5px;
+            }
+        }
+
         .btn {
             height: 40px;
             width: 40px;
@@ -147,9 +155,4 @@
 
 .error {
     color: rgb(133, 8, 8) !important;
-}
-
-.import {
-    position: absolute;
-    right: 10px;
 }

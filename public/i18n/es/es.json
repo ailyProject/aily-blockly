@@ -19,6 +19,7 @@
         "SETTINGS": "Configuración",
         "ABOUT": "Acerca de",
         "GITHUB": "Github",
+        "FEEDBACK": "Comentarios",
         "EXIT": "Salir",
         "USER_MANUAL": "Manual de Usuario",
         "EXAMPLES": "Ejemplos",
@@ -52,7 +53,6 @@
             "REPOSITORY_URLS": "URLs de Repositorio",
             "BOARD_LIST": "Lista de Placas",
             "LIBRARY_LIST": "Lista de Bibliotecas",
-            "SEARCH_BOARD": "Buscar Placa",
             "INSTALL": "Instalar",
             "UNINSTALL": "Desinstalar"
         },
@@ -71,6 +71,7 @@
         "BOARD": {
             "SEARCH": "Buscar Placa",
             "READ_DOC": "Leer Documentación",
+            "ADD_BOARD": "Agregar Placa",
             "DEV": "dev"
         },
         "FORM": {
@@ -93,6 +94,8 @@
         "INSTALLED": "Instalado",
         "CORE_LIBRARY": "Biblioteca central",
         "IMPORT_LIBRARY": "Importar biblioteca local",
+        "DEV_HELP": "Ayuda desarrollo",
+        "REPORT_ISSUE": "Reportar problema",
         "INSTALL": "Instalar",
         "INSTALLED_TEXT": "Instalado",
         "REMOVE": "Eliminar",

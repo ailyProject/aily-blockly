@@ -19,6 +19,7 @@
         "SETTINGS": "설정",
         "ABOUT": "소프트웨어 정보",
         "GITHUB": "Github",
+        "FEEDBACK": "피드백",
         "EXIT": "종료",
         "USER_MANUAL": "사용자 매뉴얼",
         "EXAMPLES": "예제 프로그램",
@@ -52,9 +53,34 @@
             "REPOSITORY_URLS": "저장소 주소",
             "BOARD_LIST": "개발 보드 목록",
             "LIBRARY_LIST": "라이브러리 목록",
-            "SEARCH_BOARD": "개발 보드 검색",
             "INSTALL": "설치",
             "UNINSTALL": "제거"
+        }
+    },
+    "PROJECT_NEW": {
+        "TITLE": "새 프로젝트",
+        "STEPS": {
+            "SELECT_BOARD": "보드 선택",
+            "BASIC_SETTINGS": "기본 설정",
+            "CREATE_PROJECT": "프로젝트 생성"
+        },
+        "BOARD": {
+            "SEARCH": "보드 검색",
+            "READ_DOC": "문서 읽기",
+            "ADD_BOARD": "보드 추가",
+            "DEV": "개발"
+        },
+        "FORM": {
+            "BOARD": "보드",
+            "PROJECT_NAME": "프로젝트 이름",
+            "SAVE_PATH": "저장 경로",
+            "NAME_EXISTS": "프로젝트 이름이 이미 존재합니다. 수정해 주세요"
+        },
+        "BUTTONS": {
+            "NEXT": "다음",
+            "PREV": "이전",
+            "CREATE": "프로젝트 생성",
+            "CREATING": "생성 중"
         }
     },
     "LIB_MANAGER": {
@@ -64,6 +90,8 @@
         "INSTALLED": "설치됨",
         "CORE_LIBRARY": "코어 라이브러리",
         "IMPORT_LIBRARY": "로컬 라이브러리 가져오기",
+        "DEV_HELP": "개발 도움말",
+        "REPORT_ISSUE": "문제 신고",
         "INSTALL": "설치",
         "INSTALLED_TEXT": "설치됨",
         "REMOVE": "제거",

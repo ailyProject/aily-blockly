@@ -234,6 +234,10 @@ function createWindow() {
 
   // 当页面准备好显示时，再显示窗口
   mainWindow.once('ready-to-show', () => {
+    // 如果上次窗口是最大化状态，则恢复最大化
+    if (windowBounds.isMaximized) {
+      mainWindow.maximize();
+    }
     mainWindow.show();
   });
 
@@ -455,16 +459,47 @@ ipcMain.on("setting-changed", (event, data) => {
 // 记录窗口大小和位置，用于下次打开时恢复
 function windowMoveResizeListener() {
   const bounds = mainWindow.getBounds();
-  // console.log("窗口位置和大小：", bounds);
-  // 读取配置文件, 将窗口位置和大小保存到配置文件中
+  const isMaximized = mainWindow.isMaximized();
+  // console.log("窗口位置和大小：", bounds, "最大化状态：", isMaximized);
+  
+  // 读取配置文件
   const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
   let userConf = JSON.parse(fs.readFileSync(userConfigPath));
-  userConf["window"] = {
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-  };
+  
+  // 确保window配置存在
+  if (!userConf["window"]) {
+    userConf["window"] = {};
+  }
+  
+  if (isMaximized) {
+    // 如果当前是最大化状态，只更新最大化状态，保留之前的normalBounds
+    userConf["window"].isMaximized = true;
+    // 如果之前没有记录normalBounds，使用当前bounds作为默认值
+    if (!userConf["window"].normalBounds) {
+      userConf["window"].normalBounds = {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      };
+    }
+  } else {
+    // 如果当前不是最大化状态，记录当前大小为normalBounds
+    userConf["window"] = {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      isMaximized: false,
+      normalBounds: {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      }
+    };
+  }
+  
   fs.writeFileSync(userConfigPath, JSON.stringify(userConf));
 }
 
@@ -472,6 +507,58 @@ function listenMoveResize() {
   const listener = _.debounce(windowMoveResizeListener.bind(this), 1000)
   mainWindow.on('resize', listener)
   mainWindow.on('move', listener)
+  
+  // 监听窗口最大化事件 - 在最大化前记录当前大小
+  mainWindow.on('maximize', () => {
+    // 在最大化之前，先记录当前的窗口大小到normalBounds
+    const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
+    try {
+      let userConf = JSON.parse(fs.readFileSync(userConfigPath));
+      if (!userConf["window"]) {
+        userConf["window"] = {};
+      }
+      
+      // 只有当窗口当前不是最大化状态时，才记录normalBounds
+      if (!mainWindow.isMaximized()) {
+        const bounds = mainWindow.getBounds();
+        userConf["window"].normalBounds = {
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      }
+      
+      userConf["window"].isMaximized = true;
+      fs.writeFileSync(userConfigPath, JSON.stringify(userConf));
+    } catch (error) {
+      console.error('记录最大化前窗口大小失败:', error);
+    }
+  });
+  
+  // 监听窗口还原事件
+  mainWindow.on('unmaximize', () => {
+    // 还原到之前记录的大小
+    const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
+    try {
+      const userConf = JSON.parse(fs.readFileSync(userConfigPath));
+      if (userConf.window && userConf.window.normalBounds) {
+        const normalBounds = userConf.window.normalBounds;
+        mainWindow.setBounds({
+          x: normalBounds.x,
+          y: normalBounds.y,
+          width: normalBounds.width,
+          height: normalBounds.height
+        });
+      }
+    } catch (error) {
+      console.error('恢复窗口大小失败:', error);
+    }
+    // 延迟保存状态，确保窗口大小已经改变
+    setTimeout(() => {
+      windowMoveResizeListener();
+    }, 100);
+  });
 }
 
 function getConfWindowBounds() {
@@ -479,6 +566,19 @@ function getConfWindowBounds() {
     width: 1200,
     height: 780,
   };
+  
+  // 保存最大化状态
+  const isMaximized = bounds.isMaximized || false;
+  
+  // 如果有normalBounds且当前不是最大化状态，使用normalBounds
+  // 如果是最大化状态，使用normalBounds作为基础窗口大小（用于创建窗口）
+  if (bounds.normalBounds) {
+    bounds = {
+      ...bounds.normalBounds,
+      isMaximized: isMaximized
+    };
+  }
+  
   // 确保窗口位置在屏幕范围内
   const screenBounds = screen.getPrimaryDisplay().bounds;
   if (bounds.x < screenBounds.x) {
@@ -493,6 +593,10 @@ function getConfWindowBounds() {
   if (bounds.height > screenBounds.height) {
     bounds.height = screenBounds.height;
   }
+  
+  // 添加最大化状态到返回的bounds中
+  bounds.isMaximized = isMaximized;
+  
   return bounds;
 }
 

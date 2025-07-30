@@ -19,6 +19,7 @@
         "SETTINGS": "設定",
         "ABOUT": "關於本軟體",
         "GITHUB": "Github",
+        "FEEDBACK": "意見反饋",
         "EXIT": "退出",
         "USER_MANUAL": "使用者手冊",
         "EXAMPLES": "範例程式",
@@ -66,7 +67,6 @@
             "REPOSITORY_URLS": "倉庫地址",
             "BOARD_LIST": "開發板清單",
             "LIBRARY_LIST": "函式庫清單",
-            "SEARCH_BOARD": "搜尋開發板",
             "INSTALL": "安裝",
             "UNINSTALL": "解除安裝"
         },
@@ -85,6 +85,7 @@
         "BOARD": {
             "SEARCH": "搜尋開發板",
             "READ_DOC": "閱讀文件",
+            "ADD_BOARD": "新增開發板",
             "DEV": "dev"
         },
         "FORM": {
@@ -108,6 +109,8 @@
         "INSTALLED": "已安裝",
         "CORE_LIBRARY": "核心函式庫",
         "IMPORT_LIBRARY": "導入本地庫",
+        "DEV_HELP": "開發幫助",
+        "REPORT_ISSUE": "回報問題",
         "INSTALL": "安裝",
         "INSTALLED_TEXT": "已安裝",
         "REMOVE": "移除",

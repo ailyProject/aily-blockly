@@ -20,6 +20,7 @@
         "SETTINGS": "设置",
         "ABOUT": "关于本软件",
         "GITHUB": "Github",
+        "FEEDBACK":"反馈问题",
         "EXIT": "退出",
         "USER_MANUAL": "用户手册",
         "EXAMPLES": "教程与示例",
@@ -68,7 +69,6 @@
             "REPOSITORY_URLS": "仓库地址",
             "BOARD_LIST": "开发板列表",
             "LIBRARY_LIST": "库列表",
-            "SEARCH_BOARD": "搜索开发板",
             "INSTALL": "安装",
             "UNINSTALL": "卸载"
         },
@@ -87,6 +87,7 @@
         "BOARD": {
             "SEARCH": "搜索开发板",
             "READ_DOC": "阅读文档",
+            "ADD_BOARD": "添加开发板",
             "DEV": "dev"
         },
         "FORM": {
@@ -110,6 +111,9 @@
         "INSTALLED": "已安装",
         "CORE_LIBRARY": "核心库",
         "IMPORT_LIBRARY": "导入本地库",
+        "HELP":"如何开发库",
+        "DEV_HELP": "开发帮助",
+        "REPORT_ISSUE": "反馈问题",
         "INSTALL": "安装",
         "INSTALLED_TEXT": "已安装",
         "REMOVE": "移除",

@@ -6,7 +6,8 @@
           <nz-steps [nzCurrent]="currentStep" nzDirection="vertical" nzSize="small">
             <nz-step [nzTitle]="'PROJECT_NEW.STEPS.SELECT_BOARD' | translate"></nz-step>
             <nz-step [nzTitle]="'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate"></nz-step>
-            <nz-step [nzTitle]="'PROJECT_NEW.STEPS.CREATE_PROJECT' | translate" [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
+            <nz-step [nzTitle]="'PROJECT_NEW.STEPS.CREATE_PROJECT' | translate"
+              [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
           </nz-steps>
           <ng-template #iconTemplate><i class="fa-duotone fa-solid fa-spinner-third"></i></ng-template>
         </div>
@@ -16,7 +17,8 @@
         <div class="right-inner flex-start">
           <div class="search-box">
             <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
-              <input nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword" (ngModelChange)="search()" />
+              <input nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
+                (ngModelChange)="search()" />
             </nz-input-group>
             <ng-template #suffixIconSearch>
               @if(keyword.length > 0){
@@ -25,10 +27,15 @@
               <i class="fa-light fa-search"></i>
               }
             </ng-template>
-            <div class="tag-list">
+            <!-- <div class="tag-list">
               @for (tag of tagListRandom; track tag) {
               <nz-tag (click)="keyword=tag;search()">{{ tag }}</nz-tag>
               }
+            </div> -->
+            <div class="btns">
+              <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
+                <i class="fa-light fa-question"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
+              </button>
             </div>
           </div>
           <div class="board-selector sscroll">
@@ -79,7 +86,8 @@
             <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div>
             <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
             @if(showIsExist){
-            <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' | translate }}</div>
+            <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' |
+              translate }}</div>
             }
           </div>
           <div class="item">

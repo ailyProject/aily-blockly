@@ -5,13 +5,15 @@
 
 ## 开发&&打包  
 
-**库安装**
+**依赖安装**
 ```
 git clone https://github.com/ailyProject/aily-blockly.git
 cd aily-blockly
 npm i
 cd electron
 npm i
+cd child
+.\7za.exe x node-v18.20.8-win-x64.7z -onode
 ```  
 
 **electron运行**
@@ -25,6 +27,8 @@ npm run build
 ```
 打包需要开启windows的开发者模式
 打包后生成的安装包在路径为dist\aily-blockly
+
+
 
 ## 相关目录
 

@@ -199,7 +199,7 @@ export class TerminalService {
 
   /**
    * 强制终止指定进程
-   * @param processName 可选，进程名称，如 'arduino-cli.exe'
+   * @param processName 可选，进程名称，如 'aily-arduino-cli.exe'
    */
   killProcess(processName?: string): Promise<any> {
     if (!this.currentPid) {

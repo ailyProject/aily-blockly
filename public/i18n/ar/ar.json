@@ -19,6 +19,7 @@
         "SETTINGS": "الإعدادات",
         "ABOUT": "حول البرنامج",
         "GITHUB": "Github",
+        "FEEDBACK": "ملاحظات",
         "EXIT": "خروج",
         "USER_MANUAL": "دليل المستخدم",
         "EXAMPLES": "أمثلة",
@@ -52,7 +53,6 @@
             "REPOSITORY_URLS": "عناوين المستودع",
             "BOARD_LIST": "قائمة اللوحات",
             "LIBRARY_LIST": "قائمة المكتبات",
-            "SEARCH_BOARD": "بحث عن لوحة",
             "INSTALL": "تثبيت",
             "UNINSTALL": "إلغاء التثبيت"
         },
@@ -71,6 +71,7 @@
         "BOARD": {
             "SEARCH": "بحث عن لوحة",
             "READ_DOC": "قراءة الوثائق",
+            "ADD_BOARD": "إضافة لوحة",
             "DEV": "تطوير"
         },
         "FORM": {
@@ -93,6 +94,8 @@
         "INSTALLED": "مثبت",
         "CORE_LIBRARY": "مكتبة أساسية",
         "IMPORT_LIBRARY": "استيراد مكتبة محلية",
+        "DEV_HELP": "مساعدة التطوير",
+        "REPORT_ISSUE": "الإبلاغ عن مشكلة",
         "INSTALL": "تثبيت",
         "INSTALLED_TEXT": "مثبت",
         "REMOVE": "إزالة",

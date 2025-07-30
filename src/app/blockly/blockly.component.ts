@@ -16,6 +16,7 @@ import './custom-category';
 import './custom-field/field-bitmap';
 import './custom-field/field-bitmap-u8g2';
 import './custom-field/field-image';
+import './custom-field/field-image-preview';
 import './custom-field/field-tone';
 import './custom-field/field-multilineinput';
 import './custom-field/field-slider';

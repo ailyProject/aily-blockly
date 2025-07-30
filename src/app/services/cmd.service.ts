@@ -211,6 +211,30 @@ export class CmdService {
   }
 
   /**
+   * 终止后台进程 aily-arduino-cli.exe
+   * @returns Promise<boolean> 是否成功终止
+   */
+  async killArduinoCli(): Promise<boolean> {
+    try {
+      // 在 Windows 系统下使用 taskkill 命令终止 aily-arduino-cli.exe 进程
+      const result = await this.runAsync('taskkill /f /im aily-arduino-cli.exe', undefined, false);
+
+      if (result.type === 'close' && result.code === 0) {
+        console.log('终止 aily-arduino-cli.exe 进程成功');
+        return true;
+      } else {
+        console.error('终止 aily-arduino-cli.exe 进程失败', result);
+        return false;
+      }
+    } catch (error) {
+      console.error('Error killing aily-arduino-cli.exe:', error);
+      return false;
+    }
+  }
+
+  
+
+  /**
    * 清空队列
    */
   clearQueue(): void {

@@ -24,20 +24,22 @@
                 }}</nz-tag>
             <nz-tag (click)="keyword='核心库';search()">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
         </div>
-        <div class="import">
-            <button nz-button nzType="primary" nzSize="small" (click)="importLib()" [nz-tooltip]
-                [nzTooltipTitle]="'LIB_MANAGER.IMPORT_LIBRARY' | translate">
-                <i class="fa-light fa-plus"></i>
+        <div class="btns">
+            <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
+                <i class="fa-light fa-question"></i>{{'LIB_MANAGER.DEV_HELP' | translate}}
+            </button>
+            <button nz-button nzType="default" nzDanger nzSize="small" style="margin-right: 10px;" (click)="report()">
+                <i class="fa-light fa-bug"></i>{{'LIB_MANAGER.REPORT_ISSUE' | translate}}
+            </button>
+            <button nz-button nzType="primary" nzSize="small" (click)="importLib()">
+                <i class="fa-light fa-plus"></i>{{'LIB_MANAGER.IMPORT_LIBRARY' | translate}}
             </button>
         </div>
     </div>
     <div class="lib-list">
         @for( lib of libraryList;track lib.name ) {
-        <div class="lib-item" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">
-            <!-- @if(lib.tested){
-            <div class="state"></div>
-            } -->
-            <div class="name ellipsis">{{lib.nickname}}
+        <div class="lib-item">
+            <div class="name ellipsis" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">{{lib.nickname}}
                 @if(lib.tested){
                 <i class="fa-regular fa-badge-check"></i>
                 }@else {
@@ -99,7 +101,8 @@
                         {{'LIB_MANAGER.INSTALL' | translate }}
                     </button>
                     }@else{
-                    <button nz-button nzType="primary" nzSize="small" (click)="installLib(lib)">
+                    <button nz-button nzType="primary" nzSize="small" [disabled]="isInstalling"
+                        (click)="installLib(lib)">
                         {{ 'LIB_MANAGER.INSTALL'| translate }}
                     </button>
                     }

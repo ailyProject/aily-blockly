@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { RouterModule } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -15,7 +15,7 @@ import { PlaygroundService } from '../playground.service';
   templateUrl: './subject-list.component.html',
   styleUrl: './subject-list.component.scss'
 })
-export class SubjectListComponent {
+export class SubjectListComponent implements OnInit {
   subjectList: any[] = [];
   resourceUrl: string = '';
   keyword: string = '';
@@ -34,7 +34,7 @@ export class SubjectListComponent {
     });
   }
 
-  ngAfterViewInit() {
+  ngOnInit() {
     this.resourceUrl = this.configService.data.resource[0] + "/imgs/examples/";
     
     // 如果数据已经加载，直接使用

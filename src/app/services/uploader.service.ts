@@ -35,6 +35,7 @@ export class UploaderService {
   private streamId: string | null = null;
   private uploadCompleted = false;
   private isErrored = false;
+  cancelled = false;
 
   // 定义正则表达式，匹配常见的进度格式
   progressRegexPatterns = [
@@ -59,14 +60,14 @@ export class UploaderService {
   ];
 
   // 添加这个错误处理方法
-  private handleUploadError(errorMessage: string) {
+  private handleUploadError(errorMessage: string, title="上传失败") {
     console.error("handle errror: ", errorMessage);
     this.noticeService.update({
-      title: "上传失败",
+      title: title,
       text: errorMessage,
       detail: errorMessage,
       state: 'error',
-      setTimeout: 55000
+      setTimeout: 600000
     });
 
     this.cmdService.kill(this.streamId || '');
@@ -107,6 +108,7 @@ export class UploaderService {
         }
 
         this.isErrored = false;
+        this.cancelled = false;
 
         // 重置ESP32上传状态，防止进度累加
         this['esp32UploadState'] = {
@@ -137,7 +139,7 @@ export class UploaderService {
         if (this.builderService.cancelled) {
           this.uploadInProgress = false;
           this.noticeService.update({
-            title: "上传已取消",
+            title: "编译已取消",
             text: '编译已取消',
             state: 'warn',
             setTimeout: 55000
@@ -147,7 +149,7 @@ export class UploaderService {
         }
 
         if (!this.builderService.passed) {
-          this.handleUploadError('编译失败，请检查代码');
+          this.handleUploadError('编译失败，请检查代码', "编译失败");
           reject({ state: 'error', text: '编译失败，请检查代码' });
           return;
         }
@@ -234,7 +236,7 @@ export class UploaderService {
         // 将buildProperties添加到compilerParam中
         uploadParam += buildProperties;
 
-        const uploadCmd = `arduino-cli.exe ${uploadParam} --input-dir ${buildPath} --board-path ${sdkPath} --tools-path ${toolsPath} --verbose`;
+        const uploadCmd = `aily-arduino-cli.exe ${uploadParam} --input-dir ${buildPath} --board-path ${sdkPath} --tools-path ${toolsPath} --verbose`;
 
         this.uploadInProgress = true;
         this.noticeService.update({ title: title, text: lastUploadText, state: 'doing', progress: 0, setTimeout: 0 });
@@ -363,7 +365,7 @@ export class UploaderService {
                         progress: lastProgress,
                         setTimeout: 0,
                         stop: () => {
-                          this.cancelBuild()
+                          this.cancel()
                         }
                       });
                     }
@@ -392,6 +394,8 @@ export class UploaderService {
             if(this.isErrored) {
               console.error("上传过程中发生错误，已取消");
               this.handleUploadError('上传过程中发生错误');
+              // 终止Arduino CLI进程
+              this.cmdService.killArduinoCli();
               reject({ state: 'error', text: errorText });
             } else if (this.uploadCompleted) {
               console.log("上传完成");
@@ -403,7 +407,7 @@ export class UploaderService {
               });
               this.uploadInProgress = false;
               resolve({ state: 'done', text: '上传完成' });
-            } else {
+            } else if (this.cancelled) {
               console.warn("上传中断");
               this.noticeService.update({
                 title: "上传已取消",
@@ -412,7 +416,22 @@ export class UploaderService {
                 setTimeout: 55000
               });
               this.uploadInProgress = false;
+              // 终止Arduino CLI进程
+              this.cmdService.killArduinoCli();
               reject({ state: 'warn', text: '上传已取消' });
+            } else {
+              console.warn("上传未完成，可能是由于超时或其他原因");
+              this.noticeService.update({
+                title: errorTitle,
+                text: lastUploadText,
+                detail: errorText,
+                state: 'error',
+                setTimeout: 600000
+              });
+              this.uploadInProgress = false;
+              // 终止Arduino CLI进程
+              this.cmdService.killArduinoCli();
+              reject({ state: 'error', text: '上传未完成，请检查日志' });
             }
           }
         })
@@ -427,7 +446,8 @@ export class UploaderService {
   /**
 * 取消当前编译过程
 */
-  cancelBuild() {
+  cancel() {
+    this.cancelled = true;
     this.cmdService.kill(this.streamId || '');
   }
 }

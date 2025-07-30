@@ -3,6 +3,8 @@
   height: 100%;
   background-color: rgba(0, 0, 0, 0.95);
   color: #fff;
+  overflow-y: auto; // 为 ngx-ui-scroll 添加滚动支持
+  overflow-x: hidden; // 禁止水平滚动
 
   .item {
     min-height: 24px;
