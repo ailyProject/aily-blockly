@@ -2,8 +2,6 @@ const { contextBridge, ipcRenderer, shell } = require("electron");
 const { SerialPort } = require("serialport");
 const { exec } = require("child_process");
 const { existsSync, statSync } = require("fs");
-const { get } = require("lodash");
-const { basename, dirname, extname, resolve, normalize } = require("path");
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -22,10 +20,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getElectronPath: () => __dirname,
     isDir: (path) => statSync(path).isDirectory(),
     join: (...args) => require("path").join(...args),
-    dirname: (path) => require("path").dirname(path),
-    extname: (path) => require("path").extname(path),
-    normalize: (path) => require("path").normalize(path),
-    resolve: (path) => require("path").resolve(path),
     basename: (path) => require("path").basename(path)
   },
   versions: () => process.versions,
@@ -158,9 +152,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => require("fs").statSync(path),
     isDirectory: (path) => require("fs").statSync(path).isDirectory(),
-    unlinkSync: (path, cb) => require("fs").unlinkSync(path, cb),
-    rmdirSync: (path) => require("fs").rmdirSync(path, { recursive: true, force: true }),
-    renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
   },
   ble: {
 
@@ -228,30 +219,4 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.on('update-status', (_, data) => callback(data));
     }
   },
-  mcp: {
-    connect: (name, command, args) => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke('mcp:connect', name, command, args)
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      })
-    },
-    getTools: (name) => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke('mcp:get-tools', name)
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      })
-    },
-    useTool: (toolName, args) => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke('mcp:use-tool', toolName, args)
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      })
-    }
-  }
 });

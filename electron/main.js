@@ -108,7 +108,6 @@ const { registerWindowHandlers } = require("./window");
 const { registerNpmHandlers } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers } = require("./cmd");
-const { registerMCPHandlers } = require("./mcp");
 // debug模块
 const { initLogger } = require("./logger");
 
@@ -301,7 +300,6 @@ function createWindow() {
   registerWindowHandlers(mainWindow);
   registerNpmHandlers(mainWindow);
   registerCmdHandlers(mainWindow);
-  registerMCPHandlers(mainWindow);
 }
 
 app.on("ready", () => {

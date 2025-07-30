@@ -116,10 +116,6 @@ export class SerialMonitorComponent {
     return this.serialMonitorService.viewMode.showTimestamp;
   }
 
-  get autoDTR() {
-    return this.serialMonitorService.viewMode.autoDTR;
-  }
-
   get showHex() {
     return this.serialMonitorService.viewMode.showHex;
   }

@@ -8,9 +8,6 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { pinyin } from "pinyin-pro";
 import { Router } from '@angular/router';
 import { CmdService } from './cmd.service';
-import { generateDateString } from '../func/func';
-
-const { pt } = (window as any)['electronAPI'].platform;
 import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
 import { generateDateString } from '../func/func';
@@ -94,6 +91,40 @@ export class ProjectService {
     }
   }
 
+  // 检测复制是否成功
+  async checkIsExisits(filePath) {
+    if (!window['path'].isExists(filePath)) {
+      let checkCount = 0;
+      const maxChecks = 10; // 5秒 / 500ms = 10次
+
+      const checkFileExistence = () => {
+        return new Promise((resolve, reject) => {
+          const timer = setInterval(() => {
+            checkCount++;
+            if (window['path'].isExists(filePath)) {
+              clearInterval(timer);
+              resolve(true);
+            } else if (checkCount >= maxChecks) {
+              clearInterval(timer);
+              this.message.error('无法找到项目文件: ' + filePath);
+              this.uiService.updateFooterState({ state: 'error', text: '无法找到项目文件: ' + filePath });
+              reject(new Error('无法找到项目文件: ' + filePath));
+            }
+          }, 500);
+        });
+      };
+
+      try {
+        await checkFileExistence();
+        return true;
+      } catch (error) {
+        console.error('文件不存在:', error);
+        return false;
+      }
+    }
+    return true;
+  }
+
   // 检测字符串是否包含中文字符
   containsChineseCharacters(str: string): boolean {
     const chineseRegex = /[\u4e00-\u9fa5]/;
@@ -101,7 +132,7 @@ export class ProjectService {
   }
 
   // 新建项目
-  async projectNew(newProjectData: NewProjectData, closeWindow: boolean = true) {
+  async projectNew(newProjectData: NewProjectData) {
     console.log('newProjectData: ', newProjectData);
     const appDataPath = window['path'].getAppData();
     // const projectPath = (newProjectData.path + newProjectData.name).replace(/\s/g, '_');
@@ -115,6 +146,10 @@ export class ProjectService {
     await this.cmdService.runAsync(`mkdir -p "${projectPath}"`);
     // 复制模板文件到项目目录
     await this.cmdService.runAsync(`cp -r "${templatePath}\\*" "${projectPath}"`);
+    // 判断复制是否成功
+    if (!await this.checkIsExisits(projectPath + '/project.abi')) {
+      return;
+    }
 
     // 3. 修改package.json文件
     const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
@@ -132,10 +167,7 @@ export class ProjectService {
     this.uiService.updateFooterState({ state: 'done', text: '项目创建成功' });
     // 此后就是打开项目(projectOpen)的逻辑，理论可复用，由于此时在新建项目窗口，因此要告知主窗口，进行打开项目操作
     await window['iWindow'].send({ to: 'main', data: { action: 'open-project', path: projectPath } });
-    
-    if (closeWindow) {
-      this.uiService.closeWindow();
-    }
+    this.uiService.closeWindow();
   }
 
   // 打开项目
@@ -266,40 +298,6 @@ export class ProjectService {
       console.error('检查未保存更改时出错:', error);
       // 出错时，保守地返回 true，表示可能有未保存的更改
       return true;
-    }
-  }
-
-  generateUniqueProjectName(prjPath, prefix = 'project_'): string {
-    const baseDateStr = generateDateString();
-    prefix = prefix + baseDateStr;
-
-    // 尝试使用字母后缀 a-z
-    for (let charCode = 97; charCode <= 122; charCode++) {
-      const suffix = String.fromCharCode(charCode);
-      const projectName: string = prefix + suffix;
-      const projectPath = prjPath + pt + projectName;
-
-      if (!window['path'].isExists(projectPath)) {
-        return projectName;
-      }
-    }
-
-    // 如果所有字母都已使用，则使用数字后缀
-    let numberSuffix = 0;
-    while (true) {
-      const projectName = prefix + 'a' + numberSuffix;
-      const projectPath = prjPath + pt + projectName;
-
-      if (!window['path'].isExists(projectPath)) {
-        return projectName;
-      }
-
-      numberSuffix++;
-
-      // 安全检查，防止无限循环
-      if (numberSuffix > 1000) {
-        return prefix + 'a' + Date.now(); // 极端情况下使用时间戳
-      }
     }
   }
 

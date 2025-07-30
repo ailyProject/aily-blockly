@@ -11,12 +11,8 @@
 .username {
     padding: 3px 6px;
     border-bottom: 1px solid #444;
-    font-size: 14px;
+    font-size: 12px;
     color: #888;
-
-    i {
-        font-size: 16px;
-    }
 }
 
 .content {
@@ -32,40 +28,38 @@
         h5,
         h6 {
             font-weight: bold;
+            // color: #222;
             margin-top: 0;
         }
 
         h1 {
-            font-size: 26px;
-            margin-bottom: 0.5em;
+            font-size: 32px;
+            margin-bottom: 1em;
         }
 
         h2 {
-            font-size: 22px;
-            margin-bottom: 0.5em;
-            border-left: 8px solid #3794ff;
-            line-height: 26px;
-            padding-left: 12px;
+            font-size: 28px;
+            margin-bottom: 1em;
         }
 
         h3 {
-            font-size: 18px;
-            margin-bottom: 0.2em;
+            font-size: 24px;
+            margin-bottom: 1em;
         }
 
         h4 {
-            font-size: 16px;
-            margin-bottom: 0.2em;
+            font-size: 20px;
+            margin-bottom: 1em;
         }
 
         h5 {
-            font-size: 14px;
-            margin-bottom: 0.2em;
+            font-size: 16px;
+            margin-bottom: 1em;
         }
 
         h6 {
             font-size: 14px;
-            margin-bottom: 0.2em;
+            margin-bottom: 1em;
         }
 
         p,

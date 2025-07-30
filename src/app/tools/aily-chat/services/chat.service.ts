@@ -1,10 +1,8 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, Subject } from 'rxjs';
-import { MCPTool } from './mcp.service';
 
 import { API } from "../../../configs/api.config";
-
 
 @Injectable({
   providedIn: 'root'
@@ -17,8 +15,8 @@ export class ChatService {
     private http: HttpClient
   ) { }
 
-  startSession(tools: MCPTool[] | null = null): Observable<any> {
-    return this.http.post(API.startSession, {session_id: this.currentSessionId, tools: tools || []});
+  startSession() {
+    return this.http.post(API.startSession, {session_id: this.currentSessionId});
   }
 
   closeSession(sessionId: string) {

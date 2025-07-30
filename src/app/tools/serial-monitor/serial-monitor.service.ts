@@ -28,7 +28,6 @@ export class SerialMonitorService {
     autoWrap: true, // 换行显示
     autoScroll: true, // 自动滚动显示
     showTimestamp: true, // 时间显示
-    autoDTR: true, // 自动发送DTR信号
   }
 
   inputMode = {
@@ -113,17 +112,6 @@ export class SerialMonitorService {
             dir: 'SYS'
           });
           this.dataUpdated.next();
-          
-          // // 连接成功后自动发送DTR信号
-          if (this.viewMode.autoDTR) {
-            setTimeout(() => {
-              this.sendSignal('DTR', true).then((success) => {
-                if (success) {
-                  console.log('自动发送DTR信号成功');
-                }
-              });
-            }, 100); // 延迟100ms确保串口完全就绪
-          }
           
           resolve(true);
         });

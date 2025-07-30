@@ -80,7 +80,8 @@ export let HEADER_BTNS: IMenuItem[][] = [
       action: 'tool-open',
       data: { type: 'tool', data: "aily-chat" },
       icon: 'fa-light fa-star-christmas',
-      more: 'AI'
+      more: 'AI',
+      dev: true
     },
     {
       name: 'MENU.APP_STORE',
