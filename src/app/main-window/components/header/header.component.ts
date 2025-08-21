@@ -20,7 +20,15 @@ import { Router } from '@angular/router';
 import { ElectronService } from '../../../services/electron.service';
 import { UserComponent } from '../user/user.component';
 import { ConfigService } from '../../../services/config.service';
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
 import { AuthService } from '../../../services/auth.service';
+=======
+import { BlocklyService } from '../../../blockly/blockly.service';
+>>>>>>> Stashed changes
+=======
+import { BlocklyService } from '../../../blockly/blockly.service';
+>>>>>>> Stashed changes
 
 @Component({
   selector: 'app-header',
@@ -82,7 +90,15 @@ export class HeaderComponent {
     private router: Router,
     private electronService: ElectronService,
     private configService: ConfigService,
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
     private authService: AuthService
+=======
+    private blocklyService: BlocklyService
+>>>>>>> Stashed changes
+=======
+    private blocklyService: BlocklyService
+>>>>>>> Stashed changes
   ) { }
 
   async ngAfterViewInit() {
@@ -326,6 +342,15 @@ export class HeaderComponent {
       case 'board-select':
         console.log('board-select');
         break;
+      case 'zoom-in':
+        this.handleZoom('in');
+        break;
+      case 'zoom-out':
+        this.handleZoom('out');
+        break;
+      case 'zoom-reset':
+        this.handleZoom('reset');
+        break;
       default:
         console.log('未处理的操作:', item.action);
         break;
@@ -392,7 +417,18 @@ export class HeaderComponent {
     if (event.altKey) parts.push('alt');
 
     // 添加主键，忽略修饰键本身
-    const key = event.key.toLowerCase();
+    let key = event.key.toLowerCase();
+    
+    // 特殊处理一些键
+    if (key === '=' && event.shiftKey) {
+      // Shift + = 实际上是 +
+      key = '+';
+    } else if (key === '-') {
+      key = '-';
+    } else if (key === '0') {
+      key = '0';
+    }
+    
     if (!['control', 'shift', 'alt'].includes(key)) {
       parts.push(key);
     }
@@ -584,6 +620,47 @@ export class HeaderComponent {
         },
         check: false
       }));
+  }
+
+  /**
+   * 处理缩放操作
+   * @param action 缩放动作：'in' | 'out' | 'reset'
+   */
+  handleZoom(action: 'in' | 'out' | 'reset'): void {
+    // 只在 blockly 编辑器页面执行缩放
+    if (!this.router.url.includes('/main/blockly-editor')) {
+      return;
+    }
+
+    const workspace = this.blocklyService.workspace;
+    if (!workspace) {
+      console.warn('Blockly workspace 未初始化');
+      return;
+    }
+
+    const currentScale = workspace.getScale();
+    let newScale = currentScale;
+
+    switch (action) {
+      case 'in':
+        // 放大：增加 20%
+        newScale = Math.min(currentScale * 1.2, 3.0); // 最大 3 倍
+        break;
+      case 'out':
+        // 缩小：减少 20%
+        newScale = Math.max(currentScale * 0.8, 0.3); // 最小 0.3 倍
+        break;
+      case 'reset':
+        // 重置为 1:1
+        newScale = 1.0;
+        break;
+    }
+
+    if (newScale !== currentScale) {
+      workspace.setScale(newScale);
+      // 触发工作区重绘
+      workspace.resizeContents();
+    }
   }
 
 }

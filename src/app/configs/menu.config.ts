@@ -153,6 +153,33 @@ export let HEADER_MENU: IMenuItem[] = [
     sep: true,
   },
   {
+    name: 'MENU.ZOOM_IN',
+    text: 'Ctrl + +',
+    action: 'zoom-in',
+    data: { type: 'zoom', data: 'in' },
+    icon: 'fa-light fa-magnifying-glass-plus',
+    router: ['/main/blockly-editor']
+  },
+  {
+    name: 'MENU.ZOOM_OUT',
+    text: 'Ctrl + -',
+    action: 'zoom-out',
+    data: { type: 'zoom', data: 'out' },
+    icon: 'fa-light fa-magnifying-glass-minus',
+    router: ['/main/blockly-editor']
+  },
+  {
+    name: 'MENU.ZOOM_RESET',
+    text: 'Ctrl + 0',
+    action: 'zoom-reset',
+    data: { type: 'zoom', data: 'reset' },
+    icon: 'fa-light fa-magnifying-glass',
+    router: ['/main/blockly-editor']
+  },
+  {
+    sep: true,
+  },
+  {
     name: 'MENU.SETTINGS',
     action: 'settings-open',
     data: { type: 'window', path: 'settings', alwaysOnTop: true, width: 700, height: 550 },
