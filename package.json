@@ -117,7 +117,6 @@
     "@ngx-translate/core": "^16.0.3",
     "@splidejs/splide": "^4.1.4",
     "@types/uuid": "^10.0.0",
-    "@wokwi/elements": "^1.7.0",
     "@xterm/addon-clipboard": "^0.1.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
