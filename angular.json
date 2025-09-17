@@ -33,6 +33,25 @@
             ],
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
+            "allowedCommonJsDependencies": [
+              "@codingame/monaco-vscode-api",
+              "@codingame/monaco-vscode-base-service-override",
+              "@codingame/monaco-vscode-editor-api",
+              "@codingame/monaco-vscode-extension-api",
+              "@codingame/monaco-vscode-extensions-service-override",
+              "@codingame/monaco-vscode-rollup-vsix-plugin"
+            ],
+            "loader": {
+              ".ttf": "file",
+              ".png": "file",
+              ".jpg": "file",
+              ".jpeg": "file",
+              ".gif": "file",
+              ".svg": "file",
+              ".woff": "file",
+              ".woff2": "file",
+              ".eot": "file"
+            },
             "assets": [
               {
                 "glob": "**/*",
