@@ -20,7 +20,7 @@ export class BuilderService {
    */
   async build() {
     new Promise<void>((resolve, reject) => {
-      this.actionService.dispatch('build-begin', {}, result => {
+      this.actionService.dispatch('compile-begin', {}, result => {
         if (result.success) {
           resolve()
         } else {
@@ -35,7 +35,7 @@ export class BuilderService {
    * 取消当前编译过程
    */
   cancel() {
-    this.actionService.dispatch('build-cancel', {}, result => {
+    this.actionService.dispatch('compile-cancel', {}, result => {
       if (result.success) {
       } else {
       }

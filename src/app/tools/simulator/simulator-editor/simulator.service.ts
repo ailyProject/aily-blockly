@@ -18,11 +18,6 @@ export interface ComponentConfig {
 export class SimulatorService {
   // 引脚状态变化的可观察对象
   pinStateChange = new Subject<PinState>();
-
-  // 模拟器状态
-  private isRunning = false;
-  private boardType = '';
-  private components: Map<string, ComponentConfig> = new Map();
   
   constructor() { }
 

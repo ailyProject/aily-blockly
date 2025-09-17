@@ -6518,6 +6518,6 @@ export const blocklyEditTools = {
 export default smartBlockTool;
 
 // 初始化事件错误处理器(2025.9.16 陈吕洲 未调用就运行，非常不好，要改)
-setTimeout(() => {  
-  initializeEventErrorHandler();
-}, 1000);
+// setTimeout(() => {  
+//   initializeEventErrorHandler();
+// }, 1000);

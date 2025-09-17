@@ -125,7 +125,7 @@ export class NpmService {
 
   async installBoardDeps() {
     const boardPackageJson = await this.prjService.getBoardPackageJson() || {};
-    console.log("boardPackageJson: ", boardPackageJson);
+    // console.log("boardPackageJson: ", boardPackageJson);
     await this.installBoardDependencies(boardPackageJson);
   }
 
@@ -136,7 +136,7 @@ export class NpmService {
       const appDataPath = this.configService.data.appdata_path[this.configService.data.platform].replace('%HOMEPATH%', window['path'].getUserHome());
       const boardDependencies = packageJson.boardDependencies || {};
 
-      console.log("boardDependencies: ", boardDependencies);
+      // console.log("boardDependencies: ", boardDependencies);
 
       for (const [key, version] of Object.entries(boardDependencies)) {
         const depPath = `${appDataPath}/node_modules/${key}`;
@@ -146,13 +146,13 @@ export class NpmService {
           const depPackageJson = JSON.parse(window['fs'].readFileSync(depPathPackageJson));
           // 检查版本是否一致
           if (depPackageJson.version === version) {
-            console.log(`依赖 ${key} 已安装，版本一致`);
+            // console.log(`依赖 ${key} 已安装，版本一致`);
             continue;
           } else {
-            console.log(`依赖 ${key} 已安装，但版本不一致，当前版本: ${depPackageJson.version}, 需要版本: ${version}`);
+            // console.log(`依赖 ${key} 已安装，但版本不一致，当前版本: ${depPackageJson.version}, 需要版本: ${version}`);
           }
         } else {
-          console.log(`依赖 ${key} 未安装`);
+          // console.log(`依赖 ${key} 未安装`);
         }
 
         // if (window['path'].isExists(depPath)) {

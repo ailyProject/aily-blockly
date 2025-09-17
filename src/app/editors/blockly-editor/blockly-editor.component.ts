@@ -94,9 +94,9 @@ export class BlocklyEditorComponent {
     await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-    console.log(packageJson);
     
     this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
+    this.projectService.currentProjectPath = projectPath;
     // 添加到最近打开的项目
     this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
     // 设置当前项目路径和package.json数据
@@ -113,6 +113,7 @@ export class BlocklyEditorComponent {
     this.uiService.updateFooterState({ state: 'doing', text: '正在加载开发板配置' });
     const boardJson = await this.projectService.getBoardJson();
 
+    this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
     // 4. 加载blockly library

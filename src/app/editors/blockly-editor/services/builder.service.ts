@@ -1,29 +1,32 @@
 import { Injectable } from '@angular/core';
-import { ProjectService } from '../../../services/project.service';
 import { CmdOutput, CmdService } from '../../../services/cmd.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NoticeService } from '../../../services/notice.service';
+import { ProjectService } from '../../../services/project.service';
 import { LogService } from '../../../services/log.service';
 import { NpmService } from '../../../services/npm.service';
 import { ConfigService } from '../../../services/config.service';
-import { BlocklyService } from './blockly.service';
 import { ActionState } from '../../../services/ui.service';
 import { ActionService } from '../../../services/action.service';
 import { arduinoGenerator } from '../components/blockly/generators/arduino/arduino';
+
+import { BlocklyService as BlocklyService } from './blockly.service';
+import { _ProjectService } from './project.service';
 
 @Injectable()
 export class _BuilderService {
 
   constructor(
-    private blocklyService: BlocklyService,
-    private projectService: ProjectService,
     private cmdService: CmdService,
     private message: NzMessageService,
     private noticeService: NoticeService,
     private logService: LogService,
     private npmService: NpmService,
     private configService: ConfigService,
-    private actionService: ActionService
+    private actionService: ActionService,
+    private projectService: ProjectService,
+    private _projectService: _ProjectService,
+    private blocklyService: BlocklyService,
   ) { }
 
   private buildInProgress = false;
@@ -99,7 +102,7 @@ export class _BuilderService {
           }
         });
 
-        this.currentProjectPath = this.projectService.currentProjectPath;
+        this.currentProjectPath = this._projectService.currentProjectPath;
         const tempPath = this.currentProjectPath + '/.temp';
         const sketchPath = tempPath + '/sketch';
         const sketchFilePath = sketchPath + '/sketch.ino';
@@ -131,7 +134,7 @@ export class _BuilderService {
         await window['fs'].writeFileSync(sketchFilePath, code);
 
         // 加载项目package.json
-        const packageJson = await this.projectService.getPackageJson();
+        const packageJson = await this._projectService.currentPackageData;
         const dependencies = packageJson.dependencies || {};
 
         const libsPath = []

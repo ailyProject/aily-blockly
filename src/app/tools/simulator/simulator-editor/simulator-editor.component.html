@@ -1,36 +1,3 @@
 <div class="simulator-workspace">
-  <div class="simulator-toolbar">
-    <div class="toolbar-section">
-      <h4>组件库</h4>
-      <button class="btn btn-primary" (click)="addComponent('arduino', 50, 50)">
-        <i class="icon-arduino"></i> Arduino UNO
-      </button>
-      <button class="btn btn-secondary" (click)="addComponent('temperature', 300, 100)">
-        <i class="icon-temp"></i> 温度传感器
-      </button>
-      <button class="btn btn-secondary" (click)="addComponent('led', 300, 200)">
-        <i class="icon-led"></i> LED
-      </button>
-    </div>
-    
-    <div class="toolbar-section">
-      <h4>操作</h4>
-      <button class="btn btn-warning" (click)="clearAll()">
-        <i class="icon-clear"></i> 清空画布
-      </button>
-      <button class="btn btn-info" (click)="exportConnections()">
-        <i class="icon-export"></i> 导出连接
-      </button>
-    </div>
-    
-    <div class="toolbar-section connection-info" *ngIf="isConnecting">
-      <h4>连接模式</h4>
-      <p>点击目标引脚完成连接，或点击空白区域取消</p>
-      <button class="btn btn-danger btn-sm" (click)="cancelConnection()">取消连接</button>
-    </div>
-  </div>
-
-  <div class="simulator-container" #simulatorContainer>
-    <!-- Konva画布将在这里渲染 -->
-  </div>
+  
 </div>
