@@ -14,6 +14,7 @@ import { BuilderService } from '../../services/builder.service';
 import { UploaderService } from '../../services/uploader.service';
 import { ElectronService } from '../../services/electron.service';
 import { ShortcutService, ShortcutAction, ShortcutKeyMapping } from './services/shortcut.service';
+import { VsixService } from './services/vsix.service';
 import { Subscription } from 'rxjs';
 import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
@@ -83,6 +84,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     private uploadService: UploaderService,
     private electronService: ElectronService,
     private shortcutService: ShortcutService,
+    private vsixService: VsixService,
   ) {
   }
 
@@ -92,6 +94,9 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     // 注册当前组件到 _ProjectService
     this._ProjectService.registerCodeEditor(this);
+
+    // 初始化 VSIX 扩展
+    await this.initializeVsixExtensions();
 
     this.activatedRoute.queryParams.subscribe(params => {
       if (params['path']) {
@@ -117,6 +122,26 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     window.history.replaceState(null, '', window.location.href);
     window.history.pushState(null, '', window.location.href);
+  }
+
+  /**
+   * 初始化 VSIX 扩展
+   */
+  private async initializeVsixExtensions(): Promise<void> {
+    try {
+      console.log('Initializing VSIX extensions...');
+      
+      // 等待 Electron 服务初始化完成
+      if (this.electronService.isElectron) {
+        await this.vsixService.initializeAllExtensions();
+        console.log('VSIX extensions initialized successfully');
+      } else {
+        console.log('Not running in Electron, skipping VSIX extension initialization');
+      }
+    } catch (error) {
+      console.error('Failed to initialize VSIX extensions:', error);
+      // 不阻止组件的正常加载，只是记录错误
+    }
   }
 
   ngOnDestroy(): void {
@@ -339,8 +364,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       const monacoComponent = this.getMonacoEditorComponent();
       if (monacoComponent) {
-        const editor = monacoComponent.monacoInstance;
-        if (editor && editor.getModel()) {
+        const editorInstance = monacoComponent.editorInstance;
+        if (editorInstance && editorInstance.getModel()) {
           const viewState = monacoComponent.getViewState();
           if (viewState) {
             return { viewState };
