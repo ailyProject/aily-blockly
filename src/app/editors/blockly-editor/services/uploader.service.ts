@@ -70,6 +70,11 @@ export class _UploaderService {
     });
   }
 
+  destroy() {
+    this.actionService.unlisten('upload-begin');
+    this.actionService.unlisten('upload-cancel');
+  }
+
   // 添加这个错误处理方法
   private handleUploadError(errorMessage: string, title = "上传失败") {
     console.error("handle errror: ", errorMessage);
@@ -514,7 +519,7 @@ export class _UploaderService {
               console.error("上传过程中发生错误，已取消");
               this.handleUploadError('上传过程中发生错误');
               // 终止Arduino CLI进程
-              
+
               reject({ state: 'error', text: errorText });
             } else if (this.uploadCompleted) {
               console.log("上传完成");
@@ -536,7 +541,7 @@ export class _UploaderService {
               });
               this.uploadInProgress = false;
               // 终止Arduino CLI进程
-              
+
               reject({ state: 'warn', text: '上传已取消' });
             } else {
               console.warn("上传未完成，可能是由于超时或其他原因");
@@ -549,7 +554,7 @@ export class _UploaderService {
               });
               this.uploadInProgress = false;
               // 终止Arduino CLI进程
-              
+
               reject({ state: 'error', text: '上传未完成，请检查日志' });
             }
           }

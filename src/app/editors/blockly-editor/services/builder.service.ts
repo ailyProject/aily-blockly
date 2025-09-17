@@ -55,6 +55,11 @@ export class _BuilderService {
     });
   }
 
+  destroy() {
+    this.actionService.unlisten('compile-begin');
+    this.actionService.unlisten('compile-cancel');
+  }
+
   // 添加这个错误处理方法
   private handleCompileError(errorMessage: string) {
     console.error("handle errror: ", errorMessage);
