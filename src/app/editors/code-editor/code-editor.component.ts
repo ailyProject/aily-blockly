@@ -477,7 +477,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private jumpToPosition(position: any): void {
     try {
       const monacoComponent = this.getMonacoEditorComponent();
-      const editor = monacoComponent?.monacoInstance;
+      const editor = monacoComponent?.editorInstance;
 
       if (editor && position) {
         const targetPosition = {

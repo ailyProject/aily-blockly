@@ -1,10 +1,12 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, Output, SimpleChanges, ViewChild, OnInit, AfterViewInit, OnDestroy, OnChanges } from '@angular/core';
+import { Component, EventEmitter, Input, Output, SimpleChanges, ViewChild, ElementRef, OnInit, AfterViewInit, OnDestroy, OnChanges } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { NzCodeEditorModule, NzCodeEditorComponent } from 'ng-zorro-antd/code-editor';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { VsixService } from '../../services/vsix.service';
 import { ClangdTester } from '../../utils/clangd-tester';
+
+// Monaco Editor 原始导入
+import * as monaco from 'monaco-editor';
 
 // Monaco VSCode API imports - 使用示例代码的方式
 import * as vscode from '@codingame/monaco-vscode-extension-api';
@@ -13,7 +15,6 @@ import '@codingame/monaco-vscode-extension-api/localExtensionHost';
 @Component({
   selector: 'app-monaco-editor',
   imports: [
-    NzCodeEditorModule,
     CommonModule,
     FormsModule
   ],
@@ -213,7 +214,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
   }
 
-  @ViewChild(NzCodeEditorComponent) codeEditor: NzCodeEditorComponent;
+  @ViewChild('monacoEditorContainer', { static: true }) monacoContainer!: ElementRef<HTMLDivElement>;
 
   @Input() options: any = {
     language: 'cpp',
@@ -231,9 +232,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   @Input() sdkPath: string;
   @Input() librariesPath: string;
 
-  private disposables: any[] = [];
-  public monacoInstance: any;
-  public editorInstance: any; // 添加编辑器实例的引用
+  private disposables: monaco.IDisposable[] = [];
+  public monacoInstance: typeof monaco = monaco;
+  public editorInstance: monaco.editor.IStandaloneCodeEditor | null = null;
 
   constructor(
     private message: NzMessageService,
@@ -246,31 +247,79 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   async ngAfterViewInit() {
-    // 等待编辑器初始化完成后再加载扩展
+    // 等待DOM完全渲染后初始化编辑器
     setTimeout(async () => {
-      if (this.editorInstance) {
-        await this.setupVsixExtensions(this.editorInstance);
-      }
-    }, 1000);
+      await this.initializeMonacoEditor();
+    }, 100);
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (changes['code'] && this.editorInstance && !changes['code'].firstChange) {
+      const currentValue = this.editorInstance.getValue();
+      if (currentValue !== this.code) {
+        this.editorInstance.setValue(this.code);
+      }
+    }
+    
+    if (changes['options'] && this.editorInstance && !changes['options'].firstChange) {
+      this.editorInstance.updateOptions(this.options);
+    }
   }
 
   ngOnDestroy() {
     this.disposables.forEach(d => d.dispose());
+    if (this.editorInstance) {
+      this.editorInstance.dispose();
+    }
   }
 
   onCodeChange(newCode: string): void {
     this.codeChange.emit(newCode);
   }
 
-  editorInitialized(editor: any): void {
-    this.monacoInstance = (window as any).monaco;
-    this.editorInstance = editor; // 保存编辑器实例
+  /**
+   * 初始化 Monaco Editor
+   */
+  private async initializeMonacoEditor(): Promise<void> {
+    try {
+      if (!this.monacoContainer?.nativeElement) {
+        console.error('Monaco container not found');
+        return;
+      }
+
+      console.log('Initializing Monaco Editor...');
+
+      // 创建编辑器实例
+      this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
+        value: this.code,
+        language: this.options.language || 'cpp',
+        theme: this.options.theme || 'vs-dark',
+        lineNumbers: this.options.lineNumbers || 'on',
+        automaticLayout: this.options.automaticLayout !== false,
+        ...this.options
+      });
+
+      // 监听内容变化
+      const onDidChangeContent = this.editorInstance.onDidChangeModelContent(() => {
+        const value = this.editorInstance?.getValue() || '';
+        this.onCodeChange(value);
+      });
+      this.disposables.push(onDidChangeContent);
+
+      // 编辑器初始化完成后的设置
+      this.editorInitialized(this.editorInstance);
+
+      console.log('Monaco Editor initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize Monaco Editor:', error);
+    }
+  }
+
+  editorInitialized(editor: monaco.editor.IStandaloneCodeEditor): void {
+    this.editorInstance = editor;
 
     // 在编辑器初始化后设置Tab键处理
-    if (editor && this.monacoInstance) {
+    if (editor) {
       // 添加自定义右键菜单项
       this.setupContextMenu(editor);
       
@@ -282,14 +331,18 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /**
    * 设置自定义右键菜单
    */
-  private setupContextMenu(editor: any): void {
+  private setupContextMenu(editor: monaco.editor.IStandaloneCodeEditor): void {
     if (!this.monacoInstance) return;
+    
+    // 添加自定义右键菜单项（可选）
+    // 这里可以根据需要添加自定义的上下文菜单项
+    console.log('Context menu setup completed');
   }
 
   /**
    * 设置 VSIX 扩展支持
    */
-  private async setupVsixExtensions(editor: any): Promise<void> {
+  private async setupVsixExtensions(editor: monaco.editor.IStandaloneCodeEditor): Promise<void> {
     try {
       console.log('Setting up VSIX extensions for Monaco editor...');
 
@@ -589,22 +642,23 @@ int main() {
     
     languages.forEach(langId => {
       try {
-        // 检查补全提供者
-        const hasCompletion = this.monacoInstance.languages.getCompletionItemProviders?.(langId);
-        console.log(`${langId} 补全提供者:`, hasCompletion ? '✅ 已注册' : '❌ 未注册');
+        // 检查语言是否已注册
+        const registeredLanguages = this.monacoInstance.languages.getLanguages();
+        const langExists = registeredLanguages.some(lang => lang.id === langId);
+        console.log(`${langId} 语言注册状态:`, langExists ? '✅ 已注册' : '❌ 未注册');
         
-        // 检查悬停提供者
-        const hasHover = this.monacoInstance.languages.getHoverProviders?.(langId);
-        console.log(`${langId} 悬停提供者:`, hasHover ? '✅ 已注册' : '❌ 未注册');
-        
-        // 检查语言配置
-        const langConfig = this.monacoInstance.languages.getLanguageConfiguration?.(langId);
-        console.log(`${langId} 语言配置:`, langConfig ? '✅ 已配置' : '❌ 未配置');
+        if (langExists) {
+          console.log(`${langId} 语言支持可用`);
+        }
         
       } catch (error) {
         console.warn(`检查 ${langId} 语言服务时出错:`, error);
       }
     });
+    
+    // 显示所有已注册的语言
+    const allLanguages = this.monacoInstance.languages.getLanguages();
+    console.log('所有已注册的语言:', allLanguages.map(lang => lang.id));
   }
 
   /**
