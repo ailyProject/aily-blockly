@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { NzTreeNodeOptions } from 'ng-zorro-antd/tree';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
+import { DeleteDialogComponent } from '../components/delete-dialog/delete-dialog.component';
 
 // 文件节点接口
 interface FileNode {
@@ -20,9 +21,9 @@ export class FileService {
   currentPath;
 
   // 剪贴板状态管理
-  private clipboard: { 
-    nodes: FileNode[], 
-    operation: 'copy' | 'cut' | null 
+  private clipboard: {
+    nodes: FileNode[],
+    operation: 'copy' | 'cut' | null
   } = { nodes: [], operation: null };
 
   constructor(
@@ -64,17 +65,17 @@ export class FileService {
   }
 
   // ==================== 剪贴板操作 ====================
-  
+
   /**
    * 复制文件/文件夹到剪贴板
    */
   copyToClipboard(nodes: FileNode[]): void {
     console.log('Copy to clipboard:', nodes.map(n => n.path));
-    this.clipboard = { 
-      nodes: [...nodes], 
-      operation: 'copy' 
+    this.clipboard = {
+      nodes: [...nodes],
+      operation: 'copy'
     };
-    
+
     // 使用系统剪贴板API复制路径
     try {
       const paths = nodes.map(n => n.path).join('\n');
@@ -95,11 +96,11 @@ export class FileService {
    */
   cutToClipboard(nodes: FileNode[]): void {
     console.log('Cut to clipboard:', nodes.map(n => n.path));
-    this.clipboard = { 
-      nodes: [...nodes], 
-      operation: 'cut' 
+    this.clipboard = {
+      nodes: [...nodes],
+      operation: 'cut'
     };
-    
+
     // 使用系统剪贴板API复制路径
     try {
       const paths = nodes.map(n => n.path).join('\n');
@@ -120,7 +121,7 @@ export class FileService {
    */
   async pasteFromClipboard(targetNode: FileNode): Promise<{ success: boolean, newFiles?: Array<{ name: string, isLeaf: boolean, path: string }> }> {
     console.log('Paste to:', targetNode.path);
-    
+
     if (this.clipboard.nodes.length === 0 || !this.clipboard.operation) {
       this.message.warning('剪贴板为空');
       return { success: false };
@@ -187,7 +188,7 @@ export class FileService {
 
       this.message.success(`成功${this.clipboard.operation === 'copy' ? '复制' : '移动'} ${this.clipboard.nodes.length} 个项目`);
       return { success: true, newFiles };
-      
+
     } catch (error) {
       console.error('粘贴操作失败:', error);
       this.message.error(`粘贴失败: ${error.message}`);
@@ -219,20 +220,20 @@ export class FileService {
       // 文件夹处理
       let newName = originalName;
       let newPath = window['path'].join(targetDir, newName);
-      
+
       // 如果原文件夹名不存在冲突，直接返回
       if (!window['fs'].existsSync(newPath)) {
         return newName;
       }
-      
+
       // 尝试 foldername-copy
       newName = `${originalName}-copy`;
       newPath = window['path'].join(targetDir, newName);
-      
+
       if (!window['fs'].existsSync(newPath)) {
         return newName;
       }
-      
+
       // 如果 foldername-copy 也存在，则尝试 foldername-copy1, foldername-copy2...
       let counter = 1;
       do {
@@ -240,29 +241,29 @@ export class FileService {
         newPath = window['path'].join(targetDir, newName);
         counter++;
       } while (window['fs'].existsSync(newPath));
-      
+
       return newName;
     } else {
       // 文件处理
       const ext = window['path'].extname(originalName);
       const nameWithoutExt = window['path'].basename(originalName, ext);
-      
+
       let newName = originalName;
       let newPath = window['path'].join(targetDir, newName);
-      
+
       // 如果原文件名不存在冲突，直接返回
       if (!window['fs'].existsSync(newPath)) {
         return newName;
       }
-      
+
       // 尝试 filename-copy.ext
       newName = `${nameWithoutExt}-copy${ext}`;
       newPath = window['path'].join(targetDir, newName);
-      
+
       if (!window['fs'].existsSync(newPath)) {
         return newName;
       }
-      
+
       // 如果 filename-copy.ext 也存在，则尝试 filename-copy1.ext, filename-copy2.ext...
       let counter = 1;
       do {
@@ -270,86 +271,9 @@ export class FileService {
         newPath = window['path'].join(targetDir, newName);
         counter++;
       } while (window['fs'].existsSync(newPath));
-      
+
       return newName;
     }
-  }
-
-  /**
-   * 重命名文件/文件夹
-   */
-  renameNode(node: FileNode, onSuccess?: (oldPath: string, newPath: string) => void): void {
-    console.log('Rename:', node.path);
-    
-    const currentName = window['path'].basename(node.path);
-    
-    this.modal.create({
-      nzTitle: `重命名${node.isLeaf ? '文件' : '文件夹'}`,
-      nzContent: `
-        <div>
-          <p>当前名称: ${currentName}</p>
-          <input id="rename-input" type="text" value="${currentName}" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" />
-        </div>
-      `,
-      nzOnOk: () => {
-        const newName = (document.getElementById('rename-input') as HTMLInputElement)?.value?.trim();
-        
-        if (!newName) {
-          this.message.error('请输入有效的名称');
-          return false;
-        }
-        
-        if (newName === currentName) {
-          return true; // 没有变化，直接关闭
-        }
-        
-        const parentDir = window['path'].dirname(node.path);
-        const newPath = window['path'].join(parentDir, newName);
-        
-        try {
-          // 检查新名称是否已存在
-          if (window['fs'].existsSync(newPath)) {
-            this.message.error('该名称已存在');
-            return false;
-          }
-          
-          // 执行重命名
-          window['fs'].renameSync(node.path, newPath);
-          this.message.success('重命名成功');
-          
-          // 调用成功回调，传递旧路径和新路径
-          if (onSuccess) {
-            onSuccess(node.path, newPath);
-          }
-          
-          return true;
-        } catch (error) {
-          console.error('重命名失败:', error);
-          this.message.error(`重命名失败: ${error.message}`);
-          return false;
-        }
-      }
-    });
-    
-    // 延迟聚焦到输入框并选中文本
-    setTimeout(() => {
-      const input = document.getElementById('rename-input') as HTMLInputElement;
-      if (input) {
-        input.focus();
-        if (node.isLeaf) {
-          // 如果是文件，选中文件名（不包括扩展名）
-          const lastDotIndex = currentName.lastIndexOf('.');
-          if (lastDotIndex > 0) {
-            input.setSelectionRange(0, lastDotIndex);
-          } else {
-            input.select();
-          }
-        } else {
-          // 如果是文件夹，选中全部
-          input.select();
-        }
-      }
-    }, 100);
   }
 
   /**
@@ -357,10 +281,10 @@ export class FileService {
    */
   deleteNodes(nodes: FileNode[], onSuccess?: (deletedPaths: string[]) => void): void {
     console.log('Delete:', nodes.map(n => n.path));
-    
+
     const fileCount = nodes.filter(n => n.isLeaf).length;
     const folderCount = nodes.filter(n => !n.isLeaf).length;
-    
+
     let message = '确定要删除以下项目吗？\n\n';
     if (fileCount > 0) {
       message += `${fileCount} 个文件\n`;
@@ -368,217 +292,214 @@ export class FileService {
     if (folderCount > 0) {
       message += `${folderCount} 个文件夹\n`;
     }
-    message += '\n此操作不可撤销！';
     
-    this.modal.confirm({
-      nzTitle: '确认删除',
-      nzContent: message.replace(/\n/g, '<br>'),
-      nzOkText: '删除',
-      nzOkType: 'primary',
-      nzOkDanger: true,
-      nzCancelText: '取消',
-      nzOnOk: () => {
-        const deletedPaths: string[] = [];
-        const failedPaths: string[] = [];
-        
-        try {
-          for (const node of nodes) {
-            console.log('Deleting node:', node.path, 'isLeaf:', node.isLeaf);
-            
-            try {
-              if (node.isLeaf) {
-                // 删除文件
-                window['fs'].unlinkSync(node.path);
-                console.log('File deleted successfully:', node.path);
-              } else {
-                // 删除文件夹 - 需要递归删除
-                this.deleteFolderRecursive(node.path);
-                console.log('Folder deleted successfully:', node.path);
-              }
-              deletedPaths.push(node.path);
-            } catch (error) {
-              console.error('Failed to delete node:', node.path, error);
-              failedPaths.push(node.path);
-            }
-          }
-          
-          console.log('Delete operation completed. Deleted:', deletedPaths, 'Failed:', failedPaths);
-          
-          if (deletedPaths.length > 0) {
-            this.message.success(`成功删除 ${deletedPaths.length} 个项目${failedPaths.length > 0 ? `，${failedPaths.length} 个项目删除失败` : ''}`);
-            
-            // 清空剪贴板中被删除的项目
-            if (this.clipboard.nodes.length > 0) {
-              const deletedPathsSet = new Set(deletedPaths);
-              this.clipboard.nodes = this.clipboard.nodes.filter(n => !deletedPathsSet.has(n.path));
-              if (this.clipboard.nodes.length === 0) {
-                this.clipboard.operation = null;
-              }
-            }
-            
-            // 调用成功回调，只传递成功删除的路径列表
-            if (onSuccess) {
-              console.log('Calling onSuccess callback with successfully deleted paths:', deletedPaths);
-              onSuccess(deletedPaths);
-            }
-          } else {
-            this.message.error('所有文件删除失败');
-          }
-          
-          if (failedPaths.length > 0) {
-            console.error('Failed to delete paths:', failedPaths);
-          }
-          
-        } catch (error) {
-          console.error('删除操作出现异常:', error);
-          this.message.error(`删除失败: ${error.message}`);
-        }
+    // 检查是否支持回收站
+    const trashAvailable = window['other'] && window['other'].moveToTrash;
+    if (trashAvailable) {
+      message += '\n文件将被移动到回收站，可以从回收站恢复。';
+    } else {
+      message += '\n此操作将永久删除文件，不可撤销！';
+    }
+
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '380px',
+      nzContent: DeleteDialogComponent,
+      nzData: {
+        title: '确认删除',
+        text: message,
+        nodes: nodes
       }
     });
+
+    modalRef.afterClose.subscribe(async (result: string) => {
+      if (result === 'confirm') {
+        await this.performDelete(nodes, onSuccess);
+      }
+    });
+  }
+
+  /**
+   * 执行实际的删除操作（移动到回收站）
+   */
+  private async performDelete(nodes: FileNode[], onSuccess?: (deletedPaths: string[]) => void): Promise<void> {
+    const deletedPaths: string[] = [];
+    const failedPaths: string[] = [];
+
+    try {
+      for (const node of nodes) {
+        console.log('Moving to trash:', node.path, 'isLeaf:', node.isLeaf);
+
+        try {
+          // 尝试使用 Electron 的回收站 API
+          if (window['other'] && window['other'].moveToTrash) {
+            const result = await window['other'].moveToTrash(node.path);
+            if (result.success) {
+              console.log('Successfully moved to trash:', node.path);
+              deletedPaths.push(node.path);
+            } else {
+              console.error('Failed to move to trash:', node.path, result.error);
+              failedPaths.push(node.path);
+            }
+          } else {
+            // 降级方案：永久删除（如果回收站 API 不可用）
+            console.warn('Trash API not available, falling back to permanent deletion');
+            if (node.isLeaf) {
+              // 删除文件
+              window['fs'].unlinkSync(node.path);
+              console.log('File deleted permanently:', node.path);
+            } else {
+              // 删除文件夹 - 需要递归删除
+              this.deleteFolderRecursive(node.path);
+              console.log('Folder deleted permanently:', node.path);
+            }
+            deletedPaths.push(node.path);
+          }
+        } catch (error) {
+          console.error('Failed to delete node:', node.path, error);
+          failedPaths.push(node.path);
+        }
+      }
+
+      console.log('Delete operation completed. Deleted:', deletedPaths, 'Failed:', failedPaths);
+
+      if (deletedPaths.length > 0) {
+        const trashAvailable = window['other'] && window['other'].moveToTrash;
+        const actionText = trashAvailable ? '移动到回收站' : '永久删除';
+        this.message.success(`成功${actionText} ${deletedPaths.length} 个项目${failedPaths.length > 0 ? `，${failedPaths.length} 个项目失败` : ''}`);
+
+        // 清空剪贴板中被删除的项目
+        if (this.clipboard.nodes.length > 0) {
+          const deletedPathsSet = new Set(deletedPaths);
+          this.clipboard.nodes = this.clipboard.nodes.filter(n => !deletedPathsSet.has(n.path));
+          if (this.clipboard.nodes.length === 0) {
+            this.clipboard.operation = null;
+          }
+        }
+
+        // 调用成功回调，只传递成功删除的路径列表
+        if (onSuccess) {
+          console.log('Calling onSuccess callback with successfully deleted paths:', deletedPaths);
+          onSuccess(deletedPaths);
+        }
+      } else {
+        this.message.error('所有文件删除失败');
+      }
+
+      if (failedPaths.length > 0) {
+        console.error('Failed to delete paths:', failedPaths);
+      }
+
+    } catch (error) {
+      console.error('删除操作出现异常:', error);
+      this.message.error(`删除失败: ${error.message}`);
+    }
   }
 
   // ==================== 文件创建操作 ====================
 
   /**
-   * 创建新文件
+   * 验证文件/文件夹名称是否有效
    */
-  createNewFile(parentNode: FileNode, onSuccess?: (fileName: string) => void): void {
-    console.log('Create new file in:', parentNode.path);
-    
-    // 确保父节点是文件夹
-    let parentPath = parentNode.path;
-    if (parentNode.isLeaf) {
-      parentPath = window['path'].dirname(parentPath);
+  validateFileName(name: string): { valid: boolean, error?: string } {
+    if (!name || !name.trim()) {
+      return { valid: false, error: '名称不能为空' };
     }
-    
-    this.modal.create({
-      nzTitle: '创建新文件',
-      nzContent: `
-        <div>
-          <p>在文件夹中创建新文件: ${window['path'].basename(parentPath)}</p>
-          <input id="new-file-input" type="text" placeholder="输入文件名（如: main.cpp）" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" />
-        </div>
-      `,
-      nzOnOk: () => {
-        const fileName = (document.getElementById('new-file-input') as HTMLInputElement)?.value?.trim();
-        
-        if (!fileName) {
-          this.message.error('请输入文件名');
-          return false;
-        }
-        
-        // 检查文件名是否包含非法字符
-        const invalidChars = /[<>:"/\\|?*]/;
-        if (invalidChars.test(fileName)) {
-          this.message.error('文件名包含非法字符');
-          return false;
-        }
-        
-        const filePath = window['path'].join(parentPath, fileName);
-        
-        try {
-          // 检查文件是否已存在
-          if (window['fs'].existsSync(filePath)) {
-            this.message.error('该文件名已存在');
-            return false;
-          }
-          
-          // 创建空文件
-          window['fs'].writeFileSync(filePath, '');
-          this.message.success('文件创建成功');
-          
-          // 调用成功回调，传递文件名
-          if (onSuccess) {
-            onSuccess(fileName);
-          }
-          
-          return true;
-        } catch (error) {
-          console.error('创建文件失败:', error);
-          this.message.error(`创建文件失败: ${error.message}`);
-          return false;
-        }
-      }
-    });
-    
-    // 延迟聚焦到输入框
-    setTimeout(() => {
-      const input = document.getElementById('new-file-input') as HTMLInputElement;
-      if (input) {
-        input.focus();
-      }
-    }, 100);
+
+    // 检查是否包含非法字符
+    const invalidChars = /[<>:"/\\|?*]/;
+    if (invalidChars.test(name)) {
+      return { valid: false, error: '名称包含非法字符: < > : " / \\ | ? *' };
+    }
+
+    // 检查是否为保留名称（Windows）
+    const reservedNames = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'];
+    if (reservedNames.includes(name.toUpperCase())) {
+      return { valid: false, error: '不能使用系统保留名称' };
+    }
+
+    return { valid: true };
   }
 
   /**
-   * 创建新文件夹
+   * 创建文件（内联编辑版本）
    */
-  createNewFolder(parentNode: FileNode, onSuccess?: (folderName: string) => void): void {
-    console.log('Create new folder in:', parentNode.path);
-    
-    // 确保父节点是文件夹
-    let parentPath = parentNode.path;
-    if (parentNode.isLeaf) {
-      parentPath = window['path'].dirname(parentPath);
+  createFileInline(parentPath: string, fileName: string): { success: boolean, error?: string, filePath?: string } {
+    try {
+      const validation = this.validateFileName(fileName);
+      if (!validation.valid) {
+        return { success: false, error: validation.error };
+      }
+
+      const filePath = window['path'].join(parentPath, fileName);
+
+      // 检查文件是否已存在
+      if (window['fs'].existsSync(filePath)) {
+        return { success: false, error: '文件已存在' };
+      }
+
+      // 创建空文件
+      window['fs'].writeFileSync(filePath, '');
+      return { success: true, filePath };
+    } catch (error) {
+      return { success: false, error: `创建文件失败: ${error.message}` };
     }
-    
-    this.modal.create({
-      nzTitle: '创建新文件夹',
-      nzContent: `
-        <div>
-          <p>在文件夹中创建新文件夹: ${window['path'].basename(parentPath)}</p>
-          <input id="new-folder-input" type="text" placeholder="输入文件夹名" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" />
-        </div>
-      `,
-      nzOnOk: () => {
-        const folderName = (document.getElementById('new-folder-input') as HTMLInputElement)?.value?.trim();
-        
-        if (!folderName) {
-          this.message.error('请输入文件夹名');
-          return false;
-        }
-        
-        // 检查文件夹名是否包含非法字符
-        const invalidChars = /[<>:"/\\|?*]/;
-        if (invalidChars.test(folderName)) {
-          this.message.error('文件夹名包含非法字符');
-          return false;
-        }
-        
-        const folderPath = window['path'].join(parentPath, folderName);
-        
-        try {
-          // 检查文件夹是否已存在
-          if (window['fs'].existsSync(folderPath)) {
-            this.message.error('该文件夹名已存在');
-            return false;
-          }
-          
-          // 创建文件夹
-          window['fs'].mkdirSync(folderPath);
-          this.message.success('文件夹创建成功');
-          
-          // 调用成功回调，传递文件夹名
-          if (onSuccess) {
-            onSuccess(folderName);
-          }
-          
-          return true;
-        } catch (error) {
-          console.error('创建文件夹失败:', error);
-          this.message.error(`创建文件夹失败: ${error.message}`);
-          return false;
-        }
+  }
+
+  /**
+   * 创建文件夹（内联编辑版本）
+   */
+  createFolderInline(parentPath: string, folderName: string): { success: boolean, error?: string, folderPath?: string } {
+    try {
+      const validation = this.validateFileName(folderName);
+      if (!validation.valid) {
+        return { success: false, error: validation.error };
       }
-    });
-    
-    // 延迟聚焦到输入框
-    setTimeout(() => {
-      const input = document.getElementById('new-folder-input') as HTMLInputElement;
-      if (input) {
-        input.focus();
+
+      const folderPath = window['path'].join(parentPath, folderName);
+
+      // 检查文件夹是否已存在
+      if (window['fs'].existsSync(folderPath)) {
+        return { success: false, error: '文件夹已存在' };
       }
-    }, 100);
+
+      // 创建文件夹
+      window['fs'].mkdirSync(folderPath);
+      return { success: true, folderPath };
+    } catch (error) {
+      return { success: false, error: `创建文件夹失败: ${error.message}` };
+    }
+  }
+
+  /**
+   * 重命名文件/文件夹（内联编辑版本）
+   */
+  renameNodeInline(oldPath: string, newName: string): { success: boolean, error?: string, newPath?: string } {
+    try {
+      const validation = this.validateFileName(newName);
+      if (!validation.valid) {
+        return { success: false, error: validation.error };
+      }
+
+      const parentDir = window['path'].dirname(oldPath);
+      const newPath = window['path'].join(parentDir, newName);
+
+      // 检查新名称是否已存在
+      if (window['fs'].existsSync(newPath)) {
+        return { success: false, error: '该名称已存在' };
+      }
+
+      // 执行重命名
+      window['fs'].renameSync(oldPath, newPath);
+      return { success: true, newPath };
+    } catch (error) {
+      return { success: false, error: `重命名失败: ${error.message}` };
+    }
   }
 
   // ==================== 路径操作 ====================
@@ -589,7 +510,7 @@ export class FileService {
   copyPathToClipboard(node: FileNode, relative: boolean, rootPath?: string): void {
     const path = relative ? this.getRelativePath(node.path, rootPath) : node.path;
     console.log('Copy path to clipboard:', path);
-    
+
     try {
       navigator.clipboard.writeText(path).then(() => {
         this.message.success(`已复制${relative ? '相对' : '绝对'}路径到剪贴板`);
@@ -616,22 +537,22 @@ export class FileService {
     if (!rootPath || !absolutePath) {
       return absolutePath;
     }
-    
+
     // 标准化路径，确保使用一致的分隔符
     const normalizedRoot = window['path'].normalize(rootPath);
     const normalizedPath = window['path'].normalize(absolutePath);
-    
+
     // 检查路径是否在根目录下
     if (!normalizedPath.startsWith(normalizedRoot)) {
       return absolutePath; // 如果不在根目录下，返回绝对路径
     }
-    
+
     // 计算相对路径
     let relativePath = normalizedPath.substring(normalizedRoot.length);
-    
+
     // 移除开头的路径分隔符
     relativePath = relativePath.replace(/^[\\\/]+/, '');
-    
+
     return relativePath || '.'; // 如果为空，返回当前目录
   }
 
@@ -642,7 +563,7 @@ export class FileService {
    */
   revealInExplorer(node: FileNode): void {
     console.log('Reveal in explorer:', node.path);
-    
+
     try {
       // 使用Electron API打开文件资源管理器
       if (window['other'] && window['other'].openByExplorer) {
@@ -652,7 +573,7 @@ export class FileService {
         // 降级方案：尝试使用shell命令
         const platform = window['platform']?.type || 'win32';
         let command = '';
-        
+
         if (platform === 'win32') {
           // Windows
           if (node.isLeaf) {
@@ -674,7 +595,7 @@ export class FileService {
           const dir = node.isLeaf ? window['path'].dirname(node.path) : node.path;
           command = `xdg-open "${dir}"`;
         }
-        
+
         if (command && window['cmd'] && window['cmd'].run) {
           window['cmd'].run({ command });
           this.message.success('已尝试在资源管理器中打开');
@@ -693,14 +614,14 @@ export class FileService {
    */
   openInTerminal(node: FileNode): void {
     console.log('Open in terminal:', node.path);
-    
+
     // 确定要在终端中打开的目录
     let targetPath = node.path;
     if (node.isLeaf) {
       // 如果是文件，使用其父目录
       targetPath = window['path'].dirname(targetPath);
     }
-    
+
     try {
       // 尝试使用Electron的终端API
       if (window['terminal'] && window['terminal'].init) {
@@ -708,7 +629,7 @@ export class FileService {
           cwd: targetPath,
           shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
         };
-        
+
         window['terminal'].init(terminalOptions).then(() => {
           this.message.success('已在终端中打开');
         }).catch((error) => {
@@ -729,7 +650,7 @@ export class FileService {
       // 降级方案：使用系统命令打开终端
       const platform = window['platform']?.type || 'win32';
       let command = '';
-      
+
       if (platform === 'win32') {
         // Windows - 打开命令提示符
         command = `start cmd /k "cd /d \\"${targetPath}\\""`;
@@ -754,7 +675,7 @@ export class FileService {
           }
         }
       }
-      
+
       if (command && window['cmd'] && window['cmd'].run) {
         window['cmd'].run({ command });
         this.message.success('已尝试在终端中打开');
@@ -767,149 +688,31 @@ export class FileService {
     }
   }
 
-  // ==================== 属性信息 ====================
-
-  /**
-   * 显示文件/文件夹属性
-   */
-  showProperties(node: FileNode): void {
-    console.log('Show properties:', node.path);
-    
-    try {
-      // 获取文件统计信息
-      const stats = window['fs'].statSync(node.path);
-      const size = this.formatFileSize(stats.size);
-      const created = new Date(stats.birthtime).toLocaleString();
-      const modified = new Date(stats.mtime).toLocaleString();
-      const accessed = new Date(stats.atime).toLocaleString();
-      
-      // 获取路径信息
-      const fileName = window['path'].basename(node.path);
-      const directory = window['path'].dirname(node.path);
-      const extension = node.isLeaf ? window['path'].extname(node.path) : '';
-      
-      // 构建属性信息HTML
-      const propertiesHtml = `
-        <div style="text-align: left;">
-          <h4 style="margin-bottom: 16px;">${node.isLeaf ? '文件' : '文件夹'}属性</h4>
-          
-          <div style="margin-bottom: 12px;">
-            <strong>名称:</strong> ${fileName}
-          </div>
-          
-          ${extension ? `
-          <div style="margin-bottom: 12px;">
-            <strong>类型:</strong> ${extension.substring(1).toUpperCase()} 文件
-          </div>
-          ` : ''}
-          
-          <div style="margin-bottom: 12px;">
-            <strong>位置:</strong> ${directory}
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <strong>完整路径:</strong> ${node.path}
-          </div>
-          
-          ${node.isLeaf ? `
-          <div style="margin-bottom: 12px;">
-            <strong>大小:</strong> ${size}
-          </div>
-          ` : ''}
-          
-          <div style="margin-bottom: 12px;">
-            <strong>创建时间:</strong> ${created}
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <strong>修改时间:</strong> ${modified}
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <strong>访问时间:</strong> ${accessed}
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <strong>权限:</strong> ${this.formatPermissions(stats.mode)}
-          </div>
-        </div>
-      `;
-      
-      this.modal.create({
-        nzTitle: '属性',
-        nzContent: propertiesHtml,
-        nzFooter: null,
-        nzWidth: 500
-      });
-      
-    } catch (error) {
-      console.error('获取属性失败:', error);
-      this.message.error('获取属性失败');
-    }
-  }
-
-  /**
-   * 格式化文件大小
-   */
-  private formatFileSize(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  }
-
-  /**
-   * 格式化权限
-   */
-  private formatPermissions(mode: number): string {
-    const permissions = [];
-    
-    // 所有者权限
-    permissions.push((mode & 0o400) ? 'r' : '-');
-    permissions.push((mode & 0o200) ? 'w' : '-');
-    permissions.push((mode & 0o100) ? 'x' : '-');
-    
-    // 组权限
-    permissions.push((mode & 0o040) ? 'r' : '-');
-    permissions.push((mode & 0o020) ? 'w' : '-');
-    permissions.push((mode & 0o010) ? 'x' : '-');
-    
-    // 其他权限
-    permissions.push((mode & 0o004) ? 'r' : '-');
-    permissions.push((mode & 0o002) ? 'w' : '-');
-    permissions.push((mode & 0o001) ? 'x' : '-');
-    
-    return permissions.join('') + ` (${(mode & parseInt('777', 8)).toString(8)})`;
-  }
-
   /**
    * 递归删除文件夹
    */
   private deleteFolderRecursive(folderPath: string): void {
     console.log('Recursively deleting folder:', folderPath);
-    
+
     if (!window['fs'].existsSync(folderPath)) {
       console.log('Folder does not exist:', folderPath);
       return;
     }
-    
+
     const stats = window['fs'].statSync(folderPath);
     if (!stats.isDirectory()) {
       // 如果不是文件夹，直接删除文件
       window['fs'].unlinkSync(folderPath);
       return;
     }
-    
+
     // 读取文件夹内容
     const entries = window['fs'].readDirSync(folderPath);
-    
+
     for (const entry of entries) {
       const fullPath = window['path'].join(folderPath, entry.name);
       const entryStats = window['fs'].statSync(fullPath);
-      
+
       if (entryStats.isDirectory()) {
         // 递归删除子文件夹
         this.deleteFolderRecursive(fullPath);
@@ -918,7 +721,7 @@ export class FileService {
         window['fs'].unlinkSync(fullPath);
       }
     }
-    
+
     // 删除空文件夹
     window['fs'].rmdirSync(folderPath);
     console.log('Folder deleted:', folderPath);

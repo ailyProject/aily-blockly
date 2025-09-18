@@ -418,6 +418,17 @@ ipcMain.handle("env-get", (event, key) => {
   return process.env[key];
 })
 
+// 移动文件到回收站
+ipcMain.handle("move-to-trash", async (event, filePath) => {
+  try {
+    const result = await shell.trashItem(filePath);
+    return { success: true, result };
+  } catch (error) {
+    console.error('Failed to move item to trash:', error);
+    return { success: false, error: error.message };
+  }
+})
+
 // 打开新实例
 ipcMain.handle("open-new-instance", async (event, data) => {
   try {

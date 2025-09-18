@@ -80,10 +80,38 @@
             .icon {
                 height: 24px;
                 width: 24px;
+                padding-top: 3px;
+
+                .main {
+                    color: #39acff;
+                }
             }
 
             .file-name {
                 height: 100%;
+            }
+
+            .inline-edit-input {
+                background: #3c3f41;
+                border: 1px solid #1890ff;
+                border-radius: 2px;
+                color: #d4d4d4;
+                font-size: 12px;
+                font-family: inherit;
+                padding: 2px 4px;
+                height: 18px;
+                min-width: 120px;
+                max-width: 200px;
+                outline: none;
+
+                &:focus {
+                    border-color: #40a9ff;
+                    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+                }
+
+                &::placeholder {
+                    color: #888;
+                }
             }
         }
     }

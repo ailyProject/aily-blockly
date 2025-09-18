@@ -54,15 +54,15 @@ export const FILE_RIGHTCLICK_MENU: IMenuItem[] = [
         icon: 'fa-light fa-browsers',
         type: 'file'
     },
-    {
-        sep: true
-    },
-    {
-        name: 'MENU.FILE_PROPERTIES',
-        action: 'file-properties',
-        icon: 'fa-light fa-info-circle',
-        type: 'file'
-    }
+    // {
+    //     sep: true
+    // },
+    // {
+    //     name: 'MENU.FILE_PROPERTIES',
+    //     action: 'file-properties',
+    //     icon: 'fa-light fa-info-circle',
+    //     type: 'file'
+    // }
 ];
 
 // 文件夹右键菜单配置
@@ -155,15 +155,15 @@ export const FOLDER_RIGHTCLICK_MENU: IMenuItem[] = [
         icon: 'fa-light fa-magnifying-glass',
         type: 'folder'
     },
-    {
-        sep: true
-    },
-    {
-        name: 'MENU.FOLDER_PROPERTIES',
-        action: 'folder-properties',
-        icon: 'fa-light fa-info-circle',
-        type: 'folder'
-    }
+    // {
+    //     sep: true
+    // },
+    // {
+    //     name: 'MENU.FOLDER_PROPERTIES',
+    //     action: 'folder-properties',
+    //     icon: 'fa-light fa-info-circle',
+    //     type: 'folder'
+    // }
 ];
 
 // 根文件夹（项目根目录）特殊菜单
@@ -228,15 +228,15 @@ export const ROOT_RIGHTCLICK_MENU: IMenuItem[] = [
         icon: 'fa-light fa-magnifying-glass',
         type: 'folder'
     },
-    {
-        sep: true
-    },
-    {
-        name: 'MENU.FOLDER_PROPERTIES',
-        action: 'folder-properties',
-        icon: 'fa-light fa-info-circle',
-        type: 'folder'
-    }
+    // {
+    //     sep: true
+    // },
+    // {
+    //     name: 'MENU.FOLDER_PROPERTIES',
+    //     action: 'folder-properties',
+    //     icon: 'fa-light fa-info-circle',
+    //     type: 'folder'
+    // }
 ];
 
 // 多选菜单配置

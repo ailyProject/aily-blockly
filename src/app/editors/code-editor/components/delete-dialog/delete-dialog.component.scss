@@ -1,0 +1,92 @@
+.prompt-box {
+    background: #2b2d30;
+    border-radius: 5px;
+    flex-direction: column;
+    width: 100%;
+    overflow: hidden;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    height: 34px;
+    border-bottom: 1px solid #222427;
+    background: #2b2d30;
+}
+
+.title {
+    height: 100%;
+    padding-left: 10px;
+    display: flex;
+    align-items: center;
+    flex-grow: 1;
+}
+
+.win-btns {
+    display: flex;
+    align-items: center;
+    font-size: 15px;
+
+    .btn {
+        font-size: 16px;
+        width: 33px;
+        height: 33px;
+        margin-right: 0;
+
+        &:hover {
+            background: #3a3c3f;
+        }
+    }
+
+    .minimize {
+        font-size: 18px;
+    }
+
+    .go-main {
+        // border-right: 1px solid #333;
+        margin-right: 10px;
+        font-size: 17px;
+        background: transparent !important;
+
+        &:hover {
+            color: rgb(75, 151, 221);
+        }
+    }
+
+    .close {
+        font-size: 19px;
+
+        &:hover {
+            color: rgb(145, 0, 0);
+        }
+    }
+}
+
+.content {
+    padding: 10px;
+    background: #323437;
+
+    input {
+        background: #3a3c3f;
+    }
+
+    .text {
+        min-height: 32px;
+        line-height: 25px;
+    }
+
+    .progress-container {
+        height: 32px;
+        // padding-right: 10px;
+    }
+
+}
+
+.footer {
+    margin-top: 10px;
+    text-align: right;
+
+    button {
+        margin-left: 10px;
+    }
+}

@@ -48,39 +48,45 @@ aily Blockly是aily Project下的blockly IDE，前期面向非专业用户提供
 ## 项目赞助
 本项目由以下企业和个人赞助
 
-### 企业赞助  
-<a target="_blank" href="https://www.seekfree.cn/" >
-    <img src=".\brand\seekfree\logo.png" alt="seekfree" width=200 />
-</a>  
+### 企业赞助
 <a target="_blank" href="https://www.seeedstudio.com/" >
-    <img src=".\brand\seeedstudio\logo.png" alt="seeedstudio" width=200 />
-</a>  
+    <img src=".\public\sponsor\seeedstudio\logo.webp" alt="seeedstudio" width=200 />
+</a><br>  
+<a target="_blank" href="https://www.seekfree.cn/" >
+    <img src=".\public\sponsor\seekfree\logo.webp" alt="seekfree" width=200 />
+</a><br>
 <a target="_blank" href="https://www.diandeng.tech/" >
-    <img src=".\brand\diandeng\logo.png" alt="diandeng" width=200 />
-</a>  
+    <img src=".\public\sponsor\diandeng\logo.webp" alt="diandeng" width=200 />
+</a><br>  
 <a target="_blank" href="https://www.openjumper.com/" >
-    <img src=".\brand\openjumper\logo.png" alt="openjumper" width=200 />
-</a>  
+    <img src=".\public\sponsor\openjumper\logo.webp" alt="openjumper" width=200 />
+</a><br>
+<a target="_blank" href="https://www.pdmicro.cn/" >
+    <img src=".\public\sponsor\pengde\logo.webp" alt="openjumper" width=200 />
+</a><br>  
 <a target="_blank" href="https://www.titlab.cn/" >
-    <img src=".\brand\titlab\logo.png" alt="titlab" width=200 />
-</a>  
+    <img src=".\public\sponsor\titlab\logo.webp" alt="titlab" width=200 />
+</a><br>  
 <a target="_blank" href="https://www.emakefun.com" >
-    <img src=".\brand\emakefun\logo.png" alt="emakefun" width=200 />
-</a>  
+    <img src=".\public\sponsor\emakefun\logo.webp" alt="emakefun" width=200 />
+</a><br>  
 <a target="_blank" href="http://www.keyes-robot.com/" >
-    <img src=".\brand\keyes\logo.png" alt="keyes" width=200 />
+    <img src=".\public\sponsor\keyes\logo.webp" alt="keyes" width=200 />
 </a>  
 
 
 ### 个人赞助   
-
+陶冬(天微电子)  
+夏青(蘑菇云创客空间)  
+杜忠忠Dzz(社区伙伴)  
+李端(益学汇)  
+孙俊杰(社区伙伴)  
 
 ## 项目使用到的主要开源项目
 [electron]()本项目使用electron构建桌面程序  
 [angular]()本项目使用angular作为渲染端构建主要UI逻辑  
 [node]()本项目使用npm和node进行包管理和执行必要脚本  
 [7z]()本项目使用7z减小部分包的大小（如巨大的ESP32编译器）  
-[arduino-cli]()本项目使用arduino cli构建arduino项目  
 其他内容可见[package.json](./package.json)  
 
 ## 附加权利说明  

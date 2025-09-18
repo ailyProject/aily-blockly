@@ -1,0 +1,21 @@
+<div class="prompt-box bborder">
+    <div class="header">
+        <div class="title">{{title}}</div>
+        <div class="win-btns">
+            <div class="btn ccenter close" (click)="cancel()">
+                <i class="fa-light fa-xmark"></i>
+            </div>
+        </div>
+    </div>
+    <div class="content">
+        <div class="text">
+            确定删除以下内容吗？
+            <div>{{getFormattedText()}}</div>
+            <div>之后可以从回收站恢复该文件</div>
+        </div>
+        <div class="footer">
+            <button nz-button [nzSize]="'small'" nzType="default" (click)="cancel()">取消</button>
+            <button nz-button [nzSize]="'small'" nzType="primary" nzDanger (click)="deleteFile()">删除</button>
+        </div>
+    </div>
+</div>

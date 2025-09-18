@@ -217,6 +217,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
     // 通过浏览器打开
     openByBrowser: (url) => shell.openExternal(url),
+    // 移动文件到回收站
+    moveToTrash: (filePath) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("move-to-trash", filePath)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
+    },
     exitApp: () => ipcRenderer.send("window-close"),
     // 打开新的程序实例
     openNewInstance: (options = {}) => {
