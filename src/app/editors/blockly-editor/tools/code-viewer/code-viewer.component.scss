@@ -1,5 +1,76 @@
+.code-viewer-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.highlight-controls {
+  flex-shrink: 0;
+  
+  button {
+    background: #007acc;
+    color: white;
+    border: none;
+    padding: 4px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    
+    &:hover {
+      background: #005a9e;
+    }
+  }
+}
+
 nz-code-editor {
     height: 100% !important;
     width: 100% !important;
     background-color:transparent;
+    flex: 1;
+}
+
+// Monaco Editor 高亮样式
+::ng-deep {
+  // 整行高亮（行背景）
+  .highlighted-line {
+    background-color: rgba(255, 255, 0, 0.2) !important;
+    border-left: 3px solid #ffd700 !important;
+  }
+  
+  // 文本高亮（具体文字）
+  .highlighted-text {
+    background-color: rgba(255, 255, 0, 0.3) !important;
+    color: #000 !important;
+    border-radius: 2px;
+  }
+  
+  // 范围高亮
+  .highlighted-range {
+    background-color: rgba(0, 123, 255, 0.2) !important;
+    border: 1px solid rgba(0, 123, 255, 0.5);
+    border-radius: 2px;
+  }
+  
+  // 左边距图标
+  .highlighted-glyph {
+    background-color: #ffd700 !important;
+  }
+  
+  // 错误高亮
+  .highlighted-error {
+    background-color: rgba(255, 0, 0, 0.2) !important;
+    border-bottom: 2px wavy #ff0000;
+  }
+  
+  // 警告高亮
+  .highlighted-warning {
+    background-color: rgba(255, 165, 0, 0.2) !important;
+    border-bottom: 2px wavy #ffa500;
+  }
+  
+  // 成功高亮
+  .highlighted-success {
+    background-color: rgba(0, 255, 0, 0.2) !important;
+    border-left: 3px solid #00ff00;
+  }
 }
