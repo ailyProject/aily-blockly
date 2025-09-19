@@ -26,15 +26,24 @@ declare const monaco: any;
 })
 export class CodeViewerComponent implements AfterViewInit, OnDestroy {
   @ViewChild('editorContainer', { static: false }) editorContainer?: ElementRef;
-  
+
   code = '';
   currentUrl;
   windowInfo = '代码查看';
-  
+
   // 存储高亮装饰器的ID
   private decorationIds: string[] = [];
   // 存储Monaco Editor实例
   private editorInstance: monacoEditor.editor.IStandaloneCodeEditor | null = null;
+  // 存储当前高亮的 block ID，用于在代码更新后恢复高亮
+  private currentHighlightedBlockId: string | null = null;
+  // 存储当前高亮的位置信息
+  private currentHighlightPosition: { startLine: number; endLine: number } | null = null;
+
+  // 添加文本行与ID的映射表
+  private lineIdMap: Map<string, number[]> = new Map(); // id -> 行号数组
+  private idLineMap: Map<number, string> = new Map(); // 行号 -> id
+  private textData: Array<{ text: string, id: string }> = []; // 存储文本和ID的原始数据
 
   constructor(
     private blocklyService: BlocklyService,
@@ -51,13 +60,35 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     this.initializeMonacoEditor();
 
     // 订阅代码变化
-    this.blocklyService.codeSubject.subscribe((code) => {
+    this.blocklyService.codeSubject.subscribe((codeData) => {
       setTimeout(() => {
-        this.code = code;
+        this.code = codeData.text;
         if (this.editorInstance) {
-          this.editorInstance.setValue(code);
+          // 如果没有设置文本映射，则使用传统方式
+          if (this.textData.length === 0) {
+            // this.editorInstance.setValue(this.code);
+            this.setTextWithIds(codeData.data);
+
+            // 如果之前有高亮的 block，在代码更新后恢复高亮
+            // if (this.currentHighlightedBlockId) {
+            //   setTimeout(() => {
+            //     this.restoreCurrentHighlight();
+            //   }, 50);
+            // }
+          }
+          // 如果已经设置了文本映射，则不覆盖编辑器内容
         }
       }, 100);
+    });
+
+    // 订阅 block 点击事件
+    this.blocklyService.blockClickSubject.subscribe((block) => {
+      if (block && block.id) {
+        console.log('收到 block 点击事件:', block.type, block.id);
+        this.highlightById(block.id);
+      } else {
+        this.clearHighlight();
+      }
     });
   }
 
@@ -147,17 +178,15 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
    * @param startLine 起始行号（从1开始）
    * @param endLine 结束行号（从1开始）
    * @param className 可选的CSS类名
+   * @param clearPrevious 是否清除之前的高亮（默认为 true）
    */
-  highlightLines(startLine: number, endLine: number, className?: string): void {
+  highlightLines(startLine: number, endLine: number, className?: string, clearPrevious: boolean = true): void {
     if (!this.editorInstance) {
       console.warn('编辑器实例未就绪');
       return;
     }
 
     const editor = this.editorInstance;
-    
-    // 清除之前的高亮
-    this.clearHighlight();
 
     // 创建装饰器配置
     const decorations = [{
@@ -169,8 +198,17 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
       }
     }];
 
-    // 应用装饰器
-    this.decorationIds = editor.deltaDecorations([], decorations);
+    // 直接替换装饰器，避免闪烁
+    if (clearPrevious) {
+      // 用新装饰器替换所有旧装饰器
+      this.decorationIds = editor.deltaDecorations(this.decorationIds, decorations);
+    } else {
+      // 添加到现有装饰器
+      this.decorationIds = editor.deltaDecorations([], decorations);
+    }
+
+    // 存储当前高亮位置
+    this.currentHighlightPosition = { startLine, endLine };
   }
 
   /**
@@ -186,7 +224,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
 
     const editor = this.editorInstance;
     const model = editor.getModel();
-    
+
     if (!model) return;
 
     // 清除之前的高亮
@@ -224,7 +262,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     const editor = this.editorInstance;
-    
+
     // 清除之前的高亮
     this.clearHighlight();
 
@@ -247,62 +285,237 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     if (this.editorInstance && this.decorationIds.length > 0) {
       this.decorationIds = this.editorInstance.deltaDecorations(this.decorationIds, []);
     }
+    // 清除当前高亮的 block ID 和位置信息
+    this.currentHighlightedBlockId = null;
+    this.currentHighlightPosition = null;
   }
 
   /**
-   * 滚动到指定行并高亮
-   * @param lineNumber 行号（从1开始）
+   * 设置文本内容和ID映射
+   * @param textWithIds 包含文本和ID的数组，格式：[{text: 'code content', id: 'unique_id'}, ...]
    */
-  scrollToLineAndHighlight(lineNumber: number): void {
-    if (!this.editorInstance) return;
+  setTextWithIds(textWithIds: Array<{ text: string, id: string }>): void {
+    // 清除之前的映射
+    this.clearAllMappings();
+
+    // 存储原始数据
+    this.textData = [...textWithIds];
+
+    // 合并所有文本内容
+    const fullText = textWithIds.map(item => item.text).join('\n');
+
+    // 更新编辑器内容
+    if (this.editorInstance) {
+      this.editorInstance.setValue(fullText);
+    }
+
+    // 计算每个文本块对应的行号
+    let currentLine = 1;
+    textWithIds.forEach(item => {
+      const lines = item.text.split('\n');
+      const startLine = currentLine;
+      const endLine = currentLine + lines.length - 1;
+
+      // 创建行号数组
+      const lineNumbers: number[] = [];
+      for (let i = startLine; i <= endLine; i++) {
+        lineNumbers.push(i);
+      }
+
+      // 设置映射关系
+      this.setLineMapping(item.id, lineNumbers);
+
+      // 更新当前行位置（+1是因为join时会添加换行符）
+      currentLine = endLine + 1;
+    });
+
+    console.log('文本与ID映射设置完成:', this.lineIdMap);
+  }
+
+  /**
+   * 设置行与ID的映射关系
+   * @param id 标识符
+   * @param lineNumbers 对应的行号数组
+   */
+  private setLineMapping(id: string, lineNumbers: number[]): void {
+    // 清除该ID之前的映射
+    if (this.lineIdMap.has(id)) {
+      const oldLines = this.lineIdMap.get(id)!;
+      oldLines.forEach(line => this.idLineMap.delete(line));
+    }
+
+    // 设置新的映射
+    this.lineIdMap.set(id, lineNumbers);
+    lineNumbers.forEach(line => this.idLineMap.set(line, id));
+  }
+
+  /**
+   * 根据ID获取对应的行号
+   * @param id 标识符
+   * @returns 行号数组
+   */
+  getLinesByMapping(id: string): number[] {
+    return this.lineIdMap.get(id) || [];
+  }
+
+  /**
+   * 根据行号获取对应的ID
+   * @param lineNumber 行号
+   * @returns 对应的ID
+   */
+  getIdByLine(lineNumber: number): string | undefined {
+    return this.idLineMap.get(lineNumber);
+  }
+
+  /**
+   * 根据ID高亮对应的行
+   * @param id 标识符
+   * @param className 可选的CSS类名
+   */
+  highlightById(id: string, className?: string): void {
+    const lines = this.getLinesByMapping(id);
+    if (lines.length > 0) {
+      console.log(`根据ID ${id} 高亮行:`, lines);
+      this.highlightMultipleLines(lines, className);
+
+      // 滚动到第一行
+      if (this.editorInstance) {
+        this.editorInstance.revealLine(lines[0]);
+      }
+
+      // 更新当前高亮的ID
+      this.currentHighlightedBlockId = id;
+    } else {
+      console.warn(`未找到ID ${id} 对应的行`);
+    }
+  }
+
+  /**
+   * 根据多个ID高亮对应的行
+   * @param ids ID数组
+   * @param className 可选的CSS类名
+   */
+  highlightByIds(ids: string[], className?: string): void {
+    const allLines: number[] = [];
+
+    ids.forEach(id => {
+      const lines = this.getLinesByMapping(id);
+      allLines.push(...lines);
+    });
+
+    if (allLines.length > 0) {
+      // 去重并排序
+      const uniqueLines = [...new Set(allLines)].sort((a, b) => a - b);
+      console.log(`根据IDs ${ids.join(', ')} 高亮行:`, uniqueLines);
+
+      this.highlightMultipleLines(uniqueLines, className);
+
+      // 滚动到第一行
+      if (this.editorInstance && uniqueLines.length > 0) {
+        this.editorInstance.revealLine(uniqueLines[0]);
+      }
+    }
+  }
+
+  /**
+   * 清除所有映射关系
+   */
+  private clearAllMappings(): void {
+    this.lineIdMap.clear();
+    this.idLineMap.clear();
+    this.textData = [];
+    this.clearHighlight();
+  }
+
+  // /**
+  //  * 根据 block ID 高亮对应的代码
+  //  * @param blockId Blockly block 的 ID
+  //  * @param updateCurrentBlockId 是否更新当前高亮的 block ID（默认为 true）
+  //  */
+  // highlightBlockCode(blockId: string, updateCurrentBlockId: boolean = true): void {
+  //   if (!this.editorInstance) {
+  //     console.warn('Monaco Editor 实例未就绪');
+  //     return;
+  //   }
+
+  //   const blockPosition = this.blocklyService.getBlockLinePosition(blockId);
+  //   if (blockPosition) {
+  //     console.log(`高亮 block ${blockId} 对应的代码行:`, blockPosition);
+
+  //     // 滚动到第一个匹配的行
+  //     this.editorInstance.revealLine(blockPosition.startLine);
+
+  //     // 高亮所有匹配的行或段落
+  //     if (blockPosition.segments && blockPosition.segments.length > 0) {
+  //       // 如果有分段信息，高亮每个段落
+  //       this.highlightMultipleSegments(blockPosition.segments);
+  //     } else if (blockPosition.matchingLines && blockPosition.matchingLines.length > 0) {
+  //       // 如果有匹配行信息，高亮所有匹配的行
+  //       this.highlightMultipleLines(blockPosition.matchingLines);
+  //     } else {
+  //       // fallback 到传统的起始-结束行高亮
+  //       this.highlightLines(blockPosition.startLine, blockPosition.endLine);
+  //     }
+
+  //     // 更新当前高亮的 block ID
+  //     if (updateCurrentBlockId) {
+  //       this.currentHighlightedBlockId = blockId;
+  //     }
+  //   } else {
+  //     console.warn(`未找到 block ${blockId} 对应的代码位置`);
+  //   }
+  // }
+
+  /**
+   * 高亮多个分散的代码行
+   * @param lines 要高亮的行号数组
+   * @param className 可选的CSS类名
+   */
+  private highlightMultipleLines(lines: number[], className?: string): void {
+    if (!this.editorInstance || lines.length === 0) return;
 
     const editor = this.editorInstance;
-    
-    // 滚动到指定行
-    editor.revealLine(lineNumber);
-    
-    // 高亮该行
-    this.highlightLines(lineNumber, lineNumber);
+    const decorations: any[] = [];
+
+    lines.forEach(lineNumber => {
+      decorations.push({
+        range: new monacoEditor.Range(lineNumber, 1, lineNumber, 1),
+        options: {
+          isWholeLine: true,
+          className: className || 'highlighted-block',
+          glyphMarginClassName: 'highlighted-glyph'
+        }
+      });
+    });
+
+    // 清除之前的高亮并应用新的
+    this.decorationIds = editor.deltaDecorations(this.decorationIds, decorations);
   }
+
+  // /**
+  //  * 强制恢复当前的高亮（用于代码更新后）
+  //  */
+  // private restoreCurrentHighlight(): void {
+  //   if (this.currentHighlightedBlockId && this.editorInstance) {
+  //     // 重新获取 block 位置（因为代码可能已更新）
+  //     const blockPosition = this.blocklyService.getBlockLinePosition(this.currentHighlightedBlockId);
+  //     if (blockPosition) {
+  //       console.log(`恢复高亮 block ${this.currentHighlightedBlockId}:`, blockPosition);
+
+  //       // 使用相同的逻辑恢复高亮
+  //       if (blockPosition.segments && blockPosition.segments.length > 0) {
+  //         this.highlightMultipleSegments(blockPosition.segments);
+  //       } else if (blockPosition.matchingLines && blockPosition.matchingLines.length > 0) {
+  //         this.highlightMultipleLines(blockPosition.matchingLines);
+  //       } else {
+  //         this.highlightLines(blockPosition.startLine, blockPosition.endLine, 'highlighted-block', true);
+  //       }
+  //     }
+  //   }
+  // }
 
   close() {
     this.uiService.closeTool('code-viewer');
   }
 
-  // 示例方法：演示不同的高亮效果
-  
-  /**
-   * 示例：高亮第5-8行
-   */
-  exampleHighlightLines() {
-    this.highlightLines(5, 8);
-  }
-
-  /**
-   * 示例：高亮所有"void"关键字
-   */
-  exampleHighlightKeyword() {
-    this.highlightText('void', 'highlighted-text');
-  }
-
-  /**
-   * 示例：高亮错误行
-   */
-  exampleHighlightError(lineNumber: number) {
-    this.highlightLines(lineNumber, lineNumber, 'highlighted-error');
-  }
-
-  /**
-   * 示例：高亮警告
-   */
-  exampleHighlightWarning(startLine: number, startCol: number, endLine: number, endCol: number) {
-    this.highlightRange(startLine, startCol, endLine, endCol, 'highlighted-warning');
-  }
-
-  /**
-   * 示例：滚动到指定行并高亮
-   */
-  exampleScrollAndHighlight(lineNumber: number) {
-    this.scrollToLineAndHighlight(lineNumber);
-  }
 }

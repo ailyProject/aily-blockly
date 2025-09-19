@@ -23,7 +23,8 @@ export class BlocklyService {
     ],
   };
 
-  codeSubject = new BehaviorSubject<string>('');
+  codeSubject = new BehaviorSubject<{ text: string, data: any }>({ text: '', data: null });
+  blockClickSubject = new BehaviorSubject<any>(null);
 
   boardConfig;
 
@@ -326,7 +327,7 @@ export class BlocklyService {
     };
 
     // 重置其他可能的状态
-    this.codeSubject.next('');
+    this.codeSubject.next({ text: '', data: null });
   }
 
   getWorkspaceJson() {

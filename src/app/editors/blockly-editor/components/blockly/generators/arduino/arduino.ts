@@ -43,6 +43,12 @@ const inputTypes = Blockly.inputs.inputTypes;
 
 export class ArduinoGenerator extends Blockly.CodeGenerator {
   codeDict = {};
+  
+  // 用于存储代码副本，格式为 [{text: string, id: string}, ...]
+  codeCopy: Array<{text: string, id: string}> = [];
+  
+  // 用于跟踪block到代码的映射
+  blockToCodeMap: Map<string, string[]> = new Map();
 
   /** @param name Name of the language the generator is for. */
   constructor(name = 'Arduino') {
@@ -66,6 +72,22 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       'lowByte,highByte,bitRead,bitWrite,bitSet,bitClear,bit,attachInterrupt,' +
       'detachInterrupt,interrupts,noInterrupts',
     );
+  }
+
+  /**
+   * 重写workspaceToCode方法以重置代码副本
+   * @param workspace The workspace to generate code from
+   * @returns The generated code
+   */
+  override workspaceToCode(workspace: Blockly.Workspace): string {
+    // 在生成新代码之前清空相关数据
+    this.codeCopy = [];
+    this.blockToCodeMap.clear();
+
+    // 调用父类的workspaceToCode方法
+    const code = super.workspaceToCode(workspace);
+
+    return code;
   }
 
   /**
@@ -219,6 +241,10 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       (loops.length > 0 ? `${loops.join('\n  ')}\n` : '') +
       (loops_end.length > 0 ? `  ${loops_end.join('\n  ')}\n` : '') +
       `}`;
+
+    // 创建代码副本，将每行代码与对应的block id关联
+    this.createCodeCopy(newcode);
+
     return newcode;
   }
 
@@ -372,66 +398,78 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   addMacro(tag, code, overwrite = false) {
     if (this.codeDict['macros'][tag] === undefined || overwrite) {
       this.codeDict['macros'][tag] = code;
+      // 记录代码和block ID的映射关系
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addLibrary(tag, code, overwrite = false) {
     if (this.codeDict['libraries'][tag] === undefined || overwrite) {
       this.codeDict['libraries'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addVariable(tag, code, overwrite = false) {
     if (this.codeDict['variables'][tag] === undefined || overwrite) {
       this.codeDict['variables'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addObject(tag, code, overwrite = false) {
     if (this.codeDict['objects'][tag] === undefined || overwrite) {
       this.codeDict['objects'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addFunction(tag, code, overwrite = false) {
     if (this.codeDict['functions'][tag] === undefined || overwrite) {
       this.codeDict['functions'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addSetupBegin(tag, code, overwrite = false) {
     if (this.codeDict['setups_begin'][tag] === undefined || overwrite) {
       this.codeDict['setups_begin'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addSetup(tag, code, overwrite = false) {
     if (this.codeDict['setups'][tag] === undefined || overwrite) {
       this.codeDict['setups'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addSetupEnd(tag, code, overwrite = false) {
     if (this.codeDict['setups_end'][tag] === undefined || overwrite) {
       this.codeDict['setups_end'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addLoopBegin(tag, code, overwrite = false) {
     if (this.codeDict['loops_begin'][tag] === undefined || overwrite) {
       this.codeDict['loops_begin'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addLoop(tag, code, overwrite = false) {
     if (this.codeDict['loops'][tag] === undefined || overwrite) {
       this.codeDict['loops'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
   addLoopEnd(tag, code, overwrite = false) {
     if (this.codeDict['loops_end'][tag] === undefined || overwrite) {
       this.codeDict['loops_end'][tag] = code;
+      this.recordCodeMapping(code, tag);
     }
   }
 
@@ -480,6 +518,86 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       }
     }
     return false;
+  }
+
+  /**
+   * 记录代码片段和对应的block ID映射关系
+   * @param code 代码片段
+   * @param blockId block的ID
+   */
+  recordCodeMapping(code: string, blockId: string) {
+    if (!this.blockToCodeMap.has(blockId)) {
+      this.blockToCodeMap.set(blockId, []);
+    }
+    this.blockToCodeMap.get(blockId)!.push(code);
+  }
+
+  /**
+   * 创建代码副本，将每行代码与对应的block ID关联
+   * @param finalCode 最终生成的完整代码
+   */
+  createCodeCopy(finalCode: string) {
+    this.codeCopy = [];
+    const lines = finalCode.split('\n');
+    
+    for (const line of lines) {
+      if (line.trim()) { // 只处理非空行
+        let matchedBlockId = 'system'; // 默认为系统生成的代码
+        
+        // 尝试在 blockToCodeMap 中找到匹配的代码片段
+        for (const [blockId, codeSegments] of this.blockToCodeMap) {
+          for (const segment of codeSegments) {
+            // 如果当前行包含在某个代码段中，或者代码段包含当前行
+            if (line.includes(segment.trim()) || segment.includes(line.trim())) {
+              matchedBlockId = blockId;
+              break;
+            }
+          }
+          if (matchedBlockId !== 'system') {
+            break;
+          }
+        }
+        
+        this.codeCopy.push({
+          text: line,
+          id: matchedBlockId
+        });
+      }
+    }
+  }
+
+  /**
+   * 获取代码副本数据
+   * @returns 代码副本数组，格式为 [{text: string, id: string}, ...]
+   */
+  getCodeCopy(): Array<{text: string, id: string}> {
+    return this.codeCopy;
+  }
+
+  /**
+   * 获取格式化的代码副本信息（用于调试和展示）
+   * @returns 包含统计信息的格式化字符串
+   */
+  getCodeCopyInfo(): string {
+    const totalLines = this.codeCopy.length;
+    const blockIds = new Set(this.codeCopy.map(item => item.id));
+    const uniqueBlocks = blockIds.size;
+    
+    let info = `代码副本信息:\n`;
+    info += `总行数: ${totalLines}\n`;
+    info += `涉及的block数量: ${uniqueBlocks}\n`;
+    info += `Block ID统计:\n`;
+    
+    const blockStats = new Map<string, number>();
+    this.codeCopy.forEach(item => {
+      blockStats.set(item.id, (blockStats.get(item.id) || 0) + 1);
+    });
+    
+    blockStats.forEach((count, blockId) => {
+      info += `  - ${blockId}: ${count}行\n`;
+    });
+    
+    return info;
   }
 }
 

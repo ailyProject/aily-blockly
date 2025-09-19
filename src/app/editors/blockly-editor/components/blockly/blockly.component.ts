@@ -139,7 +139,7 @@ export class BlocklyComponent {
     const globalServiceManager = GlobalServiceManager.getInstance();
     globalServiceManager.setBitmapUploadService(this.bitmapUploadService);
   }
-  
+
   ngOnInit(): void {
     this.setPrompt();
     this.bitmapUploadService.uploadRequestSubject.subscribe((request) => {
@@ -323,7 +323,24 @@ export class BlocklyComponent {
 
       window['Arduino'] = <any>arduinoGenerator;
       (window as any)['Blockly'] = Blockly;
-      this.workspace.addChangeListener((event) => {
+
+      // 添加 block 点击事件监听
+      this.workspace.addChangeListener((event: any) => {
+        // 监听block选择事件
+        if (event.type === Blockly.Events.SELECTED) {
+          if (event.newElementId) {
+            const block = this.workspace.getBlockById(event.newElementId);
+            if (block) {
+              // console.log('Block selected:', block);
+              this.blocklyService.blockClickSubject.next(block);
+            }
+          } else {
+            // 没有选中任何 block，发送 null
+            // console.log('No block selected');
+            this.blocklyService.blockClickSubject.next(null);
+          }
+        }
+
         try {
           this.codeGeneration();
         } catch (error) {
@@ -396,7 +413,25 @@ export class BlocklyComponent {
     this.codeGenerationTimer = setTimeout(() => {
       try {
         const code = arduinoGenerator.workspaceToCode(this.workspace);
-        this.blocklyService.codeSubject.next(code);
+        
+        // 获取代码副本数据
+        const codeCopy = arduinoGenerator.getCodeCopy();
+        
+        // 在开发环境下输出代码副本信息用于调试
+        // if (codeCopy.length > 0) {
+        //   console.log('代码副本生成成功:', arduinoGenerator.getCodeCopyInfo());
+        //   console.log('代码副本详情:', codeCopy);
+        // }
+        
+        // 将代码和代码副本数据一起传递
+        this.blocklyService.codeSubject.next({ 
+          text: code, 
+          data: codeCopy 
+        });
+
+        // codeCopy.join('\n')
+        // console.log(JSON.stringify(codeCopy));
+        
       } catch (error) {
         // 仅在开发环境下打印错误，避免用户看到错误
         console.error('代码生成时出现错误，可能是某些块尚未注册：', error);
