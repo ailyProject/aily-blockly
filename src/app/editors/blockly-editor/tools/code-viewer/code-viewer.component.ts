@@ -1,12 +1,14 @@
-import { Component, ViewChild } from '@angular/core';
+import { Component, ViewChild, ElementRef, AfterViewInit, OnDestroy } from '@angular/core';
 import { ToolContainerComponent } from '../../../../components/tool-container/tool-container.component';
 import { UiService } from '../../../../services/ui.service';
 import { SubWindowComponent } from '../../../../components/sub-window/sub-window.component';
 import { Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
-import { NzCodeEditorModule, NzCodeEditorComponent } from 'ng-zorro-antd/code-editor';
 import { FormsModule } from '@angular/forms';
 import { BlocklyService } from '../../services/blockly.service';
+
+// 导入monaco-editor
+import * as monacoEditor from 'monaco-editor';
 
 // 声明monaco全局变量
 declare const monaco: any;
@@ -14,7 +16,6 @@ declare const monaco: any;
 @Component({
   selector: 'app-code-viewer',
   imports: [
-    NzCodeEditorModule,
     ToolContainerComponent,
     SubWindowComponent,
     CommonModule,
@@ -23,8 +24,8 @@ declare const monaco: any;
   templateUrl: './code-viewer.component.html',
   styleUrl: './code-viewer.component.scss',
 })
-export class CodeViewerComponent {
-  @ViewChild(NzCodeEditorComponent, { static: false }) codeEditor?: NzCodeEditorComponent;
+export class CodeViewerComponent implements AfterViewInit, OnDestroy {
+  @ViewChild('editorContainer', { static: false }) editorContainer?: ElementRef;
   
   code = '';
   currentUrl;
@@ -33,18 +34,7 @@ export class CodeViewerComponent {
   // 存储高亮装饰器的ID
   private decorationIds: string[] = [];
   // 存储Monaco Editor实例
-  private editorInstance: any;
-
-  options: any = {
-    language: 'cpp',
-    theme: 'vs-dark',
-    lineNumbers: 'on',
-    automaticLayout: true,
-    // 添加编辑器初始化回调
-    onDidCreateEditor: (editor: any) => {
-      this.editorInstance = editor;
-    }
-  }
+  private editorInstance: monacoEditor.editor.IStandaloneCodeEditor | null = null;
 
   constructor(
     private blocklyService: BlocklyService,
@@ -57,11 +47,99 @@ export class CodeViewerComponent {
   }
 
   ngAfterViewInit(): void {
+    // 初始化Monaco Editor
+    this.initializeMonacoEditor();
+
+    // 订阅代码变化
     this.blocklyService.codeSubject.subscribe((code) => {
       setTimeout(() => {
         this.code = code;
+        if (this.editorInstance) {
+          this.editorInstance.setValue(code);
+        }
       }, 100);
     });
+  }
+
+  ngOnDestroy(): void {
+    // 清理Monaco Editor实例
+    if (this.editorInstance) {
+      this.editorInstance.dispose();
+    }
+  }
+
+  /**
+   * 初始化Monaco Editor
+   */
+  private initializeMonacoEditor(): void {
+    if (!this.editorContainer) {
+      console.error('编辑器容器未找到');
+      return;
+    }
+
+    // 设置Monaco Editor的工作路径
+    if (typeof window !== 'undefined') {
+      (window as any).MonacoEnvironment = {
+        getWorkerUrl: (moduleId: string, label: string) => {
+          if (label === 'json') {
+            return '/assets/vs/language/json/json.worker.js';
+          }
+          if (label === 'css' || label === 'scss' || label === 'less') {
+            return '/assets/vs/language/css/css.worker.js';
+          }
+          if (label === 'html' || label === 'handlebars' || label === 'razor') {
+            return '/assets/vs/language/html/html.worker.js';
+          }
+          if (label === 'typescript' || label === 'javascript') {
+            return '/assets/vs/language/typescript/ts.worker.js';
+          }
+          return '/assets/vs/editor/editor.worker.js';
+        }
+      };
+    }
+
+    // 配置Monaco Editor选项
+    const editorOptions: monacoEditor.editor.IStandaloneEditorConstructionOptions = {
+      language: 'cpp',
+      theme: 'vs-dark',
+      lineNumbers: 'on',
+      automaticLayout: true,
+      readOnly: true,
+      minimap: { enabled: false },
+      scrollbar: {
+        vertical: 'auto',
+        horizontal: 'auto'
+      },
+      fontSize: 14,
+      wordWrap: 'on',
+      folding: true,
+      renderLineHighlight: 'all',
+      cursorStyle: 'line',
+      scrollBeyondLastLine: false,
+    };
+
+    try {
+      // 创建Monaco Editor实例
+      this.editorInstance = monacoEditor.editor.create(
+        this.editorContainer.nativeElement,
+        editorOptions
+      );
+
+      // 设置初始代码
+      if (this.code) {
+        this.editorInstance.setValue(this.code);
+      }
+
+      // 监听编辑器尺寸变化
+      window.addEventListener('resize', () => {
+        if (this.editorInstance) {
+          this.editorInstance.layout();
+        }
+      });
+
+    } catch (error) {
+      console.error('Monaco Editor初始化失败:', error);
+    }
   }
 
   /**
@@ -83,7 +161,7 @@ export class CodeViewerComponent {
 
     // 创建装饰器配置
     const decorations = [{
-      range: new monaco.Range(startLine, 1, endLine, 1),
+      range: new monacoEditor.Range(startLine, 1, endLine, 1),
       options: {
         isWholeLine: true,
         className: className || 'highlighted-line',
@@ -114,7 +192,7 @@ export class CodeViewerComponent {
     // 清除之前的高亮
     this.clearHighlight();
 
-    const decorations: any[] = [];
+    const decorations: monacoEditor.editor.IModelDeltaDecoration[] = [];
     const matches = model.findMatches(searchText, false, false, true, null, false);
 
     matches.forEach(match => {
@@ -122,7 +200,7 @@ export class CodeViewerComponent {
         range: match.range,
         options: {
           className: className || 'highlighted-text',
-          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+          stickiness: monacoEditor.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
         }
       });
     });
@@ -151,10 +229,10 @@ export class CodeViewerComponent {
     this.clearHighlight();
 
     const decorations = [{
-      range: new monaco.Range(startLine, startColumn, endLine, endColumn),
+      range: new monacoEditor.Range(startLine, startColumn, endLine, endColumn),
       options: {
         className: className || 'highlighted-range',
-        stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+        stickiness: monacoEditor.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
       }
     }];
 

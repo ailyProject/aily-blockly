@@ -10,15 +10,14 @@
 <ng-template #windowBoxTemplate>
   <div class="code-viewer-container">
     <!-- 控制按钮区域 -->
-    <div class="highlight-controls" style="padding: 8px; border-bottom: 1px solid #333;">
+    <!-- <div class="highlight-controls" style="padding: 8px; border-bottom: 1px solid #333;">
       <button (click)="exampleHighlightLines()" style="margin-right: 8px;">高亮5-8行</button>
       <button (click)="exampleHighlightKeyword()" style="margin-right: 8px;">高亮"void"</button>
       <button (click)="exampleScrollAndHighlight(10)" style="margin-right: 8px;">跳转第10行</button>
       <button (click)="clearHighlight()">清除高亮</button>
     </div>
-    
+     -->
     <!-- 代码编辑器 -->
-    <nz-code-editor [(ngModel)]="code" [nzEditorOption]="options">
-    </nz-code-editor>
+    <div #editorContainer class="monaco-editor-container"></div>
   </div>
 </ng-template>
