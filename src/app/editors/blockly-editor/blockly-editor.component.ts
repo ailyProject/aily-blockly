@@ -63,6 +63,7 @@ export class BlocklyEditorComponent {
         console.log('project path', params['path']);
         try {
           this._projectService.currentProjectPath = params['path']
+          this.projectService.currentProjectPath = params['path'];
           this.loadProject();
         } catch (error) {
           console.error('加载项目失败', error);
@@ -95,7 +96,6 @@ export class BlocklyEditorComponent {
     await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-
     this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
     this.projectService.currentProjectPath = projectPath;
     // 添加到最近打开的项目
@@ -133,8 +133,7 @@ export class BlocklyEditorComponent {
 
     // 6. 加载项目目录中project.abi（这是blockly格式的json文本必须要先安装库才能加载这个json，因为其中可能会用到一些库）
     this.uiService.updateFooterState({ state: 'done', text: '项目加载成功' });
-
-    // this.projectService.stateSubject.next('loaded');
+    this.projectService.stateSubject.next('loaded');
 
     // 7. 后台安装开发板依赖
     this.npmService.installBoardDeps()
@@ -154,6 +153,6 @@ export class BlocklyEditorComponent {
 
   // 测试用
   reload() {
-    this.loadProject();
+    this.projectService.projectOpen();
   }
 }
