@@ -96,7 +96,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this._ProjectService.registerCodeEditor(this);
 
     // 初始化 VSIX 扩展
-    await this.initializeVsixExtensions();
+    this.initializeVsixExtensions();
 
     this.activatedRoute.queryParams.subscribe(params => {
       if (params['path']) {
