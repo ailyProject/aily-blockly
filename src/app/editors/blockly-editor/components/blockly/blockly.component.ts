@@ -417,10 +417,16 @@ export class BlocklyComponent {
         // 获取代码副本数据
         const codeCopy = arduinoGenerator.getCodeCopy();
         
-        // 在开发环境下输出代码副本信息用于调试
+        // // 在开发环境下输出代码副本信息用于调试
         // if (codeCopy.length > 0) {
-        //   console.log('代码副本生成成功:', arduinoGenerator.getCodeCopyInfo());
-        //   console.log('代码副本详情:', codeCopy);
+        //   console.log('=== Arduino代码生成器 - 代码副本信息 ===');
+        //   console.log(arduinoGenerator.getCodeCopyInfo());
+          console.log('=== Block映射详情 ===');
+          console.log(arduinoGenerator.getBlockMappingDebugInfo());
+          // console.log('=== 代码副本详情 ===');
+          // console.log('代码副本数组:', codeCopy);
+        //   console.log('=== 生成的完整代码 ===');
+        //   console.log(code);
         // }
         
         // 将代码和代码副本数据一起传递

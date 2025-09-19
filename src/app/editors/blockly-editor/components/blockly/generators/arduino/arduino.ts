@@ -75,7 +75,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 
   /**
-   * 重写workspaceToCode方法以重置代码副本
+   * 重写workspaceToCode方法以创建代码副本
    * @param workspace The workspace to generate code from
    * @returns The generated code
    */
@@ -84,10 +84,48 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     this.codeCopy = [];
     this.blockToCodeMap.clear();
 
-    // 调用父类的workspaceToCode方法
+    // 调用父类的workspaceToCode方法生成最终代码
     const code = super.workspaceToCode(workspace);
 
     return code;
+  }
+
+  /**
+   * 重写blockToCode方法以收集block代码映射
+   * @param block The block to generate code for
+   * @returns The generated code
+   */
+  override blockToCode(block: Blockly.Block | null): string | [string, number] {
+    if (!block) {
+      return '';
+    }
+
+    // 调用父类的blockToCode方法生成代码
+    const codeResult = super.blockToCode(block);
+
+    // 处理代码结果（可能是string或者[string, number]）
+    let codeText: string;
+    if (Array.isArray(codeResult)) {
+      codeText = codeResult[0];
+    } else {
+      codeText = codeResult;
+    }
+
+    // 如果有代码生成，记录映射关系
+    if (codeText && codeText.trim()) {
+      if (!this.blockToCodeMap.has(block.id)) {
+        this.blockToCodeMap.set(block.id, []);
+      }
+      // 将代码按行分割，每行都与当前block关联
+      const lines = codeText.split('\n');
+      for (const line of lines) {
+        if (line.trim()) {
+          this.blockToCodeMap.get(block.id)!.push(line.trim());
+        }
+      }
+    }
+
+    return codeResult;
   }
 
   /**
@@ -398,78 +436,66 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   addMacro(tag, code, overwrite = false) {
     if (this.codeDict['macros'][tag] === undefined || overwrite) {
       this.codeDict['macros'][tag] = code;
-      // 记录代码和block ID的映射关系
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addLibrary(tag, code, overwrite = false) {
     if (this.codeDict['libraries'][tag] === undefined || overwrite) {
       this.codeDict['libraries'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addVariable(tag, code, overwrite = false) {
     if (this.codeDict['variables'][tag] === undefined || overwrite) {
       this.codeDict['variables'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addObject(tag, code, overwrite = false) {
     if (this.codeDict['objects'][tag] === undefined || overwrite) {
       this.codeDict['objects'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addFunction(tag, code, overwrite = false) {
     if (this.codeDict['functions'][tag] === undefined || overwrite) {
       this.codeDict['functions'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addSetupBegin(tag, code, overwrite = false) {
     if (this.codeDict['setups_begin'][tag] === undefined || overwrite) {
       this.codeDict['setups_begin'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addSetup(tag, code, overwrite = false) {
     if (this.codeDict['setups'][tag] === undefined || overwrite) {
       this.codeDict['setups'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addSetupEnd(tag, code, overwrite = false) {
     if (this.codeDict['setups_end'][tag] === undefined || overwrite) {
       this.codeDict['setups_end'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addLoopBegin(tag, code, overwrite = false) {
     if (this.codeDict['loops_begin'][tag] === undefined || overwrite) {
       this.codeDict['loops_begin'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addLoop(tag, code, overwrite = false) {
     if (this.codeDict['loops'][tag] === undefined || overwrite) {
       this.codeDict['loops'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
   addLoopEnd(tag, code, overwrite = false) {
     if (this.codeDict['loops_end'][tag] === undefined || overwrite) {
       this.codeDict['loops_end'][tag] = code;
-      this.recordCodeMapping(code, tag);
     }
   }
 
@@ -543,18 +569,25 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     for (const line of lines) {
       if (line.trim()) { // 只处理非空行
         let matchedBlockId = 'system'; // 默认为系统生成的代码
+        let bestMatch = '';
         
-        // 尝试在 blockToCodeMap 中找到匹配的代码片段
+        // 尝试在 blockToCodeMap 中找到最匹配的代码片段
         for (const [blockId, codeSegments] of this.blockToCodeMap) {
           for (const segment of codeSegments) {
-            // 如果当前行包含在某个代码段中，或者代码段包含当前行
-            if (line.includes(segment.trim()) || segment.includes(line.trim())) {
+            const trimmedSegment = segment.trim();
+            const trimmedLine = line.trim();
+            
+            // 精确匹配或者代码片段包含当前行
+            if (trimmedLine === trimmedSegment || 
+                (trimmedSegment.includes(trimmedLine) && trimmedLine.length > bestMatch.length)) {
               matchedBlockId = blockId;
-              break;
+              bestMatch = trimmedLine;
             }
-          }
-          if (matchedBlockId !== 'system') {
-            break;
+            // 如果当前行包含代码片段（处理多行代码的情况）
+            else if (trimmedLine.includes(trimmedSegment) && trimmedSegment.length > bestMatch.length) {
+              matchedBlockId = blockId;
+              bestMatch = trimmedSegment;
+            }
           }
         }
         
@@ -586,6 +619,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     let info = `代码副本信息:\n`;
     info += `总行数: ${totalLines}\n`;
     info += `涉及的block数量: ${uniqueBlocks}\n`;
+    info += `Block映射信息: ${this.blockToCodeMap.size}个blocks有代码生成\n`;
     info += `Block ID统计:\n`;
     
     const blockStats = new Map<string, number>();
@@ -597,6 +631,21 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       info += `  - ${blockId}: ${count}行\n`;
     });
     
+    return info;
+  }
+
+  /**
+   * 获取详细的block到代码映射信息（用于调试）
+   * @returns 详细映射信息
+   */
+  getBlockMappingDebugInfo(): string {
+    let info = `Block到代码映射详情:\n`;
+    this.blockToCodeMap.forEach((codeSegments, blockId) => {
+      info += `ID： ${blockId}:\n`;
+      codeSegments.forEach((code, index) => {
+        info += `  ${index + 1}. "${code}"\n`;
+      });
+    });
     return info;
   }
 }
