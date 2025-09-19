@@ -95,9 +95,6 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // 注册当前组件到 _ProjectService
     this._ProjectService.registerCodeEditor(this);
 
-    // 初始化 VSIX 扩展
-    this.initializeVsixExtensions();
-
     this.activatedRoute.queryParams.subscribe(params => {
       if (params['path']) {
         console.log('project path', params['path']);
@@ -111,17 +108,6 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.message.error('没有找到项目路径');
       }
     });
-
-    // 初始化快捷键监听
-    this.initShortcutListeners();
-
-    // 启动定期保存编辑器状态的定时器（每5秒保存一次）
-    this.saveStateTimer = setInterval(() => {
-      this.saveCurrentTabState();
-    }, 5000);
-
-    window.history.replaceState(null, '', window.location.href);
-    window.history.pushState(null, '', window.location.href);
   }
 
   /**
@@ -130,7 +116,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private async initializeVsixExtensions(): Promise<void> {
     try {
       console.log('Initializing VSIX extensions...');
-      
+
       // 等待 Electron 服务初始化完成
       if (this.electronService.isElectron) {
         await this.vsixService.initializeAllExtensions();
@@ -142,6 +128,21 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       console.error('Failed to initialize VSIX extensions:', error);
       // 不阻止组件的正常加载，只是记录错误
     }
+  }
+
+
+  ngAfterViewInit(): void {
+    // 初始化 VSIX 扩展
+    this.initializeVsixExtensions();
+    // 初始化快捷键监听
+    this.initShortcutListeners();
+    // 启动定期保存编辑器状态的定时器（每5秒保存一次）
+    this.saveStateTimer = setInterval(() => {
+      this.saveCurrentTabState();
+    }, 5000);
+
+    window.history.replaceState(null, '', window.location.href);
+    window.history.pushState(null, '', window.location.href);
   }
 
   ngOnDestroy(): void {
@@ -163,10 +164,6 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     // 清理快捷键监听器
     this.cleanupShortcutListeners();
-  }
-
-  ngAfterViewInit(): void {
-
   }
 
   async loadProject(projectPath: string) {
