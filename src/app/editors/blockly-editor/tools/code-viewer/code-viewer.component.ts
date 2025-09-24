@@ -62,11 +62,12 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     // 订阅代码变化
     this.blocklyService.codeSubject.subscribe((codeData) => {
       setTimeout(() => {
-        this.code = codeData.text;
         if (this.editorInstance) {
+          this.editorInstance.setValue(codeData.text); // 先清空内容
           // 如果没有设置文本映射，则使用传统方式
           if (this.textData.length === 0) {
             // this.editorInstance.setValue(this.code);
+            console.log(codeData.data);
             this.setTextWithIds(codeData.data);
 
             // 如果之前有高亮的 block，在代码更新后恢复高亮
@@ -112,19 +113,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     if (typeof window !== 'undefined') {
       (window as any).MonacoEnvironment = {
         getWorkerUrl: (moduleId: string, label: string) => {
-          if (label === 'json') {
-            return '/assets/vs/language/json/json.worker.js';
-          }
-          if (label === 'css' || label === 'scss' || label === 'less') {
-            return '/assets/vs/language/css/css.worker.js';
-          }
-          if (label === 'html' || label === 'handlebars' || label === 'razor') {
-            return '/assets/vs/language/html/html.worker.js';
-          }
-          if (label === 'typescript' || label === 'javascript') {
-            return '/assets/vs/language/typescript/ts.worker.js';
-          }
-          return '/assets/vs/editor/editor.worker.js';
+          return './assets/monaco-editor/worker-loader.js';
         }
       };
     }
@@ -298,36 +287,41 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     // 清除之前的映射
     this.clearAllMappings();
 
-    // 存储原始数据
-    this.textData = [...textWithIds];
+    textWithIds.forEach((lineData, index) => {
+      if (this.lineIdMap.has(lineData.id)) {
+        this.lineIdMap.get(lineData.id).push(index); // 追加行号
+      } else {
+        this.lineIdMap.set(lineData.id, [index]); // 初始化映射
+      }
+    });
 
-    // 合并所有文本内容
-    const fullText = textWithIds.map(item => item.text).join('\n');
+    // // 合并所有文本内容
+    // const fullText = textWithIds.map(item => item.text).join('\n');
 
-    // 更新编辑器内容
-    if (this.editorInstance) {
-      this.editorInstance.setValue(fullText);
-    }
+    // // 更新编辑器内容
+    // if (this.editorInstance) {
+    //   this.editorInstance.setValue(fullText);
+    // }
 
     // 计算每个文本块对应的行号
-    let currentLine = 1;
-    textWithIds.forEach(item => {
-      const lines = item.text.split('\n');
-      const startLine = currentLine;
-      const endLine = currentLine + lines.length - 1;
+    // let currentLine = 1;
+    // textWithIds.forEach(item => {
+    //   const lines = item.text.split('\n');
+    //   const startLine = currentLine;
+    //   const endLine = currentLine + lines.length - 1;
 
-      // 创建行号数组
-      const lineNumbers: number[] = [];
-      for (let i = startLine; i <= endLine; i++) {
-        lineNumbers.push(i);
-      }
+    //   // 创建行号数组
+    //   const lineNumbers: number[] = [];
+    //   for (let i = startLine; i <= endLine; i++) {
+    //     lineNumbers.push(i);
+    //   }
 
-      // 设置映射关系
-      this.setLineMapping(item.id, lineNumbers);
+    //   // 设置映射关系
+    //   this.setLineMapping(item.id, lineNumbers);
 
-      // 更新当前行位置（+1是因为join时会添加换行符）
-      currentLine = endLine + 1;
-    });
+    //   // 更新当前行位置（+1是因为join时会添加换行符）
+    //   currentLine = endLine + 1;
+    // });
 
     console.log('文本与ID映射设置完成:', this.lineIdMap);
   }

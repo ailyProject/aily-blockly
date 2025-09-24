@@ -199,7 +199,7 @@ export class BlocklyComponent {
       console.warn = (function (originalWarn) {
         return function (msg) {
           // 过滤掉块重定义的警告
-          if (msg.includes('overwrites previous definition')) {
+          if (typeof msg === 'string' && msg.includes('overwrites previous definition')) {
             return;
           }
           // 保留其他警告
@@ -331,22 +331,24 @@ export class BlocklyComponent {
           if (event.newElementId) {
             const block = this.workspace.getBlockById(event.newElementId);
             if (block) {
-              // console.log('Block selected:', block);
+              console.log('Block selected:', block);
               this.blocklyService.blockClickSubject.next(block);
             }
           } else {
             // 没有选中任何 block，发送 null
-            // console.log('No block selected');
             this.blocklyService.blockClickSubject.next(null);
           }
         }
 
-        try {
-          this.codeGeneration();
-        } catch (error) {
-          // 仅在开发环境下打印错误，避免用户看到错误
-          console.debug('代码生成时出现错误，可能是某些块尚未注册：', error);
-          // 错误发生时不更新代码
+        // 只有在真正的工作区内容变化时才触发代码生成
+        if (this.shouldRegenerateCode(event)) {
+          try {
+            this.codeGeneration();
+          } catch (error) {
+            // 仅在开发环境下打印错误，避免用户看到错误
+            console.debug('代码生成时出现错误，可能是某些块尚未注册：', error);
+            // 错误发生时不更新代码
+          }
         }
       });
 
@@ -413,37 +415,56 @@ export class BlocklyComponent {
     this.codeGenerationTimer = setTimeout(() => {
       try {
         const code = arduinoGenerator.workspaceToCode(this.workspace);
-        
+
         // 获取代码副本数据
         const codeCopy = arduinoGenerator.getCodeCopy();
-        
+
         // // 在开发环境下输出代码副本信息用于调试
         // if (codeCopy.length > 0) {
         //   console.log('=== Arduino代码生成器 - 代码副本信息 ===');
         //   console.log(arduinoGenerator.getCodeCopyInfo());
-          console.log('=== Block映射详情 ===');
-          console.log(arduinoGenerator.getBlockMappingDebugInfo());
-          // console.log('=== 代码副本详情 ===');
-          // console.log('代码副本数组:', codeCopy);
+        // console.log('=== Block映射详情 ===');
+        // console.log(arduinoGenerator.getBlockMappingDebugInfo());
+        // console.log('=== 代码副本详情 ===');
+        // console.log('代码副本数组:', codeCopy);
         //   console.log('=== 生成的完整代码 ===');
         //   console.log(code);
         // }
-        
+
         // 将代码和代码副本数据一起传递
-        this.blocklyService.codeSubject.next({ 
-          text: code, 
-          data: codeCopy 
+        this.blocklyService.codeSubject.next({
+          text: code,
+          data: codeCopy
         });
 
         // codeCopy.join('\n')
         // console.log(JSON.stringify(codeCopy));
-        
+
       } catch (error) {
         // 仅在开发环境下打印错误，避免用户看到错误
         console.error('代码生成时出现错误，可能是某些块尚未注册：', error);
         // 错误发生时不更新代码
       }
     }, 500); // 500毫秒防抖延迟
+  }
+
+  /**
+   * 判断是否需要重新生成代码
+   * @param event Blockly事件对象
+   * @returns 是否需要重新生成代码
+   */
+  private shouldRegenerateCode(event: any): boolean {
+    const codeChangingEvents = [
+      Blockly.Events.BLOCK_CREATE,    // 创建块
+      Blockly.Events.BLOCK_DELETE,    // 删除块
+      Blockly.Events.BLOCK_CHANGE,    // 块内容变化（字段值变化等）
+      Blockly.Events.BLOCK_MOVE,      // 移动块（包括连接和断开）
+      Blockly.Events.VAR_CREATE,      // 创建变量
+      Blockly.Events.VAR_DELETE,      // 删除变量
+      Blockly.Events.VAR_RENAME,      // 重命名变量
+    ];
+
+    return codeChangingEvents.includes(event.type);
   }
 }
 
