@@ -1,0 +1,184 @@
+<div class="project-new-box">
+  <div class="header">
+    <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
+      <i class="fa-regular fa-chevron-left"></i>
+    </div>
+    <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
+      <input type="text" nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
+        (ngModelChange)="search()" />
+    </nz-input-group>
+    <ng-template #suffixIconSearch>
+      @if(keyword.length > 0){
+      <i class="fa-light fa-xmark" (click)="keyword='';search()"></i>
+      } @else {
+      <i class="fa-light fa-search"></i>
+      }
+    </ng-template>
+    <!-- 查看模式：
+    <div class="tag-list">
+      @for (tag of tagList; track tag) {
+      <nz-tag (click)="changeViewMode(tag)">{{ tag.name }}</nz-tag>
+      }
+    </div> -->
+    <!-- <nz-steps [nzCurrent]="currentStep" nzSize="small">
+      <nz-step [nzTitle]="'PROJECT_NEW.STEPS.SELECT_BOARD' | translate"></nz-step>
+      <nz-step [nzTitle]="'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate"></nz-step>
+      <nz-step [nzTitle]="'PROJECT_NEW.STEPS.CREATE_PROJECT' | translate"
+        [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
+    </nz-steps>
+    <ng-template #iconTemplate><i class="fa-duotone fa-solid fa-spinner-third"></i></ng-template> -->
+    <div class="btns">
+      <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
+        <i class="fa-light fa-question"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
+      </button>
+    </div>
+  </div>
+  <div class="content">
+    <div class="left">
+      <div class="left-inner">
+        @if (currentStep == 0) {
+        <app-brand-list (brandSelected)="onBrandSelected($event)"></app-brand-list>
+        } @else {
+        <div class="steps-box ccenter">
+          <nz-steps [nzCurrent]="currentStep" nzSize="small" [nzDirection]="'vertical'">
+            <nz-step [nzTitle]="'PROJECT_NEW.STEPS.SELECT_BOARD' | translate"></nz-step>
+            <nz-step [nzTitle]="'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate"></nz-step>
+            <nz-step [nzTitle]="'PROJECT_NEW.STEPS.CREATE_PROJECT' | translate"
+              [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
+          </nz-steps>
+          <ng-template #iconTemplate><i class="fa-duotone fa-solid fa-spinner-third"></i></ng-template>
+        </div>
+        }
+      </div>
+    </div>
+    <div class="right">
+      @if (currentStep == 0) {
+      <div class="right-inner flex-start">
+        <div class="board-selector-box sscroll">
+          <div class="board-selector">
+            @for (board of boardList; track board.name) {
+            <div class="board ccenter btn" [ngClass]="{ selected: currentBoard == board, disabled: board.disabled }"
+              (click)="selectBoard(board)">
+              <div class="img-box">
+                <img [src]="resourceUrl+'/imgs/boards/'+board.img" />
+              </div>
+              <div class="name">{{ board.nickname }}
+                @if(board.disabled){
+                <span>(dev)</span>
+                }
+              </div>
+            </div>
+            }
+          </div>
+        </div>
+        @if(currentBoard){
+        <div class="desc-box">
+          <div class="img-box ccenter">
+            <img [src]="resourceUrl+'/imgs/boards/'+currentBoard.img" />
+          </div>
+          <div class="content">
+            <div class="title">
+              <div class="title-text">{{currentBoard.nickname}}</div>
+            </div>
+            <div class="text sscroll">{{ currentBoard.description }}</div>
+            <div class="next">
+              <button nz-button nzType="primary" (click)="nextStep()">
+                {{ 'PROJECT_NEW.BUTTONS.USE_THIS' | translate }}
+              </button>
+              <div class="links">
+                <div class="btn link ccenter" (click)="openUrl(currentBoard.url)">
+                  {{ 'PROJECT_NEW.BOARD.READ_DOC' | translate }}
+                </div>
+                <!-- <div class="btn link ccenter" (click)="openUrl(currentBoard.url)">
+                  {{ '教程' | translate }}
+                </div>
+                <div class="btn link ccenter" (click)="openUrl(currentBoard.url)">
+                  {{ '购买' | translate }}
+                </div> -->
+              </div>
+            </div>
+          </div>
+
+        </div>
+        }
+      </div>
+      } @else {
+      <!-- 基本设定页面 -->
+      <div class="right-inner">
+        <div class="right-content">
+          <div class="item">
+            <div>{{ 'PROJECT_NEW.FORM.BOARD' | translate }}:</div>
+            <nz-input-group [nzSuffix]="suffixIconSearch">
+              <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
+            </nz-input-group>
+            <ng-template #suffixIconSearch>
+              <i class="fa-light fa-at"></i>
+            </ng-template>
+            <nz-select [(ngModel)]="newProjectData.board.version">
+              @for (version of boardVersionList; track version) {
+              <nz-option [nzValue]="version" [nzLabel]="version"></nz-option>
+              }
+            </nz-select>
+          </div>
+          <div class="item">
+            <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div>
+            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
+            @if(showIsExist){
+            <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' |
+              translate }}</div>
+            }
+          </div>
+          <div class="item">
+            <div>{{ 'PROJECT_NEW.FORM.SAVE_PATH' | translate }}:</div>
+            <nz-input-group [nzAddOnAfter]="addOnAfterTemplate">
+              <input nz-input [(ngModel)]="newProjectData.path" [disabled]="true" />
+            </nz-input-group>
+            <ng-template #addOnAfterTemplate>
+              <div class="btn ccenter ffull" (click)="selectFolder()">
+                <i class="fa-light fa-folder"></i>
+              </div>
+            </ng-template>
+          </div>
+          <div class="step-btns">
+            <button nz-button nzType="default" (click)="currentStep = 0">
+              {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
+            </button>
+            @if (currentStep == 1) {
+            <button nz-button nzType="primary" [disabled]="showIsExist" (click)="createProject()">
+              {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
+            </button>
+            }@else if (currentStep == 2) {
+            <button nz-button nzType="default" nzLoading>
+              {{ 'PROJECT_NEW.BUTTONS.CREATING' | translate }}
+            </button>
+            }
+          </div>
+        </div>
+      </div>
+      }
+    </div>
+  </div>
+  <!-- <div class="footer">
+    <div class="btns">
+      @if (currentStep == 0) {
+      <button nz-button nzType="primary" (click)="nextStep()">
+        {{ 'PROJECT_NEW.BUTTONS.NEXT' | translate }}
+      </button>
+      } @else {
+      @if (currentStep == 1) {
+      <button nz-button nzType="default" (click)="currentStep = 0">
+        {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
+      </button>
+      <button nz-button nzType="primary" [disabled]="showIsExist" (click)="createProject()">
+        {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
+      </button>
+      }
+      }
+      @if (currentStep == 2) {
+      <button nz-button nzType="default" nzLoading>
+        {{ 'PROJECT_NEW.BUTTONS.CREATING' | translate }}
+      </button>
+      }
+    </div>
+  </div> -->
+</div>

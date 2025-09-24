@@ -190,7 +190,12 @@ export class LibManagerComponent {
     // 检查库兼容性
     // console.log('当前开发板内核：', this.projectService.currentBoardConfig.core.replace('aily:', ''));
     // console.log('当前库兼容内核：', JSON.stringify(lib.compatibility.core));
-    if (!await this.checkCompatibility(lib.compatibility.core, this.projectService.currentBoardConfig.core.replace('aily:', ''))) {
+    // if (!await this.checkCompatibility(lib.compatibility.core, this.projectService.currentBoardConfig.core.replace('aily:', ''))) {
+    //   return;
+    // }
+    // 处理 core 字符串，去掉第一个以 ':' 分割的部分
+    const boardCore = this.projectService.currentBoardConfig.core.split(':').slice(1).join(':');
+    if (!await this.checkCompatibility(lib.compatibility.core, boardCore)) {
       return;
     }
     // console.log('当前项目路径：', this.projectService.currentProjectPath);

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getUserHome: () => require("os").homedir(),
     getAppDataPath: () => process.env.AILY_APPDATA_PATH,
     getAilyBuilderPath: () => process.env.AILY_BUILDER_PATH,
+    getAilyBuilderBuildPath: () => process.env.AILY_BUILDER_BUILD_PATH,
     getUserDocuments: () => require("os").homedir() + `${pt}Documents`,
     isExists: (path) => existsSync(path),
     getElectronPath: () => __dirname,
@@ -25,7 +26,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     extname: (path) => require("path").extname(path),
     normalize: (path) => require("path").normalize(path),
     resolve: (path) => require("path").resolve(path),
-    basename: (path) => require("path").basename(path)
+    basename: (path, suffix = undefined) => require("path").basename(path, suffix)
   },
   versions: () => process.versions,
   SerialPort: {
@@ -313,5 +314,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getZoomLevel: () => webFrame.getZoomLevel(),
     setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
     getZoomFactor: () => webFrame.getZoomFactor()
+  },
+  tools: {
+    findFileByName: (searchPath, fileName) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("find-file", searchPath, fileName)
+          .then((files) => resolve(files))
+          .catch((error) => reject(error));
+      });
+    },
+    calculateMD5: (text) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("calculate-md5", text)
+          .then((md5) => resolve(md5))
+          .catch((error) => reject(error));
+      });
+    }
   }
 });

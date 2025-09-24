@@ -1,0 +1,13 @@
+<div class="brand-selector">
+    @for (brand of brandList; track brand.value) {
+        <div class="ccenter brand-item" 
+             [class.selected]="selectedBrand?.value === brand.value"
+             (click)="selectBrand(brand)">
+            @if (brand.img) {
+                <img [src]="brand.img" [alt]="brand.name">
+            } @else {
+                <span>{{ brand.name }}</span>
+            }
+        </div>
+    }
+</div>

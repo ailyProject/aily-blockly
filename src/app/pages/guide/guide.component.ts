@@ -122,7 +122,8 @@ export class GuideComponent implements OnInit, AfterViewInit {
   process(item) {
     switch (item.action) {
       case 'project-new':
-        this.uiService.openWindow(item.data);
+        this.router.navigate(['/main/project-new']);
+        // this.uiService.openWindow(item.data);
         break;
       case 'project-open':
         this.openProject(item.data);

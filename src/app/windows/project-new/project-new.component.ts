@@ -12,6 +12,7 @@ import { NzSelectModule } from 'ng-zorro-antd/select';
 import { NpmService } from '../../services/npm.service';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { TranslateModule } from '@ngx-translate/core';
+import { UiService } from '../../services/ui.service';
 
 const { pt } = (window as any)['electronAPI'].platform;
 
@@ -62,7 +63,8 @@ export class ProjectNewComponent {
     private electronService: ElectronService,
     private projectService: ProjectService,
     private configService: ConfigService,
-    private npmService: NpmService
+    private npmService: NpmService,
+    private uiService: UiService
   ) { }
 
   async ngOnInit() {
@@ -148,12 +150,8 @@ export class ProjectNewComponent {
       return;
     }
     this.currentStep = 2;
-
     await this.projectService.projectNew(this.newProjectData);
-
-    // setTimeout(() => {
-    //   window['subWindow'].close();
-    // }, 1000);
+    this.uiService.closeWindow();
   }
 
   openUrl(url) {

@@ -99,7 +99,7 @@ export let HEADER_BTNS: IMenuItem[][] = [
     {
       name: 'MENU.USER_AUTH',
       action: 'user-auth',
-      data: { type: 'tool', data: "app-store" },
+      data: { type: 'tool', data: "user-auth" },
       icon: 'fa-light fa-user',
     },
   ],

@@ -7,6 +7,7 @@ export class _ProjectService {
 
   currentProjectPath;
   currentPackageData;
+  private initialized = false; // 防止重复初始化
 
   constructor(
     private blocklyService: BlocklyService,
@@ -14,13 +15,25 @@ export class _ProjectService {
   ) { }
 
   init() {
+    if (this.initialized) {
+      console.warn('_ProjectService 已经初始化过了，跳过重复初始化');
+      return;
+    }
+    
+    this.initialized = true;
     this.actionService.listen('project-save', (action) => {
       this.save(action.payload.path);
-    });
+    }, 'project-save-handler');
     this.actionService.listen('project-check-unsaved', (action) => {
       let result = this.hasUnsavedChanges();
       return { hasUnsavedChanges: result };
-    });
+    }, 'project-check-unsaved-handler');
+  }
+
+  destroy() {
+    this.actionService.unlisten('project-save-handler');
+    this.actionService.unlisten('project-check-unsaved-handler');
+    this.initialized = false; // 重置初始化状态
   }
 
   close() {

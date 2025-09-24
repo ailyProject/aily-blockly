@@ -64,7 +64,7 @@ export class BlocklyEditorComponent {
         try {
           this._projectService.currentProjectPath = params['path']
           this.projectService.currentProjectPath = params['path'];
-          this.loadProject();
+          this.loadProject(params['path']);
         } catch (error) {
           console.error('加载项目失败', error);
           this.message.error('加载项目失败，请检查项目文件是否完整');
@@ -84,6 +84,7 @@ export class BlocklyEditorComponent {
   }
 
   ngOnDestroy(): void {
+    this._projectService.destroy();
     this._builderService.cancel();
     this._builderService.destroy();
     this._uploadService.cancel();
@@ -92,16 +93,16 @@ export class BlocklyEditorComponent {
     this.blocklyService.reset();
   }
 
-  async loadProject(projectPath = this._projectService.currentProjectPath) {
+  async loadProject(projectPath) {
     await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-    this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
-    this.projectService.currentProjectPath = projectPath;
+    this.electronService.setTitle(`aily blockly - ${packageJson.nickname}`);
     // 添加到最近打开的项目
     this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
     // 设置当前项目路径和package.json数据
     this._projectService.currentPackageData = packageJson;
+    this.projectService.currentPackageData = packageJson;
 
     // 检查是否有node_modules目录，没有则安装依赖，有则跳过
     const nodeModulesExist = this.electronService.exists(projectPath + '/node_modules');

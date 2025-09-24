@@ -1,0 +1,33 @@
+.brand-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 15px;
+  padding-bottom: 15px;
+
+  div {
+    background: #3e4243;
+    padding: 5px;
+    border-radius: 5px;
+    cursor: pointer;
+    height: 50px;
+    font-size: 20px;
+
+    img {
+      max-width: 140px;
+      max-height: 40px;
+    }
+
+    &:hover {
+      background: #555959;
+    }
+
+    &.selected {
+      background: #065095;
+      
+      &:hover {
+        background: #155c96;
+      }
+    }
+  }
+}

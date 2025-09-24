@@ -17,7 +17,7 @@
   </div>
   }
   <div class="null-box drag" (dblclick)="maximize()"></div>
-  <div class="project-box ccenter">{{ projectData.name }}</div>
+  <div class="project-box ccenter">{{ projectData.nickname || projectData.name}}</div>
   <div class="toolbox">
     @for (zone of headerBtns; track $index) {
     <div class="zone ccenter">

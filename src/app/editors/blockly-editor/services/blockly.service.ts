@@ -231,6 +231,7 @@ export class BlocklyService {
       const block = blocks[index];
       // 从Blockly中删除block定义
       if (block.type && Blockly.Blocks[block.type]) {
+        console.log(`- delete ${block.type}`);
         delete Blockly.Blocks[block.type];
       }
     }
@@ -252,6 +253,9 @@ export class BlocklyService {
   // 从toolbox中移除项
   removeLibToolbox(toolboxItem) {
     // 通过比较找到要移除的toolbox项
+    console.log(`即将移除`, toolboxItem);
+
+
     const index = this.findToolboxItemIndex(toolboxItem);
     if (index !== -1) {
       this.toolbox.contents.splice(index, 1);
@@ -264,7 +268,7 @@ export class BlocklyService {
     for (let i = 0; i < this.toolbox.contents.length; i++) {
       const item = this.toolbox.contents[i];
       // 使用name、categoryId等属性进行匹配
-      if (JSON.stringify(item) === JSON.stringify(toolboxItem)) {
+      if (item.name === toolboxItem.name && item.kind == toolboxItem.kind) {
         return i;
       }
     }

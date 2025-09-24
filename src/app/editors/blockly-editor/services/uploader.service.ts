@@ -14,6 +14,8 @@ import { SerialDialogComponent } from "../../../main-window/components/serial-di
 import { ActionService } from "../../../services/action.service";
 import { arduinoGenerator } from "../components/blockly/generators/arduino/arduino";
 import { BlocklyService } from "./blockly.service";
+import { findFile } from '../../../utils/builder.utils';
+import { error } from "console";
 
 @Injectable()
 export class _UploaderService {
@@ -38,6 +40,8 @@ export class _UploaderService {
   private uploadCompleted = false;
   private isErrored = false;
   cancelled = false;
+  
+  private initialized = false; // 防止重复初始化
 
   // 定义正则表达式，匹配常见的进度格式
   progressRegexPatterns = [
@@ -47,12 +51,14 @@ export class _UploaderService {
     /\[\s*={1,}>*\s*\]\s*\d+%.*$/,
     // Writing | ████████████████████████████████████████████████▉  | 98% 
     /\|\s*\d+%\s*$/,
-    // 或者只是数字+百分号（例如：[====>    ] 70%）
-    /\b(\d+)%\b/,
+    // Writing at 0x00a2b8d7 [============================> ]  97.1% 196608/202563 bytes...
+    /Writing\s+at\s+0x[0-9a-f]+\s+\[.*?\]\s+(\d+(?:\.\d+)?)%/i,
     // Writing at 0x0005446e... (18 %)
     // Writing at 0x0002d89e... (40 %)
     // Writing at 0x0003356b... (50 %)
     /Writing\s+at\s+0x[0-9a-f]+\.\.\.\s+\(\d+\s*%\)/i,
+    // 或者只是数字+百分号（例如：[====>    ] 70%）
+    /\b(\d+(?:\.\d+)?)%\b/,
     // 70% 13/18
     /^(\d+)%\s+\d+\/\d+/,
     // 标准格式：数字%（例如：70%）
@@ -62,22 +68,123 @@ export class _UploaderService {
   ];
 
   init() {
-    this.actionService.listen('upload-begin', (action) => {
-      this.upload();
-    });
+    if (this.initialized) {
+      console.warn('_UploaderService 已经初始化过了，跳过重复初始化');
+      return;
+    }
+    
+    this.initialized = true;
+    this.actionService.listen('upload-begin', async (action) => {
+      try {
+        const result = await this.upload();
+        return { success: true, result };
+      } catch (msg) {
+        return { success: false, result: msg };
+      }
+    }, 'uploader-upload-begin');
     this.actionService.listen('upload-cancel', (action) => {
       this.cancel();
-    });
+    }, 'uploader-upload-cancel');
   }
 
   destroy() {
-    this.actionService.unlisten('upload-begin');
-    this.actionService.unlisten('upload-cancel');
+    console.log("_UploaderService destroy");
+    this.actionService.unlisten('uploader-upload-begin');
+    this.actionService.unlisten('uploader-upload-cancel');
+    this.initialized = false; // 重置初始化状态
+  }
+
+  /**
+   * 处理上传参数，统一处理所有参数替换和文件查找逻辑
+   * @param uploadParam 原始上传参数字符串
+   * @param buildPath 构建路径
+   * @param toolsPath 工具路径
+   * @returns 处理后的参数列表、标志和命令信息
+   */
+  private async processUploadParams(uploadParam: string, buildPath: string, toolsPath: string, sdkPath: string, baudRate: string) {
+    const flags = {
+      use_1200bps_touch: false,
+      wait_for_upload: false
+    };
+
+    // 第一步：分割参数并处理基本变量替换和标志提取
+    let paramPromises = uploadParam.split(' ').map(async param => {
+      if (param.startsWith('[') && param.endsWith(']')) {
+        if (param.includes('--use_1200bps_touch')) {
+          flags.use_1200bps_touch = true;
+        }
+        if (param.includes('--wait_for_upload')) {
+          flags.wait_for_upload = true;
+        }
+        return ""; // 标志参数不需要保留在参数列表中
+      } else if (param.includes('${serial}')) {
+        return param.replace('${serial}', this.serialService.currentPort || '');
+      } else if (param.includes('${baud}')) {
+        return param.replace('${baud}', baudRate || '115200');
+      } else if (param.includes('${bootloader}')) {
+        const bootLoaderFile = await findFile(buildPath, '*.bootloader.bin');
+        return param.replace('${bootloader}', bootLoaderFile);
+      } else if (param.includes('${partitions}')) {
+        const partitionsFile = await findFile(buildPath, '*.partitions.bin');
+        return param.replace('${partitions}', partitionsFile);
+      } else if (param.includes('${boot_app0}')) {
+        return param.replace('${boot_app0}', `${sdkPath}/tools/partitions/boot_app0.bin`)
+      }
+      return param;
+    });
+    
+    let paramList = (await Promise.all(paramPromises)).filter(param => param !== ""); // 过滤掉空字符串（标志参数）
+
+    console.log("Processed upload params: ", paramList, flags);
+
+    // 第二步：查找可执行文件的完整路径
+    let command = '';
+    if (paramList.length > 0) {
+      command = await findFile(toolsPath, paramList[0] + (window['platform'].isWindows ? '.exe' : ''));
+    }
+
+    // 替换命令为完整路径命令
+    if (command) {
+      paramList[0] = command;
+    }
+
+    // 第三步：处理 ${'filename'} 格式的文件路径参数
+    for (let i = 0; i < paramList.length; i++) {
+      const param = paramList[i];
+      const match = param.match(/\$\{\'(.+?)\'\}/);
+      if (match) {
+        const fileName = match[1];
+        
+        // 获取fileName后缀
+        const fileNameParts = fileName.split('.');
+        const fileExtension = fileNameParts.length > 1 ? fileNameParts.pop() : '';
+
+        let findRes = '';
+
+        // 判断后缀是否为(bin|elf|hex|eep|img|uf2)之一
+        if (!['bin', 'elf', 'hex', 'eep', 'img', 'uf2'].includes(fileExtension)) {
+          findRes = await findFile(toolsPath, fileName);
+          if (!findRes) {
+            findRes = await findFile(sdkPath + "/tools", fileName);
+          }
+        } else {
+          findRes = await findFile(buildPath, fileName);
+        }
+
+        paramList[i] = param.replace(`\$\{\'${fileName}\'\}`, findRes);
+      }
+    }
+
+    return {
+      processedParams: paramList,
+      flags,
+      command
+    };
   }
 
   // 添加这个错误处理方法
   private handleUploadError(errorMessage: string, title = "上传失败") {
-    console.error("handle errror: ", errorMessage);
+    // console.error("handle errror: ", errorMessage);
     this.noticeService.update({
       title: title,
       text: errorMessage,
@@ -148,7 +255,7 @@ export class _UploaderService {
             // 编译成功，继续上传流程
           } catch (error) {
             // 编译失败，处理错误
-            console.error("编译失败:", error);
+            // console.error("编译失败:", error);
             // reject(error || { state: 'error', text: '编译失败，请检查代码' });
           }
         }
@@ -172,6 +279,8 @@ export class _UploaderService {
         }
 
         const buildPath = this._builderService.buildPath;
+        const sdkPath = this._builderService.sdkPath;
+        const toolsPath = this._builderService.toolsPath;
 
         // 判断buildPath是否存在
         if (!window['path'].isExists(buildPath)) {
@@ -183,133 +292,79 @@ export class _UploaderService {
 
         let lastUploadText = `正在上传${boardJson.name}`;
 
-        const sdkPath = this._builderService.sdkPath;
-        const toolsPath = this._builderService.toolsPath;
-
         let uploadParam = '';
         let uploadParamList: string[] = [];
 
-        const compilerTool = boardJson.compilerTool || 'arduino-cli';
-        if (compilerTool !== 'arduino-cli') {
-          // 获取上传参数
-          uploadParam = boardJson.uploadParam;
-          if (!uploadParam) {
-            this.handleUploadError('缺少上传参数，请检查板子配置');
-            reject({ state: 'error', text: '缺少上传参数' });
-            return;
-          }
+        let baudRate = '';
 
-          uploadParamList = uploadParam.split(' ')
-          const command = uploadParamList[0];
-
-          if (command === 'avrdude') {
-            lastUploadText = `正在使用avrdude上传${boardJson.name}`;
-            uploadParamList = uploadParam.split(' ').map(param => {
-              if (param === 'avrdude') {
-                return `${toolsPath}/avrdude@6.3.0-arduino17/bin/avrdude`;
-              } else if (param === '-Cavrdude.conf') {
-                return `-C${toolsPath}/avrdude@6.3.0-arduino17/etc/avrdude.conf`;
-              }
-              return param;
-            });
-
-            // 构建命令
-            // avrdude" "-CC:\Users\coloz\AppData\Local\Arduino15\packages\arduino\tools\avrdude\6.3.0-arduino17/etc/avrdude.conf" -v -V -patmega328p -carduino "-PCOM6" -b115200 -D "-Uflash:w:C:\Users\coloz\AppData\Local\arduino\sketches\66B0FBB49C1955500D8D91CCC1015A05/sketch.ino.hex:i"
-
-            const baudRate = '115200';
-            uploadParam = uploadParamList.join(' ');
-            uploadParam += ` -P${this.serialService.currentPort} -b${baudRate} -D -Uflash:w:${buildPath}/sketch.hex:i`;
-          } else if (command === 'esptool') {
-            lastUploadText = `正在使用esptool上传${boardJson.name}`;
-
-            // 提取--chip后的芯片型号
-            let chipType = '';
-            const chipIndex = uploadParamList.findIndex(param => param === '--chip');
-            if (chipIndex !== -1 && chipIndex + 1 < uploadParamList.length) {
-              chipType = uploadParamList[chipIndex + 1];
-            }
-
-            uploadParamList = uploadParam.split(' ').map(param => {
-              if (param === 'esptool') {
-                return `${toolsPath}/esptool_py@4.8.1/esptool`;
-              }
-              return param;
-            });
-
-            // 构建命令
-            // "C:\Users\LENOVO\AppData\Local\Arduino15\packages\esp32\tools\esptool_py\4.9.dev3/esptool.exe" --chip esp32s3--port "COM3" --baud 921600  --before default_reset--after hard_reset write_flash - z--flash_mode keep--flash_freq keep--flash_size keep 0x0 "C:\Users\LENOVO\AppData\Local\aily-builder\project\blink_sketch_efc08b5a\blink_sketch.bootloader.bin" 0x8000 "C:\Users\LENOVO\AppData\Local\aily-builder\project\blink_sketch_efc08b5a\blink_sketch.partitions.bin" 0xe000 "C:\Users\LENOVO\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.2.0/tools/partitions/boot_app0.bin" 0x10000 "C:\Users\LENOVO\AppData\Local\aily-builder\project\blink_sketch_efc08b5a\blink_sketch.bin"
-
-            const baudRate = '921600';
-            // TODO
-            const sketch_bootloader = `${buildPath}/sketch.bootloader.bin`;
-            const sketch_partitions = `${buildPath}/sketch.partitions.bin`;
-            let boot_app0_bin = `${sdkPath}/tools/partitions/boot_app0.bin`;
-
-            uploadParam = uploadParamList.join(' ');
-            uploadParam += ` --port ${this.serialService.currentPort} --baud ${baudRate} --before default_reset --after hard_reset write_flash -z --flash_mode keep --flash_freq keep --flash_size keep 0x0 ${sketch_bootloader} 0x8000 ${sketch_partitions} 0xe000 ${boot_app0_bin} 0x10000 ${buildPath}/sketch.bin`;
-          } else if (command === 'bossac') {
-            lastUploadText = `正在使用bossac上传${boardJson.name}`;
-            let use_1200bps_touch = false;
-            uploadParamList = uploadParam.split(' ').map(param => {
-              if (param === 'bossac') {
-                return `${toolsPath}/bossac@1.9.1-arduino5/bossac`;
-              } else if (param.includes('--use_1200bps_touch')) {
-                use_1200bps_touch = true;
-                return "";
-              }
-              return param;
-            });
-
-            if (use_1200bps_touch) {
-              await this.serialMonitorService.connect({ path: this.serialService.currentPort || '', baudRate: 1200 });
-              // await new Promise(resolve => setTimeout(resolve, 250));
-              this.serialMonitorService.disconnect();
-            }
-
-            // 构建命令
-            // "C:\Users\LENOVO\AppData\Local\Arduino15\packages\arduino\tools\bossac\1.9.1-arduino5/bossac" -d --port=COM8 -a -U -e -w "C:\Users\LENOVO\AppData\Local\aily-builder\project\blink_sketch_efc08b5a/blink_sketch.bin" -R
-
-            uploadParam = uploadParamList.join(' ');
-            uploadParam += ` -d --port=${this.serialService.currentPort} -a -U -e -w ${buildPath}/sketch.bin -R`;
-          } else if (command === 'dfu-util') {
-            lastUploadText = `正在使用dfu-util上传${boardJson.name}`;
-            uploadParamList = uploadParam.split(' ').map(param => {
-              if (param === 'dfu-util') {
-                return `${toolsPath}/dfu-util@0.11.0-arduino5/dfu-util`;
-              }
-              return param;
-            });
-
-            // 构建命令
-            // "C:\Users\LENOVO\AppData\Local\Arduino15\packages\arduino\tools\dfu-util\0.11.0-arduino5/dfu-util" --device 0x2341:0x0069,:0x0369 -D "C:\Users\LENOVO\AppData\Local\arduino\sketches\1149E9B555B61CE95EAC981A26A112DC/Blink.ino.bin" -a0 -Q
-
-            uploadParam = uploadParamList.join(' ');
-            uploadParam += ` --device 0x2341:0x0069,:0x0369 -D ${buildPath}/sketch.bin -a0 -Q`;
-          }
-        } else {
-          // 获取上传参数
-          uploadParam = boardJson.uploadParam;
-          if (!uploadParam) {
-            this.handleUploadError('缺少上传参数，请检查板子配置');
-            reject({ state: 'error', text: '缺少上传参数' });
-            return;
-          }
-
-          uploadParamList = uploadParam.split(' ').map(param => {
-            // 替换${serial}为当前串口号
-            if (param.includes('${serial}')) {
-              return param.replace('${serial}', this.serialService.currentPort);
-            } else if (param.startsWith('aily:')) {
-              return this._builderService.boardType;
-            }
-            return param;
-          });
-
-          uploadParam = uploadParamList.join(' ');
+        // 获取上传参数
+        uploadParam = boardJson.uploadParam;
+        if (!uploadParam) {
+          this.handleUploadError('缺少上传参数，请检查板子配置');
+          reject({ state: 'error', text: '缺少上传参数' });
+          return;
         }
 
-        // 上传
-        // await this.uiService.openTerminal();
+        try {
+          const projectConfig = await this.projectService.getProjectConfig();
+          console.log("Project config: ", projectConfig);
+          if (projectConfig) {
+            baudRate = projectConfig?.UploadSpeed?.upload?.speed || '';
+          }
+        } catch (error) {
+          console.warn('没有额外的自定义配置');
+        }
+
+        // 解析和处理上传参数
+        let processedParams: string[];
+        let flags: { use_1200bps_touch: boolean; wait_for_upload: boolean };
+        let command: string;
+        
+        try {
+          const result = await this.processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate);
+          processedParams = result.processedParams;
+          flags = result.flags;
+          command = result.command;
+        } catch (error) {
+          this.handleUploadError(error.message || '参数处理失败');
+          reject({ state: 'error', text: error.message || '参数处理失败' });
+          return;
+        }
+
+        uploadParamList = processedParams;
+        const use_1200bps_touch = flags.use_1200bps_touch;
+        const wait_for_upload = flags.wait_for_upload;
+
+        if (!command) {
+          this.handleUploadError('上传工具未找到，请检查安装');
+          reject({ state: 'error', text: '上传工具未找到' });
+          return;
+        }
+
+        // 上传预处理
+        if (use_1200bps_touch) {
+          await this.serialMonitorService.connect({ path: this.serialService.currentPort || '', baudRate: 1200 });
+          // await new Promise(resolve => setTimeout(resolve, 250));
+          this.serialMonitorService.disconnect();
+        }
+
+        console.log("Wait for upload:", wait_for_upload);
+
+        if (wait_for_upload) {
+          const portList = await this.serialMonitorService.getPortsList();
+          await this.serialMonitorService.connect({ path: this.serialService.currentPort });
+          await new Promise(resolve => setTimeout(resolve, 250));
+          this.serialMonitorService.disconnect();
+          const currentPortList = await this.serialMonitorService.getPortsList();
+
+          // 对比portList和currentPortList, 找出新增的port
+          const newPorts = currentPortList.filter(port => !portList.some(existingPort => existingPort.path === port.path));
+          if (newPorts.length > 0) {
+            this.serialService.currentPort = newPorts[0].path;
+          } else {
+            console.log("没有检测到新串口，继续使用旧串口");
+          }
+        }
 
         const title = '上传中';
         const completeTitle = '上传完成';
@@ -319,48 +374,48 @@ export class _UploaderService {
 
         let errorText = '';
 
-        // 获取和解析项目编译参数
-        let buildProperties = '';
-        try {
-          const projectConfig = await this.projectService.getProjectConfig();
-          if (projectConfig) {
-            const buildPropertyParams: string[] = [];
+        // // 获取和解析项目编译参数
+        // let buildProperties = '';
+        // try {
+        //   const projectConfig = await this.projectService.getProjectConfig();
+        //   if (projectConfig) {
+        //     const buildPropertyParams: string[] = [];
 
-            // 遍历配置对象，解析编译参数
-            Object.values(projectConfig).forEach((configSection: any) => {
-              if (configSection && typeof configSection === 'object') {
-                // 遍历每个配置段（如 build、upload 等）
-                Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
-                  // 排除upload等非编译相关的配置段
-                  if (sectionKey == 'build') return;
-                  if (sectionValue && typeof sectionValue === 'object') {
-                    // 遍历具体的配置项
-                    Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
-                      buildPropertyParams.push(`--upload-property ${sectionKey}.${key}=${value}`);
-                    });
-                  }
-                });
-              }
-            });
+        //     // 遍历配置对象，解析编译参数
+        //     Object.values(projectConfig).forEach((configSection: any) => {
+        //       if (configSection && typeof configSection === 'object') {
+        //         // 遍历每个配置段（如 build、upload 等）
+        //         Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
+        //           // 排除upload等非编译相关的配置段
+        //           if (sectionKey == 'build') return;
+        //           if (sectionValue && typeof sectionValue === 'object') {
+        //             // 遍历具体的配置项
+        //             Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
+        //               buildPropertyParams.push(`--upload-property ${sectionKey}.${key}=${value}`);
+        //             });
+        //           }
+        //         });
+        //       }
+        //     });
 
-            buildProperties = buildPropertyParams.join(' ');
-            if (buildProperties) {
-              buildProperties = ' ' + buildProperties; // 在前面添加空格
-            }
-          }
-        } catch (error) {
-          console.warn('获取项目配置失败:', error);
-        }
+        //     buildProperties = buildPropertyParams.join(' ');
+            
+        //     if (buildProperties) {
+        //       buildProperties = ' ' + buildProperties; // 在前面添加空格
+        //     }
+        //   }
+        // } catch (error) {
+        //   console.warn('获取项目配置失败:', error);
+        // }
 
         // 将buildProperties添加到compilerParam中
-        uploadParam += buildProperties;
+        // uploadParam += buildProperties;
+        // const uploadCmd = uploadParam;
 
-        let uploadCmd = '';
-        if (compilerTool !== 'arduino-cli') {
-          uploadCmd = uploadParam;
-        } else {
-          uploadCmd = `aily-arduino-cli.exe ${uploadParam} --input-dir ${buildPath} --board-path ${sdkPath} --tools-path ${toolsPath} --verbose`;
-        }
+        const buildProperties = '';
+
+        const uploadCmd = `${command} ${uploadParamList.slice(1).join(' ')}${buildProperties}`;
+        console.log("Upload cmd: ", uploadCmd);
 
         this.uploadInProgress = true;
         this.noticeService.update({ title: title, text: lastUploadText, state: 'doing', progress: 0, setTimeout: 0 });
@@ -384,11 +439,14 @@ export class _UploaderService {
                 lines.forEach((line: string) => {
                   const trimmedLine = line.trim();
                   if (trimmedLine) {
+                    errorText = trimmedLine;
+
                     // 检查是否有错误信息
                     if (trimmedLine.toLowerCase().includes('error:') ||
                       trimmedLine.toLowerCase().includes('failed') ||
                       trimmedLine.toLowerCase().includes('a fatal error occurred') ||
                       trimmedLine.toLowerCase().includes("can't open device")) {
+                      
                       this.handleUploadError(trimmedLine);
                       // return;
                     }
@@ -462,14 +520,16 @@ export class _UploaderService {
                         const match = trimmedLine.match(regex);
                         if (match) {
                           // 提取数字部分
-                          console.log("match: ", match);
-                          let numericMatch = trimmedLine.match(/(\d+)%/);
+                          // console.log("match: ", match);
+                          let numericMatch = trimmedLine.match(/(\d+(?:\.\d+)?)%/);
                           if (!numericMatch) {
-                            numericMatch = trimmedLine.match(/(\d+)\s*%/);
+                            numericMatch = trimmedLine.match(/(\d+(?:\.\d+)?)\s*%/);
                           }
-                          console.log("numericMatch: ", numericMatch);
+                          // console.log("numericMatch: ", numericMatch);
                           if (numericMatch) {
-                            progressValue = parseInt(numericMatch[1], 10);
+                            progressValue = parseFloat(numericMatch[1]);
+                            // 转换为整数，因为进度条通常使用整数
+                            progressValue = Math.floor(progressValue);
                             if (lastProgress == 0 && progressValue > 100) {
                               progressValue = 0;
                             }
@@ -480,7 +540,7 @@ export class _UploaderService {
                     }
 
                     if (progressValue && progressValue > lastProgress) {
-                      console.log("progress: ", lastProgress);
+                      // console.log("progress: ", lastProgress);
                       lastProgress = progressValue;
                       this.noticeService.update({
                         title: title,
@@ -498,6 +558,12 @@ export class _UploaderService {
                     if (lastProgress === 100) {
                       this.uploadCompleted = true;
                     }
+
+                    // 处理特定的完成标志: Wrote 198144 bytes to E:/NEW.UF2
+                    if (trimmedLine.includes('Wrote') && trimmedLine.includes('bytes to')) {
+                      this.uploadCompleted = true;
+                    }
+
                   }
                 });
               } else {
@@ -509,14 +575,13 @@ export class _UploaderService {
             }
           },
           error: (error: any) => {
-            console.error("上传错误:", error);
+            console.log("上传命令错误:", error);
             this.handleUploadError(error.message || '上传过程中发生错误');
             reject({ state: 'error', text: error.message || '上传失败' });
           },
           complete: () => {
-            console.log("bufferData: ", bufferData);
+            console.log("上传命令完成");
             if (this.isErrored) {
-              console.error("上传过程中发生错误，已取消");
               this.handleUploadError('上传过程中发生错误');
               // 终止Arduino CLI进程
 
@@ -548,7 +613,7 @@ export class _UploaderService {
               this.noticeService.update({
                 title: errorTitle,
                 text: lastUploadText,
-                detail: errorText,
+                detail: "超时或其他原因",
                 state: 'error',
                 setTimeout: 600000
               });
@@ -560,7 +625,7 @@ export class _UploaderService {
           }
         })
       } catch (error) {
-        console.error("上传异常:", error);
+        // console.error("上传异常:", error);
         this.handleUploadError(error.message || '上传失败');
         reject({ state: 'error', text: error.message || '上传失败' });
       }
