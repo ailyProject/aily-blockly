@@ -6,7 +6,9 @@ import { AppComponent } from './app/app.component';
 import './app/utils/global-chat.utils';
 
 // Monaco Editor configuration
-self.MonacoEnvironment = {};
+// 不提供worker配置，让Monaco Editor使用fallback模式（主线程模式）
+// 这避免了web worker的模块加载问题
+(self as any).MonacoEnvironment = {};
 
 bootstrapApplication(AppComponent, appConfig)
   .catch((err) => console.error(err));

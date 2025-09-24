@@ -5,13 +5,133 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { VsixService } from '../../services/vsix.service';
 import { ClangdTester } from '../../utils/clangd-tester';
 
-// Monaco Editor 原始导入
 import * as monaco from 'monaco-editor';
+import * as vscode from 'vscode'
+import 'vscode/localExtensionHost'
+import { initialize } from '@codingame/monaco-vscode-api'
+import getBaseServiceOverride from '@codingame/monaco-vscode-base-service-override'
+import getExtensionsServiceOverride from '@codingame/monaco-vscode-extensions-service-override'
 
-// Monaco VSCode API imports - 使用示例代码的方式
-import * as vscode from '@codingame/monaco-vscode-extension-api';
-import '@codingame/monaco-vscode-extension-api/localExtensionHost';
+// 常量定义
+const MONACO_CONFIG = {
+  TIMEOUTS: {
+    EDITOR_INIT_DELAY: 100,
+    CLANGD_VERIFY_DELAY: 2000,
+    COMPLETION_TEST_DELAY: 2000,
+    MANUAL_VERIFY_DELAY: 500,
+    RETRY_DELAY: 3000
+  },
+  API_CHECK: {
+    MAX_WAIT_TIME: 10000,
+    CHECK_INTERVAL: 200,
+    LOG_THRESHOLD: 2000
+  },
+  VIEW_STATE_RESTORE: {
+    MAX_ATTEMPTS: 20,
+    RETRY_INTERVAL: 50
+  }
+} as const;
 
+// 日志工具类
+class MonacoLogger {
+  private static logThrottle = new Map<string, number>();
+  
+  static info(message: string, ...args: any[]): void {
+    console.log(`📝 [Monaco] ${message}`, ...args);
+  }
+  
+  static success(message: string, ...args: any[]): void {
+    console.log(`✅ [Monaco] ${message}`, ...args);
+  }
+  
+  static warn(message: string, ...args: any[]): void {
+    console.warn(`⚠️ [Monaco] ${message}`, ...args);
+  }
+  
+  static error(message: string, ...args: any[]): void {
+    console.error(`❌ [Monaco] ${message}`, ...args);
+  }
+  
+  static debug(message: string, ...args: any[]): void {
+    console.debug(`🔍 [Monaco] ${message}`, ...args);
+  }
+  
+  // 限流日志，避免在循环中输出太多日志
+  static throttledLog(key: string, message: string, threshold: number = 1000, ...args: any[]): void {
+    const now = Date.now();
+    const lastLog = this.logThrottle.get(key) || 0;
+    
+    if (now - lastLog > threshold) {
+      console.log(`🔄 [Monaco] ${message}`, ...args);
+      this.logThrottle.set(key, now);
+    }
+  }
+}
+
+// 类型定义
+interface ExtensionManifest {
+  name?: string;
+  displayName?: string;
+  publisher?: string;
+  version?: string;
+  contributes?: {
+    languages?: Array<{ id: string; }>;
+    grammars?: Array<{ language: string; }>;
+    themes?: Array<{ label: string; }>;
+    commands?: Array<{ command: string; title?: string; }>;
+  };
+}
+
+interface ExtensionData {
+  manifest: ExtensionManifest;
+}
+
+interface MonacoEditorOptions {
+  language?: string;
+  theme?: string;
+  lineNumbers?: 'on' | 'off' | 'relative' | 'interval';
+  automaticLayout?: boolean;
+  readOnly?: boolean;
+  fontSize?: number;
+  wordWrap?: 'on' | 'off' | 'wordWrapColumn' | 'bounded';
+  [key: string]: any;
+}
+
+// 使用Monaco的原生接口类型
+type ViewState = monaco.editor.ICodeEditorViewState;
+
+// 全局初始化状态管理
+declare global {
+  interface Window {
+    __MONACO_VSCODE_API_INITIALIZED__?: boolean;
+    __MONACO_VSCODE_API_INITIALIZING__?: Promise<void>;
+  }
+}
+
+/**
+ * Monaco Editor Angular组件
+ * 
+ * 该组件封装了Monaco Editor，并集成了VSCode API和VSIX扩展支持。
+ * 主要功能：
+ * - Monaco Editor的初始化和配置
+ * - VSCode API的初始化和管理
+ * - VSIX扩展的加载和注册
+ * - 编辑器状态的保存和恢复
+ * - 内存管理和资源清理
+ * 
+ * @example
+ * ```html
+ * <app-monaco-editor
+ *   [code]="sourceCode"
+ *   [options]="editorOptions"
+ *   [filePath]="currentFile"
+ *   (codeChange)="onCodeChange($event)">
+ * </app-monaco-editor>
+ * ```
+ * 
+ * @author AI Assistant
+ * @since 1.0.0
+ */
 @Component({
   selector: 'app-monaco-editor',
   imports: [
@@ -25,61 +145,102 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
   private static isMonacoInitialized = false;
   private static isVSCodeAPIReady = false; // 添加API就绪标志
+  private static globalDisposables: monaco.IDisposable[] = []; // 全局资源清理
+  private timeoutIds: number[] = []; // 追踪所有timeout ID
 
   /**
    * 初始化 Monaco VSCode API（使用示例代码的方式）
    */
   static async initializeMonacoVSCodeAPI(): Promise<void> {
-    if (MonacoEditorComponent.isMonacoInitialized) {
+    // 检查是否已经初始化过
+    if (window.__MONACO_VSCODE_API_INITIALIZED__) {
+      console.log('✅ Monaco VSCode API 已经初始化过，跳过重复初始化');
+      // 确保内部标志也是正确的
+      MonacoEditorComponent.isMonacoInitialized = true;
       return;
     }
 
-    try {
-      console.log('Initializing Monaco VSCode API with localExtensionHost...');
-      
-      // 使用正确的monaco-vscode-api初始化方式
-      // 首先确保导入了必要的模块
-      await import('@codingame/monaco-vscode-extension-api/localExtensionHost');
-      
-      // 等待一小段时间让API初始化
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // 等待VSCode API准备就绪
-      await MonacoEditorComponent.waitForVSCodeAPIReady();
-      
-      console.log('✅ LocalExtensionHost已导入，API应该可用');
-      
-      // 检查VSCode API是否可用
-      if (typeof vscode !== 'undefined') {
-        console.log('✅ VSCode API 模块已加载');
-        console.log('✅ 可用的API:', Object.keys(vscode));
-        
-        // 检查关键的语言服务API
-        if (vscode.languages) {
-          console.log('✅ vscode.languages API 可用');
-          console.log('✅ 语言API方法:', Object.keys(vscode.languages));
-        } else {
-          console.warn('⚠️ vscode.languages API 不可用');
-        }
-        
-        if (vscode.commands) {
-          console.log('✅ vscode.commands API 可用');
-        } else {
-          console.warn('⚠️ vscode.commands API 不可用');
-        }
-      } else {
-        console.error('❌ VSCode API 模块未加载');
-      }
-      
-      MonacoEditorComponent.isMonacoInitialized = true;
-      console.log('Monaco VSCode API initialized successfully');
-    } catch (error) {
-      console.error('Failed to initialize Monaco VSCode API:', error);
-      throw error;
+    // 检查是否正在初始化中
+    if (window.__MONACO_VSCODE_API_INITIALIZING__) {
+      console.log('🔄 Monaco VSCode API 正在初始化中，等待完成...');
+      await window.__MONACO_VSCODE_API_INITIALIZING__;
+      return;
     }
-  }
 
-  /**
+    // 设置初始化进行中的标志
+    const initPromise = (async (): Promise<void> => {
+      try {
+        console.log('🚀 开始初始化 Monaco VSCode API...');
+        
+        // 首先调用 monaco-vscode-api 的 initialize() 来初始化服务
+        console.log('🔄 调用 initialize() 初始化 monaco-vscode-api 服务...');
+        await initialize({
+          // 添加必要的服务覆盖
+          ...getBaseServiceOverride(), // 基本服务，包含必要的核心功能
+          ...getExtensionsServiceOverride(), // 扩展服务，支持VSCode扩展
+        });
+        console.log('✅ monaco-vscode-api 服务初始化完成');
+        
+        // 等待VSCode API准备就绪（优化后的方法）
+        await MonacoEditorComponent.waitForVSCodeAPIReady();
+        
+        console.log('✅ LocalExtensionHost已导入，API应该可用');
+      
+        // 检查VSCode API是否可用
+        if (typeof vscode !== 'undefined') {
+          console.log('✅ VSCode API 模块已加载');
+          const availableApis = Object.keys(vscode).filter(key => typeof vscode[key] === 'object');
+          console.log('✅ 可用的API:', availableApis);
+          
+          // 检查关键的语言服务API
+          if (vscode.languages && typeof vscode.languages.registerCompletionItemProvider === 'function') {
+            console.log('✅ vscode.languages API 可用');
+            const languageMethods = Object.keys(vscode.languages).filter(key => typeof vscode.languages[key] === 'function');
+            console.log('✅ 语言API方法:', languageMethods.slice(0, 5), '...'); // 只显示前5个，避免日志过多
+          } else {
+            console.warn('⚠️ vscode.languages API 不可用');
+          }
+          
+          if (vscode.commands && typeof vscode.commands.registerCommand === 'function') {
+            console.log('✅ vscode.commands API 可用');
+          } else {
+            console.warn('⚠️ vscode.commands API 不可用');
+          }
+        } else {
+          console.error('❌ VSCode API 模块未加载');
+        }
+        
+        // 设置全局初始化标志
+        window.__MONACO_VSCODE_API_INITIALIZED__ = true;
+        MonacoEditorComponent.isMonacoInitialized = true;
+        
+        console.log('✅ Monaco VSCode API 初始化成功完成');
+        
+      } catch (error: any) {
+        console.error('❌ Monaco VSCode API 初始化失败:', error);
+        
+        // 检查是否是版本冲突错误
+        if (error?.message?.includes('Another version of monaco-vscode-api has already been loaded')) {
+          console.warn('⚠️ 检测到 monaco-vscode-api 版本冲突，尝试使用现有初始化...');
+          // 如果是版本冲突，仍然设置为已初始化状态，避免重复尝试
+          window.__MONACO_VSCODE_API_INITIALIZED__ = true;
+          MonacoEditorComponent.isMonacoInitialized = true;
+          return;
+        }
+        
+        throw error;
+      } finally {
+        // 清理初始化进行中的标志
+        window.__MONACO_VSCODE_API_INITIALIZING__ = undefined;
+      }
+    })();
+    
+    // 设置当前的初始化 Promise
+    window.__MONACO_VSCODE_API_INITIALIZING__ = initPromise;
+    
+    // 等待初始化完成
+    await initPromise;
+  }  /**
    * 等待VSCode API完全准备就绪
    */
   static async waitForVSCodeAPIReady(): Promise<void> {
@@ -89,33 +250,46 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
 
     const maxWaitTime = 10000; // 最大等待10秒
-    const checkInterval = 500; // 每500ms检查一次
+    const checkInterval = 200; // 每200ms检查一次，提高响应性
     let waitedTime = 0;
 
     return new Promise((resolve, reject) => {
       const checkReady = () => {
         try {
-          // 尝试访问vscode.languages来检查API是否准备就绪
+          // 检查VSCode API是否完全准备就绪
           if (typeof vscode !== 'undefined' && 
               vscode.languages && 
-              typeof vscode.languages.registerCompletionItemProvider === 'function') {
-            console.log('✅ VSCode API已准备就绪');
-            MonacoEditorComponent.isVSCodeAPIReady = true; // 设置标志
-            resolve();
-            return;
+              vscode.commands &&
+              typeof vscode.languages.registerCompletionItemProvider === 'function' &&
+              typeof vscode.commands.registerCommand === 'function') {
+            
+            // 额外检查：尝试调用一个简单的API来确保服务真正可用
+            try {
+              // 检查服务是否真正初始化
+              const testDisposable = vscode.commands.registerCommand('test.api.ready', () => {});
+              testDisposable.dispose(); // 立即清理测试命令
+              
+              console.log('✅ VSCode API已完全准备就绪，所有服务可用');
+              MonacoEditorComponent.isVSCodeAPIReady = true;
+              resolve();
+              return;
+            } catch (testError) {
+              console.log('🔄 VSCode API存在但服务尚未完全初始化...');
+            }
           }
         } catch (error) {
           // API还未准备好，继续等待
+          console.log('🔄 VSCode API检查失败，继续等待...');
         }
 
         waitedTime += checkInterval;
         if (waitedTime >= maxWaitTime) {
-          console.warn('⚠️ VSCode API准备超时，继续执行...');
+          console.warn('⚠️ VSCode API准备超时，但仍然继续执行...');
           MonacoEditorComponent.isVSCodeAPIReady = true; // 即使超时也设置标志，避免重复等待
           resolve(); // 即使超时也继续执行，避免阻塞
         } else {
           // 只在前几次检查时输出日志，避免刷屏
-          if (waitedTime <= 1500) {
+          if (waitedTime <= 2000) {
             console.log(`🔄 等待VSCode API准备就绪... (${waitedTime}ms)`);
           }
           setTimeout(checkReady, checkInterval);
@@ -129,7 +303,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /**
    * 注册 VSIX 扩展到 Monaco（使用 VSCode API）
    */
-  static async registerVsixExtension(extensionData: any): Promise<void> {
+  static async registerVsixExtension(extensionData: ExtensionData): Promise<void> {
     try {
       console.log(`Registering VSIX extension: ${extensionData.manifest.name}`);
 
@@ -172,19 +346,69 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         }
       }
 
-      // 处理命令 - 添加安全检查
+      // 处理命令 - 添加安全检查和更好的错误处理
       if (manifest.contributes?.commands && vscode.commands) {
+        console.log(`🔄 开始注册 ${manifest.contributes.commands.length} 个命令...`);
         for (const command of manifest.contributes.commands) {
           try {
             console.log(`Registering command: ${command.command}`);
+            
+            // 检查命令是否已经注册，避免重复注册
+            const existingCommands = await vscode.commands.getCommands();
+            if (existingCommands.includes(command.command)) {
+              console.log(`⚠️ 命令 ${command.command} 已存在，跳过注册`);
+              continue;
+            }
+            
             // 使用 VSCode API 注册命令
-            vscode.commands.registerCommand(command.command, (...args: any[]) => {
+            const disposable = vscode.commands.registerCommand(command.command, (...args: any[]) => {
               console.log(`Executing command: ${command.command}`, args);
               // 这里可以添加命令的具体实现
+              // 例如：处理 clangd 的 inlayHints.toggle 命令
+              if (command.command === 'clangd.inlayHints.toggle') {
+                console.log('执行 clangd inlay hints 切换命令');
+                // 添加具体的 inlay hints 切换逻辑
+              }
             });
+            
+            console.log(`✅ 成功注册命令: ${command.command}`);
+            
+            // 保存 disposable 以便后续清理，防止内存泄漏
+            MonacoEditorComponent.globalDisposables.push(disposable);
+            
           } catch (commandError) {
-            console.warn(`Failed to register command ${command.command}:`, commandError);
+            console.error(`❌ Failed to register command ${command.command}:`, commandError);
+            // 检查是否是 "Default api is not ready yet" 错误
+            if (commandError.message && commandError.message.includes('Default api is not ready yet')) {
+              console.error('💡 提示：VSCode API 服务尚未完全初始化');
+              console.log('🔄 尝试延迟重试注册命令...');
+              
+              // 延迟重试一次
+              const retryTimeoutId = setTimeout(async () => {
+                try {
+                  console.log(`🔄 重试注册命令: ${command.command}`);
+                  const retryDisposable = vscode.commands.registerCommand(command.command, (...args: any[]) => {
+                    console.log(`Executing command (retry): ${command.command}`, args);
+                    if (command.command === 'clangd.inlayHints.toggle') {
+                      console.log('执行 clangd inlay hints 切换命令');
+                    }
+                  });
+                  MonacoEditorComponent.globalDisposables.push(retryDisposable);
+                  console.log(`✅ 重试成功注册命令: ${command.command}`);
+                } catch (retryError) {
+                  console.error(`❌ 重试失败: ${command.command}`, retryError);
+                }
+              }, 3000); // 3秒后重试
+              // 注意：这里是静态方法，无法访问实例属性，所以不能直接保存timeout ID
+            }
           }
+        }
+        console.log(`✅ 命令注册完成`);
+      } else {
+        if (!manifest.contributes?.commands) {
+          console.log('📝 该扩展没有定义命令');
+        } else if (!vscode.commands) {
+          console.error('❌ vscode.commands API 不可用');
         }
       }
 
@@ -193,13 +417,15 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         for (const language of manifest.contributes.languages) {
           try {
             // 示例：注册补全提供者
-            vscode.languages.registerCompletionItemProvider(language.id, {
+            const completionDisposable = vscode.languages.registerCompletionItemProvider(language.id, {
               provideCompletionItems: (document: any, position: any) => {
                 console.log(`Providing completions for ${language.id} at position:`, position);
                 // 返回补全项
                 return [];
               }
             });
+            // 保存disposable以便清理
+            MonacoEditorComponent.globalDisposables.push(completionDisposable);
             console.log(`✅ 成功为语言 ${language.id} 注册补全提供者`);
           } catch (providerError) {
             console.warn(`Failed to register completion provider for ${language.id}:`, providerError);
@@ -214,43 +440,81 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
   }
 
+  /** Monaco编辑器容器DOM引用 */
   @ViewChild('monacoEditorContainer', { static: true }) monacoContainer!: ElementRef<HTMLDivElement>;
 
-  @Input() options: any = {
+  /** 编辑器配置选项 */
+  @Input() options: MonacoEditorOptions = {
     language: 'cpp',
     theme: 'vs-dark',
     lineNumbers: 'on',
     automaticLayout: true
   }
 
+  /** 编辑器内容 */
   @Input() code = '';
-  @Input() filePath = ''; // 当前文件路径
+  
+  /** 当前文件路径 */
+  @Input() filePath = '';
 
+  /** 代码变化事件 */
   @Output() codeChange = new EventEmitter<string>();
+  
+  /** 打开文件请求事件 */
   @Output() openFileRequest = new EventEmitter<{ filePath: string, position: any }>();
 
+  /** SDK路径 */
   @Input() sdkPath: string;
+  
+  /** 库路径 */
   @Input() librariesPath: string;
 
+  /** 需要清理的资源列表 */
   private disposables: monaco.IDisposable[] = [];
+  
+  /** Monaco Editor实例引用 */
   public monacoInstance: typeof monaco = monaco;
+  
+  /** 当前编辑器实例 */
   public editorInstance: monaco.editor.IStandaloneCodeEditor | null = null;
 
+  /**
+   * 组件构造函数
+   * @param message 消息服务
+   * @param vsixService VSIX扩展服务
+   */
   constructor(
     private message: NzMessageService,
     private vsixService: VsixService
   ) { }
 
-  async ngOnInit() {
-    // 确保 Monaco VSCode API 已初始化
-    await MonacoEditorComponent.initializeMonacoVSCodeAPI();
+  async ngOnInit(): Promise<void> {
+    try {
+      // 确保 Monaco VSCode API 已初始化
+      await MonacoEditorComponent.initializeMonacoVSCodeAPI();
+    } catch (error) {
+      console.error('初始化Monaco VSCode API失败:', error);
+      this.message.error('编辑器初始化失败，可能会影响某些功能');
+      // 不阻断组件初始化，允许基本功能继续工作
+    }
   }
 
-  async ngAfterViewInit() {
-    // 等待DOM完全渲染后初始化编辑器
-    setTimeout(async () => {
-      await this.initializeMonacoEditor();
-    }, 100);
+  async ngAfterViewInit(): Promise<void> {
+    try {
+      // 等待DOM完全渲染后初始化编辑器
+      const timeoutId = setTimeout(async () => {
+        try {
+          await this.initializeMonacoEditor();
+        } catch (error) {
+          console.error('初始化Monaco编辑器失败:', error);
+          this.message.error('编辑器初始化失败，请刷新页面重试');
+        }
+      }, 100) as unknown as number;
+      this.timeoutIds.push(timeoutId);
+    } catch (error) {
+      console.error('ngAfterViewInit失败:', error);
+      this.message.error('组件初始化失败');
+    }
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -267,9 +531,18 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   ngOnDestroy() {
+    // 清理实例级别的disposables
     this.disposables.forEach(d => d.dispose());
+    this.disposables = [];
+    
+    // 清理所有timeout
+    this.timeoutIds.forEach(id => clearTimeout(id));
+    this.timeoutIds = [];
+    
+    // 清理编辑器实例
     if (this.editorInstance) {
       this.editorInstance.dispose();
+      this.editorInstance = null;
     }
   }
 
@@ -341,48 +614,54 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
   /**
    * 设置 VSIX 扩展支持
+   * @param editor Monaco编辑器实例
    */
   private async setupVsixExtensions(editor: monaco.editor.IStandaloneCodeEditor): Promise<void> {
     try {
-      console.log('Setting up VSIX extensions for Monaco editor...');
+      MonacoLogger.info('正在为Moanco编辑器设置VSIX扩展...');
 
       // 首先确保VSCode API已初始化
       if (!MonacoEditorComponent.isMonacoInitialized) {
-        console.log('VSCode API未初始化，先进行初始化...');
+        MonacoLogger.info('VSCode API未初始化，先进行初始化...');
         await MonacoEditorComponent.initializeMonacoVSCodeAPI();
       }
 
       // 再次等待API准备就绪
-      console.log('等待VSCode API准备就绪...');
+      MonacoLogger.info('等待VSCode API准备就绪...');
       await MonacoEditorComponent.waitForVSCodeAPIReady();
+      
+      // 额外的安全等待时间，确保所有服务完全初始化
+      MonacoLogger.info('等待额外的服务初始化时间...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       // 首先初始化所有可用的扩展
       await this.vsixService.initializeAllExtensions();
 
       // 获取所有已加载的扩展
       const loadedExtensions = this.vsixService.getLoadedExtensions();
-      console.log(`Found ${loadedExtensions.length} loaded extensions`);
+      MonacoLogger.success(`找到 ${loadedExtensions.length} 个已加载的扩展`);
 
       // 使用新的扩展注册方式
       for (const extensionData of loadedExtensions) {
         try {
-          console.log(`尝试注册扩展: ${extensionData.manifest.name}`);
+          MonacoLogger.info(`尝试注册扩展: ${extensionData.manifest.name}`);
           await MonacoEditorComponent.registerVsixExtension(extensionData);
-          console.log(`Successfully registered extension: ${extensionData.manifest.name}`);
+          MonacoLogger.success(`成功注册扩展: ${extensionData.manifest.name}`);
         } catch (error) {
-          console.error(`Failed to register extension ${extensionData.manifest.name}:`, error);
+          MonacoLogger.error(`注册扩展失败 ${extensionData.manifest.name}:`, error);
           // 继续处理其他扩展，不中断流程
         }
       }
 
       // 延迟验证clangd扩展，给API更多时间准备
-      setTimeout(async () => {
+      const timeoutId = setTimeout(async () => {
         await this.verifyClangdExtension();
-      }, 2000);
+      }, MONACO_CONFIG.TIMEOUTS.CLANGD_VERIFY_DELAY) as unknown as number;
+      this.timeoutIds.push(timeoutId);
 
-      console.log('VSIX extensions setup completed for Monaco editor');
+      MonacoLogger.success('VSIX扩展设置完成');
     } catch (error) {
-      console.error('Failed to setup VSIX extensions:', error);
+      MonacoLogger.error('设置VSIX扩展失败:', error);
       // 不抛出错误，允许编辑器继续正常工作
     }
   }
@@ -454,7 +733,8 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         } else {
           console.warn('⚠️ VSCode API不可用，稍后重试...');
           // 等待一段时间后重试
-          setTimeout(() => this.verifyClangdExtension(), 3000);
+          const timeoutId = setTimeout(() => this.verifyClangdExtension(), 3000) as unknown as number;
+          this.timeoutIds.push(timeoutId);
           return false;
         }
       } catch (apiError) {
@@ -485,7 +765,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   private testCompletionProvider(): void {
     if (!this.editorInstance || !this.monacoInstance) return;
     
-    setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       try {
         const model = this.editorInstance.getModel();
         const position = this.editorInstance.getPosition();
@@ -498,24 +778,25 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       } catch (error) {
         console.warn('测试补全提供器时出错:', error);
       }
-    }, 2000);
+    }, 2000) as unknown as number;
+    this.timeoutIds.push(timeoutId);
   }
 
   /**
    * 获取编辑器的视图状态（包含滚动位置、光标位置等）
    */
-  public getViewState(): any {
-    if (this.editorInstance && this.editorInstance.getModel()) {
-      try {
-        const viewState = this.editorInstance.saveViewState();
-        // console.log('获取视图状态成功:', viewState);
-        return viewState;
-      } catch (error) {
-        console.warn('获取视图状态失败:', error);
-        return null;
-      }
-    } else {
+  public getViewState(): ViewState | null {
+    if (!this.editorInstance?.getModel()) {
       console.warn('编辑器实例或模型未准备好，无法获取视图状态');
+      return null;
+    }
+    
+    try {
+      const viewState = this.editorInstance.saveViewState();
+      // console.log('获取视图状态成功:', viewState);
+      return viewState;
+    } catch (error) {
+      console.warn('获取视图状态失败:', error);
       return null;
     }
   }
@@ -523,25 +804,29 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /**
    * 恢复编辑器的视图状态
    */
-  public restoreViewState(viewState: any): void {
-    if (!viewState) return;
+  public restoreViewState(viewState: ViewState | null): void {
+    if (!viewState) {
+      console.debug('没有视图状态需要恢复');
+      return;
+    }
 
-    if (this.editorInstance && this.editorInstance.getModel()) {
-      try {
-        this.editorInstance.restoreViewState(viewState);
-        // console.log('恢复视图状态成功');
-      } catch (error) {
-        console.warn('恢复视图状态失败:', error);
-      }
-    } else {
+    if (!this.editorInstance?.getModel()) {
       console.warn('编辑器实例或模型未准备好，无法恢复视图状态');
+      return;
+    }
+    
+    try {
+      this.editorInstance.restoreViewState(viewState);
+      // console.log('恢复视图状态成功');
+    } catch (error) {
+      console.warn('恢复视图状态失败:', error);
     }
   }
 
   /**
    * 安全地恢复编辑器状态，会等待编辑器准备就绪
    */
-  public async restoreViewStateSafely(viewState: any): Promise<boolean> {
+  public async restoreViewStateSafely(viewState: ViewState | null): Promise<boolean> {
     if (!viewState) return false;
 
     return new Promise((resolve) => {
@@ -607,7 +892,7 @@ int main() {
       this.editorInstance.setValue(testCode);
       
       // 3. 设置光标到补全测试位置
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         const model = this.editorInstance.getModel();
         if (model) {
           // 设置光标到 vec. 后面
@@ -623,7 +908,8 @@ int main() {
           console.log('4. 悬停在变量上查看类型信息');
           console.log('5. 右键查看上下文菜单选项');
         }
-      }, 500);
+      }, 500) as unknown as number;
+      this.timeoutIds.push(timeoutId);
     }
   }
 
@@ -734,9 +1020,11 @@ int main() {
   public async forceReinitialize(): Promise<void> {
     console.log('🔄 强制重新初始化VSCode API和扩展...');
     
-    // 重置初始化标志
+    // 重置所有初始化标志（包括全局的）
     MonacoEditorComponent.isMonacoInitialized = false;
-    MonacoEditorComponent.isVSCodeAPIReady = false; // 重置API准备标志
+    MonacoEditorComponent.isVSCodeAPIReady = false;
+    window.__MONACO_VSCODE_API_INITIALIZED__ = false;
+    window.__MONACO_VSCODE_API_INITIALIZING__ = undefined;
     
     try {
       // 重新初始化VSCode API
@@ -747,9 +1035,13 @@ int main() {
         await this.setupVsixExtensions(this.editorInstance);
       }
       
-      console.log('✅ 重新初始化完成');
+      console.log('✅ 强制重新初始化完成');
     } catch (error) {
-      console.error('❌ 重新初始化失败:', error);
+      console.error('❌ 强制重新初始化失败:', error);
+      // 如果是版本冲突错误，提供友好的提示
+      if (error.message && error.message.includes('Another version of monaco-vscode-api has already been loaded')) {
+        console.warn('💡 提示：检测到版本冲突。建议重新安装依赖或重启应用程序。');
+      }
     }
   }
 
