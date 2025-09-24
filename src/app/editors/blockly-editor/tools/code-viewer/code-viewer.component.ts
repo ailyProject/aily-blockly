@@ -8,10 +8,7 @@ import { FormsModule } from '@angular/forms';
 import { BlocklyService } from '../../services/blockly.service';
 
 // 导入monaco-editor
-import * as monacoEditor from 'monaco-editor';
-
-// 声明monaco全局变量
-declare const monaco: any;
+import * as monaco from 'monaco-editor';
 
 @Component({
   selector: 'app-code-viewer',
@@ -25,7 +22,7 @@ declare const monaco: any;
   styleUrl: './code-viewer.component.scss',
 })
 export class CodeViewerComponent implements AfterViewInit, OnDestroy {
-  @ViewChild('editorContainer', { static: false }) editorContainer?: ElementRef;
+  @ViewChild('monacoEditorContainer', { static: false }) monacoContainer!: ElementRef<HTMLDivElement>;
 
   code = '';
   currentUrl;
@@ -34,7 +31,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
   // 存储高亮装饰器的ID
   private decorationIds: string[] = [];
   // 存储Monaco Editor实例
-  private editorInstance: monacoEditor.editor.IStandaloneCodeEditor | null = null;
+  private editorInstance: monaco.editor.IStandaloneCodeEditor | null = null;
   // 存储当前高亮的 block ID，用于在代码更新后恢复高亮
   private currentHighlightedBlockId: string | null = null;
   // 存储当前高亮的位置信息
@@ -56,7 +53,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit(): void {
-    // 初始化Monaco Editor
+    // 等待DOM完全渲染后初始化编辑器
     this.initializeMonacoEditor();
 
     // 订阅代码变化
@@ -67,7 +64,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
           // 如果没有设置文本映射，则使用传统方式
           if (this.textData.length === 0) {
             // this.editorInstance.setValue(this.code);
-            console.log(codeData.data);
+            // console.log(codeData.data);
             this.setTextWithIds(codeData.data);
 
             // 如果之前有高亮的 block，在代码更新后恢复高亮
@@ -78,6 +75,12 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
             // }
           }
           // 如果已经设置了文本映射，则不覆盖编辑器内容
+        } else {
+          // 如果编辑器实例不存在，尝试重新初始化
+          console.warn('Monaco Editor 实例不存在，尝试重新初始化...');
+          setTimeout(() => {
+            this.initializeMonacoEditor();
+          }, 200);
         }
       }, 100);
     });
@@ -97,68 +100,62 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     // 清理Monaco Editor实例
     if (this.editorInstance) {
       this.editorInstance.dispose();
+      this.editorInstance = null;
     }
+
+    // 清理映射关系
+    this.clearAllMappings();
   }
 
   /**
    * 初始化Monaco Editor
    */
   private initializeMonacoEditor(): void {
-    if (!this.editorContainer) {
-      console.error('编辑器容器未找到');
-      return;
-    }
+    try {
+      if (!this.monacoContainer?.nativeElement) {
+        console.error('Monaco container not found');
+        return;
+      }
 
-    // 设置Monaco Editor的工作路径
-    if (typeof window !== 'undefined') {
+      // 强制设置 Monaco Environment 完全禁用 Worker（组件级别）
       (window as any).MonacoEnvironment = {
-        getWorkerUrl: (moduleId: string, label: string) => {
-          return './assets/monaco-editor/worker-loader.js';
+        getWorker: function () {
+          return null;
+        },
+        getWorkerUrl: function () {
+          return '';
         }
       };
-    }
 
-    // 配置Monaco Editor选项
-    const editorOptions: monacoEditor.editor.IStandaloneEditorConstructionOptions = {
-      language: 'cpp',
-      theme: 'vs-dark',
-      lineNumbers: 'on',
-      automaticLayout: true,
-      readOnly: true,
-      minimap: { enabled: false },
-      scrollbar: {
-        vertical: 'auto',
-        horizontal: 'auto'
-      },
-      fontSize: 14,
-      wordWrap: 'on',
-      folding: true,
-      renderLineHighlight: 'all',
-      cursorStyle: 'line',
-      scrollBeyondLastLine: false,
-    };
+      // 创建编辑器实例 - 代码查看器配置（禁用语言服务）
+      this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
+        value: this.code,
+        language: 'cpp',
+        theme: 'vs-dark',
+        lineNumbers: 'on',
+        readOnly: true, // 设置为只读，因为这是代码查看器
+        minimap: {
+          enabled: true
+        }
+      });
 
-    try {
-      // 创建Monaco Editor实例
-      this.editorInstance = monacoEditor.editor.create(
-        this.editorContainer.nativeElement,
-        editorOptions
-      );
+      console.log('Monaco Editor initialized successfully');
+
+      // 监听编辑器尺寸变化
+      const resizeObserver = new ResizeObserver(() => {
+        if (this.editorInstance) {
+          this.editorInstance.layout();
+        }
+      });
+      resizeObserver.observe(this.monacoContainer.nativeElement);
 
       // 设置初始代码
       if (this.code) {
         this.editorInstance.setValue(this.code);
       }
 
-      // 监听编辑器尺寸变化
-      window.addEventListener('resize', () => {
-        if (this.editorInstance) {
-          this.editorInstance.layout();
-        }
-      });
-
     } catch (error) {
-      console.error('Monaco Editor初始化失败:', error);
+      console.error('Failed to initialize Monaco Editor:', error);
     }
   }
 
@@ -179,7 +176,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
 
     // 创建装饰器配置
     const decorations = [{
-      range: new monacoEditor.Range(startLine, 1, endLine, 1),
+      range: new monaco.Range(startLine, 1, endLine, 1),
       options: {
         isWholeLine: true,
         className: className || 'highlighted-line',
@@ -219,7 +216,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     // 清除之前的高亮
     this.clearHighlight();
 
-    const decorations: monacoEditor.editor.IModelDeltaDecoration[] = [];
+    const decorations: monaco.editor.IModelDeltaDecoration[] = [];
     const matches = model.findMatches(searchText, false, false, true, null, false);
 
     matches.forEach(match => {
@@ -227,7 +224,7 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
         range: match.range,
         options: {
           className: className || 'highlighted-text',
-          stickiness: monacoEditor.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
         }
       });
     });
@@ -256,10 +253,10 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     this.clearHighlight();
 
     const decorations = [{
-      range: new monacoEditor.Range(startLine, startColumn, endLine, endColumn),
+      range: new monaco.Range(startLine, startColumn, endLine, endColumn),
       options: {
         className: className || 'highlighted-range',
-        stickiness: monacoEditor.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+        stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
       }
     }];
 
@@ -284,16 +281,33 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
    * @param textWithIds 包含文本和ID的数组，格式：[{text: 'code content', id: 'unique_id'}, ...]
    */
   setTextWithIds(textWithIds: Array<{ text: string, id: string }>): void {
+
+    // 再次处理textWithIds, 查找换行符，将textWithIds拆分成多行
+    let newTextWithIds: Array<{ text: string, id: string }> = [];
+    textWithIds.forEach(item => {
+      const lines = item.text.split('\n');
+      lines.forEach((line, index) => {
+        newTextWithIds.push({ text: line, id: item.id });
+      });
+    });
+
     // 清除之前的映射
     this.clearAllMappings();
 
-    textWithIds.forEach((lineData, index) => {
+    console.log(textWithIds);
+
+
+    newTextWithIds.forEach((lineData, index) => {
       if (this.lineIdMap.has(lineData.id)) {
         this.lineIdMap.get(lineData.id).push(index); // 追加行号
       } else {
         this.lineIdMap.set(lineData.id, [index]); // 初始化映射
       }
     });
+
+    console.log(textWithIds);
+    console.log(newTextWithIds);
+    console.log('文本与ID映射设置完成:', this.lineIdMap);
 
     // // 合并所有文本内容
     // const fullText = textWithIds.map(item => item.text).join('\n');
@@ -323,7 +337,6 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
     //   currentLine = endLine + 1;
     // });
 
-    console.log('文本与ID映射设置完成:', this.lineIdMap);
   }
 
   /**
@@ -473,10 +486,10 @@ export class CodeViewerComponent implements AfterViewInit, OnDestroy {
 
     lines.forEach(lineNumber => {
       decorations.push({
-        range: new monacoEditor.Range(lineNumber, 1, lineNumber, 1),
+        range: new monaco.Range(lineNumber, 1, lineNumber, 1),
         options: {
           isWholeLine: true,
-          className: className || 'highlighted-block',
+          className: className || 'highlighted-line',
           glyphMarginClassName: 'highlighted-glyph'
         }
       });
