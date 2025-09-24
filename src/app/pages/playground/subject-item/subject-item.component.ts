@@ -75,10 +75,6 @@ export class SubjectItemComponent {
     }
   }
 
-  async installLib(lib, prefix) {
-    this.cmdService.runAsync(`npm install ${lib.name} --prefix "${prefix}"`)
-  }
-
   async loadExample(path) {
     // 找到当前item
     const currentItem = this.exampleItem?.examples?.find(item => item.path === path);
@@ -104,7 +100,7 @@ export class SubjectItemComponent {
       // 将path路径中的最后文件夹名添加"_`generateDateString()`"后缀
       const lastFolderName = path.split('/').pop();
       const targetPathName = this.projectService.generateUniqueProjectName(this.projectService.projectRootPath, lastFolderName + '_');
-      const targetPath = `${this.projectService.projectRootPath}/${targetPathName}`;
+      const targetPath = `${this.projectService.projectRootPath}\\${targetPathName}`;
       console.log('目标路径: ', targetPath);
       await this.cmdService.runAsync(`cp -r "${examplePath}" "${targetPath}"`);
       this.uiService.updateFooterState({ state: 'done', text: `示例加载完成` });

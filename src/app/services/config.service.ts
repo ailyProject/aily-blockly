@@ -130,6 +130,61 @@ export class ConfigService {
     );
     return this.examplesList;
   }
+
+  /**
+   * 记录开发板使用次数
+   * @param boardName 开发板名称
+   */
+  recordBoardUsage(boardName: string) {
+    if (!this.data.boardUsageCount) {
+      this.data.boardUsageCount = {};
+    }
+    
+    // 增加使用次数
+    this.data.boardUsageCount[boardName] = (this.data.boardUsageCount[boardName] || 0) + 1;
+    
+    // 保存配置
+    this.save();
+  }
+
+  /**
+   * 获取开发板使用次数
+   * @param boardName 开发板名称
+   * @returns 使用次数
+   */
+  getBoardUsageCount(boardName: string): number {
+    return this.data.boardUsageCount?.[boardName] || 0;
+  }
+
+  /**
+   * 获取所有开发板的使用次数统计
+   * @returns 使用次数统计对象
+   */
+  getAllBoardUsageCount(): Record<string, number> {
+    return this.data.boardUsageCount || {};
+  }
+
+  /**
+   * 根据使用次数对开发板列表进行排序
+   * @param boardList 开发板列表
+   * @returns 排序后的开发板列表
+   */
+  sortBoardsByUsage(boardList: any[]): any[] {
+    const usageCount = this.getAllBoardUsageCount();
+    
+    return [...boardList].sort((a, b) => {
+      const usageA = usageCount[a.name] || 0;
+      const usageB = usageCount[b.name] || 0;
+      
+      // 首先按使用次数降序排列
+      if (usageA !== usageB) {
+        return usageB - usageA;
+      }
+      
+      // 如果使用次数相同，按原来的顺序排列（保持稳定排序）
+      return 0;
+    });
+  }
 }
 
 interface AppConfig {
@@ -197,4 +252,7 @@ interface AppConfig {
 
   /** 跳过更新的版本列表 */
   skippedVersions?: string[];
+
+  /** 开发板使用次数统计 */
+  boardUsageCount?: Record<string, number>;
 }

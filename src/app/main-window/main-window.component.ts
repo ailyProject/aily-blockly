@@ -21,7 +21,6 @@ import { NpmService } from '../services/npm.service';
 import { SimulatorComponent } from '../tools/simulator/simulator.component';
 import { Router, RouterModule } from '@angular/router';
 import { ConfigService } from '../services/config.service';
-import { UserComponent } from './components/user/user.component';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FloatSiderComponent } from '../components/float-sider/float-sider.component';
 
@@ -57,7 +56,7 @@ export class MainWindowComponent {
 
   showRbox = false;
   showBbox = false;
-  terminalTab = 'log';  // log, terminal
+  terminalTab = 'log';
   selectedTabIndex = 0;
 
   get topTool() {

@@ -273,20 +273,20 @@ export class HeaderComponent {
         if (item.state === 'doing') return;
         item.state = 'doing';
         this.builderService.build().then(result => {
-          item.state = 'done';
+          item.state = result.state || 'done';
         }).catch(err => {
           console.log("编译未完成: ", JSON.stringify(err));
-          if (err.state) item.state = err.state;
+          if (err && err.state) item.state = err.state;
         })
         break;
       case 'upload':
         if (item.state === 'doing') return;
         item.state = 'doing';
         this.uploaderService.upload().then(result => {
-          item.state = 'done';
+          item.state = result.state || 'done';
         }).catch(err => {
           console.log("上传未完成: ", JSON.stringify(err));
-          if (err.state) item.state = err.state;
+          if (err && err.state) item.state = err.state;
         });
         break;
       case 'settings-open':

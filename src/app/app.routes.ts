@@ -20,6 +20,10 @@ export const routes: Routes = [
                 loadComponent: () => import('./pages/guide/guide.component').then(m => m.GuideComponent)
             },
             {
+                path: 'project-new',
+                loadComponent: () => import('./pages/project-new/project-new.component').then(m => m.ProjectNewComponent)
+            },
+            {
                 path: 'playground',
                 loadComponent: () => import('./pages/playground/playground.component').then(m => m.PlaygroundComponent),
                 children: [

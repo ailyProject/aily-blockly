@@ -112,6 +112,8 @@ const { registerMCPHandlers } = require("./mcp");
 const { registerVsixHandlers } = require("./vsix-loader");
 // debug模块
 const { initLogger } = require("./logger");
+// tools
+const { registerToolsHandlers } = require("./tools");
 
 let mainWindow;
 let userConf;
@@ -153,6 +155,7 @@ function loadEnv() {
   if (isWin32) {
     // 设置Windows的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["win32"].replace('%HOMEPATH%', os.homedir());
+    process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), "AppData", "Local", "aily-builder", "project");
   } else if (isDarwin) {
     // 设置macOS的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"];
@@ -204,7 +207,7 @@ function loadEnv() {
   // 默认全局编译器路径
   process.env.AILY_COMPILERS_PATH = path.join(
     process.env.AILY_APPDATA_PATH,
-    "compiler",
+    "tools",
   );
   // 默认全局烧录器路径
   process.env.AILY_TOOLS_PATH = path.join(process.env.AILY_APPDATA_PATH, "tools");
@@ -319,6 +322,7 @@ function createWindow() {
   registerCmdHandlers(mainWindow);
   registerMCPHandlers(mainWindow);
   registerVsixHandlers();
+  registerToolsHandlers(mainWindow);
 }
 
 app.on("ready", () => {

@@ -13,19 +13,32 @@ interface CodeEditorComponent {
 export class _ProjectService {
 
   private codeEditorComponent: CodeEditorComponent | null = null;
+  private initialized = false; // 防止重复初始化
 
   constructor(
     private actionService: ActionService
   ) { }
 
   init() {
+    if (this.initialized) {
+      console.warn('Code Editor _ProjectService 已经初始化过了，跳过重复初始化');
+      return;
+    }
+    
+    this.initialized = true;
     this.actionService.listen('saveProject', data => {
       this.save(data.payload.path);
-    });
+    }, 'code-editor-save-project');
     this.actionService.listen('project-check-unsaved', (action) => {
       let result = this.hasUnsavedChanges();
       return { hasUnsavedChanges: result };
-    });
+    }, 'code-editor-check-unsaved');
+  }
+
+  destroy() {
+    this.actionService.unlisten('code-editor-save-project');
+    this.actionService.unlisten('code-editor-check-unsaved');
+    this.initialized = false; // 重置初始化状态
   }
 
   // 注册 CodeEditorComponent 实例

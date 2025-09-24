@@ -126,7 +126,7 @@
         },
         "BOARD": {
             "SEARCH": "搜索开发板",
-            "READ_DOC": "阅读文档",
+            "READ_DOC": "文档",
             "ADD_BOARD": "添加开发板",
             "DEV": "dev"
         },
@@ -137,6 +137,7 @@
             "NAME_EXISTS": "项目名称已存在，请修改"
         },
         "BUTTONS": {
+            "USE_THIS": "使用此开发板",
             "NEXT": "下一步",
             "PREV": "上一步",
             "CREATE": "创建项目",

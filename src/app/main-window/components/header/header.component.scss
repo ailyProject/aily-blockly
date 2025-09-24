@@ -57,11 +57,17 @@ $header-inner-height: 38px;
   .toolbox {
     display: flex;
     height: 100%;
+    background: #2b2d30;
+    z-index: 1;
 
     .zone {
       margin-left: 8px;
       padding: 5px;
       height: 100%;
+
+      &:first-child {
+        margin-left: 0;
+      }
     }
   }
 
