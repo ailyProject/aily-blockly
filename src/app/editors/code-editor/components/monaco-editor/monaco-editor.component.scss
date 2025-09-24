@@ -1,7 +1,8 @@
-nz-code-editor {
+.monaco-editor-container {
     height: 100% !important;
     width: 100% !important;
-    background-color:transparent;
+    background-color: transparent;
+    overflow: hidden;
 }
 
 // 定义高亮样式

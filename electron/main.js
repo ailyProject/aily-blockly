@@ -109,6 +109,7 @@ const { registerNpmHandlers } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers } = require("./cmd");
 const { registerMCPHandlers } = require("./mcp");
+const { registerVsixHandlers } = require("./vsix-loader");
 // debug模块
 const { initLogger } = require("./logger");
 // tools
@@ -320,6 +321,7 @@ function createWindow() {
   registerNpmHandlers(mainWindow);
   registerCmdHandlers(mainWindow);
   registerMCPHandlers(mainWindow);
+  registerVsixHandlers();
   registerToolsHandlers(mainWindow);
 }
 

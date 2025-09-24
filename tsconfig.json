@@ -3,6 +3,7 @@
 {
   "compileOnSave": false,
   "compilerOptions": {
+    "baseUrl": "./",
     "outDir": "./dist/out-tsc",
     "strict": false,
     "noImplicitOverride": true,
@@ -21,7 +22,11 @@
     "allowJs": true,
     "types": [
       "node"
-    ]
+    ],
+    "paths": {
+      "@codingame/monaco-vscode-api/*": ["node_modules/@codingame/monaco-vscode-api/*"],
+      "vscode/*": ["node_modules/@codingame/monaco-vscode-api/vscode/*"]
+    }
   },
   "angularCompilerOptions": {
     "enableI18nLegacyMessageIdFormat": false,
