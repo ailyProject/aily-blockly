@@ -123,6 +123,15 @@ export class _BuilderService {
     this.buildInProgress = false;
   }
 
+  /**
+   * 检查是否已取消
+   */
+  private checkIfCancelled(): void {
+    if (this.cancelled) {
+      throw new Error('编译已取消');
+    }
+  }
+
   async build(): Promise<ActionState> {
     return new Promise<ActionState>(async (resolve, reject) => {
       try {
@@ -162,455 +171,498 @@ export class _BuilderService {
         this.cancelled = false; // 重置取消状态
         this.buildStartTime = Date.now(); // 记录编译开始时间
 
-        // 创建临时文件夹
-        if (!window['path'].isExists(tempPath)) {
-          await this.cmdService.runAsync(`New-Item -Path "${tempPath}" -ItemType Directory -Force`);
-        }
-        if (!window['path'].isExists(sketchPath)) {
-          await this.cmdService.runAsync(`New-Item -Path "${sketchPath}" -ItemType Directory -Force`);
-        }
-        if (!window['path'].isExists(librariesPath)) {
-          await this.cmdService.runAsync(`New-Item -Path "${librariesPath}" -ItemType Directory -Force`);
-        }
+        let compileCommand: string = "";
+        let title: string = "";
+        let completeTitle: string = `编译完成`;
 
-        // 生成sketch文件
-        const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
-        this.lastCode = code;
-        await window['fs'].writeFileSync(sketchFilePath, code);
-
-        // 加载项目package.json
-        const packageJson = await this.projectService.getPackageJson();
-        const dependencies = packageJson.dependencies || {};
-
-        const libsPath = []
-        Object.entries(dependencies).forEach(([key, version]) => {
-          if (key.startsWith('@aily-project/lib-') && !key.startsWith('@aily-project/lib-core')) {
-            libsPath.push(key)
+        try {
+          // 创建临时文件夹
+          this.checkIfCancelled();
+          if (!window['path'].isExists(tempPath)) {
+            await this.cmdService.runAsync(`New-Item -Path "${tempPath}" -ItemType Directory -Force`);
           }
-        });
+          if (!window['path'].isExists(sketchPath)) {
+            await this.cmdService.runAsync(`New-Item -Path "${sketchPath}" -ItemType Directory -Force`);
+          }
+          if (!window['path'].isExists(librariesPath)) {
+            await this.cmdService.runAsync(`New-Item -Path "${librariesPath}" -ItemType Directory -Force`);
+          }
 
-        // 获取板子信息(board.json)
-        const boardJson = await this.projectService.getBoardJson();
+          // 生成sketch文件
+          this.checkIfCancelled();
+          const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+          this.lastCode = code;
+          await window['fs'].writeFileSync(sketchFilePath, code);
 
-        if (!boardJson) {
-          this.handleCompileError('未找到板子信息(board.json)');
-          throw new Error('未找到板子信息(board.json)');
-        }
+          // 加载项目package.json
+          this.checkIfCancelled();
+          const packageJson = await this.projectService.getPackageJson();
+          const dependencies = packageJson.dependencies || {};
 
-        this.boardJson = boardJson;
+          const libsPath = []
+          Object.entries(dependencies).forEach(([key, version]) => {
+            if (key.startsWith('@aily-project/lib-') && !key.startsWith('@aily-project/lib-core')) {
+              libsPath.push(key)
+            }
+          });
 
-        // 解压libraries到临时文件夹，使用并行处理优化性能
-        console.log(`开始处理 ${libsPath.length} 个库文件`);
-        const copiedLibraries = await this.processLibrariesParallel(libsPath, librariesPath);
+          // 获取板子信息(board.json)
+          this.checkIfCancelled();
+          const boardJson = await this.projectService.getBoardJson();
 
-        // 检查和清理libraries文件夹
-        // 输出已复制的库文件夹名称
-        console.log(`已复制的库文件夹: ${copiedLibraries.join(', ')}`);
+          if (!boardJson) {
+            this.handleCompileError('未找到板子信息(board.json)');
+            throw new Error('未找到板子信息(board.json)');
+          }
 
-        // 获取libraries文件夹中的所有文件夹
-        let existingFolders: string[] = [];
+          this.boardJson = boardJson;
 
-        if (window['fs'].existsSync(librariesPath)) {
-          const librariesItems = window['fs'].readDirSync(librariesPath);
-          existingFolders = librariesItems
-            .filter(item => window['fs'].isDirectory(`${librariesPath}/${item.name || item}`))
-            .map(item => item.name || item);
+          // 处理库文件
+          this.checkIfCancelled();
+          // 解压libraries到临时文件夹，使用并行处理优化性能
+          console.log(`开始处理 ${libsPath.length} 个库文件`);
+          const copiedLibraries = await this.processLibrariesParallel(libsPath, librariesPath);
 
-          console.log(`libraries文件夹中现有文件夹: ${existingFolders.join(', ')}`);
+          // 清理未使用的库
+          this.checkIfCancelled();
+          // 检查和清理libraries文件夹
+          // 输出已复制的库文件夹名称
+          console.log(`已复制的库文件夹: ${copiedLibraries.join(', ')}`);
 
-          // 直接清理不在copiedLibraries列表中的文件夹
-          if (existingFolders.length > 0) {
-            console.log('开始清理未使用的库文件夹');
+          // 获取libraries文件夹中的所有文件夹
+          let existingFolders: string[] = [];
 
-            for (const folder of existingFolders) {
-              // 检查文件夹是否在已复制的列表中
-              const shouldKeep = copiedLibraries.some(copiedLib => {
-                return folder === copiedLib || folder.startsWith(copiedLib);
-              });
+          if (window['fs'].existsSync(librariesPath)) {
+            const librariesItems = window['fs'].readDirSync(librariesPath);
+            existingFolders = librariesItems
+              .filter(item => window['fs'].isDirectory(`${librariesPath}/${item.name || item}`))
+              .map(item => item.name || item);
 
-              if (!shouldKeep) {
-                const folderToDelete = `${librariesPath}/${folder}`;
-                console.log(`删除未使用的库文件夹: ${folder}`);
-                try {
-                  await this.cmdService.runAsync(`Remove-Item -Path "${folderToDelete}" -Recurse -Force`);
-                } catch (error) {
-                  console.warn(`删除文件夹 ${folder} 失败:`, error);
+            console.log(`libraries文件夹中现有文件夹: ${existingFolders.join(', ')}`);
+
+            // 直接清理不在copiedLibraries列表中的文件夹
+            if (existingFolders.length > 0) {
+              console.log('开始清理未使用的库文件夹');
+
+              for (const folder of existingFolders) {
+                // 检查文件夹是否在已复制的列表中
+                const shouldKeep = copiedLibraries.some(copiedLib => {
+                  return folder === copiedLib || folder.startsWith(copiedLib);
+                });
+
+                if (!shouldKeep) {
+                  const folderToDelete = `${librariesPath}/${folder}`;
+                  console.log(`删除未使用的库文件夹: ${folder}`);
+                  try {
+                    await this.cmdService.runAsync(`Remove-Item -Path "${folderToDelete}" -Recurse -Force`);
+                  } catch (error) {
+                    console.warn(`删除文件夹 ${folder} 失败:`, error);
+                  }
                 }
               }
             }
           }
-        }
 
-        // 获取编译器、sdk、tool的名称和版本
-        let compiler = ""
-        let sdk = ""
+          // 获取编辑器信息
+          this.checkIfCancelled();
 
-        const toolVersions = []
+          // 获取编译器、sdk、tool的名称和版本
+          let compiler = ""
+          let sdk = ""
 
-        const boardDependencies = (await this.projectService.getBoardPackageJson()).boardDependencies || {};
+          const toolVersions = []
 
-        Object.entries(boardDependencies).forEach(([key, version]) => {
-          if (key.startsWith('@aily-project/compiler-')) {
-            compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
-            toolVersions.push(compiler);
-          } else if (key.startsWith('@aily-project/sdk-')) {
-            sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
-          } else if (key.startsWith('@aily-project/tool-')) {
-            let toolName = key.replace(/^@aily-project\/tool-/, '');
-            if (toolName.startsWith('idf_')) {
-              toolName = 'esp32-arduino-libs';
-            }
-            const tool = toolName + '@' + version;
-            toolVersions.push(tool);
-          }
-        });
+          const boardDependencies = (await this.projectService.getBoardPackageJson()).boardDependencies || {};
 
-        if (!compiler || !sdk) {
-          this.handleCompileError('未找到编译器或SDK信息');
-          throw new Error('未找到编译器或SDK信息');
-        }
-
-        // 组合编译器、sdk、tools的路径
-        // 兼容旧版本
-        const oldCompilerPath = window['path'].getAppDataPath() + `/compiler/${compiler}`;
-        this.compilerPath = oldCompilerPath;
-        this.sdkPath = await window["env"].get('AILY_SDK_PATH') + `/${sdk}`;
-        this.toolsPath = await window["env"].get('AILY_TOOLS_PATH');
-
-        // 获取使用的编译器
-        // const compilerTool = boardJson.compilerTool || 'aily-builder';
-
-        // 获取编译命令
-        let compilerParam = boardJson.compilerParam;
-        if (!compilerParam) {
-          this.handleCompileError('未找到编译命令(compilerParam)');
-          throw new Error('未找到编译命令(compilerParam)');
-        }
-
-        let compilerParamList = compilerParam.split(' ');
-
-        // 找到 -b 或 --board 参数后面的 fqbn 值，并从参数列表中移除
-        for (let i = 0; i < compilerParamList.length; i++) {
-          if (compilerParamList[i] === '-b' || compilerParamList[i] === '--board') {
-            // 下一个参数就是 fqbn 值
-            if (i + 1 < compilerParamList.length) {
-              let fqbn = compilerParamList[i + 1];
-              // 如果 fqbn 以 aily: 开头，需要替换 sdk 部分
-              // const parts = fqbn.split(':');
-              // if (parts.length > 2) { // 确保至少有3部分 (aily:avr:mega)
-              //   if (compilerTool !== 'aily-builder') {
-              //     parts[0] = "aily"
-              //     parts[1] = sdk;
-              //     fqbn = parts.join(':');
-              //   }
-              // }
-              this.boardType = fqbn;
-
-              // 从参数列表中移除 -b/--board 和 fqbn 参数
-              compilerParamList.splice(i, 2); // 移除当前位置的两个元素
-
-              break;
-            }
-          }
-
-          if (compilerParamList[i] === '-v' || compilerParamList[i] === '--verbose') {
-            // 移除 -v 或 --verbose 参数
-            compilerParamList.splice(i, 1);
-            i--; // 调整索引以继续检查当前位置
-          }
-        }
-
-        console.log("boardType: ", this.boardType);
-
-        compilerParam = compilerParamList.join(' ');
-
-        // 获取和解析项目编译参数
-        let buildProperties = '';
-        try {
-          const projectConfig = await this.projectService.getProjectConfig();
-          if (projectConfig) {
-            const buildPropertyParams: string[] = [];
-
-            // 遍历配置对象，解析编译参数
-            Object.values(projectConfig).forEach((configSection: any) => {
-              if (configSection && typeof configSection === 'object') {
-                // 遍历每个配置段（如 build、upload 等）
-                Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
-                  // 排除upload等非编译相关的配置段
-                  if (sectionKey == 'upload') return;
-                  if (sectionValue && typeof sectionValue === 'object') {
-                    // 遍历具体的配置项
-                    Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
-                      buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
-                    });
-                  }
-                });
+          Object.entries(boardDependencies).forEach(([key, version]) => {
+            if (key.startsWith('@aily-project/compiler-')) {
+              compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
+              toolVersions.push(compiler);
+            } else if (key.startsWith('@aily-project/sdk-')) {
+              sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
+            } else if (key.startsWith('@aily-project/tool-')) {
+              let toolName = key.replace(/^@aily-project\/tool-/, '');
+              if (toolName.startsWith('idf_')) {
+                toolName = 'esp32-arduino-libs';
               }
-            });
+              const tool = toolName + '@' + version;
+              toolVersions.push(tool);
+            }
+          });
 
-            buildProperties = buildPropertyParams.join(' ');
-            if (buildProperties) {
-              buildProperties = ' ' + buildProperties; // 在前面添加空格
+          if (!compiler || !sdk) {
+            this.handleCompileError('未找到编译器或SDK信息');
+            throw new Error('未找到编译器或SDK信息');
+          }
+
+          // 配置路径和参数
+          this.checkIfCancelled();
+
+          // 组合编译器、sdk、tools的路径
+          // 兼容旧版本
+          const oldCompilerPath = window['path'].getAppDataPath() + `/compiler/${compiler}`;
+          this.compilerPath = oldCompilerPath;
+          this.sdkPath = await window["env"].get('AILY_SDK_PATH') + `/${sdk}`;
+          this.toolsPath = await window["env"].get('AILY_TOOLS_PATH');
+
+          // 获取使用的编译器
+          // const compilerTool = boardJson.compilerTool || 'aily-builder';
+
+          // 获取编译命令
+          let compilerParam = boardJson.compilerParam;
+          if (!compilerParam) {
+            this.handleCompileError('未找到编译命令(compilerParam)');
+            throw new Error('未找到编译命令(compilerParam)');
+          }
+
+          let compilerParamList = compilerParam.split(' ');
+
+          // 找到 -b 或 --board 参数后面的 fqbn 值，并从参数列表中移除
+          for (let i = 0; i < compilerParamList.length; i++) {
+            if (compilerParamList[i] === '-b' || compilerParamList[i] === '--board') {
+              // 下一个参数就是 fqbn 值
+              if (i + 1 < compilerParamList.length) {
+                let fqbn = compilerParamList[i + 1];
+                // 如果 fqbn 以 aily: 开头，需要替换 sdk 部分
+                // const parts = fqbn.split(':');
+                // if (parts.length > 2) { // 确保至少有3部分 (aily:avr:mega)
+                //   if (compilerTool !== 'aily-builder') {
+                //     parts[0] = "aily"
+                //     parts[1] = sdk;
+                //     fqbn = parts.join(':');
+                //   }
+                // }
+                this.boardType = fqbn;
+
+                // 从参数列表中移除 -b/--board 和 fqbn 参数
+                compilerParamList.splice(i, 2); // 移除当前位置的两个元素
+
+                break;
+              }
+            }
+
+            if (compilerParamList[i] === '-v' || compilerParamList[i] === '--verbose') {
+              // 移除 -v 或 --verbose 参数
+              compilerParamList.splice(i, 1);
+              i--; // 调整索引以继续检查当前位置
             }
           }
-        } catch (error) {
-          console.warn('获取项目配置失败:', error);
-        }
 
-        // 将buildProperties添加到compilerParam中
-        compilerParam += buildProperties;
+          console.log("boardType: ", this.boardType);
 
-        let compileCommandParts = [];
+          compilerParam = compilerParamList.join(' ');
 
-        // buildPath
-        this.buildPath = await getDefaultBuildPath(sketchFilePath);
+          // 获取和解析项目编译参数
+          let buildProperties = '';
+          try {
+            const projectConfig = await this.projectService.getProjectConfig();
+            if (projectConfig) {
+              const buildPropertyParams: string[] = [];
 
-        compileCommandParts = [
-          "node",
-          `"${window['path'].getAilyBuilderPath()}/index.js"`,
-          `${compilerParam}`,
-          `"${sketchFilePath}"`,
-          '--jobs', '4',
-          '--board', `"${this.boardType}"`,
-          '--libraries-path', `"${librariesPath}"`,
-          '--sdk-path', `"${this.sdkPath}"`,
-          '--tools-path', `"${this.toolsPath}"`,
-          '--tool-versions', `"${toolVersions.join(',')}"`,
-        ];
-
-        // 检查复制compilerPath下的所有文件夹到toolsPath中
-        await this.syncCompilerToolsToToolsPath();
-        const compileCommand = compileCommandParts.join(' ');
-
-        const title = `编译 ${boardJson.name}`;
-        const completeTitle = `编译完成`;
-
-        let lastProgress = 0;
-        let lastBuildText = '';
-        let bufferData = '';
-        let completeLines = '';
-        let lastStdErr = '';
-        let fullStdErr = '';
-        let isBuildText = false;
-        let outputComplete = false;
-        let flashInfo = '';
-        let ramInfo = '';
-        let lastLogLines: string[] = [];
-
-        this.buildStartTime = Date.now(); // 记录编译开始时间
-
-        this.cmdService.run(compileCommand, null, false).subscribe({
-          next: (output: CmdOutput) => {
-            console.log('编译命令输出:', output);
-            this.streamId = output.streamId;
-
-            if (output.data) {
-              const data = output.data;
-              if (data.includes('\r\n') || data.includes('\n') || data.includes('\r')) {
-                // 分割成行，同时处理所有三种换行符情况
-                const lines = (bufferData + data).split(/\r\n|\n|\r/);
-                // 最后一个可能不完整的行保留为新的bufferData
-                bufferData = lines.pop() || '';
-                // 处理完整的行
-                // completeLines = lines.join('\n');
-                // this.logService.update({"detail": completeLines});
-
-                lines.forEach((line: string) => {
-                  // 处理每一行输出
-                  let trimmedLine = line.trim();
-
-                  if (!trimmedLine) return; // 如果行为空，则跳过处理
-
-                  // const cleanLine = line.replace(/\[\d+(;\d+)*m/g, '');
-                  // this.logService.update({ "detail": line });
-
-                  // 检查是否有错误信息
-                  // if (/error:|error during build:|failed|fatal/i.test(trimmedLine)) {
-                  //   console.error("检测到编译错误:", trimmedLine);
-                  //   // 提取更有用的错误信息，避免过长
-                  //   // const errorMatch = trimmedLine.match(/error:(.+?)($|(\s+at\s+))/i);
-                  //   // const errorText = errorMatch ? errorMatch[1].trim() : trimmedLine;
-                  //   // this.handleCompileError(errorText);
-                  //   this.isErrored = true;
-                  //   return;
-                  // }
-
-                  // if (output.type === 'stderr') {
-                  //   return; // 如果是stderr输出，则不处理
-                  // }
-
-                  // if (this.isErrored) {
-                  //   // this.logService.update({ "detail": line, "state": "error" });
-                  //   return;
-                  // }
-
-                  // 提取构建文本
-                  if (trimmedLine.startsWith('BuildText:')) {
-                    const lineContent = trimmedLine.replace('BuildText:', '').trim();
-                    const buildText = lineContent.split(/[\n\r]/)[0];
-                    lastBuildText = buildText;
-                    isBuildText = true;
-                  } else {
-                    isBuildText = false;
-                  }
-
-                  // 提取Output file路径
-                  // if (trimmedLine.includes('Output File:')) {
-                  //   const outputFileMatch = trimmedLine.match(/Output File:\s*(.+)$/);
-                  //   if (outputFileMatch) {
-                  //     this.outputFilePath = outputFileMatch[1].trim();
-                  //     console.log('提取到Output file路径:', this.outputFilePath);
-                  //   }
-                  // }
-
-                  // 提取进度信息
-                  const progressInfo = trimmedLine.trim();
-                  let progressValue = 0;
-
-                  // Match patterns like [========================================          ] 80%
-                  const barProgressMatch = progressInfo.match(/\[.*?\]\s*(\d+)%/);
-                  // Match patterns like [99/101] for fraction-based progress
-                  const fractionProgressMatch = progressInfo.match(/\[(\d+)\/(\d+)\]/);
-
-                  if (barProgressMatch) {
-                    try {
-                      progressValue = parseInt(barProgressMatch[1], 10);
-                    } catch (error) {
-                      progressValue = 0;
-                      console.warn('进度解析错误:', error);
+              // 遍历配置对象，解析编译参数
+              Object.values(projectConfig).forEach((configSection: any) => {
+                if (configSection && typeof configSection === 'object') {
+                  // 遍历每个配置段（如 build、upload 等）
+                  Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
+                    // 排除upload等非编译相关的配置段
+                    if (sectionKey == 'upload') return;
+                    if (sectionValue && typeof sectionValue === 'object') {
+                      // 遍历具体的配置项
+                      Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
+                        buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
+                      });
                     }
-                  } else if (fractionProgressMatch) {
-                    try {
-                      const current = parseInt(fractionProgressMatch[1], 10);
-                      const total = parseInt(fractionProgressMatch[2], 10);
-                      progressValue = Math.round((current / total) * 100);
-                    } catch (error) {
-                      progressValue = 0;
-                      console.warn('分数进度解析错误:', error);
-                    }
-                  }
+                  });
+                }
+              });
 
-                  if (progressValue > lastProgress) {
-                    // console.log("progress: ", lastProgress);
-                    lastProgress = progressValue;
-                    this.noticeService.update({
-                      title: title,
-                      text: lastBuildText,
-                      state: 'doing',
-                      progress: lastProgress,
-                      setTimeout: 0,
-                      stop: () => {
-                        this.cancel();
+              buildProperties = buildPropertyParams.join(' ');
+              if (buildProperties) {
+                buildProperties = ' ' + buildProperties; // 在前面添加空格
+              }
+            }
+          } catch (error) {
+            console.warn('获取项目配置失败:', error);
+          }
+
+          // 将buildProperties添加到compilerParam中
+          compilerParam += buildProperties;
+
+          // 同步编译器工具
+          this.checkIfCancelled();
+
+          // buildPath
+          this.buildPath = await getDefaultBuildPath(sketchFilePath);
+          await this.syncCompilerToolsToToolsPath();
+
+          // 开始编译
+          this.checkIfCancelled();
+
+          let compileCommandParts = [
+            "node",
+            `"${window['path'].getAilyBuilderPath()}/index.js"`,
+            `${compilerParam}`,
+            `"${sketchFilePath}"`,
+            '--jobs', '4',
+            '--board', `"${this.boardType}"`,
+            '--libraries-path', `"${librariesPath}"`,
+            '--sdk-path', `"${this.sdkPath}"`,
+            '--tools-path', `"${this.toolsPath}"`,
+            '--tool-versions', `"${toolVersions.join(',')}"`,
+          ];
+
+          compileCommand = compileCommandParts.join(' ');
+          title = `编译 ${boardJson.name}`;
+          completeTitle = `编译完成`;
+
+          let lastProgress = 0;
+          let lastBuildText = '';
+          let bufferData = '';
+          let completeLines = '';
+          let lastStdErr = '';
+          let fullStdErr = '';
+          let isBuildText = false;
+          let outputComplete = false;
+          let flashInfo = '';
+          let ramInfo = '';
+          let lastLogLines: string[] = [];
+
+          this.buildStartTime = Date.now(); // 记录编译开始时间
+
+          this.cmdService.run(compileCommand, null, false).subscribe({
+            next: (output: CmdOutput) => {
+              console.log('编译命令输出:', output);
+              if (this.cancelled) {
+                return;
+              }
+              this.streamId = output.streamId;
+
+              if (output.data) {
+                const data = output.data;
+                if (data.includes('\r\n') || data.includes('\n') || data.includes('\r')) {
+                  // 分割成行，同时处理所有三种换行符情况
+                  const lines = (bufferData + data).split(/\r\n|\n|\r/);
+                  // 最后一个可能不完整的行保留为新的bufferData
+                  bufferData = lines.pop() || '';
+                  // 处理完整的行
+                  // completeLines = lines.join('\n');
+                  // this.logService.update({"detail": completeLines});
+
+                  lines.forEach((line: string) => {
+                    // 处理每一行输出
+                    let trimmedLine = line.trim();
+
+                    if (!trimmedLine) return; // 如果行为空，则跳过处理
+
+                    // const cleanLine = line.replace(/\[\d+(;\d+)*m/g, '');
+                    // this.logService.update({ "detail": line });
+
+                    // 检查是否有错误信息
+                    // if (/error:|error during build:|failed|fatal/i.test(trimmedLine)) {
+                    //   console.error("检测到编译错误:", trimmedLine);
+                    //   // 提取更有用的错误信息，避免过长
+                    //   // const errorMatch = trimmedLine.match(/error:(.+?)($|(\s+at\s+))/i);
+                    //   // const errorText = errorMatch ? errorMatch[1].trim() : trimmedLine;
+                    //   // this.handleCompileError(errorText);
+                    //   this.isErrored = true;
+                    //   return;
+                    // }
+
+                    // if (output.type === 'stderr') {
+                    //   return; // 如果是stderr输出，则不处理
+                    // }
+
+                    // if (this.isErrored) {
+                    //   // this.logService.update({ "detail": line, "state": "error" });
+                    //   return;
+                    // }
+
+                    // 提取构建文本
+                    if (trimmedLine.startsWith('BuildText:')) {
+                      const lineContent = trimmedLine.replace('BuildText:', '').trim();
+                      const buildText = lineContent.split(/[\n\r]/)[0];
+                      lastBuildText = buildText;
+                      isBuildText = true;
+                    } else {
+                      isBuildText = false;
+                    }
+
+                    // 提取Output file路径
+                    // if (trimmedLine.includes('Output File:')) {
+                    //   const outputFileMatch = trimmedLine.match(/Output File:\s*(.+)$/);
+                    //   if (outputFileMatch) {
+                    //     this.outputFilePath = outputFileMatch[1].trim();
+                    //     console.log('提取到Output file路径:', this.outputFilePath);
+                    //   }
+                    // }
+
+                    // 提取进度信息
+                    const progressInfo = trimmedLine.trim();
+                    let progressValue = 0;
+
+                    // Match patterns like [========================================          ] 80%
+                    const barProgressMatch = progressInfo.match(/\[.*?\]\s*(\d+)%/);
+                    // Match patterns like [99/101] for fraction-based progress
+                    const fractionProgressMatch = progressInfo.match(/\[(\d+)\/(\d+)\]/);
+
+                    if (barProgressMatch) {
+                      try {
+                        progressValue = parseInt(barProgressMatch[1], 10);
+                      } catch (error) {
+                        progressValue = 0;
+                        console.warn('进度解析错误:', error);
                       }
-                    });
-                  }
+                    } else if (fractionProgressMatch) {
+                      try {
+                        const current = parseInt(fractionProgressMatch[1], 10);
+                        const total = parseInt(fractionProgressMatch[2], 10);
+                        progressValue = Math.round((current / total) * 100);
+                      } catch (error) {
+                        progressValue = 0;
+                        console.warn('分数进度解析错误:', error);
+                      }
+                    }
 
-                  // 进度为100%时标记完成
-                  if (lastProgress === 100) {
-                    this.buildCompleted = true;
-                  }
-
-                  // 如果不是进度信息，则直接更新日志
-                  // 判断是否包含:Global variables use 9 bytes (0%) of dynamic memory, leaving 2039 bytes for local variables. Maximum is 2048 bytes.
-                  if (trimmedLine.includes('Global variables use')) {
-                    outputComplete = true;
-                    this.logService.update({ "detail": trimmedLine, "state": "done" });
-                  } else {
-                    if (!outputComplete) {
-                      if (output.type == 'stderr') {
-                        // this.logService.update({ "detail": trimmedLine, "state": "error" });
-                        
-                        if (trimmedLine.includes('[ERROR]') || trimmedLine.toLowerCase().includes("[error]")) {
-                          lastStdErr = trimmedLine;
-                          fullStdErr += trimmedLine + '\n';
-                          this.isErrored = true;
+                    if (progressValue > lastProgress) {
+                      // console.log("progress: ", lastProgress);
+                      lastProgress = progressValue;
+                      this.noticeService.update({
+                        title: title,
+                        text: lastBuildText,
+                        state: 'doing',
+                        progress: lastProgress,
+                        setTimeout: 0,
+                        stop: () => {
+                          this.cancel();
                         }
-                      } else {
-                        this.logService.update({ "detail": trimmedLine, "state": "doing" });
+                      });
+                    }
+
+                    // 进度为100%时标记完成
+                    if (lastProgress === 100) {
+                      this.buildCompleted = true;
+                    }
+
+                    // 如果不是进度信息，则直接更新日志
+                    // 判断是否包含:Global variables use 9 bytes (0%) of dynamic memory, leaving 2039 bytes for local variables. Maximum is 2048 bytes.
+                    if (trimmedLine.includes('Global variables use')) {
+                      outputComplete = true;
+                      this.logService.update({ "detail": trimmedLine, "state": "done" });
+                    } else {
+                      if (!outputComplete) {
+                        if (output.type == 'stderr') {
+                          // this.logService.update({ "detail": trimmedLine, "state": "error" });
+
+                          if (trimmedLine.includes('[ERROR]') || trimmedLine.toLowerCase().includes("[error]")) {
+                            lastStdErr = trimmedLine;
+                            fullStdErr += trimmedLine + '\n';
+                            this.isErrored = true;
+                          }
+                        } else {
+                          this.logService.update({ "detail": trimmedLine, "state": "doing" });
+                        }
                       }
                     }
-                  }
 
-                  // 收集最后的几行日志用于提取固件信息
-                  lastLogLines.push(trimmedLine);
-                  if (lastLogLines.length > 30) {
-                    lastLogLines.shift(); // 保持最后30行
-                  }
-                });
+                    // 收集最后的几行日志用于提取固件信息
+                    lastLogLines.push(trimmedLine);
+                    if (lastLogLines.length > 30) {
+                      lastLogLines.shift(); // 保持最后30行
+                    }
+                  });
+                } else {
+                  // 没有换行符，直接追加
+                  bufferData += data;
+                }
               } else {
-                // 没有换行符，直接追加
-                bufferData += data;
+                bufferData += '';
               }
-            } else {
-              bufferData += '';
-            }
-          },
-          error: (error: any) => {
-            this.isErrored = true;
-            this.handleCompileError(error.message);
-            reject({ state: 'error', text: error.message });
-          },
-          complete: () => {
-            console.log('编译命令执行完成');
-            if (this.buildCompleted) {
+            },
+            error: (error: any) => {
+              this.isErrored = true;
+              this.handleCompileError(error.message);
+              reject({ state: 'error', text: error.message });
+            },
+            complete: () => {
               console.log('编译命令执行完成');
-              // 计算编译耗时
-              const buildEndTime = Date.now();
-              const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
-              console.log(`编译耗时: ${buildDuration} 秒`);
+              if (this.buildCompleted) {
+                console.log('编译命令执行完成');
+                // 计算编译耗时
+                const buildEndTime = Date.now();
+                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
+                console.log(`编译耗时: ${buildDuration} 秒`);
 
-              // 提取flash和ram信息
-              const displayText = this.extractFirmwareInfo(lastLogLines);
-              const displayTextWithTime = `${displayText} (耗时: ${buildDuration}s)`;
-              this.noticeService.update({ title: completeTitle, text: displayTextWithTime, state: 'done', setTimeout: 600000 });
-              this.buildInProgress = false;
-              this.passed = true;
-              resolve({ state: 'done', text: `编译完成 (耗时: ${buildDuration}s)` });
-            } else if (this.isErrored) {
-              // 计算编译耗时
-              const buildEndTime = Date.now();
-              const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
-              console.log(`编译失败，耗时: ${buildDuration} 秒`);
+                // 提取flash和ram信息
+                const displayText = this.extractFirmwareInfo(lastLogLines);
+                const displayTextWithTime = `${displayText} (耗时: ${buildDuration}s)`;
+                this.noticeService.update({ title: completeTitle, text: displayTextWithTime, state: 'done', setTimeout: 600000 });
+                this.buildInProgress = false;
+                this.passed = true;
+                resolve({ state: 'done', text: `编译完成 (耗时: ${buildDuration}s)` });
+              } else if (this.isErrored) {
+                // 计算编译耗时
+                const buildEndTime = Date.now();
+                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
+                console.log(`编译失败，耗时: ${buildDuration} 秒`);
 
-              // 去掉lastStdErr中的颜色代码（"[31m[ERROR][0m Compilation failed: Compilation failed）
-              lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
+                // 去掉lastStdErr中的颜色代码（"[31m[ERROR][0m Compilation failed: Compilation failed）
+                lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
 
-              this.noticeService.update({
-                title: "编译失败",
-                text: `${lastStdErr.slice(0, 30) + "..." || '编译未完成'} (耗时: ${buildDuration}s)`,
-                state: 'error',
-                setTimeout: 600000
-              });
+                this.noticeService.update({
+                  title: "编译失败",
+                  text: `${lastStdErr.slice(0, 30) + "..." || '编译未完成'} (耗时: ${buildDuration}s)`,
+                  state: 'error',
+                  setTimeout: 600000
+                });
 
-              this.logService.update({ detail: fullStdErr, state: 'error' });
+                this.logService.update({ detail: fullStdErr, state: 'error' });
 
-              // this.logService.update({ title: "编译失败", detail: lastStdErr, state: 'error' });
-              this.buildInProgress = false;
-              this.passed = false;
-              // 终止Arduino CLI进程
+                // this.logService.update({ title: "编译失败", detail: lastStdErr, state: 'error' });
+                this.buildInProgress = false;
+                this.passed = false;
+                // 终止Arduino CLI进程
 
-              reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)` });
-            } else if (this.cancelled) {
-              console.warn("编译中断")
-              // 计算编译耗时
-              const buildEndTime = Date.now();
-              const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
-              console.log(`编译已取消，耗时: ${buildDuration} 秒`);
+                reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)` });
+              } else if (this.cancelled) {
+                console.warn("编译中断")
+                // 计算编译耗时
+                const buildEndTime = Date.now();
+                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
+                console.log(`编译已取消，耗时: ${buildDuration} 秒`);
 
-              this.noticeService.update({
-                title: "编译已取消",
-                text: `编译已取消 (耗时: ${buildDuration}s)`,
-                state: 'warn',
-                setTimeout: 55000
-              });
-              this.buildInProgress = false;
-              this.passed = false;
-              // 终止Arduino CLI进程
+                this.noticeService.update({
+                  title: "编译已取消",
+                  text: `编译已取消 (耗时: ${buildDuration}s)`,
+                  state: 'warn',
+                  setTimeout: 55000
+                });
+                this.buildInProgress = false;
+                this.passed = false;
+                // 终止Arduino CLI进程
 
-              reject({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
+                reject({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
+              }
             }
+          })
+        } catch (error) {
+          if (error.message === '编译已取消') {
+            const buildEndTime = Date.now();
+            const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
+
+            this.noticeService.update({
+              title: "编译已取消",
+              text: `编译已取消 (耗时: ${buildDuration}s)`,
+              state: 'warn',
+              setTimeout: 5000
+            });
+            this.buildInProgress = false;
+            this.cancelled = true;
+
+            reject({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
+            return;
           }
-        })
+          throw error;
+        }
       } catch (error) {
         this.handleCompileError(error.message);
         reject({ state: 'error', text: error.message });
@@ -1050,6 +1102,14 @@ export class _BuilderService {
   cancel() {
     this.cancelled = true;
     this.cmdService.kill(this.streamId || '');
+
+    // 输出编译正在取消中
+    this.noticeService.update({
+      title: "取消中",
+      text: `编译取消中，请稍候...`,
+      state: 'doing',
+      setTimeout: 0
+    });
   }
 
   // /**
