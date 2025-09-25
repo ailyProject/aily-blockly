@@ -6,9 +6,22 @@ import { AppComponent } from './app/app.component';
 import './app/utils/global-chat.utils';
 
 // Monaco Editor configuration
-// 不提供worker配置，让Monaco Editor使用fallback模式（主线程模式）
-// 这避免了web worker的模块加载问题
-(self as any).MonacoEnvironment = {};
+// 完全禁用WebWorker以避免加载和通信错误
+// 提供一个假的Worker对象来避免null引用错误
+(self as any).MonacoEnvironment = {
+  getWorker: function (workerId: string, label: string) {
+    // 返回一个假的Worker对象，避免null引用错误
+    return {
+      postMessage: () => {}, // 空函数
+      onmessage: null,
+      onerror: null,
+      terminate: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false
+    };
+  }
+};
 
 bootstrapApplication(AppComponent, appConfig)
   .catch((err) => console.error(err));

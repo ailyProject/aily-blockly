@@ -562,13 +562,25 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       console.log('Initializing Monaco Editor...');
 
-      // 创建编辑器实例
+      // 创建编辑器实例时禁用可能触发WebWorker的功能
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
         value: this.code,
         language: this.options.language || 'cpp',
         theme: this.options.theme || 'vs-dark',
         lineNumbers: this.options.lineNumbers || 'on',
         automaticLayout: this.options.automaticLayout !== false,
+        // 禁用可能触发WebWorker的功能
+        occurrencesHighlight: 'off',
+        codeLens: false,
+        links: false,
+        hover: {
+          enabled: false
+        },
+        parameterHints: {
+          enabled: false
+        },
+        suggestOnTriggerCharacters: false,
+        quickSuggestions: false,
         ...this.options
       });
 
