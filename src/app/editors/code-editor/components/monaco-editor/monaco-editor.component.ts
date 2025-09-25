@@ -32,41 +32,7 @@ const MONACO_CONFIG = {
   }
 } as const;
 
-// 日志工具类
-class MonacoLogger {
-  private static logThrottle = new Map<string, number>();
-  
-  static info(message: string, ...args: any[]): void {
-    console.log(`📝 [Monaco] ${message}`, ...args);
-  }
-  
-  static success(message: string, ...args: any[]): void {
-    console.log(`✅ [Monaco] ${message}`, ...args);
-  }
-  
-  static warn(message: string, ...args: any[]): void {
-    console.warn(`⚠️ [Monaco] ${message}`, ...args);
-  }
-  
-  static error(message: string, ...args: any[]): void {
-    console.error(`❌ [Monaco] ${message}`, ...args);
-  }
-  
-  static debug(message: string, ...args: any[]): void {
-    console.debug(`🔍 [Monaco] ${message}`, ...args);
-  }
-  
-  // 限流日志，避免在循环中输出太多日志
-  static throttledLog(key: string, message: string, threshold: number = 1000, ...args: any[]): void {
-    const now = Date.now();
-    const lastLog = this.logThrottle.get(key) || 0;
-    
-    if (now - lastLog > threshold) {
-      console.log(`🔄 [Monaco] ${message}`, ...args);
-      this.logThrottle.set(key, now);
-    }
-  }
-}
+
 
 // 类型定义
 interface ExtensionManifest {
@@ -108,30 +74,6 @@ declare global {
   }
 }
 
-/**
- * Monaco Editor Angular组件
- * 
- * 该组件封装了Monaco Editor，并集成了VSCode API和VSIX扩展支持。
- * 主要功能：
- * - Monaco Editor的初始化和配置
- * - VSCode API的初始化和管理
- * - VSIX扩展的加载和注册
- * - 编辑器状态的保存和恢复
- * - 内存管理和资源清理
- * 
- * @example
- * ```html
- * <app-monaco-editor
- *   [code]="sourceCode"
- *   [options]="editorOptions"
- *   [filePath]="currentFile"
- *   (codeChange)="onCodeChange($event)">
- * </app-monaco-editor>
- * ```
- * 
- * @author AI Assistant
- * @since 1.0.0
- */
 @Component({
   selector: 'app-monaco-editor',
   imports: [
@@ -173,7 +115,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         console.log('🚀 开始初始化 Monaco VSCode API...');
         
         // 首先调用 monaco-vscode-api 的 initialize() 来初始化服务
-        console.log('🔄 调用 initialize() 初始化 monaco-vscode-api 服务...');
+        // console.log('🔄 调用 initialize() 初始化 monaco-vscode-api 服务...');
         await initialize({
           // 添加必要的服务覆盖
           ...getBaseServiceOverride(), // 基本服务，包含必要的核心功能
@@ -630,20 +572,20 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    */
   private async setupVsixExtensions(editor: monaco.editor.IStandaloneCodeEditor): Promise<void> {
     try {
-      MonacoLogger.info('正在为Moanco编辑器设置VSIX扩展...');
+      console.log('📝 [Monaco] 正在为Moanco编辑器设置VSIX扩展...');
 
       // 首先确保VSCode API已初始化
       if (!MonacoEditorComponent.isMonacoInitialized) {
-        MonacoLogger.info('VSCode API未初始化，先进行初始化...');
+        console.log('📝 [Monaco] VSCode API未初始化，先进行初始化...');
         await MonacoEditorComponent.initializeMonacoVSCodeAPI();
       }
 
       // 再次等待API准备就绪
-      MonacoLogger.info('等待VSCode API准备就绪...');
+      console.log('📝 [Monaco] 等待VSCode API准备就绪...');
       await MonacoEditorComponent.waitForVSCodeAPIReady();
       
       // 额外的安全等待时间，确保所有服务完全初始化
-      MonacoLogger.info('等待额外的服务初始化时间...');
+      console.log('📝 [Monaco] 等待额外的服务初始化时间...');
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       // 首先初始化所有可用的扩展
@@ -651,16 +593,16 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       // 获取所有已加载的扩展
       const loadedExtensions = this.vsixService.getLoadedExtensions();
-      MonacoLogger.success(`找到 ${loadedExtensions.length} 个已加载的扩展`);
+      console.log(`✅ [Monaco] 找到 ${loadedExtensions.length} 个已加载的扩展`);
 
       // 使用新的扩展注册方式
       for (const extensionData of loadedExtensions) {
         try {
-          MonacoLogger.info(`尝试注册扩展: ${extensionData.manifest.name}`);
+          console.log(`📝 [Monaco] 尝试注册扩展: ${extensionData.manifest.name}`);
           await MonacoEditorComponent.registerVsixExtension(extensionData);
-          MonacoLogger.success(`成功注册扩展: ${extensionData.manifest.name}`);
+          console.log(`✅ [Monaco] 成功注册扩展: ${extensionData.manifest.name}`);
         } catch (error) {
-          MonacoLogger.error(`注册扩展失败 ${extensionData.manifest.name}:`, error);
+          console.error(`❌ [Monaco] 注册扩展失败 ${extensionData.manifest.name}:`, error);
           // 继续处理其他扩展，不中断流程
         }
       }
@@ -671,9 +613,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       }, MONACO_CONFIG.TIMEOUTS.CLANGD_VERIFY_DELAY) as unknown as number;
       this.timeoutIds.push(timeoutId);
 
-      MonacoLogger.success('VSIX扩展设置完成');
+      console.log('✅ [Monaco] VSIX扩展设置完成');
     } catch (error) {
-      MonacoLogger.error('设置VSIX扩展失败:', error);
+      console.error('❌ [Monaco] 设置VSIX扩展失败:', error);
       // 不抛出错误，允许编辑器继续正常工作
     }
   }
