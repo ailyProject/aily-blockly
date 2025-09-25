@@ -98,10 +98,14 @@
             "NAME_EXISTS": "Le nom du projet existe déjà, veuillez le modifier"
         },
         "BUTTONS": {
+            "USE_THIS": "Utiliser cette Carte",
             "NEXT": "Suivant",
             "PREV": "Précédent",
             "CREATE": "Créer Projet",
             "CREATING": "Création en cours"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "Version bêta, non vérifiée, utilisez avec prudence"
         }
     },
     "LIB_MANAGER": {

@@ -100,10 +100,14 @@
             "NAME_EXISTS": "Projektname existiert bereits, bitte ändern"
         },
         "BUTTONS": {
+            "USE_THIS": "Dieses Board verwenden",
             "NEXT": "Weiter",
             "PREV": "Zurück",
             "CREATE": "Projekt erstellen",
             "CREATING": "Erstellen"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "Beta-Version, ungeprüft, mit Vorsicht verwenden"
         }
     },
     "LIB_MANAGER": {

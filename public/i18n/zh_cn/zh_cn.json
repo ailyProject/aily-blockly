@@ -142,6 +142,9 @@
             "PREV": "上一步",
             "CREATE": "创建项目",
             "CREATING": "正在创建"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "内测版本，未经验证，谨慎使用"
         }
     },
     "LIB_MANAGER": {

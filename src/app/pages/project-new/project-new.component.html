@@ -63,8 +63,8 @@
                 <img [src]="resourceUrl+'/imgs/boards/'+board.img" />
               </div>
               <div class="name">{{ board.nickname }}
-                @if(board.disabled){
-                <span>(dev)</span>
+                @if(board.state){
+                <span>({{board.state}})</span>
                 }
               </div>
             </div>
@@ -79,6 +79,9 @@
           <div class="content">
             <div class="title">
               <div class="title-text">{{currentBoard.nickname}}</div>
+              @if(currentBoard.state){
+              <span class="warn"><i class="fa-light fa-circle-exclamation"></i>{{ 'PROJECT_NEW.WARNINGS.BETA_VERSION' | translate }}</span>
+              }
             </div>
             <div class="text sscroll">{{ currentBoard.description }}</div>
             <div class="next">

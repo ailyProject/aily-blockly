@@ -98,10 +98,14 @@
             "NAME_EXISTS": "Nome do projeto já existe, por favor modifique"
         },
         "BUTTONS": {
+            "USE_THIS": "Usar esta Placa",
             "NEXT": "Próximo",
             "PREV": "Anterior",
             "CREATE": "Criar projeto",
             "CREATING": "Criando"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "Versão beta, não verificada, use com cautela"
         }
     },
     "LIB_MANAGER": {

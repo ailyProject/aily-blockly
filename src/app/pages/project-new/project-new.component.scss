@@ -263,7 +263,7 @@
       position: relative;
       height: 30px;
       display: flex;
-      justify-content: space-between;
+      // justify-content: space-between;
       align-items: flex-end;
       padding-bottom: 5px;
     }
@@ -304,6 +304,19 @@
       font-weight: bold;
       display: flex;
       align-items: center;
+    }
+
+    .warn {
+      color: #ffb400;
+      font-size: 14px;
+      height: 14px;
+      margin-left: 10px;
+      display: flex;
+      align-items: center;
+
+      i {
+        margin-right: 3px;
+      }
     }
 
     .btns {

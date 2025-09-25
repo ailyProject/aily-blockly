@@ -94,10 +94,14 @@
             "NAME_EXISTS": "프로젝트 이름이 이미 존재합니다. 수정해 주세요"
         },
         "BUTTONS": {
+            "USE_THIS": "이 보드 사용",
             "NEXT": "다음",
             "PREV": "이전",
             "CREATE": "프로젝트 생성",
             "CREATING": "생성 중"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "베타 버전, 미검증, 주의해서 사용"
         }
     },
     "LIB_MANAGER": {

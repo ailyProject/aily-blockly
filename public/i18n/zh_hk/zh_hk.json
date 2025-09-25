@@ -100,10 +100,14 @@
             "NAME_EXISTS": "專案名稱已存在，請修改"
         },
         "BUTTONS": {
+            "USE_THIS": "使用此開發板",
             "NEXT": "下一步",
             "PREV": "上一步",
             "CREATE": "創建專案",
             "CREATING": "正在創建"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "內測版本，未經驗證，謹慎使用"
         }
     },
     "LIB_MANAGER": {

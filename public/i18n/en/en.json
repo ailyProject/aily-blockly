@@ -124,7 +124,7 @@
         },
         "BOARD": {
             "SEARCH": "Search Board",
-            "READ_DOC": "Read Documentation",
+            "READ_DOC": "Documentation",
             "ADD_BOARD": "Add Board",
             "DEV": "dev"
         },
@@ -135,10 +135,14 @@
             "NAME_EXISTS": "Project name already exists, please modify"
         },
         "BUTTONS": {
+            "USE_THIS": "Use This Board",
             "NEXT": "Next",
             "PREV": "Previous",
             "CREATE": "Create Project",
             "CREATING": "Creating"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "Beta version, unverified, use with caution"
         }
     },
     "LIB_MANAGER": {

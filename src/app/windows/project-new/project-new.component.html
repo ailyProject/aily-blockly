@@ -46,8 +46,8 @@
                 <img [src]="resourceUrl+'/imgs/boards/'+board.img" />
               </div>
               <div class="name">{{ board.nickname }}
-                @if(board.disabled){
-                <span>(dev)</span>
+                @if(board.state){
+                <span>({{board.state}})</span>
                 }
               </div>
             </div>

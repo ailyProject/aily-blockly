@@ -128,10 +128,14 @@
             "NAME_EXISTS": "プロジェクト名は既に存在します。変更してください"
         },
         "BUTTONS": {
+            "USE_THIS": "このボードを使用",
             "NEXT": "次へ",
             "PREV": "前へ",
             "CREATE": "プロジェクトを作成",
             "CREATING": "作成中"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "ベータ版、未検証、注意して使用"
         }
     }
 }
