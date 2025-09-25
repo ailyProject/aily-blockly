@@ -1,5 +1,7 @@
 # AilyBlockly
-灵感来自Github copilot  
+
+[English](README.md) | 中文
+
 ## 关于本软件
 aily Project是一个硬件开发集成环境，计划集成诸多AI能力，帮助硬件开发者更畅快的进行开发。  
 aily Blockly是aily Project下的blockly IDE，前期面向非专业用户提供AI辅助编程能力，长远目标是打破专业开发和非专业开发的界限，最终实现自然语言编程。  
@@ -50,28 +52,28 @@ aily Blockly是aily Project下的blockly IDE，前期面向非专业用户提供
 
 ### 企业赞助
 <a target="_blank" href="https://www.seeedstudio.com/" >
-    <img src=".\public\sponsor\seeedstudio\logo.webp" alt="seeedstudio" width=200 />
+    <img src=".\public\sponsor\seeedstudio\logo_l.webp" alt="seeedstudio" width=200 />
 </a><br>  
 <a target="_blank" href="https://www.seekfree.cn/" >
-    <img src=".\public\sponsor\seekfree\logo.webp" alt="seekfree" width=200 />
+    <img src=".\public\sponsor\seekfree\logo_l.webp" alt="seekfree" width=200 />
 </a><br>
 <a target="_blank" href="https://www.diandeng.tech/" >
-    <img src=".\public\sponsor\diandeng\logo.webp" alt="diandeng" width=200 />
+    <img src=".\public\sponsor\diandeng\logo_l.webp" alt="diandeng" width=200 />
 </a><br>  
 <a target="_blank" href="https://www.openjumper.com/" >
     <img src=".\public\sponsor\openjumper\logo.webp" alt="openjumper" width=200 />
 </a><br>
 <a target="_blank" href="https://www.pdmicro.cn/" >
-    <img src=".\public\sponsor\pengde\logo.webp" alt="openjumper" width=200 />
+    <img src=".\public\sponsor\pengde\logo.webp" alt="pengde" width=200 />
 </a><br>  
 <a target="_blank" href="https://www.titlab.cn/" >
-    <img src=".\public\sponsor\titlab\logo.webp" alt="titlab" width=200 />
+    <img src=".\public\sponsor\titlab\logo_l.webp" alt="titlab" width=200 />
 </a><br>  
 <a target="_blank" href="https://www.emakefun.com" >
-    <img src=".\public\sponsor\emakefun\logo.webp" alt="emakefun" width=200 />
+    <img src=".\public\sponsor\emakefun\logo_l.webp" alt="emakefun" width=200 />
 </a><br>  
 <a target="_blank" href="http://www.keyes-robot.com/" >
-    <img src=".\public\sponsor\keyes\logo.webp" alt="keyes" width=200 />
+    <img src=".\public\sponsor\keyes\logo_l.webp" alt="keyes" width=200 />
 </a>  
 
 
