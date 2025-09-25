@@ -431,7 +431,7 @@ export class HeaderComponent {
 
         if (menuItem) {
           event.preventDefault(); // 阻止默认行为
-          console.log('快捷键触发:', menuItem.name, shortcutKey);
+          // console.log('快捷键触发:', menuItem.name, shortcutKey);
 
           // 执行对应的操作
           if (menuItem.data && menuItem.data.type) {
