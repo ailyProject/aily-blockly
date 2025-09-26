@@ -5,7 +5,6 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { VsixService } from '../../services/vsix.service';
 
 import * as monaco from 'monaco-editor';
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import * as vscode from 'vscode'
 import 'vscode/localExtensionHost'
 import { initialize } from '@codingame/monaco-vscode-api'
@@ -16,9 +15,20 @@ import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-over
 import getBaseServiceOverride from '@codingame/monaco-vscode-base-service-override'
 import getExtensionsServiceOverride from '@codingame/monaco-vscode-extensions-service-override'
 
-window.MonacoEnvironment = {
-  getWorker: (_moduleId, _label) => new editorWorker()
-}
+(self as any).MonacoEnvironment = {
+  getWorker: function (workerId: string, label: string) {
+    // 返回一个假的Worker对象，避免null引用错误
+    return {
+      postMessage: () => {}, // 空函数
+      onmessage: null,
+      onerror: null,
+      terminate: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false
+    };
+  }
+};
 
 // 常量定义
 const MONACO_CONFIG = {
@@ -515,18 +525,39 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     })
 
     // json config like in vscode settings.json
-//     updateUserConfiguration(`{
-//     "editor.fontSize": 14,
-//     "editor.lineHeight": 14,
-//     "editor.fontFamily": "monospace",
-//     "editor.fontWeight": "bold",
-//     "editor.letterSpacing": 0,
-// }`)
+    //     updateUserConfiguration(`{
+    //     "editor.fontSize": 14,
+    //     "editor.lineHeight": 14,
+    //     "editor.fontFamily": "monospace",
+    //     "editor.fontWeight": "bold",
+    //     "editor.letterSpacing": 0,
+    // }`)
 
     // creating an editor with VSCode configuration
     this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
       value: this.code,
-    })
+      language: this.options.language || 'cpp',
+      theme: this.options.theme || 'vs-dark',
+      lineNumbers: this.options.lineNumbers || 'on',
+      automaticLayout: this.options.automaticLayout || true,
+      // 禁用minimap以避免渲染错误
+      minimap: {
+        enabled: false
+      },
+      // 添加其他安全配置
+      scrollBeyondLastLine: false,
+      wordWrap: 'on',
+      fontSize: 14
+    });
+
+    // 添加内容变化监听
+    if (this.editorInstance) {
+      const onDidChangeContent = this.editorInstance.onDidChangeModelContent(() => {
+        const value = this.editorInstance?.getValue() || '';
+        this.onCodeChange(value);
+      });
+      this.disposables.push(onDidChangeContent);
+    }
   }
 
   /**

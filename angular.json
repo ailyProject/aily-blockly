@@ -61,6 +61,11 @@
                 "glob": "**/*",
                 "input": "node_modules/blockly/media/",
                 "output": "blockly/media"
+              },
+              {
+                "glob": "**/*",
+                "input": "node_modules/monaco-editor/esm/vs",
+                "output": "monaco-editor"
               }
             ],
             "styles": [

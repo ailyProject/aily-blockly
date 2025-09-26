@@ -23,7 +23,7 @@ export class BuilderService {
   }
 
   private init(): void {
-    console.log("BuilderService init");
+    // console.log("BuilderService init");
     this.projectService.boardChangeSubject.subscribe(() => {
       console.log('开发板已变更');
       console.log('当前项目路径:', this.projectService.currentProjectPath);

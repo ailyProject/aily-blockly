@@ -374,10 +374,7 @@ export class FileTreeComponent implements OnInit {
     if (this.dataSource) {
       this.dataSource.saveExpandedState();
     }
-
     const files = this.fileService.readDir(path);
-    console.log('Loaded root path files:', files);
-
     // 转换为扁平节点格式
     const flatFiles: FlatFileNode[] = files.map(file => ({
       expandable: !file.isLeaf,
