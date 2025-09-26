@@ -16,17 +16,9 @@ import getBaseServiceOverride from '@codingame/monaco-vscode-base-service-overri
 import getExtensionsServiceOverride from '@codingame/monaco-vscode-extensions-service-override'
 
 (self as any).MonacoEnvironment = {
-  getWorker: function (workerId: string, label: string) {
+  getWorker: (workerId: string, label: string) => {
     // 返回一个假的Worker对象，避免null引用错误
-    return {
-      postMessage: () => {}, // 空函数
-      onmessage: null,
-      onerror: null,
-      terminate: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false
-    };
+    return new Worker(new URL('../../../../../../node_modules/monaco-editor/esm/vs/editor/editor.worker', import.meta.url));
   }
 };
 
@@ -536,18 +528,18 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     // creating an editor with VSCode configuration
     this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
       value: this.code,
-      language: this.options.language || 'cpp',
-      theme: this.options.theme || 'vs-dark',
-      lineNumbers: this.options.lineNumbers || 'on',
-      automaticLayout: this.options.automaticLayout || true,
+      language: 'cpp',
+      theme: 'dark',
+      lineNumbers: 'on',
+      automaticLayout: true,
       // 禁用minimap以避免渲染错误
-      minimap: {
-        enabled: false
-      },
+      // minimap: {
+      //   enabled: false
+      // },
       // 添加其他安全配置
-      scrollBeyondLastLine: false,
-      wordWrap: 'on',
-      fontSize: 14
+      // scrollBeyondLastLine: false,
+      // wordWrap: 'on',
+      // fontSize: 14
     });
 
     // 添加内容变化监听

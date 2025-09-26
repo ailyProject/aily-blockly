@@ -61,11 +61,6 @@
                 "glob": "**/*",
                 "input": "node_modules/blockly/media/",
                 "output": "blockly/media"
-              },
-              {
-                "glob": "**/*",
-                "input": "node_modules/monaco-editor/esm/vs",
-                "output": "monaco-editor"
               }
             ],
             "styles": [
@@ -81,7 +76,8 @@
             ],
             "scripts": [
               "node_modules/pinyin-pro/dist/index.js"
-            ]
+            ],
+            "webWorkerTsConfig": "tsconfig.worker.json"
           },
           "configurations": {
             "production": {
@@ -141,7 +137,8 @@
               "./node_modules/ng-zorro-antd/ng-zorro-antd.min.css",
               "src/styles.scss"
             ],
-            "scripts": []
+            "scripts": [],
+            "webWorkerTsConfig": "tsconfig.worker.json"
           }
         }
       }

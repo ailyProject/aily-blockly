@@ -5,27 +5,4 @@
     overflow: hidden;
 }
 
-// 定义高亮样式
-:host ::ng-deep {
-  .line-highlight {
-    background-color: rgba(255, 255, 0, 0.2) !important; /* 黄色高亮背景 */
-    border: 1px solid rgba(255, 255, 0, 0.5) !important;
-    animation: highlight-fade 2s ease-out;
-  }
-
-  .line-highlight-decoration {
-    background-color: rgba(255, 215, 0, 0.8) !important; /* 金色装饰线 */
-    width: 4px !important;
-  }
-
-  @keyframes highlight-fade {
-    0% {
-      background-color: rgba(255, 255, 0, 0.6);
-      border-color: rgba(255, 255, 0, 0.8);
-    }
-    100% {
-      background-color: rgba(255, 255, 0, 0.2);
-      border-color: rgba(255, 255, 0, 0.5);
-    }
-  }
-}
+// @use 'monaco-editor/';
