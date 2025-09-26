@@ -14,7 +14,7 @@ import { BuilderService } from '../../services/builder.service';
 import { UploaderService } from '../../services/uploader.service';
 import { ElectronService } from '../../services/electron.service';
 import { ShortcutService, ShortcutAction, ShortcutKeyMapping } from './services/shortcut.service';
-import { VsixService } from './services/vsix.service';
+// import { VsixService } from './services/vsix.service';
 import { Subscription } from 'rxjs';
 import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
@@ -84,7 +84,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     private uploadService: UploaderService,
     private electronService: ElectronService,
     private shortcutService: ShortcutService,
-    private vsixService: VsixService,
+    // private vsixService: VsixService,
   ) {
   }
 
@@ -110,30 +110,30 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     });
   }
 
-  /**
-   * 初始化 VSIX 扩展
-   */
-  private async initializeVsixExtensions(): Promise<void> {
-    try {
-      console.log('Initializing VSIX extensions...');
+  // /**
+  //  * 初始化 VSIX 扩展
+  //  */
+  // private async initializeVsixExtensions(): Promise<void> {
+  //   try {
+  //     console.log('Initializing VSIX extensions...');
 
-      // 等待 Electron 服务初始化完成
-      if (this.electronService.isElectron) {
-        await this.vsixService.initializeAllExtensions();
-        console.log('VSIX extensions initialized successfully');
-      } else {
-        console.log('Not running in Electron, skipping VSIX extension initialization');
-      }
-    } catch (error) {
-      console.error('Failed to initialize VSIX extensions:', error);
-      // 不阻止组件的正常加载，只是记录错误
-    }
-  }
+  //     // 等待 Electron 服务初始化完成
+  //     if (this.electronService.isElectron) {
+  //       await this.vsixService.initializeAllExtensions();
+  //       console.log('VSIX extensions initialized successfully');
+  //     } else {
+  //       console.log('Not running in Electron, skipping VSIX extension initialization');
+  //     }
+  //   } catch (error) {
+  //     console.error('Failed to initialize VSIX extensions:', error);
+  //     // 不阻止组件的正常加载，只是记录错误
+  //   }
+  // }
 
 
   ngAfterViewInit(): void {
     // 初始化 VSIX 扩展
-    this.initializeVsixExtensions();
+    // this.initializeVsixExtensions();
     // 初始化快捷键监听
     this.initShortcutListeners();
     // 启动定期保存编辑器状态的定时器（每5秒保存一次）

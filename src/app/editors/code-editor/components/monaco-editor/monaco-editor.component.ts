@@ -3,7 +3,6 @@ import { Component, EventEmitter, Input, Output, SimpleChanges, ViewChild, Eleme
 import { FormsModule } from '@angular/forms';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { VsixService } from '../../services/vsix.service';
-import { ClangdTester } from '../../utils/clangd-tester';
 
 import * as monaco from 'monaco-editor';
 import * as vscode from 'vscode'
@@ -881,27 +880,6 @@ int main() {
     // 显示所有已注册的语言
     const allLanguages = this.monacoInstance.languages.getLanguages();
     console.log('所有已注册的语言:', allLanguages.map(lang => lang.id));
-  }
-
-  /**
-   * 生成完整的clangd状态报告
-   */
-  public generateClangdReport(): void {
-    console.log('\n📊 === 完整的clangd状态报告 ===');
-
-    // 使用测试工具生成报告
-    ClangdTester.generateReport();
-
-    // 检查语言提供者
-    this.checkLanguageProviders();
-
-    // 如果有编辑器实例，进行实际测试
-    if (this.editorInstance) {
-      console.log('\n🧪 进行实际编辑器测试...');
-      ClangdTester.testCompletion(this.editorInstance);
-    }
-
-    console.log('\n=== 报告结束 ===\n');
   }
 
   /**
