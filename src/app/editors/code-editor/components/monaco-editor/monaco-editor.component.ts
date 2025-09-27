@@ -17,7 +17,6 @@ import getExtensionsServiceOverride from '@codingame/monaco-vscode-extensions-se
 
 (self as any).MonacoEnvironment = {
   getWorker: (workerId: string, label: string) => {
-    // 返回一个假的Worker对象，避免null引用错误
     return new Worker(new URL('../../../../../../node_modules/monaco-editor/esm/vs/editor/editor.worker', import.meta.url));
   }
 };
