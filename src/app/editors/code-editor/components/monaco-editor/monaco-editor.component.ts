@@ -216,8 +216,8 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    */
   private setupThemeResourcesRedirect(): void {
     try {
-      // 创建一个委托文件系统提供者，将主题资源路径重定向到 /vscode/theme-resources
-      const themeResourceProvider = new DelegateFileSystemProvider({
+      // 创建专门处理 extension-file://vscode.theme-defaults 的文件系统提供者
+      const extensionFileProvider = new DelegateFileSystemProvider({
         delegate: new (class implements IFileSystemProviderWithFileReadWriteCapability {
           capabilities = FileSystemProviderCapabilities.FileReadWrite | FileSystemProviderCapabilities.PathCaseSensitive;
           onDidChangeCapabilities = new (vscode as any).EventEmitter().event;
@@ -226,36 +226,56 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           watch() { return { dispose: () => {} }; }
           
           async stat(resource: Uri): Promise<IStat> {
-            // 重定向到新路径
-            const redirectedPath = resource.path.replace(/\/themes?\//, '/vscode/theme-resources/');
-            const redirectedUri = resource.with({ path: redirectedPath });
-            
             return {
               type: 1, // FileType.File
               ctime: Date.now(),
               mtime: Date.now(),
-              size: 0
+              size: 1024 // 预估大小
             };
           }
           
           async readFile(resource: Uri): Promise<Uint8Array> {
-            // 重定向主题文件请求到 /vscode/theme-resources 路径
-            const redirectedPath = resource.path.replace(/\/themes?\//, '/vscode/theme-resources/');
-            const redirectedUri = resource.with({ path: redirectedPath });
+            console.log('Reading extension file:', resource.toString());
             
-            try {
-              // 尝试从重定向的路径读取文件
-              const response = await fetch(redirectedUri.toString());
-              if (response.ok) {
-                const arrayBuffer = await response.arrayBuffer();
-                return new Uint8Array(arrayBuffer);
+            // 处理 extension-file://vscode.theme-defaults 路径
+            if (resource.scheme === 'extension-file' && resource.authority === 'vscode.theme-defaults') {
+              // 处理形如 /extension/themes/dark_vs.json 的路径
+              let fileName: string | undefined;
+              
+              if (resource.path.includes('/themes/')) {
+                // 提取主题文件名：/extension/themes/dark_vs.json -> dark_vs.json
+                fileName = resource.path.split('/themes/').pop();
+              } else {
+                // 如果没有 themes 路径，直接取文件名
+                fileName = resource.path.split('/').pop();
               }
-            } catch (error) {
-              console.warn('Failed to load theme resource from redirected path:', error);
+              
+              if (fileName) {
+                const redirectedPath = `/vscode/theme-resources/${fileName}`;
+                
+                try {
+                  console.log(`Redirecting ${resource.toString()} to: ${redirectedPath}`);
+                  const response = await fetch(redirectedPath);
+                  if (response.ok) {
+                    const arrayBuffer = await response.arrayBuffer();
+                    console.log('Successfully loaded theme file:', fileName);
+                    return new Uint8Array(arrayBuffer);
+                  } else {
+                    console.warn('Failed to fetch theme file:', redirectedPath, response.status);
+                  }
+                } catch (error) {
+                  console.warn('Error fetching theme file:', error);
+                }
+              }
             }
             
-            // 如果重定向失败，返回空内容
-            return new Uint8Array();
+            // 如果重定向失败，返回空的JSON主题内容作为回退
+            const fallbackTheme = {
+              "type": "dark",
+              "colors": {},
+              "tokenColors": []
+            };
+            return new TextEncoder().encode(JSON.stringify(fallbackTheme));
           }
           
           async writeFile() { throw new Error('Write not supported'); }
@@ -265,17 +285,16 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           async rename() { throw new Error('Rename not supported'); }
         })(),
         toDelegate: (uri: Uri) => {
-          // 将主题相关的路径重定向到 /vscode/theme-resources
-          const redirectedPath = uri.path.replace(/\/themes?\//, '/vscode/theme-resources/');
-          return uri.with({ path: redirectedPath });
+          // 对于 extension-file://vscode.theme-defaults 路径，保持原样传递给委托处理器
+          return uri;
         },
         fromDeletate: (uri: Uri) => uri
       });
 
-      // 注册自定义文件系统提供者
-      registerFileSystemOverlay(999, themeResourceProvider);
+      // 注册 extension-file 文件系统提供者，优先级高于默认提供者
+      registerCustomProvider('extension-file', extensionFileProvider);
       
-      console.log('Theme resources redirect setup completed');
+      console.log('Extension file system provider registered for theme resources');
     } catch (error) {
       console.warn('Failed to setup theme resources redirect:', error);
     }
