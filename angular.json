@@ -61,6 +61,11 @@
                 "glob": "**/*",
                 "input": "node_modules/blockly/media/",
                 "output": "blockly/media"
+              },
+              {
+                "glob": "**/*",
+                "input": "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources",
+                "output": "vscode/theme-resources"
               }
             ],
             "styles": [
