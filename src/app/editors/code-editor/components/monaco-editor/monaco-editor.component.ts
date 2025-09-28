@@ -3,6 +3,7 @@ import { Component, EventEmitter, Input, Output, SimpleChanges, ViewChild, Eleme
 import { FormsModule } from '@angular/forms';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { VsixService } from '../../services/vsix.service';
+import { MonacoVSCodeCSSLoader } from '../../../../utils/monaco-vscode-css-loader';
 
 import * as monaco from 'monaco-editor';
 import * as vscode from 'vscode'
@@ -142,6 +143,18 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   async init() {
     try {
       console.log('Initializing Monaco VSCode API...');
+
+      // 检查是否需要加载CSS文件（非开发模式）
+      const isDevMode = window.location.port === '4200' || 
+                       window.location.hostname === 'localhost' || 
+                       window.location.hostname === '127.0.0.1';
+      
+      if (!isDevMode) {
+        console.log('Production mode detected, loading Monaco VSCode CSS files...');
+        await MonacoVSCodeCSSLoader.loadAllMonacoCSS();
+      } else {
+        console.log('Development mode detected, skipping manual CSS loading...');
+      }
 
       // 重定向主题资源路径
       this.setupThemeResourcesRedirect();
