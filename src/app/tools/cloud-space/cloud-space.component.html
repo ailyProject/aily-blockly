@@ -1,0 +1,66 @@
+<app-tool-container [title]="'CLOUD SPACE'" (closeEvent)="close()">
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-tool-container>
+<ng-template #windowBoxTemplate>
+    <div class="window-box">
+        <div class="top">
+            <button class="sync-btn" nz-button nzType="primary" (click)="syncToCloud()" [disabled]="isSyncing">
+                <i class="fa-regular fa-arrows-rotate" [class.spinning]="isSyncing"></i>
+                {{ isSyncing ? '正在同步' : '同步本项目到云端' }}
+            </button>
+        </div>
+        <div class="section-title">
+            <div class="title ccenter">
+                云存储列表
+            </div>
+            <div class="search-btn ccenter" (click)="openSearch()"><i class="fa-light fa-magnifying-glass"></i></div>
+            @if(showSearch){
+            <div class="search-box">
+                <input nz-input placeholder="搜索已存储的项目" />
+                <div class="close-btn ccenter" (click)="showSearch = false">
+                    <i class="fa-light fa-xmark"></i>
+                </div>
+            </div>
+            }
+        </div>
+        <div class="item-list sscroll">
+            @for (item of itemList; track $index) {
+            <div class="item">
+                <div class="content">
+                    <div class="left">
+                        <img src="imgs\subject.webp" alt="">
+                    </div>
+                    <div class="right">
+                        <div class="title">项目1</div>
+                        <div class="text">项目简介项目简介项介项目简介项介项目简介项介项目简介项介项目简介项介项目简介项目简介项目简介项目简介项目简介项目简介项目简介项目简介项目简介项目简介
+                        </div>
+                    </div>
+                </div>
+                <div class="btns ccenter">
+                    <button>
+                        <i class="fa-light fa-folder-open"></i>
+                        打开
+                    </button>
+                    <button (click)="openEditor()">
+                        <i class="fa-light fa-pen"></i>
+                        编辑
+                    </button>
+                    <button>
+                        <i class="fa-light fa-eye"></i>
+                        公开
+                        <!-- <i class="fa-light fa-eye-slash"></i>
+                        私有 -->
+                    </button>
+                    <button class="delete">
+                        <i class="fa-light fa-trash"></i>
+                        删除
+                    </button>
+                </div>
+            </div>
+            }
+        </div>
+        @if(showEditor) {
+        <app-cloud-project-editor (close)="showEditor = false"></app-cloud-project-editor>
+        }
+    </div>
+</ng-template>

@@ -1,0 +1,29 @@
+<div class="editor-box">
+    <div></div>
+    <div class="content">
+        <div class="item">
+            <div>项目名称:</div>
+            <input class="board" nz-input [(ngModel)]="projectData.nickname" />
+        </div>
+        <div class="item">
+            <div>项目简介:</div>
+            <textarea rows="6" nz-input [(ngModel)]="projectData.description"></textarea>
+        </div>
+        <div class="item">
+            <div>封面图片:</div>
+            <div class="file-input ccenter">
+                点击选择封面图片
+                <input nz-input [(ngModel)]="projectData.image" type="file" />
+            </div>
+        </div>
+    </div>
+
+    <div class="bottom">
+        <button class="sync-btn" nz-button (click)="onClose()">
+            返回
+        </button>
+        <button class="sync-btn" nz-button nzType="primary" (click)="onSave()">
+            保存
+        </button>
+    </div>
+</div>

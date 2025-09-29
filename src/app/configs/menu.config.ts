@@ -97,6 +97,13 @@ export let HEADER_BTNS: IMenuItem[][] = [
       dev: true
     },
     {
+      name: 'MENU.USER_SPACE',
+      action: 'tool-open',
+      data: { type: 'tool', data: "cloud-space" },
+      icon: 'fa-light fa-cloud',
+      dev: true
+    },
+    {
       name: 'MENU.USER_AUTH',
       action: 'user-auth',
       data: { type: 'tool', data: "user-auth" },

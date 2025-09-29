@@ -23,6 +23,7 @@ import { Router, RouterModule } from '@angular/router';
 import { ConfigService } from '../services/config.service';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FloatSiderComponent } from '../components/float-sider/float-sider.component';
+import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 
 @Component({
   selector: 'app-main-window',
@@ -45,7 +46,8 @@ import { FloatSiderComponent } from '../components/float-sider/float-sider.compo
     RouterModule,
     NzToolTipModule,
     NzModalModule,
-    FloatSiderComponent
+    FloatSiderComponent,
+    CloudSpaceComponent
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',

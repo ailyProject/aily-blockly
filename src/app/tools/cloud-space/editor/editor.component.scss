@@ -1,0 +1,72 @@
+.editor-box {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #333;
+    padding: 10px;
+
+    .item {
+        display: flex;
+        // align-items: center;
+        margin-bottom: 15px;
+        min-width: 32px;
+        position: relative;
+
+        >div:first-child {
+            width: 80px;
+            height: 32px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+        }
+
+        input {
+            background: #363636;
+            z-index: 1;
+            height: 32px;
+            color: rgba(255, 255, 255, 0.7) !important;
+
+            &.board {
+                border-radius: 2px 0 0 2px;
+            }
+        }
+
+        .error {
+            color: rgb(255, 80, 80);
+            font-size: 12px;
+            position: absolute;
+            bottom: -15px;
+            left: 130px;
+        }
+
+        .file-input {
+            position: relative;
+            width: 300px;
+            height: 150px;
+            background: #363636;
+            border-radius: 5px;
+            border: 1px dashed #555;
+
+            input {
+                width: 100%;
+                height: 100%;
+                opacity: 0;
+                position: absolute;
+                top: 0;
+                left: 0;
+                cursor: pointer;
+            }
+        }
+    }
+}
+
+.bottom {
+    margin-top: 15px;
+    text-align: right;
+
+    button {
+        margin-left: 15px;
+    }
+}
