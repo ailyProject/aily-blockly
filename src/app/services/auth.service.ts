@@ -5,9 +5,6 @@ import { catchError, map } from 'rxjs/operators';
 import { API } from '../configs/api.config';
 import { ElectronService } from './electron.service';
 
-// 声明 electronAPI 类型
-declare const electronAPI: any;
-
 export interface CommonResponse {
   status: number;
   message: string;
@@ -161,6 +158,7 @@ export class AuthService {
     } catch (error) {
       console.error('登出过程中出错:', error);
     } finally {
+      // 清理当前实例的认证数据
       await this.clearAuthData();
     }
   }
@@ -255,6 +253,64 @@ export class AuthService {
     } catch (error) {
       console.error('获取 token 失败:', error);
       return null;
+    }
+  }
+
+  /**
+   * 检查认证文件是否存在（用于快速判断登录状态）
+   */
+  async checkAuthFileExists(): Promise<boolean> {
+    try {
+      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
+        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
+        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
+        return (window as any).electronAPI.fs.existsSync(authFilePath);
+      } else {
+        // 降级到localStorage检查
+        const token = localStorage.getItem('aily_auth_token');
+        return !!token;
+      }
+    } catch (error) {
+      console.error('检查认证文件失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 同步登录状态（基于文件存在性检查）
+   */
+  async syncLoginStatus(): Promise<void> {
+    try {
+      const fileExists = await this.checkAuthFileExists();
+      const currentLoginStatus = this.isLoggedInSubject.value;
+      
+      // 如果文件状态与当前登录状态不一致，则更新状态
+      if (fileExists !== currentLoginStatus) {
+        if (!fileExists && currentLoginStatus) {
+          // 文件不存在但当前显示为登录状态，说明其他实例已登出
+          console.log('检测到其他实例已登出，同步登出当前实例');
+          await this.clearAuthData();
+        } else if (fileExists && !currentLoginStatus) {
+          // 文件存在但当前显示为未登录状态，重新获取用户信息
+          console.log('检测到认证文件存在，重新获取登录状态');
+          const token = await this.getToken2();
+          if (token) {
+            try {
+              const userInfo = await this.getMe(token);
+              if (userInfo) {
+                this.userInfoSubject.next(userInfo);
+                this.isLoggedInSubject.next(true);
+              }
+            } catch (error) {
+              console.error('获取用户信息失败:', error);
+              // token可能已过期，清理文件
+              await this.clearAuthDataFile();
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('同步登录状态失败:', error);
     }
   }
 
@@ -521,6 +577,313 @@ export class AuthService {
    */
   get currentUser(): any {
     return this.userInfoSubject.value;
+  }
+
+  /**
+   * 检查并同步登录状态（供组件调用）
+   * 在用户点击用户组件时调用此方法来确保状态同步
+   */
+  async checkAndSyncAuthStatus(): Promise<boolean> {
+    await this.syncLoginStatus();
+    return this.isAuthenticated;
+  }
+
+  /**
+   * 启动 GitHub OAuth 流程
+   */
+  startGitHubOAuth(): Observable<{ authorization_url: string; state: string }> {
+    // 生成并存储 state 参数
+    const state = this.generateOAuthState();
+    
+    const requestData = {
+      redirect_uri: 'ailyblockly://auth/callback',
+      state: state
+    };
+
+    return this.http.post<CommonResponse>(API.githubBrowserAuthorize, requestData).pipe(
+      map(response => {
+        if (response.status === 200 && response.data?.authorization_url) {
+          // 注册当前实例为OAuth发起者
+          if (this.electronService.isElectron && (window as any).electronAPI?.oauth) {
+            (window as any).electronAPI.oauth.registerState(state).then((result: any) => {
+              console.log('已注册OAuth状态到实例管理:', result);
+            }).catch((error: any) => {
+              console.error('注册OAuth状态失败:', error);
+            });
+          }
+          
+          return {
+            authorization_url: response.data.authorization_url,
+            state: state
+          };
+        }
+        throw new Error(response.message || '获取授权URL失败');
+      }),
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * GitHub OAuth 状态管理
+   */
+  private oauthState: { state: string; timestamp: number } | null = null;
+  private readonly OAUTH_TIMEOUT = 5 * 60 * 1000; // 5分钟超时
+
+  /**
+   * 生成并存储 OAuth state
+   */
+  generateOAuthState(): string {
+    const state = Math.random().toString(36).substring(2) + Date.now().toString(36);
+    this.oauthState = { state, timestamp: Date.now() };
+    
+    // 同时保存到文件系统（用于跨实例共享）
+    this.saveOAuthStateToFile(state);
+    
+    return state;
+  }
+
+  /**
+   * 保存 OAuth state 到文件
+   */
+  private async saveOAuthStateToFile(state: string): Promise<void> {
+    try {
+      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
+        // 使用共享的AppData路径（不使用实例隔离的路径）
+        const originalAppDataPath = await this.getOriginalAppDataPath();
+        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
+        
+        const stateData = {
+          state,
+          timestamp: Date.now()
+        };
+        
+        // 确保目录存在
+        const stateDir = (window as any).electronAPI.path.dirname(stateFilePath);
+        if (!(window as any).electronAPI.fs.existsSync(stateDir)) {
+          (window as any).electronAPI.fs.mkdirSync(stateDir, { recursive: true });
+        }
+        
+        (window as any).electronAPI.fs.writeFileSync(stateFilePath, JSON.stringify(stateData, null, 2));
+        console.log('OAuth state已保存到共享文件:', stateFilePath);
+      }
+    } catch (error) {
+      console.error('保存OAuth状态到文件失败:', error);
+    }
+  }
+
+  /**
+   * 从文件读取 OAuth state
+   */
+  private async loadOAuthStateFromFile(): Promise<{ state: string; timestamp: number } | null> {
+    try {
+      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
+        const originalAppDataPath = await this.getOriginalAppDataPath();
+        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
+        
+        if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
+          const content = (window as any).electronAPI.fs.readFileSync(stateFilePath, 'utf8');
+          const stateData = JSON.parse(content);
+          console.log('从共享文件加载OAuth状态:', stateData);
+          return stateData;
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error('从文件加载OAuth状态失败:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 获取原始AppData路径（非实例隔离）
+   */
+  private async getOriginalAppDataPath(): Promise<string> {
+    try {
+      const currentAppDataPath = (window as any).electronAPI.path.getAppDataPath();
+      
+      // 检查是否是实例隔离的路径 (包含 /instances/ 的路径)
+      const instancesMatch = currentAppDataPath.match(/(.*)[/\\]instances[/\\][^/\\]+$/);
+      if (instancesMatch) {
+        return instancesMatch[1]; // 返回原始路径
+      }
+      
+      // 如果不是实例隔离路径，直接返回
+      return currentAppDataPath;
+    } catch (error) {
+      console.error('获取原始AppData路径失败:', error);
+      return (window as any).electronAPI.path.getAppDataPath();
+    }
+  }
+
+  /**
+   * 验证 OAuth state
+   */
+  async validateOAuthState(state: string): Promise<boolean> {
+    // 首先检查内存中的状态（同实例验证）
+    if (this.oauthState && this.oauthState.state === state) {
+      // 检查超时
+      if (Date.now() - this.oauthState.timestamp <= this.OAUTH_TIMEOUT) {
+        console.log('OAuth状态验证通过（内存）');
+        return true;
+      }
+    }
+    
+    // 如果内存中没有，尝试从文件加载（跨实例验证）
+    const fileState = await this.loadOAuthStateFromFile();
+    if (fileState && fileState.state === state) {
+      // 检查超时
+      if (Date.now() - fileState.timestamp <= this.OAUTH_TIMEOUT) {
+        console.log('OAuth状态验证通过（文件）');
+        return true;
+      } else {
+        console.log('OAuth状态已超时');
+        this.clearOAuthStateFile();
+      }
+    } else {
+      console.log('OAuth状态验证失败:', { 
+        inputState: state, 
+        memoryState: this.oauthState?.state, 
+        fileState: fileState?.state 
+      });
+    }
+    
+    return false;
+  }
+
+  /**
+   * 清理 OAuth state
+   */
+  clearOAuthState(): void {
+    this.oauthState = null;
+    this.clearOAuthStateFile();
+  }
+
+  /**
+   * 清理 OAuth state 文件
+   */
+  private async clearOAuthStateFile(): Promise<void> {
+    try {
+      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
+        const originalAppDataPath = await this.getOriginalAppDataPath();
+        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
+        
+        if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
+          (window as any).electronAPI.fs.unlinkSync(stateFilePath);
+          console.log('已清理OAuth状态共享文件:', stateFilePath);
+        }
+      }
+    } catch (error) {
+      console.error('清理OAuth状态文件失败:', error);
+    }
+  }
+
+  /**
+   * GitHub Token 交换
+   */
+  exchangeGitHubToken(code: string, state: string): Observable<any> {
+    const requestData = {
+      code: code,
+      state: state
+    };
+
+    return this.http.post<CommonResponse>(API.githubTokenExchange, requestData).pipe(
+      map(response => {
+        if (response.status === 200 && response.data) {
+          return response.data;
+        }
+        throw new Error(response.message || 'Token 交换失败');
+      }),
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 处理协议回调
+   */
+  async handleOAuthCallback(callbackData: {
+    code?: string;
+    state?: string;
+    error?: string;
+    error_description?: string;
+  }): Promise<{ success: boolean; data?: any; error?: string; message?: string }> {
+    try {
+      // 检查是否有错误
+      if (callbackData.error) {
+        this.clearOAuthState();
+        return {
+          success: false,
+          error: callbackData.error,
+          message: callbackData.error_description || '授权失败'
+        };
+      }
+
+      // 检查必需参数
+      if (!callbackData.code || !callbackData.state) {
+        this.clearOAuthState();
+        return {
+          success: false,
+          error: 'missing_parameters',
+          message: '缺少必需的参数'
+        };
+      }
+
+      // 验证 state
+      const isValidState = await this.validateOAuthState(callbackData.state);
+      if (!isValidState) {
+        return {
+          success: false,
+          error: 'invalid_state',
+          message: '无效的状态参数或请求已超时'
+        };
+      }
+
+      // 交换 token
+      const tokenData = await this.exchangeGitHubToken(callbackData.code, callbackData.state).toPromise();
+      
+      // 清理状态
+      this.clearOAuthState();
+
+      // 处理成功结果
+      await this.handleGitHubOAuthSuccess(tokenData);
+
+      return {
+        success: true,
+        data: tokenData
+      };
+
+    } catch (error) {
+      console.error('处理 OAuth 回调失败:', error);
+      this.clearOAuthState();
+      return {
+        success: false,
+        error: 'callback_processing_failed',
+        message: error instanceof Error ? error.message : '处理回调失败'
+      };
+    }
+  }
+
+  /**
+   * GitHub OAuth 登录成功处理
+   */
+  async handleGitHubOAuthSuccess(data: { access_token: string; user?: any }): Promise<void> {
+    try {
+      await this.saveToken2(data.access_token);
+      if (data.user) {
+        await this.saveUserInfo(data.user);
+        this.userInfoSubject.next(data.user);
+      }
+      this.isLoggedInSubject.next(true);
+    } catch (error) {
+      console.error('处理 GitHub OAuth 成功数据失败:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 服务销毁时的清理工作
+   */
+  destroy(): void {
+    // 不再需要文件监听的清理工作
   }
 
   /**

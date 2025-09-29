@@ -14,7 +14,7 @@ import { TranslateModule } from '@ngx-translate/core';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Router } from '@angular/router';
 import { BrandListComponent } from './components/brand-list/brand-list.component';
-import { BRAND_LIST } from '../../configs/board.config';
+import { BRAND_LIST, CORE_LIST } from '../../configs/board.config';
 
 const { pt } = (window as any)['electronAPI'].platform;
 
@@ -37,7 +37,11 @@ const { pt } = (window as any)['electronAPI'].platform;
 })
 export class ProjectNewComponent {
   currentStep = 0;
+
+  listMode = 'brand'; // brand | core | function
+
   selectedBrand: any = null;
+  selectedCore: any = null;
 
   currentBoard: any = null;
   newProjectData: NewProjectData = {
@@ -55,13 +59,6 @@ export class ProjectNewComponent {
   // 搜索开发板关键字
   keyword = '';
 
-  tagList = [
-    { name: '显示全部', mode: 'all' },
-    { name: '按品牌', mode: 'brand' },
-    { name: '按核心', mode: 'core' },
-    { name: '按功能', mode: 'function' },
-  ];
-
   _boardList: any[] = [];
   boardList: any[] = [];
 
@@ -74,6 +71,13 @@ export class ProjectNewComponent {
     return BRAND_LIST
       .filter(brand => brand.value !== 'all' && brand.value !== 'other')
       .map(brand => brand.value.toLowerCase());
+  }
+
+  // 获取已定义的核心架构列表（排除'all'和'other'）
+  private getDefinedCores(): string[] {
+    return CORE_LIST
+      .filter(core => core.value !== 'all' && core.value !== 'other')
+      .map(core => core.value.toLowerCase());
   }
 
   constructor(
@@ -94,13 +98,13 @@ export class ProjectNewComponent {
     // this.electronService.setTitle('PROJECT_NEW.TITLE');
 
     await this.configService.init();
-    
+
     // 先处理开发板列表数据
     let processedBoardList = this.process(this.configService.boardList);
-    
+
     // 按使用次数排序
     this._boardList = this.configService.sortBoardsByUsage(processedBoardList);
-    
+
     this.boardList = JSON.parse(JSON.stringify(this._boardList));
     this.currentBoard = this.boardList[0];
 
@@ -202,12 +206,23 @@ export class ProjectNewComponent {
     }
   }
 
+  onSelected(obj: any) {
+    switch (this.listMode) {
+      case 'brand':
+        this.onBrandSelected(obj);
+        break;
+      case 'core':
+        this.onCoreSelected(obj);
+        break;
+    }
+  }
+
   onBrandSelected(brand: any) {
     this.selectedBrand = brand;
     console.log('选中的品牌:', brand);
 
     // 根据选中的品牌过滤开发板列表
-    if (brand && brand.value && brand.value !== 'all') {
+    if (brand && brand.value !== 'all') {
       if (brand.value === 'other') {
         // 当选择"其他品牌"时，显示已有品牌列表未覆盖的元素
         const definedBrands = this.getDefinedBrands();
@@ -245,8 +260,77 @@ export class ProjectNewComponent {
     }
   }
 
-  changeViewMode(mode) {
+  onCoreSelected(core: any) {
+    this.selectedCore = core;
+    console.log('选中的核心架构:', core);
 
+    // 根据选中的核心架构过滤开发板列表
+    if (core && core.value !== 'all') {
+      let filteredBoardList: any[] = [];
+      if (core.value === 'other') {
+        // 当选择"其他核心架构"时，显示已有核心列表未覆盖的元素
+        const definedCores = this.getDefinedCores();
+        filteredBoardList = this._boardList.filter(board => {
+          if (board.type && typeof board.type === 'string') {
+            const boardType = board.type.toLowerCase();
+            // 检查是否包含任何已定义的核心架构
+            return !definedCores.some(definedCore => boardType.includes(definedCore));
+          }
+          return true; // 如果没有 type 字段，也算作 other
+        });
+      } else {
+        // 普通核心架构过滤
+        filteredBoardList = this._boardList.filter(board => {
+          // 检查开发板的 type 字段是否包含指定的 core
+          if (board.type && typeof board.type === 'string') {
+            // 支持多种格式：esp32:esp32, arduino:avr, aily:esp32 等
+            return board.type.toLowerCase().includes(core.value.toLowerCase());
+          }
+          return false;
+        });
+      }
+
+      // 对过滤后的列表按使用次数排序
+      this.boardList = this.configService.sortBoardsByUsage(filteredBoardList);
+
+      console.log('按核心架构过滤后的开发板列表:', this.boardList);
+
+      // 如果有过滤结果，选择第一个开发板
+      if (this.boardList.length > 0) {
+        this.selectBoard(this.boardList[0]);
+      } else {
+        this.currentBoard = null;
+      }
+    } else {
+      // 如果选择"显示全部"或没有选中核心架构，显示所有开发板（已按使用次数排序）
+      this.boardList = JSON.parse(JSON.stringify(this._boardList));
+      if (this.boardList.length > 0) {
+        this.selectBoard(this.boardList[0]);
+      }
+    }
+  }
+
+  changeViewMode(mode: string) {
+    this.listMode = mode;
+
+    // 根据不同模式进行初始化
+    if (mode === 'core') {
+      // 如果切换到核心架构模式，重置选择状态
+      this.selectedCore = null;
+      // 显示所有开发板
+      this.boardList = JSON.parse(JSON.stringify(this._boardList));
+      if (this.boardList.length > 0) {
+        this.selectBoard(this.boardList[0]);
+      }
+    } else if (mode === 'brand') {
+      // 如果切换到品牌模式，重置选择状态
+      this.selectedBrand = null;
+      // 显示所有开发板
+      this.boardList = JSON.parse(JSON.stringify(this._boardList));
+      if (this.boardList.length > 0) {
+        this.selectBoard(this.boardList[0]);
+      }
+    }
   }
 }
 
@@ -259,6 +343,7 @@ export interface BoardInfo {
   "description": string,
   "url": string,
   "brand": string,
+  "type"?: string, // 开发板类型/核心架构 (如 esp32:esp32, arduino:avr, etc)
 }
 
 export interface NewProjectData {

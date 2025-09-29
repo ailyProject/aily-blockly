@@ -64,10 +64,16 @@
     },
     "ESP32": {
         "UPLOAD_SPEED": "Upload Speed",
+        "UPLOAD_MODE": "Upload Method",
         "FLASH_MODE": "Flash Mode",
         "FLASH_SIZE": "Flash Size",
         "PARTITION_SCHEME": "Partition Scheme",
         "CDC_ON_BOOT": "USB CDC on Boot"
+    },
+    "STM32": {
+        "BOARD": "Select Board Model",
+        "USB": "USB Configuration",
+        "UPLOAD_METHOD": "Upload Method"
     },
     "GUIDE": {
         "START": "Start",

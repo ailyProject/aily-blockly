@@ -364,6 +364,12 @@
 .tag-list {
   nz-tag {
     cursor: pointer;
+
+    &.active {
+      background: #007bff;
+      border-color: #007bff;
+      color: #fff;
+    }
   }
 }
 

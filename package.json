@@ -14,6 +14,12 @@
     "appId": "blockly.aily.pro",
     "forceCodeSigning": false,
     "asar": false,
+    "protocols": [
+      {
+        "name": "Aily Blockly OAuth",
+        "schemes": ["ailyblockly"]
+      }
+    ],
     "directories": {
       "output": "dist/aily-blockly/"
     },

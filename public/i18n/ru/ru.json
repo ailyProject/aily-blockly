@@ -29,10 +29,16 @@
     },
     "ESP32": {
         "UPLOAD_SPEED": "Скорость загрузки",
+        "UPLOAD_MODE": "Метод загрузки",
         "FLASH_MODE": "Режим Flash",
         "FLASH_SIZE": "Размер Flash",
         "PARTITION_SCHEME": "Схема разделов",
         "CDC_ON_BOOT": "USB CDC при загрузке"
+    },
+    "STM32": {
+        "BOARD": "Выбор модели платы",
+        "USB": "Настройки USB",
+        "UPLOAD_METHOD": "Метод загрузки"
     },
     "GUIDE": {
         "START": "Начать",

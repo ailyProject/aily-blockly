@@ -173,6 +173,7 @@ export interface BoardInfo {
   "url": string,
   "brand": string,
   "disabled": boolean, // 是否禁用
+  "type"?: string, // 开发板类型/核心架构 (如 esp32:esp32, arduino:avr, etc)
 }
 
 export interface NewProjectData {

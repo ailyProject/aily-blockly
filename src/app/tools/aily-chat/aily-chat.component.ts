@@ -2237,6 +2237,11 @@ ${JSON.stringify(errData)}
    * @param mode 要切换到的模式
    */
   private async switchToMode(mode: string) {
+    // 暂禁止切换为agent模式
+    if (mode === 'agent') {
+      this.message.warning('当前账号暂时无法使用该模式！');
+      return;
+    }
     this.chatService.currentMode = mode;
     console.log('切换AI模式为:', this.currentMode);
     await this.stopAndCloseSession();

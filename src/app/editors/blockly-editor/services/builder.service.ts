@@ -53,7 +53,7 @@ export class _BuilderService {
     private blocklyService: BlocklyService,
   ) { }
 
-  private buildInProgress = false;
+  buildInProgress = false;
   private streamId: string | null = null;
   private buildCompleted = false;
   private isErrored = false; // 标识是否为错误状态
@@ -72,6 +72,7 @@ export class _BuilderService {
   compilerPath = "";
   boardJson: any = null;
   buildPath = "";
+  isUploading = false;
   
   private initialized = false; // 防止重复初始化
 
@@ -104,7 +105,7 @@ export class _BuilderService {
   }
 
   // 添加这个错误处理方法
-  private handleCompileError(errorMessage: string) {
+  private handleCompileError(errorMessage: string, sendToLog: boolean = true): void {
     // 计算编译耗时
     const buildEndTime = Date.now();
     const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
@@ -113,9 +114,10 @@ export class _BuilderService {
     this.noticeService.update({
       title: "编译失败",
       text: `${errorMessage} (耗时: ${buildDuration}s)`,
-      detail: errorMessage,
       state: 'error',
-      setTimeout: 600000
+      detail: errorMessage,
+      setTimeout: 600000,
+      sendToLog: sendToLog
     });
 
     this.passed = false;
@@ -138,6 +140,12 @@ export class _BuilderService {
         if (this.buildInProgress) {
           this.message.warning("编译正在进行中，请稍后再试");
           reject({ state: 'warn', text: '编译中，请稍后' });
+          return;
+        }
+
+        if (this.isUploading) {
+          this.message.warning("上传正在进行中，请稍后再试");
+          reject({ state: 'warn', text: '上传中，请稍后' });
           return;
         }
 
@@ -352,29 +360,40 @@ export class _BuilderService {
 
           compilerParam = compilerParamList.join(' ');
 
-          // 获取和解析项目编译参数
-          let buildProperties = '';
-          try {
-            const projectConfig = await this.projectService.getProjectConfig();
-            if (projectConfig) {
-              const buildPropertyParams: string[] = [];
+        // 获取和解析项目编译参数
+        let buildProperties = '';
+        try {
+          const projectConfig = await this.projectService.getProjectConfig();
+          if (projectConfig) {
+            const buildPropertyParams: string[] = [];
 
-              // 遍历配置对象，解析编译参数
-              Object.values(projectConfig).forEach((configSection: any) => {
-                if (configSection && typeof configSection === 'object') {
-                  // 遍历每个配置段（如 build、upload 等）
-                  Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
-                    // 排除upload等非编译相关的配置段
-                    if (sectionKey == 'upload') return;
-                    if (sectionValue && typeof sectionValue === 'object') {
-                      // 遍历具体的配置项
-                      Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
-                        buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
-                      });
-                    }
-                  });
-                }
-              });
+            
+            // projectConfig是个JSON对象，包含多个配置段
+            // 遍历输出每一个key及其值
+            Object.entries(projectConfig).forEach(([key, value]) => {
+              if (value !== null && value !== undefined && value !== '') {
+                // if (/upload/i.test(key)) return; // 跳过包含 upload 的配置项
+                buildPropertyParams.push(`--board-options ${key}=${value}`);
+                console.log(`解析配置: --board-options ${key}=${value}`);
+              }
+            });
+
+            // // 遍历配置对象，解析编译参数
+            // Object.values(projectConfig).forEach((configSection: any) => {
+            //   if (configSection && typeof configSection === 'object') {
+            //     // 遍历每个配置段（如 build、upload 等）
+            //     Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
+            //       // 排除upload等非编译相关的配置段
+            //       if (sectionKey == 'upload') return;
+            //       if (sectionValue && typeof sectionValue === 'object') {
+            //         // 遍历具体的配置项
+            //         Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
+            //           buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
+            //         });
+            //       }
+            //     });
+            //   }
+            // });
 
               buildProperties = buildPropertyParams.join(' ');
               if (buildProperties) {
@@ -608,12 +627,16 @@ export class _BuilderService {
                 // 去掉lastStdErr中的颜色代码（"[31m[ERROR][0m Compilation failed: Compilation failed）
                 lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
 
-                this.noticeService.update({
-                  title: "编译失败",
-                  text: `${lastStdErr.slice(0, 30) + "..." || '编译未完成'} (耗时: ${buildDuration}s)`,
-                  state: 'error',
-                  setTimeout: 600000
-                });
+                this.handleCompileError(lastStdErr || '编译未完成', false);
+
+                // this.noticeService.update({
+                //   title: "编译失败",
+                //   text: `${lastStdErr.slice(0, 30) + "..." || '编译未完成'} (耗时: ${buildDuration}s)`,
+                //   detail: fullStdErr,
+                //   state: 'error',
+                //   setTimeout: 600000,
+                //   sendToLog: false
+                // });
 
                 this.logService.update({ detail: fullStdErr, state: 'error' });
 

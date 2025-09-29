@@ -169,6 +169,19 @@ export class HeaderComponent {
       // console.log('ESP32配置选项:', esp32config);
     }
 
+    // 添加STM32相关配置选项
+    if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
+      this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
+      let temp = this.projectService.currentBoardConfig['type'].split(':');
+      let board = temp[temp.length - 1];
+      // console.log('STM32开发板标识:', board);
+      let stm32config = await this.projectService.updateStm32ConfigMenu(board);
+      if (stm32config) {
+        portList0 = portList0.concat(stm32config)
+      }
+      // console.log('STM32配置选项:', stm32config);
+    }
+
     // 添加切换开发板功能
     let boardList = await this.configService.loadBoardList();
     boardList = this.convertBoardListFormat(boardList);
@@ -321,6 +334,8 @@ export class HeaderComponent {
         if (event) {
           this.calculateUserPosition(event);
         }
+        // 在显示用户组件前先同步登录状态
+        await this.authService.checkAndSyncAuthStatus();
         this.showUser = !this.showUser;
         break;
       case 'board-select':
@@ -563,7 +578,7 @@ export class HeaderComponent {
 
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
-    console.log('选择子菜单项:', subItem);
+    // console.log('选择子菜单项:', subItem);
     // 切换开发板
     if (subItem.key === "BoardType") {
       this.projectService.changeBoard(subItem.data.board);
@@ -572,8 +587,13 @@ export class HeaderComponent {
       let packageJson = await this.projectService.getPackageJson();
       packageJson['projectConfig'] = packageJson['projectConfig'] || {};
       packageJson['projectConfig'][subItem.key] = subItem.data;
-      // 更新项目配置
       this.projectService.setPackageJson(packageJson);
+      // 判断是否是STM32，是则更新项目配置
+      if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
+      this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
+        let newPinConfig = subItem;
+        this.projectService.compareStm32PinConfig(newPinConfig)
+      }
     }
   }
 
@@ -614,9 +634,9 @@ export class HeaderComponent {
    * @returns 转换后的菜单格式列表
    */
   convertBoardListFormat(boardList: any[]): any[] {
-    console.log('转换开发板列表格式:', boardList);
+    // console.log('转换开发板列表格式:', boardList);
     const currentBoardName = this.projectService.currentBoardConfig?.name;
-    console.log('当前开发板名称:', currentBoardName);
+    // console.log('当前开发板名称:', currentBoardName);
 
     return boardList
       .filter(board => board.nickname !== currentBoardName) // 过滤掉当前已选的开发板

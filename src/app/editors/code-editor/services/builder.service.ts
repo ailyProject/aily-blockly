@@ -344,22 +344,32 @@ export class BuilderService {
           if (projectConfig) {
             const buildPropertyParams: string[] = [];
 
-            // 遍历配置对象，解析编译参数
-            Object.values(projectConfig).forEach((configSection: any) => {
-              if (configSection && typeof configSection === 'object') {
-                // 遍历每个配置段（如 build、upload 等）
-                Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
-                  // 排除upload等非编译相关的配置段
-                  if (sectionKey == 'upload') return;
-                  if (sectionValue && typeof sectionValue === 'object') {
-                    // 遍历具体的配置项
-                    Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
-                      buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
-                    });
-                  }
-                });
+            // projectConfig是个JSON对象，包含多个配置段
+            // 遍历输出每一个key及其值
+            Object.entries(projectConfig).forEach(([key, value]) => {
+              if (value !== null && value !== undefined && value !== '') {
+                // if (/upload/i.test(key)) return; // 跳过包含 upload 的配置项
+                buildPropertyParams.push(`--board-options ${key}=${value}`);
+                console.log(`解析配置: --board-options ${key}=${value}`);
               }
             });
+
+            // // 遍历配置对象，解析编译参数
+            // Object.values(projectConfig).forEach((configSection: any) => {
+            //   if (configSection && typeof configSection === 'object') {
+            //     // 遍历每个配置段（如 build、upload 等）
+            //     Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
+            //       // 排除upload等非编译相关的配置段
+            //       if (sectionKey == 'upload') return;
+            //       if (sectionValue && typeof sectionValue === 'object') {
+            //         // 遍历具体的配置项
+            //         Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
+            //           buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
+            //         });
+            //       }
+            //     });
+            //   }
+            // });
 
             buildProperties = buildPropertyParams.join(' ');
             if (buildProperties) {

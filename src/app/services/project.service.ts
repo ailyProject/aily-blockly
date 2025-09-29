@@ -10,6 +10,7 @@ import { CmdService } from './cmd.service';
 import { generateDateString } from '../func/func';
 import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
+import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { ActionService } from './action.service';
 
 const { pt } = (window as any)['electronAPI'].platform;
@@ -43,6 +44,8 @@ export class ProjectService {
   projectRootPath: string;
   currentProjectPath: string;
   currentBoardConfig: any;
+  // STM32选择开发板时定义引脚使用
+  currentStm32Config: { board: any , variant: any , variant_h: any } = { board: null, variant: null, variant_h: null };
 
   constructor(
     private uiService: UiService,
@@ -101,7 +104,7 @@ export class ProjectService {
 
   // 新建项目
   async projectNew(newProjectData: NewProjectData, closeWindow: boolean = true) {
-    console.log('newProjectData: ', newProjectData);
+    // console.log('newProjectData: ', newProjectData);
     const appDataPath = window['path'].getAppDataPath();
     // const projectPath = (newProjectData.path + newProjectData.name).replace(/\s/g, '_');
     const projectPath = window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'));
@@ -300,6 +303,48 @@ export class ProjectService {
     return JSON.parse(this.electronService.readFile(boardJsonPath));
   }
 
+  // 获取开发板特殊配置文件，如 STM32 需要的特殊配置
+  async getJsonConfig(fileName: string) {
+    const boardModule = await this.getBoardModule();
+    if (!boardModule) {
+      throw new Error('未找到开发板模块');
+    }
+    const configPath = `${this.currentProjectPath}/node_modules/${boardModule}/${fileName}`;
+    if (!window['fs'].existsSync(configPath)) {
+      throw new Error('配置文件不存在: ' + configPath);
+    }
+    return JSON.parse(this.electronService.readFile(configPath));
+  }
+
+  // 修改开发板配置文件board.json， 如 STM32需要，传入新的data
+  async setBoardJson(data: any) {
+    const boardModule = await this.getBoardModule();
+    if (!boardModule) {
+      throw new Error('未找到开发板模块');
+    }
+    const boardJsonPath = `${this.currentProjectPath}/node_modules/${boardModule}/board.json`;
+    if (!window['fs'].existsSync(boardJsonPath)) {
+      throw new Error('开发板配置文件不存在: ' + boardJsonPath);
+    }
+
+    // 保存当前项目
+    this.save();
+    this.message.loading('正在切换开发板配置...', { nzDuration: 5000 });
+
+    const boardJson = JSON.parse(this.electronService.readFile(boardJsonPath));
+    Object.assign(boardJson, data);
+    window['fs'].writeFileSync(boardJsonPath, JSON.stringify(boardJson, null, 2));
+
+    // 重新加载项目
+    console.log('重新加载项目...');
+    await this.projectOpen(this.currentProjectPath);
+
+    // 通知开发板变更
+    this.boardChangeSubject.next();
+    this.uiService.updateFooterState({ state: 'done', text: '开发板切换完成' });
+    this.message.success('开发板切换成功', { nzDuration: 3000 });
+  }
+
   // 获取开发板package路径
   async getBoardPackagePath() {
     const boardModule = await this.getBoardModule();
@@ -353,6 +398,9 @@ export class ProjectService {
     }
   }
 
+  // // 解析boards.txt并获取配置信息
+  // async getBoardConfig(boardName: string, boardType: string) {
+
   // 解析boards.txt并获取ESP32配置信息
   async getEsp32BoardConfig(boardName: string) {
     try {
@@ -379,6 +427,7 @@ export class ProjectService {
       // 提取需要的配置项
       const esp32Config = {
         uploadSpeed: this.extractMenuOptions(boardConfig, 'UploadSpeed'),
+        uploadMode: this.extractMenuOptions(boardConfig, 'UploadMode'),
         flashMode: this.extractMenuOptions(boardConfig, 'FlashMode'),
         flashSize: this.extractMenuOptions(boardConfig, 'FlashSize'),
         partitionScheme: this.extractMenuOptions(boardConfig, 'PartitionScheme'),
@@ -388,6 +437,49 @@ export class ProjectService {
       return esp32Config;
     } catch (error) {
       console.error('获取ESP32开发板配置失败:', error);
+      return null;
+    }
+  }
+
+  // 解析boards.txt并获取STM32配置信息
+  async getStm32BoardConfig(boardName: string) {
+    try {
+      const sdkPath = await this.getSdkPath();
+      if (!sdkPath) {
+        throw new Error('未找到 SDK 路径');
+      }
+
+      const boardsFilePath = `${sdkPath}/boards.txt`;
+      if (!window['fs'].existsSync(boardsFilePath)) {
+        throw new Error('boards.txt 文件不存在: ' + boardsFilePath);
+      }
+
+      const boardsContent = window['fs'].readFileSync(boardsFilePath, 'utf8');
+      const lines = boardsContent.split('\n');
+
+      // 查找指定开发板的配置
+      const boardConfig = this.parseBoardsConfig(lines, boardName);      
+
+      // console.log('====boardConfig:', boardConfig);
+
+      if (!boardConfig) {
+        throw new Error(`未找到开发板 "${boardName}" 的配置`);
+      }
+
+      const stm32Config = {
+        board: this.extractMenuOptions(boardConfig, 'pnum'),
+        usb: this.extractMenuOptions(boardConfig, 'usb'),
+        upload_method: this.extractMenuOptions(boardConfig, 'upload_method'),
+      };
+
+      // 只保留 name 字段中包含 "Generic" 的选项，其它全部去掉
+      if (stm32Config.board && Array.isArray(stm32Config.board)) {
+        stm32Config.board = stm32Config.board.filter(item => item.name && item.name.includes('Generic'));
+      }
+
+      return stm32Config;
+    } catch (error) {
+      console.error('获取STM32开发板配置失败:', error);
       return null;
     }
   }
@@ -415,6 +507,14 @@ export class ProjectService {
           config[`${currentBoard}.name`] = nameMatch[2];
         }
         continue;
+      }
+
+      // 以boardName.开头的行表示当前开发板的配置
+      if (!foundBoard) {
+        if (trimmedLine.startsWith(`${boardName}.`)) {
+          foundBoard = true;
+          currentBoard = boardName;
+        }
       }
 
       // 如果找到了目标开发板，继续收集配置
@@ -452,31 +552,36 @@ export class ProjectService {
   }
 
   // 通用的配置比较方法
-  private compareConfigs(childData: any, currentData: any, configKeys: string[]): boolean {
+  private compareConfigs(childData: any, currentData: any): boolean {
     if (!childData || !currentData) {
       return false;
     }
 
-    // 检查build配置
-    if (childData.build && currentData.build) {
-      for (const key of configKeys) {
-        if (childData.build.hasOwnProperty(key)) {
-          if (childData.build[key] !== currentData.build[key]) {
-            return false;
-          }
-        }
+    if (childData && currentData) {
+      if (childData !== currentData) {
+        return false;
       }
     }
+    // // 检查build配置
+    // if (childData.build && currentData.build) {
+    //   for (const key of configKeys) {
+    //     if (childData.build.hasOwnProperty(key)) {
+    //       if (childData.build[key] !== currentData.build[key]) {
+    //         return false;
+    //       }
+    //     }
+    //   }
+    // }
 
-    // 检查upload配置
-    if (childData.upload && currentData.upload) {
-      const uploadKeys = Object.keys(childData.upload);
-      for (const key of uploadKeys) {
-        if (childData.upload[key] !== currentData.upload[key]) {
-          return false;
-        }
-      }
-    }
+    // // 检查upload配置
+    // if (childData.upload && currentData.upload) {
+    //   const uploadKeys = Object.keys(childData.upload);
+    //   for (const key of uploadKeys) {
+    //     if (childData.upload[key] !== currentData.upload[key]) {
+    //       return false;
+    //     }
+    //   }
+    // }
 
     return true;
   }
@@ -488,67 +593,95 @@ export class ProjectService {
     const menuPrefix = `${boardName}.menu.${menuType}.`;
 
     // 首先收集所有选项的基本信息
-    const optionKeys = new Set<string>();
+    const optionDatas = new Set<string>();
 
     for (const key in boardConfig) {
       if (key.startsWith(menuPrefix)) {
         const remainingPath = key.replace(menuPrefix, '');
-        const optionKey = remainingPath.split('.')[0];
+        const optionData = remainingPath.split('.')[0];
 
         // 只处理主选项，不处理子属性
         if (!remainingPath.includes('.') || remainingPath.split('.').length === 2) {
-          optionKeys.add(optionKey);
+          optionDatas.add(optionData);
+          // console.log('Found option data:', optionData);
         }
       }
     }
 
-    // 为每个选项构建完整的配置对象
-    optionKeys.forEach(optionKey => {
-      const mainKey = `${menuPrefix}${optionKey}`;
-      const optionName = boardConfig[mainKey];
-
-      if (optionName) {
-        const option = {
-          name: optionName,
-          key: menuType,
-          data: {
-            build: {},
-            upload: {}
-          },
-          check: false
-        };
-
-        // 收集该选项的所有相关配置
-        for (const key in boardConfig) {
-          if (key.startsWith(`${menuPrefix}${optionKey}.`)) {
-            const configPath = key.replace(`${menuPrefix}${optionKey}.`, '');
-            const pathParts = configPath.split('.');
-
-            if (pathParts.length === 2) {
-              const category = pathParts[0]; // build 或 upload
-              const property = pathParts[1]; // partitions, maximum_size 等
-
-              if (category === 'build' || category === 'upload') {
-                option.data[category][property] = boardConfig[key];
-              }
-            }
+    // 构建选项列表，只包含key和data，key为menuType，data为optionData
+    optionDatas.forEach(optionData => {
+      const option = {
+        name: boardConfig[`${menuPrefix}${optionData}`] || optionData,
+        key: menuType,
+        data: optionData,
+        check: false,
+        // // 其他属性 如 build.variant
+        extra: {
+          build: {
+            variant: boardConfig[`${menuPrefix}${optionData}.build.variant`] || '',
+            variant_h: boardConfig[`${menuPrefix}${optionData}.build.variant_h`] || ''
           }
         }
-
-        // 清理空的配置对象
-        if (Object.keys(option.data.build).length === 0) {
-          delete option.data.build;
-        }
-        if (Object.keys(option.data.upload).length === 0) {
-          delete option.data.upload;
-        }
-        if (Object.keys(option.data).length === 0) {
-          delete option.data;
-        }
-
-        options.push(option);
       }
+
+      // console.log(`==========>>>${menuPrefix}${optionData}:`, boardConfig[`${menuPrefix}${optionData}.build.variant`] || '');
+      // console.log('option:', option);
+
+      // 清理空的配置对象
+      if (Object.keys(option.data).length === 0) {
+        delete option.data;
+      }
+
+      options.push(option);
     });
+
+    // // 为每个选项构建完整的配置对象
+    // optionKeys.forEach(optionKey => {
+    //   const mainKey = `${menuPrefix}${optionKey}`;
+    //   const optionName = boardConfig[mainKey];
+
+    //   if (optionName) {
+    //     const option = {
+    //       name: optionName,
+    //       key: menuType,
+    //       data: {
+    //         build: {},
+    //         upload: {}
+    //       },
+    //       check: false
+    //     };
+
+    //     // 收集该选项的所有相关配置
+    //     for (const key in boardConfig) {
+    //       if (key.startsWith(`${menuPrefix}${optionKey}.`)) {
+    //         const configPath = key.replace(`${menuPrefix}${optionKey}.`, '');
+    //         const pathParts = configPath.split('.');
+
+    //         if (pathParts.length === 2) {
+    //           const category = pathParts[0]; // build 或 upload
+    //           const property = pathParts[1]; // partitions, maximum_size 等
+
+    //           if (category === 'build' || category === 'upload') {
+    //             option.data[category][property] = boardConfig[key];
+    //           }
+    //         }
+    //       }
+    //     }
+
+    //     // 清理空的配置对象
+    //     if (Object.keys(option.data.build).length === 0) {
+    //       delete option.data.build;
+    //     }
+    //     if (Object.keys(option.data.upload).length === 0) {
+    //       delete option.data.upload;
+    //     }
+    //     if (Object.keys(option.data).length === 0) {
+    //       delete option.data;
+    //     }
+
+    //     options.push(option);
+    //   }
+    // });
     return options;
   }
 
@@ -556,7 +689,7 @@ export class ProjectService {
   async updateEsp32ConfigMenu(boardName: string) {
     try {
       const boardConfig = await this.getEsp32BoardConfig(boardName);
-      console.log('获取到的ESP32开发板配置:', boardConfig);
+      // console.log('获取到的ESP32开发板配置:', boardConfig);
 
       if (!boardConfig) {
         console.warn(`无法获取开发板 "${boardName}" 的配置`);
@@ -585,7 +718,18 @@ export class ProjectService {
             menuItem.children.forEach((child: any) => {
               child.check = false; // 先清空所有选中状态
               // 使用通用比较方法检查当前配置是否匹配
-              if (this.compareConfigs(child.data, currentProjectConfig.UploadSpeed, ['speed'])) {
+              if (this.compareConfigs(child.data, currentProjectConfig.UploadSpeed)) {
+                child.check = true;
+              }
+            });
+          }
+        } else if (menuItem.name === 'ESP32.UPLOAD_MODE' && boardConfig.uploadMode) {
+          menuItem.children = boardConfig.uploadMode;
+          // 根据当前项目配置设置check状态
+          if (currentProjectConfig.UploadMode) {
+            menuItem.children.forEach((child: any) => {
+              child.check = false;
+              if (this.compareConfigs(child.data, currentProjectConfig.UploadMode)) {
                 child.check = true;
               }
             });
@@ -597,15 +741,8 @@ export class ProjectService {
           if (currentProjectConfig.FlashMode) {
             menuItem.children.forEach((child: any) => {
               child.check = false;
-              if (child.data && child.data.build && currentProjectConfig.FlashMode.build) {
-                // 检查FlashMode的所有相关配置项是否完全匹配
-                const childBuild = child.data.build;
-                const currentBuild = currentProjectConfig.FlashMode.build;
-
-                const isMatched = this.compareFlashModeConfig(childBuild, currentBuild);
-                if (isMatched) {
-                  child.check = true;
-                }
+              if (this.compareConfigs(child.data, currentProjectConfig.FlashMode)) {
+                child.check = true;
               }
             });
           }
@@ -615,7 +752,7 @@ export class ProjectService {
           if (currentProjectConfig.FlashSize) {
             menuItem.children.forEach((child: any) => {
               child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.FlashSize, ['flash_size'])) {
+              if (this.compareConfigs(child.data, currentProjectConfig.FlashSize)) {
                 child.check = true;
               }
             });
@@ -626,7 +763,7 @@ export class ProjectService {
           if (currentProjectConfig.PartitionScheme) {
             menuItem.children.forEach((child: any) => {
               child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.PartitionScheme, ['partitions', 'maximum_size'])) {
+              if (this.compareConfigs(child.data, currentProjectConfig.PartitionScheme)) {
                 child.check = true;
               }
             });
@@ -637,7 +774,7 @@ export class ProjectService {
           if (currentProjectConfig.CDCOnBoot) {
             menuItem.children.forEach((child: any) => {
               child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.CDCOnBoot, ['cdc_on_boot'])) {
+              if (this.compareConfigs(child.data, currentProjectConfig.CDCOnBoot)) {
                 child.check = true;
               }
             });
@@ -649,6 +786,325 @@ export class ProjectService {
       console.error('更新ESP32配置菜单失败:', error);
       return null;
     }
+  }
+
+  // 更新STM32配置菜单项
+  async updateStm32ConfigMenu(boardName: string) {
+    try {
+      const boardConfig = await this.getStm32BoardConfig(boardName);
+
+      if (!boardConfig) {
+        console.warn(`无法获取开发板 "${boardName}" 的配置`);
+        return null;
+      }
+
+      // 读取当前项目的package.json配置
+      let currentProjectConfig: any = {};
+      let packageJson: any = {};
+      try {
+        packageJson = await this.getPackageJson();
+        currentProjectConfig = packageJson.projectConfig || {};
+      } catch (error) {
+        console.warn('无法读取项目配置:', error);
+      }
+
+      let STM32_CONFIG_MENU_TEMP = JSON.parse(JSON.stringify(STM32_CONFIG_MENU));
+
+      // 更新菜单项
+      STM32_CONFIG_MENU_TEMP.forEach(menuItem => {
+        if (menuItem.name === 'STM32.BOARD' && boardConfig.board) {
+          menuItem.children = boardConfig.board;
+          // 根据当前项目配置设置check状态
+          // console.log('menuItem.children:', menuItem.children);
+          if (currentProjectConfig.pnum) {     
+            menuItem.children.forEach((child: any) => {
+              child.check = false; // 先清空所有选中状态
+              if (this.compareConfigs(child.data, currentProjectConfig.pnum)) {
+                child.check = true;
+                // console.log('=============================================');
+                // console.log('child:', child);
+                this.currentStm32Config.board = child.data;
+                this.currentStm32Config.variant = child.extra?.build.variant || null;
+                this.currentStm32Config.variant_h = child.extra?.build.variant_h || null;
+                // console.log('Selected STM32 pin config:', this.currentStm32Config);
+                // console.log('=============================================');
+              }
+            });
+          } else {
+            // 如果项目配置中没有pnum，则默认选中第一个
+            if (menuItem.children.length > 0) {
+              menuItem.children[0].check = true;
+              packageJson['projectConfig'] = packageJson['projectConfig'] || {};
+              packageJson['projectConfig']['pnum'] = menuItem.children[0].data;
+              // 更新项目配置
+              this.setPackageJson(packageJson);
+              this.compareStm32PinConfig(menuItem.children[0]);
+            }
+          }
+        } else if (menuItem.name === 'STM32.USB' && boardConfig.usb) {
+          menuItem.children = boardConfig.usb;
+          // 根据当前项目配置设置check状态
+          if (currentProjectConfig.usb) {
+            menuItem.children.forEach((child: any) => {
+              child.check = false;
+              if (this.compareConfigs(child.data, currentProjectConfig.usb)) {
+                child.check = true;
+              }
+            });
+          }
+        } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
+          menuItem.children = boardConfig.upload_method;
+          // 根据当前项目配置设置check状态
+          if (currentProjectConfig.upload_method) {
+            menuItem.children.forEach((child: any) => {
+              child.check = false;
+              if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
+                child.check = true;
+              }
+            });
+          }
+        }
+      });
+      return STM32_CONFIG_MENU_TEMP;
+    } catch (error) {
+      console.error('更新STM32配置菜单失败:', error);
+      return null;
+    }
+  }
+
+  // 比较stm32引脚配置
+  async compareStm32PinConfig(pinConfig: any): Promise<boolean> {
+    // console.log('=============================================');
+    // console.log('Comparing STM32 pin config:', pinConfig, "||", this.currentStm32Config);
+    if (pinConfig.data == this.currentStm32Config.board) {
+      return true;
+    } else if (pinConfig.extra?.build.variant == this.currentStm32Config.variant) {
+      return true;
+    } else {
+      let newPinConfig = pinConfig;
+
+      // newPinConfig = this.parseGenericConfig(newPinConfig);
+      // console.log('=============================================');
+      // console.log('newPinConfig:', newPinConfig);
+
+      let variant = newPinConfig.extra?.build.variant || null;
+      let variant_h = newPinConfig.extra?.build.variant_h || 'variant_generic.h';
+
+      const setPinConfig = await this.getVariantConfig(variant, variant_h);
+      const currentBoardJson = await this.getBoardJson();
+
+      let isChanged = false;
+      
+      if (typeof setPinConfig === 'object' && setPinConfig !== null) {
+        Object.keys(setPinConfig).forEach(key => {
+          if (Array.isArray(setPinConfig[key])) {
+            if (JSON.stringify(currentBoardJson[key]) !== JSON.stringify(setPinConfig[key])) {
+              currentBoardJson[key] = setPinConfig[key];
+              isChanged = true;
+            }
+          }
+        });
+      }
+
+      // 保存更新后的board.json
+      if (isChanged) {
+        await this.setBoardJson(currentBoardJson);
+        this.currentStm32Config.board = pinConfig.data;
+        this.currentStm32Config.variant = variant;
+        this.currentStm32Config.variant_h = variant_h;
+        // console.log('Updated STM32 pin config:', this.currentStm32Config);
+      }
+
+      // // // 获取到的config格式为“STM32F1xx/F100C(4-6)T”
+      // // // 我们需要转换为“F1XXC”
+      // // // 支持 STM32F1xx/F103C、STM32F4xx/F407V、STM32H7xx/H767Z、STM32C0xx/C030F 等
+      // // const match = newPinConfig.match(/STM32([A-Z]\d?)xx\/[A-Z]\d{3}([A-Z])/i);
+      // // if (match) {
+      // //   // match[1] 可能是 F1、F4、H7、C0 等，match[2] 是主型号字母
+      // //   newPinConfig = match[1].toUpperCase() + 'XX' + match[2].toUpperCase();
+      // // }
+      // // console.log('newPinConfig:', newPinConfig);
+      // // 读取特殊配置文件
+      // const newPinJson = await this.getJsonConfig(newPinConfig + '.pins.json');
+      // // console.log('newPinJson:', newPinJson);
+      // const currentBoardJson = await this.getBoardJson();
+      // // console.log('currentBoardJson:', currentBoardJson);
+      // let isChanged = false;
+      // // 遍历newPinJson中的每一项，更新currentBoardJson中的对应项
+      // if (typeof newPinJson === 'object' && newPinJson !== null) {
+      //   // 如果 newPinJson 结构为 {analog: [...], digital: [...]}，则直接整体替换 currentBoardJson 的同名属性
+      //   Object.keys(newPinJson).forEach(key => {
+      //     // console.log(`Comparing key: ${key}`);
+      //     if (Array.isArray(newPinJson[key])) {
+      //       if (JSON.stringify(currentBoardJson[key]) !== JSON.stringify(newPinJson[key])) {
+      //         currentBoardJson[key] = newPinJson[key];
+      //         isChanged = true;
+      //       }
+      //     }
+      //   });
+      // } else {
+      //   console.error('newPinJson 不是对象:', newPinJson);
+      // }
+      // // 保存更新后的board.json
+      // if (isChanged) {
+      //   await this.setBoardJson(currentBoardJson);
+      //   this.currentStm32pinConfig = pinConfig;
+      // }
+      return false;
+    }
+  }
+
+  // 根据传入的引脚信息解析引脚配置 如STM32F1xx/F100C(4-6)T
+  async getVariantConfig(variant: string, variant_h: string) {
+    try {
+      const sdkPath = await this.getSdkPath();
+      if (!sdkPath) {
+        throw new Error('未找到 SDK 路径');
+      }
+
+      const variantFilePath = `${sdkPath}/variants/${variant}/${variant_h}`;
+      // console.log('variantFilePath:', variantFilePath);
+      if (!window['fs'].existsSync(variantFilePath)) {
+        throw new Error('引脚配置文件不存在: ' + variantFilePath);
+      }
+
+      const variantContent = window['fs'].readFileSync(variantFilePath, 'utf8');
+
+      return this.parseVariantConfig(variantContent);
+    } catch (error) {
+      console.error('解析STM32引脚配置失败:', error);
+    }
+  }
+
+  private parseVariantConfig(content: string): any {
+    const analogPins: any[] = [];
+    const digitalPins: any[] = [];
+    const i2cPins: any = { Wire: [] };
+    const spiPins: any = { SPI: [] };
+
+    const lines = content.split(/\r?\n/);
+    const digitalSet = new Set<string>();
+    const i2cMap: any = {};
+    const spiMap: any = {};
+
+    // 宽松匹配多种 define 写法：PA0 PIN_A0 或 PIN_A0 PA0 等
+    const analogRe1 = /^\s*#\s*define\s+([A-Z]{1,3}\d{1,3})\s+(PIN_A\d+)\b/; // PA0  PIN_A0
+    const analogRe2 = /^\s*#\s*define\s+(PIN_A\d+)\s+([A-Z]{1,3}\d{1,3})\b/; // PIN_A0 PA0
+
+    const digitalRe1 = /^\s*#\s*define\s+([A-Z]{1,3}\d{1,3})\s+(\d+|PIN_A\d+)\b/; // PA1  1  或 PA1 PIN_A0
+    const digitalRe2 = /^\s*#\s*define\s+(PIN_[A-Z0-9_]+)\s+(\d+|[A-Z]{1,3}\d{1,3})\b/; // PIN_LED 13 或 PIN_A0 PA0
+
+    const i2cRe = /^\s*#\s*define\s+PIN_WIRE_(SDA|SCL)\s+([A-Z]{1,3}\d{1,3})\b/;
+    const i2cReAlt = /^\s*#\s*define\s+([A-Z]{1,3}\d{1,3})\s+PIN_WIRE_(SDA|SCL)\b/;
+
+    const spiRe = /^\s*#\s*define\s+PIN_SPI_(SS\d*|MOSI|MISO|SCK)\s+([A-Z]{1,3}\d{1,3})\b/;
+    const spiReAlt = /^\s*#\s*define\s+([A-Z]{1,3}\d{1,3})\s+PIN_SPI_(SS\d*|MOSI|MISO|SCK)\b/;
+
+    for (const line of lines) {
+      // 去掉行尾注释
+      const pureLine = line.replace(/\/\/.*$/,'').replace(/\/\*.*\*\/\s*$/,'');
+
+      // analog
+      let m = analogRe1.exec(pureLine) || analogRe2.exec(pureLine);
+      if (m) {
+        // 统一为 [pinMacro, port]，优先保留 PIN_Ax 做第一个元素以兼容 gen_boards 输出
+        if (m[1].startsWith('PIN_A')) {
+          analogPins.push([m[1], m[2]]);
+        } else {
+          analogPins.push([m[2], m[1]]);
+        }
+      }
+
+      // digital
+      m = digitalRe1.exec(pureLine) || digitalRe2.exec(pureLine);
+      if (m) {
+        // m[1] 是名字或 PIN_ 前缀，根据捕获组位置不同处理
+        let name = m[1];
+        let val = m[2];
+        // 如果捕获到 PIN_* 在第一位（digitalRe2），将 name 与 val 调换以保持一致
+        if (name.startsWith('PIN_')) {
+          // 如果包含SPI WIRE SERIAL等关键字，则跳过
+          if (name.includes('PIN_SPI_') || name.includes('PIN_WIRE_') || name.includes('PIN_SERIAL_')) {
+            continue;
+          }
+          // 保证唯一性，使用宏名或引脚名作为标识
+          const display = name;
+          if (!digitalSet.has(display)) {
+            digitalSet.add(display);
+            digitalPins.push([display, display]);
+          }
+        } else {
+          const display = name;
+          if (!digitalSet.has(display)) {
+            digitalSet.add(display);
+            digitalPins.push([display, display]);
+          }
+        }
+      }
+
+      // i2c
+      m = i2cRe.exec(pureLine);
+      if (m) {
+        i2cMap[m[1]] = m[2];
+      } else {
+        m = i2cReAlt.exec(pureLine);
+        if (m) {
+          i2cMap[m[2]] = m[1]; // alt captures port then PIN_WIRE_x
+        }
+      }
+
+      // spi
+      m = spiRe.exec(pureLine);
+      if (m) {
+        let key = m[1];
+        if (key.startsWith('SS')) key = 'SS';
+        spiMap[key] = m[2];
+      } else {
+        m = spiReAlt.exec(pureLine);
+        if (m) {
+          let key = m[2];
+          if (key.startsWith('SS')) key = 'SS';
+          spiMap[key] = m[1];
+        }
+      }
+    }
+
+    // i2c 输出顺序 SDA, SCL
+    if (i2cMap['SDA']) i2cPins.Wire.push(['SDA', i2cMap['SDA']]);
+    if (i2cMap['SCL']) i2cPins.Wire.push(['SCL', i2cMap['SCL']]);
+
+    // SPI 输出固定顺序 MOSI, MISO, SCK, SS
+    const spiOrder = ['MOSI','MISO','SCK','SS'];
+    for (const k of spiOrder) {
+      if (spiMap[k]) spiPins.SPI.push([k, spiMap[k]]);
+    }
+
+    // 结果格式与 gen_boards.js 相同
+    return {
+      analogPins,
+      digitalPins,
+      pwmPins: digitalPins,
+      servoPins: digitalPins,
+      interruptPins: digitalPins,
+      i2cPins,
+      spiPins
+    };
+  }
+
+  private parseGenericConfig(config: string): string {
+    // 匹配 GENERIC_F100C4TX、GENERIC_F103CB、GENERIC_F407VG 等格式
+    // 识别后 输出F1XXC、F4XXV等格式
+    // const match = config.match(/GENERIC_([A-Z])(\d{1,2})\d*[A-Z]?([A-Z])/i);
+    // const match = config.match(/GENERIC_([A-Z])(\d?)\d*[A-Z]?([A-Z])/i);
+    const match = config.match(/GENERIC_([A-Z])(\d)\d*([A-Z])/i);
+    if (match) {
+      // match[1] 提取主系列（如 F）
+      // match[2] 提取数字部分（如 1、4、7、0）
+      // match[3] 提取主型号字母（如 C、V、Z、F）
+      return `${match[1]}${match[2]}XX${match[3]}`.toUpperCase();
+    }
+    console.warn('无法解析 GENERIC 配置:', config);
+    return config; // 如果无法解析，返回原始字符串
   }
 
   // 获取项目配置

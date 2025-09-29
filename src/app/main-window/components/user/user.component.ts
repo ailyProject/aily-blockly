@@ -4,10 +4,18 @@ import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzSpinModule } from 'ng-zorro-antd/spin';
+import { NzDividerModule } from 'ng-zorro-antd/divider';
+import { NzIconModule } from 'ng-zorro-antd/icon';
 import { AuthService, LoginRequest, RegisterRequest } from '../../../services/auth.service';
+import { ElectronService } from '../../../services/electron.service';
+import { GitHubLoginDialogComponent } from '../github-login-dialog/github-login-dialog.component';
 import { Subject, takeUntil } from 'rxjs';
 import sha256 from 'crypto-js/sha256';
+
+// 声明 electronAPI 类型
+declare const window: any;
 
 @Component({
   selector: 'app-user',
@@ -16,7 +24,9 @@ import sha256 from 'crypto-js/sha256';
     FormsModule,
     NzButtonModule,
     NzInputModule,
-    NzSpinModule
+    NzSpinModule,
+    NzDividerModule,
+    NzIconModule
   ],
   templateUrl: './user.component.html',
   styleUrl: './user.component.scss'
@@ -36,7 +46,9 @@ export class UserComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private destroy$ = new Subject<void>();
   private message = inject(NzMessageService);
+  private modal = inject(NzModalService);
   private authService = inject(AuthService);
+  private electronService = inject(ElectronService);
 
   userInfo = {
     username: '',
@@ -48,13 +60,23 @@ export class UserComponent implements OnInit, OnDestroy, AfterViewInit {
   isRegistering = false;
   isLoggedIn = false;
   currentUser: any = null;
+  isGitHubAuthWaiting = false;
 
-  ngOnInit() {
+  async ngOnInit() {
+    // 首先检查并同步登录状态
+    await this.checkAndSyncAuthStatus();
+
     // 监听登录状态
     this.authService.isLoggedIn$
       .pipe(takeUntil(this.destroy$))
       .subscribe(isLoggedIn => {
         this.isLoggedIn = isLoggedIn;
+        
+        // 如果登录成功且当前在GitHub登录等待状态，关闭弹窗
+        if (isLoggedIn && this.isGitHubAuthWaiting) {
+          this.isGitHubAuthWaiting = false;
+          this.closeEvent.emit();
+        }
       });
 
     // 监听用户信息
@@ -63,6 +85,20 @@ export class UserComponent implements OnInit, OnDestroy, AfterViewInit {
       .subscribe(userInfo => {
         this.currentUser = userInfo;
       });
+
+    // 由于app.component已经设置了全局OAuth监听器，这里不需要再设置
+    // 但是我们可以监听AuthService的登录状态变化来处理UI状态
+  }
+
+  /**
+   * 检查并同步认证状态
+   */
+  private async checkAndSyncAuthStatus(): Promise<void> {
+    try {
+      await this.authService.checkAndSyncAuthStatus();
+    } catch (error) {
+      console.error('同步认证状态失败:', error);
+    }
   }
 
   ngAfterViewInit(): void {
@@ -197,6 +233,71 @@ export class UserComponent implements OnInit, OnDestroy, AfterViewInit {
 
   more() {
     this.message.warning('服务暂不可用');
+  }
+
+  /**
+   * 开始 GitHub 浏览器 OAuth 登录
+   */
+  async onGitHubLogin() {
+    if (this.isGitHubAuthWaiting) return;
+
+    // 首先显示确认对话框
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '380px',
+      nzContent: GitHubLoginDialogComponent,
+      nzData: {
+        title: 'GitHub 登录确认',
+        text: ''
+      }
+    });
+
+    // 等待用户选择
+    modalRef.afterClose.subscribe(async (result: any) => {
+      if (result && result.result === 'agree') {
+        // 用户同意，继续GitHub登录流程
+        await this.proceedWithGitHubLogin();
+      }
+      // 如果用户取消或关闭对话框，则不执行任何操作
+    });
+  }
+
+  /**
+   * 执行实际的GitHub登录流程
+   */
+  private async proceedWithGitHubLogin() {
+    this.isGitHubAuthWaiting = true;
+
+    try {
+      // 直接通过 HTTP 请求启动 GitHub OAuth 流程
+      this.authService.startGitHubOAuth().subscribe({
+        next: (response) => {
+          // 使用 ElectronService 在系统浏览器中打开授权页面
+          if (this.electronService.isElectron) {
+            this.electronService.openUrl(response.authorization_url);
+            this.message.info('正在跳转到 GitHub 授权页面...');
+          } else {
+            // 如果不在 Electron 环境中，使用 window.open 作为降级方案
+            window.open(response.authorization_url, '_blank');
+            this.message.info('正在跳转到 GitHub 授权页面...');
+          }
+        },
+        error: (error) => {
+          console.error('启动 GitHub OAuth 失败:', error);
+          this.message.error('启动 GitHub 登录失败，请检查网络连接');
+          this.isGitHubAuthWaiting = false;
+        }
+      });
+    } catch (error) {
+      console.error('GitHub 登录出错:', error);
+      this.message.error('GitHub 登录失败');
+      this.isGitHubAuthWaiting = false;
+    }
   }
 
 }

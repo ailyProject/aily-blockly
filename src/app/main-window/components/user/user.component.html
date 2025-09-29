@@ -21,7 +21,7 @@
                 <div class="ccenter">
                     <i class="fa-light fa-user-vneck"></i>
                 </div>
-                <div class="username">内测用户</div>
+                <div class="username">{{ currentUser?.username || currentUser?.login || '用户' }}</div>
             </div>
             <div class="actions">
                 <button nz-button nzType="primary" (click)="onLogout()">
@@ -31,6 +31,24 @@
         </div>
         }@else {
         <div class="login-box">
+            <!-- GitHub 登录按钮 -->
+            <div class="github-login-section">
+                <button 
+                    nz-button 
+                    nzType="default" 
+                    nzSize="large" 
+                    [nzLoading]="isGitHubAuthWaiting"
+                    (click)="onGitHubLogin()"
+                    class="github-btn">
+                    <i class="fa-brands fa-github"></i>
+                    <span>{{ isGitHubAuthWaiting ? '授权中...' : '使用 GitHub 登录' }}</span>
+                </button>
+            </div>
+
+            <nz-divider nzText="或"></nz-divider>
+
+            <!-- 传统登录表单 -->
+            @if(!isRegistering) {
             <div class="item">
                 <div class="ccenter">
                     <i class="fa-light fa-user"></i>
@@ -44,10 +62,56 @@
                 <input nz-input type="password" placeholder="请输入密码" [(ngModel)]="userInfo.password" />
             </div>
             <div class="actions">
-                <button nz-button nzType="primary" (click)="onLogin()">
-                    登录
+                <button 
+                    nz-button 
+                    nzType="primary" 
+                    [nzLoading]="isWaiting"
+                    (click)="onLogin()">
+                    {{ isWaiting ? '登录中...' : '登录' }}
+                </button>
+                <!-- <button 
+                    nz-button 
+                    nzType="link" 
+                    (click)="toggleRegisterMode()">
+                    注册新账户
+                </button> -->
+            </div>
+            }@else {
+            <!-- 注册表单 -->
+            <div class="item">
+                <div class="ccenter">
+                    <i class="fa-light fa-user"></i>
+                </div>
+                <input nz-input spellcheck="false" type="text" placeholder="请输入用户名" [(ngModel)]="userInfo.username" />
+            </div>
+            <div class="item">
+                <div class="ccenter">
+                    <i class="fa-light fa-envelope"></i>
+                </div>
+                <input nz-input type="email" placeholder="请输入邮箱" [(ngModel)]="userInfo.email" />
+            </div>
+            <div class="item">
+                <div class="ccenter">
+                    <i class="fa-light fa-lock"></i>
+                </div>
+                <input nz-input type="password" placeholder="请输入密码" [(ngModel)]="userInfo.password" />
+            </div>
+            <div class="actions">
+                <button 
+                    nz-button 
+                    nzType="primary" 
+                    [nzLoading]="isWaiting"
+                    (click)="onRegister()">
+                    {{ isWaiting ? '注册中...' : '注册' }}
+                </button>
+                <button 
+                    nz-button 
+                    nzType="link" 
+                    (click)="toggleRegisterMode()">
+                    返回登录
                 </button>
             </div>
+            }
         </div>
         }
     </div>

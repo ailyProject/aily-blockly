@@ -13,6 +13,9 @@ export const API = {
   verifyToken: `${AUTH_SERVER_URL}/api/v1/auth/verify`,
   refreshToken: `${AUTH_SERVER_URL}/api/v1/auth/refresh`,
   me: `${AUTH_SERVER_URL}/api/v1/auth/me`,
+  // github oauth
+  githubBrowserAuthorize: `${AUTH_SERVER_URL}/api/v1/oauth/github/browser-authorize`,
+  githubTokenExchange: `${AUTH_SERVER_URL}/api/v1/oauth/github/token-exchange`,
   // ai
   startSession: `${CHAT_SERVER_URL}/api/v1/start_session`,
   closeSession: `${CHAT_SERVER_URL}/api/v1/close_session`,

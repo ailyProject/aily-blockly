@@ -14,12 +14,12 @@
       <i class="fa-light fa-search"></i>
       }
     </ng-template>
-    <!-- 查看模式：
+    <!-- 查看模式：-->
     <div class="tag-list">
-      @for (tag of tagList; track tag) {
-      <nz-tag (click)="changeViewMode(tag)">{{ tag.name }}</nz-tag>
-      }
-    </div> -->
+      <nz-tag (click)="changeViewMode('brand')" [nzColor]="listMode === 'brand' ? '#108ee9' : null">按品牌</nz-tag>
+      <nz-tag (click)="changeViewMode('core')" [nzColor]="listMode === 'core' ? '#108ee9' : null">按核心</nz-tag>
+      <!-- <nz-tag (click)="listMode = 'function'">按功能</nz-tag> -->
+    </div>
     <!-- <nz-steps [nzCurrent]="currentStep" nzSize="small">
       <nz-step [nzTitle]="'PROJECT_NEW.STEPS.SELECT_BOARD' | translate"></nz-step>
       <nz-step [nzTitle]="'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate"></nz-step>
@@ -37,7 +37,7 @@
     <div class="left">
       <div class="left-inner">
         @if (currentStep == 0) {
-        <app-brand-list (brandSelected)="onBrandSelected($event)"></app-brand-list>
+        <app-brand-list [mode]="listMode" (brandSelected)="onSelected($event)"></app-brand-list>
         } @else {
         <div class="steps-box ccenter">
           <nz-steps [nzCurrent]="currentStep" nzSize="small" [nzDirection]="'vertical'">
@@ -80,7 +80,8 @@
             <div class="title">
               <div class="title-text">{{currentBoard.nickname}}</div>
               @if(currentBoard.state){
-              <span class="warn"><i class="fa-light fa-circle-exclamation"></i>{{ 'PROJECT_NEW.WARNINGS.BETA_VERSION' | translate }}</span>
+              <span class="warn"><i class="fa-light fa-circle-exclamation"></i>{{ 'PROJECT_NEW.WARNINGS.BETA_VERSION' |
+                translate }}</span>
               }
             </div>
             <div class="text sscroll">{{ currentBoard.description }}</div>

@@ -35,11 +35,12 @@ export class _UploaderService {
     private blocklyService: BlocklyService
   ) { }
 
-  private uploadInProgress = false;
+  uploadInProgress = false;
   private streamId: string | null = null;
   private uploadCompleted = false;
   private isErrored = false;
   cancelled = false;
+  private commandName: string | null = null;
   
   private initialized = false; // 防止重复初始化
 
@@ -148,6 +149,8 @@ export class _UploaderService {
       paramList[0] = command;
     }
 
+    this.commandName = window['path'].basename(paramList[0])
+
     // 第三步：处理 ${'filename'} 格式的文件路径参数
     for (let i = 0; i < paramList.length; i++) {
       const param = paramList[i];
@@ -196,6 +199,7 @@ export class _UploaderService {
     this.cmdService.kill(this.streamId || '');
     this.isErrored = true;
     this.uploadInProgress = false;
+    this._builderService.isUploading = false;
   }
 
   async upload(): Promise<ActionState> {
@@ -204,6 +208,12 @@ export class _UploaderService {
         if (this.uploadInProgress) {
           this.message.warning('上传中，请稍后');
           reject({ state: 'warn', text: '上传中，请稍后' });
+          return;
+        }
+
+        if (this._builderService.buildInProgress) {
+          this.message.warning('正在编译，请稍后再试');
+          reject({ state: 'warn', text: '正在编译，请稍后' });
           return;
         }
 
@@ -216,6 +226,7 @@ export class _UploaderService {
         if (!this.serialService.currentPort) {
           this.message.warning('请先选择串口');
           this.uploadInProgress = false;
+          this._builderService.isUploading = false;
           reject({ state: 'warn', text: '请先选择串口' });
           this.modal.create({
             nzTitle: null,
@@ -232,6 +243,7 @@ export class _UploaderService {
 
         this.isErrored = false;
         this.cancelled = false;
+        this.uploadCompleted = false;
 
         // 重置ESP32上传状态，防止进度累加
         this['esp32UploadState'] = {
@@ -262,6 +274,7 @@ export class _UploaderService {
 
         if (this._builderService.cancelled) {
           this.uploadInProgress = false;
+          this._builderService.isUploading = false;
           this.noticeService.update({
             title: "编译已取消",
             text: '编译已取消',
@@ -277,6 +290,9 @@ export class _UploaderService {
           reject({ state: 'error', text: '编译失败，请检查代码' });
           return;
         }
+
+        // 辨识上传中
+        this._builderService.isUploading = true;
 
         const buildPath = this._builderService.buildPath;
         const sdkPath = this._builderService.sdkPath;
@@ -309,7 +325,7 @@ export class _UploaderService {
           const projectConfig = await this.projectService.getProjectConfig();
           console.log("Project config: ", projectConfig);
           if (projectConfig) {
-            baudRate = projectConfig?.UploadSpeed?.upload?.speed || '';
+            baudRate = projectConfig?.UploadSpeed || '';
           }
         } catch (error) {
           console.warn('没有额外的自定义配置');
@@ -422,7 +438,7 @@ export class _UploaderService {
 
         let bufferData = '';
         this.cmdService.run(uploadCmd, null, false).subscribe({
-          next: (output: CmdOutput) => {
+          next: async (output: CmdOutput) => {
             // console.log('编译命令输出:', output);
             this.streamId = output.streamId;
 
@@ -595,6 +611,7 @@ export class _UploaderService {
                 setTimeout: 55000
               });
               this.uploadInProgress = false;
+              this._builderService.isUploading = false;
               resolve({ state: 'done', text: '上传完成' });
             } else if (this.cancelled) {
               console.warn("上传中断");
@@ -605,7 +622,7 @@ export class _UploaderService {
                 setTimeout: 55000
               });
               this.uploadInProgress = false;
-              // 终止Arduino CLI进程
+              this._builderService.isUploading = false;
 
               reject({ state: 'warn', text: '上传已取消' });
             } else {
@@ -618,6 +635,7 @@ export class _UploaderService {
                 setTimeout: 600000
               });
               this.uploadInProgress = false;
+              this._builderService.isUploading = false;
               // 终止Arduino CLI进程
 
               reject({ state: 'error', text: '上传未完成，请检查日志' });
@@ -638,6 +656,8 @@ export class _UploaderService {
   cancel() {
     this.cancelled = true;
     this.cmdService.kill(this.streamId || '');
+    console.log("取消command: ", this.commandName);
+    this.cmdService.killByName(this.commandName || '');
   }
 }
 

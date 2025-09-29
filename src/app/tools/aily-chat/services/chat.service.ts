@@ -23,7 +23,7 @@ export interface ChatTextMessage {
 export class ChatService {
 
   currentSessionId = '';
-  currentMode = 'agent'; // 默认为代理模式
+  currentMode = 'ask'; // 默认为代理模式
 
   private textSubject = new Subject<ChatTextMessage>();
   private static instance: ChatService;

@@ -33,6 +33,36 @@ button {
 .login-box {
     padding: 10px;
 
+    .github-login-section {
+        margin-bottom: 15px;
+        
+        .github-btn {
+            width: 100%;
+            height: 40px;
+            border-color: #30363d;
+            background: #21262d;
+            color: #f0f6fc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            
+            &:hover:not(:disabled) {
+                background: #30363d;
+                border-color: #8b949e;
+            }
+            
+            &:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+            
+            .anticon {
+                font-size: 16px;
+            }
+        }
+    }
+
     .item {
         display: flex;
         margin-bottom: 15px;
@@ -54,9 +84,24 @@ button {
     }
 
     .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        
         button {
             width: 100%;
-            margin-top: 10px;
+            
+            &[nz-button][nzType="link"] {
+                padding: 0;
+                height: auto;
+                margin-top: 5px;
+            }
         }
+    }
+    
+    .username {
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 32px;
     }
 }

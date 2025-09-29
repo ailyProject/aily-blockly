@@ -20,7 +20,9 @@ export class NoticeService {
   update(opts: NoticeOptions) {
     opts['showDetail'] = false;
     this.stateSubject.next(opts);
-    if (opts.detail) {
+
+    const sendToLog = opts.sendToLog ?? true;
+    if (sendToLog && opts.detail) {
       this.logService.update({
         title: opts.title,
         detail: opts.detail,
@@ -44,4 +46,5 @@ export interface NoticeOptions {
   detail?: string,
   showDetail?: boolean,
   timestamp?: number,
+  sendToLog?: boolean,
 }

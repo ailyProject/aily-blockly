@@ -201,6 +201,7 @@ export class CmdService {
     const subject = this.subjects.get(streamId);
     if (subject) {
       const result = await window['cmd'].kill(streamId);
+      console.log(`Kill command ${streamId}:`, result);
       if (result.success) {
         subject.complete();
         this.subjects.delete(streamId);
@@ -208,6 +209,15 @@ export class CmdService {
       return result.success;
     }
     return false;
+  }
+
+  /**
+   * 按进程名终止命令执行
+   */
+  async killByName(processName: string): Promise<boolean> {
+    const result = await window['cmd'].killByName(processName);
+    console.log(`Kill process by name ${processName}:`, result);
+    return result.success;
   }
 
   /**

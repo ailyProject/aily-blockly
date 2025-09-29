@@ -66,10 +66,16 @@
     },
     "ESP32": {
         "UPLOAD_SPEED": "烧录速度",
+        "UPLOAD_MODE": "烧录方式",
         "FLASH_MODE": "闪存模式",
         "FLASH_SIZE": "闪存大小",
         "PARTITION_SCHEME": "分区方案",
         "CDC_ON_BOOT": "USB模拟串口"
+    },
+    "STM32": {
+        "BOARD": "开发板型号选择",
+        "USB": "USB配置",
+        "UPLOAD_METHOD": "烧录方式"
     },
     "GUIDE": {
         "START": "开始",

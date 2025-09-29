@@ -1,10 +1,14 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from './services/electron.service';
 import { ConfigService } from './services/config.service';
 import { TranslationService } from './services/translation.service';
-// import { AuthService } from './services/auth.service';
+import { AuthService } from './services/auth.service';
+import { NzMessageService } from 'ng-zorro-antd/message';
+
+// 声明 electronAPI 类型
+declare const window: any;
 
 @Component({
   selector: 'app-root',
@@ -13,13 +17,16 @@ import { TranslationService } from './services/translation.service';
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
   title = 'aily-blockly';
 
   private electronService = inject(ElectronService);
   private configService = inject(ConfigService);
   private translationService = inject(TranslationService);
-  // private authService = inject(AuthService);
+  private authService = inject(AuthService);
+  private message = inject(NzMessageService);
+  
+  private oauthResultListener: (() => void) | null = null;
 
  async ngOnInit() {
     await this.electronService.init();
@@ -27,6 +34,62 @@ export class AppComponent implements OnInit {
     await this.translationService.init();
     
     // 在ElectronService初始化完成后再初始化认证服务
-    // await this.authService.initializeAuth();
+    await this.authService.initializeAuth();
+    
+    // 设置全局OAuth监听器
+    this.setupGlobalOAuthListener();
+  }
+
+  ngOnDestroy() {
+    // 清理OAuth监听器
+    if (this.oauthResultListener) {
+      this.oauthResultListener();
+    }
+  }
+
+  /**
+   * 设置全局GitHub OAuth协议回调监听
+   */
+  private setupGlobalOAuthListener() {
+    if (window['oauth'].onCallback) {
+      this.oauthResultListener = window['oauth'].onCallback(async (callbackData: any) => {
+        try {
+          // 使用AuthService处理协议回调
+          const result = await this.authService.handleOAuthCallback(callbackData);
+          
+          if (result.success) {
+            console.log('GitHub OAuth 成功:', result.data);
+            this.message.success('GitHub 登录成功');
+          } else {
+            // OAuth失败
+            console.error('GitHub OAuth 失败:', result);
+            let errorMessage = 'GitHub 登录失败';
+            
+            switch (result.error) {
+              case 'timeout':
+              case 'invalid_state':
+                errorMessage = '登录状态无效或已超时，请重试';
+                break;
+              case 'missing_parameters':
+                errorMessage = '授权参数缺失，请重试';
+                break;
+              case 'access_denied':
+                errorMessage = '您取消了授权';
+                break;
+              case 'callback_processing_failed':
+                errorMessage = result.message || '处理授权回调失败';
+                break;
+              default:
+                errorMessage = result.message || 'GitHub 登录失败';
+            }
+            
+            this.message.error(errorMessage);
+          }
+        } catch (error) {
+          console.error('处理OAuth回调异常:', error);
+          this.message.error('登录处理失败，请重试');
+        }
+      });
+    }
   }
 }

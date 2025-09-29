@@ -11,6 +11,12 @@ export let ESP32_CONFIG_MENU: IMenuItem[] = [
         children: []
     },
     {
+        name: 'ESP32.UPLOAD_MODE',
+        data: {},
+        icon: "fa-light fa-cloud-arrow-up",
+        children: []
+    },
+    {
         name: 'ESP32.FLASH_MODE',
         data: {},
         icon: 'fa-light fa-tablet-rugged',

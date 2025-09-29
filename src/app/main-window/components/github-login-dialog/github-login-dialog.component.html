@@ -1,0 +1,32 @@
+<div class="prompt-box bborder">
+    <div class="header">
+        <div class="title">{{ title }}</div>
+        <div class="win-btns">
+            <div class="btn ccenter close" (click)="cancel()">
+                <i class="fa-light fa-xmark"></i>
+            </div>
+        </div>
+    </div>
+    <div class="content">
+        <div class="icon-section">
+            <i nz-icon nzType="github" nzTheme="outline" class="github-icon"></i>
+        </div>
+        <div class="text">
+            <div class="main-text">使用 GitHub 账号登录</div>
+            <div class="sub-text">
+                登录后您可以：
+                <ul>
+                    <li>免费试用 AI 问答功能</li>
+                    <li>享受个性化的开发体验</li>
+                </ul>
+                <div class="notice">
+                    <strong>注意：</strong>我们会使用您的 GitHub 账号为我们的几个开源仓库点 star，这有助于支持我们的项目发展。
+                </div>
+            </div>
+        </div>
+        <div class="footer">
+            <button nz-button [nzSize]="'small'" nzType="default" (click)="cancel()">取消</button>
+            <button nz-button [nzSize]="'small'" nzType="primary" (click)="agree()">同意并继续</button>
+        </div>
+    </div>
+</div>
