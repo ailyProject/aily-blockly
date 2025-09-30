@@ -53,12 +53,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   @ViewChild('monacoEditorContainer', { static: true }) monacoContainer!: ElementRef<HTMLDivElement>;
 
   /** 编辑器配置选项 */
-  @Input() options: MonacoEditorOptions = {
-    language: 'cpp',
-    theme: 'vs-dark',
-    lineNumbers: 'on',
-    automaticLayout: true
-  }
+  @Input() options: MonacoEditorOptions = {}
 
   /** 编辑器内容 */
   @Input() code = '';
@@ -237,9 +232,22 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
         value: this.code,
         language: language,
-        // minimap: {
-        //   enabled: false
-        // }
+        automaticLayout: true,
+        // 优化minimap配置以减少重绘
+        minimap: {
+          enabled: true,
+          side: 'right',
+          size: 'proportional',
+          showSlider: 'mouseover', // 只在鼠标悬停时显示滑块
+          renderCharacters: false, // 不渲染字符，只显示块状颜色
+          maxColumn: 120, // 限制minimap宽度
+          scale: 1
+        },
+        // 其他性能优化选项
+        scrollBeyondLastLine: false,
+        smoothScrolling: true,
+        cursorSmoothCaretAnimation: 'on',
+        ...this.options
       });
 
       // 添加内容变化监听
