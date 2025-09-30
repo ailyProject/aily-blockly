@@ -98,6 +98,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "Cadre de développement",
             "BOARD": "Carte",
             "PROJECT_NAME": "Nom du Projet",
             "SAVE_PATH": "Chemin de Sauvegarde",

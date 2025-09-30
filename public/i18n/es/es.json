@@ -98,6 +98,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "Marco de desarrollo",
             "BOARD": "Placa",
             "PROJECT_NAME": "Nombre del Proyecto",
             "SAVE_PATH": "Ruta de Guardado",

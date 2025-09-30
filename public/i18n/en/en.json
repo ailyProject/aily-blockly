@@ -135,6 +135,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "Development Framework",
             "BOARD": "Board",
             "PROJECT_NAME": "Project Name",
             "SAVE_PATH": "Save Path",

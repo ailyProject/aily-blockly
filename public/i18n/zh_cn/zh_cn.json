@@ -137,6 +137,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "开发框架",
             "BOARD": "开发板",
             "PROJECT_NAME": "项目名称",
             "SAVE_PATH": "保存路径",

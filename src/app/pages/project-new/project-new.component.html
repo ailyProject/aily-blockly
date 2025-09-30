@@ -111,7 +111,26 @@
       <div class="right-inner">
         <div class="right-content">
           <div class="item">
+            <div>{{ 'PROJECT_NEW.FORM.DEVMODE' | translate }}:</div>
+            <nz-radio-group [(ngModel)]="newProjectData.devmode">
+              @for(mode of devmodes;track mode ){
+              @switch(mode){
+              @case ('arduino') {
+              <label nz-radio-button nzValue="arduino">Arduino</label>
+              }
+              @case ('micropython') {
+              <label nz-radio-button nzValue="micropython">MicroPython</label>
+              }
+              @case ('freertos') {
+              <label nz-radio-button nzValue="freertos">FreeRTOS</label>
+              }
+              }
+              }
+            </nz-radio-group>
+          </div>
+          <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.BOARD' | translate }}:</div>
+            <!-- @if(newProjectData.devmode=='arduino'){ -->
             <nz-input-group [nzSuffix]="suffixIconSearch">
               <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
             </nz-input-group>
@@ -123,6 +142,9 @@
               <nz-option [nzValue]="version" [nzLabel]="version"></nz-option>
               }
             </nz-select>
+            <!-- }@else if (newProjectData.devmode=='micropython') {
+            <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
+            } -->
           </div>
           <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div>
@@ -162,27 +184,4 @@
       }
     </div>
   </div>
-  <!-- <div class="footer">
-    <div class="btns">
-      @if (currentStep == 0) {
-      <button nz-button nzType="primary" (click)="nextStep()">
-        {{ 'PROJECT_NEW.BUTTONS.NEXT' | translate }}
-      </button>
-      } @else {
-      @if (currentStep == 1) {
-      <button nz-button nzType="default" (click)="currentStep = 0">
-        {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
-      </button>
-      <button nz-button nzType="primary" [disabled]="showIsExist" (click)="createProject()">
-        {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
-      </button>
-      }
-      }
-      @if (currentStep == 2) {
-      <button nz-button nzType="default" nzLoading>
-        {{ 'PROJECT_NEW.BUTTONS.CREATING' | translate }}
-      </button>
-      }
-    </div>
-  </div> -->
 </div>

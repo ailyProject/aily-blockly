@@ -1,7 +1,9 @@
-<blockly-main></blockly-main>
+@if(devmode){
+<blockly-main [devmode]="devmode"></blockly-main>
+}
 <div class="project-mangager-btn ccenter">
   <div class="mangager ccenter" (click)="openProjectManager()">{{'LIB_MANAGER.TITLE'| translate}}</div>
-  @if(devmode){
+  @if(developerMode){
   <!-- <div class="edit btn link ccenter" (click)="edit()">
     <i class="fa-light fa-pen"></i>
   </div> -->

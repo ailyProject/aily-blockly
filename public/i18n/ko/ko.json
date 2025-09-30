@@ -94,6 +94,7 @@
             "DEV": "개발"
         },
         "FORM": {
+            "DEVMODE": "개발 프레임워크",
             "BOARD": "보드",
             "PROJECT_NAME": "프로젝트 이름",
             "SAVE_PATH": "저장 경로",
