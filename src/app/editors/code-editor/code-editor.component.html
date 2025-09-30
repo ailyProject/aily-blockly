@@ -27,7 +27,7 @@
                     </nz-tab>
                     }
                 </nz-tabset>
-                <app-monaco-editor [code]="code" (codeChange)="onCodeChange($event)" [filePath]="selectedFile"
+                <app-monaco-editor [code]="code" (codeChange)="onCodeChange($event)" [filePath]="selectedFile?.path || ''"
                     (openFileRequest)="onOpenFileRequest($event)"></app-monaco-editor>
                 } @else {
                 <div class="empty-editor" style="padding: 15px;">

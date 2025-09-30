@@ -94,7 +94,7 @@ export class ExtensionLoaderService {
             (registrationResult as any).registerFileUrl(file.path, file.url, file.mimeType)
             // console.log(`Registered file: ${file.path} -> ${file.url}`)
           } catch (error) {
-            console.warn(`Failed to register file ${file.path}:`, error)
+            // console.warn(`Failed to register file ${file.path}:`, error)
           }
         }
       }

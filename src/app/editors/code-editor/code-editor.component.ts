@@ -19,6 +19,13 @@ import { Subscription } from 'rxjs';
 import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
 
+export interface SelectedFile {
+  path: string;      // 文件路径
+  title: string;     // 显示的文件名
+  key?: string;      // 唯一标识
+  isLeaf?: boolean;  // 是否为叶节点
+}
+
 export interface OpenedFile {
   path: string;      // 文件路径
   title: string;     // 显示的文件名
@@ -54,8 +61,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // 当前编辑器内容
   code: string = '';
-  // 当前选中的文件路径
-  selectedFile: string = '';
+  // 当前选中的文件对象
+  selectedFile: SelectedFile | null = null;
   // 当前打开的文件
   openedFiles: OpenedFile[] = [];
   // 当前选中的标签页索引
@@ -202,7 +209,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // 从文件树选择文件时触发
-  async selectedFileChange(file: any) {
+  async selectedFileChange(file: SelectedFile) {
     // 先保存当前标签页的状态
     this.saveCurrentTabState();
 
@@ -228,6 +235,9 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.selectedIndex = this.openedFiles.length - 1;
     }
 
+    // 设置当前选中的文件
+    this.selectedFile = file;
+
     // 延迟更新代码，确保界面已更新
     setTimeout(() => {
       this.updateCurrentCode();
@@ -247,18 +257,31 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.selectedIndex >= 0 && this.selectedIndex < this.openedFiles.length) {
       const currentFile = this.openedFiles[this.selectedIndex];
       // console.log('更新编辑器内容:', currentFile.title, '存储的状态:', currentFile.editorState);
-      this.code = currentFile.content;
-      this.selectedFile = currentFile.path;
+      
+      // 先更新文件路径，再更新内容，避免竞态条件
+      const newSelectedFile = { path: currentFile.path, title: currentFile.title };
+      
+      // 如果文件路径发生变化，先更新路径
+      if (!this.selectedFile || this.selectedFile.path !== newSelectedFile.path) {
+        this.selectedFile = newSelectedFile;
+        // 给一点时间让路径变更先处理
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      
+      // 然后更新内容
+      this.code = currentFile.content || '';
 
-      // 延迟恢复编辑器状态，确保内容已经更新
+      // 延迟恢复编辑器状态，确保内容已经更新并且编辑器准备就绪
       setTimeout(async () => {
         if (currentFile.editorState) {
+          // 等待一段时间确保内容更新完成
+          await new Promise(resolve => setTimeout(resolve, 50));
           await this.restoreEditorState(currentFile.editorState);
         }
-      }, 0);
+      }, 50);
     } else {
+      this.selectedFile = null;
       this.code = '';
-      this.selectedFile = '';
     }
   }
 
@@ -475,11 +498,22 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const monacoComponent = this.getMonacoEditorComponent();
       const editor = monacoComponent?.editorInstance;
 
-      if (editor && position) {
-        const targetPosition = {
-          lineNumber: position.lineNumber || (position.line + 1), // 兼容不同的位置格式
-          column: position.column || (position.character + 1)
-        };
+      if (editor && editor.getModel() && position) {
+        const model = editor.getModel();
+        const lineCount = model.getLineCount();
+        
+        // 验证并修正位置
+        let lineNumber = position.lineNumber || (position.line + 1);
+        let column = position.column || (position.character + 1);
+        
+        // 确保行号在有效范围内
+        lineNumber = Math.max(1, Math.min(lineNumber, lineCount));
+        
+        // 确保列号在有效范围内
+        const maxColumn = model.getLineMaxColumn(lineNumber);
+        column = Math.max(1, Math.min(column, maxColumn));
+
+        const targetPosition = { lineNumber, column };
 
         // 跳转到指定位置
         editor.setPosition(targetPosition);

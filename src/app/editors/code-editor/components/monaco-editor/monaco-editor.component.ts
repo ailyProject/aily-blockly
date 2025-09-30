@@ -20,6 +20,12 @@ import { ExtensionLoaderService } from '../../services/extension-loader.service'
 
 (self as any).MonacoEnvironment = {
   getWorker: (workerId: string, label: string) => {
+    if (label === 'TextMateWorker') {
+      return new Worker(
+        new URL('../../../../../../node_modules/@codingame/monaco-vscode-textmate-service-override/worker', import.meta.url),
+        { type: 'module' }
+      );
+    }
     return new Worker(new URL('../../../../../../node_modules/monaco-editor/esm/vs/editor/editor.worker', import.meta.url));
   }
 };
@@ -59,7 +65,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   @Input() code = '';
 
   /** 当前文件路径 */
-  @Input() filePath = '';
+  @Input() filePath: string = '';
 
   /** 代码变化事件 */
   @Output() codeChange = new EventEmitter<string>();
@@ -91,33 +97,294 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   async ngAfterViewInit(): Promise<void> {
+    // 设置全局错误处理
+    this.setupGlobalErrorHandling();
     this.init();
   }
 
-  ngOnChanges(changes: SimpleChanges): void {
-    if (changes['code'] && this.editorInstance && !changes['code'].firstChange) {
-      const currentValue = this.editorInstance.getValue();
-      if (currentValue !== this.code) {
-        this.editorInstance.setValue(this.code);
+  /**
+   * 设置全局错误处理，特别是针对 tokenization 错误
+   */
+  private setupGlobalErrorHandling(): void {
+    // 捕获未处理的Promise rejection
+    const originalHandler = window.addEventListener;
+    window.addEventListener('unhandledrejection', (event) => {
+      if (event.reason && typeof event.reason === 'object') {
+        const error = event.reason;
+        if (error.message && error.message.includes('Illegal value for lineNumber')) {
+          console.warn('Caught TextMate tokenization error, attempting to recover:', error);
+          event.preventDefault(); // 阻止错误进一步传播
+          
+          // 尝试恢复
+          setTimeout(() => {
+            this.handleTokenizationError();
+          }, 100);
+        }
       }
-    }
+    });
 
+    // 捕获全局错误
+    const originalErrorHandler = window.onerror;
+    window.onerror = (message, source, lineno, colno, error) => {
+      if (typeof message === 'string' && message.includes('Illegal value for lineNumber')) {
+        console.warn('Caught global tokenization error, attempting to recover:', message);
+        this.handleTokenizationError();
+        return true; // 阻止默认错误处理
+      }
+      
+      // 调用原始错误处理器
+      if (originalErrorHandler) {
+        return originalErrorHandler(message, source, lineno, colno, error);
+      }
+      return false;
+    };
+  }
+
+  /**
+   * 处理 tokenization 错误
+   */
+  private handleTokenizationError(): void {
+    if (!this.editorInstance) return;
+
+    try {
+      console.log('Attempting to recover from tokenization error...');
+      
+      // 保存当前内容
+      const currentContent = this.editorInstance.getValue();
+      
+      // 重新创建模型
+      this.recreateModel();
+      
+      // 如果重建后内容不一致，重新设置
+      setTimeout(() => {
+        if (this.editorInstance && this.editorInstance.getValue() !== currentContent) {
+          try {
+            this.editorInstance.setValue(currentContent);
+          } catch (error) {
+            console.warn('Failed to restore content after tokenization error recovery:', error);
+          }
+        }
+      }, 200);
+      
+    } catch (error) {
+      console.error('Failed to handle tokenization error:', error);
+    }
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    // 处理选项变化
     if (changes['options'] && this.editorInstance && !changes['options'].firstChange) {
       this.editorInstance.updateOptions(this.options);
     }
 
-    // 当文件路径改变时，加载对应的语言扩展并更新编辑器语言
-    if (changes['filePath'] && !changes['filePath'].firstChange && this.filePath && this.editorInstance) {
-      const newLanguage = this.getLanguageFromFilePath(this.filePath);
+    // 处理文件路径和内容变化，确保正确的顺序
+    const hasFilePathChange = changes['filePath'] && !changes['filePath'].firstChange && this.filePath && typeof this.filePath === 'string';
+    const hasCodeChange = changes['code'] && !changes['code'].firstChange;
 
-      // 异步加载扩展并更新语言
-      this.loadLanguageExtension(newLanguage).then(() => {
-        const model = this.editorInstance?.getModel();
-        if (model) {
-          monaco.editor.setModelLanguage(model, newLanguage);
-          console.log(`Editor language changed to: ${newLanguage}`);
+    if (hasFilePathChange || hasCodeChange) {
+      this.updateEditorContentSafely(hasFilePathChange, hasCodeChange);
+    }
+  }
+
+  /**
+   * 安全地更新编辑器内容，处理语言和内容的同步
+   */
+  private async updateEditorContentSafely(hasFilePathChange: boolean, hasCodeChange: boolean): Promise<void> {
+    if (!this.editorInstance) return;
+
+    try {
+      // 如果文件路径改变，先处理语言切换
+      if (hasFilePathChange) {
+        console.log('filePath changed:', this.filePath);
+        const newLanguage = this.getLanguageFromFilePath(this.filePath);
+        
+        // 先加载语言扩展
+        await this.loadLanguageExtension(newLanguage);
+        
+        // 创建新的模型而不是更新现有模型，避免tokenizer问题
+        const newContent = this.code || '';
+        
+        // 验证内容格式
+        const validatedContent = this.validateContent(newContent);
+        const newModel = monaco.editor.createModel(validatedContent, newLanguage);
+        
+        // 保存当前的视图状态
+        const oldViewState = this.editorInstance.saveViewState();
+        
+        // 替换模型
+        const oldModel = this.editorInstance.getModel();
+        this.editorInstance.setModel(newModel);
+        
+        // 清理旧模型
+        if (oldModel && oldModel !== newModel) {
+          oldModel.dispose();
         }
-      });
+        
+        // 尝试恢复视图状态（如果有效的话）
+        if (oldViewState) {
+          setTimeout(() => {
+            this.restoreViewStateSafely(oldViewState);
+          }, 50);
+        }
+        
+        console.log(`Editor language changed to: ${newLanguage} with new model`);
+      }
+      // 如果只是内容改变，直接更新内容
+      else if (hasCodeChange) {
+        const currentValue = this.editorInstance.getValue();
+        const newContent = this.code || '';
+        
+        if (currentValue !== newContent) {
+          // 使用更安全的方式更新内容
+          await this.setEditorValueSafely(newContent);
+        }
+      }
+    } catch (error) {
+      console.error('Error in updateEditorContentSafely:', error);
+      // 如果所有方法都失败，尝试重建整个编辑器状态
+      this.recreateModel();
+    }
+  }
+
+  /**
+   * 安全地设置编辑器值
+   */
+  private async setEditorValueSafely(content: string): Promise<void> {
+    if (!this.editorInstance) return;
+
+    try {
+      // 先暂停语法高亮
+      const model = this.editorInstance.getModel();
+      if (model) {
+        // 设置内容
+        const validatedContent = this.validateContent(content);
+        this.editorInstance.setValue(validatedContent);
+        
+        // 等待一帧确保内容设置完成
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        
+        // 验证设置是否成功
+        const actualValue = this.editorInstance.getValue();
+        if (actualValue !== content) {
+          console.warn('Content setting verification failed, retrying...');
+          this.editorInstance.setValue(content);
+        }
+        
+        // 确保光标位置安全
+        this.ensureSafeCursorPosition();
+      }
+    } catch (error) {
+      console.error('Error in setEditorValueSafely:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 验证和清理内容，确保没有可能导致tokenization问题的字符
+   */
+  private validateContent(content: string): string {
+    if (!content) return '';
+
+    try {
+      // 移除可能导致问题的字符
+      let cleanContent = content
+        .replace(/\r\n/g, '\n') // 统一换行符
+        .replace(/\r/g, '\n')   // 处理单独的\r
+        .replace(/\0/g, '');    // 移除null字符
+
+      // 确保内容以换行符结束（如果非空）
+      if (cleanContent && !cleanContent.endsWith('\n')) {
+        cleanContent += '\n';
+      }
+
+      // 验证内容不会导致极大的行数（可能导致性能问题）
+      const lines = cleanContent.split('\n');
+      if (lines.length > 10000) {
+        console.warn('Content has too many lines, truncating...');
+        cleanContent = lines.slice(0, 10000).join('\n');
+      }
+
+      return cleanContent;
+    } catch (error) {
+      console.warn('Content validation failed, using empty content:', error);
+      return '';
+    }
+  }
+
+  /**
+   * 验证模型状态，确保没有无效的行号引用
+   */
+  private validateModelState(): void {
+    if (!this.editorInstance) return;
+
+    try {
+      const model = this.editorInstance.getModel();
+      if (!model) return;
+
+      const lineCount = model.getLineCount();
+      
+      // 检查模型的基本完整性
+      if (lineCount <= 0) {
+        console.warn('Model has invalid line count:', lineCount);
+        this.recreateModel();
+        return;
+      }
+
+      // 验证每一行是否可以正常访问
+      for (let i = 1; i <= Math.min(lineCount, 10); i++) {
+        try {
+          model.getLineContent(i);
+          model.getLineLength(i);
+        } catch (error) {
+          console.error(`Error accessing line ${i}:`, error);
+          this.recreateModel();
+          return;
+        }
+      }
+
+      // 验证光标位置
+      this.ensureSafeCursorPosition();
+      
+    } catch (error) {
+      console.warn('Model validation failed:', error);
+      this.recreateModel();
+    }
+  }
+
+  /**
+   * 确保光标位置在安全范围内
+   */
+  private ensureSafeCursorPosition(): void {
+    if (!this.editorInstance) return;
+
+    try {
+      const model = this.editorInstance.getModel();
+      if (model && model.getLineCount() > 0) {
+        const position = this.editorInstance.getPosition();
+        if (position) {
+          const lineCount = model.getLineCount();
+          if (position.lineNumber > lineCount || position.lineNumber < 1) {
+            this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
+          } else {
+            // 检查列位置
+            const maxColumn = model.getLineMaxColumn(position.lineNumber);
+            if (position.column > maxColumn || position.column < 1) {
+              this.editorInstance.setPosition({ 
+                lineNumber: position.lineNumber, 
+                column: Math.max(1, Math.min(position.column, maxColumn))
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Error ensuring safe cursor position:', error);
+      // 回退到安全位置
+      try {
+        this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
+      } catch (fallbackError) {
+        console.error('Even fallback cursor positioning failed:', fallbackError);
+      }
     }
   }
 
@@ -134,10 +401,85 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   /**
+   * 重新创建编辑器模型，用于解决语法高亮问题
+   */
+  private recreateModel(): void {
+    if (!this.editorInstance) return;
+
+    try {
+      // 保存当前状态
+      let currentValue = '';
+      let oldViewState: ViewState | null = null;
+      
+      try {
+        currentValue = this.editorInstance.getValue() || this.code || '';
+        oldViewState = this.editorInstance.saveViewState();
+      } catch (error) {
+        console.warn('Failed to save current state before recreating model:', error);
+        currentValue = this.code || '';
+      }
+
+      const language = this.getLanguageFromFilePath(this.filePath);
+      
+      // 清理旧模型
+      const oldModel = this.editorInstance.getModel();
+      
+      // 创建新的模型
+      const validatedContent = this.validateContent(currentValue);
+      const newModel = monaco.editor.createModel(validatedContent, language);
+      
+      // 设置新模型
+      this.editorInstance.setModel(newModel);
+      
+      // 清理旧模型
+      if (oldModel && oldModel !== newModel) {
+        try {
+          oldModel.dispose();
+        } catch (error) {
+          console.warn('Failed to dispose old model:', error);
+        }
+      }
+      
+      // 恢复光标到安全位置
+      setTimeout(() => {
+        try {
+          if (oldViewState && this.isValidViewState(oldViewState)) {
+            this.restoreViewStateSafely(oldViewState);
+          } else {
+            this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
+          }
+        } catch (error) {
+          console.warn('Failed to restore position after model recreation:', error);
+          try {
+            this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
+          } catch (fallbackError) {
+            console.error('Even fallback positioning failed:', fallbackError);
+          }
+        }
+      }, 100);
+      
+      console.log('Monaco editor model recreated successfully');
+    } catch (error) {
+      console.error('Failed to recreate model:', error);
+      
+      // 最后的回退方案：重置编辑器到基本状态
+      try {
+        const validatedContent = this.validateContent(this.code || '');
+        const basicModel = monaco.editor.createModel(validatedContent, 'plaintext');
+        this.editorInstance?.setModel(basicModel);
+        this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
+        console.log('Fallback to basic model completed');
+      } catch (fallbackError) {
+        console.error('Even basic model creation failed:', fallbackError);
+      }
+    }
+  }
+
+  /**
    * 根据文件路径推断语言类型
    */
-  private getLanguageFromFilePath(filePath: string): string {
-    if (!filePath) {
+  private getLanguageFromFilePath(filePath: any): string {
+    if (!filePath || typeof filePath !== 'string') {
       return this.options.language || 'cpp';
     }
 
@@ -216,7 +558,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       })
 
       // 根据当前文件类型按需加载语言扩展
-      const language = this.filePath
+      const language = (this.filePath && typeof this.filePath === 'string')
         ? this.getLanguageFromFilePath(this.filePath)
         : (this.options.language || 'cpp');
 
@@ -230,7 +572,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       // 创建编辑器实例
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
-        value: this.code,
+        value: this.code || '',
         language: language,
         automaticLayout: true,
         // 优化minimap配置以减少重绘
@@ -256,6 +598,32 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           const value = this.editorInstance?.getValue() || '';
           this.onCodeChange(value);
         });
+
+        // 添加模型变化监听
+        this.editorInstance.onDidChangeModel((e) => {
+          console.log('Editor model changed:', e);
+          // 当模型变化时，确保光标位置安全
+          setTimeout(() => {
+            this.ensureSafeCursorPosition();
+          }, 50);
+        });
+
+        // 添加错误监听（如果可用）
+        try {
+          // 监听潜在的tokenization错误
+          const model = this.editorInstance.getModel();
+          if (model) {
+            // 监听模型内容变化，以防出现tokenization问题
+            model.onDidChangeContent(() => {
+              // 延迟验证，确保tokenization完成
+              setTimeout(() => {
+                this.validateModelState();
+              }, 100);
+            });
+          }
+        } catch (error) {
+          console.warn('Failed to setup model listeners:', error);
+        }
       }
 
       console.log('Monaco Editor created successfully');
@@ -287,11 +655,50 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     try {
       const viewState = this.editorInstance.saveViewState();
-      // console.log('获取视图状态成功:', viewState);
-      return viewState;
+      
+      // 验证获取到的viewState是否包含有效数据
+      if (viewState && this.isValidViewState(viewState)) {
+        // console.log('获取视图状态成功:', viewState);
+        return viewState;
+      } else {
+        console.warn('获取到的视图状态无效');
+        return null;
+      }
     } catch (error) {
       console.warn('获取视图状态失败:', error);
       return null;
+    }
+  }
+
+  /**
+   * 检查视图状态是否有效
+   */
+  private isValidViewState(viewState: ViewState): boolean {
+    if (!viewState) return false;
+    
+    try {
+      const model = this.editorInstance?.getModel();
+      if (!model) return false;
+      
+      const lineCount = model.getLineCount();
+      
+      // 检查cursor state
+      if (viewState.cursorState && Array.isArray(viewState.cursorState)) {
+        for (const cursor of viewState.cursorState) {
+          if (cursor && cursor.position) {
+            const { lineNumber, column } = cursor.position;
+            if (lineNumber < 1 || lineNumber > lineCount || column < 1) {
+              console.warn('发现无效的光标位置:', cursor.position);
+              return false;
+            }
+          }
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      console.warn('验证视图状态时出错:', error);
+      return false;
     }
   }
 
@@ -310,10 +717,89 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
 
     try {
-      this.editorInstance.restoreViewState(viewState);
-      // console.log('恢复视图状态成功');
+      // 验证并修正视图状态
+      const validatedViewState = this.validateViewState(viewState);
+      
+      if (validatedViewState) {
+        this.editorInstance.restoreViewState(validatedViewState);
+        // console.log('恢复视图状态成功');
+      } else {
+        console.warn('视图状态验证失败，跳过恢复');
+        // 回退到文件开头
+        this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
+      }
     } catch (error) {
       console.warn('恢复视图状态失败:', error);
+      // 尝试回退到安全位置
+      try {
+        this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
+      } catch (fallbackError) {
+        console.error('回退到文件开头也失败:', fallbackError);
+      }
+    }
+  }
+
+  /**
+   * 验证并修正视图状态中的位置信息
+   */
+  private validateViewState(viewState: ViewState): ViewState | null {
+    if (!viewState || !this.editorInstance) return null;
+
+    try {
+      const model = this.editorInstance.getModel();
+      if (!model) return null;
+
+      const lineCount = model.getLineCount();
+      
+      // 获取每行的最大列数的辅助函数
+      const getMaxColumn = (lineNumber: number): number => {
+        try {
+          return model.getLineMaxColumn(lineNumber);
+        } catch {
+          return 1;
+        }
+      };
+
+      // 验证并修正行号和列号
+      const validatePosition = (lineNumber: number, column: number): { lineNumber: number, column: number } => {
+        const validLineNumber = Math.max(1, Math.min(lineNumber || 1, lineCount));
+        const maxColumn = getMaxColumn(validLineNumber);
+        const validColumn = Math.max(1, Math.min(column || 1, maxColumn));
+        return { lineNumber: validLineNumber, column: validColumn };
+      };
+
+      // 创建一个修正后的viewState副本
+      const correctedViewState: any = { ...viewState };
+
+      // 检查和修正cursor state
+      if (correctedViewState.cursorState && Array.isArray(correctedViewState.cursorState)) {
+        correctedViewState.cursorState = correctedViewState.cursorState.map((cursor: any) => {
+          if (cursor && cursor.position) {
+            const validatedPos = validatePosition(cursor.position.lineNumber, cursor.position.column);
+            return {
+              ...cursor,
+              position: validatedPos
+            };
+          }
+          return cursor;
+        });
+      }
+
+      // 检查和修正view state中的滚动位置等
+      if (correctedViewState.viewState) {
+        // 修正滚动位置
+        if (correctedViewState.viewState.scrollTop) {
+          correctedViewState.viewState.scrollTop = Math.max(0, correctedViewState.viewState.scrollTop);
+        }
+        if (correctedViewState.viewState.scrollLeft) {
+          correctedViewState.viewState.scrollLeft = Math.max(0, correctedViewState.viewState.scrollLeft);
+        }
+      }
+
+      return correctedViewState as ViewState;
+    } catch (error) {
+      console.warn('验证视图状态失败:', error);
+      return null;
     }
   }
 
@@ -330,12 +816,29 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       const tryRestore = () => {
         if (this.editorInstance && this.editorInstance.getModel()) {
           try {
-            this.editorInstance.restoreViewState(viewState);
-            // console.log('视图状态安全恢复成功');
-            resolve(true);
+            // 验证并修正视图状态
+            const validatedViewState = this.validateViewState(viewState);
+            
+            if (validatedViewState) {
+              this.editorInstance.restoreViewState(validatedViewState);
+              console.log('视图状态安全恢复成功');
+              resolve(true);
+            } else {
+              console.warn('视图状态验证失败，跳过恢复');
+              resolve(false);
+            }
             return;
           } catch (error) {
             console.warn('恢复视图状态失败:', error);
+            // 尝试恢复到文件开头
+            try {
+              this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
+              resolve(true);
+            } catch (fallbackError) {
+              console.error('回退到文件开头也失败:', fallbackError);
+              resolve(false);
+            }
+            return;
           }
         }
 
