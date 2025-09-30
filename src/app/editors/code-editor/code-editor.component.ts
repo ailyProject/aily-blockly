@@ -323,8 +323,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // 标签页切换事件
   onTabChange(index: number): void {
-    console.log('切换标签页:', index, '当前选中:', this.selectedIndex);
-
+    // console.log('切换标签页:', index, '当前选中:', this.selectedIndex);
     // 如果切换到的是当前标签页，不需要处理
     if (index === this.selectedIndex) {
       return;

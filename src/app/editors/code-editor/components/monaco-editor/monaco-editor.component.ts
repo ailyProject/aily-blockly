@@ -13,10 +13,10 @@ import { initialize } from '@codingame/monaco-vscode-api'
 import getConfigurationServiceOverride, {
   updateUserConfiguration
 } from '@codingame/monaco-vscode-configuration-service-override'
+import getTextmateServiceOverride from '@codingame/monaco-vscode-textmate-service-override'
+import getLanguagesServiceOverride from '@codingame/monaco-vscode-languages-service-override'
 import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-override'
 import getExtensionsServiceOverride, { ExtensionHostKind } from '@codingame/monaco-vscode-extensions-service-override'
-import getFilesServiceOverride from '@codingame/monaco-vscode-files-service-override'
-import getTextmateServiceOverride from '@codingame/monaco-vscode-textmate-service-override'
 import { ExtensionLoaderService } from '../../services/extension-loader.service';
 
 (self as any).MonacoEnvironment = {
@@ -91,8 +91,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    * @param vsixService VSIX扩展服务
    */
   constructor(
-    private message: NzMessageService,
-    private vsixService: VsixService,
     private extensionLoader: ExtensionLoaderService
   ) { }
 
@@ -144,7 +142,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           ...getConfigurationServiceOverride(),
           ...getThemeServiceOverride(),
           ...getExtensionsServiceOverride(),
-          ...getFilesServiceOverride(),
+          ...getLanguagesServiceOverride(),
           ...getTextmateServiceOverride()
         });
         window['vscode_inited'] = true
@@ -169,15 +167,13 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       // 手动设置默认主题配置
       // await this.configureDefaultTheme();
       updateUserConfiguration(`{
-        "workbench.colorTheme": "Default Dark Modern",
-        "editor.theme": "vs-dark",
-        "workbench.preferredDarkColorTheme": "Default Dark Modern",
-        "workbench.preferredLightColorTheme": "Default Light Modern"
+        "workbench.colorTheme": "Default Dark Modern"
       }`);
 
       // 创建编辑器实例
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
         value: this.code,
+        language: 'cpp', 
         minimap: {
           enabled: false
         }
@@ -197,95 +193,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       console.error('Monaco Editor initialization failed:', error);
     }
   }
-
-  // /**
-  //  * 设置主题资源路径重定向
-  //  */
-  // private setupThemeResourcesRedirect(): void {
-  //   try {
-  //     // 创建专门处理 extension-file://vscode.theme-defaults 的文件系统提供者
-  //     const extensionFileProvider = new DelegateFileSystemProvider({
-  //       delegate: new (class implements IFileSystemProviderWithFileReadWriteCapability {
-  //         capabilities = FileSystemProviderCapabilities.FileReadWrite | FileSystemProviderCapabilities.PathCaseSensitive;
-  //         onDidChangeCapabilities = new (vscode as any).EventEmitter().event;
-  //         onDidChangeFile = new (vscode as any).EventEmitter().event;
-
-  //         watch() { return { dispose: () => { } }; }
-
-  //         async stat(resource: Uri): Promise<IStat> {
-  //           return {
-  //             type: 1, // FileType.File
-  //             ctime: Date.now(),
-  //             mtime: Date.now(),
-  //             size: 1024 // 预估大小
-  //           };
-  //         }
-
-  //         async readFile(resource: Uri): Promise<Uint8Array> {
-  //           console.log('Reading extension file:', resource.toString());
-
-  //           // 处理 extension-file://vscode.theme-defaults 路径
-  //           if (resource.scheme === 'extension-file' && resource.authority === 'vscode.theme-defaults') {
-  //             // 处理形如 /extension/themes/dark_vs.json 的路径
-  //             let fileName: string | undefined;
-
-  //             if (resource.path.includes('/themes/')) {
-  //               // 提取主题文件名：/extension/themes/dark_vs.json -> dark_vs.json
-  //               fileName = resource.path.split('/themes/').pop();
-  //             } else {
-  //               // 如果没有 themes 路径，直接取文件名
-  //               fileName = resource.path.split('/').pop();
-  //             }
-
-  //             if (fileName) {
-  //               const redirectedPath = `/vscode/theme-resources/${fileName}`;
-
-  //               try {
-  //                 console.log(`Redirecting ${resource.toString()} to: ${redirectedPath}`);
-  //                 const response = await fetch(redirectedPath);
-  //                 if (response.ok) {
-  //                   const arrayBuffer = await response.arrayBuffer();
-  //                   console.log('Successfully loaded theme file:', fileName);
-  //                   return new Uint8Array(arrayBuffer);
-  //                 } else {
-  //                   console.warn('Failed to fetch theme file:', redirectedPath, response.status);
-  //                 }
-  //               } catch (error) {
-  //                 console.warn('Error fetching theme file:', error);
-  //               }
-  //             }
-  //           }
-
-  //           // 如果重定向失败，返回空的JSON主题内容作为回退
-  //           const fallbackTheme = {
-  //             "type": "dark",
-  //             "colors": {},
-  //             "tokenColors": []
-  //           };
-  //           return new TextEncoder().encode(JSON.stringify(fallbackTheme));
-  //         }
-
-  //         async writeFile() { throw new Error('Write not supported'); }
-  //         async mkdir() { throw new Error('Mkdir not supported'); }
-  //         async readdir() { return []; }
-  //         async delete() { throw new Error('Delete not supported'); }
-  //         async rename() { throw new Error('Rename not supported'); }
-  //       })(),
-  //       toDelegate: (uri: Uri) => {
-  //         // 对于 extension-file://vscode.theme-defaults 路径，保持原样传递给委托处理器
-  //         return uri;
-  //       },
-  //       fromDeletate: (uri: Uri) => uri
-  //     });
-
-  //     // 注册 extension-file 文件系统提供者，优先级高于默认提供者
-  //     registerCustomProvider('extension-file', extensionFileProvider);
-
-  //     console.log('Extension file system provider registered for theme resources');
-  //   } catch (error) {
-  //     console.warn('Failed to setup theme resources redirect:', error);
-  //   }
-  // }
 
   /**
    * 设置自定义右键菜单
@@ -353,7 +260,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         if (this.editorInstance && this.editorInstance.getModel()) {
           try {
             this.editorInstance.restoreViewState(viewState);
-            console.log('视图状态安全恢复成功');
+            // console.log('视图状态安全恢复成功');
             resolve(true);
             return;
           } catch (error) {

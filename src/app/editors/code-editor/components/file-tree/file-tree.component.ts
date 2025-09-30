@@ -504,7 +504,7 @@ export class FileTreeComponent implements OnInit {
   }
 
   onMenuItemClick(menuItem: IMenuItem) {
-    console.log('Menu item clicked:', menuItem, 'Node:', this.currentSelectedNode);
+    // console.log('Menu item clicked:', menuItem, 'Node:', this.currentSelectedNode);
     // 隐藏菜单
     this.showRightClickMenu = false;
     // 处理菜单项点击事件
