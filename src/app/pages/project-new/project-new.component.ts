@@ -15,8 +15,7 @@ import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Router } from '@angular/router';
 import { BrandListComponent } from './components/brand-list/brand-list.component';
 import { BRAND_LIST, CORE_LIST } from '../../configs/board.config';
-
-const { pt } = (window as any)['electronAPI'].platform;
+import { PlatformService } from '../../services/platform.service';
 
 @Component({
   selector: 'app-project-new',
@@ -87,10 +86,12 @@ export class ProjectNewComponent {
     private projectService: ProjectService,
     private configService: ConfigService,
     private npmService: NpmService,
+    private platformService: PlatformService,
   ) { }
 
   async ngOnInit() {
     if (this.electronService.isElectron) {
+      const pt = this.platformService.getPlatformSeparator();
       this.newProjectData.path = window['path'].getUserDocuments() + `${pt}aily-project${pt}`;
     }
 
@@ -156,6 +157,7 @@ export class ProjectNewComponent {
       path: this.newProjectData.path,
     });
     // console.log('选中的文件夹路径：', folderPath);
+    const pt = this.platformService.getPlatformSeparator();
     if (folderPath.slice(-1) !== pt) {
       this.newProjectData.path = folderPath + pt;
     }
@@ -165,6 +167,7 @@ export class ProjectNewComponent {
   // 检查项目名称是否存在
   showIsExist = false;
   async checkPathIsExist(): Promise<boolean> {
+    const pt = this.platformService.getPlatformSeparator();
     let path = this.newProjectData.path + pt + this.newProjectData.name;
     let isExist = window['path'].isExists(path);
     if (isExist) {

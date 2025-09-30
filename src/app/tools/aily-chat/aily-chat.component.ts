@@ -46,8 +46,6 @@ import { todoWriteTool } from './tools';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { ConfigService } from '../../services/config.service';
 
-const { pt } = (window as any)['electronAPI'].platform;
-
 export interface Tool {
   name: string;
   description: string;

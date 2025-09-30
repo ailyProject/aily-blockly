@@ -12,8 +12,7 @@ import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
 import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { ActionService } from './action.service';
-
-const { pt } = (window as any)['electronAPI'].platform;
+import { PlatformService } from './platform.service';
 
 interface ProjectPackageData {
   name: string;
@@ -45,7 +44,7 @@ export class ProjectService {
   currentProjectPath: string;
   currentBoardConfig: any;
   // STM32选择开发板时定义引脚使用
-  currentStm32Config: { board: any , variant: any , variant_h: any } = { board: null, variant: null, variant_h: null };
+  currentStm32Config: { board: any, variant: any, variant_h: any } = { board: null, variant: null, variant_h: null };
 
   constructor(
     private uiService: UiService,
@@ -55,6 +54,7 @@ export class ProjectService {
     private cmdService: CmdService,
     private configService: ConfigService,
     private actionService: ActionService,
+    private platformService: PlatformService,
   ) {
   }
 
@@ -458,7 +458,7 @@ export class ProjectService {
       const lines = boardsContent.split('\n');
 
       // 查找指定开发板的配置
-      const boardConfig = this.parseBoardsConfig(lines, boardName);      
+      const boardConfig = this.parseBoardsConfig(lines, boardName);
 
       // console.log('====boardConfig:', boardConfig);
 
@@ -816,7 +816,7 @@ export class ProjectService {
           menuItem.children = boardConfig.board;
           // 根据当前项目配置设置check状态
           // console.log('menuItem.children:', menuItem.children);
-          if (currentProjectConfig.pnum) {     
+          if (currentProjectConfig.pnum) {
             menuItem.children.forEach((child: any) => {
               child.check = false; // 先清空所有选中状态
               if (this.compareConfigs(child.data, currentProjectConfig.pnum)) {
@@ -894,7 +894,7 @@ export class ProjectService {
       const currentBoardJson = await this.getBoardJson();
 
       let isChanged = false;
-      
+
       if (typeof setPinConfig === 'object' && setPinConfig !== null) {
         Object.keys(setPinConfig).forEach(key => {
           if (Array.isArray(setPinConfig[key])) {
@@ -1002,7 +1002,7 @@ export class ProjectService {
 
     for (const line of lines) {
       // 去掉行尾注释
-      const pureLine = line.replace(/\/\/.*$/,'').replace(/\/\*.*\*\/\s*$/,'');
+      const pureLine = line.replace(/\/\/.*$/, '').replace(/\/\*.*\*\/\s*$/, '');
 
       // analog
       let m = analogRe1.exec(pureLine) || analogRe2.exec(pureLine);
@@ -1074,7 +1074,7 @@ export class ProjectService {
     if (i2cMap['SCL']) i2cPins.Wire.push(['SCL', i2cMap['SCL']]);
 
     // SPI 输出固定顺序 MOSI, MISO, SCK, SS
-    const spiOrder = ['MOSI','MISO','SCK','SS'];
+    const spiOrder = ['MOSI', 'MISO', 'SCK', 'SS'];
     for (const k of spiOrder) {
       if (spiMap[k]) spiPins.SPI.push([k, spiMap[k]]);
     }
@@ -1130,10 +1130,10 @@ export class ProjectService {
       // 0. 保存当前项目
       this.save();
       this.message.loading('正在切换开发板...', { nzDuration: 5000 });
-      
+
       // 记录开发板使用次数
       this.configService.recordBoardUsage(boardInfo.name);
-      
+
       // 1. 先获取项目package.json中的board依赖，如@aily-project/board-xxxx，然后npm uninstall移除这个board依赖
       const currentBoardModule = await this.getBoardModule();
       if (currentBoardModule) {
@@ -1165,6 +1165,7 @@ export class ProjectService {
   generateUniqueProjectName(prjPath, prefix = 'project_'): string {
     const baseDateStr = generateDateString();
     prefix = prefix + baseDateStr;
+    const pt = this.platformService.getPlatformSeparator();
 
     // 尝试使用字母后缀 a-z
     for (let charCode = 97; charCode <= 122; charCode++) {
