@@ -625,7 +625,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
 
-  siderWidth = 250;
+  siderWidth = 210;
   onSideResize({ width }: NzResizeEvent): void {
     this.siderWidth = width!;
   }

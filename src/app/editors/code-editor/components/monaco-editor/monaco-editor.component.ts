@@ -7,7 +7,6 @@ import { MonacoVSCodeCSSLoader } from '../../../../utils/monaco-vscode-css-loade
 
 import * as monaco from 'monaco-editor';
 import * as vscode from 'vscode'
-import { Uri } from 'vscode'
 import 'vscode/localExtensionHost'
 import { initialize } from '@codingame/monaco-vscode-api'
 import getConfigurationServiceOverride, {
@@ -85,11 +84,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /** 当前编辑器实例 */
   public editorInstance: monaco.editor.IStandaloneCodeEditor | null = null;
 
-  /**
-   * 组件构造函数
-   * @param message 消息服务
-   * @param vsixService VSIX扩展服务
-   */
+  /** 已加载的语言扩展集合 */
+  private loadedLanguageExtensions = new Set<string>();
+
   constructor(
     private extensionLoader: ExtensionLoaderService
   ) { }
@@ -113,6 +110,20 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     if (changes['options'] && this.editorInstance && !changes['options'].firstChange) {
       this.editorInstance.updateOptions(this.options);
     }
+
+    // 当文件路径改变时，加载对应的语言扩展并更新编辑器语言
+    if (changes['filePath'] && !changes['filePath'].firstChange && this.filePath && this.editorInstance) {
+      const newLanguage = this.getLanguageFromFilePath(this.filePath);
+
+      // 异步加载扩展并更新语言
+      this.loadLanguageExtension(newLanguage).then(() => {
+        const model = this.editorInstance?.getModel();
+        if (model) {
+          monaco.editor.setModelLanguage(model, newLanguage);
+          console.log(`Editor language changed to: ${newLanguage}`);
+        }
+      });
+    }
   }
 
   ngOnDestroy() {
@@ -125,6 +136,61 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
   onCodeChange(newCode: string): void {
     this.codeChange.emit(newCode);
+  }
+
+  /**
+   * 根据文件路径推断语言类型
+   */
+  private getLanguageFromFilePath(filePath: string): string {
+    if (!filePath) {
+      return this.options.language || 'cpp';
+    }
+
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+
+    const languageMap: Record<string, string> = {
+      'cpp': 'cpp',
+      'c': 'cpp',
+      'h': 'cpp',
+      'ino': 'cpp',
+      'json': 'json',
+    };
+
+    return languageMap[ext] || this.options.language || 'cpp';
+  }
+
+  /**
+   * 根据语言类型按需加载对应的扩展
+   */
+  private async loadLanguageExtension(language: string): Promise<void> {
+    // 避免重复加载
+    if (this.loadedLanguageExtensions.has(language)) {
+      console.log(`Language extension for ${language} already loaded`);
+      return;
+    }
+
+    const extensionMap: Record<string, string> = {
+      'cpp': 'vscode/extensions/cpp',
+      'json': 'vscode/extensions/json',
+    };
+
+    const extensionPath = extensionMap[language];
+    if (!extensionPath) {
+      console.warn(`No extension found for language: ${language}`);
+      return;
+    }
+
+    try {
+      await this.extensionLoader.loadExtension(extensionPath, {
+        hostKind: ExtensionHostKind.LocalWebWorker,
+        system: true
+      });
+
+      this.loadedLanguageExtensions.add(language);
+      console.log(`Language extension loaded for: ${language}`);
+    } catch (error) {
+      console.error(`Failed to load extension for ${language}:`, error);
+    }
   }
 
 
@@ -154,15 +220,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         system: true
       })
 
-      await this.extensionLoader.loadExtension('vscode/extensions/cpp', {
-        hostKind: ExtensionHostKind.LocalWebWorker,
-        system: true
-      })
+      // 根据当前文件类型按需加载语言扩展
+      const language = this.filePath
+        ? this.getLanguageFromFilePath(this.filePath)
+        : (this.options.language || 'cpp');
 
-      await this.extensionLoader.loadExtension('vscode/extensions/json', {
-        hostKind: ExtensionHostKind.LocalWebWorker,
-        system: true
-      })
+      await this.loadLanguageExtension(language);
 
       // 手动设置默认主题配置
       // await this.configureDefaultTheme();
@@ -173,10 +236,10 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       // 创建编辑器实例
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
         value: this.code,
-        language: 'cpp', 
-        minimap: {
-          enabled: false
-        }
+        language: language,
+        // minimap: {
+        //   enabled: false
+        // }
       });
 
       // 添加内容变化监听
