@@ -686,8 +686,26 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const action = this.shortcutService.getShortcutAction(shortcutKey, 'editor');
 
     if (action) {
-      event.preventDefault();
-      this.handleShortcutAction(action);
+      // 检查是否在 Monaco 编辑器内部
+      const isInMonaco = target.closest('.monaco-editor') !== null;
+      
+      if (isInMonaco) {
+        // 在 Monaco 编辑器内，只处理特定的快捷键
+        if (action.type === 'save') {
+          // 保存文件，阻止默认行为
+          event.preventDefault();
+          this.handleSaveShortcut();
+        } else if (action.type === 'close') {
+          // 关闭标签页，阻止默认行为
+          event.preventDefault();
+          this.handleCloseShortcut();
+        }
+        // 其他快捷键（如查找、替换）让 Monaco 自己处理，不拦截
+      } else {
+        // 不在 Monaco 编辑器内，处理所有快捷键
+        event.preventDefault();
+        this.handleShortcutAction(action);
+      }
     }
   }
 
