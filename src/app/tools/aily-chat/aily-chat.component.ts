@@ -321,11 +321,7 @@ export class AilyChatComponent implements OnDestroy {
         }
 
         if (isLoggedIn) {
-          // 只在登录状态且未初始化过MCP时才初始化
-          if (!this.mcpInitialized) {
-            this.mcpInitialized = true;
-            await this.mcpService.init();
-          }
+          //
         } else {
           // 用户登出时的处理
           console.log('用户已登出，清理会话和状态');
@@ -532,7 +528,7 @@ ${JSON.stringify(errData)}
     }
   }
 
-  startSession(): Promise<void> {
+  async startSession(): Promise<void> {
     // 如果会话正在启动中，直接返回
     if (this.isSessionStarting) {
       console.log('startSession 被跳过: 会话正在启动中');
@@ -544,6 +540,11 @@ ${JSON.stringify(errData)}
       isSessionStarting: this.isSessionStarting
     });
     this.isSessionStarting = true;
+
+    if (!this.mcpInitialized) {
+      this.mcpInitialized = true;
+      await this.mcpService.init();
+    }
 
     // tools + mcp tools
     this.isCompleted = false;
@@ -636,7 +637,9 @@ ${JSON.stringify(errData)}
     let text = content.trim();
     if (!this.sessionId || !text) return;
 
-
+    if (this.isCompleted) {
+      this.resetChat();
+    }
 
     if (sender === 'user') {
       if (this.isWaiting) {
