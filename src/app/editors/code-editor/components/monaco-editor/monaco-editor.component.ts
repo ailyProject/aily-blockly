@@ -178,20 +178,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       // 创建编辑器实例
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
         value: this.code,
-        language: 'cpp',
-        theme: 'vs-dark', // 使用VSCode主题
-        lineNumbers: 'on',
-        automaticLayout: true,
         minimap: {
           enabled: false
-        },
-        fontSize: 14,
-        fontFamily: 'Consolas, "Courier New", monospace',
-        wordWrap: 'on',
-        scrollBeyondLastLine: false,
-        renderWhitespace: 'selection',
-        tabSize: 2,
-        insertSpaces: true
+        }
       });
 
       // 添加内容变化监听
