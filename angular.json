@@ -65,11 +65,16 @@
               {
                 "glob": "**/*",
                 "input": "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources",
-                "output": "vscode/theme-resources"
+                "output": "vscode/extension/theme"
+              },
+              {
+                "glob": "**/*",
+                "input": "node_modules/@codingame/monaco-vscode-cpp-default-extension/resources",
+                "output": "vscode/extension/cpp"
               },
               {
                 "glob": "**/*.css",
-                "input":"node_modules/@codingame/monaco-vscode-api/vscode/src/vs",
+                "input": "node_modules/@codingame/monaco-vscode-api/vscode/src/vs",
                 "output": "vscode/css"
               }
             ],

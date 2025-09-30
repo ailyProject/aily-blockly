@@ -28,7 +28,7 @@ export class MonacoVSCodeCSSLoader {
       document.head.appendChild(style);
 
       this.loadedCSSFiles.add(cssPath);
-      console.log(`Successfully loaded CSS: ${cssPath}`);
+      // console.log(`Successfully loaded CSS: ${cssPath}`);
     } catch (error) {
       console.warn(`Error loading CSS: ${cssPath}`, error);
     }
@@ -139,10 +139,8 @@ export class MonacoVSCodeCSSLoader {
     ];
 
     console.log('Loading Monaco VSCode CSS files...');
-
     const loadPromises = cssFiles.map(cssFile => this.loadCSS(cssFile));
     await Promise.allSettled(loadPromises);
-
-    console.log(`Monaco VSCode CSS loading completed. Loaded ${this.loadedCSSFiles.size} files.`);
+    // console.log(`Monaco VSCode CSS loading completed. Loaded ${this.loadedCSSFiles.size} files.`);
   }
 }
