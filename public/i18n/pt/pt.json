@@ -98,6 +98,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "Framework de desenvolvimento",
             "BOARD": "Placa",
             "PROJECT_NAME": "Nome do projeto",
             "SAVE_PATH": "Caminho de salvamento",

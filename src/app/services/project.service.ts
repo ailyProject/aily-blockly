@@ -1,7 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { UiService } from './ui.service';
-import { NewProjectData } from '../windows/project-new/project-new.component';
 import { ElectronService } from './electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { pinyin } from "pinyin-pro";
@@ -13,6 +12,7 @@ import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
 import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { ActionService } from './action.service';
 import { PlatformService } from './platform.service';
+import { NewProjectData } from '../pages/project-new/project-new.component';
 
 interface ProjectPackageData {
   name: string;
@@ -103,7 +103,7 @@ export class ProjectService {
   }
 
   // 新建项目
-  async projectNew(newProjectData: NewProjectData, closeWindow: boolean = true) {
+  async projectNew(newProjectData: NewProjectData) {
     // console.log('newProjectData: ', newProjectData);
     const appDataPath = window['path'].getAppDataPath();
     // const projectPath = (newProjectData.path + newProjectData.name).replace(/\s/g, '_');
@@ -128,6 +128,8 @@ export class ProjectService {
     } else {
       packageJson.name = newProjectData.name;
     }
+    // 设置开发框架
+    packageJson.devmode = newProjectData.devmode;
 
     window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
 

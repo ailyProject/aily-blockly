@@ -16,6 +16,7 @@ import { Router } from '@angular/router';
 import { BrandListComponent } from './components/brand-list/brand-list.component';
 import { BRAND_LIST, CORE_LIST } from '../../configs/board.config';
 import { PlatformService } from '../../services/platform.service';
+import { NzRadioModule } from 'ng-zorro-antd/radio';
 
 @Component({
   selector: 'app-project-new',
@@ -29,7 +30,8 @@ import { PlatformService } from '../../services/platform.service';
     NzSelectModule,
     NzTagModule,
     TranslateModule,
-    BrandListComponent
+    BrandListComponent,
+    NzRadioModule
   ],
   templateUrl: './project-new.component.html',
   styleUrl: './project-new.component.scss',
@@ -50,7 +52,8 @@ export class ProjectNewComponent {
       name: '',
       nickname: '',
       version: '',
-    }
+    },
+    devmode: ''
   };
 
   boardVersion = '';
@@ -112,6 +115,7 @@ export class ProjectNewComponent {
     this.newProjectData.board.nickname = this.currentBoard.nickname;
     this.newProjectData.board.name = this.currentBoard.name;
     this.newProjectData.board.version = this.currentBoard.version;
+    this.newProjectData.devmode = this.currentBoard.mode ? this.currentBoard.mode[0] : 'Arduino';
     this.newProjectData.name = this.projectService.generateUniqueProjectName(this.newProjectData.path, 'project_');
   }
 
@@ -137,11 +141,14 @@ export class ProjectNewComponent {
     }
   }
 
+  devmodes = [];
   selectBoard(boardInfo: BoardInfo) {
     this.currentBoard = boardInfo;
     this.newProjectData.board.name = boardInfo.name;
     this.newProjectData.board.nickname = boardInfo.nickname;
     this.newProjectData.board.version = boardInfo.version;
+    this.newProjectData.devmode = boardInfo.mode ? this.currentBoard.mode[0] : 'arduino';
+    this.devmodes = boardInfo.mode
   }
 
   // 可用版本列表
@@ -347,6 +354,7 @@ export interface BoardInfo {
   "url": string,
   "brand": string,
   "type"?: string, // 开发板类型/核心架构 (如 esp32:esp32, arduino:avr, etc)
+  "mode"?: string[]
 }
 
 export interface NewProjectData {
@@ -356,5 +364,6 @@ export interface NewProjectData {
     name: string,
     nickname: string,
     version: string
-  }
+  },
+  devmode?: string
 }

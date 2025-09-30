@@ -128,6 +128,7 @@
             "DEV": "開発"
         },
         "FORM": {
+            "DEVMODE": "開発フレームワーク",
             "BOARD": "ボード",
             "PROJECT_NAME": "プロジェクト名",
             "SAVE_PATH": "保存パス",
