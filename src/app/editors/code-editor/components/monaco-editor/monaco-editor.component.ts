@@ -108,18 +108,18 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    */
   private setupGlobalErrorHandling(): void {
     // 捕获未处理的Promise rejection
-    const originalHandler = window.addEventListener;
     window.addEventListener('unhandledrejection', (event) => {
       if (event.reason && typeof event.reason === 'object') {
         const error = event.reason;
-        if (error.message && error.message.includes('Illegal value for lineNumber')) {
-          console.warn('Caught TextMate tokenization error, attempting to recover:', error);
+        const errorMessage = error.message || '';
+        
+        // 捕获并忽略模型已释放的错误（这是正常的切换过程）
+        if (errorMessage.includes('Model is disposed') || 
+            errorMessage.includes('_BugIndicatingError') ||
+            errorMessage.includes('Illegal value for lineNumber')) {
+          console.debug('捕获到预期的模型切换错误，已忽略:', errorMessage);
           event.preventDefault(); // 阻止错误进一步传播
-
-          // 尝试恢复
-          setTimeout(() => {
-            this.handleTokenizationError();
-          }, 100);
+          return;
         }
       }
     });
@@ -127,10 +127,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     // 捕获全局错误
     const originalErrorHandler = window.onerror;
     window.onerror = (message, source, lineno, colno, error) => {
-      if (typeof message === 'string' && message.includes('Illegal value for lineNumber')) {
-        console.warn('Caught global tokenization error, attempting to recover:', message);
-        this.handleTokenizationError();
-        return true; // 阻止默认错误处理
+      if (typeof message === 'string') {
+        // 捕获并忽略模型已释放相关的错误
+        if (message.includes('Model is disposed') || 
+            message.includes('Illegal value for lineNumber') ||
+            message.includes('_BugIndicatingError')) {
+          console.debug('捕获到预期的模型切换错误，已忽略:', message);
+          return true; // 阻止默认错误处理
+        }
       }
 
       // 调用原始错误处理器
@@ -207,52 +211,67 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         try {
           console.log('filePath changed:', this.filePath);
           const newLanguage = this.getLanguageFromFilePath(this.filePath);
+          const currentLanguage = this.editorInstance.getModel()?.getLanguageId();
           const newContent = this.code || '';
           const validatedContent = this.validateContent(newContent);
 
-          // *** 关键修改：先完全清理旧模型，再加载新语言扩展 ***
+          // 如果语言相同，只需要更新内容，不需要切换语言扩展
+          if (currentLanguage === newLanguage) {
+            console.log('语言相同，仅更新模型内容');
+            
+            // 获取旧模型
+            const oldModel = this.editorInstance.getModel();
+            
+            // 创建新模型
+            const newModel = monaco.editor.createModel(validatedContent, newLanguage);
+            this.editorInstance.setModel(newModel);
+            
+            // 异步清理旧模型
+            if (oldModel) {
+              setTimeout(() => {
+                try {
+                  oldModel.dispose();
+                } catch (error) {
+                  console.warn('Old model disposal warning:', error);
+                }
+              }, 0);
+            }
+            
+            this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
+            console.log('模型内容更新完成');
+            return;
+          }
+
+          // 语言不同，需要切换语言扩展
+          console.log(`语言切换: ${currentLanguage} → ${newLanguage}`);
           
           // 1. 获取旧模型并断开连接
           const oldModel = this.editorInstance.getModel();
-          console.log('断开旧模型连接...');
           this.editorInstance.setModel(null);
           
-          // 2. 等待确保编辑器完全断开（增加等待时间）
-          await new Promise(resolve => setTimeout(resolve, 100));
-          
-          // 3. 清理旧模型
+          // 2. 立即清理旧模型（使用 setTimeout(0) 让出主线程）
           if (oldModel) {
-            try {
-              console.log('释放旧模型...');
-              oldModel.dispose();
-            } catch (error) {
-              console.warn('Old model disposal warning:', error);
-            }
+            setTimeout(() => {
+              try {
+                oldModel.dispose();
+              } catch (error) {
+                console.warn('Old model disposal warning:', error);
+              }
+            }, 0);
           }
           
-          // 4. 等待确保旧模型完全释放，TextMate Worker 停止处理
-          await new Promise(resolve => setTimeout(resolve, 150));
+          // 3. 短暂等待，让 dispose 操作进入事件队列
+          await new Promise(resolve => setTimeout(resolve, 20));
           
-          // 5. 现在安全地加载新语言扩展
-          console.log(`加载语言扩展: ${newLanguage}...`);
+          // 4. 加载新语言扩展
           await this.loadLanguageExtension(newLanguage);
           
-          // 6. 再等待一小段时间，确保扩展完全加载
-          await new Promise(resolve => setTimeout(resolve, 50));
-          
-          // 7. 创建并设置新模型
-          console.log('创建新模型...');
+          // 5. 创建并设置新模型
           const newModel = monaco.editor.createModel(validatedContent, newLanguage);
           this.editorInstance.setModel(newModel);
 
-          // 8. 设置光标到文件开头
-          setTimeout(() => {
-            try {
-              this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
-            } catch (error) {
-              console.warn('Failed to set cursor position:', error);
-            }
-          }, 50);
+          // 6. 设置光标到文件开头
+          this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
 
           console.log(`编辑器语言切换完成: ${newLanguage}`);
         } finally {
@@ -550,7 +569,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   private async loadLanguageExtension(language: string): Promise<void> {
     // 避免重复加载
     if (this.loadedLanguageExtensions.has(language)) {
-      console.log(`语言扩展 ${language} 已加载，跳过`);
+      // console.log(`语言扩展 ${language} 已加载，跳过`);
       return;
     }
 
@@ -566,8 +585,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
 
     try {
-      console.log(`开始加载语言扩展: ${language} (${extensionPath})`);
-      
+      // console.log(`开始加载语言扩展: ${language}`);
       await this.extensionLoader.loadExtension(extensionPath, {
         hostKind: ExtensionHostKind.LocalWebWorker,
         system: true
@@ -575,10 +593,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       this.loadedLanguageExtensions.add(language);
       console.log(`语言扩展 ${language} 加载成功`);
-      
-      // 加载完成后等待一小段时间，确保扩展完全初始化
-      await new Promise(resolve => setTimeout(resolve, 50));
-      
     } catch (error) {
       console.error(`加载语言扩展 ${language} 失败:`, error);
       // 即使失败也标记为已尝试加载，避免重复尝试
