@@ -1,0 +1,62 @@
+<div class="prompt-box bborder">
+    <div class="header">
+        <div class="title">切换开发板</div>
+        <div class="win-btns">
+            <div class="btn ccenter close" (click)="cancel()" [class.disabled]="isLoading">
+                <i class="fa-light fa-xmark"></i>
+            </div>
+        </div>
+    </div>
+    <div class="content" [class.loading]="isLoading">
+        <!-- 加载状态覆盖层 -->
+        <!-- @if(isLoading) {
+        <div class="loading-overlay">
+        </div>
+        } -->
+        <!-- 搜索框 -->
+        <div class="search-box">
+            <input nz-input [(ngModel)]="searchKeyword" (ngModelChange)="onSearch()" placeholder="搜索开发板..."
+                class="search-input" [disabled]="isLoading" />
+        </div>
+
+        <!-- 选择开发板列表 -->
+        <div class="board-list sscroll">
+            @if(filteredBoardList.length === 0) {
+            <div class="empty-list">
+                <i class="fa-light fa-inbox"></i>
+                <span>未找到匹配的开发板</span>
+            </div>
+            }
+            @for(board of filteredBoardList; track board.name) {
+            <div class="board-item" [class.selected]="selectedBoard?.name === board.name" [class.disabled]="isLoading"
+                (click)="!isLoading && selectBoard(board)">
+                <div class="board-img ccenter">
+                    <img [src]="resourceUrl+board.img" />
+                </div>
+                <div class="board-info">
+                    <div class="board-name">{{ board.nickname }}
+                        @if(board.state){
+                        <span>({{board.state}})</span>
+                        }
+                    </div>
+                    <!-- @if(board.data?.board?.description) {
+                    <div class="board-desc">{{ board.data.board.description }}</div>
+                    } -->
+                    @if(board.brand) {
+                    <div class="board-brand">{{ board.brand }}</div>
+                    }
+                </div>
+                @if(selectedBoard?.name === board.name) {
+                <i class="fa-solid fa-circle-check check-icon"></i>
+                }
+            </div>
+            }
+        </div>
+
+        <div class="footer">
+            <button nz-button [nzSize]="'small'" nzType="default" (click)="cancel()" [disabled]="isLoading">取消</button>
+            <button nz-button [nzSize]="'small'" nzType="primary" [disabled]="!selectedBoard || isLoading"
+                [nzLoading]="isLoading" (click)="confirm()">确认</button>
+        </div>
+    </div>
+</div>

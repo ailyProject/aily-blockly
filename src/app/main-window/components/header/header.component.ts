@@ -21,6 +21,7 @@ import { ElectronService } from '../../../services/electron.service';
 import { UserComponent } from '../user/user.component';
 import { ConfigService } from '../../../services/config.service';
 import { AuthService } from '../../../services/auth.service';
+import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
 
 @Component({
   selector: 'app-header',
@@ -158,6 +159,7 @@ export class HeaderComponent {
         }
       ];
     }
+
     // 添加ESP32相关配置选项
     if (this.projectService.currentBoardConfig['core'].indexOf('esp32') > -1) {
       let temp = this.projectService.currentBoardConfig['type'].split(':');
@@ -183,14 +185,12 @@ export class HeaderComponent {
     }
 
     // 添加切换开发板功能
-    let boardList = await this.configService.loadBoardList();
-    boardList = this.convertBoardListFormat(boardList);
     portList0.push({ sep: true });
     portList0.push({
       name: '切换开发板',
       icon: 'fa-light fa-layer-group',
       action: 'board-select',
-      children: boardList
+      // children: boardList
     })
     this.configList = portList0;
     this.cd.detectChanges();
@@ -339,7 +339,7 @@ export class HeaderComponent {
         this.showUser = !this.showUser;
         break;
       case 'board-select':
-        console.log('board-select');
+        this.openBoardSelectorDialog();
         break;
       default:
         console.log('未处理的操作:', item.action);
@@ -579,21 +579,15 @@ export class HeaderComponent {
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
     // console.log('选择子菜单项:', subItem);
-    // 切换开发板
-    if (subItem.key === "BoardType") {
-      this.projectService.changeBoard(subItem.data.board);
-      this.showPortList = false;
-    } else {
-      let packageJson = await this.projectService.getPackageJson();
-      packageJson['projectConfig'] = packageJson['projectConfig'] || {};
-      packageJson['projectConfig'][subItem.key] = subItem.data;
-      this.projectService.setPackageJson(packageJson);
-      // 判断是否是STM32，是则更新项目配置
-      if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
+    let packageJson = await this.projectService.getPackageJson();
+    packageJson['projectConfig'] = packageJson['projectConfig'] || {};
+    packageJson['projectConfig'][subItem.key] = subItem.data;
+    this.projectService.setPackageJson(packageJson);
+    // 判断是否是STM32，是则更新项目配置
+    if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
       this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
-        let newPinConfig = subItem;
-        this.projectService.compareStm32PinConfig(newPinConfig)
-      }
+      let newPinConfig = subItem;
+      this.projectService.compareStm32PinConfig(newPinConfig)
     }
   }
 
@@ -628,39 +622,34 @@ export class HeaderComponent {
     this.showUser = false;
   }
 
-  /**
-   * 将开发板列表转换为菜单格式
-   * @param boardList 原始开发板列表
-   * @returns 转换后的菜单格式列表
-   */
-  convertBoardListFormat(boardList: any[]): any[] {
-    // console.log('转换开发板列表格式:', boardList);
-    const currentBoardName = this.projectService.currentBoardConfig?.name;
-    // console.log('当前开发板名称:', currentBoardName);
+  async openBoardSelectorDialog() {
+    // 获取开发板列表
+    let boardList = await this.configService.loadBoardList();
+    console.log(boardList);
 
-    return boardList
-      .filter(board => board.nickname !== currentBoardName) // 过滤掉当前已选的开发板
-      // .filter(board => !board.disabled) // 过滤掉被禁用的开发板
-      .map(board => ({
-        name: board.nickname || board.name, // 使用昵称，如果没有则使用name
-        key: "BoardType",
-        data: {
-          board: {
-            name: board.name,
-            nickname: board.nickname,
-            version: board.version,
-            description: board.description,
-            author: board.author,
-            brand: board.brand,
-            url: board.url,
-            compatibility: board.compatibility,
-            img: board.img
-          }
-        },
-        check: false
-      }));
+    // 显示开发板选择对话框
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '400px',
+      nzContent: BoardSelectorDialogComponent,
+      nzData: {
+        boardList: boardList
+      }
+    });
+
+    // // 处理对话框返回结果
+    // modalRef.afterClose.subscribe(result => {
+    //   if (result && result.result === 'confirm') {
+    //     // 开发板已经在对话框内切换完成，只需要更新UI
+    //     this.cd.detectChanges();
+    //   }
+    // });
   }
-
 }
 
 export interface RunState {
