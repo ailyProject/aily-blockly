@@ -565,47 +565,31 @@ export class FileService {
     console.log('Reveal in explorer:', node.path);
 
     try {
-      // 使用Electron API打开文件资源管理器
-      if (window['other'] && window['other'].openByExplorer) {
-        window['other'].openByExplorer(node.path);
-        this.message.success('已在资源管理器中打开');
+      // 直接使用shell命令以确保正确的"显示并选中"行为
+      const platform = window['platform']?.type || 'win32';
+      let command = '';
+
+      if (platform === 'win32') {
+        // Windows - 无论文件还是文件夹，都使用 /select 参数来选中并显示
+        command = `explorer.exe /select,"${node.path}"`;
+      } else if (platform === 'darwin') {
+        // macOS - 使用 -R 参数来显示并选中
+        command = `open -R "${node.path}"`;
       } else {
-        // 降级方案：尝试使用shell命令
-        const platform = window['platform']?.type || 'win32';
-        let command = '';
+        // Linux - 打开所在目录
+        const dir = node.isLeaf ? window['path'].dirname(node.path) : node.path;
+        command = `xdg-open "${dir}"`;
+      }
 
-        if (platform === 'win32') {
-          // Windows
-          if (node.isLeaf) {
-            // 如果是文件，选中该文件
-            command = `explorer.exe /select,"${node.path}"`;
-          } else {
-            // 如果是文件夹，打开该文件夹
-            command = `explorer.exe "${node.path}"`;
-          }
-        } else if (platform === 'darwin') {
-          // macOS
-          if (node.isLeaf) {
-            command = `open -R "${node.path}"`;
-          } else {
-            command = `open "${node.path}"`;
-          }
-        } else {
-          // Linux
-          const dir = node.isLeaf ? window['path'].dirname(node.path) : node.path;
-          command = `xdg-open "${dir}"`;
-        }
-
-        if (command && window['cmd'] && window['cmd'].run) {
-          window['cmd'].run({ command });
-          this.message.success('已尝试在资源管理器中打开');
-        } else {
-          this.message.warning('当前环境不支持此功能');
-        }
+      if (command && window['cmd'] && window['cmd'].run) {
+        window['cmd'].run({ command });
+        // this.message.success('已在资源管理器中显示');
+      } else {
+        this.message.warning('当前环境不支持此功能');
       }
     } catch (error) {
-      console.error('在资源管理器中打开失败:', error);
-      this.message.error('在资源管理器中打开失败');
+      console.error('在资源管理器中显示失败:', error);
+      this.message.error('在资源管理器中显示失败');
     }
   }
 
