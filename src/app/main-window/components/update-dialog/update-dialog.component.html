@@ -1,51 +1,25 @@
-<div class="prompt-box bborder">
-  <div class="header">
-    <div class="title">{{title}}</div>
-    <div class="win-btns">
-      <div class="btn ccenter close" (click)="close('')">
-        <i class="fa-light fa-xmark"></i>
-      </div>
-    </div>
+<app-base-dialog 
+  [title]="title"
+  [buttons]="buttons"
+  (closeDialog)="onClose()"
+  (buttonClick)="onButtonClick($event)">
+  
+  @if(mode === 'available'){
+  <div class="text" [innerHTML]="text"></div>
+  }
+  
+  <!-- 进度条 - 仅在下载时显示 -->
+  @if(mode === 'downloading' || mode === 'downloaded'){
+  <div class="progress-container">
+    <nz-progress [nzPercent]="progress" [nzShowInfo]="true"
+      [nzStatus]="progress==100?'success':'active'"></nz-progress>
   </div>
-  <div class="content">
-    @if(mode === 'available'){
-    <div class="text" [innerHTML]="text"></div>
-    }
-    <!-- 进度条 - 仅在下载时显示 -->
-    @if(mode === 'downloading' || mode === 'downloaded'){
-    <div class="progress-container">
-      <nz-progress [nzPercent]="progress" [nzShowInfo]="true"
-        [nzStatus]="progress==100?'success':'active'"></nz-progress>
-    </div>
-    }
+  }
 
-    @if (mode === 'error') {
-    <div class="error-container">
-      <i nz-icon nzType="close-circle" nzTheme="fill" style="color: #f5222d;"></i>
-      <span>下载失败</span>
-    </div>
-    }
-
-    <div class="footer">
-      <!-- 可用更新状态的按钮 -->
-      @switch (mode) {
-      @case ("available") {
-      <button nz-button nzType="default" (click)="close()" [nzSize]="'small'">稍后提醒</button>
-      <button nz-button nzType="default" (click)="close('skip')" nzDanger [nzSize]="'small'">跳过此版本</button>
-      <button nz-button nzType="primary" (click)="download()" [nzSize]="'small'">立即更新</button>
-      }
-      @case ("downloading") {
-      <button nz-button nzType="default" (click)="close('download_stop')" nzDanger [nzSize]="'small'">取消下载</button>
-      }
-      @case ("downloaded") {
-      <button nz-button nzType="default" (click)="close()" [nzSize]="'small'">稍后安装</button>
-      <button nz-button nzType="primary" (click)="close('install')" [nzSize]="'small'">立即安装</button>
-      }
-      @case ("error") {
-      <button nz-button nzType="default" (click)="close('')" [nzSize]="'small'">关闭</button>
-      <button nz-button nzType="primary" (click)="download()" [nzSize]="'small'">重试</button>
-      }
-      }
-    </div>
+  @if (mode === 'error') {
+  <div class="error-container">
+    <i nz-icon nzType="close-circle" nzTheme="fill" style="color: #f5222d;"></i>
+    <span>{{ 'UPDATE_DIALOG.DOWNLOAD_FAILED' | translate }}</span>
   </div>
-</div>
+  }
+</app-base-dialog>

@@ -2,19 +2,21 @@ import { Component, inject, OnInit, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzModalRef, NZ_MODAL_DATA } from 'ng-zorro-antd/modal';
-import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ConfigService } from '../../../services/config.service';
 import { ProjectService } from '../../../services/project.service';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
 
 @Component({
   selector: 'app-board-selector-dialog',
   imports: [
     CommonModule,
     FormsModule,
-    NzButtonModule,
-    NzInputModule
+    NzInputModule,
+    TranslateModule,
+    BaseDialogComponent
   ],
   templateUrl: './board-selector-dialog.component.html',
   styleUrl: './board-selector-dialog.component.scss'
@@ -31,7 +33,7 @@ export class BoardSelectorDialogComponent implements OnInit {
   searchKeyword: string = '';
   selectedBoard: any = null;
   isLoading: boolean = false;
-  loadingText: string = '正在切换开发板...';
+  loadingText: string = '';
 
   get resourceUrl() {
     return this.configService.data.resource[0] + '/imgs/boards/';
@@ -39,12 +41,14 @@ export class BoardSelectorDialogComponent implements OnInit {
 
   constructor(
     private configService: ConfigService,
-    private projectService: ProjectService
+    private projectService: ProjectService,
+    private translate: TranslateService
   ) {
 
   }
 
   ngOnInit(): void {
+    this.loadingText = this.translate.instant('BOARD_SELECTOR.LOADING');
     this.boardList = this.data.boardList || [];
     this.filteredBoardList = [...this.boardList];
   }
@@ -69,6 +73,38 @@ export class BoardSelectorDialogComponent implements OnInit {
     this.selectedBoard = board;
   }
 
+  get buttons(): DialogButton[] {
+    return [
+      { 
+        text: 'BOARD_SELECTOR.CANCEL', 
+        type: 'default', 
+        action: 'cancel',
+        disabled: this.isLoading
+      },
+      { 
+        text: 'BOARD_SELECTOR.CONFIRM', 
+        type: 'primary', 
+        action: 'confirm',
+        disabled: !this.selectedBoard || this.isLoading,
+        loading: this.isLoading
+      }
+    ];
+  }
+
+  onClose(): void {
+    if (!this.isLoading) {
+      this.modal.close();
+    }
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'confirm') {
+      this.confirm();
+    } else if (action === 'cancel') {
+      this.onClose();
+    }
+  }
+
   // 确认选择
   async confirm(): Promise<void> {
     if (this.selectedBoard) {
@@ -81,7 +117,7 @@ export class BoardSelectorDialogComponent implements OnInit {
         this.modal.close();
       } catch (error) {
         console.error('切换开发板失败:', error);
-        this.message.error('切换开发板失败');
+        this.message.error(this.translate.instant('BOARD_SELECTOR.SWITCH_FAILED'));
         this.isLoading = false;
         this.cd.detectChanges();
       }

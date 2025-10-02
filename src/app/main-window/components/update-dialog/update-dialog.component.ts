@@ -1,15 +1,16 @@
 import { Component, Inject, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
-import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { NzIconModule } from 'ng-zorro-antd/icon';
 import { Observable, Subscription } from 'rxjs';
 import { UpdateService } from '../../../services/update.service';
+import { TranslateModule } from '@ngx-translate/core';
+import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
 
 @Component({
   selector: 'app-update-dialog',
-  imports: [NzButtonModule, CommonModule, NzProgressModule, NzIconModule],
+  imports: [CommonModule, NzProgressModule, NzIconModule, TranslateModule, BaseDialogComponent],
   templateUrl: './update-dialog.component.html',
   styleUrls: ['./update-dialog.component.scss']
 })
@@ -57,8 +58,43 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
     this.updateProgressSubscription?.unsubscribe();
   }
 
-  close(result: string = '') {
+  get buttons(): DialogButton[] {
+    switch (this.mode) {
+      case 'available':
+        return [
+          { text: 'UPDATE_DIALOG.REMIND_LATER', type: 'default', action: 'remind' },
+          { text: 'UPDATE_DIALOG.SKIP_VERSION', type: 'default', danger: true, action: 'skip' },
+          { text: 'UPDATE_DIALOG.UPDATE_NOW', type: 'primary', action: 'download' }
+        ];
+      case 'downloading':
+        return [
+          { text: 'UPDATE_DIALOG.CANCEL_DOWNLOAD', type: 'default', danger: true, action: 'download_stop' }
+        ];
+      case 'downloaded':
+        return [
+          { text: 'UPDATE_DIALOG.INSTALL_LATER', type: 'default', action: 'remind' },
+          { text: 'UPDATE_DIALOG.INSTALL_NOW', type: 'primary', action: 'install' }
+        ];
+      case 'error':
+        return [
+          { text: 'UPDATE_DIALOG.CLOSE', type: 'default', action: 'close' },
+          { text: 'UPDATE_DIALOG.RETRY', type: 'primary', action: 'download' }
+        ];
+      default:
+        return [];
+    }
+  }
+
+  onClose(result: string = ''): void {
     this.modal.close(result);
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'download') {
+      this.download();
+    } else {
+      this.modal.close(action);
+    }
   }
 
   download() {
