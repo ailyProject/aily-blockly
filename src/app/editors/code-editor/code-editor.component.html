@@ -21,7 +21,10 @@
                     <nz-tab nzClosable [nzTitle]="titleTemplate">
                         <ng-template #titleTemplate>
                             <span class="tab-inner" (mousedown)="handleMiddleClick($event, i)">
-                                {{ file.title }} <span class="blue-point" *ngIf="file.isDirty"></span>
+                                {{ file.title }}
+                                @if(file.isDirty){
+                                <span class="blue-point"></span>
+                                }
                             </span>
                         </ng-template>
                     </nz-tab>

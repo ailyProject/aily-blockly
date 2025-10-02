@@ -208,10 +208,20 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
         try {
           console.log('filePath changed:', this.filePath);
+          
+          // 如果只有 filePath 变化但 code 没变化，可能是因为 code 还没更新
+          // 这种情况下，我们等待一小段时间，让 code 也更新
+          if (!hasCodeChange) {
+            // console.log('只有 filePath 变化，等待 code 更新...');
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          
           const newLanguage = this.getLanguageFromFilePath(this.filePath);
           const currentLanguage = this.editorInstance.getModel()?.getLanguageId();
           const newContent = this.code || '';
           const validatedContent = this.validateContent(newContent);
+          
+          // console.log('准备更新模型，语言:', newLanguage, '内容长度:', newContent.length);
 
           // 如果语言相同，只需要更新内容，不需要切换语言扩展
           if (currentLanguage === newLanguage) {
@@ -670,7 +680,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
         // 添加模型变化监听
         this.editorInstance.onDidChangeModel((e) => {
-          console.log('Editor model changed:', e);
+          // console.log('Editor model changed:', e);
           // 当模型变化时，确保光标位置安全
           setTimeout(() => {
             this.ensureSafeCursorPosition();

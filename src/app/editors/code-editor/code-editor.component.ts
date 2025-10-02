@@ -18,6 +18,7 @@ import { Subscription } from 'rxjs';
 import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
 import { NpmService } from 'src/app/services/npm.service';
+import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialog/unsave-dialog.component';
 
 export interface SelectedFile {
   path: string;      // 文件路径
@@ -30,6 +31,7 @@ export interface OpenedFile {
   path: string;      // 文件路径
   title: string;     // 显示的文件名
   content: string;   // 文件内容
+  originalContent: string; // 原始文件内容（用于比较是否修改）
   isDirty: boolean;  // 是否有未保存的更改
   editorState?: {    // 编辑器状态
     scrollTop?: number;       // 滚动位置
@@ -204,6 +206,9 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (existingFileIndex >= 0) {
       // 如果已经打开，切换到该标签页
       this.selectedIndex = existingFileIndex;
+       
+      // 不要在这里更新 selectedFile，让 updateCurrentCode 来处理
+      // 以确保 filePath 和 code 同步更新
     } else {
       // 否则新建标签页
       const content = window['fs'].readFileSync(filePath);
@@ -211,18 +216,19 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
         path: filePath,
         title: file.title,
         content: content,
+        originalContent: content, // 保存原始内容
         isDirty: false,
         editorState: {} // 初始化编辑器状态
       };
 
       this.openedFiles.push(newFile);
       this.selectedIndex = this.openedFiles.length - 1;
+      
+      // 对于新文件，也不在这里更新 selectedFile
     }
 
-    // 设置当前选中的文件
-    this.selectedFile = file;
-
     // 延迟更新代码，确保界面已更新
+    // updateCurrentCode 会同时更新 selectedFile 和 code
     setTimeout(() => {
       this.updateCurrentCode();
     }, 0);
@@ -232,24 +238,34 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   async updateCurrentCode() {
     if (this.selectedIndex >= 0 && this.selectedIndex < this.openedFiles.length) {
       const currentFile = this.openedFiles[this.selectedIndex];
-      // console.log('更新编辑器内容:', currentFile.title, '存储的状态:', currentFile.editorState);
 
-      // 先更新文件路径，再更新内容，避免竞态条件
+      // 构建新的选中文件对象
       const newSelectedFile = { path: currentFile.path, title: currentFile.title };
+      const newCode = currentFile.content || '';
 
-      // 如果文件路径发生变化，先更新路径
-      if (!this.selectedFile || this.selectedFile.path !== newSelectedFile.path) {
-        this.selectedFile = newSelectedFile;
-        // 给一点时间让路径变更先处理
+      // 检查是否需要更新
+      const needsUpdate = !this.selectedFile || 
+                         this.selectedFile.path !== newSelectedFile.path || 
+                         this.code !== newCode;
+
+      if (needsUpdate) {
+        // 同时更新文件路径和内容，避免竞态条件
+        // 使用 Promise 确保这是一个原子操作
+        await new Promise<void>(resolve => {
+          // 先更新 code，因为 Monaco 的 ngOnChanges 会检查 code 的变化
+          this.code = newCode;
+          // 然后立即更新 selectedFile
+          this.selectedFile = newSelectedFile;
+          resolve();
+        });
+
+        // 给 Angular 变更检测一点时间
         await new Promise(resolve => setTimeout(resolve, 10));
       }
 
-      // 然后更新内容
-      this.code = currentFile.content || '';
-
       // 延迟恢复编辑器状态，确保内容已经更新并且编辑器准备就绪
       setTimeout(async () => {
-        if (currentFile.editorState) {
+        if (currentFile.editorState && Object.keys(currentFile.editorState).length > 0) {
           // 等待一段时间确保内容更新完成
           await new Promise(resolve => setTimeout(resolve, 50));
           await this.restoreEditorState(currentFile.editorState);
@@ -264,24 +280,37 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // 关闭标签页
   closeTab({ index }: { index: number }): void {
     const file = this.openedFiles[index];
+    console.log('closeTab called, file:', file.title, 'isDirty:', file.isDirty);
 
     if (file.isDirty) {
-      // 如果文件有未保存的更改，弹出确认框
-      this.modal.confirm({
-        nzTitle: '确认关闭',
-        nzContent: `${file.title} 有未保存的更改，是否保存？`,
-        nzOkText: '保存',
-        nzCancelText: '不保存',
-        nzOnOk: () => {
-          this.saveFile(index).then(() => {
+      // console.log('File is dirty, showing unsave dialog');
+      // 如果文件有未保存的更改，弹出 UnsaveDialog
+      const modalRef = this.modal.create({
+        nzContent: UnsaveDialogComponent,
+        nzData: { action: 'close' },
+        nzFooter: null,
+        nzClosable: false,
+        nzMaskClosable: false,
+        nzWidth: 400
+      });
+
+      modalRef.afterClose.subscribe((result: { result: string } | undefined) => {
+        // console.log('Dialog closed with result:', result);
+        if (result) {
+          if (result.result === 'save') {
+            // 保存并关闭
+            this.saveFile(index).then(() => {
+              this.doCloseTab(index);
+            });
+          } else if (result.result === 'continue') {
+            // 不保存，直接关闭
             this.doCloseTab(index);
-          });
-        },
-        nzOnCancel: () => {
-          this.doCloseTab(index);
+          }
+          // 如果是 'cancel'，不做任何操作
         }
       });
     } else {
+      // console.log('File is not dirty, closing directly');
       this.doCloseTab(index);
     }
   }
@@ -310,6 +339,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   async saveFile(index: number): Promise<void> {
     const file = this.openedFiles[index];
     window['fs'].writeFileSync(file.path, file.content);
+    file.originalContent = file.content; // 更新原始内容
     file.isDirty = false;
   }
 
@@ -407,9 +437,13 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onCodeChange(newContent: string): void {
     if (this.selectedIndex >= 0 && this.selectedIndex < this.openedFiles.length) {
       const currentFile = this.openedFiles[this.selectedIndex];
-      if (currentFile.content !== newContent) {
-        currentFile.content = newContent;
-        currentFile.isDirty = true;
+      // 更新当前内容
+      currentFile.content = newContent;
+      // 与原始内容比较，判断是否有修改
+      const wasDirty = currentFile.isDirty;
+      currentFile.isDirty = currentFile.originalContent !== newContent;
+      if (wasDirty !== currentFile.isDirty) {
+        console.log('File isDirty changed:', currentFile.title, 'isDirty:', currentFile.isDirty);
       }
     }
   }
@@ -442,6 +476,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
           path: event.filePath,
           title: fileName,
           content: content,
+          originalContent: content, // 保存原始内容
           isDirty: false,
           editorState: {}
         };
@@ -629,8 +664,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (event.button === 1) {
       // 阻止默认行为（如在某些浏览器中的自动滚动）
       event.preventDefault();
-      // 关闭对应的标签页
-      this.doCloseTab(index);
+      // 关闭对应的标签页，使用 closeTab 以支持未保存提示
+      this.closeTab({ index });
     }
   }
 
