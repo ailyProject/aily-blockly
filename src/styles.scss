@@ -60,6 +60,15 @@ nz-modal-container {
   overflow: hidden !important;
 }
 
+.ant-tree-treenode-selected::before {
+  background: rgba(24, 143, 255, 0.5) !important;
+  border: 1px solid #1890ff;
+}
+
+.ant-tree-node-content-wrapper {
+  padding: 0 !important;
+}
+
 .cdk-overlay-container {
   z-index: 10000 !important;
 }

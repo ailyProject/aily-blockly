@@ -15,7 +15,7 @@
     display: flex;
     height: 100%;
     width: 100%;
-    flex-direction: column; 
+    flex-direction: column;
     position: relative;
 
     app-monaco-editor {
@@ -62,11 +62,6 @@ nz-tabset {
 
     &.ant-tabs-editable-card {
         ::ng-deep {
-            // button {
-            //     padding: 0 !important;
-            //     color: #a5a5a5;
-            // }
-
             .ant-tabs-nav-more {
                 padding: 0 12px !important;
             }
@@ -96,5 +91,22 @@ nz-tabset {
                 }
             }
         }
+    }
+}
+
+.empty-editor {
+    width: 100%;
+    height: 100%;
+    background: #222222;
+    flex-direction: column;
+
+    .logo {
+        font-size: 90px;
+        color: #1c1c1c;
+        line-height: 95px;
+    }
+    .text{
+        font-size: 45px;
+        color: #1d1d1d;
     }
 }

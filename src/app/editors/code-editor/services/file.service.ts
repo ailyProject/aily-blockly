@@ -33,6 +33,7 @@ export class FileService {
 
 
   readDir(path: string): NzTreeNodeOptions[] {
+    // console.log('readDir path:', path);
     let entries = window['fs'].readDirSync(path);
     let result = [];
     let dirs = [];
@@ -292,7 +293,7 @@ export class FileService {
     if (folderCount > 0) {
       message += `${folderCount} 个文件夹\n`;
     }
-    
+
     // 检查是否支持回收站
     const trashAvailable = window['other'] && window['other'].moveToTrash;
     if (trashAvailable) {

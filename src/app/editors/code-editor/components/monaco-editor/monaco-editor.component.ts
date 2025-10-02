@@ -1,8 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { Component, EventEmitter, Input, Output, SimpleChanges, ViewChild, ElementRef, OnInit, AfterViewInit, OnDestroy, OnChanges } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { NzMessageService } from 'ng-zorro-antd/message';
-import { VsixService } from '../../services/vsix.service';
 import { MonacoVSCodeCSSLoader } from '../../../../utils/monaco-vscode-css-loader';
 
 import * as monaco from 'monaco-editor';
@@ -112,11 +110,11 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       if (event.reason && typeof event.reason === 'object') {
         const error = event.reason;
         const errorMessage = error.message || '';
-        
+
         // 捕获并忽略模型已释放的错误（这是正常的切换过程）
-        if (errorMessage.includes('Model is disposed') || 
-            errorMessage.includes('_BugIndicatingError') ||
-            errorMessage.includes('Illegal value for lineNumber')) {
+        if (errorMessage.includes('Model is disposed') ||
+          errorMessage.includes('_BugIndicatingError') ||
+          errorMessage.includes('Illegal value for lineNumber')) {
           console.debug('捕获到预期的模型切换错误，已忽略:', errorMessage);
           event.preventDefault(); // 阻止错误进一步传播
           return;
@@ -129,9 +127,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     window.onerror = (message, source, lineno, colno, error) => {
       if (typeof message === 'string') {
         // 捕获并忽略模型已释放相关的错误
-        if (message.includes('Model is disposed') || 
-            message.includes('Illegal value for lineNumber') ||
-            message.includes('_BugIndicatingError')) {
+        if (message.includes('Model is disposed') ||
+          message.includes('Illegal value for lineNumber') ||
+          message.includes('_BugIndicatingError')) {
           console.debug('捕获到预期的模型切换错误，已忽略:', message);
           return true; // 阻止默认错误处理
         }
@@ -218,14 +216,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           // 如果语言相同，只需要更新内容，不需要切换语言扩展
           if (currentLanguage === newLanguage) {
             console.log('语言相同，仅更新模型内容');
-            
+
             // 获取旧模型
             const oldModel = this.editorInstance.getModel();
-            
+
             // 创建新模型
             const newModel = monaco.editor.createModel(validatedContent, newLanguage);
             this.editorInstance.setModel(newModel);
-            
+
             // 异步清理旧模型
             if (oldModel) {
               setTimeout(() => {
@@ -236,19 +234,16 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
                 }
               }, 0);
             }
-            
+
             this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
             console.log('模型内容更新完成');
             return;
           }
 
-          // 语言不同，需要切换语言扩展
-          console.log(`语言切换: ${currentLanguage} → ${newLanguage}`);
-          
           // 1. 获取旧模型并断开连接
           const oldModel = this.editorInstance.getModel();
           this.editorInstance.setModel(null);
-          
+
           // 2. 立即清理旧模型（使用 setTimeout(0) 让出主线程）
           if (oldModel) {
             setTimeout(() => {
@@ -259,13 +254,13 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
               }
             }, 0);
           }
-          
+
           // 3. 短暂等待，让 dispose 操作进入事件队列
           await new Promise(resolve => setTimeout(resolve, 20));
-          
+
           // 4. 加载新语言扩展
           await this.loadLanguageExtension(newLanguage);
-          
+
           // 5. 创建并设置新模型
           const newModel = monaco.editor.createModel(validatedContent, newLanguage);
           this.editorInstance.setModel(newModel);
@@ -445,10 +440,10 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         // 先将模型设置为null，断开连接
         const model = this.editorInstance.getModel();
         this.editorInstance.setModel(null);
-        
+
         // 等待一帧，确保所有异步操作完成
         await new Promise(resolve => requestAnimationFrame(resolve));
-        
+
         // 清理模型
         if (model) {
           try {
@@ -457,7 +452,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
             console.warn('Model disposal warning:', error);
           }
         }
-        
+
         // 清理编辑器
         this.editorInstance.dispose();
         this.editorInstance = null;
@@ -558,6 +553,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       'h': 'cpp',
       'ino': 'cpp',
       'json': 'json',
+      'md': 'markdown'
     };
 
     return languageMap[ext] || this.options.language || 'cpp';
@@ -576,6 +572,8 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     const extensionMap: Record<string, string> = {
       'cpp': 'vscode/extensions/cpp',
       'json': 'vscode/extensions/json',
+      'markdown-basics': 'vscode/extensions/markdown-basics',
+
     };
 
     const extensionPath = extensionMap[language];

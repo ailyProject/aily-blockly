@@ -14,10 +14,10 @@ import { BuilderService } from '../../services/builder.service';
 import { UploaderService } from '../../services/uploader.service';
 import { ElectronService } from '../../services/electron.service';
 import { ShortcutService, ShortcutAction, ShortcutKeyMapping } from './services/shortcut.service';
-// import { VsixService } from './services/vsix.service';
 import { Subscription } from 'rxjs';
 import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
+import { NpmService } from 'src/app/services/npm.service';
 
 export interface SelectedFile {
   path: string;      // 文件路径
@@ -81,6 +81,10 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.projectService.currentProjectPath
   }
 
+  set projectPath(path: string) {
+    this.projectService.currentProjectPath = path
+  }
+
   constructor(
     private modal: NzModalService,
     private projectService: ProjectService,
@@ -91,7 +95,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     private uploadService: UploaderService,
     private electronService: ElectronService,
     private shortcutService: ShortcutService,
-    // private vsixService: VsixService,
+    private npmService: NpmService
   ) {
   }
 
@@ -106,7 +110,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (params['path']) {
         console.log('project path', params['path']);
         try {
-          this.loadProject(params['path']);
+          this.projectPath = params['path'];
+          this.loadProject();
         } catch (error) {
           console.error('加载项目失败', error);
           this.message.error('加载项目失败，请检查项目文件是否完整');
@@ -117,30 +122,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     });
   }
 
-  // /**
-  //  * 初始化 VSIX 扩展
-  //  */
-  // private async initializeVsixExtensions(): Promise<void> {
-  //   try {
-  //     console.log('Initializing VSIX extensions...');
-
-  //     // 等待 Electron 服务初始化完成
-  //     if (this.electronService.isElectron) {
-  //       await this.vsixService.initializeAllExtensions();
-  //       console.log('VSIX extensions initialized successfully');
-  //     } else {
-  //       console.log('Not running in Electron, skipping VSIX extension initialization');
-  //     }
-  //   } catch (error) {
-  //     console.error('Failed to initialize VSIX extensions:', error);
-  //     // 不阻止组件的正常加载，只是记录错误
-  //   }
-  // }
-
-
   ngAfterViewInit(): void {
-    // 初始化 VSIX 扩展
-    // this.initializeVsixExtensions();
     // 初始化快捷键监听
     this.initShortcutListeners();
     // 启动定期保存编辑器状态的定时器（每5秒保存一次）
@@ -173,7 +155,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cleanupShortcutListeners();
   }
 
-  async loadProject(projectPath: string) {
+  async loadProject(projectPath: string = this.projectPath) {
     // 判断当前目录下是否有package.json和ino文件
     if (!this.electronService.exists(projectPath + '/package.json')) {
       const fileList = this.electronService.readDir(projectPath);
@@ -187,16 +169,18 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.electronService.writeFile(projectPath + '/package.json', JSON.stringify(packageData))
       }
     }
-
-    const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-    this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
-    this.projectService.currentPackageData = packageJson;
-    // 添加到最近打开的项目
-    this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
-    // 设置当前项目路径和package.json数据
-    this.projectService.currentPackageData = packageJson;
-    this.projectService.currentProjectPath = projectPath;
-
+    try {
+      const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+      this.electronService.setTitle(`aily coder - ${packageJson.name}`);
+      this.projectService.currentPackageData = packageJson;
+      // 添加到最近打开的项目
+      this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
+      // 设置当前项目路径和package.json数据
+      this.projectService.currentPackageData = packageJson;
+      this.npmService.installBoardDeps();
+    } catch (error) {
+      console.warn('这可能不是一个aci项目');
+    }
     this.projectService.stateSubject.next('loaded');
     // 7. 后台安装开发板依赖
     // this.npmService.installBoardDeps()
@@ -244,30 +228,22 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }, 0);
   }
 
-  /**
-   * 检查是否为C/C++/Arduino文件
-   */
-  private isCppFile(filePath: string): boolean {
-    const extension = filePath.toLowerCase().split('.').pop();
-    return ['cpp', 'c', 'h', 'hpp', 'ino', 'cc', 'cxx', 'hxx'].includes(extension || '');
-  }
-
   // 更新当前编辑器内容
   async updateCurrentCode() {
     if (this.selectedIndex >= 0 && this.selectedIndex < this.openedFiles.length) {
       const currentFile = this.openedFiles[this.selectedIndex];
       // console.log('更新编辑器内容:', currentFile.title, '存储的状态:', currentFile.editorState);
-      
+
       // 先更新文件路径，再更新内容，避免竞态条件
       const newSelectedFile = { path: currentFile.path, title: currentFile.title };
-      
+
       // 如果文件路径发生变化，先更新路径
       if (!this.selectedFile || this.selectedFile.path !== newSelectedFile.path) {
         this.selectedFile = newSelectedFile;
         // 给一点时间让路径变更先处理
         await new Promise(resolve => setTimeout(resolve, 10));
       }
-      
+
       // 然后更新内容
       this.code = currentFile.content || '';
 
@@ -501,14 +477,14 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (editor && editor.getModel() && position) {
         const model = editor.getModel();
         const lineCount = model.getLineCount();
-        
+
         // 验证并修正位置
         let lineNumber = position.lineNumber || (position.line + 1);
         let column = position.column || (position.character + 1);
-        
+
         // 确保行号在有效范围内
         lineNumber = Math.max(1, Math.min(lineNumber, lineCount));
-        
+
         // 确保列号在有效范围内
         const maxColumn = model.getLineMaxColumn(lineNumber);
         column = Math.max(1, Math.min(column, maxColumn));
@@ -722,7 +698,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (action) {
       // 检查是否在 Monaco 编辑器内部
       const isInMonaco = target.closest('.monaco-editor') !== null;
-      
+
       if (isInMonaco) {
         // 在 Monaco 编辑器内，只处理特定的快捷键
         if (action.type === 'save') {
