@@ -60,6 +60,8 @@ export interface OpenedFile {
 export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // Monaco编辑器组件引用
   @ViewChild(MonacoEditorComponent) monacoEditorRef!: MonacoEditorComponent;
+  // 文件树组件引用
+  @ViewChild(FileTreeComponent) fileTreeRef!: FileTreeComponent;
 
   // 当前编辑器内容
   code: string = '';
@@ -362,6 +364,14 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.saveCurrentTabState();
 
     this.selectedIndex = index;
+
+    // 同步文件树的选中状态
+    if (this.selectedIndex >= 0 && this.selectedIndex < this.openedFiles.length) {
+      const currentFile = this.openedFiles[this.selectedIndex];
+      if (this.fileTreeRef && currentFile) {
+        this.fileTreeRef.selectNodeByPath(currentFile.path);
+      }
+    }
 
     // 延迟更新代码，确保标签页切换动画完成
     setTimeout(() => {

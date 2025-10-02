@@ -278,7 +278,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           // 6. 设置光标到文件开头
           this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
 
-          console.log(`编辑器语言切换完成: ${newLanguage}`);
+          // console.log(`编辑器语言切换完成: ${newLanguage}`);
         } finally {
           // 确保标志被重置
           this.isChangingModel = false;
@@ -900,7 +900,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
             if (validatedViewState) {
               this.editorInstance.restoreViewState(validatedViewState);
-              console.log('视图状态安全恢复成功');
+              // console.log('视图状态安全恢复成功');
               resolve(true);
             } else {
               console.warn('视图状态验证失败，跳过恢复');

@@ -369,6 +369,27 @@ export class FileTreeComponent implements OnInit {
     }, 0);
   }
 
+  /**
+   * 根据文件路径选中节点
+   * @param filePath 文件路径
+   */
+  selectNodeByPath(filePath: string): void {
+    if (!filePath) {
+      return;
+    }
+
+    const allNodes = this.dataSource.getCurrentData();
+    const targetNode = allNodes.find(node => node.path === filePath);
+
+    if (targetNode) {
+      // 清除当前选择
+      this.nodeSelection.clear();
+      // 选中目标节点
+      this.nodeSelection.select(targetNode);
+      this.lastClickedNode = targetNode;
+    }
+  }
+
   loadRootPath(path = this.rootPath): void {
     // 保存当前展开状态
     if (this.dataSource) {
