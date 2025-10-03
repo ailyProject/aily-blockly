@@ -582,7 +582,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     const extensionMap: Record<string, string> = {
       'cpp': 'vscode/extensions/cpp',
       'json': 'vscode/extensions/json',
-      'markdown-basics': 'vscode/extensions/markdown-basics',
+      'markdown': 'vscode/extensions/markdown-basics',
 
     };
 
