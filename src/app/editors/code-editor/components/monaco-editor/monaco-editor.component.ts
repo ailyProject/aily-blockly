@@ -586,6 +586,22 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     };
 
+    // 对于C++，还要加载cpptools扩展（如果存在）
+    const cppToolsPath = 'C:\\Users\\coloz\\AppData\\Local\\aily-project\\extensions\\cpptools';
+    if (language === 'cpp') {
+      try {
+        console.log('尝试加载cpptools扩展...');
+        await this.extensionLoader.loadExternalExtension(cppToolsPath, {
+          hostKind: ExtensionHostKind.LocalProcess,
+          system: false
+        });
+        console.log('cpptools扩展加载成功');
+      } catch (error) {
+        console.warn('加载cpptools扩展失败:', error);
+        // 即使cpptools加载失败，也继续加载基本的cpp扩展
+      }
+    }
+
     const extensionPath = extensionMap[language];
     if (!extensionPath) {
       console.warn(`未找到语言 ${language} 的扩展配置`);
@@ -643,10 +659,11 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       await this.loadLanguageExtension(language);
 
-      // 手动设置默认主题配置
+      // 手动设置默认主题配置和启用API提案
       // await this.configureDefaultTheme();
       updateUserConfiguration(`{
-        "workbench.colorTheme": "Default Dark Modern"
+        "workbench.colorTheme": "Default Dark Modern",
+        "extensions.enableProposedApi": ["ms-vscode.cpptools"]
       }`);
 
       // 创建编辑器实例

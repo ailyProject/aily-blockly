@@ -208,6 +208,181 @@ export class ExtensionLoaderService {
   }
 
   /**
+   * 从外部目录加载扩展（通过Electron的VSIX加载器）
+   * @param extensionPath 外部扩展目录的完整路径
+   * @param options 扩展配置选项
+   */
+  async loadExternalExtension(
+    extensionPath: string,
+    options?: {
+      /** 扩展主机类型，默认为 LocalWebWorker */
+      hostKind?: ExtensionHostKind
+      /** 是否为系统扩展，默认为 false */
+      system?: boolean
+    }
+  ): Promise<ExtensionLoadResult> {
+    try {
+      console.log(`Loading external extension from: ${extensionPath}`)
+
+      // 检查是否在Electron环境中
+      if (!window['fs'] || !window['fs'].readFileSync) {
+        throw new Error('External extension loading requires Electron environment')
+      }
+
+      // 通过Electron IPC加载扩展清单
+      const manifest = await this.loadExternalManifest(extensionPath)
+      const extensionId = `${manifest.publisher}.${manifest.name}`
+
+      // 检查是否已加载
+      if (this.loadedExtensions.has(extensionId)) {
+        console.log(`External extension ${extensionId} already loaded`)
+        return this.loadedExtensions.get(extensionId)!
+      }
+
+      console.log(`Registering external extension: ${manifest.name} v${manifest.version}`)
+
+      // 注册扩展
+      const hostKind = options?.hostKind ?? ExtensionHostKind.LocalWebWorker
+      
+      // 为cpptools扩展启用所需的API提案
+      const extensionOptions: any = {
+        system: options?.system ?? false
+      }
+      
+      if (manifest.publisher === 'ms-vscode' && manifest.name === 'cpptools') {
+        extensionOptions.enableProposedApi = ['terminalDataWriteEvent', 'chatParticipantAdditions']
+      }
+      
+      const registrationResult = registerExtension(
+        manifest,
+        hostKind,
+        extensionOptions
+      )
+
+      // 注册扩展文件（从外部目录）
+      await this.registerExternalExtensionFiles(extensionPath, manifest, registrationResult)
+
+      // 等待扩展准备就绪
+      await registrationResult.whenReady()
+      console.log(`External extension ${manifest.name} loaded successfully`)
+
+      const result: ExtensionLoadResult = {
+        id: registrationResult.id,
+        manifest,
+        dispose: registrationResult.dispose,
+        whenReady: registrationResult.whenReady,
+        getApi: 'getApi' in registrationResult ? (registrationResult.getApi as () => Promise<typeof vscode>) : undefined
+      }
+
+      this.loadedExtensions.set(extensionId, result)
+
+      return result
+    } catch (error) {
+      console.error(`Failed to load external extension from ${extensionPath}:`, error)
+      throw error
+    }
+  }
+
+  /**
+   * 通过Electron文件系统加载外部扩展的清单文件
+   */
+  private async loadExternalManifest(extensionPath: string): Promise<IExtensionManifest> {
+    const packageJsonPath = `${extensionPath}/package.json`
+    const manifestContent = window['fs'].readFileSync(packageJsonPath, 'utf8')
+    return JSON.parse(manifestContent)
+  }
+
+  /**
+   * 注册外部扩展的文件
+   */
+  private async registerExternalExtensionFiles(
+    extensionPath: string,
+    manifest: IExtensionManifest,
+    registrationResult: any
+  ): Promise<void> {
+    // 只有 LocalWebWorker 和 LocalProcess 才有 registerFileUrl
+    if (!('registerFileUrl' in registrationResult)) {
+      return
+    }
+
+    const contributes = manifest.contributes
+    if (!contributes) {
+      return
+    }
+
+    // 处理语言配置文件
+    if (contributes.languages) {
+      for (const language of contributes.languages) {
+        if (language.configuration) {
+          await this.registerExternalFile(extensionPath, language.configuration, registrationResult, 'application/json')
+        }
+      }
+    }
+
+    // 处理语法文件（TextMate grammars）
+    if (contributes.grammars) {
+      for (const grammar of contributes.grammars) {
+        if (grammar.path) {
+          await this.registerExternalFile(extensionPath, grammar.path, registrationResult, 'application/json')
+        }
+      }
+    }
+
+    // 处理主题文件
+    if (contributes.themes) {
+      for (const theme of contributes.themes) {
+        if (theme.path) {
+          await this.registerExternalFile(extensionPath, theme.path, registrationResult, 'application/json')
+        }
+      }
+    }
+
+    // 处理代码片段
+    if (contributes.snippets) {
+      for (const snippet of contributes.snippets) {
+        if (snippet.path) {
+          await this.registerExternalFile(extensionPath, snippet.path, registrationResult, 'application/json')
+        }
+      }
+    }
+
+    // 处理扩展图标
+    if (manifest.icon) {
+      const iconExt = manifest.icon.split('.').pop()?.toLowerCase()
+      const mimeType = iconExt === 'png' ? 'image/png' :
+        iconExt === 'svg' ? 'image/svg+xml' :
+          iconExt === 'jpg' || iconExt === 'jpeg' ? 'image/jpeg' :
+            undefined
+      
+      await this.registerExternalFile(extensionPath, manifest.icon, registrationResult, mimeType)
+    }
+  }
+
+  /**
+   * 注册单个外部文件
+   */
+  private async registerExternalFile(
+    extensionPath: string,
+    relativePath: string,
+    registrationResult: any,
+    mimeType?: string
+  ): Promise<void> {
+    try {
+      const fullPath = `${extensionPath}/${relativePath}`
+      const fileContent = window['fs'].readFileSync(fullPath, 'utf8')
+      
+      // 创建Blob URL
+      const blob = new Blob([fileContent], { type: mimeType || 'text/plain' })
+      const url = URL.createObjectURL(blob)
+      
+      registrationResult.registerFileUrl(relativePath, url, mimeType)
+      console.log(`Registered external file: ${relativePath} -> ${url}`)
+    } catch (error) {
+      console.warn(`Failed to register external file ${relativePath}:`, error)
+    }
+  }
+
+  /**
    * 收集扩展中需要注册的文件
    */
   private collectExtensionFiles(
