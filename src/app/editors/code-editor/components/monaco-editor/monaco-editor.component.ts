@@ -208,19 +208,19 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
         try {
           console.log('filePath changed:', this.filePath);
-          
+
           // 如果只有 filePath 变化但 code 没变化，可能是因为 code 还没更新
           // 这种情况下，我们等待一小段时间，让 code 也更新
           if (!hasCodeChange) {
             // console.log('只有 filePath 变化，等待 code 更新...');
             await new Promise(resolve => setTimeout(resolve, 50));
           }
-          
+
           const newLanguage = this.getLanguageFromFilePath(this.filePath);
           const currentLanguage = this.editorInstance.getModel()?.getLanguageId();
           const newContent = this.code || '';
           const validatedContent = this.validateContent(newContent);
-          
+
           // console.log('准备更新模型，语言:', newLanguage, '内容长度:', newContent.length);
 
           // 如果语言相同，只需要更新内容，不需要切换语言扩展
@@ -586,22 +586,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     };
 
-    // 对于C++，还要加载cpptools扩展（如果存在）
-    const cppToolsPath = 'C:\\Users\\coloz\\AppData\\Local\\aily-project\\extensions\\cpptools';
-    if (language === 'cpp') {
-      try {
-        console.log('尝试加载cpptools扩展...');
-        await this.extensionLoader.loadExternalExtension(cppToolsPath, {
-          hostKind: ExtensionHostKind.LocalProcess,
-          system: false
-        });
-        console.log('cpptools扩展加载成功');
-      } catch (error) {
-        console.warn('加载cpptools扩展失败:', error);
-        // 即使cpptools加载失败，也继续加载基本的cpp扩展
-      }
-    }
-
     const extensionPath = extensionMap[language];
     if (!extensionPath) {
       console.warn(`未找到语言 ${language} 的扩展配置`);
@@ -622,6 +606,22 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       // 即使失败也标记为已尝试加载，避免重复尝试
       this.loadedLanguageExtensions.add(language);
       throw error;
+    }
+  }
+
+  async loadCpptools() {
+    // 对于C++，还要加载cpptools扩展（如果存在）
+    const cppToolsPath = 'C:\\Users\\coloz\\AppData\\Local\\aily-project\\extensions\\cpptools';
+    try {
+      console.log('加载cpptools扩展...');
+      await this.extensionLoader.loadExternalExtension(cppToolsPath, {
+        hostKind: ExtensionHostKind.LocalProcess,
+        system: false
+      });
+      console.log('cpptools扩展加载成功');
+    } catch (error) {
+      console.warn('加载cpptools扩展失败:', error);
+      // 即使cpptools加载失败，也继续加载基本的cpp扩展
     }
   }
 

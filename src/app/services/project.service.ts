@@ -282,12 +282,17 @@ export class ProjectService {
   // 获取开发板名称
   async getBoardModule() {
     const prjPackageJson = await this.getPackageJson();
-    return Object.keys(prjPackageJson.dependencies).find(dep => dep.startsWith('@aily-project/board-'));
+    try {
+      return Object.keys(prjPackageJson.dependencies).find(dep => dep.startsWith('@aily-project/board-'));
+    } catch (error) {
+      return null
+    }
   }
 
   // 获取开发板模块的package.json
   async getBoardPackageJson() {
     const boardModule = await this.getBoardModule();
+    if (!boardModule) return {};
     const boardPackageJsonPath = `${this.currentProjectPath}/node_modules/${boardModule}/package.json`;
     return JSON.parse(this.electronService.readFile(boardPackageJsonPath));
   }

@@ -76,6 +76,16 @@
                 "glob": "**/*.css",
                 "input": "node_modules/@codingame/monaco-vscode-api/vscode/src/vs",
                 "output": "vscode/css"
+              },
+              {
+                "glob": "**/onig.wasm",
+                "input": "node_modules/vscode-oniguruma/release",
+                "output": "vscode-oniguruma/release"
+              },
+              {
+                "glob": "**/codicon.ttf",
+                "input": "node_modules/@codingame/monaco-vscode-api/vscode/src/vs/base/browser/ui/codicons/codicon",
+                "output": "/"
               }
             ],
             "styles": [
