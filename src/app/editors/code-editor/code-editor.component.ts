@@ -450,11 +450,11 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // 更新当前内容
       currentFile.content = newContent;
       // 与原始内容比较，判断是否有修改
-      const wasDirty = currentFile.isDirty;
+      // const wasDirty = currentFile.isDirty;
       currentFile.isDirty = currentFile.originalContent !== newContent;
-      if (wasDirty !== currentFile.isDirty) {
-        console.log('File isDirty changed:', currentFile.title, 'isDirty:', currentFile.isDirty);
-      }
+      // if (wasDirty !== currentFile.isDirty) {
+      //   console.log('File isDirty changed:', currentFile.title, 'isDirty:', currentFile.isDirty);
+      // }
     }
   }
 
