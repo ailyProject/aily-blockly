@@ -6,7 +6,8 @@ const { existsSync, statSync } = require("fs");
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
 
-contextBridge.exposeInMainWorld("electronAPI", {
+// contextBridge.exposeInMainWorld("electronAPI", {
+window.electronAPI = {
   ipcRenderer: {
     send: (channel, data) => ipcRenderer.send(channel, data),
     on: (channel, callback) => ipcRenderer.on(channel, callback),
@@ -363,4 +364,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
       });
     }
   }
-});
+  // });
+}

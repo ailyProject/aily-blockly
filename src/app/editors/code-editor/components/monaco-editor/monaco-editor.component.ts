@@ -606,9 +606,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       console.log(`语言扩展 ${language} 加载成功`);
 
       // 如果是C++语言，自动加载cpptools扩展以提供代码补全功能
-      if (language === 'cpp') {
-        await this.loadCpptools();
-      }
+      // if (language === 'cpp') {
+      //   await this.loadCpptools();
+      // }
     } catch (error) {
       console.error(`加载语言扩展 ${language} 失败:`, error);
       // 即使失败也标记为已尝试加载，避免重复尝试

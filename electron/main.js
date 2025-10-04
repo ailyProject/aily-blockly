@@ -362,7 +362,6 @@ const { registerNpmHandlers } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers } = require("./cmd");
 const { registerMCPHandlers } = require("./mcp");
-const { registerVsixHandlers } = require("./vsix-loader");
 // debug模块
 const { initLogger } = require("./logger");
 // tools
@@ -540,6 +539,7 @@ function createWindow() {
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: true,
+      contextIsolation: false,
       webSecurity: false,
       preload: path.join(__dirname, "preload.js"),
     },
@@ -617,7 +617,6 @@ function createWindow() {
   registerNpmHandlers(mainWindow);
   registerCmdHandlers(mainWindow);
   registerMCPHandlers(mainWindow);
-  registerVsixHandlers();
   registerToolsHandlers(mainWindow);
 
   // 检查是否有待处理的OAuth回调
