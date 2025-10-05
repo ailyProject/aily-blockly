@@ -83,6 +83,11 @@
                 "output": "vscode-oniguruma/release"
               },
               {
+                "glob": "**/onig.wasm",
+                "input": "node_modules/vscode-oniguruma/release",
+                "output": "node_modules/vscode-oniguruma/release"
+              },
+              {
                 "glob": "**/codicon.ttf",
                 "input": "node_modules/@codingame/monaco-vscode-api/vscode/src/vs/base/browser/ui/codicons/codicon",
                 "output": "/"

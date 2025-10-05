@@ -708,55 +708,87 @@ export class FileTreeComponent implements OnInit {
   }
 
   private createNewFile(parentNode: FlatFileNode) {
-    // 确定实际的父路径
+    // 确定实际的父路径和父节点
     let parentPath = parentNode.path;
+    let actualParentNode = parentNode;
+    
     if (parentNode.isLeaf) {
+      // 如果选中的是文件，使用其父目录
       parentPath = window['path'].dirname(parentPath);
+      // 查找父目录节点
+      const parentDirNode = this.dataSource.getCurrentData().find(n => n.path === parentPath);
+      if (parentDirNode) {
+        actualParentNode = parentDirNode;
+      }
     }
 
-    // 创建临时节点用于内联编辑，使用时间戳确保唯一性
-    const tempKey = `__new_file_temp_${Date.now()}__`;
-    const tempPath = window['path'].join(parentPath, tempKey);
-    const tempNode: FlatFileNode = {
-      expandable: false,
-      title: '',
-      level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
-      key: tempPath,
-      isLeaf: true,
-      path: tempPath
-    };
+    // 如果父节点是文件夹且未展开，先展开它
+    if (actualParentNode.expandable && !this.treeControl.isExpanded(actualParentNode)) {
+      this.treeControl.expand(actualParentNode);
+    }
 
-    // 添加临时节点到适当位置
-    this.addFileNodeDirect(parentPath, tempKey, true);
+    // 等待文件夹展开完成后再创建临时节点
+    setTimeout(() => {
+      // 创建临时节点用于内联编辑，使用时间戳确保唯一性
+      const tempKey = `__new_file_temp_${Date.now()}__`;
+      const tempPath = window['path'].join(parentPath, tempKey);
+      const tempNode: FlatFileNode = {
+        expandable: false,
+        title: '',
+        level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
+        key: tempPath,
+        isLeaf: true,
+        path: tempPath
+      };
 
-    // 开始内联编辑
-    this.startInlineEdit(tempNode, 'newFile', parentPath);
+      // 添加临时节点到适当位置
+      this.addFileNodeDirect(parentPath, tempKey, true);
+
+      // 开始内联编辑
+      this.startInlineEdit(tempNode, 'newFile', parentPath);
+    }, 50);
   }
 
   private createNewFolder(parentNode: FlatFileNode) {
-    // 确定实际的父路径
+    // 确定实际的父路径和父节点
     let parentPath = parentNode.path;
+    let actualParentNode = parentNode;
+    
     if (parentNode.isLeaf) {
+      // 如果选中的是文件，使用其父目录
       parentPath = window['path'].dirname(parentPath);
+      // 查找父目录节点
+      const parentDirNode = this.dataSource.getCurrentData().find(n => n.path === parentPath);
+      if (parentDirNode) {
+        actualParentNode = parentDirNode;
+      }
     }
 
-    // 创建临时节点用于内联编辑，使用时间戳确保唯一性
-    const tempKey = `__new_folder_temp_${Date.now()}__`;
-    const tempPath = window['path'].join(parentPath, tempKey);
-    const tempNode: FlatFileNode = {
-      expandable: true,
-      title: '',
-      level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
-      key: tempPath,
-      isLeaf: false,
-      path: tempPath
-    };
+    // 如果父节点是文件夹且未展开，先展开它
+    if (actualParentNode.expandable && !this.treeControl.isExpanded(actualParentNode)) {
+      this.treeControl.expand(actualParentNode);
+    }
 
-    // 添加临时节点到适当位置
-    this.addFileNodeDirect(parentPath, tempKey, false);
+    // 等待文件夹展开完成后再创建临时节点
+    setTimeout(() => {
+      // 创建临时节点用于内联编辑，使用时间戳确保唯一性
+      const tempKey = `__new_folder_temp_${Date.now()}__`;
+      const tempPath = window['path'].join(parentPath, tempKey);
+      const tempNode: FlatFileNode = {
+        expandable: true,
+        title: '',
+        level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
+        key: tempPath,
+        isLeaf: false,
+        path: tempPath
+      };
 
-    // 开始内联编辑
-    this.startInlineEdit(tempNode, 'newFolder', parentPath);
+      // 添加临时节点到适当位置
+      this.addFileNodeDirect(parentPath, tempKey, false);
+
+      // 开始内联编辑
+      this.startInlineEdit(tempNode, 'newFolder', parentPath);
+    }, 50);
   }
 
   private copyPathToClipboard(node: FlatFileNode, relative: boolean) {
