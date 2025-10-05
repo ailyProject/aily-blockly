@@ -99,82 +99,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   async ngAfterViewInit(): Promise<void> {
-    // 设置全局错误处理
-    this.setupGlobalErrorHandling();
     this.init();
-  }
-
-  /**
-   * 设置全局错误处理，特别是针对 tokenization 错误
-   */
-  private setupGlobalErrorHandling(): void {
-    // 捕获未处理的Promise rejection
-    window.addEventListener('unhandledrejection', (event) => {
-      if (event.reason && typeof event.reason === 'object') {
-        const error = event.reason;
-        const errorMessage = error.message || '';
-
-        // 捕获并忽略模型已释放的错误（这是正常的切换过程）
-        if (errorMessage.includes('Model is disposed') ||
-          errorMessage.includes('_BugIndicatingError') ||
-          errorMessage.includes('Illegal value for lineNumber')) {
-          console.debug('捕获到预期的模型切换错误，已忽略:', errorMessage);
-          event.preventDefault(); // 阻止错误进一步传播
-          return;
-        }
-      }
-    });
-
-    // 捕获全局错误
-    const originalErrorHandler = window.onerror;
-    window.onerror = (message, source, lineno, colno, error) => {
-      if (typeof message === 'string') {
-        // 捕获并忽略模型已释放相关的错误
-        if (message.includes('Model is disposed') ||
-          message.includes('Illegal value for lineNumber') ||
-          message.includes('_BugIndicatingError')) {
-          console.debug('捕获到预期的模型切换错误，已忽略:', message);
-          return true; // 阻止默认错误处理
-        }
-      }
-
-      // 调用原始错误处理器
-      if (originalErrorHandler) {
-        return originalErrorHandler(message, source, lineno, colno, error);
-      }
-      return false;
-    };
-  }
-
-  /**
-   * 处理 tokenization 错误
-   */
-  private async handleTokenizationError(): Promise<void> {
-    if (!this.editorInstance) return;
-
-    try {
-      console.log('Attempting to recover from tokenization error...');
-
-      // 保存当前内容
-      const currentContent = this.editorInstance.getValue();
-
-      // 重新创建模型
-      await this.recreateModel();
-
-      // 如果重建后内容不一致，重新设置
-      setTimeout(() => {
-        if (this.editorInstance && this.editorInstance.getValue() !== currentContent) {
-          try {
-            this.editorInstance.setValue(currentContent);
-          } catch (error) {
-            console.warn('Failed to restore content after tokenization error recovery:', error);
-          }
-        }
-      }, 200);
-
-    } catch (error) {
-      console.error('Failed to handle tokenization error:', error);
-    }
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -606,9 +531,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       console.log(`语言扩展 ${language} 加载成功`);
 
       // 如果是C++语言，自动加载cpptools扩展以提供代码补全功能
-      // if (language === 'cpp') {
-      //   await this.loadCpptools();
-      // }
+      if (language === 'cpp') {
+        await this.loadCpptools();
+      }
     } catch (error) {
       console.error(`加载语言扩展 ${language} 失败:`, error);
       // 即使失败也标记为已尝试加载，避免重复尝试
@@ -737,7 +662,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
         // 设置剪贴板支持（Electron环境）
         await this.setupClipboardSupport();
-        
+
         // 覆盖编辑器的剪贴板 actions
         this.overrideClipboardActions();
       }
@@ -840,7 +765,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
               // 忽略错误
             }
           }
-          
+
           if (text && this.editorInstance) {
             const selection = this.editorInstance.getSelection();
             if (selection) {
