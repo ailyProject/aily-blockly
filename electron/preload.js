@@ -363,6 +363,32 @@ window.electronAPI = {
           .catch((error) => reject(error));
       });
     }
-  }
-  // });
+  },
+  // 剪贴板 API - 用于 Monaco 编辑器等需要剪贴板访问的组件
+  clipboard: {
+    writeText: (text) => {
+      return new Promise((resolve) => {
+        try {
+          const { clipboard } = require('electron');
+          clipboard.writeText(text);
+          resolve(true);
+        } catch (error) {
+          console.error('Failed to write to clipboard:', error);
+          resolve(false);
+        }
+      });
+    },
+    readText: () => {
+      return new Promise((resolve) => {
+        try {
+          const { clipboard } = require('electron');
+          const text = clipboard.readText();
+          resolve(text);
+        } catch (error) {
+          console.error('Failed to read from clipboard:', error);
+          resolve('');
+        }
+      });
+    }
+  },
 }

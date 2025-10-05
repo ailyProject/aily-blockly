@@ -734,6 +734,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         } catch (error) {
           console.warn('Failed to setup model listeners:', error);
         }
+
+        // 设置剪贴板支持（Electron环境）
+        await this.setupClipboardSupport();
+        
+        // 覆盖编辑器的剪贴板 actions
+        this.overrideClipboardActions();
       }
 
       console.log('Monaco Editor created successfully');
@@ -752,6 +758,192 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     // 添加自定义右键菜单项（可选）
     // 这里可以根据需要添加自定义的上下文菜单项
     console.log('Context menu setup completed');
+  }
+
+  /**
+   * 设置剪贴板支持（Electron环境）
+   */
+  private async setupClipboardSupport(): Promise<void> {
+    if (!this.editorInstance) return;
+
+    // 检查是否在 Electron 环境中
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI || !electronAPI.clipboard) {
+      console.log('Not in Electron environment or clipboard API not available');
+      return;
+    }
+
+    try {
+      // 使用 VSCode API 注册剪贴板命令处理器
+      const { commands } = await import('vscode');
+
+      // 注册复制命令
+      commands.registerCommand('editor.action.clipboardCopyAction', async () => {
+        const selection = this.editorInstance?.getSelection();
+        if (selection && this.editorInstance) {
+          const model = this.editorInstance.getModel();
+          if (model && !selection.isEmpty()) {
+            const text = model.getValueInRange(selection);
+            if (text) {
+              await electronAPI.clipboard.writeText(text);
+              // 同时也写入 navigator.clipboard 作为备用
+              if (navigator.clipboard) {
+                try {
+                  await navigator.clipboard.writeText(text);
+                } catch (e) {
+                  // 忽略 navigator.clipboard 错误
+                }
+              }
+              console.log('✓ Text copied to clipboard');
+            }
+          }
+        }
+      });
+
+      // 注册剪切命令
+      commands.registerCommand('editor.action.clipboardCutAction', async () => {
+        const selection = this.editorInstance?.getSelection();
+        if (selection && this.editorInstance) {
+          const model = this.editorInstance.getModel();
+          if (model && !selection.isEmpty()) {
+            const text = model.getValueInRange(selection);
+            if (text) {
+              await electronAPI.clipboard.writeText(text);
+              // 同时也写入 navigator.clipboard 作为备用
+              if (navigator.clipboard) {
+                try {
+                  await navigator.clipboard.writeText(text);
+                } catch (e) {
+                  // 忽略 navigator.clipboard 错误
+                }
+              }
+              // 删除选中的文本
+              this.editorInstance.executeEdits('cut', [{
+                range: selection,
+                text: ''
+              }]);
+              console.log('✓ Text cut to clipboard');
+            }
+          }
+        }
+      });
+
+      // 注册粘贴命令
+      commands.registerCommand('editor.action.clipboardPasteAction', async () => {
+        try {
+          let text = await electronAPI.clipboard.readText();
+          // 如果 Electron clipboard 为空，尝试使用 navigator.clipboard
+          if (!text && navigator.clipboard) {
+            try {
+              text = await navigator.clipboard.readText();
+            } catch (e) {
+              // 忽略错误
+            }
+          }
+          
+          if (text && this.editorInstance) {
+            const selection = this.editorInstance.getSelection();
+            if (selection) {
+              this.editorInstance.executeEdits('paste', [{
+                range: selection,
+                text: text
+              }]);
+              // 将光标移动到粘贴文本的末尾
+              const lines = text.split('\n');
+              const lastLine = lines[lines.length - 1];
+              const newPosition = {
+                lineNumber: selection.startLineNumber + lines.length - 1,
+                column: lines.length === 1 ? selection.startColumn + lastLine.length : lastLine.length + 1
+              };
+              this.editorInstance.setPosition(newPosition);
+              console.log('✓ Text pasted from clipboard');
+            }
+          }
+        } catch (error) {
+          console.error('Failed to paste from clipboard:', error);
+        }
+      });
+
+      console.log('✓ Clipboard commands registered for Monaco editor');
+    } catch (error) {
+      console.error('Failed to setup clipboard support:', error);
+    }
+  }
+
+  /**
+   * 覆盖 Monaco 编辑器的剪贴板 actions
+   */
+  private overrideClipboardActions(): void {
+    if (!this.editorInstance) return;
+
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI || !electronAPI.clipboard) {
+      return;
+    }
+
+    try {
+      // 添加键盘快捷键
+      this.editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, async () => {
+        const selection = this.editorInstance?.getSelection();
+        if (selection && this.editorInstance) {
+          const model = this.editorInstance.getModel();
+          if (model && !selection.isEmpty()) {
+            const text = model.getValueInRange(selection);
+            if (text) {
+              await electronAPI.clipboard.writeText(text);
+              console.log('✓ Copied (Ctrl+C)');
+            }
+          }
+        }
+      });
+
+      this.editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, async () => {
+        const selection = this.editorInstance?.getSelection();
+        if (selection && this.editorInstance) {
+          const model = this.editorInstance.getModel();
+          if (model && !selection.isEmpty()) {
+            const text = model.getValueInRange(selection);
+            if (text) {
+              await electronAPI.clipboard.writeText(text);
+              this.editorInstance.executeEdits('cut', [{
+                range: selection,
+                text: ''
+              }]);
+              console.log('✓ Cut (Ctrl+X)');
+            }
+          }
+        }
+      });
+
+      this.editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, async () => {
+        try {
+          const text = await electronAPI.clipboard.readText();
+          if (text && this.editorInstance) {
+            const selection = this.editorInstance.getSelection();
+            if (selection) {
+              this.editorInstance.executeEdits('paste', [{
+                range: selection,
+                text: text
+              }]);
+              const lines = text.split('\n');
+              const lastLine = lines[lines.length - 1];
+              const newPosition = {
+                lineNumber: selection.startLineNumber + lines.length - 1,
+                column: lines.length === 1 ? selection.startColumn + lastLine.length : lastLine.length + 1
+              };
+              this.editorInstance.setPosition(newPosition);
+              console.log('✓ Pasted (Ctrl+V)');
+            }
+          }
+        } catch (error) {
+          console.error('Failed to paste:', error);
+        }
+      });
+
+      console.log('✓ Clipboard keyboard shortcuts registered');
+    } catch (error) {
+      console.error('Failed to override clipboard actions:', error);
+    }
   }
 
   /**
