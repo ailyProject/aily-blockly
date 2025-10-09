@@ -34,7 +34,7 @@ export const routes: Routes = [
                     },
                     {
                         path: 'list',
-                        loadComponent: () => import('./pages/playground/subject-list/subject-list.component').then(m => m.SubjectListComponent)
+                        loadComponent: () => import('./pages/playground/example-list/example-list.component').then(m => m.ExampleListComponent)
                     },
                     {
                         path: 's/:name',

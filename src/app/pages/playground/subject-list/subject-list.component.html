@@ -1,16 +1,20 @@
-<div class="example-list">
-    @for( subject of subjectList;track $index) {
-    <div class="example-item" [routerLink]="['/main/playground/s/' + subject.name.replace('@aily-project/','')]">
-        <div class="img-box">
-            <img [src]="resourceUrl + subject.img" alt="" (error)="onImgError($event)" />
-        </div>
-        <div>
-            <div class="name ellipsis">{{ subject.nickname }}</div>
-            <div class="text ellipsis">{{ subject.description }}</div>
-        </div>
-        <div class="footer">
-            <div class="author">{{ subject.author }}</div>
-            <!-- <div class="state">
+<div class="content-box">
+    <div class="example-list">
+        @for( subject of subjectList;track $index) {
+        <div class="example-item" [routerLink]="['/main/playground/s/' + subject.name.replace('@aily-project/','')]">
+            <div class="img-box">
+                <img [src]="resourceUrl + subject.img" alt="" (error)="onImgError($event)" />
+                @if(subject.examples?.length > 0){
+                <div class="collection">合集</div>
+                }
+            </div>
+            <div>
+                <div class="name ellipsis">{{ subject.nickname }}</div>
+                <div class="text ellipsis">{{ subject.description }}</div>
+            </div>
+            <div class="footer">
+                <div class="author">{{ subject.author }}</div>
+                <!-- <div class="state">
                 <div>
                     <i class="fa-light fa-arrow-down-to-line"></i>
                     1234
@@ -20,7 +24,11 @@
                     5674
                 </div>
             </div> -->
+            </div>
         </div>
+        }
     </div>
-    }
+</div>
+<div class="pagination">
+    <!-- <nz-pagination [(nzPageIndex)]="pageIndex" [nzTotal]="total"></nz-pagination> -->
 </div>
