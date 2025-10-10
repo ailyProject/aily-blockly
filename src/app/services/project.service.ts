@@ -182,7 +182,7 @@ export class ProjectService {
       if (result.success) {
         this.stateSubject.next('saved');
       } else {
-        console.warn('项目保存失败:', result.error);
+        // console.warn('项目保存失败:', result.error);
       }
     });
   }

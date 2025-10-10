@@ -13,10 +13,8 @@ npm-debug.log
 yarn-error.log
 /child/node
 /child/clangd
-<<<<<<< HEAD
-=======
 /child/aily-builder
->>>>>>> stao
+/public/vscode/extensions
 
 # IDEs and editors
 .idea/

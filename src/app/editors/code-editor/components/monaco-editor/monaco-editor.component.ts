@@ -90,6 +90,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /** 当前正在进行的模型切换操作 */
   private isChangingModel = false;
 
+  /** 剪贴板命令是否已注册(全局标志) */
+  private static clipboardCommandsRegistered = false;
+
   constructor(
     private extensionLoader: ExtensionLoaderService
   ) { }
@@ -509,9 +512,8 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     const extensionMap: Record<string, string> = {
       'cpp': 'vscode/extensions/cpp',
-      'json': 'vscode/extensions/json',
+      'json': 'vscode/extensions/json-language-features',
       'markdown': 'vscode/extensions/markdown-basics',
-
     };
 
     const extensionPath = extensionMap[language];
@@ -574,8 +576,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       if (!window['vscode_inited']) {
         await MonacoVSCodeCSSLoader.loadAllMonacoCSS();
-        // 重定向主题资源路径
-        // this.setupThemeResourcesRedirect();
 
         await initialize({
           ...getConfigurationServiceOverride(),
@@ -600,11 +600,44 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       await this.loadLanguageExtension(language);
 
-      // 手动设置默认主题配置和启用API提案
-      // await this.configureDefaultTheme();
       updateUserConfiguration(`{
         "workbench.colorTheme": "Default Dark Modern",
-        "extensions.enableProposedApi": ["ms-vscode.cpptools"]
+        "extensions.enableProposedApi": ["ms-vscode.cpptools"],
+        "json.format.enable": true,
+        "C_Cpp.autocomplete": "default",
+        "C_Cpp.autocompleteAddParentheses": false,
+        "C_Cpp.suggestSnippets": true,
+        "C_Cpp.errorSquiggles": "enabledIfIncludesResolve",
+        "C_Cpp.dimInactiveRegions": true,
+        "C_Cpp.inactiveRegionOpacity": 0.55,
+        "C_Cpp.intelliSenseEngine": "default",
+        "C_Cpp.intelliSenseUpdateDelay": 1000,
+        "C_Cpp.workspaceSymbols": "Just My Code",
+        "C_Cpp.workspaceParsingPriority": "highest",
+        "C_Cpp.codeFolding": "enabled",
+        "C_Cpp.enhancedColorization": "enabled",
+        "C_Cpp.formatting": "clangFormat",
+        "C_Cpp.clang_format_path": "",
+        "C_Cpp.clang_format_style": "file",
+        "C_Cpp.clang_format_fallbackStyle": "Visual Studio",
+        "C_Cpp.clang_format_sortIncludes": null,
+        "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+        "C_Cpp.codeAnalysis.clangTidy.path": "",
+        "C_Cpp.codeAnalysis.clangTidy.config": "",
+        "C_Cpp.codeAnalysis.runAutomatically": true,
+        "C_Cpp.codeAnalysis.maxConcurrentThreads": null,
+        "C_Cpp.codeAnalysis.maxMemory": null,
+        "C_Cpp.codeAnalysis.updateDelay": 2000,
+        "C_Cpp.codeAnalysis.exclude": {
+            "**/.git": true,
+            "**/build": true,
+            "**/node_modules": true
+        },
+        "C_Cpp.inlayHints.autoDeclarationTypes.enabled": true,
+        "C_Cpp.inlayHints.autoDeclarationTypes.showOnLeft": false,
+        "C_Cpp.inlayHints.parameterNames.enabled": true,
+        "C_Cpp.inlayHints.parameterNames.suppressWhenArgumentContainsName": true,
+        "C_Cpp.inlayHints.referenceOperator.enabled": true
       }`);
 
       // 创建编辑器实例
@@ -694,7 +727,13 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     // 检查是否在 Electron 环境中
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI || !electronAPI.clipboard) {
-      console.log('Not in Electron environment or clipboard API not available');
+      // console.log('Not in Electron environment or clipboard API not available');
+      return;
+    }
+
+    // 检查命令是否已经注册过,避免重复注册
+    if (MonacoEditorComponent.clipboardCommandsRegistered) {
+      // console.log('Clipboard commands already registered, skipping');
       return;
     }
 
@@ -719,7 +758,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
                   // 忽略 navigator.clipboard 错误
                 }
               }
-              console.log('✓ Text copied to clipboard');
+              // console.log('✓ Text copied to clipboard');
             }
           }
         }
@@ -747,7 +786,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
                 range: selection,
                 text: ''
               }]);
-              console.log('✓ Text cut to clipboard');
+              // console.log('✓ Text cut to clipboard');
             }
           }
         }
@@ -781,7 +820,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
                 column: lines.length === 1 ? selection.startColumn + lastLine.length : lastLine.length + 1
               };
               this.editorInstance.setPosition(newPosition);
-              console.log('✓ Text pasted from clipboard');
+              // console.log('✓ Text pasted from clipboard');
             }
           }
         } catch (error) {
@@ -789,6 +828,8 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         }
       });
 
+      // 标记命令已注册
+      MonacoEditorComponent.clipboardCommandsRegistered = true;
       console.log('✓ Clipboard commands registered for Monaco editor');
     } catch (error) {
       console.error('Failed to setup clipboard support:', error);
@@ -816,7 +857,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
             const text = model.getValueInRange(selection);
             if (text) {
               await electronAPI.clipboard.writeText(text);
-              console.log('✓ Copied (Ctrl+C)');
+              // console.log('✓ Copied (Ctrl+C)');
             }
           }
         }
@@ -857,7 +898,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
                 column: lines.length === 1 ? selection.startColumn + lastLine.length : lastLine.length + 1
               };
               this.editorInstance.setPosition(newPosition);
-              console.log('✓ Pasted (Ctrl+V)');
+              // console.log('✓ Pasted (Ctrl+V)');
             }
           }
         } catch (error) {
@@ -865,7 +906,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         }
       });
 
-      console.log('✓ Clipboard keyboard shortcuts registered');
+      // console.log('✓ Clipboard keyboard shortcuts registered');
     } catch (error) {
       console.error('Failed to override clipboard actions:', error);
     }
