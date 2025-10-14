@@ -3,55 +3,61 @@
 </app-tool-container>
 <ng-template #windowBoxTemplate>
     <div class="window-box">
+        @if (canSync) {
         <div class="top">
             <button class="sync-btn" nz-button nzType="primary" (click)="syncToCloud()" [disabled]="isSyncing">
                 <i class="fa-regular fa-arrows-rotate" [class.spinning]="isSyncing"></i>
                 {{ isSyncing ? '正在同步' : '同步本项目到云端' }}
             </button>
         </div>
+        }
         <div class="section-title">
             <div class="title ccenter">
                 云存储列表
+                <div class="search-btn ccenter" (click)="openSearch()"><i class="fa-light fa-magnifying-glass"></i></div>
             </div>
-            <div class="search-btn ccenter" (click)="openSearch()"><i class="fa-light fa-magnifying-glass"></i></div>
+            <!-- <div class="search-btn ccenter" (click)="openSearch()"><i class="fa-light fa-magnifying-glass"></i></div> -->
             @if(showSearch){
             <div class="search-box">
-                <input nz-input placeholder="搜索已存储的项目" />
-                <div class="close-btn ccenter" (click)="showSearch = false">
+                <input nz-input placeholder="搜索已存储的项目" [(ngModel)]="searchKeyword" (ngModelChange)="onSearchChange()" />
+                <div class="close-btn ccenter" (click)="closeSearch()">
                     <i class="fa-light fa-xmark"></i>
                 </div>
             </div>
             }
         </div>
+
         <div class="item-list sscroll">
-            @for (item of itemList; track $index) {
+            @for (item of filteredItemList; track $index) {
             <div class="item">
                 <div class="content">
                     <div class="left">
-                        <img src="imgs\subject.webp" alt="">
+                        <img src={{item?.image_url}} alt="">
+                        <div class="title">{{item?.nickname}}</div>
                     </div>
                     <div class="right">
-                        <div class="title">项目1</div>
-                        <div class="text">项目简介项目简介项介项目简介项介项目简介项介项目简介项介项目简介项介项目简介项目简介项目简介项目简介项目简介项目简介项目简介项目简介项目简介项目简介
-                        </div>
+                        <div class="text">{{item?.description || '无描述'}}</div>
                     </div>
                 </div>
                 <div class="btns ccenter">
-                    <button>
+                    <button (click)="openInNewTab(item)">
                         <i class="fa-light fa-folder-open"></i>
                         打开
                     </button>
-                    <button (click)="openEditor()">
+                    <button (click)="openEditor(item)">
                         <i class="fa-light fa-pen"></i>
                         编辑
                     </button>
-                    <button>
+                    <button (click)="toggleVisibility(item)">
+                        @if (item?.is_published === false) {
                         <i class="fa-light fa-eye"></i>
                         公开
-                        <!-- <i class="fa-light fa-eye-slash"></i>
-                        私有 -->
+                        } @else {
+                        <i class="fa-light fa-eye-slash"></i>
+                        私有
+                        }
                     </button>
-                    <button class="delete">
+                    <button class="delete" (click)="deleteCloudProject(item)">
                         <i class="fa-light fa-trash"></i>
                         删除
                     </button>
@@ -60,7 +66,8 @@
             }
         </div>
         @if(showEditor) {
-        <app-cloud-project-editor (close)="showEditor = false"></app-cloud-project-editor>
+        <app-cloud-project-editor (close)="showEditor = false" (saved)="onProjectSaved()"
+            [projectData]="editorProjectData"></app-cloud-project-editor>
         }
     </div>
 </ng-template>

@@ -1,0 +1,174 @@
+import { Component, inject, input } from '@angular/core';
+import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { NzIconModule } from 'ng-zorro-antd/icon';
+import { NzInputModule } from 'ng-zorro-antd/input';
+import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
+import { AuthService } from '../../../services/auth.service';
+import { Subject, takeUntil } from 'rxjs';
+import { NzMessageService } from 'ng-zorro-antd/message';
+import { ElectronService } from '../../../services/electron.service';
+import sha256 from 'crypto-js/sha256';
+
+@Component({
+  selector: 'app-login-dialog',
+  imports: [
+    NzButtonModule,
+    CommonModule,
+    FormsModule,
+    NzIconModule,
+    NzInputModule,
+    BaseDialogComponent
+  ],
+  templateUrl: './login-dialog.component.html',
+  styleUrl: './login-dialog.component.scss'
+})
+export class LoginDialogComponent {
+
+  readonly modal = inject(NzModalRef);
+  private destroy$ = new Subject<void>();
+
+  showWeChatLogin = false;
+  showPhoneLogin = true;
+
+  isWaiting = false;
+  inputUsername = '';
+  inputPassword = '';
+
+  constructor(
+    private authService: AuthService,
+    private message: NzMessageService,
+    private electronService: ElectronService
+  ) {
+    // 监听登录状态
+    this.authService.isLoggedIn$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(isLoggedIn => {
+        // 如果登录成功且当前在GitHub登录等待状态，关闭弹窗
+        if (isLoggedIn) {
+          // this.message.success('登录成功');
+          this.modal.close();
+        }
+      });
+  }
+
+  // async ngOnInit() {
+
+  //   // 监听登录状态
+  //   this.authService.isLoggedIn$
+  //     .pipe(takeUntil(this.destroy$))
+  //     .subscribe(isLoggedIn => {
+  //       this.isLoggedIn = isLoggedIn;
+
+  //       // 如果登录成功且当前在GitHub登录等待状态，关闭弹窗
+  //       if (isLoggedIn && this.isGitHubAuthWaiting) {
+  //         this.isGitHubAuthWaiting = false;
+  //         this.closeEvent.emit();
+  //       }
+  //     });
+
+  //   // 监听用户信息
+  //   this.authService.userInfo$
+  //     .pipe(takeUntil(this.destroy$))
+  //     .subscribe(userInfo => {
+  //       this.currentUser = userInfo;
+  //     });
+
+  //   // 由于app.component已经设置了全局OAuth监听器，这里不需要再设置
+  //   // 但是我们可以监听AuthService的登录状态变化来处理UI状态
+  // }
+
+  onCloseDialog(): void {
+    this.modal.close({ result: 'cancel' });
+  }
+
+  mode = '';
+  select(mode) {
+    this.mode = mode;
+    // switch (mode) {
+    //   case 'github':
+    //     this.mode = mode;
+    //     break;
+
+    //   default:
+    //     break;
+    // }
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'cancel') {
+      this.modal.close({ result: 'cancel' });
+    } else if (action === 'agree') {
+      this.modal.close({ result: 'agree' });
+    }
+  }
+
+
+  /**
+   * 执行实际的GitHub登录流程
+   */
+  async loginByGithub() {
+    try {
+      // 直接通过 HTTP 请求启动 GitHub OAuth 流程
+      this.authService.startGitHubOAuth().subscribe({
+        next: (response) => {
+          // 使用 ElectronService 在系统浏览器中打开授权页面
+          if (this.electronService.isElectron) {
+            this.electronService.openUrl(response.authorization_url);
+            this.message.info('正在跳转到 GitHub 授权页面...');
+          } else {
+            // 如果不在 Electron 环境中，使用 window.open 作为降级方案
+            window.open(response.authorization_url, '_blank');
+            this.message.info('正在跳转到 GitHub 授权页面...');
+          }
+        },
+        error: (error) => {
+          console.error('启动 GitHub OAuth 失败:', error);
+          this.message.error('启动 GitHub 登录失败，请检查网络连接');
+        }
+      });
+    } catch (error) {
+      console.error('GitHub 登录出错:', error);
+      this.message.error('GitHub 登录失败');
+    }
+  }
+
+  async loginByPhone() {
+      if (!this.inputUsername || !this.inputPassword) {
+        this.message.warning('请输入用户名和密码');
+        return;
+      }
+  
+      this.isWaiting = true;
+  
+      try {
+        const loginData = {
+          username: this.inputUsername,
+          password: sha256(this.inputPassword).toString()
+        };
+  
+        this.authService.login(loginData).subscribe({
+          next: (response) => {
+            if (response.status === 200 && response.data) {
+              this.message.success('登录成功');
+            } else {
+              this.message.error(response.message || '登录失败');
+            }
+          },
+          error: (error) => {
+            console.error('登录错误:', error);
+            this.message.error('登录失败，请检查网络连接');
+          },
+          complete: () => {
+            this.isWaiting = false;
+          }
+        });
+      } catch (error) {
+        console.error('登录过程中出错:', error);
+        this.message.error('登录失败');
+        this.isWaiting = false;
+      }
+    }
+}

@@ -1,11 +1,8 @@
 import { inject } from '@angular/core';
 import { HttpInterceptorFn, HttpRequest, HttpHandlerFn, HttpEvent, HttpErrorResponse } from '@angular/common/http';
-import { Observable, throwError, BehaviorSubject, filter, take, switchMap, catchError, from } from 'rxjs';
+import { Observable, throwError, catchError, from, switchMap } from 'rxjs';
 import { AuthService } from '../services/auth.service';
 import { API } from '../configs/api.config';
-
-let isRefreshing = false;
-let refreshTokenSubject: BehaviorSubject<any> = new BehaviorSubject<any>(null);
 
 function shouldInterceptRequest(url: string): boolean {
   // 获取API配置中的所有URL
@@ -27,7 +24,7 @@ export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: 
     switchMap(request => next(request)),
     catchError(error => {
       if (error instanceof HttpErrorResponse && !req.url.includes('auth/login') && error.status === 401) {
-        return handle401Error(req, next, authService);
+        return handle401Error(authService);
       }
       return throwError(() => error);
     })
@@ -35,6 +32,7 @@ export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: 
 };
 
 async function addTokenHeader(request: HttpRequest<any>, authService: AuthService, token?: string | null): Promise<HttpRequest<any>> {
+  console.log('Auth Interceptor - Adding token to request:', request.url);
   if (!token) {
     token = await authService.getToken2();
   }
@@ -50,43 +48,12 @@ async function addTokenHeader(request: HttpRequest<any>, authService: AuthServic
   return request;
 }
 
-function handle401Error(request: HttpRequest<any>, next: HttpHandlerFn, authService: AuthService): Observable<HttpEvent<any>> {
-  if (!isRefreshing) {
-    isRefreshing = true;
-    refreshTokenSubject.next(null);
-
-    return from(authService.refreshAuthToken()).pipe(
-      switchMap((success: boolean) => {
-        isRefreshing = false;
-        if (success) {
-          return from(authService.getToken()).pipe(
-            switchMap(token => {
-              refreshTokenSubject.next(token);
-              return from(addTokenHeader(request, authService, token)).pipe(
-                switchMap(req => next(req))
-              );
-            })
-          );
-        } else {
-          authService.logout();
-          return throwError(() => new Error('Token refresh failed'));
-        }
-      }),
-      catchError((err) => {
-        isRefreshing = false;
-        authService.logout();
-        return throwError(() => err);
-      })
-    );
-  }
-
-  return refreshTokenSubject.pipe(
-    filter(token => token !== null),
-    take(1),
-    switchMap(token => 
-      from(addTokenHeader(request, authService, token)).pipe(
-        switchMap(req => next(req))
-      )
-    )
-  );
+function handle401Error(authService: AuthService): Observable<HttpEvent<any>> {
+  console.log('Auth Interceptor - Token过期，清理认证数据并要求重新登录');
+  
+  // 清理认证数据并登出
+  authService.logout();
+  
+  // 返回错误，让调用方处理登录逻辑
+  return throwError(() => new Error('Token已过期，请重新登录'));
 }

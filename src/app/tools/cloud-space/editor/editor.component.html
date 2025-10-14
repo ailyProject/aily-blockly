@@ -10,10 +10,44 @@
             <textarea rows="6" nz-input [(ngModel)]="projectData.description"></textarea>
         </div>
         <div class="item">
+            <div>文档地址:</div>
+            <input class="board" nz-input [(ngModel)]="projectData.doc_url" />
+        </div>
+        <div class="item">
             <div>封面图片:</div>
-            <div class="file-input ccenter">
-                点击选择封面图片
-                <input nz-input [(ngModel)]="projectData.image" type="file" />
+            <div class="image-upload-container">
+                <!-- 图片预览区域 -->
+                <div class="image-preview" *ngIf="imagePreviewUrl || projectData.image">
+                    <img 
+                        [src]="imagePreviewUrl || projectData.image" 
+                        alt="封面图片预览"
+                        class="preview-image"
+                    />
+                    <div class="image-actions">
+                        <button 
+                            type="button" 
+                            class="remove-btn" 
+                            (click)="removeSelectedImage()"
+                            title="移除图片"
+                        >
+                            ×
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 文件选择区域 -->
+                <div class="file-input ccenter" [class.has-image]="imagePreviewUrl || projectData.image">
+                    <div class="upload-text">
+                        <span *ngIf="!imagePreviewUrl && !projectData.image">点击选择封面图片</span>
+                        <span *ngIf="imagePreviewUrl || projectData.image">点击更换封面图片</span>
+                        <div class="upload-hint">支持 JPG、PNG、GIF 格式，最大 5MB</div>
+                    </div>
+                    <input 
+                        type="file" 
+                        accept="image/*"
+                        (change)="onImageFileSelected($event)"
+                    />
+                </div>
             </div>
         </div>
     </div>

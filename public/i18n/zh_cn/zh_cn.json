@@ -74,8 +74,7 @@
     },
     "STM32": {
         "BOARD": "开发板型号选择",
-        "USB": "USB配置",
-        "UPLOAD_METHOD": "烧录方式"
+        "USB": "USB配置"
     },
     "GUIDE": {
         "START": "开始",

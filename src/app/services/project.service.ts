@@ -24,6 +24,7 @@ interface ProjectPackageData {
   board?: string;
   type?: string;
   framework?: string;
+  cloudId?: string; // 云端项目ID
 }
 
 @Injectable({
@@ -36,12 +37,24 @@ export class ProjectService {
   // 开发板变更事件通知，只在变更时发出
   boardChangeSubject = new Subject<void>();
 
+  // 当前项目路径的订阅源
+  private currentProjectPathSubject = new BehaviorSubject<string>('');
+  currentProjectPath$ = this.currentProjectPathSubject.asObservable();
+
   currentPackageData: ProjectPackageData = {
     name: 'aily blockly',
   };
 
   projectRootPath: string;
-  currentProjectPath: string;
+  
+  // 当前项目路径的 getter 和 setter
+  get currentProjectPath(): string {
+    return this.currentProjectPathSubject.value;
+  }
+  
+  set currentProjectPath(path: string) {
+    this.currentProjectPathSubject.next(path);
+  }
   currentBoardConfig: any;
   // STM32选择开发板时定义引脚使用
   currentStm32Config: { board: any, variant: any, variant_h: any } = { board: null, variant: null, variant_h: null };
@@ -213,7 +226,7 @@ export class ProjectService {
     };
     this.stateSubject.next('default');
     this.uiService.closeTerminal();
-    this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
+    // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
     this.router.navigate(['/main/guide'], { replaceUrl: true });
   }
 
@@ -275,6 +288,9 @@ export class ProjectService {
     const packageJsonPath = `${this.currentProjectPath}/package.json`;
     // 写入新的package.json
     window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
+
+    // 更新当前packageData
+    this.currentPackageData = data;
 
     this.boardChangeSubject.next();
   }
@@ -476,7 +492,7 @@ export class ProjectService {
       const stm32Config = {
         board: this.extractMenuOptions(boardConfig, 'pnum'),
         usb: this.extractMenuOptions(boardConfig, 'usb'),
-        upload_method: this.extractMenuOptions(boardConfig, 'upload_method'),
+        // upload_method: this.extractMenuOptions(boardConfig, 'upload_method'),
       };
 
       // 只保留 name 字段中包含 "Generic" 的选项，其它全部去掉
@@ -859,17 +875,17 @@ export class ProjectService {
               }
             });
           }
-        } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
-          menuItem.children = boardConfig.upload_method;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.upload_method) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
-                child.check = true;
-              }
-            });
-          }
+        // } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
+        //   menuItem.children = boardConfig.upload_method;
+        //   // 根据当前项目配置设置check状态
+        //   if (currentProjectConfig.upload_method) {
+        //     menuItem.children.forEach((child: any) => {
+        //       child.check = false;
+        //       if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
+        //         child.check = true;
+        //       }
+        //     });
+        //   }
         }
       });
       return STM32_CONFIG_MENU_TEMP;
@@ -1119,7 +1135,7 @@ export class ProjectService {
     try {
       const packageJson = await this.getPackageJson();
       if (!packageJson || !packageJson.projectConfig) {
-        throw new Error('项目配置未找到或格式不正确');
+        return {};
       }
 
       return packageJson.projectConfig;

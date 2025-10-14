@@ -860,6 +860,20 @@ app.on('open-url', (event, url) => {
   handleProtocol(url);
 });
 
+// 文件选择
+ipcMain.handle("select-file", async (event, data) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(senderWindow, {
+    title: data.title || '选择文件',
+    defaultPath: data.path,
+    properties: ["openFile"],
+  });
+  if (result.canceled) {
+    return "";
+  }
+  return result.filePaths[0];
+});
+
 // 项目管理相关
 // 打开项目用
 ipcMain.handle("select-folder", async (event, data) => {

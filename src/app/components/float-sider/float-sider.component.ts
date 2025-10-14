@@ -1,5 +1,6 @@
 import { Component, Input, OnInit, OnDestroy } from '@angular/core';
 import { PinmapComponent } from '../../app-store/pinmap/pinmap.component';
+import { FeedbackDialogComponent } from '../feedback-dialog/feedback-dialog.component';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CommonModule } from '@angular/common';
@@ -94,5 +95,29 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
       return;
     }
     this.electronService.openUrl(data.url)
+  }
+
+  openSettings() {
+
+  }
+
+  openFeedback() {
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzContent: FeedbackDialogComponent,
+      nzWidth: '500px',
+    });
+
+    // 处理反馈结果
+    modalRef.afterClose.subscribe(result => {
+      if (result?.result === 'success') {
+        console.log('反馈已提交:', result.data);
+      }
+    });
   }
 }
