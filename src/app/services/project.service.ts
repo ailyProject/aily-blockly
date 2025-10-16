@@ -46,12 +46,12 @@ export class ProjectService {
   };
 
   projectRootPath: string;
-  
+
   // 当前项目路径的 getter 和 setter
   get currentProjectPath(): string {
     return this.currentProjectPathSubject.value;
   }
-  
+
   set currentProjectPath(path: string) {
     this.currentProjectPathSubject.next(path);
   }
@@ -202,6 +202,7 @@ export class ProjectService {
 
   saveAs(path) {
     //在当前路径下创建一个新的目录
+    path = path.replace(/\s/g, '_');
     window['fs'].mkdirSync(path);
     // 复制项目目录到新路径
     window['fs'].copySync(this.currentProjectPath, path);
@@ -211,12 +212,19 @@ export class ProjectService {
     const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
     // 获取新的项目名称
     let name = path.split('\\').pop();
-    packageJson.name = name;
+    if (this.containsChineseCharacters(name)) {
+      packageJson.name = pinyin(name, {
+        toneType: "none",
+        separator: ""
+      }).replace(/\s/g, '_');
+    } else {
+      packageJson.name = name;
+    }
     window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
     // 修改当前项目路径
     this.currentProjectPath = path;
     this.currentPackageData = packageJson;
-    this.addRecentlyProject({ name: this.currentPackageData.name, path: path });
+    this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
   }
 
   async close() {
@@ -240,7 +248,7 @@ export class ProjectService {
     this.configService.save();
   }
 
-  addRecentlyProject(data: { name: string, path: string }) {
+  addRecentlyProject(data: { name: string, path: string, nickname?: string }) {
     let temp: any[] = this.recentlyProjects
     temp.unshift(data);
     temp = temp.filter((item, index) => {
@@ -875,17 +883,17 @@ export class ProjectService {
               }
             });
           }
-        // } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
-        //   menuItem.children = boardConfig.upload_method;
-        //   // 根据当前项目配置设置check状态
-        //   if (currentProjectConfig.upload_method) {
-        //     menuItem.children.forEach((child: any) => {
-        //       child.check = false;
-        //       if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
-        //         child.check = true;
-        //       }
-        //     });
-        //   }
+          // } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
+          //   menuItem.children = boardConfig.upload_method;
+          //   // 根据当前项目配置设置check状态
+          //   if (currentProjectConfig.upload_method) {
+          //     menuItem.children.forEach((child: any) => {
+          //       child.check = false;
+          //       if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
+          //         child.check = true;
+          //       }
+          //     });
+          //   }
         }
       });
       return STM32_CONFIG_MENU_TEMP;

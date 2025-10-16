@@ -104,7 +104,7 @@ export class BlocklyEditorComponent {
 
     this.electronService.setTitle(`aily blockly - ${packageJson.nickname}`);
     // 添加到最近打开的项目
-    this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
+    this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath, nickname: packageJson.nickname || packageJson.name });
     // 设置当前项目路径和package.json数据
     this._projectService.currentPackageData = packageJson;
     this.projectService.currentPackageData = packageJson;

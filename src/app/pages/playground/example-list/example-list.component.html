@@ -4,9 +4,6 @@
         <div class="example-item">
             <div class="img-box">
                 <img [src]="example.image_url" alt="" (error)="onImgError($event)" />
-                <!-- @if(example.examples?.length > 0){
-                <div class="collection">合集</div>
-                } -->
                 <div class="downloads">
                     <i class="fa-regular fa-arrow-down-to-line"></i> {{ example.download_count || '0' }}
                 </div>
@@ -15,15 +12,6 @@
                 </div>
             </div>
             <div>
-                <!-- <div class="name ellipsis">{{ example.nickname }}</div> -->
-                <!-- <div class="title-b">
-                    <div class="author">
-                        <i class="fa-light fa-user" style="margin-right: 5px;"></i>{{ example.author }}
-                    </div>
-                    <div class="downloads">
-                        <i class="fa-regular fa-arrow-down-to-line"></i> {{ example.downloads || '10k' }}
-                    </div>
-                </div> -->
                 <div class="text ellipsis">{{ example.description }}</div>
             </div>
             <div class="footer">

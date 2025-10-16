@@ -60,14 +60,14 @@ export class CloudService {
     }
 
     // 打印FormData内容（用于调试）
-    console.log('FormData内容:');
-    for (const [key, value] of formData.entries()) {
-      if (value instanceof File) {
-        console.log(`${key}: File(${value.name}, ${value.size} bytes, ${value.type})`);
-      } else {
-        console.log(`${key}: ${value}`);
-      }
-    }
+    // console.log('FormData内容:');
+    // for (const [key, value] of formData.entries()) {
+    //   if (value instanceof File) {
+    //     console.log(`${key}: File(${value.name}, ${value.size} bytes, ${value.type})`);
+    //   } else {
+    //     console.log(`${key}: ${value}`);
+    //   }
+    // }
 
     // 创建带有正确headers的请求
     const headers = new HttpHeaders({

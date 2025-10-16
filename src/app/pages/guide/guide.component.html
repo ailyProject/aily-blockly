@@ -21,13 +21,14 @@
       }
     </div>
     }
+    <!-- 近期打开的项目 -->
     <div style="min-height: 150px;">
       @if(recentlyProjects.length > 0) {
       <div class="title">{{'GUIDE.RECENTLY' | translate}}</div>
       <div class="menu-box">
         @for(project of recentlyProjects; track $index) {
         <div class="project btn link" (click)="openProjectByPath(project)">
-          {{project.name}}
+          <div>{{project.nickname || project.name}}</div>
           <div class="path ellipsis">{{project.path}}</div>
         </div>
         }
@@ -56,7 +57,7 @@
       <div>{{'GUIDE.FEEDBACK' | translate}}</div>
       <div>{{'GUIDE.FEEDBACK_DESC' | translate}}</div>
     </div>
-    <div class="item" style="height: 165px;">
+    <div class="item" style="height: 165px;" (click)="test()">
       <div>{{'GUIDE.WECHAT_GROUP' | translate}}</div>
       <div>{{'GUIDE.WECHAT_GROUP_DESC' | translate}}</div>
       <img class="qrcode" src="https://dl.diandeng.tech/blockly/wechat.jpg" (error)="retryLoadImage()" alt="微信群二维码"

@@ -6,6 +6,19 @@ function registerWindowHandlers(mainWindow) {
     // 添加一个映射来存储已打开的窗口
     const openWindows = new Map();
 
+    // 注册窗口焦点事件监听
+    const setupFocusListeners = (window) => {
+        window.on('focus', () => {
+            window.webContents.send('window-focus');
+        });
+        window.on('blur', () => {
+            window.webContents.send('window-blur');
+        });
+    };
+
+    // 为主窗口设置焦点监听
+    setupFocusListeners(mainWindow);
+
     ipcMain.on("window-open", (event, data) => {
         const windowUrl = data.path;
 
@@ -37,6 +50,9 @@ function registerWindowHandlers(mainWindow) {
                 preload: path.join(__dirname, "preload.js"),
             },
         });
+
+        // 为子窗口设置焦点监听
+        setupFocusListeners(subWindow);
 
         // 将新窗口添加到映射
         openWindows.set(windowUrl, subWindow);
@@ -87,6 +103,13 @@ function registerWindowHandlers(mainWindow) {
         if (senderWindow && senderWindow.isMaximized()) {
             senderWindow.unmaximize();
         }
+    });
+
+    // 检查窗口是否获得焦点（同步）
+    ipcMain.on("window-is-focused", (event) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        const isFocused = senderWindow ? senderWindow.isFocused() : false;
+        event.returnValue = isFocused;
     });
 
     ipcMain.on("window-go-main", (event, data) => {

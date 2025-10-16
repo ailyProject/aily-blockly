@@ -10,8 +10,8 @@ import { ActivatedRoute } from '@angular/router';
 import { PlaygroundService } from '../playground.service';
 import { NzPaginationModule } from 'ng-zorro-antd/pagination';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
-import { fromEvent, Subject } from 'rxjs';
-import { debounceTime, takeUntil } from 'rxjs/operators';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 import { CloudService } from '../../../tools/cloud-space/services/cloud.service';
 import { ProjectService } from '../../../services/project.service';
 import { CmdService } from '../../../services/cmd.service';
@@ -43,6 +43,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   pageSize: number = 10; // 每页显示数量，默认值
   total: number = 500; // 总条目数
   loadingExampleIndex: number | null = null; // 当前正在加载的示例索引
+  private pageSizeCalculated: boolean = false; // 标记 pageSize 是否已计算
   
   private destroy$ = new Subject<void>();
 
@@ -69,7 +70,10 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
         this.keyword = params['keyword'] || '';
         // 当通过 URL 搜索时，重置回第一页
         this.pageIndex = 1;
-        this.getExamples();
+        // 只有在 pageSize 已计算后才获取数据
+        if (this.pageSizeCalculated) {
+          this.getExamples();
+        }
       });
     // this.resourceUrl = this.configService.data.resource[0] + "/imgs/examples/";
 
@@ -133,15 +137,19 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
       this.calculatePageSize();
     }, 100);
 
-    // 监听窗口大小变化
-    fromEvent(window, 'resize')
-      .pipe(
-        debounceTime(300),
-        takeUntil(this.destroy$)
-      )
-      .subscribe(() => {
+    // 监听 content-box 元素的大小变化
+    if (this.contentBox) {
+      const resizeObserver = new ResizeObserver(() => {
         this.calculatePageSize();
       });
+      
+      resizeObserver.observe(this.contentBox.nativeElement);
+      
+      // 在组件销毁时断开观察
+      this.destroy$.subscribe(() => {
+        resizeObserver.disconnect();
+      });
+    }
   }
 
   ngOnDestroy() {
@@ -171,13 +179,27 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     const rows = Math.floor((containerHeight + gap) / (itemHeight + gap));
 
     // 总共可以显示的数量
-    const calculatedPageSize = itemsPerRow * rows;
-
-    // 至少显示1个
-    this.pageSize = Math.max(1, calculatedPageSize);
+    const calculatedPageSize = Math.max(1, itemsPerRow * rows);
     
     console.log('Container size:', containerWidth, 'x', containerHeight);
-    console.log('Items per row:', itemsPerRow, 'Rows:', rows, 'Page size:', this.pageSize);
+    console.log('Items per row:', itemsPerRow, 'Rows:', rows, 'Calculated page size:', calculatedPageSize);
+    
+    // 如果计算出的 pageSize 与当前值不同,更新并重新获取数据
+    if (this.pageSize !== calculatedPageSize) {
+      const oldPageSize = this.pageSize;
+      this.pageSize = calculatedPageSize;
+      console.log(`Page size changed from ${oldPageSize} to ${this.pageSize}, refreshing data...`);
+      
+      // 重置到第一页并重新获取数据
+      this.pageIndex = 1;
+      this.getExamples();
+    } else if (!this.pageSizeCalculated) {
+      // 第一次计算完成后，即使值没变也要获取数据
+      this.getExamples();
+    }
+    
+    // 标记 pageSize 已计算
+    this.pageSizeCalculated = true;
   }
 
   search(keyword = this.keyword) {
@@ -203,7 +225,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cloudService.getProjectArchive(item.archive_url).subscribe(async res => {
       // 直接添加随机数避免重名
       const randomNum = Math.floor(100000 + Math.random() * 900000);
-      const uniqueName = `${item.nickname || item.name || 'cloud_project'}_${randomNum}`;
+      const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
       const targetPath = this.projectService.projectRootPath + '\\' + uniqueName;
 
       // 使用 Move-Item 将下载/临时文件移动到目标项目目录

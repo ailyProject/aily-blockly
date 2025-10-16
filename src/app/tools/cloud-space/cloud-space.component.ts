@@ -111,7 +111,7 @@ export class CloudSpaceComponent {
     this.cloudService.getProjectArchive(item.archive_url).subscribe(async res => {
       // 直接添加随机数避免重名
       const randomNum = Math.floor(100000 + Math.random() * 900000);
-      const uniqueName = `${item.nickname || item.name || 'cloud_project'}_${randomNum}`;
+      const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
       const targetPath = this.projectService.projectRootPath + '\\' + uniqueName;
       
       // 使用 Move-Item 将下载/临时文件移动到目标项目目录

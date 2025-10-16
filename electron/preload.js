@@ -130,6 +130,20 @@ window.electronAPI = {
     // 向其他窗口发送消息
     send: (data) => ipcRenderer.invoke("window-send", data),
     onReceive: (callback) => ipcRenderer.on("window-receive", callback),
+    // 检查窗口是否为活动窗口
+    isFocused: () => ipcRenderer.sendSync("window-is-focused"),
+    // 监听窗口获得焦点事件
+    onFocus: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("window-focus", listener);
+      return () => ipcRenderer.removeListener("window-focus", listener);
+    },
+    // 监听窗口失去焦点事件
+    onBlur: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("window-blur", listener);
+      return () => ipcRenderer.removeListener("window-blur", listener);
+    },
   },
   subWindow: {
     open: (options) => ipcRenderer.send("window-open", options),
@@ -364,31 +378,38 @@ window.electronAPI = {
       });
     }
   },
-  // 剪贴板 API - 用于 Monaco 编辑器等需要剪贴板访问的组件
-  clipboard: {
-    writeText: (text) => {
-      return new Promise((resolve) => {
-        try {
-          const { clipboard } = require('electron');
-          clipboard.writeText(text);
-          resolve(true);
-        } catch (error) {
-          console.error('Failed to write to clipboard:', error);
-          resolve(false);
-        }
+  // 系统通知 API
+  notification: {
+    /**
+     * 显示系统通知
+     * @param {Object} options - 通知选项
+     * @param {string} options.title - 通知标题
+     * @param {string} options.body - 通知内容
+     * @param {string} [options.icon] - 通知图标路径（可选）
+     * @param {boolean} [options.silent=false] - 是否静音（可选）
+     * @param {string} [options.timeoutType='default'] - 超时类型（可选，'default' | 'never'）
+     * @param {string} [options.urgency] - 紧急程度（可选，'normal' | 'critical' | 'low'，仅 Linux）
+     * @returns {Promise<{success: boolean, result?: any, error?: string}>}
+     */
+    show: (options) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("notification-show", options)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
       });
     },
-    readText: () => {
-      return new Promise((resolve) => {
-        try {
-          const { clipboard } = require('electron');
-          const text = clipboard.readText();
-          resolve(text);
-        } catch (error) {
-          console.error('Failed to read from clipboard:', error);
-          resolve('');
-        }
+    /**
+     * 检查系统是否支持通知
+     * @returns {Promise<boolean>}
+     */
+    isSupported: () => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("notification-is-supported")
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
       });
     }
-  },
-}
+  }
+};
