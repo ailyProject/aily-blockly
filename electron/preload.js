@@ -151,7 +151,7 @@ window.electronAPI = {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
-    readFileSync: (path) => require("fs").readFileSync(path, "utf8"),
+    readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readDirSync: (path) => require("fs").readdirSync(path, { withFileTypes: true }),
     writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),

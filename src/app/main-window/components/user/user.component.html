@@ -21,7 +21,7 @@
                 <div class="ccenter">
                     <i class="fa-light fa-user-vneck"></i>
                 </div>
-                <div class="username">{{ currentUser?.username || currentUser?.login || '用户' }}</div>
+                <div class="username">{{ currentUser?.nickname || currentUser?.login || '用户' }}</div>
             </div>
             <div class="actions">
                 <button nz-button nzType="primary" (click)="onLogout()">

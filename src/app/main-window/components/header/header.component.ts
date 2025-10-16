@@ -22,6 +22,7 @@ import { UserComponent } from '../user/user.component';
 import { ConfigService } from '../../../services/config.service';
 import { AuthService } from '../../../services/auth.service';
 import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
+import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 
 @Component({
   selector: 'app-header',
@@ -332,12 +333,16 @@ export class HeaderComponent {
         }
         break;
       case 'user-auth':
-        if (event) {
-          this.calculateUserPosition(event);
-        }
         // 在显示用户组件前先同步登录状态
-        await this.authService.checkAndSyncAuthStatus();
-        this.showUser = !this.showUser;
+        let isLogin = await this.authService.checkAndSyncAuthStatus();
+        if (isLogin) {
+          if (event) {
+            this.calculateUserPosition(event);
+          }
+          this.showUser = !this.showUser;
+        } else {
+          this.openLoginDialog();
+        }
         break;
       case 'board-select':
         this.openBoardSelectorDialog();
@@ -545,6 +550,19 @@ export class HeaderComponent {
     });
   }
 
+  openLoginDialog() {
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '350px',
+      nzContent: LoginDialogComponent
+    });
+  }
+
   showInRouter(menuItem: IMenuItem) {
     if (!menuItem.router) {
       return true;
@@ -568,9 +586,38 @@ export class HeaderComponent {
 
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
-    // console.log('选择子菜单项:', subItem);
+    console.log('选择子菜单项:', subItem);
     let packageJson = await this.projectService.getPackageJson();
     packageJson['projectConfig'] = packageJson['projectConfig'] || {};
+
+    // // 判断是否为PartitionScheme并且值为'custom'，如果是则弹出文件选择
+    // if (subItem.key === 'PartitionScheme' && subItem.data.toLowerCase() === 'custom') {
+    //   const folderPath = await window['ipcRenderer'].invoke('select-file', {
+    //     title: '选择分区文件',
+    //     path: this.projectService.currentProjectPath,
+    //   });
+
+    //   // console.log('选中的分区文件路径：', folderPath);
+
+    //   if (!folderPath) {
+    //     this.message.warning('未选择分区文件，已取消');
+    //     return;
+    //   }
+
+    //   // 执行复制操作，复制到项目根目录下的 'partitions.csv'
+    //   const destPath = window['path'].join(this.projectService.currentProjectPath, 'partitions.csv');
+    //   if (folderPath != destPath) {
+    //     // console.log('复制分区文件到项目目录:', destPath);
+    //     try {
+    //       window['fs'].copySync(folderPath, destPath);
+    //     } catch (error) {
+    //       console.warn('复制分区文件失败:', error);
+    //       this.message.error('复制分区文件失败');
+    //       return;
+    //     }
+    //   }
+    // }
+
     packageJson['projectConfig'][subItem.key] = subItem.data;
     this.projectService.setPackageJson(packageJson);
     // 判断是否是STM32，是则更新项目配置

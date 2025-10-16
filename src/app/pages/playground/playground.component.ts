@@ -49,12 +49,12 @@ export class PlaygroundComponent {
 
     // 使用翻译初始化标签列表
     this.tagList = [
-      this.translate.instant('显示全部'),
-      this.translate.instant('入门课程'),
-      this.translate.instant('库示例'),
-      this.translate.instant('精选项目'),
-      this.translate.instant('物联网'),
-      this.translate.instant('机器人'),
+      // this.translate.instant('显示全部'),
+      // this.translate.instant('入门课程'),
+      // this.translate.instant('库示例'),
+      // this.translate.instant('精选项目'),
+      // this.translate.instant('物联网'),
+      // this.translate.instant('机器人'),
     ];
 
     this.electronService.setTitle('aily blockly - Playground');
@@ -62,23 +62,21 @@ export class PlaygroundComponent {
 
   keyword: string = '';
   search(keyword = this.keyword) {
-    if (keyword) {
-      keyword = keyword.replace(/\s/g, '').toLowerCase();
-      this.router.navigate(['/main/playground/list'], {
-        queryParams: { keyword }
-      });
-    } else {
-
-    }
+    keyword = keyword.replace(/\s/g, '').toLowerCase();
+    this.router.navigate(['/main/playground/list'], {
+      queryParams: { keyword }
+    });
   }
 
   back() {
-    // 检查是否有历史记录可以返回
-    if (window.history.length > 1) {
-      this.location.back();
-    } else {
-      // 如果没有历史记录，跳转到项目初始默认路径
-      this.router.navigate(['/main/guide']);
-    }
+    // // 检查是否有历史记录可以返回
+    // if (window.history.length > 1) {
+    //   this.location.back();
+    // } else {
+    //   // 如果没有历史记录，跳转到项目初始默认路径
+    //   this.router.navigate(['/main/guide']);
+    // }
+
+    this.router.navigate(['/main/guide']);
   }
 }

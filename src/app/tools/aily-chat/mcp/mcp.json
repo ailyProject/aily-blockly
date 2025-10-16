@@ -1,13 +1,4 @@
 {
   "mcpServers": {
-    "archon": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "http://114.132.150.141:8051/mcp",
-        "--allow-http"
-      ],
-      "enabled": true
-    }
   }
 }

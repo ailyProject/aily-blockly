@@ -3,12 +3,12 @@
         @for( example of exampleList;track $index) {
         <div class="example-item">
             <div class="img-box">
-                <img [src]="resourceUrl + example.img" alt="" (error)="onImgError($event)" />
+                <img [src]="example.image_url" alt="" (error)="onImgError($event)" />
                 <!-- @if(example.examples?.length > 0){
                 <div class="collection">合集</div>
                 } -->
                 <div class="downloads">
-                    <i class="fa-regular fa-arrow-down-to-line"></i> {{ example.downloads || '10k+' }}
+                    <i class="fa-regular fa-arrow-down-to-line"></i> {{ example.download_count || '0' }}
                 </div>
                 <div class="title">
                     {{ example.nickname }}
@@ -33,8 +33,10 @@
                     </div>
                 </div>
                 <div class="btns">
-                    <button nz-button class="doc-btn" [nzSize]="'small'" nz-tooltip nzTooltipTitle="文档"><i
+                    @if (example.doc_url && example.doc_url.trim() !== '') {
+                    <button nz-button class="doc-btn" [nzSize]="'small'" nz-tooltip nzTooltipTitle="文档" (click)="openDoc($index)"><i
                             class="fa-light fa-book"></i></button>
+                    }
                     <button nz-button class="load-btn" nzType="primary" [nzSize]="'small'"
                         [nzLoading]="isLoading($index)" [disabled]="isDisabled($index)" (click)="loadExample($index)">
                         {{ isLoading($index) ? '加载中' : '加载示例' }}
@@ -56,5 +58,5 @@
     </div>
 </div>
 <div class="pagination">
-    <nz-pagination [(nzPageIndex)]="pageIndex" [nzPageSize]="pageSize" [nzTotal]="total"></nz-pagination>
+    <nz-pagination [(nzPageIndex)]="pageIndex" [nzPageSize]="pageSize" [nzTotal]="total" (nzPageIndexChange)="onPageChange($event)"></nz-pagination>
 </div>

@@ -63,8 +63,7 @@ export class AppComponent implements OnInit, OnDestroy {
             this.message.success('GitHub 登录成功');
           } else {
             // OAuth失败
-            console.error('GitHub OAuth 失败:', result);
-            let errorMessage = 'GitHub 登录失败';
+            let errorMessage = 'GitHub 登录超时，请重试';
 
             switch (result.error) {
               case 'timeout':
@@ -81,7 +80,7 @@ export class AppComponent implements OnInit, OnDestroy {
                 errorMessage = result.message || '处理授权回调失败';
                 break;
               default:
-                errorMessage = result.message || 'GitHub 登录失败';
+                errorMessage = result.message || 'GitHub 登录超时，请重试';
             }
 
             this.message.error(errorMessage);

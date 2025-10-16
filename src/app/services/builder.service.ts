@@ -23,10 +23,15 @@ export class BuilderService {
   }
 
   private init(): void {
-    // console.log("BuilderService init");
     this.projectService.boardChangeSubject.subscribe(() => {
-      console.log('开发板已变更');
-      console.log('当前项目路径:', this.projectService.currentProjectPath);
+      try {
+        this.actionService.dispatch('compile-reset', {}, result => {
+          console.log('编译器已重置:', result);
+        });
+      } catch (error) {
+        console.warn('编译器重置失败:', error);
+      }
+
       this.clearCache(this.projectService.currentProjectPath).then(() => {
         console.log('编译缓存已清除');
       }).catch(err => {

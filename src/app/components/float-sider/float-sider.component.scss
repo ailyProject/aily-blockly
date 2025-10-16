@@ -34,11 +34,6 @@
     font-size: 18px;
     transition: all 0.3s;
 
-    // &:last-child {
-    //   margin-top: -5px;
-    //   margin-bottom: 0;
-    // }
-
     &.add {
       background: transparent !important;
     }
@@ -56,4 +51,10 @@
     }
   }
 
+  .line{
+    width: 30px;
+    height: 1px;
+    background: #555;
+    margin-bottom: 5px;
+  }
 }
