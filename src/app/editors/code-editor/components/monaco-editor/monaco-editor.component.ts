@@ -87,6 +87,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /** cpptools扩展是否已加载 */
   private cpptoolsLoaded = false;
 
+  /** json-language-features扩展是否已加载 */
+  private jsonLanguageFeaturesLoaded = false;
+
+  /** JSON格式化提供者是否已注册(全局标志) */
+  private static jsonFormatterRegistered = false;
+
   /** 当前正在进行的模型切换操作 */
   private isChangingModel = false;
 
@@ -465,13 +471,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     } catch (error) {
       console.error('Failed to recreate model:', error);
 
-      // 最后的回退方案：重置编辑器到基本状态
+      // 最后的回退方案：重置编辑器到基本状态（使用json作为默认，因为我们有手动注册的格式化器）
       try {
         const validatedContent = this.validateContent(this.code || '');
-        const basicModel = monaco.editor.createModel(validatedContent, 'plaintext');
+        const fallbackLanguage = this.getLanguageFromFilePath(this.filePath) || 'json';
+        const basicModel = monaco.editor.createModel(validatedContent, fallbackLanguage);
         this.editorInstance?.setModel(basicModel);
         this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
-        console.log('Fallback to basic model completed');
+        console.log(`Fallback to basic model completed with language: ${fallbackLanguage}`);
       } catch (fallbackError) {
         console.error('Even basic model creation failed:', fallbackError);
       }
@@ -512,11 +519,19 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     const extensionMap: Record<string, string> = {
       'cpp': 'vscode/extensions/cpp',
-      'json': 'vscode/extensions/json',
+      // 'json': 'vscode/extensions/json',  // 已禁用：避免与手动注册的格式化提供者冲突
       'markdown': 'vscode/extensions/markdown-basics',
     };
 
     const extensionPath = extensionMap[language];
+    
+    // 对于 JSON，不加载扩展，使用手动注册的格式化提供者
+    if (language === 'json') {
+      console.log('JSON 语言：使用手动注册的格式化提供者，跳过扩展加载');
+      this.loadedLanguageExtensions.add(language);
+      return;
+    }
+    
     if (!extensionPath) {
       console.warn(`未找到语言 ${language} 的扩展配置`);
       return;
@@ -532,6 +547,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       this.loadedLanguageExtensions.add(language);
       console.log(`语言扩展 ${language} 加载成功`);
 
+      // 如果是JSON语言，不再加载 json-language-features 扩展
+      // 因为我们已经手动注册了格式化提供者，避免冲突
+      // if (language === 'json') {
+      //   await this.loadJsonLanguageFeatures();
+      // }
+
       // 如果是C++语言，自动加载cpptools扩展以提供代码补全功能
       if (language === 'cpp') {
         await this.loadCpptools();
@@ -541,6 +562,48 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       // 即使失败也标记为已尝试加载，避免重复尝试
       this.loadedLanguageExtensions.add(language);
       throw error;
+    }
+  }
+
+  /**
+   * 加载 json-language-features 扩展，提供JSON格式化、验证等功能
+   */
+  async loadJsonLanguageFeatures() {
+    // 避免重复加载
+    if (this.jsonLanguageFeaturesLoaded) {
+      console.log('json-language-features扩展已加载，跳过');
+      return;
+    }
+
+    const jsonLanguageFeaturesPath = 'vscode/extensions/json-language-features';
+    try {
+      console.log('加载json-language-features扩展...');
+      const result = await this.extensionLoader.loadExtension(jsonLanguageFeaturesPath, {
+        hostKind: ExtensionHostKind.LocalWebWorker,
+        system: true
+      });
+      
+      // 等待扩展完全激活
+      await result.whenReady();
+      
+      // 额外等待一小段时间，确保语言服务器完全启动
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      this.jsonLanguageFeaturesLoaded = true;
+      console.log('json-language-features扩展加载并激活成功');
+      
+      // 触发语言激活事件
+      try {
+        const { commands } = await import('vscode');
+        // 尝试激活 JSON 语言
+        await commands.executeCommand('workbench.action.openSettings', 'json');
+      } catch (activationError) {
+        console.warn('激活 JSON 语言时出现警告:', activationError);
+      }
+    } catch (error) {
+      console.warn('加载json-language-features扩展失败:', error);
+      // 即使加载失败，也标记为已尝试加载，避免重复尝试
+      this.jsonLanguageFeaturesLoaded = true;
     }
   }
 
@@ -698,6 +761,9 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
         // 覆盖编辑器的剪贴板 actions
         this.overrideClipboardActions();
+
+        // 注册 JSON 格式化提供者（确保快捷键可用，使用 VSCode API）
+        await this.registerJsonFormattingProvider();
       }
 
       console.log('Monaco Editor created successfully');
@@ -716,6 +782,123 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     // 添加自定义右键菜单项（可选）
     // 这里可以根据需要添加自定义的上下文菜单项
     console.log('Context menu setup completed');
+  }
+
+  /**
+   * 注册通用格式化提供者
+   * 使用 VSCode API 而不是 Monaco API，这是 monaco-vscode-api 的正确用法
+   * 为所有语言（包括 plaintext）注册基本的格式化提供者
+   */
+  private async registerJsonFormattingProvider(): Promise<void> {
+    // 检查是否已经注册过，避免重复注册
+    if (MonacoEditorComponent.jsonFormatterRegistered) {
+      console.log('格式化提供者已注册，跳过');
+      return;
+    }
+
+    try {
+      // 导入 VSCode API（这是 monaco-vscode-api 的正确用法）
+      const vscode = await import('vscode');
+      
+      // 注册 JSON 文档格式化提供者
+      const jsonDisposable = vscode.languages.registerDocumentFormattingEditProvider(
+        { scheme: '*', language: 'json' },
+        {
+          provideDocumentFormattingEdits(document, options, token) {
+            try {
+              const text = document.getText();
+              
+              // 解析并格式化 JSON
+              const parsed = JSON.parse(text);
+              const tabSize = options.tabSize || 2;
+              const formatted = JSON.stringify(parsed, null, tabSize);
+              
+              // 返回 VSCode TextEdit 对象
+              const fullRange = new vscode.Range(
+                document.positionAt(0),
+                document.positionAt(text.length)
+              );
+              
+              return [vscode.TextEdit.replace(fullRange, formatted)];
+            } catch (error) {
+              console.error('JSON 格式化失败:', error);
+              return [];
+            }
+          }
+        }
+      );
+
+      // 注册 JSON 范围格式化提供者
+      const jsonRangeDisposable = vscode.languages.registerDocumentRangeFormattingEditProvider(
+        { scheme: '*', language: 'json' },
+        {
+          provideDocumentRangeFormattingEdits(document, range, options, token) {
+            try {
+              // 获取选中范围的文本
+              const text = document.getText(range);
+              
+              // 尝试解析并格式化
+              const parsed = JSON.parse(text);
+              const tabSize = options.tabSize || 2;
+              const formatted = JSON.stringify(parsed, null, tabSize);
+              
+              return [vscode.TextEdit.replace(range, formatted)];
+            } catch (error) {
+              // 如果选中的不是完整的 JSON，尝试格式化整个文档
+              console.warn('选中的文本不是有效的 JSON，尝试格式化整个文档');
+              try {
+                const fullText = document.getText();
+                const parsed = JSON.parse(fullText);
+                const tabSize = options.tabSize || 2;
+                const formatted = JSON.stringify(parsed, null, tabSize);
+                
+                const fullRange = new vscode.Range(
+                  document.positionAt(0),
+                  document.positionAt(fullText.length)
+                );
+                
+                return [vscode.TextEdit.replace(fullRange, formatted)];
+              } catch (fullError) {
+                console.error('JSON 范围格式化失败:', fullError);
+                return [];
+              }
+            }
+          }
+        }
+      );
+
+      // 为 plaintext 也注册一个格式化提供者（防止报错）
+      const plaintextDisposable = vscode.languages.registerDocumentFormattingEditProvider(
+        { scheme: '*', language: 'plaintext' },
+        {
+          provideDocumentFormattingEdits(document, options, token) {
+            // 尝试作为 JSON 格式化
+            try {
+              const text = document.getText();
+              const parsed = JSON.parse(text);
+              const tabSize = options.tabSize || 2;
+              const formatted = JSON.stringify(parsed, null, tabSize);
+              
+              const fullRange = new vscode.Range(
+                document.positionAt(0),
+                document.positionAt(text.length)
+              );
+              
+              return [vscode.TextEdit.replace(fullRange, formatted)];
+            } catch (error) {
+              // 不是有效的 JSON，返回空数组
+              return [];
+            }
+          }
+        }
+      );
+
+      // 标记已注册，避免重复注册
+      MonacoEditorComponent.jsonFormatterRegistered = true;
+      console.log('✓ 格式化提供者已注册（JSON 和 plaintext，使用 VSCode API，支持快捷键 Shift+Alt+F）');
+    } catch (error) {
+      console.error('注册格式化提供者失败:', error);
+    }
   }
 
   /**
@@ -1121,6 +1304,193 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       tryRestore();
     });
+  }
+
+  /**
+   * 格式化当前文档
+   * 支持 JSON、C++、Markdown 等语言的格式化
+   * @returns Promise<boolean> 格式化是否成功
+   */
+  /**
+   * 格式化当前文档
+   * 支持 JSON、C++、Markdown 等语言的格式化
+   * @returns Promise<boolean> 格式化是否成功
+   */
+  public async formatDocument(): Promise<boolean> {
+    if (!this.editorInstance) {
+      console.warn('编辑器实例未初始化，无法格式化');
+      return false;
+    }
+
+    const model = this.editorInstance.getModel();
+    if (!model) {
+      console.warn('编辑器模型未初始化，无法格式化');
+      return false;
+    }
+
+    try {
+      const language = model.getLanguageId();
+      console.log(`正在格式化 ${language} 文档...`);
+
+      // 获取格式化 action
+      const formatAction = this.editorInstance.getAction('editor.action.formatDocument');
+      
+      if (!formatAction) {
+        console.warn(`未找到格式化 action，语言: ${language}`);
+        
+        // JSON 的回退方案
+        if (language === 'json') {
+          return await this.fallbackJsonFormat();
+        }
+        
+        return false;
+      }
+
+      // 执行格式化
+      await formatAction.run();
+      console.log('✓ 文档格式化成功');
+      return true;
+    } catch (error) {
+      console.error('文档格式化失败:', error);
+      
+      // 如果是 JSON，尝试回退方案
+      const language = model.getLanguageId();
+      if (language === 'json') {
+        console.log('尝试使用回退的 JSON 格式化方案...');
+        return await this.fallbackJsonFormat();
+      }
+      
+      return false;
+    }
+  }
+
+  /**
+   * 检查是否有可用的格式化提供者
+   */
+  private async checkFormatProviders(model: monaco.editor.ITextModel): Promise<boolean> {
+    try {
+      // 使用 Monaco 的 API 检查格式化提供者
+      const providers = monaco.languages.getLanguages();
+      const languageId = model.getLanguageId();
+      
+      console.log(`检查 ${languageId} 的格式化提供者...`);
+      
+      // 等待一小段时间让提供者注册
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      return true; // 暂时返回 true，让格式化尝试执行
+    } catch (error) {
+      console.warn('检查格式化提供者失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * JSON 格式化的回退方案（使用原生 JavaScript）
+   */
+  private async fallbackJsonFormat(): Promise<boolean> {
+    if (!this.editorInstance) return false;
+
+    try {
+      const model = this.editorInstance.getModel();
+      if (!model) return false;
+
+      const content = model.getValue();
+      console.log('使用原生 JSON.parse/stringify 进行格式化...');
+      
+      // 尝试解析和格式化 JSON
+      const parsed = JSON.parse(content);
+      const formatted = JSON.stringify(parsed, null, 2);
+      
+      // 更新编辑器内容
+      const fullRange = model.getFullModelRange();
+      model.pushEditOperations(
+        [],
+        [{
+          range: fullRange,
+          text: formatted
+        }],
+        () => null
+      );
+      
+      console.log('✓ JSON 格式化成功（使用回退方案）');
+      return true;
+    } catch (error) {
+      console.error('JSON 回退格式化失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 格式化选中的代码
+   * @returns Promise<boolean> 格式化是否成功
+   */
+  public async formatSelection(): Promise<boolean> {
+    if (!this.editorInstance) {
+      console.warn('编辑器实例未初始化，无法格式化');
+      return false;
+    }
+
+    const selection = this.editorInstance.getSelection();
+    if (!selection || selection.isEmpty()) {
+      console.warn('没有选中任何内容，将格式化整个文档');
+      return this.formatDocument();
+    }
+
+    const model = this.editorInstance.getModel();
+    if (!model) {
+      console.warn('编辑器模型未初始化，无法格式化');
+      return false;
+    }
+
+    try {
+      const language = model.getLanguageId();
+      console.log(`正在格式化选中的 ${language} 代码...`);
+
+      // 获取格式化选区 action
+      const formatAction = this.editorInstance.getAction('editor.action.formatSelection');
+      
+      if (!formatAction) {
+        console.warn('未找到格式化选区 action，尝试格式化整个文档');
+        return this.formatDocument();
+      }
+
+      // 执行格式化
+      await formatAction.run();
+      console.log('✓ 选中代码格式化成功');
+      return true;
+    } catch (error) {
+      console.error('选中代码格式化失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 触发 VS Code 命令
+   * @param commandId 命令 ID，例如 'editor.action.formatDocument'
+   * @returns Promise<boolean> 命令是否执行成功
+   */
+  public async executeCommand(commandId: string): Promise<boolean> {
+    if (!this.editorInstance) {
+      console.warn('编辑器实例未初始化，无法执行命令');
+      return false;
+    }
+
+    try {
+      const action = this.editorInstance.getAction(commandId);
+      
+      if (!action) {
+        console.warn(`未找到命令: ${commandId}`);
+        return false;
+      }
+
+      await action.run();
+      console.log(`✓ 命令 ${commandId} 执行成功`);
+      return true;
+    } catch (error) {
+      console.error(`命令 ${commandId} 执行失败:`, error);
+      return false;
+    }
   }
 
 }
