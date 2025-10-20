@@ -98,6 +98,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "Framework de desenvolvimento",
             "BOARD": "Placa",
             "PROJECT_NAME": "Nome do projeto",
             "SAVE_PATH": "Caminho de salvamento",
@@ -140,5 +141,33 @@
         "IOT": "IoT",
         "OTHERS": "Outros",
         "ALL": "Todas as bibliotecas"
+    },
+    "BOARD_SELECTOR": {
+        "TITLE": "Trocar Placa",
+        "SEARCH_PLACEHOLDER": "Pesquisar placa...",
+        "EMPTY_LIST": "Nenhuma placa correspondente encontrada",
+        "CANCEL": "Cancelar",
+        "CONFIRM": "Confirmar",
+        "LOADING": "Trocando placa...",
+        "SWITCH_FAILED": "Falha ao trocar placa"
+    },
+    "UPDATE_DIALOG": {
+        "TITLE": "Atualização de software",
+        "DOWNLOAD_FAILED": "Falha no download",
+        "REMIND_LATER": "Lembrar mais tarde",
+        "SKIP_VERSION": "Pular esta versão",
+        "UPDATE_NOW": "Atualizar agora",
+        "CANCEL_DOWNLOAD": "Cancelar download",
+        "INSTALL_LATER": "Instalar mais tarde",
+        "INSTALL_NOW": "Instalar agora",
+        "CLOSE": "Fechar",
+        "RETRY": "Tentar novamente"
+    },
+    "UNSAVE_DIALOG": {
+        "TITLE": "Alterações não salvas",
+        "MESSAGE": "Você tem alterações não salvas. Deseja salvá-las?",
+        "CANCEL": "Cancelar",
+        "SKIP_SAVE": "Pular salvamento",
+        "SAVE_AND_CONTINUE": "Salvar e continuar"
     }
 }

@@ -14,13 +14,15 @@ import { IMenuItem } from '../../../configs/menu.config';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { UpdateService } from '../../../services/update.service';
 import { Router } from '@angular/router';
 import { ElectronService } from '../../../services/electron.service';
 import { UserComponent } from '../user/user.component';
 import { ConfigService } from '../../../services/config.service';
 import { AuthService } from '../../../services/auth.service';
+import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
+import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 
 @Component({
   selector: 'app-header',
@@ -82,7 +84,8 @@ export class HeaderComponent {
     private router: Router,
     private electronService: ElectronService,
     private configService: ConfigService,
-    private authService: AuthService
+    private authService: AuthService,
+    private translate: TranslateService
   ) { }
 
   async ngAfterViewInit() {
@@ -158,6 +161,7 @@ export class HeaderComponent {
         }
       ];
     }
+
     // 添加ESP32相关配置选项
     if (this.projectService.currentBoardConfig['core'].indexOf('esp32') > -1) {
       let temp = this.projectService.currentBoardConfig['type'].split(':');
@@ -183,14 +187,12 @@ export class HeaderComponent {
     }
 
     // 添加切换开发板功能
-    let boardList = await this.configService.loadBoardList();
-    boardList = this.convertBoardListFormat(boardList);
     portList0.push({ sep: true });
     portList0.push({
-      name: '切换开发板',
+      name: this.translate.instant('BOARD_SELECTOR.TITLE'),
       icon: 'fa-light fa-layer-group',
       action: 'board-select',
-      children: boardList
+      // children: boardList
     })
     this.configList = portList0;
     this.cd.detectChanges();
@@ -331,15 +333,19 @@ export class HeaderComponent {
         }
         break;
       case 'user-auth':
-        if (event) {
-          this.calculateUserPosition(event);
-        }
         // 在显示用户组件前先同步登录状态
-        await this.authService.checkAndSyncAuthStatus();
-        this.showUser = !this.showUser;
+        let isLogin = await this.authService.checkAndSyncAuthStatus();
+        if (isLogin) {
+          if (event) {
+            this.calculateUserPosition(event);
+          }
+          this.showUser = !this.showUser;
+        } else {
+          this.openLoginDialog();
+        }
         break;
       case 'board-select':
-        console.log('board-select');
+        this.openBoardSelectorDialog();
         break;
       default:
         console.log('未处理的操作:', item.action);
@@ -504,17 +510,6 @@ export class HeaderComponent {
       return true;
     }
 
-    // 根据不同操作设置不同的提示文本
-    let title = '有未保存的更改';
-    let text = '是否保存当前项目？';
-    if (action === 'open') {
-      text = '在打开新项目前，是否保存当前项目的更改？';
-    } else if (action === 'new') {
-      text = '在创建新项目前，是否保存当前项目的更改？';
-    } else if (action === 'close') {
-      text = '是否在关闭前保存更改？';
-    }
-
     return new Promise<boolean>((resolve) => {
       const modalRef = this.modal.create({
         nzTitle: null,
@@ -523,9 +518,9 @@ export class HeaderComponent {
         nzBodyStyle: {
           padding: '0',
         },
-        nzWidth: '320px',
+        nzWidth: '350px',
         nzContent: UnsaveDialogComponent,
-        nzData: { title, text },
+        nzData: { action },
         // nzDraggable: true,
       });
 
@@ -555,6 +550,19 @@ export class HeaderComponent {
     });
   }
 
+  openLoginDialog() {
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '350px',
+      nzContent: LoginDialogComponent
+    });
+  }
+
   showInRouter(menuItem: IMenuItem) {
     if (!menuItem.router) {
       return true;
@@ -578,22 +586,45 @@ export class HeaderComponent {
 
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
-    // console.log('选择子菜单项:', subItem);
-    // 切换开发板
-    if (subItem.key === "BoardType") {
-      this.projectService.changeBoard(subItem.data.board);
-      this.showPortList = false;
-    } else {
-      let packageJson = await this.projectService.getPackageJson();
-      packageJson['projectConfig'] = packageJson['projectConfig'] || {};
-      packageJson['projectConfig'][subItem.key] = subItem.data;
-      this.projectService.setPackageJson(packageJson);
-      // 判断是否是STM32，是则更新项目配置
-      if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
+    console.log('选择子菜单项:', subItem);
+    let packageJson = await this.projectService.getPackageJson();
+    packageJson['projectConfig'] = packageJson['projectConfig'] || {};
+
+    // // 判断是否为PartitionScheme并且值为'custom'，如果是则弹出文件选择
+    // if (subItem.key === 'PartitionScheme' && subItem.data.toLowerCase() === 'custom') {
+    //   const folderPath = await window['ipcRenderer'].invoke('select-file', {
+    //     title: '选择分区文件',
+    //     path: this.projectService.currentProjectPath,
+    //   });
+
+    //   // console.log('选中的分区文件路径：', folderPath);
+
+    //   if (!folderPath) {
+    //     this.message.warning('未选择分区文件，已取消');
+    //     return;
+    //   }
+
+    //   // 执行复制操作，复制到项目根目录下的 'partitions.csv'
+    //   const destPath = window['path'].join(this.projectService.currentProjectPath, 'partitions.csv');
+    //   if (folderPath != destPath) {
+    //     // console.log('复制分区文件到项目目录:', destPath);
+    //     try {
+    //       window['fs'].copySync(folderPath, destPath);
+    //     } catch (error) {
+    //       console.warn('复制分区文件失败:', error);
+    //       this.message.error('复制分区文件失败');
+    //       return;
+    //     }
+    //   }
+    // }
+
+    packageJson['projectConfig'][subItem.key] = subItem.data;
+    this.projectService.setPackageJson(packageJson);
+    // 判断是否是STM32，是则更新项目配置
+    if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
       this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
-        let newPinConfig = subItem;
-        this.projectService.compareStm32PinConfig(newPinConfig)
-      }
+      let newPinConfig = subItem;
+      this.projectService.compareStm32PinConfig(newPinConfig)
     }
   }
 
@@ -628,39 +659,34 @@ export class HeaderComponent {
     this.showUser = false;
   }
 
-  /**
-   * 将开发板列表转换为菜单格式
-   * @param boardList 原始开发板列表
-   * @returns 转换后的菜单格式列表
-   */
-  convertBoardListFormat(boardList: any[]): any[] {
-    // console.log('转换开发板列表格式:', boardList);
-    const currentBoardName = this.projectService.currentBoardConfig?.name;
-    // console.log('当前开发板名称:', currentBoardName);
+  async openBoardSelectorDialog() {
+    // 获取开发板列表
+    let boardList = await this.configService.loadBoardList();
+    console.log(boardList);
 
-    return boardList
-      .filter(board => board.nickname !== currentBoardName) // 过滤掉当前已选的开发板
-      // .filter(board => !board.disabled) // 过滤掉被禁用的开发板
-      .map(board => ({
-        name: board.nickname || board.name, // 使用昵称，如果没有则使用name
-        key: "BoardType",
-        data: {
-          board: {
-            name: board.name,
-            nickname: board.nickname,
-            version: board.version,
-            description: board.description,
-            author: board.author,
-            brand: board.brand,
-            url: board.url,
-            compatibility: board.compatibility,
-            img: board.img
-          }
-        },
-        check: false
-      }));
+    // 显示开发板选择对话框
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '400px',
+      nzContent: BoardSelectorDialogComponent,
+      nzData: {
+        boardList: boardList
+      }
+    });
+
+    // // 处理对话框返回结果
+    // modalRef.afterClose.subscribe(result => {
+    //   if (result && result.result === 'confirm') {
+    //     // 开发板已经在对话框内切换完成，只需要更新UI
+    //     this.cd.detectChanges();
+    //   }
+    // });
   }
-
 }
 
 export interface RunState {

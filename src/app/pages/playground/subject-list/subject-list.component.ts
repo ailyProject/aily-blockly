@@ -8,10 +8,19 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ConfigService } from '../../../services/config.service';
 import { ActivatedRoute } from '@angular/router';
 import { PlaygroundService } from '../playground.service';
+import { NzPaginationModule } from 'ng-zorro-antd/pagination';
 
 @Component({
   selector: 'app-subject-list',
-  imports: [RouterModule, CommonModule, FormsModule, NzInputModule, NzButtonModule, TranslateModule],
+  imports: [
+    RouterModule,
+    CommonModule,
+    FormsModule,
+    NzInputModule,
+    NzButtonModule,
+    TranslateModule,
+    NzPaginationModule
+  ],
   templateUrl: './subject-list.component.html',
   styleUrl: './subject-list.component.scss'
 })
@@ -20,11 +29,14 @@ export class SubjectListComponent implements OnInit {
   resourceUrl: string = '';
   keyword: string = '';
 
+  pageIndex: number = 1; // 当前页码
+  total: number = 500; // 总条目数
+
   constructor(
     private configService: ConfigService,
     private translate: TranslateService,
     private route: ActivatedRoute,
-    private playgroundService: PlaygroundService
+    private playgroundService: PlaygroundService,
   ) {
     // 从URL参数中获取搜索关键词（如果有）
     this.route.queryParams.subscribe(params => {
@@ -36,12 +48,12 @@ export class SubjectListComponent implements OnInit {
 
   ngOnInit() {
     this.resourceUrl = this.configService.data.resource[0] + "/imgs/examples/";
-    
+
     // 如果数据已经加载，直接使用
     if (this.playgroundService.isLoaded) {
       this.subjectList = this.playgroundService.processedExamplesList;
       console.log(this.subjectList);
-      
+
       // 如果URL中有关键词，执行搜索
       if (this.keyword) {
         this.search(this.keyword);
@@ -51,7 +63,7 @@ export class SubjectListComponent implements OnInit {
       this.playgroundService.loadExamplesList().then(() => {
         this.subjectList = this.playgroundService.processedExamplesList;
         console.log(this.subjectList);
-        
+
         // 如果URL中有关键词，执行搜索
         if (this.keyword) {
           this.search(this.keyword);

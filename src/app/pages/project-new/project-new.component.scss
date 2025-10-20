@@ -96,6 +96,18 @@
           flex-shrink: 0;
         }
 
+        nz-radio-group {
+          background: #363636;
+
+          label {
+            opacity: 0.5;
+
+            &.ant-radio-button-wrapper-checked {
+              opacity: 1 !important;
+            }
+          }
+        }
+
         input {
           background: #363636;
           z-index: 1;

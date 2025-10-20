@@ -100,6 +100,7 @@
             "DEV": "Entwicklung"
         },
         "FORM": {
+            "DEVMODE": "Entwicklungs-Framework",
             "BOARD": "Board",
             "PROJECT_NAME": "Projektname",
             "SAVE_PATH": "Speicherpfad",
@@ -145,5 +146,33 @@
         "AI": "KI",
         "IOT": "IoT",
         "OTHERS": "Andere"
+    },
+    "BOARD_SELECTOR": {
+        "TITLE": "Board wechseln",
+        "SEARCH_PLACEHOLDER": "Board suchen...",
+        "EMPTY_LIST": "Keine passenden Boards gefunden",
+        "CANCEL": "Abbrechen",
+        "CONFIRM": "Bestätigen",
+        "LOADING": "Board wird gewechselt...",
+        "SWITCH_FAILED": "Board-Wechsel fehlgeschlagen"
+    },
+    "UPDATE_DIALOG": {
+        "TITLE": "Software-Update",
+        "DOWNLOAD_FAILED": "Download fehlgeschlagen",
+        "REMIND_LATER": "Später erinnern",
+        "SKIP_VERSION": "Diese Version überspringen",
+        "UPDATE_NOW": "Jetzt aktualisieren",
+        "CANCEL_DOWNLOAD": "Download abbrechen",
+        "INSTALL_LATER": "Später installieren",
+        "INSTALL_NOW": "Jetzt installieren",
+        "CLOSE": "Schließen",
+        "RETRY": "Erneut versuchen"
+    },
+    "UNSAVE_DIALOG": {
+        "TITLE": "Nicht gespeicherte Änderungen",
+        "MESSAGE": "Sie haben nicht gespeicherte Änderungen. Möchten Sie diese speichern?",
+        "CANCEL": "Abbrechen",
+        "SKIP_SAVE": "Speichern überspringen",
+        "SAVE_AND_CONTINUE": "Speichern und fortfahren"
     }
 }

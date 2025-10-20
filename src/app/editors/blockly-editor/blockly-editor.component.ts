@@ -37,7 +37,9 @@ import { ProjectService } from '../../services/project.service';
 export class BlocklyEditorComponent {
   showLibraryManager = false;
 
-  get devmode() {
+  devmode;
+
+  get developerMode() {
     return this.configService.data.devmode;
   }
 
@@ -97,9 +99,12 @@ export class BlocklyEditorComponent {
     await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+    // 加载项目开发框架
+    this.devmode = packageJson.devmode || 'arduino';
+
     this.electronService.setTitle(`aily blockly - ${packageJson.nickname}`);
     // 添加到最近打开的项目
-    this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
+    this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath, nickname: packageJson.nickname || packageJson.name });
     // 设置当前项目路径和package.json数据
     this._projectService.currentPackageData = packageJson;
     this.projectService.currentPackageData = packageJson;
@@ -122,6 +127,9 @@ export class BlocklyEditorComponent {
     this.uiService.updateFooterState({ state: 'doing', text: '正在加载blockly库' });
     // 获取项目目录下的所有blockly库
     let libraryModuleList = (await this.npmService.getAllInstalledLibraries(projectPath)).map(item => item.name);
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+
     for (let index = 0; index < libraryModuleList.length; index++) {
       const libPackageName = libraryModuleList[index];
       this.uiService.updateFooterState({ state: 'doing', text: '正在加载' + libPackageName });

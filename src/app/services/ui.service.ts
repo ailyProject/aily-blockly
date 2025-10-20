@@ -112,6 +112,11 @@ export class UiService {
     this.openToolList = [];
   }
 
+  // 判断某个工具是否打开
+  isToolOpen(name: string): boolean {
+    return this.openToolList.includes(name);
+  }
+
   turnBottomSider(data = 'default') {
     if (this.terminalIsOpen && this.currentBottomTab === data) {
       // 如果底部面板已经打开且当前选中的就是要打开的tab，则关闭面板

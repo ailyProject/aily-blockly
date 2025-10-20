@@ -35,8 +35,8 @@
 }
 
 .section-title {
-    margin: 15px 10px 0 10px;
-    padding-bottom: 10px;
+    // margin: 15px 10px 0 10px;
+    padding: 10px;
     font-size: 14px;
     color: #fff;
     border-bottom: 1px solid #444;
@@ -50,8 +50,8 @@
         width: 30px;
         height: 30px;
         position: absolute;
-        right: 0;
-        top: 0;
+        top: 10px;
+        right: 10px;
         cursor: pointer;
 
         &:hover {
@@ -61,9 +61,9 @@
 
     .search-box {
         position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
+        top: 10px;
+        left: 10px;
+        width: calc(100% - 20px);
         height: 32px;
         display: flex;
         padding-left: 10px;
@@ -129,22 +129,32 @@
 
         .left {
             margin-right: 10px;
+            position: relative;
+            border-radius: 5px;
+            overflow: hidden;
+            width: 170px;
+            flex-shrink: 0;
 
             img {
                 width: 170px;
-                border-radius: 5px;
+                height: 85px;
+            }
+
+            .title {
+                font-size: 14px;
+                color: #fff;
+                position: absolute;
+                left: 0;
+                bottom: 0;
+                background: rgba(0, 0, 0, 0.6);
+                width: 100%;
+                padding: 2px 0 2px 8px;
             }
         }
 
         .right {
             display: flex;
             flex-direction: column;
-
-            .title {
-                font-size: 14px;
-                color: #fff;
-                margin-bottom: 5px;
-            }
 
             .text {
                 font-size: 12px;

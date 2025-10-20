@@ -1,0 +1,50 @@
+<div class="content-box" #contentBox>
+    <div class="example-list">
+        @for( example of exampleList;track $index) {
+        <div class="example-item">
+            <div class="img-box">
+                <img [src]="example.image_url" alt="" (error)="onImgError($event)" />
+                <div class="downloads">
+                    <i class="fa-regular fa-arrow-down-to-line"></i> {{ example.download_count || '0' }}
+                </div>
+                <div class="title">
+                    {{ example.nickname }}
+                </div>
+            </div>
+            <div>
+                <div class="text ellipsis">{{ example.description }}</div>
+            </div>
+            <div class="footer">
+                <div class="btns">
+                    <div class="author">
+                        <i class="fa-light fa-user" style="margin-right: 5px;"></i>{{ example.author }}
+                    </div>
+                </div>
+                <div class="btns">
+                    @if (example.doc_url && example.doc_url.trim() !== '') {
+                    <button nz-button class="doc-btn" [nzSize]="'small'" nz-tooltip nzTooltipTitle="文档" (click)="openDoc($index)"><i
+                            class="fa-light fa-book"></i></button>
+                    }
+                    <button nz-button class="load-btn" nzType="primary" [nzSize]="'small'"
+                        [nzLoading]="isLoading($index)" [disabled]="isDisabled($index)" (click)="loadExample($index)">
+                        {{ isLoading($index) ? '加载中' : '加载示例' }}
+                    </button>
+                </div>
+                <!-- <div class="state">
+                <div>
+                    <i class="fa-light fa-arrow-down-to-line"></i>
+                    1234
+                </div>
+                <div>
+                    <i class="fa-light fa-thumbs-up"></i>
+                    5674
+                </div>
+            </div> -->
+            </div>
+        </div>
+        }
+    </div>
+</div>
+<div class="pagination">
+    <nz-pagination [(nzPageIndex)]="pageIndex" [nzPageSize]="pageSize" [nzTotal]="total" (nzPageIndexChange)="onPageChange($event)"></nz-pagination>
+</div>

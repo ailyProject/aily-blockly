@@ -14,6 +14,7 @@
         "DEBUG": "Debug",
         "TERMINAL": "Terminal",
         "TOOL_SERIAL": "Serial Tool",
+        "SIMULATOR": "Simulator",
         "AI": "AI",
         "APP_STORE": "App Store",
         "SETTINGS": "Settings",
@@ -24,6 +25,7 @@
         "USER_MANUAL": "User Manual",
         "EXAMPLES": "Examples",
         "UPDATE": "Check for Updates",
+        "USER_AUTH": "User Center",
         "FILE_OPEN": "Open File",
         "FILE_OPEN_WITH": "Open With",
         "OPEN_WITH_SYSTEM_EDITOR": "System Default Editor",
@@ -135,6 +137,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "Development Framework",
             "BOARD": "Board",
             "PROJECT_NAME": "Project Name",
             "SAVE_PATH": "Save Path",
@@ -159,6 +162,7 @@
         "INSTALLED": "Installed",
         "CORE_LIBRARY": "Core Library",
         "IMPORT_LIBRARY": "Import Local Library",
+        "HELP": "How to Develop Library",
         "DEV_HELP": "Development Help",
         "REPORT_ISSUE": "Report Issue",
         "INSTALL": "Install",
@@ -188,5 +192,37 @@
         "CURRENT_BOARD_CORE": "Current board core:",
         "CANCEL": "Cancel",
         "CONTINUE_INSTALL": "Continue Install"
+    },
+    "BOARD_SELECTOR": {
+        "TITLE": "Switch Board",
+        "SEARCH_PLACEHOLDER": "Search board...",
+        "EMPTY_LIST": "No matching boards found",
+        "CANCEL": "Cancel",
+        "CONFIRM": "Confirm",
+        "LOADING": "Switching board...",
+        "SWITCH_FAILED": "Failed to switch board"
+    },
+    "UPDATE_DIALOG": {
+        "TITLE": "Software Update",
+        "DOWNLOAD_FAILED": "Download Failed",
+        "REMIND_LATER": "Remind Later",
+        "SKIP_VERSION": "Skip This Version",
+        "UPDATE_NOW": "Update Now",
+        "CANCEL_DOWNLOAD": "Cancel Download",
+        "INSTALL_LATER": "Install Later",
+        "INSTALL_NOW": "Install Now",
+        "CLOSE": "Close",
+        "RETRY": "Retry"
+    },
+    "UNSAVE_DIALOG": {
+        "TITLE": "Unsaved Changes",
+        "MESSAGE": "You have unsaved changes. Do you want to save them?",
+        "MESSAGE_OPEN": "Do you want to save changes to the current project before opening a new one?",
+        "MESSAGE_NEW": "Do you want to save changes to the current project before creating a new one?",
+        "MESSAGE_CLOSE": "Do you want to save changes before closing?",
+        "MESSAGE_DEFAULT": "Do you want to save the current project?",
+        "CANCEL": "Cancel",
+        "SKIP_SAVE": "Skip Save",
+        "SAVE_AND_CONTINUE": "Save and Continue"
     }
 }

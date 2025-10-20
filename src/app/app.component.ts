@@ -25,17 +25,18 @@ export class AppComponent implements OnInit, OnDestroy {
   private translationService = inject(TranslationService);
   private authService = inject(AuthService);
   private message = inject(NzMessageService);
-  
+
   private oauthResultListener: (() => void) | null = null;
 
- async ngOnInit() {
+  async ngOnInit() {
     await this.electronService.init();
     await this.configService.init();
     await this.translationService.init();
-    
+
     // 在ElectronService初始化完成后再初始化认证服务
     await this.authService.initializeAuth();
-    
+
+    if (!this.electronService.isElectron) return;
     // 设置全局OAuth监听器
     this.setupGlobalOAuthListener();
   }
@@ -56,15 +57,14 @@ export class AppComponent implements OnInit, OnDestroy {
         try {
           // 使用AuthService处理协议回调
           const result = await this.authService.handleOAuthCallback(callbackData);
-          
+
           if (result.success) {
             console.log('GitHub OAuth 成功:', result.data);
             this.message.success('GitHub 登录成功');
           } else {
             // OAuth失败
-            console.error('GitHub OAuth 失败:', result);
-            let errorMessage = 'GitHub 登录失败';
-            
+            let errorMessage = 'GitHub 登录超时，请重试';
+
             switch (result.error) {
               case 'timeout':
               case 'invalid_state':
@@ -80,9 +80,9 @@ export class AppComponent implements OnInit, OnDestroy {
                 errorMessage = result.message || '处理授权回调失败';
                 break;
               default:
-                errorMessage = result.message || 'GitHub 登录失败';
+                errorMessage = result.message || 'GitHub 登录超时，请重试';
             }
-            
+
             this.message.error(errorMessage);
           }
         } catch (error) {

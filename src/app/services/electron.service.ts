@@ -110,4 +110,114 @@ export class ElectronService {
     // }
   }
 
+  /**
+   * 显示系统通知
+   * @param title 通知标题
+   * @param body 通知内容
+   * @param options 可选配置
+   * @returns Promise<{success: boolean, result?: any, error?: string}>
+   */
+  async notify(title: string, body: string, options?: {
+    icon?: string;
+    silent?: boolean;
+    timeoutType?: 'default' | 'never';
+    urgency?: 'normal' | 'critical' | 'low';
+  }) {
+    if (!this.isElectron) {
+      console.warn('Not in Electron environment, notification not supported');
+      return { success: false, error: 'Not in Electron environment' };
+    }
+
+    try {
+      const notificationOptions = {
+        title,
+        body,
+        ...options
+      };
+
+      const result = await window['notification'].show(notificationOptions);
+      return result;
+    } catch (error) {
+      console.error('Show notification error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 检查是否支持通知
+   * @returns Promise<boolean>
+   */
+  async isNotificationSupported(): Promise<boolean> {
+    if (!this.isElectron) {
+      return false;
+    }
+
+    try {
+      return await window['notification'].isSupported();
+    } catch (error) {
+      console.error('Check notification support error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 检查当前窗口是否为活动窗口（是否获得焦点）
+   * @returns boolean
+   */
+  isWindowFocused(): boolean {
+    if (!this.isElectron) {
+      // 在浏览器环境中使用 document.hasFocus()
+      return document.hasFocus();
+    }
+
+    try {
+      return window['iWindow'].isFocused();
+    } catch (error) {
+      console.error('Check window focus error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 监听窗口获得焦点事件
+   * @param callback 回调函数
+   * @returns 取消监听的函数
+   */
+  onWindowFocus(callback: () => void): () => void {
+    if (!this.isElectron) {
+      // 在浏览器环境中使用原生事件
+      const handler = () => callback();
+      window.addEventListener('focus', handler);
+      return () => window.removeEventListener('focus', handler);
+    }
+
+    try {
+      return window['iWindow'].onFocus(callback);
+    } catch (error) {
+      console.error('Listen window focus error:', error);
+      return () => {};
+    }
+  }
+
+  /**
+   * 监听窗口失去焦点事件
+   * @param callback 回调函数
+   * @returns 取消监听的函数
+   */
+  onWindowBlur(callback: () => void): () => void {
+    if (!this.isElectron) {
+      // 在浏览器环境中使用原生事件
+      const handler = () => callback();
+      window.addEventListener('blur', handler);
+      return () => window.removeEventListener('blur', handler);
+    }
+
+    try {
+      return window['iWindow'].onBlur(callback);
+    } catch (error) {
+      console.error('Listen window blur error:', error);
+      return () => {};
+    }
+  }
+
 }

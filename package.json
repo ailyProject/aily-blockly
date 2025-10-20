@@ -1,6 +1,7 @@
 {
   "name": "aily-blockly",
-  "version": "0.7.0",
+  "productName": "aily blockly",
+  "version": "0.7.7",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -17,7 +18,9 @@
     "protocols": [
       {
         "name": "Aily Blockly OAuth",
-        "schemes": ["ailyblockly"]
+        "schemes": [
+          "ailyblockly"
+        ]
       }
     ],
     "directories": {
@@ -152,6 +155,7 @@
     "shiki": "^3.5.0",
     "simplebar-angular": "^3.3.0",
     "tslib": "^2.3.0",
+    "ua-parser-js": "^2.0.5",
     "uuid": "^11.1.0",
     "zone.js": "~0.15.0"
   },
@@ -161,6 +165,7 @@
     "@angular/compiler-cli": "^19.0.0",
     "@types/jasmine": "~5.1.0",
     "@types/node": "^22.10.7",
+    "@types/ua-parser-js": "^0.7.39",
     "concurrently": "^9.1.2",
     "electron": "^35.0.2",
     "electron-builder": "^25.1.8",

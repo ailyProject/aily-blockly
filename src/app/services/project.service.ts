@@ -1,7 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { UiService } from './ui.service';
-import { NewProjectData } from '../windows/project-new/project-new.component';
 import { ElectronService } from './electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { pinyin } from "pinyin-pro";
@@ -12,8 +11,8 @@ import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
 import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { ActionService } from './action.service';
-
-const { pt } = (window as any)['electronAPI'].platform;
+import { PlatformService } from './platform.service';
+import { NewProjectData } from '../pages/project-new/project-new.component';
 
 interface ProjectPackageData {
   name: string;
@@ -25,6 +24,7 @@ interface ProjectPackageData {
   board?: string;
   type?: string;
   framework?: string;
+  cloudId?: string; // 云端项目ID
 }
 
 @Injectable({
@@ -37,15 +37,27 @@ export class ProjectService {
   // 开发板变更事件通知，只在变更时发出
   boardChangeSubject = new Subject<void>();
 
+  // 当前项目路径的订阅源
+  private currentProjectPathSubject = new BehaviorSubject<string>('');
+  currentProjectPath$ = this.currentProjectPathSubject.asObservable();
+
   currentPackageData: ProjectPackageData = {
     name: 'aily blockly',
   };
 
   projectRootPath: string;
-  currentProjectPath: string;
+
+  // 当前项目路径的 getter 和 setter
+  get currentProjectPath(): string {
+    return this.currentProjectPathSubject.value;
+  }
+
+  set currentProjectPath(path: string) {
+    this.currentProjectPathSubject.next(path);
+  }
   currentBoardConfig: any;
   // STM32选择开发板时定义引脚使用
-  currentStm32Config: { board: any , variant: any , variant_h: any } = { board: null, variant: null, variant_h: null };
+  currentStm32Config: { board: any, variant: any, variant_h: any } = { board: null, variant: null, variant_h: null };
 
   constructor(
     private uiService: UiService,
@@ -55,6 +67,7 @@ export class ProjectService {
     private cmdService: CmdService,
     private configService: ConfigService,
     private actionService: ActionService,
+    private platformService: PlatformService,
   ) {
   }
 
@@ -103,7 +116,7 @@ export class ProjectService {
   }
 
   // 新建项目
-  async projectNew(newProjectData: NewProjectData, closeWindow: boolean = true) {
+  async projectNew(newProjectData: NewProjectData) {
     // console.log('newProjectData: ', newProjectData);
     const appDataPath = window['path'].getAppDataPath();
     // const projectPath = (newProjectData.path + newProjectData.name).replace(/\s/g, '_');
@@ -128,6 +141,8 @@ export class ProjectService {
     } else {
       packageJson.name = newProjectData.name;
     }
+    // 设置开发框架
+    packageJson.devmode = newProjectData.devmode;
 
     window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
 
@@ -187,6 +202,7 @@ export class ProjectService {
 
   saveAs(path) {
     //在当前路径下创建一个新的目录
+    path = path.replace(/\s/g, '_');
     window['fs'].mkdirSync(path);
     // 复制项目目录到新路径
     window['fs'].copySync(this.currentProjectPath, path);
@@ -196,12 +212,19 @@ export class ProjectService {
     const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
     // 获取新的项目名称
     let name = path.split('\\').pop();
-    packageJson.name = name;
+    if (this.containsChineseCharacters(name)) {
+      packageJson.name = pinyin(name, {
+        toneType: "none",
+        separator: ""
+      }).replace(/\s/g, '_');
+    } else {
+      packageJson.name = name;
+    }
     window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
     // 修改当前项目路径
     this.currentProjectPath = path;
     this.currentPackageData = packageJson;
-    this.addRecentlyProject({ name: this.currentPackageData.name, path: path });
+    this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
   }
 
   async close() {
@@ -211,7 +234,7 @@ export class ProjectService {
     };
     this.stateSubject.next('default');
     this.uiService.closeTerminal();
-    this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
+    // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
     this.router.navigate(['/main/guide'], { replaceUrl: true });
   }
 
@@ -225,7 +248,7 @@ export class ProjectService {
     this.configService.save();
   }
 
-  addRecentlyProject(data: { name: string, path: string }) {
+  addRecentlyProject(data: { name: string, path: string, nickname?: string }) {
     let temp: any[] = this.recentlyProjects
     temp.unshift(data);
     temp = temp.filter((item, index) => {
@@ -273,6 +296,9 @@ export class ProjectService {
     const packageJsonPath = `${this.currentProjectPath}/package.json`;
     // 写入新的package.json
     window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
+
+    // 更新当前packageData
+    this.currentPackageData = data;
 
     this.boardChangeSubject.next();
   }
@@ -431,7 +457,8 @@ export class ProjectService {
         flashMode: this.extractMenuOptions(boardConfig, 'FlashMode'),
         flashSize: this.extractMenuOptions(boardConfig, 'FlashSize'),
         partitionScheme: this.extractMenuOptions(boardConfig, 'PartitionScheme'),
-        cdcOnBoot: this.extractMenuOptions(boardConfig, 'CDCOnBoot')
+        cdcOnBoot: this.extractMenuOptions(boardConfig, 'CDCOnBoot'),
+        psram: this.extractMenuOptions(boardConfig, 'PSRAM')
       };
 
       return esp32Config;
@@ -458,7 +485,7 @@ export class ProjectService {
       const lines = boardsContent.split('\n');
 
       // 查找指定开发板的配置
-      const boardConfig = this.parseBoardsConfig(lines, boardName);      
+      const boardConfig = this.parseBoardsConfig(lines, boardName);
 
       // console.log('====boardConfig:', boardConfig);
 
@@ -469,7 +496,7 @@ export class ProjectService {
       const stm32Config = {
         board: this.extractMenuOptions(boardConfig, 'pnum'),
         usb: this.extractMenuOptions(boardConfig, 'usb'),
-        upload_method: this.extractMenuOptions(boardConfig, 'upload_method'),
+        // upload_method: this.extractMenuOptions(boardConfig, 'upload_method'),
       };
 
       // 只保留 name 字段中包含 "Generic" 的选项，其它全部去掉
@@ -779,6 +806,17 @@ export class ProjectService {
               }
             });
           }
+        } else if (menuItem.name === 'ESP32.PSRAM' && boardConfig.psram) {
+          menuItem.children = boardConfig.psram;
+          // 根据当前项目配置设置check状态
+          if (currentProjectConfig.PSRAM) {
+            menuItem.children.forEach((child: any) => {
+              child.check = false;
+              if (this.compareConfigs(child.data, currentProjectConfig.PSRAM)) {
+                child.check = true;
+              }
+            });
+          }
         }
       });
       return ESP32_CONFIG_MENU_TEMP;
@@ -816,7 +854,7 @@ export class ProjectService {
           menuItem.children = boardConfig.board;
           // 根据当前项目配置设置check状态
           // console.log('menuItem.children:', menuItem.children);
-          if (currentProjectConfig.pnum) {     
+          if (currentProjectConfig.pnum) {
             menuItem.children.forEach((child: any) => {
               child.check = false; // 先清空所有选中状态
               if (this.compareConfigs(child.data, currentProjectConfig.pnum)) {
@@ -852,17 +890,17 @@ export class ProjectService {
               }
             });
           }
-        } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
-          menuItem.children = boardConfig.upload_method;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.upload_method) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
-                child.check = true;
-              }
-            });
-          }
+          // } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
+          //   menuItem.children = boardConfig.upload_method;
+          //   // 根据当前项目配置设置check状态
+          //   if (currentProjectConfig.upload_method) {
+          //     menuItem.children.forEach((child: any) => {
+          //       child.check = false;
+          //       if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
+          //         child.check = true;
+          //       }
+          //     });
+          //   }
         }
       });
       return STM32_CONFIG_MENU_TEMP;
@@ -894,7 +932,7 @@ export class ProjectService {
       const currentBoardJson = await this.getBoardJson();
 
       let isChanged = false;
-      
+
       if (typeof setPinConfig === 'object' && setPinConfig !== null) {
         Object.keys(setPinConfig).forEach(key => {
           if (Array.isArray(setPinConfig[key])) {
@@ -1002,7 +1040,7 @@ export class ProjectService {
 
     for (const line of lines) {
       // 去掉行尾注释
-      const pureLine = line.replace(/\/\/.*$/,'').replace(/\/\*.*\*\/\s*$/,'');
+      const pureLine = line.replace(/\/\/.*$/, '').replace(/\/\*.*\*\/\s*$/, '');
 
       // analog
       let m = analogRe1.exec(pureLine) || analogRe2.exec(pureLine);
@@ -1074,7 +1112,7 @@ export class ProjectService {
     if (i2cMap['SCL']) i2cPins.Wire.push(['SCL', i2cMap['SCL']]);
 
     // SPI 输出固定顺序 MOSI, MISO, SCK, SS
-    const spiOrder = ['MOSI','MISO','SCK','SS'];
+    const spiOrder = ['MOSI', 'MISO', 'SCK', 'SS'];
     for (const k of spiOrder) {
       if (spiMap[k]) spiPins.SPI.push([k, spiMap[k]]);
     }
@@ -1112,7 +1150,7 @@ export class ProjectService {
     try {
       const packageJson = await this.getPackageJson();
       if (!packageJson || !packageJson.projectConfig) {
-        throw new Error('项目配置未找到或格式不正确');
+        return {};
       }
 
       return packageJson.projectConfig;
@@ -1130,10 +1168,10 @@ export class ProjectService {
       // 0. 保存当前项目
       this.save();
       this.message.loading('正在切换开发板...', { nzDuration: 5000 });
-      
+
       // 记录开发板使用次数
       this.configService.recordBoardUsage(boardInfo.name);
-      
+
       // 1. 先获取项目package.json中的board依赖，如@aily-project/board-xxxx，然后npm uninstall移除这个board依赖
       const currentBoardModule = await this.getBoardModule();
       if (currentBoardModule) {
@@ -1165,6 +1203,7 @@ export class ProjectService {
   generateUniqueProjectName(prjPath, prefix = 'project_'): string {
     const baseDateStr = generateDateString();
     prefix = prefix + baseDateStr;
+    const pt = this.platformService.getPlatformSeparator();
 
     // 尝试使用字母后缀 a-z
     for (let charCode = 97; charCode <= 122; charCode++) {

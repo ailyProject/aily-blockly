@@ -67,7 +67,7 @@ export class LibManagerComponent {
       this.translate.instant('LIB_MANAGER.DISPLAY'),
       // this.translate.instant('LIB_MANAGER.SOUND'),
       this.translate.instant('LIB_MANAGER.STORAGE'),
-      this.translate.instant('LIB_MANAGER.ROBOT'),
+      // this.translate.instant('LIB_MANAGER.ROBOT'),
       this.translate.instant('LIB_MANAGER.AI'),
       this.translate.instant('LIB_MANAGER.IOT'),
     ];
@@ -141,18 +141,11 @@ export class LibManagerComponent {
   }
 
   async search(keyword = this.keyword) {
+    this.keyword = keyword;
     if (keyword) {
       keyword = keyword.replace(/\s/g, '').toLowerCase();
 
-      // 处理翻译后的特殊关键词
-      const installedKey = this.translate.instant('LIB_MANAGER.INSTALLED').toLowerCase();
-      const coreLibKey = this.translate.instant('LIB_MANAGER.CORE_LIBRARY').toLowerCase();
-
-      if (keyword === installedKey) {
-        keyword = 'installed';
-      } else if (keyword === coreLibKey) {
-        keyword = 'lib-core-';
-      } else if (keyword === 'ai') {
+      if (keyword === 'ai') {
         keyword = 'artificialintelligence';
       }
 

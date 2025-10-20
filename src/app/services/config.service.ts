@@ -8,7 +8,7 @@ import { ElectronService } from './electron.service';
 })
 export class ConfigService {
 
-  data: AppConfig;
+  data: AppConfig | any = {};
 
   constructor(
     private http: HttpClient,
@@ -16,6 +16,7 @@ export class ConfigService {
   ) { }
 
   init() {
+    if (!this.electronService.isElectron) return;
     this.load();
   }
 
@@ -85,6 +86,7 @@ export class ConfigService {
   }
 
   async save() {
+    if (!this.electronService.isElectron) return;
     let configFilePath = window['path'].getAppDataPath();
     window['fs'].writeFileSync(`${configFilePath}/config.json`, JSON.stringify(this.data, null, 2));
   }
@@ -139,10 +141,10 @@ export class ConfigService {
     if (!this.data.boardUsageCount) {
       this.data.boardUsageCount = {};
     }
-    
+
     // 增加使用次数
     this.data.boardUsageCount[boardName] = (this.data.boardUsageCount[boardName] || 0) + 1;
-    
+
     // 保存配置
     this.save();
   }
@@ -171,16 +173,16 @@ export class ConfigService {
    */
   sortBoardsByUsage(boardList: any[]): any[] {
     const usageCount = this.getAllBoardUsageCount();
-    
+
     return [...boardList].sort((a, b) => {
       const usageA = usageCount[a.name] || 0;
       const usageB = usageCount[b.name] || 0;
-      
+
       // 首先按使用次数降序排列
       if (usageA !== usageB) {
         return usageB - usageA;
       }
-      
+
       // 如果使用次数相同，按原来的顺序排列（保持稳定排序）
       return 0;
     });

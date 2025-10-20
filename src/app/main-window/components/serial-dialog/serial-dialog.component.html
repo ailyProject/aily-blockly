@@ -1,19 +1,14 @@
-<div class="prompt-box bborder">
-    <div class="header">
-        <div class="title">请先选择设备端口</div>
-        <div class="win-btns">
-            <div class="btn ccenter close" (click)="cancel()">
-                <i class="fa-light fa-xmark"></i>
-            </div>
-        </div>
+<app-base-dialog 
+    [title]="title"
+    [buttons]="buttons"
+    [showCloseButton]="true"
+    [showFooter]="true"
+    (closeDialog)="onCloseDialog()"
+    (buttonClick)="onButtonClick($event)">
+    
+    <div class="text">点击左上的设备名选择设备端口</div>
+    <div>
+        <img style="width:298px" src="imgs\serial-selector.webp">
     </div>
-    <div class="content">
-        <div class="text">点击左上的设备名选择设备端口</div>
-        <div>
-            <img style="width:298px" src="imgs\serial-selector.webp">
-        </div>
-        <div class="footer">
-            <button nz-button [nzSize]="'small'" nzType="default" (click)="cancel()">知道了</button>
-        </div>
-    </div>
-</div>
+    
+</app-base-dialog>

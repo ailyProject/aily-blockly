@@ -1,11 +1,20 @@
 @if(loaded){
 <div class="float-zone">
   <div class="float-sider" [ngClass]="{'show': show}">
-    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" nzTooltipTitle="引脚图" (click)="showPinmap()">
-      <i class="fa-light fa-microchip"></i>
+    <div class="float-sider show">
+      <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" nzTooltipTitle="引脚图" (click)="showPinmap()">
+        <i class="fa-light fa-microchip"></i>
+      </div>
+      <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" nzTooltipTitle="文档" (click)="openDocUrl()">
+        <i class="fa-light fa-book"></i>
+      </div>
+      <div class="line"></div>
+    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" nzTooltipTitle="反馈" (click)="openFeedback()">
+      <i class="fa-light fa-message-pen"></i>
     </div>
-    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" nzTooltipTitle="文档" (click)="openDocUrl()">
-      <i class="fa-light fa-book"></i>
+      <!-- <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" nzTooltipTitle="设置" (click)="openSettings()">
+      <i class="fa-light fa-gear"></i>
+    </div> -->
     </div>
   </div>
 </div>

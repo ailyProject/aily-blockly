@@ -61,25 +61,22 @@
 
     .icon {
       width: 25px;
-      // height: 20px;
     }
   }
 
   .project {
     display: flex;
-    white-space: nowrap;
-    align-items: flex-end;
-    padding: 3px 0;
+    flex-direction: column;
+    align-items: flex-start !important;
     font-size: 14px;
-    height: 28px;
+    height: 40px;
     line-height: 14px;
 
     .path {
       color: #999;
-      margin-left: 10px;
-      font-size: 12px;
+      margin-top: 5px;
+      font-size: 10px;
       line-height: 13px;
-      // width: 300px;
     }
   }
 }
@@ -127,11 +124,13 @@ img.qrcode {
   margin-top: 6px;
   width: 100px;
   height: 100px;
+  border-radius: 3px;
 }
 
 // 赞助商轮播样式
 .sponsor-carousel {
   overflow: hidden;
+
   .splide__slide {
     display: flex;
     justify-content: center;

@@ -30,7 +30,7 @@ export async function newProjectTool(prjRootPath: string, toolArgs: any, prjServ
             name: prjName,
             path: prjRootPath,
             board: boardInfo
-        }, false);
+        });
         toolResult = `项目 "${prjName}" 创建成功！项目路径为${prjRootPath}\\${prjName}`;
     } catch (e) {
         console.error('创建项目失败:', e);

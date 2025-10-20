@@ -20,9 +20,9 @@
             <nz-tag (click)="keyword=tag;search()">{{ tag }}</nz-tag>
             }
             <span style="position: absolute;top: 10px;color: #444;">|</span>
-            <nz-tag style="margin-left: 11px;" (click)="keyword='已安装';search()">{{ 'LIB_MANAGER.INSTALLED' | translate
+            <nz-tag style="margin-left: 11px;" (click)="search('installed')">{{ 'LIB_MANAGER.INSTALLED' | translate
                 }}</nz-tag>
-            <nz-tag (click)="keyword='核心库';search()">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
+            <nz-tag (click)="search('lib-core')">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
         </div>
         <div class="btns">
             <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">

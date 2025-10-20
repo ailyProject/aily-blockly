@@ -6,6 +6,14 @@ const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 
+// 设置应用名称，用于 Windows 系统通知显示
+app.setName("aily blockly");
+
+// Windows 系统中设置 AppUserModelID，用于通知分组和显示
+if (isWin32) {
+  app.setAppUserModelId("pro.aily.blockly");
+}
+
 PROTOCOL = "ailyblockly";
 
 // OAuth实例管理
@@ -362,6 +370,7 @@ const { registerNpmHandlers } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers } = require("./cmd");
 const { registerMCPHandlers } = require("./mcp");
+const { initNotificationHandlers } = require("./notification");
 // debug模块
 const { initLogger } = require("./logger");
 // tools
@@ -617,6 +626,7 @@ function createWindow() {
   registerCmdHandlers(mainWindow);
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
+  initNotificationHandlers();
 
   // 检查是否有待处理的OAuth回调
   if (global.pendingOAuthCallback) {
@@ -857,6 +867,20 @@ app.on('open-url', (event, url) => {
   event.preventDefault();
   console.log('macOS open-url:', url);
   handleProtocol(url);
+});
+
+// 文件选择
+ipcMain.handle("select-file", async (event, data) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(senderWindow, {
+    title: data.title || '选择文件',
+    defaultPath: data.path,
+    properties: ["openFile"],
+  });
+  if (result.canceled) {
+    return "";
+  }
+  return result.filePaths[0];
 });
 
 // 项目管理相关

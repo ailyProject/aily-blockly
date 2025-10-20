@@ -1,4 +1,4 @@
-import { Component, ElementRef, ViewChild } from '@angular/core';
+import { Component, ElementRef, Input, ViewChild } from '@angular/core';
 import * as Blockly from 'blockly';
 import * as zhHans from 'blockly/msg/zh-hans';
 // import {
@@ -9,6 +9,7 @@ import * as zhHans from 'blockly/msg/zh-hans';
 import './plugins/toolbox-search/src/index';
 import './plugins/block-plus-minus/src/index.js';
 import { arduinoGenerator } from './generators/arduino/arduino';
+import { micropythonGenerator } from './generators/micropython/micropython';
 import { BlocklyService } from '../../services/blockly.service';
 import { BitmapUploadResponse, GlobalServiceManager } from '../../services/bitmap-upload.service';
 
@@ -49,6 +50,8 @@ import { NoticeService } from '../../../../services/notice.service';
 export class BlocklyComponent {
   @ViewChild('blocklyDiv', { static: true }) blocklyDiv!: ElementRef;
 
+  @Input() devmode;
+  generator;
   // Control bitmap upload handler visibility
   showBitmapUploadHandler = true;
 
@@ -139,9 +142,10 @@ export class BlocklyComponent {
     const globalServiceManager = GlobalServiceManager.getInstance();
     globalServiceManager.setBitmapUploadService(this.bitmapUploadService);
   }
-  
+
   ngOnInit(): void {
-    this.setPrompt();
+    this.initDevMode();
+    this.initPrompt();
     this.bitmapUploadService.uploadRequestSubject.subscribe((request) => {
       const modalRef = this.modal.create({
         nzTitle: null,
@@ -267,61 +271,6 @@ export class BlocklyComponent {
       });
       resizeObserver.observe(this.blocklyDiv.nativeElement);
 
-      // this.workspace.registerButtonCallback(
-      //   'CREATE_NUMBER_VARIABLE',
-      //   (button) => {
-      //     console.log('CREATE_NUMBER_VARIABLE');
-      //     Blockly.Variables.createVariableButtonHandler(
-      //       this.workspace,
-      //       (name) => {
-      //         console.log('变量创建成功');
-      //       },
-      //       'aily-variable',
-      //     );
-      //   },
-      // );
-
-      // this.workspace.registerButtonCallback('CREATE_OBJECT', (button) => {
-      //   console.log('CREATE_OBJECT');
-      // });
-
-      // Blockly.Variables.createVariableButtonHandler = (
-      //   workspace,
-      //   opt_callback,
-      //   opt_type,
-      // ) => {
-      //   let modal = this.modal.create({
-      //     nzTitle: '添加变量',
-      //     nzWidth: '350px',
-      //     nzContent: NewVarModalComponent,
-      //     // nzComponentParams: {
-      //     //   varType: opt_type
-      //     // },
-      //     nzOnOk: (e) => {
-      //       if (opt_callback) opt_callback(e.varName);
-      //     },
-      //   });
-      //   modal.triggerOk;
-      // };
-      // this.blocklyDiv.nativeElement.addEventListener(
-      //   'mousemove',
-      //   (event: any) => {
-      //     if (!this.draggingBlock) return;
-
-      //     if (this.draggingBlock?.workspace?.id !== this.workspace.id) {
-      //       const xml: any = Blockly.Xml.blockToDom(this.draggingBlock); // .clone()
-
-      //       const newBlock: any = Blockly.Xml.domToBlock(xml, this.workspace);
-      //       newBlock.moveBy(
-      //         event.clientX - 180 - this.workspace.scrollX - this.offsetX,
-      //         event.clientY - 70 - this.workspace.scrollY - this.offsetY,
-      //       );
-      //       this.draggingBlock = null;
-      //     }
-      //   },
-      // );
-
-      window['Arduino'] = <any>arduinoGenerator;
       (window as any)['Blockly'] = Blockly;
       this.workspace.addChangeListener((event) => {
         try {
@@ -332,12 +281,29 @@ export class BlocklyComponent {
           // 错误发生时不更新代码
         }
       });
-
       this.initLanguage();
     }, 100);
   }
 
-  setPrompt() {
+  initDevMode() {
+    console.log('DEV MODE: ', this.devmode);
+
+    switch (this.devmode) {
+      case 'arduino':
+        window['Arduino'] = <any>arduinoGenerator;
+        this.generator = arduinoGenerator;
+        break;
+      case 'micropython':
+        window['MicropPython'] = <any>micropythonGenerator;
+        window['MPY'] = <any>micropythonGenerator;
+        this.generator = micropythonGenerator;
+        break;
+      default:
+        break;
+    }
+  }
+
+  initPrompt() {
     Blockly.dialog.setPrompt((message, defaultValue, callback) => {
       // console.log('对话框初始化，消息:', message, '默认值:', defaultValue);
       this.modal.create({
@@ -395,7 +361,7 @@ export class BlocklyComponent {
     // 设置新的定时器，1秒后执行代码生成
     this.codeGenerationTimer = setTimeout(() => {
       try {
-        const code = arduinoGenerator.workspaceToCode(this.workspace);
+        const code = this.generator.workspaceToCode(this.workspace);
         this.blocklyService.codeSubject.next(code);
       } catch (error) {
         // 仅在开发环境下打印错误，避免用户看到错误

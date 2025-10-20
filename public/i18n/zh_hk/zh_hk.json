@@ -100,6 +100,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "開發框架",
             "BOARD": "開發板",
             "PROJECT_NAME": "專案名稱",
             "SAVE_PATH": "儲存路徑",
@@ -142,5 +143,37 @@
         "AI": "AI",
         "IOT": "物聯網",
         "OTHERS": "其他"
+    },
+    "BOARD_SELECTOR": {
+        "TITLE": "切換開發板",
+        "SEARCH_PLACEHOLDER": "搜索開發板...",
+        "EMPTY_LIST": "未找到匹配的開發板",
+        "CANCEL": "取消",
+        "CONFIRM": "確認",
+        "LOADING": "正在切換開發板...",
+        "SWITCH_FAILED": "切換開發板失敗"
+    },
+    "UPDATE_DIALOG": {
+        "TITLE": "軟體更新",
+        "DOWNLOAD_FAILED": "下載失敗",
+        "REMIND_LATER": "稍後提醒",
+        "SKIP_VERSION": "跳過此版本",
+        "UPDATE_NOW": "立即更新",
+        "CANCEL_DOWNLOAD": "取消下載",
+        "INSTALL_LATER": "稍後安裝",
+        "INSTALL_NOW": "立即安裝",
+        "CLOSE": "關閉",
+        "RETRY": "重試"
+    },
+    "UNSAVE_DIALOG": {
+        "TITLE": "未儲存的變更",
+        "MESSAGE": "您有未儲存的變更，是否儲存?",
+        "MESSAGE_OPEN": "在打開新項目前,是否儲存當前項目的變更?",
+        "MESSAGE_NEW": "在創建新項目前,是否儲存當前項目的變更?",
+        "MESSAGE_CLOSE": "是否在關閉前儲存變更?",
+        "MESSAGE_DEFAULT": "是否儲存當前項目?",
+        "CANCEL": "取消",
+        "SKIP_SAVE": "跳過儲存",
+        "SAVE_AND_CONTINUE": "儲存並繼續"
     }
 }

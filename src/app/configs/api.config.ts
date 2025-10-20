@@ -1,6 +1,7 @@
 const SERVER_URL: string = 'https://aily-chat.diandeng.tech';
 const CHAT_SERVER_URL: string = 'http://114.132.150.141:8100';
 const AUTH_SERVER_URL: string = 'http://114.132.150.141:8101';
+const WORKSPACE_SERVER_URL: string = 'http://114.132.150.141:8102';
 const REGISTRY_URL: string = 'https://registry.diandeng.tech';
 
 export const API = {
@@ -24,4 +25,11 @@ export const API = {
   getHistory: `${CHAT_SERVER_URL}/api/v1/conversation_history`,
   stopSession: `${CHAT_SERVER_URL}/api/v1/stop_session`,
   cancelTask: `${CHAT_SERVER_URL}/api/v1/cancel_task`,
+  // cloud
+  cloudBase: `${WORKSPACE_SERVER_URL}/api/v1/cloud`,
+  cloudSync: `${WORKSPACE_SERVER_URL}/api/v1/cloud/sync`,
+  cloudProjects: `${WORKSPACE_SERVER_URL}/api/v1/cloud/projects`,
+  cloudPublicProjects: `${WORKSPACE_SERVER_URL}/api/v1/cloud/projects/public`,
+  // feedback
+  feedback: `${WORKSPACE_SERVER_URL}/api/v1/feedback/submit`,
 };

@@ -45,6 +45,8 @@ export class MenuComponent {
   activeSubmenuIndex: number | null = null;
   submenuTimeout: any = null;
   submenuPosition = { left: '0px', top: '0px' };
+  submenuMaxHeight = 'none';
+  submenuOverflow = 'visible';
 
   constructor(private router: Router) { }
 
@@ -122,7 +124,13 @@ export class MenuComponent {
     // 计算目标菜单项在可见项中的索引
     for (let i = 0; i <= index; i++) {
       const item = this.menuList[i];
-      if (!item.sep && this.showInRouter(item)) {
+      // 跳过分隔符
+      if (item.sep) {
+        continue;
+      }
+      // 检查是否应该渲染这个菜单项
+      const shouldRender = (item.children && item.children.length > 0) || (!item.children && this.showInRouter(item));
+      if (shouldRender) {
         if (i === index) {
           targetItemIndex = visibleItemCount;
         }
@@ -137,13 +145,41 @@ export class MenuComponent {
       const itemRect = menuItemElement.getBoundingClientRect();
 
       // 子菜单显示在主菜单右侧
-      const left = this.position.x + this.width + 2;
-      const top = this.position.y + (itemRect.top - menuBoxRect.top);
+      const left = menuBoxRect.right + 2;
+      const top = itemRect.top;
 
       this.submenuPosition = {
         left: left + 'px',
-        top: top - 3 + 'px'
+        top: top - 2 + 'px'
       };
+
+      // 计算子菜单高度
+      this.calculateSubmenuHeight(top);
+    }
+  }
+
+  // 计算子菜单最大高度
+  calculateSubmenuHeight(submenuTop: number) {
+    const windowHeight = window.innerHeight;
+    const submenuTopFromWindow = submenuTop;
+
+    // 预估子菜单项数量和高度
+    const submenuItems = this.menuList[this.activeSubmenuIndex]?.children || [];
+    const itemHeight = 30; // 每个菜单项高度
+    const padding = 6; // 上下padding (3px * 2)
+    const estimatedSubmenuHeight = submenuItems.length * itemHeight + padding;
+
+    // 计算最大可用高度 (窗口高度 - 子菜单顶部距离 - 底部预留空间)
+    const bottomPadding = 10; // 底部预留空间
+    const maxAvailableHeight = windowHeight - submenuTopFromWindow - bottomPadding;
+
+    // 如果预估高度超过最大可用高度,启用滚动
+    if (estimatedSubmenuHeight > maxAvailableHeight) {
+      this.submenuMaxHeight = maxAvailableHeight + 'px';
+      this.submenuOverflow = 'auto';
+    } else {
+      this.submenuMaxHeight = 'none';
+      this.submenuOverflow = 'visible';
     }
   }
 

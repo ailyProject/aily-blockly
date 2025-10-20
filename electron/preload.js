@@ -129,6 +129,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     // 向其他窗口发送消息
     send: (data) => ipcRenderer.invoke("window-send", data),
     onReceive: (callback) => ipcRenderer.on("window-receive", callback),
+    // 检查窗口是否为活动窗口
+    isFocused: () => ipcRenderer.sendSync("window-is-focused"),
+    // 监听窗口获得焦点事件
+    onFocus: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("window-focus", listener);
+      return () => ipcRenderer.removeListener("window-focus", listener);
+    },
+    // 监听窗口失去焦点事件
+    onBlur: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("window-blur", listener);
+      return () => ipcRenderer.removeListener("window-blur", listener);
+    },
   },
   subWindow: {
     open: (options) => ipcRenderer.send("window-open", options),
@@ -150,7 +164,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
-    readFileSync: (path) => require("fs").readFileSync(path, "utf8"),
+    readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readDirSync: (path) => require("fs").readdirSync(path, { withFileTypes: true }),
     writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
@@ -359,6 +373,40 @@ contextBridge.exposeInMainWorld("electronAPI", {
         ipcRenderer
           .invoke("calculate-md5", text)
           .then((md5) => resolve(md5))
+          .catch((error) => reject(error));
+      });
+    }
+  },
+  // 系统通知 API
+  notification: {
+    /**
+     * 显示系统通知
+     * @param {Object} options - 通知选项
+     * @param {string} options.title - 通知标题
+     * @param {string} options.body - 通知内容
+     * @param {string} [options.icon] - 通知图标路径（可选）
+     * @param {boolean} [options.silent=false] - 是否静音（可选）
+     * @param {string} [options.timeoutType='default'] - 超时类型（可选，'default' | 'never'）
+     * @param {string} [options.urgency] - 紧急程度（可选，'normal' | 'critical' | 'low'，仅 Linux）
+     * @returns {Promise<{success: boolean, result?: any, error?: string}>}
+     */
+    show: (options) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("notification-show", options)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 检查系统是否支持通知
+     * @returns {Promise<boolean>}
+     */
+    isSupported: () => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("notification-is-supported")
+          .then((result) => resolve(result))
           .catch((error) => reject(error));
       });
     }

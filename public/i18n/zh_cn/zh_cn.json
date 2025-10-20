@@ -70,12 +70,12 @@
         "FLASH_MODE": "闪存模式",
         "FLASH_SIZE": "闪存大小",
         "PARTITION_SCHEME": "分区方案",
-        "CDC_ON_BOOT": "USB模拟串口"
+        "CDC_ON_BOOT": "USB模拟串口",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "开发板型号选择",
-        "USB": "USB配置",
-        "UPLOAD_METHOD": "烧录方式"
+        "USB": "USB配置"
     },
     "GUIDE": {
         "START": "开始",
@@ -137,6 +137,7 @@
             "DEV": "dev"
         },
         "FORM": {
+            "DEVMODE": "开发框架",
             "BOARD": "开发板",
             "PROJECT_NAME": "项目名称",
             "SAVE_PATH": "保存路径",
@@ -191,5 +192,37 @@
         "CURRENT_BOARD_CORE": "当前开发板内核：",
         "CANCEL": "取消",
         "CONTINUE_INSTALL": "继续安装"
+    },
+    "BOARD_SELECTOR": {
+        "TITLE": "切换开发板",
+        "SEARCH_PLACEHOLDER": "搜索开发板...",
+        "EMPTY_LIST": "未找到匹配的开发板",
+        "CANCEL": "取消",
+        "CONFIRM": "确认",
+        "LOADING": "正在切换开发板...",
+        "SWITCH_FAILED": "切换开发板失败"
+    },
+    "UPDATE_DIALOG": {
+        "TITLE": "软件更新",
+        "DOWNLOAD_FAILED": "下载失败",
+        "REMIND_LATER": "稍后提醒",
+        "SKIP_VERSION": "跳过此版本",
+        "UPDATE_NOW": "立即更新",
+        "CANCEL_DOWNLOAD": "取消下载",
+        "INSTALL_LATER": "稍后安装",
+        "INSTALL_NOW": "立即安装",
+        "CLOSE": "关闭",
+        "RETRY": "重试"
+    },
+    "UNSAVE_DIALOG": {
+        "TITLE": "未保存的更改",
+        "MESSAGE": "您有未保存的更改，是否保存?",
+        "MESSAGE_OPEN": "在打开新项目前,是否保存当前项目的更改?",
+        "MESSAGE_NEW": "在创建新项目前,是否保存当前项目的更改?",
+        "MESSAGE_CLOSE": "是否在关闭前保存更改?",
+        "MESSAGE_DEFAULT": "是否保存当前项目?",
+        "CANCEL": "取消",
+        "SKIP_SAVE": "跳过保存",
+        "SAVE_AND_CONTINUE": "保存并继续"
     }
 }

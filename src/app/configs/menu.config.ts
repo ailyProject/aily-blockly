@@ -74,14 +74,14 @@ export let HEADER_BTNS: IMenuItem[][] = [
       data: { type: 'tool', data: "serial-monitor" },
       icon: 'fa-light fa-monitor-waveform',
     },
-    {
-      name: 'MENU.SIMULATOR',
-      action: 'tool-open',
-      data: { type: 'tool', data: "simulator" },
-      icon: 'fa-light fa-atom',
-      dev: true,
-      router: ['/main/blockly-editor']
-    },
+    // {
+    //   name: 'MENU.SIMULATOR',
+    //   action: 'tool-open',
+    //   data: { type: 'tool', data: "simulator" },
+    //   icon: 'fa-light fa-atom',
+    //   dev: true,
+    //   router: ['/main/blockly-editor']
+    // },
     {
       name: 'MENU.AI',
       action: 'tool-open',
@@ -89,19 +89,18 @@ export let HEADER_BTNS: IMenuItem[][] = [
       icon: 'fa-light fa-star-christmas',
       more: 'AI'
     },
-    {
-      name: 'MENU.APP_STORE',
-      action: 'tool-open',
-      data: { type: 'tool', data: "app-store" },
-      icon: 'fa-light fa-store',
-      dev: true
-    },
+    // {
+    //   name: 'MENU.APP_STORE',
+    //   action: 'tool-open',
+    //   data: { type: 'tool', data: "app-store" },
+    //   icon: 'fa-light fa-store',
+    //   dev: true
+    // },
     {
       name: 'MENU.USER_SPACE',
       action: 'tool-open',
       data: { type: 'tool', data: "cloud-space" },
       icon: 'fa-light fa-cloud',
-      dev: true
     },
     {
       name: 'MENU.USER_AUTH',

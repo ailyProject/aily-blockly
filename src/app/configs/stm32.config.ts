@@ -16,10 +16,10 @@ export let STM32_CONFIG_MENU: IMenuItem[] = [
         icon: "fa-light fa-usb-drive",
         children: []
     },
-    {
-        name: 'STM32.UPLOAD_METHOD',
-        data: {},
-        icon: "fa-light fa-cloud-arrow-up",
-        children: []
-    }
+    // {
+    //     name: 'STM32.UPLOAD_METHOD',
+    //     data: {},
+    //     icon: "fa-light fa-cloud-arrow-up",
+    //     children: []
+    // }
 ]

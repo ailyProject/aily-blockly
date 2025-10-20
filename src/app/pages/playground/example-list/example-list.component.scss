@@ -1,0 +1,150 @@
+.content-box {
+    height: calc(100vh - 150px);
+    padding: 15px;
+}
+
+.example-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    width: 100%;
+
+    .example-item {
+        width: 280px;
+        height: 280px;
+        background: #2b2b2b;
+        border-radius: 5px;
+        padding: 10px;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        transition: all 0.3s;
+
+        &:hover {
+            background: #3a3a3a;
+        }
+
+        .img-box {
+            border-radius: 5px;
+            position: relative;
+            width: 260px;
+            height: 130px;
+            overflow: hidden;
+
+            img {
+                width: 260px;
+                height: 130px;
+            }
+
+            .downloads {
+                position: absolute;
+                top: 5px;
+                right: 5px;
+                background: rgba(0, 0, 0, 0.6);
+                color: #fff;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 10px;
+            }
+
+            .collection {
+                position: absolute;
+                bottom: 5px;
+                right: 5px;
+                background: rgba(0, 0, 0, 0.6);
+                color: #fff;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 10px;
+            }
+
+            .title {
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                width: 100%;
+                background: rgba(0, 0, 0, 0.6);
+                color: #fff;
+                padding: 5px;
+                line-height: 18px;
+                font-size: 16px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+        }
+
+        .title-b {
+            font-size: 12px;
+            display: flex;
+
+            >div {
+                color: #c9c9c9;
+                margin-right: 15px;
+            }
+        }
+
+        .text {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #ccc;
+            height: 86px;
+            white-space: normal;
+            overflow: hidden;
+            line-clamp: 4;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 4;
+        }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #aaa;
+
+            .btns {
+                display: flex;
+                gap: 8px;
+            }
+
+            // ::ng-deep {
+            //     .ant-btn-round.ant-btn-sm {
+            //         height: 24px;
+            //         width: 24px;
+            //         font-size: 12px;
+            //         display: flex;
+            //         align-items: center;
+            //         justify-content: center;
+
+            //         &:hover {
+            //             color: #fff;
+            //             border-color: #fff;
+            //         }
+            //     }
+            // }
+
+            .doc-btn {
+                color: #ccc;
+
+                &:hover {
+                    color: #fff;
+                }
+            }
+
+            .load-btn {
+                width: 88px;
+            }
+        }
+    }
+}
+
+.pagination {
+    padding: 3px;
+    width: 100%;
+    text-align: center;
+}

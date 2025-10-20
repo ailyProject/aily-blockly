@@ -15,8 +15,8 @@ import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Router } from '@angular/router';
 import { BrandListComponent } from './components/brand-list/brand-list.component';
 import { BRAND_LIST, CORE_LIST } from '../../configs/board.config';
-
-const { pt } = (window as any)['electronAPI'].platform;
+import { PlatformService } from '../../services/platform.service';
+import { NzRadioModule } from 'ng-zorro-antd/radio';
 
 @Component({
   selector: 'app-project-new',
@@ -30,7 +30,8 @@ const { pt } = (window as any)['electronAPI'].platform;
     NzSelectModule,
     NzTagModule,
     TranslateModule,
-    BrandListComponent
+    BrandListComponent,
+    NzRadioModule
   ],
   templateUrl: './project-new.component.html',
   styleUrl: './project-new.component.scss',
@@ -51,7 +52,8 @@ export class ProjectNewComponent {
       name: '',
       nickname: '',
       version: '',
-    }
+    },
+    devmode: ''
   };
 
   boardVersion = '';
@@ -87,10 +89,12 @@ export class ProjectNewComponent {
     private projectService: ProjectService,
     private configService: ConfigService,
     private npmService: NpmService,
+    private platformService: PlatformService,
   ) { }
 
   async ngOnInit() {
     if (this.electronService.isElectron) {
+      const pt = this.platformService.getPlatformSeparator();
       this.newProjectData.path = window['path'].getUserDocuments() + `${pt}aily-project${pt}`;
     }
 
@@ -111,6 +115,7 @@ export class ProjectNewComponent {
     this.newProjectData.board.nickname = this.currentBoard.nickname;
     this.newProjectData.board.name = this.currentBoard.name;
     this.newProjectData.board.version = this.currentBoard.version;
+    this.newProjectData.devmode = this.currentBoard.mode ? this.currentBoard.mode[0] : 'Arduino';
     this.newProjectData.name = this.projectService.generateUniqueProjectName(this.newProjectData.path, 'project_');
   }
 
@@ -136,11 +141,14 @@ export class ProjectNewComponent {
     }
   }
 
+  devmodes = [];
   selectBoard(boardInfo: BoardInfo) {
     this.currentBoard = boardInfo;
     this.newProjectData.board.name = boardInfo.name;
     this.newProjectData.board.nickname = boardInfo.nickname;
     this.newProjectData.board.version = boardInfo.version;
+    this.newProjectData.devmode = boardInfo.mode ? this.currentBoard.mode[0] : 'arduino';
+    this.devmodes = boardInfo.mode
   }
 
   // 可用版本列表
@@ -156,6 +164,7 @@ export class ProjectNewComponent {
       path: this.newProjectData.path,
     });
     // console.log('选中的文件夹路径：', folderPath);
+    const pt = this.platformService.getPlatformSeparator();
     if (folderPath.slice(-1) !== pt) {
       this.newProjectData.path = folderPath + pt;
     }
@@ -165,6 +174,7 @@ export class ProjectNewComponent {
   // 检查项目名称是否存在
   showIsExist = false;
   async checkPathIsExist(): Promise<boolean> {
+    const pt = this.platformService.getPlatformSeparator();
     let path = this.newProjectData.path + pt + this.newProjectData.name;
     let isExist = window['path'].isExists(path);
     if (isExist) {
@@ -344,6 +354,7 @@ export interface BoardInfo {
   "url": string,
   "brand": string,
   "type"?: string, // 开发板类型/核心架构 (如 esp32:esp32, arduino:avr, etc)
+  "mode"?: string[]
 }
 
 export interface NewProjectData {
@@ -353,5 +364,6 @@ export interface NewProjectData {
     name: string,
     nickname: string,
     version: string
-  }
+  },
+  devmode?: string
 }

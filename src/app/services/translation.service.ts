@@ -3,6 +3,7 @@ import { TranslateService } from '@ngx-translate/core';
 import { HttpClient } from '@angular/common/http';
 import { lastValueFrom } from 'rxjs';
 import { ConfigService } from './config.service';
+import { ElectronService } from './electron.service';
 
 export interface Locale {
   name: string;
@@ -22,7 +23,8 @@ export class TranslationService {
   constructor(
     private translate: TranslateService,
     private http: HttpClient,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private electronService: ElectronService
   ) {
   }
 
@@ -39,6 +41,7 @@ export class TranslationService {
     const currentLang = this.getSelectedLanguage();
     await this.setLanguage(currentLang);
 
+    if (!this.electronService.isElectron) return;
     window['ipcRenderer'].on('setting-changed', (event, data) => {
       if (data.action == 'language-changed') {
         this.setLanguage(data.data);
@@ -87,7 +90,7 @@ export class TranslationService {
 
     // 使用该语言
     this.translate.use(lang);
-    this.configService.data.selectedLanguage = lang;
+    this.configService.data['selectedLanguage'] = lang;
     this.configService.save();
     return lang;
   }

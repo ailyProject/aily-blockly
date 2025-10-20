@@ -1,0 +1,45 @@
+<app-base-dialog 
+  [title]="'BOARD_SELECTOR.TITLE' | translate"
+  [buttons]="buttons"
+  [showCloseButton]="!isLoading"
+  (closeDialog)="onClose()"
+  (buttonClick)="onButtonClick($event)">
+  
+  <!-- 搜索框 -->
+  <div class="search-box">
+    <input nz-input [(ngModel)]="searchKeyword" (ngModelChange)="onSearch()" 
+      [placeholder]="'BOARD_SELECTOR.SEARCH_PLACEHOLDER' | translate"
+      class="search-input" [disabled]="isLoading" />
+  </div>
+
+  <!-- 选择开发板列表 -->
+  <div class="board-list sscroll">
+    @if(filteredBoardList.length === 0) {
+    <div class="empty-list">
+      <i class="fa-light fa-inbox"></i>
+      <span>{{ 'BOARD_SELECTOR.EMPTY_LIST' | translate }}</span>
+    </div>
+    }
+    @for(board of filteredBoardList; track board.name) {
+    <div class="board-item" [class.selected]="selectedBoard?.name === board.name" [class.disabled]="isLoading"
+      (click)="!isLoading && selectBoard(board)">
+      <div class="board-img ccenter">
+        <img [src]="resourceUrl+board.img" />
+      </div>
+      <div class="board-info">
+        <div class="board-name">{{ board.nickname }}
+          @if(board.state){
+          <span>({{board.state}})</span>
+          }
+        </div>
+        @if(board.brand) {
+        <div class="board-brand">{{ board.brand }}</div>
+        }
+      </div>
+      @if(selectedBoard?.name === board.name) {
+      <i class="fa-solid fa-circle-check check-icon"></i>
+      }
+    </div>
+    }
+  </div>
+</app-base-dialog>

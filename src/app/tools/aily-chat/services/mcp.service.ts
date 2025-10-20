@@ -154,7 +154,7 @@ export class McpService {
           if (Connect.success === true) {
             console.log(`成功连接到MCP服务 ${serverName}`);
           } else {
-            console.error(`连接到MCP服务 ${serverName} 失败:`, Connect.error);
+            console.warn(`连接到MCP服务 ${serverName} 失败:`, Connect.error);
             // 连接失败时从clients中移除
             const index = this.clients.indexOf(serverName);
             if (index > -1) {
@@ -162,7 +162,7 @@ export class McpService {
             }
           }
         } catch (e) {
-          console.error(`连接到MCP服务 ${serverName} 时发生错误:`, e);
+          console.warn(`连接到MCP服务 ${serverName} 时发生错误:`, e);
           // 连接失败时从clients中移除
           const index = this.clients.indexOf(serverName);
           if (index > -1) {

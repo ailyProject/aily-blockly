@@ -58,6 +58,8 @@ export class _UploaderService {
     // Writing at 0x0002d89e... (40 %)
     // Writing at 0x0003356b... (50 %)
     /Writing\s+at\s+0x[0-9a-f]+\.\.\.\s+\(\d+\s*%\)/i,
+    // Wrote and verified address 0x08001700 (79.31%)
+    /Wrote\s+and\s+verified\s+address\s+0x[0-9a-f]+\s+\((\d+(?:\.\d+)?)%\)/i,
     // 或者只是数字+百分号（例如：[====>    ] 70%）
     /\b(\d+(?:\.\d+)?)%\b/,
     // 70% 13/18
@@ -131,10 +133,10 @@ export class _UploaderService {
       if (param.includes('${baud}')) {
         return param.replace('${baud}', baudRate || '115200');
       } else if (param.includes('${bootloader}')) {
-        const bootLoaderFile = await findFile(buildPath, '*.bootloader.bin');
+        const bootLoaderFile = await findFile(buildPath, '*.bootloader.bin', '');
         return param.replace('${bootloader}', bootLoaderFile);
       } else if (param.includes('${partitions}')) {
-        const partitionsFile = await findFile(buildPath, '*.partitions.bin');
+        const partitionsFile = await findFile(buildPath, '*.partitions.bin', '');
         return param.replace('${partitions}', partitionsFile);
       } else if (param.includes('${boot_app0}')) {
         return param.replace('${boot_app0}', `${sdkPath}/tools/partitions/boot_app0.bin`)
@@ -146,12 +148,50 @@ export class _UploaderService {
 
     console.log("Processed upload params: ", paramList, flags);
 
-    // 第二步：查找可执行文件的完整路径
-    let command = '';
-    if (paramList.length > 0) {
-      command = await findFile(toolsPath, paramList[0] + (window['platform'].isWindows ? '.exe' : ''));
+    const boardPackageJson = await this.projectService.getBoardPackageJson();
+    if (!boardPackageJson) {
+      throw new Error('无法获取板子配置');
     }
 
+    // 获取boardPackageJson中的boardDependencies，并筛选出以 'tool-' 或 '@aily-project/tool-' 开头的依赖
+    const toolDependencies: { [key: string]: string } = {};
+    Object.entries(boardPackageJson.boardDependencies || {})
+      .filter(([key, value]) => key.startsWith('tool-') || key.startsWith('@aily-project/tool-'))
+      .forEach(([key, value]) => {
+        // 去掉可能的前缀 '@aily-project/tool-' 或 'tool-'
+        let name = key;
+        const prefixAily = '@aily-project/tool-';
+        const prefixTool = 'tool-';
+        if (name.startsWith(prefixAily)) {
+          name = name.slice(prefixAily.length);
+        } else if (name.startsWith(prefixTool)) {
+          name = name.slice(prefixTool.length);
+        }
+        toolDependencies[name] = value as string;
+      });
+
+    console.log("Tool dependencies: ", toolDependencies);
+
+    // 第二步：查找可执行文件的完整路径
+    let toolVersion = toolDependencies[paramList[0]];
+    if (!toolVersion) {
+      // 对toolDependencies进行更宽松的匹配，只要key中包含paramList[0]就匹配
+      const matchedTool = Object.keys(toolDependencies).find(key => {
+        return key.toLowerCase().includes(paramList[0].toLowerCase());
+      });
+
+      if (matchedTool) {
+        toolVersion = toolDependencies[matchedTool];
+      }
+    }
+
+    console.log("Upload Tool version: ", toolVersion);
+
+    let command = '';
+    if (paramList.length > 0) {
+      command = await findFile(toolsPath, paramList[0] + (window['platform'].isWindows ? '.exe' : ''), toolVersion || '');
+    }
+    console.log("Found command: ", command);
     // 替换命令为完整路径命令
     if (command) {
       paramList[0] = command;
@@ -174,12 +214,12 @@ export class _UploaderService {
 
         // 判断后缀是否为(bin|elf|hex|eep|img|uf2)之一
         if (!['bin', 'elf', 'hex', 'eep', 'img', 'uf2'].includes(fileExtension)) {
-          findRes = await findFile(toolsPath, fileName);
+          findRes = await findFile(toolsPath, fileName, '');
           if (!findRes) {
-            findRes = await findFile(sdkPath + "/tools", fileName);
+            findRes = await findFile(sdkPath + "/tools", fileName, '');
           }
         } else {
-          findRes = await findFile(buildPath, fileName);
+          findRes = await findFile(buildPath, fileName, '');
         }
 
         paramList[i] = param.replace(`\$\{\'${fileName}\'\}`, findRes);
@@ -666,6 +706,9 @@ export class _UploaderService {
 * 取消当前编译过程
 */
   cancel() {
+    if (!this.uploadInProgress) {
+      return;
+    }
     this.cancelled = true;
     this.cmdService.kill(this.streamId || '');
     console.log("取消command: ", this.commandName);

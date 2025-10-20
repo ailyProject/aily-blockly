@@ -1,0 +1,39 @@
+<div class="prompt-box bborder" [class]="customClass" [class.loading]="loading">
+    <div class="header">
+        <div class="title">{{title}}</div>
+        <div class="win-btns">
+            @if(showCloseButton) {
+            <div class="btn ccenter close" (click)="onClose()">
+                <i class="fa-light fa-xmark"></i>
+            </div>
+            }
+        </div>
+    </div>
+    <div class="content">
+        <!-- 内容插槽 -->
+        <ng-content></ng-content>
+        
+        <!-- Footer 插槽或默认按钮 -->
+        @if(showFooter) {
+        <div class="footer">
+            <ng-content select="[footer]"></ng-content>
+            
+            <!-- 如果没有自定义 footer，使用配置的按钮 -->
+            @if(buttons.length > 0) {
+            @for(button of buttons; track button.action) {
+            <button 
+                nz-button 
+                [nzSize]="button.size || 'small'" 
+                [nzType]="button.type || 'default'" 
+                [nzDanger]="button.danger || false"
+                [disabled]="button.disabled || false"
+                [nzLoading]="button.loading || false"
+                (click)="onButtonClick(button.action)">
+                {{ button.text | translate }}
+            </button>
+            }
+            }
+        </div>
+        }
+    </div>
+</div>

@@ -94,6 +94,7 @@
             "DEV": "개발"
         },
         "FORM": {
+            "DEVMODE": "개발 프레임워크",
             "BOARD": "보드",
             "PROJECT_NAME": "프로젝트 이름",
             "SAVE_PATH": "저장 경로",
@@ -136,5 +137,37 @@
         "IOT": "사물인터넷",
         "OTHERS": "기타",
         "ALL": "모든 라이브러리"
+    },
+    "BOARD_SELECTOR": {
+        "TITLE": "보드 전환",
+        "SEARCH_PLACEHOLDER": "보드 검색...",
+        "EMPTY_LIST": "일치하는 보드를 찾을 수 없습니다",
+        "CANCEL": "취소",
+        "CONFIRM": "확인",
+        "LOADING": "보드 전환 중...",
+        "SWITCH_FAILED": "보드 전환 실패"
+    },
+    "UPDATE_DIALOG": {
+        "TITLE": "소프트웨어 업데이트",
+        "DOWNLOAD_FAILED": "다운로드 실패",
+        "REMIND_LATER": "나중에 알림",
+        "SKIP_VERSION": "이 버전 건너뛰기",
+        "UPDATE_NOW": "지금 업데이트",
+        "CANCEL_DOWNLOAD": "다운로드 취소",
+        "INSTALL_LATER": "나중에 설치",
+        "INSTALL_NOW": "지금 설치",
+        "CLOSE": "닫기",
+        "RETRY": "다시 시도"
+    },
+    "UNSAVE_DIALOG": {
+        "TITLE": "저장되지 않은 변경 사항",
+        "MESSAGE": "저장되지 않은 변경 사항이 있습니다. 저장하시겠습니까?",
+        "MESSAGE_OPEN": "새 프로젝트를 열기 전에 현재 프로젝트의 변경 사항을 저장하시겠습니까?",
+        "MESSAGE_NEW": "새 프로젝트를 만들기 전에 현재 프로젝트의 변경 사항을 저장하시겠습니까?",
+        "MESSAGE_CLOSE": "닫기 전에 변경 사항을 저장하시겠습니까?",
+        "MESSAGE_DEFAULT": "현재 프로젝트를 저장하시겠습니까?",
+        "CANCEL": "취소",
+        "SKIP_SAVE": "저장 건너뛰기",
+        "SAVE_AND_CONTINUE": "저장 후 계속"
     }
 }
