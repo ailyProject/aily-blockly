@@ -167,4 +167,8 @@ export class GuideComponent implements OnInit, AfterViewInit {
       // }
     }, 12000)
   }
+
+  openFeedback() {
+    this.uiService.openFeedback();
+  }
 }

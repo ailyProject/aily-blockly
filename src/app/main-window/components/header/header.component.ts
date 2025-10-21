@@ -347,6 +347,9 @@ export class HeaderComponent {
       case 'board-select':
         this.openBoardSelectorDialog();
         break;
+      case 'feedback':
+        this.uiService.openFeedback();
+        break;
       default:
         console.log('未处理的操作:', item.action);
         break;

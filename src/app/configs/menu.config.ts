@@ -186,8 +186,7 @@ export let HEADER_MENU: IMenuItem[] = [
   },
   {
     name: 'MENU.FEEDBACK',
-    action: 'browser-open',
-    data: { type: 'other', action: 'openByBrowser', url: 'https://github.com/ailyProject/aily-blockly/issues' },
+    action: 'feedback',
     icon: 'fa-light fa-messages-question',
   },
   {

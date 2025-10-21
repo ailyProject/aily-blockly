@@ -5,6 +5,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NoticeService } from '../services/notice.service';
 import { CmdOutput, CmdService } from './cmd.service';
 import { ActionService } from './action.service';
+import { ElectronService } from './electron.service';
 
 import { getDefaultBuildPath, findFile } from '../utils/builder.utils';
 
@@ -18,6 +19,7 @@ export class BuilderService {
     private actionService: ActionService,
     private projectService: ProjectService,
     private cmdService: CmdService,
+    private electronService: ElectronService
   ) {
     this.init();
   }
@@ -46,10 +48,15 @@ export class BuilderService {
   async build() {
     try {
       const result = await this.actionService.dispatchWithFeedback('compile-begin', {}, 600000).toPromise();
-      console.log('>>>>> 编译结果:', result);
+      if (!this.electronService.isWindowFocused()) {
+        this.electronService.notify('编译', result.data?.result?.text || '');
+      }
       return result.data?.result;
     } catch (error) {
       // console.error('编译失败:', error);
+      if (!this.electronService.isWindowFocused()) {
+        this.electronService.notify('编译', '编译失败');
+      }
       throw error;
     }
   }

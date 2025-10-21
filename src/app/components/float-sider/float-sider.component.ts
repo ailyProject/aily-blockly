@@ -10,6 +10,7 @@ import { Subscription } from 'rxjs';
 import { filter } from 'rxjs/operators';
 import { ElectronService } from '../../services/electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { UiService } from '../../services/ui.service';
 @Component({
   selector: 'app-float-sider',
   imports: [
@@ -31,7 +32,8 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
     private projectService: ProjectService,
     private router: Router,
     private electronService: ElectronService,
-    private message: NzMessageService
+    private message: NzMessageService,
+    private uiService: UiService
   ) { }
 
   ngOnInit() {
@@ -102,22 +104,6 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   }
 
   openFeedback() {
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzContent: FeedbackDialogComponent,
-      nzWidth: '500px',
-    });
-
-    // 处理反馈结果
-    modalRef.afterClose.subscribe(result => {
-      if (result?.result === 'success') {
-        console.log('反馈已提交:', result.data);
-      }
-    });
+    this.uiService.openFeedback();
   }
 }

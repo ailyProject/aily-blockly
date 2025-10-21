@@ -628,7 +628,6 @@ export class _BuilderService {
               reject({ state: 'error', text: error.message });
             },
             complete: () => {
-              console.log('编译命令执行完成');
               if (this.buildCompleted) {
                 console.log('编译命令执行完成');
                 // 计算编译耗时

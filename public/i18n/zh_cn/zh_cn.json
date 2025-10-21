@@ -70,7 +70,8 @@
         "FLASH_MODE": "闪存模式",
         "FLASH_SIZE": "闪存大小",
         "PARTITION_SCHEME": "分区方案",
-        "CDC_ON_BOOT": "USB模拟串口"
+        "CDC_ON_BOOT": "USB模拟串口",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "开发板型号选择",

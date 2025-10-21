@@ -11,11 +11,16 @@
         display: block;
         margin-bottom: 8px;
         font-size: 14px;
-        color: #ddd;
+        color: #f5f5f5;
 
         .required {
             color: #ff4d4f;
             margin-left: 4px;
+        }
+
+        .more {
+            font-size: 12px;
+            color: #c4c4c4;
         }
     }
 
@@ -64,24 +69,20 @@
     }
 
     .tips {
-        display: flex;
-        align-items: flex-start;
-        gap: 8px;
         padding: 5px;
         background: rgba(255, 235, 17, 0.1);
         border-radius: 4px;
         border-left: 3px solid #ffad14;
-        margin-top: 16px;
-        font-size: 13px;
+        margin: 15px 0;
+        font-size: 14px;
 
-        i {
-            font-size: 16px;
-            margin-top: 1px;
-            flex-shrink: 0;
+        >div {
+            height: 24px;
         }
 
-        span {
-            line-height: 1.5;
+        a {
+            color: #1890ff;
+            cursor: pointer;
         }
     }
 }

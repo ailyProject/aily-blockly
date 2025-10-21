@@ -30,4 +30,6 @@ export const API = {
   cloudSync: `${WORKSPACE_SERVER_URL}/api/v1/cloud/sync`,
   cloudProjects: `${WORKSPACE_SERVER_URL}/api/v1/cloud/projects`,
   cloudPublicProjects: `${WORKSPACE_SERVER_URL}/api/v1/cloud/projects/public`,
+  // feedback
+  feedback: `${WORKSPACE_SERVER_URL}/api/v1/feedback/submit`,
 };
