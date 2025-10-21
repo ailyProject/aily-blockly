@@ -84,11 +84,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /** 已加载的语言扩展集合 */
   private loadedLanguageExtensions = new Set<string>();
 
-  /** cpptools扩展是否已加载 */
-  private cpptoolsLoaded = false;
+  // /** cpptools扩展是否已加载 */
+  // private cpptoolsLoaded = false;
 
   /** json-language-features扩展是否已加载 */
   private jsonLanguageFeaturesLoaded = false;
+
+  /** clangd扩展是否已加载 */
+  private clangdLoaded = false;
 
   /** JSON格式化提供者是否已注册(全局标志) */
   private static jsonFormatterRegistered = false;
@@ -555,7 +558,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       // 如果是C++语言，自动加载cpptools扩展以提供代码补全功能
       if (language === 'cpp') {
-        await this.loadCpptools();
+        // await this.loadCpptools();
       }
     } catch (error) {
       console.error(`加载语言扩展 ${language} 失败:`, error);
@@ -607,29 +610,115 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
   }
 
-  async loadCpptools() {
-    // 避免重复加载cpptools扩展
-    if (this.cpptoolsLoaded) {
-      console.log('cpptools扩展已加载，跳过');
+  /**
+   * 加载 vscode-clangd 扩展，提供 C/C++ 代码补全、导航和分析功能
+   * 
+   * 使用示例:
+   * ```typescript
+   * // 使用默认的 clangd 配置
+   * await this.loadClangdExtension();
+   * 
+   * // 或者指定自定义的 clangd 可执行文件路径
+   * await this.loadClangdExtension('D:\\path\\to\\clangd\\bin\\clangd.exe');
+   * ```
+   * 
+   * @param clangdPath clangd 可执行文件的路径，例如：'D:\\path\\to\\clangd.exe'
+   *                   如果不提供，将使用扩展的默认配置（'clangd'，从 PATH 中查找）
+   * @returns Promise<void>
+   */
+  async loadClangdExtension(clangdPath?: string): Promise<void> {
+    // 检查是否已加载
+    if (this.clangdLoaded) {
+      console.log('clangd 扩展已加载，跳过');
       return;
     }
 
-    // 对于C++，还要加载cpptools扩展（如果存在）
-    const cppToolsPath = 'C:\\Users\\coloz\\AppData\\Local\\aily-project\\extensions\\cpptools';
+    const clangdExtensionPath = 'vscode/extensions/clangd';
+    
     try {
-      console.log('加载cpptools扩展...');
-      await this.extensionLoader.loadExternalExtension(cppToolsPath, {
-        hostKind: ExtensionHostKind.LocalProcess,
-        system: false
+      console.log('开始加载 clangd 扩展...');
+      
+      // 如果提供了 clangd 路径，先配置它
+      if (clangdPath) {
+        console.log(`配置 clangd 路径: ${clangdPath}`);
+        
+        // 使用 VSCode API 更新配置
+        const { workspace } = await import('vscode');
+        const config = workspace.getConfiguration('clangd');
+        
+        // 设置 clangd 可执行文件路径
+        await config.update('path', clangdPath, true);
+        
+        // 可选：设置其他有用的配置
+        await config.update('arguments', [
+          '--background-index',           // 启用后台索引
+          '--clang-tidy',                 // 启用 clang-tidy 检查
+          '--completion-style=detailed',  // 详细的补全信息
+          '--header-insertion=iwyu',      // 自动插入头文件
+          '--pch-storage=memory',         // 在内存中存储预编译头
+        ], true);
+        
+        console.log('clangd 配置已更新');
+      }
+      
+      // 加载 clangd 扩展
+      const result = await this.extensionLoader.loadExtension(clangdExtensionPath, {
+        hostKind: ExtensionHostKind.LocalProcess, // clangd 需要在本地进程中运行
+        system: true
       });
-      this.cpptoolsLoaded = true;
-      console.log('cpptools扩展加载成功');
+      
+      // 等待扩展完全激活
+      await result.whenReady();
+      
+      // 额外等待确保语言服务器完全启动
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // 标记为已加载
+      this.clangdLoaded = true;
+      this.loadedLanguageExtensions.add('clangd');
+      console.log('✓ clangd 扩展加载成功');
+      
+      // 尝试激活 clangd
+      try {
+        const { commands } = await import('vscode');
+        await commands.executeCommand('clangd.activate');
+        console.log('✓ clangd 已激活');
+      } catch (activationError) {
+        console.warn('激活 clangd 时出现警告:', activationError);
+      }
+      
     } catch (error) {
-      console.warn('加载cpptools扩展失败:', error);
-      // 即使cpptools加载失败，也标记为已尝试加载，避免重复尝试
-      this.cpptoolsLoaded = true;
+      console.error('加载 clangd 扩展失败:', error);
+      // 即使失败也标记为已尝试加载，避免重复尝试
+      this.clangdLoaded = true;
+      this.loadedLanguageExtensions.add('clangd');
+      throw error;
     }
   }
+
+  // async loadCpptools() {
+  //   // 避免重复加载cpptools扩展
+  //   if (this.cpptoolsLoaded) {
+  //     console.log('cpptools扩展已加载，跳过');
+  //     return;
+  //   }
+
+  //   // 对于C++，还要加载cpptools扩展（如果存在）
+  //   const cppToolsPath = 'C:\\Users\\coloz\\AppData\\Local\\aily-project\\extensions\\cpptools';
+  //   try {
+  //     console.log('加载cpptools扩展...');
+  //     await this.extensionLoader.loadExternalExtension(cppToolsPath, {
+  //       hostKind: ExtensionHostKind.LocalProcess,
+  //       system: false
+  //     });
+  //     this.cpptoolsLoaded = true;
+  //     console.log('cpptools扩展加载成功');
+  //   } catch (error) {
+  //     console.warn('加载cpptools扩展失败:', error);
+  //     // 即使cpptools加载失败，也标记为已尝试加载，避免重复尝试
+  //     this.cpptoolsLoaded = true;
+  //   }
+  // }
 
 
   async init() {
@@ -663,44 +752,37 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       await this.loadLanguageExtension(language);
 
+      // 加载 clangd 扩展以提供 C/C++ 智能提示
+      try {
+        const clangdPath = 'D:\\Git\\aily-project\\aily-blockly-vscode\\child\\clangd\\bin\\clangd.exe';
+        await this.loadClangdExtension(clangdPath);
+      } catch (error) {
+        console.warn('clangd 扩展加载失败，但不影响基本编辑功能:', error);
+      }
+
       updateUserConfiguration(`{
         "workbench.colorTheme": "Default Dark Modern",
-        "extensions.enableProposedApi": ["ms-vscode.cpptools"],
+        "extensions.enableProposedApi": ["llvm-vs-code-extensions.vscode-clangd"],
         "json.format.enable": true,
-        "C_Cpp.autocomplete": "default",
-        "C_Cpp.autocompleteAddParentheses": false,
-        "C_Cpp.suggestSnippets": true,
-        "C_Cpp.errorSquiggles": "enabledIfIncludesResolve",
-        "C_Cpp.dimInactiveRegions": true,
-        "C_Cpp.inactiveRegionOpacity": 0.55,
-        "C_Cpp.intelliSenseEngine": "default",
-        "C_Cpp.intelliSenseUpdateDelay": 1000,
-        "C_Cpp.workspaceSymbols": "Just My Code",
-        "C_Cpp.workspaceParsingPriority": "highest",
-        "C_Cpp.codeFolding": "enabled",
-        "C_Cpp.enhancedColorization": "enabled",
-        "C_Cpp.formatting": "clangFormat",
-        "C_Cpp.clang_format_path": "",
-        "C_Cpp.clang_format_style": "file",
-        "C_Cpp.clang_format_fallbackStyle": "Visual Studio",
-        "C_Cpp.clang_format_sortIncludes": null,
-        "C_Cpp.codeAnalysis.clangTidy.enabled": true,
-        "C_Cpp.codeAnalysis.clangTidy.path": "",
-        "C_Cpp.codeAnalysis.clangTidy.config": "",
-        "C_Cpp.codeAnalysis.runAutomatically": true,
-        "C_Cpp.codeAnalysis.maxConcurrentThreads": null,
-        "C_Cpp.codeAnalysis.maxMemory": null,
-        "C_Cpp.codeAnalysis.updateDelay": 2000,
-        "C_Cpp.codeAnalysis.exclude": {
-            "**/.git": true,
-            "**/build": true,
-            "**/node_modules": true
-        },
-        "C_Cpp.inlayHints.autoDeclarationTypes.enabled": true,
-        "C_Cpp.inlayHints.autoDeclarationTypes.showOnLeft": false,
-        "C_Cpp.inlayHints.parameterNames.enabled": true,
-        "C_Cpp.inlayHints.parameterNames.suppressWhenArgumentContainsName": true,
-        "C_Cpp.inlayHints.referenceOperator.enabled": true
+        "clangd.path": "D:\\\\Git\\\\aily-project\\\\aily-blockly-vscode\\\\child\\\\clangd\\\\bin\\\\clangd.exe",
+        "clangd.arguments": [
+          "--background-index",
+          "--clang-tidy",
+          "--completion-style=detailed",
+          "--header-insertion=iwyu",
+          "--pch-storage=memory"
+        ],
+        "clangd.fallbackFlags": [],
+        "clangd.serverCompletionRanking": true,
+        "clangd.restartAfterCrash": true,
+        "clangd.checkUpdates": false,
+        "clangd.inactiveRegions.opacity": 0.55,
+        "clangd.enableCodeCompletion": true,
+        "clangd.enableHover": true,
+        "clangd.enable": true,
+        "C_Cpp.autocomplete": "disabled",
+        "C_Cpp.errorSquiggles": "disabled",
+        "C_Cpp.intelliSenseEngine": "disabled"
       }`);
 
       // 创建编辑器实例
