@@ -84,15 +84,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /** 已加载的语言扩展集合 */
   private loadedLanguageExtensions = new Set<string>();
 
-  // /** cpptools扩展是否已加载 */
-  // private cpptoolsLoaded = false;
-
-  /** clangd扩展是否已加载 */
-  private clangdLoaded = false;
-
-  /** JSON格式化提供者是否已注册(全局标志) */
-  private static jsonFormatterRegistered = false;
-
   /** 当前正在进行的模型切换操作 */
   private isChangingModel = false;
 
@@ -538,19 +529,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
 
     try {
-      // console.log(`开始加载语言扩展: ${language}`);
       await this.extensionLoader.loadExtension(extensionPath, {
         hostKind: ExtensionHostKind.LocalWebWorker,
         system: true
       });
-
       this.loadedLanguageExtensions.add(language);
       console.log(`语言扩展 ${language} 加载成功`);
-
-      // 如果是C++语言，自动加载cpptools扩展以提供代码补全功能
-      if (language === 'cpp') {
-        // await this.loadCpptools();
-      }
     } catch (error) {
       console.error(`加载语言扩展 ${language} 失败:`, error);
       // 即使失败也标记为已尝试加载，避免重复尝试
@@ -1036,31 +1020,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
   }
 
-  // async loadCpptools() {
-  //   // 避免重复加载cpptools扩展
-  //   if (this.cpptoolsLoaded) {
-  //     console.log('cpptools扩展已加载，跳过');
-  //     return;
-  //   }
-
-  //   // 对于C++，还要加载cpptools扩展（如果存在）
-  //   const cppToolsPath = 'C:\\Users\\coloz\\AppData\\Local\\aily-project\\extensions\\cpptools';
-  //   try {
-  //     console.log('加载cpptools扩展...');
-  //     await this.extensionLoader.loadExternalExtension(cppToolsPath, {
-  //       hostKind: ExtensionHostKind.LocalProcess,
-  //       system: false
-  //     });
-  //     this.cpptoolsLoaded = true;
-  //     console.log('cpptools扩展加载成功');
-  //   } catch (error) {
-  //     console.warn('加载cpptools扩展失败:', error);
-  //     // 即使cpptools加载失败，也标记为已尝试加载，避免重复尝试
-  //     this.cpptoolsLoaded = true;
-  //   }
-  // }
-
-
   async init() {
     try {
       console.log('Initializing Monaco VSCode API...');
@@ -1097,16 +1056,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       updateUserConfiguration(`{
         "workbench.colorTheme": "Default Dark Modern",
         "extensions.enableProposedApi": ["llvm-vs-code-extensions.vscode-clangd"],
-        "json.format.enable": true,
-        "clangd.path": "D:\\\\Git\\\\aily-project\\\\aily-blockly-vscode\\\\child\\\\clangd\\\\bin\\\\clangd.exe",
-        "clangd.arguments": [
-          "--background-index",
-          "--clang-tidy",
-          "--completion-style=detailed",
-          "--header-insertion=iwyu",
-          "--pch-storage=memory"
-        ],
-        "clangd.enable": true
+        "json.format.enable": true
       }`);
 
       // 加载 clangd 扩展以提供 C/C++ 智能提示和格式化

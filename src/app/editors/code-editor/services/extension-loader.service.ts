@@ -247,13 +247,8 @@ export class ExtensionLoaderService {
       // 注册扩展
       const hostKind = options?.hostKind ?? ExtensionHostKind.LocalWebWorker
       
-      // 为cpptools扩展启用所需的API提案
       const extensionOptions: any = {
         system: options?.system ?? false
-      }
-      
-      if (manifest.publisher === 'ms-vscode' && manifest.name === 'cpptools') {
-        extensionOptions.enableProposedApi = ['terminalDataWriteEvent', 'chatParticipantAdditions']
       }
       
       const registrationResult = registerExtension(
