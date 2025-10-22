@@ -527,14 +527,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     };
 
     const extensionPath = extensionMap[language];
-    
+
     // 对于 JSON，不加载扩展，使用手动注册的格式化提供者
     if (language === 'json') {
       console.log('JSON 语言：使用手动注册的格式化提供者，跳过扩展加载');
       this.loadedLanguageExtensions.add(language);
       return;
     }
-    
+
     if (!extensionPath) {
       console.warn(`未找到语言 ${language} 的扩展配置`);
       return;
@@ -569,6 +569,119 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   /**
+   * 检查格式化提供者是否已注册
+   */
+  private async checkFormattingProviders(): Promise<void> {
+    try {
+      console.log('=== 检查格式化提供者 ===');
+      
+      // 1. 检查 Monaco 的语言注册
+      const languages = monaco.languages.getLanguages();
+      console.log('Monaco 已注册的语言:', languages.map(l => l.id));
+      
+      // 2. 检查 C++ 相关语言
+      const cppLanguages = languages.filter(l => 
+        l.id === 'cpp' || l.id === 'c' || l.id === 'cuda-cpp' || 
+        l.id === 'objective-c' || l.id === 'objective-cpp'
+      );
+      console.log('C++ 相关语言:', cppLanguages.map(l => l.id));
+      
+      if (cppLanguages.length === 0) {
+        console.warn('⚠ 没有找到 C++ 语言注册！');
+      } else {
+        console.log('✓ C++ 语言已注册');
+      }
+      
+      // 3. 检查 VSCode 扩展
+      const vscode = await import('vscode');
+      const allExtensions = vscode.extensions.all;
+      console.log('所有扩展数量:', allExtensions.length);
+      
+      const clangdExtension = vscode.extensions.getExtension('llvm-vs-code-extensions.vscode-clangd');
+      if (clangdExtension) {
+        console.log('✓ clangd 扩展已找到');
+        console.log('  - 扩展 ID:', clangdExtension.id);
+        console.log('  - 是否激活:', clangdExtension.isActive);
+        console.log('  - 版本:', clangdExtension.packageJSON?.version);
+        
+        if (!clangdExtension.isActive) {
+          console.warn('⚠ clangd 扩展未激活，尝试激活...');
+          try {
+            await clangdExtension.activate();
+            console.log('✓ clangd 扩展激活成功');
+          } catch (error) {
+            console.error('✗ clangd 扩展激活失败:', error);
+          }
+        }
+      } else {
+        console.error('✗ 未找到 clangd 扩展');
+      }
+      
+      // 4. 检查可用的命令
+      const commands = await vscode.commands.getCommands();
+      const formatCommands = commands.filter(cmd => 
+        cmd.includes('format') || cmd.includes('clangd')
+      );
+      console.log('格式化相关命令 (部分):', formatCommands.slice(0, 10));
+      
+      console.log('=== 检查完成 ===');
+    } catch (error) {
+      console.error('检查格式化提供者时出错:', error);
+    }
+  }
+
+  /**
+   * 获取 clangd 可执行文件路径
+   * 优先使用项目内置的 clangd，如果不存在则使用系统路径
+   */
+  private async getClangdPath(): Promise<string> {
+    try {
+      // 如果在 Electron 环境中
+      const electronAPI = (window as any).electronAPI;
+      
+      if (electronAPI) {
+        try {
+          // 尝试从 Electron 获取应用路径
+          const appPath = await electronAPI.platform?.getAppPath?.();
+          
+          if (appPath) {
+            // 判断平台
+            const platform = await electronAPI.platform?.getPlatform?.() || 'win32';
+            const isWindows = platform === 'win32';
+            const clangdBinary = isWindows ? 'clangd.exe' : 'clangd';
+            
+            // 构造完整路径：appPath/child/clangd/bin/clangd.exe
+            const fullPath = `${appPath}/child/clangd/bin/${clangdBinary}`;
+            console.log('构造的 clangd 路径:', fullPath);
+            return fullPath;
+          }
+        } catch (error) {
+          console.warn('从 Electron API 获取路径失败:', error);
+        }
+      }
+      
+      // 回退方案1: 使用 location.origin 构造路径（开发环境）
+      if (typeof window !== 'undefined' && window.location) {
+        const origin = window.location.origin;
+        const isWindows = navigator.platform.toLowerCase().includes('win');
+        
+        if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+          // 开发环境，使用项目根目录
+          const clangdBinary = isWindows ? 'clangd.exe' : 'clangd';
+          return `child/clangd/bin/${clangdBinary}`;
+        }
+      }
+      
+      // 回退方案2: 使用系统的 clangd（从 PATH 查找）
+      console.warn('无法确定 clangd 路径，使用系统默认值');
+      return 'clangd';
+    } catch (error) {
+      console.error('获取 clangd 路径时出错:', error);
+      return 'clangd';
+    }
+  }
+
+  /**
    * 加载 json-language-features 扩展，提供JSON格式化、验证等功能
    */
   async loadJsonLanguageFeatures() {
@@ -585,16 +698,16 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         hostKind: ExtensionHostKind.LocalWebWorker,
         system: true
       });
-      
+
       // 等待扩展完全激活
       await result.whenReady();
-      
+
       // 额外等待一小段时间，确保语言服务器完全启动
       await new Promise(resolve => setTimeout(resolve, 500));
-      
+
       this.jsonLanguageFeaturesLoaded = true;
       console.log('json-language-features扩展加载并激活成功');
-      
+
       // 触发语言激活事件
       try {
         const { commands } = await import('vscode');
@@ -626,73 +739,349 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    *                   如果不提供，将使用扩展的默认配置（'clangd'，从 PATH 中查找）
    * @returns Promise<void>
    */
-  async loadClangdExtension(clangdPath?: string): Promise<void> {
+  async loadClangdExtension(): Promise<void> {
     // 检查是否已加载
     if (this.clangdLoaded) {
       console.log('clangd 扩展已加载，跳过');
       return;
     }
 
-    const clangdExtensionPath = 'vscode/extensions/clangd';
-    
+    // 使用绝对路径进行测试
+    const clangdExtensionPath = 'D:\\Git\\aily-project\\aily-blockly-vscode\\public\\vscode\\extensions\\clangd';
+
+    console.log('开始加载 clangd 扩展...');
+
     try {
-      console.log('开始加载 clangd 扩展...');
-      
-      // 如果提供了 clangd 路径，先配置它
-      if (clangdPath) {
-        console.log(`配置 clangd 路径: ${clangdPath}`);
-        
-        // 使用 VSCode API 更新配置
-        const { workspace } = await import('vscode');
-        const config = workspace.getConfiguration('clangd');
-        
-        // 设置 clangd 可执行文件路径
-        await config.update('path', clangdPath, true);
-        
-        // 可选：设置其他有用的配置
-        await config.update('arguments', [
-          '--background-index',           // 启用后台索引
-          '--clang-tidy',                 // 启用 clang-tidy 检查
-          '--completion-style=detailed',  // 详细的补全信息
-          '--header-insertion=iwyu',      // 自动插入头文件
-          '--pch-storage=memory',         // 在内存中存储预编译头
-        ], true);
-        
-        console.log('clangd 配置已更新');
-      }
-      
-      // 加载 clangd 扩展
+      // **关键修改1**: 先加载扩展（这会自动注册配置项）
+      console.log(`加载 clangd 扩展: ${clangdExtensionPath}`);
       const result = await this.extensionLoader.loadExtension(clangdExtensionPath, {
-        hostKind: ExtensionHostKind.LocalProcess, // clangd 需要在本地进程中运行
+        hostKind: ExtensionHostKind.LocalProcess,
         system: true
       });
-      
-      // 等待扩展完全激活
+
+      // 等待扩展注册完成（包括配置项注册）
       await result.whenReady();
+      console.log('✓ clangd 扩展已注册');
+
+      // **关键修改2**: 手动激活扩展
+      // 由于 clangd 的 activationEvents 是 "onLanguage:cpp"，我们需要手动触发激活
+      console.log('尝试手动激活 clangd 扩展...');
       
+      const { extensions, commands } = await import('vscode');
+      
+      try {
+        // 方法1: 通过 extensions API 获取并激活扩展
+        const clangdExtension = extensions.getExtension('llvm-vs-code-extensions.vscode-clangd');
+        
+        if (clangdExtension) {
+          console.log('找到 clangd 扩展，开始激活...');
+          
+          if (!clangdExtension.isActive) {
+            // 手动激活扩展
+            await clangdExtension.activate();
+            console.log('✓ clangd 扩展已通过 extensions.activate() 激活');
+          } else {
+            console.log('✓ clangd 扩展已经处于激活状态');
+          }
+          
+          // 等待一下确保命令已注册
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // 检查命令是否已注册
+          console.log('检查 clangd 命令是否已注册...');
+          const allCommands = await commands.getCommands();
+          const clangdCommands = allCommands.filter(cmd => cmd.startsWith('clangd.'));
+          console.log('可用的 clangd 命令:', clangdCommands);
+          
+          if (clangdCommands.length > 0) {
+            console.log('✓ clangd 命令已成功注册');
+            
+            // 可选：执行 clangd.activate 或 clangd.restart 来启动语言服务器
+            if (clangdCommands.includes('clangd.activate')) {
+              await commands.executeCommand('clangd.activate');
+              console.log('✓ 已执行 clangd.activate，启动语言服务器');
+            } else if (clangdCommands.includes('clangd.restart')) {
+              await commands.executeCommand('clangd.restart');
+              console.log('✓ 已执行 clangd.restart，启动语言服务器');
+            }
+          } else {
+            console.warn('⚠ 扩展已激活但命令未注册');
+          }
+          
+        } else {
+          console.error('✗ 未找到 clangd 扩展（ID: llvm-vs-code-extensions.vscode-clangd）');
+          
+          // 列出所有已加载的扩展以供调试
+          const allExtensions = extensions.all.map(ext => ext.id);
+          console.log('所有已加载的扩展:', allExtensions);
+        }
+        
+      } catch (activationError) {
+        console.warn('手动激活扩展时出错:', activationError);
+        console.warn('扩展将在打开 C++ 文件时自动激活');
+      }
+
       // 额外等待确保语言服务器完全启动
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      console.log('等待 clangd 语言服务器完全启动...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
       // 标记为已加载
       this.clangdLoaded = true;
       this.loadedLanguageExtensions.add('clangd');
-      console.log('✓ clangd 扩展加载成功');
       
-      // 尝试激活 clangd
-      try {
-        const { commands } = await import('vscode');
-        await commands.executeCommand('clangd.activate');
-        console.log('✓ clangd 已激活');
-      } catch (activationError) {
-        console.warn('激活 clangd 时出现警告:', activationError);
+      // **关键**: 手动注册 C++ 语言到 Monaco（如果尚未注册）
+      await this.ensureCppLanguageRegistered();
+      
+      console.log('✓ clangd 扩展加载成功');
+
+      // **重要**: 强制触发 clangd 连接，使其注册格式化提供者
+      await this.activateClangdFormatting();
+
+      // 最终检查
+      console.log('=== clangd 加载后状态检查 ===');
+      const clangdExt = extensions.getExtension('llvm-vs-code-extensions.vscode-clangd');
+      if (clangdExt) {
+        console.log('  扩展状态:', clangdExt.isActive ? '已激活' : '未激活');
+        
+        // 检查 clangd 相关命令
+        const allCmds = await commands.getCommands();
+        const clangdCmds = allCmds.filter(cmd => cmd.startsWith('clangd.') || cmd.includes('format'));
+        console.log('  可用命令:', clangdCmds);
+        
+        // 尝试检查 clangd 服务器状态
+        try {
+          // 某些扩展会暴露状态信息
+          if (clangdExt.exports) {
+            console.log('  扩展导出:', Object.keys(clangdExt.exports));
+          }
+        } catch (e) {
+          console.log('  无法获取扩展导出信息');
+        }
       }
       
+      // 检查 Monaco 语言注册情况
+      const monacoLanguages = monaco.languages.getLanguages();
+      console.log('  Monaco 已注册语言:', monacoLanguages.map(l => l.id));
+      const hasCpp = monacoLanguages.some(l => l.id === 'cpp' || l.id === 'c');
+      console.log('  C++ 语言已注册:', hasCpp);
+      
+      console.log('=== 状态检查完成 ===');
+
     } catch (error) {
       console.error('加载 clangd 扩展失败:', error);
-      // 即使失败也标记为已尝试加载，避免重复尝试
-      this.clangdLoaded = true;
-      this.loadedLanguageExtensions.add('clangd');
       throw error;
+    }
+  }
+
+  /**
+   * 激活 clangd 的格式化功能
+   * 通过手动注册格式化提供者来确保格式化功能可用
+   */
+  private async activateClangdFormatting(): Promise<void> {
+    try {
+      console.log('激活 clangd 格式化功能...');
+      
+      const vscode = await import('vscode');
+      
+      // 方法1: 尝试执行 clangd.activate 命令（如果存在）
+      try {
+        const commands = await vscode.commands.getCommands();
+        if (commands.includes('clangd.activate')) {
+          await vscode.commands.executeCommand('clangd.activate');
+          console.log('✓ 执行了 clangd.activate 命令');
+        }
+      } catch (e) {
+        console.log('clangd.activate 命令不可用或执行失败');
+      }
+      
+      // 方法2: 手动为 C++ 注册一个格式化提供者
+      // 使用 clang-format 命令行工具进行格式化
+      console.log('注册 C++ 格式化提供者 (使用 clang-format)...');
+      
+      const languageIds = ['cpp', 'c', 'cuda-cpp', 'objective-c', 'objective-cpp'];
+      
+      for (const langId of languageIds) {
+        try {
+          // 使用 Monaco 的 API 注册格式化提供者
+          const disposable = monaco.languages.registerDocumentFormattingEditProvider(langId, {
+            async provideDocumentFormattingEdits(model, options, token) {
+              console.log(`开始格式化 ${langId} 文档...`);
+              
+              try {
+                const content = model.getValue();
+                const lineCount = model.getLineCount();
+                
+                console.log(`  - 文档行数: ${lineCount}`);
+                console.log(`  - 调用 clang-format 工具...`);
+                
+                // 使用 Electron API 调用 clang-format
+                const electronAPI = (window as any).electronAPI;
+                
+                if (!electronAPI || !electronAPI.cmd) {
+                  console.error('  ✗ Electron API 不可用');
+                  return [];
+                }
+                
+                // 构造 clang-format 命令
+                const clangFormatPath = 'C:\\Users\\coloz\\Downloads\\clang+llvm-21.1.3-x86_64-pc-windows-msvc.tar\\clang+llvm-21.1.3-x86_64-pc-windows-msvc\\bin\\clang-format.exe';
+                
+                // 检查 clang-format 是否存在
+                if (!electronAPI.fs.existsSync(clangFormatPath)) {
+                  console.error('  ✗ clang-format 不存在:', clangFormatPath);
+                  return [];
+                }
+                
+                console.log('  ✓ 找到 clang-format:', clangFormatPath);
+                
+                // 使用 stdin/stdout 方式调用 clang-format
+                // clang-format 会从 stdin 读取代码，格式化后输出到 stdout
+                const result = await new Promise<string>((resolve, reject) => {
+                  const streamId = `format_${Date.now()}`;
+                  let output = '';
+                  let errorOutput = '';
+                  let isCompleted = false;
+                  
+                  // 监听输出
+                  const removeListener = electronAPI.cmd.onData(streamId, (data: any) => {
+                    if (data.type === 'stdout') {
+                      output += data.data;
+                    } else if (data.type === 'stderr') {
+                      errorOutput += data.data;
+                    } else if (data.type === 'exit') {
+                      if (isCompleted) return; // 防止重复调用
+                      isCompleted = true;
+                      removeListener();
+                      
+                      if (data.code === 0) {
+                        console.log('  ✓ clang-format 执行成功，输出长度:', output.length);
+                        resolve(output);
+                      } else {
+                        reject(new Error(`clang-format 退出码: ${data.code}, 错误: ${errorOutput}`));
+                      }
+                    } else if (data.type === 'error') {
+                      if (isCompleted) return;
+                      isCompleted = true;
+                      removeListener();
+                      reject(new Error(`执行错误: ${data.message || data.data}`));
+                    }
+                  });
+                  
+                  // 执行命令
+                  // 使用 --assume-filename 参数指定文件类型
+                  // 使用 --style=Google 指定代码风格
+                  electronAPI.cmd.run({
+                    command: clangFormatPath,
+                    args: ['--assume-filename=code.cpp', '--style=Google'],
+                    cwd: 'D:\\',
+                    streamId: streamId
+                  }).then(() => {
+                    console.log('  - 命令已启动，正在写入代码到 stdin...');
+                    // 延迟一下确保进程已启动
+                    setTimeout(() => {
+                      // 通过 stdin 发送代码内容
+                      electronAPI.cmd.input(streamId, content);
+                      console.log('  - 代码已写入，等待格式化结果...');
+                    }, 100);
+                  }).catch((error: any) => {
+                    if (isCompleted) return;
+                    isCompleted = true;
+                    removeListener();
+                    reject(error);
+                  });
+                  
+                  // 超时处理（增加到 10 秒）
+                  setTimeout(() => {
+                    if (isCompleted) return;
+                    isCompleted = true;
+                    removeListener();
+                    electronAPI.cmd.kill(streamId);
+                    reject(new Error('clang-format 超时'));
+                  }, 10000);
+                });
+                
+                console.log('  ✓ clang-format 执行成功');
+                
+                // 如果格式化后的内容与原内容相同，返回空
+                if (result === content) {
+                  console.log('  - 代码已经是格式化的，无需修改');
+                  return [];
+                }
+                
+                // 返回完整替换的编辑
+                const fullRange = {
+                  startLineNumber: 1,
+                  startColumn: 1,
+                  endLineNumber: lineCount,
+                  endColumn: model.getLineMaxColumn(lineCount)
+                };
+                
+                console.log('  ✓ 返回格式化编辑');
+                
+                return [{
+                  range: fullRange,
+                  text: result
+                }];
+                
+              } catch (error) {
+                console.error('  ✗ 格式化失败:', error);
+                return [];
+              }
+            }
+          });
+          
+          console.log(`✓ 已为 ${langId} 注册格式化提供者`);
+        } catch (error) {
+          console.error(`注册 ${langId} 格式化提供者失败:`, error);
+        }
+      }
+      
+      console.log('✓ clangd 格式化功能激活完成');
+    } catch (error) {
+      console.error('激活 clangd 格式化功能失败:', error);
+    }
+  }
+
+  /**
+   * 确保 C++ 语言在 Monaco 中正确注册
+   */
+  private async ensureCppLanguageRegistered(): Promise<void> {
+    try {
+      console.log('检查并注册 C++ 语言...');
+      
+      const registeredLanguages = monaco.languages.getLanguages();
+      const cppLanguages = ['cpp', 'c', 'cuda-cpp', 'objective-c', 'objective-cpp'];
+      
+      for (const langId of cppLanguages) {
+        const isRegistered = registeredLanguages.some(l => l.id === langId);
+        
+        if (!isRegistered) {
+          console.log(`  - 注册语言: ${langId}`);
+          
+          // 手动注册语言
+          monaco.languages.register({
+            id: langId,
+            extensions: langId === 'cpp' ? ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.h'] :
+                        langId === 'c' ? ['.c', '.h'] :
+                        langId === 'cuda-cpp' ? ['.cu', '.cuh'] :
+                        langId === 'objective-c' ? ['.m'] :
+                        ['.mm'],
+            aliases: langId === 'cpp' ? ['C++', 'Cpp', 'cpp'] :
+                     langId === 'c' ? ['C', 'c'] :
+                     langId === 'cuda-cpp' ? ['CUDA C++'] :
+                     langId === 'objective-c' ? ['Objective-C'] :
+                     ['Objective-C++'],
+            mimetypes: langId === 'cpp' || langId === 'c' ? ['text/x-c++src', 'text/x-c++hdr'] : []
+          });
+          
+          console.log(`✓ 语言 ${langId} 已注册`);
+        } else {
+          console.log(`  - 语言 ${langId} 已存在`);
+        }
+      }
+      
+      console.log('C++ 语言注册检查完成');
+    } catch (error) {
+      console.error('注册 C++ 语言失败:', error);
     }
   }
 
@@ -752,14 +1141,8 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       await this.loadLanguageExtension(language);
 
-      // 加载 clangd 扩展以提供 C/C++ 智能提示
-      try {
-        const clangdPath = 'D:\\Git\\aily-project\\aily-blockly-vscode\\child\\clangd\\bin\\clangd.exe';
-        await this.loadClangdExtension(clangdPath);
-      } catch (error) {
-        console.warn('clangd 扩展加载失败，但不影响基本编辑功能:', error);
-      }
-
+      // **重要**: 先配置 clangd 路径，再加载扩展
+      // 使用绝对路径进行测试
       updateUserConfiguration(`{
         "workbench.colorTheme": "Default Dark Modern",
         "extensions.enableProposedApi": ["llvm-vs-code-extensions.vscode-clangd"],
@@ -772,18 +1155,17 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           "--header-insertion=iwyu",
           "--pch-storage=memory"
         ],
-        "clangd.fallbackFlags": [],
-        "clangd.serverCompletionRanking": true,
-        "clangd.restartAfterCrash": true,
-        "clangd.checkUpdates": false,
-        "clangd.inactiveRegions.opacity": 0.55,
-        "clangd.enableCodeCompletion": true,
-        "clangd.enableHover": true,
-        "clangd.enable": true,
-        "C_Cpp.autocomplete": "disabled",
-        "C_Cpp.errorSquiggles": "disabled",
-        "C_Cpp.intelliSenseEngine": "disabled"
+        "clangd.enable": true
       }`);
+
+      // 加载 clangd 扩展以提供 C/C++ 智能提示和格式化
+      await this.loadClangdExtension();
+
+      // 等待一段时间确保 clangd 完全启动
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // 检查格式化提供者是否已注册
+      await this.checkFormattingProviders();
 
       // 创建编辑器实例
       this.editorInstance = monaco.editor.create(this.monacoContainer.nativeElement, {
@@ -838,14 +1220,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
           console.warn('Failed to setup model listeners:', error);
         }
 
-        // 设置剪贴板支持（Electron环境）
-        await this.setupClipboardSupport();
+        // // 设置剪贴板支持（Electron环境）
+        // await this.setupClipboardSupport();
 
-        // 覆盖编辑器的剪贴板 actions
-        this.overrideClipboardActions();
+        // // 覆盖编辑器的剪贴板 actions
+        // this.overrideClipboardActions();
 
         // 注册 JSON 格式化提供者（确保快捷键可用，使用 VSCode API）
-        await this.registerJsonFormattingProvider();
+        // await this.registerJsonFormattingProvider();
       }
 
       console.log('Monaco Editor created successfully');
@@ -871,117 +1253,117 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    * 使用 VSCode API 而不是 Monaco API，这是 monaco-vscode-api 的正确用法
    * 为所有语言（包括 plaintext）注册基本的格式化提供者
    */
-  private async registerJsonFormattingProvider(): Promise<void> {
-    // 检查是否已经注册过，避免重复注册
-    if (MonacoEditorComponent.jsonFormatterRegistered) {
-      console.log('格式化提供者已注册，跳过');
-      return;
-    }
+  // private async registerJsonFormattingProvider(): Promise<void> {
+  //   // 检查是否已经注册过，避免重复注册
+  //   if (MonacoEditorComponent.jsonFormatterRegistered) {
+  //     console.log('格式化提供者已注册，跳过');
+  //     return;
+  //   }
 
-    try {
-      // 导入 VSCode API（这是 monaco-vscode-api 的正确用法）
-      const vscode = await import('vscode');
-      
-      // 注册 JSON 文档格式化提供者
-      const jsonDisposable = vscode.languages.registerDocumentFormattingEditProvider(
-        { scheme: '*', language: 'json' },
-        {
-          provideDocumentFormattingEdits(document, options, token) {
-            try {
-              const text = document.getText();
-              
-              // 解析并格式化 JSON
-              const parsed = JSON.parse(text);
-              const tabSize = options.tabSize || 2;
-              const formatted = JSON.stringify(parsed, null, tabSize);
-              
-              // 返回 VSCode TextEdit 对象
-              const fullRange = new vscode.Range(
-                document.positionAt(0),
-                document.positionAt(text.length)
-              );
-              
-              return [vscode.TextEdit.replace(fullRange, formatted)];
-            } catch (error) {
-              console.error('JSON 格式化失败:', error);
-              return [];
-            }
-          }
-        }
-      );
+  //   try {
+  //     // 导入 VSCode API（这是 monaco-vscode-api 的正确用法）
+  //     const vscode = await import('vscode');
 
-      // 注册 JSON 范围格式化提供者
-      const jsonRangeDisposable = vscode.languages.registerDocumentRangeFormattingEditProvider(
-        { scheme: '*', language: 'json' },
-        {
-          provideDocumentRangeFormattingEdits(document, range, options, token) {
-            try {
-              // 获取选中范围的文本
-              const text = document.getText(range);
-              
-              // 尝试解析并格式化
-              const parsed = JSON.parse(text);
-              const tabSize = options.tabSize || 2;
-              const formatted = JSON.stringify(parsed, null, tabSize);
-              
-              return [vscode.TextEdit.replace(range, formatted)];
-            } catch (error) {
-              // 如果选中的不是完整的 JSON，尝试格式化整个文档
-              console.warn('选中的文本不是有效的 JSON，尝试格式化整个文档');
-              try {
-                const fullText = document.getText();
-                const parsed = JSON.parse(fullText);
-                const tabSize = options.tabSize || 2;
-                const formatted = JSON.stringify(parsed, null, tabSize);
-                
-                const fullRange = new vscode.Range(
-                  document.positionAt(0),
-                  document.positionAt(fullText.length)
-                );
-                
-                return [vscode.TextEdit.replace(fullRange, formatted)];
-              } catch (fullError) {
-                console.error('JSON 范围格式化失败:', fullError);
-                return [];
-              }
-            }
-          }
-        }
-      );
+  //     // 注册 JSON 文档格式化提供者
+  //     const jsonDisposable = vscode.languages.registerDocumentFormattingEditProvider(
+  //       { scheme: '*', language: 'json' },
+  //       {
+  //         provideDocumentFormattingEdits(document, options, token) {
+  //           try {
+  //             const text = document.getText();
 
-      // 为 plaintext 也注册一个格式化提供者（防止报错）
-      const plaintextDisposable = vscode.languages.registerDocumentFormattingEditProvider(
-        { scheme: '*', language: 'plaintext' },
-        {
-          provideDocumentFormattingEdits(document, options, token) {
-            // 尝试作为 JSON 格式化
-            try {
-              const text = document.getText();
-              const parsed = JSON.parse(text);
-              const tabSize = options.tabSize || 2;
-              const formatted = JSON.stringify(parsed, null, tabSize);
-              
-              const fullRange = new vscode.Range(
-                document.positionAt(0),
-                document.positionAt(text.length)
-              );
-              
-              return [vscode.TextEdit.replace(fullRange, formatted)];
-            } catch (error) {
-              // 不是有效的 JSON，返回空数组
-              return [];
-            }
-          }
-        }
-      );
+  //             // 解析并格式化 JSON
+  //             const parsed = JSON.parse(text);
+  //             const tabSize = options.tabSize || 2;
+  //             const formatted = JSON.stringify(parsed, null, tabSize);
 
-      // 标记已注册，避免重复注册
-      MonacoEditorComponent.jsonFormatterRegistered = true;
-      console.log('✓ 格式化提供者已注册（JSON 和 plaintext，使用 VSCode API，支持快捷键 Shift+Alt+F）');
-    } catch (error) {
-      console.error('注册格式化提供者失败:', error);
-    }
-  }
+  //             // 返回 VSCode TextEdit 对象
+  //             const fullRange = new vscode.Range(
+  //               document.positionAt(0),
+  //               document.positionAt(text.length)
+  //             );
+
+  //             return [vscode.TextEdit.replace(fullRange, formatted)];
+  //           } catch (error) {
+  //             console.error('JSON 格式化失败:', error);
+  //             return [];
+  //           }
+  //         }
+  //       }
+  //     );
+
+  //     // 注册 JSON 范围格式化提供者
+  //     const jsonRangeDisposable = vscode.languages.registerDocumentRangeFormattingEditProvider(
+  //       { scheme: '*', language: 'json' },
+  //       {
+  //         provideDocumentRangeFormattingEdits(document, range, options, token) {
+  //           try {
+  //             // 获取选中范围的文本
+  //             const text = document.getText(range);
+
+  //             // 尝试解析并格式化
+  //             const parsed = JSON.parse(text);
+  //             const tabSize = options.tabSize || 2;
+  //             const formatted = JSON.stringify(parsed, null, tabSize);
+
+  //             return [vscode.TextEdit.replace(range, formatted)];
+  //           } catch (error) {
+  //             // 如果选中的不是完整的 JSON，尝试格式化整个文档
+  //             console.warn('选中的文本不是有效的 JSON，尝试格式化整个文档');
+  //             try {
+  //               const fullText = document.getText();
+  //               const parsed = JSON.parse(fullText);
+  //               const tabSize = options.tabSize || 2;
+  //               const formatted = JSON.stringify(parsed, null, tabSize);
+
+  //               const fullRange = new vscode.Range(
+  //                 document.positionAt(0),
+  //                 document.positionAt(fullText.length)
+  //               );
+
+  //               return [vscode.TextEdit.replace(fullRange, formatted)];
+  //             } catch (fullError) {
+  //               console.error('JSON 范围格式化失败:', fullError);
+  //               return [];
+  //             }
+  //           }
+  //         }
+  //       }
+  //     );
+
+  //     // 为 plaintext 也注册一个格式化提供者（防止报错）
+  //     const plaintextDisposable = vscode.languages.registerDocumentFormattingEditProvider(
+  //       { scheme: '*', language: 'plaintext' },
+  //       {
+  //         provideDocumentFormattingEdits(document, options, token) {
+  //           // 尝试作为 JSON 格式化
+  //           try {
+  //             const text = document.getText();
+  //             const parsed = JSON.parse(text);
+  //             const tabSize = options.tabSize || 2;
+  //             const formatted = JSON.stringify(parsed, null, tabSize);
+
+  //             const fullRange = new vscode.Range(
+  //               document.positionAt(0),
+  //               document.positionAt(text.length)
+  //             );
+
+  //             return [vscode.TextEdit.replace(fullRange, formatted)];
+  //           } catch (error) {
+  //             // 不是有效的 JSON，返回空数组
+  //             return [];
+  //           }
+  //         }
+  //       }
+  //     );
+
+  //     // 标记已注册，避免重复注册
+  //     MonacoEditorComponent.jsonFormatterRegistered = true;
+  //     console.log('✓ 格式化提供者已注册（JSON 和 plaintext，使用 VSCode API，支持快捷键 Shift+Alt+F）');
+  //   } catch (error) {
+  //     console.error('注册格式化提供者失败:', error);
+  //   }
+  // }
 
   /**
    * 设置剪贴板支持（Electron环境）
@@ -1393,11 +1775,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
    * 支持 JSON、C++、Markdown 等语言的格式化
    * @returns Promise<boolean> 格式化是否成功
    */
-  /**
-   * 格式化当前文档
-   * 支持 JSON、C++、Markdown 等语言的格式化
-   * @returns Promise<boolean> 格式化是否成功
-   */
   public async formatDocument(): Promise<boolean> {
     if (!this.editorInstance) {
       console.warn('编辑器实例未初始化，无法格式化');
@@ -1414,17 +1791,45 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       const language = model.getLanguageId();
       console.log(`正在格式化 ${language} 文档...`);
 
-      // 获取格式化 action
-      const formatAction = this.editorInstance.getAction('editor.action.formatDocument');
+      // 先检查是否有格式化提供者
+      console.log('=== 格式化前检查 ===');
       
+      // 获取当前文档的 URI
+      const uri = model.uri;
+      console.log('文档 URI:', uri.toString());
+      console.log('文档语言:', language);
+      console.log('Monaco 语言列表:', monaco.languages.getLanguages().map(l => l.id));
+      
+      // 检查该语言是否在 Monaco 中注册
+      const registeredLanguages = monaco.languages.getLanguages();
+      const isLanguageRegistered = registeredLanguages.some(l => l.id === language);
+      console.log(`语言 ${language} 是否已注册:`, isLanguageRegistered);
+      
+      if (!isLanguageRegistered) {
+        console.error(`✗ 语言 ${language} 未在 Monaco 中注册！这是格式化失败的根本原因。`);
+        console.log('尝试手动触发语言注册...');
+        
+        // 尝试触发 C++ 语言的激活
+        try {
+          const vscode = await import('vscode');
+          await vscode.commands.executeCommand('setContext', 'resourceLangId', language);
+        } catch (e) {
+          console.warn('触发语言激活失败:', e);
+        }
+      }
+
+      // 尝试使用 Monaco 的格式化 action
+      console.log('尝试使用 Monaco 格式化 action...');
+      const formatAction = this.editorInstance.getAction('editor.action.formatDocument');
+
       if (!formatAction) {
         console.warn(`未找到格式化 action，语言: ${language}`);
-        
+
         // JSON 的回退方案
         if (language === 'json') {
           return await this.fallbackJsonFormat();
         }
-        
+
         return false;
       }
 
@@ -1434,14 +1839,14 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       return true;
     } catch (error) {
       console.error('文档格式化失败:', error);
-      
+
       // 如果是 JSON，尝试回退方案
       const language = model.getLanguageId();
       if (language === 'json') {
         console.log('尝试使用回退的 JSON 格式化方案...');
         return await this.fallbackJsonFormat();
       }
-      
+
       return false;
     }
   }
@@ -1454,12 +1859,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       // 使用 Monaco 的 API 检查格式化提供者
       const providers = monaco.languages.getLanguages();
       const languageId = model.getLanguageId();
-      
+
       console.log(`检查 ${languageId} 的格式化提供者...`);
-      
+
       // 等待一小段时间让提供者注册
       await new Promise(resolve => setTimeout(resolve, 100));
-      
+
       return true; // 暂时返回 true，让格式化尝试执行
     } catch (error) {
       console.warn('检查格式化提供者失败:', error);
@@ -1479,11 +1884,11 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       const content = model.getValue();
       console.log('使用原生 JSON.parse/stringify 进行格式化...');
-      
+
       // 尝试解析和格式化 JSON
       const parsed = JSON.parse(content);
       const formatted = JSON.stringify(parsed, null, 2);
-      
+
       // 更新编辑器内容
       const fullRange = model.getFullModelRange();
       model.pushEditOperations(
@@ -1494,7 +1899,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         }],
         () => null
       );
-      
+
       console.log('✓ JSON 格式化成功（使用回退方案）');
       return true;
     } catch (error) {
@@ -1531,7 +1936,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       // 获取格式化选区 action
       const formatAction = this.editorInstance.getAction('editor.action.formatSelection');
-      
+
       if (!formatAction) {
         console.warn('未找到格式化选区 action，尝试格式化整个文档');
         return this.formatDocument();
@@ -1560,7 +1965,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     try {
       const action = this.editorInstance.getAction(commandId);
-      
+
       if (!action) {
         console.warn(`未找到命令: ${commandId}`);
         return false;

@@ -14,7 +14,6 @@ yarn-error.log
 /child/node
 /child/clangd
 /child/aily-builder
-/public/vscode/extensions
 
 # IDEs and editors
 .idea/

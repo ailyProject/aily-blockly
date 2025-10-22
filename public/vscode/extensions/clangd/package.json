@@ -1,0 +1,401 @@
+{
+    "name": "vscode-clangd",
+    "displayName": "clangd",
+    "description": "C/C++ completion, navigation, and insights",
+    "version": "0.2.0",
+    "publisher": "llvm-vs-code-extensions",
+    "license": "MIT",
+    "homepage": "https://clangd.llvm.org/",
+    "icon": "icon.png",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Linters",
+        "Formatters"
+    ],
+    "keywords": [
+        "C",
+        "C++",
+        "clang",
+        "clangd",
+        "LLVM"
+    ],
+    "activationEvents": [
+        "onLanguage:c",
+        "onLanguage:cpp",
+        "onLanguage:cuda-cpp",
+        "onLanguage:objective-c",
+        "onLanguage:objective-cpp"
+    ],
+    "main": "./out/bundle",
+    "scripts": {
+        "esbuild": "esbuild ./src/extension.ts --bundle --outfile=out/bundle.js --external:@aws-sdk/client-s3 --external:vscode --format=cjs --platform=node",
+        "vscode:prepublish": "npm run check-ts && npm run esbuild -- --minify --keep-names",
+        "compile": "npm run esbuild -- --sourcemap",
+        "check-ts": "tsc -noEmit -p ./",
+        "format": "clang-format -i --glob=\"{src,test}/*.ts\"",
+        "test-compile": "tsc -p ./ && npm run compile",
+        "test": "npm run test-compile && node ./out/test/index.js",
+        "package": "vsce package --baseImagesUrl https://raw.githubusercontent.com/clangd/vscode-clangd/master/",
+        "publish": "vsce publish --baseImagesUrl https://raw.githubusercontent.com/clangd/vscode-clangd/master/",
+        "publish-openvsx": "ovsx publish --baseImagesUrl https://raw.githubusercontent.com/clangd/vscode-clangd/master/",
+        "package-pre-release": "vsce package --pre-release --baseImagesUrl https://raw.githubusercontent.com/clangd/vscode-clangd/master/",
+        "publish-pre-release": "vsce publish --pre-release --baseImagesUrl https://raw.githubusercontent.com/clangd/vscode-clangd/master/",
+        "publish-openvsx-pre-release": "ovsx publish --pre-release --baseImagesUrl https://raw.githubusercontent.com/clangd/vscode-clangd/master/",
+        "git-clang-format": "git-clang-format --extensions=ts"
+    },
+    "dependencies": {
+        "@clangd/install": "0.1.20",
+        "vscode-languageclient": "^9.0.1"
+    },
+    "devDependencies": {
+        "@types/glob": "^8.1.0",
+        "@types/mocha": "^10.0.7",
+        "@types/node": "^22.0.2",
+        "@types/sinon": "^17.0.3",
+        "@types/vscode": "^1.75.0",
+        "@vscode/test-electron": "^2.4.1",
+        "@vscode/vsce": "^3.2.2",
+        "clang-format": "^1.8.0",
+        "esbuild": "^0.25.0",
+        "glob": "^11.0.0",
+        "mocha": "^11.1.0",
+        "ovsx": "^0.10.1",
+        "sinon": "^19.0.2",
+        "typescript": "^5.5.4"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/clangd/vscode-clangd.git"
+    },
+    "qna": "marketplace",
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": false,
+            "description": "Clangd isn't safe to run on untrusted code as it embeds clang as a parser. Parsing source files as one navigates a code base, carries the risk of being exploited."
+        }
+    },
+    "contributes": {
+        "languages": [
+            {
+                "id": "cpp",
+                "filenamePatterns": [
+                    "**/include/c++/**",
+                    "**/MSVC/*/include/**"
+                ],
+                "firstLine": "^/[/*].*-\\*-\\s*C\\+\\+\\s*-\\*-.*"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "clangd",
+            "properties": {
+                "clangd.path": {
+                    "type": "string",
+                    "default": "D:\\Git\\aily-project\\aily-blockly-vscode\\child\\clangd\\bin\\clangd.exe",
+                    "scope": "machine-overridable",
+                    "description": "The path to clangd executable, e.g.: /usr/bin/clangd."
+                },
+                "clangd.useScriptAsExecutable": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "machine-overridable",
+                    "description": "Allows the path to be a script e.g.: clangd.sh."
+                },
+                "clangd.arguments": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Arguments for clangd server."
+                },
+                "clangd.trace": {
+                    "type": "string",
+                    "description": "Names a file that clangd should log a performance trace to, in chrome trace-viewer JSON format."
+                },
+                "clangd.semanticHighlighting": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable semantic highlighting in clangd.",
+                    "deprecationMessage": "Legacy semanticHighlights is no longer supported. Please use `editor.semanticHighlighting.enabled` instead."
+                },
+                "clangd.fallbackFlags": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Extra clang flags used to parse files when no compilation database is found."
+                },
+                "clangd.serverCompletionRanking": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Always rank completion items on the server as you type. This produces more accurate results at the cost of higher latency than client-side filtering."
+                },
+                "clangd.restartAfterCrash": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Auto restart clangd (up to 4 times) if it crashes."
+                },
+                "clangd.checkUpdates": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Check for language server updates on startup."
+                },
+                "clangd.onConfigChanged": {
+                    "type": "string",
+                    "default": "ignore",
+                    "description": "What to do when clangd configuration files are changed. Ignored for clangd 12+, which can reload such files itself; however, this can be overridden with clangd.onConfigChanged.forceEnable.",
+                    "enum": [
+                        "prompt",
+                        "restart",
+                        "ignore"
+                    ],
+                    "enumDescriptions": [
+                        "Prompt the user for restarting the server",
+                        "Automatically restart the server",
+                        "Do nothing"
+                    ]
+                },
+                "clangd.detectExtensionConflicts": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Warn about conflicting extensions and suggest disabling them."
+                },
+                "clangd.inactiveRegions.useBackgroundHighlight": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use a background highlight rather than opacity to identify inactive preprocessor regions."
+                },
+                "clangd.inactiveRegions.opacity": {
+                    "type": "number",
+                    "default": 0.55,
+                    "description": "Opacity of inactive regions (used only if clangd.inactiveRegions.useBackgroundHighlight=false)"
+                },
+                "clangd.enableCodeCompletion": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable code completion provided by the language server"
+                },
+                "clangd.enableHover": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable hovers provided by the language server"
+                },
+                "clangd.enable": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable clangd language server features"
+                }
+            }
+        },
+        "colors": [
+            {
+                "id": "clangd.inactiveRegions.background",
+                "description": "Background color of inactive code regions (used only if clangd.inactiveRegions.useBackgroundHighlight=true)",
+                "defaults": {
+                    "dark": "#1212124C",
+                    "light": "#DCDCDC4C",
+                    "highContrast": "#FCFCFC4C"
+                }
+            }
+        ],
+        "commands": [
+            {
+                "command": "clangd.switchheadersource",
+                "category": "clangd",
+                "title": "Switch Between Source/Header"
+            },
+            {
+                "command": "clangd.install",
+                "category": "clangd",
+                "title": "Download language server"
+            },
+            {
+                "command": "clangd.update",
+                "category": "clangd",
+                "title": "Check for language server update"
+            },
+            {
+                "command": "clangd.activate",
+                "category": "clangd",
+                "title": "Manually activate extension"
+            },
+            {
+                "command": "clangd.restart",
+                "category": "clangd",
+                "title": "Restart language server"
+            },
+            {
+                "command": "clangd.typeHierarchy",
+                "category": "clangd",
+                "title": "Open Type Hierarchy"
+            },
+            {
+                "command": "clangd.typeHierarchy.viewParents",
+                "category": "clangd",
+                "title": "Types: Show Base Classes",
+                "icon": "$(triangle-up)"
+            },
+            {
+                "command": "clangd.typeHierarchy.viewChildren",
+                "category": "clangd",
+                "title": "Types: Show Derived Classes",
+                "icon": "$(triangle-down)"
+            },
+            {
+                "command": "clangd.typeHierarchy.close",
+                "category": "clangd",
+                "enablement": "clangd.typeHierarchyView.visible",
+                "title": "Close type hierarchy view",
+                "icon": "$(panel-close)"
+            },
+            {
+                "command": "clangd.memoryUsage",
+                "category": "clangd",
+                "title": "Show memory usage",
+                "enablement": "clangd.memoryUsage.supported",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "clangd.memoryUsage.close",
+                "category": "clangd",
+                "enablement": "clangd.memoryUsage.visible",
+                "title": "Close memory usage view",
+                "icon": "$(panel-close)"
+            },
+            {
+                "command": "clangd.ast",
+                "category": "clangd",
+                "title": "Show AST",
+                "enablement": "clangd.ast.supported",
+                "icon": "$(list-tree)"
+            },
+            {
+                "command": "clangd.ast.close",
+                "category": "clangd",
+                "enablement": "clangd.ast.visible",
+                "title": "Close AST view",
+                "icon": "$(panel-close)"
+            },
+            {
+                "command": "clangd.projectConfig",
+                "category": "clangd",
+                "title": "Open project configuration file",
+                "icon": "$(gear)"
+            },
+            {
+                "command": "clangd.userConfig",
+                "category": "clangd",
+                "title": "Open user configuration file",
+                "icon": "$(gear)"
+            },
+            {
+                "command": "clangd.inlayHints.toggle",
+                "category": "clangd",
+                "title": "Toggle inlay hints",
+                "enablement": "clangd.inlayHints.supported"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "clangd.switchheadersource",
+                "key": "Alt+o",
+                "mac": "Alt+cmd+o",
+                "when": "(resourceLangId == c || resourceLangId == cpp || resourceLangId == cuda-cpp || resourceLangId == objective-c || resourceLangId == objective-cpp) && editorTextFocus"
+            },
+            {
+                "command": "clangd.typeHierarchy",
+                "key": "Shift+Alt+t",
+                "when": "(resourceLangId == cpp || resourceLangId == cuda-cpp || resourceLangId == objective-c || resourceLangId == objective-cpp) && editorTextFocus"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "clangd.typeHierarchy",
+                    "when": "resourceLangId == cpp && clangd.enableTypeHierarchy",
+                    "group": "0_navigation@4",
+                    "_comment": "see https://github.com/microsoft/vscode-references-view/blob/f63eaed9934ca5ecc8f3fb3ca096f38c6e5e181f/package.json#L162"
+                },
+                {
+                    "command": "clangd.switchheadersource",
+                    "when": "resourceLangId == c || resourceLangId == cpp || resourceLangId == cuda-cpp || resourceLangId == objective-c || resourceLangId == objective-cpp",
+                    "group": "0_navigation@5"
+                },
+                {
+                    "command": "clangd.ast",
+                    "when": "(resourceLangId == c || resourceLangId == cpp || resourceLangId == cuda-cpp || resourceLangId == objective-c || resourceLangId == objective-cpp) && clangd.ast.supported"
+                }
+            ],
+            "view/title": [
+                {
+                    "command": "clangd.typeHierarchy.viewParents",
+                    "when": "view == clangd.typeHierarchyView",
+                    "group": "navigation"
+                },
+                {
+                    "command": "clangd.typeHierarchy.viewChildren",
+                    "when": "view == clangd.typeHierarchyView",
+                    "group": "navigation"
+                },
+                {
+                    "command": "clangd.typeHierarchy.close",
+                    "when": "view == clangd.typeHierarchyView",
+                    "group": "navigation"
+                },
+                {
+                    "command": "clangd.memoryUsage.close",
+                    "when": "view == clangd.memoryUsage",
+                    "group": "navigation"
+                },
+                {
+                    "command": "clangd.memoryUsage",
+                    "when": "view == clangd.memoryUsage",
+                    "group": "navigation"
+                },
+                {
+                    "command": "clangd.ast.close",
+                    "when": "view == clangd.ast",
+                    "group": "navigation"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "clangd.typeHierarchy.viewParents",
+                    "when": "resourceLangId == cpp"
+                },
+                {
+                    "command": "clangd.typeHierarchy.viewChildren",
+                    "when": "resourceLangId == cpp"
+                },
+                {
+                    "command": "clangd.memoryUsage",
+                    "when": "clangd.memoryUsage.supported"
+                }
+            ]
+        },
+        "views": {
+            "explorer": [
+                {
+                    "id": "clangd.typeHierarchyView",
+                    "name": "Type Hierarchy",
+                    "when": "clangd.typeHierarchyVisible"
+                },
+                {
+                    "id": "clangd.memoryUsage",
+                    "name": "clangd Memory Usage",
+                    "when": "clangd.memoryUsage.hasData"
+                },
+                {
+                    "id": "clangd.ast",
+                    "name": "AST",
+                    "when": "clangd.ast.hasData"
+                }
+            ]
+        }
+    }
+}

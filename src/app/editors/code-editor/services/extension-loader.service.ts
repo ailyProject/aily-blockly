@@ -86,17 +86,20 @@ export class ExtensionLoaderService {
 
       // 3. 收集并注册扩展文件
       const files = this.collectExtensionFiles(manifest, baseUrl)
+      console.log(`Collected ${files.length} files for extension ${manifest.name}`)
 
       // 只有 LocalWebWorker 和 LocalProcess 才有 registerFileUrl
       if ('registerFileUrl' in registrationResult) {
         for (const file of files) {
           try {
             (registrationResult as any).registerFileUrl(file.path, file.url, file.mimeType)
-            // console.log(`Registered file: ${file.path} -> ${file.url}`)
+            console.log(`✓ Registered file: ${file.path}`)
           } catch (error) {
-            // console.warn(`Failed to register file ${file.path}:`, error)
+            console.warn(`✗ Failed to register file ${file.path}:`, error)
           }
         }
+      } else {
+        console.warn(`Extension host kind does not support registerFileUrl`)
       }
       // 4. 等待扩展准备就绪
       await registrationResult.whenReady()
@@ -390,6 +393,29 @@ export class ExtensionLoaderService {
     baseUrl: string
   ): ExtensionFileInfo[] {
     const files: ExtensionFileInfo[] = []
+    
+    // **关键修复**: 首先注册扩展的主入口文件（如果存在）
+    // 这个文件包含了扩展的所有逻辑，包括命令的实现
+    if (manifest.main) {
+      // 处理主入口文件路径
+      let mainPath = manifest.main
+      // 如果路径以 ./ 开头，去掉它
+      if (mainPath.startsWith('./')) {
+        mainPath = mainPath.substring(2)
+      }
+      // 如果没有扩展名，添加 .js
+      if (!mainPath.endsWith('.js')) {
+        mainPath = `${mainPath}.js`
+      }
+      
+      files.push({
+        path: mainPath,
+        url: `${baseUrl}${mainPath}`,
+        mimeType: 'application/javascript'
+      })
+      console.log(`Registered main entry: ${mainPath}`)
+    }
+
     const contributes = manifest.contributes
 
     if (!contributes) {

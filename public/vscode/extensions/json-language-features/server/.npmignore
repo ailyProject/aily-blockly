@@ -1,0 +1,10 @@
+.vscode/
+out/test/
+out/**/*.js.map
+src/
+test/
+tsconfig.json
+.gitignore
+package-lock.json
+extension.webpack.config.js
+vscode-json-languageserver-*.tgz
