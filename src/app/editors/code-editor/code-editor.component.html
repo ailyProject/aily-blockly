@@ -1,4 +1,14 @@
 <div class="code-editor">
+    <!-- 加载状态遮罩 -->
+    @if (!loaded) {
+    <div class="loading-overlay">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <div class="loading-text">正在加载项目...</div>
+        </div>
+    </div>
+    }
+    
     <nz-layout>
         <nz-sider [nzWidth]="siderWidth" nz-resizable [nzMinWidth]="150" [nzMaxWidth]="800"
             (nzResize)="onSideResize($event)">

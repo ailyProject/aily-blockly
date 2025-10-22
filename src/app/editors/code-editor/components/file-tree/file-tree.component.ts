@@ -356,17 +356,21 @@ export class FileTreeComponent implements OnInit {
   }
 
   ngOnInit() {
-    this.loadRootPath();
+    // 延迟加载文件树，优先让UI渲染
+    setTimeout(() => {
+      this.loadRootPath();
+    }, 0);
   }
 
   ngAfterViewInit() {
+    // 延迟选择默认文件，确保文件树已加载
     setTimeout(() => {
       const files = this.dataSource.getCurrentData();
       const inoFile = files.find(f => f.isLeaf && f.title.endsWith('.ino'));
       if (inoFile) {
         this.openFile(inoFile);
       }
-    }, 0);
+    }, 100); // 增加延迟时间，确保文件树已完全加载
   }
 
   /**

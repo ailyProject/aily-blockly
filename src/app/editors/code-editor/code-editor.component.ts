@@ -115,7 +115,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
         console.log('project path', params['path']);
         try {
           this.projectPath = params['path'];
-          this.loadProject();
+          // 异步加载项目，不阻塞UI渲染
+          this.loadProjectAsync();
         } catch (error) {
           console.error('加载项目失败', error);
           this.message.error('加载项目失败，请检查项目文件是否完整');
@@ -128,7 +129,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngAfterViewInit(): void {
     // 初始化快捷键监听
-    this.initShortcutListeners();
+    // this.initShortcutListeners();
     // 启动定期保存编辑器状态的定时器（每5秒保存一次）
     this.saveStateTimer = setInterval(() => {
       this.saveCurrentTabState();
@@ -159,7 +160,32 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cleanupShortcutListeners();
   }
 
-  async loadProject(projectPath: string = this.projectPath) {
+  /**
+   * 异步加载项目（优化版本）
+   * 将耗时操作移到后台，优先显示界面
+   */
+  private async loadProjectAsync() {
+    try {
+      // 第一阶段：快速加载基本信息（同步，快速完成）
+      await this.loadProjectBasicInfo(this.projectPath);
+      
+      // 标记为已加载，允许UI显示
+      this.loaded = true;
+      this.projectService.stateSubject.next('loaded');
+      
+      // 第二阶段：后台加载依赖（异步，不阻塞UI）
+      this.loadProjectDependenciesInBackground();
+    } catch (error) {
+      console.error('加载项目失败', error);
+      this.message.error('加载项目失败，请检查项目文件是否完整');
+      this.loaded = true; // 即使失败也标记为已加载，避免永久加载状态
+    }
+  }
+
+  /**
+   * 加载项目基本信息（快速）
+   */
+  private async loadProjectBasicInfo(projectPath: string) {
     // 判断当前目录下是否有package.json和ino文件
     if (!this.electronService.exists(projectPath + '/package.json')) {
       const fileList = this.electronService.readDir(projectPath);
@@ -173,27 +199,45 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.electronService.writeFile(projectPath + '/package.json', JSON.stringify(packageData))
       }
     }
+    
     try {
       const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
       this.electronService.setTitle(`aily coder - ${packageJson.name}`);
       this.projectService.currentPackageData = packageJson;
       // 添加到最近打开的项目
       this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath });
-      // 设置当前项目路径和package.json数据
-      this.projectService.currentPackageData = packageJson;
-      this.npmService.installBoardDeps();
     } catch (error) {
       console.warn('这可能不是一个aci项目');
     }
+  }
+
+  /**
+   * 在后台加载项目依赖（不阻塞UI）
+   */
+  private loadProjectDependenciesInBackground() {
+    // 使用 setTimeout 将依赖安装推迟到下一个事件循环
+    // 这样UI可以先渲染完成
+    setTimeout(() => {
+      this.npmService.installBoardDeps()
+        .then(() => {
+          console.log('开发板依赖安装完成');
+        })
+        .catch(err => {
+          console.error('开发板依赖安装失败:', err);
+          // 不显示错误消息，因为这是后台操作
+        });
+    }, 100); // 延迟100ms，让UI先显示
+  }
+
+  /**
+   * 同步加载项目（保留用于其他地方调用）
+   */
+  async loadProject(projectPath: string = this.projectPath) {
+    await this.loadProjectBasicInfo(projectPath);
+    this.loaded = true;
     this.projectService.stateSubject.next('loaded');
-    // 7. 后台安装开发板依赖
-    // this.npmService.installBoardDeps()
-    //   .then(() => {
-    //     console.log('install board dependencies success');
-    //   })
-    //   .catch(err => {
-    //     console.error('install board dependencies error', err);
-    //   });
+    // 同步版本也使用后台加载依赖
+    this.loadProjectDependenciesInBackground();
   }
 
   // 从文件树选择文件时触发
@@ -320,6 +364,12 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // 实际执行关闭标签页的操作
   private async doCloseTab(index: number): Promise<void> {
     const file = this.openedFiles[index];
+
+    // 通知 Monaco 编辑器清理对应的 model
+    const monacoComponent = this.getMonacoEditorComponent();
+    if (monacoComponent && file.path) {
+      monacoComponent.disposeModel(file.path);
+    }
 
     this.openedFiles.splice(index, 1);
 
@@ -628,10 +678,17 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private closeDeletedTabs(tabIndices: number[]): void {
     console.log('Closing deleted tabs:', tabIndices);
 
+    const monacoComponent = this.getMonacoEditorComponent();
+
     // 从后往前删除，避免索引变化问题
     for (const index of tabIndices) {
       const file = this.openedFiles[index];
       console.log('Closing tab:', file.title, 'at index', index);
+
+      // 通知 Monaco 编辑器清理对应的 model
+      if (monacoComponent && file.path) {
+        monacoComponent.disposeModel(file.path);
+      }
 
       // 直接删除，不需要保存确认（文件已经被删除了）
       this.openedFiles.splice(index, 1);

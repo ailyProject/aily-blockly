@@ -90,6 +90,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   /** 剪贴板命令是否已注册(全局标志) */
   private static clipboardCommandsRegistered = false;
 
+  /** Model 缓存：每个文件路径对应一个 model */
+  private modelCache = new Map<string, monaco.editor.ITextModel>();
+
+  /** ViewState 缓存：每个文件路径对应一个视图状态 */
+  private viewStateCache = new Map<string, monaco.editor.ICodeEditorViewState | null>();
+
   constructor(
     private extensionLoader: ExtensionLoaderService
   ) { }
@@ -99,7 +105,10 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   async ngAfterViewInit(): Promise<void> {
-    this.init();
+    // 延迟初始化编辑器，让组件先渲染
+    setTimeout(() => {
+      this.init();
+    }, 0);
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -118,13 +127,13 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   /**
-   * 安全地更新编辑器内容，处理语言和内容的同步
+   * 安全地更新编辑器内容，使用 Model 缓存机制
    */
   private async updateEditorContentSafely(hasFilePathChange: boolean, hasCodeChange: boolean): Promise<void> {
     if (!this.editorInstance) return;
 
     try {
-      // 如果文件路径改变，先处理语言切换
+      // 如果文件路径改变，切换到对应的 model
       if (hasFilePathChange) {
         // 防止并发的模型切换操作
         if (this.isChangingModel) {
@@ -135,132 +144,99 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         this.isChangingModel = true;
 
         try {
-          console.log('filePath changed:', this.filePath);
+          console.log('切换文件:', this.filePath);
 
-          // 如果只有 filePath 变化但 code 没变化，可能是因为 code 还没更新
-          // 这种情况下，我们等待一小段时间，让 code 也更新
+          // 等待 code 更新（如果需要）
           if (!hasCodeChange) {
-            // console.log('只有 filePath 变化，等待 code 更新...');
             await new Promise(resolve => setTimeout(resolve, 50));
           }
 
-          const newLanguage = this.getLanguageFromFilePath(this.filePath);
-          const currentLanguage = this.editorInstance.getModel()?.getLanguageId();
-          const newContent = this.code || '';
-          const validatedContent = this.validateContent(newContent);
-
-          // console.log('准备更新模型，语言:', newLanguage, '内容长度:', newContent.length);
-
-          // 如果语言相同，只需要更新内容，不需要切换语言扩展
-          if (currentLanguage === newLanguage) {
-            console.log('语言相同，仅更新模型内容');
-
-            // 获取旧模型
-            const oldModel = this.editorInstance.getModel();
-
-            // 创建新模型
-            const newModel = monaco.editor.createModel(validatedContent, newLanguage);
-            this.editorInstance.setModel(newModel);
-
-            // 异步清理旧模型
-            if (oldModel) {
-              setTimeout(() => {
-                try {
-                  oldModel.dispose();
-                } catch (error) {
-                  console.warn('Old model disposal warning:', error);
-                }
-              }, 0);
-            }
-
-            this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
-            console.log('模型内容更新完成');
-            return;
-          }
-
-          // 1. 获取旧模型并断开连接
-          const oldModel = this.editorInstance.getModel();
-          this.editorInstance.setModel(null);
-
-          // 2. 立即清理旧模型（使用 setTimeout(0) 让出主线程）
-          if (oldModel) {
-            setTimeout(() => {
-              try {
-                oldModel.dispose();
-              } catch (error) {
-                console.warn('Old model disposal warning:', error);
-              }
-            }, 0);
-          }
-
-          // 3. 短暂等待，让 dispose 操作进入事件队列
-          await new Promise(resolve => setTimeout(resolve, 20));
-
-          // 4. 加载新语言扩展
-          await this.loadLanguageExtension(newLanguage);
-
-          // 5. 创建并设置新模型
-          const newModel = monaco.editor.createModel(validatedContent, newLanguage);
-          this.editorInstance.setModel(newModel);
-
-          // 6. 设置光标到文件开头
-          this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
-
-          // console.log(`编辑器语言切换完成: ${newLanguage}`);
+          await this.switchToFile(this.filePath, this.code || '');
         } finally {
-          // 确保标志被重置
           this.isChangingModel = false;
         }
       }
-      // 如果只是内容改变，直接更新内容
+      // 如果只是内容改变，更新当前 model 的内容
       else if (hasCodeChange) {
-        const currentValue = this.editorInstance.getValue();
-        const newContent = this.code || '';
+        const currentModel = this.editorInstance.getModel();
+        if (currentModel) {
+          const currentValue = currentModel.getValue();
+          const newContent = this.code || '';
 
-        if (currentValue !== newContent) {
-          // 使用更安全的方式更新内容
-          await this.setEditorValueSafely(newContent);
+          if (currentValue !== newContent) {
+            // 直接更新 model 的值，保留撤销历史
+            currentModel.setValue(this.validateContent(newContent));
+          }
         }
       }
     } catch (error) {
       console.error('Error in updateEditorContentSafely:', error);
-      // 如果所有方法都失败，尝试重建整个编辑器状态
-      this.recreateModel().catch(err => console.error('Failed to recreate model:', err));
     }
   }
 
   /**
-   * 安全地设置编辑器值
+   * 切换到指定文件（使用 Model 缓存）
    */
-  private async setEditorValueSafely(content: string): Promise<void> {
-    if (!this.editorInstance) return;
+  private async switchToFile(filePath: string, content: string): Promise<void> {
+    if (!this.editorInstance || !filePath) return;
 
-    try {
-      // 先暂停语法高亮
-      const model = this.editorInstance.getModel();
-      if (model) {
-        // 设置内容
-        const validatedContent = this.validateContent(content);
-        this.editorInstance.setValue(validatedContent);
-
-        // 等待一帧确保内容设置完成
-        await new Promise(resolve => requestAnimationFrame(resolve));
-
-        // 验证设置是否成功
-        const actualValue = this.editorInstance.getValue();
-        if (actualValue !== content) {
-          console.warn('Content setting verification failed, retrying...');
-          this.editorInstance.setValue(content);
-        }
-
-        // 确保光标位置安全
-        this.ensureSafeCursorPosition();
-      }
-    } catch (error) {
-      console.error('Error in setEditorValueSafely:', error);
-      throw error;
+    // 1. 保存当前文件的视图状态
+    const currentModel = this.editorInstance.getModel();
+    if (currentModel) {
+      const currentUri = currentModel.uri.toString();
+      const viewState = this.editorInstance.saveViewState();
+      this.viewStateCache.set(currentUri, viewState);
+      console.log('保存视图状态:', currentUri);
     }
+
+    // 2. 获取目标文件的语言类型
+    const language = this.getLanguageFromFilePath(filePath);
+    
+    // 3. 加载语言扩展（如果需要）
+    await this.loadLanguageExtension(language);
+
+    // 4. 获取或创建目标文件的 model
+    const uri = monaco.Uri.file(filePath);
+    const uriString = uri.toString();
+    let model = this.modelCache.get(uriString);
+
+    if (!model) {
+      // 首次打开文件，创建新 model
+      console.log('创建新 model:', filePath, 'language:', language);
+      model = monaco.editor.createModel(this.validateContent(content), language, uri);
+      this.modelCache.set(uriString, model);
+
+      // 监听 model 内容变化，用于检测修改状态
+      model.onDidChangeContent(() => {
+        // 内容变化由父组件处理
+      });
+    } else {
+      // Model 已存在，更新内容（如果外部修改了文件）
+      const currentContent = model.getValue();
+      if (currentContent !== content) {
+        console.log('更新已存在的 model 内容');
+        model.setValue(this.validateContent(content));
+      }
+    }
+
+    // 5. 切换 model
+    this.editorInstance.setModel(model);
+    console.log('切换 model 完成:', filePath);
+
+    // 6. 恢复视图状态
+    const viewState = this.viewStateCache.get(uriString);
+    if (viewState) {
+      console.log('恢复视图状态:', filePath);
+      this.editorInstance.restoreViewState(viewState);
+    } else {
+      // 新文件，跳转到开头
+      this.editorInstance.setPosition({ lineNumber: 1, column: 1 });
+    }
+
+    this.editorInstance.focus();
   }
+
+
 
   /**
    * 验证和清理内容，确保没有可能导致tokenization问题的字符
@@ -376,20 +352,22 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     if (this.editorInstance) {
       try {
         // 先将模型设置为null，断开连接
-        const model = this.editorInstance.getModel();
         this.editorInstance.setModel(null);
 
         // 等待一帧，确保所有异步操作完成
         await new Promise(resolve => requestAnimationFrame(resolve));
 
-        // 清理模型
-        if (model) {
+        // 清理所有缓存的 model
+        for (const [uri, model] of this.modelCache.entries()) {
           try {
             model.dispose();
+            console.log('清理 model:', uri);
           } catch (error) {
             console.warn('Model disposal warning:', error);
           }
         }
+        this.modelCache.clear();
+        this.viewStateCache.clear();
 
         // 清理编辑器
         this.editorInstance.dispose();
@@ -405,33 +383,30 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   }
 
   /**
-   * 重新创建编辑器模型，用于解决语法高亮问题
+   * 重新创建编辑器模型（用于错误恢复）
    */
   private async recreateModel(): Promise<void> {
-    if (!this.editorInstance) return;
+    if (!this.editorInstance || !this.filePath) return;
 
     try {
-      // 保存当前状态
-      let currentValue = '';
+      console.log('重新创建模型:', this.filePath);
 
+      // 保存当前内容
+      let currentValue = '';
       try {
         currentValue = this.editorInstance.getValue() || this.code || '';
       } catch (error) {
-        console.warn('Failed to save current state before recreating model:', error);
         currentValue = this.code || '';
       }
 
-      const language = this.getLanguageFromFilePath(this.filePath);
-
-      // 先将编辑器设置为null，断开与旧模型的连接
-      const oldModel = this.editorInstance.getModel();
-      this.editorInstance.setModel(null);
-
-      // 等待一帧，确保所有异步操作完成
-      await new Promise(resolve => requestAnimationFrame(resolve));
-
-      // 清理旧模型
+      // 清除缓存，强制重新创建
+      const uri = monaco.Uri.file(this.filePath);
+      const uriString = uri.toString();
+      const oldModel = this.modelCache.get(uriString);
+      
       if (oldModel) {
+        this.modelCache.delete(uriString);
+        this.viewStateCache.delete(uriString);
         try {
           oldModel.dispose();
         } catch (error) {
@@ -439,40 +414,12 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
         }
       }
 
-      // 再等待一帧，确保dispose完成
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      // 重新创建
+      await this.switchToFile(this.filePath, currentValue);
 
-      // 创建新的模型
-      const validatedContent = this.validateContent(currentValue);
-      const newModel = monaco.editor.createModel(validatedContent, language);
-
-      // 设置新模型
-      this.editorInstance.setModel(newModel);
-
-      // 恢复光标到安全位置
-      setTimeout(() => {
-        try {
-          this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
-        } catch (error) {
-          console.warn('Failed to restore position after model recreation:', error);
-        }
-      }, 100);
-
-      console.log('Monaco editor model recreated successfully');
+      console.log('模型重新创建成功');
     } catch (error) {
       console.error('Failed to recreate model:', error);
-
-      // 最后的回退方案：重置编辑器到基本状态（使用json作为默认，因为我们有手动注册的格式化器）
-      try {
-        const validatedContent = this.validateContent(this.code || '');
-        const fallbackLanguage = this.getLanguageFromFilePath(this.filePath) || 'json';
-        const basicModel = monaco.editor.createModel(validatedContent, fallbackLanguage);
-        this.editorInstance?.setModel(basicModel);
-        this.editorInstance?.setPosition({ lineNumber: 1, column: 1 });
-        console.log(`Fallback to basic model completed with language: ${fallbackLanguage}`);
-      } catch (fallbackError) {
-        console.error('Even basic model creation failed:', fallbackError);
-      }
     }
   }
 
@@ -662,6 +609,30 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     console.log('Context menu setup completed');
   }
 
+
+  /**
+   * 关闭文件时清理对应的 model（供父组件调用）
+   */
+  public disposeModel(filePath: string): void {
+    const uri = monaco.Uri.file(filePath);
+    const uriString = uri.toString();
+    const model = this.modelCache.get(uriString);
+
+    if (model) {
+      try {
+        // 如果是当前正在使用的 model，先切换到 null
+        if (this.editorInstance?.getModel() === model) {
+          this.editorInstance.setModel(null);
+        }
+        model.dispose();
+        this.modelCache.delete(uriString);
+        this.viewStateCache.delete(uriString);
+        console.log('清理文件 model:', filePath);
+      } catch (error) {
+        console.warn('Failed to dispose model for', filePath, error);
+      }
+    }
+  }
 
   /**
    * 获取编辑器的视图状态（包含滚动位置、光标位置等）
