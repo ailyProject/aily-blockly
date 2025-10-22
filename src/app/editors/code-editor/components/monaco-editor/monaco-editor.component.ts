@@ -87,9 +87,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
   // /** cpptools扩展是否已加载 */
   // private cpptoolsLoaded = false;
 
-  /** json-language-features扩展是否已加载 */
-  private jsonLanguageFeaturesLoaded = false;
-
   /** clangd扩展是否已加载 */
   private clangdLoaded = false;
 
@@ -550,12 +547,6 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       this.loadedLanguageExtensions.add(language);
       console.log(`语言扩展 ${language} 加载成功`);
 
-      // 如果是JSON语言，不再加载 json-language-features 扩展
-      // 因为我们已经手动注册了格式化提供者，避免冲突
-      // if (language === 'json') {
-      //   await this.loadJsonLanguageFeatures();
-      // }
-
       // 如果是C++语言，自动加载cpptools扩展以提供代码补全功能
       if (language === 'cpp') {
         // await this.loadCpptools();
@@ -681,47 +672,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
     }
   }
 
-  /**
-   * 加载 json-language-features 扩展，提供JSON格式化、验证等功能
-   */
-  async loadJsonLanguageFeatures() {
-    // 避免重复加载
-    if (this.jsonLanguageFeaturesLoaded) {
-      console.log('json-language-features扩展已加载，跳过');
-      return;
-    }
 
-    const jsonLanguageFeaturesPath = 'vscode/extensions/json-language-features';
-    try {
-      console.log('加载json-language-features扩展...');
-      const result = await this.extensionLoader.loadExtension(jsonLanguageFeaturesPath, {
-        hostKind: ExtensionHostKind.LocalWebWorker,
-        system: true
-      });
-
-      // 等待扩展完全激活
-      await result.whenReady();
-
-      // 额外等待一小段时间，确保语言服务器完全启动
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      this.jsonLanguageFeaturesLoaded = true;
-      console.log('json-language-features扩展加载并激活成功');
-
-      // 触发语言激活事件
-      try {
-        const { commands } = await import('vscode');
-        // 尝试激活 JSON 语言
-        await commands.executeCommand('workbench.action.openSettings', 'json');
-      } catch (activationError) {
-        console.warn('激活 JSON 语言时出现警告:', activationError);
-      }
-    } catch (error) {
-      console.warn('加载json-language-features扩展失败:', error);
-      // 即使加载失败，也标记为已尝试加载，避免重复尝试
-      this.jsonLanguageFeaturesLoaded = true;
-    }
-  }
 
   /**
    * 加载 vscode-clangd 扩展，提供 C/C++ 代码补全、导航和分析功能
