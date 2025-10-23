@@ -347,6 +347,19 @@ export class FileTreeComponent implements OnInit {
     editType: 'rename'
   };
 
+  // 常量定义
+  private readonly TIMING = {
+    DOM_UPDATE: 0,           // DOM 更新延迟
+    FOLDER_EXPAND: 50,       // 文件夹展开延迟
+    DEFAULT_FILE_SELECT: 100, // 默认文件选择延迟
+    FOCUS_RETRY: 50          // 焦点重试延迟
+  };
+
+  private readonly TEMP_NODE_PREFIX = {
+    FILE: '__new_file_temp_',
+    FOLDER: '__new_folder_temp_'
+  };
+
   constructor(
     private fileService: FileService,
     private message: NzMessageService
@@ -359,18 +372,25 @@ export class FileTreeComponent implements OnInit {
     // 延迟加载文件树，优先让UI渲染
     setTimeout(() => {
       this.loadRootPath();
-    }, 0);
+    }, this.TIMING.DOM_UPDATE);
   }
 
   ngAfterViewInit() {
     // 延迟选择默认文件，确保文件树已加载
     setTimeout(() => {
-      const files = this.dataSource.getCurrentData();
-      const inoFile = files.find(f => f.isLeaf && f.title.endsWith('.ino'));
-      if (inoFile) {
-        this.openFile(inoFile);
-      }
-    }, 100); // 增加延迟时间，确保文件树已完全加载
+      this.selectDefaultInoFile();
+    }, this.TIMING.DEFAULT_FILE_SELECT);
+  }
+
+  /**
+   * 选择默认的 .ino 文件
+   */
+  private selectDefaultInoFile(): void {
+    const files = this.dataSource.getCurrentData();
+    const inoFile = files.find(f => f.isLeaf && f.title.endsWith('.ino'));
+    if (inoFile) {
+      this.openFile(inoFile);
+    }
   }
 
   /**
@@ -667,99 +687,111 @@ export class FileTreeComponent implements OnInit {
     console.log('Starting delete operation for nodes:', nodes.map(n => n.path));
 
     this.fileService.deleteNodes(nodes, (deletedPaths: string[]) => {
-      console.log('Delete callback received for paths:', deletedPaths);
-
-      try {
-        // 发出文件删除事件，通知父组件
-        this.filesDeleted.emit(deletedPaths);
-
-        // 使用增量更新删除节点
-        deletedPaths.forEach(path => {
-          console.log('Removing node from UI:', path);
-          this.removeFileNode(path);
-        });
-
-        // 清除已删除节点的选择状态
-        const currentSelected = this.nodeSelection.selected.filter(
-          node => !deletedPaths.includes(node.path)
-        );
-        this.nodeSelection.clear();
-        currentSelected.forEach(node => {
-          this.nodeSelection.select(node);
-        });
-
-        console.log('Delete operation completed, UI updated');
-
-        // 验证删除是否成功反映在UI中
-        setTimeout(() => {
-          const currentData = this.dataSource.getCurrentData();
-          const stillExists = deletedPaths.some(path =>
-            currentData.some(node => node.path === path)
-          );
-
-          if (stillExists) {
-            console.warn('Some deleted nodes still exist in UI, forcing refresh');
-            this.refresh();
-          }
-        }, 100);
-
-      } catch (error) {
-        console.error('Error updating UI after delete:', error);
-        // 如果增量更新失败，强制刷新整个树
-        this.refresh();
-      }
+      this.handleDeleteCallback(deletedPaths);
     });
   }
 
-  private createNewFile(parentNode: FlatFileNode) {
-    // 确定实际的父路径和父节点
-    let parentPath = parentNode.path;
-    let actualParentNode = parentNode;
-    
-    if (parentNode.isLeaf) {
-      // 如果选中的是文件，使用其父目录
-      parentPath = window['path'].dirname(parentPath);
-      // 查找父目录节点
-      const parentDirNode = this.dataSource.getCurrentData().find(n => n.path === parentPath);
-      if (parentDirNode) {
-        actualParentNode = parentDirNode;
-      }
-    }
+  /**
+   * 处理删除回调
+   */
+  private handleDeleteCallback(deletedPaths: string[]): void {
+    console.log('Delete callback received for paths:', deletedPaths);
 
-    // 如果父节点是文件夹且未展开，先展开它
-    if (actualParentNode.expandable && !this.treeControl.isExpanded(actualParentNode)) {
-      this.treeControl.expand(actualParentNode);
-    }
+    try {
+      // 发出文件删除事件，通知父组件
+      this.filesDeleted.emit(deletedPaths);
 
-    // 等待文件夹展开完成后再创建临时节点
+      // 使用增量更新删除节点
+      deletedPaths.forEach(path => {
+        console.log('Removing node from UI:', path);
+        this.removeFileNode(path);
+      });
+
+      // 清除已删除节点的选择状态
+      this.updateSelectionAfterDelete(deletedPaths);
+
+      console.log('Delete operation completed, UI updated');
+
+      // 验证删除是否成功反映在UI中
+      this.verifyDeleteOperation(deletedPaths);
+
+    } catch (error) {
+      console.error('Error updating UI after delete:', error);
+      // 如果增量更新失败，强制刷新整个树
+      this.refresh();
+    }
+  }
+
+  /**
+   * 删除后更新选择状态
+   */
+  private updateSelectionAfterDelete(deletedPaths: string[]): void {
+    const currentSelected = this.nodeSelection.selected.filter(
+      node => !deletedPaths.includes(node.path)
+    );
+    this.nodeSelection.clear();
+    currentSelected.forEach(node => {
+      this.nodeSelection.select(node);
+    });
+  }
+
+  /**
+   * 验证删除操作是否成功
+   */
+  private verifyDeleteOperation(deletedPaths: string[]): void {
     setTimeout(() => {
-      // 创建临时节点用于内联编辑，使用时间戳确保唯一性
-      const tempKey = `__new_file_temp_${Date.now()}__`;
-      const tempPath = window['path'].join(parentPath, tempKey);
-      const tempNode: FlatFileNode = {
-        expandable: false,
-        title: '',
-        level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
-        key: tempPath,
-        isLeaf: true,
-        path: tempPath
-      };
+      const currentData = this.dataSource.getCurrentData();
+      const stillExists = deletedPaths.some(path =>
+        currentData.some(node => node.path === path)
+      );
 
-      // 添加临时节点到适当位置
-      this.addFileNodeDirect(parentPath, tempKey, true);
+      if (stillExists) {
+        console.warn('Some deleted nodes still exist in UI, forcing refresh');
+        this.refresh();
+      }
+    }, this.TIMING.DEFAULT_FILE_SELECT);
+  }
 
-      // 开始内联编辑，需要额外延迟以确保DOM完全更新
-      setTimeout(() => {
-        this.startInlineEdit(tempNode, 'newFile', parentPath);
-      }, 0);
-    }, 50);
+  private createNewFile(parentNode: FlatFileNode) {
+    this.createNewNode(parentNode, true);
   }
 
   private createNewFolder(parentNode: FlatFileNode) {
-    // 确定实际的父路径和父节点
+    this.createNewNode(parentNode, false);
+  }
+
+  /**
+   * 创建新节点（文件或文件夹）
+   * @param parentNode 父节点
+   * @param isFile 是否为文件
+   */
+  private createNewNode(parentNode: FlatFileNode, isFile: boolean): void {
+    const { parentPath, actualParentNode } = this.resolveParentInfo(parentNode);
+
+    // 如果父节点是文件夹且未展开，先展开它
+    this.ensureNodeExpanded(actualParentNode);
+
+    // 等待文件夹展开完成后再创建临时节点
+    setTimeout(() => {
+      const tempNode = this.createTempNode(parentNode, parentPath, isFile);
+
+      // 添加临时节点到适当位置
+      this.addFileNodeDirect(parentPath, tempNode.key.split(/[/\\]/).pop()!, isFile);
+
+      // 开始内联编辑，需要额外延迟以确保DOM完全更新
+      setTimeout(() => {
+        this.startInlineEdit(tempNode, isFile ? 'newFile' : 'newFolder', parentPath);
+      }, this.TIMING.DOM_UPDATE);
+    }, this.TIMING.FOLDER_EXPAND);
+  }
+
+  /**
+   * 解析父节点信息
+   */
+  private resolveParentInfo(parentNode: FlatFileNode): { parentPath: string; actualParentNode: FlatFileNode } {
     let parentPath = parentNode.path;
     let actualParentNode = parentNode;
-    
+
     if (parentNode.isLeaf) {
       // 如果选中的是文件，使用其父目录
       parentPath = window['path'].dirname(parentPath);
@@ -770,41 +802,38 @@ export class FileTreeComponent implements OnInit {
       }
     }
 
-    // 如果父节点是文件夹且未展开，先展开它
-    if (actualParentNode.expandable && !this.treeControl.isExpanded(actualParentNode)) {
-      this.treeControl.expand(actualParentNode);
+    return { parentPath, actualParentNode };
+  }
+
+  /**
+   * 确保节点已展开
+   */
+  private ensureNodeExpanded(node: FlatFileNode): void {
+    if (node.expandable && !this.treeControl.isExpanded(node)) {
+      this.treeControl.expand(node);
     }
+  }
 
-    // 等待文件夹展开完成后再创建临时节点
-    setTimeout(() => {
-      // 创建临时节点用于内联编辑，使用时间戳确保唯一性
-      const tempKey = `__new_folder_temp_${Date.now()}__`;
-      const tempPath = window['path'].join(parentPath, tempKey);
-      const tempNode: FlatFileNode = {
-        expandable: true,
-        title: '',
-        level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
-        key: tempPath,
-        isLeaf: false,
-        path: tempPath
-      };
+  /**
+   * 创建临时节点
+   */
+  private createTempNode(parentNode: FlatFileNode, parentPath: string, isFile: boolean): FlatFileNode {
+    const prefix = isFile ? this.TEMP_NODE_PREFIX.FILE : this.TEMP_NODE_PREFIX.FOLDER;
+    const tempKey = `${prefix}${Date.now()}__`;
+    const tempPath = window['path'].join(parentPath, tempKey);
 
-      // 添加临时节点到适当位置
-      this.addFileNodeDirect(parentPath, tempKey, false);
-
-      // 开始内联编辑，需要额外延迟以确保DOM完全更新
-      setTimeout(() => {
-        this.startInlineEdit(tempNode, 'newFolder', parentPath);
-      }, 0);
-    }, 50);
+    return {
+      expandable: !isFile,
+      title: '',
+      level: parentNode.isLeaf ? parentNode.level : parentNode.level + 1,
+      key: tempPath,
+      isLeaf: isFile,
+      path: tempPath
+    };
   }
 
   private copyPathToClipboard(node: FlatFileNode, relative: boolean) {
     this.fileService.copyPathToClipboard(node, relative, this.rootPath);
-  }
-
-  private getRelativePath(absolutePath: string): string {
-    return this.fileService.getRelativePath(absolutePath, this.rootPath);
   }
 
   private revealInExplorer(node: FlatFileNode) {
@@ -814,10 +843,6 @@ export class FileTreeComponent implements OnInit {
   private openInTerminal(node: FlatFileNode) {
     this.fileService.openInTerminal(node);
   }
-
-  // private showProperties(node: FlatFileNode) {
-  //   this.fileService.showProperties(node);
-  // }
 
   private compressMultipleFiles(nodes: FlatFileNode[]) {
     // TODO: 实现多文件压缩功能
@@ -843,6 +868,22 @@ export class FileTreeComponent implements OnInit {
   openFile(file: FlatFileNode) {
     this.selectedFile = file.path;
     this.selectedFileChange.emit(file);
+  }
+
+  /**
+   * 根据文件路径打开文件
+   */
+  private openFileByPath(filePath: string): void {
+    const allNodes = this.dataSource.getCurrentData();
+    const fileNode = allNodes.find(node => node.path === filePath && node.isLeaf);
+
+    if (fileNode) {
+      // 选中并打开文件
+      this.nodeSelection.clear();
+      this.nodeSelection.select(fileNode);
+      this.lastClickedNode = fileNode;
+      this.openFile(fileNode);
+    }
   }
 
   getFileIcon(filename: string): string {
@@ -873,7 +914,7 @@ export class FileTreeComponent implements OnInit {
     // 恢复选择状态
     setTimeout(() => {
       this.restoreSelection(selectedPaths);
-    }, 0);
+    }, this.TIMING.DOM_UPDATE);
   }
 
   // 获取选中节点的数量和类型信息
@@ -1038,81 +1079,140 @@ export class FileTreeComponent implements OnInit {
     const data = this.dataSource.getCurrentData();
 
     // 检查文件是否已存在
-    const existingNode = data.find(n => n.path === fullPath);
-    if (existingNode) {
+    if (this.nodeExists(data, fullPath)) {
       return; // 文件已存在，不重复添加
     }
 
-    // 寻找合适的插入位置
-    let insertLevel = 0;
-    let insertIndex = data.length; // 默认插入到末尾
+    const { insertLevel, insertIndex } = this.findInsertPosition(data, parentPath, newFileName, isLeaf);
 
-    // 如果是根目录，直接插入到顶层
-    if (parentPath === this.rootPath) {
-      insertLevel = 0;
-      // 按文件类型和字母顺序排序：文件夹在前，文件在后
-      for (let i = 0; i < data.length; i++) {
-        if (data[i].level === 0) {
-          if (isLeaf && !data[i].isLeaf) {
-            // 新文件，当前是文件夹，继续查找
-            continue;
-          } else if (!isLeaf && data[i].isLeaf) {
-            // 新文件夹，当前是文件，插入这里
-            insertIndex = i;
-            break;
-          } else if (data[i].title > newFileName) {
-            // 同类型，按字母顺序
-            insertIndex = i;
-            break;
-          }
-        } else if (data[i].level < 0) {
-          // 已经到了下一层，停止
-          break;
-        }
-      }
-    } else {
-      // 寻找父节点
-      const parentNodeIndex = data.findIndex(n => n.path === parentPath);
-      if (parentNodeIndex !== -1) {
-        const parentNode = data[parentNodeIndex];
-        insertLevel = parentNode.level + 1;
-
-        // 找到同级节点的末尾位置，并按照文件类型和字母顺序排序
-        insertIndex = parentNodeIndex + 1;
-        while (insertIndex < data.length && data[insertIndex].level > parentNode.level) {
-          if (data[insertIndex].level === insertLevel) {
-            if (isLeaf && !data[insertIndex].isLeaf) {
-              // 新文件，当前是文件夹，继续查找
-            } else if (!isLeaf && data[insertIndex].isLeaf) {
-              // 新文件夹，当前是文件，插入这里
-              break;
-            } else if (data[insertIndex].title > newFileName) {
-              // 同类型，按字母顺序
-              break;
-            }
-          }
-          insertIndex++;
-        }
-      } else {
-        // 父节点不存在，可能需要先展开父节点
-        console.warn('Parent node not found:', parentPath);
-        return;
-      }
+    if (insertIndex === -1) {
+      return; // 插入位置无效
     }
 
-    const newNode: FlatFileNode = {
-      expandable: !isLeaf,
-      title: newFileName,
-      level: insertLevel,
-      key: fullPath,
-      isLeaf: isLeaf,
-      path: fullPath
-    };
+    const newNode = this.createFileNode(newFileName, fullPath, insertLevel, isLeaf);
 
     // 直接插入到数据中
     data.splice(insertIndex, 0, newNode);
     // 使用flattenedData.next来触发更新，避免完全重置
     this.dataSource['flattenedData'].next([...data]);
+  }
+
+  /**
+   * 检查节点是否已存在
+   */
+  private nodeExists(data: FlatFileNode[], path: string): boolean {
+    return data.some(n => n.path === path);
+  }
+
+  /**
+   * 查找插入位置
+   */
+  private findInsertPosition(
+    data: FlatFileNode[],
+    parentPath: string,
+    newFileName: string,
+    isLeaf: boolean
+  ): { insertLevel: number; insertIndex: number } {
+    // 如果是根目录
+    if (parentPath === this.rootPath) {
+      return this.findRootLevelInsertPosition(data, newFileName, isLeaf);
+    }
+
+    // 如果是子目录
+    return this.findChildLevelInsertPosition(data, parentPath, newFileName, isLeaf);
+  }
+
+  /**
+   * 查找根级别插入位置
+   */
+  private findRootLevelInsertPosition(
+    data: FlatFileNode[],
+    newFileName: string,
+    isLeaf: boolean
+  ): { insertLevel: number; insertIndex: number } {
+    const insertLevel = 0;
+    let insertIndex = data.length; // 默认插入到末尾
+
+    // 按文件类型和字母顺序排序：文件夹在前，文件在后
+    for (let i = 0; i < data.length; i++) {
+      if (data[i].level === 0) {
+        const shouldInsertHere = this.shouldInsertBefore(data[i], newFileName, isLeaf);
+        if (shouldInsertHere) {
+          insertIndex = i;
+          break;
+        }
+      } else if (data[i].level < 0) {
+        // 已经到了下一层，停止
+        break;
+      }
+    }
+
+    return { insertLevel, insertIndex };
+  }
+
+  /**
+   * 查找子级别插入位置
+   */
+  private findChildLevelInsertPosition(
+    data: FlatFileNode[],
+    parentPath: string,
+    newFileName: string,
+    isLeaf: boolean
+  ): { insertLevel: number; insertIndex: number } {
+    const parentNodeIndex = data.findIndex(n => n.path === parentPath);
+
+    if (parentNodeIndex === -1) {
+      console.warn('Parent node not found:', parentPath);
+      return { insertLevel: 0, insertIndex: -1 };
+    }
+
+    const parentNode = data[parentNodeIndex];
+    const insertLevel = parentNode.level + 1;
+    let insertIndex = parentNodeIndex + 1;
+
+    // 找到同级节点的末尾位置，并按照文件类型和字母顺序排序
+    while (insertIndex < data.length && data[insertIndex].level > parentNode.level) {
+      if (data[insertIndex].level === insertLevel) {
+        const shouldInsertHere = this.shouldInsertBefore(data[insertIndex], newFileName, isLeaf);
+        if (shouldInsertHere) {
+          break;
+        }
+      }
+      insertIndex++;
+    }
+
+    return { insertLevel, insertIndex };
+  }
+
+  /**
+   * 判断是否应该在当前节点之前插入
+   * 排序规则：文件夹在前，文件在后；同类型按字母顺序
+   */
+  private shouldInsertBefore(currentNode: FlatFileNode, newFileName: string, newIsLeaf: boolean): boolean {
+    if (newIsLeaf && !currentNode.isLeaf) {
+      // 新文件，当前是文件夹，继续查找
+      return false;
+    } else if (!newIsLeaf && currentNode.isLeaf) {
+      // 新文件夹，当前是文件，插入这里
+      return true;
+    } else {
+      // 同类型，按字母顺序
+      return currentNode.title > newFileName;
+    }
+  }
+
+  /**
+   * 创建文件节点
+   */
+  private createFileNode(fileName: string, fullPath: string, level: number, isLeaf: boolean): FlatFileNode {
+    return {
+      expandable: !isLeaf,
+      title: fileName,
+      level: level,
+      key: fullPath,
+      isLeaf: isLeaf,
+      path: fullPath
+    };
   }
 
   // 增量更新 - 删除文件/文件夹
@@ -1156,7 +1256,7 @@ export class FileTreeComponent implements OnInit {
     // 延迟到下一个事件循环，确保DOM已更新
     setTimeout(() => {
       this.focusInlineInput();
-    }, 0);
+    }, this.TIMING.DOM_UPDATE);
   }
 
   // 取消内联编辑
@@ -1222,31 +1322,51 @@ export class FileTreeComponent implements OnInit {
   private focusInlineInput() {
     const inputElement = document.querySelector('.inline-edit-input') as HTMLInputElement;
     if (inputElement) {
-      inputElement.focus();
-
-      // 选择文本（对于重命名操作，选择不包括扩展名的部分）
-      if (this.inlineEditState.editType === 'rename' && this.inlineEditState.originalValue) {
-        const value = this.inlineEditState.originalValue;
-        const lastDotIndex = value.lastIndexOf('.');
-        if (lastDotIndex > 0) {
-          inputElement.setSelectionRange(0, lastDotIndex);
-        } else {
-          inputElement.select();
-        }
-      } else {
-        inputElement.select();
-      }
+      this.focusAndSelectInput(inputElement);
     } else {
       // 如果没有找到输入框，稍后重试
-      console.warn('Inline edit input not found, retrying...');
-      setTimeout(() => {
-        const retryElement = document.querySelector('.inline-edit-input') as HTMLInputElement;
-        if (retryElement) {
-          retryElement.focus();
-          retryElement.select();
-        }
-      }, 50);
+      this.retryFocusInput();
     }
+  }
+
+  /**
+   * 聚焦并选择输入框内容
+   */
+  private focusAndSelectInput(inputElement: HTMLInputElement): void {
+    inputElement.focus();
+
+    // 选择文本（对于重命名操作，选择不包括扩展名的部分）
+    if (this.inlineEditState.editType === 'rename' && this.inlineEditState.originalValue) {
+      this.selectFileName(inputElement, this.inlineEditState.originalValue);
+    } else {
+      inputElement.select();
+    }
+  }
+
+  /**
+   * 选择文件名（不包括扩展名）
+   */
+  private selectFileName(inputElement: HTMLInputElement, fileName: string): void {
+    const lastDotIndex = fileName.lastIndexOf('.');
+    if (lastDotIndex > 0) {
+      inputElement.setSelectionRange(0, lastDotIndex);
+    } else {
+      inputElement.select();
+    }
+  }
+
+  /**
+   * 重试聚焦输入框
+   */
+  private retryFocusInput(): void {
+    console.warn('Inline edit input not found, retrying...');
+    setTimeout(() => {
+      const retryElement = document.querySelector('.inline-edit-input') as HTMLInputElement;
+      if (retryElement) {
+        retryElement.focus();
+        retryElement.select();
+      }
+    }, this.TIMING.FOCUS_RETRY);
   }
 
   // 移除临时节点（用于取消新建操作）
@@ -1305,6 +1425,11 @@ export class FileTreeComponent implements OnInit {
       this.message.success('文件创建成功');
       // 更新临时节点为实际节点
       this.updateTempNodeToReal(fileName, result.filePath, true);
+
+      // 自动打开新创建的文件
+      setTimeout(() => {
+        this.openFileByPath(result.filePath);
+      }, this.TIMING.DOM_UPDATE);
     } else {
       this.message.error(result.error);
       this.removeInlineEditTempNode();
