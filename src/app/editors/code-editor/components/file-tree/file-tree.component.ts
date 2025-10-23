@@ -748,8 +748,10 @@ export class FileTreeComponent implements OnInit {
       // 添加临时节点到适当位置
       this.addFileNodeDirect(parentPath, tempKey, true);
 
-      // 开始内联编辑
-      this.startInlineEdit(tempNode, 'newFile', parentPath);
+      // 开始内联编辑，需要额外延迟以确保DOM完全更新
+      setTimeout(() => {
+        this.startInlineEdit(tempNode, 'newFile', parentPath);
+      }, 0);
     }, 50);
   }
 
@@ -790,8 +792,10 @@ export class FileTreeComponent implements OnInit {
       // 添加临时节点到适当位置
       this.addFileNodeDirect(parentPath, tempKey, false);
 
-      // 开始内联编辑
-      this.startInlineEdit(tempNode, 'newFolder', parentPath);
+      // 开始内联编辑，需要额外延迟以确保DOM完全更新
+      setTimeout(() => {
+        this.startInlineEdit(tempNode, 'newFolder', parentPath);
+      }, 0);
     }, 50);
   }
 
@@ -1232,6 +1236,16 @@ export class FileTreeComponent implements OnInit {
       } else {
         inputElement.select();
       }
+    } else {
+      // 如果没有找到输入框，稍后重试
+      console.warn('Inline edit input not found, retrying...');
+      setTimeout(() => {
+        const retryElement = document.querySelector('.inline-edit-input') as HTMLInputElement;
+        if (retryElement) {
+          retryElement.focus();
+          retryElement.select();
+        }
+      }, 50);
     }
   }
 

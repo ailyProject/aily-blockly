@@ -116,7 +116,9 @@ export class GuideComponent implements OnInit, AfterViewInit {
   }
 
   async openProjectByPath(data) {
+    console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds().toString().padStart(3, '0'));
     await this.projectService.projectOpen(data.path);
+    console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds().toString().padStart(3, '0'));
   }
 
   process(item) {

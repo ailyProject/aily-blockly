@@ -104,9 +104,10 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   async ngOnInit() {
-    // 初始化 _ProjectService
+    
+console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds().toString().padStart(3, '0'));
+    
     this._ProjectService.init();
-
     // 注册当前组件到 _ProjectService
     this._ProjectService.registerCodeEditor(this);
 
@@ -128,13 +129,13 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit(): void {
+    console.log(new Date().toLocaleTimeString());
     // 初始化快捷键监听
     // this.initShortcutListeners();
     // 启动定期保存编辑器状态的定时器（每5秒保存一次）
     this.saveStateTimer = setInterval(() => {
       this.saveCurrentTabState();
     }, 5000);
-
     window.history.replaceState(null, '', window.location.href);
     window.history.pushState(null, '', window.location.href);
   }
