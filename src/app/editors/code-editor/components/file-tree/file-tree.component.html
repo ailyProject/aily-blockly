@@ -8,8 +8,13 @@
             <i class="fa-light fa-sync"></i>
         </button>
     </div>
-    <div class="file-explorer-content sscroll" (contextmenu)="onRightClick($event)" 
-         (keydown)="onKeyDown($event)" (click)="onContentClick($event)" tabindex="0">
+    <div class="file-explorer-content sscroll" 
+         (contextmenu)="onRightClick($event)" 
+         (keydown)="onKeyDown($event)" 
+         (click)="onContentClick($event)" 
+         (dragover)="onContainerDragOver($event)"
+         (drop)="onContainerDrop($event)"
+         tabindex="0">
         @if (isLoading) {
         <div class="line-box lloading">
             <div class="icon-box ccenter">
@@ -30,8 +35,17 @@
             <!-- 叶子节点 (文件) -->
             <nz-tree-node *nzTreeNodeDef="let node" nzTreeNodePadding>
                 <nz-tree-node-toggle nzTreeNodeNoopToggle></nz-tree-node-toggle>
-                <nz-tree-node-option [nzSelected]="nodeSelection.isSelected(node)"
-                    (nzClick)="nodeClick(node, $event); $event.stopPropagation()" (contextmenu)="onRightClick($event, node)">
+                <nz-tree-node-option 
+                    [nzSelected]="nodeSelection.isSelected(node)"
+                    [class]="getDragOverClass(node)"
+                    [attr.draggable]="!isNodeEditing(node)"
+                    (dragstart)="onDragStart($event, node)"
+                    (dragover)="onDragOver($event, node)"
+                    (dragleave)="onDragLeave($event)"
+                    (drop)="onDrop($event, node)"
+                    (dragend)="onDragEnd($event)"
+                    (nzClick)="nodeClick(node, $event); $event.stopPropagation()" 
+                    (contextmenu)="onRightClick($event, node)">
                     <div class="file-item">
                         <div class="icon ccenter">
                             <i [class]="getFileIcon(node.title)"></i>
@@ -60,8 +74,17 @@
                     <i class="fa-duotone fa-solid fa-loader lloading"></i>
                     }
                 </nz-tree-node-toggle>
-                <nz-tree-node-option [nzSelected]="nodeSelection.isSelected(node)"
-                    (nzClick)="nodeClick(node, $event); $event.stopPropagation()" (contextmenu)="onRightClick($event, node)">
+                <nz-tree-node-option 
+                    [nzSelected]="nodeSelection.isSelected(node)"
+                    [class]="getDragOverClass(node)"
+                    [attr.draggable]="!isNodeEditing(node)"
+                    (dragstart)="onDragStart($event, node)"
+                    (dragover)="onDragOver($event, node)"
+                    (dragleave)="onDragLeave($event)"
+                    (drop)="onDrop($event, node)"
+                    (dragend)="onDragEnd($event)"
+                    (nzClick)="nodeClick(node, $event); $event.stopPropagation()" 
+                    (contextmenu)="onRightClick($event, node)">
                     <div class="file-item">
                         <div class="icon ccenter">
                             <i class="fa-solid {{treeControl.isExpanded(node) ? 'fa-folder-open' : 'fa-folder'}}"></i>

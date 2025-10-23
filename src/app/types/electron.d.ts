@@ -11,6 +11,9 @@ declare global {
         encryptString: (plainText: string) => Buffer;
         decryptString: (encrypted: Buffer) => string;
       };
+      file: {
+        getPath: (file: File) => string | null;
+      };
       ipcRenderer: any;
       path: any;
       platform: any;

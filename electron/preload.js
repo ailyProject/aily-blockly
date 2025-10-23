@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, shell, safeStorage, webFrame } = require("electron");
+const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, webUtils } = require("electron");
 const { SerialPort } = require("serialport");
 const { exec } = require("child_process");
 const { existsSync, statSync } = require("fs");
@@ -176,6 +176,32 @@ window.electronAPI = {
     unlinkSync: (path, cb) => require("fs").unlinkSync(path, cb),
     rmdirSync: (path) => require("fs").rmdirSync(path, { recursive: true, force: true }),
     renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
+  },
+  file: {
+    /**
+     * 获取 File 对象的文件系统路径（支持拖拽文件）
+     * @param {File} file - 浏览器 File 对象
+     * @returns {string|null} 文件路径，失败返回 null
+     */
+    getPath: (file) => {
+      try {
+        // 方法 1: Electron 20+ 使用 webUtils.getPathForFile
+        if (webUtils && typeof webUtils.getPathForFile === 'function') {
+          return webUtils.getPathForFile(file);
+        }
+        
+        // 方法 2: 降级方案，尝试直接访问 path 属性
+        if (file && (file.path || file.webkitRelativePath)) {
+          return file.path || file.webkitRelativePath;
+        }
+        
+        console.warn('无法获取文件路径: webUtils 不可用且 file.path 不存在');
+        return null;
+      } catch (error) {
+        console.error('获取文件路径失败:', error);
+        return null;
+      }
+    }
   },
   glob: {
     // 使用glob模式查找文件

@@ -146,3 +146,70 @@
         width: 24px;
     }
 }
+
+// ==================== 拖拽样式 ====================
+
+// 拖拽中的节点样式
+nz-tree-node-option[draggable="true"] {
+    cursor: grab;
+
+    &:active {
+        cursor: grabbing;
+    }
+}
+
+// 拖拽经过时的视觉反馈
+.drag-over-inside {
+    background-color: rgba(24, 144, 255, 0.15) !important;
+    border: 1px dashed #1890ff;
+    border-radius: 2px;
+}
+
+.drag-over-before {
+    position: relative;
+
+    &::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background-color: #1890ff;
+        z-index: 10;
+    }
+}
+
+.drag-over-after {
+    position: relative;
+
+    &::after {
+        content: '';
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background-color: #1890ff;
+        z-index: 10;
+    }
+}
+
+// 拖拽图像样式（用于自定义拖拽预览）
+.drag-image {
+    padding: 4px 8px;
+    background: rgba(24, 144, 255, 0.9);
+    color: white;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+// 拖拽时禁用文本选择
+.file-explorer-content {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}

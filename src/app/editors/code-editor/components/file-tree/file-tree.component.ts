@@ -290,6 +290,22 @@ class DynamicFileDataSource implements DataSource<FlatFileNode> {
     }
     // 注意：如果节点不在当前数据中，调用者应该处理刷新逻辑
   }
+
+  /**
+   * 清除节点的子节点缓存
+   * 当文件夹内容发生变化但文件夹是折叠状态时，需要清除缓存
+   * 这样当用户展开文件夹时，会重新从文件系统加载最新内容
+   */
+  clearNodeCache(nodePath: string): void {
+    const data = this.flattenedData.getValue();
+    const node = data.find(n => n.path === nodePath);
+    
+    if (node) {
+      // 从缓存集合中移除该节点
+      this.childrenLoadedSet.delete(node);
+      console.log('已清除节点缓存:', nodePath);
+    }
+  }
 }
 
 @Component({
@@ -352,13 +368,29 @@ export class FileTreeComponent implements OnInit {
     DOM_UPDATE: 0,           // DOM 更新延迟
     FOLDER_EXPAND: 50,       // 文件夹展开延迟
     DEFAULT_FILE_SELECT: 100, // 默认文件选择延迟
-    FOCUS_RETRY: 50          // 焦点重试延迟
+    FOCUS_RETRY: 50,         // 焦点重试延迟
+    DRAG_SCROLL_DELAY: 300,  // 拖拽滚动延迟
+    AUTO_EXPAND_DELAY: 800   // 拖拽自动展开延迟
   };
 
   private readonly TEMP_NODE_PREFIX = {
     FILE: '__new_file_temp_',
     FOLDER: '__new_folder_temp_'
   };
+
+  // 拖拽相关状态
+  dragState = {
+    isDragging: false,
+    draggedNodes: [] as FlatFileNode[],
+    dragOverNode: null as FlatFileNode | null,
+    dropPosition: null as 'before' | 'after' | 'inside' | null,
+    isExternalDrag: false
+  };
+
+  // 拖拽自动展开定时器
+  private dragExpandTimer: any = null;
+  // 拖拽滚动定时器
+  private dragScrollTimer: any = null;
 
   constructor(
     private fileService: FileService,
@@ -1105,6 +1137,28 @@ export class FileTreeComponent implements OnInit {
   }
 
   /**
+   * 检查父文件夹是否已展开
+   * 用于判断是否需要手动添加子节点到树中
+   */
+  private isParentExpanded(parentPath: string): boolean {
+    // 如果是根目录，始终返回 true（根目录总是展开的）
+    if (parentPath === this.rootPath) {
+      return true;
+    }
+
+    // 查找父节点
+    const data = this.dataSource.getCurrentData();
+    const parentNode = data.find(n => n.path === parentPath);
+    
+    if (!parentNode) {
+      return false; // 父节点不存在，不需要添加
+    }
+
+    // 检查父节点是否展开
+    return this.treeControl.isExpanded(parentNode);
+  }
+
+  /**
    * 查找插入位置
    */
   private findInsertPosition(
@@ -1489,5 +1543,664 @@ export class FileTreeComponent implements OnInit {
         this.finishInlineEdit(inputElement.value);
       }
     }, 100);
+  }
+
+  // ==================== 拖拽功能实现 ====================
+
+  /**
+   * 开始拖拽节点
+   */
+  onDragStart(event: DragEvent, node: FlatFileNode): void {
+    // 如果正在编辑，不允许拖拽
+    if (this.inlineEditState.isEditing) {
+      event.preventDefault();
+      return;
+    }
+
+    // 如果拖拽的节点没有被选中，则只拖拽当前节点
+    if (!this.nodeSelection.isSelected(node)) {
+      this.nodeSelection.clear();
+      this.nodeSelection.select(node);
+    }
+
+    // 设置拖拽状态
+    this.dragState.isDragging = true;
+    this.dragState.draggedNodes = [...this.nodeSelection.selected];
+    this.dragState.isExternalDrag = false;
+
+    // 设置拖拽数据
+    const dragData = {
+      type: 'internal',
+      nodes: this.dragState.draggedNodes.map(n => ({
+        path: n.path,
+        title: n.title,
+        isLeaf: n.isLeaf
+      }))
+    };
+
+    event.dataTransfer!.effectAllowed = 'copyMove';
+    event.dataTransfer!.setData('application/json', JSON.stringify(dragData));
+
+    // 为外部拖拽设置文件路径 - 使用多种格式确保兼容性
+    const filePaths = this.dragState.draggedNodes.map(n => n.path);
+    
+    // 设置纯文本格式（用于文本编辑器等应用）
+    event.dataTransfer!.setData('text/plain', filePaths.join('\n'));
+    
+    // 设置文件URI列表格式（用于文件管理器等应用）
+    // Windows: file:///C:/path/to/file
+    // macOS/Linux: file:///path/to/file
+    const fileUris = filePaths.map(p => {
+      // 标准化路径分隔符为正斜杠
+      const normalizedPath = p.replace(/\\/g, '/');
+      // 确保绝对路径以斜杠开头（Windows 路径如 C: 需要变成 /C:）
+      const uriPath = normalizedPath.startsWith('/') ? normalizedPath : '/' + normalizedPath;
+      return `file://${uriPath}`;
+    });
+    event.dataTransfer!.setData('text/uri-list', fileUris.join('\r\n'));
+
+    // 在控制台输出调试信息
+    console.log('拖拽开始:', {
+      files: filePaths,
+      uris: fileUris,
+      count: filePaths.length
+    });
+
+    // 设置拖拽图像
+    this.setDragImage(event);
+  }
+
+  /**
+   * 拖拽经过节点
+   */
+  onDragOver(event: DragEvent, node: FlatFileNode | null): void {
+    event.preventDefault();
+    event.stopPropagation();
+
+    // 清除之前的自动展开定时器
+    this.clearDragExpandTimer();
+
+    if (!node) {
+      // 拖拽到空白区域，表示放到根目录
+      this.dragState.dragOverNode = null;
+      this.dragState.dropPosition = 'inside';
+      event.dataTransfer!.dropEffect = 'move';
+      return;
+    }
+
+    // 检查是否是外部拖拽
+    const hasFiles = event.dataTransfer?.types?.includes('Files');
+    if (hasFiles) {
+      // 外部文件拖入，总是允许
+      this.dragState.isExternalDrag = true;
+      this.dragState.dragOverNode = node;
+      this.dragState.dropPosition = node.isLeaf ? 'before' : 'inside';
+      event.dataTransfer!.dropEffect = 'copy';
+      
+      // 如果拖拽到文件夹上且停留一段时间，自动展开
+      if (!node.isLeaf && this.dragState.dropPosition === 'inside') {
+        this.startDragExpandTimer(node);
+      }
+      
+      // 处理自动滚动
+      this.handleDragScroll(event);
+      return;
+    }
+
+    // 检查是否是有效的拖放目标
+    if (!this.isValidDropTarget(node)) {
+      event.dataTransfer!.dropEffect = 'none';
+      this.dragState.dragOverNode = null;
+      this.dragState.dropPosition = null;
+      return;
+    }
+
+    // 确定拖放位置
+    this.dragState.dragOverNode = node;
+    this.dragState.dropPosition = this.calculateDropPosition(event, node);
+
+    // 设置拖放效果
+    event.dataTransfer!.dropEffect = event.ctrlKey ? 'copy' : 'move';
+
+    // 如果拖拽到文件夹上且停留一段时间，自动展开
+    if (!node.isLeaf && this.dragState.dropPosition === 'inside') {
+      this.startDragExpandTimer(node);
+    }
+
+    // 处理自动滚动
+    this.handleDragScroll(event);
+  }
+
+  /**
+   * 拖拽离开节点
+   */
+  onDragLeave(event: DragEvent): void {
+    event.preventDefault();
+    this.clearDragExpandTimer();
+  }
+
+  /**
+   * 放下拖拽的节点
+   */
+  async onDrop(event: DragEvent, targetNode: FlatFileNode | null): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.clearDragExpandTimer();
+    this.clearDragScrollTimer();
+
+    try {
+      // 检查是否是外部文件拖入
+      const files = event.dataTransfer?.files;
+      if (files && files.length > 0) {
+        await this.handleExternalDrop(files, targetNode);
+        return;
+      }
+
+      // 内部拖拽
+      await this.handleInternalDrop(event, targetNode);
+
+    } finally {
+      // 重置拖拽状态
+      this.resetDragState();
+    }
+  }
+
+  /**
+   * 拖拽结束
+   */
+  onDragEnd(event: DragEvent): void {
+    this.resetDragState();
+    this.clearDragExpandTimer();
+    this.clearDragScrollTimer();
+  }
+
+  /**
+   * 处理外部文件拖入
+   */
+  private async handleExternalDrop(files: FileList, targetNode: FlatFileNode | null): Promise<void> {
+    console.log('=== 外部文件拖入开始 ===');
+    console.log('文件数量:', files.length);
+    console.log('目标节点:', targetNode?.path || '根目录');
+    console.log('window.electronAPI 存在:', !!window['electronAPI']);
+    console.log('window.path 存在:', !!window['path']);
+    console.log('window.fs 存在:', !!window['fs']);
+
+    // 确定目标路径
+    let targetPath = this.rootPath;
+    if (targetNode) {
+      targetPath = targetNode.isLeaf ? window['path'].dirname(targetNode.path) : targetNode.path;
+    }
+
+    console.log('目标路径:', targetPath);
+
+    const copiedFiles: string[] = [];
+    const failedFiles: string[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      console.log(`\n--- 处理文件 ${i + 1}/${files.length} ---`);
+      console.log('文件名:', file.name);
+      console.log('文件大小:', file.size);
+      console.log('文件类型:', file.type);
+      
+      // 在 Electron 中，File 对象有一个 path 属性
+      // 这是 Electron 特有的扩展属性
+      // 使用 Electron API 获取文件路径
+      // 优先使用 webUtils.getPathForFile (Electron 20+)
+      let sourcePath: string | null = null;
+      
+      // 方法 1: 使用 electronAPI.file.getPath (推荐)
+      if ((window['electronAPI'] as any)?.file?.getPath) {
+        try {
+          sourcePath = (window['electronAPI'] as any).file.getPath(file);
+          console.log('✓ 使用 electronAPI.file.getPath 获取路径:', sourcePath);
+        } catch (error) {
+          console.warn('⚠ electronAPI.file.getPath 调用失败:', error);
+        }
+      }
+      
+      // 方法 2: 降级方案，直接访问 file.path
+      if (!sourcePath && (file as any).path) {
+        sourcePath = (file as any).path;
+        console.log('✓ 使用 file.path 获取路径:', sourcePath);
+      }
+
+      console.log('最终获取的路径:', sourcePath);
+      console.log('File 对象的所有属性:', Object.getOwnPropertyNames(file));
+
+      // 如果仍然没有路径，说明无法处理此文件
+      if (!sourcePath) {
+        console.error('❌ 无法获取文件路径');
+        console.error('可能原因:');
+        console.error('1. 应用未在 Electron 环境中运行');
+        console.error('2. Electron API 未正确暴露（检查 preload.js）');
+        console.error('3. Electron 版本过旧（需要 20+ 或包含 file.path）');
+        console.error('4. 文件来源不支持（虚拟文件系统等）');
+        console.error('\n调试信息:');
+        console.error('- electronAPI 存在:', !!window['electronAPI']);
+        console.error('- electronAPI.file 存在:', !!(window['electronAPI'] as any)?.file);
+        console.error('- electronAPI.file.getPath 存在:', !!(window['electronAPI'] as any)?.file?.getPath);
+        console.error('- file.path 存在:', !!(file as any).path);
+        
+        failedFiles.push(file.name);
+        continue;
+      }
+
+      try {
+        const fileName = window['path'].basename(sourcePath);
+        let destPath = window['path'].join(targetPath, fileName);
+
+        console.log('✓ 文件路径获取成功');
+        console.log('源路径:', sourcePath);
+        console.log('目标路径:', destPath);
+
+        // 检查源文件是否存在
+        if (!window['fs'].existsSync(sourcePath)) {
+          console.error('❌ 源文件不存在:', sourcePath);
+          failedFiles.push(file.name);
+          continue;
+        }
+
+        console.log('✓ 源文件存在');
+
+        // 如果目标已存在，生成唯一文件名
+        if (window['fs'].existsSync(destPath)) {
+          const stats = window['fs'].statSync(sourcePath);
+          const isDir = stats.isDirectory();
+          const uniqueName = this.generateUniqueNameForDrop(targetPath, fileName, isDir);
+          destPath = window['path'].join(targetPath, uniqueName);
+          console.log('⚠ 目标文件已存在，使用新名称:', uniqueName);
+        }
+
+        // 复制文件或文件夹
+        const stats = window['fs'].statSync(sourcePath);
+        const finalFileName = window['path'].basename(destPath);
+        const isDirectory = stats.isDirectory();
+        
+        if (isDirectory) {
+          console.log('→ 开始复制文件夹...');
+          window['fs'].copySync(sourcePath, destPath);
+          console.log('✓ 文件夹复制成功');
+        } else {
+          console.log('→ 开始复制文件...');
+          const content = window['fs'].readFileSync(sourcePath);
+          window['fs'].writeFileSync(destPath, content);
+          console.log('✓ 文件复制成功');
+        }
+
+        // 只有当父文件夹是展开状态时才需要手动添加节点
+        // 如果父文件夹是折叠的，展开时会自动加载子节点
+        if (this.isParentExpanded(targetPath)) {
+          console.log('→ 父文件夹已展开，添加节点到树中...');
+          this.addFileNodeDirect(targetPath, finalFileName, !isDirectory);
+          console.log('✓ 节点已添加到树中');
+        } else {
+          console.log('⚠ 父文件夹未展开，清除缓存以便下次展开时重新加载');
+          // 清除父文件夹的子节点缓存，这样当用户展开时会重新从文件系统加载
+          this.dataSource.clearNodeCache(targetPath);
+        }
+
+        copiedFiles.push(file.name);
+      } catch (error) {
+        console.error('❌ 复制失败:', file.name);
+        console.error('错误详情:', error);
+        failedFiles.push(file.name);
+      }
+    }
+
+    console.log('\n=== 外部文件拖入完成 ===');
+    console.log('成功:', copiedFiles.length, copiedFiles);
+    console.log('失败:', failedFiles.length, failedFiles);
+
+    // 显示结果消息
+    if (copiedFiles.length > 0) {
+      this.message.success(`成功导入 ${copiedFiles.length} 个项目${failedFiles.length > 0 ? `，${failedFiles.length} 个失败` : ''}`);
+    } else if (failedFiles.length > 0) {
+      // 提供更详细的错误信息
+      const errorMsg = `文件导入失败。请检查控制台日志。\n可能原因：\n1. 未在 Electron 环境运行\n2. 文件路径获取失败\n3. 文件系统 API 未正确暴露`;
+      this.message.error(errorMsg);
+      console.error('❌ 导入失败原因分析:');
+      console.error('- window.electronAPI:', window['electronAPI']);
+      console.error('- window.path:', window['path']);
+      console.error('- window.fs:', window['fs']);
+    }
+  }
+
+  /**
+   * 处理内部拖拽放下
+   */
+  private async handleInternalDrop(event: DragEvent, targetNode: FlatFileNode | null): Promise<void> {
+    if (!this.dragState.isDragging || this.dragState.draggedNodes.length === 0) {
+      return;
+    }
+
+    // 确定目标路径
+    let targetPath: string;
+    if (!targetNode) {
+      // 放到根目录
+      targetPath = this.rootPath;
+    } else if (this.dragState.dropPosition === 'inside') {
+      // 放到文件夹内部
+      targetPath = targetNode.isLeaf ? window['path'].dirname(targetNode.path) : targetNode.path;
+    } else {
+      // 放到节点前后（同级）
+      targetPath = window['path'].dirname(targetNode.path);
+    }
+
+    const isCopy = event.ctrlKey;
+    const movedFiles: string[] = [];
+    const failedFiles: string[] = [];
+
+    for (const draggedNode of this.dragState.draggedNodes) {
+      try {
+        const sourcePath = draggedNode.path;
+        const fileName = window['path'].basename(sourcePath);
+
+        // 检查是否拖拽到自己或子目录
+        if (this.isDropIntoSelfOrChild(sourcePath, targetPath)) {
+          console.warn('不能将文件夹拖拽到自己或子目录:', sourcePath);
+          continue;
+        }
+
+        // 检查是否拖拽到相同位置
+        const sourceParent = window['path'].dirname(sourcePath);
+        if (sourceParent === targetPath && !isCopy) {
+          console.log('拖拽到相同位置，跳过:', sourcePath);
+          continue;
+        }
+
+        let destPath = window['path'].join(targetPath, fileName);
+
+        // 如果目标已存在，生成唯一文件名
+        if (window['fs'].existsSync(destPath)) {
+          const uniqueName = this.generateUniqueNameForDrop(targetPath, fileName, !draggedNode.isLeaf);
+          destPath = window['path'].join(targetPath, uniqueName);
+        }
+
+        if (isCopy) {
+          // 复制操作
+          if (draggedNode.isLeaf) {
+            const content = window['fs'].readFileSync(sourcePath);
+            window['fs'].writeFileSync(destPath, content);
+          } else {
+            window['fs'].copySync(sourcePath, destPath);
+          }
+          
+          // 只有当父文件夹是展开状态时才需要手动添加节点
+          if (this.isParentExpanded(targetPath)) {
+            this.addFileNodeDirect(targetPath, window['path'].basename(destPath), draggedNode.isLeaf);
+          } else {
+            // 清除父文件夹的子节点缓存
+            this.dataSource.clearNodeCache(targetPath);
+          }
+        } else {
+          // 移动操作
+          window['fs'].renameSync(sourcePath, destPath);
+          this.removeFileNode(sourcePath);
+          
+          // 只有当父文件夹是展开状态时才需要手动添加节点
+          if (this.isParentExpanded(targetPath)) {
+            this.addFileNodeDirect(targetPath, window['path'].basename(destPath), draggedNode.isLeaf);
+          } else {
+            // 清除父文件夹的子节点缓存
+            this.dataSource.clearNodeCache(targetPath);
+          }
+        }
+
+        movedFiles.push(fileName);
+      } catch (error) {
+        console.error('拖拽操作失败:', draggedNode.path, error);
+        failedFiles.push(draggedNode.title);
+      }
+    }
+
+    // 显示结果消息
+    if (movedFiles.length > 0) {
+      const action = isCopy ? '复制' : '移动';
+      this.message.success(`成功${action} ${movedFiles.length} 个项目${failedFiles.length > 0 ? `，${failedFiles.length} 个失败` : ''}`);
+    } else if (failedFiles.length > 0) {
+      this.message.error('拖拽操作失败');
+    }
+  }
+
+  /**
+   * 检查是否是有效的拖放目标
+   */
+  private isValidDropTarget(targetNode: FlatFileNode): boolean {
+    // 如果是外部拖拽，允许拖到任何文件夹或文件（文件会拖到父目录）
+    if (this.dragState.isExternalDrag) {
+      return true;
+    }
+
+    // 内部拖拽检查
+    if (!this.dragState.isDragging || this.dragState.draggedNodes.length === 0) {
+      return false;
+    }
+
+    // 不能拖拽到自己
+    const isDraggingSelf = this.dragState.draggedNodes.some(n => n.path === targetNode.path);
+    if (isDraggingSelf) {
+      return false;
+    }
+
+    // 不能拖拽到自己的子节点
+    for (const draggedNode of this.dragState.draggedNodes) {
+      if (!draggedNode.isLeaf && targetNode.path.startsWith(draggedNode.path + window['path'].sep)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * 计算拖放位置
+   */
+  private calculateDropPosition(event: DragEvent, node: FlatFileNode): 'before' | 'after' | 'inside' {
+    // 如果是文件夹，优先放到内部
+    if (!node.isLeaf) {
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const height = rect.height;
+
+      // 上方1/4区域为before，下方1/4为after，中间1/2为inside
+      if (y < height * 0.25) {
+        return 'before';
+      } else if (y > height * 0.75) {
+        return 'after';
+      } else {
+        return 'inside';
+      }
+    } else {
+      // 如果是文件，只能放到前后
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      return y < rect.height / 2 ? 'before' : 'after';
+    }
+  }
+
+  /**
+   * 检查是否拖拽到自己或子目录
+   */
+  private isDropIntoSelfOrChild(sourcePath: string, targetPath: string): boolean {
+    if (sourcePath === targetPath) {
+      return true;
+    }
+    // 检查targetPath是否是sourcePath的子目录
+    return targetPath.startsWith(sourcePath + window['path'].sep);
+  }
+
+  /**
+   * 为拖放生成唯一文件名
+   */
+  private generateUniqueNameForDrop(targetDir: string, originalName: string, isFolder: boolean): string {
+    if (isFolder) {
+      let counter = 1;
+      let newName = originalName;
+      while (window['fs'].existsSync(window['path'].join(targetDir, newName))) {
+        newName = `${originalName} (${counter})`;
+        counter++;
+      }
+      return newName;
+    } else {
+      const ext = window['path'].extname(originalName);
+      const nameWithoutExt = window['path'].basename(originalName, ext);
+      let counter = 1;
+      let newName = originalName;
+      while (window['fs'].existsSync(window['path'].join(targetDir, newName))) {
+        newName = `${nameWithoutExt} (${counter})${ext}`;
+        counter++;
+      }
+      return newName;
+    }
+  }
+
+  /**
+   * 设置拖拽图像
+   */
+  private setDragImage(event: DragEvent): void {
+    const draggedCount = this.dragState.draggedNodes.length;
+    const dragImage = document.createElement('div');
+    dragImage.className = 'drag-image';
+    dragImage.style.position = 'absolute';
+    dragImage.style.top = '-1000px';
+    dragImage.style.left = '-1000px';
+    dragImage.style.padding = '4px 8px';
+    dragImage.style.background = 'rgba(24, 144, 255, 0.9)';
+    dragImage.style.color = 'white';
+    dragImage.style.borderRadius = '4px';
+    dragImage.style.fontSize = '12px';
+    dragImage.style.whiteSpace = 'nowrap';
+
+    if (draggedCount === 1) {
+      dragImage.textContent = this.dragState.draggedNodes[0].title;
+    } else {
+      dragImage.textContent = `${draggedCount} 个项目`;
+    }
+
+    document.body.appendChild(dragImage);
+    event.dataTransfer!.setDragImage(dragImage, 10, 10);
+
+    // 移除临时元素
+    setTimeout(() => {
+      document.body.removeChild(dragImage);
+    }, 0);
+  }
+
+  /**
+   * 启动自动展开定时器
+   */
+  private startDragExpandTimer(node: FlatFileNode): void {
+    this.clearDragExpandTimer();
+    this.dragExpandTimer = setTimeout(() => {
+      if (!this.treeControl.isExpanded(node)) {
+        this.treeControl.expand(node);
+      }
+    }, this.TIMING.AUTO_EXPAND_DELAY);
+  }
+
+  /**
+   * 清除自动展开定时器
+   */
+  private clearDragExpandTimer(): void {
+    if (this.dragExpandTimer) {
+      clearTimeout(this.dragExpandTimer);
+      this.dragExpandTimer = null;
+    }
+  }
+
+  /**
+   * 处理拖拽自动滚动
+   */
+  private handleDragScroll(event: DragEvent): void {
+    const container = document.querySelector('.file-explorer-content') as HTMLElement;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const scrollZone = 50; // 滚动触发区域的高度
+    const scrollSpeed = 10; // 滚动速度
+
+    this.clearDragScrollTimer();
+
+    if (event.clientY < rect.top + scrollZone) {
+      // 向上滚动
+      this.dragScrollTimer = setInterval(() => {
+        container.scrollTop -= scrollSpeed;
+      }, 50);
+    } else if (event.clientY > rect.bottom - scrollZone) {
+      // 向下滚动
+      this.dragScrollTimer = setInterval(() => {
+        container.scrollTop += scrollSpeed;
+      }, 50);
+    }
+  }
+
+  /**
+   * 清除拖拽滚动定时器
+   */
+  private clearDragScrollTimer(): void {
+    if (this.dragScrollTimer) {
+      clearInterval(this.dragScrollTimer);
+      this.dragScrollTimer = null;
+    }
+  }
+
+  /**
+   * 重置拖拽状态
+   */
+  private resetDragState(): void {
+    this.dragState.isDragging = false;
+    this.dragState.draggedNodes = [];
+    this.dragState.dragOverNode = null;
+    this.dragState.dropPosition = null;
+    this.dragState.isExternalDrag = false;
+  }
+
+  /**
+   * 获取拖拽视觉反馈的CSS类
+   */
+  getDragOverClass(node: FlatFileNode): string {
+    if (this.dragState.dragOverNode !== node) {
+      return '';
+    }
+
+    switch (this.dragState.dropPosition) {
+      case 'before':
+        return 'drag-over-before';
+      case 'after':
+        return 'drag-over-after';
+      case 'inside':
+        return 'drag-over-inside';
+      default:
+        return '';
+    }
+  }
+
+  /**
+   * 处理容器拖拽经过（用于外部文件拖入）
+   */
+  onContainerDragOver(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+
+    // 检查是否是外部文件
+    const hasFiles = event.dataTransfer?.types.includes('Files');
+    if (hasFiles) {
+      this.dragState.isExternalDrag = true;
+      event.dataTransfer!.dropEffect = 'copy';
+    }
+  }
+
+  /**
+   * 处理容器拖拽放下（用于外部文件拖入到空白区域）
+   */
+  onContainerDrop(event: DragEvent): void {
+    // 只处理拖到空白区域的情况
+    const target = event.target as HTMLElement;
+    if (target.classList.contains('file-explorer-content') || target.classList.contains('sscroll')) {
+      this.onDrop(event, null);
+    }
   }
 }
