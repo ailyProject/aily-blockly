@@ -25,6 +25,7 @@
         "EXAMPLES": "예제 프로그램",
         "UPDATE": "업데이트 확인",
         "USER_AUTH": "사용자 서비스",
+        "USER_SPACE": "클라우드 스페이스",
         "LIB_MANAGER": "라이브러리 관리자"
     },
     "ESP32": {
@@ -136,7 +137,8 @@
         "AI": "AI",
         "IOT": "사물인터넷",
         "OTHERS": "기타",
-        "ALL": "모든 라이브러리"
+        "ALL": "모든 라이브러리",
+        "LIB_IN_USE": "이 라이브러리는 현재 사용 중입니다. 이 라이브러리를 제거하기 전에 작업 공간에서 관련 블록을 먼저 삭제하세요"
     },
     "BOARD_SELECTOR": {
         "TITLE": "보드 전환",
@@ -169,5 +171,33 @@
         "CANCEL": "취소",
         "SKIP_SAVE": "저장 건너뛰기",
         "SAVE_AND_CONTINUE": "저장 후 계속"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "사용자 피드백",
+        "FEEDBACK_TYPE": "피드백 유형",
+        "TYPE_BUG": "버그 리포트",
+        "TYPE_BUILD_UPLOAD": "빌드/업로드 문제",
+        "TYPE_OTHER": "기타 문제",
+        "TYPE_FEATURE": "기능 제안",
+        "TITLE_LABEL": "제목",
+        "TITLE_PLACEHOLDER": "피드백 제목을 입력하세요",
+        "CONTENT_LABEL": "피드백 내용",
+        "CONTENT_PLACEHOLDER": "정확하고 상세한 피드백을 제공해 주세요 (최소 10자)",
+        "CHAR_COUNT": "자",
+        "EMAIL_LABEL": "연락처 이메일",
+        "EMAIL_OPTIONAL": "(선택사항, 이메일로 답변을 받을 수 있습니다)",
+        "TIP_1": "1. 피드백을 제출하면 소프트웨어가 문제 해결을 위해 버전, 환경, 프로젝트 등 필요한 정보를 자동으로 수집합니다",
+        "TIP_2": "2. 피드백이 성공하면 위의 정보가",
+        "TIP_2_LINK": "이 프로젝트의 GitHub issues",
+        "TIP_2_END": "에 공개됩니다",
+        "SUBMIT": "제출",
+        "CANCEL": "취소",
+        "WARNING_CONTENT_EMPTY": "피드백 내용을 입력하세요",
+        "WARNING_TITLE_EMPTY": "피드백 제목을 입력하세요",
+        "WARNING_CONTENT_TOO_SHORT": "피드백 내용은 최소 10자 이상이어야 합니다",
+        "WARNING_INVALID_EMAIL": "유효한 이메일 주소를 입력하세요",
+        "SUCCESS_MESSAGE": "피드백을 주셔서 감사합니다!",
+        "ERROR_SUBMIT_FAILED": "제출 실패, 나중에 다시 시도해 주세요",
+        "NO_DEPENDENCIES": "없음"
     }
 }

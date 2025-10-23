@@ -285,6 +285,9 @@ export class ProjectService {
 
   // 获取当前项目的package.json
   async getPackageJson() {
+    if (!this.currentProjectPath) {
+      return null;
+    }
     const packageJsonPath = `${this.currentProjectPath}/package.json`;
     return JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
   }

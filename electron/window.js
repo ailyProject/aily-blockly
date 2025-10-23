@@ -1,6 +1,7 @@
 // 窗口控制
 const { ipcMain, BrowserWindow } = require("electron");
 const path = require('path');
+const { app } = require("electron");
 
 function registerWindowHandlers(mainWindow) {
     // 添加一个映射来存储已打开的窗口
@@ -87,7 +88,13 @@ function registerWindowHandlers(mainWindow) {
 
     ipcMain.on("window-close", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        senderWindow.close();
+
+        // 检查是否是主窗口，如果是主窗口，关闭整个应用程序
+        if (senderWindow === mainWindow) {
+            app.quit();
+        } else {
+            senderWindow.close();
+        }
     });
 
     // 修改为同步处理程序

@@ -25,6 +25,7 @@
         "EXAMPLES": "Beispiele",
         "UPDATE": "Nach Updates suchen",
         "USER_AUTH": "Benutzerdienst",
+        "USER_SPACE": "Cloud-Speicher",
         "LIB_MANAGER": "Bibliotheksverwaltung"
     },
     "ESP32": {
@@ -145,7 +146,8 @@
         "ROBOT": "Roboter",
         "AI": "KI",
         "IOT": "IoT",
-        "OTHERS": "Andere"
+        "OTHERS": "Andere",
+        "LIB_IN_USE": "Diese Bibliothek wird derzeit verwendet. Bitte entfernen Sie zuerst die zugehörigen Blöcke aus dem Arbeitsbereich, bevor Sie diese Bibliothek entfernen"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Board wechseln",
@@ -174,5 +176,33 @@
         "CANCEL": "Abbrechen",
         "SKIP_SAVE": "Speichern überspringen",
         "SAVE_AND_CONTINUE": "Speichern und fortfahren"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "Benutzerfeedback",
+        "FEEDBACK_TYPE": "Feedback-Typ",
+        "TYPE_BUG": "Fehlermeldung",
+        "TYPE_BUILD_UPLOAD": "Build-/Upload-Problem",
+        "TYPE_OTHER": "Anderes Problem",
+        "TYPE_FEATURE": "Funktionsvorschlag",
+        "TITLE_LABEL": "Titel",
+        "TITLE_PLACEHOLDER": "Bitte geben Sie einen Titel ein",
+        "CONTENT_LABEL": "Feedback-Inhalt",
+        "CONTENT_PLACEHOLDER": "Stellen Sie sicher, dass Ihr Feedback genau und detailliert ist (mindestens 10 Zeichen)",
+        "CHAR_COUNT": "Zeichen",
+        "EMAIL_LABEL": "Kontakt-E-Mail",
+        "EMAIL_OPTIONAL": "(Optional, Sie können Antworten per E-Mail erhalten)",
+        "TIP_1": "1. Beim Absenden von Feedback sammelt die Software automatisch notwendige Informationen (Version, Umgebung, Projekt usw.), um das Problem zu lösen",
+        "TIP_2": "2. Nach erfolgreichem Feedback werden die oben genannten Informationen öffentlich verfügbar sein auf",
+        "TIP_2_LINK": "den GitHub-Issues dieses Projekts",
+        "TIP_2_END": "",
+        "SUBMIT": "Absenden",
+        "CANCEL": "Abbrechen",
+        "WARNING_CONTENT_EMPTY": "Bitte geben Sie Feedback-Inhalt ein",
+        "WARNING_TITLE_EMPTY": "Bitte geben Sie einen Titel ein",
+        "WARNING_CONTENT_TOO_SHORT": "Der Inhalt muss mindestens 10 Zeichen lang sein",
+        "WARNING_INVALID_EMAIL": "Bitte geben Sie eine gültige E-Mail-Adresse ein",
+        "SUCCESS_MESSAGE": "Vielen Dank für Ihr Feedback!",
+        "ERROR_SUBMIT_FAILED": "Absenden fehlgeschlagen, bitte versuchen Sie es später erneut",
+        "NO_DEPENDENCIES": "Keine"
     }
 }

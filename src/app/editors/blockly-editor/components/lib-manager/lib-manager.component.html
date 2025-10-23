@@ -81,10 +81,10 @@
                         <i class="fa-regular fa-book"></i>
                     </button>
                     }
-                    @if (lib.example) {
+                    <!-- @if (lib.example) {
                     <button nz-button nzSize="small" style="margin-right: 5px;"
                         (click)="openExample(lib.example)">示例</button>
-                    }
+                    } -->
                     @if(lib.state=='installed') {
                     <button nz-button nzType="text" nzSize="small" [disabled]="true">
                         {{ 'LIB_MANAGER.INSTALLED_TEXT' | translate }}

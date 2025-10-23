@@ -25,6 +25,7 @@
         "EXAMPLES": "Exemples",
         "UPDATE": "Vérifier les mises à jour",
         "USER_AUTH": "Service Utilisateur",
+        "USER_SPACE": "Espace Cloud",
         "LIB_MANAGER": "Gestionnaire de Bibliothèques"
     },
     "ESP32": {
@@ -143,7 +144,8 @@
         "AI": "IA",
         "IOT": "IoT",
         "OTHERS": "Autres",
-        "ALL": "Toutes les bibliothèques"
+        "ALL": "Toutes les bibliothèques",
+        "LIB_IN_USE": "Cette bibliothèque est actuellement utilisée. Veuillez supprimer les blocs associés de l'espace de travail avant de supprimer cette bibliothèque"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Changer de carte",
@@ -172,5 +174,33 @@
         "CANCEL": "Annuler",
         "SKIP_SAVE": "Ignorer l'enregistrement",
         "SAVE_AND_CONTINUE": "Enregistrer et continuer"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "Retour d'information",
+        "FEEDBACK_TYPE": "Type de retour",
+        "TYPE_BUG": "Rapport de bug",
+        "TYPE_BUILD_UPLOAD": "Problème de compilation/téléchargement",
+        "TYPE_OTHER": "Autre problème",
+        "TYPE_FEATURE": "Suggestion de fonctionnalité",
+        "TITLE_LABEL": "Titre",
+        "TITLE_PLACEHOLDER": "Veuillez saisir un titre",
+        "CONTENT_LABEL": "Contenu du retour",
+        "CONTENT_PLACEHOLDER": "Assurez-vous que votre retour est précis et détaillé (au moins 10 caractères)",
+        "CHAR_COUNT": "caractères",
+        "EMAIL_LABEL": "Email de contact",
+        "EMAIL_OPTIONAL": "(Optionnel, vous pouvez recevoir des réponses par email)",
+        "TIP_1": "1. En soumettant un retour, le logiciel collectera automatiquement les informations nécessaires (version, environnement, projet, etc.) pour résoudre le problème",
+        "TIP_2": "2. Après un retour réussi, les informations ci-dessus seront publiquement disponibles sur",
+        "TIP_2_LINK": "les issues GitHub de ce projet",
+        "TIP_2_END": "",
+        "SUBMIT": "Soumettre",
+        "CANCEL": "Annuler",
+        "WARNING_CONTENT_EMPTY": "Veuillez saisir le contenu du retour",
+        "WARNING_TITLE_EMPTY": "Veuillez saisir un titre",
+        "WARNING_CONTENT_TOO_SHORT": "Le contenu doit contenir au moins 10 caractères",
+        "WARNING_INVALID_EMAIL": "Veuillez saisir une adresse email valide",
+        "SUCCESS_MESSAGE": "Merci pour votre retour !",
+        "ERROR_SUBMIT_FAILED": "Échec de la soumission, veuillez réessayer plus tard",
+        "NO_DEPENDENCIES": "Aucune"
     }
 }

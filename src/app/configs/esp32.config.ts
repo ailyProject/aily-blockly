@@ -37,7 +37,7 @@ export let ESP32_CONFIG_MENU: IMenuItem[] = [
     {
         name: 'ESP32.CDC_ON_BOOT',
         data: {},
-        icon: "fa-light fa-hard-drive",
+        icon: "fa-brands fa-usb",
         children: []
     },
     {

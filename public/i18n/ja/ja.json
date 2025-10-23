@@ -25,6 +25,7 @@
         "EXAMPLES": "サンプルプログラム",
         "UPDATE": "アップデートを確認",
         "USER_AUTH": "ユーザーサービス",
+        "USER_SPACE": "クラウドスペース",
         "LIB_MANAGER": "ライブラリマネージャー"
     },
     "ESP32": {
@@ -112,7 +113,8 @@
         "AI": "AI",
         "IOT": "IoT",
         "OTHERS": "その他",
-        "ALL": "すべてのライブラリ"
+        "ALL": "すべてのライブラリ",
+        "LIB_IN_USE": "このライブラリは現在使用中です。このライブラリを削除する前に、ワークスペースから関連するブロックを削除してください"
     },
     "PROJECT_NEW": {
         "TITLE": "新規プロジェクト",
@@ -176,5 +178,33 @@
         "CANCEL": "キャンセル",
         "SKIP_SAVE": "保存をスキップ",
         "SAVE_AND_CONTINUE": "保存して続行"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "ユーザーフィードバック",
+        "FEEDBACK_TYPE": "フィードバックタイプ",
+        "TYPE_BUG": "バグ報告",
+        "TYPE_BUILD_UPLOAD": "ビルド/アップロード問題",
+        "TYPE_OTHER": "その他の問題",
+        "TYPE_FEATURE": "機能提案",
+        "TITLE_LABEL": "タイトル",
+        "TITLE_PLACEHOLDER": "フィードバックタイトルを入力してください",
+        "CONTENT_LABEL": "フィードバック内容",
+        "CONTENT_PLACEHOLDER": "正確で詳細なフィードバックをご提供ください（10文字以上）",
+        "CHAR_COUNT": "文字",
+        "EMAIL_LABEL": "連絡先メール",
+        "EMAIL_OPTIONAL": "（任意、メールで返信を受け取れます）",
+        "TIP_1": "1. フィードバックを送信すると、ソフトウェアは問題解決のためにバージョン、環境、プロジェクトなどの必要な情報を自動的に収集します",
+        "TIP_2": "2. フィードバックが成功すると、上記の情報は",
+        "TIP_2_LINK": "このプロジェクトのGitHub issues",
+        "TIP_2_END": "で公開されます",
+        "SUBMIT": "送信",
+        "CANCEL": "キャンセル",
+        "WARNING_CONTENT_EMPTY": "フィードバック内容を入力してください",
+        "WARNING_TITLE_EMPTY": "フィードバックタイトルを入力してください",
+        "WARNING_CONTENT_TOO_SHORT": "フィードバック内容は10文字以上である必要があります",
+        "WARNING_INVALID_EMAIL": "有効なメールアドレスを入力してください",
+        "SUCCESS_MESSAGE": "フィードバックをありがとうございます！",
+        "ERROR_SUBMIT_FAILED": "送信に失敗しました。後でもう一度お試しください",
+        "NO_DEPENDENCIES": "なし"
     }
 }

@@ -10,7 +10,7 @@ import { LogService } from "../../../services/log.service";
 import { NpmService } from "../../../services/npm.service";
 import { SerialMonitorService } from "../../../tools/serial-monitor/serial-monitor.service";
 import { ActionState } from "../../../services/ui.service";
-import { SerialDialogComponent } from "../../../main-window/components/serial-dialog/serial-dialog.component";
+// import { SerialDialogComponent } from "../../../main-window/components/serial-dialog/serial-dialog.component";
 import { ActionService } from "../../../services/action.service";
 import { arduinoGenerator } from "../components/blockly/generators/arduino/arduino";
 import { BlocklyService } from "./blockly.service";
@@ -271,23 +271,6 @@ export class _UploaderService {
           return;
         }
 
-        if (!this.serialService.currentPort) {
-          this.message.warning('请先选择串口');
-          this.uploadInProgress = false;
-          this._builderService.isUploading = false;
-          reject({ state: 'warn', text: '请先选择串口' });
-          this.modal.create({
-            nzTitle: null,
-            nzFooter: null,
-            nzClosable: false,
-            nzBodyStyle: {
-              padding: '0',
-            },
-            nzWidth: '320px',
-            nzContent: SerialDialogComponent,
-          });
-          return;
-        }
 
         this.isErrored = false;
         this.cancelled = false;

@@ -21,10 +21,15 @@ $header-inner-height: 38px;
   }
 
   .board {
-    margin-left: 10px;
+    padding-left: 10px;
+    height: $header-inner-height;
     color: #818992;
     cursor: pointer;
     opacity: 0.7;
+
+    * {
+      pointer-events: none;
+    }
 
     &:hover {
       opacity: 1;

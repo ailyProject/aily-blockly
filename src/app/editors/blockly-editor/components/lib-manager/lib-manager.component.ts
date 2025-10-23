@@ -65,19 +65,10 @@ export class LibManagerComponent {
       this.translate.instant('LIB_MANAGER.ACTUATORS'),
       this.translate.instant('LIB_MANAGER.COMMUNICATION'),
       this.translate.instant('LIB_MANAGER.DISPLAY'),
-      // this.translate.instant('LIB_MANAGER.SOUND'),
       this.translate.instant('LIB_MANAGER.STORAGE'),
-      // this.translate.instant('LIB_MANAGER.ROBOT'),
       this.translate.instant('LIB_MANAGER.AI'),
       this.translate.instant('LIB_MANAGER.IOT'),
     ];
-
-    // this.configService.loadLibraryList().then(async (data: any) => {
-    //   this._libraryList = this.process(data);
-    //   // this.libraryList = JSON.parse(JSON.stringify(this._libraryList));
-    //   this.libraryList = await this.checkInstalled();
-    //   this.cd.detectChanges();
-    // });
 
     this._libraryList = this.process(this.configService.libraryList);
     this.libraryList = await this.checkInstalled();
@@ -217,6 +208,10 @@ export class LibManagerComponent {
 
   async removeLib(lib) {
     // 移除库前，应先检查项目代码是否使用了该库，如果使用了，应提示用户
+    if (this.checkLibUsage(lib)) {
+      this.message.warning(this.translate.instant('LIB_MANAGER.LIB_IN_USE'), { nzDuration: 5000 });
+      return;
+    }
     lib.state = 'uninstalling';
     this.message.loading(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.UNINSTALLING')}...`);
     const libPackagePath = this.projectService.currentProjectPath + '\\node_modules\\' + lib.name;
@@ -226,6 +221,22 @@ export class LibManagerComponent {
     this.libraryList = await this.checkInstalled(this.libraryList);
     // lib.state = 'default';
     this.message.success(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.UNINSTALLED')}`);
+  }
+
+
+  checkLibUsage(lib) {
+    // 检查项目代码是否使用了该库
+    const libPackagePath = this.projectService.currentProjectPath + '\\node_modules\\' + lib.name;
+    const libBlockPath = libPackagePath + '\\block.json';
+    const blocksData = JSON.parse(this.electronService.readFile(libBlockPath));
+    const abiJson = JSON.stringify(this.blocklyService.getWorkspaceJson());
+    for (let index = 0; index < blocksData.length; index++) {
+      const element = blocksData[index];
+      if (abiJson.includes(element.type)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async checkCompatibility(libCompatibility, boardCore): Promise<boolean> {

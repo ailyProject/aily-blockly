@@ -1,16 +1,11 @@
-<app-base-dialog [title]="'用户反馈'" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
+<app-base-dialog [title]="'FEEDBACK_DIALOG.TITLE' | translate" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
     [loading]="isSubmitting" (closeDialog)="onCloseDialog()" (buttonClick)="onButtonClick($event)">
 
     <div class="feedback-form">
         <div class="form-item">
-            <label class="form-label">反馈类型
+            <label class="form-label">{{ 'FEEDBACK_DIALOG.FEEDBACK_TYPE' | translate }}
                 <span class="required">*</span>
             </label>
-            <!-- <nz-select [(ngModel)]="feedbackType" nzSize="small" class="form-control">
-                @for(type of feedbackTypes; track type.value) {
-                <nz-option [nzValue]="type.value" [nzLabel]="type.label"></nz-option>
-                }
-            </nz-select> -->
             <nz-radio-group [(ngModel)]="feedbackType">
                 @for(type of feedbackTypes; track type.value) {
                 <label nz-radio [nzValue]="type.value">{{ type.label }}</label>
@@ -20,33 +15,37 @@
 
         <div class="form-item">
             <label class="form-label">
-                标题
+                {{ 'FEEDBACK_DIALOG.TITLE_LABEL' | translate }}
                 <span class="required">*</span>
             </label>
-            <input class="form-control" nz-input [(ngModel)]="feedbackTitle" placeholder="请输入反馈标题"
+            <input class="form-control" nz-input [(ngModel)]="feedbackTitle" 
+                [placeholder]="'FEEDBACK_DIALOG.TITLE_PLACEHOLDER' | translate"
                 [disabled]="isSubmitting">
         </div>
         <div class="form-item">
             <label class="form-label">
-                反馈内容
+                {{ 'FEEDBACK_DIALOG.CONTENT_LABEL' | translate }}
                 <span class="required">*</span>
             </label>
-            <textarea nz-input [(ngModel)]="feedbackContent" placeholder="请确保您的反馈内容准确、详细，以便我们更好地帮助您（至少10个字符）" [rows]="6"
+            <textarea nz-input [(ngModel)]="feedbackContent" 
+                [placeholder]="'FEEDBACK_DIALOG.CONTENT_PLACEHOLDER' | translate" 
+                [rows]="6"
                 class="form-control" [disabled]="isSubmitting">
             </textarea>
             <div class="char-count">
-                {{ feedbackContent.length }} 字符
+                {{ feedbackContent.length }} {{ 'FEEDBACK_DIALOG.CHAR_COUNT' | translate }}
             </div>
         </div>
         <div class="form-item">
             <label class="form-label">
-                联系邮箱 <span class="more">(选填，您可以通过邮箱收到回复)</span>
+                {{ 'FEEDBACK_DIALOG.EMAIL_LABEL' | translate }} 
+                <span class="more">{{ 'FEEDBACK_DIALOG.EMAIL_OPTIONAL' | translate }}</span>
             </label>
             <input class="form-control" nz-input [(ngModel)]="email">
         </div>
         <div class="tips">
-            <div>1. 提交反馈，软件将自动获取版本、环境、项目等必要信息，用于解决问题</div>
-            <div>2. 反馈成功后，以上信息将会在 <a (click)="openUrl()">本项目GitHub issues</a> 上公开</div>
+            <div>{{ 'FEEDBACK_DIALOG.TIP_1' | translate }}</div>
+            <div>{{ 'FEEDBACK_DIALOG.TIP_2' | translate }} <a (click)="openUrl()">{{ 'FEEDBACK_DIALOG.TIP_2_LINK' | translate }}</a> {{ 'FEEDBACK_DIALOG.TIP_2_END' | translate }}</div>
         </div>
     </div>
 

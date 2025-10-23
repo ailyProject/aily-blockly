@@ -26,6 +26,7 @@
         "EXAMPLES": "教程与示例",
         "UPDATE": "检查更新",
         "USER_AUTH": "用户中心",
+        "USER_SPACE": "云空间",
         "FILE_OPEN": "打开文件",
         "FILE_OPEN_WITH": "打开方式",
         "OPEN_WITH_SYSTEM_EDITOR": "系统默认编辑器",
@@ -183,7 +184,8 @@
         "ROBOT": "机器人",
         "AI": "AI",
         "IOT": "物联网",
-        "OTHERS": "其他"
+        "OTHERS": "其他",
+        "LIB_IN_USE": "该库正在被使用，请先在工作区删除相关块，再移除本库"
     },
     "COMPATIBILITY_DIALOG": {
         "TITLE": "库兼容性提示",
@@ -224,5 +226,33 @@
         "CANCEL": "取消",
         "SKIP_SAVE": "跳过保存",
         "SAVE_AND_CONTINUE": "保存并继续"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "用户反馈",
+        "FEEDBACK_TYPE": "反馈类型",
+        "TYPE_BUG": "Bug反馈",
+        "TYPE_BUILD_UPLOAD": "编译/上传问题",
+        "TYPE_OTHER": "其他问题",
+        "TYPE_FEATURE": "功能建议",
+        "TITLE_LABEL": "标题",
+        "TITLE_PLACEHOLDER": "请输入反馈标题",
+        "CONTENT_LABEL": "反馈内容",
+        "CONTENT_PLACEHOLDER": "请确保您的反馈内容准确、详细，以便我们更好地帮助您（至少10个字符）",
+        "CHAR_COUNT": "字符",
+        "EMAIL_LABEL": "联系邮箱",
+        "EMAIL_OPTIONAL": "(选填，您可以通过邮箱收到回复)",
+        "TIP_1": "1. 提交反馈，软件将自动获取版本、环境、项目等必要信息，用于解决问题",
+        "TIP_2": "2. 反馈成功后，以上信息将会在",
+        "TIP_2_LINK": "本项目GitHub issues",
+        "TIP_2_END": "上公开",
+        "SUBMIT": "提交",
+        "CANCEL": "取消",
+        "WARNING_CONTENT_EMPTY": "请输入反馈内容",
+        "WARNING_TITLE_EMPTY": "请输入反馈标题",
+        "WARNING_CONTENT_TOO_SHORT": "反馈内容至少需要10个字符",
+        "WARNING_INVALID_EMAIL": "请输入有效的邮箱地址",
+        "SUCCESS_MESSAGE": "感谢您的反馈！",
+        "ERROR_SUBMIT_FAILED": "提交失败，请稍后重试",
+        "NO_DEPENDENCIES": "无"
     }
 }

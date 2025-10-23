@@ -25,6 +25,7 @@
         "EXAMPLES": "Programas de exemplo",
         "UPDATE": "Verificar atualizações",
         "USER_AUTH": "Serviço do Usuário",
+        "USER_SPACE": "Espaço na Nuvem",
         "LIB_MANAGER": "Gerenciador de Bibliotecas"
     },
     "ESP32": {
@@ -140,7 +141,8 @@
         "AI": "IA",
         "IOT": "IoT",
         "OTHERS": "Outros",
-        "ALL": "Todas as bibliotecas"
+        "ALL": "Todas as bibliotecas",
+        "LIB_IN_USE": "Esta biblioteca está atualmente em uso. Por favor, remova os blocos relacionados do espaço de trabalho antes de remover esta biblioteca"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Trocar Placa",
@@ -169,5 +171,34 @@
         "CANCEL": "Cancelar",
         "SKIP_SAVE": "Pular salvamento",
         "SAVE_AND_CONTINUE": "Salvar e continuar"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "Feedback do usuário",
+        "FEEDBACK_TYPE": "Tipo de feedback",
+        "TYPE_BUG": "Relatório de bug",
+        "TYPE_BUILD_UPLOAD": "Problema de compilação/upload",
+        "TYPE_OTHER": "Outro problema",
+        "TYPE_FEATURE": "Sugestão de recurso",
+        "TITLE_LABEL": "Título",
+        "TITLE_PLACEHOLDER": "Por favor, insira um título",
+        "CONTENT_LABEL": "Conteúdo do feedback",
+        "CONTENT_PLACEHOLDER": "Certifique-se de que seu feedback seja preciso e detalhado (pelo menos 10 caracteres)",
+        "CHAR_COUNT": "caracteres",
+        "EMAIL_LABEL": "E-mail de contato",
+        "EMAIL_OPTIONAL": "(Opcional, você pode receber respostas por e-mail)",
+        "TIP_1": "1. Ao enviar feedback, o software coletará automaticamente informações necessárias (versão, ambiente, projeto, etc.) para resolver o problema",
+        "TIP_2": "2. Após o feedback bem-sucedido, as informações acima estarão disponíveis publicamente em",
+        "TIP_2_LINK": "issues do GitHub deste projeto",
+        "TIP_2_END": "",
+        "SUBMIT": "Enviar",
+        "CANCEL": "Cancelar",
+        "WARNING_CONTENT_EMPTY": "Por favor, insira o conteúdo do feedback",
+        "WARNING_TITLE_EMPTY": "Por favor, insira um título",
+        "WARNING_CONTENT_TOO_SHORT": "O conteúdo deve ter pelo menos 10 caracteres",
+        "WARNING_INVALID_EMAIL": "Por favor, insira um endereço de e-mail válido",
+        "SUCCESS_MESSAGE": "Obrigado pelo seu feedback!",
+        "ERROR_SUBMIT_FAILED": "Falha ao enviar, por favor tente mais tarde",
+        "NO_DEPENDENCIES": "Nenhuma"
     }
 }
+

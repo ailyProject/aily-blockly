@@ -6,7 +6,7 @@
   </div>
 
   @if(isLoaded()){
-  <div class="board ccenter" (click)="openPortList()">
+  <div class="board ccenter" (click)="openPortList($event)">
     {{currentBoard}}
     @if(currentPort){
     ({{currentPort}})
@@ -26,7 +26,8 @@
       @if(showInRouter(btn)){
       @if (btn.type === 'act-btn') {
       <app-act-btn [icon]="btn.icon" [color]="btn.color" [(state)]="btn.state" nz-tooltip
-        nzTooltipTitle="{{ btn.name | translate}}" (click)="onClick(btn)"></app-act-btn>
+        nzTooltipTitle="{{ btn.name | translate}}" (click)="onClick(btn,$event)">
+      </app-act-btn>
       }@else{
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ btn.name | translate}}" (click)="onClick(btn,$event)"
         [ngStyle]="{ color: btn.color ? btn.color : '' }" [ngClass]="{ selected: isOpenTool(btn) }">
@@ -60,8 +61,8 @@
 }
 <!-- device port list -->
 @if (showPortList) {
-<app-menu class="ports" [position]="{x:40,y:40}" [width]="260" [menuList]="configList" (closeEvent)="closePortList()"
-  [keywords]="boardKeywords" (itemClickEvent)="selectPort($event)"
+<app-menu class="ports" [position]="portListPosition" [width]="260" [menuList]="configList"
+  (closeEvent)="closePortList()" [keywords]="boardKeywords" (itemClickEvent)="selectPort($event)"
   (subItemClickEvent)="selectSubItem($event)"></app-menu>
 }
 @if(showUser){

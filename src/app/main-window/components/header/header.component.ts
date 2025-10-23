@@ -127,7 +127,8 @@ export class HeaderComponent {
   showPortList = false;
   configList: PortItem[] = []
   boardKeywords = []; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
-  openPortList() {
+  openPortList(event) {
+    this.calculatePortListPosition(event)
     let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
     this.boardKeywords = [boardname];
     this.showPortList = !this.showPortList;
@@ -295,6 +296,12 @@ export class HeaderComponent {
         })
         break;
       case 'upload':
+        // 确认是否选择串口
+        if (!this.serialService.currentPort) {
+          this.message.warning('请先选择串口');
+          this.openPortList(event);
+          return;
+        }
         if (item.state === 'doing') return;
         item.state = 'doing';
         this.uploaderService.upload().then(result => {
@@ -641,7 +648,7 @@ export class HeaderComponent {
 
     // 计算用户组件的位置，使其显示在点击元素的下方
     this.userPosition = {
-      x: rect.left + 10, // 向左偏移一些，使其更好对齐
+      x: rect.left + 10,
       y: 40
     };
 
@@ -660,6 +667,32 @@ export class HeaderComponent {
 
   closeUser() {
     this.showUser = false;
+  }
+
+
+  portListPosition = { x: 40, y: 40 };
+  calculatePortListPosition(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    // 计算端口列表的位置，使其显示在点击元素的下方
+    this.portListPosition = {
+      x: rect.left + 2,
+      y: 40
+    };
+
+    // 确保端口列表不会超出窗口边界
+    const windowWidth = window.innerWidth;
+    const windowHeight = window.innerHeight;
+    const portListWidth = 300; // 端口列表的宽度
+    const portListHeight = 400; // 端口列表的高度
+
+    if (this.portListPosition.x + portListWidth > windowWidth) {
+      this.portListPosition.x = windowWidth - portListWidth - 3;
+    }
+
+    if (this.portListPosition.y + portListHeight > windowHeight) {
+      this.portListPosition.y = windowHeight - portListHeight - 3;
+    }
   }
 
   async openBoardSelectorDialog() {

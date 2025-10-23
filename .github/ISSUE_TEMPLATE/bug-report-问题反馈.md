@@ -8,7 +8,7 @@ assignees: ''
 ---
 
 **Basic Information/基本信息**
-- Operation System Vserison:[Windows 11|Mac OS X Panther 10.3.9|etc.等]
+- Operation System Verison:[Windows 11|Mac OS X Panther 10.3.9|etc.等]
 - Aily Blockly Version/软件版本:[0.0.1]
 - Project Package Json/项目依赖包:
 > Default path/默认路径: Your Documents\aily-project\project_xxx\package.json

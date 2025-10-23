@@ -25,6 +25,7 @@
         "EXAMPLES": "Ejemplos",
         "UPDATE": "Buscar actualizaciones",
         "USER_AUTH": "Servicio de Usuario",
+        "USER_SPACE": "Espacio en la Nube",
         "LIB_MANAGER": "Gestor de Bibliotecas"
     },
     "ESP32": {
@@ -140,7 +141,8 @@
         "AI": "IA",
         "IOT": "IoT",
         "OTHERS": "Otros",
-        "ALL": "Todas las bibliotecas"
+        "ALL": "Todas las bibliotecas",
+        "LIB_IN_USE": "Esta biblioteca está actualmente en uso. Por favor, elimine los bloques relacionados del espacio de trabajo antes de remover esta biblioteca"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Cambiar placa",
@@ -169,5 +171,33 @@
         "CANCEL": "Cancelar",
         "SKIP_SAVE": "Omitir guardado",
         "SAVE_AND_CONTINUE": "Guardar y continuar"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "Comentarios del usuario",
+        "FEEDBACK_TYPE": "Tipo de comentario",
+        "TYPE_BUG": "Reporte de error",
+        "TYPE_BUILD_UPLOAD": "Problema de compilación/carga",
+        "TYPE_OTHER": "Otro problema",
+        "TYPE_FEATURE": "Sugerencia de función",
+        "TITLE_LABEL": "Título",
+        "TITLE_PLACEHOLDER": "Por favor ingrese un título",
+        "CONTENT_LABEL": "Contenido del comentario",
+        "CONTENT_PLACEHOLDER": "Asegúrese de que su comentario sea preciso y detallado (al menos 10 caracteres)",
+        "CHAR_COUNT": "caracteres",
+        "EMAIL_LABEL": "Correo de contacto",
+        "EMAIL_OPTIONAL": "(Opcional, puede recibir respuestas por correo electrónico)",
+        "TIP_1": "1. Al enviar comentarios, el software recopilará automáticamente información necesaria (versión, entorno, proyecto, etc.) para resolver el problema",
+        "TIP_2": "2. Después de comentarios exitosos, la información anterior estará disponible públicamente en",
+        "TIP_2_LINK": "los issues de GitHub de este proyecto",
+        "TIP_2_END": "",
+        "SUBMIT": "Enviar",
+        "CANCEL": "Cancelar",
+        "WARNING_CONTENT_EMPTY": "Por favor ingrese el contenido del comentario",
+        "WARNING_TITLE_EMPTY": "Por favor ingrese un título",
+        "WARNING_CONTENT_TOO_SHORT": "El contenido debe tener al menos 10 caracteres",
+        "WARNING_INVALID_EMAIL": "Por favor ingrese una dirección de correo electrónico válida",
+        "SUCCESS_MESSAGE": "¡Gracias por sus comentarios!",
+        "ERROR_SUBMIT_FAILED": "Error al enviar, por favor intente más tarde",
+        "NO_DEPENDENCIES": "Ninguna"
     }
 }

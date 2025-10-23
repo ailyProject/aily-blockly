@@ -25,6 +25,7 @@
         "EXAMPLES": "範例程式",
         "UPDATE": "檢查更新",
         "USER_AUTH": "用戶服務",
+        "USER_SPACE": "雲空間",
         "LIB_MANAGER": "庫管理"
     },
     "ESP32": {
@@ -142,7 +143,8 @@
         "ROBOT": "機器人",
         "AI": "AI",
         "IOT": "物聯網",
-        "OTHERS": "其他"
+        "OTHERS": "其他",
+        "LIB_IN_USE": "該庫正在被使用，請先在工作區刪除相關塊，再移除本庫"
     },
     "BOARD_SELECTOR": {
         "TITLE": "切換開發板",
@@ -175,5 +177,33 @@
         "CANCEL": "取消",
         "SKIP_SAVE": "跳過儲存",
         "SAVE_AND_CONTINUE": "儲存並繼續"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "用戶反饋",
+        "FEEDBACK_TYPE": "反饋類型",
+        "TYPE_BUG": "Bug反饋",
+        "TYPE_BUILD_UPLOAD": "編譯/上傳問題",
+        "TYPE_OTHER": "其他問題",
+        "TYPE_FEATURE": "功能建議",
+        "TITLE_LABEL": "標題",
+        "TITLE_PLACEHOLDER": "請輸入反饋標題",
+        "CONTENT_LABEL": "反饋內容",
+        "CONTENT_PLACEHOLDER": "請確保您的反饋內容準確、詳細，以便我們更好地幫助您（至少10個字符）",
+        "CHAR_COUNT": "字符",
+        "EMAIL_LABEL": "聯繫郵箱",
+        "EMAIL_OPTIONAL": "(選填，您可以透過郵箱收到回覆)",
+        "TIP_1": "1. 提交反饋，軟件將自動獲取版本、環境、項目等必要信息，用於解決問題",
+        "TIP_2": "2. 反饋成功後，以上信息將會在",
+        "TIP_2_LINK": "本項目GitHub issues",
+        "TIP_2_END": "上公開",
+        "SUBMIT": "提交",
+        "CANCEL": "取消",
+        "WARNING_CONTENT_EMPTY": "請輸入反饋內容",
+        "WARNING_TITLE_EMPTY": "請輸入反饋標題",
+        "WARNING_CONTENT_TOO_SHORT": "反饋內容至少需要10個字符",
+        "WARNING_INVALID_EMAIL": "請輸入有效的郵箱地址",
+        "SUCCESS_MESSAGE": "感謝您的反饋！",
+        "ERROR_SUBMIT_FAILED": "提交失敗，請稍後重試",
+        "NO_DEPENDENCIES": "無"
     }
 }

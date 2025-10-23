@@ -41,11 +41,6 @@ export class BlocklyService {
     Blockly.serialization.workspaces.load(jsonData, this.workspace);
   }
 
-  getAbiJson() {
-    let json = Blockly.serialization.workspaces.save(this.workspace);
-    return json;
-  }
-
   // async loadLibrariesByUrl() {
   //   let coreLibraries = await lastValueFrom(
   //     this.http.get<any[]>('arduino/core/core.json', { responseType: 'json' }),

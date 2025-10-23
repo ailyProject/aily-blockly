@@ -4,6 +4,10 @@
     transform: all 0.3s;
     position: relative;
 
+    * {
+        pointer-events: none;
+    }
+
     .default{
         cursor: pointer;
     }

@@ -26,6 +26,7 @@
         "EXAMPLES": "Examples",
         "UPDATE": "Check for Updates",
         "USER_AUTH": "User Center",
+        "USER_SPACE": "Cloud Space",
         "FILE_OPEN": "Open File",
         "FILE_OPEN_WITH": "Open With",
         "OPEN_WITH_SYSTEM_EDITOR": "System Default Editor",
@@ -183,7 +184,8 @@
         "ROBOT": "Robot",
         "AI": "AI",
         "IOT": "IoT",
-        "OTHERS": "Others"
+        "OTHERS": "Others",
+        "LIB_IN_USE": "This library is currently in use. Please remove related blocks from the workspace before removing this library"
     },
     "COMPATIBILITY_DIALOG": {
         "TITLE": "Library Compatibility Notice",
@@ -224,5 +226,33 @@
         "CANCEL": "Cancel",
         "SKIP_SAVE": "Skip Save",
         "SAVE_AND_CONTINUE": "Save and Continue"
+    },
+    "FEEDBACK_DIALOG": {
+        "TITLE": "User Feedback",
+        "FEEDBACK_TYPE": "Feedback Type",
+        "TYPE_BUG": "Bug Report",
+        "TYPE_BUILD_UPLOAD": "Build/Upload Issue",
+        "TYPE_OTHER": "Other Issue",
+        "TYPE_FEATURE": "Feature Suggestion",
+        "TITLE_LABEL": "Title",
+        "TITLE_PLACEHOLDER": "Please enter feedback title",
+        "CONTENT_LABEL": "Feedback Content",
+        "CONTENT_PLACEHOLDER": "Please ensure your feedback is accurate and detailed to help us assist you better (at least 10 characters)",
+        "CHAR_COUNT": "characters",
+        "EMAIL_LABEL": "Contact Email",
+        "EMAIL_OPTIONAL": "(Optional, you can receive replies via email)",
+        "TIP_1": "1. Submit feedback, the software will automatically collect version, environment, project and other necessary information to help solve the problem",
+        "TIP_2": "2. After successful feedback, the above information will be publicly available on",
+        "TIP_2_LINK": "this project's GitHub issues",
+        "TIP_2_END": "",
+        "SUBMIT": "Submit",
+        "CANCEL": "Cancel",
+        "WARNING_CONTENT_EMPTY": "Please enter feedback content",
+        "WARNING_TITLE_EMPTY": "Please enter feedback title",
+        "WARNING_CONTENT_TOO_SHORT": "Feedback content must be at least 10 characters",
+        "WARNING_INVALID_EMAIL": "Please enter a valid email address",
+        "SUCCESS_MESSAGE": "Thank you for your feedback!",
+        "ERROR_SUBMIT_FAILED": "Submission failed, please try again later",
+        "NO_DEPENDENCIES": "None"
     }
 }
