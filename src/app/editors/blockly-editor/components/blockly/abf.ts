@@ -19,6 +19,50 @@ export function processJsonVar(sourceJson, boardConfig) {
     return JSON.parse(jsonString)
 }
 
+/**
+ * 替换json配置中的静态文件路径
+ * @param {object} sourceJson - 需要处理的JSON对象
+ * @param {string} libStaticPath - 静态文件基础路径
+ * @returns {object} - 处理后的JSON对象
+ */
+export function processStaticFilePath(sourceJson, libStaticPath) {
+    // 检查是否包含 field_image
+    const jsonString = JSON.stringify(sourceJson);
+    if (jsonString.indexOf('"field_image"') === -1) {
+        return sourceJson;
+    }
+    
+    const processedJson = JSON.parse(JSON.stringify(sourceJson));
+    // 递归处理对象
+    function processObject(obj) {
+        if (Array.isArray(obj)) {
+            // 如果是数组，遍历每个元素
+            obj.forEach(item => processObject(item));
+        } else if (obj && typeof obj === 'object') {
+            // 如果是对象，检查是否是 field_image 类型
+            if (obj.type === 'field_image' && obj.src) {
+                // 判断 src 是否只是文件名（没有完整路径、没有协议）
+                const src = obj.src;
+
+                // 检查是否已经包含协议或完整路径
+                const hasProtocol = /^(https?|file|data):/i.test(src);
+                const hasPath = src.includes('/') || src.includes('\\');
+
+                // 如果只是文件名，添加 libStaticPath
+                if (!hasProtocol && !hasPath) {
+                    obj.src = libStaticPath + (libStaticPath.endsWith('/') ? '' : '/') + src;
+                }
+            }
+
+            // 递归处理对象的所有属性
+            Object.values(obj).forEach(value => processObject(value));
+        }
+    }
+
+    processObject(processedJson);
+    return processedJson;
+}
+
 export function processI18n(sourceJson, i18nData) {
     // 创建blocks的副本，避免修改原始数据
     const updatedBlocks = JSON.parse(JSON.stringify(sourceJson));

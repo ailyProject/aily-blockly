@@ -163,7 +163,7 @@ export class SerialMonitorComponent {
 
   ) { }
 
-  ngOnInit() {
+  async ngOnInit() {
     this.currentUrl = this.router.url;
     if (this.serialService.currentPort) {
       // this.windowInfo = this.serialService.currentPort;
@@ -196,7 +196,25 @@ export class SerialMonitorComponent {
         this.switchValue = false;
         this.serialMonitorService.disconnect();
       }
-    })
+    });
+
+    // 检查并设置默认串口
+    this.checkAndSetDefaultPort();
+  }
+
+
+  // 检查串口列表并设置默认串口
+  private async checkAndSetDefaultPort() {
+    try {
+      const ports = await this.serialService.getSerialPorts();
+      if (ports && ports.length === 1 && !this.currentPort) {
+        // 只有一个串口且当前没有选择串口时，设为默认
+        this.currentPort = ports[0].name;
+        this.cd.detectChanges();
+      }
+    } catch (error) {
+      console.warn('获取串口列表失败:', error);
+    }
   }
 
   // 处理滚动事件
@@ -246,12 +264,25 @@ export class SerialMonitorComponent {
       let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
       this.boardKeywords = [boardname];
     }
-    this.showPortList = !this.showPortList;
     this.getDevicePortList();
+    this.showPortList = !this.showPortList;
   }
 
   async getDevicePortList() {
-    this.portList = await this.serialService.getSerialPorts();
+    let ports = await this.serialService.getSerialPorts();
+    if (ports && ports.length > 0) {
+      this.portList = ports;
+    } else {
+      this.portList = [
+        {
+          name: 'Device not found',
+          text: '',
+          type: 'serial',
+          icon: 'fa-light fa-triangle-exclamation',
+          disabled: true,
+        }
+      ]
+    }
     this.cd.detectChanges();
   }
 

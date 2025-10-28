@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "選單",
         "PROJECT_NEW": "新建專案",
         "PROJECT_OPEN": "開啟專案",
         "PROJECT_SAVE": "儲存專案",
@@ -34,7 +35,8 @@
         "FLASH_MODE": "閃存模式",
         "FLASH_SIZE": "閃存大小",
         "PARTITION_SCHEME": "分區方案",
-        "CDC_ON_BOOT": "USB模擬串口"
+        "CDC_ON_BOOT": "USB模擬串口",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "開發板型號選擇",
@@ -205,5 +207,22 @@
         "SUCCESS_MESSAGE": "感謝您的反饋！",
         "ERROR_SUBMIT_FAILED": "提交失敗，請稍後重試",
         "NO_DEPENDENCIES": "無"
+    },
+    "AILY_CHAT": {
+        "TITLE": "AI助手",
+        "HISTORY": "歷史會話",
+        "NEW_CHAT": "新建會話",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "AI的回覆僅能作為參考，不一定正確，也不代表本軟件開發者的意見，使用者需自行辨別",
+        "ADD_CONTEXT": "添加上下文",
+        "ADD_FILE": "添加文件",
+        "ADD_FOLDER": "添加文件夾",
+        "ADD_WEBSITE": "添加網站",
+        "MODE_AGENT": "代理",
+        "MODE_QA": "問答",
+        "SEND": "發送",
+        "STOP": "停止",
+        "MODE_AGENT_FULL": "代理模式",
+        "MODE_QA_FULL": "問答模式"
     }
 }

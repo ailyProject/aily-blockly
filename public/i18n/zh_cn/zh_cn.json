@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "菜单",
         "PROJECT_NEW": "新建项目",
         "PROJECT_OPEN": "打开项目",
         "PROJECT_SAVE": "保存项目",
@@ -254,5 +255,22 @@
         "SUCCESS_MESSAGE": "感谢您的反馈！",
         "ERROR_SUBMIT_FAILED": "提交失败，请稍后重试",
         "NO_DEPENDENCIES": "无"
+    },
+    "AILY_CHAT": {
+        "TITLE": "AI助手",
+        "HISTORY": "历史会话",
+        "NEW_CHAT": "新建会话",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "AI的回复仅能作为参考，不一定正确，也不代表本软件开发者的意见，使用者需自行辨别",
+        "ADD_CONTEXT": "添加上下文",
+        "ADD_FILE": "添加文件",
+        "ADD_FOLDER": "添加文件夹",
+        "ADD_WEBSITE": "添加网站",
+        "MODE_AGENT": "代理",
+        "MODE_QA": "问答",
+        "SEND": "发送",
+        "STOP": "停止",
+        "MODE_AGENT_FULL": "代理模式",
+        "MODE_QA_FULL": "问答模式"
     }
 }

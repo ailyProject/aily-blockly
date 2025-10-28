@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "Menu",
         "PROJECT_NEW": "New Project",
         "PROJECT_OPEN": "Open Project",
         "PROJECT_SAVE": "Save Project",
@@ -71,7 +72,8 @@
         "FLASH_MODE": "Flash Mode",
         "FLASH_SIZE": "Flash Size",
         "PARTITION_SCHEME": "Partition Scheme",
-        "CDC_ON_BOOT": "USB CDC on Boot"
+        "CDC_ON_BOOT": "USB CDC on Boot",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "Select Board Model",
@@ -254,5 +256,22 @@
         "SUCCESS_MESSAGE": "Thank you for your feedback!",
         "ERROR_SUBMIT_FAILED": "Submission failed, please try again later",
         "NO_DEPENDENCIES": "None"
+    },
+    "AILY_CHAT": {
+        "TITLE": "AI Assistant",
+        "HISTORY": "Chat History",
+        "NEW_CHAT": "New Chat",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "AI responses are for reference only and may not be accurate. They do not represent the views of the software developers. Users should verify the information themselves.",
+        "ADD_CONTEXT": "Add Context",
+        "ADD_FILE": "Add File",
+        "ADD_FOLDER": "Add Folder",
+        "ADD_WEBSITE": "Add Website",
+        "MODE_AGENT": "Agent",
+        "MODE_QA": "Q&A",
+        "SEND": "Send",
+        "STOP": "Stop",
+        "MODE_AGENT_FULL": "Agent Mode",
+        "MODE_QA_FULL": "Q&A Mode"
     }
 }

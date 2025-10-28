@@ -16,6 +16,20 @@ if (isWin32) {
 
 PROTOCOL = "ailyblockly";
 
+// 辅助函数：安全地向窗口发送消息
+function safeSendToWindow(window, channel, ...args) {
+  if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
+    try {
+      window.webContents.send(channel, ...args);
+      return true;
+    } catch (error) {
+      console.error(`Error sending to channel ${channel}:`, error.message);
+      return false;
+    }
+  }
+  return false;
+}
+
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
 
@@ -291,8 +305,7 @@ function handleProtocol(url) {
           // 如果目标实例就是当前实例
           if (targetInstance.userDataPath === app.getPath('userData')) {
             console.log('OAuth回调属于当前实例');
-            if (mainWindow && mainWindow.webContents) {
-              mainWindow.webContents.send('oauth-callback', callbackData);
+            if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
               // 将窗口置前显示
               if (mainWindow.isMinimized()) {
                 mainWindow.restore();
@@ -317,8 +330,7 @@ function handleProtocol(url) {
               console.error('转发OAuth回调数据失败');
               // 转发失败时，也尝试在当前实例处理
               console.warn('转发失败，尝试在当前实例处理OAuth回调');
-              if (mainWindow && mainWindow.webContents) {
-                mainWindow.webContents.send('oauth-callback', callbackData);
+              if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
                 if (mainWindow.isMinimized()) {
                   mainWindow.restore();
                 }
@@ -339,8 +351,7 @@ function handleProtocol(url) {
       
       // 如果没有找到对应实例或没有state，在当前实例处理
       console.log('在当前实例处理OAuth回调');
-      if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('oauth-callback', callbackData);
+      if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
         // 将窗口置前显示
         if (mainWindow.isMinimized()) {
           mainWindow.restore();
@@ -633,8 +644,7 @@ function createWindow() {
   if (global.pendingOAuthCallback) {
     // 延迟发送以确保渲染进程已准备好
     setTimeout(() => {
-      if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('oauth-callback', global.pendingOAuthCallback);
+      if (safeSendToWindow(mainWindow, 'oauth-callback', global.pendingOAuthCallback)) {
         global.pendingOAuthCallback = null;
       }
     }, 2000);
@@ -651,9 +661,7 @@ function createWindow() {
         // 检查回调数据是否是最近的（5分钟内）
         if (Date.now() - callbackData.timestamp < 5 * 60 * 1000) {
           console.log('发现OAuth回调文件，发送回调数据');
-          if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.send('oauth-callback', callbackData);
-          } else {
+          if (!safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
             global.pendingOAuthCallback = callbackData;
           }
         }
@@ -675,15 +683,15 @@ function createWindow() {
               try {
                 const callbackData = JSON.parse(fs.readFileSync(callbackFilePath, 'utf8'));
                 console.log('检测到OAuth回调文件变化，发送回调数据');
-                if (mainWindow && mainWindow.webContents) {
-                  mainWindow.webContents.send('oauth-callback', callbackData);
-                  
+                if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
                   // 将窗口置前显示
-                  if (mainWindow.isMinimized()) {
-                    mainWindow.restore();
+                  if (mainWindow && !mainWindow.isDestroyed()) {
+                    if (mainWindow.isMinimized()) {
+                      mainWindow.restore();
+                    }
+                    mainWindow.focus();
+                    mainWindow.show();
                   }
-                  mainWindow.focus();
-                  mainWindow.show();
                 }
                 // 删除已处理的回调文件
                 fs.unlinkSync(callbackFilePath);
@@ -1014,7 +1022,7 @@ ipcMain.handle("open-new-instance", async (event, data) => {
 // settingChanged
 ipcMain.on("setting-changed", (event, data) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
-  mainWindow.webContents.send("setting-changed", data);
+  safeSendToWindow(mainWindow, "setting-changed", data);
 });
 
 // 记录窗口大小和位置，用于下次打开时恢复

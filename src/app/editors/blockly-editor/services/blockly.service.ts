@@ -1,8 +1,7 @@
-import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import * as Blockly from 'blockly';
-import { processI18n, processJsonVar } from '../components/blockly/abf';
+import { processI18n, processJsonVar, processStaticFilePath } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService } from '../../../services/electron.service';
 
@@ -95,15 +94,15 @@ export class BlocklyService {
     // console.log('loadLibrary', libPackagePath);
     try {
       // 加载block
-      const blockFileIsExist = window['path'].isExists(libPackagePath + '/block.json');
+      const blockFileIsExist = this.electronService.exists(libPackagePath + '/block.json');
       if (blockFileIsExist) {
         // 加载generator
-        const generatorFileIsExist = window['path'].isExists(libPackagePath + '/generator.js');
+        const generatorFileIsExist = this.electronService.exists(libPackagePath + '/generator.js');
         if (generatorFileIsExist) {
           await this.loadLibGenerator(libPackagePath + '/generator.js');
         }
-
-        let blocks = JSON.parse(window['fs'].readFileSync(libPackagePath + '/block.json'));
+        // 加载blocks
+        let blocks = JSON.parse(this.electronService.readFile(libPackagePath + '/block.json'));
         let i18nData = null;
         // 检查多语言文件是否存在
         const i18nFilePath = libPackagePath + '/i18n/' + this.translateService.currentLang + '.json';
@@ -111,15 +110,13 @@ export class BlocklyService {
           i18nData = JSON.parse(this.electronService.readFile(i18nFilePath));
           blocks = processI18n(blocks, i18nData);
         }
-        this.loadLibBlocks(blocks);
-        // else {
-        //   //  加载js形式的block定义
-        //   this.loadLibBlocksJS(libPackagePath + '/block.js');
-        // }
+        // 替换block中静态图片路径
+        const staticFileIsExist = this.electronService.exists(libPackagePath + '/static');
+        this.loadLibBlocks(blocks, staticFileIsExist ? (libPackagePath + '/static') : null);
         // 加载toolbox
-        const toolboxFileIsExist = window['path'].isExists(libPackagePath + '/toolbox.json');
+        const toolboxFileIsExist = this.electronService.exists(libPackagePath + '/toolbox.json');
         if (toolboxFileIsExist) {
-          let toolbox = JSON.parse(window['fs'].readFileSync(libPackagePath + '/toolbox.json'));
+          let toolbox = JSON.parse(this.electronService.readFile(libPackagePath + '/toolbox.json'));
           if (i18nData) toolbox.name = i18nData.toolbox_name;
           this.loadLibToolbox(toolbox);
         }
@@ -135,10 +132,13 @@ export class BlocklyService {
     }
   }
 
-  loadLibBlocks(blocks) {
+  loadLibBlocks(blocks, libStaticPath) {
     for (let index = 0; index < blocks.length; index++) {
       let block = blocks[index];
       block = processJsonVar(block, this.boardConfig); // 替换开发板相关变量
+      if (libStaticPath) {
+        block = processStaticFilePath(block, libStaticPath);
+      }
       Blockly.defineBlocksWithJsonArray([block]);
     }
   }
@@ -188,9 +188,9 @@ export class BlocklyService {
   removeLibrary(libPackagePath) {
     // 读取要移除的库的信息
     // 移除block定义
-    const blockFileIsExist = window['path'].isExists(libPackagePath + '/block.json');
+    const blockFileIsExist = this.electronService.exists(libPackagePath + '/block.json');
     if (blockFileIsExist) {
-      let blocks = JSON.parse(window['fs'].readFileSync(libPackagePath + '/block.json'));
+      let blocks = JSON.parse(this.electronService.readFile(libPackagePath + '/block.json'));
       this.removeLibBlocks(blocks);
     } else {
       // 对于JS形式加载的block，需要使用block文件名作为标识
@@ -199,9 +199,9 @@ export class BlocklyService {
     }
 
     // 移除toolbox项
-    const toolboxFileIsExist = window['path'].isExists(libPackagePath + '/toolbox.json');
+    const toolboxFileIsExist = this.electronService.exists(libPackagePath + '/toolbox.json');
     if (toolboxFileIsExist) {
-      let toolbox = JSON.parse(window['fs'].readFileSync(libPackagePath + '/toolbox.json'));
+      let toolbox = JSON.parse(this.electronService.readFile(libPackagePath + '/toolbox.json'));
       // 检查多语言文件是否存在，（2025.5.29 修复因为多语言造成的移除不了toolbox的问题）
       let i18nData = null;
       const i18nFilePath = libPackagePath + '/i18n/' + this.translateService.currentLang + '.json';
@@ -213,7 +213,7 @@ export class BlocklyService {
     }
 
     // 移除generator相关引用
-    const generatorFileIsExist = window['path'].isExists(libPackagePath + '/generator.js');
+    const generatorFileIsExist = this.electronService.exists(libPackagePath + '/generator.js');
     if (generatorFileIsExist) {
       this.removeLibGenerator(libPackagePath + '/generator.js');
     }

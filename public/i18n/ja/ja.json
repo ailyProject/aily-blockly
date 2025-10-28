@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "メニュー",
         "PROJECT_NEW": "新規プロジェクト",
         "PROJECT_OPEN": "プロジェクトを開く",
         "PROJECT_SAVE": "プロジェクトを保存",
@@ -34,7 +35,8 @@
         "FLASH_MODE": "フラッシュモード",
         "FLASH_SIZE": "フラッシュサイズ",
         "PARTITION_SCHEME": "パーティション方式",
-        "CDC_ON_BOOT": "USBシリアル通信"
+        "CDC_ON_BOOT": "USBシリアル通信",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "開発ボードモデル選択",
@@ -206,5 +208,22 @@
         "SUCCESS_MESSAGE": "フィードバックをありがとうございます！",
         "ERROR_SUBMIT_FAILED": "送信に失敗しました。後でもう一度お試しください",
         "NO_DEPENDENCIES": "なし"
+    },
+    "AILY_CHAT": {
+        "TITLE": "AIアシスタント",
+        "HISTORY": "チャット履歴",
+        "NEW_CHAT": "新しいチャット",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "AIの回答は参考用であり、必ずしも正確ではありません。ソフトウェア開発者の意見を表すものではなく、ユーザー自身で判断してください。",
+        "ADD_CONTEXT": "コンテキストを追加",
+        "ADD_FILE": "ファイルを追加",
+        "ADD_FOLDER": "フォルダを追加",
+        "ADD_WEBSITE": "ウェブサイトを追加",
+        "MODE_AGENT": "エージェント",
+        "MODE_QA": "Q&A",
+        "SEND": "送信",
+        "STOP": "停止",
+        "MODE_AGENT_FULL": "エージェントモード",
+        "MODE_QA_FULL": "Q&Aモード"
     }
 }

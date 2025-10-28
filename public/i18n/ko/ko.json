@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "메뉴",
         "PROJECT_NEW": "새 프로젝트",
         "PROJECT_OPEN": "프로젝트 열기",
         "PROJECT_SAVE": "프로젝트 저장",
@@ -34,7 +35,8 @@
         "FLASH_MODE": "플래시 모드",
         "FLASH_SIZE": "플래시 크기",
         "PARTITION_SCHEME": "파티션 스킴",
-        "CDC_ON_BOOT": "USB 시리얼 통신"
+        "CDC_ON_BOOT": "USB 시리얼 통신",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "개발 보드 모델 선택",
@@ -199,5 +201,22 @@
         "SUCCESS_MESSAGE": "피드백을 주셔서 감사합니다!",
         "ERROR_SUBMIT_FAILED": "제출 실패, 나중에 다시 시도해 주세요",
         "NO_DEPENDENCIES": "없음"
+    },
+    "AILY_CHAT": {
+        "TITLE": "AI 어시스턴트",
+        "HISTORY": "채팅 기록",
+        "NEW_CHAT": "새 채팅",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "AI 응답은 참고용이며 정확하지 않을 수 있습니다. 소프트웨어 개발자의 의견을 대표하지 않으며, 사용자는 정보를 직접 확인해야 합니다.",
+        "ADD_CONTEXT": "컨텍스트 추가",
+        "ADD_FILE": "파일 추가",
+        "ADD_FOLDER": "폴더 추가",
+        "ADD_WEBSITE": "웹사이트 추가",
+        "MODE_AGENT": "에이전트",
+        "MODE_QA": "Q&A",
+        "SEND": "전송",
+        "STOP": "중지",
+        "MODE_AGENT_FULL": "에이전트 모드",
+        "MODE_QA_FULL": "Q&A 모드"
     }
 }

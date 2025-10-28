@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "Menu",
         "PROJECT_NEW": "Nouveau Projet",
         "PROJECT_OPEN": "Ouvrir Projet",
         "PROJECT_SAVE": "Sauvegarder Projet",
@@ -34,7 +35,8 @@
         "FLASH_MODE": "Mode Flash",
         "FLASH_SIZE": "Taille Flash",
         "PARTITION_SCHEME": "Schéma de partition",
-        "CDC_ON_BOOT": "USB CDC au démarrage"
+        "CDC_ON_BOOT": "USB CDC au démarrage",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "Sélection du modèle de la carte",
@@ -202,5 +204,22 @@
         "SUCCESS_MESSAGE": "Merci pour votre retour !",
         "ERROR_SUBMIT_FAILED": "Échec de la soumission, veuillez réessayer plus tard",
         "NO_DEPENDENCIES": "Aucune"
+    },
+    "AILY_CHAT": {
+        "TITLE": "Assistant IA",
+        "HISTORY": "Historique des discussions",
+        "NEW_CHAT": "Nouvelle discussion",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "Les réponses de l'IA sont fournies à titre de référence uniquement et peuvent ne pas être exactes. Elles ne représentent pas les opinions des développeurs du logiciel. Les utilisateurs doivent vérifier les informations par eux-mêmes.",
+        "ADD_CONTEXT": "Ajouter un contexte",
+        "ADD_FILE": "Ajouter un fichier",
+        "ADD_FOLDER": "Ajouter un dossier",
+        "ADD_WEBSITE": "Ajouter un site web",
+        "MODE_AGENT": "Agent",
+        "MODE_QA": "Q&R",
+        "SEND": "Envoyer",
+        "STOP": "Arrêter",
+        "MODE_AGENT_FULL": "Mode Agent",
+        "MODE_QA_FULL": "Mode Q&R"
     }
 }

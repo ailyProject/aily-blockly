@@ -1,6 +1,6 @@
 <div class="header-box">
   <div class="menu ccenter" (click)="openMenu()">
-    <div class="btn ccenter" nz-tooltip nzTooltipTitle="菜单">
+    <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ 'MENU.MENU' | translate }}">
       <i class="fa-regular fa-bars"></i>
     </div>
   </div>
@@ -57,7 +57,7 @@
 </div>
 <!-- menu -->
 @if (showMenu) {
-<app-menu [menuList]="headerMenu" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"></app-menu>
+<app-menu [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"></app-menu>
 }
 <!-- device port list -->
 @if (showPortList) {

@@ -1,18 +1,15 @@
 @if (currentUrl == "/aily-chat") {
-<app-sub-window [title]="windowInfo" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
+<app-sub-window [title]="'AILY_CHAT.TITLE' | translate" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-sub-window>
 } @else {
-<app-tool-container [title]="windowInfo" (closeEvent)="close()">
+<app-tool-container [title]="'AILY_CHAT.TITLE' | translate" (closeEvent)="close()">
   <ng-container header-btns>
-    <div class="btn ccenter" (click)="demandEdit()" nz-tooltip nzTooltipPlacement="bottom" nzTooltipTitle="需求管理">
-      <i class="fa-light fa-list-check"></i>
-    </div>
     <div class="btn ccenter" (click)="openHistoryChat($event)" nz-tooltip nzTooltipPlacement="bottom"
-      nzTooltipTitle="历史会话">
+      [nzTooltipTitle]="'AILY_CHAT.HISTORY' | translate">
       <i class="fa-light fa-clock-rotate-left"></i>
     </div>
-    <div class="btn ccenter" (click)="newChat()" nz-tooltip nzTooltipPlacement="bottom" nzTooltipTitle="新建会话">
+    <div class="btn ccenter" (click)="newChat()" nz-tooltip nzTooltipPlacement="bottom" [nzTooltipTitle]="'AILY_CHAT.NEW_CHAT' | translate">
       <i class="fa-light fa-message-plus"></i>
     </div>
   </ng-container>
@@ -34,8 +31,8 @@
       }@else{
       <div class="guide-box ccenter">
         <i class="fa-light fa-star-christmas"></i>
-        <div class="title">aily assistant service</div>
-        <div class="text">AI的回复仅能作为参考，不一定正确，也不代表本软件开发者的意见，使用者需自行辨别</div>
+        <div class="title">{{ 'AILY_CHAT.SERVICE_TITLE' | translate }}</div>
+        <div class="text">{{ 'AILY_CHAT.DISCLAIMER' | translate }}</div>
         <div></div>
       </div>
       }
@@ -80,7 +77,7 @@
             (keydown)="onKeyDown($event)">
           </textarea>
           <div class="btns">
-            <div class="btn ccenter enter" nz-tooltip nzTooltipPlacement="bottom" nzTooltipTitle="添加上下文"
+            <div class="btn ccenter enter" nz-tooltip nzTooltipPlacement="bottom" [nzTooltipTitle]="'AILY_CHAT.ADD_CONTEXT' | translate"
               (click)="openAddList()">
               <i class="fa-light fa-paperclip"></i>
             </div>
@@ -91,28 +88,28 @@
               </div>
             </div>
             <div class="btn2 ccenter enter animate__animated animate__fadeInLeft animate__faster" nz-tooltip
-              nzTooltipTitle="添加文件" (click)="addFile()">
+              [nzTooltipTitle]="'AILY_CHAT.ADD_FILE' | translate" (click)="addFile()">
               <i class="fa-light fa-file-plus"></i>
             </div>
             <div class="btn2 ccenter enter animate__animated animate__fadeInLeft animate__faster" nz-tooltip
-              nzTooltipTitle="添加文件夹" (click)="addFolder()">
+              [nzTooltipTitle]="'AILY_CHAT.ADD_FOLDER' | translate" (click)="addFolder()">
               <i class="fa-light fa-folder-plus"></i>
             </div>
             <div class="btn2 ccenter enter animate__animated animate__fadeInLeft animate__faster" nz-tooltip
-              nzTooltipTitle="添加网站" (click)="addUrl()">
+              [nzTooltipTitle]="'AILY_CHAT.ADD_WEBSITE' | translate" (click)="addUrl()">
               <i class="fa-light fa-globe-pointer"></i>
             </div>
             }
             <!-- 模式选择 -->
             <div class="btn mode ccenter enter" (click)="switchMode($event)">
               @if(currentMode === 'agent') {
-              <i class="fa-light fa-user-astronaut"></i><span>代理</span>
+              <i class="fa-light fa-user-astronaut"></i><span>{{ 'AILY_CHAT.MODE_AGENT' | translate }}</span>
               } @else {
-              <i class="fa-light fa-comment-smile"></i><span>问答</span>
+              <i class="fa-light fa-comment-smile"></i><span>{{ 'AILY_CHAT.MODE_QA' | translate }}</span>
               }
             </div>
             <div class="btn right ccenter" [ngClass]="{'lloading':isWaiting}" nzTooltipPlacement="bottom" nz-tooltip
-              [nzTooltipTitle]="isWaiting?'停止':'发送'" (click)="sendButtonClick()">
+              [nzTooltipTitle]="isWaiting ? ('AILY_CHAT.STOP' | translate) : ('AILY_CHAT.SEND' | translate)" (click)="sendButtonClick()">
               @if(isWaiting){
               <div class="stop-box ccenter">
                 <i class="fa-light fa-stop"></i>
@@ -138,6 +135,6 @@
 }
 
 @if(showMode){
-<app-menu [menuList]="ModeList" [position]="modeListPosition" [width]="125" (closeEvent)="closeMenu()"
+<app-menu [menuList]="ModeList" [position]="modeListPosition" (closeEvent)="closeMenu()"
   (itemClickEvent)="modeMenuClick($event)"></app-menu>
 }

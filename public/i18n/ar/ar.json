@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "قائمة الطعام",
         "PROJECT_NEW": "مشروع جديد",
         "PROJECT_OPEN": "فتح مشروع",
         "PROJECT_SAVE": "حفظ المشروع",
@@ -34,7 +35,8 @@
         "FLASH_MODE": "وضع الفلاش",
         "FLASH_SIZE": "حجم الفلاش",
         "PARTITION_SCHEME": "مخطط التقسيم",
-        "CDC_ON_BOOT": "USB CDC عند التشغيل"
+        "CDC_ON_BOOT": "USB CDC عند التشغيل",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "اختيار نموذج اللوحة",
@@ -199,5 +201,22 @@
         "SUCCESS_MESSAGE": "شكرا لملاحظاتك!",
         "ERROR_SUBMIT_FAILED": "فشل الإرسال، يرجى المحاولة لاحقًا",
         "NO_DEPENDENCIES": "لا شيء"
+    },
+    "AILY_CHAT": {
+        "TITLE": "مساعد الذكاء الاصطناعي",
+        "HISTORY": "سجل المحادثة",
+        "NEW_CHAT": "محادثة جديدة",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "ردود الذكاء الاصطناعي للمرجعية فقط وقد لا تكون دقيقة. لا تمثل آراء مطوري البرامج. يجب على المستخدمين التحقق من المعلومات بأنفسهم.",
+        "ADD_CONTEXT": "إضافة سياق",
+        "ADD_FILE": "إضافة ملف",
+        "ADD_FOLDER": "إضافة مجلد",
+        "ADD_WEBSITE": "إضافة موقع ويب",
+        "MODE_AGENT": "وكيل",
+        "MODE_QA": "سؤال وجواب",
+        "SEND": "إرسال",
+        "STOP": "إيقاف",
+        "MODE_AGENT_FULL": "وضع الوكيل",
+        "MODE_QA_FULL": "وضع سؤال وجواب"
     }
 }

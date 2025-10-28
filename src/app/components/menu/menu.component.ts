@@ -31,7 +31,7 @@ export class MenuComponent {
     y: 40,
   };
 
-  @Input() width = 250;
+  @Input() width;
 
   @Output() itemClickEvent = new EventEmitter();
 

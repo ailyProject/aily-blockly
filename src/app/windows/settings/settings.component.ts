@@ -188,7 +188,7 @@ export class SettingsComponent {
     this.boardOperations[board.name] = { status: 'loading' };
     const result = await this.settingsService.uninstall(board)
     if (result === 'success') {
-      this.updateBoardList();
+      board.installed = false;
     }
     else if (result === 'failed') {
       this.boardOperations[board.name] = { status: 'failed' };
@@ -199,7 +199,7 @@ export class SettingsComponent {
     this.boardOperations[board.name] = { status: 'loading' };
     const result = await this.settingsService.install(board)
     if (result === 'success') {
-      this.updateBoardList();
+      board.installed = true;
     }
     else if (result === 'failed') {
       this.boardOperations[board.name] = { status: 'failed' };

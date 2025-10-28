@@ -1,5 +1,6 @@
 {
     "MENU": {
+        "MENU": "Menü",
         "PROJECT_NEW": "Neues Projekt",
         "PROJECT_OPEN": "Projekt öffnen",
         "PROJECT_SAVE": "Projekt speichern",
@@ -34,7 +35,8 @@
         "FLASH_MODE": "Flash-Modus",
         "FLASH_SIZE": "Flash-Größe",
         "PARTITION_SCHEME": "Partitionierungsschema",
-        "CDC_ON_BOOT": "USB CDC beim Start"
+        "CDC_ON_BOOT": "USB CDC beim Start",
+        "PSRAM": "PSRAM"
     },
     "STM32": {
         "BOARD": "Entwicklungsboard-Modell auswählen",
@@ -204,5 +206,22 @@
         "SUCCESS_MESSAGE": "Vielen Dank für Ihr Feedback!",
         "ERROR_SUBMIT_FAILED": "Absenden fehlgeschlagen, bitte versuchen Sie es später erneut",
         "NO_DEPENDENCIES": "Keine"
+    },
+    "AILY_CHAT": {
+        "TITLE": "KI-Assistent",
+        "HISTORY": "Chat-Verlauf",
+        "NEW_CHAT": "Neuer Chat",
+        "SERVICE_TITLE": "aily assistant service",
+        "DISCLAIMER": "KI-Antworten dienen nur als Referenz und sind möglicherweise nicht genau. Sie repräsentieren nicht die Meinungen der Software-Entwickler. Benutzer sollten die Informationen selbst überprüfen.",
+        "ADD_CONTEXT": "Kontext hinzufügen",
+        "ADD_FILE": "Datei hinzufügen",
+        "ADD_FOLDER": "Ordner hinzufügen",
+        "ADD_WEBSITE": "Website hinzufügen",
+        "MODE_AGENT": "Agent",
+        "MODE_QA": "F&A",
+        "SEND": "Senden",
+        "STOP": "Stoppen",
+        "MODE_AGENT_FULL": "Agent-Modus",
+        "MODE_QA_FULL": "F&A-Modus"
     }
 }

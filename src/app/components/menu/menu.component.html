@@ -1,6 +1,6 @@
 <div class="menu-container">
   <div class="menu-box bborder" #menuBox
-    [ngStyle]="{ left: position.x + 'px', top: position.y + 'px' ,'width': width + 'px'}">
+    [ngStyle]="{ left: position.x + 'px', top: position.y + 'px' ,'width': width?width + 'px':'auto'}">
     @for (item of menuList; track $index) {
     @if (item.sep) {
     <div class="sep"></div>
@@ -24,15 +24,12 @@
   </div>
   <!-- 子菜单放在主菜单外部 -->
   @if(activeSubmenuIndex !== null && menuList[activeSubmenuIndex]?.children) {
-  <div class="submenu-box menu-box bborder" #submenuBox [ngClass]="{'show': activeSubmenuIndex !== null}"
-    [ngStyle]="{
+  <div class="submenu-box menu-box bborder" #submenuBox [ngClass]="{'show': activeSubmenuIndex !== null}" [ngStyle]="{
       'left': submenuPosition.left, 
       'top': submenuPosition.top,
       'max-height': submenuMaxHeight,
       'overflow-y': submenuOverflow
-    }" 
-    (mouseenter)="keepSubMenuOpen(activeSubmenuIndex)"
-    (mouseleave)="hideSubMenu($event, activeSubmenuIndex)">
+    }" (mouseenter)="keepSubMenuOpen(activeSubmenuIndex)" (mouseleave)="hideSubMenu($event, activeSubmenuIndex)">
     @for (subItem of menuList[activeSubmenuIndex].children; track $index) {
     <div class="menu-item ccenter" (click)="subItemClick($event,subItem)">
       <div class="name ellipsis">{{ subItem.name }}</div>

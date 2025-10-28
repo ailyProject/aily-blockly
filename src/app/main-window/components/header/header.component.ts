@@ -115,6 +115,20 @@ export class HeaderComponent {
     })
   }
 
+  // 检查串口列表并设置默认串口
+  private async checkAndSetDefaultPort() {
+    try {
+      const ports = await this.serialService.getSerialPorts();
+      if (ports && ports.length === 1 && !this.currentPort) {
+        // 只有一个串口且当前没有选择串口时，设为默认
+        this.currentPort = ports[0].name;
+        this.cd.detectChanges();
+      }
+    } catch (error) {
+      console.warn('获取串口列表失败:', error);
+    }
+  }
+
   showMenu = false;
   openMenu() {
     this.showMenu = !this.showMenu;
@@ -589,6 +603,7 @@ export class HeaderComponent {
   isLoaded() {
     for (const router of ['/main/blockly-editor', '/main/code-editor']) {
       if (this.router.url.indexOf(router) > -1) {
+        this.checkAndSetDefaultPort();
         return true;
       }
     }

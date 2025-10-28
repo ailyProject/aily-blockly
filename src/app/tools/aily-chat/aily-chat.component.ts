@@ -70,6 +70,7 @@ import { TOOLS } from './tools/tools';
 import { AuthService } from '../../services/auth.service';
 import { resolveObjectURL } from 'buffer';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 // import { reloadAbiJsonTool, reloadAbiJsonToolSimple } from './tools';
 
 @Component({
@@ -84,7 +85,8 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
     ToolContainerComponent,
     NzResizableModule,
     NzToolTipModule,
-    MenuComponent
+    MenuComponent,
+    TranslateModule
   ],
   templateUrl: './aily-chat.component.html',
   styleUrl: './aily-chat.component.scss',
@@ -113,8 +115,6 @@ export class AilyChatComponent implements OnDestroy {
   inputValue = '';
   prjRootPath = '';
   prjPath = '';
-
-  windowInfo = 'AI助手';
 
   isCompleted = false;
   private isSessionStarting = false; // 防止重复启动会话的标志位
@@ -269,7 +269,8 @@ export class AilyChatComponent implements OnDestroy {
     private message: NzMessageService,
     private authService: AuthService,
     private modal: NzModalService,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private translate: TranslateService
   ) { }
 
   ngOnInit() {
@@ -1857,20 +1858,22 @@ ${JSON.stringify(errData)}
   ]
 
   // AI模式列表
-  ModeList: IMenuItem[] = [
-    {
-      name: '代理模式',
-      action: 'agent-mode',
-      icon: 'fa-light fa-user-astronaut',
-      data: { mode: 'agent' }
-    },
-    {
-      name: '问答模式',
-      action: 'qa-mode',
-      icon: 'fa-light fa-comment-smile',
-      data: { mode: 'qa' }
-    }
-  ]
+  get ModeList(): IMenuItem[] {
+    return [
+      {
+        name: this.translate.instant('AILY_CHAT.MODE_AGENT_FULL'),
+        action: 'agent-mode',
+        icon: 'fa-light fa-user-astronaut',
+        data: { mode: 'agent' }
+      },
+      {
+        name: this.translate.instant('AILY_CHAT.MODE_QA_FULL'),
+        action: 'qa-mode',
+        icon: 'fa-light fa-comment-smile',
+        data: { mode: 'qa' }
+      }
+    ];
+  }
 
   // 当前AI模式
   // currentMode = 'agent'; // 默认为代理模式
