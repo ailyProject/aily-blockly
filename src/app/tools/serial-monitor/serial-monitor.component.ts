@@ -148,7 +148,7 @@ export class SerialMonitorComponent {
     if (this.serialService.currentPort) {
       this.currentPort = this.serialService.currentPort;
     }
-    
+
     // 初始化数据列表
     this.dataList = [...this.serialMonitorService.dataList];
   }
@@ -158,8 +158,8 @@ export class SerialMonitorComponent {
     console.log('ngAfterViewInit - viewport:', this.viewport);
     console.log('ngAfterViewInit - dataList length:', this.dataList.length);
 
-    this.serialMonitorService.dataUpdated.subscribe(() => {
-      this.handleDataUpdate();
+    this.serialMonitorService.dataUpdated.subscribe((data) => {
+      this.handleDataUpdate(data);
     });
 
     // 添加滚动事件监听,用于检测用户手动滚动
@@ -191,15 +191,18 @@ export class SerialMonitorComponent {
   }
 
   // 处理数据更新
-  private handleDataUpdate() {
+  private handleDataUpdate(data) {
     // 关键：创建新数组引用，触发 Angular 变更检测和 CDK 虚拟滚动更新
-    this.dataList = [...this.serialMonitorService.dataList];
-    
-    // 如果数据被清空
-    if ( this.dataList.length === 0) {
-      this.cd.detectChanges();
-      return;
+    if (data.data) {
+      console.log(data);
+      this.dataList.push(data);
     }
+
+    // 如果数据被清空
+    // if (this.dataList.length === 0) {
+    //   this.cd.detectChanges();
+    //   return;
+    // }
 
     // 强制触发变更检测
     this.cd.detectChanges();
@@ -219,7 +222,7 @@ export class SerialMonitorComponent {
       setTimeout(() => {
         this.scrollToBottom();
       }, 20);
-      
+
       // 重置滚动标记
       // setTimeout(() => {
       //   this.isProgrammaticScroll = false;
