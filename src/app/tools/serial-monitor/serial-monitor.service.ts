@@ -39,7 +39,7 @@ export class SerialMonitorService {
 
   dataList: dataItem[] = [];
 
-  dataUpdated = new Subject<void>();
+  dataUpdated = new Subject<dataItem>();
 
   // 串口相关属性
   private serialPort: any = null;
@@ -99,7 +99,7 @@ export class SerialMonitorService {
       };
 
       this.serialPort = window.electronAPI.SerialPort.create(serialOptions);
-      
+
       return new Promise((resolve, reject) => {
         this.serialPort.on('open', () => {
           this.isConnected = true;
@@ -107,13 +107,14 @@ export class SerialMonitorService {
           this.setupDataListeners();
           console.log('串口已打开');
           // 记录连接信息到数据列表
-          this.dataList.push({
+          let data: dataItem = {
             time: new Date().toLocaleTimeString(),
             data: Buffer.from(`[串口已连接: ${options.path} ${options.baudRate}波特 ${options.dataBits}数据位 ${options.stopBits}停止位 ${options.parity}校验 ${options.flowControl}流控]`),
             dir: 'SYS'
-          });
-          this.dataUpdated.next();
-          
+          }
+          this.dataList.push(data);
+          this.dataUpdated.next(data);
+
           resolve(true);
         });
 
@@ -165,7 +166,7 @@ export class SerialMonitorService {
    * 2. 如果距离首次接收数据超过10秒，创建新记录
    * 3. 其他情况追加到当前记录
    */
-  private processReceivedData(data) {
+  private processReceivedData(revData) {
     const currentTime = Date.now();
     const timeString = new Date().toLocaleTimeString();
 
@@ -175,25 +176,26 @@ export class SerialMonitorService {
       currentTime - this.firstDataTime > 10000 ||
       this.dataList[this.dataList.length - 1].dir !== 'RX') {
       // 创建新的数据项
-      this.dataList.push({
+      let data: dataItem = {
         time: timeString,
-        data: data,
+        data: revData,
         dir: 'RX'
-      });
+      }
+      this.dataList.push(data);
       // 记录这是新记录的首次接收时间
       this.firstDataTime = currentTime;
+      this.dataUpdated.next(data);
     } else {
       // 将数据添加到最后一个项目
       const lastItem = this.dataList[this.dataList.length - 1];
       // 合并Buffer数据
-      const combinedData = Buffer.concat([lastItem.data, data]);
+      const combinedData = Buffer.concat([lastItem.data, revData]);
       lastItem.data = combinedData;
+      this.dataUpdated.next({});
     }
 
     // 更新最后一次接收数据的时间
     this.lastDataTime = currentTime;
-
-    this.dataUpdated.next();
   }
 
   /**
@@ -240,13 +242,14 @@ export class SerialMonitorService {
           resolve(false);
         } else {
           // 记录发送的数据到dataList
-          this.dataList.push({
+          let data: dataItem = {
             time: new Date().toLocaleTimeString(),
             data: bufferToSend,
             dir: 'TX'
-          });
+          }
+          this.dataList.push(data);
 
-          this.dataUpdated.next();
+          this.dataUpdated.next(data);
           resolve(true);
         }
       });
@@ -394,7 +397,7 @@ export class SerialMonitorService {
       this.message.warning('串口未连接，请先打开串口');
       return Promise.resolve(false);
     }
-    
+
     return new Promise((resolve) => {
       try {
         const methodName = signalType.toLowerCase();
@@ -411,12 +414,13 @@ export class SerialMonitorService {
             resolve(false);
           } else {
             // 记录信号发送到数据列表
-            this.dataList.push({
+            let data: dataItem = {
               time: new Date().toLocaleTimeString(),
               data: Buffer.from(`[设置${signalType}信号: ${state ? '开启' : '关闭'}]`),
               dir: 'SYS'
-            });
-            this.dataUpdated.next();
+            }
+            this.dataList.push(data);
+            this.dataUpdated.next(data);
             resolve(true);
           }
         });
@@ -455,9 +459,9 @@ export class SerialMonitorService {
 }
 
 export interface dataItem {
-  time: string,
-  data: any,
-  dir: 'TX' | 'RX' | 'SYS',
+  time?: string,
+  data?: any,
+  dir?: 'TX' | 'RX' | 'SYS',
   searchHighlight?: boolean,
 }
 

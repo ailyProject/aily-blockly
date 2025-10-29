@@ -405,7 +405,7 @@ export class SerialMonitorComponent {
   clearView() {
     this.serialMonitorService.dataList = [];
     this.dataList = [];
-    this.serialMonitorService.dataUpdated.next();
+    this.serialMonitorService.dataUpdated.next({});
   }
 
   changeInputMode(name) {
@@ -414,7 +414,7 @@ export class SerialMonitorComponent {
 
   send(data = this.inputValue) {
     this.serialMonitorService.sendData(data);
-    this.serialMonitorService.dataUpdated.next();
+    this.serialMonitorService.dataUpdated.next({});
     if (this.inputValue.trim() !== '') {
       // 避免保存空内容到历史记录
       if (!this.serialMonitorService.sendHistoryList.includes(this.inputValue)) {
@@ -517,7 +517,7 @@ export class SerialMonitorComponent {
 
     if (!keyword || keyword.trim() === '') {
       // 清除所有高亮
-      this.serialMonitorService.dataUpdated.next();
+      this.serialMonitorService.dataUpdated.next({});
       return;
     }
 
