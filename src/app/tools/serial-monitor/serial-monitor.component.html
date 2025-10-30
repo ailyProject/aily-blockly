@@ -67,11 +67,16 @@
       }
       <div class="monitor">
         <div class="r-box">
-          <cdk-virtual-scroll-viewport [itemSize]="30" style="height: 400px;" [minBufferPx]="300" [maxBufferPx]="600"
-            class="data-list sscroll">
-            <app-data-item *cdkVirtualFor="let item of dataList; trackBy: trackByIndex" [data]="item"
-              [searchKeyword]="searchKeyword"></app-data-item>
+
+          <!-- 数据显示 -->
+          <cdk-virtual-scroll-viewport class="data-list sscroll" [itemSize]="26" [minBufferPx]="300"
+            [maxBufferPx]="600">
+            <div *cdkVirtualFor="let item of dataSource; trackBy: trackByIndex">
+              <app-data-item [data]="item" [searchKeyword]="searchKeyword"
+                (click)="onDataItemClick(item)"></app-data-item>
+            </div>
           </cdk-virtual-scroll-viewport>
+
           <div class="btns">
             <div class="btn ccenter hex" nz-tooltip nzTooltipTitle="HEX显示" (click)="changeViewMode('showHex')"
               [ngClass]="{'actived':showHex}">

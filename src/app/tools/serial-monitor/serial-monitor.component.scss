@@ -114,8 +114,6 @@ cdk-virtual-scroll-viewport{
 
   .switch {
     margin-left: 10px;
-    // position: absolute;
-    // right: 0;
   }
 
   .setting-btn {
@@ -159,27 +157,11 @@ cdk-virtual-scroll-viewport{
     margin: 0 10px;
     padding: 5px;
     position: relative;
-    display: flex;
-    flex-direction: column;
 
     .data-list {
-      flex-grow: 1;
       max-height: calc(100% - 28px);
       overflow-y: auto;
     }
-
-    // CDK 虚拟滚动容器样式
-    cdk-virtual-scroll-viewport {
-      flex: 1;
-      height: 100%;
-      min-height: 0;
-      max-height: calc(100% - 28px);
-    }
-
-    cdk-virtual-scroll-viewport ::ng-deep .cdk-virtual-scroll-content-wrapper {
-      width: 100%;
-    }
-
   }
 
 }
