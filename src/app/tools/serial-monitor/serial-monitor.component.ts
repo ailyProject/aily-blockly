@@ -162,10 +162,6 @@ export class SerialMonitorComponent {
   }
 
   ngAfterViewInit() {
-    // 添加调试日志
-    console.log('ngAfterViewInit - viewport:', this.viewport);
-    console.log('ngAfterViewInit - data length:', this.dataSource.value.length);
-
     this.serialMonitorService.dataUpdated.subscribe((data) => {
       this.handleDataUpdate(data);
     });
@@ -206,37 +202,15 @@ export class SerialMonitorComponent {
     // console.log('scrollOffset:', scrollOffset);
     // console.log('isAtBottom:', isAtBottom);
 
-    const currentIndex = this.viewport.getRenderedRange().start;
-
     // 追加数据（保持使用新数组引用，触发虚拟滚动更新）
     if (data.data) {
       this.dataSource.append(data);
     }
 
     setTimeout(() => {
-      // if (this.autoScroll && isAtBottom) {
-      //   // 如果开启了自动滚动且之前在底部，滚动到底部
-      //   const maxOffset = this.viewport.measureScrollOffset('end');
-      //   this.viewport.scrollToOffset(maxOffset, 'smooth');
-      // } else {
-      // 否则保持原来位置
       if (scrollOffset > 100) this.viewport.scrollToOffset(scrollOffset, 'auto');
       // }
     }, 0);
-
-    // if (this.viewport && scrollOffset > 0) {
-    //   // 恢复滚动位置
-    //   setTimeout(() => {
-    //     this.viewport.scrollToOffset(scrollOffset);
-    //   }, 0);
-    // }
-
-    // if (this.autoScroll) {
-    //   // 自动滚动开启 -> 滚到底部（在 DOM 更新后执行）
-    //   setTimeout(() => this.scrollToBottom(), 10);
-    //   return;
-    // }
-
   }
 
   scrollToBottom() {
