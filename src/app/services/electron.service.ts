@@ -46,6 +46,34 @@ export class ElectronService {
   }
 
   /**
+   * 删除文件
+   */
+  deleteFile(filePath: string) {
+    return window['fs'].unlinkSync(filePath);
+  }
+
+  /**
+   * 删除目录
+   * @param dirPath 目录路径
+   * @param recursive 是否递归删除（默认为 true）
+   */
+  deleteDir(dirPath: string) {
+    return window['fs'].rmdirSync(dirPath);
+  }
+
+  /**
+   * 删除文件或目录（自动判断类型）
+   * @param path 文件或目录路径
+   */
+  delete(path: string) {
+    if (this.isDirectory(path)) {
+      return this.deleteDir(path);
+    } else {
+      return this.deleteFile(path);
+    }
+  }
+
+  /**
  * 判断路径是否存在
  */
   exists(path: string): boolean {
@@ -138,7 +166,7 @@ export class ElectronService {
       const result = await window['notification'].show(notificationOptions);
       return result;
     } catch (error) {
-      console.error('Show notification error:', error);
+      console.warn('Show notification error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -218,6 +246,27 @@ export class ElectronService {
       console.error('Listen window blur error:', error);
       return () => {};
     }
+  }
+
+  private _isWindowFullScreen: boolean | null = null;
+
+  /**
+   * 窗口全屏状态
+   * @returns boolean
+   */
+  isWindowFullScreen() {
+    if (this.isElectron) {
+      try {
+        window['ipcRenderer'].invoke('window-is-full-screen').then((state: boolean) => {
+          this._isWindowFullScreen = state;
+        });
+        return this._isWindowFullScreen;
+      } catch (error) {
+        console.warn('获取全屏状态失败:', error);
+        return false;
+      }
+    }
+    return false;
   }
 
 }

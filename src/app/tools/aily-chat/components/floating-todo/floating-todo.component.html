@@ -1,0 +1,60 @@
+<div class="todo-panel" *ngIf="todoList && todoList.length > 0">
+  <!-- TODO面板标题 -->
+  <div class="todo-panel-header">
+    <div class="header-content" (click)="toggleCollapse()">
+      <i class="fas fa-chevron-right panel-icon" [class.expanded]="!isCollapsed"></i>
+      <span class="panel-title">Todos ({{ getCompletedCount() }}/{{ todoList?.length || 0 }})</span>
+    </div>
+    <div class="header-actions">
+      <i class="fas fa-trash delete-icon" 
+         (click)="clearAllTodos($event)" 
+         title="删除所有Todos"></i>
+    </div>
+  </div>
+
+  <!-- TODO列表内容 -->
+  <div class="todo-panel-content" *ngIf="!isCollapsed">
+    <div class="todo-list" *ngIf="todoList && todoList.length > 0">
+      <div class="todo-item" 
+           *ngFor="let todo of todoList; trackBy: trackByTodoId"
+           [class.completed]="todo.status === 'completed'">
+        
+        <!-- 状态图标 -->
+        <div class="todo-status-icon" (click)="toggleTodoStatus(todo)">
+          <i class="fas" 
+             [class.fa-circle-pause]="todo.status === 'pending'"
+             [class.fa-play-circle]="todo.status === 'in_progress'"
+             [class.fa-check-circle]="todo.status === 'completed'"
+             [class.status-pending]="todo.status === 'pending'"
+             [class.status-in-progress]="todo.status === 'in_progress'"
+             [class.status-completed]="todo.status === 'completed'"></i>
+        </div>
+
+        <!-- TODO内容 -->
+        <div class="todo-content">
+          <div class="todo-line">
+            <span class="todo-text" [class.completed-text]="todo.status === 'completed'">
+              {{ todo.content }}
+            </span>
+            
+            <!-- 优先级标签 -->
+            <span class="todo-priority" 
+                  [class.priority-high]="getPriorityLevel(todo.priority) === 'high'"
+                  [class.priority-medium]="getPriorityLevel(todo.priority) === 'medium'"
+                  [class.priority-low]="getPriorityLevel(todo.priority) === 'low'">
+              {{ getPriorityText(todo.priority) }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 空状态显示 -->
+    <div class="empty-state" *ngIf="!todoList || todoList.length === 0">
+      <div class="empty-message">
+        <i class="fas fa-tasks"></i>
+        <span>暂无TODO项</span>
+      </div>
+    </div>
+  </div>
+</div>

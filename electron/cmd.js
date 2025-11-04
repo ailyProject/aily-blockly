@@ -1,5 +1,6 @@
 const { spawn, exec } = require('child_process');
 const { ipcMain } = require('electron');
+const { isWin32, isDarwin, isLinux } = require('./platform');
 
 class CommandManager {
   constructor() {
@@ -10,14 +11,39 @@ class CommandManager {
   // 执行命令并返回流式数据
   executeCommand(options) {
     const { command, args = [], cwd, env, streamId } = options;
+    
+    // 根据平台选择正确的 shell
+    let shell;
+    if (isWin32) {
+      shell = 'powershell';
+    } else if (isDarwin) {
+      shell = '/bin/zsh';
+    } else if (isLinux) {
+      shell = '/bin/bash';
+    } else {
+      shell = true; // 使用系统默认 shell
+    }
+
+    console.log("====shell: ", command, args, {
+      cwd: cwd || process.cwd(),
+      // env: { ...process.env, ...env },
+      shell: shell,
+      stdio: ['pipe', 'pipe', 'pipe']
+    }, streamId);
+    
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
       env: { ...process.env, ...env },
-      shell: 'powershell',
+      shell: shell,
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
     this.processes.set(streamId, child);
+
+    console.log("====child:" , child,{
+      pid: child.pid,
+      process: child
+    });
 
     return {
       pid: child.pid,

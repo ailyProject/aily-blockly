@@ -1,0 +1,42 @@
+@if (currentUrl == "/serial-monitor") {
+<app-sub-window [title]="windowInfo" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-sub-window>
+} @else {
+<app-tool-container [title]="windowInfo" [path]="'/serial-monitor'" (closeEvent)="close()">
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-tool-container>
+}
+<ng-template #windowBoxTemplate>
+    <div class="window-box">
+        <div class="menu-box bborder" #menuBox (click)="$event.stopPropagation()">
+            <div class="content">
+                <div class="title">aily Blocky Service</div>
+                @if(isLoggedIn){
+                <div class="text">欢迎参加我们的AI服务测试</div>
+                }@else {
+                <div class="text">
+                    登录后即可使用本软件提供的相关服务
+                    <!-- <span (click)="more()">了解更多</span> -->
+                </div>
+                }
+
+
+            </div>
+
+            <div class="login-box">
+                <div class="item">
+                    <div class="ccenter">
+                        <i class="fa-light fa-user-vneck"></i>
+                    </div>
+                    <div class="username">{{ currentUser?.nickname || currentUser?.login || '用户' }}</div>
+                </div>
+                <div class="actions">
+                    <button nz-button nzType="primary" (click)="onLogout()">
+                        登出
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</ng-template>

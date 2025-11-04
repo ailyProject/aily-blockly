@@ -11,6 +11,18 @@ $header-inner-height: 38px;
   background: #2b2d30;
   border-bottom: 2px solid #222427;
 
+  &.darwin {
+    padding-left: 80px;
+
+    &.full-screen {
+      padding-left: 0;
+    }
+
+    .win-btns {
+      display: none;
+    }
+  }
+
   .menu {
     width: $header-inner-height;
     height: $header-inner-height;
@@ -56,6 +68,7 @@ $header-inner-height: 38px;
     position: absolute;
     width: 20vw;
     left: 40vw;
+    white-space: nowrap;
   }
 
   .toolbox {

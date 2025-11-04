@@ -49,3 +49,5 @@ child/node*
 !child/node-*.*
 child/aily-builder
 !child/aily-builder-*.*
+
+aily-todos/*.json

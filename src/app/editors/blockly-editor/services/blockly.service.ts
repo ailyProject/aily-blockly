@@ -117,11 +117,15 @@ export class BlocklyService {
         const toolboxFileIsExist = this.electronService.exists(libPackagePath + '/toolbox.json');
         if (toolboxFileIsExist) {
           let toolbox = JSON.parse(this.electronService.readFile(libPackagePath + '/toolbox.json'));
-          if (i18nData) toolbox.name = i18nData.toolbox_name;
+          if (i18nData) {
+            // console.log(toolbox.name + ' >>> ' + i18nData.toolbox_name);
+            toolbox.name = i18nData.toolbox_name;
+          }
           this.loadLibToolbox(toolbox);
         }
       }
     } catch (error) {
+      console.error('加载库失败:', libPackageName);
       console.error(error);
       // this.noticeService.update({
       //   title: '加载库失败',
@@ -247,7 +251,7 @@ export class BlocklyService {
   // 从toolbox中移除项
   removeLibToolbox(toolboxItem) {
     // 通过比较找到要移除的toolbox项
-    console.log(`即将移除`, toolboxItem);
+    console.log(`即将移除：`, toolboxItem);
 
 
     const index = this.findToolboxItemIndex(toolboxItem);

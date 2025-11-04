@@ -157,7 +157,7 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
       // 渲染 Mermaid 图表
       this.renderMermaidDiagram(this.rawCode);
     } catch (error) {
-      console.error('Error processing mermaid data:', error);
+      console.warn('Error processing mermaid data:', error);
       this.errorMessage = `数据处理失败: ${error.message}`;
       this.isLoading = false;
       this.renderedSvg = '';
@@ -214,7 +214,7 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
       }, 100);
 
     } catch (error) {
-      console.error('Mermaid rendering error:', error);
+      console.warn('Mermaid rendering error:', error);
       this.isLoading = false;
       this.renderedSvg = '';
       this.rawSvgString = '';

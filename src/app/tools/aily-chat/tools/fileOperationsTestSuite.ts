@@ -38,7 +38,7 @@ export class FileOperationsTestSuite {
       
       console.log('✅ 所有测试通过！');
     } catch (error) {
-      console.error('❌ 测试失败:', error);
+      console.warn('❌ 测试失败:', error);
     }
   }
 

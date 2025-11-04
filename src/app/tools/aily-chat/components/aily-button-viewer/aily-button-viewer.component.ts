@@ -63,7 +63,7 @@ export class AilyButtonViewerComponent {
                 this.buttons = [];
             }
         } catch (error) {
-            console.error('Error processing button data:', error);
+            console.warn('Error processing button data:', error);
             this.buttons = [];
         }
     }

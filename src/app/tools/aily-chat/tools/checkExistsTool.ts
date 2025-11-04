@@ -102,7 +102,7 @@ export async function checkExistsTool(
             }, null, 2)
         };
     } catch (error: any) {
-        console.error("检查路径存在性失败:", error);
+        console.warn("检查路径存在性失败:", error);
         
         let errorMessage = `检查路径存在性失败: ${error.message}`;
         if (error.code) {

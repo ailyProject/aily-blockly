@@ -122,7 +122,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
         // 标记为已处理
         this.processedPlaceholders.add(placeholderKey);
       } catch (error) {
-        console.error('Error replacing placeholder with component:', error);
+        console.warn('Error replacing placeholder with component:', error);
         this.showErrorPlaceholder(placeholder, error);
         // 即使出错也标记为已处理，避免重复尝试
         this.processedPlaceholders.add(placeholderKey);
@@ -150,7 +150,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
         // 标记为已处理
         this.processedPlaceholders.add(placeholderKey);
       } catch (error) {
-        console.error('Error replacing placeholder with component:', error);
+        console.warn('Error replacing placeholder with component:', error);
         this.showErrorPlaceholder(placeholder, error);
         // 即使出错也标记为已处理，避免重复尝试
         this.processedPlaceholders.add(placeholderKey);
@@ -285,12 +285,12 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
         placeholder.remove();
       }
     } catch (e) {
-      console.error('Error removing placeholder:', e);
+      console.warn('Error removing placeholder:', e);
       // 最后的兜底方案
       try {
         placeholder.style.display = 'none';
       } catch (hideError) {
-        console.error('Error hiding placeholder:', hideError);
+        console.warn('Error hiding placeholder:', hideError);
       }
     }
   }

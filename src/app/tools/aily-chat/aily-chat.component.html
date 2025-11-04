@@ -5,6 +5,9 @@
 } @else {
 <app-tool-container [title]="'AILY_CHAT.TITLE' | translate" (closeEvent)="close()">
   <ng-container header-btns>
+    <!-- <div class="btn ccenter" (click)="demandEdit()" nz-tooltip nzTooltipPlacement="bottom" nzTooltipTitle="需求管理">
+      <i class="fa-light fa-list-check"></i>
+    </div> -->
     <div class="btn ccenter" (click)="openHistoryChat($event)" nz-tooltip nzTooltipPlacement="bottom"
       [nzTooltipTitle]="'AILY_CHAT.HISTORY' | translate">
       <i class="fa-light fa-clock-rotate-left"></i>
@@ -13,7 +16,14 @@
       <i class="fa-light fa-message-plus"></i>
     </div>
   </ng-container>
-  <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+  
+  <!-- 整个聊天区域的容器 -->
+  <div class="aily-chat-wrapper">
+    <div class="todo-panel-container">
+      <app-floating-todo [sessionId]="sessionId"></app-floating-todo>
+    </div>
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+  </div>
 </app-tool-container>
 }
 <ng-template #windowBoxTemplate>

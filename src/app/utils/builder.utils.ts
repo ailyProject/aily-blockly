@@ -4,7 +4,8 @@ export async function getDefaultBuildPath(sketchFilePath: string): Promise<strin
     const sketchMd5Value = await window["tools"].calculateMD5(window['path'].resolve(sketchFilePath));
     const sketchMd5 = sketchMd5Value.slice(0, 8);
     const sketchName = window['path'].basename(sketchFilePath, '.ino');
-    return `${window['path'].getAilyBuilderBuildPath()}\\${sketchName}_${sketchMd5}`;
+    // 使用跨平台的路径拼接方式
+    return window['path'].join(window['path'].getAilyBuilderBuildPath(), `${sketchName}_${sketchMd5}`);
 }
 
 /**
@@ -32,6 +33,12 @@ export async function findFile(basePath: string, fileName: string, version: stri
         filteredRes = findRes.filter((filePath: string) => {
             const baseName = window['path'].basename(filePath);
             return regex.test(baseName);
+        });
+    } else {
+        // 没有通配符时，进行全字匹配
+        filteredRes = findRes.filter((filePath: string) => {
+            const baseName = window['path'].basename(filePath);
+            return baseName === fileName;
         });
     }
 

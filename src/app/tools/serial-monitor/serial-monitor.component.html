@@ -67,12 +67,15 @@
       }
       <div class="monitor">
         <div class="r-box">
-          <div class="sscroll data-list" #scrollContainer>
-            @for (item of dataList; track $index) {
-            <app-data-item [data]="item" [searchKeyword]="searchKeyword"></app-data-item>
-            }
-            <div style="height: 10px;"></div>
+
+          <!-- 数据显示 -->
+          <div class="data-list sscroll" #dataListBox>
+            <div *uiScroll="let item of datasource">
+              <app-data-item [data]="item" [searchKeyword]="searchKeyword"
+                (click)="onDataItemClick(item)"></app-data-item>
+            </div>
           </div>
+
           <div class="btns">
             <div class="btn ccenter hex" nz-tooltip nzTooltipTitle="HEX显示" (click)="changeViewMode('showHex')"
               [ngClass]="{'actived':showHex}">
@@ -174,6 +177,6 @@
 
 <!-- baudrate list -->
 @if (showBaudList) {
-<app-menu [position]="position" [width]="90" [menuList]="baudList" (closeEvent)="closeBaudList()"
+<app-menu [position]="position" [menuList]="baudList" (closeEvent)="closeBaudList()"
   (itemClickEvent)="selectBaud($event)"></app-menu>
 }

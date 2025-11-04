@@ -1,4 +1,4 @@
-<div class="header-box">
+<div class="header-box" [class.darwin]="isMac" [class.full-screen]="isWindowFullScreen">
   <div class="menu ccenter" (click)="openMenu()">
     <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ 'MENU.MENU' | translate }}">
       <i class="fa-regular fa-bars"></i>

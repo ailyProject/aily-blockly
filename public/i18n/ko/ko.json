@@ -218,5 +218,49 @@
         "STOP": "중지",
         "MODE_AGENT_FULL": "에이전트 모드",
         "MODE_QA_FULL": "Q&A 모드"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "프로젝트 설정",
+        "BASIC_INFO": "기본 정보",
+        "NAME": "프로젝트 이름",
+        "NAME_PLACEHOLDER": "프로젝트 이름을 입력하세요",
+        "VERSION": "버전",
+        "VERSION_PLACEHOLDER": "버전을 입력하세요（예: 1.0.0）",
+        "NICKNAME": "프로젝트 별명",
+        "NICKNAME_PLACEHOLDER": "프로젝트 별명을 입력하세요",
+        "DESCRIPTION": "설명",
+        "DESCRIPTION_PLACEHOLDER": "프로젝트 설명을 입력하세요",
+        "DOC_URL": "문서 URL",
+        "DOC_URL_PLACEHOLDER": "문서 URL을 입력하세요",
+        "PROJECT_CONFIG": "프로젝트 설정",
+        "NO_CONFIG": "설정 정보 없음",
+        "DEPENDENCIES": "의존성",
+        "NO_DEPENDENCIES": "의존성 없음",
+        "ADD": "추가",
+        "CONFIG_KEY_PLACEHOLDER": "설정 키",
+        "CONFIG_VALUE_PLACEHOLDER": "설정 값",
+        "DEPENDENCY_NAME_PLACEHOLDER": "패키지 이름",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "버전",
+        "CLOSE": "닫기",
+        "SAVE": "저장",
+        "WARNING_NAME_EMPTY": "프로젝트 이름을 입력하세요",
+        "WARNING_NAME_INVALID_FORMAT": "프로젝트 이름 형식이 올바르지 않습니다. 소문자, 숫자, 하이픈, 밑줄만 사용할 수 있습니다",
+        "WARNING_VERSION_EMPTY": "버전을 입력하세요",
+        "WARNING_VERSION_INVALID_FORMAT": "버전 형식이 올바르지 않습니다. x.y.z 형식을 따라야 합니다（예: 1.0.0）",
+        "WARNING_DOC_URL_INVALID_FORMAT": "문서 URL 형식이 올바르지 않습니다. 유효한 URL을 입력하세요",
+        "SUCCESS_SAVE": "저장에 성공했습니다！",
+        "ERROR_SAVE_FAILED": "저장에 실패했습니다. 나중에 다시 시도해 주세요",
+        "ERROR_LOAD_FAILED": "프로젝트 설정 로드에 실패했습니다"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "프로젝트 설정",
+        "PINMAP": "핀 맵",
+        "DOCUMENTATION": "문서",
+        "FEEDBACK": "피드백",
+        "NO_PINMAP": "이 보드에 대한 핀 맵을 사용할 수 없습니다",
+        "NO_DOCUMENTATION": "이 보드에 대한 문서를 사용할 수 없습니다"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "먼저 시리얼 포트를 선택하세요"
     }
 }

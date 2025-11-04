@@ -28,6 +28,7 @@ export interface LoginResponse {
       email?: string;
       phone?: string;
       nickname?: string;
+      groups?: string[];
     };
   };
 }

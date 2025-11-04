@@ -15,6 +15,7 @@
         "DEBUG": "偵錯",
         "TERMINAL": "終端",
         "TOOL_SERIAL": "串口工具",
+        "SIMULATOR": "模擬器",
         "AI": "AI",
         "APP_STORE": "應用商店",
         "SETTINGS": "設定",
@@ -128,6 +129,7 @@
         "INSTALLED": "已安裝",
         "CORE_LIBRARY": "核心函式庫",
         "IMPORT_LIBRARY": "導入本地庫",
+        "HELP": "如何開發庫",
         "DEV_HELP": "開發幫助",
         "REPORT_ISSUE": "回報問題",
         "INSTALL": "安裝",
@@ -136,6 +138,9 @@
         "INSTALLING": "正在安裝",
         "UNINSTALLING": "正在解除安裝",
         "UNINSTALLED": "已解除安裝",
+        "IMPORTING": "正在導入",
+        "IMPORTED": "導入成功",
+        "IMPORT_FAILED": "導入失敗",
         "SENSORS": "感應器",
         "ACTUATORS": "執行器",
         "COMMUNICATION": "通訊",
@@ -147,6 +152,14 @@
         "IOT": "物聯網",
         "OTHERS": "其他",
         "LIB_IN_USE": "該庫正在被使用，請先在工作區刪除相關塊，再移除本庫"
+    },
+    "COMPATIBILITY_DIALOG": {
+        "TITLE": "庫兼容性提示",
+        "WARNING_MESSAGE": "該庫可能無法在當前開發板上使用，是否繼續安裝？",
+        "SUPPORTED_CORES": "當前庫支持內核：",
+        "CURRENT_BOARD_CORE": "當前開發板內核：",
+        "CANCEL": "取消",
+        "CONTINUE_INSTALL": "繼續安裝"
     },
     "BOARD_SELECTOR": {
         "TITLE": "切換開發板",
@@ -224,5 +237,49 @@
         "STOP": "停止",
         "MODE_AGENT_FULL": "代理模式",
         "MODE_QA_FULL": "問答模式"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "項目設置",
+        "BASIC_INFO": "基本信息",
+        "NAME": "項目名稱",
+        "NAME_PLACEHOLDER": "請輸入項目名稱",
+        "VERSION": "版本號",
+        "VERSION_PLACEHOLDER": "請輸入版本號，如：1.0.0",
+        "NICKNAME": "項目暱稱",
+        "NICKNAME_PLACEHOLDER": "請輸入項目暱稱",
+        "DESCRIPTION": "項目描述",
+        "DESCRIPTION_PLACEHOLDER": "請輸入項目描述",
+        "DOC_URL": "文檔鏈接",
+        "DOC_URL_PLACEHOLDER": "請輸入文檔鏈接",
+        "PROJECT_CONFIG": "項目配置",
+        "NO_CONFIG": "暫無配置信息",
+        "DEPENDENCIES": "依賴項",
+        "NO_DEPENDENCIES": "暫無依賴項",
+        "ADD": "添加",
+        "CONFIG_KEY_PLACEHOLDER": "配置項名稱",
+        "CONFIG_VALUE_PLACEHOLDER": "配置值",
+        "DEPENDENCY_NAME_PLACEHOLDER": "依賴包名稱",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "版本號",
+        "CLOSE": "關閉",
+        "SAVE": "保存",
+        "WARNING_NAME_EMPTY": "請輸入項目名稱",
+        "WARNING_NAME_INVALID_FORMAT": "項目名稱格式不正確，只能包含小寫字母、數字、連字符和下劃線",
+        "WARNING_VERSION_EMPTY": "請輸入版本號",
+        "WARNING_VERSION_INVALID_FORMAT": "版本號格式不正確，必須符合 x.y.z 格式(如 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "文檔鏈接格式不正確，請輸入有效的 URL 地址",
+        "SUCCESS_SAVE": "保存成功！",
+        "ERROR_SAVE_FAILED": "保存失敗，請稍後重試",
+        "ERROR_LOAD_FAILED": "加載項目設置失敗"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "項目設置",
+        "PINMAP": "引腳圖",
+        "DOCUMENTATION": "文檔",
+        "FEEDBACK": "反饋",
+        "NO_PINMAP": "該開發板沒有提供引腳圖",
+        "NO_DOCUMENTATION": "該開發板沒有提供文檔鏈接"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "請先選擇串口"
     }
 }

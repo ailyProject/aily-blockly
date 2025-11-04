@@ -16,6 +16,7 @@ import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
 import { ProjectService } from '../../services/project.service';
+import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -23,7 +24,8 @@ import { ProjectService } from '../../services/project.service';
     BlocklyComponent,
     LibManagerComponent,
     NotificationComponent,
-    TranslateModule
+    TranslateModule,
+    DevToolComponent
   ],
   providers: [
     _ProjectService,
@@ -96,11 +98,10 @@ export class BlocklyEditorComponent {
   }
 
   async loadProject(projectPath) {
-    await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
     // 加载项目开发框架
-    this.devmode = packageJson.devmode || 'arduino';
+    this.devmode = packageJson.devmode || 'arduino'; // 可选项: 'arduino', 'micropython'
 
     this.electronService.setTitle(`aily blockly - ${packageJson.nickname}`);
     // 添加到最近打开的项目
@@ -128,7 +129,7 @@ export class BlocklyEditorComponent {
     // 获取项目目录下的所有blockly库
     let libraryModuleList = (await this.npmService.getAllInstalledLibraries(projectPath)).map(item => item.name);
 
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 120));
 
     for (let index = 0; index < libraryModuleList.length; index++) {
       const libPackageName = libraryModuleList[index];

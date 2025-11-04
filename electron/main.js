@@ -16,20 +16,6 @@ if (isWin32) {
 
 PROTOCOL = "ailyblockly";
 
-// 辅助函数：安全地向窗口发送消息
-function safeSendToWindow(window, channel, ...args) {
-  if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-    try {
-      window.webContents.send(channel, ...args);
-      return true;
-    } catch (error) {
-      console.error(`Error sending to channel ${channel}:`, error.message);
-      return false;
-    }
-  }
-  return false;
-}
-
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
 
@@ -37,7 +23,7 @@ const OAUTH_STATE_FILE = 'oauth-instances.json';
 function getOAuthStateFilePath() {
   // 获取原始用户数据路径（在设置实例隔离之前的路径）
   let originalUserDataPath;
-  
+
   if (shouldUseMultiInstance()) {
     // 在多实例模式下，需要获取原始的用户数据路径
     const currentPath = app.getPath('userData');
@@ -51,7 +37,7 @@ function getOAuthStateFilePath() {
   } else {
     originalUserDataPath = app.getPath('userData');
   }
-  
+
   return path.join(originalUserDataPath, OAUTH_STATE_FILE);
 }
 
@@ -60,21 +46,21 @@ function registerOAuthInstance(state) {
   try {
     const stateFilePath = getOAuthStateFilePath();
     const currentUserDataPath = app.getPath('userData');
-    
+
     const instanceInfo = {
       instanceId: process.pid, // 使用进程ID作为实例标识
       userDataPath: currentUserDataPath,
       timestamp: Date.now(),
       state: state
     };
-    
+
     console.log('注册OAuth实例信息:', {
       state,
       instanceId: instanceInfo.instanceId,
       userDataPath: currentUserDataPath,
       stateFilePath
     });
-    
+
     let oauthStates = {};
     if (fs.existsSync(stateFilePath)) {
       try {
@@ -84,9 +70,9 @@ function registerOAuthInstance(state) {
         oauthStates = {};
       }
     }
-    
+
     oauthStates[state] = instanceInfo;
-    
+
     // 清理超过10分钟的过期状态
     const now = Date.now();
     Object.keys(oauthStates).forEach(key => {
@@ -94,17 +80,17 @@ function registerOAuthInstance(state) {
         delete oauthStates[key];
       }
     });
-    
+
     // 确保状态文件目录存在
     const stateFileDir = path.dirname(stateFilePath);
     if (!fs.existsSync(stateFileDir)) {
       fs.mkdirSync(stateFileDir, { recursive: true });
     }
-    
+
     fs.writeFileSync(stateFilePath, JSON.stringify(oauthStates, null, 2));
     console.log('已注册OAuth状态:', state, '实例ID:', instanceInfo.instanceId);
     console.log('OAuth状态文件内容:', oauthStates);
-    
+
     return instanceInfo;
   } catch (error) {
     console.error('注册OAuth实例失败:', error);
@@ -117,21 +103,21 @@ function findOAuthInstance(state) {
   try {
     const stateFilePath = getOAuthStateFilePath();
     console.log('查找OAuth实例，状态文件路径:', stateFilePath);
-    
+
     if (!fs.existsSync(stateFilePath)) {
       console.log('OAuth状态文件不存在:', stateFilePath);
       return null;
     }
-    
+
     const oauthStates = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
     console.log('OAuth状态文件内容:', oauthStates);
     console.log('查找状态:', state);
-    
+
     const instanceInfo = oauthStates[state];
-    
+
     if (instanceInfo) {
       console.log('找到匹配的实例信息:', instanceInfo);
-      
+
       // 检查实例是否仍然存在（通过检查用户数据目录）
       if (fs.existsSync(instanceInfo.userDataPath)) {
         console.log('目标实例目录存在:', instanceInfo.userDataPath);
@@ -145,7 +131,7 @@ function findOAuthInstance(state) {
     } else {
       console.log('未找到匹配的实例信息，可用状态:', Object.keys(oauthStates));
     }
-    
+
     return null;
   } catch (error) {
     console.error('查找OAuth实例失败:', error);
@@ -162,7 +148,7 @@ function sendOAuthCallbackToInstance(instanceInfo, callbackData) {
       ...callbackData,
       timestamp: Date.now()
     }));
-    
+
     console.log('已将OAuth回调数据写入目标实例文件:', callbackFilePath);
     return true;
   } catch (error) {
@@ -201,7 +187,7 @@ function shouldUseMultiInstance() {
 if (shouldUseMultiInstance()) {
   // 检查是否是协议启动
   const isProtocolLaunch = process.argv.some(arg => arg.startsWith(`${PROTOCOL}://`));
-  
+
   if (!isProtocolLaunch) {
     // 只有非协议启动才设置实例隔离
     setupUniqueUserDataPath();
@@ -266,7 +252,7 @@ handleCommandLineArgs(process.argv);
 
 function handleProtocol(url) {
   console.log('收到协议链接:', url);
-  
+
   try {
     const urlObj = new URL(url);
 
@@ -277,7 +263,7 @@ function handleProtocol(url) {
     if (urlObj.hostname && urlObj.hostname !== '') {
       fullPath = '/' + urlObj.hostname + urlObj.pathname;
     }
-    
+
     // 检查是否是OAuth回调（使用完整路径）
     if (fullPath === '/auth/callback') {
       const searchParams = urlObj.searchParams;
@@ -285,9 +271,9 @@ function handleProtocol(url) {
       const state = searchParams.get('state');
       const error = searchParams.get('error');
       const errorDescription = searchParams.get('error_description');
-      
+
       console.log('OAuth回调参数:', { code, state, error, errorDescription });
-      
+
       // 构建回调数据
       const callbackData = {
         code,
@@ -295,17 +281,18 @@ function handleProtocol(url) {
         error,
         error_description: errorDescription
       };
-      
+
       // 如果有state，尝试找到对应的实例
       if (state) {
         const targetInstance = findOAuthInstance(state);
         if (targetInstance) {
           console.log('找到目标实例:', targetInstance.instanceId, '当前实例路径:', app.getPath('userData'));
-          
+
           // 如果目标实例就是当前实例
           if (targetInstance.userDataPath === app.getPath('userData')) {
             console.log('OAuth回调属于当前实例');
-            if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
+            if (mainWindow && mainWindow.webContents) {
+              mainWindow.webContents.send('oauth-callback', callbackData);
               // 将窗口置前显示
               if (mainWindow.isMinimized()) {
                 mainWindow.restore();
@@ -330,7 +317,8 @@ function handleProtocol(url) {
               console.error('转发OAuth回调数据失败');
               // 转发失败时，也尝试在当前实例处理
               console.warn('转发失败，尝试在当前实例处理OAuth回调');
-              if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
+              if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('oauth-callback', callbackData);
                 if (mainWindow.isMinimized()) {
                   mainWindow.restore();
                 }
@@ -348,10 +336,11 @@ function handleProtocol(url) {
       } else {
         console.warn('OAuth回调缺少state参数');
       }
-      
+
       // 如果没有找到对应实例或没有state，在当前实例处理
       console.log('在当前实例处理OAuth回调');
-      if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('oauth-callback', callbackData);
         // 将窗口置前显示
         if (mainWindow.isMinimized()) {
           mainWindow.restore();
@@ -362,10 +351,10 @@ function handleProtocol(url) {
         // 如果窗口不存在，存储回调数据以便稍后处理
         global.pendingOAuthCallback = callbackData;
       }
-      
+
       return;
     }
-    
+
     // 处理其他协议链接
     // dialog.showMessageBox({ message: `收到协议：${url}` });
   } catch (error) {
@@ -381,20 +370,54 @@ const { registerNpmHandlers } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers } = require("./cmd");
 const { registerMCPHandlers } = require("./mcp");
-const { initNotificationHandlers } = require("./notification");
 // debug模块
 const { initLogger } = require("./logger");
 // tools
 const { registerToolsHandlers } = require("./tools");
+const { registerNotificationHandlers } = require("./notification");
 
 let mainWindow;
 let userConf;
 
+// 检查Node
+function checkNodePath(childPath) {
+  const child_process = require("child_process");
+  childPath = escapePath(childPath);
+  const nodePath = path.join(childPath, "node");
+  if (!fs.existsSync(nodePath)) {
+    const nodeZipPath = path.join(childPath, "node-v22.19.0-darwin-arm64.tar.xz");
+    try {
+      child_process.execSync(`tar -xzf ${nodeZipPath} -C ${childPath} && mv ${nodeZipPath.replace('.tar.xz', '')} ${nodePath}`, {stdio: 'inherit'});
+      console.log('安装解压node成功！');
+    } catch (error) {
+      console.error("安装解压node失败，错误码:", error);
+    }
+  }
+  const ailyBuilderPath = path.join(childPath, "aily-builder");
+  if (!fs.existsSync(ailyBuilderPath)) {
+    const ailyBuilderZipPath = path.join(childPath, "aily-builder-1.0.5.7z");
+    try {
+      child_process.execSync(`mkdir -p ${ailyBuilderPath} && tar -xzf ${ailyBuilderZipPath} -C ${ailyBuilderPath}`, {stdio: 'inherit'});
+      console.log('安装解压aily-builder成功！');
+    } catch (error) {
+      console.error("安装解压aily-builder失败，错误码:", error);
+    }
+  }
+}
+
+// 路径转义
+function escapePath(path) {
+  if (isWin32) {
+    return path;
+  }
+  return path.replace(/(\s|[()&|;<>`$\\])/g, '\\$1');
+}
+
 // 环境变量加载
 function loadEnv() {
   // 将child目录添加到环境变量PATH中
-  const childPath = path.join(__dirname, "..", "child")
-  const nodePath = path.join(childPath, "node")
+  const childPath = path.join(__dirname, "..", "child");
+  const nodePath = path.join(childPath, isDarwin ? "node/bin" : "node");
 
   // 只保留PowerShell路径，移除其他系统PATH
   let customPath = nodePath + path.delimiter + childPath;
@@ -415,6 +438,19 @@ function loadEnv() {
       }
     });
   }
+  if (isDarwin) {
+    const systemPaths = [
+      '/bin',
+      '/usr/bin'
+    ];
+    systemPaths.forEach(sysPath => {
+      if (fs.existsSync(sysPath)) {
+        customPath += path.delimiter + sysPath;
+      }
+    });
+  } else if (isLinux) {
+    customPath += path.delimiter + '/bin';
+  }
 
   // 完全替换PATH
   process.env.PATH = customPath;
@@ -430,10 +466,13 @@ function loadEnv() {
     process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), "AppData", "Local", "aily-builder", "project");
   } else if (isDarwin) {
     // 设置macOS的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"];
+    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"].replace('~', os.homedir());
+    process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), "Library", "aily-builder", "project");
+    checkNodePath(childPath);
   } else {
     // 设置Linux的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["linux"];
+    process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), ".cache", "aily-builder", "project");
   }
 
   // 确保应用数据目录存在
@@ -471,7 +510,7 @@ function loadEnv() {
   // npm registry
   process.env.AILY_NPM_REGISTRY = conf["npm_registry"][0];
   // 7za path
-  process.env.AILY_7ZA_PATH = path.join(childPath, "7za.exe")
+  process.env.AILY_7ZA_PATH = path.join(childPath, isWin32 ? "7za.exe" : "7za");
   // aily builder path
   process.env.AILY_BUILDER_PATH = path.join(childPath, "aily-builder");
   // 全局npm包路径
@@ -499,6 +538,8 @@ function loadEnv() {
   if (fs.existsSync(ninjaPath)) {
     process.env.PATH = `${process.env.PATH}${path.delimiter}${ninjaPath}`;
   }
+
+  console.log("====process.env:", process.env)
 }
 
 
@@ -554,7 +595,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     frame: false,
-    titleBarStyle: 'default',
+    titleBarStyle: isDarwin ? 'hiddenInset' : 'default',
     alwaysOnTop: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -618,6 +659,28 @@ function createWindow() {
     }
   }
 
+  // 开发环境下的热重载处理
+  if (serve) {
+    // 防止 DevTools 断开连接
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+      if (errorCode === -102) {
+        // ERR_CONNECTION_REFUSED - 开发服务器可能正在重启
+        console.log('开发服务器连接失败,尝试重新加载...');
+        setTimeout(() => {
+          mainWindow.reload();
+        }, 1000);
+      }
+    });
+
+    // 监听页面加载完成
+    mainWindow.webContents.on('did-finish-load', () => {
+      console.log('页面加载完成');
+    });
+
+    // 开启 DevTools (可选)
+    // mainWindow.webContents.openDevTools();
+  }
+
   // 当主窗口被关闭时，进行相应的处理
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -638,22 +701,23 @@ function createWindow() {
   registerCmdHandlers(mainWindow);
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
-  initNotificationHandlers();
+  registerNotificationHandlers(mainWindow);
 
   // 检查是否有待处理的OAuth回调
   if (global.pendingOAuthCallback) {
     // 延迟发送以确保渲染进程已准备好
     setTimeout(() => {
-      if (safeSendToWindow(mainWindow, 'oauth-callback', global.pendingOAuthCallback)) {
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('oauth-callback', global.pendingOAuthCallback);
         global.pendingOAuthCallback = null;
       }
     }, 2000);
   }
-  
+
   // 在多实例模式下，监听OAuth回调文件的变化
   if (shouldUseMultiInstance()) {
     const callbackFilePath = path.join(app.getPath('userData'), 'oauth-callback.json');
-    
+
     // 检查是否已有OAuth回调文件
     if (fs.existsSync(callbackFilePath)) {
       try {
@@ -661,7 +725,9 @@ function createWindow() {
         // 检查回调数据是否是最近的（5分钟内）
         if (Date.now() - callbackData.timestamp < 5 * 60 * 1000) {
           console.log('发现OAuth回调文件，发送回调数据');
-          if (!safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
+          if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('oauth-callback', callbackData);
+          } else {
             global.pendingOAuthCallback = callbackData;
           }
         }
@@ -671,7 +737,7 @@ function createWindow() {
         console.error('处理OAuth回调文件失败:', error);
       }
     }
-    
+
     // 监听OAuth回调文件的创建
     const callbackDir = path.dirname(callbackFilePath);
     if (fs.existsSync(callbackDir)) {
@@ -683,15 +749,15 @@ function createWindow() {
               try {
                 const callbackData = JSON.parse(fs.readFileSync(callbackFilePath, 'utf8'));
                 console.log('检测到OAuth回调文件变化，发送回调数据');
-                if (safeSendToWindow(mainWindow, 'oauth-callback', callbackData)) {
+                if (mainWindow && mainWindow.webContents) {
+                  mainWindow.webContents.send('oauth-callback', callbackData);
+                  
                   // 将窗口置前显示
-                  if (mainWindow && !mainWindow.isDestroyed()) {
-                    if (mainWindow.isMinimized()) {
-                      mainWindow.restore();
-                    }
-                    mainWindow.focus();
-                    mainWindow.show();
+                  if (mainWindow.isMinimized()) {
+                    mainWindow.restore();
                   }
+                  mainWindow.focus();
+                  mainWindow.show();
                 }
                 // 删除已处理的回调文件
                 fs.unlinkSync(callbackFilePath);
@@ -712,7 +778,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (shouldUseMultiInstance()) {
   // 多实例模式：检查是否是协议启动
   const isProtocolLaunch = process.argv.some(arg => arg.startsWith(`${PROTOCOL}://`));
-  
+
   if (isProtocolLaunch) {
     // 协议启动时，检查是否已有其他实例能处理
     if (!gotTheLock) {
@@ -729,28 +795,28 @@ if (shouldUseMultiInstance()) {
       app.releaseSingleInstanceLock();
     }
   }
-  
+
   // 监听second-instance事件，用于处理协议链接
   app.on('second-instance', (event, commandLine, workingDirectory) => {
     console.log('收到second-instance事件，命令行参数:', commandLine);
-    
+
     // 查找协议链接
     const protocolUrl = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`));
     if (protocolUrl) {
       console.log('在second-instance中处理协议链接:', protocolUrl);
       handleProtocol(protocolUrl);
-      
+
       // 处理协议后不要置前窗口，让具体的处理逻辑决定
       return;
     } else {
       // 处理其他类型的启动参数（如.abi文件、路由参数等）
       handleCommandLineArgs(commandLine);
-      
+
       // 如果有待处理的文件或路由，更新主窗口
       if (pendingFileToOpen || pendingRoute) {
         updateMainWindowWithPendingData();
       }
-      
+
       // 将现有窗口置前
       if (mainWindow) {
         if (mainWindow.isMinimized()) {
@@ -778,13 +844,13 @@ if (shouldUseMultiInstance()) {
       } else {
         // 处理其他类型的启动参数（如.abi文件、路由参数等）
         handleCommandLineArgs(commandLine);
-        
+
         // 如果有待处理的文件或路由，更新主窗口
         if (pendingFileToOpen || pendingRoute) {
           updateMainWindowWithPendingData();
         }
       }
-      
+
       // 将现有窗口置前
       if (mainWindow) {
         if (mainWindow.isMinimized()) {
@@ -803,7 +869,7 @@ app.on("ready", () => {
   } catch (error) {
     console.error("loadEnv error: ", error);
   }
-  
+
   // 检查是否是协议启动
   const protocolUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
   if (protocolUrl) {
@@ -813,7 +879,7 @@ app.on("ready", () => {
       handleProtocol(protocolUrl);
     }, 1000);
   }
-  
+
   // 创建主窗口
   createWindow();
   listenMoveResize();
@@ -1022,7 +1088,7 @@ ipcMain.handle("open-new-instance", async (event, data) => {
 // settingChanged
 ipcMain.on("setting-changed", (event, data) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
-  safeSendToWindow(mainWindow, "setting-changed", data);
+  mainWindow.webContents.send("setting-changed", data);
 });
 
 // 记录窗口大小和位置，用于下次打开时恢复
@@ -1207,3 +1273,64 @@ function cleanupOldInstances() {
 }
 
 cleanupOldInstances();
+
+// ============================================
+// Ripgrep 搜索功能
+// ============================================
+const ripgrep = require('./ripgrep');
+
+// 检查 ripgrep 是否可用
+ipcMain.handle("ripgrep-check-available", async (event) => {
+  try {
+    const available = await ripgrep.isRipgrepAvailable();
+    return available;
+  } catch (error) {
+    console.error('检查 ripgrep 可用性失败:', error);
+    return false;
+  }
+});
+
+// 使用 ripgrep 搜索文件内容
+ipcMain.handle("ripgrep-search-files", async (event, params) => {
+  try {
+    const result = await ripgrep.searchFiles(params);
+    return result;
+  } catch (error) {
+    console.error('Ripgrep 搜索失败:', error);
+    return {
+      success: false,
+      numFiles: 0,
+      filenames: [],
+      error: error.message
+    };
+  }
+});
+
+// 列出所有内容文件
+ipcMain.handle("ripgrep-list-files", async (event, searchPath, limit = 1000) => {
+  try {
+    const result = await ripgrep.listAllContentFiles(searchPath, limit);
+    return result;
+  } catch (error) {
+    console.error('列出文件失败:', error);
+    return {
+      success: false,
+      files: []
+    };
+  }
+});
+
+// 搜索文件内容并返回匹配的行
+ipcMain.handle("ripgrep-search-content", async (event, params) => {
+  try {
+    const result = await ripgrep.searchContent(params);
+    return result;
+  } catch (error) {
+    console.error('搜索内容失败:', error);
+    return {
+      success: false,
+      matches: [],
+      error: error.message
+    };
+  }
+});

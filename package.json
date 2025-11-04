@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.8.2",
+  "version": "0.8.5",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -135,7 +135,6 @@
     "@xterm/addon-clipboard": "^0.1.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "angular-gridster2": "^19.0.0",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
     "blockly": "^11.2.2",

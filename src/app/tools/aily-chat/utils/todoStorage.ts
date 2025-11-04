@@ -197,7 +197,7 @@ export function getTodos(sessionId: string = 'default'): TodoItem[] {
       todos = JSON.parse(fileContent)
     }
   } catch (error) {
-    console.error('读取todos失败:', error)
+    console.warn('读取todos失败:', error)
     todos = []
   }
   
@@ -236,7 +236,7 @@ export function setTodos(todos: TodoItem[], sessionId: string = 'default'): void
     
     updateMetrics(sessionId, 'setTodos')
   } catch (error) {
-    console.error('保存todos失败:', error)
+    console.warn('保存todos失败:', error)
     throw error
   }
 }

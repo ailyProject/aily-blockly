@@ -15,114 +15,59 @@ export class SettingsService {
     private http: HttpClient
   ) { }
 
+  async searchVersionsByAPI(packageName: string, registry: string) {
+    const apiUrl = registry.replace(/\/?$/, '/') + '-/verdaccio/data/sidebar/' + encodeURIComponent(packageName);
+    const response: any = await this.http.get(apiUrl).toPromise();
+    const versions = response.versions || {};
+    console.log('versions: ', versions);
+    return versions;
+  }
+
   async searchByAPI(searchKey: string, prefix: string, registry: string) {
     const apiUrl = registry.replace(/\/?$/, '/') + '-/v1/search?text=' + searchKey + '&size=250';
     const response: any = await this.http.get(apiUrl).toPromise();
     const searchResList = response.objects.map(obj => obj.package);
     const installedDict = await this.getInstalledDependencies(prefix);
-    searchResList.forEach((item) => {
-      // 判断名称与版本是否对应
-      if (installedDict[item.name] && installedDict[item.name].version === item.version) {
-        item.installed = true;
-      } else {
-        item.installed = false;
-      }
-    });
-    console.log('searchResList: ', searchResList);
-    return searchResList;
+    const resultList = [];
+    for (const item of searchResList) {
+      const versions_dict = await this.searchVersionsByAPI(item.name, registry);
+      // 轮询所有版本,判断是否安装
+
+      Object.keys(versions_dict).forEach(version => {
+        // 判断名称与版本是否对应
+        let installed = false;
+        if (installedDict[item.name] && installedDict[item.name].version === version) {
+          installed = true;
+        }
+
+        resultList.push({
+          name: item.name,
+          version: version,
+          installed: installed,
+          ...versions_dict[version]
+        });
+      });
+    }
+    console.log('searchResList: ', resultList);
+    return resultList;
   }
 
 
   async getToolList(prefix: string, registry: string) {
-    // const cmd = `npm search @aily-project/tool- --json=true --registry=${registry}`;
-    // const result = await window['npm'].run({ cmd });
-    // const allToolList = JSON.parse(result);
-
-    // const installedDict = await this.getInstalledDependencies(prefix);
-    // allToolList.forEach((tool) => {
-    //   // 判断名称与版本是否对应
-    //   if (installedDict[tool.name] && installedDict[tool.name].version === tool.version) {
-    //     tool.installed = true;
-    //   } else {
-    //     tool.installed = false;
-    //   }
-    // });
-
-    // console.log('allToolList: ', allToolList);
-    // this.toolList = allToolList;
-
     this.toolList = await this.searchByAPI('@aily-project/tool-', prefix, registry);
   }
 
   async getSdkList(prefix: string, registry: string) {
-    // const cmd = `npm search @aily-project/sdk- --json=true --registry=${registry}`;
-    // const result = await window['npm'].run({ cmd });
-    // const allSdkList = JSON.parse(result);
-
-    // const installedDict = await this.getInstalledDependencies(prefix);
-    // allSdkList.forEach((sdk) => {
-    //   // 判断名称与版本是否对应
-    //   if (installedDict[sdk.name] && installedDict[sdk.name].version === sdk.version) {
-    //     sdk.installed = true;
-    //   } else {
-    //     sdk.installed = false;
-    //   }
-    // });
-    // this.sdkList = allSdkList;
-
-    // console.log('sdkList: ', this.sdkList);
-
     this.sdkList = await this.searchByAPI('@aily-project/sdk-', prefix, registry);
   }
 
   async getCompilerList(prefix: string, registry: string) {
-    // const cmd = `npm search @aily-project/compiler- --json=true --registry=${registry}`;
-    // const result = await window['npm'].run({ cmd });
-    // const allCompilerList = JSON.parse(result);
-
-    // const installedDict = await this.getInstalledDependencies(prefix);
-    // allCompilerList.forEach((compiler) => {
-    //   // 判断名称与版本是否对应
-    //   if (installedDict[compiler.name] && installedDict[compiler.name].version === compiler.version) {
-    //     compiler.installed = true;
-    //   } else {
-    //     compiler.installed = false;
-    //   }
-    // });
-    // this.compilerList = allCompilerList;
-
-    // // console.log('compilerList: ', this.compilerList);
-
     this.compilerList = await this.searchByAPI('@aily-project/compiler-', prefix, registry);
   }
 
   async getBoardList(prefix: string, registry: string) {
-    // const allBoardList = await this.getAllBoardList(registry);
-    // const installedDict = await this.getInstalledDependencies(prefix);
-    // allBoardList.forEach((board) => {
-    //   // 判断名称与版本是否对应
-    //   if (installedDict[board.name] && installedDict[board.name].version === board.version) {
-    //     board.installed = true;
-    //   } else {
-    //     board.installed = false;
-    //   }
-    // });
-    // this.boardList = allBoardList;
-
-    // console.log('boardList: ', this.boardList);
-
     this.boardList = await this.searchByAPI('@aily-project/board-', prefix, registry);
   }
-
-  // async getAllBoardList(registry) {
-  //   // 执行搜索时，配置的scope registry使用不到，需要在命令行中指定registry
-  //   const cmd = `npm search @aily-project/board- --json=true --registry=${registry}`
-  //   const result = await window['npm'].run({ cmd });
-  //   const allBoardList = JSON.parse(result);
-  //   // const allBoardList = await window['dependencies'].boardList();
-  //   // console.log('allBoardList: ', allBoardList);
-  //   return allBoardList;
-  // }
 
   // installed dependencies
   async getInstalledDependencies(prefix: string) {

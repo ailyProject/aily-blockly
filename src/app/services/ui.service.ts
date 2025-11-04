@@ -7,6 +7,7 @@ import { TerminalService } from '../tools/terminal/terminal.service';
 import { NavigationEnd, Router } from '@angular/router';
 import { FeedbackDialogComponent } from '../components/feedback-dialog/feedback-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
+import { ProjectSettingDialogComponent } from '../components/project-setting-dialog/project-setting-dialog.component';
 
 @Injectable({
   providedIn: 'root',
@@ -199,6 +200,27 @@ export class UiService {
         padding: '0',
       },
       nzContent: FeedbackDialogComponent,
+      nzWidth: '520px',
+    });
+
+    // 处理反馈结果
+    modalRef.afterClose.subscribe(result => {
+      if (result?.result === 'success') {
+        console.log('反馈已提交:', result.data);
+      }
+    });
+  }
+
+  openProjectSettings(){
+    // 这里参考 USAGE_EXAMPLE.ts 中的代码实现
+    const modalRef = this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzContent: ProjectSettingDialogComponent,
       nzWidth: '520px',
     });
 

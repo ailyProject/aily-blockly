@@ -6,6 +6,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { pinyin } from "pinyin-pro";
 import { Router } from '@angular/router';
 import { CmdService } from './cmd.service';
+import { CrossPlatformCmdService } from './cross-platform-cmd.service';
 import { generateDateString } from '../func/func';
 import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
@@ -13,6 +14,8 @@ import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { ActionService } from './action.service';
 import { PlatformService } from './platform.service';
 import { NewProjectData } from '../pages/project-new/project-new.component';
+
+const { pt } = (window as any)['electronAPI'].platform;
 
 interface ProjectPackageData {
   name: string;
@@ -65,6 +68,7 @@ export class ProjectService {
     private message: NzMessageService,
     private router: Router,
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private configService: ConfigService,
     private actionService: ActionService,
     private platformService: PlatformService,
@@ -125,11 +129,11 @@ export class ProjectService {
 
     this.uiService.updateFooterState({ state: 'doing', text: '正在创建项目...' });
     await this.cmdService.runAsync(`npm install ${boardPackage} --prefix "${appDataPath}"`);
-    const templatePath = `${appDataPath}\\node_modules\\${newProjectData.board.name}\\template`;
+    const templatePath = `${appDataPath}${pt}node_modules${pt}${newProjectData.board.name}${pt}template`;
     // 创建项目目录
-    await this.cmdService.runAsync(`mkdir -p "${projectPath}"`);
+    await this.crossPlatformCmdService.createDirectory(projectPath, true);
     // 复制模板文件到项目目录
-    await this.cmdService.runAsync(`cp -r "${templatePath}\\*" "${projectPath}"`);
+    await this.crossPlatformCmdService.copyItem(`${templatePath}${pt}*`, projectPath, true, true);
 
     // 3. 修改package.json文件
     const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
@@ -336,6 +340,20 @@ export class ProjectService {
     }
     return JSON.parse(this.electronService.readFile(boardJsonPath));
   }
+
+  // 获取开发板根目录路下得特殊配置文件，如 ESP32 需要的 partitions.csv
+  async getBoardFile(fileName: string) {
+    const boardModule = await this.getBoardModule();
+    if (!boardModule) {
+      throw new Error('未找到开发板模块');
+    }
+    const filePath = `${this.currentProjectPath}/node_modules/${boardModule}/${fileName}`;
+    if (!window['fs'].existsSync(filePath)) {
+      return null;
+    }
+    return filePath;
+  }
+
 
   // 获取开发板特殊配置文件，如 STM32 需要的特殊配置
   async getJsonConfig(fileName: string) {
@@ -1192,6 +1210,41 @@ export class ProjectService {
       console.log('安装新开发板模块:', newBoardPackage);
       this.uiService.updateFooterState({ state: 'doing', text: '正在安装新开发板...' });
       await this.cmdService.runAsync(`npm install ${newBoardPackage}`, this.currentProjectPath);
+
+      // 2.5. 获取新开发板的模板并更新package.json
+      console.log('更新项目配置文件...');
+      this.uiService.updateFooterState({ state: 'doing', text: '正在更新项目配置...' });
+      
+      // 读取当前package.json保留项目基本信息
+      const currentPackageJson = await this.getPackageJson();
+      
+      // 获取新开发板的模板package.json
+      const appDataPath = window['path'].getAppDataPath();
+      const templatePath = `${appDataPath}${pt}node_modules${pt}${boardInfo.name}${pt}template`;
+      const templatePackageJsonPath = `${templatePath}${pt}package.json`;
+      
+      if (window['fs'].existsSync(templatePackageJsonPath)) {
+        // 读取模板package.json
+        const templatePackageJson = JSON.parse(window['fs'].readFileSync(templatePackageJsonPath, 'utf8'));
+        
+        // 合并配置：保留当前项目的基本信息，使用新开发板的依赖和配置
+        const newPackageJson = {
+          ...templatePackageJson,
+          name: currentPackageJson.name, // 保留项目名称
+          nickname: currentPackageJson.nickname, // 保留昵称
+          author: currentPackageJson.author, // 保留作者
+          description: currentPackageJson.description, // 保留描述
+          // 不保留其他自定义配置
+          // ...(currentPackageJson.projectConfig && { projectConfig: currentPackageJson.projectConfig }),
+          // ...(currentPackageJson.cloudId && { cloudId: currentPackageJson.cloudId }),
+        };
+        
+        // 写入新的package.json
+        window['fs'].writeFileSync(`${this.currentProjectPath}/package.json`, JSON.stringify(newPackageJson, null, 2));
+        console.log('package.json 更新完成');
+      } else {
+        console.warn('未找到新开发板的模板package.json，跳过配置更新');
+      }
 
       // 3. 重新加载项目
       console.log('重新加载项目...');

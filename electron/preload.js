@@ -376,6 +376,108 @@ window.electronAPI = {
           .then((md5) => resolve(md5))
           .catch((error) => reject(error));
       });
+    },
+    // Glob 工具 - 直接使用 glob API，不需要 IPC
+    globTool: (params) => {
+      return new Promise((resolve, reject) => {
+        try {
+          const { pattern, path: searchPath, limit = 100 } = params;
+          const glob = require("glob");
+          
+          const options = {
+            absolute: true,
+            nodir: true,
+            ignore: [
+              '**/node_modules/**',
+              '**/.git/**',
+              '**/dist/**',
+              '**/build/**',
+              '**/.angular/**'
+            ]
+          };
+          
+          if (searchPath) {
+            options.cwd = searchPath;
+          }
+          
+          const startTime = Date.now();
+          const files = glob.sync(pattern, options);
+          const durationMs = Date.now() - startTime;
+          
+          const truncated = files.length > limit;
+          const limitedFiles = files.slice(0, limit);
+          
+          resolve({
+            is_error: false,
+            content: limitedFiles.join('\n'),
+            metadata: {
+              pattern,
+              path: searchPath,
+              numFiles: limitedFiles.length,
+              totalFiles: files.length,
+              durationMs,
+              truncated
+            }
+          });
+        } catch (error) {
+          reject({
+            is_error: true,
+            content: `Glob 搜索失败: ${error.message}`,
+            metadata: {
+              pattern: params.pattern,
+              path: params.path,
+              error: error.message
+            }
+          });
+        }
+      });
+    }
+  },
+  // Ripgrep 搜索 API
+  ripgrep: {
+    /**
+     * 检查 ripgrep 是否可用
+     */
+    isRipgrepAvailable: () => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-check-available")
+          .then((available) => resolve(available))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 使用 ripgrep 搜索文件内容
+     */
+    searchFiles: (params) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-search-files", params)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 列出所有内容文件
+     */
+    listAllContentFiles: (searchPath, limit) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-list-files", searchPath, limit)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 搜索文件内容并返回匹配的行
+     */
+    searchContent: (params) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-search-content", params)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
     }
   },
   // 系统通知 API

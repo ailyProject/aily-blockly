@@ -1,15 +1,36 @@
+/* AI聊天组件主容器布局 - 包含TODO面板和聊天内容 */
+.aily-chat-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden; /* 防止内容溢出 */
+}
+
+/* TODO面板容器样式 */
+.todo-panel-container {
+  flex-shrink: 0; /* 不允许收缩，保持TODO面板完整显示 */
+  border-top: 1px solid var(--border-color, #3c3c3c);
+  background: var(--vscode-sideBar-background, #252526);
+  max-height: 300px; /* 限制最大高度防止占用过多空间 */
+  overflow: hidden;
+  transition: all 0.2s ease; /* 平滑的高度变化动画 */
+}
+
 .window-box {
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1; /* 占用剩余空间，适应TODO面板高度变化 */
+  min-height: 0; /* 确保可以收缩 */
+  overflow: hidden; /* 防止内容溢出 */
 }
 
 .dialog-list {
   padding-left: 10px;
-  height: calc(100% - 180px);
+  flex: 1; /* 使用flex:1让对话区域占用剩余空间 */
   overflow-y: auto;
-  scroll-behavior: smooth; // 添加平滑滚动
+  scroll-behavior: smooth;
+  min-height: 0; /* 确保flex子项可以收缩 */
 
   .dialogs {
     padding: 0 10px 10px 0;

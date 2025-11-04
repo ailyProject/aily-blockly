@@ -272,5 +272,49 @@
         "STOP": "停止",
         "MODE_AGENT_FULL": "代理模式",
         "MODE_QA_FULL": "问答模式"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "项目设置",
+        "BASIC_INFO": "基本信息",
+        "NAME": "项目名称",
+        "NAME_PLACEHOLDER": "请输入项目名称",
+        "VERSION": "版本号",
+        "VERSION_PLACEHOLDER": "请输入版本号，如：1.0.0",
+        "NICKNAME": "项目昵称",
+        "NICKNAME_PLACEHOLDER": "请输入项目昵称",
+        "DESCRIPTION": "项目描述",
+        "DESCRIPTION_PLACEHOLDER": "请输入项目描述",
+        "DOC_URL": "文档链接",
+        "DOC_URL_PLACEHOLDER": "请输入文档链接",
+        "PROJECT_CONFIG": "项目配置",
+        "NO_CONFIG": "暂无配置信息",
+        "DEPENDENCIES": "依赖项",
+        "NO_DEPENDENCIES": "暂无依赖项",
+        "ADD": "添加",
+        "CONFIG_KEY_PLACEHOLDER": "配置项名称",
+        "CONFIG_VALUE_PLACEHOLDER": "配置值",
+        "DEPENDENCY_NAME_PLACEHOLDER": "依赖包名称",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "版本号",
+        "CLOSE": "关闭",
+        "SAVE": "保存",
+        "WARNING_NAME_EMPTY": "请输入项目名称",
+        "WARNING_NAME_INVALID_FORMAT": "项目名称格式不正确，只能包含小写字母、数字、连字符和下划线",
+        "WARNING_VERSION_EMPTY": "请输入版本号",
+        "WARNING_VERSION_INVALID_FORMAT": "版本号格式不正确，必须符合 x.y.z 格式(如 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "文档链接格式不正确，请输入有效的 URL 地址",
+        "SUCCESS_SAVE": "保存成功！",
+        "ERROR_SAVE_FAILED": "保存失败，请稍后重试",
+        "ERROR_LOAD_FAILED": "加载项目设置失败"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "项目设置",
+        "PINMAP": "引脚图",
+        "DOCUMENTATION": "文档",
+        "FEEDBACK": "反馈",
+        "NO_PINMAP": "该开发板没有提供引脚图",
+        "NO_DOCUMENTATION": "该开发板没有提供文档链接"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "请先选择串口"
     }
 }

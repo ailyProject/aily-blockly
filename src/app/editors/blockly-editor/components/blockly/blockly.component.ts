@@ -173,17 +173,6 @@ export class BlocklyComponent {
           };
 
           this.bitmapUploadService.sendUploadResponse(response);
-        } else {
-          // 用户取消或出错
-          // const response: BitmapUploadResponse = {
-          //   fieldId: request.fieldId,  // 添加字段ID
-          //   data: request.currentBitmap, // 返回原始数据
-          //   success: false,
-          //   // message: '图片处理已取消',
-          //   // timestamp: Date.now()
-          // };
-
-          // this.bitmapUploadService.sendUploadResponse(response);
         }
       });
     });
@@ -272,6 +261,8 @@ export class BlocklyComponent {
       resizeObserver.observe(this.blocklyDiv.nativeElement);
 
       (window as any)['Blockly'] = Blockly;
+      // 设置全局工作区引用，供 editBlockTool 使用
+      (window as any)['blocklyWorkspace'] = this.workspace;
       this.workspace.addChangeListener((event) => {
         try {
           this.codeGeneration();

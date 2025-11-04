@@ -5,7 +5,7 @@
   "appdata_path": {
     "win32": "%HOMEPATH%\\AppData\\Local\\aily-project",
     "linux": "~/.config/aily-project",
-    "darwin": "~/Library/Application Support/aily-project"
+    "darwin": "~/Library/aily-project"
   },
   "project_path": "%HOMEPATH%\\Documents\\aily-project",
   "npm_registry": [

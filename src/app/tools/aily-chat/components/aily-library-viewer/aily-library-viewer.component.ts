@@ -69,7 +69,7 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
       this.libraryInfo = this.configService.libraryDict[this.libraryPackageName];
       this.errorMessage = '';
     } catch (error) {
-      console.error('Error processing library data:', error);
+      console.warn('Error processing library data:', error);
       this.errorMessage = `数据处理失败: ${error.message}`;
     }
   }
@@ -90,7 +90,7 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
       // 可以添加成功提示
       this.chatService.sendTextToChat(`安装库包: ${this.libraryInfo.name}`, { sender: 'library', type: 'install', autoSend: true });
     } catch (error) {
-      console.error('安装失败:', error);
+      console.warn('安装失败:', error);
       this.errorMessage = `安装失败: ${error.message}`;
     }
   }

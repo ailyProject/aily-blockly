@@ -68,7 +68,7 @@ export class AilyStateViewerComponent implements OnInit, OnDestroy {
       }
       this.errorMessage = '';
     } catch (error) {
-      console.error('Error processing state data:', error);
+      console.warn('Error processing state data:', error);
       this.errorMessage = `数据处理失败: ${error.message}`;
       this.stateInfo = {
         text: this.errorMessage,

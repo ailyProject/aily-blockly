@@ -99,7 +99,7 @@ export async function deleteFileTool(
             content: resultMessage 
         };
     } catch (error: any) {
-        console.error("删除文件失败:", error);
+        console.warn("删除文件失败:", error);
         
         let errorMessage = `删除文件失败: ${error.message}`;
         if (error.code) {

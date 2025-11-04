@@ -94,7 +94,7 @@ export class MarkdownPipe implements PipeTransform {
    * 检查是否为特殊的 Aily 代码块类型
    */
   private isAilyCodeBlock(lang: string): boolean {
-    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid'];
+    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid', 'mermaid'];
     return ailyTypes.includes(lang);
   }/**
    * 渲染 Aily 特殊代码块为组件占位符
@@ -117,7 +117,7 @@ export class MarkdownPipe implements PipeTransform {
                   <!-- Aily ${type} Component Placeholder -->
               </div>`;
     } catch (error) {
-      console.error(`Error preparing ${type} component:`, error);
+      console.warn(`Error preparing ${type} component:`, error);
       return this.renderFallbackCodeBlock(code, type, error);
     }
   }
@@ -309,7 +309,7 @@ export class MarkdownPipe implements PipeTransform {
         return this.sanitizer.bypassSecurityTrustHtml(html);
       }),
       catchError((error) => {
-        console.error('Markdown parsing error:', error);
+        console.warn('Markdown parsing error:', error);
         // 如果解析失败，返回原始文本
         return of(this.sanitizer.bypassSecurityTrustHtml(markdownText));
       })

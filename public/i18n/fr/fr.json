@@ -15,6 +15,7 @@
         "DEBUG": "Déboguer",
         "TERMINAL": "Terminal",
         "TOOL_SERIAL": "Outil Série",
+        "SIMULATOR": "Simulateur",
         "AI": "IA",
         "APP_STORE": "Magasin d'Applications",
         "SETTINGS": "Paramètres",
@@ -68,7 +69,9 @@
             "THEME": "Paramètres de Thème",
             "COMPILATION": "Paramètres de Compilation",
             "REPOSITORY": "Paramètres de Dépôt",
-            "DEPENDENCIES": "Dépendances Globales"
+            "DEPENDENCIES": "Dépendances Globales",
+            "MCP": "MCP",
+            "DEVMODE": "Mode Développeur"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Dossier du Projet",
@@ -122,9 +125,11 @@
         "TITLE": "Gestionnaire de Bibliothèques",
         "BACK": "Retour",
         "SEARCH_LIBRARY": "Rechercher une bibliothèque",
+        "ALL": "Toutes les bibliothèques",
         "INSTALLED": "Installé",
         "CORE_LIBRARY": "Bibliothèque centrale",
         "IMPORT_LIBRARY": "Importer une bibliothèque locale",
+        "HELP": "Comment développer une bibliothèque",
         "DEV_HELP": "Aide développement",
         "REPORT_ISSUE": "Signaler problème",
         "INSTALL": "Installer",
@@ -146,8 +151,15 @@
         "AI": "IA",
         "IOT": "IoT",
         "OTHERS": "Autres",
-        "ALL": "Toutes les bibliothèques",
         "LIB_IN_USE": "Cette bibliothèque est actuellement utilisée. Veuillez supprimer les blocs associés de l'espace de travail avant de supprimer cette bibliothèque"
+    },
+    "COMPATIBILITY_DIALOG": {
+        "TITLE": "Avis de Compatibilité de Bibliothèque",
+        "WARNING_MESSAGE": "Cette bibliothèque peut ne pas fonctionner sur la carte actuelle. Voulez-vous continuer l'installation?",
+        "SUPPORTED_CORES": "Cœurs supportés par la bibliothèque:",
+        "CURRENT_BOARD_CORE": "Cœur de la carte actuelle:",
+        "CANCEL": "Annuler",
+        "CONTINUE_INSTALL": "Continuer l'installation"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Changer de carte",
@@ -173,6 +185,10 @@
     "UNSAVE_DIALOG": {
         "TITLE": "Modifications non enregistrées",
         "MESSAGE": "Vous avez des modifications non enregistrées. Voulez-vous les enregistrer ?",
+        "MESSAGE_OPEN": "Voulez-vous enregistrer les modifications du projet actuel avant d'en ouvrir un nouveau ?",
+        "MESSAGE_NEW": "Voulez-vous enregistrer les modifications du projet actuel avant d'en créer un nouveau ?",
+        "MESSAGE_CLOSE": "Voulez-vous enregistrer les modifications avant de fermer ?",
+        "MESSAGE_DEFAULT": "Voulez-vous enregistrer le projet actuel ?",
         "CANCEL": "Annuler",
         "SKIP_SAVE": "Ignorer l'enregistrement",
         "SAVE_AND_CONTINUE": "Enregistrer et continuer"
@@ -221,5 +237,49 @@
         "STOP": "Arrêter",
         "MODE_AGENT_FULL": "Mode Agent",
         "MODE_QA_FULL": "Mode Q&R"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "Paramètres du Projet",
+        "BASIC_INFO": "Informations de Base",
+        "NAME": "Nom du Projet",
+        "NAME_PLACEHOLDER": "Veuillez saisir le nom du projet",
+        "VERSION": "Version",
+        "VERSION_PLACEHOLDER": "Veuillez saisir la version, par ex.: 1.0.0",
+        "NICKNAME": "Surnom du Projet",
+        "NICKNAME_PLACEHOLDER": "Veuillez saisir le surnom du projet",
+        "DESCRIPTION": "Description",
+        "DESCRIPTION_PLACEHOLDER": "Veuillez saisir la description du projet",
+        "DOC_URL": "URL de Documentation",
+        "DOC_URL_PLACEHOLDER": "Veuillez saisir l'URL de documentation",
+        "PROJECT_CONFIG": "Configuration du Projet",
+        "NO_CONFIG": "Aucune information de configuration",
+        "DEPENDENCIES": "Dépendances",
+        "NO_DEPENDENCIES": "Aucune dépendance",
+        "ADD": "Ajouter",
+        "CONFIG_KEY_PLACEHOLDER": "Clé de configuration",
+        "CONFIG_VALUE_PLACEHOLDER": "Valeur de configuration",
+        "DEPENDENCY_NAME_PLACEHOLDER": "Nom du paquet",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "Version",
+        "CLOSE": "Fermer",
+        "SAVE": "Enregistrer",
+        "WARNING_NAME_EMPTY": "Veuillez saisir le nom du projet",
+        "WARNING_NAME_INVALID_FORMAT": "Format de nom de projet invalide. Seules les lettres minuscules, les chiffres, les traits d'union et les traits de soulignement sont autorisés",
+        "WARNING_VERSION_EMPTY": "Veuillez saisir la version",
+        "WARNING_VERSION_INVALID_FORMAT": "Format de version invalide. Doit suivre le format x.y.z (par ex. 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "Format d'URL de documentation invalide. Veuillez saisir une URL valide",
+        "SUCCESS_SAVE": "Enregistré avec succès!",
+        "ERROR_SAVE_FAILED": "Échec de l'enregistrement, veuillez réessayer plus tard",
+        "ERROR_LOAD_FAILED": "Échec du chargement des paramètres du projet"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "Paramètres du Projet",
+        "PINMAP": "Schéma des Broches",
+        "DOCUMENTATION": "Documentation",
+        "FEEDBACK": "Retour d'information",
+        "NO_PINMAP": "Schéma des broches non disponible pour cette carte",
+        "NO_DOCUMENTATION": "Documentation non disponible pour cette carte"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "Veuillez d'abord sélectionner un port série"
     }
 }

@@ -218,6 +218,47 @@
         "STOP": "Parar",
         "MODE_AGENT_FULL": "Modo Agente",
         "MODE_QA_FULL": "Modo P&R"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "Configurações do Projeto",
+        "BASIC_INFO": "Informações Básicas",
+        "NAME": "Nome do Projeto",
+        "NAME_PLACEHOLDER": "Por favor, insira o nome do projeto",
+        "VERSION": "Versão",
+        "VERSION_PLACEHOLDER": "Por favor, insira a versão, ex.: 1.0.0",
+        "NICKNAME": "Apelido do Projeto",
+        "NICKNAME_PLACEHOLDER": "Por favor, insira o apelido do projeto",
+        "DESCRIPTION": "Descrição",
+        "DESCRIPTION_PLACEHOLDER": "Por favor, insira a descrição do projeto",
+        "DOC_URL": "URL de Documentação",
+        "DOC_URL_PLACEHOLDER": "Por favor, insira a URL de documentação",
+        "PROJECT_CONFIG": "Configuração do Projeto",
+        "NO_CONFIG": "Sem informações de configuração",
+        "DEPENDENCIES": "Dependências",
+        "NO_DEPENDENCIES": "Sem dependências",
+        "ADD": "Adicionar",
+        "CONFIG_KEY_PLACEHOLDER": "Chave de configuração",
+        "CONFIG_VALUE_PLACEHOLDER": "Valor de configuração",
+        "DEPENDENCY_NAME_PLACEHOLDER": "Nome do pacote",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "Versão",
+        "CLOSE": "Fechar",
+        "SAVE": "Salvar",
+        "WARNING_NAME_EMPTY": "Por favor, insira o nome do projeto",
+        "WARNING_NAME_INVALID_FORMAT": "Formato de nome de projeto inválido. Apenas letras minúsculas, números, hífens e sublinhados são permitidos",
+        "WARNING_VERSION_EMPTY": "Por favor, insira a versão",
+        "WARNING_VERSION_INVALID_FORMAT": "Formato de versão inválido. Deve seguir o formato x.y.z (ex. 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "Formato de URL de documentação inválido. Por favor, insira uma URL válida",
+        "SUCCESS_SAVE": "Salvo com sucesso!",
+        "ERROR_SAVE_FAILED": "Falha ao salvar, por favor tente mais tarde",
+        "ERROR_LOAD_FAILED": "Falha ao carregar as configurações do projeto"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "Configurações do Projeto",
+        "PINMAP": "Mapa de Pinos",
+        "DOCUMENTATION": "Documentação",
+        "FEEDBACK": "Feedback",
+        "NO_PINMAP": "Mapa de pinos não disponível para esta placa",
+        "NO_DOCUMENTATION": "Documentação não disponível para esta placa"
     }
 }
 

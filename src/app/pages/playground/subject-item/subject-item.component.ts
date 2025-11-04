@@ -8,6 +8,7 @@ import { ProjectService } from '../../../services/project.service';
 import { ConfigService } from '../../../services/config.service';
 import { ElectronService } from '../../../services/electron.service';
 import { CmdService } from '../../../services/cmd.service';
+import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { PlaygroundService } from '../playground.service';
 import { UiService } from '../../../services/ui.service';
 
@@ -42,6 +43,7 @@ export class SubjectItemComponent {
     private message: NzMessageService,
     private electronService: ElectronService,
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private playgroundService: PlaygroundService,
     private uiService: UiService
   ) { }
@@ -102,7 +104,7 @@ export class SubjectItemComponent {
       const targetPathName = this.projectService.generateUniqueProjectName(this.projectService.projectRootPath, lastFolderName + '_');
       const targetPath = `${this.projectService.projectRootPath}\\${targetPathName}`;
       console.log('目标路径: ', targetPath);
-      await this.cmdService.runAsync(`cp -r "${examplePath}" "${targetPath}"`);
+      await this.crossPlatformCmdService.copyItem(examplePath, targetPath, true, true);
       this.uiService.updateFooterState({ state: 'done', text: `示例加载完成` });
       this.projectService.projectOpen(targetPath);
     } catch (error) {

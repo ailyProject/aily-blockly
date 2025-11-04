@@ -71,7 +71,7 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
       this.boardInfo = this.configService.boardDict[this.boardPackageName] || null;
       this.errorMessage = '';
     } catch (error) {
-      console.error('Error processing board data:', error);
+      console.warn('Error processing board data:', error);
       this.errorMessage = `数据处理失败: ${error.message}`;
     }
   }

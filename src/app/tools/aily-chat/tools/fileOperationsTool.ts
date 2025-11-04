@@ -1,5 +1,6 @@
 import { connectionStrategies } from "@joint/core";
 import { ToolUseResult } from "./tools";
+import { injectTodoReminder } from "./todoWriteTool";
 
 
 // 路径处理示例
@@ -155,13 +156,15 @@ export async function fileOperationsTool(
 
         // 验证路径是否有效
         if (!filePath || filePath.trim() === '') {
-            return { 
+            const toolResult = { 
                 is_error: true, 
                 content: `无效的文件路径: basePath="${basePath}", name="${name}"` 
             };
+            return injectTodoReminder(toolResult, 'fileOperationsTool');
         }
 
         let is_error = false;
+        let toolResult: any;
 
         switch (operation) {
             case 'list':
@@ -178,25 +181,30 @@ export async function fileOperationsTool(
                         };
                     })
                 );
-                return { is_error, content: JSON.stringify(fileDetails, null, 2) };
+                toolResult = { is_error, content: JSON.stringify(fileDetails, null, 2) };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             case 'read':
                 const fileContent = await window['fs'].readFileSync(filePath, 'utf-8');
-                return { is_error, content: fileContent };
+                toolResult = { is_error, content: fileContent };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             case 'tree':
                 const directoryTree = await buildDirectoryTree(filePath, 0, maxDepth);
                 if (!directoryTree) {
-                    return { is_error: true, content: `无法构建目录树: ${filePath}` };
+                    toolResult = { is_error: true, content: `无法构建目录树: ${filePath}` };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
-                return { is_error, content: JSON.stringify(directoryTree, null, 2) };
+                toolResult = { is_error, content: JSON.stringify(directoryTree, null, 2) };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             case 'create':
                 try {
                     if (is_folder) {
                         console.log(`创建文件夹: ${filePath}`);
                         await window['fs'].mkdirSync(filePath, { recursive: true });
-                        return { is_error, content: `Folder created at: ${filePath}` };
+                        toolResult = { is_error, content: `Folder created at: ${filePath}` };
+                        return injectTodoReminder(toolResult, 'fileOperationsTool');
                     } else {
                         const dir = window['path'].dirname(filePath);
                         console.log(`文件目录: ${dir}`);
@@ -211,14 +219,16 @@ export async function fileOperationsTool(
                         // 写入文件
                         console.log(`写入文件内容，长度: ${(content || '').length}`);
                         await window['fs'].writeFileSync(filePath, content || '', 'utf-8');
-                        return { is_error, content: `File created at: ${filePath}` };
+                        toolResult = { is_error, content: `File created at: ${filePath}` };
+                        return injectTodoReminder(toolResult, 'fileOperationsTool');
                     }
                 } catch (createError) {
-                    console.error('文件创建失败:', createError);
-                    return { 
+                    console.warn('文件创建失败:', createError);
+                    toolResult = { 
                         is_error: true, 
                         content: `文件创建失败: ${createError.message}\n路径: ${filePath}\n目录: ${window['path'].dirname(filePath)}` 
                     };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
 
             case 'edit':
@@ -226,13 +236,15 @@ export async function fileOperationsTool(
                     console.log(`编辑文件: ${filePath}`);
                     console.log(`写入内容长度: ${(content || '').length}`);
                     await window['fs'].writeFileSync(filePath, content || '', 'utf-8');
-                    return { is_error, content: `File updated at: ${filePath}` };
+                    toolResult = { is_error, content: `File updated at: ${filePath}` };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 } catch (editError) {
-                    console.error('文件编辑失败:', editError);
-                    return { 
+                    console.warn('文件编辑失败:', editError);
+                    toolResult = { 
                         is_error: true, 
                         content: `文件编辑失败: ${editError.message}\n路径: ${filePath}` 
                     };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
 
             case 'rename':
@@ -278,20 +290,24 @@ export async function fileOperationsTool(
                     await window['fs'].unlinkSync(filePath);
                 }
 
-                return { is_error, content: `Deleted ${is_folder ? 'folder' : 'file'} at: ${filePath} (backup at: ${backupPath})` };
+                toolResult = { is_error, content: `Deleted ${is_folder ? 'folder' : 'file'} at: ${filePath} (backup at: ${backupPath})` };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             case 'delete':
                 console.log(`Deleting ${is_folder ? 'folder' : 'file'} at: ${filePath}`);
                 if (is_folder) {
                     await window['fs'].rmdirSync(filePath, { recursive: true, force: true });
-                    return { is_error, content: `Folder deleted at: ${filePath}` };
+                    toolResult = { is_error, content: `Folder deleted at: ${filePath}` };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
                 try {
                     await window['fs'].unlinkSync(filePath, null);
-                    return { is_error, content: `File deleted at: ${filePath}` };
+                    toolResult = { is_error, content: `File deleted at: ${filePath}` };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 } catch (err) {
                     is_error = true;
-                    return { is_error, content: `File deletion failed: ${filePath}` };
+                    toolResult = { is_error, content: `File deletion failed: ${filePath}` };
+                    return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
 
             case 'exists':
@@ -299,25 +315,29 @@ export async function fileOperationsTool(
                 if (exists && is_folder !== undefined) {
                     const isDir = window['fs'].isDirectory(filePath);
                     if (is_folder !== isDir) {
-                        return {
+                        toolResult = {
                             is_error,
                             content: `false (path exists but is ${isDir ? 'a directory' : 'a file'})`
                         };
+                        return injectTodoReminder(toolResult, 'fileOperationsTool');
                     }
                 }
-                return { is_error, content: exists.toString() };
+                toolResult = { is_error, content: exists.toString() };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             case 'tree':
                 const tree = await buildDirectoryTree(filePath, 0, maxDepth);
-                return { is_error, content: JSON.stringify(tree, null, 2) };
+                toolResult = { is_error, content: JSON.stringify(tree, null, 2) };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             default:
-                return { is_error: true, content: `Invalid operation: ${operation}` };
+                toolResult = { is_error: true, content: `Invalid operation: ${operation}` };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
         }
     } catch (error: any) {
-        console.error("File operation error:", error);
-        console.error("错误堆栈:", error.stack);
-        console.error("操作参数:", JSON.stringify(params, null, 2));
+        console.warn("File operation error:", error);
+        console.warn("错误堆栈:", error.stack);
+        console.warn("操作参数:", JSON.stringify(params, null, 2));
         
         // 提供更详细的错误信息
         let errorMessage = `文件操作失败: ${error.message}`;
@@ -328,9 +348,10 @@ export async function fileOperationsTool(
             errorMessage += `\n错误路径: ${error.path}`;
         }
         
-        return { 
+        const toolResult = { 
             is_error: true, 
             content: errorMessage + `\n操作类型: ${params.operation}\n目标路径: ${params.path}${params.name ? '/' + params.name : ''}` 
         };
+        return injectTodoReminder(toolResult, 'fileOperationsTool');
     }
 }

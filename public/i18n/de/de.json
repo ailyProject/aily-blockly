@@ -15,6 +15,7 @@
         "DEBUG": "Debuggen",
         "TERMINAL": "Terminal",
         "TOOL_SERIAL": "Serielles Tool",
+        "SIMULATOR": "Simulator",
         "AI": "KI",
         "APP_STORE": "App Store",
         "SETTINGS": "Einstellungen",
@@ -128,6 +129,7 @@
         "INSTALLED": "Installiert",
         "CORE_LIBRARY": "Kernbibliothek",
         "IMPORT_LIBRARY": "Lokale Bibliothek importieren",
+        "HELP": "Wie man Bibliotheken entwickelt",
         "DEV_HELP": "Entwicklungshilfe",
         "REPORT_ISSUE": "Problem melden",
         "INSTALL": "Installieren",
@@ -150,6 +152,14 @@
         "IOT": "IoT",
         "OTHERS": "Andere",
         "LIB_IN_USE": "Diese Bibliothek wird derzeit verwendet. Bitte entfernen Sie zuerst die zugehörigen Blöcke aus dem Arbeitsbereich, bevor Sie diese Bibliothek entfernen"
+    },
+    "COMPATIBILITY_DIALOG": {
+        "TITLE": "Bibliothekskompatibilitätshinweis",
+        "WARNING_MESSAGE": "Diese Bibliothek funktioniert möglicherweise nicht auf dem aktuellen Board. Möchten Sie trotzdem mit der Installation fortfahren?",
+        "SUPPORTED_CORES": "Von der Bibliothek unterstützte Kerne:",
+        "CURRENT_BOARD_CORE": "Aktueller Board-Kern:",
+        "CANCEL": "Abbrechen",
+        "CONTINUE_INSTALL": "Installation fortsetzen"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Board wechseln",
@@ -175,6 +185,10 @@
     "UNSAVE_DIALOG": {
         "TITLE": "Nicht gespeicherte Änderungen",
         "MESSAGE": "Sie haben nicht gespeicherte Änderungen. Möchten Sie diese speichern?",
+        "MESSAGE_OPEN": "Möchten Sie die Änderungen am aktuellen Projekt speichern, bevor Sie ein neues öffnen?",
+        "MESSAGE_NEW": "Möchten Sie die Änderungen am aktuellen Projekt speichern, bevor Sie ein neues erstellen?",
+        "MESSAGE_CLOSE": "Möchten Sie die Änderungen vor dem Schließen speichern?",
+        "MESSAGE_DEFAULT": "Möchten Sie das aktuelle Projekt speichern?",
         "CANCEL": "Abbrechen",
         "SKIP_SAVE": "Speichern überspringen",
         "SAVE_AND_CONTINUE": "Speichern und fortfahren"
@@ -223,5 +237,49 @@
         "STOP": "Stoppen",
         "MODE_AGENT_FULL": "Agent-Modus",
         "MODE_QA_FULL": "F&A-Modus"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "Projekteinstellungen",
+        "BASIC_INFO": "Grundlegende Informationen",
+        "NAME": "Projektname",
+        "NAME_PLACEHOLDER": "Bitte Projektnamen eingeben",
+        "VERSION": "Version",
+        "VERSION_PLACEHOLDER": "Bitte Version eingeben, z.B.: 1.0.0",
+        "NICKNAME": "Projekt-Spitzname",
+        "NICKNAME_PLACEHOLDER": "Bitte Projekt-Spitzname eingeben",
+        "DESCRIPTION": "Beschreibung",
+        "DESCRIPTION_PLACEHOLDER": "Bitte Projektbeschreibung eingeben",
+        "DOC_URL": "Dokumentations-URL",
+        "DOC_URL_PLACEHOLDER": "Bitte Dokumentations-URL eingeben",
+        "PROJECT_CONFIG": "Projektkonfiguration",
+        "NO_CONFIG": "Keine Konfigurationsinformationen",
+        "DEPENDENCIES": "Abhängigkeiten",
+        "NO_DEPENDENCIES": "Keine Abhängigkeiten",
+        "ADD": "Hinzufügen",
+        "CONFIG_KEY_PLACEHOLDER": "Konfigurationsschlüssel",
+        "CONFIG_VALUE_PLACEHOLDER": "Konfigurationswert",
+        "DEPENDENCY_NAME_PLACEHOLDER": "Paketname",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "Version",
+        "CLOSE": "Schließen",
+        "SAVE": "Speichern",
+        "WARNING_NAME_EMPTY": "Bitte Projektnamen eingeben",
+        "WARNING_NAME_INVALID_FORMAT": "Ungültiges Projektnamenformat. Nur Kleinbuchstaben, Zahlen, Bindestriche und Unterstriche sind erlaubt",
+        "WARNING_VERSION_EMPTY": "Bitte Version eingeben",
+        "WARNING_VERSION_INVALID_FORMAT": "Ungültiges Versionsformat. Muss dem Format x.y.z folgen (z.B. 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "Ungültiges Dokumentations-URL-Format. Bitte geben Sie eine gültige URL ein",
+        "SUCCESS_SAVE": "Erfolgreich gespeichert!",
+        "ERROR_SAVE_FAILED": "Speichern fehlgeschlagen, bitte versuchen Sie es später erneut",
+        "ERROR_LOAD_FAILED": "Laden der Projekteinstellungen fehlgeschlagen"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "Projekteinstellungen",
+        "PINMAP": "Pin-Belegung",
+        "DOCUMENTATION": "Dokumentation",
+        "FEEDBACK": "Feedback",
+        "NO_PINMAP": "Pin-Belegung für dieses Board nicht verfügbar",
+        "NO_DOCUMENTATION": "Dokumentation für dieses Board nicht verfügbar"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "Bitte wählen Sie zuerst einen seriellen Port aus"
     }
 }

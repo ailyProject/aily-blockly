@@ -4,6 +4,7 @@ import { ActionState } from './ui.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NoticeService } from '../services/notice.service';
 import { CmdOutput, CmdService } from './cmd.service';
+import { CrossPlatformCmdService } from './cross-platform-cmd.service';
 import { ActionService } from './action.service';
 import { ElectronService } from './electron.service';
 
@@ -19,6 +20,7 @@ export class BuilderService {
     private actionService: ActionService,
     private projectService: ProjectService,
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private electronService: ElectronService
   ) {
     this.init();
@@ -83,12 +85,12 @@ export class BuilderService {
       console.log('清除编译缓存:', sketchPath);
       const buildPath = await getDefaultBuildPath(sketchFilePath);
       console.log('编译缓存路径:', buildPath);
-      await this.cmdService.runAsync(`Remove-Item -Path "${buildPath}" -Recurse -Force`)
+      await this.crossPlatformCmdService.removeItem(buildPath, true, true);
 
       // 删除项目下的.temp文件夹，如果存在的话
       if (window['fs'].existsSync(tempPath)) {
         console.log('删除项目下的.temp文件夹:', tempPath);
-        await this.cmdService.runAsync(`Remove-Item -Path "${tempPath}" -Recurse -Force`);
+        await this.crossPlatformCmdService.removeItem(tempPath, true, true);
       } else {
         console.log('.temp文件夹不存在，无需删除');
       }

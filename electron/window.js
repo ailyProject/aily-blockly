@@ -1,38 +1,33 @@
 // 窗口控制
-const { ipcMain, BrowserWindow } = require("electron");
+const { ipcMain, BrowserWindow, app } = require("electron");
 const path = require('path');
-const { app } = require("electron");
 
 function registerWindowHandlers(mainWindow) {
     // 添加一个映射来存储已打开的窗口
     const openWindows = new Map();
 
-    // 注册窗口焦点事件监听
-    const setupFocusListeners = (window) => {
-        window.on('focus', () => {
-            // 检查窗口是否已销毁以及 webContents 是否有效
-            if (!window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-                try {
-                    window.webContents.send('window-focus');
-                } catch (error) {
-                    console.error('Error sending window-focus:', error.message);
-                }
+    mainWindow.on('focus', () => {
+        try {
+            if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('window-focus');
             }
-        });
-        window.on('blur', () => {
-            // 检查窗口是否已销毁以及 webContents 是否有效
-            if (!window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-                try {
-                    window.webContents.send('window-blur');
-                } catch (error) {
-                    console.error('Error sending window-blur:', error.message);
-                }
-            }
-        });
-    };
 
-    // 为主窗口设置焦点监听
-    setupFocusListeners(mainWindow);
+        } catch (error) {
+            console.error('Error sending window-focus:', error.message);
+        }
+    });
+
+    mainWindow.on('blur', () => {
+        // 检查窗口是否已销毁以及 webContents 是否有效
+        try {
+            if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('window-blur');
+            }
+
+        } catch (error) {
+            console.error('Error sending window-blur:', error.message);
+        }
+    });
 
     ipcMain.on("window-open", (event, data) => {
         const windowUrl = data.path;
@@ -65,9 +60,6 @@ function registerWindowHandlers(mainWindow) {
                 preload: path.join(__dirname, "preload.js"),
             },
         });
-
-        // 为子窗口设置焦点监听
-        setupFocusListeners(subWindow);
 
         // 将新窗口添加到映射
         openWindows.set(windowUrl, subWindow);
@@ -102,7 +94,6 @@ function registerWindowHandlers(mainWindow) {
 
     ipcMain.on("window-close", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
-
         // 检查是否是主窗口，如果是主窗口，关闭整个应用程序
         if (senderWindow === mainWindow) {
             app.quit();
@@ -126,6 +117,12 @@ function registerWindowHandlers(mainWindow) {
         }
     });
 
+    // 监听获取全屏状态的请求
+    ipcMain.handle('window-is-full-screen', (event) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        return senderWindow.isFullScreen();
+    });
+
     // 检查窗口是否获得焦点（同步）
     ipcMain.on("window-is-focused", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
@@ -135,20 +132,8 @@ function registerWindowHandlers(mainWindow) {
 
     ipcMain.on("window-go-main", (event, data) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        
-        // 检查主窗口的有效性
-        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-            try {
-                mainWindow.webContents.send("window-go-main", data.replace('/', ''));
-            } catch (error) {
-                console.error('Error sending window-go-main:', error.message);
-            }
-        }
-        
-        // 检查发送窗口的有效性
-        if (senderWindow && !senderWindow.isDestroyed()) {
-            senderWindow.close();
-        }
+        mainWindow.webContents.send("window-go-main", data.replace('/', ''));
+        senderWindow.close();
     });
 
     ipcMain.on("window-alwaysOnTop", (event, alwaysOnTop) => {
@@ -159,11 +144,6 @@ function registerWindowHandlers(mainWindow) {
     ipcMain.handle("window-send", (event, data) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         if (data.to == 'main') {
-            // 检查主窗口的有效性
-            if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isDestroyed()) {
-                return Promise.resolve("main window not available");
-            }
-            
             // 创建唯一消息ID
             const messageId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
             // 创建Promise等待响应
@@ -171,7 +151,7 @@ function registerWindowHandlers(mainWindow) {
                 // 设置一次性监听器接收响应
                 const responseListener = (event, response) => {
                     if (response.messageId === messageId) {
-                        // 收到对应ID的响应,移除监听器并返回结果
+                        // 收到对应ID的响应，移除监听器并返回结果
                         ipcMain.removeListener('main-window-response', responseListener);
                         // console.log('window-send response', response);
                         resolve(response.data || "success");
@@ -179,21 +159,12 @@ function registerWindowHandlers(mainWindow) {
                 };
                 // 注册监听器
                 ipcMain.on('main-window-response', responseListener);
-                
-                // 发送消息到main窗口,带上messageId
-                try {
-                    mainWindow.webContents.send("window-receive", {
-                        form: senderWindow.id,
-                        data: data.data,
-                        messageId: messageId
-                    });
-                } catch (error) {
-                    console.error('Error sending to main window:', error.message);
-                    ipcMain.removeListener('main-window-response', responseListener);
-                    resolve("send error");
-                    return;
-                }
-                
+                // 发送消息到main窗口，带上messageId
+                mainWindow.webContents.send("window-receive", {
+                    form: senderWindow.id,
+                    data: data.data,
+                    messageId: messageId
+                });
                 // 自定义超时或默认9秒超时
                 setTimeout(() => {
                     ipcMain.removeListener('main-window-response', responseListener);
@@ -207,14 +178,7 @@ function registerWindowHandlers(mainWindow) {
     // 用于sub窗口改变main窗口状态显示
     ipcMain.on('state-update', (event, data) => {
         console.log('state-update: ', data);
-        // 检查主窗口的有效性
-        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-            try {
-                mainWindow.webContents.send('state-update', data);
-            } catch (error) {
-                console.error('Error sending state-update:', error.message);
-            }
-        }
+        mainWindow.webContents.send('state-update', data);
     });
 }
 

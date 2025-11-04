@@ -1,0 +1,118 @@
+<app-base-dialog [title]="'PROJECT_SETTING_DIALOG.TITLE' | translate" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
+    [loading]="isSubmitting" (closeDialog)="onCloseDialog()" (buttonClick)="onButtonClick($event)">
+
+    <div class="project-setting-form">
+        <!-- 基本信息 -->
+        <div class="section">
+            <!-- <h3 class="section-title">{{ 'PROJECT_SETTING_DIALOG.BASIC_INFO' | translate }}</h3> -->
+            
+            <div class="form-item">
+                <label class="form-label">
+                    {{ 'PROJECT_SETTING_DIALOG.NAME' | translate }}
+                    <span class="required">*</span>
+                </label>
+                <input class="form-control" nz-input [(ngModel)]="projectSettings.name" 
+                    [placeholder]="'PROJECT_SETTING_DIALOG.NAME_PLACEHOLDER' | translate"
+                    [disabled]="isSubmitting">
+            </div>
+
+            <div class="form-item">
+                <label class="form-label">
+                    {{ 'PROJECT_SETTING_DIALOG.VERSION' | translate }}
+                    <span class="required">*</span>
+                </label>
+                <input class="form-control" nz-input [(ngModel)]="projectSettings.version" 
+                    [placeholder]="'PROJECT_SETTING_DIALOG.VERSION_PLACEHOLDER' | translate"
+                    [disabled]="isSubmitting">
+            </div>
+
+            <div class="form-item">
+                <label class="form-label">
+                    {{ 'PROJECT_SETTING_DIALOG.NICKNAME' | translate }}
+                </label>
+                <input class="form-control" nz-input [(ngModel)]="projectSettings.nickname" 
+                    [placeholder]="'PROJECT_SETTING_DIALOG.NICKNAME_PLACEHOLDER' | translate"
+                    [disabled]="isSubmitting">
+            </div>
+
+            <div class="form-item">
+                <label class="form-label">
+                    {{ 'PROJECT_SETTING_DIALOG.DESCRIPTION' | translate }}
+                </label>
+                <textarea nz-input [(ngModel)]="projectSettings.description" 
+                    [placeholder]="'PROJECT_SETTING_DIALOG.DESCRIPTION_PLACEHOLDER' | translate" 
+                    [rows]="3"
+                    class="form-control" [disabled]="isSubmitting">
+                </textarea>
+            </div>
+
+            <div class="form-item">
+                <label class="form-label">
+                    {{ 'PROJECT_SETTING_DIALOG.DOC_URL' | translate }}
+                </label>
+                <input class="form-control" nz-input [(ngModel)]="projectSettings.doc_url" 
+                    [placeholder]="'PROJECT_SETTING_DIALOG.DOC_URL_PLACEHOLDER' | translate"
+                    [disabled]="isSubmitting">
+            </div>
+        </div>
+
+        <!-- 项目配置 -->
+        <!-- <div class="section">
+            <h3 class="section-title">
+                {{ 'PROJECT_SETTING_DIALOG.PROJECT_CONFIG' | translate }}
+                <button nz-button nzType="link" nzSize="small" class="add-btn" (click)="addProjectConfig()" [disabled]="isSubmitting">
+                    <span>+ {{ 'PROJECT_SETTING_DIALOG.ADD' | translate }}</span>
+                </button>
+            </h3>
+            <div class="config-list">
+                @if (projectConfigArray.length > 0) {
+                    @for (config of projectConfigArray; track $index; let i = $index) {
+                        <div class="config-item-editable">
+                            <input class="config-key-input" nz-input [(ngModel)]="config.key" 
+                                [placeholder]="'PROJECT_SETTING_DIALOG.CONFIG_KEY_PLACEHOLDER' | translate"
+                                [disabled]="isSubmitting">
+                            <input class="config-value-input" nz-input [(ngModel)]="config.value" 
+                                [placeholder]="'PROJECT_SETTING_DIALOG.CONFIG_VALUE_PLACEHOLDER' | translate"
+                                [disabled]="isSubmitting">
+                            <button nz-button nzType="text" nzDanger class="delete-btn" (click)="deleteProjectConfig(i)" [disabled]="isSubmitting">
+                                <span class="icon-delete">×</span>
+                            </button>
+                        </div>
+                    }
+                } @else {
+                    <div class="empty-message">{{ 'PROJECT_SETTING_DIALOG.NO_CONFIG' | translate }}</div>
+                }
+            </div>
+        </div> -->
+
+        <!-- 依赖项 -->
+        <!-- <div class="section">
+            <h3 class="section-title">
+                {{ 'PROJECT_SETTING_DIALOG.DEPENDENCIES' | translate }}
+                <button nz-button nzType="link" nzSize="small" class="add-btn" (click)="addDependency()" [disabled]="isSubmitting">
+                    <span>+ {{ 'PROJECT_SETTING_DIALOG.ADD' | translate }}</span>
+                </button>
+            </h3>
+            <div class="dependency-list">
+                @if (dependenciesArray.length > 0) {
+                    @for (dep of dependenciesArray; track $index; let i = $index) {
+                        <div class="dependency-item-editable">
+                            <input class="dependency-name-input" nz-input [(ngModel)]="dep.key" 
+                                [placeholder]="'PROJECT_SETTING_DIALOG.DEPENDENCY_NAME_PLACEHOLDER' | translate"
+                                [disabled]="isSubmitting">
+                            <input class="dependency-version-input" nz-input [(ngModel)]="dep.value" 
+                                [placeholder]="'PROJECT_SETTING_DIALOG.DEPENDENCY_VERSION_PLACEHOLDER' | translate"
+                                [disabled]="isSubmitting">
+                            <button nz-button nzType="text" nzDanger class="delete-btn" (click)="deleteDependency(i)" [disabled]="isSubmitting">
+                                <span class="icon-delete">×</span>
+                            </button>
+                        </div>
+                    }
+                } @else {
+                    <div class="empty-message">{{ 'PROJECT_SETTING_DIALOG.NO_DEPENDENCIES' | translate }}</div>
+                }
+            </div>
+        </div> -->
+    </div>
+
+</app-base-dialog>

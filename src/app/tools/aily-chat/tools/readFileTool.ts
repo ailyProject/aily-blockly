@@ -1,4 +1,5 @@
 import { ToolUseResult } from "./tools";
+import { injectTodoReminder } from "./todoWriteTool";
 
 // 路径处理函数
 function normalizePath(inputPath: string): string {
@@ -49,46 +50,51 @@ export async function readFileTool(
 
         // 验证路径是否有效
         if (!filePath || filePath.trim() === '') {
-            return { 
+            const toolResult = { 
                 is_error: true, 
                 content: `无效的文件路径: "${filePath}"` 
             };
+            return injectTodoReminder(toolResult, 'readFileTool');
         }
 
         // 检查文件是否存在
         if (!window['fs'].existsSync(filePath)) {
-            return {
+            const toolResult = {
                 is_error: true,
                 content: `文件不存在: ${filePath}`
             };
+            return injectTodoReminder(toolResult, 'readFileTool');
         }
 
         // 检查是否为文件（不是目录）
         const isDirectory = await window['fs'].isDirectory(filePath);
         if (isDirectory) {
-            return {
+            const toolResult = {
                 is_error: true,
                 content: `路径是目录而不是文件: ${filePath}`
             };
+            return injectTodoReminder(toolResult, 'readFileTool');
         }
 
         const fileContent = await window['fs'].readFileSync(filePath, encoding);
         
-        return { 
+        const toolResult = { 
             is_error: false, 
             content: fileContent 
         };
+        return injectTodoReminder(toolResult, 'readFileTool');
     } catch (error: any) {
-        console.error("读取文件失败:", error);
+        console.warn("读取文件失败:", error);
         
         let errorMessage = `读取文件失败: ${error.message}`;
         if (error.code) {
             errorMessage += `\n错误代码: ${error.code}`;
         }
         
-        return { 
+        const toolResult = { 
             is_error: true, 
             content: errorMessage + `\n目标文件: ${params.path}` 
         };
+        return injectTodoReminder(toolResult, 'readFileTool');
     }
 }

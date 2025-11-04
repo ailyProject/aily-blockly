@@ -15,6 +15,7 @@
         "DEBUG": "デバッグ",
         "TERMINAL": "ターミナル",
         "TOOL_SERIAL": "シリアルツール",
+        "SIMULATOR": "シミュレータ",
         "AI": "AI",
         "APP_STORE": "アプリストア",
         "SETTINGS": "設定",
@@ -68,7 +69,9 @@
             "THEME": "テーマ設定",
             "COMPILATION": "コンパイル設定",
             "REPOSITORY": "リポジトリ設定",
-            "DEPENDENCIES": "グローバル依存関係"
+            "DEPENDENCIES": "グローバル依存関係",
+            "MCP": "MCP",
+            "DEVMODE": "開発者モード"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "プロジェクトフォルダ",
@@ -87,13 +90,16 @@
             "APPLY": "適用"
         }
     },
-    "LIB_MANAGER": {
+    "PROJECT_NEW": {
+        "TITLE": "新規プロジェクト",
         "TITLE": "ライブラリマネージャー",
         "BACK": "戻る",
         "SEARCH_LIBRARY": "ライブラリを検索",
+        "ALL": "すべてのライブラリ",
         "INSTALLED": "インストール済み",
         "CORE_LIBRARY": "コアライブラリ",
         "IMPORT_LIBRARY": "ローカルライブラリをインポート",
+        "HELP": "ライブラリの開発方法",
         "DEV_HELP": "開発ヘルプ",
         "REPORT_ISSUE": "問題報告",
         "INSTALL": "インストール",
@@ -118,7 +124,15 @@
         "ALL": "すべてのライブラリ",
         "LIB_IN_USE": "このライブラリは現在使用中です。このライブラリを削除する前に、ワークスペースから関連するブロックを削除してください"
     },
-    "PROJECT_NEW": {
+    "COMPATIBILITY_DIALOG": {
+        "TITLE": "ライブラリ互換性通知",
+        "WARNING_MESSAGE": "このライブラリは現在のボードで動作しない可能性があります。インストールを続けますか？",
+        "SUPPORTED_CORES": "ライブラリがサポートするコア：",
+        "CURRENT_BOARD_CORE": "現在のボードのコア：",
+        "CANCEL": "キャンセル",
+        "CONTINUE_INSTALL": "インストールを続ける"
+    },
+    "BOARD_SELECTOR": {
         "TITLE": "新規プロジェクト",
         "STEPS": {
             "SELECT_BOARD": "ボードを選択",
@@ -225,5 +239,49 @@
         "STOP": "停止",
         "MODE_AGENT_FULL": "エージェントモード",
         "MODE_QA_FULL": "Q&Aモード"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "プロジェクト設定",
+        "BASIC_INFO": "基本情報",
+        "NAME": "プロジェクト名",
+        "NAME_PLACEHOLDER": "プロジェクト名を入力してください",
+        "VERSION": "バージョン",
+        "VERSION_PLACEHOLDER": "バージョンを入力してください（例：1.0.0）",
+        "NICKNAME": "プロジェクトニックネーム",
+        "NICKNAME_PLACEHOLDER": "プロジェクトニックネームを入力してください",
+        "DESCRIPTION": "説明",
+        "DESCRIPTION_PLACEHOLDER": "プロジェクトの説明を入力してください",
+        "DOC_URL": "ドキュメントURL",
+        "DOC_URL_PLACEHOLDER": "ドキュメントURLを入力してください",
+        "PROJECT_CONFIG": "プロジェクト設定",
+        "NO_CONFIG": "設定情報がありません",
+        "DEPENDENCIES": "依存関係",
+        "NO_DEPENDENCIES": "依存関係がありません",
+        "ADD": "追加",
+        "CONFIG_KEY_PLACEHOLDER": "設定キー",
+        "CONFIG_VALUE_PLACEHOLDER": "設定値",
+        "DEPENDENCY_NAME_PLACEHOLDER": "パッケージ名",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "バージョン",
+        "CLOSE": "閉じる",
+        "SAVE": "保存",
+        "WARNING_NAME_EMPTY": "プロジェクト名を入力してください",
+        "WARNING_NAME_INVALID_FORMAT": "プロジェクト名の形式が正しくありません。小文字、数字、ハイフン、アンダースコアのみ使用できます",
+        "WARNING_VERSION_EMPTY": "バージョンを入力してください",
+        "WARNING_VERSION_INVALID_FORMAT": "バージョン形式が正しくありません。x.y.z形式に従ってください（例：1.0.0）",
+        "WARNING_DOC_URL_INVALID_FORMAT": "ドキュメントURLの形式が正しくありません。有効なURLを入力してください",
+        "SUCCESS_SAVE": "保存に成功しました！",
+        "ERROR_SAVE_FAILED": "保存に失敗しました。後でもう一度お試しください",
+        "ERROR_LOAD_FAILED": "プロジェクト設定の読み込みに失敗しました"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "プロジェクト設定",
+        "PINMAP": "ピン配置図",
+        "DOCUMENTATION": "ドキュメント",
+        "FEEDBACK": "フィードバック",
+        "NO_PINMAP": "このボードのピン配置図は利用できません",
+        "NO_DOCUMENTATION": "このボードのドキュメントは利用できません"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "先にシリアルポートを選択してください"
     }
 }

@@ -133,7 +133,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       try {
         await this.splitAndRenderContent(content);
       } catch (fallbackError) {
-        console.error('Even fallback render failed:', fallbackError);
+        console.warn('Even fallback render failed:', fallbackError);
         this.contentDiv.nativeElement.textContent = content;
         this.updateRenderState(content);
       }
@@ -280,7 +280,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       this.updateRenderState(content);
 
     } catch (error) {
-      console.error('Error in splitAndRenderContent:', error);
+      console.warn('Error in splitAndRenderContent:', error);
       // 降级处理
       if (this.contentDiv?.nativeElement) {
         this.contentDiv.nativeElement.textContent = content;
@@ -350,7 +350,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       this.updateRenderState(currentContent);
 
     } catch (error) {
-      console.error('Error in processIncrementalRender:', error);
+      console.warn('Error in processIncrementalRender:', error);
       // 降级到完整重新渲染
       await this.splitAndRenderContent(currentContent);
     }

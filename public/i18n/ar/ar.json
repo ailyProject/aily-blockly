@@ -15,6 +15,7 @@
         "DEBUG": "تصحيح الأخطاء",
         "TERMINAL": "الطرفية",
         "TOOL_SERIAL": "أداة المنفذ التسلسلي",
+        "SIMULATOR": "المحاكي",
         "AI": "الذكاء الاصطناعي",
         "APP_STORE": "متجر التطبيقات",
         "SETTINGS": "الإعدادات",
@@ -68,7 +69,9 @@
             "THEME": "إعدادات المظهر",
             "COMPILATION": "إعدادات التجميع",
             "REPOSITORY": "إعدادات المستودع",
-            "DEPENDENCIES": "التبعيات العامة"
+            "DEPENDENCIES": "التبعيات العامة",
+            "MCP": "MCP",
+            "DEVMODE": "وضع المطور"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "مجلد المشروع",
@@ -122,9 +125,11 @@
         "TITLE": "مدير المكتبات",
         "BACK": "رجوع",
         "SEARCH_LIBRARY": "بحث في المكتبات",
+        "ALL": "كل المكتبات",
         "INSTALLED": "مثبت",
         "CORE_LIBRARY": "مكتبة أساسية",
         "IMPORT_LIBRARY": "استيراد مكتبة محلية",
+        "HELP": "كيفية تطوير المكتبة",
         "DEV_HELP": "مساعدة التطوير",
         "REPORT_ISSUE": "الإبلاغ عن مشكلة",
         "INSTALL": "تثبيت",
@@ -133,6 +138,9 @@
         "INSTALLING": "جاري التثبيت",
         "UNINSTALLING": "جاري إلغاء التثبيت",
         "UNINSTALLED": "تم إلغاء التثبيت",
+        "IMPORTING": "جاري الاستيراد",
+        "IMPORTED": "الاستيراد ناجح",
+        "IMPORT_FAILED": "فشل الاستيراد",
         "SENSORS": "المستشعرات",
         "ACTUATORS": "المشغلات",
         "COMMUNICATION": "الاتصالات",
@@ -143,8 +151,15 @@
         "AI": "الذكاء الاصطناعي",
         "IOT": "إنترنت الأشياء",
         "OTHERS": "أخرى",
-        "ALL": "كل المكتبات",
         "LIB_IN_USE": "هذه المكتبة قيد الاستخدام حاليًا. يرجى إزالة الكتل ذات الصلة من مساحة العمل أولاً قبل إزالة هذه المكتبة"
+    },
+    "COMPATIBILITY_DIALOG": {
+        "TITLE": "إشعار توافق المكتبة",
+        "WARNING_MESSAGE": "قد لا تعمل هذه المكتبة على اللوحة الحالية. هل تريد الاستمرار في التثبيت؟",
+        "SUPPORTED_CORES": "النوى المدعومة من المكتبة:",
+        "CURRENT_BOARD_CORE": "نواة اللوحة الحالية:",
+        "CANCEL": "إلغاء",
+        "CONTINUE_INSTALL": "استمرار التثبيت"
     },
     "BOARD_SELECTOR": {
         "TITLE": "تبديل اللوحة",
@@ -170,6 +185,10 @@
     "UNSAVE_DIALOG": {
         "TITLE": "تغييرات غير محفوظة",
         "MESSAGE": "لديك تغييرات غير محفوظة. هل تريد حفظها؟",
+        "MESSAGE_OPEN": "هل تريد حفظ التغييرات في المشروع الحالي قبل فتح مشروع جديد؟",
+        "MESSAGE_NEW": "هل تريد حفظ التغييرات في المشروع الحالي قبل إنشاء مشروع جديد؟",
+        "MESSAGE_CLOSE": "هل تريد حفظ التغييرات قبل الإغلاق؟",
+        "MESSAGE_DEFAULT": "هل تريد حفظ المشروع الحالي؟",
         "CANCEL": "إلغاء",
         "SKIP_SAVE": "تخطي الحفظ",
         "SAVE_AND_CONTINUE": "الحفظ والمتابعة"
@@ -218,5 +237,49 @@
         "STOP": "إيقاف",
         "MODE_AGENT_FULL": "وضع الوكيل",
         "MODE_QA_FULL": "وضع سؤال وجواب"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "إعدادات المشروع",
+        "BASIC_INFO": "المعلومات الأساسية",
+        "NAME": "اسم المشروع",
+        "NAME_PLACEHOLDER": "يرجى إدخال اسم المشروع",
+        "VERSION": "الإصدار",
+        "VERSION_PLACEHOLDER": "يرجى إدخال الإصدار، مثل: 1.0.0",
+        "NICKNAME": "الاسم المستعار للمشروع",
+        "NICKNAME_PLACEHOLDER": "يرجى إدخال الاسم المستعار للمشروع",
+        "DESCRIPTION": "الوصف",
+        "DESCRIPTION_PLACEHOLDER": "يرجى إدخال وصف المشروع",
+        "DOC_URL": "رابط الوثائق",
+        "DOC_URL_PLACEHOLDER": "يرجى إدخال رابط الوثائق",
+        "PROJECT_CONFIG": "تكوين المشروع",
+        "NO_CONFIG": "لا توجد معلومات تكوين",
+        "DEPENDENCIES": "التبعيات",
+        "NO_DEPENDENCIES": "لا توجد تبعيات",
+        "ADD": "إضافة",
+        "CONFIG_KEY_PLACEHOLDER": "مفتاح التكوين",
+        "CONFIG_VALUE_PLACEHOLDER": "قيمة التكوين",
+        "DEPENDENCY_NAME_PLACEHOLDER": "اسم الحزمة",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "الإصدار",
+        "CLOSE": "إغلاق",
+        "SAVE": "حفظ",
+        "WARNING_NAME_EMPTY": "يرجى إدخال اسم المشروع",
+        "WARNING_NAME_INVALID_FORMAT": "تنسيق اسم المشروع غير صحيح. يُسمح فقط بالأحرف الصغيرة والأرقام والشرطات والشرطات السفلية",
+        "WARNING_VERSION_EMPTY": "يرجى إدخال الإصدار",
+        "WARNING_VERSION_INVALID_FORMAT": "تنسيق الإصدار غير صحيح. يجب اتباع تنسيق x.y.z (مثل 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "تنسيق رابط الوثائق غير صحيح. يرجى إدخال عنوان URL صالح",
+        "SUCCESS_SAVE": "تم الحفظ بنجاح!",
+        "ERROR_SAVE_FAILED": "فشل الحفظ، يرجى المحاولة لاحقًا",
+        "ERROR_LOAD_FAILED": "فشل تحميل إعدادات المشروع"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "إعدادات المشروع",
+        "PINMAP": "خريطة الدبابيس",
+        "DOCUMENTATION": "التوثيق",
+        "FEEDBACK": "ملاحظات",
+        "NO_PINMAP": "خريطة الدبابيس غير متوفرة لهذه اللوحة",
+        "NO_DOCUMENTATION": "التوثيق غير متوفر لهذه اللوحة"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "يرجى تحديد منفذ تسلسلي أولاً"
     }
 }

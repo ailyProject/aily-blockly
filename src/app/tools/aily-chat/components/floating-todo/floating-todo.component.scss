@@ -1,0 +1,267 @@
+.todo-panel {
+  background: var(--vscode-sideBar-background, #252526);
+  color: var(--vscode-sideBar-foreground, #cccccc);
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  font-size: 13px;
+  border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+  
+  .todo-panel-header {
+    height: 30px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+    user-select: none;
+    background: var(--vscode-sideBar-background, #252526);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    
+    &:hover {
+      background: var(--vscode-list-hoverBackground, #2a2d2e);
+      
+      .header-actions {
+        opacity: 1;
+      }
+    }
+
+    .header-content {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      flex: 1;
+
+      .panel-icon {
+        font-size: 12px;
+        color: var(--vscode-icon-foreground, #c5c5c5);
+        transition: transform 0.2s ease;
+
+        &.expanded {
+          transform: rotate(90deg);
+        }
+      }
+
+      .panel-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--vscode-sideBar-foreground, #cccccc);
+        text-transform: none;
+        letter-spacing: 0.5px;
+      }
+    }
+    
+    .header-actions {
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      
+      .delete-icon {
+        font-size: 12px;
+        color: var(--vscode-icon-foreground, #c5c5c5);
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 2px;
+        transition: all 0.2s ease;
+        
+        &:hover {
+          color: var(--vscode-errorForeground, #f48771);
+          background: var(--vscode-toolbar-hoverBackground, #37373a);
+        }
+      }
+    }
+  }
+
+  .todo-panel-content {
+    background: var(--vscode-sideBar-background, #252526);
+    max-height: 270px; /* 为header留出30px，限制内容最大高度 */
+    overflow-y: auto; /* 内容超出时显示滚动条 */
+
+    /* 滚动条样式 */
+    &::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: var(--vscode-scrollbar-shadow, transparent);
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: var(--vscode-scrollbarSlider-background, #424242);
+      border-radius: 3px;
+    }
+
+    &::-webkit-scrollbar-thumb:hover {
+      background: var(--vscode-scrollbarSlider-hoverBackground, #4f4f4f);
+    }
+
+    .todo-list {
+      .todo-item {
+        display: flex;
+        align-items: center;
+        height: 30px;
+        padding: 0 12px;
+        gap: 8px;
+        border-bottom: 1px solid var(--vscode-panel-border, rgba(60, 60, 60, 0.3));
+        cursor: pointer;
+        
+        &:hover {
+          background: var(--vscode-list-hoverBackground, #2a2d2e);
+        }
+
+        &.completed {
+          opacity: 0.6;
+          
+          .todo-content .todo-text {
+            text-decoration: line-through;
+          }
+        }
+
+        .todo-status-icon {
+          padding: 0;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 16px;
+          height: 16px;
+          
+          i {
+            font-size: 12px;
+            
+            &.status-pending {
+              color: var(--vscode-charts-orange, #ff8c00);
+            }
+            
+            &.status-in-progress {
+              color: var(--vscode-charts-blue, #007acc);
+            }
+            
+            &.status-completed {
+              color: var(--vscode-charts-green, #4ec9b0);
+            }
+          }
+
+          &:hover i {
+            opacity: 0.8;
+          }
+        }
+
+        .todo-content {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          
+          .todo-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            width: 100%;
+          }
+          
+          .todo-text {
+            color: var(--vscode-editor-foreground, #d4d4d4);
+            font-size: 12px;
+            line-height: 1;
+            word-wrap: break-word;
+            flex: 1;
+            
+            &.completed-text {
+              color: var(--vscode-disabledForeground, #656565);
+              text-decoration: line-through;
+            }
+          }
+
+          .todo-priority {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            flex-shrink: 0;
+            line-height: 1;
+            
+            &.priority-high {
+              background: var(--vscode-charts-red, #f85149);
+              color: white;
+            }
+            
+            &.priority-medium {
+              background: var(--vscode-charts-orange, #ff8c00);
+              color: white;
+            }
+            
+            &.priority-low {
+              background: var(--vscode-charts-gray, #6e7681);
+              color: var(--vscode-editor-foreground, #d4d4d4);
+            }
+          }
+        }
+      }
+    }
+    
+    .empty-state {
+      padding: 20px 12px;
+      text-align: center;
+      color: var(--vscode-descriptionForeground, #999999);
+      
+      .empty-message {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        
+        i {
+          font-size: 24px;
+          opacity: 0.5;
+        }
+        
+        span {
+          font-size: 12px;
+        }
+      }
+    }
+  }
+}
+
+/* 动画效果 */
+.todo-panel-content {
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .todo-panel {
+    .todo-item {
+      padding: 8px 10px;
+      
+      .todo-content .todo-text {
+        font-size: 11px;
+      }
+    }
+  }
+}
+
+/* VSCode主题适配 */
+:root {
+  --todo-panel-background: var(--vscode-sideBar-background, #252526);
+  --todo-panel-foreground: var(--vscode-sideBar-foreground, #cccccc);
+  --todo-panel-border: var(--vscode-panel-border, #3c3c3c);
+  --todo-hover-background: var(--vscode-list-hoverBackground, #2a2d2e);
+}

@@ -123,7 +123,7 @@ export class ReloadAbiJsonToolService {
       };
 
     } catch (error: any) {
-      console.error('重新加载 ABI JSON 数据失败:', error);
+      console.warn('重新加载 ABI JSON 数据失败:', error);
       
       let errorMessage = '重新加载 ABI JSON 数据失败';
       if (error.message) {
@@ -261,7 +261,7 @@ export async function reloadAbiJsonToolSimple(
     };
 
   } catch (error: any) {
-    console.error('重新加载 ABI JSON 数据失败:', error);
+    console.warn('重新加载 ABI JSON 数据失败:', error);
     
     return {
       content: `重新加载 ABI JSON 数据失败: ${error.message || error}`,

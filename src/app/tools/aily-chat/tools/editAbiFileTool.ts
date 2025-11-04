@@ -162,7 +162,7 @@ export async function findAbiFilesTool(
             content: `找到 ${abiFiles.length} 个ABI文件:\n${JSON.stringify(result, null, 2)}`
         };
     } catch (error: any) {
-        console.error("查找ABI文件失败:", error);
+        console.warn("查找ABI文件失败:", error);
         
         return {
             is_error: true,
@@ -389,7 +389,7 @@ export async function editAbiFileTool(
             content: `ABI文件编辑成功: ${filePath}\n操作: ${operationDescription}` 
         };
     } catch (error: any) {
-        console.error("编辑ABI文件失败:", error);
+        console.warn("编辑ABI文件失败:", error);
         
         let errorMessage = `编辑ABI文件失败: ${error.message}`;
         if (error.code) {

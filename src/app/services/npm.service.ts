@@ -322,7 +322,7 @@ export class NpmService {
 
   // 安装工具
   async installTool(tool: any) {
-    await this.installPackage(tool, '工具');
+    await this.installPackage(tool, '工具', tool?.version);
   }
 
   // 安装SDK
@@ -332,7 +332,7 @@ export class NpmService {
 
   // 安装编译器
   async installCompiler(compiler: any) {
-    await this.installPackage(compiler, '编译器');
+    await this.installPackage(compiler, '编译器', compiler?.version);
   }
 
   // 通用卸载方法

@@ -66,7 +66,7 @@ export class McpService {
       this.tools = Array.from(toolMap.values());
       console.log('MCP服务初始化完成，加载工具数量:', this.tools.length);
     } catch (error) {
-      console.error('MCP服务初始化失败:', error);
+      console.warn('MCP服务初始化失败:', error);
       this.isInitialized = false; // 初始化失败时重置标志位
       throw error;
     }
@@ -113,7 +113,7 @@ export class McpService {
       // 返回配置
       return config;
     } catch (error) {
-      console.error('无法加载MCP配置文件:', error);
+      console.warn('无法加载MCP配置文件:', error);
       throw new Error('无法加载MCP配置文件');
     }
   }
@@ -171,7 +171,7 @@ export class McpService {
         }
       }
     } catch (e) {
-      console.error("连接到MCP服务器失败:", e);
+      console.warn("连接到MCP服务器失败:", e);
       throw e;
     }
   }
@@ -183,11 +183,11 @@ export class McpService {
       if (result.success) {
         return result.tools;
       } else {
-        console.error("获取工具失败:", result.error);
+        console.warn("获取工具失败:", result.error);
         return [];
       }
     } catch (e) {
-      console.error("获取工具时发生错误:", e);
+      console.warn("获取工具时发生错误:", e);
       return [];
     }
   }

@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { CmdOutput, CmdService } from '../../../services/cmd.service';
+import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NoticeService } from '../../../services/notice.service';
 import { ProjectService } from '../../../services/project.service';
@@ -42,6 +43,7 @@ export class _BuilderService {
 
   constructor(
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private message: NzMessageService,
     private noticeService: NoticeService,
     private logService: LogService,
@@ -191,13 +193,13 @@ export class _BuilderService {
           // 创建临时文件夹
           this.checkIfCancelled();
           if (!window['path'].isExists(tempPath)) {
-            await this.cmdService.runAsync(`New-Item -Path "${tempPath}" -ItemType Directory -Force`);
+            await this.crossPlatformCmdService.createDirectory(tempPath, true);
           }
           if (!window['path'].isExists(sketchPath)) {
-            await this.cmdService.runAsync(`New-Item -Path "${sketchPath}" -ItemType Directory -Force`);
+            await this.crossPlatformCmdService.createDirectory(sketchPath, true);
           }
           if (!window['path'].isExists(librariesPath)) {
-            await this.cmdService.runAsync(`New-Item -Path "${librariesPath}" -ItemType Directory -Force`);
+            await this.crossPlatformCmdService.createDirectory(librariesPath, true);
           }
 
           // 生成sketch文件
@@ -266,7 +268,7 @@ export class _BuilderService {
                   const folderToDelete = `${librariesPath}/${folder}`;
                   console.log(`删除未使用的库文件夹: ${folder}`);
                   try {
-                    await this.cmdService.runAsync(`Remove-Item -Path "${folderToDelete}" -Recurse -Force`);
+                    await this.crossPlatformCmdService.removeItem(folderToDelete, true, true);
                   } catch (error) {
                     console.warn(`删除文件夹 ${folder} 失败:`, error);
                   }
@@ -364,55 +366,43 @@ export class _BuilderService {
 
           compilerParam = compilerParamList.join(' ');
 
-        // 获取和解析项目编译参数
-        let buildProperties = '';
-        try {
-          const projectConfig = await this.projectService.getProjectConfig();
-          if (projectConfig) {
-            const buildPropertyParams: string[] = [];
-
-            
-            // projectConfig是个JSON对象，包含多个配置段
-            // 遍历输出每一个key及其值
-            Object.entries(projectConfig).forEach(([key, value]) => {
-              if (value !== null && value !== undefined && value !== '') {
-                // if (/upload/i.test(key)) return; // 跳过包含 upload 的配置项
-                buildPropertyParams.push(`--board-options ${key}=${value}`);
-                console.log(`解析配置: --board-options ${key}=${value}`);
-              }
-
-              if (key === 'PartitionScheme' && value === 'custom') {
-                // 判断项目目录下分区文件是否存在
-                const partitionFilePath = this.currentProjectPath + '/partitions.csv';
-                if (!window['path'].isExists(partitionFilePath)) {
-                  this.handleCompileError('选择了自定义分区方案，但未找到 partitions.csv 分区文件');
+          // 获取和解析项目编译参数
+          let buildProperties = '';
+          try {
+            const projectConfig = await this.projectService.getProjectConfig();
+            if (projectConfig) {
+              const buildPropertyParams: string[] = [];
+              
+              // projectConfig是个JSON对象，包含多个配置段
+              // 遍历输出每一个key及其值
+              for (const [key, value] of Object.entries(projectConfig)) {
+                if (value !== null && value !== undefined && value !== '') {
+                  // if (/upload/i.test(key)) return; // 跳过包含 upload 的配置项
+                  buildPropertyParams.push(`--board-options ${key}=${value}`);
+                  console.log(`解析配置: --board-options ${key}=${value}`);
                 }
-                // 复制自定义分区文件到临时目录
-                const destPartitionFilePath = sketchPath + '/partitions.csv';
-                try {
-                  this.cmdService.runAsync(`Copy-Item -Path "${partitionFilePath}" -Destination "${destPartitionFilePath}" -Force`);
-                } catch (error) {
-                  this.handleCompileError('复制分区文件失败:', error);
+
+                if (key === 'PartitionScheme' && value === 'custom') {
+                  // 判断项目目录下分区文件是否存在
+                  let partitionFilePath = this.currentProjectPath + '/partitions.csv';
+                  if (!window['path'].isExists(partitionFilePath)) {
+                    partitionFilePath = await this.projectService.getBoardFile('partitions.csv');
+                  }
+
+                  if (!partitionFilePath || !window['path'].isExists(partitionFilePath)) {
+                    this.handleCompileError('选择了自定义分区方案，但未找到 partitions.csv 分区文件');
+                    break;
+                  }
+
+                  // 复制自定义分区文件到临时目录
+                  const destPartitionFilePath = sketchPath + '/partitions.csv';
+                  try {
+                    this.cmdService.runAsync(`Copy-Item -Path "${partitionFilePath}" -Destination "${destPartitionFilePath}" -Force`);
+                  } catch (error) {
+                    this.handleCompileError('复制分区文件失败:', error);
+                  }
                 }
               }
-            });
-
-            // // 遍历配置对象，解析编译参数
-            // Object.values(projectConfig).forEach((configSection: any) => {
-            //   if (configSection && typeof configSection === 'object') {
-            //     // 遍历每个配置段（如 build、upload 等）
-            //     Object.entries(configSection).forEach(([sectionKey, sectionValue]: [string, any]) => {
-            //       // 排除upload等非编译相关的配置段
-            //       if (sectionKey == 'upload') return;
-            //       if (sectionValue && typeof sectionValue === 'object') {
-            //         // 遍历具体的配置项
-            //         Object.entries(sectionValue).forEach(([key, value]: [string, any]) => {
-            //           buildPropertyParams.push(`--build-property ${sectionKey}.${key}=${value}`);
-            //         });
-            //       }
-            //     });
-            //   }
-            // });
 
               buildProperties = buildPropertyParams.join(' ');
               if (buildProperties) {
@@ -421,6 +411,11 @@ export class _BuilderService {
             }
           } catch (error) {
             console.warn('获取项目配置失败:', error);
+          }
+
+          if (this.isErrored) {
+            reject({ state: 'error', text: '编译参数解析失败' });
+            return;
           }
 
           // 将buildProperties添加到compilerParam中
@@ -865,9 +860,11 @@ export class _BuilderService {
     for (const op of operations) {
       // 如果目标已存在且是开发模式，添加删除命令
       if (window['path'].isExists(op.target) && (this.configService.data.devmode || false)) {
-        deleteCommands.push(`Remove-Item -Path "${op.target}" -Recurse -Force`);
+        // 使用跨平台命令删除
+        await this.crossPlatformCmdService.removeItem(op.target, true, true);
       }
-      copyCommands.push(`Copy-Item -Path "${op.source}" -Destination "${op.target}" -Recurse -Force`);
+      // 使用跨平台命令复制
+      await this.crossPlatformCmdService.copyItem(op.source, op.target, true, true);
     }
     
     try {
@@ -904,7 +901,7 @@ export class _BuilderService {
       let shouldCopy = true;
       if (window['path'].isExists(targetPath)) {
         if (this.configService.data.devmode || false) {
-          await this.cmdService.runAsync(`Remove-Item -Path "${targetPath}" -Recurse -Force`);
+          await this.crossPlatformCmdService.removeItem(targetPath, true, true);
         } else {
           console.log(`库 ${lib} 目标路径已存在，跳过复制但保留记录`);
           shouldCopy = false;
@@ -912,7 +909,7 @@ export class _BuilderService {
       }
 
       if (shouldCopy) {
-        await this.cmdService.runAsync(`Copy-Item -Path "${sourcePath}" -Destination "${targetPath}" -Recurse -Force`);
+        await this.crossPlatformCmdService.copyItem(sourcePath, targetPath, true, true);
       }
 
       // 更新缓存
@@ -1105,7 +1102,7 @@ export class _BuilderService {
       // 检查toolsPath是否存在，如果不存在则创建
       if (!window['path'].isExists(this.toolsPath)) {
         console.log(`创建工具路径: ${this.toolsPath}`);
-        await this.cmdService.runAsync(`New-Item -Path "${this.toolsPath}" -ItemType Directory -Force`);
+        await this.crossPlatformCmdService.createDirectory(this.toolsPath, true);
       }
 
       // 获取编译器目录名称（例如：从 /path/to/compiler@1.0.0 中提取 compiler@1.0.0）
@@ -1129,7 +1126,7 @@ export class _BuilderService {
 
       // 复制整个编译器目录到工具路径
       try {
-        await this.cmdService.runAsync(`Copy-Item -Path "${this.compilerPath}" -Destination "${this.toolsPath}" -Recurse -Force`);
+        await this.crossPlatformCmdService.copyItem(this.compilerPath, this.toolsPath, true, true);
         console.log(`成功复制编译器目录: ${compilerDirName}`);
       } catch (error) {
         console.error(`复制编译器目录失败:`, error);

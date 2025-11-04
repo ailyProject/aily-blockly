@@ -1,18 +1,13 @@
 @if(devmode){
 <blockly-main [devmode]="devmode"></blockly-main>
-}
 <div class="project-mangager-btn ccenter">
   <div class="mangager ccenter" (click)="openProjectManager()">{{'LIB_MANAGER.TITLE'| translate}}</div>
-  @if(developerMode){
-  <!-- <div class="edit btn link ccenter" (click)="edit()">
-    <i class="fa-light fa-pen"></i>
-  </div> -->
-  <div class="reload btn link ccenter" (click)="reload()">
-    <i class="fa-light fa-sync"></i>
-  </div>
-  }
-
 </div>
+}
+@if(developerMode){
+<app-dev-tool></app-dev-tool>
+}
+
 @if (showLibraryManager) {
 <app-lib-manager (close)="showLibraryManager=false"></app-lib-manager>
 }

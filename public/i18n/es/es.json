@@ -15,6 +15,7 @@
         "DEBUG": "Depurar",
         "TERMINAL": "Terminal",
         "TOOL_SERIAL": "Herramienta Serial",
+        "SIMULATOR": "Simulador",
         "AI": "IA",
         "APP_STORE": "Tienda de Aplicaciones",
         "SETTINGS": "Configuración",
@@ -68,7 +69,9 @@
             "THEME": "Configuración de Tema",
             "COMPILATION": "Configuración de Compilación",
             "REPOSITORY": "Configuración de Repositorio",
-            "DEPENDENCIES": "Dependencias Globales"
+            "DEPENDENCIES": "Dependencias Globales",
+            "MCP": "MCP",
+            "DEVMODE": "Modo Desarrollador"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Carpeta de Proyecto",
@@ -122,9 +125,11 @@
         "TITLE": "Administrador de Bibliotecas",
         "BACK": "Volver",
         "SEARCH_LIBRARY": "Buscar biblioteca",
+        "ALL": "Todas las bibliotecas",
         "INSTALLED": "Instalado",
         "CORE_LIBRARY": "Biblioteca central",
         "IMPORT_LIBRARY": "Importar biblioteca local",
+        "HELP": "Cómo desarrollar biblioteca",
         "DEV_HELP": "Ayuda desarrollo",
         "REPORT_ISSUE": "Reportar problema",
         "INSTALL": "Instalar",
@@ -133,6 +138,9 @@
         "INSTALLING": "Instalando",
         "UNINSTALLING": "Desinstalando",
         "UNINSTALLED": "Desinstalado",
+        "IMPORTING": "Importando",
+        "IMPORTED": "Importación exitosa",
+        "IMPORT_FAILED": "Importación fallida",
         "SENSORS": "Sensores",
         "ACTUATORS": "Actuadores",
         "COMMUNICATION": "Comunicación",
@@ -143,8 +151,15 @@
         "AI": "IA",
         "IOT": "IoT",
         "OTHERS": "Otros",
-        "ALL": "Todas las bibliotecas",
         "LIB_IN_USE": "Esta biblioteca está actualmente en uso. Por favor, elimine los bloques relacionados del espacio de trabajo antes de remover esta biblioteca"
+    },
+    "COMPATIBILITY_DIALOG": {
+        "TITLE": "Aviso de Compatibilidad de Biblioteca",
+        "WARNING_MESSAGE": "Esta biblioteca puede no funcionar en la placa actual. ¿Desea continuar con la instalación?",
+        "SUPPORTED_CORES": "Núcleos soportados por la biblioteca:",
+        "CURRENT_BOARD_CORE": "Núcleo de la placa actual:",
+        "CANCEL": "Cancelar",
+        "CONTINUE_INSTALL": "Continuar instalación"
     },
     "BOARD_SELECTOR": {
         "TITLE": "Cambiar placa",
@@ -170,6 +185,10 @@
     "UNSAVE_DIALOG": {
         "TITLE": "Cambios sin guardar",
         "MESSAGE": "Tiene cambios sin guardar. ¿Desea guardarlos?",
+        "MESSAGE_OPEN": "¿Desea guardar los cambios del proyecto actual antes de abrir uno nuevo?",
+        "MESSAGE_NEW": "¿Desea guardar los cambios del proyecto actual antes de crear uno nuevo?",
+        "MESSAGE_CLOSE": "¿Desea guardar los cambios antes de cerrar?",
+        "MESSAGE_DEFAULT": "¿Desea guardar el proyecto actual?",
         "CANCEL": "Cancelar",
         "SKIP_SAVE": "Omitir guardado",
         "SAVE_AND_CONTINUE": "Guardar y continuar"
@@ -218,5 +237,49 @@
         "STOP": "Detener",
         "MODE_AGENT_FULL": "Modo Agente",
         "MODE_QA_FULL": "Modo P&R"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "Configuración del Proyecto",
+        "BASIC_INFO": "Información Básica",
+        "NAME": "Nombre del Proyecto",
+        "NAME_PLACEHOLDER": "Por favor ingrese el nombre del proyecto",
+        "VERSION": "Versión",
+        "VERSION_PLACEHOLDER": "Por favor ingrese la versión, ej.: 1.0.0",
+        "NICKNAME": "Apodo del Proyecto",
+        "NICKNAME_PLACEHOLDER": "Por favor ingrese el apodo del proyecto",
+        "DESCRIPTION": "Descripción",
+        "DESCRIPTION_PLACEHOLDER": "Por favor ingrese la descripción del proyecto",
+        "DOC_URL": "URL de Documentación",
+        "DOC_URL_PLACEHOLDER": "Por favor ingrese la URL de documentación",
+        "PROJECT_CONFIG": "Configuración del Proyecto",
+        "NO_CONFIG": "Sin información de configuración",
+        "DEPENDENCIES": "Dependencias",
+        "NO_DEPENDENCIES": "Sin dependencias",
+        "ADD": "Agregar",
+        "CONFIG_KEY_PLACEHOLDER": "Clave de configuración",
+        "CONFIG_VALUE_PLACEHOLDER": "Valor de configuración",
+        "DEPENDENCY_NAME_PLACEHOLDER": "Nombre del paquete",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "Versión",
+        "CLOSE": "Cerrar",
+        "SAVE": "Guardar",
+        "WARNING_NAME_EMPTY": "Por favor ingrese el nombre del proyecto",
+        "WARNING_NAME_INVALID_FORMAT": "Formato de nombre de proyecto inválido. Solo se permiten letras minúsculas, números, guiones y guiones bajos",
+        "WARNING_VERSION_EMPTY": "Por favor ingrese la versión",
+        "WARNING_VERSION_INVALID_FORMAT": "Formato de versión inválido. Debe seguir el formato x.y.z (ej. 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "Formato de URL de documentación inválido. Por favor ingrese una URL válida",
+        "SUCCESS_SAVE": "¡Guardado exitosamente!",
+        "ERROR_SAVE_FAILED": "Error al guardar, por favor intente más tarde",
+        "ERROR_LOAD_FAILED": "Error al cargar la configuración del proyecto"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "Configuración del Proyecto",
+        "PINMAP": "Mapa de Pines",
+        "DOCUMENTATION": "Documentación",
+        "FEEDBACK": "Comentarios",
+        "NO_PINMAP": "Mapa de pines no disponible para esta placa",
+        "NO_DOCUMENTATION": "Documentación no disponible para esta placa"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "Por favor seleccione un puerto serial primero"
     }
 }

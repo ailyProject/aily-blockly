@@ -1,4 +1,5 @@
 import { ToolUseResult } from "./tools";
+import { injectTodoReminder } from "./todoWriteTool";
 
 /**
  * 文件编辑工具
@@ -115,10 +116,11 @@ export async function editFileTool(
 
         // 验证路径是否有效
         if (!normalizedFilePath || normalizedFilePath.trim() === '') {
-            return { 
+            const toolResult = { 
                 is_error: true, 
                 content: `无效的文件路径: "${filePath}"` 
             };
+            return injectTodoReminder(toolResult, 'editFileTool');
         }
 
         // 检查文件是否存在
@@ -137,19 +139,21 @@ export async function editFileTool(
                     fileExists = true;
                 }
             } else {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `文件不存在: ${normalizedFilePath}。如需创建新文件，请设置 createIfNotExists 参数为 true。`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
         } else {
             // 检查是否为文件（不是目录）
             const isDirectory = await window['fs'].isDirectory(normalizedFilePath);
             if (isDirectory) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `路径是目录而不是文件: ${normalizedFilePath}`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
         }
 
@@ -160,10 +164,11 @@ export async function editFileTool(
         if (replaceStartLine !== undefined) {
             // 替换指定行或行范围（最高优先级）
             if (replaceStartLine < 1) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `替换起始行号必须大于0，当前为: ${replaceStartLine}`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
 
             // 读取现有文件内容
@@ -172,10 +177,11 @@ export async function editFileTool(
             
             // 验证起始行号是否有效
             if (replaceStartLine > lines.length) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `替换起始行号 ${replaceStartLine} 超出文件行数 ${lines.length}`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
 
             // 确定结束行号
@@ -183,14 +189,15 @@ export async function editFileTool(
             
             // 验证结束行号
             if (endLine < replaceStartLine) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `替换结束行号 ${endLine} 不能小于起始行号 ${replaceStartLine}`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
             
             if (endLine > lines.length) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `替换结束行号 ${endLine} 超出文件行数 ${lines.length}`
                 };
@@ -220,10 +227,11 @@ export async function editFileTool(
         } else if (insertLine !== undefined) {
             // 在指定行插入内容
             if (insertLine < 1) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `插入行号必须大于0，当前为: ${insertLine}`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
 
             // 读取现有文件内容
@@ -232,10 +240,11 @@ export async function editFileTool(
             
             // 验证行号是否有效
             if (insertLine > lines.length + 1) {
-                return {
+                const toolResult = {
                     is_error: true,
                     content: `插入行号 ${insertLine} 超出文件行数 ${lines.length}。最大可插入行号为 ${lines.length + 1}`
                 };
+                return injectTodoReminder(toolResult, 'editFileTool');
             }
 
             // 在指定行插入内容
@@ -259,21 +268,23 @@ export async function editFileTool(
         // 写入文件
         await window['fs'].writeFileSync(normalizedFilePath, finalContent, encoding);
         
-        return { 
+        const toolResult = { 
             is_error: false, 
             content: `文件编辑成功: ${normalizedFilePath}\n操作: ${operationDescription}` 
         };
+        return injectTodoReminder(toolResult, 'editFileTool');
     } catch (error: any) {
-        console.error("编辑文件失败:", error);
+        console.warn("编辑文件失败:", error);
         
         let errorMessage = `编辑文件失败: ${error.message}`;
         if (error.code) {
             errorMessage += `\n错误代码: ${error.code}`;
         }
         
-        return { 
+        const toolResult = { 
             is_error: true, 
             content: errorMessage + `\n目标文件: ${params.path}` 
         };
+        return injectTodoReminder(toolResult, 'editFileTool');
     }
 }

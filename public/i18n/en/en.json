@@ -103,9 +103,9 @@
         "SECTIONS": {
             "BASIC": "Basic Settings",
             "THEME": "Theme Settings",
-            "COMPILATION": "Compilation Settings",
-            "REPOSITORY": "Repository Settings",
-            "DEPENDENCIES": "Global Dependencies",
+            "COMPILATION": "Compilation",
+            "REPOSITORY": "Repository",
+            "DEPENDENCIES": "Dependencies",
             "MCP": "MCP",
             "DEVMODE": "Developer Mode"
         },
@@ -273,5 +273,49 @@
         "STOP": "Stop",
         "MODE_AGENT_FULL": "Agent Mode",
         "MODE_QA_FULL": "Q&A Mode"
+    },
+    "PROJECT_SETTING_DIALOG": {
+        "TITLE": "Project Settings",
+        "BASIC_INFO": "Basic Information",
+        "NAME": "Project Name",
+        "NAME_PLACEHOLDER": "Please enter project name",
+        "VERSION": "Version",
+        "VERSION_PLACEHOLDER": "Please enter version, e.g., 1.0.0",
+        "NICKNAME": "Project Nickname",
+        "NICKNAME_PLACEHOLDER": "Please enter project nickname",
+        "DESCRIPTION": "Description",
+        "DESCRIPTION_PLACEHOLDER": "Please enter project description",
+        "DOC_URL": "Documentation URL",
+        "DOC_URL_PLACEHOLDER": "Please enter documentation URL",
+        "PROJECT_CONFIG": "Project Configuration",
+        "NO_CONFIG": "No configuration information",
+        "DEPENDENCIES": "Dependencies",
+        "NO_DEPENDENCIES": "No dependencies",
+        "ADD": "Add",
+        "CONFIG_KEY_PLACEHOLDER": "Config key",
+        "CONFIG_VALUE_PLACEHOLDER": "Config value",
+        "DEPENDENCY_NAME_PLACEHOLDER": "Package name",
+        "DEPENDENCY_VERSION_PLACEHOLDER": "Version",
+        "CLOSE": "Close",
+        "SAVE": "Save",
+        "WARNING_NAME_EMPTY": "Please enter project name",
+        "WARNING_NAME_INVALID_FORMAT": "Invalid project name format. Only lowercase letters, numbers, hyphens and underscores are allowed",
+        "WARNING_VERSION_EMPTY": "Please enter version",
+        "WARNING_VERSION_INVALID_FORMAT": "Invalid version format. Must follow x.y.z format (e.g., 1.0.0)",
+        "WARNING_DOC_URL_INVALID_FORMAT": "Invalid documentation URL format. Please enter a valid URL",
+        "SUCCESS_SAVE": "Saved successfully!",
+        "ERROR_SAVE_FAILED": "Save failed, please try again later",
+        "ERROR_LOAD_FAILED": "Failed to load project settings"
+    },
+    "FLOAT_SIDER": {
+        "PROJECT_SETTINGS": "Project Settings",
+        "PINMAP": "Pin Map",
+        "DOCUMENTATION": "Documentation",
+        "FEEDBACK": "Feedback",
+        "NO_PINMAP": "Pin map not available for this board",
+        "NO_DOCUMENTATION": "Documentation not available for this board"
+    },
+    "SERIAL": {
+        "SELECT_PORT_FIRST": "Please select a serial port first"
     }
 }

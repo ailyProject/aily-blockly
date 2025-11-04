@@ -4,7 +4,7 @@
         <div class="line"></div>
         <div class="btns">
             <div class="item ccenter" (click)="select('github')" [ngClass]="{'active':mode=='github'}">
-                <i class="fa-brands fa-github"></i>
+                <div class="icon ccenter"><i class="fa-brands fa-github"></i></div>
                 Github
             </div>
             <!-- <div class="item ccenter" (click)="select('google')" [ngClass]="{'active':mode=='google'}">
@@ -19,10 +19,10 @@
                 <i class="fa-brands fa-weixin"></i>
                 WeChat
             </div> -->
-            <!-- <div class="item ccenter" (click)="select('phone')" [ngClass]="{'active':mode=='phone'}">
-                <i class="fa-light fa-mobile-screen-button"></i>
-                账号密码
-            </div> -->
+            <div class="item ccenter" (click)="select('phone')" [ngClass]="{'active':mode=='phone'}">
+                <div class="icon ccenter"><i class="fa-light fa-mobile"></i></div>
+                Phone
+            </div>
 
         </div>
         @switch(mode){
@@ -61,26 +61,32 @@
 
         }
         @case ('phone') {
-            <div class="phone-login-box">
-                <div class="item">
-                    <div class="ccenter">
-                        <i class="fa-light fa-user"></i>
-                    </div>
-                    <input nz-input spellcheck="false" type="text" placeholder="请输入用户名" [(ngModel)]="inputUsername" />
-                </div>
-                <div class="item">
-                    <div class="ccenter">
-                        <i class="fa-light fa-lock"></i>
-                    </div>
-                    <input nz-input type="password" placeholder="请输入密码" [(ngModel)]="inputPassword" />
-                </div>
-                <div class="actions">
-                    <button nz-button nzType="primary" [nzLoading]="isWaiting" (click)="loginByPhone()">
-                        {{ isWaiting ? '登录中...' : '登录' }}
-                    </button>
-                
-                </div>
+        <div class="description">
+            <div>
+                暂未开放手机号注册<br/>
+                手机号号登录仅限AI功能内测用户使用
             </div>
+        </div>
+        <div class="phone-login-box">
+            <div class="item">
+                <div class="ccenter">
+                    <i class="fa-light fa-user"></i>
+                </div>
+                <input nz-input spellcheck="false" type="text" placeholder="请输入手机号" [(ngModel)]="inputUsername" />
+            </div>
+            <div class="item">
+                <div class="ccenter">
+                    <i class="fa-light fa-lock"></i>
+                </div>
+                <input nz-input type="password" placeholder="请输入密码" [(ngModel)]="inputPassword" />
+            </div>
+            <div class="actions">
+                <button nz-button nzType="primary" [nzLoading]="isWaiting" (click)="loginByPhone()">
+                    {{ isWaiting ? '登录中...' : '登录' }}
+                </button>
+
+            </div>
+        </div>
         }
         @default {
         <div class="text text2">点击选择登录方式</div>

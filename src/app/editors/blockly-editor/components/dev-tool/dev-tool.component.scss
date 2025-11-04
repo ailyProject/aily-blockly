@@ -1,0 +1,62 @@
+.devtool-box {
+    position: absolute;
+    bottom: 1px;
+    left: 185px;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    background: rgba(20, 20, 20, 0.6);
+    padding: 5px;
+    border-radius: 5px;
+    box-shadow: 0 0 5px 0 rgba(0, 0, 0, 0.1);
+    height: 40px;
+    transition: all 0.3s ease;
+    overflow: hidden;
+    z-index: 999;
+    cursor: default;
+    user-select: none;
+
+    &.dragging {
+        transition: none;
+        opacity: 0.8;
+        box-shadow: 0 5px 15px 0 rgba(0, 0, 0, 0.3);
+    }
+
+    .drag-handle {
+        cursor: move;
+        padding: 5px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #999;
+        border-radius: 3px;
+        
+        &:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        i {
+            font-size: 14px;
+        }
+    }
+
+    .btn {
+        background: #333;
+        border-radius: 5px;
+        padding: 5px;
+        cursor: pointer;
+
+        &:hover {
+            background: #666;
+        }
+
+        i{
+            margin-right: 4px;
+        }
+
+        i.fa-xmark{
+            color: red;
+        }
+    }
+}

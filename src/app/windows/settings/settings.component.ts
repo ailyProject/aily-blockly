@@ -49,10 +49,10 @@ export class SettingsComponent {
       name: 'SETTINGS.SECTIONS.THEME',
       icon: 'fa-light fa-gift'
     },
-    {
-      name: 'SETTINGS.SECTIONS.COMPILATION',
-      icon: 'fa-light fa-screwdriver-wrench'
-    },
+    // {
+    //   name: 'SETTINGS.SECTIONS.COMPILATION',
+    //   icon: 'fa-light fa-screwdriver-wrench'
+    // },
     {
       name: 'SETTINGS.SECTIONS.REPOSITORY',
       icon: 'fa-light fa-book-bookmark'
@@ -61,10 +61,10 @@ export class SettingsComponent {
       name: 'SETTINGS.SECTIONS.DEPENDENCIES',
       icon: 'fa-light fa-layer-group'
     },
-    {
-      name: 'SETTINGS.SECTIONS.MCP',
-      icon: 'fa-light fa-webhook'
-    },
+    // {
+    //   name: 'SETTINGS.SECTIONS.MCP',
+    //   icon: 'fa-light fa-webhook'
+    // },
     {
       name: 'SETTINGS.SECTIONS.DEVMODE',
       icon: 'fa-light fa-gear-code'

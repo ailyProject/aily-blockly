@@ -11,12 +11,14 @@ import { filter } from 'rxjs/operators';
 import { ElectronService } from '../../services/electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { UiService } from '../../services/ui.service';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 @Component({
   selector: 'app-float-sider',
   imports: [
     NzModalModule,
     NzToolTipModule,
-    CommonModule
+    CommonModule,
+    TranslateModule
   ],
   templateUrl: './float-sider.component.html',
   styleUrl: './float-sider.component.scss'
@@ -33,7 +35,8 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
     private router: Router,
     private electronService: ElectronService,
     private message: NzMessageService,
-    private uiService: UiService
+    private uiService: UiService,
+    private translate: TranslateService
   ) { }
 
   ngOnInit() {
@@ -71,7 +74,7 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
 
   showPinmap() {
     if (!this.electronService.exists(this.boardPackagePath + '/pinmap.webp')) {
-      this.message.error('该开发板没有提供引脚图');
+      this.message.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
       return;
     }
     const modalRef = this.modal.create({
@@ -93,14 +96,14 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   openDocUrl() {
     let data = JSON.parse(this.electronService.readFile(this.boardPackagePath + '/package.json'))
     if (!data.url) {
-      this.message.error('该开发板没有提供文档链接');
+      this.message.error(this.translate.instant('FLOAT_SIDER.NO_DOCUMENTATION'));
       return;
     }
     this.electronService.openUrl(data.url)
   }
 
   openSettings() {
-
+    this.uiService.openProjectSettings();
   }
 
   openFeedback() {

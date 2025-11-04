@@ -1,3 +1,5 @@
+import { json } from "stream/consumers";
+
 export const toolParamNames = [
     "command"
 ] as const;
@@ -13,22 +15,17 @@ export interface ToolUseResult {
     is_error: boolean;
     content: string;
     details?: string;
+    metadata?: any; // 添加 metadata 支持
 }
 
 export const TOOLS = [
     {
         name: 'create_project',
-        description: `创建一个新项目，返回项目路径。需要提供开发板信息，包含名称。`,
+        description: '创建一个新项目，返回项目路径。需要提供使用的开发板（如 "@aily-project/board-arduino_uno", "@aily-project/board-arduino_uno_r4_minima"），传入的开发板名称以`https://blockly.diandeng.tech/boards.json`中的内容为准。',
         input_schema: {
             type: 'object',
             properties: {
-                board: {
-                    type: 'object',
-                    properties: {
-                        name: { type: 'string', description: '板子名称' }
-                    },
-                    description: '开发板信息'
-                },
+                board: { type: 'string', description: '开发板名称' },
             },
             required: ['board']
         }
@@ -61,29 +58,29 @@ export const TOOLS = [
             required: ['info_type']
         }
     },
-    {
-        name: "list_directory",
-        description: `列出指定目录的内容，包括文件和文件夹信息。返回每个项目的名称、类型、大小和修改时间。`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                path: {
-                    type: 'string',
-                    description: '要列出内容的目录路径'
-                }
-            },
-            required: ['path']
-        }
-    },
+    // {
+    //     name: "list_directory",
+    //     description: `列出指定目录的内容，包括文件和文件夹信息。返回每个项目的名称、类型、大小和修改时间。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             path: {
+    //                 type: 'string',
+    //                 description: '要列出内容的目录路径'
+    //             }
+    //         },
+    //         required: ['path']
+    //     }
+    // },
     {
         name: "read_file",
-        description: `读取指定文件的内容。支持文本文件的读取，可指定编码格式。`,
+        description: `读取指定文件的内容，需文件完整路径，建议优先使用grep工具。支持文本文件的读取，可指定编码格式。`,
         input_schema: {
             type: 'object',
             properties: {
                 path: {
                     type: 'string',
-                    description: '要读取的文件路径'
+                    description: '要读取的文件完整路径'
                 },
                 encoding: {
                     type: 'string',
@@ -96,13 +93,13 @@ export const TOOLS = [
     },
     {
         name: "create_file",
-        description: `创建新文件并写入内容。如果目录不存在会自动创建。可选择是否覆盖已存在的文件。`,
+        description: `创建新文件并写入内容，需文件完整路径。如果目录不存在会自动创建。可选择是否覆盖已存在的文件。`,
         input_schema: {
             type: 'object',
             properties: {
                 path: {
                     type: 'string',
-                    description: '要创建的文件路径'
+                    description: '要创建的文件完整路径'
                 },
                 content: {
                     type: 'string',
@@ -230,48 +227,181 @@ export const TOOLS = [
             required: ['path']
         }
     },
+    // {
+    //     name: "check_exists",
+    //     description: `检查指定路径的文件或文件夹是否存在，返回详细信息包括类型、大小、修改时间等。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             path: {
+    //                 type: 'string',
+    //                 description: '要检查的路径'
+    //             },
+    //             type: {
+    //                 type: 'string',
+    //                 description: '期望的类型：file(文件)、folder(文件夹)或any(任意类型)',
+    //                 enum: ['file', 'folder', 'any'],
+    //                 default: 'any'
+    //             }
+    //         },
+    //         required: ['path']
+    //     }
+    // },
+    // {
+    //     name: "get_directory_tree",
+    //     description: `获取指定目录的树状结构，可控制遍历深度和是否包含文件。适合了解项目结构。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             path: {
+    //                 type: 'string',
+    //                 description: '要获取树状结构的目录路径'
+    //             },
+    //             maxDepth: {
+    //                 type: 'number',
+    //                 description: '最大遍历深度',
+    //                 default: 3
+    //             },
+    //             includeFiles: {
+    //                 type: 'boolean',
+    //                 description: '是否包含文件（false时只显示文件夹）',
+    //                 default: true
+    //             }
+    //         },
+    //         required: ['path']
+    //     }
+    // },
     {
-        name: "check_exists",
-        description: `检查指定路径的文件或文件夹是否存在，返回详细信息包括类型、大小、修改时间等。`,
+        name: "grep_tool",
+        description: `- Fast content search tool that works with any codebase size
+- Searches file contents using regular expressions
+- Supports full regex syntax (eg. "log.*Error", "function\\s+\\w+", etc.)
+- Use this tool when you need to find files containing specific patterns
+support two modes:
+1. File name mode (default): returns a list of file paths containing the matched content
+2. Content mode: returns the specific line content, file path, and line number of the matches
+
+基本语法:
+查询boards.json中的主板信息(返回文件名)
+\`\`\`json
+{
+  "pattern": "WIFI|BLE",
+  "path": "D:\\\\codes\\\\aily-blockly",
+  "include": "*boards.json"
+}
+\`\`\`
+
+查询并返回具体内容(如需要查询文件中的具体信息)
+\`\`\`json
+{
+  "pattern": "WIFI|BLE",
+  "path": "D:\\\\codes\\\\aily-blockly",
+  "include": "*boards.json"
+  "returnContent": true,
+  "contextLines": 1
+}
+\`\`\``,
         input_schema: {
             type: 'object',
             properties: {
+                pattern: {
+                    type: 'string',
+                    description: '要搜索的模式（支持正则表达式或普通文本）'
+                },
                 path: {
                     type: 'string',
-                    description: '要检查的路径'
+                    description: '搜索路径（目录）。如果不提供，默认使用当前项目路径'
                 },
-                type: {
+                include: {
                     type: 'string',
-                    description: '期望的类型：file(文件)、folder(文件夹)或any(任意类型)',
-                    enum: ['file', 'folder', 'any'],
-                    default: 'any'
-                }
-            },
-            required: ['path']
-        }
-    },
-    {
-        name: "get_directory_tree",
-        description: `获取指定目录的树状结构，可控制遍历深度和是否包含文件。适合了解项目结构。`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                path: {
-                    type: 'string',
-                    description: '要获取树状结构的目录路径'
+                    description: '文件包含模式（glob格式），如 "*.js"（仅搜索JS文件）、"*.{ts,tsx}"（搜索TS和TSX文件）、"*boards.json"（文件名包含boards.json）'
                 },
-                maxDepth: {
-                    type: 'number',
-                    description: '最大遍历深度',
-                    default: 3
-                },
-                includeFiles: {
+                isRegex: {
                     type: 'boolean',
-                    description: '是否包含文件（false时只显示文件夹）',
+                    description: '搜索模式是否为正则表达式。true=正则表达式，false=普通文本',
+                    default: true
+                },
+                returnContent: {
+                    type: 'boolean',
+                    description: '是否返回匹配的具体内容。false=只返回文件名列表（快速），true=返回匹配的行内容、文件路径和行号（详细）',
+                    default: false
+                },
+                contextLines: {
+                    type: 'number',
+                    description: '上下文行数（0-5）。当returnContent为true时，显示匹配行周围的上下文。0=只显示匹配行，1=上下各1行，2=上下各2行',
+                    default: 0
+                },
+                maxLineLength: {
+                    type: 'number',
+                    description: '每行最大字符长度（100-2000）。用于控制返回内容的长度，避免单行超大文件（如压缩JSON）返回过多数据。推荐值：500',
+                    default: 100
+                },
+                maxResults: {
+                    type: 'number',
+                    description: '最大结果数量限制',
+                    default: 20
+                },
+                ignoreCase: {
+                    type: 'boolean',
+                    description: '是否忽略大小写',
                     default: true
                 }
             },
-            required: ['path']
+            required: ['pattern']
+        }
+    },
+    {
+        name: "glob_tool",
+        description: `- Fast file pattern matching tool that works with any codebase size
+- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+- Returns matching file paths sorted by modification time
+- Use this tool when you need to find files by name patterns
+- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead
+
+快速文件模式匹配工具，用于按文件名模式查找文件。
+
+基本语法:
+查找所有 JavaScript 文件
+\`\`\`json
+{
+  "pattern": "**/*.js",
+  "path": "D:\\\\codes\\\\aily-blockly"
+}
+\`\`\`
+
+查找特定名称的文件
+\`\`\`json
+{
+  "pattern": "*boards.json",
+  "path": "C:\\\\Users\\\\LENOVO\\\\AppData\\\\Local\\\\aily-project"
+}
+\`\`\`
+
+查找多种文件类型
+\`\`\`json
+{
+  "pattern": "**/*.{ts,tsx,js,jsx}",
+  "path": "D:\\\\codes\\\\aily-blockly\\\\src"
+}
+\`\`\``,
+        input_schema: {
+            type: 'object',
+            properties: {
+                pattern: {
+                    type: 'string',
+                    description: '文件匹配模式（支持 glob 语法）。例如: "**/*.js"（所有JS文件）, "src/**/*.ts"（src目录下所有TS文件）, "*boards.json"（文件名包含boards.json）'
+                },
+                path: {
+                    type: 'string',
+                    description: '搜索路径（目录）。如果不提供，默认使用当前工作目录'
+                },
+                limit: {
+                    type: 'number',
+                    description: '返回结果的最大数量限制（防止返回过多文件）',
+                    default: 100
+                }
+            },
+            required: ['pattern']
         }
     },
     {
@@ -335,40 +465,40 @@ export const TOOLS = [
     //         required: []
     //     }
     // },
-    {
-        name: "edit_abi_file",
-        description: `编辑ABI文件工具。支持多种编辑模式：1) 替换整个文件内容（默认）；2) 在指定行插入内容；3) 替换指定行或行范围；4) 追加到文件末尾。自动查找当前路径下的.abi文件，如果不存在会自动创建。`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                content: {
-                    type: 'string',
-                    description: '要写入的内容。替换模式下必须是有效的JSON格式；插入/替换模式下可以是任意文本内容'
-                },
-                insertLine: {
-                    type: 'number',
-                    description: '插入行号（从1开始）。指定此参数时会在该行插入内容'
-                },
-                replaceStartLine: {
-                    type: 'number',
-                    description: '替换起始行号（从1开始）。指定此参数时会替换指定行的内容'
-                },
-                replaceEndLine: {
-                    type: 'number',
-                    description: '替换结束行号（从1开始）。与replaceStartLine配合使用，可替换多行内容。如不指定则只替换起始行'
-                },
-                replaceMode: {
-                    type: 'boolean',
-                    description: '是否替换整个文件内容。true=替换整个文件（默认），false=执行其他操作（插入、替换行、追加）',
-                    default: true
-                }
-            },
-            required: ['content']
-        }
-    },
+    // {
+    //     name: "edit_abi_file",
+    //     description: `编辑ABI文件工具。支持多种编辑模式：1) 替换整个文件内容（默认）；2) 在指定行插入内容；3) 替换指定行或行范围；4) 追加到文件末尾。自动查找当前路径下的.abi文件，如果不存在会自动创建。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             content: {
+    //                 type: 'string',
+    //                 description: '要写入的内容。替换模式下必须是有效的JSON格式；插入/替换模式下可以是任意文本内容'
+    //             },
+    //             insertLine: {
+    //                 type: 'number',
+    //                 description: '插入行号（从1开始）。指定此参数时会在该行插入内容'
+    //             },
+    //             replaceStartLine: {
+    //                 type: 'number',
+    //                 description: '替换起始行号（从1开始）。指定此参数时会替换指定行的内容'
+    //             },
+    //             replaceEndLine: {
+    //                 type: 'number',
+    //                 description: '替换结束行号（从1开始）。与replaceStartLine配合使用，可替换多行内容。如不指定则只替换起始行'
+    //             },
+    //             replaceMode: {
+    //                 type: 'boolean',
+    //                 description: '是否替换整个文件内容。true=替换整个文件（默认），false=执行其他操作（插入、替换行、追加）',
+    //                 default: true
+    //             }
+    //         },
+    //         required: ['content']
+    //     }
+    // },
     {
         name: "smart_block_tool",
-        description: `智能块创建、配置Blockly工作区中的块。
+        description: `智能块创建、配置Blockly工作区中的块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme</system-reminder>。
 基本语法:
 基本语法
 \`\`\`json
@@ -380,9 +510,8 @@ export const TOOLS = [
   "parentConnection": {
     "blockId": "父块ID",
     "connectionType": "next|input|statement",
-    "inputName": "输入名"
-  }, // 父块连接配置（可选）
-  "createVariables": true // 是否创建变量，可选
+    "inputName": "输入名，如ARDUINO_SETUP"
+  } // 父块连接配置（可选）
 }
 \`\`\`
 示例:
@@ -409,10 +538,10 @@ export const TOOLS = [
 创建Arduino数字输出
 \`\`\`json
 {
-  "type": "base_digital_write",
-  "fields": {"PIN": "\${board.digitalPins[0].value}", "STAT": "HIGH"},
+  "type": "io_digitalwrite",
   "inputs": {
-    "PIN": {"block": {"type": "math_number", "fields": {"NUM": "13"}}}
+    "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    "STATE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
   }
 }
 \`\`\`
@@ -458,11 +587,6 @@ export const TOOLS = [
                         inputName: { type: 'string', description: '输入名称' }
                     },
                     description: '父块连接配置（可选）。不提供时创建独立块，适用于全局变量、函数定义等顶级代码块'
-                },
-                createVariables: {
-                    type: 'boolean',
-                    description: '是否自动创建所需变量（可选），默认值为true',
-                    default: true
                 }
             },
             required: ['type']
@@ -470,34 +594,45 @@ export const TOOLS = [
     },
     {
         name: "connect_blocks_tool",
-        description: `块连接工具。连接两个Blockly块，支持三种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）。`,
+        description: `块连接工具。连接两个及以上Blockly块，支持三种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）。
+
+⚠️ **重要**：连接语义说明
+- containerBlock: **容器块/父块** (提供连接点的块，如arduino_setup、if_else、repeat等)
+- contentBlock: **内容块/子块** (要被连接的块，如digital_write、delay等)
+- 例如：将digital_write放入arduino_setup中
+  - containerBlock: "arduino_setup_id0" (容器)  
+  - contentBlock: "digital_write_id1" (内容)
+  - connectionType: "statement"
+  - inputName: "input_statement"
+
+常见错误：不要混淆容器和内容的关系！`,
         input_schema: {
             type: 'object',
             properties: {
-                sourceBlock: {
+                containerBlock: {
                     type: 'string',
-                    description: '输出块ID（提供连接的块）'
+                    description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）'
                 },
-                targetBlock: {
+                contentBlock: {
                     type: 'string', 
-                    description: '接收块ID（接收连接的块）'
+                    description: '📦 内容块ID（子块，要被放入容器的块，如digital_write、delay、sensor_read等功能块）'
                 },
                 connectionType: {
                     type: 'string',
                     enum: ['next', 'input', 'statement'],
-                    description: '连接类型：next=顺序连接，input=输入连接，statement=语句连接（推荐，支持指定inputName，用于事件处理块和容器块）'
+                    description: '连接类型：statement=语句连接（推荐，用于将功能块放入容器块），input=输入连接（用于参数值），next=顺序连接（用于按顺序排列）'
                 },
                 inputName: {
                     type: 'string',
-                    description: '输入名称（input和statement连接类型时可指定具体连接点，不指定时系统会自动检测最佳连接点）'
+                    description: '输入端口名称（statement连接时指定容器的哪个端口，如"input_statement"、"DO"、"ELSE"等，不指定时自动检测）'
                 }
             },
-            required: ['sourceBlock', 'targetBlock', 'connectionType']
+            required: ['containerBlock', 'contentBlock', 'connectionType']
         }
     },
     {
         name: "create_code_structure_tool", 
-        description: `动态结构创建工具。使用动态结构处理器创建任意复杂的代码块结构，支持自定义块组合和连接规则。
+        description: `动态结构创建工具，<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme</system-reminder>。建议分步生成代码，如：全局变量-初始化-loop-回调函数 不要一次性生成超过10个block的代码块。使用动态结构处理器创建任意复杂的代码块结构，支持自定义块组合和连接规则。
 基本语法:
 \`\`\`json
 {
@@ -510,7 +645,7 @@ export const TOOLS = [
     }
   },
   "insertPosition": "workspace", // 插入位置类型（"workspace" | "after" | "before" | "input" | "statement" | "append"）
-  "targetBlock": "目标块ID", // 目标块ID（当 insertPosition 不为 "workspace" 时必需）
+  "targetBlock": "容器块ID", // 目标容器块ID（当 insertPosition 不为 "workspace" 时必需）
   "targetInput": "目标输入名称", // 目标输入名称（当 insertPosition 为 "input" 或 "statement" 时可选）
   "position": {"x": 100, "y": 100} // 坐标位置（当 insertPosition 为 "workspace" 时使用）
 
@@ -615,7 +750,7 @@ export const TOOLS = [
                 },
                 targetBlock: {
                     type: 'string',
-                    description: '目标块ID（当insertPosition不是workspace时必需）'
+                    description: '目标容器块ID（当insertPosition不是workspace时必需）'
                 },
                 targetInput: {
                     type: 'string',
@@ -659,75 +794,75 @@ export const TOOLS = [
             required: ['blockId']
         }
     },
-    {
-        name: "variable_manager_tool",
-        description: `变量管理工具。创建、删除、重命名工作区中的变量。支持不同类型的变量和作用域管理。`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                operation: {
-                    type: 'string',
-                    enum: ['create', 'delete', 'rename', 'list'],
-                    description: '操作类型：create=创建，delete=删除，rename=重命名，list=列出所有变量'
-                },
-                variableName: {
-                    type: 'string',
-                    description: '变量名（create、delete、rename时必需）'
-                },
-                newName: {
-                    type: 'string',
-                    description: '新变量名（rename时必需）'
-                },
-                variableType: {
-                    type: 'string',
-                    description: '变量类型，如String、Number、Boolean等',
-                    default: 'String'
-                }
-            },
-            required: ['operation']
-        }
-    },
-    {
-        name: "find_block_tool",
-        description: `块查找工具。在工作区中查找特定的块，支持多种查找条件：块类型、字段值、位置等。返回匹配的块信息。`,
-        input_schema: {
-            type: 'object', 
-            properties: {
-                criteria: {
-                    type: 'object',
-                    properties: {
-                        type: { type: 'string', description: '块类型' },
-                        fields: { type: 'object', description: '字段值匹配' },
-                        position: { 
-                            type: 'object',
-                            properties: {
-                                x: { type: 'number' },
-                                y: { type: 'number' },
-                                tolerance: { type: 'number', description: '位置容差' }
-                            },
-                            description: '位置匹配'
-                        },
-                        connected: { type: 'boolean', description: '是否已连接' }
-                    },
-                    description: '查找条件'
-                },
-                limit: {
-                    type: 'number',
-                    description: '返回结果数量限制',
-                    default: 10
-                },
-                includeMetadata: {
-                    type: 'boolean',
-                    description: '是否包含详细元数据',
-                    default: false
-                }
-            },
-            required: ['criteria']
-        }
-    },
+    // {
+    //     name: "variable_manager_tool",
+    //     description: `变量管理工具。创建、删除、重命名工作区中的变量。支持不同类型的变量和作用域管理。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             operation: {
+    //                 type: 'string',
+    //                 enum: ['create', 'delete', 'rename', 'list'],
+    //                 description: '操作类型：create=创建，delete=删除，rename=重命名，list=列出所有变量'
+    //             },
+    //             variableName: {
+    //                 type: 'string',
+    //                 description: '变量名（create、delete、rename时必需）'
+    //             },
+    //             newName: {
+    //                 type: 'string',
+    //                 description: '新变量名（rename时必需）'
+    //             },
+    //             variableType: {
+    //                 type: 'string',
+    //                 description: '变量类型，如String、Number、Boolean等',
+    //                 default: 'String'
+    //             }
+    //         },
+    //         required: ['operation']
+    //     }
+    // },
+    // {
+    //     name: "find_block_tool",
+    //     description: `块查找工具。在工作区中查找特定的块，支持多种查找条件：块类型、字段值、位置等。返回匹配的块信息。`,
+    //     input_schema: {
+    //         type: 'object', 
+    //         properties: {
+    //             criteria: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     type: { type: 'string', description: '块类型' },
+    //                     fields: { type: 'object', description: '字段值匹配' },
+    //                     position: { 
+    //                         type: 'object',
+    //                         properties: {
+    //                             x: { type: 'number' },
+    //                             y: { type: 'number' },
+    //                             tolerance: { type: 'number', description: '位置容差' }
+    //                         },
+    //                         description: '位置匹配'
+    //                     },
+    //                     connected: { type: 'boolean', description: '是否已连接' }
+    //                 },
+    //                 description: '查找条件'
+    //             },
+    //             limit: {
+    //                 type: 'number',
+    //                 description: '返回结果数量限制',
+    //                 default: 10
+    //             },
+    //             includeMetadata: {
+    //                 type: 'boolean',
+    //                 description: '是否包含详细元数据',
+    //                 default: false
+    //             }
+    //         },
+    //         required: ['criteria']
+    //     }
+    // },
     {
         name: "delete_block_tool",
-        description: `块删除工具。通过块ID删除工作区中的指定块。支持两种删除模式：普通删除（只删除指定块，保留连接的块）和级联删除（删除整个块树，包括所有连接的子块）。`,
+        description: `块删除工具，如果使用connect_blocks_tool重新连接能解决则优先使用块连接工具。通过块ID删除工作区中的指定块。支持两种删除模式：普通删除（只删除指定块，保留连接的块，推荐使用）和级联删除（删除整个块树，包括所有连接的子块）。`,
         input_schema: {
             type: 'object',
             properties: {
@@ -790,66 +925,106 @@ export const TOOLS = [
             required: []
         }
     },
+//     {
+//         name: "queryBlockDefinitionTool",
+//         description: `查询项目中所有库的块定义信息。
+        
+// ## 功能特点
+// - **动态扫描**: 自动扫描当前项目的 node_modules/@aily-project/lib-* 目录中的 block.json 文件
+// - **缓存优化**: 内置缓存机制，避免重复文件读取
+// - **灵活查询**: 支持按块类型、块ID或关键词进行过滤查询
+// - **兼容性分析**: 可查询特定块的连接类型和兼容性信息
+
+// ## 使用场景
+// - 查找可用的块类型和定义
+// - 分析块之间的连接兼容性
+// - 获取块的输入输出配置信息
+// - 调试块连接问题
+
+// ## 查询选项
+// - **blockType**: 按特定块类型筛选
+// - **searchKeyword**: 按关键词搜索块ID或描述
+// - **includeInputs**: 是否包含输入配置详情
+// - **includeOutputs**: 是否包含输出配置详情
+// - **compatibilityCheck**: 检查与指定块的兼容性`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 blockType: {
+//                     type: 'string',
+//                     description: '要查询的特定块类型（可选，用于筛选）'
+//                 },
+//                 library: {
+//                     type: 'string',
+//                     description: '要查询的特定库名（可选，用于筛选）'
+//                 },
+//                 connectionType: {
+//                     type: 'string',
+//                     enum: ['input_statement', 'input_value', 'previousStatement', 'nextStatement', 'output'],
+//                     description: '要查询的连接类型（可选）'
+//                 },
+//                 refresh: {
+//                     type: 'boolean',
+//                     description: '是否强制刷新缓存',
+//                     default: false
+//                 },
+//                 useRealData: {
+//                     type: 'boolean',
+//                     description: '是否使用真实数据（需要文件读取）',
+//                     default: false
+//                 },
+//                 scanFiles: {
+//                     type: 'boolean',
+//                     description: '是否扫描实际文件系统',
+//                     default: true
+//                 }
+//             },
+//             required: []
+//         }
+//     },
+//     {
+//         name: "getBlockConnectionCompatibilityTool",
+//         description: `分析块之间的连接兼容性，帮助解决块连接问题。
+
+// ## 功能特点
+// - **连接类型分析**: 详细分析输入输出的连接类型（value、statement等）
+// - **兼容性检查**: 检查两个块之间是否可以连接
+// - **连接建议**: 为连接失败提供解决方案和替代连接方式
+// - **类型映射**: 显示Blockly连接类型的详细信息
+
+// ## 使用场景
+// - 调试块连接失败问题
+// - 查找可连接的块类型
+// - 分析连接类型不匹配的原因
+// - 获取连接建议和替代方案
+
+// ## 分析维度
+// - **输入类型分析**: 分析目标块可接受的输入类型
+// - **输出类型分析**: 分析源块的输出类型
+// - **类型兼容性**: 检查类型是否匹配
+// - **连接建议**: 提供连接方案`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 sourceBlockType: {
+//                     type: 'string',
+//                     description: '源块类型（要连接出去的块）'
+//                 },
+//                 targetBlockType: {
+//                     type: 'string',
+//                     description: '目标块类型（要连接到的块）'
+//                 },
+//                 library: {
+//                     type: 'string',
+//                     description: '库名（可选，用于筛选特定库）'
+//                 }
+//             },
+//             required: ['sourceBlockType', 'targetBlockType']
+//         }
+//     },
     {
         name: "todo_write_tool",
         description: `Creates and manages todo items for task tracking and progress management in the current session.
-请求参数
-## 必填字段
-- \`operation\`: 操作类型 (add|list|update|toggle|delete|query|stats|clear|optimize)
-
-## 操作特定必填字段
-- **add**: \`content\` - 任务内容
-- **update**: \`todos\` - 任务数组
-- **toggle/delete**: \`id\` - 任务ID
-- **query**: \`query\` - 查询条件对象
-
-## 可选字段
-- \`priority\`: 优先级 (high|medium|low)，默认 'medium'
-- \`tags\`: 标签数组
-
-示例:
-## 添加任务 (add)
-\`\`\`json
-{
-  "operation": "add",
-  "content": "完成项目文档",
-  "priority": "high",
-  "tags": ["文档", "重要"]
-}
-\`\`\`
-
-## 批量更新任务 (update)
-\`\`\`json
-{
-  "operation": "update",
-  "todos": [
-    {
-      "id": "任务ID",
-      "content": "更新后的任务内容",
-      "status": "in_progress",
-      "priority": "high",
-      "tags": ["标签1", "标签2"]
-    }
-  ]
-}
-\`\`\`
-
-## 查看任务列表 (list)
-\`\`\`json
-{
-  "operation": "list"
-}
-\`\`\`
-
-## 切换任务状态 (toggle)
-\`\`\`json
-{
-  "operation": "toggle",
-  "id": "任务ID"
-}
-\`\`\`
-状态循环：\`pending\` → \`in_progress\` → \`completed\`
-
 Use this tool to create and manage todo items for tracking tasks and progress. This tool provides comprehensive todo management:
 
 ## When to Use This Tool
@@ -910,6 +1085,82 @@ Skip using this tool when:
 - **Clear all todos**: Reset the entire todo list
 
 When in doubt, use this tool. Being proactive with task management demonstrates attentiveness and ensures you complete all requirements successfully.
+
+请求参数
+## 必填字段
+- \`operation\`: 操作类型 (add|list|update|toggle|delete|query|stats|clear|optimize)
+
+## 操作特定必填字段
+- **add**: \`content\` - 任务内容
+- **update**: \`todos\` - 任务数组
+- **toggle/delete**: \`id\` - 任务ID
+- **query**: \`query\` - 查询条件对象
+
+## 可选字段
+- \`priority\`: 优先级 (high|medium|low)，默认 'medium'
+- \`tags\`: 标签数组
+
+示例:
+## 添加单个任务 (add)
+\`\`\`json
+{
+  "operation": "add",
+  "content": "完成项目文档",
+  "priority": "high",
+  "status": "pending",
+}
+\`\`\`
+
+## 批量添加任务 (batch_add)
+\`\`\`json
+{
+  "operation": "batch_add",
+  "todos": [
+    {
+      "content": "任务1内容",
+      "priority": "medium",
+      "status": "pending"
+    },
+    {
+      "content": "任务2内容",
+      "priority": "low",
+      "status": "in_progress"
+    }
+  ]
+}
+\`\`\`
+
+## 批量更新任务 (update)
+\`\`\`json
+{
+  "operation": "update",
+  "todos": [
+    {
+      "id": "任务ID",
+      "content": "更新后的任务内容",
+      "status": "in_progress",
+      "priority": "high",
+      "tags": ["标签1", "标签2"]
+    }
+  ]
+}
+\`\`\`
+
+## 查看任务列表 (list)
+\`\`\`json
+{
+  "operation": "list"
+}
+\`\`\`
+
+## 切换任务状态 (toggle)
+\`\`\`json
+{
+  "operation": "toggle",
+  "id": "任务ID"
+}
+\`\`\`
+状态循环：\`pending\` → \`in_progress\` → \`completed\`
 `,
         input_schema: {
             type: 'object',
@@ -1024,5 +1275,80 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
             },
             required: ['operation']
         }
+    },
+    {
+        name: 'analyze_library_blocks',
+        description: `分析指定库的块定义和使用模式，在库对应的readme不存在或者描述不准确的情况下使用这个工具来补充和完善库的文档说明。深入解析库文件，提取块定义、生成器逻辑、工具箱配置等信息，生成完整的库知识图谱。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                libraryNames: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: '要分析的库名称列表，如 ["@aily-project/lib-blinker", "@aily-project/lib-sensor"]'
+                },
+                analysisDepth: {
+                    type: 'string',
+                    enum: ['basic', 'detailed', 'full'],
+                    default: 'detailed',
+                    description: '分析深度：basic(基本信息)、detailed(详细信息)、full(完整关系图)'
+                },
+                includeExamples: {
+                    type: 'boolean',
+                    default: true,
+                    description: '是否包含使用示例'
+                }
+            },
+            required: ['libraryNames']
+        }
+    },
+    {
+        name: 'verify_block_existence',
+        description: `验证指定块是否存在于指定库中。快速检查块的可用性，避免使用不存在的块类型。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                blockTypes: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: '要验证的块类型列表，如 ["blinker_run", "sensor_read_temperature"]'
+                },
+                libraryNames: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: '要搜索的库名称列表，如 ["@aily-project/lib-blinker"]'
+                },
+                includeAlternatives: {
+                    type: 'boolean',
+                    default: true,
+                    description: '如果块不存在，是否建议替代方案'
+                }
+            },
+            required: ['blockTypes', 'libraryNames']
+        }
+    // },
+    // {
+    //     name: 'arduino_syntax_check',
+    //     description: `检查Arduino代码的语法正确性。用于验证生成的Arduino代码是否有语法错误，特别是检测未声明的变量。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             code: {
+    //                 type: 'string',
+    //                 description: 'Arduino C++代码内容'
+    //             },
+    //             timeout: {
+    //                 type: 'number',
+    //                 default: 3000,
+    //                 description: '检查超时时间（毫秒）'
+    //             },
+    //             enableWarnings: {
+    //                 type: 'boolean',
+    //                 default: true,
+    //                 description: '是否启用警告检查'
+    //             }
+    //         },
+    //         required: ['code']
+    //     }
     }
 ]

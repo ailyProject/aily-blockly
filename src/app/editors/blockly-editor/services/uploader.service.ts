@@ -15,7 +15,6 @@ import { ActionService } from "../../../services/action.service";
 import { arduinoGenerator } from "../components/blockly/generators/arduino/arduino";
 import { BlocklyService } from "./blockly.service";
 import { findFile } from '../../../utils/builder.utils';
-import { error } from "console";
 
 @Injectable()
 export class _UploaderService {
@@ -41,7 +40,7 @@ export class _UploaderService {
   private isErrored = false;
   cancelled = false;
   private commandName: string | null = null;
-  
+
   private initialized = false; // 防止重复初始化
 
   // 定义正则表达式，匹配常见的进度格式
@@ -75,7 +74,7 @@ export class _UploaderService {
       console.warn('_UploaderService 已经初始化过了，跳过重复初始化');
       return;
     }
-    
+
     this.initialized = true;
     this.actionService.listen('upload-begin', async (action) => {
       try {
@@ -110,13 +109,14 @@ export class _UploaderService {
       wait_for_upload: false
     };
 
-    // 第一步：分割参数并处理基本变量替换和标志提取
-    // 使用正则先提取出以[]包裹的标志参数，并从原来的字符串中移除
-    const flagParams = uploadParam.match(/\[([^\]]+)\]/g) || [];
+    // 第一步:分割参数并处理基本变量替换和标志提取
+    // 使用正则先提取出以[]包裹的标志参数,并从原来的字符串中移除
+    const flagParams: string[] = uploadParam.match(/\[([^\]]+)\]/g) || [];
 
-    flagParams.forEach(flag => {
+    flagParams.forEach((flag: string) => {
       if (flag.includes('--use_1200bps_touch')) {
         flags.use_1200bps_touch = true;
+        console.log("Detected use_1200bps_touch flag");
       }
       if (flag.includes('--wait_for_upload')) {
         flags.wait_for_upload = true;
@@ -143,7 +143,7 @@ export class _UploaderService {
       }
       return param;
     });
-    
+
     let paramList = (await Promise.all(paramPromises)).filter(param => param !== ""); // 过滤掉空字符串（标志参数）
 
     console.log("Processed upload params: ", paramList, flags);
@@ -192,9 +192,12 @@ export class _UploaderService {
       command = await findFile(toolsPath, paramList[0] + (window['platform'].isWindows ? '.exe' : ''), toolVersion || '');
     }
     console.log("Found command: ", command);
+    
     // 替换命令为完整路径命令
     if (command) {
       paramList[0] = command;
+    } else {
+      throw new Error(`无法找到可执行文件: ${paramList[0]}`);
     }
 
     this.commandName = window['path'].basename(paramList[0])
@@ -202,10 +205,12 @@ export class _UploaderService {
     // 第三步：处理 ${'filename'} 格式的文件路径参数
     for (let i = 0; i < paramList.length; i++) {
       const param = paramList[i];
+      
+      // 处理包含文件路径变量的参数，例如 -C${'avrdude.conf'}
       const match = param.match(/\$\{\'(.+?)\'\}/);
       if (match) {
         const fileName = match[1];
-        
+
         // 获取fileName后缀
         const fileNameParts = fileName.split('.');
         const fileExtension = fileNameParts.length > 1 ? fileNameParts.pop() : '';
@@ -222,7 +227,12 @@ export class _UploaderService {
           findRes = await findFile(buildPath, fileName, '');
         }
 
-        paramList[i] = param.replace(`\$\{\'${fileName}\'\}`, findRes);
+        // 确保找到了文件路径
+        if (findRes) {
+          paramList[i] = param.replace(`\$\{\'${fileName}\'\}`, findRes);
+        } else {
+          console.warn(`无法找到文件: ${fileName}`);
+        }
       }
     }
 
@@ -322,9 +332,6 @@ export class _UploaderService {
           return;
         }
 
-        // 辨识上传中
-        this._builderService.isUploading = true;
-
         const buildPath = this._builderService.buildPath;
         const sdkPath = this._builderService.sdkPath;
         const toolsPath = this._builderService.toolsPath;
@@ -334,6 +341,9 @@ export class _UploaderService {
           // 编译
           await this._builderService.build();
         }
+
+        // 辨识上传中
+        this._builderService.isUploading = true;
 
         const boardJson = this._builderService.boardJson;
 
@@ -366,7 +376,7 @@ export class _UploaderService {
         let processedParams: string[];
         let flags: { use_1200bps_touch: boolean; wait_for_upload: boolean };
         let command: string;
-        
+
         try {
           const result = await this.processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate);
           processedParams = result.processedParams;
@@ -390,9 +400,11 @@ export class _UploaderService {
 
         // 上传预处理
         if (use_1200bps_touch) {
+          console.log("1200bps touch triggered, current port:", this.serialService.currentPort);
           await this.serialMonitorService.connect({ path: this.serialService.currentPort || '', baudRate: 1200 });
-          // await new Promise(resolve => setTimeout(resolve, 250));
+          await new Promise(resolve => setTimeout(resolve, 250));
           this.serialMonitorService.disconnect();
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
 
         console.log("Wait for upload:", wait_for_upload);
@@ -446,7 +458,7 @@ export class _UploaderService {
         //     });
 
         //     buildProperties = buildPropertyParams.join(' ');
-            
+
         //     if (buildProperties) {
         //       buildProperties = ' ' + buildProperties; // 在前面添加空格
         //     }
@@ -464,7 +476,18 @@ export class _UploaderService {
         let uploadCmd = `${command} ${uploadParamList.slice(1).join(' ')}${buildProperties}`;
         console.log("Upload cmd: ", uploadCmd);
 
-        uploadCmd = uploadCmd.replace('${serial}', this.serialService.currentPort || '');
+        // uploadCmd = uploadCmd.replace('${serial}', this.serialService.currentPort || '');
+
+        // 在 macOS 下，如果当前端口是 /dev/tty 开头，则替换为 /dev/cu
+        if (window['platform'].isMacOS && this.serialService.currentPort && 
+          this.serialService.currentPort.startsWith('/dev/cu.') && uploadCmd.includes('bossac')) {
+          let cuPort = this.serialService.currentPort;
+          cuPort = cuPort.replace('/dev/cu.', 'cu.');
+          console.log(`Converting port from ${this.serialService.currentPort} to ${cuPort}`);
+          uploadCmd = uploadCmd.replace('${serial}', cuPort);
+        } else {
+          uploadCmd = uploadCmd.replace('${serial}', this.serialService.currentPort || '');
+        }
 
         console.log("Final upload cmd: ", uploadCmd);
 
@@ -497,7 +520,7 @@ export class _UploaderService {
                       trimmedLine.toLowerCase().includes('failed') ||
                       trimmedLine.toLowerCase().includes('a fatal error occurred') ||
                       trimmedLine.toLowerCase().includes("can't open device")) {
-                      
+
                       this.handleUploadError(trimmedLine);
                       // return;
                     }
