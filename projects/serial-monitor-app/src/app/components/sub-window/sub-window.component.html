@@ -1,0 +1,32 @@
+<div class="sub-window-box bborder">
+  <div class="header">
+    <div class="title">{{ title }}</div>
+    <div class="win-btns">
+      @for (btn of winBtns; track btn) {
+        @if (btn === "go-main") {
+          <div class="btn ccenter go-main" (click)="goMain()">
+            <i class="fa-light fa-square-arrow-down-left"></i>
+          </div>
+        }
+        @if (btn === "minimize") {
+          <div class="btn ccenter minimize" (click)="minimize()">
+            <i class="fa-light fa-minus"></i>
+          </div>
+        }
+        @if (btn === "maximize") {
+          <div class="btn ccenter maximize" (click)="maximize()">
+            <i class="fa-light fa-square"></i>
+          </div>
+        }
+        @if (btn === "close") {
+          <div class="btn ccenter close" (click)="close()">
+            <i class="fa-light fa-xmark"></i>
+          </div>
+        }
+      }
+    </div>
+  </div>
+  <div class="content">
+    <ng-content></ng-content>
+  </div>
+</div>

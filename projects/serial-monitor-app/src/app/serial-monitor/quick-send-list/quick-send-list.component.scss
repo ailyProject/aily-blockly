@@ -1,0 +1,96 @@
+.quick-send-list {
+    position: relative;
+    width: 100%;
+    font-size: 12px;
+
+    &:hover .setting {
+        visibility: visible;
+    }
+}
+
+.btns {
+    display: flex;
+    align-items: center;
+    height: 100%;
+}
+
+.title {
+    padding: 0 10px;
+    flex-shrink: 0;
+}
+
+.item-btn {
+    height: 24px;
+    min-width: 15px;
+    flex-shrink: 0;
+    background-color: #333;
+    padding: 0 6px;
+    margin-right: 10px;
+    border-radius: 5px;
+    cursor: pointer;
+
+    &.signal {
+        background-color: rgba(221, 77, 0, 0.5);
+
+        &:hover {
+            background-color: rgba(221, 77, 0, 0.8);
+        }
+    }
+
+    &.text {
+        background-color: rgba(4, 110, 197, 0.5);
+
+        &:hover {
+            background-color: rgba(4, 110, 197, 0.8);
+        }
+    }
+
+    &.hex {
+        background-color: rgba(35, 118, 0, 0.5);
+
+        &:hover {
+            background-color: rgba(35, 118, 0, 0.8);
+        }
+    }
+
+    &:hover {
+        background-color: #444;
+    }
+}
+
+.setting {
+    position: absolute;
+    top: 0;
+    right: 0;
+    font-size: 18px;
+    width: 38px;
+    height: 38px;
+    padding-top: 2px;
+
+    &:hover {
+        color: #fff;
+    }
+}
+
+ngx-simplebar {
+    height: 40px;
+    width: calc(100% - 40px);
+
+    ::ng-deep {
+        .simplebar-content-wrapper {
+            height: 100%;
+        }
+
+        .simplebar-scrollbar:before {
+            height: 5px;
+        }
+
+        .simplebar-horizontal {
+            height: 5px;
+        }
+
+        .simplebar-content {
+            height: 100%;
+        }
+    }
+}

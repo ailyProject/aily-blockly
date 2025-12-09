@@ -3,8 +3,19 @@ declare global {
   interface Window {
     electronAPI: {
       SerialPort: {
+        // 列出可用串口
         list: () => Promise<any[]>;
+        // 旧版 API (兼容)
         create: (options: any) => any;
+        // 新版 API (iframe 通信用)
+        connect?: (options: any) => Promise<any>;
+        disconnect?: () => Promise<any>;
+        send?: (data: any) => Promise<any>;
+        getStatus?: () => Promise<any>;
+        // 事件监听
+        onData?: (callback: (data: any) => void) => () => void;
+        onError?: (callback: (error: any) => void) => () => void;
+        onDisconnected?: (callback: () => void) => () => void;
       };
       safeStorage: {
         isEncryptionAvailable: () => boolean;

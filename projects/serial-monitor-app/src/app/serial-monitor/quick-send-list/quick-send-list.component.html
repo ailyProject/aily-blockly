@@ -1,0 +1,20 @@
+<div class="quick-send-list">
+    <ngx-simplebar [options]="options2">
+        <div class="btns">
+            <div class="title">快捷发送</div>
+            @for(item of quickSendList; track $index) {
+            <div class="item-btn ccenter" [ngClass]="item.type" (click)="send(item)">
+                {{item.name}}
+            </div>
+            }
+            <!-- <div style="width: 40px;height:24px;flex-shrink: 0; "></div> -->
+        </div>
+    </ngx-simplebar>
+    <div class="btn setting ccenter" (click)="edit()">
+        @if(showMore){
+        <i class="fa-light fa-xmark"></i>
+        }@else{
+        <i class="fa-light fa-pencil"></i>
+        }
+    </div>
+</div>

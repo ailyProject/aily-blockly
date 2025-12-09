@@ -1,0 +1,11 @@
+<div class="quick-send-editor">
+    <div class="content">
+  <nz-code-editor [(ngModel)]="code" [nzEditorOption]="options">
+  </nz-code-editor>
+    </div>
+    <div class="btns">
+        <button class="right ccenter" nz-button nzType="primary" (click)="save()">
+            保存
+        </button>
+    </div>
+</div>

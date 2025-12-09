@@ -9,7 +9,8 @@ import { AilyChatComponent } from '../tools/aily-chat/aily-chat.component';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService } from '../services/ui.service';
-import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
+import { SerialMonitorIframeComponent } from '../components/serial-monitor-iframe/serial-monitor-iframe.component';
+import { IframeBridgeService } from '../services/iframe-bridge.service';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '../services/project.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
@@ -39,7 +40,7 @@ import { ModelStoreComponent } from '../tools/model-store/model-store.component'
     AilyChatComponent,
     TerminalComponent,
     LogComponent,
-    SerialMonitorComponent,
+    SerialMonitorIframeComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
     AppStoreComponent,
@@ -84,7 +85,8 @@ export class MainWindowComponent {
     private npmService: NpmService,
     private router: Router,
     private configService: ConfigService,
-    private modal: NzModalService
+    private modal: NzModalService,
+    private iframeBridge: IframeBridgeService
   ) { }
 
   ngOnInit(): void {
@@ -92,6 +94,9 @@ export class MainWindowComponent {
     this.projectService.init();
     this.updateService.init();
     this.npmService.init();
+
+    // 设置 iframe 通信监听
+    this.setupIframeListeners();
 
     // 语言设置变化后，重新加载项目
     window['ipcRenderer'].on('setting-changed', async (event, data) => {
@@ -251,6 +256,41 @@ export class MainWindowComponent {
 
   exportLog() {
     this.logComponent?.exportData();
+  }
+
+  /**
+   * 设置 iframe 通信监听器
+   */
+  private setupIframeListeners() {
+    // 监听 iframe 准备就绪
+    this.iframeBridge.onMessage('IFRAME_READY').subscribe(() => {
+      console.log('Serial monitor iframe is ready');
+      this.sendInitialConfig();
+    });
+
+    // 监听关闭请求
+    this.iframeBridge.onMessage('REQUEST_CLOSE').subscribe(() => {
+      this.closeRightBox();
+    });
+
+    // 监听来自 iframe 的错误
+    this.iframeBridge.onMessage('ERROR').subscribe((msg) => {
+      console.error('Serial monitor error:', msg.data);
+      if (msg.data?.error) {
+        this.message.error(msg.data.error);
+      }
+    });
+  }
+
+  /**
+   * 发送初始配置到 iframe
+   */
+  private sendInitialConfig() {
+    // 如果有项目数据，发送给 iframe
+    const projectData = this.projectService.currentPackageData;
+    if (projectData) {
+      this.iframeBridge.notifyProjectUpdate(projectData);
+    }
   }
 
 }

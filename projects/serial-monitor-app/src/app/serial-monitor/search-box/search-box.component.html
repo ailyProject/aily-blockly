@@ -1,0 +1,12 @@
+<div class="search-box">
+  <nz-input-group [nzSuffix]="suffixIconSearch">
+    <input type="text" nz-input placeholder="search keyword" [(ngModel)]="keyword"
+      (ngModelChange)="onKeywordChange($event)" />
+  </nz-input-group>  <ng-template #suffixIconSearch>
+    @if (resultsCount > 0) {
+      <span class="result-count">{{ currentIndex + 1 }}/{{ resultsCount }}</span>
+    }
+    <i class="fa-light fa-chevron-up" (click)="onPrevClick()" [ngClass]="{'disabled': resultsCount === 0}"></i>
+    <i class="fa-light fa-chevron-down" (click)="onNextClick()" [ngClass]="{'disabled': resultsCount === 0}"></i>
+  </ng-template>
+</div>

@@ -109,9 +109,14 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
+    "start:serial": "ng serve serial-monitor-app",
+    "start:both": "concurrently \"npm start\" \"npm run start:serial\"",
     "watch": "ng build --watch --configuration development",
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && electron ./electron/main.js --serve\"",
-    "build": "ng build --base-href ./ && electron-builder build"
+    "electron:full": "concurrently \"npm start\" \"npm run start:serial\" \"wait-on tcp:4200 && wait-on tcp:4201 && electron ./electron/main.js --serve\"",
+    "build": "ng build --base-href ./ && electron-builder build",
+    "build:serial": "ng build serial-monitor-app --configuration production",
+    "build:all": "ng build --base-href ./ && ng build serial-monitor-app --configuration production && electron-builder build"
   },
   "private": true,
   "dependencies": {
@@ -180,6 +185,7 @@
     "karma-coverage": "~2.2.0",
     "karma-jasmine": "~5.1.0",
     "karma-jasmine-html-reporter": "~2.1.0",
+    "ng-packagr": "^19.2.0",
     "typescript": "~5.6.2",
     "wait-on": "^8.0.2"
   }

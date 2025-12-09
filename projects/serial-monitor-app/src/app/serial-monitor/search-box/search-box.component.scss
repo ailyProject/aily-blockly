@@ -1,0 +1,26 @@
+.search-box {
+    position: absolute;
+    bottom: 35px;
+    right: 5px;
+    background: #202020;
+    border-radius: 5px;
+    width: 200px;
+
+    nz-input-group {
+        border: none;
+    }
+
+    i {
+        cursor: pointer;
+
+        &:hover {
+            color: #1890ff;
+        }
+    }
+
+    .result-count {
+        margin-left: 8px;
+        font-size: 12px;
+        color: #888;
+    }
+}

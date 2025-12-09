@@ -1,0 +1,28 @@
+<div class="sub-window-header">
+  <div class="title">{{ title }}</div>
+  <div class="window-controls">
+    @if (winBtns.includes('gomain')) {
+      <button class="win-btn gomain" (click)="goMain()" title="返回主窗口">
+        <i class="fa fa-arrow-left"></i>
+      </button>
+    }
+    @if (winBtns.includes('minimize')) {
+      <button class="win-btn minimize" (click)="minimize()" title="最小化">
+        <i class="fa fa-minus"></i>
+      </button>
+    }
+    @if (winBtns.includes('maximize')) {
+      <button class="win-btn maximize" (click)="maximize()" title="最大化">
+        <i class="fa fa-square-o"></i>
+      </button>
+    }
+    @if (winBtns.includes('close')) {
+      <button class="win-btn close" (click)="close()" title="关闭">
+        <i class="fa fa-times"></i>
+      </button>
+    }
+  </div>
+</div>
+<div class="sub-window-content">
+  <ng-content></ng-content>
+</div>

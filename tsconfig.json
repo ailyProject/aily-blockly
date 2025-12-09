@@ -3,6 +3,14 @@
 {
   "compileOnSave": false,
   "compilerOptions": {
+    "paths": {
+      "aily-shared": [
+        "./projects/aily-shared/src/public-api.ts"
+      ],
+      "aily-shared/*": [
+        "./projects/aily-shared/src/*"
+      ]
+    },
     "outDir": "./dist/out-tsc",
     "strict": false,
     "noImplicitOverride": true,

@@ -1,0 +1,29 @@
+<div class="history-list-container">
+    <div class="history-header">
+        <div class="history-title">发送历史记录</div>
+        <div class="history-close btn ccenter" (click)="onClose()">
+            <i class="fa-light fa-xmark"></i>
+        </div>
+    </div>
+    <div class="history-content">
+        <ngx-simplebar style="max-height: 300px;">
+            @if(sendHistoryList.length === 0) {
+            <div class="empty-history">暂无历史记录</div>
+            } @else {
+            @for(item of sendHistoryList; track $index) {
+            <div class="history-item">
+                <div class="history-text" [title]="item">{{ item }}</div>
+                <div class="history-actions">
+                    <button class="history-btn edit" (click)="editHistory(item)" nz-tooltip nzTooltipTitle="编辑">
+                        <i class="fa-light fa-pen-to-square"></i>
+                    </button>
+                    <button class="history-btn resend" (click)="resendHistory(item)" nz-tooltip nzTooltipTitle="重发">
+                        <i class="fa-light fa-paper-plane-top"></i>
+                    </button>
+                </div>
+            </div>
+            }
+            }
+        </ngx-simplebar>
+    </div>
+</div>

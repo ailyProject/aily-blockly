@@ -1,0 +1,100 @@
+.item {
+  position: relative;
+  display: flex;
+  line-height: 24px;
+  padding: 1px 3px;
+  border-radius: 5px;
+  margin-bottom: 1px;
+  user-select: text;
+
+  &.highlight {
+    background: rgba(57, 135, 252, 0.5);
+
+    &:hover {
+      background: rgba(57, 135, 252, 0.6);
+    }
+  }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .time {
+    flex-shrink: 0;
+    color: #888;
+  }
+
+  .dir {
+    color: #888;
+    background-color: rgba(51, 51, 51, 0.6);
+    display: flex;
+    justify-content: center;
+    border-radius: 5px;
+    margin: 0 5px 0 5px;
+    font-size: 9px;
+    width: 20px;
+    flex-grow: 0;
+    flex-shrink: 0;
+
+    &.tx {
+      background-color: #4e6694 !important;
+      color: #999;
+    }
+
+    &.sys {
+      color: #0b8800;
+    }
+  }
+}
+
+.data {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  max-width: 100%;
+
+  &.nowrap {
+    white-space: nowrap;
+  }
+
+  &.sys {
+    color: #0b8800;
+  }
+
+  &.tx {
+    color: rgb(130, 182, 225);
+  }
+
+  &.error {
+    color: rgb(182, 0, 0);
+  }
+
+  ::ng-deep {
+    .zf {
+      width: 14px;
+      height: 20px;
+      background: rgba(255, 140, 0, 0.3);
+      color: #fff;
+      margin: 0 2px;
+      border-radius: 5px;
+    }
+
+    .hex {
+      margin-right: 7px;
+    }
+  }
+}
+
+// 添加搜索高亮相关样式
+
+.search-highlight {
+  background-color: #ffeb3b;
+  color: #000;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.search-active {
+  background-color: rgba(255, 235, 59, 0.15);
+  border-left: 3px solid #ffeb3b;
+}

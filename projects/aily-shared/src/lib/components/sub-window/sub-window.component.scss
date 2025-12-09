@@ -1,0 +1,49 @@
+.sub-window-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--header-bg, #1e1e1e);
+  border-bottom: 1px solid var(--border-color, #333);
+  -webkit-app-region: drag;
+
+  .title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-color, #fff);
+  }
+
+  .window-controls {
+    display: flex;
+    gap: 4px;
+    -webkit-app-region: no-drag;
+
+    .win-btn {
+      width: 32px;
+      height: 24px;
+      border: none;
+      background: transparent;
+      color: var(--text-color, #fff);
+      cursor: pointer;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.2s;
+
+      &:hover {
+        background: var(--btn-hover-bg, rgba(255, 255, 255, 0.1));
+      }
+
+      &.close:hover {
+        background: #e81123;
+        color: #fff;
+      }
+    }
+  }
+}
+
+.sub-window-content {
+  flex: 1;
+  overflow: auto;
+}

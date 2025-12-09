@@ -1,0 +1,13 @@
+{
+  "name": "serial-monitor-app",
+  "version": "1.0.0",
+  "description": "Serial Monitor as standalone Angular app",
+  "main": "index.html",
+  "scripts": {
+    "start": "ng serve serial-monitor-app --port 4201",
+    "build": "ng build serial-monitor-app",
+    "watch": "ng build serial-monitor-app --watch"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

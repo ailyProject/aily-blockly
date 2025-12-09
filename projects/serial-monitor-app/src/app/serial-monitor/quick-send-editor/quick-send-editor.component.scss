@@ -1,0 +1,33 @@
+.quick-send-editor {
+    background: #323437;
+    padding-top: 7px;
+    border-radius: 5px;
+    height: calc(100% - 50px);
+    width: 100%;
+    position: absolute;
+    bottom: 0;
+
+    .content {
+        margin: -10px 10px 0 10px;
+        background: #292929;
+        height: calc(100% - 28px);
+        border-radius: 0 0 5px 5px;
+        overflow: hidden;
+    }
+
+    .btns {
+        padding: 0 10px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        position: absolute;
+        bottom: 5px;
+        width: 100%;
+        button {
+            height: 28px;
+            line-height: 16px;
+            border-radius: 5px;
+        }
+    }
+}
