@@ -42,6 +42,10 @@
       }
     </div>
     }
+    <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ 'MENU.MENU' | translate}}"
+      (click)="onClick('open more', $event)">
+      <i class="fa-light fa-ellipsis-stroke-vertical"></i>
+    </div>
   </div>
   <div class="win-btns">
     <div class="btn ccenter minimize" (click)="minimize()">
@@ -57,7 +61,8 @@
 </div>
 <!-- menu -->
 @if (showMenu) {
-<app-menu [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"></app-menu>
+<app-menu [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()"
+  (itemClickEvent)="onMenuClick($event)"></app-menu>
 }
 <!-- device port list -->
 @if (showPortList) {
