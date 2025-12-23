@@ -512,7 +512,7 @@ export class AuthService {
         localStorage.setItem(this.USER_INFO_KEY, userInfoStr);
       }
     } catch (error) {
-      console.log('保存用户信息失败:', error);
+      console.error('保存用户信息失败:', error);
     }
   }
 
@@ -579,7 +579,7 @@ export class AuthService {
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.REFRESH_TOKEN_KEY);
     localStorage.removeItem(this.USER_INFO_KEY);
-    this.clearAuthDataFile();
+    await this.clearAuthDataFile();
     this.isLoggedInSubject.next(false);
     this.userInfoSubject.next(null);
   }
