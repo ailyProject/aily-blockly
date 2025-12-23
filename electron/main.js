@@ -15,7 +15,7 @@ if (isWin32) {
   app.setAppUserModelId("pro.aily.blockly");
 }
 
-PROTOCOL = "abis";
+const PROTOCOL = "abis";
 
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
@@ -777,7 +777,7 @@ function createWindow() {
   const mainWindowState = windowStateKeeper({
     defaultWidth: 1200,
     defaultHeight: 780,
-    path: path.join(process.env.AILY_APPDATA_PATH),
+    path: process.env.AILY_APPDATA_PATH || app.getPath('userData'),
   })
 
   mainWindow = new BrowserWindow({
