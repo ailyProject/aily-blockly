@@ -313,8 +313,8 @@ export class BlocklyComponent implements DoCheck {
           if (errorMessage.includes('Invalid default type')) {
             title = '无效的默认类型';
           }
-          if (text.startsWith("TypeError: ")) {
-            text = text.substring("TypeError: ".length);
+          if (text.startsWith('TypeError: ')) {
+            text = text.substring('TypeError: '.length);
           }
           this.noticeService.update({
             title,
@@ -399,20 +399,43 @@ export class BlocklyComponent implements DoCheck {
       (window as any)['Blockly'] = Blockly;
       // 设置全局工作区引用，供 editBlockTool 使用
       (window as any)['blocklyWorkspace'] = this.workspace;
+
+      this.generator.on('progress', ({ completed, total, currentBlock }) => {
+        console.log(`进度: ${completed}/${total}, 当前块: ${currentBlock}`);
+      });
+
+      // 监听完成事件
+      this.generator.on('complete', ({ code }) => {
+        console.log('完整代码生成完成:', code);
+        this.blocklyService.codeSubject.next(code);
+      });
+
+      // 监听错误事件
+      this.generator.on('error', ({ error }) => {
+        console.error('代码生成错误:', error);
+      });
+
       this.workspace.addChangeListener((event: any) => {
-        // if (event.type == Blockly.Events.SELECTED) {
-        //   console.log('积木选择事件：', event);
-        //   // const code = Blockly;
-        //   // console.log('代码生成结果：', code);
-        //  const block = this.workspace.getBlockById(event.newElementId);
-        //  console.log('选中的积木：', block);
-        // }
-        try {
-          this.codeGeneration();
-        } catch (error) {
-          // 仅在开发环境下打印错误，避免用户看到错误
-          console.debug('代码生成时出现错误，可能是某些块尚未注册：', error);
-          // 错误发生时不更新代码
+        console.log('Toolbox state changed:', this.workspace.getFlyout?.().isVisible());
+        // 仅在代码块变更时触发代码生成
+        const blockChangeEvents = [
+          Blockly.Events.BLOCK_CREATE, // 块创建
+          Blockly.Events.BLOCK_DELETE, // 块删除
+          Blockly.Events.BLOCK_CHANGE, // 块字段值变更
+          Blockly.Events.BLOCK_FIELD_INTERMEDIATE_CHANGE, // 块字段值变更
+          Blockly.Events.BLOCK_MOVE, // 块移动
+          Blockly.Events.BLOCK_DRAG, // 块拖拽
+          Blockly.Events.VAR_RENAME, // 变量重命名
+        ];
+
+        if (blockChangeEvents.includes(event.type)) {
+          try {
+            this.codeGeneration();
+          } catch (error) {
+            // 仅在开发环境下打印错误，避免用户看到错误
+            console.debug('代码生成时出现错误，可能是某些块尚未注册：', error);
+            // 错误发生时不更新代码
+          }
         }
       });
       this.initLanguage();
@@ -463,7 +486,7 @@ export class BlocklyComponent implements DoCheck {
   }
 
   initLanguage() {
-    Blockly.Msg["CROSS_TAB_COPY"] = "复制到指定位置";
+    Blockly.Msg['CROSS_TAB_COPY'] = '复制到指定位置';
   }
 
   setupBlockRegistryInterception(): void {
@@ -496,8 +519,13 @@ export class BlocklyComponent implements DoCheck {
     // 设置新的定时器，1秒后执行代码生成
     this.codeGenerationTimer = setTimeout(() => {
       try {
-        const code = this.generator.workspaceToCode(this.workspace);
-        this.blocklyService.codeSubject.next(code);
+        this.generator.workspaceToCodeAsync(this.workspace, {
+          returnSkeleton: true,    // 立即返回骨架代码
+          batchSize: 2,           // 每批处理2个块
+          enableProgress: true      // 启用进度通知
+        });
+        // const code = this.generator.workspaceToCode(this.workspace);
+        // this.blocklyService.codeSubject.next(code);
       } catch (error) {
         // 仅在开发环境下打印错误，避免用户看到错误
         console.error('代码生成时出现错误，可能是某些块尚未注册：', error);

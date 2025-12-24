@@ -41,8 +41,47 @@ export enum Order {
 const stringUtils = Blockly.utils.string;
 const inputTypes = Blockly.inputs.inputTypes;
 
+/**
+ * 代码生成事件类型定义
+ */
+export interface CodeGenerationEvents {
+  progress: { completed: number; total: number; currentBlock?: string };
+  complete: { code: string };
+  error: { error: Error };
+}
+
+/**
+ * 异步代码生成选项
+ */
+export interface AsyncCodeGenerationOptions {
+  /** 是否立即返回骨架代码 */
+  returnSkeleton?: boolean;
+  /** 每批处理的块数量 */
+  batchSize?: number;
+  /** 是否启用进度通知 */
+  enableProgress?: boolean;
+}
+
+/**
+ * 代码生成任务
+ */
+interface CodeGenerationTask {
+  block: Blockly.Block;
+  priority: number; // 优先级，数字越小优先级越高
+  depth: number; // 块深度
+}
+
 export class ArduinoGenerator extends Blockly.CodeGenerator {
   codeDict = {};
+
+  // 异步生成相关属性
+  private _isGenerating = false;
+  private _generationQueue: CodeGenerationTask[] = [];
+  private _generationProgress = { completed: 0, total: 0 };
+  private _currentGenerationId: string | null = null;
+  private _generationAbortController: AbortController | null = null;
+  private _eventListeners: Map<string, Set<Function>> = new Map();
+  private _processedBlocks: Set<string> = new Set();
 
   /** @param name Name of the language the generator is for. */
   constructor(name = 'Arduino') {
@@ -64,8 +103,420 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       'noTone,shiftOut,shitIn,pulseIn,millis,micros,delay,delayMicroseconds,' +
       'min,max,abs,constrain,map,pow,sqrt,sin,cos,tan,randomSeed,random,' +
       'lowByte,highByte,bitRead,bitWrite,bitSet,bitClear,bit,attachInterrupt,' +
-      'detachInterrupt,interrupts,noInterrupts',
+      'detachInterrupt,interrupts,noInterrupts'
     );
+  }
+
+  /**
+   * 事件监听器管理
+   */
+  private _emit(event: keyof CodeGenerationEvents, data: any): void {
+    const listeners = this._eventListeners.get(event);
+    if (listeners) {
+      listeners.forEach((listener) => {
+        try {
+          listener(data);
+        } catch (error) {
+          console.error(`Error in event listener for ${event}:`, error);
+        }
+      });
+    }
+  }
+
+  /**
+   * 添加事件监听器
+   */
+  on<K extends keyof CodeGenerationEvents>(
+    event: K,
+    listener: (data: CodeGenerationEvents[K]) => void
+  ): void {
+    if (!this._eventListeners.has(event)) {
+      this._eventListeners.set(event, new Set());
+    }
+    this._eventListeners.get(event)!.add(listener);
+  }
+
+  /**
+   * 移除事件监听器
+   */
+  off<K extends keyof CodeGenerationEvents>(
+    event: K,
+    listener: (data: CodeGenerationEvents[K]) => void
+  ): void {
+    const listeners = this._eventListeners.get(event);
+    if (listeners) {
+      listeners.delete(listener);
+    }
+  }
+
+  /**
+   * 移除所有事件监听器
+   */
+  removeAllListeners(event?: keyof CodeGenerationEvents): void {
+    if (event) {
+      this._eventListeners.delete(event);
+    } else {
+      this._eventListeners.clear();
+    }
+  }
+
+  /**
+   * 收集顶层块（不递归收集子块）
+   * 子块会在 blockToCode 中自动处理
+   */
+  private _collectTopBlocks(workspace: Blockly.Workspace): Blockly.Block[] {
+    const topBlocks = workspace.getTopBlocks(true);
+    const validBlocks: Blockly.Block[] = [];
+
+    for (let i = 0, block; (block = topBlocks[i]); i++) {
+      if (block.isEnabled() && !block.isInsertionMarker()) {
+        validBlocks.push(block);
+      }
+    }
+
+    return validBlocks;
+  }
+
+  /**
+   * 生成骨架代码（快速路径）
+   * 注意：此方法不会修改生成器状态，避免影响后续完整代码生成
+   */
+  private _generateSkeletonCode(workspace: Blockly.Workspace): string {
+    // 保存当前状态
+    const savedCodeDict = JSON.parse(JSON.stringify(this.codeDict));
+    const savedDefinitions = { ...this.definitions_ };
+
+    try {
+      // 临时初始化（不影响后续完整生成，因为完整生成会重新 init）
+      const blocks = workspace.getTopBlocks(true);
+      const blockCount = blocks.length;
+
+      // 生成基本结构
+      let skeleton = `#include <Arduino.h>\n\n`;
+      skeleton += `// 代码生成中，共 ${blockCount} 个顶层块，请稍候...\n\n`;
+      skeleton += `void setup() {\n  // 初始化代码\n}\n\n`;
+      skeleton += `void loop() {\n  // 主循环代码\n}`;
+
+      return skeleton;
+    } finally {
+      // 恢复状态（虽然完整生成会重新 init，但为了安全起见还是恢复）
+      this.codeDict = savedCodeDict;
+      this.definitions_ = savedDefinitions;
+    }
+  }
+
+  /**
+   * 异步生成代码
+   */
+  async workspaceToCodeAsync(
+    workspace?: Blockly.Workspace,
+    options: AsyncCodeGenerationOptions = {}
+  ): Promise<string> {
+    // 记录开始时间
+    const startTime = performance.now();
+    console.log('[workspaceToCodeAsync] 进度: 开始执行代码生成');
+
+    if (!workspace) {
+      console.warn(
+        'No workspace specified in workspaceToCodeAsync call.  Guessing.'
+      );
+      workspace = Blockly.common.getMainWorkspace();
+    }
+
+    const {
+      returnSkeleton = true,
+      batchSize = 10,
+      enableProgress = true,
+    } = options;
+
+    // 如果正在生成，取消之前的任务
+    if (this._isGenerating && this._generationAbortController) {
+      this._generationAbortController.abort();
+    }
+
+    // 创建新的生成任务ID
+    const generationId = `${Date.now()}-${Math.random()}`;
+    this._currentGenerationId = generationId;
+    this._generationAbortController = new AbortController();
+    const signal = this._generationAbortController.signal;
+
+    // 重置状态
+    this._isGenerating = true;
+    this._generationQueue = [];
+    this._processedBlocks.clear();
+    this._generationProgress = { completed: 0, total: 0 };
+
+    // 初始化生成器
+    this.init(workspace);
+
+    // 只收集顶层块，子块会在 blockToCode 中自动处理
+    const topBlocks = this._collectTopBlocks(workspace);
+    this._generationQueue = topBlocks.map((block) => ({
+      block,
+      priority: 0,
+      depth: 0,
+    }));
+    this._generationProgress.total = this._generationQueue.length;
+
+    // 如果启用快速路径，立即返回骨架代码
+    if (returnSkeleton) {
+      const skeletonCode = this._generateSkeletonCode(workspace);
+
+      // 异步处理完整代码生成
+      this._processGenerationQueue(
+        generationId,
+        signal,
+        batchSize,
+        enableProgress,
+        startTime
+      ).catch((error) => {
+        if (error.name !== 'AbortError') {
+          this._emit('error', { error });
+        }
+      });
+
+      return skeletonCode;
+    }
+    // 否则等待完整生成
+    return this._processGenerationQueue(
+      generationId,
+      signal,
+      batchSize,
+      enableProgress,
+      startTime
+    );
+  }
+
+  /**
+   * 处理生成队列
+   * 只处理顶层块，每个顶层块的完整代码（包括子块）同步生成
+   */
+  private async _processGenerationQueue(
+    generationId: string,
+    signal: AbortSignal,
+    batchSize: number,
+    enableProgress: boolean,
+    startTime: number
+  ): Promise<string> {
+    const codeResults: Array<{
+      block: Blockly.Block;
+      code: string | [string, number];
+    }> = [];
+
+    return new Promise((resolve, reject) => {
+      if (signal.aborted || this._currentGenerationId !== generationId) {
+        reject(new DOMException('Generation cancelled', 'AbortError'));
+        return;
+      }
+
+      const processBatch = () => {
+        if (signal.aborted || this._currentGenerationId !== generationId) {
+          this._isGenerating = false;
+          reject(new DOMException('Generation cancelled', 'AbortError'));
+          return;
+        }
+
+        let processed = 0;
+        while (
+          processed < batchSize &&
+          this._generationQueue.length > 0 &&
+          !signal.aborted
+          ) {
+          const task = this._generationQueue.shift()!;
+          const block = task.block;
+
+          if (this._processedBlocks.has(block.id)) {
+            processed++;
+            continue;
+          }
+
+          try {
+            // 生成顶层块的完整代码（包括所有子块）
+            // blockToCode 会递归处理所有子块，这是同步的但很快
+            const blockCode = this.blockToCode(block);
+
+            codeResults.push({ block, code: blockCode });
+            this._processedBlocks.add(block.id);
+            this._generationProgress.completed++;
+
+            if (enableProgress) {
+              this._emit('progress', {
+                completed: this._generationProgress.completed,
+                total: this._generationProgress.total,
+                currentBlock: block.type,
+              });
+            }
+          } catch (error) {
+            console.error(
+              `Error generating code for block ${block.id}:`,
+              error
+            );
+            // 即使出错也标记为已处理，避免无限循环
+            this._processedBlocks.add(block.id);
+            this._generationProgress.completed++;
+          }
+
+          processed++;
+        }
+
+        if (this._generationQueue.length === 0) {
+          // 所有顶层块处理完成，生成最终代码
+          this._isGenerating = false;
+          try {
+            const finalCode = this._generateFinalCodeFromResults(codeResults);
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            console.log(
+              `[workspaceToCodeAsync] 进度: 代码生成完成，执行时间: ${duration.toFixed(2)}ms`
+            );
+            this._emit('complete', { code: finalCode });
+            resolve(finalCode);
+          } catch (error) {
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            console.error(
+              `[workspaceToCodeAsync] 进度: 代码生成失败，执行时间: ${duration.toFixed(2)}ms`,
+              error
+            );
+            this._emit('error', { error: error as Error });
+            reject(error);
+          }
+        } else {
+          // 继续处理下一批
+          const scheduler =
+            window.requestIdleCallback ||
+            ((cb: () => void) => setTimeout(cb, 0));
+          scheduler(() => {
+            processBatch();
+          });
+        }
+      };
+
+      // 开始处理第一批
+      const scheduler =
+        window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 0));
+      scheduler(() => {
+        processBatch();
+      });
+    });
+  }
+
+  /**
+   * 从代码生成结果生成最终代码
+   */
+  private _generateFinalCodeFromResults(
+    codeResults: Array<{
+      block: Blockly.Block;
+      code: string | [string, number];
+    }>
+  ): string {
+    const code: string[] = [];
+
+    for (const { block, code: blockCode } of codeResults) {
+      let line: string | [string, number] = blockCode;
+
+      if (Array.isArray(line)) {
+        line = line[0];
+      }
+
+      if (line) {
+        if (block.outputConnection) {
+          line = this.scrubNakedValue(line as string);
+          if (this.STATEMENT_PREFIX && !block.suppressPrefixSuffix) {
+            line = this.injectId(this.STATEMENT_PREFIX, block) + line;
+          }
+          if (this.STATEMENT_SUFFIX && !block.suppressPrefixSuffix) {
+            line = line + this.injectId(this.STATEMENT_SUFFIX, block);
+          }
+        }
+        code.push(line as string);
+      }
+    }
+
+    let codeString = code.join('\n');
+    codeString = this.finish(codeString);
+    codeString = codeString.replace(/^\s+\n/, '');
+    codeString = codeString.replace(/\n\s+$/, '\n');
+    codeString = codeString.replace(/[ \t]+\n/g, '\n');
+
+    return codeString;
+  }
+
+  /**
+   * 取消当前代码生成
+   */
+  cancelGeneration(): void {
+    if (this._isGenerating && this._generationAbortController) {
+      this._generationAbortController.abort();
+      this._isGenerating = false;
+      this._generationQueue = [];
+      this._processedBlocks.clear();
+      this._currentGenerationId = null;
+    }
+  }
+
+  /**
+   * 清除生成缓存
+   */
+  clearGenerationCache(): void {
+    this._processedBlocks.clear();
+    // 如果正在生成，取消当前任务
+    if (this._isGenerating) {
+      this.cancelGeneration();
+    }
+  }
+
+  /**
+   * Generate code for all blocks in the workspace to the specified language.
+   *
+   * @param workspace Workspace to generate code from.
+   * @returns Generated code.
+   */
+  override workspaceToCode(workspace?: Blockly.Workspace): string {
+    if (!workspace) {
+      // Backwards compatibility from before there could be multiple workspaces.
+      console.warn(
+        'No workspace specified in workspaceToCode call.  Guessing.'
+      );
+      workspace = Blockly.common.getMainWorkspace();
+    }
+    const code = [];
+    this.init(workspace);
+    const blocks = workspace.getTopBlocks(true);
+    for (let i = 0, block; (block = blocks[i]); i++) {
+      let line = this.blockToCode(block);
+      if (Array.isArray(line)) {
+        // Value blocks return tuples of code and operator order.
+        // Top-level blocks don't care about operator order.
+        line = line[0];
+      }
+      if (line) {
+        if (block.outputConnection) {
+          // This block is a naked value.  Ask the language's code generator if
+          // it wants to append a semicolon, or something.
+          line = this.scrubNakedValue(line);
+          if (this.STATEMENT_PREFIX && !block.suppressPrefixSuffix) {
+            line = this.injectId(this.STATEMENT_PREFIX, block) + line;
+          }
+          if (this.STATEMENT_SUFFIX && !block.suppressPrefixSuffix) {
+            line = line + this.injectId(this.STATEMENT_SUFFIX, block);
+          }
+        }
+        code.push(line);
+      }
+    }
+    // Blank line between each section.
+    let codeString = code.join('\n');
+    codeString = this.finish(codeString);
+    // Final scrubbing of whitespace.
+    codeString = codeString.replace(/^\s+\n/, '');
+    codeString = codeString.replace(/\n\s+$/, '\n');
+    codeString = codeString.replace(/[ \t]+\n/g, '\n');
+
+    // setTimeout(() => {
+    //   this.workspaceToCodeAgain(workspace);
+    // }, 5000);
+    return codeString;
   }
 
   /**
@@ -82,6 +533,9 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       this.nameDB_.reset();
     }
 
+    // 清除生成缓存
+    this._processedBlocks.clear();
+
     this.nameDB_.setVariableMap(workspace.getVariableMap());
     this.nameDB_.populateVariables(workspace);
     this.nameDB_.populateProcedures(workspace);
@@ -93,8 +547,8 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       defvars.push(
         this.nameDB_.getName(
           devVarList[i],
-          Blockly.Names.NameType.DEVELOPER_VARIABLE,
-        ),
+          Blockly.Names.NameType.DEVELOPER_VARIABLE
+        )
       );
     }
 
@@ -104,8 +558,8 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       defvars.push(
         this.nameDB_.getName(
           variables[i].getId(),
-          Blockly.Names.NameType.VARIABLE,
-        ),
+          Blockly.Names.NameType.VARIABLE
+        )
       );
     }
 
@@ -210,12 +664,14 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       (objects.length > 0 ? `${objects.join('\n')}\n\n` : '') +
       (functions.length > 0 ? `${functions.join('\n')}\n\n` : '') +
       `void setup() {\n` +
-      (setups_begin.length > 0 ? `  ${setups_begin.join('\n  ')}\n` : '') + '\n' +
+      (setups_begin.length > 0 ? `  ${setups_begin.join('\n  ')}\n` : '') +
+      '\n' +
       (setups.length > 0 ? `${setups.join('\n  ')}\n` : '') +
       (setups_end.length > 0 ? `    ${setups_end.join('\n  ')}\n` : '') +
       `}\n\n` +
       `void loop() {\n` +
-      (loops_begin.length > 0 ? `  ${loops_begin.join('\n  ')}\n` : '') + '\n' +
+      (loops_begin.length > 0 ? `  ${loops_begin.join('\n  ')}\n` : '') +
+      '\n' +
       (loops.length > 0 ? `${loops.join('\n  ')}\n` : '') +
       (loops_end.length > 0 ? `  ${loops_end.join('\n  ')}\n` : '') +
       `}`;
@@ -247,7 +703,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       .replace(/\\/g, '\\\\')
       .replace(/\n/g, '\\\n')
       .replace(/'/g, "\\'");
-    return "\"" + string + "\"";
+    return '"' + string + '"';
   }
 
   /**
@@ -264,6 +720,37 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 
   /**
+   * Generate a code string representing the blocks attached to the named
+   * statement input. Indent the code.
+   * This is mainly used in generators. When trying to generate code to evaluate
+   * look at using workspaceToCode or blockToCode.
+   *
+   * @param block The block containing the input.
+   * @param name The name of the input.
+   * @returns Generated code or '' if no blocks are connected.
+   * @throws ReferenceError if the specified input does not exist.
+   */
+  override statementToCode(block: Blockly.Block, name: string): string {
+    const targetBlock = block.getInputTargetBlock(name);
+    if (!targetBlock && !block.getInput(name)) {
+      throw ReferenceError(`Input "${name}" doesn't exist on "${block.type}"`);
+    }
+    let code = this.blockToCode(targetBlock);
+    // Value blocks must return code and order of operations info.
+    // Statement blocks must only return code.
+    if (typeof code !== 'string') {
+      throw TypeError(
+        'Expecting code from statement block: ' +
+        (targetBlock && targetBlock.type),
+      );
+    }
+    if (code) {
+      code = this.prefixLines(code, this.INDENT);
+    }
+    return code;
+  }
+
+  /**
    * Common tasks for generating JavaScript from blocks.
    * Handles comments for the specified block and any connected value blocks.
    * Calls any statements following this block.
@@ -276,7 +763,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   override scrub_(
     block: Blockly.Block,
     code: string,
-    thisOnly = false,
+    thisOnly = false
   ): string {
     let commentCode = '';
     // Only collect comments for blocks that aren't inline.
@@ -308,6 +795,75 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 
   /**
+   * Generate code for the specified block (and attached blocks).
+   * The generator must be initialized before calling this function.
+   *
+   * @param block The block to generate code for.
+   * @param opt_thisOnly True to generate code for only this statement.
+   * @returns For statement blocks, the generated code.
+   *     For value blocks, an array containing the generated code and an
+   * operator order value.  Returns '' if block is null.
+   */
+  override blockToCode(
+    block: Blockly.Block | null,
+    opt_thisOnly?: boolean
+  ): string | [string, number] {
+    if (this.isInitialized === false) {
+      console.warn(
+        'CodeGenerator init was not called before blockToCode was called.'
+      );
+    }
+    if (!block) {
+      return '';
+    }
+    if (!block.isEnabled()) {
+      // Skip past this block if it is disabled.
+      return opt_thisOnly ? '' : this.blockToCode(block.getNextBlock());
+    }
+    if (block.isInsertionMarker()) {
+      // Skip past insertion markers.
+      return opt_thisOnly ? '' : this.blockToCode(block.getChildren(false)[0]);
+    }
+
+    // Look up block generator function in dictionary - but fall back
+    // to looking up on this if not found, for backwards compatibility.
+    const func = this.forBlock[block.type];
+    if (typeof func !== 'function') {
+      throw Error(
+        `${this.name_} generator does not know how to generate code ` +
+        `for block type "${block.type}".`
+      );
+    }
+    // First argument to func.call is the value of 'this' in the generator.
+    // Prior to 24 September 2013 'this' was the only way to access the block.
+    // The current preferred method of accessing the block is through the second
+    // argument to func.call, which becomes the first parameter to the
+    // generator.
+
+    let code: string | [string, number] = func.call(block, block, this);
+
+    if (Array.isArray(code)) {
+      // Value blocks return tuples of code and operator order.
+      if (!block.outputConnection) {
+        throw TypeError('Expecting string from statement block: ' + block.type);
+      }
+      return [this.scrub_(block, code[0], opt_thisOnly), code[1]];
+    } else if (typeof code === 'string') {
+      if (this.STATEMENT_PREFIX && !block.suppressPrefixSuffix) {
+        code = this.injectId(this.STATEMENT_PREFIX, block) + code;
+      }
+      if (this.STATEMENT_SUFFIX && !block.suppressPrefixSuffix) {
+        code = code + this.injectId(this.STATEMENT_SUFFIX, block);
+      }
+      return this.scrub_(block, code, opt_thisOnly);
+    } else if (code === null) {
+      // Block has handled code generation itself.
+      return '';
+    }
+    throw SyntaxError('Invalid code generated: ' + code);
+  }
+
+  /**
    * Generate code representing the specified value input, adjusted to take into
    * account indexing (zero- or one-based) and optionally by a specified delta
    * and/or by negation.
@@ -324,7 +880,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     atId: string,
     delta = 0,
     negate = false,
-    order = Order.NONE,
+    order = Order.NONE
   ): string {
     if (block.workspace.options.oneBasedIndex) {
       delta--;
@@ -437,6 +993,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
 
   // 变量相关
   variableTypes = {};
+
   getVarType(varName) {
     if (this.variableTypes[varName]) {
       return this.variableTypes[varName];
@@ -462,7 +1019,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     if (type == 'field_variable') {
       code = arduinoGenerator.nameDB_.getName(
         block.getFieldValue(name),
-        'VARIABLE',
+        'VARIABLE'
       );
       return code;
     }
@@ -482,6 +1039,5 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     return false;
   }
 }
-
 
 export const arduinoGenerator = new ArduinoGenerator();
