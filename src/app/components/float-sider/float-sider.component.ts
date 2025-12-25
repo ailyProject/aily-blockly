@@ -93,13 +93,19 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   }
 
 
-  openDocUrl() {
-    let data = JSON.parse(this.electronService.readFile(this.boardPackagePath + '/package.json'))
-    if (!data.url) {
-      this.message.error(this.translate.instant('FLOAT_SIDER.NO_DOCUMENTATION'));
+  async openDocUrl() {
+    let data = await this.projectService.getPackageJson();
+    if (data.doc_url) {
+      this.electronService.openUrl(data.doc_url);
       return;
     }
-    this.electronService.openUrl(data.url)
+
+    data = JSON.parse(this.electronService.readFile(this.boardPackagePath + '/package.json'))
+    if (data.url) {
+      this.electronService.openUrl(data.url)
+      return;
+    }
+    this.message.error(this.translate.instant('FLOAT_SIDER.NO_DOCUMENTATION'));
   }
 
   openSettings() {
@@ -108,5 +114,9 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
 
   openFeedback() {
     this.uiService.openFeedback();
+  }
+
+  openHistory() {
+    this.uiService.openHistory();
   }
 }

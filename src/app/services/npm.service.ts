@@ -6,6 +6,7 @@ import { UiService } from './ui.service';
 import { API } from '../configs/api.config';
 import { ProjectService } from './project.service';
 import { CmdService } from './cmd.service';
+import { WorkflowService } from './workflow.service';
 
 @Injectable({
   providedIn: 'root'
@@ -17,7 +18,8 @@ export class NpmService {
     private configService: ConfigService,
     private uiService: UiService,
     private prjService: ProjectService,
-    private cmdService: CmdService
+    private cmdService: CmdService,
+    private workflowService: WorkflowService
   ) { }
 
   isInstalling = false;
@@ -106,6 +108,7 @@ export class NpmService {
       board = JSON.parse(board);
     }
     this.isInstalling = true;
+    this.workflowService.startInstall();
     const appDataPath = this.configService.data.appdata_path[this.configService.data.platform].replace('%HOMEPATH%', window['path'].getUserHome());
     const cmd = `npm install ${board.name}@${board.version} --prefix "${appDataPath}"`;
     this.uiService.updateFooterState({ state: 'doing', text: `正在安装${board.name}...`, timeout: 300000 });
@@ -119,6 +122,7 @@ export class NpmService {
 
     this.uiService.updateFooterState({ state: 'done', text: '开发板安装完成' });
     this.isInstalling = false;
+    this.workflowService.finishInstall(true);
     // return template/package.json
     return `${appDataPath}/node_modules/${board.name}/template/package.json`;
   }
@@ -133,6 +137,8 @@ export class NpmService {
   async installBoardDependencies(packageJson: any) {
     try {
       this.isInstalling = true;
+      this.workflowService.startInstall();
+      console.log('开始安装开发板依赖...');
       const appDataPath = this.configService.data.appdata_path[this.configService.data.platform].replace('%HOMEPATH%', window['path'].getUserHome());
       const boardDependencies = packageJson.boardDependencies || {};
 
@@ -182,9 +188,11 @@ export class NpmService {
       }
 
       this.uiService.updateFooterState({ state: 'done', text: '开发板依赖安装完成' });
+      this.workflowService.finishInstall(true);
     } catch (error) {
       console.error('安装开发板依赖时出错:', error);
       this.uiService.updateFooterState({ state: 'error', text: '开发板依赖安装失败' });
+      this.workflowService.finishInstall(false, '开发板依赖安装失败');
     } finally {
       this.isInstalling = false;
     }

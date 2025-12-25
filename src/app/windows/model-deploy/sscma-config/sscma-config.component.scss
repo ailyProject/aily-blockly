@@ -1,0 +1,550 @@
+.window-inner {
+  position: relative;
+  height: calc(100vh - 35px);
+}
+
+.window-content {
+  display: flex;
+  height: 100%;
+  position: relative;
+
+  .right {
+    padding: 15px 0;
+    overflow-y: auto;
+    width: 100%;
+
+    .right-inner {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+  }
+}
+
+// 串口选择器
+.port-selector {
+  display: flex;
+  align-items: center;
+  position: relative;
+  gap: 10px;
+  padding: 0 10px;
+
+  .item-inner {
+    width: 100px;
+    height: 32px;
+    background-color: #222;
+    border-radius: 4px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 10px;
+    padding-right: 20px;
+    color: #eee;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+      background-color: #2a2a2a;
+    }
+
+    .value {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .arrow-box {
+      pointer-events: auto;
+      position: absolute;
+      right: 8px;
+
+      .arrow {
+        transition: transform 0.3s;
+
+        &.down {
+          transform: rotate(90deg);
+        }
+      }
+    }
+
+    .value,
+    .arrow-box,
+    .arrow-box .arrow {
+      pointer-events: none;
+    }
+  }
+
+  .doc-btn {
+    position: absolute;
+    right: 10px;
+    cursor: pointer;
+    color: #CCC;
+    transition: all 0.3s;
+
+    &:hover {
+      color: #FFF;
+    }
+  }
+
+}
+
+
+.config-container {
+  position: relative;
+  padding: 0 10px;
+  flex-grow: 1;
+}
+
+
+// ============================================
+// 配置内容主容器（两种模式共用）
+// ============================================
+.sscma-config {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Slider color overrides for this component (ng-zorro nz-slider) */
+::ng-deep nz-slider .ant-slider-track {
+  background-color: #8fc31f !important;
+}
+
+::ng-deep nz-slider .ant-slider-rail {
+  background-color: rgba(143, 195, 31, 0.14) !important;
+}
+
+::ng-deep nz-slider .ant-slider-handle {
+  border-color: #8fc31f !important;
+  box-shadow: none !important;
+}
+
+::ng-deep nz-slider .ant-slider-handle::before,
+::ng-deep nz-slider .ant-slider-handle::after {
+  background: #8fc31f !important;
+}
+
+/* Make the slider active track use the same gradient as other UI accents */
+::ng-deep nz-slider .ant-slider-track {
+  background: linear-gradient(90deg, #8fc31fc7, #8fc31f8e) !important;
+}
+
+/* Ensure the draggable handle remains circular */
+::ng-deep nz-slider .ant-slider-handle,
+::ng-deep nz-slider .ant-slider-handle::before,
+::ng-deep nz-slider .ant-slider-handle::after {
+  border-radius: 50% !important;
+  border: 1px solid !important;
+}
+
+/* keep handle sizing consistent with ant default while allowing color override */
+::ng-deep nz-slider .ant-slider-handle {
+  width: 10px !important;
+  height: 10px !important;
+  margin-top: -4px !important;
+  box-sizing: border-box !important;
+}
+
+
+// ===================
+// 主内容区域
+// ===================
+.config-main {
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+  background-color: #2a2b2e;
+  border-radius: 4px;
+  position: relative;
+
+  button[nz-button] {
+    height: 32px;
+    font-size: 14px;
+    font-weight: 500;
+    border-radius: 4px;
+
+    &:not([nzDanger]):not([disabled]) {
+      &[nzType="primary"] {
+        background-color: #8fc31fc7;
+        border-color: #8fc31fc7;
+
+        &:hover {
+          background-color: #8fc31f8e;
+          border-color: #8fc31f8e;
+        }
+      }
+    }
+
+    &[nzDanger] {
+      &:hover {
+        opacity: 0.85;
+      }
+    }
+  }
+
+}
+
+.section {
+  padding-top: 15px;
+
+  .section-title {
+    font-size: 14px;
+    line-height: 14px;
+    font-weight: 800;
+    color: #ffffff;
+    margin-bottom: 10px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #666;
+    position: relative;
+    display: flex;
+    align-items: center;
+
+    .apply-btn {
+      font-size: 12px;
+      height: 18px;
+      position: absolute;
+      right: 0;
+      background: #8fc31f;
+      cursor: pointer;
+      border: none;
+      border-radius: 2px;
+      transition: all 0.2s;
+
+      &:hover {
+        background: #93c032;
+      }
+    }
+  }
+
+  .section-content {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+
+    .section-item {
+      font-size: 12px;
+      color: #aaa;
+
+      label {
+        width: 60px;
+        margin-right: 10px;
+
+        .section-tip {
+          margin-left: 5px;
+          color: #999;
+        }
+      }
+
+      span {
+        color: #fff;
+        flex: 1 1 auto;
+        text-align: left;
+      }
+
+      .setting-control {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+
+        nz-slider {
+          flex: 1;
+        }
+      }
+
+      nz-input-number {
+        width: 50px;
+        font-size: 12px;
+        margin-left: 5px;
+
+        // 未配置状态样式
+        &.not-configured {
+          ::ng-deep {
+            .ant-input-number-input {
+              color: #666;
+            }
+          }
+        }
+      }
+
+      nz-select {
+        font-size: 12px;
+        margin-left: 5px;
+      }
+
+
+      input {
+        height: 30px;
+        background: transparent;
+        outline: none;
+        border: none;
+        border-radius: 2px;
+        background: #222;
+        padding-left: 5px;
+      }
+    }
+  }
+}
+
+// ===================
+// 左侧：模型与预览
+// ===================
+.config-main-left {
+  padding: 10px;
+
+  .connected-info {
+    // height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ff9100;
+    font-size: 14px;
+    text-align: center;
+  }
+
+  // 模型信息区
+  .model-section {
+    .model-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 8px;
+
+      label {
+        min-width: 72px;
+        color: #bbb;
+        font-weight: 600;
+      }
+
+      span {
+        color: #fff;
+        flex: 1 1 auto;
+        text-align: left;
+      }
+    }
+  }
+
+  // 实时预览区
+  .preview-section {
+    position: relative;
+    width: 300px;
+    height: 300px;
+    margin-bottom: 10px;
+    background: #808080;
+    border-radius: 4px;
+    overflow: hidden;
+
+    .play-btn {
+      width: 36px;
+      height: 36px;
+      position: absolute;
+      bottom: 5px;
+      right: 5px;
+      border-radius: 50%;
+      opacity: 0.6;
+      cursor: pointer;
+
+      &:hover {
+        opacity: 1;
+      }
+
+      &.play {
+        background-color: #8fc31f;
+      }
+
+      &.pause {
+        background-color: #222;
+      }
+    }
+
+    .preview-image {
+      width: 300px;
+      height: 300px;
+      max-width: none;
+      max-height: none;
+      object-fit: contain;
+      display: block;
+    }
+
+    .preview-overlay-canvas {
+      position: absolute;
+      left: 0;
+      top: 0;
+      pointer-events: none;
+    }
+  }
+
+  // 识别结果区
+  .recognition-area {
+    margin-top: 12px;
+    color: #eaeaea;
+
+    .recognition-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 200px;
+    }
+
+    .recognition-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      width: 100%;
+    }
+
+    .class-label {
+      width: 100px;
+      color: #fff;
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .object-class-label {
+      width: 120px;
+      color: #fff;
+      font-size: 12px;
+      text-align: right;
+      margin-left: auto; /* push to the far right */
+    }
+
+    .score-bar {
+      flex: 1 1 auto;
+      height: 24px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .bar-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0%;
+      background: linear-gradient(90deg, #8fc31fc7, #8fc31f8e);
+      transition: width 120ms ease;
+    }
+
+    .bar-text {
+      position: absolute;
+      left: 5px;
+      color: #fff;
+      font-size: 12px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
+    .score-text {
+      width: 48px;
+      text-align: right;
+      color: #d0ffd6;
+      font-size: 12px;
+      font-weight: 600;
+    }
+  }
+}
+
+// ===================
+// 右侧：设备信息
+// ===================
+.config-main-right {
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+
+  .connected-info {
+    // height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ff9100;
+    font-size: 14px;
+    text-align: center;
+  }
+
+  .device-section {
+    padding: 12px 12px 12px 0;
+
+    .device-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+
+      label {
+        color: #ccc;
+        margin-right: 10px;
+      }
+
+      span {
+        color: #fff;
+      }
+    }
+
+    // 传输类型选择器
+    .transport-selector {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-left: auto;
+
+      label {
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.85);
+        font-weight: 500;
+      }
+
+      .item-inner {
+        height: 32px;
+        width: 100%;
+        background-color: #222;
+        border-radius: 4px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-left: 10px;
+        padding-right: 20px;
+        color: #eee;
+        font-size: 14px;
+        cursor: pointer;
+        transition: all 0.2s;
+
+        &:hover {
+          background-color: #2a2a2a;
+        }
+
+        .value {
+          flex: 1;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .arrow-box {
+          pointer-events: auto;
+          position: absolute;
+          right: 8px;
+
+          .arrow {
+            transition: transform 0.3s;
+
+            &.down {
+              transform: rotate(90deg);
+            }
+          }
+        }
+      }
+    }
+  }
+}

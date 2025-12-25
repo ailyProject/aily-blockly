@@ -40,6 +40,7 @@ export interface NoticeOptions {
   title?: string,
   text?: string,
   state?: string,
+  showProgress?: boolean,
   progress?: number,
   setTimeout?: number,
   stop?: Function,

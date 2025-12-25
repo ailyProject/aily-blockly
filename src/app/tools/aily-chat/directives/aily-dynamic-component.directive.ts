@@ -269,7 +269,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
     // 保存组件引用以便后续清理
     this.componentRefs.push(componentRef);
 
-    console.log(`Successfully created ${ailyType} component:`, componentData);
+    // console.log(`Successfully created ${ailyType} component:`, componentData);
   }
 
   /**

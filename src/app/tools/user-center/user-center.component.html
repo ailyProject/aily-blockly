@@ -1,42 +1,95 @@
-@if (currentUrl == "/serial-monitor") {
-<app-sub-window [title]="windowInfo" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
-    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
-</app-sub-window>
-} @else {
-<app-tool-container [title]="windowInfo" [path]="'/serial-monitor'" (closeEvent)="close()">
+<app-tool-container [title]="'USER CENTER'" (closeEvent)="close()">
     <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-tool-container>
-}
 <ng-template #windowBoxTemplate>
     <div class="window-box">
-        <div class="menu-box bborder" #menuBox (click)="$event.stopPropagation()">
-            <div class="content">
-                <div class="title">aily Blocky Service</div>
-                @if(isLoggedIn){
-                <div class="text">欢迎参加我们的AI服务测试</div>
-                }@else {
-                <div class="text">
-                    登录后即可使用本软件提供的相关服务
-                    <!-- <span (click)="more()">了解更多</span> -->
+        <div class="user-info">
+            <div class="avatar ccenter">
+                <i class="fa-thin fa-user"></i>
+            </div>
+            <div class="username">
+                @if (!isEditingNickname) {
+                <span class="username__text" [class.username__text--placeholder]="!displayNickname"
+                    (click)="onStartNicknameEdit($event)" (keydown.enter)="onStartNicknameEdit($event)"
+                    (keydown.space)="onStartNicknameEdit($event)" tabindex="0" role="button">
+                    {{ displayNickname || '点击设置昵称' }}
+                </span>
+                } @else {
+                <div class="nickname-edit">
+                    <input #nicknameInput nz-input maxlength="30" placeholder="请输入新的昵称" [(ngModel)]="editedNickname"
+                        [disabled]="nicknameSaving" (blur)="onNicknameBlur()" (keydown.enter)="onSaveNickname()"
+                        (keydown.escape)="onCancelNicknameEdit($event)" />
+                    <div class="nickname-edit__hint">
+                        支持中英文，长度不超过30个字符。
+                    </div>
+                    <div class="nickname-edit__error" *ngIf="nicknameError">
+                        {{ nicknameError }}
+                    </div>
                 </div>
                 }
-
-
             </div>
-
-            <div class="login-box">
-                <div class="item">
-                    <div class="ccenter">
-                        <i class="fa-light fa-user-vneck"></i>
-                    </div>
-                    <div class="username">{{ currentUser?.nickname || currentUser?.login || '用户' }}</div>
+            <div class="user-login" *ngIf="currentUser?.login">
+                <span class="label">账号</span>
+                <span class="value">{{ currentUser?.login }}</span>
+            </div>
+        </div>
+        <div class="user-data">
+            <div class="item">
+                <div class="icon ccenter">
+                    <i class="fa-light fa-dollar-sign"></i>
                 </div>
-                <div class="actions">
-                    <button nz-button nzType="primary" (click)="onLogout()">
-                        登出
-                    </button>
+                <div class="content">
+                    <div class="headline">
+                        <span class="label">Token</span>
+                        <span class="value">{{ (currentUser?.quota?.total_token || 0) | number }}</span>
+                    </div>
+                    <!-- <div class="meta">
+                        <span class="chip">free {{ currentUser?.quota?.details?.free_limit || 0 }}</span>
+                        <span class="chip">paid {{ currentUser?.quota?.details?.paid_limit || 0 }}</span>
+                        <span class="chip">gift {{ currentUser?.quota?.details?.gift_limit || 0 }}</span>
+                    </div> -->
+                </div>
+            </div>
+            <div class="item">
+                <div class="icon ccenter">
+                    <i class="fa-light fa-chart-line"></i>
+                </div>
+                <div class="content">
+                    <div class="headline">
+                        <span class="label">Token usage</span>
+                        <span class="value">
+                            <span>({{ quotaUsagePercent}}%)</span>
+                            {{ (currentUser?.quota?.used_token || 0) | number }}
+                        </span>
+                    </div>
+                    <div class="progress"
+                        [title]="'Used: ' + quotaUsagePercent + '%, Remaining: ' + quotaRemainingPercent + '%'">
+                        <div class="remaining-bar" [style.width.%]="quotaRemainingPercent"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="item">
+                <div class="icon ccenter">
+                    <i class="fa-light fa-clock-rotate-left"></i>
+                </div>
+                <div class="content">
+                    <div class="headline">
+                        <span class="label">Free Token reset time</span>
+                    </div>
+                    <div class="value value--muted">{{ currentUser?.quota?.reset_time || '-' }}</div>
                 </div>
             </div>
         </div>
+        <div class="actions">
+            <!-- <button nz-button nzType="primary" (click)="onLogout()">
+                修改用户信息
+            </button> -->
+            <button nz-button nzType="primary" (click)="onLogout()">
+                登出
+            </button>
+        </div>
     </div>
+    @if(!isLoggedIn){
+    <app-login></app-login>
+    }
 </ng-template>

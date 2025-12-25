@@ -1,9 +1,11 @@
-import { Component, EventEmitter, Input, input, Output, OnInit } from '@angular/core';
+import { Component, EventEmitter, Input, Output, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzTagModule } from 'ng-zorro-antd/tag';
+import { NzIconModule } from 'ng-zorro-antd/icon';
 import { CloudService } from '../services/cloud.service';
 import { resizeImage, convertImageToWebP } from '../../../utils/img.utils';
 import { NZ_DATE_CONFIG_DEFAULT } from 'ng-zorro-antd/i18n';
@@ -14,7 +16,9 @@ import { NZ_DATE_CONFIG_DEFAULT } from 'ng-zorro-antd/i18n';
     CommonModule,
     FormsModule,
     NzButtonModule,
-    NzInputModule
+    NzInputModule,
+    NzTagModule,
+    NzIconModule
   ],
   templateUrl: './editor.component.html',
   styleUrl: './editor.component.scss'
@@ -29,11 +33,17 @@ export class EditorComponent implements OnInit {
     nickname: '',
     description: '',
     image: '',
-    image_url: ''
+    image_url: '',
+    tags: []
   };
 
   selectedImageFile: File | null = null;
   imagePreviewUrl: string | null = null;
+
+  // 标签相关
+  tags: string[] = [];
+  tagInputValue = '';
+  availableColors = ['magenta', 'red', 'volcano', 'orange', 'gold', 'lime', 'green', 'cyan', 'blue', 'geekblue', 'purple'];
 
   constructor(
     private cloudService: CloudService,
@@ -42,8 +52,36 @@ export class EditorComponent implements OnInit {
   }
 
   ngOnInit() {
-    // 在 ngOnInit 中初始化图片预览URL，此时 @Input 属性已经被正确设置
+    // 在 ngOnInit 中初始化图片预览URL,此时 @Input 属性已经被正确设置
     this.imagePreviewUrl = this.projectData.image_url || null;
+    // 初始化标签
+    this.tags = JSON.parse(this.projectData.tags) || [];
+
+    console.log("Edit Data: ", this.projectData);
+  }
+
+  // 标签相关方法
+  handleClose(removedTag: string): void {
+    this.tags = this.tags.filter(tag => tag !== removedTag);
+  }
+
+  handleTagInputKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      this.addTag();
+    }
+  }
+
+  addTag(): void {
+    const trimmedValue = this.tagInputValue.trim();
+    if (trimmedValue && this.tags.indexOf(trimmedValue) === -1) {
+      this.tags = [...this.tags, trimmedValue];
+      this.tagInputValue = '';
+    }
+  }
+
+  getTagColor(index: number): string {
+    return this.availableColors[index % this.availableColors.length];
   }
 
   onClose() {
@@ -138,7 +176,8 @@ export class EditorComponent implements OnInit {
     const updateData: any = {
       nickname: this.projectData.nickname.trim(),
       description: this.projectData.description || '',
-      doc_url: this.projectData.doc_url || ''
+      doc_url: this.projectData.doc_url || '',
+      tags: this.tags
     };
 
     // 如果选择了新图片，先进行压缩和格式转换

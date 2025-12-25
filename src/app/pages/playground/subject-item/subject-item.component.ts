@@ -11,6 +11,7 @@ import { CmdService } from '../../../services/cmd.service';
 import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { PlaygroundService } from '../playground.service';
 import { UiService } from '../../../services/ui.service';
+import { PlatformService } from '../../../services/platform.service';
 
 @Component({
   selector: 'app-subject-item',
@@ -45,7 +46,8 @@ export class SubjectItemComponent {
     private cmdService: CmdService,
     private crossPlatformCmdService: CrossPlatformCmdService,
     private playgroundService: PlaygroundService,
-    private uiService: UiService
+    private uiService: UiService,
+    private platformService: PlatformService
   ) { }
 
   ngOnInit() {
@@ -102,7 +104,8 @@ export class SubjectItemComponent {
       // 将path路径中的最后文件夹名添加"_`generateDateString()`"后缀
       const lastFolderName = path.split('/').pop();
       const targetPathName = this.projectService.generateUniqueProjectName(this.projectService.projectRootPath, lastFolderName + '_');
-      const targetPath = `${this.projectService.projectRootPath}\\${targetPathName}`;
+      const separator = this.platformService.getPlatformSeparator();
+      const targetPath = `${this.projectService.projectRootPath}${separator}${targetPathName}`;
       console.log('目标路径: ', targetPath);
       await this.crossPlatformCmdService.copyItem(examplePath, targetPath, true, true);
       this.uiService.updateFooterState({ state: 'done', text: `示例加载完成` });

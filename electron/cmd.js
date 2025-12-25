@@ -24,12 +24,12 @@ class CommandManager {
       shell = true; // 使用系统默认 shell
     }
 
-    console.log("====shell: ", command, args, {
-      cwd: cwd || process.cwd(),
-      // env: { ...process.env, ...env },
-      shell: shell,
-      stdio: ['pipe', 'pipe', 'pipe']
-    }, streamId);
+    // console.log("====shell: ", command, args, {
+    //   cwd: cwd || process.cwd(),
+    //   // env: { ...process.env, ...env },
+    //   shell: shell,
+    //   stdio: ['pipe', 'pipe', 'pipe']
+    // }, streamId);
     
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
@@ -40,10 +40,10 @@ class CommandManager {
 
     this.processes.set(streamId, child);
 
-    console.log("====child:" , child,{
-      pid: child.pid,
-      process: child
-    });
+    // console.log("====child:" , child,{
+    //   pid: child.pid,
+    //   process: child
+    // });
 
     return {
       pid: child.pid,

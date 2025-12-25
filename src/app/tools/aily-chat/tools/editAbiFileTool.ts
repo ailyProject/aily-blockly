@@ -139,7 +139,7 @@ export async function findAbiFilesTool(
     try {
         const { searchPath = process.cwd(), maxDepth = 3 } = params;
         
-        console.log("在路径下查找ABI文件: ", searchPath);
+        // console.log("在路径下查找ABI文件: ", searchPath);
         
         const abiFiles = findAbiFiles(searchPath, maxDepth);
         
@@ -205,7 +205,7 @@ export async function editAbiFileTool(
         } = params;
         const filePath = path + "/project.abi";
 
-        console.log("编辑ABI文件: ", filePath);
+        // console.log("编辑ABI文件: ", filePath);
 
         // 验证路径是否有效
         if (!filePath || filePath.trim() === '') {
@@ -322,16 +322,16 @@ export async function editAbiFileTool(
             
             if (replaceStartLine === endLine) {
                 operationDescription = `替换第 ${replaceStartLine} 行内容（${contentLines.length} 行）`;
-                console.log(`替换第 ${replaceStartLine} 行，新行数: ${contentLines.length}`);
+                // console.log(`替换第 ${replaceStartLine} 行，新行数: ${contentLines.length}`);
             } else {
                 operationDescription = `替换第 ${replaceStartLine}-${endLine} 行内容（${deleteCount} 行 → ${contentLines.length} 行）`;
-                console.log(`替换第 ${replaceStartLine}-${endLine} 行，原行数: ${deleteCount}，新行数: ${contentLines.length}`);
+                // console.log(`替换第 ${replaceStartLine}-${endLine} 行，原行数: ${deleteCount}，新行数: ${contentLines.length}`);
             }
         } else if (replaceMode || (!fileExists && insertLine === undefined)) {
             // 替换整个文件内容（默认行为）
             finalContent = content;
             operationDescription = "替换整个文件内容";
-            console.log(`替换ABI内容长度: ${content.length}`);
+            // console.log(`替换ABI内容长度: ${content.length}`);
         } else if (insertLine !== undefined) {
             // 在指定行插入内容
             if (insertLine < 1) {
@@ -362,13 +362,13 @@ export async function editAbiFileTool(
             finalContent = lines.join('\n');
             
             operationDescription = `在第 ${insertLine} 行插入 ${contentLines.length} 行内容`;
-            console.log(`在第 ${insertLine} 行插入内容，新增行数: ${contentLines.length}`);
+            // console.log(`在第 ${insertLine} 行插入内容，新增行数: ${contentLines.length}`);
         } else {
             // 追加到文件末尾
             const existingContent = await window['fs'].readFileSync(filePath, encoding);
             finalContent = existingContent + (existingContent.endsWith('\n') ? '' : '\n') + content;
             operationDescription = "追加内容到文件末尾";
-            console.log(`追加ABI内容长度: ${content.length}`);
+            // console.log(`追加ABI内容长度: ${content.length}`);
         }
 
         // 验证最终内容是否为有效的JSON格式

@@ -7,9 +7,11 @@
         <div class="ccenter">
             <i class="fa-light fa-spinner-third"></i>
         </div>
-        <div class="num-box ccenter">
-            {{progressValue}}%
-        </div>
+        @if (data.showProgress) {
+            <div class="num-box ccenter">
+                {{progressValue}}%
+            </div>
+        }
     </div>
     }
     @case ("done") {

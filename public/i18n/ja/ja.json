@@ -17,6 +17,7 @@
         "TOOL_SERIAL": "シリアルツール",
         "SIMULATOR": "シミュレータ",
         "AI": "AI",
+        "MODEL_STORE": "モデルストア",
         "APP_STORE": "アプリストア",
         "SETTINGS": "設定",
         "ABOUT": "このソフトウェアについて",
@@ -62,11 +63,29 @@
         "SPONSORS": "プロジェクトスポンサー",
         "SPONSORS_DESC": "このプロジェクトは以下の企業/個人にスポンサーされています"
     },
+    "APP_STORE": {
+        "HEADER_INFO": "最初の {{count}} 個のアプリがツールバーに表示されます",
+        "RESET": "リセット",
+        "IN_HEADER": "ツールバー",
+        "TOOLBAR_APPS": "ツールバーアプリ",
+        "SIDEBAR_APPS": "サイドバーアプリ",
+        "OTHER_APPS": "その他のアプリ",
+        "DRAG_HERE": "ここにドラッグ",
+        "CODE_DESC": "生成されたコードを表示",
+        "LIB_MANAGER_DESC": "プロジェクトライブラリの依存関係を管理",
+        "SERIAL_DESC": "シリアルモニターツール",
+        "AI_DESC": "AIアシスタント",
+        "MODEL_STORE_DESC": "AIモデルストア",
+        "CLOUD_SPACE_DESC": "クラウドストレージ",
+        "USER_CENTER_DESC": "ユーザーセンターと設定",
+        "SIMULATOR_DESC": "シミュレータ（開発中）"
+    },
     "SETTINGS": {
         "TITLE": "設定",
         "SECTIONS": {
             "BASIC": "基本設定",
             "THEME": "テーマ設定",
+            "BLOCKLY": "Blockly設定",
             "COMPILATION": "コンパイル設定",
             "REPOSITORY": "リポジトリ設定",
             "DEPENDENCIES": "グローバル依存関係",
@@ -78,6 +97,7 @@
             "LANGUAGE": "言語",
             "UI_THEME": "UIテーマ",
             "BLOCKLY_THEME": "Blocklyテーマ",
+            "BLOCKLY_MINIMAP": "Blocklyミニマップ",
             "COMPILATION_OPTIONS": "コンパイルオプション",
             "REPOSITORY_URLS": "リポジトリアドレス",
             "BOARD_LIST": "ボードリスト",
@@ -92,6 +112,36 @@
     },
     "PROJECT_NEW": {
         "TITLE": "新規プロジェクト",
+        "STEPS": {
+            "SELECT_BOARD": "ボードを選択",
+            "BASIC_SETTINGS": "基本設定",
+            "CREATE_PROJECT": "プロジェクトを作成"
+        },
+        "BOARD": {
+            "SEARCH": "ボードを検索",
+            "READ_DOC": "ドキュメント",
+            "ADD_BOARD": "ボードを追加",
+            "DEV": "開発"
+        },
+        "FORM": {
+            "DEVMODE": "開発フレームワーク",
+            "BOARD": "ボード",
+            "PROJECT_NAME": "プロジェクト名",
+            "SAVE_PATH": "保存パス",
+            "NAME_EXISTS": "プロジェクト名は既に存在します。変更してください"
+        },
+        "BUTTONS": {
+            "USE_THIS": "このボードを使用",
+            "NEXT": "次へ",
+            "PREV": "前へ",
+            "CREATE": "プロジェクトを作成",
+            "CREATING": "作成中"
+        },
+        "WARNINGS": {
+            "BETA_VERSION": "ベータ版、未検証、注意して使用"
+        }
+    },
+    "LIB_MANAGER": {
         "TITLE": "ライブラリマネージャー",
         "BACK": "戻る",
         "SEARCH_LIBRARY": "ライブラリを検索",
@@ -121,7 +171,6 @@
         "AI": "AI",
         "IOT": "IoT",
         "OTHERS": "その他",
-        "ALL": "すべてのライブラリ",
         "LIB_IN_USE": "このライブラリは現在使用中です。このライブラリを削除する前に、ワークスペースから関連するブロックを削除してください"
     },
     "COMPATIBILITY_DIALOG": {
@@ -131,37 +180,6 @@
         "CURRENT_BOARD_CORE": "現在のボードのコア：",
         "CANCEL": "キャンセル",
         "CONTINUE_INSTALL": "インストールを続ける"
-    },
-    "BOARD_SELECTOR": {
-        "TITLE": "新規プロジェクト",
-        "STEPS": {
-            "SELECT_BOARD": "ボードを選択",
-            "BASIC_SETTINGS": "基本設定",
-            "CREATE_PROJECT": "プロジェクトを作成"
-        },
-        "BOARD": {
-            "SEARCH": "ボードを検索",
-            "READ_DOC": "ドキュメントを読む",
-            "ADD_BOARD": "ボードを追加",
-            "DEV": "開発"
-        },
-        "FORM": {
-            "DEVMODE": "開発フレームワーク",
-            "BOARD": "ボード",
-            "PROJECT_NAME": "プロジェクト名",
-            "SAVE_PATH": "保存パス",
-            "NAME_EXISTS": "プロジェクト名は既に存在します。変更してください"
-        },
-        "BUTTONS": {
-            "USE_THIS": "このボードを使用",
-            "NEXT": "次へ",
-            "PREV": "前へ",
-            "CREATE": "プロジェクトを作成",
-            "CREATING": "作成中"
-        },
-        "WARNINGS": {
-            "BETA_VERSION": "ベータ版、未検証、注意して使用"
-        }
     },
     "BOARD_SELECTOR": {
         "TITLE": "ボードを切り替え",
@@ -225,6 +243,7 @@
     },
     "AILY_CHAT": {
         "TITLE": "AIアシスタント",
+        "SETTINGS": "AI設定",
         "HISTORY": "チャット履歴",
         "NEW_CHAT": "新しいチャット",
         "SERVICE_TITLE": "aily assistant service",
@@ -238,12 +257,14 @@
         "SEND": "送信",
         "STOP": "停止",
         "MODE_AGENT_FULL": "エージェントモード",
-        "MODE_QA_FULL": "Q&Aモード"
+        "MODE_QA_FULL": "Q&Aモード",
+        "STOP_CURRENT_SESSION_FIRST": "新しいセッションを作成する前に、現在のセッションを停止してください"
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "プロジェクト設定",
         "BASIC_INFO": "基本情報",
         "NAME": "プロジェクト名",
+        "NAME_RULE": "小文字、数字、ハイフン、アンダースコアのみ使用可能",
         "NAME_PLACEHOLDER": "プロジェクト名を入力してください",
         "VERSION": "バージョン",
         "VERSION_PLACEHOLDER": "バージョンを入力してください（例：1.0.0）",
@@ -283,5 +304,90 @@
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "先にシリアルポートを選択してください"
+    },
+    "MODEL_DEPLOY": {
+        "TITLE": "モデルのデプロイ",
+        "SELECT_MODEL": "モデルを選択",
+        "SELECT_DEVICE": "デバイスを選択",
+        "DEPLOY": "デプロイ",
+        "DEPLOYING": "デプロイ中",
+        "SUCCESS_DEPLOY": "モデルのデプロイが成功しました！",
+        "ERROR_DEPLOY_FAILED": "モデルのデプロイに失敗しました。後でもう一度お試しください",
+        "NO_MODELS": "利用可能なモデルがありません。まずモデルストアからモデルをダウンロードしてください",
+        "DEPLOY_STATUS": "デプロイ状況",
+        "STEPS": {
+            "SELECT": "モデルを選択",
+            "CONTACT": "デバイスを接続",
+            "CONFIGURE": "パラメータを設定",
+            "DEPLOY": "モデルをデプロイ",
+            "TEST": "モデルをテスト"
+        },
+        "BUTTONS": {
+            "NEXT": "次へ",
+            "PREV": "前へ",
+            "FINISH": "完了",
+            "DEPLOY": "デプロイ開始",
+            "DEPLOYING": "デプロイ中..."
+        },
+        "SUPPORTED_DEVICES": "対応デバイス",
+        "DEVICE_INFO": "このモデルは以下のデバイスにデプロイできます。お持ちでない場合は下のリンクから購入できます",
+        "CONNECT_DEVICE": "デバイスを接続"
+    },
+    "MODEL_STORE": {
+        "TITLE": "モデルストア",
+        "DESCRIPTION": "モデル概要",
+        "MODEL_INFO": "モデル情報",
+        "SUPPORTED_BOARDS": "対応デバイス",
+        "MODEL_TYPE": "モデルタイプ",
+        "MODEL_FORMAT": "モデル形式",
+        "MODEL_PRECISION": "モデル精度",
+        "MODEL_SIZE": "モデルサイズ",
+        "VERSION": "バージョン",
+        "MODEL_DETAILS": "モデル詳細",
+        "MODEL_LABELS": "モデルカテゴリ",
+        "AUTHOR": "作者",
+        "DEPLOY_COUNT": "デプロイ回数",
+        "VIEW_COUNT": "閲覧数",
+        "LIKE_COUNT": "いいね",
+        "TAG_VISION": "ビジョン",
+        "TAG_AUDIO": "オーディオ",
+        "SEARCH_PLACEHOLDER": "利用可能なモデルを検索",
+        "MODEL_LIST": "モデル一覧",
+        "LOADING": "読み込み中...",
+        "BACK": "戻る",
+        "TEST_MODEL": "モデルをテスト",
+        "DEPLOY_MODEL": "モデルをデプロイ",
+        "SELF_TRAINED_MODEL": "自己学習モデル"
+    },
+    "XIAO_ESP32S3_SENSE_CONNECT": {
+        "STEP1": "1. XIAO ESP32S3 Sense をカメラ拡張ボードに接続します",
+        "STEP2": "2. XIAO ESP32S3 Sense を USB でパソコンに接続します",
+        "STEP3": "3. デバイスのシリアルポートを選択し、\"デプロイ開始\"ボタンをクリックします",
+        "STEP4": "4. デプロイ完了を待ってモデルをテストします"
+    },
+    "SSCMA_CONFIG": {
+        "TITLE": "モデル設定",
+        "SELECT_PORT": "シリアルポートを選択",
+        "DISCONNECT": "切断",
+        "CONNECT_DEVICE": "デバイスを接続",
+        "READ_DOCS": "ドキュメントを読む",
+        "LIVE_PREVIEW": "リアルタイムプレビュー",
+        "DEVICE_ID": "デバイスID",
+        "DEVICE_VERSION": "デバイスバージョン",
+        "CURRENT_MODEL": "使用中のモデル",
+        "MODEL_SETTINGS": "モデル設定",
+        "CONFIDENCE": "信頼度",
+        "CONFIDENCE_TIP": "認識結果に対するモデルの確信度。値が高いほど精度が要求されますが、ターゲットを見逃す可能性があります",
+        "IOU_THRESHOLD": "IOUしきい値",
+        "IOU_TIP": "重なり合った検出ボックスを削除するために使用。値が高いほど重複ボックスが保持されます",
+        "GPIO_CONFIG": "GPIO トリガー設定",
+        "APPLY_CONFIG": "設定を適用",
+        "TRIGGER_WHEN": "以上の場合",
+        "CONFIDENCE_TRIGGER": "% の信頼度でトリガー",
+        "SELECT_PIN": "ピンを選択",
+        "SELECT_LEVEL": "レベルを選択",
+        "DEFAULT_LOW_TRIGGER_HIGH": "デフォルトLow、トリガーHigh",
+        "DEFAULT_HIGH_TRIGGER_LOW": "デフォルトHigh、トリガーLow",
+        "CANCEL": "キャンセル"
     }
 }

@@ -17,6 +17,7 @@ import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
 import { ProjectService } from '../../services/project.service';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
+import { HistoryService } from './services/history.service';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -28,7 +29,6 @@ import { DevToolComponent } from './components/dev-tool/dev-tool.component';
     DevToolComponent
   ],
   providers: [
-    _ProjectService,
     _BuilderService,
     _UploaderService,
     BitmapUploadService
@@ -68,6 +68,7 @@ export class BlocklyEditorComponent {
         try {
           this._projectService.currentProjectPath = params['path']
           this.projectService.currentProjectPath = params['path'];
+          // this._projectService.initHistory(); // 初始化历史服务
           this.loadProject(params['path']);
         } catch (error) {
           console.error('加载项目失败', error);
@@ -109,6 +110,9 @@ export class BlocklyEditorComponent {
     // 设置当前项目路径和package.json数据
     this._projectService.currentPackageData = packageJson;
     this.projectService.currentPackageData = packageJson;
+    window['packageJson'] = packageJson;    
+    // 暴露 ProjectService 到全局，供 generator.js 使用
+    window['projectService'] = this.projectService;
 
     // 检查是否有node_modules目录，没有则安装依赖，有则跳过
     const nodeModulesExist = this.electronService.exists(projectPath + '/node_modules');
@@ -156,6 +160,9 @@ export class BlocklyEditorComponent {
   }
 
   openProjectManager() {
+    if (this.blocklyService.checkAiWaiting()) {
+      return;
+    }
     this.uiService.closeToolAll();
     this.showLibraryManager = !this.showLibraryManager;
     this.cd.detectChanges();

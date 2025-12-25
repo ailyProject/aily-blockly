@@ -45,7 +45,7 @@ export async function deleteFileTool(
         // 路径规范化
         filePath = normalizePath(filePath);
         
-        console.log("删除文件: ", filePath);
+        // console.log("删除文件: ", filePath);
 
         // 验证路径是否有效
         if (!filePath || filePath.trim() === '') {

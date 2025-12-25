@@ -145,7 +145,7 @@ export function validateTodos(todos: TodoItem[]): ValidationResult {
 // 指标管理
 function updateMetrics(sessionId: string, operation: string, cacheHit: boolean = false): void {
   try {
-    const metricsFile = `./aily-todos/metrics_${sessionId}.json`
+    const metricsFile = `${window['path'].getAppDataPath()}/aily-todos/metrics_${sessionId}.json`
     let metrics: TodoMetrics = {
       totalOperations: 0,
       cacheHits: 0,
@@ -188,7 +188,7 @@ export function getTodos(sessionId: string = 'default'): TodoItem[] {
 
   updateMetrics(sessionId, 'getTodos', false)
   
-  const todoFile = `./aily-todos/todos_${sessionId}.json`
+  const todoFile = `${window['path'].getAppDataPath()}/aily-todos/todos_${sessionId}.json`
   let todos: TodoItem[] = []
   
   try {
@@ -227,7 +227,7 @@ export function setTodos(todos: TodoItem[], sessionId: string = 'default'): void
     // 智能排序
     const sortedTodos = smartSort(processedTodos)
     
-    const todoFile = `./aily-todos/todos_${sessionId}.json`
+    const todoFile = `${window['path'].getAppDataPath()}/aily-todos/todos_${sessionId}.json`
     FileStorageAdapter.write(todoFile, JSON.stringify(sortedTodos, null, 2))
     
     // 清除缓存
@@ -363,7 +363,7 @@ export function getTodoStatistics(sessionId: string = 'default') {
   }
 
   try {
-    const metricsFile = `./aily-todos/metrics_${sessionId}.json`
+    const metricsFile = `${window['path'].getAppDataPath()}/aily-todos/metrics_${sessionId}.json`
     if (FileStorageAdapter.exists(metricsFile)) {
       const fileContent = FileStorageAdapter.read(metricsFile)
       metrics = { ...metrics, ...JSON.parse(fileContent) }
@@ -461,4 +461,21 @@ export function getNextTask(sessionId: string = 'default'): TodoItem | null {
   })
   
   return sortedPending[0]
+}
+
+export function clearTodoStorage(): void {
+  // 删除所有存储文件
+  try {
+    const dir = `${window['path'].getAppDataPath()}/aily-todos`
+    if (FileStorageAdapter.exists(dir)) {
+      const files = window['fs'].readdirSync(dir)
+      for (const file of files) {
+        if (file.startsWith('todos_') || file.startsWith('metrics_')) {
+          window['fs'].unlinkSync(window['path'].join(dir, file))
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('清除存储失败:', error)
+  }
 }

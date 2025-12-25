@@ -16,6 +16,8 @@ import { CompatibleDialogComponent } from '../compatible-dialog/compatible-dialo
 import { CmdOutput, CmdService } from '../../../../services/cmd.service';
 import { ElectronService } from '../../../../services/electron.service';
 import { BlocklyService } from '../../services/blockly.service';
+import { PlatformService } from '../../../../services/platform.service';
+import { WorkflowService } from '../../../../services/workflow.service';
 
 @Component({
   selector: 'app-lib-manager',
@@ -55,8 +57,11 @@ export class LibManagerComponent {
     private translate: TranslateService,
     private modal: NzModalService,
     private cmdService: CmdService,
-    private electronService: ElectronService
-  ) { }
+    private electronService: ElectronService,
+    private platformService: PlatformService,
+    private workflowService: WorkflowService
+  ) {
+  }
 
   async ngOnInit() {
     // 使用翻译初始化标签列表
@@ -170,6 +175,7 @@ export class LibManagerComponent {
   currentStreamId;
   output = '';
   isInstalling = false;
+
   async installLib(lib) {
     // 检查库兼容性
     // console.log('当前开发板内核：', this.projectService.currentBoardConfig.core.replace('aily:', ''));
@@ -184,26 +190,35 @@ export class LibManagerComponent {
     }
     // console.log('当前项目路径：', this.projectService.currentProjectPath);
     this.isInstalling = true;
+    this.workflowService.startInstall();
     let packageList_old = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
     // console.log('当前已安装的库列表：', packageList_old);
 
     lib.state = 'installing';
     this.message.loading(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.INSTALLING')}...`);
     this.output = '';
-    await this.cmdService.runAsync(`npm install ${lib.name}@${lib.version}`, this.projectService.currentProjectPath)
-    this.libraryList = await this.checkInstalled(this.libraryList);
-    // lib.state = 'default';
-    this.message.success(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.INSTALLED')}`);
+    try {
+      await this.cmdService.runAsync(`npm install ${lib.name}@${lib.version}`, this.projectService.currentProjectPath)
+      this.libraryList = await this.checkInstalled(this.libraryList);
+      // lib.state = 'default';
+      this.message.success(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.INSTALLED')}`);
 
-    let packageList_new = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
-    // console.log('新的已安装的库列表：', packageList_new);
-    // 比对相较于旧的已安装库列表，找出新增的库
-    const newPackages = packageList_new.filter(pkg => !packageList_old.some(oldPkg => oldPkg.name === pkg.name && oldPkg.version === pkg.version));
-    // console.log('新增的库：', newPackages);
-    for (const pkg of newPackages) {
-      this.blocklyService.loadLibrary(pkg.name, this.projectService.currentProjectPath);
+      let packageList_new = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
+      // console.log('新的已安装的库列表：', packageList_new);
+      // 比对相较于旧的已安装库列表，找出新增的库
+      const newPackages = packageList_new.filter(pkg => !packageList_old.some(oldPkg => oldPkg.name === pkg.name && oldPkg.version === pkg.version));
+      // console.log('新增的库：', newPackages);
+      for (const pkg of newPackages) {
+        this.blocklyService.loadLibrary(pkg.name, this.projectService.currentProjectPath);
+      }
+      this.isInstalling = false;
+      this.workflowService.finishInstall(true);
+    } catch (error) {
+      this.isInstalling = false;
+      lib.state = 'error'; // Or revert to previous state
+      this.message.error(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.INSTALL_FAILED')}`);
+      this.workflowService.finishInstall(false, error.message || 'Install failed');
     }
-    this.isInstalling = false;
   }
 
   async removeLib(lib) {
@@ -214,7 +229,12 @@ export class LibManagerComponent {
     }
     lib.state = 'uninstalling';
     this.message.loading(`${lib.nickname} ${this.translate.instant('LIB_MANAGER.UNINSTALLING')}...`);
-    const libPackagePath = this.projectService.currentProjectPath + '\\node_modules\\' + lib.name;
+    // 使用pathJoin处理路径，正确处理包含'/'的包名（如@aily-project/test）
+    const libPackagePath = this.electronService.pathJoin(
+      this.projectService.currentProjectPath,
+      'node_modules',
+      ...lib.name.split('/')
+    );
     this.blocklyService.removeLibrary(libPackagePath);
     this.output = '';
     await this.cmdService.runAsync(`npm uninstall ${lib.name}`, this.projectService.currentProjectPath);
@@ -226,8 +246,9 @@ export class LibManagerComponent {
 
   checkLibUsage(lib) {
     // 检查项目代码是否使用了该库
-    const libPackagePath = this.projectService.currentProjectPath + '\\node_modules\\' + lib.name;
-    const libBlockPath = libPackagePath + '\\block.json';
+    const separator = this.platformService.getPlatformSeparator();
+    const libPackagePath = this.projectService.currentProjectPath + `${separator}node_modules${separator}` + lib.name;
+    const libBlockPath = libPackagePath + `${separator}block.json`;
     const blocksData = JSON.parse(this.electronService.readFile(libBlockPath));
     const abiJson = JSON.stringify(this.blocklyService.getWorkspaceJson());
     for (let index = 0; index < blocksData.length; index++) {

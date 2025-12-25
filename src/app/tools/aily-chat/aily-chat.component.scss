@@ -29,7 +29,7 @@
   padding-left: 10px;
   flex: 1; /* 使用flex:1让对话区域占用剩余空间 */
   overflow-y: auto;
-  scroll-behavior: smooth;
+  //scroll-behavior: smooth;
   min-height: 0; /* 确保flex子项可以收缩 */
 
   .dialogs {
@@ -179,6 +179,7 @@ nz-resize-handle {
   .text {
     color: #999;
     text-align: center;
+    padding-right: 10px;
   }
 }
 
@@ -190,7 +191,7 @@ nz-resize-handle {
   position: absolute;
   top: 0;
   left: 0;
-  width: 112px;
+  width: 84px;
   height: 28px;
   z-index: 0;
   pointer-events: none;
@@ -204,6 +205,7 @@ nz-resize-handle {
   color: #ccc;
   padding-top: 1px;
   border-radius: 5px;
+  z-index: 999;
   cursor: pointer;
 
   &:hover {
@@ -245,6 +247,7 @@ nz-resize-handle {
 
 // 模式切换按钮
 .btn {
+  margin-left: 1px;
   &.mode {
     width: 50px !important;
 
@@ -253,5 +256,10 @@ nz-resize-handle {
       font-size: 12px;
     }
 
+  }
+
+  &.active {
+    color: var(--vscode-focusBorder, #007acc) !important;
+    background: rgba(0, 122, 204, 0.1);
   }
 }

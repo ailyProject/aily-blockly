@@ -1,17 +1,30 @@
 @if(loaded){
 <div class="float-zone">
   <div class="float-sider" [ngClass]="{'show': show}">
-    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" [nzTooltipTitle]="'FLOAT_SIDER.PROJECT_SETTINGS' | translate" (click)="openSettings()">
+    <!-- 项目设置 -->
+    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left"
+      [nzTooltipTitle]="'FLOAT_SIDER.PROJECT_SETTINGS' | translate" (click)="openSettings()">
       <i class="fa-light fa-folder-bookmark"></i>
     </div>
-    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" [nzTooltipTitle]="'FLOAT_SIDER.PINMAP' | translate" (click)="showPinmap()">
+    <!-- 显示引脚图 -->
+    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" [nzTooltipTitle]="'FLOAT_SIDER.PINMAP' | translate"
+      (click)="showPinmap()">
       <i class="fa-light fa-microchip"></i>
     </div>
-    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" [nzTooltipTitle]="'FLOAT_SIDER.DOCUMENTATION' | translate" (click)="openDocUrl()">
+    <!-- 打开文档 -->
+    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left"
+      [nzTooltipTitle]="'FLOAT_SIDER.DOCUMENTATION' | translate" (click)="openDocUrl()">
       <i class="fa-light fa-book"></i>
     </div>
+    <!-- 历史版本 -->
+    <!-- <div class="item ccenter" nz-tooltip nzTooltipPlacement="left"
+      [nzTooltipTitle]="'FLOAT_SIDER.HISTORY' | translate" (click)="openHistory()">
+      <i class="fa-light fa-rectangle-history"></i>
+    </div> -->
     <div class="line"></div>
-    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" [nzTooltipTitle]="'FLOAT_SIDER.FEEDBACK' | translate" (click)="openFeedback()">
+    <!-- 反馈问题 -->
+    <div class="item ccenter" nz-tooltip nzTooltipPlacement="left" [nzTooltipTitle]="'FLOAT_SIDER.FEEDBACK' | translate"
+      (click)="openFeedback()">
       <i class="fa-light fa-message-pen"></i>
     </div>
   </div>

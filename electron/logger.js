@@ -41,8 +41,30 @@ function initLogger(appDataPath) {
     return electronLog.transports.file.getFile().path;
 }
 
+// 注册 IPC handler，允许渲染进程发送日志到主进程
+function registerLoggerHandlers() {
+    const { ipcMain } = require('electron');
+    
+    // 处理来自渲染进程的日志
+    ipcMain.handle('log-error', (event, message, error) => {
+        const errorMessage = error 
+            ? `${message}: ${error.message || error}${error.stack ? '\n' + error.stack : ''}`
+            : message;
+        electronLog.error('[渲染进程]', errorMessage);
+    });
+    
+    ipcMain.handle('log-warn', (event, message) => {
+        electronLog.warn('[渲染进程]', message);
+    });
+    
+    ipcMain.handle('log-info', (event, message) => {
+        electronLog.info('[渲染进程]', message);
+    });
+}
+
 module.exports = {
     initLogger,
+    registerLoggerHandlers,
     // 导出日志对象，方便在其他地方直接使用
     log: electronLog
 };

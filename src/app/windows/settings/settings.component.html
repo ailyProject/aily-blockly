@@ -42,24 +42,38 @@
             <div class="right-inner">
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.UI_THEME' | translate }}:</div>
-                <!-- <div class="item-inner"> -->
                 <nz-radio-group [(ngModel)]="configData.theme" [nzSize]="'small'" nzButtonStyle="solid">
                   <label nz-radio-button nzValue="default">Dark</label>
                   <label nz-radio-button nzValue="light" [nzDisabled]="true">Light</label>
                 </nz-radio-group>
-                <!-- </div> -->
               </div>
+            </div>
+          </div>
+
+          <!-- Blockly 设置 -->
+          <div id="SETTINGS.SECTIONS.BLOCKLY" class="section">
+            <h2 class="section-title">{{ 'SETTINGS.SECTIONS.BLOCKLY' | translate }}</h2>
+            <div class="right-inner">
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_THEME' | translate }}:</div>
-                <!-- <div class="item-inner"> -->
                 <nz-radio-group [(ngModel)]="configData.blockly.renderer" [nzSize]="'small'" nzButtonStyle="solid">
                   <label nz-radio-button nzValue="thrasos">Thrasos</label>
                   <label nz-radio-button nzValue="zelos">Zelos</label>
                 </nz-radio-group>
-                <!-- </div> -->
+              </div>
+              <div class="item">
+                <div>{{ 'SETTINGS.FIELDS.BLOCKLY_MINIMAP' | translate }}:</div>
+                <nz-switch [(ngModel)]="configData.blockly.minimap"></nz-switch>
+              </div>
+              <div class="item">
+                <div>{{ 'SETTINGS.FIELDS.FLYOUT_AUTO_CLOSE' | translate }}:</div>
+                <nz-switch [(ngModel)]="configData.blockly.flyoutAutoClose" [ngModelOptions]="{standalone: true}"
+                  [ngModel]="configData.blockly.flyoutAutoClose !== false"
+                  (ngModelChange)="configData.blockly.flyoutAutoClose = $event"></nz-switch>
               </div>
             </div>
           </div>
+
           <!-- 编译设置 -->
           <!-- <div id="SETTINGS.SECTIONS.COMPILATION" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.COMPILATION' | translate }}</h2>
@@ -96,15 +110,26 @@
             </div>
           </div>
 
-          <!-- 开发板管理 -->
+          <!-- 全局依赖管理 -->
           <div id="SETTINGS.SECTIONS.DEPENDENCIES" class="section">
-            <h2 class="section-title">{{ 'SETTINGS.SECTIONS.DEPENDENCIES' | translate }}</h2>
+            <h2 class="section-title">
+              <div>
+                {{ 'SETTINGS.SECTIONS.DEPENDENCIES' | translate }}
+              </div>
+              <div class="search-box">
+                <input nz-input placeholder="{{'SEARCH'}}"
+                  [(ngModel)]="boardSearchKeyword" (ngModelChange)="onBoardSearchChange()" />
+                <i class="fa-light fa-search"></i>
+              </div>
+            </h2>
             <div class="right-inner">
               <div class="board-list sscroll bborder">
-                @if(boardList.length == 0) {
-                <div class="board-item">Loading</div>
+                @if(filteredBoardList.length == 0 && boardSearchKeyword) {
+                <div class="board-item">{{ 'NO RESULTS'}}</div>
+                }@else if(boardList.length == 0) {
+                <div class="board-item">Loading...</div>
                 }@else{
-                @for (board of boardList; track $index) {
+                @for (board of filteredBoardList; track $index) {
                 <div class="board-item">
                   <div>{{ board.name }}</div>
                   <div class="version">&#64;{{ board.version }}</div>
@@ -118,7 +143,6 @@
                 </div>
                 }
                 }
-
               </div>
             </div>
           </div>

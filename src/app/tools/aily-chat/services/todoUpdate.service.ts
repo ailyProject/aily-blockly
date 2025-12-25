@@ -19,7 +19,7 @@ export class TodoUpdateService {
   constructor() {
     // 将服务实例注册到全局对象，以便notifyTodoUpdate函数可以访问
     (window as any)['todoUpdateService'] = this;
-    console.log('🔧 TodoUpdateService已注册到全局对象');
+    // console.log('🔧 TodoUpdateService已注册到全局对象');
   }
 
   /**
@@ -27,7 +27,7 @@ export class TodoUpdateService {
    * @param sessionId 会话ID
    */
   triggerTodoUpdate(sessionId: string): void {
-    console.log('🔔 触发TODO更新通知:', sessionId);
+    // console.log('🔔 触发TODO更新通知:', sessionId);
     this.todoUpdatedSubject.next(sessionId);
   }
 
@@ -36,7 +36,7 @@ export class TodoUpdateService {
    * @param sessionId 会话ID
    */
   refreshTodoData(sessionId: string): void {
-    console.log('🔄 从存储重新加载TODO数据:', sessionId);
+    // console.log('🔄 从存储重新加载TODO数据:', sessionId);
     
     // 获取最新的TODO数据
     const updatedTodos = getTodos(sessionId);
@@ -106,7 +106,7 @@ export class TodoUpdateService {
    * @param todos TODO项目数组
    */
   updateTodoData(sessionId: string, todos: TodoItem[]): void {
-    console.log('📝 更新TODO数据:', sessionId, todos);
+    // console.log('📝 更新TODO数据:', sessionId, todos);
     const newData = new Map(this.todoDataSubject.value);
     newData.set(sessionId, todos);
     this.todoDataSubject.next(newData);

@@ -30,7 +30,7 @@
         justify-content: center;
         color: #999;
         border-radius: 3px;
-        
+
         &:hover {
             background: rgba(255, 255, 255, 0.1);
             color: #fff;
@@ -46,17 +46,31 @@
         border-radius: 5px;
         padding: 5px;
         cursor: pointer;
+        font-size: 10px;
+        width: 32px;
+        height: 32px;
+
+        &.round {
+            border-radius: 50%;
+        }
 
         &:hover {
             background: #666;
         }
 
-        i{
-            margin-right: 4px;
+        i {
+            font-size: 18px;
         }
 
-        i.fa-xmark{
+        i.fa-xmark {
             color: red;
         }
+    }
+
+    .line {
+        margin: 0 2px;
+        width: 1px;
+        height: 20px;
+        background: #555;
     }
 }

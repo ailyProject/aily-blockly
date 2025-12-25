@@ -55,7 +55,7 @@ class TodoManager {
    */
   configure(config: Partial<TodoManagerConfig>): void {
     this.config = { ...this.config, ...config };
-    console.log(`⚙️ TodoManager 配置更新:`, this.config);
+    // console.log(`⚙️ TodoManager 配置更新:`, this.config);
   }
 
   /**
@@ -65,7 +65,7 @@ class TodoManager {
     this.isActive = true;
     this.callCount = 0;
     this.lastReminderCall = 0;
-    console.log('🔍 TodoManager 开始监测工具调用');
+    // console.log('🔍 TodoManager 开始监测工具调用');
   }
 
   /**
@@ -74,7 +74,7 @@ class TodoManager {
   stopMonitoring(): void {
     this.isActive = false;
     this.callCount = 0;
-    console.log('⏹️ TodoManager 停止监测');
+    // console.log('⏹️ TodoManager 停止监测');
   }
 
   /**
@@ -83,7 +83,7 @@ class TodoManager {
   resetCallCount(): void {
     this.callCount = 0;
     this.lastReminderCall = 0;
-    console.log('🔄 TodoManager 调用计数已重置');
+    // console.log('🔄 TodoManager 调用计数已重置');
   }
 
   /**
@@ -98,12 +98,12 @@ class TodoManager {
       // 如果是todoWrite工具，重置计数
       this.callCount = 0;
       this.lastReminderCall = 0;
-      console.log('🔄 TodoManager 计数重置（todoWrite调用）');
+      // console.log('🔄 TodoManager 计数重置（todoWrite调用）');
       return;
     }
 
     this.callCount++;
-    console.log(`📊 TodoManager 记录调用: ${toolName}, 当前计数: ${this.callCount}`);
+    // console.log(`📊 TodoManager 记录调用: ${toolName}, 当前计数: ${this.callCount}`);
   }
 
   /**
@@ -162,7 +162,7 @@ class TodoManager {
 
     reminder += `\n\n💬 使用 manage_todo_list 工具来查看或更新任务状态`;
 
-    console.log(`📢 TodoManager 生成提醒 (计数: ${this.callCount})`);
+    // console.log(`📢 TodoManager 生成提醒 (计数: ${this.callCount})`);
     return reminder;
   }
 
@@ -215,7 +215,7 @@ export function injectTodoReminder(
     enhancedResult.content = `${enhancedResult.content}${reminder}`;
   }
   
-  console.log(`📢 为工具 ${toolName} 注入todo提醒`);
+  // console.log(`📢 为工具 ${toolName} 注入todo提醒`);
   return enhancedResult;
 }
 
@@ -276,14 +276,28 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult> {
     switch (operation) {
       case 'update':
         // 批量更新TODO列表
-        if (!todos || !Array.isArray(todos)) {
-          toolResult = '❌ **错误**: 缺少todos数组\n\n💡 **正确用法**: `{"operation": "update", "todos": [...]}` ';
+        let todosArray = todos;
+        
+        // 如果 todos 是字符串，尝试解析为 JSON
+        if (typeof todos === 'string') {
+          try {
+            todosArray = JSON.parse(todos);
+            // console.log('📝 解析 todos 字符串为数组:', todosArray);
+          } catch (parseError) {
+            toolResult = `❌ **错误**: todos 参数不是有效的 JSON 格式\n\n💡 **错误详情**: ${parseError instanceof Error ? parseError.message : '解析失败'}\n\n💡 **正确用法**: \`{"operation": "update", "todos": [...]}\``;
+            is_error = true;
+            break;
+          }
+        }
+        
+        if (!todosArray || !Array.isArray(todosArray)) {
+          toolResult = `❌ **错误**: todos 必须是一个数组\n\n💡 **当前类型**: ${typeof todosArray}\n\n💡 **正确用法**: \`{"operation": "update", "todos": [...]}\``;
           is_error = true;
           break;
         }
 
         // 验证todos格式
-        const validatedTodos: TodoItem[] = todos.map((todo: any) => ({
+        const validatedTodos: TodoItem[] = todosArray.map((todo: any) => ({
           id: todo.id || generateId(),
           content: todo.content?.trim() || '',
           status: ['pending', 'in_progress', 'completed'].includes(todo.status) ? todo.status : 'pending',
@@ -356,8 +370,22 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult> {
         break;
 
       case 'batch_add':
-        if (!todos || !Array.isArray(todos) || todos.length === 0) {
-          toolResult = '❌ **错误**: 缺少任务数组\n\n💡 **正确用法**: `{"operation": "batch_add", "todos": [{"content": "任务1", "priority": "high"}, {"content": "任务2"}]}` ';
+        let batchTodosArray = todos;
+        
+        // 如果 todos 是字符串，尝试解析为 JSON
+        if (typeof todos === 'string') {
+          try {
+            batchTodosArray = JSON.parse(todos);
+            // console.log('📝 解析 batch_add todos 字符串为数组:', batchTodosArray);
+          } catch (parseError) {
+            toolResult = `❌ **错误**: todos 参数不是有效的 JSON 格式\n\n💡 **错误详情**: ${parseError instanceof Error ? parseError.message : '解析失败'}\n\n💡 **正确用法**: \`{"operation": "batch_add", "todos": [...]}\``;
+            is_error = true;
+            break;
+          }
+        }
+        
+        if (!batchTodosArray || !Array.isArray(batchTodosArray) || batchTodosArray.length === 0) {
+          toolResult = `❌ **错误**: todos 必须是一个非空数组\n\n💡 **当前类型**: ${typeof batchTodosArray}\n\n💡 **正确用法**: \`{"operation": "batch_add", "todos": [{"content": "任务1", "priority": "high"}, {"content": "任务2"}]}\``;
           is_error = true;
           break;
         }
@@ -366,7 +394,7 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult> {
           const currentTodos = getTodos(sessionId);
           const inProgressCount = currentTodos.filter(t => t.status === 'in_progress').length;
           
-          const newTodos = todos.map((todo: any) => ({
+          const newTodos = batchTodosArray.map((todo: any) => ({
             id: todo.id || generateId(),
             content: todo.content?.trim() || '',
             status: ['pending', 'in_progress', 'completed'].includes(todo.status) ? todo.status : 'pending',

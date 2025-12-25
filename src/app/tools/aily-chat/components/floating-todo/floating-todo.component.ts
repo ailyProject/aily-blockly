@@ -22,7 +22,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   private todoUpdateService = inject(TodoUpdateService);
 
   ngOnInit() {
-    console.log('[TODO Panel] 初始化组件, sessionId:', this.sessionId);
+    // console.log('[TODO Panel] 初始化组件, sessionId:', this.sessionId);
     this.initializeTodoService();
     this.loadInitialTodos();
     this.setupBackupTimer();
@@ -34,7 +34,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
       const newSessionId = changes['sessionId'].currentValue;
       const oldSessionId = changes['sessionId'].previousValue;
       
-      console.log('[TODO Panel] sessionId发生变化:', oldSessionId, '->', newSessionId);
+      // console.log('[TODO Panel] sessionId发生变化:', oldSessionId, '->', newSessionId);
       
       // 重新加载新sessionId的TODO数据
       this.loadTodosFromService();
@@ -52,11 +52,11 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
 
   private initializeTodoService() {
     try {
-      console.log('[TODO Panel] 初始化TodoUpdateService');
+      // console.log('[TODO Panel] 初始化TodoUpdateService');
       
       // 订阅TODO更新事件
       this.updateSubscription = this.todoUpdateService.todoUpdated$.subscribe((sessionId: string) => {
-        console.log('[TODO Panel] 接收到TODO更新事件:', sessionId);
+        // console.log('[TODO Panel] 接收到TODO更新事件:', sessionId);
         // 检查更新的sessionId是否与当前sessionId匹配
         if (sessionId === this.sessionId || sessionId === 'default') {
           this.loadTodosFromService();
@@ -65,7 +65,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
 
       // 订阅TODO数据变化
       const dataSubscription = this.todoUpdateService.todoData$.subscribe((todoData: Map<string, TodoItem[]>) => {
-        console.log('[TODO Panel] 接收到TODO数据变化:', todoData);
+        // console.log('[TODO Panel] 接收到TODO数据变化:', todoData);
         // 动态获取当前sessionId对应的TODO数据
         const currentSessionId = this.sessionId || 'default';
         const sessionTodos = todoData.get(currentSessionId);
@@ -136,7 +136,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
         // ];
         // console.log('[TODO Panel] 使用测试数据，共', this.todoList.length, '项');
         this.todoList = [];
-        console.log('[TODO Panel] 加载初始TODO列表为空');
+        // console.log('[TODO Panel] 加载初始TODO列表为空');
       }
     } catch (error) {
       console.warn('[TODO Panel] 加载初始TODO失败:', error);
@@ -154,7 +154,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   // 模板绑定方法
   toggleCollapse() {
     this.isCollapsed = !this.isCollapsed;
-    console.log('[TODO Panel] 切换折叠状态:', this.isCollapsed);
+    // console.log('[TODO Panel] 切换折叠状态:', this.isCollapsed);
   }
 
   getCompletedCount(): number {
@@ -169,7 +169,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     const newStatus = statusOrder[nextIndex];
     todo.status = newStatus;
     
-    console.log('[TODO Panel] 切换TODO状态:', todo.id, '→', newStatus);
+    // console.log('[TODO Panel] 切换TODO状态:', todo.id, '→', newStatus);
     
     // 通知服务状态变更
     try {
@@ -202,7 +202,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     event.stopPropagation();
     
     const sessionId = this.sessionId || 'default';
-    console.log('[TODO Panel] 清空所有TODO项, sessionId:', sessionId);
+    // console.log('[TODO Panel] 清空所有TODO项, sessionId:', sessionId);
     
     try {
       // 清空存储中的TODO数据
@@ -214,7 +214,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
       // 通知服务数据已更新
       this.todoUpdateService.updateTodoData(sessionId, []);
       
-      console.log('[TODO Panel] ✅ 成功清空所有TODO项');
+      // console.log('[TODO Panel] ✅ 成功清空所有TODO项');
     } catch (error) {
       console.warn('[TODO Panel] ❌ 清空TODO项失败:', error);
     }

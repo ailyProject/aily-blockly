@@ -45,7 +45,7 @@ export async function checkExistsTool(
         // 路径规范化
         targetPath = normalizePath(targetPath);
         
-        console.log("检查路径是否存在: ", targetPath);
+        // console.log("检查路径是否存在: ", targetPath);
 
         // 验证路径是否有效
         if (!targetPath || targetPath.trim() === '') {

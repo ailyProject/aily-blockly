@@ -70,7 +70,7 @@ export class TerminalComponent {
   ngOnDestroy(): void {
     this.closeNodePty();
     this.terminalEl.nativeElement.removeEventListener('contextmenu', this.contextMenuListener);
-    this.resizeObserver.disconnect();
+    this.resizeObserver?.disconnect();
     this.terminal.dispose();
   }
 

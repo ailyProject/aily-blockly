@@ -1,8 +1,8 @@
 import { Component, ElementRef, Input, OnInit, ViewChild } from '@angular/core';
 import * as Blockly from 'blockly';
 import * as zhHans from 'blockly/msg/zh-hans';
-import { BlocklyService } from '../../blockly/blockly.service';
 import { browserEvents } from 'blockly';
+import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 
 @Component({
   selector: 'app-aily-blockly',
@@ -40,7 +40,9 @@ export class AilyBlocklyComponent implements OnInit {
     this.blocklyService.offsetY = offsetY;
   }
 
-  constructor(private blocklyService: BlocklyService) {}
+  constructor(
+    private blocklyService: BlocklyService
+  ) { }
 
   workspace: any;
 
@@ -171,7 +173,7 @@ export class AilyBlocklyComponent implements OnInit {
     this.workspace
       .getFlyout()
       .getWorkspace()
-      .addChangeListener((event: any) => {});
+      .addChangeListener((event: any) => { });
 
     this.workspace.getFlyout().contents.forEach(({ block }) => {
       browserEvents.bind(
@@ -213,11 +215,11 @@ export class AilyBlocklyComponent implements OnInit {
       globalDom.setAttribute(
         'class',
         'surfaceGlobal ' +
-          (this.workspace.options.renderer || 'geras') +
-          '-renderer ' +
-          (this.workspace.getTheme
-            ? this.workspace.getTheme().name + '-theme'
-            : ''),
+        (this.workspace.options.renderer || 'geras') +
+        '-renderer ' +
+        (this.workspace.getTheme
+          ? this.workspace.getTheme().name + '-theme'
+          : ''),
       );
       globalDom.append(...surfaceDom);
       document.body.append(globalDom);

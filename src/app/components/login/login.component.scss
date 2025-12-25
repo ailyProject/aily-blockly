@@ -1,0 +1,144 @@
+.login-box {
+    padding: 15px;
+    height: 100%;
+    width: 100%;
+    position: absolute;
+    top: 0;
+    background: rgba(0, 0, 0, 0.5);
+    flex-direction: column;
+
+    .inner {
+        background: #292929;
+        width: 100%;
+        padding: 15px;
+        border-radius: 5px;
+    }
+
+}
+
+.description {
+    width: 100%;
+}
+
+.phone-login-box {
+    width: 100%;
+}
+
+.header {
+    text-align: center;
+    margin-bottom: 10px;
+}
+
+
+.text2 {
+    color: #ccc;
+}
+
+.line {
+    border-bottom: 0.5px solid #666;
+    margin-bottom: 10px;
+}
+
+.btns {
+    display: flex;
+    justify-content: center;
+
+    .item {
+        flex-direction: column;
+        padding: 15px;
+        cursor: pointer;
+        color: #aaa;
+        transition: all 0.3s;
+
+        i {
+            font-size: 30px;
+        }
+
+        &:hover {
+            color: #FFF;
+        }
+
+        &.active {
+            color: #FFF;
+        }
+
+        .icon {
+            width: 35px;
+            height: 35px;
+        }
+
+        .fa-mobile {
+            font-size: 28px;
+        }
+    }
+}
+
+.login-btn {
+    margin-top: 15px;
+
+    button {
+        width: 100%;
+    }
+}
+
+.wechat {
+    flex-direction: column;
+
+    .qrcode {
+        width: 156px;
+        height: 156px;
+        border: 1px solid #666;
+        border-radius: 3px;
+        margin-bottom: 15px;
+    }
+}
+
+.phone-login-box {
+    margin-top: 23px;
+
+    .item {
+        display: flex;
+        margin-bottom: 15px;
+
+        >div:first-child {
+            width: 40px;
+            line-height: 32px;
+            margin-right: 10px;
+        }
+
+        i {
+            font-size: 20px;
+        }
+
+        input {
+            background: #363636;
+            color: rgba(255, 255, 255, 0.7) !important;
+
+            &[type="password"] {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            }
+        }
+    }
+
+    .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+
+        button {
+            width: 100%;
+
+            &[nz-button][nzType="link"] {
+                padding: 0;
+                height: auto;
+                margin-top: 5px;
+            }
+        }
+    }
+
+    .username {
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 32px;
+    }
+}

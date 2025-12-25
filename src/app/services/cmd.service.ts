@@ -125,7 +125,7 @@ export class CmdService {
    * @param cwd 工作目录
    */
   private executeCommand(command: string, cwd?: string): Observable<CmdOutput> {
-    console.log(`run command: ${command}`);
+    // console.log(`run command: ${command}`);
     this.logService.update({
       title: '执行命令',
       detail: command,
@@ -152,7 +152,7 @@ export class CmdService {
         const task = this.taskQueue.shift()!;
 
         try {
-          console.log(`Processing queued command: ${task.command}`);
+          // console.log(`Processing queued command: ${task.command}`);
 
           // 执行命令并等待完成
           const observable = this.executeCommand(task.command, task.cwd);
@@ -201,7 +201,7 @@ export class CmdService {
     const subject = this.subjects.get(streamId);
     if (subject) {
       const result = await window['cmd'].kill(streamId);
-      console.log(`Kill command ${streamId}:`, result);
+      // console.log(`Kill command ${streamId}:`, result);
       if (result.success) {
         subject.complete();
         this.subjects.delete(streamId);
@@ -216,7 +216,7 @@ export class CmdService {
    */
   async killByName(processName: string): Promise<boolean> {
     const result = await window['cmd'].killByName(processName);
-    console.log(`Kill process by name ${processName}:`, result);
+    // console.log(`Kill process by name ${processName}:`, result);
     return result.success;
   }
 

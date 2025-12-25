@@ -35,11 +35,11 @@ export class McpService {
   async init() {
     // 防止重复初始化
     if (this.isInitialized) {
-      console.log('MCP服务已经初始化过，跳过重复初始化');
+      // console.log('MCP服务已经初始化过，跳过重复初始化');
       return;
     }
 
-    console.log('开始初始化MCP服务...');
+    // console.log('开始初始化MCP服务...');
     this.isInitialized = true;
     
     try {
@@ -64,7 +64,7 @@ export class McpService {
 
       // 转换回数组
       this.tools = Array.from(toolMap.values());
-      console.log('MCP服务初始化完成，加载工具数量:', this.tools.length);
+      // console.log('MCP服务初始化完成，加载工具数量:', this.tools.length);
     } catch (error) {
       console.warn('MCP服务初始化失败:', error);
       this.isInitialized = false; // 初始化失败时重置标志位
@@ -89,13 +89,13 @@ export class McpService {
         const fallbackExists = await window['path'].isExists(fallbackConfigFilePath);
         if (fallbackExists) {
           configFilePath = fallbackConfigFilePath;
-          console.log(`使用备用MCP配置文件: ${fallbackConfigFilePath}`);
+          // console.log(`使用备用MCP配置文件: ${fallbackConfigFilePath}`);
         } else {
           console.warn(`MCP配置文件 ${primaryConfigFilePath} 和 ${fallbackConfigFilePath} 都不存在，使用默认配置`);
           return { mcpServers: {} };
         }
       } else {
-        console.log(`使用主MCP配置文件: ${primaryConfigFilePath}`);
+        // console.log(`使用主MCP配置文件: ${primaryConfigFilePath}`);
       }
       
       const configContent = await window['fs'].readFileSync(configFilePath, 'utf-8');
@@ -113,7 +113,7 @@ export class McpService {
       // 返回配置
       return config;
     } catch (error) {
-      console.warn('无法加载MCP配置文件:', error);
+      // console.warn('无法加载MCP配置文件:', error);
       throw new Error('无法加载MCP配置文件');
     }
   }
@@ -132,13 +132,13 @@ export class McpService {
       for (const [serverName, serverConfig] of Object.entries(config.mcpServers)) {
         // 检查是否启用
         if (!serverConfig.enabled) {
-          console.log(`MCP服务 ${serverName} 已禁用，跳过连接`);
+          // console.log(`MCP服务 ${serverName} 已禁用，跳过连接`);
           continue;
         }
 
         // 检查是否已经连接过
         if (this.clients.includes(serverName)) {
-          console.log(`MCP服务 ${serverName} 已经连接过，跳过重复连接`);
+          // console.log(`MCP服务 ${serverName} 已经连接过，跳过重复连接`);
           continue;
         }
 
@@ -149,12 +149,12 @@ export class McpService {
 
         // 连接到服务器
         try {
-          console.log(`正在连接到MCP服务 ${serverName}...`);
+          // console.log(`正在连接到MCP服务 ${serverName}...`);
           const Connect = await window["mcp"].connect(serverName, serverConfig.command, processedArgs);
           if (Connect.success === true) {
-            console.log(`成功连接到MCP服务 ${serverName}`);
+            // console.log(`成功连接到MCP服务 ${serverName}`);
           } else {
-            console.warn(`连接到MCP服务 ${serverName} 失败:`, Connect.error);
+            // console.warn(`连接到MCP服务 ${serverName} 失败:`, Connect.error);
             // 连接失败时从clients中移除
             const index = this.clients.indexOf(serverName);
             if (index > -1) {
@@ -162,7 +162,7 @@ export class McpService {
             }
           }
         } catch (e) {
-          console.warn(`连接到MCP服务 ${serverName} 时发生错误:`, e);
+          // console.warn(`连接到MCP服务 ${serverName} 时发生错误:`, e);
           // 连接失败时从clients中移除
           const index = this.clients.indexOf(serverName);
           if (index > -1) {
@@ -171,7 +171,7 @@ export class McpService {
         }
       }
     } catch (e) {
-      console.warn("连接到MCP服务器失败:", e);
+      // console.warn("连接到MCP服务器失败:", e);
       throw e;
     }
   }
@@ -183,11 +183,11 @@ export class McpService {
       if (result.success) {
         return result.tools;
       } else {
-        console.warn("获取工具失败:", result.error);
+        // console.warn("获取工具失败:", result.error);
         return [];
       }
     } catch (e) {
-      console.warn("获取工具时发生错误:", e);
+      // console.warn("获取工具时发生错误:", e);
       return [];
     }
   }
@@ -196,7 +196,7 @@ export class McpService {
    * 重置MCP服务，清理所有连接和工具
    */
   reset() {
-    console.log('重置MCP服务...');
+    // console.log('重置MCP服务...');
     this.isInitialized = false;
     this.clients = [];
     this.tools = [];

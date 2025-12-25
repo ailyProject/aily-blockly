@@ -85,7 +85,7 @@ export class AilyButtonViewerComponent {
      * 处理按钮点击事件
      */
     onButtonClick(button: ButtonData): void {
-        this.isDisabled = true;
+        // this.isDisabled = true;
 
         // 发射事件
         this.buttonClick.emit(button);

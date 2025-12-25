@@ -13,3 +13,4 @@ import './list_create.js';
 import './procedures.js';
 import './text_join';
 import './dynamic-inputs.js';
+import './switch-case.js';

@@ -13,102 +13,39 @@ export interface IMenuItem {
   dev?: boolean;
   router?: string[]; // 在指定路由中显示
   children?: IMenuItem[],
+  extra?: any,
   check?: boolean,
   key?: string; // 用于标识编译和上传配置
 }
 
-export let HEADER_BTNS: IMenuItem[][] = [
-  [
-    {
-      name: 'MENU.BUILD',
-      action: 'compile',
-      data: { type: 'cmd', data: 'compile' },
-      icon: 'fa-regular fa-check',
-      type: 'act-btn',
-      color: '#006adc',
-      state: 'default',
-      router: ['/main/blockly-editor', '/main/code-editor']
-    },
-    {
-      name: 'MENU.RUN',
-      action: 'upload',
-      data: { type: 'cmd', data: 'upload' },
-      icon: 'fa-regular fa-play',
-      type: 'act-btn',
-      color: '#009600',
-      state: 'default',
-      router: ['/main/blockly-editor', '/main/code-editor']
-    },
-    // {
-    //   name: 'MENU.DEBUG',
-    //   data: { type: 'cmd', data: 'debug' },
-    //   icon: 'fa-regular fa-rocket',
-    //   type: 'act-btn',
-    //   color: '#f18800',
-    // },
-  ],
-  [
-    // {
-    //   name: 'MENU.TERMINAL',
-    //   action: 'terminal',
-    //   data: { type: 'terminal', data: "default" },
-    //   icon: 'fa-light fa-rectangle-terminal',
-    // },
-    {
-      name: 'MENU.CODE',
-      action: 'tool-open',
-      data: { type: 'tool', data: "code-viewer" },
-      icon: 'fa-light fa-rectangle-code',
-      router: ['/main/blockly-editor']
-    },
-    {
-      name: 'MENU.LIB_MANAGER',
-      action: 'tool-open',
-      data: { type: 'tool', data: "lib-manager" },
-      icon: 'fa-light fa-books',
-      router: ['/main/code-editor']
-    },
-    {
-      name: 'MENU.TOOL_SERIAL',
-      action: 'tool-open',
-      data: { type: 'tool', data: "serial-monitor" },
-      icon: 'fa-light fa-monitor-waveform',
-    },
-    // {
-    //   name: 'MENU.SIMULATOR',
-    //   action: 'tool-open',
-    //   data: { type: 'tool', data: "simulator" },
-    //   icon: 'fa-light fa-atom',
-    //   dev: true,
-    //   router: ['/main/blockly-editor']
-    // },
-    {
-      name: 'MENU.AI',
-      action: 'tool-open',
-      data: { type: 'tool', data: "aily-chat" },
-      icon: 'fa-light fa-star-christmas',
-      more: 'AI'
-    },
-    // {
-    //   name: 'MENU.APP_STORE',
-    //   action: 'tool-open',
-    //   data: { type: 'tool', data: "app-store" },
-    //   icon: 'fa-light fa-store',
-    //   dev: true
-    // },
-    {
-      name: 'MENU.USER_SPACE',
-      action: 'tool-open',
-      data: { type: 'tool', data: "cloud-space" },
-      icon: 'fa-light fa-cloud',
-    },
-    {
-      name: 'MENU.USER_AUTH',
-      action: 'user-auth',
-      data: { type: 'tool', data: "user-auth" },
-      icon: 'fa-light fa-user',
-    },
-  ],
+export let HEADER_BTNS: IMenuItem[] = [
+  {
+    name: 'MENU.BUILD',
+    action: 'compile',
+    data: { type: 'cmd', data: 'compile' },
+    icon: 'fa-regular fa-check',
+    type: 'act-btn',
+    color: '#006adc',
+    state: 'default',
+    router: ['/main/blockly-editor', '/main/code-editor']
+  },
+  {
+    name: 'MENU.RUN',
+    action: 'upload',
+    data: { type: 'cmd', data: 'upload' },
+    icon: 'fa-regular fa-play',
+    type: 'act-btn',
+    color: '#009600',
+    state: 'default',
+    router: ['/main/blockly-editor', '/main/code-editor']
+  },
+  // {
+  //   name: 'MENU.DEBUG',
+  //   data: { type: 'cmd', data: 'debug' },
+  //   icon: 'fa-regular fa-rocket',
+  //   type: 'act-btn',
+  //   color: '#f18800',
+  // },
 ];
 
 

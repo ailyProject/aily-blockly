@@ -20,10 +20,25 @@ export class ConfigService {
     this.load();
   }
 
+  get_lang_filename(lang: string) {
+    if (!lang) lang = 'zh_cn';
+    else if(lang.toLowerCase() == 'zh-cn' || lang.toLowerCase() == 'zh_cn') lang = 'zh_cn';
+    else if(lang.toLowerCase() == 'zh-hk' || lang.toLowerCase() == 'zh_hk') lang = 'zh_hk';
+    else if(lang.startsWith('en_') || lang.startsWith('en-')) lang = 'en';
+    else if(lang.startsWith('fr_') || lang.startsWith('fr-')) lang = 'fr';
+    else if(lang.startsWith('de_') || lang.startsWith('de-')) lang = 'de';
+    else if(lang.startsWith('pt_') || lang.startsWith('pt-')) lang = 'pt';
+    else lang = lang.toLowerCase();
+
+    return lang;
+  }
+
   async load() {
     let defaultConfigFilePath = window['path'].getElectronPath();
     let defaultConfigFile = window['fs'].readFileSync(`${defaultConfigFilePath}/config/config.json`);
     this.data = await JSON.parse(defaultConfigFile);
+
+    this.data["selectedLanguage"] = this.get_lang_filename(window['platform'].lang);
 
     let userConfData;
     let configFilePath = window['path'].getAppDataPath();
@@ -39,6 +54,7 @@ export class ConfigService {
 
     // 添加当前系统类型到data中
     this.data["platform"] = window['platform'].type;
+    this.data["lang"] = this.get_lang_filename(window['platform'].lang);
 
     // 并行加载缓存的boards.json和libraries.json
     // await Promise.all([
@@ -237,7 +253,10 @@ interface AppConfig {
     warnings: string;
   };
 
-  devmode: boolean;
+  devmode: {
+    enabled: boolean;
+    autoSave: boolean;
+  };
 
   blockly: {
     renderer: string; // Blockly渲染器
@@ -257,4 +276,7 @@ interface AppConfig {
 
   /** 开发板使用次数统计 */
   boardUsageCount?: Record<string, number>;
+
+  /** AI聊天模式 */
+  aiChatMode?: 'agent' | 'ask';
 }

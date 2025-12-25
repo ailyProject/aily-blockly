@@ -1,0 +1,33 @@
+<app-sub-window [title]="'视觉模型训练'" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content sscroll">
+      <div class="type-selector">
+        <div class="text">选择你要训练的视觉模型类型</div>
+        <div class="type-list">
+          <div class="item ccenter" (click)="goToClassificationTrain()">
+            <i class="fa-thin fa-image"></i>
+            分类识别
+            <div class="desc">图像分类模型训练</div>
+          </div>
+          <div class="item ccenter" (click)="goToDetectionTrain()">
+            <i class="fa-thin fa-border-all"></i>
+            目标识别
+            <div class="desc">目标检测模型训练</div>
+          </div>
+          <!-- <div class="item ccenter disabled">
+            <i class="fa-thin fa-person"></i>
+            骨架识别
+            <div class="desc">即将推出</div>
+          </div> -->
+        </div>
+      </div>
+    </div>
+    <div class="window-footer">
+      <div class="btns">
+        <button nz-button nzType="primary" (click)="close()">
+          返回
+        </button>
+      </div>
+    </div>
+  </div>
+</app-sub-window>

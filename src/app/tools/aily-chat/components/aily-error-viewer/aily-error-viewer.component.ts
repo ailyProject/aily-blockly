@@ -6,7 +6,7 @@ import { NzIconModule } from 'ng-zorro-antd/icon';
 import { AuthService } from '../../../../services/auth.service';
 import { Subject, takeUntil } from 'rxjs';
 import { NzModalService } from 'ng-zorro-antd/modal';
-import { LoginDialogComponent } from '../../../../main-window/components/login-dialog/login-dialog.component';
+// import { LoginDialogComponent } from '../../../../main-window/components/login-dialog/login-dialog.component';
 
 export interface AilyErrorData {
     type: 'aily-error';
@@ -70,23 +70,23 @@ export class AilyErrorViewerComponent implements OnInit, OnDestroy {
         }
     }
 
-    login() {
-        // this.authService.showUser.next(true);
-        this.openLoginDialog();
-    }
+    // login() {
+    //     // this.authService.showUser.next(true);
+    //     this.openLoginDialog();
+    // }
 
-    openLoginDialog() {
-        const modalRef = this.modal.create({
-          nzTitle: null,
-          nzFooter: null,
-          nzClosable: false,
-          nzBodyStyle: {
-            padding: '0',
-          },
-          nzWidth: '350px',
-          nzContent: LoginDialogComponent
-        });
-      }
+    // openLoginDialog() {
+    //     const modalRef = this.modal.create({
+    //         nzTitle: null,
+    //         nzFooter: null,
+    //         nzClosable: false,
+    //         nzBodyStyle: {
+    //             padding: '0',
+    //         },
+    //         nzWidth: '350px',
+    //         nzContent: LoginDialogComponent
+    //     });
+    // }
 
 
     logDetail() {

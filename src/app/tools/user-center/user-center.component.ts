@@ -1,15 +1,18 @@
 import { Component, ElementRef, inject, ViewChild } from '@angular/core';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
-import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { AuthService, LoginRequest, RegisterRequest } from '../../services/auth.service';
-import { GitHubLoginDialogComponent } from '../../main-window/components/github-login-dialog/github-login-dialog.component';
 import sha256 from 'crypto-js/sha256';
 import { Subject, takeUntil } from 'rxjs';
 import { ElectronService } from '../../services/electron.service';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { LoginComponent } from '../../components/login/login.component';
+import { NzButtonModule } from 'ng-zorro-antd/button';
+import { NzProgressModule } from 'ng-zorro-antd/progress';
+import { NzInputModule } from 'ng-zorro-antd/input';
+import { UiService } from '../../services/ui.service';
 
 @Component({
   selector: 'app-user-center',
@@ -17,7 +20,10 @@ import { NzMessageService } from 'ng-zorro-antd/message';
     FormsModule,
     CommonModule,
     ToolContainerComponent,
-    SubWindowComponent
+    LoginComponent,
+    NzButtonModule,
+    NzProgressModule,
+    NzInputModule
   ],
   templateUrl: './user-center.component.html',
   styleUrl: './user-center.component.scss'
@@ -26,14 +32,11 @@ export class UserCenterComponent {
   currentUrl = '/user-center';
   windowInfo = '用户中心';
   @ViewChild('menuBox') menuBox: ElementRef;
-
-  // @Output() closeEvent = new EventEmitter<void>();
+  @ViewChild('nicknameInput') nicknameInput?: ElementRef<HTMLInputElement>;
 
   private destroy$ = new Subject<void>();
   private message = inject(NzMessageService);
-  private modal = inject(NzModalService);
   private authService = inject(AuthService);
-  private electronService = inject(ElectronService);
 
   userInfo = {
     username: '',
@@ -46,6 +49,17 @@ export class UserCenterComponent {
   isLoggedIn = false;
   currentUser: any = null;
   isGitHubAuthWaiting = false;
+  isEditingNickname = false;
+  editedNickname = '';
+  nicknameSaving = false;
+  nicknameError = '';
+  quotaUsagePercent = 0;
+
+  constructor(
+    private uiService: UiService
+  ) {
+
+  }
 
   async ngOnInit() {
     // 首先检查并同步登录状态
@@ -56,19 +70,16 @@ export class UserCenterComponent {
       .pipe(takeUntil(this.destroy$))
       .subscribe(isLoggedIn => {
         this.isLoggedIn = isLoggedIn;
-
-        // // 如果登录成功且当前在GitHub登录等待状态，关闭弹窗
-        // if (isLoggedIn && this.isGitHubAuthWaiting) {
-        //   this.isGitHubAuthWaiting = false;
-        //   this.closeEvent.emit();
-        // }
+        this.refreshMe();
       });
 
     // 监听用户信息
     this.authService.userInfo$
       .pipe(takeUntil(this.destroy$))
       .subscribe(userInfo => {
+        console.log('UserCenterComponent - 接收到用户信息更新: ', userInfo);
         this.currentUser = userInfo;
+        this.calculateQuotaUsagePercent();
       });
 
     // 由于app.component已经设置了全局OAuth监听器，这里不需要再设置
@@ -86,50 +97,21 @@ export class UserCenterComponent {
     }
   }
 
-  ngAfterViewInit(): void {
+  refreshMe() {
+    this.authService.refreshMe().then(() => {
+      console.log('Auth token refreshed.');
+      this.calculateQuotaUsagePercent();
+    });
+  }
 
+
+  ngAfterViewInit(): void {
+    this.refreshMe();
   }
 
   ngOnDestroy() {
     this.destroy$.next();
     this.destroy$.complete();
-  }
-
-  async onLogin() {
-    if (!this.userInfo.username || !this.userInfo.password) {
-      this.message.warning('请输入用户名和密码');
-      return;
-    }
-
-    this.isWaiting = true;
-
-    try {
-      const loginData: LoginRequest = {
-        username: this.userInfo.username,
-        password: sha256(this.userInfo.password).toString()
-      };
-
-      this.authService.login(loginData).subscribe({
-        next: (response) => {
-          if (response.status === 200 && response.data) {
-            this.message.success('登录成功');
-          } else {
-            this.message.error(response.message || '登录失败');
-          }
-        },
-        error: (error) => {
-          console.error('登录错误:', error);
-          this.message.error('登录失败，请检查网络连接');
-        },
-        complete: () => {
-          this.isWaiting = false;
-        }
-      });
-    } catch (error) {
-      console.error('登录过程中出错:', error);
-      this.message.error('登录失败');
-      this.isWaiting = false;
-    }
   }
 
   async onRegister() {
@@ -197,72 +179,128 @@ export class UserCenterComponent {
     this.message.warning('服务暂不可用');
   }
 
-  /**
-   * 开始 GitHub 浏览器 OAuth 登录
-   */
-  async onGitHubLogin() {
-    if (this.isGitHubAuthWaiting) return;
+  close() {
+    this.uiService.closeTool('user-center');
+  }
 
-    // 首先显示确认对话框
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzWidth: '380px',
-      nzContent: GitHubLoginDialogComponent,
-      nzData: {
-        title: 'GitHub 登录确认',
-        text: ''
-      }
-    });
-
-    // 等待用户选择
-    modalRef.afterClose.subscribe(async (result: any) => {
-      if (result && result.result === 'agree') {
-        // 用户同意，继续GitHub登录流程
-        await this.proceedWithGitHubLogin();
-      }
-      // 如果用户取消或关闭对话框，则不执行任何操作
+  onStartNicknameEdit(event?: Event): void {
+    if (this.nicknameSaving) {
+      return;
+    }
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    this.isEditingNickname = true;
+    this.nicknameError = '';
+    this.editedNickname = this.displayNickname;
+    setTimeout(() => {
+      this.nicknameInput?.nativeElement?.focus();
+      this.nicknameInput?.nativeElement?.select();
     });
   }
 
-  /**
-   * 执行实际的GitHub登录流程
-   */
-  private async proceedWithGitHubLogin() {
-    this.isGitHubAuthWaiting = true;
+  onCancelNicknameEdit(event?: Event): void {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    this.isEditingNickname = false;
+    this.nicknameSaving = false;
+    this.nicknameError = '';
+    this.editedNickname = '';
+  }
+
+  async onSaveNickname(): Promise<void> {
+    if (!this.isEditingNickname || this.nicknameSaving) {
+      return;
+    }
+
+    const nextNickname = this.editedNickname.trim();
+    if (!nextNickname) {
+      this.nicknameError = '昵称不能为空';
+      this.message.warning('昵称不能为空');
+      setTimeout(() => {
+        this.nicknameInput?.nativeElement?.focus();
+      });
+      return;
+    }
+
+    if (nextNickname === this.displayNickname) {
+      this.isEditingNickname = false;
+      this.editedNickname = '';
+      return;
+    }
+
+    this.nicknameSaving = true;
+    this.nicknameError = '';
 
     try {
-      // 直接通过 HTTP 请求启动 GitHub OAuth 流程
-      this.authService.startGitHubOAuth().subscribe({
-        next: (response) => {
-          // 使用 ElectronService 在系统浏览器中打开授权页面
-          if (this.electronService.isElectron) {
-            this.electronService.openUrl(response.authorization_url);
-            this.message.info('正在跳转到 GitHub 授权页面...');
-          } else {
-            // 如果不在 Electron 环境中，使用 window.open 作为降级方案
-            window.open(response.authorization_url, '_blank');
-            this.message.info('正在跳转到 GitHub 授权页面...');
-          }
-        },
-        error: (error) => {
-          console.error('启动 GitHub OAuth 失败:', error);
-          this.message.error('启动 GitHub 登录失败，请检查网络连接');
-          this.isGitHubAuthWaiting = false;
-        }
-      });
+      await this.submitNicknameChange(nextNickname);
+      this.currentUser = {
+        ...this.currentUser,
+        nickname: nextNickname
+      };
+      this.message.success('昵称修改已保存');
+      this.isEditingNickname = false;
+      this.editedNickname = '';
     } catch (error) {
-      console.error('GitHub 登录出错:', error);
-      this.message.error('GitHub 登录失败');
-      this.isGitHubAuthWaiting = false;
+      console.error('昵称更新失败:', error);
+      this.nicknameError = '昵称更新失败，请稍后重试';
+      this.message.error('昵称更新失败，请稍后重试');
+    } finally {
+      this.nicknameSaving = false;
     }
   }
 
-  close() {
+  async onNicknameBlur(): Promise<void> {
+    if (this.nicknameSaving) {
+      return;
+    }
+    await this.onSaveNickname();
+  }
 
+  private async submitNicknameChange(nextNickname: string): Promise<void> {
+    (await this.authService.changeNickname(nextNickname)).subscribe({
+      next: async (response) => {
+        if (response.status === 200) {
+          // 昵称修改成功
+          await this.authService.refreshMe();
+        } else {
+          throw new Error('昵称修改失败，服务器返回错误');
+        }
+      },
+      error: (error) => {
+        console.error('昵称修改请求失败:', error);
+        throw error;
+      }
+    });
+  }
+
+  get displayNickname(): string {
+    return (this.currentUser?.nickname || this.currentUser?.login || '').trim();
+  }
+
+  get quotaRemainingPercent(): number {
+    return Math.max(0, 100 - this.quotaUsagePercent);
+  }
+
+  private calculateQuotaUsagePercent(): void {
+    console.log('=== 开始计算配额使用百分比 ===');
+    console.log('currentUser 完整对象:', JSON.stringify(this.currentUser, null, 2));
+    console.log('currentUser?.quota:', this.currentUser?.quota);
+    
+    const total = this.currentUser?.quota?.total_token ?? 0;
+    const used = this.currentUser?.quota?.used_token ?? 0;
+    
+    console.log('提取的值 - total:', total, 'used:', used);
+    console.log('total 类型:', typeof total, 'used 类型:', typeof used);
+    
+    if (!total || total <= 0) {
+      this.quotaUsagePercent = 0;
+      console.log('总配额为0或无效，设置使用百分比为0');
+      return;
+    }
+    const percent = (used / total) * 100;
+    // 保留2位小数，不四舍五入到整数
+    this.quotaUsagePercent = Math.max(0, Math.min(100, Number(percent.toFixed(2))));
+    console.log('计算得到的使用百分比:', this.quotaUsagePercent, '(used/total*100 =', used, '/', total, '*100)');
+    console.log('=== 计算完成 ===');
   }
 }

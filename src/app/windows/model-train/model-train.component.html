@@ -1,0 +1,149 @@
+<app-sub-window [title]="'MODEL_TRAIN.TITLE' | translate" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content">
+      <div class="type-selector">
+        <div class="text">选择你要训练的模型类型</div>
+        <div class="type-list">
+          <div class="item ccenter" (click)="goToVisionTrain()">
+            <i class="fa-thin fa-eye"></i>
+            视觉模型
+            <!-- <div class="desc"></div> -->
+          </div>
+          <div class="item ccenter disabled" (click)="goToAudioTrain()">
+            <i class="fa-thin fa-ear"></i>
+            音频模型
+            <div class="desc">即将推出</div>
+          </div>
+          <div class="item ccenter disabled">
+            <i class="fa-thin fa-database"></i>
+            数据模型
+            <div class="desc">即将推出</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 最近打开的项目 -->
+      @if(recentProjects.length > 0) {
+      <div class="recent-projects">
+        <div class="section-title">最近打开的项目</div>
+        <div class="project-list">
+          @for(project of recentProjects; track project.path) {
+          <div class="project-item" (click)="openRecentProject(project)">
+            <!-- <div class="project-icon ccenter">
+              @if(project.modelType === 'classification') {
+              <i class="fa-thin fa-grid-2"></i>
+              } @else if(project.modelType === 'detection') {
+              <i class="fa-thin fa-vector-square"></i>
+              } @else {
+              <i class="fa-thin fa-brain"></i>
+              }
+            </div> -->
+            <div class="project-info">
+              <div class="project-meta">
+                <span class="model-type">{{ getModelTypeName(project.modelType) }}</span>
+                <span class="project-name">{{ project.nickname || project.name }}</span>
+              </div>
+              <div class="project-path">{{ project.path }}</div>
+            </div>
+          </div>
+          }
+        </div>
+      </div>
+      }
+    </div>
+    <div class="window-footer">
+      <div class="btns">
+        <button nz-button nzType="primary" (click)="close()">
+          关闭
+        </button>
+        <button nz-button nzType="primary" (click)="openProject()">
+          打开项目
+        </button>
+      </div>
+    </div>
+  </div>
+  @if(false){
+  <div class="window-inner">
+    <div class="window-content">
+      <div class="left">
+        <div class="left-inner">
+          <nz-steps [nzCurrent]="currentStep" nzDirection="vertical" nzSize="small">
+            <nz-step [nzTitle]="'MODEL_TRAIN.STEPS.CONTACT' | translate"></nz-step>
+            <nz-step [nzTitle]="'MODEL_TRAIN.STEPS.DEPLOY' | translate"></nz-step>
+            <nz-step [nzTitle]="'MODEL_TRAIN.STEPS.TEST' | translate"
+              [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
+          </nz-steps>
+          <ng-template #iconTemplate><i class="fa-duotone fa-solid fa-spinner-third"></i></ng-template>
+        </div>
+      </div>
+      <div class="right">
+        @if (currentStep == 0) {
+        <div class="right-inner flex-start">
+
+        </div>
+        } @else {
+        <!-- 基本设定页面 -->
+        <div class="right-inner">
+          <div class="item">
+            <!-- <div>{{ 'MODEL_DEPLOY.FORM.BOARD' | translate }}:</div> -->
+            <!-- <nz-input-group [nzSuffix]="suffixIconSearch">
+              <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
+            </nz-input-group>
+            <ng-template #suffixIconSearch>
+              <i class="fa-light fa-at"></i>
+            </ng-template> -->
+            <!-- <nz-select [(ngModel)]="newProjectData.board.version">
+              @for (version of boardVersionList; track version) {
+              <nz-option [nzValue]="version" [nzLabel]="version"></nz-option>
+              }
+            </nz-select> -->
+          </div>
+          <div class="item">
+            <!-- <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div> -->
+            <!-- <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
+            @if(showIsExist){
+            <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' |
+              translate }}</div>
+            } -->
+          </div>
+          <div class="item">
+            <!-- <div>{{ 'PROJECT_NEW.FORM.SAVE_PATH' | translate }}:</div> -->
+            <!-- <nz-input-group [nzAddOnAfter]="addOnAfterTemplate">
+              <input nz-input [(ngModel)]="newProjectData.path" [disabled]="true" />
+            </nz-input-group>
+            <ng-template #addOnAfterTemplate>
+              <div class="btn ccenter ffull" (click)="selectFolder()">
+                <i class="fa-light fa-folder"></i>
+              </div>
+            </ng-template> -->
+          </div>
+        </div>
+        }
+      </div>
+    </div>
+    <div class="window-footer">
+      <div class="btns">
+        @if (currentStep == 0) {
+        <button nz-button nzType="primary" (click)="nextStep()">
+          {{ 'PROJECT_NEW.BUTTONS.NEXT' | translate }}
+        </button>
+        } @else {
+        @if (currentStep == 1) {
+        <button nz-button nzType="default" (click)="currentStep = 0">
+          {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
+        </button>
+        <button nz-button nzType="primary" [disabled]="true">
+          {{ 'PROJECT_NEW.BUTTONS.DEPLOY' | translate }}
+        </button>
+        }
+        }
+        @if (currentStep == 2) {
+        <button nz-button nzType="default" nzLoading>
+          {{ 'PROJECT_NEW.BUTTONS.TEST' | translate }}
+        </button>
+        }
+      </div>
+    </div>
+  </div>
+  }
+</app-sub-window>

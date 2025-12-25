@@ -46,7 +46,7 @@ export async function createFolderTool(
         // 路径规范化
         folderPath = normalizePath(folderPath);
         
-        console.log("创建文件夹: ", folderPath);
+        // console.log("创建文件夹: ", folderPath);
 
         // 验证路径是否有效
         if (!folderPath || folderPath.trim() === '') {

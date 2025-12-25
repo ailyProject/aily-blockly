@@ -45,7 +45,7 @@ export async function listDirectoryTool(
         // 路径规范化
         dirPath = normalizePath(dirPath);
         
-        console.log("列出目录内容: ", dirPath);
+        // console.log("列出目录内容: ", dirPath);
 
         // 验证路径是否有效
         if (!dirPath || dirPath.trim() === '') {

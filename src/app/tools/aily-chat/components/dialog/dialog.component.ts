@@ -94,13 +94,13 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
 
     // 如果是全新的内容或内容长度减少了（可能是重置），则清空并重新渲染
     if (processedContent.length < this.lastContentLength || this.lastProcessedContent === '') {
-      console.log('全新内容渲染');
+      // console.log('全新内容渲染');
       await this.resetAndRenderAll(processedContent);
       return;
     }
 
     // 增量渲染
-    console.log('增量渲染');
+    // console.log('增量渲染');
     await this.processIncrementalRender(processedContent);
 
     this.cd.detectChanges();

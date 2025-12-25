@@ -2,6 +2,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const _ = require("lodash");
+const windowStateKeeper = require('electron-window-state');
 const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
@@ -14,7 +15,7 @@ if (isWin32) {
   app.setAppUserModelId("pro.aily.blockly");
 }
 
-PROTOCOL = "ailyblockly";
+PROTOCOL = "abis";
 
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
@@ -54,12 +55,12 @@ function registerOAuthInstance(state) {
       state: state
     };
 
-    console.log('注册OAuth实例信息:', {
-      state,
-      instanceId: instanceInfo.instanceId,
-      userDataPath: currentUserDataPath,
-      stateFilePath
-    });
+    // console.log('注册OAuth实例信息:', {
+    //   state,
+    //   instanceId: instanceInfo.instanceId,
+    //   userDataPath: currentUserDataPath,
+    //   stateFilePath
+    // });
 
     let oauthStates = {};
     if (fs.existsSync(stateFilePath)) {
@@ -88,8 +89,8 @@ function registerOAuthInstance(state) {
     }
 
     fs.writeFileSync(stateFilePath, JSON.stringify(oauthStates, null, 2));
-    console.log('已注册OAuth状态:', state, '实例ID:', instanceInfo.instanceId);
-    console.log('OAuth状态文件内容:', oauthStates);
+    // console.log('已注册OAuth状态:', state, '实例ID:', instanceInfo.instanceId);
+    // console.log('OAuth状态文件内容:', oauthStates);
 
     return instanceInfo;
   } catch (error) {
@@ -206,7 +207,13 @@ const serve = args.some((val) => val === "--serve");
 process.env.DEV = serve;
 
 // 注册协议处理
-app.setAsDefaultProtocolClient(PROTOCOL);
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient(PROTOCOL);
+}
 
 // 文件关联处理
 let pendingFileToOpen = null;
@@ -355,6 +362,45 @@ function handleProtocol(url) {
       return;
     }
 
+    // 检查是否是打开示例列表
+    // 移除末尾斜杠以兼容不同情况
+    const normalizedPath = fullPath.replace(/\/$/, '');
+    if (normalizedPath === '/examples' || normalizedPath === '/open-examples' || normalizedPath === '/open-template') {
+      const searchParams = urlObj.searchParams;
+      const keyword = searchParams.get('keyword');
+      const id = searchParams.get('templateId') || searchParams.get('id');
+      const sessionId = searchParams.get('sessionId');
+      const params = searchParams.get('params');
+      const version = searchParams.get('version');
+
+      // 优先使用 keyword，如果有 id 则作为 keyword
+      const searchKeyword = keyword || id || '';
+
+      console.log('打开示例列表:', { keyword, id, params, version, searchKeyword });
+
+      const data = {
+        keyword: searchKeyword,
+        id: id || '',
+        sessionId: sessionId || '',
+        params: params || '',
+        version: version || ''
+      };
+
+      if (mainWindow && mainWindow.webContents && isRendererReady) {
+        mainWindow.webContents.send('open-example-list', data);
+        if (mainWindow.isMinimized()) {
+          mainWindow.restore();
+        }
+        mainWindow.focus();
+        mainWindow.show();
+      } else {
+        // 如果窗口不存在或未就绪，存储数据以便稍后处理
+        console.log('窗口未就绪，缓存示例列表请求');
+        global.pendingExampleListOpen = data;
+      }
+      return;
+    }
+
     // 处理其他协议链接
     // dialog.showMessageBox({ message: `收到协议：${url}` });
   } catch (error) {
@@ -371,36 +417,164 @@ const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers } = require("./cmd");
 const { registerMCPHandlers } = require("./mcp");
 // debug模块
-const { initLogger } = require("./logger");
+const { initLogger, registerLoggerHandlers } = require("./logger");
 // tools
 const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
 
 let mainWindow;
 let userConf;
+let isRendererReady = false;
 
-// 检查Node
-function checkNodePath(childPath) {
+// 监听渲染进程就绪事件
+ipcMain.on('renderer-ready', () => {
+  console.log('渲染进程已就绪');
+  isRendererReady = true;
+
+  // 检查是否有待处理的OAuth回调
+  if (global.pendingOAuthCallback) {
+    console.log('发送待处理的OAuth回调');
+    mainWindow.webContents.send('oauth-callback', global.pendingOAuthCallback);
+    global.pendingOAuthCallback = null;
+  }
+
+  // 检查是否有待处理的示例列表打开请求
+  if (global.pendingExampleListOpen) {
+    console.log('发送待处理的示例列表请求');
+    mainWindow.webContents.send('open-example-list', global.pendingExampleListOpen);
+    global.pendingExampleListOpen = null;
+  }
+});
+
+// macos检查安装环境
+function macosInstallEnv(childPath) {
   const child_process = require("child_process");
-  childPath = escapePath(childPath);
-  const nodePath = path.join(childPath, "node");
-  if (!fs.existsSync(nodePath)) {
-    const nodeZipPath = path.join(childPath, "node-v22.19.0-darwin-arm64.tar.xz");
+
+  // 从文件名中提取版本号
+  function extractVersion(filename, keyword) {
+    // node 格式：node-v22.21.0-darwin-arm64.7z → 22.21.0
+    // aily-builder 格式：aily-builder-1.0.7.7z → 1.0.7
+    if (keyword === "node") {
+      const match = filename.match(/node-v(\d+\.\d+\.\d+)/);
+      return match ? match[1] : null;
+    } else if (keyword === "aily-builder") {
+      const match = filename.match(/aily-builder-(\d+\.\d+\.\d+)/);
+      return match ? match[1] : null;
+    }
+    return null;
+  }
+
+  // 比较语义化版本号
+  function compareSemver(version1, version2) {
+    if (!version1 || !version2) return 0;
+
+    // 移除可能的 'v' 前缀
+    const v1 = version1.replace(/^v/, '').split('.').map(Number);
+    const v2 = version2.replace(/^v/, '').split('.').map(Number);
+
+    // 确保两个版本号都有三个部分
+    while (v1.length < 3) v1.push(0);
+    while (v2.length < 3) v2.push(0);
+
+    // 比较主版本号
+    if (v1[0] !== v2[0]) {
+      return v1[0] > v2[0] ? 1 : -1;
+    }
+    // 比较次版本号
+    if (v1[1] !== v2[1]) {
+      return v1[1] > v2[1] ? 1 : -1;
+    }
+    // 比较修订版本号
+    if (v1[2] !== v2[2]) {
+      return v1[2] > v2[2] ? 1 : -1;
+    }
+    return 0;
+  }
+
+  // 查找指定目录下关键字匹配的最新版本文件
+  function findLatestVersionFile(directory, keyword) {
     try {
-      child_process.execSync(`tar -xzf ${nodeZipPath} -C ${childPath} && mv ${nodeZipPath.replace('.tar.xz', '')} ${nodePath}`, {stdio: 'inherit'});
-      console.log('安装解压node成功！');
+      if (!fs.existsSync(directory)) {
+        return null;
+      }
+
+      const files = fs.readdirSync(directory);
+      const matchingFiles = files.filter(file => {
+        return file.startsWith(keyword) && file.endsWith('.7z');
+      });
+
+      if (matchingFiles.length === 0) {
+        return null;
+      }
+
+      // 提取版本号并找到最新版本
+      let latestFile = matchingFiles[0];
+      let latestVersion = extractVersion(latestFile, keyword);
+
+      for (let i = 1; i < matchingFiles.length; i++) {
+        const currentVersion = extractVersion(matchingFiles[i], keyword);
+        if (currentVersion && compareSemver(currentVersion, latestVersion) > 0) {
+          latestFile = matchingFiles[i];
+          latestVersion = currentVersion;
+        }
+      }
+
+      return path.join(directory, latestFile);
     } catch (error) {
-      console.error("安装解压node失败，错误码:", error);
+      console.error(`查找${keyword}文件失败:`, error);
+      return null;
     }
   }
-  const ailyBuilderPath = path.join(childPath, "aily-builder");
-  if (!fs.existsSync(ailyBuilderPath)) {
-    const ailyBuilderZipPath = path.join(childPath, "aily-builder-1.0.5.7z");
+
+  const z7Name = "7zz";
+  const z7Path = path.join(childPath, z7Name);
+  if (serve && !fs.existsSync(z7Path)) {
+    const z7SourcePath = path.join(childPath, "macos", z7Name);
     try {
-      child_process.execSync(`mkdir -p ${ailyBuilderPath} && tar -xzf ${ailyBuilderZipPath} -C ${ailyBuilderPath}`, {stdio: 'inherit'});
-      console.log('安装解压aily-builder成功！');
+      const escapeZ7SourcePath = escapePath(z7SourcePath);
+      const escapeZ7Path = escapePath(z7Path);
+      child_process.execSync(`cp ${escapeZ7SourcePath} ${escapeZ7Path}`, { stdio: 'inherit' });
+      console.log('安装解压7zz成功！');
     } catch (error) {
-      console.error("安装解压aily-builder失败，错误码:", error);
+      console.error("安装解压7zz失败，错误码:", error);
+    }
+  }
+  const nodeName = "node";
+  const nodePath = path.join(childPath, nodeName);
+  if (!fs.existsSync(nodePath)) {
+    const sourceDir = path.join(childPath, serve ? "macos" : "");
+    const nodeZipPath = findLatestVersionFile(sourceDir, nodeName);
+    if (nodeZipPath && fs.existsSync(nodeZipPath)) {
+      try {
+        const escapeNodePath = escapePath(nodePath);
+        const escapeNodeZipPath = escapePath(nodeZipPath);
+        child_process.execSync(`mkdir -p ${escapeNodePath} && tar -xzf ${escapeNodeZipPath} -C ${escapeNodePath}`, { stdio: 'inherit' });
+        console.log(`安装解压 ${nodeName}: ${nodeZipPath}成功！`);
+        if (!serve) fs.unlinkSync(nodeZipPath);
+      } catch (error) {
+        console.error(`安装解压 ${nodeName}: ${nodeZipPath}失败，错误码:`, error);
+      }
+    } else {
+      console.error(`未找到 ${nodeName}: ${nodeZipPath}，搜索目录: ${sourceDir}`);
+    }
+  }
+  const ailyBuilderName = "aily-builder";
+  const ailyBuilderPath = path.join(childPath, ailyBuilderName);
+  if (!fs.existsSync(ailyBuilderPath)) {
+    const sourceDir = path.join(childPath, serve ? "macos" : "");
+    const ailyBuilderZipPath = findLatestVersionFile(sourceDir, ailyBuilderName);
+    if (ailyBuilderZipPath && fs.existsSync(ailyBuilderZipPath)) {
+      try {
+        const escapeAilyBuilderPath = escapePath(ailyBuilderPath);
+        const escapeAilyBuilderZipPath = escapePath(ailyBuilderZipPath);
+        child_process.execSync(`mkdir -p ${escapeAilyBuilderPath} && tar -xzf ${escapeAilyBuilderZipPath} -C ${escapeAilyBuilderPath}`, { stdio: 'inherit' });
+        console.log(`安装解压 ${ailyBuilderName}: ${ailyBuilderZipPath}成功！`);
+        if (!serve) fs.unlinkSync(ailyBuilderZipPath);
+      } catch (error) {
+        console.error(`安装解压 ${ailyBuilderName}: ${ailyBuilderZipPath}失败，错误码:`, error);
+      }
+    } else {
+      console.error(`未找到 ${ailyBuilderName}: ${ailyBuilderZipPath}，搜索目录: ${sourceDir}`);
     }
   }
 }
@@ -468,7 +642,6 @@ function loadEnv() {
     // 设置macOS的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"].replace('~', os.homedir());
     process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), "Library", "aily-builder", "project");
-    checkNodePath(childPath);
   } else {
     // 设置Linux的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["linux"];
@@ -482,6 +655,17 @@ function loadEnv() {
     } catch (error) {
       console.error("创建应用数据目录失败:", error);
     }
+  }
+
+  try {
+    initLogger(process.env.AILY_APPDATA_PATH);
+    registerLoggerHandlers();
+  } catch (error) {
+    console.error("initLogger error: ", error);
+  }
+
+  if (isDarwin) {
+    macosInstallEnv(childPath);
   }
 
   // 检测并读取appdata_path目录下是否有config.json文件
@@ -507,19 +691,19 @@ function loadEnv() {
     userConf = {}; // 确保userConf是一个对象
   }
 
+  // child Path
+  process.env.AILY_CHILD_PATH = childPath;
+
   // npm registry
   process.env.AILY_NPM_REGISTRY = conf["npm_registry"][0];
   // 7za path
-  process.env.AILY_7ZA_PATH = path.join(childPath, isWin32 ? "7za.exe" : "7za");
+  process.env.AILY_7ZA_PATH = path.join(childPath, isWin32 ? "7za.exe" : "7zz");
   // aily builder path
   process.env.AILY_BUILDER_PATH = path.join(childPath, "aily-builder");
   // 全局npm包路径
   process.env.AILY_NPM_PREFIX = process.env.AILY_APPDATA_PATH;
   // 默认全局编译器路径
-  process.env.AILY_COMPILERS_PATH = path.join(
-    process.env.AILY_APPDATA_PATH,
-    "tools",
-  );
+  process.env.AILY_COMPILERS_PATH = path.join(process.env.AILY_APPDATA_PATH, "tools",);
   // 默认全局烧录器路径
   process.env.AILY_TOOLS_PATH = path.join(process.env.AILY_APPDATA_PATH, "tools");
   // 默认全局SDK路径
@@ -539,7 +723,10 @@ function loadEnv() {
     process.env.PATH = `${process.env.PATH}${path.delimiter}${ninjaPath}`;
   }
 
-  console.log("====process.env:", process.env)
+  // 当前系统语言
+  process.env.AILY_SYSTEM_LANG = app.getLocale();
+
+  // console.log("====process.env:", process.env)
 }
 
 
@@ -587,10 +774,17 @@ function updateMainWindowWithPendingData() {
 }
 
 function createWindow() {
-  let windowBounds = getConfWindowBounds();
+  const mainWindowState = windowStateKeeper({
+    defaultWidth: 1200,
+    defaultHeight: 780,
+    path: path.join(process.env.AILY_APPDATA_PATH),
+  })
 
   mainWindow = new BrowserWindow({
-    ...windowBounds,
+    x: mainWindowState.x,
+    y: mainWindowState.y,
+    width: mainWindowState.width,
+    height: mainWindowState.height,
     show: false,
     minWidth: 800,
     minHeight: 600,
@@ -603,17 +797,22 @@ function createWindow() {
       contextIsolation: false,
       webSecurity: false,
       preload: path.join(__dirname, "preload.js"),
+      // // 启用 Web Serial API 支持
+      // enableBlinkFeatures: 'Serial',
     },
   });
+
+  mainWindow.setBounds({
+    height: mainWindowState.height,
+    width: mainWindowState.width,
+  });
+
+  mainWindowState.manage(mainWindow);
 
   // mainWindow.setMenu(null);
 
   // 当页面准备好显示时，再显示窗口
   mainWindow.once('ready-to-show', () => {
-    // 如果上次窗口是最大化状态，则恢复最大化
-    if (windowBounds.isMaximized) {
-      mainWindow.maximize();
-    }
     mainWindow.show();
   });
 
@@ -684,14 +883,9 @@ function createWindow() {
   // 当主窗口被关闭时，进行相应的处理
   mainWindow.on("closed", () => {
     mainWindow = null;
+    isRendererReady = false;
     app.quit();
   });
-
-  try {
-    initLogger(process.env.AILY_APPDATA_PATH);
-  } catch (error) {
-    console.error("initLogger error: ", error);
-  }
 
   // 注册ipc handlers
   registerUpdaterHandlers(mainWindow);
@@ -704,14 +898,27 @@ function createWindow() {
   registerNotificationHandlers(mainWindow);
 
   // 检查是否有待处理的OAuth回调
+  // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
+  // 但为了兼容性（如果 renderer-ready 没触发），保留一个较长时间的超时检查
   if (global.pendingOAuthCallback) {
-    // 延迟发送以确保渲染进程已准备好
     setTimeout(() => {
-      if (mainWindow && mainWindow.webContents) {
+      if (global.pendingOAuthCallback && mainWindow && mainWindow.webContents) {
+        console.log('超时检查：发送待处理的OAuth回调');
         mainWindow.webContents.send('oauth-callback', global.pendingOAuthCallback);
         global.pendingOAuthCallback = null;
       }
-    }, 2000);
+    }, 5000);
+  }
+
+  // 检查是否有待处理的示例列表打开请求
+  if (global.pendingExampleListOpen) {
+    setTimeout(() => {
+      if (global.pendingExampleListOpen && mainWindow && mainWindow.webContents) {
+        console.log('超时检查：发送待处理的示例列表请求');
+        mainWindow.webContents.send('open-example-list', global.pendingExampleListOpen);
+        global.pendingExampleListOpen = null;
+      }
+    }, 5000);
   }
 
   // 在多实例模式下，监听OAuth回调文件的变化
@@ -751,7 +958,7 @@ function createWindow() {
                 console.log('检测到OAuth回调文件变化，发送回调数据');
                 if (mainWindow && mainWindow.webContents) {
                   mainWindow.webContents.send('oauth-callback', callbackData);
-                  
+
                   // 将窗口置前显示
                   if (mainWindow.isMinimized()) {
                     mainWindow.restore();
@@ -804,6 +1011,24 @@ if (shouldUseMultiInstance()) {
     const protocolUrl = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`));
     if (protocolUrl) {
       console.log('在second-instance中处理协议链接:', protocolUrl);
+
+      // 检查是否是示例相关的URL，如果是则忽略（由新实例处理）
+      try {
+        const urlObj = new URL(protocolUrl);
+        let fullPath = urlObj.pathname;
+        if (urlObj.hostname && urlObj.hostname !== '') {
+          fullPath = '/' + urlObj.hostname + urlObj.pathname;
+        }
+        const normalizedPath = fullPath.replace(/\/$/, '');
+
+        if (normalizedPath === '/examples' || normalizedPath === '/open-examples' || normalizedPath === '/open-template') {
+          console.log('检测到示例相关URL，忽略second-instance处理，将由新实例处理');
+          return;
+        }
+      } catch (e) {
+        console.error('解析协议URL失败:', e);
+      }
+
       handleProtocol(protocolUrl);
 
       // 处理协议后不要置前窗口，让具体的处理逻辑决定
@@ -882,8 +1107,49 @@ app.on("ready", () => {
 
   // 创建主窗口
   createWindow();
-  listenMoveResize();
 });
+
+// // 处理 Web Serial API 的串口选择请求
+// app.on('web-contents-created', (event, contents) => {
+//   contents.session.on('select-serial-port', (event, portList, webContents, callback) => {
+//     event.preventDefault();
+//     console.log('Web Serial API: 可用串口列表', portList);
+
+//     // 如果有可用的串口，选择第一个（或者可以根据 VID/PID 筛选）
+//     if (portList && portList.length > 0) {
+//       // 查找 ESP32S3 设备 (VID: 0x303a, PID: 0x1001)
+//       const esp32Port = portList.find(port =>
+//         port.vendorId === '303a' && port.productId === '1001'
+//       );
+
+//       if (esp32Port) {
+//         console.log('选择 ESP32S3 串口:', esp32Port.portId);
+//         callback(esp32Port.portId);
+//       } else {
+//         // 如果没找到 ESP32S3，选择第一个
+//         console.log('未找到 ESP32S3，选择第一个串口:', portList[0].portId);
+//         callback(portList[0].portId);
+//       }
+//     } else {
+//       console.log('没有可用的串口');
+//       callback('');
+//     }
+//   });
+
+//   contents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+//     if (permission === 'serial') {
+//       return true;
+//     }
+//     return false;
+//   });
+
+//   contents.session.setDevicePermissionHandler((details) => {
+//     if (details.deviceType === 'serial') {
+//       return true;
+//     }
+//     return false;
+//   });
+// });
 
 // 当所有窗口都被关闭时退出应用（macOS 除外）
 app.on("window-all-closed", () => {
@@ -1090,150 +1356,6 @@ ipcMain.on("setting-changed", (event, data) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
   mainWindow.webContents.send("setting-changed", data);
 });
-
-// 记录窗口大小和位置，用于下次打开时恢复
-function windowMoveResizeListener() {
-  const bounds = mainWindow.getBounds();
-  const isMaximized = mainWindow.isMaximized();
-  // console.log("窗口位置和大小：", bounds, "最大化状态：", isMaximized);
-
-  // 读取配置文件
-  const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
-  let userConf = JSON.parse(fs.readFileSync(userConfigPath));
-
-  // 确保window配置存在
-  if (!userConf["window"]) {
-    userConf["window"] = {};
-  }
-
-  if (isMaximized) {
-    // 如果当前是最大化状态，只更新最大化状态，保留之前的normalBounds
-    userConf["window"].isMaximized = true;
-    // 如果之前没有记录normalBounds，使用当前bounds作为默认值
-    if (!userConf["window"].normalBounds) {
-      userConf["window"].normalBounds = {
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      };
-    }
-  } else {
-    // 如果当前不是最大化状态，记录当前大小为normalBounds
-    userConf["window"] = {
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
-      isMaximized: false,
-      normalBounds: {
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      }
-    };
-  }
-
-  fs.writeFileSync(userConfigPath, JSON.stringify(userConf));
-}
-
-function listenMoveResize() {
-  const listener = _.debounce(windowMoveResizeListener.bind(this), 1000)
-  mainWindow.on('resize', listener)
-  mainWindow.on('move', listener)
-
-  // 监听窗口最大化事件 - 在最大化前记录当前大小
-  mainWindow.on('maximize', () => {
-    // 在最大化之前，先记录当前的窗口大小到normalBounds
-    const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
-    try {
-      let userConf = JSON.parse(fs.readFileSync(userConfigPath));
-      if (!userConf["window"]) {
-        userConf["window"] = {};
-      }
-
-      // 只有当窗口当前不是最大化状态时，才记录normalBounds
-      if (!mainWindow.isMaximized()) {
-        const bounds = mainWindow.getBounds();
-        userConf["window"].normalBounds = {
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-        };
-      }
-
-      userConf["window"].isMaximized = true;
-      fs.writeFileSync(userConfigPath, JSON.stringify(userConf));
-    } catch (error) {
-      console.error('记录最大化前窗口大小失败:', error);
-    }
-  });
-
-  // 监听窗口还原事件
-  mainWindow.on('unmaximize', () => {
-    // 还原到之前记录的大小
-    const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
-    try {
-      const userConf = JSON.parse(fs.readFileSync(userConfigPath));
-      if (userConf.window && userConf.window.normalBounds) {
-        const normalBounds = userConf.window.normalBounds;
-        mainWindow.setBounds({
-          x: normalBounds.x,
-          y: normalBounds.y,
-          width: normalBounds.width,
-          height: normalBounds.height
-        });
-      }
-    } catch (error) {
-      console.error('恢复窗口大小失败:', error);
-    }
-    // 延迟保存状态，确保窗口大小已经改变
-    setTimeout(() => {
-      windowMoveResizeListener();
-    }, 100);
-  });
-}
-
-function getConfWindowBounds() {
-  let bounds = userConf.window || {
-    width: 1200,
-    height: 780,
-  };
-
-  // 保存最大化状态
-  const isMaximized = bounds.isMaximized || false;
-
-  // 如果有normalBounds且当前不是最大化状态，使用normalBounds
-  // 如果是最大化状态，使用normalBounds作为基础窗口大小（用于创建窗口）
-  if (bounds.normalBounds) {
-    bounds = {
-      ...bounds.normalBounds,
-      isMaximized: isMaximized
-    };
-  }
-
-  // 确保窗口位置在屏幕范围内
-  const screenBounds = screen.getPrimaryDisplay().bounds;
-  if (bounds.x < screenBounds.x) {
-    bounds.x = screenBounds.x;
-  }
-  if (bounds.y < screenBounds.y) {
-    bounds.y = screenBounds.y;
-  }
-  if (bounds.width > screenBounds.width) {
-    bounds.width = screenBounds.width;
-  }
-  if (bounds.height > screenBounds.height) {
-    bounds.height = screenBounds.height;
-  }
-
-  // 添加最大化状态到返回的bounds中
-  bounds.isMaximized = isMaximized;
-
-  return bounds;
-}
 
 // OAuth状态管理的IPC处理器
 ipcMain.handle("oauth-register-state", (event, state) => {

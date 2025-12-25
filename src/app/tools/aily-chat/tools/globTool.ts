@@ -59,7 +59,7 @@ async function searchWithGlob(
         options.absolute = true; // 返回绝对路径
         options.nodir = true;    // 只返回文件，不返回目录
         
-        console.log(`[Glob] 搜索模式: "${pattern}" 在 "${searchPath || '当前目录'}"`);
+        // console.log(`[Glob] 搜索模式: "${pattern}" 在 "${searchPath || '当前目录'}"`);
         
         // 使用同步 glob 搜索避免异步问题
         const files: string[] = electronAPI.glob.sync(pattern, options);
@@ -69,7 +69,7 @@ async function searchWithGlob(
         const truncated = files.length > limit;
         const limitedFiles = files.slice(0, limit);
         
-        console.log(`[Glob] 找到 ${files.length} 个文件，返回前 ${limitedFiles.length} 个，耗时 ${durationMs}ms`);
+        // console.log(`[Glob] 找到 ${files.length} 个文件，返回前 ${limitedFiles.length} 个，耗时 ${durationMs}ms`);
         
         return {
             durationMs,
@@ -108,7 +108,7 @@ function searchWithGlobSync(
         options.absolute = true;
         options.nodir = true;
         
-        console.log(`[Glob Sync] 搜索模式: "${pattern}" 在 "${searchPath || '当前目录'}"`);
+        // console.log(`[Glob Sync] 搜索模式: "${pattern}" 在 "${searchPath || '当前目录'}"`);
         
         // 执行同步 glob 搜索
         const files: string[] = electronAPI.glob.sync(pattern, options);
@@ -118,7 +118,7 @@ function searchWithGlobSync(
         const truncated = files.length > limit;
         const limitedFiles = files.slice(0, limit);
         
-        console.log(`[Glob Sync] 找到 ${files.length} 个文件，返回前 ${limitedFiles.length} 个，耗时 ${durationMs}ms`);
+        // console.log(`[Glob Sync] 找到 ${files.length} 个文件，返回前 ${limitedFiles.length} 个，耗时 ${durationMs}ms`);
         
         return {
             durationMs,
@@ -189,7 +189,7 @@ export default async function globTool(params: {
         
         // 如果异步失败，尝试同步方式
         if (!result) {
-            console.log('[Glob] 异步搜索失败，尝试同步方式...');
+            // console.log('[Glob] 异步搜索失败，尝试同步方式...');
             result = searchWithGlobSync(pattern, path, limit);
         }
         

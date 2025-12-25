@@ -324,20 +324,19 @@ async function searchContent(params) {
     
     const startTime = Date.now();
     
-    // 构建 ripgrep 参数 - 回到简单模式,在 JS 层手动处理多匹配
+    // 构建 ripgrep 参数
     const args = [
         '--no-heading',      // 不显示文件名作为标题
         '--line-number',     // 显示行号
         '--color=never',     // 不使用颜色
         '--max-count', Math.min(maxResults, 1000).toString(),  // 每个文件最多匹配数
-        // 关键: 让 ripgrep 返回完整的超长行,不要跳过
         '--max-columns', '0',  // 0 表示不限制列数
     ];
     
-    // 注意: --vimgrep 不支持 contextLines (上下文行)
-    // 如果需要上下文,应该使用传统的 --no-heading --line-number 模式
+    // 上下文行数支持
     if (contextLines > 0) {
-        console.warn(`[searchContent] --vimgrep 模式不支持 contextLines,已忽略`);
+        args.push('-C', contextLines.toString());  // -C N 表示显示前后各 N 行上下文
+        console.log(`[searchContent] 启用上下文行: ${contextLines} 行`);
     }
     
     // 大小写敏感性
@@ -777,31 +776,44 @@ function mergeOverlappingContexts(matchPositions, content, maxLength, file, line
     const mergedRanges = [];
     const contextRadius = Math.floor(maxLength / 2);
     
-    console.log(`[mergeOverlappingContexts] 上下文半径: ${contextRadius}`);
+    // 🆕 优化策略：动态计算合并缓冲区，避免过度合并
+    const mergeBuffer = Math.min(Math.floor(maxLength * 0.1), 50); // 10%的长度或最多50字符
+    const maxMatchesPerRange = 3; // 每个区域最多包含3个匹配，超过则拆分
+    
+    console.log(`[mergeOverlappingContexts] 上下文半径: ${contextRadius}, 合并缓冲: ${mergeBuffer} (${maxLength}的10%), 最多匹配/区域: ${maxMatchesPerRange}`);
     
     // 第一步：计算每个匹配的上下文范围
     const ranges = sortedPositions.map(pos => ({
         matchPos: pos,
         start: Math.max(0, pos - contextRadius),
-        end: Math.min(content.length, pos + contextRadius)
+        end: Math.min(content.length, pos + contextRadius),
+        matchPositions: [pos]
     }));
     
-    // 第二步：合并重叠的范围
+    // 第二步：合并重叠的范围（更保守的策略）
     let currentRange = ranges[0];
     
     for (let i = 1; i < ranges.length; i++) {
         const nextRange = ranges[i];
         
-        // 检查是否重叠或相邻（留一些缓冲空间）
-        if (nextRange.start <= currentRange.end + 50) { // 50字符缓冲
+        // 🆕 检查是否应该合并（更严格的条件）
+        const shouldMerge = (
+            nextRange.start <= currentRange.end + mergeBuffer && // 距离足够近
+            (currentRange.matchPositions || [currentRange.matchPos]).length < maxMatchesPerRange // 当前区域未达到匹配上限
+        );
+        
+        if (shouldMerge) {
             // 合并范围
             currentRange.end = Math.max(currentRange.end, nextRange.end);
-            currentRange.matchPositions = currentRange.matchPositions || [currentRange.matchPos];
+            if (!currentRange.matchPositions) {
+                currentRange.matchPositions = [currentRange.matchPos];
+            }
             currentRange.matchPositions.push(nextRange.matchPos);
-            console.log(`[mergeOverlappingContexts] 合并范围: ${currentRange.start}-${currentRange.end}, 匹配位置: [${currentRange.matchPositions.join(', ')}]`);
+            console.log(`[mergeOverlappingContexts] ✓ 合并范围: ${currentRange.start}-${currentRange.end}, 包含 ${currentRange.matchPositions.length} 个匹配`);
         } else {
-            // 不重叠，保存当前范围并开始新范围
+            // 不合并，保存当前范围并开始新范围
             mergedRanges.push(currentRange);
+            console.log(`[mergeOverlappingContexts] ✗ 不合并，保存独立范围，原因: ${nextRange.start > currentRange.end + mergeBuffer ? '距离太远' : '匹配数已达上限'}`);
             currentRange = nextRange;
         }
     }
@@ -809,7 +821,7 @@ function mergeOverlappingContexts(matchPositions, content, maxLength, file, line
     // 添加最后一个范围
     mergedRanges.push(currentRange);
     
-    console.log(`[mergeOverlappingContexts] 合并后范围数: ${mergedRanges.length}`);
+    console.log(`[mergeOverlappingContexts] 合并后范围数: ${mergedRanges.length} (原始: ${matchPositions.length})`);
     
     // 第三步：为每个合并范围生成结果
     const results = [];

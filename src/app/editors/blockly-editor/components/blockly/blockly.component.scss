@@ -102,5 +102,45 @@
             border: none;
             outline: none;
         }
+
+        .inner-icon {
+            padding-top: 4px;
+        }
     }
+
+    ::ng-deep {
+        .blockly-minimap {
+            position: absolute;
+            border-radius: 5px;
+            overflow: hidden;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+            width: 200px;
+            height: 150px;
+            right: 16px;
+            top: 16px;
+
+            .blocklyMainBackground {
+                fill: rgb(43, 43, 43) !important;
+            }
+        }
+    }
+
+}
+
+.blockly-spin {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1010;
+  background: transparent;
+  transition: background 0.3s ease-in-out;
+  
+  &.show {
+    background: rgb(0 0 0 / 30%);
+  }
+  
+  &.fade-out {
+    background: transparent;
+  }
 }

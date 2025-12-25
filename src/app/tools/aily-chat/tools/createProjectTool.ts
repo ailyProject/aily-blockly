@@ -24,7 +24,7 @@ export async function newProjectTool(prjRootPath: string, toolArgs: any, prjServ
             throw new Error(`未找到开发板信息: ${toolArgs.board}`);
         }
 
-        console.log("使用的开发板信息:", boardInfo);
+        // console.log("使用的开发板信息:", boardInfo);
 
         const prjName = prjService.generateUniqueProjectName(prjRootPath)
         await prjService.projectNew({

@@ -95,7 +95,7 @@ const dynamicInputsMutator = {
         input.appendField(createMinusField(displayIndex), 'MINUS' + displayIndex);
       }
 
-      console.log(`Updated shape - added input: ${inputName} (index: ${inputIndex})`);
+      // console.log(`Updated shape - added input: ${inputName} (index: ${inputIndex})`);
     }
     while (this.extraCount_ > targetCount) {
       this.removeInput_();
@@ -162,7 +162,7 @@ const dynamicInputsMutator = {
       input.appendField(createMinusField(displayIndex), 'MINUS' + displayIndex);
     }
 
-    console.log(`Added input: ${inputName} (index: ${inputIndex}, minInputs: ${this.minInputs})`);
+    // console.log(`Added input: ${inputName} (index: ${inputIndex}, minInputs: ${this.minInputs})`);
   },
 
   /**
@@ -184,7 +184,7 @@ const dynamicInputsMutator = {
       const lastInputName = this.getInputName_(lastIndex);
       this.removeInput(lastInputName);
       this.extraCount_--;
-      console.log(`Removed last input: ${lastInputName}`);
+      // console.log(`Removed last input: ${lastInputName}`);
       return;
     }
 
@@ -231,7 +231,7 @@ const dynamicInputsMutator = {
     // Update minus field indices for all remaining inputs
     this.updateMinusFields_();
 
-    console.log(`Removed input at display index: ${displayIndex}, shifted subsequent inputs up`);
+    // console.log(`Removed input at display index: ${displayIndex}, shifted subsequent inputs up`);
   },
 
   /**
@@ -273,34 +273,21 @@ const dynamicInputsHelper = function () {
       break;
     }
   }
-  
+
   // If we found an INPUT* input, add the plus button to it
   if (targetInput) {
     targetInput.insertFieldAt(0, createPlusField(), 'PLUS');
-    console.log(`Added plus button to input: ${targetInput.name}`);
+    // console.log(`Added plus button to input: ${targetInput.name}`);
   } else {
     // Fallback: if no INPUT* inputs found, use the first input
     if (this.inputList.length > 0) {
       const firstInput = this.inputList[0];
       firstInput.insertFieldAt(0, createPlusField(), 'PLUS');
-      console.log(`No INPUT* inputs found, added plus button to first input: ${firstInput.name}`);
+      // console.log(`No INPUT* inputs found, added plus button to first input: ${firstInput.name}`);
     }
   }
 
-  // If we found an INPUT* input, add the plus button to it
-  if (targetInput) {
-    targetInput.insertFieldAt(0, createPlusField(), 'PLUS');
-    console.log(`Added plus button to input: ${targetInput.name}`);
-  } else {
-    // Fallback: if no INPUT* inputs found, use the first input
-    if (this.inputList.length > 0) {
-      const firstInput = this.inputList[0];
-      firstInput.insertFieldAt(0, createPlusField(), 'PLUS');
-      console.log(`No INPUT* inputs found, added plus button to first input: ${firstInput.name}`);
-    }
-  }
-
-  console.log(`Initialized dynamic inputs mutator with minInputs: ${this.minInputs}`);
+  // console.log(`Initialized dynamic inputs mutator with minInputs: ${this.minInputs}`);
 };
 
 // Register the mutator

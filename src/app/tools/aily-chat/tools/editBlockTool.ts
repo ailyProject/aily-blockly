@@ -42,6 +42,9 @@ function generateSuccessInfo() {
   `;
 }
 
+let conutForGetWorkspaceOverview = 0;
+let maxCount = 4;
+
 interface Position {
   x?: number;
   y?: number;
@@ -221,18 +224,18 @@ export function fixJsonString(
   const changes: string[] = [];
   let fixedJson = jsonString.trim();
 
-  if (logProcess) {
-    console.log(`🔧 开始修复 JSON: ${jsonString}`);
-  }
+  // if (logProcess) {
+  //   console.log(`🔧 开始修复 JSON: ${jsonString}`);
+  // }
 
   // 首先尝试直接解析
   try {
     JSON.parse(fixedJson);
     return { fixed: fixedJson, success: true, changes };
   } catch (error) {
-    if (logProcess) {
-      console.log(`⚠️ 需要修复 JSON: ${(error as Error).message}`);
-    }
+    // if (logProcess) {
+    //   console.log(`⚠️ 需要修复 JSON: ${(error as Error).message}`);
+    // }
   }
 
   // 使用 jsonrepair 库修复
@@ -241,14 +244,14 @@ export function fixJsonString(
       const repaired = jsonrepair(fixedJson);
       JSON.parse(repaired); // 验证修复结果
       changes.push('jsonrepair库自动修复');
-      if (logProcess) {
-        console.log(`✅ jsonrepair 修复成功: ${repaired}`);
-      }
+      // if (logProcess) {
+      //   console.log(`✅ jsonrepair 修复成功: ${repaired}`);
+      // }
       return { fixed: repaired, success: true, changes };
     } catch (repairError) {
-      if (logProcess) {
-        console.log(`❌ jsonrepair 修复失败: ${(repairError as Error).message}`);
-      }
+      // if (logProcess) {
+      //   console.log(`❌ jsonrepair 修复失败: ${(repairError as Error).message}`);
+      // }
     }
   }
 
@@ -330,114 +333,114 @@ function calculateEditDistance(str1: string, str2: string): number {
   return matrix[str1.length][str2.length];
 }
 
-/**
- * 🔍 模糊匹配查找块 - 支持多种匹配策略
- */
-function findBlockByFuzzyId(providedId: string, workspace: any): any | null {
-  if (!providedId || !workspace) {
-    console.log('⚠️ findBlockByFuzzyId: 参数无效');
-    return null;
-  }
+// /**
+//  * 🔍 模糊匹配查找块 - 支持多种匹配策略
+//  */
+// function findBlockByFuzzyId(providedId: string, workspace: any): any | null {
+//   if (!providedId || !workspace) {
+//     // console.log('⚠️ findBlockByFuzzyId: 参数无效');
+//     return null;
+//   }
 
-  console.log(`🔍 开始模糊匹配块ID: "${providedId}"`);
+//   // console.log(`🔍 开始模糊匹配块ID: "${providedId}"`);
   
-  // 获取工作区中的所有块
-  const allBlocks = workspace.getAllBlocks();
-  if (!allBlocks || allBlocks.length === 0) {
-    console.log('⚠️ 工作区中没有找到任何块');
-    return null;
-  }
+//   // 获取工作区中的所有块
+//   const allBlocks = workspace.getAllBlocks();
+//   if (!allBlocks || allBlocks.length === 0) {
+//     // console.log('⚠️ 工作区中没有找到任何块');
+//     return null;
+//   }
 
-  console.log(`📊 工作区中共有 ${allBlocks.length} 个块`);
+//   // console.log(`📊 工作区中共有 ${allBlocks.length} 个块`);
   
-  // 1. 首先尝试精确匹配
-  for (const block of allBlocks) {
-    if (block.id === providedId) {
-      console.log(`✅ 精确匹配成功: ${block.type}(${block.id})`);
-      return block;
-    }
-  }
-  console.log('⚠️ 精确匹配失败，尝试模糊匹配...');
+//   // 1. 首先尝试精确匹配
+//   for (const block of allBlocks) {
+//     if (block.id === providedId) {
+//       // console.log(`✅ 精确匹配成功: ${block.type}(${block.id})`);
+//       return block;
+//     }
+//   }
+//   // console.log('⚠️ 精确匹配失败，尝试模糊匹配...');
 
-  // 2. 模糊匹配策略
-  const matches: Array<{block: any, score: number, reason: string}> = [];
+//   // 2. 模糊匹配策略
+//   const matches: Array<{block: any, score: number, reason: string}> = [];
   
-  for (const block of allBlocks) {
-    const blockId = block.id;
-    let score = 0;
-    let reason = '';
+//   for (const block of allBlocks) {
+//     const blockId = block.id;
+//     let score = 0;
+//     let reason = '';
     
-    // 策略1: 包含匹配 - 较短的ID在较长的ID中连续存在
-    if (providedId.length > blockId.length && providedId.includes(blockId)) {
-      score = 90;
-      reason = `工作区ID "${blockId}" 连续包含在提供的ID "${providedId}" 中`;
-    } else if (blockId.length > providedId.length && blockId.includes(providedId)) {
-      score = 85;
-      reason = `提供的ID "${providedId}" 连续包含在工作区ID "${blockId}" 中`;
-    }
+//     // 策略1: 包含匹配 - 较短的ID在较长的ID中连续存在
+//     if (providedId.length > blockId.length && providedId.includes(blockId)) {
+//       score = 90;
+//       reason = `工作区ID "${blockId}" 连续包含在提供的ID "${providedId}" 中`;
+//     } else if (blockId.length > providedId.length && blockId.includes(providedId)) {
+//       score = 85;
+//       reason = `提供的ID "${providedId}" 连续包含在工作区ID "${blockId}" 中`;
+//     }
     
-    // 策略2: 前缀匹配
-    else if (blockId.startsWith(providedId) || providedId.startsWith(blockId)) {
-      const minLength = Math.min(blockId.length, providedId.length);
-      const maxLength = Math.max(blockId.length, providedId.length);
-      score = (minLength / maxLength) * 80;
-      reason = `前缀匹配: "${providedId}" 与 "${blockId}" 有共同前缀`;
-    }
+//     // 策略2: 前缀匹配
+//     else if (blockId.startsWith(providedId) || providedId.startsWith(blockId)) {
+//       const minLength = Math.min(blockId.length, providedId.length);
+//       const maxLength = Math.max(blockId.length, providedId.length);
+//       score = (minLength / maxLength) * 80;
+//       reason = `前缀匹配: "${providedId}" 与 "${blockId}" 有共同前缀`;
+//     }
     
-    // 策略3: 后缀匹配
-    else if (blockId.endsWith(providedId) || providedId.endsWith(blockId)) {
-      const minLength = Math.min(blockId.length, providedId.length);
-      const maxLength = Math.max(blockId.length, providedId.length);
-      score = (minLength / maxLength) * 75;
-      reason = `后缀匹配: "${providedId}" 与 "${blockId}" 有共同后缀`;
-    }
+//     // 策略3: 后缀匹配
+//     else if (blockId.endsWith(providedId) || providedId.endsWith(blockId)) {
+//       const minLength = Math.min(blockId.length, providedId.length);
+//       const maxLength = Math.max(blockId.length, providedId.length);
+//       score = (minLength / maxLength) * 75;
+//       reason = `后缀匹配: "${providedId}" 与 "${blockId}" 有共同后缀`;
+//     }
     
-    // 策略4: 编辑距离匹配（用于处理1-2个字符的差异）
-    else {
-      const editDistance = calculateEditDistance(providedId, blockId);
-      const maxLength = Math.max(providedId.length, blockId.length);
-      if (editDistance <= 2 && maxLength > 5) { // 最多允许2个字符差异，且ID足够长
-        score = ((maxLength - editDistance) / maxLength) * 70;
-        reason = `编辑距离匹配: "${providedId}" 与 "${blockId}" 相似度高(距离=${editDistance})`;
-      }
-    }
+//     // 策略4: 编辑距离匹配（用于处理1-2个字符的差异）
+//     else {
+//       const editDistance = calculateEditDistance(providedId, blockId);
+//       const maxLength = Math.max(providedId.length, blockId.length);
+//       if (editDistance <= 2 && maxLength > 5) { // 最多允许2个字符差异，且ID足够长
+//         score = ((maxLength - editDistance) / maxLength) * 70;
+//         reason = `编辑距离匹配: "${providedId}" 与 "${blockId}" 相似度高(距离=${editDistance})`;
+//       }
+//     }
     
-    if (score > 0) {
-      matches.push({block, score, reason});
-      console.log(`🎯 候选匹配: ${block.type}(${blockId}) - 得分: ${score.toFixed(2)} - ${reason}`);
-    }
-  }
+//     if (score > 0) {
+//       matches.push({block, score, reason});
+//       // console.log(`🎯 候选匹配: ${block.type}(${blockId}) - 得分: ${score.toFixed(2)} - ${reason}`);
+//     }
+//   }
   
-  if (matches.length === 0) {
-    console.log('❌ 未找到任何匹配的块');
-    return null;
-  }
+//   if (matches.length === 0) {
+//     // console.log('❌ 未找到任何匹配的块');
+//     return null;
+//   }
   
-  // 按得分排序，选择最佳匹配
-  matches.sort((a, b) => b.score - a.score);
-  const bestMatch = matches[0];
+//   // 按得分排序，选择最佳匹配
+//   matches.sort((a, b) => b.score - a.score);
+//   const bestMatch = matches[0];
   
-  console.log(`🏆 最佳匹配: ${bestMatch.block.type}(${bestMatch.block.id})`);
-  console.log(`📊 匹配得分: ${bestMatch.score.toFixed(2)}`);
-  console.log(`📋 匹配原因: ${bestMatch.reason}`);
+//   // console.log(`🏆 最佳匹配: ${bestMatch.block.type}(${bestMatch.block.id})`);
+//   // console.log(`📊 匹配得分: ${bestMatch.score.toFixed(2)}`);
+//   // console.log(`📋 匹配原因: ${bestMatch.reason}`);
   
-  // 如果最佳匹配得分太低，拒绝匹配
-  if (bestMatch.score < 60) {
-    console.log('⚠️ 最佳匹配得分过低，拒绝匹配');
-    return null;
-  }
+//   // 如果最佳匹配得分太低，拒绝匹配
+//   if (bestMatch.score < 60) {
+//     // console.log('⚠️ 最佳匹配得分过低，拒绝匹配');
+//     return null;
+//   }
   
-  // 如果有多个高分匹配，提醒可能存在歧义
-  const highScoreMatches = matches.filter(m => m.score >= bestMatch.score - 10);
-  if (highScoreMatches.length > 1) {
-    console.log(`⚠️ 检测到 ${highScoreMatches.length} 个高分匹配，可能存在歧义:`);
-    highScoreMatches.forEach(m => {
-      console.log(`   - ${m.block.type}(${m.block.id}) - 得分: ${m.score.toFixed(2)}`);
-    });
-  }
+//   // 如果有多个高分匹配，提醒可能存在歧义
+//   const highScoreMatches = matches.filter(m => m.score >= bestMatch.score - 10);
+//   if (highScoreMatches.length > 1) {
+//     // console.log(`⚠️ 检测到 ${highScoreMatches.length} 个高分匹配，可能存在歧义:`);
+//     // highScoreMatches.forEach(m => {
+//     //   console.log(`   - ${m.block.type}(${m.block.id}) - 得分: ${m.score.toFixed(2)}`);
+//     // });
+//   }
   
-  return bestMatch.block;
-}
+//   return bestMatch.block;
+// }
 
 /**
  * 🎯 智能块查找函数（支持多种匹配策略）
@@ -460,35 +463,41 @@ export function getBlockByIdSmart(
   const { 
     enableFuzzyMatch = true, 
     minScore = 60, 
-    logDetails = true 
+    logDetails = false 
   } = options;
 
   if (!workspace || !blockId) {
-    if (logDetails) console.log('⚠️ getBlockByIdSmart: 参数无效');
+    // if (logDetails) 
+    console.log('⚠️ getBlockByIdSmart: 参数无效');
     return null;
   }
 
-  if (logDetails) console.log(`🎯 智能查找块: "${blockId}"`);
+  // if (logDetails) 
+  console.log(`🎯 智能查找块: "${blockId}"`);
   
   // 1. 🎯 精确匹配
-  if (logDetails) console.log('📍 尝试精确匹配...');
+  // if (logDetails) 
+  console.log('📍 尝试精确匹配...');
   let block = workspace.getBlockById(blockId);
   if (block) {
-    if (logDetails) console.log(`✅ 精确匹配成功: ${block.type}(${block.id})`);
+    // if (logDetails) 
+    console.log(`✅ 精确匹配成功: ${block.type}(${block.id})`);
     return block;
   }
 
   // 2. 🔍 模糊匹配（如果启用）
   if (!enableFuzzyMatch) {
-    if (logDetails) console.log('❌ 精确匹配失败，模糊匹配已禁用');
+    // if (logDetails) 
+    console.log('❌ 精确匹配失败，模糊匹配已禁用');
     return null;
   }
 
-  if (logDetails) console.log('🔍 开始智能模糊匹配...');
+  // if (logDetails) console.log('🔍 开始智能模糊匹配...');
   
   const allBlocks = workspace.getAllBlocks();
   if (!allBlocks || allBlocks.length === 0) {
-    if (logDetails) console.log('⚠️ 工作区中没有任何块');
+    // if (logDetails) 
+    console.log('⚠️ 工作区中没有任何块');
     return null;
   }
 
@@ -552,7 +561,8 @@ export function getBlockByIdSmart(
   }
 
   if (matches.length === 0) {
-    if (logDetails) console.log('❌ 未找到任何匹配的块');
+    // if (logDetails) 
+    console.log('❌ 未找到任何匹配的块');
     return null;
   }
 
@@ -563,15 +573,15 @@ export function getBlockByIdSmart(
   
   // 检查最佳匹配得分
   if (bestMatch.score < minScore) {
-    if (logDetails) {
+    // if (logDetails) {
       console.log(`⚠️ 最佳匹配得分过低 (${bestMatch.score.toFixed(2)} < ${minScore})`);
       console.log(`   候选块: ${bestMatch.block.type}(${bestMatch.block.id})`);
-    }
+    // }
     return null;
   }
 
   // 记录匹配结果
-  if (logDetails) {
+  // if (logDetails) {
     console.log(`🏆 最佳匹配: ${bestMatch.block.type}(${bestMatch.block.id})`);
     console.log(`📊 匹配得分: ${bestMatch.score.toFixed(2)}`);
     console.log(`📋 匹配原因: ${bestMatch.reason}`);
@@ -584,7 +594,7 @@ export function getBlockByIdSmart(
         console.log(`   ${i + 1}. ${m.block.type}(${m.block.id}) - 得分: ${m.score.toFixed(2)} - ${m.reason}`);
       });
     }
-  }
+  // }
 
   return bestMatch.block;
 }
@@ -703,13 +713,13 @@ export function getActiveWorkspace(): any {
 
   // 所有方法都失败了
   console.warn('❌ 所有工作区查找方法都失败了');
-  console.log('🔍 调试信息:');
-  console.log('- window.blocklyWorkspace:', !!(window as any).blocklyWorkspace);
-  console.log('- window.angularComponentRef:', !!(window as any).angularComponentRef);
-  console.log('- Blockly.getMainWorkspace:', !!(Blockly && Blockly.getMainWorkspace));
-  console.log('- window[\'Blockly\']:', !!((window as any)['Blockly']));
-  console.log('- DOM blocklyDiv:', !!document.getElementById('blocklyDiv'));
-  console.log('- angularServiceRef:', !!(window as any).angularServiceRef);
+  // console.log('🔍 调试信息:');
+  // console.log('- window.blocklyWorkspace:', !!(window as any).blocklyWorkspace);
+  // console.log('- window.angularComponentRef:', !!(window as any).angularComponentRef);
+  // console.log('- Blockly.getMainWorkspace:', !!(Blockly && Blockly.getMainWorkspace));
+  // console.log('- window[\'Blockly\']:', !!((window as any)['Blockly']));
+  // console.log('- DOM blocklyDiv:', !!document.getElementById('blocklyDiv'));
+  // console.log('- angularServiceRef:', !!(window as any).angularServiceRef);
   
   throw new Error('未找到活动的 Blockly 工作区。请确保 Blockly 已正确初始化。');
 }
@@ -728,7 +738,7 @@ function disableBlocklyEvents(): void {
       eventSystemState.wasRecordingUndo = Blockly.Events.getRecordUndo();
       eventSystemState.currentGroup = Blockly.Events.getGroup();
       Blockly.Events.disable();
-      console.log('🔇 Blockly事件系统已禁用');
+      // console.log('🔇 Blockly事件系统已禁用');
     }
   } catch (error) {
     console.warn('禁用事件系统失败:', error);
@@ -745,7 +755,7 @@ function enableBlocklyEvents(): void {
         Blockly.Events.setGroup(false);
       }
       Blockly.Events.setRecordUndo(eventSystemState.wasRecordingUndo);
-      console.log('🔊 Blockly事件系统已恢复');
+      // console.log('🔊 Blockly事件系统已恢复');
     }
   } catch (error) {
     console.warn('恢复事件系统失败:', error);
@@ -835,7 +845,7 @@ function getFieldTypeInfo(block: any, fieldName: string): {
                                  fieldName.toLowerCase().includes('variable');
     
     if (isLikelyVariableField) {
-      console.log(`🎯 基于字段名启发式检测: ${fieldName} 很可能是变量字段`);
+      // console.log(`🎯 基于字段名启发式检测: ${fieldName} 很可能是变量字段`);
     }
     
     // 先尝试从块定义中获取字段信息 - 优先相信实际的字段类型
@@ -855,20 +865,66 @@ function getFieldTypeInfo(block: any, fieldName: string): {
         tempWorkspace.dispose();
         
         if (field) {
-          const fieldType = field.constructor.name || '';
+          // 使用更可靠的字段类型检测方法，避免依赖构造函数名称（在压缩后会变化）
+          let fieldType = 'unknown';
+          let isVariableField = false;
+          let isInputField = false;
+          let isDropdownField = false;
+
+          // 检测字段类型 - 使用 instanceof 和特有属性/方法来判断
+          try {
+            // 检查是否为变量字段
+            if (field.getVariable && typeof field.getVariable === 'function') {
+              fieldType = 'FieldVariable';
+              isVariableField = true;
+            }
+            // 检查是否为文本输入字段
+            else if (field.getEditorText_ && typeof field.getEditorText_ === 'function') {
+              fieldType = 'FieldTextInput';
+              isInputField = true;
+            }
+            // 检查是否为下拉菜单字段
+            else if (field.getOptions && typeof field.getOptions === 'function') {
+              fieldType = 'FieldDropdown';
+              isDropdownField = true;
+            }
+            // 检查是否为数字字段
+            else if (field.getConstraints && typeof field.getConstraints === 'function') {
+              fieldType = 'FieldNumber';
+              isInputField = true;
+            }
+            // 检查是否为颜色字段
+            else if (field.getColour && typeof field.getColour === 'function') {
+              fieldType = 'FieldColour';
+            }
+            // 检查是否为角度字段
+            else if (field.setAngle && typeof field.setAngle === 'function') {
+              fieldType = 'FieldAngle';
+              isInputField = true;
+            }
+            // 默认情况 - 使用方法检测而非构造函数名
+            else {
+              // 用method-based检测替代constructor.name依赖
+              if (field.getVariable && typeof field.getVariable === 'function') {
+                fieldType = 'FieldVariable';
+                isVariableField = true;
+              } else if (field.getEditorText_ && typeof field.getEditorText_ === 'function') {
+                fieldType = 'FieldTextInput';
+                isInputField = true;
+              } else if (field.getOptions && typeof field.getOptions === 'function') {
+                fieldType = 'FieldDropdown';
+                isDropdownField = true;
+              } else {
+                // 最终备用方案
+                fieldType = field.constructor.name || 'unknown';
+              }
+            }
+          } catch (e) {
+            console.warn('字段类型检测出错:', e);
+            fieldType = field.constructor.name || 'unknown';
+          }
+
           console.log(`🔍 从块定义检查字段类型: ${fieldName} -> ${fieldType}`);
-
-          // 精确的字段类型检测 - 优先相信实际类型，而不是字段名
-          const isVariableField = fieldType === 'FieldVariable' || 
-                                 fieldType.includes('Variable');
-
-          const isInputField = fieldType === 'FieldTextInput' || 
-                              fieldType === 'FieldInput' ||
-                              fieldType.includes('Input');
-
-          // 下拉菜单字段检测
-          const isDropdownField = fieldType === 'FieldDropdown' ||
-                                 fieldType.includes('Dropdown');
 
           console.log(`📋 字段分析结果: ${fieldName} - 变量字段: ${isVariableField}, 输入字段: ${isInputField}, 下拉字段: ${isDropdownField}, 类型: ${fieldType}`);
 
@@ -894,21 +950,69 @@ function getFieldTypeInfo(block: any, fieldName: string): {
       return { isVariableField: false, isInputField: false, fieldType: null };
     }
 
-    const fieldType = field.constructor.name || '';
+    // 使用更可靠的字段类型检测方法
+    let fieldType = 'unknown';
+    let isVariableField = false;
+    let isInputField = false;
+    let isDropdownField = false;
+
+    try {
+      // 检查是否为变量字段
+      if (field.getVariable && typeof field.getVariable === 'function') {
+        fieldType = 'FieldVariable';
+        isVariableField = true;
+      }
+      // 检查是否为文本输入字段
+      else if (field.getEditorText_ && typeof field.getEditorText_ === 'function') {
+        fieldType = 'FieldTextInput';
+        isInputField = true;
+      }
+      // 检查是否为下拉菜单字段
+      else if (field.getOptions && typeof field.getOptions === 'function') {
+        fieldType = 'FieldDropdown';
+        isDropdownField = true;
+      }
+      // 检查是否为数字字段
+      else if (field.getConstraints && typeof field.getConstraints === 'function') {
+        fieldType = 'FieldNumber';
+        isInputField = true;
+      }
+      // 检查是否为颜色字段
+      else if (field.getColour && typeof field.getColour === 'function') {
+        fieldType = 'FieldColour';
+      }
+      // 检查是否为角度字段
+      else if (field.setAngle && typeof field.setAngle === 'function') {
+        fieldType = 'FieldAngle';
+        isInputField = true;
+      }
+      // 默认情况 - 基于功能检测而非构造函数名
+      else {
+        // 最终回退：使用基于特性的检测
+        if (isLikelyVariableField || (field.getText && field.setText && field.getVariable)) {
+          fieldType = 'FieldVariable';
+          isVariableField = true;
+        } else if (!isLikelyVariableField && (field.getText && field.setText && !field.getVariable)) {
+          fieldType = 'FieldTextInput';
+          isInputField = true;
+        } else {
+          fieldType = field.constructor.name || 'unknown';
+          // 只保留必要的布尔值设置，避免依赖构造函数名
+          isVariableField = isLikelyVariableField;
+          isInputField = !isLikelyVariableField && (field.getText && field.setText);
+        }
+      }
+    } catch (e) {
+      console.warn('字段类型检测出错:', e);
+      // 最安全的回退方案：只依赖字段名推断和基本特性
+      fieldType = field.constructor.name || 'unknown';
+      isVariableField = isLikelyVariableField;
+      isInputField = !isLikelyVariableField;
+      isDropdownField = false;
+    }
+    
     console.log(`🔍 回退检查字段类型: ${fieldName} -> ${fieldType}`);
-
-    // 判断是否为变量字段 - 结合类型和字段名
-    const isVariableField = fieldType === 'FieldVariable' || 
-                           fieldType.includes('Variable') ||
-                           isLikelyVariableField;
-
-    // 判断是否为输入字段 - 但排除变量字段
-    const isInputField = (fieldType === 'FieldTextInput' || 
-                        fieldType === 'FieldInput' ||
-                        fieldType.includes('Input')) &&
-                        !isLikelyVariableField;
-
-    console.log(`📋 字段分析结果: ${fieldName} - 变量字段: ${isVariableField}, 输入字段: ${isInputField}`);
+    console.log(`📋 字段分析结果: ${fieldName} - 变量字段: ${isVariableField}, 输入字段: ${isInputField}, 下拉字段: ${isDropdownField}`);
 
     return {
       isVariableField,
@@ -978,7 +1082,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
               let variableType: string | undefined = undefined;
               if (typeof value === 'object' && value !== null && (value as any).type) {
                 variableType = (value as any).type;
-                console.log(`🔍 从字段配置提取变量类型: ${variableType}`);
+                // console.log(`🔍 从字段配置提取变量类型: ${variableType}`);
               }
               
               finalVariableId = handleVariableField(block, actualValue, true, variableType);
@@ -1016,6 +1120,136 @@ function configureBlockFields(block: any, fields: FieldConfig): {
   }
 
   return { configSuccess };
+}
+
+/**
+ * 模糊匹配变量 - 支持首尾字符丢失的情况
+ * @param variableMap 变量映射对象
+ * @param searchName 要搜索的变量名
+ * @returns 匹配的变量对象或null
+ */
+function findVariableByFuzzyMatch(variableMap: any, searchName: string): any | null {
+  if (!variableMap || !searchName || searchName.length < 2) {
+    return null;
+  }
+
+  const allVariables = variableMap.getAllVariables();
+  if (!allVariables || allVariables.length === 0) {
+    return null;
+  }
+
+  console.log(`🔍 开始模糊匹配，搜索: "${searchName}"`);
+
+  // 候选匹配结果
+  const candidates: Array<{
+    variable: any;
+    score: number;
+    reason: string;
+  }> = [];
+
+  for (const variable of allVariables) {
+    const varName = variable.name || '';
+    const varId = variable.getId() || '';
+    
+    // 跳过空名称
+    if (!varName && !varId) continue;
+
+    let score = 0;
+    let reason = '';
+
+    // 策略1: 检查搜索名是否是变量名的子串（处理首尾字符丢失）
+    if (varName.includes(searchName)) {
+      score = 90;
+      reason = `变量名包含搜索字符串: "${varName}" 包含 "${searchName}"`;
+    }
+    // 策略2: 检查搜索名是否是变量ID的子串
+    else if (varId.includes(searchName)) {
+      score = 85;
+      reason = `变量ID包含搜索字符串: "${varId}" 包含 "${searchName}"`;
+    }
+    // 策略3: 检查变量名是否是搜索名的子串（处理搜索名过长的情况）
+    else if (searchName.includes(varName) && varName.length >= 3) {
+      score = 80;
+      reason = `搜索字符串包含变量名: "${searchName}" 包含 "${varName}"`;
+    }
+    // 策略4: 检查变量ID是否是搜索名的子串
+    else if (searchName.includes(varId) && varId.length >= 3) {
+      score = 75;
+      reason = `搜索字符串包含变量ID: "${searchName}" 包含 "${varId}"`;
+    }
+    // 策略5: 前缀匹配（处理尾部字符丢失）
+    else if (varName.startsWith(searchName) || searchName.startsWith(varName)) {
+      const minLength = Math.min(varName.length, searchName.length);
+      const maxLength = Math.max(varName.length, searchName.length);
+      score = (minLength / maxLength) * 70;
+      reason = `前缀匹配: "${varName}" 与 "${searchName}"`;
+    }
+    // 策略6: 后缀匹配（处理首部字符丢失）
+    else if (varName.endsWith(searchName) || searchName.endsWith(varName)) {
+      const minLength = Math.min(varName.length, searchName.length);
+      const maxLength = Math.max(varName.length, searchName.length);
+      score = (minLength / maxLength) * 65;
+      reason = `后缀匹配: "${varName}" 与 "${searchName}"`;
+    }
+    // 策略7: 编辑距离匹配（处理中间字符差异）
+    else {
+      const editDistance = calculateEditDistance(varName, searchName);
+      const maxLength = Math.max(varName.length, searchName.length);
+      
+      // 只有当编辑距离较小且字符串足够长时才考虑
+      if (editDistance <= Math.min(3, maxLength * 0.4) && maxLength >= 4) {
+        score = Math.max(0, 60 - (editDistance / maxLength) * 30);
+        reason = `编辑距离匹配: "${varName}" 与 "${searchName}" 距离=${editDistance}`;
+      }
+    }
+
+    // 加分项：长度相似性
+    if (score > 0) {
+      const lengthDiff = Math.abs(varName.length - searchName.length);
+      if (lengthDiff <= 2) {
+        score += 5;
+        reason += ' + 长度相似';
+      }
+    }
+
+    // 记录候选
+    if (score > 0) {
+      candidates.push({ variable, score, reason });
+      console.log(`🎯 候选匹配: ${varName}(${varId}) - 得分: ${score.toFixed(2)} - ${reason}`);
+    }
+  }
+
+  // 如果没有候选，返回null
+  if (candidates.length === 0) {
+    console.log(`❌ 没有找到模糊匹配的变量`);
+    return null;
+  }
+
+  // 按得分排序
+  candidates.sort((a, b) => b.score - a.score);
+  
+  const bestMatch = candidates[0];
+  
+  // 检查最佳匹配得分是否足够高
+  if (bestMatch.score < 50) {
+    console.log(`⚠️ 最佳匹配得分过低 (${bestMatch.score.toFixed(2)}), 拒绝匹配`);
+    return null;
+  }
+
+  console.log(`🏆 最佳模糊匹配: ${bestMatch.variable.name}(${bestMatch.variable.getId()})`);
+  console.log(`📊 匹配得分: ${bestMatch.score.toFixed(2)}`);
+  console.log(`📋 匹配原因: ${bestMatch.reason}`);
+
+  // 如果有多个高分匹配，警告歧义
+  const highScoreMatches = candidates.filter(c => c.score >= bestMatch.score - 10);
+  if (highScoreMatches.length > 1) {
+    console.log(`⚠️ 检测到 ${highScoreMatches.length} 个高分匹配，存在歧义:`);
+    // highScoreMatches.slice(0, 3).forEach((match, i) => {
+    //   console.log(`   ${i + 1}. ${match.variable.name}(${match.variable.getId()}) - 得分: ${match.score.toFixed(2)}`);
+    // });
+  }
+
+  return bestMatch.variable;
 }
 
 /**
@@ -1087,9 +1321,9 @@ function handleVariableField(block: any, variableName: string, returnId: boolean
     if (!variable) {
       const allVariables = variableMap.getAllVariables();
       console.log(`📊 工作区中共有 ${allVariables.length} 个变量:`);
-      allVariables.forEach((v, index) => {
-        console.log(`  ${index + 1}. 名称: "${v.name}", ID: ${v.getId()}, 类型: ${v.type || 'unknown'}`);
-      });
+      // allVariables.forEach((v, index) => {
+      //   console.log(`  ${index + 1}. 名称: "${v.name}", ID: ${v.getId()}, 类型: ${v.type || 'unknown'}`);
+      // });
       
       // 精确匹配变量名
       variable = allVariables.find(v => v.name === variableName);
@@ -1099,10 +1333,19 @@ function handleVariableField(block: any, variableName: string, returnId: boolean
         console.log(`❌ 遍历后仍未找到变量: "${variableName}"`);
         // 尝试大小写不敏感匹配
         variable = allVariables.find(v => v.name.toLowerCase() === variableName.toLowerCase());
-        if (variable) {
-          console.log(`✅ 通过大小写不敏感匹配找到变量: "${variable.name}" (查找: "${variableName}")`);
-        }
+        // if (variable) {
+        //   console.log(`✅ 通过大小写不敏感匹配找到变量: "${variable.name}" (查找: "${variableName}")`);
+        // }
       }
+    }
+
+    // 方法5: 如果仍未找到，进行模糊匹配（支持首尾字符丢失的情况）
+    if (!variable) {
+      console.log(`🔍 开始模糊匹配变量: "${variableName}"`);
+      variable = findVariableByFuzzyMatch(variableMap, variableName);
+      // if (variable) {
+      //   console.log(`✅ 通过模糊匹配找到变量: "${variable.name}" (ID: ${variable.getId()}) (查找: "${variableName}")`);
+      // }
     }
     
     if (variable) {
@@ -1110,50 +1353,50 @@ function handleVariableField(block: any, variableName: string, returnId: boolean
       return returnId ? variable.getId() : variableName;
     }
 
-    // 2. 如果变量不存在，创建新变量
-    console.log(`🆕 变量不存在，创建新变量: ${variableName}`);
+    // // 2. 如果变量不存在，创建新变量
+    // console.log(`🆕 变量不存在，创建新变量: ${variableName}`);
     
-    // 根据提供的类型或块类型推断变量类型
-    let finalVariableType = variableType || ''; // 使用提供的类型，如果没有则默认为''
+    // // 根据提供的类型或块类型推断变量类型
+    // let finalVariableType = variableType || ''; // 使用提供的类型，如果没有则默认为''
     
-    if (!variableType && block.type) {
-      // 从块类型推断变量类型
-      if (block.type.includes('number') || block.type.includes('math')) {
-        finalVariableType = 'Number';
-      } else if (block.type.includes('string') || block.type.includes('text')) {
-        finalVariableType = 'String';
-      } else if (block.type.includes('boolean')) {
-        finalVariableType = 'Boolean';
-      } else if (block.type.includes('dht')) {
-        finalVariableType = 'DHT';
-      } else if (block.type.includes('servo')) {
-        finalVariableType = 'Servo';
-      } else if (block.type.includes('lcd')) {
-        finalVariableType = 'LCD';
-      }
-    }
+    // if (!variableType && block.type) {
+    //   // 从块类型推断变量类型
+    //   if (block.type.includes('number') || block.type.includes('math')) {
+    //     finalVariableType = 'Number';
+    //   } else if (block.type.includes('string') || block.type.includes('text')) {
+    //     finalVariableType = 'String';
+    //   } else if (block.type.includes('boolean')) {
+    //     finalVariableType = 'Boolean';
+    //   } else if (block.type.includes('dht')) {
+    //     finalVariableType = 'DHT';
+    //   } else if (block.type.includes('servo')) {
+    //     finalVariableType = 'Servo';
+    //   } else if (block.type.includes('lcd')) {
+    //     finalVariableType = 'LCD';
+    //   }
+    // }
 
-    // 创建变量
-    variable = variableMap.createVariable(variableName, finalVariableType);
+    // // 创建变量
+    // variable = variableMap.createVariable(variableName, finalVariableType);
     
-    if (variable) {
-      console.log(`✅ 变量创建成功: ${variableName} (类型: ${finalVariableType}, ID: ${variable.getId()})`);
+    // if (variable) {
+    //   console.log(`✅ 变量创建成功: ${variableName} (类型: ${finalVariableType}, ID: ${variable.getId()})`);
       
-      // 🔧 如果有全局的变量注册函数（来自generator.js），调用它
-      if (typeof (window as any).registerVariableToBlockly === 'function') {
-        try {
-          (window as any).registerVariableToBlockly(variableName, finalVariableType);
-          console.log(`🔧 变量已注册到工具箱: ${variableName}`);
-        } catch (error) {
-          console.warn('⚠️ 注册变量到工具箱失败:', error);
-        }
-      }
+    //   // 🔧 如果有全局的变量注册函数（来自generator.js），调用它
+    //   if (typeof (window as any).registerVariableToBlockly === 'function') {
+    //     try {
+    //       (window as any).registerVariableToBlockly(variableName, finalVariableType);
+    //       console.log(`🔧 变量已注册到工具箱: ${variableName}`);
+    //     } catch (error) {
+    //       console.warn('⚠️ 注册变量到工具箱失败:', error);
+    //     }
+    //   }
       
-      return returnId ? variable.getId() : variableName;
-    } else {
-      console.warn(`❌ 变量创建失败: ${variableName}`);
-      return null;
-    }
+    //   return returnId ? variable.getId() : variableName;
+    // } else {
+    //   console.warn(`❌ 变量创建失败: ${variableName}`);
+    //   return null;
+    // }
     
   } catch (error) {
     console.warn('❌ 处理变量字段时出错:', error);
@@ -1347,7 +1590,7 @@ async function smartInsertBlock(
         
         const inputConnection = parentBlock.getInput(inputName);
         if (!inputConnection || !inputConnection.connection) {
-          throw new Error(`父块 ${parentBlock.type} 没有名为 "${inputName}" 的输入`);
+          throw new Error(`父块 ${parentBlock.type} 没有名为 "${inputName}" 的输入，请阅读块所属readme确认正确的输入名称。`);
         }
         
         console.log(`🔍 输入连接类型检查:`);
@@ -1717,15 +1960,15 @@ export async function smartBlockTool(args: SmartBlockArgs): Promise<SmartBlockRe
       }
     }
 
-    // 获取工作区概览信息
-    const { overview: workspaceOverview, cppCode, isError } = await getWorkspaceOverviewInfo();
+    // // 获取工作区概览信息
+    // const { overview: workspaceOverview, cppCode, isError } = await getWorkspaceOverviewInfo();
 
     // 生成增强的结果消息
     // let enhancedMessage = `✅ 完成创建智能块 ${type}`;
     // if (result.totalBlocks && result.totalBlocks > 1) {
     //   enhancedMessage += `，包含 ${result.totalBlocks} 个块`;
     // }
-    let enhancedMessage = `✅ 完成创建智能块`;
+    let enhancedMessage = `✅ 完成创建智能块 ${type} id: ${result.block.id}`;
     
     // 🔧 如果有变量字段，添加处理信息
     if (parsedFields) {
@@ -1739,9 +1982,15 @@ export async function smartBlockTool(args: SmartBlockArgs): Promise<SmartBlockRe
       }
     }
     
-    if (!isError && workspaceOverview) {
-      enhancedMessage += `\n\n${workspaceOverview}`;
+    // 获取工作区概览信息
+    if (conutForGetWorkspaceOverview++ >= maxCount) {
+      const { overview: workspaceOverview, cppCode, isError } = await getWorkspaceOverviewInfo();
+
+      if (!isError && workspaceOverview) {
+        enhancedMessage += `\n\n${workspaceOverview}`;
+      }
     }
+    console.log('conutForGetWorkspaceOverview', conutForGetWorkspaceOverview);
 
     const toolResult = {
       is_error: false,
@@ -1752,8 +2001,7 @@ export async function smartBlockTool(args: SmartBlockArgs): Promise<SmartBlockRe
         position: parsedPosition,
         totalBlocks: result.totalBlocks || 1,
         parentConnected: !!parsedParentConnection,
-        workspaceOverview: isError ? null : workspaceOverview,
-        cppCode: cppCode || null
+        // workspaceOverview: isError ? null : workspaceOverview
       }
     };
 
@@ -2014,14 +2262,16 @@ function analyzeDynamicInputPattern(block: any, blockType: string): any {
     };
   }
   
-  // 检测 elseIfCount 模式 (controls_elseif 等)
-  if (block.elseIfCount_ !== undefined ||
+  // 检测 elseIfCount 模式 (controls_elseif, controls_if 等)
+  if (block.elseIfCount_ !== undefined || block.hasElse_ !== undefined ||
       (block.inputList?.some((input: any) => input.name && input.name.match(/^IF\d+$/)) &&
-       block.inputList?.some((input: any) => input.name && input.name.match(/^DO\d+$/)))) {
+       block.inputList?.some((input: any) => input.name && input.name.match(/^DO\d+$/))) ||
+      blockType === 'controls_if' || blockType === 'controls_ifelse') {
     return {
       inputPattern: 'IF',
       extraStateKey: 'elseIfCount',
-      defaultCount: 1,
+      hasElseKey: 'hasElse',
+      defaultCount: 0,
       minCount: 0,
       maxCount: 20
     };
@@ -2040,13 +2290,13 @@ function analyzeDynamicInputPattern(block: any, blockType: string): any {
     };
   }
   
-  // 检测 INPUT 模式 (自定义的 print 块等)
+  // 检测 INPUT 模式 (使用 dynamic-inputs 插件的块，如 blinker_widget_print 等)
   if (block.inputList?.some((input: any) => input.name && input.name.startsWith('INPUT'))) {
     return {
       inputPattern: 'INPUT',
-      extraStateKey: 'itemCount',
-      defaultCount: 1,
-      minCount: 1,
+      extraStateKey: 'extraCount',
+      defaultCount: 0,  // dynamic-inputs 默认 extraCount 为 0
+      minCount: 0,
       maxCount: 20
     };
   }
@@ -2121,15 +2371,18 @@ function analyzeExistingInputs(block: any, blockType: string): any {
     };
   }
   
-  // 检测 INPUT 模式
+  // 检测 INPUT 模式 (dynamic-inputs 插件)
   const inputInputs = inputNames.filter((name: string) => /^INPUT\d*$/.test(name));
   if (inputInputs.length > 0) {
+    // 计算 extraCount: 总输入数减去最小输入数 (通常为1)
+    const minInputs = 1; // dynamic-inputs 默认最小输入数为1
+    const extraCount = Math.max(0, inputInputs.length - minInputs);
     return {
       supportsDynamic: true,
       inputPattern: 'INPUT',
-      extraStateKey: 'itemCount',
-      defaultCount: Math.max(1, inputInputs.length),
-      minCount: 1,
+      extraStateKey: 'extraCount',
+      defaultCount: extraCount,
+      minCount: 0,
       maxCount: 20
     };
   }
@@ -2159,11 +2412,20 @@ function detectCoreBlocklyDynamicBlocks(blockType: string): any {
       minCount: 1,
       maxCount: 50
     },
-    'controls_elseif': {
+    'controls_ifelse': {
       supportsDynamic: true,
       inputPattern: 'IF',
       extraStateKey: 'elseIfCount',
-      defaultCount: 1,
+      defaultCount: 0,  // 默认没有额外的 elseif，只有预定义的 if-else
+      minCount: 0,
+      maxCount: 20
+    },
+    'controls_if': {
+      supportsDynamic: true,
+      inputPattern: 'IF',
+      extraStateKey: 'elseIfCount', 
+      hasElseKey: 'hasElse',
+      defaultCount: 0,
       minCount: 0,
       maxCount: 20
     }
@@ -2210,12 +2472,36 @@ function inferExtraState(block: any, config: any): any | null {
       }
     }
     
-    else if (pattern === 'IF' && blockType === 'controls_elseif') {
-      // controls_elseif 特殊处理
-      const ifInputs = inputKeys.filter(key => key.startsWith('IF') && key !== 'IF');  // 排除基础的 IF
+    else if (pattern === 'IF' && blockType === 'controls_ifelse') {
+      // controls_ifelse 特殊处理：计算额外的 elseif 数量
+      const ifInputs = inputKeys.filter(key => key.match(/^IF[1-9]\d*$/));  // 只计算 IF1, IF2, ... (不包括 IF0)
       const elseIfCount = ifInputs.length;
-      console.log(`🎯 controls_elseif 推断 elseIfCount: ${elseIfCount} (基于输入: ${ifInputs.join(', ')})`);
+      console.log(`🎯 controls_ifelse 推断 elseIfCount: ${elseIfCount} (基于额外输入: ${ifInputs.join(', ')})`);
       return { elseIfCount };
+    }
+    
+    else if (pattern === 'IF' && blockType === 'controls_if') {
+      // controls_if 特殊处理
+      const ifInputs = inputKeys.filter(key => key.startsWith('IF') && key !== 'IF0');  // 排除基础的 IF0
+      const doInputs = inputKeys.filter(key => key.startsWith('DO') && key !== 'DO0');  // 排除基础的 DO0
+      const hasElse = inputKeys.includes('ELSE');
+      
+      // elseif数量基于 IF1, IF2... 或 DO1, DO2... 的最大数量
+      const elseIfCount = Math.max(
+        ifInputs.length, 
+        doInputs.length
+      );
+      
+      const extraState: any = {};
+      if (elseIfCount > 0) {
+        extraState.elseIfCount = elseIfCount;
+      }
+      if (hasElse) {
+        extraState.hasElse = true;
+      }
+      
+      console.log(`🎯 controls_if 推断 extraState:`, extraState, `(基于输入: ${inputKeys.join(', ')})`);
+      return Object.keys(extraState).length > 0 ? extraState : null;
     }
     
     else if (pattern === 'ARG') {
@@ -2227,16 +2513,19 @@ function inferExtraState(block: any, config: any): any | null {
     }
     
     else if (pattern === 'INPUT') {
-      // blinker_widget_print 等
+      // blinker_widget_print 等使用 dynamic-inputs 插件
       const inputInputs = inputKeys.filter(key => key.startsWith('INPUT'));
       if (inputInputs.length > 0) {
         const maxInputNumber = Math.max(...inputInputs.map(key => {
           const match = key.match(/INPUT(\d+)/);
           return match ? parseInt(match[1]) : -1;
         }));
-        const itemCount = maxInputNumber + 1;
-        console.log(`🎯 ${blockType} 推断 itemCount: ${itemCount}`);
-        return { itemCount };
+        // dynamic-inputs: extraCount = 总输入数 - 最小输入数
+        const totalInputs = maxInputNumber + 1;
+        const minInputs = 1; // 默认最小输入数
+        const extraCount = Math.max(0, totalInputs - minInputs);
+        console.log(`🎯 ${blockType} 推断 extraCount: ${extraCount} (总输入=${totalInputs}, 最小=${minInputs})`);
+        return { extraCount };
       }
     }
   }
@@ -2285,46 +2574,133 @@ async function applyDynamicExtraState(block: any, extraState: any, dynamicSuppor
     }
   }
   
-  // controls_elseif 块（elseIfCount 模式）
-  else if (blockType === 'controls_elseif' && extraState.elseIfCount !== undefined) {
-    console.log(`🔢 controls_elseif 设置 elseIfCount: ${extraState.elseIfCount}`);
+  // controls_ifelse 块（elseIfCount 模式）- 统一使用 controls_if 的处理逻辑
+  else if ((blockType === 'controls_ifelse') && extraState.elseIfCount !== undefined) {
+    console.log(`🔢 ${blockType} 设置 elseIfCount: ${extraState.elseIfCount}`);
     
-    block.elseIfCount_ = extraState.elseIfCount;
+    const targetElseIfCount = extraState.elseIfCount || 0;
+    const currentElseIfCount = block.elseIfCount_ || 0;
+    // controls_ifelse 默认就有 ELSE 输入
+    const currentHasElse = block.hasElse_ !== undefined ? block.hasElse_ : true;
     
-    if (block.updateShape_ && typeof block.updateShape_ === 'function') {
-      console.log(`🔄 调用 controls_elseif 的 updateShape_`);
-      block.updateShape_();
-      console.log(`✅ controls_elseif updateShape_ 调用完成`);
+    console.log(`🎯 目标状态: elseIfCount=${targetElseIfCount}`);
+    console.log(`📊 当前状态: elseIfCount=${currentElseIfCount}, hasElse=${currentHasElse}`);
+    
+    // 🔧 模拟插件的 plus() 方法来添加 elseif
+    if (targetElseIfCount > currentElseIfCount) {
+      const addCount = targetElseIfCount - currentElseIfCount;
+      console.log(`➕ 需要添加 ${addCount} 个 elseif`);
       
-      // 验证 IF 和 DO 输入
-      const expectedInputs = [];
-      expectedInputs.push('IF0', 'DO0'); // 基础的 IF/DO
-      for (let i = 1; i <= extraState.elseIfCount; i++) {
-        expectedInputs.push(`IF${i}`, `DO${i}`);
-      }
-      if (extraState.hasElse) {
-        expectedInputs.push('ELSE');
-      }
-      
-      await validateAndCreateInputs(block, expectedInputs, 'appendValueInput');
-    } else {
-      console.warn(`⚠️ controls_elseif 没有 updateShape_ 方法，手动创建输入`);
-      // 手动创建 elseif 输入
-      for (let i = 1; i <= extraState.elseIfCount; i++) {
-        try {
-          if (!block.getInput(`IF${i}`)) {
-            block.appendValueInput(`IF${i}`).setCheck('Boolean');
-            console.log(`✅ 手动创建输入 IF${i}`);
-          }
-          if (!block.getInput(`DO${i}`)) {
-            block.appendStatementInput(`DO${i}`);
-            console.log(`✅ 手动创建输入 DO${i}`);
-          }
-        } catch (error) {
-          console.warn(`❌ 手动创建 controls_elseif 输入失败:`, error);
+      for (let i = 0; i < addCount; i++) {
+        if (block.plus && typeof block.plus === 'function') {
+          console.log(`🔄 调用插件的 plus() 方法 ${i + 1}/${addCount}`);
+          block.plus();
+        } else if (block.addElseIf_ && typeof block.addElseIf_ === 'function') {
+          console.log(`🔄 调用 addElseIf_() 方法 ${i + 1}/${addCount}`);
+          block.addElseIf_();
+        } else {
+          console.warn(`⚠️ 无法找到添加 elseif 的方法`);
+          break;
         }
       }
     }
+    // 🔧 模拟插件的 minus() 方法来删除 elseif  
+    else if (targetElseIfCount < currentElseIfCount) {
+      const removeCount = currentElseIfCount - targetElseIfCount;
+      console.log(`➖ 需要删除 ${removeCount} 个 elseif`);
+      
+      for (let i = 0; i < removeCount; i++) {
+        const indexToRemove = currentElseIfCount - i;
+        if (block.minus && typeof block.minus === 'function') {
+          console.log(`🔄 调用插件的 minus(${indexToRemove}) 方法 ${i + 1}/${removeCount}`);
+          block.minus(indexToRemove);
+        } else if (block.removeElseIf_ && typeof block.removeElseIf_ === 'function') {
+          console.log(`🔄 调用 removeElseIf_() 方法 ${i + 1}/${removeCount}`);
+          block.removeElseIf_();
+        } else {
+          console.warn(`⚠️ 无法找到删除 elseif 的方法`);
+          break;
+        }
+      }
+    }
+    
+    console.log(`✅ controls_ifelse 插件模拟操作完成`);
+  }
+
+  // controls_if 块（elseIfCount + hasElse 模式）- 模拟插件行为
+  else if (blockType === 'controls_if' && (extraState.elseIfCount !== undefined || extraState.hasElse !== undefined)) {
+    console.log(`🔢 controls_if 设置 extraState:`, extraState);
+    
+    const targetElseIfCount = extraState.elseIfCount || 0;
+    const targetHasElse = extraState.hasElse || false;
+    const currentElseIfCount = block.elseIfCount_ || 0;
+    const currentHasElse = block.hasElse_ || false;
+    
+    console.log(`🎯 目标状态: elseIfCount=${targetElseIfCount}, hasElse=${targetHasElse}`);
+    console.log(`📊 当前状态: elseIfCount=${currentElseIfCount}, hasElse=${currentHasElse}`);
+    
+    // 🔧 模拟插件的 plus() 方法来添加 elseif
+    if (targetElseIfCount > currentElseIfCount) {
+      const addCount = targetElseIfCount - currentElseIfCount;
+      console.log(`➕ 需要添加 ${addCount} 个 elseif`);
+      
+      for (let i = 0; i < addCount; i++) {
+        if (block.plus && typeof block.plus === 'function') {
+          console.log(`🔄 调用插件的 plus() 方法 ${i + 1}/${addCount}`);
+          block.plus();
+        } else if (block.addElseIf_ && typeof block.addElseIf_ === 'function') {
+          console.log(`🔄 调用 addElseIf_() 方法 ${i + 1}/${addCount}`);
+          block.addElseIf_();
+        } else {
+          console.warn(`⚠️ 无法找到添加 elseif 的方法`);
+          break;
+        }
+      }
+    }
+    // 🔧 模拟插件的 minus() 方法来删除 elseif  
+    else if (targetElseIfCount < currentElseIfCount) {
+      const removeCount = currentElseIfCount - targetElseIfCount;
+      console.log(`➖ 需要删除 ${removeCount} 个 elseif`);
+      
+      for (let i = 0; i < removeCount; i++) {
+        const indexToRemove = currentElseIfCount - i;
+        if (block.minus && typeof block.minus === 'function') {
+          console.log(`🔄 调用插件的 minus(${indexToRemove}) 方法 ${i + 1}/${removeCount}`);
+          block.minus(indexToRemove);
+        } else if (block.removeElseIf_ && typeof block.removeElseIf_ === 'function') {
+          console.log(`🔄 调用 removeElseIf_() 方法 ${i + 1}/${removeCount}`);
+          block.removeElseIf_();
+        } else {
+          console.warn(`⚠️ 无法找到删除 elseif 的方法`);
+          break;
+        }
+      }
+    }
+    
+    // 🔧 处理 else 输入
+    if (targetHasElse !== currentHasElse) {
+      if (targetHasElse && !block.getInput('ELSE')) {
+        console.log(`➕ 添加 ELSE 输入`);
+        block.hasElse_ = true;
+        try {
+          block.appendStatementInput('ELSE').appendField('else');
+          console.log(`✅ ELSE 输入创建成功`);
+        } catch (error) {
+          console.warn(`❌ 创建 ELSE 输入失败:`, error);
+        }
+      } else if (!targetHasElse && block.getInput('ELSE')) {
+        console.log(`➖ 删除 ELSE 输入`);
+        block.hasElse_ = false;
+        try {
+          block.removeInput('ELSE');
+          console.log(`✅ ELSE 输入删除成功`);
+        } catch (error) {
+          console.warn(`❌ 删除 ELSE 输入失败:`, error);
+        }
+      }
+    }
+    
+    console.log(`✅ controls_if 插件模拟操作完成`);
   }
   
   // procedures 块（params 模式）
@@ -2343,19 +2719,81 @@ async function applyDynamicExtraState(block: any, extraState: any, dynamicSuppor
     }
   }
   
-  // blinker_widget_print 等（itemCount 模式）
-  else if ((blockType === 'blinker_widget_print' || blockType.includes('_print')) && extraState.itemCount !== undefined) {
-    console.log(`🔢 ${blockType} 设置 itemCount: ${extraState.itemCount}`);
+  // blinker_widget_print 等（extraCount 模式）- 模拟 dynamic-inputs 插件行为
+  else if ((blockType === 'blinker_widget_print' || blockType.includes('_print')) && extraState.extraCount !== undefined) {
+    console.log(`🔢 ${blockType} 设置 extraCount: ${extraState.extraCount}`);
     
-    block.itemCount_ = extraState.itemCount;
+    const targetExtraCount = extraState.extraCount || 0;
+    const currentExtraCount = block.extraCount_ || 0;
+    const minInputs = block.minInputs || 1;
     
-    if (block.updateShape_ && typeof block.updateShape_ === 'function') {
-      block.updateShape_();
-      console.log(`✅ ${blockType} updateShape_ 调用完成`);
-    } else {
-      console.warn(`⚠️ ${blockType} 没有 updateShape_ 方法，手动创建输入`);
-      await manuallyCreateInputs(block, extraState.itemCount, 'INPUT', 'appendValueInput');
+    console.log(`🎯 目标状态: extraCount=${targetExtraCount} (总输入=${minInputs + targetExtraCount})`);
+    console.log(`📊 当前状态: extraCount=${currentExtraCount} (总输入=${minInputs + currentExtraCount})`);
+    
+    // 🔧 模拟 dynamic-inputs 插件的 plus() 方法来添加输入
+    if (targetExtraCount > currentExtraCount) {
+      const addCount = targetExtraCount - currentExtraCount;
+      console.log(`➕ 需要添加 ${addCount} 个额外输入`);
+      
+      for (let i = 0; i < addCount; i++) {
+        if (block.plus && typeof block.plus === 'function') {
+          console.log(`🔄 调用 dynamic-inputs 的 plus() 方法 ${i + 1}/${addCount}`);
+          block.plus();
+        } else if (block.addInput_ && typeof block.addInput_ === 'function') {
+          console.log(`🔄 调用 addInput_() 方法 ${i + 1}/${addCount}`);
+          block.addInput_();
+        } else {
+          console.warn(`⚠️ 无法找到添加输入的方法，尝试手动创建`);
+          // 手动创建输入作为后备方案
+          const inputIndex = minInputs + currentExtraCount + i;
+          const inputName = `INPUT${inputIndex}`;
+          if (!block.getInput(inputName)) {
+            try {
+              const input = block.appendValueInput(inputName);
+              console.log(`✅ 手动创建输入: ${inputName}`);
+            } catch (error) {
+              console.warn(`❌ 手动创建输入失败: ${inputName}`, error);
+            }
+          }
+        }
+      }
+      // 更新内部状态
+      block.extraCount_ = targetExtraCount;
     }
+    // 🔧 模拟 dynamic-inputs 插件的 minus() 方法来删除输入
+    else if (targetExtraCount < currentExtraCount) {
+      const removeCount = currentExtraCount - targetExtraCount;
+      console.log(`➖ 需要删除 ${removeCount} 个额外输入`);
+      
+      for (let i = 0; i < removeCount; i++) {
+        if (block.minus && typeof block.minus === 'function') {
+          // dynamic-inputs 使用 1-based 索引
+          const displayIndex = minInputs + currentExtraCount - i;
+          console.log(`🔄 调用 dynamic-inputs 的 minus(${displayIndex}) 方法 ${i + 1}/${removeCount}`);
+          block.minus(displayIndex);
+        } else if (block.removeInput_ && typeof block.removeInput_ === 'function') {
+          console.log(`🔄 调用 removeInput_() 方法 ${i + 1}/${removeCount}`);
+          block.removeInput_();
+        } else {
+          console.warn(`⚠️ 无法找到删除输入的方法，尝试手动删除`);
+          // 手动删除输入作为后备方案
+          const inputIndex = minInputs + currentExtraCount - 1 - i;
+          const inputName = `INPUT${inputIndex}`;
+          if (block.getInput(inputName)) {
+            try {
+              block.removeInput(inputName);
+              console.log(`✅ 手动删除输入: ${inputName}`);
+            } catch (error) {
+              console.warn(`❌ 手动删除输入失败: ${inputName}`, error);
+            }
+          }
+        }
+      }
+      // 更新内部状态
+      block.extraCount_ = targetExtraCount;
+    }
+    
+    console.log(`✅ ${blockType} dynamic-inputs 插件模拟操作完成`);
   }
   
   // 通用处理
@@ -2386,7 +2824,7 @@ async function validateAndCreateInputs(block: any, expectedInputs: string[], inp
     if (input) {
       console.log(`✅ 输入 ${inputName} 已存在`);
     } else {
-      console.warn(`⚠️ 输入 ${inputName} 不存在，尝试手动创建`);
+      // console.warn(`⚠️ 输入 ${inputName} 不存在，尝试手动创建`);
       try {
         if (inputType === 'appendValueInput') {
           block.appendValueInput(inputName);
@@ -2439,9 +2877,9 @@ async function applyDynamicExtensions(block: any, config: any): Promise<void> {
     if (!config.extraState) {
       console.log('🤖 未提供 extraState，开始智能推断...');
       config.extraState = inferExtraState(block, config);
-      if (config.extraState) {
-        console.log('✅ 智能推断的 extraState:', JSON.stringify(config.extraState));
-      }
+      // if (config.extraState) {
+      //   console.log('✅ 智能推断的 extraState:', JSON.stringify(config.extraState));
+      // }
     }
 
     // 处理需要动态输入的块类型 - 先扩展输入，再处理extraState
@@ -2451,49 +2889,52 @@ async function applyDynamicExtensions(block: any, config: any): Promise<void> {
       
       // 检查是否需要动态扩展输入
       if (block.type === 'blinker_widget_print' || block.type.includes('_print')) {
-        console.log('🔧 检测到需要动态输入的块类型，准备扩展');
+        console.log('🔧 检测到使用 dynamic-inputs 插件的块类型，准备扩展');
         await extendBlockWithDynamicInputs(block, config.inputs);
         
-        // 根据实际输入数量计算并设置 itemCount
+        // 根据实际输入数量计算并设置 extraCount
         const inputCount = inputNames.filter(name => name.startsWith('INPUT')).length;
-        console.log(`📊 计算得到的输入数量: ${inputCount}`);
+        const minInputs = 1; // dynamic-inputs 默认最小输入数
+        const extraCount = Math.max(0, inputCount - minInputs);
+        console.log(`📊 计算得到的输入数量: ${inputCount}, extraCount: ${extraCount}`);
         
         if (inputCount > 0) {
           // 动态设置 extraState
           if (!config.extraState) {
             config.extraState = {};
           }
-          config.extraState.itemCount = inputCount;
-          console.log(`🔢 动态设置 itemCount 为: ${inputCount}`);
+          config.extraState.extraCount = extraCount;
+          console.log(`🔢 动态设置 extraCount 为: ${extraCount}`);
           
-          // 应用到块 - 设置 itemCount_
-          block.itemCount_ = inputCount;
-          console.log(`✅ 设置块的 itemCount_ 为: ${inputCount}`);
+          // 应用到块 - 设置 extraCount_
+          block.extraCount_ = extraCount;
+          block.minInputs = minInputs;
+          console.log(`✅ 设置块的 extraCount_ 为: ${extraCount}, minInputs: ${minInputs}`);
           
-          // 🆕 关键修复：参考 text_join.js 模式，重写 saveExtraState 方法
+          // 🆕 关键修复：参考 dynamic-inputs.js 模式，重写 saveExtraState 方法
           block.saveExtraState = function() {
-            console.log(`💾 saveExtraState 被调用，返回 itemCount: ${this.itemCount_}`);
+            console.log(`💾 saveExtraState 被调用，返回 extraCount: ${this.extraCount_}`);
             return {
-              itemCount: this.itemCount_
+              extraCount: this.extraCount_
             };
           };
           
           // 🆕 同时重写 loadExtraState 方法确保一致性
           block.loadExtraState = function(state) {
             console.log(`🔄 loadExtraState 被调用，state:`, state);
-            if (state && state.itemCount !== undefined) {
-              this.itemCount_ = state.itemCount;
+            if (state && state.extraCount !== undefined) {
+              this.extraCount_ = state.extraCount;
               if (this.updateShape_ && typeof this.updateShape_ === 'function') {
-                this.updateShape_();
-                console.log(`✅ loadExtraState 调用 updateShape_，itemCount_: ${this.itemCount_}`);
+                this.updateShape_(state.extraCount);
+                console.log(`✅ loadExtraState 调用 updateShape_，extraCount_: ${this.extraCount_}`);
               }
             }
           };
           
           // 如果有 updateShape_ 方法，调用它
           if (block.updateShape_ && typeof block.updateShape_ === 'function') {
-            block.updateShape_();
-            console.log(`🔄 调用 updateShape_ 更新块形状，当前 itemCount_: ${block.itemCount_}`);
+            block.updateShape_(extraCount);
+            console.log(`🔄 调用 updateShape_ 更新块形状，当前 extraCount_: ${block.extraCount_}`);
           }
         }
       }
@@ -2965,7 +3406,7 @@ export async function createCodeStructureTool(
     console.log(`🎯 开始创建 ${structure} 结构`);
     console.log('📍 计算的位置:', blockPosition);
 
-    // 使用动态结构处理器创建结构
+    // // 使用动态结构处理器创建结构
     console.log(`� 使用动态结构定义创建: ${structure}`);
     const rootBlock = await createDynamicStructure(workspace, config, blockPosition, createdBlocks, connections);
 
@@ -2979,7 +3420,7 @@ export async function createCodeStructureTool(
       
       if (insertPosition !== 'workspace' && targetBlock) {
         console.log(`🎯 执行块插入: ${insertPosition} 到 ${targetBlock}`);
-        await handleBlockInsertion(workspace, rootBlock, insertPosition, targetBlock, targetInput);
+        await handleBlockInsertion(workspace, rootBlock.block, insertPosition, targetBlock, targetInput);
         console.log(`✅ 块插入完成`);
       } else {
         console.log(`⚠️ 跳过块插入 - 条件不满足`);
@@ -2993,14 +3434,14 @@ export async function createCodeStructureTool(
       metadata = {
         structureType: structure,
         createdBlocks,
-        rootBlockId: rootBlock.id,
+        rootBlockId: rootBlock.block?.id || 'unknown',
         connections,
         workspaceOverview: isError ? null : workspaceOverview
       };
 
       toolResult = ``;
       if (rootBlock.error) {
-        toolResult += `⚠️ 注意: 在创建过程中遇到一些问题，部分块创建失败或者连接错误！请仔细检查并修复这些问题，务必读取相关库的readme。\n`
+        toolResult += `⚠️ 注意: 在创建过程中遇到一些问题，部分块创建失败或者连接错误！请仔细阅读相关库的readme后再进行调整。\n`
       } else {
         // toolResult += `✅ 成功创建 ${structure} 代码结构`;
         toolResult += `✅ 创建完成代码结构 `;
@@ -3010,7 +3451,7 @@ export async function createCodeStructureTool(
 📊 创建结果概览:
 - 结构名称: ${structure}
 - 创建块数: ${createdBlocks.length} 个
-- 根块ID: ${rootBlock.id}
+- 根块ID: ${rootBlock.block?.id || 'unknown'}
 - 连接数: ${connections.length} 个
 
 ${workspaceOverview}`;
@@ -3184,18 +3625,20 @@ export async function connectBlocksTool(args: ConnectBlocksArgs): Promise<Connec
   console.log('🔗 连接块工具 - 智能版本');
   console.log('📥 输入参数:', JSON.stringify(args, null, 2));
 
+  let errorMessage: string | null = null;
+
   try {
     // 🔍 步骤1：智能参数验证和纠错
     const validation = validateAndCorrectConnectionParams(args);
     let actualArgs = validation.correctedArgs;
     
-    if (validation.correctionMade) {
-      console.log('🔄 参数自动纠正成功！');
-      console.log('📋 纠正原因:', validation.correctionReason);
-      console.log('📥 纠正后参数:', JSON.stringify(actualArgs, null, 2));
-    } else {
-      console.log('✅ 参数验证通过，无需纠正');
-    }
+    // if (validation.correctionMade) {
+    //   console.log('🔄 参数自动纠正成功！');
+    //   console.log('📋 纠正原因:', validation.correctionReason);
+    //   console.log('📥 纠正后参数:', JSON.stringify(actualArgs, null, 2));
+    // } else {
+    //   console.log('✅ 参数验证通过，无需纠正');
+    // }
     
     const workspace = getActiveWorkspace();
     const { containerBlock, contentBlock, connectionType, inputName } = actualArgs;
@@ -3260,6 +3703,7 @@ export async function connectBlocksTool(args: ConnectBlocksArgs): Promise<Connec
             optimizedConnectionType = 'input'; // statement 本质上是 input 连接
             console.log(`✅ 用户指定的输入 "${inputName}" 验证成功`);
           } else {
+            errorMessage = `输入 "${inputName}" 在块 ${containerBlockObj.type} 中不存在或无连接，请阅读该块的readme以获取正确的输入名称。`;
             console.log(`⚠️ 用户指定的输入 "${inputName}" 不存在或无连接，尝试自动检测`);
             const detectedInputName = detectStatementInput(containerBlockObj);
             if (detectedInputName) {
@@ -3359,23 +3803,33 @@ export async function connectBlocksTool(args: ConnectBlocksArgs): Promise<Connec
 
     console.log(message);
 
-    // 获取工作区概览，包括树状结构和生成的代码
-    const { overview: workspaceOverview, cppCode, isError } = await getWorkspaceOverviewInfo();
+    // // 获取工作区概览，包括树状结构和生成的代码
+    // const { overview: workspaceOverview, cppCode, isError } = await getWorkspaceOverviewInfo();    
     
     // 生成增强的结果消息
     let enhancedMessage = `${message}`;
     
     // 如果进行了参数纠正，添加纠正信息
     if (validation.correctionMade) {
-      enhancedMessage = `${message}
+      enhancedMessage = `${errorMessage}\n${message}
 
-� **智能纠错**：${validation.correctionReason}`;
+ **智能纠错**：${validation.correctionReason}`;
     }
     
-    enhancedMessage += `
+//     enhancedMessage += `
 
-�📊 连接操作完成后的工作区状态:
-${workspaceOverview}`;
+//  📊 连接操作完成后的工作区状态:
+// ${workspaceOverview}`;
+
+    // 获取工作区概览信息
+    if (conutForGetWorkspaceOverview++ >= maxCount) {
+      const { overview: workspaceOverview, cppCode, isError } = await getWorkspaceOverviewInfo();
+
+      if (!isError && workspaceOverview) {
+        enhancedMessage += `\n\n${workspaceOverview}`;
+      }
+    }
+    console.log('conutForGetWorkspaceOverview', conutForGetWorkspaceOverview);
 
     return {
       is_error: false,
@@ -3398,8 +3852,7 @@ ${workspaceOverview}`;
         inputName: optimizedInputName,
         parameterCorrected: validation.correctionMade,
         correctionReason: validation.correctionReason,
-        workspaceOverview: isError ? null : workspaceOverview,
-        cppCode: cppCode || null
+        // workspaceOverview: isError ? null : workspaceOverview
       }
     };
 
@@ -3485,15 +3938,17 @@ async function getWorkspaceOverviewInfo(includeCode = true, includeTree = true):
       }
       
       // 🔧 如果概览中包含变量信息，添加到开头
-      if (overview.includes('📝 变量列表:')) {
-        console.log('✅ 工作区概览包含变量信息');
-      } else {
-        console.log('ℹ️ 工作区概览中无变量信息');
-      }
+      // if (overview.includes('📝 变量列表:')) {
+      //   console.log('✅ 工作区概览包含变量信息');
+      // } else {
+      //   console.log('ℹ️ 工作区概览中无变量信息');
+      // }
+
+      conutForGetWorkspaceOverview = 0; // 重置计数器
       
       return { overview, cppCode, isError: false };
     } else {
-      console.warn('⚠️ 获取工作区概览失败:', overviewResult.content);
+      // console.warn('⚠️ 获取工作区概览失败:', overviewResult.content);
       overview = '⚠️ 工作区概览获取失败，但操作成功';
       return { overview, cppCode: '', isError: true };
     }
@@ -3523,9 +3978,9 @@ function detectStatementInput(block: any): string | null {
     console.log(`📋 块有 ${block.inputList.length} 个输入:`);
     
     // 详细日志显示所有输入
-    block.inputList.forEach((input: any, index: number) => {
-      console.log(`  ${index}: ${input.name} (类型: ${input.type}, 有连接: ${!!input.connection})`);
-    });
+    // block.inputList.forEach((input: any, index: number) => {
+    //   console.log(`  ${index}: ${input.name} (类型: ${input.type}, 有连接: ${!!input.connection})`);
+    // });
 
     // 查找语句类型的输入 (type === 3 是 statement 连接)
     for (const input of block.inputList) {
@@ -3619,149 +4074,149 @@ interface SafetyCheckResult {
   hasChildren: boolean;
 }
 
-function performSafetyCheck(block: any, cascade: boolean): SafetyCheckResult {
-  const warnings: string[] = [];
-  const criticalIssues: string[] = [];
-  const affectedBlocks: Array<{ id: string; type: string; relation: string }> = [];
+// function performSafetyCheck(block: any, cascade: boolean): SafetyCheckResult {
+//   const warnings: string[] = [];
+//   const criticalIssues: string[] = [];
+//   const affectedBlocks: Array<{ id: string; type: string; relation: string }> = [];
   
-  console.log(`🔍 执行安全检查: ${block.type} (${block.id})`);
+//   // console.log(`🔍 执行安全检查: ${block.type} (${block.id})`);
   
-  // 检查是否是重要的根块
-  const isRootBlock = !block.previousConnection || 
-                     block.type.includes('setup') || 
-                     block.type.includes('loop') ||
-                     block.type.includes('event') ||
-                     block.type.includes('procedure') ||
-                     block.type.includes('function');
+//   // 检查是否是重要的根块
+//   const isRootBlock = !block.previousConnection || 
+//                      block.type.includes('setup') || 
+//                      block.type.includes('loop') ||
+//                      block.type.includes('event') ||
+//                      block.type.includes('procedure') ||
+//                      block.type.includes('function');
 
-  if (isRootBlock) {
-    warnings.push(`这是一个根块 (${block.type})，删除可能影响程序结构`);
-  }
+//   if (isRootBlock) {
+//     warnings.push(`这是一个根块 (${block.type})，删除可能影响程序结构`);
+//   }
 
-  // 检查子块和连接的块
-  const hasChildren = block.getChildren ? block.getChildren().length > 0 : false;
-  let childCount = 0;
+//   // 检查子块和连接的块
+//   const hasChildren = block.getChildren ? block.getChildren().length > 0 : false;
+//   let childCount = 0;
   
-  // 收集所有连接的块
-  if (block.getChildren) {
-    const children = block.getChildren();
-    childCount = children.length;
+//   // 收集所有连接的块
+//   if (block.getChildren) {
+//     const children = block.getChildren();
+//     childCount = children.length;
     
-    for (const child of children) {
-      affectedBlocks.push({
-        id: child.id,
-        type: child.type,
-        relation: cascade ? '将被删除' : '将保留但可能断开连接'
-      });
-    }
-  }
+//     for (const child of children) {
+//       affectedBlocks.push({
+//         id: child.id,
+//         type: child.type,
+//         relation: cascade ? '将被删除' : '将保留但可能断开连接'
+//       });
+//     }
+//   }
 
-  // 检查下一个块
-  const nextBlock = block.getNextBlock?.();
-  if (nextBlock) {
-    affectedBlocks.push({
-      id: nextBlock.id,
-      type: nextBlock.type,
-      relation: cascade ? '将被删除' : '将尝试重连到前一个块'
-    });
-  }
+//   // 检查下一个块
+//   const nextBlock = block.getNextBlock?.();
+//   if (nextBlock) {
+//     affectedBlocks.push({
+//       id: nextBlock.id,
+//       type: nextBlock.type,
+//       relation: cascade ? '将被删除' : '将尝试重连到前一个块'
+//     });
+//   }
 
-  // 检查连接到此块输入的块
-  if (block.inputList) {
-    for (const input of block.inputList) {
-      if (input.connection && input.connection.targetConnection) {
-        const inputBlock = input.connection.targetBlock;
-        if (inputBlock) {
-          affectedBlocks.push({
-            id: inputBlock.id,
-            type: inputBlock.type,
-            relation: cascade ? '将被删除' : '将断开连接'
-          });
-          childCount++;
-        }
-      }
-    }
-  }
+//   // 检查连接到此块输入的块
+//   if (block.inputList) {
+//     for (const input of block.inputList) {
+//       if (input.connection && input.connection.targetConnection) {
+//         const inputBlock = input.connection.targetBlock;
+//         if (inputBlock) {
+//           affectedBlocks.push({
+//             id: inputBlock.id,
+//             type: inputBlock.type,
+//             relation: cascade ? '将被删除' : '将断开连接'
+//           });
+//           childCount++;
+//         }
+//       }
+//     }
+//   }
 
-  // 生成警告信息
-  if (childCount > 0) {
-    if (cascade) {
-      warnings.push(`级联删除将同时删除 ${childCount} 个连接的块`);
-    } else {
-      warnings.push(`删除后将影响 ${childCount} 个连接的块，它们将被保留但可能断开连接`);
-    }
-  }
+//   // 生成警告信息
+//   if (childCount > 0) {
+//     if (cascade) {
+//       warnings.push(`级联删除将同时删除 ${childCount} 个连接的块`);
+//     } else {
+//       warnings.push(`删除后将影响 ${childCount} 个连接的块，它们将被保留但可能断开连接`);
+//     }
+//   }
 
-  // 检查是否是关键的初始化块
-  if (block.type.includes('serial') || block.type.includes('init') || block.type.includes('begin')) {
-    warnings.push(`这是一个初始化块 (${block.type})，删除可能影响其他功能`);
-  }
+//   // 检查是否是关键的初始化块
+//   if (block.type.includes('serial') || block.type.includes('init') || block.type.includes('begin')) {
+//     warnings.push(`这是一个初始化块 (${block.type})，删除可能影响其他功能`);
+//   }
 
-  // 检查是否有变量定义
-  if (block.getVars && block.getVars().length > 0) {
-    const variables = block.getVars();
-    warnings.push(`此块定义了变量: ${variables.join(', ')}，删除后这些变量仍会保留`);
-  }
+//   // 检查是否有变量定义
+//   if (block.getVars && block.getVars().length > 0) {
+//     const variables = block.getVars();
+//     warnings.push(`此块定义了变量: ${variables.join(', ')}，删除后这些变量仍会保留`);
+//   }
 
-  const canDelete = criticalIssues.length === 0;
+//   const canDelete = criticalIssues.length === 0;
 
-  console.log(`🔍 安全检查结果:`);
-  console.log(`   可以删除: ${canDelete}`);
-  console.log(`   是否根块: ${isRootBlock}`);
-  console.log(`   有子块: ${hasChildren} (${childCount}个)`);
-  console.log(`   警告数量: ${warnings.length}`);
-  console.log(`   严重问题: ${criticalIssues.length}`);
+//   // console.log(`🔍 安全检查结果:`);
+//   // console.log(`   可以删除: ${canDelete}`);
+//   // console.log(`   是否根块: ${isRootBlock}`);
+//   // console.log(`   有子块: ${hasChildren} (${childCount}个)`);
+//   // console.log(`   警告数量: ${warnings.length}`);
+//   // console.log(`   严重问题: ${criticalIssues.length}`);
 
-  return {
-    canDelete,
-    warnings,
-    criticalIssues,
-    affectedBlocks,
-    isRootBlock,
-    hasChildren
-  };
-}
+//   return {
+//     canDelete,
+//     warnings,
+//     criticalIssues,
+//     affectedBlocks,
+//     isRootBlock,
+//     hasChildren
+//   };
+// }
 
-/**
- * 分析删除操作的影响
- */
-function analyzeDeleteImpact(block: any, cascade: boolean): {
-  blocksToDelete: string[];
-  blocksToPreserve: string[];
-  reconnections: Array<{ from: string; to: string; success: boolean }>;
-} {
-  const blocksToDelete: string[] = [block.id];
-  const blocksToPreserve: string[] = [];
-  const reconnections: Array<{ from: string; to: string; success: boolean }> = [];
+// /**
+//  * 分析删除操作的影响
+//  */
+// function analyzeDeleteImpact(block: any, cascade: boolean): {
+//   blocksToDelete: string[];
+//   blocksToPreserve: string[];
+//   reconnections: Array<{ from: string; to: string; success: boolean }>;
+// } {
+//   const blocksToDelete: string[] = [block.id];
+//   const blocksToPreserve: string[] = [];
+//   const reconnections: Array<{ from: string; to: string; success: boolean }> = [];
 
-  if (cascade) {
-    // 级联删除：收集所有连接的块
-    const allConnected = getAllConnectedBlocks(block);
-    blocksToDelete.push(...allConnected.map(b => b.id));
-  } else {
-    // 智能删除：分析重连可能性
-    const previousBlock = block.getPreviousBlock?.();
-    const nextBlock = block.getNextBlock?.();
+//   if (cascade) {
+//     // 级联删除：收集所有连接的块
+//     const allConnected = getAllConnectedBlocks(block);
+//     blocksToDelete.push(...allConnected.map(b => b.id));
+//   } else {
+//     // 智能删除：分析重连可能性
+//     const previousBlock = block.getPreviousBlock?.();
+//     const nextBlock = block.getNextBlock?.();
     
-    if (block.getChildren) {
-      const children = block.getChildren();
-      blocksToPreserve.push(...children.map(b => b.id));
-    }
+//     if (block.getChildren) {
+//       const children = block.getChildren();
+//       blocksToPreserve.push(...children.map(b => b.id));
+//     }
 
-    if (previousBlock && nextBlock) {
-      reconnections.push({
-        from: previousBlock.id,
-        to: nextBlock.id,
-        success: checkConnectionCompatibility(
-          previousBlock.nextConnection,
-          nextBlock.previousConnection
-        )
-      });
-    }
-  }
+//     if (previousBlock && nextBlock) {
+//       reconnections.push({
+//         from: previousBlock.id,
+//         to: nextBlock.id,
+//         success: checkConnectionCompatibility(
+//           previousBlock.nextConnection,
+//           nextBlock.previousConnection
+//         )
+//       });
+//     }
+//   }
 
-  return { blocksToDelete, blocksToPreserve, reconnections };
-}
+//   return { blocksToDelete, blocksToPreserve, reconnections };
+// }
 
 /**
  * 获取所有连接的块
@@ -3977,35 +4432,35 @@ export async function deleteBlockTool(args: {
       const resultMessage = `成功级联删除块 "${deletedBlockType}" 及其 ${deletedIds.length - 1} 个连接块（共删除 ${deletedIds.length} 个块）`;
       console.log(`✅ ${resultMessage}`);
       
-      // 获取删除后的工作区概览
-      console.log('📊 获取删除后的工作区概览...');
-      const overviewResult = await getWorkspaceOverviewTool({
-        includeCode: true,
-        includeTree: true,
-        format: 'text',
-        groupBy: 'structure'
-      });
+      // // 获取删除后的工作区概览
+      // console.log('📊 获取删除后的工作区概览...');
+      // const overviewResult = await getWorkspaceOverviewTool({
+      //   includeCode: true,
+      //   includeTree: true,
+      //   format: 'text',
+      //   groupBy: 'structure'
+      // });
       
-      let workspaceOverview = '';
-      let cppCode = '';
+      // let workspaceOverview = '';
+      // let cppCode = '';
       
-      if (!overviewResult.is_error) {
-        workspaceOverview = overviewResult.content;
-        // 尝试提取C++代码部分
-        const codeMatch = workspaceOverview.match(/```cpp([\s\S]*?)```/);
-        if (codeMatch) {
-          cppCode = codeMatch[1].trim();
-        }
-      } else {
-        console.warn('⚠️ 获取工作区概览失败:', overviewResult.content);
-        workspaceOverview = '⚠️ 工作区概览获取失败，但删除操作成功';
-      }
+      // if (!overviewResult.is_error) {
+      //   workspaceOverview = overviewResult.content;
+      //   // 尝试提取C++代码部分
+      //   const codeMatch = workspaceOverview.match(/```cpp([\s\S]*?)```/);
+      //   if (codeMatch) {
+      //     cppCode = codeMatch[1].trim();
+      //   }
+      // } else {
+      //   console.warn('⚠️ 获取工作区概览失败:', overviewResult.content);
+      //   workspaceOverview = '⚠️ 工作区概览获取失败，但删除操作成功';
+      // }
 
       // 生成增强的结果消息
-      const enhancedMessage = `${resultMessage}
+      const enhancedMessage = `${resultMessage}`;
 
-📊 删除操作完成后的工作区状态:
-${workspaceOverview}`;
+// 📊 删除操作完成后的工作区状态:
+// ${workspaceOverview}`;
       
       return {
         is_error: false,
@@ -4020,9 +4475,7 @@ ${workspaceOverview}`;
           deletedBlockId: blockId,
           deletedBlockType: deletedBlockType,
           totalDeleted: deletedIds.length,
-          cascadeDeleted: cascadeDeleted,
-          workspaceOverview: overviewResult.is_error ? null : overviewResult.content,
-          cppCode: cppCode || null
+          cascadeDeleted: cascadeDeleted
         }
       };
       
@@ -4110,35 +4563,35 @@ ${workspaceOverview}`;
       
       console.log(`✅ ${resultMessage}`);
       
-      // 获取删除后的工作区概览
-      console.log('📊 获取删除后的工作区概览...');
-      const overviewResult = await getWorkspaceOverviewTool({
-        includeCode: true,
-        includeTree: true,
-        format: 'text',
-        groupBy: 'structure'
-      });
+      // // 获取删除后的工作区概览
+      // console.log('📊 获取删除后的工作区概览...');
+      // const overviewResult = await getWorkspaceOverviewTool({
+      //   includeCode: true,
+      //   includeTree: true,
+      //   format: 'text',
+      //   groupBy: 'structure'
+      // });
       
-      let workspaceOverview = '';
-      let cppCode = '';
+      // let workspaceOverview = '';
+      // let cppCode = '';
       
-      if (!overviewResult.is_error) {
-        workspaceOverview = overviewResult.content;
-        // 尝试提取C++代码部分
-        const codeMatch = workspaceOverview.match(/```cpp([\s\S]*?)```/);
-        if (codeMatch) {
-          cppCode = codeMatch[1].trim();
-        }
-      } else {
-        console.warn('⚠️ 获取工作区概览失败:', overviewResult.content);
-        workspaceOverview = '⚠️ 工作区概览获取失败，但删除操作成功';
-      }
+      // if (!overviewResult.is_error) {
+      //   workspaceOverview = overviewResult.content;
+      //   // 尝试提取C++代码部分
+      //   const codeMatch = workspaceOverview.match(/```cpp([\s\S]*?)```/);
+      //   if (codeMatch) {
+      //     cppCode = codeMatch[1].trim();
+      //   }
+      // } else {
+      //   console.warn('⚠️ 获取工作区概览失败:', overviewResult.content);
+      //   workspaceOverview = '⚠️ 工作区概览获取失败，但删除操作成功';
+      // }
 
       // 生成增强的结果消息
-      const enhancedMessage = `${resultMessage}
+      const enhancedMessage = `${resultMessage}`;
 
-📊 删除操作完成后的工作区状态:
-${workspaceOverview}`;
+// 📊 删除操作完成后的工作区状态:
+// ${workspaceOverview}`;
       
       return {
         is_error: false,
@@ -4153,9 +4606,7 @@ ${workspaceOverview}`;
         metadata: {
           deletedBlockId: blockId,
           deletedBlockType: deletedBlockType,
-          reconnectedBlocks: reconnectedBlocks,
-          workspaceOverview: overviewResult.is_error ? null : overviewResult.content,
-          cppCode: cppCode || null
+          reconnectedBlocks: reconnectedBlocks
         }
       };
     }
@@ -4411,11 +4862,11 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
           
           console.log('🔍 开始进行Arduino语法检测...');
           
-          // 详细的环境诊断
-          console.log('🔧 环境诊断:');
-          console.log('- window.ng:', !!((window as any)['ng']));
-          console.log('- window.path:', !!((window as any)['path']));
-          console.log('- window.env:', !!((window as any)['env']));
+          // // 详细的环境诊断
+          // console.log('🔧 环境诊断:');
+          // console.log('- window.ng:', !!((window as any)['ng']));
+          // console.log('- window.path:', !!((window as any)['path']));
+          // console.log('- window.env:', !!((window as any)['env']));
           
           // 检查 Angular injector
           let injectorAvailable = false;
@@ -4514,11 +4965,11 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
                   toolUsed: 'arduino-syntax-tool'
                 };
                 
-                console.log('✅ Arduino语法检测完成 (回退模式):', {
-                  isValid: isValid,
-                  errorCount: errors.length,
-                  warningCount: warnings.length
-                });
+                // console.log('✅ Arduino语法检测完成 (回退模式):', {
+                //   isValid: isValid,
+                //   errorCount: errors.length,
+                //   warningCount: warnings.length
+                // });
               } else {
                 console.warn('⚠️ Arduino语法检测返回空结果 (回退模式)');
                 lintResult = {
@@ -4542,7 +4993,7 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
               
               const lintStartTime = Date.now();
               const lintServiceResult = await arduinoLintService.checkSyntax(generatedCode, {
-                mode: 'auto',
+                mode: 'ast-grep',
                 format: 'json'
               });
               const lintDuration = Date.now() - lintStartTime;
@@ -4564,16 +5015,16 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
                 duration: lintDuration,
                 language: 'arduino',
                 toolUsed: 'aily-builder-lint',
-                mode: lintServiceResult.mode || 'auto'
+                mode: lintServiceResult.mode || 'ast-grep'
               };
               
-              console.log('✅ Arduino语法检测完成 (aily-builder):', {
-                isValid: lintResult.isValid,
-                errorCount: lintResult.errors.length,
-                warningCount: lintResult.warnings.length,
-                noteCount: (lintResult.notes || []).length,
-                duration: lintDuration
-              });
+              // console.log('✅ Arduino语法检测完成 (aily-builder):', {
+              //   isValid: lintResult.isValid,
+              //   errorCount: lintResult.errors.length,
+              //   warningCount: lintResult.warnings.length,
+              //   noteCount: (lintResult.notes || []).length,
+              //   duration: lintDuration
+              // });
               
               // 如果没有错误但标记为无效，可能是其他问题
               if (!lintResult.isValid && lintResult.errors.length === 0) {
@@ -5222,13 +5673,13 @@ function formatWorkspaceOverviewText(
           lines.push(`  📊 检测模式: ${structure.lintResult.mode}`);
         }
         
-        // 显示警告（即使通过检查也可能有警告）
-        if (structure.lintResult.warnings && structure.lintResult.warnings.length > 0) {
-          lines.push('  ⚠️ 注意事项:');
-          structure.lintResult.warnings.forEach((warning: any, index: number) => {
-            lines.push(`    ${index + 1}. 第${warning.line}行，第${warning.column}列: ${warning.message}`);
-          });
-        }
+        // // 显示警告（即使通过检查也可能有警告）
+        // if (structure.lintResult.warnings && structure.lintResult.warnings.length > 0) {
+        //   lines.push('  ⚠️ 注意事项:');
+        //   structure.lintResult.warnings.forEach((warning: any, index: number) => {
+        //     lines.push(`    ${index + 1}. 第${warning.line}行，第${warning.column}列: ${warning.message}`);
+        //   });
+        // }
         
         // 显示注释信息
         if (structure.lintResult.notes && structure.lintResult.notes.length > 0) {
@@ -5329,7 +5780,7 @@ export async function configureBlockTool(args: any): Promise<ToolUseResult> {
   
   try {
     const workspace = getActiveWorkspace();
-    let { blockId, blockType, fields, inputs } = args;
+    let { blockId, blockType, fields, inputs, extraState } = args;
 
     // 🔧 参数修复和转换
     console.log('🔧 开始参数修复和转换...');
@@ -5383,30 +5834,110 @@ export async function configureBlockTool(args: any): Promise<ToolUseResult> {
       }
     }
 
+    // 修复 extraState 参数
+    if (typeof extraState === 'string') {
+      console.log(`⚠️ extraState 是字符串，尝试解析...`);
+      
+      if (extraState.trim() && extraState !== '{}') {
+        const fixResult = fixJsonString(extraState, { logProcess: true });
+        
+        if (fixResult.success) {
+          console.log(`✅ JSON 修复成功，应用的修复: ${fixResult.changes.join(', ')}`);
+          try {
+            extraState = JSON.parse(fixResult.fixed);
+            console.log(`✅ extraState 修复成功: ${JSON.stringify(extraState)}`);
+          } catch (parseError) {
+            console.warn(`❌ 修复后的 JSON 仍然无法解析: ${(parseError as Error).message}`);
+            extraState = null;
+          }
+        } else {
+          console.warn(`❌ JSON 修复失败: ${fixResult.error}`);
+          console.warn(`❌ 尝试的修复: ${fixResult.changes.join(', ')}`);
+          extraState = null;
+        }
+      } else {
+        extraState = null;
+        console.log(`✅ extraState 设为 null（空字符串或仅包含 {}）`);
+      }
+    }
+
     console.log('🔍 修复后的参数:');
     console.log(`  - 块ID: ${blockId}`);
     console.log(`  - 块类型: ${blockType}`);
     console.log(`  - 字段: ${JSON.stringify(fields)}`);
     console.log(`  - 输入: ${JSON.stringify(inputs)}`);
+    console.log(`  - extraState: ${JSON.stringify(extraState)}`);
     
     let targetBlock: any = null;
     
-    // 查找目标块
+    // 查找目标块 - 参考 findBlockTool 的智能查找逻辑
     if (blockId) {
+      console.log(`🆔 按ID查找: "${blockId}"`);
+      
+      // 1. 首先尝试精确匹配
       targetBlock = workspace.getBlockById(blockId);
-    } else if (blockType) {
+      
+      if (!targetBlock) {
+        console.log(`❌ 精确匹配未找到，尝试智能模糊匹配...`);
+        
+        // 2. 使用智能模糊匹配
+        targetBlock = getBlockByIdSmart(workspace, blockId, {
+          enableFuzzyMatch: true,
+          minScore: 60,
+          logDetails: true
+        });
+        
+        if (targetBlock) {
+          console.log(`✅ 模糊匹配成功: ${targetBlock.type} (ID: ${targetBlock.id})`);
+        }
+      } else {
+        console.log(`✅ 精确匹配成功: ${targetBlock.type} (ID: ${targetBlock.id})`);
+      }
+    } 
+    
+    // 如果通过ID未找到，或者只提供了块类型
+    if (!targetBlock && blockType) {
+      console.log(`📋 按类型查找: "${blockType}"`);
+      
       const allBlocks = workspace.getAllBlocks();
-      targetBlock = allBlocks.find((block: any) => block.type === blockType);
+      
+      // 1. 首先尝试精确类型匹配
+      const exactMatches = allBlocks.filter((block: any) => block.type === blockType);
+      
+      if (exactMatches.length > 0) {
+        targetBlock = exactMatches[0]; // 取第一个匹配的
+        console.log(`✅ 精确类型匹配成功: ${targetBlock.type} (ID: ${targetBlock.id})`);
+        
+        if (exactMatches.length > 1) {
+          console.log(`⚠️ 发现 ${exactMatches.length} 个相同类型的块，已选择第一个`);
+        }
+      } else {
+        console.log(`❌ 精确类型匹配未找到，尝试模糊类型匹配...`);
+        
+        // 2. 尝试模糊类型匹配
+        const fuzzyMatches = allBlocks.filter((block: any) => 
+          block.type.toLowerCase().includes(blockType.toLowerCase())
+        );
+        
+        if (fuzzyMatches.length > 0) {
+          targetBlock = fuzzyMatches[0];
+          console.log(`✅ 模糊类型匹配成功: ${targetBlock.type} (ID: ${targetBlock.id})`);
+          console.log(`🔍 找到 ${fuzzyMatches.length} 个模糊匹配，已选择第一个`);
+        }
+      }
     }
     
+    // 最后的检查
     if (!targetBlock) {
-      throw new Error('未找到目标块');
+      const searchInfo = blockId ? `块ID "${blockId}"` : blockType ? `块类型 "${blockType}"` : '未指定的条件';
+      throw new Error(`未找到目标块 (${searchInfo})。请检查ID是否正确或块是否存在于工作区中。`);
     }
 
     console.log(`✅ 找到目标块: ${targetBlock.type} (ID: ${targetBlock.id})`);
 
     let fieldsUpdated: string[] = [];
     const inputsUpdated: string[] = [];
+    let extraStateUpdated: boolean = false;
 
     let check: boolean = false;
 
@@ -5428,28 +5959,84 @@ export async function configureBlockTool(args: any): Promise<ToolUseResult> {
       }
     }
 
+    // 配置 extraState（用于修改 controls_if 等动态块的结构）
+    if (extraState) {
+      console.log('🎛️ 开始更新 extraState...');
+      try {
+        // 检测是否支持动态输入
+        const dynamicSupport = detectDynamicInputSupport(targetBlock.type, targetBlock);
+        
+        if (dynamicSupport.supportsDynamic) {
+          console.log(`✅ ${targetBlock.type} 支持动态输入，应用 extraState`);
+          await applyDynamicExtraState(targetBlock, extraState, dynamicSupport);
+          extraStateUpdated = true;
+          console.log(`✅ extraState 更新完成`);
+        } else if (targetBlock.loadExtraState && typeof targetBlock.loadExtraState === 'function') {
+          console.log(`🔄 使用 loadExtraState 方法更新`);
+          targetBlock.loadExtraState(extraState);
+          extraStateUpdated = true;
+          console.log(`✅ extraState 更新完成`);
+        } else {
+          console.warn(`⚠️ ${targetBlock.type} 不支持 extraState 配置`);
+        }
+      } catch (error) {
+        console.warn('extraState 配置时出错:', error);
+      }
+    }
+
     // 配置输入（如果需要支持）
-    if (inputs) {
-      console.log('🔌 输入配置暂不支持（可以在此扩展）');
+    // if (inputs) {
+    //   console.log('🔌 输入配置暂不支持（可以在此扩展）');
+    // }
+
+    // 更新成功状态检查
+    const overallSuccess = check || extraStateUpdated;
+
+    // 🔄 关键修复：如果有结构更新，重新初始化块的SVG
+    if (extraStateUpdated && targetBlock) {
+      try {
+        console.log('🔧 结构已更新，重新初始化块SVG...');
+        
+        // 重新初始化SVG（这是关键步骤）
+        if (targetBlock.initSvg && typeof targetBlock.initSvg === 'function') {
+          targetBlock.initSvg();
+          console.log('✅ 块SVG重新初始化完成');
+        }
+        
+        // 确保块可见并正确渲染
+        if (targetBlock.render && typeof targetBlock.render === 'function') {
+          targetBlock.render();
+          console.log('✅ 块重新渲染完成');
+        }
+        
+      } catch (svgError) {
+        console.warn('⚠️ SVG重新初始化失败，但配置已成功:', svgError);
+      }
     }
 
     let message = ``;
-    if (check) {
-      message += `✅ 块配置成功: ${targetBlock.type} [${blockId}] ${fieldsUpdated.length > 0 ? `，更新字段: ${fieldsUpdated.join(', ')}` : ''}`;
+    if (overallSuccess) {
+      message += `✅ 块配置成功: ${targetBlock.type} [${targetBlock.id}]`;
+      if (fieldsUpdated.length > 0) {
+        message += `，更新字段: ${fieldsUpdated.join(', ')}`;
+      }
+      if (extraStateUpdated) {
+        message += `，更新结构配置`;
+      }
     } else {
       message += `⚠️ 块配置部分失败，请检查提供的字段和值是否正确。请阅读库readme以获取支持的字段列表。`;
     }
-    // const message = `✅ 块配置成功: ${targetBlock.type} [${blockId}] ${fieldsUpdated.length > 0 ? `，更新字段: ${fieldsUpdated.join(', ')}` : ''}`;
     console.log(message);
 
     return {
-      is_error: check ? false : true,
+      is_error: !overallSuccess,
       content: message,
       details: JSON.stringify({
         blockId: targetBlock.id,
         blockType: targetBlock.type,
         fieldsUpdated,
-        inputsUpdated
+        inputsUpdated,
+        extraStateUpdated
       })
     };
 
@@ -6092,10 +6679,10 @@ async function scanBlockDefinitions(projectService?: any): Promise<Map<string, B
     
   } catch (error) {
     console.warn('❌ 扫描块定义文件失败:', error);
-    console.log('📋 错误详情:', error);
+    // console.log('📋 错误详情:', error);
     
     // 如果扫描失败，返回预定义的块信息作为后备
-    console.log('🔄 使用预定义的块信息作为后备...');
+    // console.log('🔄 使用预定义的块信息作为后备...');
     return getFallbackBlockDefinitions();
   }
 }
@@ -7035,10 +7622,10 @@ async function createDynamicStructure(
   }
   
   // 3. 根据连接规则连接块
-  console.log('🗺️ 当前块映射表:');
-  for (const [key, block] of blockMap.entries()) {
-    console.log(`  - ${key} → ${block.type}[${block.id}]`);
-  }
+  // console.log('🗺️ 当前块映射表:');
+  // for (const [key, block] of blockMap.entries()) {
+  //   console.log(`  - ${key} → ${block.type}[${block.id}]`);
+  // }
   
   for (const rule of connectionRules) {
     try {
@@ -7132,10 +7719,10 @@ async function createDynamicStructure(
           (window as any)['Blockly'].Events.setRecordUndo(wasRecordingUndo);
         }
       } else {
-        console.warn(`⚠️ 无法找到连接的块: ${rule.source} -> ${rule.target}`);
-        console.warn(`  源块 "${rule.source}": ${sourceBlock ? '✅ 找到' : '❌ 未找到'}`);
-        console.warn(`  目标块 "${rule.target}": ${targetBlock ? '✅ 找到' : '❌ 未找到'}`);
-        console.warn(`  可用的块键: [${Array.from(blockMap.keys()).join(', ')}]`);
+        // console.warn(`⚠️ 无法找到连接的块: ${rule.source} -> ${rule.target}`);
+        // console.warn(`  源块 "${rule.source}": ${sourceBlock ? '✅ 找到' : '❌ 未找到'}`);
+        // console.warn(`  目标块 "${rule.target}": ${targetBlock ? '✅ 找到' : '❌ 未找到'}`);
+        // console.warn(`  可用的块键: [${Array.from(blockMap.keys()).join(', ')}]`);
       }
     } catch (error) {
       console.warn(`❌ 连接块时出错:`, error);
@@ -7362,18 +7949,18 @@ async function handleBlockInsertion(
         console.log(`  - statementInput.connection存在: ${!!(statementInput && statementInput.connection)}`);
         console.log(`  - block.previousConnection存在: ${!!block.previousConnection}`);
         
-        if (statementInput) {
-          console.log(`  - statementInput.type: ${statementInput.type}`);
-          if (statementInput.connection) {
-            console.log(`  - statementInput.connection.type: ${statementInput.connection.type}`);
-            console.log(`  - statementInput.connection已连接: ${!!statementInput.connection.targetBlock()}`);
-          }
-        }
+        // if (statementInput) {
+        //   // console.log(`  - statementInput.type: ${statementInput.type}`);
+        //   if (statementInput.connection) {
+        //     console.log(`  - statementInput.connection.type: ${statementInput.connection.type}`);
+        //     console.log(`  - statementInput.connection已连接: ${!!statementInput.connection.targetBlock()}`);
+        //   }
+        // }
         
-        if (block.previousConnection) {
-          console.log(`  - block.previousConnection.type: ${block.previousConnection.type}`);
-          console.log(`  - block.previousConnection已连接: ${!!block.previousConnection.targetBlock()}`);
-        }
+        // if (block.previousConnection) {
+        //   console.log(`  - block.previousConnection.type: ${block.previousConnection.type}`);
+        //   console.log(`  - block.previousConnection已连接: ${!!block.previousConnection.targetBlock()}`);
+        // }
         
         if (statementInput && statementInput.connection && block.previousConnection) {
           // 检查连接类型兼容性
@@ -7415,24 +8002,24 @@ async function handleBlockInsertion(
           }
         } else {
           console.warn(`❌ statement 连接失败 - 连接点检查:`);
-          console.warn(`  语句输入存在: ${!!statementInput}`);
-          console.warn(`  语句输入连接存在: ${!!(statementInput && statementInput.connection)}`);
-          console.warn(`  插入块previousConnection存在: ${!!block.previousConnection}`);
+          // console.warn(`  语句输入存在: ${!!statementInput}`);
+          // console.warn(`  语句输入连接存在: ${!!(statementInput && statementInput.connection)}`);
+          // console.warn(`  插入块previousConnection存在: ${!!block.previousConnection}`);
           
-          if (statementInput) {
-            console.warn(`  语句输入类型: ${statementInput.type}`);
-            if (statementInput.connection) {
-              console.warn(`  语句输入连接类型: ${statementInput.connection.type}`);
-            }
-          }
-          if (block.previousConnection) {
-            console.warn(`  插入块连接类型: ${block.previousConnection.type}`);
-          }
+          // if (statementInput) {
+          //   console.warn(`  语句输入类型: ${statementInput.type}`);
+          //   if (statementInput.connection) {
+          //     console.warn(`  语句输入连接类型: ${statementInput.connection.type}`);
+          //   }
+          // }
+          // if (block.previousConnection) {
+          //   console.warn(`  插入块连接类型: ${block.previousConnection.type}`);
+          // }
         }
       } else {
         console.warn(`❌ statement 插入失败: 无法确定目标输入名`);
-        console.warn(`  目标块类型: ${targetBlock.type}`);
-        console.warn(`  请检查目标块是否为容器块（如 setup, loop 等）`);
+        // console.warn(`  目标块类型: ${targetBlock.type}`);
+        // console.warn(`  请检查目标块是否为容器块（如 setup, loop 等）`);
       }
       break;
       

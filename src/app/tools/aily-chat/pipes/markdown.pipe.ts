@@ -306,14 +306,23 @@ export class MarkdownPipe implements PipeTransform {
       map((html: string) => {
         // 在这里，HTML 已经包含了组件占位符
         // 后续需要通过指令或其他机制将占位符替换为真正的组件
-        return this.sanitizer.bypassSecurityTrustHtml(html);
+        const filteredHtml = this.filterHiddenTokens(html);
+        return this.sanitizer.bypassSecurityTrustHtml(filteredHtml);
       }),
       catchError((error) => {
         console.warn('Markdown parsing error:', error);
         // 如果解析失败，返回原始文本
-        return of(this.sanitizer.bypassSecurityTrustHtml(markdownText));
+        const filteredMarkdown = this.filterHiddenTokens(markdownText);
+        return of(this.sanitizer.bypassSecurityTrustHtml(filteredMarkdown));
       })
     );
+  }
+
+  /**
+   * 过滤需要隐藏的特殊标记，防止在界面上渲染
+   */
+  private filterHiddenTokens(content: string): string {
+    return content.replace(/TERMINATE/g, '');
   }
 }
 

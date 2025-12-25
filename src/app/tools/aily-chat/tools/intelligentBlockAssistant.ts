@@ -83,29 +83,29 @@ export class IntelligentBlockAssistant {
     } = {}
   ): Promise<BlockSequenceResult> {
     
-    console.log(`🧠 开始智能块序列生成`);
-    console.log(`📝 用户意图: ${userIntent}`);
-    console.log(`📚 目标库: ${targetLibraries.join(', ') || '所有已安装库'}`);
+    // console.log(`🧠 开始智能块序列生成`);
+    // console.log(`📝 用户意图: ${userIntent}`);
+    // console.log(`📚 目标库: ${targetLibraries.join(', ') || '所有已安装库'}`);
     
     // 1. 获取所有相关库的块知识
     const libraryKnowledge = await this.gatherLibraryKnowledge(targetLibraries, projectService);
-    console.log(`📊 获取了 ${libraryKnowledge.size} 个库的知识`);
+    // console.log(`📊 获取了 ${libraryKnowledge.size} 个库的知识`);
     
     // 2. 理解用户意图
     const intentAnalysis = await this.analyzeUserIntent(userIntent);
-    console.log(`🎯 意图分析: ${JSON.stringify(intentAnalysis)}`);
+    // console.log(`🎯 意图分析: ${JSON.stringify(intentAnalysis)}`);
     
     // 3. 匹配合适的块和模式
     const matchedPatterns = await this.matchBlockPatterns(intentAnalysis, libraryKnowledge);
-    console.log(`🔍 找到 ${matchedPatterns.length} 个匹配模式`);
+    // console.log(`🔍 找到 ${matchedPatterns.length} 个匹配模式`);
     
     // 4. 生成具体的块序列
     const blockSequence = await this.constructBlockSequence(matchedPatterns, intentAnalysis, options);
-    console.log(`🔧 生成了 ${blockSequence.length} 个块的序列`);
+    // console.log(`🔧 生成了 ${blockSequence.length} 个块的序列`);
     
     // 5. 验证序列的正确性
     const validation = await this.validateBlockSequence(blockSequence, libraryKnowledge);
-    console.log(`✅ 序列验证${validation.isValid ? '通过' : '失败'}`);
+    // console.log(`✅ 序列验证${validation.isValid ? '通过' : '失败'}`);
     
     // 6. 生成替代方案
     const alternatives = await this.generateAlternatives(matchedPatterns, blockSequence, intentAnalysis);
@@ -151,7 +151,7 @@ export class IntelligentBlockAssistant {
             const currentProjectPath = projectService.currentProjectPath === projectService.projectRootPath ? "" : projectService.currentProjectPath;
             if (currentProjectPath) {
               projectPath = currentProjectPath;
-              console.log(`✅ 获取项目路径: ${projectPath}`);
+              // console.log(`✅ 获取项目路径: ${projectPath}`);
             } else {
               console.warn('项目路径为空');
             }
@@ -556,7 +556,7 @@ export class IntelligentBlockAssistant {
     const bestPattern = patterns[0];
     const sequence: BlockSequenceStep[] = [];
     
-    console.log(`🎯 使用最佳模式: ${bestPattern.pattern.name} (得分: ${bestPattern.score.toFixed(2)})`);
+    // console.log(`🎯 使用最佳模式: ${bestPattern.pattern.name} (得分: ${bestPattern.score.toFixed(2)})`);
     
     for (let i = 0; i < bestPattern.pattern.sequence.length; i++) {
       const step = bestPattern.pattern.sequence[i];

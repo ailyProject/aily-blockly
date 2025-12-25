@@ -124,38 +124,38 @@ export class BlockAnalyzer {
    * 深度分析库的所有可用块
    */
   static async analyzeLibraryBlocks(libraryName: string, projectPath?: string): Promise<LibraryBlockKnowledge> {
-    console.log(`🔍 开始分析库: ${libraryName}`);
+    // console.log(`🔍 开始分析库: ${libraryName}`);
     
     // 首先检查缓存
     const libraryPath = await this.getLibraryPath(libraryName, projectPath);
     const cachedResult = await templateCacheService.getCachedAnalysis(libraryPath);
     if (cachedResult) {
-      console.log(`📦 使用缓存的分析结果: ${libraryName}`);
+      // console.log(`📦 使用缓存的分析结果: ${libraryName}`);
       return cachedResult;
     }
     
     try {
-      console.log(`�📂 库路径: ${libraryPath}`);
+      // console.log(`�📂 库路径: ${libraryPath}`);
       
       // 1. 解析 block.json - 获取块定义
       const blockDefinitions = await this.parseBlockDefinitions(libraryPath);
-      console.log(`📦 找到 ${blockDefinitions.length} 个块定义`);
+      // console.log(`📦 找到 ${blockDefinitions.length} 个块定义`);
       
       // 2. 解析 generator.js - 获取C++代码生成逻辑
       const generatorLogic = await this.parseGeneratorLogic(libraryPath);
-      console.log(`⚙️ 解析了 ${generatorLogic.size} 个生成器`);
+      // console.log(`⚙️ 解析了 ${generatorLogic.size} 个生成器`);
       
       // 3. 解析 toolbox.json - 获取分类和工具箱信息
       const toolboxInfo = await this.parseToolboxInfo(libraryPath);
-      console.log(`🔧 解析了 ${toolboxInfo.categories.length} 个分类`);
+      // console.log(`🔧 解析了 ${toolboxInfo.categories.length} 个分类`);
       
       // 4. 关联分析 - 建立块与C++代码的映射关系
       const blockRelations = await this.analyzeBlockRelations(blockDefinitions, generatorLogic);
-      console.log(`🔗 分析了块关系图`);
+      // console.log(`🔗 分析了块关系图`);
       
       // 5. 生成使用知识图谱
       const usagePatterns = await this.extractUsagePatterns(blockRelations, toolboxInfo, blockDefinitions);
-      console.log(`📋 生成了 ${usagePatterns.length} 个使用模式`);
+      // console.log(`📋 生成了 ${usagePatterns.length} 个使用模式`);
       
       // 6. 丰富块信息
       const enrichedBlocks = this.enrichBlockInformation(blockDefinitions, generatorLogic, blockRelations);
@@ -179,7 +179,7 @@ export class BlockAnalyzer {
       ];
       templateCacheService.setCachedAnalysis(libraryPath, result, filePaths);
       
-      console.log(`✅ 库分析完成: ${libraryName}`);
+      // console.log(`✅ 库分析完成: ${libraryName}`);
       return result;
       
     } catch (error) {
@@ -903,7 +903,7 @@ export class BlockAnalyzer {
         libraryName
       );
       
-      console.log(`🔍 库路径解析: ${libraryName} -> ${exactLibraryPath}`);
+      // console.log(`🔍 库路径解析: ${libraryName} -> ${exactLibraryPath}`);
       
       // 验证精确路径是否存在
       if (electronAPI.fs && electronAPI.fs.existsSync(exactLibraryPath)) {
@@ -911,10 +911,10 @@ export class BlockAnalyzer {
       }
       
       // 2. 精确匹配失败，尝试模糊匹配
-      console.log(`🔍 精确匹配失败，开始模糊匹配: ${libraryName}`);
+      // console.log(`🔍 精确匹配失败，开始模糊匹配: ${libraryName}`);
       const fuzzyMatchPath = await this.findLibraryByFuzzyMatch(libraryName, currentProjectPath);
       if (fuzzyMatchPath) {
-        console.log(`✅ 模糊匹配成功: ${libraryName} -> ${fuzzyMatchPath}`);
+        // console.log(`✅ 模糊匹配成功: ${libraryName} -> ${fuzzyMatchPath}`);
         return fuzzyMatchPath;
       }
       
@@ -952,7 +952,7 @@ export class BlockAnalyzer {
       const dependencies = packageData.dependencies || {};
       const libraryNames = Object.keys(dependencies);
       
-      console.log(`📦 从 package.json 读取到 ${libraryNames.length} 个依赖:`, libraryNames);
+      // console.log(`📦 从 package.json 读取到 ${libraryNames.length} 个依赖:`, libraryNames);
       
       return libraryNames;
     } catch (error) {
@@ -1028,7 +1028,7 @@ export class BlockAnalyzer {
       const installedLibraries = this.getInstalledLibraries(projectPath);
       
       if (installedLibraries.length > 0) {
-        console.log(`🔍 使用 package.json 进行模糊匹配: "${partialName}"`);
+        // console.log(`🔍 使用 package.json 进行模糊匹配: "${partialName}"`);
         
         // 使用智能匹配策略匹配库名
         const bestMatch = this.findBestLibraryMatch(partialName, installedLibraries);
@@ -1039,14 +1039,14 @@ export class BlockAnalyzer {
           
           // 验证路径是否有效
           if (this.isValidLibraryPath(libraryPath)) {
-            console.log(`🎯 找到匹配库: "${partialName}" -> "${bestMatch}"`);
+            // console.log(`🎯 找到匹配库: "${partialName}" -> "${bestMatch}"`);
             return libraryPath;
           }
         }
       }
       
       // 如果 package.json 方法失败，回退到目录扫描
-      console.log(`📁 回退到目录扫描进行模糊匹配: "${partialName}"`);
+      // console.log(`📁 回退到目录扫描进行模糊匹配: "${partialName}"`);
       return this.findLibraryByDirectoryScan(partialName, projectPath);
       
     } catch (error) {
@@ -1090,7 +1090,7 @@ export class BlockAnalyzer {
             .filter(entry => entry.isDirectory())
             .map(entry => entry.name);
           
-          console.log(`📁 在 ${searchPath} 中找到 ${directories.length} 个目录`);
+          // console.log(`📁 在 ${searchPath} 中找到 ${directories.length} 个目录`);
           
           // 使用更智能的匹配策略
           const bestMatch = this.findBestLibraryMatch(partialNameLower, directories);
@@ -1104,7 +1104,7 @@ export class BlockAnalyzer {
                 ? `@aily-project/${bestMatch}`
                 : bestMatch;
               
-              console.log(`🎯 找到匹配库: "${partialName}" -> "${fullLibraryName}"`);
+              // console.log(`🎯 找到匹配库: "${partialName}" -> "${fullLibraryName}"`);
               return Promise.resolve(candidatePath);
             }
           }
@@ -1172,14 +1172,14 @@ export class BlockAnalyzer {
       try {
         const savedProjectPath = localStorage.getItem('currentProjectPath');
         if (savedProjectPath) {
-          console.log('从本地存储获取项目路径:', savedProjectPath);
+          // console.log('从本地存储获取项目路径:', savedProjectPath);
           return savedProjectPath;
         }
       } catch (error) {
         console.warn('无法从本地存储获取项目路径:', error);
       }
       
-      console.warn('无法获取当前项目路径，所有方法都失败了');
+      // console.warn('无法获取当前项目路径，所有方法都失败了');
       return null;
       
     } catch (error) {

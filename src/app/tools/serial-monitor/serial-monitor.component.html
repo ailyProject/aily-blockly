@@ -1,9 +1,9 @@
 @if (currentUrl == "/serial-monitor") {
-<app-sub-window [title]="windowInfo" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
+<app-sub-window [title]="'MONITOR'" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-sub-window>
 } @else {
-<app-tool-container [title]="windowInfo" [path]="'/serial-monitor'" (closeEvent)="close()">
+<app-tool-container [title]="'MONITOR'" [path]="'/serial-monitor'" (closeEvent)="close()">
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-tool-container>
 }
@@ -126,7 +126,7 @@
             <app-quick-send-list (openMore)="openQuickSendEditor()"></app-quick-send-list>
           </div>
           <div class="input-box">
-            <textarea #chatTextarea class="sscroll vsfont" spellcheck="false" [(ngModel)]="inputValue"
+            <textarea #chatTextarea class="sscroll vsfont" [(ngModel)]="inputValue"
               (keydown)="onKeyDown($event)">
             </textarea>
             <div class="btns">

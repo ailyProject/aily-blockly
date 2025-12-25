@@ -38,6 +38,9 @@ export class NotificationComponent {
 
   ngOnInit(): void {
     this.noticeService.stateSubject.subscribe((data) => {
+      if (data && data.showProgress !== false) {
+        data.showProgress = true;
+      }
       this.data = data;
 
       // 如果有进度值，启动进度动画

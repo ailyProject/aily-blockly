@@ -1,0 +1,234 @@
+.window-box {
+    padding: 0 15px;
+
+    .user-info {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        border-bottom: 1px #666666 solid;
+        padding: 15px 0;
+        margin-bottom: 15px;
+
+        .avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: 1px #666 solid;
+
+            i {
+                color: #666;
+                font-size: 30px;
+            }
+        }
+
+
+    }
+
+    .user-data {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+
+        .item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.03);
+
+            &:hover {
+                border-color: rgba(255, 255, 255, 0.18);
+                background: rgba(255, 255, 255, 0.06);
+            }
+
+            .icon {
+                width: 48px;
+                height: 48px;
+                border-radius: 14px;
+                background: rgba(255, 255, 255, 0.06);
+                color: #f5f5f5;
+                flex-shrink: 0;
+
+                i {
+                    font-size: 20px;
+                }
+            }
+
+            .content {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .headline {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 12px;
+
+                .label {
+                    font-size: 14px;
+                    font-weight: 600;
+                    letter-spacing: 0.02em;
+                    color: rgba(255, 255, 255, 0.86);
+                    text-transform: uppercase;
+                }
+
+                .value {
+                    font-size: 22px;
+                    font-weight: 700;
+                    color: #ffd166;
+
+                    span{
+                        font-size: 14px;
+                        color: #666666;
+                    }
+                }
+            }
+
+            .value {
+                font-size: 16px;
+                font-weight: 500;
+                color: rgba(255, 255, 255, 0.86);
+
+                &.value--muted {
+                    color: rgba(255, 255, 255, 0.6);
+                }
+            }
+
+            .meta {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .chip {
+                display: inline-flex;
+                align-items: center;
+                padding: 4px 10px;
+                border-radius: 999px;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.75);
+                font-size: 12px;
+                font-weight: 500;
+                letter-spacing: 0.02em;
+            }
+
+            .progress {
+                width: 100%;
+                height: 8px;
+                border-radius: 4px;
+                overflow: hidden;
+                background: linear-gradient(90deg, #00c600 0%, #fbff00 50%, #ce0f0f 100%);
+                display: flex;
+                position: relative;
+
+                .remaining-bar {
+                    position: absolute;
+                    right: 0;
+                    height: 100%;
+                    background: #808080;
+                }
+            }
+        }
+
+        .username {
+            margin-top: 12px;
+            text-align: center;
+            max-width: 100%;
+
+            .username__text {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: rgba(255, 255, 255, 0.92);
+                cursor: pointer;
+                padding: 4px 12px;
+                border-radius: 8px;
+                transition: background-color 0.2s ease, color 0.2s ease;
+
+                &:hover,
+                &:focus-visible {
+                    background: rgba(255, 255, 255, 0.08);
+                    outline: none;
+                }
+
+                &.username__text--placeholder {
+                    color: rgba(255, 255, 255, 0.55);
+                    font-weight: 500;
+                }
+            }
+        }
+
+        .nickname-edit {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+            width: 220px;
+            max-width: 100%;
+
+            input {
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.2);
+                color: #f5f5f5;
+                width: 100%;
+
+                &:focus {
+                    border-color: #7f5af0;
+                    box-shadow: 0 0 0 2px rgba(127, 90, 240, 0.2);
+                }
+            }
+
+            .nickname-edit__hint {
+                width: 100%;
+                text-align: center;
+                font-size: 12px;
+                color: rgba(255, 255, 255, 0.55);
+            }
+
+            .nickname-edit__error {
+                width: 100%;
+                text-align: center;
+                font-size: 12px;
+                color: #ff6b6b;
+            }
+        }
+
+        .user-login {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-top: 10px;
+
+            .label {
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+                font-weight: 600;
+            }
+
+            .value {
+                color: rgba(255, 255, 255, 0.82);
+                font-weight: 500;
+            }
+        }
+    }
+
+    .actions {
+        width: 100%;
+        margin: 24px 0 16px;
+
+        button {
+            width: 100%;
+        }
+    }
+}

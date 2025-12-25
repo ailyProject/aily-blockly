@@ -15,7 +15,7 @@ async function checkRipgrepAvailable(): Promise<boolean> {
         const electronAPI = (window as any).electronAPI;
         if (electronAPI?.ripgrep && typeof electronAPI.ripgrep.isRipgrepAvailable === 'function') {
             ripgrepAvailable = await electronAPI.ripgrep.isRipgrepAvailable();
-            console.log('Ripgrep 可用性检测:', ripgrepAvailable);
+            // console.log('Ripgrep 可用性检测:', ripgrepAvailable);
             return ripgrepAvailable;
         }
     } catch (error) {
@@ -33,7 +33,9 @@ async function searchWithRipgrep(
     pattern: string,
     searchPath: string,
     include?: string,
-    isRegex: boolean = true
+    isRegex: boolean = true,
+    ignoreCase: boolean = true,
+    wholeWord: boolean = false
 ): Promise<{ numFiles: number, filenames: string[], durationMs: number } | null> {
     try {
         const electronAPI = (window as any).electronAPI;
@@ -46,8 +48,9 @@ async function searchWithRipgrep(
             path: searchPath,
             include,
             isRegex,
-            maxResults: 100,
-            ignoreCase: true
+            maxResults: 50,
+            ignoreCase,
+            wholeWord
         });
         
         if (!result.success) {
@@ -108,7 +111,9 @@ function searchFilesRecursive(
     pattern: string,
     includePattern?: string,
     isRegex: boolean = true,
-    maxResults: number = 100
+    maxResults: number = 50,
+    ignoreCase: boolean = true,
+    wholeWord: boolean = false
 ): { filenames: string[], numFiles: number } {
     const matchedFiles: string[] = [];
     const visited = new Set<string>();
@@ -116,15 +121,18 @@ function searchFilesRecursive(
     // 编译搜索正则表达式
     let searchRegex: RegExp;
     try {
+        const flags = ignoreCase ? 'i' : '';
         if (isRegex) {
-            searchRegex = new RegExp(pattern, 'i'); // 不区分大小写
+            searchRegex = new RegExp(pattern, flags);
         } else {
             // 如果不是正则表达式，进行转义并创建普通文本搜索
             const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            searchRegex = new RegExp(escapedPattern, 'i');
+            // 如果启用 wholeWord，添加单词边界
+            const finalPattern = wholeWord ? `\\b${escapedPattern}\\b` : escapedPattern;
+            searchRegex = new RegExp(finalPattern, flags);
         }
-    } catch (error) {
-        throw new Error(`无效的搜索模式: ${pattern}`);
+    } catch (error: any) {
+        throw new Error(`无效的搜索模式 "${pattern}": ${error.message}。${isRegex ? '如果使用正则表达式，请确保语法正确。如需匹配特殊字符，请设置 isRegex=false' : ''}`);
     }
     
     // 解析文件包含模式
@@ -256,6 +264,8 @@ export async function grepTool(
         contextLines?: number;
         maxLineLength?: number;
         maxResults?: number;
+        ignoreCase?: boolean;
+        wholeWord?: boolean;
     }
 ): Promise<ToolUseResult> {
     const startTime = Date.now();
@@ -269,7 +279,9 @@ export async function grepTool(
             returnContent = false,
             contextLines = 0,
             maxLineLength = 500,
-            maxResults = 100
+            maxResults = 50,
+            ignoreCase = true,
+            wholeWord = false
         } = params;
         
         // 验证搜索模式
@@ -301,7 +313,7 @@ export async function grepTool(
         // 路径规范化
         searchPath = normalizePath(searchPath);
         
-        console.log(`搜索文件内容: pattern="${pattern}", path="${searchPath}", include="${include || 'all'}"`);
+        // console.log(`搜索文件内容: pattern="${pattern}", path="${searchPath}", include="${include || 'all'}"`);
         
         // 验证路径是否存在
         if (!window['fs'].existsSync(searchPath)) {
@@ -327,19 +339,36 @@ export async function grepTool(
         
         // 如果需要返回内容，使用 searchContent
         if (returnContent && ripgrepReady) {
-            console.log('使用 ripgrep searchContent 返回匹配内容');
+            // console.log('使用 ripgrep searchContent 返回匹配内容');
             
             try {
                 const electronAPI = (window as any).electronAPI;
+                
+                // 🆕 动态调整策略：先用较小的 maxLineLength 试探性搜索
+                let effectiveMaxLineLength = Math.min(Math.max(100, maxLineLength || 500), 2000);
+                let effectiveMaxResults = maxResults;
+                
+                // 如果 maxLineLength 过小（<300），可能漏掉关键内容，自动提高到 500
+                if (effectiveMaxLineLength < 300) {
+                    console.warn(`maxLineLength 太小 (${effectiveMaxLineLength})，自动调整到 500 以避免遗漏关键内容`);
+                    effectiveMaxLineLength = 500;
+                }
+                
+                // 如果 maxLineLength 过大（>1000），减少 maxResults 防止数据过载
+                if (effectiveMaxLineLength > 1000) {
+                    effectiveMaxResults = Math.min(maxResults, 10);
+                    console.warn(`maxLineLength 较大 (${effectiveMaxLineLength})，降低 maxResults 到 ${effectiveMaxResults} 防止数据过载`);
+                }
+                
                 const result = await electronAPI.ripgrep.searchContent({
                     pattern,
                     path: searchPath,
                     include,
                     isRegex,
-                    maxResults,
-                    ignoreCase: true,
+                    maxResults: effectiveMaxResults,
+                    ignoreCase,
                     contextLines: Math.min(Math.max(0, contextLines || 0), 5), // 限制0-5
-                    maxLineLength: Math.min(Math.max(100, maxLineLength || 500), 2000) // 限制100-2000
+                    maxLineLength: effectiveMaxLineLength
                 });
                 
                 const durationMs = Date.now() - startTime;
@@ -362,13 +391,16 @@ export async function grepTool(
                     return injectTodoReminder(toolResult, 'grepTool');
                 }
                 
+                // 🆕 数据量控制：最大 20KB 硬性限制
+                const MAX_CONTENT_SIZE = 20 * 1024; // 20KB
                 let resultContent = `找到 ${result.numMatches} 个匹配项\n`;
                 resultContent += `搜索模式: ${pattern}\n`;
                 resultContent += `搜索路径: ${searchPath}\n`;
                 if (include) {
                     resultContent += `文件过滤: ${include}\n`;
                 }
-                resultContent += `耗时: ${result.durationMs}ms (使用 ripgrep)\n\n`;
+                resultContent += `耗时: ${result.durationMs}ms (使用 ripgrep)\n`;
+                resultContent += `每行最大长度: ${effectiveMaxLineLength} 字符\n\n`;
                 
                 // 按文件分组显示匹配内容
                 const byFile: { [file: string]: typeof result.matches } = {};
@@ -379,28 +411,73 @@ export async function grepTool(
                     byFile[match.file].push(match);
                 });
                 
-                Object.entries(byFile).forEach(([file, matches], fileIndex) => {
-                    resultContent += `━━━ 文件 ${fileIndex + 1}: ${file} (${matches.length} 个匹配) ━━━\n`;
-                    matches.forEach((match: any, matchIndex: number) => {
-                        resultContent += `  [${matchIndex + 1}] 行 ${match.line}:\n`;
-                        resultContent += `      ${match.content}\n`;
-                    });
-                    resultContent += '\n';
-                });
+                let needContent = true;
+                let warnContent = '';
+                let truncated = false;
+                let displayedMatches = 0;
+                let currentSize = new Blob([resultContent]).size;
                 
-                if (result.numMatches >= maxResults) {
-                    resultContent += `\n⚠️ 结果已截断，仅显示前 ${maxResults} 个匹配。请使用更具体的搜索模式或文件过滤。`;
+                for (const [file, matches] of Object.entries(byFile)) {
+                    const fileHeader = `━━━ 文件: ${file} (${matches.length} 个匹配) ━━━\n`;
+                    const headerSize = new Blob([fileHeader]).size;
+                    
+                    // 检查添加文件头后是否超过限制
+                    if (currentSize + headerSize > MAX_CONTENT_SIZE) {
+                        truncated = true;
+                        break;
+                    }
+                    
+                    resultContent += fileHeader;
+                    currentSize += headerSize;
+                    
+                    for (const [matchIndex, match] of matches.entries()) {
+                        const matchLine = `  [${displayedMatches + 1}] 行 ${match.line}:\n      ${match.content}\n`;
+                        const matchSize = new Blob([matchLine]).size;
+                        
+                        // 检查添加匹配内容后是否超过限制
+                        if (currentSize + matchSize > MAX_CONTENT_SIZE) {
+                            truncated = true;
+                            break;
+                        }
+                        
+                        resultContent += matchLine;
+                        currentSize += matchSize;
+                        displayedMatches++;
+                    }
+                    
+                    if (truncated) {
+                        break;
+                    }
+                    
+                    resultContent += '\n';
+                    currentSize += 1;
+                }
+                
+                // 添加截断警告
+                if (truncated) {
+                    warnContent += `\n⚠️ 数据已截断（超过 ${MAX_CONTENT_SIZE / 1024}KB 限制）\n`;
+                    // warnContent += `已显示: ${displayedMatches}/${result.numMatches} 个匹配\n`;
+                    warnContent += `建议：使用更精确的搜索模式或增加文件过滤条件（include 参数）`;
+                    needContent = false;
+                } else if (result.numMatches >= effectiveMaxResults) {
+                    warnContent += resultContent;
+                    warnContent += `\n⚠️ 结果已截断（达到最大结果数 ${effectiveMaxResults}）\n`;
+                    warnContent += `建议：使用更具体的搜索模式或文件过滤`;
+                    needContent = false;
                 }
 
-                console.log('searchContent 完成:', result.numMatches, '个匹配, 耗时', result.durationMs, 'ms');
-                console.log('匹配内容:', result.matches);
+                // 日志输出实际大小
+                const finalSize = new Blob([resultContent]).size;
+                // console.log(`searchContent 完成: ${displayedMatches}/${result.numMatches} 个匹配, 数据大小: ${(finalSize / 1024).toFixed(2)}KB, 耗时 ${result.durationMs}ms`);
 
                 const toolResult = {
                     is_error: false,
-                    content: resultContent,
+                    content: needContent ? resultContent : warnContent,
                     metadata: {
                         numMatches: result.numMatches,
-                        matches: result.matches,
+                        displayedMatches,
+                        truncated,
+                        contentSizeKB: parseFloat((finalSize / 1024).toFixed(2)),
                         durationMs: result.durationMs,
                         pattern,
                         searchPath,
@@ -412,7 +489,7 @@ export async function grepTool(
             } catch (error: any) {
                 console.warn('searchContent 失败:', error);
                 // 降级到文件名模式
-                console.log('降级到文件名搜索模式');
+                // console.log('降级到文件名搜索模式');
             }
         }
         
@@ -422,28 +499,30 @@ export async function grepTool(
         let usingRipgrep = false;
         
         if (ripgrepReady) {
-            console.log('使用 ripgrep 进行文件名搜索');
-            searchResult = await searchWithRipgrep(pattern, searchPath, include, isRegex);
+            // console.log('使用 ripgrep 进行文件名搜索');
+            searchResult = await searchWithRipgrep(pattern, searchPath, include, isRegex, ignoreCase, wholeWord);
             if (searchResult) {
                 usingRipgrep = true;
-                console.log(`Ripgrep 搜索完成: 找到 ${searchResult.numFiles} 个文件, 耗时 ${searchResult.durationMs}ms`);
+                // console.log(`Ripgrep 搜索完成: 找到 ${searchResult.numFiles} 个文件, 耗时 ${searchResult.durationMs}ms`);
             }
         }
         
         // 如果 ripgrep 不可用或失败，使用纯 TypeScript 实现作为后备
         if (!searchResult) {
-            if (ripgrepReady) {
-                console.log('Ripgrep 搜索失败，回退到纯 TypeScript 实现');
-            } else {
-                console.log('Ripgrep 不可用，使用纯 TypeScript 实现');
-            }
+            // if (ripgrepReady) {
+            //     console.log('Ripgrep 搜索失败，回退到纯 TypeScript 实现');
+            // } else {
+            //     console.log('Ripgrep 不可用，使用纯 TypeScript 实现');
+            // }
             
             const jsResult = searchFilesRecursive(
                 searchPath,
                 pattern,
                 include,
                 isRegex,
-                MAX_RESULTS
+                MAX_RESULTS,
+                ignoreCase,
+                wholeWord
             );
             
             searchResult = {

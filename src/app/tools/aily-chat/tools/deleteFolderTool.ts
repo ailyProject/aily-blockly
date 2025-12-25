@@ -46,7 +46,7 @@ export async function deleteFolderTool(
         // 路径规范化
         folderPath = normalizePath(folderPath);
         
-        console.log("删除文件夹: ", folderPath);
+        // console.log("删除文件夹: ", folderPath);
 
         // 验证路径是否有效
         if (!folderPath || folderPath.trim() === '') {

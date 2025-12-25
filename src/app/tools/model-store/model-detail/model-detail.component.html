@@ -1,0 +1,123 @@
+<div class="model-detail">
+    @if(modelDetail) {
+    <div class="title">{{ modelDetail.name }}</div>
+    <div class="content sscroll">
+        <!-- 模型概览：左侧图片，右侧信息 -->
+        <div class="model-overview">
+            <!-- 左侧：模型图片 -->
+            <div class="model-image" *ngIf="modelDetail.pic_url">
+                <img [src]="modelDetail.pic_url" [alt]="modelDetail.name">
+            </div>
+
+            <!-- 右侧：模型信息 -->
+            <div class="model-info-panel">
+                <!-- 适用开发板 -->
+                <div class="info-row">
+                    <span class="info-label">{{ 'MODEL_STORE.SUPPORTED_BOARDS' | translate }}</span>
+                    <div class="info-value">
+                        @for (board of getSupportedBoards(); track board) {
+                        <span class="tag-board">{{ board.board }}</span>
+                        }
+                    </div>
+                </div>
+
+                <!-- 模型类型 -->
+                <div class="info-row">
+                    <span class="info-label">{{ 'MODEL_STORE.MODEL_TYPE' | translate }}</span>
+                    <div class="info-value">
+                        <span class="tag-task">{{ getTaskDescription() }}</span>
+                    </div>
+                </div>
+
+                <!-- 模型格式 -->
+                <div class="info-row">
+                    <span class="info-label">{{ 'MODEL_STORE.MODEL_FORMAT' | translate }}</span>
+                    <div class="info-value">
+                        <span class="tag-model">{{ getModelFormat() }}</span>
+                    </div>
+                </div>
+
+                <!-- 模型精度 -->
+                <div class="info-row">
+                    <span class="info-label">{{ 'MODEL_STORE.MODEL_PRECISION' | translate }}</span>
+                    <div class="info-value">
+                        <span class="tag-precision">{{ getPrecision() }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 描述 -->
+        <div class="section">
+            <div class="section-title">{{ 'MODEL_STORE.DESCRIPTION' | translate }}</div>
+            <div class="description">{{ modelDetail.description }}</div>
+        </div>
+
+        <!-- 模型详情 -->
+        <div class="section">
+            <div class="section-title">{{ 'MODEL_STORE.MODEL_DETAILS' | translate }}</div>
+            <div class="detail-content" [innerHTML]="getSafeHtml(modelDetail.content)"></div>
+        </div>
+
+        <!-- 模型类别 -->
+        <div class="section" *ngIf="modelDetail.labels && modelDetail.labels.length > 0">
+            <div class="section-title">{{ 'MODEL_STORE.MODEL_LABELS' | translate }}</div>
+            <div class="labels-list">
+                @for (label of modelDetail.labels; track label.object_id) {
+                <div class="label-item">
+                    <span class="label-name">{{ label.object_name }}</span>
+                </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- <div class="model-info">
+                <div class="info-item">
+                    <span class="label">作者：</span>
+                    <span>{{ modelDetail.author_name }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">版本：</span>
+                    <span>{{ modelDetail.version }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">模型大小：</span>
+                    <span>{{ (modelDetail.model_size | number) || '0' }} bytes</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">部署次数：</span>
+                    <span>{{ modelDetail.deploy_num }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">浏览次数：</span>
+                    <span>{{ modelDetail.view_num }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">点赞数：</span>
+                    <span>{{ modelDetail.like_num }}</span>
+                </div>
+            </div> -->
+
+    <div class="actions bottom">
+        <button class="back-btn" nz-button nzType="default" (click)="onClose()">
+            {{ 'MODEL_STORE.BACK' | translate }}
+        </button>
+        <button nz-button nzType="primary" (click)="onDeploy(modelDetail, 'test')"
+            [disabled]="!modelDetail?.is_enabled">
+            {{ 'MODEL_STORE.TEST_MODEL' | translate }}
+        </button>
+        <button nz-button nzType="primary" (click)="onDeploy(modelDetail, 'deploy')"
+            [disabled]="!modelDetail?.is_enabled">
+            {{ 'MODEL_STORE.DEPLOY_MODEL' | translate }}
+        </button>
+    </div>
+    }@else {
+    <div class="title">
+        <nz-skeleton [nzTitle]="true" [nzActive]="true"></nz-skeleton>
+    </div>
+    <div class="content">
+        <nz-skeleton [nzActive]="true"></nz-skeleton>
+    </div>
+    }
+</div>

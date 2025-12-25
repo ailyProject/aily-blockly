@@ -18,7 +18,7 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
             return injectTodoReminder(toolResults, 'executeCommandTool');
         }
 
-        console.log('Executing command:', data.command, 'in directory:', data.cwd);
+        // console.log('Executing command:', data.command, 'in directory:', data.cwd);
 
         if (!data.cwd) {
             toolResult = "执行command命令失败: 当前未打开项目";
@@ -36,7 +36,7 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
             
             cmdService.run(data.command, data.cwd, false).subscribe({
                 next: (data) => {
-                    console.log(`Command output received:`, data);
+                    // console.log(`Command output received:`, data);
 
                     // 正确处理CmdOutput对象，提取data字段
                     let textOutput = '';
@@ -47,7 +47,7 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
                     } else {
                         textOutput = JSON.stringify(data);
                     }
-                    console.log(`Command output: ${textOutput}`);
+                    // console.log(`Command output: ${textOutput}`);
                     output += textOutput;
                 },
                 error: (err) => {
@@ -56,7 +56,7 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
                     reject(err);
                 },
                 complete: () => {
-                    console.log('Command execution completed');
+                    // console.log('Command execution completed');
                     resolve(output);
                 }
             });
@@ -65,11 +65,11 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
         toolResult = result || '命令执行完成';
         
     } catch (e) {
-        console.warn('执行command命令失败:', e);
+        // console.warn('执行command命令失败:', e);
         toolResult = `执行command命令失败: ${e.message}`;
         is_error = true;
     } finally {
-        console.log('executeCommandTool result:', toolResult, 'is_error:', is_error);
+        // console.log('executeCommandTool result:', toolResult, 'is_error:', is_error);
         const toolResults = {
             is_error,
             content: toolResult

@@ -1,0 +1,31 @@
+<!-- 模型部署主容器 - 根据模型类型和模式动态加载对应组件 -->
+<app-notification></app-notification>
+
+@if (modelDetail) {
+  @switch (modelType) {
+    <!-- SSCMA 类型模型（SenseCraft AI / Seeed Studio） -->
+    @case ('sscma') {
+      @if (mode === 'deploy') {
+        <!-- 部署模式：显示完整的部署流程（包含步骤导航） -->
+        <app-sscma-deploy></app-sscma-deploy>
+      } @else {
+        <!-- 测试模式：直接显示配置/测试页面 -->
+        <app-sscma-config [showFrame]="true"></app-sscma-config>
+      }
+    }
+    
+    <!-- 其他类型模型（预留扩展） -->
+    @case ('other') {
+      <div class="deploy-placeholder">
+        <p>其他模型类型开发中...</p>
+        <p>模型: {{ modelDetail.name }}</p>
+        <p>作者: {{ modelDetail.author_name }}</p>
+      </div>
+    }
+  }
+} @else {
+  <!-- 加载中或未找到模型数据 -->
+  <div class="deploy-placeholder">
+    <p>正在加载模型数据...</p>
+  </div>
+}

@@ -8,6 +8,7 @@ import { CmdService } from '../../../services/cmd.service';
 import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { ProjectService } from '../../../services/project.service';
 import { ActionState } from '../../../services/ui.service';
+import { PlatformService } from "../../../services/platform.service";
 
 @Injectable({
   providedIn: 'root'
@@ -23,6 +24,7 @@ export class BuilderService {
     private logService: LogService,
     private npmService: NpmService,
     private configService: ConfigService,
+    private platformService: PlatformService,
   ) { }
 
   private buildInProgress = false;
@@ -151,7 +153,7 @@ export class BuilderService {
             // 如果没有src文件夹，则使用src.7z解压到临时文件夹
             let sourceZipPath = `${this.currentProjectPath}/node_modules/${lib}/src.7z`;
             if (!window['path'].isExists(sourceZipPath)) continue;
-            await this.cmdService.runAsync(`7za x "${sourceZipPath}" -o"${sourcePath}" -y`);
+            await this.cmdService.runAsync(`${this.platformService.za7} x "${sourceZipPath}" -o"${sourcePath}" -y`);
           }
 
           // 判断src目录下是否有且仅有一个src目录，没有别的文件或文件夹

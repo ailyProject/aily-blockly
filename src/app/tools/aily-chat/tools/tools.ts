@@ -74,7 +74,28 @@ export const TOOLS = [
     // },
     {
         name: "read_file",
-        description: `读取指定文件的内容，需文件完整路径，建议优先使用grep工具。支持文本文件的读取，可指定编码格式。`,
+        description: `读取指定文件的内容。支持完整读取或按行/字节范围读取，自动处理大文件。
+
+**读取模式：**
+1. **完整读取**（默认）：读取整个文件（文件需小于 maxSize）
+2. **按行范围读取**：指定起始行号和行数（行号从1开始）
+3. **按字节范围读取**：指定起始字节位置和字节数（推荐用于大文件，优先级最高）
+
+**大文件处理：**
+- 默认限制 1MB，超过限制需指定范围读取或增加 maxSize
+- 检测到超长行会发出警告
+- 字节范围读取使用流式读取，不会一次性加载整个文件
+
+**使用场景：**
+- 小文件（<1MB）：直接完整读取
+- 大文件：使用字节范围读取 (startByte + byteCount)
+- 已知行号：使用行范围读取 (startLine + lineCount)
+- 搜索内容：使用 grep_tool 工具
+
+**注意：**
+- 行号从 1 开始计数
+- 字节位置从 0 开始计数
+- 字节范围读取优先级最高`,
         input_schema: {
             type: 'object',
             properties: {
@@ -86,6 +107,32 @@ export const TOOLS = [
                     type: 'string',
                     description: '文件编码格式',
                     default: 'utf-8'
+                },
+                startLine: {
+                    type: 'number',
+                    description: '起始行号（从1开始）。指定后按行范围读取',
+                    minimum: 1
+                },
+                lineCount: {
+                    type: 'number',
+                    description: '要读取的行数。不指定则读到文件末尾（或达到 maxSize 限制）',
+                    minimum: 1
+                },
+                startByte: {
+                    type: 'number',
+                    description: '起始字节位置（从0开始）。指定后按字节范围读取（优先级最高，推荐用于大文件）',
+                    minimum: 0
+                },
+                byteCount: {
+                    type: 'number',
+                    description: '要读取的字节数。不指定则读到文件末尾（或达到 maxSize 限制）',
+                    minimum: 1
+                },
+                maxSize: {
+                    type: 'number',
+                    description: '最大读取大小（字节）。默认 1MB (1048576)。超过此大小需使用范围读取',
+                    default: 1048576,
+                    minimum: 1024
                 }
             },
             required: ['path']
@@ -141,47 +188,111 @@ export const TOOLS = [
     },
     {
         name: "edit_file",
-        description: `编辑文件工具。支持多种编辑模式：1) 替换整个文件内容（默认）；2) 在指定行插入内容；3) 替换指定行或行范围；4) 追加到文件末尾。可选择当文件不存在时是否创建新文件。`,
+        description: `编辑文件工具 - 支持多种编辑模式（推荐使用 String Replace 模式以获得最佳安全性）
+
+**编辑模式：**
+1. **String Replace**（推荐）：替换文件中的特定字符串，自动检测多匹配防止意外修改
+2. **Whole File**：替换整个文件内容
+3. **Line-based**：在指定行插入或替换指定行范围
+4. **Append**：追加内容到文件末尾
+
+使用示例：
+
+// 替换文件中的特定字符串（最安全的方式）
+editFileTool({
+  path: "/path/to/file.ts",
+  oldString: "const value = 123;",
+  newString: "const value = 456;",
+  replaceMode: "string"
+});
+
+// 替换整个文件
+editFileTool({
+  path: "/path/to/file.txt",
+  content: 'new file content',
+  replaceMode: "whole"
+});
+
+// 在第5行插入内容
+editFileTool({
+  path: "/path/to/file.txt", 
+  content: 'new line content',
+  insertLine: 5
+});
+
+// 替换第3-5行的内容
+editFileTool({
+  path: "/path/to/file.txt",
+  content: 'multi-line\nreplacement\ncontent',
+  replaceStartLine: 3,
+  replaceEndLine: 5
+});
+
+// 追加到文件末尾
+editFileTool({
+  path: "/path/to/file.txt",
+  content: 'append content'
+});
+
+**String Replace 模式优势：**
+- 自动检测并拒绝多个匹配（防止意外修改错误位置）
+- 支持创建新文件（oldString 为空）
+- 提供精确的行号和修改信息
+- 自动检测文件编码
+
+**重要：**
+- 不支持编辑 .ipynb 文件
+- String Replace 模式要求字符串在文件中唯一匹配
+- 建议在 oldString 中包含 3-5 行上下文以确保唯一性`,
         input_schema: {
             type: 'object',
             properties: {
                 path: {
                     type: 'string',
-                    description: '要编辑的文件路径'
+                    description: '要编辑的文件路径（支持相对路径和绝对路径）'
+                },
+                oldString: {
+                    type: 'string',
+                    description: '要替换的原字符串（String Replace 模式）。为空时创建新文件。必须在文件中唯一匹配，建议包含 3-5 行上下文'
+                },
+                newString: {
+                    type: 'string',
+                    description: '替换后的新字符串（String Replace 模式）。与 oldString 配合使用'
                 },
                 content: {
                     type: 'string',
-                    description: '要写入的内容。替换模式下是新的文件内容；插入/替换模式下可以是任意文本内容'
+                    description: '要写入的内容（其他模式使用）。Whole File 模式下是完整文件内容；Line-based 和 Append 模式下是要插入/追加的内容'
                 },
                 encoding: {
                     type: 'string',
-                    description: '文件编码格式',
+                    description: '文件编码格式。不指定时自动检测（UTF-8 优先）',
                     default: 'utf-8'
                 },
                 createIfNotExists: {
                     type: 'boolean',
-                    description: '如果文件不存在是否创建',
+                    description: '文件不存在时是否创建（仅用于非 String Replace 模式）',
                     default: false
                 },
                 insertLine: {
                     type: 'number',
-                    description: '插入行号（从1开始）。指定此参数时会在该行插入内容'
+                    description: '插入行号（从1开始，Line-based 模式）。在指定行插入 content 的内容'
                 },
                 replaceStartLine: {
                     type: 'number',
-                    description: '替换起始行号（从1开始）。指定此参数时会替换指定行的内容'
+                    description: '替换起始行号（从1开始，Line-based 模式）。替换从此行开始的内容'
                 },
                 replaceEndLine: {
                     type: 'number',
-                    description: '替换结束行号（从1开始）。与replaceStartLine配合使用，可替换多行内容。如不指定则只替换起始行'
+                    description: '替换结束行号（从1开始，Line-based 模式）。与 replaceStartLine 配合可替换多行。不指定则只替换起始行'
                 },
                 replaceMode: {
-                    type: 'boolean',
-                    description: '是否替换整个文件内容。true=替换整个文件（默认），false=执行其他操作（插入、替换行、追加）',
-                    default: true
+                    type: 'string',
+                    enum: ['string', 'whole', 'line', 'append'],
+                    description: '编辑模式：string=字符串替换（推荐，最安全），whole=替换整个文件，line=行级操作（需配合 insertLine/replaceStartLine），append=追加到末尾',
+                    default: 'string'
                 }
             },
-            required: ['path', 'content']
+            required: ['path']
         }
     },
     {
@@ -272,17 +383,143 @@ export const TOOLS = [
     //     }
     // },
     {
+        name: "search_boards_libraries",
+        description: `专门用于搜索开发板(boards.json)和库(libraries.json)的高效工具。
+
+**使用场景：**
+1. 查找特定功能的库（如"温度传感器"、"舵机"、"OLED"）
+2. 查找支持特定芯片的开发板（如"esp32"、"arduino"）
+3. 查找作者或品牌相关的硬件（如"adafruit"、"seeed"）
+
+**注意：**
+- 返回结果默认限制在前50条最相关匹配
+- 使用此工具而非通用grep工具可以获得更精确、更快速的结果
+- 多关键词搜索时，匹配任一关键词即可返回结果（OR逻辑）
+
+**示例：**
+查找 ESP32 开发板：
+\`\`\`json
+{
+  "query": "esp32",
+  "type": "boards"
+}
+\`\`\`
+
+查找舵机控制库：
+\`\`\`json
+{
+  "query": "servo",
+  "type": "libraries"
+}
+\`\`\``,
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'array',
+                    items: {
+                        type: 'string'
+                    },
+                    description: '搜索关键词数组。例如：["esp32", "wifi"], ["temperature", "sensor"]'
+                },
+                type: {
+                    type: 'string',
+                    enum: ['boards', 'libraries'],
+                    description: '搜索类型：boards(仅开发板), libraries(仅库)。默认为 boards',
+                    default: 'boards'
+                },
+                maxResults: {
+                    type: 'number',
+                    description: '最大返回结果数，默认50',
+                    default: 50
+                }
+            },
+            required: ['query']
+        }
+    },
+    {
+        name: "get_board_parameters",
+        description: `获取当前项目开发板的详细参数配置工具。
+从当前打开项目的开发板配置(board.json)中读取详细的硬件配置参数。
+
+**可用参数类型：**
+引脚相关：
+- analogPins
+- digitalPins
+- pwmPins
+- servoPins
+- interruptPins
+通信接口：
+- serialPort
+- serialSpeed
+- spi
+- spiPins
+- i2c
+- i2cPins
+- i2cSpeed
+
+其他配置：
+- builtinLed
+- rgbLed
+- batteryPin
+- name
+- description
+- compilerParam
+- uploadParam
+
+**使用场景：**
+1. 用户询问"这个开发板有哪些模拟引脚"
+2. 需要知道当前开发板支持的串口波特率
+3. 查询SPI/I2C引脚配置
+4. 获取PWM引脚列表用于舵机控制
+5. 查看开发板的完整硬件参数
+
+**示例：**
+获取当前开发板的模拟和数字引脚：
+\`\`\`json
+{
+  "parameters": ["analogPins", "digitalPins"]
+}
+\`\`\`
+
+获取当前开发板的所有参数：
+\`\`\`json
+{}
+\`\`\`
+
+获取通信接口配置：
+\`\`\`json
+{
+  "parameters": ["serialPort", "spi", "i2c", "spiPins", "i2cPins"]
+}
+\`\`\``,
+        input_schema: {
+            type: 'object',
+            properties: {
+                parameters: {
+                    type: 'array',
+                    items: {
+                        type: 'string'
+                    },
+                    description: '要获取的参数列表。如果不指定，返回所有参数。常用参数：analogPins, digitalPins, pwmPins, servoPins, serialPort, spi, i2c, spiPins, i2cPins 等'
+                }
+            },
+            required: []
+        }
+    },
+    {
         name: "grep_tool",
         description: `- Fast content search tool that works with any codebase size
 - Searches file contents using regular expressions
 - Supports full regex syntax (eg. "log.*Error", "function\\s+\\w+", etc.)
 - Use this tool when you need to find files containing specific patterns
+- Use word boundaries \\b to ensure a complete word match.
 support two modes:
 1. File name mode (default): returns a list of file paths containing the matched content
 2. Content mode: returns the specific line content, file path, and line number of the matches
 
-基本语法:
-查询boards.json中的主板信息(返回文件名)
+Basic Syntax:
+Query board info in boards.json (returns filenames)
 \`\`\`json
 {
   "pattern": "WIFI|BLE",
@@ -291,10 +528,10 @@ support two modes:
 }
 \`\`\`
 
-查询并返回具体内容(如需要查询文件中的具体信息)
+Query and return specific content (for detailed info)
 \`\`\`json
 {
-  "pattern": "WIFI|BLE",
+  "pattern": "\\\\bWIFI\\\\b|\\\\bBLE\\\\b",
   "path": "D:\\\\codes\\\\aily-blockly",
   "include": "*boards.json"
   "returnContent": true,
@@ -318,7 +555,7 @@ support two modes:
                 },
                 isRegex: {
                     type: 'boolean',
-                    description: '搜索模式是否为正则表达式。true=正则表达式，false=普通文本',
+                    description: '搜索模式是否为正则表达式。true=正则表达式（支持 | 或 .* 等元字符），false=普通文本（自动转义特殊字符）。使用正则时需手动添加 \\b 实现全词匹配',
                     default: true
                 },
                 returnContent: {
@@ -333,19 +570,24 @@ support two modes:
                 },
                 maxLineLength: {
                     type: 'number',
-                    description: '每行最大字符长度（100-2000）。用于控制返回内容的长度，避免单行超大文件（如压缩JSON）返回过多数据。推荐值：500',
+                    description: '每行最大字符长度（100-2000）。用于控制返回内容的长度，避免单行超大文件（如压缩JSON）返回过多数据。推荐值：20',
                     default: 100
                 },
                 maxResults: {
                     type: 'number',
                     description: '最大结果数量限制',
                     default: 20
-                },
-                ignoreCase: {
-                    type: 'boolean',
-                    description: '是否忽略大小写',
-                    default: true
                 }
+                // ignoreCase: {
+                //     type: 'boolean',
+                //     description: '是否忽略大小写',
+                //     default: true
+                // },
+                // wholeWord: {
+                //     type: 'boolean',
+                //     description: '是否全词匹配（仅在 isRegex=false 时有效）。启用后只匹配完整单词，避免部分匹配。使用正则表达式时此参数无效，需手动在模式中添加 \\b 边界符',
+                //     default: false
+                // }
             },
             required: ['pattern']
         }
@@ -406,7 +648,7 @@ support two modes:
     },
     {
         name: "fetch",
-        description: `获取网络上的信息和资源，支持HTTP/HTTPS请求，能够处理大文件下载。支持多种请求方法和响应类型。`,
+        description: `获取网络上的信息和资源，支持HTTP/HTTPS请求，能够处理大文件下载。支持多种请求方法和响应类型。注意：非必要时请避免使用此工具，以减少外部依赖和网络请求。`,
         input_schema: {
             type: 'object',
             properties: {
@@ -632,7 +874,12 @@ support two modes:
     },
     {
         name: "create_code_structure_tool", 
-        description: `动态结构创建工具，<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme</system-reminder>。建议分步生成代码，如：全局变量-初始化-loop-回调函数 不要一次性生成超过10个block的代码块。使用动态结构处理器创建任意复杂的代码块结构，支持自定义块组合和连接规则。
+        description: `动态结构创建工具，使用动态结构处理器创建任意复杂的代码块结构，支持自定义块组合和连接规则。
+注意事项:
+- 使用工具前必须确保已经读取了使用的block所属库的Readme
+- 建议分步生成代码，如：全局变量-初始化-loop-回调函数。
+- 不要一次性生成超过10个block的代码块结构。
+
 基本语法:
 \`\`\`json
 {
@@ -762,36 +1009,90 @@ support two modes:
     },
     {
         name: "configure_block_tool",
-        description: `块配置工具。修改现有块的属性，包括字段值、输入连接、样式等。支持批量配置和属性验证。`,
+        description: `用途：修改已存在 Blockly 块的字段值与动态结构（extraState），用于调整块的显示/配置但不创建或删除块。
+
+主要能力：
+- 更新字段（field_dropdown、field_input、field_number、field_checkbox、text 等）。
+- 修改动态结构（如 controls_if 的 else/elseif 分支、text_join 或 lists_create_with 的项目数）。
+- 支持通过 blockId 精准定位或通过 blockType 查找第一个匹配块。
+
+前提条件：
+- 目标块必须已存在于工作区。
+- 必须提供有效的 blockId 或 blockType。
+- 字段修改需提供非空的 fields 对象；结构修改需提供 extraState 对象。
+
+限制与注意：
+- 不用于创建新块（请使用 smart_block_tool）。
+- 不用于删除块或改变块之间的连接关系（请使用 delete_block_tool / connect_blocks_tool）。
+- 修改前请确保理解目标块的字段名与 extraState 结构，错误参数可能导致操作失败。
+
+**extraState 使用示例：**
+为 controls_if 块添加 1 个 else if 和 1 个 else 分支：
+\`\`\`json
+{
+  "blockId": "if_block_id",
+  "extraState": {
+    "elseIfCount": 1,
+    "hasElse": true
+  }
+}
+\`\`\`
+
+**必须提供完整的参数结构，空参数会导致工具执行失败。**`,
         input_schema: {
             type: 'object',
             properties: {
                 blockId: {
                     type: 'string',
-                    description: '要配置的块ID'
+                    description: '要配置的块ID（blockId 和 blockType 至少提供一个）'
+                },
+                blockType: {
+                    type: 'string',
+                    description: '块类型，当未提供 blockId 时使用（会找到第一个匹配类型的块）'
                 },
                 fields: {
                     type: 'object',
-                    description: '要更新的字段值'
+                    description: '要更新的字段值对象。格式：{"字段名": "字段值"}。字段名需要参考对应库的文档。',
+                    additionalProperties: {
+                        oneOf: [
+                            { type: 'string' },
+                            { type: 'number' },
+                            { type: 'boolean' }
+                        ]
+                    }
                 },
-                inputs: {
-                    type: 'object', 
-                    description: '要更新的输入连接'
-                },
-                position: {
+                extraState: {
                     type: 'object',
+                    description: '动态块结构配置对象。用于修改支持动态输入的块结构，如 controls_if 的分支数量。',
                     properties: {
-                        x: { type: 'number', description: 'X坐标' },
-                        y: { type: 'number', description: 'Y坐标' }
+                        elseIfCount: {
+                            type: 'number',
+                            description: 'else if 分支数量（适用于 controls_if, controls_ifelse）',
+                            minimum: 0,
+                            maximum: 20
+                        },
+                        hasElse: {
+                            type: 'boolean',
+                            description: '是否包含 else 分支（适用于 controls_if）'
+                        },
+                        itemCount: {
+                            type: 'number',
+                            description: '项目数量（适用于 text_join, lists_create_with 等）',
+                            minimum: 1,
+                            maximum: 50
+                        }
                     },
-                    description: '新位置'
-                },
-                style: {
-                    type: 'object',
-                    description: '块的样式配置'
+                    additionalProperties: true
                 }
             },
-            required: ['blockId']
+            anyOf: [
+                { 
+                    allOf: [
+                        { anyOf: [{ required: ['blockId'] }, { required: ['blockType'] }] },
+                        { anyOf: [{ required: ['fields'] }, { required: ['extraState'] }] }
+                    ]
+                }
+            ]
         }
     },
     // {

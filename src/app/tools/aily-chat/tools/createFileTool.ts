@@ -48,7 +48,7 @@ export async function createFileTool(
         // 路径规范化
         filePath = normalizePath(filePath);
         
-        console.log("创建文件: ", filePath);
+        // console.log("创建文件: ", filePath);
 
         // 验证路径是否有效
         if (!filePath || filePath.trim() === '') {
@@ -69,16 +69,16 @@ export async function createFileTool(
         }
 
         const dir = window['path'].dirname(filePath);
-        console.log(`文件目录: ${dir}`);
+        // console.log(`文件目录: ${dir}`);
         
         // 确保目录存在
         if (!window['fs'].existsSync(dir)) {
-            console.log(`创建目录: ${dir}`);
+            // console.log(`创建目录: ${dir}`);
             await window['fs'].mkdirSync(dir, { recursive: true });
         }
         
         // 写入文件
-        console.log(`写入文件内容，长度: ${content.length}`);
+        // console.log(`写入文件内容，长度: ${content.length}`);
         await window['fs'].writeFileSync(filePath, content, encoding);
         
         const toolResult = { 

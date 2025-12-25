@@ -14,6 +14,8 @@ yarn-error.log
 /child/node
 /child/clangd
 /child/aily-builder
+/child/7zz
+/child/7za.exe
 
 # IDEs and editors
 .idea/
@@ -46,8 +48,6 @@ testem.log
 Thumbs.db
 temp
 child/node*
-!child/node-*.*
-child/aily-builder
-!child/aily-builder-*.*
+child/aily-builder*
 
 aily-todos/*.json

@@ -11,27 +11,27 @@ export class ArduinoSyntaxTool {
 
   constructor() {
     // 参照 TodoUpdateService 的模式，直接从全局对象获取服务
-    console.log('🔧 ArduinoSyntaxTool 初始化...');
+    // console.log('🔧 ArduinoSyntaxTool 初始化...');
     
     // 直接从全局对象获取服务实例
     this.lintService = (window as any)['arduinoLintService'];
     
-    if (this.lintService) {
-      console.log('✅ Arduino Lint Service 获取成功（通过全局对象）');
+    // if (this.lintService) {
+    //   console.log('✅ Arduino Lint Service 获取成功（通过全局对象）');
       
-      // 测试服务可用性
-      try {
-        const isAvailable = this.lintService.isAvailable();
-        const status = this.lintService.getStatus();
-        console.log('- 服务可用性:', isAvailable);
-        console.log('- 服务状态:', status);
-      } catch (error) {
-        console.warn('⚠️ 服务测试失败:', error);
-      }
-    } else {
-      console.warn('⚠️ 无法从全局对象获取 Arduino Lint Service');
-      console.log('- 检查 (window as any)[\'arduinoLintService\']:', (window as any)['arduinoLintService']);
-    }
+    //   // 测试服务可用性
+    //   try {
+    //     const isAvailable = this.lintService.isAvailable();
+    //     const status = this.lintService.getStatus();
+    //     console.log('- 服务可用性:', isAvailable);
+    //     console.log('- 服务状态:', status);
+    //   } catch (error) {
+    //     console.warn('⚠️ 服务测试失败:', error);
+    //   }
+    // } else {
+    //   console.warn('⚠️ 无法从全局对象获取 Arduino Lint Service');
+    //   console.log('- 检查 (window as any)[\'arduinoLintService\']:', (window as any)['arduinoLintService']);
+    // }
   }
 
   async use(parameters: {
@@ -41,8 +41,8 @@ export class ArduinoSyntaxTool {
     const { code, timeout = 5000 } = parameters;
 
     try {
-      console.log('🔍 Arduino语法检查工具启动 (aily-builder lint)...');
-      console.log('- lintService 实例:', !!this.lintService);
+      // console.log('🔍 Arduino语法检查工具启动 (aily-builder lint)...');
+      // console.log('- lintService 实例:', !!this.lintService);
       
       if (!code || code.trim().length === 0) {
         return {
@@ -53,21 +53,21 @@ export class ArduinoSyntaxTool {
 
       // 检查 lint 服务是否可用
       if (!this.lintService) {
-        console.warn('❌ lintService 实例不存在');
+        // console.warn('❌ lintService 实例不存在');
         return {
           is_error: true,
           content: '❌ **Arduino Lint 服务不可用**\n\n可能原因：\n1. 服务未正确注册到全局对象\n2. 服务初始化失败\n\n请检查浏览器控制台获取详细错误信息。'
         };
       }
 
-      console.log('- 检查服务可用性...');
+      // console.log('- 检查服务可用性...');
       const isServiceAvailable = this.lintService.isAvailable();
-      console.log('- 服务可用性结果:', isServiceAvailable);
+      // console.log('- 服务可用性结果:', isServiceAvailable);
       
       if (!isServiceAvailable) {
-        console.warn('❌ aily-builder 不可用');
+        // console.warn('❌ aily-builder 不可用');
         const status = this.lintService.getStatus();
-        console.log('- 服务状态:', status);
+        // console.log('- 服务状态:', status);
         return {
           is_error: true,
           content: '❌ **aily-builder 不可用**\n\n可能原因：\n1. aily-builder 未正确安装\n2. 路径配置错误\n3. Electron 环境未准备就绪\n\n请检查：\n- window.path 对象是否存在\n- getAilyBuilderPath() 是否返回有效路径\n- aily-builder/index.js 文件是否存在'

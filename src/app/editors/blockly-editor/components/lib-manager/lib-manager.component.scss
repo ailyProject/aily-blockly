@@ -5,7 +5,7 @@
     min-height: 100%;
     top: 0;
     left: 0;
-    z-index: 9999;
+    z-index: 999999;
 
     .header {
         height: 40px;
@@ -19,8 +19,14 @@
 
         .btns {
             position: absolute;
-            right: 10px;
-            i{
+            display: flex;
+            align-items: center;
+            right: 0;
+            padding: 0 10px;
+            height: 100%;
+            background: #222;
+
+            i {
                 margin-right: 5px;
             }
         }
