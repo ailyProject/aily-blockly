@@ -1568,7 +1568,10 @@ export class FileTreeComponent implements OnInit {
     this.dragState.draggedNodes = [...this.nodeSelection.selected];
     this.dragState.isExternalDrag = false;
 
-    // 设置拖拽数据
+    // 获取所有拖拽的文件路径
+    const filePaths = this.dragState.draggedNodes.map(n => n.path);
+
+    // 设置拖拽数据（用于内部拖拽）
     const dragData = {
       type: 'internal',
       nodes: this.dragState.draggedNodes.map(n => ({
@@ -1581,19 +1584,41 @@ export class FileTreeComponent implements OnInit {
     event.dataTransfer!.effectAllowed = 'copyMove';
     event.dataTransfer!.setData('application/json', JSON.stringify(dragData));
 
-    // 为外部拖拽设置文件路径 - 使用多种格式确保兼容性
-    const filePaths = this.dragState.draggedNodes.map(n => n.path);
+    // ⭐ 关键：为了支持拖拽到外部应用，需要设置正确的数据格式
     
-    // 设置纯文本格式（用于文本编辑器等应用）
+    // 方法 1: 设置文本格式（文件路径）
     event.dataTransfer!.setData('text/plain', filePaths.join('\n'));
     
-    // 设置文件URI列表格式（用于文件管理器等应用）
-    // Windows: file:///C:/path/to/file
-    // macOS/Linux: file:///path/to/file
+    // 方法 2: 设置 DownloadURL 格式（适用于单个文件）
+    // 格式：MIME:name:url
+    if (filePaths.length === 1) {
+      const filePath = filePaths[0];
+      const fileName = window['path'].basename(filePath);
+      
+      // 读取文件内容并创建 Blob URL（用于拖拽到浏览器等）
+      try {
+        if (window['fs'].existsSync(filePath) && window['fs'].statSync(filePath).isFile()) {
+          const fileContent = window['fs'].readFileSync(filePath);
+          const blob = new Blob([fileContent]);
+          const blobUrl = URL.createObjectURL(blob);
+          
+          // 设置 DownloadURL
+          const mimeType = this.getMimeType(fileName);
+          event.dataTransfer!.setData('DownloadURL', `${mimeType}:${fileName}:${blobUrl}`);
+          
+          console.log('设置 DownloadURL:', `${mimeType}:${fileName}:${blobUrl}`);
+          
+          // 清理 Blob URL（在拖拽结束后）
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        }
+      } catch (error) {
+        console.warn('创建 DownloadURL 失败:', error);
+      }
+    }
+    
+    // 方法 3: 设置文件 URI 列表（标准格式）
     const fileUris = filePaths.map(p => {
-      // 标准化路径分隔符为正斜杠
       const normalizedPath = p.replace(/\\/g, '/');
-      // 确保绝对路径以斜杠开头（Windows 路径如 C: 需要变成 /C:）
       const uriPath = normalizedPath.startsWith('/') ? normalizedPath : '/' + normalizedPath;
       return `file://${uriPath}`;
     });
@@ -1608,6 +1633,32 @@ export class FileTreeComponent implements OnInit {
 
     // 设置拖拽图像
     this.setDragImage(event);
+  }
+
+  /**
+   * 根据文件名获取 MIME 类型
+   */
+  private getMimeType(fileName: string): string {
+    const ext = fileName.split('.').pop()?.toLowerCase() || '';
+    const mimeTypes: Record<string, string> = {
+      'txt': 'text/plain',
+      'html': 'text/html',
+      'css': 'text/css',
+      'js': 'text/javascript',
+      'json': 'application/json',
+      'png': 'image/png',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'gif': 'image/gif',
+      'svg': 'image/svg+xml',
+      'pdf': 'application/pdf',
+      'zip': 'application/zip',
+      'c': 'text/plain',
+      'cpp': 'text/plain',
+      'h': 'text/plain',
+      'ino': 'text/plain'
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
   }
 
   /**

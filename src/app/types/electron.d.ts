@@ -13,6 +13,7 @@ declare global {
       };
       file: {
         getPath: (file: File) => string | null;
+        startDrag: (filePaths: string | string[]) => Promise<{ success: boolean; error?: string }>;
       };
       ipcRenderer: any;
       path: any;

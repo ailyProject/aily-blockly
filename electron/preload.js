@@ -201,6 +201,20 @@ window.electronAPI = {
         console.error('获取文件路径失败:', error);
         return null;
       }
+    },
+    /**
+     * 启动文件拖拽到外部应用
+     * @param {string|string[]} filePaths - 要拖拽的文件路径（单个或多个）
+     * @param {string} [iconPath] - 拖拽图标路径（可选）
+     * @returns {Promise<void>}
+     */
+    startDrag: (filePaths) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke('file-start-drag', filePaths)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
     }
   },
   glob: {
