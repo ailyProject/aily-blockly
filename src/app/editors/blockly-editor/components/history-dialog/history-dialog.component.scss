@@ -1,0 +1,27 @@
+.content {
+  height: 60vh;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.history-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+
+  .info {
+    .time { font-weight: bold; margin-bottom: 4px; }
+    .note { color: #666; margin-left: 8px; font-size: 12px; }
+  }
+}
+
+.history-list-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f0f0;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+

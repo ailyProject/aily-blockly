@@ -1,0 +1,172 @@
+<!-- SSCMA 模型部署组件（XIAO ESP32S3） -->
+<app-notification></app-notification>
+
+<app-sub-window [title]="'模型部署'" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content">
+      <!-- 左侧步骤导航 -->
+      <div class="left">
+        <div class="left-inner">
+          <nz-steps [nzCurrent]="currentStep" nzDirection="vertical" nzSize="small">
+            @if (deployStepConfig) {
+            @for (step of deployStepConfig.steps; track step) {
+            <nz-step [nzTitle]="step | translate"></nz-step>
+            }
+            } @else {
+            <nz-step [nzTitle]="'MODEL_DEPLOY.STEPS.DEPLOY' | translate"></nz-step>
+            <nz-step [nzTitle]="'MODEL_DEPLOY.STEPS.CONFIGURE' | translate"></nz-step>
+            }
+          </nz-steps>
+        </div>
+      </div>
+
+      <!-- 右侧内容区域 -->
+      <div class="right sscroll" style="margin-left: -15px;">
+        @if (currentStep == 0) {
+        @if (this.modelDetail?.author_name === 'SenseCraft AI') {
+        <!-- 第二步：连接设备（SenseCraft AI） -->
+        <div class="right-inner device-connect-view">
+          <!-- 支持的设备类型 -->
+          <!-- <div class="section">
+                <div class="section-title">{{ 'MODEL_DEPLOY.SUPPORTED_DEVICES' | translate }}</div>
+                <div class="device-info">{{ 'MODEL_DEPLOY.DEVICE_INFO' | translate }}</div>
+                <div class="device-list">
+                  @for (board of getSupportedBoards(); track board) {
+                    <div class="device-item" (click)="board.url && openUrl(board.url)">
+                      <span class="device-tag">{{ board.board }}</span>
+                    </div>
+                  }
+                </div>
+              </div> -->
+
+          <!-- 连接设备步骤 -->
+          <div class="section">
+            <div class="section-title">{{ 'MODEL_DEPLOY.STEPS.DEPLOY' | translate }}: {{ modelDetail.name }}</div>
+            <div class="connect-steps">
+              <div class="connect-step">
+                <div class="step-text">{{ deviceConnectionSteps[0] | translate }}</div>
+                <div class="step-image" *ngIf="deviceConnectionImage">
+                  <img [src]="deviceConnectionImage" alt="连接示意图">
+                </div>
+                <!-- </div> -->
+                <!-- <div class="connect-step"> -->
+                <div class="step-text">{{ deviceConnectionSteps[1] | translate }}</div>
+                <!-- </div> -->
+                <!-- <div class="connect-step"> -->
+                <div class="step-text">{{ deviceConnectionSteps[2] | translate }}</div>
+
+                <div class="item-inner serial-btn ccenter" (click)="openPortList($event)">
+                  <div class="value">{{currentPort || ('SSCMA_CONFIG.SELECT_PORT' | translate)}}</div>
+                  <div class="arrow-box">
+                    <i class="fa-light fa-angle-right arrow" [ngClass]="{'down':showPortList}"></i>
+                  </div>
+                </div>
+                <div class="step-text">{{ deviceConnectionSteps[3] | translate }}</div>
+                <div class="deploy-status" *ngIf="isDeploying || deployProgress > 0">
+                  <div class="status-text">{{ deployStatus }}</div>
+                  <div class="progress-container">
+                    <div class="progress-bar" [style.width.%]="deployProgress"></div>
+                  </div>
+                  <div class="progress-text">
+                    <div>
+                      {{ deployProgress }}%
+                    </div>
+                    @if(isDeploying && !isCancelling){
+                    <div class="cancel-btn" (click)="cancelDeploy()">
+                      {{ 'SSCMA_CONFIG.CANCEL' | translate }}
+                    </div>
+                    }
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        } @else {
+        <!-- 第一步：选择部署配置（其他作者） -->
+        <div class="right-inner">
+          <div class="step-content">
+            <p>步骤 1 内容（选择部署配置）</p>
+          </div>
+        </div>
+        }
+        } @else if (currentStep == 1) {
+        <!-- 第二步：模型配置 -->
+        <div class="right-inner">
+          <app-sscma-config style="height: 100%;" [portPath]="currentPort!" [showFrame]="false"
+            (configComplete)="onConfigComplete()" (backToDeploy)="prevStep()">
+          </app-sscma-config>
+        </div>
+        }
+      </div>
+    </div>
+
+    <!-- 底部操作按钮 -->
+    <div class="window-footer">
+      <div class="footer-left">
+        powered by SenseCraft AI
+        <!-- @if (authorLogo) {
+        <img [src]="authorLogo" alt="Author Logo" class="author-logo">
+        } -->
+      </div>
+
+      <div class="btns">
+        @if (deployStepConfig) {
+        @if (deployStepConfig.order === 'select-deploy-configure') {
+        @if (currentStep > 0) {
+        <button nz-button nzType="default" (click)="prevStep()">
+          {{ 'MODEL_DEPLOY.BUTTONS.PREV' | translate }}
+        </button>
+        }
+
+        @if (currentStep === 0) {
+        <button nz-button nzType="primary" (click)="startDeploy()" [disabled]="!currentPort || isDeploying">
+          {{ (isDeploying ? 'MODEL_DEPLOY.BUTTONS.DEPLOYING' : 'MODEL_DEPLOY.BUTTONS.DEPLOY') | translate }}
+        </button>
+        } @else {
+        <button nz-button nzType="primary">
+          {{ 'MODEL_DEPLOY.BUTTONS.FINISH' | translate }}
+        </button>
+        }
+        } @else if (deployStepConfig.order === 'select-configure-deploy') {
+        @if (currentStep > 0) {
+        <button nz-button nzType="default" (click)="prevStep()">
+          {{ 'MODEL_DEPLOY.BUTTONS.PREV' | translate }}
+        </button>
+        }
+
+        @if (currentStep === 0) {
+        <button nz-button nzType="primary" (click)="startDeploy()" [disabled]="!currentPort || isDeploying">
+          {{ (isDeploying ? 'MODEL_DEPLOY.BUTTONS.DEPLOYING' : 'MODEL_DEPLOY.BUTTONS.DEPLOY') | translate }}
+        </button>
+        } @else {
+        <button nz-button nzType="primary">
+          {{ 'MODEL_DEPLOY.BUTTONS.FINISH' | translate }}
+        </button>
+        }
+        }
+        } @else {
+        @if (currentStep > 0) {
+        <button nz-button nzType="default" (click)="prevStep()">
+          {{ 'MODEL_DEPLOY.BUTTONS.PREV' | translate }}
+        </button>
+        }
+        @if (currentStep === 0) {
+        <button nz-button nzType="primary" (click)="startDeploy()" [disabled]="!currentPort || isDeploying">
+          {{ (isDeploying ? 'MODEL_DEPLOY.BUTTONS.DEPLOYING' : 'MODEL_DEPLOY.BUTTONS.DEPLOY') | translate }}
+        </button>
+        } @else {
+        <button nz-button nzType="primary" (click)="close()">
+          {{ 'MODEL_DEPLOY.BUTTONS.FINISH' | translate }}
+        </button>
+        }
+        }
+      </div>
+    </div>
+  </div>
+</app-sub-window>
+
+@if (showPortList) {
+<app-menu [position]="position" [width]="260" [menuList]="portList" (closeEvent)="closePortList()"
+  [keywords]="boardKeywords" (itemClickEvent)="selectPort($event)"></app-menu>
+}

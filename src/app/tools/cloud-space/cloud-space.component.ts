@@ -14,6 +14,9 @@ import { LoginDialogComponent } from '../../main-window/components/login-dialog/
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { ElectronService } from '../../services/electron.service';
 import { distinctUntilChanged } from 'rxjs/operators';
+import { PlatformService } from "../../services/platform.service";
+import { CrossPlatformCmdService } from "../../services/cross-platform-cmd.service";
+import { LoginComponent } from '../../components/login/login.component';
 
 @Component({
   selector: 'app-cloud-space',
@@ -22,7 +25,8 @@ import { distinctUntilChanged } from 'rxjs/operators';
     FormsModule,
     CommonModule,
     NzButtonModule,
-    EditorComponent
+    EditorComponent,
+    LoginComponent
   ],
   templateUrl: './cloud-space.component.html',
   styleUrl: './cloud-space.component.scss'
@@ -38,6 +42,9 @@ export class CloudSpaceComponent {
   searchKeyword = ''; // 搜索关键词
   isLoginDialogOpen = false; // 标记登录对话框是否已打开
 
+  isLoggedIn = false;
+  openingProjectIds = new Set<string>();
+
   constructor(
     private uiService: UiService,
     private cloudService: CloudService,
@@ -46,7 +53,9 @@ export class CloudSpaceComponent {
     private message: NzMessageService,
     private authService: AuthService,
     private modal: NzModalService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private platformService: PlatformService,
+    private crossPlatformCmdService: CrossPlatformCmdService
   ) { }
 
   // 分页参数
@@ -56,15 +65,15 @@ export class CloudSpaceComponent {
 
   ngOnInit(): void {
     this.projectService.currentProjectPath$.subscribe(path => {
-      console.log('当前项目路径变化:', path);
+      // console.log('当前项目路径变化:', path);
       this.canSync = !!path;
     });
 
-    this.authService.checkAndSyncAuthStatus().then((res) => {
-      if (!res) {
-        this.openLoginDialog();
-      }
-    });
+    // this.authService.checkAndSyncAuthStatus().then((res) => {
+    //   if (!res) {
+    //     this.openLoginDialog();
+    //   }
+    // });
 
     // 检查用户是否登录
     this.authService.isLoggedIn$
@@ -73,8 +82,10 @@ export class CloudSpaceComponent {
         if (!isLoggedIn) {
           this.itemList = [];
           this.filteredItemList = [];
+          this.isLoggedIn = false;
         } else {
           // 用户已登录时关闭可能存在的登录对话框状态标记
+          this.isLoggedIn = true;
           this.isLoginDialogOpen = false;
           this.getCloudProjects().then(
             () => { console.log('云项目列表获取完成'); }
@@ -85,47 +96,66 @@ export class CloudSpaceComponent {
       });
   }
 
-  openLoginDialog() {
-    this.isLoginDialogOpen = true;
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzWidth: '350px',
-      nzContent: LoginDialogComponent
-    });
+  // openLoginDialog() {
+  //   this.isLoginDialogOpen = true;
+  //   const modalRef = this.modal.create({
+  //     nzTitle: null,
+  //     nzFooter: null,
+  //     nzClosable: false,
+  //     nzBodyStyle: {
+  //       padding: '0',
+  //     },
+  //     nzWidth: '350px',
+  //     nzContent: LoginDialogComponent
+  //   });
 
-    // 当对话框关闭时重置状态
-    modalRef.afterClose.subscribe(() => {
-      this.isLoginDialogOpen = false;
-    });
-  }
+  //   // 当对话框关闭时重置状态
+  //   modalRef.afterClose.subscribe(() => {
+  //     this.isLoginDialogOpen = false;
+  //   });
+  // }
 
   // 打开项目
   openInNewTab(item) {
     if (!item || !item.id) return;
-    console.log('打开云上项目:', item);
-    this.cloudService.getProjectArchive(item.archive_url).subscribe(async res => {
-      // 直接添加随机数避免重名
-      const randomNum = Math.floor(100000 + Math.random() * 900000);
-      const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
-      const targetPath = this.projectService.projectRootPath + '\\' + uniqueName;
-      
-      // 使用 Move-Item 将下载/临时文件移动到目标项目目录
-      // -Force 用于覆盖同名目标（如果存在）
-      await this.cmdService.runAsync(`Move-Item -Path "${res}" -Destination "${targetPath}" -Force`);
+    if (this.openingProjectIds.has(item.id)) return;
 
-      // 更新 package.json 中的项目信息
-      const packageJson = JSON.parse(this.electronService.readFile(`${targetPath}/package.json`));
-      packageJson.nickname = item.nickname
-      packageJson.description = item.description || ''
-      packageJson.doc_url = item.doc_url || ''
-      this.electronService.writeFile(`${targetPath}/package.json`, JSON.stringify(packageJson, null, 2));
+    this.openingProjectIds.add(item.id);
+    // console.log('打开云上项目:', item);
+    this.cloudService.getProjectArchive(item.archive_url).subscribe({
+      next: async res => {
+        try {
+          // 直接添加随机数避免重名
+          const randomNum = Math.floor(100000 + Math.random() * 900000);
+          const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
+          const targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + uniqueName;
 
-      this.projectService.projectOpen(targetPath);
+          // 使用 Move-Item 将下载/临时文件移动到目标项目目录
+          // -Force 用于覆盖同名目标（如果存在）
+          await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
+
+          // 更新 package.json 中的项目信息
+          const packageJson = JSON.parse(this.electronService.readFile(`${targetPath}/package.json`));
+          packageJson.nickname = item.nickname
+          packageJson.description = item.description || ''
+          packageJson.doc_url = item.doc_url || ''
+          packageJson.keywords = item?.tags ? JSON.parse(item.tags) : []
+          packageJson.cloudId = item.id;
+
+          this.electronService.writeFile(`${targetPath}/package.json`, JSON.stringify(packageJson, null, 2));
+          this.projectService.projectOpen(targetPath);
+        } catch (e) {
+          console.error('打开项目失败', e);
+          this.message.error('打开项目失败');
+        } finally {
+          this.openingProjectIds.delete(item.id);
+        }
+      },
+      error: err => {
+        console.error('下载项目失败', err);
+        this.message.error('下载项目失败');
+        this.openingProjectIds.delete(item.id);
+      }
     });
   }
 
@@ -154,7 +184,7 @@ export class CloudSpaceComponent {
           this.itemList.push(prj);
         });
         this.totalProjects = res.data.total;
-        console.log('获取云上项目列表成功:', this.itemList);
+        // console.log('获取云上项目列表成功:', this.itemList);
         // 应用搜索过滤
         this.filterProjects();
       } else {
@@ -176,7 +206,7 @@ export class CloudSpaceComponent {
         return nickname.includes(keyword) || description.includes(keyword) || name.includes(keyword);
       });
     }
-    console.log('过滤后的项目列表:', this.filteredItemList);
+    // console.log('过滤后的项目列表:', this.filteredItemList);
   }
 
   // 搜索关键词变化时触发
@@ -188,7 +218,7 @@ export class CloudSpaceComponent {
   async delete7zFile(archivePath: string) {
     if (await window['fs'].existsSync(archivePath)) {
       await window['fs'].unlinkSync(archivePath);
-      console.log('删除已存在的7z文件:', archivePath);
+      // console.log('删除已存在的7z文件:', archivePath);
     }
   }
 
@@ -203,7 +233,7 @@ export class CloudSpaceComponent {
 
     const archivePath = `${prjPath}/project.7z`;
     await this.delete7zFile(archivePath);
-    
+
     // 检查要打包的文件是否存在
     const packageJsonPath = `${prjPath}/package.json`;
     if (!await window['fs'].existsSync(packageJsonPath)) {
@@ -211,85 +241,67 @@ export class CloudSpaceComponent {
       console.warn('package.json 不存在:', packageJsonPath);
       return;
     }
-    
-    console.log('开始打包项目:', prjPath);
-    
-    // 构建更安全的打包命令
-    // 使用绝对路径避免路径问题，并明确指定文件
-    let packCommand = `7za.exe a -t7z -mx=9 "${archivePath}" package.json`;
-    
-    // 检查是否有.abi文件
-    const files = window['fs'].readDirSync(prjPath, { withFileTypes: true });
-    const abiFiles = files.filter(file => file.name.endsWith('.abi'));
-    
-    if (abiFiles.length > 0) {
-      console.log('找到abi文件:', abiFiles.map(f => f.name));
-      // 逐个添加abi文件
-      for (const abiFile of abiFiles) {
-        packCommand += ` "${abiFile.name}"`;
-      }
-    } else {
-      console.log('未找到abi文件，只打包package.json');
-    }
 
-    // 检查是否有partitions.csv文件
-    const partitionFile = files.find(file => file.name.toLowerCase() === 'partitions.csv');
-    if (partitionFile) {
-      console.log('找到partitions.csv文件:', partitionFile.name);
-      packCommand += ` "${partitionFile.name}"`;
-    } else {
-      console.log('未找到partitions.csv文件');
-    }
+    // console.log('开始打包项目:', prjPath);
+
+    // 构建更安全的打包命令
+    // 打包所有文件，但排除特定目录和文件
+    // -x!node_modules: 排除 node_modules
+    // -x!.chat: 排除 .chat
+    // -x!.history: 排除 .history
+    // -x!.temp: 排除 .temp
+    // -x!package-lock.json: 排除 package-lock.json
+    // -x!project.7z: 排除自身
+    // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
+    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-x!.chat" "-x!.history" "-x!.temp" "-x!package-lock.json" "-x!project.7z"`;
     
-    console.log('执行打包命令:', packCommand);
-    
-    // 打包文件
+    // console.log('执行打包命令:', packCommand);
     const result = await this.cmdService.runAsync(packCommand, prjPath, false);
-    
-    console.log('打包命令执行结果:', result);
-    
+
+    // console.log('打包命令执行结果:', result);
+
     // 检查打包是否成功
     if (result.type === 'error' || (result.code && result.code !== 0)) {
       this.message.error('项目打包失败: ' + (result.error || result.data));
       console.error('7za打包失败:', result);
       return;
     }
-    
+
     // 等待文件系统完成写入
     await new Promise(resolve => setTimeout(resolve, 500));
-    
+
     // 验证生成的7z文件
     if (!window['fs'].existsSync(archivePath)) {
       this.message.error('7z文件生成失败');
       console.error('7z文件不存在:', archivePath);
       return;
     }
-    
+
     // 检查文件大小（多次检查确保文件完整）
     let fileStats = window['fs'].statSync(archivePath);
     let retryCount = 0;
-    
+
     // 如果文件大小为0，等待一段时间后重试
     while (fileStats.size === 0 && retryCount < 5) {
-      console.log(`文件大小为0，等待重试... (${retryCount + 1}/5)`);
+      // console.log(`文件大小为0，等待重试... (${retryCount + 1}/5)`);
       await new Promise(resolve => setTimeout(resolve, 300));
       fileStats = window['fs'].statSync(archivePath);
       retryCount++;
     }
-    
+
     if (fileStats.size === 0) {
       this.message.error('生成的7z文件为空，打包过程可能失败');
       console.error('7z文件为空:', archivePath);
-      
+
       // 尝试手动检查打包命令的输出
       console.error('打包命令输出:', result.data);
       return;
     }
-    
-    console.log('7z文件生成成功:', {
-      path: archivePath,
-      size: fileStats.size
-    });
+
+    // console.log('7z文件生成成功:', {
+    //   path: archivePath,
+    //   size: fileStats.size
+    // });
 
     return archivePath;
   }
@@ -320,16 +332,9 @@ export class CloudSpaceComponent {
 
   async syncToCloud() {
     this.isSyncing = true;
-    
+
     // 保存当前项目
     await this.projectService.save(this.projectService.currentProjectPath);
-
-    // 获取当前项目数据
-    const currentProjectData = this.projectService.currentPackageData;
-    if (!currentProjectData) {
-      this.isSyncing = false;
-      return;
-    }
 
     const archivePath = await this.packageProject(this.projectService.currentProjectPath);
     if (!archivePath) {
@@ -337,35 +342,48 @@ export class CloudSpaceComponent {
       return;
     }
 
+    // 获取当前项目数据
+    const currentProjectData = await this.projectService.getPackageJson();
+    if (!currentProjectData) {
+      this.isSyncing = false;
+      return;
+    }
+
     // 等待一小段时间确保文件完全写入
     await new Promise(resolve => setTimeout(resolve, 200));
-
-    console.log("archivePath:", archivePath);
 
     this.cloudService.syncProject({
       pid: currentProjectData?.cloudId,
       projectData: currentProjectData,
       archive: archivePath
     }).subscribe(async res => {
-      if (res && res.status === 200) {
-        await this.setCurrentProjectCloudId(res.data.id);
-        this.message.success('同步成功');
-        // 更新项目列表
-        await this.getCloudProjects();
-        console.log('同步成功, 云端项目ID:', res.data.id);
-      } else {
-        console.error('同步失败, 服务器返回错误:', res);
-        this.message.error('同步失败: ' + (res?.messages || '未知错误'));
+      try {
+        if (res && res.status === 200) {
+          await this.setCurrentProjectCloudId(res.data.id);
+          this.message.success('同步成功');
+          // 更新项目列表
+          await this.getCloudProjects();
+          // console.log('同步成功, 云端项目ID:', res.data.id);
+        } else {
+          console.error('同步失败, 服务器返回错误:', res);
+          this.message.error('同步失败: ' + (res?.messages || '未知错误'));
+        }
+      } catch (e) {
+        console.error('同步后处理失败:', e);
+        this.message.error('同步成功但更新本地信息失败: ' + (e.message || e));
+      } finally {
+        this.isSyncing = false;
+        this.delete7zFile(archivePath);
       }
-      this.isSyncing = false;
-      this.delete7zFile(archivePath);
     }, err => {
       this.isSyncing = false;
       console.error('同步失败:', err);
       this.message.error('同步失败: ' + err);
       this.delete7zFile(archivePath);
     });
-  }  showEditor = false;
+  } 
+  
+  showEditor = false;
 
   openEditor(item) {
     this.showEditor = true;
@@ -391,7 +409,7 @@ export class CloudSpaceComponent {
 
   toggleVisibility(item) {
     // 切换公开/私有状态
-    console.log('切换项目可见性:', item);
+    // console.log('切换项目可见性:', item);
     if (item.is_published) {
       this.cloudService.unpublishProject(item.id).subscribe(res => {
         this.message.info(`项目 "${item.nickname}" 已设为私有`);

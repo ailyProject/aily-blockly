@@ -60,7 +60,7 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
    * 处理数据
    */
   private processData(): void {
-    console.log('Processing board data:', this.data);
+    // console.log('Processing board data:', this.data);
     if (!this.data) {
       this.errorMessage = '没有可显示的开发板数据';
       return;
@@ -71,7 +71,7 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
       this.boardInfo = this.configService.boardDict[this.boardPackageName] || null;
       this.errorMessage = '';
     } catch (error) {
-      console.error('Error processing board data:', error);
+      console.warn('Error processing board data:', error);
       this.errorMessage = `数据处理失败: ${error.message}`;
     }
   }
@@ -114,7 +114,7 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
     if (!this.boardInfo?.name) return;
 
     // 实现开发板安装逻辑
-    console.log('Installing board:', this.boardInfo.name);
+    // console.log('Installing board:', this.boardInfo.name);
     this.chatService.sendTextToChat(`安装开发板: ${this.boardInfo.name}`, { sender: 'board', type: 'install', autoSend: true });
   }
 
@@ -127,6 +127,6 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
   }
 
   logDetail() {
-    console.log('状态详情:', this.boardInfo);
+    // console.log('状态详情:', this.boardInfo);
   }
 }

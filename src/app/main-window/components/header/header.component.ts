@@ -18,11 +18,14 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { UpdateService } from '../../../services/update.service';
 import { Router } from '@angular/router';
 import { ElectronService } from '../../../services/electron.service';
-import { UserComponent } from '../user/user.component';
 import { ConfigService } from '../../../services/config.service';
 import { AuthService } from '../../../services/auth.service';
 import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
 import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
+import { PlatformService } from '../../../services/platform.service';
+// import { AppStoreService } from '../../../tools/app-store/app-store.service';
+import { AppItem } from '../../../tools/app-store/app-store.config';
+import { APP_LIST } from '../../../configs/tool.config';
 
 @Component({
   selector: 'app-header',
@@ -31,7 +34,6 @@ import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
     NzToolTipModule,
     MenuComponent,
     ActBtnComponent,
-    UserComponent,
     TranslateModule
   ],
   templateUrl: './header.component.html',
@@ -40,6 +42,15 @@ import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 export class HeaderComponent {
   headerBtns = HEADER_BTNS;
   headerMenu = HEADER_MENU;
+  headerApps = APP_LIST;
+
+  get isMac() {
+    return this.platformService.isMac();
+  }
+
+  get isWindowFullScreen() {
+    return this.electronService.isWindowFullScreen();
+  }
 
   get projectData() {
     return this.projectService.currentPackageData;
@@ -71,6 +82,11 @@ export class HeaderComponent {
     return isDevMode()
   }
 
+  // 从 AppStoreService 获取要显示在 header 上的 apps
+  // get headerApps(): AppItem[] {
+  //   return this.appStoreService.getHeaderApps();
+  // }
+
   constructor(
     private projectService: ProjectService,
     private uiService: UiService,
@@ -85,7 +101,9 @@ export class HeaderComponent {
     private electronService: ElectronService,
     private configService: ConfigService,
     private authService: AuthService,
-    private translate: TranslateService
+    private translate: TranslateService,
+    private platformService: PlatformService,
+    // private appStoreService: AppStoreService
   ) { }
 
   async ngAfterViewInit() {
@@ -97,6 +115,13 @@ export class HeaderComponent {
             menu.disabled = false;
           }
         });
+
+        // headerBtns中的按钮都置为默认状态
+        // this.headerBtns.forEach((btnGroup) => {
+        //   btnGroup.forEach((btn) => {
+        //     btn.state = 'default';
+        //   });
+        // });
       } else {
         // 将headerMenu中有disabled的按钮置禁用
         this.headerMenu.forEach((menu) => {
@@ -113,6 +138,21 @@ export class HeaderComponent {
     this.authService.showUser.subscribe(state => {
       this.showUser = state;
     })
+    this.checkAndSetDefaultPort();
+  }
+
+  // 检查串口列表并设置默认串口
+  private async checkAndSetDefaultPort() {
+    try {
+      const ports = await this.serialService.getSerialPorts();
+      if (ports && ports.length === 1 && !this.currentPort) {
+        // 只有一个串口且当前没有选择串口时，设为默认
+        this.currentPort = ports[0].name;
+        this.cd.detectChanges();
+      }
+    } catch (error) {
+      console.warn('获取串口列表失败:', error);
+    }
   }
 
   showMenu = false;
@@ -131,13 +171,14 @@ export class HeaderComponent {
     this.calculatePortListPosition(event)
     let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
     this.boardKeywords = [boardname];
-    this.showPortList = !this.showPortList;
     this.getDevicePortList();
+    this.showPortList = true;
+    // this.cd.detectChanges();
   }
 
   closePortList() {
     this.showPortList = false;
-    this.cd.detectChanges();
+    // this.cd.detectChanges();
   }
 
   selectPort(item) {
@@ -298,7 +339,7 @@ export class HeaderComponent {
       case 'upload':
         // 确认是否选择串口
         if (!this.serialService.currentPort) {
-          this.message.warning('请先选择串口');
+          this.message.warning(this.translate.instant('SERIAL.SELECT_PORT_FIRST'));
           this.openPortList(event);
           return;
         }
@@ -337,18 +378,6 @@ export class HeaderComponent {
           this.electronService.openNewInStance('/main/playground')
         } else {
           this.router.navigate(['/main/playground']);
-        }
-        break;
-      case 'user-auth':
-        // 在显示用户组件前先同步登录状态
-        let isLogin = await this.authService.checkAndSyncAuthStatus();
-        if (isLogin) {
-          if (event) {
-            this.calculateUserPosition(event);
-          }
-          this.showUser = !this.showUser;
-        } else {
-          this.openLoginDialog();
         }
         break;
       case 'board-select':
@@ -633,37 +662,15 @@ export class HeaderComponent {
     // 判断是否是STM32，是则更新项目配置
     if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
       this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
-      let newPinConfig = subItem;
-      this.projectService.compareStm32PinConfig(newPinConfig)
+      // 如果subItem包含pnum variant字段，则调用比较函数
+      if (subItem.key === 'pnum' && subItem.extra?.build.variant) {
+        let newPinConfig = subItem;
+        this.projectService.compareStm32PinConfig(newPinConfig)
+      }
     }
   }
 
   showUser = false;
-  userPosition = { x: 0, y: 40 };
-
-  // 计算用户组件的显示位置
-  calculateUserPosition(event: MouseEvent) {
-    const target = event.target as HTMLElement;
-    const rect = target.getBoundingClientRect();
-
-    // 计算用户组件的位置，使其显示在点击元素的下方
-    this.userPosition = {
-      x: rect.left + 10,
-      y: 40
-    };
-
-    // 确保用户组件不会超出窗口边界
-    const windowWidth = window.innerWidth;
-    const userComponentWidth = 260; // 用户组件的宽度
-
-    if (this.userPosition.x + userComponentWidth > windowWidth) {
-      this.userPosition.x = windowWidth - userComponentWidth - 3;
-    }
-
-    if (this.userPosition.x < 0) {
-      this.userPosition.x = 10;
-    }
-  }
 
   closeUser() {
     this.showUser = false;
@@ -722,6 +729,13 @@ export class HeaderComponent {
     //     this.cd.detectChanges();
     //   }
     // });
+  }
+
+  appStoreBtn = {
+    name: 'MENU.APP_STORE',
+    action: 'tool-open',
+    data: { type: 'tool', data: "app-store" },
+    icon: 'fa-light fa-grid-2-plus',
   }
 }
 

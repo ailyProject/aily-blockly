@@ -32,7 +32,7 @@ export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: 
 };
 
 async function addTokenHeader(request: HttpRequest<any>, authService: AuthService, token?: string | null): Promise<HttpRequest<any>> {
-  console.log('Auth Interceptor - Adding token to request:', request.url);
+  // console.log('Auth Interceptor - Adding token to request:', request.url);
   if (!token) {
     token = await authService.getToken2();
   }
@@ -49,7 +49,7 @@ async function addTokenHeader(request: HttpRequest<any>, authService: AuthServic
 }
 
 function handle401Error(authService: AuthService): Observable<HttpEvent<any>> {
-  console.log('Auth Interceptor - Token过期，清理认证数据并要求重新登录');
+  // console.log('Auth Interceptor - Token过期，清理认证数据并要求重新登录');
   
   // 清理认证数据并登出
   authService.logout();

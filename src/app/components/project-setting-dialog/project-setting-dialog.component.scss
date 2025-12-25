@@ -1,0 +1,278 @@
+.project-setting-form {
+    max-height: 70vh;
+    overflow-y: auto;
+    padding-right: 8px;
+
+    .section {
+        margin-bottom: 24px;
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #f5f5f5;
+        margin-bottom: 16px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #4a4c4f;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+
+        .add-btn {
+            color: #1890ff;
+            padding: 0 8px;
+            height: 24px;
+            font-size: 13px;
+
+            &:hover {
+                color: #40a9ff;
+            }
+        }
+    }
+
+    .form-item {
+        margin-bottom: 16px;
+
+        &:last-of-type {
+            margin-bottom: 0;
+        }
+    }
+
+    .form-label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 14px;
+        color: #f5f5f5;
+
+        .required {
+            color: #ff4d4f;
+            margin-left: 4px;
+        }
+
+        .more {
+            margin-left: 10px;
+            font-size: 12px;
+            color: #999;
+        }
+    }
+
+    .form-control {
+        width: 100%;
+        background: #3a3c3f;
+        border: 1px solid #4a4c4f;
+        border-radius: 4px;
+        color: #ddd;
+        transition: all 0.3s;
+
+        &:hover {
+            border-color: #5a5c5f;
+        }
+
+        &:focus {
+            border-color: #1890ff;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+        }
+
+        &:disabled {
+            background: #2b2d30;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+    }
+
+    textarea.form-control {
+        resize: vertical;
+        min-height: 80px;
+        font-family: inherit;
+        padding: 8px 11px;
+    }
+
+    input.form-control {
+        height: 32px;
+        padding: 4px 11px;
+    }
+
+    // 配置列表样式
+    .config-list,
+    .dependency-list {
+        background: #2b2d30;
+        border: 1px solid #4a4c4f;
+        border-radius: 4px;
+        padding: 12px;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .config-item,
+    .dependency-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        background: #3a3c3f;
+        border-radius: 4px;
+        border-left: 3px solid #1890ff;
+        transition: all 0.2s;
+
+        &:hover {
+            background: #414345;
+            border-left-color: #40a9ff;
+        }
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    // 可编辑的配置项和依赖项
+    .config-item-editable,
+    .dependency-item-editable {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        background: #3a3c3f;
+        border-radius: 4px;
+        border-left: 3px solid #1890ff;
+        transition: all 0.2s;
+
+        &:hover {
+            background: #414345;
+            border-left-color: #40a9ff;
+        }
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+
+        input {
+            background: #2b2d30;
+            border: 1px solid #4a4c4f;
+            border-radius: 3px;
+            color: #ddd;
+            height: 28px;
+            padding: 4px 8px;
+            font-size: 13px;
+            transition: all 0.2s;
+
+            &:hover {
+                border-color: #5a5c5f;
+            }
+
+            &:focus {
+                border-color: #1890ff;
+                outline: none;
+                box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+            }
+
+            &:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+        }
+
+        .config-key-input,
+        .dependency-name-input {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .config-value-input,
+        .dependency-version-input {
+            flex: 0 0 120px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .delete-btn {
+            flex: 0 0 auto;
+            padding: 0;
+            width: 28px;
+            height: 28px;
+            border: none;
+            background: transparent;
+            color: #ff4d4f;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3px;
+            transition: all 0.2s;
+
+            &:hover {
+                background: rgba(255, 77, 79, 0.1);
+                color: #ff7875;
+            }
+
+            .icon-delete {
+                font-size: 20px;
+                line-height: 1;
+            }
+        }
+    }
+
+    .config-key,
+    .dependency-name {
+        font-size: 14px;
+        color: #ddd;
+        font-weight: 500;
+        flex: 0 0 auto;
+        max-width: 60%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .config-value,
+    .dependency-version {
+        font-size: 13px;
+        color: #999;
+        font-family: 'Courier New', monospace;
+        background: #252629;
+        padding: 2px 8px;
+        border-radius: 3px;
+        flex: 0 0 auto;
+        max-width: 35%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .empty-message {
+        text-align: center;
+        color: #999;
+        font-size: 14px;
+        padding: 20px;
+    }
+
+    // 滚动条样式
+    &::-webkit-scrollbar,
+    .config-list::-webkit-scrollbar,
+    .dependency-list::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    &::-webkit-scrollbar-track,
+    .config-list::-webkit-scrollbar-track,
+    .dependency-list::-webkit-scrollbar-track {
+        background: #2b2d30;
+        border-radius: 4px;
+    }
+
+    &::-webkit-scrollbar-thumb,
+    .config-list::-webkit-scrollbar-thumb,
+    .dependency-list::-webkit-scrollbar-thumb {
+        background: #4a4c4f;
+        border-radius: 4px;
+
+        &:hover {
+            background: #5a5c5f;
+        }
+    }
+}

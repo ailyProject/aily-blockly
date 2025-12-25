@@ -46,7 +46,7 @@ export async function deleteFolderTool(
         // 路径规范化
         folderPath = normalizePath(folderPath);
         
-        console.log("删除文件夹: ", folderPath);
+        // console.log("删除文件夹: ", folderPath);
 
         // 验证路径是否有效
         if (!folderPath || folderPath.trim() === '') {
@@ -116,7 +116,7 @@ export async function deleteFolderTool(
             content: resultMessage 
         };
     } catch (error: any) {
-        console.error("删除文件夹失败:", error);
+        console.warn("删除文件夹失败:", error);
         
         let errorMessage = `删除文件夹失败: ${error.message}`;
         if (error.code) {

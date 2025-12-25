@@ -6,6 +6,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { pinyin } from "pinyin-pro";
 import { Router } from '@angular/router';
 import { CmdService } from './cmd.service';
+import { CrossPlatformCmdService } from './cross-platform-cmd.service';
 import { generateDateString } from '../func/func';
 import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
@@ -13,6 +14,9 @@ import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { ActionService } from './action.service';
 import { PlatformService } from './platform.service';
 import { NewProjectData } from '../pages/project-new/project-new.component';
+import { WorkflowService } from './workflow.service';
+
+const { pt } = (window as any)['electronAPI'].platform;
 
 interface ProjectPackageData {
   name: string;
@@ -65,9 +69,11 @@ export class ProjectService {
     private message: NzMessageService,
     private router: Router,
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private configService: ConfigService,
     private actionService: ActionService,
     private platformService: PlatformService,
+    private workflowService: WorkflowService
   ) {
   }
 
@@ -102,7 +108,7 @@ export class ProjectService {
         }
       });
 
-      this.projectRootPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
+      this.projectRootPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents\\', window['path'].getUserDocuments() + this.platformService.getPlatformSeparator());
       // if (!this.currentProjectPath) {
       //   this.currentProjectPath = this.projectRootPath;
       // }
@@ -125,11 +131,11 @@ export class ProjectService {
 
     this.uiService.updateFooterState({ state: 'doing', text: '正在创建项目...' });
     await this.cmdService.runAsync(`npm install ${boardPackage} --prefix "${appDataPath}"`);
-    const templatePath = `${appDataPath}\\node_modules\\${newProjectData.board.name}\\template`;
+    const templatePath = `${appDataPath}${pt}node_modules${pt}${newProjectData.board.name}${pt}template`;
     // 创建项目目录
-    await this.cmdService.runAsync(`mkdir -p "${projectPath}"`);
+    await this.crossPlatformCmdService.createDirectory(projectPath, true);
     // 复制模板文件到项目目录
-    await this.cmdService.runAsync(`cp -r "${templatePath}\\*" "${projectPath}"`);
+    await this.crossPlatformCmdService.copyItem(`${templatePath}${pt}*`, projectPath, true, true);
 
     // 3. 修改package.json文件
     const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
@@ -191,8 +197,9 @@ export class ProjectService {
 
   // 保存项目
   save(path = this.currentProjectPath) {
-    this.actionService.dispatch('project-save', { path }, result => {
+    this.actionService.dispatch('project-save', { path }, async result => {
       if (result.success) {
+        this.currentPackageData = await this.getPackageJson();
         this.stateSubject.next('saved');
       } else {
         // console.warn('项目保存失败:', result.error);
@@ -296,14 +303,145 @@ export class ProjectService {
     if (!this.currentProjectPath) {
       throw new Error('当前项目路径未设置');
     }
+
+    // set之前重新获取最新的package.json内容，然后进行合并
+    const currentPackageJson = await this.getPackageJson();
+    // 对比写入内容和当前内容是否相同，如果相同则不写入
+    if (JSON.stringify(currentPackageJson) === JSON.stringify(data)) {
+      // console.log('package.json内容未更改，跳过写入');
+      return;
+    }
+
+    if (currentPackageJson) {
+      data = { ...currentPackageJson, ...data };
+    }
+
     const packageJsonPath = `${this.currentProjectPath}/package.json`;
-    // 写入新的package.json
-    window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
+
+    try {
+      // 尝试直接写入
+      window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
+    } catch (error) {
+      // 如果写入失败，尝试移除只读属性后重试
+      console.warn('写入package.json失败，尝试修改权限后重试:', error);
+      try {
+        if (window['fs'].existsSync(packageJsonPath)) {
+          // 0o666 确保文件可读写
+          window['fs'].chmodSync(packageJsonPath, 0o666);
+          // 重试写入
+          window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
+        }
+      } catch (retryError) {
+        console.error('修改权限后写入仍然失败:', retryError);
+        throw retryError;
+      }
+    }
 
     // 更新当前packageData
     this.currentPackageData = data;
 
     this.boardChangeSubject.next();
+  }
+
+  /**
+   * 添加或更新宏定义
+   * @param macro 宏定义字符串，如 "BOARD_SCREEN_COMBO=501"
+   */
+  async addMacro(macro: string) {
+    const pkg = await this.getPackageJson();
+    if (!pkg.MACROS) {
+      pkg.MACROS = [];
+    }
+
+    // 规范化为字符串数组（如果存储为 [[...], [...]] 则取首元素）
+    const normalized: string[] = (pkg.MACROS || []).map((m: any) => {
+      if (Array.isArray(m)) return String(m[0] || '').trim();
+      return String(m || '').trim();
+    }).filter((s: string) => s.length > 0);
+
+    // 提取宏名称（等号前的部分），并支持无等号的宏定义
+    const macroName = macro.split('=')[0];
+
+    // 查找已有的同名项（以名称为准，不区分是否带赋值）
+    const existingIndex = normalized.findIndex((entry) => {
+      const entryName = entry.split('=')[0];
+      return entryName === macroName;
+    });
+
+    if (existingIndex !== -1) {
+      // 替换同名项
+      normalized[existingIndex] = macro;
+    } else {
+      // 追加新宏
+      normalized.push(macro);
+    }
+
+    // 在写入前再次读取最新的 package.json，防止并发写入覆盖
+    const latestPkg = await this.getPackageJson();
+    if (!latestPkg.MACROS) latestPkg.MACROS = [];
+
+    // 规范化并写回到最新 pkg
+    latestPkg.MACROS = normalized.map(s => [s]);
+
+    console.log('addMacro -> normalized macros to write:', latestPkg.MACROS);
+    await this.setPackageJson(latestPkg);
+    console.log('✅ 添加宏定义:', macro, '当前宏列表:', latestPkg.MACROS);
+  }
+
+  /**
+   * 删除宏定义
+   * @param macroName 宏名称，如 "BOARD_SCREEN_COMBO"
+   */
+  async removeMacro(macroName: string) {
+    const pkg = await this.getPackageJson();
+    if (!pkg.MACROS || pkg.MACROS.length === 0) {
+      return;
+    }
+
+    // 规范化为字符串数组（兼容 ['A'] 或 [['A=1']] 等存储形式）
+    const normalized: string[] = (pkg.MACROS || []).map((m: any) => {
+      if (Array.isArray(m)) return String(m[0] || '').trim();
+      return String(m || '').trim();
+    }).filter((s: string) => s.length > 0);
+
+    // 过滤掉名称匹配的宏（既匹配 "NAME" 又匹配 "NAME=..."）
+    const filtered = normalized.filter(entry => {
+      const name = entry.split('=')[0];
+      return name !== macroName;
+    });
+
+    // 在写入前再次读取最新的 package.json，防止并发写入覆盖
+    const latestPkg = await this.getPackageJson();
+    if (!latestPkg.MACROS) latestPkg.MACROS = [];
+
+    latestPkg.MACROS = filtered.map(s => [s]);
+    console.log('removeMacro -> normalized macros to write:', latestPkg.MACROS);
+    await this.setPackageJson(latestPkg);
+    console.log('🗑️ 删除宏定义:', macroName, '当前宏列表:', latestPkg.MACROS);
+  }
+
+  /**
+   * 获取所有宏定义
+   * @returns 宏定义数组，如 ["BOARD_SCREEN_COMBO=501", "BBXX"]
+   */
+  async getMacros(): Promise<string[]> {
+    const pkg = await this.getPackageJson();
+    if (!pkg.MACROS || pkg.MACROS.length === 0) {
+      return [];
+    }
+    return (pkg.MACROS || []).map((m: any) => {
+      if (Array.isArray(m)) return String(m[0] || '');
+      return String(m || '');
+    }).filter((s: string) => s.length > 0);
+  }
+
+  /**
+   * 获取编译时的宏定义参数
+   * @returns 如 "BOARD_SCREEN_COMBO=501,BBXX"
+   */
+  async getBuildMacrosString(): Promise<string> {
+    const macros = await this.getMacros();
+    return macros.join(',');
   }
 
   // 获取开发板名称
@@ -336,6 +474,20 @@ export class ProjectService {
     }
     return JSON.parse(this.electronService.readFile(boardJsonPath));
   }
+
+  // 获取开发板根目录路下得特殊配置文件，如 ESP32 需要的 partitions.csv
+  async getBoardFile(fileName: string) {
+    const boardModule = await this.getBoardModule();
+    if (!boardModule) {
+      throw new Error('未找到开发板模块');
+    }
+    const filePath = `${this.currentProjectPath}/node_modules/${boardModule}/${fileName}`;
+    if (!window['fs'].existsSync(filePath)) {
+      return null;
+    }
+    return filePath;
+  }
+
 
   // 获取开发板特殊配置文件，如 STM32 需要的特殊配置
   async getJsonConfig(fileName: string) {
@@ -402,30 +554,32 @@ export class ProjectService {
         throw new Error('未找到开发板 SDK 模块');
       }
 
+      const sdkVersion = boardPackageJson.boardDependencies[sdkModule];
+      const sdkFileName = sdkModule.replace('@aily-project/sdk-', '') + '_' + sdkVersion;
       const appDataPath = window['path'].getAppDataPath()
-
-      const sdkLibPath = `${appDataPath}/node_modules/${sdkModule}`;
+      const sdkLibPath = this.electronService.pathJoin(appDataPath, 'sdk', `${sdkFileName}`);
       if (!window['fs'].existsSync(sdkLibPath)) {
         throw new Error('SDK 库路径不存在: ' + sdkLibPath);
       }
 
-      // Get all files in the SDK library path
-      const sdkFiles = window['fs'].readDirSync(sdkLibPath);
+      // // Get all files in the SDK library path
+      // const sdkFiles = window['fs'].readDirSync(sdkLibPath);
 
-      // Filter for .7z files
-      const sdkZipFiles = sdkFiles.filter(file => file.name.endsWith('.7z'));
+      // // Filter for .7z files
+      // const sdkZipFiles = sdkFiles.filter(file => file.name.endsWith('.7z'));
 
-      // If there are no .7z files, throw an error
-      if (sdkZipFiles.length === 0) {
-        throw new Error('未找到 SDK 压缩包文件');
-      }
+      // // If there are no .7z files, throw an error
+      // if (sdkZipFiles.length === 0) {
+      //   throw new Error('未找到 SDK 压缩包文件');
+      // }
 
-      // Replace '@' with '_' in the filename
-      const sdkZipFileName = sdkZipFiles[0].name;
-      const formattedSdkZipFileName = sdkZipFileName.replace(/@/g, '_').replace(/\.7z$/i, '');
+      // // Replace '@' with '_' in the filename
+      // const sdkZipFileName = sdkZipFiles[0].name;
+      // const formattedSdkZipFileName = sdkZipFileName.replace(/@/g, '_').replace(/\.7z$/i, '');
 
       // sdk path
-      return `${await window["env"].get('AILY_SDK_PATH')}/${formattedSdkZipFileName}`;
+      // return `${await window["env"].get('AILY_SDK_PATH')}/${formattedSdkZipFileName}`;
+      return `${await window["env"].get('AILY_SDK_PATH')}/${sdkFileName}`;
     } catch (error) {
       console.error('获取 SDK 路径失败:', error);
       return "";
@@ -1193,6 +1347,50 @@ export class ProjectService {
       this.uiService.updateFooterState({ state: 'doing', text: '正在安装新开发板...' });
       await this.cmdService.runAsync(`npm install ${newBoardPackage}`, this.currentProjectPath);
 
+      // 2.5. 获取新开发板的模板并更新package.json
+      console.log('更新项目配置文件...');
+      this.uiService.updateFooterState({ state: 'doing', text: '正在更新项目配置...' });
+      
+      // 读取当前package.json保留项目基本信息
+      const currentPackageJson = await this.getPackageJson();
+      
+      // 获取新开发板的模板package.json
+      const appDataPath = window['path'].getAppDataPath();
+      const templatePath = `${appDataPath}${pt}node_modules${pt}${boardInfo.name}${pt}template`;
+      const templatePackageJsonPath = `${templatePath}${pt}package.json`;
+      
+      if (window['fs'].existsSync(templatePackageJsonPath)) {
+        // 读取模板package.json
+        const templatePackageJson = JSON.parse(window['fs'].readFileSync(templatePackageJsonPath, 'utf8'));
+        
+        // 合并配置：保留当前项目的基本信息，使用新开发板的依赖和配置
+        const newPackageJson = {
+          ...templatePackageJson,
+          name: currentPackageJson.name, // 保留项目名称
+          nickname: currentPackageJson.nickname, // 保留昵称
+          author: currentPackageJson.author, // 保留作者
+          description: currentPackageJson.description, // 保留描述
+          dependencies: {
+            // 从模板获取新的开发板依赖和基础库
+            ...templatePackageJson.dependencies,
+            // 保留当前项目的非开发板依赖（过滤掉 @aily-project/board-* 包）
+            ...Object.fromEntries(
+              Object.entries(currentPackageJson.dependencies || {})
+                .filter(([key]) => !key.startsWith('@aily-project/board-'))
+            ),
+          },
+          // 不保留其他自定义配置
+          // ...(currentPackageJson.projectConfig && { projectConfig: currentPackageJson.projectConfig }),
+          // ...(currentPackageJson.cloudId && { cloudId: currentPackageJson.cloudId }),
+        };
+        
+        // 写入新的package.json
+        window['fs'].writeFileSync(`${this.currentProjectPath}/package.json`, JSON.stringify(newPackageJson, null, 2));
+        console.log('package.json 更新完成');
+      } else {
+        console.warn('未找到新开发板的模板package.json，跳过配置更新');
+      }
+
       // 3. 重新加载项目
       console.log('重新加载项目...');
       await this.projectOpen(this.currentProjectPath);
@@ -1241,5 +1439,29 @@ export class ProjectService {
         return prefix + 'a' + Date.now(); // 极端情况下使用时间戳
       }
     }
+  }
+
+  /**
+   * 获取当前项目的构建路径
+   * @returns 返回构建路径
+   */
+  async getBuildPath(): Promise<string> {
+    const sketchPath = window['path'].join(
+      this.currentProjectPath,
+      '.temp',
+      'sketch',
+      'sketch.ino'
+    );
+    const sketchName = window['path'].basename(sketchPath, '.ino');
+
+    // 为了避免不同项目的同名sketch冲突,使用项目路径的MD5哈希值
+    const projectPathMD5 = (await window['tools'].calculateMD5(sketchPath)).substring(0, 8); // 只取前8位MD5值
+    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
+
+    // 使用统一的构建路径获取方法
+    return window['path'].join(
+      window['path'].getAilyBuilderBuildPath(),
+      uniqueSketchName
+    );
   }
 }

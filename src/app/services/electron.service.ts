@@ -46,6 +46,34 @@ export class ElectronService {
   }
 
   /**
+   * 删除文件
+   */
+  deleteFile(filePath: string) {
+    return window['fs'].unlinkSync(filePath);
+  }
+
+  /**
+   * 删除目录
+   * @param dirPath 目录路径
+   * @param recursive 是否递归删除（默认为 true）
+   */
+  deleteDir(dirPath: string) {
+    return window['fs'].rmdirSync(dirPath);
+  }
+
+  /**
+   * 删除文件或目录（自动判断类型）
+   * @param path 文件或目录路径
+   */
+  delete(path: string) {
+    if (this.isDirectory(path)) {
+      return this.deleteDir(path);
+    } else {
+      return this.deleteFile(path);
+    }
+  }
+
+  /**
  * 判断路径是否存在
  */
   exists(path: string): boolean {
@@ -61,6 +89,11 @@ export class ElectronService {
 
   isFile(path: string) {
     return window['fs'].isFile(path);
+  }
+
+  // join路径
+  pathJoin(...paths: string[]) {
+    return window['path'].join(...paths);
   }
 
   // 调用浏览器打开url
@@ -138,7 +171,7 @@ export class ElectronService {
       const result = await window['notification'].show(notificationOptions);
       return result;
     } catch (error) {
-      console.error('Show notification error:', error);
+      console.warn('Show notification error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -220,4 +253,52 @@ export class ElectronService {
     }
   }
 
+  /**
+   * 检查窗口是否最大化
+   * @returns boolean
+   */
+  isWindowMaximized(): boolean {
+    if (!this.isElectron) {
+      return false;
+    }
+
+    try {
+      return window['iWindow'].isMaximized();
+    } catch (error) {
+      console.error('Check window maximized error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 检查窗口是否最大化（同步方法，用于模板绑定）
+   * 注意：这里实际检测的是窗口最大化状态，而非全屏状态
+   * @returns boolean
+   */
+  isWindowFullScreen(): boolean {
+    if (!this.isElectron) {
+      return false;
+    }
+
+    try {
+      return window['iWindow'].isMaximized();
+    } catch (error) {
+      console.error('Check window maximized error:', error);
+      return false;
+    }
+  }
+
+
+  openByExplorer(path){
+    window['other'].openByExplorer(path);
+  }
+
+  /**
+   * 发送渲染进程就绪信号
+   */
+  sendRendererReady() {
+    if (this.isElectron) {
+      window['ipcRenderer'].send('renderer-ready');
+    }
+  }
 }

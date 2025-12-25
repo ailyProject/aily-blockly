@@ -28,6 +28,7 @@ export interface LoginResponse {
       email?: string;
       phone?: string;
       nickname?: string;
+      groups?: string[];
     };
   };
 }
@@ -86,7 +87,7 @@ export class AuthService {
               this.isLoggedInSubject.next(false);
             }
 
-            console.log('认证状态:', this.isLoggedInSubject.value);
+            // console.log('认证状态:', this.isLoggedInSubject.value);
           }).catch(error => {
             this.isLoggedInSubject.next(false);
           });
@@ -116,10 +117,11 @@ export class AuthService {
           // console.log("登录成功，token: ", response.data.access_token);
           // 保存 token 和用户信息
           this.saveToken2(response.data.access_token);
-          if (response.data.user) {
-            this.saveUserInfo(response.data.user);
-            this.userInfoSubject.next(response.data.user);
-          }
+          this.getMe(response.data.access_token);
+          // if (response.data.user) {
+          //   this.saveUserInfo(response.data.user);
+          //   this.userInfoSubject.next(response.data.user);
+          // }
           this.isLoggedInSubject.next(true);
         } else {
           this.isLoggedInSubject.next(false);
@@ -185,15 +187,34 @@ export class AuthService {
       }).subscribe({
         next: (response) => {
           if (response.status === 200 && response.data) {
+            this.userInfoSubject.next(response.data);
             resolve(response.data);
           } else {
-            reject(new Error('获取用户信息失败'));
+            console.warn('获取用户信息失败:', response);
+            reject(null);
           }
         },
         error: (error) => reject(error)
       });
     });
   }
+
+  async refreshMe() {
+    return this.http.get<CommonResponse>(API.me).subscribe( (res) => {
+      if (res.status === 200 && res.data) {
+        this.userInfoSubject.next(res.data);
+      };
+    });
+  }
+
+  /**
+   * 更改用户昵称
+   */
+  async changeNickname(newNickname: string) {
+    return this.http.post<CommonResponse>(API.changeNickname, { nickname: newNickname });
+  }
+
+
 
   /**
    * 检查是否支持安全存储
@@ -222,7 +243,7 @@ export class AuthService {
         localStorage.setItem(this.TOKEN_KEY, token);
       }
     } catch (error) {
-      console.error('保存 token 失败:', error);
+      // console.error('保存 token 失败:', error);
       throw error;
     }
   }
@@ -286,11 +307,11 @@ export class AuthService {
       if (fileExists !== currentLoginStatus) {
         if (!fileExists && currentLoginStatus) {
           // 文件不存在但当前显示为登录状态，说明其他实例已登出
-          console.log('检测到其他实例已登出，同步登出当前实例');
+          // console.log('检测到其他实例已登出，同步登出当前实例');
           await this.clearAuthData();
         } else if (fileExists && !currentLoginStatus) {
           // 文件存在但当前显示为未登录状态，重新获取用户信息
-          console.log('检测到认证文件存在，重新获取登录状态');
+          // console.log('检测到认证文件存在，重新获取登录状态');
           const token = await this.getToken2();
           if (token) {
             try {
@@ -423,12 +444,12 @@ export class AuthService {
         // 删除.aily文件
         if ((window as any).electronAPI.fs.existsSync(authFilePath)) {
           (window as any).electronAPI.fs.unlinkSync(authFilePath);
-          console.log('已删除认证文件:', authFilePath);
+          // console.log('已删除认证文件:', authFilePath);
         }
       } else {
         // 降级到localStorage（开发环境或不支持electron）
         localStorage.removeItem('aily_auth_token');
-        console.log('已清除localStorage中的认证数据');
+        // console.log('已清除localStorage中的认证数据');
       }
     } catch (error) {
       console.error('清除认证数据失败:', error);
@@ -604,7 +625,7 @@ export class AuthService {
           // 注册当前实例为OAuth发起者
           if (this.electronService.isElectron && (window as any).electronAPI?.oauth) {
             (window as any).electronAPI.oauth.registerState(state).then((result: any) => {
-              console.log('已注册OAuth状态到实例管理:', result);
+              // console.log('已注册OAuth状态到实例管理:', result);
             }).catch((error: any) => {
               console.error('注册OAuth状态失败:', error);
             });
@@ -662,7 +683,7 @@ export class AuthService {
         }
         
         (window as any).electronAPI.fs.writeFileSync(stateFilePath, JSON.stringify(stateData, null, 2));
-        console.log('OAuth state已保存到共享文件:', stateFilePath);
+        // console.log('OAuth state已保存到共享文件:', stateFilePath);
       }
     } catch (error) {
       console.error('保存OAuth状态到文件失败:', error);
@@ -681,7 +702,7 @@ export class AuthService {
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           const content = (window as any).electronAPI.fs.readFileSync(stateFilePath, 'utf8');
           const stateData = JSON.parse(content);
-          console.log('从共享文件加载OAuth状态:', stateData);
+          // console.log('从共享文件加载OAuth状态:', stateData);
           return stateData;
         }
       }
@@ -721,7 +742,7 @@ export class AuthService {
     if (this.oauthState && this.oauthState.state === state) {
       // 检查超时
       if (Date.now() - this.oauthState.timestamp <= this.OAUTH_TIMEOUT) {
-        console.log('OAuth状态验证通过（内存）');
+        // console.log('OAuth状态验证通过（内存）');
         return true;
       }
     }
@@ -731,18 +752,18 @@ export class AuthService {
     if (fileState && fileState.state === state) {
       // 检查超时
       if (Date.now() - fileState.timestamp <= this.OAUTH_TIMEOUT) {
-        console.log('OAuth状态验证通过（文件）');
+        // console.log('OAuth状态验证通过（文件）');
         return true;
       } else {
-        console.log('OAuth状态已超时');
+        // console.log('OAuth状态已超时');
         this.clearOAuthStateFile();
       }
     } else {
-      console.log('OAuth状态验证失败:', { 
-        inputState: state, 
-        memoryState: this.oauthState?.state, 
-        fileState: fileState?.state 
-      });
+      // console.log('OAuth状态验证失败:', { 
+      //   inputState: state, 
+      //   memoryState: this.oauthState?.state, 
+      //   fileState: fileState?.state 
+      // });
     }
     
     return false;
@@ -767,7 +788,7 @@ export class AuthService {
         
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           (window as any).electronAPI.fs.unlinkSync(stateFilePath);
-          console.log('已清理OAuth状态共享文件:', stateFilePath);
+          // console.log('已清理OAuth状态共享文件:', stateFilePath);
         }
       }
     } catch (error) {

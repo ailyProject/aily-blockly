@@ -14,6 +14,29 @@
             <input class="board" nz-input [(ngModel)]="projectData.doc_url" />
         </div>
         <div class="item">
+            <div>项目标签:</div>
+            <div class="tags-wrapper">
+                <input
+                    class="tag-input-field"
+                    nz-input
+                    type="text"
+                    [(ngModel)]="tagInputValue"
+                    (keydown)="handleTagInputKeyDown($event)"
+                    placeholder="输入标签后按回车添加"
+                />
+                <div class="tags-display" *ngIf="tags.length > 0">
+                    <nz-tag 
+                        *ngFor="let tag of tags; let i = index"
+                        [nzMode]="'closeable'"
+                        [nzColor]="getTagColor(i)"
+                        (nzOnClose)="handleClose(tag)"
+                    >
+                        {{ tag }}
+                    </nz-tag>
+                </div>
+            </div>
+        </div>
+        <div class="item">
             <div>封面图片:</div>
             <div class="image-upload-container">
                 <!-- 图片预览区域 -->

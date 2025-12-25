@@ -5,7 +5,7 @@
         </div>
         <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
             <input type="text" nz-input [placeholder]="'LIB_MANAGER.SEARCH_LIBRARY' | translate" [(ngModel)]="keyword"
-                spellcheck="false" (ngModelChange)="search()" />
+                (ngModelChange)="search()" />
         </nz-input-group>
         <ng-template #suffixIconSearch>
             @if(keyword.length > 0){
@@ -25,12 +25,14 @@
             <nz-tag (click)="search('lib-core')">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
         </div>
         <div class="btns">
-            <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
-                <i class="fa-light fa-question"></i>{{'LIB_MANAGER.DEV_HELP' | translate}}
+            <button nz-button nzType="primary" nzShape="circle" nzSize="small" style="margin-right: 10px;"
+                (click)="help()">
+                <i class="fa-light fa-question" style="margin-right: 0"></i>
+                <!-- {{'LIB_MANAGER.DEV_HELP' | translate}} -->
             </button>
-            <button nz-button nzType="default" nzDanger nzSize="small" style="margin-right: 10px;" (click)="report()">
+            <!-- <button nz-button nzType="default" nzDanger nzSize="small" style="margin-right: 10px;" (click)="report()">
                 <i class="fa-light fa-bug"></i>{{'LIB_MANAGER.REPORT_ISSUE' | translate}}
-            </button>
+            </button> -->
             <button nz-button nzType="primary" nzSize="small" (click)="importLib()">
                 <i class="fa-light fa-plus"></i>{{'LIB_MANAGER.IMPORT_LIBRARY' | translate}}
             </button>

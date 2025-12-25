@@ -1,8 +1,11 @@
 import { Injectable } from '@angular/core';
 import { BlocklyService } from './blockly.service';
 import { ActionService } from '../../../services/action.service';
+import { HistoryService } from './history.service';
 
-@Injectable()
+@Injectable({
+  providedIn: 'root'
+})
 export class _ProjectService {
 
   currentProjectPath;
@@ -11,7 +14,8 @@ export class _ProjectService {
 
   constructor(
     private blocklyService: BlocklyService,
-    private actionService: ActionService
+    private actionService: ActionService,
+    private historyService: HistoryService
   ) { }
 
   init() {
@@ -21,6 +25,7 @@ export class _ProjectService {
     }
     
     this.initialized = true;
+
     this.actionService.listen('project-save', (action) => {
       this.save(action.payload.path);
     }, 'project-save-handler');
@@ -30,9 +35,17 @@ export class _ProjectService {
     }, 'project-check-unsaved-handler');
   }
 
+  // 初始化历史服务（在设置 currentProjectPath 后调用）
+  initHistory() {
+    if (this.currentProjectPath) {
+      this.historyService.init(this.currentProjectPath, this.blocklyService);
+    }
+  }
+
   destroy() {
     this.actionService.unlisten('project-save-handler');
     this.actionService.unlisten('project-check-unsaved-handler');
+    this.historyService.destroy();
     this.initialized = false; // 重置初始化状态
   }
 
@@ -62,9 +75,22 @@ export class _ProjectService {
     }
   }
 
-  save(path: string) {
+  save(path: string, createHistory: boolean = true) {
     const jsonData = this.blocklyService.getWorkspaceJson();
     window['fs'].writeFileSync(`${path}/project.abi`, JSON.stringify(jsonData, null, 2));
+    
+    if (createHistory && this.currentProjectPath) {
+      // 创建手动保存的历史版本
+      this.historyService.createManualVersion();
+    }
+    
     // this.stateSubject.next('saved');
+  }
+
+  restoreVersion(versionId: string) {
+    this.historyService.restoreVersion(versionId, (path: string) => {
+      // 保存到文件 (覆盖当前项目文件)
+      this.save(path, false);
+    });
   }
 }

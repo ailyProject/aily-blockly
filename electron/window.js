@@ -1,24 +1,94 @@
 // 窗口控制
-const { ipcMain, BrowserWindow } = require("electron");
+const { ipcMain, BrowserWindow, app } = require("electron");
+const { exec, execSync } = require('child_process');
 const path = require('path');
-const { app } = require("electron");
+
+function terminateAilyProcess() {
+    const platform = process.platform;
+    let checkCommand;
+    let killCommand;
+    const processName = platform === 'win32' ? 'aily blockly.exe' : 'aily blockly';
+
+    if (platform === 'win32') {
+        checkCommand = `tasklist /FI "IMAGENAME eq ${processName}" /FO CSV`;
+        killCommand = `taskkill /F /IM "${processName}"`;
+    } else {
+        checkCommand = `pgrep -f "${processName}"`;
+        killCommand = `pkill -f "${processName}"`;
+    }
+
+    try {
+        let count = 0;
+        try {
+            const stdout = execSync(checkCommand, { encoding: 'utf8' });
+            if (platform === 'win32') {
+                const matches = stdout.match(new RegExp(processName.replace('.', '\\.'), 'gi'));
+                count = matches ? matches.length : 0;
+            } else {
+                count = stdout.trim().split('\n').length;
+            }
+        } catch (e) {
+            if (platform !== 'win32' && e.status === 1) {
+                count = 0;
+            } else {
+                console.warn('Error checking process count:', e.message);
+            }
+        }
+
+        console.log(`Current aily-blockly process count: ${count}`);
+
+        if (count > 1) {
+            console.log('Multiple instances detected. Skipping forced termination.');
+            return;
+        }
+
+        exec(killCommand, (error, stdout, stderr) => {
+            if (error) {
+                const notFound =
+                    (platform === 'win32' && stderr && stderr.includes('not found')) ||
+                    (platform !== 'win32' && error.code === 1);
+                if (notFound) {
+                    console.log('No aily-blockly process found to terminate.');
+                    return;
+                }
+                console.error(`Error killing aily-blockly process: ${error.message}`);
+                return;
+            }
+            if (stdout) {
+                console.log(`aily-blockly process terminated: ${stdout}`);
+            }
+        });
+    } catch (commandError) {
+        console.warn('Error attempting to kill aily-blockly process:', commandError.message);
+    }
+}
 
 function registerWindowHandlers(mainWindow) {
     // 添加一个映射来存储已打开的窗口
     const openWindows = new Map();
 
-    // 注册窗口焦点事件监听
-    const setupFocusListeners = (window) => {
-        window.on('focus', () => {
-            window.webContents.send('window-focus');
-        });
-        window.on('blur', () => {
-            window.webContents.send('window-blur');
-        });
-    };
+    mainWindow.on('focus', () => {
+        try {
+            if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('window-focus');
+            }
 
-    // 为主窗口设置焦点监听
-    setupFocusListeners(mainWindow);
+        } catch (error) {
+            console.error('Error sending window-focus:', error.message);
+        }
+    });
+
+    mainWindow.on('blur', () => {
+        // 检查窗口是否已销毁以及 webContents 是否有效
+        try {
+            if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('window-blur');
+            }
+
+        } catch (error) {
+            console.error('Error sending window-blur:', error.message);
+        }
+    });
 
     ipcMain.on("window-open", (event, data) => {
         const windowUrl = data.path;
@@ -51,9 +121,6 @@ function registerWindowHandlers(mainWindow) {
                 preload: path.join(__dirname, "preload.js"),
             },
         });
-
-        // 为子窗口设置焦点监听
-        setupFocusListeners(subWindow);
 
         // 将新窗口添加到映射
         openWindows.set(windowUrl, subWindow);
@@ -88,10 +155,11 @@ function registerWindowHandlers(mainWindow) {
 
     ipcMain.on("window-close", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
-
         // 检查是否是主窗口，如果是主窗口，关闭整个应用程序
         if (senderWindow === mainWindow) {
             app.quit();
+            // Attempt to terminate any residual helper processes on exit.
+            terminateAilyProcess();
         } else {
             senderWindow.close();
         }
@@ -110,6 +178,12 @@ function registerWindowHandlers(mainWindow) {
         if (senderWindow && senderWindow.isMaximized()) {
             senderWindow.unmaximize();
         }
+    });
+
+    // 监听获取全屏状态的请求
+    ipcMain.handle('window-is-full-screen', (event) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        return senderWindow.isFullScreen();
     });
 
     // 检查窗口是否获得焦点（同步）

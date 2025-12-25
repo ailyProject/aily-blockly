@@ -1,0 +1,514 @@
+<app-sub-window [title]="'目标识别模型训练'" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content sscroll">
+      <!-- 左侧：图像输入区域 (2/3) -->
+      <div class="left-panel">
+        <div class="image-input-card">
+          <div class="card-header">
+            <span class="card-title">数据集</span>
+            <div class="header-actions">
+              <button class="header-action-btn" (click)="openCamera()" title="打开摄像头">
+                <i class="fa-light fa-video"></i>
+              </button>
+              <button class="header-action-btn" (click)="uploadImages()" title="上传图片">
+                <i class="fa-light fa-upload"></i>
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- 标注模式 -->
+            @if (annotationOpened && currentAnnotation) {
+            <div class="sample-section sample-section-camera">
+              <div class="annotation-panel">
+                <div class="annotation-header">
+                  <span>数据标注</span>
+                  <button class="close-btn" (click)="closeAnnotation()">
+                    <i class="fa-light fa-xmark"></i>
+                  </button>
+                </div>
+                
+                <div class="annotation-image-container" 
+                     (mousedown)="onAnnotationMouseDown($event)">
+                  <img [src]="currentAnnotation.imageUrl" alt="标注图片" #annotationImage (load)="onAnnotationImageLoad()">
+                  <!-- 裁剪遮罩层 -->
+                  <!-- <div class="crop-mask-overlay">
+                    <div class="crop-mask-left" [style.width.%]="cropMaskOffset.left"></div>
+                    <div class="crop-mask-right" [style.width.%]="cropMaskOffset.right"></div>
+                    <div class="crop-mask-top" [style.height.%]="cropMaskOffset.top"></div>
+                    <div class="crop-mask-bottom" [style.height.%]="cropMaskOffset.bottom"></div>
+                  </div> -->
+                  <div class="image-overlay-icons">
+                    <i class="fa-light fa-trash top-right" title="删除图片" (click)="deleteCurrentImage(); $event.stopPropagation()"></i>
+                  </div>
+                  
+                  <!-- 已有的标注框 -->
+                  @for (box of currentAnnotation.boxes; track box.id) {
+                  <div class="annotation-box" 
+                       [attr.data-box-id]="box.id"
+                       [class.selected]="selectedBoxId === box.id"
+                       [style.left.%]="box.x" 
+                       [style.top.%]="box.y"
+                       [style.width.%]="box.width" 
+                       [style.height.%]="box.height">
+                    <!-- 拖拽区域 -->
+                    <div class="box-drag-area" [attr.data-box-id]="box.id">
+                      <i class="fa-light fa-arrows-up-down-left-right drag-icon"></i>
+                    </div>
+                    <!-- 标签和删除按钮 -->
+                    <div class="box-label-area">
+                      <span class="box-label">{{ box.label }}</span>
+                      <button class="box-delete-btn" (click)="deleteBox(box.id); $event.stopPropagation()">
+                        <i class="fa-light fa-xmark"></i>
+                      </button>
+                    </div>
+                    <!-- 调整大小手柄 -->
+                    @if (selectedBoxId === box.id) {
+                    <div class="resize-handle nw" data-handle="nw"></div>
+                    <div class="resize-handle ne" data-handle="ne"></div>
+                    <div class="resize-handle sw" data-handle="sw"></div>
+                    <div class="resize-handle se" data-handle="se"></div>
+                    }
+                  </div>
+                  }
+                  
+                  <!-- 正在绘制的框 -->
+                  @if (isDrawing && currentBox) {
+                  <div class="annotation-box drawing"
+                       [style.left.%]="currentBox.x" 
+                       [style.top.%]="currentBox.y"
+                       [style.width.%]="currentBox.width" 
+                       [style.height.%]="currentBox.height">
+                    <div class="box-label-area">
+                      <span class="box-label">{{ currentBox.label }}</span>
+                    </div>
+                  </div>
+                  }
+                </div>
+                
+                <div class="annotation-footer">
+                  <!-- 工具栏 -->
+                  <!-- <div class="annotation-toolbar">
+                    <button class="tool-btn" title="标注工具" [class.active]="selectedLabel">
+                      <i class="fa-light fa-vector-square"></i>
+                    </button>
+                    <button class="tool-btn danger" title="删除图片" (click)="deleteCurrentImage()">
+                      <i class="fa-light fa-trash"></i>
+                    </button>
+                  </div> -->
+                  
+                  <!-- Label设置区域 -->
+                  <div class="label-settings">
+                    <div class="label-select-row">
+                      <button class="tool-btn" title="标注工具" [class.active]="selectedLabel">
+                        <i class="fa-light fa-vector-square"></i>
+                      </button>
+                      <!-- <span class="label-text">标签：</span> -->
+                      <nz-select class="label-select" [(ngModel)]="selectedLabel" (ngModelChange)="onLabelChange($event)" nzPlaceHolder="选择标签" nzSize="small">
+                        @for (label of allLabels; track label) {
+                        <nz-option [nzValue]="label" [nzLabel]="label"></nz-option>
+                        }
+                      </nz-select>
+                      <button class="delete-label-btn" (click)="deleteSelectedLabel()" [disabled]="!selectedLabel || allLabels.length <= 1" title="删除当前标签">
+                        <i class="fa-light fa-trash"></i>
+                      </button>
+                      <button class="add-label-btn" (click)="openLabelModal()" title="添加新标签">
+                        <i class="fa-light fa-plus"></i>
+                      </button>
+                    </div>
+                    <!-- <div class="label-add-row">
+                      <input type="text" 
+                             class="new-label-input" 
+                             [(ngModel)]="newLabelName" 
+                             placeholder="新建标签"
+                             (keydown.enter)="addNewLabel()">
+                      <button class="add-label-btn" (click)="addNewLabel()" [disabled]="!newLabelName.trim()">
+                        <i class="fa-light fa-plus"></i>
+                      </button>
+                    </div> -->
+
+                    <div class="info-item">
+                      <span class="info-label">标注图片数：</span>
+                      <span class="info-value">{{ annotatedImageCount }}</span>
+                      <!-- <span class="info-label">对象数：</span>
+                      <span class="info-value">{{ allLabels.length }}</span> -->
+                    </div>
+
+                    <!-- <div class="info-item">
+                      <span class="info-label">标注对象数：</span>
+                      <span class="info-value">{{ allLabels.length }}</span>
+                    </div> -->
+                    
+                    <!-- 图片导航 -->
+                    <div class="image-navigation">
+                      <!-- <span class="info-label">标注图片数：</span>
+                      <span class="info-value">{{ annotatedImageCount }}</span> -->
+                      <button class="nav-btn" (click)="previousImage()" [disabled]="currentAnnotation.imageIndex === 0" title="上一张">
+                        <i class="fa-light fa-chevron-left"></i>
+                      </button>
+                      <!-- <span class="image-counter">{{ currentAnnotation.imageIndex + 1 }} / {{ uploadedImages.length }}</span> -->
+                      <div class="image-counter">
+                        <span class="current-image">{{ currentAnnotation.imageIndex + 1 }}</span>
+                        <span class="image-separator">/</span>
+                        <span class="total-images">{{ uploadedImages.length }}</span>
+                      </div>
+                      <button class="nav-btn" (click)="nextImage()" [disabled]="currentAnnotation.imageIndex === uploadedImages.length - 1" title="下一张">
+                        <i class="fa-light fa-chevron-right"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="sample-grid-section">
+                <div class="sample-grid">
+                  @for (image of pagedImages; track image; let i = $index) {
+                  <div class="sample-thumb" (click)="viewImage(i)">
+                    <div class="thumb-image-container">
+                      <img [src]="image" alt="样本">
+                      <!-- 标注框预览 -->
+                      @if (getImageAnnotations((currentPage - 1) * pageSize + i).length > 0) {
+                      <div class="annotation-preview-layer">
+                        @for (box of getImageAnnotations((currentPage - 1) * pageSize + i); track box.id) {
+                        <div class="preview-box"
+                             [style.left.%]="box.x"
+                             [style.top.%]="box.y"
+                             [style.width.%]="box.width"
+                             [style.height.%]="box.height">
+                          <span class="preview-label">{{ box.label }}</span>
+                        </div>
+                        }
+                      </div>
+                      }
+                    </div>
+                  </div>
+                  }
+                </div>
+                <!-- 分页控件 -->
+                @if (totalPages >= 1) {
+                <div class="pagination-controls">
+                  <button class="page-btn" [disabled]="currentPage === 1" (click)="prevPage()">
+                    <i class="fa-light fa-chevron-left"></i>
+                  </button>
+                  <div class="page-info">
+                    <span class="current-page">{{ currentPage }}</span>
+                    <span class="page-separator">/</span>
+                    <span class="total-pages">{{ totalPages }}</span>
+                  </div>
+                  <button class="page-btn" [disabled]="currentPage === totalPages" (click)="nextPage()">
+                    <i class="fa-light fa-chevron-right"></i>
+                  </button>
+                </div>
+                }
+              </div>
+            </div>
+            }
+            
+            <!-- 未打开摄像头状态 -->
+            @if (!cameraOpened && !annotationOpened) {
+            <div class="sample-section sample-section-grid">
+              @if (uploadedImages.length > 0) {
+              <div class="sample-grid">
+                @for (image of pagedImages; track image; let i = $index) {
+                <div class="sample-thumb" (click)="viewImage(i)">
+                  <div class="thumb-image-container">
+                    <img [src]="image" alt="样本">
+                    <!-- 标注框预览 -->
+                    @if (getImageAnnotations((currentPage - 1) * pageSize + i).length > 0) {
+                    <div class="annotation-preview-layer">
+                      @for (box of getImageAnnotations((currentPage - 1) * pageSize + i); track box.id) {
+                      <div class="preview-box"
+                           [style.left.%]="box.x"
+                           [style.top.%]="box.y"
+                           [style.width.%]="box.width"
+                           [style.height.%]="box.height">
+                        <span class="preview-label">{{ box.label }}</span>
+                      </div>
+                      }
+                    </div>
+                    }
+                  </div>
+                </div>
+                }
+              </div>
+              <!-- 分页控件 -->
+              @if (totalPages >= 1) {
+              <div class="pagination-controls">
+                <button class="page-btn" [disabled]="currentPage === 1" (click)="prevPage()">
+                  <i class="fa-light fa-chevron-left"></i>
+                </button>
+                <div class="page-info">
+                  <span class="current-page">{{ currentPage }}</span>
+                  <span class="page-separator">/</span>
+                  <span class="total-pages">{{ totalPages }}</span>
+                </div>
+                <button class="page-btn" [disabled]="currentPage === totalPages" (click)="nextPage()">
+                  <i class="fa-light fa-chevron-right"></i>
+                </button>
+              </div>
+              }
+              } @else {
+              <div class="empty-hint-text">
+                <p>暂无图片，请点击右上角按钮上传图片或打开摄像头</p>
+              </div>
+              }
+            </div>
+            }
+            
+            <!-- 打开摄像头状态 -->
+            @if (cameraOpened && !annotationOpened) {
+            <div class="sample-section sample-section-camera">
+              <div class="camera-preview-card">
+                <div class="camera-header">
+                  <span>Webcam</span>
+                  <button class="close-btn" (click)="closeCamera()">
+                    <i class="fa-light fa-xmark"></i>
+                  </button>
+                </div>
+                <div class="camera-video-wrapper">
+                  @if (!cameraError) {
+                    <video #cameraVideo autoplay playsinline [class.mirrored]="cameraMirrored"></video>
+                    <canvas #cameraCanvas style="display: none;"></canvas>
+                    <div class="video-overlay-icons">
+                      <i class="fa-light fa-camera-rotate top-right" title="翻转" (click)="toggleMirror(); $event.stopPropagation()"></i>
+                    </div>
+                  } @else {
+                    <div class="camera-error">
+                      <i class="fa-light fa-camera-slash error-icon"></i>
+                      <p class="error-message">打开摄像头时出错</p>
+                      <p class="error-hint">请确保您启用了相关权限，或改为上传图片</p>
+                    </div>
+                  }
+                </div>
+                <div class="camera-actions">
+                  @if (!cameraError) {
+                    <button class="capture-btn" (click)="captureImage()">
+                      <i class="fa-light fa-camera"></i>
+                      拍照
+                    </button>
+                  }
+                </div>
+              </div>
+              
+              <div class="sample-grid-section">
+                <!-- @if (uploadedImages.length > 0) {
+                  <div class="sample-grid-label">{{ uploadedImages.length }} 个图片样本</div>
+                } @else {
+                  <div class="sample-grid-label">添加图片样本：</div>
+                } -->
+                <div class="sample-grid">
+                  @for (image of pagedImages; track image; let i = $index) {
+                  <div class="sample-thumb" (click)="viewImage(i)">
+                    <div class="thumb-image-container">
+                      <img [src]="image" alt="样本">
+                      <!-- 标注框预览 -->
+                      @if (getImageAnnotations((currentPage - 1) * pageSize + i).length > 0) {
+                      <div class="annotation-preview-layer">
+                        @for (box of getImageAnnotations((currentPage - 1) * pageSize + i); track box.id) {
+                        <div class="preview-box"
+                             [style.left.%]="box.x"
+                             [style.top.%]="box.y"
+                             [style.width.%]="box.width"
+                             [style.height.%]="box.height">
+                          <span class="preview-label">{{ box.label }}</span>
+                        </div>
+                        }
+                      </div>
+                      }
+                    </div>
+                  </div>
+                  }
+                </div>
+                <!-- 分页控件 -->
+                @if (totalPages >= 1) {
+                <div class="pagination-controls">
+                  <button class="page-btn" [disabled]="currentPage === 1" (click)="prevPage()">
+                    <i class="fa-light fa-chevron-left"></i>
+                  </button>
+                  <div class="page-info">
+                    <span class="current-page">{{ currentPage }}</span>
+                    <span class="page-separator">/</span>
+                    <span class="total-pages">{{ totalPages }}</span>
+                  </div>
+                  <button class="page-btn" [disabled]="currentPage === totalPages" (click)="nextPage()">
+                    <i class="fa-light fa-chevron-right"></i>
+                  </button>
+                </div>
+                }
+              </div>
+            </div>
+            }
+          </div>
+        </div>
+      </div>
+
+      <!-- 右侧：训练和预览区域 (1/3) -->
+      <div class="right-panel">
+        <!-- 上方：训练区域 -->
+        <div class="train-card">
+          <div class="panel-title">训练</div>
+          <div class="panel-body">
+            <!-- <div class="train-info">
+              <div class="info-item">
+                <span class="info-label">标注图片数：</span>
+                <span class="info-value">{{ annotatedImageCount }} / {{ uploadedImages.length }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">标注对象数：</span>
+                <span class="info-value">{{ allLabels.length }}</span>
+              </div>
+            </div> -->
+            <button class="train-btn" (click)="startTraining()" [disabled]="isTraining">
+              {{ isTraining ? '训练中...' : '训练模型' }}
+            </button>
+          </div>
+          <div class="advanced-section">
+            <div class="advanced-header" (click)="toggleAdvanced()">
+              <span>高级</span>
+              <i class="fa-light" [ngClass]="showAdvanced ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+            </div>
+            @if (showAdvanced) {
+            <div class="advanced-body">
+              <div class="form-item">
+                <label>周期数：</label>
+                <input type="number" [(ngModel)]="trainConfig.epochs" min="1" max="500">
+              </div>
+              <div class="form-item">
+                <label>批次大小：</label>
+                <select [(ngModel)]="trainConfig.batchSize">
+                  <option [value]="16">16</option>
+                  <option [value]="32">32</option>
+                  <option [value]="64">64</option>
+                </select>
+              </div>
+              <div class="form-item">
+                <label>学习速率：</label>
+                <input type="number" [(ngModel)]="trainConfig.learningRate" step="0.001" min="0.0001" max="1">
+              </div>
+              <div class="form-item">
+                <label>重置为默认设置</label>
+                <button class="reset-btn" (click)="resetTrainConfig()">重置</button>
+              </div>
+            </div>
+            }
+          </div>
+        </div>
+
+        <!-- 下方：预览区域 -->
+        <div class="preview-card">
+          <div class="panel-header">
+            <span class="panel-title">预览</span>
+            <div class="panel-actions">
+              <button class="export-btn" [disabled]="!modelTrained" (click)="exportModel()">
+                <i class="fa-light fa-download"></i>
+                导出模型
+              </button>
+            </div>
+          </div>
+          <div class="panel-body preview-body">
+            @if (!modelTrained) {
+            <div class="preview-placeholder">
+              <p>您必须先训练模型，然后才可以在此处预览。</p>
+            </div>
+            } @else {
+            <div class="preview-content">
+              <!-- 输入控制区 -->
+              <div class="preview-input-section">
+                <label class="toggle-switch">
+                  <input type="checkbox" [(ngModel)]="previewEnabled">
+                  <span class="toggle-slider"></span>
+                </label>
+                <nz-select class="input-source-select" [(ngModel)]="previewInputSource">
+                  <nz-option nzValue="webcam" nzLabel="Webcam"></nz-option>
+                  <nz-option nzValue="upload" nzLabel="文件"></nz-option>
+                </nz-select>
+              </div>
+              
+              <!-- 预览区 -->
+              <div class="preview-camera-wrapper">
+                @if (previewEnabled && previewInputSource === 'webcam') {
+                  <div class="preview-video-container">
+                    <video #previewVideo autoplay playsinline></video>
+                  </div>
+                }
+                
+                @if (previewInputSource === 'upload') {
+                  <div class="preview-upload-controls">
+                    <button class="upload-file-btn">
+                      <i class="fa-light fa-upload"></i>
+                      <span>上传图片</span>
+                    </button>
+                  </div>
+                }
+                
+                @if (!previewEnabled && previewInputSource === 'webcam') {
+                  <div class="preview-disabled-placeholder">
+                    <i class="fa-light fa-video-slash"></i>
+                    <span>预览已禁用</span>
+                  </div>
+                }
+              </div>
+              
+              <!-- 检测结果区 -->
+              <div class="detection-results">
+                <span class="section-label">检测结果</span>
+                <div class="results-list">
+                  <div class="result-empty">暂无检测结果</div>
+                </div>
+              </div>
+            </div>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部按钮 -->
+    <div class="window-footer">
+      <div class="btns">
+        <button nz-button nzType="default" (click)="close()">
+          返回
+        </button>
+        <button nz-button nzType="primary" (click)="deployModel()" [disabled]="!modelTrained">
+          部署模型
+        </button>
+        <button nz-button nzType="primary" (click)="openSaveProjectModal()">
+          保存项目
+        </button>
+      </div>
+    </div>
+    
+    <!-- 添加标签弹窗 -->
+    <nz-modal 
+      [(nzVisible)]="isLabelModalVisible" 
+      nzTitle="添加标签"
+      [nzFooter]="labelModalFooter"
+      [nzWidth]="320"
+      (nzOnCancel)="closeLabelModal()"
+      nzClassName="label-modal">
+      <div *nzModalContent class="label-modal-content">
+        <!-- <p class="modal-hint">请为刚绘制的标注框添加标签：</p> -->
+        <input 
+          nz-input 
+          [(ngModel)]="modalLabelName" 
+          placeholder="输入标签名称"
+          (keydown.enter)="confirmAddLabel()"
+          class="label-input">
+      </div>
+      <ng-template #labelModalFooter>
+        <button nz-button nzType="default" (click)="closeLabelModal()">取消</button>
+        <button nz-button nzType="primary" (click)="confirmAddLabel()" [disabled]="!modalLabelName.trim()">确定</button>
+      </ng-template>
+    </nz-modal>
+  </div>
+
+  <!-- 保存项目弹窗 -->
+  <app-save-project-modal
+    [(visible)]="isSaveProjectModalVisible"
+    [(projectName)]="projectSaveName"
+    [(projectPath)]="projectSavePath"
+    [namePrefix]="'detection_'"
+    (save)="handleSaveProject($event)"
+    (cancel)="closeSaveProjectModal()">
+  </app-save-project-modal>
+  
+</app-sub-window>

@@ -1,0 +1,404 @@
+<app-sub-window [title]="'分类识别模型训练'" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content sscroll">
+      <!-- 左侧：类别列表 -->
+      <div class="left-panel">
+        <div class="class-list">
+          @for (classItem of classList; track classItem.id) {
+          <div class="class-card" [class.disabled]="!classItem.enabled">
+            <div class="class-header">
+              @if (editingClassId === classItem.id) {
+              <input type="text" class="class-name-input" [(ngModel)]="editingClassName"
+                (keydown.enter)="saveClassName(classItem)" (keydown.escape)="cancelEditClassName()"
+                (blur)="saveClassName(classItem)" autofocus>
+              } @else {
+              <span class="class-name">{{ classItem.name }}</span>
+              <i class="fa-light fa-pen edit-icon" (click)="startEditClassName(classItem, $event)"></i>
+              @if (!classItem.enabled) {
+              <span class="disabled-badge">已停用</span>
+              }
+              }
+              <div class="more-menu" (click)="toggleMenu(classItem.id)">
+                <i class="fa-solid fa-ellipsis-vertical"></i>
+              </div>
+              @if (activeMenuId === classItem.id) {
+              <div class="dropdown-menu">
+                <div class="menu-item" (click)="deleteClass(classItem.id)">删除类别</div>
+                <div class="menu-item" (click)="toggleClass(classItem.id)">{{ classItem.enabled ? '停用类别' : '启用类别' }}
+                </div>
+                <div class="menu-item" (click)="removeAllSamples(classItem.id)">移除所有样本</div>
+                <!-- <div class="menu-item disabled">下载样本</div> -->
+                <!-- <div class="menu-item disabled">将样本保存到云端硬盘</div> -->
+              </div>
+              }
+            </div>
+            <div class="class-body">
+              <!-- 状态1: 未打开摄像头 - 按钮 + 水平滚动图片 -->
+              @if (currentCameraClassId !== classItem.id) {
+              <div class="sample-label-section">
+                @if (classItem.samples.length > 0) {
+                <div class="sample-count">{{ classItem.samples.length }} 个图片样本</div>
+                } @else {
+                <div class="sample-count">添加图片样本：</div>
+                }
+              </div>
+              <div class="sample-section sample-section-row">
+                <div class="sample-actions">
+                  <div class="action-btn ccenter" (click)="toggleCamera(classItem.id)">
+                    <i class="fa-light fa-video"></i>
+                    <div>摄像头</div>
+                  </div>
+                  <div class="action-btn ccenter" (click)="uploadImages(classItem.id)">
+                    <i class="fa-light fa-upload"></i>
+                    <div>上传</div>
+                  </div>
+                </div>
+
+                @if (classItem.samples.length > 0) {
+                <div class="sample-images-container">
+                  <div class="sample-images">
+                    @for (sample of classItem.samples; track sample; let i = $index) {
+                    <div class="sample-thumb" (click)="viewImage(classItem.id, i, $event)">
+                      <img [src]="sample" alt="样本">
+                    </div>
+                    }
+                  </div>
+                </div>
+                }
+              </div>
+              }
+
+              <!-- 状态2: 打开摄像头 - 摄像头预览 + 网格图片 -->
+              @if (currentCameraClassId === classItem.id) {
+              <div class="sample-section sample-section-camera">
+                <div class="camera-preview-card">
+                  <div class="camera-video-wrapper">
+                    @if (!cameraError) {
+                    <video #cameraVideo autoplay playsinline [class.mirrored]="cameraMirrored"></video>
+                    <canvas #cameraCanvas style="display: none;"></canvas>
+                    } @else {
+                    <div class="camera-error">
+                      <i class="fa-light fa-camera-slash error-icon"></i>
+                      <p class="error-message">打开摄像头时出错</p>
+                      <p class="error-hint">请确保您启用了相关权限，或改为上传图片</p>
+                    </div>
+                    }
+                  </div>
+                  <!-- 关闭按钮 -->
+                  <div class="close-btn ccenter" (click)="closeCamera()">
+                    <i class="fa-light fa-xmark"></i>
+                  </div>
+                  <!-- 翻转按钮 -->
+                  <div class="video-overlay-icons">
+                    <i class="fa-light fa-camera-rotate top-right" title="翻转"
+                      (click)="toggleMirror(); $event.stopPropagation()"></i>
+                  </div>
+                  <!-- 拍照按钮 -->
+                  <div class="camera-actions">
+                    @if (!cameraError) {
+                    <button class="capture-btn" (click)="captureImage()">
+                      <i class="fa-light fa-camera"></i>
+                      按住即可录制
+                    </button>
+                    <!-- <button class="settings-btn">
+                        <i class="fa-light fa-gear"></i>
+                      </button> -->
+                    }
+                  </div>
+                </div>
+
+                <div class="sample-grid-section">
+                  @if (classItem.samples.length > 0) {
+                  <div class="sample-grid-label">{{ classItem.samples.length }} 个图片样本</div>
+                  } @else {
+                  <div class="sample-grid-label">添加图片样本：</div>
+                  }
+                  <div class="sample-grid">
+                    @for (sample of classItem.samples; track sample; let i = $index) {
+                    <div class="sample-thumb" (click)="viewImage(classItem.id, i, $event)">
+                      <img [src]="sample" alt="样本">
+                    </div>
+                    }
+                  </div>
+                </div>
+              </div>
+              }
+            </div>
+          </div>
+          }
+        </div>
+
+        <!-- 添加类别按钮 -->
+        <div class="add-class-btn" (click)="addClass()">
+          <i class="fa-light fa-plus"></i>
+          <span>添加类别</span>
+        </div>
+      </div>
+
+      <!-- 连接线1 -->
+      <div class="connector">
+        <div class="connector-line"></div>
+      </div>
+
+      <!-- 中间：训练区域 -->
+      <div class="center-panel">
+        <div class="panel-card">
+          <div class="panel-title">训练</div>
+          <div class="panel-body">
+            <button class="train-btn" (click)="startTraining()" [disabled]="isTraining">
+              {{ isTraining ? '训练中...' : '训练模型' }}
+            </button>
+          </div>
+          <div class="advanced-section">
+            <div class="advanced-header" (click)="toggleAdvanced()">
+              <span>高级</span>
+              <i class="fa-light" [ngClass]="showAdvanced ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+            </div>
+            @if (showAdvanced) {
+            <div class="advanced-body">
+              <div class="form-item">
+                <label>周期数：</label>
+                <ng-template #epochTooltipContent>
+                  <h3 style="margin-bottom: 10px;">周期数:</h3>
+                  <p style="margin-bottom: 5px;">
+                    一个周期是指训练数据集中的每个样本都已至少向训练模型馈送一次。
+                  </p>
+                  <p style="margin-bottom: 5px;">
+                    例如如果您的周期设为 50，则表示您正在训练的模型会处理整个训练数据集 50次。
+                    一般情况下，该数值越大，您的模型学习预测数据的效果越好。
+                  </p>
+                  <p style="margin-bottom: 0;">
+                    您可能需要微调(通常为提高)此数值，直到模型取得良好的预测结果。
+                  </p>
+                </ng-template>
+                <input type="number" [(ngModel)]="trainConfig.epochs" min="1" max="500">
+                <i class="fa-light fa-circle-question help-icon" nz-tooltip [nzTooltipTitle]="epochTooltipContent"></i>
+              </div>
+              <div class="form-item">
+                <label>批次大小：</label>
+                <select [(ngModel)]="trainConfig.batchSize">
+                  <option [value]="16">16</option>
+                  <option [value]="32">32</option>
+                  <option [value]="64">64</option>
+                  <option [value]="128">128</option>
+                  <option [value]="256">256</option>
+                  <option [value]="512">512</option>
+                </select>
+                <ng-template #batchTooltipContent>
+                  <h3 style="margin-bottom: 10px;">批次大小:</h3>
+                  <p style="margin-bottom: 5px;">
+                    批次是指在训练的一次迭代中使用的一组样本。
+                  </p>
+                  <p style="margin-bottom: 5px;">
+                    例如，假设您有 80 张图片:并将批次大小设为 16。这意味着，数据将拆分为 80/16=5个批次。所有这5个批次都已馈送到模型后，正好完成一个周期。您可能无需微调此数值，即可获得良好的训练结果。
+                  </p>
+                </ng-template>
+                <i class="fa-light fa-circle-question help-icon" nz-tooltip [nzTooltipTitle]="batchTooltipContent"></i>
+              </div>
+              <div class="form-item">
+                <label>学习速率：</label>
+                <input type="number" [(ngModel)]="trainConfig.learningRate" step="0.001" min="0.0001" max="1">
+                <ng-template #rateTooltipContent>
+                  <h3 style="margin-bottom: 10px;">学习速率：</h3>
+                  <p style="margin-bottom: 5px;">
+                    请谨慎微调此数值！即使较小的差异也可能会对模型学习效果产生很大的影响。
+                  </p>
+                </ng-template>
+                <i class="fa-light fa-circle-question help-icon" nz-tooltip [nzTooltipTitle]="rateTooltipContent"></i>
+              </div>
+              <div class="form-item">
+                <label>重置为默认设置</label>
+                <button class="reset-btn" (click)="resetTrainConfig()" title="重置为默认值">重置</button>
+              </div>
+            </div>
+            }
+          </div>
+        </div>
+      </div>
+
+      <!-- 连接线2 -->
+      <div class="connector">
+        <div class="connector-line"></div>
+      </div>
+
+      <!-- 右侧：预览区域 -->
+      <div class="right-panel">
+        <div class="panel-card">
+          <div class="panel-header">
+            <span class="panel-title">预览</span>
+            <div class="panel-actions">
+              <button class="export-btn" [disabled]="!modelTrained" (click)="exportModel()">
+                <i class="fa-light fa-download"></i>
+                导出模型
+              </button>
+            </div>
+          </div>
+          <div class="panel-body preview-body">
+            @if (!modelTrained) {
+            <div class="preview-placeholder">
+              <p>您必须先在左侧训练模型，然后才可以在此处预览。</p>
+            </div>
+            } @else {
+            <div class="preview-content">
+              <!-- 输入控制区 -->
+              <div class="preview-input-section">
+                <!-- <span class="section-label">输入</span> -->
+                <label class="toggle-switch">
+                  <input type="checkbox" [(ngModel)]="previewEnabled" (ngModelChange)="onPreviewEnabledChange($event)">
+                  <span class="toggle-slider"></span>
+                </label>
+                <!-- <span class="toggle-label">{{ previewEnabled ? '已启用' : '已禁用' }}</span> -->
+                <nz-select class="input-source-select" [(ngModel)]="previewInputSource"
+                  (ngModelChange)="onPreviewSourceChange($event)">
+                  <nz-option nzValue="webcam" nzLabel="Webcam"></nz-option>
+                  <nz-option nzValue="upload" nzLabel="文件"></nz-option>
+                </nz-select>
+              </div>
+
+              <!-- 预览区 -->
+              <div class="preview-camera-wrapper">
+                <!-- Webcam 模式 -->
+                @if (previewEnabled && previewInputSource === 'webcam') {
+                <div class="preview-video-container">
+                  <video #previewVideo autoplay playsinline [class.mirrored]="previewMirrored"
+                    [style.transform]="previewMirrored ? 'scaleX(-1)' : 'none'"></video>
+                  <div class="preview-overlay-icons">
+                    <i class="fa-light fa-camera-rotate top-right" title="翻转"
+                      (click)="togglePreviewMirror(); $event.stopPropagation()"></i>
+                  </div>
+                </div>
+                }
+
+                <!-- 文件上传模式 -->
+                @if (previewInputSource === 'upload') {
+                <div class="preview-upload-controls">
+                  <button class="upload-file-btn" (click)="uploadPreviewImage()">
+                    <i class="fa-light fa-upload"></i>
+                    <span>上传图片</span>
+                  </button>
+                </div>
+                <div class="preview-image-container">
+                  @if (uploadedPreviewImage) {
+                  <img [src]="uploadedPreviewImage" alt="上传的图片">
+                  } @else {
+                  <div class="preview-empty-placeholder">
+                    <i class="fa-light fa-image"></i>
+                    <span>点击上方按钮上传图片</span>
+                  </div>
+                  }
+                </div>
+                }
+
+                <!-- 预览禁用状态 -->
+                @if (!previewEnabled && previewInputSource === 'webcam') {
+                <div class="preview-video-container">
+                  <div class="preview-disabled-placeholder">
+                    <i class="fa-light fa-video-slash"></i>
+                    <span>预览已禁用</span>
+                  </div>
+                </div>
+                }
+              </div>
+
+              <!-- 输出结果区 -->
+              <div class="preview-output-section">
+                <span class="section-label">输出</span>
+                <div class="output-results">
+                  @for (classItem of classList; track classItem.id; let i = $index) {
+                  <div class="result-item">
+                    <span class="result-class-name" [style.color]="getClassColor(i)">{{ classItem.name }}</span>
+                    <div class="result-bar-wrapper">
+                      <div class="result-bar" [style.width.%]="getClassPrediction(classItem.id)"
+                        [style.background]="getClassBarColor(i)"></div>
+                      <span class="result-percent">{{ getClassPrediction(classItem.id) }}%</span>
+                    </div>
+                  </div>
+                  }
+                </div>
+              </div>
+            </div>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部按钮 -->
+    <div class="window-footer">
+      <div class="btns">
+        <button nz-button nzType="default" (click)="close()">
+          返回
+        </button>
+        <button nz-button nzType="primary" (click)="deployModel()" [disabled]="!modelTrained">
+          部署模型
+        </button>
+        <button nz-button nzType="primary" (click)="openSaveProjectModal()">
+          保存项目
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片查看弹窗 -->
+  <nz-modal [(nzVisible)]="isImageModalVisible" [nzTitle]="imageModalTitle" [nzFooter]="null" [nzWidth]="320"
+    (nzOnCancel)="closeImageModal()" nzClassName="image-viewer-modal">
+    <ng-template #imageModalTitle>
+      <div class="modal-title-wrapper">
+        <div class="modal-nav-btns">
+          <button nz-button nzType="text" nzSize="small" (click)="prevClass()">
+            <i class="fa-light fa-chevron-up"></i>
+          </button>
+          <button nz-button nzType="text" nzSize="small" (click)="nextClass()">
+            <i class="fa-light fa-chevron-down"></i>
+          </button>
+        </div>
+        <span class="modal-class-name">{{ currentViewingClassName }}</span>
+      </div>
+    </ng-template>
+    <div *nzModalContent class="image-viewer-content">
+      <div class="image-viewer-body">
+        <ng-container *ngIf="currentViewingImages.length > 0; else emptyClass">
+          <img [src]="currentViewingImage" alt="样本">
+        </ng-container>
+        <ng-template #emptyClass>
+          <div class="empty-placeholder">此类别为空。</div>
+        </ng-template>
+      </div>
+      <div class="image-viewer-nav">
+        <button nz-button nzType="text" (click)="previousImage()"
+          [disabled]="currentViewingImages.length === 0 || currentViewingIndex === 0">
+          <i class="fa-light fa-chevron-left"></i>
+        </button>
+        <span class="image-counter">{{ currentViewingImages.length > 0 ? (currentViewingIndex + 1 + ' / ' +
+          currentViewingImages.length) : 'N/A' }}</span>
+        <button nz-button nzType="text" (click)="nextImage()"
+          [disabled]="currentViewingImages.length === 0 || currentViewingIndex === currentViewingImages.length - 1">
+          <i class="fa-light fa-chevron-right"></i>
+        </button>
+      </div>
+      <div class="image-viewer-footer">
+        <nz-select [(ngModel)]="selectedClassForMove" (ngModelChange)="moveCurrentImageTo($event)"
+          [nzDropdownMatchSelectWidth]="false" style="width: 150px;">
+          @for (classItem of classList; track classItem.id) {
+          <nz-option [nzValue]="classItem.id" [nzLabel]="classItem.name"></nz-option>
+          }
+        </nz-select>
+        <button nz-button nzType="text" nzDanger (click)="deleteCurrentImage()"
+          [disabled]="currentViewingImages.length === 0">
+          <i class="fa-light fa-trash"></i>
+        </button>
+      </div>
+    </div>
+  </nz-modal>
+
+  <!-- 保存项目弹窗 -->
+  <app-save-project-modal
+    [(visible)]="isSaveProjectModalVisible"
+    [(projectName)]="projectSaveName"
+    [(projectPath)]="projectSavePath"
+    [namePrefix]="'classification_'"
+    (save)="handleSaveProject($event)"
+    (cancel)="closeSaveProjectModal()">
+  </app-save-project-modal>
+
+</app-sub-window>

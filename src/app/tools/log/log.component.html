@@ -1,5 +1,5 @@
 <div class="log-box sscroll" #logBox>
-  <div *uiScroll="let item of datasource;" 
+  <div *uiScroll="let item of datasource" 
        class="item" 
        [ngClass]="{'error':item.state=='error','warn':item.state=='warn','info':item.state=='info'}"
        (click)="handleClick(item, $event)" 

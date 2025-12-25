@@ -1,0 +1,233 @@
+.app-store-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0 10px;
+  overflow: hidden;
+  background: #1e1f22;
+
+  .app-store-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #3a3c3f;
+
+    .header-info {
+      .info-text {
+        font-size: 13px;
+        color: #818992;
+      }
+    }
+
+    .reset-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: 1px solid #3a3c3f;
+      border-radius: 4px;
+      background: transparent;
+      color: #a5a5a5;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+
+      &:hover {
+        background: #3a3c3f;
+        border-color: #4a8cca;
+        color: #fff;
+      }
+    }
+  }
+
+  .app-store-content {
+    display: flex;
+    gap: 16px;
+    flex: 1;
+    overflow: hidden;
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sidebar-content {
+      width: 70px;
+      // height: 100%;
+      // // display: flex;
+      // // flex-direction: column;
+      // // overflow: hidden;
+    }
+  }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #818992;
+    margin-bottom: 10px;
+    margin-top: 8px;
+
+    i {
+      font-size: 13px;
+    }
+  }
+
+  .app-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 4px;
+
+    &.header-zone {
+      background: rgba(74, 140, 202, 0.08);
+      border: 1px dashed #4a8cca;
+      height: 70px;
+    }
+
+    &.sidebar-zone {
+      width: 70px;
+      height: 100%;
+      flex-direction: column;
+      align-items: center;
+      background: rgba(138, 43, 226, 0.08);
+      border: 1px dashed #8a2be2;
+      overflow-y: auto;
+    }
+
+    &.other-zone {
+      flex: 1;
+      overflow-y: auto;
+      background: #2b2d30;
+      border: 1px solid #3a3c3f;
+      align-content: flex-start;
+    }
+
+    .app-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 50px;
+      height: 50px;
+      border-radius: 8px;
+      background: #2b2d30;
+      border: 1px solid #3a3c3f;
+      cursor: grab;
+      transition: all 0.2s;
+
+      &:hover {
+        border-color: #4a8cca;
+        background: #3a3c3f;
+      }
+
+      &:active {
+        cursor: grabbing;
+      }
+
+      &.dev {
+        border-style: dashed;
+        opacity: 0.6;
+      }
+
+      &.empty-slot {
+        border: 1px dashed #4a4a4a;
+        background: transparent;
+        cursor: default;
+
+        &:hover {
+          background: transparent;
+          border-color: #4a4a4a;
+        }
+
+        .empty-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 24px;
+          height: 24px;
+          color: #4a4a4a;
+          font-size: 14px;
+        }
+
+        .empty-text {
+          display: none;
+        }
+      }
+
+      .app-icon {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        color: #a5a5a5;
+        font-size: 20px;
+        transition: color 0.2s;
+
+        .app-badge {
+          position: absolute;
+          top: -4px;
+          right: -4px;
+          padding: 1px 4px;
+          border-radius: 4px;
+          background: #e34c4c;
+          color: #fff;
+          font-size: 8px;
+          font-weight: bold;
+        }
+      }
+
+      &:hover .app-icon {
+        color: #fff;
+      }
+
+      .app-name {
+        // display: none;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      .header-indicator {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        color: #52c41a;
+        font-size: 10px;
+      }
+
+      .sidebar-indicator {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        color: #8a2be2;
+        font-size: 10px;
+      }
+    }
+
+    // Sortable.js 拖拽样式
+    .sortable-ghost {
+      opacity: 0.4;
+      background: rgba(74, 140, 202, 0.2);
+    }
+
+    .sortable-chosen {
+      cursor: grabbing;
+    }
+
+    .sortable-drag {
+      opacity: 1;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    }
+  }
+}

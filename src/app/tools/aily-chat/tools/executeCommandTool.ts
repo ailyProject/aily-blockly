@@ -1,5 +1,6 @@
 import { ToolUseResult } from "./tools";
 import { CmdService } from "../../../services/cmd.service";
+import { injectTodoReminder } from "./todoWriteTool";
 
 
 export async function executeCommandTool(cmdService: CmdService, data: any): Promise<ToolUseResult> {
@@ -10,21 +11,23 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
         if (!data || !data.command) {
             toolResult = "执行command命令失败: 缺少必要的参数 'command'";
             is_error = true;
-            return {
+            const toolResults = {
                 is_error,
                 content: toolResult
             };
+            return injectTodoReminder(toolResults, 'executeCommandTool');
         }
 
-        console.log('Executing command:', data.command, 'in directory:', data.cwd);
+        // console.log('Executing command:', data.command, 'in directory:', data.cwd);
 
         if (!data.cwd) {
             toolResult = "执行command命令失败: 当前未打开项目";
             is_error = true;
-            return {
+            const toolResults = {
                 is_error,
                 content: toolResult
             };
+            return injectTodoReminder(toolResults, 'executeCommandTool');
         }
 
         // 使用 Promise 包装 Observable 来等待命令执行完成
@@ -33,7 +36,7 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
             
             cmdService.run(data.command, data.cwd, false).subscribe({
                 next: (data) => {
-                    console.log(`Command output received:`, data);
+                    // console.log(`Command output received:`, data);
 
                     // 正确处理CmdOutput对象，提取data字段
                     let textOutput = '';
@@ -44,16 +47,16 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
                     } else {
                         textOutput = JSON.stringify(data);
                     }
-                    console.log(`Command output: ${textOutput}`);
+                    // console.log(`Command output: ${textOutput}`);
                     output += textOutput;
                 },
                 error: (err) => {
-                    console.error(`Command error: ${err}`);
+                    console.warn(`Command error: ${err}`);
                     is_error = true;
                     reject(err);
                 },
                 complete: () => {
-                    console.log('Command execution completed');
+                    // console.log('Command execution completed');
                     resolve(output);
                 }
             });
@@ -62,14 +65,15 @@ export async function executeCommandTool(cmdService: CmdService, data: any): Pro
         toolResult = result || '命令执行完成';
         
     } catch (e) {
-        console.error('执行command命令失败:', e);
+        // console.warn('执行command命令失败:', e);
         toolResult = `执行command命令失败: ${e.message}`;
         is_error = true;
     } finally {
-        console.log('executeCommandTool result:', toolResult, 'is_error:', is_error);
-        return {
+        // console.log('executeCommandTool result:', toolResult, 'is_error:', is_error);
+        const toolResults = {
             is_error,
             content: toolResult
         };
+        return injectTodoReminder(toolResults, 'executeCommandTool');
     }
 }

@@ -1,0 +1,210 @@
+<!-- 内容模板 -->
+<ng-template #configContent>
+  <div class="sscma-config">
+    <!-- 串口选择 -->
+    <div class="port-selector">
+      <div class="item-inner" (click)="openPortList($event)">
+        <div class="value">{{ currentPort || ('SSCMA_CONFIG.SELECT_PORT' | translate) }}</div>
+        <div class="arrow-box">
+          <i class="fa-light fa-angle-right arrow" [ngClass]="{'down': showPortList}"></i>
+        </div>
+      </div>
+      <button nz-button [nzType]="isConnected ? 'default' : 'primary'" [nzDanger]="isConnected"
+        [disabled]="!currentPort || isConnecting" [nzLoading]="isConnecting"
+        (click)="isConnected ? disconnect() : connectToDevice()"
+        [style.background-color]="(!currentPort || isConnecting) ? '' : (isConnected ? '' : '#8fc31f')"
+        [style.border-color]="(!currentPort || isConnecting) ? '' : (isConnected ? '' : '#8fc31f')">
+        {{ isConnected ? ('SSCMA_CONFIG.DISCONNECT' | translate) : ('SSCMA_CONFIG.CONNECT_DEVICE' | translate) }}
+      </button>
+      <div class="doc-btn" (click)="openDocumentation()">{{ 'SSCMA_CONFIG.READ_DOCS' | translate }}</div>
+    </div>
+
+    <div class="config-container">
+      <!-- 主内容区 -->
+      <div class="config-main">
+        <!-- 左侧：模型与预览 -->
+        <div class="config-main-left">
+          <!-- 实时预览 -->
+          <div class="preview-section">
+            <!-- 预览图像 -->
+            @if(previewImageUrl){
+            <img #previewImg [src]="previewImageUrl" [attr.data-version]="imageVersion" alt="实时预览" class="preview-image"
+              (load)="onPreviewImageLoad()">
+            <canvas #overlayCanvas class="preview-overlay-canvas"></canvas>
+            }
+            <!-- !isConnected || isConnecting -->
+            <div class="play-btn ccenter" [ngClass]="{'play':!isPreviewMode,'pause':isPreviewMode}"
+              (click)="isPreviewMode ? stopPreview() : startPreview()">
+              @if(isPreviewMode){
+              <i class="fa-solid fa-pause"></i>
+              }@else{
+              <i class="fa-solid fa-play"></i>
+              }
+            </div>
+            <!-- 识别结果 -->
+          </div>
+          @if (modelMeta?.classes && modelMeta.classes.length) {
+          <div class="recognition-area">
+            <div class="recognition-list sscroll">
+              @for (label of modelMeta.classes; track $index; let i = $index) {
+              <div class="recognition-row">
+                @if (classScores && classScores.length) {
+                  <div class="score-bar">
+                    <div class="bar-fill" [ngStyle]="{
+                          'width': (classScores[i] || 0) + '%', 
+                          'background': getBarBackground(i)
+                        }">
+                    </div>
+                    <div class="bar-text">
+                      {{ (classScores[i] || 0) }}%
+                    </div>
+                  </div>
+                  <div class="class-label">{{ label || '-' }}</div>
+                } @else {
+                  <div class="object-class-label">{{ label || '-' }}</div>
+                }
+              </div>
+              }
+            </div>
+          </div>
+          }
+        </div>
+
+        <!-- 右侧：设备信息 -->
+        <div class="config-main-right sscroll">
+          <div style="height: 300px;">
+            <!-- 设备与模型信息 -->
+            <div class="section">
+              <div class="section-title">
+                {{ deviceInfo?.device_name || '-' }}
+              </div>
+              <div class="section-content">
+                <div class="section-item">
+                  <label>{{ 'SSCMA_CONFIG.DEVICE_ID' | translate }}:</label>
+                  <span>{{ deviceInfo?.device_id || '-' }}</span>
+                </div>
+                <div class="section-item">
+                  <label>{{ 'SSCMA_CONFIG.DEVICE_VERSION' | translate }}:</label>
+                  <span>{{ deviceInfo?.device_version || '-' }}</span>
+                </div>
+                <div class="section-item">
+                  <label>{{ 'SSCMA_CONFIG.CURRENT_MODEL' | translate }}:</label>
+                  <span>{{ modelMeta.name || '-' }} &#64; {{ modelMeta.version || '-' }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="section">
+              <div class="section-title">{{ 'SSCMA_CONFIG.MODEL_SETTINGS' | translate }}</div>
+              <div class="section-content">
+                <div class="section-item">
+                  <label>{{ 'SSCMA_CONFIG.CONFIDENCE' | translate }}
+                    <span class="section-tip">({{ 'SSCMA_CONFIG.CONFIDENCE_TIP' | translate }})</span>
+                  </label>
+                  <div class="setting-control">
+                    <nz-slider [(ngModel)]="confidenceThreshold" [nzMin]="0" [nzMax]="100" [nzStep]="1"
+                      (ngModelChange)="onConfidenceChange($event)">
+                    </nz-slider>
+                    <nz-input-number [(ngModel)]="confidenceThreshold" [nzMin]="0" [nzMax]="100" [nzStep]="1"
+                      [nzPrecision]="0" (ngModelChange)="onConfidenceChange($event)">
+                    </nz-input-number>
+                  </div>
+                </div>
+                @if (!(classScores && classScores.length)){
+                <div class="section-item">
+                  <label>{{ 'SSCMA_CONFIG.IOU_THRESHOLD' | translate }}
+                    <span class="section-tip">({{ 'SSCMA_CONFIG.IOU_TIP' | translate }})</span>
+                  </label>
+                  <div class="setting-control">
+                    <nz-slider [(ngModel)]="iouThreshold" [nzMin]="0" [nzMax]="100" [nzStep]="1"
+                      (ngModelChange)="onIouChange($event)">
+                    </nz-slider>
+                    <nz-input-number [(ngModel)]="iouThreshold" [nzMin]="0" [nzMax]="100" [nzStep]="1" [nzPrecision]="0"
+                      (ngModelChange)="onIouChange($event)">
+                    </nz-input-number>
+                  </div>
+                </div>
+                }
+              </div>
+            </div>
+          </div>
+          <!-- GPIO 设置内容 -->
+          <!-- @if (modelMeta?.classes && modelMeta.classes.length && classScores.length) { -->
+          @if (modelMeta?.classes && modelMeta.classes.length) {
+          <div>
+            <div class="section" style="margin-top: -34px;">
+              <div class="section-title">{{ 'SSCMA_CONFIG.GPIO_CONFIG' | translate }}
+                <button class="apply-btn ccenter" (click)="applyTriggerRules()"
+                  [disabled]="!isConnected || classTriggerConfigs.length === 0">
+                  {{ 'SSCMA_CONFIG.APPLY_CONFIG' | translate }}
+                </button>
+              </div>
+              <div class="section-content">
+                @for (label of modelMeta.classes; track $index; let i = $index) {
+                <div class="section-item" style="height: 24px;">
+                  <!-- <span style="color: #fff; min-width: 80px;">{{ label }}</span> -->
+                  {{ 'SSCMA_CONFIG.TRIGGER_WHEN' | translate }} <nz-input-number nzSize="small" [(ngModel)]="classTriggerConfigs[i].threshold" [nzMin]="0" [nzMax]="100" [nzStep]="1" [nzPlaceHolder]="'SSCMA_CONFIG.CONFIDENCE' | translate" style="width: 60px;" [class.not-configured]="classTriggerConfigs[i].gpio === null"></nz-input-number>{{ 'SSCMA_CONFIG.CONFIDENCE_TRIGGER' | translate }}
+                  <nz-select nzSize="small" [nzPlaceHolder]="'SSCMA_CONFIG.SELECT_PIN' | translate" [(ngModel)]="classTriggerConfigs[i].gpio" [nzOptionHeightPx]="24" style="width: 110px;" nzAllowClear>
+                    @for (pin of availableGpioPins; track pin) {
+                    <nz-option [nzValue]="pin.value" [nzLabel]="pin.label">
+                    </nz-option>
+                    }
+                  </nz-select>
+                  <nz-select nzSize="small" [nzPlaceHolder]="'SSCMA_CONFIG.SELECT_LEVEL' | translate" [(ngModel)]="classTriggerConfigs[i].levelMode" [nzOptionHeightPx]="24" style="width: 140px;" nzAllowClear>
+                    <nz-option [nzValue]="'high'" [nzLabel]="'SSCMA_CONFIG.DEFAULT_LOW_TRIGGER_HIGH' | translate"></nz-option>
+                    <nz-option [nzValue]="'low'" [nzLabel]="'SSCMA_CONFIG.DEFAULT_HIGH_TRIGGER_LOW' | translate"></nz-option>
+                  </nz-select>
+                </div>
+                }
+              </div>
+            </div>
+          </div>
+          }
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 串口选择菜单 -->
+  @if (showPortList) {
+  <app-menu [position]="position" [width]="260" [menuList]="portList" (closeEvent)="closePortList()"
+    (itemClickEvent)="selectPort($event)">
+  </app-menu>
+  }
+
+  <!-- 传输类型选择菜单 -->
+  @if (showTransportList) {
+  <app-menu [position]="position" [width]="220" [menuList]="transportMenuList" (closeEvent)="closeTransportList()"
+    (itemClickEvent)="selectTransport($event)">
+  </app-menu>
+  }
+</ng-template>
+
+<!-- ========================================= -->
+<!-- 渲染模式控制：独立窗口 vs 嵌入模式 -->
+<!-- ========================================= -->
+@if (showFrame) {
+<!-- 
+    独立窗口模式（测试页面）：
+    - 完整的 sub-window 结构
+    - 与 deploy 页面的右侧区域布局一致
+    - 内容显示在 .right > .right-inner 容器中
+  -->
+<app-sub-window [title]="'SSCMA_CONFIG.TITLE' | translate" [winBtns]="['close']">
+  <div class="window-inner">
+    <div class="window-content">
+      <div class="right sscroll">
+        <div class="right-inner">
+          <ng-container *ngTemplateOutlet="configContent"></ng-container>
+        </div>
+      </div>
+    </div>
+  </div>
+</app-sub-window>
+} @else {
+<!-- 
+    嵌入模式（部署页面第3步）：
+    - 无外框结构
+    - 内容直接显示在 deploy 页面的右侧区域
+  -->
+<ng-container *ngTemplateOutlet="configContent"></ng-container>
+}

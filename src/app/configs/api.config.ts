@@ -2,18 +2,20 @@ const SERVER_URL: string = 'https://aily-chat.diandeng.tech';
 const CHAT_SERVER_URL: string = 'http://114.132.150.141:8100';
 const AUTH_SERVER_URL: string = 'http://114.132.150.141:8101';
 const WORKSPACE_SERVER_URL: string = 'http://114.132.150.141:8102';
+const MODELS_SERVER_URL: string = 'http://114.132.150.141:8103';
 const REGISTRY_URL: string = 'https://registry.diandeng.tech';
 
 export const API = {
   projectList: `${REGISTRY_URL}/-/verdaccio/data/packages`,
   projectSearch: `${REGISTRY_URL}/-/v1/search`,
-  // auth
+  // auth  
   login: `${AUTH_SERVER_URL}/api/v1/auth/login`,
   register: `${AUTH_SERVER_URL}/api/v1/auth/register`,
   logout: `${AUTH_SERVER_URL}/api/v1/auth/logout`,
   verifyToken: `${AUTH_SERVER_URL}/api/v1/auth/verify`,
   refreshToken: `${AUTH_SERVER_URL}/api/v1/auth/refresh`,
   me: `${AUTH_SERVER_URL}/api/v1/auth/me`,
+  changeNickname: `${AUTH_SERVER_URL}/api/v1/auth/me/nickname`,
   // github oauth
   githubBrowserAuthorize: `${AUTH_SERVER_URL}/api/v1/oauth/github/browser-authorize`,
   githubTokenExchange: `${AUTH_SERVER_URL}/api/v1/oauth/github/token-exchange`,
@@ -25,6 +27,7 @@ export const API = {
   getHistory: `${CHAT_SERVER_URL}/api/v1/conversation_history`,
   stopSession: `${CHAT_SERVER_URL}/api/v1/stop_session`,
   cancelTask: `${CHAT_SERVER_URL}/api/v1/cancel_task`,
+  generateTitle: `${CHAT_SERVER_URL}/api/v1/generate_title`,
   // cloud
   cloudBase: `${WORKSPACE_SERVER_URL}/api/v1/cloud`,
   cloudSync: `${WORKSPACE_SERVER_URL}/api/v1/cloud/sync`,
@@ -32,4 +35,11 @@ export const API = {
   cloudPublicProjects: `${WORKSPACE_SERVER_URL}/api/v1/cloud/projects/public`,
   // feedback
   feedback: `${WORKSPACE_SERVER_URL}/api/v1/feedback/submit`,
+  // model list
+  modelList: `${MODELS_SERVER_URL}/api/v1/model/list`,
+  // model details
+  modelDetails: `${MODELS_SERVER_URL}/api/v1/model`,
+  // firmware info
+  firmwareInfo: `${MODELS_SERVER_URL}/api/v1/firmware/info`,
+  downloadFirmware: `${MODELS_SERVER_URL}/api/v1/firmware/download`,
 };

@@ -10,12 +10,18 @@ import { ActivatedRoute } from '@angular/router';
 import { PlaygroundService } from '../playground.service';
 import { NzPaginationModule } from 'ng-zorro-antd/pagination';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
-import { Subject } from 'rxjs';
+import { NzMessageService } from 'ng-zorro-antd/message';
+import { Subject, Subscription } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { CloudService } from '../../../tools/cloud-space/services/cloud.service';
 import { ProjectService } from '../../../services/project.service';
 import { CmdService } from '../../../services/cmd.service';
 import { ElectronService } from '../../../services/electron.service';
+import { PlatformService } from "../../../services/platform.service";
+import { CrossPlatformCmdService } from "../../../services/cross-platform-cmd.service";
+import { updateBlocksInFile } from '../../../utils/blockly_updater';
+import { Buffer } from 'buffer';
+import { jsonrepair } from 'jsonrepair';
 
 @Component({
   selector: 'app-example-list',
@@ -38,6 +44,11 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   exampleList: any[] = [];
   resourceUrl: string = '';
   keyword: string = '';
+  id: string = '';
+  params: any = {};
+  version: string = '';
+  sessionId: string = '';
+  isOpened: boolean = false;
 
   pageIndex: number = 1; // 当前页码
   pageSize: number = 10; // 每页显示数量，默认值
@@ -46,6 +57,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   private pageSizeCalculated: boolean = false; // 标记 pageSize 是否已计算
   
   private destroy$ = new Subject<void>();
+  private examplesSub: Subscription | null = null;
 
   constructor(
     private configService: ConfigService,
@@ -55,8 +67,40 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     private cloudService: CloudService,
     private projectService: ProjectService,
     private cmdService: CmdService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private platformService: PlatformService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
+    private messageService: NzMessageService
   ) {
+  }
+
+  parseParams(paramsStr: string): any {
+    try {
+      if (!paramsStr || paramsStr.trim() === '') {
+        return {};
+      }
+      // 兼容处理：将 URL 中的空格替换回 + (防止被错误解码)
+      const base64Str = paramsStr.replace(/ /g, '+');
+      let jsonStr = Buffer.from(base64Str, 'base64').toString('utf8');
+      
+      // 尝试修复 JSON 字符串中的控制字符和格式问题
+      try {
+        jsonStr = jsonrepair(jsonStr);
+      } catch (err) {
+        console.warn('jsonrepair failed, trying raw parse', err);
+        // 兜底：移除可能导致解析错误的不可见控制字符
+        jsonStr = jsonStr.replace(/[\x00-\x1F]+/g, "");
+      }
+
+      if (jsonStr.startsWith("'") && jsonStr.endsWith("'")) {
+        jsonStr = jsonStr.substring(1, jsonStr.length - 1);
+      }
+      const paramsObj = JSON.parse(jsonStr);
+      return paramsObj;
+    } catch (e) {
+      console.error('解析params失败:', e);
+      return {};
+    }
   }
 
   ngOnInit() {
@@ -66,11 +110,18 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     this.route.queryParams
       .pipe(takeUntil(this.destroy$))
       .subscribe(params => {
-        console.log('URL参数:', params);
+        // console.log('URL参数:', params);
+        this.id = params['id'] || '';
+        this.sessionId = params['sessionId'] || '';
+
         this.keyword = params['keyword'] || '';
+        this.params = this.parseParams(params['params'] || '');
+
+        this.version = params['version'] || '';
         // 当通过 URL 搜索时，重置回第一页
         this.pageIndex = 1;
         // 只有在 pageSize 已计算后才获取数据
+
         if (this.pageSizeCalculated) {
           this.getExamples();
         }
@@ -101,7 +152,12 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   getExamples() {
-    this.cloudService.getPublicProjects(this.pageIndex, this.pageSize, this.keyword).subscribe(res => {
+    if (this.examplesSub) {
+      this.examplesSub.unsubscribe();
+    }
+    this.examplesSub = this.cloudService.getPublicProjects(this.pageIndex, this.pageSize, this.keyword, this.id)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(res => {
       if (res && res.status === 200) {
         this.exampleList = []
         this.total = res.data.total;
@@ -127,6 +183,15 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
         });
 
         console.log('获取公开项目列表:', this.exampleList);
+        if (this.exampleList.length === 0 && this.pageIndex === 1) {
+          this.messageService.warning("No examples found.");
+          return;
+        }
+
+        if (this.id && !this.isOpened) {
+          this.isOpened = true;
+          this.loadExample(0);
+        }
       }
     });
   }
@@ -181,14 +246,14 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     // 总共可以显示的数量
     const calculatedPageSize = Math.max(1, itemsPerRow * rows);
     
-    console.log('Container size:', containerWidth, 'x', containerHeight);
-    console.log('Items per row:', itemsPerRow, 'Rows:', rows, 'Calculated page size:', calculatedPageSize);
+    // console.log('Container size:', containerWidth, 'x', containerHeight);
+    // console.log('Items per row:', itemsPerRow, 'Rows:', rows, 'Calculated page size:', calculatedPageSize);
     
     // 如果计算出的 pageSize 与当前值不同,更新并重新获取数据
     if (this.pageSize !== calculatedPageSize) {
       const oldPageSize = this.pageSize;
       this.pageSize = calculatedPageSize;
-      console.log(`Page size changed from ${oldPageSize} to ${this.pageSize}, refreshing data...`);
+      // console.log(`Page size changed from ${oldPageSize} to ${this.pageSize}, refreshing data...`);
       
       // 重置到第一页并重新获取数据
       this.pageIndex = 1;
@@ -221,27 +286,120 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     this.loadingExampleIndex = index;
 
     const item = this.exampleList[index];
-    console.log('加载示例项目:', item);
-    this.cloudService.getProjectArchive(item.archive_url).subscribe(async res => {
-      // 直接添加随机数避免重名
-      const randomNum = Math.floor(100000 + Math.random() * 900000);
-      const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
-      const targetPath = this.projectService.projectRootPath + '\\' + uniqueName;
+    this.cloudService.getProjectArchive(item.archive_url)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: async res => {
+          try {
+            // 直接添加随机数避免重名
+            const randomNum = Math.floor(100000 + Math.random() * 900000);
+            const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
+            const targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + uniqueName;
 
-      // 使用 Move-Item 将下载/临时文件移动到目标项目目录
-      // -Force 用于覆盖同名目标（如果存在）
-      await this.cmdService.runAsync(`Move-Item -Path "${res}" -Destination "${targetPath}" -Force`);
+            // 确保目标目录的父目录存在
+            const targetParent = window['path'].dirname(targetPath);
+            if (!window['fs'].existsSync(targetParent)) {
+              window['fs'].mkdirSync(targetParent, { recursive: true });
+            }
+            
+            // 如果目标目录已存在，先删除它（确保干净复制）
+            if (window['fs'].existsSync(targetPath)) {
+              window['fs'].rmdirSync(targetPath, { recursive: true });
+            }
+            
+            console.log('复制解压文件:', res, '->', targetPath);
+            // 使用 Move-Item 将下载/临时文件移动到目标项目目录
+            // -Force 用于覆盖同名目标（如果存在）
+            await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
+            
+            // 验证复制是否成功
+            if (!window['fs'].existsSync(targetPath)) {
+              throw new Error(`复制失败：目标目录不存在 ${targetPath}`);
+            }
+            
+            // 等待一小段时间，确保文件系统操作完成
+            await new Promise(resolve => setTimeout(resolve, 100));
 
-      // 更新 package.json 中的项目信息
-      const packageJson = JSON.parse(this.electronService.readFile(`${targetPath}/package.json`));
-      packageJson.nickname = item.nickname
-      packageJson.description = item.description || ''
-      packageJson.doc_url = item.doc_url || ''
-      this.electronService.writeFile(`${targetPath}/package.json`, JSON.stringify(packageJson, null, 2));
+            // 检查解压后的目录结构，可能有一个子目录包含实际项目文件
+            let actualProjectPath = targetPath;
+            
+            // 检查目标目录是否存在且可读
+            if (!window['fs'].existsSync(targetPath)) {
+              throw new Error(`目标目录不存在: ${targetPath}`);
+            }
+            
+            const files = window['fs'].readDirSync(targetPath);
+            
+            // 如果目标目录只有一个子目录，且该子目录包含 package.json，则使用子目录
+            if (files.length === 1) {
+              const firstItem = files[0];
+              const itemName = typeof firstItem === 'object' && firstItem !== null ? firstItem.name : firstItem;
+              const subPath = `${targetPath}${this.platformService.getPlatformSeparator()}${itemName}`;
+              
+              // 检查子目录是否是目录且包含 package.json
+              if (window['fs'].isDirectory(subPath)) {
+                const subFiles = window['fs'].readDirSync(subPath);
+                const hasPackageJson = subFiles.some((file: any) => {
+                  const fileName = typeof file === 'object' && file !== null ? file.name : file;
+                  return fileName === 'package.json';
+                });
+                
+                if (hasPackageJson) {
+                  actualProjectPath = subPath;
+                  console.log('检测到嵌套目录结构，使用子目录:', actualProjectPath);
+                }
+              }
+            }
 
-      this.projectService.projectOpen(targetPath);
-      this.loadingExampleIndex = null;
-    });
+            // 验证 package.json 是否存在
+            const packageJsonPath = `${actualProjectPath}${this.platformService.getPlatformSeparator()}package.json`;
+            if (!window['fs'].existsSync(packageJsonPath)) {
+              // 列出目录内容以便调试
+              const dirContents = window['fs'].readDirSync(actualProjectPath).map((file: any) => {
+                return typeof file === 'object' && file !== null ? file.name : file;
+              });
+              throw new Error(`package.json 不存在于 ${actualProjectPath}。目录内容: ${dirContents.join(', ')}`);
+            }
+
+            // 更新 package.json 中的项目信息
+            const packageJson = JSON.parse(this.electronService.readFile(packageJsonPath));
+            packageJson.nickname = item.nickname
+            packageJson.description = item.description || ''
+            packageJson.doc_url = item.doc_url || ''
+            packageJson.keywords = item?.tags ? JSON.parse(item.tags) : ""
+            packageJson.cloudId = item.id;
+
+            this.electronService.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+
+            if (this.params && Object.keys(this.params).length > 0) {
+              const abiFilePath = `${actualProjectPath}${this.platformService.getPlatformSeparator()}project.abi`;
+              if (window['fs'].existsSync(abiFilePath)) {
+                updateBlocksInFile(abiFilePath, this.params);
+              }
+            }
+
+            this.projectService.projectOpen(actualProjectPath);
+            this.loadingExampleIndex = null;
+          } catch (error) {
+            console.error('加载示例处理失败:', error);
+            // 将错误写入日志文件
+            if ((window as any)['electronAPI']?.log) {
+              (window as any)['electronAPI'].log.error('加载示例处理失败', error);
+            }
+            this.messageService.error('加载示例失败: ' + (error?.message || '未知错误'));
+            this.loadingExampleIndex = null;
+          }
+        },
+        error: (error) => {
+          console.error('加载示例失败:', error);
+          // 将错误写入日志文件
+          if ((window as any)['electronAPI']?.log) {
+            (window as any)['electronAPI'].log.error('加载示例失败', error);
+          }
+          this.messageService.error('加载示例失败: ' + (error?.message || '网络错误或文件下载失败'));
+          this.loadingExampleIndex = null;
+        }
+      });
   }
 
   isLoading(index: number): boolean {

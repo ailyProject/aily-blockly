@@ -63,7 +63,7 @@ export class AilyButtonViewerComponent {
                 this.buttons = [];
             }
         } catch (error) {
-            console.error('Error processing button data:', error);
+            console.warn('Error processing button data:', error);
             this.buttons = [];
         }
     }
@@ -85,7 +85,7 @@ export class AilyButtonViewerComponent {
      * 处理按钮点击事件
      */
     onButtonClick(button: ButtonData): void {
-        this.isDisabled = true;
+        // this.isDisabled = true;
 
         // 发射事件
         this.buttonClick.emit(button);

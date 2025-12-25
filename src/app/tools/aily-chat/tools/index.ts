@@ -9,6 +9,7 @@ export { deleteFileTool } from './deleteFileTool';
 export { deleteFolderTool } from './deleteFolderTool';
 export { checkExistsTool } from './checkExistsTool';
 export { getDirectoryTreeTool } from './getDirectoryTreeTool';
+export { grepTool } from './grepTool';
 
 // Blockly编辑工具索引
 export { 
@@ -16,10 +17,16 @@ export {
   connectBlocksTool, 
   createCodeStructureTool, 
   configureBlockTool, 
-  variableManagerTool, 
-  findBlockTool,
+  // variableManagerTool, 
+  // findBlockTool,
   deleteBlockTool,
-  getWorkspaceOverviewTool // 新增工具
+  getWorkspaceOverviewTool, // 新增工具
+  queryBlockDefinitionTool,
+  // getBlockConnectionCompatibilityTool,
+  // 新增：智能块分析和推荐工具
+  analyzeLibraryBlocksTool,
+  // intelligentBlockSequenceTool,
+  verifyBlockExistenceTool
 } from './editBlockTool';
 
 // 其他工具

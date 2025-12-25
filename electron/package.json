@@ -15,6 +15,7 @@
     "electron-updater": "^6.6.2",
     "glob": "^11.0.3",
     "lodash": "^4.17.21",
-    "serialport": "^13.0.0"
+    "serialport": "^13.0.0",
+    "electron-window-state": "^5.0.3"
   }
 }

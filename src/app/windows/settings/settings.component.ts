@@ -49,9 +49,13 @@ export class SettingsComponent {
       name: 'SETTINGS.SECTIONS.THEME',
       icon: 'fa-light fa-gift'
     },
+    // {
+    //   name: 'SETTINGS.SECTIONS.COMPILATION',
+    //   icon: 'fa-light fa-screwdriver-wrench'
+    // },
     {
-      name: 'SETTINGS.SECTIONS.COMPILATION',
-      icon: 'fa-light fa-screwdriver-wrench'
+      name: 'SETTINGS.SECTIONS.BLOCKLY',
+      icon: 'fa-light fa-puzzle-piece'
     },
     {
       name: 'SETTINGS.SECTIONS.REPOSITORY',
@@ -61,10 +65,10 @@ export class SettingsComponent {
       name: 'SETTINGS.SECTIONS.DEPENDENCIES',
       icon: 'fa-light fa-layer-group'
     },
-    {
-      name: 'SETTINGS.SECTIONS.MCP',
-      icon: 'fa-light fa-webhook'
-    },
+    // {
+    //   name: 'SETTINGS.SECTIONS.MCP',
+    //   icon: 'fa-light fa-webhook'
+    // },
     {
       name: 'SETTINGS.SECTIONS.DEVMODE',
       icon: 'fa-light fa-gear-code'
@@ -74,12 +78,27 @@ export class SettingsComponent {
   // 用于跟踪安装/卸载状态
   boardOperations = {};
 
+  // 搜索关键字
+  boardSearchKeyword: string = '';
+
   get boardList() {
     return this.settingsService.boardList.concat(
       this.settingsService.toolList,
       this.settingsService.sdkList,
       this.settingsService.compilerList
     );;
+  }
+
+  // 过滤后的开发板列表
+  get filteredBoardList() {
+    if (!this.boardSearchKeyword || this.boardSearchKeyword.trim() === '') {
+      return this.boardList;
+    }
+    const keyword = this.boardSearchKeyword.toLowerCase().trim();
+    return this.boardList.filter(board => 
+      board.name.toLowerCase().includes(keyword) ||
+      (board.version && board.version.toLowerCase().includes(keyword))
+    );
   }
 
   get langList() {
@@ -188,7 +207,7 @@ export class SettingsComponent {
     this.boardOperations[board.name] = { status: 'loading' };
     const result = await this.settingsService.uninstall(board)
     if (result === 'success') {
-      this.updateBoardList();
+      board.installed = false;
     }
     else if (result === 'failed') {
       this.boardOperations[board.name] = { status: 'failed' };
@@ -199,7 +218,7 @@ export class SettingsComponent {
     this.boardOperations[board.name] = { status: 'loading' };
     const result = await this.settingsService.install(board)
     if (result === 'success') {
-      this.updateBoardList();
+      board.installed = true;
     }
     else if (result === 'failed') {
       this.boardOperations[board.name] = { status: 'failed' };
@@ -208,5 +227,11 @@ export class SettingsComponent {
 
   onDevModeChange() {
     // this.configData.devmode = this.configData.devmode;
+  }
+
+  // 搜索框变化处理
+  onBoardSearchChange() {
+    // 搜索逻辑已通过 filteredBoardList getter 实现
+    // 这里可以添加额外的处理逻辑，如防抖等
   }
 }

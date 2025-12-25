@@ -5,8 +5,10 @@ import { ConfigService } from '../../../services/config.service';
 import { LogService } from '../../../services/log.service';
 import { NoticeService } from '../../../services/notice.service';
 import { CmdService } from '../../../services/cmd.service';
+import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { ProjectService } from '../../../services/project.service';
 import { ActionState } from '../../../services/ui.service';
+import { PlatformService } from "../../../services/platform.service";
 
 @Injectable({
   providedIn: 'root'
@@ -16,11 +18,13 @@ export class BuilderService {
   constructor(
     private projectService: ProjectService,
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private message: NzMessageService,
     private noticeService: NoticeService,
     private logService: LogService,
     private npmService: NpmService,
     private configService: ConfigService,
+    private platformService: PlatformService,
   ) { }
 
   private buildInProgress = false;
@@ -105,13 +109,13 @@ export class BuilderService {
 
         // 创建临时文件夹
         if (!window['path'].isExists(tempPath)) {
-          await this.cmdService.runAsync(`New-Item -Path "${tempPath}" -ItemType Directory -Force`);
+          await this.crossPlatformCmdService.createDirectory(tempPath, true);
         }
         if (!window['path'].isExists(sketchPath)) {
-          await this.cmdService.runAsync(`New-Item -Path "${sketchPath}" -ItemType Directory -Force`);
+          await this.crossPlatformCmdService.createDirectory(sketchPath, true);
         }
         if (!window['path'].isExists(librariesPath)) {
-          await this.cmdService.runAsync(`New-Item -Path "${librariesPath}" -ItemType Directory -Force`);
+          await this.crossPlatformCmdService.createDirectory(librariesPath, true);
         }
 
         // 生成sketch文件
@@ -149,7 +153,7 @@ export class BuilderService {
             // 如果没有src文件夹，则使用src.7z解压到临时文件夹
             let sourceZipPath = `${this.currentProjectPath}/node_modules/${lib}/src.7z`;
             if (!window['path'].isExists(sourceZipPath)) continue;
-            await this.cmdService.runAsync(`7za x "${sourceZipPath}" -o"${sourcePath}" -y`);
+            await this.cmdService.runAsync(`${this.platformService.za7} x "${sourceZipPath}" -o"${sourcePath}" -y`);
           }
 
           // 判断src目录下是否有且仅有一个src目录，没有别的文件或文件夹
@@ -190,7 +194,7 @@ export class BuilderService {
               let shouldCopy = true;
               if (window['path'].isExists(targetPath)) {
                 if (this.configService.data.devmode || false) {
-                  await this.cmdService.runAsync(`Remove-Item -Path "${targetPath}" -Recurse -Force`);
+                  await this.crossPlatformCmdService.removeItem(targetPath, true, true);
                 } else {
                   // 非开发模式下，仍然记录为已复制，避免被清理
                   console.log(`库 ${lib} 目标路径已存在，跳过复制但保留记录`);
@@ -200,7 +204,7 @@ export class BuilderService {
 
               if (shouldCopy) {
                 // 直接复制src到targetPath
-                await this.cmdService.runAsync(`Copy-Item -Path "${sourcePath}" -Destination "${targetPath}" -Recurse -Force`);
+                await this.crossPlatformCmdService.copyItem(sourcePath, targetPath, true, true);
               }
               // 无论是否复制，都记录已处理的文件夹名称
               copiedLibraries.push(targetName);
@@ -226,7 +230,7 @@ export class BuilderService {
                     // Delete target directory if it exists
                     if (window['path'].isExists(targetPath)) {
                       if (this.configService.data.devmode || false) {
-                        await this.cmdService.runAsync(`Remove-Item -Path "${targetPath}" -Recurse -Force`);
+                        await this.crossPlatformCmdService.removeItem(targetPath, true, true);
                       } else {
                         // 如果不是debug模式，仍然记录但跳过复制
                         console.log(`目录 ${itemName} 已存在，跳过复制但保留记录`);
@@ -236,7 +240,7 @@ export class BuilderService {
 
                     if (shouldCopy) {
                       // Copy directory
-                      await this.cmdService.runAsync(`Copy-Item -Path "${fullSourcePath}" -Destination "${targetPath}" -Recurse -Force`);
+                      await this.crossPlatformCmdService.copyItem(fullSourcePath, targetPath, true, true);
                     }
                     // 无论是否复制，都记录已处理的文件夹名称
                     copiedLibraries.push(itemName);
@@ -277,7 +281,7 @@ export class BuilderService {
                 const folderToDelete = `${librariesPath}/${folder}`;
                 console.log(`删除未使用的库文件夹: ${folder}`);
                 try {
-                  await this.cmdService.runAsync(`Remove-Item -Path "${folderToDelete}" -Recurse -Force`);
+                  await this.crossPlatformCmdService.removeItem(folderToDelete, true, true);
                 } catch (error) {
                   console.warn(`删除文件夹 ${folder} 失败:`, error);
                 }

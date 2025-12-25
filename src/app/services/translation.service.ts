@@ -35,7 +35,6 @@ export class TranslationService {
     // 设置默认语言
     const defaultLang = this.getSystemLanguage();
     this.translate.setDefaultLang(defaultLang);
-    console.log(`Default language set to: ${defaultLang}`);
 
     // 加载并设置当前选择的语言
     const currentLang = this.getSelectedLanguage();

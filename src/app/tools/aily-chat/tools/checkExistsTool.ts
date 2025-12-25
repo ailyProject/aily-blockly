@@ -45,7 +45,7 @@ export async function checkExistsTool(
         // 路径规范化
         targetPath = normalizePath(targetPath);
         
-        console.log("检查路径是否存在: ", targetPath);
+        // console.log("检查路径是否存在: ", targetPath);
 
         // 验证路径是否有效
         if (!targetPath || targetPath.trim() === '') {
@@ -102,7 +102,7 @@ export async function checkExistsTool(
             }, null, 2)
         };
     } catch (error: any) {
-        console.error("检查路径存在性失败:", error);
+        console.warn("检查路径存在性失败:", error);
         
         let errorMessage = `检查路径存在性失败: ${error.message}`;
         if (error.code) {

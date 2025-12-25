@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.8.1",
+  "version": "0.9.8",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -40,12 +40,8 @@
         "to": "app/electron"
       },
       {
-        "from": "child",
-        "to": "app/child",
-        "filter": [
-          "**/*",
-          "!node/**"
-        ]
+        "from": "child/scripts",
+        "to": "app/child/scripts"
       }
     ],
     "win": {
@@ -62,16 +58,29 @@
           "icon": "public/icon.ico",
           "role": "Editor"
         }
+      ],
+      "extraResources": [
+        {
+          "from": "child/windows",
+          "to": "app/child"
+        }
       ]
     },
     "mac": {
-      "icon": "public/icon.ico",
+      "icon": "public/icon-512.ico",
+      "artifactName": "aily-blockly-${version}.${ext}",
       "fileAssociations": [
         {
           "ext": "abi",
           "name": "Aily Blockly Project",
           "description": "Aily Blockly Project File",
           "role": "Editor"
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "child/macos",
+          "to": "app/child"
         }
       ]
     },
@@ -120,22 +129,23 @@
     "@angular/router": "^19.0.0",
     "@blockly/block-dynamic-connection": "^0.7.16",
     "@blockly/field-colour-hsv-sliders": "^5.0.19",
-    "@codingame/monaco-vscode-api": "^22.1.0",
-    "@codingame/monaco-vscode-configuration-service-override": "^22.1.0",
-    "@codingame/monaco-vscode-languages-service-override": "^22.1.0",
-    "@codingame/monaco-vscode-rollup-vsix-plugin": "^22.1.0",
-    "@codingame/monaco-vscode-textmate-service-override": "^22.1.0",
-    "@codingame/monaco-vscode-theme-service-override": "^22.1.0",
+    "@codingame/monaco-vscode-api": "^22.1.4",
+    "@codingame/monaco-vscode-configuration-service-override": "^22.1.4",
+    "@codingame/monaco-vscode-languages-service-override": "^22.1.4",
+    "@codingame/monaco-vscode-rollup-vsix-plugin": "^22.1.4",
+    "@codingame/monaco-vscode-textmate-service-override": "^22.1.4",
+    "@codingame/monaco-vscode-theme-service-override": "^22.1.4",
     "@ctrl/tinycolor": "^4.1.0",
     "@lydell/node-pty": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.17.5",
     "@ngx-translate/core": "^16.0.3",
     "@splidejs/splide": "^4.1.4",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
     "@types/uuid": "^10.0.0",
     "@xterm/addon-clipboard": "^0.1.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "angular-gridster2": "^19.0.0",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
     "blockly": "^11.2.2",
@@ -143,9 +153,11 @@
     "cropperjs": "^1.6.2",
     "crypto-js": "^4.2.0",
     "dragselect": "^2.7.4",
+    "esptool-js": "^0.5.7",
     "fancy-ansi": "^0.1.3",
     "iconv-lite": "^0.7.0",
     "install": "^0.13.0",
+    "js-base64": "^3.7.8",
     "jsonrepair": "^3.13.0",
     "konva": "^9.3.22",
     "lightweight-charts": "^4.2.3",
@@ -153,7 +165,7 @@
     "marked": "^15.0.12",
     "marked-highlight": "^2.2.1",
     "mermaid": "^11.9.0",
-    "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^22.1.0",
+    "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^22.1.4",
     "monaco-languageclient": "^10.1.0",
     "ng-zorro-antd": "^19.3.1",
     "ngx-ui-scroll": "^4.1.0",
@@ -161,10 +173,12 @@
     "rxjs": "~7.8.0",
     "shiki": "^3.5.0",
     "simplebar-angular": "^3.3.0",
+    "sortablejs": "^1.15.6",
+    "spark-md5": "^3.0.2",
     "tslib": "^2.3.0",
     "ua-parser-js": "^2.0.5",
     "uuid": "^11.1.0",
-    "vscode": "npm:@codingame/monaco-vscode-extension-api@^22.1.0",
+    "vscode": "npm:@codingame/monaco-vscode-extension-api@^22.1.4",
     "vscode-ws-jsonrpc": "^3.5.0",
     "zone.js": "~0.15.0"
   },
@@ -174,6 +188,7 @@
     "@angular/compiler-cli": "^19.0.0",
     "@types/jasmine": "~5.1.0",
     "@types/node": "^22.10.7",
+    "@types/sortablejs": "^1.15.9",
     "@types/ua-parser-js": "^0.7.39",
     "concurrently": "^9.1.2",
     "electron": "^35.0.2",

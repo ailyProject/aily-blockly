@@ -72,7 +72,7 @@ function showNotification(options) {
 /**
  * 初始化通知模块的 IPC 监听器
  */
-function initNotificationHandlers() {
+function registerNotificationHandlers(mainWindow) {
   // 处理来自渲染进程的通知请求
   ipcMain.handle('notification-show', async (event, options) => {
     try {
@@ -92,5 +92,5 @@ function initNotificationHandlers() {
 
 module.exports = {
   showNotification,
-  initNotificationHandlers
+  registerNotificationHandlers
 };

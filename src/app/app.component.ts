@@ -1,5 +1,5 @@
 import { Component, OnInit, OnDestroy, inject } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { RouterOutlet, Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from './services/electron.service';
 import { ConfigService } from './services/config.service';
@@ -25,8 +25,10 @@ export class AppComponent implements OnInit, OnDestroy {
   private translationService = inject(TranslationService);
   private authService = inject(AuthService);
   private message = inject(NzMessageService);
+  private router = inject(Router);
 
   private oauthResultListener: (() => void) | null = null;
+  private exampleListListener: (() => void) | null = null;
 
   async ngOnInit() {
     await this.electronService.init();
@@ -39,6 +41,11 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!this.electronService.isElectron) return;
     // 设置全局OAuth监听器
     this.setupGlobalOAuthListener();
+    // 设置示例列表监听器
+    this.setupExampleListListener();
+
+    // 通知主进程渲染进程已就绪
+    this.electronService.sendRendererReady();
   }
 
   ngOnDestroy() {
@@ -46,13 +53,17 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.oauthResultListener) {
       this.oauthResultListener();
     }
+    // 清理示例列表监听器
+    if (this.exampleListListener) {
+      this.exampleListListener();
+    }
   }
 
   /**
    * 设置全局GitHub OAuth协议回调监听
    */
   private setupGlobalOAuthListener() {
-    if (window['oauth'].onCallback) {
+    if (window['oauth'] && window['oauth'].onCallback) {
       this.oauthResultListener = window['oauth'].onCallback(async (callbackData: any) => {
         try {
           // 使用AuthService处理协议回调
@@ -89,6 +100,28 @@ export class AppComponent implements OnInit, OnDestroy {
           console.error('处理OAuth回调异常:', error);
           this.message.error('登录处理失败，请重试');
         }
+      });
+    }
+  }
+
+  /**
+   * 设置示例列表协议监听
+   */
+  private setupExampleListListener() {
+    if (window['exampleList'] && window['exampleList'].onOpen) {
+      this.exampleListListener = window['exampleList'].onOpen((data: any) => {
+        console.log('收到打开示例列表请求:', data);
+        
+        // 导航到示例列表页面
+        this.router.navigate(['/main/playground'], {
+          queryParams: { 
+            keyword: data.keyword || '',
+            id: data.id || '',
+            sessionId: data.sessionId || '',
+            params: data.params || '',
+            version: data.version || ''
+          }
+        });
       });
     }
   }

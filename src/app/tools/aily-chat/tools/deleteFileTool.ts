@@ -45,7 +45,7 @@ export async function deleteFileTool(
         // 路径规范化
         filePath = normalizePath(filePath);
         
-        console.log("删除文件: ", filePath);
+        // console.log("删除文件: ", filePath);
 
         // 验证路径是否有效
         if (!filePath || filePath.trim() === '') {
@@ -99,7 +99,7 @@ export async function deleteFileTool(
             content: resultMessage 
         };
     } catch (error: any) {
-        console.error("删除文件失败:", error);
+        console.warn("删除文件失败:", error);
         
         let errorMessage = `删除文件失败: ${error.message}`;
         if (error.code) {

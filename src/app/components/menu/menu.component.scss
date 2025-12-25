@@ -47,8 +47,8 @@
       background: #405e8d;
     }
 
-    &.disabled:hover {
-      background: transparent;
+    &.disabled {
+      background: none;
     }
 
     &.highlight {

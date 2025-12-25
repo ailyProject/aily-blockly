@@ -1,4 +1,4 @@
-import { Component, ElementRef, Input, ViewChild } from '@angular/core';
+import { Component, ElementRef, Input, ViewChild, DoCheck } from '@angular/core';
 import * as Blockly from 'blockly';
 import * as zhHans from 'blockly/msg/zh-hans';
 // import {
@@ -13,6 +13,9 @@ import { micropythonGenerator } from './generators/micropython/micropython';
 import { BlocklyService } from '../../services/blockly.service';
 import { BitmapUploadResponse, GlobalServiceManager } from '../../services/bitmap-upload.service';
 
+import './renderer/aily-icon';
+import './renderer/aily-thrasos/thrasos';
+import './renderer/aily-zelos/zelos';
 import './custom-category';
 import './custom-field/field-bitmap';
 import './custom-field/field-bitmap-u8g2';
@@ -37,23 +40,88 @@ import { ImageUploadDialogComponent } from './components/image-upload-dialog/ima
 import { HttpErrorResponse } from '@angular/common/http';
 import { ConfigService } from '../../../../services/config.service';
 import { NoticeService } from '../../../../services/notice.service';
+import { Minimap } from '@blockly/workspace-minimap';
+
+class OverlayFlyoutMetricsManager extends (Blockly as any).MetricsManager {
+  constructor(workspace: any) {
+    super(workspace);
+  }
+
+  getViewMetrics(getWorkspaceCoordinates: boolean | undefined = undefined) {
+    const workspace = (this as any).workspace_;
+    const scale = getWorkspaceCoordinates ? workspace.scale : 1;
+    const svgMetrics = (this as any).getSvgMetrics();
+    const toolboxMetrics = (this as any).getToolboxMetrics();
+    const toolboxPosition = toolboxMetrics.position;
+
+    if (workspace.getToolbox?.()) {
+      if (
+        toolboxPosition == (Blockly as any).TOOLBOX_AT_TOP ||
+        toolboxPosition == (Blockly as any).TOOLBOX_AT_BOTTOM
+      ) {
+        svgMetrics.height -= toolboxMetrics.height;
+      } else if (
+        toolboxPosition == (Blockly as any).TOOLBOX_AT_LEFT ||
+        toolboxPosition == (Blockly as any).TOOLBOX_AT_RIGHT
+      ) {
+        svgMetrics.width -= toolboxMetrics.width;
+      }
+    }
+
+    return {
+      height: svgMetrics.height / scale,
+      width: svgMetrics.width / scale,
+      top: -workspace.scrollY / scale,
+      left: -workspace.scrollX / scale,
+    };
+  }
+
+  getAbsoluteMetrics() {
+    const workspace = (this as any).workspace_;
+    const toolboxMetrics = (this as any).getToolboxMetrics();
+    const toolboxPosition = toolboxMetrics.position;
+
+    let absoluteLeft = 0;
+    if (workspace.getToolbox?.() && toolboxPosition == (Blockly as any).TOOLBOX_AT_LEFT) {
+      absoluteLeft = toolboxMetrics.width;
+    }
+
+    let absoluteTop = 0;
+    if (workspace.getToolbox?.() && toolboxPosition == (Blockly as any).TOOLBOX_AT_TOP) {
+      absoluteTop = toolboxMetrics.height;
+    }
+
+    return {
+      top: absoluteTop,
+      left: absoluteLeft,
+    };
+  }
+}
 
 @Component({
   selector: 'blockly-main',
   imports: [
     NzModalModule,
-    CommonModule
+    CommonModule,
   ],
   templateUrl: './blockly.component.html',
   styleUrl: './blockly.component.scss',
 })
-export class BlocklyComponent {
+export class BlocklyComponent implements DoCheck {
   @ViewChild('blocklyDiv', { static: true }) blocklyDiv!: ElementRef;
 
   @Input() devmode;
   generator;
   // Control bitmap upload handler visibility
   showBitmapUploadHandler = true;
+
+  get aiWriting() {
+    return this.blocklyService.aiWriting || this.blocklyService.aiWaitWriting;
+  }
+
+  showSpinOverlay = false;
+  isFadingOut = false;
+  private previousAiWriting = false;
 
   get workspace() {
     return this.blocklyService.workspace;
@@ -88,6 +156,7 @@ export class BlocklyComponent {
   }
 
   options = {
+    flyout: 'overlay',
     toolbox: {
       kind: 'categoryToolbox',
       contents: [],
@@ -121,6 +190,7 @@ export class BlocklyComponent {
     },
     multiSelectKeys: ['Shift'],
     plugins: {
+      metricsManager: OverlayFlyoutMetricsManager,
       connectionPreviewer:
         BlockDynamicConnection.decoratePreviewer(
           Blockly.InsertionMarkerPreviewer,
@@ -131,6 +201,7 @@ export class BlocklyComponent {
   get configData() {
     return this.configService.data;
   }
+
   constructor(
     private blocklyService: BlocklyService,
     private modal: NzModalService,
@@ -173,17 +244,6 @@ export class BlocklyComponent {
           };
 
           this.bitmapUploadService.sendUploadResponse(response);
-        } else {
-          // 用户取消或出错
-          // const response: BitmapUploadResponse = {
-          //   fieldId: request.fieldId,  // 添加字段ID
-          //   data: request.currentBitmap, // 返回原始数据
-          //   success: false,
-          //   // message: '图片处理已取消',
-          //   // timestamp: Date.now()
-          // };
-
-          // this.bitmapUploadService.sendUploadResponse(response);
         }
       });
     });
@@ -196,6 +256,25 @@ export class BlocklyComponent {
     }
   }
 
+  ngDoCheck(): void {
+    const currentAiWriting = this.aiWriting;
+
+    if (!this.previousAiWriting && currentAiWriting) {
+      this.isFadingOut = false;
+      this.showSpinOverlay = true;
+    }
+
+    if (this.previousAiWriting && !currentAiWriting) {
+      this.isFadingOut = true;
+      setTimeout(() => {
+        this.showSpinOverlay = false;
+        this.isFadingOut = false;
+      }, 300);
+    }
+
+    this.previousAiWriting = currentAiWriting;
+  }
+
   ngAfterViewInit(): void {
     // this.blocklyService.init();
     setTimeout(async () => {
@@ -204,6 +283,9 @@ export class BlocklyComponent {
         return function (msg) {
           // 过滤掉块重定义的警告
           if (msg.includes('overwrites previous definition')) {
+            return;
+          }
+          if (msg.includes('CodeGenerator init was not called before blockToCode was called.')) {
             return;
           }
           // 保留其他警告
@@ -255,12 +337,55 @@ export class BlocklyComponent {
       // 在工作区创建前设置 block registry 拦截
       this.setupBlockRegistryInterception();
       // 获取当前blockly渲染器
-      this.options.renderer = this.configData.blockly.renderer || 'thrasos';
+      this.options.renderer = this.configData.blockly.renderer ? ('aily-' + this.configData.blockly.renderer) : 'thrasos';
 
       this.workspace = Blockly.inject('blocklyDiv', this.options);
 
+      // 根据配置决定 flyout 拖出 block 后是否自动关闭。
+      // 这里直接改 workspace 的 flyout 实例，避免替换 Flyout 类导致布局变化（挤占工作区）。
+      if (this.configData.blockly.flyoutAutoClose === false) {
+        const flyout = this.workspace.getFlyout?.();
+        if (flyout) {
+          (flyout as any).autoClose = false;
+
+          // Flyout 显隐会影响 metrics，但不会触发容器尺寸变化；这里在 show/hide 时补一次 svgResize。
+          // 避免手动关闭 flyout 后工作区仍保持“被挤占”的旧 metrics。
+          if (!(flyout as any).__resizePatched) {
+            (flyout as any).__resizePatched = true;
+
+            const tryResize = () => {
+              // 延迟到下一帧，确保 flyout 的 DOM 已更新。
+              setTimeout(() => Blockly.svgResize(this.workspace), 0);
+            };
+
+            const originalShow = (flyout as any).show?.bind(flyout);
+            if (originalShow) {
+              (flyout as any).show = (...args: any[]) => {
+                const result = originalShow(...args);
+                tryResize();
+                return result;
+              };
+            }
+
+            const originalHide = (flyout as any).hide?.bind(flyout);
+            if (originalHide) {
+              (flyout as any).hide = (...args: any[]) => {
+                const result = originalHide(...args);
+                tryResize();
+                return result;
+              };
+            }
+          }
+        }
+      }
+
       const multiselectPlugin = new Multiselect(this.workspace);
       multiselectPlugin.init(this.options);
+
+      if (this.configData.blockly.minimap) {
+        const minimap = new Minimap(this.workspace);
+        minimap.init();
+      }
 
       // 动态连接块监听
       this.workspace.addChangeListener(BlockDynamicConnection.finalizeConnections);
@@ -272,7 +397,16 @@ export class BlocklyComponent {
       resizeObserver.observe(this.blocklyDiv.nativeElement);
 
       (window as any)['Blockly'] = Blockly;
-      this.workspace.addChangeListener((event) => {
+      // 设置全局工作区引用，供 editBlockTool 使用
+      (window as any)['blocklyWorkspace'] = this.workspace;
+      this.workspace.addChangeListener((event: any) => {
+        // if (event.type == Blockly.Events.SELECTED) {
+        //   console.log('积木选择事件：', event);
+        //   // const code = Blockly;
+        //   // console.log('代码生成结果：', code);
+        //  const block = this.workspace.getBlockById(event.newElementId);
+        //  console.log('选中的积木：', block);
+        // }
         try {
           this.codeGeneration();
         } catch (error) {
@@ -352,6 +486,7 @@ export class BlocklyComponent {
   }
 
   private codeGenerationTimer: any = null;
+
   codeGeneration(): void {
     // 清除之前的定时器
     if (this.codeGenerationTimer) {

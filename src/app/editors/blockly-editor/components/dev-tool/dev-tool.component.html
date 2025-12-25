@@ -1,0 +1,36 @@
+<div class="devtool-box" [style.left.px]="currentX" [style.bottom.px]="currentY" [class.dragging]="isDragging">
+    <div class="drag-handle" (mousedown)="onDragStart($event)" nz-tooltip nzTooltipTitle="drag to move">
+        <i class="fa-solid fa-grip-dots-vertical"></i>
+    </div>
+    <div class="btn ccenter" (click)="reload()" nz-tooltip nzTooltipTitle="reload project">
+        <i class="fa-light fa-sync"></i>
+    </div>
+    <div class="btn ccenter" (click)="clear()" nz-tooltip nzTooltipTitle="clear cache">
+        <i class="fa-light fa-broom-wide"></i>
+    </div>
+    <div class="line">
+    </div>
+    <div class="btn ccenter" (click)="openResources()" nz-tooltip nzTooltipTitle="open resource folder">
+        <i class="fa-light fa-folder-bookmark"></i>
+    </div>
+    <div class="btn ccenter" (click)="openCompileFolder()" nz-tooltip nzTooltipTitle="open compile folder">
+        <i class="fa-light fa-folder-gear"></i>
+    </div>
+    <div class="line">
+    </div>
+    <div class="check ccenter">
+        <input type="checkbox" id="autoSave" style="margin-right: 3px;" [(ngModel)]="autoSave" />
+        <label for="autoSave">
+            auto save
+        </label>
+    </div>
+    <!-- <div class="btn ccenter" (click)="openWebDevTools()">
+        <i class="fa-light fa-gear-code"></i>
+    </div>
+    <div class="btn ccenter" (click)="help()">
+        <i class="fa-light fa-circle-info"></i>
+    </div> -->
+    <!-- <div class="btn ccenter" (click)="close()">
+        <i class="fa-light fa-xmark"></i>
+    </div> -->
+</div>

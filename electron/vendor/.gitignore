@@ -1,0 +1,8 @@
+# Ripgrep 二进制文件
+# 这些文件较大，不应提交到 git
+# 使用 download-ripgrep.js 脚本下载
+**/vendor/ripgrep/**/rg
+**/vendor/ripgrep/**/rg.exe
+
+# 但保留目录结构
+!**/vendor/ripgrep/**/.gitkeep

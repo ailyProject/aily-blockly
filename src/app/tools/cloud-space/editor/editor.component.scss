@@ -41,6 +41,47 @@
             left: 130px;
         }
 
+        .tags-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+
+            .tag-input-field {
+                background: #363636;
+                color: rgba(255, 255, 255, 0.7) !important;
+                border: 1px solid #555;
+                border-radius: 4px;
+                height: 32px;
+                padding: 0 12px;
+                font-size: 14px;
+                width: 100%;
+
+                &:focus {
+                    border-color: #1890ff;
+                    outline: none;
+                    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+                }
+
+                &::placeholder {
+                    color: rgba(255, 255, 255, 0.4);
+                }
+            }
+
+            .tags-display {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+
+                nz-tag {
+                    margin: 0;
+                    cursor: default;
+                    user-select: none;
+                    font-size: 13px;
+                }
+            }
+        }
+
         .file-input {
             position: relative;
             width: 300px;

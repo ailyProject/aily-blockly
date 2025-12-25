@@ -3,7 +3,7 @@
         <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
             <i class="fa-regular fa-chevron-left"></i>
         </div>
-        <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
+        <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'" (click)="search()">
             <input type="text" nz-input [placeholder]="'搜索示例' | translate" [(ngModel)]="keyword"
                 (ngModelChange)="search()" />
         </nz-input-group>
@@ -16,7 +16,7 @@
         </ng-template>
         <div class="tag-list">
             @for (tag of tagList; track tag) {
-            <nz-tag (click)="keyword=tag;search()">{{ tag }}</nz-tag>
+            <nz-tag (click)="keyword=tag.text;search()" [nzColor]="tag.color">{{ tag.text }}</nz-tag>
             }
         </div>
     </div>

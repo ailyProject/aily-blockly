@@ -16,6 +16,8 @@ import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
 import { ProjectService } from '../../services/project.service';
+import { DevToolComponent } from './components/dev-tool/dev-tool.component';
+import { HistoryService } from './services/history.service';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -23,10 +25,10 @@ import { ProjectService } from '../../services/project.service';
     BlocklyComponent,
     LibManagerComponent,
     NotificationComponent,
-    TranslateModule
+    TranslateModule,
+    DevToolComponent
   ],
   providers: [
-    _ProjectService,
     _BuilderService,
     _UploaderService,
     BitmapUploadService
@@ -66,6 +68,7 @@ export class BlocklyEditorComponent {
         try {
           this._projectService.currentProjectPath = params['path']
           this.projectService.currentProjectPath = params['path'];
+          // this._projectService.initHistory(); // 初始化历史服务
           this.loadProject(params['path']);
         } catch (error) {
           console.error('加载项目失败', error);
@@ -96,11 +99,10 @@ export class BlocklyEditorComponent {
   }
 
   async loadProject(projectPath) {
-    await new Promise(resolve => setTimeout(resolve, 100));
     // 加载项目package.json
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
     // 加载项目开发框架
-    this.devmode = packageJson.devmode || 'arduino';
+    this.devmode = packageJson.devmode || 'arduino'; // 可选项: 'arduino', 'micropython'
 
     this.electronService.setTitle(`aily blockly - ${packageJson.nickname}`);
     // 添加到最近打开的项目
@@ -108,6 +110,9 @@ export class BlocklyEditorComponent {
     // 设置当前项目路径和package.json数据
     this._projectService.currentPackageData = packageJson;
     this.projectService.currentPackageData = packageJson;
+    window['packageJson'] = packageJson;    
+    // 暴露 ProjectService 到全局，供 generator.js 使用
+    window['projectService'] = this.projectService;
 
     // 检查是否有node_modules目录，没有则安装依赖，有则跳过
     const nodeModulesExist = this.electronService.exists(projectPath + '/node_modules');
@@ -128,7 +133,7 @@ export class BlocklyEditorComponent {
     // 获取项目目录下的所有blockly库
     let libraryModuleList = (await this.npmService.getAllInstalledLibraries(projectPath)).map(item => item.name);
 
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 120));
 
     for (let index = 0; index < libraryModuleList.length; index++) {
       const libPackageName = libraryModuleList[index];
@@ -155,6 +160,9 @@ export class BlocklyEditorComponent {
   }
 
   openProjectManager() {
+    if (this.blocklyService.checkAiWaiting()) {
+      return;
+    }
     this.uiService.closeToolAll();
     this.showLibraryManager = !this.showLibraryManager;
     this.cd.detectChanges();

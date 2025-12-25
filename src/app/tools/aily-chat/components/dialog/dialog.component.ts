@@ -94,13 +94,13 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
 
     // 如果是全新的内容或内容长度减少了（可能是重置），则清空并重新渲染
     if (processedContent.length < this.lastContentLength || this.lastProcessedContent === '') {
-      console.log('全新内容渲染');
+      // console.log('全新内容渲染');
       await this.resetAndRenderAll(processedContent);
       return;
     }
 
     // 增量渲染
-    console.log('增量渲染');
+    // console.log('增量渲染');
     await this.processIncrementalRender(processedContent);
 
     this.cd.detectChanges();
@@ -133,7 +133,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       try {
         await this.splitAndRenderContent(content);
       } catch (fallbackError) {
-        console.error('Even fallback render failed:', fallbackError);
+        console.warn('Even fallback render failed:', fallbackError);
         this.contentDiv.nativeElement.textContent = content;
         this.updateRenderState(content);
       }
@@ -280,7 +280,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       this.updateRenderState(content);
 
     } catch (error) {
-      console.error('Error in splitAndRenderContent:', error);
+      console.warn('Error in splitAndRenderContent:', error);
       // 降级处理
       if (this.contentDiv?.nativeElement) {
         this.contentDiv.nativeElement.textContent = content;
@@ -350,7 +350,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       this.updateRenderState(currentContent);
 
     } catch (error) {
-      console.error('Error in processIncrementalRender:', error);
+      console.warn('Error in processIncrementalRender:', error);
       // 降级到完整重新渲染
       await this.splitAndRenderContent(currentContent);
     }

@@ -4,7 +4,8 @@ import { HttpClient, HttpHeaders, HttpErrorResponse } from '@angular/common/http
 import { Observable, throwError, from } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
-import { CmdService } from '../../../services/cmd.service';
+import { CmdService, CmdOutput } from '../../../services/cmd.service';
+import { PlatformService } from "../../../services/platform.service";
 
 declare global {
   interface Window {
@@ -24,13 +25,17 @@ export class CloudService {
   private apiUrl = API.cloudSync;
   private cloudProjectsUrl = API.cloudProjects;
 
-  constructor(private http: HttpClient, private cmdService: CmdService) { }
+  constructor(
+      private http: HttpClient,
+      private cmdService: CmdService,
+      private platformService: PlatformService
+  ) { }
 
   /** 
    * 获取公开列表
    */
-  getPublicProjects(page, perPage, keyword): Observable<any> {
-    return this.http.get<any>(`${API.cloudPublicProjects}?page=${page}&perPage=${perPage}&keywords=${keyword}`)
+  getPublicProjects(page, perPage, keyword, id=''): Observable<any> {
+    return this.http.get<any>(`${API.cloudPublicProjects}?page=${page}&perPage=${perPage}&keywords=${keyword}&id=${id}`)
       .pipe(
         catchError(this.handleError)
       );
@@ -107,12 +112,16 @@ export class CloudService {
     nickname?: string;
     description?: string;
     doc_url?: string;
+    tags?: string[];
     image?: File;
   }): Observable<any> {
     const formData = new FormData();
     if (params.nickname) formData.append('nickname', params.nickname);
     if (params.description) formData.append('description', params.description);
     if (params.doc_url) formData.append('doc_url', params.doc_url);
+    if (params.tags) {
+      formData.append('tags', JSON.stringify(params.tags));
+    }
     if (params.image) {
       // 确保为image文件指定正确的文件名
       const fileName = params.image.name || 'image';
@@ -199,10 +208,10 @@ export class CloudService {
     let tempDir = '';
     try {
       // 检查 blob 大小和类型
-      console.log('Blob 信息:', {
-        size: blob.size,
-        type: blob.type
-      });
+      // console.log('Blob 信息:', {
+      //   size: blob.size,
+      //   type: blob.type
+      // });
       
       if (blob.size === 0) {
         throw new Error('下载的文件为空');
@@ -221,48 +230,111 @@ export class CloudService {
       }
       
       const fileStats = window['fs'].statSync(archivePath);
-      console.log('保存的文件信息:', {
-        path: archivePath,
-        size: fileStats.size,
-        exists: true
-      });
+      // console.log('保存的文件信息:', {
+      //   path: archivePath,
+      //   size: fileStats.size,
+      //   exists: true
+      // });
       
       if (fileStats.size === 0) {
         throw new Error('保存的归档文件为空');
       }
       
       // 检查文件前几个字节，验证是否为有效的7z文件（读取为Buffer）
-      const fileBuffer = window['fs'].readFileSync(archivePath, null);
-      const magic = fileBuffer.slice(0, 6);
-      const is7zFile = magic[0] === 0x37 && magic[1] === 0x7A && 
-                       magic[2] === 0xBC && magic[3] === 0xAF && 
-                       magic[4] === 0x27 && magic[5] === 0x1C;
+      // const fileBuffer = window['fs'].readFileSync(archivePath, null);
+      // const magic = fileBuffer.slice(0, 6);
+      // const is7zFile = magic[0] === 0x37 && magic[1] === 0x7A && 
+      //                  magic[2] === 0xBC && magic[3] === 0xAF && 
+      //                  magic[4] === 0x27 && magic[5] === 0x1C;
       
-      console.log('文件魔数检查:', {
-        magic: Array.from(magic).map((b: number) => b.toString(16)).join(' '),
-        is7zFile: is7zFile
-      });
+      // console.log('文件魔数检查:', {
+      //   magic: Array.from(magic).map((b: number) => b.toString(16)).join(' '),
+      //   is7zFile: is7zFile
+      // });
       
-      if (!is7zFile) {
-        // 尝试读取文件内容开头，看是否是错误响应
-        const textContent = fileBuffer.slice(0, 200).toString('utf8');
-        console.log('文件内容开头:', textContent);
-        throw new Error(`下载的文件不是有效的7z格式。文件内容: ${textContent.substring(0, 100)}`);
-      }
+      // if (!is7zFile) {
+      //   // 尝试读取文件内容开头，看是否是错误响应
+      //   const textContent = fileBuffer.slice(0, 200).toString('utf8');
+      //   // console.log('文件内容开头:', textContent);
+      //   throw new Error(`下载的文件不是有效的7z格式。文件内容: ${textContent.substring(0, 100)}`);
+      // }
       
       // 创建解压目录
       const extractPath = `${tempDir}/extracted`;
       window['fs'].mkdirSync(extractPath);
       
-      // 使用7za.exe解压文件（明确指定7z格式）
-      const extractCmd = `7za.exe x "${archivePath}" -o"${extractPath}" -t7z -y`;
+      // 获取7za/7zz的完整路径
+      const za7Path = await this.platformService.getZa7Path();
+      
+      // 使用7za/7zz解压文件（明确指定7z格式）
+      let extractCmd = `"${za7Path}" x "${archivePath}" -o"${extractPath}" -t7z -y`;
+      if (window['platform'].isWindows) {
+        extractCmd = `& ${extractCmd}`; // PowerShell 语法
+      }
       
       console.log('执行解压命令:', extractCmd);
-      const result = await this.cmdService.runAsync(extractCmd);
       
-      // 检查解压结果
-      if (result.type === 'error' || (result.code && result.code !== 0)) {
-        throw new Error(`7za解压失败: ${result.error || result.data || '未知错误'}`);
+      // 收集所有输出信息（包括 stdout 和 stderr）
+      let allOutput = '';
+      let allErrors = '';
+      let exitCode: number | undefined;
+      let hasError = false;
+      
+      try {
+        const result = await new Promise<CmdOutput>((resolve, reject) => {
+          const outputs: string[] = [];
+          const errors: string[] = [];
+          
+          this.cmdService.run(extractCmd, undefined, false).subscribe({
+            next: (output: CmdOutput) => {
+              if (output.type === 'stdout' && output.data) {
+                outputs.push(output.data);
+                allOutput += output.data;
+              } else if (output.type === 'stderr' && output.data) {
+                errors.push(output.data);
+                allErrors += output.data;
+              } else if (output.type === 'error') {
+                hasError = true;
+                if (output.error) {
+                  errors.push(output.error);
+                  allErrors += output.error;
+                }
+              } else if (output.type === 'close') {
+                exitCode = output.code;
+                resolve(output);
+              }
+            },
+            error: (err) => {
+              hasError = true;
+              reject(err);
+            }
+          });
+        });
+        
+        // 检查解压结果
+        if (hasError || (exitCode !== undefined && exitCode !== 0)) {
+          const errorMsg = allErrors || allOutput || result.error || result.data || `退出码: ${exitCode}`;
+          const errorDetails = JSON.stringify({
+            type: result.type,
+            code: exitCode,
+            error: result.error,
+            data: result.data,
+            signal: result.signal,
+            allOutput: allOutput.substring(0, 500), // 限制长度
+            allErrors: allErrors.substring(0, 500)
+          }, null, 2);
+          console.error('解压命令执行失败:', errorDetails);
+          throw new Error(`7za解压失败: ${errorMsg}`);
+        }
+      } catch (error: any) {
+        const errorMsg = error.message || allErrors || allOutput || '未知错误';
+        console.error('解压命令执行异常:', {
+          error: error,
+          allOutput: allOutput.substring(0, 500),
+          allErrors: allErrors.substring(0, 500),
+          exitCode
+        });
+        throw new Error(`7za解压失败: ${errorMsg}`);
       }
       
       // 验证解压目录是否存在文件
@@ -275,12 +347,12 @@ export class CloudService {
         throw new Error('解压后没有找到任何文件');
       }
       
-      console.log('解压成功，文件数量:', extractedFiles.length);
+      // console.log('解压成功，文件数量:', extractedFiles.length);
 
       // 删除.7z文件，节省空间
       try {
         window['fs'].unlinkSync(archivePath);
-        console.log('已删除临时归档文件:', archivePath);
+        // console.log('已删除临时归档文件:', archivePath);
       } catch (error) {
         console.warn('删除临时归档文件失败:', error);
       }
@@ -349,12 +421,14 @@ export class CloudService {
     }
   }
 
-  private handleError(error: HttpErrorResponse) {
+  private handleError(error: any) {
     let errMsg = '';
+    
+    // 检查是否是 HttpErrorResponse
     if (error.error instanceof ErrorEvent) {
       errMsg = `客户端错误: ${error.error.message}`;
-    } else {
-      // 增加更详细的错误信息
+    } else if (error.status !== undefined || error.statusText !== undefined) {
+      // 标准的 HttpErrorResponse
       console.error('HTTP错误详细信息:', {
         status: error.status,
         statusText: error.statusText,
@@ -384,9 +458,22 @@ export class CloudService {
       } else if (error.status === 400) {
         errMsg = `请求参数错误: ${errorDetail || '请检查文件格式和必要参数'}`;
       } else {
-        errMsg = `服务端错误: ${error.status} ${error.statusText}, ${errorDetail || error.message}`;
+        const status = error.status || '未知状态码';
+        const statusText = error.statusText || '未知状态';
+        errMsg = `服务端错误: ${status} ${statusText}, ${errorDetail || error.message || '无详细错误信息'}`;
+      }
+    } else {
+      // 非标准错误对象（可能是网络错误、CORS错误等）
+      console.error('非标准HTTP错误:', error);
+      if (error.message) {
+        errMsg = `网络错误: ${error.message}`;
+      } else if (typeof error === 'string') {
+        errMsg = error;
+      } else {
+        errMsg = `未知错误: ${JSON.stringify(error)}`;
       }
     }
+    
     console.error('处理后的错误信息:', errMsg);
     return throwError(() => errMsg);
   }

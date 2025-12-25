@@ -35,6 +35,15 @@
         &.active {
             color: #FFF;
         }
+
+        .icon {
+            width: 35px;
+            height: 35px;
+        }
+
+        .fa-mobile{
+            font-size: 28px;
+        }
     }
 }
 
@@ -59,7 +68,7 @@
 }
 
 .phone-login-box {
-    padding: 10px;
+    margin-top: 23px;
 
     .item {
         display: flex;
@@ -69,6 +78,10 @@
             width: 40px;
             line-height: 32px;
             margin-right: 10px;
+        }
+
+        i{
+            font-size: 20px;
         }
 
         input {

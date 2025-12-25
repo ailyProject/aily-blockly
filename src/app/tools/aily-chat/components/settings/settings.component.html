@@ -1,0 +1,84 @@
+<div class="editor-box">
+    <div class="test">以下为测试功能，普通用户暂不可用</div>
+    <div class="content sscroll" style="filter: blur(1px);">
+        <div class="item">
+            <div class="item-title">
+                <span>最大循环次数</span>
+                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('maxCount')"></i>
+            </div>
+            <div>
+                <input nz-input [(ngModel)]="maxCount" />
+            </div>
+        </div>
+        <div class="item items-section">
+            <div class="item-title">
+                <span>安全工作区</span>
+                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('workspace')"></i>
+            </div>
+            <div class="items-list">
+                <div class="items-header">
+                    <label nz-checkbox [(ngModel)]="allWorkspaceChecked" [nzIndeterminate]="workspaceIndeterminate"
+                        (ngModelChange)="onAllWorkspaceCheckedChange($event)">
+                        全选
+                    </label>
+                </div>
+                <div class="items-container">
+                    <div *ngFor="let option of workspaceOptions" class="item-wrapper">
+                        <label nz-checkbox [(ngModel)]="option.enabled" (ngModelChange)="onWorkspaceCheckedChange()"
+                            class="list-item">
+                            {{ option.displayName }}
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="item items-section">
+            <div class="item-title">
+                <span>可用工具</span>
+                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('tools')"></i>
+            </div>
+            <div class="items-list">
+                <div class="items-header">
+                    <label nz-checkbox [(ngModel)]="allChecked" [nzIndeterminate]="indeterminate"
+                        (ngModelChange)="onAllCheckedChange($event)">
+                        全选
+                    </label>
+                    <span class="items-count">{{ enabledToolsCount }} / {{ availableTools.length }} 已启用</span>
+                </div>
+                <div class="items-container sscroll">
+                    <div *ngFor="let tool of availableTools" class="item-wrapper">
+                        <label nz-checkbox [(ngModel)]="tool.enabled" (ngModelChange)="onToolCheckedChange()"
+                            class="list-item">
+                            {{ tool.displayName }}
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="item">
+            <div class="item-title">
+                <span>使用自有API KEY</span>
+                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('apiKey')"></i>
+                <span style="margin: -1px 0 0 10px;">
+                    <nz-switch [(ngModel)]="useCustomApiKey" [nzSize]="'small'"></nz-switch>
+                </span>
+            </div>
+            @if(useCustomApiKey){
+            <div>
+                <input nz-input [(ngModel)]="baseUrl" placeholder="base url" />
+                <input nz-input [(ngModel)]="apiKey" placeholder="api key" />
+            </div>
+            }
+        </div>
+    </div>
+
+    <div class="bottom">
+        <button class="sync-btn" nz-button (click)="onClose()">
+            返回
+        </button>
+        <button class="sync-btn" nz-button nzType="primary" (click)="onSave()">
+            保存
+        </button>
+    </div>
+</div>

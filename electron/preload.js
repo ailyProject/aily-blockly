@@ -15,6 +15,7 @@ window.electronAPI = {
   },
   path: {
     getUserHome: () => require("os").homedir(),
+    getAilyChildPath: () => process.env.AILY_CHILD_PATH,
     getAppDataPath: () => process.env.AILY_APPDATA_PATH,
     getAilyBuilderPath: () => process.env.AILY_BUILDER_PATH,
     getAilyBuilderBuildPath: () => process.env.AILY_BUILDER_BUILD_PATH,
@@ -71,6 +72,7 @@ window.electronAPI = {
     isWindows: process.platform === "win32",
     isMacOS: process.platform === "darwin",
     isLinux: process.platform === "linux",
+    lang: process.env.AILY_SYSTEM_LANG || 'zh-CN'
   },
   terminal: {
     init: (data) => ipcRenderer.invoke("terminal-create", data),
@@ -166,8 +168,17 @@ window.electronAPI = {
   },
   fs: {
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
+    readFileAsBase64: (path) => {
+      const buffer = require("fs").readFileSync(path);
+      return buffer.toString('base64');
+    },
     readDirSync: (path) => require("fs").readdirSync(path, { withFileTypes: true }),
+    readdirSync: (path) => require("fs").readdirSync(path),
     writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
+    writeBase64File: (path, base64Data) => {
+      const buffer = Buffer.from(base64Data, 'base64');
+      require("fs").writeFileSync(path, buffer);
+    },
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs-extra").copySync(src, dest),
     existsSync: (path) => require("fs").existsSync(path),
@@ -175,7 +186,10 @@ window.electronAPI = {
     isDirectory: (path) => require("fs").statSync(path).isDirectory(),
     unlinkSync: (path, cb) => require("fs").unlinkSync(path, cb),
     rmdirSync: (path) => require("fs").rmdirSync(path, { recursive: true, force: true }),
+    rmSync: (path, options) => require("fs").rmSync(path, options),
     renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
+    linkSync: (existingPath, newPath) => require("fs").linkSync(existingPath, newPath),
+    chmodSync: (path, mode) => require("fs").chmodSync(path, mode),
   },
   file: {
     /**
@@ -400,6 +414,17 @@ window.electronAPI = {
       });
     }
   },
+  // 示例列表协议 API
+  exampleList: {
+    onOpen: (callback) => {
+      const listener = (event, data) => callback(data);
+      ipcRenderer.on('open-example-list', listener);
+      // 返回解除监听函数
+      return () => {
+        ipcRenderer.removeListener('open-example-list', listener);
+      };
+    }
+  },
   tools: {
     findFileByName: (searchPath, fileName) => {
       return new Promise((resolve, reject) => {
@@ -414,6 +439,108 @@ window.electronAPI = {
         ipcRenderer
           .invoke("calculate-md5", text)
           .then((md5) => resolve(md5))
+          .catch((error) => reject(error));
+      });
+    },
+    // Glob 工具 - 直接使用 glob API，不需要 IPC
+    globTool: (params) => {
+      return new Promise((resolve, reject) => {
+        try {
+          const { pattern, path: searchPath, limit = 100 } = params;
+          const glob = require("glob");
+          
+          const options = {
+            absolute: true,
+            nodir: true,
+            ignore: [
+              '**/node_modules/**',
+              '**/.git/**',
+              '**/dist/**',
+              '**/build/**',
+              '**/.angular/**'
+            ]
+          };
+          
+          if (searchPath) {
+            options.cwd = searchPath;
+          }
+          
+          const startTime = Date.now();
+          const files = glob.sync(pattern, options);
+          const durationMs = Date.now() - startTime;
+          
+          const truncated = files.length > limit;
+          const limitedFiles = files.slice(0, limit);
+          
+          resolve({
+            is_error: false,
+            content: limitedFiles.join('\n'),
+            metadata: {
+              pattern,
+              path: searchPath,
+              numFiles: limitedFiles.length,
+              totalFiles: files.length,
+              durationMs,
+              truncated
+            }
+          });
+        } catch (error) {
+          reject({
+            is_error: true,
+            content: `Glob 搜索失败: ${error.message}`,
+            metadata: {
+              pattern: params.pattern,
+              path: params.path,
+              error: error.message
+            }
+          });
+        }
+      });
+    }
+  },
+  // Ripgrep 搜索 API
+  ripgrep: {
+    /**
+     * 检查 ripgrep 是否可用
+     */
+    isRipgrepAvailable: () => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-check-available")
+          .then((available) => resolve(available))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 使用 ripgrep 搜索文件内容
+     */
+    searchFiles: (params) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-search-files", params)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 列出所有内容文件
+     */
+    listAllContentFiles: (searchPath, limit) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-list-files", searchPath, limit)
+          .then((result) => resolve(result))
+          .catch((error) => reject(error));
+      });
+    },
+    /**
+     * 搜索文件内容并返回匹配的行
+     */
+    searchContent: (params) => {
+      return new Promise((resolve, reject) => {
+        ipcRenderer
+          .invoke("ripgrep-search-content", params)
+          .then((result) => resolve(result))
           .catch((error) => reject(error));
       });
     }
@@ -450,6 +577,24 @@ window.electronAPI = {
           .then((result) => resolve(result))
           .catch((error) => reject(error));
       });
+    }
+  },
+  base64: {
+    atob: (b64String) => Buffer.from(b64String, 'base64').toString('binary'),
+  },
+  // 日志 API - 将渲染进程的日志发送到主进程记录
+  log: {
+    error: (message, error) => {
+      ipcRenderer.invoke('log-error', message, error ? {
+        message: error.message || String(error),
+        stack: error.stack
+      } : null);
+    },
+    warn: (message) => {
+      ipcRenderer.invoke('log-warn', message);
+    },
+    info: (message) => {
+      ipcRenderer.invoke('log-info', message);
     }
   }
 };

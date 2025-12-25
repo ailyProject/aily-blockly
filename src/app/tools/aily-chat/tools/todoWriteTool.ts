@@ -16,10 +16,229 @@ import {
   optimizeTodoStorage,
   validateTodos
 } from "../utils/todoStorage";
+import { notifyTodoUpdate } from "../services/todoUpdate.service";
 
-export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { todos?: any[] }> {
+// =============================================================================
+// TodoManager - IDE端运行的todo管理器
+// =============================================================================
+
+interface TodoManagerConfig {
+  reminderThreshold: number; // 提醒阈值，默认为5
+  maxThreshold: number; // 最大阈值，默认为10
+  enabled: boolean; // 是否启用
+}
+
+class TodoManager {
+  private static instance: TodoManager;
+  private callCount: number = 0;
+  private isActive: boolean = false;
+  private config: TodoManagerConfig = {
+    reminderThreshold: 5,
+    maxThreshold: 10,
+    enabled: true
+  };
+  private lastReminderCall: number = 0;
+
+  static getInstance(): TodoManager {
+    if (!TodoManager.instance) {
+      TodoManager.instance = new TodoManager();
+    }
+    return TodoManager.instance;
+  }
+
+  private constructor() {
+    // console.log('🎯 TodoManager 初始化');
+  }
+
+  /**
+   * 配置管理器
+   */
+  configure(config: Partial<TodoManagerConfig>): void {
+    this.config = { ...this.config, ...config };
+    // console.log(`⚙️ TodoManager 配置更新:`, this.config);
+  }
+
+  /**
+   * 启动监测 - 当 todoWrite 工具被使用时调用
+   */
+  startMonitoring(): void {
+    this.isActive = true;
+    this.callCount = 0;
+    this.lastReminderCall = 0;
+    // console.log('🔍 TodoManager 开始监测工具调用');
+  }
+
+  /**
+   * 停止监测
+   */
+  stopMonitoring(): void {
+    this.isActive = false;
+    this.callCount = 0;
+    // console.log('⏹️ TodoManager 停止监测');
+  }
+
+  /**
+   * 重置调用计数
+   */
+  resetCallCount(): void {
+    this.callCount = 0;
+    this.lastReminderCall = 0;
+    // console.log('🔄 TodoManager 调用计数已重置');
+  }
+
+  /**
+   * 记录工具调用 - 在每个工具调用时调用（除了todoWrite）
+   */
+  recordToolCall(toolName: string): void {
+    if (!this.config.enabled || !this.isActive) {
+      return;
+    }
+
+    if (toolName === 'todoWrite') {
+      // 如果是todoWrite工具，重置计数
+      this.callCount = 0;
+      this.lastReminderCall = 0;
+      // console.log('🔄 TodoManager 计数重置（todoWrite调用）');
+      return;
+    }
+
+    this.callCount++;
+    // console.log(`📊 TodoManager 记录调用: ${toolName}, 当前计数: ${this.callCount}`);
+  }
+
+  /**
+   * 检查是否需要提醒，并返回提醒信息
+   */
+  checkAndGetReminder(sessionId: string = 'default'): string | null {
+    if (!this.config.enabled || !this.isActive) {
+      return null;
+    }
+
+    // 检查是否达到提醒阈值
+    const shouldRemind = this.callCount >= this.config.reminderThreshold && 
+                        this.callCount > this.lastReminderCall;
+
+    if (!shouldRemind) {
+      return null;
+    }
+
+    this.lastReminderCall = this.callCount;
+
+    // 获取todo信息
+    const todos = getTodos(sessionId);
+    const stats = getTodoStatistics(sessionId);
+
+    if (stats.total === 0) {
+      return null; // 没有todo则不提醒
+    }
+
+    // 根据计数程度决定提醒强度
+    const isUrgent = this.callCount >= this.config.maxThreshold;
+    const urgencyPrefix = isUrgent ? '🚨 **紧急提醒**' : '💡 **友好提醒**';
+
+    // 生成提醒信息
+    let reminder = `\n\n${urgencyPrefix}: 您有 ${stats.byStatus.pending} 个待处理任务`;
+    
+    if (stats.byStatus.in_progress > 0) {
+      reminder += `, ${stats.byStatus.in_progress} 个进行中任务`;
+    }
+    
+    reminder += `。`;
+
+    // 如果是紧急提醒，显示具体任务
+    if (isUrgent && stats.byStatus.pending > 0) {
+      const pendingTodos = getTodosByStatus('pending', sessionId).slice(0, 3);
+      reminder += `\n\n🔥 **待处理任务**:`;
+      pendingTodos.forEach((todo, index) => {
+        const priorityIcon = todo.priority === 'high' ? '🔴' : 
+                           todo.priority === 'medium' ? '🟡' : '🟢';
+        reminder += `\n${index + 1}. ${priorityIcon} ${todo.content}`;
+      });
+      
+      if (stats.byStatus.pending > 3) {
+        reminder += `\n... 还有 ${stats.byStatus.pending - 3} 个任务`;
+      }
+    }
+
+    reminder += `\n\n💬 使用 manage_todo_list 工具来查看或更新任务状态`;
+
+    // console.log(`📢 TodoManager 生成提醒 (计数: ${this.callCount})`);
+    return reminder;
+  }
+
+  /**
+   * 获取状态信息
+   */
+  getStatus(): {
+    isActive: boolean;
+    callCount: number;
+    config: TodoManagerConfig;
+  } {
+    return {
+      isActive: this.isActive,
+      callCount: this.callCount,
+      config: { ...this.config }
+    };
+  }
+}
+
+// 导出管理器实例
+export const todoManager = TodoManager.getInstance();
+
+/**
+ * 工具调用拦截器 - 在其他工具的返回结果中注入todo提醒
+ * 这个函数应该在每个工具函数的最后被调用
+ */
+export function injectTodoReminder(
+  toolResult: ToolUseResult, 
+  toolName: string, 
+  sessionId: string = 'default'
+): ToolUseResult {
+  // 记录工具调用
+  todoManager.recordToolCall(toolName);
+  
+  // 检查是否需要提醒
+  const reminder = todoManager.checkAndGetReminder(sessionId);
+  
+  if (!reminder) {
+    return toolResult; // 不需要提醒，返回原结果
+  }
+  
+  // 需要提醒，在结果中添加提醒信息
+  const enhancedResult = { ...toolResult };
+  
+  if (enhancedResult.is_error) {
+    // 如果是错误结果，在错误信息后添加提醒
+    enhancedResult.content = `${enhancedResult.content}${reminder}`;
+  } else {
+    // 如果是成功结果，在成功信息后添加提醒
+    enhancedResult.content = `${enhancedResult.content}${reminder}`;
+  }
+  
+  // console.log(`📢 为工具 ${toolName} 注入todo提醒`);
+  return enhancedResult;
+}
+
+/**
+ * 配置TodoManager - 供IDE调用
+ */
+export function configureTodoManager(config: Partial<TodoManagerConfig>): void {
+  todoManager.configure(config);
+}
+
+/**
+ * 获取TodoManager状态 - 供IDE调用
+ */
+export function getTodoManagerStatus() {
+  return todoManager.getStatus();
+}
+
+export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult> {
   let toolResult = null;
   let is_error = false;
+
+  // 🎯 启动TodoManager监测
+  todoManager.startMonitoring();
 
   try {
     const { 
@@ -35,53 +254,19 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
       query 
     } = toolArgs;
 
-    // 生成增强的显示格式
+    // 生成简洁的显示格式，专注于核心信息
     const formatTodoList = (todos: TodoItem[]): string => {
       if (todos.length === 0) {
-        return '📝 **TODO列表为空**\n\n💡 使用 `{"operation": "add", "content": "任务内容", "priority": "high", "tags": ["标签"]}` 添加新任务';
+        return 'TODO列表为空';
       }
 
-      let result = '📝 **TODO列表**\n\n';
-      
-      todos.forEach((todo, index) => {
-        const statusIcon = todo.status === 'completed' ? '✅' : 
-                          todo.status === 'in_progress' ? '🔄' : '⏸️';
-        const priorityIcon = todo.priority === 'high' ? '🔴' : 
-                            todo.priority === 'medium' ? '🟡' : '🟢';
-        
-        const isCompleted = todo.status === 'completed';
-        const todoText = isCompleted ? `~~${todo.content}~~` : `**${todo.content}**`;
-        
-        // 显示标签
-        const tagsDisplay = Array.isArray(todo.tags) && todo.tags.length > 0 
-          ? ` 🏷️[${todo.tags.join(', ')}]` 
-          : '';
-          
-        // 显示预估时间
-        const hoursDisplay = todo.estimatedHours 
-          ? ` ⏱️${todo.estimatedHours}h` 
-          : '';
-          
-        // 显示状态变化
-        const statusChange = todo.previousStatus && todo.previousStatus !== todo.status
-          ? ` (${todo.previousStatus} → ${todo.status})`
-          : '';
-        
-        result += `${index + 1}. ${statusIcon} ${priorityIcon} ${todoText}${tagsDisplay}${hoursDisplay} \`(${todo.id})\`${statusChange}\n`;
+      let result = 'TODO列表:\n\n| ID | priority | content | status |\n| --- | --- | --- | --- |\n';
+
+      todos.forEach((todo) => {
+        result += `| ${todo.id} | ${todo.priority.toUpperCase()} | ${todo.content} | ${todo.status.toUpperCase()} |\n`;
       });
-
-      const stats = getTodoStatistics(sessionId);
-      result += `\n📊 **统计**: 总计${stats.total}项 | ⏸️待处理${stats.byStatus.pending}项 | 🔄进行中${stats.byStatus.in_progress}项 | ✅已完成${stats.byStatus.completed}项`;
       
-      if (stats.estimatedTotalHours > 0) {
-        result += ` | ⏱️预估${stats.estimatedTotalHours}小时`;
-      }
-      
-      if (stats.cacheEfficiency > 0) {
-        result += ` | 📈缓存效率${stats.cacheEfficiency}%`;
-      }
-      
-      return result;
+      return result.trim();
     };
 
     const generateId = (): string => {
@@ -91,14 +276,28 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
     switch (operation) {
       case 'update':
         // 批量更新TODO列表
-        if (!todos || !Array.isArray(todos)) {
-          toolResult = '❌ **错误**: 缺少todos数组\n\n💡 **正确用法**: `{"operation": "update", "todos": [...]}` ';
+        let todosArray = todos;
+        
+        // 如果 todos 是字符串，尝试解析为 JSON
+        if (typeof todos === 'string') {
+          try {
+            todosArray = JSON.parse(todos);
+            // console.log('📝 解析 todos 字符串为数组:', todosArray);
+          } catch (parseError) {
+            toolResult = `❌ **错误**: todos 参数不是有效的 JSON 格式\n\n💡 **错误详情**: ${parseError instanceof Error ? parseError.message : '解析失败'}\n\n💡 **正确用法**: \`{"operation": "update", "todos": [...]}\``;
+            is_error = true;
+            break;
+          }
+        }
+        
+        if (!todosArray || !Array.isArray(todosArray)) {
+          toolResult = `❌ **错误**: todos 必须是一个数组\n\n💡 **当前类型**: ${typeof todosArray}\n\n💡 **正确用法**: \`{"operation": "update", "todos": [...]}\``;
           is_error = true;
           break;
         }
 
         // 验证todos格式
-        const validatedTodos: TodoItem[] = todos.map((todo: any) => ({
+        const validatedTodos: TodoItem[] = todosArray.map((todo: any) => ({
           id: todo.id || generateId(),
           content: todo.content?.trim() || '',
           status: ['pending', 'in_progress', 'completed'].includes(todo.status) ? todo.status : 'pending',
@@ -118,6 +317,7 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
         }
 
         setTodos(validatedTodos, sessionId);
+        notifyTodoUpdate(sessionId); // 触发UI更新通知
         toolResult = `✅ **TODO列表更新成功**\n\n${formatTodoList(validatedTodos)}`;
         break;
 
@@ -149,6 +349,7 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
           }
 
           const updatedTodos = addTodo(newTodo, sessionId);
+          notifyTodoUpdate(sessionId); // 触发UI更新通知
           
           const statusIcon = newTodo.status === 'completed' ? '✅' : 
                             newTodo.status === 'in_progress' ? '🔄' : '⏸️';
@@ -169,8 +370,22 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
         break;
 
       case 'batch_add':
-        if (!todos || !Array.isArray(todos) || todos.length === 0) {
-          toolResult = '❌ **错误**: 缺少任务数组\n\n💡 **正确用法**: `{"operation": "batch_add", "todos": [{"content": "任务1", "priority": "high"}, {"content": "任务2"}]}` ';
+        let batchTodosArray = todos;
+        
+        // 如果 todos 是字符串，尝试解析为 JSON
+        if (typeof todos === 'string') {
+          try {
+            batchTodosArray = JSON.parse(todos);
+            // console.log('📝 解析 batch_add todos 字符串为数组:', batchTodosArray);
+          } catch (parseError) {
+            toolResult = `❌ **错误**: todos 参数不是有效的 JSON 格式\n\n💡 **错误详情**: ${parseError instanceof Error ? parseError.message : '解析失败'}\n\n💡 **正确用法**: \`{"operation": "batch_add", "todos": [...]}\``;
+            is_error = true;
+            break;
+          }
+        }
+        
+        if (!batchTodosArray || !Array.isArray(batchTodosArray) || batchTodosArray.length === 0) {
+          toolResult = `❌ **错误**: todos 必须是一个非空数组\n\n💡 **当前类型**: ${typeof batchTodosArray}\n\n💡 **正确用法**: \`{"operation": "batch_add", "todos": [{"content": "任务1", "priority": "high"}, {"content": "任务2"}]}\``;
           is_error = true;
           break;
         }
@@ -179,7 +394,7 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
           const currentTodos = getTodos(sessionId);
           const inProgressCount = currentTodos.filter(t => t.status === 'in_progress').length;
           
-          const newTodos = todos.map((todo: any) => ({
+          const newTodos = batchTodosArray.map((todo: any) => ({
             id: todo.id || generateId(),
             content: todo.content?.trim() || '',
             status: ['pending', 'in_progress', 'completed'].includes(todo.status) ? todo.status : 'pending',
@@ -215,6 +430,9 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
           }
 
           const updatedTodos = getTodos(sessionId);
+          if (addedCount > 0) {
+            notifyTodoUpdate(sessionId); // 触发UI更新通知
+          }
           
           let resultMessage = `✅ **批量添加完成**: 成功添加${addedCount}个任务`;
           if (failedTasks.length > 0) {
@@ -290,6 +508,7 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
           }
 
           const updatedTodos = updateTodo(id, { status: newStatus }, sessionId);
+          notifyTodoUpdate(sessionId); // 触发UI更新通知
           
           const statusText = newStatus === 'completed' ? '完成' : 
                             newStatus === 'in_progress' ? '开始进行' : '重置为待处理';
@@ -316,6 +535,7 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
           }
 
           const updatedTodos = deleteTodo(id, sessionId);
+          notifyTodoUpdate(sessionId); // 触发UI更新通知
           toolResult = `✅ **任务删除成功**: ${todo.content}\n\n${formatTodoList(updatedTodos)}`;
         } catch (error) {
           toolResult = `❌ **删除失败**: ${error instanceof Error ? error.message : '未知错误'}`;
@@ -326,12 +546,16 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
       case 'clear':
         const count = getTodos(sessionId).length;
         clearTodos(sessionId);
+        if (count > 0) {
+          notifyTodoUpdate(sessionId); // 触发UI更新通知
+        }
         toolResult = `✅ **清空完成**: 删除了${count}个任务`;
         break;
 
       case 'optimize':
         optimizeTodoStorage(sessionId);
         const optimizedTodos = getTodos(sessionId);
+        notifyTodoUpdate(sessionId); // 触发UI更新通知
         toolResult = `✅ **存储优化完成**\n\n${formatTodoList(optimizedTodos)}`;
         break;
 
@@ -370,7 +594,6 @@ export async function todoWriteTool(toolArgs: any): Promise<ToolUseResult & { to
 
   return {
     content: toolResult,
-    is_error,
-    todos: resultTodos
+    is_error
   };
 }

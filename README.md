@@ -1,4 +1,4 @@
-# AilyBlockly
+# aily blockly  
 
 [中文](README_ZH.md) | English
 
@@ -6,7 +6,7 @@
 Aily Project is a hardware development integrated environment that plans to integrate numerous AI capabilities to help hardware developers develop more smoothly.  
 Aily Blockly is a blockly IDE under the aily Project. In the early stage, it provides AI-assisted programming capabilities for non-professional users. The long-term goal is to break the boundary between professional development and non-professional development, and ultimately achieve natural language programming.  
 
-<img src="./img/sf.webp" width=1000 />
+<img src="./img/home.webp" />
 
 > We aim to design and develop this project as industrial-grade software, but the project is currently in the alpha stage and is not recommended for mass production device firmware development. However, the current version is perfectly suitable for prototype verification and educational teaching.  
 
@@ -20,19 +20,19 @@ Although we have prepared many libraries (covering almost all commonly used modu
 3. **Powerful and Compact Serial Debug Tool**
 Attempts to create an all-purpose serial tool. Welcome everyone to test, provide feedback, and propose new ideas.
 
-4. **AI Project Generation (Small-scale testing)**
+4. **AI Project Generation**
 According to user requirements, automatically analyzes projects, recommends development boards, modules, and libraries, generates project architecture diagrams and pin connection diagrams, and creates projects for users.
 
-5. **AI Code Generation (Small-scale testing)**
+5. **AI Code Generation**
 According to user requirements, automatically writes programs.
 
-6. **AI Library Conversion (Small-scale testing)**
+6. **AI Library Conversion**
 Native C/C++ libraries can be easily converted to libraries used by this software. Based on large model configuration generation, during development, if you want to use an Arduino library but don't have the corresponding blockly library, just provide the Arduino library to AI, and AI will automatically analyze and generate the corresponding blockly library. With this feature, this software can become the blockly platform with the most libraries.
 
 7. **AI Development Board Configuration Generation (Under improvement)**
 Based on large model configuration generation, when adding development boards, you no longer need to write new configurations purely by hand. Just provide the development board documentation (md format), and AI will automatically analyze and help you generate development board configuration files. (Only supports development boards with esp32, avr, renesas, rp2040, stm32 as the core, because compilers and core SDKs still need to be prepared by us in advance to the repository)
 
-8. **Lightning Compilation Tool (Coming soon)**
+8. **Lightning Compilation Tool** (Phase 1 online, Phase 2 coming soon!)
 Edge-cloud collaboration, lightning compilation. Reduces the original 1-hour compilation work to 1 minute!
 
 ## Unofficial Version Notes  
@@ -40,7 +40,6 @@ This alpha version for testing only guarantees the minimum usability, and many p
 The current version is not recommended for actual work use, as many adjustments we make later may cause incompatibility between versions.
 
 ## Planned Features
-· AI enhancement (some features are already online)    
 · Hardware simulation  
 · microPython support (mode added, but no library support yet)  
 
@@ -97,6 +96,10 @@ Sun Junjie (Community Partner)
 [node]() This project uses npm and node for package management and executing necessary scripts  
 [7z]() This project uses 7z to reduce the size of some packages (such as the huge ESP32 compiler)  
 Other content can be found in [package.json](./package.json)  
+
+## The AI features of this project reference the following projects
+[Kode](https://github.com/shareAI-lab/Kode-cli)  
+[copilot](https://github.com/microsoft/vscode-copilot-chat)  
 
 ## Additional Rights Statement  
 For derivatives or modifications based on this project, without the consent of the project leader (Naihe col), the following activities are prohibited:
