@@ -9,7 +9,7 @@ import { AilyChatComponent } from '../tools/aily-chat/aily-chat.component';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService } from '../services/ui.service';
-import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
+import { SerialMonitorIframeComponent } from '../tools/serial-monitor-iframe/serial-monitor-iframe.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '../services/project.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
@@ -39,7 +39,7 @@ import { ModelStoreComponent } from '../tools/model-store/model-store.component'
     AilyChatComponent,
     TerminalComponent,
     LogComponent,
-    SerialMonitorComponent,
+    SerialMonitorIframeComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
     AppStoreComponent,

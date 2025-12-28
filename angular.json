@@ -126,6 +126,82 @@
           }
         }
       }
+    },
+    "serial-monitor-app": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": {
+          "style": "scss",
+          "skipTests": true
+        }
+      },
+      "root": "projects/serial-monitor-app",
+      "sourceRoot": "projects/serial-monitor-app/src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:application",
+          "options": {
+            "outputPath": "dist/serial-monitor-app",
+            "index": "projects/serial-monitor-app/src/index.html",
+            "browser": "projects/serial-monitor-app/src/main.ts",
+            "polyfills": ["zone.js"],
+            "tsConfig": "projects/serial-monitor-app/tsconfig.app.json",
+            "inlineStyleLanguage": "scss",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public/fonts",
+                "output": "assets/fonts"
+              }
+            ],
+            "styles": [
+              "projects/serial-monitor-app/src/styles.scss",
+              "node_modules/ng-zorro-antd/ng-zorro-antd.dark.css",
+              "node_modules/ng-zorro-antd/resizable/style/index.less"
+            ],
+            "scripts": []
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "500kB",
+                  "maximumError": "2MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "1MB"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular-devkit/build-angular:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "serial-monitor-app:build:production"
+            },
+            "development": {
+              "buildTarget": "serial-monitor-app:build:development"
+            }
+          },
+          "defaultConfiguration": "development",
+          "options": {
+            "port": 4201
+          }
+        }
+      }
     }
   },
   "cli": {

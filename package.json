@@ -113,8 +113,10 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
+    "start:serial-monitor": "ng serve --project serial-monitor-app --port 4201",
     "watch": "ng build --watch --configuration development",
-    "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && electron ./electron/main.js --serve\"",
+    "start:aily-blockly": "concurrently \"npm start\" \"wait-on tcp:4200 && electron ./electron/main.js --serve\"",
+    "electron": "concurrently \"npm start\" \"npm run start:serial-monitor\" \"wait-on tcp:4200 && electron ./electron/main.js --serve\"",
     "build": "ng build --base-href ./ && electron-builder build"
   },
   "private": true,
@@ -172,6 +174,7 @@
     "tslib": "^2.3.0",
     "ua-parser-js": "^2.0.5",
     "uuid": "^11.1.0",
+    "penpal": "^7.0.4",
     "zone.js": "~0.15.0"
   },
   "devDependencies": {

@@ -1,0 +1,113 @@
+.menu-container {
+  position: relative;
+}
+
+.menu-box {
+  background: #2b2d30;
+  border-radius: 5px;
+  position: fixed;
+  z-index: 999;
+  flex-direction: column;
+  padding: 3px 0;
+
+  .menu-item {
+    padding: 0 10px;
+    height: 30px;
+    min-height: 30px;
+    flex-shrink: 0;
+    justify-content: flex-start;
+    margin: 0 3px;
+    border-radius: 5px;
+    cursor: pointer;
+    color: #ddd;
+    position: relative;
+
+    .name {
+      white-space: nowrap;
+    }
+
+    .icon {
+      width: 20px;
+      margin-right: 10px;
+      flex-shrink: 0;
+    }
+
+    .text {
+      margin-left: 10px;
+      white-space: nowrap;
+      color: #999;
+      flex-shrink: 1;
+    }
+
+    &:hover {
+      background: #405e8d;
+    }
+
+    &.active {
+      background: #405e8d;
+    }
+
+    &.disabled {
+      background: none;
+      opacity: 0.6;
+    }
+
+    &.highlight {
+      .icon {
+        color: #f7ce42;
+      }
+    }
+
+    .arrow {
+      position: absolute;
+      right: 10px;
+    }
+
+    .check {
+      position: absolute;
+      right: 5px;
+      color: #f7ce42;
+    }
+  }
+
+  .sep {
+    height: 1px;
+    background: #444;
+    margin: 2px 0;
+  }
+}
+
+.submenu-box {
+  min-width: 100px;
+  box-shadow: 0 0 5px #111;
+  z-index: 1000;
+
+  &.show {
+    display: flex;
+  }
+
+  .name {
+    padding-right: 20px;
+  }
+
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #2b2d30;
+    border-radius: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+
+    &:hover {
+      background: #666;
+    }
+  }
+
+  scrollbar-width: thin;
+  scrollbar-color: #555 #2b2d30;
+}

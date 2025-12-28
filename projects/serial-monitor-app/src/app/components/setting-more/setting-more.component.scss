@@ -1,0 +1,77 @@
+.settings {
+    background: #292929;
+    margin: -17px 10px 10px 10px;
+    padding-top: 7px;
+    border-radius: 5px;
+
+    .line {
+        display: flex;
+        align-items: center;
+        position: relative;
+        flex-wrap: wrap;
+    }
+}
+
+.item {
+    display: flex;
+    align-items: center;
+    color: #eee;
+    position: relative;
+    height: 40px;
+    font-size: 12px;
+
+    .title {
+        padding: 0 10px;
+        flex-shrink: 0;
+    }
+
+    .item-inner {
+        height: 24px;
+        width: 90px;
+        background-color: #333;
+        border-radius: 2px;
+        position: relative;
+        display: flex;
+        justify-content: flex-start;
+        padding-left: 10px;
+        color: #eee;
+        font-size: 14px;
+        cursor: pointer;
+
+        &.selected {
+            .arrow {
+                transform: rotate(90deg);
+            }
+        }
+
+        .btn {
+            width: 20px;
+            height: 24px;
+            position: absolute;
+            right: 0;
+            color: rgb(0, 96, 160);
+
+            &:nth-child(2) {
+                right: 20px;
+            }
+
+            &:hover {
+                color: rgb(0, 140, 233);
+            }
+        }
+
+        .value {
+            pointer-events: none;
+        }
+
+        .arrow-box {
+            pointer-events: none;
+            position: absolute;
+            right: 8px;
+
+            .arrow {
+                transition: transform 0.3s;
+            }
+        }
+    }
+}

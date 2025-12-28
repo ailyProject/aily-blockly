@@ -1,0 +1,44 @@
+/* 全局样式 */
+@import 'ng-zorro-antd/ng-zorro-antd.min.css';
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  background: transparent;
+}
+
+/* 滚动条样式 */
+.sscroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.sscroll::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.4);
+  border-radius: 3px;
+}
+
+.sscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* vs code 字体 */
+.vsfont {
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* 居中 */
+.ccenter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

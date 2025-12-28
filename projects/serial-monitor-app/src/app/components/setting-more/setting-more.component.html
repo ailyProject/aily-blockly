@@ -1,0 +1,49 @@
+<div class="settings">
+    <div class="line">
+        <div class="item">
+            <div class="title">数据位</div>
+            <div class="item-inner ccenter" [ngClass]="{'selected':menuList == dataBitsList}"
+                (click)="openMenu($event, dataBitsList)">
+                <div class="value">{{selectedDataBits?.name}}</div>
+                <div class="arrow-box">
+                    <i class="fa-light fa-angle-right arrow"></i>
+                </div>
+            </div>
+        </div>
+        <div class="item">
+            <div class="title">停止位</div>
+            <div class="item-inner ccenter" [ngClass]="{'selected':menuList == stopBitsList}"
+                (click)="openMenu($event, stopBitsList)">
+                <div class="value">{{selectedStopBits?.name}}</div>
+                <div class="arrow-box">
+                    <i class="fa-light fa-angle-right arrow"></i>
+                </div>
+            </div>
+        </div>
+        <div class="item">
+            <div class="title">校验位</div>
+            <div class="item-inner ccenter" [ngClass]="{'selected':menuList == parityList}"
+                (click)="openMenu($event, parityList)">
+                <div class="value">{{selectedParity?.name}}</div>
+                <div class="arrow-box">
+                    <i class="fa-light fa-angle-right arrow"></i>
+                </div>
+            </div>
+        </div>
+        <div class="item">
+            <div class="title">流控制</div>
+            <div class="item-inner ccenter" [ngClass]="{'selected':menuList == flowControlList}"
+                (click)="openMenu($event, flowControlList)">
+                <div class="value">{{selectedFlowControl?.name}}</div>
+                <div class="arrow-box">
+                    <i class="fa-light fa-angle-right arrow"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (showMenu && menuList) {
+<app-menu [position]="position" [width]="90" [menuList]="menuList" (closeEvent)="closeMenu()"
+    (itemClickEvent)="select($event)"></app-menu>
+}

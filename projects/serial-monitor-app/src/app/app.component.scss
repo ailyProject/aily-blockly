@@ -1,0 +1,264 @@
+.serial-monitor-app {
+  position: relative;
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  background: #1e1e1e;
+  color: #eee;
+}
+
+.main-box {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.settings {
+  background: #292929;
+  margin: 10px;
+  border-radius: 5px;
+
+  .line {
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+
+  .item {
+    display: flex;
+    align-items: center;
+    color: #eee;
+    position: relative;
+    height: 40px;
+    font-size: 12px;
+
+    .title {
+      min-width: 56px;
+      padding: 0 10px;
+      flex-shrink: 0;
+    }
+
+    .item-inner {
+      height: 24px;
+      width: 90px;
+      background-color: #333;
+      border-radius: 2px;
+      position: relative;
+      display: flex;
+      justify-content: flex-start;
+      padding-left: 10px;
+      padding-right: 20px;
+      color: #eee;
+      font-size: 14px;
+      cursor: pointer;
+
+      .btn {
+        width: 20px;
+        height: 24px;
+        position: absolute;
+        right: 0;
+        color: rgb(0, 96, 160);
+
+        &:nth-child(2) {
+          right: 20px;
+        }
+
+        &:hover {
+          color: rgb(0, 140, 233);
+        }
+      }
+
+      .value {
+        pointer-events: none;
+        width: 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .arrow-box {
+        pointer-events: none;
+        position: absolute;
+        right: 8px;
+
+        .arrow {
+          transition: transform 0.3s;
+
+          &.down {
+            transform: rotate(90deg);
+          }
+        }
+      }
+    }
+  }
+
+  .switch {
+    margin-left: 10px;
+  }
+
+  .setting-btn {
+    position: absolute;
+    right: 0;
+    font-size: 18px;
+    width: 38px;
+    height: 38px;
+    padding-top: 2px;
+    cursor: pointer;
+
+    &:hover {
+      color: #fff;
+    }
+  }
+}
+
+.monitor {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+
+  .r-box {
+    height: calc(100% - 10px);
+    background: #292929;
+    border-radius: 5px;
+    margin: 0 10px;
+    padding: 5px;
+    position: relative;
+
+    .data-list {
+      height: calc(100% - 28px);
+      overflow-y: auto;
+      position: relative;
+    }
+  }
+}
+
+.btns {
+  width: 100%;
+  display: flex;
+  height: 28px;
+  position: relative;
+
+  .right {
+    position: absolute;
+    right: 0px;
+  }
+
+  .right2 {
+    position: absolute;
+    right: 42px;
+  }
+
+  .right3 {
+    position: absolute;
+    right: 74px;
+  }
+
+  button {
+    height: 28px;
+    line-height: 16px;
+    border-radius: 5px;
+  }
+
+  .btn {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+    color: #eee;
+    padding-top: 1px;
+    border-radius: 5px;
+    cursor: pointer;
+
+    &:hover {
+      color: #fff;
+      background: #3f3f3f;
+    }
+
+    &.actived {
+      color: #4db2ff;
+    }
+
+    i.actived {
+      color: #4db2ff;
+    }
+  }
+}
+
+.sender {
+  position: relative;
+  flex-shrink: 0;
+
+  .s-box {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+
+    .input-box {
+      display: flex;
+      flex-direction: column;
+      height: calc(100% - 70px);
+      margin: 10px;
+      padding: 5px;
+      border-radius: 5px;
+      position: relative;
+      background: #292929;
+
+      textarea {
+        font-size: 14px;
+        flex-grow: 1;
+        border: none;
+        resize: none;
+        outline: none;
+        padding: 7px 0 0 5px;
+        background: transparent;
+        color: #eee;
+      }
+    }
+  }
+}
+
+.hex {
+  .fa-rectangle {
+    font-size: 24px;
+  }
+
+  > div {
+    position: absolute;
+    font-size: 10px;
+  }
+}
+
+nz-resize-handle {
+  .line {
+    margin-top: 5px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+}
+
+// 居中
+.ccenter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// 滚动条样式
+.sscroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.sscroll::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.4);
+  border-radius: 3px;
+}
+
+.sscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+// vs code 字体
+.vsfont {
+  font-family: 'Consolas', 'Courier New', monospace;
+}

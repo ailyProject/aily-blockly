@@ -1,0 +1,35 @@
+{
+  "name": "serial-monitor-app",
+  "version": "1.0.0",
+  "description": "Serial Monitor Angular Application for iframe embedding",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve --project serial-monitor-app --port 4201",
+    "build": "ng build --project serial-monitor-app",
+    "build:prod": "ng build --project serial-monitor-app --configuration production"
+  },
+  "dependencies": {
+    "@angular/animations": "^19.0.0",
+    "@angular/common": "^19.0.0",
+    "@angular/compiler": "^19.0.0",
+    "@angular/core": "^19.0.0",
+    "@angular/forms": "^19.0.0",
+    "@angular/platform-browser": "^19.0.0",
+    "@angular/platform-browser-dynamic": "^19.0.0",
+    "@angular/router": "^19.0.0",
+    "buffer": "^6.0.3",
+    "ng-zorro-antd": "^19.0.0",
+    "ngx-ui-scroll": "^2.4.0",
+    "penpal": "^7.0.4",
+    "rxjs": "~7.8.0",
+    "simplebar-angular": "^3.2.6",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^19.0.0",
+    "@angular/cli": "^19.0.0",
+    "@angular/compiler-cli": "^19.0.0",
+    "typescript": "~5.6.2"
+  }
+}
