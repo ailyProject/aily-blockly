@@ -105,7 +105,15 @@ export class SerialMonitorBridgeService {
       console.log('[SerialMonitorBridge] Connection established');
     } catch (error) {
       console.error('[SerialMonitorBridge] Failed to connect:', error);
+      throw error; // 向上抛出错误以便组件处理
     }
+  }
+
+  /**
+   * 检查连接是否就绪
+   */
+  isConnectionReady(): boolean {
+    return this.connectionReady.value;
   }
 
   /**

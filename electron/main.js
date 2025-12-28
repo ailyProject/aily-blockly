@@ -864,7 +864,19 @@ function createWindow() {
   // 开发环境下的热重载处理
   if (serve) {
     // 防止 DevTools 断开连接
-    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // 只处理主 frame 的加载失败，忽略 iframe 的加载失败
+      if (!isMainFrame) {
+        console.log(`[iframe] 子应用加载失败: ${validatedURL}, 错误: ${errorDescription}`);
+        // 通知渲染进程 iframe 加载失败
+        mainWindow.webContents.send('iframe-load-error', {
+          url: validatedURL,
+          errorCode: errorCode,
+          errorDescription: errorDescription
+        });
+        return; // 不刷新主窗口，让 Angular 组件处理 iframe 错误
+      }
+      
       if (errorCode === -102) {
         // ERR_CONNECTION_REFUSED - 开发服务器可能正在重启
         console.log('开发服务器连接失败,尝试重新加载...');
