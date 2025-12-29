@@ -9,7 +9,9 @@ import { AilyChatComponent } from '../tools/aily-chat/aily-chat.component';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService } from '../services/ui.service';
-import { SerialMonitorIframeComponent } from '../tools/serial-monitor-iframe/serial-monitor-iframe.component';
+import { SubappContainerComponent, SUBAPP_CONFIGS, SubappBridgeService } from '../components/subapp-container';
+import { SerialService } from '../services/serial.service';
+import { ElectronService } from '../services/electron.service';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '../services/project.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
@@ -26,6 +28,7 @@ import { FloatSiderComponent } from '../components/float-sider/float-sider.compo
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
 import { ModelStoreComponent } from '../tools/model-store/model-store.component';
+import { TranslateService } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-main-window',
@@ -39,7 +42,7 @@ import { ModelStoreComponent } from '../tools/model-store/model-store.component'
     AilyChatComponent,
     TerminalComponent,
     LogComponent,
-    SerialMonitorIframeComponent,
+    SubappContainerComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
     AppStoreComponent,
@@ -73,6 +76,9 @@ export class MainWindowComponent {
     return this.uiService.openToolList;
   }
 
+  // 子应用配置
+  subappConfigs = SUBAPP_CONFIGS;
+
   options = {
     autoHide: true,
     clickOnTrack: true,
@@ -88,14 +94,36 @@ export class MainWindowComponent {
     private npmService: NpmService,
     private router: Router,
     private configService: ConfigService,
-    private modal: NzModalService
-  ) { }
+    private modal: NzModalService,
+    public subappBridge: SubappBridgeService,
+    private serialService: SerialService,
+    private electronService: ElectronService,
+    private translate: TranslateService
+  ) {
+    // 初始化通用 Bridge 服务提供者
+    this.subappBridge.setProvider({
+      serialService: this.serialService,
+      electronService: this.electronService,
+      projectService: this.projectService,
+      configService: this.configService,
+      uiService: this.uiService,
+      translateService: this.translate,
+      messageService: this.message
+    });
+  }
 
   ngOnInit(): void {
     this.uiService.init();
     this.projectService.init();
     this.updateService.init();
     this.npmService.init();
+
+    // 上传过程中断开串口连接
+    this.uiService.stateSubject.subscribe((state) => {
+      if (state.state == 'doing' && state.text == '固件上传中...') {
+        this.subappBridge.forceDisconnect('serial-monitor');
+      }
+    });
 
     // 语言设置变化后，重新加载项目
     window['ipcRenderer'].on('setting-changed', async (event, data) => {
@@ -255,6 +283,17 @@ export class MainWindowComponent {
 
   exportLog() {
     this.logComponent?.exportData();
+  }
+
+  /**
+   * 串口监视器子应用连接成功回调
+   */
+  onSerialMonitorConnected() {
+    console.log('[MainWindow] 串口监视器子应用已连接');
+    // 如果有当前选中的串口，通知子应用
+    if (this.serialService.currentPort) {
+      this.subappBridge.setPort('serial-monitor', this.serialService.currentPort);
+    }
   }
 
 }

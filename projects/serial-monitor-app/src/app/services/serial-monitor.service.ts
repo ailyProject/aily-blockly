@@ -2,8 +2,22 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { Buffer } from 'buffer';
 import { PenpalService } from '../penpal/penpal.service';
-import { DataItem, QuickSendItem, PortInfo } from '../penpal/types';
+import { SerialPortService } from './serial-port.service';
+import { DataItem, QuickSendItem, PortInfo, SerialConfig } from '../penpal/types';
 
+const CONFIG_KEY_QUICK_SEND = 'serial-monitor.quickSendList';
+
+/**
+ * 串口监视器业务服务
+ * 
+ * 子应用内的核心业务服务，管理：
+ * - 数据显示和处理
+ * - 视图模式
+ * - 快捷发送
+ * - 数据导出
+ * 
+ * 串口操作委托给 SerialPortService
+ */
 @Injectable({
   providedIn: 'root'
 })
@@ -26,35 +40,37 @@ export class SerialMonitorService {
   dataList: DataItem[] = [];
   dataUpdated = new Subject<void | DataItem>();
   
-  connectionStatus = new BehaviorSubject<boolean>(false);
+  /** 连接状态 - 来自 SerialPortService */
+  get connectionStatus(): BehaviorSubject<boolean> {
+    return this.serialPortService.connectionStatus;
+  }
+  
   availablePorts = new BehaviorSubject<PortInfo[]>([]);
 
   sendHistoryList: string[] = [];
   quickSendList: QuickSendItem[] = [];
 
-  constructor(private penpalService: PenpalService) {
+  constructor(
+    private penpalService: PenpalService,
+    private serialPortService: SerialPortService
+  ) {
     this.init();
   }
 
   private async init() {
-    // 订阅来自父窗口的串口数据
-    this.penpalService.serialDataReceived.subscribe((data) => {
+    // 订阅来自 SerialPortService 的串口数据
+    this.serialPortService.dataReceived.subscribe((data) => {
       this.processReceivedData(data);
     });
 
-    // 订阅连接状态变化
-    this.penpalService.connectionStatusChanged.subscribe((connected) => {
-      this.connectionStatus.next(connected);
-    });
-
-    // 订阅清空数据请求
+    // 订阅清空数据请求（来自父窗口）
     this.penpalService.clearDataRequested.subscribe(() => {
       this.clearData();
     });
 
-    // 订阅强制断开请求
-    this.penpalService.forceDisconnectRequested.subscribe(() => {
-      this.connectionStatus.next(false);
+    // 订阅强制断开请求（来自父窗口，如上传固件时）
+    this.penpalService.forceDisconnectRequested.subscribe(async () => {
+      await this.disconnect();
     });
 
     // 订阅快捷发送列表更新
@@ -62,8 +78,18 @@ export class SerialMonitorService {
       this.quickSendList = list;
     });
 
+    // 同步输入模式到 SerialPortService
+    this.syncInputMode();
+
     // 加载快捷发送列表
     await this.loadQuickSendList();
+  }
+
+  /**
+   * 同步输入模式设置到 SerialPortService
+   */
+  private syncInputMode(): void {
+    this.serialPortService.inputMode = this.inputMode;
   }
 
   private processReceivedData(data: DataItem) {
@@ -81,7 +107,7 @@ export class SerialMonitorService {
    */
   async getPortsList(): Promise<PortInfo[]> {
     try {
-      const ports = await this.penpalService.getPortsList();
+      const ports = await this.serialPortService.getPortsList();
       this.availablePorts.next(ports);
       return ports;
     } catch (error) {
@@ -93,38 +119,16 @@ export class SerialMonitorService {
   /**
    * 连接串口
    */
-  async connect(options: {
-    path: string;
-    baudRate: number;
-    dataBits?: number;
-    stopBits?: number;
-    parity?: string;
-    flowControl?: string;
-  }): Promise<boolean> {
-    try {
-      const result = await this.penpalService.connect(options);
-      if (result) {
-        this.connectionStatus.next(true);
-      }
-      return result;
-    } catch (error) {
-      console.error('连接串口失败:', error);
-      return false;
-    }
+  async connect(options: SerialConfig): Promise<boolean> {
+    this.syncInputMode();
+    return this.serialPortService.connect(options);
   }
 
   /**
    * 断开串口连接
    */
   async disconnect(): Promise<boolean> {
-    try {
-      const result = await this.penpalService.disconnect();
-      this.connectionStatus.next(false);
-      return result;
-    } catch (error) {
-      console.error('断开串口失败:', error);
-      return false;
-    }
+    return this.serialPortService.disconnect();
   }
 
   /**
@@ -136,10 +140,11 @@ export class SerialMonitorService {
       return false;
     }
 
+    this.syncInputMode();
+    
     try {
       const actualMode = this.inputMode.hexMode ? 'hex' : mode;
-      const result = await this.penpalService.sendData(data, actualMode, ignoreEnd);
-      return result;
+      return await this.serialPortService.sendData(data, actualMode, ignoreEnd);
     } catch (error) {
       console.error('发送数据失败:', error);
       return false;
@@ -156,7 +161,7 @@ export class SerialMonitorService {
     }
 
     try {
-      return await this.penpalService.sendSignal(signalType, state);
+      return await this.serialPortService.sendSignal(signalType, state);
     } catch (error) {
       console.error('发送信号失败:', error);
       return false;
@@ -193,7 +198,7 @@ export class SerialMonitorService {
     for (const item of this.dataList) {
       if (this.viewMode.showTimestamp) {
         fileContent += `[${item.time}] `;
-        fileContent += item.dir;
+        fileContent += item.dir + ' ';
       }
 
       let dataContent = '';
@@ -236,9 +241,20 @@ export class SerialMonitorService {
       }
     }
 
-    const filePath = await this.penpalService.exportData(fileContent);
-    if (filePath) {
-      await this.penpalService.showMessage('success', '数据已成功导出到' + filePath);
+    try {
+      const filePath = await this.penpalService.selectFolderSaveAs({
+        title: '导出串口数据',
+        defaultPath: `serial_data_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`,
+        filters: [{ name: 'Text Files', extensions: ['txt'] }]
+      });
+
+      if (filePath) {
+        await this.penpalService.writeFile(filePath, fileContent);
+        await this.penpalService.showMessage('success', '数据已成功导出到 ' + filePath);
+      }
+    } catch (error) {
+      console.error('导出数据失败:', error);
+      await this.penpalService.showMessage('error', '导出数据失败');
     }
   }
 
@@ -246,7 +262,7 @@ export class SerialMonitorService {
    * 保存快捷发送列表
    */
   async saveQuickSendList(): Promise<void> {
-    await this.penpalService.saveQuickSendList(this.quickSendList);
+    await this.penpalService.saveConfig(CONFIG_KEY_QUICK_SEND, this.quickSendList);
   }
 
   /**
@@ -255,25 +271,27 @@ export class SerialMonitorService {
   async loadQuickSendList(): Promise<void> {
     try {
       await this.penpalService.waitForConnection();
-      const list = await this.penpalService.getQuickSendList();
+      const list = await this.penpalService.getConfig(CONFIG_KEY_QUICK_SEND);
       if (list && list.length > 0) {
         this.quickSendList = list;
       } else {
-        this.quickSendList = [
-          { name: 'DTR', type: 'signal', data: 'DTR' },
-          { name: 'RTS', type: 'signal', data: 'RTS' },
-          { name: '发送文本', type: 'text', data: 'This is aily blockly' },
-          { name: '发送Hex', type: 'hex', data: 'FF FF A1 A2 A3 A4 A5' }
-        ];
+        this.quickSendList = this.getDefaultQuickSendList();
       }
     } catch (e) {
       console.error('加载快速发送列表失败:', e);
-      this.quickSendList = [
-        { name: 'DTR', type: 'signal', data: 'DTR' },
-        { name: 'RTS', type: 'signal', data: 'RTS' },
-        { name: '发送文本', type: 'text', data: 'This is aily blockly' },
-        { name: '发送Hex', type: 'hex', data: 'FF FF A1 A2 A3 A4 A5' }
-      ];
+      this.quickSendList = this.getDefaultQuickSendList();
     }
+  }
+
+  /**
+   * 获取默认快捷发送列表
+   */
+  private getDefaultQuickSendList(): QuickSendItem[] {
+    return [
+      { name: 'DTR', type: 'signal', data: 'DTR' },
+      { name: 'RTS', type: 'signal', data: 'RTS' },
+      { name: '发送文本', type: 'text', data: 'This is aily blockly' },
+      { name: '发送Hex', type: 'hex', data: 'FF FF A1 A2 A3 A4 A5' }
+    ];
   }
 }

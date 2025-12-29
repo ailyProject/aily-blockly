@@ -1,7 +1,7 @@
 import { Injectable, NgZone } from '@angular/core';
 import { connect, WindowMessenger, RemoteProxy, Connection } from 'penpal';
 import { BehaviorSubject, Subject } from 'rxjs';
-import { ParentMethods, ChildMethods, DataItem, QuickSendItem, SerialConfig, PortInfo } from './types';
+import { ParentMethods, ChildMethods, DataItem, QuickSendItem, PortInfo } from './types';
 
 @Injectable({
   providedIn: 'root'
@@ -11,9 +11,7 @@ export class PenpalService {
   private connection: Connection<ParentMethods> | null = null;
   private connectionReady = new BehaviorSubject<boolean>(false);
 
-  // 用于向组件广播事件
-  serialDataReceived = new Subject<DataItem>();
-  connectionStatusChanged = new Subject<boolean>();
+  // 用于向组件广播来自父窗口的事件
   portChanged = new Subject<string>();
   baudRateChanged = new Subject<string>();
   clearDataRequested = new Subject<void>();
@@ -27,36 +25,31 @@ export class PenpalService {
   private async initConnection() {
     try {
       const childMethods: ChildMethods = {
-        onSerialData: (data: DataItem) => {
-          this.ngZone.run(() => {
-            this.serialDataReceived.next(data);
-          });
-        },
-        onConnectionStatusChange: (connected: boolean) => {
-          this.ngZone.run(() => {
-            this.connectionStatusChanged.next(connected);
-          });
-        },
+        // 设置当前串口
         setPort: (port: string) => {
           this.ngZone.run(() => {
             this.portChanged.next(port);
           });
         },
+        // 设置波特率
         setBaudRate: (baudRate: string) => {
           this.ngZone.run(() => {
             this.baudRateChanged.next(baudRate);
           });
         },
+        // 清空数据
         clearData: () => {
           this.ngZone.run(() => {
             this.clearDataRequested.next();
           });
         },
+        // 强制断开连接（上传固件时）
         forceDisconnect: () => {
           this.ngZone.run(() => {
             this.forceDisconnectRequested.next();
           });
         },
+        // 更新快捷发送列表
         updateQuickSendList: (list: QuickSendItem[]) => {
           this.ngZone.run(() => {
             this.quickSendListUpdated.next(list);
@@ -105,62 +98,60 @@ export class PenpalService {
     return this.connectionReady.value && this.parentMethods !== null;
   }
 
-  // ============ 串口操作 ============
+  // ============ 通用 Electron API ============
 
-  async getPortsList(): Promise<PortInfo[]> {
+  /**
+   * 调用 IPC 方法
+   */
+  async invokeIpc(channel: string, ...args: any[]): Promise<any> {
     await this.waitForConnection();
-    return this.parentMethods!.getPortsList();
+    return this.parentMethods!.invokeIpc(channel, ...args);
   }
 
-  async connect(config: SerialConfig): Promise<boolean> {
+  /**
+   * 获取串口列表
+   */
+  async getSerialPorts(): Promise<PortInfo[]> {
     await this.waitForConnection();
-    return this.parentMethods!.connect(config);
-  }
-
-  async disconnect(): Promise<boolean> {
-    await this.waitForConnection();
-    return this.parentMethods!.disconnect();
-  }
-
-  async sendData(data: string, mode?: string, ignoreEnd?: boolean): Promise<boolean> {
-    await this.waitForConnection();
-    return this.parentMethods!.sendData(data, mode, ignoreEnd);
-  }
-
-  async sendSignal(signalType: 'DTR' | 'RTS', state?: boolean): Promise<boolean> {
-    await this.waitForConnection();
-    return this.parentMethods!.sendSignal(signalType, state);
+    return this.parentMethods!.getSerialPorts();
   }
 
   // ============ 文件操作 ============
 
-  async exportData(content: string): Promise<string | null> {
+  async readFile(path: string): Promise<string> {
     await this.waitForConnection();
-    return this.parentMethods!.exportData(content);
+    return this.parentMethods!.readFile(path);
   }
 
-  // ============ 配置操作 ============
-
-  async getQuickSendList(): Promise<QuickSendItem[]> {
+  async writeFile(path: string, content: string): Promise<void> {
     await this.waitForConnection();
-    return this.parentMethods!.getQuickSendList();
+    return this.parentMethods!.writeFile(path, content);
   }
 
-  async saveQuickSendList(list: QuickSendItem[]): Promise<void> {
+  async selectFolderSaveAs(options: any): Promise<string | null> {
     await this.waitForConnection();
-    return this.parentMethods!.saveQuickSendList(list);
+    return this.parentMethods!.selectFolderSaveAs(options);
   }
 
   // ============ UI 操作 ============
 
-  async closePanel(): Promise<void> {
+  async closeTool(toolId: string): Promise<void> {
     await this.waitForConnection();
-    return this.parentMethods!.closePanel();
+    return this.parentMethods!.closeTool(toolId);
   }
 
-  async openInNewWindow(): Promise<void> {
+  async closePanel(): Promise<void> {
+    return this.closeTool('serial-monitor');
+  }
+
+  async openInNewWindow(route?: string): Promise<void> {
     await this.waitForConnection();
-    return this.parentMethods!.openInNewWindow();
+    return this.parentMethods!.openInNewWindow(route || '/serial-monitor');
+  }
+
+  async showMessage(type: 'success' | 'error' | 'warning' | 'info', content: string): Promise<void> {
+    await this.waitForConnection();
+    return this.parentMethods!.showMessage(type, content);
   }
 
   // ============ 翻译 ============
@@ -170,17 +161,30 @@ export class PenpalService {
     return this.parentMethods!.translate(key);
   }
 
-  // ============ 消息提示 ============
+  // ============ 项目/配置 ============
 
-  async showMessage(type: 'success' | 'error' | 'warning' | 'info', content: string): Promise<void> {
+  async getCurrentProjectPath(): Promise<string | null> {
     await this.waitForConnection();
-    return this.parentMethods!.showMessage(type, content);
+    return this.parentMethods!.getCurrentProjectPath();
   }
-
-  // ============ 开发板信息 ============
 
   async getCurrentBoard(): Promise<string | null> {
     await this.waitForConnection();
     return this.parentMethods!.getCurrentBoard();
+  }
+
+  async getCurrentPort(): Promise<string | null> {
+    await this.waitForConnection();
+    return this.parentMethods!.getCurrentPort();
+  }
+
+  async getConfig(key: string): Promise<any> {
+    await this.waitForConnection();
+    return this.parentMethods!.getConfig(key);
+  }
+
+  async saveConfig(key: string, value: any): Promise<void> {
+    await this.waitForConnection();
+    return this.parentMethods!.saveConfig(key, value);
   }
 }

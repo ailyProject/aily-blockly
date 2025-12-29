@@ -64,7 +64,11 @@
               <app-code-viewer></app-code-viewer>
               }
               @case ("serial-monitor") {
-              <app-serial-monitor-iframe></app-serial-monitor-iframe>
+              <app-subapp-container
+                [config]="subappConfigs['serial-monitor']"
+                [bridge]="subappBridge"
+                (connected)="onSerialMonitorConnected()">
+              </app-subapp-container>
               }
               @case ("aily-chat") {
               <app-aily-chat></app-aily-chat>

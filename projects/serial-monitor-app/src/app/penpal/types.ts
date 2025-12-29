@@ -1,6 +1,10 @@
 /**
  * Penpal 通信接口定义
- * 用于主程序和 serial-monitor-app 之间的通信
+ * 用于主程序和子应用之间的通信
+ * 
+ * 设计理念：
+ * - ParentMethods 只提供通用的底层 API
+ * - 业务逻辑完全在子应用内实现
  */
 
 // 串口数据项接口
@@ -38,52 +42,46 @@ export interface PortInfo {
 }
 
 /**
- * 父窗口暴露给子窗口的方法
- * 主程序实现这些方法，供 iframe 内的 serial-monitor 调用
+ * 父窗口暴露给子窗口的通用 API
+ * 主程序只提供底层能力，不包含业务逻辑
  */
 export interface ParentMethods {
   [key: string]: ((...args: any[]) => any) | ParentMethods;
   
-  // 串口操作
-  getPortsList(): Promise<PortInfo[]>;
-  connect(config: SerialConfig): Promise<boolean>;
-  disconnect(): Promise<boolean>;
-  sendData(data: string, mode?: string, ignoreEnd?: boolean): Promise<boolean>;
-  sendSignal(signalType: 'DTR' | 'RTS', state?: boolean): Promise<boolean>;
+  // === Electron IPC ===
+  invokeIpc(channel: string, ...args: any[]): Promise<any>;
   
-  // 文件操作
-  exportData(content: string): Promise<string | null>;
+  // === 串口 API（底层） ===
+  getSerialPorts(): Promise<PortInfo[]>;
+  createSerialPort(options: SerialConfig): any;
   
-  // 配置操作
-  getQuickSendList(): Promise<QuickSendItem[]>;
-  saveQuickSendList(list: QuickSendItem[]): Promise<void>;
+  // === 文件操作 ===
+  readFile(path: string): Promise<string>;
+  writeFile(path: string, content: string): Promise<void>;
+  selectFolderSaveAs(options: any): Promise<string | null>;
   
-  // UI 操作
-  closePanel(): void;
-  openInNewWindow(): void;
-  
-  // 翻译
-  translate(key: string): Promise<string>;
-  
-  // 消息提示
+  // === UI 操作 ===
+  closeTool(toolId: string): void;
+  openInNewWindow(route: string): void;
   showMessage(type: 'success' | 'error' | 'warning' | 'info', content: string): void;
   
-  // 获取当前开发板信息
+  // === 翻译 ===
+  translate(key: string): Promise<string>;
+  
+  // === 项目/配置 ===
+  getCurrentProjectPath(): Promise<string | null>;
   getCurrentBoard(): Promise<string | null>;
+  getCurrentPort(): Promise<string | null>;
+  getConfig(key: string): Promise<any>;
+  saveConfig(key: string, value: any): Promise<void>;
 }
 
 /**
  * 子窗口暴露给父窗口的方法
- * serial-monitor-app 实现这些方法，供主程序调用
+ * 子应用实现这些方法，供主程序调用（通常用于通知子应用）
  */
 export interface ChildMethods {
   [key: string]: ((...args: any[]) => any) | ChildMethods;
-  
-  // 接收串口数据
-  onSerialData(data: DataItem): void;
-  
-  // 连接状态变化
-  onConnectionStatusChange(connected: boolean): void;
   
   // 设置当前串口和波特率
   setPort(port: string): void;
@@ -92,7 +90,7 @@ export interface ChildMethods {
   // 清空数据
   clearData(): void;
   
-  // 断开连接（上传固件时）
+  // 强制断开连接（上传固件时由主程序调用）
   forceDisconnect(): void;
   
   // 更新快捷发送列表

@@ -4,6 +4,50 @@
 
 本文档定义了 Aily Blockly 项目中子应用的设计规范。子应用是独立的 Angular 应用程序，通过 iframe 嵌入到主应用中，并使用 penpal 7.x 进行跨窗口通信。
 
+## 架构设计
+
+### 核心组件
+
+```
+src/app/components/subapp-container/
+├── index.ts                      # 公共导出
+├── subapp-config.ts              # 子应用配置接口和预定义配置
+├── subapp-container.component.ts # 通用子应用容器组件
+└── subapp-bridge.service.ts      # 通用桥接服务
+
+src/app/services/
+├── serial-monitor-methods.service.ts  # 串口监视器业务方法
+└── ...                                # 其他子应用业务方法
+```
+
+### 设计理念
+
+1. **统一入口**: 所有子应用通过 `<app-subapp-container>` 加载
+2. **通用 Bridge**: `SubappBridgeService` 管理所有子应用连接
+3. **方法注册**: 各子应用的业务方法通过 `registerMethods()` 注册
+4. **配置驱动**: 通过 `SUBAPP_CONFIGS` 管理子应用配置
+
+### 数据流
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         主程序 (Parent)                          │
+├─────────────────────────────────────────────────────────────────┤
+│  SubappBridgeService                                            │
+│  ├── 通用方法 (translate, showMessage, getConfig, ...)         │
+│  └── 注册的业务方法 (connect, disconnect, sendData, ...)       │
+│                                                                 │
+│  SerialMonitorMethodsService.register()                        │
+│  └── 注册串口监视器相关方法                                      │
+├─────────────────────────────────────────────────────────────────┤
+│                    penpal 7.x 通信                              │
+├─────────────────────────────────────────────────────────────────┤
+│                         子应用 (Child)                           │
+│  PenpalService                                                  │
+│  └── 调用父窗口方法，接收父窗口推送                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## 目录结构
 
 ```
@@ -256,6 +300,147 @@ export class SubAppIframeComponent implements AfterViewInit, OnDestroy {
 }
 ```
 
+### 5. 通用子应用容器 (推荐方式)
+
+为了支持多个子应用并统一管理加载逻辑，我们提供了通用的 `SubappContainerComponent`：
+
+#### 子应用配置 (`components/subapp-container/subapp-config.ts`)
+
+```typescript
+/**
+ * 子应用配置接口
+ */
+export interface SubAppConfig {
+  /** 子应用唯一标识 */
+  id: string;
+  
+  /** 子应用显示名称 */
+  name: string;
+  
+  /** 开发模式端口号 */
+  devPort: number;
+  
+  /** 生产模式路径 */
+  prodPath: string;
+  
+  /** 工具面板路由路径 (可选) */
+  routePath?: string;
+  
+  /** 连接超时时间 (毫秒, 默认 10000) */
+  connectionTimeout?: number;
+}
+
+/**
+ * Bridge 服务接口
+ * 所有子应用的 Bridge 服务都需要实现这个接口
+ */
+export interface SubAppBridge {
+  initConnection(iframeRef: any): Promise<void>;
+  destroy(): void;
+  isConnectionReady(): boolean;
+}
+
+/**
+ * 预定义的子应用配置
+ */
+export const SUBAPP_CONFIGS: { [key: string]: SubAppConfig } = {
+  'serial-monitor': {
+    id: 'serial-monitor',
+    name: '串口监视器',
+    devPort: 4201,
+    prodPath: './serial-monitor-app/index.html',
+    routePath: '/serial-monitor',
+    connectionTimeout: 10000
+  },
+  // 添加更多子应用...
+};
+```
+
+#### 使用通用容器组件
+
+```typescript
+import { Component } from '@angular/core';
+import { SubappContainerComponent, SUBAPP_CONFIGS, SubAppConfig } from '../../components/subapp-container';
+import { MyBridgeService } from './my-bridge.service';
+
+@Component({
+  selector: 'app-my-subapp',
+  imports: [SubappContainerComponent],
+  template: `
+    <app-subapp-container
+      [config]="subappConfig"
+      [bridge]="bridgeService"
+      (connected)="onConnected()"
+      (connectionError)="onConnectionError($event)">
+    </app-subapp-container>
+  `
+})
+export class MySubappComponent {
+  subappConfig: SubAppConfig = SUBAPP_CONFIGS['my-subapp'];
+  
+  constructor(public bridgeService: MyBridgeService) {}
+  
+  onConnected() {
+    console.log('子应用已连接');
+  }
+  
+  onConnectionError(error: string) {
+    console.error('连接失败:', error);
+  }
+}
+```
+
+#### 创建 Bridge 服务
+
+Bridge 服务必须实现 `SubAppBridge` 接口：
+
+```typescript
+import { Injectable, ElementRef } from '@angular/core';
+import { connect, WindowMessenger, Connection } from 'penpal';
+import { SubAppBridge } from '../../components/subapp-container';
+import { ParentMethods, ChildMethods } from './penpal-types';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class MyBridgeService implements SubAppBridge {
+  private connection: Connection<ChildMethods> | null = null;
+  private ready = false;
+
+  async initConnection(iframeRef: ElementRef<HTMLIFrameElement>): Promise<void> {
+    const parentMethods: ParentMethods = {
+      // 定义主程序暴露的方法...
+    };
+
+    const messenger = new WindowMessenger({
+      remoteWindow: iframeRef.nativeElement.contentWindow!,
+      allowedOrigins: ['*']
+    });
+
+    this.connection = connect<ChildMethods>({
+      messenger,
+      methods: parentMethods
+    });
+
+    await this.connection.promise;
+    this.ready = true;
+  }
+
+  destroy(): void {
+    if (this.connection) {
+      this.connection.destroy();
+      this.connection = null;
+      this.ready = false;
+    }
+  }
+
+  isConnectionReady(): boolean {
+    return this.ready;
+  }
+}
+```
+```
+
 ## Angular 工作区配置
 
 ### angular.json 子项目配置
@@ -465,7 +650,132 @@ onSerialData: (data) => {
 
 完整的子应用示例可参考：
 - 子应用代码：`projects/serial-monitor-app/`
-- 主程序集成：`src/app/tools/serial-monitor-iframe/`
+- 通用 Bridge 服务：`src/app/components/subapp-container/subapp-bridge.service.ts`
+- 业务方法服务：`src/app/services/serial-monitor-methods.service.ts`
+- 通用容器组件：`src/app/components/subapp-container/`
+- 主窗口集成：`src/app/main-window/main-window.component.html`
+
+## 添加新子应用步骤
+
+### 1. 创建子应用项目
+
+```bash
+# 创建目录结构
+mkdir -p projects/{new-subapp}/src/app/{components,services,config,penpal}
+```
+
+### 2. 添加子应用配置
+
+在 `src/app/components/subapp-container/subapp-config.ts` 中添加配置：
+
+```typescript
+export const SUBAPP_CONFIGS: { [key: string]: SubAppConfig } = {
+  'serial-monitor': { ... },
+  'new-subapp': {
+    id: 'new-subapp',
+    name: '新子应用',
+    devPort: 4202,  // 使用新端口
+    prodPath: './new-subapp/index.html',
+    routePath: '/new-subapp',
+  },
+};
+```
+
+### 3. 创建业务方法服务
+
+创建 `src/app/services/new-subapp-methods.service.ts`：
+
+```typescript
+import { Injectable } from '@angular/core';
+import { SubappBridgeService } from '../components/subapp-container';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class NewSubappMethodsService {
+  constructor(private bridgeService: SubappBridgeService) {}
+  
+  /**
+   * 注册子应用相关方法到 bridge 服务
+   */
+  register(): void {
+    this.bridgeService.registerMethods('new-subapp', {
+      // 业务方法
+      doSomething: (param: string) => this.doSomething(param),
+      getData: () => this.getData(),
+    });
+  }
+  
+  private async doSomething(param: string): Promise<void> {
+    // 实现业务逻辑
+  }
+  
+  private async getData(): Promise<any> {
+    // 返回数据
+  }
+  
+  /**
+   * 调用子应用方法
+   */
+  notifyChild(method: string, ...args: any[]): void {
+    this.bridgeService.callChild('new-subapp', method, ...args);
+  }
+}
+```
+
+### 4. 在主窗口中集成
+
+在 `main-window.component.ts` 中：
+
+```typescript
+import { SubappContainerComponent, SUBAPP_CONFIGS, SubappBridgeService } from '../components/subapp-container';
+import { NewSubappMethodsService } from '../services/new-subapp-methods.service';
+
+@Component({
+  imports: [SubappContainerComponent, ...],
+})
+export class MainWindowComponent {
+  subappConfigs = SUBAPP_CONFIGS;
+  
+  constructor(
+    public subappBridge: SubappBridgeService,
+    private newSubappMethods: NewSubappMethodsService,
+    ...
+  ) {
+    // 注册业务方法
+    this.newSubappMethods.register();
+  }
+  
+  onNewSubappConnected() {
+    // 子应用连接成功后的处理
+  }
+}
+```
+
+```html
+<!-- main-window.component.html -->
+@case ("new-subapp") {
+<app-subapp-container
+  [config]="subappConfigs['new-subapp']"
+  [bridge]="subappBridge"
+}
+```
+
+### 5. 更新 angular.json
+
+添加新子应用的构建配置，使用新端口号。
+
+### 6. 添加启动脚本
+
+在根目录 `package.json` 中添加：
+
+```json
+{
+  "scripts": {
+    "start:new-subapp": "ng serve new-subapp --port 4202"
+  }
+}
+```
 
 ## 依赖版本
 
