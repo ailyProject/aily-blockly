@@ -422,6 +422,9 @@ const { initLogger, registerLoggerHandlers } = require("./logger");
 const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
 
+// sublink模块
+const sublink = require("./sublink");
+
 let mainWindow;
 let userConf;
 let isRendererReady = false;
@@ -899,6 +902,8 @@ function createWindow() {
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
   registerNotificationHandlers(mainWindow);
+
+  sublink.register();
 
   // 检查是否有待处理的OAuth回调
   // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
