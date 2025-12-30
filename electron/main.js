@@ -6,7 +6,6 @@ const windowStateKeeper = require('electron-window-state');
 const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
-const CrossAppCommunication = require("./cross-app-communication");
 
 // 设置应用名称，用于 Windows 系统通知显示
 app.setName("aily blockly");
@@ -426,7 +425,6 @@ const { registerNotificationHandlers } = require("./notification");
 let mainWindow;
 let userConf;
 let isRendererReady = false;
-let crossAppComm = null;
 
 // 监听渲染进程就绪事件
 ipcMain.on('renderer-ready', () => {
@@ -602,7 +600,7 @@ function loadEnv() {
     // 使用环境变量获取系统路径，支持系统安装在任意盘符
     const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-
+    
     // 添加必要的系统路径
     const systemPaths = [
       path.join(systemRoot, 'System32'),
@@ -633,7 +631,7 @@ function loadEnv() {
   }
 
   // 完全替换PATH
-  process.env.PATH = customPath;
+  process.env.PATH = customPath;  
 
   // 读取config.json文件
   const configPath = path.join(__dirname, 'config', "config.json");
@@ -814,11 +812,6 @@ function createWindow() {
 
   mainWindowState.manage(mainWindow);
 
-  // 初始化跨应用通信实例
-  if (!crossAppComm) {
-    crossAppComm = new CrossAppCommunication();
-  }
-
   // mainWindow.setMenu(null);
 
   // 当页面准备好显示时，再显示窗口
@@ -892,11 +885,6 @@ function createWindow() {
 
   // 当主窗口被关闭时，进行相应的处理
   mainWindow.on("closed", () => {
-    // 清理跨应用通信连接
-    if (crossAppComm) {
-      crossAppComm.close();
-      crossAppComm = null;
-    }
     mainWindow = null;
     isRendererReady = false;
     app.quit();
@@ -1103,7 +1091,7 @@ if (shouldUseMultiInstance()) {
   }
 }
 
-app.on("ready", async () => {
+app.on("ready", () => {
   try {
     loadEnv();
   } catch (error) {
@@ -1122,23 +1110,6 @@ app.on("ready", async () => {
 
   // 创建主窗口
   createWindow();
-
-  // 启动跨应用通信服务器（如果需要接收其他应用的连接）
-  // 端口设置为 0 表示自动分配端口
-  if (crossAppComm) {
-    try {
-      const port = await crossAppComm.startServer(8787);
-      console.log(`跨应用通信服务器已启动，端口: ${port}`);
-      
-      // 注册消息处理器示例
-      crossAppComm.on('synchronous-message', (data) => {
-        console.log('收到同步消息:', data);
-        return 'pong'; // 返回响应
-      });
-    } catch (error) {
-      console.error('启动跨应用通信服务器失败:', error);
-    }
-  }
 });
 
 // // 处理 Web Serial API 的串口选择请求
@@ -1185,11 +1156,6 @@ app.on("ready", async () => {
 
 // 当所有窗口都被关闭时退出应用（macOS 除外）
 app.on("window-all-closed", () => {
-  // 清理跨应用通信连接
-  if (crossAppComm) {
-    crossAppComm.close();
-    crossAppComm = null;
-  }
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -1245,11 +1211,6 @@ app.on('open-url', (event, url) => {
   event.preventDefault();
   console.log('macOS open-url:', url);
   handleProtocol(url);
-});
-
-ipcMain.on('asynchronous-message', (event, arg) => {
-  console.log(1111122222,arg);  // 打印出 "ping"
-  event.reply('asynchronous-reply', 'pong');
 });
 
 // 文件选择
@@ -1496,93 +1457,5 @@ ipcMain.handle("ripgrep-search-content", async (event, params) => {
       matches: [],
       error: error.message
     };
-  }
-});
-
-// ============================================
-// 跨应用通信功能
-// ============================================
-
-// 连接到其他应用
-ipcMain.handle('cross-app-connect', async (event, port, host = '127.0.0.1') => {
-  try {
-    if (!crossAppComm) {
-      return { success: false, error: '跨应用通信未初始化' };
-    }
-    await crossAppComm.connectToApp(port, host);
-    return { success: true, message: '连接成功' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-// 发送同步消息
-ipcMain.handle('cross-app-send-sync', async (event, channel, data, timeout = 5000) => {
-  try {
-    if (!crossAppComm) {
-      return { success: false, error: '跨应用通信未初始化' };
-    }
-    const result = await crossAppComm.sendSync(channel, data, timeout);
-    return { success: true, data: result };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-// 发送异步消息
-ipcMain.handle('cross-app-send', async (event, channel, data) => {
-  try {
-    if (!crossAppComm) {
-      return { success: false, error: '跨应用通信未初始化' };
-    }
-    crossAppComm.send(channel, data);
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-// 注册消息处理器
-ipcMain.handle('cross-app-on', async (event, channel) => {
-  try {
-    if (!crossAppComm) {
-      return { success: false, error: '跨应用通信未初始化' };
-    }
-    // 注册消息处理器，通过 IPC 转发
-    crossAppComm.on(channel, (data) => {
-      // 通知渲染进程
-      if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('cross-app-message', { channel, data });
-      }
-    });
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-// 移除消息处理器
-ipcMain.handle('cross-app-remove-handler', async (event, channel) => {
-  try {
-    if (!crossAppComm) {
-      return { success: false, error: '跨应用通信未初始化' };
-    }
-    crossAppComm.removeHandler(channel);
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-// 获取服务器端口号
-ipcMain.handle('cross-app-get-server-port', async () => {
-  try {
-    if (!crossAppComm) {
-      return { success: false, error: '跨应用通信未初始化', port: null };
-    }
-    const port = crossAppComm.getServerPort();
-    return { success: true, port };
-  } catch (error) {
-    return { success: false, error: error.message, port: null };
   }
 });
