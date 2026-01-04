@@ -777,7 +777,7 @@ function createWindow() {
   const mainWindowState = windowStateKeeper({
     defaultWidth: 1200,
     defaultHeight: 780,
-    path: process.env.AILY_APPDATA_PATH || app.getPath('userData'),
+    path: path.join(process.env.AILY_APPDATA_PATH),
   })
 
   mainWindow = new BrowserWindow({
