@@ -5,6 +5,7 @@ import { ElectronService } from './services/electron.service';
 import { ConfigService } from './services/config.service';
 import { TranslationService } from './services/translation.service';
 import { AuthService } from './services/auth.service';
+import { ShortcutService } from './services/shortcut.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 
 // 声明 electronAPI 类型
@@ -24,6 +25,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private configService = inject(ConfigService);
   private translationService = inject(TranslationService);
   private authService = inject(AuthService);
+  private shortcutService = inject(ShortcutService);
   private message = inject(NzMessageService);
   private router = inject(Router);
 
@@ -34,6 +36,9 @@ export class AppComponent implements OnInit, OnDestroy {
     await this.electronService.init();
     await this.configService.init();
     await this.translationService.init();
+
+    // 初始化快捷键服务
+    this.shortcutService.init();
 
     // 在ElectronService初始化完成后再初始化认证服务
     await this.authService.initializeAuth();
@@ -57,6 +62,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.exampleListListener) {
       this.exampleListListener();
     }
+    // 销毁快捷键服务
+    this.shortcutService.destroy();
   }
 
   /**
