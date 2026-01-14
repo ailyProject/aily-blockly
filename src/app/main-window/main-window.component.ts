@@ -1,4 +1,4 @@
-import { Component, ChangeDetectorRef, ViewChild } from '@angular/core';
+import { Component, ChangeDetectorRef, ViewChild, ElementRef, HostListener } from '@angular/core';
 import { FooterComponent } from './components/footer/footer.component';
 import { HeaderComponent } from './components/header/header.component';
 import { CommonModule } from '@angular/common';
@@ -28,6 +28,8 @@ import { UserCenterComponent } from '../tools/user-center/user-center.component'
 import { ModelStoreComponent } from '../tools/model-store/model-store.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
 import { OnboardingService } from '../services/onboarding.service';
+import { WebContentsViewService, SubAppBounds } from '../services/web-contents-view.service';
+import { SubAppContainerComponent } from '../components/sub-app-container/sub-app-container.component';
 
 @Component({
   selector: 'app-main-window',
@@ -54,7 +56,8 @@ import { OnboardingService } from '../services/onboarding.service';
     CloudSpaceComponent,
     UserCenterComponent,
     ModelStoreComponent,
-    OnboardingComponent
+    OnboardingComponent,
+    SubAppContainerComponent
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
@@ -62,11 +65,15 @@ import { OnboardingService } from '../services/onboarding.service';
 export class MainWindowComponent {
   @ViewChild('logComponent') logComponent!: LogComponent;
   @ViewChild('terminalComponent') terminalComponent!: TerminalComponent;
+  @ViewChild('rightBox') rightBoxRef!: ElementRef<HTMLElement>;
 
   showRbox = false;
   showBbox = false;
   terminalTab = 'log';
   selectedTabIndex = 0;
+
+  // 是否使用 WebContentsView 模式
+  useWebContentsView = true;
 
   get topTool() {
     return this.uiService.topTool;
@@ -96,7 +103,8 @@ export class MainWindowComponent {
     private router: Router,
     private configService: ConfigService,
     private modal: NzModalService,
-    private onboardingService: OnboardingService
+    private onboardingService: OnboardingService,
+    private wcvService: WebContentsViewService
   ) { }
 
   ngOnInit(): void {
@@ -212,10 +220,60 @@ export class MainWindowComponent {
 
   onSideResize({ width }: NzResizeEvent): void {
     this.siderWidth = width!;
+    // 如果使用 WebContentsView 模式，更新子应用边界
+    if (this.useWebContentsView) {
+      this.updateSubAppBounds();
+    }
   }
 
   onContentResize({ height }: NzResizeEvent): void {
     this.bottomHeight = height!;
+  }
+
+  // 更新所有可见子应用的边界
+  private async updateSubAppBounds(): Promise<void> {
+    if (!this.useWebContentsView || !this.rightBoxRef) {
+      return;
+    }
+
+    const updates: { appId: string; bounds: SubAppBounds }[] = [];
+    
+    for (const tool of this.openToolList) {
+      const bounds = this.calculateToolBounds();
+      updates.push({ appId: tool, bounds });
+    }
+
+    if (updates.length > 0) {
+      await this.wcvService.batchUpdateBounds(updates);
+    }
+  }
+
+  // 计算工具面板的边界
+  private calculateToolBounds(): SubAppBounds {
+    if (!this.rightBoxRef) {
+      return { x: 0, y: 0, width: this.siderWidth, height: 600 };
+    }
+
+    const element = this.rightBoxRef.nativeElement;
+    const rect = element.getBoundingClientRect();
+    
+    // 获取标题栏高度（macOS）
+    const titleBarHeight = (window as any).electronAPI?.platform?.isMacOS ? 28 : 0;
+
+    return {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top + titleBarHeight),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  }
+
+  // 窗口大小变化时更新子应用边界
+  @HostListener('window:resize')
+  onWindowResize(): void {
+    if (this.useWebContentsView) {
+      this.updateSubAppBounds();
+    }
   }
 
   // 处理底部tab的切换

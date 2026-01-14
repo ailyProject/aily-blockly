@@ -56,36 +56,38 @@
         <nz-resize-handle nzDirection="left" nzCursorType="grid">
           <div class="sider-resize-line"></div>
         </nz-resize-handle>
-        <div class="right-box">
+        <div class="right-box" #rightBox>
           @for (tool of openToolList; track tool) {
-            <div class="tool-panel" [style.z-index]="tool === topTool ? 100 : 1">
-              @switch (tool) {
-              @case ("code-viewer") {
-              <app-code-viewer></app-code-viewer>
-              }
-              @case ("serial-monitor") {
-              <app-serial-monitor></app-serial-monitor>
-              }
-              @case ("aily-chat") {
-              <app-aily-chat></app-aily-chat>
-              }
-              @case ("simulator") {
-              <app-simulator></app-simulator>
-              }
-              @case ("app-store") {
-              <app-app-store></app-app-store>
-              }
-              @case ("cloud-space") {
-              <app-cloud-space></app-cloud-space>
-              }
-              @case ("model-store") {
-              <app-model-store></app-model-store>
-              }
-              @case ("user-center") {
-              <app-user-center></app-user-center>
-              }
-              }
-            </div>
+          <div class="tool-panel" [style.z-index]="tool === topTool ? 100 : 1">
+            @switch (tool) {
+            @case ("code-viewer") {
+            <app-code-viewer></app-code-viewer>
+            }
+            @case ("serial-monitor") {
+            <!-- <app-serial-monitor></app-serial-monitor> -->
+            <app-sub-app-container [appId]="tool" [useWebContentsView]="true" [visible]="tool === topTool">
+            </app-sub-app-container>
+            }
+            @case ("aily-chat") {
+            <app-aily-chat></app-aily-chat>
+            }
+            @case ("simulator") {
+            <app-simulator></app-simulator>
+            }
+            @case ("app-store") {
+            <app-app-store></app-app-store>
+            }
+            @case ("cloud-space") {
+            <app-cloud-space></app-cloud-space>
+            }
+            @case ("model-store") {
+            <app-model-store></app-model-store>
+            }
+            @case ("user-center") {
+            <app-user-center></app-user-center>
+            }
+            }
+          </div>
           }
         </div>
       </nz-sider>
@@ -97,10 +99,7 @@
 
 <!-- 新手引导组件 -->
 @if (onboardingConfig) {
-<app-onboarding 
-  [show]="showOnboarding" 
-  [config]="onboardingConfig"
-  (closed)="onOnboardingClosed()"
+<app-onboarding [show]="showOnboarding" [config]="onboardingConfig" (closed)="onOnboardingClosed()"
   (completed)="onOnboardingCompleted()">
 </app-onboarding>
 }

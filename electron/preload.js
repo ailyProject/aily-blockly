@@ -526,5 +526,128 @@ contextBridge.exposeInMainWorld("electronAPI", {
     info: (message) => {
       ipcRenderer.invoke('log-info', message);
     }
+  },
+  // WebContentsView 子应用 API
+  webContentsView: {
+    /**
+     * 创建子应用
+     * @param {string} appId - 子应用 ID
+     * @param {object} options - 配置选项
+     * @returns {Promise<{success: boolean}>}
+     */
+    create: (appId, options = {}) => {
+      return ipcRenderer.invoke('wcv-create', { appId, options });
+    },
+    /**
+     * 显示子应用
+     * @param {string} appId - 子应用 ID
+     * @param {object} bounds - 位置和大小 {x, y, width, height}
+     * @returns {Promise<{success: boolean}>}
+     */
+    show: (appId, bounds) => {
+      return ipcRenderer.invoke('wcv-show', { appId, bounds });
+    },
+    /**
+     * 隐藏子应用
+     * @param {string} appId - 子应用 ID
+     * @returns {Promise<{success: boolean}>}
+     */
+    hide: (appId) => {
+      return ipcRenderer.invoke('wcv-hide', { appId });
+    },
+    /**
+     * 更新子应用边界
+     * @param {string} appId - 子应用 ID
+     * @param {object} bounds - 位置和大小 {x, y, width, height}
+     * @returns {Promise<{success: boolean}>}
+     */
+    updateBounds: (appId, bounds) => {
+      return ipcRenderer.invoke('wcv-update-bounds', { appId, bounds });
+    },
+    /**
+     * 批量更新子应用边界
+     * @param {Array<{appId: string, bounds: object}>} updates - 更新列表
+     * @returns {Promise<{success: boolean, results: object}>}
+     */
+    batchUpdateBounds: (updates) => {
+      return ipcRenderer.invoke('wcv-batch-update-bounds', { updates });
+    },
+    /**
+     * 销毁子应用
+     * @param {string} appId - 子应用 ID
+     * @returns {Promise<{success: boolean}>}
+     */
+    destroy: (appId) => {
+      return ipcRenderer.invoke('wcv-destroy', { appId });
+    },
+    /**
+     * 发送消息到子应用
+     * @param {string} appId - 子应用 ID
+     * @param {string} channel - 通道名
+     * @param {any} data - 数据
+     * @returns {Promise<{success: boolean}>}
+     */
+    send: (appId, channel, data) => {
+      return ipcRenderer.invoke('wcv-send', { appId, channel, data });
+    },
+    /**
+     * 获取子应用列表
+     * @returns {Promise<Array>}
+     */
+    list: () => {
+      return ipcRenderer.invoke('wcv-list');
+    },
+    /**
+     * 将子应用置于最前
+     * @param {string} appId - 子应用 ID
+     * @returns {Promise<{success: boolean}>}
+     */
+    bringToFront: (appId) => {
+      return ipcRenderer.invoke('wcv-bring-to-front', { appId });
+    },
+    /**
+     * 监听来自主进程或其他子应用的消息
+     * @param {string} channel - 通道名
+     * @param {function} callback - 回调函数
+     * @returns {function} 取消监听的函数
+     */
+    onMessage: (channel, callback) => {
+      const listener = (event, data) => callback(data);
+      ipcRenderer.on(channel, listener);
+      return () => ipcRenderer.removeListener(channel, listener);
+    },
+    /**
+     * 打开子应用的开发者工具
+     * @param {string} appId - 子应用 ID
+     * @param {object} options - DevTools 选项，如 { mode: 'detach' | 'right' | 'bottom' | 'undocked' }
+     * @returns {Promise<{success: boolean}>}
+     */
+    openDevTools: (appId, options = { mode: 'detach' }) => {
+      return ipcRenderer.invoke('wcv-open-devtools', { appId, options });
+    },
+    /**
+     * 关闭子应用的开发者工具
+     * @param {string} appId - 子应用 ID
+     * @returns {Promise<{success: boolean}>}
+     */
+    closeDevTools: (appId) => {
+      return ipcRenderer.invoke('wcv-close-devtools', { appId });
+    },
+    /**
+     * 切换子应用的开发者工具
+     * @param {string} appId - 子应用 ID
+     * @returns {Promise<{success: boolean}>}
+     */
+    toggleDevTools: (appId) => {
+      return ipcRenderer.invoke('wcv-toggle-devtools', { appId });
+    },
+    /**
+     * 检查子应用的开发者工具是否已打开
+     * @param {string} appId - 子应用 ID
+     * @returns {Promise<boolean>}
+     */
+    isDevToolsOpened: (appId) => {
+      return ipcRenderer.invoke('wcv-is-devtools-opened', { appId });
+    }
   }
 });

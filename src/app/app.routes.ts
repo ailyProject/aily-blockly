@@ -92,6 +92,44 @@ export const routes: Routes = [
         path: "model-store",
         loadComponent: () => import('./tools/model-store/model-store.component').then(m => m.ModelStoreComponent)
     },
+    // WebContentsView 子应用路由（用于嵌入式子应用）
+    {
+        path: "tools",
+        children: [
+            {
+                path: 'code-viewer',
+                loadComponent: () => import('./editors/blockly-editor/tools/code-viewer/code-viewer.component').then(m => m.CodeViewerComponent)
+            },
+            {
+                path: 'serial-monitor',
+                loadComponent: () => import('./tools/serial-monitor/serial-monitor.component').then(m => m.SerialMonitorComponent)
+            },
+            {
+                path: 'aily-chat',
+                loadComponent: () => import('./tools/aily-chat/aily-chat.component').then(m => m.AilyChatComponent)
+            },
+            {
+                path: 'simulator',
+                loadComponent: () => import('./tools/simulator/simulator.component').then(m => m.SimulatorComponent)
+            },
+            {
+                path: 'app-store',
+                loadComponent: () => import('./tools/app-store/app-store.component').then(m => m.AppStoreComponent)
+            },
+            {
+                path: 'cloud-space',
+                loadComponent: () => import('./tools/cloud-space/cloud-space.component').then(m => m.CloudSpaceComponent)
+            },
+            {
+                path: 'model-store',
+                loadComponent: () => import('./tools/model-store/model-store.component').then(m => m.ModelStoreComponent)
+            },
+            {
+                path: 'user-center',
+                loadComponent: () => import('./tools/user-center/user-center.component').then(m => m.UserCenterComponent)
+            }
+        ]
+    },
     {
         path: "model-deploy",
         children: [

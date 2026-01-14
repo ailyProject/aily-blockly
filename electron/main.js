@@ -421,6 +421,8 @@ const { initLogger, registerLoggerHandlers } = require("./logger");
 // tools
 const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
+// WebContentsView 子应用管理
+const { registerWebContentsViewHandlers, destroyAllViews } = require("./web-contents-view");
 
 let mainWindow;
 let userConf;
@@ -1126,6 +1128,8 @@ function createWindow() {
 
   // 当主窗口被关闭时，进行相应的处理
   mainWindow.on("closed", () => {
+    // 销毁所有 WebContentsView 子应用
+    destroyAllViews(mainWindow);
     mainWindow = null;
     isRendererReady = false;
     app.quit();
@@ -1140,6 +1144,7 @@ function createWindow() {
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
   registerNotificationHandlers(mainWindow);
+  registerWebContentsViewHandlers(mainWindow);
 
   // 检查是否有待处理的OAuth回调
   // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
