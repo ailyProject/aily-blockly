@@ -47,10 +47,6 @@ import { Subscription } from 'rxjs';
       overflow: hidden;
     }
 
-    .sub-app-container.active {
-      box-shadow: 0 0 0 1px var(--primary-color, #007acc);
-    }
-
     .loading-overlay {
       position: absolute;
       top: 0;
@@ -151,7 +147,10 @@ export class SubAppContainerComponent implements OnInit, AfterViewInit, OnDestro
 
   ngAfterViewInit() {
     if (this.useWebContentsView && this._visible) {
-      this.initWebContentsView();
+      // 延迟初始化，确保元素已完成布局
+      this.waitForLayout().then(() => {
+        this.initWebContentsView();
+      });
     }
 
     // 监听容器大小变化
@@ -159,6 +158,28 @@ export class SubAppContainerComponent implements OnInit, AfterViewInit, OnDestro
       this.updateBounds();
     });
     this.resizeObserver.observe(this.elementRef.nativeElement);
+  }
+
+  /**
+   * 等待元素完成布局
+   */
+  private waitForLayout(): Promise<void> {
+    return new Promise((resolve) => {
+      const checkLayout = () => {
+        const rect = this.elementRef.nativeElement.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          resolve();
+        } else {
+          // 如果尺寸还是0，等待下一帧再检查
+          requestAnimationFrame(checkLayout);
+        }
+      };
+      
+      // 使用 setTimeout 确保在 Angular 变更检测之后
+      setTimeout(() => {
+        requestAnimationFrame(checkLayout);
+      }, 0);
+    });
   }
 
   ngOnDestroy() {
@@ -208,6 +229,8 @@ export class SubAppContainerComponent implements OnInit, AfterViewInit, OnDestro
     }
 
     if (this._visible) {
+      // 确保元素已完成布局
+      await this.waitForLayout();
       const bounds = this.calculateBounds();
       await this.wcvService.showSubApp(this.appId, bounds);
     } else {
@@ -223,12 +246,18 @@ export class SubAppContainerComponent implements OnInit, AfterViewInit, OnDestro
     // 这个值可能需要根据实际情况调整
     const titleBarHeight = (window as any).electronAPI?.platform?.isMacOS ? 28 : 0;
 
-    return {
+    // 确保边界有效
+    const bounds = {
       x: Math.round(rect.left),
       y: Math.round(rect.top + titleBarHeight),
       width: Math.round(rect.width),
       height: Math.round(rect.height)
     };
+
+    // 调试日志
+    console.log(`[SubAppContainer] ${this.appId} bounds:`, bounds);
+
+    return bounds;
   }
 
   private async updateBounds() {
