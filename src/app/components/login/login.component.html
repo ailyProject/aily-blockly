@@ -1,6 +1,6 @@
 <div class="login-box ccenter">
     <div class="inner">
-        <div class="header">登陆后即可使用我们的服务</div>
+        <div class="header">{{ 'LOGIN.HEADER' | translate }}</div>
         <div class="line"></div>
         <div class="btns">
             <div class="item ccenter" (click)="select('github')" [ngClass]="{'active':mode=='github'}">
@@ -21,7 +21,7 @@
         </div> -->
             <div class="item ccenter" (click)="select('phone')" [ngClass]="{'active':mode=='phone'}">
                 <div class="icon ccenter"><i class="fa-light fa-mobile"></i></div>
-                Phone
+                {{ 'LOGIN.PHONE' | translate }}
             </div>
 
         </div>
@@ -29,18 +29,18 @@
         @case ('github') {
         <div class="description">
             <div>
-                登录后您可以：
+                {{ 'LOGIN.BENEFITS_TITLE' | translate }}
                 <ul>
-                    <li>免费试用 AI 问答功能</li>
-                    <li>分享你的项目</li>
-                    <li>享受个性化的开发体验</li>
+                    <li>{{ 'LOGIN.BENEFIT_AI' | translate }}</li>
+                    <li>{{ 'LOGIN.BENEFIT_SHARE' | translate }}</li>
+                    <li>{{ 'LOGIN.BENEFIT_EXPERIENCE' | translate }}</li>
                 </ul>
                 <div class="notice">
-                    <strong>注意：</strong>我们会使用您的 GitHub 账号为我们的几个开源仓库点 star，这有助于支持我们的项目发展。
+                    <strong>{{ 'LOGIN.NOTICE_LABEL' | translate }}</strong>{{ 'LOGIN.NOTICE_CONTENT' | translate }}
                 </div>
             </div>
             <div class="login-btn">
-                <button nz-button nzType="primary" (click)="loginByGithub()">Github登录</button>
+                <button nz-button nzType="primary" (click)="loginByGithub()">{{ 'LOGIN.GITHUB_LOGIN' | translate }}</button>
             </div>
         </div>
         }
@@ -53,7 +53,7 @@
 
             </div>
             <div>
-                扫描二维码关注公众号并登录
+                {{ 'LOGIN.WECHAT_SCAN' | translate }}
             </div>
         </div>
         }
@@ -63,8 +63,8 @@
         @case ('phone') {
         <div class="description">
             <div>
-                暂未开放手机号注册<br />
-                手机号号登录仅限AI功能内测用户使用
+                {{ 'LOGIN.PHONE_NOT_OPEN' | translate }}<br />
+                {{ 'LOGIN.PHONE_BETA_ONLY' | translate }}
             </div>
         </div>
         <div class="phone-login-box">
@@ -72,23 +72,23 @@
                 <div class="ccenter">
                     <i class="fa-light fa-user"></i>
                 </div>
-                <input nz-input type="text" placeholder="请输入手机号" [(ngModel)]="inputUsername" />
+                <input nz-input type="text" [placeholder]="'LOGIN.PHONE_PLACEHOLDER' | translate" [(ngModel)]="inputUsername" />
             </div>
             <div class="item">
                 <div class="ccenter">
                     <i class="fa-light fa-lock"></i>
                 </div>
-                <input nz-input type="password" placeholder="请输入密码" [(ngModel)]="inputPassword" />
+                <input nz-input type="password" [placeholder]="'LOGIN.PASSWORD_PLACEHOLDER' | translate" [(ngModel)]="inputPassword" />
             </div>
             <div class="actions">
                 <button nz-button nzType="primary" [nzLoading]="isWaiting" (click)="loginByPhone()">
-                    {{ isWaiting ? '登录中...' : '登录' }}
+                    {{ isWaiting ? ('LOGIN.LOGGING_IN' | translate) : ('LOGIN.LOGIN' | translate) }}
                 </button>
             </div>
         </div>
         }
         @default {
-        <div class="text text2">点击选择登录方式</div>
+        <div class="text text2">{{ 'LOGIN.SELECT_METHOD' | translate }}</div>
         }
         }
     </div>

@@ -110,7 +110,7 @@ export class AuthService {
    * 用户登录
    */
   login(loginData: LoginRequest): Observable<LoginResponse> {
-    return this.http.post<LoginResponse>(API.login, loginData).pipe(
+    return this.http.post<LoginResponse>(API.login, { ...loginData, device_id: 'pc' }).pipe(
       map((response) => {
         // console.log("登录响应: ", response);
         if (response.status === 200 && response.data) {
@@ -616,7 +616,8 @@ export class AuthService {
     
     const requestData = {
       redirect_uri: 'ailyblockly://auth/callback',
-      state: state
+      state: state,
+      device_id: 'pc'
     };
 
     return this.http.post<CommonResponse>(API.githubBrowserAuthorize, requestData).pipe(
@@ -802,7 +803,8 @@ export class AuthService {
   exchangeGitHubToken(code: string, state: string): Observable<any> {
     const requestData = {
       code: code,
-      state: state
+      state: state,
+      device_id: 'pc'
     };
 
     return this.http.post<CommonResponse>(API.githubTokenExchange, requestData).pipe(

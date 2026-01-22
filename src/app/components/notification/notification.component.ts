@@ -16,6 +16,7 @@ import { UiService } from '../../services/ui.service';
 export class NotificationComponent {
 
   data: NoticeOptions;
+  isClosable = true;
 
   willClose = false;
 
@@ -41,7 +42,10 @@ export class NotificationComponent {
       if (data && data.showProgress !== false) {
         data.showProgress = true;
       }
-      this.data = data;
+
+      const closable = data ? (data.closable ?? data.state !== 'doing') : true;
+      this.isClosable = closable;
+      this.data = data ? { ...data, closable } : data;
 
       // 如果有进度值，启动进度动画
       if (this.data && this.data.progress !== undefined) {

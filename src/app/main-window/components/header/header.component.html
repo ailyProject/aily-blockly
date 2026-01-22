@@ -23,7 +23,7 @@
       @for (btn of headerBtns; track $index) {
       @if(showInRouter(btn)){
       <app-act-btn [icon]="btn.icon" [color]="btn.color" [(state)]="btn.state" nz-tooltip
-        nzTooltipTitle="{{ btn.name | translate}}" (click)="onClick(btn,$event)">
+        nzTooltipTitle="{{ btn.name | translate}}({{btn.text}})" (click)="onClick(btn,$event)" [attr.data-action]="btn.action">
       </app-act-btn>
       }
       }

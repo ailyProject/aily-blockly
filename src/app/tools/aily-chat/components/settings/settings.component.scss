@@ -113,6 +113,102 @@
                     }
                 }
 
+                // 添加API密钥表单样式
+                .add-api-form {
+                    background: #363636;
+                    padding: 12px;
+                    border-radius: 4px;
+                    margin-bottom: 10px;
+
+                    .form-row {
+                        margin-bottom: 8px;
+
+                        input {
+                            width: 100%;
+                            background: #2a2a2a;
+                            border: 1px solid #444;
+                            margin-bottom: 0;
+                            color: rgba(255, 255, 255, 0.7) !important;
+
+                            &:focus {
+                                border-color: #1890ff;
+                            }
+                        }
+
+                        // nz-select 样式覆盖
+                        ::ng-deep .ant-select-selector {
+                            background: #2a2a2a !important;
+                            border: 1px solid #444 !important;
+                            color: rgba(255, 255, 255, 0.7) !important;
+                        }
+
+                        ::ng-deep .ant-select-arrow {
+                            color: rgba(255, 255, 255, 0.45) !important;
+                        }
+
+                        ::ng-deep .ant-select-item-option-content {
+                            color: rgba(255, 255, 255, 0.7) !important;
+                        }
+
+                        &:last-of-type {
+                            margin-bottom: 0;
+                        }
+                    }
+
+                    .form-actions {
+                        margin-top: 10px;
+                        text-align: right;
+                    }
+                }
+
+                // 添加模型表单样式
+                .add-model-form {
+                    background: #363636;
+                    padding: 12px;
+                    border-radius: 4px;
+                    margin-bottom: 10px;
+
+                    .form-row {
+                        margin-bottom: 8px;
+
+                        input {
+                            width: 100%;
+                            background: #2a2a2a;
+                            border: 1px solid #444;
+                            margin-bottom: 0;
+                            color: rgba(255, 255, 255, 0.7) !important;
+
+                            &:focus {
+                                border-color: #1890ff;
+                            }
+                        }
+
+                        // nz-select 样式覆盖
+                        ::ng-deep .ant-select-selector {
+                            background: #2a2a2a !important;
+                            border: 1px solid #444 !important;
+                            color: rgba(255, 255, 255, 0.7) !important;
+                        }
+
+                        ::ng-deep .ant-select-arrow {
+                            color: rgba(255, 255, 255, 0.45) !important;
+                        }
+
+                        ::ng-deep .ant-select-item-option-content {
+                            color: rgba(255, 255, 255, 0.7) !important;
+                        }
+
+                        &:last-of-type {
+                            margin-bottom: 0;
+                        }
+                    }
+
+                    .form-actions {
+                        margin-top: 10px;
+                        text-align: right;
+                    }
+                }
+
                 .items-container {
                     display: grid;
                     grid-template-columns: 1fr;
@@ -138,6 +234,119 @@
 
                             &:hover {
                                 background: #404040;
+                            }
+                        }
+
+                        // API密钥项特定样式
+                        &.api-key-item {
+                            display: flex;
+                            align-items: center;
+                            gap: 8px;
+
+                            .api-key-info {
+                                flex: 1;
+
+                                .list-item {
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 6px;
+                                    padding: 8px 10px;
+
+                                    .api-key-name {
+                                        font-weight: 500;
+                                        color: rgba(255, 255, 255, 0.9);
+                                    }
+
+                                    .api-key-url {
+                                        color: rgba(255, 255, 255, 0.5);
+                                        font-size: 12px;
+                                        overflow: hidden;
+                                        text-overflow: ellipsis;
+                                        white-space: nowrap;
+                                        max-width: 200px;
+                                    }
+
+                                    .invalid-badge {
+                                        display: inline-block;
+                                        padding: 2px 6px;
+                                        background: #ff4d4f;
+                                        color: white;
+                                        font-size: 10px;
+                                        border-radius: 2px;
+                                        margin-left: auto;
+                                    }
+                                }
+                            }
+
+                            .delete-btn {
+                                flex-shrink: 0;
+                                padding: 4px 8px;
+                                height: auto;
+                                line-height: 1;
+
+                                i {
+                                    font-size: 14px;
+                                }
+                            }
+                        }
+
+                        // 模型项特定样式
+                        &.model-item {
+                            display: flex;
+                            align-items: center;
+                            gap: 8px;
+
+                            .model-info {
+                                flex: 1;
+
+                                .list-item {
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 6px;
+                                    padding: 8px 10px;
+
+                                    .model-name {
+                                        font-weight: 500;
+                                    }
+
+                                    .model-id {
+                                        color: rgba(255, 255, 255, 0.5);
+                                        font-size: 12px;
+                                    }
+
+                                    .custom-badge {
+                                        display: inline-block;
+                                        padding: 2px 6px;
+                                        background: #1890ff;
+                                        color: white;
+                                        font-size: 10px;
+                                        border-radius: 2px;
+                                        margin-left: auto;
+                                    }
+                                }
+
+                                .model-api-info {
+                                    padding: 2px 10px;
+                                    font-size: 11px;
+                                    color: rgba(255, 255, 255, 0.5);
+
+                                    .api关联 {
+                                        &.no-api {
+                                            color: #ff4d4f;
+                                        }
+                                    }
+                                }
+                            }
+
+                            .delete-btn {
+                                flex-shrink: 0;
+                                padding: 4px 8px;
+                                height: auto;
+                                line-height: 1;
+
+                                i {
+                                    font-size: 14px;
+                                }
                             }
                         }
                     }

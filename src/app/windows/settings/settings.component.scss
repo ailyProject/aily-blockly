@@ -197,6 +197,22 @@ ngx-simplebar {
       }
     }
   }
+
+  nz-select {
+    width: 350px !important;
+    margin-left: 0;
+
+    ::ng-deep {
+      nz-select-top-control {
+        border-radius: 2px;
+      }
+    }
+  }
+}
+
+.region-flag {
+  margin-right: 6px;
+  font-size: 16px;
 }
 
 [disabled] {

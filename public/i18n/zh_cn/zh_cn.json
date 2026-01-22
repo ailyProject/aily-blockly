@@ -65,7 +65,9 @@
         "MULTI_CUT": "剪切选中项",
         "MULTI_DELETE": "删除选中项",
         "MULTI_COMPRESS": "压缩为zip",
-        "LIB_MANAGER": "库管理"
+        "LIB_MANAGER": "库管理",
+        "AI_ASSISTANT": "AI助手",
+        "PROJECT_HUB": "项目广场"
     },
     "ESP32": {
         "UPLOAD_SPEED": "烧录速度",
@@ -95,8 +97,43 @@
         "FEEDBACK_DESC": "可以通过这里告知使用反馈",
         "WECHAT_GROUP": "用户微信群",
         "WECHAT_GROUP_DESC": "加入用户微信群，与其它用户交流",
+        "USER_GROUP": "用户社区",
+        "USER_GROUP_DESC": "加入社区，与其他用户交流",
+        "AI_APP_CENTER": "AI应用中心",
+        "AI_APP_CENTER_DESC": "点击前往探索AI硬件与边缘计算应用",
         "SPONSORS": "项目赞助者",
-        "SPONSORS_DESC": "本项目得到了以下企业/个人的赞助"
+        "SPONSORS_DESC": "本项目得到了以下企业/个人的赞助",
+        "NEWS": "动态",
+        "ONBOARDING": {
+            "STEP1_TITLE": "创建新项目",
+            "STEP1_DESC": "点击这里可以创建一个新的编程项目，选择开发板和编程语言开始您的创作之旅。",
+            "STEP2_TITLE": "打开已有项目",
+            "STEP2_DESC": "如果您之前已经创建过项目，可以点击这里打开已有的项目文件夹。",
+            "STEP3_TITLE": "项目广场",
+            "STEP3_DESC": "浏览和探索社区分享的优秀项目，获取灵感和学习资源。",
+            "STEP4_TITLE": "AI助手",
+            "STEP4_DESC": "AI助手能帮你创建项目，你只需要描述您的需求即可。项目生成后，AI助手还可以解答问题、生成代码、修复错误。",
+            "STEP5_TITLE": "SenseCraft AI应用中心",
+            "STEP5_DESC": "在这里你可以探索各种AI硬件与边缘计算应用，发现更多可能性。",
+            "STEP6_TITLE": "最新动态",
+            "STEP6_DESC": "这里会显示软件的最新动态和公告信息，帮助您了解最新功能和更新。",
+            "STEP7_TITLE": "加入用户社区",
+            "STEP7_DESC": "遇到问题？想分享作品？加入我们的用户社区，与其他开发者一起交流学习！"
+        }
+    },
+    "BLOCKLY": {
+        "ONBOARDING": {
+            "TOOLBOX_TITLE": "积木工具箱",
+            "TOOLBOX_DESC": "这里是积木分类区域，点击不同的分类可以找到各种功能积木块，拖拽到右边工作区使用。",
+            "WORKSPACE_TITLE": "工作区",
+            "WORKSPACE_DESC": "这是您的编程工作区，可以在这里拖拽、连接积木块来创建程序。支持缩放、拖动画布。",
+            "BUILD_TITLE": "编译程序",
+            "BUILD_DESC": "完成积木拼接后，点击这里编译程序。编译成功后可以看到生成的代码。",
+            "UPLOAD_TITLE": "烧录程序",
+            "UPLOAD_DESC": "连接开发板后，点击这里将程序烧录到开发板上运行。",
+            "LIB_MANAGER_TITLE": "库管理器",
+            "LIB_MANAGER_DESC": "点击这里打开库管理器，可以安装、卸载各种功能扩展库，为您的项目添加更多积木块。"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "前 {{count}} 个应用会显示在顶部工具栏",
@@ -122,7 +159,7 @@
             "THEME": "主题设置",
             "BLOCKLY": "Blockly设置",
             "COMPILATION": "编译设置",
-            "REPOSITORY": "仓库设置",
+            "REPOSITORY": "服务区域",
             "DEPENDENCIES": "全局依赖",
             "MCP": "MCP",
             "DEVMODE": "开发者模式"
@@ -135,7 +172,9 @@
             "BLOCKLY_MINIMAP": "Blockly缩略图",
             "FLYOUT_AUTO_CLOSE": "自动关闭工具箱",
             "COMPILATION_OPTIONS": "编译选项",
+            "REGION": "服务区域",
             "REPOSITORY_URLS": "仓库地址",
+            "API_SERVER": "API服务器",
             "BOARD_LIST": "开发板列表",
             "LIBRARY_LIST": "库列表",
             "INSTALL": "安装",
@@ -157,7 +196,9 @@
             "SEARCH": "搜索开发板",
             "READ_DOC": "文档",
             "ADD_BOARD": "添加开发板",
-            "DEV": "dev"
+            "DEV": "dev",
+            "BY_BRAND": "按品牌",
+            "BY_CORE": "按核心"
         },
         "FORM": {
             "DEVMODE": "开发框架",
@@ -167,7 +208,8 @@
             "NAME_EXISTS": "项目名称已存在，请修改"
         },
         "BUTTONS": {
-            "USE_THIS": "使用此开发板",
+            "USE_THIS": "创建新项目",
+            "USE_THIS_FROM_HUB": "从广场加载项目",
             "NEXT": "下一步",
             "PREV": "上一步",
             "CREATE": "创建项目",
@@ -275,7 +317,12 @@
         "WARNING_INVALID_EMAIL": "请输入有效的邮箱地址",
         "SUCCESS_MESSAGE": "感谢您的反馈！",
         "ERROR_SUBMIT_FAILED": "提交失败，请稍后重试",
-        "NO_DEPENDENCIES": "无"
+        "NO_DEPENDENCIES": "无",
+        "IMAGE_UPLOADING": "正在上传图片...",
+        "IMAGE_UPLOAD_SUCCESS": "图片上传成功",
+        "IMAGE_UPLOAD_FAILED": "图片上传失败，请重试",
+        "ATTACH_HINT": "拖放、粘贴或",
+        "SELECT_FILE": "选择图片"
     },
     "AILY_CHAT": {
         "TITLE": "AI助手",
@@ -294,7 +341,17 @@
         "STOP": "停止",
         "MODE_AGENT_FULL": "代理模式",
         "MODE_QA_FULL": "问答模式",
-        "STOP_CURRENT_SESSION_FIRST": "请先停止当前会话，再新建"
+        "STOP_CURRENT_SESSION_FIRST": "请先停止当前会话，再新建",
+        "ONBOARDING": {
+            "STEP1_TITLE": "输入框",
+            "STEP1_DESC": "在这里输入你想问的问题或需要AI帮助完成的任务，按 Enter 发送，Ctrl+Enter 换行",
+            "STEP2_TITLE": "添加上下文",
+            "STEP2_DESC": "点击这里可以添加文件或文件夹作为上下文，帮助AI更好地理解你的需求",
+            "STEP3_TITLE": "模式切换",
+            "STEP3_DESC": "代理模式可以自动执行任务（如编写代码、修复错误），问答模式仅回答问题",
+            "STEP4_TITLE": "发送/停止",
+            "STEP4_DESC": "点击发送消息，AI正在回复时可点击停止"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "项目设置",
@@ -339,7 +396,24 @@
         "NO_DOCUMENTATION": "该开发板没有提供文档链接"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "请先选择串口"
+        "SELECT_PORT_FIRST": "请先选择串口",
+        "PORT": "串口",
+        "BAUD_RATE": "波特率",
+        "MORE_SETTINGS": "更多设置",
+        "HEX_DISPLAY": "HEX显示",
+        "AUTO_WRAP": "自动换行",
+        "AUTO_SCROLL": "自动滚动",
+        "TIMESTAMP": "时间戳",
+        "SHOW_CTRL_CHAR": "显示不可见字符",
+        "SEARCH": "搜索",
+        "EXPORT": "导出",
+        "CLEAR": "清除",
+        "SEND_BY_ENTER": "回车发送",
+        "END_R": "\\r 结束符",
+        "END_N": "\\n 结束符",
+        "PORT_OPENED": "串口已打开",
+        "PORT_CLOSED": "串口已关闭",
+        "NO_CHART_DATA": "暂无数据"
     },
     "MODEL_DEPLOY": {
         "TITLE": "模型部署",
@@ -425,5 +499,39 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "默认低，触发高",
         "DEFAULT_HIGH_TRIGGER_LOW": "默认高，触发低",
         "CANCEL": "取消"
+    },
+    "LOGIN": {
+        "HEADER": "登陆后即可使用我们的服务",
+        "PHONE": "手机号",
+        "BENEFITS_TITLE": "登录后您可以：",
+        "BENEFIT_AI": "免费试用 AI 问答功能",
+        "BENEFIT_SHARE": "分享你的项目",
+        "BENEFIT_EXPERIENCE": "享受个性化的开发体验",
+        "NOTICE_LABEL": "注意：",
+        "NOTICE_CONTENT": "我们会使用您的 GitHub 账号为我们的几个开源仓库点 star，这有助于支持我们的项目发展。",
+        "GITHUB_LOGIN": "Github登录",
+        "WECHAT_SCAN": "扫描二维码关注公众号并登录",
+        "PHONE_NOT_OPEN": "暂未开放手机号注册",
+        "PHONE_BETA_ONLY": "手机号登录仅限AI功能内测用户使用",
+        "PHONE_PLACEHOLDER": "请输入手机号",
+        "PASSWORD_PLACEHOLDER": "请输入密码",
+        "LOGGING_IN": "登录中...",
+        "LOGIN": "登录",
+        "SELECT_METHOD": "点击选择登录方式",
+        "REDIRECTING_GITHUB": "正在跳转到 GitHub 授权页面...",
+        "GITHUB_LOGIN_FAILED": "启动 GitHub 登录失败，请检查网络连接",
+        "GITHUB_ERROR": "GitHub 登录失败",
+        "ENTER_CREDENTIALS": "请输入用户名和密码",
+        "LOGIN_SUCCESS": "登录成功",
+        "LOGIN_FAILED": "登录失败",
+        "LOGIN_NETWORK_ERROR": "登录失败，请检查网络连接"
+    },
+    "COMMON": {
+        "ONBOARDING": {
+            "SKIP": "跳过",
+            "PREV": "上一步",
+            "NEXT": "下一步",
+            "DONE": "完成"
+        }
     }
 }

@@ -57,9 +57,11 @@
           <div class="desc-box">
             <div class="title">
               {{currentBoard.nickname}}
+              @if(currentBoard.url){
               <div class="doc btn link" (click)="openUrl(currentBoard.url)">
                 {{ 'PROJECT_NEW.BOARD.READ_DOC' | translate }}
               </div>
+              }
             </div>
             <div class="content">{{ currentBoard.description }}</div>
           </div>

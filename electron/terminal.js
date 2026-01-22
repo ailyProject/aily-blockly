@@ -20,6 +20,11 @@ const promptRegex = promptRegexMap[process.platform]
 const terminals = new Map();
 
 function registerTerminalHandlers(mainWindow) {
+  // 获取当前平台的shell
+  ipcMain.handle("terminal-get-shell", (event) => {
+    return shellMap[process.platform];
+  });
+
   ipcMain.handle("terminal-create", (event, args) => {
     console.log("terminal-create args ", args);
     return new Promise((resolve, reject) => {

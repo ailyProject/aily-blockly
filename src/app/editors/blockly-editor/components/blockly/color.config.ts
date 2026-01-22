@@ -1,9 +1,0 @@
-export let colorList = [
-"#BE52F2","#D48CF6","#E9C5FB",
-"#FFCF5C","#FFDF92","#FFEFC9",
-"#0084F4","#4D9BFF","#99C2FF",
-"#FF647C","#FF8E9D","#FFC2D1",
-"#6979F8","#8E9CFF","#C2C9FF",
-"#F2994A","#F5B17B","#F8D0AC",
-"#00C48C","#4ED8B8","#99E2D9",
-]

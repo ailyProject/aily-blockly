@@ -46,15 +46,16 @@
     }
 
     .lib-list {
-        display: flex;
-        flex-wrap: wrap;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, 365px);
+        justify-content: center;
         gap: 15px;
         width: 100%;
         padding: 15px;
 
         .lib-item {
-            width: 365px;
-            max-width: 24vw;
+            width: 100%;
+            max-width: 365px;
             height: 165px;
             background: #2b2b2b;
             border-radius: 5px;

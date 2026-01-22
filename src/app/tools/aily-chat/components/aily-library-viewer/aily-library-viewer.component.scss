@@ -5,12 +5,61 @@
   padding: 5px 10px;
   background-color: #3a3a3a;
   color: #ccc;
+  min-height: 60px;
 
   &:hover {
     background-color: #3f3f3f;
   }
 }
 
+// 加载卡片
+.loading-card {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 50px;
+
+  .loading-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-top-color: #4a9eff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    .loading-text {
+      color: #888;
+      font-size: 13px;
+    }
+  }
+}
+
+// 错误卡片
+.error-card {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 50px;
+
+  .error-content {
+    .error-text {
+      color: #999;
+      font-size: 13px;
+    }
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .img-box {
   i {

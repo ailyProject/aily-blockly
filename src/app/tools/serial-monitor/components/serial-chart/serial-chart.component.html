@@ -1,0 +1,10 @@
+<div class="chart-box">
+  <div id="LightweightChart" style="width: 100%; height: 100%;"></div>
+  @if(!hasChartData){
+  <div class="chart-empty-state">
+    <i class="fa-light fa-chart-line"></i>
+    <span>{{ 'SERIAL.NO_CHART_DATA' | translate }}</span>
+    <div class="help" (click)="openUrl('https://aily.pro/doc/serial-monitor#%E6%8A%98%E7%BA%BF%E5%9B%BE%E5%8A%9F%E8%83%BD')">使用方法</div>
+  </div>
+  }
+</div>

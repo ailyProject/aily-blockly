@@ -60,10 +60,10 @@ export class SubjectItemComponent {
           this.initializeItemsLoadingState();
         } else {
           // 如果数据未加载，等待加载完成后查找
-          this.playgroundService.loadExamplesList().then(() => {
-            this.exampleItem = this.playgroundService.findExampleByName(name);
-            this.initializeItemsLoadingState();
-          });
+          // this.playgroundService.loadExamplesList().then(() => {
+          //   this.exampleItem = this.playgroundService.findExampleByName(name);
+          //   this.initializeItemsLoadingState();
+          // });
         }
       }
     });

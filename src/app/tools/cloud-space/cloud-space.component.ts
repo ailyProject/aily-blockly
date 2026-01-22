@@ -322,6 +322,7 @@ export class CloudSpaceComponent {
 
   async setCurrentProjectCloudId(cloudId: string) {
     const currentProjectData = this.projectService.currentPackageData;
+    console.log('当前项目数据:', currentProjectData);
     if (!currentProjectData) return;
 
     currentProjectData.cloudId = cloudId;
@@ -333,54 +334,65 @@ export class CloudSpaceComponent {
   async syncToCloud() {
     this.isSyncing = true;
 
-    // 保存当前项目
-    await this.projectService.save(this.projectService.currentProjectPath);
+    try {
+      // 等待保存完成
+      const result = await this.projectService.save(this.projectService.currentProjectPath);
+      if (result.success) {
+        console.log('项目保存成功，开始同步到云端');
+      } else {
+        this.message.error('项目保存失败，无法同步: ' + (result.error || '未知错误'));
+        this.isSyncing = false;
+        return;
+      }
 
-    const archivePath = await this.packageProject(this.projectService.currentProjectPath);
-    if (!archivePath) {
-      this.isSyncing = false;
-      return;
-    }
+      const archivePath = await this.packageProject(this.projectService.currentProjectPath);
+      if (!archivePath) {
+        this.isSyncing = false;
+        return;
+      }
 
-    // 获取当前项目数据
-    const currentProjectData = await this.projectService.getPackageJson();
-    if (!currentProjectData) {
-      this.isSyncing = false;
-      return;
-    }
-
-    // 等待一小段时间确保文件完全写入
-    await new Promise(resolve => setTimeout(resolve, 200));
+      // 获取当前项目数据（此时 package.json 已经更新完成）
+      const currentProjectData = await this.projectService.getPackageJson();
+      console.log('当前项目数据:', currentProjectData);
+      if (!currentProjectData) {
+        this.isSyncing = false;
+        return;
+      }
 
     this.cloudService.syncProject({
       pid: currentProjectData?.cloudId,
       projectData: currentProjectData,
       archive: archivePath
     }).subscribe(async res => {
-      try {
-        if (res && res.status === 200) {
-          await this.setCurrentProjectCloudId(res.data.id);
-          this.message.success('同步成功');
-          // 更新项目列表
-          await this.getCloudProjects();
-          // console.log('同步成功, 云端项目ID:', res.data.id);
-        } else {
-          console.error('同步失败, 服务器返回错误:', res);
-          this.message.error('同步失败: ' + (res?.messages || '未知错误'));
+        try {
+          if (res && res.status === 200) {
+            await this.setCurrentProjectCloudId(res.data.id);
+            this.message.success('同步成功');
+            // 更新项目列表
+            await this.getCloudProjects();
+            // console.log('同步成功, 云端项目ID:', res.data.id);
+          } else {
+            console.error('同步失败, 服务器返回错误:', res);
+            this.message.error('同步失败: ' + (res?.messages || '未知错误'));
+          }
+        } catch (e) {
+          console.error('同步后处理失败:', e);
+          this.message.error('同步成功但更新本地信息失败: ' + (e.message || e));
+        } finally {
+          this.isSyncing = false;
+          this.delete7zFile(archivePath);
         }
-      } catch (e) {
-        console.error('同步后处理失败:', e);
-        this.message.error('同步成功但更新本地信息失败: ' + (e.message || e));
-      } finally {
+      }, err => {
         this.isSyncing = false;
+        console.error('同步失败:', err);
+        this.message.error('同步失败: ' + err);
         this.delete7zFile(archivePath);
-      }
-    }, err => {
+      });
+    } catch (error) {
       this.isSyncing = false;
-      console.error('同步失败:', err);
-      this.message.error('同步失败: ' + err);
-      this.delete7zFile(archivePath);
-    });
+      console.error('同步流程出错:', error);
+      this.message.error('同步失败: ' + error);
+    }
   } 
   
   showEditor = false;
@@ -417,6 +429,10 @@ export class CloudSpaceComponent {
       });
     } else {
       this.cloudService.publishProject(item.id).subscribe(res => {
+        if(res.status !== 200){
+          this.message.error(`${res.messages}`);
+          return;
+        }
         this.message.info(`项目 "${item.nickname}" 已设为公开`);
         item.is_published = true;
       });

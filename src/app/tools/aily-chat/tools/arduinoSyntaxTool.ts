@@ -108,7 +108,7 @@ export class ArduinoSyntaxTool {
       return {
         is_error: false,
         content: `✅ **代码语法检查通过**
-
+<system-reminder>语法检查通过不代表代码逻辑正确，仅表示代码符合Arduino语法规范。请确保代码逻辑符合预期。</system-reminder>
 🔍 检查工具：aily-builder lint
 ⏱️ 检查耗时：${result.executionTime}ms
 📝 检查结果：无语法错误${result.warnings && result.warnings.length > 0 ? `，但有 ${result.warnings.length} 个警告` : ''}`

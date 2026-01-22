@@ -1,5 +1,6 @@
 import path from "path";
 import { ToolUseResult } from "./tools";
+import { normalizePath } from "../services/security.service";
 
 /**
  * ABI文件编辑工具
@@ -51,34 +52,6 @@ import { ToolUseResult } from "./tools";
  *   replaceMode: false
  * });
  */
-
-// 路径处理函数
-function normalizePath(inputPath: string): string {
-    if (!inputPath) return '';
-    
-    let normalizedPath = inputPath;
-    
-    if (typeof inputPath === 'string') {
-        const isWindowsPath = /^[A-Za-z]:\\/.test(inputPath);
-        
-        if (isWindowsPath) {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '\\')
-                .replace(/\//g, '\\');
-        } else {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '/')
-                .replace(/\\/g, '/')
-                .replace(/\/+/g, '/');
-        }
-        
-        if (normalizedPath.length > 1 && (normalizedPath.endsWith('/') || normalizedPath.endsWith('\\'))) {
-            normalizedPath = normalizedPath.slice(0, -1);
-        }
-    }
-    
-    return normalizedPath;
-}
 
 /**
  * 递归查找指定路径下的所有.abi文件

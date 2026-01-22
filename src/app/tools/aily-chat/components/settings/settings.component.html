@@ -1,6 +1,6 @@
 <div class="editor-box">
     <div class="test">以下为测试功能，普通用户暂不可用</div>
-    <div class="content sscroll" style="filter: blur(1px);">
+    <div class="content sscroll">
         <div class="item">
             <div class="item-title">
                 <span>最大循环次数</span>
@@ -10,6 +10,7 @@
                 <input nz-input [(ngModel)]="maxCount" />
             </div>
         </div>
+
         <div class="item items-section">
             <div class="item-title">
                 <span>安全工作区</span>
@@ -23,15 +24,150 @@
                     </label>
                 </div>
                 <div class="items-container">
-                    <div *ngFor="let option of workspaceOptions" class="item-wrapper">
+                    @for (option of workspaceOptions; track option.displayName) {
+                    <div class="item-wrapper">
                         <label nz-checkbox [(ngModel)]="option.enabled" (ngModelChange)="onWorkspaceCheckedChange()"
                             class="list-item">
                             {{ option.displayName }}
                         </label>
                     </div>
+                    }
                 </div>
             </div>
         </div>
+
+        <!-- API密钥管理 -->
+        <div class="item items-section">
+            <div class="item-title">
+                <span>API密钥配置</span>
+                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('apiKey')"></i>
+            </div>
+            <div class="items-list">
+                <div class="items-header">
+                    <span class="items-count">{{ apiKeysList.length }} 个配置</span>
+                    <button nz-button nzType="link" nzSize="small" (click)="toggleAddApiKeyForm()">
+                        <i class="fa-light" [ngClass]="showAddApiKeyForm ? 'fa-minus' : 'fa-plus'"></i>
+                        {{ showAddApiKeyForm ? '取消' : '添加配置' }}
+                    </button>
+                </div>
+
+                <!-- 添加API密钥表单 -->
+                @if(showAddApiKeyForm){
+                <div class="add-api-form">
+                    <div class="form-row">
+                        <input nz-input [(ngModel)]="newApiKey.name" placeholder="配置名称 (如: OpenAI API)" />
+                    </div>
+                    <div class="form-row">
+                        <input nz-input [(ngModel)]="newApiKey.baseUrl" placeholder="Base URL (如: https://api.openai.com/v1)" />
+                    </div>
+                    <div class="form-row">
+                        <input nz-input [(ngModel)]="newApiKey.apiKey" placeholder="API Key" />
+                    </div>
+                    <div class="form-actions">
+                        <button nz-button nzType="primary" nzSize="small" (click)="addApiKey()">
+                            确认添加
+                        </button>
+                    </div>
+                </div>
+                }
+
+                <!-- API密钥列表 -->
+                <div class="items-container sscroll">
+                    @for (apiKey of apiKeysList; track apiKey.id) {
+                    <div class="item-wrapper api-key-item">
+                        <div class="api-key-info">
+                            <label nz-checkbox [(ngModel)]="apiKey.enabled" (ngModelChange)="toggleApiKeyEnabled(apiKey.id)"
+                                class="list-item">
+                                <span class="api-key-name">{{ apiKey.name }}</span>
+                                <span class="api-key-url">({{ apiKey.baseUrl }})</span>
+                            </label>
+                        </div>
+                        <button nz-button nzType="link" nzSize="small" nzDanger (click)="removeApiKey(apiKey.id)"
+                            class="delete-btn">
+                            <i class="fa-light fa-trash"></i>
+                        </button>
+                    </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="item items-section">
+            <div class="item-title">
+                <span>模型管理</span>
+                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('tools')"></i>
+            </div>
+            <div class="items-list">
+                <div class="items-header">
+                    <label nz-checkbox [(ngModel)]="allModelsChecked" [nzIndeterminate]="modelsIndeterminate"
+                        (ngModelChange)="onAllModelsCheckedChange($event)">
+                        全选
+                    </label>
+                    <span class="items-count">{{ enabledModelsCount }} / {{ modelList.length }} 已启用</span>
+                    <button nz-button nzType="link" nzSize="small" (click)="toggleAddModelForm()">
+                        <i class="fa-light" [ngClass]="showAddModelForm ? 'fa-minus' : 'fa-plus'"></i>
+                        {{ showAddModelForm ? '取消' : '添加模型' }}
+                    </button>
+                </div>
+                
+                <!-- 添加模型表单 -->
+                @if(showAddModelForm){
+                <div class="add-model-form">
+                    <div class="form-row">
+                        <input nz-input [(ngModel)]="newModel.model" placeholder="模型ID (如: gpt-4)" />
+                    </div>
+                    <div class="form-row">
+                        <input nz-input [(ngModel)]="newModel.name" placeholder="显示名称 (如: GPT-4)" />
+                    </div>
+                    <div class="form-row">
+                        <input nz-input [(ngModel)]="newModel.family" placeholder="模型厂商 (如: openai)" />
+                    </div>
+                    <div class="form-row">
+                        <nz-select [(ngModel)]="newModel.apiKeyId" nzPlaceHolder="使用的API" nzAllowClear>
+                            @for (apiKey of apiKeysList; track apiKey.id) {
+                            <nz-option 
+                                [nzValue]="apiKey.id" 
+                                [nzLabel]="apiKey.name"
+                                [nzDisabled]="!apiKey.enabled">
+                            </nz-option>
+                            }
+                        </nz-select>
+                    </div>
+                    <div class="form-actions">
+                        <button nz-button nzType="primary" nzSize="small" (click)="addCustomModel()">
+                            确认添加
+                        </button>
+                    </div>
+                </div>
+                }
+                
+                <div class="items-container sscroll">
+                    @for (model of modelList; track model.model) {
+                    <div class="item-wrapper model-item">
+                        <div class="model-info">
+                            <label nz-checkbox [(ngModel)]="model.enabled" (ngModelChange)="onModelCheckedChange()"
+                                class="list-item">
+                                <span class="model-name">{{ model.name }}</span>
+                                <span class="model-id">({{ model.model }})</span>
+                            </label>
+                            <div class="model-api-info">
+                                @if(model.apiKeyId){
+                                <span class="api关联">API: {{ getApiKeyName(model.apiKeyId) }}</span>
+                                } @else {
+                                <span class="api关联 no-api">未关联API</span>
+                                }
+                            </div>
+                        </div>
+                        <button nz-button nzType="link" nzSize="small" nzDanger (click)="removeModel(model)"
+                            class="delete-btn">
+                            <i class="fa-light fa-trash"></i>
+                        </button>
+                    </div>
+                    }
+                </div>
+            </div>
+        </div>
+
         <div class="item items-section">
             <div class="item-title">
                 <span>可用工具</span>
@@ -46,30 +182,16 @@
                     <span class="items-count">{{ enabledToolsCount }} / {{ availableTools.length }} 已启用</span>
                 </div>
                 <div class="items-container sscroll">
-                    <div *ngFor="let tool of availableTools" class="item-wrapper">
+                    @for (tool of availableTools; track tool.displayName) {
+                    <div class="item-wrapper">
                         <label nz-checkbox [(ngModel)]="tool.enabled" (ngModelChange)="onToolCheckedChange()"
                             class="list-item">
                             {{ tool.displayName }}
                         </label>
                     </div>
+                    }
                 </div>
             </div>
-        </div>
-
-        <div class="item">
-            <div class="item-title">
-                <span>使用自有API KEY</span>
-                <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('apiKey')"></i>
-                <span style="margin: -1px 0 0 10px;">
-                    <nz-switch [(ngModel)]="useCustomApiKey" [nzSize]="'small'"></nz-switch>
-                </span>
-            </div>
-            @if(useCustomApiKey){
-            <div>
-                <input nz-input [(ngModel)]="baseUrl" placeholder="base url" />
-                <input nz-input [(ngModel)]="apiKey" placeholder="api key" />
-            </div>
-            }
         </div>
     </div>
 

@@ -15,8 +15,6 @@ export class ActBtnComponent {
 
   @Output() stateChange = new EventEmitter<'default' | 'doing' | 'done' | 'error' | 'warn'>();
 
-  disabled = false;
-
   constructor() {
   }
 

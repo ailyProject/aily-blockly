@@ -3,16 +3,9 @@
     height: 38px;
     transform: all 0.3s;
     position: relative;
+    cursor: pointer;
 
-    * {
-        pointer-events: none;
-    }
-
-    .default{
-        cursor: pointer;
-    }
-
-    .lloading{
+    .lloading {
         cursor: wait;
     }
 

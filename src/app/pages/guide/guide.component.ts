@@ -2,6 +2,7 @@ import { Component, OnInit, AfterViewInit } from '@angular/core';
 import { GUIDE_MENU } from '../../configs/menu.config';
 import { UiService } from '../../services/ui.service';
 import { ProjectService } from '../../services/project.service';
+import { ConfigService } from '../../services/config.service';
 import { version } from '../../../../package.json';
 import { TranslateModule } from '@ngx-translate/core';
 import { Router } from '@angular/router';
@@ -9,6 +10,8 @@ import { ElectronService } from '../../services/electron.service';
 import Splide from '@splidejs/splide';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
+import { OnboardingService } from '../../services/onboarding.service';
+import { GUIDE_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 
 @Component({
   selector: 'app-guide',
@@ -22,6 +25,42 @@ export class GuideComponent implements OnInit, AfterViewInit {
   showMenu = true;
   showMore = false;
   sponsors: any[] = [];
+  showImgUrl: string | null = null;
+  imgLoading = false;
+  private imgRetryCount = 0;
+  private readonly maxRetry = 1;
+
+  showImg(url: string) {
+    this.imgLoading = true;
+    this.imgRetryCount = 0;
+    this.showImgUrl = url;
+  }
+
+  hideImg() {
+    this.showImgUrl = null;
+    this.imgLoading = false;
+    this.imgRetryCount = 0;
+  }
+
+  onImgLoad() {
+    this.imgLoading = false;
+  }
+
+  onImgError() {
+    if (this.imgRetryCount < this.maxRetry && this.showImgUrl) {
+      this.imgRetryCount++;
+      const currentUrl = this.showImgUrl;
+      // 200ms 后重新加载
+      setTimeout(() => {
+        if (this.showImgUrl === currentUrl) {
+          // 添加时间戳强制重新加载
+          this.showImgUrl = currentUrl + (currentUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+        }
+      }, 200);
+    } else {
+      this.imgLoading = false;
+    }
+  }
 
   get recentlyProjects() {
     return this.projectService.recentlyProjects
@@ -32,11 +71,47 @@ export class GuideComponent implements OnInit, AfterViewInit {
     private projectService: ProjectService,
     private router: Router,
     private electronService: ElectronService,
-    private http: HttpClient
+    private http: HttpClient,
+    private configService: ConfigService,
+    private onboardingService: OnboardingService
   ) { }
+
+  /**
+   * 获取微信二维码 URL（根据当前 region 动态生成）
+   */
+  get wechatQrcodeUrl(): string {
+    const resourceUrl = this.configService.getCurrentResourceUrl();
+    return `${resourceUrl}/wechat.jpg`;
+  }
+
+  get qqQrcodeUrl(): string {
+    const resourceUrl = this.configService.getCurrentResourceUrl();
+    return `${resourceUrl}/qq.jpg`
+  }
 
   ngOnInit() {
     this.loadSponsors();
+    this.checkFirstLaunch();
+  }
+
+  // 检查是否是第一次启动
+  private checkFirstLaunch() {
+    const hasSeenOnboarding = this.configService.data.onboardingCompleted;
+    if (!hasSeenOnboarding) {
+      // 延迟显示引导，确保页面已渲染
+      setTimeout(() => {
+        this.onboardingService.start(GUIDE_ONBOARDING_CONFIG, {
+          onClosed: () => this.onOnboardingClosed(),
+          onCompleted: () => this.onOnboardingClosed()
+        });
+      }, 500);
+    }
+  }
+
+  // 跳过或关闭引导
+  private onOnboardingClosed() {
+    this.configService.data.onboardingCompleted = true;
+    this.configService.save();
   }
 
   ngAfterViewInit() {
@@ -136,6 +211,9 @@ export class GuideComponent implements OnInit, AfterViewInit {
       case 'playground-open':
         this.router.navigate(['/main/playground']);
         break;
+      case 'tool-open':
+        this.uiService.turnTool(item.data);
+        break;
       default:
         break;
     }
@@ -150,25 +228,23 @@ export class GuideComponent implements OnInit, AfterViewInit {
   }
 
   // 重新加载微信二维码图片
-  retryLoadImage() {
-    setTimeout(() => {
-      const img = document.querySelector('.qrcode') as HTMLImageElement;
-      if (img) {
-        const originalSrc = 'https://dl.diandeng.tech/blockly/wechat.jpg';
-        img.src = `${originalSrc}?t=${Date.now()}`;
-      }
-    }, 1000);
+  // retryLoadImage() {
+  //   setTimeout(() => {
+  //     const img = document.querySelector('.qrcode') as HTMLImageElement;
+  //     if (img) {
+  //       const originalSrc = 'https://dl.diandeng.tech/blockly/wechat.jpg';
+  //       img.src = `${originalSrc}?t=${Date.now()}`;
+  //     }
+  //   }, 1000);
+  // }
 
-  }
-
-  test() {
-    console.log(this.electronService.isWindowFocused());
-    setTimeout(() => {
-      // if (!this.electronService.isWindowFocused()) {
-      //   this.electronService.notify('测试', '开发阶段刷卡JFK拉萨机');
-      // }
-    }, 12000)
-  }
+  // test() {
+  //   console.log(this.electronService.isWindowFocused());
+  //   setTimeout(() => {
+  //     // if (!this.electronService.isWindowFocused()) {
+  //     // }
+  //   }, 12000)
+  // }
 
   openFeedback() {
     this.uiService.openFeedback();

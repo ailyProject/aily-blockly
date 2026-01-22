@@ -1,5 +1,5 @@
-<div class="log-box sscroll" #logBox>
-  <div *uiScroll="let item of datasource" 
+<cdk-virtual-scroll-viewport autosize class="log-box">
+  <div *cdkVirtualFor="let item of logList; trackBy: trackByFn" 
        class="item" 
        [ngClass]="{'error':item.state=='error','warn':item.state=='warn','info':item.state=='info'}"
        (click)="handleClick(item, $event)" 
@@ -9,4 +9,4 @@
     <div class="title">{{item.title}}</div>
     <div class="text" [innerHTML]="item.detail | ansi"></div>
   </div>
-</div>
+</cdk-virtual-scroll-viewport>

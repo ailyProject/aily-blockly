@@ -1,0 +1,63 @@
+<div class="aily-task-action-viewer" (dblclick)="logDetail()">
+    <div class="action-content">
+        <!-- 图标和消息 -->
+        <div class="action-header">
+            <div class="action-icon">
+                <div class="icon ccenter" [ngClass]="getIconStateClass()">
+                    <i [class]="getIconClass()"></i>
+                </div>
+            </div>
+            <div class="action-message">
+                {{ message }}
+            </div>
+        </div>
+        
+        <!-- 操作按钮 -->
+        @if (!isActionTaken && !isHistory) {
+        <div class="action-buttons">
+            @switch (actionType) {
+                @case ('max_messages') {
+                    <button class="action-btn primary" (click)="onContinue()">
+                        <i class="fa-light fa-arrow-right"></i>
+                        <span>继续对话</span>
+                    </button>
+                    <button class="action-btn secondary" (click)="onDismiss()">
+                        <i class="fa-light fa-stop"></i>
+                        <span>停止</span>
+                    </button>
+                }
+                @case ('error') {
+                    <button class="action-btn primary" (click)="onRetry()">
+                        <i class="fa-light fa-rotate-right"></i>
+                        <span>重试</span>
+                    </button>
+                    <button class="action-btn secondary" (click)="onDismiss()">
+                        <i class="fa-light fa-stop"></i>
+                        <span>停止</span>
+                    </button>
+                }
+                @case ('timeout') {
+                    <button class="action-btn primary" (click)="onRetry()">
+                        <i class="fa-light fa-rotate-right"></i>
+                        <span>重试</span>
+                    </button>
+                    <button class="action-btn secondary" (click)="onDismiss()">
+                        <i class="fa-light fa-stop"></i>
+                        <span>停止</span>
+                    </button>
+                }
+                @default {
+                    <button class="action-btn primary" (click)="onContinue()">
+                        <i class="fa-light fa-arrow-right"></i>
+                        <span>继续</span>
+                    </button>
+                    <button class="action-btn secondary" (click)="onDismiss()">
+                        <i class="fa-light fa-stop"></i>
+                        <span>停止</span>
+                    </button>
+                }
+            }
+        </div>
+        }
+    </div>
+</div>

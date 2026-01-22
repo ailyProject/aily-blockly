@@ -27,7 +27,8 @@ export class AilyButtonViewerComponent {
 
     buttons: ButtonData[] = [];
 
-    isDisabled = false
+    isDisabled = false;
+    isHistory = false; // 历史记录模式，隐藏按钮
 
     constructor(private chatService: ChatService) {
     }
@@ -48,6 +49,9 @@ export class AilyButtonViewerComponent {
             this.buttons = [];
             return;
         }
+
+        // 检查是否为历史记录模式
+        this.isHistory = this.data.isHistory === true;
 
         try {
             // 如果 data.buttons 存在，使用它；否则使用 data 本身

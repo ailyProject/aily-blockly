@@ -12,6 +12,7 @@ import { ConfigService } from '../../services/config.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { TranslateModule } from '@ngx-translate/core';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
+import { NzSelectModule } from 'ng-zorro-antd/select';
 
 @Component({
   selector: 'app-settings',
@@ -24,7 +25,8 @@ import { NzSwitchModule } from 'ng-zorro-antd/switch';
     NzRadioModule,
     SimplebarAngularModule,
     TranslateModule,
-    NzSwitchModule
+    NzSwitchModule,
+    NzSelectModule
   ],
   templateUrl: './settings.component.html',
   styleUrl: './settings.component.scss',
@@ -59,7 +61,7 @@ export class SettingsComponent {
     },
     {
       name: 'SETTINGS.SECTIONS.REPOSITORY',
-      icon: 'fa-light fa-book-bookmark'
+      icon: 'fa-light fa-globe'
     },
     {
       name: 'SETTINGS.SECTIONS.DEPENDENCIES',
@@ -101,6 +103,49 @@ export class SettingsComponent {
     );
   }
 
+  get npmRegistryList() {
+    return this.configService.getRegionList();
+  }
+
+  get apiServerList() {
+    return this.configService.getRegionList();
+  }
+
+  // 区域对应的国旗映射
+  regionFlags: { [key: string]: string } = {
+    'cn': '🇨🇳',
+    'eu': '🇪🇺',
+    'us': '🇺🇸',
+    'jp': '🇯🇵',
+    'kr': '🇰🇷',
+    'localhost': ''
+  };
+
+  // 获取区域列表（仅启用的区域）
+  get regionList() {
+    return this.configService.getEnabledRegionList();
+  }
+
+  // 获取区域对应的国旗
+  getRegionFlag(key: string): string {
+    return this.regionFlags[key] || '🌐';
+  }
+
+  // 当前选择的区域
+  get selectedRegion() {
+    return this.configData.region || 'cn';
+  }
+
+  set selectedRegion(value: string) {
+    this.configData.region = value;
+  }
+
+  // 切换区域
+  async onRegionChange(regionKey: string) {
+    await this.configService.setRegion(regionKey);
+    await this.updateBoardList();
+  }
+
   get langList() {
     return this.translationService.languageList;
   }
@@ -116,7 +161,6 @@ export class SettingsComponent {
   appdata_path: string
 
   mcpServiceList = []
-
 
   constructor(
     private uiService: UiService,
@@ -138,10 +182,12 @@ export class SettingsComponent {
     const platform = this.configService.data.platform;
     // this.appdata_path = this.configService.data.appdata_path[platform].replace('%HOMEPATH%', window['path'].getUserHome());
     this.appdata_path = window['path'].getAppDataPath();
-    // this.settingsService.getBoardList(this.appdata_path, this.configService.data.npm_registry[0]);
-    this.settingsService.getToolList(this.appdata_path, this.configService.data.npm_registry[0]);
-    this.settingsService.getSdkList(this.appdata_path, this.configService.data.npm_registry[0]);
-    this.settingsService.getCompilerList(this.appdata_path, this.configService.data.npm_registry[0]);
+    // 使用当前区域的仓库地址
+    const npmRegistry = this.configService.getCurrentNpmRegistry();
+    // this.settingsService.getBoardList(this.appdata_path, npmRegistry);
+    this.settingsService.getToolList(this.appdata_path, npmRegistry);
+    this.settingsService.getSdkList(this.appdata_path, npmRegistry);
+    this.settingsService.getCompilerList(this.appdata_path, npmRegistry);
   }
 
   selectLang(lang) {

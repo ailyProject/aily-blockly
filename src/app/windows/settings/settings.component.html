@@ -38,7 +38,7 @@
 
           <!-- 主题设置 -->
           <div id="SETTINGS.SECTIONS.THEME" class="section">
-            <h2 class="section-title">{{ 'SETTINGS.SECTIONS.THEME' | translate }} <span>部分效果需重新打开项目生效</span></h2>
+            <h2 class="section-title">{{ 'SETTINGS.SECTIONS.THEME' | translate }}</h2>
             <div class="right-inner">
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.UI_THEME' | translate }}:</div>
@@ -98,15 +98,16 @@
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.REPOSITORY' | translate }}</h2>
             <div class="right-inner">
               <div class="item">
-                <div>{{ 'SETTINGS.FIELDS.REPOSITORY_URLS' | translate }}:</div>
-                <input nz-input [(ngModel)]="configData.npm_registry[0]" [disabled]="true" />
+                <div>{{ 'SETTINGS.FIELDS.REGION' | translate }}:</div>
+                <nz-radio-group [(ngModel)]="selectedRegion" (ngModelChange)="onRegionChange($event)" [nzSize]="'small'"
+                  nzButtonStyle="solid">
+                  @for (region of regionList; track region.key) {
+                  <label nz-radio-button [nzValue]="region.key">
+                    {{ region.name }}
+                  </label>
+                  }
+                </nz-radio-group>
               </div>
-              <!-- <div class="instructions">{{ 'SETTINGS.FIELDS.REPOSITORY_URLS' | translate }}</div>
-              <textarea class="registry" nz-input [(ngModel)]="npmRegistryListStr"></textarea>
-              <div class="instructions">{{ 'SETTINGS.FIELDS.BOARD_LIST' | translate }}</div>
-              <textarea class="registry" nz-input [(ngModel)]="npmRegistryListStr"></textarea>
-              <div class="instructions">{{ 'SETTINGS.FIELDS.LIBRARY_LIST' | translate }}</div>
-              <textarea class="registry" nz-input [(ngModel)]="npmRegistryListStr"></textarea> -->
             </div>
           </div>
 
@@ -117,8 +118,8 @@
                 {{ 'SETTINGS.SECTIONS.DEPENDENCIES' | translate }}
               </div>
               <div class="search-box">
-                <input nz-input placeholder="{{'SEARCH'}}"
-                  [(ngModel)]="boardSearchKeyword" (ngModelChange)="onBoardSearchChange()" />
+                <input nz-input placeholder="{{'SEARCH'}}" [(ngModel)]="boardSearchKeyword"
+                  (ngModelChange)="onBoardSearchChange()" />
                 <i class="fa-light fa-search"></i>
               </div>
             </h2>

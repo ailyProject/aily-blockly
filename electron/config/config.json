@@ -8,15 +8,33 @@
     "darwin": "~/Library/aily-project"
   },
   "project_path": "%HOMEPATH%\\Documents\\aily-project",
-  "npm_registry": [
-    "https://registry.diandeng.tech"
-  ],
-  "resource": [
-    "https://blockly.diandeng.tech"
-  ],
-  "updater": [
-    "https://dl.diandeng.tech/blockly"
-  ],
+  "region": "cn",
+  "regions": {
+    "cn": {
+      "name": "China",
+      "enabled": true,
+      "api_server": "https://aapi.diandeng.tech",
+      "npm_registry": "https://registry.diandeng.tech",
+      "resource": "https://blockly.diandeng.tech",
+      "updater": "https://dl.diandeng.tech/blockly"
+    },
+    "eu": {
+      "name": "Europe",
+      "enabled": true,
+      "api_server": "https://api.aily.pro",
+      "npm_registry": "https://registry.aily.pro",
+      "resource": "https://rs1.aily.pro",
+      "updater": "https://dl.aily.pro/blockly"
+    },
+    "localhost": {
+      "name": "Local",
+      "enabled": true,
+      "api_server": "https://aapi.diandeng.tech",
+      "npm_registry": "http://localhost:4873",
+      "resource": "http://localhost:4874",
+      "updater": ""
+    }
+  },
   "compile": {
     "verbose": true,
     "warnings": "error"

@@ -29,7 +29,9 @@
         "UPDATE": "Verificar atualizações",
         "USER_AUTH": "Serviço do Usuário",
         "USER_SPACE": "Espaço na Nuvem",
-        "LIB_MANAGER": "Gerenciador de Bibliotecas"
+        "LIB_MANAGER": "Gerenciador de Bibliotecas",
+        "AI_ASSISTANT": "Assistente de IA",
+        "PROJECT_HUB": "Central de Projetos"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Velocidade de Upload",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "Envie feedback sobre sua experiência",
         "WECHAT_GROUP": "Grupo de Usuários WeChat",
         "WECHAT_GROUP_DESC": "Junte-se ao grupo de usuários WeChat para se comunicar com outros usuários",
+        "USER_GROUP": "Comunidade de Usuários",
+        "USER_GROUP_DESC": "Junte-se à comunidade para se comunicar com outros usuários",
+        "AI_APP_CENTER": "Centro de Aplicativos IA",
+        "AI_APP_CENTER_DESC": "Clique para explorar aplicações de hardware IA e edge computing",
         "SPONSORS": "Patrocinadores do Projeto",
-        "SPONSORS_DESC": "Este projeto é patrocinado pelas seguintes empresas/indivíduos"
+        "SPONSORS_DESC": "Este projeto é patrocinado pelas seguintes empresas/indivíduos",
+        "NEWS": "Notícias",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Criar novo projeto",
+            "STEP1_DESC": "Clique aqui para criar um novo projeto de programação. Escolha sua placa e linguagem de programação para começar sua jornada criativa.",
+            "STEP2_TITLE": "Abrir projeto existente",
+            "STEP2_DESC": "Se você já criou projetos antes, clique aqui para abrir uma pasta de projeto existente.",
+            "STEP3_TITLE": "Central de Projetos",
+            "STEP3_DESC": "Navegue e explore excelentes projetos compartilhados pela comunidade para obter inspiração e recursos de aprendizado.",
+            "STEP4_TITLE": "Assistente de IA",
+            "STEP4_DESC": "O assistente de IA ajuda você a criar projetos. Basta descrever o que você precisa. Após a geração, ele também pode responder perguntas, gerar código e corrigir erros.",
+            "STEP5_TITLE": "Hub de IA SenseCraft",
+            "STEP5_DESC": "Explore aqui vários hardwares de IA e aplicações de computação de borda, e descubra mais possibilidades.",
+            "STEP6_TITLE": "Últimas Notícias",
+            "STEP6_DESC": "Aqui você encontrará as últimas notícias e anúncios sobre o software, para se manter atualizado sobre novos recursos e atualizações.",
+            "STEP7_TITLE": "Junte-se à Comunidade",
+            "STEP7_DESC": "Tem perguntas? Quer compartilhar seu trabalho? Junte-se à nossa comunidade de usuários para conectar e aprender com outros makers!"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "Os primeiros {{count}} aplicativos serão mostrados na barra de ferramentas",
@@ -121,7 +144,9 @@
             "SEARCH": "Pesquisar placas",
             "READ_DOC": "Ler documentação",
             "ADD_BOARD": "Adicionar placa",
-            "DEV": "dev"
+            "DEV": "dev",
+            "BY_BRAND": "Por Marca",
+            "BY_CORE": "Por Núcleo"
         },
         "FORM": {
             "DEVMODE": "Framework de desenvolvimento",
@@ -132,6 +157,7 @@
         },
         "BUTTONS": {
             "USE_THIS": "Usar esta Placa",
+            "USE_THIS_FROM_HUB": "Carregar projeto do Hub",
             "NEXT": "Próximo",
             "PREV": "Anterior",
             "CREATE": "Criar projeto",
@@ -239,7 +265,12 @@
         "WARNING_INVALID_EMAIL": "Por favor, insira um endereço de e-mail válido",
         "SUCCESS_MESSAGE": "Obrigado pelo seu feedback!",
         "ERROR_SUBMIT_FAILED": "Falha ao enviar, por favor tente mais tarde",
-        "NO_DEPENDENCIES": "Nenhuma"
+        "NO_DEPENDENCIES": "Nenhuma",
+        "IMAGE_UPLOADING": "Enviando imagem...",
+        "IMAGE_UPLOAD_SUCCESS": "Imagem enviada com sucesso",
+        "IMAGE_UPLOAD_FAILED": "Falha ao enviar imagem, tente novamente",
+        "ATTACH_HINT": "Anexar arquivos arrastando, colando ou",
+        "SELECT_FILE": "selecionar arquivos"
     },
     "AILY_CHAT": {
         "TITLE": "Assistente IA",
@@ -258,7 +289,17 @@
         "STOP": "Parar",
         "MODE_AGENT_FULL": "Modo Agente",
         "MODE_QA_FULL": "Modo P&R",
-        "STOP_CURRENT_SESSION_FIRST": "Por favor, pare a sessão atual antes de criar uma nova"
+        "STOP_CURRENT_SESSION_FIRST": "Por favor, pare a sessão atual antes de criar uma nova",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Caixa de entrada",
+            "STEP1_DESC": "Digite aqui suas perguntas ou tarefas para assistência da IA. Pressione Enter para enviar, Ctrl+Enter para nova linha",
+            "STEP2_TITLE": "Adicionar contexto",
+            "STEP2_DESC": "Clique aqui para adicionar arquivos ou pastas como contexto para ajudar a IA a entender melhor suas necessidades",
+            "STEP3_TITLE": "Alternar modo",
+            "STEP3_DESC": "O modo Agente pode executar tarefas automaticamente (escrever código, corrigir erros). O modo P&R apenas responde perguntas",
+            "STEP4_TITLE": "Enviar/Parar",
+            "STEP4_DESC": "Clique para enviar mensagem, ou parar quando a IA estiver respondendo"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "Configurações do Projeto",
@@ -303,7 +344,24 @@
         "NO_DOCUMENTATION": "Documentação não disponível para esta placa"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "Selecione uma porta serial primeiro"
+        "SELECT_PORT_FIRST": "Selecione uma porta serial primeiro",
+        "PORT": "Porta",
+        "BAUD_RATE": "Taxa de transmissão",
+        "MORE_SETTINGS": "Mais configurações",
+        "HEX_DISPLAY": "Exibição HEX",
+        "AUTO_WRAP": "Quebra de linha automática",
+        "AUTO_SCROLL": "Rolagem automática",
+        "TIMESTAMP": "Carimbo de data/hora",
+        "SHOW_CTRL_CHAR": "Mostrar caracteres invisíveis",
+        "SEARCH": "Pesquisar",
+        "EXPORT": "Exportar",
+        "CLEAR": "Limpar",
+        "SEND_BY_ENTER": "Enviar com Enter",
+        "END_R": "Fim de linha \\r",
+        "END_N": "Fim de linha \\n",
+        "PORT_OPENED": "Porta serial aberta",
+        "PORT_CLOSED": "Porta serial fechada",
+        "NO_CHART_DATA": "Sem dados"
     },
     "MODEL_DEPLOY": {
         "TITLE": "Implantação de Modelo",
@@ -389,5 +447,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "Padrão Baixo, Gatilho Alto",
         "DEFAULT_HIGH_TRIGGER_LOW": "Padrão Alto, Gatilho Baixo",
         "CANCEL": "Cancelar"
+    },
+    "LOGIN": {
+        "HEADER": "Faça login para usar nossos serviços",
+        "PHONE": "Telefone",
+        "BENEFITS_TITLE": "Após o login, você pode:",
+        "BENEFIT_AI": "Experimentar a função AI Q&A gratuitamente",
+        "BENEFIT_SHARE": "Compartilhar seus projetos",
+        "BENEFIT_EXPERIENCE": "Desfrutar de uma experiência de desenvolvimento personalizada",
+        "NOTICE_LABEL": "Nota: ",
+        "NOTICE_CONTENT": "Usaremos sua conta do GitHub para dar estrela aos nossos repositórios de código aberto, o que ajuda no desenvolvimento do projeto.",
+        "GITHUB_LOGIN": "Login com Github",
+        "WECHAT_SCAN": "Escaneie o código QR para seguir e fazer login",
+        "PHONE_NOT_OPEN": "Registro por telefone ainda não está disponível",
+        "PHONE_BETA_ONLY": "Login por telefone é apenas para testadores beta de AI",
+        "PHONE_PLACEHOLDER": "Digite o número de telefone",
+        "PASSWORD_PLACEHOLDER": "Digite a senha",
+        "LOGGING_IN": "Entrando...",
+        "LOGIN": "Entrar",
+        "SELECT_METHOD": "Clique para selecionar o método de login",
+        "REDIRECTING_GITHUB": "Redirecionando para a página de autorização do GitHub...",
+        "GITHUB_LOGIN_FAILED": "Falha ao iniciar o login do GitHub. Verifique a conexão de rede",
+        "GITHUB_ERROR": "Falha no login do GitHub",
+        "ENTER_CREDENTIALS": "Por favor, digite nome de usuário e senha",
+        "LOGIN_SUCCESS": "Login bem-sucedido",
+        "LOGIN_FAILED": "Falha no login",
+        "LOGIN_NETWORK_ERROR": "Falha no login, verifique a conexão de rede"
     }
 }

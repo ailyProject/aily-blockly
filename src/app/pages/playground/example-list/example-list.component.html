@@ -1,6 +1,6 @@
 <div class="content-box" #contentBox>
     <div class="example-list">
-        @for( example of exampleList;track $index) {
+        @for( example of exampleList;track example.uuid) {
         <div class="example-item">
             <div class="img-box">
                 <img [src]="example.image_url" alt="" (error)="onImgError($event)" />

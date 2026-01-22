@@ -1,4 +1,5 @@
 <div class="aily-button-viewer" (dblclick)="logDetail()">
+    @if (!isHistory) {
     <div class="btns">
         @for (button of buttons; track button.action || $index) {
         <button nz-button [nzType]="button.type" [nzSize]="'small'"
@@ -6,5 +7,6 @@
             {{ button.text }}
         </button>
         }
-    <div>
+    </div>
+    }
 </div>

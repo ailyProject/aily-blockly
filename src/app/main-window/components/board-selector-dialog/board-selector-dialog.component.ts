@@ -36,7 +36,7 @@ export class BoardSelectorDialogComponent implements OnInit {
   loadingText: string = '';
 
   get resourceUrl() {
-    return this.configService.data.resource[0] + '/imgs/boards/';
+    return this.configService.getCurrentResourceUrl() + '/imgs/boards/';
   }
 
   constructor(

@@ -30,6 +30,7 @@ export class BlocklyService {
   loadedLibraries = new Set<string>(); // libPackagePath
 
   codeSubject = new BehaviorSubject<string>('');
+  dependencySubject = new BehaviorSubject<string>('');
 
   boardConfig;
 
@@ -86,17 +87,17 @@ export class BlocklyService {
       'node_modules',
       ...libPackageName.split('/')
     );
-    
+
     // 防止重复加载
     if (this.loadedLibraries.has(libPackagePath)) {
       return;
     }
-    
+
     try {
       // 加载block
       // const blockFileIsExist = this.electronService.exists(libPackagePath + '\\block.json');
       const blockFileIsExist = this.electronService.exists(this.electronService.pathJoin(libPackagePath, 'block.json'));
-      
+
       if (blockFileIsExist) {
         // 加载generator
         // const generatorFileIsExist = this.electronService.exists(libPackagePath + '\\generator.js');
@@ -129,7 +130,7 @@ export class BlocklyService {
         // block.json 不存在时，不标记为已加载
         return;
       }
-      
+
       // 标记为已加载
       this.loadedLibraries.add(libPackagePath);
     } catch (error) {
@@ -145,7 +146,7 @@ export class BlocklyService {
       'node_modules',
       ...libPackageName.split('/')
     );
-    
+
     // 直接调用 removeLibrary 函数
     this.removeLibrary(libPackagePath);
   }
@@ -186,7 +187,7 @@ export class BlocklyService {
     if (existingIndex !== -1) {
       return;
     }
-    
+
     this.toolbox.contents.push(toolboxItem);
     this.workspace.updateToolbox(this.toolbox);
     this.workspace.render();
@@ -200,15 +201,15 @@ export class BlocklyService {
         resolve(true);
         return;
       }
-      
+
       // 在加载前记录当前已有的generator函数
       const blockTypesBefore = this.getRegisteredGenerators();
-      
+
       let script = document.createElement('script');
       script.type = 'text/javascript';
       script.src = 'file:///' + filePath;
       script.setAttribute('data-generator-path', filePath); // 标记script来源
-      
+
       script.onload = () => {
         // 加载后检测新增的generator函数
         const blockTypesAfter = this.getRegisteredGenerators();
@@ -217,12 +218,12 @@ export class BlocklyService {
         console.log(`Generator loaded from ${filePath}, registered blocks:`, newBlockTypes);
         resolve(true);
       };
-      
+
       script.onerror = (error: any) => {
         console.error(`Generator loading failed: ${filePath}`, error);
         resolve(false);
       };
-      
+
       document.getElementsByTagName('head')[0].appendChild(script);
     });
   }
@@ -232,12 +233,12 @@ export class BlocklyService {
     const generators = [];
     // Blockly的generator通常注册在 Blockly.Arduino、Blockly.Python等对象上
     if ((Blockly as any).Arduino) {
-      generators.push(...Object.keys((Blockly as any).Arduino).filter(key => 
+      generators.push(...Object.keys((Blockly as any).Arduino).filter(key =>
         typeof (Blockly as any).Arduino[key] === 'function'
       ));
     }
     if ((Blockly as any).Python) {
-      generators.push(...Object.keys((Blockly as any).Python).filter(key => 
+      generators.push(...Object.keys((Blockly as any).Python).filter(key =>
         typeof (Blockly as any).Python[key] === 'function'
       ));
     }
@@ -247,15 +248,15 @@ export class BlocklyService {
   removeLibrary(libPackagePath) {
     // 路径已经是标准格式，无需再次分割
     // electronService.pathJoin已经处理了路径分隔符
-    
+
     // 检查是否已加载
     if (!this.loadedLibraries.has(libPackagePath)) {
       console.warn(`库 ${libPackagePath} 未加载,无需移除`);
       return;
     }
-    
+
     console.log(`开始移除库: ${libPackagePath}`);
-    
+
     // 读取要移除的库的信息
     // 移除block定义
     const blockFileIsExist = this.electronService.exists(this.electronService.pathJoin(libPackagePath, 'block.json'));
@@ -287,7 +288,7 @@ export class BlocklyService {
     if (generatorFileIsExist) {
       this.removeLibGenerator(this.electronService.pathJoin(libPackagePath, 'generator.js'));
     }
-    
+
     // 从已加载库列表中移除
     this.loadedLibraries.delete(libPackagePath);
     console.log(`库 ${libPackagePath} 移除完成`);
@@ -363,7 +364,7 @@ export class BlocklyService {
       });
       this.loadedGenerators.delete(scriptSrc);
     }
-    
+
     // 查找并移除相关脚本标签
     const scripts = document.getElementsByTagName('script');
     for (let i = scripts.length - 1; i >= 0; i--) { // 倒序遍历避免索引问题
@@ -379,12 +380,12 @@ export class BlocklyService {
 
   reset() {
     console.log('开始重置 BlocklyService...');
-    
+
     this.iconsMap.clear();
     this.blockDefinitionsMap.clear();
     this.loadedGenerators.clear();
     this.loadedLibraries.clear();
-    
+
     // 移除所有加载的脚本标签（block.js 和 generator.js）
     const scripts = document.getElementsByTagName('script');
     const scriptSrcsToRemove = [];
@@ -410,8 +411,8 @@ export class BlocklyService {
     const generatorTypes = ['Arduino', 'Python', 'JavaScript', 'Dart', 'Lua', 'PHP'];
     generatorTypes.forEach(type => {
       if ((Blockly as any)[type]) {
-        const keysToDelete = Object.keys((Blockly as any)[type]).filter(key => 
-          typeof (Blockly as any)[type][key] === 'function' && 
+        const keysToDelete = Object.keys((Blockly as any)[type]).filter(key =>
+          typeof (Blockly as any)[type][key] === 'function' &&
           !key.startsWith('init') && // 保留init等系统方法
           !key.startsWith('finish')
         );
@@ -440,7 +441,7 @@ export class BlocklyService {
 
     // 重置其他可能的状态
     this.codeSubject.next('');
-    
+
     // console.log('BlocklyService 重置完成');
   }
 

@@ -1,36 +1,20 @@
 import { ToolUseResult } from "./tools";
-
-// 路径处理函数
-function normalizePath(inputPath: string): string {
-    if (!inputPath) return '';
-    
-    let normalizedPath = inputPath;
-    
-    if (typeof inputPath === 'string') {
-        const isWindowsPath = /^[A-Za-z]:\\/.test(inputPath);
-        
-        if (isWindowsPath) {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '\\')
-                .replace(/\//g, '\\');
-        } else {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '/')
-                .replace(/\\/g, '/')
-                .replace(/\/+/g, '/');
-        }
-        
-        if (normalizedPath.length > 1 && (normalizedPath.endsWith('/') || normalizedPath.endsWith('\\'))) {
-            normalizedPath = normalizedPath.slice(0, -1);
-        }
-    }
-    
-    return normalizedPath;
-}
+import { 
+    PathSecurityContext, 
+    validateDirectoryOperation,
+    isCriticalRemovalTarget,
+    normalizePath 
+} from "../services/security.service";
+import { 
+    logFileOperation, 
+    completeAuditLog, 
+    logBlockedOperation 
+} from "../services/audit-log.service";
 
 /**
  * 删除文件夹工具
  * @param params 参数
+ * @param securityContext 安全上下文（可选）
  * @returns 工具执行结果
  */
 export async function deleteFolderTool(
@@ -38,8 +22,12 @@ export async function deleteFolderTool(
         path: string;
         createBackup?: boolean;
         recursive?: boolean;
-    }
+    },
+    securityContext?: PathSecurityContext
 ): Promise<ToolUseResult> {
+    const startTime = Date.now();
+    let auditLogId: string | null = null;
+    
     try {
         let { path: folderPath, createBackup = true, recursive = true } = params;
         
@@ -55,6 +43,32 @@ export async function deleteFolderTool(
                 content: `无效的文件夹路径: "${folderPath}"` 
             };
         }
+
+        // ==================== 安全验证 ====================
+        if (securityContext) {
+            auditLogId = logFileOperation('deleteFolder', folderPath, params, 'high');
+            
+            // 检查是否为关键删除目标
+            const criticalCheck = isCriticalRemovalTarget(folderPath, securityContext);
+            if (!criticalCheck.allowed) {
+                logBlockedOperation('deleteFolderTool', 'deleteFolder', folderPath, criticalCheck.reason || '禁止删除关键目录');
+                return { 
+                    is_error: true, 
+                    content: `安全检查未通过: ${criticalCheck.reason}` 
+                };
+            }
+            
+            // 验证目录操作安全性
+            const securityCheck = validateDirectoryOperation(folderPath, securityContext, 'delete');
+            if (!securityCheck.allowed) {
+                logBlockedOperation('deleteFolderTool', 'deleteFolder', folderPath, securityCheck.reason || '安全检查未通过');
+                return { 
+                    is_error: true, 
+                    content: `安全检查未通过: ${securityCheck.reason}` 
+                };
+            }
+        }
+        // ==================== 安全验证结束 ====================
 
         // 检查文件夹是否存在
         if (!window['fs'].existsSync(folderPath)) {
@@ -79,7 +93,7 @@ export async function deleteFolderTool(
         if (createBackup) {
             const dirName = window['path'].basename(folderPath);
             const parentDir = window['path'].dirname(folderPath);
-            backupPath = window['path'].join(parentDir, `ZBAK_${dirName}`);
+            backupPath = window['path'].join(parentDir, `ABIBAK_${dirName}`);
 
             await window['fs'].mkdirSync(backupPath, { recursive: true });
 
@@ -106,6 +120,11 @@ export async function deleteFolderTool(
         // 删除文件夹
         await window['fs'].rmdirSync(folderPath, { recursive, force: true });
         
+        // 记录成功
+        if (auditLogId) {
+            completeAuditLog(auditLogId, true, { duration: Date.now() - startTime });
+        }
+        
         let resultMessage = `文件夹删除成功: ${folderPath}`;
         if (createBackup) {
             resultMessage += `\n备份文件夹: ${backupPath}`;
@@ -117,6 +136,14 @@ export async function deleteFolderTool(
         };
     } catch (error: any) {
         console.warn("删除文件夹失败:", error);
+        
+        // 记录失败
+        if (auditLogId) {
+            completeAuditLog(auditLogId, false, { 
+                duration: Date.now() - startTime,
+                errorMessage: error.message 
+            });
+        }
         
         let errorMessage = `删除文件夹失败: ${error.message}`;
         if (error.code) {

@@ -1,5 +1,39 @@
 import { ToolUseResult } from "./tools";
 import { injectTodoReminder } from "./todoWriteTool";
+import { normalizePath } from "../services/security.service";
+import { lintAndFormat, shouldLint } from "../services/lintService";
+
+/**
+ * 辅助函数：检查编辑后的文件是否有 lint 错误
+ * @param filePath 文件路径
+ * @param content 文件内容
+ * @param successMessage 成功消息
+ * @returns 带 lint 结果的工具返回
+ */
+function createEditResultWithLint(
+    filePath: string,
+    content: string,
+    successMessage: string
+): ToolUseResult {
+    // 对 .json 和 .js 文件进行 lint 检测
+    let lintMessage = '';
+    if (shouldLint(filePath) && content) {
+        lintMessage = lintAndFormat(content, filePath);
+    }
+
+    // 如果有 lint 错误，返回带警告的结果
+    if (lintMessage) {
+        return {
+            is_error: true,
+            content: `${successMessage}${lintMessage}`
+        };
+    }
+
+    return {
+        is_error: false,
+        content: successMessage
+    };
+}
 
 /**
  * 文件编辑工具 - 支持多种编辑模式
@@ -73,34 +107,6 @@ function detectFileEncoding(filePath: string): BufferEncoding {
 }
 
 /**
- * 路径处理函数 - 转换为绝对路径（Windows或Unix）
- */
-function normalizePath(inputPath: string): string {
-    if (!inputPath || inputPath.trim() === '') {
-        return '';
-    }
-    
-    const path = window['path'];
-    
-    // 检查是否为绝对路径（支持 Windows 和 Unix）
-    const isAbsolutePath = /^([A-Za-z]:\\|\\\\|\/)/i.test(inputPath);
-    
-    // 如果已经是绝对路径，直接返回
-    if (isAbsolutePath) {
-        return inputPath;
-    }
-    
-    // 否则相对于当前工作目录
-    if (path && typeof path.resolve === 'function') {
-        const cwd = window['process']?.cwd?.() || '';
-        return cwd ? path.resolve(cwd, inputPath) : inputPath;
-    }
-    
-    // 如果 path.resolve 不可用，返回原路径
-    return inputPath;
-}
-
-/**
  * 编辑文件工具
  * @param params 参数
  * @returns 工具执行结果
@@ -146,7 +152,7 @@ export async function editFileTool(
         if (!normalizedFilePath || normalizedFilePath.trim() === '') {
             const toolResult = {
                 is_error: true,
-                content: `❌ 无效的文件路径: "${filePath}"`
+                content: `❌ 无效的文件路径: "${filePath}", 请传入需要编辑的文件的有效路径。`
             };
             return injectTodoReminder(toolResult, 'editFileTool');
         }
@@ -210,10 +216,9 @@ export async function editFileTool(
                 }
                 fs.writeFileSync(normalizedFilePath, newString, 'utf-8');
                 
-                const toolResult = {
-                    is_error: false,
-                    content: `✅ 新文件创建成功\n文件: ${normalizedFilePath}\n行数: ${newString.split('\n').length}`
-                };
+                // lint 检测新创建的文件
+                const successMsg = `✅ 新文件创建成功\n文件: ${normalizedFilePath}\n行数: ${newString.split('\n').length}`;
+                const toolResult = createEditResultWithLint(normalizedFilePath, newString, successMsg);
                 return injectTodoReminder(toolResult, 'editFileTool');
             }
             
@@ -258,10 +263,9 @@ export async function editFileTool(
             const changedLines = newString.split('\n').length;
             const oldLines = oldString.split('\n').length;
             
-            const toolResult = {
-                is_error: false,
-                content: `✅ 文件编辑成功\n文件: ${normalizedFilePath}\n修改位置: 第 ${beforeLines} 行\n行数变化: ${oldLines} → ${changedLines} 行`
-            };
+            // lint 检测编辑后的文件
+            const successMsg = `✅ 文件编辑成功\n文件: ${normalizedFilePath}\n修改位置: 第 ${beforeLines} 行\n行数变化: ${oldLines} → ${changedLines} 行`;
+            const toolResult = createEditResultWithLint(normalizedFilePath, updatedContent, successMsg);
             return injectTodoReminder(toolResult, 'editFileTool');
         }
         
@@ -385,10 +389,9 @@ export async function editFileTool(
         // 写入文件
         fs.writeFileSync(normalizedFilePath, finalContent, encoding);
         
-        const toolResult = {
-            is_error: false,
-            content: `✅ 文件编辑成功\n文件: ${normalizedFilePath}\n操作: ${operationDescription}`
-        };
+        // lint 检测编辑后的文件
+        const successMsg = `✅ 文件编辑成功\n文件: ${normalizedFilePath}\n操作: ${operationDescription}`;
+        const toolResult = createEditResultWithLint(normalizedFilePath, finalContent, successMsg);
         return injectTodoReminder(toolResult, 'editFileTool');
         
     } catch (error: any) {

@@ -3,7 +3,7 @@ const os = require("os");
 const fs = require("fs");
 const _ = require("lodash");
 const windowStateKeeper = require('electron-window-state');
-const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, net } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 
@@ -15,7 +15,7 @@ if (isWin32) {
   app.setAppUserModelId("pro.aily.blockly");
 }
 
-PROTOCOL = "abis";
+const PROTOCOL = "abis";
 
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
@@ -587,6 +587,179 @@ function escapePath(path) {
   return path.replace(/(\s|[()&|;<>`$\\])/g, '\\$1');
 }
 
+// 检查URL延迟
+function checkLatency(url, resource=false) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let pingUrl = url;
+    if (!pingUrl.endsWith('/')) {
+      pingUrl += '/';
+    }
+    if (resource) {
+      pingUrl += 'boards-ai.json';
+    } else {
+      pingUrl += 'ping';
+    }
+    try {
+      // console.log('[节点检测] Checking latency for URL:', pingUrl);
+      const request = net.request({ method: 'HEAD', url: pingUrl });
+      request.on('response', (response) => {
+        const end = Date.now();
+        response.on('end', () => {
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            resolve({ url, latency: end - start });
+          } else {
+            // console.warn(`[节点检测] ${pingUrl} 返回状态码: ${response.statusCode}`);
+            resolve({ url, latency: Infinity, error: `Status ${response.statusCode}` });
+          }
+        });
+        response.on('error', (err) => {
+          // console.warn(`[节点检测] ${pingUrl} 响应错误:`, err);
+          resolve({ url, latency: Infinity, error: 'Response error' });
+        });
+        response.resume();
+      });
+      request.on('error', (error) => {
+        console.warn(`[节点检测] ${pingUrl} 请求错误:`, error);
+        resolve({ url, latency: Infinity, error: error.message || 'Request error' });
+      });
+      request.end();
+    } catch (e) {
+      console.warn(`[节点检测] ${pingUrl} 异常:`, e);
+      resolve({ url, latency: Infinity, error: e.message || 'Exception' });
+    }
+  });
+}
+
+// 获取最快URL
+async function getFastestUrl(urls, item_key='') {
+
+  console.log('[节点检测] 检测最快URL列表:', urls);
+  if (!urls || urls.length === 0) return null;
+  if (urls.length === 1) return urls[0];
+
+  const isResource = item_key === 'resource';
+  const timeout = isResource ? 8000 : 5000; // resource 检测需要下载文件，给更长超时
+  
+  try {
+    // 使用 Promise.allSettled 确保获取所有结果，不会因为某个失败而中断
+    const promises = urls.map(url => checkLatency(url, isResource));
+    
+    // 创建一个可以提前返回的 Promise
+    // 当有任意一个成功的结果时，等待一小段时间收集更多结果后返回
+    const results = await Promise.race([
+      // 等待所有请求完成
+      Promise.allSettled(promises).then(settled => 
+        settled
+          .filter(r => r.status === 'fulfilled')
+          .map(r => r.value)
+      ),
+      // 超时后返回已完成的结果
+      new Promise(resolve => {
+        setTimeout(async () => {
+          // 超时时，尝试获取已完成的 Promise 结果
+          const settledResults = [];
+          for (let i = 0; i < promises.length; i++) {
+            try {
+              // 使用 Promise.race 检查是否已完成
+              const result = await Promise.race([
+                promises[i],
+                new Promise((_, reject) => setTimeout(() => reject(new Error('still pending')), 10))
+              ]);
+              settledResults.push(result);
+            } catch (e) {
+              // Promise 还未完成，跳过
+            }
+          }
+          // console.log(`[节点检测] 超时(${timeout}ms)，已完成 ${settledResults.length}/${urls.length} 个检测`);
+          resolve(settledResults);
+        }, timeout);
+      })
+    ]);
+    
+    // console.log('[节点检测] results: ', results);
+    
+    if (!results || results.length === 0) {
+      console.warn(`[节点检测] 超时且无结果，返回第一个节点: ${urls[0]}`);
+      return urls[0];
+    }
+    
+    const validResults = results.filter(r => r && r.latency !== Infinity);
+    if (validResults.length === 0) {
+      // 输出所有失败节点和原因
+      // console.warn('[节点检测] 所有已完成的节点检测都失败，详细信息如下:');
+      // results.forEach(r => {
+      //   if (r) {
+      //     console.warn(`  节点: ${r.url}, 错误: ${r.error || '未知'}, latency: ${r.latency}`);
+      //   }
+      // });
+      console.warn(`[节点检测] 所有节点检测失败，返回第一个节点: ${urls[0]}`);
+      return urls[0];
+    }
+    
+    validResults.sort((a, b) => a.latency - b.latency);
+    // console.log(`[节点检测] 成功检测 ${validResults.length} 个节点，最快: ${validResults[0].url} (${validResults[0].latency}ms)`);
+    return validResults[0].url;
+  } catch (e) {
+    console.error('[节点检测] getFastestUrl error:', e);
+    return urls[0];
+  }
+}
+
+// 初始化最快服务器配置（非阻塞异步方式，不影响启动速度）
+// 现在改为基于 region 配置，检测各个区域的服务延迟来自动选择最优区域
+function initFastestServersAsync() {
+  const configPath = path.join(__dirname, 'config', "config.json");
+  if (!fs.existsSync(configPath)) return;
+  
+  try {
+    const conf = JSON.parse(fs.readFileSync(configPath));
+    const regions = conf.regions;
+    if (!regions || Object.keys(regions).length === 0) return;
+
+    // console.log('[节点检测] 后台开始检测最优区域节点...');
+    
+    // 获取所有启用区域的 api_server 进行延迟检测（过滤掉未启用的区域、空URL和localhost）
+    const regionKeys = Object.keys(regions).filter(key => 
+      key !== 'localhost' && regions[key].enabled && regions[key].api_server
+    );
+    const regionUrls = regionKeys.map(key => regions[key].api_server);
+    
+    getFastestUrl(regionUrls, 'api_server').then(fastestUrl => {
+      if (fastestUrl) {
+        // 找到对应的区域
+        const fastestRegionKey = regionKeys.find(key => regions[key].api_server === fastestUrl);
+        if (fastestRegionKey) {
+          const fastestRegion = regions[fastestRegionKey];
+          console.log(`[节点检测] 检测到最优区域: ${fastestRegion.name} (${fastestRegionKey})`);
+          
+          // 设置环境变量
+          process.env.AILY_NPM_REGISTRY = fastestRegion.npm_registry;
+          process.env.AILY_ZIP_URL = fastestRegion.resource;
+          process.env.AILY_API_SERVER = fastestRegion.api_server;
+          process.env.AILY_REGION = fastestRegionKey;
+          
+          // 通知渲染进程区域已更新
+          if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('server-node-updated', { 
+              region: fastestRegionKey,
+              npm_registry: fastestRegion.npm_registry,
+              resource: fastestRegion.resource,
+              api_server: fastestRegion.api_server
+            });
+          }
+          // console.log('[节点检测] 区域节点检测完成');
+        }
+      }
+    }).catch(e => {
+      console.error('[节点检测] 检测过程出错:', e);
+    });
+    
+  } catch (e) {
+    console.error('Error initializing fastest servers:', e);
+  }
+}
+
 // 环境变量加载
 function loadEnv() {
   // 将child目录添加到环境变量PATH中
@@ -597,12 +770,16 @@ function loadEnv() {
   let customPath = nodePath + path.delimiter + childPath;
 
   if (isWin32) {
+    // 使用环境变量获取系统路径，支持系统安装在任意盘符
+    const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    
     // 添加必要的系统路径
     const systemPaths = [
-      'C:\\Windows\\System32',
-      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
-      'C:\\Program Files\\PowerShell\\7', // PowerShell 7 (如果存在)
-      'C:\\Windows'
+      path.join(systemRoot, 'System32'),
+      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
+      path.join(programFiles, 'PowerShell', '7'), // PowerShell 7 (如果存在)
+      systemRoot
     ];
 
     // 检查路径是否存在，只添加存在的路径
@@ -627,7 +804,7 @@ function loadEnv() {
   }
 
   // 完全替换PATH
-  process.env.PATH = customPath;
+  process.env.PATH = customPath;  
 
   // 读取config.json文件
   const configPath = path.join(__dirname, 'config', "config.json");
@@ -684,6 +861,31 @@ function loadEnv() {
   // 读取用户配置文件
   try {
     userConf = JSON.parse(fs.readFileSync(userConfigPath));
+    
+    // TODO: 下一版删除，统一修正 regions.cn.api_server 地址为标准地址
+    let needSave = false;
+    if (userConf.regions && userConf.regions.cn) {
+      const correctApiServer = "https://aapi.diandeng.tech";
+      const currentApiServer = userConf.regions.cn.api_server;
+      
+      // 检查当前地址是否需要修正（只要不是正确地址就修正）
+      if (currentApiServer !== correctApiServer) {
+        console.log(`检测到需要更新的 API 地址: ${currentApiServer || '(空)'} → ${correctApiServer}`);
+        userConf.regions.cn.api_server = correctApiServer;
+        needSave = true;
+      }
+    }
+    
+    // 如果配置被修改，保存回文件
+    if (needSave) {
+      try {
+        fs.writeFileSync(userConfigPath, JSON.stringify(userConf, null, 2));
+        console.log("用户配置文件已更新并保存:", userConfigPath);
+      } catch (error) {
+        console.error("保存用户配置文件失败:", error);
+      }
+    }
+    
     // 合并配置文件
     Object.assign(conf, userConf);
   } catch (error) {
@@ -694,8 +896,47 @@ function loadEnv() {
   // child Path
   process.env.AILY_CHILD_PATH = childPath;
 
+  // TODO 下一版本删除，强制将cn区域的api_server地址设置为https://aapi.diandeng.tech
+  conf.regions["cn"]["api_server"] = "https://aapi.diandeng.tech";
+  // console.log("conf: ", conf);
+  // 从 regions 配置中获取当前区域的服务地址
+  const currentRegion = conf.region || 'cn';
+  const regionConfig = conf.regions && conf.regions[currentRegion] ? conf.regions[currentRegion] : conf.regions['cn'];
+  
+  // 当前区域
+  process.env.AILY_REGION = currentRegion;
   // npm registry
-  process.env.AILY_NPM_REGISTRY = conf["npm_registry"][0];
+  process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
+  // 设置 npm 使用应用数据目录下的配置文件，忽略系统 .npmrc
+  const appNpmrcPath = path.join(process.env.AILY_APPDATA_PATH, ".npmrc");
+  // 如果不存在则创建
+  if (!fs.existsSync(appNpmrcPath)) {
+    try {
+      fs.writeFileSync(appNpmrcPath, `@aily-project:registry=\${AILY_NPM_REGISTRY}\naudit=false\nfund=false\n`);
+    } catch (error) {
+      console.error("创建 .npmrc 文件失败:", error);
+    }
+  }
+  process.env.NPM_CONFIG_USERCONFIG = appNpmrcPath;
+  // 清理可能来自系统/终端的代理相关环境变量，避免 npm 在 app 内部使用系统代理
+  try {
+    const proxyEnvKeys = [
+      'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+      'ALL_PROXY', 'all_proxy', 'PROXY', 'proxy',
+      'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY', 'npm_config_proxy', 'npm_config_https_proxy',
+      'npm_config_https-proxy', 'npm_config_proxy'
+    ];
+    proxyEnvKeys.forEach((k) => {
+      if (process.env[k]) {
+        delete process.env[k];
+      }
+    });
+    // 也清理在 env 配置中以 npm 配置形式存在的 https-proxy/http-proxy
+    if (process.env.npm_config_https_proxy) delete process.env.npm_config_https_proxy;
+    if (process.env.npm_config_http_proxy) delete process.env.npm_config_http_proxy;
+  } catch (e) {
+    console.error('清理代理环境变量失败:', e);
+  }
   // 7za path
   process.env.AILY_7ZA_PATH = path.join(childPath, isWin32 ? "7za.exe" : "7zz");
   // aily builder path
@@ -709,7 +950,9 @@ function loadEnv() {
   // 默认全局SDK路径
   process.env.AILY_SDK_PATH = path.join(process.env.AILY_APPDATA_PATH, "sdk");
   // zip包下载地址
-  process.env.AILY_ZIP_URL = conf["resource"][0];
+  process.env.AILY_ZIP_URL = regionConfig.resource;
+  // API服务器地址
+  process.env.AILY_API_SERVER = regionConfig.api_server;
 
   process.env.AILY_PROJECT_PATH = conf["project_path"];
 
@@ -1088,9 +1331,11 @@ if (shouldUseMultiInstance()) {
   }
 }
 
-app.on("ready", () => {
+app.on("ready", async () => {
   try {
     loadEnv();
+    // 异步检测最优服务器，不阻塞窗口创建
+    initFastestServersAsync();
   } catch (error) {
     console.error("loadEnv error: ", error);
   }

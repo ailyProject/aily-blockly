@@ -10,6 +10,145 @@ const logger = {
     error: (...args) => console.error(...args)
 };
 
+// 延时函数
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 动态加载 serialport 模块
+let SerialPort = null;
+
+function loadSerialPort() {
+    if (SerialPort) return SerialPort;
+    
+    // 尝试多个可能的路径加载 serialport
+    const possiblePaths = [
+        // 从 electron 目录加载
+        path.join(__dirname, '..', '..', 'electron', 'node_modules', 'serialport'),
+        // 从 app.asar.unpacked 加载 (打包后)
+        path.join(__dirname, '..', '..', 'electron', 'node_modules', 'serialport'),
+        // 直接 require (如果在 NODE_PATH 中)
+        'serialport'
+    ];
+    
+    for (const modulePath of possiblePaths) {
+        try {
+            const serialportModule = require(modulePath);
+            SerialPort = serialportModule.SerialPort;
+            logger.log('成功加载 serialport 模块:', modulePath);
+            return SerialPort;
+        } catch (e) {
+            // 继续尝试下一个路径
+        }
+    }
+    
+    throw new Error('无法加载 serialport 模块，请确保已安装依赖');
+}
+
+// 获取串口列表
+async function getPortsList() {
+    try {
+        const SP = loadSerialPort();
+        const ports = await SP.list();
+        return ports;
+    } catch (error) {
+        logger.error('获取串口列表失败:', error);
+        return [];
+    }
+}
+
+// 1200bps touch 操作：以1200波特率连接串口并断开，触发板子重置
+async function perform1200bpsTouch(portPath) {
+    logger.log('执行 1200bps touch, 串口:', portPath);
+    const SP = loadSerialPort();
+    
+    return new Promise((resolve, reject) => {
+        const port = new SP({
+            path: portPath,
+            baudRate: 1200,
+            autoOpen: false
+        });
+
+        port.open((err) => {
+            if (err) {
+                logger.error('1200bps touch 串口打开失败:', err.message);
+                reject(err);
+                return;
+            }
+
+            // 等待250ms后关闭
+            setTimeout(() => {
+                port.close((closeErr) => {
+                    if (closeErr) {
+                        logger.warn('1200bps touch 串口关闭警告:', closeErr.message);
+                    }
+                    // 再等待250ms让板子完成重置
+                    setTimeout(() => {
+                        logger.log('1200bps touch 完成');
+                        resolve();
+                    }, 250);
+                });
+            }, 250);
+        });
+    });
+}
+
+// wait_for_upload 操作：等待新串口出现
+async function performWaitForUpload(portPath) {
+    logger.log('执行 wait_for_upload, 当前串口:', portPath);
+    const SP = loadSerialPort();
+    
+    // 获取当前串口列表
+    const portListBefore = await getPortsList();
+    logger.log('操作前串口列表:', portListBefore.map(p => p.path));
+    
+    // 连接串口
+    const port = new SP({
+        path: portPath,
+        baudRate: 1200,
+        autoOpen: false
+    });
+
+    await new Promise((resolve, reject) => {
+        port.open((err) => {
+            if (err) {
+                logger.error('wait_for_upload 串口打开失败:', err.message);
+                reject(err);
+                return;
+            }
+            resolve();
+        });
+    });
+
+    // 等待5秒
+    await delay(5000);
+
+    // 关闭串口
+    await new Promise((resolve) => {
+        port.close((err) => {
+            if (err) {
+                logger.warn('wait_for_upload 串口关闭警告:', err.message);
+            }
+            resolve();
+        });
+    });
+
+    // 获取新的串口列表
+    const portListAfter = await getPortsList();
+    logger.log('操作后串口列表:', portListAfter.map(p => p.path));
+
+    // 找出新增的串口
+    const newPorts = portListAfter.filter(
+        port => !portListBefore.some(existingPort => existingPort.path === port.path)
+    );
+
+    if (newPorts.length > 0) {
+        logger.log('检测到新串口:', newPorts[0].path);
+        return newPorts[0].path;
+    } else {
+        logger.log('没有检测到新串口，继续使用旧串口');
+        return portPath;
+    }
+}
+
 async function main() {
     const configPath = process.argv[2];
     if (!configPath) {
@@ -31,7 +170,9 @@ async function main() {
         boardModule,
         appDataPath,
         serialPort: initialSerialPort,
-        uploadParam: configUploadParam
+        uploadParam: configUploadParam,
+        use_1200bps_touch,
+        wait_for_upload
     } = config;
 
     // console.log('上传配置:', {
@@ -57,7 +198,7 @@ async function main() {
             throw new Error(`未找到项目包文件: ${projectPackageJsonPath}`);
         }
         const projectPackageJson = JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'));
-        const projectConfig = projectPackageJson.aily || {};
+        const projectConfig = projectPackageJson.projectConfig || {};
 
         // 3. 读取板子信息
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -86,8 +227,24 @@ async function main() {
 
         logger.log('使用的上传参数:', uploadParam);
 
+        // core
+        const coreItem = boardJson?.core || 'arduino';
+        const core = coreItem.split(":")[0];
+
+        // 5. 根据核心选择不同的上传参数处理方式
+        let defaultBaudRate;
+        if (core === 'arduino') {
+            defaultBaudRate = '115200';
+        } else {
+            defaultBaudRate = '921600';
+        }
+
+        console.log('使用的核心:', core);
+        console.log('默认波特率:', defaultBaudRate);
+
         // 6. 获取波特率
-        const baudRate = projectConfig?.UploadSpeed || '115200';
+        const baudRate = projectConfig?.UploadSpeed || defaultBaudRate;
+        console.log('使用的波特率:', baudRate);
 
         // 7. 获取工具依赖
         const toolDependencies = {};
@@ -114,8 +271,25 @@ async function main() {
             }
         });
 
-        // 9. 使用传入的串口（已在调用前预处理）
+        // 9. 上传预处理：处理 1200bps touch 和 wait_for_upload
         let finalSerialPort = initialSerialPort;
+        
+        if (use_1200bps_touch) {
+            try {
+                await perform1200bpsTouch(finalSerialPort);
+            } catch (err) {
+                throw new Error('串口连接失败: ' + err.message);
+            }
+        }
+
+        if (wait_for_upload) {
+            try {
+                finalSerialPort = await performWaitForUpload(finalSerialPort);
+            } catch (err) {
+                throw new Error('串口操作失败: ' + err.message);
+            }
+        }
+
         logger.log('使用串口:', finalSerialPort);
 
         // 10. 处理上传参数
@@ -161,7 +335,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     
     // 替换 ${baud}
     if (paramString.includes('${baud}')) {
-        paramString = paramString.replace(/\$\{baud\}/g, baudRate || '115200');
+        paramString = paramString.replace(/\$\{baud\}/g, baudRate);
     }
 
     // 替换 ${serial}

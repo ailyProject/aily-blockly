@@ -32,6 +32,12 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
   libraryInfo: any = null;
   dependencies: string[] = [];
   canInstall = false;
+  isLoading = true;  // 默认为 true，等待数据
+  
+  // 重试相关
+  private retryCount = 0;
+  private readonly MAX_RETRY = 3;
+  private retryTimer: any = null;
 
   ngOnInit() {
     this.processData();
@@ -40,6 +46,10 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     // 清理资源
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
   }
 
   constructor(
@@ -60,17 +70,54 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
    */
   private processData(): void {
     if (!this.data) {
-      this.errorMessage = '没有可显示的数据';
+      // 没有数据时保持 loading 状态
+      this.isLoading = true;
+      this.errorMessage = '';
       return;
     }
 
     try {
-      this.libraryPackageName = this.data.library.name;
-      this.libraryInfo = this.configService.libraryDict[this.libraryPackageName];
-      this.errorMessage = '';
+      this.libraryPackageName = this.data.library?.name;
+      
+      if (!this.libraryPackageName) {
+        // 没有名称时保持 loading
+        this.isLoading = true;
+        this.errorMessage = '';
+        return;
+      }
+      
+      this.libraryInfo = this.configService.libraryDict[this.libraryPackageName] || null;
+      
+      if (this.libraryInfo) {
+        // 成功加载
+        this.isLoading = false;
+        this.errorMessage = '';
+        this.retryCount = 0;
+      } else {
+        // 未找到，尝试重试（可能 ConfigService 还在加载）
+        this.scheduleRetry();
+      }
     } catch (error) {
       console.warn('Error processing library data:', error);
-      this.errorMessage = `数据处理失败: ${error.message}`;
+      this.scheduleRetry();
+    }
+  }
+
+  /**
+   * 安排重试
+   */
+  private scheduleRetry(): void {
+    if (this.retryCount < this.MAX_RETRY) {
+      this.retryCount++;
+      this.isLoading = true;
+      this.errorMessage = '';
+      this.retryTimer = setTimeout(() => {
+        this.processData();
+      }, 300 * this.retryCount);
+    } else {
+      // 超过重试次数，显示错误
+      this.isLoading = false;
+      this.errorMessage = '库加载失败';
     }
   }
 

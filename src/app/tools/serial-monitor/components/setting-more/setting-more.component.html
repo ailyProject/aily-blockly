@@ -32,7 +32,7 @@
         </div>
         <div class="item">
             <div class="title">流控制</div>
-            <div class="item-inner ccenter" [ngClass]="{'selected':menuList == flowControlList}"
+            <div class="item-inner ccenter" style="width: 100px;" [ngClass]="{'selected':menuList == flowControlList}"
                 (click)="openMenu($event, flowControlList)">
                 <div class="value">{{selectedFlowControl.name}}</div>
                 <div class="arrow-box">

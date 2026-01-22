@@ -29,7 +29,9 @@
         "UPDATE": "アップデートを確認",
         "USER_AUTH": "ユーザーサービス",
         "USER_SPACE": "クラウドスペース",
-        "LIB_MANAGER": "ライブラリマネージャー"
+        "LIB_MANAGER": "ライブラリマネージャー",
+        "AI_ASSISTANT": "AIアシスタント",
+        "PROJECT_HUB": "プロジェクトハブ"
     },
     "ESP32": {
         "UPLOAD_SPEED": "書き込み速度",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "あなたの体験についてフィードバックを送信してください",
         "WECHAT_GROUP": "WeChatユーザーグループ",
         "WECHAT_GROUP_DESC": "WeChatユーザーグループに参加して他のユーザーと交流する",
+        "USER_GROUP": "ユーザーコミュニティ",
+        "USER_GROUP_DESC": "コミュニティに参加して他のユーザーと交流する",
+        "AI_APP_CENTER": "AIアプリセンター",
+        "AI_APP_CENTER_DESC": "クリックしてAIハードウェアとエッジコンピューティングアプリを探索",
         "SPONSORS": "プロジェクトスポンサー",
-        "SPONSORS_DESC": "このプロジェクトは以下の企業/個人にスポンサーされています"
+        "SPONSORS_DESC": "このプロジェクトは以下の企業/個人にスポンサーされています",
+        "NEWS": "ニュース",
+        "ONBOARDING": {
+            "STEP1_TITLE": "新規プロジェクトを作成",
+            "STEP1_DESC": "ここをクリックして新しいプログラミングプロジェクトを作成します。ボードとプログラミング言語を選択して、創作の旅を始めましょう。",
+            "STEP2_TITLE": "既存のプロジェクトを開く",
+            "STEP2_DESC": "以前にプロジェクトを作成したことがある場合は、ここをクリックして既存のプロジェクトフォルダを開きます。",
+            "STEP3_TITLE": "プロジェクトハブ",
+            "STEP3_DESC": "コミュニティが共有した優れたプロジェクトを閲覧・探索し、インスピレーションや学習リソースを得ましょう。",
+            "STEP4_TITLE": "AIアシスタント",
+            "STEP4_DESC": "AIアシスタントがプロジェクト作成をサポートします。必要なことを説明するだけでOK。生成後は質問への回答、コード生成、エラー修正もお手伝いします。",
+            "STEP5_TITLE": "SenseCraft AIハブ",
+            "STEP5_DESC": "ここで様々なAIハードウェアやエッジコンピューティングアプリケーションを探索し、より多くの可能性を発見できます。",
+            "STEP6_TITLE": "最新ニュース",
+            "STEP6_DESC": "ここにはソフトウェアの最新ニュースやお知らせが表示され、新機能やアップデートを把握できます。",
+            "STEP7_TITLE": "コミュニティに参加",
+            "STEP7_DESC": "質問がありますか？作品を共有したいですか？ユーザーコミュニティに参加して、他のメーカーと交流・学習しましょう！"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "最初の {{count}} 個のアプリがツールバーに表示されます",
@@ -121,7 +144,9 @@
             "SEARCH": "ボードを検索",
             "READ_DOC": "ドキュメント",
             "ADD_BOARD": "ボードを追加",
-            "DEV": "開発"
+            "DEV": "開発",
+            "BY_BRAND": "ブランド別",
+            "BY_CORE": "コア別"
         },
         "FORM": {
             "DEVMODE": "開発フレームワーク",
@@ -132,6 +157,7 @@
         },
         "BUTTONS": {
             "USE_THIS": "このボードを使用",
+            "USE_THIS_FROM_HUB": "ハブからプロジェクトを読み込む",
             "NEXT": "次へ",
             "PREV": "前へ",
             "CREATE": "プロジェクトを作成",
@@ -239,7 +265,12 @@
         "WARNING_INVALID_EMAIL": "有効なメールアドレスを入力してください",
         "SUCCESS_MESSAGE": "フィードバックをありがとうございます！",
         "ERROR_SUBMIT_FAILED": "送信に失敗しました。後でもう一度お試しください",
-        "NO_DEPENDENCIES": "なし"
+        "NO_DEPENDENCIES": "なし",
+        "IMAGE_UPLOADING": "画像をアップロード中...",
+        "IMAGE_UPLOAD_SUCCESS": "画像のアップロードに成功しました",
+        "IMAGE_UPLOAD_FAILED": "画像のアップロードに失敗しました。もう一度お試しください",
+        "ATTACH_HINT": "ドラッグ＆ドロップ、貼り付け、または",
+        "SELECT_FILE": "ファイルを選択"
     },
     "AILY_CHAT": {
         "TITLE": "AIアシスタント",
@@ -258,7 +289,17 @@
         "STOP": "停止",
         "MODE_AGENT_FULL": "エージェントモード",
         "MODE_QA_FULL": "Q&Aモード",
-        "STOP_CURRENT_SESSION_FIRST": "新しいセッションを作成する前に、現在のセッションを停止してください"
+        "STOP_CURRENT_SESSION_FIRST": "新しいセッションを作成する前に、現在のセッションを停止してください",
+        "ONBOARDING": {
+            "STEP1_TITLE": "入力ボックス",
+            "STEP1_DESC": "ここに質問やAIに手伝ってもらいたいタスクを入力してください。Enterで送信、Ctrl+Enterで改行",
+            "STEP2_TITLE": "コンテキストを追加",
+            "STEP2_DESC": "ここをクリックしてファイルやフォルダをコンテキストとして追加し、AIがあなたのニーズをより理解できるようにします",
+            "STEP3_TITLE": "モード切替",
+            "STEP3_DESC": "エージェントモードはタスクを自動実行できます（コード作成、エラー修正など）。Q&Aモードは質問に回答するのみです",
+            "STEP4_TITLE": "送信/停止",
+            "STEP4_DESC": "クリックでメッセージを送信、AIが応答中の場合は停止できます"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "プロジェクト設定",
@@ -303,7 +344,24 @@
         "NO_DOCUMENTATION": "このボードのドキュメントは利用できません"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "先にシリアルポートを選択してください"
+        "SELECT_PORT_FIRST": "先にシリアルポートを選択してください",
+        "PORT": "ポート",
+        "BAUD_RATE": "ボーレート",
+        "MORE_SETTINGS": "詳細設定",
+        "HEX_DISPLAY": "HEX表示",
+        "AUTO_WRAP": "自動改行",
+        "AUTO_SCROLL": "自動スクロール",
+        "TIMESTAMP": "タイムスタンプ",
+        "SHOW_CTRL_CHAR": "不可視文字を表示",
+        "SEARCH": "検索",
+        "EXPORT": "エクスポート",
+        "CLEAR": "クリア",
+        "SEND_BY_ENTER": "Enterで送信",
+        "END_R": "\\r 改行",
+        "END_N": "\\n 改行",
+        "PORT_OPENED": "シリアルポートが開かれました",
+        "PORT_CLOSED": "シリアルポートが閉じられました",
+        "NO_CHART_DATA": "データがありません"
     },
     "MODEL_DEPLOY": {
         "TITLE": "モデルのデプロイ",
@@ -389,5 +447,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "デフォルトLow、トリガーHigh",
         "DEFAULT_HIGH_TRIGGER_LOW": "デフォルトHigh、トリガーLow",
         "CANCEL": "キャンセル"
+    },
+    "LOGIN": {
+        "HEADER": "ログイン後、当社のサービスをご利用いただけます",
+        "PHONE": "電話番号",
+        "BENEFITS_TITLE": "ログイン後、以下が可能になります：",
+        "BENEFIT_AI": "AI Q&A機能を無料でお試しいただけます",
+        "BENEFIT_SHARE": "プロジェクトを共有できます",
+        "BENEFIT_EXPERIENCE": "パーソナライズされた開発体験をお楽しみいただけます",
+        "NOTICE_LABEL": "注意：",
+        "NOTICE_CONTENT": "当社はあなたのGitHubアカウントを使用して、当社のオープンソースリポジトリにスターを付けます。これはプロジェクトの発展をサポートするためです。",
+        "GITHUB_LOGIN": "Githubでログイン",
+        "WECHAT_SCAN": "QRコードをスキャンしてフォローしてログイン",
+        "PHONE_NOT_OPEN": "電話番号登録はまだ利用できません",
+        "PHONE_BETA_ONLY": "電話番号ログインはAIベータテスター専用です",
+        "PHONE_PLACEHOLDER": "電話番号を入力",
+        "PASSWORD_PLACEHOLDER": "パスワードを入力",
+        "LOGGING_IN": "ログイン中...",
+        "LOGIN": "ログイン",
+        "SELECT_METHOD": "ログイン方法を選択してください",
+        "REDIRECTING_GITHUB": "GitHub認証ページにリダイレクト中...",
+        "GITHUB_LOGIN_FAILED": "GitHubログインの開始に失敗しました。ネットワーク接続を確認してください",
+        "GITHUB_ERROR": "GitHubログインに失敗しました",
+        "ENTER_CREDENTIALS": "ユーザー名とパスワードを入力してください",
+        "LOGIN_SUCCESS": "ログイン成功",
+        "LOGIN_FAILED": "ログイン失敗",
+        "LOGIN_NETWORK_ERROR": "ログインに失敗しました。ネットワーク接続を確認してください"
     }
 }

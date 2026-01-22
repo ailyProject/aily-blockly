@@ -18,6 +18,8 @@ import { BitmapUploadService } from './services/bitmap-upload.service';
 import { ProjectService } from '../../services/project.service';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { HistoryService } from './services/history.service';
+import { OnboardingService } from '../../services/onboarding.service';
+import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -58,7 +60,8 @@ export class BlocklyEditorComponent {
     private projectService: ProjectService,
     private _projectService: _ProjectService,
     private _builderService: _BuilderService,
-    private _uploadService: _UploaderService
+    private _uploadService: _UploaderService,
+    private onboardingService: OnboardingService
   ) { }
 
   ngOnInit(): void {
@@ -110,7 +113,7 @@ export class BlocklyEditorComponent {
     // 设置当前项目路径和package.json数据
     this._projectService.currentPackageData = packageJson;
     this.projectService.currentPackageData = packageJson;
-    window['packageJson'] = packageJson;    
+    window['packageJson'] = packageJson;
     // 暴露 ProjectService 到全局，供 generator.js 使用
     window['projectService'] = this.projectService;
 
@@ -149,6 +152,9 @@ export class BlocklyEditorComponent {
     this.uiService.updateFooterState({ state: 'done', text: '项目加载成功' });
     this.projectService.stateSubject.next('loaded');
 
+    // 检查是否需要显示新手引导
+    this.checkBlocklyOnboarding();
+
     // 7. 后台安装开发板依赖
     this.npmService.installBoardDeps()
       .then(() => {
@@ -166,6 +172,26 @@ export class BlocklyEditorComponent {
     this.uiService.closeToolAll();
     this.showLibraryManager = !this.showLibraryManager;
     this.cd.detectChanges();
+  }
+
+  // 检查是否需要显示新手引导
+  private checkBlocklyOnboarding() {
+    const hasSeenOnboarding = this.configService.data.blocklyOnboardingCompleted;
+    if (!hasSeenOnboarding) {
+      // 延迟显示引导，确保 Blockly 工作区已完全渲染
+      setTimeout(() => {
+        this.onboardingService.start(BLOCKLY_ONBOARDING_CONFIG, {
+          onClosed: () => this.onOnboardingClosed(),
+          onCompleted: () => this.onOnboardingClosed()
+        });
+      }, 800);
+    }
+  }
+
+  // 引导关闭或完成时的处理
+  private onOnboardingClosed() {
+    this.configService.data.blocklyOnboardingCompleted = true;
+    this.configService.save();
   }
 
   // 测试用

@@ -27,11 +27,32 @@
                 {{ 'FEEDBACK_DIALOG.CONTENT_LABEL' | translate }}
                 <span class="required">*</span>
             </label>
-            <textarea nz-input [(ngModel)]="feedbackContent" 
-                [placeholder]="'FEEDBACK_DIALOG.CONTENT_PLACEHOLDER' | translate" 
-                [rows]="6"
-                class="form-control" [disabled]="isSubmitting">
-            </textarea>
+            <div class="textarea-wrapper" 
+                [class.drag-over]="isDragOver"
+                (dragover)="onDragOver($event)"
+                (dragleave)="onDragLeave($event)"
+                (drop)="onDrop($event)">
+                <textarea nz-input [(ngModel)]="feedbackContent" 
+                    #contentTextarea
+                    (paste)="onPaste($event)"
+                    [placeholder]="'FEEDBACK_DIALOG.CONTENT_PLACEHOLDER' | translate" 
+                    [rows]="6"
+                    class="form-control" [disabled]="isSubmitting">
+                </textarea>
+                <div class="attach-bar">
+                    <span class="attach-hint">
+                        <i class="fa-solid fa-paperclip"></i>
+                        {{ 'FEEDBACK_DIALOG.ATTACH_HINT' | translate }}
+                    </span>
+                    <input type="file" 
+                        #fileInput 
+                        (change)="onFileSelect($event)" 
+                        accept="image/*" 
+                        multiple 
+                        style="display: none;">
+                    <a class="attach-link" (click)="fileInput.click()">{{ 'FEEDBACK_DIALOG.SELECT_FILE' | translate }}</a>
+                </div>
+            </div>
             <div class="char-count">
                 {{ feedbackContent.length }} {{ 'FEEDBACK_DIALOG.CHAR_COUNT' | translate }}
             </div>

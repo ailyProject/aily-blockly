@@ -1,37 +1,102 @@
 import { ToolUseResult } from "./tools";
 import { injectTodoReminder } from "./todoWriteTool";
+import { 
+    PathSecurityContext, 
+    validateFileRead,
+    FILE_READ_LIMITS,
+    normalizePath 
+} from "../services/security.service";
+import { 
+    logFileOperation, 
+    completeAuditLog, 
+    logBlockedOperation 
+} from "../services/audit-log.service";
 
-// 路径处理函数
-function normalizePath(inputPath: string): string {
-    if (!inputPath) return '';
-    
-    let normalizedPath = inputPath;
-    
-    if (typeof inputPath === 'string') {
-        const isWindowsPath = /^[A-Za-z]:\\/.test(inputPath);
-        
-        if (isWindowsPath) {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '\\')
-                .replace(/\//g, '\\');
-        } else {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '/')
-                .replace(/\\/g, '/')
-                .replace(/\/+/g, '/');
-        }
-        
-        if (normalizedPath.length > 1 && (normalizedPath.endsWith('/') || normalizedPath.endsWith('\\'))) {
-            normalizedPath = normalizedPath.slice(0, -1);
-        }
-    }
-    
-    return normalizedPath;
+// 智能读取阈值常量
+const SMART_READ_LINE_THRESHOLD = 10240; // 单行超过10KB则认为是单行大文件
+
+/**
+ * 分析文件特征，用于智能读取决策
+ */
+interface FileCharacteristics {
+    totalLines: number;
+    fileSize: number;
+    avgLineLength: number;
+    maxLineLength: number;
+    isSingleLineLargeFile: boolean;
+    hasLongLines: boolean;
 }
 
 /**
- * 读取文件内容工具（支持行范围和字节范围读取，自动处理大文件）
+ * 快速分析文件特征（仅读取部分内容进行判断）
+ */
+async function analyzeFileCharacteristics(
+    filePath: string, 
+    encoding: BufferEncoding,
+    sampleSize: number = 65536 // 默认采样64KB
+): Promise<FileCharacteristics> {
+    const stats = window['fs'].statSync(filePath);
+    const fileSize = stats.size;
+    
+    // 对于小文件直接完整读取分析
+    const readSize = Math.min(sampleSize, fileSize);
+    const sampleContent = await window['fs'].readFileSync(filePath, encoding);
+    const actualSample = sampleContent.substring(0, readSize);
+    
+    const lines = actualSample.split('\n');
+    const totalLines = lines.length;
+    const lineLengths = lines.map(line => line.length);
+    const maxLineLength = Math.max(...lineLengths);
+    const avgLineLength = lineLengths.reduce((a, b) => a + b, 0) / totalLines;
+    
+    // 判断是否为单行大文件（只有1行，或者第一行占据了大部分内容）
+    const isSingleLineLargeFile = (totalLines === 1 && fileSize > 1024) || 
+                                   (totalLines <= 2 && lines[0].length > fileSize * 0.9);
+    
+    // 判断是否有超长行
+    const hasLongLines = maxLineLength > SMART_READ_LINE_THRESHOLD;
+    
+    return {
+        totalLines: fileSize <= sampleSize ? totalLines : -1, // -1表示未完整读取
+        fileSize,
+        avgLineLength,
+        maxLineLength,
+        isSingleLineLargeFile,
+        hasLongLines
+    };
+}
+
+/**
+ * 将行范围转换为字节范围（用于单行大文件）
+ */
+function convertLineRangeToByteRange(
+    startLine: number | undefined,
+    lineCount: number | undefined,
+    fileSize: number,
+    characteristics: FileCharacteristics
+): { startByte: number; byteCount: number } | null {
+    // 仅对单行大文件或超长行文件进行转换
+    if (!characteristics.isSingleLineLargeFile && !characteristics.hasLongLines) {
+        return null;
+    }
+    
+    // 对于单行文件，行范围没有意义，转换为字节范围
+    if (characteristics.isSingleLineLargeFile) {
+        const start = startLine !== undefined ? Math.max(0, (startLine - 1) * Math.floor(characteristics.avgLineLength)) : 0;
+        const count = lineCount !== undefined ? lineCount * Math.floor(characteristics.avgLineLength) : fileSize - start;
+        return { 
+            startByte: Math.min(start, fileSize), 
+            byteCount: Math.min(count, fileSize - start) 
+        };
+    }
+    
+    return null;
+}
+
+/**
+ * 读取文件内容工具（支持行范围和字节范围读取，自动处理大文件和单行文件）
  * @param params 参数
+ * @param securityContext 安全上下文（可选）
  * @returns 工具执行结果
  */
 export async function readFileTool(
@@ -43,8 +108,12 @@ export async function readFileTool(
         startByte?: number;
         byteCount?: number;
         maxSize?: number;
-    }
+    },
+    securityContext?: PathSecurityContext
 ): Promise<ToolUseResult> {
+    const startTime = Date.now();
+    let auditLogId: string | null = null;
+    
     try {
         let { 
             path: filePath, 
@@ -90,6 +159,34 @@ export async function readFileTool(
         // 获取文件大小
         const stats = window['fs'].statSync(filePath);
         const fileSize = stats.size;
+
+        // ==================== 安全验证 ====================
+        if (securityContext) {
+            auditLogId = logFileOperation('readFile', filePath, { fileSize }, 'low');
+            
+            // 验证读取安全性
+            const securityCheck = validateFileRead(filePath, securityContext, fileSize);
+            if (!securityCheck.allowed) {
+                logBlockedOperation('readFileTool', 'readFile', filePath, securityCheck.reason || '安全检查未通过');
+                const toolResult = { 
+                    is_error: true, 
+                    content: `安全检查未通过: ${securityCheck.reason}` 
+                };
+                return injectTodoReminder(toolResult, 'readFileTool');
+            }
+            
+            // 检查文件扩展名
+            const ext = window['path'].extname(filePath).toLowerCase();
+            if (FILE_READ_LIMITS.blockedExtensions.includes(ext)) {
+                logBlockedOperation('readFileTool', 'readFile', filePath, `禁止读取此类型文件: ${ext}`);
+                const toolResult = { 
+                    is_error: true, 
+                    content: `禁止读取此类型文件: ${ext}` 
+                };
+                return injectTodoReminder(toolResult, 'readFileTool');
+            }
+        }
+        // ==================== 安全验证结束 ====================
         
         let resultContent: string;
         let metadata: any = {
@@ -99,6 +196,20 @@ export async function readFileTool(
             fileSizeKB: (fileSize / 1024).toFixed(2),
             fileSizeMB: (fileSize / 1024 / 1024).toFixed(2)
         };
+
+        // 参数类型转换（LLM可能传递字符串类型的数字）
+        if (typeof startByte === 'string') startByte = parseInt(startByte, 10) || undefined;
+        if (typeof byteCount === 'string') byteCount = parseInt(byteCount, 10) || undefined;
+        if (typeof startLine === 'string') startLine = parseInt(startLine, 10) || undefined;
+        if (typeof lineCount === 'string') lineCount = parseInt(lineCount, 10) || undefined;
+
+        // 忽略无效的字节参数（0 或 NaN 视为未指定）
+        if (startByte === 0 && (byteCount === undefined || byteCount === 0)) {
+            startByte = undefined;
+        }
+        if (byteCount === 0) {
+            byteCount = undefined;
+        }
 
         // 按字节范围读取（优先级最高）
         if (startByte !== undefined || byteCount !== undefined) {
@@ -139,6 +250,46 @@ export async function readFileTool(
                     content: `文件过大 (${(fileSize / 1024 / 1024).toFixed(2)} MB)。建议使用字节范围读取 (startByte + byteCount) 或增加 maxSize 参数。当前限制: ${(maxSize / 1024 / 1024).toFixed(2)} MB`
                 };
                 return injectTodoReminder(toolResult, 'readFileTool');
+            }
+            
+            // 智能读取：分析文件特征
+            const characteristics = await analyzeFileCharacteristics(filePath, encoding);
+            
+            // 对于单行大文件或超长行文件，自动转换为字节范围读取
+            if (characteristics.isSingleLineLargeFile || characteristics.hasLongLines) {
+                const byteRange = convertLineRangeToByteRange(startLine, lineCount, fileSize, characteristics);
+                
+                if (byteRange) {
+                    // 自动切换为字节模式读取
+                    const fullContent = await window['fs'].readFileSync(filePath, encoding);
+                    const start = byteRange.startByte;
+                    const count = Math.min(byteRange.byteCount, maxSize);
+                    
+                    resultContent = fullContent.substring(start, start + count);
+                    
+                    metadata.readMode = 'bytes (auto-converted from lines)';
+                    metadata.originalRequest = { startLine, lineCount };
+                    metadata.startByte = start;
+                    metadata.actualBytesRead = resultContent.length;
+                    metadata.truncated = start + count < fileSize;
+                    metadata.smartReadInfo = {
+                        reason: characteristics.isSingleLineLargeFile 
+                            ? '检测到单行大文件，自动切换为字节读取' 
+                            : '检测到超长行，自动切换为字节读取',
+                        fileCharacteristics: {
+                            totalLines: characteristics.totalLines,
+                            maxLineLength: characteristics.maxLineLength,
+                            avgLineLength: Math.round(characteristics.avgLineLength)
+                        }
+                    };
+                    
+                    const toolResult = { 
+                        is_error: false, 
+                        content: resultContent,
+                        metadata
+                    };
+                    return injectTodoReminder(toolResult, 'readFileTool');
+                }
             }
             
             const fullContent = await window['fs'].readFileSync(filePath, encoding);
@@ -201,6 +352,11 @@ export async function readFileTool(
             }
         }
         
+        // 记录成功
+        if (auditLogId) {
+            completeAuditLog(auditLogId, true, { duration: Date.now() - startTime });
+        }
+        
         const toolResult = { 
             is_error: false, 
             content: resultContent,
@@ -209,6 +365,14 @@ export async function readFileTool(
         return injectTodoReminder(toolResult, 'readFileTool');
     } catch (error: any) {
         console.warn("读取文件失败:", error);
+        
+        // 记录失败
+        if (auditLogId) {
+            completeAuditLog(auditLogId, false, { 
+                duration: Date.now() - startTime,
+                errorMessage: error.message 
+            });
+        }
         
         let errorMessage = `读取文件失败: ${error.message}`;
         if (error.code) {

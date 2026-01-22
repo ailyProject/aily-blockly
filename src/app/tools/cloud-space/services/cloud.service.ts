@@ -21,9 +21,10 @@ declare const process: any;
   providedIn: 'root'
 })
 export class CloudService {
-  baseUrl: string = API.cloudBase;
-  private apiUrl = API.cloudSync;
-  private cloudProjectsUrl = API.cloudProjects;
+  // 使用 getter 动态获取 URL，确保区域切换后能获取到最新的地址
+  get baseUrl(): string { return API.cloudBase; }
+  private get apiUrl() { return API.cloudSync; }
+  private get cloudProjectsUrl() { return API.cloudProjects; }
 
   constructor(
       private http: HttpClient,
@@ -34,8 +35,8 @@ export class CloudService {
   /** 
    * 获取公开列表
    */
-  getPublicProjects(page, perPage, keyword, id=''): Observable<any> {
-    return this.http.get<any>(`${API.cloudPublicProjects}?page=${page}&perPage=${perPage}&keywords=${keyword}&id=${id}`)
+  getPublicProjects(page, perPage, keyword, id='', board=''): Observable<any> {
+    return this.http.get<any>(`${API.cloudPublicProjects}?page=${page}&perPage=${perPage}&keywords=${keyword}&id=${id}&board=${board}`)
       .pipe(
         catchError(this.handleError)
       );

@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DATA_BITS_LIST, STOP_BITS_LIST, PARITY_LIST, FLOW_CONTROL_LIST } from '../../config';
 import { MenuComponent } from '../../../../components/menu/menu.component';
@@ -38,11 +38,27 @@ export class SettingMoreComponent {
 
   @Output() settingsChanged = new EventEmitter<any>();
 
+  // 接收初始配置
+  @Input() initialDataBits: string = '8';
+  @Input() initialStopBits: string = '1';
+  @Input() initialParity: string = 'none';
+  @Input() initialFlowControl: string = 'none';
+
   ngOnInit(): void {
-    this.selectedDataBits = this.dataBitsList.find(item => item.isDefault) || this.dataBitsList[0];
-    this.selectedStopBits = this.stopBitsList.find(item => item.isDefault) || this.stopBitsList[0];
-    this.selectedParity = this.parityList.find(item => item.isDefault) || this.parityList[0];
-    this.selectedFlowControl = this.flowControlList.find(item => item.isDefault) || this.flowControlList[0];
+    // 根据传入的初始值查找对应的选项，如果找不到则使用默认值
+    // dataBits 和 stopBits 的 value 是 number 类型，需要转换比较
+    this.selectedDataBits = this.dataBitsList.find(item => item.value === Number(this.initialDataBits)) 
+      || this.dataBitsList.find(item => item.isDefault) 
+      || this.dataBitsList[0];
+    this.selectedStopBits = this.stopBitsList.find(item => item.value === Number(this.initialStopBits)) 
+      || this.stopBitsList.find(item => item.isDefault) 
+      || this.stopBitsList[0];
+    this.selectedParity = this.parityList.find(item => item.value === this.initialParity) 
+      || this.parityList.find(item => item.isDefault) 
+      || this.parityList[0];
+    this.selectedFlowControl = this.flowControlList.find(item => item.value === this.initialFlowControl) 
+      || this.flowControlList.find(item => item.isDefault) 
+      || this.flowControlList[0];
   }
 
   // 当设置更改时触发事件

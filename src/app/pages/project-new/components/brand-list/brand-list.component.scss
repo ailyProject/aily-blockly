@@ -5,13 +5,14 @@
   margin-bottom: 15px;
   padding-bottom: 15px;
 
-  div {
+  .brand-item {
+    cursor: pointer;
     background: #3e4243;
     padding: 5px;
     border-radius: 5px;
-    cursor: pointer;
     height: 50px;
     font-size: 20px;
+    transition: all 0.2s;
 
     img {
       max-width: 140px;
@@ -24,7 +25,7 @@
 
     &.selected {
       background: #065095;
-      
+
       &:hover {
         background: #155c96;
       }

@@ -21,9 +21,13 @@
     cursor: pointer;
     color: #ddd;
     position: relative;
+    overflow: hidden;
 
     .name {
       white-space: nowrap;
+      // flex: 1;
+      flex-shrink: 0;
+      min-width: 0;
     }
 
     .icon {
@@ -33,10 +37,11 @@
     }
 
     .text {
-      margin-left: 10px;
+      margin-left: auto;
+      padding-left: 10px;
       white-space: nowrap;
       color: #999;
-      flex-shrink: 1;
+      flex-shrink: 0;
     }
 
     &:hover {

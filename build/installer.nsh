@@ -36,17 +36,27 @@
   Delete "$INSTDIR\resources\app\child\node-v22.19.0-win-x64.7z"
 
   ; 使用7za.exe解压aily-builder.7z到aily-builder目录
-  nsExec::ExecToStack '"$INSTDIR\resources\app\child\7za.exe" x "$INSTDIR\resources\app\child\aily-builder-1.1.0.7z" -o"$INSTDIR\resources\app\child\aily-builder" -y'
+  nsExec::ExecToStack '"$INSTDIR\resources\app\child\7za.exe" x "$INSTDIR\resources\app\child\aily-builder-1.1.2.7z" -o"$INSTDIR\resources\app\child\aily-builder" -y'
   
   ; 等待解压完成
   Sleep 2000
 
   ; 删除解压后的压缩包，节省磁盘空间
-  Delete "$INSTDIR\resources\app\child\aily-builder-1.1.0.7z"
+  Delete "$INSTDIR\resources\app\child\aily-builder-1.1.2.7z"
+
+  ; 手动创建桌面快捷方式，确保指向独立的 ico 文件以解决缓存问题
+  ; 强制覆盖可能存在的旧快捷方式
+  CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${PRODUCT_FILENAME}.exe" "" "$INSTDIR\resources\app\icon.ico" 0
+    
+  ; 刷新 Shell 图标缓存
+  System::Call 'shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
 !macroend
 
 !macro customUnInstall
+  ; 删除手动创建的桌面快捷方式
+  Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
+
   ; 创建临时空目录用于 Robocopy 镜像删除
   CreateDirectory "$TEMP\empty_dir_for_cleanup"
   

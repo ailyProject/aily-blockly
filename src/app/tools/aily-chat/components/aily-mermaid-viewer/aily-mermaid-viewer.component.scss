@@ -16,11 +16,46 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 8px;
 
       .error-text {
         color: #999;
       }
+    }
+  }
+
+  // 加载卡片
+  .loading-card {
+    padding: 24px 16px;
+    min-height: 120px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    .loading-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid rgba(255, 255, 255, 0.1);
+        border-top-color: #4a9eff;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      .loading-text {
+        color: #888;
+        font-size: 13px;
+      }
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
     }
   }
 
@@ -51,7 +86,7 @@
 
         // 确保 SVG 正确显示
         svg {
-          max-width: 100% !important;
+          // max-width: 100% !important;
           height: auto !important;
           display: block !important;
           margin: 0 auto;

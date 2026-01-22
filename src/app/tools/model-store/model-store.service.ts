@@ -98,8 +98,9 @@ export class ModelStoreService {
   // private baseUrl = 'https://sensecraft.seeed.cc/aiserverapi/model/list_model';
   // private detailApiUrl = 'https://sensecraft.seeed.cc/aiserverapi/model/view_model';
 
-  private baseUrl = API.modelList;
-  private detailApiUrl = API.modelDetails;
+  // 使用 getter 动态获取 URL，确保区域切换后能获取到最新的地址
+  private get baseUrl() { return API.modelList; }
+  private get detailApiUrl() { return API.modelDetails; }
 
   private readonly pageSize = 12;  // 每页显示数量
   // private readonly uniformType = 32;  // XIAO ESP32S3 Sense

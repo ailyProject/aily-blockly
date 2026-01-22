@@ -74,22 +74,27 @@ export const TOOLS = [
     // },
     {
         name: "read_file",
-        description: `读取指定文件的内容。支持完整读取或按行/字节范围读取，自动处理大文件。
+        description: `读取指定文件的内容。支持完整读取或按行/字节范围读取，自动处理大文件和单行文件。
 
 **读取模式：**
 1. **完整读取**（默认）：读取整个文件（文件需小于 maxSize）
 2. **按行范围读取**：指定起始行号和行数（行号从1开始）
 3. **按字节范围读取**：指定起始字节位置和字节数（推荐用于大文件，优先级最高）
 
+**自动优化（内部处理，无需手动配置）：**
+- 单行大文件（如压缩JSON）：自动转换行范围为字节范围读取
+- 超长行检测：自动选择最优读取策略
+- 多行文件指定行范围时：自动计算等效字节范围，选择覆盖更大的方式
+
 **大文件处理：**
 - 默认限制 1MB，超过限制需指定范围读取或增加 maxSize
-- 检测到超长行会发出警告
 - 字节范围读取使用流式读取，不会一次性加载整个文件
 
 **使用场景：**
 - 小文件（<1MB）：直接完整读取
 - 大文件：使用字节范围读取 (startByte + byteCount)
-- 已知行号：使用行范围读取 (startLine + lineCount)
+- 已知行号：使用行范围读取 (startLine + lineCount)，工具会自动优化
+- **库readme或文档**：完整读取
 - 搜索内容：使用 grep_tool 工具
 
 **注意：**
@@ -384,49 +389,132 @@ editFileTool({
     // },
     {
         name: "search_boards_libraries",
-        description: `专门用于搜索开发板(boards.json)和库(libraries.json)的高效工具。
+        description: `智能开发板和库搜索工具，支持文本搜索和结构化筛选。
+使用前可使用get_hardware_categories工具获取可用的分类和筛选维度。
+**⭐ 推荐调用方式（统一使用 filters）：**
+\`\`\`json
+// 文本搜索
+{ "type": "boards", "filters": { "keywords": ["wifi", "esp32", "arduino"] } }
+
+// 结构化筛选 + 文本搜索
+{ "type": "boards", "filters": { "keywords": ["esp32"], "connectivity": ["WiFi"], "flash": ">4096" } }
+
+// 纯结构化筛选
+{ "type": "libraries", "filters": { "category": "sensor", "communication": ["I2C"] } }
+\`\`\`
 
 **使用场景：**
 1. 查找特定功能的库（如"温度传感器"、"舵机"、"OLED"）
 2. 查找支持特定芯片的开发板（如"esp32"、"arduino"）
-3. 查找作者或品牌相关的硬件（如"adafruit"、"seeed"）
+3. 按硬件规格筛选开发板（如"Flash >= 4MB"、"支持WiFi和BLE"）
+4. 按类别筛选库（如"sensor类"、"通信类"）
+
+**筛选参数说明：**
+
+*通用参数：*
+- keywords: 文本搜索关键词（字符串或数组），如 "esp32 wifi" 或 ["esp32", "wifi"]
+
+*开发板筛选（filters）：*
+- flash: Flash大小筛选（KB），支持比较运算符（如 ">4096", ">=1024"）
+- sram: SRAM大小筛选（KB）
+- frequency: 主频筛选（MHz）
+- cores: 核心数筛选
+- architecture: 架构筛选（如 "xtensa-lx7", "avr"）
+- connectivity: 连接方式数组（如 ["WiFi", "BLE"]）
+- interfaces: 接口数组（如 ["SPI", "I2C", "camera"]）
+- brand: 品牌筛选
+- voltage: 工作电压筛选
+
+*库筛选（filters）：*
+- category: 类别筛选（如 "sensor", "actuator", "communication"）
+- hardwareType: 硬件类型数组（如 ["temperature", "humidity"]）
+- supportedCores: 支持的核心数组（如 ["esp32:esp32", "arduino:avr"]）
+- communication: 通信方式数组（如 ["I2C", "SPI"]）
 
 **注意：**
 - 返回结果默认限制在前50条最相关匹配
-- 使用此工具而非通用grep工具可以获得更精确、更快速的结果
-- 多关键词搜索时，匹配任一关键词即可返回结果（OR逻辑）
-
-**示例：**
-查找 ESP32 开发板：
-\`\`\`json
-{
-  "query": "esp32",
-  "type": "boards"
-}
-\`\`\`
-
-查找舵机控制库：
-\`\`\`json
-{
-  "query": "servo",
-  "type": "libraries"
-}
-\`\`\``,
+- 数值筛选支持运算符：>, >=, <, <=, =, !=`,
         input_schema: {
             type: 'object',
             properties: {
-                query: {
-                    type: 'array',
-                    items: {
-                        type: 'string'
-                    },
-                    description: '搜索关键词数组。例如：["esp32", "wifi"], ["temperature", "sensor"]'
-                },
                 type: {
                     type: 'string',
                     enum: ['boards', 'libraries'],
                     description: '搜索类型：boards(仅开发板), libraries(仅库)。默认为 boards',
                     default: 'boards'
+                },
+                filters: {
+                    type: 'object',
+                    description: '筛选条件（支持文本搜索和结构化筛选）',
+                    properties: {
+                        // 通用文本搜索
+                        keywords: {
+                            oneOf: [
+                                { type: 'string', description: '搜索关键词，空格分隔多个词' },
+                                { type: 'array', items: { type: 'string' }, description: '搜索关键词数组' }
+                            ],
+                            description: '文本搜索关键词（OR逻辑：匹配任意一个关键词即可返回）。例如: "wifi esp32" 或 ["wifi", "esp32", "arduino"] 会返回包含wifi或esp32或arduino的所有结果，匹配越多分数越高'
+                        },
+                        // 开发板筛选
+                        flash: {
+                            type: 'string',
+                            description: 'Flash大小筛选（KB），支持比较运算符：>=4096, >2048, =16384'
+                        },
+                        sram: {
+                            type: 'string',
+                            description: 'SRAM大小筛选（KB），支持比较运算符'
+                        },
+                        frequency: {
+                            type: 'string',
+                            description: '主频筛选（MHz），支持比较运算符'
+                        },
+                        cores: {
+                            type: 'string',
+                            description: '核心数筛选，支持比较运算符'
+                        },
+                        architecture: {
+                            type: 'string',
+                            description: '架构筛选，如 xtensa-lx7, avr, arm-cortex-m4'
+                        },
+                        connectivity: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '连接方式数组（AND逻辑），如 ["WiFi", "BLE", "Ethernet"]'
+                        },
+                        interfaces: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '接口数组（AND逻辑），如 ["SPI", "I2C", "UART", "camera"]'
+                        },
+                        brand: {
+                            type: 'string',
+                            description: '品牌筛选，如 Espressif, Arduino, Seeed'
+                        },
+                        voltage: {
+                            type: 'string',
+                            description: '工作电压筛选（V）'
+                        },
+                        // 库筛选
+                        category: {
+                            type: 'string',
+                            description: '库类别筛选，如 sensor, actuator, communication, display'
+                        },
+                        hardwareType: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '硬件类型数组，如 ["temperature", "humidity"]'
+                        },
+                        supportedCores: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '支持的核心数组，如 ["esp32:esp32", "arduino:avr"]'
+                        },
+                        communication: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '通信方式数组，如 ["I2C", "SPI", "UART", "OneWire"]'
+                        }
+                    }
                 },
                 maxResults: {
                     type: 'number',
@@ -434,7 +522,83 @@ editFileTool({
                     default: 50
                 }
             },
-            required: ['query']
+            required: ['filters']
+        }
+    },
+    {
+        name: "get_hardware_categories",
+        description: `获取开发板或库的分类信息，用于引导式选型流程。
+
+**⭐ 推荐使用流程：**
+1. 先调用此工具获取分类概览（如传感器有哪些类型？开发板有哪些品牌？）
+2. 根据分类结果，调用 search_boards_libraries 进行精确搜索
+
+**开发板分类维度（dimension）：**
+- architecture: 架构（avr, xtensa-lx6, xtensa-lx7, riscv, arm-cortex-m4...）
+- connectivity: 连接方式（wifi, ble, bluetooth-classic, zigbee...）
+- interfaces: 接口类型（camera, sd-card, display, usb-device, ethernet...）
+- tags: 用途标签（AI, IoT, ARM, 教育, 入门...）
+
+**库分类维度（dimension）：**
+- category: 主分类（sensor, motor, display, communication, audio...）
+- hardwareType: 硬件类型（temperature, humidity, led, oled, touch, stepper...）
+- communication: 通信协议（i2c, spi, uart, gpio, pwm...）
+
+**使用示例：**
+\`\`\`json
+// 获取所有库的主分类
+{ "type": "libraries", "dimension": "category" }
+
+// 获取传感器类库的硬件类型
+{ "type": "libraries", "dimension": "hardwareType", "filterBy": { "category": "sensor" } }
+
+// 获取开发板的接口类型分类（camera, sd-card, display等）
+{ "type": "boards", "dimension": "interfaces" }
+
+// 获取开发板的用途标签（AI, IoT, ARM等）
+{ "type": "boards", "dimension": "tags" }
+
+// 获取支持WiFi的开发板的架构分布
+{ "type": "boards", "dimension": "architecture", "filterBy": { "connectivity": ["wifi"] } }
+\`\`\``,
+        input_schema: {
+            type: 'object',
+            properties: {
+                type: {
+                    type: 'string',
+                    enum: ['boards', 'libraries'],
+                    description: '获取分类的类型：boards(开发板) 或 libraries(库)'
+                },
+                dimension: {
+                    type: 'string',
+                    description: '分类维度：开发板可选 architecture/connectivity/interfaces/tags；库可选 category/hardwareType/communication'
+                },
+                filterBy: {
+                    type: 'object',
+                    description: '可选的预过滤条件，用于获取特定范围内的分类',
+                    properties: {
+                        category: {
+                            type: 'string',
+                            description: '仅限库：先按主分类过滤，再获取子分类'
+                        },
+                        architecture: {
+                            type: 'string',
+                            description: '仅限开发板：先按架构过滤'
+                        },
+                        connectivity: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '仅限开发板：先按连接方式过滤'
+                        },
+                        tags: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: '仅限开发板：先按用途标签过滤'
+                        }
+                    }
+                }
+            },
+            required: ['type', 'dimension']
         }
     },
     {
@@ -738,11 +902,346 @@ Query and return specific content (for detailed info)
     //         required: ['content']
     //     }
     // },
+    // =============================================================================
+    // 原子化块操作工具（推荐用于复杂结构）
+    // =============================================================================
+//     {
+//         name: "create_single_block",
+//         description: `创建单个 Blockly 块，支持 inputs 嵌套、动态块配置和创建时直接连接。<system-reminder>使用前需读取对应库的 Readme</system-reminder>
+
+// **特性**：shadow 块嵌套 | extraState 配置 | 创建时直接连接（可选）| 返回块 ID
+
+// **关键示例**：
+// \`\`\`json
+// // 创建并直接连接到 arduino_setup
+// {"type": "serial_begin", "fields": {"SERIAL": "Serial", "SPEED": "9600"}, "connect": {"action": "put_into", "target": "arduino_setup"}}
+
+// // 创建 math_number 并设为 delay 的 TIME 输入
+// {"type": "math_number", "fields": {"NUM": 1000}, "connect": {"action": "set_as_input", "target": "delay_id", "input": "TIME"}}
+
+// // 动态块（需指定 extraState）
+// {"type": "controls_if", "extraState": {"elseIfCount": 1, "hasElse": true}}
+
+// // 带输入的块
+// {"type": "io_digitalwrite", "inputs": {"PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}}}}
+// \`\`\``,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 type: { 
+//                     type: 'string', 
+//                     description: '块类型，如 serial_begin, io_digitalwrite, text_join 等' 
+//                 },
+//                 fields: { 
+//                     type: 'object', 
+//                     description: '块字段值，如 {SERIAL: "Serial", SPEED: "9600"}' 
+//                 },
+//                 inputs: {
+//                     type: 'object',
+//                     description: '块输入配置。每个输入可以是: {"shadow": {"type": "块类型", "fields": {...}}} 或 {"blockId": "已存在的块ID"}',
+//                     additionalProperties: {
+//                         type: 'object',
+//                         properties: {
+//                             shadow: {
+//                                 type: 'object',
+//                                 properties: {
+//                                     type: { type: 'string', description: 'shadow块类型' },
+//                                     fields: { type: 'object', description: 'shadow块字段' }
+//                                 },
+//                                 required: ['type']
+//                             },
+//                             blockId: { type: 'string', description: '已存在的块ID' }
+//                         }
+//                     }
+//                 },
+//                 extraState: {
+//                     type: 'object',
+//                     description: '动态块的额外状态配置。text_join/lists_create_with 用 {itemCount: N}; controls_if 用 {elseIfCount: N, hasElse: true}',
+//                     properties: {
+//                         itemCount: { type: 'number', description: 'text_join/lists_create_with 的输入数量' },
+//                         elseIfCount: { type: 'number', description: 'controls_if 的 else if 分支数量' },
+//                         hasElse: { type: 'boolean', description: 'controls_if 是否有 else 分支' }
+//                     }
+//                 },
+//                 position: {
+//                     type: 'object',
+//                     properties: {
+//                         x: { type: 'number', description: 'X坐标' },
+//                         y: { type: 'number', description: 'Y坐标' }
+//                     },
+//                     description: '可选，块的位置'
+//                 },
+//                 connect: {
+//                     type: 'object',
+//                     description: '可选，创建后立即连接到目标块（参考 connect_blocks_simple）',
+//                     properties: {
+//                         action: {
+//                             type: 'string',
+//                             enum: ['put_into', 'chain_after', 'set_as_input'],
+//                             description: 'put_into=放入容器, chain_after=链接到后面, set_as_input=设为值输入'
+//                         },
+//                         target: {
+//                             type: 'string',
+//                             description: '目标块 ID 或类型名（如 "arduino_setup", "arduino_loop"）'
+//                         },
+//                         input: {
+//                             type: 'string',
+//                             description: '目标输入名（可选，会自动检测）'
+//                         },
+//                         moveWithChain: {
+//                             type: 'boolean',
+//                             description: '是否将块后面连接的块一起移动（默认 false）',
+//                             default: false
+//                         }
+//                     },
+//                     required: ['action', 'target']
+//                 }
+//             },
+//             required: ['type']
+//         }
+//     },
+//     {
+//         name: "connect_blocks_simple",
+//         description: `【原子化工具-推荐】连接两个 Blockly 块，使用直观的语义。
+
+// **连接动作**：
+// | action | 说明 | 适用块类型 |
+// |--------|------|-----------|
+// | put_into | 放入容器的语句输入 | 语句块 → 容器块 |
+// | chain_after | 链接到块后面 | 语句块 → 语句块 |
+// | set_as_input | 设为值输入 | 值块 → 任意块 |
+
+// **moveWithChain 选项**：
+// - true（默认）：移动块时，将其后面连接的所有块一起移动
+// - false：只移动单个块，原来连接在其后面的块会保持在原位置并自动重连
+
+// **示例**：
+// \`\`\`json
+// // 将 serial_begin 放入 arduino_setup
+// {"block": "serial_begin_id", "action": "put_into", "target": "arduino_setup_id"}
+
+// // 将 delay 链接到 serial_println 后面
+// {"block": "delay_id", "action": "chain_after", "target": "serial_println_id"}
+
+// // 将 math_number 设为 delay 的 TIME 输入
+// {"block": "math_number_id", "action": "set_as_input", "target": "delay_id", "input": "TIME"}
+
+// // 只移动单个块（不带后面连接的块）
+// {"block": "some_block_id", "action": "chain_after", "target": "target_id", "moveWithChain": false}
+// \`\`\`
+
+// **与 connect_blocks_tool 的区别**：
+// - 语义更清晰：put_into/chain_after/set_as_input
+// - 自动检测输入名（input 参数可选）
+// - 支持 moveWithChain 选项控制是否移动整个块链
+// - 更详细的错误提示`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 block: { 
+//                     type: 'string', 
+//                     description: '要操作的块 ID（来自 create_single_block 的返回值）' 
+//                 },
+//                 action: {
+//                     type: 'string',
+//                     enum: ['put_into', 'chain_after', 'set_as_input'],
+//                     description: 'put_into=放入容器, chain_after=链接到后面, set_as_input=设为值输入'
+//                 },
+//                 target: { 
+//                     type: 'string', 
+//                     description: '目标块 ID' 
+//                 },
+//                 input: { 
+//                     type: 'string', 
+//                     description: '目标输入名（可选，会自动检测）' 
+//                 },
+//                 moveWithChain: {
+//                     type: 'boolean',
+//                     description: '是否将块后面连接的块一起移动（默认 false）。设为 false 时只移动单个块，原来在其后的块会自动重连',
+//                     default: false
+//                 }
+//             },
+//             required: ['block', 'action', 'target']
+//         }
+//     },
+//     {
+//         name: "set_block_field",
+//         description: `【原子化工具】设置块的字段值。用于修改已创建块的字段。
+
+// **示例**：
+// \`\`\`json
+// {"blockId": "abc123", "fieldName": "SPEED", "value": "115200"}
+// {"blockId": "abc123", "fieldName": "VAR", "value": {"name": "myVar"}}
+// \`\`\``,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 blockId: { type: 'string', description: '块 ID' },
+//                 fieldName: { type: 'string', description: '字段名' },
+//                 value: { description: '字段值（字符串、数字或变量对象）' }
+//             },
+//             required: ['blockId', 'fieldName', 'value']
+//         }
+//     },
+//     {
+//         name: "set_block_input",
+//         description: `【原子化工具】将块连接到另一个块的指定输入。支持两种模式：连接已存在的块，或创建新块并连接。
+
+// **模式1：连接已存在的块**（使用 sourceBlockId）
+// \`\`\`json
+// {"blockId": "if_block_id", "inputName": "IF0", "sourceBlockId": "condition_block_id"}
+// \`\`\`
+
+// **模式2：创建新块并连接**（使用 newBlock）
+// \`\`\`json
+// {
+//   "blockId": "delay_block_id",
+//   "inputName": "TIME",
+//   "newBlock": {"type": "math_number", "fields": {"NUM": "1000"}}
+// }
+// \`\`\`
+
+// **创建 shadow 块并连接**：
+// \`\`\`json
+// {
+//   "blockId": "io_digitalwrite_id",
+//   "inputName": "PIN",
+//   "newBlock": {"type": "io_pin_digi", "fields": {"PIN": "13"}, "shadow": true}
+// }
+// \`\`\`
+
+// **注意**：sourceBlockId 和 newBlock 必须二选一，不能同时提供`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 blockId: { type: 'string', description: '目标块 ID' },
+//                 inputName: { type: 'string', description: '输入名称' },
+//                 sourceBlockId: { type: 'string', description: '要连接的已存在块 ID（与 newBlock 二选一）' },
+//                 newBlock: {
+//                     type: 'object',
+//                     description: '要创建并连接的新块配置（与 sourceBlockId 二选一）',
+//                     properties: {
+//                         type: { type: 'string', description: '块类型' },
+//                         fields: { type: 'object', description: '块字段值' },
+//                         shadow: { type: 'boolean', description: '是否作为 shadow 块', default: false }
+//                     },
+//                     required: ['type']
+//                 }
+//             },
+//             required: ['blockId', 'inputName']
+//         }
+//     },
+//     {
+//         name: "get_workspace_blocks",
+//         description: `【原子化工具】获取工作区当前的所有块列表。
+
+// **用途**：
+// - 查看已创建的块和它们的 ID
+// - 检查哪些块有空输入需要填充
+// - 分析块之间的连接关系
+
+// **返回信息**：
+// - 每个块的 ID、类型、是否为根块
+// - 空输入列表（提示需要连接）
+// - 块按类型分组统计`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {}
+//         }
+//     },
+//     {
+//         name: "batch_create_blocks",
+//         description: `批量创建块并建立连接，一次调用完成整个结构。<system-reminder>使用前需读取对应库的 Readme</system-reminder>
+
+// **核心特性**：扁平化 blocks+connections 数组 | 使用临时ID（如 "b1"）引用 | 一次调用完成多块创建和连接
+
+// **示例**（DHT温度读取+LED控制）：
+// \`\`\`json
+// {
+//   "blocks": [
+//     {"id": "b1", "type": "dht_init", "fields": {"VAR": {"name": "dht"}}},
+//     {"id": "b2", "type": "controls_if", "extraState": {"hasElse": true}},
+//     {"id": "b3", "type": "logic_compare", "fields": {"OP": "GT"}},
+//     {"id": "b4", "type": "dht_read_temperature", "fields": {"VAR": {"name": "dht"}}},
+//     {"id": "b5", "type": "math_number", "fields": {"NUM": 30}}
+//   ],
+//   "connections": [
+//     {"block": "b1", "action": "put_into", "target": "arduino_setup"},
+//     {"block": "b2", "action": "put_into", "target": "arduino_loop"},
+//     {"block": "b3", "action": "set_as_input", "target": "b2", "input": "IF0"},
+//     {"block": "b4", "action": "set_as_input", "target": "b3", "input": "A"},
+//     {"block": "b5", "action": "set_as_input", "target": "b3", "input": "B"}
+//   ]
+// }
+// \`\`\`
+
+// **块类型与动作**：
+// - **语句块**（io_digitalwrite, dht_init, controls_if）：用 put_into（放入容器）或 chain_after（垂直堆叠）
+// - **值块**（math_number, dht_read_temperature, logic_compare）：用 set_as_input（设为输入）
+
+// **关键规则**：
+// 1. chain_after 不支持 input 参数！放入 controls_if 的 DO0/ELSE 用 put_into
+// 2. 临时ID 仅单次调用有效，跨调用需用返回的真实ID
+// 3. inputs 配置：shadow块 | 嵌套块 | blockRef 引用
+// 4. target 支持：临时ID（"b1"）| 类型名（"arduino_setup"）| 真实ID`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 blocks: {
+//                     type: 'array',
+//                     description: '要创建的块列表（扁平化数组）',
+//                     items: {
+//                         type: 'object',
+//                         properties: {
+//                             id: { type: 'string', description: '临时ID，用于 connections 中引用（如 "b1", "b2"）' },
+//                             type: { type: 'string', description: '块类型（如 "dht_init", "controls_if"）' },
+//                             fields: { type: 'object', description: '块字段值' },
+//                             inputs: { 
+//                                 type: 'object', 
+//                                 description: '输入配置，支持 shadow 块或 blockRef 引用'
+//                             },
+//                             extraState: { type: 'object', description: '动态块的额外状态（如 controls_if 的 {hasElse: true}）' }
+//                         },
+//                         required: ['id', 'type']
+//                     }
+//                 },
+//                 connections: {
+//                     type: 'array',
+//                     description: '连接规则列表',
+//                     items: {
+//                         type: 'object',
+//                         properties: {
+//                             block: { type: 'string', description: '要操作的块（临时ID）' },
+//                             action: { 
+//                                 type: 'string', 
+//                                 enum: ['put_into', 'chain_after', 'set_as_input'],
+//                                 description: 'put_into=放入容器, chain_after=链接到后面, set_as_input=设为值'
+//                             },
+//                             target: { type: 'string', description: '目标块（临时ID 或 已存在块的真实ID）' },
+//                             input: { type: 'string', description: '目标输入名（可选，会自动检测）' }
+//                         },
+//                         required: ['block', 'action', 'target']
+//                     }
+//                 },
+//                 position: {
+//                     type: 'object',
+//                     properties: {
+//                         x: { type: 'number' },
+//                         y: { type: 'number' }
+//                     },
+//                     description: '起始位置（可选）'
+//                 }
+//             },
+//             required: ['blocks', 'connections']
+//         }
+//     },
+    // =============================================================================
+    // 原有块操作工具（保持兼容）
+    // =============================================================================
     {
         name: "smart_block_tool",
-        description: `智能块创建、配置Blockly工作区中的块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme</system-reminder>。
+        description: `智能块创建Blockly工作区中的块，一次只能创建一个块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme。注意：当需要创建3个以上的块或嵌套超过2层时，推荐使用create_code_structure_tool创建。</system-reminder>
 基本语法:
-基本语法
 \`\`\`json
 {
   "type": "块类型",
@@ -836,7 +1335,7 @@ Query and return specific content (for detailed info)
     },
     {
         name: "connect_blocks_tool",
-        description: `块连接工具。连接两个及以上Blockly块，支持三种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）。
+        description: `块连接工具，通过修改连接关系移动Blockly块，但不会新建块，支持四种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）、disconnect（断开连接变独立块）。
 
 ⚠️ **重要**：连接语义说明
 - containerBlock: **容器块/父块** (提供连接点的块，如arduino_setup、if_else、repeat等)
@@ -847,90 +1346,95 @@ Query and return specific content (for detailed info)
   - connectionType: "statement"
   - inputName: "input_statement"
 
+🔓 **断开连接（变独立块）**：
+- 使用 connectionType: "disconnect" 将块从父块断开，变成工作区中的独立块
+- moveChain: false（默认）- 只断开指定块，后续块保持在原位置
+- moveChain: true - 断开整个块链，包括后续所有块一起变成独立块
+
 常见错误：不要混淆容器和内容的关系！`,
         input_schema: {
             type: 'object',
             properties: {
                 containerBlock: {
                     type: 'string',
-                    description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）'
+                    description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）。disconnect模式时可省略'
                 },
                 contentBlock: {
                     type: 'string', 
-                    description: '📦 内容块ID（子块，要被放入容器的块，如digital_write、delay、sensor_read等功能块）'
+                    description: '📦 内容块ID（子块，要被放入容器的块，或要断开连接的块）'
                 },
                 connectionType: {
                     type: 'string',
-                    enum: ['next', 'input', 'statement'],
-                    description: '连接类型：statement=语句连接（推荐，用于将功能块放入容器块），input=输入连接（用于参数值），next=顺序连接（用于按顺序排列）'
+                    enum: ['next', 'input', 'statement', 'disconnect'],
+                    description: '连接类型：statement=语句连接（推荐），input=输入连接，next=顺序连接，disconnect=断开连接变独立块'
                 },
                 inputName: {
                     type: 'string',
                     description: '输入端口名称（statement连接时指定容器的哪个端口，如"input_statement"、"DO"、"ELSE"等，不指定时自动检测）'
+                },
+                moveChain: {
+                    type: 'boolean',
+                    description: '是否移动整个块链。false=只移动/断开单个块，后续块保持或重连；true（默认）=移动/断开整个块链',
+                    default: true
                 }
             },
-            required: ['containerBlock', 'contentBlock', 'connectionType']
+            required: ['contentBlock', 'connectionType']
         }
     },
     {
         name: "create_code_structure_tool", 
-        description: `动态结构创建工具，使用动态结构处理器创建任意复杂的代码块结构，支持自定义块组合和连接规则。
-注意事项:
-- 使用工具前必须确保已经读取了使用的block所属库的Readme
-- 建议分步生成代码，如：全局变量-初始化-loop-回调函数。
-- 不要一次性生成超过10个block的代码块结构。
+        description: `动态结构创建工具，创建包含多个块的代码结构并连接到工作区。
 
-基本语法:
-\`\`\`json
-{
-  "structure": "结构名称",
-  "config": {
-    "structureDefinition": {
-      "rootBlock": {...},
-      "additionalBlocks": [...],
-      "connectionRules": [...]
-    }
-  },
-  "insertPosition": "workspace", // 插入位置类型（"workspace" | "after" | "before" | "input" | "statement" | "append"）
-  "targetBlock": "容器块ID", // 目标容器块ID（当 insertPosition 不为 "workspace" 时必需）
-  "targetInput": "目标输入名称", // 目标输入名称（当 insertPosition 为 "input" 或 "statement" 时可选）
-  "position": {"x": 100, "y": 100} // 坐标位置（当 insertPosition 为 "workspace" 时使用）
+**注意事项**:
+- 使用工具前必须确保已读取使用的 block 所属库的 Readme
+- 建议分步生成代码：全局变量 → 初始化 → loop → 回调函数
+- 不要一次性生成超过 10 个 block 的代码块结构
 
-}
-\`\`\`
-示例:
-添加到Arduino Setup
+**参数说明**:
+- \`structureDefinition\`: 定义要创建的块（rootBlock + additionalBlocks）
+- \`connectionRules\`: 定义所有块之间的连接（包括新创建的块之间，以及新块与工作区已有块之间）
+
+**示例: 在 Arduino Setup 中添加初始化代码**
 \`\`\`json
 {
   "structure": "init-code",
   "config": {
     "structureDefinition": {
       "rootBlock": {
-        "type": "serial_begin",
-        "id": "serial_init",
-        "fields": {"SERIAL": "Serial", "SPEED": "9600"}
+        "type": "control_if",
+        "id": "if_check",
+        "extraState": {"hasElse": true},
+        "inputs": {
+          "IF0": {"block": {"type": "logic_compare", "id": "logic_compare_id", "fields": {"OP": "GT"}, ...}},
+          "DO0": {"block": {"type": "io_digitalwrite", "id": "green_led_on", "inputs": {...}}},
+          "ELSE": {}
+        }
       },
       "additionalBlocks": [
         {
-          "type": "base_pin_mode",
-          "id": "pin_setup",
+          "type": "io_digitalwrite",
+          "id": "red_led_on",
           "inputs": {
-            "PIN": {"block": {"type": "math_number", "fields": {"NUM": "13"}}},
-            "MODE": {"block": {"type": "base_pin_mode_option", "fields": {"MODE": "OUTPUT"}}}
+            "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+            "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
           }
-        }
-      ],
-      "connectionRules": [
+        },
         {
-          "source": "serial_init",
-          "target": "pin_setup",
-          "connectionType": "next"
+          "type": "io_digitalwrite",
+          "id": "red_led_off",
+          "inputs": {
+            "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+            "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "LOW"}}}
+          }
         }
       ]
     }
   },
-  "insertPosition": "statement",
-  "targetBlock": "arduino_setup_id"
+  "connectionRules": [
+    {"source": "arduino_setup_id", "target": "if_check", "connectionType": "statement", "inputName": "ARDUINO_SETUP"},
+    {"source": "green_led_on", "target": "red_led_on", "connectionType": "next"},
+    {"source": "if_check", "target": "red_led_off", "connectionType": "statement", "inputName": "ELSE"}
+  ]
 }
 \`\`\`
 `,
@@ -939,7 +1443,7 @@ Query and return specific content (for detailed info)
             properties: {
                 structure: {
                     type: 'string',
-                    description: '结构名称（任意字符串，用于日志和元数据）'
+                    description: '结构名称（用于日志和调试）'
                 },
                 config: {
                     type: 'object',
@@ -949,38 +1453,38 @@ Query and return specific content (for detailed info)
                             properties: {
                                 rootBlock: {
                                     type: 'object',
-                                    description: '根块配置'
+                                    description: '根块配置（必须包含 type 和 id）'
                                 },
                                 additionalBlocks: {
                                     type: 'array',
                                     items: { type: 'object' },
                                     description: '附加块配置数组'
-                                },
-                                connectionRules: {
-                                    type: 'array',
-                                    items: {
-                                        type: 'object',
-                                        properties: {
-                                            source: { type: 'string', description: '输出块引用' },
-                                            target: { type: 'string', description: '接收块引用' },
-                                            inputName: { type: 'string', description: '接收块的输入名称' },
-                                            connectionType: { 
-                                                type: 'string', 
-                                                enum: ['next', 'input', 'statement'],
-                                                description: '连接类型' 
-                                            }
-                                        },
-                                        required: ['source', 'target']
-                                    },
-                                    description: '块连接规则'
                                 }
                             },
                             required: ['rootBlock'],
-                            description: '动态结构定义'
+                            description: '动态结构定义（仅定义要创建的块）'
                         }
                     },
                     required: ['structureDefinition'],
-                    description: '结构配置'
+                    description: '结构配置对象'
+                },
+                connectionRules: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            source: { type: 'string', description: '源块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
+                            target: { type: 'string', description: '目标块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
+                            inputName: { type: 'string', description: 'statement/input 连接时指定输入名称' },
+                            connectionType: { 
+                                type: 'string', 
+                                enum: ['next', 'input', 'statement'],
+                                description: 'next=source.nextConnection→target.previousConnection，statement=source.getInput(inputName).connection→target.previousConnection，input=source.getInput(inputName).connection→target.outputConnection' 
+                            }
+                        },
+                        required: ['source', 'target', 'connectionType']
+                    },
+                    description: '块之间的连接规则（统一定义所有连接，包括新块之间和新块与已有块之间）'
                 },
                 position: {
                     type: 'object',
@@ -988,20 +1492,7 @@ Query and return specific content (for detailed info)
                         x: { type: 'number', description: 'X坐标' },
                         y: { type: 'number', description: 'Y坐标' }
                     },
-                    description: '结构在工作区中的位置'
-                },
-                insertPosition: {
-                    type: 'string',
-                    enum: ['workspace', 'after', 'before', 'input', 'statement', 'append'],
-                    description: '插入位置：workspace=独立放置，after=目标块后，before=目标块前，input=目标块输入，statement=statement连接（用于hat块），append=追加到工作区'
-                },
-                targetBlock: {
-                    type: 'string',
-                    description: '目标容器块ID（当insertPosition不是workspace时必需）'
-                },
-                targetInput: {
-                    type: 'string',
-                    description: '目标输入名（当insertPosition是input时必需）'
+                    description: '结构在工作区中的坐标位置'
                 }
             },
             required: ['structure']
@@ -1163,21 +1654,37 @@ Query and return specific content (for detailed info)
     // },
     {
         name: "delete_block_tool",
-        description: `块删除工具，如果使用connect_blocks_tool重新连接能解决则优先使用块连接工具。通过块ID删除工作区中的指定块。支持两种删除模式：普通删除（只删除指定块，保留连接的块，推荐使用）和级联删除（删除整个块树，包括所有连接的子块）。`,
+        description: `块删除工具，支持删除单个或多个块。
+**注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
+**注意**：优先使用块创建工具及连接工具修复代码结构。
+
+**功能特点**：
+- 支持单个块ID或多个块ID数组输入
+- 智能删除：只删除指定块，保留连接的块并自动重连
+- 删除后自动重连前后块（如果可能）
+
+**示例**：
+\`\`\`json
+// 删除单个块
+{"blockIds": "block_id_123"}
+
+// 删除多个块
+{"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
+\`\`\`
+
+**注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
         input_schema: {
             type: 'object',
             properties: {
-                blockId: {
-                    type: 'string',
-                    description: '要删除的块的ID'
-                },
-                cascade: {
-                    type: 'boolean',
-                    description: '是否级联删除连接的块。false=只删除指定块，true=删除整个块树',
-                    default: false
+                blockIds: {
+                    oneOf: [
+                        { type: 'string', description: '单个要删除的块ID' },
+                        { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
+                    ],
+                    description: '要删除的块ID，支持单个字符串或字符串数组'
                 }
             },
-            required: ['blockId']
+            required: ['blockIds']
         }
     },
     {
@@ -1579,7 +2086,7 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
     },
     {
         name: 'analyze_library_blocks',
-        description: `分析指定库的块定义和使用模式，在库对应的readme不存在或者描述不准确的情况下使用这个工具来补充和完善库的文档说明。深入解析库文件，提取块定义、生成器逻辑、工具箱配置等信息，生成完整的库知识图谱。`,
+        description: `分析指定库的块定义，生成类似 readme.md 格式的块定义文档。优先使用read_file工具读取库readme，当库对应的 readme 不存在或描述不准确时，使用此工具补充和完善库的文档说明。`,
         input_schema: {
             type: 'object',
             properties: {
@@ -1587,17 +2094,6 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
                     type: 'array',
                     items: { type: 'string' },
                     description: '要分析的库名称列表，如 ["@aily-project/lib-blinker", "@aily-project/lib-sensor"]'
-                },
-                analysisDepth: {
-                    type: 'string',
-                    enum: ['basic', 'detailed', 'full'],
-                    default: 'detailed',
-                    description: '分析深度：basic(基本信息)、detailed(详细信息)、full(完整关系图)'
-                },
-                includeExamples: {
-                    type: 'boolean',
-                    default: true,
-                    description: '是否包含使用示例'
                 }
             },
             required: ['libraryNames']
@@ -1627,6 +2123,209 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
             },
             required: ['blockTypes', 'libraryNames']
         }
+    }
+    // =============================================================================
+    // 扁平化块创建工具（推荐）
+    // =============================================================================
+//     {
+//         name: "flat_create_blocks",
+//         description: `【推荐】扁平化批量创建 Blockly 块 - 支持智能拆分嵌套结构
+// <system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme。
+// **注意事项**：
+// - 一个block(id)包含的块(type)严禁超过5个，超过请分多次创建。
+// - 严禁一次性生成全部代码块，建议分多次调用，每次创建少量块。
+// - 创建代码步骤：全局变量 → 初始化（arduino_setup）→ 主循环（arduino_loop）→ 回调函数</system-reminder>
+
+// 🧠 **智能拆分功能**：
+// - 工具会自动检测嵌套结构（如 controls_ifelse 中的 inputs.IF0.block）
+// - 自动将嵌套块提取为独立块并生成连接规则
+// - 即使 JSON 结构有轻微错误也能正确处理
+
+// **块定义格式**（与 smart_block_tool 相同）:
+// \`\`\`json
+// {
+//   "id": "b1",
+//   "type": "io_digitalwrite",
+//   "inputs": {
+//     "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+//     "STATE": { "shadow": { "type": "io_state", "fields": {"STATE": "HIGH"}}}
+//   }
+// }
+// \`\`\`
+
+// **连接格式**:
+// - \`"b1 -> arduino_setup"\` - 语句块放入容器（自动检测 input_statement）
+// - \`"b1 -> b2:next"\` - 顺序连接（b1 接在 b2 后面）
+// - \`"b3 -> b2:VALUE"\` - 值输入连接（b3 连接到 b2 的 VALUE 输入）
+// - \`"b1 -> if_block:DO0"\` - 语句输入连接（b1 放入 if 块的第一个执行分支）
+// - 不提供连接规则的块将成为工作区中的独立块
+
+// ⚠️ **重要：输入名称是扁平的，不支持嵌套路径！**
+// - ✅ 正确: \`"b1 -> if_block:DO0"\`, \`"b2 -> if_block:DO1"\`, \`"b3 -> if_block:ELSE"\`
+// - ❌ 错误: \`"b1 -> if_block:ELSE:IF0:DO0"\`（不支持嵌套路径）
+
+// **controls_ifelse 输入名称规则**（extraState: {elseIfCount: N}）:
+// - IF0/DO0: 第一个 if 条件和执行体
+// - IF1/DO1, IF2/DO2...: else if 分支（按 elseIfCount 数量）
+// - ELSE: else 分支执行体
+
+// **示例 - 温度读取+串口打印**:
+// \`\`\`json
+// {
+//   "blocks": [
+//     {"id": "b1", "type": "dht_begin", "fields": {"VAR": "dht", "PIN": "2", "TYPE": "DHT11"}},
+//     {"id": "b2", "type": "serial_begin", "fields": {"SERIAL": "Serial", "SPEED": "9600"}},
+//     {"id": "b3", "type": "dht_read_temperature", "fields": {"VAR": "dht"}},
+//     {"id": "b4", "type": "serial_println", "fields": {"SERIAL": "Serial"}}},
+//     {"id": "b5", "type": "delay_ms", "inputs": {"TIME": {"shadow": {"type": "math_number", "fields": {"NUM": "2000"}}}}}
+//   ],
+//   "connections": [
+//     "b1 -> arduino_setup",
+//     "b2 -> b1:next",
+//     "b3 -> arduino_loop",
+//     "b3 -> b4:VAR",
+//     "b4 -> b3:next",
+//     "b5 -> b4:next"
+//   ]
+// }
+// \`\`\`
+
+// **动态块 extra**: \`controls_if\`: {"elseIfCount": N, "hasElse": true}, \`text_join/lists_create_with\`: {"itemCount": N}`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 blocks: {
+//                     type: 'array',
+//                     description: '块定义数组，格式与 smart_block_tool 完全相同',
+//                     items: {
+//                         type: 'object',
+//                         properties: {
+//                             id: { type: 'string', description: '临时ID（如 "b1", "b2"）' },
+//                             type: { type: 'string', description: '块类型' },
+//                             fields: { type: 'object', description: '字段值' },
+//                             inputs: { type: 'object', description: '输入配置，与 smart_block_tool 格式相同' },
+//                             extra: { type: 'object', description: '动态块配置: itemCount, elseIfCount, hasElse' }
+//                         },
+//                         required: ['id', 'type']
+//                     }
+//                 },
+//                 connections: {
+//                     type: 'array',
+//                     description: '连接规则: "源ID -> 目标ID" 或 "源ID -> 目标ID:输入名"。不提供连接规则的块将成为独立块',
+//                     items: { type: 'string' }
+//                 }
+//             },
+//             required: ['blocks']
+//         }
+//     }
+    // =============================================================================
+    // DSL 块创建工具
+    // =============================================================================
+//     {
+//         name: 'dsl_create_blocks',
+//         description: `使用 YAML-Like DSL 语法创建 Blockly 块 - 最简洁的块创建方式
+
+// **语法格式**：
+// \`\`\`yaml
+// setup:
+//   - 块类型 参数1 参数2 ...
+//   - 变量 = 块类型 参数...
+
+// loop:
+//   - 块类型 参数...
+//   - if 条件:
+//       - 块类型 参数...
+//     else:
+//       - 块类型 参数...
+// \`\`\`
+
+// **核心规则**：
+// 1. \`setup:\` 和 \`loop:\` 定义代码区域
+// 2. \`-\` 开头表示一个块
+// 3. 参数按顺序自动映射到字段
+// 4. \`变量 = 块类型\` 用于赋值/引用
+// 5. 缩进表示嵌套（语句输入）
+
+// **示例1 - 基础串口**：
+// \`\`\`yaml
+// setup:
+//   - serial_begin Serial 9600
+
+// loop:
+//   - serial_println Serial "Hello"
+//   - time_delay 1000
+// \`\`\`
+
+// **示例2 - DHT 温度传感器**：
+// \`\`\`yaml
+// setup:
+//   - serial_begin Serial 9600
+//   - dht_init dht DHT22 2
+
+// loop:
+//   - temp = dht_read_temperature dht
+//   - serial_println Serial temp
+//   - time_delay 2000
+// \`\`\`
+
+// **示例3 - 条件判断**：
+// \`\`\`yaml
+// setup:
+//   - dht_init dht DHT22 2
+
+// loop:
+//   - temp = dht_read_temperature dht
+//   - if temp > 30:
+//       - io_digitalwrite 13 HIGH
+//     else:
+//       - io_digitalwrite 13 LOW
+//   - time_delay 1000
+// \`\`\`
+
+// **示例4 - 带回调的块**：
+// \`\`\`yaml
+// setup:
+//   - mqtt_connect broker="192.168.1.1" port=1883:
+//       on_connect:
+//         - mqtt_subscribe "sensor/data"
+//       on_message:
+//         - serial_println Serial $payload
+
+// loop:
+//   - mqtt_loop
+//   - time_delay 100
+// \`\`\`
+
+// **常用块类型**：
+// | 块类型 | 参数 | 说明 |
+// |--------|------|------|
+// | serial_begin | Serial 波特率 | 初始化串口 |
+// | serial_println | Serial 内容 | 串口打印 |
+// | dht_init | 变量名 类型 引脚 | 初始化 DHT |
+// | dht_read_temperature | 变量名 | 读取温度 |
+// | io_digitalwrite | 引脚 状态 | 数字输出 |
+// | io_digitalread | 引脚 | 数字输入 |
+// | time_delay | 毫秒 | 延时 |
+
+// **操作符**：
+// - 比较: \`==\`, \`!=\`, \`<\`, \`>\`, \`<=\`, \`>=\`
+// - 逻辑: \`&&\`, \`||\`, \`and\`, \`or\`
+
+// **优势**：
+// - 📉 体积比 JSON 减少 75%
+// - ✅ 无需管理 ID 和连接
+// - ✅ 顺序书写 = 顺序执行
+// - ✅ 接近自然语言`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 code: {
+//                     type: 'string',
+//                     description: 'YAML-Like DSL 代码'
+//                 }
+//             },
+//             required: ['code']
+//         }
     // },
     // {
     //     name: 'arduino_syntax_check',
@@ -1651,5 +2350,5 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
     //         },
     //         required: ['code']
     //     }
-    }
+    // }
 ]

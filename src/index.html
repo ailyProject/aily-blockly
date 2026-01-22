@@ -11,6 +11,61 @@
   <link rel="stylesheet" href="fonts/fontawesome6/css/all.min.css" />
   <!-- Icon-font -->
   <link rel="stylesheet" href="fonts/iconfont/iconfont.css">
+  <!-- 内联启动画面样式，确保在 Angular 加载前就能显示 -->
+  <style>
+    body {
+      margin: 0;
+      background-color: #2b2d30;
+    }
+    .loading-box {
+      width: 100vw;
+      height: 100vh;
+      background: #2b2d30;
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 99;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      border-radius: 5px;
+    }
+    .loading-box .text {
+      color: #fff;
+      margin-left: 12px;
+      margin-top: 5px;
+      font-size: 18px;
+    }
+    .ball-grid-beat {
+      width: 57px;
+      height: 57px;
+    }
+    .ball-grid-beat > div {
+      display: inline-block;
+      float: left;
+      width: 15px;
+      height: 15px;
+      margin: 2px;
+      border-radius: 100%;
+      background-color: #fff;
+      animation: ball-grid-beat 1.3s ease infinite;
+    }
+    .ball-grid-beat > div:nth-child(1) { animation-delay: 0.36s; animation-duration: 1.18s; }
+    .ball-grid-beat > div:nth-child(2) { animation-delay: 0.2s; animation-duration: 1.28s; }
+    .ball-grid-beat > div:nth-child(3) { animation-delay: 0.48s; animation-duration: 0.88s; }
+    .ball-grid-beat > div:nth-child(4) { animation-delay: 0.28s; animation-duration: 1.28s; }
+    .ball-grid-beat > div:nth-child(5) { animation-delay: 0.13s; animation-duration: 1.11s; }
+    .ball-grid-beat > div:nth-child(6) { animation-delay: 0.28s; animation-duration: 0.98s; }
+    .ball-grid-beat > div:nth-child(7) { animation-delay: 0.47s; animation-duration: 1.08s; }
+    .ball-grid-beat > div:nth-child(8) { animation-delay: 0.36s; animation-duration: 1.38s; }
+    .ball-grid-beat > div:nth-child(9) { animation-delay: 0.04s; animation-duration: 1.01s; }
+    @keyframes ball-grid-beat {
+      0%, 50%, 100% { transform: scale(1); opacity: 1; }
+      25% { transform: scale(0.5); opacity: 0.5; }
+      75% { transform: scale(0.5); opacity: 0.5; }
+    }
+  </style>
 </head>
 
 <body spellcheck="false">

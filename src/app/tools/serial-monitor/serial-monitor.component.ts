@@ -1,5 +1,4 @@
-import { ChangeDetectorRef, Component, ViewChild, ElementRef } from '@angular/core';
-import { BehaviorSubject, Observable, Subscription } from 'rxjs';
+import { ChangeDetectorRef, Component, ViewChild, ElementRef, AfterViewInit, OnDestroy } from '@angular/core';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { FormsModule } from '@angular/forms';
 import { NzInputModule } from 'ng-zorro-antd/input';
@@ -26,8 +25,11 @@ import { SettingMoreComponent } from './components/setting-more/setting-more.com
 import { QuickSendEditorComponent } from './components/quick-send-editor/quick-send-editor.component';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { SearchBoxComponent } from './components/search-box/search-box.component';
+import { SerialChartComponent } from './components/serial-chart/serial-chart.component';
 import { Buffer } from 'buffer';
-import { TranslateService } from '@ngx-translate/core';
+import { TranslateService, TranslateModule } from '@ngx-translate/core';
+import { ConfigService } from '../../services/config.service';
+import { ElectronService } from '../../services/electron.service';
 
 @Component({
   selector: 'app-serial-monitor',
@@ -50,7 +52,9 @@ import { TranslateService } from '@ngx-translate/core';
     SettingMoreComponent,
     QuickSendEditorComponent,
     SearchBoxComponent,
-    UiScrollModule
+    SerialChartComponent,
+    UiScrollModule,
+    TranslateModule
   ],
   templateUrl: './serial-monitor.component.html',
   styleUrl: './serial-monitor.component.scss',
@@ -148,10 +152,16 @@ export class SerialMonitorComponent {
     private cd: ChangeDetectorRef,
     private message: NzMessageService,
     private translate: TranslateService,
+    private configService: ConfigService,
+    private electronService: ElectronService
   ) { }
 
   async ngOnInit() {
     this.currentUrl = this.router.url;
+
+    // 加载保存的串口监视器配置
+    this.loadSavedConfig();
+
     if (this.serialService.currentPort) {
       this.currentPort = this.serialService.currentPort;
     }
@@ -205,26 +215,18 @@ export class SerialMonitorComponent {
   }
 
   @ViewChild('dataListBox', { static: false }) dataListBoxRef!: ElementRef<HTMLDivElement>;
+  @ViewChild('serialChart') serialChartRef!: SerialChartComponent;
 
-  private scrollToBottom(fast = false) {
+  private scrollToBottom() {
     if (!this.autoScroll) return;
     setTimeout(() => {
-      // console.log('scroll To Bottom');
       requestAnimationFrame(() => {
         if (this.dataListBoxRef) {
           const element = this.dataListBoxRef.nativeElement;
-          if (fast) {
-            element.scrollTop = element.scrollHeight;
-          } else {
-            // 使用 scrollTo 实现平滑滚动
-            element.scrollTo({
-              top: element.scrollHeight,
-              behavior: 'smooth'
-            });
-          }
+          element.scrollTop = element.scrollHeight;
         }
       });
-    }, fast ? 50 : 100);
+    }, 50);
   }
 
   // 处理数据更新
@@ -272,7 +274,7 @@ export class SerialMonitorComponent {
     }
     this.cd.detectChanges();
     // 如果开启自动滚动,滚动到底部
-    this.scrollToBottom(true);
+    this.scrollToBottom();
   }
 
 
@@ -288,6 +290,46 @@ export class SerialMonitorComponent {
     } catch (error) {
       console.warn('获取串口列表失败:', error);
     }
+  }
+
+  // 加载保存的串口监视器配置
+  private loadSavedConfig() {
+    const savedConfig = this.configService.data.serialMonitor;
+    if (savedConfig) {
+      // 只有在当前没有选择串口时才加载保存的串口
+      if (!this.currentPort && savedConfig.port) {
+        this.currentPort = savedConfig.port;
+      }
+      if (savedConfig.baudRate) {
+        this.currentBaudRate = savedConfig.baudRate;
+      }
+      if (savedConfig.dataBits) {
+        this.dataBits = savedConfig.dataBits;
+      }
+      if (savedConfig.stopBits) {
+        this.stopBits = savedConfig.stopBits;
+      }
+      if (savedConfig.parity) {
+        this.parity = savedConfig.parity;
+      }
+      if (savedConfig.flowControl) {
+        this.flowControl = savedConfig.flowControl;
+      }
+    }
+  }
+
+  // 保存串口监视器配置
+  private saveSerialConfig() {
+    if (!this.configService.data.serialMonitor) {
+      this.configService.data.serialMonitor = {};
+    }
+    this.configService.data.serialMonitor.port = this.currentPort;
+    this.configService.data.serialMonitor.baudRate = this.currentBaudRate;
+    this.configService.data.serialMonitor.dataBits = this.dataBits;
+    this.configService.data.serialMonitor.stopBits = this.stopBits;
+    this.configService.data.serialMonitor.parity = this.parity;
+    this.configService.data.serialMonitor.flowControl = this.flowControl;
+    this.configService.save();
   }
 
   ngOnDestroy() {
@@ -353,6 +395,7 @@ export class SerialMonitorComponent {
   selectPort(portItem) {
     this.currentPort = portItem.name;
     this.closePortList();
+    this.saveSerialConfig();
   }
 
   // 波特率选择列表相关 
@@ -376,11 +419,15 @@ export class SerialMonitorComponent {
   selectBaud(item) {
     this.currentBaudRate = item.name;
     this.closeBaudList();
+    this.saveSerialConfig();
   }
 
   async switchPort() {
     if (!this.switchValue) {
-      this.serialMonitorService.disconnect();
+      const result = await this.serialMonitorService.disconnect();
+      if (result) {
+        this.message.success(this.translate.instant('SERIAL.PORT_CLOSED'));
+      }
       return;
     }
 
@@ -392,20 +439,32 @@ export class SerialMonitorComponent {
       return;
     }
 
-    await this.serialMonitorService.connect({
-      path: this.currentPort,
-      baudRate: parseInt(this.currentBaudRate),
-      dataBits: parseInt(this.dataBits),
-      stopBits: parseFloat(this.stopBits),
-      parity: this.parity,
-      flowControl: this.flowControl
-    });
+    try {
+      const result = await this.serialMonitorService.connect({
+        path: this.currentPort,
+        baudRate: parseInt(this.currentBaudRate),
+        dataBits: parseInt(this.dataBits),
+        stopBits: parseFloat(this.stopBits),
+        parity: this.parity,
+        flowControl: this.flowControl
+      });
 
-    // 发送DTR信号
-    setTimeout(() => {
-      this.serialMonitorService.sendSignal('DTR');
-    }, 50);
-
+      if (result) {
+        this.message.success(this.translate.instant('SERIAL.PORT_OPENED'));
+        // 发送DTR信号
+        setTimeout(() => {
+          this.serialMonitorService.sendSignal('DTR');
+        }, 50);
+      } else {
+        // 连接失败，关闭开关
+        this.switchValue = false;
+        this.cd.detectChanges();
+      }
+    } catch (error) {
+      // 连接失败，关闭开关
+      this.switchValue = false;
+      this.cd.detectChanges();
+    }
   }
 
   changeViewMode(name) {
@@ -418,6 +477,10 @@ export class SerialMonitorComponent {
     if (this.datasource && this.datasource.adapter) {
       // 清空时使用 reload 是合理的,因为需要完全重置
       this.datasource.adapter.reload(0);
+    }
+    // 清空图表数据
+    if (this.serialChartRef) {
+      this.serialChartRef.clearChartData();
     }
   }
 
@@ -495,6 +558,9 @@ export class SerialMonitorComponent {
     this.stopBits = settings.stopBits.value;
     this.parity = settings.parity.value;
     this.flowControl = settings.flowControl.value;
+
+    // 保存配置
+    this.saveSerialConfig();
 
     // 如果已经连接，需要断开重连以应用新设置
     if (this.switchValue) {
@@ -584,5 +650,27 @@ export class SerialMonitorComponent {
 
   onDataItemClick(item: dataItem) {
     console.log(item);
+  }
+
+  showChartBox = false;
+
+  openChartBox() {
+    this.showChartBox = !this.showChartBox;
+    if (this.showChartBox) {
+      // 延迟初始化图表，确保 DOM 元素已渲染
+      setTimeout(() => {
+        if (this.serialChartRef) {
+          this.serialChartRef.initChart();
+        }
+      }, 100);
+    } else {
+      if (this.serialChartRef) {
+        this.serialChartRef.destroyChart();
+      }
+    }
+  }
+
+  openUrl(url) {
+    this.electronService.openUrl(url);
   }
 }

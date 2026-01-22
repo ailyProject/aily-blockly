@@ -1,36 +1,219 @@
-name: CI&&CD
+name: CI & CD Pipeline
 
 on:
   push:
     branches:
       - deploy
+    tags:
+      - 'v*' # 增加标签触发，这通常是申请签名时的加分项
+  workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  # 任务 1：Windows 客户端构建 (新增，用于向 SignPath 证明构建能力)
+  build-windows:
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js 18.x
-        uses: actions/setup-node@v1
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
-      
-      - name: Dependent environment
+          node-version: '22.x'
+          cache: 'npm'
+
+      - name: Install Dependencies
         run: |
-          npm i -g @angular/cli
-          npm i
-      
-      - name: Compile
+          npm install -g @angular/cli
+          npm ci
+          cd electron && npm ci
+
+      - name: Compile Windows Executable
         run: |
-          npm run build
+          npm run build -- --win
+        env:
+          NODE_ENV: production
+
+      # --- SignPath 预留位 (申请时给审核员看的重点) ---
+      # - name: Sign with SignPath
+      #   uses: signpath/github-action@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     ... (待申请通过后完善)
       
-      - name: Deploy
-        uses: Dylan700/sftp-upload-action@latest
+      - name: Archive Windows Artifact
+        uses: actions/upload-artifact@v4
         with:
-          server: ${{ secrets.HOST }}
-          username: ubuntu
-          key: ${{ secrets.PRIVATEKEY }}
-          uploads: |
-            dist/aily-software => ${{ secrets.TARGET }}
+          name: AilyBlockly-Windows-Package
+          path: dist/aily-blockly/ # 包含所有输出：exe, yml 等
+
+  # 任务 2：macOS 客户端构建
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: |
+          npm install -g @angular/cli
+          npm ci
+          cd electron && npm ci
+
+      - name: Compile macOS Executable
+        run: |
+          npm run build -- --mac
+        env:
+          NODE_ENV: production
+
+      # --- Apple 代码签名和公证 ---
+      - name: Import Codesign Certificates
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.APPLE_SIGNING_CERT }}
+          p12-password: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+
+      - name: Find DMG file
+        id: find_dmg
+        run: |
+          DMG_PATH=$(find dist/aily-blockly -name "*.dmg" -type f | head -n 1)
+          echo "dmg_path=$DMG_PATH" >> $GITHUB_OUTPUT
+          echo "Found DMG at: $DMG_PATH"
+
+      - name: Debug - Check DMG file
+        run: |
+          echo "DMG file: ${{ steps.find_dmg.outputs.dmg_path }}"
+          ls -lh "${{ steps.find_dmg.outputs.dmg_path }}"
+          file "${{ steps.find_dmg.outputs.dmg_path }}"
+
+      - name: Notarize and Staple macOS App
+        id: notarize
+        continue-on-error: true
+        uses: lando/notarize-action@v2
+        with:
+          product-path: "${{ steps.find_dmg.outputs.dmg_path }}"
+          appstore-connect-username: ${{ secrets.APPLE_ID }}
+          appstore-connect-password: ${{ secrets.APPLE_APP_PASSWORD }}
+          appstore-connect-team-id: ${{ secrets.APPLE_TEAM_ID }}
+          primary-bundle-id: "blockly.aily.pro"
+
+      - name: Debug - Notarization Result
+        run: |
+          echo "Notarization step outcome: ${{ steps.notarize.outcome }}"
+          if [ "${{ steps.notarize.outcome }}" = "failure" ]; then
+            echo "⚠️  Notarization failed, but continuing with artifact upload..."
+          else
+            echo "✓ Notarization completed successfully"
+          fi
+
+      - name: Verify Notarization
+        continue-on-error: true
+        run: |
+          echo "Checking file signature..."
+          codesign -dvv "${{ steps.find_dmg.outputs.dmg_path }}" || echo "File not code-signed"
+          echo ""
+          echo "Running spctl verification..."
+          spctl -a -vvv -t install "${{ steps.find_dmg.outputs.dmg_path }}" || echo "spctl verification failed"
+          echo ""
+          echo "Running stapler validate..."
+          stapler validate "${{ steps.find_dmg.outputs.dmg_path }}" || echo "Stapler validation failed"
+      
+      - name: Archive macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package
+          path: dist/aily-blockly/ # 包含所有输出：dmg, zip, yml 等
+
+  # 任务 3：发布到 GitHub Release
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package
+          path: ./release
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package
+          path: ./release
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./release/*.exe
+            ./release/*.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 任务 4：上传文件到服务器（与Release并行执行）
+  upload-to-server:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package
+          path: ./artifacts/windows
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package
+          path: ./artifacts/macos
+
+      - name: Upload files to Server (non-yml files first, yml files last)
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_PATH: ${{ secrets.SERVER_PATH }}
+        run: |
+          # 安装sshpass用于密码认证
+          sudo apt-get update && sudo apt-get install -y sshpass
+          
+          # 创建临时目录用于组织文件
+          mkdir -p ./upload-temp
+          
+          # 复制Windows文件（exe先上传）
+          echo "准备Windows文件..."
+          cp ./artifacts/windows/*.exe ./upload-temp/ 2>/dev/null || echo "未找到Windows exe文件"
+          
+          # 复制macOS文件（dmg和zip先上传）
+          echo "准备macOS文件..."
+          cp ./artifacts/macos/*.dmg ./upload-temp/ 2>/dev/null || echo "未找到macOS dmg文件"
+          cp ./artifacts/macos/*.zip ./upload-temp/ 2>/dev/null || echo "未找到macOS zip文件"
+          
+          # 先上传非yml文件
+          if [ -n "$(ls -A ./upload-temp/)" ]; then
+            echo "上传非yml文件到服务器..."
+            sshpass -p "$SERVER_PASSWORD" scp -o StrictHostKeyChecking=no -r ./upload-temp/* "$SERVER_USER@$SERVER_HOST:$SERVER_PATH"
+          fi
+          
+          # 最后上传yml文件
+          echo "准备yml配置文件..."
+          mkdir -p ./yml-files
+          cp ./artifacts/windows/latest.yml ./yml-files/ 2>/dev/null || echo "未找到Windows latest.yml"
+          cp ./artifacts/macos/latest-mac.yml ./yml-files/ 2>/dev/null || echo "未找到macOS latest-mac.yml"
+          
+          if [ -n "$(ls -A ./yml-files/)" ]; then
+            echo "上传yml配置文件到服务器..."
+            sshpass -p "$SERVER_PASSWORD" scp -o StrictHostKeyChecking=no -r ./yml-files/* "$SERVER_USER@$SERVER_HOST:$SERVER_PATH"
+          fi
+          
+          echo "✓ 文件上传完成"

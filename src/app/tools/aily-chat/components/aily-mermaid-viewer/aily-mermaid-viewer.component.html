@@ -1,14 +1,15 @@
 <div class="aily-mermaid-viewer sscroll" (dblclick)="logDetail()">
-  @if (errorMessage) {
+  @if (isLoading) {
+  <div class="loading-card">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <div class="loading-text">图表生成中...</div>
+    </div>
+  </div>
+  } @else if (errorMessage) {
   <div class="error-card">
     <div class="error-content">
       <span class="error-text">🚫 图表渲染失败</span>
-    </div>
-  </div>
-  } @else if (isLoading) {
-  <div class="error-card">
-    <div class="error-content">
-      <div class="error-text">📊 等待图表生成...</div>
     </div>
   </div>
   } @else if (renderedSvg) {

@@ -6,7 +6,7 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Location } from '@angular/common';
-import { Router, RouterModule } from '@angular/router';
+import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { PlaygroundService } from './playground.service';
 import { ElectronService } from '../../services/electron.service';
 
@@ -28,10 +28,12 @@ export class PlaygroundComponent {
   @Output() close = new EventEmitter();
 
   tagList: any[] = [];
+  board: string = '';
   // exampleList = []
 
   constructor(
     private router: Router,
+    private route: ActivatedRoute,
     private location: Location,
     private translate: TranslateService,
     private playgroundService: PlaygroundService,
@@ -41,12 +43,10 @@ export class PlaygroundComponent {
   }
 
   ngOnInit() {
-    // 在组件初始化时加载示例数据
-    // this.playgroundService.loadExamplesList().then(() => {
-    //   console.log('示例数据加载完成');
-    // }).catch(error => {
-    //   console.error('加载示例数据失败:', error);
-    // });
+    // 获取查询参数中的 board
+    this.route.queryParams.subscribe(params => {
+      this.board = params['board'] || '';
+    });
 
     // 使用翻译初始化标签列表
     this.tagList = [
@@ -74,20 +74,23 @@ export class PlaygroundComponent {
   keyword: string = '';
   search(keyword = this.keyword) {
     // keyword = keyword.replace(/\s/g, '').toLowerCase();
+    const queryParams: any = { keyword };
+    if (this.board) {
+      queryParams.board = this.board;
+    }
     this.router.navigate(['/main/playground/list'], {
-      queryParams: { keyword }
+      queryParams
     });
   }
 
   back() {
     // // 检查是否有历史记录可以返回
-    // if (window.history.length > 1) {
-    //   this.location.back();
-    // } else {
-    //   // 如果没有历史记录，跳转到项目初始默认路径
-    //   this.router.navigate(['/main/guide']);
-    // }
-
-    this.router.navigate(['/main/guide']);
+    if (window.history.length > 1) {
+      this.location.back();
+    } else {
+      // 如果没有历史记录，跳转到项目初始默认路径
+      this.router.navigate(['/main/guide']);
+    }
+    // this.router.navigate(['/main/guide']);
   }
 }

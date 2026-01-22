@@ -1,5 +1,6 @@
 import { ToolUseResult } from "./tools";
 import { injectTodoReminder } from "./todoWriteTool";
+import { normalizePath } from "../services/security.service";
 
 /**
  * 检查 ripgrep 是否可用
@@ -67,34 +68,6 @@ async function searchWithRipgrep(
         console.warn('Ripgrep 搜索错误:', error);
         return null;
     }
-}
-
-// 路径处理函数
-function normalizePath(inputPath: string): string {
-    if (!inputPath) return '';
-    
-    let normalizedPath = inputPath;
-    
-    if (typeof inputPath === 'string') {
-        const isWindowsPath = /^[A-Za-z]:\\/.test(inputPath);
-        
-        if (isWindowsPath) {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '\\')
-                .replace(/\//g, '\\');
-        } else {
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '/')
-                .replace(/\\/g, '/')
-                .replace(/\/+/g, '/');
-        }
-        
-        if (normalizedPath.length > 1 && (normalizedPath.endsWith('/') || normalizedPath.endsWith('\\'))) {
-            normalizedPath = normalizedPath.slice(0, -1);
-        }
-    }
-    
-    return normalizedPath;
 }
 
 /**

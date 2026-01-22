@@ -1,44 +1,24 @@
 import { connectionStrategies } from "@joint/core";
 import { ToolUseResult } from "./tools";
 import { injectTodoReminder } from "./todoWriteTool";
+import { 
+    SecurityService, 
+    PathSecurityContext, 
+    createSecurityContext,
+    validateFileRead,
+    validateFileWrite,
+    validateFileDelete,
+    validateDirectoryOperation,
+    FILE_WRITE_LIMITS,
+    normalizePath
+} from "../services/security.service";
+import { 
+    auditLogService, 
+    logFileOperation, 
+    completeAuditLog, 
+    logBlockedOperation 
+} from "../services/audit-log.service";
 
-
-// 路径处理示例
-function normalizePath(inputPath: string): string {
-    if (!inputPath) return '';
-    
-    // console.log('规范化前的路径:', inputPath);
-    
-    // 对于 Windows 路径，保持反斜杠格式，因为某些 Electron API 需要原生路径格式
-    let normalizedPath = inputPath;
-    
-    // 处理常见的转义问题
-    if (typeof inputPath === 'string') {
-        // 检查是否是 Windows 路径格式
-        const isWindowsPath = /^[A-Za-z]:\\/.test(inputPath);
-        
-        if (isWindowsPath) {
-            // Windows 路径：保持反斜杠，但确保正确转义
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '\\')  // 将双反斜杠转为单反斜杠
-                .replace(/\//g, '\\');   // 将正斜杠转为反斜杠
-        } else {
-            // Unix 路径：转换为正斜杠
-            normalizedPath = inputPath
-                .replace(/\\\\/g, '/')   // 处理双反斜杠
-                .replace(/\\/g, '/')     // 处理单反斜杠
-                .replace(/\/+/g, '/');   // 合并多个斜杠
-        }
-        
-        // 移除尾部路径分隔符（除非是根目录）
-        if (normalizedPath.length > 1 && (normalizedPath.endsWith('/') || normalizedPath.endsWith('\\'))) {
-            normalizedPath = normalizedPath.slice(0, -1);
-        }
-    }
-    
-    // console.log('规范化后的路径:', normalizedPath);
-    return normalizedPath;
-}
 
 // 构建目录树的递归函数
 async function buildDirectoryTree(dirPath: string, currentDepth: number = 0, maxDepth: number = 3) {
@@ -97,8 +77,12 @@ export async function fileOperationsTool(
         content?: string;
         is_folder?: boolean;
         maxDepth?: number; // 用于控制目录树的最大深度
-    }
+    },
+    securityContext?: PathSecurityContext // 新增安全上下文参数
 ): Promise<ToolUseResult> {
+    const startTime = Date.now();
+    let auditLogId: string | null = null;
+    
     try {
         let { operation, path: basePath, name, content, is_folder = false, maxDepth = 3 } = params;
 
@@ -162,6 +146,46 @@ export async function fileOperationsTool(
             };
             return injectTodoReminder(toolResult, 'fileOperationsTool');
         }
+
+        // ==================== 安全验证 ====================
+        // 如果提供了安全上下文，进行安全验证
+        if (securityContext) {
+            let securityCheck;
+            const riskLevel = ['delete', 'rename'].includes(operation) ? 'high' : 
+                              ['create', 'edit'].includes(operation) ? 'medium' : 'low';
+            
+            // 记录审计日志
+            auditLogId = logFileOperation(operation, filePath, params, riskLevel as any);
+            
+            switch (operation) {
+                case 'read':
+                case 'list':
+                case 'exists':
+                case 'tree':
+                    securityCheck = validateFileRead(filePath, securityContext);
+                    break;
+                case 'create':
+                case 'edit':
+                    securityCheck = validateFileWrite(filePath, securityContext, content?.length);
+                    break;
+                case 'delete':
+                case 'rename':
+                    securityCheck = validateFileDelete(filePath, securityContext);
+                    break;
+                default:
+                    securityCheck = { allowed: true };
+            }
+            
+            if (!securityCheck.allowed) {
+                logBlockedOperation('fileOperationsTool', operation, filePath, securityCheck.reason || '安全检查未通过');
+                const toolResult = { 
+                    is_error: true, 
+                    content: `安全检查未通过: ${securityCheck.reason}` 
+                };
+                return injectTodoReminder(toolResult, 'fileOperationsTool');
+            }
+        }
+        // ==================== 安全验证结束 ====================
 
         let is_error = false;
         let toolResult: any;
@@ -254,7 +278,7 @@ export async function fileOperationsTool(
                     // Create backup folder with timestamp
                     const dirName = window['path'].basename(filePath);
                     const parentDir = window['path'].dirname(filePath);
-                    backupPath = window['path'].join(parentDir, `ZBAK_${dirName}`);
+                    backupPath = window['path'].join(parentDir, `ABIBAK_${dirName}`);
 
                     await window['fs'].mkdirSync(backupPath, { recursive: true });
 
@@ -283,7 +307,7 @@ export async function fileOperationsTool(
                     const filename = window['path'].basename(filePath);
                     const ext = window['path'].extname(filePath);
                     const baseFilename = filename.replace(ext, '');
-                    backupPath = window['path'].join(dir, `ZBAK_${baseFilename}${ext}`);
+                    backupPath = window['path'].join(dir, `ABIBAK_${baseFilename}${ext}`);
 
                     const fileContent = await window['fs'].readFileSync(filePath, 'utf-8');
                     await window['fs'].writeFileSync(backupPath, fileContent);
@@ -346,6 +370,14 @@ export async function fileOperationsTool(
         }
         if (error.path) {
             errorMessage += `\n错误路径: ${error.path}`;
+        }
+        
+        // 记录审计日志 - 失败
+        if (auditLogId) {
+            completeAuditLog(auditLogId, false, {
+                duration: Date.now() - startTime,
+                errorMessage: error.message
+            });
         }
         
         const toolResult = { 

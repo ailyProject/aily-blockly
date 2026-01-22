@@ -3,34 +3,43 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden; /* 防止内容溢出 */
+  overflow: hidden;
+  /* 防止内容溢出 */
 }
 
 /* TODO面板容器样式 */
 .todo-panel-container {
-  flex-shrink: 0; /* 不允许收缩，保持TODO面板完整显示 */
+  flex-shrink: 0;
+  /* 不允许收缩，保持TODO面板完整显示 */
   border-top: 1px solid var(--border-color, #3c3c3c);
   background: var(--vscode-sideBar-background, #252526);
-  max-height: 300px; /* 限制最大高度防止占用过多空间 */
+  max-height: 300px;
+  /* 限制最大高度防止占用过多空间 */
   overflow: hidden;
-  transition: all 0.2s ease; /* 平滑的高度变化动画 */
+  transition: all 0.2s ease;
+  /* 平滑的高度变化动画 */
 }
 
 .window-box {
   position: relative;
   display: flex;
   flex-direction: column;
-  flex: 1; /* 占用剩余空间，适应TODO面板高度变化 */
-  min-height: 0; /* 确保可以收缩 */
-  overflow: hidden; /* 防止内容溢出 */
+  flex: 1;
+  /* 占用剩余空间，适应TODO面板高度变化 */
+  min-height: 0;
+  /* 确保可以收缩 */
+  overflow: hidden;
+  /* 防止内容溢出 */
 }
 
 .dialog-list {
   padding-left: 10px;
-  flex: 1; /* 使用flex:1让对话区域占用剩余空间 */
+  flex: 1;
+  /* 使用flex:1让对话区域占用剩余空间 */
   overflow-y: auto;
   //scroll-behavior: smooth;
-  min-height: 0; /* 确保flex子项可以收缩 */
+  min-height: 0;
+  /* 确保flex子项可以收缩 */
 
   .dialogs {
     padding: 0 10px 10px 0;
@@ -248,8 +257,11 @@ nz-resize-handle {
 // 模式切换按钮
 .btn {
   margin-left: 1px;
+  transition: all 0.2s;
+
   &.mode {
-    width: 50px !important;
+    width: auto !important;
+    padding: 0 6px !important;
 
     span {
       margin-left: 5px;
@@ -261,5 +273,13 @@ nz-resize-handle {
   &.active {
     color: var(--vscode-focusBorder, #007acc) !important;
     background: rgba(0, 122, 204, 0.1);
+  }
+}
+
+.mode-menu {
+  ::ng-deep {
+    .menu-item {
+      padding: 0 3px !important;
+    }
   }
 }

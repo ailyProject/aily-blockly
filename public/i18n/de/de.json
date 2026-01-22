@@ -29,7 +29,9 @@
         "UPDATE": "Nach Updates suchen",
         "USER_AUTH": "Benutzerdienst",
         "USER_SPACE": "Cloud-Speicher",
-        "LIB_MANAGER": "Bibliotheksverwaltung"
+        "LIB_MANAGER": "Bibliotheksverwaltung",
+        "AI_ASSISTANT": "KI-Assistent",
+        "PROJECT_HUB": "Projekt-Hub"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Upload-Geschwindigkeit",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "Teilen Sie uns Ihre Erfahrungen mit",
         "WECHAT_GROUP": "WeChat-Benutzergruppe",
         "WECHAT_GROUP_DESC": "Treten Sie der WeChat-Benutzergruppe bei, um sich mit anderen Benutzern auszutauschen",
+        "USER_GROUP": "Benutzer-Community",
+        "USER_GROUP_DESC": "Treten Sie der Community bei, um sich mit anderen Benutzern auszutauschen",
+        "AI_APP_CENTER": "AI-App-Center",
+        "AI_APP_CENTER_DESC": "Klicken Sie hier, um AI-Hardware und Edge-Computing-Anwendungen zu erkunden",
         "SPONSORS": "Projekt-Sponsoren",
-        "SPONSORS_DESC": "Dieses Projekt wird von den folgenden Unternehmen/Personen gesponsert"
+        "SPONSORS_DESC": "Dieses Projekt wird von den folgenden Unternehmen/Personen gesponsert",
+        "NEWS": "Neuigkeiten",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Neues Projekt erstellen",
+            "STEP1_DESC": "Klicken Sie hier, um ein neues Programmierprojekt zu erstellen. Wählen Sie Ihr Board und die Programmiersprache, um Ihre kreative Reise zu beginnen.",
+            "STEP2_TITLE": "Vorhandenes Projekt öffnen",
+            "STEP2_DESC": "Wenn Sie bereits Projekte erstellt haben, klicken Sie hier, um einen vorhandenen Projektordner zu öffnen.",
+            "STEP3_TITLE": "Projekt-Hub",
+            "STEP3_DESC": "Durchsuchen und erkunden Sie hervorragende Projekte, die von der Community geteilt wurden, um Inspiration und Lernressourcen zu erhalten.",
+            "STEP4_TITLE": "KI-Assistent",
+            "STEP4_DESC": "Der KI-Assistent hilft Ihnen bei der Projekterstellung. Beschreiben Sie einfach, was Sie brauchen. Nach der Erstellung kann er auch Fragen beantworten, Code generieren und Fehler beheben.",
+            "STEP5_TITLE": "SenseCraft KI-Hub",
+            "STEP5_DESC": "Erkunden Sie hier verschiedene KI-Hardware und Edge-Computing-Anwendungen und entdecken Sie mehr Möglichkeiten.",
+            "STEP6_TITLE": "Neueste Nachrichten",
+            "STEP6_DESC": "Hier finden Sie die neuesten Nachrichten und Ankündigungen zur Software, damit Sie über neue Funktionen und Updates informiert bleiben.",
+            "STEP7_TITLE": "Community beitreten",
+            "STEP7_DESC": "Haben Sie Fragen? Möchten Sie Ihre Arbeit teilen? Treten Sie unserer Benutzer-Community bei, um sich mit anderen Makern auszutauschen und zu lernen!"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "Die ersten {{count}} Apps werden in der Symbolleiste angezeigt",
@@ -121,7 +144,9 @@
             "SEARCH": "Board suchen",
             "READ_DOC": "Dokumentation lesen",
             "ADD_BOARD": "Board hinzufügen",
-            "DEV": "Entwicklung"
+            "DEV": "Entwicklung",
+            "BY_BRAND": "Nach Marke",
+            "BY_CORE": "Nach Kern"
         },
         "FORM": {
             "DEVMODE": "Entwicklungs-Framework",
@@ -132,6 +157,7 @@
         },
         "BUTTONS": {
             "USE_THIS": "Dieses Board verwenden",
+            "USE_THIS_FROM_HUB": "Projekt aus dem Hub laden",
             "NEXT": "Weiter",
             "PREV": "Zurück",
             "CREATE": "Projekt erstellen",
@@ -239,7 +265,12 @@
         "WARNING_INVALID_EMAIL": "Bitte geben Sie eine gültige E-Mail-Adresse ein",
         "SUCCESS_MESSAGE": "Vielen Dank für Ihr Feedback!",
         "ERROR_SUBMIT_FAILED": "Absenden fehlgeschlagen, bitte versuchen Sie es später erneut",
-        "NO_DEPENDENCIES": "Keine"
+        "NO_DEPENDENCIES": "Keine",
+        "IMAGE_UPLOADING": "Bild wird hochgeladen...",
+        "IMAGE_UPLOAD_SUCCESS": "Bild erfolgreich hochgeladen",
+        "IMAGE_UPLOAD_FAILED": "Bild-Upload fehlgeschlagen, bitte erneut versuchen",
+        "ATTACH_HINT": "Dateien per Drag & Drop, Einfügen oder",
+        "SELECT_FILE": "Dateien auswählen"
     },
     "AILY_CHAT": {
         "TITLE": "KI-Assistent",
@@ -258,7 +289,17 @@
         "STOP": "Stoppen",
         "MODE_AGENT_FULL": "Agent-Modus",
         "MODE_QA_FULL": "F&A-Modus",
-        "STOP_CURRENT_SESSION_FIRST": "Bitte stoppen Sie zuerst die aktuelle Sitzung, bevor Sie eine neue erstellen"
+        "STOP_CURRENT_SESSION_FIRST": "Bitte stoppen Sie zuerst die aktuelle Sitzung, bevor Sie eine neue erstellen",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Eingabefeld",
+            "STEP1_DESC": "Geben Sie hier Ihre Fragen oder Aufgaben ein, bei denen die KI helfen soll. Enter zum Senden, Ctrl+Enter für neue Zeile",
+            "STEP2_TITLE": "Kontext hinzufügen",
+            "STEP2_DESC": "Klicken Sie hier, um Dateien oder Ordner als Kontext hinzuzufügen, damit die KI Ihre Anforderungen besser versteht",
+            "STEP3_TITLE": "Modus wechseln",
+            "STEP3_DESC": "Agent-Modus kann Aufgaben automatisch ausführen (Code schreiben, Fehler beheben). F&A-Modus beantwortet nur Fragen",
+            "STEP4_TITLE": "Senden/Stoppen",
+            "STEP4_DESC": "Klicken zum Senden der Nachricht, oder Stoppen während die KI antwortet"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "Projekteinstellungen",
@@ -303,7 +344,24 @@
         "NO_DOCUMENTATION": "Dokumentation für dieses Board nicht verfügbar"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "Bitte wählen Sie zuerst einen seriellen Port aus"
+        "SELECT_PORT_FIRST": "Bitte wählen Sie zuerst einen seriellen Port aus",
+        "PORT": "Port",
+        "BAUD_RATE": "Baudrate",
+        "MORE_SETTINGS": "Weitere Einstellungen",
+        "HEX_DISPLAY": "HEX-Anzeige",
+        "AUTO_WRAP": "Automatischer Zeilenumbruch",
+        "AUTO_SCROLL": "Automatisches Scrollen",
+        "TIMESTAMP": "Zeitstempel",
+        "SHOW_CTRL_CHAR": "Unsichtbare Zeichen anzeigen",
+        "SEARCH": "Suchen",
+        "EXPORT": "Exportieren",
+        "CLEAR": "Löschen",
+        "SEND_BY_ENTER": "Mit Enter senden",
+        "END_R": "\\r Zeilenende",
+        "END_N": "\\n Zeilenende",
+        "PORT_OPENED": "Serieller Port geöffnet",
+        "PORT_CLOSED": "Serieller Port geschlossen",
+        "NO_CHART_DATA": "Keine Daten"
     },
     "MODEL_DEPLOY": {
         "TITLE": "Modellbereitstellung",
@@ -389,5 +447,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "Standard Low, Trigger High",
         "DEFAULT_HIGH_TRIGGER_LOW": "Standard High, Trigger Low",
         "CANCEL": "Abbrechen"
+    },
+    "LOGIN": {
+        "HEADER": "Melden Sie sich an, um unsere Dienste zu nutzen",
+        "PHONE": "Telefon",
+        "BENEFITS_TITLE": "Nach der Anmeldung können Sie:",
+        "BENEFIT_AI": "AI Q&A-Funktion kostenlos ausprobieren",
+        "BENEFIT_SHARE": "Ihre Projekte teilen",
+        "BENEFIT_EXPERIENCE": "Personalisierte Entwicklungserfahrung genießen",
+        "NOTICE_LABEL": "Hinweis: ",
+        "NOTICE_CONTENT": "Wir werden Ihr GitHub-Konto verwenden, um unsere Open-Source-Repositories zu markieren, was die Projektentwicklung unterstützt.",
+        "GITHUB_LOGIN": "Mit Github anmelden",
+        "WECHAT_SCAN": "QR-Code scannen, um zu folgen und anzumelden",
+        "PHONE_NOT_OPEN": "Telefonregistrierung ist noch nicht verfügbar",
+        "PHONE_BETA_ONLY": "Telefonanmeldung ist nur für AI-Beta-Tester",
+        "PHONE_PLACEHOLDER": "Telefonnummer eingeben",
+        "PASSWORD_PLACEHOLDER": "Passwort eingeben",
+        "LOGGING_IN": "Anmeldung...",
+        "LOGIN": "Anmelden",
+        "SELECT_METHOD": "Klicken Sie, um eine Anmeldemethode auszuwählen",
+        "REDIRECTING_GITHUB": "Weiterleitung zur GitHub-Autorisierungsseite...",
+        "GITHUB_LOGIN_FAILED": "GitHub-Anmeldung konnte nicht gestartet werden. Bitte überprüfen Sie die Netzwerkverbindung",
+        "GITHUB_ERROR": "GitHub-Anmeldung fehlgeschlagen",
+        "ENTER_CREDENTIALS": "Bitte geben Sie Benutzername und Passwort ein",
+        "LOGIN_SUCCESS": "Anmeldung erfolgreich",
+        "LOGIN_FAILED": "Anmeldung fehlgeschlagen",
+        "LOGIN_NETWORK_ERROR": "Anmeldung fehlgeschlagen, bitte überprüfen Sie die Netzwerkverbindung"
     }
 }

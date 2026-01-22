@@ -29,7 +29,9 @@
         "UPDATE": "Buscar actualizaciones",
         "USER_AUTH": "Servicio de Usuario",
         "USER_SPACE": "Espacio en la Nube",
-        "LIB_MANAGER": "Gestor de Bibliotecas"
+        "LIB_MANAGER": "Gestor de Bibliotecas",
+        "AI_ASSISTANT": "Asistente de IA",
+        "PROJECT_HUB": "Centro de Proyectos"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Velocidad de subida",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "Envíe comentarios sobre su experiencia",
         "WECHAT_GROUP": "Grupo de Usuarios de WeChat",
         "WECHAT_GROUP_DESC": "Únase al grupo de usuarios de WeChat para comunicarse con otros usuarios",
+        "USER_GROUP": "Comunidad de Usuarios",
+        "USER_GROUP_DESC": "Únase a la comunidad para comunicarse con otros usuarios",
+        "AI_APP_CENTER": "Centro de Aplicaciones IA",
+        "AI_APP_CENTER_DESC": "Haga clic para explorar aplicaciones de hardware IA y edge computing",
         "SPONSORS": "Patrocinadores del Proyecto",
-        "SPONSORS_DESC": "Este proyecto está patrocinado por las siguientes empresas/individuos"
+        "SPONSORS_DESC": "Este proyecto está patrocinado por las siguientes empresas/individuos",
+        "NEWS": "Noticias",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Crear nuevo proyecto",
+            "STEP1_DESC": "Haga clic aquí para crear un nuevo proyecto de programación. Elija su placa y lenguaje de programación para comenzar su viaje creativo.",
+            "STEP2_TITLE": "Abrir proyecto existente",
+            "STEP2_DESC": "Si ya ha creado proyectos antes, haga clic aquí para abrir una carpeta de proyecto existente.",
+            "STEP3_TITLE": "Centro de Proyectos",
+            "STEP3_DESC": "Explore y descubra excelentes proyectos compartidos por la comunidad para obtener inspiración y recursos de aprendizaje.",
+            "STEP4_TITLE": "Asistente de IA",
+            "STEP4_DESC": "El asistente de IA le ayuda a crear proyectos. Solo describa lo que necesita. Después de la generación, también puede responder preguntas, generar código y corregir errores.",
+            "STEP5_TITLE": "Centro de IA SenseCraft",
+            "STEP5_DESC": "Explore aquí varias aplicaciones de hardware de IA y computación en el borde, y descubra más posibilidades.",
+            "STEP6_TITLE": "Últimas Noticias",
+            "STEP6_DESC": "Aquí encontrará las últimas noticias y anuncios sobre el software, para mantenerse informado sobre nuevas funciones y actualizaciones.",
+            "STEP7_TITLE": "Únase a la Comunidad",
+            "STEP7_DESC": "¿Tiene preguntas? ¿Quiere compartir su trabajo? ¡Únase a nuestra comunidad de usuarios para conectar y aprender con otros makers!"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "Las primeras {{count}} aplicaciones se mostrarán en la barra de herramientas",
@@ -121,7 +144,9 @@
             "SEARCH": "Buscar Placa",
             "READ_DOC": "Leer Documentación",
             "ADD_BOARD": "Agregar Placa",
-            "DEV": "dev"
+            "DEV": "dev",
+            "BY_BRAND": "Por Marca",
+            "BY_CORE": "Por Núcleo"
         },
         "FORM": {
             "DEVMODE": "Marco de desarrollo",
@@ -132,6 +157,7 @@
         },
         "BUTTONS": {
             "USE_THIS": "Usar esta Placa",
+            "USE_THIS_FROM_HUB": "Cargar proyecto desde el Hub",
             "NEXT": "Siguiente",
             "PREV": "Anterior",
             "CREATE": "Crear Proyecto",
@@ -239,7 +265,12 @@
         "WARNING_INVALID_EMAIL": "Por favor ingrese una dirección de correo electrónico válida",
         "SUCCESS_MESSAGE": "¡Gracias por sus comentarios!",
         "ERROR_SUBMIT_FAILED": "Error al enviar, por favor intente más tarde",
-        "NO_DEPENDENCIES": "Ninguna"
+        "NO_DEPENDENCIES": "Ninguna",
+        "IMAGE_UPLOADING": "Subiendo imagen...",
+        "IMAGE_UPLOAD_SUCCESS": "Imagen subida correctamente",
+        "IMAGE_UPLOAD_FAILED": "Error al subir la imagen, por favor intente de nuevo",
+        "ATTACH_HINT": "Adjuntar archivos arrastrando, pegando o",
+        "SELECT_FILE": "seleccionar archivos"
     },
     "AILY_CHAT": {
         "TITLE": "Asistente IA",
@@ -258,7 +289,17 @@
         "STOP": "Detener",
         "MODE_AGENT_FULL": "Modo Agente",
         "MODE_QA_FULL": "Modo P&R",
-        "STOP_CURRENT_SESSION_FIRST": "Por favor, detenga la sesión actual antes de crear una nueva"
+        "STOP_CURRENT_SESSION_FIRST": "Por favor, detenga la sesión actual antes de crear una nueva",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Cuadro de entrada",
+            "STEP1_DESC": "Escriba aquí sus preguntas o tareas para la asistencia de IA. Presione Enter para enviar, Ctrl+Enter para nueva línea",
+            "STEP2_TITLE": "Agregar contexto",
+            "STEP2_DESC": "Haga clic aquí para agregar archivos o carpetas como contexto para ayudar a la IA a comprender mejor sus necesidades",
+            "STEP3_TITLE": "Cambio de modo",
+            "STEP3_DESC": "El modo Agente puede ejecutar tareas automáticamente (escribir código, corregir errores). El modo P&R solo responde preguntas",
+            "STEP4_TITLE": "Enviar/Detener",
+            "STEP4_DESC": "Haga clic para enviar mensaje, o detener cuando la IA esté respondiendo"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "Configuración del Proyecto",
@@ -303,7 +344,24 @@
         "NO_DOCUMENTATION": "Documentación no disponible para esta placa"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "Por favor seleccione un puerto serial primero"
+        "SELECT_PORT_FIRST": "Por favor seleccione un puerto serial primero",
+        "PORT": "Puerto",
+        "BAUD_RATE": "Velocidad en baudios",
+        "MORE_SETTINGS": "Más configuraciones",
+        "HEX_DISPLAY": "Pantalla HEX",
+        "AUTO_WRAP": "Ajuste de línea automático",
+        "AUTO_SCROLL": "Desplazamiento automático",
+        "TIMESTAMP": "Marca de tiempo",
+        "SHOW_CTRL_CHAR": "Mostrar caracteres invisibles",
+        "SEARCH": "Buscar",
+        "EXPORT": "Exportar",
+        "CLEAR": "Limpiar",
+        "SEND_BY_ENTER": "Enviar con Enter",
+        "END_R": "Fin de línea \\r",
+        "END_N": "Fin de línea \\n",
+        "PORT_OPENED": "Puerto serial abierto",
+        "PORT_CLOSED": "Puerto serial cerrado",
+        "NO_CHART_DATA": "Sin datos"
     },
     "MODEL_DEPLOY": {
         "TITLE": "Despliegue de Modelo",
@@ -389,5 +447,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "Predeterminado Bajo, Disparar Alto",
         "DEFAULT_HIGH_TRIGGER_LOW": "Predeterminado Alto, Disparar Bajo",
         "CANCEL": "Cancelar"
+    },
+    "LOGIN": {
+        "HEADER": "Inicie sesión para usar nuestros servicios",
+        "PHONE": "Teléfono",
+        "BENEFITS_TITLE": "Después de iniciar sesión, puede:",
+        "BENEFIT_AI": "Probar la función AI Q&A gratis",
+        "BENEFIT_SHARE": "Compartir sus proyectos",
+        "BENEFIT_EXPERIENCE": "Disfrutar de una experiencia de desarrollo personalizada",
+        "NOTICE_LABEL": "Nota: ",
+        "NOTICE_CONTENT": "Usaremos su cuenta de GitHub para dar estrella a nuestros repositorios de código abierto, lo que ayuda al desarrollo del proyecto.",
+        "GITHUB_LOGIN": "Iniciar sesión con Github",
+        "WECHAT_SCAN": "Escanee el código QR para seguir e iniciar sesión",
+        "PHONE_NOT_OPEN": "El registro por teléfono aún no está disponible",
+        "PHONE_BETA_ONLY": "El inicio de sesión por teléfono es solo para probadores beta de AI",
+        "PHONE_PLACEHOLDER": "Ingrese número de teléfono",
+        "PASSWORD_PLACEHOLDER": "Ingrese contraseña",
+        "LOGGING_IN": "Iniciando sesión...",
+        "LOGIN": "Iniciar sesión",
+        "SELECT_METHOD": "Haga clic para seleccionar el método de inicio de sesión",
+        "REDIRECTING_GITHUB": "Redirigiendo a la página de autorización de GitHub...",
+        "GITHUB_LOGIN_FAILED": "Error al iniciar el inicio de sesión de GitHub. Verifique la conexión de red",
+        "GITHUB_ERROR": "Error en el inicio de sesión de GitHub",
+        "ENTER_CREDENTIALS": "Por favor ingrese nombre de usuario y contraseña",
+        "LOGIN_SUCCESS": "Inicio de sesión exitoso",
+        "LOGIN_FAILED": "Error en el inicio de sesión",
+        "LOGIN_NETWORK_ERROR": "Error en el inicio de sesión, verifique la conexión de red"
     }
 }

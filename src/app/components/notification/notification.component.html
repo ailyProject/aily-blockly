@@ -8,9 +8,9 @@
             <i class="fa-light fa-spinner-third"></i>
         </div>
         @if (data.showProgress) {
-            <div class="num-box ccenter">
-                {{progressValue}}%
-            </div>
+        <div class="num-box ccenter">
+            {{progressValue}}%
+        </div>
         }
     </div>
     }
@@ -49,8 +49,10 @@
             }
         </div>
     </div>
+    @if(data.state!='doing'){
     <div class="close btn link ccenter" (click)="close()">
         <i class="fa-light fa-xmark"></i>
     </div>
+    }
 </div>
 }

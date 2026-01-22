@@ -2,6 +2,9 @@ import { Injectable } from '@angular/core';
 import { BlocklyService } from './blockly.service';
 import { ActionService } from '../../../services/action.service';
 import { HistoryService } from './history.service';
+import { arduinoGenerator } from '../components/blockly/generators/arduino/arduino';
+import { ElectronService } from '../../../services/electron.service';
+
 
 @Injectable({
   providedIn: 'root'
@@ -15,7 +18,8 @@ export class _ProjectService {
   constructor(
     private blocklyService: BlocklyService,
     private actionService: ActionService,
-    private historyService: HistoryService
+    private historyService: HistoryService,
+    private electronService: ElectronService
   ) { }
 
   init() {
@@ -26,8 +30,8 @@ export class _ProjectService {
     
     this.initialized = true;
 
-    this.actionService.listen('project-save', (action) => {
-      this.save(action.payload.path);
+    this.actionService.listen('project-save', async (action) => {
+      await this.save(action.payload.path);
     }, 'project-save-handler');
     this.actionService.listen('project-check-unsaved', (action) => {
       let result = this.hasUnsavedChanges();
@@ -75,7 +79,7 @@ export class _ProjectService {
     }
   }
 
-  save(path: string, createHistory: boolean = true) {
+  async save(path: string, createHistory: boolean = true) {
     const jsonData = this.blocklyService.getWorkspaceJson();
     window['fs'].writeFileSync(`${path}/project.abi`, JSON.stringify(jsonData, null, 2));
     
@@ -84,7 +88,44 @@ export class _ProjectService {
       this.historyService.createManualVersion();
     }
     
+    // 更新 codeHash 以反映当前代码状态
+    // 这样当代码改变后同步时，服务器能够检测到代码已改变
+    await this.updateCodeHash(path);
+    
     // this.stateSubject.next('saved');
+  }
+
+  /**
+   * 更新 package.json 中的 codeHash
+   * 用于在项目保存时记录当前代码的哈希值
+   */
+  private async updateCodeHash(path: string) {
+    try {
+      if (!arduinoGenerator || !this.blocklyService || !this.blocklyService.workspace) {
+        console.warn('无法生成代码哈希，跳过更新');
+        return;
+      }
+
+      // 生成当前代码
+      const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+      
+      // 计算哈希
+      if (this.electronService && this.electronService.calculateHash) {
+        const codeHash = await this.electronService.calculateHash(code);
+          // 读取 package.json 并更新 codeHash
+          const packageJsonPath = `${path}/package.json`;
+          try {
+            const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+            packageJson.codeHash = codeHash;
+            window['fs'].writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+            console.log('✅ codeHash 已更新:', codeHash.substring(0, 8) + '...');
+          } catch (error) {
+            console.error('更新 codeHash 失败:', error);
+          }
+      }
+    } catch (error) {
+      console.error('更新代码哈希时出错:', error);
+    }
   }
 
   restoreVersion(versionId: string) {

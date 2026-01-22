@@ -1,11 +1,13 @@
 .content-box {
     height: calc(100vh - 150px);
     padding: 15px;
+    overflow: auto;
 }
 
 .example-list {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 280px);
+    justify-content: center;
     gap: 15px;
     width: 100%;
 

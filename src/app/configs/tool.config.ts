@@ -62,7 +62,7 @@ export const APP_LIST: AppItem[] = [
     description: 'APP_STORE.CLOUD_SPACE_DESC',
     action: 'tool-open',
     data: { type: 'tool', data: 'cloud-space' },
-    icon: 'fa-light fa-cloud',
+    icon: 'fa-light fa-album-collection',
     enabled: true
   },
   {

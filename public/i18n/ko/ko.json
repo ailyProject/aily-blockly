@@ -29,7 +29,9 @@
         "UPDATE": "업데이트 확인",
         "USER_AUTH": "사용자 서비스",
         "USER_SPACE": "클라우드 스페이스",
-        "LIB_MANAGER": "라이브러리 관리자"
+        "LIB_MANAGER": "라이브러리 관리자",
+        "AI_ASSISTANT": "AI 어시스턴트",
+        "PROJECT_HUB": "프로젝트 허브"
     },
     "ESP32": {
         "UPLOAD_SPEED": "업로드 속도",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "경험에 대한 피드백을 보내주세요",
         "WECHAT_GROUP": "WeChat 사용자 그룹",
         "WECHAT_GROUP_DESC": "WeChat 사용자 그룹에 가입하여 다른 사용자들과 소통하세요",
+        "USER_GROUP": "사용자 커뮤니티",
+        "USER_GROUP_DESC": "커뮤니티에 가입하여 다른 사용자들과 소통하세요",
+        "AI_APP_CENTER": "AI 앱 센터",
+        "AI_APP_CENTER_DESC": "AI 하드웨어 및 엣지 컴퓨팅 애플리케이션을 탐색하려면 클릭하세요",
         "SPONSORS": "프로젝트 후원자",
-        "SPONSORS_DESC": "이 프로젝트는 다음 회사/개인들의 후원을 받고 있습니다"
+        "SPONSORS_DESC": "이 프로젝트는 다음 회사/개인들의 후원을 받고 있습니다",
+        "NEWS": "뉴스",
+        "ONBOARDING": {
+            "STEP1_TITLE": "새 프로젝트 만들기",
+            "STEP1_DESC": "여기를 클릭하여 새 프로그래밍 프로젝트를 만드세요. 보드와 프로그래밍 언어를 선택하여 창작 여정을 시작하세요.",
+            "STEP2_TITLE": "기존 프로젝트 열기",
+            "STEP2_DESC": "이전에 프로젝트를 만든 적이 있다면, 여기를 클릭하여 기존 프로젝트 폴더를 열 수 있습니다.",
+            "STEP3_TITLE": "프로젝트 허브",
+            "STEP3_DESC": "커뮤니티에서 공유한 훌륭한 프로젝트를 탐색하고 영감과 학습 자료를 얻으세요.",
+            "STEP4_TITLE": "AI 어시스턴트",
+            "STEP4_DESC": "AI 어시스턴트가 프로젝트 생성을 도와드립니다. 필요한 것을 설명하기만 하면 됩니다. 생성 후에는 질문 답변, 코드 생성, 오류 수정도 도와드립니다.",
+            "STEP5_TITLE": "SenseCraft AI 허브",
+            "STEP5_DESC": "여기에서 다양한 AI 하드웨어와 엣지 컴퓨팅 애플리케이션을 탐색하고 더 많은 가능성을 발견하세요.",
+            "STEP6_TITLE": "최신 뉴스",
+            "STEP6_DESC": "여기에는 소프트웨어의 최신 뉴스와 공지사항이 표시되어 새로운 기능과 업데이트를 파악할 수 있습니다.",
+            "STEP7_TITLE": "커뮤니티 가입",
+            "STEP7_DESC": "질문이 있으신가요? 작품을 공유하고 싶으신가요? 사용자 커뮤니티에 가입하여 다른 메이커들과 교류하고 배우세요!"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "처음 {{count}}개의 앱이 도구 모음에 표시됩니다",
@@ -117,7 +140,9 @@
             "SEARCH": "보드 검색",
             "READ_DOC": "문서 읽기",
             "ADD_BOARD": "보드 추가",
-            "DEV": "개발"
+            "DEV": "개발",
+            "BY_BRAND": "브랜드별",
+            "BY_CORE": "코어별"
         },
         "FORM": {
             "DEVMODE": "개발 프레임워크",
@@ -128,6 +153,7 @@
         },
         "BUTTONS": {
             "USE_THIS": "이 보드 사용",
+            "USE_THIS_FROM_HUB": "허브에서 프로젝트 불러오기",
             "NEXT": "다음",
             "PREV": "이전",
             "CREATE": "프로젝트 생성",
@@ -235,7 +261,12 @@
         "WARNING_INVALID_EMAIL": "유효한 이메일 주소를 입력하세요",
         "SUCCESS_MESSAGE": "피드백을 주셔서 감사합니다!",
         "ERROR_SUBMIT_FAILED": "제출 실패, 나중에 다시 시도해 주세요",
-        "NO_DEPENDENCIES": "없음"
+        "NO_DEPENDENCIES": "없음",
+        "IMAGE_UPLOADING": "이미지 업로드 중...",
+        "IMAGE_UPLOAD_SUCCESS": "이미지 업로드 성공",
+        "IMAGE_UPLOAD_FAILED": "이미지 업로드 실패, 다시 시도해 주세요",
+        "ATTACH_HINT": "드래그 & 드롭, 붙여넣기 또는",
+        "SELECT_FILE": "파일 선택"
     },
     "AILY_CHAT": {
         "TITLE": "AI 어시스턴트",
@@ -254,7 +285,17 @@
         "STOP": "중지",
         "MODE_AGENT_FULL": "에이전트 모드",
         "MODE_QA_FULL": "Q&A 모드",
-        "STOP_CURRENT_SESSION_FIRST": "새 세션을 생성하기 전에 먼저 현재 세션을 중지하세요"
+        "STOP_CURRENT_SESSION_FIRST": "새 세션을 생성하기 전에 먼저 현재 세션을 중지하세요",
+        "ONBOARDING": {
+            "STEP1_TITLE": "입력 상자",
+            "STEP1_DESC": "여기에 질문이나 AI가 도와줄 작업을 입력하세요. Enter로 전송, Ctrl+Enter로 줄바꿈",
+            "STEP2_TITLE": "컨텍스트 추가",
+            "STEP2_DESC": "여기를 클릭하여 파일이나 폴더를 컨텍스트로 추가하면 AI가 귀하의 요구를 더 잘 이해할 수 있습니다",
+            "STEP3_TITLE": "모드 전환",
+            "STEP3_DESC": "에이전트 모드는 작업을 자동으로 실행할 수 있습니다(코드 작성, 오류 수정 등). Q&A 모드는 질문에만 답변합니다",
+            "STEP4_TITLE": "전송/중지",
+            "STEP4_DESC": "클릭하여 메시지 전송, AI가 응답 중일 때 중지 가능"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "프로젝트 설정",
@@ -299,7 +340,24 @@
         "NO_DOCUMENTATION": "이 보드에 대한 문서를 사용할 수 없습니다"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "먼저 시리얼 포트를 선택하세요"
+        "SELECT_PORT_FIRST": "먼저 시리얼 포트를 선택하세요",
+        "PORT": "포트",
+        "BAUD_RATE": "보레이트",
+        "MORE_SETTINGS": "추가 설정",
+        "HEX_DISPLAY": "HEX 표시",
+        "AUTO_WRAP": "자동 줄바꿈",
+        "AUTO_SCROLL": "자동 스크롤",
+        "TIMESTAMP": "타임스탬프",
+        "SHOW_CTRL_CHAR": "비가시 문자 표시",
+        "SEARCH": "검색",
+        "EXPORT": "내보내기",
+        "CLEAR": "지우기",
+        "SEND_BY_ENTER": "Enter로 전송",
+        "END_R": "\\r 줄 끝",
+        "END_N": "\\n 줄 끝",
+        "PORT_OPENED": "시리얼 포트가 열렸습니다",
+        "PORT_CLOSED": "시리얼 포트가 닫혔습니다",
+        "NO_CHART_DATA": "데이터 없음"
     },
     "MODEL_DEPLOY": {
         "TITLE": "모델 배포",
@@ -385,5 +443,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "기본 Low, 트리거 High",
         "DEFAULT_HIGH_TRIGGER_LOW": "기본 High, 트리거 Low",
         "CANCEL": "취소"
+    },
+    "LOGIN": {
+        "HEADER": "로그인 후 서비스를 이용하실 수 있습니다",
+        "PHONE": "전화번호",
+        "BENEFITS_TITLE": "로그인 후 가능한 기능:",
+        "BENEFIT_AI": "AI Q&A 기능 무료 체험",
+        "BENEFIT_SHARE": "프로젝트 공유",
+        "BENEFIT_EXPERIENCE": "맞춤형 개발 경험 제공",
+        "NOTICE_LABEL": "주의: ",
+        "NOTICE_CONTENT": "귀하의 GitHub 계정을 사용하여 오픈 소스 저장소에 스타를 줄 예정이며, 이는 프로젝트 발전을 지원합니다.",
+        "GITHUB_LOGIN": "Github로 로그인",
+        "WECHAT_SCAN": "QR 코드를 스캠하여 팔로우 및 로그인",
+        "PHONE_NOT_OPEN": "전화번호 등록은 아직 사용할 수 없습니다",
+        "PHONE_BETA_ONLY": "전화번호 로그인은 AI 베타 테스터 전용입니다",
+        "PHONE_PLACEHOLDER": "전화번호 입력",
+        "PASSWORD_PLACEHOLDER": "비밀번호 입력",
+        "LOGGING_IN": "로그인 중...",
+        "LOGIN": "로그인",
+        "SELECT_METHOD": "로그인 방법을 선택하세요",
+        "REDIRECTING_GITHUB": "GitHub 인증 페이지로 이동 중...",
+        "GITHUB_LOGIN_FAILED": "GitHub 로그인을 시작하지 못했습니다. 네트워크 연결을 확인하세요",
+        "GITHUB_ERROR": "GitHub 로그인 실패",
+        "ENTER_CREDENTIALS": "사용자 이름과 비밀번호를 입력하세요",
+        "LOGIN_SUCCESS": "로그인 성공",
+        "LOGIN_FAILED": "로그인 실패",
+        "LOGIN_NETWORK_ERROR": "로그인 실패, 네트워크 연결을 확인하세요"
     }
 }

@@ -26,6 +26,8 @@ import { FloatSiderComponent } from '../components/float-sider/float-sider.compo
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
 import { ModelStoreComponent } from '../tools/model-store/model-store.component';
+import { OnboardingComponent } from '../components/onboarding/onboarding.component';
+import { OnboardingService } from '../services/onboarding.service';
 
 @Component({
   selector: 'app-main-window',
@@ -51,7 +53,8 @@ import { ModelStoreComponent } from '../tools/model-store/model-store.component'
     FloatSiderComponent,
     CloudSpaceComponent,
     UserCenterComponent,
-    ModelStoreComponent
+    ModelStoreComponent,
+    OnboardingComponent
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
@@ -69,11 +72,19 @@ export class MainWindowComponent {
     return this.uiService.topTool;
   }
 
+  get openToolList() {
+    return this.uiService.openToolList;
+  }
+
   options = {
     autoHide: true,
     clickOnTrack: true,
     scrollbarMinSize: 50,
   };
+
+  // 新手引导相关
+  showOnboarding = false;
+  onboardingConfig = null;
 
   constructor(
     private uiService: UiService,
@@ -84,7 +95,8 @@ export class MainWindowComponent {
     private npmService: NpmService,
     private router: Router,
     private configService: ConfigService,
-    private modal: NzModalService
+    private modal: NzModalService,
+    private onboardingService: OnboardingService
   ) { }
 
   ngOnInit(): void {
@@ -92,6 +104,16 @@ export class MainWindowComponent {
     this.projectService.init();
     this.updateService.init();
     this.npmService.init();
+
+    // 订阅 onboarding 服务
+    this.onboardingService.show$.subscribe((show) => {
+      this.showOnboarding = show;
+      this.cd.detectChanges();
+    });
+    this.onboardingService.config$.subscribe((config) => {
+      this.onboardingConfig = config;
+      this.cd.detectChanges();
+    });
 
     // 语言设置变化后，重新加载项目
     window['ipcRenderer'].on('setting-changed', async (event, data) => {
@@ -251,6 +273,16 @@ export class MainWindowComponent {
 
   exportLog() {
     this.logComponent?.exportData();
+  }
+
+  // 新手引导关闭事件
+  onOnboardingClosed() {
+    this.onboardingService.close();
+  }
+
+  // 新手引导完成事件
+  onOnboardingCompleted() {
+    this.onboardingService.complete();
   }
 
 }

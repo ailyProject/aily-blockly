@@ -1,7 +1,7 @@
 <div class="guide-box ccenter">
   <div class="left-box">
     <div class="stitle">
-      aily blockly IDE
+      <img class="logo" src="imgs/logo.webp" alt="" draggable="false">
       <div class="version">ver {{version}}</div>
     </div>
     <div class="title">{{'GUIDE.START' | translate}}</div>
@@ -40,28 +40,44 @@
     </div>
   </div>
   <div class="right-box ccenter">
-    <!-- <iframe src="https://ide.clz.me/" frameborder="0" allowpopups="true" class="pp"></iframe> -->
-    <div class="item" (click)="gotoPlayground()">
+    <div class="item" style="height: 50px;" (click)="openUrl('https://sensecraft.seeed.cc/ai/application')">
+      <div><img style="height: 16px;margin-top: -5px;" src="brands\sensecraft.webp" alt="" srcset=""> {{'GUIDE.AI_APP_CENTER' | translate}}</div>
+      <div>{{'GUIDE.AI_APP_CENTER_DESC' | translate}}</div>
+      <div class="arrow"><i class=" fa-regular fa-angle-right"></i></div>
+    </div>
+    <div class="item" style="height: 120px;flex-grow: 1;padding: 0;overflow: hidden;">
+      <div style="padding: 5px 10px;">{{'GUIDE.NEWS' | translate}}</div>
+      <iframe src="http://aily.pro/news" frameborder="0" style="height: 100%;background: transparent;"></iframe>
+    </div>
+    <!-- <div class="item" (click)="gotoPlayground()">
       <div>{{'GUIDE.TUTORIAL' | translate}}</div>
       <div>{{'GUIDE.TUTORIAL_DESC' | translate}}</div>
-    </div>
-    <!-- <div class="item" (click)="openUrl('https://github.com/ailyProject/aily-blockly/blob/master/VERSION.md')">
-      <div>{{'GUIDE.VERSION_INFO' | translate}}</div>
-      <div>{{'GUIDE.VERSION_INFO_DESC' | translate}}</div>
     </div> -->
-    <div class="item" (click)="openUrl('https://github.com/ailyProject/aily-blockly')">
+    <!-- <div class="item" (click)="openUrl('https://github.com/ailyProject/aily-blockly')">
       <div>{{'GUIDE.GITHUB' | translate}}</div>
       <div>{{'GUIDE.GITHUB_DESC' | translate}}</div>
-    </div>
-    <div class="item" (click)="openFeedback()">
+    </div> -->
+    <!-- <div class="item" (click)="openFeedback()">
       <div>{{'GUIDE.FEEDBACK' | translate}}</div>
       <div>{{'GUIDE.FEEDBACK_DESC' | translate}}</div>
-    </div>
-    <div class="item" style="height: 165px;" (click)="test()">
-      <div>{{'GUIDE.WECHAT_GROUP' | translate}}</div>
-      <div>{{'GUIDE.WECHAT_GROUP_DESC' | translate}}</div>
-      <img class="qrcode" src="https://dl.diandeng.tech/blockly/wechat.jpg" (error)="retryLoadImage()" alt="微信群二维码"
-        srcset="">
+    </div> -->
+    <div class="item" style="height: 90px;">
+      <div>{{'GUIDE.USER_GROUP' | translate}}</div>
+      <div>{{'GUIDE.USER_GROUP_DESC' | translate}}</div>
+      <div class="group-btn">
+        <div (click)="showImg('https://dl.diandeng.tech/blockly/wechat.jpg')">
+          <i class="fa-brands fa-weixin"></i>
+        </div>
+        <div (click)="showImg('https://dl.diandeng.tech/blockly/qq.jpg')">
+          <i class="fa-brands fa-qq"></i>
+        </div>
+        <div (click)="openUrl('https://github.com/orgs/ailyProject/discussions')">
+          <i class="fa-brands fa-github"></i>
+        </div>
+        <div (click)="openUrl('https://discord.gg/ddMbGVmpQ8')">
+          <i class="fa-brands fa-discord"></i>
+        </div>
+      </div>
     </div>
     <div class="item" style="height: 165px;">
       <div>{{'GUIDE.SPONSORS' | translate}}</div>
@@ -94,3 +110,17 @@
     </div>
   </div>
 </div>
+
+@if (showImgUrl) {
+<div class="img-overlay ccenter" (click)="hideImg()">
+  @if (imgLoading) {
+  <div class="img-loading">
+    <div class="spinner"></div>
+  </div>
+  }
+  <img [src]="showImgUrl" alt="预览图片" 
+       [class.hidden]="imgLoading" 
+       (load)="onImgLoad()" 
+       (error)="onImgError()">
+</div>
+}

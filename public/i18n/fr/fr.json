@@ -29,7 +29,9 @@
         "UPDATE": "Vérifier les mises à jour",
         "USER_AUTH": "Service Utilisateur",
         "USER_SPACE": "Espace Cloud",
-        "LIB_MANAGER": "Gestionnaire de Bibliothèques"
+        "LIB_MANAGER": "Gestionnaire de Bibliothèques",
+        "AI_ASSISTANT": "Assistant IA",
+        "PROJECT_HUB": "Centre de Projets"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Vitesse de téléchargement",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "Envoyez vos commentaires sur votre expérience",
         "WECHAT_GROUP": "Groupe d'Utilisateurs WeChat",
         "WECHAT_GROUP_DESC": "Rejoignez le groupe d'utilisateurs WeChat pour communiquer avec d'autres utilisateurs",
+        "USER_GROUP": "Communauté des Utilisateurs",
+        "USER_GROUP_DESC": "Rejoignez la communauté pour communiquer avec d'autres utilisateurs",
+        "AI_APP_CENTER": "Centre d'Applications IA",
+        "AI_APP_CENTER_DESC": "Cliquez pour explorer les applications matérielles IA et edge computing",
         "SPONSORS": "Sponsors du Projet",
-        "SPONSORS_DESC": "Ce projet est sponsorisé par les entreprises/individus suivants"
+        "SPONSORS_DESC": "Ce projet est sponsorisé par les entreprises/individus suivants",
+        "NEWS": "Actualités",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Créer un nouveau projet",
+            "STEP1_DESC": "Cliquez ici pour créer un nouveau projet de programmation. Choisissez votre carte et le langage de programmation pour commencer votre voyage créatif.",
+            "STEP2_TITLE": "Ouvrir un projet existant",
+            "STEP2_DESC": "Si vous avez déjà créé des projets, cliquez ici pour ouvrir un dossier de projet existant.",
+            "STEP3_TITLE": "Centre de Projets",
+            "STEP3_DESC": "Parcourez et explorez les excellents projets partagés par la communauté pour trouver l'inspiration et les ressources d'apprentissage.",
+            "STEP4_TITLE": "Assistant IA",
+            "STEP4_DESC": "L'assistant IA vous aide à créer des projets. Décrivez simplement vos besoins. Après la génération, il peut aussi répondre aux questions, générer du code et corriger les erreurs.",
+            "STEP5_TITLE": "Centre IA SenseCraft",
+            "STEP5_DESC": "Explorez ici diverses applications de matériel IA et de calcul en périphérie, et découvrez plus de possibilités.",
+            "STEP6_TITLE": "Dernières Actualités",
+            "STEP6_DESC": "Ici, vous trouverez les dernières actualités et annonces sur le logiciel, pour vous tenir informé des nouvelles fonctionnalités et mises à jour.",
+            "STEP7_TITLE": "Rejoindre la Communauté",
+            "STEP7_DESC": "Des questions ? Envie de partager votre travail ? Rejoignez notre communauté d'utilisateurs pour échanger et apprendre avec d'autres makers !"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "Les {{count}} premières applications seront affichées dans la barre d'outils",
@@ -121,7 +144,9 @@
             "SEARCH": "Rechercher une Carte",
             "READ_DOC": "Lire la Documentation",
             "ADD_BOARD": "Ajouter une Carte",
-            "DEV": "dev"
+            "DEV": "dev",
+            "BY_BRAND": "Par Marque",
+            "BY_CORE": "Par Cœur"
         },
         "FORM": {
             "DEVMODE": "Cadre de développement",
@@ -132,6 +157,7 @@
         },
         "BUTTONS": {
             "USE_THIS": "Utiliser cette Carte",
+            "USE_THIS_FROM_HUB": "Charger le projet depuis le Hub",
             "NEXT": "Suivant",
             "PREV": "Précédent",
             "CREATE": "Créer Projet",
@@ -239,7 +265,12 @@
         "WARNING_INVALID_EMAIL": "Veuillez saisir une adresse email valide",
         "SUCCESS_MESSAGE": "Merci pour votre retour !",
         "ERROR_SUBMIT_FAILED": "Échec de la soumission, veuillez réessayer plus tard",
-        "NO_DEPENDENCIES": "Aucune"
+        "NO_DEPENDENCIES": "Aucune",
+        "IMAGE_UPLOADING": "Téléchargement de l'image...",
+        "IMAGE_UPLOAD_SUCCESS": "Image téléchargée avec succès",
+        "IMAGE_UPLOAD_FAILED": "Échec du téléchargement de l'image, veuillez réessayer",
+        "ATTACH_HINT": "Joindre des fichiers par glisser-déposer, coller ou",
+        "SELECT_FILE": "sélectionner des fichiers"
     },
     "AILY_CHAT": {
         "TITLE": "Assistant IA",
@@ -258,7 +289,17 @@
         "STOP": "Arrêter",
         "MODE_AGENT_FULL": "Mode Agent",
         "MODE_QA_FULL": "Mode Q&R",
-        "STOP_CURRENT_SESSION_FIRST": "Veuillez d'abord arrêter la session en cours avant d'en créer une nouvelle"
+        "STOP_CURRENT_SESSION_FIRST": "Veuillez d'abord arrêter la session en cours avant d'en créer une nouvelle",
+        "ONBOARDING": {
+            "STEP1_TITLE": "Zone de saisie",
+            "STEP1_DESC": "Tapez ici vos questions ou tâches pour l'assistance IA. Appuyez sur Entrée pour envoyer, Ctrl+Entrée pour nouvelle ligne",
+            "STEP2_TITLE": "Ajouter un contexte",
+            "STEP2_DESC": "Cliquez ici pour ajouter des fichiers ou dossiers comme contexte afin d'aider l'IA à mieux comprendre vos besoins",
+            "STEP3_TITLE": "Changement de mode",
+            "STEP3_DESC": "Le mode Agent peut exécuter des tâches automatiquement (écrire du code, corriger des erreurs). Le mode Q&R répond uniquement aux questions",
+            "STEP4_TITLE": "Envoyer/Arrêter",
+            "STEP4_DESC": "Cliquez pour envoyer un message, ou arrêter lorsque l'IA répond"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "Paramètres du Projet",
@@ -303,7 +344,24 @@
         "NO_DOCUMENTATION": "Documentation non disponible pour cette carte"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "Veuillez d'abord sélectionner un port série"
+        "SELECT_PORT_FIRST": "Veuillez d'abord sélectionner un port série",
+        "PORT": "Port",
+        "BAUD_RATE": "Débit en bauds",
+        "MORE_SETTINGS": "Plus de paramètres",
+        "HEX_DISPLAY": "Affichage HEX",
+        "AUTO_WRAP": "Retour à la ligne automatique",
+        "AUTO_SCROLL": "Défilement automatique",
+        "TIMESTAMP": "Horodatage",
+        "SHOW_CTRL_CHAR": "Afficher les caractères invisibles",
+        "SEARCH": "Rechercher",
+        "EXPORT": "Exporter",
+        "CLEAR": "Effacer",
+        "SEND_BY_ENTER": "Envoyer avec Entrée",
+        "END_R": "Fin de ligne \\r",
+        "END_N": "Fin de ligne \\n",
+        "PORT_OPENED": "Port série ouvert",
+        "PORT_CLOSED": "Port série fermé",
+        "NO_CHART_DATA": "Aucune donnée"
     },
     "MODEL_DEPLOY": {
         "TITLE": "Déploiement de modèle",
@@ -389,5 +447,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "Défaut Bas, Déclencher Haut",
         "DEFAULT_HIGH_TRIGGER_LOW": "Défaut Haut, Déclencher Bas",
         "CANCEL": "Annuler"
+    },
+    "LOGIN": {
+        "HEADER": "Connectez-vous pour utiliser nos services",
+        "PHONE": "Téléphone",
+        "BENEFITS_TITLE": "Après connexion, vous pouvez :",
+        "BENEFIT_AI": "Essayer gratuitement la fonction AI Q&A",
+        "BENEFIT_SHARE": "Partager vos projets",
+        "BENEFIT_EXPERIENCE": "Profiter d'une expérience de développement personnalisée",
+        "NOTICE_LABEL": "Remarque : ",
+        "NOTICE_CONTENT": "Nous utiliserons votre compte GitHub pour mettre une étoile sur nos dépôts open source, ce qui aide au développement du projet.",
+        "GITHUB_LOGIN": "Se connecter avec Github",
+        "WECHAT_SCAN": "Scannez le code QR pour suivre et vous connecter",
+        "PHONE_NOT_OPEN": "L'inscription par téléphone n'est pas encore disponible",
+        "PHONE_BETA_ONLY": "La connexion par téléphone est réservée aux testeurs bêta AI",
+        "PHONE_PLACEHOLDER": "Entrez le numéro de téléphone",
+        "PASSWORD_PLACEHOLDER": "Entrez le mot de passe",
+        "LOGGING_IN": "Connexion en cours...",
+        "LOGIN": "Connexion",
+        "SELECT_METHOD": "Cliquez pour sélectionner la méthode de connexion",
+        "REDIRECTING_GITHUB": "Redirection vers la page d'autorisation GitHub...",
+        "GITHUB_LOGIN_FAILED": "Échec du démarrage de la connexion GitHub. Veuillez vérifier la connexion réseau",
+        "GITHUB_ERROR": "Échec de la connexion GitHub",
+        "ENTER_CREDENTIALS": "Veuillez entrer le nom d'utilisateur et le mot de passe",
+        "LOGIN_SUCCESS": "Connexion réussie",
+        "LOGIN_FAILED": "Échec de la connexion",
+        "LOGIN_NETWORK_ERROR": "Échec de la connexion, veuillez vérifier la connexion réseau"
     }
 }

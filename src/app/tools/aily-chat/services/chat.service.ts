@@ -4,6 +4,7 @@ import { Observable, Subject } from 'rxjs';
 import { MCPTool } from './mcp.service';
 import { API } from "../../../configs/api.config";
 import { ConfigService } from '../../../services/config.service';
+import { AilyChatConfigService } from './aily-chat-config.service';
 
 export interface ChatTextOptions {
   sender?: string;
@@ -18,17 +19,35 @@ export interface ChatTextMessage {
   timestamp?: number;
 }
 
+// 模型配置接口
+export interface ModelConfig {
+  model: string;
+  family: string;
+  name: string;
+  speed: string;
+}
+
+// 可用模型列表
+export const AVAILABLE_MODELS: ModelConfig[] = [
+  { model: 'glm-4.7', family: 'glm', name: 'GLM-4.7', speed: '1x' },
+  { model: 'glm-4.6', family: 'glm', name: 'GLM-4.6', speed: '1x' }
+];
+
 @Injectable({
   providedIn: 'root'
 })
 export class ChatService {
 
   currentMode = 'ask'; // 默认为代理模式
+  currentModel: ModelConfig | null = null; // 当前模型，在构造函数中初始化
   historyList = [];
   historyChatMap = new Map<string, any>();
 
   currentSessionId = this.historyList.length > 0 ? this.historyList[0].sessionId : '';
   currentSessionTitle = this.historyList.length > 0 ? this.historyList[0].name : '';
+  
+  // 记录当前会话创建时的项目路径，用于确保历史记录保存到正确位置
+  currentSessionPath = '';
 
   titleIsGenerating = false;
 
@@ -37,11 +56,19 @@ export class ChatService {
 
   constructor(
     private http: HttpClient,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private ailyChatConfigService: AilyChatConfigService
   ) {
     ChatService.instance = this;
     // 从配置加载AI聊天模式
     this.loadChatMode();
+    // 从配置加载AI模型
+    this.loadChatModel();
+    
+    // 订阅配置变更，当模型列表更新时重新加载
+    this.ailyChatConfigService.configChanged$.subscribe(() => {
+      this.loadChatModel();
+    });
   }
 
   /**
@@ -62,20 +89,136 @@ export class ChatService {
     this.configService.save();
   }
 
+  /**
+   * 从配置加载AI模型
+   */
+  private loadChatModel(): void {
+    const savedModel = this.configService.data.aiChatModel;
+    const enabledModels = this.ailyChatConfigService.getEnabledModels();
+    
+    // 重置当前模型，确保每次都重新验证
+    this.currentModel = null;
+    
+    if (savedModel && enabledModels.length > 0) {
+      // 尝试找到匹配的模型配置（从已启用的模型中查找）
+      const foundModel = enabledModels.find(m => m.model === savedModel.model);
+      if (foundModel) {
+        this.currentModel = foundModel;
+      }
+    }
+    
+    // 如果没有找到保存的模型或保存的模型不可用（如自定义模型但未启用自定义API KEY），使用第一个已启用的模型
+    if (!this.currentModel && enabledModels.length > 0) {
+      this.currentModel = enabledModels[0];
+      // 更新保存的模型配置
+      this.saveChatModel(this.currentModel);
+    }
+  }
+
+  /**
+   * 保存AI模型到配置
+   */
+  saveChatModel(model: ModelConfig): void {
+    this.currentModel = model;
+    this.configService.data.aiChatModel = model;
+    this.configService.save();
+  }
+
   // 打开.history
   openHistoryFile(prjPath: string) {
-    // 打开项目下的.history文件
-    const historyPath = prjPath + '/.chat';
+    // 打开项目下的.chat_history/.chat文件
+    this.ensureChatHistoryFolder(prjPath);
+    const historyPath = this.getChatHistoryFolderPath(prjPath) + '/.chat';
     if (window['fs'].existsSync(historyPath)) {
       this.historyList = JSON.parse(window['fs'].readFileSync(historyPath, 'utf-8'));
+    } else {
+      // 如果历史文件不存在，清空历史列表
+      this.historyList = [];
     }
   }
 
   // 保存.history
   saveHistoryFile(prjPath: string) {
-    // 保存项目下的.history文件
-    const historyPath = prjPath + '/.chat';
+    // 保存项目下的.chat_history/.chat文件
+    this.ensureChatHistoryFolder(prjPath);
+    const historyPath = this.getChatHistoryFolderPath(prjPath) + '/.chat';
     window['fs'].writeFileSync(historyPath, JSON.stringify(this.historyList, null, 2), 'utf-8');
+  }
+
+  /**
+   * 获取 .chat_history 文件夹路径
+   * @param prjPath 项目路径
+   * @returns .chat_history 文件夹的完整路径
+   */
+  private getChatHistoryFolderPath(prjPath: string): string {
+    return prjPath + '/.chat_history';
+  }
+
+  /**
+   * 获取会话历史记录文件路径
+   * @param prjPath 项目路径
+   * @param sessionId 会话ID
+   * @returns 会话历史记录文件的完整路径
+   */
+  private getSessionHistoryFilePath(prjPath: string, sessionId: string): string {
+    return this.getChatHistoryFolderPath(prjPath) + '/' + sessionId + '.json';
+  }
+
+  /**
+   * 确保 .chat_history 文件夹存在
+   * @param prjPath 项目路径
+   */
+  private ensureChatHistoryFolder(prjPath: string): void {
+    const folderPath = this.getChatHistoryFolderPath(prjPath);
+    if (!window['fs'].existsSync(folderPath)) {
+      window['fs'].mkdirSync(folderPath, { recursive: true });
+    }
+  }
+
+  /**
+   * 保存会话聊天记录到 .chat_history 文件夹
+   * @param prjPath 项目路径
+   * @param sessionId 会话ID
+   * @param chatList 聊天记录列表
+   */
+  saveSessionChatHistory(prjPath: string, sessionId: string, chatList: any[]): void {
+    if (!sessionId || !chatList || chatList.length === 0) {
+      return;
+    }
+    
+    this.ensureChatHistoryFolder(prjPath);
+    const filePath = this.getSessionHistoryFilePath(prjPath, sessionId);
+    
+    try {
+      window['fs'].writeFileSync(filePath, JSON.stringify(chatList, null, 2), 'utf-8');
+    } catch (error) {
+      console.warn('保存会话聊天记录失败:', error);
+    }
+  }
+
+  /**
+   * 从 .chat_history 文件夹加载会话聊天记录
+   * @param prjPath 项目路径
+   * @param sessionId 会话ID
+   * @returns 聊天记录列表，如果不存在则返回 null
+   */
+  loadSessionChatHistory(prjPath: string, sessionId: string): any[] | null {
+    if (!sessionId) {
+      return null;
+    }
+    
+    const filePath = this.getSessionHistoryFilePath(prjPath, sessionId);
+    
+    try {
+      if (window['fs'].existsSync(filePath)) {
+        const content = window['fs'].readFileSync(filePath, 'utf-8');
+        return JSON.parse(content);
+      }
+    } catch (error) {
+      console.warn('加载会话聊天记录失败:', error);
+    }
+    
+    return null;
   }
 
 
@@ -121,8 +264,29 @@ export class ChatService {
     }
   }
 
-  startSession(mode: string, tools: MCPTool[] | null = null): Observable<any> {
-    return this.http.post(API.startSession, { session_id: this.currentSessionId, tools: tools || [], mode });
+  startSession(mode: string, tools: MCPTool[] | null = null, maxCount?: number, customllmConfig?: any, customModel?: any): Observable<any> {
+    const payload: any = { 
+      session_id: this.currentSessionId, 
+      tools: tools || [], 
+      mode 
+    };
+    
+    // 如果提供了 maxCount 参数，添加到请求中
+    if (maxCount !== undefined && maxCount > 0) {
+      payload.max_count = maxCount;
+    }
+
+    // 如果提供了自定义LLM配置，添加到请求中
+    if (customllmConfig) {
+      payload.llm_config = customllmConfig;
+    }
+
+    // 如果提供了自定义模型，添加到请求中
+    if (customModel) {
+      payload.custom_model = customModel;
+    }
+    
+    return this.http.post(API.startSession, payload);
   }
 
   closeSession(sessionId: string) {
@@ -160,6 +324,7 @@ export class ChatService {
                 // console.log(msg);
 
                 if (msg.type === 'TaskCompleted') {
+                  // console.log("Complete Msg: ", msg);
                   messageSubject.complete();
                   return;
                 }

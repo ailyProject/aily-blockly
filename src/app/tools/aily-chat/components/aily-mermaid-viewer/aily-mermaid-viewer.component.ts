@@ -28,11 +28,16 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
   @Input() data: AilyMermaidData | null = null;
 
   errorMessage = '';
-  isLoading = false;
+  isLoading = true;  // 默认为 true，等待数据
   rawCode = '';
   renderedSvg: SafeHtml = '';
   rawSvgString = '';
   containerId = '';
+  
+  // 渲染重试相关
+  private renderRetryCount = 0;
+  private readonly MAX_RETRY = 3;
+  private retryTimer: any = null;
 
   // 全屏相关属性
   isFullscreen = false;
@@ -65,6 +70,10 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
     // 清理资源
     if (this.isFullscreen) {
       document.body.style.overflow = '';
+    }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
   }
 
@@ -127,8 +136,9 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
    */
   private processData(): void {
     if (!this.data) {
-      this.errorMessage = '没有可显示的 Mermaid 数据';
-      this.isLoading = false;
+      // 没有数据时保持 loading 状态，等待数据到达
+      this.isLoading = true;
+      this.errorMessage = '';
       this.renderedSvg = '';
       this.rawSvgString = '';
       return;
@@ -144,24 +154,41 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
       }
 
       this.rawCode = this.preprocessMermaidCode(code.trim());
-      this.errorMessage = '';
 
       if (!this.rawCode) {
-        this.errorMessage = '没有找到 Mermaid 代码';
-        this.isLoading = false;
+        // 代码为空，保持 loading
+        this.isLoading = true;
+        this.errorMessage = '';
         this.renderedSvg = '';
         this.rawSvgString = '';
         return;
       }
 
       // 渲染 Mermaid 图表
+      this.isLoading = true;
+      this.errorMessage = '';
       this.renderMermaidDiagram(this.rawCode);
     } catch (error) {
       console.warn('Error processing mermaid data:', error);
-      this.errorMessage = `数据处理失败: ${error.message}`;
+      // 处理失败时尝试重试
+      this.scheduleRetry();
+    }
+  }
+
+  /**
+   * 安排重试
+   */
+  private scheduleRetry(): void {
+    if (this.renderRetryCount < this.MAX_RETRY) {
+      this.renderRetryCount++;
+      // console.log(`[AilyMermaid] 安排重试 ${this.renderRetryCount}/${this.MAX_RETRY}`);
+      this.retryTimer = setTimeout(() => {
+        this.processData();
+      }, 500 * this.renderRetryCount); // 递增延迟
+    } else {
+      // 超过重试次数，显示错误
       this.isLoading = false;
-      this.renderedSvg = '';
-      this.rawSvgString = '';
+      this.errorMessage = '图表渲染失败';
     }
   }
 
@@ -207,6 +234,7 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
       this.renderedSvg = this.sanitizer.bypassSecurityTrustHtml(enhancedSvg);
       this.isLoading = false;
       this.errorMessage = '';
+      this.renderRetryCount = 0; // 成功后重置重试计数
 
       // 延迟发送事件，确保 DOM 已渲染
       setTimeout(() => {
@@ -215,10 +243,8 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
 
     } catch (error) {
       console.warn('Mermaid rendering error:', error);
-      this.isLoading = false;
-      this.renderedSvg = '';
-      this.rawSvgString = '';
-      this.errorMessage = this.getErrorMessage(error);
+      // 渲染失败时尝试重试，而不是立即显示错误
+      this.scheduleRetry();
     }
   }
 
@@ -266,8 +292,8 @@ export class AilyMermaidViewerComponent implements OnInit, OnDestroy, OnChanges 
   }
 
   logDetail() {
-    console.log('mermaid data:');
-    console.log(this.rawCode);
+    // console.log('mermaid data:');
+    // console.log(this.rawCode);
 
     // // 检查 DOM 中的 SVG 元素
     // if (this.containerId) {

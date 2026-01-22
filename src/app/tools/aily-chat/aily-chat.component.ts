@@ -9,8 +9,8 @@ import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
-import { Subscription } from 'rxjs';
-import { ChatService, ChatTextOptions } from './services/chat.service';
+import { Subscription, skip, distinctUntilChanged } from 'rxjs';
+import { ChatService, ChatTextOptions, AVAILABLE_MODELS, ModelConfig } from './services/chat.service';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { MenuComponent } from '../../components/menu/menu.component';
 import { IMenuItem } from '../../configs/menu.config';
@@ -35,6 +35,7 @@ import { checkExistsTool } from './tools/checkExistsTool';
 import { getDirectoryTreeTool } from './tools/getDirectoryTreeTool';
 import { grepTool } from './tools/grepTool';
 import { searchBoardsLibrariesTool } from './tools/searchBoardsLibrariesTool';
+import { getHardwareCategoriesTool } from './tools/getHardwareCategoriesTools';
 import { getBoardParametersTool } from './tools/getBoardParametersTool';
 import globTool from './tools/globTool';
 import { fetchTool, FetchToolService } from './tools/fetchTool';
@@ -53,12 +54,28 @@ import {
   // 新增：智能块分析工具
   analyzeLibraryBlocksTool,
   // intelligentBlockSequenceTool,
-  verifyBlockExistenceTool
+  verifyBlockExistenceTool,
+  fixJsonString  // 导入 JSON 修复函数
 } from './tools/editBlockTool';
+// // 原子化块操作工具
+// import {
+//   createSingleBlockTool,
+//   connectBlocksSimpleTool,
+//   setBlockFieldTool,
+//   setBlockInputTool,
+//   getWorkspaceBlocksTool,
+//   batchCreateBlocksTool
+// } from './tools/atomicBlockTools';
+// // 扁平化块操作工具
+// import { flatCreateBlocksTool } from './tools/flatBlockTools';
+// // DSL 块操作工具
+// import { dslCreateBlocksTool } from './tools/dslBlockTools';
 import { todoWriteTool } from './tools';
 // import { arduinoSyntaxTool } from './tools/arduinoSyntaxTool';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { ConfigService } from '../../services/config.service';
+import { createSecurityContext } from './services/security.service';
+import { AilyChatConfigService } from './services/aily-chat-config.service';
 
 export interface Tool {
   name: string;
@@ -97,7 +114,6 @@ export interface ToolCallInfo {
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { TOOLS } from './tools/tools';
 import { AuthService } from '../../services/auth.service';
-import { resolveObjectURL } from 'buffer';
 import { FloatingTodoComponent } from './components/floating-todo/floating-todo.component';
 import { TodoUpdateService } from './services/todoUpdate.service';
 import { ArduinoLintService } from './services/arduino-lint.service';
@@ -106,6 +122,8 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { LoginComponent } from '../../components/login/login.component';
 import { NoticeService } from '../../services/notice.service';
 import { AilyChatSettingsComponent } from './components/settings/settings.component';
+import { OnboardingService } from '../../services/onboarding.service';
+import { AILY_CHAT_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 
 // import { reloadAbiJsonTool, reloadAbiJsonToolSimple } from './tools';
 
@@ -162,6 +180,9 @@ export class AilyChatComponent implements OnDestroy {
   prjPath = '';
   currentUserGroup: string[] = [];
 
+  // 会话期间允许访问的额外路径（用户添加的上下文文件/文件夹）
+  sessionAllowedPaths: string[] = [];
+
   isCompleted = false;
   private isSessionStarting = false; // 防止重复启动会话的标志位
   private hasInitializedForThisLogin = false; // 标记是否已为当前登录状态初始化过
@@ -170,7 +191,13 @@ export class AilyChatComponent implements OnDestroy {
   private loginStatusSubscription: Subscription;
   private aiWritingSubscription: Subscription;
   private aiWaitingSubscription: Subscription;
+  private projectPathSubscription: Subscription; // 订阅项目路径变化
+  private configChangedSubscription: Subscription; // 订阅配置变更
   private mcpInitialized = false; // 添加标志位防止重复初始化MCP
+  
+  // 任务操作相关
+  private taskActionHandler: ((event: Event) => void) | null = null;
+  private lastStopReason: string = ''; // 保存上次停止原因用于重试
 
   get sessionId() {
     return this.chatService.currentSessionId;
@@ -184,6 +211,13 @@ export class AilyChatComponent implements OnDestroy {
     return this.chatService.currentMode;
   }
 
+  get currentModel() {
+    return this.chatService.currentModel;
+  }
+
+  get currentModelName() {
+    return this.chatService.currentModel?.name;
+  }
 
   /**
    * 确保字符串在 JSON 中是安全的，转义特殊字符
@@ -224,6 +258,9 @@ export class AilyChatComponent implements OnDestroy {
    * @param args 工具参数（可选，用于历史记录恢复）
    */
   private startToolCall(toolId: string, toolName: string, text: string, args?: any): void {
+    // 添加JSON校验text字段
+    text = this.makeJsonSafe(text);
+
     const toolCallInfo: ToolCallInfo = {
       id: toolId,
       name: toolName,
@@ -325,7 +362,7 @@ export class AilyChatComponent implements OnDestroy {
         item.content.forEach(result => {
           if (result.call_id && toolCallMap.has(result.call_id)) {
             const toolInfo = toolCallMap.get(result.call_id)!;
-            const resultState = result.is_error ? ToolCallState.ERROR : ToolCallState.DONE;
+            const resultState = result?.is_error ? ToolCallState.ERROR : ToolCallState.DONE;
             const resultText = this.generateToolResultText(toolInfo.name, toolInfo.args, result);
 
             const completeInfo: ToolCallInfo = {
@@ -342,7 +379,9 @@ export class AilyChatComponent implements OnDestroy {
           }
         });
       } else {
-        this.appendMessage(item.role, item.content);
+        // 处理历史消息，标记其中的交互组件为历史模式
+        const processedContent = this.markContentAsHistory(item.content);
+        this.appendMessage(item.role, processedContent);
       }
     });
 
@@ -357,6 +396,38 @@ export class AilyChatComponent implements OnDestroy {
       };
       this.displayToolCallState(timeoutInfo);
     });
+  }
+
+  /**
+   * 标记消息内容为历史模式
+   * 用于在历史记录渲染时隐藏交互按钮
+   * @param content 消息内容
+   * @returns 处理后的内容
+   */
+  private markContentAsHistory(content: string): string {
+    if (!content || typeof content !== 'string') {
+      return content;
+    }
+
+    // 匹配所有 aily-* 代码块，为其中的 JSON 添加 isHistory 标记
+    // 使用更灵活的正则表达式匹配各种格式
+    return content.replace(
+      /```(aily-[a-z-]+)\s*([\s\S]*?)```/g,
+      (match, blockType, jsonContent) => {
+        try {
+          const trimmedContent = jsonContent.trim();
+          if (!trimmedContent) {
+            return match;
+          }
+          const data = JSON.parse(trimmedContent);
+          data.isHistory = true;
+          return `\`\`\`${blockType}\n${JSON.stringify(data, null, 2)}\n\`\`\``;
+        } catch (e) {
+          // 如果解析 JSON 失败，返回原始内容
+          return match;
+        }
+      }
+    );
   }
 
   /**
@@ -375,16 +446,7 @@ export class AilyChatComponent implements OnDestroy {
       case 'create_project':
         return "创建项目...";
       case 'execute_command':
-        const commandParts = args.command?.split(' ') || [];
-        let displayCommand = args.command || 'unknown';
-        if (commandParts.length > 1) {
-          if (commandParts[0].toLowerCase() === 'npm') {
-            displayCommand = `${commandParts[0]} ${commandParts[1]}`;
-          } else {
-            displayCommand = commandParts[0];
-          }
-        }
-        return `执行: ${displayCommand}`;
+        return this.formatCommandDisplay(args.command || 'unknown');
       case 'get_context':
         return "获取上下文信息...";
       case 'list_directory':
@@ -435,8 +497,38 @@ export class AilyChatComponent implements OnDestroy {
         return "编辑ABI文件...";
       case 'reload_abi_json':
         return "重新加载Blockly工作区数据...";
+      // 原子化块工具
+      case 'create_single_block':
+        return `创建块: ${args.type || 'unknown'}`;
+      case 'connect_blocks_simple':
+        return `连接块: ${args.action || 'unknown'}`;
+      case 'set_block_field':
+        return `设置字段: ${args.fieldName || 'unknown'}`;
+      case 'set_block_input':
+        return `设置输入: ${args.inputName || 'unknown'}`;
+      case 'get_workspace_blocks':
+        return "获取工作区块列表...";
+      // 扁平化块工具
+      case 'flat_create_blocks':
+        let flatBlockCount = 0;
+        if (args?.blocks) {
+          if (typeof args.blocks === 'string') {
+            try {
+              flatBlockCount = JSON.parse(args.blocks).length;
+            } catch (e) {
+              flatBlockCount = 0;
+            }
+          } else if (Array.isArray(args.blocks)) {
+            flatBlockCount = args.blocks.length;
+          }
+        }
+        return `扁平化创建块: ${flatBlockCount}个块...`;
+      // DSL 块工具
+      // case 'dsl_create_blocks':
+      //   return `DSL 创建块...`;
+      // 原有块工具
       case 'smart_block_tool':
-        return `操作Blockly块: ${args.type || 'unknown'}`;
+        return `创建Blockly块: ${args.type || 'unknown'}`;
       case 'connect_blocks_tool':
         return "连接Blockly块...";
       case 'create_code_structure_tool':
@@ -481,16 +573,8 @@ export class AilyChatComponent implements OnDestroy {
       case 'create_project':
         return "项目创建成功";
       case 'execute_command':
-        const commandParts = args?.command?.split(' ') || [];
-        let displayCommand = args?.command || 'unknown';
-        if (commandParts.length > 1) {
-          if (commandParts[0].toLowerCase() === 'npm') {
-            displayCommand = `${commandParts[0]} ${commandParts[1]}`;
-          } else {
-            displayCommand = commandParts[0];
-          }
-        }
-        return `命令${displayCommand}执行成功`;
+        const cmdDisplay = this.formatCommandDisplay(args?.command || 'unknown');
+        return `${cmdDisplay} ✓`;
       case 'get_context':
         return "上下文信息获取成功";
       case 'list_directory':
@@ -541,6 +625,37 @@ export class AilyChatComponent implements OnDestroy {
         return 'ABI文件编辑成功';
       case 'reload_abi_json':
         return 'ABI数据重新加载成功';
+      // 原子化块工具结果
+      case 'create_single_block':
+        return `块创建成功: ${args?.type || 'unknown'}`;
+      case 'connect_blocks_simple':
+        return `块连接成功: ${args?.action || 'unknown'}`;
+      case 'set_block_field':
+        return `字段设置成功: ${args?.fieldName || 'unknown'}`;
+      case 'set_block_input':
+        return `输入设置成功: ${args?.inputName || 'unknown'}`;
+      case 'get_workspace_blocks':
+        return `获取块列表成功`;
+      // 扁平化块工具结果
+      case 'flat_create_blocks':
+        let blocksCreated = result?.data?.stats?.blocksCreated || 0;
+        if (blocksCreated === 0 && args?.blocks) {
+          if (typeof args.blocks === 'string') {
+            try {
+              blocksCreated = JSON.parse(args.blocks).length;
+            } catch (e) {
+              blocksCreated = 0;
+            }
+          } else if (Array.isArray(args.blocks)) {
+            blocksCreated = args.blocks.length;
+          }
+        }
+        const connsCreated = result?.data?.stats?.connectionsEstablished || 0;
+        return `扁平化创建成功: ${blocksCreated}个块, ${connsCreated}个连接`;
+      // DSL 块工具结果
+      // case 'dsl_create_blocks':
+      //   return result?.is_error ? 'DSL 块创建失败' : 'DSL 块创建成功';
+      // 原有块工具结果
       case 'smart_block_tool':
         return `智能块操作成功: ${args?.type || 'unknown'}`;
       case 'connect_blocks_tool':
@@ -589,6 +704,135 @@ export class AilyChatComponent implements OnDestroy {
   }
 
   /**
+   * 格式化命令显示，特别处理路径相关命令
+   * @param command 完整命令字符串
+   * @param maxPathSegments 显示路径的最大段数（默认2）
+   * @returns 格式化后的显示文本
+   */
+  private formatCommandDisplay(command: string, maxPathSegments: number = 2): string {
+    if (!command) return 'unknown';
+
+    const parts = command.trim().split(/\s+/);
+    if (parts.length === 0) return 'unknown';
+
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1);
+
+    // 命令名称映射表
+    const specialCommands: Record<string, string> = {
+      'cd': '切换到', 'mkdir': '创建目录', 'rmdir': '删除目录',
+      'rm': '删除', 'del': '删除', 'remove': '删除',
+      'cp': '复制', 'copy': '复制',
+      'mv': '移动', 'move': '移动', 'rename': '重命名',
+      'ls': '列出', 'dir': '列出', 'tree': '目录树',
+      'cat': '查看', 'type': '查看', 'head': '查看', 'tail': '查看', 'less': '查看', 'more': '查看',
+      'touch': '创建文件', 'echo': '输出', 'printf': '输出',
+      'chmod': '修改权限', 'chown': '修改所有者',
+      'grep': '搜索', 'find': '查找', 'locate': '定位',
+      'tar': '压缩/解压', 'zip': '压缩', 'unzip': '解压', 'gzip': '压缩', 'gunzip': '解压',
+      'curl': '请求', 'wget': '下载',
+      'pip': 'pip', 'npm': 'npm', 'yarn': 'yarn', 'pnpm': 'pnpm', 'node': 'node', 'python': 'python',
+      'git': 'git', 'svn': 'svn',
+      'make': '构建', 'cmake': '配置构建', 'gcc': '编译', 'g++': '编译', 'clang': '编译',
+      'sudo': '管理员执行', 'su': '切换用户',
+      'ssh': '远程连接', 'scp': '远程复制', 'rsync': '同步',
+      'ps': '进程列表', 'kill': '终止进程', 'top': '系统监控', 'htop': '系统监控',
+      'df': '磁盘空间', 'du': '目录大小', 'free': '内存信息',
+      'pwd': '当前目录', 'whoami': '当前用户', 'hostname': '主机名',
+      'ping': '网络测试', 'ifconfig': '网络配置', 'ipconfig': '网络配置', 'netstat': '网络状态',
+      'apt': 'apt', 'apt-get': 'apt-get', 'yum': 'yum', 'brew': 'brew', 'choco': 'choco',
+      'systemctl': '服务管理', 'service': '服务管理',
+      'docker': 'docker', 'kubectl': 'kubectl',
+    };
+
+    // 过滤掉选项参数（以 - 开头的）
+    const filteredArgs = args.filter(a => !a.startsWith('-'));
+
+    // 特殊处理 cd 命令（需要处理路径显示）
+    if (cmd === 'cd' && filteredArgs.length > 0) {
+      const targetPath = filteredArgs.join(' ').replace(/["']/g, '');
+      const normalizedPath = targetPath.replace(/\\/g, '/');
+      const pathParts = normalizedPath.split('/').filter(Boolean);
+
+      if (pathParts.length > maxPathSegments) {
+        return `切换到: .../${pathParts.slice(-maxPathSegments).join('/')}`;
+      } else if (pathParts.length > 0) {
+        return `切换到: ${pathParts.join('/')}`;
+      }
+      return 'cd';
+    }
+
+    // 如果命令在映射表中
+    if (specialCommands[cmd]) {
+      if (filteredArgs.length > 0) {
+        const target = filteredArgs[filteredArgs.length - 1].replace(/["']/g, '');
+        const name = target.split(/[\\/]/).pop() || target;
+        return `${specialCommands[cmd]}: ${name}`;
+      }
+      return specialCommands[cmd];
+    }
+
+    // 其他命令：显示 "命令名 + 第一个参数"
+    if (filteredArgs.length > 0) {
+      return `${cmd} ${filteredArgs[0]}`;
+    }
+    return cmd;
+  }
+
+  /**
+   * 解析正则表达式 pattern，提取关键词并格式化显示
+   * 例如: '\\besp32\\b|\\barduino uno\\b' => 'esp32 | arduino uno'
+   * @param pattern 正则表达式模式
+   * @param maxLength 最大显示长度，超过则截断并添加省略号
+   * @returns 格式化后的显示文本
+   */
+  formatSearchPattern(pattern: string, maxLength: number = 30): string {
+    if (!pattern) return '未知模式';
+
+    try {
+      // 按 | 分割（处理正则表达式中的 OR 操作）
+      const parts = pattern.split('|');
+
+      // 提取每个部分的关键词（移除 \b 等正则边界符）
+      const keywords = parts.map(part => {
+        return part
+          .replace(/\\b/g, '')           // 移除单词边界 \b
+          .replace(/\^|\$/g, '')          // 移除行首/行尾锚点
+          .replace(/\\[dDwWsS]/g, '')     // 移除字符类简写
+          .replace(/[\[\]\(\)\{\}\*\+\?\.]/g, '') // 移除常见正则元字符
+          .trim();
+      }).filter(k => k.length > 0);  // 过滤空字符串
+
+      if (keywords.length === 0) {
+        // 如果提取不到关键词，直接使用原 pattern 截取
+        return pattern.length > maxLength ? pattern.substring(0, maxLength) + '...' : pattern;
+      }
+
+      // 用 " | " 连接关键词
+      const formatted = keywords.join(' | ');
+
+      // 检查长度，超过则截断
+      if (formatted.length > maxLength) {
+        // 尝试只显示前几个关键词
+        let result = '';
+        for (let i = 0; i < keywords.length; i++) {
+          const next = result ? result + ' | ' + keywords[i] : keywords[i];
+          if (next.length > maxLength - 3) {  // 留出 "..." 的位置
+            return result + '...';
+          }
+          result = next;
+        }
+        return result + '...';
+      }
+
+      return formatted;
+    } catch (e) {
+      // 解析失败，返回截取的原 pattern
+      return pattern.length > maxLength ? pattern.substring(0, maxLength) + '...' : pattern;
+    }
+  }
+
+  /**
    * 获取路径中的文件名（不包含路径）
    * @param path 文件的完整路径
    * @returns 文件名，如果路径无效则返回空字符串
@@ -615,7 +859,7 @@ export class AilyChatComponent implements OnDestroy {
     try {
       // 标准化路径分隔符（处理Windows和Unix路径）
       const normalizedPath = path.replace(/\\/g, '/');
-      
+
       // 查找 @aily-project 的位置
       const ailyProjectIndex = normalizedPath.indexOf('/@aily-project/');
       if (ailyProjectIndex === -1) {
@@ -625,7 +869,7 @@ export class AilyChatComponent implements OnDestroy {
       // 获取 @aily-project 后的部分
       const afterAilyProject = normalizedPath.substring(ailyProjectIndex + '/@aily-project/'.length);
       const pathParts = afterAilyProject.split('/');
-      
+
       // 第一个部分应该是库名（如 lib-esp32-time）
       if (pathParts.length === 0) {
         return '';
@@ -633,16 +877,16 @@ export class AilyChatComponent implements OnDestroy {
 
       const libraryName = pathParts[0];
       // 构建 package.json 的完整路径
-      const packageJsonPath = normalizedPath.substring(0, ailyProjectIndex) + 
-                             '/@aily-project/' + libraryName + '/package.json';
-      
+      const packageJsonPath = normalizedPath.substring(0, ailyProjectIndex) +
+        '/@aily-project/' + libraryName + '/package.json';
+
       // 使用 Electron 的 fs 模块读取文件
       if (window['fs'] && window['fs'].existsSync(packageJsonPath)) {
         const fileContent = window['fs'].readFileSync(packageJsonPath, 'utf-8');
         const packageData = JSON.parse(fileContent);
         return packageData.nickname || '';
       }
-      
+
       return '';
     } catch (error) {
       console.warn('获取库 nickname 失败:', error);
@@ -719,6 +963,10 @@ export class AilyChatComponent implements OnDestroy {
     }
   }
 
+  getProjectRootPath(): string {
+    return this.projectService.projectRootPath;
+  }
+
   getCurrentProjectPath(): string {
     return this.projectService.currentProjectPath !== this.projectService.projectRootPath
       ? this.projectService.currentProjectPath
@@ -737,7 +985,8 @@ export class AilyChatComponent implements OnDestroy {
   tools: Tool[] = TOOLS;
 
   // 关键信息获取
-  getKeyInfo = () => {
+  getKeyInfo = async () => {
+    const shell = await window['terminal'].getShell();
     return `
 <keyinfo>
 项目存放根路径(**rootFolder**): ${this.projectService.projectRootPath || '无'}
@@ -748,8 +997,29 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
 转换库存放路径(**libraryConversionPath**): ${this.getCurrentProjectPath() ? this.getCurrentProjectPath() : (window['path'].join(window['path'].getAppDataPath(), 'libraries') || '无')}
 当前使用的语言(**lang**)： ${this.configService.data.lang || 'zh-cn'}
 操作系统(**os**): ${window['platform'].type || 'unknown'}
+当前命令行终端(**terminal**): ${shell || 'unknown'}
+</keyinfo>
+<keyinfo>
+uses get_hardware_categories tool to get hardware categories before searching boards and libraries.
+uses search_boards_libraries tool to search for boards and libraries based on user needs.
+Do not create non-existent boards and libraries.
 </keyinfo>
 `
+  }
+
+  // 动态获取安全上下文（每次调用时根据当前项目路径重新创建，只允许当前项目路径）
+  private get securityContext(): ReturnType<typeof createSecurityContext> {
+    // 获取安全工作区配置
+    const securityWorkspaces = this.ailyChatConfigService.securityWorkspaces;
+    const allowProjectPathAccess: boolean = securityWorkspaces.project;
+    const allowNodeModulesAccess: boolean = securityWorkspaces.library;
+    
+    // 使用会话期间保存的允许路径
+    return createSecurityContext(this.getCurrentProjectPath(), {
+      allowProjectPathAccess: allowProjectPathAccess,  // 默认允许访问当前项目路径
+      allowNodeModulesAccess: allowNodeModulesAccess,  // 默认允许访问 node_modules
+      additionalAllowedPaths: this.sessionAllowedPaths
+    });
   }
 
   // generate title
@@ -779,7 +1049,10 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
     private noticeService: NoticeService,
     private platformService: PlatformService,
     private electronService: ElectronService,
+    private ailyChatConfigService: AilyChatConfigService,
+    private onboardingService: OnboardingService
   ) {
+    // securityContext 改为 getter，每次使用时动态获取当前项目路径
   }
 
   ngOnInit() {
@@ -793,8 +1066,8 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
     // 设置全局工具引用，供测试和调试使用
     (window as any)['editBlockTool'] = {
       getActiveWorkspace,
-      connectBlocksTool,
-      createCodeStructureTool,
+      // connectBlocksTool,
+      // createCodeStructureTool,
       configureBlockTool,
       // variableManagerTool,
       // findBlockTool,
@@ -828,6 +1101,32 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
 
     this.aiWaitingSubscription = this.blocklyService.aiWaiting$.subscribe(this.showAiWritingNotice.bind(this));
 
+    // 绑定任务操作事件监听
+    this.taskActionHandler = this.handleTaskAction.bind(this);
+    document.addEventListener('aily-task-action', this.taskActionHandler);
+
+    // 订阅项目路径变化，重新加载聊天历史列表
+    // 使用 skip(1) 跳过初始值，distinctUntilChanged 确保只在路径真正变化时触发
+    this.projectPathSubscription = this.projectService.currentProjectPath$.pipe(
+      distinctUntilChanged(),
+      skip(1)
+    ).subscribe(
+      (newPath: string) => {
+        console.log('[AilyChat] 项目路径变化:', newPath);
+        
+        // 更新当前项目路径
+        this.prjPath = newPath === this.projectService.projectRootPath ? '' : newPath;
+        this.prjRootPath = this.projectService.projectRootPath;
+        
+        // 根据新的项目路径重新加载聊天历史
+        const targetPath = newPath || this.projectService.projectRootPath;
+        this.chatService.openHistoryFile(targetPath);
+        this.HistoryList = [...this.chatService.historyList].reverse();
+        
+        console.log('[AilyChat] 历史记录已重新加载, 数量:', this.HistoryList.length);
+      }
+    );
+
     // 订阅登录状态变化
     this.loginStatusSubscription = this.authService.isLoggedIn$.subscribe(
       async isLoggedIn => {
@@ -847,6 +1146,8 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
             // console.log("startSession result: ", res);
             // 获取历史记录
             this.getHistory();
+            // 检查是否需要显示新手引导
+            this.checkFirstUsage();
           }).catch((err) => {
             // console.warn("startSession error: ", err);
 
@@ -873,8 +1174,9 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
           this.isCompleted = false;
           this.isSessionStarting = false;
 
-          // 清空会话ID
+          // 清空会话ID和路径
           this.chatService.currentSessionId = '';
+          this.chatService.currentSessionPath = '';
 
           // 重置消息列表为默认状态
           this.list = [];
@@ -898,6 +1200,36 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
           }
 
           // console.log('用户登出状态清理完成');
+        }
+      }
+    );
+
+    // 订阅配置变更，实时应用新配置
+    this.configChangedSubscription = this.ailyChatConfigService.configChanged$.subscribe(
+      async (newConfig) => {
+        // console.log('配置已变更:', newConfig);
+        
+        // 判断当前会话是否有对话历史（排除系统默认消息）
+        const hasConversationHistory = this.list.length > 0;
+        
+        // 如果当前会话没有对话历史，则可以安全地重新启动会话以应用新配置
+        if (!hasConversationHistory && this.sessionId && this.isLoggedIn) {
+          // console.log('当前会话无对话历史，重新启动会话以应用新配置');
+          try {
+            // 先停止当前会话
+            await this.stopAndCloseSession(true); // skipSave=true，因为只是重新初始化
+            // 启动新会话
+            await this.startSession();
+            this.message.success('配置已更新并生效');
+            // console.log('会话已重新启动，新配置已生效');
+          } catch (error) {
+            console.warn('重新启动会话失败:', error);
+            this.message.warning('配置更新失败，请尝试新建对话');
+          }
+        } else if (hasConversationHistory) {
+          // 如果有对话历史，提示用户配置将在下次会话生效
+          this.message.info('配置已保存，将在下次新建对话时生效');
+          // console.log('当前会话有对话历史，配置将在下次会话生效');
         }
       }
     );
@@ -1081,6 +1413,45 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
     this.chatService.historyChatMap.set(this.sessionId, this.list);
   }
 
+  /**
+   * 保存当前会话数据到文件
+   * 在创建新对话、关闭对话、组件销毁时调用
+   */
+  private saveCurrentSession(): void {
+    if (!this.sessionId || this.list.length === 0) {
+      return;
+    }
+
+    try {
+      // 使用会话创建时记录的路径，确保历史记录保存到发起会话的位置
+      // 如果没有记录的路径，才使用当前项目路径作为后备
+      const prjPath = this.chatService.currentSessionPath || this.projectService.currentProjectPath || this.projectService.projectRootPath;
+      
+      if (!prjPath) {
+        console.warn('无法获取项目路径，跳过保存会话');
+        return;
+      }
+
+      // 确保会话在历史列表中
+      let historyData = this.chatService.historyList.find(h => h.sessionId === this.sessionId);
+      if (!historyData) {
+        const title = this.sessionTitle || 'q' + Date.now();
+        this.chatService.historyList.push({ sessionId: this.sessionId, name: title });
+        this.HistoryList = [...this.chatService.historyList].reverse();
+      }
+
+      // 保存历史列表索引文件
+      this.chatService.saveHistoryFile(prjPath);
+      
+      // 保存聊天记录到 .chat_history 文件夹
+      this.chatService.saveSessionChatHistory(prjPath, this.sessionId, this.list);
+      
+      // console.log('会话已保存:', this.sessionId, '路径:', prjPath);
+    } catch (error) {
+      console.warn('保存会话失败:', error);
+    }
+  }
+
   async startSession(): Promise<void> {
     // 如果会话正在启动中，直接返回
     if (this.isSessionStarting) {
@@ -1090,6 +1461,9 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
 
     this.isSessionStarting = true;
 
+    // 清空会话期间的额外允许路径
+    this.sessionAllowedPaths = [];
+
     if (!this.mcpInitialized) {
       this.mcpInitialized = true;
       await this.mcpService.init();
@@ -1097,7 +1471,15 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
 
     // tools + mcp tools
     this.isCompleted = false;
-    let tools = this.tools;
+    
+    // 根据配置过滤启用的工具
+    const enabledToolNames = this.ailyChatConfigService.enabledTools;
+    const hasEnabledToolsConfig = enabledToolNames && enabledToolNames.length > 0;
+    
+    let tools = hasEnabledToolsConfig 
+      ? this.tools.filter(tool => enabledToolNames.includes(tool.name))
+      : this.tools;
+    
     let mcpTools = this.mcpService.tools.map(tool => {
       if (!tool.name.startsWith("mcp_")) {
         tool.name = "mcp_" + tool.name;
@@ -1107,14 +1489,37 @@ appDataPath(**appDataPath**): ${window['path'].getAppDataPath() || '无'}
     if (mcpTools && mcpTools.length > 0) {
       tools = tools.concat(mcpTools);
     }
+    
+    // 获取 maxCount 配置
+    const maxCount = this.ailyChatConfigService.maxCount;
+
+    // 自定义apiKey与 baseUrl
+    let customllmConfig;
+    if (this.ailyChatConfigService.useCustomApiKey) {
+      customllmConfig = {
+        apiKey: this.ailyChatConfigService.apiKey,
+        baseUrl: this.ailyChatConfigService.baseUrl,
+      }
+    } else {
+      customllmConfig = null;
+    }
+
+    // 使用当前选择的模型
+    const customModel = this.currentModel ? {
+      model: this.currentModel.model,
+      family: this.currentModel.family
+    } : null;
+
 
     return new Promise<void>((resolve, reject) => {
-      this.chatService.startSession(this.currentMode, tools).subscribe({
+      this.chatService.startSession(this.currentMode, tools, maxCount, customllmConfig, customModel).subscribe({
         next: (res: any) => {
           if (res.status === 'success') {
             if (res.data != this.sessionId) {
               this.chatService.currentSessionId = res.data;
               this.chatService.currentSessionTitle = "";
+              // 记录会话创建时的项目路径，用于后续保存历史记录到正确位置
+              this.chatService.currentSessionPath = this.projectService.currentProjectPath || this.projectService.projectRootPath;
             }
             // console.log('会话启动成功, sessionId:', res.data);
             this.streamConnect();
@@ -1195,6 +1600,8 @@ ${JSON.stringify(errData)}
     }
 
     this.send('user', this.inputValue.trim(), true);
+    // 将用户添加的上下文路径保存到会话允许路径中
+    this.mergeSelectContentToSessionPaths();
     this.selectContent = [];
     this.inputValue = "";
   }
@@ -1357,7 +1764,7 @@ ${JSON.stringify(errData)}
               for (const result of data.content) {
                 if (result.call_id && result?.name !== "ask_approval") {
                   // 根据工具名称和结果状态确定显示文本
-                  const resultState = result.is_error ? ToolCallState.ERROR : ToolCallState.DONE;
+                  const resultState = result?.is_error ? ToolCallState.ERROR : ToolCallState.DONE;
                   const resultText = this.toolCallStates[result.call_id];
                   if (resultText) {
                     // console.log("完成工具调用: ", result.call_id, result.name, resultState, resultText);
@@ -1458,7 +1865,7 @@ ${JSON.stringify(errData)}
             let resultState = "done";
             let resultText = '';
 
-            console.log("工具调用请求: ", data.tool_name, toolArgs);
+            // console.log("工具调用请求: ", data.tool_name, toolArgs);
 
             // 定义 block 工具列表
             const blockTools = [
@@ -1467,6 +1874,11 @@ ${JSON.stringify(errData)}
               'create_code_structure_tool',
               'configure_block_tool',
               'delete_block_tool',
+              'create_single_block',
+              'connect_blocks_simple',
+              'set_block_field',
+              'set_block_input',
+              'batch_create_blocks',
               // 'get_workspace_overview_tool',
               // 'queryBlockDefinitionTool',
               // 'analyze_library_blocks',
@@ -1490,7 +1902,7 @@ ${JSON.stringify(errData)}
                     // console.log('[创建项目工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "正在创建项目...", toolArgs);
                     toolResult = await newProjectTool(this.prjRootPath, toolArgs, this.projectService, this.configService);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       this.uiService.updateFooterState({ state: 'warn', text: '项目创建失败' });
                       resultState = "warn"
                       resultText = '项目创建异常,即将重试';
@@ -1504,31 +1916,37 @@ ${JSON.stringify(errData)}
                     // Extract the command main body for display
                     const commandParts = toolArgs.command.split(' ');
                     let displayCommand = toolArgs.command;
+                    let displayArgs = '';
 
                     if (commandParts.length > 1) {
                       // 对于 npm 命令，显示前两个词（如 "npm install"）
                       if (commandParts[0].toLowerCase() === 'npm') {
                         displayCommand = `${commandParts[0]} ${commandParts[1]}`;
                       } else {
-                        // 其他命令只显示第一个词
+                        // 其他命令显示命令词+第一个参数
                         displayCommand = `${commandParts[0]}`;
+                        displayArgs = commandParts[1] || '';
+                        // 如果Args太长，只显示后20个字符
+                        if (displayArgs.length > 20) {
+                          displayArgs = '...' + displayArgs.slice(-20);
+                        }
                       }
                     }
 
-                    this.startToolCall(toolCallId, data.tool_name, `执行: ${displayCommand}`, toolArgs);
+                    this.startToolCall(toolCallId, data.tool_name, `执行: ${displayCommand} ${displayArgs}`, toolArgs);
                     // Check if cwd is specified, otherwise use project paths
                     if (!toolArgs.cwd) {
                       toolArgs.cwd = this.projectService.currentProjectPath || this.projectService.projectRootPath;
                     }
-                    
+
                     // Get project path from command args or default
                     const projectPath = toolArgs.cwd || this.prjPath;
-                    
+
                     // Check if this is an npm uninstall command
                     const command = toolArgs.command;
                     const isNpmInstall = command.includes('npm i') || command.includes('npm install')
                     const isNpmUninstall = command.includes('npm uninstall');
-                    
+
                     // 如果是 npm uninstall，需要在执行命令之前先卸载库（因为命令执行后文件就被删除了）
                     if (isNpmUninstall) {
                       console.log('检测到 npm uninstall 命令，在执行前先卸载库');
@@ -1542,21 +1960,21 @@ ${JSON.stringify(errData)}
                         // 使用 Set 去重，避免重复处理
                         const uniqueLibs = [...new Set(matches)];
                         console.log('去重后的卸载库列表:', uniqueLibs);
-                        
+
                         // 检查库是否正在使用中
                         const separator = this.platformService.getPlatformSeparator();
                         const libsInUse: string[] = [];
-                        
+
                         for (const libPackageName of uniqueLibs as string[]) {
                           try {
                             const libPackagePath = projectPath + `${separator}node_modules${separator}` + libPackageName;
                             const libBlockPath = libPackagePath + `${separator}block.json`;
-                            
+
                             // 检查 block.json 文件是否存在
                             if (this.electronService.exists(libBlockPath)) {
                               const blocksData = JSON.parse(this.electronService.readFile(libBlockPath));
                               const abiJson = JSON.stringify(this.blocklyService.getWorkspaceJson());
-                              
+
                               // 检查工作区中是否使用了该库的任何块
                               for (let index = 0; index < blocksData.length; index++) {
                                 const element = blocksData[index];
@@ -1570,7 +1988,7 @@ ${JSON.stringify(errData)}
                             console.warn("检查库使用情况失败:", libPackageName, e);
                           }
                         }
-                        
+
                         // 如果有库正在使用中，阻止卸载并返回错误消息
                         if (libsInUse.length > 0) {
                           const errorMsg = `无法卸载以下库，因为项目代码正在使用它们：${libsInUse.join(', ')}。请先删除相关代码块后再尝试卸载。`;
@@ -1582,7 +2000,7 @@ ${JSON.stringify(errData)}
                           // 直接跳过命令执行
                           break;
                         }
-                        
+
                         // 遍历所有匹配到的库包名进行卸载
                         for (const libPackageName of uniqueLibs) {
                           try {
@@ -1595,11 +2013,11 @@ ${JSON.stringify(errData)}
                         }
                       }
                     }
-                    
-                    // 执行命令
-                    toolResult = await executeCommandTool(this.cmdService, toolArgs);
-                    
-                    if (!toolResult.is_error) {
+
+                    // 执行命令，传递安全上下文用于路径验证
+                    toolResult = await executeCommandTool(this.cmdService, toolArgs, this.securityContext);
+
+                    if (!toolResult?.is_error) {
                       if (isNpmInstall) {
                         console.log('检测到 npm install 命令，尝试加载库');
                         // Extract all @aily-project/ packages from the command
@@ -1612,7 +2030,7 @@ ${JSON.stringify(errData)}
                           // 使用 Set 去重，避免重复加载
                           const uniqueLibs = [...new Set(matches)];
                           console.log('去重后的库列表:', uniqueLibs);
-                          
+
                           // 遍历所有匹配到的库包名
                           for (const libPackageName of uniqueLibs) {
                             // Load the library into blockly
@@ -1648,7 +2066,7 @@ ${JSON.stringify(errData)}
                     // console.log('[获取上下文信息工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "获取上下文信息...", toolArgs);
                     toolResult = await getContextTool(this.projectService, toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '获取上下文信息异常, 即将重试';
                     } else {
@@ -1660,7 +2078,7 @@ ${JSON.stringify(errData)}
                     const distFolderName = this.getLastFolderName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `获取${distFolderName}目录内容`, toolArgs);
                     toolResult = await listDirectoryTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `获取${distFolderName}目录内容异常, 即将重试`;
                     } else {
@@ -1676,11 +2094,11 @@ ${JSON.stringify(errData)}
                     // }
                     let libNickName = await this.getLibraryNickname(toolArgs.path);
                     // if (this.configService.data.devmode) {
-                      // 将\\转为/以便显示
-                      // const displayPath = toolArgs.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
-                      // readFileName = `${displayPath}`;
+                    // 将\\转为/以便显示
+                    // const displayPath = toolArgs.path.replace(/\\\\/g, '/').replace(/\\/g, '/');
+                    // readFileName = `${displayPath}`;
 
-                      // 是否包含 lib- 前缀 及 readmd
+                    // 是否包含 lib- 前缀 及 readmd
                     const hasLibPrefix = toolArgs.path.includes('lib-') && (toolArgs.path.endsWith('README.md') || toolArgs.path.endsWith('readme.md'));
 
                     if (libNickName || hasLibPrefix) {
@@ -1701,8 +2119,8 @@ ${JSON.stringify(errData)}
                       this.startToolCall(toolCallId, data.tool_name, `读取: ${readFileName}`, toolArgs);
                     }
 
-                    toolResult = await readFileTool(toolArgs);
-                    if (toolResult.is_error) {
+                    toolResult = await readFileTool(toolArgs, this.securityContext);
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `读取异常, 即将重试`;
                     } else {
@@ -1714,7 +2132,7 @@ ${JSON.stringify(errData)}
                     //   }
                     //   this.startToolCall(toolCallId, data.tool_name, `读取: ${readFileName}`, toolArgs);
                     //   toolResult = await readFileTool(toolArgs);
-                    //   if (toolResult.is_error) {
+                    //   if (toolResult?.is_error) {
                     //     resultState = "warn";
                     //     resultText = `读取异常, 即将重试`;
                     //   } else {
@@ -1726,8 +2144,8 @@ ${JSON.stringify(errData)}
                     // console.log('[创建文件工具被调用]', toolArgs);
                     let createFileName = this.getFileName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `创建: ${createFileName}`, toolArgs);
-                    toolResult = await createFileTool(toolArgs);
-                    if (toolResult.is_error) {
+                    toolResult = await createFileTool(toolArgs, this.securityContext);
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `创建${createFileName}文件异常, 即将重试`;
                     } else {
@@ -1739,7 +2157,7 @@ ${JSON.stringify(errData)}
                     let createFolderName = this.getLastFolderName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `创建: ${createFolderName}`, toolArgs);
                     toolResult = await createFolderTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `创建${createFolderName}文件夹异常, 即将重试`;
                     } else {
@@ -1751,7 +2169,7 @@ ${JSON.stringify(errData)}
                     let editFileName = this.getFileName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `编辑: ${editFileName}`, toolArgs);
                     toolResult = await editFileTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `编辑${editFileName}文件异常, 即将重试`;
                     } else {
@@ -1762,8 +2180,8 @@ ${JSON.stringify(errData)}
                     // console.log('[删除文件工具被调用]', toolArgs);
                     let deleteFileName = this.getFileName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `删除: ${deleteFileName}`, toolArgs);
-                    toolResult = await deleteFileTool(toolArgs);
-                    if (toolResult.is_error) {
+                    toolResult = await deleteFileTool(toolArgs, this.securityContext);
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `删除${deleteFileName}文件异常, 即将重试`;
                     } else {
@@ -1774,8 +2192,8 @@ ${JSON.stringify(errData)}
                     // console.log('[删除文件夹工具被调用]', toolArgs);
                     let deleteFolderName = this.getLastFolderName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `删除: ${deleteFolderName}`, toolArgs);
-                    toolResult = await deleteFolderTool(toolArgs);
-                    if (toolResult.is_error) {
+                    toolResult = await deleteFolderTool(toolArgs, this.securityContext);
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = `删除${deleteFolderName}文件夹异常, 即将重试`;
                     } else {
@@ -1795,7 +2213,7 @@ ${JSON.stringify(errData)}
 
                     this.startToolCall(toolCallId, data.tool_name, doingText, toolArgs);
                     toolResult = await checkExistsTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = errText;
                     } else {
@@ -1807,35 +2225,113 @@ ${JSON.stringify(errData)}
                     let treeFolderName = this.getLastFolderName(toolArgs.path);
                     this.startToolCall(toolCallId, data.tool_name, `获取目录树: ${treeFolderName}`, toolArgs);
                     toolResult = await getDirectoryTreeTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `获取目录树 ${treeFolderName} 失败: ` + (toolResult.content || '未知错误');
+                      resultText = `获取目录树 ${treeFolderName} 失败: ` + (toolResult?.content || '未知错误');
                     } else {
                       resultText = `获取目录树 ${treeFolderName} 成功`;
                     }
                     break;
                   case 'search_boards_libraries':
                     // console.log('[开发板库搜索工具被调用]', toolArgs);
-                    const searchQuery = toolArgs.query ? toolArgs.query.substring(0, 30) : '未知查询';
-                    const searchType = toolArgs.type || 'both';
+                    // 处理查询显示：filters 可能是字符串或对象
+                    let searchDisplayText = '';
+
+                    // 解析 filters（可能是 JSON 字符串）
+                    let parsedFilters: any = null;
+                    if (toolArgs.filters) {
+                      if (typeof toolArgs.filters === 'string') {
+                        try {
+                          const trimmed = toolArgs.filters.trim();
+                          if (trimmed && trimmed !== '{}') {
+                            parsedFilters = JSON.parse(trimmed);
+                          }
+                        } catch (e) {
+                          console.warn('Failed to parse filters:', toolArgs.filters);
+                        }
+                      } else if (typeof toolArgs.filters === 'object') {
+                        parsedFilters = toolArgs.filters;
+                      }
+                    }
+
+                    // 优先显示 filters.keywords
+                    if (parsedFilters?.keywords) {
+                      const keywords = Array.isArray(parsedFilters.keywords)
+                        ? parsedFilters.keywords
+                        : String(parsedFilters.keywords).split(/\s+/);
+                      if (keywords.length > 0) {
+                        searchDisplayText = keywords.slice(0, 3).join(', ');
+                        if (keywords.length > 3) {
+                          searchDisplayText += ` 等${keywords.length}个关键词`;
+                        }
+                      }
+                    }
+
+                    // 显示其他筛选条件（排除 keywords）
+                    if (parsedFilters) {
+                      const otherFilterKeys = Object.keys(parsedFilters).filter(k => k !== 'keywords');
+                      if (otherFilterKeys.length > 0) {
+                        const filterDisplay = otherFilterKeys.slice(0, 3).map(k => {
+                          const val = parsedFilters[k];
+                          if (Array.isArray(val)) return `${k}:[${val.slice(0, 2).join(',')}${val.length > 2 ? '...' : ''}]`;
+                          return `${k}:${val}`;
+                        }).join(', ');
+                        searchDisplayText += searchDisplayText ? ` + ${filterDisplay}` : filterDisplay;
+                      }
+                    }
+
+                    if (!searchDisplayText) {
+                      searchDisplayText = '未知查询';
+                    }
+                    const searchType = toolArgs.type || 'boards';
                     const searchTypeDisplay = searchType === 'boards' ? '开发板' : searchType === 'libraries' ? '库' : '开发板和库';
                     this.appendMessage('aily', `
 
 \`\`\`aily-state
 {
   "state": "doing",
-  "text": "正在搜索${searchTypeDisplay}: ${searchQuery}",
+  "text": "正在搜索${searchTypeDisplay}: ${searchDisplayText}",
   "id": "${toolCallId}"
 }
 \`\`\`\n\n
                     `);
                     toolResult = await searchBoardsLibrariesTool.handler(toolArgs, this.configService);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `搜索失败: ` + (toolResult.content || '未知错误');
+                      resultText = `搜索${searchTypeDisplay}失败: ` + (toolResult?.content || '未知错误');
                     } else {
                       const totalMatches = toolResult.metadata?.totalMatches || 0;
-                      resultText = `搜索 "${searchQuery}" 成功，找到 ${totalMatches} 个匹配项`;
+                      // 显示搜索内容，截取前20个字符
+                      const searchSummary = searchDisplayText.length > 20 ? searchDisplayText.substring(0, 20) + '...' : searchDisplayText;
+                      resultText = `搜索${searchTypeDisplay}「${searchSummary}」完成，找到 ${totalMatches} 个匹配项`;
+                    }
+                    break;
+                  case 'get_hardware_categories':
+                    // console.log('[硬件分类获取工具被调用]', toolArgs);
+                    const catType = toolArgs.type === 'boards' ? '开发板' : '库';
+                    const dimensionLabels: Record<string, string> = {
+                      brand: '品牌', architecture: '架构', connectivity: '连接方式',
+                      category: '主分类', hardwareType: '硬件类型', communication: '通信协议'
+                    };
+                    const dimensionDisplay = dimensionLabels[toolArgs.dimension] || toolArgs.dimension;
+                    this.appendMessage('aily', `
+
+\`\`\`aily-state
+{
+  "state": "doing",
+  "text": "正在获取${catType}的${dimensionDisplay}分类",
+  "id": "${toolCallId}"
+}
+\`\`\`\n\n
+                    `);
+                    toolResult = await getHardwareCategoriesTool.handler(toolArgs, this.configService);
+                    if (toolResult.is_error) {
+                      resultState = "error";
+                      resultText = `获取${catType}分类失败: ` + (toolResult.content || '未知错误');
+                    } else {
+                      const categoryCount = toolResult.metadata?.categories?.length || 0;
+                      const totalCount = toolResult.metadata?.total || 0;
+                      resultText = `获取${catType}${dimensionDisplay}分类完成，共 ${categoryCount} 个分类，涵盖 ${totalCount} 个${catType}`;
                     }
                     break;
                   case 'get_board_parameters':
@@ -1852,9 +2348,9 @@ ${JSON.stringify(errData)}
 \`\`\`\n\n
                     `);
                     toolResult = await getBoardParametersTool.handler(this.projectService, toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `获取开发板参数失败: ` + (toolResult.content || '未知错误');
+                      resultText = `获取开发板参数失败: ` + (toolResult?.content || '未知错误');
                     } else {
                       const boardName = toolResult.metadata?.boardName || '未知';
                       const paramsCount = toolResult.metadata?.parameterCount || 0;
@@ -1863,7 +2359,15 @@ ${JSON.stringify(errData)}
                     break;
                   case 'grep_tool':
                     // console.log('[Grep搜索工具被调用]', toolArgs);
-                    const searchPattern = toolArgs.pattern ? toolArgs.pattern.substring(0, 30) : '未知模式';
+                    // 格式化 pattern 用于显示（提取关键词）
+                    let searchPattern = this.formatSearchPattern(toolArgs.pattern, 30);
+                    // 转义 JSON 敏感字符
+                    searchPattern = searchPattern
+                      .replace(/\\/g, '\\\\')
+                      .replace(/"/g, '\\"')
+                      .replace(/\n/g, ' ')
+                      .replace(/\r/g, '')
+                      .replace(/\t/g, ' ');
                     const searchPathDisplay = toolArgs.path ? this.getLastFolderName(toolArgs.path) : '当前项目';
                     this.appendMessage('aily', `
 
@@ -1876,9 +2380,11 @@ ${JSON.stringify(errData)}
 \`\`\`\n\n
                     `);
                     toolResult = await grepTool(toolArgs);
-                    if (toolResult.is_error) {
+                    // 用于结果显示的搜索内容（格式化显示关键词）
+                    const searchPatternDisplay = this.formatSearchPattern(toolArgs.pattern, 20);
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `搜索失败: ` + (toolResult.content || '未知错误');
+                      resultText = `搜索「${searchPatternDisplay}」失败: ` + (toolResult?.content || '未知错误');
                     } else {
                       // 优先显示匹配记录数，如果没有则显示文件数
                       const numMatches = toolResult.metadata?.numMatches;
@@ -1887,20 +2393,20 @@ ${JSON.stringify(errData)}
                       if (numMatches !== undefined) {
                         // 新的 JavaScript 展开模式：显示匹配记录数
                         if (numMatches === 0) {
-                          resultText = `搜索完成，未找到匹配内容`;
+                          resultText = `搜索「${searchPatternDisplay}」完成，未找到匹配内容`;
                         } else {
                           const duration = toolResult.metadata?.durationMs || 0;
-                          resultText = `搜索完成，找到 ${numMatches} 个匹配记录`;
-                          if (duration > 0) {
-                            resultText += ` (耗时 ${duration}ms)`;
-                          }
+                          resultText = `搜索「${searchPatternDisplay}」完成，找到 ${numMatches} 个匹配记录`;
+                          // if (duration > 0) {
+                          //   resultText += ` (耗时 ${duration}ms)`;
+                          // }
                         }
                       } else if (numFiles !== undefined) {
                         // 传统文件名模式：显示匹配文件数
-                        resultText = `搜索完成，找到 ${numFiles} 个匹配文件`;
+                        resultText = `搜索「${searchPatternDisplay}」完成，找到 ${numFiles} 个匹配文件`;
                       } else {
                         // 兜底显示
-                        resultText = `搜索完成`;
+                        resultText = `搜索「${searchPatternDisplay}」完成`;
                       }
                     }
                     break;
@@ -1919,9 +2425,9 @@ ${JSON.stringify(errData)}
 \`\`\`\n\n
                     `);
                     toolResult = await globTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `文件搜索失败: ` + (toolResult.content || '未知错误');
+                      resultText = `文件搜索失败: ` + (toolResult?.content || '未知错误');
                     } else {
                       // 显示找到的文件数量
                       const numFiles = toolResult.metadata?.numFiles;
@@ -1946,7 +2452,7 @@ ${JSON.stringify(errData)}
                     const fetchUrl = this.getUrlDisplayName(toolArgs.url);
                     this.startToolCall(toolCallId, data.tool_name, `进行网络请求: ${fetchUrl}`, toolArgs);
                     toolResult = await fetchTool(this.fetchToolService, toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
                       resultText = `网络请求异常，即将重试`;
                     } else {
@@ -2016,9 +2522,9 @@ ${JSON.stringify(errData)}
                       const editAbiResult = await editAbiFileTool(editAbiParams);
                       toolResult = {
                         "content": editAbiResult.content,
-                        "is_error": editAbiResult.is_error
+                        "is_error": editAbiResult?.is_error
                       }
-                      if (toolResult.is_error) {
+                      if (toolResult?.is_error) {
                         resultState = "warn";
                         resultText = `ABI文件编辑异常, 即将重试`;
                       } else {
@@ -2043,7 +2549,7 @@ ${JSON.stringify(errData)}
                         const reloadResult = await reloadAbiJsonService.executeReloadAbiJson(toolArgs);
                         toolResult = {
                           content: reloadResult.content,
-                          is_error: reloadResult.is_error
+                          is_error: reloadResult?.is_error
                         }
                       }
                     }
@@ -2057,15 +2563,200 @@ ${JSON.stringify(errData)}
                     const reloadResult = await reloadAbiJsonService.executeReloadAbiJson(toolArgs);
                     toolResult = {
                       content: reloadResult.content,
-                      is_error: reloadResult.is_error
+                      is_error: reloadResult?.is_error
                     };
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = 'ABI数据重新加载异常';
                     } else {
                       resultText = 'ABI数据重新加载成功';
                     }
                     break;
+                  // =============================================================================
+                  // 原子化块操作工具
+                  // =============================================================================
+                  // case 'create_single_block':
+                  //   this.startToolCall(toolCallId, data.tool_name, `创建块: ${toolArgs.type}`, toolArgs);
+                  //   toolResult = await createSingleBlockTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = `块创建失败: ${toolArgs.type}`;
+                  //   } else {
+                  //     resultText = `块创建成功: ${toolArgs.type} (ID: ${toolResult.metadata?.blockId})`;
+                  //   }
+                  //   break;
+                  // case 'connect_blocks_simple':
+                  //   this.startToolCall(toolCallId, data.tool_name, `连接块: ${toolArgs.action}`, toolArgs);
+                  //   toolResult = await connectBlocksSimpleTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = `块连接失败`;
+                  //   } else {
+                  //     resultText = `块连接成功: ${toolArgs.action}`;
+                  //   }
+                  //   break;
+                  // case 'set_block_field':
+                  //   this.startToolCall(toolCallId, data.tool_name, `设置字段: ${toolArgs.fieldName}`, toolArgs);
+                  //   toolResult = await setBlockFieldTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = `字段设置失败`;
+                  //   } else {
+                  //     resultText = `字段设置成功: ${toolArgs.fieldName}`;
+                  //   }
+                  //   break;
+                  // case 'set_block_input':
+                  //   this.startToolCall(toolCallId, data.tool_name, `设置输入: ${toolArgs.inputName}`, toolArgs);
+                  //   toolResult = await setBlockInputTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = `输入设置失败`;
+                  //   } else {
+                  //     resultText = `输入设置成功: ${toolArgs.inputName}`;
+                  //   }
+                  //   break;
+                  // case 'get_workspace_blocks':
+                  //   this.startToolCall(toolCallId, data.tool_name, "获取工作区块列表...", toolArgs);
+                  //   toolResult = await getWorkspaceBlocksTool();
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = `获取块列表失败`;
+                  //   } else {
+                  //     resultText = `获取块列表成功`;
+                  //   }
+                  //   break;
+                  // case 'batch_create_blocks':
+                  //   // 解析可能是 JSON 字符串的参数以获取正确数量（使用 JSON 修复）
+                  //   let parsedBlocks: any[] = [];
+                  //   let parsedConns: any[] = [];
+                  //   let displayText = '批量创建块...';  // 默认显示文本
+                  //   try {
+                  //     // 使用 fixJsonString 修复可能格式错误的 JSON
+                  //     if (typeof toolArgs.blocks === 'string') {
+                  //       const fixResult = fixJsonString(toolArgs.blocks);
+                  //       const jsonToParse = fixResult.success ? fixResult.fixed : toolArgs.blocks;
+                  //       parsedBlocks = JSON.parse(jsonToParse);
+                  //     } else if (Array.isArray(toolArgs.blocks)) {
+                  //       parsedBlocks = toolArgs.blocks;
+                  //     }
+
+                  //     if (typeof toolArgs.connections === 'string') {
+                  //       const fixResult = fixJsonString(toolArgs.connections);
+                  //       const jsonToParse = fixResult.success ? fixResult.fixed : toolArgs.connections;
+                  //       parsedConns = JSON.parse(jsonToParse);
+                  //     } else if (Array.isArray(toolArgs.connections)) {
+                  //       parsedConns = toolArgs.connections;
+                  //     }
+
+                  //     // 成功解析后生成显示文本
+                  //     const batchBlockCount = Array.isArray(parsedBlocks) ? parsedBlocks.length : 0;
+                  //     const batchConnCount = Array.isArray(parsedConns) ? parsedConns.length : 0;
+                  //     displayText = `批量创建: ${batchBlockCount}个块, ${batchConnCount}个连接`;
+                  //   } catch (e) {
+                  //     console.warn('解析 batch_create_blocks 参数失败（已尝试修复）:', e);
+                  //     // 解析失败时，尝试从字符串粗略估算数量
+                  //     try {
+                  //       const blocksStr = typeof toolArgs.blocks === 'string' ? toolArgs.blocks : JSON.stringify(toolArgs.blocks || []);
+                  //       const connsStr = typeof toolArgs.connections === 'string' ? toolArgs.connections : JSON.stringify(toolArgs.connections || []);
+                  //       const estimatedBlocks = (blocksStr.match(/"type"\s*:/g) || []).length;
+                  //       const estimatedConns = (connsStr.match(/"parent"\s*:/g) || []).length;
+                  //       if (estimatedBlocks > 0 || estimatedConns > 0) {
+                  //         displayText = `批量创建: 约${estimatedBlocks}个块, 约${estimatedConns}个连接`;
+                  //       }
+                  //     } catch (estimateError) {
+                  //       // 估算也失败，保持默认显示
+                  //     }
+                  //   }
+                  //   this.startToolCall(toolCallId, data.tool_name, displayText, toolArgs);
+                  //   toolResult = await batchCreateBlocksTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     // 从 metadata 中获取实际的成功和失败数量
+                  //     const totalBlocks = toolResult.metadata?.totalBlocks || 0;
+                  //     const successBlocks = toolResult.metadata?.successBlocks || 0;
+                  //     const totalConns = toolResult.metadata?.totalConnections || 0;
+                  //     const successConns = toolResult.metadata?.successConnections || 0;
+                  //     const failedBlocks = totalBlocks - successBlocks;
+                  //     const failedConns = totalConns - successConns;
+                  //     resultText = `批量创建部分失败: ${failedBlocks}个块失败, ${failedConns}个连接失败`;
+                  //   } else {
+                  //     const successBlocks = toolResult.metadata?.successBlocks || 0;
+                  //     const successConns = toolResult.metadata?.successConnections || 0;
+                  //     resultText = `批量创建成功: ${successBlocks}个块, ${successConns}个连接`;
+                  //   }
+                  //   break;
+                  // =============================================================================
+                  // 扁平化块创建工具
+                  // =============================================================================
+                  // case 'flat_create_blocks':
+                  //   // console.log('🔧 [扁平化块创建工具被调用]');
+                  //   // 解析可能是 JSON 字符串的参数
+                  //   let flatBlockCount = 0;
+                  //   let flatConnCount = 0;
+
+                  //   if (toolArgs.blocks) {
+                  //     if (typeof toolArgs.blocks === 'string') {
+                  //       const fixResult = fixJsonString(toolArgs.blocks);
+                  //       toolArgs.blocks = fixResult.success ? fixResult.fixed : toolArgs.blocks;
+                  //       try {
+                  //         flatBlockCount = JSON.parse(toolArgs.blocks).length;
+                  //       } catch (e) {
+                  //         console.warn('解析 flat_create_blocks.blocks 失败:', e);
+                  //       }
+                  //     } else if (Array.isArray(toolArgs.blocks)) {
+                  //       flatBlockCount = toolArgs.blocks.length;
+                  //     }
+                  //   }
+
+                  //   if (toolArgs.connections) {
+                  //     if (typeof toolArgs.connections === 'string') {
+                  //       const fixResult = fixJsonString(toolArgs.connections);
+                  //       toolArgs.connections = fixResult.success ? fixResult.fixed : toolArgs.connections;
+                  //       try {
+                  //         flatConnCount = JSON.parse(toolArgs.connections).length;
+                  //       } catch (e) {
+                  //         console.warn('解析 flat_create_blocks.connections 失败:', e);
+                  //       }
+                  //     } else if (Array.isArray(toolArgs.connections)) {
+                  //       flatConnCount = toolArgs.connections.length;
+                  //     }
+                  //   }
+
+                  //   this.startToolCall(toolCallId, data.tool_name, `扁平化创建: ${flatBlockCount}个块, ${flatConnCount}个连接`, toolArgs);
+                  //   toolResult = await flatCreateBlocksTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     const stats = (toolResult as any).data?.stats;
+                  //     if (stats) {
+                  //       resultText = `扁平化创建部分失败: ${stats.blocksFailed || 0}个块失败, ${stats.connectionsFailed || 0}个连接失败`;
+                  //     } else {
+                  //       resultText = '扁平化块创建异常';
+                  //     }
+                  //   } else {
+                  //     const stats = (toolResult as any).data?.stats;
+                  //     if (stats) {
+                  //       resultText = `扁平化创建成功: ${stats.blocksCreated}个块, ${stats.connectionsEstablished}个连接`;
+                  //     } else {
+                  //       resultText = `扁平化块创建成功`;
+                  //     }
+                  //   }
+                  //   break;
+                  // =============================================================================
+                  // DSL 块创建工具
+                  // =============================================================================
+                  // case 'dsl_create_blocks':
+                  //   this.startToolCall(toolCallId, data.tool_name, `DSL 创建块...`, toolArgs);
+                  //   toolResult = await dslCreateBlocksTool(toolArgs);
+                  //   if (toolResult.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = 'DSL 块创建失败';
+                  //   } else {
+                  //     resultText = 'DSL 块创建成功';
+                  //   }
+                  //   break;
+                  // =============================================================================
+                  // 原有块操作工具
+                  // =============================================================================
                   case 'smart_block_tool':
                     // console.log('🔧 [智能块工具被调用]');
                     // console.log('📥 大模型传入的完整参数:', JSON.stringify(toolArgs, null, 2));
@@ -2077,10 +2768,10 @@ ${JSON.stringify(errData)}
                     // console.log('  - 父级连接:', toolArgs.parentConnection);
                     // console.log('  - 创建变量:', toolArgs.createVariables);
 
-                    this.startToolCall(toolCallId, data.tool_name, `操作Blockly块: ${toolArgs.type}`, toolArgs);
+                    this.startToolCall(toolCallId, data.tool_name, `创建Blockly块: ${toolArgs.type}`, toolArgs);
                     toolResult = await smartBlockTool(toolArgs);
                     // console.log('✅ 智能块工具执行结果:', toolResult);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '智能块操作异常';
                     } else {
@@ -2091,7 +2782,7 @@ ${JSON.stringify(errData)}
                     // console.log('[块连接工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "连接Blockly块...", toolArgs);
                     toolResult = await connectBlocksTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '块连接异常';
                     } else {
@@ -2102,7 +2793,7 @@ ${JSON.stringify(errData)}
                     // console.log('[代码结构创建工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, `创建代码结构: ${toolArgs.structure}`, toolArgs);
                     toolResult = await createCodeStructureTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '代码结构创建异常';
                     } else {
@@ -2113,7 +2804,7 @@ ${JSON.stringify(errData)}
                     // console.log('[块配置工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "配置Blockly块...", toolArgs);
                     toolResult = await configureBlockTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '块配置异常, 即将重试';
                     } else {
@@ -2133,7 +2824,7 @@ ${JSON.stringify(errData)}
                   // \`\`\`\n\n
                   //                     `);
                   //                     toolResult = await variableManagerTool(toolArgs);
-                  //                     if (toolResult.is_error) {
+                  //                     if (toolResult?.is_error) {
                   //                       resultState = "warn";
                   //                       resultText = '变量操作异常,即将重试';
                   //                     } else {
@@ -2153,9 +2844,9 @@ ${JSON.stringify(errData)}
                   // \`\`\`\n\n
                   //                     `);
                   //                     toolResult = await findBlockTool(toolArgs);
-                  //                     if (toolResult.is_error) {
+                  //                     if (toolResult?.is_error) {
                   //                       resultState = "error";
-                  //                       resultText = '块查找失败: ' + (toolResult.content || '未知错误');
+                  //                       resultText = '块查找失败: ' + (toolResult?.content || '未知错误');
                   //                     } else {
                   //                       resultText = '块查找完成';
                   //                     }
@@ -2164,7 +2855,7 @@ ${JSON.stringify(errData)}
                     // console.log('[块删除工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "删除Blockly块...", toolArgs);
                     toolResult = await deleteBlockTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '块删除异常, 即将重试';
                     } else {
@@ -2175,7 +2866,7 @@ ${JSON.stringify(errData)}
                     // console.log('[工作区全览工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "分析工作区全览...", toolArgs);
                     toolResult = await getWorkspaceOverviewTool(toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = '工作区分析异常, 即将重试';
                     } else {
@@ -2203,7 +2894,7 @@ ${JSON.stringify(errData)}
                     // 将当前会话ID传递给todoWriteTool，确保每个会话的TODO数据独立存储
                     const todoArgs = { ...toolArgs, sessionId: this.sessionId };
                     toolResult = await todoWriteTool(todoArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "warn";
                       resultText = 'TODO操作异常,即将重试';
                     } else {
@@ -2265,11 +2956,11 @@ ${JSON.stringify(errData)}
                     // console.log('[块定义查询工具被调用]', toolArgs);
                     this.startToolCall(toolCallId, data.tool_name, "查询块定义信息...", toolArgs);
                     toolResult = await queryBlockDefinitionTool(this.projectService, toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = '块定义查询失败: ' + (toolResult.content || '未知错误');
+                      resultText = '块定义查询失败: ' + (toolResult?.content || '未知错误');
                     } else {
-                      resultText = `块定义查询完成: ${toolResult.content}`;
+                      resultText = `块定义查询完成: ${toolResult?.content}`;
                     }
                   }
                     break;
@@ -2287,11 +2978,11 @@ ${JSON.stringify(errData)}
                   // \`\`\`\n\n
                   //                       `);
                   //                       toolResult = await getBlockConnectionCompatibilityTool(this.projectService, toolArgs);
-                  //                       if (toolResult.is_error) {
+                  //                       if (toolResult?.is_error) {
                   //                         resultState = "error";
-                  //                         resultText = '块连接兼容性分析失败: ' + (toolResult.content || '未知错误');
+                  //                         resultText = '块连接兼容性分析失败: ' + (toolResult?.content || '未知错误');
                   //                       } else {
-                  //                         resultText = `块连接兼容性分析完成: ${toolResult.content}`;
+                  //                         resultText = `块连接兼容性分析完成: ${toolResult?.content}`;
                   //                       }
                   //                     }
                   //                     break;
@@ -2300,15 +2991,32 @@ ${JSON.stringify(errData)}
 
                     // 安全地处理 libraryNames 参数
                     let libraryNamesDisplay = '未知库';
+                    let parsedLibraryNames: string[] = [];
                     try {
-                      const libraryNames = typeof toolArgs.libraryNames === 'string'
-                        ? JSON.parse(toolArgs.libraryNames)
-                        : toolArgs.libraryNames;
-                      if (Array.isArray(libraryNames)) {
-                        libraryNamesDisplay = libraryNames.join(', ');
+                      if (typeof toolArgs.libraryNames === 'string') {
+                        // 尝试解析 JSON 数组字符串
+                        if (toolArgs.libraryNames.startsWith('[')) {
+                          parsedLibraryNames = JSON.parse(toolArgs.libraryNames);
+                        } else {
+                          // 普通字符串，可能是逗号分隔或单个库名
+                          parsedLibraryNames = toolArgs.libraryNames.split(',').map((s: string) => s.trim()).filter(Boolean);
+                        }
+                      } else if (Array.isArray(toolArgs.libraryNames)) {
+                        parsedLibraryNames = toolArgs.libraryNames;
+                      }
+                      if (parsedLibraryNames.length > 0) {
+                        libraryNamesDisplay = parsedLibraryNames.join(', ');
+                        // 更新 toolArgs 以便传递给工具
+                        toolArgs.libraryNames = parsedLibraryNames;
                       }
                     } catch (error) {
                       console.warn('解析 libraryNames 失败:', error);
+                      // 降级处理：直接作为单个库名使用
+                      if (typeof toolArgs.libraryNames === 'string' && toolArgs.libraryNames) {
+                        parsedLibraryNames = [toolArgs.libraryNames];
+                        libraryNamesDisplay = toolArgs.libraryNames;
+                        toolArgs.libraryNames = parsedLibraryNames;
+                      }
                     }
 
                     this.appendMessage('aily', `
@@ -2322,13 +3030,13 @@ ${JSON.stringify(errData)}
 \`\`\`\n\n
                     `);
                     toolResult = await analyzeLibraryBlocksTool(this.projectService, toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `库分析失败: ${toolResult.content || '未知错误'}`;
+                      resultText = `库分析失败: ${toolResult?.content || '未知错误'}`;
                     } else {
                       const metadata = toolResult.metadata;
                       if (metadata) {
-                        resultText = `库分析完成: 分析了${metadata.librariesAnalyzed || 0}个库，找到${metadata.totalBlocks || 0}个块，${metadata.totalPatterns || 0}个使用模式`;
+                        resultText = `库分析完成: 分析了 ${metadata.librariesAnalyzed || 0} 个库，找到 ${metadata.totalBlocks || 0} 个块定义`;
                       } else {
                         resultText = '库分析完成';
                       }
@@ -2347,9 +3055,9 @@ ${JSON.stringify(errData)}
                   // \`\`\`\n\n
                   //                     `);
                   //                     toolResult = await intelligentBlockSequenceTool(this.projectService, toolArgs);
-                  //                     if (toolResult.is_error) {
+                  //                     if (toolResult?.is_error) {
                   //                       resultState = "error";
-                  //                       resultText = `智能序列生成失败: ${toolResult.content || '未知错误'}`;
+                  //                       resultText = `智能序列生成失败: ${toolResult?.content || '未知错误'}`;
                   //                     } else {
                   //                       const metadata = toolResult.metadata;
                   //                       if (metadata && metadata.sequenceLength !== undefined) {
@@ -2386,9 +3094,9 @@ ${JSON.stringify(errData)}
 \`\`\`\n\n
                     `);
                     toolResult = await verifyBlockExistenceTool(this.projectService, toolArgs);
-                    if (toolResult.is_error) {
+                    if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `块验证失败: ${toolResult.content || '未知错误'}`;
+                      resultText = `块验证失败: ${toolResult?.content || '未知错误'}`;
                     } else {
                       const metadata = toolResult.metadata;
                       if (metadata) {
@@ -2415,7 +3123,7 @@ ${JSON.stringify(errData)}
                   //                     `);
 
                   //                     toolResult = await arduinoSyntaxTool.use(toolArgs);
-                  //                     if (toolResult.is_error) {
+                  //                     if (toolResult?.is_error) {
                   //                       resultState = "warn";
                   //                       resultText = '代码语法检查发现问题';
                   //                     } else {
@@ -2427,7 +3135,7 @@ ${JSON.stringify(errData)}
               }
 
               // 根据执行结果确定状态
-              if (toolResult && toolResult.is_error) {
+              if (toolResult && toolResult?.is_error) {
                 resultState = "error";
               } else if (toolResult && toolResult.warning) {
                 resultState = "warn";
@@ -2443,7 +3151,7 @@ ${JSON.stringify(errData)}
             }
 
             // 获取keyinfo
-            const keyInfo = this.getKeyInfo();
+            const keyInfo = await this.getKeyInfo();
 
             let toolContent = '';
 
@@ -2458,7 +3166,13 @@ ${JSON.stringify(errData)}
                 'delete_block_tool',
                 'get_workspace_overview_tool',
                 'edit_abi_file',
-                'reload_abi_json'
+                'reload_abi_json',
+                'create_single_block',
+                'connect_blocks_simple',
+                'set_block_field',
+                'set_block_input',
+                'batch_create_blocks',
+                'flat_create_blocks',
               ].includes(data.tool_name);
 
               // 判断是否需要路径信息的工具
@@ -2480,47 +3194,51 @@ ${JSON.stringify(errData)}
               ].includes(data.tool_name);
 
               // 只在 Blockly 工具失败或警告时添加规则提示
-              const needsRules = isBlocklyTool && (toolResult.is_error || resultState === 'warn');
+              const needsRules = isBlocklyTool && (toolResult?.is_error || resultState === 'warn');
 
               // 智能决定是否包含 keyInfo：需要路径信息的工具 或 工具失败/警告时
-              const shouldIncludeKeyInfo = needsPathInfo || toolResult.is_error || resultState === 'warn';
+              const shouldIncludeKeyInfo = needsPathInfo || toolResult?.is_error || resultState === 'warn';
 
               if (needsRules || newConnect || newProject) {
+                console.log('包含规则提示');
                 newConnect = false;
                 newProject = false;
                 // Blockly 工具失败时：同时包含 keyInfo 和 rules
                 toolContent += `\n${keyInfo}\n
-<rules>请不要经验主义或者过于自信，Blockly块创建必须遵循以下流程：
+<rules>请不要经验主义或者过于自信，blockly块创建必须遵循以下流程：
 1. 在开始编程前使用get_workspace_overview_tool分析当前工作区，了解已有块和结构情况
 2. 先列出计划使用的所有库(不可跳过以\`lib-core\`开始的库，特别注意lib-core-logic lib-core-variables lib-core-time等基础库)
-3. 逐一完整读取每个库的README确定块存在
+3. 逐一读取每个库的README文件，了解库功能和块定义，如果README不存在，使用工具分析库块定义
 4. 使用smart_block_tool和create_code_structure_tool创建对应代码块
-- 不要一次性生成大量块(超过10个)，分步创建，每次创建后检查结果
-- 全局变量 setup loop 回调函数 独立结构分开创建(steup/loop基础块已经存在于工作区，无需重复创建)
+- 严格按照库README中的块定义创建，确保类型、字段、输入、连接等完全匹配
+- 梳理清楚代码逻辑，分解成多个小块逐一创建
+- 全局变量 setup loop 回调函数 独立结构分开创建
 - 当尝试使用代码块多次仍然无法创建成功时，安装 @aily-project/lib-core-custom 并使用库中的自定义块进行代码创建
 5. 检查工具反馈结果
 6. 修复结构或逻辑问题(多次修复仍然有误时，分析是否遗漏了相关库readme的阅读)
-- 如果发现问题，请及时修复，不要继续往下走
-- 如果部分代码块创建失败，使用第三步的工具继续创建遗漏的块
-- 如果发现连接的块不满足要求，可以使用第三步的工具创建新的块并替换连接
-- 如果连接逻辑问题可使用connect_blocks_tool修改连接关系
-- 避免直接删除整个代码块，优先考虑使用配置工具修改块属性或者删除某一个块后重新创建
-- 全局变量请作为独立块创建
-- 独立且无用的块请删除
+**注意**：严禁遇到问题就删除代码块。
+- 仔细分析代码逻辑和块结构，找出具体问题所在。
+- 精确修复问题，最小化改动，保持代码结构稳定。
+- 仔细分析问题复杂度，避免简单问题复杂化: 简单的块缺少，优先使用新建块解决；块错误，新建块进行替换；块连接错误，优先使用连接块进行修复。
+- 复杂问题修复流程：新建块或者配置块->连接块->检查反馈->重复修复，如果三次修复仍然失败，才考虑删除代码块。
+- 代码块因为连接错误导致变成孤立块时，优先使用连接工具进行连接修复，禁止直接删除孤立块，如果最终无法修复或者不再使用，才考虑删除孤立块。
+- 这个过程中只能使用blockly相关工具，禁止使用任何文件操作工具对代码块进行编辑。
 7. 重复直至完成
+8. 一次只调用一个工具完成一个小目标，等待工具反馈后再进行下一个操作。
+9. **深入分析代码逻辑，全面思考嵌入式代码的整体逻辑及硬件特性，逻辑正确高于一切**。
 JSON务必保留必要的换行和缩进格式，否则可能导致解析失败。</rules>
-<toolResult>${toolResult.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
               } else if (shouldIncludeKeyInfo) {
                 // 需要路径信息的工具 或 工具失败时：只包含 keyInfo
-                toolContent += `\n${keyInfo}\n<toolResult>${toolResult.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+                toolContent += `\n${keyInfo}\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
               } else {
                 // 其他成功的工具：不包含 keyInfo
-                toolContent += `\n<toolResult>${toolResult.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+                toolContent += `\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
               }
             } else {
               toolContent = `
 Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendations, and guidance ONLY. You do NOT execute actual tasks or changes.
-<toolResult>${toolResult.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+<toolResult>${toolResult?.content || '工具执行完成，无返回内容'}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
             }
 
             // 显示工具完成状态（除了 todo_write_tool）
@@ -2541,14 +3259,14 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
               this.completeToolCall(data.tool_id, data.tool_name, finalState, resultText);
             }
 
-            console.log(`工具调用结果: `, toolResult, resultText);
+            // console.log(`工具调用结果: `, toolResult, resultText);
 
             this.send("tool", JSON.stringify({
               "type": "tool",
               "tool_id": data.tool_id,
               "content": toolContent,
               "resultText": this.makeJsonSafe(resultText),
-              "is_error": toolResult.is_error
+              "is_error": toolResult?.is_error ?? false
             }, null, 2), false);
           } else if (data.type === 'user_input_required') {
             // 处理用户输入请求 - 需要用户补充消息时停止等待状态
@@ -2557,6 +3275,56 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
               this.list[this.list.length - 1].state = 'done';
             }
             this.isWaiting = false;
+          } else if (data.type === 'TaskCompleted') {
+            const stopReason = data.stop_reason || 'unknown';
+            // 判断停止原因
+            // 1. Text 'TERMINATE' mentioned - 正常结束，由 complete 回调处理状态
+            // 2. Maximum number of messages - 需要显示继续对话提示
+            // 3. 其他异常 - 需要显示重试提示
+            
+            if (stopReason.includes('TERMINATE')) {
+              // 正常结束，状态由 complete 回调统一处理
+              // pass
+            } else if (stopReason.includes('Maximum number of messages')) {
+              // 解析最大消息数
+              const maxMessagesMatch = stopReason.match(/(\d+)\s*reached/);
+              const maxMessages = maxMessagesMatch ? parseInt(maxMessagesMatch[1], 10) : 10;
+              
+              // 保存当前停止原因用于继续对话
+              this.lastStopReason = stopReason;
+              
+              // 显示提示信息，询问是否继续
+              this.appendMessage('aily', `
+
+\`\`\`aily-task-action
+{
+  "actionType": "max_messages",
+  "message": "已达到本轮对话的最大消息数限制（${maxMessages}条），您可以选择继续对话或开始新会话。",
+  "stopReason": "${this.makeJsonSafe(stopReason)}",
+  "metadata": {
+    "maxMessages": ${maxMessages}
+  }
+}
+\`\`\`\n\n
+              `);
+            } else {
+              // 保存当前停止原因用于重试
+              this.lastStopReason = stopReason;
+              
+              // 显示报错，并提供重试按钮
+              this.appendMessage('aily', `
+
+\`\`\`aily-task-action
+{
+  "actionType": "error",
+  "message": "任务执行过程中遇到问题，请重试或开始新会话。",
+  "stopReason": "${this.makeJsonSafe(stopReason)}",
+  "metadata": {}
+}
+\`\`\`\n\n
+              `);
+            }
+
           }
           this.scrollToBottom();
         } catch (e) {
@@ -2581,39 +3349,34 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
         this.isWaiting = false;
         this.isCompleted = true;
 
-        // if (this.list.length <= this.defaultList.length) {
-        //   return;
-        // }
-
-        // 保存会话, 如果sessionId存在的话
+        // 更新历史列表元数据（用于显示），但不立即落盘
+        // 落盘操作在 newChat、closeSession、ngOnDestroy 时触发
         try {
           let historyData = this.chatService.historyList.find(h => h.sessionId === this.sessionId);
-          if (!historyData) {
+          if (!historyData && this.sessionId) {
             // 如果已经有标题,直接使用
             if (this.sessionTitle && this.sessionTitle.trim() !== '') {
-              // console.log('使用现有会话标题:', this.sessionTitle);
               this.chatService.historyList.push({ sessionId: this.sessionId, name: this.sessionTitle });
               this.HistoryList = [...this.chatService.historyList].reverse();
-              this.chatService.saveHistoryFile(this.projectService.currentProjectPath || this.projectService.projectRootPath);
             } else {
-              // 没有标题则等待3秒后检查
-              // console.log('等待标题生成...');
-              const checkAndSave = () => {
-                // 如果正在生成标题，则继续等待
+              // 没有标题则等待标题生成后更新
+              const checkTitle = () => {
                 if (this.chatService.titleIsGenerating) {
-                  setTimeout(checkAndSave, 1000);
+                  setTimeout(checkTitle, 1000);
                   return;
                 }
                 const title = this.sessionTitle || 'q' + Date.now();
-                this.chatService.historyList.push({ sessionId: this.sessionId, name: title });
-                this.HistoryList = [...this.chatService.historyList].reverse();
-                this.chatService.saveHistoryFile(this.projectService.currentProjectPath || this.projectService.projectRootPath);
+                // 再次检查是否已存在
+                if (!this.chatService.historyList.find(h => h.sessionId === this.sessionId)) {
+                  this.chatService.historyList.push({ sessionId: this.sessionId, name: title });
+                  this.HistoryList = [...this.chatService.historyList].reverse();
+                }
               };
-              setTimeout(checkAndSave, 10000);
+              setTimeout(checkTitle, 3000);
             }
           }
         } catch (error) {
-          console.warn("Error getting history data:", error);
+          console.warn("Error updating history list:", error);
         }
       },
       error: (err) => {
@@ -2641,26 +3404,55 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
 
     this.list = [];
     // console.log('获取历史消息，sessionId:', this.sessionId);
-    // this.chatService.getHistory(this.sessionId).subscribe((res: any) => {
-    //   // console.log('get history', res);
-    //
-    // });
+    
+    // 优先从内存缓存中获取
     if (this.chatService.historyChatMap.get(this.sessionId)) {
-      this.list = [...this.chatService.historyChatMap.get(this.sessionId)];
+      const cachedHistory = this.chatService.historyChatMap.get(this.sessionId);
+      // 处理历史消息，标记其中的交互组件为历史模式
+      this.list = cachedHistory.map(item => {
+        if (item.content && typeof item.content === 'string') {
+          return {
+            ...item,
+            content: this.markContentAsHistory(item.content)
+          };
+        }
+        return item;
+      });
       this.scrollToBottom('auto');
       return;
     }
 
-    this.chatService.getHistory(this.sessionId).subscribe((res: any) => {
-      // console.log('get history', res);
-      if (res.status === 'success') {
-        // 先解析工具调用状态信息
-        this.parseHistory(res.data);
-        this.scrollToBottom('auto');
-      } else {
-        this.appendMessage('error', res.message);
-      }
-    });
+    // 其次从本地 .chat_history 文件夹加载
+    const prjPath = this.projectService.currentProjectPath || this.projectService.projectRootPath;
+    const localChatHistory = this.chatService.loadSessionChatHistory(prjPath, this.sessionId);
+    if (localChatHistory && localChatHistory.length > 0) {
+      // 处理历史消息，标记其中的交互组件为历史模式
+      this.list = localChatHistory.map(item => {
+        if (item.content && typeof item.content === 'string') {
+          return {
+            ...item,
+            content: this.markContentAsHistory(item.content)
+          };
+        }
+        return item;
+      });
+      // 同时更新内存缓存
+      this.chatService.historyChatMap.set(this.sessionId, this.list);
+      this.scrollToBottom('auto');
+      return;
+    }
+
+    // // 最后从服务端获取
+    // this.chatService.getHistory(this.sessionId).subscribe((res: any) => {
+    //   // console.log('get history', res);
+    //   if (res.status === 'success') {
+    //     // 先解析工具调用状态信息
+    //     this.parseHistory(res.data);
+    //     this.scrollToBottom('auto');
+    //   } else {
+    //     this.appendMessage('error', res.message);
+    //   }
+    // });
   }
 
   bottomHeight = 180;
@@ -2669,17 +3461,33 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     this.bottomHeight = height!;
   }
 
-  // 当使用ctrl+enter时发送消息
+  // 回车发送消息，ctrl+回车换行
   async onKeyDown(event: KeyboardEvent) {
-    if (event.ctrlKey && event.key === 'Enter') {
-      if (this.isWaiting) {
-        return;
-      }
+    if (event.key === 'Enter') {
+      if (event.ctrlKey) {
+        // Ctrl+Enter 换行
+        const textarea = event.target as HTMLTextAreaElement;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        this.inputValue = this.inputValue.substring(0, start) + '\n' + this.inputValue.substring(end);
+        // 需要在下一个事件循环中设置光标位置
+        setTimeout(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + 1;
+        }, 0);
+        event.preventDefault();
+      } else {
+        // Enter 发送消息
+        if (this.isWaiting) {
+          return;
+        }
 
-      this.send("user", this.inputValue.trim(), true);
-      this.selectContent = [];
-      this.inputValue = "";
-      event.preventDefault();
+        this.send("user", this.inputValue.trim(), true);
+        // 将用户添加的上下文路径保存到会话允许路径中
+        this.mergeSelectContentToSessionPaths();
+        this.selectContent = [];
+        this.inputValue = "";
+        event.preventDefault();
+      }
     }
   }
 
@@ -2849,10 +3657,26 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     ];
   }
 
+  // AI模型列表
+  get ModelList(): IMenuItem[] {
+    // 从配置服务获取已启用的模型列表
+    const enabledModels = this.ailyChatConfigService.getEnabledModels();
+    return enabledModels.map(model => ({
+      name: model.name,
+      action: 'select-model',
+      data: { model }
+    }));
+  }
+
   // 当前AI模式
   // currentMode = 'agent'; // 默认为代理模式
 
-  async stopAndCloseSession() {
+  async stopAndCloseSession(skipSave: boolean = false) {
+    // 关闭会话前，保存当前会话数据（除非明确跳过）
+    if (!skipSave) {
+      this.saveCurrentSession();
+    }
+
     try {
       // 等待停止操作完成
       await new Promise<void>((resolve, reject) => {
@@ -2929,6 +3753,9 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
       return;
     }
 
+    // 创建新对话前，保存当前会话数据
+    this.saveCurrentSession();
+
     this.list = [];
 
     // console.log("CurrentList: ", this.list);
@@ -2937,12 +3764,13 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     this.isCompleted = false;
 
     try {
-      // 先停止并关闭当前会话
-      await this.stopAndCloseSession();
+      // 先停止并关闭当前会话（跳过保存，因为上面已保存）
+      await this.stopAndCloseSession(true);
 
-      // 确保会话完全关闭后再清空ID
+      // 确保会话完全关闭后再清空ID和路径
       this.chatService.currentSessionId = '';
       this.chatService.currentSessionTitle = '';
+      this.chatService.currentSessionPath = '';
 
       // 重置会话启动标志和初始化标志
       this.isSessionStarting = false;
@@ -2960,6 +3788,73 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
       // 即使失败也要确保标志位重置
       this.isSessionStarting = false;
     }
+  }
+
+  /**
+   * 处理任务操作事件（来自 aily-task-action-viewer 组件）
+   * @param event 自定义事件
+   */
+  private handleTaskAction(event: Event): void {
+    const customEvent = event as CustomEvent;
+    const { action, data } = customEvent.detail || {};
+    
+    // console.log('收到任务操作事件:', action, data);
+    
+    switch (action) {
+      case 'continue':
+        this.continueConversation();
+        break;
+      case 'retry':
+        this.retryLastAction();
+        break;
+      case 'newChat':
+        this.newChat();
+        break;
+      case 'dismiss':
+        // 用户选择关闭，无需额外操作
+        break;
+      default:
+        console.warn('未知的任务操作:', action);
+    }
+  }
+
+  /**
+   * 继续当前对话
+   * 向服务器发送继续请求，让AI继续之前的任务
+   */
+  async continueConversation(): Promise<void> {
+    if (this.isWaiting) {
+      this.message.warning('正在处理中，请稍候...');
+      return;
+    }
+    
+    if (!this.sessionId) {
+      this.message.warning('会话不存在，请开始新对话');
+      return;
+    }
+    
+    // 发送继续消息
+    const continueMessage = '请继续完成之前的任务。';
+    await this.send('user', continueMessage, false);
+  }
+
+  /**
+   * 重试上次失败的操作
+   */
+  async retryLastAction(): Promise<void> {
+    if (this.isWaiting) {
+      this.message.warning('正在处理中，请稍候...');
+      return;
+    }
+    
+    if (!this.sessionId) {
+      this.message.warning('会话不存在，请开始新对话');
+      return;
+    }
+    
+    // 发送重试消息
+    const retryMessage = '请重试上次的操作。';
+    await this.send('user', retryMessage, false);
   }
 
   selectContent: ResourceItem[] = []
@@ -3087,6 +3982,23 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
   }
 
   /**
+   * 将 selectContent 中的文件/文件夹路径合并到 sessionAllowedPaths
+   * 用于在发送消息后保留用户添加的上下文路径权限
+   */
+  private mergeSelectContentToSessionPaths(): void {
+    const newPaths = this.selectContent
+      .filter(item => (item.type === 'file' || item.type === 'folder') && item.path)
+      .map(item => item.path as string);
+
+    // 去重合并到 sessionAllowedPaths
+    for (const path of newPaths) {
+      if (!this.sessionAllowedPaths.includes(path)) {
+        this.sessionAllowedPaths.push(path);
+      }
+    }
+  }
+
+  /**
    * 获取资源列表的文本描述，用于发送给AI
    */
   getResourcesText(): string {
@@ -3128,8 +4040,10 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
 
   showHistoryList = false;
   showMode = false;
+  showModelMenu = false;
   historyListPosition = { x: 0, y: 0 };
   modeListPosition = { x: 0, y: 0 };
+  modelListPosition = { x: 0, y: 0 };
 
   openHistoryChat(e) {
     // 设置菜单的位置
@@ -3142,6 +4056,7 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
   closeMenu() {
     this.showHistoryList = false;
     this.showMode = false;
+    this.showModelMenu = false;
   }
 
   menuClick(e) {
@@ -3149,6 +4064,8 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     // console.log("CurrentSessionId: ", this.chatService.currentSessionId)
     if (this.chatService.currentSessionId !== e.sessionId) {
       this.chatService.currentSessionId = e.sessionId;
+      // 历史会话来自当前路径的历史列表，所以记录当前路径
+      this.chatService.currentSessionPath = this.projectService.currentProjectPath || this.projectService.projectRootPath;
       this.getHistory();
       this.isCompleted = true;
       this.closeMenu();
@@ -3225,6 +4142,75 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     this.showMode = false;
   }
 
+  // 模型选择相关方法
+  switchModel(event: MouseEvent) {
+    // 获取点击的按钮元素
+    const target = event.currentTarget as HTMLElement;
+    if (target) {
+      // 获取按钮的位置信息
+      const rect = target.getBoundingClientRect();
+
+      // 计算菜单位置：在按钮上方显示
+      const menuWidth = 180; // 菜单宽度
+      const menuHeight = this.ModelList.length * 30 + 6 + 6; // 预估菜单高度：每项30px + 上下padding各3px + 上下间距各3px
+
+      // 计算水平位置
+      let x = rect.left;
+
+      // 计算垂直位置：在按钮上方显示
+      let y = rect.top - menuHeight - 1;
+
+      // 边界检查：如果菜单会超出屏幕左边界，则左对齐到按钮左边缘
+      if (x < 0) {
+        x = rect.left;
+      }
+
+      // 边界检查：如果菜单会超出屏幕上边界，则显示在按钮下方
+      if (y < 0) {
+        y = rect.bottom - 1;
+      }
+
+      // 设置菜单位置
+      this.modelListPosition = { x: Math.max(0, x), y: Math.max(0, y) };
+    } else {
+      // 如果无法获取按钮位置，使用默认位置
+      this.modelListPosition = { x: window.innerWidth - 302, y: window.innerHeight - 280 };
+    }
+
+    // 阻止事件冒泡，避免触发其他点击事件
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.showModelMenu = !this.showModelMenu;
+  }
+
+  modelMenuClick(item: IMenuItem) {
+    if (item.data?.model && item.data.model.model !== this.currentModel?.model) {
+      this.switchToModel(item.data.model);
+    }
+    this.showModelMenu = false;
+  }
+
+  /**
+   * 切换AI模型并创建新会话
+   * @param model 要切换到的模型配置
+   */
+  private async switchToModel(model: ModelConfig) {
+    if (model.model === this.currentModel?.model) {
+      return;
+    }
+
+    // 保存模型到配置
+    this.chatService.saveChatModel(model);
+    // 切换模型需要创建新会话
+    await this.stopAndCloseSession();
+    this.startSession().then((res) => {
+      // console.log('新会话已启动，当前模型:', this.currentModel);
+    }).catch((err) => {
+      console.error('切换模型失败:', err);
+    });
+  }
+
   /**
    * 切换AI模式并创建新会话
    * @param mode 要切换到的模式
@@ -3245,11 +4231,36 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     });
   }
 
+  // ==================== 新手引导相关方法 ====================
+
+  // 检查是否是第一次使用AI助手
+  private checkFirstUsage() {
+    const hasSeenOnboarding = this.configService.data.ailyChatOnboardingCompleted;
+    if (!hasSeenOnboarding && this.isLoggedIn) {
+      // 延迟显示引导，确保页面已渲染
+      setTimeout(() => {
+        this.onboardingService.start(AILY_CHAT_ONBOARDING_CONFIG, {
+          onClosed: () => this.onOnboardingClosed(),
+          onCompleted: () => this.onOnboardingClosed()
+        });
+      }, 800);
+    }
+  }
+
+  // 引导关闭或完成时的处理
+  private onOnboardingClosed() {
+    this.configService.data.ailyChatOnboardingCompleted = true;
+    this.configService.save();
+  }
+
   /**
    * 清理订阅
    */
   ngOnDestroy() {
     // console.log('AilyChatComponent 正在销毁...');
+
+    // 组件销毁前，保存当前会话数据
+    this.saveCurrentSession();
 
     // 清理消息订阅
     if (this.messageSubscription) {
@@ -3277,6 +4288,24 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     if (this.aiWaitingSubscription) {
       this.aiWaitingSubscription.unsubscribe();
       this.aiWaitingSubscription = null;
+    }
+
+    // 清理项目路径订阅
+    if (this.projectPathSubscription) {
+      this.projectPathSubscription.unsubscribe();
+      this.projectPathSubscription = null;
+    }
+
+    // 清理配置变更订阅
+    if (this.configChangedSubscription) {
+      this.configChangedSubscription.unsubscribe();
+      this.configChangedSubscription = null;
+    }
+
+    // 清理任务操作事件监听
+    if (this.taskActionHandler) {
+      document.removeEventListener('aily-task-action', this.taskActionHandler);
+      this.taskActionHandler = null;
     }
 
     // 重置会话启动标志和MCP初始化标志
@@ -3308,6 +4337,10 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
   }
 
   onSettingsSaved() {
-
+    // 关闭设置面板
+    this.showSettings = false;
+    
+    // 注意：配置生效逻辑已由 configChanged$ 订阅处理
+    // 这里不需要额外操作，消息提示会在订阅中统一处理
   }
 }

@@ -37,3 +37,8 @@ export { getContextTool } from './getContextTool';
 export { fetchTool, FetchToolService } from './fetchTool';
 export { todoWriteTool } from './todoWriteTool';
 // export { reloadAbiJsonTool, reloadAbiJsonToolSimple, reloadAbiJsonToolDirect, ReloadAbiJsonToolService } from './reloadAbiJsonTool';
+
+// 安全服务
+export * from '../services/security.service';
+export * from '../services/command-security.service';
+export * from '../services/audit-log.service';

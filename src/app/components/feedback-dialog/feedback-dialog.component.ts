@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -7,7 +7,7 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { BaseDialogComponent, DialogButton } from '../base-dialog/base-dialog.component';
-import { FeedbackService } from '../../services/feedback.service';
+import { FeedbackService, ImageUploadResponse } from '../../services/feedback.service';
 import { ElectronService } from '../../services/electron.service';
 import { NzRadioModule } from 'ng-zorro-antd/radio';
 import { ProjectService } from '../../services/project.service';
@@ -31,8 +31,19 @@ import { version } from '../../../../package.json';
   templateUrl: './feedback-dialog.component.html',
   styleUrl: './feedback-dialog.component.scss'
 })
-export class FeedbackDialogComponent {
+export class FeedbackDialogComponent implements OnDestroy {
   readonly modal = inject(NzModalRef);
+
+  // textarea 元素引用
+  @ViewChild('contentTextarea') contentTextarea!: ElementRef<HTMLTextAreaElement>;
+
+  private readonly STORAGE_KEY = 'feedback_dialog_draft';
+
+  // 标记是否已成功提交
+  private isSubmitted: boolean = false;
+
+  // 图片上传计数器，用于生成唯一占位符
+  private uploadCounter: number = 0;
 
   // 反馈类型
   feedbackType: string = 'bug';
@@ -57,6 +68,9 @@ export class FeedbackDialogComponent {
 
   // 提交状态
   isSubmitting: boolean = false;
+
+  // 拖拽状态
+  isDragOver: boolean = false;
 
   email: string = '';
 
@@ -86,14 +100,66 @@ export class FeedbackDialogComponent {
   ) { }
 
   ngOnInit(): void {
+    this.loadDraft();
+  }
+
+  ngOnDestroy(): void {
+    // 组件销毁时，如果未成功提交，则保存草稿
+    if (!this.isSubmitted) {
+      this.saveDraft();
+    }
+  }
+
+  // 从 localStorage 加载草稿数据
+  private loadDraft(): void {
+    try {
+      const draft = localStorage.getItem(this.STORAGE_KEY);
+      if (draft) {
+        const data = JSON.parse(draft);
+        this.feedbackType = data.feedbackType || 'bug';
+        this.feedbackTitle = data.feedbackTitle || '';
+        this.feedbackContent = data.feedbackContent || '';
+        this.contactInfo = data.contactInfo || '';
+        this.email = data.email || '';
+      }
+    } catch (error) {
+      console.warn('加载反馈草稿失败:', error);
+    }
+  }
+
+  // 保存草稿数据到 localStorage
+  private saveDraft(): void {
+    try {
+      const draft = {
+        feedbackType: this.feedbackType,
+        feedbackTitle: this.feedbackTitle,
+        feedbackContent: this.feedbackContent,
+        contactInfo: this.contactInfo,
+        email: this.email
+      };
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(draft));
+    } catch (error) {
+      console.warn('保存反馈草稿失败:', error);
+    }
+  }
+
+  // 清除草稿数据
+  private clearDraft(): void {
+    try {
+      localStorage.removeItem(this.STORAGE_KEY);
+    } catch (error) {
+      console.warn('清除反馈草稿失败:', error);
+    }
   }
 
   onCloseDialog(): void {
+    this.saveDraft();
     this.modal.close({ result: 'cancel' });
   }
 
   onButtonClick(action: string): void {
     if (action === 'cancel') {
+      this.saveDraft();
       this.modal.close({ result: 'cancel' });
     } else if (action === 'submit') {
       this.submitFeedback();
@@ -141,27 +207,21 @@ ${errorLogsStr}
 
   // 问题描述
   getIssueDescription(): string {
-    const descriptionStr = this.feedbackContent
-      ? this.feedbackContent.split('\n').map(line => `  ${line}`).join('\n')
-      : "  null";
+    const descriptionStr = this.feedbackContent?.trim() || 'null';
 
     return `**Issue Descriptions:**
-\`\`\`plaintext
+
 ${descriptionStr}
-\`\`\`
     `;
   }
 
   // 功能建议
   getFeatureSuggestion(): string {
-    const descriptionStr = this.feedbackContent
-      ? this.feedbackContent.split('\n').map(line => `  ${line}`).join('\n')
-      : "  null";
+    const descriptionStr = this.feedbackContent?.trim() || 'null';
 
-    return `**Feature Suggestions**
-\`\`\`plaintext
+    return `**Feature Suggestions:**
+
 ${descriptionStr}
-\`\`\`
     `;
   }
 
@@ -233,6 +293,8 @@ ${descriptionStr}
 
       this.feedbackService.submitFeedback(feedbackData).subscribe(res => {
         this.message.success(this.translate.instant('FEEDBACK_DIALOG.SUCCESS_MESSAGE'));
+        this.isSubmitted = true;
+        this.clearDraft();
         this.modal.close({ result: 'success', data: feedbackData });
         this.isSubmitting = false;
       }, err => {
@@ -245,6 +307,144 @@ ${descriptionStr}
       this.message.error(this.translate.instant('FEEDBACK_DIALOG.ERROR_SUBMIT_FAILED'));
       this.isSubmitting = false;
     }
+  }
+
+  /**
+   * 处理拖拽经过事件
+   * @param event 拖拽事件
+   */
+  onDragOver(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // 检查是否包含图片文件
+    if (event.dataTransfer?.types.includes('Files')) {
+      this.isDragOver = true;
+    }
+  }
+
+  /**
+   * 处理拖拽离开事件
+   * @param event 拖拽事件
+   */
+  onDragLeave(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragOver = false;
+  }
+
+  /**
+   * 处理拖放事件
+   * @param event 拖放事件
+   */
+  onDrop(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragOver = false;
+
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    // 遍历所有拖入的文件，处理图片文件
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.type.startsWith('image/')) {
+        this.handleImageUpload(file);
+      }
+    }
+  }
+
+  /**
+   * 处理文件选择事件
+   * @param event 文件选择事件
+   */
+  onFileSelect(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const files = input.files;
+    if (!files || files.length === 0) return;
+
+    // 遍历所有选择的文件，处理图片文件
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.type.startsWith('image/')) {
+        this.handleImageUpload(file);
+      }
+    }
+
+    // 清空 input 以便可以重复选择同一文件
+    input.value = '';
+  }
+
+  /**
+   * 处理粘贴事件，支持从剪贴板粘贴图片
+   * @param event 粘贴事件
+   */
+  onPaste(event: ClipboardEvent): void {
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) return;
+
+    const items = clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        event.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          this.handleImageUpload(file);
+        }
+        return;
+      }
+    }
+  }
+
+  /**
+   * 处理图片上传
+   * @param file 图片文件
+   */
+  private handleImageUpload(file: File): void {
+    const textarea = this.contentTextarea?.nativeElement;
+    if (!textarea) return;
+
+    // 生成唯一的占位符标识
+    const uploadId = ++this.uploadCounter;
+    const fileName = file.name || 'image.png';
+    const placeholder = `![Uploading ${fileName}#${uploadId}...]()`;
+
+    // 获取当前光标位置
+    const startPos = textarea.selectionStart;
+    const endPos = textarea.selectionEnd;
+
+    // 在光标位置插入占位符
+    const beforeText = this.feedbackContent.substring(0, startPos);
+    const afterText = this.feedbackContent.substring(endPos);
+    this.feedbackContent = beforeText + placeholder + afterText;
+
+    // 显示上传中提示
+    this.message.loading(this.translate.instant('FEEDBACK_DIALOG.IMAGE_UPLOADING'), { nzDuration: 0 });
+
+    // 上传图片
+    this.feedbackService.uploadImage(file).subscribe({
+      next: (response: ImageUploadResponse) => {
+        this.message.remove();
+        if (response.status === 200 && response.data.url) {
+          // 上传成功，替换占位符为真实的 Markdown 图片语法
+          const imageMarkdown = `![${fileName}](${response.data.url})`;
+          this.feedbackContent = this.feedbackContent.replace(placeholder, imageMarkdown);
+          this.message.success(this.translate.instant('FEEDBACK_DIALOG.IMAGE_UPLOAD_SUCCESS'));
+        } else {
+          // 上传失败，移除占位符
+          this.feedbackContent = this.feedbackContent.replace(placeholder, '');
+          this.message.error(this.translate.instant('FEEDBACK_DIALOG.IMAGE_UPLOAD_FAILED'));
+        }
+      },
+      error: (error) => {
+        this.message.remove();
+        console.warn('图片上传失败:', error);
+        // 上传失败，移除占位符
+        this.feedbackContent = this.feedbackContent.replace(placeholder, '');
+        this.message.error(this.translate.instant('FEEDBACK_DIALOG.IMAGE_UPLOAD_FAILED'));
+      }
+    });
   }
 
   openUrl() {

@@ -22,6 +22,7 @@ import { FormsModule } from '@angular/forms';
 import { AilyDynamicComponentDirective } from '../../directives/aily-dynamic-component.directive';
 import { MarkdownPipe } from '../../pipes/markdown.pipe';
 import { firstValueFrom } from 'rxjs';
+import { ConfigService } from '../../../../services/config.service';
 
 // import { AilyCodingComponent } from '../../../../components/aily-coding/aily-coding.component';
 
@@ -55,9 +56,10 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
 
   constructor(
     private sanitizer: DomSanitizer,
-    private cd: ChangeDetectorRef
+    private cd: ChangeDetectorRef,
+    private configService: ConfigService
   ) {
-    this.markdownPipe = new MarkdownPipe(this.sanitizer);
+    this.markdownPipe = new MarkdownPipe(this.sanitizer, this.configService);
   }
 
   ngOnInit(): void {
@@ -713,6 +715,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       .replace(/\s*```aily-library/g, '\n```aily-library\n')
       .replace(/\s*```aily-state/g, '\n```aily-state\n')
       .replace(/\s*```aily-button/g, '\n```aily-button\n')
+      .replace(/\s*```aily-task-action/g, '\n```aily-task-action\n')
       .replace(/\[thinking...\]/g, '');
   }
 
@@ -721,7 +724,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
    */
   private fixCodeBlockEndings(content: string): string {
     // 定义 aily 代码块类型
-    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid'];
+    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid', 'aily-task-action'];
 
     // 只处理代码块结束符号 ``` (不是开始符号)
     // 查找所有的 ``` 并判断是否为结束符号
@@ -772,5 +775,6 @@ const agentNameList = [
   ["[to_contextAgent]", "😀"],
   ["[to_libraryInstallationAgent]", "😀"],
   ["[to_fileOperationAgent]", "😁"],
-  ["[to_user]", "😉"]
+  ["[to_user]", "😉"],
+  ["[to_xxx]", "🤖"]
 ]

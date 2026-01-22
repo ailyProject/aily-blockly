@@ -5,12 +5,13 @@
   min-width: 1197px;
   background: #2b2d30;
   display: flex;
+  justify-content: flex-start;
 
   .left-box {
     width: 500px;
     display: flex;
     flex-direction: column;
-    padding: 20px 0 20px 100px;
+    padding: 10px 0 10px 100px;
     flex-grow: 1;
     flex-shrink: 1;
   }
@@ -18,25 +19,33 @@
   .right-box {
     flex-grow: 0;
     flex-shrink: 0;
+    padding: 10px 0 10px 0;
     width: 680px;
     height: 560px;
     position: relative;
     display: flex;
+    justify-content: flex-end;
+    align-items: flex-start;
     flex-direction: column;
+    gap: 15px;
   }
 
   .stitle {
     position: relative;
-    margin-bottom: 30px;
+    margin-bottom: 20px;
     display: flex;
     align-items: flex-end;
     font-size: 30px;
     line-height: 30px;
 
+    .logo {
+      height: 32px;
+    }
+
     .version {
       color: #888888;
       font-size: 12px;
-      margin: 0 0 2px 7px;
+      margin: 0 0 5px 7px;
       line-height: 12px;
     }
   }
@@ -50,6 +59,7 @@
   .menu-box {
     display: flex;
     flex-direction: column;
+    font-size: 15px;
 
     .btn {
       padding: 3px 0;
@@ -60,7 +70,8 @@
     }
 
     .icon {
-      width: 25px;
+      width: 24px;
+      margin-right: 3px;
     }
   }
 
@@ -68,7 +79,7 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start !important;
-    font-size: 14px;
+    font-size: 15px;
     height: 40px;
     line-height: 14px;
 
@@ -93,14 +104,14 @@
 .item {
   width: 400px;
   height: 50px;
-  margin-bottom: 15px;
   display: flex;
   flex-direction: column;
   background: #292929;
   border-radius: 5px;
   padding: 5px 10px;
-  border-left: 5px solid #4d4d4d;
   cursor: pointer;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.3);
+  position: relative;
 
   >div:nth-child(1) {
     span {
@@ -115,8 +126,20 @@
     font-size: 12px;
   }
 
+  .arrow {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    font-size: 20px;
+    transition: all 0.2s;
+    color: #999;
+  }
+
   &:hover {
-    border-left: 5px solid #2658ce;
+    .arrow {
+      color: #87b828;
+    }
   }
 }
 
@@ -176,5 +199,84 @@ img.qrcode {
       font-size: 12px;
       color: #999;
     }
+  }
+}
+
+.group-btn {
+  display: flex;
+  margin-top: 8px;
+
+  >div {
+    height: 30px;
+    width: 50px;
+
+    i {
+      font-size: 26px;
+      color: #c5c5c5;
+      transition: all 0.2s;
+
+      &:hover {
+        &.fa-weixin {
+          color: green;
+        }
+
+        &.fa-qq {
+          color: rgb(0, 119, 255);
+        }
+
+        &.fa-github {
+          color: #fff;
+        }
+
+        &.fa-discord {
+          color: #4533ef;
+        }
+      }
+
+    }
+  }
+}
+
+.img-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.8);
+  z-index: 99999;
+  cursor: pointer;
+
+  img {
+    max-width: 210px;
+    max-height: 210px;
+    border-radius: 8px;
+    transition: opacity 0.2s ease;
+
+    &.hidden {
+      opacity: 0;
+      position: absolute;
+    }
+  }
+
+  .img-loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }

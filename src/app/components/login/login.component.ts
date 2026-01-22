@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzIconModule } from 'ng-zorro-antd/icon';
 import { NzInputModule } from 'ng-zorro-antd/input';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subject, takeUntil } from 'rxjs';
 import { AuthService } from '../../services/auth.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -18,6 +19,7 @@ import sha256 from 'crypto-js/sha256';
     FormsModule,
     NzIconModule,
     NzInputModule,
+    TranslateModule,
   ],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss'
@@ -35,7 +37,8 @@ export class LoginComponent {
   constructor(
     private authService: AuthService,
     private message: NzMessageService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private translate: TranslateService
   ) {
     // 监听登录状态
     this.authService.isLoggedIn$
@@ -78,27 +81,27 @@ export class LoginComponent {
           // 使用 ElectronService 在系统浏览器中打开授权页面
           if (this.electronService.isElectron) {
             this.electronService.openUrl(response.authorization_url);
-            this.message.info('正在跳转到 GitHub 授权页面...');
+            this.message.info(this.translate.instant('LOGIN.REDIRECTING_GITHUB'));
           } else {
             // 如果不在 Electron 环境中，使用 window.open 作为降级方案
             window.open(response.authorization_url, '_blank');
-            this.message.info('正在跳转到 GitHub 授权页面...');
+            this.message.info(this.translate.instant('LOGIN.REDIRECTING_GITHUB'));
           }
         },
         error: (error) => {
           console.error('启动 GitHub OAuth 失败:', error);
-          this.message.error('启动 GitHub 登录失败，请检查网络连接');
+          this.message.error(this.translate.instant('LOGIN.GITHUB_LOGIN_FAILED'));
         }
       });
     } catch (error) {
       console.error('GitHub 登录出错:', error);
-      this.message.error('GitHub 登录失败');
+      this.message.error(this.translate.instant('LOGIN.GITHUB_ERROR'));
     }
   }
 
   async loginByPhone() {
     if (!this.inputUsername || !this.inputPassword) {
-      this.message.warning('请输入用户名和密码');
+      this.message.warning(this.translate.instant('LOGIN.ENTER_CREDENTIALS'));
       return;
     }
 
@@ -113,14 +116,14 @@ export class LoginComponent {
       this.authService.login(loginData).subscribe({
         next: (response) => {
           if (response.status === 200 && response.data) {
-            this.message.success('登录成功');
+            this.message.success(this.translate.instant('LOGIN.LOGIN_SUCCESS'));
           } else {
-            this.message.error(response.message || '登录失败');
+            this.message.error(response.message || this.translate.instant('LOGIN.LOGIN_FAILED'));
           }
         },
         error: (error) => {
           console.error('登录错误:', error);
-          this.message.error('登录失败，请检查网络连接');
+          this.message.error(this.translate.instant('LOGIN.LOGIN_NETWORK_ERROR'));
         },
         complete: () => {
           this.isWaiting = false;
@@ -128,7 +131,7 @@ export class LoginComponent {
       });
     } catch (error) {
       console.error('登录过程中出错:', error);
-      this.message.error('登录失败');
+      this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED'));
       this.isWaiting = false;
     }
   }

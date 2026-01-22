@@ -30,9 +30,15 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
   boardInfo: any = null;
   errorMessage = '';
   showRaw = false;
+  isLoading = true;  // 默认为 true，等待数据
+  
+  // 重试相关
+  private retryCount = 0;
+  private readonly MAX_RETRY = 3;
+  private retryTimer: any = null;
 
   get resourceUrl() {
-    return this.configService.data.resource[0];
+    return this.configService.getCurrentResourceUrl();
   }
 
   constructor(
@@ -46,6 +52,10 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     // 清理资源
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
   }
 
   /**
@@ -62,17 +72,54 @@ export class AilyBoardViewerComponent implements OnInit, OnDestroy {
   private processData(): void {
     // console.log('Processing board data:', this.data);
     if (!this.data) {
-      this.errorMessage = '没有可显示的开发板数据';
+      // 没有数据时保持 loading 状态
+      this.isLoading = true;
+      this.errorMessage = '';
       return;
     }
 
     try {
-      this.boardPackageName = this.data.board.name;
+      this.boardPackageName = this.data.board?.name;
+      
+      if (!this.boardPackageName) {
+        // 没有名称时保持 loading
+        this.isLoading = true;
+        this.errorMessage = '';
+        return;
+      }
+      
       this.boardInfo = this.configService.boardDict[this.boardPackageName] || null;
-      this.errorMessage = '';
+      
+      if (this.boardInfo) {
+        // 成功加载
+        this.isLoading = false;
+        this.errorMessage = '';
+        this.retryCount = 0;
+      } else {
+        // 未找到，尝试重试（可能 ConfigService 还在加载）
+        this.scheduleRetry();
+      }
     } catch (error) {
       console.warn('Error processing board data:', error);
-      this.errorMessage = `数据处理失败: ${error.message}`;
+      this.scheduleRetry();
+    }
+  }
+
+  /**
+   * 安排重试
+   */
+  private scheduleRetry(): void {
+    if (this.retryCount < this.MAX_RETRY) {
+      this.retryCount++;
+      this.isLoading = true;
+      this.errorMessage = '';
+      this.retryTimer = setTimeout(() => {
+        this.processData();
+      }, 300 * this.retryCount);
+    } else {
+      // 超过重试次数，显示错误
+      this.isLoading = false;
+      this.errorMessage = '开发板加载失败';
     }
   }
 

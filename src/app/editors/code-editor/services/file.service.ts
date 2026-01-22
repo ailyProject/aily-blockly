@@ -3,6 +3,7 @@ import { NzTreeNodeOptions } from 'ng-zorro-antd/tree';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { DeleteDialogComponent } from '../components/delete-dialog/delete-dialog.component';
+import { PlatformService } from '../../../services/platform.service';
 
 // 文件节点接口
 interface FileNode {
@@ -28,18 +29,19 @@ export class FileService {
 
   constructor(
     private message: NzMessageService,
-    private modal: NzModalService
+    private modal: NzModalService,
+    private platformService: PlatformService
   ) { }
 
 
   readDir(path: string): NzTreeNodeOptions[] {
-    // console.log('readDir path:', path);
+    const separator = this.platformService.getPlatformSeparator();
     let entries = window['fs'].readDirSync(path);
     let result = [];
     let dirs = [];
     let files = [];
     for (const entry of entries) {
-      let path = entry.path + '\\' + entry.name;
+      let path = entry.path + separator + entry.name;
       let isDir = window['path'].isDir(path)
       let item: NzTreeNodeOptions = {
         title: entry.name,

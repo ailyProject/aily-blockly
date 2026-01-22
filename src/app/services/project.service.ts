@@ -197,15 +197,22 @@ export class ProjectService {
 
   // 保存项目
   save(path = this.currentProjectPath) {
-    this.actionService.dispatch('project-save', { path }, async result => {
-      if (result.success) {
-        this.currentPackageData = await this.getPackageJson();
-        this.stateSubject.next('saved');
-      } else {
-        // console.warn('项目保存失败:', result.error);
-      }
+    return new Promise<{ success: boolean; error?: string; path?: string }>((resolve) => {
+      this.stateSubject.next('saving');
+      this.actionService.dispatch('project-save', { path }, async result => {
+        if (result.success) {
+          this.currentPackageData = await this.getPackageJson();
+          this.stateSubject.next('saved');
+          resolve({ success: true, path });
+        } else {
+          console.warn('项目保存失败:', result.error);
+          this.stateSubject.next('error');
+          resolve({ success: false, error: result.error, path });
+        }
+      });
     });
   }
+
 
   saveAs(path) {
     //在当前路径下创建一个新的目录
@@ -339,8 +346,6 @@ export class ProjectService {
 
     // 更新当前packageData
     this.currentPackageData = data;
-
-    this.boardChangeSubject.next();
   }
 
   /**

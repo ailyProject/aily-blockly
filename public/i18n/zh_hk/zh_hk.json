@@ -29,7 +29,9 @@
         "UPDATE": "檢查更新",
         "USER_AUTH": "用戶服務",
         "USER_SPACE": "雲空間",
-        "LIB_MANAGER": "庫管理"
+        "LIB_MANAGER": "庫管理",
+        "AI_ASSISTANT": "AI助手",
+        "PROJECT_HUB": "專案廣場"
     },
     "ESP32": {
         "UPLOAD_SPEED": "燒錄速度",
@@ -60,8 +62,29 @@
         "FEEDBACK_DESC": "可以透過這裡告知使用反饋",
         "WECHAT_GROUP": "用戶微信群",
         "WECHAT_GROUP_DESC": "加入用戶微信群，與其他用戶交流",
+        "USER_GROUP": "用戶社區",
+        "USER_GROUP_DESC": "加入社區，與其他用戶交流",
+        "AI_APP_CENTER": "AI應用中心",
+        "AI_APP_CENTER_DESC": "點擊前往探索AI硬體與邊緣計算應用",
         "SPONSORS": "專案贊助者",
-        "SPONSORS_DESC": "本專案得到了以下企業/個人的贊助"
+        "SPONSORS_DESC": "本專案得到了以下企業/個人的贊助",
+        "NEWS": "動態",
+        "ONBOARDING": {
+            "STEP1_TITLE": "建立新專案",
+            "STEP1_DESC": "點擊這裡可以建立一個新的程式設計專案，選擇開發板和程式語言開始您的創作之旅。",
+            "STEP2_TITLE": "開啟現有專案",
+            "STEP2_DESC": "如果您之前已經建立過專案，可以點擊這裡開啟現有的專案資料夾。",
+            "STEP3_TITLE": "專案廣場",
+            "STEP3_DESC": "瀏覽和探索社群分享的優秀專案，獲取靈感和學習資源。",
+            "STEP4_TITLE": "AI助手",
+            "STEP4_DESC": "AI助手能幫你建立專案，你只需要描述您的需求即可。專案生成後，AI助手還可以解答問題、生成程式碼、修復錯誤。",
+            "STEP5_TITLE": "SenseCraft AI應用中心",
+            "STEP5_DESC": "在這裡你可以探索各種AI硬體與邊緣運算應用，發現更多可能性。",
+            "STEP6_TITLE": "最新動態",
+            "STEP6_DESC": "這裡會顯示軟體的最新動態和公告資訊，幫助您了解最新功能和更新。",
+            "STEP7_TITLE": "加入用戶社群",
+            "STEP7_DESC": "遇到問題？想分享作品？加入我們的用戶社群，與其他開發者一起交流學習！"
+        }
     },
     "APP_STORE": {
         "HEADER_INFO": "前 {{count}} 個應用會顯示在頂部工具欄",
@@ -121,7 +144,9 @@
             "SEARCH": "搜尋開發板",
             "READ_DOC": "閱讀文件",
             "ADD_BOARD": "新增開發板",
-            "DEV": "dev"
+            "DEV": "dev",
+            "BY_BRAND": "按品牌",
+            "BY_CORE": "按核心"
         },
         "FORM": {
             "DEVMODE": "開發框架",
@@ -131,7 +156,8 @@
             "NAME_EXISTS": "專案名稱已存在，請修改"
         },
         "BUTTONS": {
-            "USE_THIS": "使用此開發板",
+            "USE_THIS": "使用此開發板創建專案",
+            "USE_THIS_FROM_HUB": "從廣場載入專案",
             "NEXT": "下一步",
             "PREV": "上一步",
             "CREATE": "創建專案",
@@ -239,7 +265,12 @@
         "WARNING_INVALID_EMAIL": "請輸入有效的郵箱地址",
         "SUCCESS_MESSAGE": "感謝您的反饋！",
         "ERROR_SUBMIT_FAILED": "提交失敗，請稍後重試",
-        "NO_DEPENDENCIES": "無"
+        "NO_DEPENDENCIES": "無",
+        "IMAGE_UPLOADING": "正在上傳圖片...",
+        "IMAGE_UPLOAD_SUCCESS": "圖片上傳成功",
+        "IMAGE_UPLOAD_FAILED": "圖片上傳失敗，請重試",
+        "ATTACH_HINT": "拖放、貼上或",
+        "SELECT_FILE": "選擇圖片"
     },
     "AILY_CHAT": {
         "TITLE": "AI助手",
@@ -258,7 +289,17 @@
         "STOP": "停止",
         "MODE_AGENT_FULL": "代理模式",
         "MODE_QA_FULL": "問答模式",
-        "STOP_CURRENT_SESSION_FIRST": "請先停止當前會話，再新建"
+        "STOP_CURRENT_SESSION_FIRST": "請先停止當前會話，再新建",
+        "ONBOARDING": {
+            "STEP1_TITLE": "輸入框",
+            "STEP1_DESC": "在這裡輸入你想問的問題或需要AI幫助完成的任務，按 Enter 發送，Ctrl+Enter 換行",
+            "STEP2_TITLE": "添加上下文",
+            "STEP2_DESC": "點擊這裡可以添加文件或文件夾作為上下文，幫助AI更好地理解你的需求",
+            "STEP3_TITLE": "模式切換",
+            "STEP3_DESC": "代理模式可以自動執行任務（如編寫代碼、修復錯誤），問答模式僅回答問題",
+            "STEP4_TITLE": "發送/停止",
+            "STEP4_DESC": "點擊發送消息，AI正在回覆時可點擊停止"
+        }
     },
     "PROJECT_SETTING_DIALOG": {
         "TITLE": "項目設置",
@@ -303,7 +344,24 @@
         "NO_DOCUMENTATION": "該開發板沒有提供文檔鏈接"
     },
     "SERIAL": {
-        "SELECT_PORT_FIRST": "請先選擇串口"
+        "SELECT_PORT_FIRST": "請先選擇串口",
+        "PORT": "串口",
+        "BAUD_RATE": "波特率",
+        "MORE_SETTINGS": "更多設置",
+        "HEX_DISPLAY": "HEX顯示",
+        "AUTO_WRAP": "自動換行",
+        "AUTO_SCROLL": "自動滾動",
+        "TIMESTAMP": "時間戳",
+        "SHOW_CTRL_CHAR": "顯示不可見字元",
+        "SEARCH": "搜尋",
+        "EXPORT": "匯出",
+        "CLEAR": "清除",
+        "SEND_BY_ENTER": "回車發送",
+        "END_R": "\\r 結束符",
+        "END_N": "\\n 結束符",
+        "PORT_OPENED": "串口已打開",
+        "PORT_CLOSED": "串口已關閉",
+        "NO_CHART_DATA": "暫無數據"
     },
     "MODEL_DEPLOY": {
         "TITLE": "模型部署",
@@ -389,5 +447,31 @@
         "DEFAULT_LOW_TRIGGER_HIGH": "默認低，觸發高",
         "DEFAULT_HIGH_TRIGGER_LOW": "默認高，觸發低",
         "CANCEL": "取消"
+    },
+    "LOGIN": {
+        "HEADER": "登錄後即可使用我們的服務",
+        "PHONE": "手機號碼",
+        "BENEFITS_TITLE": "登錄後您可以：",
+        "BENEFIT_AI": "免費試用 AI 問答功能",
+        "BENEFIT_SHARE": "分享您的專案",
+        "BENEFIT_EXPERIENCE": "享受個性化的開發體驗",
+        "NOTICE_LABEL": "注意：",
+        "NOTICE_CONTENT": "我們會使用您的 GitHub 帳號為我們的幾個開源倉庫點 star，這有助於支持我們的專案發展。",
+        "GITHUB_LOGIN": "Github登錄",
+        "WECHAT_SCAN": "掃描二維碼關注公眾號並登錄",
+        "PHONE_NOT_OPEN": "暫未開放手機號註冊",
+        "PHONE_BETA_ONLY": "手機號登錄僅限AI功能內測用戶使用",
+        "PHONE_PLACEHOLDER": "請輸入手機號",
+        "PASSWORD_PLACEHOLDER": "請輸入密碼",
+        "LOGGING_IN": "登錄中...",
+        "LOGIN": "登錄",
+        "SELECT_METHOD": "點擊選擇登錄方式",
+        "REDIRECTING_GITHUB": "正在跳轉到 GitHub 授權頁面...",
+        "GITHUB_LOGIN_FAILED": "啟動 GitHub 登錄失敗，請檢查網絡連接",
+        "GITHUB_ERROR": "GitHub 登錄失敗",
+        "ENTER_CREDENTIALS": "請輸入用戶名和密碼",
+        "LOGIN_SUCCESS": "登錄成功",
+        "LOGIN_FAILED": "登錄失敗",
+        "LOGIN_NETWORK_ERROR": "登錄失敗，請檢查網絡連接"
     }
 }

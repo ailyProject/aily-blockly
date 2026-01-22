@@ -1,7 +1,21 @@
 <div class="aily-board-viewer" (dblclick)="logDetail()">
+  @if (isLoading) {
+  <div class="loading-card">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <div class="loading-text">加载中...</div>
+    </div>
+  </div>
+  } @else if (errorMessage) {
+  <div class="error-card">
+    <div class="error-content">
+      <span class="error-text">🚫 {{errorMessage}}</span>
+    </div>
+  </div>
+  } @else {
   <div class="board-card">
     <div class="img-box ccenter">
-      <img [src]=" resourceUrl+'/imgs/boards/'+boardInfo?.img" />
+      <img [src]="resourceUrl+'/imgs/boards/'+boardInfo?.img" />
     </div>
     <div class="text-box">
       <div class="title">{{boardInfo?.nickname}}</div>
@@ -13,4 +27,5 @@
       }
     </div>
   </div>
+  }
 </div>

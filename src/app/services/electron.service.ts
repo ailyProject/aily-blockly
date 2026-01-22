@@ -301,4 +301,47 @@ export class ElectronService {
       window['ipcRenderer'].send('renderer-ready');
     }
   }
+
+  /**
+   * 获取当前区域（异步方法）
+   */
+  async currentRegion(): Promise<string> {
+    if (!this.isElectron) {
+      return '';
+    }
+    try {
+      return await window['env'].get('AILY_REGION') || '';
+    } catch (error) {
+      console.error('Get current region error:', error);
+      return '';
+    }
+  }
+
+  /**
+   * 计算字符串内容的 SHA256 哈希值
+   * @param content 要计算哈希的字符串内容
+   * @returns SHA256 哈希值（十六进制字符串）
+   */
+  async calculateHash(content: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(content);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /**
+   * 计算文件的 SHA256 哈希值
+   * @param filePath 文件路径
+   * @returns SHA256 哈希值（十六进制字符串）
+   */
+  async calculateFileHash(filePath: string): Promise<string> {
+    try {
+      const content = this.readFile(filePath);
+      return await this.calculateHash(content);
+    } catch (error) {
+      console.error('计算文件哈希值失败:', error);
+      throw error;
+    }
+  }
 }

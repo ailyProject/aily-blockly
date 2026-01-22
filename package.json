@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.8",
+  "version": "0.9.17",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -42,6 +42,10 @@
       {
         "from": "child/scripts",
         "to": "app/child/scripts"
+      },
+      {
+        "from": "public/icon.ico",
+        "to": "app/icon.ico"
       }
     ],
     "win": {
@@ -68,7 +72,7 @@
     },
     "mac": {
       "icon": "public/icon-512.ico",
-      "artifactName": "aily-blockly-${version}.${ext}",
+      "artifactName": "aily-blockly-${version}-arm64.${ext}",
       "fileAssociations": [
         {
           "ext": "abi",
@@ -120,6 +124,7 @@
   "private": true,
   "dependencies": {
     "@angular/animations": "^19.0.0",
+    "@angular/cdk-experimental": "^19.2.19",
     "@angular/common": "^19.0.0",
     "@angular/compiler": "^19.0.0",
     "@angular/core": "^19.0.0",
@@ -138,7 +143,7 @@
     "@codingame/monaco-vscode-theme-service-override": "^24.2.0",
     "@ctrl/tinycolor": "^4.1.0",
     "@lydell/node-pty": "^1.1.0",
-    "@modelcontextprotocol/sdk": "^1.17.5",
+    "@modelcontextprotocol/sdk": "^1.25.1",
     "@ngx-translate/core": "^16.0.3",
     "@splidejs/splide": "^4.1.4",
     "@tensorflow/tfjs": "^4.22.0",
@@ -161,7 +166,7 @@
     "js-base64": "^3.7.8",
     "jsonrepair": "^3.13.0",
     "konva": "^9.3.22",
-    "lightweight-charts": "^4.2.3",
+    "lightweight-charts": "^5.1.0",
     "loaders.css": "^0.1.2",
     "marked": "^15.0.12",
     "marked-highlight": "^2.2.1",

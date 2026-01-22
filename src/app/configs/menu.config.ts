@@ -21,6 +21,7 @@ export interface IMenuItem {
 export let HEADER_BTNS: IMenuItem[] = [
   {
     name: 'MENU.BUILD',
+    text: 'F5',
     action: 'compile',
     data: { type: 'cmd', data: 'compile' },
     icon: 'fa-regular fa-check',
@@ -31,6 +32,7 @@ export let HEADER_BTNS: IMenuItem[] = [
   },
   {
     name: 'MENU.RUN',
+    text: 'F6',
     action: 'upload',
     data: { type: 'cmd', data: 'upload' },
     icon: 'fa-regular fa-play',
@@ -162,17 +164,24 @@ export let GUIDE_MENU: IMenuItem[] = [
     data: { type: 'explorer', data: 'project-open' },
     icon: 'fa-light fa-folder-open',
   },
+  // {
+  //   name: 'MENU.USER_MANUAL',
+  //   action: 'browser-open',
+  //   data: { type: 'other', action: 'openByBrowser', url: 'https://aily.pro/doc' },
+  //   icon: 'fa-light fa-book-open-cover',
+  // },
   {
-    name: 'MENU.USER_MANUAL',
-    action: 'browser-open',
-    data: { type: 'other', action: 'openByBrowser', url: 'https://aily.pro/doc' },
-    icon: 'fa-light fa-book-open-cover',
-  },
-  {
-    name: 'MENU.EXAMPLES',
+    name: 'MENU.PROJECT_HUB',
     action: 'playground-open',
     data: { type: 'other', action: 'openByBrowser', url: 'https://aily.pro' },
-    icon: 'fa-light fa-books',
+    icon: 'fa-light fa-album-collection',
+  },
+  {
+    name: 'MENU.AI_ASSISTANT',
+    action: 'tool-open',
+    data: { type: 'tool', data: 'aily-chat' },
+    icon: 'fa-light fa-star-christmas',
+    more: 'AI',
   }
 ];
 

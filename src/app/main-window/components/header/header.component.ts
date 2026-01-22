@@ -167,8 +167,23 @@ export class HeaderComponent {
   showPortList = false;
   configList: PortItem[] = []
   boardKeywords = []; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
-  openPortList(event) {
-    this.calculatePortListPosition(event)
+  openPortList(event?: MouseEvent) {
+    if (event) {
+      this.calculatePortListPosition(event);
+    } else {
+      // 快捷键触发时，查找上传按钮元素获取位置
+      const uploadBtn = document.querySelector('[data-action="upload"]') as HTMLElement;
+      if (uploadBtn) {
+        const rect = uploadBtn.getBoundingClientRect();
+        this.portListPosition = {
+          x: rect.left + 2,
+          y: 40
+        };
+      } else {
+        // 备用位置
+        this.portListPosition = { x: 40, y: 40 };
+      }
+    }
     let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
     this.boardKeywords = [boardname];
     this.getDevicePortList();
@@ -414,9 +429,19 @@ export class HeaderComponent {
   // 快捷键功能，监听键盘事件,执行对应的操作
   private shortcutMap: Map<string, IMenuItem> = new Map();
   private initShortcutMap(): void {
+    // 处理 HEADER_MENU 的快捷键
     for (const item of HEADER_MENU) {
       if (item.text) {
         // 将快捷键文本转换成标准格式(如: "ctrl+s")
+        const shortcutKey = this.normalizeShortcutKey(item.text);
+        if (shortcutKey) {
+          this.shortcutMap.set(shortcutKey, item);
+        }
+      }
+    }
+    // 处理 HEADER_BTNS 的快捷键（编译、上传等）
+    for (const item of HEADER_BTNS) {
+      if (item.text) {
         const shortcutKey = this.normalizeShortcutKey(item.text);
         if (shortcutKey) {
           this.shortcutMap.set(shortcutKey, item);
@@ -484,22 +509,21 @@ export class HeaderComponent {
         }
       }
 
-      // 只处理包含修饰键的组合键
-      if (event.ctrlKey || event.shiftKey || event.altKey) {
+      // 处理功能键 F1-F12
+      const isFunctionKey = /^f([1-9]|1[0-2])$/i.test(event.key);
+      
+      // 处理包含修饰键的组合键或功能键
+      if (event.ctrlKey || event.shiftKey || event.altKey || isFunctionKey) {
         const shortcutKey = this.getShortcutFromEvent(event);
         const menuItem = this.shortcutMap.get(shortcutKey);
 
-        if (menuItem) {
+        if (menuItem && this.showInRouter(menuItem)) {
           event.preventDefault(); // 阻止默认行为
           // console.log('快捷键触发:', menuItem.name, shortcutKey);
 
           // 执行对应的操作
-          if (menuItem.data && menuItem.data.type) {
+          if (menuItem.action) {
             this.process(menuItem);
-          } else if (menuItem.action) {
-            // 如果需要处理action类型的菜单项，可以在这里添加逻辑
-            // this.handleMenuAction(menuItem);
-            console.log('需要处理action:', menuItem.action);
           }
         }
       }

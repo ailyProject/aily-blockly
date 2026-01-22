@@ -1,0 +1,174 @@
+:host {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.aily-task-action-viewer {
+    border-radius: 8px;
+    padding: 12px 16px;
+    background-color: #2d2d2d;
+    border: 1px solid #404040;
+    color: #e0e0e0;
+    margin: 8px 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.action-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.action-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.action-icon {
+    flex-shrink: 0;
+    font-size: 16px;
+
+    .icon {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        
+        &.warn {
+            color: #faad14;
+            background-color: rgba(250, 173, 20, 0.1);
+        }
+
+        &.error {
+            color: #ff4d4f;
+            background-color: rgba(255, 77, 79, 0.1);
+        }
+
+        &.info {
+            color: #1890ff;
+            background-color: rgba(24, 144, 255, 0.1);
+        }
+
+        &.done {
+            color: #52c41a;
+            background-color: rgba(82, 196, 26, 0.1);
+        }
+    }
+}
+
+.action-message {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ccc;
+    padding-top: 2px;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.action-buttons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 34px; // 与图标对齐
+}
+
+.action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: none;
+    outline: none;
+
+    i {
+        font-size: 12px;
+    }
+
+    &.primary {
+        background-color: #1890ff;
+        color: #fff;
+        
+        &:hover {
+            background-color: #40a9ff;
+        }
+
+        &:active {
+            background-color: #096dd9;
+        }
+    }
+
+    &.secondary {
+        background-color: #404040;
+        color: #e0e0e0;
+        border: 1px solid #555;
+
+        &:hover {
+            background-color: #4a4a4a;
+            border-color: #666;
+        }
+
+        &:active {
+            background-color: #383838;
+        }
+    }
+
+    &.ghost {
+        background-color: transparent;
+        color: #999;
+        padding: 6px 8px;
+
+        &:hover {
+            color: #ccc;
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        &:active {
+            background-color: rgba(255, 255, 255, 0.08);
+        }
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+}
+
+
+
+// 响应式调整
+@media (max-width: 480px) {
+    .action-buttons {
+        flex-wrap: wrap;
+        padding-left: 0;
+    }
+
+    .action-btn {
+        flex: 1;
+        justify-content: center;
+        min-width: 80px;
+
+        &.ghost {
+            flex: 0;
+            min-width: auto;
+        }
+    }
+}

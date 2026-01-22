@@ -1,16 +1,31 @@
-.log-box {
+:host {
+  display: block;
   width: 100%;
   height: 100%;
+  position: relative;
+}
+
+.log-box {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow-x: hidden;
   background-color: rgba(0, 0, 0, 0.95);
   color: #fff;
-  overflow-y: auto; // 为 ngx-ui-scroll 添加滚动支持
-  overflow-x: hidden; // 禁止水平滚动
+
+  // CDK 虚拟滚动内部容器样式
+  .cdk-virtual-scroll-content-wrapper {
+    width: 100%;
+  }
 
   .item {
-    min-height: 24px;
+    min-height: 24px; // 最小高度
+    box-sizing: border-box;
     display: flex;
-    // align-items: center;
-    // flex-wrap: wrap;
+    flex-wrap: wrap; // 允许换行
+    align-items: flex-start;
     padding-left: 10px;
     cursor: pointer;
     margin-bottom: 3px;
@@ -55,6 +70,10 @@
 
     .text {
       color: #eee;
+      flex: 1;
+      min-width: 0;
+      word-wrap: break-word;
+      white-space: pre-wrap; // 保留空白并允许换行
     }
 
     .btns {
@@ -67,19 +86,22 @@
       flex-shrink: 0;
     }
   }
-}
 
-ngx-simplebar {
-  height: 100%;
-  width: 100%;
+  // CDK 虚拟滚动内部滚动条样式
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
 
-  ::ng-deep {
-    .simplebar-content-wrapper {
-      height: 100%;
-    }
+  &::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+  }
 
-    .simplebar-content {
-      height: 100%;
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.5);
     }
   }
 }

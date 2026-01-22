@@ -1,0 +1,36 @@
+@if (show && step) {
+<div class="onboarding-overlay">
+  <!-- 高亮区域 -->
+  <div class="onboarding-highlight" [ngStyle]="highlightStyle"></div>
+  
+  <!-- 提示框 -->
+  <div #tooltipRef class="onboarding-tooltip" [ngStyle]="tooltipStyle">
+    <div class="tooltip-content">
+      <!-- 步骤指示器 -->
+      <div class="tooltip-step">{{ currentStep + 1 }} / {{ totalSteps }}</div>
+      
+      <!-- 标题 -->
+      <div class="tooltip-title">{{ step.titleKey | translate }}</div>
+      
+      <!-- 描述 -->
+      <div class="tooltip-desc">{{ step.descKey | translate }}</div>
+      
+      <!-- 操作按钮 -->
+      <div class="tooltip-actions">
+        <button class="btn-skip" (click)="skip()">{{ 'COMMON.ONBOARDING.SKIP' | translate }}</button>
+        <div class="btn-group">
+          @if (currentStep > 0) {
+          <button class="btn-prev" (click)="prevStep()">{{ 'COMMON.ONBOARDING.PREV' | translate }}</button>
+          }
+          <button class="btn-next" (click)="nextStep()">
+            {{ currentStep < totalSteps - 1 ? ('COMMON.ONBOARDING.NEXT' | translate) : ('COMMON.ONBOARDING.DONE' | translate) }}
+          </button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 箭头指示器 -->
+    <div class="tooltip-arrow" [class]="'arrow-' + actualArrowPosition" [ngStyle]="arrowStyle"></div>
+  </div>
+</div>
+}

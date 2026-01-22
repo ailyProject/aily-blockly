@@ -293,8 +293,13 @@
       display: flex;
       align-items: center;
 
+      button {
+        margin-right: 15px;
+      }
+
       .links {
-        margin-left: 15px;
+        position: absolute;
+        right: 10px;
         display: flex;
         align-items: center;
 

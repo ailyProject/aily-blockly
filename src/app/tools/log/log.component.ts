@@ -1,155 +1,143 @@
-import { Component, OnDestroy, OnInit, AfterViewInit, ViewChild, ElementRef } from '@angular/core';
+import { Component, OnDestroy, OnInit, AfterViewInit, ViewChild, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { Datasource, SizeStrategy, UiScrollModule } from 'ngx-ui-scroll';
+import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
+import { CdkAutoSizeVirtualScroll } from '@angular/cdk-experimental/scrolling';
 import { LogService, LogOptions } from '../../services/log.service';
 import { AnsiPipe } from './ansi.pipe';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { UiService } from '../../services/ui.service';
 import { ProjectService } from '../../services/project.service';
 import { ElectronService } from '../../services/electron.service';
+import { stripAnsi } from 'fancy-ansi';
+import { Subscription } from 'rxjs';
 
 @Component({
   selector: 'app-log',
-  imports: [CommonModule, AnsiPipe, UiScrollModule],
+  imports: [CommonModule, AnsiPipe, ScrollingModule, CdkAutoSizeVirtualScroll],
   templateUrl: './log.component.html',
   styleUrl: './log.component.scss',
 })
-export class LogComponent {
+export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   private clickTimeout: any;
   private preventSingleClick = false;
+  private subscription: Subscription = new Subscription();
 
-  // 虚拟滚动数据源
-  datasource;
+  // 虚拟滚动视口引用
+  @ViewChild(CdkVirtualScrollViewport) viewport!: CdkVirtualScrollViewport;
 
-  // = new Datasource<LogOptions>({
-  //   get: (index: number, count: number) => {
-  //     console.log(`Datasource get called: index=${index}, count=${count}, total=${this.logService.list.length}`);
-  //     const data: LogOptions[] = [];
-  //     const startIndex = Math.max(0, index);
-  //     const endIndex = Math.min(this.logService.list.length, startIndex + count);
+  // 日志列表 - 使用属性而非 getter，以便 CDK 正确检测变化
+  logList: LogOptions[] = [];
 
-  //     for (let i = startIndex; i < endIndex; i++) {
-  //       if (this.logService.list[i]) {
-  //         this.logService.list[i]['id'] = i; // 确保每个日志项都有唯一的 ID
-  //         data.push(this.logService.list[i]);
-  //       }
-  //     }
-
-  //     console.log(`Datasource returning ${data.length} items for range [${startIndex}, ${endIndex})`);
-
-  //     return Promise.resolve(data);
-  //   },
-
-  //   settings: {
-  //     minIndex: 0,
-  //     startIndex: 0,
-  //     bufferSize: 30, // 减少缓冲区大小，降低内存使用
-  //     padding: 0.3, // 适中的 padding 值
-  //     sizeStrategy: SizeStrategy.Frequent
-  //   }
-  // });
-
-  get logList() {
-    return this.logService.list;
-  }
+  // 每项的估算高度（用于初始渲染）
+  readonly minBufferPx = 200;
+  readonly maxBufferPx = 400;
 
   constructor(
     private logService: LogService,
     private message: NzMessageService,
     private uiService: UiService,
     private projectService: ProjectService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private cdr: ChangeDetectorRef
   ) { }
 
   ngOnInit() {
-    let startIndex = 0;
-    if (this.logService.list.length > 0) {
-      startIndex = this.logService.list.length - 1;
-    }
-
-    this.datasource = new Datasource<LogOptions>({
-      get: (index: number, count: number) => {
-        // console.log(`Datasource get called: index=${index}, count=${count}, total=${this.logService.list.length}`);
-        const data: LogOptions[] = [];
-        const startIndex = Math.max(0, index);
-        const endIndex = Math.min(this.logService.list.length, startIndex + count);
-
-        for (let i = startIndex; i < endIndex; i++) {
-          if (this.logService.list[i]) {
-            this.logService.list[i]['id'] = i; // 确保每个日志项都有唯一的 ID
-            data.push(this.logService.list[i]);
-          }
-        }
-        return Promise.resolve(data);
-      },
-
-      settings: {
-        minIndex: 0,
-        startIndex,
-        bufferSize: 30, // 增加缓冲区大小,提升滚动流畅度
-        padding: 0.5, // 适中的 padding 值
-        itemSize: 24,
-        sizeStrategy: SizeStrategy.Average
-      }
-    });
+    // 初始化日志列表
+    this.logList = this.logService.list;
   }
 
   ngAfterViewInit() {
+    // 初始化时检查视口尺寸
+    setTimeout(() => {
+      if (this.viewport) {
+        this.viewport.checkViewportSize();
+      }
+    }, 100);
+
     // 监听日志更新
-    this.logService.stateSubject.subscribe((opts) => {
-      this.handleLogUpdate();
-    });
+    this.subscription.add(
+      this.logService.stateSubject.subscribe(() => {
+        this.handleLogUpdate();
+      })
+    );
 
     if (this.logService.list.length > 0) {
       this.scrollToBottom();
     }
   }
 
-  @ViewChild('logBox', { static: false }) logBoxRef!: ElementRef<HTMLDivElement>;
+  // 滚动到底部，使用多次尝试确保内容完全渲染
   scrollToBottom() {
-    setTimeout(() => {
-      requestAnimationFrame(() => {
-        if (this.logBoxRef) {
-          const element = this.logBoxRef.nativeElement;
-          // 使用 scrollTo 方法实现平滑滚动
-          element.scrollTo({
-            top: element.scrollHeight,
-            behavior: 'auto'
-          });
-        }
+    // 取消之前的滚动请求
+    if (this.scrollTimeoutId) {
+      clearTimeout(this.scrollTimeoutId);
+    }
+
+    const doScroll = (attempts = 0) => {
+      if (!this.viewport) return;
+
+      const element = this.viewport.elementRef.nativeElement;
+      this.viewport.checkViewportSize();
+      
+      const scrollHeight = element.scrollHeight;
+      const currentScroll = element.scrollTop + element.clientHeight;
+      
+      // 滚动到底部
+      element.scrollTo({
+        top: scrollHeight,
+        behavior: attempts === 0 ? 'auto' : 'smooth'
       });
-    }, 100);
+
+      // 如果还没到底部且尝试次数不超过3次，继续尝试
+      if (attempts < 3 && scrollHeight > currentScroll + 10) {
+        this.scrollTimeoutId = setTimeout(() => doScroll(attempts + 1), 100);
+      }
+    };
+
+    // 等待变更检测和渲染完成后再滚动
+    this.scrollTimeoutId = setTimeout(() => {
+      requestAnimationFrame(() => {
+        doScroll(0);
+      });
+    }, 50);
   }
 
-  // 处理日志更新的新方法
-  private handleLogUpdate() {
-    const currentLogCount = this.logService.list.length;
+  private scrollTimeoutId: any;
 
-    // 如果日志被清空
-    if (currentLogCount === 0) {
-      if (this.datasource.adapter) {
-        this.datasource.adapter.reload(0);
+  // 处理日志更新
+  private handleLogUpdate() {
+    // 给每个日志项添加唯一 id
+    this.logService.list.forEach((item, index) => {
+      if (item['id'] === undefined) {
+        item['id'] = index;
       }
-      return;
-    }
-    const startIndex = currentLogCount - 1;
-    this.datasource.adapter.reload(startIndex).then(() => {
-      this.scrollToBottom();
     });
+    // 更新引用以触发变更检测
+    this.logList = [...this.logService.list];
+    this.cdr.detectChanges();
+    // 滚动到底部
+    this.scrollToBottom();
   }
 
   clear() {
     this.logService.clear();
-    if (this.datasource.adapter) {
-      this.datasource.adapter.reload(0);
-    }
+    this.logList = [];
+    this.cdr.detectChanges();
+  }
+
+  // trackBy 函数，用于优化虚拟滚动性能
+  trackByFn(index: number, item: LogOptions): number {
+    return item['id'] ?? index;
   }
 
   ngOnDestroy() {
     if (this.clickTimeout) {
       clearTimeout(this.clickTimeout);
     }
-    // this.lastLogCount = 0;
+    if (this.scrollTimeoutId) {
+      clearTimeout(this.scrollTimeoutId);
+    }
+    this.subscription.unsubscribe();
   }
 
   // 处理点击事件，区分单击和双击
@@ -173,10 +161,20 @@ export class LogComponent {
     this.copyLogItemToChat(item);
   }
 
+  // 清理日志内容：去除 ANSI 格式化字符和每行开头的状态标识
+  private cleanLogContent(text: string): string {
+    if (!text) return '';
+    // 先去除 ANSI 格式化字符
+    let cleaned = stripAnsi(text);
+    // 再去除每行开头的状态标识，如 [ERROR]、[INFO]、[WARN] 等
+    cleaned = cleaned.replace(/^\s*\[(ERROR|INFO|WARN|WARNING|DEBUG|TRACE|FATAL)\]\s*/gim, '');
+    return cleaned;
+  }
+
   // 单击复制日志内容到剪切板
   async copyLogItemToClipboard(item: any) {
     try {
-      const logContent = `${item.detail}`;
+      const logContent = this.cleanLogContent(item.detail);
       await navigator.clipboard.writeText(logContent);
       this.message.success('日志内容已复制到剪切板');
     } catch (err) {
@@ -189,8 +187,9 @@ export class LogComponent {
     // 这里可以实现将日志内容发送到AI助手的逻辑
     // 例如，调用一个服务方法来处理这个操作
     this.uiService.openTool("aily-chat");
+    const cleanDetail = this.cleanLogContent(item.detail);
     setTimeout(() => {
-      window.sendToAilyChat(`运行日志：\n${item.detail}`, {
+      window.sendToAilyChat(`运行日志：\n${cleanDetail}`, {
         sender: 'LogComponent',
         type: 'log'
       });

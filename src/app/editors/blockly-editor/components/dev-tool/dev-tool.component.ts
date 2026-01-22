@@ -1,6 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { ProjectService } from '../../../../services/project.service';
 import { ElectronService } from '../../../../services/electron.service';
+import { BuilderService } from '../../../../services/builder.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { FormsModule } from '@angular/forms';
 import { ConfigService } from '../../../../services/config.service';
@@ -49,7 +50,8 @@ export class DevToolComponent implements OnInit {
     private projectService: ProjectService,
     private electronService: ElectronService,
     private messageService: NzMessageService,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private builderService: BuilderService
   ) {
 
   }
@@ -130,16 +132,21 @@ export class DevToolComponent implements OnInit {
   async clear() {
     try {
       const defaultBuildPath = await this.projectService.getBuildPath();
-
-      // console.log(defaultBuildPath);
+  
       // 检查目录是否存在
       if (!window['fs'].existsSync(defaultBuildPath)) {
         this.messageService.info('Build folder does not exist');
         return;
       }
-
       // 删除buildPath目录
       this.electronService.deleteDir(defaultBuildPath);
+
+      // 检查preprocess.json文件并删除
+      const preprocessPath = this.electronService.pathJoin(this.projectService.currentProjectPath, '.temp', 'preprocess.json');
+      if (this.electronService.exists(preprocessPath)) {
+        this.electronService.deleteFile(preprocessPath);
+      }
+
       this.messageService.success('Clear build folder success');
     } catch (error) {
       if (error.message && error.message.includes('EBUSY')) {
