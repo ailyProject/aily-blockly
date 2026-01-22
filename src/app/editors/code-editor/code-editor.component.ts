@@ -10,13 +10,13 @@ import { ActivatedRoute } from '@angular/router';
 import { NzLayoutComponent, NzLayoutModule } from "ng-zorro-antd/layout";
 import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { BuilderService } from '../../services/builder.service';
-import { UploaderService } from '../../services/uploader.service';
 import { ElectronService } from '../../services/electron.service';
 import { ShortcutService, ShortcutAction, ShortcutKeyMapping } from './services/shortcut.service';
 import { Subscription } from 'rxjs';
 import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
+import { _BuilderService } from './services/_builder.service';
+import { _UploaderService } from './services/_uploader.service';
 import { NpmService } from 'src/app/services/npm.service';
 import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialog/unsave-dialog.component';
 
@@ -53,6 +53,10 @@ export interface OpenedFile {
     NzLayoutComponent,
     NzLayoutModule,
     NzResizableModule,
+  ],
+  providers: [
+    _BuilderService,
+    _UploaderService
   ],
   templateUrl: './code-editor.component.html',
   styleUrl: './code-editor.component.scss'
@@ -95,8 +99,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     private _ProjectService: _ProjectService,
     private activatedRoute: ActivatedRoute,
     private message: NzMessageService,
-    private builderService: BuilderService,
-    private uploadService: UploaderService,
+    private _builderService: _BuilderService,
+    private _uploaderService: _UploaderService,
     private electronService: ElectronService,
     private shortcutService: ShortcutService,
     private npmService: NpmService
@@ -108,6 +112,9 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds().toString().padStart(3, '0'));
     
     this._ProjectService.init();
+    this._builderService.init();
+    this._uploaderService.init();
+    
     // 注册当前组件到 _ProjectService
     this._ProjectService.registerCodeEditor(this);
 
@@ -116,6 +123,7 @@ console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds()
         console.log('project path', params['path']);
         try {
           this.projectPath = params['path'];
+          this._ProjectService.currentProjectPath = params['path'];
           // 异步加载项目，不阻塞UI渲染
           this.loadProjectAsync();
         } catch (error) {
@@ -143,6 +151,7 @@ console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds()
   ngOnDestroy(): void {
     // 注销当前组件
     this._ProjectService.unregisterCodeEditor();
+    this._ProjectService.destroy();
 
     // 保存当前标签页状态
     this.saveCurrentTabState();
@@ -152,10 +161,13 @@ console.log(new Date().toLocaleTimeString() + '.' + new Date().getMilliseconds()
       clearInterval(this.saveStateTimer);
     }
 
-    this.builderService.cancel();
-    this.uploadService.cancel();
+    // 取消编译和上传
+    this._builderService.cancel();
+    this._builderService.destroy();
+    this._uploaderService.cancel();
+    this._uploaderService.destroy();
 
-    this.electronService.setTitle('aily blockly');
+    this.electronService.setTitle('aily coder');
 
     // 清理快捷键监听器
     this.cleanupShortcutListeners();
