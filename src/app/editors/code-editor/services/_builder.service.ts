@@ -429,25 +429,31 @@ export class _BuilderService {
   private async findMainFile(): Promise<string | null> {
     const projectPath = this.projectService.currentProjectPath;
     
-    // 尝试查找 .ino 文件
-    const files = window['fs'].readDirSync(projectPath);
-    for (const file of files) {
-      const name = typeof file === 'object' ? file.name : file;
-      if (name.endsWith('.ino')) {
-        return this.electronService.pathJoin(projectPath, name);
+    try {
+      // 尝试查找 .ino 文件
+      if (window['fs'].existsSync(projectPath)) {
+        const files = window['fs'].readdirSync(projectPath);
+        for (const file of files) {
+          const fileName = typeof file === 'string' ? file : file.name;
+          if (fileName.endsWith('.ino')) {
+            return this.electronService.pathJoin(projectPath, fileName);
+          }
+        }
       }
-    }
-    
-    // 尝试查找 src 目录下的 main.cpp
-    const srcMainCpp = this.electronService.pathJoin(projectPath, 'src', 'main.cpp');
-    if (window['path'].isExists(srcMainCpp)) {
-      return srcMainCpp;
-    }
-    
-    // 尝试查找根目录下的 main.cpp
-    const mainCpp = this.electronService.pathJoin(projectPath, 'main.cpp');
-    if (window['path'].isExists(mainCpp)) {
-      return mainCpp;
+      
+      // 尝试查找 src 目录下的 main.cpp
+      const srcMainCpp = this.electronService.pathJoin(projectPath, 'src', 'main.cpp');
+      if (window['fs'].existsSync(srcMainCpp)) {
+        return srcMainCpp;
+      }
+      
+      // 尝试查找根目录下的 main.cpp
+      const mainCpp = this.electronService.pathJoin(projectPath, 'main.cpp');
+      if (window['fs'].existsSync(mainCpp)) {
+        return mainCpp;
+      }
+    } catch (error) {
+      console.error('查找主文件失败:', error);
     }
     
     return null;
@@ -510,14 +516,19 @@ export class _BuilderService {
 
   /**
    * 安全的通知更新方法
+   * 在取消状态下阻止所有非取消相关的UI更新
    */
   private safeUpdateNotice(config: any) {
+    // 如果已取消，只允许更新为取消状态
     if (this.cancelled) {
       if (config.state === 'warn' && config.title && config.title.includes('取消')) {
         this.noticeService.update(config);
       }
+      // 其他所有更新都被忽略
       return;
     }
+    
+    // 正常状态下直接更新
     this.noticeService.update(config);
   }
 

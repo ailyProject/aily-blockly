@@ -89,14 +89,19 @@ export class _UploaderService {
 
   /**
    * 安全的通知更新方法
+   * 在取消状态下阻止所有非取消相关的UI更新
    */
   private safeUpdateNotice(config: any) {
+    // 如果已取消，只允许更新为取消状态
     if (this.cancelled) {
       if (config.state === 'warn' && config.title && config.title.includes('取消')) {
         this.noticeService.update(config);
       }
+      // 其他所有更新都被忽略
       return;
     }
+    
+    // 正常状态下直接更新
     this.noticeService.update(config);
   }
 
