@@ -47,15 +47,15 @@ export const APP_LIST: AppItem[] = [
     more: 'AI',
     enabled: true
   },
-  {
-    id: 'model-store',
-    name: 'MENU.MODEL_STORE',
-    description: 'APP_STORE.MODEL_STORE_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'model-store' },
-    icon: 'fa-light fa-microchip-ai',
-    enabled: true
-  },
+  // {
+  //   id: 'model-store',
+  //   name: 'MENU.MODEL_STORE',
+  //   description: 'APP_STORE.MODEL_STORE_DESC',
+  //   action: 'tool-open',
+  //   data: { type: 'tool', data: 'model-store' },
+  //   icon: 'fa-light fa-microchip-ai',
+  //   enabled: true
+  // },
   {
     id: 'cloud-space',
     name: 'MENU.USER_SPACE',
@@ -66,6 +66,26 @@ export const APP_LIST: AppItem[] = [
     enabled: true
   },
   {
+    id: 'mqtt-manager',
+    name: 'MENU.SIMULATOR',
+    description: 'APP_STORE.SIMULATOR_DESC',
+    action: 'tool-open',
+    data: { type: 'tool', data: 'mqtt-manager' },
+    icon: 'fa-light fa-chart-network',
+    enabled: true
+  },
+  //   {
+  //     id: 'simulator',
+  //     name: 'MENU.SIMULATOR',
+  //     description: 'APP_STORE.SIMULATOR_DESC',
+  //     action: 'tool-open',
+  //     data: { type: 'tool', data: 'simulator' },
+  //     icon: 'fa-light fa-atom',
+  //     router: ['/main/blockly-editor'],
+  //     dev: true,
+  //     enabled: false
+  //   }
+  {
     id: 'user-center',
     name: 'MENU.USER_AUTH',
     description: 'APP_STORE.USER_CENTER_DESC',
@@ -74,15 +94,4 @@ export const APP_LIST: AppItem[] = [
     icon: 'fa-light fa-user',
     enabled: true
   },
-//   {
-//     id: 'simulator',
-//     name: 'MENU.SIMULATOR',
-//     description: 'APP_STORE.SIMULATOR_DESC',
-//     action: 'tool-open',
-//     data: { type: 'tool', data: 'simulator' },
-//     icon: 'fa-light fa-atom',
-//     router: ['/main/blockly-editor'],
-//     dev: true,
-//     enabled: false
-//   }
 ];

@@ -27,6 +27,7 @@ import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component'
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
 import { ModelStoreComponent } from '../tools/model-store/model-store.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
+import { MqttManagerComponent } from '../tools/mqtt-manager/mqtt-manager.component';
 import { OnboardingService } from '../services/onboarding.service';
 
 @Component({
@@ -54,7 +55,8 @@ import { OnboardingService } from '../services/onboarding.service';
     CloudSpaceComponent,
     UserCenterComponent,
     ModelStoreComponent,
-    OnboardingComponent
+    OnboardingComponent,
+    MqttManagerComponent
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',

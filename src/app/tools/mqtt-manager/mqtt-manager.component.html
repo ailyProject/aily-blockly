@@ -1,0 +1,348 @@
+@if (currentUrl == "/mqtt-manager") {
+<app-sub-window [title]="'MQTT Manager'" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
+  <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-sub-window>
+} @else {
+<app-tool-container [title]="'MQTT Manager'" [path]="'/mqtt-manager'" (closeEvent)="close()">
+  <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-tool-container>
+}
+
+<ng-template #windowBoxTemplate>
+  <div class="window-box">
+    <div class="main-box">
+      <!-- Broker 配置区域 -->
+      <div class="settings">
+        <div class="line">
+          <div class="item">
+            <div class="title">主机</div>
+            <div class="item-inner input-item">
+              <input type="text" [(ngModel)]="brokerHost" placeholder="localhost" />
+            </div>
+          </div>
+          <div class="item">
+            <div class="title">管理端口</div>
+            <div class="item-inner input-item">
+              <input type="text" [(ngModel)]="brokerAdminPort" placeholder="3001" />
+            </div>
+          </div>
+          <div class="item">
+            <div class="title">MQTT端口</div>
+            <div class="item-inner input-item">
+              <input type="text" [(ngModel)]="brokerMqttPort" placeholder="1883" />
+            </div>
+          </div>
+          <div class="action-btns">
+            <button class="action-btn" nz-tooltip nzTooltipTitle="检查 Broker 状态" (click)="checkBrokerHealth()">
+              <i class="fa-light fa-heart-pulse"></i>
+            </button>
+            <button class="action-btn" nz-tooltip nzTooltipTitle="刷新设备列表" (click)="loadDevices()">
+              <i class="fa-light fa-rotate"></i>
+            </button>
+          </div>
+          <div class="connection-status">
+            @if (isConnected) {
+              <span class="status connected"><i class="fa-solid fa-circle"></i> 已连接</span>
+            } @else if (connecting) {
+              <span class="status connecting"><i class="fa-solid fa-spinner fa-spin"></i> 连接中</span>
+            } @else {
+              <span class="status disconnected"><i class="fa-regular fa-circle"></i> 未连接</span>
+            }
+          </div>
+        </div>
+      </div>
+
+      <!-- 主要内容区 - 标签页 -->
+      <nz-tabset [(nzSelectedIndex)]="activeTab" class="content-tabs">
+        <!-- 设备管理 -->
+        <nz-tab nzTitle="设备管理">
+          <div class="device-panel">
+            <div class="panel-header">
+              <span class="panel-title">设备列表</span>
+              <button class="add-btn" (click)="openCreateDeviceModal()">
+                <i class="fa-light fa-plus"></i> 新建设备
+              </button>
+            </div>
+            <div class="device-list sscroll">
+              @if (loadingDevices) {
+                <div class="loading-box">
+                  <nz-spin nzSimple></nz-spin>
+                </div>
+              } @else if (devices.length === 0) {
+                <div class="empty-box">
+                  <nz-empty nzNotFoundContent="暂无设备，点击「新建设备」创建"></nz-empty>
+                </div>
+              } @else {
+                <nz-table #deviceTable [nzData]="devices" [nzShowPagination]="false" nzSize="small">
+                  <thead>
+                    <tr>
+                      <th>UUID</th>
+                      <th>Token</th>
+                      <th>创建时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (device of deviceTable.data; track device.uuid) {
+                      <tr [class.selected]="selectedDevice?.uuid === device.uuid" (click)="selectDevice(device)">
+                        <td>
+                          <span class="uuid-text" nz-tooltip [nzTooltipTitle]="device.uuid">
+                            {{ device.uuid | slice:0:12 }}...
+                          </span>
+                        </td>
+                        <td>
+                          <span class="token-text">{{ device.token | slice:0:8 }}...</span>
+                        </td>
+                        <td>{{ device.created_at | date:'yyyy-MM-dd HH:mm' }}</td>
+                        <td>
+                          <button class="table-btn" nz-tooltip nzTooltipTitle="查看详情" (click)="getDeviceDetail(device.uuid); $event.stopPropagation()">
+                            <i class="fa-light fa-eye"></i>
+                          </button>
+                          <button class="table-btn" nz-tooltip nzTooltipTitle="获取连接凭证" (click)="getDeviceCredentials(device.uuid); $event.stopPropagation()">
+                            <i class="fa-light fa-key"></i>
+                          </button>
+                          <button class="table-btn" nz-tooltip nzTooltipTitle="复制UUID" (click)="copyToClipboard(device.uuid); $event.stopPropagation()">
+                            <i class="fa-light fa-copy"></i>
+                          </button>
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </nz-table>
+              }
+            </div>
+
+            <!-- 设备详情 -->
+            @if (selectedDevice) {
+              <div class="device-detail">
+                <div class="detail-header">
+                  <span>设备详情</span>
+                  <button class="close-btn" (click)="selectedDevice = null">
+                    <i class="fa-light fa-xmark"></i>
+                  </button>
+                </div>
+                <div class="detail-content sscroll">
+                  <div class="detail-row">
+                    <span class="label">UUID:</span>
+                    <span class="value">{{ selectedDevice.uuid }}</span>
+                    <button class="copy-btn" (click)="copyToClipboard(selectedDevice.uuid)">
+                      <i class="fa-light fa-copy"></i>
+                    </button>
+                  </div>
+                  <div class="detail-row">
+                    <span class="label">Token:</span>
+                    <span class="value">{{ selectedDevice.token }}</span>
+                    <button class="copy-btn" (click)="copyToClipboard(selectedDevice.token)">
+                      <i class="fa-light fa-copy"></i>
+                    </button>
+                  </div>
+                  <div class="detail-row">
+                    <span class="label">Auth Key:</span>
+                    <span class="value">{{ selectedDevice.auth_key }}</span>
+                    <button class="copy-btn" (click)="copyToClipboard(selectedDevice.auth_key)">
+                      <i class="fa-light fa-copy"></i>
+                    </button>
+                  </div>
+                  <div class="detail-row">
+                    <span class="label">Client ID:</span>
+                    <span class="value">{{ selectedDevice.client_id }}</span>
+                    <button class="copy-btn" (click)="copyToClipboard(selectedDevice.client_id)">
+                      <i class="fa-light fa-copy"></i>
+                    </button>
+                  </div>
+                  <div class="detail-row">
+                    <span class="label">Username:</span>
+                    <span class="value">{{ selectedDevice.username }}</span>
+                    <button class="copy-btn" (click)="copyToClipboard(selectedDevice.username)">
+                      <i class="fa-light fa-copy"></i>
+                    </button>
+                  </div>
+                  @if (selectedDevice.groups && selectedDevice.groups.length > 0) {
+                    <div class="detail-row">
+                      <span class="label">所属组:</span>
+                      <span class="value groups">
+                        @for (group of selectedDevice.groups; track group) {
+                          <nz-tag>{{ group }}</nz-tag>
+                        }
+                      </span>
+                    </div>
+                  }
+                  <div class="detail-row">
+                    <span class="label">创建时间:</span>
+                    <span class="value">{{ selectedDevice.created_at | date:'yyyy-MM-dd HH:mm:ss' }}</span>
+                  </div>
+                  <div class="detail-row">
+                    <span class="label">更新时间:</span>
+                    <span class="value">{{ selectedDevice.updated_at | date:'yyyy-MM-dd HH:mm:ss' }}</span>
+                  </div>
+                </div>
+              </div>
+            }
+          </div>
+        </nz-tab>
+
+        <!-- MQTT 测试 -->
+        <nz-tab nzTitle="MQTT 测试">
+          <div class="mqtt-test-panel">
+            <!-- 订阅区域 -->
+            <div class="subscribe-section">
+              <div class="section-header">
+                <i class="fa-light fa-inbox-in"></i> 主题订阅
+              </div>
+              <div class="subscribe-input">
+                <input type="text" [(ngModel)]="subscribeTopic" placeholder="输入订阅主题，如: device/+/data" />
+                <button class="subscribe-btn" [disabled]="!isConnected" (click)="subscribeToTopic()">
+                  <i class="fa-light fa-plus"></i> 订阅
+                </button>
+              </div>
+              @if (subscribedTopics.length > 0) {
+                <div class="subscribed-list">
+                  @for (topic of subscribedTopics; track topic) {
+                    <div class="subscribed-item">
+                      <span class="topic-name">{{ topic }}</span>
+                      <button class="remove-btn" (click)="unsubscribeTopic(topic)">
+                        <i class="fa-light fa-xmark"></i>
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+
+            <!-- 消息显示区 -->
+            <div class="message-monitor">
+              <div class="message-list sscroll" #messageListBox>
+                @if (messages.length === 0) {
+                  <div class="no-message">暂无消息，请先订阅主题</div>
+                } @else {
+                  @for (msg of messages; track $index) {
+                    <div class="message-item" [ngClass]="getMessageClass(msg.type)">
+                      @if (showTimestamp) {
+                        <span class="msg-time">[{{ formatTime(msg.timestamp) }}]</span>
+                      }
+                      <span class="msg-topic">[{{ msg.topic }}]</span>
+                      <span class="msg-content">{{ msg.payload }}</span>
+                    </div>
+                  }
+                }
+              </div>
+              <div class="btns">
+                <div class="btn ccenter" nz-tooltip nzTooltipTitle="自动滚动" (click)="toggleViewMode('autoScroll')"
+                  [ngClass]="{'actived': autoScroll}">
+                  <i class="fa-light fa-arrow-down-to-line"></i>
+                </div>
+                <div class="btn ccenter" nz-tooltip nzTooltipTitle="显示时间戳" (click)="toggleViewMode('showTimestamp')"
+                  [ngClass]="{'actived': showTimestamp}">
+                  <i class="fa-light fa-timer"></i>
+                </div>
+                <div class="btn ccenter right" nz-tooltip nzTooltipTitle="清空消息" (click)="clearMessages()">
+                  <i class="fa-light fa-trash-can"></i>
+                </div>
+              </div>
+            </div>
+          </div>
+        </nz-tab>
+      </nz-tabset>
+
+      <!-- 发送区域 -->
+      <div class="sender" nz-resizable [style.height.px]="bottomHeight" [nzMaxHeight]="400" [nzMinHeight]="150"
+        (nzResize)="onContentResize($event)">
+        <nz-resize-handle nzDirection="top">
+          <div class="resize-line"></div>
+        </nz-resize-handle>
+        <div class="s-box">
+          <div class="publish-header">
+            <div class="topic-input">
+              <span class="label">发布主题:</span>
+              <input type="text" [(ngModel)]="publishTopic" placeholder="输入发布主题" />
+            </div>
+            @if (isConnected) {
+              <button class="disconnect-btn" (click)="disconnect()">
+                <i class="fa-light fa-plug-circle-xmark"></i> 断开连接
+              </button>
+            }
+          </div>
+          <div class="input-box">
+            <textarea #chatTextarea class="sscroll vsfont" [(ngModel)]="inputMessage" (keydown)="onKeyDown($event)"
+              placeholder="输入要发送的消息..."></textarea>
+            <div class="btns">
+              <div class="btn right ccenter" nz-tooltip nzTooltipTitle="Ctrl+Enter 发送" [class.disabled]="!isConnected"
+                (click)="publishMessage()">
+                <i class="fa-light fa-paper-plane"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</ng-template>
+
+<!-- 创建设备弹窗 -->
+<nz-modal [(nzVisible)]="showCreateDeviceModal" nzTitle="创建新设备" (nzOnCancel)="showCreateDeviceModal = false"
+  (nzOnOk)="createDevice()" nzOkText="创建" nzCancelText="取消">
+  <ng-container *nzModalContent>
+    <div class="modal-form">
+      <div class="form-item">
+        <label>设备 UUID（可选，留空自动生成）:</label>
+        <input type="text" [(ngModel)]="newDeviceUuid" placeholder="自动生成 UUID" />
+      </div>
+      <div class="form-item">
+        <label>设备 Token（可选，留空自动生成）:</label>
+        <input type="text" [(ngModel)]="newDeviceToken" placeholder="自动生成 Token" />
+      </div>
+    </div>
+  </ng-container>
+</nz-modal>
+
+<!-- 设备凭证弹窗 -->
+<nz-modal [(nzVisible)]="showCredentialsModal" nzTitle="设备连接凭证" (nzOnCancel)="showCredentialsModal = false"
+  [nzFooter]="credentialsFooter" nzWidth="500px">
+  <ng-container *nzModalContent>
+    @if (deviceCredentials) {
+      <div class="credentials-info">
+        <div class="info-alert">
+          <i class="fa-light fa-circle-info"></i>
+          <span>每次获取连接凭证都会重新生成，之前的凭证将失效</span>
+        </div>
+        <div class="credential-item">
+          <span class="label">UUID:</span>
+          <span class="value">{{ deviceCredentials.uuid }}</span>
+          <button class="copy-btn" (click)="copyToClipboard(deviceCredentials.uuid)">
+            <i class="fa-light fa-copy"></i>
+          </button>
+        </div>
+        <div class="credential-item">
+          <span class="label">Client ID:</span>
+          <span class="value">{{ deviceCredentials.clientId }}</span>
+          <button class="copy-btn" (click)="copyToClipboard(deviceCredentials.clientId)">
+            <i class="fa-light fa-copy"></i>
+          </button>
+        </div>
+        <div class="credential-item">
+          <span class="label">Username:</span>
+          <span class="value">{{ deviceCredentials.username }}</span>
+          <button class="copy-btn" (click)="copyToClipboard(deviceCredentials.username)">
+            <i class="fa-light fa-copy"></i>
+          </button>
+        </div>
+        <div class="credential-item">
+          <span class="label">Password:</span>
+          <span class="value">{{ deviceCredentials.password }}</span>
+          <button class="copy-btn" (click)="copyToClipboard(deviceCredentials.password)">
+            <i class="fa-light fa-copy"></i>
+          </button>
+        </div>
+      </div>
+    }
+  </ng-container>
+  <ng-template #credentialsFooter>
+    <button nz-button nzType="default" (click)="showCredentialsModal = false">关闭</button>
+    <button nz-button nzType="primary" [disabled]="connecting" (click)="connectWithCredentials()">
+      @if (connecting) {
+        <i class="fa-light fa-spinner fa-spin"></i>
+      }
+      使用此凭证连接
+    </button>
+  </ng-template>
+</nz-modal>
