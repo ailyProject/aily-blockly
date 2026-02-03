@@ -10,6 +10,7 @@ export interface MqttDevice {
   username: string;
   password?: string;
   iot_token?: string;
+  status: number; // 0=离线, 1=在线
   created_at: string;
   updated_at: string;
   groups?: string[];
