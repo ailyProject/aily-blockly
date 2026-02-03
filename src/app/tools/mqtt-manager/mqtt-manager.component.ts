@@ -63,7 +63,6 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
 
   // MQTT 连接状态
   isConnected = false;
-  connecting = false;
 
   // 消息相关
   messages: MqttMessage[] = [];
@@ -80,10 +79,7 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
   bottomHeight = 210;
   activeTab = 0;
 
-  // 创建设备弹窗
-  showCreateDeviceModal = false;
-  newDeviceUuid = '';
-  newDeviceToken = '';
+
 
   // 凭证弹窗
   showCredentialsModal = false;
@@ -96,7 +92,7 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
     private translate: TranslateService,
     private uiService: UiService,
     private mqttService: MqttManagerService
-  ) {}
+  ) { }
 
   ngOnInit() {
     this.currentUrl = this.router.url;
@@ -113,7 +109,6 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
     // 订阅连接状态
     this.mqttService.connectionStatus$.subscribe(status => {
       this.isConnected = status;
-      this.connecting = false;
       this.cd.detectChanges();
     });
 
@@ -160,18 +155,22 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
   }
 
   // 获取所有设备
-  async loadDevices() {
-    this.loadingDevices = true;
+  async loadDevices(silent = false) {
+    // silent 模式下不显示 loading，避免刷新时页面闪烁
+    if (!silent) {
+      this.loadingDevices = true;
+    }
     try {
       const result = await this.mqttService.getAllDevices(this.brokerHost, this.brokerAdminPort);
       if (result.message === 1000) {
         this.devices = result.detail.devices;
-        this.message.success(`已加载 ${result.detail.total} 个设备`);
+        // this.message.success(`已加载 ${result.detail.total} 个设备`);
       }
     } catch (error) {
       this.message.error('获取设备列表失败');
     } finally {
       this.loadingDevices = false;
+      this.cd.detectChanges();
     }
   }
 
@@ -188,25 +187,15 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
     }
   }
 
-  // 显示创建设备弹窗
-  openCreateDeviceModal() {
-    this.newDeviceUuid = '';
-    this.newDeviceToken = '';
-    this.showCreateDeviceModal = true;
-  }
-
-  // 创建设备
+  // 创建设备（自动生成UUID和Token）
   async createDevice() {
     try {
       const result = await this.mqttService.createDevice(
         this.brokerHost,
-        this.brokerAdminPort,
-        this.newDeviceUuid || undefined,
-        this.newDeviceToken || undefined
+        this.brokerAdminPort
       );
       if (result.message === 1000) {
         this.message.success('设备创建成功');
-        this.showCreateDeviceModal = false;
         await this.loadDevices();
       } else if (result.message === 1001) {
         this.message.error('UUID 已存在');
@@ -232,8 +221,6 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
   // 使用凭证连接
   async connectWithCredentials() {
     if (!this.deviceCredentials) return;
-
-    this.connecting = true;
     this.saveConfig();
 
     const config: ConnectionConfig = {
@@ -250,7 +237,6 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
       this.showCredentialsModal = false;
     } catch (error) {
       this.message.error('MQTT 连接失败');
-      this.connecting = false;
     }
   }
 
@@ -376,5 +362,15 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
       case 'system': return 'msg-system';
       default: return '';
     }
+  }
+
+  showMoreSettings = false;
+  openMoreSettings() {
+
+  }
+
+  switchValue=false;
+  toggleSwitch() {
+    this.switchValue = !this.switchValue;
   }
 }

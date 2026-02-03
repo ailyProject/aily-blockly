@@ -23,7 +23,7 @@
     position: relative;
     flex-wrap: wrap;
     gap: 5px;
-    padding: 5px;
+    height: 40px;
   }
 
   .item {
@@ -41,7 +41,7 @@
     }
 
     .item-inner {
-      height: 28px;
+      height: 24px;
       width: 100px;
       background-color: #333;
       border-radius: 4px;
@@ -127,40 +127,38 @@
   }
 }
 
-// 内容标签页
-.content-tabs {
-  flex: 1;
-  min-height: 0;
-  margin: 0 10px;
-  overflow: hidden;
+.switch {
+  margin-left: 10px;
+}
 
-  ::ng-deep {
-    .ant-tabs-content {
-      height: 100%;
-    }
+.setting-btn {
+  position: absolute;
+  right: 0;
+  font-size: 18px;
+  width: 38px;
+  height: 38px;
+  padding-top: 2px;
 
-    .ant-tabs-tabpane {
-      height: 100%;
-    }
-
-    .ant-tabs-nav {
-      margin-bottom: 0;
-    }
+  &:hover {
+    color: #fff;
   }
 }
 
 // 设备管理面板
 .device-panel {
   display: flex;
-  height: 100%;
-  gap: 10px;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: #292929;
+  margin: 0 10px;
+  border-radius: 5px;
 
   .panel-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 8px 12px;
-    background: #333;
     border-radius: 5px 5px 0 0;
 
     .panel-title {
@@ -169,30 +167,34 @@
       color: #eee;
     }
 
-    .add-btn {
-      padding: 4px 12px;
-      border: none;
-      background: #1890ff;
-      color: #fff;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 12px;
+    .header-btns {
       display: flex;
-      align-items: center;
-      gap: 4px;
-      transition: background 0.2s;
+      gap: 8px;
 
-      &:hover {
-        background: #40a9ff;
+      button {
+        color: #d4d4d4;
+        cursor: pointer;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
+        border: none;
+
+        &:hover {
+          color: #fff;
+        }
       }
     }
   }
 
   .device-list {
     flex: 1;
-    background: #292929;
+    min-height: 0;
     border-radius: 0 0 5px 5px;
     overflow: auto;
+    // padding: 0 5px 0 5px;
+    padding-left: 10px;
 
     .loading-box,
     .empty-box {
@@ -208,23 +210,30 @@
         color: #eee;
       }
 
-      .ant-table-thead > tr > th {
-        background: #333;
+      .ant-table-thead {
+        background: #222;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+
+      .ant-table-thead>tr>th {
         color: #aaa;
-        border-bottom: 1px solid #444;
+        background: transparent;
         font-size: 12px;
       }
 
-      .ant-table-tbody > tr > td {
-        border-bottom: 1px solid #3a3a3a;
+      .ant-table-tbody>tr>td {
+        // border-bottom: 1px solid #3a3a3a;
         font-size: 12px;
+        cursor: pointer;
       }
 
-      .ant-table-tbody > tr:hover > td {
+      .ant-table-tbody>tr:hover>td {
         background: #3a3a3a;
       }
 
-      .ant-table-tbody > tr.selected > td {
+      .ant-table-tbody>tr.selected>td {
         background: rgba(24, 144, 255, 0.1);
       }
 
