@@ -66,22 +66,22 @@
       }
     }
   }
-}
 
-.switch {
-  margin-left: 10px;
-}
+  .switch {
+    margin-left: 10px;
+  }
 
-.setting-btn {
-  position: absolute;
-  right: 0;
-  font-size: 18px;
-  width: 38px;
-  height: 38px;
-  padding-top: 2px;
+  .setting-btn {
+    position: absolute;
+    right: 0;
+    font-size: 18px;
+    width: 38px;
+    height: 38px;
+    padding-top: 2px;
 
-  &:hover {
-    color: #fff;
+    &:hover {
+      color: #fff;
+    }
   }
 }
 
@@ -92,7 +92,7 @@
   flex: 1;
   min-height: 0;
   background: #292929;
-  margin: 0 10px;
+  margin: 0 10px 10px 10px;
   border-radius: 5px;
 
   .panel-header {
