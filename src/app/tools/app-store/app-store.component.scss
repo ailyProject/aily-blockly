@@ -6,41 +6,6 @@
   overflow: hidden;
   background: #1e1f22;
 
-  .app-store-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid #3a3c3f;
-
-    .header-info {
-      .info-text {
-        font-size: 13px;
-        color: #818992;
-      }
-    }
-
-    .reset-btn {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border: 1px solid #3a3c3f;
-      border-radius: 4px;
-      background: transparent;
-      color: #a5a5a5;
-      cursor: pointer;
-      font-size: 12px;
-      transition: all 0.2s;
-
-      &:hover {
-        background: #3a3c3f;
-        border-color: #4a8cca;
-        color: #fff;
-      }
-    }
-  }
 
   .app-store-content {
     display: flex;
@@ -76,6 +41,32 @@
 
     i {
       font-size: 13px;
+    }
+
+    .reset-icon-btn {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #818992;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+
+      i {
+        font-size: 12px;
+      }
+
+      &:hover {
+        background: #3a3c3f;
+        color: #fff;
+      }
     }
   }
 

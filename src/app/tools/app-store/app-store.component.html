@@ -9,13 +9,6 @@
 }
 <ng-template #windowBoxTemplate>
     <div class="app-store-container">
-        <!-- <div class="app-store-header">
-            <button class="reset-btn" (click)="resetToDefault()">
-                <i class="fa-light fa-rotate-left"></i>
-                {{ 'APP_STORE.RESET' | translate }}
-            </button>
-        </div> -->
-
         <div class="app-store-content">
             <!-- 左侧主内容区 -->
             <div class="main-content">
@@ -41,6 +34,9 @@
                 <div class="section-title">
                     <i class="fa-light fa-grid-3"></i>
                     {{ 'APP_STORE.ALL_APPS' | translate }}
+                    <button class="reset-icon-btn" nz-tooltip [nzTooltipTitle]="'APP_STORE.RESET' | translate" (click)="resetToDefault()">
+                        <i class="fa-light fa-rotate-left"></i>
+                    </button>
                 </div>
                 <div class="app-grid other-zone" #otherZone>
                     @for (app of otherZoneApps; track app.id) {

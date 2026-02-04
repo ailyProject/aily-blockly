@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectorRef, Component, ElementRef, isDevMode, OnDestroy, ViewChild, viewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, ElementRef, isDevMode, OnDestroy, OnInit, ViewChild, viewChild } from '@angular/core';
 import { HEADER_BTNS, HEADER_MENU } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FormsModule } from '@angular/forms';
@@ -23,9 +23,9 @@ import { AuthService } from '../../../services/auth.service';
 import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
 import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 import { PlatformService } from '../../../services/platform.service';
-// import { AppStoreService } from '../../../tools/app-store/app-store.service';
+import { AppStoreService } from '../../../tools/app-store/app-store.service';
 import { AppItem } from '../../../tools/app-store/app-store.config';
-import { APP_LIST } from '../../../configs/tool.config';
+import { Subscription } from 'rxjs';
 
 @Component({
   selector: 'app-header',
@@ -39,10 +39,11 @@ import { APP_LIST } from '../../../configs/tool.config';
   templateUrl: './header.component.html',
   styleUrl: './header.component.scss',
 })
-export class HeaderComponent implements OnDestroy {
+export class HeaderComponent implements OnInit, OnDestroy {
   headerBtns = HEADER_BTNS;
   headerMenu = HEADER_MENU;
-  headerApps = APP_LIST;
+  headerApps: AppItem[] = [];
+  private headerAppsSub?: Subscription;
 
   get isMac() {
     return this.platformService.isMac();
@@ -87,11 +88,6 @@ export class HeaderComponent implements OnDestroy {
     return isDevMode()
   }
 
-  // 从 AppStoreService 获取要显示在 header 上的 apps
-  // get headerApps(): AppItem[] {
-  //   return this.appStoreService.getHeaderApps();
-  // }
-
   constructor(
     private projectService: ProjectService,
     private uiService: UiService,
@@ -108,8 +104,18 @@ export class HeaderComponent implements OnDestroy {
     private authService: AuthService,
     private translate: TranslateService,
     private platformService: PlatformService,
-    // private appStoreService: AppStoreService
-  ) { }
+    private appStoreService: AppStoreService
+  ) {
+    // 与 app-store 工具栏区域对应，显示同一份 header 应用列表
+    this.headerApps = this.appStoreService.getHeaderApps();
+  }
+
+  ngOnInit() {
+    this.headerAppsSub = this.appStoreService.headerApps$.subscribe(apps => {
+      this.headerApps = apps;
+      this.cd.markForCheck();
+    });
+  }
 
   async ngAfterViewInit() {
     if (this.electronService.isElectron) {
@@ -472,6 +478,7 @@ export class HeaderComponent implements OnDestroy {
   }
 
   ngOnDestroy() {
+    this.headerAppsSub?.unsubscribe();
     if (this.electronService.isElectron) {
       // 取消窗口全屏状态变化监听
       if (this.unsubscribeFullScreenChanged) {

@@ -1,11 +1,18 @@
 import { Injectable } from '@angular/core';
+import { BehaviorSubject } from 'rxjs';
 import { AppItem, APP_LIST, HEADER_APP_LIMIT, SIDEBAR_APP_LIMIT } from './app-store.config';
+
+const STORAGE_KEY = 'app-store-zones-config';
 
 @Injectable({
   providedIn: 'root'
 })
 export class AppStoreService {
   private apps: AppItem[] = [...APP_LIST];
+
+  // Header 上显示的 app 列表（与 app-store 工具栏区域对应，可被 header 订阅）
+  private headerAppsSubject = new BehaviorSubject<AppItem[]>(this.loadHeaderAppsFromStorage());
+  headerApps$ = this.headerAppsSubject.asObservable();
 
   // Header 上显示的 app 数量上限
   readonly HEADER_APP_LIMIT = HEADER_APP_LIMIT;
@@ -14,6 +21,21 @@ export class AppStoreService {
 
   constructor() {
     this.loadAppsFromStorage();
+  }
+
+  // 从 app-store-zones-config 读取 header 应用列表（与 app-store 组件逻辑一致）
+  private loadHeaderAppsFromStorage(): AppItem[] {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const config = JSON.parse(stored);
+        const ids: string[] = config.header || [];
+        return ids.map((id: string) => APP_LIST.find(app => app.id === id)).filter(Boolean) as AppItem[];
+      }
+    } catch (e) {
+      console.error('Failed to load header apps from storage:', e);
+    }
+    return APP_LIST.slice(0, this.HEADER_APP_LIMIT);
   }
 
   // 从本地存储加载 app 配置
@@ -38,9 +60,14 @@ export class AppStoreService {
     return this.apps.filter(app => app.enabled);
   }
 
-  // 获取显示在 header 上的 app（前6个）
+  // 获取显示在 header 上的 app（与 app-store 工具栏区域一致）
   getHeaderApps(): AppItem[] {
-    return this.apps.slice(0, this.HEADER_APP_LIMIT);
+    return this.headerAppsSubject.getValue();
+  }
+
+  // app-store 保存后调用，同步 header 显示
+  updateHeaderApps(apps: AppItem[]): void {
+    this.headerAppsSubject.next(apps);
   }
 
   // 启用/禁用 app
