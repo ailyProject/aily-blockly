@@ -31,7 +31,8 @@
         "USER_SPACE": "클라우드 스페이스",
         "LIB_MANAGER": "라이브러리 관리자",
         "AI_ASSISTANT": "AI 어시스턴트",
-        "PROJECT_HUB": "프로젝트 허브"
+        "PROJECT_HUB": "프로젝트 허브",
+        "MQTT_MANAGER": "IoT 서비스"
     },
     "ESP32": {
         "UPLOAD_SPEED": "업로드 속도",

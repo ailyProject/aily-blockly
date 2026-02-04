@@ -338,6 +338,70 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
     this.selectedDevice = device;
   }
 
+  // 检查当前选中设备是否已连接
+  isSelectedDeviceConnected(): boolean {
+    if (!this.selectedDevice) return false;
+    return this.mqttService.isDeviceConnected(this.selectedDevice.uuid);
+  }
+
+  // 测试设备上线
+  async testDeviceOnline() {
+    if (!this.selectedDevice) {
+      this.message.warning('请先选择设备');
+      return;
+    }
+
+    try {
+      // 1. 获取设备连接凭证
+      const result = await this.mqttService.getDeviceConnection(
+        this.brokerHost,
+        this.brokerAdminPort,
+        this.selectedDevice.uuid
+      );
+
+      if (result.message !== 1000) {
+        this.message.error('获取连接凭证失败');
+        return;
+      }
+
+      const credentials = result.detail;
+      this.saveConfig();
+
+      // 2. 使用 mqtt.js 连接到 Broker
+      const config: ConnectionConfig = {
+        host: this.brokerHost,
+        port: parseInt(this.brokerMqttPort),
+        clientId: credentials.clientId,
+        username: credentials.username,
+        password: credentials.password,
+      };
+
+      await this.mqttService.connectWithMqttJs(this.selectedDevice.uuid, config);
+      this.message.success(`设备 ${this.selectedDevice.uuid} 已上线`);
+      this.cd.detectChanges();
+
+      // 3. 刷新设备列表以更新状态
+      setTimeout(() => {
+        this.loadDevices(true);
+      }, 1000);
+
+    } catch (error: any) {
+      this.message.error(`上线失败: ${error.message || error}`);
+    }
+  }
+
+  // 断开当前设备连接
+  disconnectDevice() {
+    if (!this.selectedDevice) return;
+    this.mqttService.disconnectMqttJs(this.selectedDevice.uuid);
+    this.message.info('设备已下线');
+    this.cd.detectChanges();
+    // 刷新设备列表以更新状态
+    setTimeout(() => {
+      this.loadDevices(true);
+    }, 1000);
+  }
+
   // 关闭工具
   close() {
     this.uiService.closeTool('mqtt-manager');

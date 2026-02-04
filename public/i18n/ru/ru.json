@@ -31,7 +31,8 @@
         "USER_SPACE": "Облачное хранилище",
         "LIB_MANAGER": "Менеджер библиотек",
         "AI_ASSISTANT": "ИИ-ассистент",
-        "PROJECT_HUB": "Центр проектов"
+        "PROJECT_HUB": "Центр проектов",
+        "MQTT_MANAGER": "Сервис IoT"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Скорость загрузки",

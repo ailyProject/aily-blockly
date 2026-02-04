@@ -31,7 +31,8 @@
         "USER_SPACE": "مساحة السحابة",
         "LIB_MANAGER": "مدير المكتبة",
         "AI_ASSISTANT": "مساعد الذكاء الاصطناعي",
-        "PROJECT_HUB": "ساحة المشاريع"
+        "PROJECT_HUB": "ساحة المشاريع",
+        "MQTT_MANAGER": "خدمة إنترنت الأشياء"
     },
     "ESP32": {
         "UPLOAD_SPEED": "سرعة الرفع",

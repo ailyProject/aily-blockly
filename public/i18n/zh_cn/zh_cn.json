@@ -67,7 +67,8 @@
         "MULTI_COMPRESS": "压缩为zip",
         "LIB_MANAGER": "库管理",
         "AI_ASSISTANT": "AI助手",
-        "PROJECT_HUB": "项目广场"
+        "PROJECT_HUB": "项目广场",
+        "MQTT_MANAGER": "物联网服务"
     },
     "ESP32": {
         "UPLOAD_SPEED": "烧录速度",

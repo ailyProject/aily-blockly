@@ -31,7 +31,8 @@
         "USER_SPACE": "Cloud-Speicher",
         "LIB_MANAGER": "Bibliotheksverwaltung",
         "AI_ASSISTANT": "KI-Assistent",
-        "PROJECT_HUB": "Projekt-Hub"
+        "PROJECT_HUB": "Projekt-Hub",
+        "MQTT_MANAGER": "IoT-Dienst"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Upload-Geschwindigkeit",

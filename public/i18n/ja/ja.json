@@ -31,7 +31,8 @@
         "USER_SPACE": "クラウドスペース",
         "LIB_MANAGER": "ライブラリマネージャー",
         "AI_ASSISTANT": "AIアシスタント",
-        "PROJECT_HUB": "プロジェクトハブ"
+        "PROJECT_HUB": "プロジェクトハブ",
+        "MQTT_MANAGER": "IoTサービス"
     },
     "ESP32": {
         "UPLOAD_SPEED": "書き込み速度",

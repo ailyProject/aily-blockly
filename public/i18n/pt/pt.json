@@ -31,7 +31,8 @@
         "USER_SPACE": "Espaço na Nuvem",
         "LIB_MANAGER": "Gerenciador de Bibliotecas",
         "AI_ASSISTANT": "Assistente de IA",
-        "PROJECT_HUB": "Central de Projetos"
+        "PROJECT_HUB": "Central de Projetos",
+        "MQTT_MANAGER": "Serviço IoT"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Velocidade de Upload",

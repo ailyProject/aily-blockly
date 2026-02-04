@@ -304,6 +304,50 @@
       }
     }
   }
+
+  .detail-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 0 10px;
+    height: 40px;
+    border-top: 1px solid #3a3a3a;
+
+    .online-btn,
+    .offline-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+
+      i {
+        font-size: 14px;
+      }
+    }
+
+    .online-btn {
+      background: #52c41a;
+      color: #fff;
+
+      &:hover {
+        background: #73d13d;
+      }
+    }
+
+    .offline-btn {
+      background: #ff4d4f;
+      color: #fff;
+
+      &:hover {
+        background: #ff7875;
+      }
+    }
+  }
 }
 
 // MQTT 测试面板

@@ -69,11 +69,11 @@
               @for (device of deviceTable.data; track device.uuid) {
               <tr [class.selected]="selectedDevice?.uuid === device.uuid" (click)="selectDevice(device)">
                 <td>
-                  <span class="status-dot" [class.online]="device.status === 1" [class.offline]="device.status === 0"
-                    nz-tooltip [nzTooltipTitle]="device.status === 1 ? '在线' : '离线'"></span>
+                  <span class="status-dot" [class.online]="device.status === 1"
+                    [class.offline]="device.status === 0"></span>
                 </td>
                 <td>
-                  <span class="uuid-text" nz-tooltip [nzTooltipTitle]="device.uuid">
+                  <span class="uuid-text">
                     {{ device.uuid }}
                   </span>
                 </td>
@@ -138,6 +138,17 @@
             <span class="label">创建时间:</span>
             <span class="value">{{ selectedDevice.created_at | date:'yyyy-MM-dd HH:mm:ss' }}</span>
           </div>
+        </div>
+        <div class="detail-footer">
+          @if (isSelectedDeviceConnected()) {
+          <button class="offline-btn" (click)="disconnectDevice()">
+            <i class="fa-light fa-plug-circle-xmark"></i> 断开连接
+          </button>
+          } @else {
+          <button class="online-btn" (click)="testDeviceOnline()">
+            <i class="fa-light fa-plug-circle-check"></i> 测试上线
+          </button>
+          }
         </div>
       </div>
       }

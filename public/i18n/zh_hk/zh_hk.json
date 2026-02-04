@@ -31,7 +31,8 @@
         "USER_SPACE": "雲空間",
         "LIB_MANAGER": "庫管理",
         "AI_ASSISTANT": "AI助手",
-        "PROJECT_HUB": "專案廣場"
+        "PROJECT_HUB": "專案廣場",
+        "MQTT_MANAGER": "物聯網服務"
     },
     "ESP32": {
         "UPLOAD_SPEED": "燒錄速度",

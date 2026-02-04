@@ -324,14 +324,20 @@ class SimpleMqttClient {
 })
 export class MqttManagerService {
   private client: SimpleMqttClient | null = null;
+  
+  // 追踪多个设备的连接状态 (deviceUuid -> clientId)
+  private connectedDevices = new Map<string, string>();
 
   // 消息流
   private messagesSubject = new Subject<MqttMessage>();
   public messages$ = this.messagesSubject.asObservable();
 
-  // 连接状态
+  // 连接状态（用于 WebSocket 方式）
   private connectionStatusSubject = new BehaviorSubject<boolean>(false);
   public connectionStatus$ = this.connectionStatusSubject.asObservable();
+
+  // Electron API
+  private electronAPI = (window as any).electronAPI;
 
   constructor() {}
 
@@ -387,7 +393,94 @@ export class MqttManagerService {
     return response.json();
   }
 
-  // ==================== MQTT Client ====================
+  // ==================== MQTT Client (mqtt.js via Electron) ====================
+
+  /**
+   * 使用 mqtt.js 连接到 MQTT Broker（通过 Electron preload）
+   * 这种方式使用真正的 TCP 连接，更稳定可靠
+   * @param deviceUuid 设备 UUID，用于追踪连接
+   * @param config 连接配置
+   */
+  async connectWithMqttJs(deviceUuid: string, config: ConnectionConfig): Promise<void> {
+    // 如果该设备已有连接，先断开
+    if (this.connectedDevices.has(deviceUuid)) {
+      this.disconnectMqttJs(deviceUuid);
+    }
+
+    const clientId = config.clientId;
+
+    try {
+      const result = await this.electronAPI.mqtt.connect(clientId, {
+        host: config.host,
+        port: config.port,
+        clientId: config.clientId,
+        username: config.username,
+        password: config.password,
+      });
+
+      if (result.success) {
+        this.connectedDevices.set(deviceUuid, clientId);
+        this.addSystemMessage(`设备 ${deviceUuid} 已连接到 MQTT Broker`);
+
+        // 注册断开连接回调
+        this.electronAPI.mqtt.onDisconnect(clientId, () => {
+          this.connectedDevices.delete(deviceUuid);
+          this.addSystemMessage(`设备 ${deviceUuid} 连接已关闭`);
+        });
+      } else {
+        throw new Error(result.error || '连接失败');
+      }
+    } catch (error: any) {
+      this.connectedDevices.delete(deviceUuid);
+      this.addSystemMessage(`设备 ${deviceUuid} 连接错误: ${error.message || error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 断开指定设备的 mqtt.js 连接
+   * @param deviceUuid 设备 UUID
+   */
+  disconnectMqttJs(deviceUuid: string): void {
+    const clientId = this.connectedDevices.get(deviceUuid);
+    if (clientId && this.electronAPI?.mqtt) {
+      this.electronAPI.mqtt.disconnect(clientId);
+      this.connectedDevices.delete(deviceUuid);
+    }
+  }
+
+  /**
+   * 断开所有设备的 mqtt.js 连接
+   */
+  disconnectAllMqttJs(): void {
+    this.connectedDevices.forEach((clientId, deviceUuid) => {
+      if (this.electronAPI?.mqtt) {
+        this.electronAPI.mqtt.disconnect(clientId);
+      }
+    });
+    this.connectedDevices.clear();
+  }
+
+  /**
+   * 检查指定设备的 mqtt.js 连接状态
+   * @param deviceUuid 设备 UUID
+   */
+  isDeviceConnected(deviceUuid: string): boolean {
+    const clientId = this.connectedDevices.get(deviceUuid);
+    if (clientId && this.electronAPI?.mqtt) {
+      return this.electronAPI.mqtt.isConnected(clientId);
+    }
+    return false;
+  }
+
+  /**
+   * 获取所有已连接的设备 UUID 列表
+   */
+  getConnectedDevices(): string[] {
+    return Array.from(this.connectedDevices.keys());
+  }
+
+  // ==================== MQTT Client (WebSocket) ====================
 
   /**
    * 连接到 MQTT Broker (via WebSocket)

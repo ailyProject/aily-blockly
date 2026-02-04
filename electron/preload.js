@@ -5,6 +5,10 @@ const { exec } = require("child_process");
 const { existsSync, statSync } = require("fs");
 const { isAbsolute } = require("path");
 const { tmpdir } = require("os");
+const mqtt = require("mqtt");
+
+// 存储 MQTT 客户端实例
+const mqttClients = new Map();
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -616,6 +620,133 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
     info: (message) => {
       ipcRenderer.invoke('log-info', message);
+    }
+  },
+  // MQTT API - 用于 MQTT 连接管理
+  mqtt: {
+    /**
+     * 连接到 MQTT Broker
+     * @param {string} clientId - 客户端唯一标识
+     * @param {object} options - 连接选项
+     * @param {string} options.host - Broker 主机地址
+     * @param {number} options.port - Broker 端口
+     * @param {string} options.username - 用户名
+     * @param {string} options.password - 密码
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    connect: (clientId, options) => {
+      return new Promise((resolve, reject) => {
+        try {
+          // 如果已存在同 clientId 的连接，先断开
+          if (mqttClients.has(clientId)) {
+            const oldClient = mqttClients.get(clientId);
+            oldClient.end(true);
+            mqttClients.delete(clientId);
+          }
+
+          const url = `mqtt://${options.host}:${options.port}`;
+          const client = mqtt.connect(url, {
+            clientId: options.clientId || clientId,
+            username: options.username,
+            password: options.password,
+            connectTimeout: 10000,
+            reconnectPeriod: 0, // 禁用自动重连，由上层控制
+          });
+
+          // 连接超时处理
+          const timeout = setTimeout(() => {
+            client.end(true);
+            reject({ success: false, error: '连接超时' });
+          }, 10000);
+
+          client.on('connect', () => {
+            clearTimeout(timeout);
+            mqttClients.set(clientId, client);
+            resolve({ success: true });
+          });
+
+          client.on('error', (error) => {
+            clearTimeout(timeout);
+            client.end(true);
+            mqttClients.delete(clientId);
+            reject({ success: false, error: error.message });
+          });
+
+          client.on('close', () => {
+            mqttClients.delete(clientId);
+          });
+        } catch (error) {
+          reject({ success: false, error: error.message });
+        }
+      });
+    },
+
+    /**
+     * 断开 MQTT 连接
+     * @param {string} clientId - 客户端唯一标识
+     */
+    disconnect: (clientId) => {
+      if (mqttClients.has(clientId)) {
+        const client = mqttClients.get(clientId);
+        client.end(true);
+        mqttClients.delete(clientId);
+      }
+    },
+
+    /**
+     * 检查连接状态
+     * @param {string} clientId - 客户端唯一标识
+     * @returns {boolean}
+     */
+    isConnected: (clientId) => {
+      if (mqttClients.has(clientId)) {
+        const client = mqttClients.get(clientId);
+        return client.connected;
+      }
+      return false;
+    },
+
+    /**
+     * 订阅主题
+     * @param {string} clientId - 客户端唯一标识
+     * @param {string} topic - 主题
+     * @param {function} callback - 消息回调
+     */
+    subscribe: (clientId, topic, callback) => {
+      if (mqttClients.has(clientId)) {
+        const client = mqttClients.get(clientId);
+        client.subscribe(topic);
+        client.on('message', (receivedTopic, message) => {
+          if (receivedTopic === topic || topic.includes('+') || topic.includes('#')) {
+            callback(receivedTopic, message.toString());
+          }
+        });
+      }
+    },
+
+    /**
+     * 发布消息
+     * @param {string} clientId - 客户端唯一标识
+     * @param {string} topic - 主题
+     * @param {string} message - 消息内容
+     */
+    publish: (clientId, topic, message) => {
+      if (mqttClients.has(clientId)) {
+        const client = mqttClients.get(clientId);
+        client.publish(topic, message);
+      }
+    },
+
+    /**
+     * 注册断开连接回调
+     * @param {string} clientId - 客户端唯一标识
+     * @param {function} callback - 断开连接回调
+     */
+    onDisconnect: (clientId, callback) => {
+      if (mqttClients.has(clientId)) {
+        const client = mqttClients.get(clientId);
+        client.on('close', callback);
+      }
     }
   }
 });

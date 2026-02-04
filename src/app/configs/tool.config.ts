@@ -67,8 +67,8 @@ export const APP_LIST: AppItem[] = [
   },
   {
     id: 'mqtt-manager',
-    name: 'MENU.SIMULATOR',
-    description: 'APP_STORE.SIMULATOR_DESC',
+    name: 'MENU.MQTT_MANAGER',
+    description: 'APP_STORE.MQTT_MANAGER_DESC',
     action: 'tool-open',
     data: { type: 'tool', data: 'mqtt-manager' },
     icon: 'fa-light fa-chart-network',
