@@ -12,6 +12,7 @@
     gap: 16px;
     flex: 1;
     overflow: hidden;
+    min-height: 0;
 
     .main-content {
       flex: 1;
@@ -80,7 +81,7 @@
     &.header-zone {
       background: rgba(74, 140, 202, 0.08);
       border: 1px dashed #4a8cca;
-      height: 70px;
+      min-height: 70px;
     }
 
     &.sidebar-zone {
@@ -118,6 +119,12 @@
       &:hover {
         border-color: #4a8cca;
         background: #3a3c3f;
+      }
+
+      &.selected {
+        border-color: #4a8cca;
+        background: #3a3c3f;
+        box-shadow: 0 0 0 2px rgba(74, 140, 202, 0.3);
       }
 
       &:active {
@@ -219,6 +226,70 @@
     .sortable-drag {
       opacity: 1;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  // 底部信息展示面板
+  .app-info-panel {
+    margin-top: 16px;
+    margin-bottom: 10px;
+    padding: 16px;
+    background: #2b2d30;
+    border: 1px solid #3a3c3f;
+    border-radius: 8px;
+    animation: slideUp 0.3s ease-out;
+    flex-shrink: 0;
+
+    .app-info-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #3a3c3f;
+
+      .app-info-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        background: #3a3c3f;
+        color: #a5a5a5;
+        font-size: 20px;
+      }
+
+      .app-info-title {
+        flex: 1;
+
+        h3 {
+          margin: 0;
+          font-size: 16px;
+          font-weight: 500;
+          color: #fff;
+        }
+      }
+    }
+
+    .app-info-content {
+      p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #a5a5a5;
+      }
+    }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
     }
   }
 }

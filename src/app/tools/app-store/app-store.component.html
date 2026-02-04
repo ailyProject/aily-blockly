@@ -19,7 +19,7 @@
                 </div>
                 <div class="app-grid header-zone" #headerZone>
                     @for (app of headerZoneApps; track app.id; let i = $index) {
-                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" (dblclick)="openApp(app)">
+                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" [class.selected]="selectedApp?.id === app.id" (dblclick)="openApp(app)">
                         <div class="app-icon">
                             <i class="{{ app.icon }}"></i>
                         </div>
@@ -40,7 +40,7 @@
                 </div>
                 <div class="app-grid other-zone" #otherZone>
                     @for (app of otherZoneApps; track app.id) {
-                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" (dblclick)="openApp(app)">
+                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" [class.selected]="selectedApp?.id === app.id" (dblclick)="openApp(app)">
                         <div class="app-icon">
                             <i class="{{ app.icon }}"></i>
                         </div>
@@ -60,7 +60,7 @@
                 </div>
                 <div class="app-grid sidebar-zone" #sidebarZone>
                     @for (app of sidebarZoneApps; track app.id) {
-                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" (dblclick)="openApp(app)">
+                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" [class.selected]="selectedApp?.id === app.id" (dblclick)="openApp(app)">
                         <div class="app-icon">
                             <i class="{{ app.icon }}"></i>
                         </div>
@@ -72,5 +72,22 @@
                 </div>
             </div>
         </div>
+        
+        <!-- 底部信息展示区域 -->
+        @if (selectedApp) {
+        <div class="app-info-panel">
+            <div class="app-info-header">
+                <div class="app-info-icon">
+                    <i class="{{ selectedApp.icon }}"></i>
+                </div>
+                <div class="app-info-title">
+                    <h3>{{ selectedApp.name | translate }}</h3>
+                </div>
+            </div>
+            <div class="app-info-content">
+                <p>{{ selectedApp.description | translate }}</p>
+            </div>
+        </div>
+        }
     </div>
 </ng-template>

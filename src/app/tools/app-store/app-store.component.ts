@@ -1,4 +1,4 @@
-import { Component, OnInit, AfterViewInit, ViewChild, ElementRef, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, AfterViewInit, OnDestroy, ViewChild, ElementRef, ChangeDetectorRef } from '@angular/core';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { CommonModule } from '@angular/common';
@@ -24,7 +24,7 @@ import Sortable, { SortableEvent } from 'sortablejs';
   templateUrl: './app-store.component.html',
   styleUrl: './app-store.component.scss'
 })
-export class AppStoreComponent implements OnInit, AfterViewInit {
+export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   currentUrl: string;
   windowInfo = 'MENU.APP_STORE';
   
@@ -32,6 +32,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
   headerZoneApps: AppItem[] = [];
   sidebarZoneApps: AppItem[] = [];
   otherZoneApps: AppItem[] = [];
+  
+  // 当前选中的 app
+  selectedApp: AppItem | null = null;
 
   @ViewChild('headerZone') headerZone!: ElementRef;
   @ViewChild('sidebarZone') sidebarZone!: ElementRef;
@@ -44,6 +47,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
   
   // 防止重复处理的标志
   private isHandlingAdd = false;
+  
+  // 保存点击事件监听器的引用，用于清理
+  private clickListeners: Array<{ element: HTMLElement; listener: (e: MouseEvent) => void }> = [];
 
   constructor(
     private uiService: UiService,
@@ -62,6 +68,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
     setTimeout(() => {
       this.initSortable();
     }, 0);
+  }
+
+  ngOnDestroy() {
+    // 组件销毁时清理所有资源
+    this.destroySortable();
   }
 
   initSortable() {
@@ -128,15 +139,77 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
           // 拖入到 other 区域意味着删除，直接移除 DOM 元素
           evt.item.remove();
           this.handleUpdate();
+        },
+        onStart: (evt: SortableEvent) => {
+          console.log("🚀 ~ AppStoreComponent ~ initSortable ~ evt:", evt)
+          this.selectApp(this.otherZoneApps[evt.oldIndex]);
+        },
+        onEnd: (evt: SortableEvent) => {
+          console.log("🚀 ~ AppStoreComponent ~ onEnd ~ evt:", evt)
+          setTimeout(() => {
+            this.bindClickEvents();
+          }, 100);
         }
       });
     } else {
       console.warn('Other zone element not found');
     }
+
+    this.bindClickEvents();
+  }
+  
+  // 手动绑定点击事件到所有 app-card 元素
+  private bindClickEvents() {
+    console.log("🚀 ~ AppStoreComponent ~ bindClickEvents ~ bindClickEvents:")
+    // 先清理旧的事件监听器
+    this.unbindClickEvents();
+    
+    // 为所有三个区域的 app-card 绑定点击事件
+    const zones = [
+      { element: this.headerZone?.nativeElement, apps: this.headerZoneApps },
+      { element: this.sidebarZone?.nativeElement, apps: this.sidebarZoneApps },
+      { element: this.otherZone?.nativeElement, apps: this.otherZoneApps }
+    ];
+    
+    zones.forEach(zone => {
+      if (zone.element) {
+        const cards = zone.element.querySelectorAll('.app-card');
+        cards.forEach((card: HTMLElement) => {
+          const appId = card.getAttribute('data-id');
+          if (appId) {
+            const app = APP_LIST.find(a => a.id === appId);
+            if (app) {
+              const listener = (e: MouseEvent) => {
+                // 阻止事件冒泡，避免与 Sortable 冲突
+                e.stopPropagation();
+                this.selectApp(app);
+              };
+              
+              // 使用 capture 阶段捕获事件，在 Sortable 之前处理
+              card.addEventListener('click', listener, true);
+              
+              // 保存监听器引用
+              this.clickListeners.push({ element: card, listener });
+            }
+          }
+        });
+      }
+    });
+  }
+  
+  // 清理所有点击事件监听器
+  private unbindClickEvents() {
+    this.clickListeners.forEach(({ element, listener }) => {
+      element.removeEventListener('click', listener, true);
+    });
+    this.clickListeners = [];
   }
 
   // 销毁 Sortable 实例
   private destroySortable() {
+    // 先清理点击事件监听器
+    this.unbindClickEvents();
+    
     if (this.headerSortable) {
       this.headerSortable.destroy();
       this.headerSortable = undefined;
@@ -159,6 +232,8 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
     try {
       const appId = evt.item.getAttribute('data-id');
       const targetZone = evt.to;
+      // 在移除 DOM 元素之前保存插入位置，确保位置信息准确
+      const newIndex = evt.newIndex !== undefined && evt.newIndex >= 0 ? evt.newIndex : undefined;
       
       // 确定目标数组
       let targetArray: AppItem[];
@@ -169,44 +244,51 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
       } else {
         // 未知区域，直接移除并返回
         evt.item.remove();
+        this.isHandlingAdd = false;
         return;
       }
       
       // 检查目标数组是否已存在该 app（防止重复）
-      const alreadyExists = targetArray.some(app => app.id === appId);
+      const existingIndex = targetArray.findIndex(app => app.id === appId);
       
-      if (alreadyExists) {
+      if (existingIndex !== -1) {
         // 如果已存在，移除刚添加的 DOM 元素
         evt.item.remove();
+        this.isHandlingAdd = false;
+        return;
+      }
+      
+      // 找到对应的 app 对象
+      const app = APP_LIST.find(a => a.id === appId);
+      if (!app) {
+        evt.item.remove();
+        this.isHandlingAdd = false;
         return;
       }
       
       // 先移除 Sortable 添加的临时 DOM 元素，避免与 Angular 渲染冲突
       evt.item.remove();
       
-      // 找到对应的 app 对象并添加到数组
-      const app = APP_LIST.find(a => a.id === appId);
-      if (app) {
-        targetArray.push(app);
+      // 使用保存的 newIndex 插入到正确位置，而不是 push 到末尾
+      // 如果 newIndex 无效，则插入到末尾
+      const insertIndex = newIndex !== undefined ? newIndex : targetArray.length;
+      targetArray.splice(insertIndex, 0, app);
+      
+      // 保存配置
+      this.saveAppsOrder();
+      
+      // 使用 requestAnimationFrame 确保在下一帧更新，避免与当前拖拽操作冲突
+      requestAnimationFrame(() => {
+        // 触发变更检测，让 Angular 重新渲染
+        this.cdr.detectChanges();
         
-        // 保存配置
-        this.saveAppsOrder();
-        
-        // 使用 requestAnimationFrame 确保在下一帧更新，避免与当前拖拽操作冲突
-        requestAnimationFrame(() => {
-          // 触发变更检测，让 Angular 重新渲染
-          this.cdr.detectChanges();
-          
-          // 重新初始化 Sortable（因为 DOM 已更新）
-          setTimeout(() => {
-            this.initSortable();
-            // 重置标志
-            this.isHandlingAdd = false;
-          }, 0);
-        });
-      } else {
-        this.isHandlingAdd = false;
-      }
+        // 重新初始化 Sortable（因为 DOM 已更新）
+        setTimeout(() => {
+          this.initSortable();
+          // 重置标志
+          this.isHandlingAdd = false;
+        }, 0);
+      });
     } catch (error) {
       this.isHandlingAdd = false;
       console.error('Error in handleAdd:', error);
@@ -301,6 +383,12 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
   // 打开 app
   openApp(app: AppItem) {
     this.uiService.openTool(app.data.data);
+  }
+
+  // 选中 app 显示信息
+  selectApp(app: AppItem) {
+    console.log("🚀 ~ AppStoreComponent ~ selectApp ~ app:", app)
+    this.selectedApp = app;
   }
 
   // 保存排序
