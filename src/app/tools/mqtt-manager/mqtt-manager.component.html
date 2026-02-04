@@ -62,7 +62,6 @@
               <tr>
                 <th nzWidth="25px"></th>
                 <th>UUID</th>
-                <th>Token</th>
                 <th>创建时间</th>
               </tr>
             </thead>
@@ -78,11 +77,6 @@
                     {{ device.uuid }}
                   </span>
                 </td>
-                <td>
-                  <span class="token-text" nz-tooltip [nzTooltipTitle]="device.token">
-                    {{ device.token }}
-                  </span>
-                </td>
                 <td>{{ device.created_at | date:'yyyy-MM-dd HH:mm' }}</td>
               </tr>
               }
@@ -90,74 +84,63 @@
           </nz-table>
           }
         </div>
+      </div>
 
-        <!-- 设备详情 -->
-        @if (selectedDevice) {
-        <div class="device-detail">
-          <div class="detail-header">
-            <span>设备详情</span>
-            <button class="close-btn" (click)="selectedDevice = null">
-              <i class="fa-light fa-xmark"></i>
+      <!-- 设备详情 -->
+      @if (selectedDevice) {
+      <div class="device-detail">
+        <div class="detail-header">
+          <span>设备详情</span>
+          <button class="close-btn" (click)="selectedDevice = null">
+            <i class="fa-light fa-xmark"></i>
+          </button>
+        </div>
+        <div class="detail-content sscroll">
+          <div class="detail-row">
+            <span class="label">UUID:</span>
+            <span class="value">{{ selectedDevice.uuid }}</span>
+            <button class="copy-btn" (click)="copyToClipboard(selectedDevice.uuid)">
+              <i class="fa-light fa-copy"></i>
             </button>
           </div>
-          <div class="detail-content sscroll">
-            <div class="detail-row">
-              <span class="label">UUID:</span>
-              <span class="value">{{ selectedDevice.uuid }}</span>
-              <button class="copy-btn" (click)="copyToClipboard(selectedDevice.uuid)">
-                <i class="fa-light fa-copy"></i>
-              </button>
-            </div>
-            <div class="detail-row">
-              <span class="label">Token:</span>
-              <span class="value">{{ selectedDevice.token }}</span>
-              <button class="copy-btn" (click)="copyToClipboard(selectedDevice.token)">
-                <i class="fa-light fa-copy"></i>
-              </button>
-            </div>
-            <div class="detail-row">
-              <span class="label">Auth Key:</span>
-              <span class="value">{{ selectedDevice.auth_key }}</span>
-              <button class="copy-btn" (click)="copyToClipboard(selectedDevice.auth_key)">
-                <i class="fa-light fa-copy"></i>
-              </button>
-            </div>
-            <div class="detail-row">
-              <span class="label">Client ID:</span>
-              <span class="value">{{ selectedDevice.client_id }}</span>
-              <button class="copy-btn" (click)="copyToClipboard(selectedDevice.client_id)">
-                <i class="fa-light fa-copy"></i>
-              </button>
-            </div>
-            <div class="detail-row">
-              <span class="label">Username:</span>
-              <span class="value">{{ selectedDevice.username }}</span>
-              <button class="copy-btn" (click)="copyToClipboard(selectedDevice.username)">
-                <i class="fa-light fa-copy"></i>
-              </button>
-            </div>
-            @if (selectedDevice.groups && selectedDevice.groups.length > 0) {
-            <div class="detail-row">
-              <span class="label">所属组:</span>
-              <span class="value groups">
-                @for (group of selectedDevice.groups; track group) {
-                <nz-tag>{{ group }}</nz-tag>
-                }
-              </span>
-            </div>
-            }
-            <div class="detail-row">
-              <span class="label">创建时间:</span>
-              <span class="value">{{ selectedDevice.created_at | date:'yyyy-MM-dd HH:mm:ss' }}</span>
-            </div>
-            <div class="detail-row">
-              <span class="label">更新时间:</span>
-              <span class="value">{{ selectedDevice.updated_at | date:'yyyy-MM-dd HH:mm:ss' }}</span>
-            </div>
+          <div class="detail-row">
+            <span class="label">AuthKey:</span>
+            <span class="value">{{ selectedDevice.auth_key }}</span>
+            <button class="copy-btn" (click)="copyToClipboard(selectedDevice.auth_key)">
+              <i class="fa-light fa-copy"></i>
+            </button>
+          </div>
+          <div class="detail-row">
+            <span class="label">Client ID:</span>
+            <span class="value">{{ selectedDevice.client_id }}</span>
+            <button class="copy-btn" (click)="copyToClipboard(selectedDevice.client_id)">
+              <i class="fa-light fa-copy"></i>
+            </button>
+          </div>
+          <div class="detail-row">
+            <span class="label">Username:</span>
+            <span class="value">{{ selectedDevice.username }}</span>
+            <button class="copy-btn" (click)="copyToClipboard(selectedDevice.username)">
+              <i class="fa-light fa-copy"></i>
+            </button>
+          </div>
+          @if (selectedDevice.groups && selectedDevice.groups.length > 0) {
+          <div class="detail-row">
+            <span class="label">所属组:</span>
+            <span class="value groups">
+              @for (group of selectedDevice.groups; track group) {
+              <nz-tag>{{ group }}</nz-tag>
+              }
+            </span>
+          </div>
+          }
+          <div class="detail-row">
+            <span class="label">创建时间:</span>
+            <span class="value">{{ selectedDevice.created_at | date:'yyyy-MM-dd HH:mm:ss' }}</span>
           </div>
         </div>
-        }
       </div>
+      }
 
       <!-- 订阅区域 -->
       <!-- <div class="mqtt-test-panel">

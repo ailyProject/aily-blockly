@@ -99,8 +99,8 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 12px;
-    border-radius: 5px 5px 0 0;
+    height: 40px;
+    padding: 0 10px;
 
     .panel-title {
       font-size: 13px;
@@ -225,83 +225,81 @@
       }
     }
   }
+}
 
-  // 设备详情
-  .device-detail {
-    width: 320px;
-    background: #292929;
-    border-radius: 5px;
+// 设备详情
+.device-detail {
+  display: flex;
+  flex-direction: column;
+  background: #292929;
+  margin: 0 10px 10px 10px;
+  border-radius: 5px;
+
+  .detail-header {
     display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
+    justify-content: space-between;
+    align-items: center;
+    height: 40px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #eee;
+    border-bottom: 1px solid #3a3a3a;
 
-    .detail-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 12px;
-      background: #333;
-      border-radius: 5px 5px 0 0;
-      font-size: 13px;
-      font-weight: 500;
-      color: #eee;
+    .close-btn {
+      padding: 4px;
+      border: none;
+      background: transparent;
+      color: #888;
+      cursor: pointer;
+      font-size: 14px;
 
-      .close-btn {
-        padding: 4px;
-        border: none;
-        background: transparent;
-        color: #888;
-        cursor: pointer;
-        font-size: 14px;
-
-        &:hover {
-          color: #fff;
-        }
+      &:hover {
+        color: #fff;
       }
     }
+  }
 
-    .detail-content {
-      flex: 1;
-      padding: 12px;
-      overflow-y: auto;
+  .detail-content {
+    flex: 1;
+    padding: 12px;
+    overflow-y: auto;
 
-      .detail-row {
-        display: flex;
-        align-items: flex-start;
-        margin-bottom: 12px;
+    .detail-row {
+      display: flex;
+      align-items: flex-start;
+      font-size: 12px;
+
+      .label {
+        width: 80px;
+        color: #888;
+        flex-shrink: 0;
+      }
+
+      .value {
+        flex: 1;
+        color: #eee;
+        word-break: break-all;
+        font-family: monospace;
+
+        &.groups {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+        }
+      }
+
+      .copy-btn {
+        padding: 2px 6px;
+        border: none;
+        background: transparent;
+        color: #666;
+        cursor: pointer;
         font-size: 12px;
+        flex-shrink: 0;
 
-        .label {
-          width: 80px;
-          color: #888;
-          flex-shrink: 0;
-        }
-
-        .value {
-          flex: 1;
-          color: #eee;
-          word-break: break-all;
-          font-family: monospace;
-
-          &.groups {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-          }
-        }
-
-        .copy-btn {
-          padding: 2px 6px;
-          border: none;
-          background: transparent;
-          color: #666;
-          cursor: pointer;
-          font-size: 12px;
-          flex-shrink: 0;
-
-          &:hover {
-            color: #1890ff;
-          }
+        &:hover {
+          color: #1890ff;
         }
       }
     }
