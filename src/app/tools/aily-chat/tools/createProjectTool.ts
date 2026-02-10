@@ -3,10 +3,91 @@ import { ProjectService } from "../../../services/project.service";
 import { ConfigService } from '../../../services/config.service';
 import { injectTodoReminder } from "./todoWriteTool";
 
+interface LibraryInfo {
+    name: string;
+    path: string;
+    readmeAiPath?: string;
+}
+
+interface BoardInfo {
+    name: string;
+    path: string;
+}
+
+interface CreateProjectResult {
+    projectOpened: boolean;
+    projectPath?: string;
+    projectName?: string;
+    board?: BoardInfo;
+    libraries?: LibraryInfo[];
+    message?: string;
+}
+
+/**
+ * 收集项目信息（开发板、已安装的库及其 readme_ai.md 路径）
+ */
+function collectProjectInfo(projectPath: string, projectName: string): CreateProjectResult {
+    const result: CreateProjectResult = {
+        projectOpened: true,
+        projectPath,
+        projectName
+    };
+
+    try {
+        const ailyProjectPath = window["path"].join(projectPath, 'node_modules', '@aily-project');
+
+        if (!window['fs'].existsSync(ailyProjectPath)) {
+            result.message = `项目 "${projectName}" 创建成功！项目依赖目录尚未就绪。`;
+            return result;
+        }
+
+        const items = window['fs'].readdirSync(ailyProjectPath);
+        const libraries: LibraryInfo[] = [];
+        let board: BoardInfo | undefined;
+
+        for (const item of items) {
+            const itemPath = window["path"].join(ailyProjectPath, item);
+
+            try {
+                if (!window['fs'].isDirectory(itemPath)) continue;
+            } catch {
+                continue;
+            }
+
+            const simplifiedPath = `{projectPath}/@aily-project/${item}`;
+
+            if (item.startsWith('board-')) {
+                board = { name: item, path: simplifiedPath };
+            } else if (item.startsWith('lib-')) {
+                const libInfo: LibraryInfo = { name: item, path: simplifiedPath };
+                const readmePath = window["path"].join(itemPath, 'readme_ai.md');
+                if (window['fs'].existsSync(readmePath)) {
+                    libInfo.readmeAiPath = `${simplifiedPath}/readme_ai.md`;
+                }
+                libraries.push(libInfo);
+            }
+        }
+
+        if (board) result.board = board;
+        if (libraries.length > 0) result.libraries = libraries;
+
+        const boardSummary = board ? `开发板: ${board.name}` : '未安装开发板';
+        const libCount = libraries.length;
+        const libsWithReadme = libraries.filter(lib => lib.readmeAiPath).length;
+
+        result.message = `项目 "${projectName}" 创建成功！\n${boardSummary}\n已安装 ${libCount} 个库${libsWithReadme > 0 ? `，其中 ${libsWithReadme} 个包含 readme_ai.md 文档，可使用 analyze_library_blocks 分析没有 readme_ai.md 文档的库` : ''}`;
+    } catch (e) {
+        console.warn('收集项目信息失败:', e);
+        result.message = `项目 "${projectName}" 创建成功！（获取详细信息时出错: ${e.message}）`;
+    }
+
+    return result;
+}
+
 export async function newProjectTool(prjRootPath: string, toolArgs: any, prjService: ProjectService, configService: ConfigService): Promise<ToolUseResult> {
-    let toolResult = null;
-    let is_error = false;   
-    
+    let is_error = false;
+    let toolResult: string;
+
     try {
         // 判断toolArgs.board是否是JSON字符串
         let boardInfo;
@@ -24,24 +105,25 @@ export async function newProjectTool(prjRootPath: string, toolArgs: any, prjServ
             throw new Error(`未找到开发板信息: ${toolArgs.board}`);
         }
 
-        // console.log("使用的开发板信息:", boardInfo);
-
-        const prjName = prjService.generateUniqueProjectName(prjRootPath)
+        const prjName = prjService.generateUniqueProjectName(prjRootPath);
         await prjService.projectNew({
             name: prjName,
             path: prjRootPath,
             board: boardInfo
         });
-        toolResult = `项目 "${prjName}" 创建成功！项目路径为${prjRootPath}\\${prjName}`;
+
+        const projectPath = window["path"].join(prjRootPath, prjName);
+        const result = collectProjectInfo(projectPath, prjName);
+        toolResult = JSON.stringify(result, null, 2);
     } catch (e) {
         console.warn('创建项目失败:', e);
         toolResult = `创建项目失败: ${e.message}`;
         is_error = true;
-    } finally {
-        const toolResults = {
-            is_error,
-            content: toolResult
-        };
-        return injectTodoReminder(toolResults, 'newProjectTool');
     }
+
+    const toolResults = {
+        is_error,
+        content: toolResult
+    };
+    return injectTodoReminder(toolResults, 'newProjectTool');
 }

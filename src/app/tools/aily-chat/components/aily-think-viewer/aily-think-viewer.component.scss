@@ -33,7 +33,7 @@
 
                 .loading {
                     color: #1890ff;
-                    
+
                     i {
                         animation: spin 1s linear infinite;
                     }
@@ -57,8 +57,8 @@
     }
 
     .think-content {
-        padding: 8px 8px 8px 8px;
-        margin-top: 5px;
+        padding: 8px 2px;
+        margin: 5px -10px 0 0;
         font-size: 12px;
         line-height: 1.6;
         color: #999;
@@ -73,6 +73,7 @@
     from {
         transform: rotate(0deg);
     }
+
     to {
         transform: rotate(360deg);
     }

@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Blockly主題",
             "BLOCKLY_MINIMAP": "Blockly縮略圖",
             "COMPILATION_OPTIONS": "編譯選項",
+            "REGION": "服務區域",
+            "REGION_TITLE": "切換服務區域",
+            "REGION_DESC": "切換服務區域後需要重新登入，是否繼續？",
+            "REGION_CONFIRM": "確認",
+            "REGION_CANCEL": "取消",
             "REPOSITORY_URLS": "倉庫地址",
             "BOARD_LIST": "開發板清單",
             "LIBRARY_LIST": "函式庫清單",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "文檔",
         "FEEDBACK": "反饋",
         "NO_PINMAP": "該開發板沒有提供引腳圖",
+        "PINMAP_PARSE_ERROR": "引腳圖解析失敗",
         "NO_DOCUMENTATION": "該開發板沒有提供文檔鏈接"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "無法開啟專案: ",
         "CREATING_PROJECT": "正在建立專案...",
         "PROJECT_CREATED": "專案建立成功",
+        "CREATE_FAILED": "專案建立失敗",
         "PATH_NOT_EXIST": "專案路徑不存在，請重新選擇專案",
         "SWITCHING_BOARD_CONFIG": "正在切換開發板配置...",
         "BOARD_SWITCH_COMPLETE": "開發板切換完成",

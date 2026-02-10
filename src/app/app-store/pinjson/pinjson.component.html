@@ -1,0 +1,16 @@
+<app-sub-window [title]="'PIN MAP'" [winBtns]="['minimize', 'maximize', 'close']">
+  <div class="pinjson-container">
+    @if(showEmptyState) {
+    <div class="pinjson-empty-state">
+      <i class="fa-light fa-inbox"></i>
+      <span>加载失败</span>
+    </div>
+    }
+    <iframe
+      class="pinjson-iframe"
+      [src]="iframeSrc"
+      (load)="onIframeLoad($event)"
+      title="Pin JSON Viewer"
+    ></iframe>
+  </div>
+</app-sub-window>

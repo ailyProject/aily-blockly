@@ -10,7 +10,7 @@ class CommandManager {
 
   // 执行命令并返回流式数据
   executeCommand(options) {
-    const { command, args = [], cwd, env, streamId } = options;
+    let { command, args = [], cwd, env, streamId } = options;
     
     // 根据平台选择正确的 shell
     let shell;
@@ -24,12 +24,44 @@ class CommandManager {
       shell = true; // 使用系统默认 shell
     }
 
-    // console.log("====shell: ", command, args, {
-    //   cwd: cwd || process.cwd(),
-    //   // env: { ...process.env, ...env },
-    //   shell: shell,
-    //   stdio: ['pipe', 'pipe', 'pipe']
-    // }, streamId);
+    // 【核心修复】Windows 环境下的特殊处理
+    if (isWin32) {
+      // 1. 如果是 npm/npx 命令，强制加上 .cmd 后缀
+      // 只有这样，spawn 才能准确找到可执行文件，不再依赖 Shell 的智能猜测
+      if (command === 'npm') {
+        command = 'npm.cmd';
+      } else if (command === 'npx') {
+        command = 'npx.cmd';
+      }
+
+      // 2. 对于 .cmd 命令，使用 CMD (shell: true) 而非 PowerShell
+      // 因为 .cmd 本质是批处理，用 cmd.exe 运行是最原生、最稳的
+      // 同时也避开了 PowerShell 执行策略 (ExecutionPolicy) 的干扰
+      if (command.endsWith('.cmd') || command.endsWith('.bat')) {
+        shell = true;
+      }
+    }
+
+    // 【调试增强】为 npm install 命令自动添加 --loglevel verbose 参数
+    const isNpmCmd = command === 'npm' || command === 'npm.cmd';
+    const isInstallCmd = args.includes('install') || args.includes('i');
+    if (isNpmCmd && isInstallCmd) {
+      // 检查是否已经有 loglevel 或 verbose 相关参数
+      const hasLogLevel = args.some(arg => 
+        arg.includes('--loglevel') || arg === '--verbose' || arg === '-d' || arg === '--silent' || arg === '-s'
+      );
+      
+      if (!hasLogLevel) {
+        // 添加 --loglevel verbose 以获取详细日志
+        args = [...args, '--loglevel', 'verbose'];
+      }
+    }
+
+    // 打印执行命令的日志
+    const fullCommand = args.length > 0 ? `${command} ${args.join(' ')}` : command;
+    console.log(`[CMD] 执行命令: ${fullCommand}`);
+    console.log(`[CMD] 工作目录: ${cwd || process.cwd()}`);
+    console.log(`[CMD] Shell: ${shell}`);
     
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
@@ -109,24 +141,29 @@ function registerCmdHandlers(mainWindow) {
       // console.log(options);
       // 监听标准输出
       process.stdout.on('data', (data) => {
+        const output = data.toString();
+        console.log(`[CMD][${streamId}] stdout: ${output}`);
         senderWindow.send(`cmd-data-${streamId}`, {
           type: 'stdout',
-          data: data.toString(),
+          data: output,
           streamId
         });
       });
 
       // 监听错误输出
       process.stderr.on('data', (data) => {
+        const output = data.toString();
+        console.error(`[CMD][${streamId}] stderr: ${output}`);
         senderWindow.send(`cmd-data-${streamId}`, {
           type: 'stderr',
-          data: data.toString(),
+          data: output,
           streamId
         });
       });
 
       // 监听进程关闭
       process.on('close', (code, signal) => {
+        console.log(`[CMD][${streamId}] 进程关闭, code: ${code}, signal: ${signal}`);
         senderWindow.send(`cmd-data-${streamId}`, {
           type: 'close',
           code,
@@ -138,6 +175,7 @@ function registerCmdHandlers(mainWindow) {
 
       // 监听进程错误
       process.on('error', (error) => {
+        console.error(`[CMD][${streamId}] 进程错误: ${error.message}`);
         senderWindow.send(`cmd-data-${streamId}`, {
           type: 'error',
           error: error.message,

@@ -188,6 +188,10 @@
             "FLYOUT_AUTO_CLOSE": "Auto Close Toolbox",
             "COMPILATION_OPTIONS": "Compilation Options",
             "REGION": "Service Region",
+            "REGION_TITLE": "Switch Service Region",
+            "REGION_DESC": "You need to log in again after switching the service region. Continue?",
+            "REGION_CONFIRM": "Confirm",
+            "REGION_CANCEL": "Cancel",
             "REPOSITORY_URLS": "Repository URLs",
             "BOARD_LIST": "Board List",
             "LIBRARY_LIST": "Library List",
@@ -408,6 +412,7 @@
         "DOCUMENTATION": "Documentation",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Pin map not available for this board",
+        "PINMAP_PARSE_ERROR": "Pin map parsing failed",
         "NO_DOCUMENTATION": "Documentation not available for this board"
     },
     "SERIAL": {
@@ -596,6 +601,7 @@
         "CANNOT_OPEN_PROJECT": "Cannot open project: ",
         "CREATING_PROJECT": "Creating project...",
         "PROJECT_CREATED": "Project created successfully",
+        "CREATE_FAILED": "Project creation failed",
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
         "BOARD_SWITCH_COMPLETE": "Board switch complete",

@@ -5,6 +5,7 @@ import { MCPTool } from './mcp.service';
 import { API } from "../../../configs/api.config";
 import { ConfigService } from '../../../services/config.service';
 import { AilyChatConfigService, ModelConfigOption } from './aily-chat-config.service';
+import { AuthService } from '../../../services/auth.service';
 
 // 使用 ModelConfigOption 作为统一的模型配置类型，保留 ModelConfig 别名以兼容旧代码
 export type ModelConfig = ModelConfigOption;
@@ -52,7 +53,8 @@ export class ChatService {
   constructor(
     private http: HttpClient,
     private configService: ConfigService,
-    private ailyChatConfigService: AilyChatConfigService
+    private ailyChatConfigService: AilyChatConfigService,
+    private authService: AuthService
   ) {
     ChatService.instance = this;
     // 从配置加载AI聊天模式
@@ -259,7 +261,7 @@ export class ChatService {
     }
   }
 
-  startSession(mode: string, tools: MCPTool[] | null = null, maxCount?: number, customllmConfig?: any, customModel?: any): Observable<any> {
+  startSession(mode: string, tools: MCPTool[] | null = null, maxCount?: number, customllmConfig?: any, selectModel?: string): Observable<any> {
     const payload: any = { 
       session_id: this.currentSessionId, 
       tools: tools || [], 
@@ -276,9 +278,9 @@ export class ChatService {
       payload.llm_config = customllmConfig;
     }
 
-    // 如果提供了自定义模型，添加到请求中
-    if (customModel) {
-      payload.custom_model = customModel;
+    // 如果提供了选择的模型名称，添加到请求中
+    if (selectModel) {
+      payload.select_model = selectModel;
     }
     
     return this.http.post(API.startSession, payload);
@@ -289,66 +291,98 @@ export class ChatService {
   }
 
   streamConnect(sessionId: string, options?: any): Observable<any> {
-    const messageSubject = new Subject<any>();
+    // 使用 Observable 构造函数，确保只有在订阅时才开始执行
+    return new Observable(observer => {
+      let aborted = false;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-    fetch(`${API.streamConnect}/${sessionId}`)
-      .then(async response => {
-        if (!response.ok) {
-          messageSubject.error(new Error(`HTTP error! Status: ${response.status}`));
-          return;
+      // 获取 token 并添加 Authorization 头部
+      this.authService.getToken2().then(token => {
+        if (aborted) return;
+
+        const headers: HeadersInit = {};
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
         }
 
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        fetch(`${API.streamConnect}/${sessionId}`, { headers })
+          .then(async response => {
+          if (aborted) return;
 
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
+          if (!response.ok) {
+            observer.error(new Error(`HTTP error! Status: ${response.status}`));
+            return;
+          }
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+          reader = response.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
 
-            for (const line of lines) {
-              if (!line.trim()) continue;
-              try {
-                const msg = JSON.parse(line);
-                messageSubject.next(msg);
-                // console.log(msg);
+          try {
+            while (!aborted) {
+              const { value, done } = await reader.read();
+              if (done) break;
 
-                if (msg.type === 'TaskCompleted') {
-                  // console.log("Complete Msg: ", msg);
-                  messageSubject.complete();
-                  return;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                if (aborted) break;
+                if (!line.trim()) continue;
+                try {
+                  const msg = JSON.parse(line);
+                  observer.next(msg);
+                  // console.log("recv: ", msg);
+
+                  if (msg.type === 'TaskCompleted') {
+                    observer.complete();
+                    return;
+                  }
+                } catch (error) {
+                  console.warn('解析JSON失败:', error, line);
                 }
-              } catch (error) {
-                console.warn('解析JSON失败:', error, line);
               }
             }
-          }
 
-          // 处理缓冲区中剩余的内容
-          if (buffer.trim()) {
-            try {
-              const msg = JSON.parse(buffer);
-              messageSubject.next(msg);
-            } catch (error) {
-              console.warn('解析最后的JSON失败:', error, buffer);
+            // 处理缓冲区中剩余的内容
+            if (!aborted && buffer.trim()) {
+              try {
+                const msg = JSON.parse(buffer);
+                observer.next(msg);
+              } catch (error) {
+                console.warn('解析最后的JSON失败:', error, buffer);
+              }
+            }
+
+            if (!aborted) {
+              observer.complete();
+            }
+          } catch (error) {
+            if (!aborted) {
+              observer.error(error);
             }
           }
-
-          messageSubject.complete();
-        } catch (error) {
-          messageSubject.error(error);
+        })
+        .catch(error => {
+          if (!aborted) {
+            observer.error(error);
+          }
+        });
+      }).catch(error => {
+        if (!aborted) {
+          observer.error(error);
         }
-      })
-      .catch(error => {
-        messageSubject.error(error);
       });
 
-    return messageSubject.asObservable();
+      // 返回清理函数，在取消订阅时调用
+      return () => {
+        aborted = true;
+        if (reader) {
+          reader.cancel().catch(() => {});
+        }
+      };
+    });
   }
 
   sendMessage(sessionId: string, content: string, source: string = 'user') {

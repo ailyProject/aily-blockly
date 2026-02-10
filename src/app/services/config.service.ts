@@ -2,7 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { lastValueFrom } from 'rxjs';
 import { ElectronService } from './electron.service';
-import { API, setServerUrl, setRegistryUrl } from '../configs/api.config';
+import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../configs/api.config';
 
 @Injectable({
   providedIn: 'root',
@@ -113,14 +113,14 @@ export class ConfigService {
     this.data["platform"] = window['platform'].type;
     this.data["lang"] = this.get_lang_filename(window['platform'].lang);
 
-    // 并行加载缓存的boards.json和libraries.json
+    // 并行加载缓存的boards.json和libraries.json（旧格式，用于基础功能）
     // await Promise.all([
     this.loadAndCacheBoardList(configFilePath);
     this.loadAndCacheLibraryList(configFilePath);
-
-    this.loadAndCacheBoardIndex(configFilePath);
-    this.loadAndCacheLibraryIndex(configFilePath);
     // ]);
+
+    // 注意：boardIndex 和 libraryIndex（新格式索引）延迟到 AI 组件加载时再加载
+    // 以减轻软件启动耗时，参见 loadHardwareIndexForAI()
 
     // 延迟后再次尝试加载，确保最优节点检测完成后能成功下载最新数据
     if (this.electronService.isElectron) {
@@ -258,6 +258,7 @@ export class ConfigService {
       // 更新 API 配置模块的缓存
       setRegistryUrl(regionConfig.npm_registry);
       setServerUrl(regionConfig.api_server);
+      setToolWebUrl(regionConfig.tool_web);
       
       // 更新环境变量
       if (window['process']?.env) {
@@ -265,6 +266,7 @@ export class ConfigService {
         window['process'].env['AILY_NPM_REGISTRY'] = regionConfig.npm_registry;
         window['process'].env['AILY_ZIP_URL'] = regionConfig.resource;
         window['process'].env['AILY_API_SERVER'] = regionConfig.api_server;
+        window['process'].env['AILY_TOOL_WEB'] = regionConfig.tool_web;
       }
       
       // 通过 ipcRenderer 通知主进程更新环境变量（等待所有更新完成）
@@ -273,7 +275,8 @@ export class ConfigService {
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_REGION', value: regionKey }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_NPM_REGISTRY', value: regionConfig.npm_registry }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_ZIP_URL', value: regionConfig.resource }),
-          window['ipcRenderer'].invoke('env-set', { key: 'AILY_API_SERVER', value: regionConfig.api_server })
+          window['ipcRenderer'].invoke('env-set', { key: 'AILY_API_SERVER', value: regionConfig.api_server }),
+          window['ipcRenderer'].invoke('env-set', { key: 'AILY_TOOL_WEB', value: regionConfig.tool_web })
         ]);
       }
       
@@ -317,6 +320,38 @@ export class ConfigService {
   // ==================== 新格式索引（结构化数据）====================
   boardIndex: any[] = [];  // 新格式开发板索引
   libraryIndex: any[] = [];  // 新格式库索引
+  private _hardwareIndexLoaded = false;  // 标记索引是否已加载
+
+  /**
+   * 为 AI 工具加载硬件索引数据（boardIndex 和 libraryIndex）
+   * 延迟加载以减轻软件启动耗时
+   * @returns Promise<void>
+   */
+  async loadHardwareIndexForAI(): Promise<void> {
+    // 避免重复加载
+    if (this._hardwareIndexLoaded) {
+      console.log('[ConfigService] 硬件索引已加载，跳过');
+      return;
+    }
+
+    console.log('[ConfigService] 开始加载 AI 硬件索引...');
+    const configFilePath = window['path'].getAppDataPath();
+    
+    await Promise.all([
+      this.loadAndCacheBoardIndex(configFilePath),
+      this.loadAndCacheLibraryIndex(configFilePath)
+    ]);
+    
+    this._hardwareIndexLoaded = true;
+    console.log('[ConfigService] AI 硬件索引加载完成, boardIndex:', this.boardIndex?.length, 'libraryIndex:', this.libraryIndex?.length);
+  }
+
+  /**
+   * 检查硬件索引是否已加载
+   */
+  get isHardwareIndexLoaded(): boolean {
+    return this._hardwareIndexLoaded;
+  }
 
   private async loadAndCacheBoardIndex(configFilePath: string): Promise<void> {
     try {
@@ -412,7 +447,7 @@ export class ConfigService {
   async loadBoardIndex(): Promise<any[]> {
     try {
       let response: any = await lastValueFrom(
-        this.http.get(this.data.resource[0] + '/boards-index.json', {
+        this.http.get(this.getCurrentResourceUrl() + '/boards-index.json', {
           responseType: 'json',
         }),
       );
@@ -432,7 +467,7 @@ export class ConfigService {
   async loadLibraryIndex(): Promise<any[]> {
     try {
       let response: any = await lastValueFrom(
-        this.http.get(this.data.resource[0] + '/libraries-index.json', {
+        this.http.get(this.getCurrentResourceUrl() + '/libraries-index.json', {
           responseType: 'json',
         }),
       );
@@ -760,6 +795,7 @@ interface AppConfig {
     [key: string]: {
       name: string;
       api_server: string;
+      tool_web: string;
       npm_registry: string;
       resource: string;
       updater: string;

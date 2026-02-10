@@ -99,14 +99,17 @@
             <div class="right-inner">
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.REGION' | translate }}:</div>
-                <nz-radio-group [(ngModel)]="selectedRegion" (ngModelChange)="onRegionChange($event)" [nzSize]="'small'"
-                  nzButtonStyle="solid">
+                <div class="region-buttons">
                   @for (region of regionList; track region.key) {
-                  <label nz-radio-button [nzValue]="region.key">
+                  <button 
+                    nz-button 
+                    nzSize="small"
+                    [nzType]="selectedRegion === region.key ? 'primary' : 'default'"
+                    (click)="onRegionChange(region.key)">
                     {{ region.name }}
-                  </label>
+                  </button>
                   }
-                </nz-radio-group>
+                </div>
               </div>
             </div>
           </div>

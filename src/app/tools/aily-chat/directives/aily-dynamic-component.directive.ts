@@ -46,6 +46,7 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
     this.observer = new MutationObserver((mutations) => {
       let shouldScan = false;
       const newPlaceholders = new Set<HTMLElement>();
+      const updatedPlaceholders = new Set<HTMLElement>();
       
       mutations.forEach((mutation) => {
         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
@@ -77,7 +78,24 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
             }
           });
         }
+        
+        // 监听属性变化，用于更新现有组件
+        if (mutation.type === 'attributes' && mutation.target.nodeType === Node.ELEMENT_NODE) {
+          const target = mutation.target as HTMLElement;
+          if (target.classList?.contains('aily-code-block-placeholder') && 
+              mutation.attributeName === 'data-aily-data') {
+            // 占位符的数据属性发生了变化，尝试更新现有组件
+            updatedPlaceholders.add(target);
+          }
+        }
       });
+
+      // 处理属性更新的占位符
+      if (updatedPlaceholders.size > 0) {
+        updatedPlaceholders.forEach((placeholder) => {
+          this.updateExistingComponentFromPlaceholder(placeholder);
+        });
+      }
 
       if (shouldScan) {
         // 只处理新发现的占位符，而不是全部重新扫描
@@ -87,7 +105,9 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
 
     this.observer.observe(this.elementRef.nativeElement, {
       childList: true,
-      subtree: true
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-aily-data']
     });
   }
 
@@ -419,6 +439,77 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
       container: existingContainer,
       componentRef: componentRef
     };
+  }
+
+  /**
+   * 从占位符更新现有组件（用于属性变化时）
+   */
+  private updateExistingComponentFromPlaceholder(placeholder: HTMLElement): void {
+    const ailyType = placeholder.getAttribute('data-aily-type');
+    const encodedData = placeholder.getAttribute('data-aily-data');
+    const componentId = placeholder.getAttribute('data-component-id');
+
+    if (!ailyType || !encodedData || ailyType !== 'aily-think') {
+      return; // 只处理 think 组件的更新
+    }
+
+    // 解码数据
+    let componentData;
+    try {
+      const decodedData = safeBase64Decode(encodedData);
+      componentData = JSON.parse(decodedData);
+    } catch (error) {
+      console.warn('Failed to decode component data for update:', error);
+      return;
+    }
+
+    // 查找现有的组件容器
+    // 对于 think 组件，我们查找最后一个 think 组件容器（因为通常最后一个段落包含最新的 think 内容）
+    let componentContainer: HTMLElement | null = null;
+    
+    // 首先尝试通过 component-id 查找（如果 component-id 匹配）
+    if (componentId) {
+      componentContainer = this.elementRef.nativeElement.querySelector(
+        `.aily-think-container[data-component-id="${componentId}"]`
+      ) as HTMLElement;
+    }
+    
+    // 如果没找到，查找最后一个 think 组件容器（不依赖 component-id）
+    if (!componentContainer) {
+      const allThinkContainers = this.elementRef.nativeElement.querySelectorAll('.aily-think-container');
+      if (allThinkContainers.length > 0) {
+        // 使用最后一个容器（应该对应最后一个段落）
+        componentContainer = allThinkContainers[allThinkContainers.length - 1] as HTMLElement;
+      }
+    }
+    
+    // 如果还是没找到，尝试查找占位符附近的组件容器
+    if (!componentContainer) {
+      let current: HTMLElement | null = placeholder.parentElement;
+      while (current && current !== this.elementRef.nativeElement) {
+        if (current.classList.contains('aily-think-container')) {
+          componentContainer = current;
+          break;
+        }
+        current = current.parentElement;
+      }
+    }
+
+    if (!componentContainer) {
+      return; // 找不到组件容器，无法更新
+    }
+
+    // 查找对应的组件引用
+    const componentRef = this.componentRefs.find(ref => {
+      return componentContainer!.contains(ref.location.nativeElement);
+    });
+
+    if (!componentRef) {
+      return; // 找不到组件引用，无法更新
+    }
+
+    // 更新组件数据
+    this.updateExistingComponent({ container: componentContainer, componentRef }, componentData);
   }
 
   /**

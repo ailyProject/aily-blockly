@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.21",
+  "version": "0.9.23",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -140,9 +140,11 @@
     "@blockly/field-colour-hsv-sliders": "^5.0.19",
     "@blockly/workspace-minimap": "^0.2.16",
     "@ctrl/tinycolor": "^4.1.0",
+    "@esbuild/darwin-arm64": "^0.27.3",
     "@lydell/node-pty": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@ngx-translate/core": "^16.0.3",
+    "@rollup/rollup-darwin-arm64": "^4.57.1",
     "@splidejs/splide": "^4.1.4",
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
@@ -182,6 +184,7 @@
     "tslib": "^2.3.0",
     "ua-parser-js": "^2.0.5",
     "uuid": "^11.1.0",
+    "vscroll": "^1.8.0",
     "zone.js": "~0.15.0"
   },
   "devDependencies": {

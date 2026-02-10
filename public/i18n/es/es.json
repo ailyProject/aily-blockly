@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Tema de Blockly",
             "BLOCKLY_MINIMAP": "Minimapa de Blockly",
             "COMPILATION_OPTIONS": "Opciones de Compilación",
+            "REGION": "Región de servicio",
+            "REGION_TITLE": "Cambiar región de servicio",
+            "REGION_DESC": "Deberá iniciar sesión de nuevo después de cambiar la región de servicio. ¿Continuar?",
+            "REGION_CONFIRM": "Confirmar",
+            "REGION_CANCEL": "Cancelar",
             "REPOSITORY_URLS": "URLs de Repositorio",
             "BOARD_LIST": "Lista de Placas",
             "LIBRARY_LIST": "Lista de Bibliotecas",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "Documentación",
         "FEEDBACK": "Comentarios",
         "NO_PINMAP": "Mapa de pines no disponible para esta placa",
+        "PINMAP_PARSE_ERROR": "Error al analizar el mapa de pines",
         "NO_DOCUMENTATION": "Documentación no disponible para esta placa"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "No se puede abrir el proyecto: ",
         "CREATING_PROJECT": "Creando proyecto...",
         "PROJECT_CREATED": "Proyecto creado correctamente",
+        "CREATE_FAILED": "Error al crear el proyecto",
         "PATH_NOT_EXIST": "La ruta del proyecto no existe, seleccione otro proyecto",
         "SWITCHING_BOARD_CONFIG": "Cambiando configuración de la placa...",
         "BOARD_SWITCH_COMPLETE": "Cambio de placa completado",

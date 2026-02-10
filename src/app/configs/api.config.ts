@@ -2,12 +2,19 @@
 // 这些变量可以通过 setServerUrl/setRegistryUrl 在运行时更新
 let _cachedServerUrl: string | null = null;
 let _cachedRegistryUrl: string | null = null;
+let _cachedToolWebUrl: string | null = null;
 
 // 从 process.env 读取初始值（如果可用）
 function getInitialServerUrl(): string {
   return (typeof process !== 'undefined' && window['env'].get("AILY_API_SERVER")) 
     ? window['env'].get("AILY_API_SERVER")
     : 'https://api.aily.pro';
+}
+
+function getInitialToolWebUrl(): string {
+  return (typeof process !== 'undefined' && window['env'].get("AILY_TOOL_WEB"))
+    ? window['env'].get("AILY_TOOL_WEB")
+    : 'https://tool.aily.pro';
 }
 
 function getInitialRegistryUrl(): string {
@@ -31,6 +38,13 @@ function getRegistryUrl(): string {
   return getInitialRegistryUrl();
 }
 
+export function getToolWebUrl(): string {
+  if (_cachedToolWebUrl !== null) {
+    return _cachedToolWebUrl;
+  }
+  return getInitialToolWebUrl();
+}
+
 /**
  * 更新 API 服务器地址（在设置页面更改后调用）
  * @param url 新的服务器地址
@@ -45,6 +59,10 @@ export function setServerUrl(url: string): void {
  */
 export function setRegistryUrl(url: string): void {
   _cachedRegistryUrl = url;
+}
+
+export function setToolWebUrl(url: string): void {
+  _cachedToolWebUrl = url;
 }
 
 // 使用 getter 动态获取 API 地址，确保每次访问都读取最新的环境变量

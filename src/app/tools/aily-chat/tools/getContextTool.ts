@@ -8,13 +8,24 @@ interface GetContextInput {
     info_type?: 'all' | 'project' | 'platform' | 'system' | 'editingMode';
 }
 
+interface BoardInfo {
+    name: string; // 如 board-arduino_uno
+    path: string; // 如 {projectPath}/@aily-project/board-arduino_uno
+}
+
+interface LibraryInfo {
+    name: string; // 如 lib-core-io
+    path: string; // 如 {projectPath}/@aily-project/lib-core-io
+    readmePath?: string; // readme_ai.md 文件路径（如果存在）
+}
+
 interface ProjectInfo {
-    path: string;
+    opened: boolean;
+    projectPath?: string;
     name?: string;
-    rootFolder?: string;
-    opened?: boolean;
+    board?: BoardInfo;
+    libraries?: LibraryInfo[];
     appDataPath?: string;
-    libraryConversionPath?: string;
 }
 
 interface PlatformInfo {
@@ -44,7 +55,6 @@ interface GetContextResult {
     editingMode?: EditingMode;
     workspaceOverview?: string;
     cppCode?: string;
-    readme?: string;
     warn?: string;
 }
 
@@ -91,32 +101,6 @@ export async function getContextTool(prjService: ProjectService, input: GetConte
         if (!result.project?.opened) {
             result.warn = `当前没有打开的项目，如果需要创建或打开项目，必须先征求用户同意再进行操作。`;
         }
-        result.readme = `
-## 上下文信息字段说明
-
-### project (项目信息)
-- **path**: 当前项目的相对路径（path/node_modules/@aily-project目录下存放当前项目的依赖库，如已安装的board、libraries、用户配置等）
-- **name**: 项目名称（从 package.json 读取）
-- **rootFolder**: 项目根文件夹名称
-- **opened**: 是否有项目被打开
-- **appDataPath**: 应用数据存储路径（包含SDK文件、编译器工具等，boards.json-开发板列表 libraries.json-库列表 等缓存到此路径）
-- **libraryConversionPath**: 库转换存放路径（用于存放转换后的库文件）
-- **dependencies**: 项目依赖包（从 package.json 读取）
-- **boardDependencies**: 开发板相关依赖（从 package.json 读取）
-
-### editingMode (编辑模式)
-- **mode**: 当前编辑模式
-  - 'blockly': 积木编程模式
-  - 'code': 代码编程模式
-  - 'unknown': 未知模式
-
-### workspaceOverview (工作区概览) - 仅在项目打开且处于Blockly模式时提供
-- **workspaceOverview**: Blockly工作区的完整概览，包含：
-  - 工作区统计信息（块数量、连接数量等）
-  - 块结构树状图
-  - 变量列表
-  - 代码生成信息
-`;
     } catch (error) {
         console.warn('Error getting context information:', error);
     }
@@ -181,45 +165,94 @@ async function getWorkspaceOverviewInfo(includeCode = true, includeTree = true):
 
 async function getProjectInfo(projectService): Promise<ProjectInfo> {
     try {
-        const prjRootPath = projectService.projectRootPath;
-        const currentProjectPath = projectService.currentProjectPath === projectService.projectRootPath ? "" : projectService.currentProjectPath;
+        const currentProjectPath = projectService.currentProjectPath === projectService.projectRootPath 
+            ? "" 
+            : projectService.currentProjectPath;
 
-        const appDataPath = window['path'].getAppDataPath() || ''
-        // Basic result with path
+        const appDataPath = window['path'].getAppDataPath() || '';
+        
+        // 基础结果
         const result: ProjectInfo = {
-            path: currentProjectPath || '',
-            rootFolder: prjRootPath || '',
             opened: !!currentProjectPath,
-            appDataPath: appDataPath,
-            // libraryConversionPath: appDataPath ? window['path'].join(appDataPath, 'libraries') : ''
-            libraryConversionPath: !!currentProjectPath ? currentProjectPath : (appDataPath ? window['path'].join(appDataPath, 'libraries') : '')
+            appDataPath: appDataPath
         };
 
-        // If current project path is empty, return early
+        // 如果没有打开项目，直接返回
         if (!currentProjectPath) {
             return result;
         }
 
-        // Set root folder
-        result.rootFolder = window["path"].basename(currentProjectPath);
+        result.projectPath = currentProjectPath;
 
-        // Try to read package.json for name and dependencies
-        const packageJsonPath = window["path"].join(currentProjectPath, 'package.json');
+        // 尝试读取项目名称
+        try {
+            const packageJsonPath = window["path"].join(currentProjectPath, 'package.json');
+            if (window['fs'].existsSync(packageJsonPath)) {
+                const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+                result.name = packageJson.name;
+            }
+        } catch (e) {
+            console.warn('读取package.json失败:', e);
+        }
 
-        if (window['fs'].existsSync(packageJsonPath)) {
-            const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
-            result.name = packageJson.name;
+        // 获取 node_modules/@aily-project 目录下的内容
+        const ailyProjectPath = window["path"].join(currentProjectPath, 'node_modules', '@aily-project');
+        
+        if (window['fs'].existsSync(ailyProjectPath)) {
+            // 读取目录内容
+            const items = window['fs'].readdirSync(ailyProjectPath);
+            const libraries: LibraryInfo[] = [];
+            let board: BoardInfo | undefined;
 
-            // Add dependencies information
-            // Note: You might want to update the ProjectInfo interface to include dependencies
-            (result as any).dependencies = packageJson.dependencies || {};
-            (result as any).boardDependencies = packageJson.boardDependencies || {};
+            for (const item of items) {
+                const itemPath = window["path"].join(ailyProjectPath, item);
+                
+                // 检查是否是目录
+                try {
+                    const isDir = window['fs'].isDirectory(itemPath);
+                    if (!isDir) continue;
+                } catch (e) {
+                    continue;
+                }
+
+                // 简化路径表示：{projectPath}/node_modules/@aily-project/{name}
+                const simplifiedPath = `{projectPath}/node_modules/@aily-project/${item}`;
+
+                // 判断是开发板还是库
+                if (item.startsWith('board-')) {
+                    board = { 
+                        name: item,
+                        path: simplifiedPath
+                    };
+                } else if (item.startsWith('lib-')) {
+                    const libInfo: LibraryInfo = { 
+                        name: item,
+                        path: simplifiedPath
+                    };
+                    
+                    // 检查是否存在 readme_ai.md
+                    const readmePath = window["path"].join(itemPath, 'readme_ai.md');
+                    if (window['fs'].existsSync(readmePath)) {
+                        libInfo.readmePath = `${simplifiedPath}/readme_ai.md`;
+                    }
+
+                    libraries.push(libInfo);
+                }
+            }
+
+            if (board) {
+                result.board = board;
+            }
+
+            if (libraries.length > 0) {
+                result.libraries = libraries;
+            }
         }
 
         return result;
     } catch (error) {
         console.warn('Error getting project info:', error);
-        return { path: process.cwd() };
+        return { opened: false };
     }
 }
 

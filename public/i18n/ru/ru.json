@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Тема Blockly",
             "BLOCKLY_MINIMAP": "Миникарта Blockly",
             "COMPILATION_OPTIONS": "Параметры компиляции",
+            "REGION": "Регион обслуживания",
+            "REGION_TITLE": "Переключить регион обслуживания",
+            "REGION_DESC": "После переключения региона потребуется повторный вход. Продолжить?",
+            "REGION_CONFIRM": "Подтвердить",
+            "REGION_CANCEL": "Отмена",
             "REPOSITORY_URLS": "Адреса репозиториев",
             "BOARD_LIST": "Список плат",
             "LIBRARY_LIST": "Список библиотек",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "Документация",
         "FEEDBACK": "Обратная связь",
         "NO_PINMAP": "Схема выводов недоступна для этой платы",
+        "PINMAP_PARSE_ERROR": "Ошибка разбора схемы выводов",
         "NO_DOCUMENTATION": "Документация недоступна для этой платы"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "Невозможно открыть проект: ",
         "CREATING_PROJECT": "Создание проекта...",
         "PROJECT_CREATED": "Проект успешно создан",
+        "CREATE_FAILED": "Не удалось создать проект",
         "PATH_NOT_EXIST": "Путь проекта не существует, выберите другой проект",
         "SWITCHING_BOARD_CONFIG": "Изменение конфигурации платы...",
         "BOARD_SWITCH_COMPLETE": "Смена платы завершена",

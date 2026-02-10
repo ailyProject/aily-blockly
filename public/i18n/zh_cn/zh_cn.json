@@ -187,6 +187,10 @@
             "FLYOUT_AUTO_CLOSE": "自动关闭工具箱",
             "COMPILATION_OPTIONS": "编译选项",
             "REGION": "服务区域",
+            "REGION_TITLE": "切换服务区域",
+            "REGION_DESC": "切换服务区域后需要重新登录，是否继续？",
+            "REGION_CONFIRM": "确认",
+            "REGION_CANCEL": "取消",
             "REPOSITORY_URLS": "仓库地址",
             "API_SERVER": "API服务器",
             "BOARD_LIST": "开发板列表",
@@ -408,6 +412,7 @@
         "DOCUMENTATION": "文档",
         "FEEDBACK": "反馈",
         "NO_PINMAP": "该开发板没有提供引脚图",
+        "PINMAP_PARSE_ERROR": "引脚图解析失败",
         "NO_DOCUMENTATION": "该开发板没有提供文档链接"
     },
     "SERIAL": {
@@ -596,6 +601,7 @@
         "CANNOT_OPEN_PROJECT": "无法打开项目: ",
         "CREATING_PROJECT": "正在创建项目...",
         "PROJECT_CREATED": "项目创建成功",
+        "CREATE_FAILED": "项目创建失败",
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",

@@ -182,6 +182,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
     linkSync: (existingPath, newPath) => require("fs").linkSync(existingPath, newPath),
     chmodSync: (path, mode) => require("fs").chmodSync(path, mode),
+    appendFileSync: (path, data) => require("fs").appendFileSync(path, data),
   },
   glob: {
     // 使用glob模式查找文件

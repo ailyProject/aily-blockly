@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Thème Blockly",
             "BLOCKLY_MINIMAP": "Miniature Blockly",
             "COMPILATION_OPTIONS": "Options de Compilation",
+            "REGION": "Région de service",
+            "REGION_TITLE": "Changer la région de service",
+            "REGION_DESC": "Vous devrez vous reconnecter après avoir changé la région de service. Continuer ?",
+            "REGION_CONFIRM": "Confirmer",
+            "REGION_CANCEL": "Annuler",
             "REPOSITORY_URLS": "URLs des Dépôts",
             "BOARD_LIST": "Liste des Cartes",
             "LIBRARY_LIST": "Liste des Bibliothèques",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "Documentation",
         "FEEDBACK": "Retour d'information",
         "NO_PINMAP": "Schéma des broches non disponible pour cette carte",
+        "PINMAP_PARSE_ERROR": "Échec de l'analyse du schéma des broches",
         "NO_DOCUMENTATION": "Documentation non disponible pour cette carte"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "Impossible d'ouvrir le projet: ",
         "CREATING_PROJECT": "Création du projet...",
         "PROJECT_CREATED": "Projet créé avec succès",
+        "CREATE_FAILED": "Échec de la création du projet",
         "PATH_NOT_EXIST": "Le chemin du projet n'existe pas, veuillez sélectionner un autre projet",
         "SWITCHING_BOARD_CONFIG": "Changement de la configuration de la carte...",
         "BOARD_SWITCH_COMPLETE": "Changement de carte terminé",

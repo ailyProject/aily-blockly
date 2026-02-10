@@ -42,7 +42,6 @@ export class CloudSpaceComponent {
   searchKeyword = ''; // 搜索关键词
   isLoginDialogOpen = false; // 标记登录对话框是否已打开
 
-  isLoggedIn = false;
   openingProjectIds = new Set<string>();
 
   constructor(
@@ -82,10 +81,8 @@ export class CloudSpaceComponent {
         if (!isLoggedIn) {
           this.itemList = [];
           this.filteredItemList = [];
-          this.isLoggedIn = false;
         } else {
           // 用户已登录时关闭可能存在的登录对话框状态标记
-          this.isLoggedIn = true;
           this.isLoginDialogOpen = false;
           this.getCloudProjects().then(
             () => { console.log('云项目列表获取完成'); }

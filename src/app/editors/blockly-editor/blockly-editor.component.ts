@@ -120,9 +120,7 @@ export class BlocklyEditorComponent {
     // 暴露 ProjectService 到全局，供 generator.js 使用
     window['projectService'] = this.projectService;
 
-    // 检查是否有node_modules目录，没有则安装依赖，有则跳过
-    const nodeModulesExist = this.electronService.exists(projectPath + '/node_modules');
-    if (!nodeModulesExist) {
+    if (!(await this.npmService.installedOk(projectPath))) {
       // 终端进入项目目录，安装项目依赖
       // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
       setTimeout(() => {
@@ -134,6 +132,16 @@ export class BlocklyEditorComponent {
         });
       }, 0);
       await this.cmdService.runAsync(`npm install`, projectPath);
+      if (!(await this.npmService.installedOk(projectPath))) {
+        setTimeout(() => {
+          this.noticeService.update({ 
+            title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'), 
+            text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'), 
+            state: 'error'
+          });
+        }, 1000);
+        return;
+      }
       setTimeout(() => {
         this.noticeService.update({
           title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'), 

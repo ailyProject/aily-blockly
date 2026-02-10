@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "مظهر Blockly",
             "BLOCKLY_MINIMAP": "خريطة Blockly المصغرة",
             "COMPILATION_OPTIONS": "خيارات التجميع",
+            "REGION": "منطقة الخدمة",
+            "REGION_TITLE": "تبديل منطقة الخدمة",
+            "REGION_DESC": "ستحتاج إلى تسجيل الدخول مرة أخرى بعد تبديل منطقة الخدمة. هل تريد المتابعة؟",
+            "REGION_CONFIRM": "تأكيد",
+            "REGION_CANCEL": "إلغاء",
             "REPOSITORY_URLS": "عناوين المستودع",
             "BOARD_LIST": "قائمة اللوحات",
             "LIBRARY_LIST": "قائمة المكتبات",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "التوثيق",
         "FEEDBACK": "ملاحظات",
         "NO_PINMAP": "خريطة الدبابيس غير متوفرة لهذه اللوحة",
+        "PINMAP_PARSE_ERROR": "فشل تحليل خريطة الدبابيس",
         "NO_DOCUMENTATION": "التوثيق غير متوفر لهذه اللوحة"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "تعذر فتح المشروع: ",
         "CREATING_PROJECT": "جاري إنشاء المشروع...",
         "PROJECT_CREATED": "تم إنشاء المشروع بنجاح",
+        "CREATE_FAILED": "فشل إنشاء المشروع",
         "PATH_NOT_EXIST": "مسار المشروع غير موجود، يرجى اختيار مشروع آخر",
         "SWITCHING_BOARD_CONFIG": "جاري تغيير إعدادات اللوحة...",
         "BOARD_SWITCH_COMPLETE": "اكتمل تغيير اللوحة",

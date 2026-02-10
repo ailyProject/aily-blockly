@@ -4,8 +4,8 @@
 <ng-template #windowBoxTemplate>
     <div class="window-box">
         <div class="user-info">
-            <div class="avatar ccenter" (click)="onAvatarClick()" [style.cursor]="isLoggedIn ? 'pointer' : 'default'" 
-                 [title]="isLoggedIn ? '点击打开管理后台' : ''">
+            <div class="avatar ccenter" (click)="onAvatarClick()" [style.cursor]="'pointer'" 
+                 [title]="'点击打开管理后台'">
                 @if (currentUser?.avatar) {
                     <img [src]="currentUser.avatar" alt="用户头像" />
                 } @else {
@@ -94,7 +94,5 @@
             </button>
         </div>
     </div>
-    @if(!isLoggedIn){
     <app-login></app-login>
-    }
 </ng-template>

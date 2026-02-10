@@ -207,6 +207,11 @@ export class AuthService {
   }
 
   async refreshMe() {
+    // 先检查是否有 token，没有 token 就不发起请求
+    const token = await this.getToken2();
+    if (!token) {
+      return;
+    }
     return this.http.get<CommonResponse>(API.me).subscribe( (res) => {
       if (res.status === 200 && res.data) {
         this.userInfoSubject.next(res.data);
@@ -309,7 +314,7 @@ export class AuthService {
     try {
       const fileExists = await this.checkAuthFileExists();
       const currentLoginStatus = this.isLoggedInSubject.value;
-      
+
       // 如果文件状态与当前登录状态不一致，则更新状态
       if (fileExists !== currentLoginStatus) {
         if (!fileExists && currentLoginStatus) {
@@ -620,9 +625,9 @@ export class AuthService {
   startGitHubOAuth(): Observable<{ authorization_url: string; state: string }> {
     // 生成并存储 state 参数
     const state = this.generateOAuthState();
-    
+
     const requestData = {
-      redirect_uri: 'ailyblockly://auth/callback',
+      redirect_uri: 'abis://auth/callback',
       state: state,
       device_id: 'pc'
     };
@@ -638,7 +643,7 @@ export class AuthService {
               console.error('注册OAuth状态失败:', error);
             });
           }
-          
+
           return {
             authorization_url: response.data.authorization_url,
             state: state
@@ -662,10 +667,10 @@ export class AuthService {
   generateOAuthState(): string {
     const state = Math.random().toString(36).substring(2) + Date.now().toString(36);
     this.oauthState = { state, timestamp: Date.now() };
-    
+
     // 同时保存到文件系统（用于跨实例共享）
     this.saveOAuthStateToFile(state);
-    
+
     return state;
   }
 
@@ -678,18 +683,18 @@ export class AuthService {
         // 使用共享的AppData路径（不使用实例隔离的路径）
         const originalAppDataPath = await this.getOriginalAppDataPath();
         const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
-        
+
         const stateData = {
           state,
           timestamp: Date.now()
         };
-        
+
         // 确保目录存在
         const stateDir = (window as any).electronAPI.path.dirname(stateFilePath);
         if (!(window as any).electronAPI.fs.existsSync(stateDir)) {
           (window as any).electronAPI.fs.mkdirSync(stateDir, { recursive: true });
         }
-        
+
         (window as any).electronAPI.fs.writeFileSync(stateFilePath, JSON.stringify(stateData, null, 2));
         // console.log('OAuth state已保存到共享文件:', stateFilePath);
       }
@@ -706,7 +711,7 @@ export class AuthService {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
         const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
-        
+
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           const content = (window as any).electronAPI.fs.readFileSync(stateFilePath, 'utf8');
           const stateData = JSON.parse(content);
@@ -727,13 +732,13 @@ export class AuthService {
   private async getOriginalAppDataPath(): Promise<string> {
     try {
       const currentAppDataPath = (window as any).electronAPI.path.getAppDataPath();
-      
+
       // 检查是否是实例隔离的路径 (包含 /instances/ 的路径)
       const instancesMatch = currentAppDataPath.match(/(.*)[/\\]instances[/\\][^/\\]+$/);
       if (instancesMatch) {
         return instancesMatch[1]; // 返回原始路径
       }
-      
+
       // 如果不是实例隔离路径，直接返回
       return currentAppDataPath;
     } catch (error) {
@@ -754,7 +759,7 @@ export class AuthService {
         return true;
       }
     }
-    
+
     // 如果内存中没有，尝试从文件加载（跨实例验证）
     const fileState = await this.loadOAuthStateFromFile();
     if (fileState && fileState.state === state) {
@@ -767,13 +772,13 @@ export class AuthService {
         this.clearOAuthStateFile();
       }
     } else {
-      // console.log('OAuth状态验证失败:', { 
-      //   inputState: state, 
-      //   memoryState: this.oauthState?.state, 
-      //   fileState: fileState?.state 
+      // console.log('OAuth状态验证失败:', {
+      //   inputState: state,
+      //   memoryState: this.oauthState?.state,
+      //   fileState: fileState?.state
       // });
     }
-    
+
     return false;
   }
 
@@ -793,7 +798,7 @@ export class AuthService {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
         const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
-        
+
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           (window as any).electronAPI.fs.unlinkSync(stateFilePath);
           // console.log('已清理OAuth状态共享文件:', stateFilePath);
@@ -867,7 +872,7 @@ export class AuthService {
 
       // 交换 token
       const tokenData = await this.exchangeGitHubToken(callbackData.code, callbackData.state).toPromise();
-      
+
       // 清理状态
       this.clearOAuthState();
 

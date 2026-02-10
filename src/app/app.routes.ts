@@ -89,6 +89,10 @@ export const routes: Routes = [
         loadComponent: () => import('./tools/simulator/simulator.component').then(m => m.SimulatorComponent)
     },
     {
+        path: "pinjson",
+        loadComponent: () => import('./app-store/pinjson/pinjson.component').then(m => m.PinjsonComponent)
+    },
+    {
         path: "model-store",
         loadComponent: () => import('./tools/model-store/model-store.component').then(m => m.ModelStoreComponent)
     },

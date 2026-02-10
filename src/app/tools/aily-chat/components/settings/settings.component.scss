@@ -107,6 +107,9 @@
                     }
 
                     .item-wrapper {
+                        min-width: 0;
+                        overflow: hidden;
+
                         .list-item {
                             display: flex;
                             padding: 5px 10px;
@@ -132,6 +135,7 @@
                                 background: #363636;
                                 border-radius: 3px;
                                 transition: all 0.2s;
+                                overflow: hidden;
 
                                 &:hover {
                                     background: #404040;
@@ -145,6 +149,7 @@
                                     padding: 0;
                                     background: transparent;
                                     min-width: 0;
+                                    overflow: hidden;
 
                                     &:hover {
                                         background: transparent;
@@ -158,7 +163,12 @@
 
                                     .model-id {
                                         color: rgba(255, 255, 255, 0.4);
-                                        margin-left: 15px;
+                                        margin-left: 10px;
+                                        overflow: hidden;
+                                        text-overflow: ellipsis;
+                                        white-space: nowrap;
+                                        min-width: 0;
+                                        flex-shrink: 1;
                                     }
                                 }
 
@@ -230,6 +240,10 @@
 
             &[type="password"] {
                 letter-spacing: -5px;
+
+                &::placeholder {
+                    letter-spacing: normal;
+                }
             }
 
             &:focus {

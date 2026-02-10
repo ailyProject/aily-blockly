@@ -9,6 +9,7 @@ import { FeedbackDialogComponent } from '../components/feedback-dialog/feedback-
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { ProjectSettingDialogComponent } from '../components/project-setting-dialog/project-setting-dialog.component';
 import { HistoryDialogComponent } from '../editors/blockly-editor/components/history-dialog/history-dialog.component';
+import { AuthService } from './auth.service';
 
 @Injectable({
   providedIn: 'root',
@@ -40,7 +41,8 @@ export class UiService {
     private electronService: ElectronService,
     private terminalService: TerminalService,
     private router: Router,
-    private modal: NzModalService
+    private modal: NzModalService,
+    private authService: AuthService
   ) { }
 
 
@@ -55,6 +57,16 @@ export class UiService {
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         console.log('window-receive', message);
         let data;
+        if (message.data?.action === 'logout') {
+          // 处理登出请求
+          try {
+            await this.authService.logout();
+            data = { success: true };
+          } catch (error) {
+            console.error('登出失败:', error);
+            data = { success: false, error: error.message };
+          }
+        }
         // if (message.data.action == 'open-terminal') {
         //   data = await this.openTerminal();
         //   // console.log('open-terminal', pid);

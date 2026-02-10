@@ -1,5 +1,6 @@
 import { Component, Input, OnInit, OnDestroy } from '@angular/core';
 import { PinmapComponent } from '../../app-store/pinmap/pinmap.component';
+import { PinjsonComponent } from '../../app-store/pinjson/pinjson.component';
 import { FeedbackDialogComponent } from '../feedback-dialog/feedback-dialog.component';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
@@ -77,7 +78,7 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
       this.message.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
       return;
     }
-    const modalRef = this.modal.create({
+    this.modal.create({
       nzTitle: null,
       nzFooter: null,
       nzClosable: false,
@@ -86,10 +87,28 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
       },
       nzContent: PinmapComponent,
       nzData: {
-        img: this.boardPackagePath + '/pinmap.webp' // 假设 pinmap 图片路径
+        img: this.boardPackagePath + '/pinmap.webp'
       },
       nzWidth: '500px',
     });
+  }
+
+  showPinjson() {
+    const pinjsonPath = this.boardPackagePath + '/pinmap.json';
+    if (!this.electronService.exists(pinjsonPath)) {
+      // this.message.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
+      this.showPinmap();
+      return;
+    }
+    
+    // 使用子窗口打开，通过 URL 查询参数传递文件路径
+    if (this.electronService.isElectron && window['subWindow']) {
+      window['subWindow'].open({
+        path: `pinjson?filePath=${encodeURIComponent(pinjsonPath)}`,
+        width: 800,
+        height: 600
+      });
+    }
   }
 
 

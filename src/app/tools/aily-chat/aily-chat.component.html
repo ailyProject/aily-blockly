@@ -126,7 +126,7 @@
             <!-- 模型选择 -->
             @if(ModelList.length > 0) {
             <div class="btn mode ccenter" (click)="switchModel($event)">
-              <i class="fa-light fa-robot"></i><span>{{ currentModelName }}</span>
+              <i class="fa-light fa-star-christmas"></i><span>{{ currentModelName }}</span>
             </div>
             }
             <div class="btn right ccenter" [ngClass]="{'lloading':isWaiting}" nzTooltipPlacement="bottom" nz-tooltip
@@ -151,9 +151,7 @@
     <aily-chat-settings (close)="showSettings = false" (saved)="onSettingsSaved()"></aily-chat-settings>
     }
   </div>
-  @if(!isLoggedIn){
   <app-login></app-login>
-  }
 </ng-template>
 
 @if (showHistoryList) {

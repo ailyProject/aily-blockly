@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Blocklyテーマ",
             "BLOCKLY_MINIMAP": "Blocklyミニマップ",
             "COMPILATION_OPTIONS": "コンパイルオプション",
+            "REGION": "サービスリージョン",
+            "REGION_TITLE": "サービスリージョンの切り替え",
+            "REGION_DESC": "サービスリージョンを切り替えると再ログインが必要です。続行しますか？",
+            "REGION_CONFIRM": "確認",
+            "REGION_CANCEL": "キャンセル",
             "REPOSITORY_URLS": "リポジトリアドレス",
             "BOARD_LIST": "ボードリスト",
             "LIBRARY_LIST": "ライブラリリスト",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "ドキュメント",
         "FEEDBACK": "フィードバック",
         "NO_PINMAP": "このボードのピン配置図は利用できません",
+        "PINMAP_PARSE_ERROR": "ピン配置図の解析に失敗しました",
         "NO_DOCUMENTATION": "このボードのドキュメントは利用できません"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "プロジェクトを開けません: ",
         "CREATING_PROJECT": "プロジェクトを作成中...",
         "PROJECT_CREATED": "プロジェクトが作成されました",
+        "CREATE_FAILED": "プロジェクトの作成に失敗しました",
         "PATH_NOT_EXIST": "プロジェクトパスが存在しません。別のプロジェクトを選択してください",
         "SWITCHING_BOARD_CONFIG": "ボード設定を切り替え中...",
         "BOARD_SWITCH_COMPLETE": "ボードの切り替えが完了しました",

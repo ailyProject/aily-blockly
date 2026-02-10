@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Blockly 테마",
             "BLOCKLY_MINIMAP": "Blockly 미니맵",
             "COMPILATION_OPTIONS": "컴파일 옵션",
+            "REGION": "서비스 지역",
+            "REGION_TITLE": "서비스 지역 전환",
+            "REGION_DESC": "서비스 지역을 전환하면 다시 로그인해야 합니다. 계속하시겠습니까?",
+            "REGION_CONFIRM": "확인",
+            "REGION_CANCEL": "취소",
             "REPOSITORY_URLS": "저장소 주소",
             "BOARD_LIST": "개발 보드 목록",
             "LIBRARY_LIST": "라이브러리 목록",
@@ -354,6 +359,7 @@
         "DOCUMENTATION": "문서",
         "FEEDBACK": "피드백",
         "NO_PINMAP": "이 보드에 대한 핀 맵을 사용할 수 없습니다",
+        "PINMAP_PARSE_ERROR": "핀 맵 파싱 실패",
         "NO_DOCUMENTATION": "이 보드에 대한 문서를 사용할 수 없습니다"
     },
     "SERIAL": {
@@ -536,6 +542,7 @@
         "CANNOT_OPEN_PROJECT": "프로젝트를 열 수 없습니다: ",
         "CREATING_PROJECT": "프로젝트 생성 중...",
         "PROJECT_CREATED": "프로젝트가 생성되었습니다",
+        "CREATE_FAILED": "프로젝트 생성에 실패했습니다",
         "PATH_NOT_EXIST": "프로젝트 경로가 존재하지 않습니다. 다른 프로젝트를 선택하세요",
         "SWITCHING_BOARD_CONFIG": "보드 구성 전환 중...",
         "BOARD_SWITCH_COMPLETE": "보드 전환 완료",

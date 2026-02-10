@@ -47,7 +47,6 @@ export class UserCenterComponent {
 
   isWaiting = false;
   isRegistering = false;
-  isLoggedIn = false;
   currentUser: any = null;
   isGitHubAuthWaiting = false;
   isEditingNickname = false;
@@ -70,8 +69,9 @@ export class UserCenterComponent {
     this.authService.isLoggedIn$
       .pipe(takeUntil(this.destroy$))
       .subscribe(isLoggedIn => {
-        this.isLoggedIn = isLoggedIn;
-        this.refreshMe();
+        if (isLoggedIn) {
+          this.refreshMe();
+        }
       });
 
     // 监听用户信息
@@ -309,12 +309,6 @@ export class UserCenterComponent {
    * 点击头像时触发 SSO 跳转
    */
   async onAvatarClick(): Promise<void> {
-    // 检查是否已登录
-    if (!this.isLoggedIn) {
-      this.message.warning('请先登录');
-      return;
-    }
-
     try {
       // 显示加载提示
       const loadingMessage = this.message.loading('正在生成登录链接...', { nzDuration: 0 });

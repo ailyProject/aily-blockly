@@ -20,7 +20,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { NzImageModule } from 'ng-zorro-antd/image';
 import { FormsModule } from '@angular/forms';
 import { AilyDynamicComponentDirective } from '../../directives/aily-dynamic-component.directive';
-import { MarkdownPipe } from '../../pipes/markdown.pipe';
+import { MarkdownPipe, safeBase64Decode } from '../../pipes/markdown.pipe';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '../../../../services/config.service';
 
@@ -470,6 +470,80 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       return;
     }
 
+    // 检查是否包含 think 组件
+    const hasThinkInLast = lastSegment.content.includes('aily-think');
+    const hasThinkInModified = modifiedSegment.content.includes('aily-think');
+
+    // 如果最后一个段落和新段落都包含 think 组件，尝试更新现有组件而不是替换DOM
+    if (hasThinkInLast && hasThinkInModified) {
+      // 查找现有的 think 组件实例（组件创建后，占位符会被替换成组件）
+      const thinkComponents = container.querySelectorAll('app-aily-think-viewer');
+      if (thinkComponents.length > 0) {
+        // 找到最后一个 think 组件（应该对应最后一个段落）
+        const lastThinkComponent = thinkComponents[thinkComponents.length - 1];
+        
+        // 创建临时容器来解析新的HTML，提取 think 占位符数据
+        const newTempDiv = document.createElement('div');
+        newTempDiv.innerHTML = modifiedSegment.html;
+        
+        // 查找新HTML中的 think 占位符
+        const newPlaceholder = newTempDiv.querySelector('.aily-code-block-placeholder[data-aily-type="aily-think"]') as HTMLElement;
+        
+        if (newPlaceholder) {
+          const encodedData = newPlaceholder.getAttribute('data-aily-data');
+          if (encodedData) {
+            try {
+              // 使用与指令相同的解码方法
+              // 先解码 base64，然后解析 JSON
+              const decodedData = safeBase64Decode(encodedData);
+              const jsonData = JSON.parse(decodedData);
+              
+              // 如果 content 是编码的，需要进一步解码（与 markdown pipe 的逻辑一致）
+              let thinkContent = jsonData.content || jsonData.text || '';
+              if (jsonData.encoded && typeof thinkContent === 'string') {
+                try {
+                  thinkContent = decodeURIComponent(atob(thinkContent));
+                } catch (e) {
+                  console.warn('Failed to decode think content:', e);
+                }
+              }
+              
+              // 构建组件数据（与 markdown pipe 的输出格式一致）
+              const componentData = {
+                type: 'aily-think',
+                content: String(thinkContent),
+                isComplete: jsonData.isComplete !== false,
+                metadata: jsonData.metadata || {}
+              };
+              
+              // 通过自定义事件通知组件更新
+              const updateEvent = new CustomEvent('think-data-update', { 
+                detail: componentData,
+                bubbles: true 
+              });
+              lastThinkComponent.dispatchEvent(updateEvent);
+              
+              // 同时尝试直接设置 data 属性（如果组件支持）
+              // 注意：这需要组件暴露 data 属性为 @Input() 或 public
+              if ((lastThinkComponent as any).__ngContext__) {
+                // Angular 组件，尝试通过上下文访问实例
+                const componentInstance = (lastThinkComponent as any).__ngContext__?.[8];
+                if (componentInstance && typeof componentInstance.setData === 'function') {
+                  componentInstance.setData(componentData);
+                }
+              }
+              
+              // 不替换DOM，直接返回
+              return;
+            } catch (error) {
+              console.warn('Failed to update think component directly:', error);
+              // 如果直接更新失败，继续执行替换操作
+            }
+          }
+        }
+      }
+    }
+
     // 创建临时容器来解析新的HTML
     const newTempDiv = document.createElement('div');
     newTempDiv.innerHTML = modifiedSegment.html;
@@ -687,26 +761,26 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       // 检查是否遇到 </think> 标签
       if (inThinkBlock && content.substring(i, i + 8) === '</think>') {
         inThinkBlock = false;
-        // // 将 think 内容转换为 aily-think 代码块
-        // if (thinkContent.trim()) {
-        //   // 使用 base64 编码 content 避免换行符转义问题
-        //   const encodedContent = btoa(encodeURIComponent(thinkContent.trim()));
-        //   const thinkData = {
-        //     content: encodedContent,
-        //     isComplete: true,
-        //     encoded: true
-        //   };
-        //   // 确保代码块前后有正确的换行
-        //   result += '```aily-think\n' + JSON.stringify(thinkData) + '\n```';
-        // }
-        // thinkContent = '';
+        // 将 think 内容转换为 aily-think 代码块
+        if (thinkContent.trim()) {
+          // 使用 base64 编码 content 避免换行符转义问题
+          const encodedContent = btoa(encodeURIComponent(thinkContent.trim()));
+          const thinkData = {
+            content: encodedContent,
+            isComplete: true,
+            encoded: true
+          };
+          // 确保代码块前后有正确的换行
+          result += '```aily-think\n' + JSON.stringify(thinkData) + '\n```';
+        }
+        thinkContent = '';
         i += 8; // 跳过 </think>
         continue;
       }
       
       // 收集 think 块内的内容或添加到结果中
       if (inThinkBlock) {
-        // thinkContent += content[i];
+        thinkContent += content[i];
       } else {
         result += content[i];
       }
@@ -714,18 +788,18 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
       i++;
     }
     
-    // // 如果内容结束时仍在 think 块内（流式传输中），显示正在思考的状态
-    // if (inThinkBlock && thinkContent.trim()) {
-    //   // 使用 base64 编码 content 避免换行符转义问题
-    //   const encodedContent = btoa(encodeURIComponent(thinkContent.trim()));
-    //   const thinkData = {
-    //     content: encodedContent,
-    //     isComplete: false,
-    //     encoded: true
-    //   };
-    //   // 确保代码块前后有正确的换行
-    //   result += '```aily-think\n' + JSON.stringify(thinkData) + '\n```';
-    // }
+    // 如果内容结束时仍在 think 块内（流式传输中），显示正在思考的状态
+    if (inThinkBlock && thinkContent.trim()) {
+      // 使用 base64 编码 content 避免换行符转义问题
+      const encodedContent = btoa(encodeURIComponent(thinkContent.trim()));
+      const thinkData = {
+        content: encodedContent,
+        isComplete: false,
+        encoded: true
+      };
+      // 确保代码块前后有正确的换行
+      result += '```aily-think\n' + JSON.stringify(thinkData) + '\n```';
+    }
     
     return result;
   }
@@ -785,6 +859,7 @@ export class DialogComponent implements OnInit, OnChanges, OnDestroy {
 
     return content;
   }
+
 
   test() {
     console.log('原始内容:', this.content);

@@ -37,6 +37,9 @@ export class LoginComponent {
   isWaiting = false;
   inputUsername = '';
   inputPassword = '';
+  
+  // 控制组件显隐：未登录时显示，已登录时隐藏
+  showLogin = true;
 
   constructor(
     private authService: AuthService,
@@ -44,15 +47,12 @@ export class LoginComponent {
     private electronService: ElectronService,
     private translate: TranslateService
   ) {
-    // 监听登录状态
+    // 监听登录状态，控制组件显隐
     this.authService.isLoggedIn$
       .pipe(takeUntil(this.destroy$))
       .subscribe(isLoggedIn => {
-        // 如果登录成功且当前在GitHub登录等待状态，关闭弹窗
-        if (isLoggedIn) {
-          // this.message.success('登录成功');
-          // this.modal.close();
-        }
+        // 未登录时显示组件，已登录时隐藏组件
+        this.showLogin = !isLoggedIn;
       });
   }
 
@@ -98,10 +98,11 @@ export class LoginComponent {
    */
   async loginByGithub() {
     try {
-      const altchaToken = await this.verifyAltcha();
-      if (altchaToken === null) {
-        return;
-      }
+      // TODO: 临时注释掉验证逻辑
+      // const altchaToken = await this.verifyAltcha();
+      // if (altchaToken === null) {
+      //   return;
+      // }
 
       // 直接通过 HTTP 请求启动 GitHub OAuth 流程
       this.authService.startGitHubOAuth().subscribe({
@@ -133,12 +134,16 @@ export class LoginComponent {
       return;
     }
 
-    const altchaToken = await this.verifyAltcha();
-    if (altchaToken === null) {
-      return;
-    }
-
+    // 立即显示加载状态，避免用户感觉按钮无响应
     this.isWaiting = true;
+
+    // TODO: 临时注释掉验证逻辑
+    // const altchaToken = await this.verifyAltcha();
+    // if (altchaToken === null) {
+    //   this.isWaiting = false;
+    //   return;
+    // }
+    const altchaToken = '';
 
     try {
       const loginData = {

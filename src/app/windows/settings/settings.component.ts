@@ -10,9 +10,11 @@ import { SettingsService } from '../../services/settings.service';
 import { TranslationService } from '../../services/translation.service';
 import { ConfigService } from '../../services/config.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
 import { NzSelectModule } from 'ng-zorro-antd/select';
+import { AuthService } from '../../services/auth.service';
+import { NzModalService } from 'ng-zorro-antd/modal';
 
 @Component({
   selector: 'app-settings',
@@ -142,8 +144,52 @@ export class SettingsComponent {
 
   // 切换区域
   async onRegionChange(regionKey: string) {
-    await this.configService.setRegion(regionKey);
-    await this.updateBoardList();
+    // 如果选择的区域和当前区域一样，直接返回
+    if (regionKey === this.selectedRegion) {
+      return;
+    }
+
+    // 检查是否已登录
+    if (this.authService.isAuthenticated) {
+      // 显示确认弹窗
+      this.modal.confirm({
+        nzTitle: this.translateService.instant('SETTINGS.FIELDS.REGION_TITLE'),
+        nzContent: this.translateService.instant('SETTINGS.FIELDS.REGION_DESC'),
+        nzOkText: this.translateService.instant('SETTINGS.FIELDS.REGION_CONFIRM'),
+        nzCancelText: this.translateService.instant('SETTINGS.FIELDS.REGION_CANCEL'),
+        nzBodyStyle: { background: '#2b2d30' },
+        nzOnOk: async () => {
+          // 用户确认后，更新区域值
+          this.selectedRegion = regionKey;
+          
+          // 发送消息到主窗口执行登出
+          try {
+            setTimeout(async () => {
+              if (window['iWindow'] && window['iWindow'].send) {
+                // 子窗口：发送消息到主窗口
+                window['iWindow'].send({ 
+                  to: 'main', 
+                  data: { action: 'logout' } 
+                });
+                this.authService.logout();
+              } else {
+                this.authService.logout();
+              }
+            }, 0);
+          } catch (error) {
+            console.error('登出失败:', error);
+          }
+          // 继续执行切换区域
+          await this.configService.setRegion(regionKey);
+          await this.updateBoardList();
+        }
+      });
+    } else {
+      // 未登录，直接切换区域
+      this.selectedRegion = regionKey;
+      await this.configService.setRegion(regionKey);
+      await this.updateBoardList();
+    }
   }
 
   get langList() {
@@ -167,6 +213,9 @@ export class SettingsComponent {
     private settingsService: SettingsService,
     private translationService: TranslationService,
     private configService: ConfigService,
+    private authService: AuthService,
+    private modal: NzModalService,
+    private translateService: TranslateService,
   ) {
   }
 

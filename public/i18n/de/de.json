@@ -138,6 +138,11 @@
             "BLOCKLY_THEME": "Blockly-Theme",
             "BLOCKLY_MINIMAP": "Blockly-Miniaturansicht",
             "COMPILATION_OPTIONS": "Kompilierungsoptionen",
+            "REGION": "Service-Region",
+            "REGION_TITLE": "Service-Region wechseln",
+            "REGION_DESC": "Nach dem Wechsel der Service-Region müssen Sie sich erneut anmelden. Fortfahren?",
+            "REGION_CONFIRM": "Bestätigen",
+            "REGION_CANCEL": "Abbrechen",
             "REPOSITORY_URLS": "Repository-URLs",
             "BOARD_LIST": "Board-Liste",
             "LIBRARY_LIST": "Bibliotheksliste",
@@ -358,6 +363,7 @@
         "DOCUMENTATION": "Dokumentation",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Pin-Belegung für dieses Board nicht verfügbar",
+        "PINMAP_PARSE_ERROR": "Fehler beim Parsen der Pin-Belegung",
         "NO_DOCUMENTATION": "Dokumentation für dieses Board nicht verfügbar"
     },
     "SERIAL": {
@@ -540,6 +546,7 @@
         "CANNOT_OPEN_PROJECT": "Projekt kann nicht geöffnet werden: ",
         "CREATING_PROJECT": "Projekt wird erstellt...",
         "PROJECT_CREATED": "Projekt erfolgreich erstellt",
+        "CREATE_FAILED": "Projekt konnte nicht erstellt werden",
         "PATH_NOT_EXIST": "Projektpfad existiert nicht, bitte wählen Sie ein anderes Projekt",
         "SWITCHING_BOARD_CONFIG": "Board-Konfiguration wird gewechselt...",
         "BOARD_SWITCH_COMPLETE": "Board-Wechsel abgeschlossen",

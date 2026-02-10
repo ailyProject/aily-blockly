@@ -24,6 +24,7 @@ import { newProjectTool } from './tools/createProjectTool';
 import { executeCommandTool } from './tools/executeCommandTool';
 import { askApprovalTool } from './tools/askApprovalTool';
 import { getContextTool } from './tools/getContextTool';
+import { getProjectInfoTool } from './tools/getProjectInfoTool';
 import { listDirectoryTool } from './tools/listDirectoryTool';
 import { readFileTool } from './tools/readFileTool';
 import { createFileTool } from './tools/createFileTool';
@@ -58,6 +59,9 @@ import {
   verifyBlockExistenceTool,
   fixJsonString  // 导入 JSON 修复函数
 } from './tools/editBlockTool';
+// ABS 工具 (Aily Block Syntax)
+// import { insertDslHandler, getDslHelpHandler } from './tools/dslTool';
+import { syncAbsFileHandler } from './tools/syncAbsFileTool';
 // // 原子化块操作工具
 // import {
 //   createSingleBlockTool,
@@ -69,7 +73,7 @@ import {
 // } from './tools/atomicBlockTools';
 // // 扁平化块操作工具
 // import { flatCreateBlocksTool } from './tools/flatBlockTools';
-// // DSL 块操作工具
+// // ABS 块操作工具 (Aily Block Syntax)
 // import { dslCreateBlocksTool } from './tools/dslBlockTools';
 import { todoWriteTool } from './tools';
 // import { arduinoSyntaxTool } from './tools/arduinoSyntaxTool';
@@ -125,6 +129,8 @@ import { NoticeService } from '../../services/notice.service';
 import { AilyChatSettingsComponent } from './components/settings/settings.component';
 import { OnboardingService } from '../../services/onboarding.service';
 import { AILY_CHAT_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
+import { AbsAutoSyncService } from './services/abs-auto-sync.service';
+import { absVersionControlHandler } from './tools/absVersionControlTool';
 
 // import { reloadAbiJsonTool, reloadAbiJsonToolSimple } from './tools';
 
@@ -187,6 +193,7 @@ export class AilyChatComponent implements OnDestroy {
   isCompleted = false;
   private isSessionStarting = false; // 防止重复启动会话的标志位
   private hasInitializedForThisLogin = false; // 标记是否已为当前登录状态初始化过
+  private isCancelled = false; // 标记任务是否被用户取消，防止取消后工具结果触发重连
 
   private textMessageSubscription: Subscription;
   private loginStatusSubscription: Subscription;
@@ -281,8 +288,8 @@ export class AilyChatComponent implements OnDestroy {
    * @param text 显示文本
    */
   private completeToolCall(toolId: string, toolName: string, state: ToolCallState, text: string): void {
-    // 如果存在历史状态文本，使用它；否则使用传入的文本
-    const displayText = this.toolCallStates[toolId] || text;
+    // 优先使用传入的文本，如果为空则使用历史状态文本
+    const displayText = text || this.toolCallStates[toolId] || '';
 
     const toolCallInfo: ToolCallInfo = {
       id: toolId,
@@ -450,6 +457,8 @@ export class AilyChatComponent implements OnDestroy {
         return this.formatCommandDisplay(args.command || 'unknown');
       case 'get_context':
         return "获取上下文信息...";
+      case 'get_project_info':
+        return "获取项目信息...";
       case 'list_directory':
         const distFolderName = args.path ? this.getLastFolderName(args.path) : 'unknown';
         return `获取${distFolderName}目录内容`;
@@ -524,9 +533,9 @@ export class AilyChatComponent implements OnDestroy {
           }
         }
         return `扁平化创建块: ${flatBlockCount}个块...`;
-      // DSL 块工具
+      // ABS 块工具 (Aily Block Syntax)
       // case 'dsl_create_blocks':
-      //   return `DSL 创建块...`;
+      //   return `ABS 创建块...`;
       // 原有块工具
       case 'smart_block_tool':
         return `创建Blockly块: ${args.type || 'unknown'}`;
@@ -578,6 +587,8 @@ export class AilyChatComponent implements OnDestroy {
         return `${cmdDisplay} ✓`;
       case 'get_context':
         return "上下文信息获取成功";
+      case 'get_project_info':
+        return "项目信息获取成功";
       case 'list_directory':
         const distFolderName = args?.path ? this.getLastFolderName(args.path) : 'unknown';
         return `获取${distFolderName}目录内容成功`;
@@ -653,9 +664,9 @@ export class AilyChatComponent implements OnDestroy {
         }
         const connsCreated = result?.data?.stats?.connectionsEstablished || 0;
         return `扁平化创建成功: ${blocksCreated}个块, ${connsCreated}个连接`;
-      // DSL 块工具结果
+      // ABS 块工具结果 (Aily Block Syntax)
       // case 'dsl_create_blocks':
-      //   return result?.is_error ? 'DSL 块创建失败' : 'DSL 块创建成功';
+      //   return result?.is_error ? 'ABS 块创建失败' : 'ABS 块创建成功';
       // 原有块工具结果
       case 'smart_block_tool':
         return `智能块操作成功: ${args?.type || 'unknown'}`;
@@ -1051,7 +1062,8 @@ Do not create non-existent boards and libraries.
     private platformService: PlatformService,
     private electronService: ElectronService,
     private ailyChatConfigService: AilyChatConfigService,
-    private onboardingService: OnboardingService
+    private onboardingService: OnboardingService,
+    private absAutoSyncService: AbsAutoSyncService
   ) {
     // securityContext 改为 getter，每次使用时动态获取当前项目路径
   }
@@ -1123,6 +1135,11 @@ Do not create non-existent boards and libraries.
         const targetPath = newPath || this.projectService.projectRootPath;
         this.chatService.openHistoryFile(targetPath);
         this.HistoryList = [...this.chatService.historyList].reverse();
+        
+        // 初始化 ABS 自动同步服务
+        if (newPath && newPath !== this.projectService.projectRootPath) {
+          this.absAutoSyncService.initialize(newPath);
+        }
         
         console.log('[AilyChat] 历史记录已重新加载, 数量:', this.HistoryList.length);
       }
@@ -1261,6 +1278,15 @@ Do not create non-existent boards and libraries.
     // console.log('接收到外部文本:', text, '选项:', options);
 
     if (options?.type === 'button') {
+      // 拦截特殊按钮动作
+      if (text === '重试') {
+        this.retryLastAction();
+        return;
+      }
+      if (text === '新建会话') {
+        this.newChat();
+        return;
+      }
       this.send("user", text, false);
       return;
     }
@@ -1380,6 +1406,65 @@ Do not create non-existent boards and libraries.
     //     }, 2000);
   }
 
+  /**
+   * 清理最后一条 AI 消息中的流式残留内容
+   * 
+   * 由于流式传输的延迟，agent 输出的终止标记（如 TERMINATE、[to_user]）
+   * 和未完成的特殊代码块可能残留在消息中。此方法在对话终止时统一清理。
+   */
+  private cleanupLastAiMessage(): void {
+    if (this.list.length === 0) return;
+    const lastMsg = this.list[this.list.length - 1];
+    if (lastMsg.role !== 'aily' || !lastMsg.content) return;
+
+    let content = lastMsg.content as string;
+    const originalLength = content.length;
+
+    // 1. 移除终止标记及其前后空白（完整或部分）
+    //    匹配 TERMINATE 的完整或部分出现（流式可能只传了前几个字符）
+    content = content.replace(/\s*\[?TERMINATE\]?\s*$/i, '');
+    content = content.replace(/\s*\[to_user\]\s*$/i, '');
+    // 部分终止标记（如 "TERMI", "TERMINA" 等出现在末尾）
+    const terminatePartials = ['TERMINAT', 'TERMINA', 'TERMIN', 'TERMI', 'TERM'];
+    for (const partial of terminatePartials) {
+      if (content.trimEnd().endsWith(partial)) {
+        content = content.substring(0, content.lastIndexOf(partial)).trimEnd();
+        break;
+      }
+    }
+
+    // 2. 移除未闭合的特殊 aily 代码块
+    //    检测以 ```aily-xxx 开头但未以 ``` 闭合的代码块
+    const ailyCodeBlockStart = /```(aily-(?:state|button|error|blockly|board|library|task-action|think|mermaid)|mermaid)[^\n]*\n/g;
+    let match: RegExpExecArray | null;
+    let lastUnclosedStart = -1;
+
+    // 重置 lastIndex
+    ailyCodeBlockStart.lastIndex = 0;
+    while ((match = ailyCodeBlockStart.exec(content)) !== null) {
+      const startPos = match.index;
+      // 在 startPos 之后查找闭合的 ```
+      const afterStart = content.substring(startPos + match[0].length);
+      const closeMatch = afterStart.match(/\n\s*```/);
+      if (!closeMatch) {
+        // 没找到闭合标记，这是一个未完成的代码块
+        lastUnclosedStart = startPos;
+      }
+    }
+
+    if (lastUnclosedStart >= 0) {
+      content = content.substring(0, lastUnclosedStart).trimEnd();
+    }
+
+    // 3. 清理末尾残留的不完整 markdown 代码块起始符 (```, `` 等)
+    content = content.replace(/\s*`{1,3}\s*$/, '');
+
+    // 只在内容实际发生变化时更新
+    if (content.length !== originalLength) {
+      lastMsg.content = content;
+    }
+  }
+
   appendMessage(role, text) {
     // console.log("添加消息: ", role, text);
 
@@ -1461,6 +1546,8 @@ Do not create non-existent boards and libraries.
     }
 
     this.isSessionStarting = true;
+    // 重置取消标志，确保新会话正常工作
+    this.isCancelled = false;
 
     // 清空会话期间的额外允许路径
     this.sessionAllowedPaths = [];
@@ -1468,17 +1555,38 @@ Do not create non-existent boards and libraries.
     if (!this.mcpInitialized) {
       this.mcpInitialized = true;
       await this.mcpService.init();
+      
+      // 延迟加载硬件索引数据（用于 AI 工具的开发板/库搜索）
+      this.configService.loadHardwareIndexForAI().catch(err => {
+        console.warn('[AilyChat] 加载硬件索引失败:', err);
+      });
     }
+    
+    // // 会话开始时自动导出 ABS 文件（无感同步）
+    // const currentPath = this.getCurrentProjectPath();
+    // if (currentPath) {
+    //   this.absAutoSyncService.initialize(currentPath);
+    //   this.absAutoSyncService.onSessionStart().catch(err => {
+    //     console.warn('[AilyChat] ABS 自动导出失败:', err);
+    //   });
+    // }
 
     // tools + mcp tools
     this.isCompleted = false;
     
     // 根据配置过滤启用的工具
     const enabledToolNames = this.ailyChatConfigService.enabledTools;
+    const disabledToolNames = this.ailyChatConfigService.disabledTools || [];
     const hasEnabledToolsConfig = enabledToolNames && enabledToolNames.length > 0;
     
+    // 过滤工具逻辑：
+    // 1. 如果没有配置，使用全部工具
+    // 2. 如果有配置，启用的工具 + 新工具（不在禁用列表中的未知工具）
     let tools = hasEnabledToolsConfig 
-      ? this.tools.filter(tool => enabledToolNames.includes(tool.name))
+      ? this.tools.filter(tool => 
+          enabledToolNames.includes(tool.name) || 
+          (!disabledToolNames.includes(tool.name) && !enabledToolNames.includes(tool.name))
+        )
       : this.tools;
     
     let mcpTools = this.mcpService.tools.map(tool => {
@@ -1511,15 +1619,12 @@ Do not create non-existent boards and libraries.
       customllmConfig = null;
     }
 
-    // 使用当前选择的模型
-    const customModel = this.currentModel ? {
-      model: this.currentModel.model,
-      family: this.currentModel.family
-    } : null;
+    // 使用当前选择的模型名称（服务端会根据 baseUrl 自动推断 family）
+    const selectModel = this.currentModel?.model || null;
 
 
     return new Promise<void>((resolve, reject) => {
-      this.chatService.startSession(this.currentMode, tools, maxCount, customllmConfig, customModel).subscribe({
+      this.chatService.startSession(this.currentMode, tools, maxCount, customllmConfig, selectModel).subscribe({
         next: (res: any) => {
           if (res.status === 'success') {
             if (res.data != this.sessionId) {
@@ -1601,6 +1706,8 @@ ${JSON.stringify(errData)}
   }
 
   async sendButtonClick(): Promise<void> {
+    this.autoScrollEnabled = true;
+    this.scrollToBottom();
     if (this.isWaiting) {
       this.stop();
       return;
@@ -1618,8 +1725,16 @@ ${JSON.stringify(errData)}
   }
 
   async send(sender: string, content: string, clear: boolean = true): Promise<void> {
+    // 如果任务已取消且是工具消息，直接忽略，防止触发重连
+    if (this.isCancelled && sender === 'tool') {
+      console.log('任务已取消，忽略工具结果消息');
+      return;
+    }
+    
     if (this.isCompleted) {
       // console.log('上次会话已完成，需要重新启动会话');
+      // 重置取消标志，开始新会话
+      this.isCancelled = false;
       await this.resetChat();
     }
 
@@ -1710,7 +1825,13 @@ ${JSON.stringify(errData)}
   "message": "${errorMessage}",
   "status": ${error.status || 'unknown'}
 }
-\`\`\`\n\n`);
+\`\`\`
+
+\`\`\`aily-button
+[{"text":"重试","action":"retry","type":"primary"}]
+\`\`\`
+
+`);
         }
       }
     });
@@ -1718,6 +1839,9 @@ ${JSON.stringify(errData)}
 
   // 这里写停止发送信号
   stop() {
+    // 标记任务已取消，防止后续工具结果触发重连
+    this.isCancelled = true;
+    
     // 设置最后一条AI消息状态为done（如果存在）
     if (this.list.length > 0 && this.list[this.list.length - 1].role === 'aily') {
       this.list[this.list.length - 1].state = 'done';
@@ -1751,6 +1875,20 @@ ${JSON.stringify(errData)}
 
     this.messageSubscription = this.chatService.streamConnect(this.sessionId).subscribe({
       next: async (data: any) => {
+        // 记录流式数据到文件（Unicode 转中文）
+        // try {
+        //   const logPath = this.projectService.projectRootPath + '\\stream_log.txt';
+        //   const timestamp = new Date().toISOString();
+        //   const jsonStr = JSON.stringify(data, null, 2).replace(/\\u[\dA-Fa-f]{4}/gi, match =>
+        //     String.fromCharCode(parseInt(match.replace(/\\u/g, ''), 16))
+        //   );
+        //   const logEntry = `[${timestamp}]\n${jsonStr}\n\n`;
+        //   window['fs'].appendFileSync(logPath, logEntry, 'utf8');
+        // } catch (logErr) {
+        //   console.warn('写入日志文件失败:', logErr);
+        // }
+        
+        // console.log("当前是否处于等待状态： ", this.isWaiting)
         if (!this.isWaiting) {
           return; // 如果不在等待状态，直接返回
         }
@@ -1804,6 +1942,7 @@ ${JSON.stringify(errData)}
 }
 \`\`\`\n\n
 `);
+              newConnect = true;
             }
           } else if (data.type === 'error') {
             // 设置最后一条AI消息状态为done（如果存在）
@@ -1811,14 +1950,17 @@ ${JSON.stringify(errData)}
               this.list[this.list.length - 1].state = 'done';
             }
             this.appendMessage('error', `
-
 \`\`\`aily-error
 {
-  "message": "${data.message || '未知错误'}"
+  "message": "${this.makeJsonSafe(data.message || '未知错误')}"
 }
-\`\`\`\n\n
+\`\`\`
 
-          `);
+\`\`\`aily-button
+[{"text":"重试","action":"retry","type":"primary"}]
+\`\`\`
+
+`);
             this.isWaiting = false;
           } else if (data.type === 'tool_call_request') {
             let toolArgs;
@@ -1886,6 +2028,7 @@ ${JSON.stringify(errData)}
               'set_block_field',
               'set_block_input',
               'batch_create_blocks',
+              'sync_abs_file',
               // 'get_workspace_overview_tool',
               // 'queryBlockDefinitionTool',
               // 'analyze_library_blocks',
@@ -2054,8 +2197,8 @@ ${JSON.stringify(errData)}
                           this.projectService.projectOpen(projectPath);
                         }
                       }
-                      console.log(`命令${displayCommand}执行成功`);
-                      resultText = `命令${displayCommand}执行成功`
+                      console.log(`命令 ${displayCommand} 执行成功`);
+                      resultText = `命令 ${displayCommand} 执行成功`
                     } else {
                       // npm install 失败时不重试，避免重复加载库
                       if (isNpmInstall) {
@@ -2063,21 +2206,32 @@ ${JSON.stringify(errData)}
                         resultState = "done";  // 标记为完成，不触发重试
                         resultText = `npm install命令执行失败，请检查网络或依赖配置`;
                       } else {
-                        console.log(`命令${displayCommand}执行异常, 即将重试`);
+                        console.log(`命令 ${displayCommand} 执行异常, 即将重试`);
                         resultState = "warn";
-                        resultText = `命令${displayCommand}执行异常, 即将重试`;
+                        resultText = `命令 ${displayCommand} 执行异常, 即将重试`;
                       }
                     }
                     break;
                   case 'get_context':
                     // console.log('[获取上下文信息工具被调用]', toolArgs);
-                    this.startToolCall(toolCallId, data.tool_name, "获取上下文信息...", toolArgs);
+                    this.startToolCall(toolCallId, data.tool_name, "获取 上下文信息...", toolArgs);
                     toolResult = await getContextTool(this.projectService, toolArgs);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = '获取上下文信息异常, 即将重试';
+                      resultText = '获取 上下文信息 异常, 即将重试';
                     } else {
-                      resultText = `上下文信息获取成功`;
+                      resultText = `获取 上下文信息 成功`;
+                    }
+                    break;
+                  case 'get_project_info':
+                    // console.log('[获取项目信息工具被调用]', toolArgs);
+                    this.startToolCall(toolCallId, data.tool_name, "获取 项目信息...", toolArgs);
+                    toolResult = await getProjectInfoTool(this.projectService, toolArgs);
+                    if (toolResult?.is_error) {
+                      resultState = "warn";
+                      resultText = '获取 项目信息 异常, 即将重试';
+                    } else {
+                      resultText = `获取 项目信息 成功`;
                     }
                     break;
                   case 'list_directory':
@@ -2087,9 +2241,9 @@ ${JSON.stringify(errData)}
                     toolResult = await listDirectoryTool(toolArgs);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `获取${distFolderName}目录内容异常, 即将重试`;
+                      resultText = `获取 ${distFolderName} 目录内容异常, 即将重试`;
                     } else {
-                      resultText = `获取${distFolderName}目录内容成功`;
+                      resultText = `获取 ${distFolderName} 目录内容成功`;
                     }
                     break;
                   case 'read_file':
@@ -2129,9 +2283,21 @@ ${JSON.stringify(errData)}
                     toolResult = await readFileTool(toolArgs, this.securityContext);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `读取异常, 即将重试`;
+                      if (readFileName === 'project.abs') {
+                        resultText = `读取 项目文件 异常, 即将重试`;
+                      } else if (libNickName) {
+                        resultText = `了解 ${libNickName} 使用方法异常, 即将重试`;
+                      } else {
+                        resultText = `读取 文件 异常, 即将重试`;
+                      }
                     } else {
-                      resultText = `读取${readFileName}文件成功`;
+                      if (readFileName === 'project.abs') {
+                        resultText = `读取 项目文件 成功`;
+                      } else if (libNickName) {
+                        resultText = `了解 ${libNickName} 使用方法成功`;
+                      } else {
+                        resultText = `读取 ${readFileName} 文件成功`;
+                      }
                     }
                     // } else {
                     //   if (libNickName) {
@@ -2150,13 +2316,16 @@ ${JSON.stringify(errData)}
                   case 'create_file':
                     // console.log('[创建文件工具被调用]', toolArgs);
                     let createFileName = this.getFileName(toolArgs.path);
+                    if (createFileName === 'project.abs') {
+                      createFileName = '项目文件';
+                    }
                     this.startToolCall(toolCallId, data.tool_name, `创建: ${createFileName}`, toolArgs);
                     toolResult = await createFileTool(toolArgs, this.securityContext);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `创建${createFileName}文件异常, 即将重试`;
+                      resultText = `创建 ${createFileName} 文件异常, 即将重试`;
                     } else {
-                      resultText = `创建${createFileName}文件成功`;
+                      resultText = `创建 ${createFileName} 文件成功`;
                     }
                     break;
                   case 'create_folder':
@@ -2166,33 +2335,39 @@ ${JSON.stringify(errData)}
                     toolResult = await createFolderTool(toolArgs);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `创建${createFolderName}文件夹异常, 即将重试`;
+                      resultText = `创建 ${createFolderName} 文件夹异常, 即将重试`;
                     } else {
-                      resultText = `创建${createFolderName}文件夹成功`;
+                      resultText = `创建 ${createFolderName} 文件夹成功`;
                     }
                     break;
                   case 'edit_file':
                     // console.log('[编辑文件工具被调用]', toolArgs);
                     let editFileName = this.getFileName(toolArgs.path);
+                    if (editFileName === 'project.abs') {
+                      editFileName = '项目文件';
+                    }
                     this.startToolCall(toolCallId, data.tool_name, `编辑: ${editFileName}`, toolArgs);
                     toolResult = await editFileTool(toolArgs);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `编辑${editFileName}文件异常, 即将重试`;
+                      resultText = `编辑 ${editFileName} 文件异常, 即将重试`;
                     } else {
-                      resultText = `编辑${editFileName}文件成功`;
+                      resultText = `编辑 ${editFileName} 文件成功`;
                     }
                     break;
                   case 'delete_file':
                     // console.log('[删除文件工具被调用]', toolArgs);
                     let deleteFileName = this.getFileName(toolArgs.path);
+                    if (editFileName === 'project.abs') {
+                      editFileName = '项目文件';
+                    }
                     this.startToolCall(toolCallId, data.tool_name, `删除: ${deleteFileName}`, toolArgs);
                     toolResult = await deleteFileTool(toolArgs, this.securityContext);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `删除${deleteFileName}文件异常, 即将重试`;
+                      resultText = `删除 ${deleteFileName} 文件异常, 即将重试`;
                     } else {
-                      resultText = `删除${deleteFileName}文件成功`;
+                      resultText = `删除 ${deleteFileName} 文件成功`;
                     }
                     break;
                   case 'delete_folder':
@@ -2202,9 +2377,9 @@ ${JSON.stringify(errData)}
                     toolResult = await deleteFolderTool(toolArgs, this.securityContext);
                     if (toolResult?.is_error) {
                       resultState = "warn";
-                      resultText = `删除${deleteFolderName}文件夹异常, 即将重试`;
+                      resultText = `删除 ${deleteFolderName} 文件夹异常, 即将重试`;
                     } else {
-                      resultText = `删除${deleteFolderName}文件夹成功`;
+                      resultText = `删除 ${deleteFolderName} 文件夹成功`;
                     }
                     break;
                   case 'check_exists':
@@ -2305,12 +2480,12 @@ ${JSON.stringify(errData)}
                     toolResult = await searchBoardsLibrariesTool.handler(toolArgs, this.configService);
                     if (toolResult?.is_error) {
                       resultState = "error";
-                      resultText = `搜索${searchTypeDisplay}失败: ` + (toolResult?.content || '未知错误');
+                      resultText = `搜索 ${searchTypeDisplay} 失败: ` + (toolResult?.content || '未知错误');
                     } else {
                       const totalMatches = toolResult.metadata?.totalMatches || 0;
                       // 显示搜索内容，截取前20个字符
                       const searchSummary = searchDisplayText.length > 20 ? searchDisplayText.substring(0, 20) + '...' : searchDisplayText;
-                      resultText = `搜索${searchTypeDisplay}「${searchSummary}」完成，找到 ${totalMatches} 个匹配项`;
+                      resultText = `搜索 ${searchTypeDisplay} 「${searchSummary}」完成，找到 ${totalMatches} 个匹配项`;
                     }
                     break;
                   case 'get_hardware_categories':
@@ -2334,11 +2509,11 @@ ${JSON.stringify(errData)}
                     toolResult = await getHardwareCategoriesTool.handler(toolArgs, this.configService);
                     if (toolResult.is_error) {
                       resultState = "error";
-                      resultText = `获取${catType}分类失败: ` + (toolResult.content || '未知错误');
+                      resultText = `获取 ${catType} 分类失败: ` + (toolResult.content || '未知错误');
                     } else {
                       const categoryCount = toolResult.metadata?.categories?.length || 0;
                       const totalCount = toolResult.metadata?.total || 0;
-                      resultText = `获取${catType}${dimensionDisplay}分类完成，共 ${categoryCount} 个分类，涵盖 ${totalCount} 个${catType}`;
+                      resultText = `获取 ${catType} ${dimensionDisplay} 分类完成，共 ${categoryCount} 个分类，涵盖 ${totalCount} 个${catType}`;
                     }
                     break;
                   case 'get_board_parameters':
@@ -2818,6 +2993,56 @@ ${JSON.stringify(errData)}
                       resultText = `块配置成功: ID ${toolArgs.blockId}`;
                     }
                     break;
+                  // =============================================================================
+                  // DSL 块创建工具
+                  // =============================================================================
+                  // case 'insert_code_dsl':
+                  //   this.startToolCall(toolCallId, data.tool_name, "DSL 代码创建块...", toolArgs);
+                  //   toolResult = await insertDslHandler(toolArgs);
+                  //   if (toolResult?.is_error) {
+                  //     resultState = "warn";
+                  //     resultText = 'ABS 代码执行失败';
+                  //   } else {
+                  //     const metadata = toolResult?.metadata;
+                  //     resultText = `ABS 代码执行成功: 创建了 ${metadata?.createdBlocks || 0} 个块`;
+                  //   }
+                  //   break;
+                  // case 'get_dsl_syntax_help':
+                  //   this.startToolCall(toolCallId, data.tool_name, "获取 ABS 语法帮助...", toolArgs);
+                  //   toolResult = getDslHelpHandler();
+                  //   resultText = 'ABS 语法帮助';
+                  //   break;
+                  case 'sync_abs_file':
+                    if (toolArgs.operation === 'import') {
+                      this.startToolCall(toolCallId, data.tool_name, "加载 图形化代码...", toolArgs);
+                    }
+                    // this.startToolCall(toolCallId, data.tool_name, `同步 ABS 文件 (${toolArgs.operation})...`, toolArgs);
+                    toolResult = await syncAbsFileHandler(toolArgs, this.projectService, this.electronService, this.absAutoSyncService);
+                    if (toolResult?.is_error) {
+                      resultState = "warn";
+                      resultText = '项目文件 同步失败';
+                    } else {
+                      const op = toolArgs.operation;
+                      // export 时不显示状态
+                      resultText = op === 'import' ? '加载 图形化代码 完成' 
+                        // : op === 'status' ? 'ABS 状态查询完成'
+                        : '';  // status 与 export 不显示
+                    }
+                    break;
+                  case 'abs_version_control':
+                    this.startToolCall(toolCallId, data.tool_name, `版本控制 (${toolArgs.operation})...`, toolArgs);
+                    toolResult = await absVersionControlHandler(toolArgs, this.absAutoSyncService);
+                    if (toolResult?.is_error) {
+                      resultState = "warn";
+                      resultText = '版本控制操作失败';
+                    } else {
+                      const op = toolArgs.operation;
+                      resultText = op === 'list' ? '版本列表获取成功'
+                        : op === 'get' ? '版本内容获取成功'
+                        : op === 'rollback' ? '版本回滚成功'
+                        : '版本保存成功';
+                    }
+                    break;
                   //                   case 'variable_manager_tool':
                   //                     console.log('[变量管理工具被调用]', toolArgs);
                   //                     this.appendMessage('aily', `
@@ -3158,7 +3383,7 @@ ${JSON.stringify(errData)}
             }
 
             // 获取keyinfo
-            const keyInfo = await this.getKeyInfo();
+            // const keyInfo = await this.getKeyInfo();
 
             let toolContent = '';
 
@@ -3180,6 +3405,7 @@ ${JSON.stringify(errData)}
                 'set_block_input',
                 'batch_create_blocks',
                 'flat_create_blocks',
+                'sync_abs_file',
               ].includes(data.tool_name);
 
               // 判断是否需要路径信息的工具
@@ -3209,56 +3435,57 @@ ${JSON.stringify(errData)}
               const shouldIncludeKeyInfo = needsPathInfo || toolResult?.is_error || resultState === 'warn';
 
               if (needsRules || newConnect || newProject) {
-                console.log('包含规则提示');
+                console.log('======================================包含规则提示======================================');
                 newConnect = false;
                 newProject = false;
                 // Blockly 工具失败时：同时包含 keyInfo 和 rules
-                toolContent += `\n${keyInfo}\n
-<rules>Blockly块创建规范流程，**严格遵守**：
+                // toolContent += `\n${keyInfo}\n
+// 【ABS编写规范】
+// - 字段(field)直接写值：field_dropdown写枚举\`HIGH\`、field_input写字符串\`"dht"\`、field_number写数字\`9600\`、field_variable写\`$varName\`
+// - 值输入(input_value)必须连接值块：数字用\`math_number(10)\`、文本用\`text("Hello")\`、布尔用\`logic_boolean(TRUE)\`、变量用\`$varName\`(自动创建variables_get)
+// - 语句输入(input_statement)用4空格缩进子块表示
+// - 多输入块用\`@输入名:\`标记：如controls_if的\`@IF0:\`/\`@DO0:\`/\`@ELSE:\`
+// - 空括号不可省略：\`block_name()\`
+                toolContent += `
+<rules>Blockly块操作规范流程（ABS模式），**严格遵守**：
+
+【核心原则】
+所有块操作统一通过ABS文件进行：创建=添加ABS代码行，修改=编辑参数，删除=移除代码行
 
 【准备阶段】
-1. 使用get_workspace_overview_tool分析当前工作区的已有块和结构
-2. 列出所有需要使用及可能会使用的库（必须包含\`lib-core-*\`系列核心库：logic、variables、time、math等）
-3. 逐一阅读各库README了解块定义，README不存在时使用工具分析
-4. 如果需要的库未安装，则使用工具查询并安装所需库，安装完成后重新执行步骤1-3
+1. 使用todo_write_tool规划当前项目流程
+2. 使用get_workspace_overview_tool分析当前工作区，获取ABS代码和变量列表
+3. 列出所有需要使用的库（必须包含\`lib-core-*\`系列核心库：logic、variables、time、math等）
+4. 逐一阅读各库readme_ai.md了解块定义和ABS语法
+5. 如果需要的库未安装，则查询并安装所需库，安装完成后重新执行步骤1-4
 
-【创建阶段】
-4. **完整规划代码逻辑和块结构**
-5. 使用smart_block_tool和create_code_structure_tool按README定义创建块
-   - 严格匹配块的类型、字段、输入、连接定义
-   - 分层拆分创建：全局变量/setup/loop/回调函数等独立创建，每个部分内部也逐步拆分，避免一次性创建大型代码结构
-   - 多次创建失败时，安装@aily-project/lib-core-custom使用自定义块进行创建
-6. 检查工具反馈，修复问题（失败时检查是否遗漏库README）
-7. 重复步骤4-6直至完成
+【创建/修改阶段】
+1. **完整规划代码逻辑**，先在脑中构思完整的ABS结构
+2. 使用sync_abs_file工具的export操作获取当前代码
+3. 编辑ABS代码：添加新块、修改参数、调整结构
+4. 使用sync_abs_file工具的import操作导入修改后的ABS
+5. 检查工具反馈，如果失败则分析错误信息，修正ABS代码后重新导入
+6. 重复步骤2-5直至完成
 
-【修复原则】⚠️**严禁直接删除代码块，必须严格遵守以下原则**：
-- 诊断优先：先完整分析代码逻辑和块结构，定位具体问题
-  · 问题定位：逻辑错误/缺块/块错误/连接错误
-  · 根本原因：变量作用域/块连接位置/块定义理解错误
-  · 读取对应库readme和文档，确认块定义和使用方法
-- 最小改动：精确修复，保持结构稳定
-  · 逻辑错误 → 调整块位置和连接
-  · 缺块 → 精确创建所需块
-  · 块参数错误 → 使用configure_block_tool修正参数
-  · 块错误 → 重新创建正确块，替换错误块
-  · 连接错误 → 使用connect_blocks_tool重新连接
-- 分级处理：
-  · 简单问题（缺块/块错误/连接错误） → 分析根本原因→ 新建块或使用connect_blocks_tool连接
-  · 复杂问题 → 分析根本原因 → 新建/配置块 → 连接 → 检查反馈 → 循环修复（3次失败后才可删除）
-- 孤立块处理：优先用连接工具修复，仅在无法修复且不再使用时才删除
-- 禁止使用文件操作工具编辑代码块
+【修复原则】
+- 诊断优先：分析get_workspace_overview_tool返回的ABS代码，定位问题
+- 最小改动：只修改需要变更的ABS行，保持其他结构不变
+- 增量更新：sync_abs_file支持增量更新，只会修改变化的块
+- 错误处理：导入失败时检查ABS语法，特别是变量前缀\`$\`和括号匹配
 
 【执行要求】
-- 每次只调用一个工具，等待反馈后再进行下一步
 - 深入分析嵌入式代码逻辑和硬件特性，确保逻辑正确
-- JSON保留换行和缩进格式，避免解析失败</rules>
+- ABS代码保持清晰的缩进和换行，便于阅读和调试
+- 复杂结构分步创建，先创建外层再填充内层</rules>
 <toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
               } else if (shouldIncludeKeyInfo) {
                 // 需要路径信息的工具 或 工具失败时：只包含 keyInfo
-                toolContent += `\n${keyInfo}\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+                // toolContent += `\n${keyInfo}\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+                toolContent += `\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
               } else {
                 // 其他成功的工具：不包含 keyInfo
-                toolContent += `\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+                // toolContent += `\n<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
+                toolContent += `<toolResult>${toolResult?.content}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
               }
             } else {
               toolContent = `
@@ -3266,8 +3493,8 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
 <toolResult>${toolResult?.content || '工具执行完成，无返回内容'}</toolResult>\n<info>如果想结束对话，转交给用户，可以使用[to_xxx]，这里的xxx为user</info>`;
             }
 
-            // 显示工具完成状态（除了 todo_write_tool）
-            if (data.tool_name !== 'todo_write_tool') {
+            // 显示工具完成状态（除了 todo_write_tool，以及 resultText 为空的情况）
+            if (data.tool_name !== 'todo_write_tool' && resultText) {
               let finalState: ToolCallState;
               switch (resultState) {
                 case "error":
@@ -3307,6 +3534,9 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
             // 2. Maximum number of messages - 需要显示继续对话提示
             // 3. 其他异常 - 需要显示重试提示
             
+            // 先清理流式残留内容（TERMINATE 文字、未闭合的代码块等）
+            this.cleanupLastAiMessage();
+
             if (stopReason.includes('TERMINATE')) {
               // 正常结束，状态由 complete 回调统一处理
               // pass
@@ -3338,16 +3568,17 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
               
               // 显示报错，并提供重试按钮
               this.appendMessage('aily', `
-
-\`\`\`aily-task-action
+\`\`\`aily-error
 {
-  "actionType": "error",
-  "message": "任务执行过程中遇到问题，请重试或开始新会话。",
-  "stopReason": "${this.makeJsonSafe(stopReason)}",
-  "metadata": {}
+  "message": "任务执行过程中遇到问题，请重试或开始新会话。"
 }
-\`\`\`\n\n
-              `);
+\`\`\`
+
+\`\`\`aily-button
+[{"text":"重试","action":"retry","type":"primary"}]
+\`\`\`
+
+`);
             }
 
           }
@@ -3355,19 +3586,25 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
         } catch (e) {
           console.log('处理流数据时出错:', e);
           this.appendMessage('error', `
-
 \`\`\`aily-error
 {
   "message": "服务异常，请稍后重试。"
 }
-\`\`\`\n\n
+\`\`\`
 
-          `);
+\`\`\`aily-button
+[{"text":"重试","action":"retry","type":"primary"}]
+\`\`\`
+
+`);
           // 调用取消函数
           this.stop();
         }
       },
       complete: () => {
+        // 清理流式残留内容
+        this.cleanupLastAiMessage();
+
         if (this.list.length > 0 && this.list[this.list.length - 1].role === 'aily') {
           this.list[this.list.length - 1].state = 'done';
         }
@@ -3410,15 +3647,22 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
         if (this.list.length > 0 && this.list[this.list.length - 1].role === 'aily') {
           this.list[this.list.length - 1].state = 'done';
         }
-        this.appendMessage('error', `
 
+        // 只有在活跃对话中才显示错误提示和重试按钮
+        if (this.isWaiting) {
+          this.appendMessage('error', `
 \`\`\`aily-error
 {
-  "message": "连接中断。"
+  "message": "网络连接已断开，请检查网络后重试。"
 }
-\`\`\`\n\n
+\`\`\`
+
+\`\`\`aily-button
+[{"text":"重试","action":"retry","type":"primary"}]
+\`\`\`
 
 `);
+        }
         this.isWaiting = false;
       }
     });
@@ -3501,6 +3745,8 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
         }, 0);
         event.preventDefault();
       } else {
+        this.autoScrollEnabled = true;
+        this.scrollToBottom();
         // Enter 发送消息
         if (this.isWaiting) {
           return;
@@ -3787,6 +4033,7 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     // 新会话时重新启用自动滚动
     this.autoScrollEnabled = true;
     this.isCompleted = false;
+    this.isCancelled = false; // 重置取消标志
 
     try {
       // 先停止并关闭当前会话（跳过保存，因为上面已保存）
@@ -4136,6 +4383,7 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     event.preventDefault();
     event.stopPropagation();
 
+    this.showModelMenu = false;
     this.showMode = !this.showMode;
   }
 
@@ -4206,6 +4454,7 @@ Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendati
     event.preventDefault();
     event.stopPropagation();
 
+    this.showMode = false;
     this.showModelMenu = !this.showModelMenu;
   }
 
