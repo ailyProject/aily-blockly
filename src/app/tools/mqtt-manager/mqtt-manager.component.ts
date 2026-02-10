@@ -338,13 +338,12 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
     this.selectedDevice = device;
   }
 
-  // 检查当前选中设备是否已连接
+  // 检查当前选中设备是否已连接（WebSocket 方式）
   isSelectedDeviceConnected(): boolean {
-    if (!this.selectedDevice) return false;
-    return this.mqttService.isDeviceConnected(this.selectedDevice.uuid);
+    return this.mqttService.isConnected();
   }
 
-  // 测试设备上线
+  // 测试设备上线（使用 WebSocket 方式）
   async testDeviceOnline() {
     if (!this.selectedDevice) {
       this.message.warning('请先选择设备');
@@ -367,7 +366,7 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
       const credentials = result.detail;
       this.saveConfig();
 
-      // 2. 使用 mqtt.js 连接到 Broker
+      // 2. 使用 WebSocket 连接到 Broker
       const config: ConnectionConfig = {
         host: this.brokerHost,
         port: parseInt(this.brokerMqttPort),
@@ -376,7 +375,7 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
         password: credentials.password,
       };
 
-      await this.mqttService.connectWithMqttJs(this.selectedDevice.uuid, config);
+      await this.mqttService.connect(config);
       this.message.success(`设备 ${this.selectedDevice.uuid} 已上线`);
       this.cd.detectChanges();
 
@@ -393,7 +392,7 @@ export class MqttManagerComponent implements OnInit, OnDestroy {
   // 断开当前设备连接
   disconnectDevice() {
     if (!this.selectedDevice) return;
-    this.mqttService.disconnectMqttJs(this.selectedDevice.uuid);
+    this.mqttService.disconnect();
     this.message.info('设备已下线');
     this.cd.detectChanges();
     // 刷新设备列表以更新状态

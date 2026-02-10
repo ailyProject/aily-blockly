@@ -171,7 +171,6 @@
     "marked-highlight": "^2.2.1",
     "mermaid": "^11.9.0",
     "monaco-editor": "^0.52.2",
-    "mqtt": "^5.15.0",
     "ng-zorro-antd": "^19.0.1",
     "ngx-ui-scroll": "^4.1.0",
     "pinyin-pro": "^3.26.0",
