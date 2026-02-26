@@ -49,7 +49,14 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   private isHandlingAdd = false;
   
   // 保存点击事件监听器的引用，用于清理
-  private clickListeners: Array<{ element: HTMLElement; listener: (e: MouseEvent) => void }> = [];
+  private clickListeners: Array<{
+    element: HTMLElement;
+    clickListener: (e: MouseEvent) => void;
+    dblclickListener: (e: MouseEvent) => void;
+    clickTimeout?: ReturnType<typeof setTimeout>;
+  }> = [];
+  // 区域空白处点击监听器（点击取消选中）
+  private zoneClickListeners: Array<{ element: HTMLElement; listener: (e: MouseEvent) => void }> = [];
 
   constructor(
     private uiService: UiService,
@@ -98,6 +105,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         if (!this.isHandlingAdd) {
           this.handleUpdate();
         }
+        this.selectApp(null);
       },
       onRemove: (evt: SortableEvent) => {
         this.handleRemove(evt);
@@ -141,14 +149,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
           this.handleUpdate();
         },
         onStart: (evt: SortableEvent) => {
-          console.log("🚀 ~ AppStoreComponent ~ initSortable ~ evt:", evt)
           this.selectApp(this.otherZoneApps[evt.oldIndex]);
         },
         onEnd: (evt: SortableEvent) => {
-          console.log("🚀 ~ AppStoreComponent ~ onEnd ~ evt:", evt)
+          this.removeSelectedFromAllCards();
           setTimeout(() => {
             this.bindClickEvents();
-          }, 100);
+          }, 10);
         }
       });
     } else {
@@ -158,51 +165,99 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.bindClickEvents();
   }
   
-  // 手动绑定点击事件到所有 app-card 元素
+  // 手动绑定单击、双击事件到所有 app-card 元素
   private bindClickEvents() {
-    console.log("🚀 ~ AppStoreComponent ~ bindClickEvents ~ bindClickEvents:")
     // 先清理旧的事件监听器
     this.unbindClickEvents();
-    
-    // 为所有三个区域的 app-card 绑定点击事件
+
     const zones = [
       { element: this.headerZone?.nativeElement, apps: this.headerZoneApps },
       { element: this.sidebarZone?.nativeElement, apps: this.sidebarZoneApps },
       { element: this.otherZone?.nativeElement, apps: this.otherZoneApps }
     ];
-    
+
     zones.forEach(zone => {
       if (zone.element) {
+        // 点击区域空白处时取消选中
+        const zoneListener = (e: MouseEvent) => {
+          if (!(e.target as HTMLElement).closest('.app-card') && this.selectedApp) {
+            this.selectApp(null);
+            this.cdr.detectChanges();
+          }
+        };
+        zone.element.addEventListener('click', zoneListener, true);
+        this.zoneClickListeners.push({ element: zone.element, listener: zoneListener });
+
         const cards = zone.element.querySelectorAll('.app-card');
         cards.forEach((card: HTMLElement) => {
           const appId = card.getAttribute('data-id');
           if (appId) {
             const app = APP_LIST.find(a => a.id === appId);
             if (app) {
-              const listener = (e: MouseEvent) => {
-                // 阻止事件冒泡，避免与 Sortable 冲突
-                e.stopPropagation();
-                this.selectApp(app);
+              const entry: (typeof this.clickListeners)[0] = {
+                element: card,
+                clickListener: () => {},
+                dblclickListener: () => {}
               };
-              
-              // 使用 capture 阶段捕获事件，在 Sortable 之前处理
-              card.addEventListener('click', listener, true);
-              
-              // 保存监听器引用
-              this.clickListeners.push({ element: card, listener });
+
+              entry.clickListener = (e: MouseEvent) => {
+                e.stopPropagation();
+                // 双击时会先触发两次 click，用 timeout 区分单击
+                entry.clickTimeout = setTimeout(() => {
+                  entry.clickTimeout = undefined;
+                  // 若已是 selected 状态，则取消选中
+                  const isAlreadySelected = this.selectedApp?.id === app.id;
+                  this.selectApp(isAlreadySelected ? null : app);
+                  this.cdr.detectChanges();
+                }, 250);
+              };
+
+              entry.dblclickListener = (e: MouseEvent) => {
+                e.stopPropagation();
+                if (entry.clickTimeout) {
+                  clearTimeout(entry.clickTimeout);
+                  entry.clickTimeout = undefined;
+                }
+                this.selectApp(app);
+                this.openApp(app);
+                this.cdr.detectChanges();
+              };
+
+              card.addEventListener('click', entry.clickListener, true);
+              card.addEventListener('dblclick', entry.dblclickListener, true);
+              this.clickListeners.push(entry);
             }
           }
         });
       }
     });
   }
+
+  // 移除所有 app-card 的 selected 类
+  private removeSelectedFromAllCards() {
+    const containers = [
+      this.headerZone?.nativeElement,
+      this.sidebarZone?.nativeElement,
+      this.otherZone?.nativeElement
+    ];
+    containers.forEach(el => {
+      el?.querySelectorAll('.app-card.selected').forEach(card => card.classList.remove('selected'));
+    });
+    this.cdr.detectChanges();
+  }
   
   // 清理所有点击事件监听器
   private unbindClickEvents() {
-    this.clickListeners.forEach(({ element, listener }) => {
-      element.removeEventListener('click', listener, true);
+    this.clickListeners.forEach(({ element, clickListener, dblclickListener, clickTimeout }) => {
+      if (clickTimeout) clearTimeout(clickTimeout);
+      element.removeEventListener('click', clickListener, true);
+      element.removeEventListener('dblclick', dblclickListener, true);
     });
     this.clickListeners = [];
+    this.zoneClickListeners.forEach(({ element, listener }) => {
+      element.removeEventListener('click', listener, true);
+    });
+    this.zoneClickListeners = [];
   }
 
   // 销毁 Sortable 实例
@@ -385,10 +440,24 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.uiService.openTool(app.data.data);
   }
 
-  // 选中 app 显示信息
-  selectApp(app: AppItem) {
-    console.log("🚀 ~ AppStoreComponent ~ selectApp ~ app:", app)
+  // 选中 app 显示信息（同时同步 DOM 的 selected 类）
+  selectApp(app: AppItem | null) {
     this.selectedApp = app;
+    this.removeSelectedFromAllCards();
+    if (app) {
+      const appId = app.id;
+      const containers = [
+        this.headerZone?.nativeElement,
+        this.sidebarZone?.nativeElement,
+        this.otherZone?.nativeElement
+      ];
+      for (const el of containers) {
+        const card = el?.querySelector(`.app-card[data-id="${appId}"]`);
+        if (card) {
+          card.classList.add('selected');
+        }
+      }
+    }
   }
 
   // 保存排序
