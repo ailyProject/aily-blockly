@@ -4,11 +4,14 @@ const { exec } = require('child_process');
 
 
 function registerNpmHandlers(mainWindow) {
-    ipcMain.handle('npm-run', async (event, { cmd }) => {
+    ipcMain.handle('npm-run', async (event, { cmd, option = {} }) => {
         console.log('npm run cmd: ', cmd);
         return new Promise((resolve, reject) => {
             exec(cmd, (error, stdout, stderr) => {
                 if (error) {
+                    if (option?.ignoreErr) {
+                        return resolve(false);
+                    }
                     console.error(`执行命令出错: ${error}`);
                     return reject(error);
                 }

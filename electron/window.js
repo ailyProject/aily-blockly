@@ -69,7 +69,7 @@ function registerWindowHandlers(mainWindow) {
 
     mainWindow.on('focus', () => {
         try {
-            if (mainWindow && mainWindow.webContents) {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-focus');
             }
 
@@ -81,7 +81,7 @@ function registerWindowHandlers(mainWindow) {
     mainWindow.on('blur', () => {
         // 检查窗口是否已销毁以及 webContents 是否有效
         try {
-            if (mainWindow && mainWindow.webContents) {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-blur');
             }
 
@@ -92,7 +92,7 @@ function registerWindowHandlers(mainWindow) {
 
     mainWindow.on('enter-full-screen', () => {
         try {
-            if (mainWindow && mainWindow.webContents) {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-full-screen-changed', true);
             }
         } catch (error) {
@@ -102,11 +102,32 @@ function registerWindowHandlers(mainWindow) {
 
     mainWindow.on('leave-full-screen', () => {
         try {
-            if (mainWindow && mainWindow.webContents) {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-full-screen-changed', false);
             }
         } catch (error) {
             console.error('Error sending window-full-screen-changed:', error.message);
+        }
+    });
+
+    // 为主窗口注册最大化/还原状态监听
+    mainWindow.on('maximize', () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('window-maximize-changed', true);
+            }
+        } catch (error) {
+            console.error('Error sending window-maximize-changed:', error.message);
+        }
+    });
+
+    mainWindow.on('unmaximize', () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('window-maximize-changed', false);
+            }
+        } catch (error) {
+            console.error('Error sending window-maximize-changed:', error.message);
         }
     });
 
@@ -133,6 +154,7 @@ function registerWindowHandlers(mainWindow) {
             frame: false,
             autoHideMenuBar: true,
             transparent: true,
+            titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
             alwaysOnTop: data.alwaysOnTop ? data.alwaysOnTop : false,
             width: data.width ? data.width : 800,
             height: data.height ? data.height : 600,
@@ -146,10 +168,63 @@ function registerWindowHandlers(mainWindow) {
         // 将新窗口添加到映射
         openWindows.set(windowUrl, subWindow);
 
+        // 为子窗口注册全屏状态监听
+        subWindow.on('enter-full-screen', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-full-screen-changed', true);
+                }
+            } catch (error) {
+                console.error('Error sending sub-window-full-screen-changed:', error.message);
+            }
+        });
+
+        subWindow.on('leave-full-screen', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-full-screen-changed', false);
+                }
+            } catch (error) {
+                console.error('Error sending sub-window-full-screen-changed:', error.message);
+            }
+        });
+
+        // 为子窗口注册最大化/还原状态监听
+        subWindow.on('maximize', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-maximize-changed', true);
+                }
+            } catch (error) {
+                console.error('Error sending window-maximize-changed:', error.message);
+            }
+        });
+
+        subWindow.on('unmaximize', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-maximize-changed', false);
+                }
+            } catch (error) {
+                console.error('Error sending window-maximize-changed:', error.message);
+            }
+        });
+
         // 当窗口关闭时，从映射中移除
         subWindow.on('closed', () => {
             openWindows.delete(windowUrl);
         });
+
+        // 页面加载完成后，将 data/url/title 发送给子窗口
+        if (data.data || data.url || data.title) {
+            subWindow.webContents.on('did-finish-load', () => {
+                subWindow.webContents.send('window-init-data', {
+                    url: data.url,
+                    title: data.title,
+                    data: data.data,
+                });
+            });
+        }
 
         if (process.env.DEV === 'true' || process.env.DEV === true) {
             subWindow.loadURL(`http://localhost:4200/#/${data.path}`);

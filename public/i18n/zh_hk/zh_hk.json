@@ -184,7 +184,8 @@
             "CREATING": "正在創建"
         },
         "WARNINGS": {
-            "BETA_VERSION": "內測版本，未經驗證，謹慎使用"
+            "BETA_VERSION": "內測版本，未經驗證，謹慎使用",
+            "TODO": "該設備支持即將上線"
         }
     },
     "LIB_MANAGER": {
@@ -362,6 +363,7 @@
         "DOCUMENTATION": "文檔",
         "FEEDBACK": "反饋",
         "NO_PINMAP": "該開發板沒有提供引腳圖",
+        "PINMAP_PARSE_ERROR": "引腳圖解析失敗",
         "NO_DOCUMENTATION": "該開發板沒有提供文檔鏈接"
     },
     "SERIAL": {
@@ -484,6 +486,7 @@
         "PHONE_BETA_ONLY": "手機號登錄僅限AI功能內測用戶使用",
         "PHONE_PLACEHOLDER": "請輸入手機號",
         "PASSWORD_PLACEHOLDER": "請輸入密碼",
+        "CODE_SENDING": "請先獲取驗證碼",
         "LOGGING_IN": "登錄中...",
         "LOGIN": "登錄",
         "SELECT_METHOD": "點擊選擇登錄方式",
@@ -544,6 +547,7 @@
         "CANNOT_OPEN_PROJECT": "無法開啟專案: ",
         "CREATING_PROJECT": "正在建立專案...",
         "PROJECT_CREATED": "專案建立成功",
+        "CREATE_FAILED": "專案建立失敗",
         "PATH_NOT_EXIST": "專案路徑不存在，請重新選擇專案",
         "SWITCHING_BOARD_CONFIG": "正在切換開發板配置...",
         "BOARD_SWITCH_COMPLETE": "開發板切換完成",

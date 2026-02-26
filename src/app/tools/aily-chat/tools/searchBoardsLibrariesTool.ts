@@ -1,4 +1,4 @@
-import { injectTodoReminder } from "./todoWriteTool";
+﻿import { injectTodoReminder } from "./todoWriteTool";
 import { ConfigService } from '../../../services/config.service';
 
 // ==================== 新索引格式接口（boards-index.json / libraries-index.json）====================
@@ -94,46 +94,6 @@ interface StructuredFilters {
     hardwareType?: string[];
     supportedCores?: string[];
     communication?: string[];
-}
-
-// ==================== 格式检测工具 ====================
-/**
- * 检测是否为新格式的开发板数据
- */
-function isNewBoardFormat(item: any): item is NewBoardItem {
-    return item && 
-           typeof item.displayName === 'string' && 
-           typeof item.architecture === 'string' &&
-           typeof item.flash === 'number' &&
-           Array.isArray(item.connectivity);
-}
-
-/**
- * 检测是否为新格式的库数据
- */
-function isNewLibraryFormat(item: any): item is NewLibraryItem {
-    return item && 
-           typeof item.displayName === 'string' && 
-           typeof item.category === 'string' &&
-           Array.isArray(item.supportedCores) &&
-           Array.isArray(item.communication);
-}
-
-/**
- * 检测数组是否为新格式
- */
-function detectDataFormat(items: any[]): 'new' | 'old' {
-    if (!items || items.length === 0) return 'old';
-    const sample = items[0];
-    // 新格式有 displayName 和结构化字段
-    if (sample.displayName && (sample.architecture || sample.category)) {
-        return 'new';
-    }
-    // 旧格式有 nickname
-    if (sample.nickname !== undefined) {
-        return 'old';
-    }
-    return 'old';
 }
 
 /**
@@ -432,25 +392,10 @@ export const searchBoardsLibrariesTool = {
                 const newLibrariesData = configService.libraryIndex;
                 const oldLibrariesData = configService.libraryList;
                 
-                // 调试日志
-                console.log('[SearchTool] 库搜索数据源诊断:', {
-                    newLibrariesData_length: newLibrariesData?.length || 0,
-                    oldLibrariesData_length: oldLibrariesData?.length || 0,
-                    newLibrariesData_sample: newLibrariesData?.[0] ? {
-                        name: newLibrariesData[0].name,
-                        displayName: newLibrariesData[0].displayName,
-                        category: newLibrariesData[0].category,
-                    } : null
-                });
-                
                 if (newLibrariesData && newLibrariesData.length > 0) {
-                    // 使用新格式搜索（支持结构化筛选）
-                    console.log('[SearchTool] ✅ 使用新格式搜索库');
                     dataFormat = 'new';
                     results.push(...searchInNewLibraries(newLibrariesData as NewLibraryItem[], queryListLower, filters, oldLibrariesData as OldLibraryItem[]));
                 } else if (oldLibrariesData && oldLibrariesData.length > 0) {
-                    // 降级到旧格式搜索（将 filters 转换为文本搜索）
-                    console.log('[SearchTool] ⚠️ 降级到旧格式搜索库');
                     const fallbackQueries = convertFiltersToQueries(filters, 'libraries');
                     const combinedQueries = [...queryListLower, ...fallbackQueries];
                     results.push(...searchInOldLibraries(oldLibrariesData as OldLibraryItem[], combinedQueries));
@@ -627,17 +572,10 @@ function compareNumeric(value: number, condition: string | string[]): boolean {
     }
 }
 
-// ==================== 新格式搜索函数 ====================
+// ==================== 共享类型与通用评分函数 ====================
 
-/**
- * 在新格式开发板数组中搜索匹配项 - 支持文本搜索和结构化筛选
- */
-function searchInNewBoards(
-    boards: NewBoardItem[], 
-    queryList: string[],
-    filters?: StructuredFilters,
-    oldBoardsData?: OldBoardItem[]
-): Array<{
+/** 搜索结果项 */
+interface SearchResultItem {
     source: 'board' | 'library';
     name: string;
     displayName: string;
@@ -646,614 +584,324 @@ function searchInNewBoards(
     matchedFields: string[];
     matchedQueries: string[];
     metadata?: any;
-}> {
-    const results: Array<{
-        source: 'board' | 'library';
-        name: string;
-        displayName: string;
-        description: string;
-        score: number;
-        matchedFields: string[];
-        matchedQueries: string[];
-        metadata?: any;
-    }> = [];
+}
+
+/** 单词边界匹配 - 检查 query 是否作为独立单词出现在 text 中 */
+function matchesWordBoundary(text: string, query: string): boolean {
+    const delimiters = /[\s\-_\/@:.,;()\[\]{}，。！？；：、""''【】《》（）]/;
+    let index = 0;
+    while ((index = text.indexOf(query, index)) !== -1) {
+        const beforeOk = index === 0 || delimiters.test(text[index - 1]);
+        const afterIndex = index + query.length;
+        const afterOk = afterIndex === text.length || delimiters.test(text[afterIndex]);
+        if (beforeOk && afterOk) return true;
+        index++;
+    }
+    return false;
+}
+
+/**
+ * 单字段文本评分 - 3 级匹配 (精确 → 词边界 → 包含)
+ * @param weights [精确匹配分, 词边界匹配分, 包含匹配分]
+ */
+function scoreTextField(text: string, query: string, weights: [number, number, number]): number {
+    const textLower = text.toLowerCase();
+    if (textLower === query) return weights[0];
+    if (weights[1] > 0 && matchesWordBoundary(textLower, query)) return weights[1];
+    if (weights[2] > 0 && textLower.includes(query)) return weights[2];
+    return 0;
+}
+
+/** 数组字段文本评分 - 对数组中每个元素评分并累加 */
+function scoreArrayField(items: string[], query: string, weights: [number, number, number]): number {
+    let total = 0;
+    for (const item of items) total += scoreTextField(item, query, weights);
+    return total;
+}
+
+/** 数组字段精确匹配评分 - 仅 toLowerCase() === query */
+function scoreArrayExact(items: string[], query: string, weight: number): number {
+    let total = 0;
+    for (const item of items) {
+        if (item.toLowerCase() === query) total += weight;
+    }
+    return total;
+}
+
+/** 多关键词加分计算 */
+function applyMultiKeywordBonus(totalScore: number, queryCount: number, matchedCount: number): number {
+    if (queryCount > 1 && matchedCount > 1) {
+        return matchedCount === queryCount
+            ? totalScore * 1.5
+            : totalScore * (1 + 0.2 * (matchedCount - 1));
+    }
+    return totalScore;
+}
+
+/** 大小写不敏感的数组包含检查 */
+function arrayIncludesCI(arr: string[], value: string): boolean {
+    const lv = value.toLowerCase();
+    return arr.some(item => item.toLowerCase() === lv);
+}
+
+// ==================== 字段评分配置 ====================
+
+/** 字段评分配置项 */
+interface FieldScoreConfig {
+    name: string;
+    getValue: (item: any) => string | string[] | undefined;
+    /** [精确, 词边界, 包含] */
+    weights: [number, number, number];
+    /** 数组字段仅精确匹配 */
+    exactOnly?: boolean;
+}
+
+/**
+ * 通用文本评分引擎 - 根据字段配置对条目进行评分
+ * 返回的 totalScore 不含多关键词加分，由调用方决定何时应用
+ */
+function scoreItemByFields(
+    item: any,
+    queryList: string[],
+    fieldConfigs: FieldScoreConfig[]
+): { totalScore: number; matchedFields: string[]; matchedQueries: string[] } {
+    let totalScore = 0;
+    const matchedFields: string[] = [];
+    const matchedQueries: string[] = [];
+
+    for (const query of queryList) {
+        let queryScore = 0;
+        let queryMatched = false;
+
+        for (const config of fieldConfigs) {
+            const value = config.getValue(item);
+            if (value == null) continue;
+
+            let fieldScore: number;
+            if (Array.isArray(value)) {
+                fieldScore = config.exactOnly
+                    ? scoreArrayExact(value, query, config.weights[0])
+                    : scoreArrayField(value, query, config.weights);
+            } else {
+                fieldScore = scoreTextField(String(value), query, config.weights);
+            }
+
+            if (fieldScore > 0) {
+                queryScore += fieldScore;
+                queryMatched = true;
+                if (!matchedFields.includes(config.name)) matchedFields.push(config.name);
+            }
+        }
+
+        if (queryMatched) {
+            totalScore += queryScore;
+            matchedQueries.push(query);
+        }
+    }
+
+    return { totalScore, matchedFields, matchedQueries };
+}
+
+// ---- 新格式开发板字段配置 ----
+const NEW_BOARD_FIELDS: FieldScoreConfig[] = [
+    { name: 'keywords',     getValue: (b: NewBoardItem) => b.keywords,     weights: [20, 15, 10] },
+    { name: 'displayName',  getValue: (b: NewBoardItem) => b.displayName,  weights: [18, 12, 8] },
+    { name: 'name',         getValue: (b: NewBoardItem) => b.name,         weights: [15, 10, 6] },
+    { name: 'tags',         getValue: (b: NewBoardItem) => b.tags,         weights: [12, 9, 6] },
+    { name: 'architecture', getValue: (b: NewBoardItem) => b.architecture, weights: [10, 6, 6] },
+    { name: 'mcu',          getValue: (b: NewBoardItem) => b.mcu,          weights: [10, 6, 6] },
+    { name: 'description',  getValue: (b: NewBoardItem) => b.description,  weights: [5, 5, 3] },
+    { name: 'connectivity', getValue: (b: NewBoardItem) => b.connectivity, weights: [8, 0, 0], exactOnly: true },
+    { name: 'interfaces',   getValue: (b: NewBoardItem) => b.interfaces,   weights: [8, 0, 0], exactOnly: true },
+    { name: 'brand',        getValue: (b: NewBoardItem) => b.brand,        weights: [6, 3, 3] },
+];
+
+// ---- 新格式库字段配置 ----
+const NEW_LIBRARY_FIELDS: FieldScoreConfig[] = [
+    { name: 'keywords',           getValue: (l: NewLibraryItem) => l.keywords,           weights: [20, 15, 10] },
+    { name: 'tags',               getValue: (l: NewLibraryItem) => l.tags,               weights: [18, 12, 8] },
+    { name: 'displayName',        getValue: (l: NewLibraryItem) => l.displayName,        weights: [15, 10, 7] },
+    { name: 'name',               getValue: (l: NewLibraryItem) => l.name,               weights: [15, 10, 6] },
+    { name: 'hardwareType',       getValue: (l: NewLibraryItem) => l.hardwareType,       weights: [15, 12, 12] },
+    { name: 'description',        getValue: (l: NewLibraryItem) => l.description,        weights: [5, 5, 3] },
+    { name: 'category',           getValue: (l: NewLibraryItem) => l.category,           weights: [8, 0, 0] },
+    { name: 'communication',      getValue: (l: NewLibraryItem) => l.communication,      weights: [8, 0, 0], exactOnly: true },
+    { name: 'supportedCores',     getValue: (l: NewLibraryItem) => l.supportedCores,     weights: [6, 6, 6] },
+    { name: 'compatibleHardware', getValue: (l: NewLibraryItem) => l.compatibleHardware, weights: [6, 6, 6] },
+];
+
+// ---- 旧格式开发板字段配置 ----
+const OLD_BOARD_FIELDS: FieldScoreConfig[] = [
+    { name: 'keywords',    getValue: (b: OldBoardItem) => b.keywords,    weights: [20, 15, 10] },
+    { name: 'nickname',    getValue: (b: OldBoardItem) => b.nickname,    weights: [18, 12, 8] },
+    { name: 'description', getValue: (b: OldBoardItem) => b.description, weights: [9, 9, 5] },
+    { name: 'brand',       getValue: (b: OldBoardItem) => b.brand,       weights: [6, 3, 3] },
+    { name: 'name',        getValue: (b: OldBoardItem) => b.name,        weights: [8, 8, 0] },
+];
+
+// ---- 旧格式库字段配置 ----
+const OLD_LIBRARY_FIELDS: FieldScoreConfig[] = [
+    { name: 'keywords',    getValue: (l: OldLibraryItem) => l.keywords,             weights: [20, 15, 10] },
+    { name: 'nickname',    getValue: (l: OldLibraryItem) => l.nickname,             weights: [18, 12, 8] },
+    { name: 'description', getValue: (l: OldLibraryItem) => l.description,          weights: [9, 9, 5] },
+    { name: 'core',        getValue: (l: OldLibraryItem) => l.compatibility?.core,  weights: [10, 5, 5] },
+    { name: 'author',      getValue: (l: OldLibraryItem) => l.author,               weights: [6, 3, 3] },
+    { name: 'name',        getValue: (l: OldLibraryItem) => l.name,                 weights: [8, 8, 0] },
+];
+
+// ==================== 结构化筛选函数（大小写不敏感）====================
+
+/** 新格式开发板结构化筛选 */
+function passNewBoardFilters(board: NewBoardItem, filters: StructuredFilters): boolean {
+    if (filters.flash && !compareNumeric(board.flash, filters.flash)) return false;
+    if (filters.sram && !compareNumeric(board.sram, filters.sram)) return false;
+    if (filters.frequency && !compareNumeric(board.frequency, filters.frequency)) return false;
+    if (filters.cores && !compareNumeric(board.cores, filters.cores)) return false;
+    if (filters.architecture && board.architecture.toLowerCase() !== filters.architecture.toLowerCase()) return false;
+    if (filters.connectivity) {
+        for (const conn of filters.connectivity) {
+            if (!arrayIncludesCI(board.connectivity, conn)) return false;
+        }
+    }
+    if (filters.interfaces) {
+        for (const iface of filters.interfaces) {
+            if (!arrayIncludesCI(board.interfaces, iface)) return false;
+        }
+    }
+    if (filters.brand && board.brand.toLowerCase() !== filters.brand.toLowerCase()) return false;
+    if (filters.voltage && board.voltage !== parseFloat(filters.voltage)) return false;
+    return true;
+}
+
+/** 新格式库结构化筛选 */
+function passNewLibraryFilters(lib: NewLibraryItem, filters: StructuredFilters): boolean {
+    if (filters.category && lib.category.toLowerCase() !== filters.category.toLowerCase()) return false;
+    if (filters.hardwareType && filters.hardwareType.length > 0) {
+        if (!filters.hardwareType.some(type => arrayIncludesCI(lib.hardwareType, type))) return false;
+    }
+    if (filters.supportedCores && filters.supportedCores.length > 0) {
+        if (!filters.supportedCores.some(core => arrayIncludesCI(lib.supportedCores, core))) return false;
+    }
+    if (filters.communication) {
+        for (const comm of filters.communication) {
+            if (!arrayIncludesCI(lib.communication, comm)) return false;
+        }
+    }
+    return true;
+}
+
+// ==================== 搜索函数（新格式 + 旧格式降级）====================
+
+/** 从旧数据中查找 description（处理新旧格式 name 差异） */
+function findOldDescription<T extends { name: string; description?: string }>(
+    name: string, oldData?: T[]
+): string | undefined {
+    if (!oldData) return undefined;
+    const old = oldData.find(o =>
+        o.name === name ||
+        o.name === `@aily-project/${name}` ||
+        o.name.endsWith(`/${name}`)
+    );
+    return old?.description;
+}
+
+/** 在新格式开发板数组中搜索 - 支持结构化筛选 + 文本搜索 */
+function searchInNewBoards(
+    boards: NewBoardItem[],
+    queryList: string[],
+    filters?: StructuredFilters,
+    oldBoardsData?: OldBoardItem[]
+): SearchResultItem[] {
+    const results: SearchResultItem[] = [];
 
     for (const board of boards) {
-        let totalScore = 0;
-        const matchedFields: string[] = [];
-        const matchedQueries: string[] = [];
-        let passedFilters = true;
+        // 1. 结构化筛选
+        if (filters && !passNewBoardFilters(board, filters)) continue;
 
-        // 1. 应用结构化筛选（如果提供）
+        // 2. 文本评分
+        const { totalScore: textScore, matchedFields, matchedQueries } =
+            scoreItemByFields(board, queryList, NEW_BOARD_FIELDS);
+
+        // 筛选通过时加基础分
+        let totalScore = textScore;
         if (filters) {
-            // Flash 筛选
-            if (filters.flash && !compareNumeric(board.flash, filters.flash)) {
-                passedFilters = false;
-            }
-            
-            // SRAM 筛选
-            if (filters.sram && !compareNumeric(board.sram, filters.sram)) {
-                passedFilters = false;
-            }
-            
-            // 频率筛选
-            if (filters.frequency && !compareNumeric(board.frequency, filters.frequency)) {
-                passedFilters = false;
-            }
-            
-            // 核心数筛选
-            if (filters.cores && !compareNumeric(board.cores, filters.cores)) {
-                passedFilters = false;
-            }
-            
-            // 架构筛选
-            if (filters.architecture && board.architecture !== filters.architecture) {
-                passedFilters = false;
-            }
-            
-            // 连接方式筛选（AND逻辑 - 必须全部包含）
-            if (filters.connectivity) {
-                for (const conn of filters.connectivity) {
-                    if (!board.connectivity.includes(conn)) {
-                        passedFilters = false;
-                        break;
-                    }
-                }
-            }
-            
-            // 接口筛选（AND逻辑 - 必须全部包含）
-            if (filters.interfaces) {
-                for (const iface of filters.interfaces) {
-                    if (!board.interfaces.includes(iface)) {
-                        passedFilters = false;
-                        break;
-                    }
-                }
-            }
-            
-            // 品牌筛选
-            if (filters.brand && board.brand.toLowerCase() !== filters.brand.toLowerCase()) {
-                passedFilters = false;
-            }
-            
-            // 电压筛选
-            if (filters.voltage && board.voltage !== parseFloat(filters.voltage)) {
-                passedFilters = false;
-            }
-            
-            if (!passedFilters) {
-                continue;
-            }
-            
-            // 结构化筛选通过，加基础分
             totalScore += 50;
-            matchedFields.push('structured_filters');
+            matchedFields.unshift('structured_filters');
         }
 
-        // 2. 文本关键词匹配（如果提供）
-        // 选型器设计：宽泛匹配，返回所有相关选项，让LLM做最终选择
-        if (queryList.length > 0) {
-            for (const query of queryList) {
-                let queryScore = 0;
-                let queryMatched = false;
+        // 3. 门槛：至少有关键词匹配或结构化筛选通过
+        if (matchedQueries.length === 0 && !filters) continue;
 
-                // 优先级1: keywords（权重: 20）
-                if (board.keywords) {
-                    for (const keyword of board.keywords) {
-                        const keywordLower = keyword.toLowerCase();
-                        if (keywordLower === query) {
-                            queryScore += 20;
-                            queryMatched = true;
-                        } else if (matchesWordBoundary(keywordLower, query)) {
-                            queryScore += 15;
-                            queryMatched = true;
-                        } else if (keywordLower.includes(query)) {
-                            queryScore += 10;
-                            queryMatched = true;
-                        }
-                    }
-                    if (queryMatched && !matchedFields.includes('keywords')) {
-                        matchedFields.push('keywords');
-                    }
-                }
+        // 4. 多关键词加分（含 filters 基础分一起加成）
+        totalScore = applyMultiKeywordBonus(totalScore, queryList.length, matchedQueries.length);
+        if (totalScore <= 0 && !filters) continue;
 
-                // 优先级2: displayName（权重: 18）
-                const displayNameLower = board.displayName.toLowerCase();
-                if (displayNameLower === query) {
-                    queryScore += 18;
-                    queryMatched = true;
-                } else if (matchesWordBoundary(displayNameLower, query)) {
-                    queryScore += 12;
-                    queryMatched = true;
-                } else if (displayNameLower.includes(query)) {
-                    queryScore += 8;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('displayName')) {
-                    matchedFields.push('displayName');
-                }
+        // 5. 构建结果
+        const description = board.description
+            || findOldDescription(board.name, oldBoardsData)
+            || `${board.brand} ${board.displayName}`;
 
-                // 优先级3: name（权重: 15）
-                const nameLower = board.name.toLowerCase();
-                if (nameLower === query) {
-                    queryScore += 15;
-                    queryMatched = true;
-                } else if (matchesWordBoundary(nameLower, query)) {
-                    queryScore += 10;
-                    queryMatched = true;
-                } else if (nameLower.includes(query)) {
-                    queryScore += 6;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('name')) {
-                    matchedFields.push('name');
-                }
-
-                // 优先级4: tags（权重: 12）
-                if (board.tags) {
-                    for (const tag of board.tags) {
-                        const tagLower = tag.toLowerCase();
-                        if (tagLower === query) {
-                            queryScore += 12;
-                            queryMatched = true;
-                        } else if (matchesWordBoundary(tagLower, query)) {
-                            queryScore += 9;
-                            queryMatched = true;
-                        } else if (tagLower.includes(query)) {
-                            queryScore += 6;
-                            queryMatched = true;
-                        }
-                    }
-                    if (queryMatched && !matchedFields.includes('tags')) {
-                        matchedFields.push('tags');
-                    }
-                }
-
-                // 优先级5: architecture/mcu（权重: 10）
-                const archLower = board.architecture.toLowerCase();
-                if (archLower === query) {
-                    queryScore += 10;
-                    queryMatched = true;
-                    if (!matchedFields.includes('architecture')) {
-                        matchedFields.push('architecture');
-                    }
-                } else if (archLower.includes(query)) {
-                    queryScore += 6;
-                    queryMatched = true;
-                    if (!matchedFields.includes('architecture')) {
-                        matchedFields.push('architecture');
-                    }
-                }
-                if (board.mcu) {
-                    const mcuLower = board.mcu.toLowerCase();
-                    if (mcuLower === query) {
-                        queryScore += 10;
-                        queryMatched = true;
-                        if (!matchedFields.includes('mcu')) {
-                            matchedFields.push('mcu');
-                        }
-                    } else if (mcuLower.includes(query)) {
-                        queryScore += 6;
-                        queryMatched = true;
-                        if (!matchedFields.includes('mcu')) {
-                            matchedFields.push('mcu');
-                        }
-                    }
-                }
-
-                // 优先级6: description（权重: 5）
-                if (board.description) {
-                    const descLower = board.description.toLowerCase();
-                    if (matchesWordBoundary(descLower, query)) {
-                        queryScore += 5;
-                        queryMatched = true;
-                    } else if (descLower.includes(query)) {
-                        queryScore += 3;
-                        queryMatched = true;
-                    }
-                    if (queryMatched && !matchedFields.includes('description')) {
-                        matchedFields.push('description');
-                    }
-                }
-
-                // 优先级7: connectivity/interfaces（权重: 8）- 对选型很重要
-                for (const conn of board.connectivity) {
-                    if (conn.toLowerCase() === query) {
-                        queryScore += 8;
-                        queryMatched = true;
-                        if (!matchedFields.includes('connectivity')) {
-                            matchedFields.push('connectivity');
-                        }
-                    }
-                }
-                for (const iface of board.interfaces) {
-                    if (iface.toLowerCase() === query) {
-                        queryScore += 8;
-                        queryMatched = true;
-                        if (!matchedFields.includes('interfaces')) {
-                            matchedFields.push('interfaces');
-                        }
-                    }
-                }
-
-                // 优先级8: brand（权重: 6）
-                const brandLower = board.brand.toLowerCase();
-                if (brandLower === query) {
-                    queryScore += 6;
-                    queryMatched = true;
-                } else if (brandLower.includes(query)) {
-                    queryScore += 3;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('brand')) {
-                    matchedFields.push('brand');
-                }
-
-                if (queryMatched) {
-                    totalScore += queryScore;
-                    matchedQueries.push(query);
-                }
+        results.push({
+            source: 'board', name: board.name, displayName: board.displayName,
+            description, score: totalScore, matchedFields, matchedQueries,
+            metadata: {
+                architecture: board.architecture, mcu: board.mcu,
+                frequency: board.frequency, frequencyUnit: board.frequencyUnit,
+                flash: board.flash, sram: board.sram, psram: board.psram,
+                connectivity: board.connectivity, interfaces: board.interfaces,
+                brand: board.brand, core: board.core
             }
-        }
-
-        // 简化的筛选逻辑（选型器设计：宽进严出）
-        const queryCount = queryList.length;
-        const matchedCount = matchedQueries.length;
-        
-        // 唯一门槛：必须有匹配（关键词匹配或结构化筛选通过）
-        if (matchedCount === 0 && !(filters && passedFilters)) {
-            continue;
-        }
-        
-        // 匹配多个关键词时给予加分（更相关的排在前面）
-        if (queryCount > 1 && matchedCount > 1) {
-            // 匹配所有关键词：1.5倍加分
-            if (matchedCount === queryCount) {
-                totalScore *= 1.5;
-            }
-            // 匹配部分关键词：按比例加分
-            else {
-                totalScore *= (1 + 0.2 * (matchedCount - 1));
-            }
-        }
-
-        // 如果有匹配，添加到结果
-        if (totalScore > 0 || (filters && passedFilters)) {
-            // 从旧数据中查找description（如果新数据中没有）
-            let description = (board as any).description;
-            if (!description && oldBoardsData) {
-                // 处理新旧格式name差异：新格式 "board-xxx"，旧格式 "@aily-project/board-xxx"
-                const oldBoard = oldBoardsData.find(ob => 
-                    ob.name === board.name || 
-                    ob.name === `@aily-project/${board.name}` ||
-                    ob.name.endsWith(`/${board.name}`)
-                );
-                description = oldBoard?.description;
-            }
-            description = description || `${board.brand} ${board.displayName}`;
-            
-            results.push({
-                source: 'board',
-                name: board.name,
-                displayName: board.displayName,
-                description: description,
-                score: totalScore,
-                matchedFields,
-                matchedQueries,
-                metadata: {
-                    architecture: board.architecture,
-                    mcu: board.mcu,
-                    frequency: board.frequency,
-                    frequencyUnit: board.frequencyUnit,
-                    flash: board.flash,
-                    sram: board.sram,
-                    psram: board.psram,
-                    connectivity: board.connectivity,
-                    interfaces: board.interfaces,
-                    brand: board.brand,
-                    core: board.core
-                }
-            });
-        }
+        });
     }
 
     return results;
 }
 
-/**
- * 在新格式库数组中搜索匹配项 - 支持文本搜索和结构化筛选
- */
+/** 在新格式库数组中搜索 - 支持结构化筛选 + 文本搜索 */
 function searchInNewLibraries(
-    libraries: NewLibraryItem[], 
+    libraries: NewLibraryItem[],
     queryList: string[],
     filters?: StructuredFilters,
     oldLibrariesData?: OldLibraryItem[]
-): Array<{
-    source: 'board' | 'library';
-    name: string;
-    displayName: string;
-    description: string;
-    score: number;
-    matchedFields: string[];
-    matchedQueries: string[];
-    metadata?: any;
-}> {
-    const results: Array<{
-        source: 'board' | 'library';
-        name: string;
-        displayName: string;
-        description: string;
-        score: number;
-        matchedFields: string[];
-        matchedQueries: string[];
-        metadata?: any;
-    }> = [];
+): SearchResultItem[] {
+    const results: SearchResultItem[] = [];
 
     for (const lib of libraries) {
-        let totalScore = 0;
-        const matchedFields: string[] = [];
-        const matchedQueries: string[] = [];
-        let passedFilters = true;
+        // 1. 结构化筛选
+        if (filters && !passNewLibraryFilters(lib, filters)) continue;
 
-        // 1. 应用结构化筛选（如果提供）
+        // 2. 文本评分
+        const { totalScore: textScore, matchedFields, matchedQueries } =
+            scoreItemByFields(lib, queryList, NEW_LIBRARY_FIELDS);
+
+        let totalScore = textScore;
         if (filters) {
-            // 分类筛选
-            if (filters.category && lib.category !== filters.category) {
-                passedFilters = false;
-            }
-            
-            // 硬件类型筛选（OR逻辑 - 匹配任一即可）
-            if (filters.hardwareType && filters.hardwareType.length > 0) {
-                const hasMatch = filters.hardwareType.some(type => 
-                    lib.hardwareType.includes(type)
-                );
-                if (!hasMatch) {
-                    passedFilters = false;
-                }
-            }
-            
-            // 支持内核筛选（OR逻辑 - 匹配任一即可）
-            if (filters.supportedCores && filters.supportedCores.length > 0) {
-                const hasMatch = filters.supportedCores.some(core =>  
-                    lib.supportedCores.includes(core)
-                );
-                if (!hasMatch) {
-                    passedFilters = false;
-                }
-            }
-            
-            // 通信协议筛选（AND逻辑 - 必须全部包含）
-            if (filters.communication) {
-                for (const comm of filters.communication) {
-                    if (!lib.communication.includes(comm)) {
-                        passedFilters = false;
-                        break;
-                    }
-                }
-            }
-            
-            if (!passedFilters) {
-                continue;
-            }
-            
-            // 结构化筛选通过，加基础分
             totalScore += 50;
-            matchedFields.push('structured_filters');
+            matchedFields.unshift('structured_filters');
         }
 
-        // 2. 文本关键词匹配（如果提供）
-        // 选型器设计：宽泛匹配，返回所有相关选项，让LLM做最终选择
-        if (queryList.length > 0) {
-            for (const query of queryList) {
-                let queryScore = 0;
-                let queryMatched = false;
+        // 3. 门槛
+        if (matchedQueries.length === 0 && !filters) continue;
 
-                // 优先级1: keywords（权重: 20）
-                if (lib.keywords) {
-                    for (const keyword of lib.keywords) {
-                        const keywordLower = keyword.toLowerCase();
-                        if (keywordLower === query) {
-                            queryScore += 20;
-                            queryMatched = true;
-                        } else if (matchesWordBoundary(keywordLower, query)) {
-                            queryScore += 15;
-                            queryMatched = true;
-                        } else if (keywordLower.includes(query)) {
-                            queryScore += 10;
-                            queryMatched = true;
-                        }
-                    }
-                    if (queryMatched && !matchedFields.includes('keywords')) {
-                        matchedFields.push('keywords');
-                    }
-                }
+        // 4. 多关键词加分
+        totalScore = applyMultiKeywordBonus(totalScore, queryList.length, matchedQueries.length);
+        if (totalScore <= 0 && !filters) continue;
 
-                // 优先级2: tags（权重: 18）
-                for (const tag of lib.tags) {
-                    const tagLower = tag.toLowerCase();
-                    if (tagLower === query) {
-                        queryScore += 18;
-                        queryMatched = true;
-                    } else if (matchesWordBoundary(tagLower, query)) {
-                        queryScore += 12;
-                        queryMatched = true;
-                    } else if (tagLower.includes(query)) {
-                        queryScore += 8;
-                        queryMatched = true;
-                    }
-                }
-                if (queryMatched && !matchedFields.includes('tags')) {
-                    matchedFields.push('tags');
-                }
+        // 5. 构建结果
+        const description = (lib as any).description
+            || findOldDescription(lib.name, oldLibrariesData)
+            || lib.displayName;
 
-                // 优先级3: displayName（权重: 15）
-                const displayNameLower = lib.displayName.toLowerCase();
-                if (displayNameLower === query) {
-                    queryScore += 15;
-                    queryMatched = true;
-                } else if (matchesWordBoundary(displayNameLower, query)) {
-                    queryScore += 10;
-                    queryMatched = true;
-                } else if (displayNameLower.includes(query)) {
-                    queryScore += 7;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('displayName')) {
-                    matchedFields.push('displayName');
-                }
-
-                // 优先级4: name（权重: 15）
-                const nameLower = lib.name.toLowerCase();
-                if (nameLower === query) {
-                    queryScore += 15;
-                    queryMatched = true;
-                } else if (matchesWordBoundary(nameLower, query)) {
-                    queryScore += 10;
-                    queryMatched = true;
-                } else if (nameLower.includes(query)) {
-                    queryScore += 6;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('name')) {
-                    matchedFields.push('name');
-                }
-                
-                // 优先级5: hardwareType（权重: 15 - 这是最具体的分类）
-                for (const hwType of lib.hardwareType) {
-                    const hwTypeLower = hwType.toLowerCase();
-                    if (hwTypeLower === query) {
-                        queryScore += 15;
-                        queryMatched = true;
-                    } else if (hwTypeLower.includes(query)) {
-                        queryScore += 12;
-                        queryMatched = true;
-                    }
-                    if (queryMatched && !matchedFields.includes('hardwareType')) {
-                        matchedFields.push('hardwareType');
-                    }
-                }
-
-                // 优先级6: description（权重: 5）
-                if (lib.description) {
-                    const descLower = lib.description.toLowerCase();
-                    if (matchesWordBoundary(descLower, query)) {
-                        queryScore += 5;
-                        queryMatched = true;
-                    } else if (descLower.includes(query)) {
-                        queryScore += 3;
-                        queryMatched = true;
-                    }
-                    if (queryMatched && !matchedFields.includes('description')) {
-                        matchedFields.push('description');
-                    }
-                }
-
-                // 优先级7: category（权重: 8）
-                const categoryLower = lib.category.toLowerCase();
-                if (categoryLower === query) {
-                    queryScore += 8;
-                    queryMatched = true;
-                    if (!matchedFields.includes('category')) {
-                        matchedFields.push('category');
-                    }
-                }
-
-                // 优先级8: communication（权重: 8）
-                for (const comm of lib.communication) {
-                    if (comm.toLowerCase() === query) {
-                        queryScore += 8;
-                        queryMatched = true;
-                        if (!matchedFields.includes('communication')) {
-                            matchedFields.push('communication');
-                        }
-                    }
-                }
-
-                // 优先级9: supportedCores（权重: 6）
-                for (const core of lib.supportedCores) {
-                    const coreLower = core.toLowerCase();
-                    if (coreLower === query || coreLower.includes(query)) {
-                        queryScore += 6;
-                        queryMatched = true;
-                    }
-                }
-                if (queryMatched && !matchedFields.includes('supportedCores')) {
-                    matchedFields.push('supportedCores');
-                }
-
-                // 优先级10: compatibleHardware（权重: 6）
-                for (const hw of lib.compatibleHardware) {
-                    if (hw.toLowerCase().includes(query)) {
-                        queryScore += 6;
-                        queryMatched = true;
-                        if (!matchedFields.includes('compatibleHardware')) {
-                            matchedFields.push('compatibleHardware');
-                        }
-                    }
-                }
-
-                if (queryMatched) {
-                    totalScore += queryScore;
-                    matchedQueries.push(query);
-                }
+        results.push({
+            source: 'library', name: lib.name, displayName: lib.displayName,
+            description, score: totalScore, matchedFields, matchedQueries,
+            metadata: {
+                category: lib.category, subcategory: lib.subcategory,
+                hardwareType: lib.hardwareType, supportedCores: lib.supportedCores,
+                communication: lib.communication, voltage: lib.voltage,
+                compatibleHardware: lib.compatibleHardware
             }
-        }
-
-        // 简化的筛选逻辑（选型器设计：宽进严出）
-        const queryCount = queryList.length;
-        const matchedCount = matchedQueries.length;
-        
-        // 唯一门槛：必须有匹配（关键词匹配或结构化筛选通过）
-        if (matchedCount === 0 && !(filters && passedFilters)) {
-            continue;
-        }
-        
-        // 匹配多个关键词时给予加分（更相关的排在前面）
-        if (queryCount > 1 && matchedCount > 1) {
-            // 匹配所有关键词：1.5倍加分
-            if (matchedCount === queryCount) {
-                totalScore *= 1.5;
-            }
-            // 匹配部分关键词：按比例加分
-            else {
-                totalScore *= (1 + 0.2 * (matchedCount - 1));
-            }
-        }
-
-        // 如果有匹配，添加到结果
-        if (totalScore > 0 || (filters && passedFilters)) {
-            // 从旧数据中查找description（如果新数据中没有）
-            let description = (lib as any).description;
-            if (!description && oldLibrariesData) {
-                // 处理新旧格式name差异：新格式 "lib-xxx"，旧格式 "@aily-project/lib-xxx"
-                const oldLib = oldLibrariesData.find(ol => 
-                    ol.name === lib.name || 
-                    ol.name === `@aily-project/${lib.name}` ||
-                    ol.name.endsWith(`/${lib.name}`)
-                );
-                description = oldLib?.description;
-            }
-            description = description || lib.displayName;
-            
-            results.push({
-                source: 'library',
-                name: lib.name,
-                displayName: lib.displayName,
-                description: description,
-                score: totalScore,
-                matchedFields,
-                matchedQueries,
-                metadata: {
-                    category: lib.category,
-                    subcategory: lib.subcategory,
-                    hardwareType: lib.hardwareType,
-                    supportedCores: lib.supportedCores,
-                    communication: lib.communication,
-                    voltage: lib.voltage,
-                    compatibleHardware: lib.compatibleHardware
-                }
-            });
-        }
+        });
     }
 
     return results;
@@ -1261,157 +909,28 @@ function searchInNewLibraries(
 
 // ==================== 旧格式搜索函数（降级兼容）====================
 
-/**
- * 在旧格式开发板数组中搜索匹配项 - 仅支持文本搜索
- */
-function searchInOldBoards(
-    boards: OldBoardItem[], 
-    queryList: string[]
-): Array<{
-    source: 'board' | 'library';
-    name: string;
-    displayName: string;
-    description: string;
-    score: number;
-    matchedFields: string[];
-    matchedQueries: string[];
-    metadata?: any;
-}> {
-    const results: Array<{
-        source: 'board' | 'library';
-        name: string;
-        displayName: string;
-        description: string;
-        score: number;
-        matchedFields: string[];
-        matchedQueries: string[];
-        metadata?: any;
-    }> = [];
+/** 在旧格式开发板数组中搜索 - 仅文本搜索 */
+function searchInOldBoards(boards: OldBoardItem[], queryList: string[]): SearchResultItem[] {
+    const results: SearchResultItem[] = [];
+    if (queryList.length === 0) return results;
 
     for (const board of boards) {
-        let totalScore = 0;
-        const matchedFields: string[] = [];
-        const matchedQueries: string[] = [];
+        const { totalScore: raw, matchedFields, matchedQueries } =
+            scoreItemByFields(board, queryList, OLD_BOARD_FIELDS);
 
-        if (queryList.length === 0) continue;
+        const totalScore = applyMultiKeywordBonus(raw, queryList.length, matchedQueries.length);
 
-        for (const query of queryList) {
-            let queryScore = 0;
-            let queryMatched = false;
-
-            // 1. keywords（权重: 20）
-            if (board.keywords) {
-                for (const keyword of board.keywords) {
-                    const keywordLower = keyword.toLowerCase();
-                    if (keywordLower === query) {
-                        queryScore += 20;
-                        queryMatched = true;
-                    } else if (matchesWordBoundary(keywordLower, query)) {
-                        queryScore += 15;
-                        queryMatched = true;
-                    } else if (keywordLower.includes(query)) {
-                        queryScore += 10;
-                        queryMatched = true;
-                    }
-                }
-                if (queryMatched && !matchedFields.includes('keywords')) {
-                    matchedFields.push('keywords');
-                }
-            }
-
-            // 2. nickname（权重: 18）
-            if (board.nickname) {
-                const nicknameLower = board.nickname.toLowerCase();
-                if (nicknameLower === query) {
-                    queryScore += 18;
-                    queryMatched = true;
-                } else if (matchesWordBoundary(nicknameLower, query)) {
-                    queryScore += 12;
-                    queryMatched = true;
-                } else if (nicknameLower.includes(query)) {
-                    queryScore += 8;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('nickname')) {
-                    matchedFields.push('nickname');
-                }
-            }
-
-            // 3. description（权重: 10）
-            if (board.description) {
-                const descLower = board.description.toLowerCase();
-                if (matchesWordBoundary(descLower, query)) {
-                    queryScore += 9;
-                    queryMatched = true;
-                } else if (descLower.includes(query)) {
-                    queryScore += 5;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('description')) {
-                    matchedFields.push('description');
-                }
-            }
-
-            // 4. brand（权重: 6）
-            if (board.brand) {
-                const brandLower = board.brand.toLowerCase();
-                if (brandLower === query) {
-                    queryScore += 6;
-                    queryMatched = true;
-                } else if (brandLower.includes(query)) {
-                    queryScore += 3;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('brand')) {
-                    matchedFields.push('brand');
-                }
-            }
-
-            // 5. name（精确匹配，权重: 8）
-            const nameLower = board.name.toLowerCase();
-            if (matchesWordBoundary(nameLower, query)) {
-                queryScore += 8;
-                queryMatched = true;
-                if (!matchedFields.includes('name')) {
-                    matchedFields.push('name');
-                }
-            }
-
-            if (queryMatched) {
-                totalScore += queryScore;
-                matchedQueries.push(query);
-            }
-        }
-
-        // 多关键词匹配逻辑（OR）
-        const queryCount = queryList.length;
-        const matchedCount = matchedQueries.length;
-        
-        // 匹配所有关键词时给予额外加分
-        if (queryCount > 1 && matchedCount === queryCount) {
-            totalScore *= 1.5;
-        }
-        // 匹配多个关键词时也给予加分
-        else if (queryCount > 1 && matchedCount > 1) {
-            totalScore *= (1 + 0.2 * (matchedCount - 1));
-        }
-        
-        // 最低分数门槛：过滤低相关性结果
-        const minScoreThreshold = matchedCount > 0 ? matchedCount * 10 : 10;
-        if (totalScore < minScoreThreshold) {
-            continue;
-        }
+        // 最低分数门槛
+        const minThreshold = matchedQueries.length > 0 ? matchedQueries.length * 10 : 10;
+        if (totalScore < minThreshold) continue;
 
         if (totalScore > 0) {
             results.push({
-                source: 'board',
-                name: board.name,
+                source: 'board', name: board.name,
                 displayName: board.nickname || board.name,
                 description: board.description,
-                score: totalScore,
-                matchedFields,
-                matchedQueries,
-                metadata: undefined  // 旧格式没有结构化 metadata
+                score: totalScore, matchedFields, matchedQueries,
+                metadata: undefined
             });
         }
     }
@@ -1419,199 +938,30 @@ function searchInOldBoards(
     return results;
 }
 
-/**
- * 在旧格式库数组中搜索匹配项 - 仅支持文本搜索
- */
-function searchInOldLibraries(
-    libraries: OldLibraryItem[], 
-    queryList: string[]
-): Array<{
-    source: 'board' | 'library';
-    name: string;
-    displayName: string;
-    description: string;
-    score: number;
-    matchedFields: string[];
-    matchedQueries: string[];
-    metadata?: any;
-}> {
-    const results: Array<{
-        source: 'board' | 'library';
-        name: string;
-        displayName: string;
-        description: string;
-        score: number;
-        matchedFields: string[];
-        matchedQueries: string[];
-        metadata?: any;
-    }> = [];
+/** 在旧格式库数组中搜索 - 仅文本搜索 */
+function searchInOldLibraries(libraries: OldLibraryItem[], queryList: string[]): SearchResultItem[] {
+    const results: SearchResultItem[] = [];
+    if (queryList.length === 0) return results;
 
     for (const lib of libraries) {
-        let totalScore = 0;
-        const matchedFields: string[] = [];
-        const matchedQueries: string[] = [];
+        const { totalScore: raw, matchedFields, matchedQueries } =
+            scoreItemByFields(lib, queryList, OLD_LIBRARY_FIELDS);
 
-        if (queryList.length === 0) continue;
+        const totalScore = applyMultiKeywordBonus(raw, queryList.length, matchedQueries.length);
 
-        for (const query of queryList) {
-            let queryScore = 0;
-            let queryMatched = false;
-
-            // 1. keywords（权重: 20）
-            if (lib.keywords) {
-                for (const keyword of lib.keywords) {
-                    const keywordLower = keyword.toLowerCase();
-                    if (keywordLower === query) {
-                        queryScore += 20;
-                        queryMatched = true;
-                    } else if (matchesWordBoundary(keywordLower, query)) {
-                        queryScore += 15;
-                        queryMatched = true;
-                    } else if (keywordLower.includes(query)) {
-                        queryScore += 10;
-                        queryMatched = true;
-                    }
-                }
-                if (queryMatched && !matchedFields.includes('keywords')) {
-                    matchedFields.push('keywords');
-                }
-            }
-
-            // 2. nickname（权重: 18）
-            if (lib.nickname) {
-                const nicknameLower = lib.nickname.toLowerCase();
-                if (nicknameLower === query) {
-                    queryScore += 18;
-                    queryMatched = true;
-                } else if (matchesWordBoundary(nicknameLower, query)) {
-                    queryScore += 12;
-                    queryMatched = true;
-                } else if (nicknameLower.includes(query)) {
-                    queryScore += 8;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('nickname')) {
-                    matchedFields.push('nickname');
-                }
-            }
-
-            // 3. description（权重: 10）
-            if (lib.description) {
-                const descLower = lib.description.toLowerCase();
-                if (matchesWordBoundary(descLower, query)) {
-                    queryScore += 9;
-                    queryMatched = true;
-                } else if (descLower.includes(query)) {
-                    queryScore += 5;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('description')) {
-                    matchedFields.push('description');
-                }
-            }
-
-            // 4. compatibility.core（权重: 7）
-            if (lib.compatibility?.core) {
-                for (const core of lib.compatibility.core) {
-                    const coreLower = core.toLowerCase();
-                    if (coreLower === query) {
-                        queryScore += 10;
-                        queryMatched = true;
-                    } else if (coreLower.includes(query)) {
-                        queryScore += 5;
-                        queryMatched = true;
-                    }
-                }
-                if (queryMatched && !matchedFields.includes('core')) {
-                    matchedFields.push('core');
-                }
-            }
-
-            // 5. author（权重: 4）
-            if (lib.author) {
-                const authorLower = lib.author.toLowerCase();
-                if (authorLower === query) {
-                    queryScore += 6;
-                    queryMatched = true;
-                } else if (authorLower.includes(query)) {
-                    queryScore += 3;
-                    queryMatched = true;
-                }
-                if (queryMatched && !matchedFields.includes('author')) {
-                    matchedFields.push('author');
-                }
-            }
-
-            // 6. name（精确匹配，权重: 8）
-            const nameLower = lib.name.toLowerCase();
-            if (matchesWordBoundary(nameLower, query)) {
-                queryScore += 8;
-                queryMatched = true;
-                if (!matchedFields.includes('name')) {
-                    matchedFields.push('name');
-                }
-            }
-
-            if (queryMatched) {
-                totalScore += queryScore;
-                matchedQueries.push(query);
-            }
-        }
-
-        // 多关键词匹配逻辑（OR）
-        const queryCount = queryList.length;
-        const matchedCount = matchedQueries.length;
-        
-        // 匹配所有关键词时给予额外加分
-        if (queryCount > 1 && matchedCount === queryCount) {
-            totalScore *= 1.5;
-        }
-        // 匹配多个关键词时也给予加分
-        else if (queryCount > 1 && matchedCount > 1) {
-            totalScore *= (1 + 0.2 * (matchedCount - 1));
-        }
-        
-        // 最低分数门槛：过滤低相关性结果
-        const minScoreThreshold = matchedCount > 0 ? matchedCount * 10 : 10;
-        if (totalScore < minScoreThreshold) {
-            continue;
-        }
+        const minThreshold = matchedQueries.length > 0 ? matchedQueries.length * 10 : 10;
+        if (totalScore < minThreshold) continue;
 
         if (totalScore > 0) {
             results.push({
-                source: 'library',
-                name: lib.name,
+                source: 'library', name: lib.name,
                 displayName: lib.nickname || lib.name,
                 description: lib.description,
-                score: totalScore,
-                matchedFields,
-                matchedQueries,
-                metadata: undefined  // 旧格式没有结构化 metadata
+                score: totalScore, matchedFields, matchedQueries,
+                metadata: undefined
             });
         }
     }
 
     return results;
-}
-
-/**
- * 单词边界匹配 - 检查query是否作为独立单词出现在text中
- */
-function matchesWordBoundary(text: string, query: string): boolean {
-    const delimiters = /[\s\-_\/@:.,;()\[\]{}，。！？；：、""''【】《》（）]/;
-    
-    let index = 0;
-    while ((index = text.indexOf(query, index)) !== -1) {
-        const beforeOk = index === 0 || delimiters.test(text[index - 1]);
-        const afterIndex = index + query.length;
-        const afterOk = afterIndex === text.length || delimiters.test(text[afterIndex]);
-        
-        if (beforeOk && afterOk) {
-            return true;
-        }
-        
-        index++;
-    }
-    
-    return false;
 }

@@ -1,4 +1,5 @@
-import { ChangeDetectorRef, Component, ViewChild, ElementRef, AfterViewInit, OnDestroy } from '@angular/core';
+import { ChangeDetectorRef, ChangeDetectionStrategy, Component, ViewChild, ElementRef, AfterViewInit, OnDestroy, viewChild, viewChildren, signal, effect, untracked, DestroyRef, inject } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { FormsModule } from '@angular/forms';
 import { NzInputModule } from 'ng-zorro-antd/input';
@@ -16,8 +17,9 @@ import { PortItem, SerialService } from '../../services/serial.service';
 import { ProjectService } from '../../services/project.service';
 import { MenuComponent } from '../../components/menu/menu.component';
 import { SerialMonitorService } from './serial-monitor.service';
-import { UiScrollModule, Datasource, SizeStrategy } from 'ngx-ui-scroll';
+import { injectVirtualizer } from '@tanstack/angular-virtual';
 import { dataItem } from './serial-monitor.service';
+import { RIGHT_MENU } from './right-menu.config';
 import { HistoryMessageListComponent } from './components/history-message-list/history-message-list.component';
 import { QuickSendListComponent } from './components/quick-send-list/quick-send-list.component';
 import { BAUDRATE_LIST } from './config';
@@ -53,21 +55,34 @@ import { ElectronService } from '../../services/electron.service';
     QuickSendEditorComponent,
     SearchBoxComponent,
     SerialChartComponent,
-    UiScrollModule,
     TranslateModule
   ],
   templateUrl: './serial-monitor.component.html',
   styleUrl: './serial-monitor.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SerialMonitorComponent {
-  // ngx-ui-scroll 数据源
-  datasource;
+  private destroyRef = inject(DestroyRef);
 
-  // 记录上次的数据长度，用于优化更新
-  private lastDataLength = 0;
+  // requestAnimationFrame ID，用于合并高频数据更新到单帧渲染
+  private rafId: number | null = null;
 
-  // 更新防抖定时器
-  private updateTimer: any = null;
+  // TanStack Virtual 滚动容器引用
+  dataListScrollEl = viewChild<ElementRef<HTMLDivElement>>('dataListBox');
+
+  // 虚拟行元素引用（用于动态测量高度）
+  virtualRows = viewChildren<ElementRef<HTMLDivElement>>('virtualRow');
+
+  // 数据数量 signal，驱动 virtualizer 响应式更新
+  dataCount = signal(0);
+
+  // TanStack 虚拟化器
+  virtualizer = injectVirtualizer(() => ({
+    scrollElement: this.dataListScrollEl(),
+    count: this.dataCount(),
+    estimateSize: () => 26,
+    overscan: 10,
+  }));
 
   get dataList() {
     return this.serialMonitorService.dataList;
@@ -154,7 +169,17 @@ export class SerialMonitorComponent {
     private translate: TranslateService,
     private configService: ConfigService,
     private electronService: ElectronService
-  ) { }
+  ) {
+    // 当虚拟行元素变化时，动态测量每个元素的实际高度
+    effect(() => {
+      const rows = this.virtualRows();
+      untracked(() => {
+        for (const row of rows) {
+          this.virtualizer.measureElement(row.nativeElement);
+        }
+      });
+    });
+  }
 
   async ngOnInit() {
     this.currentUrl = this.router.url;
@@ -166,115 +191,85 @@ export class SerialMonitorComponent {
       this.currentPort = this.serialService.currentPort;
     }
 
-    // 初始化 ngx-ui-scroll 数据源
-    let startIndex = 0;
+    // 初始化数据数量
     if (this.dataList.length > 0) {
-      startIndex = this.dataList.length - 1;
+      this.dataCount.set(this.dataList.length);
     }
-
-    this.datasource = new Datasource({
-      get: (index: number, count: number) => {
-        const data = this.dataList;
-        const startIdx = Math.max(0, index);
-        const endIdx = Math.min(data.length, startIdx + count);
-        const items = data.slice(startIdx, endIdx);
-        return Promise.resolve(items);
-      },
-      settings: {
-        minIndex: 0,
-        startIndex,
-        sizeStrategy: SizeStrategy.Average, // 动态学习平均高度
-        itemSize: 26, // 设置一个合理的初始预估值
-        bufferSize: 30, // 适中缓冲区
-        padding: 0.5
-      }
-    });
   }
 
   ngAfterViewInit() {
-    this.serialMonitorService.dataUpdated.subscribe((data) => {
-      this.handleDataUpdate(data);
-    });
+    this.serialMonitorService.dataUpdated
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((data) => {
+        this.handleDataUpdate(data);
+      });
 
     // 检查并设置默认串口
     this.checkAndSetDefaultPort();
 
-    // 上传过程中断开串口连接
-    this.uiService.stateSubject.subscribe((state) => {
-      if (state.state == 'doing' && state.text == '固件上传中...' && this.switchValue) {
-        this.switchValue = false;
-        this.serialMonitorService.disconnect();
+    // 监听工具信号，处理上传过程中的串口断开/重连
+    this.uiService.actionSubject
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((action: any) => {
+      if (action.action === 'signal' && action.type === 'tool') {
+        const signal = action.data as string;
+        if (signal === 'serial-monitor:disconnect' && this.switchValue) {
+          this.switchValue = false;
+          this.serialMonitorService.disconnect();
+          this.cd.detectChanges();
+        } else if (signal === 'serial-monitor:connect' && !this.switchValue && this.currentPort) {
+          this.switchValue = true;
+          this.serialMonitorService.connect({
+            path: this.currentPort,
+            baudRate: parseInt(this.currentBaudRate),
+            dataBits: parseInt(this.dataBits),
+            stopBits: parseFloat(this.stopBits),
+            parity: this.parity,
+            flowControl: this.flowControl
+          }).then(result => {
+            if (!result) {
+              this.switchValue = false;
+            }
+            this.cd.detectChanges();
+          });
+        }
       }
     });
 
     // 如果已有数据,滚动到底部
     if (this.dataList.length > 0) {
-      this.lastDataLength = this.dataList.length; // 初始化时记录数据长度
       this.scrollToBottom();
     }
   }
 
-  @ViewChild('dataListBox', { static: false }) dataListBoxRef!: ElementRef<HTMLDivElement>;
   @ViewChild('serialChart') serialChartRef!: SerialChartComponent;
+
+  private scrollTimeoutId: any;
 
   private scrollToBottom() {
     if (!this.autoScroll) return;
-    setTimeout(() => {
-      requestAnimationFrame(() => {
-        if (this.dataListBoxRef) {
-          const element = this.dataListBoxRef.nativeElement;
-          element.scrollTop = element.scrollHeight;
-        }
-      });
-    }, 50);
+    if (this.scrollTimeoutId) {
+      clearTimeout(this.scrollTimeoutId);
+    }
+    this.scrollTimeoutId = setTimeout(() => {
+      const count = this.dataCount();
+      if (count > 0) {
+        this.virtualizer.scrollToIndex(count - 1, { align: 'end' });
+      }
+    }, 30);
   }
 
-  // 处理数据更新
+  // 处理数据更新：用 requestAnimationFrame 合并多次数据事件到一帧内渲染
   private handleDataUpdate(data: dataItem | void) {
-    if (!data) {
+    // 如果已有待处理的RAF，跳过，等下一帧统一刷新
+    if (this.rafId !== null) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      const count = this.dataList.length;
+      this.dataCount.set(count);
       this.cd.detectChanges();
       this.scrollToBottom();
-      return;
-    }
-    // 如果数据被清空
-    if (this.dataList.length === 0) {
-      this.lastDataLength = 0;
-      if (this.datasource && this.datasource.adapter) {
-        this.datasource.adapter.reload(0);
-        this.cd.detectChanges();
-      }
-      return;
-    }
-
-    // this.datasource.adapter.append({
-    //   items: [data],
-    // });
-
-    // this.cd.detectChanges();
-    let currentDataCount = this.dataList.length;
-    // 计算新增的数据条数
-    const newItemsCount = currentDataCount - this.lastDataLength;
-
-    if (newItemsCount > 0 && this.datasource && this.datasource.adapter) {
-      // 使用 append 方法增量添加新数据,避免闪烁
-      const newItems = [];
-      for (let i = this.lastDataLength; i < currentDataCount; i++) {
-        const item = this.dataList[i];
-        item['id'] = i;
-        newItems.push(item);
-      }
-
-      // 追加新数据到末尾
-      this.datasource.adapter.append({
-        items: newItems
-      });
-
-      // 更新最后的数据长度
-      this.lastDataLength = currentDataCount;
-    }
-    this.cd.detectChanges();
-    // 如果开启自动滚动,滚动到底部
-    this.scrollToBottom();
+    });
   }
 
 
@@ -333,8 +328,11 @@ export class SerialMonitorComponent {
   }
 
   ngOnDestroy() {
-    if (this.updateTimer) {
-      clearTimeout(this.updateTimer);
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+    }
+    if (this.scrollTimeoutId) {
+      clearTimeout(this.scrollTimeoutId);
     }
     this.serialMonitorService.disconnect();
   }
@@ -472,12 +470,9 @@ export class SerialMonitorComponent {
   }
 
   clearView() {
-    this.serialMonitorService.dataList = [];
-    this.lastDataLength = 0;
-    if (this.datasource && this.datasource.adapter) {
-      // 清空时使用 reload 是合理的,因为需要完全重置
-      this.datasource.adapter.reload(0);
-    }
+    this.serialMonitorService.clearData();
+    this.dataCount.set(0);
+    this.cd.detectChanges();
     // 清空图表数据
     if (this.serialChartRef) {
       this.serialChartRef.clearChartData();
@@ -631,7 +626,6 @@ export class SerialMonitorComponent {
       item['searchHighlight'] = idx === dataIndex;
     });
 
-    // ngx-ui-scroll 会自动处理滚动到对应位置
     this.cd.detectChanges();
   }
 
@@ -643,13 +637,68 @@ export class SerialMonitorComponent {
     this.navigateToResult(this.currentSearchIndex + 1);
   }
 
-  // trackBy 函数用于优化 ngx-ui-scroll 性能
-  trackById(index: number, item: dataItem): any {
-    return item['id'] !== undefined ? item['id'] : index;
-  }
-
   onDataItemClick(item: dataItem) {
     console.log(item);
+  }
+
+  // 右键菜单相关
+  showContextMenu = false;
+  contextMenuPosition = { x: 0, y: 0 };
+  contextMenuItems = JSON.parse(JSON.stringify(RIGHT_MENU));
+  private contextMenuItem: dataItem | null = null;
+
+  onDataItemContextMenu(event: MouseEvent, item: dataItem) {
+    if (!this.serialMonitorService.viewMode.showTimestamp) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    // 先关闭已有菜单
+    this.showContextMenu = false;
+
+    this.contextMenuPosition = { x: event.clientX, y: event.clientY };
+    this.contextMenuItem = item;
+    this.serialMonitorService.viewMode.autoScroll = false;
+
+    // 根据当前 item 状态更新菜单标签
+    this.contextMenuItems = JSON.parse(JSON.stringify(RIGHT_MENU));
+    if (item.showHex) {
+      this.contextMenuItems[1].name = '文本显示';
+    }
+    if (item.highlight) {
+      this.contextMenuItems[2].name = '取消高亮';
+    }
+
+    // 延迟一帧确保旧菜单已销毁
+    setTimeout(() => {
+      this.showContextMenu = true;
+      this.cd.detectChanges();
+    });
+  }
+
+  closeContextMenu() {
+    this.showContextMenu = false;
+    this.contextMenuItem = null;
+    this.cd.detectChanges();
+  }
+
+  contextMenuClick(menuItem: any) {
+    if (!this.contextMenuItem) return;
+    switch (menuItem.data.action) {
+      case 'copy':
+        navigator.clipboard.writeText(this.contextMenuItem.data).then(() => {
+          this.message.info('已复制到剪贴板');
+        });
+        break;
+      case 'hex':
+        this.contextMenuItem.showHex = !this.contextMenuItem.showHex;
+        break;
+      case 'highlight':
+        this.contextMenuItem.highlight = !this.contextMenuItem.highlight;
+        break;
+    }
+    this.showContextMenu = false;
+    this.contextMenuItem = null;
+    this.cd.detectChanges();
   }
 
   showChartBox = false;

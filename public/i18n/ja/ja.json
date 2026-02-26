@@ -184,7 +184,8 @@
             "CREATING": "作成中"
         },
         "WARNINGS": {
-            "BETA_VERSION": "ベータ版、未検証、注意して使用"
+            "BETA_VERSION": "ベータ版、未検証、注意して使用",
+            "TODO": "このデバイスのサポートは近日公開予定"
         }
     },
     "LIB_MANAGER": {
@@ -362,6 +363,7 @@
         "DOCUMENTATION": "ドキュメント",
         "FEEDBACK": "フィードバック",
         "NO_PINMAP": "このボードのピン配置図は利用できません",
+        "PINMAP_PARSE_ERROR": "ピン配置図の解析に失敗しました",
         "NO_DOCUMENTATION": "このボードのドキュメントは利用できません"
     },
     "SERIAL": {
@@ -484,6 +486,7 @@
         "PHONE_BETA_ONLY": "電話番号ログインはAIベータテスター専用です",
         "PHONE_PLACEHOLDER": "電話番号を入力",
         "PASSWORD_PLACEHOLDER": "パスワードを入力",
+        "CODE_SENDING": "まず確認コードを取得してください",
         "LOGGING_IN": "ログイン中...",
         "LOGIN": "ログイン",
         "SELECT_METHOD": "ログイン方法を選択してください",
@@ -544,6 +547,7 @@
         "CANNOT_OPEN_PROJECT": "プロジェクトを開けません: ",
         "CREATING_PROJECT": "プロジェクトを作成中...",
         "PROJECT_CREATED": "プロジェクトが作成されました",
+        "CREATE_FAILED": "プロジェクトの作成に失敗しました",
         "PATH_NOT_EXIST": "プロジェクトパスが存在しません。別のプロジェクトを選択してください",
         "SWITCHING_BOARD_CONFIG": "ボード設定を切り替え中...",
         "BOARD_SWITCH_COMPLETE": "ボードの切り替えが完了しました",

@@ -1,5 +1,5 @@
 <div class="sub-window-box bborder">
-  <div class="header">
+  <div class="header" [class.darwin]="isMac" [class.full-screen]="isMacFullScreen">
     <div class="title">{{ title }}</div>
     <div class="win-btns">
       @for (btn of winBtns; track btn) {
@@ -15,7 +15,11 @@
         }
         @if (btn === "maximize") {
           <div class="btn ccenter maximize" (click)="maximize()">
-            <i class="fa-light fa-square"></i>
+            @if (isWindowFullScreen) {
+              <i class="fa-light fa-window-restore"></i>
+            } @else {
+              <i class="fa-light fa-square"></i>
+            }
           </div>
         }
         @if (btn === "close") {

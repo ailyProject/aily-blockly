@@ -184,7 +184,8 @@
             "CREATING": "Erstellen"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Beta-Version, ungeprüft, mit Vorsicht verwenden"
+            "BETA_VERSION": "Beta-Version, ungeprüft, mit Vorsicht verwenden",
+            "TODO": "Geräteunterstützung kommt bald"
         }
     },
     "LIB_MANAGER": {
@@ -362,6 +363,7 @@
         "DOCUMENTATION": "Dokumentation",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Pin-Belegung für dieses Board nicht verfügbar",
+        "PINMAP_PARSE_ERROR": "Fehler beim Parsen der Pin-Belegung",
         "NO_DOCUMENTATION": "Dokumentation für dieses Board nicht verfügbar"
     },
     "SERIAL": {
@@ -484,6 +486,7 @@
         "PHONE_BETA_ONLY": "Telefonanmeldung ist nur für AI-Beta-Tester",
         "PHONE_PLACEHOLDER": "Telefonnummer eingeben",
         "PASSWORD_PLACEHOLDER": "Passwort eingeben",
+        "CODE_SENDING": "Bitte zuerst den Bestätigungscode abrufen",
         "LOGGING_IN": "Anmeldung...",
         "LOGIN": "Anmelden",
         "SELECT_METHOD": "Klicken Sie, um eine Anmeldemethode auszuwählen",
@@ -544,6 +547,7 @@
         "CANNOT_OPEN_PROJECT": "Projekt kann nicht geöffnet werden: ",
         "CREATING_PROJECT": "Projekt wird erstellt...",
         "PROJECT_CREATED": "Projekt erfolgreich erstellt",
+        "CREATE_FAILED": "Projekt konnte nicht erstellt werden",
         "PATH_NOT_EXIST": "Projektpfad existiert nicht, bitte wählen Sie ein anderes Projekt",
         "SWITCHING_BOARD_CONFIG": "Board-Konfiguration wird gewechselt...",
         "BOARD_SWITCH_COMPLETE": "Board-Wechsel abgeschlossen",

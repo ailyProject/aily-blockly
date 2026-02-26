@@ -184,7 +184,8 @@
             "CREATING": "Criando"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Versão beta, não verificada, use com cautela"
+            "BETA_VERSION": "Versão beta, não verificada, use com cautela",
+            "TODO": "O suporte a este dispositivo estará disponível em breve"
         }
     },
     "LIB_MANAGER": {
@@ -362,6 +363,7 @@
         "DOCUMENTATION": "Documentação",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Mapa de pinos não disponível para esta placa",
+        "PINMAP_PARSE_ERROR": "Falha ao analisar mapa de pinos",
         "NO_DOCUMENTATION": "Documentação não disponível para esta placa"
     },
     "SERIAL": {
@@ -484,6 +486,7 @@
         "PHONE_BETA_ONLY": "Login por telefone é apenas para testadores beta de AI",
         "PHONE_PLACEHOLDER": "Digite o número de telefone",
         "PASSWORD_PLACEHOLDER": "Digite a senha",
+        "CODE_SENDING": "Por favor, obtenha o código de verificação primeiro",
         "LOGGING_IN": "Entrando...",
         "LOGIN": "Entrar",
         "SELECT_METHOD": "Clique para selecionar o método de login",
@@ -544,6 +547,7 @@
         "CANNOT_OPEN_PROJECT": "Não é possível abrir o projeto: ",
         "CREATING_PROJECT": "Criando projeto...",
         "PROJECT_CREATED": "Projeto criado com sucesso",
+        "CREATE_FAILED": "Falha ao criar o projeto",
         "PATH_NOT_EXIST": "O caminho do projeto não existe, selecione outro projeto",
         "SWITCHING_BOARD_CONFIG": "Alterando configuração da placa...",
         "BOARD_SWITCH_COMPLETE": "Troca de placa concluída",

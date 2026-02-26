@@ -240,6 +240,19 @@ nz-resize-handle {
       background-color: #444;
     }
 
+    &.block-item {
+      border-color: #d4a017;
+      background-color: rgba(212, 160, 23, 0.1);
+
+      &:hover {
+        background-color: rgba(212, 160, 23, 0.2);
+      }
+
+      i {
+        color: #d4a017;
+      }
+    }
+
     .resource-name {
       margin: 0 5px;
       color: #fff;
@@ -280,6 +293,30 @@ nz-resize-handle {
   ::ng-deep {
     .menu-item {
       padding: 0 3px !important;
+    }
+  }
+}
+
+::ng-deep {
+  .x-markdown {
+    p {
+      margin-top: 0.5em;
+      margin-bottom: 0.5em;
+    }
+  
+    pre {
+      margin-bottom: 0.5em;
+    }
+  }
+
+  .x-mermaid-diagram {
+    border-radius: 5px;
+    background-color: #3a3a3a;
+    max-height: 500px;
+    overflow: auto;
+
+    > svg {
+      user-select: none;
     }
   }
 }

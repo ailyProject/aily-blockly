@@ -119,9 +119,9 @@ export let HEADER_MENU: IMenuItem[] = [
     sep: true,
   },
   {
-    name: 'MENU.EXAMPLES',
+    name: 'MENU.PROJECT_HUB',
     action: 'example-open',
-    icon: 'fa-light fa-books',
+    icon: 'fa-light fa-album-collection',
   },
   {
     name: 'MENU.FEEDBACK',

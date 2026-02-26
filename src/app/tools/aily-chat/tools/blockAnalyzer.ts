@@ -216,6 +216,15 @@ export class BlockAnalyzer {
    * 丰富单个块的信息
    */
   static enrichSingleBlock(block: any): EnrichedBlockDefinition {
+    // 分析字段，包括检测动态扩展
+    const fields = this.analyzeFields(block);
+    
+    // 检测动态扩展并添加额外的动态字段信息
+    if (block.extensions && Array.isArray(block.extensions)) {
+      const dynamicFields = this.inferDynamicFields(block);
+      fields.push(...dynamicFields);
+    }
+    
     return {
       type: block.type || 'unknown',
       category: this.inferCategory(block),
@@ -226,8 +235,8 @@ export class BlockAnalyzer {
       inputs: this.analyzeInputs(block),
       outputs: this.analyzeOutputs(block),
       
-      // 字段分析
-      fields: this.analyzeFields(block),
+      // 字段分析（包含动态字段）
+      fields,
       
       // 连接性分析
       connectionTypes: {
@@ -245,6 +254,35 @@ export class BlockAnalyzer {
       // 原始定义
       rawDefinition: block
     };
+  }
+  
+  /**
+   * 推断动态扩展添加的字段
+   * 不硬编码具体字段，而是标记该块有动态扩展，建议读取 generator.js
+   */
+  static inferDynamicFields(block: any): FieldInfo[] {
+    const dynamicFields: FieldInfo[] = [];
+    const extensions = block.extensions || [];
+    
+    // 检测是否有动态扩展
+    const hasDynamicExtension = extensions.some((ext: string) => {
+      const extLower = ext.toLowerCase();
+      return extLower.includes('dynamic') || extLower.includes('mutator');
+    });
+    
+    if (hasDynamicExtension) {
+      // 添加一个标记字段，提示有动态扩展
+      dynamicFields.push({
+        name: '_DYNAMIC_',
+        type: 'custom',
+        defaultValue: extensions.join(', '),
+        options: undefined,
+        required: false,
+        description: `⚠️ 此块有动态扩展 [${extensions.join(', ')}]，实际参数可能根据其他字段值动态变化，请读取 generator.js 了解完整用法`
+      });
+    }
+    
+    return dynamicFields;
   }
   
   /**
@@ -530,14 +568,25 @@ export class BlockAnalyzer {
   static extractBlockGenerators(generatorContent: string): Map<string, string> {
     const generators = new Map<string, string>();
     
-    // 匹配 Blockly.Arduino['block_type'] = function(block) { ... }
-    const regex = /Blockly\.Arduino\['([^']+)'\]\s*=\s*function\s*\([^)]*\)\s*\{([\s\S]*?)\n\};/g;
+    // 模式1: Blockly.Arduino['block_type'] = function(block) { ... }
+    const regex1 = /Blockly\.Arduino\['([^']+)'\]\s*=\s*function\s*\([^)]*\)\s*\{([\s\S]*?)\n\};/g;
     let match;
     
-    while ((match = regex.exec(generatorContent)) !== null) {
+    while ((match = regex1.exec(generatorContent)) !== null) {
       const blockType = match[1];
       const functionBody = match[2];
       generators.set(blockType, functionBody);
+    }
+    
+    // 模式2: Arduino.forBlock['block_type'] = function(block, generator) { ... }
+    const regex2 = /Arduino\.forBlock\['([^']+)'\]\s*=\s*function\s*\([^)]*\)\s*\{([\s\S]*?)\n\};/g;
+    
+    while ((match = regex2.exec(generatorContent)) !== null) {
+      const blockType = match[1];
+      const functionBody = match[2];
+      if (!generators.has(blockType)) {
+        generators.set(blockType, functionBody);
+      }
     }
     
     return generators;
@@ -564,19 +613,86 @@ export class BlockAnalyzer {
    * 提取代码模板
    */
   static extractCodeTemplate(generatorCode: string): string {
-    // 查找 return 语句中的代码
-    const returnMatch = generatorCode.match(/return\s+['"`]([^'"`]*?)['"`]/);
-    if (returnMatch) {
-      return returnMatch[1];
+    // 方法1: 查找数组返回格式 return [varName + '.xxx()', ORDER]
+    // 匹配 return [xxx, Arduino.ORDER_xxx] 格式
+    const arrayReturnMatch = generatorCode.match(/return\s+\[\s*(?:varName\s*\+\s*)?['"`]([^'"`]+?)['"`]/);
+    if (arrayReturnMatch && arrayReturnMatch[1].trim()) {
+      return this.cleanCodeTemplate(arrayReturnMatch[1]);
     }
     
-    // 查找变量赋值中的代码
-    const codeMatch = generatorCode.match(/var\s+code\s*=\s*['"`]([^'"`]*?)['"`]/);
-    if (codeMatch) {
-      return codeMatch[1];
+    // 方法2: 匹配 return [varName + '.method()', ...] 变量拼接形式
+    const arrayVarMatch = generatorCode.match(/return\s+\[\s*\w+\s*\+\s*['"`]([^'"`]+?)['"`]/);
+    if (arrayVarMatch && arrayVarMatch[1].trim()) {
+      return 'var' + this.cleanCodeTemplate(arrayVarMatch[1]);
+    }
+    
+    // 方法3: 查找 return 语句中的简单字符串
+    const returnSimpleMatch = generatorCode.match(/return\s+['"`]([^'"`]*?)['"`]/);
+    if (returnSimpleMatch && returnSimpleMatch[1].trim()) {
+      return this.cleanCodeTemplate(returnSimpleMatch[1]);
+    }
+    
+    // 方法4: 查找 return code 语句，然后追溯 code 变量的赋值
+    if (generatorCode.includes('return code')) {
+      // 查找 code = '...' 或 code = `...` 赋值
+      const codeAssignMatch = generatorCode.match(/(?:var\s+)?code\s*=\s*['"`]([^'"`]+?)['"`]/);
+      if (codeAssignMatch && codeAssignMatch[1].trim()) {
+        return this.cleanCodeTemplate(codeAssignMatch[1]);
+      }
+      
+      // 查找 code = variable + '...' 形式
+      const codeConcatMatch = generatorCode.match(/code\s*=\s*\w+\s*\+\s*['"`]([^'"`]+?)['"`]/);
+      if (codeConcatMatch && codeConcatMatch[1].trim()) {
+        return this.cleanCodeTemplate(codeConcatMatch[1]);
+      }
+    }
+    
+    // 方法5: 查找模板字符串形式 return `...`
+    const templateMatch = generatorCode.match(/return\s+`([^`]*?)`/);
+    if (templateMatch && templateMatch[1].trim()) {
+      return this.cleanCodeTemplate(templateMatch[1]);
+    }
+    
+    // 方法6: 查找 addObject/addSetup 中的代码模板
+    const addObjectMatch = generatorCode.match(/addObject\([^,]+,\s*['"`]([^'"`]+?)['"`]/);
+    if (addObjectMatch && addObjectMatch[1].trim()) {
+      return this.cleanCodeTemplate(addObjectMatch[1]);
+    }
+    
+    // 方法7: 查找带变量替换的代码模式
+    const varCodeMatch = generatorCode.match(/['"`]([^'"`]*\$\{[^}]+\}[^'"`]*)['"`]/);
+    if (varCodeMatch && varCodeMatch[1].trim()) {
+      return this.cleanCodeTemplate(varCodeMatch[1]);
+    }
+    
+    // 方法8: 提取函数调用模式（如 xxx.begin(), xxx.read() 等）
+    const funcCallMatch = generatorCode.match(/['"`](\w+\.[\w()]+(?:\([^)]*\))?;?)['"`]/);
+    if (funcCallMatch && funcCallMatch[1].trim()) {
+      return this.cleanCodeTemplate(funcCallMatch[1]);
+    }
+    
+    // 方法9: 检查是否是 return '' 空字符串（初始化块常见）
+    if (generatorCode.match(/return\s+['"`]['"`]\s*;?\s*$/m)) {
+      // 尝试从 addSetup 提取
+      const setupMatch = generatorCode.match(/addSetup(?:Begin)?\([^,]+,\s*['"`]([^'"`]+?)['"`]/);
+      if (setupMatch && setupMatch[1].trim()) {
+        return this.cleanCodeTemplate(setupMatch[1]);
+      }
     }
     
     return '';
+  }
+  
+  /**
+   * 清理代码模板，移除多余的转义和变量占位符
+   */
+  static cleanCodeTemplate(code: string): string {
+    return code
+      .replace(/\\n/g, ' ')           // 换行符替换为空格
+      .replace(/\$\{\w+\}/g, '...')   // 变量占位符简化
+      .replace(/\s+/g, ' ')           // 多个空格合并
+      .trim()
+      .substring(0, 60);               // 限制长度
   }
   
   /**

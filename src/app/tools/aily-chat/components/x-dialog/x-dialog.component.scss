@@ -1,0 +1,153 @@
+.dialog-box {
+  background: #2d2d2d;
+  border-radius: 5px;
+  margin: 5px 0;
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 2px;
+
+  &.user {
+    background: none;
+  }
+}
+
+.username {
+  padding: 3px 6px;
+  border-bottom: 1px solid #444;
+  font-size: 14px;
+  color: #888;
+
+  i {
+    font-size: 16px;
+  }
+}
+
+.content {
+  padding: 3px 6px;
+  user-select: text;
+
+  &.thinking {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    color: #aaa;
+    font-size: 14px;
+
+    .thinking-text {
+      margin-right: 2px;
+    }
+
+    .wave-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+
+      .dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background-color: #888;
+        animation: wave-bounce 1.4s ease-in-out infinite both;
+      }
+      .dot:nth-child(1) { animation-delay: 0s; }
+      .dot:nth-child(2) { animation-delay: 0.2s; }
+      .dot:nth-child(3) { animation-delay: 0.4s; }
+    }
+  }
+
+  // 折叠式上下文块样式（由预处理生成的 HTML 使用）
+  ::ng-deep {
+    .aily-context-block {
+      border-radius: 5px;
+      padding: 4px 8px;
+      margin: 4px 0;
+      background-color: rgba(212, 160, 23, 0.08);
+      border: 1px solid rgba(212, 160, 23, 0.25);
+      font-size: 12px;
+
+      .aily-context-summary {
+        cursor: pointer;
+        color: #d4a017;
+        font-size: 13px;
+        user-select: none;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+
+        &::-webkit-details-marker {
+          display: none;
+        }
+
+        &::after {
+          content: '\f078';
+          font-family: 'Font Awesome 6 Pro';
+          font-weight: 300;
+          font-size: 10px;
+          color: #888;
+          margin-left: auto;
+          transition: transform 0.2s;
+        }
+
+        &:hover {
+          opacity: 0.85;
+        }
+      }
+
+      &[open] .aily-context-summary::after {
+        transform: rotate(180deg);
+      }
+
+      .aily-context-content {
+        margin: 6px 0 2px;
+        padding: 6px 8px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: #999;
+        background: rgba(0, 0, 0, 0.15);
+        border-radius: 3px;
+        max-height: 200px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: inherit;
+      }
+    }
+
+    // x-markdown 暗色主题微调：兼容项目风格
+    .x-markdown-dark {
+      font-size: 14px;
+
+      h2 {
+        border-left: 6px solid #3794ff;
+        padding-left: 10px;
+      }
+
+      a::after {
+        display: none;
+      }
+    }
+  }
+}
+
+.loader {
+  position: absolute;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  --c: no-repeat linear-gradient(#585858 0 0);
+  background: var(--c), var(--c), #3d3d3d;
+  background-size: 60% 100%;
+  animation: l16 3s infinite;
+}
+
+@keyframes l16 {
+  0%   { background-position: -150% 0, -150% 0 }
+  66%  { background-position: 250% 0, -150% 0 }
+  100% { background-position: 250% 0, 250% 0 }
+}
+
+@keyframes wave-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}

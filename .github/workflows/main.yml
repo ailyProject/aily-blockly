@@ -4,12 +4,10 @@ on:
   push:
     branches:
       - deploy
-    tags:
-      - 'v*' # 增加标签触发，这通常是申请签名时的加分项
   workflow_dispatch:
 
 jobs:
-  # 任务 1：Windows 客户端构建 (新增，用于向 SignPath 证明构建能力)
+  # 任务 1：Windows 客户端构建
   build-windows:
     runs-on: windows-latest
     steps:
@@ -24,28 +22,101 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
-          npm ci
-          cd electron && npm ci
+          npm ci --force
+          cd electron && npm ci --force
 
-      - name: Compile Windows Executable
+      - name: Build Angular App
         run: |
-          npm run build -- --win
+          ng build --base-href ./
         env:
           NODE_ENV: production
 
-      # --- SignPath 预留位 (申请时给审核员看的重点) ---
-      # - name: Sign with SignPath
-      #   uses: signpath/github-action@v1
-      #   with:
-      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-      #     ... (待申请通过后完善)
+      - name: Build Windows Unpacked
+        run: |
+          npx electron-builder build --win --dir
+        env:
+          NODE_ENV: production
+
+      - name: Build NSIS Installer
+        run: |
+          npx electron-builder build --win nsis --prepackaged "dist/aily-blockly/win-unpacked"
+        env:
+          NODE_ENV: production
+
+      # ================== SignPath 签名流程 ==================
       
+      - name: Upload Unsigned Installer for Signing
+        id: upload_unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: dist/aily-blockly/*.exe
+
+      - name: Sign Installer with SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: 'bd01a768-a9e3-4a62-945d-fcfdc37a299e'
+          project-slug: 'aily-blockly' 
+          signing-policy-slug: 'test-signing'
+          github-artifact-id: '${{ steps.upload_unsigned.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'dist/aily-blockly'
+
+      # 重新生成 latest.yml（使用签名后的 exe hash）
+      - name: Regenerate latest.yml with signed exe hash
+        run: |
+          cd dist/aily-blockly
+          
+          # 获取签名后的 exe 文件信息
+          $exeFile = Get-ChildItem -Filter "*.exe" | Select-Object -First 1
+          $exeSize = $exeFile.Length
+          $exeName = $exeFile.Name
+          
+          Write-Host "✓ Signed exe: $exeName ($exeSize bytes)"
+          
+          # 计算签名后的 SHA512 hash（base64格式）
+          $hash = Get-FileHash -Path $exeName -Algorithm SHA512
+          $hashBytes = [System.Convert]::FromHexString($hash.Hash)
+          $sha512Base64 = [System.Convert]::ToBase64String($hashBytes)
+          
+          Write-Host "✓ SHA512: $sha512Base64"
+          
+          # 从 package.json 读取版本号
+          $packageJson = Get-Content "../../package.json" -Raw | ConvertFrom-Json
+          $version = $packageJson.version
+          
+          # 获取发布日期（ISO 8601格式）
+          $releaseDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+          
+          # 生成新的 latest.yml 文件
+          $latestYml = @"
+          version: $version
+          files:
+            - url: $exeName
+              sha512: $sha512Base64
+              size: $exeSize
+          path: $exeName
+          sha512: $sha512Base64
+          releaseDate: '$releaseDate'
+          "@
+          
+          # 覆盖原有的 latest.yml
+          $latestYml | Out-File -FilePath "latest.yml" -Encoding UTF8 -NoNewline
+          
+          Write-Host "✓ latest.yml regenerated with signed exe hash"
+          Write-Host ""
+          Write-Host "Content:"
+          Get-Content "latest.yml"
+
+      # ================== SignPath 签名流程结束 ==================
+
       - name: Archive Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AilyBlockly-Windows-Package
-          path: dist/aily-blockly/ # 包含所有输出：exe, yml 等
-
+          path: dist/aily-blockly/
+  
   # 任务 2：macOS 客户端构建
   build-macos:
     runs-on: macos-latest
@@ -61,81 +132,100 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
-          npm ci
-          cd electron && npm ci
+          npm ci --force
+          cd electron && npm ci --force
 
-      - name: Compile macOS Executable
-        run: |
-          npm run build -- --mac
-        env:
-          NODE_ENV: production
-
-      # --- Apple 代码签名和公证 ---
+      # --- 导入代码签名证书到 Keychain ---
       - name: Import Codesign Certificates
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.APPLE_SIGNING_CERT }}
           p12-password: ${{ secrets.APPLE_SIGNING_PASSWORD }}
 
-      - name: Find DMG file
-        id: find_dmg
+      - name: Verify Certificate Import
         run: |
-          DMG_PATH=$(find dist/aily-blockly -name "*.dmg" -type f | head -n 1)
-          echo "dmg_path=$DMG_PATH" >> $GITHUB_OUTPUT
-          echo "Found DMG at: $DMG_PATH"
-
-      - name: Debug - Check DMG file
-        run: |
-          echo "DMG file: ${{ steps.find_dmg.outputs.dmg_path }}"
-          ls -lh "${{ steps.find_dmg.outputs.dmg_path }}"
-          file "${{ steps.find_dmg.outputs.dmg_path }}"
-
-      - name: Notarize and Staple macOS App
-        id: notarize
-        continue-on-error: true
-        uses: lando/notarize-action@v2
-        with:
-          product-path: "${{ steps.find_dmg.outputs.dmg_path }}"
-          appstore-connect-username: ${{ secrets.APPLE_ID }}
-          appstore-connect-password: ${{ secrets.APPLE_APP_PASSWORD }}
-          appstore-connect-team-id: ${{ secrets.APPLE_TEAM_ID }}
-          primary-bundle-id: "blockly.aily.pro"
-
-      - name: Debug - Notarization Result
-        run: |
-          echo "Notarization step outcome: ${{ steps.notarize.outcome }}"
-          if [ "${{ steps.notarize.outcome }}" = "failure" ]; then
-            echo "⚠️  Notarization failed, but continuing with artifact upload..."
+          echo "Available signing identities:"
+          security find-identity -v -p codesigning
+          echo ""
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n 1)
+          if [ -z "$IDENTITY" ]; then
+            echo "❌ No Developer ID Application certificate found!"
+            exit 1
           else
-            echo "✓ Notarization completed successfully"
+            echo "✅ Found: $IDENTITY"
           fi
 
-      - name: Verify Notarization
-        continue-on-error: true
+      # --- 构建 + 签名 + 公证（和本地 Mac 一样） ---
+      - name: Build, Sign & Notarize
         run: |
-          echo "Checking file signature..."
-          codesign -dvv "${{ steps.find_dmg.outputs.dmg_path }}" || echo "File not code-signed"
-          echo ""
-          echo "Running spctl verification..."
-          spctl -a -vvv -t install "${{ steps.find_dmg.outputs.dmg_path }}" || echo "spctl verification failed"
-          echo ""
-          echo "Running stapler validate..."
-          stapler validate "${{ steps.find_dmg.outputs.dmg_path }}" || echo "Stapler validation failed"
+          npm run build -- --mac
+        env:
+          NODE_ENV: production
+          # electron-builder 签名配置
+          CSC_LINK: ${{ secrets.APPLE_SIGNING_CERT }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+          # Apple 公证配置（electron-builder 要求的变量名）
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # --- 如果 electron-builder 公证失败，手动公证 ---
+      - name: Manual Notarization (if needed)
+        if: always()
+        run: |
+          DMG_PATH=$(find dist/aily-blockly -name "*.dmg" -type f | head -n 1)
+          
+          if [ -z "$DMG_PATH" ]; then
+            echo "❌ DMG not found!"
+            exit 1
+          fi
+          
+          echo "Checking if already notarized..."
+          if xcrun stapler validate "$DMG_PATH" 2>/dev/null; then
+            echo "✅ Already notarized and stapled!"
+            exit 0
+          fi
+          
+          echo "Submitting for notarization: $DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait \
+            --timeout 30m
+          
+          echo "Stapling..."
+          xcrun stapler staple "$DMG_PATH"
+          echo "✅ Notarization completed!"
+
+      - name: Final Verification
+        run: |
+          DMG_PATH=$(find dist/aily-blockly -name "*.dmg" -type f | head -n 1)
+          echo "=== Verification ==="
+          xcrun stapler validate "$DMG_PATH" && echo "✅ Notarized" || echo "⚠️ Not notarized"
       
       - name: Archive macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AilyBlockly-macOS-Package
-          path: dist/aily-blockly/ # 包含所有输出：dmg, zip, yml 等
+          path: dist/aily-blockly/
 
   # 任务 3：发布到 GitHub Release
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from package.json
+        id: version
+        run: |
+          VERSION=$(node -e "console.log(require('./package.json').version)")
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: v${VERSION}"
+
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
@@ -151,19 +241,20 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: |
             ./release/*.exe
             ./release/*.dmg
           draft: false
           prerelease: false
+          update_release: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 任务 4：上传文件到服务器（与Release并行执行）
-  upload-to-server:
-    needs: [build-windows, build-macos]
+  # 任务 4a：上传 Windows 文件到 Cloudflare R2 存储（与Release并行执行）
+  upload-windows-to-r2:
+    needs: [build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
@@ -171,49 +262,185 @@ jobs:
           name: AilyBlockly-Windows-Package
           path: ./artifacts/windows
 
+      - name: Ensure AWS CLI is available
+        run: |
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
+          aws --version
+
+      - name: Upload Windows files to Cloudflare R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_UPLOAD_PATH: ${{ secrets.R2_UPLOAD_PATH }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          # 配置 AWS CLI 使用 Cloudflare R2
+          aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
+          aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
+          aws configure set default.region auto
+          
+          # Cloudflare R2 endpoint
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          
+          echo "准备上传 Windows 文件到 Cloudflare R2..."
+          
+          # 先上传 Windows 安装包
+          echo "上传 Windows exe 文件..."
+          for file in ./artifacts/windows/*.exe; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              echo "  上传: $filename"
+              aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --content-type "application/x-msdownload"
+            fi
+          done
+          
+          # 最后上传 latest.yml（确保安装包已上传完成）
+          echo "上传 latest.yml 配置文件..."
+          if [ -f "./artifacts/windows/latest.yml" ]; then
+            aws s3 cp "./artifacts/windows/latest.yml" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/latest.yml" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/yaml"
+          fi
+          
+          echo "✓ Windows 文件上传到 Cloudflare R2 完成"
+          echo "公开访问地址: ${R2_PUBLIC_URL}"
+
+  # 任务 4b：上传 macOS 文件到 Cloudflare R2 存储（与Release并行执行）
+  upload-macos-to-r2:
+    needs: [build-macos]
+    runs-on: ubuntu-latest
+    steps:
       - name: Download macOS Artifact
         uses: actions/download-artifact@v4
         with:
           name: AilyBlockly-macOS-Package
           path: ./artifacts/macos
 
-      - name: Upload files to Server (non-yml files first, yml files last)
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
-          SERVER_PATH: ${{ secrets.SERVER_PATH }}
+      - name: Ensure AWS CLI is available
         run: |
-          # 安装sshpass用于密码认证
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
+          aws --version
+
+      - name: Upload macOS files to Cloudflare R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_UPLOAD_PATH: ${{ secrets.R2_UPLOAD_PATH }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          # 配置 AWS CLI 使用 Cloudflare R2
+          aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
+          aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
+          aws configure set default.region auto
+          
+          # Cloudflare R2 endpoint
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          
+          echo "准备上传 macOS 文件到 Cloudflare R2..."
+          
+          # 上传 macOS 安装包
+          echo "上传 macOS 文件..."
+          for file in ./artifacts/macos/*.dmg ./artifacts/macos/*.zip; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              echo "  上传: $filename"
+              
+              # 根据文件类型设置 Content-Type
+              if [[ "$filename" == *.dmg ]]; then
+                content_type="application/x-apple-diskimage"
+              else
+                content_type="application/zip"
+              fi
+              
+              aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --content-type "$content_type"
+            fi
+          done
+          
+          # 最后上传 latest-mac.yml（确保安装包已上传完成）
+          echo "上传 latest-mac.yml 配置文件..."
+          if [ -f "./artifacts/macos/latest-mac.yml" ]; then
+            aws s3 cp "./artifacts/macos/latest-mac.yml" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/latest-mac.yml" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/yaml"
+          fi
+          
+          echo "✓ macOS 文件上传到 Cloudflare R2 完成"
+          echo "公开访问地址: ${R2_PUBLIC_URL}"
+
+  # 原有的 SSH 上传方式已注释（备用）
+  # upload-to-server:
+  #   needs: [build-windows, build-macos]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download Windows Artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: AilyBlockly-Windows-Package
+  #         path: ./artifacts/windows
+  #
+  #     - name: Download macOS Artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: AilyBlockly-macOS-Package
+  #         path: ./artifacts/macos
+  #
+  #     - name: Upload files to Server (non-yml files first, yml files last)
+  #       env:
+  #         SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  #         SERVER_USER: ${{ secrets.SERVER_USER }}
+  #         SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+  #         SERVER_PATH: ${{ secrets.SERVER_PATH }}
+  #       run: |
+  #         sudo apt-get update && sudo apt-get install -y sshpass
+  #         mkdir -p ./upload-temp
+  #         echo "准备Windows文件..."
+  #         cp ./artifacts/windows/*.exe ./upload-temp/ 2>/dev/null || echo "未找到Windows exe文件"
+  #         echo "准备macOS文件..."
+  #         cp ./artifacts/macos/*.dmg ./upload-temp/ 2>/dev/null || echo "未找到macOS dmg文件"
+  #         cp ./artifacts/macos/*.zip ./upload-temp/ 2>/dev/null || echo "未找到macOS zip文件"
+  #         if [ -n "$(ls -A ./upload-temp/)" ]; then
+  #           echo "上传非yml文件到服务器..."
+  #           sshpass -p "$SERVER_PASSWORD" scp -o StrictHostKeyChecking=no -r ./upload-temp/* "$SERVER_USER@$SERVER_HOST:$SERVER_PATH"
+  #         fi
+  #         echo "准备yml配置文件..."
+  #         mkdir -p ./yml-files
+  #         cp ./artifacts/windows/latest.yml ./yml-files/ 2>/dev/null || echo "未找到Windows latest.yml"
+  #         cp ./artifacts/macos/latest-mac.yml ./yml-files/ 2>/dev/null || echo "未找到macOS latest-mac.yml"
+  #         if [ -n "$(ls -A ./yml-files/)" ]; then
+  #           echo "上传yml配置文件到服务器..."
+  #           sshpass -p "$SERVER_PASSWORD" scp -o StrictHostKeyChecking=no -r ./yml-files/* "$SERVER_USER@$SERVER_HOST:$SERVER_PATH"
+  #         fi
+  #         echo "✓ 文件上传完成"
+
+  # 任务 5：触发服务器脚本
+  trigger-server-script:
+    needs: [upload-windows-to-r2, upload-macos-to-r2]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Server Script
+        env:
+          SERVER_HOST: ${{ secrets.TRIGGER_SERVER_HOST }}
+          SERVER_USER: ${{ secrets.TRIGGER_SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
+          SERVER_SCRIPT_PATH: ${{ secrets.TRIGGER_SERVER_SCRIPT_PATH }}
+        run: |
           sudo apt-get update && sudo apt-get install -y sshpass
-          
-          # 创建临时目录用于组织文件
-          mkdir -p ./upload-temp
-          
-          # 复制Windows文件（exe先上传）
-          echo "准备Windows文件..."
-          cp ./artifacts/windows/*.exe ./upload-temp/ 2>/dev/null || echo "未找到Windows exe文件"
-          
-          # 复制macOS文件（dmg和zip先上传）
-          echo "准备macOS文件..."
-          cp ./artifacts/macos/*.dmg ./upload-temp/ 2>/dev/null || echo "未找到macOS dmg文件"
-          cp ./artifacts/macos/*.zip ./upload-temp/ 2>/dev/null || echo "未找到macOS zip文件"
-          
-          # 先上传非yml文件
-          if [ -n "$(ls -A ./upload-temp/)" ]; then
-            echo "上传非yml文件到服务器..."
-            sshpass -p "$SERVER_PASSWORD" scp -o StrictHostKeyChecking=no -r ./upload-temp/* "$SERVER_USER@$SERVER_HOST:$SERVER_PATH"
-          fi
-          
-          # 最后上传yml文件
-          echo "准备yml配置文件..."
-          mkdir -p ./yml-files
-          cp ./artifacts/windows/latest.yml ./yml-files/ 2>/dev/null || echo "未找到Windows latest.yml"
-          cp ./artifacts/macos/latest-mac.yml ./yml-files/ 2>/dev/null || echo "未找到macOS latest-mac.yml"
-          
-          if [ -n "$(ls -A ./yml-files/)" ]; then
-            echo "上传yml配置文件到服务器..."
-            sshpass -p "$SERVER_PASSWORD" scp -o StrictHostKeyChecking=no -r ./yml-files/* "$SERVER_USER@$SERVER_HOST:$SERVER_PATH"
-          fi
-          
-          echo "✓ 文件上传完成"
+          echo "触发服务器脚本..."
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "bash $SERVER_SCRIPT_PATH"
+          echo "✓ 脚本执行完成"

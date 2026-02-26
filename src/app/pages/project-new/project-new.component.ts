@@ -18,6 +18,7 @@ import { BRAND_LIST, CORE_LIST } from '../../configs/board.config';
 import { PlatformService } from '../../services/platform.service';
 import { NzRadioModule } from 'ng-zorro-antd/radio';
 import { CloudService } from '../../tools/cloud-space/services/cloud.service';
+import { SequentialImgDirective } from './sequential-img.directive';
 
 @Component({
   selector: 'app-project-new',
@@ -32,7 +33,8 @@ import { CloudService } from '../../tools/cloud-space/services/cloud.service';
     NzTagModule,
     TranslateModule,
     BrandListComponent,
-    NzRadioModule
+    NzRadioModule,
+    SequentialImgDirective
   ],
   templateUrl: './project-new.component.html',
   styleUrl: './project-new.component.scss',

@@ -6,6 +6,7 @@
     top: 0;
     background: rgba(0, 0, 0, 0.5);
     flex-direction: column;
+    z-index: 10;
 
     .inner {
         background: #292929;
@@ -18,6 +19,7 @@
 
 .description {
     width: 100%;
+    min-height: 200px;
 }
 
 .phone-login-box {
@@ -55,11 +57,19 @@
         }
 
         &:hover {
-            color: #FFF;
+            color: #f5f5f5;
         }
 
         &.active {
             color: #FFF;
+        }
+
+        &.wechat-active {
+            color: #FFF;
+
+            i {
+                color: #52c41a;
+            }
         }
 
         .icon {
@@ -83,13 +93,59 @@
 
 .wechat {
     flex-direction: column;
+    justify-content: flex-start;
+    height: 200px;
+    padding-top: 10px;
 
     .qrcode {
-        width: 156px;
-        height: 156px;
+        width: 150px;
+        height: 150px;
         border: 1px solid #666;
         border-radius: 3px;
         margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+
+        img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .loading-icon {
+            i {
+                font-size: 48px;
+                color: #999;
+            }
+        }
+
+        .error-text {
+            color: #ff4d4f;
+            font-size: 14px;
+            text-align: center;
+            padding: 10px;
+        }
+    }
+
+    .wechat-status {
+        width: 100%;
+        text-align: center;
+
+        .status-message {
+            color: #ccc;
+            font-size: 14px;
+
+            &.success {
+                color: #52c41a;
+            }
+
+            &.expired,
+            &.error {
+                color: #ff4d4f;
+            }
+        }
     }
 }
 
@@ -113,10 +169,17 @@
         input {
             background: #363636;
             color: rgba(255, 255, 255, 0.7) !important;
+            flex: 1;
 
             &[type="password"] {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             }
+        }
+
+        .send-code-btn {
+            margin-left: 10px;
+            min-width: 100px;
+            white-space: nowrap;
         }
     }
 

@@ -19,7 +19,8 @@ import { UpdateService } from '../services/update.service';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '../services/npm.service';
 import { SimulatorComponent } from '../tools/simulator/simulator.component';
-import { Router, RouterModule } from '@angular/router';
+import { NavigationEnd, Router, RouterModule } from '@angular/router';
+import { filter } from 'rxjs';
 import { ConfigService } from '../services/config.service';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FloatSiderComponent } from '../components/float-sider/float-sider.component';
@@ -104,6 +105,15 @@ export class MainWindowComponent {
     this.projectService.init();
     this.updateService.init();
     this.npmService.init();
+    // 重置 footer 状态
+    this.uiService.updateFooterState({ text: '', timeout: 0 });
+
+    // 监听路由变化，重置 footer 状态
+    this.router.events.pipe(
+      filter(event => event instanceof NavigationEnd)
+    ).subscribe(() => {
+      this.uiService.updateFooterState({ text: '', timeout: 0 });
+    });
 
     // 订阅 onboarding 服务
     this.onboardingService.show$.subscribe((show) => {

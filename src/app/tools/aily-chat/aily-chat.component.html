@@ -25,7 +25,9 @@
   <!-- 整个聊天区域的容器 -->
   <div class="aily-chat-wrapper">
     <div class="todo-panel-container">
-      <app-floating-todo [sessionId]="sessionId"></app-floating-todo>
+      @if(!showSettings){
+        <app-floating-todo [sessionId]="sessionId"></app-floating-todo>
+      }
     </div>
     <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
   </div>
@@ -38,9 +40,20 @@
       @if(list.length > 0){
       <!-- <ngx-simplebar #simplebarRef [options]="options"> -->
       <div class="dialogs">
-        @for (item of list; track item) {
-        <aily-dialog [role]="item.role" [content]="item.content" [doing]="item.state=='doing'"></aily-dialog>
-        }
+        <!-- @for(item of list; track sessionId + '-' + $index){
+        <aily-dialog
+          [role]="item.role"
+          [content]="item.content"
+          [doing]="item.state === 'doing'">
+        </aily-dialog>
+        } -->
+        @for(item of list; track sessionId + '-' + $index){
+          <aily-x-dialog
+            [role]="item.role"
+            [content]="item.content"
+            [doing]="item.state === 'doing'">
+          </aily-x-dialog>
+          }
       </div>
       <!-- </ngx-simplebar> -->
       }@else{
@@ -72,13 +85,15 @@
           @if( selectContent.length > 0 ) {
           <div class="resource-list">
             @for( item of selectContent; track $index) {
-            <div class="resource-item">
+            <div class="resource-item" [class.block-item]="item.type === 'block'">
               @if(item.type == 'file') {
               <i class="fa-light fa-file"></i>
               }@else if(item.type == 'folder') {
               <i class="fa-light fa-folder"></i>
               }@else if(item.type == 'url') {
               <i class="fa-light fa-link"></i>
+              }@else if(item.type == 'block') {
+              <i class="fa-light fa-cube"></i>
               }
               <span class="resource-name">{{ item.name }}</span>
               <div class="btn ccenter" (click)="removeResource($index)">
@@ -126,7 +141,7 @@
             <!-- 模型选择 -->
             @if(ModelList.length > 0) {
             <div class="btn mode ccenter" (click)="switchModel($event)">
-              <i class="fa-light fa-robot"></i><span>{{ currentModelName }}</span>
+              <i class="fa-light fa-star-christmas"></i><span>{{ currentModelName }}</span>
             </div>
             }
             <div class="btn right ccenter" [ngClass]="{'lloading':isWaiting}" nzTooltipPlacement="bottom" nz-tooltip

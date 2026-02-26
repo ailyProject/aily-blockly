@@ -34,8 +34,13 @@ export { newProjectTool } from './createProjectTool';
 export { executeCommandTool } from './executeCommandTool';
 export { askApprovalTool } from './askApprovalTool';
 export { getContextTool } from './getContextTool';
+export { getProjectInfoTool } from './getProjectInfoTool';
 export { fetchTool, FetchToolService } from './fetchTool';
-export { todoWriteTool } from './todoWriteTool';
+export { webSearchTool, WebSearchToolService } from './webSearchTool';
+export { todoWriteTool, injectTodoReminder } from './todoWriteTool';
+export { syncAbsFileHandler } from './syncAbsFileTool';
+export { absVersionControlHandler } from './absVersionControlTool';
+export { getAbsSyntaxTool } from './getAbsSyntaxTool';
 // export { reloadAbiJsonTool, reloadAbiJsonToolSimple, reloadAbiJsonToolDirect, ReloadAbiJsonToolService } from './reloadAbiJsonTool';
 
 // 安全服务

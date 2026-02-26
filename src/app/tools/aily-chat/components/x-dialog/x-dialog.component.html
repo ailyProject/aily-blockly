@@ -1,0 +1,34 @@
+<div
+  class="dialog-box animate__animated animate__fadeIn animate__faster"
+  [ngClass]="{ user: role === 'user' }"
+>
+  <div class="username">
+    @if (role === "user") {
+      <i class="fa-light fa-user-vneck"></i>&nbsp;&nbsp;me
+    } @else {
+      <i class="fa-light fa-user-astronaut"></i>&nbsp;&nbsp;aily
+    }
+  </div>
+  @if(content==='[thinking...]'){
+    <div class="content thinking">
+      <span class="thinking-text">Thinking</span>
+      <span class="wave-dots">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </span>
+    </div>
+  }
+  <div class="content">
+    @if (streamContent()) {
+      <x-markdown
+        [content]="streamContent()"
+        [streaming]="streamingConfig()"
+        [components]="componentMap"
+        rootClassName="x-markdown-dark"
+      >
+      </x-markdown>
+    }
+  </div>
+  @if (doing) {
+    <div class="loader"></div>
+  }
+</div>

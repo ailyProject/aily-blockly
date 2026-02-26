@@ -17,15 +17,19 @@
         <div class="item ccenter" (click)="select('microsoft')" [ngClass]="{'active':mode=='microsoft'}">
             <i class="fa-brands fa-microsoft"></i>
             Microsoft
-        </div>
-        <div class="item ccenter" (click)="select('wechat')" [ngClass]="{'active':mode=='wechat'}">
-            <i class="fa-brands fa-weixin"></i>
-            WeChat
         </div> -->
-            <div class="item ccenter" (click)="select('phone')" [ngClass]="{'active':mode=='phone'}">
+            <div class="item ccenter" (click)="select('wechat')" [ngClass]="{'wechat-active':mode=='wechat'}">
+                <div class="icon ccenter"><i class="fa-brands fa-weixin"></i></div>
+                WeChat
+            </div>
+            <!-- <div class="item ccenter" (click)="select('phone')" [ngClass]="{'active':mode=='phone'}">
                 <div class="icon ccenter"><i class="fa-light fa-mobile"></i></div>
                 {{ 'LOGIN.PHONE' | translate }}
-            </div>
+            </div> -->
+            <!-- <div class="item ccenter" (click)="select('email')" [ngClass]="{'active':mode=='email'}">
+                <div class="icon ccenter"><i class="fa-light fa-envelope"></i></div>
+                {{ 'LOGIN.EMAIL' | translate }}
+            </div> -->
 
         </div>
         @switch(mode){
@@ -43,7 +47,8 @@
                 </div>
             </div>
             <div class="login-btn">
-                <button nz-button nzType="primary" (click)="loginByGithub()">{{ 'LOGIN.GITHUB_LOGIN' | translate }}</button>
+                <button nz-button nzType="primary" (click)="loginByGithub()">{{ 'LOGIN.GITHUB_LOGIN' | translate
+                    }}</button>
             </div>
         </div>
         }
@@ -52,39 +57,74 @@
         }
         @case ('wechat') {
         <div class="wechat ccenter">
-            <div class="qrcode">
-
+            @if (wechatStatus === 'loading') {
+            <div class="qrcode ccenter">
+                <div class="loading-icon lloading ccenter">
+                    <i class="fa-light fa-spinner-third"></i>
+                </div>
             </div>
-            <div>
-                {{ 'LOGIN.WECHAT_SCAN' | translate }}
+            } @else if (wechatQrcodeUrl) {
+            <div class="qrcode">
+                <img [src]="wechatQrcodeUrl" alt="微信扫码登录二维码" />
+            </div>
+            } @else {
+            <div class="qrcode ccenter">
+                <div class="error-text">{{ getWeChatErrorText() }}</div>
+            </div>
+            }
+
+            <div class="wechat-status">
+                @if (wechatStatus === 'pending') {
+                <div class="status-message">{{ getWeChatStatusMessage() }}</div>
+                <!-- <div class="countdown-hint">{{ wechatQrcodeCountdown }}s {{ getWeChatCountdownHint() }}</div> -->
+                } @else if (wechatStatus === 'confirmed') {
+                <!-- <div class="status-message success">{{ getWeChatSuccessText() }}</div> -->
+                } @else if (wechatStatus === 'expired') {
+                <div class="status-message expired">{{ wechatStatusMessage }}</div>
+                <button nz-button nzType="primary" nzSize="small" (click)="refreshWeChatQrcode()"
+                    style="margin-top: 10px;">
+                    {{ getWeChatRefreshText() }}
+                </button>
+                } @else if (wechatStatus === 'error') {
+                <div class="status-message error">{{ wechatStatusMessage }}</div>
+                <button nz-button nzType="primary" nzSize="small" (click)="refreshWeChatQrcode()"
+                    style="margin-top: 10px;">
+                    {{ getWeChatRetryText() }}
+                </button>
+                }
             </div>
         </div>
         }
         @case ('microsoft') {
 
         }
-        @case ('phone') {
+        @case ('email') {
         <div class="description">
             <div>
-                {{ 'LOGIN.PHONE_NOT_OPEN' | translate }}<br />
-                {{ 'LOGIN.PHONE_BETA_ONLY' | translate }}
+                {{ 'LOGIN.EMAIL_LOGIN_DESC' | translate }}
             </div>
         </div>
         <div class="phone-login-box">
             <div class="item">
                 <div class="ccenter">
-                    <i class="fa-light fa-user"></i>
+                    <i class="fa-light fa-envelope"></i>
                 </div>
-                <input nz-input type="text" [placeholder]="'LOGIN.PHONE_PLACEHOLDER' | translate" [(ngModel)]="inputUsername" />
+                <input nz-input type="email" [placeholder]="'LOGIN.EMAIL_PLACEHOLDER' | translate"
+                    [(ngModel)]="inputEmail" />
             </div>
             <div class="item">
                 <div class="ccenter">
                     <i class="fa-light fa-lock"></i>
                 </div>
-                <input nz-input type="password" [placeholder]="'LOGIN.PASSWORD_PLACEHOLDER' | translate" [(ngModel)]="inputPassword" />
+                <input nz-input type="text" [placeholder]="'LOGIN.CODE_PLACEHOLDER' | translate"
+                    [(ngModel)]="inputCode" />
+                <button nz-button nzType="default" class="send-code-btn" [disabled]="isSendingCode || countdown > 0"
+                    (click)="sendVerificationCode()">
+                    {{ countdown > 0 ? (countdown + 's') : ('LOGIN.SEND_CODE' | translate) }}
+                </button>
             </div>
             <div class="actions">
-                <button nz-button nzType="primary" [nzLoading]="isWaiting" (click)="loginByPhone()">
+                <button nz-button nzType="primary" [nzLoading]="isWaiting" (click)="loginByEmail()">
                     {{ isWaiting ? ('LOGIN.LOGGING_IN' | translate) : ('LOGIN.LOGIN' | translate) }}
                 </button>
             </div>

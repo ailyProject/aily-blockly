@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 允许 JIT 编译 (Electron 需要) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    
+    <!-- 允许加载未签名的可执行内存 (Electron 需要) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    
+    <!-- 允许 dyld 环境变量 (某些原生模块需要) -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    
+    <!-- 禁用库验证 (加载第三方 .node 模块需要) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    
+    <!-- 禁用可执行文件内存保护 (某些原生模块需要) -->
+    <key>com.apple.security.cs.disable-executable-page-protection</key>
+    <true/>
+</dict>
+</plist>

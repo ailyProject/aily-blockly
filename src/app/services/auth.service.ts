@@ -149,6 +149,34 @@ export class AuthService {
   }
 
   /**
+   * 发送邮箱验证码
+   */
+  sendEmailCode(email: string, altcha: string): Observable<CommonResponse> {
+    return this.http.post<CommonResponse>(API.sendEmailCode, { email, altcha, device_id: 'pc' }).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 邮箱验证码登录
+   */
+  loginByEmail(email: string, code: string): Observable<LoginResponse> {
+    return this.http.post<LoginResponse>(API.loginByEmail, { email, code, device_id: 'pc' }).pipe(
+      map((response) => {
+        if (response.status === 200 && response.data) {
+          this.saveToken2(response.data.access_token);
+          this.getMe(response.data.access_token);
+          this.isLoggedInSubject.next(true);
+        } else {
+          this.isLoggedInSubject.next(false);
+        }
+        return response;
+      }),
+      catchError(this.handleError)
+    );
+  }
+
+  /**
    * 用户登出
    */
   async logout(): Promise<void> {
@@ -207,6 +235,11 @@ export class AuthService {
   }
 
   async refreshMe() {
+    // 先检查是否有 token，没有 token 就不发起请求
+    const token = await this.getToken2();
+    if (!token) {
+      return;
+    }
     return this.http.get<CommonResponse>(API.me).subscribe( (res) => {
       if (res.status === 200 && res.data) {
         this.userInfoSubject.next(res.data);
@@ -902,6 +935,47 @@ export class AuthService {
       this.isLoggedInSubject.next(true);
     } catch (error) {
       console.error('处理 GitHub OAuth 成功数据失败:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 获取微信扫码二维码
+   */
+  getWeChatQrcode(): Observable<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }> {
+    return this.http.get<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }>(API.wechatQrcode).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 检查微信扫码状态
+   */
+  checkWeChatStatus(ticket: string): Observable<CommonResponse & { data: { status: string; access_token?: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any; message?: string } }> {
+    return this.http.get<CommonResponse & { data: { status: string; access_token?: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any; message?: string } }>(
+      API.wechatCheck,
+      { params: { ticket } }
+    ).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 微信扫码登录成功处理
+   */
+  async handleWeChatOAuthSuccess(data: { access_token: string; refresh_token?: string; user?: any }): Promise<void> {
+    try {
+      await this.saveToken2(data.access_token);
+      // if (data.refresh_token) {
+      //   await this.saveRefreshToken(data.refresh_token);
+      // }
+      if (data.user) {
+        await this.saveUserInfo(data.user);
+        this.userInfoSubject.next(data.user);
+      }
+      this.isLoggedInSubject.next(true);
+    } catch (error) {
+      console.error('处理微信 OAuth 成功数据失败:', error);
       throw error;
     }
   }

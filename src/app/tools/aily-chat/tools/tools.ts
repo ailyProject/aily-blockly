@@ -58,6 +58,21 @@ export const TOOLS = [
             required: ['info_type']
         }
     },
+    {
+        name: "get_project_info",
+        description: `获取当前项目信息。如果项目已创建，返回当前项目使用的开发板及已安装的库列表。如果库中包含 readme_ai.md 文档，则同时输出该文件的路径。可用于了解项目配置、查找库文档等。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                include_readme: {
+                    type: 'boolean',
+                    description: '是否检查并返回库的 readme_ai.md 文件路径',
+                    default: true
+                }
+            },
+            required: []
+        }
+    },
     // {
     //     name: "list_directory",
     //     description: `列出指定目录的内容，包括文件和文件夹信息。返回每个项目的名称、类型、大小和修改时间。`,
@@ -812,13 +827,14 @@ Query and return specific content (for detailed info)
     },
     {
         name: "fetch",
-        description: `获取网络上的信息和资源，支持HTTP/HTTPS请求，能够处理大文件下载。支持多种请求方法和响应类型。注意：非必要时请避免使用此工具，以减少外部依赖和网络请求。`,
+        description: `获取网页内容和API数据。支持HTTP/HTTPS请求。
+注意：非必要时请避免使用此工具。如需搜索信息请优先使用 web_search 工具。`,
         input_schema: {
             type: 'object',
             properties: {
                 url: {
                     type: 'string',
-                    description: '要请求的URL地址'
+                    description: '要请求的URL地址（仅支持 http:// 和 https://）'
                 },
                 method: {
                     type: 'string',
@@ -840,8 +856,8 @@ Query and return specific content (for detailed info)
                 },
                 maxSize: {
                     type: 'number',
-                    description: '最大文件大小（字节）',
-                    default: 52428800
+                    description: '最大文件大小（字节），默认5MB',
+                    default: 5242880
                 },
                 responseType: {
                     type: 'string',
@@ -851,6 +867,32 @@ Query and return specific content (for detailed info)
                 }
             },
             required: ['url']
+        }
+    },
+    {
+        name: "web_search",
+        description: `搜索网络以获取最新信息。使用 DuckDuckGo 搜索引擎，返回搜索结果列表（标题、摘要、链接）。
+适用场景：
+- 查找最新的技术文档、库版本信息、API 参考
+- 搜索错误信息的解决方案
+- 获取项目、产品、工具的最新状态
+- 查找教程、指南和示例代码
+- 在不知道确切 URL 时先搜索再用 fetch 获取详情
+注意：搜索结果仅包含标题和摘要，如需完整内容请使用 fetch 工具访问结果中的链接。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: '搜索关键词，建议使用具体、有针对性的搜索词以获得更好的结果'
+                },
+                maxResults: {
+                    type: 'number',
+                    description: '返回的最大结果数量',
+                    default: 10
+                }
+            },
+            required: ['query']
         }
     },
     // {
@@ -1236,358 +1278,471 @@ Query and return specific content (for detailed info)
 //         }
 //     },
     // =============================================================================
-    // 原有块操作工具（保持兼容）
+    // 🔇 以下块操作工具已被 DSL 工具替代，暂时注释保留
+    // 统一使用 sync_dsl_file 进行块的创建、修改、删除操作
+    // =============================================================================
+    // {
+    //     name: "smart_block_tool",
+    //     description: `智能块创建Blockly工作区中的块，一次只能创建一个块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme。注意：当需要创建3个以上的块或嵌套超过2层时，推荐使用create_code_structure_tool创建。</system-reminder>
+    // 基本语法:
+    // \`\`\`json
+    // {
+    //   "type": "块类型",
+    //   "position": {"x": 数字, "y": 数字}, // 可选
+    //   "fields": {"字段名": "字段值"},
+    //   "inputs": {"输入名": "块ID或配置"}, // 可选
+    //   "parentConnection": {
+    //     "blockId": "父块ID",
+    //     "connectionType": "next|input|statement",
+    //     "inputName": "输入名，如ARDUINO_SETUP"
+    //   } // 父块连接配置（可选）
+    // }
+    // \`\`\`
+    // 示例:
+    // 创建数字块
+    // \`\`\`json
+    // {
+    //   "type": "math_number",
+    //   "fields": {"NUM": "123"}
+    // }
+    // \`\`\`
+    // 创建变量块
+    // \`\`\`json
+    // {
+    //   "type": "variable_define",
+    //   "fields": {
+    //     "VAR": "sensor_value",
+    //     "TYPE": "int"
+    //   },
+    //   "inputs": {
+    //     "VALUE": {"block": {"type": "math_number", "fields": {"NUM": "0"}}}
+    //   }
+    // }
+    // \`\`\`
+    // 创建Arduino数字输出
+    // \`\`\`json
+    // {
+    //   "type": "io_digitalwrite",
+    //   "inputs": {
+    //     "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    //     "STATE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
+    //   }
+    // }
+    // \`\`\`
+    // 创建串口打印
+    // \`\`\`json
+    // {
+    //   "type": "serial_println",
+    //   "fields": {"SERIAL": "Serial"},
+    //   "inputs": {
+    //     "VAR": {"block": {"type": "text", "fields": {"TEXT": "Hello"}}}
+    //   }
+    // }
+    // \`\`\`
+    // `,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             type: {
+    //                 type: 'string',
+    //                 description: '块类型，如 logic_boolean、controls_if、math_number 等'
+    //             },
+    //             position: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     x: { type: 'number', description: 'X坐标' },
+    //                     y: { type: 'number', description: 'Y坐标' }
+    //                 },
+    //                 description: '块在工作区中的位置（可选）'
+    //             },
+    //             fields: {
+    //                 type: 'object',
+    //                 description: '块的字段配置，如布尔值、数字值、变量名等'
+    //             },
+    //             inputs: {
+    //                 type: 'object',
+    //                 description: '块的输入配置，连接其他块'
+    //             },
+    //             parentConnection: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     blockId: { type: 'string', description: '父块ID' },
+    //                     connectionType: { type: 'string', description: '连接类型' },
+    //                     inputName: { type: 'string', description: '输入名称' }
+    //                 },
+    //                 description: '父块连接配置（可选）。不提供时创建独立块，适用于全局变量、函数定义等顶级代码块'
+    //             }
+    //         },
+    //         required: ['type']
+    //     }
+    // },
+    // {
+    //     name: "connect_blocks_tool",
+    //     description: `块连接工具，通过修改连接关系移动Blockly块，但不会新建块，支持四种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）、disconnect（断开连接变独立块）。
+    // 
+    // ⚠️ **重要**：连接语义说明
+    // - containerBlock: **容器块/父块** (提供连接点的块，如arduino_setup、if_else、repeat等)
+    // - contentBlock: **内容块/子块** (要被连接的块，如digital_write、delay等)
+    // - 例如：将digital_write放入arduino_setup中
+    //   - containerBlock: "arduino_setup_id0" (容器)  
+    //   - contentBlock: "digital_write_id1" (内容)
+    //   - connectionType: "statement"
+    //   - inputName: "input_statement"
+    // 
+    // 🔓 **断开连接（变独立块）**：
+    // - 使用 connectionType: "disconnect" 将块从父块断开，变成工作区中的独立块
+    // - moveChain: false（默认）- 只断开指定块，后续块保持在原位置
+    // - moveChain: true - 断开整个块链，包括后续所有块一起变成独立块
+    // 
+    // 常见错误：不要混淆容器和内容的关系！`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             containerBlock: {
+    //                 type: 'string',
+    //                 description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）。disconnect模式时可省略'
+    //             },
+    //             contentBlock: {
+    //                 type: 'string', 
+    //                 description: '📦 内容块ID（子块，要被放入容器的块，或要断开连接的块）'
+    //             },
+    //             connectionType: {
+    //                 type: 'string',
+    //                 enum: ['next', 'input', 'statement', 'disconnect'],
+    //                 description: '连接类型：statement=语句连接（推荐），input=输入连接，next=顺序连接，disconnect=断开连接变独立块'
+    //             },
+    //             inputName: {
+    //                 type: 'string',
+    //                 description: '输入端口名称（statement连接时指定容器的哪个端口，如"input_statement"、"DO"、"ELSE"等，不指定时自动检测）'
+    //             },
+    //             moveChain: {
+    //                 type: 'boolean',
+    //                 description: '是否移动整个块链。false=只移动/断开单个块，后续块保持或重连；true（默认）=移动/断开整个块链',
+    //                 default: true
+    //             }
+    //         },
+    //         required: ['contentBlock', 'connectionType']
+    //     }
+    // },
+    // {
+    //     name: "create_code_structure_tool", 
+    //     description: `动态结构创建工具，创建包含多个块的代码结构并连接到工作区。
+    // 
+    // **注意事项**:
+    // - 使用工具前必须确保已读取使用的 block 所属库的 Readme
+    // - 建议分步生成代码：全局变量 → 初始化 → loop → 回调函数
+    // - 不要一次性生成超过 10 个 block 的代码块结构
+    // 
+    // **参数说明**:
+    // - \`structureDefinition\`: 定义要创建的块（rootBlock + additionalBlocks）
+    // - \`connectionRules\`: 定义所有块之间的连接（包括新创建的块之间，以及新块与工作区已有块之间）
+    // 
+    // **示例: 在 Arduino Setup 中添加初始化代码**
+    // \`\`\`json
+    // {
+    //   "structure": "init-code",
+    //   "config": {
+    //     "structureDefinition": {
+    //       "rootBlock": {
+    //         "type": "control_if",
+    //         "id": "if_check",
+    //         "extraState": {"hasElse": true},
+    //         "inputs": {
+    //           "IF0": {"block": {"type": "logic_compare", "id": "logic_compare_id", "fields": {"OP": "GT"}, ...}},
+    //           "DO0": {"block": {"type": "io_digitalwrite", "id": "green_led_on", "inputs": {...}}},
+    //           "ELSE": {}
+    //         }
+    //       },
+    //       "additionalBlocks": [
+    //         {
+    //           "type": "io_digitalwrite",
+    //           "id": "red_led_on",
+    //           "inputs": {
+    //             "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    //             "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
+    //           }
+    //         },
+    //         {
+    //           "type": "io_digitalwrite",
+    //           "id": "red_led_off",
+    //           "inputs": {
+    //             "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    //             "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "LOW"}}}
+    //           }
+    //         }
+    //       ]
+    //     }
+    //   },
+    //   "connectionRules": [
+    //     {"source": "arduino_setup_id", "target": "if_check", "connectionType": "statement", "inputName": "ARDUINO_SETUP"},
+    //     {"source": "green_led_on", "target": "red_led_on", "connectionType": "next"},
+    //     {"source": "if_check", "target": "red_led_off", "connectionType": "statement", "inputName": "ELSE"}
+    //   ]
+    // }
+    // \`\`\`
+    // `,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             structure: {
+    //                 type: 'string',
+    //                 description: '结构名称（用于日志和调试）'
+    //             },
+    //             config: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     structureDefinition: {
+    //                         type: 'object',
+    //                         properties: {
+    //                             rootBlock: {
+    //                                 type: 'object',
+    //                                 description: '根块配置（必须包含 type 和 id）'
+    //                             },
+    //                             additionalBlocks: {
+    //                                 type: 'array',
+    //                                 items: { type: 'object' },
+    //                                 description: '附加块配置数组'
+    //                             }
+    //                         },
+    //                         required: ['rootBlock'],
+    //                         description: '动态结构定义（仅定义要创建的块）'
+    //                     }
+    //                 },
+    //                 required: ['structureDefinition'],
+    //                 description: '结构配置对象'
+    //             },
+    //             connectionRules: {
+    //                 type: 'array',
+    //                 items: {
+    //                     type: 'object',
+    //                     properties: {
+    //                         source: { type: 'string', description: '源块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
+    //                         target: { type: 'string', description: '目标块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
+    //                         inputName: { type: 'string', description: 'statement/input 连接时指定输入名称' },
+    //                         connectionType: { 
+    //                             type: 'string', 
+    //                             enum: ['next', 'input', 'statement'],
+    //                             description: 'next=source.nextConnection→target.previousConnection，statement=source.getInput(inputName).connection→target.previousConnection，input=source.getInput(inputName).connection→target.outputConnection' 
+    //                         }
+    //                     },
+    //                     required: ['source', 'target', 'connectionType']
+    //                 },
+    //                 description: '块之间的连接规则（统一定义所有连接，包括新块之间和新块与已有块之间）'
+    //             },
+    //             position: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     x: { type: 'number', description: 'X坐标' },
+    //                     y: { type: 'number', description: 'Y坐标' }
+    //                 },
+    //                 description: '结构在工作区中的坐标位置'
+    //             }
+    //         },
+    //         required: ['structure']
+    //     }
+    // },
+    // {
+    //     name: "configure_block_tool",
+    //     description: `用途：修改已存在 Blockly 块的字段值与动态结构（extraState），用于调整块的显示/配置但不创建或删除块。
+    // 
+    // 主要能力：
+    // - 更新字段（field_dropdown、field_input、field_number、field_checkbox、text 等）。
+    // - 修改动态结构（如 controls_if 的 else/elseif 分支、text_join 或 lists_create_with 的项目数）。
+    // - 支持通过 blockId 精准定位或通过 blockType 查找第一个匹配块。
+    // 
+    // 前提条件：
+    // - 目标块必须已存在于工作区。
+    // - 必须提供有效的 blockId 或 blockType。
+    // - 字段修改需提供非空的 fields 对象；结构修改需提供 extraState 对象。
+    // - 修改前请确保理解目标块的字段名与 extraState 结构，错误参数可能导致操作失败。
+    // 
+    // **extraState 使用示例：**
+    // 为 controls_if 块添加 1 个 else if 和 1 个 else 分支：
+    // \`\`\`json
+    // {
+    //   "blockId": "if_block_id",
+    //   "extraState": {
+    //     "elseIfCount": 1,
+    //     "hasElse": true
+    //   }
+    // }
+    // \`\`\`
+    // 
+    // 修改IO下拉菜单字段：
+    // \`\`\`json
+    // {
+    //   "blockId": "pin_block_id",
+    //   "blockType": "io_pin_digi",
+    //   "fields": {"PIN": "2"}
+    // }
+    // 
+    // **必须提供完整的参数结构，空参数会导致工具执行失败。**`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockId: {
+    //                 type: 'string',
+    //                 description: '要配置的块ID（blockId 和 blockType 至少提供一个）'
+    //             },
+    //             blockType: {
+    //                 type: 'string',
+    //                 description: '块类型，当未提供 blockId 时使用（会找到第一个匹配类型的块）'
+    //             },
+    //             fields: {
+    //                 type: 'object',
+    //                 description: '要更新的字段值对象。格式：{"字段名": "字段值"}。字段名需要参考对应库的文档。',
+    //                 additionalProperties: {
+    //                     oneOf: [
+    //                         { type: 'string' },
+    //                         { type: 'number' },
+    //                         { type: 'boolean' }
+    //                     ]
+    //                 }
+    //             },
+    //             extraState: {
+    //                 type: 'object',
+    //                 description: '动态块结构配置对象。用于修改支持动态输入的块结构，如 controls_if 的分支数量。',
+    //                 properties: {
+    //                     elseIfCount: {
+    //                         type: 'number',
+    //                         description: 'else if 分支数量（适用于 controls_if, controls_ifelse）',
+    //                         minimum: 0,
+    //                         maximum: 20
+    //                     },
+    //                     hasElse: {
+    //                         type: 'boolean',
+    //                         description: '是否包含 else 分支（适用于 controls_if）'
+    //                     },
+    //                     itemCount: {
+    //                         type: 'number',
+    //                         description: '项目数量（适用于 text_join, lists_create_with 等）',
+    //                         minimum: 1,
+    //                         maximum: 50
+    //                     }
+    //                 },
+    //                 additionalProperties: true
+    //             }
+    //         },
+    //         anyOf: [
+    //             { 
+    //                 allOf: [
+    //                     { anyOf: [{ required: ['blockId'] }, { required: ['blockType'] }] },
+    //                     { anyOf: [{ required: ['fields'] }, { required: ['extraState'] }] }
+    //                 ]
+    //             }
+    //         ]
+    //     }
+    // },
+    // {
+    //     name: "delete_block_tool",
+    //     description: `块删除工具，支持删除单个或多个块。
+    // **注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
+    // **注意**：优先使用块创建工具及连接工具修复代码结构。
+    // 
+    // **功能特点**：
+    // - 支持单个块ID或多个块ID数组输入
+    // - 智能删除：只删除指定块，保留连接的块并自动重连
+    // - 删除后自动重连前后块（如果可能）
+    // 
+    // **示例**：
+    // \`\`\`json
+    // // 删除单个块
+    // {"blockIds": "block_id_123"}
+    // 
+    // // 删除多个块
+    // {"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
+    // \`\`\`
+    // 
+    // **注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockIds: {
+    //                 oneOf: [
+    //                     { type: 'string', description: '单个要删除的块ID' },
+    //                     { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
+    //                 ],
+    //                 description: '要删除的块ID，支持单个字符串或字符串数组'
+    //             }
+    //         },
+    //         required: ['blockIds']
+    //     }
+    // },
+    // =============================================================================
+    // ABS 工具（Aily Block Syntax - 主要块操作方式）
     // =============================================================================
     {
-        name: "smart_block_tool",
-        description: `智能块创建Blockly工作区中的块，一次只能创建一个块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme。注意：当需要创建3个以上的块或嵌套超过2层时，推荐使用create_code_structure_tool创建。</system-reminder>
-基本语法:
-\`\`\`json
-{
-  "type": "块类型",
-  "position": {"x": 数字, "y": 数字}, // 可选
-  "fields": {"字段名": "字段值"},
-  "inputs": {"输入名": "块ID或配置"}, // 可选
-  "parentConnection": {
-    "blockId": "父块ID",
-    "connectionType": "next|input|statement",
-    "inputName": "输入名，如ARDUINO_SETUP"
-  } // 父块连接配置（可选）
-}
-\`\`\`
-示例:
-创建数字块
-\`\`\`json
-{
-  "type": "math_number",
-  "fields": {"NUM": "123"}
-}
-\`\`\`
-创建变量块
-\`\`\`json
-{
-  "type": "variable_define",
-  "fields": {
-    "VAR": "sensor_value",
-    "TYPE": "int"
-  },
-  "inputs": {
-    "VALUE": {"block": {"type": "math_number", "fields": {"NUM": "0"}}}
-  }
-}
-\`\`\`
-创建Arduino数字输出
-\`\`\`json
-{
-  "type": "io_digitalwrite",
-  "inputs": {
-    "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
-    "STATE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
-  }
-}
-\`\`\`
-创建串口打印
-\`\`\`json
-{
-  "type": "serial_println",
-  "fields": {"SERIAL": "Serial"},
-  "inputs": {
-    "VAR": {"block": {"type": "text", "fields": {"TEXT": "Hello"}}}
-  }
-}
-\`\`\`
-`,
+        name: "sync_abs_file",
+        description: `🔄 ABS 文件同步工具 - 在 Blockly 工作区和 ABS 文件之间同步。
+
+**项目中的 ABS 文件（Aily Block Syntax）：**
+每个项目目录下会有一个 \`project.abs\` 文件，以人类可读的 ABS 格式保存代码结构。
+
+**操作类型：**
+1. \`export\` - 将当前 Blockly 工作区导出为 ABS 文件
+2. \`import\` - 从 ABS 文件导入并替换当前工作区
+3. \`status\` - 获取 ABS 文件状态和内容预览
+
+**推荐工作流：**
+1. 首先使用 \`status\` 或 \`export\` 获取/生成 ABS 文件
+2. 使用 \`read_file\` 读取 \`project.abs\` 了解当前代码结构
+3. 使用 \`edit_file\` 修改 ABS 文件（像编辑普通代码一样！）
+4. 使用 \`import\` 将修改应用到 Blockly 工作区
+
+**这种方式的优势：**
+- 📖 直接看到完整的代码结构
+- ✏️ 用熟悉的文件编辑方式修改代码
+- 🔄 支持撤销和版本控制
+- 🎯 避免复杂的位置计算`,
         input_schema: {
             type: 'object',
             properties: {
-                type: {
+                operation: {
                     type: 'string',
-                    description: '块类型，如 logic_boolean、controls_if、math_number 等'
+                    enum: ['export', 'import', 'status'],
+                    description: '操作类型：export=导出到ABS文件，import=从ABS文件导入，status=查看状态'
                 },
-                position: {
-                    type: 'object',
-                    properties: {
-                        x: { type: 'number', description: 'X坐标' },
-                        y: { type: 'number', description: 'Y坐标' }
-                    },
-                    description: '块在工作区中的位置（可选）'
-                },
-                fields: {
-                    type: 'object',
-                    description: '块的字段配置，如布尔值、数字值、变量名等'
-                },
-                inputs: {
-                    type: 'object',
-                    description: '块的输入配置，连接其他块'
-                },
-                parentConnection: {
-                    type: 'object',
-                    properties: {
-                        blockId: { type: 'string', description: '父块ID' },
-                        connectionType: { type: 'string', description: '连接类型' },
-                        inputName: { type: 'string', description: '输入名称' }
-                    },
-                    description: '父块连接配置（可选）。不提供时创建独立块，适用于全局变量、函数定义等顶级代码块'
-                }
-            },
-            required: ['type']
-        }
-    },
-    {
-        name: "connect_blocks_tool",
-        description: `块连接工具，通过修改连接关系移动Blockly块，但不会新建块，支持四种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）、disconnect（断开连接变独立块）。
-
-⚠️ **重要**：连接语义说明
-- containerBlock: **容器块/父块** (提供连接点的块，如arduino_setup、if_else、repeat等)
-- contentBlock: **内容块/子块** (要被连接的块，如digital_write、delay等)
-- 例如：将digital_write放入arduino_setup中
-  - containerBlock: "arduino_setup_id0" (容器)  
-  - contentBlock: "digital_write_id1" (内容)
-  - connectionType: "statement"
-  - inputName: "input_statement"
-
-🔓 **断开连接（变独立块）**：
-- 使用 connectionType: "disconnect" 将块从父块断开，变成工作区中的独立块
-- moveChain: false（默认）- 只断开指定块，后续块保持在原位置
-- moveChain: true - 断开整个块链，包括后续所有块一起变成独立块
-
-常见错误：不要混淆容器和内容的关系！`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                containerBlock: {
-                    type: 'string',
-                    description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）。disconnect模式时可省略'
-                },
-                contentBlock: {
-                    type: 'string', 
-                    description: '📦 内容块ID（子块，要被放入容器的块，或要断开连接的块）'
-                },
-                connectionType: {
-                    type: 'string',
-                    enum: ['next', 'input', 'statement', 'disconnect'],
-                    description: '连接类型：statement=语句连接（推荐），input=输入连接，next=顺序连接，disconnect=断开连接变独立块'
-                },
-                inputName: {
-                    type: 'string',
-                    description: '输入端口名称（statement连接时指定容器的哪个端口，如"input_statement"、"DO"、"ELSE"等，不指定时自动检测）'
-                },
-                moveChain: {
+                includeHeader: {
                     type: 'boolean',
-                    description: '是否移动整个块链。false=只移动/断开单个块，后续块保持或重连；true（默认）=移动/断开整个块链',
+                    description: '导出时是否包含文件头注释（默认 true）',
                     default: true
                 }
             },
-            required: ['contentBlock', 'connectionType']
+            required: ['operation']
         }
     },
     {
-        name: "create_code_structure_tool", 
-        description: `动态结构创建工具，创建包含多个块的代码结构并连接到工作区。
+        name: "abs_version_control",
+        description: `🕐 ABS 版本控制工具 - 管理 Blockly 代码的版本历史。
 
-**注意事项**:
-- 使用工具前必须确保已读取使用的 block 所属库的 Readme
-- 建议分步生成代码：全局变量 → 初始化 → loop → 回调函数
-- 不要一次性生成超过 10 个 block 的代码块结构
+**操作类型：**
+1. \`list\` - 列出所有版本历史
+2. \`get\` - 获取指定版本的内容
+3. \`rollback\` - 回滚到指定版本
+4. \`save\` - 手动保存当前版本（带描述）
 
-**参数说明**:
-- \`structureDefinition\`: 定义要创建的块（rootBlock + additionalBlocks）
-- \`connectionRules\`: 定义所有块之间的连接（包括新创建的块之间，以及新块与工作区已有块之间）
-
-**示例: 在 Arduino Setup 中添加初始化代码**
-\`\`\`json
-{
-  "structure": "init-code",
-  "config": {
-    "structureDefinition": {
-      "rootBlock": {
-        "type": "control_if",
-        "id": "if_check",
-        "extraState": {"hasElse": true},
-        "inputs": {
-          "IF0": {"block": {"type": "logic_compare", "id": "logic_compare_id", "fields": {"OP": "GT"}, ...}},
-          "DO0": {"block": {"type": "io_digitalwrite", "id": "green_led_on", "inputs": {...}}},
-          "ELSE": {}
-        }
-      },
-      "additionalBlocks": [
-        {
-          "type": "io_digitalwrite",
-          "id": "red_led_on",
-          "inputs": {
-            "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
-            "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
-          }
-        },
-        {
-          "type": "io_digitalwrite",
-          "id": "red_led_off",
-          "inputs": {
-            "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
-            "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "LOW"}}}
-          }
-        }
-      ]
-    }
-  },
-  "connectionRules": [
-    {"source": "arduino_setup_id", "target": "if_check", "connectionType": "statement", "inputName": "ARDUINO_SETUP"},
-    {"source": "green_led_on", "target": "red_led_on", "connectionType": "next"},
-    {"source": "if_check", "target": "red_led_off", "connectionType": "statement", "inputName": "ELSE"}
-  ]
-}
-\`\`\`
-`,
+**使用场景：**
+- 修改代码前先保存版本，方便回滚
+- 查看历史版本对比差异
+- 恢复到之前的代码状态`,
         input_schema: {
             type: 'object',
             properties: {
-                structure: {
+                operation: {
                     type: 'string',
-                    description: '结构名称（用于日志和调试）'
+                    enum: ['list', 'get', 'rollback', 'save'],
+                    description: '操作类型：list=列出版本，get=获取内容，rollback=回滚，save=保存新版本'
                 },
-                config: {
-                    type: 'object',
-                    properties: {
-                        structureDefinition: {
-                            type: 'object',
-                            properties: {
-                                rootBlock: {
-                                    type: 'object',
-                                    description: '根块配置（必须包含 type 和 id）'
-                                },
-                                additionalBlocks: {
-                                    type: 'array',
-                                    items: { type: 'object' },
-                                    description: '附加块配置数组'
-                                }
-                            },
-                            required: ['rootBlock'],
-                            description: '动态结构定义（仅定义要创建的块）'
-                        }
-                    },
-                    required: ['structureDefinition'],
-                    description: '结构配置对象'
+                versionId: {
+                    type: 'string',
+                    description: '版本 ID（get 和 rollback 操作时必需）'
                 },
-                connectionRules: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            source: { type: 'string', description: '源块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
-                            target: { type: 'string', description: '目标块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
-                            inputName: { type: 'string', description: 'statement/input 连接时指定输入名称' },
-                            connectionType: { 
-                                type: 'string', 
-                                enum: ['next', 'input', 'statement'],
-                                description: 'next=source.nextConnection→target.previousConnection，statement=source.getInput(inputName).connection→target.previousConnection，input=source.getInput(inputName).connection→target.outputConnection' 
-                            }
-                        },
-                        required: ['source', 'target', 'connectionType']
-                    },
-                    description: '块之间的连接规则（统一定义所有连接，包括新块之间和新块与已有块之间）'
-                },
-                position: {
-                    type: 'object',
-                    properties: {
-                        x: { type: 'number', description: 'X坐标' },
-                        y: { type: 'number', description: 'Y坐标' }
-                    },
-                    description: '结构在工作区中的坐标位置'
+                description: {
+                    type: 'string',
+                    description: '版本描述（save 操作时使用）'
                 }
             },
-            required: ['structure']
-        }
-    },
-    {
-        name: "configure_block_tool",
-        description: `用途：修改已存在 Blockly 块的字段值与动态结构（extraState），用于调整块的显示/配置但不创建或删除块。
-
-主要能力：
-- 更新字段（field_dropdown、field_input、field_number、field_checkbox、text 等）。
-- 修改动态结构（如 controls_if 的 else/elseif 分支、text_join 或 lists_create_with 的项目数）。
-- 支持通过 blockId 精准定位或通过 blockType 查找第一个匹配块。
-
-前提条件：
-- 目标块必须已存在于工作区。
-- 必须提供有效的 blockId 或 blockType。
-- 字段修改需提供非空的 fields 对象；结构修改需提供 extraState 对象。
-- 修改前请确保理解目标块的字段名与 extraState 结构，错误参数可能导致操作失败。
-
-**extraState 使用示例：**
-为 controls_if 块添加 1 个 else if 和 1 个 else 分支：
-\`\`\`json
-{
-  "blockId": "if_block_id",
-  "extraState": {
-    "elseIfCount": 1,
-    "hasElse": true
-  }
-}
-\`\`\`
-
-修改IO下拉菜单字段：
-\`\`\`json
-{
-  "blockId": "pin_block_id",
-  "blockType": "io_pin_digi",
-  "fields": {"PIN": "2"}
-}
-
-**必须提供完整的参数结构，空参数会导致工具执行失败。**`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                blockId: {
-                    type: 'string',
-                    description: '要配置的块ID（blockId 和 blockType 至少提供一个）'
-                },
-                blockType: {
-                    type: 'string',
-                    description: '块类型，当未提供 blockId 时使用（会找到第一个匹配类型的块）'
-                },
-                fields: {
-                    type: 'object',
-                    description: '要更新的字段值对象。格式：{"字段名": "字段值"}。字段名需要参考对应库的文档。',
-                    additionalProperties: {
-                        oneOf: [
-                            { type: 'string' },
-                            { type: 'number' },
-                            { type: 'boolean' }
-                        ]
-                    }
-                },
-                extraState: {
-                    type: 'object',
-                    description: '动态块结构配置对象。用于修改支持动态输入的块结构，如 controls_if 的分支数量。',
-                    properties: {
-                        elseIfCount: {
-                            type: 'number',
-                            description: 'else if 分支数量（适用于 controls_if, controls_ifelse）',
-                            minimum: 0,
-                            maximum: 20
-                        },
-                        hasElse: {
-                            type: 'boolean',
-                            description: '是否包含 else 分支（适用于 controls_if）'
-                        },
-                        itemCount: {
-                            type: 'number',
-                            description: '项目数量（适用于 text_join, lists_create_with 等）',
-                            minimum: 1,
-                            maximum: 50
-                        }
-                    },
-                    additionalProperties: true
-                }
-            },
-            anyOf: [
-                { 
-                    allOf: [
-                        { anyOf: [{ required: ['blockId'] }, { required: ['blockType'] }] },
-                        { anyOf: [{ required: ['fields'] }, { required: ['extraState'] }] }
-                    ]
-                }
-            ]
+            required: ['operation']
         }
     },
     // {
@@ -1656,41 +1811,42 @@ Query and return specific content (for detailed info)
     //         required: ['criteria']
     //     }
     // },
-    {
-        name: "delete_block_tool",
-        description: `块删除工具，支持删除单个或多个块。
-**注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
-**注意**：优先使用块创建工具及连接工具修复代码结构。
-
-**功能特点**：
-- 支持单个块ID或多个块ID数组输入
-- 智能删除：只删除指定块，保留连接的块并自动重连
-- 删除后自动重连前后块（如果可能）
-
-**示例**：
-\`\`\`json
-// 删除单个块
-{"blockIds": "block_id_123"}
-
-// 删除多个块
-{"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
-\`\`\`
-
-**注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                blockIds: {
-                    oneOf: [
-                        { type: 'string', description: '单个要删除的块ID' },
-                        { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
-                    ],
-                    description: '要删除的块ID，支持单个字符串或字符串数组'
-                }
-            },
-            required: ['blockIds']
-        }
-    },
+    // 🔇 delete_block_tool 已被 DSL 工具替代（删除 DSL 中的行即可）
+    // {
+    //     name: "delete_block_tool",
+    //     description: `块删除工具，支持删除单个或多个块。
+    // **注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
+    // **注意**：优先使用块创建工具及连接工具修复代码结构。
+    // 
+    // **功能特点**：
+    // - 支持单个块ID或多个块ID数组输入
+    // - 智能删除：只删除指定块，保留连接的块并自动重连
+    // - 删除后自动重连前后块（如果可能）
+    // 
+    // **示例**：
+    // \`\`\`json
+    // // 删除单个块
+    // {"blockIds": "block_id_123"}
+    // 
+    // // 删除多个块
+    // {"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
+    // \`\`\`
+    // 
+    // **注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockIds: {
+    //                 oneOf: [
+    //                     { type: 'string', description: '单个要删除的块ID' },
+    //                     { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
+    //                 ],
+    //                 description: '要删除的块ID，支持单个字符串或字符串数组'
+    //             }
+    //         },
+    //         required: ['blockIds']
+    //     }
+    // },
     {
         name: "get_workspace_overview_tool",
         description: `工作区全览分析工具。提供工作区的完整分析，包括结构分析、代码生成、复杂度评估、连接关系和树状结构展示。支持多种输出格式：JSON、Markdown、详细报告和控制台输出。`,
@@ -1836,150 +1992,47 @@ Query and return specific content (for detailed info)
 //     },
     {
         name: "todo_write_tool",
-        description: `Creates and manages todo items for task tracking and progress management in the current session.
-Use this tool to create and manage todo items for tracking tasks and progress. This tool provides comprehensive todo management:
+        description: `Manage a structured todo list to track progress and plan tasks throughout your coding session. Use this tool frequently to ensure task visibility and proper planning.
 
-## When to Use This Tool
+When to use:
+- Complex multi-step work requiring planning and tracking
+- When user provides multiple tasks or requests
+- BEFORE starting work on any todo (mark as in-progress)
+- IMMEDIATELY after completing each todo (mark completed individually)
 
-Use this tool proactively in these scenarios:
+When NOT to use:
+- Single, trivial tasks completed in one step
+- Purely conversational/informational requests
 
-1. **Complex multi-step tasks** - When a task requires 3 or more distinct steps or actions
-2. **Non-trivial and complex tasks** - Tasks that require careful planning or multiple operations
-3. **User explicitly requests todo list** - When the user directly asks you to use the todo list
-4. **User provides multiple tasks** - When users provide a list of things to be done (numbered or comma-separated)
-5. **After receiving new instructions** - Immediately capture user requirements as todos
-6. **When you start working on a task** - Mark it as in_progress BEFORE beginning work. Ideally you should only have one todo as in_progress at a time
-7. **After completing a task** - Mark it as completed and add any new follow-up tasks discovered during implementation
+Task states:
+- not-started: Todo not yet begun
+- in-progress: Currently working (limit ONE at a time)
+- completed: Finished successfully
 
-## When NOT to Use This Tool
+CRITICAL workflow:
+1. Plan tasks by adding todos with specific, actionable items
+2. Mark ONE todo as in-progress before starting work
+3. Complete the work for that specific todo
+4. Mark that todo as completed IMMEDIATELY
+5. Move to next todo and repeat
 
-Skip using this tool when:
-1. There is only a single, straightforward task
-2. The task is trivial and tracking it provides no organizational benefit
-3. The task can be completed in less than 3 trivial steps
-4. The task is purely conversational or informational
+Operations:
+- **update**: 全量替换todo列表（推荐，传入完整的todos数组）
+- **add**: 添加单个任务（需要content字段）
+- **batch_add**: 批量添加任务（需要todos数组）
+- **list/read**: 查看当前任务列表
+- **toggle**: 切换任务状态循环 not-started → in-progress → completed
+- **delete**: 删除指定任务
+- **clear**: 清空所有任务
+- **stats**: 查看统计信息
 
-## Task States and Management
-
-1. **Task States**: Use these states to track progress:
-   - pending: Task not yet started
-   - in_progress: Currently working on (limit to ONE task at a time)
-   - completed: Task finished successfully
-
-2. **Task Management**:
-   - Update task status in real-time as you work
-   - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
-   - Only have ONE task in_progress at any time
-   - Complete current tasks before starting new ones
-   - Remove tasks that are no longer relevant from the list entirely
-
-3. **Task Completion Requirements**:
-   - ONLY mark a task as completed when you have FULLY accomplished it
-   - If you encounter errors, blockers, or cannot finish, keep the task as in_progress
-   - When blocked, create a new task describing what needs to be resolved
-   - Never mark a task as completed if:
-     - Tests are failing
-     - Implementation is partial
-     - You encountered unresolved errors
-     - You couldn't find necessary files or dependencies
-
-4. **Task Breakdown**:
-   - Create specific, actionable items
-   - Break complex tasks into smaller, manageable steps
-   - Use clear, descriptive task names
-
-## Tool Capabilities
-
-- **Create new todos**: Add tasks with content, priority, and status
-- **Update existing todos**: Modify any aspect of a todo (status, priority, content)
-- **Delete todos**: Remove completed or irrelevant tasks
-- **Batch operations**: Update multiple todos in a single operation
-- **Clear all todos**: Reset the entire todo list
-
-When in doubt, use this tool. Being proactive with task management demonstrates attentiveness and ensures you complete all requirements successfully.
-
-请求参数
-## 必填字段
-- \`operation\`: 操作类型 (add|list|update|toggle|delete|query|stats|clear|optimize)
-
-## 操作特定必填字段
-- **add**: \`content\` - 任务内容
-- **update**: \`todos\` - 任务数组
-- **toggle/delete**: \`id\` - 任务ID
-- **query**: \`query\` - 查询条件对象
-
-## 可选字段
-- \`priority\`: 优先级 (high|medium|low)，默认 'medium'
-- \`tags\`: 标签数组
-
-示例:
-## 添加单个任务 (add)
-\`\`\`json
-{
-  "operation": "add",
-  "content": "完成项目文档",
-  "priority": "high",
-  "status": "pending",
-}
-\`\`\`
-
-## 批量添加任务 (batch_add)
-\`\`\`json
-{
-  "operation": "batch_add",
-  "todos": [
-    {
-      "content": "任务1内容",
-      "priority": "medium",
-      "status": "pending"
-    },
-    {
-      "content": "任务2内容",
-      "priority": "low",
-      "status": "in_progress"
-    }
-  ]
-}
-\`\`\`
-
-## 批量更新任务 (update)
-\`\`\`json
-{
-  "operation": "update",
-  "todos": [
-    {
-      "id": "任务ID",
-      "content": "更新后的任务内容",
-      "status": "in_progress",
-      "priority": "high",
-      "tags": ["标签1", "标签2"]
-    }
-  ]
-}
-\`\`\`
-
-## 查看任务列表 (list)
-\`\`\`json
-{
-  "operation": "list"
-}
-\`\`\`
-
-## 切换任务状态 (toggle)
-\`\`\`json
-{
-  "operation": "toggle",
-  "id": "任务ID"
-}
-\`\`\`
-状态循环：\`pending\` → \`in_progress\` → \`completed\`
-`,
+IMPORTANT: 任务ID为简单的递增数字（1, 2, 3...），请使用正确的数字ID。Mark todos completed as soon as they are done. Do not batch completions.`,
         input_schema: {
             type: 'object',
             properties: {
                 operation: {
                     type: 'string',
-                    enum: ['add', 'batch_add', 'list', 'update', 'toggle', 'delete', 'query', 'stats', 'clear', 'optimize'],
+                    enum: ['add', 'batch_add', 'list', 'read', 'update', 'toggle', 'delete', 'stats', 'clear'],
                     description: '操作类型'
                 },
                 sessionId: {
@@ -1989,7 +2042,7 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
                 },
                 content: {
                     type: 'string',
-                    description: '任务内容（add操作必需）'
+                    description: '任务内容（add操作必需，也接受title字段）'
                 },
                 priority: {
                     type: 'string',
@@ -1999,9 +2052,9 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
                 },
                 status: {
                     type: 'string',
-                    enum: ['pending', 'in_progress', 'completed'],
-                    description: '任务状态，默认为pending',
-                    default: 'pending'
+                    enum: ['not-started', 'in-progress', 'completed'],
+                    description: '任务状态，默认为not-started',
+                    default: 'not-started'
                 },
                 tags: {
                     type: 'array',
@@ -2013,26 +2066,26 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
                     description: '预估工时'
                 },
                 id: {
-                    type: 'string',
-                    description: '任务ID（toggle/delete操作必需）'
+                    type: 'number',
+                    description: '任务ID - 简单递增数字（toggle/delete操作必需）'
                 },
                 todos: {
                     type: 'array',
-                    description: '任务数组（update/batch_add操作使用）',
+                    description: '任务数组（update时为全量替换，batch_add时为新增列表）',
                     items: {
                         type: 'object',
                         properties: {
                             id: {
-                                type: 'string',
-                                description: '任务唯一标识符'
+                                type: 'number',
+                                description: '任务ID（递增数字，如 1, 2, 3）'
                             },
                             content: {
                                 type: 'string',
-                                description: '任务内容描述'
+                                description: '任务内容描述（也接受title字段）'
                             },
                             status: {
                                 type: 'string',
-                                enum: ['pending', 'in_progress', 'completed'],
+                                enum: ['not-started', 'in-progress', 'completed'],
                                 description: '任务状态'
                             },
                             priority: {
@@ -2052,37 +2105,6 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
                         },
                         required: ['content']
                     }
-                },
-                query: {
-                    type: 'object',
-                    description: '查询条件（query操作使用）',
-                    properties: {
-                        status: {
-                            type: 'array',
-                            items: {
-                                type: 'string',
-                                enum: ['pending', 'in_progress', 'completed']
-                            },
-                            description: '状态筛选'
-                        },
-                        priority: {
-                            type: 'array',
-                            items: {
-                                type: 'string',
-                                enum: ['high', 'medium', 'low']
-                            },
-                            description: '优先级筛选'
-                        },
-                        contentMatch: {
-                            type: 'string',
-                            description: '内容关键词搜索'
-                        },
-                        tags: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '标签筛选'
-                        }
-                    }
                 }
             },
             required: ['operation']
@@ -2090,7 +2112,7 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
     },
     {
         name: 'analyze_library_blocks',
-        description: `分析指定库的块定义，生成类似 readme.md 格式的块定义文档。优先使用read_file工具读取库readme，当库对应的 readme 不存在或描述不准确时，使用此工具补充和完善库的文档说明。`,
+        description: `分析指定库的块定义，生成 ABS (Aily Block Syntax) 格式的块定义文档。优先使用read_file工具读取库readme，当库对应的 readme 不存在或描述不准确时，使用此工具补充和完善库的文档说明。`,
         input_schema: {
             type: 'object',
             properties: {
@@ -2104,30 +2126,39 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
         }
     },
     {
-        name: 'verify_block_existence',
-        description: `验证指定块是否存在于指定库中。快速检查块的可用性，避免使用不存在的块类型。`,
+        name: 'get_abs_syntax',
+        description: `Get the ABS (Aily Block Syntax) syntax specification. Returns a concise but complete reference for writing ABS code. Use this tool when you need to understand ABS syntax rules, block connection types, parameter mapping, or control flow structures before generating ABS code.`,
         input_schema: {
             type: 'object',
-            properties: {
-                blockTypes: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: '要验证的块类型列表，如 ["blinker_run", "sensor_read_temperature"]'
-                },
-                libraryNames: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: '要搜索的库名称列表，如 ["@aily-project/lib-blinker"]'
-                },
-                includeAlternatives: {
-                    type: 'boolean',
-                    default: true,
-                    description: '如果块不存在，是否建议替代方案'
-                }
-            },
-            required: ['blockTypes', 'libraryNames']
+            properties: {},
+            required: []
         }
     }
+    // {
+    //     name: 'verify_block_existence',
+    //     description: `验证指定块是否存在于指定库中。快速检查块的可用性，避免使用不存在的块类型。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockTypes: {
+    //                 type: 'array',
+    //                 items: { type: 'string' },
+    //                 description: '要验证的块类型列表，如 ["blinker_run", "sensor_read_temperature"]'
+    //             },
+    //             libraryNames: {
+    //                 type: 'array',
+    //                 items: { type: 'string' },
+    //                 description: '要搜索的库名称列表，如 ["@aily-project/lib-blinker"]'
+    //             },
+    //             includeAlternatives: {
+    //                 type: 'boolean',
+    //                 default: true,
+    //                 description: '如果块不存在，是否建议替代方案'
+    //             }
+    //         },
+    //         required: ['blockTypes', 'libraryNames']
+    //     }
+    // }
     // =============================================================================
     // 扁平化块创建工具（推荐）
     // =============================================================================

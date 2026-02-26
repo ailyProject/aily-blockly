@@ -120,9 +120,7 @@ export class BlocklyEditorComponent {
     // 暴露 ProjectService 到全局，供 generator.js 使用
     window['projectService'] = this.projectService;
 
-    // 检查是否有node_modules目录，没有则安装依赖，有则跳过
-    const nodeModulesExist = this.electronService.exists(projectPath + '/node_modules');
-    if (!nodeModulesExist) {
+    if (!(await this.npmService.installedOk(projectPath))) {
       // 终端进入项目目录，安装项目依赖
       // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
       setTimeout(() => {
@@ -134,15 +132,25 @@ export class BlocklyEditorComponent {
         });
       }, 0);
       await this.cmdService.runAsync(`npm install`, projectPath);
+      if (!(await this.npmService.installedOk(projectPath))) {
+        setTimeout(() => {
+          this.noticeService.update({
+            title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+            text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+            state: 'error'
+          });
+        }, 1000);
+        return;
+      }
       setTimeout(() => {
         this.noticeService.update({
-          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'), 
-          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'), 
+          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
           state: 'done',
           showProgress: false,
           setTimeout: 3000
         });
-      }, 1000);
+      }, 100);
     }
     // 3. 加载开发板module中的board.json
     this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG') });
@@ -185,11 +193,13 @@ export class BlocklyEditorComponent {
       });
   }
 
-  openProjectManager() {
+  openProjectManager(event?: MouseEvent) {
     if (this.blocklyService.checkAiWaiting()) {
       return;
     }
-    this.uiService.closeToolAll();
+    // hideChaff 会关闭所有打开的下拉、输入、WidgetDiv 和 DropDownDiv
+    this.blocklyService.workspace.hideChaff();
+    // this.uiService.closeToolAll();
     this.showLibraryManager = !this.showLibraryManager;
     this.cd.detectChanges();
   }
@@ -204,7 +214,7 @@ export class BlocklyEditorComponent {
           onClosed: () => this.onOnboardingClosed(),
           onCompleted: () => this.onOnboardingClosed()
         });
-      }, 800);
+      }, 500);
     }
   }
 

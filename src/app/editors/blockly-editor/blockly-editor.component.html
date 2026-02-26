@@ -1,7 +1,7 @@
 @if(devmode){
 <blockly-main [devmode]="devmode"></blockly-main>
-<div class="project-mangager-btn ccenter">
-  <div class="mangager ccenter" (click)="openProjectManager()">{{'LIB_MANAGER.TITLE'| translate}}</div>
+<div class="lib-mangager-btn ccenter" (click)="openProjectManager()">
+  {{'LIB_MANAGER.TITLE'| translate}}
 </div>
 }
 @if(developerMode){

@@ -112,14 +112,33 @@ export class AilyChatSettingsComponent implements OnInit {
     const savedEnabledTools = this.ailyChatConfigService.enabledTools;
     const hasStoredConfig = savedEnabledTools && savedEnabledTools.length > 0;
     
+    // 获取之前保存的已禁用工具列表（用于区分新工具和被禁用的工具）
+    const savedDisabledTools = this.ailyChatConfigService.disabledTools || [];
+    
     // 从 TOOLS 常量中读取所有工具
-    this.availableTools = TOOLS.map(tool => ({
-      name: tool.name,
-      displayName: this.formatToolName(tool.name),
-      description: typeof tool.description === 'string' ? tool.description : '',
-      // 如果有存储的配置，则根据配置设置启用状态；否则默认全部启用
-      enabled: hasStoredConfig ? savedEnabledTools.includes(tool.name) : true
-    }));
+    this.availableTools = TOOLS.map(tool => {
+      let enabled: boolean;
+      if (!hasStoredConfig) {
+        // 没有配置时，默认全部启用
+        enabled = true;
+      } else if (savedEnabledTools.includes(tool.name)) {
+        // 明确启用的工具
+        enabled = true;
+      } else if (savedDisabledTools.includes(tool.name)) {
+        // 明确禁用的工具
+        enabled = false;
+      } else {
+        // 新工具（不在启用列表也不在禁用列表），默认启用
+        enabled = true;
+      }
+      
+      return {
+        name: tool.name,
+        displayName: this.formatToolName(tool.name),
+        description: typeof tool.description === 'string' ? tool.description : '',
+        enabled
+      };
+    });
     this.updateAllChecked();
   }
 
@@ -187,7 +206,7 @@ export class AilyChatSettingsComponent implements OnInit {
    * 加载模型列表
    */
   private loadModelList() {
-    this.modelList = [...this.ailyChatConfigService.models];
+    this.modelList = [...this.ailyChatConfigService.models].reverse();
     this.updateModelsAllChecked();
   }
 
@@ -291,6 +310,7 @@ export class AilyChatSettingsComponent implements OnInit {
 
       this.resetNewModelForm();
       this.showAddModelForm = false;
+      this.saveModels();
       this.message.success('模型已更新');
       return;
     }
@@ -312,10 +332,11 @@ export class AilyChatSettingsComponent implements OnInit {
       apiKey: this.newModel.apiKey
     };
 
-    this.modelList.push(newModelConfig);
+    this.modelList.unshift(newModelConfig);
     this.updateModelsAllChecked();
     this.resetNewModelForm();
     this.showAddModelForm = false;
+    this.saveModels();
     this.message.success('模型已添加');
   }
 
@@ -332,8 +353,17 @@ export class AilyChatSettingsComponent implements OnInit {
     if (index !== -1) {
       this.modelList.splice(index, 1);
       this.updateModelsAllChecked();
+      this.saveModels();
       this.message.success('模型已删除');
     }
+  }
+
+  /**
+   * 立即持久化模型配置
+   */
+  private saveModels(): void {
+    this.ailyChatConfigService.models = this.modelList;
+    this.ailyChatConfigService.save();
   }
 
   onClose() {
@@ -347,6 +377,10 @@ export class AilyChatSettingsComponent implements OnInit {
     // 保存启用的工具列表
     const enabledTools = this.availableTools.filter(t => t.enabled).map(t => t.name);
     this.ailyChatConfigService.enabledTools = enabledTools;
+    
+    // 保存禁用的工具列表（用于区分新工具和被用户禁用的工具）
+    const disabledTools = this.availableTools.filter(t => !t.enabled).map(t => t.name);
+    this.ailyChatConfigService.disabledTools = disabledTools;
 
     // 保存安全工作区配置
     this.ailyChatConfigService.updateFromWorkspaceOptions(this.workspaceOptions);

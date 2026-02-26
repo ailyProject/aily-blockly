@@ -1,0 +1,9 @@
+@if (visible) {
+<div class="image-viewer-overlay" [class.dragging]="isDragging" (click)="onBackdropClick($event)"
+  (wheel)="onWheel($event)" (mousedown)="onMouseDown($event)">
+  <div class="image-viewer-content" [style.transform]="getTransform()" [style.transform-origin]="'0 0'">
+    <img [src]="img" alt="Image Viewer" class="viewer-image" draggable="false" (load)="onImageLoad($event)"
+      (click)="onImageClick($event)">
+  </div>
+</div>
+}

@@ -1367,6 +1367,34 @@ function autoGenerateExtraState(
     }
   }
   
+  // dynamic-inputs 插件的块（INPUT0, INPUT1...）extraState 自动生成
+  // 通用检测：如果有 INPUT\d+ 模式的输入，推断 extraCount
+  const inputInputs = inputKeys.filter(k => /^INPUT\d+$/.test(k));
+  if (inputInputs.length > 0) {
+    let maxInputNum = -1;
+    for (const key of inputInputs) {
+      const match = key.match(/^INPUT(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxInputNum) {
+          maxInputNum = num;
+        }
+      }
+    }
+    
+    if (maxInputNum >= 0) {
+      // extraCount = 总输入数 - 1（因为 INPUT0 是默认的）
+      const extraCount = maxInputNum; // maxInputNum 就是额外的输入数量
+      const existingExtraState = fixedBlock.extraState || {};
+      
+      if (extraCount > 0 && (existingExtraState.extraCount === undefined || existingExtraState.extraCount < extraCount)) {
+        fixedBlock.extraState = { ...existingExtraState, extraCount };
+        wasFixed = true;
+        fixInfo.push(`🔧 修复: 检测到 ${inputInputs.length} 个动态输入，自动添加 extraState.extraCount = ${extraCount}`);
+      }
+    }
+  }
+  
   return { fixed: fixedBlock, wasFixed, fixInfo };
 }
 
@@ -1492,7 +1520,7 @@ function tryFixBareInputsFormat(
   }
   
   // 🔑 关键判断：只有当 keys 匹配**动态输入名模式**时才需要包装
-  // 动态输入名模式：IF0, DO0, ELSE, ADD0, ITEM0, CASE0 等（通常由动态块使用）
+  // 动态输入名模式：IF0, DO0, ELSE, ADD0, ITEM0, CASE0, INPUT0 等（通常由动态块使用）
   // 普通输入名：PIN, STATE, VALUE, A, B, BOOL 等（不需要包装）
   const dynamicInputNamePatterns = [
     /^IF\d+$/,           // IF0, IF1... (controls_if)
@@ -1504,6 +1532,8 @@ function tryFixBareInputsFormat(
     /^CASE\d+$/,         // CASE0, CASE1... (switch)
     /^DEFAULT$/,         // DEFAULT (switch)
     /^SUBSTACK\d*$/,     // SUBSTACK, SUBSTACK2
+    /^INPUT\d+$/,        // INPUT0, INPUT1... (dynamic-inputs plugin)
+    /^ARG\d+$/,          // ARG0, ARG1... (procedures)
   ];
   
   // 检查是否有任何 key 匹配动态输入名模式

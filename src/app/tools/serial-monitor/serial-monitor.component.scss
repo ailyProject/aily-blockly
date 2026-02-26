@@ -162,6 +162,18 @@
       height: calc(100% - 28px);
       overflow-y: auto;
       position: relative;
+
+      .data-list-inner {
+        position: relative;
+        width: 100%;
+      }
+
+      .virtual-item {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+      }
     }
   }
 

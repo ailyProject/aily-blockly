@@ -1,9 +1,23 @@
+:host {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+
 .brand-selector {
   display: flex;
   flex-direction: column;
   gap: 10px;
   margin-bottom: 15px;
   padding-bottom: 15px;
+  height: 100%;
+  position: relative;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    width: 0;
+  }
 
   .brand-item {
     cursor: pointer;
@@ -13,6 +27,7 @@
     height: 50px;
     font-size: 20px;
     transition: all 0.2s;
+    flex-shrink: 0;
 
     img {
       max-width: 140px;

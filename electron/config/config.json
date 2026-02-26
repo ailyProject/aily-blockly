@@ -14,6 +14,7 @@
       "name": "China",
       "enabled": true,
       "api_server": "https://aapi.diandeng.tech",
+      "tool_web": "https://tool.aily.pro",
       "npm_registry": "https://registry.diandeng.tech",
       "resource": "https://blockly.diandeng.tech",
       "updater": "https://dl.diandeng.tech/blockly"
@@ -22,6 +23,7 @@
       "name": "Europe",
       "enabled": true,
       "api_server": "https://api.aily.pro",
+      "tool_web": "https://tool.aily.pro",
       "npm_registry": "https://registry.aily.pro",
       "resource": "https://rs1.aily.pro",
       "updater": "https://dl.aily.pro/blockly"
@@ -30,6 +32,7 @@
       "name": "Local",
       "enabled": true,
       "api_server": "https://aapi.diandeng.tech",
+      "tool_web": "https://tool.aily.pro",
       "npm_registry": "http://localhost:4873",
       "resource": "http://localhost:4874",
       "updater": ""

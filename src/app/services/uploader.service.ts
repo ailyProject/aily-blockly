@@ -15,22 +15,19 @@ export class UploaderService {
   ) { }
 
   async upload() {
-    const isSerialMonitorOpen = this.uiService.isToolOpen('serial-monitor');
     try {
-      if (isSerialMonitorOpen) {
-        this.uiService.closeTool('serial-monitor');
-      }
+      this.uiService.sendToolSignal('serial-monitor:disconnect');
       const result = await this.actionService.dispatchWithFeedback('upload-begin', {}, 300000).toPromise();
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('上传', result.data?.result?.text || '');
       }
-      if (isSerialMonitorOpen) this.uiService.openTool('serial-monitor');
+      this.uiService.sendToolSignal('serial-monitor:connect');
       return result.data?.result;
     } catch (error) {
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('上传', '上传失败');
       }
-      if (isSerialMonitorOpen) this.uiService.openTool('serial-monitor');
+      this.uiService.sendToolSignal('serial-monitor:connect');
       throw error;
     }
   }
@@ -53,11 +50,8 @@ export class UploaderService {
    * @returns Promise 表示烧录结果
    */
   async flashSoftdevice(softdeviceName: string, serialPort: string): Promise<{ success: boolean; message: string }> {
-    const isSerialMonitorOpen = this.uiService.isToolOpen('serial-monitor');
     try {
-      if (isSerialMonitorOpen) {
-        this.uiService.closeTool('serial-monitor');
-      }
+      this.uiService.sendToolSignal('serial-monitor:disconnect');
       const result = await this.actionService.dispatchWithFeedback('flash-softdevice', {
         softdeviceName,
         serialPort
@@ -67,13 +61,13 @@ export class UploaderService {
         const message = result.data?.result?.success ? 'SoftDevice 烧录成功' : 'SoftDevice 烧录失败';
         this.electronService.notify('烧录', message);
       }
-      if (isSerialMonitorOpen) this.uiService.openTool('serial-monitor');
+      this.uiService.sendToolSignal('serial-monitor:connect');
       return result.data?.result || { success: false, message: '烧录失败' };
     } catch (error: any) {
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('烧录', 'SoftDevice 烧录失败');
       }
-      if (isSerialMonitorOpen) this.uiService.openTool('serial-monitor');
+      this.uiService.sendToolSignal('serial-monitor:connect');
       return { success: false, message: error.message || '烧录失败' };
     }
   }

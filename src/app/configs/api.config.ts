@@ -2,12 +2,19 @@
 // 这些变量可以通过 setServerUrl/setRegistryUrl 在运行时更新
 let _cachedServerUrl: string | null = null;
 let _cachedRegistryUrl: string | null = null;
+let _cachedToolWebUrl: string | null = null;
 
 // 从 process.env 读取初始值（如果可用）
 function getInitialServerUrl(): string {
   return (typeof process !== 'undefined' && window['env'].get("AILY_API_SERVER")) 
     ? window['env'].get("AILY_API_SERVER")
     : 'https://api.aily.pro';
+}
+
+function getInitialToolWebUrl(): string {
+  return (typeof process !== 'undefined' && window['env'].get("AILY_TOOL_WEB"))
+    ? window['env'].get("AILY_TOOL_WEB")
+    : 'https://tool.aily.pro';
 }
 
 function getInitialRegistryUrl(): string {
@@ -31,6 +38,13 @@ function getRegistryUrl(): string {
   return getInitialRegistryUrl();
 }
 
+export function getToolWebUrl(): string {
+  if (_cachedToolWebUrl !== null) {
+    return _cachedToolWebUrl;
+  }
+  return getInitialToolWebUrl();
+}
+
 /**
  * 更新 API 服务器地址（在设置页面更改后调用）
  * @param url 新的服务器地址
@@ -47,6 +61,10 @@ export function setRegistryUrl(url: string): void {
   _cachedRegistryUrl = url;
 }
 
+export function setToolWebUrl(url: string): void {
+  _cachedToolWebUrl = url;
+}
+
 // 使用 getter 动态获取 API 地址，确保每次访问都读取最新的环境变量
 export const API = {
   get projectList() { return `${getRegistryUrl()}/-/verdaccio/data/packages`; },
@@ -55,6 +73,8 @@ export const API = {
   get login() { return `${getServerUrl()}/api/v1/auth/login`; },
   get register() { return `${getServerUrl()}/api/v1/auth/register`; },
   get logout() { return `${getServerUrl()}/api/v1/auth/logout`; },
+  get sendEmailCode() { return `${getServerUrl()}/api/v1/auth/send-email-code`; },
+  get loginByEmail() { return `${getServerUrl()}/api/v1/auth/email-code-login`; },
   get verifyToken() { return `${getServerUrl()}/api/v1/auth/verify`; },
   get refreshToken() { return `${getServerUrl()}/api/v1/auth/refresh`; },
   get me() { return `${getServerUrl()}/api/v1/auth/me`; },
@@ -62,6 +82,9 @@ export const API = {
   // github oauth
   get githubBrowserAuthorize() { return `${getServerUrl()}/api/v1/oauth/github/browser-authorize`; },
   get githubTokenExchange() { return `${getServerUrl()}/api/v1/oauth/github/token-exchange`; },
+  // wechat oauth
+  get wechatQrcode() { return `${getServerUrl()}/api/v1/oauth/wechat/qrcode`; },
+  get wechatCheck() { return `${getServerUrl()}/api/v1/oauth/wechat/check`; },
   // sso
   get ssoGenerate() { return `${getServerUrl()}/api/v1/auth/sso/generate`; },
   // ai

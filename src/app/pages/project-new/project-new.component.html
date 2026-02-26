@@ -64,7 +64,7 @@
             <div class="board ccenter btn" [ngClass]="{ selected: currentBoard == board, disabled: board.disabled }"
               (click)="selectBoard(board)">
               <div class="img-box">
-                <img [src]="resourceUrl+'/imgs/boards/'+board.img" />
+                <img [sequentialSrc]="resourceUrl+'/imgs/boards/'+board.img" />
               </div>
               <div class="name">{{ board.nickname }}
                 @if(board.state){
@@ -83,16 +83,22 @@
           <div class="content">
             <div class="title">
               <div class="title-text">{{currentBoard.nickname}}</div>
-              @if(currentBoard.state){
+              @if(currentBoard.state=='alpha'){
               <span class="warn"><i class="fa-light fa-circle-exclamation"></i>{{ 'PROJECT_NEW.WARNINGS.BETA_VERSION' |
+                translate }}</span>
+              }
+              @if(currentBoard.state=='todo'){
+              <span class="warn"><i class="fa-light fa-circle-exclamation"></i>{{ 'PROJECT_NEW.WARNINGS.TODO' |
                 translate }}</span>
               }
             </div>
             <div class="text sscroll">{{ currentBoard.description }}</div>
             <div class="next">
+              @if(currentBoard.state!='todo'){
               <button nz-button nzType="primary" (click)="nextStep()">
                 {{ 'PROJECT_NEW.BUTTONS.USE_THIS' | translate }}
               </button>
+              }
               <!-- <button nz-button nzType="primary" (click)="nextStep()">
                 创建项目
               </button>

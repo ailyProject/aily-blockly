@@ -49,6 +49,8 @@ export class _BuilderService {
   private preprocessStreamId: string | null = null; // 保存预处理的 streamId
   private preprocessError: string | null = null; // 保存预编译错误信息
   private preprocessFullError: string = ''; // 保存预编译完整错误日志
+  private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
+  private aiWaitingSubscription: any = null; // 保存 AI 等待状态订阅引用
 
   currentProjectPath = "";
   lastCode = "";
@@ -103,9 +105,10 @@ export class _BuilderService {
         return;
       }
 
-      // 互斥条件1：AI操作期间不触发自动预编译
+      // 互斥条件1：AI操作期间不触发自动预编译，但标记需要延迟执行
       if (this.blocklyService.aiWaiting) {
-        console.log('AI操作进行中，跳过自动预编译');
+        console.log('AI操作进行中，标记延迟预编译');
+        this.pendingPrecompile = true;
         return;
       }
 
@@ -296,6 +299,42 @@ export class _BuilderService {
         console.warn('启动后台预处理失败:', error);
       }
     });
+
+    // 监听 AI 操作状态变化
+    this.aiWaitingSubscription = this.blocklyService.aiWaiting$.subscribe(async (waiting) => {
+      if (waiting) {
+        // AI 操作开始，终止正在运行的预编译（结果会过时）
+        if (this.preprocessProcess || this.preprocessStreamId) {
+          console.log('AI操作开始，终止正在运行的预编译');
+          this.pendingPrecompile = true; // 标记需要重新预编译
+          try {
+            if (this.preprocessProcess) {
+              this.preprocessProcess.unsubscribe();
+              this.preprocessProcess = null;
+            }
+            if (this.preprocessStreamId) {
+              await this.cmdService.kill(this.preprocessStreamId);
+              this.preprocessStreamId = null;
+            }
+          } catch (error) {
+            console.warn('终止预编译进程失败:', error);
+          }
+        }
+      } else {
+        // AI 操作完成，触发延迟的预编译
+        if (this.pendingPrecompile) {
+          console.log('AI操作已完成，触发延迟的预编译');
+          this.pendingPrecompile = false;
+          setTimeout(() => {
+            if (!this.blocklyService.aiWaiting) {
+              this.blocklyService.dependencySubject.next('ai-complete');
+            } else {
+              this.pendingPrecompile = true;
+            }
+          }, 100);
+        }
+      }
+    });
   }
 
   destroy() {
@@ -331,6 +370,13 @@ export class _BuilderService {
       this.dependencySubscription = null;
       console.log('已取消依赖变化订阅');
     }
+
+    // 取消 AI 等待状态订阅
+    if (this.aiWaitingSubscription) {
+      this.aiWaitingSubscription.unsubscribe();
+      this.aiWaitingSubscription = null;
+    }
+    this.pendingPrecompile = false;
     
     // 清理预编译错误状态
     this.preprocessError = null;

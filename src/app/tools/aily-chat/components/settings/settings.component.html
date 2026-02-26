@@ -1,5 +1,5 @@
 <div class="editor-box">
-    <div class="test ccenter">以下为测试功能，普通用户暂不可用</div>
+    <!-- <div class="test ccenter">以下为测试功能，普通用户暂不可用</div> -->
     <div class="content sscroll">
 
         <!-- 模型管理 -->
@@ -17,7 +17,21 @@
                     <span class="items-count">{{ enabledModelsCount }} / {{ modelList.length }} 已启用</span>
                 </div>
 
-                <div class="items-container">
+                <div class="items-container sscroll" style="overflow-y: scroll;">
+                    <!-- 添加新模型 item / 表单 -->
+                    <div class="item-wrapper model-item model-item-add">
+                        <div class="model-info">
+                            @if(!showAddModelForm || editingModel){
+                            <div class="add-model-btn" (click)="openAddModelForm()">
+                                <i class="fa-light fa-plus"></i>
+                                添加新模型
+                            </div>
+                            } @else {
+                            <!-- 添加模式：显示表单 -->
+                            <ng-container *ngTemplateOutlet="modelFormTemplate"></ng-container>
+                            }
+                        </div>
+                    </div>
                     @for (model of modelList; track model.model) {
                     <div class="item-wrapper model-item">
                         <div class="model-info">
@@ -47,20 +61,6 @@
                         </div>
                     </div>
                     }
-                    <!-- 添加新模型 item / 表单 -->
-                    <div class="item-wrapper model-item model-item-add">
-                        <div class="model-info">
-                            @if(!showAddModelForm || editingModel){
-                            <div class="add-model-btn" (click)="openAddModelForm()">
-                                <i class="fa-light fa-plus"></i>
-                                添加新模型
-                            </div>
-                            } @else {
-                            <!-- 添加模式：显示表单 -->
-                            <ng-container *ngTemplateOutlet="modelFormTemplate"></ng-container>
-                            }
-                        </div>
-                    </div>
                 </div>
 
                 <!-- 模型表单模板 -->

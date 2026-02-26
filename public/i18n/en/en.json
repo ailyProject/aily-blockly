@@ -233,7 +233,8 @@
             "CREATING": "Creating"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Beta version, unverified, use with caution"
+            "BETA_VERSION": "Beta version, unverified, use with caution",
+            "TODO": "Device support coming soon"
         }
     },
     "LIB_MANAGER": {
@@ -411,6 +412,7 @@
         "DOCUMENTATION": "Documentation",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Pin map not available for this board",
+        "PINMAP_PARSE_ERROR": "Pin map parsing failed",
         "NO_DOCUMENTATION": "Documentation not available for this board"
     },
     "SERIAL": {
@@ -521,6 +523,7 @@
     "LOGIN": {
         "HEADER": "Login to use our services",
         "PHONE": "Phone",
+        "EMAIL": "Email",
         "BENEFITS_TITLE": "After logging in, you can:",
         "BENEFIT_AI": "Try AI Q&A feature for free",
         "BENEFIT_SHARE": "Share your projects",
@@ -533,6 +536,16 @@
         "PHONE_BETA_ONLY": "Phone login is only for AI beta testers",
         "PHONE_PLACEHOLDER": "Enter phone number",
         "PASSWORD_PLACEHOLDER": "Enter password",
+        "EMAIL_LOGIN_DESC": "Enter your email to receive a verification code and login",
+        "EMAIL_PLACEHOLDER": "Enter email address",
+        "CODE_PLACEHOLDER": "Enter verification code",
+        "SEND_CODE": "Get Code",
+        "ENTER_EMAIL": "Please enter email address",
+        "INVALID_EMAIL": "Please enter a valid email address",
+        "CODE_SENT": "Verification code sent, please check your email",
+        "CODE_SEND_FAILED": "Failed to send verification code, please try again",
+        "ENTER_CODE": "Please enter verification code",
+        "CODE_SENDING": "Please get verification code first",
         "LOGGING_IN": "Logging in...",
         "LOGIN": "Login",
         "SELECT_METHOD": "Click to select login method",
@@ -599,6 +612,7 @@
         "CANNOT_OPEN_PROJECT": "Cannot open project: ",
         "CREATING_PROJECT": "Creating project...",
         "PROJECT_CREATED": "Project created successfully",
+        "CREATE_FAILED": "Project creation failed",
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
         "BOARD_SWITCH_COMPLETE": "Board switch complete",

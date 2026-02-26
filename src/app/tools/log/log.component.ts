@@ -1,7 +1,6 @@
-import { Component, OnDestroy, OnInit, AfterViewInit, ViewChild, ChangeDetectorRef } from '@angular/core';
+import { Component, OnDestroy, OnInit, AfterViewInit, ElementRef, ChangeDetectorRef, viewChild, viewChildren, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { CdkAutoSizeVirtualScroll } from '@angular/cdk-experimental/scrolling';
+import { injectVirtualizer } from '@tanstack/angular-virtual';
 import { LogService, LogOptions } from '../../services/log.service';
 import { AnsiPipe } from './ansi.pipe';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -13,7 +12,7 @@ import { Subscription } from 'rxjs';
 
 @Component({
   selector: 'app-log',
-  imports: [CommonModule, AnsiPipe, ScrollingModule, CdkAutoSizeVirtualScroll],
+  imports: [CommonModule, AnsiPipe],
   templateUrl: './log.component.html',
   styleUrl: './log.component.scss',
 })
@@ -22,15 +21,25 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   private preventSingleClick = false;
   private subscription: Subscription = new Subscription();
 
-  // 虚拟滚动视口引用
-  @ViewChild(CdkVirtualScrollViewport) viewport!: CdkVirtualScrollViewport;
+  // 滚动容器引用
+  scrollElement = viewChild<ElementRef<HTMLDivElement>>('scrollElement');
 
-  // 日志列表 - 使用属性而非 getter，以便 CDK 正确检测变化
+  // 虚拟行元素引用（用于动态测量高度）
+  virtualRows = viewChildren<ElementRef<HTMLDivElement>>('virtualRow');
+
+  // 日志列表
   logList: LogOptions[] = [];
 
-  // 每项的估算高度（用于初始渲染）
-  readonly minBufferPx = 200;
-  readonly maxBufferPx = 400;
+  // 日志数量 signal，用于驱动 virtualizer 响应式更新
+  logCount = signal(0);
+
+  // TanStack 虚拟化器
+  virtualizer = injectVirtualizer(() => ({
+    scrollElement: this.scrollElement(),
+    count: this.logCount(),
+    estimateSize: () => 30,
+    overscan: 5,
+  }));
 
   constructor(
     private logService: LogService,
@@ -39,21 +48,25 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     private projectService: ProjectService,
     private electronService: ElectronService,
     private cdr: ChangeDetectorRef
-  ) { }
+  ) {
+    // 当虚拟行元素变化时，动态测量每个元素的实际高度
+    effect(() => {
+      const rows = this.virtualRows();
+      untracked(() => {
+        for (const row of rows) {
+          this.virtualizer.measureElement(row.nativeElement);
+        }
+      });
+    });
+  }
 
   ngOnInit() {
     // 初始化日志列表
-    this.logList = this.logService.list;
+    this.logList = [...this.logService.list];
+    this.logCount.set(this.logList.length);
   }
 
   ngAfterViewInit() {
-    // 初始化时检查视口尺寸
-    setTimeout(() => {
-      if (this.viewport) {
-        this.viewport.checkViewportSize();
-      }
-    }, 100);
-
     // 监听日志更新
     this.subscription.add(
       this.logService.stateSubject.subscribe(() => {
@@ -66,43 +79,16 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  // 滚动到底部，使用多次尝试确保内容完全渲染
+  // 滚动到底部
   scrollToBottom() {
-    // 取消之前的滚动请求
     if (this.scrollTimeoutId) {
       clearTimeout(this.scrollTimeoutId);
     }
-
-    const doScroll = (attempts = 0) => {
-      if (!this.viewport) return;
-
-      const element = this.viewport.elementRef.nativeElement;
-      this.viewport.checkViewportSize();
-      
-      // 获取当前 scrollHeight（虚拟滚动的估算总高度）
-      const scrollHeight = element.scrollHeight;
-      const clientHeight = element.clientHeight;
-      
-      // 计算目标滚动位置：scrollHeight - clientHeight 确保底部内容可见
-      // 减去一个小的偏移量（如 10px）避免滚动过多导致空白
-      const targetScroll = Math.max(0, scrollHeight - clientHeight - 10);
-      
-      element.scrollTo({
-        top: targetScroll,
-        behavior: 'auto'
-      });
-
-      // 多次尝试以确保内容渲染完成后滚动到正确位置
-      if (attempts < 3) {
-        this.scrollTimeoutId = setTimeout(() => doScroll(attempts + 1), 80);
-      }
-    };
-
-    // 等待变更检测和渲染完成后再滚动
     this.scrollTimeoutId = setTimeout(() => {
-      requestAnimationFrame(() => {
-        doScroll(0);
-      });
+      const count = this.logCount();
+      if (count > 0) {
+        this.virtualizer.scrollToIndex(count - 1, { align: 'end' });
+      }
     }, 30);
   }
 
@@ -110,14 +96,8 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // 处理日志更新
   private handleLogUpdate() {
-    // 给每个日志项添加唯一 id
-    this.logService.list.forEach((item, index) => {
-      if (item['id'] === undefined) {
-        item['id'] = index;
-      }
-    });
-    // 更新引用以触发变更检测
     this.logList = [...this.logService.list];
+    this.logCount.set(this.logList.length);
     this.cdr.detectChanges();
     // 滚动到底部
     this.scrollToBottom();
@@ -126,12 +106,8 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   clear() {
     this.logService.clear();
     this.logList = [];
+    this.logCount.set(0);
     this.cdr.detectChanges();
-  }
-
-  // trackBy 函数，用于优化虚拟滚动性能
-  trackByFn(index: number, item: LogOptions): number {
-    return item['id'] ?? index;
   }
 
   ngOnDestroy() {

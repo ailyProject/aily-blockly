@@ -40,6 +40,26 @@ export const BRAND_LIST = [
         img: 'brands\\stmicroelectronics.webp',
     },
     {
+        name: 'Seekfree',
+        value: 'seekfree',
+        img: 'sponsor\\seekfree\\logo.webp',
+    },
+    {
+        name: 'adafruit',
+        value: 'adafruit',
+        img: 'brands\\adafruit.webp'
+    },
+    {
+        name: 'sparkfun',
+        value: 'sparkfun',
+        img: 'brands\\sparkfun.webp'
+    },
+    {
+        name: 'micro:bit',
+        value: 'microbit',
+        img: 'brands\\microbit.webp'
+    },
+    {
         name: 'Other Brand',
         value: 'other',
         img: '',
@@ -87,6 +107,11 @@ export const CORE_LIST = [
         value: 'stm32',
         img: 'cores\\stm32.webp',
     },
+    // {
+    //     name: 'nRF5',
+    //     value: 'nRF5',
+    //     img: 'cores\\stm32.webp',
+    // },
     {
         name: 'Other Brand',
         value: 'other',

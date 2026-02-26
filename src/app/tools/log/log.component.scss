@@ -15,20 +15,25 @@
   background-color: rgba(0, 0, 0, 0.95);
   color: #fff;
 
-  // CDK 虚拟滚动内部容器样式
-  .cdk-virtual-scroll-content-wrapper {
+  overflow-y: auto;
+
+  .log-inner {
+    position: relative;
     width: 100%;
   }
 
   .item {
-    min-height: 24px; // 最小高度
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    min-height: 24px;
     box-sizing: border-box;
     display: flex;
-    flex-wrap: wrap; // 允许换行
+    flex-wrap: wrap;
     align-items: flex-start;
     padding-left: 10px;
     cursor: pointer;
-    margin-bottom: 3px;
     color: #a5a5a5;
     border-left: 5px solid #3f3f3f;
 
@@ -87,7 +92,6 @@
     }
   }
 
-  // CDK 虚拟滚动内部滚动条样式
   &::-webkit-scrollbar {
     width: 8px;
   }

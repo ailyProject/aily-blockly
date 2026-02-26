@@ -22,6 +22,11 @@ declare global {
   providedIn: 'root'
 })
 export class SerialMonitorService {
+  // 数据列表最大条数，超过时裁剪旧数据以节省内存
+  private static readonly MAX_DATA_SIZE = 100000;
+  // 裁剪后保留的条数（批量裁剪，避免频繁操作）
+  private static readonly TRIM_TARGET_SIZE = 90000;
+
   viewMode = {
     showHex: false, // hex显示
     showCtrlChar: false, // 控制字符显示
@@ -46,6 +51,15 @@ export class SerialMonitorService {
   private lastDataTime = 0;
   private firstDataTime = 0; // 当前记录首次接收数据的时间
   private isConnected = false;
+
+  // 数据更新节流控制：高频数据流下最多 ~20次/秒 通知UI
+  private static readonly UPDATE_THROTTLE_MS = 50;
+  private updateThrottleTimer: any = null;
+
+  // Buffer 分块累积：避免高频 Buffer.concat，追加数据时只 push 到数组
+  // 仅在 UI 通知前或创建新记录时才合并
+  private pendingChunks: Buffer[] = [];
+  private pendingItem: dataItem | null = null;
 
   // 状态观察对象
   connectionStatus = new BehaviorSubject<boolean>(false);
@@ -110,7 +124,8 @@ export class SerialMonitorService {
           this.dataList.push({
             time: new Date().toLocaleTimeString(),
             data: Buffer.from(`[串口已连接: ${options.path} ${options.baudRate}波特 ${options.dataBits}数据位 ${options.stopBits}停止位 ${options.parity}校验 ${options.flowControl}流控]`),
-            dir: 'SYS'
+            dir: 'SYS',
+            isError: false
           });
           this.dataUpdated.next();
 
@@ -177,28 +192,82 @@ export class SerialMonitorService {
       currentTime - this.lastDataTime > 1000 ||
       currentTime - this.firstDataTime > 10000 ||
       this.dataList[this.dataList.length - 1].dir !== 'RX') {
+      // 先合并上一条记录的待处理分块
+      this.flushPendingChunks();
       // 创建新的数据项
       let item: dataItem = {
         time: timeString,
         data: data,
-        dir: 'RX'
+        dir: 'RX',
+        isError: false
       }
       this.dataList.push(item);
-      this.dataUpdated.next(item);
+      this.pendingItem = item;
+      this.pendingChunks = [data];
       // 记录这是新记录的首次接收时间
       this.firstDataTime = currentTime;
     } else {
-      // 将数据添加到最后一个项目
-      const lastItem = this.dataList[this.dataList.length - 1];
-      // 合并Buffer数据
-      const combinedData = Buffer.concat([lastItem.data, data]);
-      lastItem.data = combinedData;
+      // 将数据块追加到待处理列表，O(1) 避免高频 Buffer.concat
+      this.pendingChunks.push(data);
     }
 
     // 更新最后一次接收数据的时间
     this.lastDataTime = currentTime;
 
-    this.dataUpdated.next();
+    // 检查数据量是否超过上限
+    this.trimDataListIfNeeded();
+
+    // 节流通知UI更新，避免高频数据导致过多变更检测
+    this.scheduleUpdate();
+  }
+
+  /**
+   * 前沿+尾沿节流调度UI通知：
+   * - 首次数据到达立即通知（前沿，保证实时性）
+   * - 节流窗口内压制后续事件
+   * - 窗口结束时再通知一次（尾沿，显示期间累积的数据）
+   */
+  private scheduleUpdate() {
+    if (this.updateThrottleTimer === null) {
+      // 前沿：立即刷新并通知 UI
+      this.flushPendingChunks();
+      this.dataUpdated.next();
+      // 设置节流窗口，窗口结束时再刷新一次
+      this.updateThrottleTimer = setTimeout(() => {
+        this.updateThrottleTimer = null;
+        this.flushPendingChunks();
+        this.dataUpdated.next();
+      }, SerialMonitorService.UPDATE_THROTTLE_MS);
+    }
+  }
+
+  /**
+   * 将累积的数据分块合并到当前记录（延迟合并策略）
+   * 高频数据流下每次追加只做 O(1) 的 push，
+   * 仅在 UI 通知前或新建记录时才执行一次 Buffer.concat
+   */
+  private flushPendingChunks() {
+    if (!this.pendingItem || this.pendingChunks.length === 0) return;
+    if (this.pendingChunks.length > 1) {
+      const combined = Buffer.concat(this.pendingChunks);
+      this.pendingItem.data = combined;
+      // 重置为单个已合并的 Buffer，避免下次重复 concat 旧数据
+      this.pendingChunks = [combined];
+    }
+    // 更新 isError 标志（仅在未标记时检查，避免重复扫描）
+    if (!this.pendingItem.isError && Buffer.isBuffer(this.pendingItem.data)) {
+      this.pendingItem.isError = this.pendingItem.data.includes('error:');
+    }
+  }
+
+  /**
+   * 当数据条数超过上限时，丢弃最前面的旧数据
+   */
+  private trimDataListIfNeeded() {
+    if (this.dataList.length > SerialMonitorService.MAX_DATA_SIZE) {
+      const removeCount = this.dataList.length - SerialMonitorService.TRIM_TARGET_SIZE;
+      this.dataList = this.dataList.slice(removeCount);
+    }
   }
 
   /**
@@ -248,7 +317,8 @@ export class SerialMonitorService {
           this.dataList.push({
             time: new Date().toLocaleTimeString(),
             data: bufferToSend,
-            dir: 'TX'
+            dir: 'TX',
+            isError: false
           });
 
           this.dataUpdated.next();
@@ -262,6 +332,11 @@ export class SerialMonitorService {
    * 断开串口连接
    */
   disconnect(): Promise<boolean> {
+    // 合并剩余的待处理数据分块
+    this.flushPendingChunks();
+    this.pendingItem = null;
+    this.pendingChunks = [];
+
     if (!this.isConnected || !this.serialPort) {
       return Promise.resolve(true);
     }
@@ -287,6 +362,8 @@ export class SerialMonitorService {
    */
   clearData() {
     this.dataList = [];
+    this.pendingItem = null;
+    this.pendingChunks = [];
   }
 
   /**
@@ -420,7 +497,8 @@ export class SerialMonitorService {
             this.dataList.push({
               time: new Date().toLocaleTimeString(),
               data: Buffer.from(`[设置${signalType}信号: ${state ? '开启' : '关闭'}]`),
-              dir: 'SYS'
+              dir: 'SYS',
+              isError: false
             });
             this.dataUpdated.next();
             resolve(true);
@@ -464,7 +542,10 @@ export interface dataItem {
   time: string,
   data: any,
   dir: 'TX' | 'RX' | 'SYS',
+  isError?: boolean,
   searchHighlight?: boolean,
+  showHex?: boolean,
+  highlight?: boolean,
 }
 
 export interface QuickSendItem {

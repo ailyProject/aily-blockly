@@ -162,7 +162,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   toggleTodoStatus(todo: TodoItem) {
-    const statusOrder: Array<TodoItem['status']> = ['pending', 'in_progress', 'completed'];
+    const statusOrder: Array<TodoItem['status']> = ['not-started', 'in-progress', 'completed'];
     const currentIndex = statusOrder.indexOf(todo.status);
     const nextIndex = (currentIndex + 1) % statusOrder.length;
     
@@ -193,7 +193,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     return texts[priority || 'low'];
   }
 
-  trackByTodoId(index: number, todo: TodoItem): string {
+  trackByTodoId(index: number, todo: TodoItem): number {
     return todo.id;
   }
 

@@ -53,9 +53,11 @@
     flex-shrink: 0;
     position: relative;
     border-right: 1px solid #333;
+    overflow: hidden;
 
     .left-inner {
       height: 100%;
+      position: relative;
       display: flex;
       flex-direction: column;
     }
@@ -190,6 +192,7 @@
 .board-selector-box {
   flex-grow: 1;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .board-selector {

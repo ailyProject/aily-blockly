@@ -1035,6 +1035,7 @@ function createWindow() {
     titleBarStyle: isDarwin ? 'hiddenInset' : 'default',
     alwaysOnTop: false,
     autoHideMenuBar: true,
+    icon: path.join(__dirname, "../public/icon.ico"),
     webPreferences: {
       nodeIntegration: true,
       webSecurity: false,
@@ -1102,20 +1103,39 @@ function createWindow() {
 
   // 开发环境下的热重载处理
   if (serve) {
-    // 防止 DevTools 断开连接
-    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-      if (errorCode === -102) {
-        // ERR_CONNECTION_REFUSED - 开发服务器可能正在重启
-        console.log('开发服务器连接失败,尝试重新加载...');
-        setTimeout(() => {
-          mainWindow.reload();
-        }, 1000);
-      }
+    // 处理页面加载失败，支持自动恢复
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // 只处理主框架的加载失败
+      if (!isMainFrame) return;
+      // -3 (ERR_ABORTED) 是正常的导航中止（如热重载触发新导航），无需处理
+      if (errorCode === -3) return;
+
+      console.log(`页面加载失败: errorCode=${errorCode}, description=${errorDescription}, url=${validatedURL}`);
+
+      // 对于开发环境中的各类加载失败，尝试重新加载
+      const retryDelay = errorCode === -102 ? 1000 : 500;
+      console.log(`${retryDelay}ms 后尝试重新加载...`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL("http://localhost:4200");
+        }
+      }, retryDelay);
     });
 
     // 监听页面加载完成
     mainWindow.webContents.on('did-finish-load', () => {
       console.log('页面加载完成');
+    });
+
+    // 处理渲染进程崩溃，自动恢复
+    mainWindow.webContents.on('render-process-gone', (event, details) => {
+      console.error('渲染进程异常退出:', details.reason, 'exitCode:', details.exitCode);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          console.log('尝试重新加载页面...');
+          mainWindow.loadURL("http://localhost:4200");
+        }
+      }, 1000);
     });
 
     // 开启 DevTools (可选)

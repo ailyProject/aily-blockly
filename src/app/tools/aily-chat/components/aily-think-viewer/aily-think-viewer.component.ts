@@ -1,4 +1,4 @@
-import { Component, Input, OnInit, OnDestroy, HostBinding } from '@angular/core';
+import { Component, Input, OnInit, OnDestroy, HostBinding, ElementRef, ViewChild, AfterViewChecked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 export interface AilyThinkData {
@@ -16,20 +16,38 @@ export interface AilyThinkData {
   templateUrl: './aily-think-viewer.component.html',
   styleUrls: ['./aily-think-viewer.component.scss']
 })
-export class AilyThinkViewerComponent implements OnInit, OnDestroy {
+export class AilyThinkViewerComponent implements OnInit, OnDestroy, AfterViewChecked {
   @Input() data: AilyThinkData | null = null;
+  @ViewChild('thinkContentElement') thinkContentElement?: ElementRef<HTMLDivElement>;
   
   @HostBinding('class.expanded') 
   isExpanded = false;
   thinkContent = '';
   isComplete = false;
+  
+  private updateListener?: (event: CustomEvent) => void;
+  private shouldScrollToBottom = false;
+
+  constructor(private elementRef: ElementRef) {}
 
   ngOnInit() {
     this.processData();
+    
+    // 监听自定义事件来更新数据（用于流式更新）
+    this.updateListener = ((event: CustomEvent) => {
+      if (event.detail) {
+        this.setData(event.detail);
+      }
+    }) as (event: CustomEvent) => void;
+    
+    this.elementRef.nativeElement.addEventListener('think-data-update', this.updateListener);
   }
 
   ngOnDestroy() {
-    // 清理资源
+    // 清理事件监听器
+    if (this.updateListener) {
+      this.elementRef.nativeElement.removeEventListener('think-data-update', this.updateListener);
+    }
   }
 
   /**
@@ -47,6 +65,7 @@ export class AilyThinkViewerComponent implements OnInit, OnDestroy {
     } else {
       this.data = data;
     }
+    
     this.processData();
   }
 
@@ -59,7 +78,14 @@ export class AilyThinkViewerComponent implements OnInit, OnDestroy {
     }
 
     // 提取内容
-    this.thinkContent = this.data.content || this.data.raw || '';
+    const newContent = this.data.content || this.data.raw || '';
+    
+    // 如果内容发生变化，标记需要滚动到底部
+    if (newContent !== this.thinkContent && newContent.length > this.thinkContent.length) {
+      this.shouldScrollToBottom = true;
+    }
+    
+    this.thinkContent = newContent;
     
     // 检查是否完成，undefined 视为完成
     this.isComplete = this.data.isComplete === true || this.data.isComplete === undefined;
@@ -67,6 +93,39 @@ export class AilyThinkViewerComponent implements OnInit, OnDestroy {
     // 如果正在思考中，默认展开
     if (!this.isComplete) {
       this.isExpanded = true;
+    }
+  }
+
+  /**
+   * 视图更新后检查是否需要滚动
+   */
+  ngAfterViewChecked(): void {
+    if (this.shouldScrollToBottom && this.thinkContentElement?.nativeElement) {
+      this.scrollToBottom();
+      this.shouldScrollToBottom = false;
+    }
+  }
+
+  /**
+   * 滚动内容到底部
+   */
+  private scrollToBottom(): void {
+    const element = this.thinkContentElement?.nativeElement;
+    if (!element) {
+      return;
+    }
+
+    // 检查内容是否超过最大高度
+    const maxHeight = 200; // 与 CSS 中的 max-height 一致
+    const scrollHeight = element.scrollHeight;
+    const clientHeight = element.clientHeight;
+
+    // 如果内容高度超过可视区域，滚动到底部
+    if (scrollHeight > clientHeight) {
+      // 使用 setTimeout 确保 DOM 更新完成后再滚动
+      setTimeout(() => {
+        element.scrollTop = element.scrollHeight;
+      }, 0);
     }
   }
 

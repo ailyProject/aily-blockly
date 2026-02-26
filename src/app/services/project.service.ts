@@ -128,42 +128,48 @@ export class ProjectService {
 
   // 新建项目
   async projectNew(newProjectData: NewProjectData) {
-    // console.log('newProjectData: ', newProjectData);
-    const appDataPath = window['path'].getAppDataPath();
-    // const projectPath = (newProjectData.path + newProjectData.name).replace(/\s/g, '_');
-    const projectPath = window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'));
-    const boardPackage = newProjectData.board.name + '@' + newProjectData.board.version;
+    try {
+      // console.log('newProjectData: ', newProjectData);
+      const appDataPath = window['path'].getAppDataPath();
+      // const projectPath = (newProjectData.path + newProjectData.name).replace(/\s/g, '_');
+      const projectPath = window['path'].join(newProjectData.path, newProjectData.name.replace(/\s/g, '_'));
+      const boardPackage = newProjectData.board.name + '@' + newProjectData.board.version;
 
-    this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-    await this.cmdService.runAsync(`npm install ${boardPackage} --prefix "${appDataPath}"`);
-    const templatePath = `${appDataPath}${pt}node_modules${pt}${newProjectData.board.name}${pt}template`;
-    // 创建项目目录
-    await this.crossPlatformCmdService.createDirectory(projectPath, true);
-    // 复制模板文件到项目目录
-    await this.crossPlatformCmdService.copyItem(`${templatePath}${pt}*`, projectPath, true, true);
+      this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
+      await this.cmdService.runAsync(`npm install ${boardPackage} --prefix "${appDataPath}"`);
+      // const templatePath = `${appDataPath}${pt}node_modules${pt}${newProjectData.board.name}${pt}template`;
+      const templatePath = window['path'].join(appDataPath, 'node_modules', newProjectData.board.name, 'template');
+      // 创建项目目录
+      await this.crossPlatformCmdService.createDirectory(projectPath, true);
+      // 复制模板文件到项目目录
+      await this.crossPlatformCmdService.copyItem(`${templatePath}${pt}*`, projectPath, true, true);
 
-    // 3. 修改package.json文件
-    const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
-    if (this.containsChineseCharacters(newProjectData.name)) {
-      packageJson.name = pinyin(newProjectData.name, {
-        toneType: "none",
-        separator: ""
-      }).replace(/\s/g, '_');
-    } else {
-      packageJson.name = newProjectData.name;
+      // 3. 修改package.json文件
+      const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
+      if (this.containsChineseCharacters(newProjectData.name)) {
+        packageJson.name = pinyin(newProjectData.name, {
+          toneType: "none",
+          separator: ""
+        }).replace(/\s/g, '_');
+      } else {
+        packageJson.name = newProjectData.name;
+      }
+      // 设置开发框架
+      packageJson.devmode = newProjectData.devmode;
+
+      window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
+
+      this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
+      // 此后就是打开项目(projectOpen)的逻辑，理论可复用，由于此时在新建项目窗口，因此要告知主窗口，进行打开项目操作
+      await window['iWindow'].send({ to: 'main', data: { action: 'open-project', path: projectPath } });
+
+      // if (closeWindow) {
+      //   this.uiService.closeWindow();
+      // }
+    } catch (error) {
+      this.message.error(this.translate.instant('PROJECT.CREATE_FAILED') + ": " + error.message);
+      this.uiService.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
     }
-    // 设置开发框架
-    packageJson.devmode = newProjectData.devmode;
-
-    window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
-
-    this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
-    // 此后就是打开项目(projectOpen)的逻辑，理论可复用，由于此时在新建项目窗口，因此要告知主窗口，进行打开项目操作
-    await window['iWindow'].send({ to: 'main', data: { action: 'open-project', path: projectPath } });
-
-    // if (closeWindow) {
-    //   this.uiService.closeWindow();
-    // }
   }
 
   // 打开项目

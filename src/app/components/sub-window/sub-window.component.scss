@@ -9,6 +9,24 @@
   height: 35px;
   border-bottom: 1px solid #222427;
   background: #2b2d30;
+
+  &.darwin {
+    padding-left: 80px;
+
+    &.full-screen {
+      padding-left: 0;
+    }
+
+    .win-btns {
+      > div {
+        display: none;
+      }
+
+      .go-main {
+        display: flex;
+      }
+    }
+  }
 }
 
 .title {

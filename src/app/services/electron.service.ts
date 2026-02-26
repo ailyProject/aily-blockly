@@ -306,6 +306,24 @@ export class ElectronService {
     }
   }
 
+  /**
+   * 监听窗口最大化状态变化事件
+   * @param callback 回调函数，参数为是否最大化
+   * @returns 取消监听的函数
+   */
+  onWindowMaximizeChanged(callback: (isMaximized: boolean) => void): () => void {
+    if (!this.isElectron) {
+      return () => {};
+    }
+
+    try {
+      return window['iWindow'].onMaximizeChanged(callback);
+    } catch (error) {
+      console.error('Listen window maximize changed error:', error);
+      return () => {};
+    }
+  }
+
   openByExplorer(path){
     window['other'].openByExplorer(path);
   }

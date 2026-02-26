@@ -129,6 +129,11 @@ export class UiService {
     this.openToolList = [];
   }
 
+  // 发送工具信号，格式为 "toolname:action"，如 "serial-monitor:disconnect"
+  sendToolSignal(signal: string) {
+    this.actionSubject.next({ action: 'signal', type: 'tool', data: signal });
+  }
+
   // 判断某个工具是否打开
   isToolOpen(name: string): boolean {
     return this.openToolList.includes(name);
@@ -268,6 +273,7 @@ export class UiService {
 
 export interface WindowOpts {
   path: string;
+  data?: any;
   title?: string;
   alwaysOnTop?: boolean;
   width?: number;

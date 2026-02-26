@@ -1,5 +1,9 @@
 @use "../components/tool-container/tool-container.component.scss";
 
+iframe {
+  display: none;
+}
+
 .main-window-box {
   height: 100vh;
   width: 100vw;

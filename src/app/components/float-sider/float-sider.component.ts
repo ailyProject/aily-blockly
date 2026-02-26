@@ -1,7 +1,4 @@
-import { Component, Input, OnInit, OnDestroy } from '@angular/core';
-import { PinmapComponent } from '../../app-store/pinmap/pinmap.component';
-import { FeedbackDialogComponent } from '../feedback-dialog/feedback-dialog.component';
-import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
+import { Component, Input, OnInit, OnDestroy, ViewChild } from '@angular/core';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CommonModule } from '@angular/common';
 import { ProjectService } from '../../services/project.service';
@@ -12,25 +9,26 @@ import { ElectronService } from '../../services/electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { UiService } from '../../services/ui.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { ImageViewerComponent } from '../image-viewer/image-viewer.component';
 @Component({
   selector: 'app-float-sider',
   imports: [
-    NzModalModule,
     NzToolTipModule,
     CommonModule,
-    TranslateModule
+    TranslateModule,
+    ImageViewerComponent
   ],
   templateUrl: './float-sider.component.html',
   styleUrl: './float-sider.component.scss'
 })
 export class FloatSiderComponent implements OnInit, OnDestroy {
   @Input() show = false;
+  @ViewChild('imageViewer') imageViewer!: ImageViewerComponent;
 
   loaded = false;
   private routerSubscription: Subscription | undefined;
 
   constructor(
-    private modal: NzModalService,
     private projectService: ProjectService,
     private router: Router,
     private electronService: ElectronService,
@@ -73,23 +71,29 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   }
 
   showPinmap() {
-    if (!this.electronService.exists(this.boardPackagePath + '/pinmap.webp')) {
-      this.message.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
+    const pinmapJsonPath = this.boardPackagePath + '/pinmap.json';
+    if (this.electronService.exists(pinmapJsonPath)) {
+      // 使用子窗口打开，通过 URL 查询参数传递文件路径
+      // this.uiService.openWindow({
+      //   path: `pinjson?filePath=${encodeURIComponent(pinjsonPath)}`,
+      //   width: 800,
+      //   height: 600
+      // });
+      this.uiService.openWindow({
+        path: `iframe?url=${encodeURIComponent('https://tool.aily.pro/component-viewer?type=json&theme=dark')}`,
+        // path: `iframe?url=${encodeURIComponent('http://localhost:3051/component-viewer?type=json')}`,
+        data: this.electronService.readFile(pinmapJsonPath),
+        width: 800,
+        height: 600
+      });
       return;
     }
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzContent: PinmapComponent,
-      nzData: {
-        img: this.boardPackagePath + '/pinmap.webp' // 假设 pinmap 图片路径
-      },
-      nzWidth: '500px',
-    });
+    const pinmapWebpPath = this.boardPackagePath + '/pinmap.webp';
+    if (this.electronService.exists(pinmapWebpPath)) {
+      this.imageViewer.open(pinmapWebpPath);
+      return;
+    }
+    this.message.error(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
   }
 
 
@@ -122,5 +126,15 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
 
   showCircuit() {
     this.message.info(this.translate.instant('FLOAT_SIDER.CIRCUIT') + ' ' + this.translate.instant('COMMON.FEATURE_COMING_SOON'));
+    // return;
+    if (this.electronService.isElectron) {
+      this.uiService.openWindow({
+        // path: `iframe?url=${encodeURIComponent('https://tool.aily.pro/connection-graph?type=json&theme=dark')}`,
+        path: `iframe?url=${encodeURIComponent('http://localhost:4201/connection-graph?type=json&theme=dark')}`,
+        data: { a: 1, b: 2 },
+        width: 800,
+        height: 600
+      });
+    }
   }
 }

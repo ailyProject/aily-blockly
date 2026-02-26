@@ -527,6 +527,58 @@ export class NpmService {
   }
 
   /**
+   * 检查 npm 依赖是否安装完整（仅检查第一层）
+   * 通过读取 package.json 的依赖声明，再扫描 node_modules 下对应包的 package.json 做对比
+   */
+  async installedOk(path) {
+    const startTime = performance.now();
+    console.log('[installedOk] 开始检查依赖状态...');
+    try {
+      const packageJsonPath = window['path'].join(path, 'package.json');
+      const nodeModulesPath = window['path'].join(path, 'node_modules');
+
+      if (!window['path'].isExists(packageJsonPath)) {
+        const elapsed = (performance.now() - startTime).toFixed(1);
+        console.log(`[installedOk] package.json 不存在，耗时: ${elapsed}ms`);
+        return false;
+      }
+
+      const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+      const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
+      const depNames = Object.keys(deps);
+
+      if (depNames.length === 0) {
+        const elapsed = (performance.now() - startTime).toFixed(1);
+        console.log(`[installedOk] 无依赖声明，检查通过，耗时: ${elapsed}ms`);
+        return true;
+      }
+
+      if (!window['path'].isExists(nodeModulesPath)) {
+        const elapsed = (performance.now() - startTime).toFixed(1);
+        console.log(`[installedOk] node_modules 不存在，依赖未安装，耗时: ${elapsed}ms`);
+        return false;
+      }
+
+      for (const name of depNames) {
+        const depPackageJsonPath = window['path'].join(nodeModulesPath, name, 'package.json');
+        if (!window['path'].isExists(depPackageJsonPath)) {
+          const elapsed = (performance.now() - startTime).toFixed(1);
+          console.log(`[installedOk] 缺少依赖: ${name}，耗时: ${elapsed}ms`);
+          return false;
+        }
+      }
+
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`[installedOk] 检查完成，依赖已完整，耗时: ${elapsed}ms`);
+      return true;
+    } catch (err) {
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`[installedOk] 检查异常，耗时: ${elapsed}ms`, err);
+      return false;
+    }
+  }
+
+  /**
    * 库列表
    * @param data
    */

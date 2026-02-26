@@ -217,11 +217,10 @@ ngx-simplebar {
 
 .region-buttons {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
 
   button {
-    min-width: 80px;
+    margin-right: -1px;
   }
 }
 

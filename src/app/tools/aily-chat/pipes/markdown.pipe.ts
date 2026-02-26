@@ -43,7 +43,7 @@ function addCorrectionEvent(event: ValidationCorrectionEvent) {
 
 /**
  * 扩展的 Markdown 管道，支持动态 Angular 组件渲染
- * 
+ *
  * 此管道将在检测到特殊的 Aily 代码块时，生成带有特殊标记的 HTML，
  * 然后通过指令系统将这些标记替换为真正的 Angular 组件
  */
@@ -66,7 +66,7 @@ export class MarkdownPipe implements PipeTransform {
           try {
             // 标准化语言名称（用于 aily 类型检测）
             const ailyLang = lang?.trim()?.toLowerCase() || '';
-            
+
             // 检查是否为特殊的 Aily 代码块类型
             if (this.isAilyCodeBlock(ailyLang)) {
               return this.renderAilyCodeBlockWithComponent(code, ailyLang);
@@ -130,7 +130,7 @@ export class MarkdownPipe implements PipeTransform {
    * 检查是否为特殊的 Aily 代码块类型
    */
   private isAilyCodeBlock(lang: string): boolean {
-    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid', 'mermaid', 'aily-task-action', 'aily-think'];
+    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid', 'mermaid', 'aily-task-action', 'aily-think', 'aily-context'];
     // 确保 lang 被正确 trim，避免空格或换行符导致匹配失败
     const normalizedLang = lang?.trim()?.toLowerCase() || '';
     return ailyTypes.includes(normalizedLang);
@@ -148,9 +148,9 @@ export class MarkdownPipe implements PipeTransform {
 
       // 返回包含组件占位符的 HTML
       // 这个占位符将在后续的指令处理中被替换为真正的 Angular 组件
-      return `<div class="aily-code-block-placeholder" 
-                   data-aily-type="${type}" 
-                   data-aily-data="${encodedData}" 
+      return `<div class="aily-code-block-placeholder"
+                   data-aily-type="${type}"
+                   data-aily-data="${encodedData}"
                    data-component-id="${componentId}">
                   <!-- Aily ${type} Component Placeholder -->
               </div>`;
@@ -292,6 +292,22 @@ export class MarkdownPipe implements PipeTransform {
             isComplete: jsonData.isComplete !== false,
             metadata: jsonData.metadata || {}
           };
+        case 'aily-context':
+          // 解码 content（如果是 base64 编码的）
+          let ctxContent = jsonData.content || '';
+          if (jsonData.encoded && typeof ctxContent === 'string') {
+            try {
+              ctxContent = decodeURIComponent(atob(ctxContent));
+            } catch (e) {
+              console.warn('Failed to decode context content:', e);
+            }
+          }
+          return {
+            type: 'aily-context',
+            label: jsonData.label || '附加上下文',
+            content: String(ctxContent),
+            metadata: jsonData.metadata || {}
+          };
         default:
           console.warn(`Unknown aily type: ${type}, using raw data`);
           return {
@@ -325,17 +341,17 @@ export class MarkdownPipe implements PipeTransform {
   private detectNameType(name: string): 'library' | 'board' | 'unknown' {
     if (!name) return 'unknown';
     const lowerName = name.toLowerCase();
-    
+
     // 检查是否包含库的特征
     if (lowerName.includes('lib-') || lowerName.includes('/lib-')) {
       return 'library';
     }
-    
+
     // 检查是否包含开发板的特征
     if (lowerName.includes('board-') || lowerName.includes('/board-')) {
       return 'board';
     }
-    
+
     return 'unknown';
   }
 
@@ -351,11 +367,11 @@ export class MarkdownPipe implements PipeTransform {
 
     // 获取查询名称（优先使用 name，其次 nickname/displayName）
     const queryName = boardData.name || boardData.nickname || boardData.displayName;
-    
+
     if (queryName && this.configService) {
       // 先检测名称类型，判断是否被错误分类
       const detectedType = this.detectNameType(queryName);
-      
+
       // 如果名称看起来像库，优先尝试库验证
       if (detectedType === 'library') {
         const libValidation = this.configService.validateLibrary(queryName);
@@ -368,7 +384,7 @@ export class MarkdownPipe implements PipeTransform {
             correctedData: libValidation.library,
             isFuzzyMatch: libValidation.fuzzyMatch
           });
-          
+
           // 返回库数据，并标记类型已修正
           return {
             ...libValidation.library,
@@ -380,10 +396,10 @@ export class MarkdownPipe implements PipeTransform {
           };
         }
       }
-      
+
       // 使用 ConfigService 验证开发板是否存在
       const validation = this.configService.validateBoard(queryName);
-      
+
       if (validation.exists && validation.board) {
         // 找到了真实存在的开发板
         if (validation.fuzzyMatch) {
@@ -397,7 +413,7 @@ export class MarkdownPipe implements PipeTransform {
             isFuzzyMatch: true
           });
         }
-        
+
         // 使用真实存在的开发板数据
         return {
           ...validation.board,
@@ -406,7 +422,7 @@ export class MarkdownPipe implements PipeTransform {
           _originalQuery: validation.fuzzyMatch ? queryName : undefined
         };
       }
-      
+
       // 开发板验证失败，再次尝试库验证（兜底）
       if (detectedType !== 'library') {
         const libFallback = this.configService.validateLibrary(queryName);
@@ -419,7 +435,7 @@ export class MarkdownPipe implements PipeTransform {
             correctedData: libFallback.library,
             isFuzzyMatch: libFallback.fuzzyMatch
           });
-          
+
           return {
             ...libFallback.library,
             _validated: true,
@@ -461,11 +477,11 @@ export class MarkdownPipe implements PipeTransform {
 
     // 获取查询名称（优先使用 name，其次 nickname）
     const queryName = libraryData.name || libraryData.nickname;
-    
+
     if (queryName && this.configService) {
       // 先检测名称类型，判断是否被错误分类
       const detectedType = this.detectNameType(queryName);
-      
+
       // 如果名称看起来像开发板，优先尝试开发板验证
       if (detectedType === 'board') {
         const boardValidation = this.configService.validateBoard(queryName);
@@ -478,7 +494,7 @@ export class MarkdownPipe implements PipeTransform {
             correctedData: boardValidation.board,
             isFuzzyMatch: boardValidation.fuzzyMatch
           });
-          
+
           // 返回开发板数据，并标记类型已修正
           return {
             ...boardValidation.board,
@@ -490,10 +506,10 @@ export class MarkdownPipe implements PipeTransform {
           };
         }
       }
-      
+
       // 使用 ConfigService 验证库是否存在
       const validation = this.configService.validateLibrary(queryName);
-      
+
       if (validation.exists && validation.library) {
         // 找到了真实存在的库
         if (validation.fuzzyMatch) {
@@ -507,7 +523,7 @@ export class MarkdownPipe implements PipeTransform {
             isFuzzyMatch: true
           });
         }
-        
+
         // 使用真实存在的库数据
         return {
           ...validation.library,
@@ -516,7 +532,7 @@ export class MarkdownPipe implements PipeTransform {
           _originalQuery: validation.fuzzyMatch ? queryName : undefined
         };
       }
-      
+
       // 库验证失败，再次尝试开发板验证（兜底）
       if (detectedType !== 'board') {
         const boardFallback = this.configService.validateBoard(queryName);
@@ -529,7 +545,7 @@ export class MarkdownPipe implements PipeTransform {
             correctedData: boardFallback.board,
             isFuzzyMatch: boardFallback.fuzzyMatch
           });
-          
+
           return {
             ...boardFallback.board,
             _validated: true,
@@ -593,7 +609,8 @@ export class MarkdownPipe implements PipeTransform {
    * 过滤需要隐藏的特殊标记，防止在界面上渲染
    */
   private filterHiddenTokens(content: string): string {
-    return content.replace(/TERMINATE/g, '');
+    return content;
+    return content.replace(/(TERMINATE|TERMIN|TER)/g, '');
   }
 }
 

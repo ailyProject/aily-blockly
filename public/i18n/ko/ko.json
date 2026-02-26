@@ -180,7 +180,8 @@
             "CREATING": "생성 중"
         },
         "WARNINGS": {
-            "BETA_VERSION": "베타 버전, 미검증, 주의해서 사용"
+            "BETA_VERSION": "베타 버전, 미검증, 주의해서 사용",
+            "TODO": "이 장치 지원이 곧 출시됩니다"
         }
     },
     "LIB_MANAGER": {
@@ -358,6 +359,7 @@
         "DOCUMENTATION": "문서",
         "FEEDBACK": "피드백",
         "NO_PINMAP": "이 보드에 대한 핀 맵을 사용할 수 없습니다",
+        "PINMAP_PARSE_ERROR": "핀 맵 파싱 실패",
         "NO_DOCUMENTATION": "이 보드에 대한 문서를 사용할 수 없습니다"
     },
     "SERIAL": {
@@ -480,6 +482,7 @@
         "PHONE_BETA_ONLY": "전화번호 로그인은 AI 베타 테스터 전용입니다",
         "PHONE_PLACEHOLDER": "전화번호 입력",
         "PASSWORD_PLACEHOLDER": "비밀번호 입력",
+        "CODE_SENDING": "먼저 인증 코드를 받으세요",
         "LOGGING_IN": "로그인 중...",
         "LOGIN": "로그인",
         "SELECT_METHOD": "로그인 방법을 선택하세요",
@@ -540,6 +543,7 @@
         "CANNOT_OPEN_PROJECT": "프로젝트를 열 수 없습니다: ",
         "CREATING_PROJECT": "프로젝트 생성 중...",
         "PROJECT_CREATED": "프로젝트가 생성되었습니다",
+        "CREATE_FAILED": "프로젝트 생성에 실패했습니다",
         "PATH_NOT_EXIST": "프로젝트 경로가 존재하지 않습니다. 다른 프로젝트를 선택하세요",
         "SWITCHING_BOARD_CONFIG": "보드 구성 전환 중...",
         "BOARD_SWITCH_COMPLETE": "보드 전환 완료",

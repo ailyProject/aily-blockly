@@ -1,12 +1,20 @@
-<cdk-virtual-scroll-viewport autosize class="log-box">
-  <div *cdkVirtualFor="let item of logList; trackBy: trackByFn" 
-       class="item" 
-       [ngClass]="{'error':item.state=='error','warn':item.state=='warn','info':item.state=='info'}"
-       (click)="handleClick(item, $event)" 
-       (dblclick)="handleDoubleClick(item, $event)" 
-       title="单击复制到剪切板，双击复制到AI助手">
-    <div class="date">{{item.timestamp | date:'HH:mm:ss'}}</div>
-    <div class="title">{{item.title}}</div>
-    <div class="text" [innerHTML]="item.detail | ansi"></div>
+<div #scrollElement class="log-box">
+  <div class="log-inner" [style.height.px]="virtualizer.getTotalSize()">
+    @for (row of virtualizer.getVirtualItems(); track row.index) {
+      <div
+        #virtualRow
+        [attr.data-index]="row.index"
+        class="item"
+        [ngClass]="{'error': logList[row.index].state === 'error', 'warn': logList[row.index].state === 'warn', 'info': logList[row.index].state === 'info'}"
+        (click)="handleClick(logList[row.index], $event)"
+        (dblclick)="handleDoubleClick(logList[row.index], $event)"
+        title="单击复制到剪切板，双击复制到AI助手"
+        [style.transform]="'translateY(' + row.start + 'px)'"
+      >
+        <div class="date">{{ logList[row.index].timestamp | date:'HH:mm:ss' }}</div>
+        <div class="title">{{ logList[row.index].title }}</div>
+        <div class="text" [innerHTML]="logList[row.index].detail | ansi"></div>
+      </div>
+    }
   </div>
-</cdk-virtual-scroll-viewport>
+</div>

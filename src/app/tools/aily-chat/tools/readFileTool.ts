@@ -211,8 +211,41 @@ export async function readFileTool(
             byteCount = undefined;
         }
 
-        // 按字节范围读取（优先级最高）
-        if (startByte !== undefined || byteCount !== undefined) {
+        // ==================== 智能读取模式选择 ====================
+        // 当同时指定了行参数和字节参数时，需要智能判断使用哪种模式
+        const hasLineParams = startLine !== undefined || lineCount !== undefined;
+        const hasByteParams = startByte !== undefined || byteCount !== undefined;
+        
+        let useByteMode = false;
+        let useByteModeReason = '';
+        
+        if (hasByteParams && hasLineParams) {
+            // 同时指定了两种参数，需要分析文件特征来决定
+            const characteristics = await analyzeFileCharacteristics(filePath, encoding);
+            
+            if (characteristics.isSingleLineLargeFile || characteristics.hasLongLines) {
+                // 单行大文件或超长行文件，使用字节模式
+                useByteMode = true;
+                useByteModeReason = characteristics.isSingleLineLargeFile 
+                    ? '检测到单行大文件，使用字节模式' 
+                    : '检测到超长行文件，使用字节模式';
+            } else {
+                // 多行普通文件，优先使用行模式，忽略字节参数
+                useByteMode = false;
+                useByteModeReason = '多行文本文件，优先使用行模式';
+                // 清除字节参数
+                startByte = undefined;
+                byteCount = undefined;
+            }
+        } else if (hasByteParams && !hasLineParams) {
+            // 只指定了字节参数
+            useByteMode = true;
+            useByteModeReason = '仅指定字节参数';
+        }
+        // ==================== 智能读取模式选择结束 ====================
+
+        // 按字节范围读取
+        if (useByteMode && (startByte !== undefined || byteCount !== undefined)) {
             const start = startByte || 0;
             const requestedCount = byteCount !== undefined ? byteCount : Math.min(maxSize, fileSize - start);
             const actualCount = Math.min(requestedCount, maxSize, fileSize - start);
@@ -240,6 +273,21 @@ export async function readFileTool(
             metadata.actualBytesRead = resultContent.length;
             metadata.truncated = requestedCount > actualCount || start + actualCount < fileSize;
             metadata.note = '字节范围基于字符偏移量（适用于文本文件）';
+            if (useByteModeReason) {
+                metadata.modeSelectionReason = useByteModeReason;
+            }
+            
+            // 空内容检测：当读取结果为空时，给出有用的建议
+            if (resultContent.length === 0) {
+                const remainingBytes = fileSize - start;
+                metadata.warning = `读取结果为空（起始位置 ${start}，文件大小 ${fileSize}，剩余 ${remainingBytes} 字节）`;
+                
+                if (remainingBytes <= 0) {
+                    metadata.suggestion = `起始位置超出或等于文件末尾。建议：使用 startLine 参数按行读取，或减小 startByte 值`;
+                } else {
+                    metadata.suggestion = `文件在此位置可能为空白。建议：尝试使用 startLine 参数按行读取`;
+                }
+            }
         }
         // 按行范围读取
         else if (startLine !== undefined || lineCount !== undefined) {

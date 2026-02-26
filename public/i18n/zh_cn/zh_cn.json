@@ -233,7 +233,8 @@
             "CREATING": "正在创建"
         },
         "WARNINGS": {
-            "BETA_VERSION": "内测版本，未经验证，谨慎使用"
+            "BETA_VERSION": "内测版本，未经验证，谨慎使用",
+            "TODO": "该设备支持即将上线"
         }
     },
     "LIB_MANAGER": {
@@ -411,6 +412,7 @@
         "DOCUMENTATION": "文档",
         "FEEDBACK": "反馈",
         "NO_PINMAP": "该开发板没有提供引脚图",
+        "PINMAP_PARSE_ERROR": "引脚图解析失败",
         "NO_DOCUMENTATION": "该开发板没有提供文档链接"
     },
     "SERIAL": {
@@ -521,6 +523,7 @@
     "LOGIN": {
         "HEADER": "登陆后即可使用我们的服务",
         "PHONE": "手机号",
+        "EMAIL": "邮箱",
         "BENEFITS_TITLE": "登录后您可以：",
         "BENEFIT_AI": "免费试用 AI 问答功能",
         "BENEFIT_SHARE": "分享你的项目",
@@ -533,6 +536,16 @@
         "PHONE_BETA_ONLY": "手机号登录仅限AI功能内测用户使用",
         "PHONE_PLACEHOLDER": "请输入手机号",
         "PASSWORD_PLACEHOLDER": "请输入密码",
+        "EMAIL_LOGIN_DESC": "输入邮箱获取验证码即可登录",
+        "EMAIL_PLACEHOLDER": "请输入邮箱地址",
+        "CODE_PLACEHOLDER": "请输入验证码",
+        "SEND_CODE": "获取验证码",
+        "ENTER_EMAIL": "请输入邮箱地址",
+        "INVALID_EMAIL": "请输入有效的邮箱地址",
+        "CODE_SENT": "验证码已发送，请查收邮件",
+        "CODE_SEND_FAILED": "验证码发送失败，请稍后重试",
+        "ENTER_CODE": "请输入验证码",
+        "CODE_SENDING": "请先获取验证码",
         "LOGGING_IN": "登录中...",
         "LOGIN": "登录",
         "SELECT_METHOD": "点击选择登录方式",
@@ -599,6 +612,7 @@
         "CANNOT_OPEN_PROJECT": "无法打开项目: ",
         "CREATING_PROJECT": "正在创建项目...",
         "PROJECT_CREATED": "项目创建成功",
+        "CREATE_FAILED": "项目创建失败",
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",
