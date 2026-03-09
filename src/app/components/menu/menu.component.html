@@ -1,6 +1,6 @@
 <div class="menu-container">
   <div class="menu-box bborder sscroll" #menuBox
-    [ngStyle]="{ left: position.x + 'px', top: position.y + 'px', 'width': width ? width + 'px' : 'auto', 'max-height': maxHeight ? maxHeight + 'px' : 'none', 'overflow-y': maxHeight ? 'auto' : 'visible' }">
+    [ngStyle]="{ left: position.x + 'px', top: position.y + 'px', 'width': width ? width + 'px' : 'auto', 'min-width': minWidth ? minWidth + 'px' : 'auto', 'max-height': maxHeight ? maxHeight + 'px' : 'none', 'overflow-y': maxHeight ? 'auto' : 'visible' }">
     @for (item of menuList; track $index) {
     @if (item.sep) {
     <div class="sep"></div>

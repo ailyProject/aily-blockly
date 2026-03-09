@@ -199,7 +199,7 @@
 
 <!-- device port list -->
 @if (showPortList) {
-<app-menu [position]="position" [width]="260" [menuList]="portList" (closeEvent)="closePortList()"
+<app-menu [position]="position" [minWidth]="260" [menuList]="portList" (closeEvent)="closePortList()"
   [keywords]="boardKeywords" (itemClickEvent)="selectPort($event)"></app-menu>
 }
 
