@@ -603,22 +603,41 @@ jobs:
         run: |
           BRANCH_NAME="${{ github.ref_name }}"
           CURRENT_SHA="${{ github.sha }}"
+          FILE_NAME="last-sha-${BRANCH_NAME}"
+          COMMIT_MSG="chore: update last release SHA for ${BRANCH_NAME} [${CURRENT_SHA:0:7}]"
 
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
+          # base64 编码内容（含换行符）
+          CONTENT=$(printf '%s\n' "$CURRENT_SHA" | base64 -w 0)
 
-          git fetch origin release-meta 2>/dev/null || true
-          if git ls-remote --heads origin release-meta 2>/dev/null | grep -q release-meta; then
-            git checkout -B release-meta origin/release-meta
-          else
-            git checkout --orphan release-meta
-            git rm -rf . 2>/dev/null || true
+          # 确保 release-meta 分支存在，不存在则以当前 SHA 为基础创建
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/refs/heads/release-meta" --silent 2>/dev/null; then
+            echo "release-meta 分支不存在，正在创建..."
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --method POST \
+              -f ref="refs/heads/release-meta" \
+              -f sha="${CURRENT_SHA}"
+            echo "✓ release-meta 分支已创建"
           fi
 
-          echo "$CURRENT_SHA" > "last-sha-${BRANCH_NAME}"
-          git add "last-sha-${BRANCH_NAME}"
-          git commit -m "chore: update last release SHA for ${BRANCH_NAME} [${CURRENT_SHA:0:7}]"
-          git push origin release-meta
+          # 获取文件当前 SHA（更新时需要，文件不存在时为空）
+          FILE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE_NAME}?ref=release-meta" \
+            --jq '.sha' 2>/dev/null || echo "")
+
+          if [ -n "$FILE_SHA" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE_NAME}" \
+              --method PUT \
+              -f message="$COMMIT_MSG" \
+              -f content="$CONTENT" \
+              -f sha="$FILE_SHA" \
+              -f branch="release-meta"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE_NAME}" \
+              --method PUT \
+              -f message="$COMMIT_MSG" \
+              -f content="$CONTENT" \
+              -f branch="release-meta"
+          fi
+
           echo "✓ Saved SHA $CURRENT_SHA for branch $BRANCH_NAME"
 
   # 任务 4a：上传 Windows 文件到 Cloudflare R2 存储（与Release并行执行）
