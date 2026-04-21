@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - deploy
+      - beta
   workflow_dispatch:
 
 jobs:
@@ -61,7 +62,7 @@ jobs:
           api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
           organization-id: 'bd01a768-a9e3-4a62-945d-fcfdc37a299e'
           project-slug: 'aily-blockly' 
-          signing-policy-slug: 'release-signing'
+          signing-policy-slug: ${{ github.ref_name == 'beta' && 'test-signing' || 'release-signing' }}
           github-artifact-id: '${{ steps.upload_unsigned.outputs.artifact-id }}'
           wait-for-completion: true
           output-artifact-directory: 'dist/aily-blockly'
@@ -270,60 +271,76 @@ jobs:
           echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           echo "Version: v${VERSION}"
 
-      - name: Get Git Commits Since Last Tag
+      - name: Get Git Commits Since Last Release
         id: commits
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CURRENT_TAG="${{ steps.version.outputs.tag }}"
-          PREV_TAG=""
-          USE_TAG=false
+          BRANCH_NAME="${{ github.ref_name }}"
+          BASE_SHA=""
 
-          # 策略1：通过 GitHub API 获取上一个成功发布的 Release tag（最可靠）
-          echo "--- 尝试通过 GitHub API 获取上一个 Release ---"
-          LATEST_RELEASE_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
-
-          if [ -n "$LATEST_RELEASE_TAG" ] && [ "$LATEST_RELEASE_TAG" != "$CURRENT_TAG" ]; then
-            echo "✓ GitHub API 返回上一个 Release tag: $LATEST_RELEASE_TAG"
-            PREV_TAG="$LATEST_RELEASE_TAG"
-          elif [ "$LATEST_RELEASE_TAG" = "$CURRENT_TAG" ]; then
-            # 当前版本已发布过，获取倒数第二个 release
-            echo "⚠️ 最新 Release 就是当前版本 $CURRENT_TAG，尝试获取上一个..."
-            PREV_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq ".[].tag_name" 2>/dev/null \
-              | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
-            if [ -n "$PREV_TAG" ]; then
-              echo "✓ 找到上一个 Release tag: $PREV_TAG"
+          # 策略1：从 release-meta 分支读取上次记录的 commit SHA（精确范围）
+          echo "--- 尝试从 release-meta 分支读取上次发布的 SHA ---"
+          git fetch origin release-meta 2>/dev/null || true
+          if git ls-remote --heads origin release-meta 2>/dev/null | grep -q release-meta; then
+            STORED_SHA=$(git show "origin/release-meta:last-sha-${BRANCH_NAME}" 2>/dev/null | tr -d '[:space:]' || echo "")
+            if [ -n "$STORED_SHA" ]; then
+              echo "✓ 读取到上次发布 SHA: $STORED_SHA"
+              if git cat-file -e "${STORED_SHA}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$STORED_SHA" HEAD 2>/dev/null; then
+                echo "✓ SHA 有效，作为 changelog 起始点"
+                BASE_SHA="$STORED_SHA"
+              else
+                echo "⚠️ 存储的 SHA 不在当前历史中（可能因 force-push/rebase），降级到 tag 策略"
+              fi
+            else
+              echo "⚠️ release-meta 分支中 last-sha-${BRANCH_NAME} 不存在或为空，降级到 tag 策略"
             fi
           else
-            echo "⚠️ GitHub API 未返回有效 Release"
+            echo "⚠️ release-meta 分支不存在（首次发布），降级到 tag 策略"
           fi
 
-          # 策略2：如果 API 失败，回退到 git tag
-          if [ -z "$PREV_TAG" ]; then
-            echo "--- 回退到 git tag 查找 ---"
-            PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
-            if [ -n "$PREV_TAG" ]; then
-              echo "✓ Git tag 找到: $PREV_TAG"
-            fi
-          fi
+          # 策略2（降级）：通过 GitHub API 获取上一个 Release tag
+          if [ -z "$BASE_SHA" ]; then
+            CURRENT_TAG="${{ steps.version.outputs.tag }}"
+            echo "--- 降级：通过 GitHub API 获取上一个 Release tag ---"
+            LATEST_RELEASE_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+            PREV_TAG=""
 
-          # 校验 PREV_TAG 是否为当前 HEAD 的祖先（防止 force-push/rebase 导致 tag 孤立）
-          if [ -n "$PREV_TAG" ]; then
-            if git merge-base --is-ancestor "$PREV_TAG" HEAD 2>/dev/null; then
-              echo "✓ $PREV_TAG 是 HEAD 的祖先，使用 tag 范围"
-              USE_TAG=true
+            if [ -n "$LATEST_RELEASE_TAG" ] && [ "$LATEST_RELEASE_TAG" != "$CURRENT_TAG" ]; then
+              echo "✓ GitHub API 返回上一个 Release tag: $LATEST_RELEASE_TAG"
+              PREV_TAG="$LATEST_RELEASE_TAG"
+            elif [ "$LATEST_RELEASE_TAG" = "$CURRENT_TAG" ]; then
+              echo "⚠️ 最新 Release 就是当前版本，尝试获取上一个..."
+              PREV_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq ".[].tag_name" 2>/dev/null \
+                | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
+              [ -n "$PREV_TAG" ] && echo "✓ 找到上一个 Release tag: $PREV_TAG"
             else
-              echo "⚠️ $PREV_TAG 不是 HEAD 的祖先（可能因 force-push/rebase 导致 tag 孤立），回退到时间范围"
-              PREV_TAG=""
+              echo "⚠️ GitHub API 未返回有效 Release"
+            fi
+
+            # 策略3（再降级）：git tag
+            if [ -z "$PREV_TAG" ]; then
+              echo "--- 再降级：git tag 查找 ---"
+              PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
+              [ -n "$PREV_TAG" ] && echo "✓ Git tag 找到: $PREV_TAG"
+            fi
+
+            if [ -n "$PREV_TAG" ]; then
+              if git merge-base --is-ancestor "$PREV_TAG" HEAD 2>/dev/null; then
+                echo "✓ $PREV_TAG 是 HEAD 的祖先，使用 tag 范围"
+                BASE_SHA="$PREV_TAG"
+              else
+                echo "⚠️ $PREV_TAG 不是 HEAD 的祖先（force-push/rebase），放弃"
+              fi
             fi
           fi
 
           # 收集提交
-          if [ "$USE_TAG" = true ]; then
-            echo "✓ Comparing $PREV_TAG → HEAD"
-            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges | head -100 > /tmp/commits.txt
+          if [ -n "$BASE_SHA" ]; then
+            echo "✓ git log ${BASE_SHA}..HEAD"
+            git log "${BASE_SHA}..HEAD" --pretty=format:"- %s" --no-merges | head -100 > /tmp/commits.txt
           else
-            echo "⚠️ 无可用 tag 基准，使用最近 30 天的提交"
+            echo "⚠️ 无可用基准，使用最近 30 天的提交"
             git log --since="30 days ago" --pretty=format:"- %s" --no-merges | head -100 > /tmp/commits.txt
           fi
 
@@ -349,24 +366,34 @@ jobs:
               text = re.sub(r'</?think>', '', text)
               return text.strip()
 
-          def call_ai(base_url, api_key, model, prompt):
+          def call_ai(base_url, api_key, model, prompt, max_retries=3):
+              import time
               payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 2000,
                 "temperature": 0.3
               }
-              req = urllib.request.Request(
-                f'{base_url}/chat/completions',
-                data=json.dumps(payload).encode('utf-8'),
-                headers={
-                  'Content-Type': 'application/json',
-                  'Authorization': f'Bearer {api_key}'
-                }
-              )
-              with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read())
-              return strip_think_tags(data['choices'][0]['message']['content'])
+              last_exc = None
+              for attempt in range(1, max_retries + 1):
+                try:
+                  req = urllib.request.Request(
+                    f'{base_url}/chat/completions',
+                    data=json.dumps(payload).encode('utf-8'),
+                    headers={
+                      'Content-Type': 'application/json',
+                      'Authorization': f'Bearer {api_key}'
+                    }
+                  )
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read())
+                  return strip_think_tags(data['choices'][0]['message']['content'])
+                except Exception as e:
+                  last_exc = e
+                  print(f"⚠️ AI request attempt {attempt}/{max_retries} failed: {e}")
+                  if attempt < max_retries:
+                    time.sleep(3 * attempt)
+              raise last_exc
 
           try:
             version  = os.environ.get('RELEASE_VERSION', '')
@@ -557,8 +584,8 @@ jobs:
             ./release/CHANGELOG.md
             ./release/CHANGELOG_ZH.md
           draft: false
-          prerelease: false
-          make_latest: true
+          prerelease: ${{ github.ref_name == 'beta' }}
+          make_latest: ${{ github.ref_name == 'deploy' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -570,9 +597,34 @@ jobs:
             ./release/CHANGELOG.md
             ./release/CHANGELOG_ZH.md
 
+      - name: Save Release SHA to release-meta branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME="${{ github.ref_name }}"
+          CURRENT_SHA="${{ github.sha }}"
+
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          git fetch origin release-meta 2>/dev/null || true
+          if git ls-remote --heads origin release-meta 2>/dev/null | grep -q release-meta; then
+            git checkout -B release-meta origin/release-meta
+          else
+            git checkout --orphan release-meta
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          echo "$CURRENT_SHA" > "last-sha-${BRANCH_NAME}"
+          git add "last-sha-${BRANCH_NAME}"
+          git commit -m "chore: update last release SHA for ${BRANCH_NAME} [${CURRENT_SHA:0:7}]"
+          git push origin release-meta
+          echo "✓ Saved SHA $CURRENT_SHA for branch $BRANCH_NAME"
+
   # 任务 4a：上传 Windows 文件到 Cloudflare R2 存储（与Release并行执行）
   upload-windows-to-r2:
     needs: [build-windows]
+    if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
       - name: Download Windows Artifact
@@ -636,6 +688,7 @@ jobs:
   # 任务 4c：上传 CHANGELOG 文件到 Cloudflare R2 存储
   upload-changelog-to-r2:
     needs: [release]
+    if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
       - name: Download CHANGELOG Artifact
@@ -689,6 +742,7 @@ jobs:
   # 任务 4b：上传 macOS 文件到 Cloudflare R2 存储（与Release并行执行）
   upload-macos-to-r2:
     needs: [build-macos]
+    if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
       - name: Download macOS Artifact
@@ -805,6 +859,7 @@ jobs:
   # 任务 5：触发服务器脚本
   trigger-server-script:
     needs: [upload-windows-to-r2, upload-macos-to-r2, upload-changelog-to-r2]
+    if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Server Script
