@@ -20,6 +20,13 @@ yarn.lock
 /child/rg
 /child/rg.exe
 
+# E2E test artifacts
+/e2e/node_modules
+/e2e/reports
+/e2e/test-results
+/e2e/playwright/.cache
+/e2e/tmp
+
 # IDEs and editors
 .idea/
 .project

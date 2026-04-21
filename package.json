@@ -141,7 +141,12 @@
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && electron ./electron/main.js --serve\"",
     "build": "ng build --base-href ./ && electron-builder build",
     "build:mac": "ng build --base-href ./ && electron-builder --mac --arm64 --x64",
-    "build:mac:universal": "ng build --base-href ./ && electron-builder --mac --universal"
+    "build:mac:universal": "ng build --base-href ./ && electron-builder --mac --universal",
+    "test:e2e": "npm --prefix e2e test",
+    "test:e2e:dev": "cross-env AILY_TEST_TARGET=dev npm --prefix e2e test",
+    "test:e2e:prod": "cross-env AILY_TEST_TARGET=prod npm --prefix e2e test",
+    "test:e2e:headed": "npm --prefix e2e run test:headed",
+    "aily-test": "npm --prefix e2e run aily-test --"
   },
   "private": true,
   "dependencies": {

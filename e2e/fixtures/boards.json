@@ -1,0 +1,27 @@
+[
+  {
+    "id": "arduino-uno",
+    "name": "Arduino Uno",
+    "package": "arduino:avr:uno",
+    "tags": ["stable", "avr"],
+    "minimalProgramXml": "<xml xmlns=\"https://developers.google.com/blockly/xml\"><block type=\"arduino_setup_loop\" /></xml>"
+  },
+  {
+    "id": "arduino-nano",
+    "name": "Arduino Nano",
+    "package": "arduino:avr:nano",
+    "tags": ["stable", "avr"]
+  },
+  {
+    "id": "esp32-devmodule",
+    "name": "ESP32 Dev Module",
+    "package": "esp32:esp32:esp32",
+    "tags": ["wifi", "xtensa"]
+  },
+  {
+    "id": "rp2040-pico",
+    "name": "Raspberry Pi Pico",
+    "package": "rp2040:rp2040:pico",
+    "tags": ["arm", "rp2040"]
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "name": "aily-blockly-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end & automation test suite for aily-blockly (Playwright for Electron).",
+  "bin": {
+    "aily-test": "./cli/index.ts"
+  },
+  "scripts": {
+    "aily-test": "tsx cli/index.ts",
+    "test": "playwright test",
+    "test:dev": "cross-env AILY_TEST_TARGET=dev playwright test",
+    "test:prod": "cross-env AILY_TEST_TARGET=prod playwright test",
+    "test:headed": "cross-env AILY_TEST_TARGET=dev playwright test --headed",
+    "doctor": "tsx cli/index.ts doctor",
+    "report": "playwright show-report reports/html"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.47.0",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "cross-env": "^7.0.3",
+    "execa": "^5.1.1",
+    "playwright": "^1.47.0",
+    "tsx": "^4.19.1",
+    "wait-on": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/wait-on": "^5.3.4",
+    "typescript": "^5.5.0"
+  }
+}

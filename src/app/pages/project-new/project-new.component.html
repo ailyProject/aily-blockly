@@ -4,7 +4,7 @@
       <i class="fa-regular fa-chevron-left"></i>
     </div>
     <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
-      <input type="text" nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
+      <input type="text" nz-input data-testid="new-project-board-input" [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
         (ngModelChange)="search()" />
     </nz-input-group>
     <ng-template #suffixIconSearch>
@@ -61,7 +61,7 @@
         <div class="board-selector-box sscroll">
           <div class="board-selector">
             @for (board of boardList; track board.name) {
-            <div class="board ccenter btn" [ngClass]="{ selected: currentBoard == board, disabled: board.disabled }"
+            <div class="board ccenter btn" data-testid="new-project-board-option" [attr.data-board-id]="board.name" [ngClass]="{ selected: currentBoard == board, disabled: board.disabled }"
               (click)="selectBoard(board)">
               <div class="img-box">
                 <img [sequentialSrc]="resourceUrl+'/imgs/boards/'+board.img" />
@@ -95,7 +95,7 @@
             <div class="text sscroll">{{ currentBoard._description }}</div>
             <div class="next">
               @if(currentBoard.state!='todo'){
-              <button nz-button nzType="primary" (click)="nextStep()">
+              <button nz-button nzType="primary" data-testid="new-project-use-this" (click)="nextStep()">
                 {{ 'PROJECT_NEW.BUTTONS.USE_THIS' | translate }}
               </button>
               }
@@ -171,7 +171,7 @@
           </div>
           <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div>
-            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
+            <input nz-input data-testid="new-project-name" [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
             @if(showIsExist){
             <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' |
               translate }}</div>
@@ -183,7 +183,7 @@
               <input nz-input [(ngModel)]="newProjectData.path" [disabled]="true" />
             </nz-input-group>
             <ng-template #addOnAfterTemplate>
-              <div class="btn ccenter ffull" (click)="selectFolder()">
+              <div class="btn ccenter ffull" data-testid="new-project-select-folder" (click)="selectFolder()">
                 <i class="fa-light fa-folder"></i>
               </div>
             </ng-template>
@@ -197,7 +197,7 @@
               {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
             </button>
             @if (currentStep == 1) {
-            <button nz-button nzType="primary" [disabled]="showIsExist || showIsPathPassed" (click)="createProject()">
+            <button nz-button nzType="primary" data-testid="new-project-submit" [disabled]="showIsExist || showIsPathPassed" (click)="createProject()">
               {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
             </button>
             }@else if (currentStep == 2) {

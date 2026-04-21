@@ -276,14 +276,31 @@ function shouldUseMultiInstance() {
   return true;
 }
 
+// --- E2E 测试模式早期检测（必须在 instance 隔离之前） ---
+const _earlyArgs = process.argv.slice(1);
+const _isTestModeEarly =
+  _earlyArgs.some((v) => v === "--test-mode") ||
+  process.env.ELECTRON_TEST_MODE === "1";
+if (_isTestModeEarly && process.env.AILY_USERDATA) {
+  try {
+    app.setPath("userData", process.env.AILY_USERDATA);
+    app.setPath("cache", path.join(process.env.AILY_USERDATA, "Cache"));
+    console.log("[test-mode] userData overridden:", process.env.AILY_USERDATA);
+  } catch (e) {
+    console.error("[test-mode] setPath(userData) failed:", e);
+  }
+}
+
 // 只有在需要多实例时才设置独立的用户数据目录
 if (shouldUseMultiInstance()) {
   // 检查是否是协议启动
   const isProtocolLaunch = process.argv.some(arg => arg.startsWith(`${PROTOCOL}://`));
 
-  if (!isProtocolLaunch) {
-    // 只有非协议启动才设置实例隔离
+  // 测试模式下跳过 instance 池化，使用显式 AILY_USERDATA
+  if (!isProtocolLaunch && !_isTestModeEarly) {
     setupPooledUserDataPath();
+  } else if (_isTestModeEarly) {
+    console.log('[test-mode] 跳过 instance 池化');
   } else {
     console.log('协议启动，跳过实例隔离设置');
   }
@@ -294,6 +311,21 @@ app.removeAsDefaultProtocolClient(PROTOCOL);
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
 process.env.DEV = serve;
+
+// --- E2E test-mode 支持（仅在显式指定 --test-mode 或 ELECTRON_TEST_MODE=1 时生效） ---
+const isTestMode =
+  args.some((val) => val === "--test-mode") ||
+  process.env.ELECTRON_TEST_MODE === "1";
+if (isTestMode) {
+  process.env.AILY_TEST_MODE = "1";
+  // 禁用 updater 的自动检查（避免测试期间弹窗/外部请求）
+  process.env.AILY_DISABLE_UPDATER = "1";
+  try {
+    require("./test-hooks").register({ app, ipcMain });
+  } catch (e) {
+    console.error("[test-mode] failed to load test-hooks:", e);
+  }
+}
 
 // 注册协议处理
 if (process.defaultApp) {

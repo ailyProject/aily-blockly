@@ -11,7 +11,7 @@
       @if (item.sep) {
       <div class="sep"></div>
       } @else {
-      <div class="btn link" (click)="onMenuClick(item)">
+      <div class="btn link" [attr.data-testid]="item.action === 'project-new' ? 'menu-new-project' : (item.action === 'project-open' ? 'menu-open-project' : null)" (click)="onMenuClick(item)">
         <div class="icon ccenter">
           <i class="{{ item.icon }}"></i>
         </div>
