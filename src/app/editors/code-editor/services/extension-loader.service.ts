@@ -434,10 +434,13 @@ export class ExtensionLoaderService {
     if (contributes.grammars) {
       for (const grammar of contributes.grammars) {
         if (grammar.path) {
+          const gPath = grammar.path
+          const isPlist =
+            gPath.endsWith('.tmLanguage') || gPath.endsWith('.plist')
           files.push({
-            path: grammar.path,
-            url: `${baseUrl}${grammar.path}`,
-            mimeType: 'application/json'
+            path: gPath,
+            url: `${baseUrl}${gPath}`,
+            mimeType: isPlist ? 'application/xml' : 'application/json'
           })
         }
       }
