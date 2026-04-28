@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Aily Blockly 审计日志服务
  * 记录所有工具调用和操作，用于安全审计和异常检测
  * 
@@ -6,6 +6,7 @@
  */
 
 import { sanitizeForLogging } from './security.service';
+import { AilyHost } from '../core/host';
 
 // ==================== 类型定义 ====================
 
@@ -330,7 +331,7 @@ class AuditLogService {
             recentLogs
                 .map(log => {
                     try {
-                        return window['path'].dirname(log.target);
+                        return AilyHost.get().path.dirname(log.target);
                     } catch {
                         return log.target;
                     }

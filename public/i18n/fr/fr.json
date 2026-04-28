@@ -31,7 +31,8 @@
         "USER_SPACE": "Espace Cloud",
         "LIB_MANAGER": "Gestionnaire de Bibliothèques",
         "AI_ASSISTANT": "Assistant IA",
-        "PROJECT_HUB": "Centre de Projets"
+        "PROJECT_HUB": "Centre de Projets",
+        "NEW_INSTANCE": "Nouvelle fenêtre"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Vitesse de téléchargement",
@@ -46,6 +47,15 @@
         "BOARD": "Sélection du modèle de la carte",
         "USB": "Paramètres USB",
         "UPLOAD_METHOD": "Méthode de Téléversement"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "Flasher SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "Voulez-vous flasher {{softdevice}} SoftDevice sur l'appareil ?",
+        "SELECT_PORT_FIRST": "Veuillez d'abord sélectionner un port",
+        "FLASHING_SOFTDEVICE": "Flashage du SoftDevice en cours...",
+        "FLASH_SUCCESS": "SoftDevice flashé avec succès",
+        "FLASH_FAILED": "Échec du flashage du SoftDevice"
     },
     "GUIDE": {
         "START": "Démarrer",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "Des questions ? Envie de partager votre travail ? Rejoignez notre communauté d'utilisateurs pour échanger et apprendre avec d'autres makers !"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "Copier à l'emplacement spécifié",
+        "CONTROLS_SWITCH_CASE": "cas",
+        "CONTROLS_SWITCH_DO": "faire",
+        "CONTROLS_SWITCH_DEFAULT": "par défaut",
+        "CROSS_TAB_PASTE": "Coller",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "Coller %1 éléments",
+        "WORKSPACE_SELECT_ALL": "Sélectionner tous les blocs"
+    },
     "APP_STORE": {
         "HEADER_INFO": "Les {{count}} premières applications seront affichées dans la barre d'outils",
         "RESET": "Réinitialiser",
@@ -113,7 +132,8 @@
             "REPOSITORY": "Paramètres de Dépôt",
             "DEPENDENCIES": "Dépendances Globales",
             "MCP": "MCP",
-            "DEVMODE": "Mode Développeur"
+            "DEVMODE": "Mode Développeur",
+            "CACHE": "Gestion du cache"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Dossier du Projet",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "Thème Blockly",
             "BLOCKLY_MINIMAP": "Miniature Blockly",
             "COMPILATION_OPTIONS": "Options de Compilation",
+            "REGION": "Région de service",
+            "REGION_TITLE": "Changer la région de service",
+            "REGION_DESC": "Vous devrez vous reconnecter après avoir changé la région de service. Continuer ?",
+            "REGION_CONFIRM": "Confirmer",
+            "REGION_CANCEL": "Annuler",
             "REPOSITORY_URLS": "URLs des Dépôts",
             "BOARD_LIST": "Liste des Cartes",
             "LIBRARY_LIST": "Liste des Bibliothèques",
             "INSTALL": "Installer",
-            "UNINSTALL": "Désinstaller"
+            "UNINSTALL": "Désinstaller",
+            "CLEAR_CACHE": "Vider le cache",
+            "CACHE_SIZE": "Taille du cache",
+            "CACHE_LOADING": "Chargement...",
+            "CACHE_ALL": "Tout effacer",
+            "CACHE_ONE_MONTH": "Effacer 1 mois",
+            "CACHE_THREE_MONTHS": "Effacer 3 mois",
+            "CACHE_CLEARING": "Effacement...",
+            "CACHE_CLEARED": "Cache effacé",
+            "CACHE_CLEAR_FAILED": "Échec de l'effacement",
+            "CACHE_CONFIRM_TITLE": "Confirmer l'effacement",
+            "CACHE_CONFIRM_DESC": "Êtes-vous sûr de vouloir effacer tout le cache de compilation ? Cette action est irréversible.",
+            "CACHE_CONFIRM_OK": "Confirmer"
         },
         "BUTTONS": {
             "CANCEL": "Annuler",
@@ -153,7 +190,8 @@
             "BOARD": "Carte",
             "PROJECT_NAME": "Nom du Projet",
             "SAVE_PATH": "Chemin de Sauvegarde",
-            "NAME_EXISTS": "Le nom du projet existe déjà, veuillez le modifier"
+            "NAME_EXISTS": "Le nom du projet existe déjà, veuillez le modifier",
+            "PATH_INVALID_CHARS": "Le chemin contient des caractères invalides (ex. / : * ? \" < > |), veuillez modifier"
         },
         "BUTTONS": {
             "USE_THIS": "Utiliser cette Carte",
@@ -164,14 +202,15 @@
             "CREATING": "Création en cours"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Version bêta, non vérifiée, utilisez avec prudence"
+            "BETA_VERSION": "Version bêta, non vérifiée, utilisez avec prudence",
+            "TODO": "Le support de cet appareil sera bientôt disponible"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "Gestionnaire de Bibliothèques",
         "BACK": "Retour",
         "SEARCH_LIBRARY": "Rechercher une bibliothèque",
-        "ALL": "Toutes les bibliothèques",
+        "ALL": "Tout",
         "INSTALLED": "Installé",
         "CORE_LIBRARY": "Bibliothèque centrale",
         "IMPORT_LIBRARY": "Importer une bibliothèque locale",
@@ -182,6 +221,7 @@
         "INSTALLED_TEXT": "Installé",
         "REMOVE": "Supprimer",
         "INSTALLING": "Installation en cours",
+        "INSTALL_FAILED": "Échec de l'installation",
         "UNINSTALLING": "Désinstallation en cours",
         "UNINSTALLED": "Désinstallé",
         "IMPORTING": "Importation en cours",
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "Mise à jour du logiciel",
+        "TITLE_READY": "Mise à jour prête",
+        "TITLE_NEW_VERSION": "Nouvelle version {{version}} disponible",
+        "TEXT_DOWNLOADED": "La version {{version}} a été téléchargée. Installer maintenant ?",
+        "TEXT_AVAILABLE": "Version actuelle {{currentVersion}}, nouvelle version {{version}}<br>Voulez-vous télécharger et installer cette mise à jour ?",
         "DOWNLOAD_FAILED": "Échec du téléchargement",
         "REMIND_LATER": "Rappeler plus tard",
         "SKIP_VERSION": "Ignorer cette version",
@@ -277,8 +321,9 @@
         "SETTINGS": "Paramètres IA",
         "HISTORY": "Historique des discussions",
         "NEW_CHAT": "Nouvelle discussion",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "Les réponses de l'IA sont fournies à titre de référence uniquement et peuvent ne pas être exactes. Elles ne représentent pas les opinions des développeurs du logiciel. Les utilisateurs doivent vérifier les informations par eux-mêmes.",
+        "USAGE_GUIDE": "Découvrir l'utilisation de l'IA",
         "ADD_CONTEXT": "Ajouter un contexte",
         "ADD_FILE": "Ajouter un fichier",
         "ADD_FOLDER": "Ajouter un dossier",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "Mode Agent",
         "MODE_QA_FULL": "Mode Q&R",
         "STOP_CURRENT_SESSION_FIRST": "Veuillez d'abord arrêter la session en cours avant d'en créer une nouvelle",
+        "NO_HISTORY_SESSION": "Aucun enregistrement de session historique",
+        "MERMAID_SAVE_ARCH": "Enregistrer comme diagramme d'architecture",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "Confirmer l'écrasement",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "Le fichier du diagramme d'architecture existe déjà dans le répertoire du projet. Écraser ?",
+        "MERMAID_ARCH_CONFIRM": "Confirmer",
+        "MERMAID_ARCH_CANCEL": "Annuler",
+        "MERMAID_COPY_FAILED": "Échec de la copie",
+        "MERMAID_SAVE_FAILED": "Échec de l'enregistrement",
+        "CLICK_TO_EDIT": "Cliquer pour modifier",
         "ONBOARDING": {
             "STEP1_TITLE": "Zone de saisie",
             "STEP1_DESC": "Tapez ici vos questions ou tâches pour l'assistance IA. Appuyez sur Entrée pour envoyer, Ctrl+Entrée pour nouvelle ligne",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Paramètres du Projet",
+        "ARCH": "Diagramme d'Architecture",
         "PINMAP": "Schéma des Broches",
+        "CIRCUIT": "Schéma de Câblage",
         "DOCUMENTATION": "Documentation",
         "FEEDBACK": "Retour d'information",
         "NO_PINMAP": "Schéma des broches non disponible pour cette carte",
-        "NO_DOCUMENTATION": "Documentation non disponible pour cette carte"
+        "PINMAP_PARSE_ERROR": "Échec de l'analyse du schéma des broches",
+        "NO_DOCUMENTATION": "Documentation non disponible pour cette carte",
+        "ARCH_ELECTRON_ONLY": "Le diagramme d'architecture n'est disponible que dans l'application bureau",
+        "NO_PROJECT": "Aucun projet ouvert",
+        "NO_ARCH": "arch.md introuvable dans le répertoire du projet",
+        "ARCH_EMPTY": "Aucun diagramme mermaid trouvé dans arch.md",
+        "ARCH_RENDER_FAILED": "Échec du rendu du diagramme d'architecture",
+        "GENERATE_ARCH_PROMPT": "Générer le diagramme d'architecture du projet",
+        "ARCH_AI_BUSY": "L'IA est en conversation, veuillez réessayer plus tard",
+        "LOGIN_REQUIRED": "Veuillez d'abord vous connecter pour utiliser cette fonctionnalité"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "Veuillez d'abord sélectionner un port série",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "Partager vos projets",
         "BENEFIT_EXPERIENCE": "Profiter d'une expérience de développement personnalisée",
         "NOTICE_LABEL": "Remarque : ",
-        "NOTICE_CONTENT": "Nous utiliserons votre compte GitHub pour mettre une étoile sur nos dépôts open source, ce qui aide au développement du projet.",
+        "NOTICE_CONTENT": "La connexion ajoutera une étoile à ce projet, contribuant au développement de notre projet",
         "GITHUB_LOGIN": "Se connecter avec Github",
         "WECHAT_SCAN": "Scannez le code QR pour suivre et vous connecter",
         "PHONE_NOT_OPEN": "L'inscription par téléphone n'est pas encore disponible",
         "PHONE_BETA_ONLY": "La connexion par téléphone est réservée aux testeurs bêta AI",
         "PHONE_PLACEHOLDER": "Entrez le numéro de téléphone",
         "PASSWORD_PLACEHOLDER": "Entrez le mot de passe",
+        "EMAIL_PLACEHOLDER": "Entrez l'adresse e-mail",
+        "CODE_PLACEHOLDER": "Entrez le code de vérification",
+        "SEND_CODE": "Envoyer le code",
+        "CODE_SENDING": "Veuillez d'abord obtenir le code de vérification",
         "LOGGING_IN": "Connexion en cours...",
         "LOGIN": "Connexion",
         "SELECT_METHOD": "Cliquez pour sélectionner la méthode de connexion",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "Veuillez entrer le nom d'utilisateur et le mot de passe",
         "LOGIN_SUCCESS": "Connexion réussie",
         "LOGIN_FAILED": "Échec de la connexion",
-        "LOGIN_NETWORK_ERROR": "Échec de la connexion, veuillez vérifier la connexion réseau"
+        "LOGIN_NETWORK_ERROR": "Échec de la connexion, veuillez vérifier la connexion réseau",
+        "AGREEMENT_PREFIX": "J'ai lu et j'accepte les",
+        "USER_AGREEMENT": "Conditions d'utilisation",
+        "AGREEMENT_AND": "et la",
+        "PRIVACY_POLICY": "Politique de confidentialité",
+        "AGREEMENT_REQUIRED": "Veuillez accepter les conditions d'utilisation et la politique de confidentialité",
+        "MODAL_CLOSE": "Fermer",
+        "AGREEMENT_LOAD_FAILED": "Échec du chargement des conditions d'utilisation",
+        "PRIVACY_LOAD_FAILED": "Échec du chargement de la politique de confidentialité",
+        "WECHAT_QRCODE_FAILED": "Échec de l'obtention du code QR",
+        "WECHAT_REFRESH": "Actualiser le code QR",
+        "WECHAT_RETRY": "Réessayer",
+        "INVITE_CODE_PLACEHOLDER": "Code d'invitation (facultatif)",
+        "AGREEMENT_BY_LOGIN": "En vous connectant/inscrivant, vous acceptez les",
+        "TERMS_OF_USE": "Conditions d'utilisation",
+        "OTHER_LOGIN_METHODS": "Vous pouvez également vous connecter avec",
+        "GITHUB_CONTINUE": "Veuillez cliquer sur \"Continue\" sur la page d'autorisation GitHub pour terminer la connexion",
+        "REGISTER": "S'inscrire"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "Fonctionnalité bientôt disponible"
+    },
+    "NPM": {
+        "INSTALLING": "Installation de {{name}}...",
+        "INSTALLING_DEPENDENCY": "Installation de la dépendance {{name}}...",
+        "INSTALL_TIMEOUT": "Délai d'installation dépassé",
+        "INSTALL_COMPLETE": "{{name}} installé avec succès",
+        "INSTALL_FAILED": "Échec de l'installation de {{name}}",
+        "UNINSTALLING": "Désinstallation de {{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "Désinstallation des dépendances inutilisées...",
+        "UNINSTALL_TIMEOUT": "Délai de désinstallation dépassé",
+        "UNINSTALL_COMPLETE": "{{name}} désinstallé avec succès",
+        "BOARD_INSTALL_COMPLETE": "Carte installée avec succès",
+        "BOARD_UNINSTALL_COMPLETE": "Carte désinstallée avec succès",
+        "BOARD_DEPS_INSTALL_COMPLETE": "Dépendances de la carte installées avec succès",
+        "BOARD_DEPS_INSTALL_FAILED": "Échec de l'installation des dépendances de la carte",
+        "DEPS_INSTALL_COMPLETE": "Dépendances installées avec succès",
+        "DEPS_UNINSTALL_COMPLETE": "Dépendances désinstallées avec succès",
+        "DEPS_UNINSTALL_FAILED": "Échec de la désinstallation des dépendances",
+        "NAME_REQUIRED": "Le nom de {{type}} ne peut pas être vide",
+        "TYPE_TOOL": "Outil",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "Compilateur",
+        "INSTALLING_TITLE": "Installation",
+        "INSTALL_COMPLETE_TITLE": "Installation Terminée",
+        "INSTALL_FAILED_TITLE": "Échec de l'Installation",
+        "UNINSTALLING_TITLE": "Désinstallation",
+        "UNINSTALL_COMPLETE_TITLE": "Désinstallation Terminée",
+        "UNINSTALL_FAILED_TITLE": "Échec de la Désinstallation"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "Installation des dépendances",
+        "LOADING_BOARD_CONFIG": "Chargement de la configuration de la carte",
+        "LOADING_BLOCKLY_LIB": "Chargement des bibliothèques Blockly",
+        "LOADING_LIB": "Chargement de {{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "Chargement du programme Blockly",
+        "PROJECT_LOAD_SUCCESS": "Projet chargé avec succès"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "Chargement de l'exemple...",
+        "EXAMPLE_LOAD_SUCCESS": "Exemple chargé avec succès",
+        "EXAMPLE_LOAD_FAILED": "Échec du chargement de l'exemple",
+        "NO_TUTORIAL_PROVIDED": "L'auteur de la bibliothèque n'a pas fourni de tutoriel"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "Impossible d'ouvrir le projet: ",
+        "CREATING_PROJECT": "Création du projet...",
+        "PROJECT_CREATED": "Projet créé avec succès",
+        "CREATE_FAILED": "Échec de la création du projet",
+        "PATH_NOT_EXIST": "Le chemin du projet n'existe pas, veuillez sélectionner un autre projet",
+        "SWITCHING_BOARD_CONFIG": "Changement de la configuration de la carte...",
+        "BOARD_SWITCH_COMPLETE": "Changement de carte terminé",
+        "BOARD_SWITCH_SUCCESS": "Carte changée avec succès",
+        "SWITCHING_BOARD": "Changement de carte...",
+        "UNINSTALLING_CURRENT_BOARD": "Désinstallation de la carte actuelle...",
+        "INSTALLING_NEW_BOARD": "Installation de la nouvelle carte...",
+        "UPDATING_PROJECT_CONFIG": "Mise à jour de la configuration du projet...",
+        "BOARD_SWITCH_FAILED": "Échec du changement de carte: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "Arrêter",
+        "VIEW_DETAIL": "Voir les détails",
+        "AI_PROCESS": "Traitement AI"
+    },
+    "LOG": {
+        "TOOLTIP": "Cliquer pour copier, double-cliquer pour envoyer à l'assistant AI",
+        "COPIED_TO_CLIPBOARD": "Contenu du journal copié dans le presse-papiers",
+        "SENT_TO_AI": "Contenu du journal envoyé à l'assistant AI",
+        "NO_DATA_TO_EXPORT": "Aucune donnée de journal à exporter",
+        "EXPORT_TITLE": "Exporter les données du journal",
+        "TEXT_FILE": "Fichiers texte",
+        "ALL_FILES": "Tous les fichiers",
+        "EXPORT_SUCCESS": "Données du journal exportées avec succès vers "
     }
 }

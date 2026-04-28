@@ -1,0 +1,10 @@
+<div class="mermaid-container" [class.dragging]="isDragging" (wheel)="onWheel($event)" (mousedown)="onMouseDown($event)"
+    (click)="onContainerClick($event)">
+    <div class="mermaid-content" [style.transform]="getTransform()" [style.transform-origin]="'0 0'">
+        <div class="mermaid-svg-container" #svgContainer [innerHTML]="renderedSvg">
+        </div>
+    </div>
+    <div class="save-btn ccenter" (click)="saveSvg($event)">
+        <i class="fa-light fa-download" style="margin-right: 5px;"></i> 保存为图片
+    </div>
+</div>

@@ -9,9 +9,9 @@
 
   .search-input {
     width: 100%;
-    background: #3a3c3f;
-    border: 1px solid #555;
-    color: #ddd;
+    background: var(--aily-bg-tertiary);
+    border: 1px solid var(--aily-border-tertiary);
+    color: var(--aily-text-quaternary);
     padding: 5px 10px;
     border-radius: 4px;
 
@@ -21,7 +21,7 @@
     }
 
     &::placeholder {
-      color: #888;
+      color: var(--aily-text-hint);
     }
   }
 }
@@ -29,9 +29,9 @@
 .board-list {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid #555;
+  border: 1px solid var(--aily-border-tertiary);
   border-radius: 4px;
-  background: #2b2d30;
+  background: var(--aily-bg-primary);
   max-height: 300px;
 
   .empty-list {
@@ -53,7 +53,7 @@
     align-items: center;
     padding: 10px;
     height: 60px;
-    border-bottom: 1px solid #3a3c3f;
+    border-bottom: 1px solid var(--aily-bg-tertiary);
     cursor: pointer;
     position: relative;
 
@@ -63,7 +63,7 @@
     }
 
     &:hover:not(.disabled) {
-      background: #3a3c3f;
+      background: var(--aily-bg-tertiary);
     }
 
     &.selected {
@@ -92,18 +92,18 @@
 
       .board-name {
         font-weight: 500;
-        color: #ddd;
+        color: var(--aily-text-quaternary);
         font-size: 14px;
       }
 
       .board-desc {
         font-size: 12px;
-        color: #999;
+        color: var(--aily-text-secondary);
       }
 
       .board-brand {
         font-size: 11px;
-        color: #666;
+        color: var(--aily-text-disabled);
       }
     }
 

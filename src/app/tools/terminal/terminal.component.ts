@@ -1,11 +1,12 @@
-import { Component, ElementRef, ViewChild } from '@angular/core';
-import { Terminal } from '@xterm/xterm';
+import { Component, ElementRef, ViewChild, effect, inject } from '@angular/core';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { ElectronService } from '../../services/electron.service';
 import { UiService } from '../../services/ui.service';
 import { ProjectService } from '../../services/project.service';
 import { TerminalService } from './terminal.service';
+import { ThemeService } from '../../services/theme.service';
 import { CommonModule } from '@angular/common';
 
 @Component({
@@ -17,16 +18,25 @@ import { CommonModule } from '@angular/common';
 export class TerminalComponent {
   @ViewChild('terminal') terminalEl: ElementRef;
 
-  terminal;
+  terminal: Terminal;
   fitAddon;
   clipboardAddon;
+
+  private readonly themeService = inject(ThemeService);
 
   constructor(
     private electronService: ElectronService,
     private uiService: UiService,
     private projectService: ProjectService,
     private terminalService: TerminalService,
-  ) { }
+  ) {
+    effect(() => {
+      this.themeService.theme();
+      if (this.terminal) {
+        this.terminal.options.theme = this.readTerminalThemeFromCss();
+      }
+    });
+  }
 
   close() {
     this.uiService.closeTool('terminal');
@@ -46,6 +56,7 @@ export class TerminalComponent {
       scrollback: 1000,
       cursorBlink: true,
       convertEol: true,
+      theme: this.readTerminalThemeFromCss(),
     });
     this.terminal.open(this.terminalEl.nativeElement);
 
@@ -72,6 +83,35 @@ export class TerminalComponent {
     this.terminalEl.nativeElement.removeEventListener('contextmenu', this.contextMenuListener);
     this.resizeObserver?.disconnect();
     this.terminal.dispose();
+  }
+
+  /** 背景 / 文本 + 光标、选区、ANSI 配色变量 */
+  private readTerminalThemeFromCss(): ITheme {
+    const styles = getComputedStyle(document.documentElement);
+    const g = (name: string) => styles.getPropertyValue(name).trim() || undefined;
+    return {
+      background: g('--aily-editor-bg'),
+      foreground: g('--aily-text-primary'),
+      cursor: g('--aily-terminal-cursor'),
+      cursorAccent: g('--aily-terminal-cursor-accent'),
+      selectionBackground: g('--aily-terminal-selection-bg'),
+      black: g('--aily-terminal-black'),
+      red: g('--aily-terminal-red'),
+      green: g('--aily-terminal-green'),
+      yellow: g('--aily-terminal-yellow'),
+      blue: g('--aily-terminal-blue'),
+      magenta: g('--aily-terminal-magenta'),
+      cyan: g('--aily-terminal-cyan'),
+      white: g('--aily-terminal-white'),
+      brightBlack: g('--aily-terminal-bright-black'),
+      brightRed: g('--aily-terminal-bright-red'),
+      brightGreen: g('--aily-terminal-bright-green'),
+      brightYellow: g('--aily-terminal-bright-yellow'),
+      brightBlue: g('--aily-terminal-bright-blue'),
+      brightMagenta: g('--aily-terminal-bright-magenta'),
+      brightCyan: g('--aily-terminal-bright-cyan'),
+      brightWhite: g('--aily-terminal-bright-white'),
+    };
   }
 
   // 用于监听容器大小变化，改变terminal大小
@@ -116,10 +156,10 @@ export class TerminalComponent {
 
     // 添加复制功能
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-      // Ctrl+Shift+C 用于复制
+      // Ctrl+C 用于复制（当有选中文本时）
       if (event.type === 'keydown' && event.ctrlKey && event.key === 'c') {
         if (this.terminal.hasSelection()) {
-          this.clipboardAddon.copy();
+          navigator.clipboard.writeText(this.terminal.getSelection());
           return false; // 阻止事件继续传播
         }
       }

@@ -1,16 +1,6 @@
 import { Injectable } from '@angular/core';
 import { ElectronService } from './electron.service';
 
-// export const BOARD_NAME: Record<string, string> = {
-//   'VID_303A&PID_1001': 'XIAO ESP32S3'
-// };
-
-// export function getBoardNameByVidPid(vendorId: string | undefined, productId: string | undefined): string | undefined {
-//   if (!vendorId || !productId) return undefined;
-//   const key = `VID_${vendorId.toUpperCase()}&PID_${productId.toUpperCase()}`;
-//   return BOARD_NAME[key];
-// }
-
 @Injectable({
   providedIn: 'root'
 })
@@ -18,6 +8,9 @@ export class SerialService {
 
   // 编译上传时，通过这里获取串口
   currentPort;
+
+  // 存储当前选中的设备完整信息（包含烧录方式 type: 'serial' | 'debugger'）
+  currentPortInfo: PortItem | null = null;
 
   constructor(
     private electronService: ElectronService
@@ -103,6 +96,8 @@ export interface PortItem {
   text?: string,
   type?: string,
   icon?: string,
-  disabled?: boolean
+  disabled?: boolean,
+  probeSerial?: string,
+  probeVidPid?: string,
 }
 

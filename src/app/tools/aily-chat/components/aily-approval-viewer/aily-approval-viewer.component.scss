@@ -1,0 +1,101 @@
+.aily-approval-viewer {
+    border-radius: 5px;
+    padding: 8px 12px;
+    background-color: #3a3a3a;
+    color: #ccc;
+    overflow: hidden;
+}
+
+.state-content {
+    display: flex;
+    align-items: center;
+}
+
+.state-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+    margin-right: 5px;
+
+    .done {
+        color: #52c41a;
+    }
+
+    .warn {
+        color: #faad14;
+    }
+}
+
+.state-text {
+    flex: 1;
+    font-size: 13px;
+}
+
+.approval-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.approval-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.approval-icon {
+    font-size: 16px;
+    color: #faad14;
+    flex-shrink: 0;
+}
+
+.approval-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: #e0e0e0;
+}
+
+.approval-message {
+    font-size: 12px;
+    color: #aaa;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+    padding-left: 24px;
+}
+
+.approval-actions {
+    display: flex;
+    gap: 8px;
+    padding-left: 24px;
+
+    .btn-approve,
+    .btn-reject {
+        border: none;
+        border-radius: 4px;
+        padding: 4px 14px;
+        font-size: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        transition: opacity 0.2s;
+
+        &:hover {
+            opacity: 0.85;
+        }
+
+        &:active {
+            opacity: 0.7;
+        }
+    }
+
+    .btn-approve {
+        background-color: #52c41a;
+        color: #fff;
+    }
+
+    .btn-reject {
+        background-color: #555;
+        color: #ccc;
+    }
+}

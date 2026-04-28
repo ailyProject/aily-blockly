@@ -16,8 +16,8 @@
         </ng-template>
         <div class="tag-list">
             <nz-tag (click)="keyword='';search()">{{ 'LIB_MANAGER.ALL' | translate }}</nz-tag>
-            @for (tag of tagList; track tag) {
-            <nz-tag (click)="keyword=tag;search()">{{ tag }}</nz-tag>
+            @for (tag of displayTagList; track tag.key) {
+            <nz-tag (click)="keyword=tag.key;search()">{{ tag.label }}</nz-tag>
             }
             <span style="position: absolute;top: 10px;color: #444;">|</span>
             <nz-tag style="margin-left: 11px;" (click)="search('installed')">{{ 'LIB_MANAGER.INSTALLED' | translate
@@ -41,7 +41,7 @@
     <div class="lib-list">
         @for( lib of libraryList;track lib.name ) {
         <div class="lib-item">
-            <div class="name ellipsis" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">{{lib.nickname}}
+            <div class="name ellipsis" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">{{lib._nickname}}
                 @if(lib.tested){
                 <i class="fa-regular fa-badge-check"></i>
                 }@else {
@@ -57,7 +57,7 @@
                     <i class="{{lib.icon}}"></i>
                     }
                 </div>
-                {{lib.description}}
+                {{lib._description}}
             </div>
             <div class="footer">
                 <div class="version">
@@ -88,9 +88,9 @@
                         (click)="openExample(lib.example)">示例</button>
                     } -->
                     @if(lib.state=='installed') {
-                    <button nz-button nzType="text" nzSize="small" [disabled]="true">
+                    <!-- <button nz-button nzType="text" nzSize="small" [disabled]="true">
                         {{ 'LIB_MANAGER.INSTALLED_TEXT' | translate }}
-                    </button>
+                    </button> -->
                     <button nz-button nzType="default" nzDanger nzSize="small" (click)="removeLib(lib)">
                         {{'LIB_MANAGER.REMOVE' | translate }}
                     </button>
@@ -109,8 +109,7 @@
                         {{'LIB_MANAGER.INSTALL' | translate }}
                     </button>
                     }@else{
-                    <button nz-button nzType="primary" nzSize="small" [disabled]="isInstalling"
-                        (click)="installLib(lib)">
+                    <button nz-button nzType="primary" nzSize="small" (click)="installLib(lib)">
                         {{ 'LIB_MANAGER.INSTALL'| translate }}
                     </button>
                     }

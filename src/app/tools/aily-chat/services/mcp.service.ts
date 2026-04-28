@@ -1,5 +1,5 @@
-import { Injectable } from '@angular/core';
-import { ConfigService } from '../../../services/config.service.js';
+﻿import { Injectable } from '@angular/core';
+import { AilyHost } from '../core/host';
 
 interface McpServerStdioConfig {
   command: string;
@@ -28,9 +28,7 @@ export class McpService {
   mcpConfigName: string = "mcp.json";
   private isInitialized = false; // 添加初始化标志位
 
-  constructor(
-    private configService: ConfigService
-  ) {}
+  constructor() {}
 
   async init() {
     // 防止重复初始化
@@ -76,17 +74,18 @@ export class McpService {
   private async loadConfig(): Promise<McpConfig> {
     try {
       // 获取配置文件内容
-      const appDataPath = this.configService.data.appdata_path[this.configService.data.platform].replace('%HOMEPATH%', window['path'].getUserHome());
+      const configData = AilyHost.get().config.data;
+      const appDataPath = configData.appdata_path[configData.platform].replace('%HOMEPATH%', AilyHost.get().path.getUserHome());
       const primaryConfigFilePath = `${appDataPath}/mcp/${this.mcpConfigName}`;
       const fallbackConfigFilePath = `./src/app/tools/aily-chat/mcp/${this.mcpConfigName}`;
       
       let configFilePath = primaryConfigFilePath;
       
       // 优先检查appDataPath下的配置文件
-      const primaryExists = await window['path'].isExists(primaryConfigFilePath);
+      const primaryExists = await AilyHost.get().path.isExists(primaryConfigFilePath);
       if (!primaryExists) {
         // 如果主配置文件不存在，检查备用配置文件
-        const fallbackExists = await window['path'].isExists(fallbackConfigFilePath);
+        const fallbackExists = await AilyHost.get().path.isExists(fallbackConfigFilePath);
         if (fallbackExists) {
           configFilePath = fallbackConfigFilePath;
           // console.log(`使用备用MCP配置文件: ${fallbackConfigFilePath}`);
@@ -98,7 +97,7 @@ export class McpService {
         // console.log(`使用主MCP配置文件: ${primaryConfigFilePath}`);
       }
       
-      const configContent = await window['fs'].readFileSync(configFilePath, 'utf-8');
+      const configContent = await AilyHost.get().fs.readFileSync(configFilePath, 'utf-8');
       // console.log("configContent: ", configContent);
       
       // 解析JSON内容

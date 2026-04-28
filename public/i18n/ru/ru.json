@@ -31,7 +31,8 @@
         "USER_SPACE": "Облачное хранилище",
         "LIB_MANAGER": "Менеджер библиотек",
         "AI_ASSISTANT": "ИИ-ассистент",
-        "PROJECT_HUB": "Центр проектов"
+        "PROJECT_HUB": "Центр проектов",
+        "NEW_INSTANCE": "Новое окно"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Скорость загрузки",
@@ -46,6 +47,15 @@
         "BOARD": "Выбор модели платы",
         "USB": "Настройки USB",
         "UPLOAD_METHOD": "Метод загрузки"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "Прошить SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "Вы хотите прошить {{softdevice}} SoftDevice на устройство?",
+        "SELECT_PORT_FIRST": "Сначала выберите порт",
+        "FLASHING_SOFTDEVICE": "Прошивка SoftDevice...",
+        "FLASH_SUCCESS": "SoftDevice успешно прошит",
+        "FLASH_FAILED": "Не удалось прошить SoftDevice"
     },
     "GUIDE": {
         "START": "Начать",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "Есть вопросы? Хотите поделиться своей работой? Присоединяйтесь к нашему сообществу пользователей, чтобы общаться и учиться вместе с другими мейкерами!"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "Копировать в указанное место",
+        "CONTROLS_SWITCH_CASE": "случай",
+        "CONTROLS_SWITCH_DO": "выполнить",
+        "CONTROLS_SWITCH_DEFAULT": "по умолчанию",
+        "CROSS_TAB_PASTE": "Вставить",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "Вставить %1 элементов",
+        "WORKSPACE_SELECT_ALL": "Выбрать все блоки"
+    },
     "APP_STORE": {
         "HEADER_INFO": "Первые {{count}} приложения будут отображаться на панели инструментов",
         "RESET": "Сбросить",
@@ -113,7 +132,8 @@
             "REPOSITORY": "Настройки репозитория",
             "DEPENDENCIES": "Глобальные зависимости",
             "MCP": "MCP",
-            "DEVMODE": "Режим разработчика"
+            "DEVMODE": "Режим разработчика",
+            "CACHE": "Управление кэшем"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Папка проекта",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "Тема Blockly",
             "BLOCKLY_MINIMAP": "Миникарта Blockly",
             "COMPILATION_OPTIONS": "Параметры компиляции",
+            "REGION": "Регион обслуживания",
+            "REGION_TITLE": "Переключить регион обслуживания",
+            "REGION_DESC": "После переключения региона потребуется повторный вход. Продолжить?",
+            "REGION_CONFIRM": "Подтвердить",
+            "REGION_CANCEL": "Отмена",
             "REPOSITORY_URLS": "Адреса репозиториев",
             "BOARD_LIST": "Список плат",
             "LIBRARY_LIST": "Список библиотек",
             "INSTALL": "Установить",
-            "UNINSTALL": "Удалить"
+            "UNINSTALL": "Удалить",
+            "CLEAR_CACHE": "Очистить кэш",
+            "CACHE_SIZE": "Размер кэша",
+            "CACHE_LOADING": "Загрузка...",
+            "CACHE_ALL": "Очистить всё",
+            "CACHE_ONE_MONTH": "Очистить старше 1 месяца",
+            "CACHE_THREE_MONTHS": "Очистить старше 3 месяцев",
+            "CACHE_CLEARING": "Очищение...",
+            "CACHE_CLEARED": "Кэш очищен",
+            "CACHE_CLEAR_FAILED": "Ошибка очистки",
+            "CACHE_CONFIRM_TITLE": "Подтвердить очистку",
+            "CACHE_CONFIRM_DESC": "Вы уверены, что хотите очистить весь кэш компиляции? Это действие нельзя отменить.",
+            "CACHE_CONFIRM_OK": "Подтвердить"
         },
         "BUTTONS": {
             "CANCEL": "Отмена",
@@ -153,7 +190,8 @@
             "BOARD": "Плата",
             "PROJECT_NAME": "Название проекта",
             "SAVE_PATH": "Путь сохранения",
-            "NAME_EXISTS": "Имя проекта уже существует, пожалуйста, измените его"
+            "NAME_EXISTS": "Имя проекта уже существует, пожалуйста, измените его",
+            "PATH_INVALID_CHARS": "Путь содержит недопустимые символы (например / : * ? \" < > |), пожалуйста, измените"
         },
         "BUTTONS": {
             "USE_THIS": "Использовать эту плату",
@@ -164,7 +202,8 @@
             "CREATING": "Создание"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Бета-версия, не проверена, используйте с осторожностью"
+            "BETA_VERSION": "Бета-версия, не проверена, используйте с осторожностью",
+            "TODO": "Поддержка этого устройства скоро появится"
         }
     },
     "LIB_MANAGER": {
@@ -180,6 +219,7 @@
         "INSTALLED_TEXT": "Установлено",
         "REMOVE": "Удалить",
         "INSTALLING": "Устанавливается",
+        "INSTALL_FAILED": "Ошибка установки",
         "UNINSTALLING": "Удаляется",
         "UNINSTALLED": "Удалено",
         "IMPORTING": "Импортируется",
@@ -195,7 +235,7 @@
         "AI": "ИИ",
         "IOT": "Интернет вещей",
         "OTHERS": "Другое",
-        "ALL": "Все библиотеки",
+        "ALL": "Все",
         "HELP": "Как разрабатывать библиотеки",
         "LIB_IN_USE": "Эта библиотека в данный момент используется. Пожалуйста, сначала удалите связанные блоки из рабочей области, прежде чем удалять эту библиотеку"
     },
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "Обновление программного обеспечения",
+        "TITLE_READY": "Обновление готово",
+        "TITLE_NEW_VERSION": "Доступна новая версия {{version}}",
+        "TEXT_DOWNLOADED": "Версия {{version}} загружена. Установить сейчас?",
+        "TEXT_AVAILABLE": "Текущая версия {{currentVersion}}, новая версия {{version}}<br>Хотите загрузить и установить это обновление?",
         "DOWNLOAD_FAILED": "Ошибка загрузки",
         "REMIND_LATER": "Напомнить позже",
         "SKIP_VERSION": "Пропустить эту версию",
@@ -277,8 +321,9 @@
         "SETTINGS": "Настройки ИИ",
         "HISTORY": "История чата",
         "NEW_CHAT": "Новый чат",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "Ответы ИИ предоставляются только для справки и могут быть неточными. Они не представляют мнения разработчиков программного обеспечения. Пользователи должны проверять информацию самостоятельно.",
+        "USAGE_GUIDE": "Узнать об использовании ИИ",
         "ADD_CONTEXT": "Добавить контекст",
         "ADD_FILE": "Добавить файл",
         "ADD_FOLDER": "Добавить папку",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "Режим агента",
         "MODE_QA_FULL": "Режим вопрос-ответ",
         "STOP_CURRENT_SESSION_FIRST": "Пожалуйста, остановите текущий сеанс перед созданием нового",
+        "NO_HISTORY_SESSION": "Нет записей сессий в истории",
+        "MERMAID_SAVE_ARCH": "Сохранить как диаграмму архитектуры",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "Подтверждение перезаписи",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "Файл диаграммы архитектуры уже существует в директории проекта. Перезаписать?",
+        "MERMAID_ARCH_CONFIRM": "Подтвердить",
+        "MERMAID_ARCH_CANCEL": "Отмена",
+        "MERMAID_COPY_FAILED": "Ошибка копирования",
+        "MERMAID_SAVE_FAILED": "Ошибка сохранения",
+        "CLICK_TO_EDIT": "Нажмите для редактирования",
         "ONBOARDING": {
             "STEP1_TITLE": "Поле ввода",
             "STEP1_DESC": "Введите здесь ваши вопросы или задачи для помощи ИИ. Нажмите Enter для отправки, Ctrl+Enter для новой строки",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Настройки проекта",
+        "ARCH": "Диаграмма архитектуры",
         "PINMAP": "Схема выводов",
+        "CIRCUIT": "Схема подключения",
         "DOCUMENTATION": "Документация",
         "FEEDBACK": "Обратная связь",
         "NO_PINMAP": "Схема выводов недоступна для этой платы",
-        "NO_DOCUMENTATION": "Документация недоступна для этой платы"
+        "PINMAP_PARSE_ERROR": "Ошибка разбора схемы выводов",
+        "NO_DOCUMENTATION": "Документация недоступна для этой платы",
+        "ARCH_ELECTRON_ONLY": "Диаграмма архитектуры доступна только в настольном приложении",
+        "NO_PROJECT": "Нет открытого проекта",
+        "NO_ARCH": "arch.md не найден в каталоге проекта",
+        "ARCH_EMPTY": "Диаграмма mermaid не найдена в arch.md",
+        "ARCH_RENDER_FAILED": "Не удалось отобразить диаграмму архитектуры",
+        "GENERATE_ARCH_PROMPT": "Создать диаграмму архитектуры проекта",
+        "ARCH_AI_BUSY": "ИИ ведёт диалог, попробуйте позже",
+        "LOGIN_REQUIRED": "Пожалуйста, войдите в систему, чтобы использовать эту функцию"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "Пожалуйста, сначала выберите последовательный порт",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "Делиться своими проектами",
         "BENEFIT_EXPERIENCE": "Наслаждаться персонализированным опытом разработки",
         "NOTICE_LABEL": "Примечание: ",
-        "NOTICE_CONTENT": "Мы будем использовать вашу учетную запись GitHub для звезды нашим открытым репозиториям, что помогает развитию проекта.",
+        "NOTICE_CONTENT": "После входа этому проекту будет поставлена звезда, что поможет развитию нашего проекта",
         "GITHUB_LOGIN": "Войти через Github",
         "WECHAT_SCAN": "Отсканируйте QR-код, чтобы подписаться и войти",
         "PHONE_NOT_OPEN": "Регистрация по телефону пока недоступна",
         "PHONE_BETA_ONLY": "Вход по телефону только для бета-тестеров AI",
         "PHONE_PLACEHOLDER": "Введите номер телефона",
         "PASSWORD_PLACEHOLDER": "Введите пароль",
+        "EMAIL_PLACEHOLDER": "Введите адрес электронной почты",
+        "CODE_PLACEHOLDER": "Введите код подтверждения",
+        "SEND_CODE": "Отправить код",
+        "CODE_SENDING": "Пожалуйста, сначала получите код подтверждения",
         "LOGGING_IN": "Вход...",
         "LOGIN": "Войти",
         "SELECT_METHOD": "Нажмите, чтобы выбрать способ входа",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "Пожалуйста, введите имя пользователя и пароль",
         "LOGIN_SUCCESS": "Вход выполнен успешно",
         "LOGIN_FAILED": "Ошибка входа",
-        "LOGIN_NETWORK_ERROR": "Ошибка входа, проверьте подключение к сети"
+        "LOGIN_NETWORK_ERROR": "Ошибка входа, проверьте подключение к сети",
+        "AGREEMENT_PREFIX": "Я прочитал и согласен с",
+        "USER_AGREEMENT": "Пользовательским соглашением",
+        "AGREEMENT_AND": "и",
+        "PRIVACY_POLICY": "Политикой конфиденциальности",
+        "AGREEMENT_REQUIRED": "Пожалуйста, сначала примите Пользовательское соглашение и Политику конфиденциальности",
+        "MODAL_CLOSE": "Закрыть",
+        "AGREEMENT_LOAD_FAILED": "Не удалось загрузить Пользовательское соглашение",
+        "PRIVACY_LOAD_FAILED": "Не удалось загрузить Политику конфиденциальности",
+        "WECHAT_QRCODE_FAILED": "Не удалось получить QR-код",
+        "WECHAT_REFRESH": "Обновить QR-код",
+        "WECHAT_RETRY": "Повторить",
+        "INVITE_CODE_PLACEHOLDER": "Код приглашения (необязательно)",
+        "AGREEMENT_BY_LOGIN": "Входя/регистрируясь, вы соглашаетесь с",
+        "TERMS_OF_USE": "Условия использования",
+        "OTHER_LOGIN_METHODS": "Вы также можете войти с помощью",
+        "GITHUB_CONTINUE": "Нажмите \"Continue\" на странице авторизации GitHub, чтобы завершить вход",
+        "REGISTER": "Регистрация"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "Функция скоро появится"
+    },
+    "NPM": {
+        "INSTALLING": "Установка {{name}}...",
+        "INSTALLING_DEPENDENCY": "Установка зависимости {{name}}...",
+        "INSTALL_TIMEOUT": "Тайм-аут установки",
+        "INSTALL_COMPLETE": "{{name}} успешно установлен",
+        "INSTALL_FAILED": "Ошибка установки {{name}}",
+        "UNINSTALLING": "Удаление {{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "Удаление неиспользуемых зависимостей...",
+        "UNINSTALL_TIMEOUT": "Тайм-аут удаления",
+        "UNINSTALL_COMPLETE": "{{name}} успешно удален",
+        "BOARD_INSTALL_COMPLETE": "Плата успешно установлена",
+        "BOARD_UNINSTALL_COMPLETE": "Плата успешно удалена",
+        "BOARD_DEPS_INSTALL_COMPLETE": "Зависимости платы успешно установлены",
+        "BOARD_DEPS_INSTALL_FAILED": "Ошибка установки зависимостей платы",
+        "DEPS_INSTALL_COMPLETE": "Зависимости успешно установлены",
+        "DEPS_UNINSTALL_COMPLETE": "Зависимости успешно удалены",
+        "DEPS_UNINSTALL_FAILED": "Ошибка удаления зависимостей",
+        "NAME_REQUIRED": "Имя {{type}} не может быть пустым",
+        "TYPE_TOOL": "Инструмент",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "Компилятор",
+        "INSTALLING_TITLE": "Установка",
+        "INSTALL_COMPLETE_TITLE": "Установка завершена",
+        "INSTALL_FAILED_TITLE": "Ошибка установки",
+        "UNINSTALLING_TITLE": "Удаление",
+        "UNINSTALL_COMPLETE_TITLE": "Удаление завершено",
+        "UNINSTALL_FAILED_TITLE": "Ошибка удаления"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "Установка зависимостей",
+        "LOADING_BOARD_CONFIG": "Загрузка конфигурации платы",
+        "LOADING_BLOCKLY_LIB": "Загрузка библиотек Blockly",
+        "LOADING_LIB": "Загрузка {{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "Загрузка программы Blockly",
+        "PROJECT_LOAD_SUCCESS": "Проект успешно загружен"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "Загрузка примера...",
+        "EXAMPLE_LOAD_SUCCESS": "Пример успешно загружен",
+        "EXAMPLE_LOAD_FAILED": "Ошибка загрузки примера",
+        "NO_TUTORIAL_PROVIDED": "Автор библиотеки не предоставил руководство"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "Невозможно открыть проект: ",
+        "CREATING_PROJECT": "Создание проекта...",
+        "PROJECT_CREATED": "Проект успешно создан",
+        "CREATE_FAILED": "Не удалось создать проект",
+        "PATH_NOT_EXIST": "Путь проекта не существует, выберите другой проект",
+        "SWITCHING_BOARD_CONFIG": "Изменение конфигурации платы...",
+        "BOARD_SWITCH_COMPLETE": "Смена платы завершена",
+        "BOARD_SWITCH_SUCCESS": "Плата успешно изменена",
+        "SWITCHING_BOARD": "Смена платы...",
+        "UNINSTALLING_CURRENT_BOARD": "Удаление текущей платы...",
+        "INSTALLING_NEW_BOARD": "Установка новой платы...",
+        "UPDATING_PROJECT_CONFIG": "Обновление конфигурации проекта...",
+        "BOARD_SWITCH_FAILED": "Ошибка смены платы: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "Остановить",
+        "VIEW_DETAIL": "Подробнее",
+        "AI_PROCESS": "Обработка AI"
+    },
+    "LOG": {
+        "TOOLTIP": "Нажмите для копирования, дважды нажмите для отправки AI-ассистенту",
+        "COPIED_TO_CLIPBOARD": "Содержимое журнала скопировано в буфер обмена",
+        "SENT_TO_AI": "Содержимое журнала отправлено AI-ассистенту",
+        "NO_DATA_TO_EXPORT": "Нет данных журнала для экспорта",
+        "EXPORT_TITLE": "Экспорт данных журнала",
+        "TEXT_FILE": "Текстовые файлы",
+        "ALL_FILES": "Все файлы",
+        "EXPORT_SUCCESS": "Данные журнала успешно экспортированы в "
     }
 }

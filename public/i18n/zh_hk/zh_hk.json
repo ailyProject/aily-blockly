@@ -31,7 +31,8 @@
         "USER_SPACE": "雲空間",
         "LIB_MANAGER": "庫管理",
         "AI_ASSISTANT": "AI助手",
-        "PROJECT_HUB": "專案廣場"
+        "PROJECT_HUB": "專案廣場",
+        "NEW_INSTANCE": "新建視窗"
     },
     "ESP32": {
         "UPLOAD_SPEED": "燒錄速度",
@@ -46,6 +47,15 @@
         "BOARD": "開發板型號選擇",
         "USB": "USB配置",
         "UPLOAD_METHOD": "燒錄方式"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "燒錄 SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "是否要燒錄 {{softdevice}} SoftDevice 到設備？",
+        "SELECT_PORT_FIRST": "請先選擇串口",
+        "FLASHING_SOFTDEVICE": "正在燒錄 SoftDevice...",
+        "FLASH_SUCCESS": "SoftDevice 燒錄成功",
+        "FLASH_FAILED": "SoftDevice 燒錄失敗"
     },
     "GUIDE": {
         "START": "開始",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "遇到問題？想分享作品？加入我們的用戶社群，與其他開發者一起交流學習！"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "複製到指定位置",
+        "CONTROLS_SWITCH_CASE": "情況",
+        "CONTROLS_SWITCH_DO": "執行",
+        "CONTROLS_SWITCH_DEFAULT": "預設執行",
+        "CROSS_TAB_PASTE": "貼上",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "貼上 %1 項",
+        "WORKSPACE_SELECT_ALL": "全選積木"
+    },
     "APP_STORE": {
         "HEADER_INFO": "前 {{count}} 個應用會顯示在頂部工具欄",
         "RESET": "重設",
@@ -113,7 +132,8 @@
             "REPOSITORY": "倉庫設定",
             "DEPENDENCIES": "全域依賴",
             "MCP": "MCP",
-            "DEVMODE": "開發者模式"
+            "DEVMODE": "開發者模式",
+            "CACHE": "緩存管理"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "專案資料夾",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "Blockly主題",
             "BLOCKLY_MINIMAP": "Blockly縮略圖",
             "COMPILATION_OPTIONS": "編譯選項",
+            "REGION": "服務區域",
+            "REGION_TITLE": "切換服務區域",
+            "REGION_DESC": "切換服務區域後需要重新登入，是否繼續？",
+            "REGION_CONFIRM": "確認",
+            "REGION_CANCEL": "取消",
             "REPOSITORY_URLS": "倉庫地址",
             "BOARD_LIST": "開發板清單",
             "LIBRARY_LIST": "函式庫清單",
             "INSTALL": "安裝",
-            "UNINSTALL": "解除安裝"
+            "UNINSTALL": "解除安裝",
+            "CLEAR_CACHE": "清除緩存",
+            "CACHE_SIZE": "緩存大小",
+            "CACHE_LOADING": "獲取中...",
+            "CACHE_ALL": "全部清除",
+            "CACHE_ONE_MONTH": "清除一個月前",
+            "CACHE_THREE_MONTHS": "清除三個月前",
+            "CACHE_CLEARING": "正在清除...",
+            "CACHE_CLEARED": "緩存已清除",
+            "CACHE_CLEAR_FAILED": "清除失敗",
+            "CACHE_CONFIRM_TITLE": "確認清除",
+            "CACHE_CONFIRM_DESC": "確定要清除所有編譯緩存嗎？此操作不可撤銷。",
+            "CACHE_CONFIRM_OK": "確認"
         },
         "BUTTONS": {
             "CANCEL": "取消",
@@ -153,7 +190,8 @@
             "BOARD": "開發板",
             "PROJECT_NAME": "專案名稱",
             "SAVE_PATH": "儲存路徑",
-            "NAME_EXISTS": "專案名稱已存在，請修改"
+            "NAME_EXISTS": "專案名稱已存在，請修改",
+            "PATH_INVALID_CHARS": "路徑包含非法字元（如 / : * ? \" < > | 等），請修改"
         },
         "BUTTONS": {
             "USE_THIS": "使用此開發板創建專案",
@@ -164,14 +202,15 @@
             "CREATING": "正在創建"
         },
         "WARNINGS": {
-            "BETA_VERSION": "內測版本，未經驗證，謹慎使用"
+            "BETA_VERSION": "內測版本，未經驗證，謹慎使用",
+            "TODO": "該設備支持即將上線"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "函式庫管理",
         "BACK": "返回",
         "SEARCH_LIBRARY": "搜尋函式庫",
-        "ALL": "所有庫",
+        "ALL": "所有",
         "INSTALLED": "已安裝",
         "CORE_LIBRARY": "核心函式庫",
         "IMPORT_LIBRARY": "導入本地庫",
@@ -182,6 +221,7 @@
         "INSTALLED_TEXT": "已安裝",
         "REMOVE": "移除",
         "INSTALLING": "正在安裝",
+        "INSTALL_FAILED": "安裝失敗",
         "UNINSTALLING": "正在解除安裝",
         "UNINSTALLED": "已解除安裝",
         "IMPORTING": "正在導入",
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "軟體更新",
+        "TITLE_READY": "更新已準備就緒",
+        "TITLE_NEW_VERSION": "發現新版本 {{version}}",
+        "TEXT_DOWNLOADED": "新版本 {{version}} 已下載完成，是否立即安裝？",
+        "TEXT_AVAILABLE": "當前版本 {{currentVersion}}，新版本 {{version}}<br>是否要下載並安裝此更新？",
         "DOWNLOAD_FAILED": "下載失敗",
         "REMIND_LATER": "稍後提醒",
         "SKIP_VERSION": "跳過此版本",
@@ -277,8 +321,9 @@
         "SETTINGS": "AI設置",
         "HISTORY": "歷史會話",
         "NEW_CHAT": "新建會話",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "AI的回覆僅能作為參考，不一定正確，也不代表本軟件開發者的意見，使用者需自行辨別",
+        "USAGE_GUIDE": "了解AI用法",
         "ADD_CONTEXT": "添加上下文",
         "ADD_FILE": "添加文件",
         "ADD_FOLDER": "添加文件夾",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "代理模式",
         "MODE_QA_FULL": "問答模式",
         "STOP_CURRENT_SESSION_FIRST": "請先停止當前會話，再新建",
+        "NO_HISTORY_SESSION": "沒有歷史會話記錄",
+        "MERMAID_SAVE_ARCH": "保存為框架圖",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "覆蓋確認",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "項目目錄下已存在框架圖文件，是否覆蓋？",
+        "MERMAID_ARCH_CONFIRM": "確認",
+        "MERMAID_ARCH_CANCEL": "取消",
+        "MERMAID_COPY_FAILED": "複製失敗",
+        "MERMAID_SAVE_FAILED": "保存失敗",
+        "CLICK_TO_EDIT": "點擊編輯",
         "ONBOARDING": {
             "STEP1_TITLE": "輸入框",
             "STEP1_DESC": "在這裡輸入你想問的問題或需要AI幫助完成的任務，按 Enter 發送，Ctrl+Enter 換行",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "項目設置",
+        "ARCH": "框架圖",
         "PINMAP": "引腳圖",
+        "CIRCUIT": "電路連接",
         "DOCUMENTATION": "文檔",
         "FEEDBACK": "反饋",
         "NO_PINMAP": "該開發板沒有提供引腳圖",
-        "NO_DOCUMENTATION": "該開發板沒有提供文檔鏈接"
+        "PINMAP_PARSE_ERROR": "引腳圖解析失敗",
+        "NO_DOCUMENTATION": "該開發板沒有提供文檔鏈接",
+        "ARCH_ELECTRON_ONLY": "框架圖僅在桌面應用中可用",
+        "NO_PROJECT": "未打開項目",
+        "NO_ARCH": "項目目錄下未找到 arch.md",
+        "ARCH_EMPTY": "arch.md 中未找到 mermaid 圖表",
+        "ARCH_RENDER_FAILED": "框架圖渲染失敗",
+        "GENERATE_ARCH_PROMPT": "生成項目架構圖",
+        "ARCH_AI_BUSY": "正在進行 AI 對話中，請稍後再試",
+        "LOGIN_REQUIRED": "請先登入後再使用此功能"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "請先選擇串口",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "分享您的專案",
         "BENEFIT_EXPERIENCE": "享受個性化的開發體驗",
         "NOTICE_LABEL": "注意：",
-        "NOTICE_CONTENT": "我們會使用您的 GitHub 帳號為我們的幾個開源倉庫點 star，這有助於支持我們的專案發展。",
+        "NOTICE_CONTENT": "登錄後會star本項目，助力我們的項目發展",
         "GITHUB_LOGIN": "Github登錄",
         "WECHAT_SCAN": "掃描二維碼關注公眾號並登錄",
         "PHONE_NOT_OPEN": "暫未開放手機號註冊",
         "PHONE_BETA_ONLY": "手機號登錄僅限AI功能內測用戶使用",
         "PHONE_PLACEHOLDER": "請輸入手機號",
         "PASSWORD_PLACEHOLDER": "請輸入密碼",
+        "EMAIL_PLACEHOLDER": "請輸入電郵地址",
+        "CODE_PLACEHOLDER": "請輸入驗證碼",
+        "SEND_CODE": "取得驗證碼",
+        "CODE_SENDING": "請先獲取驗證碼",
         "LOGGING_IN": "登錄中...",
         "LOGIN": "登錄",
         "SELECT_METHOD": "點擊選擇登錄方式",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "請輸入用戶名和密碼",
         "LOGIN_SUCCESS": "登錄成功",
         "LOGIN_FAILED": "登錄失敗",
-        "LOGIN_NETWORK_ERROR": "登錄失敗，請檢查網絡連接"
+        "LOGIN_NETWORK_ERROR": "登錄失敗，請檢查網絡連接",
+        "AGREEMENT_PREFIX": "我已閱讀並同意",
+        "USER_AGREEMENT": "用戶協議",
+        "AGREEMENT_AND": "和",
+        "PRIVACY_POLICY": "隱私政策",
+        "AGREEMENT_REQUIRED": "請先勾選同意用戶協議和隱私政策",
+        "MODAL_CLOSE": "關閉",
+        "AGREEMENT_LOAD_FAILED": "加載用戶協議失敗",
+        "PRIVACY_LOAD_FAILED": "加載隱私政策失敗",
+        "WECHAT_QRCODE_FAILED": "獲取二維碼失敗",
+        "WECHAT_REFRESH": "刷新二維碼",
+        "WECHAT_RETRY": "重試",
+        "INVITE_CODE_PLACEHOLDER": "邀請碼（選填）",
+        "AGREEMENT_BY_LOGIN": "登入/註冊即表示同意",
+        "TERMS_OF_USE": "使用條款",
+        "OTHER_LOGIN_METHODS": "您還可以使用以下帳號登入",
+        "GITHUB_CONTINUE": "請在Github授權頁面點擊\"Continue\"完成登入",
+        "REGISTER": "註冊"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "功能即將上線"
+    },
+    "NPM": {
+        "INSTALLING": "正在安裝{{name}}...",
+        "INSTALLING_DEPENDENCY": "正在安裝{{name}}依賴...",
+        "INSTALL_TIMEOUT": "安裝超時",
+        "INSTALL_COMPLETE": "{{name}}安裝完成",
+        "INSTALL_FAILED": "{{name}}安裝失敗",
+        "UNINSTALLING": "正在卸載{{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "正在卸載不再需要的依賴...",
+        "UNINSTALL_TIMEOUT": "卸載超時",
+        "UNINSTALL_COMPLETE": "{{name}}卸載完成",
+        "BOARD_INSTALL_COMPLETE": "開發板安裝完成",
+        "BOARD_UNINSTALL_COMPLETE": "開發板卸載完成",
+        "BOARD_DEPS_INSTALL_COMPLETE": "開發板依賴安裝完成",
+        "BOARD_DEPS_INSTALL_FAILED": "開發板依賴安裝失敗",
+        "DEPS_INSTALL_COMPLETE": "依賴安裝完成",
+        "DEPS_UNINSTALL_COMPLETE": "依賴卸載完成",
+        "DEPS_UNINSTALL_FAILED": "依賴卸載失敗",
+        "NAME_REQUIRED": "{{type}}名稱不能為空",
+        "TYPE_TOOL": "工具",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "編譯器",
+        "INSTALLING_TITLE": "正在安裝",
+        "INSTALL_COMPLETE_TITLE": "安裝完成",
+        "INSTALL_FAILED_TITLE": "安裝失敗",
+        "UNINSTALLING_TITLE": "正在卸載",
+        "UNINSTALL_COMPLETE_TITLE": "卸載完成",
+        "UNINSTALL_FAILED_TITLE": "卸載失敗"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "正在安裝依賴",
+        "LOADING_BOARD_CONFIG": "正在載入開發板配置",
+        "LOADING_BLOCKLY_LIB": "正在載入Blockly庫",
+        "LOADING_LIB": "正在載入{{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "正在載入Blockly程式",
+        "PROJECT_LOAD_SUCCESS": "專案載入成功"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "正在載入範例...",
+        "EXAMPLE_LOAD_SUCCESS": "範例載入完成",
+        "EXAMPLE_LOAD_FAILED": "範例載入失敗",
+        "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "無法開啟專案: ",
+        "CREATING_PROJECT": "正在建立專案...",
+        "PROJECT_CREATED": "專案建立成功",
+        "CREATE_FAILED": "專案建立失敗",
+        "PATH_NOT_EXIST": "專案路徑不存在，請重新選擇專案",
+        "SWITCHING_BOARD_CONFIG": "正在切換開發板配置...",
+        "BOARD_SWITCH_COMPLETE": "開發板切換完成",
+        "BOARD_SWITCH_SUCCESS": "開發板切換成功",
+        "SWITCHING_BOARD": "正在切換開發板...",
+        "UNINSTALLING_CURRENT_BOARD": "正在卸載當前開發板...",
+        "INSTALLING_NEW_BOARD": "正在安裝新開發板...",
+        "UPDATING_PROJECT_CONFIG": "正在更新專案配置...",
+        "BOARD_SWITCH_FAILED": "開發板切換失敗: ",
+        "LOCK_CONFLICT_TITLE": "專案已在其他視窗開啟",
+        "LOCK_CONFLICT_MESSAGE": "另一視窗或版本可能正在編輯此專案。",
+        "LOCK_CONFLICT_CONTENT": "其他執行個體可能正在編輯此專案。\n程序 PID：{{pid}}\n版本：{{version}}",
+        "LOCK_CANCEL": "取消",
+        "LOCK_FOCUS_OTHER": "切換到已開啟的視窗",
+        "LOCK_FORCE_OPEN": "仍要開啟",
+        "LOCK_ACQUIRE_FAILED": "無法取得專案鎖，請重試"
+    },
+    "NOTIFICATION": {
+        "STOP": "終止",
+        "VIEW_DETAIL": "查看詳情",
+        "AI_PROCESS": "AI處理"
+    },
+    "LOG": {
+        "TOOLTIP": "單擊複製到剪貼簿，雙擊複製到AI助手",
+        "COPIED_TO_CLIPBOARD": "日誌內容已複製到剪貼簿",
+        "SENT_TO_AI": "日誌內容已發送到AI助手",
+        "NO_DATA_TO_EXPORT": "沒有日誌資料可以匯出",
+        "EXPORT_TITLE": "匯出日誌資料",
+        "TEXT_FILE": "文字檔案",
+        "ALL_FILES": "所有檔案",
+        "EXPORT_SUCCESS": "日誌資料已成功匯出到"
     }
 }

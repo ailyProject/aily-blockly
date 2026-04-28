@@ -1,0 +1,48 @@
+<div class="edits-panel" *ngIf="summary">
+    <!-- 头部摘要栏 -->
+    <div class="edits-panel-header">
+        <div class="header-content" (click)="toggleExpanded()">
+            <i class="fas fa-chevron-right panel-icon" [class.expanded]="isExpanded"></i>
+            <span class="panel-title">{{ summary.fileCount }} files changed</span>
+            <span class="stat-added" *ngIf="summary.totalAdded > 0">+{{ summary.totalAdded }}</span>
+            <span class="stat-removed" *ngIf="summary.totalRemoved > 0">-{{ summary.totalRemoved }}</span>
+        </div>
+        <div class="header-actions" *ngIf="!isAccepted">
+            <button class="action-btn icon-btn" (click)="onUndo()" [disabled]="!canUndo" title="撤销">
+                <i class="fas fa-arrow-rotate-left"></i>
+            </button>
+            <button class="action-btn icon-btn" (click)="onRedo()" [disabled]="!canRedo" title="重做">
+                <i class="fas fa-arrow-rotate-right"></i>
+            </button>
+            <button class="action-btn primary" (click)="onKeep()" title="保留所有变更">保留</button>
+        </div>
+        <div class="header-actions" *ngIf="isAccepted">
+            <span class="action-taken-text">已保留</span>
+        </div>
+    </div>
+
+    <!-- 文件列表（展开时） -->
+    <div class="edits-panel-content" *ngIf="isExpanded && files.length > 0">
+        <div class="file-entry" *ngFor="let file of files; trackBy: trackByPath"
+            [class.file-created]="file.type === 'create'"
+            [class.file-deleted]="file.type === 'delete'">
+            <i class="fas file-icon"
+                [class.fa-file-circle-plus]="file.type === 'create'"
+                [class.fa-file-pen]="file.type === 'modify'"
+                [class.fa-file-circle-minus]="file.type === 'delete'"
+                [class.icon-created]="file.type === 'create'"
+                [class.icon-modified]="file.type === 'modify'"
+                [class.icon-deleted]="file.type === 'delete'"></i>
+            <span class="file-path" [title]="file.fullPath">{{ file.path }}</span>
+            <span class="file-stats">
+                <span class="stat-added" *ngIf="file.added > 0">+{{ file.added }}</span>
+                <span class="stat-removed" *ngIf="file.removed > 0">-{{ file.removed }}</span>
+            </span>
+            <!-- 单文件操作按钮 -->
+            <span class="file-actions" *ngIf="!isAccepted">
+                <i class="fas fa-check file-action-btn accept" (click)="onAcceptFile(file)" title="接受此文件变更"></i>
+                <i class="fas fa-xmark file-action-btn reject" (click)="onRejectFile(file)" title="拒绝并还原此文件"></i>
+            </span>
+        </div>
+    </div>
+</div>

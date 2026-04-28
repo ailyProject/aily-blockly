@@ -1,7 +1,6 @@
-import { Component, OnDestroy, OnInit, AfterViewInit, ViewChild, ChangeDetectorRef } from '@angular/core';
+import { Component, OnDestroy, OnInit, AfterViewInit, ElementRef, ChangeDetectorRef, viewChild, viewChildren, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { CdkAutoSizeVirtualScroll } from '@angular/cdk-experimental/scrolling';
+import { injectVirtualizer } from '@tanstack/angular-virtual';
 import { LogService, LogOptions } from '../../services/log.service';
 import { AnsiPipe } from './ansi.pipe';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -10,10 +9,11 @@ import { ProjectService } from '../../services/project.service';
 import { ElectronService } from '../../services/electron.service';
 import { stripAnsi } from 'fancy-ansi';
 import { Subscription } from 'rxjs';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-log',
-  imports: [CommonModule, AnsiPipe, ScrollingModule, CdkAutoSizeVirtualScroll],
+  imports: [CommonModule, AnsiPipe, TranslateModule],
   templateUrl: './log.component.html',
   styleUrl: './log.component.scss',
 })
@@ -22,15 +22,25 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   private preventSingleClick = false;
   private subscription: Subscription = new Subscription();
 
-  // 虚拟滚动视口引用
-  @ViewChild(CdkVirtualScrollViewport) viewport!: CdkVirtualScrollViewport;
+  // 滚动容器引用
+  scrollElement = viewChild<ElementRef<HTMLDivElement>>('scrollElement');
 
-  // 日志列表 - 使用属性而非 getter，以便 CDK 正确检测变化
+  // 虚拟行元素引用（用于动态测量高度）
+  virtualRows = viewChildren<ElementRef<HTMLDivElement>>('virtualRow');
+
+  // 日志列表
   logList: LogOptions[] = [];
 
-  // 每项的估算高度（用于初始渲染）
-  readonly minBufferPx = 200;
-  readonly maxBufferPx = 400;
+  // 日志数量 signal，用于驱动 virtualizer 响应式更新
+  logCount = signal(0);
+
+  // TanStack 虚拟化器
+  virtualizer = injectVirtualizer(() => ({
+    scrollElement: this.scrollElement(),
+    count: this.logCount(),
+    estimateSize: () => 30,
+    overscan: 5,
+  }));
 
   constructor(
     private logService: LogService,
@@ -38,22 +48,27 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     private uiService: UiService,
     private projectService: ProjectService,
     private electronService: ElectronService,
-    private cdr: ChangeDetectorRef
-  ) { }
+    private cdr: ChangeDetectorRef,
+    private translate: TranslateService
+  ) {
+    // 当虚拟行元素变化时，动态测量每个元素的实际高度
+    effect(() => {
+      const rows = this.virtualRows();
+      untracked(() => {
+        for (const row of rows) {
+          this.virtualizer.measureElement(row.nativeElement);
+        }
+      });
+    });
+  }
 
   ngOnInit() {
     // 初始化日志列表
-    this.logList = this.logService.list;
+    this.logList = [...this.logService.list];
+    this.logCount.set(this.logList.length);
   }
 
   ngAfterViewInit() {
-    // 初始化时检查视口尺寸
-    setTimeout(() => {
-      if (this.viewport) {
-        this.viewport.checkViewportSize();
-      }
-    }, 100);
-
     // 监听日志更新
     this.subscription.add(
       this.logService.stateSubject.subscribe(() => {
@@ -66,54 +81,25 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  // 滚动到底部，使用多次尝试确保内容完全渲染
+  // 滚动到底部
   scrollToBottom() {
-    // 取消之前的滚动请求
     if (this.scrollTimeoutId) {
       clearTimeout(this.scrollTimeoutId);
     }
-
-    const doScroll = (attempts = 0) => {
-      if (!this.viewport) return;
-
-      const element = this.viewport.elementRef.nativeElement;
-      this.viewport.checkViewportSize();
-      
-      const scrollHeight = element.scrollHeight;
-      const currentScroll = element.scrollTop + element.clientHeight;
-      
-      // 滚动到底部
-      element.scrollTo({
-        top: scrollHeight,
-        behavior: attempts === 0 ? 'auto' : 'smooth'
-      });
-
-      // 如果还没到底部且尝试次数不超过3次，继续尝试
-      if (attempts < 3 && scrollHeight > currentScroll + 10) {
-        this.scrollTimeoutId = setTimeout(() => doScroll(attempts + 1), 100);
-      }
-    };
-
-    // 等待变更检测和渲染完成后再滚动
     this.scrollTimeoutId = setTimeout(() => {
-      requestAnimationFrame(() => {
-        doScroll(0);
-      });
-    }, 50);
+      const count = this.logCount();
+      if (count > 0) {
+        this.virtualizer.scrollToIndex(count - 1, { align: 'end' });
+      }
+    }, 30);
   }
 
   private scrollTimeoutId: any;
 
   // 处理日志更新
   private handleLogUpdate() {
-    // 给每个日志项添加唯一 id
-    this.logService.list.forEach((item, index) => {
-      if (item['id'] === undefined) {
-        item['id'] = index;
-      }
-    });
-    // 更新引用以触发变更检测
     this.logList = [...this.logService.list];
+    this.logCount.set(this.logList.length);
     this.cdr.detectChanges();
     // 滚动到底部
     this.scrollToBottom();
@@ -122,12 +108,8 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   clear() {
     this.logService.clear();
     this.logList = [];
+    this.logCount.set(0);
     this.cdr.detectChanges();
-  }
-
-  // trackBy 函数，用于优化虚拟滚动性能
-  trackByFn(index: number, item: LogOptions): number {
-    return item['id'] ?? index;
   }
 
   ngOnDestroy() {
@@ -142,7 +124,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // 处理点击事件，区分单击和双击
   handleClick(item: any, event: MouseEvent) {
-    console.log('单击事件:', item);
+    console.log('click event:', item);
 
     this.clickTimeout = setTimeout(() => {
       if (!this.preventSingleClick) {
@@ -176,7 +158,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       const logContent = this.cleanLogContent(item.detail);
       await navigator.clipboard.writeText(logContent);
-      this.message.success('日志内容已复制到剪切板');
+      this.message.success(this.translate.instant('LOG.COPIED_TO_CLIPBOARD'));
     } catch (err) {
       console.error('复制到剪切板失败:', err);
     }
@@ -184,28 +166,23 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // 双击打开AI助手并发送日志内容
   async copyLogItemToChat(item: any) {
-    // 这里可以实现将日志内容发送到AI助手的逻辑
-    // 例如，调用一个服务方法来处理这个操作
-    this.uiService.openTool("aily-chat");
     const cleanDetail = this.cleanLogContent(item.detail);
-    setTimeout(() => {
-      window.sendToAilyChat(`运行日志：\n${cleanDetail}`, {
-        sender: 'LogComponent',
-        type: 'log'
-      });
-    }, 100);
-    this.message.info('日志内容已发送到AI助手');
+    this.uiService.openAndSendToChat(`log:\n${cleanDetail}`, {
+      sender: 'LogComponent',
+      type: 'log'
+    });
+    this.message.info(this.translate.instant('LOG.SENT_TO_AI'));
   }
 
   async exportData() {
     if (this.logService.list.length === 0) {
-      this.message.warning('没有日志数据可以导出');
+      this.message.warning(this.translate.instant('LOG.NO_DATA_TO_EXPORT'));
       return;
     }
 
     // 弹出保存对话框
     const folderPath = await window['ipcRenderer'].invoke('select-folder-saveAs', {
-      title: '导出日志数据',
+      title: this.translate.instant('LOG.EXPORT_TITLE'),
       path: this.projectService.currentProjectPath,
       suggestedName: 'log_' + new Date().toLocaleString('zh-CN', {
         year: 'numeric',
@@ -216,8 +193,8 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
         second: '2-digit'
       }).replace(/[/,:]/g, '_').replace(/\s/g, '_') + '.txt',
       filters: [
-        { name: '文本文件', extensions: ['txt'] },
-        { name: '所有文件', extensions: ['*'] }
+        { name: this.translate.instant('LOG.TEXT_FILE'), extensions: ['txt'] },
+        { name: this.translate.instant('LOG.ALL_FILES'), extensions: ['*'] }
       ]
     });
 
@@ -235,7 +212,7 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
     // 写入文件
     this.electronService.writeFile(folderPath, fileContent);
-    this.message.success('日志数据已成功导出到' + folderPath);
+    this.message.success(this.translate.instant('LOG.EXPORT_SUCCESS') + folderPath);
   }
 
 }

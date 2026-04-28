@@ -6,6 +6,9 @@
     <div class="box lloading ccenter">
         <div class="ccenter">
             <i class="fa-light fa-spinner-third"></i>
+            @if (data.icon) {
+            <i class="custom {{data.icon}}"></i>
+            }
         </div>
         @if (data.showProgress) {
         <div class="num-box ccenter">
@@ -41,11 +44,11 @@
         <div class="ellipsis text">{{data.text}}</div>
         <div class="btns">
             @if (data.state=='doing'&& data.stop) {
-            <div class="btn link red" (click)="stop()">终止</div>
+            <div class="btn link red" (click)="stop()">{{ 'NOTIFICATION.STOP' | translate }}</div>
             }
             @if (data.detail) {
-            <div class="btn link" (click)="view()">查看详情</div>
-            <!-- <div class="btn link" (click)="askAI()">AI助理</div> -->
+            <div class="btn link" (click)="view()">{{ 'NOTIFICATION.VIEW_DETAIL' | translate }}</div>
+            <div class="btn link" (click)="sendAI()">{{ 'NOTIFICATION.AI_PROCESS' | translate }}</div>
             }
         </div>
     </div>

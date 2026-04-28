@@ -76,9 +76,18 @@
         <div class="r-box">
           <!-- 数据显示 -->
           <div class="data-list sscroll" #dataListBox>
-            <div *uiScroll="let item of datasource">
-              <app-data-item [data]="item" [searchKeyword]="searchKeyword"
-                (click)="onDataItemClick(item)"></app-data-item>
+            <div class="data-list-inner" [style.height.px]="virtualizer.getTotalSize()">
+              @for (row of virtualizer.getVirtualItems(); track row.index) {
+                @if (dataList[row.index]) {
+                  <div #virtualRow [attr.data-index]="row.index"
+                       class="virtual-item"
+                       [style.transform]="'translateY(' + row.start + 'px)'">
+                    <app-data-item [data]="dataList[row.index]" [searchKeyword]="searchKeyword"
+                      (click)="onDataItemClick(dataList[row.index])"
+                      (contextmenu)="onDataItemContextMenu($event, dataList[row.index])"></app-data-item>
+                  </div>
+                }
+              }
             </div>
           </div>
 
@@ -198,4 +207,10 @@
 @if (showBaudList) {
 <app-menu [position]="position" [menuList]="baudList" (closeEvent)="closeBaudList()"
   (itemClickEvent)="selectBaud($event)"></app-menu>
+}
+
+<!-- data item context menu -->
+@if (showContextMenu) {
+<app-menu [menuList]="contextMenuItems" [position]="contextMenuPosition" [width]="125"
+  (closeEvent)="closeContextMenu()" (itemClickEvent)="contextMenuClick($event)"></app-menu>
 }

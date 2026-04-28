@@ -31,7 +31,8 @@
         "USER_SPACE": "클라우드 스페이스",
         "LIB_MANAGER": "라이브러리 관리자",
         "AI_ASSISTANT": "AI 어시스턴트",
-        "PROJECT_HUB": "프로젝트 허브"
+        "PROJECT_HUB": "프로젝트 허브",
+        "NEW_INSTANCE": "새 창"
     },
     "ESP32": {
         "UPLOAD_SPEED": "업로드 속도",
@@ -46,6 +47,15 @@
         "BOARD": "개발 보드 모델 선택",
         "USB": "USB 설정",
         "UPLOAD_METHOD": "업로드 방법"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "SoftDevice 플래시",
+        "FLASH_SOFTDEVICE_CONFIRM": "{{softdevice}} SoftDevice를 장치에 플래시하시겠습니까?",
+        "SELECT_PORT_FIRST": "먼저 포트를 선택해주세요",
+        "FLASHING_SOFTDEVICE": "SoftDevice 플래시 중...",
+        "FLASH_SUCCESS": "SoftDevice 플래시 성공",
+        "FLASH_FAILED": "SoftDevice 플래시 실패"
     },
     "GUIDE": {
         "START": "시작",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "질문이 있으신가요? 작품을 공유하고 싶으신가요? 사용자 커뮤니티에 가입하여 다른 메이커들과 교류하고 배우세요!"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "지정된 위치에 복사",
+        "CONTROLS_SWITCH_CASE": "조건",
+        "CONTROLS_SWITCH_DO": "실행",
+        "CONTROLS_SWITCH_DEFAULT": "기본",
+        "CROSS_TAB_PASTE": "붙여넣기",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "%1개 붙여넣기",
+        "WORKSPACE_SELECT_ALL": "모든 블록 선택"
+    },
     "APP_STORE": {
         "HEADER_INFO": "처음 {{count}}개의 앱이 도구 모음에 표시됩니다",
         "RESET": "초기화",
@@ -113,7 +132,8 @@
             "REPOSITORY": "저장소 설정",
             "DEPENDENCIES": "글로벌 종속성",
             "MCP": "MCP",
-            "DEVMODE": "개발자 모드"
+            "DEVMODE": "개발자 모드",
+            "CACHE": "캐시 관리"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "프로젝트 폴더",
@@ -122,6 +142,11 @@
             "BLOCKLY_THEME": "Blockly 테마",
             "BLOCKLY_MINIMAP": "Blockly 미니맵",
             "COMPILATION_OPTIONS": "컴파일 옵션",
+            "REGION": "서비스 지역",
+            "REGION_TITLE": "서비스 지역 전환",
+            "REGION_DESC": "서비스 지역을 전환하면 다시 로그인해야 합니다. 계속하시겠습니까?",
+            "REGION_CONFIRM": "확인",
+            "REGION_CANCEL": "취소",
             "REPOSITORY_URLS": "저장소 주소",
             "BOARD_LIST": "개발 보드 목록",
             "LIBRARY_LIST": "라이브러리 목록",
@@ -149,7 +174,8 @@
             "BOARD": "보드",
             "PROJECT_NAME": "프로젝트 이름",
             "SAVE_PATH": "저장 경로",
-            "NAME_EXISTS": "프로젝트 이름이 이미 존재합니다. 수정해 주세요"
+            "NAME_EXISTS": "프로젝트 이름이 이미 존재합니다. 수정해 주세요",
+            "PATH_INVALID_CHARS": "경로에 잘못된 문자가 포함되어 있습니다 (/ : * ? \" < > | 등). 수정해 주세요"
         },
         "BUTTONS": {
             "USE_THIS": "이 보드 사용",
@@ -160,7 +186,8 @@
             "CREATING": "생성 중"
         },
         "WARNINGS": {
-            "BETA_VERSION": "베타 버전, 미검증, 주의해서 사용"
+            "BETA_VERSION": "베타 버전, 미검증, 주의해서 사용",
+            "TODO": "이 장치 지원이 곧 출시됩니다"
         }
     },
     "LIB_MANAGER": {
@@ -176,6 +203,7 @@
         "INSTALLED_TEXT": "설치됨",
         "REMOVE": "제거",
         "INSTALLING": "설치 중",
+        "INSTALL_FAILED": "설치 실패",
         "UNINSTALLING": "제거 중",
         "UNINSTALLED": "제거됨",
         "IMPORTING": "가져오는 중",
@@ -191,7 +219,7 @@
         "AI": "AI",
         "IOT": "사물인터넷",
         "OTHERS": "기타",
-        "ALL": "모든 라이브러리",
+        "ALL": "모두",
         "HELP": "라이브러리 개발 방법",
         "LIB_IN_USE": "이 라이브러리는 현재 사용 중입니다. 이 라이브러리를 제거하기 전에 작업 공간에서 관련 블록을 먼저 삭제하세요"
     },
@@ -214,6 +242,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "소프트웨어 업데이트",
+        "TITLE_READY": "업데이트 준비 완료",
+        "TITLE_NEW_VERSION": "새 버전 {{version}} 사용 가능",
+        "TEXT_DOWNLOADED": "버전 {{version}} 다운로드가 완료되었습니다. 지금 설치하시겠습니까?",
+        "TEXT_AVAILABLE": "현재 버전 {{currentVersion}}, 새 버전 {{version}}<br>이 업데이트를 다운로드하고 설치하시겠습니까?",
         "DOWNLOAD_FAILED": "다운로드 실패",
         "REMIND_LATER": "나중에 알림",
         "SKIP_VERSION": "이 버전 건너뛰기",
@@ -273,8 +305,9 @@
         "SETTINGS": "AI 설정",
         "HISTORY": "채팅 기록",
         "NEW_CHAT": "새 채팅",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "AI 응답은 참고용이며 정확하지 않을 수 있습니다. 소프트웨어 개발자의 의견을 대표하지 않으며, 사용자는 정보를 직접 확인해야 합니다.",
+        "USAGE_GUIDE": "AI 사용법 알아보기",
         "ADD_CONTEXT": "컨텍스트 추가",
         "ADD_FILE": "파일 추가",
         "ADD_FOLDER": "폴더 추가",
@@ -286,6 +319,15 @@
         "MODE_AGENT_FULL": "에이전트 모드",
         "MODE_QA_FULL": "Q&A 모드",
         "STOP_CURRENT_SESSION_FIRST": "새 세션을 생성하기 전에 먼저 현재 세션을 중지하세요",
+        "NO_HISTORY_SESSION": "기록된 대화 기록이 없습니다",
+        "MERMAID_SAVE_ARCH": "아키텍처 다이어그램으로 저장",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "덮어쓰기 확인",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "프로젝트 디렉토리에 아키텍처 다이어그램 파일이 이미 있습니다. 덮어쓰시겠습니까?",
+        "MERMAID_ARCH_CONFIRM": "확인",
+        "MERMAID_ARCH_CANCEL": "취소",
+        "MERMAID_COPY_FAILED": "복사 실패",
+        "MERMAID_SAVE_FAILED": "저장 실패",
+        "CLICK_TO_EDIT": "클릭하여 편집",
         "ONBOARDING": {
             "STEP1_TITLE": "입력 상자",
             "STEP1_DESC": "여기에 질문이나 AI가 도와줄 작업을 입력하세요. Enter로 전송, Ctrl+Enter로 줄바꿈",
@@ -333,11 +375,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "프로젝트 설정",
+        "ARCH": "아키텍처 다이어그램",
         "PINMAP": "핀 맵",
+        "CIRCUIT": "회로 연결도",
         "DOCUMENTATION": "문서",
         "FEEDBACK": "피드백",
         "NO_PINMAP": "이 보드에 대한 핀 맵을 사용할 수 없습니다",
-        "NO_DOCUMENTATION": "이 보드에 대한 문서를 사용할 수 없습니다"
+        "PINMAP_PARSE_ERROR": "핀 맵 파싱 실패",
+        "NO_DOCUMENTATION": "이 보드에 대한 문서를 사용할 수 없습니다",
+        "ARCH_ELECTRON_ONLY": "아키텍처 다이어그램은 데스크톱 앱에서만 사용 가능합니다",
+        "NO_PROJECT": "열린 프로젝트가 없습니다",
+        "NO_ARCH": "프로젝트 디렉토리에서 arch.md를 찾을 수 없습니다",
+        "ARCH_EMPTY": "arch.md에서 mermaid 다이어그램을 찾을 수 없습니다",
+        "ARCH_RENDER_FAILED": "아키텍처 다이어그램 렌더링 실패",
+        "GENERATE_ARCH_PROMPT": "프로젝트 아키텍처 다이어그램 생성",
+        "ARCH_AI_BUSY": "AI 대화가 진행 중입니다. 잠시 후 다시 시도해 주세요",
+        "LOGIN_REQUIRED": "이 기능을 사용하려면 먼저 로그인하세요"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "먼저 시리얼 포트를 선택하세요",
@@ -452,13 +505,17 @@
         "BENEFIT_SHARE": "프로젝트 공유",
         "BENEFIT_EXPERIENCE": "맞춤형 개발 경험 제공",
         "NOTICE_LABEL": "주의: ",
-        "NOTICE_CONTENT": "귀하의 GitHub 계정을 사용하여 오픈 소스 저장소에 스타를 줄 예정이며, 이는 프로젝트 발전을 지원합니다.",
+        "NOTICE_CONTENT": "로그인 후 이 프로젝트에 스타가 부여되어 프로젝트 발전을 지원합니다",
         "GITHUB_LOGIN": "Github로 로그인",
         "WECHAT_SCAN": "QR 코드를 스캠하여 팔로우 및 로그인",
         "PHONE_NOT_OPEN": "전화번호 등록은 아직 사용할 수 없습니다",
         "PHONE_BETA_ONLY": "전화번호 로그인은 AI 베타 테스터 전용입니다",
         "PHONE_PLACEHOLDER": "전화번호 입력",
         "PASSWORD_PLACEHOLDER": "비밀번호 입력",
+        "EMAIL_PLACEHOLDER": "이메일 주소 입력",
+        "CODE_PLACEHOLDER": "인증 코드 입력",
+        "SEND_CODE": "인증 코드 받기",
+        "CODE_SENDING": "먼저 인증 코드를 받으세요",
         "LOGGING_IN": "로그인 중...",
         "LOGIN": "로그인",
         "SELECT_METHOD": "로그인 방법을 선택하세요",
@@ -468,6 +525,105 @@
         "ENTER_CREDENTIALS": "사용자 이름과 비밀번호를 입력하세요",
         "LOGIN_SUCCESS": "로그인 성공",
         "LOGIN_FAILED": "로그인 실패",
-        "LOGIN_NETWORK_ERROR": "로그인 실패, 네트워크 연결을 확인하세요"
+        "LOGIN_NETWORK_ERROR": "로그인 실패, 네트워크 연결을 확인하세요",
+        "AGREEMENT_PREFIX": "다음을 읽고 동의합니다:",
+        "USER_AGREEMENT": "이용약관",
+        "AGREEMENT_AND": "및",
+        "PRIVACY_POLICY": "개인정보 처리방침",
+        "AGREEMENT_REQUIRED": "이용약관 및 개인정보 처리방침에 먼저 동의해 주세요",
+        "MODAL_CLOSE": "닫기",
+        "AGREEMENT_LOAD_FAILED": "이용약관 로드 실패",
+        "PRIVACY_LOAD_FAILED": "개인정보 처리방침 로드 실패",
+        "WECHAT_QRCODE_FAILED": "QR 코드를 가져오지 못했습니다",
+        "WECHAT_REFRESH": "QR 코드 새로고침",
+        "WECHAT_RETRY": "다시 시도",
+        "INVITE_CODE_PLACEHOLDER": "초대 코드 (선택사항)",
+        "AGREEMENT_BY_LOGIN": "로그인/가입 시 다음에 동의하는 것으로 간주됩니다",
+        "TERMS_OF_USE": "이용약관",
+        "OTHER_LOGIN_METHODS": "다음 계정으로도 로그인할 수 있습니다",
+        "GITHUB_CONTINUE": "GitHub 인증 페이지에서 \"Continue\"를 클릭하여 로그인을 완료하세요",
+        "REGISTER": "가입"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "기능 출시 예정"
+    },
+    "NPM": {
+        "INSTALLING": "{{name}} 설치 중...",
+        "INSTALLING_DEPENDENCY": "{{name}} 의존성 설치 중...",
+        "INSTALL_TIMEOUT": "설치 시간 초과",
+        "INSTALL_COMPLETE": "{{name}} 설치 완료",
+        "INSTALL_FAILED": "{{name}} 설치 실패",
+        "UNINSTALLING": "{{name}} 제거 중...",
+        "UNINSTALLING_UNUSED_DEPS": "사용하지 않는 의존성 제거 중...",
+        "UNINSTALL_TIMEOUT": "제거 시간 초과",
+        "UNINSTALL_COMPLETE": "{{name}} 제거 완료",
+        "BOARD_INSTALL_COMPLETE": "보드 설치 완료",
+        "BOARD_UNINSTALL_COMPLETE": "보드 제거 완료",
+        "BOARD_DEPS_INSTALL_COMPLETE": "보드 의존성 설치 완료",
+        "BOARD_DEPS_INSTALL_FAILED": "보드 의존성 설치 실패",
+        "DEPS_INSTALL_COMPLETE": "의존성 설치 완료",
+        "DEPS_UNINSTALL_COMPLETE": "의존성 제거 완료",
+        "DEPS_UNINSTALL_FAILED": "의존성 제거 실패",
+        "NAME_REQUIRED": "{{type}} 이름은 비워둘 수 없습니다",
+        "TYPE_TOOL": "도구",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "컴파일러",
+        "INSTALLING_TITLE": "설치 중",
+        "INSTALL_COMPLETE_TITLE": "설치 완료",
+        "INSTALL_FAILED_TITLE": "설치 실패",
+        "UNINSTALLING_TITLE": "제거 중",
+        "UNINSTALL_COMPLETE_TITLE": "제거 완료",
+        "UNINSTALL_FAILED_TITLE": "제거 실패"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "의존성 설치 중",
+        "LOADING_BOARD_CONFIG": "보드 구성 로드 중",
+        "LOADING_BLOCKLY_LIB": "Blockly 라이브러리 로드 중",
+        "LOADING_LIB": "{{name}} 로드 중",
+        "LOADING_BLOCKLY_PROGRAM": "Blockly 프로그램 로드 중",
+        "PROJECT_LOAD_SUCCESS": "프로젝트 로드 완료"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "예제 로드 중...",
+        "EXAMPLE_LOAD_SUCCESS": "예제 로드 완료",
+        "EXAMPLE_LOAD_FAILED": "예제 로드 실패",
+        "NO_TUTORIAL_PROVIDED": "라이브러리 작성자가 튜토리얼을 제공하지 않았습니다"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "프로젝트를 열 수 없습니다: ",
+        "CREATING_PROJECT": "프로젝트 생성 중...",
+        "PROJECT_CREATED": "프로젝트가 생성되었습니다",
+        "CREATE_FAILED": "프로젝트 생성에 실패했습니다",
+        "PATH_NOT_EXIST": "프로젝트 경로가 존재하지 않습니다. 다른 프로젝트를 선택하세요",
+        "SWITCHING_BOARD_CONFIG": "보드 구성 전환 중...",
+        "BOARD_SWITCH_COMPLETE": "보드 전환 완료",
+        "BOARD_SWITCH_SUCCESS": "보드 전환 성공",
+        "SWITCHING_BOARD": "보드 전환 중...",
+        "UNINSTALLING_CURRENT_BOARD": "현재 보드 제거 중...",
+        "INSTALLING_NEW_BOARD": "새 보드 설치 중...",
+        "UPDATING_PROJECT_CONFIG": "프로젝트 구성 업데이트 중...",
+        "BOARD_SWITCH_FAILED": "보드 전환 실패: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "중지",
+        "VIEW_DETAIL": "상세 보기",
+        "AI_PROCESS": "AI 처리"
+    },
+    "LOG": {
+        "TOOLTIP": "클릭하여 클립보드에 복사, 더블클릭하여 AI 어시스턴트로 전송",
+        "COPIED_TO_CLIPBOARD": "로그 내용이 클립보드에 복사되었습니다",
+        "SENT_TO_AI": "로그 내용이 AI 어시스턴트로 전송되었습니다",
+        "NO_DATA_TO_EXPORT": "내보낼 로그 데이터가 없습니다",
+        "EXPORT_TITLE": "로그 데이터 내보내기",
+        "TEXT_FILE": "텍스트 파일",
+        "ALL_FILES": "모든 파일",
+        "EXPORT_SUCCESS": "로그 데이터가 성공적으로 내보내졌습니다: "
     }
 }

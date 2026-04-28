@@ -1,0 +1,256 @@
+// Light 主题变量定义（偏暗柔和风格，减少刺眼）
+[data-theme="light"] {
+  // ─── 背景色 ───
+  --aily-bg-primary: #e8e8e8;
+  --aily-bg-secondary: #e0e0e0;
+  --aily-bg-tertiary: #d6d6d6;
+  --aily-bg-elevated: #ededed;
+  --aily-bg-input: #f5f5f5;
+  --aily-bg-hover: #c5ddf3;
+  --aily-bg-active: #3893d8;
+  --aily-bg-overlay: rgba(0, 0, 0, 0.45);
+  --aily-bg-card: #ededed;
+
+  // ─── 文本色 ───
+  --aily-text-primary: #2e2e2e;
+  --aily-text-secondary: #555555;
+  --aily-text-tertiary: #636363;
+  --aily-text-quaternary: #404040;
+  --aily-text-disabled: #909090;
+  --aily-text-muted: #6a6a6a;
+  --aily-text-hint: #7a7a7a;
+
+  // ─── 边框色 ───
+  --aily-border-primary: #d0d0d0;
+  --aily-border-secondary: #c8c8c8;
+  --aily-border-tertiary: #bfbfbf;
+  --aily-border-input: #b8b8b8;
+  --aily-border-subtle: #d0d0d0;
+  --aily-border-active: #b0b0b0;
+
+  // ─── 功能色 ───
+  --aily-color-link: #0078d4;
+  --aily-color-link-hover: #005fb8;
+  --aily-color-accent: #0078d4;
+  --aily-color-primary: #0078d4;
+  --aily-color-primary-alt: #005fb8;
+  --aily-color-warning: #d49a10;
+  --aily-color-warning-alt: #b87d06;
+  --aily-color-error: #c02020;
+  --aily-color-error-bright: #d41400;
+  --aily-color-error-notice: #b87d06;
+  --aily-color-success: #2e7a2a;
+  --aily-color-success-alt: #256d22;
+
+  // ─── 滚动条 ───
+  --aily-scrollbar-thumb: rgba(80, 80, 80, 0.35);
+  --aily-scrollbar-thumb-hover: rgba(80, 80, 80, 0.55);
+  --aily-scrollbar-track: transparent;
+  --aily-scrollbar-track-alt: #e0e0e0;
+
+  // ─── 菜单 ───
+  --aily-menu-hover: #c5ddf3;
+  --aily-menu-text: #2e2e2e;
+  --aily-menu-text-secondary: #636363;
+  --aily-menu-separator: #c8c8c8;
+
+  // ─── 阴影 ───
+  --aily-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --aily-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.15);
+  --aily-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.18);
+
+  // ─── Loading 动画 ───
+  --aily-loading-dot: #0078d4;
+
+  // ─── 编辑器 ───
+  --aily-editor-bg: #f0f0f0;
+  --aily-editor-flyout-bg: #e0e0e0;
+
+  // ─── 杂项 ───
+  --aily-icon-color: #555555;
+  --aily-tab-active-text: #2e2e2e;
+  --aily-tab-inactive-text: #7a7a7a;
+  --aily-highlight-bg: rgba(0, 0, 0, 0.09);
+
+  // ─── blockly ───
+  --aily-blockly-text-primary: #2e2e2e;
+  // toolbox 折叠箭头（mask 着色），浅色侧栏用 #000 透明度
+  --aily-blockly-toolbox-tree-icon: rgba(0, 0, 0, 0.85);
+  // toolbox 分类行选中背景（相对侧栏略提亮，配深色字）
+  --aily-blockly-toolbox-row-selected-bg: var(--aily-bg-elevated);
+
+  // ─── 面板 / 浮层（项目广场、对话设置等）───
+  --aily-surface-header: #e2e2e2;
+  --aily-surface-scrim: rgba(196, 194, 194, 0.55);
+
+  // ─── 终端 xterm（光标、选区与 ANSI 配色）───
+  --aily-terminal-cursor: var(--aily-color-accent);
+  --aily-terminal-cursor-accent: #ffffff;
+  --aily-terminal-selection-bg: rgba(0, 120, 212, 0.28);
+  --aily-terminal-black: #000000;
+  --aily-terminal-red: #cd3131;
+  --aily-terminal-green: #00bc00;
+  --aily-terminal-yellow: #d3b717;
+  --aily-terminal-blue: #0451a5;
+  --aily-terminal-magenta: #bc05bc;
+  --aily-terminal-cyan: #0598bc;
+  --aily-terminal-white: #555555;
+  --aily-terminal-bright-black: #666666;
+  --aily-terminal-bright-red: #cd3131;
+  --aily-terminal-bright-green: #14ce14;
+  --aily-terminal-bright-yellow: #e98604;
+  --aily-terminal-bright-blue: #0451a5;
+  --aily-terminal-bright-magenta: #bc05bc;
+  --aily-terminal-bright-cyan: #0598bc;
+  --aily-terminal-bright-white: #a5a5a5;
+
+  // ─── Aily Chat 子 Agent 折叠条（如 schematicAgent / Schematic Agent）───
+  --aily-subagent-bg: var(--aily-bg-card);
+  --aily-subagent-border: #4f46e5;
+  --aily-subagent-header-hover: var(--aily-highlight-bg);
+  --aily-subagent-text: var(--aily-text-secondary);
+  --aily-subagent-label: #4338ca;
+  --aily-subagent-icon-loading: #6366f1;
+  --aily-subagent-icon-done: var(--aily-color-success);
+  --aily-subagent-arrow: var(--aily-text-hint);
+  --aily-subagent-body-divider: rgba(79, 70, 229, 0.28);
+  --aily-subagent-scrollbar-thumb: var(--aily-scrollbar-thumb);
+  --aily-subagent-scrollbar-track: var(--aily-scrollbar-track);
+
+  // ─── Aily Chat 对话气泡（x-dialog）───
+  --aily-chat-xdialog-bubble-bg: var(--aily-bg-elevated);
+  --aily-chat-xdialog-username-border: var(--aily-border-secondary);
+  --aily-chat-xdialog-username-text: var(--aily-text-hint);
+  --aily-chat-xdialog-checkpoint-fg: var(--aily-text-hint);
+  --aily-chat-xdialog-checkpoint-fg-hover: var(--aily-text-secondary);
+  --aily-chat-xdialog-thinking-fg: var(--aily-text-muted);
+  --aily-chat-xdialog-thinking-dot: var(--aily-text-hint);
+  --aily-chat-xdialog-context-bg: rgba(212, 160, 23, 0.12);
+  --aily-chat-xdialog-context-border: rgba(180, 130, 10, 0.35);
+  --aily-chat-xdialog-context-accent: #b8860b;
+  --aily-chat-xdialog-context-chevron: var(--aily-text-hint);
+  --aily-chat-xdialog-context-body-fg: var(--aily-text-secondary);
+  --aily-chat-xdialog-context-body-bg: rgba(0, 0, 0, 0.06);
+  --aily-chat-xdialog-context-hover-bg: rgba(212, 160, 23, 0.22);
+  --aily-chat-xdialog-md-h2-border: var(--aily-color-accent);
+  --aily-chat-xdialog-md-code-bg: #d8d8d8;
+  --aily-chat-xdialog-md-table-shadow: var(--aily-shadow-sm);
+  --aily-chat-xdialog-md-thead-bg: #dedede;
+  --aily-chat-xdialog-md-tbody-bg: #e8e8e8;
+  --aily-chat-xdialog-md-tr-hover: #dcdcdc;
+  --aily-chat-xdialog-md-cell-border: var(--aily-border-secondary);
+  --aily-chat-xdialog-md-cell-fg: var(--aily-text-primary);
+  --aily-chat-xdialog-md-bq-border: var(--aily-border-tertiary);
+  --aily-chat-xdialog-md-bq-bg: rgba(0, 0, 0, 0.04);
+  --aily-chat-xdialog-md-bq-bg-hover: rgba(0, 0, 0, 0.08);
+  --aily-chat-xdialog-msg-btn: var(--aily-text-hint);
+  --aily-chat-xdialog-msg-btn-hover-bg: var(--aily-highlight-bg);
+  --aily-chat-xdialog-msg-btn-hover-fg: var(--aily-text-secondary);
+  --aily-chat-xdialog-msg-btn-active: var(--aily-color-accent);
+  --aily-chat-xdialog-msg-divider: rgba(0, 0, 0, 0.12);
+  --aily-chat-xdialog-msg-model: var(--aily-text-disabled);
+  --aily-chat-xdialog-loader-stripe: #a8a8a8;
+  --aily-chat-xdialog-loader-track: #d0d0d0;
+  --aily-chat-xdialog-editable-hover: var(--aily-highlight-bg);
+  --aily-chat-xdialog-edit-bg: var(--aily-bg-input);
+  --aily-chat-xdialog-edit-resource-border: var(--aily-border-secondary);
+  --aily-chat-xdialog-edit-resource-hover-bg: var(--aily-bg-tertiary);
+  --aily-chat-xdialog-edit-resource-name: var(--aily-text-primary);
+  --aily-chat-xdialog-edit-btn-fg: var(--aily-text-quaternary);
+  --aily-chat-xdialog-edit-btn-hover-bg: var(--aily-bg-tertiary);
+  --aily-chat-xdialog-edit-btn2-fg: var(--aily-text-tertiary);
+  --aily-chat-xdialog-edit-cancel-hover-fg: var(--aily-color-error-bright);
+  --aily-chat-xdialog-edit-cancel-hover-bg: rgba(192, 32, 32, 0.1);
+  --aily-chat-xdialog-edit-list-border: var(--aily-border-secondary);
+  --aily-chat-xdialog-edit-list-bg: var(--aily-bg-secondary);
+
+  // ─── Aily Chat Context Token 用量环 / 浮层说明 ───
+  --aily-chat-token-budget-ring-track: #b0b0b0;
+  --aily-chat-token-budget-fill-ok: var(--aily-color-success);
+  --aily-chat-token-budget-fill-warn: var(--aily-color-warning);
+  --aily-chat-token-budget-fill-danger: var(--aily-color-error-bright);
+  --aily-chat-token-budget-tooltip-bar-track: rgba(0, 0, 0, 0.12);
+  --aily-chat-token-budget-label-system: var(--aily-color-success);
+  --aily-chat-token-budget-label-tools: var(--aily-color-accent);
+  --aily-chat-token-budget-label-messages: #7c3aed;
+  // ng-zorro tooltip 浮层背景（浅色为白底）
+  --aily-chat-token-budget-tooltip-panel-bg: #ffffff;
+
+  // ─── Aily Chat 内嵌块（x-aily-* viewers）───
+  --aily-chat-viewer-card-bg: var(--aily-bg-secondary);
+  --aily-chat-viewer-card-hover: var(--aily-bg-tertiary);
+  --aily-chat-viewer-fg: var(--aily-text-tertiary);
+  --aily-chat-viewer-muted: var(--aily-text-hint);
+  --aily-chat-viewer-subtle: var(--aily-text-secondary);
+  --aily-chat-viewer-faint: var(--aily-text-disabled);
+  --aily-chat-viewer-border: var(--aily-border-secondary);
+  --aily-chat-viewer-border-soft: var(--aily-border-primary);
+  --aily-chat-viewer-spinner-ring: rgba(0, 0, 0, 0.08);
+  --aily-chat-viewer-spinner-accent: var(--aily-color-primary);
+  --aily-chat-viewer-code-bg: var(--aily-bg-input);
+  --aily-chat-viewer-code-fg: var(--aily-text-primary);
+  --aily-chat-viewer-code-border: var(--aily-border-secondary);
+  --aily-chat-viewer-inline-code: var(--aily-color-warning-alt);
+  --aily-chat-viewer-mermaid-label: #e8e8e8;
+  --aily-chat-viewer-panel: var(--aily-bg-elevated);
+  --aily-chat-viewer-panel-raised: #e4e4e4;
+  --aily-chat-viewer-option-hover: #dedede;
+  --aily-chat-viewer-option-selected-bg: rgba(0, 120, 212, 0.1);
+  --aily-chat-viewer-option-selected-border: rgba(0, 120, 212, 0.35);
+  --aily-chat-viewer-overlay-hover: var(--aily-highlight-bg);
+  --aily-chat-viewer-overlay-soft: rgba(0, 0, 0, 0.05);
+  --aily-chat-viewer-primary: var(--aily-color-primary);
+  --aily-chat-viewer-primary-hover: var(--aily-color-link-hover);
+  --aily-chat-viewer-on-primary: #ffffff;
+  --aily-chat-viewer-primary-split: rgba(255, 255, 255, 0.35);
+  --aily-chat-viewer-badge-bg: rgba(0, 120, 212, 0.12);
+  --aily-chat-viewer-state-info: var(--aily-color-primary);
+  --aily-chat-viewer-state-done: var(--aily-color-success);
+  --aily-chat-viewer-state-warn: var(--aily-color-warning);
+  --aily-chat-viewer-state-error: var(--aily-color-error-bright);
+  --aily-chat-viewer-progress-track: rgba(0, 0, 0, 0.1);
+  --aily-chat-viewer-dropdown-bg: #ececec;
+  --aily-chat-viewer-dropdown-shadow: var(--aily-shadow-md);
+  --aily-chat-viewer-divider-bg: var(--aily-border-secondary);
+  --aily-chat-viewer-title-fg: var(--aily-text-primary);
+  --aily-chat-viewer-reject-hover-fg: var(--aily-text-primary);
+  --aily-chat-viewer-reject-hover-border: var(--aily-border-tertiary);
+  --aily-chat-viewer-blockly-header: var(--aily-text-primary);
+  --aily-chat-viewer-blockly-chip-bg: rgba(0, 120, 212, 0.12);
+  --aily-chat-viewer-blockly-chip-border: rgba(0, 120, 212, 0.28);
+  --aily-chat-viewer-blockly-chip-fg: var(--aily-color-link-hover);
+  --aily-chat-viewer-blockly-code-bg: var(--aily-editor-bg);
+  --aily-chat-viewer-blockly-meta: var(--aily-text-disabled);
+  --aily-chat-viewer-context-bg: rgba(212, 160, 23, 0.12);
+  --aily-chat-viewer-context-border: rgba(180, 130, 10, 0.35);
+  --aily-chat-viewer-context-header-hover: var(--aily-highlight-bg);
+  --aily-chat-viewer-context-accent: var(--aily-chat-xdialog-context-accent);
+  --aily-chat-viewer-error-title: #c62828;
+  --aily-chat-viewer-error-title-warn: #b8860b;
+  --aily-chat-viewer-task-bg: var(--aily-chat-xdialog-bubble-bg);
+  --aily-chat-viewer-task-border: var(--aily-border-secondary);
+  --aily-chat-viewer-task-accent-error: rgba(192, 32, 32, 0.35);
+  --aily-chat-viewer-task-accent-timeout: rgba(212, 160, 23, 0.4);
+  --aily-chat-viewer-btn-secondary-bg: var(--aily-bg-tertiary);
+  --aily-chat-viewer-btn-secondary-border: var(--aily-border-secondary);
+  --aily-chat-viewer-btn-secondary-hover-bg: var(--aily-bg-hover);
+  --aily-chat-viewer-btn-secondary-hover-border: var(--aily-border-tertiary);
+  --aily-chat-viewer-think-heading: var(--aily-text-secondary);
+  --aily-chat-viewer-think-md-border: var(--aily-chat-xdialog-md-h2-border);
+  --aily-chat-viewer-option-desc: var(--aily-text-hint);
+  --aily-chat-viewer-loading-fg: var(--aily-text-hint);
+  --aily-chat-viewer-scrollbar: var(--aily-scrollbar-thumb);
+
+  // Token 用量 tooltip：浮层挂在 body，需单独覆盖 ant 默认底色
+  .aily-chat-token-budget-tooltip-overlay.ant-tooltip {
+    .ant-tooltip-inner {
+      background-color: var(--aily-chat-token-budget-tooltip-panel-bg);
+      color: var(--aily-text-primary);
+    }
+
+    .ant-tooltip-arrow-content {
+      background-color: var(--aily-chat-token-budget-tooltip-panel-bg) !important;
+      --antd-arrow-background-color: var(--aily-chat-token-budget-tooltip-panel-bg);
+    }
+  }
+}

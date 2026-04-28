@@ -1,7 +1,7 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, ApplicationRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, Observable, throwError } from 'rxjs';
-import { catchError, map } from 'rxjs/operators';
+import { BehaviorSubject, Observable, Subject, throwError, from } from 'rxjs';
+import { catchError, map, switchMap } from 'rxjs/operators';
 import { API } from '../configs/api.config';
 import { ElectronService } from './electron.service';
 
@@ -14,6 +14,7 @@ export interface CommonResponse {
 export interface LoginRequest {
   username: string;
   password: string;
+  altcha?: string;
 }
 
 export interface LoginResponse {
@@ -39,6 +40,12 @@ export interface RegisterRequest {
   email: string;
 }
 
+export interface SSOTokenResponse {
+  sso_token: string;
+  expires_in: number;
+  target_url: string | null;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -49,10 +56,21 @@ export class AuthService {
 
   private http = inject(HttpClient);
   private electronService = inject(ElectronService);
+  private appRef = inject(ApplicationRef);
 
   // 用户登录状态
   private isLoggedInSubject = new BehaviorSubject<boolean>(false);
   public isLoggedIn$ = this.isLoggedInSubject.asObservable();
+  get isLoggedIn(): boolean { return this.isLoggedInSubject.value; }
+
+  // 登录时需要绑定微信的信号
+  private needsWechatBindSubject = new Subject<string>();
+  public needsWechatBind$ = this.needsWechatBindSubject.asObservable();
+
+  /** 由 app.component 调用，通知登录组件进入微信绑定模式 */
+  emitNeedsWechatBind(pendingTicket: string): void {
+    this.needsWechatBindSubject.next(pendingTicket);
+  }
 
   // 用户信息
   private userInfoSubject = new BehaviorSubject<any>(null);
@@ -62,7 +80,10 @@ export class AuthService {
   showUser = new BehaviorSubject<any>(null);
 
   constructor() {
-    // 不在构造函数中立即初始化，等待ElectronService初始化完成
+    // 登录状态变化后强制触发全局变更检测
+    this.isLoggedInSubject.subscribe(() => {
+      setTimeout(() => this.appRef.tick());
+    });
   }
 
   /**
@@ -142,6 +163,47 @@ export class AuthService {
   }
 
   /**
+   * 发送邮箱验证码
+   */
+  sendEmailCode(email: string, altcha: string): Observable<CommonResponse> {
+    // Mock 模式下直接返回成功
+    if (this.getWechatMockScenario()) {
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({ status: 200, message: 'mock: 验证码已发送' } as CommonResponse);
+          observer.complete();
+        }, 200);
+      });
+    }
+    return this.http.post<CommonResponse>(API.sendEmailCode, { email, altcha, device_id: 'pc' }).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 邮箱验证码登录
+   */
+  loginByEmail(email: string, code: string, inviteCode: string): Observable<LoginResponse> {
+    return this.http.post<LoginResponse>(API.loginByEmail, { email, code, device_id: 'pc', invite_code: inviteCode }).pipe(
+      map((response) => {
+        if (response.status === 200 && response.data) {
+          // 需要绑定微信时不保存 token
+          if ((response.data as any).status === 'needs_wechat_bind') {
+            return response;
+          }
+          this.saveToken2(response.data.access_token);
+          this.getMe(response.data.access_token);
+          this.isLoggedInSubject.next(true);
+        } else {
+          this.isLoggedInSubject.next(false);
+        }
+        return response;
+      }),
+      catchError(this.handleError)
+    );
+  }
+
+  /**
    * 用户登出
    */
   async logout(): Promise<void> {
@@ -200,11 +262,23 @@ export class AuthService {
   }
 
   async refreshMe() {
+    // 先检查是否有 token，没有 token 就不发起请求
+    const token = await this.getToken2();
+    if (!token) {
+      return;
+    }
     return this.http.get<CommonResponse>(API.me).subscribe( (res) => {
       if (res.status === 200 && res.data) {
         this.userInfoSubject.next(res.data);
       };
     });
+  }
+
+  /**
+   * 获取用户权益摘要（仪表盘用，无缓存）
+   */
+  getBenefits(): Observable<CommonResponse> {
+    return this.http.get<CommonResponse>(API.benefits);
   }
 
   /**
@@ -302,7 +376,7 @@ export class AuthService {
     try {
       const fileExists = await this.checkAuthFileExists();
       const currentLoginStatus = this.isLoggedInSubject.value;
-      
+
       // 如果文件状态与当前登录状态不一致，则更新状态
       if (fileExists !== currentLoginStatus) {
         if (!fileExists && currentLoginStatus) {
@@ -359,7 +433,7 @@ export class AuthService {
             const encrypted = (window as any).electronAPI.safeStorage.encryptString(token);
             encryptedToken = encrypted.toString('base64');
           } catch (error) {
-            console.warn('token加密失败，使用明文存储:', error);
+            // console.warn('token加密失败，使用明文存储:', error);
           }
         }
 
@@ -414,7 +488,7 @@ export class AuthService {
           //     return authData.access_token;
           //   }
         } else {
-          console.warn('认证文件不存在:', authFilePath);
+          // console.warn('认证文件不存在:', authFilePath);
           return null;
         }
       } else {
@@ -426,7 +500,7 @@ export class AuthService {
         return localStorage.getItem('aily_auth_token');
       }
     } catch (error) {
-      console.error('获取token失败:', error);
+      // console.warn('获取token失败:', error);
       return null;
     }
   }
@@ -512,7 +586,7 @@ export class AuthService {
         localStorage.setItem(this.USER_INFO_KEY, userInfoStr);
       }
     } catch (error) {
-      console.log('保存用户信息失败:', error);
+      // console.log('保存用户信息失败:', error);
     }
   }
 
@@ -599,6 +673,24 @@ export class AuthService {
   }
 
   /**
+   * 检查当前用户是否具备指定权益
+   */
+  hasEntitlement(entitlementKey: string): boolean {
+    const entitlements = this.currentUser?.entitlements;
+    if (!entitlements || typeof entitlements !== 'object') {
+      return false;
+    }
+    return Boolean(entitlements[entitlementKey]);
+  }
+
+  /**
+   * 是否具备功能预览资格
+   */
+  hasFeaturePreviewAccess(): boolean {
+    return this.hasEntitlement('feature-preview:access');
+  }
+
+  /**
    * 检查并同步登录状态（供组件调用）
    * 在用户点击用户组件时调用此方法来确保状态同步
    */
@@ -610,15 +702,18 @@ export class AuthService {
   /**
    * 启动 GitHub OAuth 流程
    */
-  startGitHubOAuth(): Observable<{ authorization_url: string; state: string }> {
+  startGitHubOAuth(inviteCode?: string): Observable<{ authorization_url: string; state: string }> {
     // 生成并存储 state 参数
     const state = this.generateOAuthState();
-    
-    const requestData = {
-      redirect_uri: 'ailyblockly://auth/callback',
+
+    const requestData: any = {
+      redirect_uri: 'abis://auth/callback',
       state: state,
       device_id: 'pc'
     };
+    if (inviteCode) {
+      requestData.invite_code = inviteCode;
+    }
 
     return this.http.post<CommonResponse>(API.githubBrowserAuthorize, requestData).pipe(
       map(response => {
@@ -631,7 +726,7 @@ export class AuthService {
               console.error('注册OAuth状态失败:', error);
             });
           }
-          
+
           return {
             authorization_url: response.data.authorization_url,
             state: state
@@ -655,10 +750,10 @@ export class AuthService {
   generateOAuthState(): string {
     const state = Math.random().toString(36).substring(2) + Date.now().toString(36);
     this.oauthState = { state, timestamp: Date.now() };
-    
+
     // 同时保存到文件系统（用于跨实例共享）
     this.saveOAuthStateToFile(state);
-    
+
     return state;
   }
 
@@ -671,18 +766,18 @@ export class AuthService {
         // 使用共享的AppData路径（不使用实例隔离的路径）
         const originalAppDataPath = await this.getOriginalAppDataPath();
         const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
-        
+
         const stateData = {
           state,
           timestamp: Date.now()
         };
-        
+
         // 确保目录存在
         const stateDir = (window as any).electronAPI.path.dirname(stateFilePath);
         if (!(window as any).electronAPI.fs.existsSync(stateDir)) {
           (window as any).electronAPI.fs.mkdirSync(stateDir, { recursive: true });
         }
-        
+
         (window as any).electronAPI.fs.writeFileSync(stateFilePath, JSON.stringify(stateData, null, 2));
         // console.log('OAuth state已保存到共享文件:', stateFilePath);
       }
@@ -699,7 +794,7 @@ export class AuthService {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
         const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
-        
+
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           const content = (window as any).electronAPI.fs.readFileSync(stateFilePath, 'utf8');
           const stateData = JSON.parse(content);
@@ -720,13 +815,13 @@ export class AuthService {
   private async getOriginalAppDataPath(): Promise<string> {
     try {
       const currentAppDataPath = (window as any).electronAPI.path.getAppDataPath();
-      
+
       // 检查是否是实例隔离的路径 (包含 /instances/ 的路径)
       const instancesMatch = currentAppDataPath.match(/(.*)[/\\]instances[/\\][^/\\]+$/);
       if (instancesMatch) {
         return instancesMatch[1]; // 返回原始路径
       }
-      
+
       // 如果不是实例隔离路径，直接返回
       return currentAppDataPath;
     } catch (error) {
@@ -747,7 +842,7 @@ export class AuthService {
         return true;
       }
     }
-    
+
     // 如果内存中没有，尝试从文件加载（跨实例验证）
     const fileState = await this.loadOAuthStateFromFile();
     if (fileState && fileState.state === state) {
@@ -760,13 +855,13 @@ export class AuthService {
         this.clearOAuthStateFile();
       }
     } else {
-      // console.log('OAuth状态验证失败:', { 
-      //   inputState: state, 
-      //   memoryState: this.oauthState?.state, 
-      //   fileState: fileState?.state 
+      // console.log('OAuth状态验证失败:', {
+      //   inputState: state,
+      //   memoryState: this.oauthState?.state,
+      //   fileState: fileState?.state
       // });
     }
-    
+
     return false;
   }
 
@@ -786,7 +881,7 @@ export class AuthService {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
         const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
-        
+
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           (window as any).electronAPI.fs.unlinkSync(stateFilePath);
           // console.log('已清理OAuth状态共享文件:', stateFilePath);
@@ -800,12 +895,15 @@ export class AuthService {
   /**
    * GitHub Token 交换
    */
-  exchangeGitHubToken(code: string, state: string): Observable<any> {
-    const requestData = {
+  exchangeGitHubToken(code: string, state: string, inviteCode?: string): Observable<any> {
+    const requestData: any = {
       code: code,
       state: state,
       device_id: 'pc'
     };
+    if (inviteCode) {
+      requestData.invite_code = inviteCode;
+    }
 
     return this.http.post<CommonResponse>(API.githubTokenExchange, requestData).pipe(
       map(response => {
@@ -860,9 +958,19 @@ export class AuthService {
 
       // 交换 token
       const tokenData = await this.exchangeGitHubToken(callbackData.code, callbackData.state).toPromise();
-      
+
       // 清理状态
       this.clearOAuthState();
+
+      // 检查是否需要绑定微信
+      if (tokenData?.status === 'needs_wechat_bind') {
+        return {
+          success: false,
+          error: 'needs_wechat_bind',
+          data: tokenData,
+          message: tokenData.message || '请先绑定微信后再继续登录'
+        };
+      }
 
       // 处理成功结果
       await this.handleGitHubOAuthSuccess(tokenData);
@@ -897,6 +1005,320 @@ export class AuthService {
       console.error('处理 GitHub OAuth 成功数据失败:', error);
       throw error;
     }
+  }
+
+  // ==================== 微信登录 Mock ====================
+  private wechatMockCallCount = new Map<string, number>();
+
+  private getWechatMockScenario(): 'confirmed' | 'needs_email_bind' | 'email_merge_confirm' | 'login_bind_merge_confirm' | null {
+    const scenario = sessionStorage.getItem('wechat_login_mock_scenario');
+    if (scenario === 'confirmed' || scenario === 'needs_email_bind' || scenario === 'email_merge_confirm' || scenario === 'login_bind_merge_confirm') {
+      return scenario as any;
+    }
+    return null;
+  }
+
+  /**
+   * 获取微信扫码二维码
+   */
+  getWeChatQrcode(inviteCode?: string): Observable<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }> {
+    const mock = this.getWechatMockScenario();
+    if (mock) {
+      const ticket = `mock_ticket_${Date.now()}`;
+      this.wechatMockCallCount.set(ticket, 0);
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({
+            status: 200,
+            message: 'mock',
+            data: {
+              ticket,
+              qrcode_url: `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent('mock:' + ticket)}`,
+              expires_in: 300,
+            },
+          } as any);
+          observer.complete();
+        }, 400);
+      });
+    }
+    const params: any = {};
+    if (inviteCode) {
+      params.invite_code = inviteCode;
+    }
+    return this.http.get<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }>(API.wechatQrcode, { params }).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 检查微信扫码状态
+   */
+  checkWeChatStatus(ticket: string): Observable<CommonResponse & { data: { status: string; access_token?: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any; message?: string } }> {
+    const mock = this.getWechatMockScenario();
+    if (mock && ticket.startsWith('mock_ticket_')) {
+      const count = this.wechatMockCallCount.get(ticket) || 0;
+      this.wechatMockCallCount.set(ticket, count + 1);
+
+      let data: any;
+      if (count < 2) {
+        data = { status: 'pending', message: '等待扫码' };
+      } else if (count < 4) {
+        data = { status: 'scanned', message: '已扫码，请在手机上确认' };
+      } else if (mock === 'needs_email_bind' || mock === 'email_merge_confirm') {
+        data = { status: 'needs_email_bind', message: '当前微信需要补全邮箱后继续登录。' };
+        this.wechatMockCallCount.delete(ticket);
+      } else {
+        data = {
+          status: 'confirmed',
+          access_token: `mock_access_${Date.now()}`,
+          refresh_token: `mock_refresh_${Date.now()}`,
+          token_type: 'bearer',
+          is_new_user: false,
+          user: { id: 'mock_user', email: 'mock@example.com', nickname: 'Mock用户', groups: ['basic'] },
+        };
+        this.wechatMockCallCount.delete(ticket);
+      }
+
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({ status: 200, message: 'mock', data } as any);
+          observer.complete();
+        }, 300);
+      });
+    }
+
+    return this.http.get<CommonResponse & { data: { status: string; access_token?: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any; message?: string } }>(
+      API.wechatCheck,
+      { params: { ticket } }
+    ).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 微信扫码登录成功处理
+   */
+  async handleWeChatOAuthSuccess(data: { access_token: string; refresh_token?: string; user?: any }): Promise<void> {
+    try {
+      await this.saveToken2(data.access_token);
+      // if (data.refresh_token) {
+      //   await this.saveRefreshToken(data.refresh_token);
+      // }
+      if (data.user) {
+        await this.saveUserInfo(data.user);
+        this.userInfoSubject.next(data.user);
+      }
+      this.isLoggedInSubject.next(true);
+    } catch (error) {
+      console.error('处理微信 OAuth 成功数据失败:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 获取登录绑定微信的二维码
+   */
+  getWeChatLoginBindQrcode(pendingTicket: string): Observable<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }> {
+    if (this.getWechatMockScenario() === 'login_bind_merge_confirm') {
+      const ticket = `mock_ticket_lb_${Date.now()}`;
+      this.wechatMockCallCount.set(ticket, 0);
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({
+            status: 200,
+            message: 'mock',
+            data: {
+              ticket,
+              qrcode_url: `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent('mock-lb:' + ticket)}`,
+              expires_in: 300,
+            },
+          } as any);
+          observer.complete();
+        }, 400);
+      });
+    }
+    return this.http.get<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }>(
+      API.wechatLoginBindQrcode,
+      { params: { pending_ticket: pendingTicket }, headers: { 'X-Supports-Merge-Confirm': 'true' } }
+    ).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 检查登录绑定微信的状态
+   */
+  checkWeChatLoginBindStatus(ticket: string): Observable<CommonResponse & { data: { status: string; access_token?: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any; message?: string; merge_info?: any } }> {
+    if (this.getWechatMockScenario() === 'login_bind_merge_confirm' && ticket.startsWith('mock_ticket_lb_')) {
+      const count = this.wechatMockCallCount.get(ticket) || 0;
+      this.wechatMockCallCount.set(ticket, count + 1);
+
+      let data: any;
+      if (count < 2) {
+        data = { status: 'pending', message: '等待扫码' };
+      } else if (count < 4) {
+        data = { status: 'scanned', message: '已扫码，正在处理...' };
+      } else {
+        data = {
+          status: 'needs_merge_confirm',
+          message: '该微信已关联其他账号，是否将微信合并到当前邮箱账号？',
+          merge_info: {
+            wechat_user_id: 'mock_wechat_user_id',
+            wechat_nickname: 'Mock微信用户',
+            email_user_id: 'mock_email_user_id',
+            email: 'existing@example.com',
+            provider_id: 'mock_provider_id',
+          },
+        };
+        this.wechatMockCallCount.delete(ticket);
+      }
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({ status: 200, message: 'mock', data } as any);
+          observer.complete();
+        }, 300);
+      });
+    }
+    return this.http.get<CommonResponse & { data: { status: string; access_token?: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any; message?: string } }>(
+      API.wechatLoginBindCheck,
+      { params: { ticket }, headers: { 'X-Supports-Merge-Confirm': 'true' } }
+    ).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 微信登录后补全邮箱绑定
+   */
+  completeWechatEmailBindLogin(ticket: string, email: string, code: string, invite_code?: string, confirm_merge?: boolean): Observable<CommonResponse & { data: { access_token: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any } }> {
+    const mock = this.getWechatMockScenario();
+    // Mock 模式
+    if (mock && ticket.startsWith('mock_ticket_')) {
+      // email_merge_confirm 场景：首次返回 needs_merge_confirm，confirm 后返回成功
+      if (mock === 'email_merge_confirm' && !confirm_merge) {
+        return new Observable(observer => {
+          setTimeout(() => {
+            observer.next({
+              status: 200,
+              message: 'mock',
+              data: {
+                status: 'needs_merge_confirm',
+                merge_info: {
+                  wechat_user_id: 'mock_wechat_user_id',
+                  wechat_nickname: 'Mock微信用户',
+                  email_user_id: 'mock_email_user_id',
+                  email: email || 'existing@example.com',
+                  provider_id: 'mock_provider_id',
+                },
+              },
+            } as any);
+            observer.complete();
+          }, 300);
+        });
+      }
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({
+            status: 200,
+            message: 'mock',
+            data: {
+              access_token: `mock_access_${Date.now()}`,
+              refresh_token: `mock_refresh_${Date.now()}`,
+              token_type: 'bearer',
+              is_new_user: false,
+              user: { id: 'mock_user', email, nickname: email.split('@')[0] || 'Mock用户', groups: ['basic'] },
+            },
+          } as any);
+          observer.complete();
+        }, 300);
+      });
+    }
+
+    const body: any = { ticket, email, code };
+    if (invite_code) {
+      body.invite_code = invite_code;
+    }
+    if (confirm_merge) {
+      body.confirm_merge = confirm_merge;
+    }
+    return this.http.post<CommonResponse & { data: { access_token: string; refresh_token?: string; token_type?: string; is_new_user?: boolean; user?: any } }>(
+      API.wechatCompleteEmailBind,
+      body,
+      { headers: { 'X-Supports-Merge-Confirm': 'true' } }
+    ).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 确认微信账号合并
+   */
+  confirmWechatMerge(ticket: string, flow: 'login_bind' | 'bind'): Observable<CommonResponse & { data: any }> {
+    if (this.getWechatMockScenario() && ticket.startsWith('mock_ticket_')) {
+      return new Observable(observer => {
+        setTimeout(() => {
+          observer.next({
+            status: 200,
+            message: 'mock',
+            data: {
+              access_token: `mock_access_merged_${Date.now()}`,
+              refresh_token: `mock_refresh_merged_${Date.now()}`,
+              token_type: 'bearer',
+              is_new_user: false,
+              user: { id: 'mock_merged_user', email: 'existing@example.com', nickname: 'Mock合并用户', groups: ['basic'] },
+            },
+          } as any);
+          observer.complete();
+        }, 500);
+      });
+    }
+    return this.http.post<CommonResponse & { data: any }>(
+      API.wechatConfirmMerge,
+      { ticket, flow }
+    ).pipe(
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * 生成 SSO Token（用于桌面端跳转 Web 端免登）
+   * @param targetUrl 可选，目标跳转 URL
+   * @returns Observable<SSOTokenResponse>
+   */
+  generateSSOToken(targetUrl?: string): Observable<SSOTokenResponse> {
+    return from(this.getToken2()).pipe(
+      switchMap(token => {
+        if (!token) {
+          return throwError(() => new Error('用户未登录'));
+        }
+
+        const requestBody: any = {
+          target_type: 'console',
+        };
+        if (targetUrl) {
+          requestBody.target_url = targetUrl;
+        }
+
+        return this.http.post<CommonResponse>(API.ssoGenerate, requestBody, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).pipe(
+          map((response) => {
+            if (response.status === 200 && response.data) {
+              return {
+                sso_token: response.data.sso_token,
+                expires_in: response.data.expires_in,
+                target_url: response.data.target_url
+              };
+            }
+            throw new Error(response.message || '生成 SSO Token 失败');
+          }),
+          catchError((error) => {
+            console.error('生成 SSO Token 失败:', error);
+            return throwError(() => error);
+          })
+        );
+      })
+    );
   }
 
   /**

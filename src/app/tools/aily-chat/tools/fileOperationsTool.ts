@@ -1,6 +1,7 @@
-import { connectionStrategies } from "@joint/core";
+﻿import { connectionStrategies } from "@joint/core";
 import { ToolUseResult } from "./tools";
 import { injectTodoReminder } from "./todoWriteTool";
+import { AilyHost } from '../core/host';
 import { 
     SecurityService, 
     PathSecurityContext, 
@@ -27,9 +28,9 @@ async function buildDirectoryTree(dirPath: string, currentDepth: number = 0, max
     }
 
     try {
-        const stats = await window['fs'].statSync(dirPath);
-        const isDirectory = await window['fs'].isDirectory(dirPath);
-        const name = window['path'].basename(dirPath);
+        const stats = await AilyHost.get().fs.statSync(dirPath);
+        const isDirectory = await AilyHost.get().fs.isDirectory(dirPath);
+        const name = AilyHost.get().path.basename(dirPath);
 
         const node = {
             name,
@@ -42,9 +43,9 @@ async function buildDirectoryTree(dirPath: string, currentDepth: number = 0, max
 
         if (isDirectory && currentDepth < maxDepth) {
             try {
-                const files = await window['fs'].readDirSync(dirPath);
+                const files = await AilyHost.get().fs.readDirSync(dirPath);
                 for (const file of files) {
-                    const childPath = window['path'].join(dirPath, file.name);
+                    const childPath = AilyHost.get().path.join(dirPath, file.name);
                     const childNode = await buildDirectoryTree(childPath, currentDepth + 1, maxDepth);
                     if (childNode) {
                         node.children.push(childNode);
@@ -130,7 +131,7 @@ export async function fileOperationsTool(
         // 构建完整文件路径
         let filePath = basePath;
         if (name) {
-            filePath = window['path'].join(basePath, name);
+            filePath = AilyHost.get().path.join(basePath, name);
         }
         
         // 再次规范化最终路径
@@ -192,14 +193,14 @@ export async function fileOperationsTool(
 
         switch (operation) {
             case 'list':
-                const files = await window['fs'].readDirSync(filePath);
+                const files = await AilyHost.get().fs.readDirSync(filePath);
                 const fileDetails = await Promise.all(
                     files.map(async (file) => {
-                        const fullPath = window['path'].join(filePath, file.name);
-                        const stats = await window['fs'].statSync(fullPath);
+                        const fullPath = AilyHost.get().path.join(filePath, file.name);
+                        const stats = await AilyHost.get().fs.statSync(fullPath);
                         return {
                             name: file,
-                            isDirectory: await window['fs'].isDirectory(fullPath),
+                            isDirectory: await AilyHost.get().fs.isDirectory(fullPath),
                             size: stats.size,
                             modifiedTime: stats.mtime,
                         };
@@ -209,7 +210,7 @@ export async function fileOperationsTool(
                 return injectTodoReminder(toolResult, 'fileOperationsTool');
 
             case 'read':
-                const fileContent = await window['fs'].readFileSync(filePath, 'utf-8');
+                const fileContent = await AilyHost.get().fs.readFileSync(filePath, 'utf-8');
                 toolResult = { is_error, content: fileContent };
                 return injectTodoReminder(toolResult, 'fileOperationsTool');
 
@@ -226,23 +227,23 @@ export async function fileOperationsTool(
                 try {
                     if (is_folder) {
                         console.log(`创建文件夹: ${filePath}`);
-                        await window['fs'].mkdirSync(filePath, { recursive: true });
+                        await AilyHost.get().fs.mkdirSync(filePath, { recursive: true });
                         toolResult = { is_error, content: `Folder created at: ${filePath}` };
                         return injectTodoReminder(toolResult, 'fileOperationsTool');
                     } else {
-                        const dir = window['path'].dirname(filePath);
+                        const dir = AilyHost.get().path.dirname(filePath);
                         console.log(`文件目录: ${dir}`);
                         console.log(`完整文件路径: ${filePath}`);
                         
                         // 确保目录存在
-                        if (!window['fs'].existsSync(dir)) {
+                        if (!AilyHost.get().fs.existsSync(dir)) {
                             console.log(`创建目录: ${dir}`);
-                            await window['fs'].mkdirSync(dir, { recursive: true });
+                            await AilyHost.get().fs.mkdirSync(dir, { recursive: true });
                         }
                         
                         // 写入文件
                         console.log(`写入文件内容，长度: ${(content || '').length}`);
-                        await window['fs'].writeFileSync(filePath, content || '', 'utf-8');
+                        await AilyHost.get().fs.writeFileSync(filePath, content || '', 'utf-8');
                         toolResult = { is_error, content: `File created at: ${filePath}` };
                         return injectTodoReminder(toolResult, 'fileOperationsTool');
                     }
@@ -250,7 +251,7 @@ export async function fileOperationsTool(
                     console.warn('文件创建失败:', createError);
                     toolResult = { 
                         is_error: true, 
-                        content: `文件创建失败: ${createError.message}\n路径: ${filePath}\n目录: ${window['path'].dirname(filePath)}` 
+                        content: `文件创建失败: ${createError.message}\n路径: ${filePath}\n目录: ${AilyHost.get().path.dirname(filePath)}` 
                     };
                     return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
@@ -259,7 +260,7 @@ export async function fileOperationsTool(
                 try {
                     console.log(`编辑文件: ${filePath}`);
                     console.log(`写入内容长度: ${(content || '').length}`);
-                    await window['fs'].writeFileSync(filePath, content || '', 'utf-8');
+                    await AilyHost.get().fs.writeFileSync(filePath, content || '', 'utf-8');
                     toolResult = { is_error, content: `File updated at: ${filePath}` };
                     return injectTodoReminder(toolResult, 'fileOperationsTool');
                 } catch (editError) {
@@ -276,42 +277,42 @@ export async function fileOperationsTool(
 
                 if (is_folder) {
                     // Create backup folder with timestamp
-                    const dirName = window['path'].basename(filePath);
-                    const parentDir = window['path'].dirname(filePath);
-                    backupPath = window['path'].join(parentDir, `ABIBAK_${dirName}`);
+                    const dirName = AilyHost.get().path.basename(filePath);
+                    const parentDir = AilyHost.get().path.dirname(filePath);
+                    backupPath = AilyHost.get().path.join(parentDir, `ABIBAK_${dirName}`);
 
-                    await window['fs'].mkdirSync(backupPath, { recursive: true });
+                    await AilyHost.get().fs.mkdirSync(backupPath, { recursive: true });
 
                     // Copy directory contents recursively
                     async function copyDirRecursive(src, dest) {
-                        const entries = await window['fs'].readDirSync(src);
+                        const entries = await AilyHost.get().fs.readDirSync(src);
                         for (const entry of entries) {
-                            const srcPath = window['path'].join(src, entry.name);
-                            const destPath = window['path'].join(dest, entry.name);
+                            const srcPath = AilyHost.get().path.join(src, entry.name);
+                            const destPath = AilyHost.get().path.join(dest, entry.name);
 
-                            if (await window['fs'].isDirectory(srcPath)) {
-                                await window['fs'].mkdirSync(destPath, { recursive: true });
+                            if (await AilyHost.get().fs.isDirectory(srcPath)) {
+                                await AilyHost.get().fs.mkdirSync(destPath, { recursive: true });
                                 await copyDirRecursive(srcPath, destPath);
                             } else {
-                                const content = await window['fs'].readFileSync(srcPath, 'utf-8');
-                                await window['fs'].writeFileSync(destPath, content);
+                                const content = await AilyHost.get().fs.readFileSync(srcPath, 'utf-8');
+                                await AilyHost.get().fs.writeFileSync(destPath, content);
                             }
                         }
                     }
 
                     await copyDirRecursive(filePath, backupPath);
-                    await window['fs'].rmdirSync(filePath, { recursive: true });
+                    await AilyHost.get().fs.rmdirSync(filePath, { recursive: true });
                 } else {
                     // Create backup file
-                    const dir = window['path'].dirname(filePath);
-                    const filename = window['path'].basename(filePath);
-                    const ext = window['path'].extname(filePath);
+                    const dir = AilyHost.get().path.dirname(filePath);
+                    const filename = AilyHost.get().path.basename(filePath);
+                    const ext = AilyHost.get().path.extname(filePath);
                     const baseFilename = filename.replace(ext, '');
-                    backupPath = window['path'].join(dir, `ABIBAK_${baseFilename}${ext}`);
+                    backupPath = AilyHost.get().path.join(dir, `ABIBAK_${baseFilename}${ext}`);
 
-                    const fileContent = await window['fs'].readFileSync(filePath, 'utf-8');
-                    await window['fs'].writeFileSync(backupPath, fileContent);
-                    await window['fs'].unlinkSync(filePath);
+                    const fileContent = await AilyHost.get().fs.readFileSync(filePath, 'utf-8');
+                    await AilyHost.get().fs.writeFileSync(backupPath, fileContent);
+                    await AilyHost.get().fs.unlinkSync(filePath);
                 }
 
                 toolResult = { is_error, content: `Deleted ${is_folder ? 'folder' : 'file'} at: ${filePath} (backup at: ${backupPath})` };
@@ -320,12 +321,12 @@ export async function fileOperationsTool(
             case 'delete':
                 console.log(`Deleting ${is_folder ? 'folder' : 'file'} at: ${filePath}`);
                 if (is_folder) {
-                    await window['fs'].rmdirSync(filePath, { recursive: true, force: true });
+                    await AilyHost.get().fs.rmdirSync(filePath, { recursive: true, force: true });
                     toolResult = { is_error, content: `Folder deleted at: ${filePath}` };
                     return injectTodoReminder(toolResult, 'fileOperationsTool');
                 }
                 try {
-                    await window['fs'].unlinkSync(filePath, null);
+                    await AilyHost.get().fs.unlinkSync(filePath, null);
                     toolResult = { is_error, content: `File deleted at: ${filePath}` };
                     return injectTodoReminder(toolResult, 'fileOperationsTool');
                 } catch (err) {
@@ -335,9 +336,9 @@ export async function fileOperationsTool(
                 }
 
             case 'exists':
-                const exists = window['fs'].existsSync(filePath);
+                const exists = AilyHost.get().fs.existsSync(filePath);
                 if (exists && is_folder !== undefined) {
-                    const isDir = window['fs'].isDirectory(filePath);
+                    const isDir = AilyHost.get().fs.isDirectory(filePath);
                     if (is_folder !== isDir) {
                         toolResult = {
                             is_error,

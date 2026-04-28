@@ -1,5 +1,6 @@
-import { ToolUseResult } from "./tools";
-import { injectTodoReminder } from "./todoWriteTool";
+﻿import { ToolUseResult } from "./tools";
+import { AilyHost } from '../core/host';
+import { readFile as asyncReadFile, stat as asyncStat, exists as asyncExists } from '../core/async-fs';
 import { 
     PathSecurityContext, 
     validateFileRead,
@@ -35,12 +36,12 @@ async function analyzeFileCharacteristics(
     encoding: BufferEncoding,
     sampleSize: number = 65536 // 默认采样64KB
 ): Promise<FileCharacteristics> {
-    const stats = window['fs'].statSync(filePath);
+    const stats = await asyncStat(filePath);
     const fileSize = stats.size;
     
     // 对于小文件直接完整读取分析
     const readSize = Math.min(sampleSize, fileSize);
-    const sampleContent = await window['fs'].readFileSync(filePath, encoding);
+    const sampleContent = await asyncReadFile(filePath, encoding);
     const actualSample = sampleContent.substring(0, readSize);
     
     const lines = actualSample.split('\n');
@@ -134,30 +135,30 @@ export async function readFileTool(
                 is_error: true, 
                 content: `无效的文件路径: "${filePath}"` 
             };
-            return injectTodoReminder(toolResult, 'readFileTool');
+            return toolResult;
         }
 
         // 检查文件是否存在
-        if (!window['fs'].existsSync(filePath)) {
+        if (!await asyncExists(filePath)) {
             const toolResult = {
                 is_error: true,
                 content: `文件不存在: ${filePath}`
             };
-            return injectTodoReminder(toolResult, 'readFileTool');
+            return toolResult;
         }
 
         // 检查是否为文件（不是目录）
-        const isDirectory = await window['fs'].isDirectory(filePath);
+        const isDirectory = AilyHost.get().fs.isDirectory(filePath);
         if (isDirectory) {
             const toolResult = {
                 is_error: true,
                 content: `路径是目录而不是文件: ${filePath}`
             };
-            return injectTodoReminder(toolResult, 'readFileTool');
+            return toolResult;
         }
 
         // 获取文件大小
-        const stats = window['fs'].statSync(filePath);
+        const stats = await asyncStat(filePath);
         const fileSize = stats.size;
 
         // ==================== 安全验证 ====================
@@ -172,18 +173,18 @@ export async function readFileTool(
                     is_error: true, 
                     content: `安全检查未通过: ${securityCheck.reason}` 
                 };
-                return injectTodoReminder(toolResult, 'readFileTool');
+                return toolResult;
             }
             
             // 检查文件扩展名
-            const ext = window['path'].extname(filePath).toLowerCase();
+            const ext = AilyHost.get().path.extname(filePath).toLowerCase();
             if (FILE_READ_LIMITS.blockedExtensions.includes(ext)) {
                 logBlockedOperation('readFileTool', 'readFile', filePath, `禁止读取此类型文件: ${ext}`);
                 const toolResult = { 
                     is_error: true, 
                     content: `禁止读取此类型文件: ${ext}` 
                 };
-                return injectTodoReminder(toolResult, 'readFileTool');
+                return toolResult;
             }
         }
         // ==================== 安全验证结束 ====================
@@ -211,8 +212,41 @@ export async function readFileTool(
             byteCount = undefined;
         }
 
-        // 按字节范围读取（优先级最高）
-        if (startByte !== undefined || byteCount !== undefined) {
+        // ==================== 智能读取模式选择 ====================
+        // 当同时指定了行参数和字节参数时，需要智能判断使用哪种模式
+        const hasLineParams = startLine !== undefined || lineCount !== undefined;
+        const hasByteParams = startByte !== undefined || byteCount !== undefined;
+        
+        let useByteMode = false;
+        let useByteModeReason = '';
+        
+        if (hasByteParams && hasLineParams) {
+            // 同时指定了两种参数，需要分析文件特征来决定
+            const characteristics = await analyzeFileCharacteristics(filePath, encoding);
+            
+            if (characteristics.isSingleLineLargeFile || characteristics.hasLongLines) {
+                // 单行大文件或超长行文件，使用字节模式
+                useByteMode = true;
+                useByteModeReason = characteristics.isSingleLineLargeFile 
+                    ? '检测到单行大文件，使用字节模式' 
+                    : '检测到超长行文件，使用字节模式';
+            } else {
+                // 多行普通文件，优先使用行模式，忽略字节参数
+                useByteMode = false;
+                useByteModeReason = '多行文本文件，优先使用行模式';
+                // 清除字节参数
+                startByte = undefined;
+                byteCount = undefined;
+            }
+        } else if (hasByteParams && !hasLineParams) {
+            // 只指定了字节参数
+            useByteMode = true;
+            useByteModeReason = '仅指定字节参数';
+        }
+        // ==================== 智能读取模式选择结束 ====================
+
+        // 按字节范围读取
+        if (useByteMode && (startByte !== undefined || byteCount !== undefined)) {
             const start = startByte || 0;
             const requestedCount = byteCount !== undefined ? byteCount : Math.min(maxSize, fileSize - start);
             const actualCount = Math.min(requestedCount, maxSize, fileSize - start);
@@ -223,12 +257,12 @@ export async function readFileTool(
                     is_error: true,
                     content: `无效的字节起始位置: ${start}（文件大小: ${fileSize} 字节）`
                 };
-                return injectTodoReminder(toolResult, 'readFileTool');
+                return toolResult;
             }
             
             // 如果文件不是很大，或者需要从头读取，可以直接读取后截取
             // 否则建议完整读取文件（Electron fs API 的限制）
-            const fullContent = await window['fs'].readFileSync(filePath, encoding);
+            const fullContent = await asyncReadFile(filePath, encoding);
             
             // 按字符截取（更适合文本文件）
             // 注意：这里是字符偏移，不是严格的字节偏移
@@ -240,6 +274,21 @@ export async function readFileTool(
             metadata.actualBytesRead = resultContent.length;
             metadata.truncated = requestedCount > actualCount || start + actualCount < fileSize;
             metadata.note = '字节范围基于字符偏移量（适用于文本文件）';
+            if (useByteModeReason) {
+                metadata.modeSelectionReason = useByteModeReason;
+            }
+            
+            // 空内容检测：当读取结果为空时，给出有用的建议
+            if (resultContent.length === 0) {
+                const remainingBytes = fileSize - start;
+                metadata.warning = `读取结果为空（起始位置 ${start}，文件大小 ${fileSize}，剩余 ${remainingBytes} 字节）`;
+                
+                if (remainingBytes <= 0) {
+                    metadata.suggestion = `起始位置超出或等于文件末尾。建议：使用 startLine 参数按行读取，或减小 startByte 值`;
+                } else {
+                    metadata.suggestion = `文件在此位置可能为空白。建议：尝试使用 startLine 参数按行读取`;
+                }
+            }
         }
         // 按行范围读取
         else if (startLine !== undefined || lineCount !== undefined) {
@@ -249,7 +298,7 @@ export async function readFileTool(
                     is_error: true,
                     content: `文件过大 (${(fileSize / 1024 / 1024).toFixed(2)} MB)。建议使用字节范围读取 (startByte + byteCount) 或增加 maxSize 参数。当前限制: ${(maxSize / 1024 / 1024).toFixed(2)} MB`
                 };
-                return injectTodoReminder(toolResult, 'readFileTool');
+                return toolResult;
             }
             
             // 智能读取：分析文件特征
@@ -261,7 +310,7 @@ export async function readFileTool(
                 
                 if (byteRange) {
                     // 自动切换为字节模式读取
-                    const fullContent = await window['fs'].readFileSync(filePath, encoding);
+                    const fullContent = await asyncReadFile(filePath, encoding);
                     const start = byteRange.startByte;
                     const count = Math.min(byteRange.byteCount, maxSize);
                     
@@ -288,11 +337,11 @@ export async function readFileTool(
                         content: resultContent,
                         metadata
                     };
-                    return injectTodoReminder(toolResult, 'readFileTool');
+                    return toolResult;
                 }
             }
             
-            const fullContent = await window['fs'].readFileSync(filePath, encoding);
+            const fullContent = await asyncReadFile(filePath, encoding);
             const lines = fullContent.split('\n');
             const start = startLine !== undefined ? Math.max(0, startLine - 1) : 0;
             const count = lineCount !== undefined ? lineCount : lines.length - start;
@@ -303,7 +352,7 @@ export async function readFileTool(
                     is_error: true,
                     content: `无效的起始行号: ${startLine}（文件总行数: ${lines.length}）`
                 };
-                return injectTodoReminder(toolResult, 'readFileTool');
+                return toolResult;
             }
             
             const selectedLines = lines.slice(start, start + count);
@@ -335,10 +384,10 @@ export async function readFileTool(
                             `3. 增加 maxSize 参数（不推荐）\n` +
                             `4. 使用 grep_tool 搜索特定内容`
                 };
-                return injectTodoReminder(toolResult, 'readFileTool');
+                return toolResult;
             }
             
-            resultContent = await window['fs'].readFileSync(filePath, encoding);
+            resultContent = await asyncReadFile(filePath, encoding);
             metadata.readMode = 'full';
             const lines = resultContent.split('\n');
             metadata.totalLines = lines.length;
@@ -362,7 +411,7 @@ export async function readFileTool(
             content: resultContent,
             metadata
         };
-        return injectTodoReminder(toolResult, 'readFileTool');
+        return toolResult;
     } catch (error: any) {
         console.warn("读取文件失败:", error);
         
@@ -383,6 +432,6 @@ export async function readFileTool(
             is_error: true, 
             content: errorMessage + `\n目标文件: ${params.path}` 
         };
-        return injectTodoReminder(toolResult, 'readFileTool');
+        return toolResult;
     }
 }

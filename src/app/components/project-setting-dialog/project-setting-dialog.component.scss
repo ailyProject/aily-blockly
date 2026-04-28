@@ -14,10 +14,10 @@
     .section-title {
         font-size: 16px;
         font-weight: 600;
-        color: #f5f5f5;
+        color: var(--aily-text-primary);
         margin-bottom: 16px;
         padding-bottom: 8px;
-        border-bottom: 1px solid #4a4c4f;
+        border-bottom: 1px solid var(--aily-border-input);
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -46,7 +46,7 @@
         display: block;
         margin-bottom: 8px;
         font-size: 14px;
-        color: #f5f5f5;
+        color: var(--aily-text-primary);
 
         .required {
             color: #ff4d4f;
@@ -56,20 +56,20 @@
         .more {
             margin-left: 10px;
             font-size: 12px;
-            color: #999;
+            color: var(--aily-text-secondary);
         }
     }
 
     .form-control {
         width: 100%;
-        background: #3a3c3f;
-        border: 1px solid #4a4c4f;
+        background: var(--aily-bg-tertiary);
+        border: 1px solid var(--aily-border-input);
         border-radius: 4px;
-        color: #ddd;
+        color: var(--aily-text-quaternary);
         transition: all 0.3s;
 
         &:hover {
-            border-color: #5a5c5f;
+            border-color: var(--aily-border-tertiary);
         }
 
         &:focus {
@@ -79,7 +79,7 @@
         }
 
         &:disabled {
-            background: #2b2d30;
+            background: var(--aily-bg-primary);
             cursor: not-allowed;
             opacity: 0.6;
         }
@@ -100,8 +100,8 @@
     // 配置列表样式
     .config-list,
     .dependency-list {
-        background: #2b2d30;
-        border: 1px solid #4a4c4f;
+        background: var(--aily-bg-primary);
+        border: 1px solid var(--aily-border-input);
         border-radius: 4px;
         padding: 12px;
         max-height: 300px;
@@ -115,13 +115,13 @@
         align-items: center;
         padding: 8px 12px;
         margin-bottom: 8px;
-        background: #3a3c3f;
+        background: var(--aily-bg-tertiary);
         border-radius: 4px;
         border-left: 3px solid #1890ff;
         transition: all 0.2s;
 
         &:hover {
-            background: #414345;
+            background: var(--aily-bg-tertiary);
             border-left-color: #40a9ff;
         }
 
@@ -138,13 +138,13 @@
         align-items: center;
         padding: 8px 12px;
         margin-bottom: 8px;
-        background: #3a3c3f;
+        background: var(--aily-bg-tertiary);
         border-radius: 4px;
         border-left: 3px solid #1890ff;
         transition: all 0.2s;
 
         &:hover {
-            background: #414345;
+            background: var(--aily-bg-tertiary);
             border-left-color: #40a9ff;
         }
 
@@ -153,17 +153,17 @@
         }
 
         input {
-            background: #2b2d30;
-            border: 1px solid #4a4c4f;
+            background: var(--aily-bg-primary);
+            border: 1px solid var(--aily-border-input);
             border-radius: 3px;
-            color: #ddd;
+            color: var(--aily-text-quaternary);
             height: 28px;
             padding: 4px 8px;
             font-size: 13px;
             transition: all 0.2s;
 
             &:hover {
-                border-color: #5a5c5f;
+                border-color: var(--aily-border-tertiary);
             }
 
             &:focus {
@@ -220,7 +220,7 @@
     .config-key,
     .dependency-name {
         font-size: 14px;
-        color: #ddd;
+        color: var(--aily-text-quaternary);
         font-weight: 500;
         flex: 0 0 auto;
         max-width: 60%;
@@ -232,9 +232,9 @@
     .config-value,
     .dependency-version {
         font-size: 13px;
-        color: #999;
+        color: var(--aily-text-secondary);
         font-family: 'Courier New', monospace;
-        background: #252629;
+        background: var(--aily-bg-elevated);
         padding: 2px 8px;
         border-radius: 3px;
         flex: 0 0 auto;
@@ -246,7 +246,7 @@
 
     .empty-message {
         text-align: center;
-        color: #999;
+        color: var(--aily-text-secondary);
         font-size: 14px;
         padding: 20px;
     }
@@ -261,18 +261,18 @@
     &::-webkit-scrollbar-track,
     .config-list::-webkit-scrollbar-track,
     .dependency-list::-webkit-scrollbar-track {
-        background: #2b2d30;
+        background: var(--aily-bg-primary);
         border-radius: 4px;
     }
 
     &::-webkit-scrollbar-thumb,
     .config-list::-webkit-scrollbar-thumb,
     .dependency-list::-webkit-scrollbar-thumb {
-        background: #4a4c4f;
+        background: var(--aily-border-input);
         border-radius: 4px;
 
         &:hover {
-            background: #5a5c5f;
+            background: var(--aily-border-tertiary);
         }
     }
 }

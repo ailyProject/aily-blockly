@@ -1,0 +1,35 @@
+<div class="aily-library-viewer" (dblclick)="logDetail()">
+  @if (isLoading) {
+  <div class="loading-card">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <div class="loading-text">加载中...</div>
+    </div>
+  </div>
+  } @else if (errorMessage) {
+  <div class="error-card">
+    <div class="error-content">
+      <span class="error-text">🚫 {{ errorMessage }}</span>
+    </div>
+  </div>
+  } @else if (libraryInfo) {
+  <div class="board-card">
+    <div class="img-box ccenter">
+      @if (libraryInfo?.icon == '') {
+      <i class="fa-light fa-cube"></i>
+      } @else {
+      <i class="{{ libraryInfo?.icon }}"></i>
+      }
+    </div>
+    <div class="text-box">
+      <div class="title">{{ libraryInfo?.nickname }}</div>
+      <div class="text ellipsis">{{ libraryInfo?.description }}</div>
+    </div>
+    <div class="action-btns ccenter">
+      @if (libraryInfo?.url) {
+      <div class="btn ccenter" (click)="openUrl(libraryInfo.url)"><i class="fa-regular fa-book"></i></div>
+      }
+    </div>
+  </div>
+  }
+</div>

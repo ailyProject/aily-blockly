@@ -12,7 +12,7 @@
 .onboarding-highlight {
   position: absolute;
   border-radius: 8px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.7),
+  box-shadow: 0 0 0 9999px var(--aily-bg-overlay),
     0 0 20px rgba(59, 130, 246, 0.5);
   border: 2px solid #3b82f6;
   transition: all 0.3s ease;
@@ -23,7 +23,7 @@
 .onboarding-tooltip {
   position: absolute;
   width: 280px;
-  background: #1e1e1e;
+  background: var(--aily-bg-elevated);
   border-radius: 12px;
   border: 1px solid #3b82f6;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
@@ -44,13 +44,13 @@
   .tooltip-title {
     font-size: 16px;
     font-weight: 600;
-    color: #fff;
+    color: var(--aily-text-primary);
     margin-bottom: 8px;
   }
 
   .tooltip-desc {
     font-size: 14px;
-    color: #aaa;
+    color: var(--aily-text-muted);
     line-height: 1.5;
     margin-bottom: 16px;
   }
@@ -63,14 +63,14 @@
     .btn-skip {
       background: transparent;
       border: none;
-      color: #888;
+      color: var(--aily-text-hint);
       font-size: 13px;
       cursor: pointer;
       padding: 8px 0;
       transition: color 0.2s;
 
       &:hover {
-        color: #fff;
+        color: var(--aily-text-primary);
       }
     }
 
@@ -80,9 +80,9 @@
     }
 
     .btn-prev {
-      background: #333;
-      border: 1px solid #555;
-      color: #ccc;
+      background: var(--aily-editor-flyout-bg);
+      border: 1px solid var(--aily-border-tertiary);
+      color: var(--aily-text-tertiary);
       padding: 8px 16px;
       border-radius: 6px;
       font-size: 13px;
@@ -90,8 +90,8 @@
       transition: all 0.2s;
 
       &:hover {
-        background: #444;
-        border-color: #666;
+        background: var(--aily-border-secondary);
+        border-color: var(--aily-text-disabled);
       }
     }
 
@@ -117,7 +117,7 @@
     position: absolute;
     width: 12px;
     height: 12px;
-    background: #1e1e1e;
+    background: var(--aily-bg-elevated);
     border: 1px solid #3b82f6;
     transform: rotate(45deg);
 

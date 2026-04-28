@@ -5,11 +5,11 @@
 
 
 .text2 {
-    color: #ccc;
+    color: var(--aily-text-tertiary);
 }
 
 .line {
-    border-bottom: 0.5px solid #666;
+    border-bottom: 0.5px solid var(--aily-text-disabled);
     margin-bottom: 10px;
 }
 
@@ -21,7 +21,7 @@
         flex-direction: column;
         padding: 15px;
         cursor: pointer;
-        color: #aaa;
+        color: var(--aily-text-muted);
         transition: all 0.3s;
 
         i {
@@ -29,11 +29,11 @@
         }
 
         &:hover {
-            color: #FFF;
+            color: var(--aily-text-primary);
         }
 
         &.active {
-            color: #FFF;
+            color: var(--aily-text-primary);
         }
 
         .icon {
@@ -61,7 +61,7 @@
     .qrcode {
         width: 156px;
         height: 156px;
-        border: 1px solid #666;
+        border: 1px solid var(--aily-text-disabled);
         border-radius: 3px;
         margin-bottom: 15px;
     }

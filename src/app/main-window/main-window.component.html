@@ -4,9 +4,8 @@
     <nz-layout>
       <nz-content>
         <div class="middle-box">
-          <ngx-simplebar [options]="options" (mousemove)="onMouseMove($event)" (mouseleave)="onMouseLeave()">
+          <ngx-simplebar [options]="options">
             <router-outlet></router-outlet>
-            <app-float-sider [show]="showFloatSider"></app-float-sider>
           </ngx-simplebar>
         </div>
         @if (showBbox) {
@@ -104,3 +103,5 @@
   (completed)="onOnboardingCompleted()">
 </app-onboarding>
 }
+
+<iframe src="https://abi.aily.pro/"></iframe>

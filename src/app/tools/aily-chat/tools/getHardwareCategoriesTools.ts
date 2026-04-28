@@ -1,4 +1,3 @@
-import { injectTodoReminder } from "./todoWriteTool";
 import { ConfigService } from '../../../services/config.service';
 
 /**
@@ -108,7 +107,7 @@ export const getHardwareCategoriesTool = {
                 is_error: true,
                 content: `获取分类失败: ${error instanceof Error ? error.message : String(error)}`
             };
-            return injectTodoReminder(toolResult, 'get_hardware_categories');
+            return toolResult;
         }
     }
 };
@@ -132,14 +131,14 @@ async function getBoardCategories(
                 is_error: false,
                 content: '暂无开发板数据'
             };
-            return injectTodoReminder(toolResult, 'get_hardware_categories');
+            return toolResult;
         }
         
         const toolResult = {
             is_error: false,
             content: `旧格式数据不支持 ${dimension} 维度分类，请升级到新索引格式`
         };
-        return injectTodoReminder(toolResult, 'get_hardware_categories');
+        return toolResult;
     }
 
     // 新格式处理
@@ -204,7 +203,7 @@ async function getBoardCategories(
         content: formatCategoriesOutput('boards', dimension, categories, boards.length, filterBy),
         metadata: { type: 'boards', dimension, categories, total: boards.length, filterBy, dataFormat: 'new' }
     };
-    return injectTodoReminder(toolResult, 'get_hardware_categories');
+    return toolResult;
 }
 
 /**
@@ -226,14 +225,14 @@ async function getLibraryCategories(
                 is_error: false,
                 content: '暂无库数据'
             };
-            return injectTodoReminder(toolResult, 'get_hardware_categories');
+            return toolResult;
         }
 
         const toolResult = {
             is_error: false,
             content: `旧格式数据不支持 ${dimension} 维度分类，请升级到新索引格式`
         };
-        return injectTodoReminder(toolResult, 'get_hardware_categories');
+        return toolResult;
     }
 
     // 新格式处理
@@ -282,7 +281,7 @@ async function getLibraryCategories(
         content: formatCategoriesOutput('libraries', dimension, categories, libraries.length, filterBy),
         metadata: { type: 'libraries', dimension, categories, total: libraries.length, filterBy, dataFormat: 'new' }
     };
-    return injectTodoReminder(toolResult, 'get_hardware_categories');
+    return toolResult;
 }
 
 /**

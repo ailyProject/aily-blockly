@@ -74,6 +74,16 @@ export function processI18n(sourceJson, i18nData) {
 
         // 检查i18n中是否有对应类型的块
         if (i18nData[blockType]) {
+            // 处理 tooltip 字段
+            if (i18nData[blockType].tooltip !== undefined) {
+                block.tooltip = i18nData[blockType].tooltip;
+            }
+
+            // 处理 helpUrl 字段
+            if (i18nData[blockType].helpUrl !== undefined) {
+                block.helpUrl = i18nData[blockType].helpUrl;
+            }
+
             // 检查所有可能的message字段
             let messageIndex = 0;
             // 循环检查原始块中的每个messageX字段
@@ -120,6 +130,52 @@ export function processI18n(sourceJson, i18nData) {
         }
     }
     return updatedBlocks;
+}
+
+/**
+ * 处理 toolbox 的多语言
+ * @param {object} toolbox - toolbox JSON对象
+ * @param {object} i18nData - 多语言数据
+ * @returns {object} - 处理后的toolbox对象
+ */
+export function processToolboxI18n(toolbox, i18nData) {
+    if (!i18nData) return toolbox;
+    
+    // 创建toolbox的副本，避免修改原始数据
+    const updatedToolbox = JSON.parse(JSON.stringify(toolbox));
+    
+    // 处理 toolbox name
+    if (i18nData.toolbox_name) {
+        updatedToolbox.name = i18nData.toolbox_name;
+    }
+    
+    // 处理 toolbox contents 中的 labels
+    if (updatedToolbox.contents && i18nData.toolbox_labels) {
+        processToolboxContents(updatedToolbox.contents, i18nData.toolbox_labels);
+    }
+    
+    return updatedToolbox;
+}
+
+/**
+ * 递归处理 toolbox contents 中的 label text
+ * @param {array} contents - toolbox contents 数组
+ * @param {object} labels - 多语言 labels 映射 { "原文": "翻译" }
+ */
+function processToolboxContents(contents, labels) {
+    if (!Array.isArray(contents)) return;
+    
+    for (const item of contents) {
+        // 处理 label 类型
+        if (item.kind === 'label' && item.text && labels[item.text]) {
+            item.text = labels[item.text];
+        }
+        
+        // 递归处理嵌套的 contents（如 category 中的内容）
+        if (item.contents) {
+            processToolboxContents(item.contents, labels);
+        }
+    }
 }
 
 function getLastElement<T>(array: T[]): T | undefined {

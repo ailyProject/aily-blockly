@@ -1,133 +1,247 @@
-.blocklyBox {
-    width: 100%;
-    flex: 1;
-
-    ::ng-deep {
-        .blocklyMainBackground {
-            stroke-width: 0 !important;
-        }
-
-        .blocklyToolboxDiv {
-            width: 180px;
-            background: #323232;
-            // border-right: 1px solid #E0E0E0;
-            padding: 0;
-            scrollbar-width: thin !important;
-            scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
-
-            .blocklyTreeIcon {
-                width: 40px;
-            }
-
-            .blocklyToolboxContents {
-                .blocklyTreeSeparator {
-                    display: none;
-                }
-            }
-
-            .blocklyToolboxCategory {
-                .blocklyTreeRow {
-                    height: 40px;
-                    display: flex;
-                    align-items: center;
-                    cursor: pointer;
-                    width: 100%;
-                    transition: all 0.3s;
-                    margin-bottom: 0;
-                    border: none !important;
-                }
-
-                .blocklyTreeSelected {
-                    background: #929292 !important;
-                }
-
-                .blocklyTreeRowContentContainer {
-                    display: flex;
-                    align-items: center;
-
-                    .tbc-icon-box {
-                        margin-top: 3px;
-                        font-size: 16px;
-                        width: 40px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                    }
-
-                }
-
-                // 搜索框例外
-                &:first-child {
-                    .blocklyTreeSelected {
-                        background: transparent !important;
-
-                        &:hover {
-                            background: transparent !important;
-                        }
-                    }
-                }
-
-                &:last-child {
-                    padding-bottom: 70px;
-                }
-            }
-
-            .blocklyTreeIcon {
-                background: rgba(255, 255, 255, 0.85);
-                mask: url('../../../../../../public/imgs/chevron-right.svg') no-repeat center center;
-                mask-size: contain;
-                transition: transform 0.3s ease;
-
-                &.blocklyTreeIconOpen {
-                    transform: rotate(90deg);
-                }
-            }
-        }
-
-        .blocklyFlyoutLabelText {
-            fill: #ccc;
-        }
-
-        .blocklyTextInputBubble .blocklyTextarea {
-            background-color: #444;
-        }
-
-        .search-box {
-            border-radius: 14px;
-            margin: 0 10px;
-            padding: 0 10px;
-            width: 158px;
-            height: 30px;
-            background: #444;
-            border: none;
-            outline: none;
-        }
-
-        .inner-icon {
-            padding-top: 4px;
-        }
-    }
-
-    ::ng-deep {
-        .blockly-minimap {
-            position: absolute;
-            border-radius: 5px;
-            overflow: hidden;
-            box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
-            width: 200px;
-            height: 150px;
-            right: 16px;
-            top: 16px;
-
-            .blocklyMainBackground {
-                fill: rgb(43, 43, 43) !important;
-            }
-        }
-    }
-
+:host {
+    display: block;
+    height: 100%;
+    min-height: 0;
 }
 
-.blockly-spin {
+.blockly-layout {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+}
+
+.toolbox-pane,
+.workspace-pane {
+    min-width: 0;
+    min-height: 0;
+}
+
+.toolbox-pane {
+    position: relative;
+}
+
+.toolbox-pane__resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    width: 8px;
+    height: 100%;
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+    outline: none;
+
+    &::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        right: 3px;
+        width: 2px;
+        height: 100%;
+        background: color-mix(in srgb, var(--aily-border-input) 30%, transparent);
+        transition: background 0.2s ease;
+    }
+
+    &:hover::after {
+        background: var(--aily-color-accent);
+    }
+}
+
+:host ::ng-deep .blocklyBox {
+    width: 100%;
+    height: 100%;
+}
+
+:host ::ng-deep .blocklyMainBackground {
+    stroke-width: 0 !important;
+}
+
+:host ::ng-deep .blocklyToolboxDiv {
+    position: absolute !important;
+    left: -10000px !important;
+    top: auto !important;
+    width: 0 !important;
+    height: 0 !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    background: transparent !important;
+    padding: 0;
+    scrollbar-width: thin !important;
+    scrollbar-color: var(--aily-scrollbar-thumb) transparent;
+
+    .blocklyTreeIcon {
+        width: 40px;
+    }
+
+    .blocklyTreeSeparator {
+        display: none;
+    }
+
+    > .blocklyToolboxContents {
+        > .blocklyToolboxCategory:first-child {
+            .blocklyTreeSelected {
+                background: transparent !important;
+            }
+
+            .blocklyTreeRow {
+                &:hover {
+                    background: transparent !important;
+                }
+            }
+        }
+
+        > .blocklyToolboxCategory:last-child {
+            padding-bottom: 70px;
+        }
+    }
+
+    .blocklyToolboxCategory {
+        .blocklyTreeRow {
+            height: 40px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.3s;
+            margin-bottom: 0;
+            border: none !important;
+        }
+
+        .blocklyTreeSelected {
+            background: var(--aily-blockly-toolbox-row-selected-bg) !important;
+        }
+
+        .blocklyTreeRowContentContainer {
+            display: flex;
+            align-items: center;
+
+            .tbc-icon-box {
+                margin-top: 3px;
+                font-size: 16px;
+                width: 40px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+        }
+    }
+
+    .blocklyTreeIcon {
+        background: var(--aily-blockly-toolbox-tree-icon);
+        mask: url('../../../../../../public/imgs/chevron-right.svg') no-repeat center center;
+        mask-size: contain;
+        transition: transform 0.3s ease;
+
+        &.blocklyTreeIconOpen {
+            transform: rotate(90deg);
+        }
+    }
+
+    .blocklyTreeRow.blocklyTreeSelected .blocklyTreeIcon {
+        background: color-mix(in srgb, var(--aily-text-primary) 85%, transparent);
+    }
+
+    .blocklyTreeLabel {
+        color: var(--aily-text-primary);
+    }
+}
+
+:host ::ng-deep .blocklyFlyoutLabelText {
+    fill: var(--aily-text-quaternary);
+}
+
+:host ::ng-deep .blocklyTextInputBubble .blocklyTextarea {
+    background-color: var(--aily-border-input);
+}
+
+:host ::ng-deep .search-box {
+    border-radius: 14px;
+    margin: 0 10px;
+    padding: 0 10px;
+    width: 158px;
+    height: 30px;
+    background: var(--aily-border-input);
+    border: none;
+    outline: none;
+}
+
+:host ::ng-deep .inner-icon {
+    padding-top: 4px;
+}
+
+:host ::ng-deep svg foreignObject.aily-flyout-pin-fo {
+    overflow: visible;
+    background: transparent !important;
+    background-color: transparent !important;
+}
+
+:host ::ng-deep .aily-flyout-pin-xhtml {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+}
+
+:host ::ng-deep .aily-flyout-pin-xhtml .aily-flyout-pin {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--aily-bg-tertiary) 88%, transparent);
+    color: var(--aily-text-secondary);
+    cursor: pointer;
+    box-shadow: 0 1px 1px rgb(0 0 0 / 20%);
+
+    &:hover {
+        background: color-mix(in srgb, var(--aily-bg-hover) 55%, var(--aily-bg-tertiary));
+        color: var(--aily-text-primary);
+    }
+
+    .aily-flyout-pin__icon {
+        display: block;
+        font-size: 11px;
+        line-height: 1;
+        opacity: 0.9;
+    }
+
+    &.aily-flyout-pin--active {
+        color: var(--aily-color-accent);
+        background: color-mix(in srgb, var(--aily-color-accent) 22%, var(--aily-bg-tertiary));
+
+        .aily-flyout-pin__icon {
+            opacity: 1;
+        }
+    }
+}
+
+:host ::ng-deep .blockly-minimap {
+    position: absolute;
+    border-radius: 5px;
+    overflow: hidden;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+    width: 200px;
+    height: 150px;
+    right: 16px;
+    top: 16px;
+
+    .blocklyMainBackground {
+        fill: rgb(43, 43, 43) !important;
+    }
+}
+
+:host ::ng-deep .blockly-spin {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -135,11 +249,11 @@
   z-index: 1010;
   background: transparent;
   transition: background 0.3s ease-in-out;
-  
+
   &.show {
     background: rgb(0 0 0 / 30%);
   }
-  
+
   &.fade-out {
     background: transparent;
   }

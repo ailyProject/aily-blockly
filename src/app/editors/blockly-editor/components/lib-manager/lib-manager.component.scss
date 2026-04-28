@@ -1,6 +1,6 @@
 .lib-manager-box {
     position: absolute;
-    background: #1f1f1f;
+    background: var(--aily-bg-secondary);
     width: 100%;
     min-height: 100%;
     top: 0;
@@ -11,11 +11,12 @@
         height: 40px;
         display: flex;
         align-items: center;
-        border-bottom: 1px solid #333;
+        border-bottom: 1px solid var(--aily-bg-tertiary);
         position: sticky;
         top: 0;
         z-index: 99;
-        background: #222;
+        background: var(--aily-bg-elevated);
+        overflow: hidden;
 
         .btns {
             position: absolute;
@@ -24,7 +25,7 @@
             right: 0;
             padding: 0 10px;
             height: 100%;
-            background: #222;
+            background: var(--aily-bg-elevated);
 
             i {
                 margin-right: 5px;
@@ -57,7 +58,7 @@
             width: 100%;
             max-width: 365px;
             height: 165px;
-            background: #2b2b2b;
+            background: var(--aily-bg-elevated);
             border-radius: 5px;
             padding: 10px;
             position: relative;
@@ -88,12 +89,12 @@
                     position: absolute;
                     right: 10px;
                     font-size: 12px;
-                    color: #aaa;
+                    color: var(--aily-text-tertiary);
                 }
             }
 
             .desc {
-                color: #aaa;
+                color: var(--aily-text-tertiary);
                 flex-grow: 1;
                 font-size: 12px;
                 white-space: normal;

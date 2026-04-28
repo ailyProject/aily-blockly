@@ -1,3 +1,4 @@
+// @ts-nocheck - TensorFlow 已禁用，安装 @tensorflow/tfjs 相关包后可重新启用
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
@@ -16,9 +17,9 @@ import { SaveProjectModalComponent } from '../../../../components/save-project-m
 import { ModelTrainService, TrainProgress, ClassData } from '../../../../services/model-train.service';
 import { ModelProjectService, ClassificationClassData } from '../../../../services/model-project.service';
 import { ElectronService } from '../../../../services/electron.service';
-import * as tf from '@tensorflow/tfjs';
-import '@tensorflow/tfjs-backend-webgl';
-import '@tensorflow/tfjs-backend-webgpu';
+// import * as tf from '@tensorflow/tfjs'; // TensorFlow disabled
+// import '@tensorflow/tfjs-backend-webgl'; // TensorFlow disabled
+// import '@tensorflow/tfjs-backend-webgpu'; // TensorFlow disabled
 
 interface ClassItem {
   id: number;

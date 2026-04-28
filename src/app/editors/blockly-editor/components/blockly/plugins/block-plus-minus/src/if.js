@@ -140,7 +140,7 @@ const controlsIfMutator = {
     // Because else-if inputs are 1-indexed we increment first, decrement last.
     this.elseIfCount_++;
     this.appendValueInput('IF' + this.elseIfCount_)
-      .setCheck('Boolean')
+      .setCheck(['Boolean', 'Number', 'String'])
       .appendField(Blockly.Msg['CONTROLS_IF_MSG_ELSEIF'])
       .appendField(
         createMinusField(this.elseIfCount_),

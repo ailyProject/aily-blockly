@@ -114,10 +114,10 @@ export class ShortcutService {
   getShortcutFromEvent(event: KeyboardEvent): string {
     const parts: string[] = [];
 
-    if (event.ctrlKey) parts.push('ctrl');
+    // Mac 上 Command 与 Windows 上 Ctrl 等效，统一为 ctrl 便于跨平台匹配
+    if (event.ctrlKey || event.metaKey) parts.push('ctrl');
     if (event.shiftKey) parts.push('shift');
     if (event.altKey) parts.push('alt');
-    if (event.metaKey) parts.push('meta'); // Mac Command key
 
     // 添加主键，忽略修饰键本身
     const key = event.key.toLowerCase();

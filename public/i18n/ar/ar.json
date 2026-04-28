@@ -31,7 +31,8 @@
         "USER_SPACE": "مساحة السحابة",
         "LIB_MANAGER": "مدير المكتبة",
         "AI_ASSISTANT": "مساعد الذكاء الاصطناعي",
-        "PROJECT_HUB": "ساحة المشاريع"
+        "PROJECT_HUB": "ساحة المشاريع",
+        "NEW_INSTANCE": "نافذة جديدة"
     },
     "ESP32": {
         "UPLOAD_SPEED": "سرعة الرفع",
@@ -46,6 +47,15 @@
         "BOARD": "اختيار نموذج اللوحة",
         "USB": "إعدادات USB",
         "UPLOAD_METHOD": "طريقة الرفع"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "برمجة SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "هل تريد برمجة {{softdevice}} SoftDevice على الجهاز؟",
+        "SELECT_PORT_FIRST": "يرجى اختيار منفذ أولاً",
+        "FLASHING_SOFTDEVICE": "جاري برمجة SoftDevice...",
+        "FLASH_SUCCESS": "تم برمجة SoftDevice بنجاح",
+        "FLASH_FAILED": "فشل في برمجة SoftDevice"
     },
     "GUIDE": {
         "START": "البدء",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "هل لديك أسئلة؟ تريد مشاركة عملك؟ انضم إلى مجتمع المستخدمين لدينا للتواصل والتعلم مع صانعين آخرين!"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "نسخ إلى الموقع المحدد",
+        "CONTROLS_SWITCH_CASE": "حالة",
+        "CONTROLS_SWITCH_DO": "نفذ",
+        "CONTROLS_SWITCH_DEFAULT": "افتراضي",
+        "CROSS_TAB_PASTE": "لصق",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "لصق %1 عناصر",
+        "WORKSPACE_SELECT_ALL": "تحديد كل الكتل"
+    },
     "APP_STORE": {
         "HEADER_INFO": "سيتم عرض أول {{count}} تطبيقات في شريط الأدوات",
         "RESET": "إعادة تعيين",
@@ -113,7 +132,8 @@
             "REPOSITORY": "إعدادات المستودع",
             "DEPENDENCIES": "التبعيات العامة",
             "MCP": "MCP",
-            "DEVMODE": "وضع المطور"
+            "DEVMODE": "وضع المطور",
+            "CACHE": "إدارة ذاكرة التخزين المؤقتة"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "مجلد المشروع",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "مظهر Blockly",
             "BLOCKLY_MINIMAP": "خريطة Blockly المصغرة",
             "COMPILATION_OPTIONS": "خيارات التجميع",
+            "REGION": "منطقة الخدمة",
+            "REGION_TITLE": "تبديل منطقة الخدمة",
+            "REGION_DESC": "ستحتاج إلى تسجيل الدخول مرة أخرى بعد تبديل منطقة الخدمة. هل تريد المتابعة؟",
+            "REGION_CONFIRM": "تأكيد",
+            "REGION_CANCEL": "إلغاء",
             "REPOSITORY_URLS": "عناوين المستودع",
             "BOARD_LIST": "قائمة اللوحات",
             "LIBRARY_LIST": "قائمة المكتبات",
             "INSTALL": "تثبيت",
-            "UNINSTALL": "إلغاء التثبيت"
+            "UNINSTALL": "إلغاء التثبيت",
+            "CLEAR_CACHE": "مسح ذاكرة التخزين المؤقتة",
+            "CACHE_SIZE": "حجم ذاكرة التخزين المؤقتة",
+            "CACHE_LOADING": "جارٍ التحميل...",
+            "CACHE_ALL": "مسح الكل",
+            "CACHE_ONE_MONTH": "مسح ما مضى عليه شهر",
+            "CACHE_THREE_MONTHS": "مسح ما مضى عليه 3 أشهر",
+            "CACHE_CLEARING": "جارٍ المسح...",
+            "CACHE_CLEARED": "تم مسح ذاكرة التخزين المؤقتة",
+            "CACHE_CLEAR_FAILED": "فشل المسح",
+            "CACHE_CONFIRM_TITLE": "تأكيد المسح",
+            "CACHE_CONFIRM_DESC": "هل أنت متأكد من مسح جميع ذاكرات التخزين المؤقتة للتجميع؟ لا يمكن التراجع عن هذا الإجراء.",
+            "CACHE_CONFIRM_OK": "تأكيد"
         },
         "BUTTONS": {
             "CANCEL": "إلغاء",
@@ -153,7 +190,8 @@
             "BOARD": "اللوحة",
             "PROJECT_NAME": "اسم المشروع",
             "SAVE_PATH": "مسار الحفظ",
-            "NAME_EXISTS": "اسم المشروع موجود بالفعل، يرجى التعديل"
+            "NAME_EXISTS": "اسم المشروع موجود بالفعل، يرجى التعديل",
+            "PATH_INVALID_CHARS": "المسار يحتوي على أحرف غير صالحة (مثل / : * ? \" < > |)، يرجى التعديل"
         },
         "BUTTONS": {
             "USE_THIS": "استخدام هذه اللوحة",
@@ -164,14 +202,15 @@
             "CREATING": "جاري الإنشاء"
         },
         "WARNINGS": {
-            "BETA_VERSION": "النسخة التجريبية، غير مؤكدة، استخدم بحذر"
+            "BETA_VERSION": "النسخة التجريبية، غير مؤكدة، استخدم بحذر",
+            "TODO": "دعم هذا الجهاز قادم قريباً"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "مدير المكتبات",
         "BACK": "رجوع",
         "SEARCH_LIBRARY": "بحث في المكتبات",
-        "ALL": "كل المكتبات",
+        "ALL": "الكل",
         "INSTALLED": "مثبت",
         "CORE_LIBRARY": "مكتبة أساسية",
         "IMPORT_LIBRARY": "استيراد مكتبة محلية",
@@ -182,6 +221,7 @@
         "INSTALLED_TEXT": "مثبت",
         "REMOVE": "إزالة",
         "INSTALLING": "جاري التثبيت",
+        "INSTALL_FAILED": "فشل التثبيت",
         "UNINSTALLING": "جاري إلغاء التثبيت",
         "UNINSTALLED": "تم إلغاء التثبيت",
         "IMPORTING": "جاري الاستيراد",
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "تحديث البرنامج",
+        "TITLE_READY": "التحديث جاهز",
+        "TITLE_NEW_VERSION": "إصدار جديد {{version}} متاح",
+        "TEXT_DOWNLOADED": "تم تنزيل الإصدار {{version}}. هل تريد التثبيت الآن؟",
+        "TEXT_AVAILABLE": "الإصدار الحالي {{currentVersion}}، الإصدار الجديد {{version}}<br>هل تريد تنزيل هذا التحديث وتثبيته؟",
         "DOWNLOAD_FAILED": "فشل التنزيل",
         "REMIND_LATER": "تذكير لاحقًا",
         "SKIP_VERSION": "تخطي هذا الإصدار",
@@ -277,8 +321,9 @@
         "SETTINGS": "إعدادات الذكاء الاصطناعي",
         "HISTORY": "سجل المحادثة",
         "NEW_CHAT": "محادثة جديدة",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "ردود الذكاء الاصطناعي للمرجعية فقط وقد لا تكون دقيقة. لا تمثل آراء مطوري البرامج. يجب على المستخدمين التحقق من المعلومات بأنفسهم.",
+        "USAGE_GUIDE": "تعرف على استخدام الذكاء الاصطناعي",
         "ADD_CONTEXT": "إضافة سياق",
         "ADD_FILE": "إضافة ملف",
         "ADD_FOLDER": "إضافة مجلد",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "وضع الوكيل",
         "MODE_QA_FULL": "وضع سؤال وجواب",
         "STOP_CURRENT_SESSION_FIRST": "يرجى إيقاف الجلسة الحالية أولاً قبل إنشاء جلسة جديدة",
+        "NO_HISTORY_SESSION": "لا توجد سجلات جلسات سابقة",
+        "MERMAID_SAVE_ARCH": "حفظ كرسم بياني للهيكل",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "تأكيد الاستبدال",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "يوجد ملف الرسم البياني للهيكل بالفعل في مجلد المشروع. هل تريد الاستبدال؟",
+        "MERMAID_ARCH_CONFIRM": "تأكيد",
+        "MERMAID_ARCH_CANCEL": "إلغاء",
+        "MERMAID_COPY_FAILED": "فشل النسخ",
+        "MERMAID_SAVE_FAILED": "فشل الحفظ",
+        "CLICK_TO_EDIT": "انقر للتعديل",
         "ONBOARDING": {
             "STEP1_TITLE": "مربع الإدخال",
             "STEP1_DESC": "اكتب هنا أسئلتك أو المهام التي تحتاج مساعدة الذكاء الاصطناعي فيها. اضغط Enter للإرسال، Ctrl+Enter لسطر جديد",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "إعدادات المشروع",
+        "ARCH": "مخطط البنية",
         "PINMAP": "خريطة الدبابيس",
+        "CIRCUIT": "مخطط الدائرة",
         "DOCUMENTATION": "التوثيق",
         "FEEDBACK": "ملاحظات",
         "NO_PINMAP": "خريطة الدبابيس غير متوفرة لهذه اللوحة",
-        "NO_DOCUMENTATION": "التوثيق غير متوفر لهذه اللوحة"
+        "PINMAP_PARSE_ERROR": "فشل تحليل خريطة الدبابيس",
+        "NO_DOCUMENTATION": "التوثيق غير متوفر لهذه اللوحة",
+        "ARCH_ELECTRON_ONLY": "مخطط البنية متاح فقط في تطبيق سطح المكتب",
+        "NO_PROJECT": "لا يوجد مشروع مفتوح",
+        "NO_ARCH": "لم يتم العثور على arch.md في مجلد المشروع",
+        "ARCH_EMPTY": "لم يتم العثور على مخطط mermaid في arch.md",
+        "ARCH_RENDER_FAILED": "فشل عرض مخطط البنية",
+        "GENERATE_ARCH_PROMPT": "إنشاء مخطط بنية المشروع",
+        "ARCH_AI_BUSY": "المحادثة مع الذكاء الاصطناعي جارية، يرجى المحاولة لاحقاً",
+        "LOGIN_REQUIRED": "يرجى تسجيل الدخول أولاً لاستخدام هذه الميزة"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "يرجى تحديد منفذ تسلسلي أولاً",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "مشاركة مشاريعك",
         "BENEFIT_EXPERIENCE": "الاستمتاع بتجربة تطوير مخصصة",
         "NOTICE_LABEL": "ملاحظة: ",
-        "NOTICE_CONTENT": "سنستخدم حساب GitHub الخاص بك لوضع نجمة على مستودعاتنا مفتوحة المصدر، مما يساعد في تطوير المشروع.",
+        "NOTICE_CONTENT": "بعد تسجيل الدخول سيتم تمييز هذا المشروع بنجمة، مما يساعد في دعم تطوير مشروعنا",
         "GITHUB_LOGIN": "تسجيل الدخول بـ Github",
         "WECHAT_SCAN": "امسح رمز QR للمتابعة وتسجيل الدخول",
         "PHONE_NOT_OPEN": "التسجيل برقم الهاتف غير متاح بعد",
         "PHONE_BETA_ONLY": "تسجيل الدخول بالهاتف مخصص لمختبري AI بيتا فقط",
         "PHONE_PLACEHOLDER": "أدخل رقم الهاتف",
         "PASSWORD_PLACEHOLDER": "أدخل كلمة المرور",
+        "EMAIL_PLACEHOLDER": "أدخل عنوان البريد الإلكتروني",
+        "CODE_PLACEHOLDER": "أدخل رمز التحقق",
+        "SEND_CODE": "إرسال الرمز",
+        "CODE_SENDING": "يرجى الحصول على رمز التحقق أولاً",
         "LOGGING_IN": "جاري تسجيل الدخول...",
         "LOGIN": "تسجيل الدخول",
         "SELECT_METHOD": "انقر لاختيار طريقة تسجيل الدخول",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "يرجى إدخال اسم المستخدم وكلمة المرور",
         "LOGIN_SUCCESS": "تم تسجيل الدخول بنجاح",
         "LOGIN_FAILED": "فشل تسجيل الدخول",
-        "LOGIN_NETWORK_ERROR": "فشل تسجيل الدخول، يرجى التحقق من الاتصال بالشبكة"
+        "LOGIN_NETWORK_ERROR": "فشل تسجيل الدخول، يرجى التحقق من الاتصال بالشبكة",
+        "AGREEMENT_PREFIX": "لقد قرأت ووافقت على",
+        "USER_AGREEMENT": "اتفاقية المستخدم",
+        "AGREEMENT_AND": "و",
+        "PRIVACY_POLICY": "سياسة الخصوصية",
+        "AGREEMENT_REQUIRED": "يرجى الموافقة على اتفاقية المستخدم وسياسة الخصوصية أولاً",
+        "MODAL_CLOSE": "إغلاق",
+        "AGREEMENT_LOAD_FAILED": "فشل تحميل اتفاقية المستخدم",
+        "PRIVACY_LOAD_FAILED": "فشل تحميل سياسة الخصوصية",
+        "WECHAT_QRCODE_FAILED": "فشل الحصول على رمز QR",
+        "WECHAT_REFRESH": "تحديث رمز QR",
+        "WECHAT_RETRY": "إعادة المحاولة",
+        "INVITE_CODE_PLACEHOLDER": "رمز الدعوة (اختياري)",
+        "AGREEMENT_BY_LOGIN": "بتسجيل الدخول/التسجيل، فإنك توافق على",
+        "TERMS_OF_USE": "شروط الاستخدام",
+        "OTHER_LOGIN_METHODS": "يمكنك أيضاً تسجيل الدخول باستخدام",
+        "GITHUB_CONTINUE": "يرجى النقر على \"Continue\" في صفحة تفويض GitHub لإكمال تسجيل الدخول",
+        "REGISTER": "تسجيل"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "الميزة قادمة قريباً"
+    },
+    "NPM": {
+        "INSTALLING": "جاري تثبيت {{name}}...",
+        "INSTALLING_DEPENDENCY": "جاري تثبيت التبعية {{name}}...",
+        "INSTALL_TIMEOUT": "انتهاء مهلة التثبيت",
+        "INSTALL_COMPLETE": "تم تثبيت {{name}} بنجاح",
+        "INSTALL_FAILED": "فشل تثبيت {{name}}",
+        "UNINSTALLING": "جاري إلغاء تثبيت {{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "جاري إلغاء تثبيت التبعيات غير المستخدمة...",
+        "UNINSTALL_TIMEOUT": "انتهاء مهلة إلغاء التثبيت",
+        "UNINSTALL_COMPLETE": "تم إلغاء تثبيت {{name}} بنجاح",
+        "BOARD_INSTALL_COMPLETE": "تم تثبيت اللوحة بنجاح",
+        "BOARD_UNINSTALL_COMPLETE": "تم إلغاء تثبيت اللوحة بنجاح",
+        "BOARD_DEPS_INSTALL_COMPLETE": "تم تثبيت تبعيات اللوحة بنجاح",
+        "BOARD_DEPS_INSTALL_FAILED": "فشل تثبيت تبعيات اللوحة",
+        "DEPS_INSTALL_COMPLETE": "تم تثبيت التبعيات بنجاح",
+        "DEPS_UNINSTALL_COMPLETE": "تم إلغاء تثبيت التبعيات بنجاح",
+        "DEPS_UNINSTALL_FAILED": "فشل إلغاء تثبيت التبعيات",
+        "NAME_REQUIRED": "لا يمكن أن يكون اسم {{type}} فارغًا",
+        "TYPE_TOOL": "أداة",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "مترجم",
+        "INSTALLING_TITLE": "جاري التثبيت",
+        "INSTALL_COMPLETE_TITLE": "اكتمل التثبيت",
+        "INSTALL_FAILED_TITLE": "فشل التثبيت",
+        "UNINSTALLING_TITLE": "جاري إلغاء التثبيت",
+        "UNINSTALL_COMPLETE_TITLE": "اكتمل إلغاء التثبيت",
+        "UNINSTALL_FAILED_TITLE": "فشل إلغاء التثبيت"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "جاري تثبيت التبعيات",
+        "LOADING_BOARD_CONFIG": "جاري تحميل إعدادات اللوحة",
+        "LOADING_BLOCKLY_LIB": "جاري تحميل مكتبات Blockly",
+        "LOADING_LIB": "جاري تحميل {{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "جاري تحميل برنامج Blockly",
+        "PROJECT_LOAD_SUCCESS": "تم تحميل المشروع بنجاح"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "جاري تحميل المثال...",
+        "EXAMPLE_LOAD_SUCCESS": "تم تحميل المثال بنجاح",
+        "EXAMPLE_LOAD_FAILED": "فشل تحميل المثال",
+        "NO_TUTORIAL_PROVIDED": "لم يقدم مؤلف المكتبة أي دليل تعليمي"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "تعذر فتح المشروع: ",
+        "CREATING_PROJECT": "جاري إنشاء المشروع...",
+        "PROJECT_CREATED": "تم إنشاء المشروع بنجاح",
+        "CREATE_FAILED": "فشل إنشاء المشروع",
+        "PATH_NOT_EXIST": "مسار المشروع غير موجود، يرجى اختيار مشروع آخر",
+        "SWITCHING_BOARD_CONFIG": "جاري تغيير إعدادات اللوحة...",
+        "BOARD_SWITCH_COMPLETE": "اكتمل تغيير اللوحة",
+        "BOARD_SWITCH_SUCCESS": "تم تغيير اللوحة بنجاح",
+        "SWITCHING_BOARD": "جاري تغيير اللوحة...",
+        "UNINSTALLING_CURRENT_BOARD": "جاري إلغاء تثبيت اللوحة الحالية...",
+        "INSTALLING_NEW_BOARD": "جاري تثبيت اللوحة الجديدة...",
+        "UPDATING_PROJECT_CONFIG": "جاري تحديث إعدادات المشروع...",
+        "BOARD_SWITCH_FAILED": "فشل تغيير اللوحة: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "إيقاف",
+        "VIEW_DETAIL": "عرض التفاصيل",
+        "AI_PROCESS": "معالجة AI"
+    },
+    "LOG": {
+        "TOOLTIP": "انقر للنسخ إلى الحافظة، انقر نقرًا مزدوجًا للإرسال إلى مساعد AI",
+        "COPIED_TO_CLIPBOARD": "تم نسخ محتوى السجل إلى الحافظة",
+        "SENT_TO_AI": "تم إرسال محتوى السجل إلى مساعد AI",
+        "NO_DATA_TO_EXPORT": "لا توجد بيانات سجل للتصدير",
+        "EXPORT_TITLE": "تصدير بيانات السجل",
+        "TEXT_FILE": "ملفات نصية",
+        "ALL_FILES": "جميع الملفات",
+        "EXPORT_SUCCESS": "تم تصدير بيانات السجل بنجاح إلى "
     }
 }

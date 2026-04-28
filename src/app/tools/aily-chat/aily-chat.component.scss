@@ -11,8 +11,8 @@
 .todo-panel-container {
   flex-shrink: 0;
   /* 不允许收缩，保持TODO面板完整显示 */
-  border-top: 1px solid var(--border-color, #3c3c3c);
-  background: var(--vscode-sideBar-background, #252526);
+  border-top: 1px solid var(--aily-border-subtle, #3c3c3c);
+  background: var(--aily-bg-secondary, #252526);
   max-height: 300px;
   /* 限制最大高度防止占用过多空间 */
   overflow: hidden;
@@ -40,6 +40,8 @@
   //scroll-behavior: smooth;
   min-height: 0;
   /* 确保flex子项可以收缩 */
+  position: relative;
+  z-index: 10;
 
   .dialogs {
     padding: 0 10px 10px 0;
@@ -67,7 +69,14 @@
     padding: 5px;
     border-radius: 5px;
     position: relative;
-    background: #292929;
+    background: var(--aily-bg-elevated);
+
+    .textarea-wrapper {
+      position: relative;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+    }
 
     textarea {
       font-size: 14px;
@@ -77,6 +86,42 @@
       outline: none;
       padding: 7px 0 0 5px;
       background: transparent;
+    }
+
+    .agent-suggestions {
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      min-width: 200px;
+      max-width: 300px;
+      background: var(--aily-bg-tertiary);
+      border: 1px solid var(--aily-border-tertiary);
+      border-radius: 6px;
+      padding: 4px;
+      margin-bottom: 4px;
+      z-index: 100;
+      box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+
+      .agent-suggestion-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        color: #c4b5fd;
+        transition: background 0.15s;
+
+        i {
+          color: #818cf8;
+          font-size: 14px;
+        }
+
+        &:hover {
+          background: rgba(99, 102, 241, 0.2);
+        }
+      }
     }
 
     .btns {
@@ -110,13 +155,13 @@
         width: 28px;
         height: 28px;
         font-size: 14px;
-        color: #eee;
+        color: var(--aily-text-primary);
         padding-top: 1px;
         border-radius: 5px;
 
         &:hover {
-          color: #fff;
-          background: #3f3f3f;
+          color: var(--aily-text-primary);
+          background: var(--aily-bg-tertiary);
         }
 
         &.actived {
@@ -141,7 +186,7 @@
       .spinner-box {
         width: 24px;
         height: 24px;
-        border: 3px solid #5a5a5a;
+        border: 3px solid var(--aily-border-tertiary);
         border-radius: 50%;
         box-sizing: border-box;
       }
@@ -161,12 +206,12 @@ nz-resize-handle {
   .line {
     margin-top: 5px;
     height: 1px;
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--aily-scrollbar-thumb);
   }
 }
 
 .historyList {
-  background: #555;
+  background: var(--aily-border-tertiary);
   position: absolute;
   top: 40px;
   right: 0;
@@ -186,9 +231,13 @@ nz-resize-handle {
   }
 
   .text {
-    color: #999;
+    color: var(--aily-text-secondary);
     text-align: center;
     padding-right: 10px;
+  }
+
+  .link {
+    margin-top: 5px;
   }
 }
 
@@ -196,7 +245,7 @@ nz-resize-handle {
 
 .list-box {
   border-radius: 5px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--aily-border-subtle);
   position: absolute;
   top: 0;
   left: 0;
@@ -204,21 +253,21 @@ nz-resize-handle {
   height: 28px;
   z-index: 0;
   pointer-events: none;
-  background: #3f3f3f;
+  background: var(--aily-bg-tertiary);
 }
 
 .btn2 {
   width: 28px;
   height: 28px;
   font-size: 14px;
-  color: #ccc;
+  color: var(--aily-text-quaternary);
   padding-top: 1px;
   border-radius: 5px;
   z-index: 999;
   cursor: pointer;
 
   &:hover {
-    color: #fff;
+    color: var(--aily-text-primary);
   }
 }
 
@@ -234,21 +283,34 @@ nz-resize-handle {
     border-radius: 5px;
     padding: 0 5px;
     border-radius: 2px;
-    border: 1px solid #666;
+    border: 1px solid var(--aily-border-tertiary);
 
     &:hover {
-      background-color: #444;
+      background-color: var(--aily-bg-tertiary);
+    }
+
+    &.block-item {
+      border-color: #d4a017;
+      background-color: rgba(212, 160, 23, 0.1);
+
+      &:hover {
+        background-color: rgba(212, 160, 23, 0.2);
+      }
+
+      i {
+        color: #d4a017;
+      }
     }
 
     .resource-name {
       margin: 0 5px;
-      color: #fff;
+      color: var(--aily-text-primary);
     }
 
     .btn {
       cursor: pointer;
       font-size: 12px;
-      color: #ccc;
+      color: var(--aily-text-quaternary);
     }
   }
 }
@@ -271,8 +333,61 @@ nz-resize-handle {
   }
 
   &.active {
-    color: var(--vscode-focusBorder, #007acc) !important;
+    color: var(--aily-color-accent, #007acc) !important;
     background: rgba(0, 122, 204, 0.1);
+  }
+}
+
+// Token 用量环形指示器
+.token-budget-indicator {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  cursor: default;
+  flex-shrink: 0;
+
+  .token-ring {
+    width: 22px;
+    height: 22px;
+
+    circle {
+      transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease;
+    }
+  }
+
+  .token-ring-track {
+    stroke: var(--aily-chat-token-budget-ring-track);
+  }
+
+  .token-ring-fill {
+    &--ok {
+      stroke: var(--aily-chat-token-budget-fill-ok);
+    }
+
+    &--warn {
+      stroke: var(--aily-chat-token-budget-fill-warn);
+    }
+
+    &--danger {
+      stroke: var(--aily-chat-token-budget-fill-danger);
+    }
+  }
+
+  .token-percent {
+    position: absolute;
+    font-size: 7px;
+    font-weight: 600;
+    color: var(--aily-chat-token-budget-fill-ok);
+    line-height: 1;
+    pointer-events: none;
+
+    &.warn {
+      color: var(--aily-chat-token-budget-fill-warn);
+    }
+
+    &.danger {
+      color: var(--aily-chat-token-budget-fill-danger);
+    }
   }
 }
 
@@ -280,6 +395,115 @@ nz-resize-handle {
   ::ng-deep {
     .menu-item {
       padding: 0 3px !important;
+    }
+  }
+}
+
+::ng-deep {
+  // Token 用量说明（tooltip 挂载在浮层，需穿透样式）
+  .token-budget-tooltip {
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: nowrap;
+    color: var(--aily-text-primary);
+
+    &__title {
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    &__summary {
+      margin-bottom: 5px;
+    }
+
+    &__line {
+      margin-bottom: 3px;
+    }
+
+    &__bar-track {
+      position: relative;
+      height: 3px;
+      background: var(--aily-chat-token-budget-tooltip-bar-track);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    &__bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s ease;
+
+      &--ok {
+        background: var(--aily-chat-token-budget-fill-ok);
+      }
+
+      &--warn {
+        background: var(--aily-chat-token-budget-fill-warn);
+      }
+
+      &--danger {
+        background: var(--aily-chat-token-budget-fill-danger);
+      }
+    }
+
+    &__swatch {
+      &--system {
+        color: var(--aily-chat-token-budget-label-system);
+      }
+
+      &--tools {
+        color: var(--aily-chat-token-budget-label-tools);
+      }
+
+      &--messages {
+        color: var(--aily-chat-token-budget-label-messages);
+      }
+    }
+
+    &__pct {
+      opacity: 0.6;
+    }
+  }
+
+  .x-markdown {
+    p {
+      margin-top: 5px;
+      margin-bottom: 5px;
+    }
+
+    pre {
+      padding: 0;
+      margin: 0;
+    }
+
+    .x-mermaid-placeholder {
+      background-color: var(--aily-bg-tertiary) !important;
+    }
+
+    .x-mermaid-diagram {
+      border-radius: 5px;
+      background-color: var(--aily-bg-tertiary);
+      max-height: 500px;
+      overflow: auto;
+      scrollbar-width: thin !important;
+      scrollbar-color: var(--aily-scrollbar-thumb) transparent;
+
+      >svg {
+        user-select: none;
+      }
+    }
+
+    .x-mermaid-error {
+      white-space: pre-wrap;
+    }
+
+    pre,
+    code,
+    kbd,
+    samp,
+    label,
+    span {
+      font-family: "MiSans Regular", "FiraCode Regular";
     }
   }
 }

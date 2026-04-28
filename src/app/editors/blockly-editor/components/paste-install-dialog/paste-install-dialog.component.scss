@@ -1,0 +1,97 @@
+.prompt-box {
+    background: var(--aily-bg-primary);
+    border-radius: 5px;
+    flex-direction: column;
+    width: 100%;
+    overflow: hidden;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    height: 34px;
+    border-bottom: 1px solid var(--aily-border-primary);
+    background: var(--aily-bg-primary);
+}
+
+.title {
+    height: 100%;
+    padding-left: 10px;
+    display: flex;
+    align-items: center;
+    flex-grow: 1;
+
+    i {
+        color: #4b97dd;
+        margin-right: 5px;
+        font-size: 16px;
+    }
+}
+
+.win-btns {
+    display: flex;
+    align-items: center;
+    font-size: 15px;
+
+    .btn {
+        font-size: 16px;
+        width: 33px;
+        height: 33px;
+        margin-right: 0;
+
+        &:hover {
+            background: var(--aily-border-subtle);
+        }
+    }
+}
+
+.content {
+    padding: 16px;
+}
+
+.text {
+    .t1 {
+        color: var(--aily-text-quaternary);
+        font-size: 13px;
+        margin-bottom: 12px;
+    }
+}
+
+.lib-list {
+    margin-bottom: 12px;
+}
+
+.lib-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 4px;
+
+    .version {
+        color: var(--aily-text-secondary);
+        font-size: 12px;
+        margin-left: 4px;
+    }
+}
+
+.install-log {
+    margin-top: 8px;
+    padding: 8px;
+    background: var(--aily-bg-secondary);
+    border-radius: 4px;
+    max-height: 100px;
+    overflow-y: auto;
+
+    .log-text {
+        color: #e05a00;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+}
+
+.footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}

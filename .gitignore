@@ -11,11 +11,14 @@
 /node_modules
 npm-debug.log
 yarn-error.log
+yarn.lock
 /child/node
 /child/clangd
 /child/aily-builder
 /child/7zz
 /child/7za.exe
+/child/rg
+/child/rg.exe
 
 # IDEs and editors
 .idea/
@@ -34,6 +37,9 @@ yarn-error.log
 !.vscode/extensions.json
 .history/*
 
+# Project-local IDE lock (cross-instance)
+.aily/
+
 # Miscellaneous
 /.angular/cache
 .sass-cache/
@@ -51,3 +57,6 @@ child/node*
 child/aily-builder*
 
 aily-todos/*.json
+docs/performance-optimization.md
+/child/rg.exe
+/child/probe-rs

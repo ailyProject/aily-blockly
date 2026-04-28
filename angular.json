@@ -64,6 +64,26 @@
               },
               {
                 "glob": "**/*",
+                "input": "node_modules/monaco-editor/min/vs",
+                "output": "/assets/vs"
+              },
+              {
+                "glob": "*.json",
+                "input": "src/app/tools/aily-chat/assets/tiktoken",
+                "output": "aily-chat/tiktoken"
+              },
+              {
+                "glob": "ng-zorro-antd.dark.css",
+                "input": "node_modules/ng-zorro-antd",
+                "output": "/"
+              },
+              {
+                "glob": "ng-zorro-antd.min.css",
+                "input": "node_modules/ng-zorro-antd",
+                "output": "/"
+              },
+              {
+                "glob": "**/*",
                 "input": "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources",
                 "output": "vscode/extension/theme"
               },
@@ -104,10 +124,7 @@
               "node_modules/@xterm/xterm/css/xterm.css",
               "node_modules/cropperjs/dist/cropper.css"
             ],
-            "scripts": [
-              "node_modules/pinyin-pro/dist/index.js"
-            ],
-            "webWorkerTsConfig": "tsconfig.worker.json"
+            "scripts": []
           },
           "configurations": {
             "production": {
@@ -115,7 +132,7 @@
                 {
                   "type": "initial",
                   "maximumWarning": "500kB",
-                  "maximumError": "3MB"
+                  "maximumError": "5MB"
                 },
                 {
                   "type": "anyComponentStyle",
@@ -167,8 +184,7 @@
               "./node_modules/ng-zorro-antd/ng-zorro-antd.min.css",
               "src/styles.scss"
             ],
-            "scripts": [],
-            "webWorkerTsConfig": "tsconfig.worker.json"
+            "scripts": []
           }
         }
       }

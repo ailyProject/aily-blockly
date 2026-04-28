@@ -1,5 +1,5 @@
 .prompt-box {
-    background: #2b2d30;
+    background: var(--aily-bg-primary);
     border-radius: 5px;
     flex-direction: column;
     width: 100%;
@@ -15,8 +15,8 @@
     display: flex;
     align-items: center;
     height: 34px;
-    border-bottom: 1px solid #222427;
-    background: #2b2d30;
+    border-bottom: 1px solid var(--aily-border-primary);
+    background: var(--aily-bg-primary);
 }
 
 .title {
@@ -39,7 +39,7 @@
         margin-right: 0;
 
         &:hover {
-            background: #3a3c3f;
+            background: var(--aily-bg-tertiary);
         }
 
         &.disabled {
@@ -58,7 +58,7 @@
         background: transparent !important;
 
         &:hover {
-            color: rgb(75, 151, 221);
+            color: var(--aily-color-link-hover);
         }
     }
 
@@ -66,17 +66,17 @@
         font-size: 19px;
 
         &:hover {
-            color: rgb(145, 0, 0);
+            color: var(--aily-color-error);
         }
     }
 }
 
 .content {
     padding: 10px;
-    background: #323437;
+    background: var(--aily-bg-secondary);
 
     input {
-        background: #3a3c3f;
+        background: var(--aily-bg-tertiary);
     }
 }
 

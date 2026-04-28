@@ -1,0 +1,34 @@
+<div class="prompt-box bborder">
+    <div class="header">
+        <div class="title"><i class="fa-solid fa-puzzle-piece"></i>{{ 'PASTE_INSTALL.TITLE' | translate }}</div>
+        <div class="win-btns">
+            <div class="btn ccenter close" (click)="cancel()" *ngIf="!installing">
+                <i class="fa-light fa-xmark"></i>
+            </div>
+        </div>
+    </div>
+    <div class="content">
+        <div class="text">
+            <div class="t1">{{ 'PASTE_INSTALL.MESSAGE' | translate }}</div>
+            <div class="lib-list">
+                @for(lib of missingLibs; track lib.name) {
+                <div class="lib-item">
+                    <nz-tag nzColor="processing">{{ lib.name }}</nz-tag>
+                    <span class="version">{{ getVersionDisplay(lib) }}</span>
+                </div>
+                }
+            </div>
+            <div class="install-log" *ngIf="installLog">
+                <div class="log-text">{{ installLog }}</div>
+            </div>
+        </div>
+        <div class="footer">
+            <button nz-button [nzSize]="'small'" nzType="default" (click)="cancel()" [disabled]="installing">
+                {{ 'PASTE_INSTALL.CANCEL' | translate }}
+            </button>
+            <button nz-button [nzSize]="'small'" nzType="primary" (click)="installAndPaste()" [nzLoading]="installing">
+                {{ 'PASTE_INSTALL.INSTALL_AND_PASTE' | translate }}
+            </button>
+        </div>
+    </div>
+</div>

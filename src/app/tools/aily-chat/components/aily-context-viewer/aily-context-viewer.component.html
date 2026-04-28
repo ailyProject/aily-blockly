@@ -1,0 +1,17 @@
+<div class="aily-context-viewer" [class.expanded]="isExpanded">
+    <div class="context-header" (click)="toggleExpand()">
+        <div class="context-title">
+            <div class="context-icon">
+                <i class="fa-light fa-cube"></i>
+            </div>
+            <span class="context-label">{{ label }}</span>
+        </div>
+        <div class="context-toggle">
+            <i class="fa-light" [class.fa-chevron-down]="!isExpanded" [class.fa-chevron-up]="isExpanded"></i>
+        </div>
+    </div>
+
+    @if (isExpanded) {
+        <div class="context-content sscroll">{{ contextContent }}</div>
+    }
+</div>

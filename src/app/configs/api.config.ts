@@ -2,6 +2,7 @@
 // 这些变量可以通过 setServerUrl/setRegistryUrl 在运行时更新
 let _cachedServerUrl: string | null = null;
 let _cachedRegistryUrl: string | null = null;
+let _cachedToolWebUrl: string | null = null;
 
 // 从 process.env 读取初始值（如果可用）
 function getInitialServerUrl(): string {
@@ -10,14 +11,20 @@ function getInitialServerUrl(): string {
     : 'https://api.aily.pro';
 }
 
+function getInitialToolWebUrl(): string {
+  return (typeof process !== 'undefined' && window['env'].get("AILY_TOOL_WEB"))
+    ? window['env'].get("AILY_TOOL_WEB")
+    : 'https://tool.aily.pro';
+}
+
 function getInitialRegistryUrl(): string {
   return (typeof process !== 'undefined' && window['env'].get("AILY_NPM_REGISTRY"))
     ? window['env'].get("AILY_NPM_REGISTRY")
-    : 'https://registry.diandeng.tech';
+    : 'https://registry.yysc.tech';
 }
 
 // 动态获取服务器地址，优先使用缓存的值
-function getServerUrl(): string {
+export function getServerUrl(): string {
   if (_cachedServerUrl !== null) {
     return _cachedServerUrl;
   }
@@ -29,6 +36,13 @@ function getRegistryUrl(): string {
     return _cachedRegistryUrl;
   }
   return getInitialRegistryUrl();
+}
+
+export function getToolWebUrl(): string {
+  if (_cachedToolWebUrl !== null) {
+    return _cachedToolWebUrl;
+  }
+  return getInitialToolWebUrl();
 }
 
 /**
@@ -47,6 +61,10 @@ export function setRegistryUrl(url: string): void {
   _cachedRegistryUrl = url;
 }
 
+export function setToolWebUrl(url: string): void {
+  _cachedToolWebUrl = url;
+}
+
 // 使用 getter 动态获取 API 地址，确保每次访问都读取最新的环境变量
 export const API = {
   get projectList() { return `${getRegistryUrl()}/-/verdaccio/data/packages`; },
@@ -55,18 +73,34 @@ export const API = {
   get login() { return `${getServerUrl()}/api/v1/auth/login`; },
   get register() { return `${getServerUrl()}/api/v1/auth/register`; },
   get logout() { return `${getServerUrl()}/api/v1/auth/logout`; },
+  get sendEmailCode() { return `${getServerUrl()}/api/v1/auth/send-email-code`; },
+  get loginByEmail() { return `${getServerUrl()}/api/v1/auth/email-code-login`; },
   get verifyToken() { return `${getServerUrl()}/api/v1/auth/verify`; },
   get refreshToken() { return `${getServerUrl()}/api/v1/auth/refresh`; },
   get me() { return `${getServerUrl()}/api/v1/auth/me`; },
   get changeNickname() { return `${getServerUrl()}/api/v1/auth/me/nickname`; },
+  get benefits() { return `${getServerUrl()}/api/v1/entitlements/me/benefits`; },
+  // invitation
+  get invitationValidateCompile() { return `${getServerUrl()}/api/v1/invitation/validate-compile`; },
   // github oauth
   get githubBrowserAuthorize() { return `${getServerUrl()}/api/v1/oauth/github/browser-authorize`; },
   get githubTokenExchange() { return `${getServerUrl()}/api/v1/oauth/github/token-exchange`; },
+  // wechat oauth
+  get wechatQrcode() { return `${getServerUrl()}/api/v1/oauth/wechat/qrcode`; },
+  get wechatCheck() { return `${getServerUrl()}/api/v1/oauth/wechat/check`; },
+  get wechatLoginBindQrcode() { return `${getServerUrl()}/api/v1/oauth/wechat/login-bind-qrcode`; },
+  get wechatLoginBindCheck() { return `${getServerUrl()}/api/v1/oauth/wechat/login-bind-check`; },
+  get wechatCompleteEmailBind() { return `${getServerUrl()}/api/v1/oauth/wechat/complete-email-bind-login`; },
+  get wechatConfirmMerge() { return `${getServerUrl()}/api/v1/oauth/wechat/confirm-merge`; },
+  // sso
+  get ssoGenerate() { return `${getServerUrl()}/api/v1/auth/sso/generate`; },
   // ai
   get startSession() { return `${getServerUrl()}/api/v1/start_session`; },
   get closeSession() { return `${getServerUrl()}/api/v1/close_session`; },
   get streamConnect() { return `${getServerUrl()}/api/v1/stream`; },
   get sendMessage() { return `${getServerUrl()}/api/v1/send_message`; },
+  /** 无状态聊天请求：每次请求携带完整 messages[]，返回 SSE 流 */
+  get chatRequest() { return `${getServerUrl()}/api/v1/chat`; },
   get getHistory() { return `${getServerUrl()}/api/v1/conversation_history`; },
   get stopSession() { return `${getServerUrl()}/api/v1/stop_session`; },
   get cancelTask() { return `${getServerUrl()}/api/v1/cancel_task`; },
@@ -86,4 +120,6 @@ export const API = {
   // firmware info
   get firmwareInfo() { return `${getServerUrl()}/api/v1/firmware/info`; },
   get downloadFirmware() { return `${getServerUrl()}/api/v1/firmware/download`; },
+  // altcha
+  get altchaChallenge() { return `${getServerUrl()}/api/v1/altcha`; },
 };

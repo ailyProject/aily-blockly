@@ -3,6 +3,10 @@ const { ipcMain, BrowserWindow, app } = require("electron");
 const { exec, execSync } = require('child_process');
 const path = require('path');
 
+const CODE_VIEWER_STATE_CHANNEL = 'blockly-code-viewer-state';
+const CODE_VIEWER_STATE_UPDATE_CHANNEL = 'blockly-code-viewer-state-update';
+const CODE_VIEWER_STATE_GET_CHANNEL = 'blockly-code-viewer-state-get';
+
 function terminateAilyProcess() {
     const platform = process.platform;
     let checkCommand;
@@ -66,10 +70,31 @@ function terminateAilyProcess() {
 function registerWindowHandlers(mainWindow) {
     // 添加一个映射来存储已打开的窗口
     const openWindows = new Map();
+    let codeViewerState = {
+        code: '',
+        selectedBlockId: null,
+        blockCodeMap: [],
+        updatedAt: 0,
+    };
+
+    const sendCodeViewerState = (targetWindow) => {
+        try {
+            if (targetWindow && !targetWindow.isDestroyed() && targetWindow.webContents && !targetWindow.webContents.isDestroyed()) {
+                targetWindow.webContents.send(CODE_VIEWER_STATE_CHANNEL, codeViewerState);
+            }
+        } catch (error) {
+            console.error('[IPC] send blockly code-viewer state failed:', error.message);
+        }
+    };
+
+    const broadcastCodeViewerState = () => {
+        sendCodeViewerState(mainWindow);
+        openWindows.forEach((subWindow) => sendCodeViewerState(subWindow));
+    };
 
     mainWindow.on('focus', () => {
         try {
-            if (mainWindow && mainWindow.webContents) {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-focus');
             }
 
@@ -81,7 +106,7 @@ function registerWindowHandlers(mainWindow) {
     mainWindow.on('blur', () => {
         // 检查窗口是否已销毁以及 webContents 是否有效
         try {
-            if (mainWindow && mainWindow.webContents) {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-blur');
             }
 
@@ -89,6 +114,48 @@ function registerWindowHandlers(mainWindow) {
             console.error('Error sending window-blur:', error.message);
         }
     });
+
+    mainWindow.on('enter-full-screen', () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('window-full-screen-changed', true);
+            }
+        } catch (error) {
+            console.error('Error sending window-full-screen-changed:', error.message);
+        }
+    });
+
+    mainWindow.on('leave-full-screen', () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('window-full-screen-changed', false);
+            }
+        } catch (error) {
+            console.error('Error sending window-full-screen-changed:', error.message);
+        }
+    });
+
+    // 为主窗口注册最大化/还原状态监听
+    mainWindow.on('maximize', () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('window-maximize-changed', true);
+            }
+        } catch (error) {
+            console.error('Error sending window-maximize-changed:', error.message);
+        }
+    });
+
+    mainWindow.on('unmaximize', () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('window-maximize-changed', false);
+            }
+        } catch (error) {
+            console.error('Error sending window-maximize-changed:', error.message);
+        }
+    });
+
 
     ipcMain.on("window-open", (event, data) => {
         const windowUrl = data.path;
@@ -111,7 +178,8 @@ function registerWindowHandlers(mainWindow) {
         const subWindow = new BrowserWindow({
             frame: false,
             autoHideMenuBar: true,
-            transparent: true,
+            thickFrame: true,
+            titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
             alwaysOnTop: data.alwaysOnTop ? data.alwaysOnTop : false,
             width: data.width ? data.width : 800,
             height: data.height ? data.height : 600,
@@ -125,10 +193,63 @@ function registerWindowHandlers(mainWindow) {
         // 将新窗口添加到映射
         openWindows.set(windowUrl, subWindow);
 
+        // 为子窗口注册全屏状态监听
+        subWindow.on('enter-full-screen', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-full-screen-changed', true);
+                }
+            } catch (error) {
+                console.error('Error sending sub-window-full-screen-changed:', error.message);
+            }
+        });
+
+        subWindow.on('leave-full-screen', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-full-screen-changed', false);
+                }
+            } catch (error) {
+                console.error('Error sending sub-window-full-screen-changed:', error.message);
+            }
+        });
+
+        // 为子窗口注册最大化/还原状态监听
+        subWindow.on('maximize', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-maximize-changed', true);
+                }
+            } catch (error) {
+                console.error('Error sending window-maximize-changed:', error.message);
+            }
+        });
+
+        subWindow.on('unmaximize', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-maximize-changed', false);
+                }
+            } catch (error) {
+                console.error('Error sending window-maximize-changed:', error.message);
+            }
+        });
+
         // 当窗口关闭时，从映射中移除
         subWindow.on('closed', () => {
             openWindows.delete(windowUrl);
         });
+
+        // 页面加载完成后，将 data/url/title 发送给子窗口
+        if (data.data || data.url || data.title) {
+            subWindow.webContents.on('did-finish-load', () => {
+                subWindow.webContents.send('window-init-data', {
+                    url: data.url,
+                    title: data.title,
+                    data: data.data,
+                });
+            });
+        }
 
         if (process.env.DEV === 'true' || process.env.DEV === true) {
             subWindow.loadURL(`http://localhost:4200/#/${data.path}`);
@@ -165,6 +286,25 @@ function registerWindowHandlers(mainWindow) {
         }
     });
 
+    // Mac 平台下处理系统关闭按钮的关闭检查
+    if (process.platform === 'darwin') {
+        mainWindow.on('close', (event) => {
+            event.preventDefault();
+            mainWindow.webContents.send('window-close-request');
+        });
+
+        // 监听渲染进程返回的关闭确认结果
+        ipcMain.on('window-close-confirmed', (event) => {
+            const senderWindow = BrowserWindow.fromWebContents(event.sender);
+            if (senderWindow === mainWindow) {
+                mainWindow.removeAllListeners('close');
+                mainWindow.close();
+                app.quit();
+                terminateAilyProcess();
+            }
+        });
+    }
+
     // 修改为同步处理程序
     ipcMain.on("window-is-maximized", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
@@ -191,6 +331,13 @@ function registerWindowHandlers(mainWindow) {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         const isFocused = senderWindow ? senderWindow.isFocused() : false;
         event.returnValue = isFocused;
+    });
+
+    // 检查窗口是否最小化（同步）
+    ipcMain.on("window-is-minimized", (event) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        const isMinimized = senderWindow ? senderWindow.isMinimized() : false;
+        event.returnValue = isMinimized;
     });
 
     ipcMain.on("window-go-main", (event, data) => {
@@ -238,10 +385,54 @@ function registerWindowHandlers(mainWindow) {
         return true;
     });
 
+    ipcMain.on(CODE_VIEWER_STATE_UPDATE_CHANNEL, (_event, data = {}) => {
+        codeViewerState = {
+            ...codeViewerState,
+            ...data,
+            updatedAt: Date.now(),
+        };
+        broadcastCodeViewerState();
+    });
+
+    ipcMain.handle(CODE_VIEWER_STATE_GET_CHANNEL, () => codeViewerState);
+
     // 用于sub窗口改变main窗口状态显示
     ipcMain.on('state-update', (event, data) => {
         console.log('state-update: ', data);
         mainWindow.webContents.send('state-update', data);
+    });
+
+    // =====================================================
+    // iframe 模块 IPC 通讯（规范：iframe-message-{模块名}，参数 {type, data}）
+    // =====================================================
+
+    const IFRAME_CHANNEL_CONNECTION_GRAPH = 'iframe-message-connection-graph';
+
+    ipcMain.on(IFRAME_CHANNEL_CONNECTION_GRAPH, (event, payload) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        const isFromMain = senderWindow && senderWindow.id === mainWindow.id;
+        if (isFromMain) {
+            // 主窗口 → 子窗口：广播给所有子窗口，由各模块按 type 自行处理（含 get-graph-data）
+            openWindows.forEach((subWindow) => {
+                try {
+                    if (subWindow && !subWindow.isDestroyed() && subWindow.webContents && !subWindow.webContents.isDestroyed()) {
+                        subWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
+                    }
+                } catch (error) {
+                    console.error('[IPC] 转发 iframe-message-connection-graph 失败:', error.message);
+                }
+            });
+            // 嵌入模式：主窗口内的 connection-graph（如 blockly-editor 的 graph-editor tab）也会发送 get-graph-data，
+            // 主窗口的 ConnectionGraphService 需要收到请求并响应，故主窗口发出的消息也需回传主窗口
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
+            }
+        } else {
+            // 子窗口 → 主窗口：转发给主窗口（含 get-graph-data）
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
+            }
+        }
     });
 }
 

@@ -1,0 +1,644 @@
+.dialog-box {
+  background: var(--aily-chat-xdialog-bubble-bg, #2d2d2d);
+  border-radius: 5px;
+  margin: 5px 0;
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 2px;
+
+  &.user {
+    background: none;
+  }
+}
+
+// ===== 子Agent折叠面板（含 schematicAgent →「Schematic Agent」展示）=====
+.subagent-fold {
+  border-radius: 5px;
+  margin: 5px 0;
+  padding: 5px 10px;
+  background-color: var(--aily-subagent-bg, #2d2d2d);
+  border-left: 3px solid var(--aily-subagent-border, #6366f1);
+  overflow: hidden;
+}
+
+.subagent-fold-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--aily-subagent-text, #cccccc);
+  user-select: none;
+  transition: background 0.2s;
+
+  &:hover {
+    background: var(--aily-subagent-header-hover, rgba(255, 255, 255, 0.05));
+    margin: -5px -10px;
+    padding: 5px 10px;
+  }
+}
+
+.subagent-fold-icon {
+  flex-shrink: 0;
+  margin-right: 2px;
+
+  &.loading {
+    color: var(--aily-subagent-icon-loading, #818cf8);
+  }
+
+  &.done {
+    color: var(--aily-subagent-icon-done, #10b981);
+  }
+}
+
+.subagent-fold-label {
+  color: var(--aily-subagent-label, #c4b5fd);
+  font-weight: 500;
+}
+
+.subagent-fold-arrow {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--aily-subagent-arrow, #888888);
+  transition: transform 0.2s;
+
+  &.expanded {
+    transform: rotate(180deg);
+  }
+}
+
+.subagent-fold-body {
+  padding: 5px 0;
+  margin-top: 5px;
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aily-subagent-scrollbar-thumb, rgba(255, 255, 255, 0.2))
+    var(--aily-subagent-scrollbar-track, transparent);
+  border-top: 1px solid var(--aily-subagent-body-divider, rgba(99, 102, 241, 0.2));
+  user-select: text;
+}
+
+@keyframes ac-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ac-spin {
+  animation: ac-spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+.username {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--aily-chat-xdialog-username-border, #444444);
+  font-size: 14px;
+  color: var(--aily-chat-xdialog-username-text, #888888);
+  display: flex;
+  align-items: center;
+
+  i {
+    font-size: 16px;
+  }
+}
+
+// .checkpoint-action-row {
+//   display: flex;
+//   align-items: center;
+//   min-height: 18px;
+//   padding: 2px 6px 0;
+// }
+
+// .restore-checkpoint-text {
+//   font-size: 12px;
+//   margin: 0 auto;
+//   color: #888;
+//   cursor: pointer;
+//   user-select: none;
+//   pointer-events: none;
+//   opacity: 0;
+//   transform: translateY(-1px);
+//   transition: opacity 0.14s ease, color 0.14s ease;
+
+//   /* 基础动画属性 */
+//   opacity: 0;
+//   transform: translateY(-1px);
+//   transition: opacity 0.14s ease, color 0.14s ease;
+//   pointer-events: none;
+
+//   &.visible {
+//     opacity: 1;
+//     pointer-events: auto;
+//   }
+
+//   &:hover {
+//     color: #ccc;
+//   }
+
+//   /* 左侧线条 */
+//   &::before {
+//     content: "";
+//     height: 1px;
+//     flex: 1;             /* 线条自动伸展 */
+//     min-width: 30px;     /* 线条的最小长度 */
+//     /* 从右向左渐变消失 (transparent -> #888) */
+//     background: linear-gradient(to left, #888, transparent);
+//     transition: background 0.14s ease;
+//   }
+
+//   /* 右侧线条 */
+//   &::after {
+//     content: "";
+//     height: 1px;
+//     flex: 1;
+//     min-width: 30px;
+//     /* 从左向右渐变消失 (#888 -> transparent) */
+//     background: linear-gradient(to right, #888, transparent);
+//     transition: background 0.14s ease;
+//   }
+// }
+
+.checkpoint-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 0;
+  padding: 0 6px;
+  width: 100%;
+  overflow: hidden;
+  transition: height 0.18s ease;
+
+  &.expanded {
+    height: 24px;
+  }
+}
+
+.restore-checkpoint-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  
+  font-size: 12px;
+  color: var(--aily-chat-xdialog-checkpoint-fg, #888888);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-1px);
+  transition: opacity 0.14s ease, color 0.14s ease;
+
+  &.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  &:hover {
+    color: var(--aily-chat-xdialog-checkpoint-fg-hover, #cccccc);
+    &::before, &::after {
+      background-image: linear-gradient(
+        var(--line-dir),
+        var(--aily-chat-xdialog-checkpoint-fg-hover, #cccccc),
+        transparent
+      );
+    }
+  }
+
+  &::before {
+    --line-dir: to left;
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: linear-gradient(
+      to left,
+      var(--aily-chat-xdialog-checkpoint-fg, #888888),
+      transparent
+    );
+  }
+
+  &::after {
+    --line-dir: to right;
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: linear-gradient(
+      to right,
+      var(--aily-chat-xdialog-checkpoint-fg, #888888),
+      transparent
+    );
+  }
+}
+
+.content {
+  padding: 5px 10px;
+  user-select: text;
+
+  &.thinking {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    color: var(--aily-chat-xdialog-thinking-fg, #a5a5a5);
+    font-size: 14px;
+
+    .thinking-text {
+      margin-right: 2px;
+    }
+
+    .wave-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+
+      .dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background-color: var(--aily-chat-xdialog-thinking-dot, #888888);
+        animation: wave-bounce 1.4s ease-in-out infinite both;
+      }
+      .dot:nth-child(1) { animation-delay: 0s; }
+      .dot:nth-child(2) { animation-delay: 0.2s; }
+      .dot:nth-child(3) { animation-delay: 0.4s; }
+    }
+  }
+
+  // 折叠式上下文块样式（由预处理生成的 HTML 使用）
+  ::ng-deep {
+    .aily-context-block {
+      border-radius: 5px;
+      padding: 4px 8px;
+      margin: 4px 0;
+      background-color: var(--aily-chat-xdialog-context-bg, rgba(212, 160, 23, 0.08));
+      border: 1px solid var(--aily-chat-xdialog-context-border, rgba(212, 160, 23, 0.25));
+      font-size: 12px;
+
+      .aily-context-summary {
+        cursor: pointer;
+        color: var(--aily-chat-xdialog-context-accent, #d4a017);
+        font-size: 13px;
+        user-select: none;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+
+        &::-webkit-details-marker {
+          display: none;
+        }
+
+        &::after {
+          content: '\f078';
+          font-family: 'Font Awesome 6 Pro';
+          font-weight: 300;
+          font-size: 10px;
+          color: var(--aily-chat-xdialog-context-chevron, #888888);
+          margin-left: auto;
+          transition: transform 0.2s;
+        }
+
+        &:hover {
+          opacity: 0.85;
+        }
+      }
+
+      &[open] .aily-context-summary::after {
+        transform: rotate(180deg);
+      }
+
+      .aily-context-content {
+        margin: 6px 0 2px;
+        padding: 6px 8px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--aily-chat-xdialog-context-body-fg, #999999);
+        background: var(--aily-chat-xdialog-context-body-bg, rgba(0, 0, 0, 0.15));
+        border-radius: 3px;
+        max-height: 200px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: inherit;
+      }
+    }
+
+    // x-markdown 暗色主题微调：兼容项目风格
+    .x-markdown-dark {
+      font-size: 14px;
+
+      h2 {
+        border-left: 6px solid var(--aily-chat-xdialog-md-h2-border, #3794ff);
+        padding-left: 10px;
+      }
+
+      a::after {
+        display: none;
+      }
+
+      li > code {
+        background: var(--aily-chat-xdialog-md-code-bg, #514e4e);
+        border-radius: 2px;
+        padding: 0 2px;
+        word-break: break-word;
+      }
+
+      table {
+        border-collapse: collapse;
+        overflow: hidden;
+        box-shadow: var(--aily-chat-xdialog-md-table-shadow, 0 1px 3px rgba(255, 255, 255, 0.05));
+        border-radius: 3px;
+      }
+      
+      thead {
+        background-color: var(--aily-chat-xdialog-md-thead-bg, rgb(50, 50, 50));
+      }
+      
+      tbody {
+        background-color: var(--aily-chat-xdialog-md-tbody-bg, rgb(46, 45, 45));
+      }
+      
+      tbody tr {
+        background-color: var(--aily-chat-xdialog-md-tbody-bg, rgb(46, 45, 45));
+        transition: background-color 200ms linear;
+      }
+      
+      tbody tr:hover {
+        background-color: var(--aily-chat-xdialog-md-tr-hover, rgb(29, 29, 29));
+      }
+      
+      th,
+      td {
+        padding: 10px 12px;
+        border: 1px solid var(--aily-chat-xdialog-md-cell-border, #444444);
+      }
+      
+      th {
+        color: var(--aily-chat-xdialog-md-cell-fg, #ffffff);
+      }
+      
+      td {
+        color: var(--aily-chat-xdialog-md-cell-fg, #ffffff);
+      }
+
+      blockquote {
+        border-left: 4px solid var(--aily-chat-xdialog-md-bq-border, #6b6b6b);
+        padding: 4px 12px;
+        margin: 5px 0;
+        background-color: var(--aily-chat-xdialog-md-bq-bg, rgba(187, 187, 187, 0.1));
+        border-radius: 0 3px 3px 0;
+        transition: background-color 0.2s ease;
+      }
+      
+      blockquote:hover {
+        background-color: var(--aily-chat-xdialog-md-bq-bg-hover, rgba(187, 187, 187, 0.2));
+      }
+    }
+  }
+}
+
+// 消息操作栏
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  justify-content: flex-start;
+}
+
+.msg-action-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--aily-chat-xdialog-msg-btn, #888888);
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s;
+
+  &:hover {
+    background: var(--aily-chat-xdialog-msg-btn-hover-bg, rgba(255, 255, 255, 0.1));
+    color: var(--aily-chat-xdialog-msg-btn-hover-fg, #cccccc);
+  }
+
+  &.active {
+    color: var(--aily-chat-xdialog-msg-btn-active, #61afef);
+  }
+}
+
+.msg-actions-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--aily-chat-xdialog-msg-divider, rgba(255, 255, 255, 0.12));
+  margin: 0 2px;
+}
+
+.msg-model-label {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--aily-chat-xdialog-msg-model, #666666);
+  white-space: nowrap;
+  user-select: none;
+  line-height: 26px;
+  padding: 0 4px;
+}
+
+.loader {
+  position: absolute;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  --c: no-repeat linear-gradient(var(--aily-chat-xdialog-loader-stripe, #585858) 0 0);
+  background: var(--c), var(--c), var(--aily-chat-xdialog-loader-track, #3d3d3d);
+  background-size: 60% 100%;
+  animation: l16 3s infinite;
+}
+
+@keyframes l16 {
+  0%   { background-position: -150% 0, -150% 0 }
+  66%  { background-position: 250% 0, -150% 0 }
+  100% { background-position: 250% 0, 250% 0 }
+}
+
+@keyframes wave-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}
+
+// ===== 可编辑用户消息 =====
+.dialog-box.editable {
+  cursor: pointer;
+  transition: background 0.15s;
+
+  &:hover {
+    background: var(--aily-chat-xdialog-editable-hover, rgba(255, 255, 255, 0.03));
+  }
+}
+
+// ===== 编辑模式输入框（与主输入框样式一致） =====
+.edit-input-box {
+  display: flex;
+  flex-direction: column;
+  margin: 10px 0 5px;
+  padding: 5px;
+  border-radius: 5px;
+  background: var(--aily-chat-xdialog-edit-bg, #292929);
+
+  .resource-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 2px 0 4px;
+
+    .resource-item {
+      display: flex;
+      align-items: center;
+      font-size: 10px;
+      border-radius: 2px;
+      padding: 0 5px;
+      border: 1px solid var(--aily-chat-xdialog-edit-resource-border, #666666);
+
+      &:hover {
+        background-color: var(--aily-chat-xdialog-edit-resource-hover-bg, #444444);
+      }
+
+      &.block-item {
+        border-color: var(--aily-chat-xdialog-context-accent, #d4a017);
+        background-color: var(--aily-chat-xdialog-context-bg, rgba(212, 160, 23, 0.08));
+
+        &:hover {
+          background-color: var(--aily-chat-xdialog-context-hover-bg, rgba(212, 160, 23, 0.2));
+        }
+
+        i {
+          color: var(--aily-chat-xdialog-context-accent, #d4a017);
+        }
+      }
+
+      .resource-name {
+        margin: 0 5px;
+        color: var(--aily-chat-xdialog-edit-resource-name, #ffffff);
+      }
+
+      .res-remove-btn {
+        cursor: pointer;
+        font-size: 12px;
+        color: var(--aily-text-tertiary, #cccccc);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+
+        &:hover {
+          color: var(--aily-text-primary, #ffffff);
+        }
+      }
+    }
+  }
+
+  .edit-textarea-wrapper {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 98px;
+
+    textarea {
+      font-size: 14px;
+      flex-grow: 1;
+      border: none;
+      resize: none;
+      outline: none;
+      padding: 7px 0 0 5px;
+      background: transparent;
+      color: inherit;
+      font-family: inherit;
+      min-height: 60px;
+    }
+  }
+
+  .edit-btns {
+    width: 100%;
+    display: flex;
+    height: 28px;
+    position: relative;
+    align-items: center;
+
+    .edit-btn {
+      width: 28px;
+      height: 28px;
+      font-size: 14px;
+      color: var(--aily-chat-xdialog-edit-btn-fg, #eeeeee);
+      padding-top: 1px;
+      border-radius: 5px;
+      cursor: pointer;
+
+      &:hover {
+        color: var(--aily-text-primary, #ffffff);
+        background: var(--aily-chat-xdialog-edit-btn-hover-bg, #3f3f3f);
+      }
+    }
+
+    .edit-mode-btn {
+      width: auto !important;
+      padding: 0 6px !important;
+
+      span {
+        margin-left: 5px;
+        font-size: 12px;
+      }
+    }
+
+    .edit-cancel-btn {
+      position: absolute;
+      right: 32px;
+      color: var(--aily-text-hint, #888888);
+
+      &:hover {
+        color: var(--aily-chat-xdialog-edit-cancel-hover-fg, #e06c75);
+        background: var(--aily-chat-xdialog-edit-cancel-hover-bg, rgba(224, 108, 117, 0.1));
+      }
+    }
+
+    .edit-send-btn {
+      position: absolute;
+      right: 0;
+    }
+
+    .edit-list-box {
+      border-radius: 5px;
+      border: 1px solid var(--aily-chat-xdialog-edit-list-border, #cccccc);
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 84px;
+      height: 28px;
+      z-index: 0;
+      pointer-events: none;
+      background: var(--aily-chat-xdialog-edit-list-bg, #3f3f3f);
+    }
+
+    .edit-btn2 {
+      width: 28px;
+      height: 28px;
+      font-size: 14px;
+      color: var(--aily-chat-xdialog-edit-btn2-fg, #cccccc);
+      padding-top: 1px;
+      border-radius: 5px;
+      z-index: 999;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      &:hover {
+        color: var(--aily-text-primary, #ffffff);
+      }
+    }
+  }
+}

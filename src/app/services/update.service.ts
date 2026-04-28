@@ -128,12 +128,6 @@ export class UpdateService {
   private showUpdateDialog(info: any, isDownloaded: boolean = false) {
     // console.log('showUpdateDialog', info, isDownloaded);
     const mode = isDownloaded ? 'downloaded' : 'available';
-    const title = isDownloaded ?
-      `更新已准备就绪` :
-      `发现新版本 ${info.version}`;
-    const text = isDownloaded ?
-      `新版本 ${info.version} 已下载完成，是否立即安装？<br>` :
-      `当前版本 ${this.currentVersion} 新版本 ${info.version}<br>是否要下载并安装此更新？`;
 
     const modalRef = this.modal.create({
       nzTitle: null,
@@ -142,14 +136,13 @@ export class UpdateService {
       nzBodyStyle: {
         padding: '0',
       },
-      nzWidth: '320px',
+      nzWidth: '500px',
       nzContent: UpdateDialogComponent,
       nzData: {
-        title: title,
-        text: text,
         mode: mode,
         progress: 0,
         version: info.version,
+        currentVersion: this.currentVersion,
       },
       nzMaskClosable: false,
     });

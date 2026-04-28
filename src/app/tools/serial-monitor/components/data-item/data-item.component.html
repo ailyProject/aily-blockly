@@ -1,23 +1,18 @@
 @if (viewMode.showTimestamp) {
-<div class="item" [ngClass]="{'highlight': showHighlight, 'search-active': data.searchHighlight}">
+<div class="item" [ngClass]="{'highlight': data.highlight, 'search-active': data.searchHighlight}">
   <!-- @if (viewMode.showTimestamp) { -->
   <div class="time">{{ data.time }}</div>
   <div class="dir" [ngClass]="{ 'tx': data.dir == 'TX','sys':data.dir=='SYS' }">
     {{data.dir}}
   </div>
   <div class="data vsfont"
-    [ngClass]="{ 'tx': data.dir == 'TX', 'sys':data.dir == 'SYS', error: data.data.includes('error:'),'nowrap': !viewMode.autoWrap }"
-    [innerHTML]="viewMode.showHex||showHex ? (data.data | showHex) : (viewMode.showCtrlChar ? (data.data | showNR) : (data.data| addNewLine))">
+    [ngClass]="{ 'tx': data.dir == 'TX', 'sys':data.dir == 'SYS', error: data.isError,'nowrap': !viewMode.autoWrap }"
+    [innerHTML]="viewMode.showHex||data.showHex ? (data.data | showHex) : (viewMode.showCtrlChar ? (data.data | showNR) : (data.data| addNewLine))">
   </div>
 </div>
 }@else{
 <span class="data vsfont"
-  [ngClass]="{ 'tx': data.dir == 'TX', 'sys':data.dir == 'SYS', error: data.data.includes('error:'),'nowrap': !viewMode.autoWrap }"
+  [ngClass]="{ 'tx': data.dir == 'TX', 'sys':data.dir == 'SYS', error: data.isError,'nowrap': !viewMode.autoWrap }"
   [innerHTML]="viewMode.showHex ? (data.data | showHex) : (viewMode.showCtrlChar ? (data.data | showNR) : (data.data | addNewLine))">
 </span>
-}
-
-@if (showMenu) {
-<app-menu [menuList]="rightMenu" [position]="position" [width]="125" (closeEvent)="closeMenu()"
-  (itemClickEvent)="menuClick($event)"></app-menu>
 }

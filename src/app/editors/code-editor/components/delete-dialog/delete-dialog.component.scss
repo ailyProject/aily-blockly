@@ -1,5 +1,5 @@
 .prompt-box {
-    background: #2b2d30;
+    background: var(--aily-bg-primary);
     border-radius: 5px;
     flex-direction: column;
     width: 100%;
@@ -10,8 +10,8 @@
     display: flex;
     align-items: center;
     height: 34px;
-    border-bottom: 1px solid #222427;
-    background: #2b2d30;
+    border-bottom: 1px solid var(--aily-border-primary);
+    background: var(--aily-bg-primary);
 }
 
 .title {
@@ -34,7 +34,7 @@
         margin-right: 0;
 
         &:hover {
-            background: #3a3c3f;
+            background: var(--aily-border-subtle);
         }
     }
 
@@ -64,10 +64,10 @@
 
 .content {
     padding: 10px;
-    background: #323437;
+    background: var(--aily-bg-secondary);
 
     input {
-        background: #3a3c3f;
+        background: var(--aily-border-subtle);
     }
 
     .text {

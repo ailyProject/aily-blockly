@@ -31,7 +31,8 @@
         "USER_SPACE": "Espaço na Nuvem",
         "LIB_MANAGER": "Gerenciador de Bibliotecas",
         "AI_ASSISTANT": "Assistente de IA",
-        "PROJECT_HUB": "Central de Projetos"
+        "PROJECT_HUB": "Central de Projetos",
+        "NEW_INSTANCE": "Nova janela"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Velocidade de Upload",
@@ -46,6 +47,15 @@
         "BOARD": "Seleção do modelo da placa",
         "USB": "Configurações USB",
         "UPLOAD_METHOD": "Método de Upload"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "Gravar SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "Deseja gravar {{softdevice}} SoftDevice no dispositivo?",
+        "SELECT_PORT_FIRST": "Por favor, selecione uma porta primeiro",
+        "FLASHING_SOFTDEVICE": "Gravando SoftDevice...",
+        "FLASH_SUCCESS": "SoftDevice gravado com sucesso",
+        "FLASH_FAILED": "Falha ao gravar SoftDevice"
     },
     "GUIDE": {
         "START": "Iniciar",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "Tem perguntas? Quer compartilhar seu trabalho? Junte-se à nossa comunidade de usuários para conectar e aprender com outros makers!"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "Copiar para local especificado",
+        "CONTROLS_SWITCH_CASE": "caso",
+        "CONTROLS_SWITCH_DO": "fazer",
+        "CONTROLS_SWITCH_DEFAULT": "padrão",
+        "CROSS_TAB_PASTE": "Colar",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "Colar %1 itens",
+        "WORKSPACE_SELECT_ALL": "Selecionar todos os blocos"
+    },
     "APP_STORE": {
         "HEADER_INFO": "Os primeiros {{count}} aplicativos serão mostrados na barra de ferramentas",
         "RESET": "Redefinir",
@@ -113,7 +132,8 @@
             "REPOSITORY": "Configurações de repositório",
             "DEPENDENCIES": "Dependências Globais",
             "MCP": "MCP",
-            "DEVMODE": "Modo Desenvolvedor"
+            "DEVMODE": "Modo Desenvolvedor",
+            "CACHE": "Gerenciamento de cache"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Pasta do projeto",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "Tema do Blockly",
             "BLOCKLY_MINIMAP": "Minimapa do Blockly",
             "COMPILATION_OPTIONS": "Opções de compilação",
+            "REGION": "Região de serviço",
+            "REGION_TITLE": "Alterar região de serviço",
+            "REGION_DESC": "Será necessário iniciar sessão novamente após alterar a região de serviço. Continuar?",
+            "REGION_CONFIRM": "Confirmar",
+            "REGION_CANCEL": "Cancelar",
             "REPOSITORY_URLS": "URLs de repositório",
             "BOARD_LIST": "Lista de placas",
             "LIBRARY_LIST": "Lista de bibliotecas",
             "INSTALL": "Instalar",
-            "UNINSTALL": "Desinstalar"
+            "UNINSTALL": "Desinstalar",
+            "CLEAR_CACHE": "Limpar cache",
+            "CACHE_SIZE": "Tamanho do cache",
+            "CACHE_LOADING": "Carregando...",
+            "CACHE_ALL": "Limpar tudo",
+            "CACHE_ONE_MONTH": "Limpar 1 mês",
+            "CACHE_THREE_MONTHS": "Limpar 3 meses",
+            "CACHE_CLEARING": "Limpando...",
+            "CACHE_CLEARED": "Cache limpo",
+            "CACHE_CLEAR_FAILED": "Falha ao limpar",
+            "CACHE_CONFIRM_TITLE": "Confirmar limpeza",
+            "CACHE_CONFIRM_DESC": "Tem certeza de que deseja limpar todo o cache de compilação? Esta ação não pode ser desfeita.",
+            "CACHE_CONFIRM_OK": "Confirmar"
         },
         "BUTTONS": {
             "CANCEL": "Cancelar",
@@ -153,7 +190,8 @@
             "BOARD": "Placa",
             "PROJECT_NAME": "Nome do projeto",
             "SAVE_PATH": "Caminho de salvamento",
-            "NAME_EXISTS": "Nome do projeto já existe, por favor modifique"
+            "NAME_EXISTS": "Nome do projeto já existe, por favor modifique",
+            "PATH_INVALID_CHARS": "O caminho contém caracteres inválidos (ex. / : * ? \" < > |), por favor modifique"
         },
         "BUTTONS": {
             "USE_THIS": "Usar esta Placa",
@@ -164,7 +202,8 @@
             "CREATING": "Criando"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Versão beta, não verificada, use com cautela"
+            "BETA_VERSION": "Versão beta, não verificada, use com cautela",
+            "TODO": "O suporte a este dispositivo estará disponível em breve"
         }
     },
     "LIB_MANAGER": {
@@ -180,6 +219,7 @@
         "INSTALLED_TEXT": "Instalado",
         "REMOVE": "Remover",
         "INSTALLING": "Instalando",
+        "INSTALL_FAILED": "Falha na instalação",
         "UNINSTALLING": "Desinstalando",
         "UNINSTALLED": "Desinstalado",
         "IMPORTING": "Importando",
@@ -195,7 +235,7 @@
         "AI": "IA",
         "IOT": "IoT",
         "OTHERS": "Outros",
-        "ALL": "Todas as bibliotecas",
+        "ALL": "Todas",
         "HELP": "Como desenvolver biblioteca",
         "LIB_IN_USE": "Esta biblioteca está atualmente em uso. Por favor, remova os blocos relacionados do espaço de trabalho antes de remover esta biblioteca"
     },
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "Atualização de software",
+        "TITLE_READY": "Atualização pronta",
+        "TITLE_NEW_VERSION": "Nova versão {{version}} disponível",
+        "TEXT_DOWNLOADED": "A versão {{version}} foi baixada. Instalar agora?",
+        "TEXT_AVAILABLE": "Versão atual {{currentVersion}}, nova versão {{version}}<br>Deseja baixar e instalar esta atualização?",
         "DOWNLOAD_FAILED": "Falha no download",
         "REMIND_LATER": "Lembrar mais tarde",
         "SKIP_VERSION": "Pular esta versão",
@@ -277,8 +321,9 @@
         "SETTINGS": "Configurações de IA",
         "HISTORY": "Histórico de chat",
         "NEW_CHAT": "Novo chat",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "As respostas da IA são apenas para referência e podem não ser precisas. Elas não representam as opiniões dos desenvolvedores do software. Os usuários devem verificar as informações por si mesmos.",
+        "USAGE_GUIDE": "Conhecer o uso da IA",
         "ADD_CONTEXT": "Adicionar contexto",
         "ADD_FILE": "Adicionar arquivo",
         "ADD_FOLDER": "Adicionar pasta",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "Modo Agente",
         "MODE_QA_FULL": "Modo P&R",
         "STOP_CURRENT_SESSION_FIRST": "Por favor, pare a sessão atual antes de criar uma nova",
+        "NO_HISTORY_SESSION": "Nenhum registro de sessão de histórico",
+        "MERMAID_SAVE_ARCH": "Salvar como diagrama de arquitetura",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "Confirmar sobrescrita",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "O arquivo do diagrama de arquitetura já existe no diretório do projeto. Sobrescrever?",
+        "MERMAID_ARCH_CONFIRM": "Confirmar",
+        "MERMAID_ARCH_CANCEL": "Cancelar",
+        "MERMAID_COPY_FAILED": "Falha ao copiar",
+        "MERMAID_SAVE_FAILED": "Falha ao salvar",
+        "CLICK_TO_EDIT": "Clique para editar",
         "ONBOARDING": {
             "STEP1_TITLE": "Caixa de entrada",
             "STEP1_DESC": "Digite aqui suas perguntas ou tarefas para assistência da IA. Pressione Enter para enviar, Ctrl+Enter para nova linha",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Configurações do Projeto",
+        "ARCH": "Diagrama de Arquitetura",
         "PINMAP": "Mapa de Pinos",
+        "CIRCUIT": "Diagrama de Circuito",
         "DOCUMENTATION": "Documentação",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Mapa de pinos não disponível para esta placa",
-        "NO_DOCUMENTATION": "Documentação não disponível para esta placa"
+        "PINMAP_PARSE_ERROR": "Falha ao analisar mapa de pinos",
+        "NO_DOCUMENTATION": "Documentação não disponível para esta placa",
+        "ARCH_ELECTRON_ONLY": "Diagrama de arquitetura disponível apenas no aplicativo desktop",
+        "NO_PROJECT": "Nenhum projeto aberto",
+        "NO_ARCH": "arch.md não encontrado no diretório do projeto",
+        "ARCH_EMPTY": "Nenhum diagrama mermaid encontrado em arch.md",
+        "ARCH_RENDER_FAILED": "Falha ao renderizar diagrama de arquitetura",
+        "GENERATE_ARCH_PROMPT": "Gerar diagrama de arquitetura do projeto",
+        "ARCH_AI_BUSY": "A IA está em uma conversa, tente novamente mais tarde",
+        "LOGIN_REQUIRED": "Por favor, faça login primeiro para usar este recurso"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "Selecione uma porta serial primeiro",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "Compartilhar seus projetos",
         "BENEFIT_EXPERIENCE": "Desfrutar de uma experiência de desenvolvimento personalizada",
         "NOTICE_LABEL": "Nota: ",
-        "NOTICE_CONTENT": "Usaremos sua conta do GitHub para dar estrela aos nossos repositórios de código aberto, o que ajuda no desenvolvimento do projeto.",
+        "NOTICE_CONTENT": "Ao fazer login, este projeto receberá uma estrela, ajudando no desenvolvimento do nosso projeto",
         "GITHUB_LOGIN": "Login com Github",
         "WECHAT_SCAN": "Escaneie o código QR para seguir e fazer login",
         "PHONE_NOT_OPEN": "Registro por telefone ainda não está disponível",
         "PHONE_BETA_ONLY": "Login por telefone é apenas para testadores beta de AI",
         "PHONE_PLACEHOLDER": "Digite o número de telefone",
         "PASSWORD_PLACEHOLDER": "Digite a senha",
+        "EMAIL_PLACEHOLDER": "Digite o endereço de e-mail",
+        "CODE_PLACEHOLDER": "Digite o código de verificação",
+        "SEND_CODE": "Enviar código",
+        "CODE_SENDING": "Por favor, obtenha o código de verificação primeiro",
         "LOGGING_IN": "Entrando...",
         "LOGIN": "Entrar",
         "SELECT_METHOD": "Clique para selecionar o método de login",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "Por favor, digite nome de usuário e senha",
         "LOGIN_SUCCESS": "Login bem-sucedido",
         "LOGIN_FAILED": "Falha no login",
-        "LOGIN_NETWORK_ERROR": "Falha no login, verifique a conexão de rede"
+        "LOGIN_NETWORK_ERROR": "Falha no login, verifique a conexão de rede",
+        "AGREEMENT_PREFIX": "Li e concordo com o",
+        "USER_AGREEMENT": "Acordo do Usuário",
+        "AGREEMENT_AND": "e a",
+        "PRIVACY_POLICY": "Política de Privacidade",
+        "AGREEMENT_REQUIRED": "Por favor, concorde com o Acordo do Usuário e a Política de Privacidade primeiro",
+        "MODAL_CLOSE": "Fechar",
+        "AGREEMENT_LOAD_FAILED": "Falha ao carregar o Acordo do Usuário",
+        "PRIVACY_LOAD_FAILED": "Falha ao carregar a Política de Privacidade",
+        "WECHAT_QRCODE_FAILED": "Falha ao obter o código QR",
+        "WECHAT_REFRESH": "Atualizar código QR",
+        "WECHAT_RETRY": "Tentar novamente",
+        "INVITE_CODE_PLACEHOLDER": "Código de convite (opcional)",
+        "AGREEMENT_BY_LOGIN": "Ao fazer login/registrar, você concorda com os",
+        "TERMS_OF_USE": "Termos de Uso",
+        "OTHER_LOGIN_METHODS": "Você também pode fazer login com",
+        "GITHUB_CONTINUE": "Clique em \"Continue\" na página de autorização do GitHub para concluir o login",
+        "REGISTER": "Registrar"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "Recurso em breve"
+    },
+    "NPM": {
+        "INSTALLING": "Instalando {{name}}...",
+        "INSTALLING_DEPENDENCY": "Instalando dependência {{name}}...",
+        "INSTALL_TIMEOUT": "Tempo de instalação esgotado",
+        "INSTALL_COMPLETE": "{{name}} instalado com sucesso",
+        "INSTALL_FAILED": "Falha ao instalar {{name}}",
+        "UNINSTALLING": "Desinstalando {{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "Desinstalando dependências não utilizadas...",
+        "UNINSTALL_TIMEOUT": "Tempo de desinstalação esgotado",
+        "UNINSTALL_COMPLETE": "{{name}} desinstalado com sucesso",
+        "BOARD_INSTALL_COMPLETE": "Placa instalada com sucesso",
+        "BOARD_UNINSTALL_COMPLETE": "Placa desinstalada com sucesso",
+        "BOARD_DEPS_INSTALL_COMPLETE": "Dependências da placa instaladas com sucesso",
+        "BOARD_DEPS_INSTALL_FAILED": "Falha ao instalar dependências da placa",
+        "DEPS_INSTALL_COMPLETE": "Dependências instaladas com sucesso",
+        "DEPS_UNINSTALL_COMPLETE": "Dependências desinstaladas com sucesso",
+        "DEPS_UNINSTALL_FAILED": "Falha ao desinstalar dependências",
+        "NAME_REQUIRED": "O nome de {{type}} não pode estar vazio",
+        "TYPE_TOOL": "Ferramenta",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "Compilador",
+        "INSTALLING_TITLE": "Instalando",
+        "INSTALL_COMPLETE_TITLE": "Instalação Concluída",
+        "INSTALL_FAILED_TITLE": "Instalação Falhou",
+        "UNINSTALLING_TITLE": "Desinstalando",
+        "UNINSTALL_COMPLETE_TITLE": "Desinstalação Concluída",
+        "UNINSTALL_FAILED_TITLE": "Desinstalação Falhou"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "Instalando dependências",
+        "LOADING_BOARD_CONFIG": "Carregando configuração da placa",
+        "LOADING_BLOCKLY_LIB": "Carregando bibliotecas Blockly",
+        "LOADING_LIB": "Carregando {{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "Carregando programa Blockly",
+        "PROJECT_LOAD_SUCCESS": "Projeto carregado com sucesso"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "Carregando exemplo...",
+        "EXAMPLE_LOAD_SUCCESS": "Exemplo carregado com sucesso",
+        "EXAMPLE_LOAD_FAILED": "Falha ao carregar o exemplo",
+        "NO_TUTORIAL_PROVIDED": "O autor da biblioteca não forneceu um tutorial"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "Não é possível abrir o projeto: ",
+        "CREATING_PROJECT": "Criando projeto...",
+        "PROJECT_CREATED": "Projeto criado com sucesso",
+        "CREATE_FAILED": "Falha ao criar o projeto",
+        "PATH_NOT_EXIST": "O caminho do projeto não existe, selecione outro projeto",
+        "SWITCHING_BOARD_CONFIG": "Alterando configuração da placa...",
+        "BOARD_SWITCH_COMPLETE": "Troca de placa concluída",
+        "BOARD_SWITCH_SUCCESS": "Placa trocada com sucesso",
+        "SWITCHING_BOARD": "Trocando placa...",
+        "UNINSTALLING_CURRENT_BOARD": "Desinstalando placa atual...",
+        "INSTALLING_NEW_BOARD": "Instalando nova placa...",
+        "UPDATING_PROJECT_CONFIG": "Atualizando configuração do projeto...",
+        "BOARD_SWITCH_FAILED": "Falha ao trocar a placa: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "Parar",
+        "VIEW_DETAIL": "Ver detalhes",
+        "AI_PROCESS": "Processamento AI"
+    },
+    "LOG": {
+        "TOOLTIP": "Clique para copiar, clique duplo para enviar ao assistente AI",
+        "COPIED_TO_CLIPBOARD": "Conteúdo do log copiado para a área de transferência",
+        "SENT_TO_AI": "Conteúdo do log enviado ao assistente AI",
+        "NO_DATA_TO_EXPORT": "Nenhum dado de log para exportar",
+        "EXPORT_TITLE": "Exportar dados de log",
+        "TEXT_FILE": "Arquivos de texto",
+        "ALL_FILES": "Todos os arquivos",
+        "EXPORT_SUCCESS": "Dados de log exportados com sucesso para "
     }
 }

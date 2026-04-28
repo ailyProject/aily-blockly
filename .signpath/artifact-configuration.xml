@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath Artifact Configuration for Aily Blockly -->
+<!-- Documentation: https://about.signpath.io/documentation/artifact-configuration/ -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  
+  <!-- NSIS Installer Signing -->
+  <nsis-installer>
+    <!-- Sign the main installer executable -->
+    <pe-file path="aily-blockly-*.exe" />
+    
+    <!-- Sign files inside the installer -->
+    <directory path="$INSTDIR">
+      <!-- Main Electron executable -->
+      <pe-file path="aily blockly.exe" />
+      
+      <!-- Electron framework DLLs -->
+      <pe-file path="*.dll" max-matches="unbounded" />
+      
+      <!-- Node.js native modules -->
+      <directory path="resources/app/node_modules">
+        <pe-file path="**/*.node" max-matches="unbounded" />
+        <pe-file path="**/*.dll" max-matches="unbounded" />
+      </directory>
+      
+      <!-- Child process executables (if any) -->
+      <directory path="resources/app/child">
+        <pe-file path="**/*.exe" max-matches="unbounded" />
+      </directory>
+    </directory>
+  </nsis-installer>
+
+</artifact-configuration>

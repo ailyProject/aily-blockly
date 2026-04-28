@@ -5,6 +5,7 @@ import { ElectronService } from './services/electron.service';
 import { ConfigService } from './services/config.service';
 import { TranslationService } from './services/translation.service';
 import { AuthService } from './services/auth.service';
+import { ThemeService } from './services/theme.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 
 // 声明 electronAPI 类型
@@ -24,6 +25,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private configService = inject(ConfigService);
   private translationService = inject(TranslationService);
   private authService = inject(AuthService);
+  private themeService = inject(ThemeService);
   private message = inject(NzMessageService);
   private router = inject(Router);
 
@@ -33,6 +35,7 @@ export class AppComponent implements OnInit, OnDestroy {
   async ngOnInit() {
     await this.electronService.init();
     await this.configService.init();
+    this.themeService.init();
     await this.translationService.init();
 
     // 在ElectronService初始化完成后再初始化认证服务
@@ -70,13 +73,17 @@ export class AppComponent implements OnInit, OnDestroy {
           const result = await this.authService.handleOAuthCallback(callbackData);
 
           if (result.success) {
-            console.log('GitHub OAuth 成功:', result.data);
+            // console.log('GitHub OAuth 成功:', result.data);
             this.message.success('GitHub 登录成功');
           } else {
             // OAuth失败
             let errorMessage = 'GitHub 登录超时，请重试';
 
             switch (result.error) {
+              case 'needs_wechat_bind':
+                // 需要绑定微信，通知登录组件
+                this.authService.emitNeedsWechatBind(result.data?.pending_ticket);
+                return;
               case 'timeout':
               case 'invalid_state':
                 errorMessage = '登录状态无效或已超时，请重试';

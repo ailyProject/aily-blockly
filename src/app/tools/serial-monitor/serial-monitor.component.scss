@@ -10,20 +10,20 @@
   flex-direction: column;
   align-items: center;
   height: 100%;
-  border-right: 1px solid #444;
+  border-right: 1px solid var(--aily-border-input);
 
   .btn {
     width: 40px;
     height: 40px;
     font-size: 20px;
-    color: #aaa;
+    color: var(--aily-text-tertiary);
 
     &:hover {
-      color: #fff;
+      color: var(--aily-text-primary);
     }
 
     &.selected {
-      color: #fff;
+      color: var(--aily-text-primary);
     }
   }
 }
@@ -35,7 +35,7 @@
 }
 
 .settings {
-  background: #292929;
+  background: var(--aily-bg-elevated);
   margin: 10px;
   border-radius: 5px;
 
@@ -48,7 +48,7 @@
   .item {
     display: flex;
     align-items: center;
-    color: #eee;
+    color: var(--aily-text-primary);
     position: relative;
     height: 40px;
     font-size: 12px;
@@ -62,14 +62,14 @@
     .item-inner {
       height: 24px;
       width: 90px;
-      background-color: #333;
+      background-color: var(--aily-bg-tertiary);
       border-radius: 2px;
       position: relative;
       display: flex;
       justify-content: flex-start;
       padding-left: 10px;
       padding-right: 20px;
-      color: #eee;
+      color: var(--aily-text-primary);
       font-size: 14px;
 
       .btn {
@@ -125,7 +125,7 @@
     padding-top: 2px;
 
     &:hover {
-      color: #fff;
+      color: var(--aily-text-primary);
     }
   }
 
@@ -133,14 +133,14 @@
     width: 36px;
     height: 28px;
     font-size: 20px;
-    color: #eee;
+    color: var(--aily-text-primary);
     cursor: pointer;
     justify-content: flex-end;
     position: absolute;
     right: 10px;
 
     &:hover {
-      color: #fff;
+      color: var(--aily-text-primary);
     }
   }
 }
@@ -152,7 +152,7 @@
 
   .r-box {
     height: calc(100% - 10px);
-    background: #292929;
+    background: var(--aily-bg-elevated);
     border-radius: 5px;
     margin: 0 10px;
     padding: 5px;
@@ -162,6 +162,18 @@
       height: calc(100% - 28px);
       overflow-y: auto;
       position: relative;
+
+      .data-list-inner {
+        position: relative;
+        width: 100%;
+      }
+
+      .virtual-item {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+      }
     }
   }
 
@@ -208,13 +220,13 @@
     width: 28px;
     height: 28px;
     font-size: 14px;
-    color: #eee;
+    color: var(--aily-text-primary);
     padding-top: 1px;
     border-radius: 5px;
 
     &:hover {
-      color: #fff;
-      background: #3f3f3f;
+      color: var(--aily-text-primary);
+      background: var(--aily-bg-tertiary);
     }
 
     &.actived {
@@ -259,7 +271,7 @@
       padding: 5px;
       border-radius: 5px;
       position: relative;
-      background: #292929;
+      background: var(--aily-bg-elevated);
 
       textarea {
         font-size: 14px;

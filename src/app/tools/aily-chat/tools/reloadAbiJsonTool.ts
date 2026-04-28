@@ -1,7 +1,8 @@
-import { Injectable } from '@angular/core';
+﻿import { Injectable } from '@angular/core';
 import { ProjectService } from '../../../services/project.service';
 import { ToolUseResult } from "./tools";
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
+import { AilyHost } from '../core/host';
 
 export interface ReloadAbiJsonArgs {
   projectPath?: string;
@@ -39,7 +40,7 @@ export class ReloadAbiJsonToolService {
         const abiFilePath = `${projectPath}/project.abi`;
         
         // 检查文件是否存在
-        if (!window['fs'].existsSync(abiFilePath)) {
+        if (!AilyHost.get().fs.existsSync(abiFilePath)) {
           return {
             content: `project.abi 文件不存在: ${abiFilePath}`,
             is_error: true
@@ -47,7 +48,7 @@ export class ReloadAbiJsonToolService {
         }
 
         try {
-          const fileContent = window['fs'].readFileSync(abiFilePath, 'utf-8');
+          const fileContent = AilyHost.get().fs.readFileSync(abiFilePath, 'utf-8');
           jsonData = JSON.parse(fileContent);
           dataSource = 'file';
         } catch (error: any) {
@@ -76,7 +77,7 @@ export class ReloadAbiJsonToolService {
         const abiFilePath = `${projectPath}/project.abi`;
         
         // 检查文件是否存在
-        if (!window['fs'].existsSync(abiFilePath)) {
+        if (!AilyHost.get().fs.existsSync(abiFilePath)) {
           return {
             content: `project.abi 文件不存在: ${abiFilePath}`,
             is_error: true
@@ -84,7 +85,7 @@ export class ReloadAbiJsonToolService {
         }
 
         try {
-          const fileContent = window['fs'].readFileSync(abiFilePath, 'utf-8');
+          const fileContent = AilyHost.get().fs.readFileSync(abiFilePath, 'utf-8');
           jsonData = JSON.parse(fileContent);
           dataSource = 'file';
         } catch (error: any) {
@@ -186,7 +187,7 @@ export async function reloadAbiJsonToolSimple(
       const abiFilePath = `${projectPath}/project.abi`;
       
       // 检查文件是否存在
-      if (!window['fs'].existsSync(abiFilePath)) {
+      if (!AilyHost.get().fs.existsSync(abiFilePath)) {
         return {
           content: `project.abi 文件不存在: ${abiFilePath}`,
           is_error: true
@@ -194,7 +195,7 @@ export async function reloadAbiJsonToolSimple(
       }
 
       try {
-        const fileContent = window['fs'].readFileSync(abiFilePath, 'utf-8');
+        const fileContent = AilyHost.get().fs.readFileSync(abiFilePath, 'utf-8');
         jsonData = JSON.parse(fileContent);
       } catch (error: any) {
         return {
@@ -220,7 +221,7 @@ export async function reloadAbiJsonToolSimple(
       const abiFilePath = `${projectPath}/project.abi`;
       
       // 检查文件是否存在
-      if (!window['fs'].existsSync(abiFilePath)) {
+      if (!AilyHost.get().fs.existsSync(abiFilePath)) {
         return {
           content: `project.abi 文件不存在: ${abiFilePath}`,
           is_error: true
@@ -228,7 +229,7 @@ export async function reloadAbiJsonToolSimple(
       }
 
       try {
-        const fileContent = window['fs'].readFileSync(abiFilePath, 'utf-8');
+        const fileContent = AilyHost.get().fs.readFileSync(abiFilePath, 'utf-8');
         jsonData = JSON.parse(fileContent);
       } catch (error: any) {
         return {

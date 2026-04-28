@@ -1,15 +1,21 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { lastValueFrom } from 'rxjs';
+import { NzMessageService } from 'ng-zorro-antd/message';
+import { lastValueFrom, Subject } from 'rxjs';
 import { ElectronService } from './electron.service';
-import { API, setServerUrl, setRegistryUrl } from '../configs/api.config';
+import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../configs/api.config';
+import { calculateSimilarity, extractKeywords } from '../utils/fuzzy-search.utils';
 
 @Injectable({
   providedIn: 'root',
 })
 export class ConfigService {
+  private static readonly ERROR_MESSAGE_DEDUP_MS = 10000;
 
   data: AppConfig | any = {};
+
+  /** 配置重新加载完成时发出，供 blockly 等组件实时应用新配置 */
+  configReloaded$ = new Subject<void>();
   
   // 数据加载状态标识
   private _isDataReady = false;
@@ -38,7 +44,8 @@ export class ConfigService {
 
   constructor(
     private http: HttpClient,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private message: NzMessageService
   ) { }
 
   async init() {
@@ -85,6 +92,7 @@ export class ConfigService {
 
     // 合并用户配置和默认配置
     this.data = { ...this.data, ...userConfData };
+    this.configReloaded$.next();
 
     // 使用Electron检测到的最优区域覆盖配置
     if (this.electronService.isElectron) {
@@ -113,14 +121,15 @@ export class ConfigService {
     this.data["platform"] = window['platform'].type;
     this.data["lang"] = this.get_lang_filename(window['platform'].lang);
 
-    // 并行加载缓存的boards.json和libraries.json
+    // 并行加载缓存的boards.json、libraries.json和tags.json（旧格式，用于基础功能）
     // await Promise.all([
     this.loadAndCacheBoardList(configFilePath);
     this.loadAndCacheLibraryList(configFilePath);
-
-    this.loadAndCacheBoardIndex(configFilePath);
-    this.loadAndCacheLibraryIndex(configFilePath);
+    this.loadAndCacheTagList(configFilePath);
     // ]);
+
+    // 注意：boardIndex 和 libraryIndex（新格式索引）延迟到 AI 组件加载时再加载
+    // 以减轻软件启动耗时，参见 loadHardwareIndexForAI()
 
     // 延迟后再次尝试加载，确保最优节点检测完成后能成功下载最新数据
     if (this.electronService.isElectron) {
@@ -138,6 +147,7 @@ export class ConfigService {
             // 重新加载数据，确保获取最新内容
             this.loadAndCacheBoardList(configFilePath);
             this.loadAndCacheLibraryList(configFilePath);
+            this.loadAndCacheTagList(configFilePath);
           }
         } catch (e) {
           console.error('Failed to reload data after region detection:', e);
@@ -147,18 +157,28 @@ export class ConfigService {
   }
 
   private async loadAndCacheBoardList(configFilePath: string): Promise<void> {
-    if (this.electronService.exists(`${configFilePath}/boards.json`)) {
-      this.boardList = JSON.parse(this.electronService.readFile(`${configFilePath}/boards.json`));
-      let boardList = await this.loadBoardList();
-      if (boardList.length > 0) {
+    const localPath = `${configFilePath}/boards.json`;
+
+    try {
+      if (this.electronService.exists(localPath)) {
+        this.boardList = this.parseBoardList(this.electronService.readFile(localPath));
+        const boardList = await this.loadBoardList();
+        if (boardList.length > 0) {
+          this.boardList = boardList;
+          this.electronService.writeFile(localPath, JSON.stringify(boardList));
+        }
+      } else {
+        // 首次启动软件，创建boards.json
+        const boardList = await this.fetchBoardListOrThrow();
         this.boardList = boardList;
-        this.electronService.writeFile(`${configFilePath}/boards.json`, JSON.stringify(boardList));
+        this.electronService.writeFile(localPath, JSON.stringify(boardList));
       }
-    } else {
-      // 首次启动软件，创建boards.json
-      this.boardList = await this.loadBoardList();
-      this.electronService.writeFile(`${configFilePath}/boards.json`, JSON.stringify(this.boardList));
+    } catch (error) {
+      console.error('[ConfigService] boards.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadBoardListFromRemote(localPath, error);
     }
+
+    this.boardDict = {};
     // 创建一个boardDict，方便通过name快速查找board信息
     this.boardList.forEach(board => {
       this.boardDict[board.name] = board;
@@ -167,18 +187,28 @@ export class ConfigService {
   }
 
   private async loadAndCacheLibraryList(configFilePath: string): Promise<void> {
-    if (this.electronService.exists(`${configFilePath}/libraries.json`)) {
-      this.libraryList = JSON.parse(this.electronService.readFile(`${configFilePath}/libraries.json`));
-      let libraryList = await this.loadLibraryList();
-      if (libraryList.length > 0) {
+    const localPath = `${configFilePath}/libraries.json`;
+
+    try {
+      if (this.electronService.exists(localPath)) {
+        this.libraryList = this.parseLibraryList(this.electronService.readFile(localPath));
+        const libraryList = await this.loadLibraryList();
+        if (libraryList.length > 0) {
+          this.libraryList = libraryList;
+          this.electronService.writeFile(localPath, JSON.stringify(libraryList));
+        }
+      } else {
+        // 首次启动软件，创建libraries.json
+        const libraryList = await this.fetchLibraryListOrThrow();
         this.libraryList = libraryList;
-        this.electronService.writeFile(`${configFilePath}/libraries.json`, JSON.stringify(libraryList));
+        this.electronService.writeFile(localPath, JSON.stringify(libraryList));
       }
-    } else {
-      // 首次启动软件，创建libraries.json
-      this.libraryList = await this.loadLibraryList();
-      this.electronService.writeFile(`${configFilePath}/libraries.json`, JSON.stringify(this.libraryList));
+    } catch (error) {
+      console.error('[ConfigService] libraries.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadLibraryListFromRemote(localPath, error);
     }
+
+    this.libraryDict = {};
     // 创建一个libraryDict，方便通过name快速查找library信息
     this.libraryList.forEach(library => {
       this.libraryDict[library.name] = library;
@@ -229,6 +259,23 @@ export class ConfigService {
   }
 
   /**
+   * 获取 Web 站点 URL（用于协议文档等）
+   */
+  getWebUrl(): string {
+    const url = this.getCurrentRegionConfig()?.web || this.data?.web || 'https://aily.pro';
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+  }
+
+  /**
+   * 获取用户中心 URL（如果配置了）
+   */
+  getUcenterWebUrl(): string {
+    const url = this.getCurrentRegionConfig()?.ucenter_web || this.data?.ucenter_web || 'https://c.aily.pro';
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+  }
+
+
+  /**
    * 获取所有可用区域列表
    */
   getRegionList(): Array<{key: string, name: string, enabled: boolean}> {
@@ -258,6 +305,7 @@ export class ConfigService {
       // 更新 API 配置模块的缓存
       setRegistryUrl(regionConfig.npm_registry);
       setServerUrl(regionConfig.api_server);
+      setToolWebUrl(regionConfig.tool_web);
       
       // 更新环境变量
       if (window['process']?.env) {
@@ -265,6 +313,7 @@ export class ConfigService {
         window['process'].env['AILY_NPM_REGISTRY'] = regionConfig.npm_registry;
         window['process'].env['AILY_ZIP_URL'] = regionConfig.resource;
         window['process'].env['AILY_API_SERVER'] = regionConfig.api_server;
+        window['process'].env['AILY_TOOL_WEB'] = regionConfig.tool_web;
       }
       
       // 通过 ipcRenderer 通知主进程更新环境变量（等待所有更新完成）
@@ -273,7 +322,8 @@ export class ConfigService {
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_REGION', value: regionKey }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_NPM_REGISTRY', value: regionConfig.npm_registry }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_ZIP_URL', value: regionConfig.resource }),
-          window['ipcRenderer'].invoke('env-set', { key: 'AILY_API_SERVER', value: regionConfig.api_server })
+          window['ipcRenderer'].invoke('env-set', { key: 'AILY_API_SERVER', value: regionConfig.api_server }),
+          window['ipcRenderer'].invoke('env-set', { key: 'AILY_TOOL_WEB', value: regionConfig.tool_web })
         ]);
       }
       
@@ -284,14 +334,60 @@ export class ConfigService {
 
   boardList = [];
   boardDict = {};
+  private errorNoticeState: Record<string, { message: string; at: number }> = {};
+
+  private parseBoardList(raw: string): any[] {
+    return this.parseArrayPayload(raw, 'boards.json 格式无效');
+  }
+
+  private async fetchBoardListOrThrow(): Promise<any[]> {
+    return this.fetchRemoteArrayOrThrow('/boards.json', '线上 boards.json 格式无效');
+  }
+
+  private async reloadBoardListFromRemote(localPath: string, originalError: unknown): Promise<void> {
+    try {
+      const latestBoardList = await this.fetchBoardListOrThrow();
+      this.boardList = latestBoardList;
+      this.electronService.writeFile(localPath, JSON.stringify(latestBoardList));
+      console.log('[ConfigService] 已使用线上最新 boards.json 覆盖本地缓存');
+    } catch (remoteError) {
+      this.boardList = [];
+      const message = this.getBoardReloadFailureMessage(remoteError, originalError);
+      console.error('[ConfigService] 从线上恢复 boards.json 失败:', remoteError);
+      this.showBoardLoadError(message);
+    }
+  }
+
+  private getBoardReloadFailureMessage(remoteError: unknown, originalError: unknown): string {
+    return this.buildReloadFailureMessage('开发板列表', 'boards.json', remoteError, originalError);
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof HttpErrorResponse) {
+      if (typeof error.error === 'string' && error.error.trim()) {
+        return error.error;
+      }
+      return error.message || `HTTP ${error.status}`;
+    }
+
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    if (typeof error === 'string') {
+      return error;
+    }
+
+    return '未知错误';
+  }
+
+  private showBoardLoadError(message: string): void {
+    this.showDedupedError('board-list', message);
+  }
+
   async loadBoardList(): Promise<any[]> {
     try {
-      let boardList: any = await lastValueFrom(
-        this.http.get(this.getCurrentResourceUrl() + '/boards.json', {
-          responseType: 'json',
-        }),
-      );
-      return boardList;
+      return await this.fetchBoardListOrThrow();
     } catch (error) {
       console.error('Failed to load board list:', error);
       return [];
@@ -300,83 +396,176 @@ export class ConfigService {
 
   libraryList = [];
   libraryDict = {};
+
+  tagList: any = {};
+
+  private parseLibraryList(raw: string): any[] {
+    return this.parseArrayPayload(raw, 'libraries.json 格式无效');
+  }
+
+  private async fetchLibraryListOrThrow(): Promise<any[]> {
+    return this.fetchRemoteArrayOrThrow('/libraries.json', '线上 libraries.json 格式无效');
+  }
+
+  private async reloadLibraryListFromRemote(localPath: string, originalError: unknown): Promise<void> {
+    try {
+      const latestLibraryList = await this.fetchLibraryListOrThrow();
+      this.libraryList = latestLibraryList;
+      this.electronService.writeFile(localPath, JSON.stringify(latestLibraryList));
+      console.log('[ConfigService] 已使用线上最新 libraries.json 覆盖本地缓存');
+    } catch (remoteError) {
+      this.libraryList = [];
+      const message = this.getLibraryReloadFailureMessage(remoteError, originalError);
+      console.error('[ConfigService] 从线上恢复 libraries.json 失败:', remoteError);
+      this.showLibraryLoadError(message);
+    }
+  }
+
+  private getLibraryReloadFailureMessage(remoteError: unknown, originalError: unknown): string {
+    return this.buildReloadFailureMessage('扩展库列表', 'libraries.json', remoteError, originalError);
+  }
+
+  private showLibraryLoadError(message: string): void {
+    this.showDedupedError('library-list', message);
+  }
+
   async loadLibraryList(): Promise<any[]> {
     try {
-      let libraryList: any = await lastValueFrom(
-        this.http.get(this.getCurrentResourceUrl() + '/libraries.json', {
-          responseType: 'json',
-        }),
-      );
-      return libraryList;
+      return await this.fetchLibraryListOrThrow();
     } catch (error) {
       console.error('Failed to load library list:', error);
       return [];
     }
   }
 
+  // ==================== tags.json ====================
+
+  private async loadAndCacheTagList(configFilePath: string): Promise<void> {
+    const localPath = `${configFilePath}/tags.json`;
+
+    try {
+      if (this.electronService.exists(localPath)) {
+        this.tagList = JSON.parse(this.electronService.readFile(localPath));
+        const tagList = await this.fetchTagList();
+        if (tagList) {
+          this.tagList = tagList;
+          this.electronService.writeFile(localPath, JSON.stringify(tagList));
+        }
+      } else {
+        // 首次启动软件，创建tags.json
+        const tagList = await this.fetchTagList();
+        if (tagList) {
+          this.tagList = tagList;
+          this.electronService.writeFile(localPath, JSON.stringify(tagList));
+        }
+      }
+    } catch (error) {
+      console.error('[ConfigService] tags.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadTagListFromRemote(localPath, error);
+    }
+
+    console.log('[ConfigService] tagList加载完成:', this.tagList?.tags?.length || 0, '个标签');
+  }
+
+  private async fetchTagList(): Promise<any> {
+    try {
+      return await lastValueFrom(
+        this.http.get(this.getCurrentResourceUrl() + '/tags.json', {
+          responseType: 'json',
+        }),
+      );
+    } catch (error) {
+      console.error('Failed to load tag list:', error);
+      return null;
+    }
+  }
+
+  private async reloadTagListFromRemote(localPath: string, originalError: unknown): Promise<void> {
+    try {
+      const latestTagList = await this.fetchTagList();
+      if (latestTagList) {
+        this.tagList = latestTagList;
+        this.electronService.writeFile(localPath, JSON.stringify(latestTagList));
+        console.log('[ConfigService] 已使用线上最新 tags.json 覆盖本地缓存');
+      }
+    } catch (remoteError) {
+      this.tagList = {};
+      const message = this.buildReloadFailureMessage('标签列表', 'tags.json', remoteError, originalError);
+      console.error('[ConfigService] 从线上恢复 tags.json 失败:', remoteError);
+      this.showDedupedError('tag-list', message);
+    }
+  }
+
   // ==================== 新格式索引（结构化数据）====================
   boardIndex: any[] = [];  // 新格式开发板索引
   libraryIndex: any[] = [];  // 新格式库索引
+  private _hardwareIndexLoaded = false;  // 标记索引是否已加载
+
+  /**
+   * 为 AI 工具加载硬件索引数据（boardIndex 和 libraryIndex）
+   * 延迟加载以减轻软件启动耗时
+   * @returns Promise<void>
+   */
+  async loadHardwareIndexForAI(): Promise<void> {
+    // 避免重复加载
+    if (this._hardwareIndexLoaded) {
+      console.log('[ConfigService] 硬件索引已加载，跳过');
+      return;
+    }
+
+    console.log('[ConfigService] 开始加载 AI 硬件索引...');
+    const configFilePath = window['path'].getAppDataPath();
+    
+    await Promise.all([
+      this.loadAndCacheBoardIndex(configFilePath),
+      this.loadAndCacheLibraryIndex(configFilePath)
+    ]);
+    
+    this._hardwareIndexLoaded = true;
+    console.log('[ConfigService] AI 硬件索引加载完成, boardIndex:', this.boardIndex?.length, 'libraryIndex:', this.libraryIndex?.length);
+  }
+
+  /**
+   * 检查硬件索引是否已加载
+   */
+  get isHardwareIndexLoaded(): boolean {
+    return this._hardwareIndexLoaded;
+  }
 
   private async loadAndCacheBoardIndex(configFilePath: string): Promise<void> {
+    const localPath = `${configFilePath}/boards-index.json`;
+
     try {
-      const localPath = `${configFilePath}/boards-index.json`;
       // 优先从本地缓存读取
       if (this.electronService.exists(localPath)) {
-        const fileContent = this.electronService.readFile(localPath);
-        const parsed = JSON.parse(fileContent);
-        
-        // 新格式：{ boards: [...] } 或 旧格式：直接数组 [...]
-        if (Array.isArray(parsed)) {
-          this.boardIndex = parsed;
-        } else if (parsed && parsed.boards && Array.isArray(parsed.boards)) {
-          this.boardIndex = parsed.boards;
-        }
+        this.boardIndex = this.parseBoardIndex(this.electronService.readFile(localPath));
         console.log('[ConfigService] 本地 boardIndex 加载成功, 数量:', this.boardIndex?.length || 0);
       }
       // 从远程加载最新数据
-      let boardIndex = await this.loadBoardIndex();
+      const boardIndex = await this.loadBoardIndex();
       if (boardIndex.length > 0) {
         this.boardIndex = boardIndex;
-        // 缓存时保持新格式（包含元数据）
-        const cacheData = {
-          version: '1.0.0',
-          generated: new Date().toISOString(),
-          count: boardIndex.length,
-          boards: boardIndex
-        };
-        this.electronService.writeFile(localPath, JSON.stringify(cacheData));
+        this.writeBoardIndexCache(localPath, boardIndex);
         console.log('[ConfigService] 远程 boardIndex 加载成功并缓存, 数量:', boardIndex.length);
       }
     } catch (error) {
-      console.warn('Failed to load board index, will fallback to old format:', error);
+      console.error('[ConfigService] boards-index.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadBoardIndexFromRemote(localPath, error);
     }
   }
 
   private async loadAndCacheLibraryIndex(configFilePath: string): Promise<void> {
+    const localPath = `${configFilePath}/libraries-index.json`;
+    console.log('[ConfigService] 检查 libraries-index.json 路径:', localPath);
+
     try {
       // 优先从本地缓存读取
-      const localPath = `${configFilePath}/libraries-index.json`;
-      console.log('[ConfigService] 检查 libraries-index.json 路径:', localPath);
-      
       if (this.electronService.exists(localPath)) {
         const fileContent = this.electronService.readFile(localPath);
         console.log('[ConfigService] 本地 libraries-index.json 文件大小:', fileContent?.length || 0, '字节');
-        
-        const parsed = JSON.parse(fileContent);
-        
-        // 新格式：{ libraries: [...] } 或 旧格式：直接数组 [...]
-        if (Array.isArray(parsed)) {
-          this.libraryIndex = parsed;
-        } else if (parsed && parsed.libraries && Array.isArray(parsed.libraries)) {
-          this.libraryIndex = parsed.libraries;
-        } else {
-          console.warn('[ConfigService] libraries-index.json 格式无法识别, 可用字段:', Object.keys(parsed || {}));
-        }
-        
+        this.libraryIndex = this.parseLibraryIndex(fileContent);
         console.log('[ConfigService] 本地 libraryIndex 加载成功, 数量:', this.libraryIndex?.length || 0);
-        
-        // 检查第一条数据的格式
+
         if (this.libraryIndex.length > 0) {
           const sample = this.libraryIndex[0];
           console.log('[ConfigService] libraryIndex 示例数据:', {
@@ -389,40 +578,160 @@ export class ConfigService {
       } else {
         console.log('[ConfigService] 本地 libraries-index.json 不存在');
       }
-      
+
       // 从远程加载最新数据
-      let libraryIndex = await this.loadLibraryIndex();
+      const libraryIndex = await this.loadLibraryIndex();
       if (libraryIndex.length > 0) {
         this.libraryIndex = libraryIndex;
-        // 缓存时保持新格式（包含元数据）
-        const cacheData = {
-          version: '1.0.0',
-          generated: new Date().toISOString(),
-          count: libraryIndex.length,
-          libraries: libraryIndex
-        };
-        this.electronService.writeFile(localPath, JSON.stringify(cacheData));
+        this.writeLibraryIndexCache(localPath, libraryIndex);
         console.log('[ConfigService] 远程 libraryIndex 加载成功并缓存, 数量:', libraryIndex.length);
       }
     } catch (error) {
-      console.warn('[ConfigService] Failed to load library index, will fallback to old format:', error);
+      console.error('[ConfigService] libraries-index.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadLibraryIndexFromRemote(localPath, error);
     }
+  }
+
+  private parseBoardIndex(raw: string): any[] {
+    return this.parseArrayPayload(raw, 'boards-index.json 格式无效', 'boards');
+  }
+
+  private parseLibraryIndex(raw: string): any[] {
+    return this.parseArrayPayload(raw, 'libraries-index.json 格式无效', 'libraries');
+  }
+
+  private writeBoardIndexCache(localPath: string, boardIndex: any[]): void {
+    const cacheData = {
+      version: '1.0.0',
+      generated: new Date().toISOString(),
+      count: boardIndex.length,
+      boards: boardIndex
+    };
+    this.electronService.writeFile(localPath, JSON.stringify(cacheData));
+  }
+
+  private writeLibraryIndexCache(localPath: string, libraryIndex: any[]): void {
+    const cacheData = {
+      version: '1.0.0',
+      generated: new Date().toISOString(),
+      count: libraryIndex.length,
+      libraries: libraryIndex
+    };
+    this.electronService.writeFile(localPath, JSON.stringify(cacheData));
+  }
+
+  private async fetchBoardIndexOrThrow(): Promise<any[]> {
+    return this.fetchRemoteArrayOrThrow('/boards-index.json', '线上 boards-index.json 格式无效', 'boards');
+  }
+
+  private async fetchLibraryIndexOrThrow(): Promise<any[]> {
+    return this.fetchRemoteArrayOrThrow('/libraries-index.json', '线上 libraries-index.json 格式无效', 'libraries');
+  }
+
+  private async reloadBoardIndexFromRemote(localPath: string, originalError: unknown): Promise<void> {
+    try {
+      const latestBoardIndex = await this.fetchBoardIndexOrThrow();
+      this.boardIndex = latestBoardIndex;
+      this.writeBoardIndexCache(localPath, latestBoardIndex);
+      console.log('[ConfigService] 已使用线上最新 boards-index.json 覆盖本地缓存');
+    } catch (remoteError) {
+      this.boardIndex = [];
+      const message = this.getBoardIndexReloadFailureMessage(remoteError, originalError);
+      console.error('[ConfigService] 从线上恢复 boards-index.json 失败:', remoteError);
+      this.showBoardIndexLoadError(message);
+    }
+  }
+
+  private async reloadLibraryIndexFromRemote(localPath: string, originalError: unknown): Promise<void> {
+    try {
+      const latestLibraryIndex = await this.fetchLibraryIndexOrThrow();
+      this.libraryIndex = latestLibraryIndex;
+      this.writeLibraryIndexCache(localPath, latestLibraryIndex);
+      console.log('[ConfigService] 已使用线上最新 libraries-index.json 覆盖本地缓存');
+    } catch (remoteError) {
+      this.libraryIndex = [];
+      const message = this.getLibraryIndexReloadFailureMessage(remoteError, originalError);
+      console.error('[ConfigService] 从线上恢复 libraries-index.json 失败:', remoteError);
+      this.showLibraryIndexLoadError(message);
+    }
+  }
+
+  private getBoardIndexReloadFailureMessage(remoteError: unknown, originalError: unknown): string {
+    return this.buildReloadFailureMessage('开发板索引', 'boards-index.json', remoteError, originalError);
+  }
+
+  private getLibraryIndexReloadFailureMessage(remoteError: unknown, originalError: unknown): string {
+    return this.buildReloadFailureMessage('扩展库索引', 'libraries-index.json', remoteError, originalError);
+  }
+
+  private showBoardIndexLoadError(message: string): void {
+    this.showDedupedError('board-index', message);
+  }
+
+  private showLibraryIndexLoadError(message: string): void {
+    this.showDedupedError('library-index', message);
+  }
+
+  private parseArrayPayload(raw: string, invalidMessage: string, wrapperKey?: string): any[] {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    if (wrapperKey && parsed && Array.isArray(parsed[wrapperKey])) {
+      return parsed[wrapperKey];
+    }
+    throw new Error(invalidMessage);
+  }
+
+  private async fetchRemoteArrayOrThrow(pathname: string, invalidMessage: string, wrapperKey?: string): Promise<any[]> {
+    const response: any = await lastValueFrom(
+      this.http.get(this.getCurrentResourceUrl() + pathname, {
+        responseType: 'json',
+      }),
+    );
+
+    if (Array.isArray(response)) {
+      return response;
+    }
+    if (wrapperKey && response && Array.isArray(response[wrapperKey])) {
+      return response[wrapperKey];
+    }
+
+    throw new Error(invalidMessage);
+  }
+
+  private buildReloadFailureMessage(resourceLabel: string, fileName: string, remoteError: unknown, originalError: unknown): string {
+    if (remoteError instanceof HttpErrorResponse) {
+      if (remoteError.status === 0) {
+        return `${resourceLabel}加载失败：网络连接异常，请检查网络或代理设置后重试。`;
+      }
+
+      return `${resourceLabel}加载失败：服务器返回 ${remoteError.status}，请稍后重试。`;
+    }
+
+    const remoteMessage = this.getErrorMessage(remoteError);
+    if (/(network|timeout|failed to fetch|net::|offline)/i.test(remoteMessage)) {
+      return `${resourceLabel}加载失败：网络连接异常，请检查网络或代理设置后重试。`;
+    }
+
+    const compactMessage = remoteMessage && remoteMessage.length <= 60 ? `：${remoteMessage}` : '，请稍后重试。';
+    return `${resourceLabel}加载失败${compactMessage}`;
+  }
+
+  private showDedupedError(key: string, message: string): void {
+    const now = Date.now();
+    const state = this.errorNoticeState[key];
+    if (state?.message === message && now - state.at < ConfigService.ERROR_MESSAGE_DEDUP_MS) {
+      return;
+    }
+
+    this.errorNoticeState[key] = { message, at: now };
+    this.message.error(message);
   }
 
   async loadBoardIndex(): Promise<any[]> {
     try {
-      let response: any = await lastValueFrom(
-        this.http.get(this.data.resource[0] + '/boards-index.json', {
-          responseType: 'json',
-        }),
-      );
-      // 新格式：{ boards: [...] } 或 旧格式：直接数组 [...]
-      if (Array.isArray(response)) {
-        return response;
-      } else if (response && response.boards && Array.isArray(response.boards)) {
-        return response.boards;
-      }
-      return [];
+      return await this.fetchBoardIndexOrThrow();
     } catch (error) {
       console.warn('boards-index.json not available:', error);
       return [];
@@ -431,18 +740,7 @@ export class ConfigService {
 
   async loadLibraryIndex(): Promise<any[]> {
     try {
-      let response: any = await lastValueFrom(
-        this.http.get(this.data.resource[0] + '/libraries-index.json', {
-          responseType: 'json',
-        }),
-      );
-      // 新格式：{ libraries: [...] } 或 旧格式：直接数组 [...]
-      if (Array.isArray(response)) {
-        return response;
-      } else if (response && response.libraries && Array.isArray(response.libraries)) {
-        return response.libraries;
-      }
-      return [];
+      return await this.fetchLibraryIndexOrThrow();
     } catch (error) {
       console.warn('libraries-index.json not available:', error);
       return [];
@@ -546,14 +844,14 @@ export class ConfigService {
 
     // 3. 模糊匹配 - 计算相似度并找最佳匹配
     const candidates = this.libraryList.map(lib => {
-      const nameScore = this.calculateSimilarity(queryLower, lib.name?.toLowerCase() || '');
-      const nicknameScore = this.calculateSimilarity(queryLower, lib.nickname?.toLowerCase() || '');
+      const nameScore = calculateSimilarity(queryLower, lib.name?.toLowerCase() || '');
+      const nicknameScore = calculateSimilarity(queryLower, lib.nickname?.toLowerCase() || '');
       
       // 关键词匹配 - 提高权重
       let keywordScore = 0;
       if (lib.keywords && Array.isArray(lib.keywords)) {
         // 提取查询中的关键词（去除特殊字符、分割、提取有意义的部分）
-        const queryKeywords = this.extractKeywords(queryLower);
+        const queryKeywords = extractKeywords(queryLower);
         
         for (const queryKw of queryKeywords) {
           for (const libKw of lib.keywords) {
@@ -574,7 +872,7 @@ export class ConfigService {
       let descriptionScore = 0;
       if (lib.description) {
         const descLower = lib.description.toLowerCase();
-        const queryKeywords = this.extractKeywords(queryLower);
+        const queryKeywords = extractKeywords(queryLower);
         for (const queryKw of queryKeywords) {
           if (descLower.includes(queryKw)) {
             descriptionScore += 0.3;
@@ -632,15 +930,15 @@ export class ConfigService {
 
     // 3. 模糊匹配 - 计算相似度并找最佳匹配
     const candidates = this.boardList.map(board => {
-      const nameScore = this.calculateSimilarity(queryLower, board.name?.toLowerCase() || '');
-      const nicknameScore = this.calculateSimilarity(queryLower, board.nickname?.toLowerCase() || '');
-      const displayNameScore = this.calculateSimilarity(queryLower, board.displayName?.toLowerCase() || '');
+      const nameScore = calculateSimilarity(queryLower, board.name?.toLowerCase() || '');
+      const nicknameScore = calculateSimilarity(queryLower, board.nickname?.toLowerCase() || '');
+      const displayNameScore = calculateSimilarity(queryLower, board.displayName?.toLowerCase() || '');
       
       // 描述匹配
       let descriptionScore = 0;
       if (board.description) {
         const descLower = board.description.toLowerCase();
-        const queryKeywords = this.extractKeywords(queryLower);
+        const queryKeywords = extractKeywords(queryLower);
         for (const queryKw of queryKeywords) {
           if (descLower.includes(queryKw)) {
             descriptionScore += 0.3;
@@ -667,66 +965,6 @@ export class ConfigService {
     return { exists: false, board: null, fuzzyMatch: false, originalQuery: boardName };
   }
 
-  /**
-   * 提取查询字符串中的关键词
-   * 例如: "@aily-project/lib-oled-ssd1306" => ["aily", "project", "lib", "oled", "ssd1306"]
-   */
-  private extractKeywords(query: string): string[] {
-    if (!query) return [];
-    
-    // 移除常见的前缀/后缀
-    let cleaned = query
-      .replace(/@aily-project\//gi, '')  // 移除包前缀
-      .replace(/^lib-/gi, '')             // 移除lib-前缀
-      .replace(/\s+/g, ' ')               // 合并空格
-      .trim();
-    
-    // 按多种分隔符分割：连字符、下划线、空格等
-    const keywords = cleaned.split(/[-_\s\/]+/)
-      .filter(kw => kw.length >= 2)  // 过滤太短的词
-      .map(kw => kw.toLowerCase());
-    
-    return [...new Set(keywords)];  // 去重
-  }
-
-  /**
-   * 计算两个字符串的相似度（Dice系数 + 包含关系）
-   */
-  private calculateSimilarity(str1: string, str2: string): number {
-    if (!str1 || !str2) return 0;
-    if (str1 === str2) return 1;
-    
-    // 包含关系检查
-    if (str1.includes(str2) || str2.includes(str1)) {
-      const shorter = str1.length < str2.length ? str1 : str2;
-      const longer = str1.length < str2.length ? str2 : str1;
-      return shorter.length / longer.length * 0.8 + 0.2;
-    }
-
-    // Dice 系数计算
-    const bigrams1 = this.getBigrams(str1);
-    const bigrams2 = this.getBigrams(str2);
-    
-    let intersection = 0;
-    for (const bigram of bigrams1) {
-      if (bigrams2.has(bigram)) {
-        intersection++;
-      }
-    }
-    
-    return (2 * intersection) / (bigrams1.size + bigrams2.size);
-  }
-
-  /**
-   * 获取字符串的 bigrams 集合
-   */
-  private getBigrams(str: string): Set<string> {
-    const bigrams = new Set<string>();
-    for (let i = 0; i < str.length - 1; i++) {
-      bigrams.add(str.substring(i, i + 2));
-    }
-    return bigrams;
-  }
 }
 
 interface AppConfig {
@@ -760,6 +998,7 @@ interface AppConfig {
     [key: string]: {
       name: string;
       api_server: string;
+      tool_web: string;
       npm_registry: string;
       resource: string;
       updater: string;

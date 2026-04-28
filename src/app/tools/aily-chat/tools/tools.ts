@@ -1,10 +1,152 @@
 import { json } from "stream/consumers";
 
+import { buildRunSubagentDescription } from './runSubagentTool';
+
 export const toolParamNames = [
     "command"
 ] as const;
 
 export type ToolParamName = (typeof toolParamNames)[number];
+
+/**
+ * 工具延迟加载分组定义
+ * 参考 Copilot 的 deferred tool loading 策略：
+ * - Core 工具：始终发送给 LLM（name + description + input_schema）
+ * - Deferred 工具：仅在系统提示中列出名称，通过 search_available_tools 按需加载
+ */
+export interface DeferredToolGroup {
+  name: string;
+  brief: string; // 一行中文描述，用于 deferred listing
+  tools: string[]; // 该分组下的工具名称
+}
+
+export const DEFERRED_TOOL_GROUPS: DeferredToolGroup[] = [
+  {
+    name: '文件工具',
+    brief: '文件夹创建、文件/文件夹删除',
+    tools: ['create_folder', 'delete_file', 'delete_folder']
+  },
+  {
+    name: '搜索工具',
+    brief: '全局文本搜索(grep)、文件模式匹配(glob)',
+    tools: ['grep_tool', 'glob_tool']
+  },
+  {
+    name: '网络工具',
+    brief: '网页/API 请求(fetch)、网络搜索(web_search)、仓库克隆(clone_repository)',
+    tools: ['fetch', 'web_search', 'clone_repository']
+  },
+  {
+    name: '硬件/库搜索',
+    brief: '搜索开发板和库、获取硬件分类、查询开发板参数',
+    tools: ['search_boards_libraries', 'get_hardware_categories', 'get_board_parameters']
+  },
+//   {
+//     name: 'ABS 工具',
+//     // brief: 'ABS 文件同步、版本控制、ABS 语法参考、库块定义分析',
+//     // tools: ['sync_abs_file', 'abs_version_control', 'get_abs_syntax', 'analyze_library_blocks']
+//     brief: '版本控制',
+//     tools: ['abs_version_control']
+//   },
+//   {
+//     name: '接线图工具',
+//     brief: '生成/验证/保存接线图、组件目录、引脚映射',
+//     tools: ['generate_schematic', 'get_pinmap_summary', 'get_component_catalog', 'validate_schematic', 'apply_schematic', 'get_current_schematic', 'generate_pinmap', 'save_pinmap']
+//   },
+  {
+    name: '项目管理',
+    brief: '创建项目、重新加载项目、切换开发板、开发板配置',
+    tools: ['create_project', 'reload_project', 'switch_board', 'get_board_config', 'set_board_config']
+  },
+  {
+    name: '终端工具',
+    brief: '后台命令执行、获取终端输出',
+    tools: ['start_background_command', 'get_terminal_output']
+  }
+];
+
+/** 所有 deferred 工具名称的 Set（快速查找） */
+const DEFERRED_TOOL_NAMES = new Set(
+  DEFERRED_TOOL_GROUPS.flatMap(g => g.tools)
+);
+
+/** 获取核心工具（非 deferred，始终发送给 LLM） */
+export function getCoreTools(allTools: any[]): any[] {
+  return allTools.filter(t => !DEFERRED_TOOL_NAMES.has(t.name));
+}
+
+/** 获取 deferred 工具（按需加载） */
+export function getDeferredTools(allTools: any[]): any[] {
+  return allTools.filter(t => DEFERRED_TOOL_NAMES.has(t.name));
+}
+
+/** 检查工具是否为 deferred */
+export function isDeferredTool(name: string): boolean {
+  return DEFERRED_TOOL_NAMES.has(name);
+}
+
+/**
+ * 生成 deferred 工具列表文本（注入到规则中，告知 LLM 可用的延迟工具）
+ * 参考 Copilot 的 <availableDeferredTools> 系统提示词段
+ * @param agentName 当前 agent 名称，过滤工具的 agents 字段
+ * @param excludeTools 配置中禁用的工具名称集合
+ */
+export function getDeferredToolsListing(agentName?: string, excludeTools?: Set<string>): string {
+  const lines: string[] = [];
+  for (const g of DEFERRED_TOOL_GROUPS) {
+    const filteredTools = g.tools.filter(toolName => {
+      if (excludeTools?.has(toolName)) return false;
+      if (agentName) {
+        const toolDef = (TOOLS as any[]).find(t => t.name === toolName);
+        if (toolDef?.agents && !toolDef.agents.includes(agentName)) return false;
+      }
+      return true;
+    });
+    if (filteredTools.length === 0) continue;
+    lines.push(`- ${g.name}: ${filteredTools.join(', ')}（${g.brief}）`);
+  }
+  if (lines.length === 0) return '';
+  return `<availableTools>\n以下工具可通过 search_available_tools 按需加载后使用：\n${lines.join('\n')}\n调用 search_available_tools 时传入关键词或工具名即可加载对应工具的完整定义。\n</availableTools>`;
+}
+
+/**
+ * 搜索 deferred 工具（供 search_available_tools 元工具使用）
+ * @param query 搜索关键词
+ * @param allTools 全部工具定义数组
+ * @param agentName 当前 agent 名称，过滤工具的 agents 字段
+ * @param excludeTools 配置中禁用的工具名称集合
+ */
+export function searchDeferredTools(query: string, allTools: any[], agentName?: string, excludeTools?: Set<string>): any[] {
+  const q = query.toLowerCase();
+  let deferredTools = getDeferredTools(allTools);
+
+  // 按 agent 权限过滤
+  if (agentName) {
+    deferredTools = deferredTools.filter(t => !t.agents || t.agents.includes(agentName));
+  }
+  // 按配置过滤（尊重 aily config 中的 disabledTools）
+  if (excludeTools && excludeTools.size > 0) {
+    deferredTools = deferredTools.filter(t => !excludeTools.has(t.name));
+  }
+
+  // 1. 精确名称匹配
+  const exactMatch = deferredTools.filter(t => t.name === q);
+  if (exactMatch.length > 0) return exactMatch;
+
+  // 2. 分组名称匹配
+  const groupMatch = DEFERRED_TOOL_GROUPS.find(g =>
+    g.name.toLowerCase().includes(q) || g.brief.toLowerCase().includes(q)
+  );
+  if (groupMatch) {
+    return deferredTools.filter(t => groupMatch.tools.includes(t.name));
+  }
+
+  // 3. 名称/描述模糊匹配
+  return deferredTools.filter(t =>
+    t.name.toLowerCase().includes(q) ||
+    (t.description && t.description.toLowerCase().includes(q))
+  );
+}
 
 // export interface ToolUse {
 //     type: "tool_use"
@@ -19,20 +161,204 @@ export interface ToolUseResult {
 }
 
 export const TOOLS = [
+    // =============================================================================
+    // 用户交互工具 - ask_user（始终可用，用于向用户提问并等待回答）
+    // =============================================================================
+    {
+        name: 'ask_user',
+        description: `向用户提出一个或多个问题并等待回答。当你需要用户做出决策、提供额外信息或确认操作时使用此工具。
+工具会暂停对话，在聊天界面显示问题和可选项，等待用户回答后继续。
+
+传入 questions 数组，单问题即长度为 1 的数组。
+
+使用场景：
+- 需要用户在多个方案中做选择（提供 options）
+- 需要用户提供多项关键信息（如项目名称 + 开发板类型 + 语言偏好）
+- 需要用户确认重要操作前的决策
+- 需求有歧义时主动澄清
+
+注意：
+- 不要滥用此工具，只在确实需要用户输入时使用
+- 如果可以合理推断，优先自行决定而非打断用户
+- 相关问题可合并为一次调用，减少打断次数`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                questions: {
+                    type: 'array',
+                    description: '问题列表（单问题传长度为 1 的数组即可）',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            question: { type: 'string', description: '问题内容' },
+                            options: {
+                                type: 'array',
+                                description: '可选项列表',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        label: { type: 'string', description: '选项文本' },
+                                        description: { type: 'string', description: '选项说明（可选）' },
+                                        recommended: { type: 'boolean', description: '是否为推荐选项' }
+                                    },
+                                    required: ['label']
+                                }
+                            },
+                            allow_freeform: { type: 'boolean', description: '是否允许自由输入（有 options 时默认 false）', default: false },
+                            multi_select: { type: 'boolean', description: '是否允许多选（默认 false）', default: false }
+                        },
+                        required: ['question']
+                    }
+                }
+            },
+            required: ['questions']
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    // =============================================================================
+    // 元工具 - search_available_tools（始终可用，用于发现和加载 deferred 工具）
+    // =============================================================================
+    {
+        name: 'search_available_tools',
+        description: `搜索并加载可用的扩展工具。当你需要使用未在当前工具列表中的工具时，调用此工具按关键词搜索。
+成功后工具会被加载，可在后续对话中直接调用。
+
+搜索示例：
+- search_available_tools({query: "schematic"}) — 加载接线图相关工具
+- search_available_tools({query: "grep"}) — 加载代码搜索工具
+- search_available_tools({query: "fetch"}) — 加载网络请求工具
+- search_available_tools({query: "abs"}) — 加载 ABS/Blockly 工具`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: '搜索关键词（工具名、分组名或功能描述）'
+                }
+            },
+            required: ['query']
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    // =============================================================================
+    // 技能工具 - load_skill（始终可用，用于加载领域知识/最佳实践指南）
+    // =============================================================================
+    {
+        name: 'load_skill',
+        description: `激活或卸载领域技能。激活后的技能内容会持久注入到每轮请求中，直到卸载。
+使用示例：
+- load_skill({query: "abs-syntax"}) — 激活 ABS 语法参考技能
+- load_skill({query: "abs-syntax", action: "unload"}) — 卸载技能
+- load_skill({url: "https://example.com/SKILL.md"}) — 从 URL 加载并激活`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: '技能名称或搜索关键词'
+                },
+                action: {
+                    type: 'string',
+                    enum: ['load', 'unload'],
+                    description: '操作类型：load（激活，默认）或 unload（卸载）'
+                },
+                url: {
+                    type: 'string',
+                    description: '直接从 URL 加载 SKILL.md 文件（一次性使用）'
+                }
+            },
+            required: ['query']
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 技能管理工具 - manage_skills（Hub 搜索/安装/卸载）
+    // TODO: 后续以 npm 包形式实现 Skills Hub，暂不启用
+    // =============================================================================
+    /*
+    {
+        name: 'manage_skills',
+        description: `管理技能：搜索/安装/卸载/列出技能。当用户提到安装技能、查找最佳实践、管理领域知识包时使用。
+
+操作类型：
+- list_available — 列出所有已注册的技能
+- list_installed — 列出从 Hub 安装的技能
+- search_hub — 在 Skills Hub 中搜索可用技能
+- install — 从 Hub 安装技能到全局或项目
+- uninstall — 卸载已安装的技能`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                action: {
+                    type: 'string',
+                    enum: ['search_hub', 'install', 'uninstall', 'list_installed', 'list_available'],
+                    description: '操作类型'
+                },
+                query: {
+                    type: 'string',
+                    description: '搜索关键词或技能名称'
+                },
+                download_url: {
+                    type: 'string',
+                    description: '技能包下载 URL（install 时需要）'
+                },
+                scope: {
+                    type: 'string',
+                    enum: ['global', 'project'],
+                    description: '安装范围：global 全局 / project 项目级'
+                }
+            },
+            required: ['action']
+        },
+        agents: ["mainAgent"]
+    },
+    */
+    // =============================================================================
+    // 子代理工具 - 始终发送给 LLM（core）
+    // =============================================================================
+    {
+        name: 'run_subagent',
+        get description() { return buildRunSubagentDescription(); },
+        input_schema: {
+            type: 'object',
+            properties: {
+                agent: {
+                    type: 'string',
+                    description: '目标子代理名称（如 schematicAgent）'
+                },
+                task: {
+                    type: 'string',
+                    description: '交给子代理的具体任务描述'
+                },
+                context: {
+                    type: 'string',
+                    description: '相关上下文信息（项目信息、代码片段、硬件连接等）'
+                }
+            },
+            required: ['agent', 'task']
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 核心工具 - 始终发送给 LLM
+    // =============================================================================
     {
         name: 'create_project',
-        description: '创建一个新项目，返回项目路径。需要提供使用的开发板（如 "@aily-project/board-arduino_uno", "@aily-project/board-arduino_uno_r4_minima"），传入的开发板名称以`https://blockly.diandeng.tech/boards.json`中的内容为准。',
+        description: '创建一个新项目，返回项目路径。需要提供使用的开发板（如 "@aily-project/board-arduino_uno", "@aily-project/board-arduino_uno_r4_minima"），传入的开发板名称以`https://blockly.yysc.tech/boards.json`中的内容为准。',
         input_schema: {
             type: 'object',
             properties: {
                 board: { type: 'string', description: '开发板名称' },
             },
             required: ['board']
-        }
+        },
+        agents: ["mainAgent"]
     },
     {
         name: 'execute_command',
-        description: `执行系统CLI命令。用于执行系统操作或运行特定命令来完成用户任务中的任何步骤。支持命令链，优先使用相对命令和路径以保持终端一致性。`,
+        description: `在 PowerShell 中执行系统 CLI 命令。用于执行系统操作或运行特定命令来完成用户任务中的任何步骤。支持命令链，优先使用相对命令和路径以保持终端一致性。
+
+如果命令需要长时间运行（如服务器、监控），请使用 start_background_command 代替。`,
         input_schema: {
             type: 'object',
             properties: {
@@ -40,7 +366,51 @@ export const TOOLS = [
                 cwd: { type: 'string', description: '工作目录，可选' }
             },
             required: ['command']
-        }
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 终端会话工具 — 后台命令执行与输出获取（参考 Copilot run_in_terminal/get_terminal_output）
+    // =============================================================================
+    {
+        name: 'start_background_command',
+        description: `在后台启动一个长时间运行的命令，不等待完成即返回。返回 session_id 用于后续查询输出。
+
+适合场景：
+- 启动开发服务器（如 npm run dev）
+- 启动串口监控
+- 执行耗时较长的编译/下载任务
+
+启动后使用 get_terminal_output 查看实时输出。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: '要执行的命令' },
+                cwd: { type: 'string', description: '工作目录（可选，默认当前项目路径）' },
+                label: { type: 'string', description: '可选标签，用于识别该会话（如 "build", "server"）' }
+            },
+            required: ['command']
+        },
+        agents: ["mainAgent"]
+    },
+    {
+        name: 'get_terminal_output',
+        description: `获取后台命令的当前输出。默认返回自上次读取以来的新输出（增量模式）。
+
+使用场景：
+- 检查后台命令的执行进度和输出
+- 获取服务器启动日志
+- 监控编译进度`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                session_id: { type: 'string', description: '终端会话 ID（由 start_background_command 返回）' },
+                incremental: { type: 'boolean', description: '是否仅获取新输出（默认 true）', default: true },
+                max_chars: { type: 'number', description: '最大返回字符数（默认 50000）', default: 50000 }
+            },
+            required: ['session_id']
+        },
+        agents: ["mainAgent"]
     },
     {
         name: "get_context",
@@ -56,7 +426,24 @@ export const TOOLS = [
                 }
             },
             required: ['info_type']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    {
+        name: "get_project_info",
+        description: `获取当前项目信息。如果项目已创建，返回当前项目使用的开发板及已安装的库列表。如果库中包含 readme_ai.md 文档，则同时输出该文件的路径。可用于了解项目配置、查找库文档等。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                include_readme: {
+                    type: 'boolean',
+                    description: '是否检查并返回库的 readme_ai.md 文件路径',
+                    default: true
+                }
+            },
+            required: []
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     // {
     //     name: "list_directory",
@@ -141,7 +528,8 @@ export const TOOLS = [
                 }
             },
             required: ['path']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: "create_file",
@@ -170,7 +558,8 @@ export const TOOLS = [
                 }
             },
             required: ['path']
-        }
+        },
+        agents: ["mainAgent"]
     },
     {
         name: "create_folder",
@@ -189,7 +578,8 @@ export const TOOLS = [
                 }
             },
             required: ['path']
-        }
+        },
+        agents: ["mainAgent"]
     },
     {
         name: "edit_file",
@@ -298,7 +688,74 @@ editFileTool({
                 }
             },
             required: ['path']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    // =============================================================================
+    // 精确替换工具（从 edit_file 拆分，参考 Copilot replace_string_in_file）
+    // =============================================================================
+    {
+        name: 'replace_string_in_file',
+        description: `精确替换文件中的一段字符串。要求 old_string 在文件中唯一匹配（不允许多个匹配，确保精确修改）。
+
+这是编辑文件最安全的方式：
+- 自动检测并拒绝多匹配（防止意外修改错误位置）
+- 建议在 old_string 中包含 3-5 行上下文以确保唯一性
+- 当 old_string 为空时，创建新文件并写入 new_string
+- 自动 lint 检测（JSON/JS 文件）
+
+适合场景：单个小改动、修改函数、修复 bug、调整配置项`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: '要编辑的文件路径'
+                },
+                old_string: {
+                    type: 'string',
+                    description: '要替换的原字符串。必须在文件中唯一匹配，建议包含 3-5 行上下文。为空时创建新文件'
+                },
+                new_string: {
+                    type: 'string',
+                    description: '替换后的新字符串'
+                }
+            },
+            required: ['path', 'old_string', 'new_string']
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    {
+        name: 'multi_replace_string_in_file',
+        description: `批量精确替换 — 在一次调用中对一个或多个文件执行多次字符串替换。每个替换操作按顺序执行。
+
+适合场景：
+- 需要同时修改多个文件
+- 一个文件中需要修改多处不同位置
+- 重构操作（如重命名变量、更新导入路径）
+
+每个替换等同于单独调用 replace_string_in_file，均要求唯一匹配。
+最多支持 50 个替换操作。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                replacements: {
+                    type: 'array',
+                    description: '替换操作列表',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: '文件路径' },
+                            old_string: { type: 'string', description: '要替换的原字符串' },
+                            new_string: { type: 'string', description: '替换后的新字符串' }
+                        },
+                        required: ['path', 'old_string', 'new_string']
+                    }
+                }
+            },
+            required: ['replacements']
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: "delete_file",
@@ -317,7 +774,8 @@ editFileTool({
                 }
             },
             required: ['path']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: "delete_folder",
@@ -341,7 +799,8 @@ editFileTool({
                 }
             },
             required: ['path']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     // {
     //     name: "check_exists",
@@ -523,7 +982,8 @@ editFileTool({
                 }
             },
             required: ['filters']
-        }
+        },
+        agents: ["mainAgent"]
     },
     {
         name: "get_hardware_categories",
@@ -599,7 +1059,8 @@ editFileTool({
                 }
             },
             required: ['type', 'dimension']
-        }
+        },
+        agents: ["mainAgent"]
     },
     {
         name: "get_board_parameters",
@@ -669,7 +1130,8 @@ editFileTool({
                 }
             },
             required: []
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: "grep_tool",
@@ -754,7 +1216,8 @@ Query and return specific content (for detailed info)
                 // }
             },
             required: ['pattern']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: "glob_tool",
@@ -808,17 +1271,21 @@ Query and return specific content (for detailed info)
                 }
             },
             required: ['pattern']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: "fetch",
-        description: `获取网络上的信息和资源，支持HTTP/HTTPS请求，能够处理大文件下载。支持多种请求方法和响应类型。注意：非必要时请避免使用此工具，以减少外部依赖和网络请求。`,
+        description: `获取网页内容和API数据。支持HTTP/HTTPS请求。
+- 内容超过限制字符时自动截断，截断时会提示剩余字符数
+- 支持分页读取：当内容被截断时，可用 startIndex 从截断位置继续读取
+如需搜索信息请优先使用 web_search 工具。`,
         input_schema: {
             type: 'object',
             properties: {
                 url: {
                     type: 'string',
-                    description: '要请求的URL地址'
+                    description: '要请求的URL地址（仅支持 http:// 和 https://）'
                 },
                 method: {
                     type: 'string',
@@ -838,20 +1305,82 @@ Query and return specific content (for detailed info)
                     description: '请求超时时间（毫秒）',
                     default: 30000
                 },
-                maxSize: {
+                startIndex: {
                     type: 'number',
-                    description: '最大文件大小（字节）',
-                    default: 52428800
-                },
-                responseType: {
-                    type: 'string',
-                    description: '响应类型',
-                    enum: ['text', 'json', 'blob', 'arraybuffer'],
-                    default: 'text'
+                    description: '分页读取的起始字符索引（0-based）。当上次调用的响应提示内容被截断时，使用此参数从截断位置继续读取'
                 }
             },
             required: ['url']
-        }
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    {
+        name: 'clone_repository',
+        description: `克隆/下载远程 Git 仓库到本地。通过平台 zip 下载 API 获取整个仓库代码并解压，无需本地安装 git。
+
+支持平台：GitHub、Gitee、GitLab、Bitbucket
+
+使用场景：
+- 用户提供了一个仓库 URL，需要获取其完整源码
+- 需要参考某个开源项目的代码结构
+- 下载示例项目或模板项目
+
+注意：
+- 仓库 zip 大小限制 50MB
+- 默认尝试 main 分支，失败后自动回退到 master
+- 支持 sparse_paths 只下载指定子目录`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                url: {
+                    type: 'string',
+                    description: '仓库 URL，如 https://github.com/owner/repo'
+                },
+                branch: {
+                    type: 'string',
+                    description: '分支名称（默认 main，失败自动回退 master）',
+                    default: 'main'
+                },
+                target_dir: {
+                    type: 'string',
+                    description: '目标目录路径（相对项目根或绝对路径，默认为项目根下以仓库名命名的目录）'
+                },
+                sparse_paths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: '仅下载指定子目录（稀疏检出），如 ["src", "docs"]'
+                }
+            },
+            required: ['url']
+        },
+        agents: ["mainAgent"]
+    },
+    {
+        name: "web_search",
+        description: `搜索网络以获取最新信息。使用 DuckDuckGo 搜索引擎，返回搜索结果列表（标题、摘要、链接）。
+适用场景：
+- 查找最新的技术文档、库版本信息、API 参考
+- 搜索错误信息的解决方案
+- 获取项目、产品、工具的最新状态
+- 查找教程、指南和示例代码
+- 在不知道确切 URL 时先搜索再用 fetch 获取详情
+注意：搜索结果仅包含标题和摘要，如需完整内容请使用 fetch 工具访问结果中的链接。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: '搜索关键词，建议使用具体、有针对性的搜索词以获得更好的结果'
+                },
+                maxResults: {
+                    type: 'number',
+                    description: '返回的最大结果数量',
+                    default: 10
+                }
+            },
+            required: ['query']
+        },
+        agents: ["mainAgent"]
     },
     // {
     //     name: "reload_abi_json",
@@ -1236,356 +1765,473 @@ Query and return specific content (for detailed info)
 //         }
 //     },
     // =============================================================================
-    // 原有块操作工具（保持兼容）
+    // 🔇 以下块操作工具已被 DSL 工具替代，暂时注释保留
+    // 统一使用 sync_dsl_file 进行块的创建、修改、删除操作
+    // =============================================================================
+    // {
+    //     name: "smart_block_tool",
+    //     description: `智能块创建Blockly工作区中的块，一次只能创建一个块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme。注意：当需要创建3个以上的块或嵌套超过2层时，推荐使用create_code_structure_tool创建。</system-reminder>
+    // 基本语法:
+    // \`\`\`json
+    // {
+    //   "type": "块类型",
+    //   "position": {"x": 数字, "y": 数字}, // 可选
+    //   "fields": {"字段名": "字段值"},
+    //   "inputs": {"输入名": "块ID或配置"}, // 可选
+    //   "parentConnection": {
+    //     "blockId": "父块ID",
+    //     "connectionType": "next|input|statement",
+    //     "inputName": "输入名，如ARDUINO_SETUP"
+    //   } // 父块连接配置（可选）
+    // }
+    // \`\`\`
+    // 示例:
+    // 创建数字块
+    // \`\`\`json
+    // {
+    //   "type": "math_number",
+    //   "fields": {"NUM": "123"}
+    // }
+    // \`\`\`
+    // 创建变量块
+    // \`\`\`json
+    // {
+    //   "type": "variable_define",
+    //   "fields": {
+    //     "VAR": "sensor_value",
+    //     "TYPE": "int"
+    //   },
+    //   "inputs": {
+    //     "VALUE": {"block": {"type": "math_number", "fields": {"NUM": "0"}}}
+    //   }
+    // }
+    // \`\`\`
+    // 创建Arduino数字输出
+    // \`\`\`json
+    // {
+    //   "type": "io_digitalwrite",
+    //   "inputs": {
+    //     "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    //     "STATE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
+    //   }
+    // }
+    // \`\`\`
+    // 创建串口打印
+    // \`\`\`json
+    // {
+    //   "type": "serial_println",
+    //   "fields": {"SERIAL": "Serial"},
+    //   "inputs": {
+    //     "VAR": {"block": {"type": "text", "fields": {"TEXT": "Hello"}}}
+    //   }
+    // }
+    // \`\`\`
+    // `,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             type: {
+    //                 type: 'string',
+    //                 description: '块类型，如 logic_boolean、controls_if、math_number 等'
+    //             },
+    //             position: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     x: { type: 'number', description: 'X坐标' },
+    //                     y: { type: 'number', description: 'Y坐标' }
+    //                 },
+    //                 description: '块在工作区中的位置（可选）'
+    //             },
+    //             fields: {
+    //                 type: 'object',
+    //                 description: '块的字段配置，如布尔值、数字值、变量名等'
+    //             },
+    //             inputs: {
+    //                 type: 'object',
+    //                 description: '块的输入配置，连接其他块'
+    //             },
+    //             parentConnection: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     blockId: { type: 'string', description: '父块ID' },
+    //                     connectionType: { type: 'string', description: '连接类型' },
+    //                     inputName: { type: 'string', description: '输入名称' }
+    //                 },
+    //                 description: '父块连接配置（可选）。不提供时创建独立块，适用于全局变量、函数定义等顶级代码块'
+    //             }
+    //         },
+    //         required: ['type']
+    //     }
+    // },
+    // {
+    //     name: "connect_blocks_tool",
+    //     description: `块连接工具，通过修改连接关系移动Blockly块，但不会新建块，支持四种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）、disconnect（断开连接变独立块）。
+    // 
+    // ⚠️ **重要**：连接语义说明
+    // - containerBlock: **容器块/父块** (提供连接点的块，如arduino_setup、if_else、repeat等)
+    // - contentBlock: **内容块/子块** (要被连接的块，如digital_write、delay等)
+    // - 例如：将digital_write放入arduino_setup中
+    //   - containerBlock: "arduino_setup_id0" (容器)  
+    //   - contentBlock: "digital_write_id1" (内容)
+    //   - connectionType: "statement"
+    //   - inputName: "input_statement"
+    // 
+    // 🔓 **断开连接（变独立块）**：
+    // - 使用 connectionType: "disconnect" 将块从父块断开，变成工作区中的独立块
+    // - moveChain: false（默认）- 只断开指定块，后续块保持在原位置
+    // - moveChain: true - 断开整个块链，包括后续所有块一起变成独立块
+    // 
+    // 常见错误：不要混淆容器和内容的关系！`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             containerBlock: {
+    //                 type: 'string',
+    //                 description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）。disconnect模式时可省略'
+    //             },
+    //             contentBlock: {
+    //                 type: 'string', 
+    //                 description: '📦 内容块ID（子块，要被放入容器的块，或要断开连接的块）'
+    //             },
+    //             connectionType: {
+    //                 type: 'string',
+    //                 enum: ['next', 'input', 'statement', 'disconnect'],
+    //                 description: '连接类型：statement=语句连接（推荐），input=输入连接，next=顺序连接，disconnect=断开连接变独立块'
+    //             },
+    //             inputName: {
+    //                 type: 'string',
+    //                 description: '输入端口名称（statement连接时指定容器的哪个端口，如"input_statement"、"DO"、"ELSE"等，不指定时自动检测）'
+    //             },
+    //             moveChain: {
+    //                 type: 'boolean',
+    //                 description: '是否移动整个块链。false=只移动/断开单个块，后续块保持或重连；true（默认）=移动/断开整个块链',
+    //                 default: true
+    //             }
+    //         },
+    //         required: ['contentBlock', 'connectionType']
+    //     }
+    // },
+    // {
+    //     name: "create_code_structure_tool", 
+    //     description: `动态结构创建工具，创建包含多个块的代码结构并连接到工作区。
+    // 
+    // **注意事项**:
+    // - 使用工具前必须确保已读取使用的 block 所属库的 Readme
+    // - 建议分步生成代码：全局变量 → 初始化 → loop → 回调函数
+    // - 不要一次性生成超过 10 个 block 的代码块结构
+    // 
+    // **参数说明**:
+    // - \`structureDefinition\`: 定义要创建的块（rootBlock + additionalBlocks）
+    // - \`connectionRules\`: 定义所有块之间的连接（包括新创建的块之间，以及新块与工作区已有块之间）
+    // 
+    // **示例: 在 Arduino Setup 中添加初始化代码**
+    // \`\`\`json
+    // {
+    //   "structure": "init-code",
+    //   "config": {
+    //     "structureDefinition": {
+    //       "rootBlock": {
+    //         "type": "control_if",
+    //         "id": "if_check",
+    //         "extraState": {"hasElse": true},
+    //         "inputs": {
+    //           "IF0": {"block": {"type": "logic_compare", "id": "logic_compare_id", "fields": {"OP": "GT"}, ...}},
+    //           "DO0": {"block": {"type": "io_digitalwrite", "id": "green_led_on", "inputs": {...}}},
+    //           "ELSE": {}
+    //         }
+    //       },
+    //       "additionalBlocks": [
+    //         {
+    //           "type": "io_digitalwrite",
+    //           "id": "red_led_on",
+    //           "inputs": {
+    //             "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    //             "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
+    //           }
+    //         },
+    //         {
+    //           "type": "io_digitalwrite",
+    //           "id": "red_led_off",
+    //           "inputs": {
+    //             "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
+    //             "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "LOW"}}}
+    //           }
+    //         }
+    //       ]
+    //     }
+    //   },
+    //   "connectionRules": [
+    //     {"source": "arduino_setup_id", "target": "if_check", "connectionType": "statement", "inputName": "ARDUINO_SETUP"},
+    //     {"source": "green_led_on", "target": "red_led_on", "connectionType": "next"},
+    //     {"source": "if_check", "target": "red_led_off", "connectionType": "statement", "inputName": "ELSE"}
+    //   ]
+    // }
+    // \`\`\`
+    // `,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             structure: {
+    //                 type: 'string',
+    //                 description: '结构名称（用于日志和调试）'
+    //             },
+    //             config: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     structureDefinition: {
+    //                         type: 'object',
+    //                         properties: {
+    //                             rootBlock: {
+    //                                 type: 'object',
+    //                                 description: '根块配置（必须包含 type 和 id）'
+    //                             },
+    //                             additionalBlocks: {
+    //                                 type: 'array',
+    //                                 items: { type: 'object' },
+    //                                 description: '附加块配置数组'
+    //                             }
+    //                         },
+    //                         required: ['rootBlock'],
+    //                         description: '动态结构定义（仅定义要创建的块）'
+    //                     }
+    //                 },
+    //                 required: ['structureDefinition'],
+    //                 description: '结构配置对象'
+    //             },
+    //             connectionRules: {
+    //                 type: 'array',
+    //                 items: {
+    //                     type: 'object',
+    //                     properties: {
+    //                         source: { type: 'string', description: '源块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
+    //                         target: { type: 'string', description: '目标块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
+    //                         inputName: { type: 'string', description: 'statement/input 连接时指定输入名称' },
+    //                         connectionType: { 
+    //                             type: 'string', 
+    //                             enum: ['next', 'input', 'statement'],
+    //                             description: 'next=source.nextConnection→target.previousConnection，statement=source.getInput(inputName).connection→target.previousConnection，input=source.getInput(inputName).connection→target.outputConnection' 
+    //                         }
+    //                     },
+    //                     required: ['source', 'target', 'connectionType']
+    //                 },
+    //                 description: '块之间的连接规则（统一定义所有连接，包括新块之间和新块与已有块之间）'
+    //             },
+    //             position: {
+    //                 type: 'object',
+    //                 properties: {
+    //                     x: { type: 'number', description: 'X坐标' },
+    //                     y: { type: 'number', description: 'Y坐标' }
+    //                 },
+    //                 description: '结构在工作区中的坐标位置'
+    //             }
+    //         },
+    //         required: ['structure']
+    //     }
+    // },
+    // {
+    //     name: "configure_block_tool",
+    //     description: `用途：修改已存在 Blockly 块的字段值与动态结构（extraState），用于调整块的显示/配置但不创建或删除块。
+    // 
+    // 主要能力：
+    // - 更新字段（field_dropdown、field_input、field_number、field_checkbox、text 等）。
+    // - 修改动态结构（如 controls_if 的 else/elseif 分支、text_join 或 lists_create_with 的项目数）。
+    // - 支持通过 blockId 精准定位或通过 blockType 查找第一个匹配块。
+    // 
+    // 前提条件：
+    // - 目标块必须已存在于工作区。
+    // - 必须提供有效的 blockId 或 blockType。
+    // - 字段修改需提供非空的 fields 对象；结构修改需提供 extraState 对象。
+    // - 修改前请确保理解目标块的字段名与 extraState 结构，错误参数可能导致操作失败。
+    // 
+    // **extraState 使用示例：**
+    // 为 controls_if 块添加 1 个 else if 和 1 个 else 分支：
+    // \`\`\`json
+    // {
+    //   "blockId": "if_block_id",
+    //   "extraState": {
+    //     "elseIfCount": 1,
+    //     "hasElse": true
+    //   }
+    // }
+    // \`\`\`
+    // 
+    // 修改IO下拉菜单字段：
+    // \`\`\`json
+    // {
+    //   "blockId": "pin_block_id",
+    //   "blockType": "io_pin_digi",
+    //   "fields": {"PIN": "2"}
+    // }
+    // 
+    // **必须提供完整的参数结构，空参数会导致工具执行失败。**`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockId: {
+    //                 type: 'string',
+    //                 description: '要配置的块ID（blockId 和 blockType 至少提供一个）'
+    //             },
+    //             blockType: {
+    //                 type: 'string',
+    //                 description: '块类型，当未提供 blockId 时使用（会找到第一个匹配类型的块）'
+    //             },
+    //             fields: {
+    //                 type: 'object',
+    //                 description: '要更新的字段值对象。格式：{"字段名": "字段值"}。字段名需要参考对应库的文档。',
+    //                 additionalProperties: {
+    //                     oneOf: [
+    //                         { type: 'string' },
+    //                         { type: 'number' },
+    //                         { type: 'boolean' }
+    //                     ]
+    //                 }
+    //             },
+    //             extraState: {
+    //                 type: 'object',
+    //                 description: '动态块结构配置对象。用于修改支持动态输入的块结构，如 controls_if 的分支数量。',
+    //                 properties: {
+    //                     elseIfCount: {
+    //                         type: 'number',
+    //                         description: 'else if 分支数量（适用于 controls_if, controls_ifelse）',
+    //                         minimum: 0,
+    //                         maximum: 20
+    //                     },
+    //                     hasElse: {
+    //                         type: 'boolean',
+    //                         description: '是否包含 else 分支（适用于 controls_if）'
+    //                     },
+    //                     itemCount: {
+    //                         type: 'number',
+    //                         description: '项目数量（适用于 text_join, lists_create_with 等）',
+    //                         minimum: 1,
+    //                         maximum: 50
+    //                     }
+    //                 },
+    //                 additionalProperties: true
+    //             }
+    //         },
+    //         anyOf: [
+    //             { 
+    //                 allOf: [
+    //                     { anyOf: [{ required: ['blockId'] }, { required: ['blockType'] }] },
+    //                     { anyOf: [{ required: ['fields'] }, { required: ['extraState'] }] }
+    //                 ]
+    //             }
+    //         ]
+    //     }
+    // },
+    // {
+    //     name: "delete_block_tool",
+    //     description: `块删除工具，支持删除单个或多个块。
+    // **注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
+    // **注意**：优先使用块创建工具及连接工具修复代码结构。
+    // 
+    // **功能特点**：
+    // - 支持单个块ID或多个块ID数组输入
+    // - 智能删除：只删除指定块，保留连接的块并自动重连
+    // - 删除后自动重连前后块（如果可能）
+    // 
+    // **示例**：
+    // \`\`\`json
+    // // 删除单个块
+    // {"blockIds": "block_id_123"}
+    // 
+    // // 删除多个块
+    // {"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
+    // \`\`\`
+    // 
+    // **注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockIds: {
+    //                 oneOf: [
+    //                     { type: 'string', description: '单个要删除的块ID' },
+    //                     { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
+    //                 ],
+    //                 description: '要删除的块ID，支持单个字符串或字符串数组'
+    //             }
+    //         },
+    //         required: ['blockIds']
+    //     }
+    // },
+    // =============================================================================
+    // ABS 工具（Aily Block Syntax - 主要块操作方式）
     // =============================================================================
     {
-        name: "smart_block_tool",
-        description: `智能块创建Blockly工作区中的块，一次只能创建一个块。<system-reminder>使用工具前必须确保已经读取了将要使用的block所属库的Readme。注意：当需要创建3个以上的块或嵌套超过2层时，推荐使用create_code_structure_tool创建。</system-reminder>
-基本语法:
-\`\`\`json
-{
-  "type": "块类型",
-  "position": {"x": 数字, "y": 数字}, // 可选
-  "fields": {"字段名": "字段值"},
-  "inputs": {"输入名": "块ID或配置"}, // 可选
-  "parentConnection": {
-    "blockId": "父块ID",
-    "connectionType": "next|input|statement",
-    "inputName": "输入名，如ARDUINO_SETUP"
-  } // 父块连接配置（可选）
-}
-\`\`\`
-示例:
-创建数字块
-\`\`\`json
-{
-  "type": "math_number",
-  "fields": {"NUM": "123"}
-}
-\`\`\`
-创建变量块
-\`\`\`json
-{
-  "type": "variable_define",
-  "fields": {
-    "VAR": "sensor_value",
-    "TYPE": "int"
-  },
-  "inputs": {
-    "VALUE": {"block": {"type": "math_number", "fields": {"NUM": "0"}}}
-  }
-}
-\`\`\`
-创建Arduino数字输出
-\`\`\`json
-{
-  "type": "io_digitalwrite",
-  "inputs": {
-    "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
-    "STATE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
-  }
-}
-\`\`\`
-创建串口打印
-\`\`\`json
-{
-  "type": "serial_println",
-  "fields": {"SERIAL": "Serial"},
-  "inputs": {
-    "VAR": {"block": {"type": "text", "fields": {"TEXT": "Hello"}}}
-  }
-}
-\`\`\`
-`,
+        name: "sync_abs_file",
+        description: `🔄 ABS 文件同步工具 - 在 Blockly 工作区和 ABS 文件之间同步。
+
+**项目中的 ABS 文件（Aily Block Syntax）：**
+每个项目目录下会有一个 \`project.abs\` 文件，以人类可读的 ABS 格式保存代码结构。
+
+**操作类型：**
+1. \`export\` - 将当前 Blockly 工作区导出为 ABS 文件
+2. \`import\` - 从 ABS 文件导入并替换当前工作区
+3. \`status\` - 获取 ABS 文件状态和内容预览
+
+**推荐工作流：**
+1. 首先使用 \`status\` 或 \`export\` 获取/生成 ABS 文件
+2. 使用 \`read_file\` 读取 \`project.abs\` 了解当前代码结构
+3. 使用 \`edit_file\` 修改 ABS 文件（像编辑普通代码一样！）
+4. 使用 \`import\` 将修改应用到 Blockly 工作区
+
+**这种方式的优势：**
+- 📖 直接看到完整的代码结构
+- ✏️ 用熟悉的文件编辑方式修改代码
+- 🔄 支持撤销和版本控制
+- 🎯 避免复杂的位置计算`,
         input_schema: {
             type: 'object',
             properties: {
-                type: {
+                operation: {
                     type: 'string',
-                    description: '块类型，如 logic_boolean、controls_if、math_number 等'
+                    enum: ['export', 'import', 'status'],
+                    description: '操作类型：export=导出到ABS文件，import=从ABS文件导入，status=查看状态'
                 },
-                position: {
-                    type: 'object',
-                    properties: {
-                        x: { type: 'number', description: 'X坐标' },
-                        y: { type: 'number', description: 'Y坐标' }
-                    },
-                    description: '块在工作区中的位置（可选）'
-                },
-                fields: {
-                    type: 'object',
-                    description: '块的字段配置，如布尔值、数字值、变量名等'
-                },
-                inputs: {
-                    type: 'object',
-                    description: '块的输入配置，连接其他块'
-                },
-                parentConnection: {
-                    type: 'object',
-                    properties: {
-                        blockId: { type: 'string', description: '父块ID' },
-                        connectionType: { type: 'string', description: '连接类型' },
-                        inputName: { type: 'string', description: '输入名称' }
-                    },
-                    description: '父块连接配置（可选）。不提供时创建独立块，适用于全局变量、函数定义等顶级代码块'
-                }
-            },
-            required: ['type']
-        }
-    },
-    {
-        name: "connect_blocks_tool",
-        description: `块连接工具，通过修改连接关系移动Blockly块，但不会新建块，支持四种连接类型：next（顺序连接）、input（输入连接）、statement（语句连接）、disconnect（断开连接变独立块）。
-
-⚠️ **重要**：连接语义说明
-- containerBlock: **容器块/父块** (提供连接点的块，如arduino_setup、if_else、repeat等)
-- contentBlock: **内容块/子块** (要被连接的块，如digital_write、delay等)
-- 例如：将digital_write放入arduino_setup中
-  - containerBlock: "arduino_setup_id0" (容器)  
-  - contentBlock: "digital_write_id1" (内容)
-  - connectionType: "statement"
-  - inputName: "input_statement"
-
-🔓 **断开连接（变独立块）**：
-- 使用 connectionType: "disconnect" 将块从父块断开，变成工作区中的独立块
-- moveChain: false（默认）- 只断开指定块，后续块保持在原位置
-- moveChain: true - 断开整个块链，包括后续所有块一起变成独立块
-
-常见错误：不要混淆容器和内容的关系！`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                containerBlock: {
-                    type: 'string',
-                    description: '🔳 容器块ID（父块，提供连接点的块，如arduino_setup、if_else、repeat等容器类型块）。disconnect模式时可省略'
-                },
-                contentBlock: {
-                    type: 'string', 
-                    description: '📦 内容块ID（子块，要被放入容器的块，或要断开连接的块）'
-                },
-                connectionType: {
-                    type: 'string',
-                    enum: ['next', 'input', 'statement', 'disconnect'],
-                    description: '连接类型：statement=语句连接（推荐），input=输入连接，next=顺序连接，disconnect=断开连接变独立块'
-                },
-                inputName: {
-                    type: 'string',
-                    description: '输入端口名称（statement连接时指定容器的哪个端口，如"input_statement"、"DO"、"ELSE"等，不指定时自动检测）'
-                },
-                moveChain: {
+                includeHeader: {
                     type: 'boolean',
-                    description: '是否移动整个块链。false=只移动/断开单个块，后续块保持或重连；true（默认）=移动/断开整个块链',
+                    description: '导出时是否包含文件头注释（默认 true）',
                     default: true
                 }
             },
-            required: ['contentBlock', 'connectionType']
+            required: ['operation']
         }
     },
-    {
-        name: "create_code_structure_tool", 
-        description: `动态结构创建工具，创建包含多个块的代码结构并连接到工作区。
+//     {
+//         name: "abs_version_control",
+//         description: `🕐 ABS 版本控制工具 - 管理 Blockly 代码的版本历史。
 
-**注意事项**:
-- 使用工具前必须确保已读取使用的 block 所属库的 Readme
-- 建议分步生成代码：全局变量 → 初始化 → loop → 回调函数
-- 不要一次性生成超过 10 个 block 的代码块结构
+// **操作类型：**
+// 1. \`list\` - 列出所有版本历史
+// 2. \`get\` - 获取指定版本的内容
+// 3. \`rollback\` - 回滚到指定版本
+// 4. \`save\` - 手动保存当前版本（带描述）
 
-**参数说明**:
-- \`structureDefinition\`: 定义要创建的块（rootBlock + additionalBlocks）
-- \`connectionRules\`: 定义所有块之间的连接（包括新创建的块之间，以及新块与工作区已有块之间）
-
-**示例: 在 Arduino Setup 中添加初始化代码**
-\`\`\`json
-{
-  "structure": "init-code",
-  "config": {
-    "structureDefinition": {
-      "rootBlock": {
-        "type": "control_if",
-        "id": "if_check",
-        "extraState": {"hasElse": true},
-        "inputs": {
-          "IF0": {"block": {"type": "logic_compare", "id": "logic_compare_id", "fields": {"OP": "GT"}, ...}},
-          "DO0": {"block": {"type": "io_digitalwrite", "id": "green_led_on", "inputs": {...}}},
-          "ELSE": {}
-        }
-      },
-      "additionalBlocks": [
-        {
-          "type": "io_digitalwrite",
-          "id": "red_led_on",
-          "inputs": {
-            "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
-            "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "HIGH"}}}
-          }
-        },
-        {
-          "type": "io_digitalwrite",
-          "id": "red_led_off",
-          "inputs": {
-            "PIN": {"shadow": {"type": "io_pin_digi", "fields": {"PIN": "13"}}},
-            "MODE": {"shadow": {"type": "io_state", "fields": {"STATE": "LOW"}}}
-          }
-        }
-      ]
-    }
-  },
-  "connectionRules": [
-    {"source": "arduino_setup_id", "target": "if_check", "connectionType": "statement", "inputName": "ARDUINO_SETUP"},
-    {"source": "green_led_on", "target": "red_led_on", "connectionType": "next"},
-    {"source": "if_check", "target": "red_led_off", "connectionType": "statement", "inputName": "ELSE"}
-  ]
-}
-\`\`\`
-`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                structure: {
-                    type: 'string',
-                    description: '结构名称（用于日志和调试）'
-                },
-                config: {
-                    type: 'object',
-                    properties: {
-                        structureDefinition: {
-                            type: 'object',
-                            properties: {
-                                rootBlock: {
-                                    type: 'object',
-                                    description: '根块配置（必须包含 type 和 id）'
-                                },
-                                additionalBlocks: {
-                                    type: 'array',
-                                    items: { type: 'object' },
-                                    description: '附加块配置数组'
-                                }
-                            },
-                            required: ['rootBlock'],
-                            description: '动态结构定义（仅定义要创建的块）'
-                        }
-                    },
-                    required: ['structureDefinition'],
-                    description: '结构配置对象'
-                },
-                connectionRules: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            source: { type: 'string', description: '源块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
-                            target: { type: 'string', description: '目标块的 id（可以是新创建的块 id，也可以是工作区已有块的 id）' },
-                            inputName: { type: 'string', description: 'statement/input 连接时指定输入名称' },
-                            connectionType: { 
-                                type: 'string', 
-                                enum: ['next', 'input', 'statement'],
-                                description: 'next=source.nextConnection→target.previousConnection，statement=source.getInput(inputName).connection→target.previousConnection，input=source.getInput(inputName).connection→target.outputConnection' 
-                            }
-                        },
-                        required: ['source', 'target', 'connectionType']
-                    },
-                    description: '块之间的连接规则（统一定义所有连接，包括新块之间和新块与已有块之间）'
-                },
-                position: {
-                    type: 'object',
-                    properties: {
-                        x: { type: 'number', description: 'X坐标' },
-                        y: { type: 'number', description: 'Y坐标' }
-                    },
-                    description: '结构在工作区中的坐标位置'
-                }
-            },
-            required: ['structure']
-        }
-    },
-    {
-        name: "configure_block_tool",
-        description: `用途：修改已存在 Blockly 块的字段值与动态结构（extraState），用于调整块的显示/配置但不创建或删除块。
-
-主要能力：
-- 更新字段（field_dropdown、field_input、field_number、field_checkbox、text 等）。
-- 修改动态结构（如 controls_if 的 else/elseif 分支、text_join 或 lists_create_with 的项目数）。
-- 支持通过 blockId 精准定位或通过 blockType 查找第一个匹配块。
-
-前提条件：
-- 目标块必须已存在于工作区。
-- 必须提供有效的 blockId 或 blockType。
-- 字段修改需提供非空的 fields 对象；结构修改需提供 extraState 对象。
-
-限制与注意：
-- 不用于创建新块（请使用 smart_block_tool）。
-- 不用于删除块或改变块之间的连接关系（请使用 delete_block_tool / connect_blocks_tool）。
-- 修改前请确保理解目标块的字段名与 extraState 结构，错误参数可能导致操作失败。
-
-**extraState 使用示例：**
-为 controls_if 块添加 1 个 else if 和 1 个 else 分支：
-\`\`\`json
-{
-  "blockId": "if_block_id",
-  "extraState": {
-    "elseIfCount": 1,
-    "hasElse": true
-  }
-}
-\`\`\`
-
-**必须提供完整的参数结构，空参数会导致工具执行失败。**`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                blockId: {
-                    type: 'string',
-                    description: '要配置的块ID（blockId 和 blockType 至少提供一个）'
-                },
-                blockType: {
-                    type: 'string',
-                    description: '块类型，当未提供 blockId 时使用（会找到第一个匹配类型的块）'
-                },
-                fields: {
-                    type: 'object',
-                    description: '要更新的字段值对象。格式：{"字段名": "字段值"}。字段名需要参考对应库的文档。',
-                    additionalProperties: {
-                        oneOf: [
-                            { type: 'string' },
-                            { type: 'number' },
-                            { type: 'boolean' }
-                        ]
-                    }
-                },
-                extraState: {
-                    type: 'object',
-                    description: '动态块结构配置对象。用于修改支持动态输入的块结构，如 controls_if 的分支数量。',
-                    properties: {
-                        elseIfCount: {
-                            type: 'number',
-                            description: 'else if 分支数量（适用于 controls_if, controls_ifelse）',
-                            minimum: 0,
-                            maximum: 20
-                        },
-                        hasElse: {
-                            type: 'boolean',
-                            description: '是否包含 else 分支（适用于 controls_if）'
-                        },
-                        itemCount: {
-                            type: 'number',
-                            description: '项目数量（适用于 text_join, lists_create_with 等）',
-                            minimum: 1,
-                            maximum: 50
-                        }
-                    },
-                    additionalProperties: true
-                }
-            },
-            anyOf: [
-                { 
-                    allOf: [
-                        { anyOf: [{ required: ['blockId'] }, { required: ['blockType'] }] },
-                        { anyOf: [{ required: ['fields'] }, { required: ['extraState'] }] }
-                    ]
-                }
-            ]
-        }
-    },
+// **使用场景：**
+// - 修改代码前先保存版本，方便回滚
+// - 查看历史版本对比差异
+// - 恢复到之前的代码状态`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 operation: {
+//                     type: 'string',
+//                     enum: ['list', 'get', 'rollback', 'save'],
+//                     description: '操作类型：list=列出版本，get=获取内容，rollback=回滚，save=保存新版本'
+//                 },
+//                 versionId: {
+//                     type: 'string',
+//                     description: '版本 ID（get 和 rollback 操作时必需）'
+//                 },
+//                 description: {
+//                     type: 'string',
+//                     description: '版本描述（save 操作时使用）'
+//                 }
+//             },
+//             required: ['operation']
+//         }
+//     },
     // {
     //     name: "variable_manager_tool",
     //     description: `变量管理工具。创建、删除、重命名工作区中的变量。支持不同类型的变量和作用域管理。`,
@@ -1652,41 +2298,42 @@ Query and return specific content (for detailed info)
     //         required: ['criteria']
     //     }
     // },
-    {
-        name: "delete_block_tool",
-        description: `块删除工具，支持删除单个或多个块。
-**注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
-**注意**：优先使用块创建工具及连接工具修复代码结构。
-
-**功能特点**：
-- 支持单个块ID或多个块ID数组输入
-- 智能删除：只删除指定块，保留连接的块并自动重连
-- 删除后自动重连前后块（如果可能）
-
-**示例**：
-\`\`\`json
-// 删除单个块
-{"blockIds": "block_id_123"}
-
-// 删除多个块
-{"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
-\`\`\`
-
-**注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
-        input_schema: {
-            type: 'object',
-            properties: {
-                blockIds: {
-                    oneOf: [
-                        { type: 'string', description: '单个要删除的块ID' },
-                        { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
-                    ],
-                    description: '要删除的块ID，支持单个字符串或字符串数组'
-                }
-            },
-            required: ['blockIds']
-        }
-    },
+    // 🔇 delete_block_tool 已被 DSL 工具替代（删除 DSL 中的行即可）
+    // {
+    //     name: "delete_block_tool",
+    //     description: `块删除工具，支持删除单个或多个块。
+    // **注意**：严禁直接进行删除操作，避免删除后重新创建相同代码块的操作，确保每次删除都是经过深思熟虑的决定。
+    // **注意**：优先使用块创建工具及连接工具修复代码结构。
+    // 
+    // **功能特点**：
+    // - 支持单个块ID或多个块ID数组输入
+    // - 智能删除：只删除指定块，保留连接的块并自动重连
+    // - 删除后自动重连前后块（如果可能）
+    // 
+    // **示例**：
+    // \`\`\`json
+    // // 删除单个块
+    // {"blockIds": "block_id_123"}
+    // 
+    // // 删除多个块
+    // {"blockIds": ["block_id_1", "block_id_2", "block_id_3"]}
+    // \`\`\`
+    // 
+    // **注意**：被删除块的前后块会尝试自动重连，连接的子块会保留。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockIds: {
+    //                 oneOf: [
+    //                     { type: 'string', description: '单个要删除的块ID' },
+    //                     { type: 'array', items: { type: 'string' }, description: '要删除的块ID数组' }
+    //                 ],
+    //                 description: '要删除的块ID，支持单个字符串或字符串数组'
+    //             }
+    //         },
+    //         required: ['blockIds']
+    //     }
+    // },
     {
         name: "get_workspace_overview_tool",
         description: `工作区全览分析工具。提供工作区的完整分析，包括结构分析、代码生成、复杂度评估、连接关系和树状结构展示。支持多种输出格式：JSON、Markdown、详细报告和控制台输出。`,
@@ -1832,261 +2479,75 @@ Query and return specific content (for detailed info)
 //     },
     {
         name: "todo_write_tool",
-        description: `Creates and manages todo items for task tracking and progress management in the current session.
-Use this tool to create and manage todo items for tracking tasks and progress. This tool provides comprehensive todo management:
+        description: `Manage a structured todo list to track progress and plan tasks.
 
-## When to Use This Tool
+Task states: not-started | in-progress (limit ONE) | completed
 
-Use this tool proactively in these scenarios:
+Workflow: plan todos → mark in-progress → do work → mark completed → next
 
-1. **Complex multi-step tasks** - When a task requires 3 or more distinct steps or actions
-2. **Non-trivial and complex tasks** - Tasks that require careful planning or multiple operations
-3. **User explicitly requests todo list** - When the user directly asks you to use the todo list
-4. **User provides multiple tasks** - When users provide a list of things to be done (numbered or comma-separated)
-5. **After receiving new instructions** - Immediately capture user requirements as todos
-6. **When you start working on a task** - Mark it as in_progress BEFORE beginning work. Ideally you should only have one todo as in_progress at a time
-7. **After completing a task** - Mark it as completed and add any new follow-up tasks discovered during implementation
+Operations:
+- **update**: 全量替换todo列表（传入完整的todos数组，替换当前所有任务）
+- **add**: 追加任务（传todos数组追加，或传content追加单个任务）
+- **toggle**: 切换任务状态（需id）
+- **list**: 查看当前任务列表
+- **delete**: 删除指定任务（需id）
+- **clear**: 清空所有任务
 
-## When NOT to Use This Tool
-
-Skip using this tool when:
-1. There is only a single, straightforward task
-2. The task is trivial and tracking it provides no organizational benefit
-3. The task can be completed in less than 3 trivial steps
-4. The task is purely conversational or informational
-
-## Task States and Management
-
-1. **Task States**: Use these states to track progress:
-   - pending: Task not yet started
-   - in_progress: Currently working on (limit to ONE task at a time)
-   - completed: Task finished successfully
-
-2. **Task Management**:
-   - Update task status in real-time as you work
-   - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
-   - Only have ONE task in_progress at any time
-   - Complete current tasks before starting new ones
-   - Remove tasks that are no longer relevant from the list entirely
-
-3. **Task Completion Requirements**:
-   - ONLY mark a task as completed when you have FULLY accomplished it
-   - If you encounter errors, blockers, or cannot finish, keep the task as in_progress
-   - When blocked, create a new task describing what needs to be resolved
-   - Never mark a task as completed if:
-     - Tests are failing
-     - Implementation is partial
-     - You encountered unresolved errors
-     - You couldn't find necessary files or dependencies
-
-4. **Task Breakdown**:
-   - Create specific, actionable items
-   - Break complex tasks into smaller, manageable steps
-   - Use clear, descriptive task names
-
-## Tool Capabilities
-
-- **Create new todos**: Add tasks with content, priority, and status
-- **Update existing todos**: Modify any aspect of a todo (status, priority, content)
-- **Delete todos**: Remove completed or irrelevant tasks
-- **Batch operations**: Update multiple todos in a single operation
-- **Clear all todos**: Reset the entire todo list
-
-When in doubt, use this tool. Being proactive with task management demonstrates attentiveness and ensures you complete all requirements successfully.
-
-请求参数
-## 必填字段
-- \`operation\`: 操作类型 (add|list|update|toggle|delete|query|stats|clear|optimize)
-
-## 操作特定必填字段
-- **add**: \`content\` - 任务内容
-- **update**: \`todos\` - 任务数组
-- **toggle/delete**: \`id\` - 任务ID
-- **query**: \`query\` - 查询条件对象
-
-## 可选字段
-- \`priority\`: 优先级 (high|medium|low)，默认 'medium'
-- \`tags\`: 标签数组
-
-示例:
-## 添加单个任务 (add)
-\`\`\`json
-{
-  "operation": "add",
-  "content": "完成项目文档",
-  "priority": "high",
-  "status": "pending",
-}
-\`\`\`
-
-## 批量添加任务 (batch_add)
-\`\`\`json
-{
-  "operation": "batch_add",
-  "todos": [
-    {
-      "content": "任务1内容",
-      "priority": "medium",
-      "status": "pending"
-    },
-    {
-      "content": "任务2内容",
-      "priority": "low",
-      "status": "in_progress"
-    }
-  ]
-}
-\`\`\`
-
-## 批量更新任务 (update)
-\`\`\`json
-{
-  "operation": "update",
-  "todos": [
-    {
-      "id": "任务ID",
-      "content": "更新后的任务内容",
-      "status": "in_progress",
-      "priority": "high",
-      "tags": ["标签1", "标签2"]
-    }
-  ]
-}
-\`\`\`
-
-## 查看任务列表 (list)
-\`\`\`json
-{
-  "operation": "list"
-}
-\`\`\`
-
-## 切换任务状态 (toggle)
-\`\`\`json
-{
-  "operation": "toggle",
-  "id": "任务ID"
-}
-\`\`\`
-状态循环：\`pending\` → \`in_progress\` → \`completed\`
-`,
+IMPORTANT: update是全量替换，必须包含所有任务。只想添加新任务时用add。Mark todos completed as soon as they are done.`,
         input_schema: {
             type: 'object',
             properties: {
                 operation: {
                     type: 'string',
-                    enum: ['add', 'batch_add', 'list', 'update', 'toggle', 'delete', 'query', 'stats', 'clear', 'optimize'],
+                    enum: ['update', 'add', 'toggle', 'list', 'delete', 'clear'],
                     description: '操作类型'
                 },
                 sessionId: {
                     type: 'string',
-                    description: '会话ID，默认为default',
+                    description: '会话ID',
                     default: 'default'
                 },
                 content: {
                     type: 'string',
-                    description: '任务内容（add操作必需）'
+                    description: '任务内容（add单项时使用，也接受title字段）'
+                },
+                status: {
+                    type: 'string',
+                    enum: ['not-started', 'in-progress', 'completed'],
+                    description: '任务状态'
                 },
                 priority: {
                     type: 'string',
                     enum: ['high', 'medium', 'low'],
-                    description: '任务优先级，默认为medium',
+                    description: '任务优先级',
                     default: 'medium'
                 },
-                status: {
-                    type: 'string',
-                    enum: ['pending', 'in_progress', 'completed'],
-                    description: '任务状态，默认为pending',
-                    default: 'pending'
-                },
-                tags: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: '任务标签数组'
-                },
-                estimatedHours: {
-                    type: 'number',
-                    description: '预估工时'
-                },
                 id: {
-                    type: 'string',
-                    description: '任务ID（toggle/delete操作必需）'
+                    type: 'number',
+                    description: '任务ID（delete时必需）'
                 },
                 todos: {
                     type: 'array',
-                    description: '任务数组（update/batch_add操作使用）',
+                    description: '任务数组（update时全量替换，add时追加）',
                     items: {
                         type: 'object',
                         properties: {
-                            id: {
-                                type: 'string',
-                                description: '任务唯一标识符'
-                            },
-                            content: {
-                                type: 'string',
-                                description: '任务内容描述'
-                            },
-                            status: {
-                                type: 'string',
-                                enum: ['pending', 'in_progress', 'completed'],
-                                description: '任务状态'
-                            },
-                            priority: {
-                                type: 'string',
-                                enum: ['high', 'medium', 'low'],
-                                description: '任务优先级'
-                            },
-                            tags: {
-                                type: 'array',
-                                items: { type: 'string' },
-                                description: '任务标签'
-                            },
-                            estimatedHours: {
-                                type: 'number',
-                                description: '预估工时'
-                            }
+                            id: { type: 'number', description: '任务ID' },
+                            content: { type: 'string', description: '任务内容（也接受title）' },
+                            status: { type: 'string', enum: ['not-started', 'in-progress', 'completed'] },
+                            priority: { type: 'string', enum: ['high', 'medium', 'low'] }
                         },
                         required: ['content']
-                    }
-                },
-                query: {
-                    type: 'object',
-                    description: '查询条件（query操作使用）',
-                    properties: {
-                        status: {
-                            type: 'array',
-                            items: {
-                                type: 'string',
-                                enum: ['pending', 'in_progress', 'completed']
-                            },
-                            description: '状态筛选'
-                        },
-                        priority: {
-                            type: 'array',
-                            items: {
-                                type: 'string',
-                                enum: ['high', 'medium', 'low']
-                            },
-                            description: '优先级筛选'
-                        },
-                        contentMatch: {
-                            type: 'string',
-                            description: '内容关键词搜索'
-                        },
-                        tags: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: '标签筛选'
-                        }
                     }
                 }
             },
             required: ['operation']
-        }
+        },
+        agents: ["mainAgent"]
     },
     {
         name: 'analyze_library_blocks',
-        description: `分析指定库的块定义，生成类似 readme.md 格式的块定义文档。优先使用read_file工具读取库readme，当库对应的 readme 不存在或描述不准确时，使用此工具补充和完善库的文档说明。`,
+        description: `分析指定库的块定义，生成 ABS (Aily Block Syntax) 格式的块定义文档。优先使用read_file工具读取库readme，当库对应的 readme 不存在或描述不准确时，使用此工具补充和完善库的文档说明。`,
         input_schema: {
             type: 'object',
             properties: {
@@ -2097,33 +2558,548 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
                 }
             },
             required: ['libraryNames']
-        }
+        },
+        agents: ["mainAgent"]
     },
+    // {
+    //     name: 'get_abs_syntax',
+    //     description: `Get the ABS (Aily Block Syntax) syntax specification. Returns a concise but complete reference for writing ABS code. Use this tool when you need to understand ABS syntax rules, block connection types, parameter mapping, or control flow structures before generating ABS code.`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {},
+    //         required: []
+    //     },
+    //     agents: ["mainAgent"]
+    // },
+    // =============================================================================
+    // 硬件接线图工具 (Schematic / Wiring Diagram)
+    // =============================================================================
     {
-        name: 'verify_block_existence',
-        description: `验证指定块是否存在于指定库中。快速检查块的可用性，避免使用不存在的块类型。`,
+        name: 'generate_schematic',
+        description: `生成硬件接线图的核心工具。分析开发板与外设的引脚映射，返回引脚摘要和生成规则。你需要根据返回内容编写 AWS (Aily Wiring Syntax) 连线，再调用 validate_schematic 完成验证、保存与刷新。
+
+**完整工作流：**
+1. （可选）不知道有哪些组件可用时，先调用 get_project_context 获取项目上下文和 pinmapId
+2. 调用本工具，传入 pinmapIds
+3. 工具返回引脚摘要，你根据此编写 AWS 连线内容
+4. 调用 validate_schematic(aws: "...") 验证 + 保存 + 刷新（最终步骤）
+
+**触发时机：** 用户说"帮我接线"、"怎么接 DHT20"、"生成接线图"、"连接传感器"等
+
+**组件类型：**
+- **硬件组件**（传感器、显示屏、执行器）：有物理引脚，需分配引脚并生成连线
+- **软件组件**（WiFi/MQTT/HTTP）：无物理引脚，以信息卡片形式展示
+
+**多实例（同型号多个）：** 使用对象格式指定别名
+\`{ "id": "lib-dht:dht20:asair", "alias": "dht_indoor", "label": "室内" }\`
+
+**软件组件 JSON 格式：**
+\`\`\`json
+{
+  "refId": "wifi", "componentId": "WiFi", "componentName": "WiFi 连接",
+  "pinmapId": "lib-wifi:default:default", "componentType": "software",
+  "softwareConfig": { "libraryType": "wifi", "icon": "wifi", "properties": { "ssid": "MyNetwork" } }
+}
+\`\`\``,
         input_schema: {
             type: 'object',
             properties: {
-                blockTypes: {
+                pinmapIds: {
                     type: 'array',
-                    items: { type: 'string' },
-                    description: '要验证的块类型列表，如 ["blinker_run", "sensor_read_temperature"]'
+                    description: `组件的 pinmapId 列表。支持两种格式：
+- 字符串：\`"lib-dht:dht20:asair"\`
+- 对象（多实例/自定义别名）：\`{ "id": "lib-dht:dht20:asair", "alias": "dht_indoor", "label": "室内温湿度" }\``,
+                    items: {
+                        oneOf: [
+                            { type: 'string' },
+                            {
+                                type: 'object',
+                                properties: {
+                                    id: { type: 'string', description: 'pinmapId 完整标识符' },
+                                    alias: { type: 'string', description: '别名，用作 refId，如 "dht_indoor"' },
+                                    label: { type: 'string', description: '显示名称，如 "室内温湿度"' }
+                                },
+                                required: ['id']
+                            }
+                        ]
+                    }
                 },
-                libraryNames: {
+                components: {
                     type: 'array',
-                    items: { type: 'string' },
-                    description: '要搜索的库名称列表，如 ["@aily-project/lib-blinker"]'
+                    description: '（旧版兼容）组件简称列表，优先使用 pinmapIds。',
+                    items: { type: 'string' }
                 },
-                includeAlternatives: {
-                    type: 'boolean',
-                    default: true,
-                    description: '如果块不存在，是否建议替代方案'
+                requirements: {
+                    type: 'string',
+                    description: '特殊连接需求，如"DHT20 用 3.3V 供电"、"舵机接 D0"等'
                 }
             },
-            required: ['blockTypes', 'libraryNames']
-        }
-    }
+            required: []
+        },
+        agents: ["schematicAgent"]
+    },
+    {
+        name: 'get_pinmap_summary',
+        description: `**已废弃** — generate_schematic 内部已包含完整引脚摘要，通常无需单独调用此工具。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                pinmapIds: {
+                    type: 'array',
+                    description: '要查询的组件 pinmapId 列表（如 ["lib-dht:dht20:asair"]）。如果为空则返回当前开发板的引脚摘要。',
+                    items: { type: 'string' }
+                }
+            },
+            required: []
+        },
+        agents: ["schematicAgent"]
+    },
+    {
+        name: 'get_component_catalog',
+        description: `获取当前项目的组件目录：开发板 + 已安装的传感器/外设库 + 软件库，列出所有可用型号和 pinmapId。
+
+**⭐ 连线流程第一步：** 在生成接线图前，先调用本工具了解项目中有哪些组件可用。
+
+**在以下情况调用：**
+- 开始连线任务时，获取项目的完整组件列表
+- 用户没有指定具体型号，需要先看看有哪些可用
+- 不确定某个组件的 pinmapId 格式
+
+**返回数据：**
+1. **currentBoard**（当前开发板）：开发板的 pinmap 状态和 pinmapId
+   - \`catalogStatus: "available"\`：有 pinmap_catalog.json，包含 models/variants
+   - \`catalogStatus: "legacy_pinmap"\`：使用旧版 pinmap.json，可直接使用
+   - \`catalogStatus: "missing"\`：缺少 pinmap 配置，需用 generate_pinmap 生成
+2. **catalogs**（传感器/外设库）：型号列表 + 变体 + pinmapId。状态 \`available\` 可直接用于 generate_schematic
+3. **softwareLibraries**（软件库）：WiFi/MQTT/HTTP 等，无物理引脚，用 \`{packageSlug}:default:default\` 作为 pinmapId
+4. **librariesMissingCatalog**（缺少配置的库）：需用 generate_pinmap 生成配置`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                libraryFilter: {
+                    type: 'string',
+                    description: '可选，只返回指定库的目录（库的 packageSlug，如 "lib-dht"、"lib-u8g2"）'
+                },
+                includeNeedsGeneration: {
+                    type: 'boolean',
+                    description: '是否包含需要生成 pinmap 的项目（status=needs_generation）',
+                    default: true
+                },
+                includeBoards: {
+                    type: 'boolean',
+                    description: '是否包含当前项目开发板的 pinmap catalog 信息（推荐设为 true）',
+                    default: true
+                }
+            },
+            required: []
+        },
+        agents: ["schematicAgent"]
+    },
+    {
+        name: 'get_project_context',
+        description: `一次获取项目上下文 + 组件目录，合并了 get_context 和 get_component_catalog 的功能。
+
+**⭐ 连线流程第一步：** 替代原先需要依次调用 get_context + get_component_catalog 的两步操作。
+
+**返回数据：**
+1. **project**：项目路径、名称、开发板、已安装库列表
+2. **cppCode**：当前 Blockly 生成的 C++ 代码（用于推断硬件外设需求）
+3. **currentBoard**：开发板的 pinmap 状态和 pinmapId
+4. **catalogs**：传感器/外设库的型号列表 + pinmapId
+5. **softwareLibraries**：软件库（WiFi/MQTT 等，无物理引脚）
+6. **librariesMissingCatalog**：缺少 catalog 的库（需用 generate_pinmap 生成）`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                includeNeedsGeneration: {
+                    type: 'boolean',
+                    description: '是否包含需要生成 pinmap 的项目（status=needs_generation）',
+                    default: true
+                }
+            },
+            required: []
+        },
+        agents: ["schematicAgent"]
+    },
+    {
+        name: 'validate_schematic',
+        description: `验证 AWS 接线图并保存。这是连线工作流的**最终步骤**，集验证 + 保存 + 刷新为一体。
+
+**功能：**
+- 解析 AWS 语法，检查引脚、冲突、电压等安全问题
+- 验证通过后自动保存 connection.aws 和 connection_output.json
+- 自动通知接线图界面刷新
+
+**调用时机：** generate_schematic 返回引脚摘要后，你编写 AWS 连线后调用本工具作为最终步骤。
+
+**推荐流程：**
+1. **get_project_context()**：获取项目上下文 + 组件目录
+2. **generate_schematic(pinmapIds: [...])**：获取引脚摘要
+3. **你编写 AWS 连线**
+4. **validate_schematic(aws: "...")**：验证 + 保存 + 刷新（最终步骤）`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                aws: {
+                    type: 'string',
+                    description: 'AWS (Aily Wiring Syntax) 格式的接线描述。'
+                }
+            },
+            required: []
+        },
+//         description: `验证并保存接线图。支持 JSON 和 AWS 两种格式输入。
+
+// **JSON 格式：** 通过 connection_data 参数传入完整 JSON
+// **AWS 格式：** 通过 aws 参数传入 AWS (Aily Wiring Syntax) 语法
+
+// **调用时机：** generate_schematic 返回引脚摘要后，你生成连线后调用本工具。
+
+// **推荐流程：**
+// 1. **get_context()**：获取当前项目和库的上下文信息，了解当前项目实际使用的开发板和组件
+// 2. **get_component_catalog(includeBoards: true)**：获取开发板 + 组件的 pinmapId 列表
+// 3. **generate_schematic(pinmapIds: [...])**：获取引脚摘要和连线规则
+// 4. **你生成连线**：输出 AWS 格式或 JSON 格式
+// 5. **validate_schematic**：验证并保存`,
+//         input_schema: {
+//             type: 'object',
+//             properties: {
+//                 connection_data: {
+//                     type: 'object',
+//                     description: 'JSON 格式的接线图数据（符合 connection_output.json 格式）。与 aws 参数二选一。'
+//                 },
+//                 aws: {
+//                     type: 'string',
+//                     description: 'AWS (Aily Wiring Syntax) 格式的接线描述。与 connection_data 参数二选一。'
+//                 }
+//             },
+//             required: []
+//         },
+        agents: ["schematicAgent"]
+    },
+    // {
+    //     name: 'apply_schematic',
+    //     description: `**已废弃** — 请直接使用 validate_schematic，它已包含验证 + 保存 + 刷新的完整功能。调用本工具会自动转发到 validate_schematic。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             aws: {
+    //                 type: 'string',
+    //                 description: '可选。直接传入 AWS 内容（首次生成时使用）。不传则从项目中的 connection.aws 文件读取。'
+    //             }
+    //         },
+    //         required: []
+    //     },
+    //     agents: ["schematicAgent"]
+    // },
+    {
+        name: 'get_current_schematic',
+        description: `读取当前项目已保存的连线图完整内容。
+
+**用于编辑流程：** 用户想修改/添加/删除连线时，先调用本工具获取当前状态，然后编写新的 AWS 内容，调用 validate_schematic 验证并保存。
+
+**典型编辑场景：**
+- “删除 DHT20 的 VCC 连线”
+- “把舍口改接到 D3 引脚”
+- “再添加一个 LED”
+
+**编辑流程：**
+1. **get_current_schematic()**：获取当前连线图数据
+2. **修改连线**：基于当前连线信息编写新的 AWS 格式内容
+   - 新增组件时：先调用 generate_schematic 获取新组件引脚信息
+3. **validate_schematic(aws: "修改后的AWS内容")**：验证 + 保存 + 刷新（最终步骤）`,
+        input_schema: {
+            type: 'object',
+            properties: {},
+            required: []
+        },
+        agents: ["mainAgent", "schematicAgent"]
+    },
+    {
+        name: 'generate_pinmap',
+        description: `为缺少引脚配置的组件（开发板、传感器、模块等任意类型）准备生成素材。返回 README、示例代码和 pinmap 模板，供你生成 pinmap JSON，再调用 save_pinmap 保存。
+
+**适用范围：** 开发板、传感器、执行器、显示屏、模块——任何需要 pinmap 的组件均可使用本工具。
+
+**触发条件（满足其一即可）：**
+- get_component_catalog 返回变体 \`status: "needs_generation"\`
+- get_component_catalog 返回库 \`catalogStatus: "missing_catalog"\`
+- 用户明确要求为某个开发板或组件生成 / 更新 pinmap
+
+**流程：** get_component_catalog（可选）→ 本工具（获取素材）→ 你生成 pinmap JSON → save_pinmap`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                pinmapId: {
+                    type: 'string',
+                    description: '目标组件的 fullId。传感器/模块示例：`"lib-servo:sg90:default"`；开发板示例：`"board-xiao_esp32s3:xiao_esp32s3:default"`'
+                },
+                referenceSource: {
+                    type: 'string',
+                    enum: ['readme', 'example', 'auto'],
+                    description: '参考信息来源，默认 auto（自动收集所有可用信息）',
+                    default: 'auto'
+                }
+            },
+            required: ['pinmapId']
+        },
+        agents: ["schematicAgent"]
+    },
+    {
+        name: 'save_pinmap',
+        description: `保存你生成的 pinmap JSON 到库目录，并自动创建/更新 pinmap_catalog.json，将状态置为 "available"。配合 generate_pinmap 使用，是该流程的最后一步。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                pinmapId: {
+                    type: 'string',
+                    description: '目标组件的 fullId（如 "lib-servo:sg90:default"）'
+                },
+                pinmapConfig: {
+                    type: 'object',
+                    description: '完整的 pinmap 配置 JSON（ComponentConfig 格式，包含 id, name, width, height, images, pins, functionTypes 字段）'
+                }
+            },
+            required: ['pinmapId', 'pinmapConfig']
+        },
+        agents: ["schematicAgent"]
+    },
+    // =============================================================================
+    // 编译工具
+    // =============================================================================
+    {
+        name: 'build_project',
+        description: `编译当前项目，检测代码是否能正常编译通过。用于代码编写完成后验证语法和链接是否正确。编译耗时较长（可能数十秒到数分钟），请仅在需要验证时调用。
+
+如果编译出现异常（如缓存损坏、切换开发板后残留旧缓存），可设置 clear_cache=true 在编译前清除缓存。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                preprocess_only: {
+                    type: 'boolean',
+                    description: '是否仅做预编译检查（更快但不生成完整产物，且为异步操作不会返回编译结果）',
+                    default: false
+                },
+                clear_cache: {
+                    type: 'boolean',
+                    description: '编译前是否清除编译缓存（解决缓存损坏或切换开发板后的残留问题）',
+                    default: false
+                }
+            },
+            required: []
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 重新加载工具
+    // =============================================================================
+    {
+        name: 'reload_project',
+        description: `重新加载当前项目。在修改了库相关的JS文件（如块定义、生成器等）后调用，使修改生效。会先保存项目再重新加载。`,
+        input_schema: {
+            type: 'object',
+            properties: {},
+            required: []
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 切换开发板工具
+    // =============================================================================
+    {
+        name: 'switch_board',
+        description: `在当前项目中切换开发板。需要提供新的开发板包名称（如 "@aily-project/board-esp32_devkitc"）。
+切换过程会自动卸载当前开发板包、安装新开发板包、更新项目配置并重新加载项目。
+
+注意：
+- 切换开发板会重置编译缓存
+- 项目中非开发板相关的依赖库会被保留
+- 如果不确定开发板名称，可先使用 search_boards_libraries 工具搜索`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                board_name: {
+                    type: 'string',
+                    description: '开发板包名称，如 "@aily-project/board-esp32_devkitc"、"@aily-project/board-arduino_uno"'
+                },
+                board_version: {
+                    type: 'string',
+                    description: '开发板包版本号（可选，不指定则使用最新版）'
+                }
+            },
+            required: ['board_name']
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 获取开发板编译/烧录配置
+    // =============================================================================
+    {
+        name: 'get_board_config',
+        description: `获取当前开发板的编译/烧录配置选项及其当前值。
+
+返回信息包括：
+- 当前开发板名称和类型
+- 所有可配置项及其可选值（如上传速度、Flash模式、Flash大小、分区方案等）
+- 每个配置项的当前选中值
+
+支持的开发板配置：
+- **ESP32**: 上传速度(UploadSpeed)、上传模式(UploadMode)、Flash模式(FlashMode)、Flash大小(FlashSize)、分区方案(PartitionScheme)、CDC启动(CDCOnBoot)、PSRAM
+- **STM32**: 开发板型号(pnum)、USB配置(usb)
+- **nRF5**: SoftDevice
+
+如果当前开发板没有额外配置选项（如 Arduino UNO），会返回空列表。`,
+        input_schema: {
+            type: 'object',
+            properties: {},
+            required: []
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 设置开发板编译/烧录配置
+    // =============================================================================
+    {
+        name: 'set_board_config',
+        description: `修改当前开发板的编译/烧录配置项。需先通过 get_board_config 工具获取可用的配置项和可选值。
+
+使用方式：
+1. 先调用 get_board_config 获取当前配置和可选值
+2. 根据返回的 config_key 和 options 中的 value，调用此工具设置
+
+示例：
+- 设置ESP32上传速度: set_board_config({ config_key: "UploadSpeed", config_value: "921600" })
+- 设置Flash大小: set_board_config({ config_key: "FlashSize", config_value: "16M" })
+- 设置分区方案: set_board_config({ config_key: "PartitionScheme", config_value: "default" })
+
+注意：配置变更后会自动触发预编译检查。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                config_key: {
+                    type: 'string',
+                    description: '配置项键名（从 get_board_config 返回的 config_key），如 UploadSpeed, FlashMode, FlashSize, PartitionScheme 等'
+                },
+                config_value: {
+                    type: 'string',
+                    description: '配置项的值（从 get_board_config 返回的 options 中的 value），如 "921600", "qio", "16M"'
+                }
+            },
+            required: ['config_key', 'config_value']
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 记忆工具 — 持久化笔记存储（参考 Copilot memory 工具）
+    // =============================================================================
+    {
+        name: 'memory',
+        description: `持久化记忆工具 — 跨会话保存和读取笔记、偏好、项目约定等信息。
+
+两层作用域：
+- **project**: 项目记忆，存储在项目根目录的 aily.md 中。记录项目特定的约定、架构决策、常见问题等。
+- **global**: 全局记忆，跨项目持久化。记录用户偏好、通用模式、经验教训等。
+
+**何时使用：**
+- 用户明确要求"记住"某些偏好或约定时
+- 发现重要的项目模式/约定需要记录时
+- 遇到反复出现的问题，记录解决方案
+- 读取之前保存的上下文以提供连续的协助体验
+
+**不要滥用：** 不要每次对话都写入，只记录真正有价值的持久化知识。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                command: {
+                    type: 'string',
+                    enum: ['read', 'write', 'append', 'replace', 'clear'],
+                    description: '操作命令: read=读取, write=覆写, append=追加, replace=精确替换, clear=清空'
+                },
+                scope: {
+                    type: 'string',
+                    enum: ['project', 'global'],
+                    description: '作用域: project=项目级(aily.md), global=全局级(跨项目)'
+                },
+                content: {
+                    type: 'string',
+                    description: 'write/append 时的内容'
+                },
+                old_text: {
+                    type: 'string',
+                    description: 'replace 时要替换的旧文本'
+                },
+                new_text: {
+                    type: 'string',
+                    description: 'replace 时的新文本'
+                }
+            },
+            required: ['command', 'scope']
+        },
+        agents: ["mainAgent"]
+    },
+    // =============================================================================
+    // 错误诊断工具（参考 Copilot get_errors）
+    // =============================================================================
+    {
+        name: 'get_errors',
+        description: `获取当前项目或指定文件的错误诊断信息。整合 lint 错误和编译错误，一次性返回所有已知问题。
+
+数据来源：
+1. **Lint 错误**: JSON/JS 文件的语法检查
+2. **编译错误**: 上次 build_project 的编译结果
+
+适合场景：
+- 编辑文件后快速检查是否引入错误
+- 编译失败后分析具体错误原因
+- 修复错误前先了解全部问题再一次性修复
+
+注意：编译错误来自上次 build_project 的缓存结果，如果代码已修改建议重新编译。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: '要检查的文件路径（可选，不指定则检查整个项目关键文件）'
+                },
+                include_lint: {
+                    type: 'boolean',
+                    description: '是否包含 lint 错误',
+                    default: true
+                },
+                include_build: {
+                    type: 'boolean',
+                    description: '是否包含上次编译错误',
+                    default: true
+                }
+            },
+            required: []
+        },
+        agents: ["mainAgent"]
+    },
+    // {
+    //     name: 'verify_block_existence',
+    //     description: `验证指定块是否存在于指定库中。快速检查块的可用性，避免使用不存在的块类型。`,
+    //     input_schema: {
+    //         type: 'object',
+    //         properties: {
+    //             blockTypes: {
+    //                 type: 'array',
+    //                 items: { type: 'string' },
+    //                 description: '要验证的块类型列表，如 ["blinker_run", "sensor_read_temperature"]'
+    //             },
+    //             libraryNames: {
+    //                 type: 'array',
+    //                 items: { type: 'string' },
+    //                 description: '要搜索的库名称列表，如 ["@aily-project/lib-blinker"]'
+    //             },
+    //             includeAlternatives: {
+    //                 type: 'boolean',
+    //                 default: true,
+    //                 description: '如果块不存在，是否建议替代方案'
+    //             }
+    //         },
+    //         required: ['blockTypes', 'libraryNames']
+    //     }
+    // }
     // =============================================================================
     // 扁平化块创建工具（推荐）
     // =============================================================================
@@ -2351,4 +3327,36 @@ When in doubt, use this tool. Being proactive with task management demonstrates 
     //         required: ['code']
     //     }
     // }
+    // =============================================================================
+    // 框架图工具
+    // =============================================================================
+    {
+        name: 'save_arch',
+        description: `保存/覆盖框架图到项目目录下的 arch.md 文件。当你生成了 mermaid 框架图后，调用此工具将其持久化保存，无需用户手动点击保存按钮。
+
+传入 mermaid 图表代码（不含 \`\`\`mermaid 包裹），工具会自动包裹并写入 arch.md。
+
+**框架图内容**：
+根据项目实际代码结构和用户需求，在一个图表中必须包含以下内容：
+1.代码执行流程图：展示从 setup 到 loop 的主要执行流程，包含关键函数调用和事件触发关系
+2.项目架构/模块设计：硬件层（开发板、传感器、外设）和软件层（库、模块）的关系图（核心库可以不展示具体块，只展示库和模块关系）
+3.必要的注释说明：图表中可以包含必要的文本说明，帮助理解架构设计和执行流程
+
+**使用时机**：
+- 生成框架图后，直接调用此工具保存，勿等待用户手动操作。
+- 用户要求更新/重新生成框架图时，同样调用此工具覆盖保存。
+
+**重要**：保存成功后框架图会自动在对话中渲染展示，请勿再次输出 mermaid 代码。`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                code: {
+                    type: 'string',
+                    description: 'Mermaid 图表代码（不含 \`\`\`mermaid 代码块包裹，工具会自动添加）'
+                }
+            },
+            required: ['code']
+        },
+        agents: ["mainAgent"]
+    },
 ]

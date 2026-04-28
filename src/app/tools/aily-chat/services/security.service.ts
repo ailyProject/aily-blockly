@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Aily Blockly 安全服务
  * 实现路径验证、敏感文件检测、权限控制等核心安全功能
  * 
@@ -6,6 +6,7 @@
  */
 
 import * as os from 'os';
+import { AilyHost } from '../core/host';
 
 // ==================== 类型定义 ====================
 
@@ -223,7 +224,7 @@ export function normalizePath(inputPath: string): string {
     
     // 使用 window.path.resolve 解析为绝对路径
     try {
-        return window['path'].resolve(inputPath);
+        return AilyHost.get().path.resolve(inputPath);
     } catch {
         // 降级处理：简单清理路径
         return inputPath.replace(/[\\/]+/g, '/');
@@ -241,12 +242,12 @@ export function isPathInside(childPath: string, parentPath: string): boolean {
             return false;
         }
         
-        const resolvedChild = window['path'].resolve(childPath);
-        const resolvedParent = window['path'].resolve(parentPath);
-        const relative = window['path'].relative(resolvedParent, resolvedChild);
+        const resolvedChild = AilyHost.get().path.resolve(childPath);
+        const resolvedParent = AilyHost.get().path.resolve(parentPath);
+        const relative = AilyHost.get().path.relative(resolvedParent, resolvedChild);
         
         // 如果相对路径以 '..' 开头或是绝对路径，则 child 不在 parent 内部
-        const result = !relative.startsWith('..') && !window['path'].isAbsolute(relative);
+        const result = !relative.startsWith('..') && !AilyHost.get().path.isAbsolute(relative);
         return result;
     } catch (error: any) {
         console.error(`[isPathInside] 异常: child="${childPath}", parent="${parentPath}"`, error);
@@ -276,10 +277,10 @@ export function isSensitivePath(filePath: string): boolean {
  */
 export function isSamePath(path1: string, path2: string): boolean {
     try {
-        const resolved1 = window['path'].resolve(path1);
-        const resolved2 = window['path'].resolve(path2);
+        const resolved1 = AilyHost.get().path.resolve(path1);
+        const resolved2 = AilyHost.get().path.resolve(path2);
         // Windows 不区分大小写，其他系统区分
-        const isWindows = window['process']?.platform === 'win32' || /^[A-Za-z]:/.test(resolved1);
+        const isWindows = AilyHost.get().platform?.type === 'win32' || /^[A-Za-z]:/.test(resolved1);
         if (isWindows) {
             return resolved1.toLowerCase() === resolved2.toLowerCase();
         }
@@ -305,7 +306,7 @@ export function isProtectedSystemPath(filePath: string): boolean {
             }
         } else {
             // 相对于用户主目录的敏感路径
-            const fullSensitivePath = window['path'].join(homedir, protectedPath);
+            const fullSensitivePath = AilyHost.get().path.join(homedir, protectedPath);
             // 检查是否是该敏感路径或在其内部
             if (isSamePath(resolvedPath, fullSensitivePath) || isPathInside(resolvedPath, fullSensitivePath)) {
                 return true;
@@ -442,7 +443,7 @@ export function isCriticalRemovalTarget(
     }
     
     // 禁止删除顶级系统目录
-    const parentDir = window['path'].dirname(resolvedPath);
+    const parentDir = AilyHost.get().path.dirname(resolvedPath);
     if (parentDir === '/' || /^[A-Za-z]:[\\/]?$/.test(parentDir)) {
         return {
             allowed: false,
@@ -460,7 +461,7 @@ export function isCriticalRemovalTarget(
  * 获取文件扩展名
  */
 export function getFileExtension(filePath: string): string {
-    const ext = window['path'].extname(filePath).toLowerCase();
+    const ext = AilyHost.get().path.extname(filePath).toLowerCase();
     return ext;
 }
 
@@ -469,7 +470,7 @@ export function getFileExtension(filePath: string): string {
  */
 export function isFileReadAllowed(filePath: string): SecurityCheckResult {
     const ext = getFileExtension(filePath);
-    const fileName = window['path'].basename(filePath).toLowerCase();
+    const fileName = AilyHost.get().path.basename(filePath).toLowerCase();
     
     // 检查是否为禁止的扩展名
     if (FILE_READ_LIMITS.blockedExtensions.includes(ext)) {
@@ -494,8 +495,8 @@ export function isFileReadAllowed(filePath: string): SecurityCheckResult {
  * 检查文件是否允许写入
  */
 export function isFileWriteAllowed(filePath: string): SecurityCheckResult {
-    const fileName = window['path'].basename(filePath).toLowerCase();
-    const dirName = window['path'].dirname(filePath);
+    const fileName = AilyHost.get().path.basename(filePath).toLowerCase();
+    const dirName = AilyHost.get().path.dirname(filePath);
     
     // 检查是否为禁止创建的文件名
     for (const blocked of FILE_WRITE_LIMITS.blockedFileNames) {
@@ -637,8 +638,8 @@ export function validateDirectoryOperation(
  */
 export function getHomedir(): string {
     try {
-        if (typeof window !== 'undefined' && window['os']?.homedir) {
-            return window['os'].homedir();
+        if (typeof window !== 'undefined' && AilyHost.get().platform?.homedir) {
+            return AilyHost.get().platform.homedir();
         }
         // 降级处理
         return process.env['HOME'] || process.env['USERPROFILE'] || '';
@@ -652,12 +653,12 @@ export function getHomedir(): string {
  */
 export function getTempDir(): string {
     try {
-        if (typeof window !== 'undefined' && window['os']?.tmpdir) {
-            const tmpDir = window['os'].tmpdir();
+        if (typeof window !== 'undefined' && AilyHost.get().platform?.tmpdir) {
+            const tmpDir = AilyHost.get().platform.tmpdir();
             return tmpDir;
         }
         // 降级处理：Windows 优先使用 TEMP/TMP 环境变量
-        const tempDir = window['env'].get('TEMP') || window['env'].get('TMP') || '/tmp';
+        const tempDir = AilyHost.get().env.get('TEMP') || AilyHost.get().env.get('TMP') || '/tmp';
         return tempDir;
     } catch (error) {
         console.error('[getTempDir] 异常:', error);
@@ -763,8 +764,8 @@ export function createSecurityContext(
     const opts = options || {};
     return {
         currentProjectPath,
-        librariesPath: currentProjectPath ? window['path']?.join(currentProjectPath, 'libraries') : undefined,
-        nodeModulesPath: opts.nodeModulesPath ?? (currentProjectPath ? window['path']?.join(currentProjectPath, 'node_modules') : undefined),
+        librariesPath: currentProjectPath ? AilyHost.get().path?.join(currentProjectPath, 'libraries') : undefined,
+        nodeModulesPath: opts.nodeModulesPath ?? (currentProjectPath ? AilyHost.get().path?.join(currentProjectPath, 'node_modules') : undefined),
         allowProjectPathAccess: opts.allowProjectPathAccess ?? false,
         allowNodeModulesAccess: opts.allowNodeModulesAccess ?? false,
         additionalAllowedPaths: opts.additionalAllowedPaths || []

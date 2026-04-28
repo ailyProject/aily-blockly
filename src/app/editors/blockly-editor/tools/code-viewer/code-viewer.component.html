@@ -3,11 +3,12 @@
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-sub-window>
 } @else {
-<app-tool-container [title]="'CODE VIEWER'" (closeEvent)="close()">
+<app-tool-container [title]="'CODE VIEWER'" [path]="'/code-viewer'" (closeEvent)="close()">
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-tool-container>
 }
 <ng-template #windowBoxTemplate>
-  <nz-code-editor [(ngModel)]="code" [nzEditorOption]="options">
+  <nz-code-editor [(ngModel)]="code" [nzEditorOption]="options"
+    (nzEditorInitialized)="onEditorInitialized($event)">
   </nz-code-editor>
 </ng-template>

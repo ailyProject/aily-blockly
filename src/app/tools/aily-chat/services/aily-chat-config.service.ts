@@ -1,5 +1,6 @@
-import { Injectable } from '@angular/core';
+﻿import { Injectable } from '@angular/core';
 import { Subject, Observable } from 'rxjs';
+import { AilyHost } from '../core/host';
 
 /**
  * 安全工作区配置项
@@ -31,7 +32,19 @@ export interface ModelConfigOption {
     speed: string;          // 速度标识
     enabled: boolean;       // 是否在列表中显示
     isCustom?: boolean;     // 是否是自定义模型
-    apiKeyId?: string;      // 关联的API配置ID（可选，为空时使用全局配置）
+    baseUrl?: string;       // API Base URL
+    apiKey?: string;        // API Key
+    apiKeyId?: string;      // 关联的API配置ID（兼容旧版本）
+}
+
+/**
+ * 按Agent分类的工具配置
+ */
+export interface AgentToolsConfig {
+    /** 启用的工具列表 */
+    enabledTools: string[];
+    /** 禁用的工具列表 */
+    disabledTools: string[];
 }
 
 /**
@@ -46,8 +59,16 @@ export interface AilyChatConfig {
     apiKey?: string;
     /** 最大循环次数 */
     maxCount?: number;
-    /** 启用的工具列表 */
+    /** 启用的工具列表（兼容旧版本，mainAgent） */
     enabledTools?: string[];
+    /** 禁用的工具列表（兼容旧版本，mainAgent） */
+    disabledTools?: string[];
+    /** 按Agent分类的工具配置 */
+    agentTools?: {
+        mainAgent?: AgentToolsConfig;
+        schematicAgent?: AgentToolsConfig;
+        [agentName: string]: AgentToolsConfig | undefined;
+    };
     /** 安全工作区配置 */
     securityWorkspaces?: {
         /** 是否允许访问项目文件 */
@@ -59,12 +80,34 @@ export interface AilyChatConfig {
     apiKeys?: ApiKeyConfig[];
     /** 模型配置列表 */
     models?: ModelConfigOption[];
+    /** Subagent 单次调用总超时（ms），默认 300000（5分钟） */
+    subagentTimeout?: number;
+    /** 自定义上下文窗口大小（tokens，0 表示自动检测） */
+    contextWindowSize?: number;
+    /** 工具结果压缩阈值比例 (0-1，占上下文窗口的百分比，默认 0.5) */
+    compressionThresholdRatio?: number;
+    /** LLM 摘要阈值比例 (0-1，占上下文窗口的百分比，默认 0.75) */
+    summarizationThresholdRatio?: number;
+    /** 默认自动保存变更（AI编辑完成后自动保留，不弹出变更面板） */
+    autoSaveEdits?: boolean;
 }
 
 /**
  * 默认内置模型列表
  */
 const DEFAULT_MODELS: ModelConfigOption[] = [];
+
+/**
+ * Auto 自动模型选项（由服务端决定使用哪个模型）
+ */
+const AUTO_MODEL: ModelConfigOption = {
+    model: 'auto',
+    name: 'Auto',
+    family: 'auto',
+    speed: '1x',
+    enabled: true,
+    isCustom: false
+};
 
 /**
  * 默认API配置（空列表）
@@ -77,12 +120,17 @@ const DEFAULT_API_KEYS: ApiKeyConfig[] = [];
 const DEFAULT_CONFIG: AilyChatConfig = {
     maxCount: 100,
     enabledTools: [],
+    disabledTools: [],
     securityWorkspaces: {
         project: true,
         library: true
     },
     apiKeys: DEFAULT_API_KEYS,
-    models: DEFAULT_MODELS
+    models: DEFAULT_MODELS,
+    contextWindowSize: 0,
+    compressionThresholdRatio: 0.5,
+    summarizationThresholdRatio: 0.75,
+    autoSaveEdits: true
 };
 
 /**
@@ -111,8 +159,8 @@ export class AilyChatConfigService {
      * 获取配置文件路径
      */
     private getConfigPath(): string {
-        const appDataPath = window['path']?.getAppDataPath?.() || '';
-        return window['path']?.join(appDataPath, this.configFileName) || '';
+        const appDataPath = AilyHost.get().path?.getAppDataPath?.() || '';
+        return AilyHost.get().path?.join(appDataPath, this.configFileName) || '';
     }
 
     /**
@@ -121,8 +169,8 @@ export class AilyChatConfigService {
     load(): void {
         try {
             const configPath = this.getConfigPath();
-            if (configPath && window['fs']?.existsSync(configPath)) {
-                const content = window['fs'].readFileSync(configPath, 'utf-8');
+            if (configPath && AilyHost.get().fs?.existsSync(configPath)) {
+                const content = AilyHost.get().fs.readFileSync(configPath, 'utf-8');
                 const savedConfig = JSON.parse(content);
                 // 合并默认配置和已保存的配置
                 this.config = { ...DEFAULT_CONFIG, ...savedConfig };
@@ -145,7 +193,7 @@ export class AilyChatConfigService {
         try {
             const configPath = this.getConfigPath();
             if (configPath) {
-                window['fs'].writeFileSync(configPath, JSON.stringify(this.config, null, 2), 'utf-8');
+                AilyHost.get().fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2), 'utf-8');
                 // 发送配置变更通知
                 this.configChangedSubject.next({ ...this.config });
                 return true;
@@ -178,13 +226,16 @@ export class AilyChatConfigService {
 
     /**
      * 获取是否使用自定义 API Key (兼容旧版本)
-     * 如果有API配置列表且非空，则认为使用自定义API
+     * 如果有API配置列表且非空，或者有自定义模型，则认为使用自定义API
      */
     get useCustomApiKey(): boolean {
         // 兼容旧版本：如果旧配置存在且有值，返回true
         if (this.config.useCustomApiKey) return true;
         // 新版本：如果有API配置，返回true
-        return (this.config.apiKeys?.length ?? 0) > 0;
+        if ((this.config.apiKeys?.length ?? 0) > 0) return true;
+        // 检查是否有自定义模型（带有apiKey和baseUrl）
+        const hasCustomModels = this.config.models?.some(m => m.isCustom && m.apiKey && m.baseUrl) ?? false;
+        return hasCustomModels;
     }
 
     set useCustomApiKey(value: boolean) {
@@ -244,6 +295,63 @@ export class AilyChatConfigService {
     }
 
     /**
+     * 获取 subagent 单次调用总超时（ms）
+     * 默认 300000（5分钟），覆盖整个多轮工具调用循环
+     */
+    get subagentTimeout(): number {
+        return this.config.subagentTimeout ?? 300000;
+    }
+
+    set subagentTimeout(value: number) {
+        this.config.subagentTimeout = value;
+    }
+
+    // ==================== 上下文预算配置 ====================
+
+    /**
+     * 获取自定义上下文窗口大小（0 表示自动检测）
+     */
+    get contextWindowSize(): number {
+        return this.config.contextWindowSize ?? 0;
+    }
+
+    set contextWindowSize(value: number) {
+        this.config.contextWindowSize = value;
+    }
+
+    /**
+     * 获取工具结果压缩阈值比例
+     */
+    get compressionThresholdRatio(): number {
+        return this.config.compressionThresholdRatio ?? 0.5;
+    }
+
+    set compressionThresholdRatio(value: number) {
+        this.config.compressionThresholdRatio = Math.max(0, Math.min(1, value));
+    }
+
+    /**
+     * 获取 LLM 摘要阈值比例
+     */
+    get summarizationThresholdRatio(): number {
+        return this.config.summarizationThresholdRatio ?? 0.75;
+    }
+
+    set summarizationThresholdRatio(value: number) {
+        this.config.summarizationThresholdRatio = Math.max(0, Math.min(1, value));
+    }
+
+    // ==================== 自动保存变更 ====================
+
+    get autoSaveEdits(): boolean {
+        return this.config.autoSaveEdits ?? false;
+    }
+
+    set autoSaveEdits(value: boolean) {
+        this.config.autoSaveEdits = value;
+    }
+
+    /**
      * 获取启用的工具列表
      */
     get enabledTools(): string[] {
@@ -252,6 +360,58 @@ export class AilyChatConfigService {
 
     set enabledTools(value: string[]) {
         this.config.enabledTools = value;
+    }
+
+    /**
+     * 获取禁用的工具列表
+     */
+    get disabledTools(): string[] {
+        return this.config.disabledTools ?? [];
+    }
+
+    set disabledTools(value: string[]) {
+        this.config.disabledTools = value;
+    }
+
+    /**
+     * 获取指定Agent的工具配置
+     * @param agentName Agent名称（如 'mainAgent', 'schematicAgent'）
+     */
+    getAgentToolsConfig(agentName: string): AgentToolsConfig {
+        // 优先从 agentTools 获取
+        const agentConfig = this.config.agentTools?.[agentName];
+        if (agentConfig) {
+            return {
+                enabledTools: agentConfig.enabledTools ?? [],
+                disabledTools: agentConfig.disabledTools ?? []
+            };
+        }
+        // 兼容旧版本：mainAgent 使用顶层的 enabledTools/disabledTools
+        if (agentName === 'mainAgent') {
+            return {
+                enabledTools: this.config.enabledTools ?? [],
+                disabledTools: this.config.disabledTools ?? []
+            };
+        }
+        // 其他Agent默认返回空配置
+        return { enabledTools: [], disabledTools: [] };
+    }
+
+    /**
+     * 设置指定Agent的工具配置
+     * @param agentName Agent名称
+     * @param config 工具配置
+     */
+    setAgentToolsConfig(agentName: string, config: AgentToolsConfig): void {
+        if (!this.config.agentTools) {
+            this.config.agentTools = {};
+        }
+        this.config.agentTools[agentName] = config;
+        // 同步更新顶层配置（兼容旧版本）
+        if (agentName === 'mainAgent') {
+            this.config.enabledTools = config.enabledTools;
+            this.config.disabledTools = config.disabledTools;
+        }
     }
 
     /**
@@ -343,16 +503,21 @@ export class AilyChatConfigService {
     /**
      * 获取已启用的模型列表
      * 规则：如果未启用自定义API KEY，则只返回内置模型
+     * 始终在列表最前面添加 Auto 选项
      */
     getEnabledModels(): ModelConfigOption[] {
         const enabledModels = this.models.filter(m => m.enabled);
         
         // 如果未启用自定义API KEY，过滤掉自定义模型
+        let resultModels: ModelConfigOption[];
         if (!this.useCustomApiKey) {
-            return enabledModels.filter(m => !m.isCustom);
+            resultModels = enabledModels.filter(m => !m.isCustom);
+        } else {
+            resultModels = enabledModels;
         }
         
-        return enabledModels;
+        // 始终在列表最前面添加 Auto 选项
+        return [AUTO_MODEL, ...resultModels];
     }
 
     /**
@@ -524,6 +689,19 @@ export class AilyChatConfigService {
                     apiKey: this.config.apiKey
                 });
             }
+        }
+
+        // 迁移旧版本的 apiKeyId 关联到新的直接配置
+        if (this.config.models && this.config.apiKeys) {
+            this.config.models.forEach(model => {
+                if (model.apiKeyId && !model.baseUrl && !model.apiKey) {
+                    const apiKey = this.config.apiKeys?.find(k => k.id === model.apiKeyId);
+                    if (apiKey) {
+                        model.baseUrl = apiKey.baseUrl;
+                        model.apiKey = apiKey.apiKey;
+                    }
+                }
+            });
         }
     }
 }

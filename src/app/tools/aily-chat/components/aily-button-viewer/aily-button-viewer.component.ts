@@ -74,13 +74,16 @@ export class AilyButtonViewerComponent {
 
     /**
      * 规范化按钮数据
+     * 支持 text/label、action/command/value、type、icon、disabled、loading
      */
     private normalizeButtonData(buttonData: any): ButtonData {
         return {
             text: buttonData.text || buttonData.label || '按钮',
-            action: buttonData.action || buttonData.command || '',
-            type: buttonData.type || 'primary',
+            action: buttonData.action || buttonData.command || buttonData.value || '',
+            type: buttonData.type || 'default',
             icon: buttonData.icon,
+            disabled: buttonData.disabled,
+            loading: buttonData.loading,
             id: buttonData.id || ''
         };
     }

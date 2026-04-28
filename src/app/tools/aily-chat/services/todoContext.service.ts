@@ -42,8 +42,8 @@ export class TodoContextService {
    */
   static getWorkStatus(sessionId: string): string {
     const todos = getTodos(sessionId);
-    const inProgress = todos.filter(t => t.status === 'in_progress');
-    const pending = todos.filter(t => t.status === 'pending');
+    const inProgress = todos.filter(t => t.status === 'in-progress');
+    const pending = todos.filter(t => t.status === 'not-started');
     const highPriority = pending.filter(t => t.priority === 'high');
 
     if (inProgress.length > 0) {
@@ -76,8 +76,8 @@ export class TodoContextService {
     return `📊 任务进度报告:\n` +
            `• 总任务数: ${stats.total}\n` +
            `• 完成率: ${completionRate}%\n` +
-           `• 进行中: ${stats.byStatus.in_progress}项\n` +
-           `• 待处理: ${stats.byStatus.pending}项\n` +
+           `• 进行中: ${stats.byStatus['in-progress']}项\n` +
+           `• 待处理: ${stats.byStatus['not-started']}项\n` +
            `• 高优先级: ${stats.byPriority.high}项`;
   }
 
@@ -90,8 +90,8 @@ export class TodoContextService {
     suggestion: string;
   } {
     const todos = getTodos(sessionId);
-    const inProgress = todos.filter(t => t.status === 'in_progress');
-    const highPriorityPending = todos.filter(t => t.priority === 'high' && t.status === 'pending');
+    const inProgress = todos.filter(t => t.status === 'in-progress');
+    const highPriorityPending = todos.filter(t => t.priority === 'high' && t.status === 'not-started');
     
     // 如果有进行中的任务但用户很久没更新
     if (inProgress.length > 0) {
@@ -135,8 +135,8 @@ export class TodoContextService {
       return suggestions;
     }
 
-    const inProgress = todos.filter(t => t.status === 'in_progress');
-    const pending = todos.filter(t => t.status === 'pending');
+    const inProgress = todos.filter(t => t.status === 'in-progress');
+    const pending = todos.filter(t => t.status === 'not-started');
     const highPriority = pending.filter(t => t.priority === 'high');
 
     if (inProgress.length > 0) {

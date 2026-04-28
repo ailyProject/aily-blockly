@@ -2,7 +2,7 @@ import { Component } from '@angular/core';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { ActivatedRoute } from '@angular/router';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ProjectService } from '../../../services/project.service';
 import { ConfigService } from '../../../services/config.service';
@@ -47,7 +47,8 @@ export class SubjectItemComponent {
     private crossPlatformCmdService: CrossPlatformCmdService,
     private playgroundService: PlaygroundService,
     private uiService: UiService,
-    private platformService: PlatformService
+    private platformService: PlatformService,
+    private translate: TranslateService,
   ) { }
 
   ngOnInit() {
@@ -84,7 +85,7 @@ export class SubjectItemComponent {
     const currentItem = this.exampleItem?.examples?.find(item => item.path === path);
     if (!currentItem) return;
 
-    this.message.loading('正在加载示例');
+    this.message.loading(this.translate.instant('PLAYGROUND.LOADING_EXAMPLE'));
     currentItem.loading = true;
     
     try {
@@ -92,7 +93,7 @@ export class SubjectItemComponent {
       const examplePath = `${appDataPath}/node_modules/${this.exampleItem.name}/${path}`;
       const abiFilePath = `${examplePath}/project.abi`;
 
-      this.uiService.updateFooterState({ state: 'doing', text: `正在加载示例...`, timeout: 300000 });
+      this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PLAYGROUND.LOADING_EXAMPLE'), timeout: 300000 });
       // 避免缓存，一律重新安装加载
       await this.cmdService.runAsync(`npm cache clean --force`);
       await this.cmdService.runAsync(`npm install ${this.exampleItem.name} --prefix "${appDataPath}" --force`);
@@ -108,10 +109,10 @@ export class SubjectItemComponent {
       const targetPath = `${this.projectService.projectRootPath}${separator}${targetPathName}`;
       console.log('目标路径: ', targetPath);
       await this.crossPlatformCmdService.copyItem(examplePath, targetPath, true, true);
-      this.uiService.updateFooterState({ state: 'done', text: `示例加载完成` });
+      this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_SUCCESS') });
       this.projectService.projectOpen(targetPath);
     } catch (error) {
-      this.message.error('示例加载失败');
+      this.message.error(this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_FAILED'));
     } finally {
       currentItem.loading = false;
     }
@@ -125,7 +126,7 @@ export class SubjectItemComponent {
     if (url) {
       this.electronService.openUrl(url);
     } else {
-      this.message.info("库作者未提供教程");
+      this.message.info(this.translate.instant('PLAYGROUND.NO_TUTORIAL_PROVIDED'));
     }
   }
 }

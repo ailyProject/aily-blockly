@@ -1,10 +1,5 @@
 /**
  * Ripgrep 工具包装器 - 用于高速文件内容搜索
- * 参考 Kode 项目的 ripgrep 实现
- * 
- * 支持两种方式:
- * 1. 使用内置的 ripgrep 二进制文件 (无需用户安装)
- * 2. 使用系统 PATH 中的 ripgrep (如果已安装)
  */
 
 const { execFile } = require('child_process');
@@ -12,59 +7,25 @@ const path = require('path');
 const fs = require('fs');
 
 /**
- * 查找 ripgrep 可执行文    // 注意: 回到传统模式,在 JavaScript 层手动处理多匹配
-    if (contextLines > 0) {
-        args.push('-C', contextLines.toString());
-    }
-    
-    // 大小写敏感性 优先级: 1. 内置版本  2. 系统 PATH
+ * 查找 ripgrep 可执行文件路径
+ * 优先使用 AILY_RG_PATH 环境变量（由 main.js 设置），指向 child/rg.exe 或 child/rg
  * @returns {string} ripgrep 可执行文件的完整路径
  */
 function findRipgrepPath() {
-    // 1. 首先尝试使用内置的 ripgrep (推荐方式)
-    const bundledRgPath = getBundledRipgrepPath();
-    if (bundledRgPath && fs.existsSync(bundledRgPath)) {
-        console.log('使用内置 ripgrep:', bundledRgPath);
-        return bundledRgPath;
+    if (process.env.AILY_RG_PATH) {
+        return process.env.AILY_RG_PATH;
     }
-    
-    // 2. 如果内置版本不存在，尝试使用系统 PATH 中的 rg
-    console.log('内置 ripgrep 不存在，尝试使用系统版本');
-    return process.platform === 'win32' ? 'rg.exe' : 'rg';
-}
-
-/**
- * 获取内置 ripgrep 的路径
- * 支持多平台多架构
- * @returns {string|null} 内置 ripgrep 的路径，如果不存在则返回 null
- */
-function getBundledRipgrepPath() {
-    try {
-        // ripgrep 二进制文件存放在 electron/vendor/ripgrep 目录
-        const vendorRoot = path.join(__dirname, 'vendor', 'ripgrep');
-        
-        let rgBinary;
-        
-        if (process.platform === 'win32') {
-            // Windows: 根据架构选择对应的二进制文件
-            // x64 是最常见的，也可以支持 ia32
-            const arch = process.arch === 'ia32' ? 'ia32' : 'x64';
-            rgBinary = path.join(vendorRoot, `${arch}-win32`, 'rg.exe');
-        } else if (process.platform === 'darwin') {
-            // macOS: 支持 x64 和 arm64 (Apple Silicon)
-            rgBinary = path.join(vendorRoot, `${process.arch}-darwin`, 'rg');
-        } else if (process.platform === 'linux') {
-            // Linux: 支持多种架构
-            rgBinary = path.join(vendorRoot, `${process.arch}-linux`, 'rg');
-        } else {
-            console.warn('不支持的平台:', process.platform);
-            return null;
-        }
-        
-        return rgBinary;
-    } catch (error) {
-        console.error('获取内置 ripgrep 路径失败:', error);
-        return null;
+    // 回退：根据平台和运行模式定位
+    const isDev = process.env.DEV === 'true';
+    const childRoot = isDev
+        ? path.join(__dirname, '..', 'child')
+        : path.join(process.resourcesPath, 'child');
+    if (process.platform === 'win32') {
+        return path.join(childRoot, isDev ? 'windows' : '', 'rg.exe');
+    } else if (process.platform === 'darwin') {
+        return path.join(childRoot, isDev ? 'macos' : '', 'rg');
+    } else {
+        return 'rg';
     }
 }
 
@@ -112,16 +73,6 @@ async function isRipgrepAvailable() {
             (error, stdout, stderr) => {
                 if (error) {
                     console.warn('Ripgrep 执行失败:', error.message);
-                    console.warn('错误详情:', stderr);
-                    
-                    // 在 macOS 上提供安装建议
-                    if (process.platform === 'darwin') {
-                        console.log('💡 在 macOS 上安装 ripgrep 的方法:');
-                        console.log('   方法1: brew install ripgrep');
-                        console.log('   方法2: 从 https://github.com/BurntSushi/ripgrep/releases 下载');
-                        console.log('   方法3: 运行 node electron/download-ripgrep.js 下载内置版本');
-                    }
-                    
                     resolve(false);
                 } else {
                     console.log('Ripgrep 可用:', stdout.trim());

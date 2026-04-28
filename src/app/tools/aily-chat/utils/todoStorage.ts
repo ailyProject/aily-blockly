@@ -1,13 +1,13 @@
+import { AilyHost } from '../core/host';
 export interface TodoItem {
-  id: string
+  id: number
   content: string
-  status: 'pending' | 'in_progress' | 'completed'
+  status: 'not-started' | 'in-progress' | 'completed'
   priority: 'high' | 'medium' | 'low'
   createdAt?: number
   updatedAt?: number
   tags?: string[]
   estimatedHours?: number
-  previousStatus?: 'pending' | 'in_progress' | 'completed'
 }
 
 export interface TodoQuery {
@@ -39,16 +39,16 @@ export interface ValidationResult {
   meta?: any
 }
 
-// 文件存储适配器 - 适配现有的 window['fs'] API
+// 文件存储适配器 - 适配现有的 AilyHost.get().fs API
 const FileStorageAdapter = {
-  exists: (path: string) => window['fs'].existsSync(path),
-  read: (path: string) => window['fs'].readFileSync(path, 'utf-8'),
+  exists: (path: string) => AilyHost.get().fs.existsSync(path),
+  read: (path: string) => AilyHost.get().fs.readFileSync(path, 'utf-8'),
   write: (path: string, content: string) => {
-    const dir = window['path'].dirname(path);
-    if (!window['fs'].existsSync(dir)) {
-      window['fs'].mkdirSync(dir, { recursive: true });
+    const dir = AilyHost.get().path.dirname(path);
+    if (!AilyHost.get().fs.existsSync(dir)) {
+      AilyHost.get().fs.mkdirSync(dir, { recursive: true });
     }
-    window['fs'].writeFileSync(path, content, 'utf-8');
+    AilyHost.get().fs.writeFileSync(path, content);
   }
 };
 
@@ -67,14 +67,14 @@ const CACHE_TTL = 5000 // 5秒缓存
 // 智能排序函数
 function smartSort(todos: TodoItem[]): TodoItem[] {
   return [...todos].sort((a, b) => {
-    // 1. 状态优先级: in_progress > pending > completed
-    const statusOrder = { in_progress: 3, pending: 2, completed: 1 }
-    const statusDiff = statusOrder[b.status] - statusOrder[a.status]
+    // 1. 状态优先级: in-progress > not-started > completed
+    const statusOrder: Record<string, number> = { 'in-progress': 3, 'not-started': 2, completed: 1 }
+    const statusDiff = (statusOrder[b.status] || 0) - (statusOrder[a.status] || 0)
     if (statusDiff !== 0) return statusDiff
 
     // 2. 优先级: high > medium > low
-    const priorityOrder = { high: 3, medium: 2, low: 1 }
-    const priorityDiff = priorityOrder[b.priority] - priorityOrder[a.priority]
+    const priorityOrder: Record<string, number> = { high: 3, medium: 2, low: 1 }
+    const priorityDiff = (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0)
     if (priorityDiff !== 0) return priorityDiff
 
     // 3. 更新时间 (最新的在前)
@@ -100,13 +100,13 @@ export function validateTodos(todos: TodoItem[]): ValidationResult {
     }
   }
 
-  // 检查多个in_progress任务
-  const inProgressTasks = todos.filter(todo => todo.status === 'in_progress')
+  // 检查多个in-progress任务
+  const inProgressTasks = todos.filter(todo => todo.status === 'in-progress')
   if (inProgressTasks.length > 1) {
     return {
       result: false,
       errorCode: 2,
-      message: 'Only one task can be in_progress at a time',
+      message: 'Only one task can be in-progress at a time',
       meta: { inProgressTaskIds: inProgressTasks.map(t => t.id) },
     }
   }
@@ -121,7 +121,7 @@ export function validateTodos(todos: TodoItem[]): ValidationResult {
         meta: { todoId: todo.id },
       }
     }
-    if (!['pending', 'in_progress', 'completed'].includes(todo.status)) {
+    if (!['not-started', 'in-progress', 'completed'].includes(todo.status)) {
       return {
         result: false,
         errorCode: 4,
@@ -145,7 +145,7 @@ export function validateTodos(todos: TodoItem[]): ValidationResult {
 // 指标管理
 function updateMetrics(sessionId: string, operation: string, cacheHit: boolean = false): void {
   try {
-    const metricsFile = `${window['path'].getAppDataPath()}/aily-todos/metrics_${sessionId}.json`
+    const metricsFile = `${AilyHost.get().path.getAppDataPath()}/aily-todos/metrics_${sessionId}.json`
     let metrics: TodoMetrics = {
       totalOperations: 0,
       cacheHits: 0,
@@ -188,7 +188,7 @@ export function getTodos(sessionId: string = 'default'): TodoItem[] {
 
   updateMetrics(sessionId, 'getTodos', false)
   
-  const todoFile = `${window['path'].getAppDataPath()}/aily-todos/todos_${sessionId}.json`
+  const todoFile = `${AilyHost.get().path.getAppDataPath()}/aily-todos/todos_${sessionId}.json`
   let todos: TodoItem[] = []
   
   try {
@@ -210,24 +210,19 @@ export function getTodos(sessionId: string = 'default'): TodoItem[] {
 
 export function setTodos(todos: TodoItem[], sessionId: string = 'default'): void {
   try {
-    const existingTodos = getTodos(sessionId)
-    
-    // 处理previousStatus追踪
+    // 处理时间戳
     const processedTodos = todos.map(todo => {
-      const existingTodo = existingTodos.find(existing => existing.id === todo.id)
-      
       return {
         ...todo,
         updatedAt: Date.now(),
         createdAt: todo.createdAt || Date.now(),
-        previousStatus: existingTodo?.status !== todo.status ? existingTodo?.status : todo.previousStatus,
       }
     })
 
     // 智能排序
     const sortedTodos = smartSort(processedTodos)
     
-    const todoFile = `${window['path'].getAppDataPath()}/aily-todos/todos_${sessionId}.json`
+    const todoFile = `${AilyHost.get().path.getAppDataPath()}/aily-todos/todos_${sessionId}.json`
     FileStorageAdapter.write(todoFile, JSON.stringify(sortedTodos, null, 2))
     
     // 清除缓存
@@ -261,7 +256,7 @@ export function addTodo(todo: Omit<TodoItem, 'createdAt' | 'updatedAt'>, session
   return updatedTodos
 }
 
-export function updateTodo(id: string, updates: Partial<TodoItem>, sessionId: string = 'default'): TodoItem[] {
+export function updateTodo(id: number, updates: Partial<TodoItem>, sessionId: string = 'default'): TodoItem[] {
   const todos = getTodos(sessionId)
   const existingTodo = todos.find(todo => todo.id === id)
 
@@ -278,7 +273,7 @@ export function updateTodo(id: string, updates: Partial<TodoItem>, sessionId: st
   return updatedTodos
 }
 
-export function deleteTodo(id: string, sessionId: string = 'default'): TodoItem[] {
+export function deleteTodo(id: number, sessionId: string = 'default'): TodoItem[] {
   const todos = getTodos(sessionId)
   const todoExists = todos.some(todo => todo.id === id)
 
@@ -297,7 +292,17 @@ export function clearTodos(sessionId: string = 'default'): void {
   updateMetrics(sessionId, 'clearTodos')
 }
 
-export function getTodoById(id: string, sessionId: string = 'default'): TodoItem | undefined {
+/**
+ * 临时清理：仅清内存缓存，不写磁盘，用于取消/新建会话时避免磁盘 IO
+ */
+export function clearTodosCache(sessionId: string = 'default'): void {
+  const cacheKey = sessionId || 'default'
+  todoCache.set(cacheKey, [])
+  cacheTimestamp.set(cacheKey, Date.now())
+  updateMetrics(sessionId, 'clearTodosCache')
+}
+
+export function getTodoById(id: number, sessionId: string = 'default'): TodoItem | undefined {
   const todos = getTodos(sessionId)
   updateMetrics(sessionId, 'getTodoById')
   return todos.find(todo => todo.id === id)
@@ -363,7 +368,7 @@ export function getTodoStatistics(sessionId: string = 'default') {
   }
 
   try {
-    const metricsFile = `${window['path'].getAppDataPath()}/aily-todos/metrics_${sessionId}.json`
+    const metricsFile = `${AilyHost.get().path.getAppDataPath()}/aily-todos/metrics_${sessionId}.json`
     if (FileStorageAdapter.exists(metricsFile)) {
       const fileContent = FileStorageAdapter.read(metricsFile)
       metrics = { ...metrics, ...JSON.parse(fileContent) }
@@ -375,8 +380,8 @@ export function getTodoStatistics(sessionId: string = 'default') {
   return {
     total: todos.length,
     byStatus: {
-      pending: todos.filter(t => t.status === 'pending').length,
-      in_progress: todos.filter(t => t.status === 'in_progress').length,
+      'not-started': todos.filter(t => t.status === 'not-started').length,
+      'in-progress': todos.filter(t => t.status === 'in-progress').length,
       completed: todos.filter(t => t.status === 'completed').length,
     },
     byPriority: {
@@ -401,9 +406,9 @@ export function optimizeTodoStorage(sessionId: string = 'default'): void {
   const todos = getTodos(sessionId)
   const validTodos = todos.filter(
     todo =>
-      todo.id &&
+      todo.id != null &&
       todo.content &&
-      ['pending', 'in_progress', 'completed'].includes(todo.status) &&
+      ['not-started', 'in-progress', 'completed'].includes(todo.status) &&
       ['high', 'medium', 'low'].includes(todo.priority),
   )
 
@@ -423,8 +428,8 @@ export function getTodoContextSummary(sessionId: string = 'default'): string {
     return "当前没有待办任务。"
   }
   
-  const inProgress = todos.filter(t => t.status === 'in_progress')
-  const pending = todos.filter(t => t.status === 'pending')
+  const inProgress = todos.filter(t => t.status === 'in-progress')
+  const pending = todos.filter(t => t.status === 'not-started')
   const highPriority = todos.filter(t => t.priority === 'high' && t.status !== 'completed')
   
   let summary = `📋 当前有${stats.total}个任务`
@@ -446,12 +451,12 @@ export function getTodoContextSummary(sessionId: string = 'default'): string {
 export function getNextTask(sessionId: string = 'default'): TodoItem | null {
   const todos = getTodos(sessionId)
   
-  // 优先返回in_progress任务
-  const inProgress = todos.find(t => t.status === 'in_progress')
+  // 优先返回in-progress任务
+  const inProgress = todos.find(t => t.status === 'in-progress')
   if (inProgress) return inProgress
   
-  // 然后返回最高优先级的pending任务
-  const pendingTodos = todos.filter(t => t.status === 'pending')
+  // 然后返回最高优先级的not-started任务
+  const pendingTodos = todos.filter(t => t.status === 'not-started')
   if (pendingTodos.length === 0) return null
   
   // 按优先级排序
@@ -466,12 +471,12 @@ export function getNextTask(sessionId: string = 'default'): TodoItem | null {
 export function clearTodoStorage(): void {
   // 删除所有存储文件
   try {
-    const dir = `${window['path'].getAppDataPath()}/aily-todos`
+    const dir = `${AilyHost.get().path.getAppDataPath()}/aily-todos`
     if (FileStorageAdapter.exists(dir)) {
-      const files = window['fs'].readdirSync(dir)
+      const files = AilyHost.get().fs.readdirSync(dir)
       for (const file of files) {
         if (file.startsWith('todos_') || file.startsWith('metrics_')) {
-          window['fs'].unlinkSync(window['path'].join(dir, file))
+          AilyHost.get().fs.unlinkSync(AilyHost.get().path.join(dir, file))
         }
       }
     }

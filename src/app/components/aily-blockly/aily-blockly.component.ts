@@ -3,6 +3,8 @@ import * as Blockly from 'blockly';
 import * as zhHans from 'blockly/msg/zh-hans';
 import { browserEvents } from 'blockly';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
+import { PlatformService } from '../../services/platform.service';
+import { applyWindowsBlocklyScrollbarThickness } from '../../editors/blockly-editor/utils/apply-windows-blockly-scrollbar-thickness';
 
 @Component({
   selector: 'app-aily-blockly',
@@ -41,7 +43,8 @@ export class AilyBlocklyComponent implements OnInit {
   }
 
   constructor(
-    private blocklyService: BlocklyService
+    private blocklyService: BlocklyService,
+    private platformService: PlatformService
   ) { }
 
   workspace: any;
@@ -56,6 +59,7 @@ export class AilyBlocklyComponent implements OnInit {
     Blockly.setLocale(<any>zhHans);
     const blocklyArea = this.blocklyArea.nativeElement;
     const blocklyDiv = this.blocklyDiv.nativeElement;
+    applyWindowsBlocklyScrollbarThickness(this.platformService.isWindows());
     this.workspace = Blockly.inject(blocklyDiv, {
       toolbox: this.data,
       grid: {

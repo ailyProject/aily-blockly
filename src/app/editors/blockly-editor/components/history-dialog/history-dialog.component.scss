@@ -12,13 +12,13 @@
 
   .info {
     .time { font-weight: bold; margin-bottom: 4px; }
-    .note { color: #666; margin-left: 8px; font-size: 12px; }
+    .note { color: var(--aily-text-tertiary); margin-left: 8px; font-size: 12px; }
   }
 }
 
 .history-list-item {
   padding: 12px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--aily-border-subtle);
 
   &:last-child {
     border-bottom: none;

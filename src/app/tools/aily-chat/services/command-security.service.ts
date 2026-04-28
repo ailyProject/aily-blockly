@@ -1,3 +1,4 @@
+﻿import { AilyHost } from '../core/host';
 /**
  * Aily Blockly 命令安全验证器
  * 实现命令白名单/黑名单和危险命令检测
@@ -690,7 +691,7 @@ export function validateWorkingDirectory(cwd: string, projectRootPath: string): 
     // 检查是否在项目目录内
     if (!normalizedCwd.startsWith(normalizedRoot)) {
         // 检查是否在允许的其他目录
-        const appDataPath = window['path']?.getAppDataPath?.()?.replace(/\\/g, '/').toLowerCase();
+        const appDataPath = AilyHost.get().path?.getAppDataPath?.()?.replace(/\\/g, '/').toLowerCase();
         if (appDataPath && normalizedCwd.startsWith(appDataPath)) {
             return { allowed: true, requiresConfirmation: false, category: 'safe' };
         }
@@ -896,10 +897,10 @@ export function validateDeleteCommandPaths(
         // 解析相对路径为绝对路径
         let absoluteTarget: string;
         try {
-            if (window['path']?.isAbsolute?.(target)) {
-                absoluteTarget = window['path'].resolve(target);
+            if (AilyHost.get().path?.isAbsolute?.(target)) {
+                absoluteTarget = AilyHost.get().path.resolve(target);
             } else {
-                absoluteTarget = window['path'].resolve(cwd, target);
+                absoluteTarget = AilyHost.get().path.resolve(cwd, target);
             }
         } catch {
             absoluteTarget = target;
@@ -1137,10 +1138,10 @@ function isPathInAllowedRange(
     // 解析相对路径为绝对路径
     let absoluteTarget: string;
     try {
-        if (window['path']?.isAbsolute?.(targetPath)) {
-            absoluteTarget = window['path'].resolve(targetPath);
+        if (AilyHost.get().path?.isAbsolute?.(targetPath)) {
+            absoluteTarget = AilyHost.get().path.resolve(targetPath);
         } else {
-            absoluteTarget = window['path'].resolve(cwd, targetPath);
+            absoluteTarget = AilyHost.get().path.resolve(cwd, targetPath);
         }
     } catch {
         absoluteTarget = targetPath;

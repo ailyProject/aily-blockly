@@ -1,0 +1,48 @@
+<div class="workspace-shell">
+  <!-- <div class="page-tabs">
+    <div class="page-tabs__main">
+      <nz-tabset
+        [nzSize]="'small'"
+        [nzSelectedIndex]="selectedIndex"
+        (nzSelectedIndexChange)="onTabChange($event)"
+        nzType="editable-card"
+        [nzHideAdd]="false"
+        (nzAdd)="pageAdded.emit()"
+        (nzClose)="onTabClose($event)">
+        <ng-container *ngFor="let page of pages; trackBy: trackPage">
+          <nz-tab [nzClosable]="pages.length > 1" [nzTitle]="page.title"></nz-tab>
+        </ng-container>
+      </nz-tabset>
+    </div>
+
+    <div class="page-tabs__actions" *ngIf="closedPages.length > 0">
+      <button
+        nz-button
+        nzType="text"
+        nz-dropdown
+        [nzDropdownMenu]="closedPagesMenu"
+        nzTrigger="click"
+        class="reopen-page-btn">
+        重新打开页面
+        <i class="fa-light fa-chevron-down"></i>
+      </button>
+
+      <nz-dropdown-menu #closedPagesMenu="nzDropdownMenu">
+        <ul nz-menu>
+          <li nz-menu-item *ngFor="let page of closedPages; trackBy: trackPage" (click)="onReopenPage(page.id)">
+            {{ page.title }}
+          </li>
+        </ul>
+      </nz-dropdown-menu>
+    </div>
+  </div> -->
+
+  <div class="workspace-stage">
+    <div class="blocklyBox" #blocklyDiv></div>
+
+    <div class="blockly-spin"
+         *ngIf="showSpinOverlay"
+         [class.show]="aiWriting && !isFadingOut"
+         [class.fade-out]="isFadingOut"></div>
+  </div>
+</div>

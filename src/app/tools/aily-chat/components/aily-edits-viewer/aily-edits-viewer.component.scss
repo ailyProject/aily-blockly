@@ -1,0 +1,236 @@
+:host {
+    display: block;
+    width: 100%;
+}
+
+.edits-panel {
+    background: var(--vscode-sideBar-background, #252526);
+    color: var(--vscode-sideBar-foreground, #cccccc);
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+    font-size: 13px;
+    border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+
+    .edits-panel-header {
+        height: 30px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+        user-select: none;
+        background: var(--vscode-sideBar-background, #252526);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+
+        &:hover {
+            background: var(--vscode-list-hoverBackground, #2a2d2e);
+        }
+
+        .header-content {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            flex: 1;
+
+            .panel-icon {
+                font-size: 10px;
+                color: var(--vscode-icon-foreground, #c5c5c5);
+                transition: transform 0.2s ease;
+
+                &.expanded {
+                    transform: rotate(90deg);
+                }
+            }
+
+            .panel-title {
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--vscode-sideBar-foreground, #cccccc);
+                letter-spacing: 0.5px;
+            }
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+
+            .action-btn {
+                padding: 1px 10px;
+                border-radius: 3px;
+                font-size: 11px;
+                cursor: pointer;
+                border: 1px solid transparent;
+                line-height: 20px;
+                white-space: nowrap;
+
+                &.primary {
+                    background-color: var(--vscode-button-background, #0078d4);
+                    color: var(--vscode-button-foreground, #fff);
+                    border-color: var(--vscode-button-background, #0078d4);
+
+                    &:hover {
+                        background-color: var(--vscode-button-hoverBackground, #1a8ae8);
+                    }
+                }
+
+                &.icon-btn {
+                    padding: 1px 4px;
+                    background: transparent;
+                    color: var(--vscode-icon-foreground, #c5c5c5);
+                    border: none;
+                    font-size: 13px;
+                    line-height: 20px;
+
+                    &:hover:not(:disabled) {
+                        background: var(--vscode-toolbar-hoverBackground, #37373a);
+                        color: var(--vscode-sideBar-foreground, #cccccc);
+                    }
+
+                    &:disabled {
+                        opacity: 0.35;
+                        cursor: default;
+                    }
+                }
+            }
+
+            .action-taken-text {
+                font-size: 11px;
+                color: var(--vscode-descriptionForeground, #888);
+                font-style: italic;
+            }
+        }
+    }
+
+    .edits-panel-content {
+        max-height: 200px;
+        overflow-y: auto;
+        background: var(--vscode-sideBar-background, #252526);
+
+        &::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        &::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        &::-webkit-scrollbar-thumb {
+            background: var(--vscode-scrollbarSlider-background, #424242);
+            border-radius: 3px;
+        }
+
+        .file-entry {
+            display: flex;
+            align-items: center;
+            height: 22px;
+            padding: 0 12px 0 20px;
+            gap: 8px;
+            cursor: default;
+
+            &:hover {
+                background: var(--vscode-list-hoverBackground, #2a2d2e);
+            }
+
+            .file-icon {
+                font-size: 11px;
+                width: 14px;
+                text-align: center;
+                flex-shrink: 0;
+
+                &.icon-created {
+                    color: var(--vscode-charts-green, #3fb950);
+                }
+
+                &.icon-modified {
+                    color: var(--vscode-charts-blue, #58a6ff);
+                }
+
+                &.icon-deleted {
+                    color: var(--vscode-charts-red, #f85149);
+                }
+            }
+
+            .file-path {
+                flex: 1;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 12px;
+                color: var(--vscode-editor-foreground, #d4d4d4);
+            }
+
+            .file-stats {
+                display: flex;
+                gap: 4px;
+                flex-shrink: 0;
+                font-size: 11px;
+            }
+
+            .file-actions {
+                display: flex;
+                gap: 2px;
+                flex-shrink: 0;
+                opacity: 0;
+                transition: opacity 0.15s ease;
+
+                .file-action-btn {
+                    width: 18px;
+                    height: 18px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    border-radius: 3px;
+                    cursor: pointer;
+                    font-size: 10px;
+
+                    &.accept {
+                        color: var(--vscode-charts-green, #3fb950);
+
+                        &:hover {
+                            background: rgba(63, 185, 80, 0.15);
+                        }
+                    }
+
+                    &.reject {
+                        color: var(--vscode-charts-red, #f85149);
+
+                        &:hover {
+                            background: rgba(248, 81, 73, 0.15);
+                        }
+                    }
+                }
+            }
+
+            &:hover .file-actions {
+                opacity: 1;
+            }
+        }
+    }
+}
+
+.stat-added {
+    color: var(--vscode-charts-green, #3fb950);
+    font-weight: 500;
+}
+
+.stat-removed {
+    color: var(--vscode-charts-red, #f85149);
+    font-weight: 500;
+}
+
+/* 动画 */
+.edits-panel-content {
+    animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}

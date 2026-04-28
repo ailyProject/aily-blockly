@@ -20,7 +20,7 @@
       font-size: 18px;
       font-weight: 500;
       margin-bottom: 40px;
-      color: #333;
+      color: var(--aily-text-tertiary);
     }
 
     .type-list {
@@ -31,11 +31,11 @@
       .item {
         position: relative;
         padding: 40px 20px;
-        border: 2px solid #3a3d40;
+        border: 2px solid var(--aily-border-subtle);
         border-radius: 8px;
         cursor: pointer;
         transition: all 0.3s;
-        background: #1e2022;
+        background: var(--aily-bg-secondary);
         flex-direction: column;
         min-height: 180px;
 
@@ -49,7 +49,7 @@
         .desc {
           margin-top: 8px;
           font-size: 12px;
-          color: #999;
+          color: var(--aily-text-secondary);
         }
 
         &:hover:not(.disabled) {
@@ -65,11 +65,11 @@
         &.disabled {
           opacity: 0.4;
           cursor: not-allowed;
-          background: #16181a;
-          border-color: #2a2c2d;
+          background: var(--aily-bg-elevated);
+          border-color: var(--aily-bg-elevated);
 
           i {
-            color: #555;
+            color: var(--aily-border-tertiary);
           }
         }
       }
@@ -78,7 +78,7 @@
 }
 
 .window-footer {
-  border-top: 1px solid #222427;
+  border-top: 1px solid var(--aily-border-primary);
   height: 60px;
   position: relative;
   display: flex;

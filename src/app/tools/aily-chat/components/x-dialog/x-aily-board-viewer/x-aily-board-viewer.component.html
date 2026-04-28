@@ -1,0 +1,31 @@
+<div class="aily-board-viewer" (dblclick)="logDetail()">
+  @if (isLoading) {
+  <div class="loading-card">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <div class="loading-text">加载中...</div>
+    </div>
+  </div>
+  } @else if (errorMessage) {
+  <div class="error-card">
+    <div class="error-content">
+      <span class="error-text">🚫 {{ errorMessage }}</span>
+    </div>
+  </div>
+  } @else if (boardInfo) {
+  <div class="board-card">
+    <div class="img-box ccenter">
+      <img [src]="resourceUrl + '/imgs/boards/' + boardInfo?.img" />
+    </div>
+    <div class="text-box">
+      <div class="title">{{ boardInfo?.nickname || boardInfo?.name }}</div>
+      <div class="text ellipsis">{{ boardInfo?.description }}</div>
+    </div>
+    <div class="action-btns ccenter">
+      @if (boardInfo?.url) {
+      <div class="btn ccenter" (click)="openUrl(boardInfo.url)"><i class="fa-regular fa-book"></i></div>
+      }
+    </div>
+  </div>
+  }
+</div>

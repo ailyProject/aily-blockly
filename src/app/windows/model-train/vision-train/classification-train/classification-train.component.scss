@@ -13,7 +13,7 @@
   align-items: flex-start;
   gap: 20px;
 
-  // 左侧：类别列表区�?
+  // 左侧：类别列表区�?
   .left-panel {
     flex: 1;
     min-width: 280px;
@@ -29,8 +29,8 @@
     }
 
     .class-card {
-      background: #1e2022;
-      border: 1px solid #3a3d40;
+      background: var(--aily-bg-secondary);
+      border: 1px solid var(--aily-border-subtle);
       border-radius: 8px;
       padding: 10px;
       transition: all 0.2s;
@@ -50,7 +50,7 @@
         margin-bottom: 10px;
         position: relative;
         height: 25px;
-        border-bottom: 1px solid #3a3d40;
+        border-bottom: 1px solid var(--aily-border-subtle);
 
         input {
           height: 25px;
@@ -59,7 +59,7 @@
         .class-name {
           font-size: 16px;
           font-weight: 500;
-          color: #fff;
+          color: var(--aily-text-primary);
         }
 
         .disabled-badge {
@@ -79,8 +79,8 @@
           flex: 1;
           font-size: 16px;
           font-weight: 500;
-          color: #fff;
-          background: #2a2c2d;
+          color: var(--aily-text-primary);
+          background: var(--aily-bg-elevated);
           border: 1px solid #1890ff;
           border-radius: 4px;
           padding: 4px 8px;
@@ -93,7 +93,7 @@
 
         .edit-icon {
           margin-left: 8px;
-          color: #888;
+          color: var(--aily-text-secondary);
           font-size: 12px;
           cursor: pointer;
 
@@ -110,12 +110,12 @@
           align-items: center;
           justify-content: center;
           cursor: pointer;
-          color: #888;
+          color: var(--aily-text-secondary);
           border-radius: 4px;
 
           &:hover {
-            background: #2a2c2d;
-            color: #fff;
+            background: var(--aily-bg-elevated);
+            color: var(--aily-text-primary);
           }
         }
 
@@ -123,8 +123,8 @@
           position: absolute;
           top: 100%;
           right: 0;
-          background: #2a2c2d;
-          border: 1px solid #3a3d40;
+          background: var(--aily-bg-elevated);
+          border: 1px solid var(--aily-border-subtle);
           border-radius: 6px;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
           z-index: 100;
@@ -138,11 +138,11 @@
             font-size: 14px;
 
             &:hover:not(.disabled) {
-              background: #3a3d40;
+              background: var(--aily-border-subtle);
             }
 
             &.disabled {
-              color: #666;
+              color: var(--aily-text-tertiary);
               cursor: not-allowed;
             }
           }
@@ -153,11 +153,11 @@
         .sample-label-section {
           margin-bottom: 12px;
           // padding-top: 12px;
-          // border-top: 1px solid #3a3d40;
+          // border-top: 1px solid var(--aily-border-subtle);
 
           .sample-count {
             font-size: 13px;
-            color: #888;
+            color: var(--aily-text-secondary);
           }
         }
 
@@ -166,7 +166,7 @@
           gap: 12px;
         }
 
-        // 状态1: 未打开摄像头 - 水平行布局
+        // 状�?: 未打开摄像�?- 水平行布局
         .sample-section-row {
           flex-direction: row;
           align-items: center;
@@ -186,13 +186,13 @@
 
               i {
                 font-size: 20px;
-                color: #fff;
+                color: var(--aily-text-primary);
                 margin-bottom: 4px;
               }
 
               div {
                 font-size: 10px;
-                color: #fff;
+                color: var(--aily-text-primary);
               }
 
               &:hover {
@@ -211,16 +211,16 @@
             }
 
             &::-webkit-scrollbar-track {
-              background: #2a2c2d;
+              background: var(--aily-bg-elevated);
               border-radius: 3px;
             }
 
             &::-webkit-scrollbar-thumb {
-              background: #4a4d50;
+              background: var(--aily-border-input);
               border-radius: 3px;
 
               &:hover {
-                background: #5a5d60;
+                background: var(--aily-border-tertiary);
               }
             }
           }
@@ -252,7 +252,7 @@
           }
         }
 
-        // 状态2: 打开摄像头 - 左右布局
+        // 状�?: 打开摄像�?- 左右布局
         .sample-section-camera {
           flex-direction: row;
           align-items: flex-start;
@@ -273,7 +273,7 @@
               height: 30px;
               border-radius: 50%;
               cursor: pointer;
-              color: #fff;
+              color: var(--aily-text-primary);
               background: rgba(11, 89, 163, 0.6);
               font-size: 16px;
               position: absolute;
@@ -282,7 +282,7 @@
 
               &:hover {
                 background: rgba(255, 255, 255, 0.03);
-                color: #fff;
+                color: var(--aily-text-primary);
               }
             }
 
@@ -329,11 +329,11 @@
                   right: 8px;
                 }
 
-                // 视频镜像样式已移到外层，见下方
+                // 视频镜像样式已移到外层，见下�?
               }
 
-              // 视频镜像样式（仅改变显示）
-              // 放在 .camera-video-wrapper 作用域中以匹配 video 元素
+              // 视频镜像样式（仅改变显示�?
+              // 放在 .camera-video-wrapper 作用域中以匹�?video 元素
               video.mirrored {
                 transform: scaleX(-1);
                 -webkit-transform: scaleX(-1);
@@ -362,13 +362,13 @@
                 .error-message {
                   font-size: 14px;
                   font-weight: 600;
-                  color: #fff;
+                  color: var(--aily-text-primary);
                   margin: 0 0 6px 0;
                 }
 
                 .error-hint {
                   font-size: 12px;
-                  color: #bfbfbf;
+                  color: var(--aily-text-quaternary);
                   margin: 0;
                 }
               }
@@ -389,7 +389,7 @@
                 flex: 1;
                 height: 36px;
                 background: #1890ff;
-                color: #fff;
+                color: var(--aily-text-primary);
                 border: none;
                 border-radius: 6px;
                 font-size: 13px;
@@ -423,13 +423,13 @@
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                color: #bfbfbf;
+                color: var(--aily-text-quaternary);
                 font-size: 16px;
 
                 &:hover {
                   background: rgba(255, 255, 255, 0.02);
                   border-color: rgba(255, 255, 255, 0.06);
-                  color: #fff;
+                  color: var(--aily-text-primary);
                 }
               }
             }
@@ -440,11 +440,11 @@
             min-width: 0;
             display: flex;
             flex-direction: column;
-            max-height: 290px; // 匹配摄像头卡片高度 (200px video + 35px header + 55px actions)
+            max-height: 290px; // 匹配摄像头卡片高�?(200px video + 35px header + 55px actions)
 
             .sample-grid-label {
               font-size: 13px;
-              color: #666;
+              color: var(--aily-text-tertiary);
               margin-bottom: 10px;
               flex-shrink: 0;
             }
@@ -452,12 +452,12 @@
             .sample-grid {
               display: grid;
               grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
-              grid-auto-rows: 52px; // 固定行高，匹配最小列宽
+              grid-auto-rows: 52px; // 固定行高，匹配最小列�?
               gap: 6px;
               overflow-y: auto;
               overflow-x: hidden;
               padding-right: 4px;
-              align-content: start; // 从顶部开始排列
+              align-content: start; // 从顶部开始排�?
 
               &::-webkit-scrollbar {
                 width: 6px;
@@ -509,10 +509,10 @@
       justify-content: center;
       gap: 8px;
       padding: 16px;
-      border: 2px dashed #3a3d40;
+      border: 2px dashed var(--aily-border-subtle);
       border-radius: 8px;
       cursor: pointer;
-      color: #888;
+      color: var(--aily-text-secondary);
       transition: all 0.2s;
 
       i {
@@ -526,7 +526,7 @@
     }
   }
 
-  // 中间：训练区�?
+  // 中间：训练区�?
   .center-panel {
     width: 200px;
     // min-width: 180px;
@@ -534,15 +534,15 @@
     align-self: center;
 
     .panel-card {
-      background: #1e2022;
-      border: 1px solid #3a3d40;
+      background: var(--aily-bg-secondary);
+      border: 1px solid var(--aily-border-subtle);
       border-radius: 8px;
       padding: 16px;
 
       .panel-title {
         font-size: 16px;
         font-weight: 600;
-        color: #fff;
+        color: var(--aily-text-primary);
         margin-bottom: 16px;
       }
 
@@ -573,18 +573,18 @@
       .advanced-section {
         margin-top: 16px;
         padding-top: 16px;
-        border-top: 1px solid #3a3d40;
+        border-top: 1px solid var(--aily-border-subtle);
 
         .advanced-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
           cursor: pointer;
-          color: #888;
+          color: var(--aily-text-secondary);
           font-size: 14px;
 
           &:hover {
-            color: #fff;
+            color: var(--aily-text-primary);
           }
 
           i {
@@ -603,7 +603,7 @@
 
             label {
               font-size: 14px;
-              color: #888;
+              color: var(--aily-text-secondary);
               white-space: nowrap;
               min-width: 60px;
               text-align: left;
@@ -636,7 +636,7 @@
             }
 
             .help-icon {
-              color: #888;
+              color: var(--aily-text-secondary);
               font-size: 14px;
               cursor: help;
               flex-shrink: 0;
@@ -667,7 +667,7 @@
     }
   }
 
-  // 右侧：预览区�?
+  // 右侧：预览区�?
   .right-panel {
     width: 220px;
     min-width: 220px;
@@ -675,8 +675,8 @@
     align-self: center;
 
     .panel-card {
-      background: #1e2022;
-      border: 1px solid #3a3d40;
+      background: var(--aily-bg-secondary);
+      border: 1px solid var(--aily-border-subtle);
       border-radius: 8px;
       display: flex;
       flex-direction: column;
@@ -686,21 +686,21 @@
         align-items: center;
         justify-content: space-between;
         padding: 12px 16px;
-        border-bottom: 1px solid #3a3d40;
+        border-bottom: 1px solid var(--aily-border-subtle);
 
         .panel-title {
           font-size: 16px;
           font-weight: 600;
-          color: #fff;
+          color: var(--aily-text-primary);
         }
 
         .panel-actions {
           .export-btn {
             padding: 4px 10px;
             background: transparent;
-            border: 1px solid #3a3d40;
+            border: 1px solid var(--aily-border-subtle);
             border-radius: 4px;
-            color: #888;
+            color: var(--aily-text-secondary);
             font-size: 12px;
             cursor: pointer;
             display: flex;
@@ -736,7 +736,7 @@
 
         .preview-placeholder {
           text-align: center;
-          color: #888;
+          color: var(--aily-text-secondary);
           padding: 10px;
 
           p {
@@ -752,7 +752,7 @@
           flex-direction: column;
           gap: 16px;
 
-          // 输入控制区
+          // 输入控制�?
           .preview-input-section {
             display: flex;
             align-items: center;
@@ -764,7 +764,7 @@
             .section-label {
               font-size: 14px;
               font-weight: 500;
-              color: #888;
+              color: var(--aily-text-secondary);
             }
 
             .toggle-switch {
@@ -796,7 +796,7 @@
                 left: 0;
                 right: 0;
                 bottom: 0;
-                background: #4a4d50;
+                background: var(--aily-border-input);
                 border-radius: 22px;
                 transition: 0.3s;
 
@@ -827,8 +827,8 @@
               flex-shrink: 0;
 
               ::ng-deep .ant-select-selector {
-                background: #2a2c2d !important;
-                border-color: #3a3d40 !important;
+                background: var(--aily-bg-elevated) !important;
+                border-color: var(--aily-border-subtle) !important;
                 color: #e6e6e6 !important;
                 border-radius: 4px;
                 white-space: nowrap;
@@ -843,12 +843,12 @@
               }
 
               ::ng-deep .ant-select-arrow {
-                color: #888;
+                color: var(--aily-text-secondary);
               }
             }
           }
 
-          // 预览区
+          // 预览�?
           .preview-camera-wrapper {
             display: flex;
             flex-direction: column;
@@ -857,7 +857,7 @@
             padding-bottom: 20px;
             gap: 12px;
 
-            // 上传控制按钮区
+            // 上传控制按钮�?
             .preview-upload-controls {
               display: flex;
               align-items: center;
@@ -928,7 +928,7 @@
                   z-index: 2;
 
                   &:hover {
-                    color: #fff;
+                    color: var(--aily-text-primary);
                   }
                 }
 
@@ -949,7 +949,7 @@
                 align-items: center;
                 justify-content: center;
                 gap: 8px;
-                color: #666;
+                color: var(--aily-text-tertiary);
 
                 i {
                   font-size: 32px;
@@ -987,7 +987,7 @@
                 align-items: center;
                 justify-content: center;
                 gap: 8px;
-                color: #666;
+                color: var(--aily-text-tertiary);
 
                 i {
                   font-size: 32px;
@@ -1000,13 +1000,13 @@
             }
           }
 
-          // 输出结果区
+          // 输出结果�?
           .preview-output-section {
             .section-label {
               display: block;
               font-size: 14px;
               font-weight: 500;
-              color: #888;
+              color: var(--aily-text-secondary);
               margin-bottom: 12px;
             }
 
@@ -1042,7 +1042,7 @@
 
                   .result-percent {
                     font-size: 13px;
-                    color: #888;
+                    color: var(--aily-text-secondary);
                     min-width: 36px;
                     text-align: right;
                   }
@@ -1055,13 +1055,13 @@
     }
   }
 
-  // 隐藏HTML中的连接线元�?
+  // 隐藏HTML中的连接线元�?
   .connector {
     display: none;
   }
 }
 
-// 图片查看器弹窗样式（暗色主题�?
+// 图片查看器弹窗样式（暗色主题�?
 ::ng-deep .image-viewer-modal {
   .ant-modal-content {
     background: #161616 !important;
@@ -1082,7 +1082,7 @@
   }
 
   .ant-modal-close {
-    color: #bfbfbf;
+    color: var(--aily-text-quaternary);
 
     &:hover {
       color: #ffffff;
@@ -1134,13 +1134,13 @@
         }
 
         &:disabled {
-          color: #666;
+          color: var(--aily-text-tertiary);
           cursor: not-allowed;
         }
       }
 
       .image-counter {
-        color: #bfbfbf;
+        color: var(--aily-text-quaternary);
         font-size: 14px;
         min-width: 60px;
         text-align: center;
@@ -1187,7 +1187,7 @@
     .ant-select-arrow,
     .ant-select-clear,
     .ant-select-selection-placeholder {
-      color: #bfbfbf !important;
+      color: var(--aily-text-quaternary) !important;
       opacity: 1 !important;
     }
 
@@ -1215,7 +1215,7 @@
 
       button {
         padding: 0 4px;
-        color: #bfbfbf;
+        color: var(--aily-text-quaternary);
 
         &:hover {
           color: #1890ff;

@@ -3,7 +3,6 @@ import { ToolContainerComponent } from '../../components/tool-container/tool-con
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { AuthService, LoginRequest, RegisterRequest } from '../../services/auth.service';
-import sha256 from 'crypto-js/sha256';
 import { Subject, takeUntil } from 'rxjs';
 import { ElectronService } from '../../services/electron.service';
 import { NzModalService } from 'ng-zorro-antd/modal';
@@ -13,6 +12,8 @@ import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { UiService } from '../../services/ui.service';
+import { NzToolTipModule } from "ng-zorro-antd/tooltip";
+import { ConfigService } from '../../services/config.service';
 
 @Component({
   selector: 'app-user-center',
@@ -23,7 +24,8 @@ import { UiService } from '../../services/ui.service';
     LoginComponent,
     NzButtonModule,
     NzProgressModule,
-    NzInputModule
+    NzInputModule,
+    NzToolTipModule
   ],
   templateUrl: './user-center.component.html',
   styleUrl: './user-center.component.scss'
@@ -37,6 +39,7 @@ export class UserCenterComponent {
   private destroy$ = new Subject<void>();
   private message = inject(NzMessageService);
   private authService = inject(AuthService);
+  private electronService = inject(ElectronService);
 
   userInfo = {
     username: '',
@@ -46,7 +49,6 @@ export class UserCenterComponent {
 
   isWaiting = false;
   isRegistering = false;
-  isLoggedIn = false;
   currentUser: any = null;
   isGitHubAuthWaiting = false;
   isEditingNickname = false;
@@ -55,8 +57,11 @@ export class UserCenterComponent {
   nicknameError = '';
   quotaUsagePercent = 0;
 
+  benefits: any = null;
+
   constructor(
-    private uiService: UiService
+    private uiService: UiService,
+    private configService: ConfigService
   ) {
 
   }
@@ -69,15 +74,17 @@ export class UserCenterComponent {
     this.authService.isLoggedIn$
       .pipe(takeUntil(this.destroy$))
       .subscribe(isLoggedIn => {
-        this.isLoggedIn = isLoggedIn;
-        this.refreshMe();
+        if (isLoggedIn) {
+          this.refreshMe();
+          this.refreshBenefits();
+        }
       });
 
     // 监听用户信息
     this.authService.userInfo$
       .pipe(takeUntil(this.destroy$))
       .subscribe(userInfo => {
-        console.log('UserCenterComponent - 接收到用户信息更新: ', userInfo);
+        // console.log('UserCenterComponent - 接收到用户信息更新: ', userInfo);
         this.currentUser = userInfo;
         this.calculateQuotaUsagePercent();
       });
@@ -93,20 +100,39 @@ export class UserCenterComponent {
     try {
       await this.authService.checkAndSyncAuthStatus();
     } catch (error) {
-      console.error('同步认证状态失败:', error);
+      console.warn('同步认证状态失败:', error);
     }
   }
 
   refreshMe() {
     this.authService.refreshMe().then(() => {
-      console.log('Auth token refreshed.');
+      // console.log('Auth token refreshed.');
       this.calculateQuotaUsagePercent();
+    }).catch((error) => {
+      console.warn('刷新用户信息失败:', error);
     });
   }
 
 
   ngAfterViewInit(): void {
     this.refreshMe();
+    this.refreshBenefits();
+  }
+
+  refreshBenefits() {
+    if (!this.authService.isLoggedIn) return;
+    this.authService.getBenefits()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (res) => {
+          if (res.status === 200 && res.data) {
+            this.benefits = res.data;
+          }
+        },
+        error: (err) => {
+          console.warn('获取权益信息失败:', err);
+        }
+      });
   }
 
   ngOnDestroy() {
@@ -138,7 +164,7 @@ export class UserCenterComponent {
           this.userInfo.email = '';
         },
         error: (error) => {
-          console.error('注册错误:', error);
+          console.warn('注册错误:', error);
           this.message.error('注册失败，请检查网络连接');
         },
         complete: () => {
@@ -146,7 +172,7 @@ export class UserCenterComponent {
         }
       });
     } catch (error) {
-      console.error('注册过程中出错:', error);
+      console.warn('注册过程中出错:', error);
       this.message.error('注册失败');
       this.isWaiting = false;
     }
@@ -158,7 +184,7 @@ export class UserCenterComponent {
       await this.authService.logout();
       this.message.success('已退出登录');
     } catch (error) {
-      console.error('退出登录失败:', error);
+      console.warn('退出登录失败:', error);
       this.message.error('退出登录失败');
     } finally {
       this.isWaiting = false;
@@ -282,25 +308,72 @@ export class UserCenterComponent {
   }
 
   private calculateQuotaUsagePercent(): void {
-    console.log('=== 开始计算配额使用百分比 ===');
-    console.log('currentUser 完整对象:', JSON.stringify(this.currentUser, null, 2));
-    console.log('currentUser?.quota:', this.currentUser?.quota);
-    
+    // console.log('=== 开始计算配额使用百分比 ===');
+    // console.log('currentUser 完整对象:', JSON.stringify(this.currentUser, null, 2));
+    // console.log('currentUser?.quota:', this.currentUser?.quota);
+
     const total = this.currentUser?.quota?.total_token ?? 0;
     const used = this.currentUser?.quota?.used_token ?? 0;
-    
-    console.log('提取的值 - total:', total, 'used:', used);
-    console.log('total 类型:', typeof total, 'used 类型:', typeof used);
-    
+
+    // console.log('提取的值 - total:', total, 'used:', used);
+    // console.log('total 类型:', typeof total, 'used 类型:', typeof used);
+
     if (!total || total <= 0) {
       this.quotaUsagePercent = 0;
-      console.log('总配额为0或无效，设置使用百分比为0');
+      // console.log('总配额为0或无效，设置使用百分比为0');
       return;
     }
     const percent = (used / total) * 100;
     // 保留2位小数，不四舍五入到整数
     this.quotaUsagePercent = Math.max(0, Math.min(100, Number(percent.toFixed(2))));
-    console.log('计算得到的使用百分比:', this.quotaUsagePercent, '(used/total*100 =', used, '/', total, '*100)');
-    console.log('=== 计算完成 ===');
+    // console.log('计算得到的使用百分比:', this.quotaUsagePercent, '(used/total*100 =', used, '/', total, '*100)');
+    // console.log('=== 计算完成 ===');
+  }
+
+  /**
+   * 点击头像时触发 SSO 跳转
+   */
+  async onAvatarClick(): Promise<void> {
+    if (!this.authService.isLoggedIn) {
+      return;
+    }
+    try {
+      // 显示加载提示
+      const loadingMessage = this.message.loading('正在生成登录链接...', { nzDuration: 0 });
+
+      // 生成 SSO Token
+      this.authService.generateSSOToken().subscribe({
+        next: (response) => {
+          loadingMessage.messageId && this.message.remove(loadingMessage.messageId);
+
+          // 使用 Electron 打开浏览器
+          this.electronService.openUrl(response.target_url);
+          this.message.success('已打开浏览器，正在跳转...');
+        },
+        error: (error) => {
+          loadingMessage.messageId && this.message.remove(loadingMessage.messageId);
+          console.error('生成 SSO Token 失败:', error);
+
+          if (error.status === 401) {
+            this.message.error('登录已过期，请重新登录');
+          } else if (error.status === 500) {
+            this.message.error('服务器错误，无法生成登录链接');
+          } else {
+            this.message.error('网络连接失败，无法自动跳转');
+          }
+        }
+      });
+    } catch (error) {
+      console.error('SSO 跳转失败:', error);
+      this.message.error('跳转失败，请稍后重试');
+    }
+  }
+
+
+  OpenUrl(url?: string) {
+    this.message.warning('测试版期间免费使用，无需购买');
+    return;
+    const target = url || this.configService.getUcenterWebUrl();
+    this.electronService.openUrl(target);
   }
 }

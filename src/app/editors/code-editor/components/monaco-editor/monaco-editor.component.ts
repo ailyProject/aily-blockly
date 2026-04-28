@@ -191,7 +191,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
     // 2. 获取目标文件的语言类型
     const language = this.getLanguageFromFilePath(filePath);
-    
+
     // 3. 加载语言扩展（如果需要）
     await this.loadLanguageExtension(language);
 
@@ -403,7 +403,7 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
       const uri = monaco.Uri.file(this.filePath);
       const uriString = uri.toString();
       const oldModel = this.modelCache.get(uriString);
-      
+
       if (oldModel) {
         this.modelCache.delete(uriString);
         this.viewStateCache.delete(uriString);
@@ -868,22 +868,22 @@ export class MonacoEditorComponent implements OnInit, AfterViewInit, OnDestroy, 
 
       // 先检查是否有格式化提供者
       console.log('=== 格式化前检查 ===');
-      
+
       // 获取当前文档的 URI
       const uri = model.uri;
       console.log('文档 URI:', uri.toString());
       console.log('文档语言:', language);
       console.log('Monaco 语言列表:', monaco.languages.getLanguages().map(l => l.id));
-      
+
       // 检查该语言是否在 Monaco 中注册
       const registeredLanguages = monaco.languages.getLanguages();
       const isLanguageRegistered = registeredLanguages.some(l => l.id === language);
       console.log(`语言 ${language} 是否已注册:`, isLanguageRegistered);
-      
+
       if (!isLanguageRegistered) {
         console.error(`✗ 语言 ${language} 未在 Monaco 中注册！这是格式化失败的根本原因。`);
         console.log('尝试手动触发语言注册...');
-        
+
         // 尝试触发 C++ 语言的激活
         try {
           const vscode = await import('vscode');

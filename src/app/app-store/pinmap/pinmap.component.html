@@ -1,5 +1,0 @@
-<div class="pinmap-container" [class.dragging]="isDragging" (wheel)="onWheel($event)" (mousedown)="onMouseDown($event)">
-  <div class="pinmap-content" [style.transform]="getTransform()" [style.transform-origin]="'0 0'">
-    <img [src]="img" alt="Pin Map" class="pinmap-image" draggable="false" (load)="onImageLoad($event)">
-  </div>
-</div>

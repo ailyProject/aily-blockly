@@ -13,6 +13,8 @@ import {
   dragSelectionWeakMap, hasSelectedParent, copyData, connectionDBList,
   dataCopyToStorage, dataCopyFromStorage, registeredShortcut,
   multiDraggableWeakMap, inPasteShortcut, getByID, shortcutNames,
+  incrementFieldInputValues, checkMissingBlockTypes, centerBlocksInViewport,
+  resetConsecutivePasteStagger, applyConsecutivePasteStagger,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
 
@@ -182,6 +184,7 @@ const registerCopy = function(useCopyPasteCrossTab) {
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
+      resetConsecutivePasteStagger(workspace);
       Blockly.Events.setGroup(false);
       return true;
     },
@@ -306,6 +309,7 @@ const registerCut = function(useCopyPasteCrossTab) {
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
+      resetConsecutivePasteStagger(workspace);
       Blockly.Events.setGroup(false);
       return true;
     },
@@ -340,79 +344,111 @@ const registerCut = function(useCopyPasteCrossTab) {
  */
 const registerPaste = function(useCopyPasteCrossTab) {
   const name = shortcutNames.MULTIPASTE;
+
+  /**
+   * Execute the actual paste operation on a workspace (shortcut version).
+   * @param {Blockly.WorkspaceSvg} workspace The target workspace.
+   */
+  const executePasteShortcut = function(workspace) {
+    const dragSelection = dragSelectionWeakMap.get(workspace);
+    const multiDraggable = multiDraggableWeakMap.get(workspace);
+
+    inPasteShortcut.set(workspace, true);
+
+    // Clear current selection prior to pasting.
+    if (dragSelection.size) {
+      dragSelection.forEach(function(id) {
+        const element = getByID(workspace, id);
+        if (element) {
+          element.unselect();
+        }
+      });
+      dragSelection.clear();
+      multiDraggable.clearAll_();
+    }
+
+    Blockly.Events.setGroup(true);
+
+    const blockList = [];
+    copyData.forEach(function(stringData) {
+      const data = typeof stringData === 'string' ?
+          JSON.parse(stringData) : stringData;
+      let ws = workspace;
+
+      if (ws.id !== Blockly.getMainWorkspace().id) {
+        if (data.blockState) {
+          data.blockState.id = Blockly.utils.idGenerator.genUid();
+        } else if (data.commentState) {
+          data.commentState.id = Blockly.utils.idGenerator.genUid();
+        }
+      }
+
+      if (data.source) {
+        ws = data.source;
+      }
+      if (ws.isFlyout) {
+        ws = ws.targetWorkspace;
+      }
+      if (data.typeCounts &&
+          ws.isCapacityAvailable(data.typeCounts)) {
+        const element = Blockly.clipboard.paste(data, ws);
+        if (element) {
+          blockList.push(element);
+          incrementFieldInputValues(element, ws);
+        }
+        if (element && element.type !== 'drag_to_dupe') {
+          dragSelectionWeakMap.get(ws).add(element.id);
+          multiDraggableWeakMap.get(ws).addSubDraggable_(element);
+        }
+      } else if (data.commentState) {
+        const element = Blockly.clipboard.paste(data, ws);
+        if (element) {
+          element.select();
+        }
+        if (element) {
+          dragSelectionWeakMap.get(ws).add(element.id);
+          multiDraggableWeakMap.get(ws).addSubDraggable_(element);
+        }
+      }
+    });
+    connectionDBList.forEach(function(connectionDB) {
+      if (blockList[connectionDB[0]] && blockList[connectionDB[1]]) {
+        blockList[connectionDB[0]].nextConnection.connect(
+            blockList[connectionDB[1]].previousConnection);
+      }
+    });
+    // Move pasted blocks to the center of the current viewport
+    centerBlocksInViewport(blockList, workspace);
+    applyConsecutivePasteStagger(blockList, workspace);
+
+    Blockly.common.setSelected(multiDraggable);
+    Blockly.Events.setGroup(false);
+  };
+
   const pasteShortcut = {
     name,
     preconditionFn: function(workspace) {
       return !workspace.options.readOnly && !Blockly.Gesture.inProgress();
     },
     callback: function(workspace) {
-      inPasteShortcut.set(workspace, true);
-      const dragSelection = dragSelectionWeakMap.get(workspace);
-      const multiDraggable = multiDraggableWeakMap.get(workspace);
-
-      // Update the dragSelection and multiDraggable object
-      // to remove current selection prior to pasting.
-      if (dragSelection.size) {
-        dragSelection.forEach(function(id) {
-          const element = getByID(workspace, id);
-          if (element) {
-            element.unselect();
-          }
-        });
-        dragSelection.clear();
-        multiDraggable.clearAll_();
-      }
-
-      Blockly.Events.setGroup(true);
-
-      const blockList = [];
       if (useCopyPasteCrossTab) {
         dataCopyFromStorage();
       }
-      copyData.forEach(function(stringData) {
-        const data = JSON.parse(stringData);
-        // Set unique id for data to prevent bug where
-        // blocks on multiple workspaces are highlighted.
-        if (workspace.id !== Blockly.getMainWorkspace().id) {
-          if (data.blockState) {
-            data.blockState.id = Blockly.utils.idGenerator.genUid();
-          } else if (data.commentState) {
-            data.commentState.id = Blockly.utils.idGenerator.genUid();
-          }
+      // Check for missing block definitions (cross-instance paste)
+      const missingLibs = checkMissingBlockTypes();
+      if (missingLibs.length > 0) {
+        if (window.__ailyBlockPasteNeedsInstall) {
+          // Trigger async install dialog, paste after completion
+          window.__ailyBlockPasteNeedsInstall(missingLibs).then(() => {
+            executePasteShortcut(workspace);
+          }).catch(() => {
+            // User cancelled
+          });
         }
-
-        if (data.source) {
-          workspace = data.source;
-        }
-        if (workspace.isFlyout) {
-          workspace = workspace.targetWorkspace;
-        }
-        if (data.typeCounts &&
-            workspace.isCapacityAvailable(data.typeCounts)) {
-          const element = Blockly.clipboard.paste(data, workspace);
-          if (element) {
-            blockList.push(element);
-          }
-          if (element.type !== 'drag_to_dupe') {
-            dragSelectionWeakMap.get(workspace).add(element.id);
-            multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
-          }
-        } else if (data.commentState) {
-          const element = Blockly.clipboard.paste(data, workspace);
-          if (element) {
-            element.select();
-          }
-          dragSelectionWeakMap.get(workspace).add(element.id);
-          multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
-        }
-      });
-      connectionDBList.forEach(function(connectionDB) {
-        blockList[connectionDB[0]].nextConnection.connect(
-            blockList[connectionDB[1]].previousConnection);
-      });
-
-      Blockly.common.setSelected(multiDraggable);
-      Blockly.Events.setGroup(false);
+        // Block paste when missing libs detected
+        return true;
+      }
+      executePasteShortcut(workspace);
       return true;
     },
   };

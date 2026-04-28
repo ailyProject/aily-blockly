@@ -1,6 +1,6 @@
-import { ToolUseResult } from "./tools";
-import { injectTodoReminder } from "./todoWriteTool";
+﻿import { ToolUseResult } from "./tools";
 import { normalizePath } from "../services/security.service";
+import { AilyHost } from '../core/host';
 
 /**
  * 检查 ripgrep 是否可用
@@ -71,25 +71,29 @@ async function searchWithRipgrep(
 }
 
 /**
- * 递归搜索文件内容
+ * 递归搜索文件内容（异步版本，不阻塞 UI）
  * @param searchPath 搜索路径
  * @param pattern 搜索模式（正则表达式字符串或普通文本）
  * @param includePattern 文件包含模式（glob格式，如 "*.js", "*.{ts,tsx}"）
  * @param isRegex 是否为正则表达式
  * @param maxResults 最大结果数
+ * @param signal 可选的中止信号
  * @returns 匹配的文件路径数组
  */
-function searchFilesRecursive(
+async function searchFilesRecursive(
     searchPath: string,
     pattern: string,
     includePattern?: string,
     isRegex: boolean = true,
     maxResults: number = 50,
     ignoreCase: boolean = true,
-    wholeWord: boolean = false
-): { filenames: string[], numFiles: number } {
+    wholeWord: boolean = false,
+    signal?: AbortSignal
+): Promise<{ filenames: string[], numFiles: number }> {
     const matchedFiles: string[] = [];
     const visited = new Set<string>();
+    const fs = AilyHost.get().fs;
+    const pathUtils = AilyHost.get().path;
     
     // 编译搜索正则表达式
     let searchRegex: RegExp;
@@ -98,9 +102,7 @@ function searchFilesRecursive(
         if (isRegex) {
             searchRegex = new RegExp(pattern, flags);
         } else {
-            // 如果不是正则表达式，进行转义并创建普通文本搜索
             const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            // 如果启用 wholeWord，添加单词边界
             const finalPattern = wholeWord ? `\\b${escapedPattern}\\b` : escapedPattern;
             searchRegex = new RegExp(finalPattern, flags);
         }
@@ -111,108 +113,119 @@ function searchFilesRecursive(
     // 解析文件包含模式
     let includeRegex: RegExp | null = null;
     if (includePattern) {
-        // 将 glob 模式转换为正则表达式
-        // 支持 "*.js", "*.{ts,tsx}" 等格式
         const globToRegex = (glob: string): string => {
             return glob
-                .replace(/\./g, '\\.')  // 转义点号
-                .replace(/\*\*/g, '.*')  // ** 匹配任意路径
-                .replace(/\*/g, '[^/\\\\]*')  // * 匹配文件名部分
-                .replace(/\{([^}]+)\}/g, (_, group) => `(${group.replace(/,/g, '|')})`)  // {a,b} 转为 (a|b)
-                .replace(/\?/g, '.');  // ? 匹配单个字符
+                .replace(/\./g, '\\.')
+                .replace(/\*\*/g, '.*')
+                .replace(/\*/g, '[^/\\\\]*')
+                .replace(/\{([^}]+)\}/g, (_, group) => `(${group.replace(/,/g, '|')})`)
+                .replace(/\?/g, '.');
         };
         
         const regexPattern = globToRegex(includePattern);
         includeRegex = new RegExp(regexPattern + '$', 'i');
     }
     
-    // 递归搜索目录
-    function searchDirectory(dirPath: string, depth: number = 0): void {
-        // 限制递归深度，防止无限递归
-        if (depth > 20 || matchedFiles.length >= maxResults) {
-            return;
-        }
+    const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'out', 'coverage']);
+
+    // 递归搜索目录（优先使用异步 API）
+    async function searchDirectory(dirPath: string, depth: number = 0): Promise<void> {
+        if (signal?.aborted) return;
+        if (depth > 20 || matchedFiles.length >= maxResults) return;
         
-        // 防止循环引用
-        const realPath = window['fs'].realpathSync ? window['fs'].realpathSync(dirPath) : dirPath;
-        if (visited.has(realPath)) {
-            return;
-        }
+        const realPath = fs.realpathSync ? fs.realpathSync(dirPath) : dirPath;
+        if (visited.has(realPath)) return;
         visited.add(realPath);
         
         try {
-            const entries = window['fs'].readDirSync(dirPath);
+            // 优先使用异步 readDir
+            let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+            if (fs.readDir) {
+                entries = await fs.readDir(dirPath);
+            } else if (fs.readDirSync) {
+                entries = fs.readDirSync(dirPath);
+            } else {
+                // 最低兼容：readdirSync 只返回文件名
+                const names = fs.readdirSync(dirPath);
+                entries = names.map(name => {
+                    const s = fs.statSync(pathUtils.join(dirPath, name));
+                    return { name, isDirectory: () => s.isDirectory(), isFile: () => s.isFile() };
+                });
+            }
             
             for (const entry of entries) {
-                if (matchedFiles.length >= maxResults) {
-                    break;
-                }
+                if (signal?.aborted || matchedFiles.length >= maxResults) break;
                 
-                const fullPath = window['path'].join(dirPath, entry.name);
+                const fullPath = pathUtils.join(dirPath, entry.name);
                 
-                // 跳过常见的需要忽略的目录
-                const skipDirs = ['node_modules', '.git', 'dist', 'build', '.next', 'out', 'coverage'];
-                if (skipDirs.includes(entry.name)) {
-                    continue;
-                }
+                if (skipDirs.has(entry.name)) continue;
                 
                 try {
-                    const stats = window['fs'].statSync(fullPath);
-                    
-                    if (stats.isDirectory()) {
-                        // 递归搜索子目录
-                        searchDirectory(fullPath, depth + 1);
-                    } else if (stats.isFile()) {
-                        // 检查文件是否匹配包含模式
-                        if (includeRegex && !includeRegex.test(fullPath)) {
-                            continue;
-                        }
+                    if (entry.isDirectory()) {
+                        await searchDirectory(fullPath, depth + 1);
+                    } else if (entry.isFile()) {
+                        if (includeRegex && !includeRegex.test(fullPath)) continue;
                         
-                        // 读取文件内容并搜索
                         try {
-                            const content = window['fs'].readFileSync(fullPath, 'utf-8');
+                            let content: string;
+                            if (fs.readFile) {
+                                content = await fs.readFile(fullPath, 'utf-8');
+                            } else {
+                                content = fs.readFileSync(fullPath, 'utf-8');
+                            }
                             if (searchRegex.test(content)) {
                                 matchedFiles.push(fullPath);
                             }
                         } catch (readError) {
-                            // 忽略无法读取的文件（如二进制文件）
                             console.debug(`无法读取文件: ${fullPath}`, readError);
                         }
                     }
                 } catch (statError) {
-                    // 忽略无法访问的文件
                     console.debug(`无法访问: ${fullPath}`, statError);
                 }
             }
         } catch (error) {
-            // 忽略无法读取的目录
             console.debug(`无法读取目录: ${dirPath}`, error);
         }
     }
     
-    // 开始搜索
-    searchDirectory(searchPath);
+    await searchDirectory(searchPath);
+    
+    if (signal?.aborted) {
+        return { filenames: matchedFiles, numFiles: matchedFiles.length };
+    }
     
     // 按修改时间排序（最新的在前）
     try {
-        matchedFiles.sort((a, b) => {
-            try {
-                const statsA = window['fs'].statSync(a);
-                const statsB = window['fs'].statSync(b);
-                const timeComparison = statsB.mtime.getTime() - statsA.mtime.getTime();
-                
-                if (timeComparison === 0) {
-                    // 时间相同时按文件名排序
+        // 使用异步 stat 排序
+        if (fs.stat) {
+            const statsMap = new Map<string, Date>();
+            for (const f of matchedFiles) {
+                if (signal?.aborted) break;
+                try {
+                    const s = await fs.stat(f);
+                    statsMap.set(f, s.mtime);
+                } catch { /* ignore */ }
+            }
+            matchedFiles.sort((a, b) => {
+                const mtA = statsMap.get(a)?.getTime() || 0;
+                const mtB = statsMap.get(b)?.getTime() || 0;
+                const timeComparison = mtB - mtA;
+                return timeComparison === 0 ? a.localeCompare(b) : timeComparison;
+            });
+        } else {
+            matchedFiles.sort((a, b) => {
+                try {
+                    const statsA = fs.statSync(a);
+                    const statsB = fs.statSync(b);
+                    const timeComparison = statsB.mtime.getTime() - statsA.mtime.getTime();
+                    return timeComparison === 0 ? a.localeCompare(b) : timeComparison;
+                } catch {
                     return a.localeCompare(b);
                 }
-                
-                return timeComparison;
-            } catch {
-                return a.localeCompare(b);
-            }
-        });
+            });
+        }
     } catch (error) {
-        // 排序失败时保持原顺序
         console.debug('文件排序失败', error);
     }
     
@@ -263,7 +276,7 @@ export async function grepTool(
                 is_error: true,
                 content: '搜索模式不能为空'
             };
-            return injectTodoReminder(toolResult, 'grepTool');
+            return toolResult;
         }
         
         // 默认使用当前工作目录
@@ -272,14 +285,14 @@ export async function grepTool(
         // 如果未提供路径，尝试获取当前项目路径
         if (!searchPath) {
             // 可以从全局上下文获取项目路径
-            if (window['prjService'] && window['prjService'].project && window['prjService'].project.path) {
-                searchPath = window['prjService'].project.path;
+            if (AilyHost.get().project && AilyHost.get().project.currentProjectPath) {
+                searchPath = AilyHost.get().project.currentProjectPath;
             } else {
                 const toolResult = {
                     is_error: true,
                     content: '未提供搜索路径，且无法获取当前项目路径'
                 };
-                return injectTodoReminder(toolResult, 'grepTool');
+                return toolResult;
             }
         }
         
@@ -289,22 +302,22 @@ export async function grepTool(
         // console.log(`搜索文件内容: pattern="${pattern}", path="${searchPath}", include="${include || 'all'}"`);
         
         // 验证路径是否存在
-        if (!window['fs'].existsSync(searchPath)) {
+        if (!AilyHost.get().fs.existsSync(searchPath)) {
             const toolResult = {
                 is_error: true,
                 content: `搜索路径不存在: ${searchPath}`
             };
-            return injectTodoReminder(toolResult, 'grepTool');
+            return toolResult;
         }
         
         // 检查是否为目录
-        const isDirectory = window['fs'].isDirectory(searchPath);
+        const isDirectory = AilyHost.get().fs.isDirectory(searchPath);
         if (!isDirectory) {
             const toolResult = {
                 is_error: true,
                 content: `搜索路径不是目录: ${searchPath}`
             };
-            return injectTodoReminder(toolResult, 'grepTool');
+            return toolResult;
         }
         
         // 首先检查 ripgrep 是否可用
@@ -352,7 +365,7 @@ export async function grepTool(
                         is_error: true,
                         content: `搜索失败: ${result.error}`
                     };
-                    return injectTodoReminder(toolResult, 'grepTool');
+                    return toolResult;
                 }
                 
                 // 构建返回内容
@@ -361,7 +374,7 @@ export async function grepTool(
                         is_error: false,
                         content: `未找到匹配的内容\n搜索模式: ${pattern}\n搜索路径: ${searchPath}${include ? `\n文件过滤: ${include}` : ''}`
                     };
-                    return injectTodoReminder(toolResult, 'grepTool');
+                    return toolResult;
                 }
                 
                 // 🆕 数据量控制：最大 20KB 硬性限制
@@ -458,7 +471,7 @@ export async function grepTool(
                         mode: 'content'
                     }
                 };
-                return injectTodoReminder(toolResult, 'grepTool');
+                return toolResult;
             } catch (error: any) {
                 console.warn('searchContent 失败:', error);
                 // 降级到文件名模式
@@ -488,7 +501,7 @@ export async function grepTool(
             //     console.log('Ripgrep 不可用，使用纯 TypeScript 实现');
             // }
             
-            const jsResult = searchFilesRecursive(
+            const jsResult = await searchFilesRecursive(
                 searchPath,
                 pattern,
                 include,
@@ -549,7 +562,7 @@ export async function grepTool(
             }
         };
         
-        return injectTodoReminder(toolResult, 'grepTool');
+        return toolResult;
     } catch (error: any) {
         console.warn("Grep搜索失败:", error);
         
@@ -562,6 +575,6 @@ export async function grepTool(
             is_error: true,
             content: errorMessage
         };
-        return injectTodoReminder(toolResult, 'grepTool');
+        return toolResult;
     }
 }

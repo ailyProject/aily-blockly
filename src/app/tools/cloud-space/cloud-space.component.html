@@ -38,11 +38,14 @@
                     </div>
                     <div class="right">
                         <div class="text">{{item?.description || '无描述'}}</div>
+                        <div class="uuid">ID: {{item?.id || ''}}</div>
                     </div>
                 </div>
                 <div class="btns ccenter">
                     <button (click)="openInNewTab(item)" [disabled]="openingProjectIds.has(item.id)">
-                        <i class="fa-light" [class.fa-folder-open]="!openingProjectIds.has(item.id)" [class.fa-spinner]="openingProjectIds.has(item.id)" [class.fa-spin]="openingProjectIds.has(item.id)"></i>
+                        <i class="fa-light" [class.fa-folder-open]="!openingProjectIds.has(item.id)"
+                            [class.fa-spinner]="openingProjectIds.has(item.id)"
+                            [class.fa-spin]="openingProjectIds.has(item.id)"></i>
                         {{ openingProjectIds.has(item.id) ? '打开中...' : '打开' }}
                     </button>
                     <button (click)="openEditor(item)">
@@ -58,6 +61,15 @@
                         私有
                         }
                     </button>
+                    <!-- <button (click)="toggleVisibility(item)">
+                        @if (item?.is_template === false) {
+                        <i class="fa-light fa-box-check"></i>
+                        设为模板
+                        } @else {
+                        <i class="fa-light fa-box"></i>
+                        取消模板
+                        }
+                    </button> -->
                     <button class="delete" (click)="deleteCloudProject(item)">
                         <i class="fa-light fa-trash"></i>
                         删除
@@ -71,7 +83,5 @@
             [projectData]="editorProjectData"></app-cloud-project-editor>
         }
     </div>
-    @if(!isLoggedIn){
     <app-login></app-login>
-    }
 </ng-template>

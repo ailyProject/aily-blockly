@@ -1,15 +1,19 @@
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
-const _ = require("lodash");
-const windowStateKeeper = require('electron-window-state');
-const { app, BrowserWindow, ipcMain, dialog, screen, shell, net } = require("electron");
+const WinState = require('electron-win-state').default;
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, net, Menu } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
+const projectLock = require("./project-lock");
 
 // 设置应用名称，用于 Windows 系统通知显示
 app.setName("aily blockly");
-
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+// 禁用 GPU 着色器磁盘缓存，避免 GPUCache 累积导致启动变慢
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+// 限制 HTTP 磁盘缓存为 100MB，防止无限增长
+app.commandLine.appendSwitch('disk-cache-size', '104857600');
 // Windows 系统中设置 AppUserModelID，用于通知分组和显示
 if (isWin32) {
   app.setAppUserModelId("pro.aily.blockly");
@@ -158,24 +162,112 @@ function sendOAuthCallbackToInstance(instanceInfo, callbackData) {
   }
 }
 
-// 隔离用户数据目录：为指定的多实例生成唯一的用户数据目录
-function setupUniqueUserDataPath() {
-  const timestamp = Date.now();
-  const randomId = Math.random().toString(36).substring(2, 8);
-  const instanceId = `${timestamp}-${randomId}`;
-
-  const originalUserDataPath = app.getPath('userData');
-  const uniqueUserDataPath = path.join(originalUserDataPath, 'instances', instanceId);
-
-  // 设置唯一的用户数据目录
-  app.setPath('userData', uniqueUserDataPath);
-  console.log('启用实例隔离，设置实例用户数据目录:', uniqueUserDataPath);
-
-  // 确保目录存在
-  if (!fs.existsSync(uniqueUserDataPath)) {
-    fs.mkdirSync(uniqueUserDataPath, { recursive: true });
+// 检查指定 PID 的进程是否仍在运行
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
-  return uniqueUserDataPath;
+}
+
+// 清理实例目录中导致启动变慢的 Chromium 缓存（保留 HTTP 缓存）
+function clearSlowCaches(instancePath) {
+  const slowCacheDirs = ['GPUCache', 'Code Cache'];
+  for (const dir of slowCacheDirs) {
+    const dirPath = path.join(instancePath, dir);
+    if (fs.existsSync(dirPath)) {
+      try {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      } catch (e) {
+        console.warn(`清理 ${dir} 失败:`, e.message);
+      }
+    }
+  }
+}
+
+/** 当前进程持有的实例锁文件路径，用于退出时清理 */
+let heldInstanceLockPath = null;
+
+// 实例目录复用池：复用空闲实例目录，保留 HTTP 缓存（图片等），清理导致启动慢的缓存
+function setupPooledUserDataPath() {
+  const originalUserDataPath = app.getPath('userData');
+  const instancesDir = path.join(originalUserDataPath, 'instances');
+
+  // 确保 instances 目录存在
+  if (!fs.existsSync(instancesDir)) {
+    fs.mkdirSync(instancesDir, { recursive: true });
+  }
+
+  // 扫描现有实例目录，查找空闲的可复用目录
+  let reusedPath = null;
+  let maxIndex = -1;
+
+  try {
+    const entries = fs.readdirSync(instancesDir);
+    for (const entry of entries) {
+      // 只处理 instance-N 格式的目录
+      const match = entry.match(/^instance-(\d+)$/);
+      if (!match) continue;
+
+      const index = parseInt(match[1], 10);
+      if (index > maxIndex) maxIndex = index;
+
+      if (reusedPath) continue; // 已找到可复用目录，只继续统计 maxIndex
+
+      const instancePath = path.join(instancesDir, entry);
+      const lockFilePath = path.join(instancePath, 'instance.lock');
+
+      if (fs.existsSync(lockFilePath)) {
+        try {
+          const lockData = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'));
+          if (lockData.pid && isProcessRunning(lockData.pid)) {
+            // 进程仍在运行，该目录被占用
+            continue;
+          }
+        } catch {
+          // 锁文件损坏，视为空闲
+        }
+      }
+
+      // 该目录空闲，可以复用
+      reusedPath = instancePath;
+    }
+  } catch (e) {
+    console.warn('扫描实例目录失败:', e.message);
+  }
+
+  // 如果没有可复用目录，创建新的 instance-N
+  if (!reusedPath) {
+    const newIndex = maxIndex + 1;
+    reusedPath = path.join(instancesDir, `instance-${newIndex}`);
+    fs.mkdirSync(reusedPath, { recursive: true });
+    console.log('创建新实例目录:', reusedPath);
+  } else {
+    console.log('复用空闲实例目录:', reusedPath);
+  }
+
+  // 清理导致启动慢的缓存（GPUCache、Code Cache），保留 HTTP Cache
+  clearSlowCaches(reusedPath);
+
+  // 写入锁文件
+  const lockFilePath = path.join(reusedPath, 'instance.lock');
+  try {
+    fs.writeFileSync(lockFilePath, JSON.stringify({
+      pid: process.pid,
+      startTime: Date.now()
+    }));
+    heldInstanceLockPath = lockFilePath;
+  } catch (e) {
+    console.warn('写入实例锁文件失败:', e.message);
+  }
+
+  // 设置 userData 到复用的目录
+  app.setPath('userData', reusedPath);
+  console.log('实例用户数据目录:', reusedPath);
+
+  return reusedPath;
 }
 
 // 检查是否需要多实例模式
@@ -191,14 +283,11 @@ if (shouldUseMultiInstance()) {
 
   if (!isProtocolLaunch) {
     // 只有非协议启动才设置实例隔离
-    setupUniqueUserDataPath();
+    setupPooledUserDataPath();
   } else {
     console.log('协议启动，跳过实例隔离设置');
   }
 }
-
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
-app.commandLine.appendSwitch('enable-features', 'V8LazyCodeGeneration,V8CacheOptions');
 
 app.removeAsDefaultProtocolClient(PROTOCOL);
 
@@ -219,6 +308,95 @@ if (process.defaultApp) {
 let pendingFileToOpen = null;
 let pendingRoute = null;
 let pendingQueryParams = null;
+/** 当前主进程已持有的项目锁（规范化路径） */
+let heldProjectLockNormalized = null;
+
+function getProjectLockStringsForMain() {
+  const defaults = {
+    LOCK_CONFLICT_TITLE: "Project already open",
+    LOCK_CONFLICT_MESSAGE: "Another window or version may be editing this project.",
+    LOCK_CANCEL: "Cancel",
+    LOCK_FOCUS_OTHER: "Bring to front",
+    LOCK_FORCE_OPEN: "Open anyway",
+  };
+  try {
+    const loc = (app.getLocale() || "").toLowerCase();
+    const pack = loc.startsWith("zh") ? "zh_cn" : "en";
+    const fp = path.join(__dirname, `../public/i18n/${pack}/${pack}.json`);
+    if (!fs.existsSync(fp)) {
+      return defaults;
+    }
+    const j = JSON.parse(fs.readFileSync(fp, "utf8"));
+    const P = j.PROJECT || {};
+    return {
+      LOCK_CONFLICT_TITLE: P.LOCK_CONFLICT_TITLE || defaults.LOCK_CONFLICT_TITLE,
+      LOCK_CONFLICT_MESSAGE: P.LOCK_CONFLICT_MESSAGE || defaults.LOCK_CONFLICT_MESSAGE,
+      LOCK_CANCEL: P.LOCK_CANCEL || defaults.LOCK_CANCEL,
+      LOCK_FOCUS_OTHER: P.LOCK_FOCUS_OTHER || defaults.LOCK_FOCUS_OTHER,
+      LOCK_FORCE_OPEN: P.LOCK_FORCE_OPEN || defaults.LOCK_FORCE_OPEN,
+    };
+  } catch (e) {
+    console.warn("getProjectLockStringsForMain:", e);
+    return defaults;
+  }
+}
+
+function getMenuStringForMain(key, fallback) {
+  try {
+    const loc = (app.getLocale() || "").toLowerCase();
+    const pack = loc.startsWith("zh") ? "zh_cn" : "en";
+    const fp = path.join(__dirname, `../public/i18n/${pack}/${pack}.json`);
+    if (!fs.existsSync(fp)) {
+      return fallback;
+    }
+    const j = JSON.parse(fs.readFileSync(fp, "utf8"));
+    const v = j.MENU && j.MENU[key];
+    return v || fallback;
+  } catch (e) {
+    console.warn("getMenuStringForMain:", e);
+    return fallback;
+  }
+}
+
+/**
+ * 打开项目目录前获取锁；冲突时弹出主进程对话框。
+ * @returns {Promise<{ proceed: boolean }>}
+ */
+async function resolveProjectLockOrPrompt(projectDir, parentWindow) {
+  const r = projectLock.tryAcquireLock(projectDir);
+  if (r.ok) {
+    heldProjectLockNormalized = r.normalizedPath;
+    return { proceed: true };
+  }
+  if (r.conflict && r.holder) {
+    const s = getProjectLockStringsForMain();
+    const detail = `${s.LOCK_CONFLICT_MESSAGE}\nPID: ${r.holder.pid}\n${r.holder.execPath || ""}\n${r.holder.appVersion || ""}`;
+    const { response } = await dialog.showMessageBox(parentWindow || undefined, {
+      type: "warning",
+      title: s.LOCK_CONFLICT_TITLE,
+      message: s.LOCK_CONFLICT_TITLE,
+      detail,
+      buttons: [s.LOCK_CANCEL, s.LOCK_FOCUS_OTHER, s.LOCK_FORCE_OPEN],
+      defaultId: 1,
+      cancelId: 0,
+    });
+    if (response === 0) {
+      return { proceed: false };
+    }
+    if (response === 1) {
+      projectLock.focusProcessByPid(r.holder.pid);
+      return { proceed: false };
+    }
+    const r2 = projectLock.tryAcquireLock(projectDir, { force: true });
+    if (r2.ok) {
+      heldProjectLockNormalized = r2.normalizedPath;
+      return { proceed: true };
+    }
+    return { proceed: false };
+  }
+  console.warn("project lock failed:", r.error || r);
+  return { proceed: false };
+}
 
 // 处理命令行参数中的 .abi 文件和路由参数
 function handleCommandLineArgs(argv) {
@@ -421,6 +599,7 @@ const { initLogger, registerLoggerHandlers } = require("./logger");
 // tools
 const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
+const { registerProbeRsHandlers } = require("./probe-rs");
 
 let mainWindow;
 let userConf;
@@ -454,11 +633,15 @@ function macosInstallEnv(childPath) {
   function extractVersion(filename, keyword) {
     // node 格式：node-v22.21.0-darwin-arm64.7z → 22.21.0
     // aily-builder 格式：aily-builder-1.0.7.7z → 1.0.7
+    // probe-rs 格式：probe-rs-0.31.0.7z → 0.31.0
     if (keyword === "node") {
       const match = filename.match(/node-v(\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
     } else if (keyword === "aily-builder") {
       const match = filename.match(/aily-builder-(\d+\.\d+\.\d+)/);
+      return match ? match[1] : null;
+    } else if (keyword === "probe-rs") {
+      const match = filename.match(/probe-rs-(\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
     }
     return null;
@@ -575,6 +758,30 @@ function macosInstallEnv(childPath) {
       }
     } else {
       console.error(`未找到 ${ailyBuilderName}: ${ailyBuilderZipPath}，搜索目录: ${sourceDir}`);
+    }
+  }
+  const probeRsName = "probe-rs";
+  const probeRsPath = path.join(childPath, probeRsName);
+  if (!fs.existsSync(probeRsPath)) {
+    const sourceDir = path.join(childPath, serve ? "macos" : "");
+    const probeRsZipPath = findLatestVersionFile(sourceDir, probeRsName);
+    if (probeRsZipPath && fs.existsSync(probeRsZipPath)) {
+      if (!fs.existsSync(z7Path)) {
+        console.error(`解压 ${probeRsName} 需要 7zz，但未找到: ${z7Path}`);
+      } else {
+        try {
+          const escapeProbeRsPath = escapePath(probeRsPath);
+          const escapeProbeRsZipPath = escapePath(probeRsZipPath);
+          const escapeZ7Path = escapePath(z7Path);
+          child_process.execSync(`mkdir -p ${escapeProbeRsPath} && ${escapeZ7Path} x ${escapeProbeRsZipPath} -o${escapeProbeRsPath} -t7z -y`, { stdio: 'inherit' });
+          console.log(`安装解压 ${probeRsName}: ${probeRsZipPath}成功！`);
+          if (!serve) fs.unlinkSync(probeRsZipPath);
+        } catch (error) {
+          console.error(`安装解压 ${probeRsName}: ${probeRsZipPath}失败，错误码:`, error);
+        }
+      }
+    } else {
+      console.error(`未找到 ${probeRsName}: ${probeRsZipPath}，搜索目录: ${sourceDir}`);
     }
   }
 }
@@ -763,7 +970,9 @@ function initFastestServersAsync() {
 // 环境变量加载
 function loadEnv() {
   // 将child目录添加到环境变量PATH中
-  const childPath = path.join(__dirname, "..", "child");
+  const childPath = serve
+    ? path.join(__dirname, "..", "child")
+    : path.join(process.resourcesPath, "child");
   const nodePath = path.join(childPath, isDarwin ? "node/bin" : "node");
 
   // 只保留PowerShell路径，移除其他系统PATH
@@ -865,7 +1074,7 @@ function loadEnv() {
     // TODO: 下一版删除，统一修正 regions.cn.api_server 地址为标准地址
     let needSave = false;
     if (userConf.regions && userConf.regions.cn) {
-      const correctApiServer = "https://aapi.diandeng.tech";
+      const correctApiServer = "https://api.yysc.tech";
       const currentApiServer = userConf.regions.cn.api_server;
       
       // 检查当前地址是否需要修正（只要不是正确地址就修正）
@@ -896,8 +1105,8 @@ function loadEnv() {
   // child Path
   process.env.AILY_CHILD_PATH = childPath;
 
-  // TODO 下一版本删除，强制将cn区域的api_server地址设置为https://aapi.diandeng.tech
-  conf.regions["cn"]["api_server"] = "https://aapi.diandeng.tech";
+  // TODO 下一版本删除，强制将cn区域的api_server地址设置为https://api.yysc.tech
+  conf.regions["cn"]["api_server"] = "https://api.yysc.tech";
   // console.log("conf: ", conf);
   // 从 regions 配置中获取当前区域的服务地址
   const currentRegion = conf.region || 'cn';
@@ -939,6 +1148,10 @@ function loadEnv() {
   }
   // 7za path
   process.env.AILY_7ZA_PATH = path.join(childPath, isWin32 ? "7za.exe" : "7zz");
+  // rg path
+  process.env.AILY_RG_PATH = path.join(childPath, isWin32 ? "rg.exe" : "rg");
+  // probe-rs path
+  process.env.AILY_PROBE_RS_PATH = path.join(childPath, "probe-rs", "probe-rs" + (isWin32 ? ".exe" : ""));
   // aily builder path
   process.env.AILY_BUILDER_PATH = path.join(childPath, "aily-builder");
   // 全局npm包路径
@@ -965,6 +1178,11 @@ function loadEnv() {
   if (fs.existsSync(ninjaPath)) {
     process.env.PATH = `${process.env.PATH}${path.delimiter}${ninjaPath}`;
   }
+  // 将 probe-rs 添加到 PATH 中
+  const probeRsDir = path.join(childPath, 'probe-rs');
+  if (fs.existsSync(probeRsDir)) {
+    process.env.PATH = `${process.env.PATH}${path.delimiter}${probeRsDir}`;
+  }
 
   // 当前系统语言
   process.env.AILY_SYSTEM_LANG = app.getLocale();
@@ -974,7 +1192,7 @@ function loadEnv() {
 
 
 // 更新已存在主窗口的内容（用于second-instance处理）
-function updateMainWindowWithPendingData() {
+async function updateMainWindowWithPendingData() {
   if (!mainWindow || !mainWindow.webContents) {
     console.log('主窗口不存在，无法更新内容');
     return;
@@ -983,7 +1201,13 @@ function updateMainWindowWithPendingData() {
   let targetUrl = null;
 
   if (pendingFileToOpen) {
-    const routePath = `main/blockly-editor?path=${encodeURIComponent(pendingFileToOpen)}`;
+    const dir = pendingFileToOpen;
+    const { proceed } = await resolveProjectLockOrPrompt(dir, mainWindow);
+    if (!proceed) {
+      pendingFileToOpen = null;
+      return;
+    }
+    const routePath = `main/blockly-editor?path=${encodeURIComponent(dir)}`;
     console.log('Updating existing window with project path:', routePath);
     targetUrl = `#/${routePath}`;
     pendingFileToOpen = null;
@@ -1017,17 +1241,21 @@ function updateMainWindowWithPendingData() {
 }
 
 function createWindow() {
-  const mainWindowState = windowStateKeeper({
+  // 检查是否为首次启动（没有窗口状态记录文件）
+  const winStateFilePath = path.join(process.env.AILY_APPDATA_PATH, 'window-state.json');
+  const isFirstLaunch = !fs.existsSync(winStateFilePath);
+
+  const winState = new WinState({
     defaultWidth: 1200,
     defaultHeight: 780,
-    path: path.join(process.env.AILY_APPDATA_PATH),
+    electronStoreOptions: {
+      name: 'window-state',
+      cwd: process.env.AILY_APPDATA_PATH,
+    },
   })
 
   mainWindow = new BrowserWindow({
-    x: mainWindowState.x,
-    y: mainWindowState.y,
-    width: mainWindowState.width,
-    height: mainWindowState.height,
+    ...winState.winOptions,
     show: false,
     minWidth: 800,
     minHeight: 600,
@@ -1035,27 +1263,43 @@ function createWindow() {
     titleBarStyle: isDarwin ? 'hiddenInset' : 'default',
     alwaysOnTop: false,
     autoHideMenuBar: true,
+    icon: serve ? path.join(__dirname, "../public/icon.ico") : path.join(process.resourcesPath, "icon.ico"),
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
       webSecurity: false,
       preload: path.join(__dirname, "preload.js"),
-      // // 启用 Web Serial API 支持
+      // 启用 Web Serial API 支持
       // enableBlinkFeatures: 'Serial',
+      // 禁用后台节流和页面可见性，避免在后台时停止渲染
+      backgroundThrottling: false,
+      pageVisibility: true,
     },
   });
 
-  mainWindow.setBounds({
-    height: mainWindowState.height,
-    width: mainWindowState.width,
+  mainWindow.setBounds(winState.state);
+
+  // electron-win-state 未持久化 isMaximized / isFullScreen，关闭前写入 store，供下次 ready-to-show 恢复
+  mainWindow.on('close', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      winState.state.isMaximized = mainWindow.isMaximized();
+      winState.state.isFullScreen = mainWindow.isFullScreen();
+      winState.saveState();
+    }
   });
 
-  mainWindowState.manage(mainWindow);
+  winState.manage(mainWindow);
 
   // mainWindow.setMenu(null);
 
-  // 当页面准备好显示时，再显示窗口
+  // 当页面准备好显示时，再显示窗口（首次启动时最大化）
   mainWindow.once('ready-to-show', () => {
+    if (isFirstLaunch || winState.state.isMaximized) {
+      mainWindow.maximize();
+    }
+    if (winState.state.isFullScreen) {
+      mainWindow.setFullScreen(true);
+    }
     mainWindow.show();
   });
 
@@ -1103,20 +1347,39 @@ function createWindow() {
 
   // 开发环境下的热重载处理
   if (serve) {
-    // 防止 DevTools 断开连接
-    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-      if (errorCode === -102) {
-        // ERR_CONNECTION_REFUSED - 开发服务器可能正在重启
-        console.log('开发服务器连接失败,尝试重新加载...');
-        setTimeout(() => {
-          mainWindow.reload();
-        }, 1000);
-      }
+    // 处理页面加载失败，支持自动恢复
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // 只处理主框架的加载失败
+      if (!isMainFrame) return;
+      // -3 (ERR_ABORTED) 是正常的导航中止（如热重载触发新导航），无需处理
+      if (errorCode === -3) return;
+
+      console.log(`页面加载失败: errorCode=${errorCode}, description=${errorDescription}, url=${validatedURL}`);
+
+      // 对于开发环境中的各类加载失败，尝试重新加载
+      const retryDelay = errorCode === -102 ? 1000 : 500;
+      console.log(`${retryDelay}ms 后尝试重新加载...`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL("http://localhost:4200");
+        }
+      }, retryDelay);
     });
 
     // 监听页面加载完成
     mainWindow.webContents.on('did-finish-load', () => {
       console.log('页面加载完成');
+    });
+
+    // 处理渲染进程崩溃，自动恢复
+    mainWindow.webContents.on('render-process-gone', (event, details) => {
+      console.error('渲染进程异常退出:', details.reason, 'exitCode:', details.exitCode);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          console.log('尝试重新加载页面...');
+          mainWindow.loadURL("http://localhost:4200");
+        }
+      }, 1000);
     });
 
     // 开启 DevTools (可选)
@@ -1139,6 +1402,7 @@ function createWindow() {
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
   registerNotificationHandlers(mainWindow);
+  registerProbeRsHandlers(mainWindow);
 
   // 检查是否有待处理的OAuth回调
   // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
@@ -1280,19 +1544,21 @@ if (shouldUseMultiInstance()) {
       // 处理其他类型的启动参数（如.abi文件、路由参数等）
       handleCommandLineArgs(commandLine);
 
-      // 如果有待处理的文件或路由，更新主窗口
-      if (pendingFileToOpen || pendingRoute) {
-        updateMainWindowWithPendingData();
-      }
-
-      // 将现有窗口置前
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) {
-          mainWindow.restore();
+      void (async () => {
+        // 如果有待处理的文件或路由，更新主窗口
+        if (pendingFileToOpen || pendingRoute) {
+          await updateMainWindowWithPendingData();
         }
-        mainWindow.focus();
-        mainWindow.show();
-      }
+
+        // 将现有窗口置前
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) {
+            mainWindow.restore();
+          }
+          mainWindow.focus();
+          mainWindow.show();
+        }
+      })();
     }
   });
 } else {
@@ -1313,26 +1579,118 @@ if (shouldUseMultiInstance()) {
         // 处理其他类型的启动参数（如.abi文件、路由参数等）
         handleCommandLineArgs(commandLine);
 
-        // 如果有待处理的文件或路由，更新主窗口
-        if (pendingFileToOpen || pendingRoute) {
-          updateMainWindowWithPendingData();
-        }
-      }
+        void (async () => {
+          // 如果有待处理的文件或路由，更新主窗口
+          if (pendingFileToOpen || pendingRoute) {
+            await updateMainWindowWithPendingData();
+          }
 
-      // 将现有窗口置前
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) {
-          mainWindow.restore();
-        }
-        mainWindow.focus();
-        mainWindow.show();
+          // 将现有窗口置前
+          if (mainWindow) {
+            if (mainWindow.isMinimized()) {
+              mainWindow.restore();
+            }
+            mainWindow.focus();
+            mainWindow.show();
+          }
+        })();
       }
     });
   }
 }
 
-app.on("ready", async () => {
+// Windows 任务栏跳转列表（Jump List），仅 Windows 有效；macOS 无对应 API，多开见 Dock 菜单「新建实例」或终端 `open -n`。
+if (typeof app.setUserTasks === "function") {
+  // app.setUserTasks([
+  //   {
+  //     program: process.execPath,
+  //     arguments: "--new-window",
+  //     iconPath: process.execPath,
+  //     iconIndex: 0,
+  //     title: "New Window",
+  //     description: "Create a new window",
+  //   },
+  // ]);
+}
+
+// TODO: 最近项目列表
+
+/**
+ * Apple Silicon Mac 上若未装 Rosetta，内置 x86_64 子进程无法运行；本机为 arm64 应用时也需要 Rosetta。
+ * 已可用则跳过；否则异步触发 softwareupdate，不阻塞窗口创建。
+ */
+function ensureRosettaIfNeededOnDarwin() {
+  if (!isDarwin) {
+    return;
+  }
   try {
+    const { execSync, execFile, execFileSync } = require("child_process");
+    const arm64Machine =
+      execSync("sysctl -n hw.optional.arm64", {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "1";
+    if (!arm64Machine) {
+      return;
+    }
+    try {
+      execFileSync("/usr/bin/arch", ["-x86_64", "/usr/bin/true"], { stdio: "ignore" });
+      console.log("Rosetta 已就绪，内置 x86 工具可在此 Mac 上运行");
+      return;
+    } catch {
+      // 未安装或 Rosetta 不可用，继续安装流程
+    }
+    execFile(
+      "/usr/sbin/softwareupdate",
+      ["--install-rosetta", "--agree-to-license"],
+      { stdio: "inherit" },
+      (err) => {
+        if (err) {
+          console.warn(
+            "自动安装 Rosetta 未成功，内置 x86 工具可能无法运行，可手动安装 Rosetta:",
+            err.message
+          );
+        } else {
+          console.log("Rosetta：自动安装命令执行成功");
+        }
+      }
+    );
+  } catch (e) {
+    console.warn("检测 Apple Silicon / Rosetta 失败，跳过自动安装:", e.message);
+  }
+}
+
+app.on("ready", async () => {
+  // 检查是否是协议启动
+  const protocolUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
+
+  // 判断是否是纯转发型协议（不需要创建窗口的协议路径）
+  if (protocolUrl) {
+    try {
+      const urlObj = new URL(protocolUrl);
+      let fullPath = urlObj.pathname;
+      if (urlObj.hostname && urlObj.hostname !== '') {
+        fullPath = '/' + urlObj.hostname + urlObj.pathname;
+      }
+
+      // OAuth 回调：无需创建窗口，直接转发给已运行的实例后退出
+      if (fullPath === '/auth/callback') {
+        console.log('检测到 OAuth 回调协议启动，跳过窗口创建，直接转发处理');
+        handleProtocol(protocolUrl);
+        // handleProtocol 内部对找到目标实例的情况会调用 app.quit()
+        // 兜底：若未找到目标实例（主窗口已关闭等异常情况），延迟退出
+        setTimeout(() => {
+          app.quit();
+        }, 500);
+        return;
+      }
+    } catch (e) {
+      console.error('应用启动时解析协议 URL 失败:', e);
+    }
+  }
+
+  try {
+    ensureRosettaIfNeededOnDarwin();
     loadEnv();
     // 异步检测最优服务器，不阻塞窗口创建
     initFastestServersAsync();
@@ -1340,14 +1698,26 @@ app.on("ready", async () => {
     console.error("loadEnv error: ", error);
   }
 
-  // 检查是否是协议启动
-  const protocolUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
+  if (isDarwin && app.dock) {
+    setupDarwinDockMenu();
+  }
+  if (isWin32) {
+    setupWindowsJumpListTasks();
+  }
+
   if (protocolUrl) {
     console.log('应用启动时检测到协议参数:', protocolUrl);
     // 延迟处理协议，确保窗口创建完成
     setTimeout(() => {
       handleProtocol(protocolUrl);
     }, 1000);
+  }
+
+  if (pendingFileToOpen) {
+    const { proceed } = await resolveProjectLockOrPrompt(pendingFileToOpen, null);
+    if (!proceed) {
+      pendingFileToOpen = null;
+    }
   }
 
   // 创建主窗口
@@ -1403,6 +1773,26 @@ app.on("window-all-closed", () => {
   }
 });
 
+app.on("will-quit", () => {
+  if (heldProjectLockNormalized) {
+    try {
+      projectLock.releaseLock(heldProjectLockNormalized);
+    } catch (e) {
+      console.warn("will-quit release project lock:", e);
+    }
+    heldProjectLockNormalized = null;
+  }
+  // 释放实例锁文件，使目录可被后续启动复用
+  if (heldInstanceLockPath) {
+    try {
+      fs.unlinkSync(heldInstanceLockPath);
+    } catch (e) {
+      console.warn('will-quit release instance lock:', e.message);
+    }
+    heldInstanceLockPath = null;
+  }
+});
+
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
 app.on("activate", () => {
   if (mainWindow === null) {
@@ -1433,15 +1823,20 @@ app.on('open-file', (event, filePath) => {
     console.log('Project directory:', projectDir);
 
     if (mainWindow && mainWindow.webContents) {
-      // 直接导航到对应路由
-      const routePath = `main/blockly-editor?path=${encodeURIComponent(projectDir)}`;
-      console.log('Navigating to route:', routePath);
+      void (async () => {
+        const { proceed } = await resolveProjectLockOrPrompt(projectDir, mainWindow);
+        if (!proceed) {
+          return;
+        }
+        const routePath = `main/blockly-editor?path=${encodeURIComponent(projectDir)}`;
+        console.log('Navigating to route:', routePath);
 
-      if (serve) {
-        mainWindow.loadURL(`http://localhost:4200/#/${routePath}`);
-      } else {
-        mainWindow.loadFile(`renderer/index.html`, { hash: `#/${routePath}` });
-      }
+        if (serve) {
+          mainWindow.loadURL(`http://localhost:4200/#/${routePath}`);
+        } else {
+          mainWindow.loadFile(`renderer/index.html`, { hash: `#/${routePath}` });
+        }
+      })();
     } else {
       pendingFileToOpen = projectDir;
     }
@@ -1483,6 +1878,39 @@ ipcMain.handle("select-folder", async (event, data) => {
   return result.filePaths[0];
 });
 
+// 跨版本项目占用：尝试获取 / 释放锁、前置其他进程窗口
+ipcMain.handle("project-lock-try", (event, data) => {
+  const { projectPath, force } = data || {};
+  const r = projectLock.tryAcquireLock(projectPath, { force: !!force });
+  if (r.ok) {
+    heldProjectLockNormalized = r.normalizedPath;
+  }
+  return r;
+});
+
+ipcMain.handle("project-lock-release", (event, data) => {
+  const { projectPath } = data || {};
+  const target = projectPath || heldProjectLockNormalized;
+  if (!target) {
+    return { ok: true };
+  }
+  const beforeHeld = heldProjectLockNormalized;
+  const r = projectLock.releaseLock(target);
+  if (r.ok && beforeHeld) {
+    const nt = projectLock.normalizeProjectPathLoose(target);
+    const nh = projectLock.normalizeProjectPathLoose(beforeHeld);
+    if (nt === nh) {
+      heldProjectLockNormalized = null;
+    }
+  }
+  return r;
+});
+
+ipcMain.handle("project-lock-focus", (event, data) => {
+  const pid = data && data.pid;
+  return projectLock.focusProcessByPid(pid);
+});
+
 // 另存为用
 ipcMain.handle("select-folder-saveAs", async (event, data) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
@@ -1504,7 +1932,8 @@ ipcMain.handle("select-folder-saveAs", async (event, data) => {
     defaultPath: defaultPath,
     properties: ['createDirectory', 'showOverwriteConfirmation'],
     buttonLabel: '保存',
-    title: '项目另存为'
+    title: data.title || '项目另存为',
+    filters: data.filters || undefined
   });
 
   if (result.canceled) {
@@ -1550,11 +1979,11 @@ ipcMain.handle("file-start-drag", async (event, filePaths) => {
   try {
     // 确保 filePaths 是数组
     const paths = Array.isArray(filePaths) ? filePaths : [filePaths];
-    
+
     // 验证文件是否存在
     const fs = require('fs');
     const validPaths = paths.filter(p => fs.existsSync(p));
-    
+
     if (validPaths.length === 0) {
       console.warn('没有有效的文件路径可拖拽');
       return { success: false, error: '没有有效的文件路径' };
@@ -1564,14 +1993,14 @@ ipcMain.handle("file-start-drag", async (event, filePaths) => {
 
     // 获取发送事件的窗口
     const webContents = event.sender;
-    
+
     // 注意：startDrag 会在后续的 dragstart 事件中被调用
     // 我们需要在这里准备好数据，但实际的拖拽由浏览器事件触发
-    
+
     // 这个方法实际上不能在 IPC handler 中调用
     // 因为 startDrag 必须在拖拽手势开始时同步调用
     // 所以我们返回成功，实际的拖拽由前端的 dragstart 事件触发
-    
+
     return { success: true, paths: validPaths };
   } catch (error) {
     console.error('准备拖拽失败:', error);
@@ -1579,53 +2008,84 @@ ipcMain.handle("file-start-drag", async (event, filePaths) => {
   }
 })
 
+function spawnNewAppInstance(data) {
+  const { route, queryParams } = data || {};
+  const args = ["--new-instance"];
+  if (route) {
+    args.push(`--route=${route}`);
+  }
+  if (queryParams) {
+    args.push(`--query=${encodeURIComponent(JSON.stringify(queryParams))}`);
+  }
+  const { spawn } = require("child_process");
+  const execPath = process.execPath;
+  const appPath = app.getAppPath();
+  const spawnArgs = [appPath, ...args];
+  console.log("启动新实例:", execPath, spawnArgs);
+  const child = spawn(execPath, spawnArgs, {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  return { success: true, pid: child.pid };
+}
+
+function setupDarwinDockMenu() {
+  if (!isDarwin || !app.dock) {
+    return;
+  }
+  const label = getMenuStringForMain("NEW_INSTANCE", "New Instance");
+  app.dock.setMenu(
+    Menu.buildFromTemplate([
+      {
+        label,
+        click: () => {
+          spawnNewAppInstance({});
+        },
+      },
+    ])
+  );
+}
+
+/** Windows 任务栏图标右键「跳转列表」中的用户任务，与 macOS Dock 菜单「新实例」对应 */
+function setupWindowsJumpListTasks() {
+  if (!isWin32) {
+    return;
+  }
+  try {
+    const title = getMenuStringForMain("NEW_INSTANCE", "New Instance");
+    const appPath = app.getAppPath();
+    const arg0 =
+      /[\s"]/.test(appPath) ? `"${appPath.replace(/"/g, '\\"')}"` : appPath;
+    app.setUserTasks([
+      {
+        program: process.execPath,
+        arguments: `${arg0} --new-instance`,
+        title,
+        description: title,
+        iconPath: process.execPath,
+        iconIndex: 0,
+      },
+    ]);
+  } catch (e) {
+    console.warn("setupWindowsJumpListTasks:", e);
+  }
+}
+
 // 打开新实例
 ipcMain.handle("open-new-instance", async (event, data) => {
   try {
-    const { route, queryParams } = data || {};
-
-    // 构建命令行参数
-    const args = ['--new-instance']; // 添加强制新实例标志
-
-    // 如果有路由参数，将其作为环境变量传递
-    if (route) {
-      args.push(`--route=${route}`);
-    }
-
-    // 如果有查询参数，将其序列化后传递
-    if (queryParams) {
-      args.push(`--query=${encodeURIComponent(JSON.stringify(queryParams))}`);
-    }
-
-    // 启动新实例
-    const { spawn } = require('child_process');
-    const execPath = process.execPath;
-    const appPath = __dirname;
-
-    // 构建完整的启动参数
-    const spawnArgs = [appPath, ...args];
-
-    console.log('启动新实例:', execPath, spawnArgs);
-
-    const child = spawn(execPath, spawnArgs, {
-      detached: true,
-      stdio: 'ignore'
-    });
-
-    // 分离子进程，使其独立运行
-    child.unref();
-
+    const result = spawnNewAppInstance(data);
     return {
       success: true,
-      pid: child.pid,
-      message: '新实例已启动'
+      pid: result.pid,
+      message: "新实例已启动",
     };
-
   } catch (error) {
-    console.error('启动新实例失败:', error);
+    console.error("启动新实例失败:", error);
     return {
       success: false,
-      error: error.message
+      error: error.message,
     };
   }
 })
@@ -1645,27 +2105,57 @@ ipcMain.handle("oauth-find-instance", (event, state) => {
   return findOAuthInstance(state);
 });
 
-// 清理过期的实例目录（可选功能）
+// 清理无主实例目录和基础 userData 中的 Chromium 缓存
 function cleanupOldInstances() {
   try {
     const originalUserDataPath = app.getPath('userData').replace(/[/\\]instances[/\\][^/\\]+$/, '');
     const instancesDir = path.join(originalUserDataPath, 'instances');
 
+    // 清理基础 userData 路径下的 GPUCache 和 Code Cache（协议启动时可能累积）
+    clearSlowCaches(originalUserDataPath);
+
     if (!fs.existsSync(instancesDir)) {
       return;
     }
 
-    const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000; // 24小时
+    const currentUserData = app.getPath('userData');
 
-    fs.readdirSync(instancesDir).forEach(instanceId => {
-      const instancePath = path.join(instancesDir, instanceId);
-      const stats = fs.statSync(instancePath);
+    fs.readdirSync(instancesDir).forEach(entry => {
+      const instancePath = path.join(instancesDir, entry);
 
-      // 如果实例目录超过24小时未使用，则删除
-      if (now - stats.mtime.getTime() > maxAge) {
-        fs.rmSync(instancePath, { recursive: true, force: true });
-        console.log('已清理过期实例目录:', instancePath);
+      // 跳过当前正在使用的实例目录
+      if (instancePath === currentUserData) return;
+
+      // 检查是否是 instance-N 格式（新格式）
+      const isPooledDir = /^instance-\d+$/.test(entry);
+
+      if (isPooledDir) {
+        // 新格式：通过锁文件判断是否空闲
+        const lockFilePath = path.join(instancePath, 'instance.lock');
+        if (fs.existsSync(lockFilePath)) {
+          try {
+            const lockData = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'));
+            if (lockData.pid && isProcessRunning(lockData.pid)) {
+              return; // 进程仍在运行，跳过
+            }
+          } catch {
+            // 锁文件损坏，继续清理
+          }
+        }
+        // 空闲的池化目录：不删除整个目录，只清理慢缓存
+        clearSlowCaches(instancePath);
+      } else {
+        // 旧格式（时间戳-随机ID）：清理超过 24 小时的旧目录
+        try {
+          const stats = fs.statSync(instancePath);
+          const maxAge = 24 * 60 * 60 * 1000;
+          if (Date.now() - stats.mtime.getTime() > maxAge) {
+            fs.rmSync(instancePath, { recursive: true, force: true });
+            console.log('已清理旧格式实例目录:', instancePath);
+          }
+        } catch (e) {
+          console.warn('清理旧实例目录失败:', entry, e.message);
+        }
       }
     });
   } catch (error) {
@@ -1734,4 +2224,86 @@ ipcMain.handle("ripgrep-search-content", async (event, params) => {
       error: error.message
     };
   }
+});
+
+// ============================================
+// 异步文件系统 IPC（在主进程执行，不阻塞渲染进程 UI）
+// ============================================
+const fsPromises = require('fs').promises;
+const fsSync = require('fs');
+
+ipcMain.handle("fs-readFile", async (_event, filePath, encoding) => {
+  return await fsPromises.readFile(filePath, encoding || 'utf8');
+});
+
+ipcMain.handle("fs-writeFile", async (_event, filePath, data, encoding) => {
+  await fsPromises.writeFile(filePath, data, encoding || 'utf8');
+});
+
+ipcMain.handle("fs-exists", async (_event, filePath) => {
+  try {
+    await fsPromises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle("fs-stat", async (_event, filePath) => {
+  const s = await fsPromises.stat(filePath);
+  return {
+    size: s.size,
+    mtime: s.mtime.toISOString(),
+    birthtime: s.birthtime.toISOString(),
+    _isDirectory: s.isDirectory(),
+    _isFile: s.isFile(),
+  };
+});
+
+ipcMain.handle("fs-readdir", async (_event, dirPath) => {
+  return await fsPromises.readdir(dirPath);
+});
+
+ipcMain.handle("fs-readDir", async (_event, dirPath) => {
+  const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
+  return entries.map(e => ({
+    name: e.name,
+    _isDirectory: e.isDirectory(),
+    _isFile: e.isFile(),
+  }));
+});
+
+ipcMain.handle("fs-mkdir", async (_event, dirPath, options) => {
+  await fsPromises.mkdir(dirPath, options || { recursive: true });
+});
+
+ipcMain.handle("fs-unlink", async (_event, filePath) => {
+  await fsPromises.unlink(filePath);
+});
+
+// ============================================
+// Glob IPC（在主进程执行，避免 preload 中 require 解析问题）
+// ============================================
+ipcMain.handle("glob-search", async (_event, pattern, options) => {
+  const glob = require("glob");
+  // glob v7: glob.sync exists; glob v10: globSync
+  if (typeof glob.sync === 'function') {
+    return glob.sync(pattern, options || {});
+  } else if (typeof glob.globSync === 'function') {
+    return glob.globSync(pattern, options || {});
+  }
+  throw new Error('glob module API not recognized');
+});
+
+ipcMain.handle("glob-search-async", async (_event, pattern, options) => {
+  const glob = require("glob");
+  // glob v7: default export is callable; glob v10: named export
+  if (typeof glob === 'function') {
+    return new Promise((resolve, reject) => {
+      glob(pattern, options || {}, (err, files) => err ? reject(err) : resolve(files));
+    });
+  } else if (typeof glob.glob === 'function') {
+    return await glob.glob(pattern, options || {});
+  }
+  throw new Error('glob module API not recognized');
 });

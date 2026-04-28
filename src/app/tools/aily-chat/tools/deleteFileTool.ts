@@ -1,4 +1,5 @@
-import { ToolUseResult } from "./tools";
+﻿import { ToolUseResult } from "./tools";
+import { AilyHost } from '../core/host';
 import { 
     PathSecurityContext, 
     validateFileDelete,
@@ -70,7 +71,7 @@ export async function deleteFileTool(
         // ==================== 安全验证结束 ====================
 
         // 检查文件是否存在
-        if (!window['fs'].existsSync(filePath)) {
+        if (!AilyHost.get().fs.existsSync(filePath)) {
             return {
                 is_error: true,
                 content: `文件不存在: ${filePath}`
@@ -78,7 +79,7 @@ export async function deleteFileTool(
         }
 
         // 检查是否为文件（不是目录）
-        const isDirectory = await window['fs'].isDirectory(filePath);
+        const isDirectory = await AilyHost.get().fs.isDirectory(filePath);
         if (isDirectory) {
             return {
                 is_error: true,
@@ -90,18 +91,18 @@ export async function deleteFileTool(
         
         // 创建备份
         if (createBackup) {
-            const dir = window['path'].dirname(filePath);
-            const filename = window['path'].basename(filePath);
-            const ext = window['path'].extname(filePath);
+            const dir = AilyHost.get().path.dirname(filePath);
+            const filename = AilyHost.get().path.basename(filePath);
+            const ext = AilyHost.get().path.extname(filePath);
             const baseFilename = filename.replace(ext, '');
-            backupPath = window['path'].join(dir, `ABIBAK_${baseFilename}${ext}`);
+            backupPath = AilyHost.get().path.join(dir, `ABIBAK_${baseFilename}${ext}`);
 
-            const fileContent = await window['fs'].readFileSync(filePath, 'utf-8');
-            await window['fs'].writeFileSync(backupPath, fileContent);
+            const fileContent = await AilyHost.get().fs.readFileSync(filePath, 'utf-8');
+            await AilyHost.get().fs.writeFileSync(backupPath, fileContent);
         }
 
         // 删除文件
-        await window['fs'].unlinkSync(filePath);
+        await AilyHost.get().fs.unlinkSync(filePath);
         
         // 记录成功
         if (auditLogId) {

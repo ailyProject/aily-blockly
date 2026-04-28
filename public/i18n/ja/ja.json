@@ -31,7 +31,8 @@
         "USER_SPACE": "クラウドスペース",
         "LIB_MANAGER": "ライブラリマネージャー",
         "AI_ASSISTANT": "AIアシスタント",
-        "PROJECT_HUB": "プロジェクトハブ"
+        "PROJECT_HUB": "プロジェクトハブ",
+        "NEW_INSTANCE": "新しいウィンドウ"
     },
     "ESP32": {
         "UPLOAD_SPEED": "書き込み速度",
@@ -46,6 +47,15 @@
         "BOARD": "開発ボードモデル選択",
         "USB": "USB設定",
         "UPLOAD_METHOD": "書き込み方法"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "SoftDeviceを書き込む",
+        "FLASH_SOFTDEVICE_CONFIRM": "{{softdevice}} SoftDeviceをデバイスに書き込みますか？",
+        "SELECT_PORT_FIRST": "先にポートを選択してください",
+        "FLASHING_SOFTDEVICE": "SoftDeviceを書き込み中...",
+        "FLASH_SUCCESS": "SoftDeviceの書き込みに成功しました",
+        "FLASH_FAILED": "SoftDeviceの書き込みに失敗しました"
     },
     "GUIDE": {
         "START": "スタート",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "質問がありますか？作品を共有したいですか？ユーザーコミュニティに参加して、他のメーカーと交流・学習しましょう！"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "指定の場所にコピー",
+        "CONTROLS_SWITCH_CASE": "ケース",
+        "CONTROLS_SWITCH_DO": "実行",
+        "CONTROLS_SWITCH_DEFAULT": "デフォルト",
+        "CROSS_TAB_PASTE": "貼り付け",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "%1 個を貼り付け",
+        "WORKSPACE_SELECT_ALL": "すべてのブロックを選択"
+    },
     "APP_STORE": {
         "HEADER_INFO": "最初の {{count}} 個のアプリがツールバーに表示されます",
         "RESET": "リセット",
@@ -113,7 +132,8 @@
             "REPOSITORY": "リポジトリ設定",
             "DEPENDENCIES": "グローバル依存関係",
             "MCP": "MCP",
-            "DEVMODE": "開発者モード"
+            "DEVMODE": "開発者モード",
+            "CACHE": "キャッシュ管理"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "プロジェクトフォルダ",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "Blocklyテーマ",
             "BLOCKLY_MINIMAP": "Blocklyミニマップ",
             "COMPILATION_OPTIONS": "コンパイルオプション",
+            "REGION": "サービスリージョン",
+            "REGION_TITLE": "サービスリージョンの切り替え",
+            "REGION_DESC": "サービスリージョンを切り替えると再ログインが必要です。続行しますか？",
+            "REGION_CONFIRM": "確認",
+            "REGION_CANCEL": "キャンセル",
             "REPOSITORY_URLS": "リポジトリアドレス",
             "BOARD_LIST": "ボードリスト",
             "LIBRARY_LIST": "ライブラリリスト",
             "INSTALL": "インストール",
-            "UNINSTALL": "アンインストール"
+            "UNINSTALL": "アンインストール",
+            "CLEAR_CACHE": "キャッシュをクリア",
+            "CACHE_SIZE": "キャッシュサイズ",
+            "CACHE_LOADING": "読み込み中...",
+            "CACHE_ALL": "すべてクリア",
+            "CACHE_ONE_MONTH": "1ヶ月前をクリア",
+            "CACHE_THREE_MONTHS": "3ヶ月前をクリア",
+            "CACHE_CLEARING": "クリア中...",
+            "CACHE_CLEARED": "キャッシュをクリアしました",
+            "CACHE_CLEAR_FAILED": "クリアに失敗しました",
+            "CACHE_CONFIRM_TITLE": "クリアの確認",
+            "CACHE_CONFIRM_DESC": "すべてのコンパイルキャッシュをクリアしますか？この操作は元に戻せません。",
+            "CACHE_CONFIRM_OK": "確認"
         },
         "BUTTONS": {
             "CANCEL": "キャンセル",
@@ -153,7 +190,8 @@
             "BOARD": "ボード",
             "PROJECT_NAME": "プロジェクト名",
             "SAVE_PATH": "保存パス",
-            "NAME_EXISTS": "プロジェクト名は既に存在します。変更してください"
+            "NAME_EXISTS": "プロジェクト名は既に存在します。変更してください",
+            "PATH_INVALID_CHARS": "パスに無効な文字（/ : * ? \" < > | など）が含まれています。変更してください"
         },
         "BUTTONS": {
             "USE_THIS": "このボードを使用",
@@ -164,14 +202,15 @@
             "CREATING": "作成中"
         },
         "WARNINGS": {
-            "BETA_VERSION": "ベータ版、未検証、注意して使用"
+            "BETA_VERSION": "ベータ版、未検証、注意して使用",
+            "TODO": "このデバイスのサポートは近日公開予定"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "ライブラリマネージャー",
         "BACK": "戻る",
         "SEARCH_LIBRARY": "ライブラリを検索",
-        "ALL": "すべてのライブラリ",
+        "ALL": "すべて",
         "INSTALLED": "インストール済み",
         "CORE_LIBRARY": "コアライブラリ",
         "IMPORT_LIBRARY": "ローカルライブラリをインポート",
@@ -182,6 +221,7 @@
         "INSTALLED_TEXT": "インストール済み",
         "REMOVE": "削除",
         "INSTALLING": "インストール中",
+        "INSTALL_FAILED": "インストール失敗",
         "UNINSTALLING": "アンインストール中",
         "UNINSTALLED": "アンインストール済み",
         "IMPORTING": "インポート中",
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "ソフトウェアアップデート",
+        "TITLE_READY": "アップデート準備完了",
+        "TITLE_NEW_VERSION": "新しいバージョン {{version}} が利用可能です",
+        "TEXT_DOWNLOADED": "バージョン {{version}} のダウンロードが完了しました。今すぐインストールしますか？",
+        "TEXT_AVAILABLE": "現在のバージョン {{currentVersion}}、新しいバージョン {{version}}<br>このアップデートをダウンロードしてインストールしますか？",
         "DOWNLOAD_FAILED": "ダウンロード失敗",
         "REMIND_LATER": "後で通知",
         "SKIP_VERSION": "このバージョンをスキップ",
@@ -277,8 +321,9 @@
         "SETTINGS": "AI設定",
         "HISTORY": "チャット履歴",
         "NEW_CHAT": "新しいチャット",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "AIの回答は参考用であり、必ずしも正確ではありません。ソフトウェア開発者の意見を表すものではなく、ユーザー自身で判断してください。",
+        "USAGE_GUIDE": "AIの使い方を学ぶ",
         "ADD_CONTEXT": "コンテキストを追加",
         "ADD_FILE": "ファイルを追加",
         "ADD_FOLDER": "フォルダを追加",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "エージェントモード",
         "MODE_QA_FULL": "Q&Aモード",
         "STOP_CURRENT_SESSION_FIRST": "新しいセッションを作成する前に、現在のセッションを停止してください",
+        "NO_HISTORY_SESSION": "履歴セッション記録がありません",
+        "MERMAID_SAVE_ARCH": "構成図として保存",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "上書き確認",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "プロジェクトディレクトリに構成図ファイルが既に存在します。上書きしますか？",
+        "MERMAID_ARCH_CONFIRM": "確認",
+        "MERMAID_ARCH_CANCEL": "キャンセル",
+        "MERMAID_COPY_FAILED": "コピーに失敗しました",
+        "MERMAID_SAVE_FAILED": "保存に失敗しました",
+        "CLICK_TO_EDIT": "クリックして編集",
         "ONBOARDING": {
             "STEP1_TITLE": "入力ボックス",
             "STEP1_DESC": "ここに質問やAIに手伝ってもらいたいタスクを入力してください。Enterで送信、Ctrl+Enterで改行",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "プロジェクト設定",
+        "ARCH": "アーキテクチャ図",
         "PINMAP": "ピン配置図",
+        "CIRCUIT": "回路接続図",
         "DOCUMENTATION": "ドキュメント",
         "FEEDBACK": "フィードバック",
         "NO_PINMAP": "このボードのピン配置図は利用できません",
-        "NO_DOCUMENTATION": "このボードのドキュメントは利用できません"
+        "PINMAP_PARSE_ERROR": "ピン配置図の解析に失敗しました",
+        "NO_DOCUMENTATION": "このボードのドキュメントは利用できません",
+        "ARCH_ELECTRON_ONLY": "アーキテクチャ図はデスクトップアプリでのみ利用可能です",
+        "NO_PROJECT": "プロジェクトが開かれていません",
+        "NO_ARCH": "プロジェクトディレクトリに arch.md が見つかりません",
+        "ARCH_EMPTY": "arch.md に mermaid 図が見つかりません",
+        "ARCH_RENDER_FAILED": "アーキテクチャ図のレンダリングに失敗しました",
+        "GENERATE_ARCH_PROMPT": "プロジェクトのアーキテクチャ図を生成してください",
+        "ARCH_AI_BUSY": "AIが会話中です。しばらくお待ちください",
+        "LOGIN_REQUIRED": "この機能を使用するには、まずログインしてください"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "先にシリアルポートを選択してください",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "プロジェクトを共有できます",
         "BENEFIT_EXPERIENCE": "パーソナライズされた開発体験をお楽しみいただけます",
         "NOTICE_LABEL": "注意：",
-        "NOTICE_CONTENT": "当社はあなたのGitHubアカウントを使用して、当社のオープンソースリポジトリにスターを付けます。これはプロジェクトの発展をサポートするためです。",
+        "NOTICE_CONTENT": "ログイン後、本プロジェクトにスターが付けられ、プロジェクトの発展を支援します",
         "GITHUB_LOGIN": "Githubでログイン",
         "WECHAT_SCAN": "QRコードをスキャンしてフォローしてログイン",
         "PHONE_NOT_OPEN": "電話番号登録はまだ利用できません",
         "PHONE_BETA_ONLY": "電話番号ログインはAIベータテスター専用です",
         "PHONE_PLACEHOLDER": "電話番号を入力",
         "PASSWORD_PLACEHOLDER": "パスワードを入力",
+        "EMAIL_PLACEHOLDER": "メールアドレスを入力",
+        "CODE_PLACEHOLDER": "確認コードを入力",
+        "SEND_CODE": "確認コードを送信",
+        "CODE_SENDING": "まず確認コードを取得してください",
         "LOGGING_IN": "ログイン中...",
         "LOGIN": "ログイン",
         "SELECT_METHOD": "ログイン方法を選択してください",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "ユーザー名とパスワードを入力してください",
         "LOGIN_SUCCESS": "ログイン成功",
         "LOGIN_FAILED": "ログイン失敗",
-        "LOGIN_NETWORK_ERROR": "ログインに失敗しました。ネットワーク接続を確認してください"
+        "LOGIN_NETWORK_ERROR": "ログインに失敗しました。ネットワーク接続を確認してください",
+        "AGREEMENT_PREFIX": "私は以下を読み、同意します：",
+        "USER_AGREEMENT": "利用規約",
+        "AGREEMENT_AND": "および",
+        "PRIVACY_POLICY": "プライバシーポリシー",
+        "AGREEMENT_REQUIRED": "利用規約とプライバシーポリシーに同意してください",
+        "MODAL_CLOSE": "閉じる",
+        "AGREEMENT_LOAD_FAILED": "利用規約の読み込みに失敗しました",
+        "PRIVACY_LOAD_FAILED": "プライバシーポリシーの読み込みに失敗しました",
+        "WECHAT_QRCODE_FAILED": "QRコードの取得に失敗しました",
+        "WECHAT_REFRESH": "QRコードを更新",
+        "WECHAT_RETRY": "再試行",
+        "INVITE_CODE_PLACEHOLDER": "招待コード（任意）",
+        "AGREEMENT_BY_LOGIN": "ログイン/登録により、以下に同意したものとみなされます",
+        "TERMS_OF_USE": "利用規約",
+        "OTHER_LOGIN_METHODS": "以下のアカウントでもログインできます",
+        "GITHUB_CONTINUE": "GitHub認証ページで\"Continue\"をクリックしてログインを完了してください",
+        "REGISTER": "登録"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "機能は近日公開予定"
+    },
+    "NPM": {
+        "INSTALLING": "{{name}}をインストール中...",
+        "INSTALLING_DEPENDENCY": "{{name}}の依存関係をインストール中...",
+        "INSTALL_TIMEOUT": "インストールタイムアウト",
+        "INSTALL_COMPLETE": "{{name}}のインストールが完了しました",
+        "INSTALL_FAILED": "{{name}}のインストールに失敗しました",
+        "UNINSTALLING": "{{name}}をアンインストール中...",
+        "UNINSTALLING_UNUSED_DEPS": "不要な依存関係をアンインストール中...",
+        "UNINSTALL_TIMEOUT": "アンインストールタイムアウト",
+        "UNINSTALL_COMPLETE": "{{name}}のアンインストールが完了しました",
+        "BOARD_INSTALL_COMPLETE": "ボードのインストールが完了しました",
+        "BOARD_UNINSTALL_COMPLETE": "ボードのアンインストールが完了しました",
+        "BOARD_DEPS_INSTALL_COMPLETE": "ボードの依存関係のインストールが完了しました",
+        "BOARD_DEPS_INSTALL_FAILED": "ボードの依存関係のインストールに失敗しました",
+        "DEPS_INSTALL_COMPLETE": "依存関係のインストールが完了しました",
+        "DEPS_UNINSTALL_COMPLETE": "依存関係のアンインストールが完了しました",
+        "DEPS_UNINSTALL_FAILED": "依存関係のアンインストールに失敗しました",
+        "NAME_REQUIRED": "{{type}}名は空にできません",
+        "TYPE_TOOL": "ツール",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "コンパイラ",
+        "INSTALLING_TITLE": "インストール中",
+        "INSTALL_COMPLETE_TITLE": "インストール完了",
+        "INSTALL_FAILED_TITLE": "インストール失敗",
+        "UNINSTALLING_TITLE": "アンインストール中",
+        "UNINSTALL_COMPLETE_TITLE": "アンインストール完了",
+        "UNINSTALL_FAILED_TITLE": "アンインストール失敗"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "依存関係をインストール中",
+        "LOADING_BOARD_CONFIG": "ボード設定を読み込み中",
+        "LOADING_BLOCKLY_LIB": "Blocklyライブラリを読み込み中",
+        "LOADING_LIB": "{{name}}を読み込み中",
+        "LOADING_BLOCKLY_PROGRAM": "Blocklyプログラムを読み込み中",
+        "PROJECT_LOAD_SUCCESS": "プロジェクトの読み込みが完了しました"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "サンプルを読み込み中...",
+        "EXAMPLE_LOAD_SUCCESS": "サンプルの読み込みが完了しました",
+        "EXAMPLE_LOAD_FAILED": "サンプルの読み込みに失敗しました",
+        "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "プロジェクトを開けません: ",
+        "CREATING_PROJECT": "プロジェクトを作成中...",
+        "PROJECT_CREATED": "プロジェクトが作成されました",
+        "CREATE_FAILED": "プロジェクトの作成に失敗しました",
+        "PATH_NOT_EXIST": "プロジェクトパスが存在しません。別のプロジェクトを選択してください",
+        "SWITCHING_BOARD_CONFIG": "ボード設定を切り替え中...",
+        "BOARD_SWITCH_COMPLETE": "ボードの切り替えが完了しました",
+        "BOARD_SWITCH_SUCCESS": "ボードの切り替えに成功しました",
+        "SWITCHING_BOARD": "ボードを切り替え中...",
+        "UNINSTALLING_CURRENT_BOARD": "現在のボードをアンインストール中...",
+        "INSTALLING_NEW_BOARD": "新しいボードをインストール中...",
+        "UPDATING_PROJECT_CONFIG": "プロジェクト設定を更新中...",
+        "BOARD_SWITCH_FAILED": "ボードの切り替えに失敗しました: ",
+        "LOCK_CONFLICT_TITLE": "プロジェクトは既に別のウィンドウで開かれています",
+        "LOCK_CONFLICT_MESSAGE": "別のウィンドウまたはバージョンがこのプロジェクトを編集中の可能性があります。",
+        "LOCK_CONFLICT_CONTENT": "別のインスタンスがこのプロジェクトを編集中の可能性があります。\nPID: {{pid}}\nバージョン: {{version}}",
+        "LOCK_CANCEL": "キャンセル",
+        "LOCK_FOCUS_OTHER": "開いているウィンドウへ切り替え",
+        "LOCK_FORCE_OPEN": "それでも開く",
+        "LOCK_ACQUIRE_FAILED": "プロジェクトロックを取得できませんでした。再試行してください。"
+    },
+    "NOTIFICATION": {
+        "STOP": "停止",
+        "VIEW_DETAIL": "詳細を表示",
+        "AI_PROCESS": "AI処理"
+    },
+    "LOG": {
+        "TOOLTIP": "クリックでクリップボードにコピー、ダブルクリックでAIアシスタントに送信",
+        "COPIED_TO_CLIPBOARD": "ログ内容がクリップボードにコピーされました",
+        "SENT_TO_AI": "ログ内容がAIアシスタントに送信されました",
+        "NO_DATA_TO_EXPORT": "エクスポートするログデータがありません",
+        "EXPORT_TITLE": "ログデータをエクスポート",
+        "TEXT_FILE": "テキストファイル",
+        "ALL_FILES": "すべてのファイル",
+        "EXPORT_SUCCESS": "ログデータが正常にエクスポートされました: "
     }
 }

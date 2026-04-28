@@ -1,7 +1,14 @@
-import { ToolUseResult } from "./tools";
-import { injectTodoReminder } from "./todoWriteTool";
+﻿import { ToolUseResult } from "./tools";
 import { normalizePath } from "../services/security.service";
 import { lintAndFormat, shouldLint } from "../services/lintService";
+import { AilyHost } from '../core/host';
+import {
+  readFile as asyncReadFile,
+  writeFile as asyncWriteFile,
+  exists as asyncExists,
+  stat as asyncStat,
+  mkdir as asyncMkdir,
+} from '../core/async-fs';
 
 /**
  * 辅助函数：检查编辑后的文件是否有 lint 错误
@@ -88,19 +95,15 @@ function createEditResultWithLint(
  * 检测文件编码（简单版）
  * 尝试以UTF-8读取，失败时尝试其他编码
  */
-function detectFileEncoding(filePath: string): BufferEncoding {
+async function detectFileEncoding(filePath: string): Promise<BufferEncoding> {
     try {
-        const fs = window['fs'];
-        fs.readFileSync(filePath, 'utf-8');
+        await asyncReadFile(filePath, 'utf-8');
         return 'utf-8';
     } catch (error) {
-        // 尝试 utf16le
         try {
-            const fs = window['fs'];
-            fs.readFileSync(filePath, 'utf16le');
+            await asyncReadFile(filePath, 'utf16le');
             return 'utf16le';
         } catch {
-            // 默认返回 utf-8
             return 'utf-8';
         }
     }
@@ -142,8 +145,8 @@ export async function editFileTool(
             replaceMode = "string"
         } = params;
         
-        const fs = window['fs'];
-        const path = window['path'];
+        const fs = AilyHost.get().fs;
+        const path = AilyHost.get().path;
         
         // 路径规范化
         const normalizedFilePath = normalizePath(filePath);
@@ -154,7 +157,7 @@ export async function editFileTool(
                 is_error: true,
                 content: `❌ 无效的文件路径: "${filePath}", 请传入需要编辑的文件的有效路径。`
             };
-            return injectTodoReminder(toolResult, 'editFileTool');
+            return toolResult;
         }
         
         // 检查是否是 Jupyter Notebook 文件
@@ -163,21 +166,21 @@ export async function editFileTool(
                 is_error: true,
                 content: `❌ 不支持编辑 Jupyter Notebook 文件 (.ipynb)。请使用专门的 Notebook 编辑工具。\n文件路径: ${normalizedFilePath}`
             };
-            return injectTodoReminder(toolResult, 'editFileTool');
+            return toolResult;
         }
         
         // 检查文件是否存在
-        let fileExists = fs.existsSync(normalizedFilePath);
+        let fileExists = await asyncExists(normalizedFilePath);
         
         // 验证是否为文件（不是目录）
         if (fileExists) {
-            const stats = fs.statSync(normalizedFilePath);
+            const stats = await asyncStat(normalizedFilePath);
             if (stats.isDirectory?.()) {
                 const toolResult = {
                     is_error: true,
                     content: `❌ 路径是目录而不是文件: ${normalizedFilePath}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
         }
         
@@ -188,7 +191,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ String replace 模式需要同时提供 oldString 和 newString 参数`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             if (oldString === newString) {
@@ -196,7 +199,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `⚠️  新旧字符串完全相同，无需修改`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             // 处理新建文件情况（oldString 为空）
@@ -206,20 +209,20 @@ export async function editFileTool(
                         is_error: true,
                         content: `❌ 文件已存在，无法创建新文件。如需覆盖，请使用 replaceMode: "whole"`
                     };
-                    return injectTodoReminder(toolResult, 'editFileTool');
+                    return toolResult;
                 }
                 
                 // 创建新文件
                 const dir = path.dirname ? path.dirname(normalizedFilePath) : normalizedFilePath.substring(0, normalizedFilePath.lastIndexOf('\\'));
-                if (!fs.existsSync(dir)) {
-                    fs.mkdirSync(dir, { recursive: true });
+                if (!await asyncExists(dir)) {
+                    await asyncMkdir(dir, { recursive: true });
                 }
-                fs.writeFileSync(normalizedFilePath, newString, 'utf-8');
+                await asyncWriteFile(normalizedFilePath, newString, 'utf-8');
                 
                 // lint 检测新创建的文件
                 const successMsg = `✅ 新文件创建成功\n文件: ${normalizedFilePath}\n行数: ${newString.split('\n').length}`;
                 const toolResult = createEditResultWithLint(normalizedFilePath, newString, successMsg);
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             // 编辑现有文件
@@ -228,12 +231,12 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 文件不存在: ${normalizedFilePath}\n若需创建新文件，请设置 oldString 为空字符串`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             // 检测文件编码
-            const encoding = specifiedEncoding || detectFileEncoding(normalizedFilePath);
-            const originalContent = fs.readFileSync(normalizedFilePath, encoding);
+            const encoding = specifiedEncoding || await detectFileEncoding(normalizedFilePath);
+            const originalContent = await asyncReadFile(normalizedFilePath, encoding);
             
             // 检查 old_string 是否在文件中
             if (!originalContent.includes(oldString)) {
@@ -241,7 +244,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 要替换的字符串在文件中未找到\n\n预期查找的字符串长度: ${oldString.length} 字符\n文件路径: ${normalizedFilePath}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             // 检查是否有多个匹配（为了安全性，只允许单个匹配）
@@ -251,12 +254,12 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 找到 ${matches} 个匹配的字符串。为了安全起见，本工具只支持单个匹配。\n\n建议:\n1. 在 oldString 中添加更多上下文代码（至少3-5行）以唯一标识该位置\n2. 分多次调用，每次替换一个匹配项\n文件: ${normalizedFilePath}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             // 执行替换
             const updatedContent = originalContent.replace(oldString, newString);
-            fs.writeFileSync(normalizedFilePath, updatedContent, encoding);
+            await asyncWriteFile(normalizedFilePath, updatedContent, encoding);
             
             // 计算修改的行信息
             const beforeLines = originalContent.substring(0, originalContent.indexOf(oldString)).split('\n').length;
@@ -266,7 +269,7 @@ export async function editFileTool(
             // lint 检测编辑后的文件
             const successMsg = `✅ 文件编辑成功\n文件: ${normalizedFilePath}\n修改位置: 第 ${beforeLines} 行\n行数变化: ${oldLines} → ${changedLines} 行`;
             const toolResult = createEditResultWithLint(normalizedFilePath, updatedContent, successMsg);
-            return injectTodoReminder(toolResult, 'editFileTool');
+            return toolResult;
         }
         
         // ========== Other Modes ==========
@@ -275,19 +278,19 @@ export async function editFileTool(
                 is_error: true,
                 content: `❌ 文件不存在: ${normalizedFilePath}。若需创建，请设置 createIfNotExists: true`
             };
-            return injectTodoReminder(toolResult, 'editFileTool');
+            return toolResult;
         }
         
         if (!fileExists && createIfNotExists) {
             const dir = path.dirname ? path.dirname(normalizedFilePath) : normalizedFilePath.substring(0, Math.max(normalizedFilePath.lastIndexOf('\\'), normalizedFilePath.lastIndexOf('/')));
-            if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
+            if (!await asyncExists(dir)) {
+                await asyncMkdir(dir, { recursive: true });
             }
-            fs.writeFileSync(normalizedFilePath, '', 'utf-8');
+            await asyncWriteFile(normalizedFilePath, '', 'utf-8');
         }
         
         // 检测文件编码
-        const encoding = specifiedEncoding || detectFileEncoding(normalizedFilePath);
+        const encoding = specifiedEncoding || await detectFileEncoding(normalizedFilePath);
         
         let finalContent: string;
         let operationDescription: string;
@@ -299,7 +302,7 @@ export async function editFileTool(
         } 
         // Line-based operations
         else if (replaceStartLine !== undefined) {
-            const existingContent = fs.readFileSync(normalizedFilePath, encoding);
+            const existingContent = await asyncReadFile(normalizedFilePath, encoding);
             const lines = existingContent.split('\n');
             
             if (replaceStartLine < 1) {
@@ -307,7 +310,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 替换起始行号必须 >= 1，当前: ${replaceStartLine}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             if (replaceStartLine > lines.length) {
@@ -315,7 +318,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 替换起始行号 ${replaceStartLine} 超出文件总行数 ${lines.length}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             const endLine = replaceEndLine !== undefined ? replaceEndLine : replaceStartLine;
@@ -325,7 +328,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 结束行号 ${endLine} 不能小于起始行号 ${replaceStartLine}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             if (endLine > lines.length) {
@@ -333,7 +336,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 替换结束行号 ${endLine} 超出文件总行数 ${lines.length}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             const contentLines = (content || '').split('\n');
@@ -349,7 +352,7 @@ export async function editFileTool(
         } 
         // Insert at specific line
         else if (insertLine !== undefined) {
-            const existingContent = fs.readFileSync(normalizedFilePath, encoding);
+            const existingContent = await asyncReadFile(normalizedFilePath, encoding);
             const lines = existingContent.split('\n');
             
             if (insertLine < 1) {
@@ -357,7 +360,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 插入行号必须 >= 1，当前: ${insertLine}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             if (insertLine > lines.length + 1) {
@@ -365,7 +368,7 @@ export async function editFileTool(
                     is_error: true,
                     content: `❌ 插入行号 ${insertLine} 超出范围。最大可插入行号: ${lines.length + 1}`
                 };
-                return injectTodoReminder(toolResult, 'editFileTool');
+                return toolResult;
             }
             
             const contentLines = (content || '').split('\n');
@@ -378,7 +381,7 @@ export async function editFileTool(
         } 
         // Append mode
         else {
-            const existingContent = fs.readFileSync(normalizedFilePath, encoding);
+            const existingContent = await asyncReadFile(normalizedFilePath, encoding);
             const hasTrailingNewline = existingContent.endsWith('\n');
             finalContent = hasTrailingNewline 
                 ? existingContent + (content || '')
@@ -387,12 +390,12 @@ export async function editFileTool(
         }
         
         // 写入文件
-        fs.writeFileSync(normalizedFilePath, finalContent, encoding);
+        await asyncWriteFile(normalizedFilePath, finalContent, encoding);
         
         // lint 检测编辑后的文件
         const successMsg = `✅ 文件编辑成功\n文件: ${normalizedFilePath}\n操作: ${operationDescription}`;
         const toolResult = createEditResultWithLint(normalizedFilePath, finalContent, successMsg);
-        return injectTodoReminder(toolResult, 'editFileTool');
+        return toolResult;
         
     } catch (error: any) {
         console.error("编辑文件失败:", error);
@@ -406,6 +409,6 @@ export async function editFileTool(
             is_error: true,
             content: errorMessage + `\n文件路径: ${params.path}`
         };
-        return injectTodoReminder(toolResult, 'editFileTool');
+        return toolResult;
     }
 }

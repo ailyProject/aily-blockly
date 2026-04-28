@@ -1,6 +1,7 @@
-import { ToolUseResult } from "./tools";
-import { injectTodoReminder } from "./todoWriteTool";
+﻿import { ToolUseResult } from "./tools";
 import { lintAndFormat, shouldLint } from "../services/lintService";
+import { AilyHost } from '../core/host';
+import { readFile as asyncReadFile, writeFile as asyncWriteFile, exists as asyncExists, mkdir as asyncMkdir } from '../core/async-fs';
 import { 
     PathSecurityContext, 
     validateFileWrite,
@@ -45,7 +46,7 @@ export async function createFileTool(
                 is_error: true, 
                 content: `无效的文件路径: "${filePath}"` 
             };
-            return injectTodoReminder(toolResult, 'createFileTool');
+            return toolResult;
         }
 
         // ==================== 安全验证 ====================
@@ -60,7 +61,7 @@ export async function createFileTool(
                     is_error: true, 
                     content: `安全检查未通过: ${securityCheck.reason}` 
                 };
-                return injectTodoReminder(toolResult, 'createFileTool');
+                return toolResult;
             }
             
             // 检查写入大小限制
@@ -69,38 +70,38 @@ export async function createFileTool(
                     is_error: true, 
                     content: `写入内容过大: ${(content.length / 1024 / 1024).toFixed(2)}MB，超过限制 ${FILE_WRITE_LIMITS.maxWriteSize / 1024 / 1024}MB` 
                 };
-                return injectTodoReminder(toolResult, 'createFileTool');
+                return toolResult;
             }
         }
         // ==================== 安全验证结束 ====================
 
         // 检查文件是否已存在
-        if (window['fs'].existsSync(filePath) && !overwrite) {
+        if (await asyncExists(filePath) && !overwrite) {
             const toolResult = {
                 is_error: true,
                 content: `文件已存在: ${filePath}。如需覆盖，请设置 overwrite 参数为 true。`
             };
-            return injectTodoReminder(toolResult, 'createFileTool');
+            return toolResult;
         }
 
-        const dir = window['path'].dirname(filePath);
+        const dir = AilyHost.get().path.dirname(filePath);
         // console.log(`文件目录: ${dir}`);
         
         // 确保目录存在
-        if (!window['fs'].existsSync(dir)) {
+        if (!await asyncExists(dir)) {
             // console.log(`创建目录: ${dir}`);
-            await window['fs'].mkdirSync(dir, { recursive: true });
+            await asyncMkdir(dir, { recursive: true });
         }
         
         // 创建备份（如果文件存在且配置了备份）
-        if (securityContext && FILE_WRITE_LIMITS.createBackup && window['fs'].existsSync(filePath)) {
+        if (securityContext && FILE_WRITE_LIMITS.createBackup && await asyncExists(filePath)) {
             try {
-                const ext = window['path'].extname(filePath);
-                const baseName = window['path'].basename(filePath, ext);
-                const dirName = window['path'].dirname(filePath);
-                const backupPath = window['path'].join(dirName, `${FILE_WRITE_LIMITS.backupPrefix}${baseName}${ext}`);
-                const originalContent = await window['fs'].readFileSync(filePath, 'utf-8');
-                await window['fs'].writeFileSync(backupPath, originalContent);
+                const ext = AilyHost.get().path.extname(filePath);
+                const baseName = AilyHost.get().path.basename(filePath, ext);
+                const dirName = AilyHost.get().path.dirname(filePath);
+                const backupPath = AilyHost.get().path.join(dirName, `${FILE_WRITE_LIMITS.backupPrefix}${baseName}${ext}`);
+                const originalContent = await asyncReadFile(filePath, 'utf-8');
+                await asyncWriteFile(backupPath, originalContent);
             } catch (backupError) {
                 console.warn('备份文件失败:', backupError);
             }
@@ -108,7 +109,7 @@ export async function createFileTool(
         
         // 写入文件
         // console.log(`写入文件内容，长度: ${content.length}`);
-        await window['fs'].writeFileSync(filePath, content, encoding);
+        await asyncWriteFile(filePath, content, encoding);
         
         // 对 .json 和 .js 文件进行 lint 检测
         let lintMessage = '';
@@ -122,7 +123,7 @@ export async function createFileTool(
                 is_error: true, 
                 content: `文件创建成功: ${filePath}${lintMessage}` 
             };
-            return injectTodoReminder(toolResult, 'createFileTool');
+            return toolResult;
         }
 
         // 记录成功
@@ -134,7 +135,7 @@ export async function createFileTool(
             is_error: false, 
             content: `文件创建成功: ${filePath}` 
         };
-        return injectTodoReminder(toolResult, 'createFileTool');
+        return toolResult;
     } catch (error: any) {
         console.warn("创建文件失败:", error);
         
@@ -155,6 +156,6 @@ export async function createFileTool(
             is_error: true, 
             content: errorMessage + `\n目标文件: ${params.path}` 
         };
-        return injectTodoReminder(toolResult, 'createFileTool');
+        return toolResult;
     }
 }

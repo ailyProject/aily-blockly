@@ -33,7 +33,7 @@
   .item-inner {
     width: 100px;
     height: 32px;
-    background-color: #222;
+    background-color: var(--aily-bg-elevated);
     border-radius: 4px;
     position: relative;
     display: flex;
@@ -41,13 +41,13 @@
     justify-content: space-between;
     padding-left: 10px;
     padding-right: 20px;
-    color: #eee;
+    color: var(--aily-text-primary);
     font-size: 14px;
     cursor: pointer;
     transition: all 0.2s;
 
     &:hover {
-      background-color: #2a2a2a;
+      background-color: var(--aily-bg-elevated);
     }
 
     .value {
@@ -82,11 +82,11 @@
     position: absolute;
     right: 10px;
     cursor: pointer;
-    color: #CCC;
+    color: var(--aily-text-quaternary);
     transition: all 0.3s;
 
     &:hover {
-      color: #FFF;
+      color: var(--aily-text-primary);
     }
   }
 
@@ -159,7 +159,7 @@
   height: 100%;
   display: flex;
   overflow: hidden;
-  background-color: #2a2b2e;
+  background-color: var(--aily-bg-elevated);
   border-radius: 4px;
   position: relative;
 
@@ -197,10 +197,10 @@
     font-size: 14px;
     line-height: 14px;
     font-weight: 800;
-    color: #ffffff;
+    color: var(--aily-text-primary);
     margin-bottom: 10px;
     padding-bottom: 5px;
-    border-bottom: 1px solid #666;
+    border-bottom: 1px solid var(--aily-border-tertiary);
     position: relative;
     display: flex;
     align-items: center;
@@ -229,7 +229,7 @@
 
     .section-item {
       font-size: 12px;
-      color: #aaa;
+      color: var(--aily-text-tertiary);
 
       label {
         width: 60px;
@@ -237,12 +237,12 @@
 
         .section-tip {
           margin-left: 5px;
-          color: #999;
+          color: var(--aily-text-secondary);
         }
       }
 
       span {
-        color: #fff;
+        color: var(--aily-text-primary);
         flex: 1 1 auto;
         text-align: left;
       }
@@ -266,7 +266,7 @@
         &.not-configured {
           ::ng-deep {
             .ant-input-number-input {
-              color: #666;
+              color: var(--aily-border-tertiary);
             }
           }
         }
@@ -284,7 +284,7 @@
         outline: none;
         border: none;
         border-radius: 2px;
-        background: #222;
+        background: var(--aily-bg-elevated);
         padding-left: 5px;
       }
     }
@@ -317,12 +317,12 @@
 
       label {
         min-width: 72px;
-        color: #bbb;
+        color: var(--aily-text-quaternary);
         font-weight: 600;
       }
 
       span {
-        color: #fff;
+        color: var(--aily-text-primary);
         flex: 1 1 auto;
         text-align: left;
       }
@@ -358,7 +358,7 @@
       }
 
       &.pause {
-        background-color: #222;
+        background-color: var(--aily-bg-elevated);
       }
     }
 
@@ -400,14 +400,14 @@
 
     .class-label {
       width: 100px;
-      color: #fff;
+      color: var(--aily-text-primary);
       font-size: 12px;
       text-align: right;
     }
 
     .object-class-label {
       width: 120px;
-      color: #fff;
+      color: var(--aily-text-primary);
       font-size: 12px;
       text-align: right;
       margin-left: auto; /* push to the far right */
@@ -416,7 +416,7 @@
     .score-bar {
       flex: 1 1 auto;
       height: 24px;
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--aily-bg-tertiary);
       border-radius: 4px;
       overflow: hidden;
       position: relative;
@@ -437,7 +437,7 @@
     .bar-text {
       position: absolute;
       left: 5px;
-      color: #fff;
+      color: var(--aily-text-primary);
       font-size: 12px;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     }
@@ -482,12 +482,12 @@
       margin-bottom: 8px;
 
       label {
-        color: #ccc;
+        color: var(--aily-text-quaternary);
         margin-right: 10px;
       }
 
       span {
-        color: #fff;
+        color: var(--aily-text-primary);
       }
     }
 
@@ -507,7 +507,7 @@
       .item-inner {
         height: 32px;
         width: 100%;
-        background-color: #222;
+        background-color: var(--aily-bg-elevated);
         border-radius: 4px;
         position: relative;
         display: flex;
@@ -515,13 +515,13 @@
         justify-content: space-between;
         padding-left: 10px;
         padding-right: 20px;
-        color: #eee;
+        color: var(--aily-text-primary);
         font-size: 14px;
         cursor: pointer;
         transition: all 0.2s;
 
         &:hover {
-          background-color: #2a2a2a;
+          background-color: var(--aily-bg-elevated);
         }
 
         .value {

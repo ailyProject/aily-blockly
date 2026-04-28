@@ -67,7 +67,8 @@
         "MULTI_COMPRESS": "压缩为zip",
         "LIB_MANAGER": "库管理",
         "AI_ASSISTANT": "AI助手",
-        "PROJECT_HUB": "项目广场"
+        "PROJECT_HUB": "项目广场",
+        "NEW_INSTANCE": "新建窗口"
     },
     "ESP32": {
         "UPLOAD_SPEED": "烧录速度",
@@ -81,6 +82,15 @@
     "STM32": {
         "BOARD": "开发板型号选择",
         "USB": "USB配置"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "烧录 SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "是否要烧录 {{softdevice}} SoftDevice 到设备？",
+        "SELECT_PORT_FIRST": "请先选择串口",
+        "FLASHING_SOFTDEVICE": "正在烧录 SoftDevice...",
+        "FLASH_SUCCESS": "SoftDevice 烧录成功",
+        "FLASH_FAILED": "SoftDevice 烧录失败"
     },
     "GUIDE": {
         "START": "开始",
@@ -122,6 +132,13 @@
         }
     },
     "BLOCKLY": {
+        "CROSS_TAB_COPY": "复制到指定位置",
+        "CONTROLS_SWITCH_CASE": "情况",
+        "CONTROLS_SWITCH_DO": "执行",
+        "CONTROLS_SWITCH_DEFAULT": "默认执行",
+        "CROSS_TAB_PASTE": "粘贴",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "粘贴 %1 项",
+        "WORKSPACE_SELECT_ALL": "全选积木",
         "ONBOARDING": {
             "TOOLBOX_TITLE": "积木工具箱",
             "TOOLBOX_DESC": "这里是积木分类区域，点击不同的分类可以找到各种功能积木块，拖拽到右边工作区使用。",
@@ -162,7 +179,8 @@
             "REPOSITORY": "服务区域",
             "DEPENDENCIES": "全局依赖",
             "MCP": "MCP",
-            "DEVMODE": "开发者模式"
+            "DEVMODE": "开发者模式",
+            "CACHE": "缓存管理"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "项目文件夹",
@@ -173,12 +191,28 @@
             "FLYOUT_AUTO_CLOSE": "自动关闭工具箱",
             "COMPILATION_OPTIONS": "编译选项",
             "REGION": "服务区域",
+            "REGION_TITLE": "切换服务区域",
+            "REGION_DESC": "切换服务区域后需要重新登录，是否继续？",
+            "REGION_CONFIRM": "确认",
+            "REGION_CANCEL": "取消",
             "REPOSITORY_URLS": "仓库地址",
             "API_SERVER": "API服务器",
             "BOARD_LIST": "开发板列表",
             "LIBRARY_LIST": "库列表",
             "INSTALL": "安装",
-            "UNINSTALL": "卸载"
+            "UNINSTALL": "卸载",
+            "CLEAR_CACHE": "清除缓存",
+            "CACHE_SIZE": "缓存大小",
+            "CACHE_LOADING": "获取中...",
+            "CACHE_ALL": "全部清除",
+            "CACHE_ONE_MONTH": "清除一个月前",
+            "CACHE_THREE_MONTHS": "清除三个月前",
+            "CACHE_CLEARING": "正在清除...",
+            "CACHE_CLEARED": "缓存已清除",
+            "CACHE_CLEAR_FAILED": "清除失败",
+            "CACHE_CONFIRM_TITLE": "确认清除",
+            "CACHE_CONFIRM_DESC": "确定要清除所有编译缓存吗？此操作不可撤销。",
+            "CACHE_CONFIRM_OK": "确认"
         },
         "BUTTONS": {
             "CANCEL": "取消",
@@ -205,7 +239,8 @@
             "BOARD": "开发板",
             "PROJECT_NAME": "项目名称",
             "SAVE_PATH": "保存路径",
-            "NAME_EXISTS": "项目名称已存在，请修改"
+            "NAME_EXISTS": "项目名称已存在，请修改",
+            "PATH_INVALID_CHARS": "路径包含非法字符（如 / : * ? \" < > | 等），请修改"
         },
         "BUTTONS": {
             "USE_THIS": "创建新项目",
@@ -216,14 +251,15 @@
             "CREATING": "正在创建"
         },
         "WARNINGS": {
-            "BETA_VERSION": "内测版本，未经验证，谨慎使用"
+            "BETA_VERSION": "内测版本，未经验证，谨慎使用",
+            "TODO": "该设备支持即将上线"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "库管理",
         "BACK": "返回",
         "SEARCH_LIBRARY": "搜索库",
-        "ALL": "所有库",
+        "ALL": "所有",
         "INSTALLED": "已安装",
         "CORE_LIBRARY": "核心库",
         "IMPORT_LIBRARY": "导入本地库",
@@ -234,6 +270,7 @@
         "INSTALLED_TEXT": "已安装",
         "REMOVE": "移除",
         "INSTALLING": "正在安装",
+        "INSTALL_FAILED": "安装失败",
         "UNINSTALLING": "正在卸载",
         "UNINSTALLED": "已卸载",
         "IMPORTING": "正在导入",
@@ -259,6 +296,12 @@
         "CANCEL": "取消",
         "CONTINUE_INSTALL": "继续安装"
     },
+    "PASTE_INSTALL": {
+        "TITLE": "需要安装库",
+        "MESSAGE": "粘贴的积木块需要以下未安装的库，是否安装？",
+        "CANCEL": "取消",
+        "INSTALL_AND_PASTE": "安装并粘贴"
+    },
     "BOARD_SELECTOR": {
         "TITLE": "切换开发板",
         "SEARCH_PLACEHOLDER": "搜索开发板...",
@@ -270,6 +313,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "软件更新",
+        "TITLE_READY": "更新已准备就绪",
+        "TITLE_NEW_VERSION": "发现新版本 {{version}}",
+        "TEXT_DOWNLOADED": "新版本 {{version}} 已下载完成，是否立即安装？",
+        "TEXT_AVAILABLE": "当前版本 {{currentVersion}}，新版本 {{version}}<br>是否要下载并安装此更新？",
         "DOWNLOAD_FAILED": "下载失败",
         "REMIND_LATER": "稍后提醒",
         "SKIP_VERSION": "跳过此版本",
@@ -329,8 +376,9 @@
         "SETTINGS": "AI设置",
         "HISTORY": "历史会话",
         "NEW_CHAT": "新建会话",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "AI的回复仅能作为参考，不一定正确，也不代表本软件开发者的意见，使用者需自行辨别",
+        "USAGE_GUIDE": "了解AI用法",
         "ADD_CONTEXT": "添加上下文",
         "ADD_FILE": "添加文件",
         "ADD_FOLDER": "添加文件夹",
@@ -342,6 +390,15 @@
         "MODE_AGENT_FULL": "代理模式",
         "MODE_QA_FULL": "问答模式",
         "STOP_CURRENT_SESSION_FIRST": "请先停止当前会话，再新建",
+        "NO_HISTORY_SESSION": "没有历史会话记录",
+        "MERMAID_SAVE_ARCH": "保存为框架图",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "覆盖确认",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "项目目录下已存在框架图文件，是否覆盖？",
+        "MERMAID_ARCH_CONFIRM": "确认",
+        "MERMAID_ARCH_CANCEL": "取消",
+        "MERMAID_COPY_FAILED": "复制失败",
+        "MERMAID_SAVE_FAILED": "保存失败",
+        "CLICK_TO_EDIT": "点击编辑",
         "ONBOARDING": {
             "STEP1_TITLE": "输入框",
             "STEP1_DESC": "在这里输入你想问的问题或需要AI帮助完成的任务，按 Enter 发送，Ctrl+Enter 换行",
@@ -389,11 +446,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "项目设置",
+        "ARCH": "框架图",
         "PINMAP": "引脚图",
+        "CIRCUIT": "电路连接",
         "DOCUMENTATION": "文档",
         "FEEDBACK": "反馈",
         "NO_PINMAP": "该开发板没有提供引脚图",
-        "NO_DOCUMENTATION": "该开发板没有提供文档链接"
+        "PINMAP_PARSE_ERROR": "引脚图解析失败",
+        "NO_DOCUMENTATION": "该开发板没有提供文档链接",
+        "ARCH_ELECTRON_ONLY": "框架图仅在桌面应用中可用",
+        "NO_PROJECT": "未打开项目",
+        "NO_ARCH": "项目目录下未找到 arch.md",
+        "ARCH_EMPTY": "arch.md 中未找到 mermaid 图表",
+        "ARCH_RENDER_FAILED": "框架图渲染失败",
+        "GENERATE_ARCH_PROMPT": "生成项目架构图",
+        "ARCH_AI_BUSY": "正在进行 AI 对话中，请稍后再试",
+        "LOGIN_REQUIRED": "请先登录后再使用此功能"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "请先选择串口",
@@ -503,18 +571,29 @@
     "LOGIN": {
         "HEADER": "登陆后即可使用我们的服务",
         "PHONE": "手机号",
+        "EMAIL": "邮箱",
         "BENEFITS_TITLE": "登录后您可以：",
         "BENEFIT_AI": "免费试用 AI 问答功能",
         "BENEFIT_SHARE": "分享你的项目",
         "BENEFIT_EXPERIENCE": "享受个性化的开发体验",
         "NOTICE_LABEL": "注意：",
-        "NOTICE_CONTENT": "我们会使用您的 GitHub 账号为我们的几个开源仓库点 star，这有助于支持我们的项目发展。",
+        "NOTICE_CONTENT": "登录后会star本项目，助力我们的项目发展",
         "GITHUB_LOGIN": "Github登录",
         "WECHAT_SCAN": "扫描二维码关注公众号并登录",
         "PHONE_NOT_OPEN": "暂未开放手机号注册",
         "PHONE_BETA_ONLY": "手机号登录仅限AI功能内测用户使用",
         "PHONE_PLACEHOLDER": "请输入手机号",
         "PASSWORD_PLACEHOLDER": "请输入密码",
+        "EMAIL_LOGIN_DESC": "输入邮箱获取验证码即可登录",
+        "EMAIL_PLACEHOLDER": "请输入邮箱地址",
+        "CODE_PLACEHOLDER": "请输入验证码",
+        "SEND_CODE": "获取验证码",
+        "ENTER_EMAIL": "请输入邮箱地址",
+        "INVALID_EMAIL": "请输入有效的邮箱地址",
+        "CODE_SENT": "验证码已发送，请查收邮件",
+        "CODE_SEND_FAILED": "验证码发送失败，请稍后重试",
+        "ENTER_CODE": "请输入验证码",
+        "CODE_SENDING": "请先获取验证码",
         "LOGGING_IN": "登录中...",
         "LOGIN": "登录",
         "SELECT_METHOD": "点击选择登录方式",
@@ -524,14 +603,116 @@
         "ENTER_CREDENTIALS": "请输入用户名和密码",
         "LOGIN_SUCCESS": "登录成功",
         "LOGIN_FAILED": "登录失败",
-        "LOGIN_NETWORK_ERROR": "登录失败，请检查网络连接"
+        "LOGIN_NETWORK_ERROR": "登录失败，请检查网络连接",
+        "AGREEMENT_PREFIX": "我已阅读并同意",
+        "USER_AGREEMENT": "用户协议",
+        "AGREEMENT_AND": "和",
+        "PRIVACY_POLICY": "隐私政策",
+        "AGREEMENT_REQUIRED": "请先勾选同意用户协议和隐私政策",
+        "MODAL_CLOSE": "关闭",
+        "AGREEMENT_LOAD_FAILED": "加载用户协议失败",
+        "PRIVACY_LOAD_FAILED": "加载隐私政策失败",
+        "WECHAT_QRCODE_FAILED": "获取二维码失败",
+        "WECHAT_REFRESH": "刷新二维码",
+        "WECHAT_RETRY": "重试",
+        "INVITE_CODE_PLACEHOLDER": "邀请码(选填)",
+        "AGREEMENT_BY_LOGIN": "登录/注册即表示同意",
+        "TERMS_OF_USE": "使用条款",
+        "OTHER_LOGIN_METHODS": "您还可以使用以下账号登录",
+        "GITHUB_CONTINUE": "请在Github授权页面点击\"Continue\"完成登录",
+        "REGISTER": "注册",
+        "WECHAT_BIND_REQUIRED": "需要绑定微信",
+        "WECHAT_BIND_SCAN": "请使用微信扫码绑定",
+        "WECHAT_BIND_SUCCESS": "绑定成功",
+        "WECHAT_BIND_CONFLICT": "该微信已绑定其他账号",
+        "BACK_TO_LOGIN": "返回登录"
     },
     "COMMON": {
+        "FEATURE_COMING_SOON": "功能即将上线",
         "ONBOARDING": {
             "SKIP": "跳过",
             "PREV": "上一步",
             "NEXT": "下一步",
             "DONE": "完成"
         }
+    },
+    "NPM": {
+        "INSTALLING": "正在安装{{name}}...",
+        "INSTALLING_DEPENDENCY": "正在安装{{name}}依赖...",
+        "INSTALL_TIMEOUT": "安装超时",
+        "INSTALL_COMPLETE": "{{name}}安装完成",
+        "INSTALL_FAILED": "{{name}}安装失败",
+        "UNINSTALLING": "正在卸载{{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "正在卸载不再需要的依赖...",
+        "UNINSTALL_TIMEOUT": "卸载超时",
+        "UNINSTALL_COMPLETE": "{{name}}卸载完成",
+        "BOARD_INSTALL_COMPLETE": "开发板安装完成",
+        "BOARD_UNINSTALL_COMPLETE": "开发板卸载完成",
+        "BOARD_DEPS_INSTALL_COMPLETE": "开发板依赖安装完成",
+        "BOARD_DEPS_INSTALL_FAILED": "开发板依赖安装失败",
+        "DEPS_INSTALL_COMPLETE": "依赖安装完成",
+        "DEPS_UNINSTALL_COMPLETE": "依赖卸载完成",
+        "DEPS_UNINSTALL_FAILED": "依赖卸载失败",
+        "NAME_REQUIRED": "{{type}}名称不能为空",
+        "TYPE_TOOL": "工具",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "编译器",
+        "INSTALLING_TITLE": "正在安装",
+        "INSTALL_COMPLETE_TITLE": "安装完成",
+        "INSTALL_FAILED_TITLE": "安装失败",
+        "UNINSTALLING_TITLE": "正在卸载",
+        "UNINSTALL_COMPLETE_TITLE": "卸载完成",
+        "UNINSTALL_FAILED_TITLE": "卸载失败"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "正在安装依赖",
+        "LOADING_BOARD_CONFIG": "正在加载开发板配置",
+        "LOADING_BLOCKLY_LIB": "正在加载Blockly库",
+        "LOADING_LIB": "正在加载{{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "正在加载Blockly程序",
+        "PROJECT_LOAD_SUCCESS": "项目加载成功"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "正在加载示例...",
+        "EXAMPLE_LOAD_SUCCESS": "示例加载完成",
+        "EXAMPLE_LOAD_FAILED": "示例加载失败",
+        "NO_TUTORIAL_PROVIDED": "库作者未提供教程"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "无法打开项目: ",
+        "CREATING_PROJECT": "正在创建项目...",
+        "PROJECT_CREATED": "项目创建成功",
+        "CREATE_FAILED": "项目创建失败",
+        "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
+        "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
+        "BOARD_SWITCH_COMPLETE": "开发板切换完成",
+        "BOARD_SWITCH_SUCCESS": "开发板切换成功",
+        "SWITCHING_BOARD": "正在切换开发板...",
+        "UNINSTALLING_CURRENT_BOARD": "正在卸载当前开发板...",
+        "INSTALLING_NEW_BOARD": "正在安装新开发板...",
+        "UPDATING_PROJECT_CONFIG": "正在更新项目配置...",
+        "BOARD_SWITCH_FAILED": "开发板切换失败: ",
+        "LOCK_CONFLICT_TITLE": "项目已在其他窗口打开",
+        "LOCK_CONFLICT_MESSAGE": "另一窗口或版本可能正在编辑此项目。",
+        "LOCK_CONFLICT_CONTENT": "其他实例可能正在编辑此项目。\n进程 PID：{{pid}}\n版本：{{version}}",
+        "LOCK_CANCEL": "取消",
+        "LOCK_FOCUS_OTHER": "切换到已打开的窗口",
+        "LOCK_FORCE_OPEN": "仍要打开",
+        "LOCK_ACQUIRE_FAILED": "无法获取项目锁，请重试"
+    },
+    "NOTIFICATION": {
+        "STOP": "终止",
+        "VIEW_DETAIL": "查看详情",
+        "AI_PROCESS": "AI处理"
+    },
+    "LOG": {
+        "TOOLTIP": "单击复制到剪切板，双击复制到AI助手",
+        "COPIED_TO_CLIPBOARD": "日志内容已复制到剪切板",
+        "SENT_TO_AI": "日志内容已发送到AI助手",
+        "NO_DATA_TO_EXPORT": "没有日志数据可以导出",
+        "EXPORT_TITLE": "导出日志数据",
+        "TEXT_FILE": "文本文件",
+        "ALL_FILES": "所有文件",
+        "EXPORT_SUCCESS": "日志数据已成功导出到"
     }
 }

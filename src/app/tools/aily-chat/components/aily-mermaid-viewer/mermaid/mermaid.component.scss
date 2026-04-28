@@ -1,0 +1,53 @@
+.mermaid-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+
+  &:active,
+  &.dragging {
+    cursor: grabbing;
+  }
+}
+
+.mermaid-content {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.1s ease-out;
+}
+
+.mermaid-svg-container {
+  max-width: none;
+  max-height: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  transition: transform 0.1s ease-out;
+
+  :deep(svg) {
+    max-width: none;
+    max-height: none;
+    height: auto;
+    width: auto;
+    pointer-events: auto;
+  }
+}
+
+.save-btn {
+  position: absolute;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 6px 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  opacity: 0.7;
+  cursor: pointer;
+  border-radius: 5px;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.8);
+  }
+}

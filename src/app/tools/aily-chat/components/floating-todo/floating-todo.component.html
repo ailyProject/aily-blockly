@@ -22,11 +22,11 @@
         <!-- 状态图标 -->
         <div class="todo-status-icon" (click)="toggleTodoStatus(todo)">
           <i class="fas" 
-             [class.fa-circle-pause]="todo.status === 'pending'"
-             [class.fa-play-circle]="todo.status === 'in_progress'"
+             [class.fa-circle-pause]="todo.status === 'not-started'"
+             [class.fa-play-circle]="todo.status === 'in-progress'"
              [class.fa-check-circle]="todo.status === 'completed'"
-             [class.status-pending]="todo.status === 'pending'"
-             [class.status-in-progress]="todo.status === 'in_progress'"
+             [class.status-pending]="todo.status === 'not-started'"
+             [class.status-in-progress]="todo.status === 'in-progress'"
              [class.status-completed]="todo.status === 'completed'"></i>
         </div>
 

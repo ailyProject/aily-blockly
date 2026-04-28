@@ -1,9 +1,9 @@
 .image-cropper-container {
   position: relative;
   overflow: hidden;
-  background-color: #1e1e1e;
+  background-color: var(--aily-bg-elevated);
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 8px var(--aily-shadow-color);
 }
 
 .image-preview {
@@ -16,7 +16,7 @@
 
   .hint-text {
     margin-top: 10px;
-    color: #888;
+    color: var(--aily-text-secondary);
     font-size: 12px;
   }
 }
@@ -50,7 +50,7 @@
     left: 0;
     right: 0;
     padding: 16px;
-    background-color: rgba(30, 30, 30, 0.8);
+    background-color: var(--aily-bg-elevated);
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -84,7 +84,7 @@
   padding: 15px;
   background-color: rgba(30, 30, 30, 0.8);
   border-radius: 4px;
-  color: #d9d9d9;
+  color: var(--aily-text-quaternary);
 
   h4 {
     margin-top: 0;

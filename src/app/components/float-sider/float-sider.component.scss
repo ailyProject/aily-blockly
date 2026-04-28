@@ -4,6 +4,7 @@
   right: 0;
   width: 70px;
   height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -14,12 +15,12 @@
   transform: translate(57px);
   // transform: translate(0px);
   transition: all 0.3s;
-  background: #3a3c3f;
+  background: var(--aily-bg-tertiary);
   width: 50px;
   z-index: 99999;
   border-radius: 5px;
   padding: 5px 0 0 0;
-  box-shadow: 0 0 5px #333;
+  box-shadow: var(--aily-shadow-md);
   display: flex;
   align-items: center;
   flex-direction: column;
@@ -29,7 +30,7 @@
     width: 40px;
     height: 40px;
     cursor: pointer;
-    background: #333;
+    background: var(--aily-editor-flyout-bg);
     margin-bottom: 5px;
     border-radius: 5px;
     font-size: 18px;
@@ -45,7 +46,7 @@
 
     .item {
       &:hover {
-        background: #555;
+        background: var(--aily-border-tertiary);
       }
     }
   }
@@ -53,7 +54,7 @@
   .line{
     width: 30px;
     height: 1px;
-    background: #555;
+    background: var(--aily-border-tertiary);
     margin-bottom: 5px;
   }
 }

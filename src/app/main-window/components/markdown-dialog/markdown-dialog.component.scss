@@ -1,0 +1,16 @@
+.markdown-container {
+  height: 400px;
+  overflow-y: auto;
+  margin: -10px -10px 10px -10px;
+  padding: 15px;
+  background: var(--aily-bg-elevated);
+}
+
+.loading-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 24px;
+  position: absolute;
+  inset: 0;
+}

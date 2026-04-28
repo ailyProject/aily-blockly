@@ -8,8 +8,8 @@ $header-inner-height: 38px;
   position: relative;
   height: $header-height;
   width: 100%;
-  background: #2b2d30;
-  border-bottom: 2px solid #222427;
+  background: var(--aily-bg-primary);
+  border-bottom: 2px solid var(--aily-border-primary);
 
   &.darwin {
     padding-left: 80px;
@@ -28,16 +28,17 @@ $header-inner-height: 38px;
     height: $header-inner-height;
 
     :hover {
-      background: #3a3c3f;
+      background: var(--aily-bg-tertiary);
     }
   }
 
   .board {
     padding-left: 10px;
     height: $header-inner-height;
-    color: #818992;
+    color: var(--aily-text-hint);
     cursor: pointer;
     opacity: 0.7;
+    padding-top: 2px;
 
     * {
       pointer-events: none;
@@ -75,7 +76,7 @@ $header-inner-height: 38px;
     position: relative;
     display: flex;
     height: 100%;
-    background: #2b2d30;
+    background: var(--aily-bg-primary);
 
     .zone {
       margin-left: 8px;
@@ -93,7 +94,7 @@ $header-inner-height: 38px;
     height: $header-inner-height;
     flex-direction: column;
     border-radius: 8px;
-    color: #a5a5a5;
+    color: var(--aily-text-muted);
     opacity: 0.7;
     font-size: 19px;
     margin-right: 8px;
@@ -114,7 +115,7 @@ $header-inner-height: 38px;
     }
 
     &.selected {
-      color: #fff;
+      color: var(--aily-text-primary);
       opacity: 1;
     }
   }
@@ -146,7 +147,7 @@ $header-inner-height: 38px;
     margin-right: 0;
 
     &:hover {
-      background: #3a3c3f;
+      background: var(--aily-bg-tertiary);
     }
   }
 
@@ -158,7 +159,7 @@ $header-inner-height: 38px;
     font-size: 19px;
 
     &:hover {
-      color: rgb(145, 0, 0);
+      color: var(--aily-color-error);
     }
   }
 }

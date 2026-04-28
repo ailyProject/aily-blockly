@@ -1,5 +1,5 @@
 .inner-window {
-    background: #CCC;
+    background: var(--aily-bg-tertiary);
     position: absolute;
     z-index: 9;
     border-radius: 5px;
@@ -17,10 +17,10 @@
     position: absolute;
     width: 100%;
     height: 32px;
-    background: #666;
+    background: var(--aily-bg-secondary);
     display: flex;
     align-items: center;
-    color: #dddddd;
+    color: var(--aily-text-quaternary);
 
     .title {
         font-size: 12px;
@@ -48,7 +48,7 @@
             cursor: pointer;
 
             &:hover {
-                color: #FFF;
+                color: var(--aily-text-primary);
             }
         }
     }
@@ -57,7 +57,7 @@
 .content {
     position: absolute;
     top: 32px;
-    background-color: #333;
+    background-color: var(--aily-editor-flyout-bg);
     height: calc(100% - 32px);
     width: 100%;
 }

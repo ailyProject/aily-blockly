@@ -9,12 +9,12 @@
         .title {
             font-size: 24px;
             font-weight: 600;
-            color: #fff;
+            color: var(--aily-text-primary);
             margin: 0 0 5px 0;
         }
 
         .date {
-            color: #aaa;
+            color: var(--aily-text-secondary);
             font-size: 12px;
 
             span {
@@ -42,7 +42,7 @@
 
 .description {
     width: 100%;
-    background: #2b2b2b;
+    background: var(--aily-bg-elevated);
     border-radius: 5px;
     padding: 10px;
     position: relative;
@@ -54,7 +54,7 @@
 
 .itemList {
     width: 100%;
-    background: #2b2b2b;
+    background: var(--aily-bg-elevated);
     border-radius: 5px;
     padding: 0 10px;
     position: relative;
@@ -63,13 +63,13 @@
     overflow: hidden;
 
     .item {
-        border-bottom: 1px solid #444;
+        border-bottom: 1px solid var(--aily-border-input);
         padding: 10px 0;
         position: relative;
         cursor: pointer;
 
         .text {
-            color: #aaa;
+            color: var(--aily-text-secondary);
             font-size: 12px;
         }
 
@@ -85,7 +85,7 @@
 
         &:hover {
             .name {
-                color: #fff;
+                color: var(--aily-text-primary);
             }
         }
     }
@@ -94,7 +94,7 @@
 .author-box {
     width: 280px;
     height: 210px;
-    background: #2b2b2b;
+    background: var(--aily-bg-elevated);
     border-radius: 5px;
     padding: 10px;
     margin-bottom: 15px;

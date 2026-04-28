@@ -227,70 +227,73 @@ export class ModelTrainService implements OnDestroy {
    * 从 IndexedDB 加载模型
    */
   async loadModel(modelName: string): Promise<any> {
-    try {
-      const tf = await import('@tensorflow/tfjs');
-      const model = await tf.loadLayersModel(`indexeddb://${modelName}`);
-      return model;
-    } catch (error: any) {
-      console.error('加载模型失败:', error);
-      throw new Error(`加载模型失败: ${error.message}`);
-    }
+    // TensorFlow disabled - re-enable when @tensorflow/tfjs is installed
+    throw new Error('TensorFlow 未安装，请先安装 @tensorflow/tfjs 相关包');
+    // try {
+    //   const tf = await import('@tensorflow/tfjs');
+    //   const model = await tf.loadLayersModel(`indexeddb://${modelName}`);
+    //   return model;
+    // } catch (error: any) {
+    //   console.error('加载模型失败:', error);
+    //   throw new Error(`加载模型失败: ${error.message}`);
+    // }
   }
 
   /**
    * 列出所有训练的模型
    */
   async listModels(): Promise<string[]> {
-    try {
-      const tf = await import('@tensorflow/tfjs');
-      const models = await tf.io.listModels();
-      return Object.keys(models).filter(key => key.startsWith('indexeddb://'));
-    } catch (error: any) {
-      console.error('列出模型失败:', error);
-      return [];
-    }
+    // TensorFlow disabled - re-enable when @tensorflow/tfjs is installed
+    return [];
+    // try {
+    //   const tf = await import('@tensorflow/tfjs');
+    //   const models = await tf.io.listModels();
+    //   return Object.keys(models).filter(key => key.startsWith('indexeddb://'));
+    // } catch (error: any) {
+    //   console.error('列出模型失败:', error);
+    //   return [];
+    // }
   }
 
   /**
    * 删除模型
    */
   async deleteModel(modelName: string): Promise<boolean> {
-    try {
-      const tf = await import('@tensorflow/tfjs');
-      await tf.io.removeModel(`indexeddb://${modelName}`);
-      return true;
-    } catch (error: any) {
-      console.error('删除模型失败:', error);
-      return false;
-    }
+    // TensorFlow disabled - re-enable when @tensorflow/tfjs is installed
+    return false;
+    // try {
+    //   const tf = await import('@tensorflow/tfjs');
+    //   await tf.io.removeModel(`indexeddb://${modelName}`);
+    //   return true;
+    // } catch (error: any) {
+    //   console.error('删除模型失败:', error);
+    //   return false;
+    // }
   }
 
   /**
    * 导出模型为文件
    */
   async exportModel(modelName: string): Promise<Blob> {
-    try {
-      const tf = await import('@tensorflow/tfjs');
-      const model = await tf.loadLayersModel(`indexeddb://${modelName}`);
-      
-      // 保存到内存
-      const saveResult = await model.save(tf.io.withSaveHandler(async (artifacts) => {
-        return {
-          modelArtifactsInfo: {
-            dateSaved: new Date(),
-            modelTopologyType: 'JSON'
-          }
-        };
-      }));
-      
-      // 创建 zip 文件（需要额外的库，这里简化处理）
-      const modelJSON = JSON.stringify(saveResult);
-      return new Blob([modelJSON], { type: 'application/json' });
-      
-    } catch (error: any) {
-      console.error('导出模型失败:', error);
-      throw new Error(`导出模型失败: ${error.message}`);
-    }
+    // TensorFlow disabled - re-enable when @tensorflow/tfjs is installed
+    throw new Error('TensorFlow 未安装，请先安装 @tensorflow/tfjs 相关包');
+    // try {
+    //   const tf = await import('@tensorflow/tfjs');
+    //   const model = await tf.loadLayersModel(`indexeddb://${modelName}`);
+    //   const saveResult = await model.save(tf.io.withSaveHandler(async (artifacts) => {
+    //     return {
+    //       modelArtifactsInfo: {
+    //         dateSaved: new Date(),
+    //         modelTopologyType: 'JSON'
+    //       }
+    //     };
+    //   }));
+    //   const modelJSON = JSON.stringify(saveResult);
+    //   return new Blob([modelJSON], { type: 'application/json' });
+    // } catch (error: any) {
+    //   console.error('导出模型失败:', error);
+    //   throw new Error(`导出模型失败: ${error.message}`);
+    // }
   }
 
   /**

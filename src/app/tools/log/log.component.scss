@@ -12,28 +12,33 @@
   right: 0;
   bottom: 0;
   overflow-x: hidden;
-  background-color: rgba(0, 0, 0, 0.95);
-  color: #fff;
+  background-color: var(--aily-bg-elevated);
+  color: var(--aily-text-primary);
 
-  // CDK 虚拟滚动内部容器样式
-  .cdk-virtual-scroll-content-wrapper {
+  overflow-y: auto;
+
+  .log-inner {
+    position: relative;
     width: 100%;
   }
 
   .item {
-    min-height: 24px; // 最小高度
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    min-height: 24px;
     box-sizing: border-box;
     display: flex;
-    flex-wrap: wrap; // 允许换行
+    flex-wrap: wrap;
     align-items: flex-start;
     padding-left: 10px;
     cursor: pointer;
-    margin-bottom: 3px;
-    color: #a5a5a5;
-    border-left: 5px solid #3f3f3f;
+    color: var(--aily-text-tertiary);
+    border-left: 5px solid var(--aily-bg-tertiary);
 
     &:hover {
-      background-color: rgba(255, 255, 255, 0.2);
+      background-color: var(--aily-scrollbar-thumb);
     }
 
     &.error {
@@ -69,7 +74,7 @@
     }
 
     .text {
-      color: #eee;
+      color: var(--aily-text-primary);
       flex: 1;
       min-width: 0;
       word-wrap: break-word;
@@ -87,21 +92,20 @@
     }
   }
 
-  // CDK 虚拟滚动内部滚动条样式
   &::-webkit-scrollbar {
     width: 8px;
   }
 
   &::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--aily-bg-primary);
   }
 
   &::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
+    background: var(--aily-scrollbar-thumb);
     border-radius: 4px;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.5);
+      background: var(--aily-scrollbar-thumb-hover);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Subject, BehaviorSubject } from 'rxjs';
 import { getTodos, TodoItem } from '../utils/todoStorage';
+import { AilyHost } from '../core/host';
 
 @Injectable({
   providedIn: 'root'
@@ -36,19 +37,30 @@ export class TodoUpdateService {
    * @param sessionId 会话ID
    */
   refreshTodoData(sessionId: string): void {
-    // console.log('🔄 从存储重新加载TODO数据:', sessionId);
+    const todos = this.readTodosFromDisk(sessionId);
     
-    // 获取最新的TODO数据
-    const updatedTodos = getTodos(sessionId);
-    
-    // 更新数据缓存
     const currentData = this.todoDataSubject.value;
     const newData = new Map(currentData);
-    newData.set(sessionId, updatedTodos);
+    newData.set(sessionId, todos);
     this.todoDataSubject.next(newData);
     
-    // 发送更新通知
     this.todoUpdatedSubject.next(sessionId);
+  }
+
+  /**
+   * 直接从磁盘读取TODO数据，绕过内存缓存
+   */
+  private readTodosFromDisk(sessionId: string): TodoItem[] {
+    const todoFile = `${AilyHost.get().path.getAppDataPath()}/aily-todos/todos_${sessionId}.json`;
+    try {
+      if (AilyHost.get().fs.existsSync(todoFile)) {
+        const fileContent = AilyHost.get().fs.readFileSync(todoFile, 'utf-8');
+        return JSON.parse(fileContent);
+      }
+    } catch (error) {
+      console.warn('[TodoUpdateService] 读取TODO文件失败:', error);
+    }
+    return [];
   }
 
   /**
@@ -58,7 +70,13 @@ export class TodoUpdateService {
    */
   getTodosForSession(sessionId: string): TodoItem[] {
     const currentData = this.todoDataSubject.value;
-    return currentData.get(sessionId) || getTodos(sessionId);
+    const cached = currentData.get(sessionId);
+    // 优先使用缓存，缓存为空时直接从磁盘读取（绕过缓存）
+    if (cached && cached.length > 0) {
+      return cached;
+    }
+    // 缓存为空或不存在时，直接从磁盘读取
+    return getTodos(sessionId);
   }
 
   /**

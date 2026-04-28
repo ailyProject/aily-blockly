@@ -1,17 +1,17 @@
-@if(devmode){
-<blockly-main [devmode]="devmode"></blockly-main>
-<div class="project-mangager-btn ccenter">
-  <div class="mangager ccenter" (click)="openProjectManager()">{{'LIB_MANAGER.TITLE'| translate}}</div>
-</div>
+@if (devmode) {
+<blockly-main
+  [devmode]="devmode"
+  (libraryManagerRequested)="openProjectManager()"></blockly-main>
 }
-@if(developerMode){
+@if (developerMode) {
 <app-dev-tool></app-dev-tool>
 }
 
 @if (showLibraryManager) {
-<app-lib-manager (close)="showLibraryManager=false"></app-lib-manager>
+  <app-lib-manager (close)="showLibraryManager = false"></app-lib-manager>
 }
 <!-- @if (showLibEditor) {
 <app-lib-editor (close)="showLibEditor=false"></app-lib-editor>
 } -->
+<app-float-sider [show]="showFloatSider"></app-float-sider>
 <app-notification></app-notification>

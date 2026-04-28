@@ -13,15 +13,21 @@
     "cn": {
       "name": "China",
       "enabled": true,
-      "api_server": "https://aapi.diandeng.tech",
-      "npm_registry": "https://registry.diandeng.tech",
-      "resource": "https://blockly.diandeng.tech",
-      "updater": "https://dl.diandeng.tech/blockly"
+      "api_server": "https://api.yysc.tech",
+      "web": "https://yysc.tech",
+      "ucenter_web": "https://c.yysc.tech",
+      "tool_web": "https://tool.yysc.tech",
+      "npm_registry": "https://registry.yysc.tech",
+      "resource": "https://blockly.yysc.tech",
+      "updater": "https://dl.yysc.tech/blockly"
     },
     "eu": {
       "name": "Europe",
       "enabled": true,
       "api_server": "https://api.aily.pro",
+      "web": "https://aily.pro",
+      "ucenter_web": "https://c.aily.pro",
+      "tool_web": "https://tool.aily.pro",
       "npm_registry": "https://registry.aily.pro",
       "resource": "https://rs1.aily.pro",
       "updater": "https://dl.aily.pro/blockly"
@@ -29,7 +35,10 @@
     "localhost": {
       "name": "Local",
       "enabled": true,
-      "api_server": "https://aapi.diandeng.tech",
+      "api_server": "https://api.yysc.tech",
+      "web": "https://aily.pro",
+      "ucenter_web": "https://c.aily.pro",
+      "tool_web": "https://tool.aily.pro",
       "npm_registry": "http://localhost:4873",
       "resource": "http://localhost:4874",
       "updater": ""

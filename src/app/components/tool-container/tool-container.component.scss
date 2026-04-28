@@ -1,5 +1,5 @@
 .tool-container {
-  background: #2b2d30;
+  background: var(--aily-bg-primary);
   height: 100%;
 }
 
@@ -21,7 +21,7 @@
         height: 30px;
 
         &:hover {
-          background: #3a3c3f;
+          background: var(--aily-bg-tertiary);
         }
       }
     }
@@ -35,5 +35,6 @@
 
 .content {
   height: calc(100% - 30px);
-  background: #323437;
+  background: var(--aily-bg-secondary);
+  overflow: hidden;
 }

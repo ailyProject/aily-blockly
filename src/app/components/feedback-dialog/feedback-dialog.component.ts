@@ -7,12 +7,13 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { BaseDialogComponent, DialogButton } from '../base-dialog/base-dialog.component';
-import { FeedbackService, ImageUploadResponse } from '../../services/feedback.service';
+import { FeedbackService, ImageUploadResponse } from './feedback.service';
 import { ElectronService } from '../../services/electron.service';
 import { NzRadioModule } from 'ng-zorro-antd/radio';
 import { ProjectService } from '../../services/project.service';
 import { LogService } from '../../services/log.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { stripAnsi } from 'fancy-ansi';
 
 import { version } from '../../../../package.json';
 
@@ -29,7 +30,8 @@ import { version } from '../../../../package.json';
     BaseDialogComponent
   ],
   templateUrl: './feedback-dialog.component.html',
-  styleUrl: './feedback-dialog.component.scss'
+  styleUrl: './feedback-dialog.component.scss',
+  providers: [FeedbackService]
 })
 export class FeedbackDialogComponent implements OnDestroy {
   readonly modal = inject(NzModalRef);
@@ -195,7 +197,7 @@ ${dependenciesStr}
       .slice(0, 20);
 
     const errorLogsStr = errorLogs.length > 0
-      ? errorLogs.map(log => `  - [${log.timestamp}] ${log.detail}`).join('\n')
+      ? errorLogs.map(log => `  - [${new Date(log.timestamp!).toLocaleTimeString()}] ${stripAnsi(log.detail || '')}`).join('\n')
       : "  null";
 
     return `- Error Logs:

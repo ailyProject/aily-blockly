@@ -3,12 +3,14 @@ import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { CommonModule } from '@angular/common';
 import { NoticeOptions, NoticeService } from '../../services/notice.service';
 import { UiService } from '../../services/ui.service';
+import { TranslateModule } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-notification',
   imports: [
     NzProgressModule,
-    CommonModule
+    CommonModule,
+    TranslateModule
   ],
   templateUrl: './notification.component.html',
   styleUrl: './notification.component.scss'
@@ -45,7 +47,7 @@ export class NotificationComponent {
 
       const closable = data ? (data.closable ?? data.state !== 'doing') : true;
       this.isClosable = closable;
-      this.data = data ? { ...data, closable } : data;
+      this.data = data ? { ...data, closable, text: data.text ? this.cleanAnsi(data.text) : data.text } : data;
 
       // 如果有进度值，启动进度动画
       if (this.data && this.data.progress !== undefined) {
@@ -151,8 +153,26 @@ export class NotificationComponent {
     this.uiService.openBottomSider('log');
   }
 
-  askAI() {
-    console.log('askAI');
+  // 清除 ANSI 格式化字符，先移除 SGR 颜色序列，再清除残留 ESC 字符
+  private cleanAnsi(text: string): string {
+    if (!text) return '';
+    return text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b/g, '');
+  }
+
+  private cleanLogContent(text: string): string {
+    if (!text) return '';
+    let cleaned = this.cleanAnsi(text);
+    cleaned = cleaned.replace(/^\s*\[(ERROR|INFO|WARN|WARNING|DEBUG|TRACE|FATAL)\]\s*/gim, '');
+    return cleaned;
+  }
+
+  sendAI() {
+    console.log(this.data);
+    const detail = this.cleanLogContent(this.data?.detail || '');
+    this.uiService.openAndSendToChat(`log:\n${detail}`, {
+      sender: 'NotificationComponent',
+      type: 'log'
+    });
   }
 
 }

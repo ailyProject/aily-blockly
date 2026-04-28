@@ -49,7 +49,7 @@ export class BoardSelectorDialogComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadingText = this.translate.instant('BOARD_SELECTOR.LOADING');
-    this.boardList = this.data.boardList || [];
+    this.boardList = (this.data.boardList || []).filter(board => board.state !== 'todo');
     this.filteredBoardList = [...this.boardList];
   }
 
@@ -61,9 +61,9 @@ export class BoardSelectorDialogComponent implements OnInit {
     } else {
       this.filteredBoardList = this.boardList.filter(board =>
         board.name.toLowerCase().includes(keyword) ||
-        (board.data?.board?.nickname || '').toLowerCase().includes(keyword) ||
-        (board.data?.board?.brand || '').toLowerCase().includes(keyword) ||
-        (board.data?.board?.description || '').toLowerCase().includes(keyword)
+        (board.nickname || '').toLowerCase().includes(keyword) ||
+        (board.brand || '').toLowerCase().includes(keyword) ||
+        (board.description || '').toLowerCase().includes(keyword)
       );
     }
   }

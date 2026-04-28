@@ -1,6 +1,7 @@
-import path from "path";
+﻿import path from "path";
 import { ToolUseResult } from "./tools";
 import { normalizePath } from "../services/security.service";
+import { AilyHost } from '../core/host';
 
 /**
  * ABI文件编辑工具
@@ -70,19 +71,20 @@ function findAbiFiles(searchPath: string, maxDepth: number = 3, currentDepth: nu
 
         const normalizedSearchPath = normalizePath(searchPath);
         
-        if (!window['fs'].existsSync(normalizedSearchPath)) {
+        if (!AilyHost.get().fs.existsSync(normalizedSearchPath)) {
             return abiFiles;
         }
 
-        const items = window['fs'].readDirSync(normalizedSearchPath);
+        const items = AilyHost.get().fs.readDirSync(normalizedSearchPath);
         
         for (const item of items) {
-            const fullPath = window['path'].join(normalizedSearchPath, item);
-            const stat = window['fs'].statSync(fullPath);
+            const itemName = item.name;
+            const fullPath = AilyHost.get().path.join(normalizedSearchPath, itemName);
+            const stat = AilyHost.get().fs.statSync(fullPath);
             
             if (stat.isFile()) {
                 // 检查是否为.abi文件
-                if (window['path'].extname(item).toLowerCase() === '.abi') {
+                if (AilyHost.get().path.extname(itemName).toLowerCase() === '.abi') {
                     abiFiles.push(normalizePath(fullPath));
                 }
             } else if (stat.isDirectory()) {
@@ -189,7 +191,7 @@ export async function editAbiFileTool(
         }
 
         // 验证文件扩展名是否为.abi
-        const fileExtension = window['path'].extname(filePath).toLowerCase();
+        const fileExtension = AilyHost.get().path.extname(filePath).toLowerCase();
         if (fileExtension !== '.abi') {
             return {
                 is_error: true,
@@ -198,7 +200,7 @@ export async function editAbiFileTool(
         }
 
         // // 如果是替换模式或创建新文件，验证ABI内容格式
-        // if (replaceMode || !window['fs'].existsSync(filePath)) {
+        // if (replaceMode || !AilyHost.get().fs.existsSync(filePath)) {
         //     try {
         //         JSON.parse(content);
         //     } catch (jsonError) {
@@ -210,18 +212,18 @@ export async function editAbiFileTool(
         // }
 
         // 检查文件是否存在
-        let fileExists = window['fs'].existsSync(filePath);
+        let fileExists = AilyHost.get().fs.existsSync(filePath);
         if (!fileExists) {
             if (createIfNotExists) {
                 // 如果文件不存在且允许创建，先创建目录
-                const dir = window['path'].dirname(filePath);
-                if (!window['fs'].existsSync(dir)) {
-                    await window['fs'].mkdirSync(dir, { recursive: true });
+                const dir = AilyHost.get().path.dirname(filePath);
+                if (!AilyHost.get().fs.existsSync(dir)) {
+                    await AilyHost.get().fs.mkdirSync(dir, { recursive: true });
                 }
                 
                 // 如果指定了插入行或替换行但文件不存在，创建空文件
                 if ((insertLine !== undefined || replaceStartLine !== undefined) && !replaceMode) {
-                    await window['fs'].writeFileSync(filePath, '', encoding);
+                    await AilyHost.get().fs.writeFileSync(filePath, '', encoding);
                     fileExists = true;
                 }
             } else {
@@ -232,7 +234,7 @@ export async function editAbiFileTool(
             }
         } else {
             // 检查是否为文件（不是目录）
-            const isDirectory = await window['fs'].isDirectory(filePath);
+            const isDirectory = await AilyHost.get().fs.isDirectory(filePath);
             if (isDirectory) {
                 return {
                     is_error: true,
@@ -255,7 +257,7 @@ export async function editAbiFileTool(
             }
 
             // 读取现有文件内容
-            const existingContent = await window['fs'].readFileSync(filePath, encoding);
+            const existingContent = await AilyHost.get().fs.readFileSync(filePath, encoding);
             const lines = existingContent.split('\n');
             
             // 验证起始行号是否有效
@@ -315,7 +317,7 @@ export async function editAbiFileTool(
             }
 
             // 读取现有文件内容
-            const existingContent = await window['fs'].readFileSync(filePath, encoding);
+            const existingContent = await AilyHost.get().fs.readFileSync(filePath, encoding);
             const lines = existingContent.split('\n');
             
             // 验证行号是否有效
@@ -338,7 +340,7 @@ export async function editAbiFileTool(
             // console.log(`在第 ${insertLine} 行插入内容，新增行数: ${contentLines.length}`);
         } else {
             // 追加到文件末尾
-            const existingContent = await window['fs'].readFileSync(filePath, encoding);
+            const existingContent = await AilyHost.get().fs.readFileSync(filePath, encoding);
             finalContent = existingContent + (existingContent.endsWith('\n') ? '' : '\n') + content;
             operationDescription = "追加内容到文件末尾";
             // console.log(`追加ABI内容长度: ${content.length}`);
@@ -355,7 +357,7 @@ export async function editAbiFileTool(
         }
 
         // 写入文件
-        await window['fs'].writeFileSync(filePath, finalContent, encoding);
+        await AilyHost.get().fs.writeFileSync(filePath, finalContent, encoding);
         
         return { 
             is_error: false, 

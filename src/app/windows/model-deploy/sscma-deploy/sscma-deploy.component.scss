@@ -16,7 +16,7 @@
 
     .left-inner {
       height: 100%;
-      border-right: 1px solid #43494b;
+      border-right: 1px solid var(--aily-border-input);
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -41,19 +41,19 @@
       &.model-info-view {
         justify-content: flex-start;
         font-size: 14px;
-        color: #ffffff;
+        color: var(--aily-text-primary);
 
         .model-name {
           font-size: 18px;
           font-weight: bold;
           margin-bottom: 10px;
-          color: #ffffff;
+          color: var(--aily-text-primary);
         }
 
         .model-image {
           margin-bottom: 20px;
           text-align: center;
-          background: #2a2b2e;
+          background: var(--aily-bg-elevated);
           border-radius: 8px;
           padding: 10px;
 
@@ -72,14 +72,14 @@
           .section-title {
             font-size: 16px;
             font-weight: 600;
-            color: #ffffff;
+            color: var(--aily-text-primary);
             margin-bottom: 12px;
             padding-bottom: 8px;
-            border-bottom: 1px solid #444;
+            border-bottom: 1px solid var(--aily-border-input);
           }
 
           .description {
-            color: #ccc;
+            color: var(--aily-text-quaternary);
             line-height: 1.6;
             margin-bottom: 12px;
           }
@@ -89,16 +89,16 @@
               display: flex;
               align-items: center;
               margin-bottom: 10px;
-              color: #ccc;
+              color: var(--aily-text-quaternary);
 
               .label {
                 min-width: 100px;
                 font-weight: 500;
-                color: #aaa;
+                color: var(--aily-text-tertiary);
               }
 
               .value {
-                color: #fff;
+                color: var(--aily-text-primary);
               }
 
               .tag-list {
@@ -155,7 +155,7 @@
           }
 
           .detail-content {
-            color: #ccc;
+            color: var(--aily-text-quaternary);
             line-height: 1.8;
 
             ::ng-deep {
@@ -176,7 +176,7 @@
               }
 
               strong {
-                color: #fff;
+                color: var(--aily-text-primary);
               }
 
               img {
@@ -215,7 +215,7 @@
       &.device-connect-view {
         justify-content: flex-start;
         font-size: 14px;
-        color: #ffffff;
+        color: var(--aily-text-primary);
 
         .section {
           margin-bottom: 24px;
@@ -224,14 +224,14 @@
           .section-title {
             font-size: 16px;
             font-weight: 600;
-            color: #ffffff;
+            color: var(--aily-text-primary);
             margin-bottom: 12px;
             padding-bottom: 8px;
-            border-bottom: 1px solid #444;
+            border-bottom: 1px solid var(--aily-border-input);
           }
 
           .device-info {
-            color: #ccc;
+            color: var(--aily-text-quaternary);
             line-height: 1.6;
             margin-bottom: 12px;
           }
@@ -266,7 +266,7 @@
               margin-bottom: 20px;
 
               .step-text {
-                color: #ccc;
+                color: var(--aily-text-quaternary);
                 margin: 10px 0;
                 font-size: 16px;
               }
@@ -296,7 +296,7 @@
               min-width: 100px;
               max-width: 300px;
               width: auto;
-              background-color: #222;
+              background-color: var(--aily-bg-elevated);
               border-radius: 4px;
               position: relative;
               display: inline-flex;
@@ -304,13 +304,13 @@
               justify-content: space-between;
               padding-left: 10px;
               padding-right: 20px;
-              color: #eee;
+              color: var(--aily-text-primary);
               font-size: 14px;
               cursor: pointer;
               transition: all 0.2s;
 
               &:hover {
-                background-color: #2a2a2a;
+                background-color: var(--aily-bg-elevated);
               }
 
               .value {
@@ -330,7 +330,7 @@
 
                 .arrow {
                   transition: transform 0.3s;
-                  color: rgba(255, 255, 255, 0.45);
+                  color: var(--aily-text-tertiary);
 
                   &.down {
                     transform: rotate(90deg);
@@ -340,7 +340,7 @@
 
               &:hover {
                 .arrow-box .arrow {
-                  color: rgba(255, 255, 255, 0.65);
+                  color: var(--aily-text-primary);
                 }
               }
             }
@@ -355,9 +355,9 @@
 
       .step-content {
         padding: 20px;
-        background: #2a2b2e;
+        background: var(--aily-bg-elevated);
         border-radius: 8px;
-        color: #ccc;
+        color: var(--aily-text-quaternary);
       }
 
       .item {
@@ -373,9 +373,9 @@
         }
 
         input {
-          background: #363636;
+          background: var(--aily-bg-tertiary);
           z-index: 1;
-          color: rgba(255, 255, 255, 0.7) !important;
+          color: var(--aily-text-primary) !important;
 
           &.board {
             border-radius: 2px 0 0 2px;
@@ -386,7 +386,7 @@
           width: 150px;
           flex-shrink: 0;
           margin-left: -1px;
-          background: #363636;
+          background: var(--aily-bg-tertiary);
 
           ::ng-deep {
             nz-select-top-control {
@@ -405,7 +405,7 @@
       }
 
       nz-input-group {
-        background: #363636;
+        background: var(--aily-bg-tertiary);
 
         ::ng-deep {
           .ant-input-group-addon {
@@ -531,7 +531,7 @@
 // }
 
 .window-footer {
-  border-top: 1px solid #222427;
+  border-top: 1px solid var(--aily-border-primary);
   height: 60px;
   position: relative;
   display: flex;
@@ -588,7 +588,7 @@
   .board {
     width: 180px;
     height: 110px;
-    background: #3e4243;
+    background: var(--aily-bg-tertiary);
     border-radius: 5px;
     flex-direction: column;
     justify-content: flex-start;
@@ -610,7 +610,7 @@
     }
 
     &.disabled {
-      background: #3f3f3f;
+      background: var(--aily-bg-tertiary);
     }
   }
 }
@@ -622,12 +622,12 @@
   bottom: 0;
   border-radius: 10px;
   padding: 5px 10px;
-  background: rgba(59, 59, 59, 0.9);
+  background: var(--aily-bg-tertiary);
   overflow: hidden;
-  box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 0 5px var(--aily-shadow-color);
 
   .title {
-    border-bottom: 1px solid #43494b;
+    border-bottom: 1px solid var(--aily-border-input);
     margin-bottom: 3px;
     position: relative;
 
@@ -640,7 +640,7 @@
 
   .content {
     height: 65px;
-    color: #bbb;
+    color: var(--aily-text-quaternary);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
@@ -681,15 +681,15 @@
 .deploy-status {
   margin-top: 10px;
   padding: 10px;
-  background: rgba(42, 43, 46, 0.8);
+  background: var(--aily-overlay-bg);
   border-radius: 4px;
-  border: 1px solid #43494b;
+  border: 1px solid var(--aily-border-input);
   width: 300px;
   height: 95px;
 
   .status-text {
     font-size: 14px;
-    color: #ffffff;
+    color: var(--aily-text-primary);
     margin-bottom: 12px;
     font-weight: 500;
   }
@@ -697,7 +697,7 @@
   .progress-container {
     width: 100%;
     height: 8px;
-    background: #2a2a2a;
+    background: var(--aily-bg-elevated);
     border-radius: 4px;
     overflow: hidden;
     margin-bottom: 8px;
@@ -715,7 +715,7 @@
     margin-top: 15px;
     font-size: 14px;
     line-height: 14px;
-    color: #888;
+    color: var(--aily-text-secondary);
     display: flex;
     justify-content: space-between;
   }

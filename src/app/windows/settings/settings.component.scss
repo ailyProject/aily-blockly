@@ -11,7 +11,7 @@
   }
 
   &.selected {
-    color: #348ce9;
+    color: var(--aily-color-primary-alt);
   }
 }
 
@@ -76,7 +76,7 @@
 }
 
 textarea {
-  background: #363636;
+  background: var(--aily-bg-input);
 }
 
 .registry {
@@ -94,12 +94,12 @@ textarea {
   padding: 0 5px 0 10px;
   position: relative;
   overflow: auto;
-  background: #363636;
-  border: 1px solid #434343;
+  background: var(--aily-bg-input);
+  border: 1px solid var(--aily-border-input);
   margin-bottom: 19px;
 
   .board-item {
-    border-bottom: 1px solid #43494b;
+    border-bottom: 1px solid var(--aily-border-active);
     display: flex;
     align-items: center;
     padding: 4px 0;
@@ -110,7 +110,7 @@ textarea {
 
     .version {
       margin-left: 5px;
-      color: #868686;
+      color: var(--aily-text-muted);
     }
 
     .btns {
@@ -146,7 +146,7 @@ ngx-simplebar {
 
 .section {
   margin-bottom: 20px;
-  border-bottom: 1px solid #43494b;
+  border-bottom: 1px solid var(--aily-border-active);
 
   &:last-child {
     border-bottom: none;
@@ -158,13 +158,13 @@ ngx-simplebar {
   font-size: 18px;
   margin-bottom: 20px;
   font-weight: 500;
-  color: #fff;
+  color: var(--aily-text-primary);
   display: flex;
   justify-content: space-between;
 
   span {
     margin-left: 5px;
-    color: #999;
+    color: var(--aily-text-secondary);
     font-size: 12px;
   }
 
@@ -179,8 +179,8 @@ ngx-simplebar {
 
 .item {
   .item-inner {
-    background: #363636;
-    border: 1px solid #434343;
+    background: var(--aily-bg-input);
+    border: 1px solid var(--aily-border-input);
     flex-grow: 1;
     display: flex;
     height: 32px;
@@ -213,6 +213,15 @@ ngx-simplebar {
 .region-flag {
   margin-right: 6px;
   font-size: 16px;
+}
+
+.region-buttons {
+  display: flex;
+  flex-wrap: wrap;
+
+  button {
+    margin-right: -1px;
+  }
 }
 
 [disabled] {

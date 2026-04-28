@@ -1,18 +1,14 @@
-<app-base-dialog 
-  [title]="title"
-  [buttons]="buttons"
-  (closeDialog)="onClose()"
-  (buttonClick)="onButtonClick($event)">
-  
+<app-base-dialog [title]="title" [buttons]="buttons" (closeDialog)="onClose()" (buttonClick)="onButtonClick($event)">
+
   @if(mode === 'available'){
+  <div #markdown class="markdown-container sscroll"></div>
   <div class="text" [innerHTML]="text"></div>
   }
-  
+
   <!-- 进度条 - 仅在下载时显示 -->
   @if(mode === 'downloading' || mode === 'downloaded'){
   <div class="progress-container">
-    <nz-progress [nzPercent]="progress" [nzShowInfo]="true"
-      [nzStatus]="progress==100?'success':'active'"></nz-progress>
+    <nz-progress [nzPercent]="progress" [nzShowInfo]="true" [nzStatus]="progress==100?'success':'active'"></nz-progress>
   </div>
   }
 

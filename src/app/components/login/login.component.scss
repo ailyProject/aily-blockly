@@ -4,24 +4,17 @@
     width: 100%;
     position: absolute;
     top: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--aily-overlay-bg);
     flex-direction: column;
+    z-index: 10;
 
     .inner {
-        background: #292929;
+        background: var(--aily-bg-elevated);
         width: 100%;
         padding: 15px;
-        border-radius: 5px;
+        border-radius: 10px;
     }
 
-}
-
-.description {
-    width: 100%;
-}
-
-.phone-login-box {
-    width: 100%;
 }
 
 .header {
@@ -30,71 +23,152 @@
 }
 
 
-.text2 {
-    color: #ccc;
-}
-
 .line {
-    border-bottom: 0.5px solid #666;
-    margin-bottom: 10px;
+    border-bottom: 0.5px solid var(--aily-border-input);
 }
 
 .btns {
     display: flex;
     justify-content: center;
+    margin-bottom: -15px;
 
     .item {
         flex-direction: column;
         padding: 15px;
+        width: 60px;
         cursor: pointer;
-        color: #aaa;
+        color: var(--aily-text-tertiary);
         transition: all 0.3s;
+        font-size: 12px;
+        white-space: nowrap;
 
         i {
-            font-size: 30px;
+            font-size: 24px;
         }
 
         &:hover {
-            color: #FFF;
+            color: var(--aily-text-primary);
         }
 
         &.active {
-            color: #FFF;
+            color: var(--aily-text-primary);
+        }
+
+        &.wechat-active {
+            color: var(--aily-text-primary);
+
+            i {
+                color: #52c41a;
+            }
         }
 
         .icon {
-            width: 35px;
-            height: 35px;
+            width: 25px;
+            height: 25px;
         }
 
-        .fa-mobile {
-            font-size: 28px;
-        }
-    }
-}
-
-.login-btn {
-    margin-top: 15px;
-
-    button {
-        width: 100%;
     }
 }
 
 .wechat {
     flex-direction: column;
+    justify-content: flex-start;
 
     .qrcode {
-        width: 156px;
-        height: 156px;
-        border: 1px solid #666;
+        width: 150px;
+        height: 150px;
+        border: 1px solid var(--aily-border-tertiary);
         border-radius: 3px;
-        margin-bottom: 15px;
+        margin-bottom: 10px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+
+        img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .loading-icon {
+            i {
+                font-size: 48px;
+                color: var(--aily-text-secondary);
+            }
+        }
+
+        .error-text {
+            color: #ff4d4f;
+            font-size: 14px;
+            text-align: center;
+        }
+    }
+
+    .wechat-status {
+        width: 100%;
+        text-align: center;
+
+        .status-message {
+            color: var(--aily-text-quaternary);
+            font-size: 14px;
+
+            &.success {
+                color: #52c41a;
+            }
+
+            &.expired,
+            &.error {
+                color: #ff4d4f;
+            }
+        }
     }
 }
 
-.phone-login-box {
-    margin-top: 23px;
+.agreement-section {
+    margin: 15px -15px 0 -15px;
+    text-align: center;
+
+    .agreement-link {
+        color: #1890ff;
+        cursor: pointer;
+        text-decoration: none;
+        margin: 0 2px;
+
+        &:hover {
+            text-decoration: underline;
+        }
+    }
+}
+
+.compliance-notice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: 15px 0 0 0;
+    padding: 14px 16px;
+    background: var(--aily-bg-tertiary);
+    border-radius: 12px;
+    text-align: left;
+
+    > i {
+        flex-shrink: 0;
+        font-size: 16px;
+        color: #3b82f6;
+        margin-top: 2px;
+    }
+
+    > span {
+        font-size: 12px;
+        line-height: 1.7;
+        color: var(--aily-text-tertiary);
+    }
+}
+
+.mail-login-box {
+    margin-top: 20px;
+    min-height: 175px;
 
     .item {
         display: flex;
@@ -111,12 +185,15 @@
         }
 
         input {
-            background: #363636;
-            color: rgba(255, 255, 255, 0.7) !important;
+            background: var(--aily-bg-tertiary);
+            color: var(--aily-text-primary) !important;
+            flex: 1;
+        }
 
-            &[type="password"] {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            }
+        .send-code-btn {
+            margin-left: 10px;
+            min-width: 100px;
+            white-space: nowrap;
         }
     }
 
@@ -136,9 +213,4 @@
         }
     }
 
-    .username {
-        font-weight: 500;
-        font-size: 16px;
-        line-height: 32px;
-    }
 }

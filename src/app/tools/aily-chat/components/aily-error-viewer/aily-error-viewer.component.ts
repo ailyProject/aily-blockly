@@ -63,11 +63,9 @@ export class AilyErrorViewerComponent implements OnInit, OnDestroy {
      * 处理数据
      */
     private processData(): void {
-        console.log('Processing error data:', this.data);
-        if (this.data.error) {
-            this.status = this.data.error.status
-            this.message = this.data.error.message
-        }
+        if (!this.data) return;
+        this.status = this.data.error?.status;
+        this.message = this.data.message ?? this.data.error?.message ?? '';
     }
 
     // login() {

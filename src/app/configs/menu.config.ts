@@ -16,6 +16,8 @@ export interface IMenuItem {
   extra?: any,
   check?: boolean,
   key?: string; // 用于标识编译和上传配置
+  /** 行内操作按钮，如重命名/删除 */
+  actions?: { icon: string; action: string; title?: string }[];
 }
 
 export let HEADER_BTNS: IMenuItem[] = [
@@ -68,7 +70,7 @@ export let HEADER_MENU: IMenuItem[] = [
   },
   {
     name: 'MENU.PROJECT_SAVE',
-    text: 'Ctrl + S',
+    text: 'Ctrl/⌘ + S',
     action: 'project-save',
     data: { type: 'cmd', data: 'save' },
     icon: 'fa-light fa-file-circle-check',
@@ -76,7 +78,7 @@ export let HEADER_MENU: IMenuItem[] = [
   },
   {
     name: 'MENU.PROJECT_SAVE_AS',
-    text: 'Ctrl + Shift + S',
+    text: 'Ctrl/⌘ + Shift + S',
     action: 'project-save-as',
     data: { type: 'cmd', data: 'save-as' },
     icon: 'fa-light fa-copy',
@@ -119,9 +121,9 @@ export let HEADER_MENU: IMenuItem[] = [
     sep: true,
   },
   {
-    name: 'MENU.EXAMPLES',
+    name: 'MENU.PROJECT_HUB',
     action: 'example-open',
-    icon: 'fa-light fa-books',
+    icon: 'fa-light fa-album-collection',
   },
   {
     name: 'MENU.FEEDBACK',

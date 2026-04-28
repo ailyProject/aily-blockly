@@ -21,6 +21,7 @@ declare global {
       terminal: any;
       iWindow: any;
       subWindow: any;
+      codeViewer: any;
       builder: any;
       uploader: any;
       fs: any;
@@ -31,6 +32,7 @@ declare global {
       env: any;
       npm: any;
       cmd: any;
+      probeRs: any;
       updater: any;
       mcp: any;
       versions: () => any;

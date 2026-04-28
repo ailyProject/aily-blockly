@@ -1,5 +1,6 @@
-import { ToolUseResult } from "./tools";
+﻿import { ToolUseResult } from "./tools";
 import { normalizePath } from "../services/security.service";
+import { AilyHost } from '../core/host';
 
 /**
  * 检查文件或文件夹是否存在工具
@@ -28,7 +29,7 @@ export async function checkExistsTool(
             };
         }
 
-        const exists = window['fs'].existsSync(targetPath);
+        const exists = AilyHost.get().fs.existsSync(targetPath);
         
         if (!exists) {
             return {
@@ -42,7 +43,7 @@ export async function checkExistsTool(
         }
 
         // 检查类型
-        const isDirectory = await window['fs'].isDirectory(targetPath);
+        const isDirectory = await AilyHost.get().fs.isDirectory(targetPath);
         const actualType = isDirectory ? 'folder' : 'file';
         
         // 如果指定了类型，检查是否匹配
@@ -60,7 +61,7 @@ export async function checkExistsTool(
         }
 
         // 获取文件/文件夹详细信息
-        const stats = await window['fs'].statSync(targetPath);
+        const stats = await AilyHost.get().fs.statSync(targetPath);
         
         return {
             is_error: false,

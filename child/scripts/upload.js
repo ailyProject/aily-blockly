@@ -16,31 +16,54 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // 动态加载 serialport 模块
 let SerialPort = null;
 
+function formatFatalError(error) {
+    if (!error) return 'Unknown error';
+    if (error instanceof Error) {
+        return error.stack || error.message;
+    }
+    return String(error);
+}
+
+function exitWithFatalError(error) {
+    logger.error(`[ERROR] ${formatFatalError(error)}`);
+    process.exit(1);
+}
+
+process.on('uncaughtException', (error) => {
+    exitWithFatalError(error);
+});
+
+process.on('unhandledRejection', (reason) => {
+    exitWithFatalError(reason);
+});
+
 function loadSerialPort() {
     if (SerialPort) return SerialPort;
-    
-    // 尝试多个可能的路径加载 serialport
+
+    const resourcesPath = path.resolve(__dirname, '..', '..');
     const possiblePaths = [
-        // 从 electron 目录加载
+        path.join(resourcesPath, 'app.asar.unpacked', 'electron', 'node_modules', 'serialport', 'dist'),
+        path.join(resourcesPath, 'app.asar.unpacked', 'electron', 'node_modules', 'serialport'),
+        path.join(__dirname, '..', '..', 'electron', 'node_modules', 'serialport', 'dist'),
         path.join(__dirname, '..', '..', 'electron', 'node_modules', 'serialport'),
-        // 从 app.asar.unpacked 加载 (打包后)
-        path.join(__dirname, '..', '..', 'electron', 'node_modules', 'serialport'),
-        // 直接 require (如果在 NODE_PATH 中)
         'serialport'
     ];
-    
+
+    let lastError = null;
+
     for (const modulePath of possiblePaths) {
         try {
             const serialportModule = require(modulePath);
-            SerialPort = serialportModule.SerialPort;
-            logger.log('成功加载 serialport 模块:', modulePath);
+            SerialPort = serialportModule.SerialPort || serialportModule;
+            // logger.log('成功加载 serialport 模块:', modulePath);
             return SerialPort;
         } catch (e) {
-            // 继续尝试下一个路径
+            lastError = e;
         }
     }
-    
-    throw new Error('无法加载 serialport 模块，请确保已安装依赖');
+
+    const detail = lastError ? `，最后错误: ${lastError.message}` : '';
+    throw new Error(`无法加载 serialport 模块，请确保已安装依赖${detail}`);
 }
 
 // 获取串口列表
@@ -91,62 +114,28 @@ async function perform1200bpsTouch(portPath) {
     });
 }
 
-// wait_for_upload 操作：等待新串口出现
-async function performWaitForUpload(portPath) {
-    logger.log('执行 wait_for_upload, 当前串口:', portPath);
-    const SP = loadSerialPort();
-    
-    // 获取当前串口列表
-    const portListBefore = await getPortsList();
-    logger.log('操作前串口列表:', portListBefore.map(p => p.path));
-    
-    // 连接串口
-    const port = new SP({
-        path: portPath,
-        baudRate: 1200,
-        autoOpen: false
-    });
-
-    await new Promise((resolve, reject) => {
-        port.open((err) => {
-            if (err) {
-                logger.error('wait_for_upload 串口打开失败:', err.message);
-                reject(err);
-                return;
-            }
-            resolve();
-        });
-    });
-
-    // 等待5秒
-    await delay(5000);
-
-    // 关闭串口
-    await new Promise((resolve) => {
-        port.close((err) => {
-            if (err) {
-                logger.warn('wait_for_upload 串口关闭警告:', err.message);
-            }
-            resolve();
-        });
-    });
-
-    // 获取新的串口列表
-    const portListAfter = await getPortsList();
-    logger.log('操作后串口列表:', portListAfter.map(p => p.path));
-
-    // 找出新增的串口
-    const newPorts = portListAfter.filter(
-        port => !portListBefore.some(existingPort => existingPort.path === port.path)
-    );
-
-    if (newPorts.length > 0) {
-        logger.log('检测到新串口:', newPorts[0].path);
-        return newPorts[0].path;
-    } else {
-        logger.log('没有检测到新串口，继续使用旧串口');
-        return portPath;
+// 轮询等待新串口出现
+// portsBefore: 操作前的串口列表
+// timeout: 超时时间（毫秒），默认 10000
+// interval: 轮询间隔（毫秒），默认 200
+// 返回新端口路径，超时返回 null
+async function waitForNewPort(portsBefore, timeout = 10000, interval = 200) {
+    const startTime = Date.now();
+    logger.log(`开始轮询等待新串口（超时 ${timeout}ms，间隔 ${interval}ms）...`);
+    while (Date.now() - startTime < timeout) {
+        const portsNow = await getPortsList();
+        // console.log('当前串口列表:', portsNow.map(p => p.path));
+        const newPorts = portsNow.filter(
+            p => !portsBefore.some(ep => ep.path === p.path)
+        );
+        if (newPorts.length > 0) {
+            logger.log(`轮询 ${Date.now() - startTime}ms 后检测到新端口:`, newPorts[0].path);
+            return newPorts[0].path;
+        }
+        await delay(interval);
     }
+    logger.log(`轮询超时（${timeout}ms），未检测到新端口`);
+    return null;
 }
 
 async function main() {
@@ -170,9 +159,14 @@ async function main() {
         boardModule,
         appDataPath,
         serialPort: initialSerialPort,
+        portType = 'serial',
+        portText = '',
+        probeSerial = '',
+        probeVidPid = '',
         uploadParam: configUploadParam,
         use_1200bps_touch,
-        wait_for_upload
+        wait_for_upload,
+        pnum
     } = config;
 
     // console.log('上传配置:', {
@@ -246,7 +240,10 @@ async function main() {
         const baudRate = projectConfig?.UploadSpeed || defaultBaudRate;
         console.log('使用的波特率:', baudRate);
 
-        // 7. 获取工具依赖
+        // 判断烧录方式：serial（串口烧录）或 debugger（调试探针烧录，如 JLink/STLink/DAPLink）
+        const isDebuggerUpload = portType === 'debugger';
+
+        // 共用准备：获取工具依赖、SDK路径、平台信息
         const toolDependencies = {};
         Object.entries(boardDependencies || {})
             .filter(([key, value]) => key.startsWith('tool-') || key.startsWith('@aily-project/tool-'))
@@ -262,7 +259,6 @@ async function main() {
                 toolDependencies[name] = value;
             });
 
-        // 8. 获取SDK路径
         let fullSdkPath = '';
         Object.entries(boardDependencies || {}).forEach(([key, version]) => {
             if (key.startsWith('@aily-project/sdk-')) {
@@ -271,45 +267,149 @@ async function main() {
             }
         });
 
-        // 9. 上传预处理：处理 1200bps touch 和 wait_for_upload
-        let finalSerialPort = initialSerialPort;
-        
-        if (use_1200bps_touch) {
-            try {
-                await perform1200bpsTouch(finalSerialPort);
-            } catch (err) {
-                throw new Error('串口连接失败: ' + err.message);
-            }
-        }
-
-        if (wait_for_upload) {
-            try {
-                finalSerialPort = await performWaitForUpload(finalSerialPort);
-            } catch (err) {
-                throw new Error('串口操作失败: ' + err.message);
-            }
-        }
-
-        logger.log('使用串口:', finalSerialPort);
-
-        // 10. 处理上传参数
         const platform = os.platform() === 'win32' ? 'win32' : (os.platform() === 'darwin' ? 'darwin' : 'linux');
-        
-        const { command, args } = await processUploadParams(
+
+        if (isDebuggerUpload) {
+            // ========== 调试探针上传路径（不涉及串口）==========
+            logger.log('烧录方式: 调试探针 (debugger)', portText || '');
+
+            // 将 pnum 从 GENERIC_F103R8TX 格式转换为 STM32F103R8 芯片名称
+            let chipName = pnum;
+            if (chipName && chipName.startsWith('GENERIC_')) {
+                chipName = 'STM32' + chipName.replace('GENERIC_', '').slice(0, -2);
+                logger.log('芯片名称转换:', pnum, '→', chipName);
+            }
+
+            // 按分号分割为多条命令（如 "probe-rs download ...;probe-rs reset ..."）
+            const uploadCommands = uploadParam.split(';').map(s => s.trim()).filter(s => s.length > 0);
+            logger.log(`共 ${uploadCommands.length} 条上传命令`);
+
+            for (let i = 0; i < uploadCommands.length; i++) {
+                const cmd = uploadCommands[i];
+                logger.log(`执行命令 [${i + 1}/${uploadCommands.length}]: ${cmd}`);
+
+                // skipToolResolve=true：工具已在 PATH 中，无需解析本地路径
+                const { command: cmdPath, args: cmdArgs } = await processUploadParams(
+                    cmd, buildPath, toolsPath, fullSdkPath, baudRate,
+                    toolDependencies, '', platform, chipName, true
+                );
+
+                // 追加 --probe VID:PID:Serial 参数（probe-rs 要求格式）
+                if (probeVidPid) {
+                    const probeSelector = probeSerial ? `${probeVidPid}:${probeSerial}` : probeVidPid;
+                    cmdArgs.push('--probe', probeSelector);
+                }
+
+                const shellCmd = wrapInQuotesIfNeeded(cmdPath);
+                logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
+
+                const exitCode = await new Promise((resolveCmd, rejectCmd) => {
+                    const child = spawn(shellCmd, cmdArgs, {
+                        cwd: buildPath,
+                        shell: true,
+                        stdio: ['inherit', 'pipe', 'pipe']
+                    });
+
+                    // 用于去除 ANSI 转义码
+                    const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+
+                    // 检测 probe-rs 风格的进度阶段并输出标记
+                    const detectPhase = (text) => {
+                        const clean = stripAnsi(text);
+                        const phaseMatch = clean.match(/(Erasing|Programming|Verifying)\s+.*?(\d+)%/i);
+                        if (phaseMatch) {
+                            logger.log(`[probe-rs:phase] ${phaseMatch[1]} ${phaseMatch[2]}%`);
+                        }
+                        if (/Finished\s+in\s+[\d.]+s/i.test(clean)) {
+                            logger.log('[probe-rs:phase] Finished');
+                        }
+                    };
+
+                    // 转发输出到各自的流并检测进度
+                    if (child.stdout) child.stdout.on('data', (data) => {
+                        process.stdout.write(data);
+                        detectPhase(data.toString());
+                    });
+                    if (child.stderr) child.stderr.on('data', (data) => {
+                        process.stderr.write(data);
+                        detectPhase(data.toString());
+                    });
+
+                    child.on('close', (code) => resolveCmd(code));
+                    child.on('error', (err) => rejectCmd(err));
+                });
+
+                if (exitCode !== 0) {
+                    logger.error(`命令 [${i + 1}] 执行失败，退出码: ${exitCode}`);
+                    process.exit(exitCode);
+                }
+            }
+
+            logger.log('所有上传命令执行完成');
+            process.exit(0);
+        }
+
+        // ========== 串口上传路径 ==========
+        logger.log('烧录方式: 串口 (serial)', initialSerialPort);
+
+        const SERIAL_PLACEHOLDER = '__SERIAL_PORT_PLACEHOLDER__';
+        const { command, args: templateArgs } = await processUploadParams(
             uploadParam,
             buildPath,
             toolsPath,
             fullSdkPath,
             baudRate,
             toolDependencies,
-            finalSerialPort,
-            platform
+            SERIAL_PLACEHOLDER,
+            platform,
+            pnum
         );
 
-        logger.log(`Executing: ${command} ${args.join(' ')}`);
+        // 上传预处理：处理 1200bps touch 和 wait_for_upload
+        // 四种组合：
+        //   touch=false, wait=false → 直接使用原端口
+        //   touch=true,  wait=false → 执行 1200bps touch，短暂延时后检测一次新端口
+        //   touch=false, wait=true  → 不做 touch，轮询等待新端口出现（外部触发）
+        //   touch=true,  wait=true  → 执行 1200bps touch，然后轮询等待新端口出现
+        let finalSerialPort = initialSerialPort;
 
-        // 11. 执行上传命令
-        const child = spawn(command, args, {
+        // 如果需要检测新端口，先记录当前端口列表作为基准
+        const needDetectNewPort = use_1200bps_touch || wait_for_upload;
+        const portsBefore = needDetectNewPort ? await getPortsList() : [];
+        if (needDetectNewPort) {
+            logger.log('操作前串口列表:', portsBefore.map(p => p.path));
+        }
+
+        // Step 1: 执行 1200bps touch（如果配置了）
+        if (use_1200bps_touch) {
+            try {
+                await perform1200bpsTouch(finalSerialPort);
+            } catch (err) {
+                logger.warn('1200bps touch 警告（将继续尝试上传）:', err.message);
+            }
+        }
+
+        // Step 2: 等待新端口
+        // 注意：只要做了 1200bps touch，就必须轮询等待新的 bootloader 端口出现
+        // （与 Arduino IDE 行为一致；SAMD / UNO R4 等板子枚举 bootloader 通常需要 1-3 秒）
+        if (wait_for_upload || use_1200bps_touch) {
+            const newPort = await waitForNewPort(portsBefore, 3000, 200);
+            if (newPort) {
+                finalSerialPort = newPort;
+            } else {
+                logger.log('未检测到新端口，继续使用原端口:', finalSerialPort);
+            }
+        }
+
+        // 将占位符替换为最终串口，生成最终参数
+        logger.log('使用串口:', finalSerialPort);
+        const args = templateArgs.map(a => a.replace(SERIAL_PLACEHOLDER, finalSerialPort));
+        const shellCommand = wrapInQuotesIfNeeded(command);
+
+        logger.log(`Executing: ${shellCommand} ${args.join(' ')}`);
+
+        // 12. 执行上传命令
+        const child = spawn(shellCommand, args, {
             cwd: buildPath,
             shell: true,
             stdio: 'inherit'
@@ -329,7 +429,7 @@ async function main() {
     }
 }
 
-async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate, toolDependencies, serialPort, platform) {
+async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate, toolDependencies, serialPort, platform, pnum, skipToolResolve = false) {
     // 1. 基础变量替换
     let paramString = uploadParam;
     
@@ -341,6 +441,11 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
     // 替换 ${serial}
     if (paramString.includes('${serial}')) {
         paramString = paramString.replace(/\$\{serial\}/g, serialPort);
+    }
+
+    // 替换 ${pnum}（STM32.BOARD 选中的开发板型号，用于 probe-rs download）
+    if (pnum && paramString.includes('${pnum}')) {
+        paramString = paramString.replace(/\$\{pnum\}/g, pnum);
     }
 
     // 替换 ${boot_app0}
@@ -365,26 +470,42 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
     // 2. 查找工具可执行文件
     const toolName = paramList[0];
-    let toolVersion = toolDependencies[toolName];
-    
-    if (!toolVersion) {
-        // 模糊匹配
-        const matchedTool = Object.keys(toolDependencies).find(key => {
-            return key.toLowerCase().includes(toolName.toLowerCase());
-        });
-        if (matchedTool) {
-            toolVersion = toolDependencies[matchedTool];
-        }
-    }
+    let commandPath = toolName;
 
-    const isWindows = platform === 'win32';
-    const toolFileName = toolName + (isWindows ? '.exe' : '');
-    
-    let commandPath = await findFile(toolsPath, toolFileName, toolVersion);
-    // console.log("Command Path: ", commandPath);
-    
-    if (!commandPath) {
-        throw new Error(`无法找到可执行文件: ${toolFileName}`);
+    if (!skipToolResolve) {
+        let toolVersion = toolDependencies[toolName];
+        
+        if (!toolVersion) {
+            // 模糊匹配
+            const matchedTool = Object.keys(toolDependencies).find(key => {
+                return key.toLowerCase().includes(toolName.toLowerCase());
+            });
+            if (matchedTool) {
+                toolVersion = toolDependencies[matchedTool];
+            }
+        }
+
+        const isWindows = platform === 'win32';
+        const toolFileName = toolName + (isWindows ? '.exe' : '');
+        
+        commandPath = await findFile(toolsPath, toolFileName, toolVersion);
+        // console.log("Command Path: ", commandPath);
+        
+        // 如果在 toolsPath 中未找到，尝试从 PATH 环境变量中查找
+        if (!commandPath && process.env.PATH) {
+            const pathDirs = process.env.PATH.split(path.delimiter);
+            for (const dir of pathDirs) {
+                const candidate = path.join(dir, toolFileName);
+                if (fs.existsSync(candidate)) {
+                    commandPath = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (!commandPath) {
+            throw new Error(`无法找到可执行文件: ${toolFileName}`);
+        }
     }
 
     // 3. 处理 ${'filename'} 格式的文件路径参数
@@ -409,7 +530,9 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
             }
 
             if (findRes) {
-                paramList[i] = param.replace(`\$\{\'${fileName}\'\}`, `"${findRes}"`);
+                const paramHasQuotes = param.startsWith('"') || param.includes('"');
+                const replacement = paramHasQuotes ? findRes : `"${findRes}"`;
+                paramList[i] = param.replace(`\$\{\'${fileName}\'\}`, replacement);
             } else {
                 logger.warn(`无法找到文件: ${fileName}`);
             }
@@ -431,7 +554,7 @@ function parseArgs(str) {
         const char = str[i];
         if (char === '"') {
             inQuote = !inQuote;
-            // current += char; // 保留引号? 通常spawn不需要引号包裹参数，除非是参数内容的一部分
+            current += char;
         } else if (char === ' ' && !inQuote) {
             if (current) {
                 args.push(current);
@@ -443,6 +566,14 @@ function parseArgs(str) {
     }
     if (current) args.push(current);
     return args;
+}
+
+function wrapInQuotesIfNeeded(value) {
+    if (!value || value.startsWith('"') || !/\s/.test(value)) {
+        return value;
+    }
+
+    return `"${value}"`;
 }
 
 // 递归查找文件

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, webUtils } = require("electron");
+const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, clipboard, webUtils } = require("electron");
 const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
@@ -24,7 +24,13 @@ window.electronAPI = {
     getAilyBuilderBuildPath: () => process.env.AILY_BUILDER_BUILD_PATH,
     getUserDocuments: () => require("os").homedir() + `${pt}Documents`,
     isExists: (path) => existsSync(path),
-    getElectronPath: () => __dirname,
+    getElectronPath: () => {
+      // 当 preload.js 从 asar 解包后，将路径重定向到 asar 内部以便 fs 操作正常工作
+      if (__dirname.includes('app.asar.unpacked')) {
+        return __dirname.replace('app.asar.unpacked', 'app.asar');
+      }
+      return __dirname;
+    },
     isDir: (path) => statSync(path).isDirectory(),
     join: (...args) => require("path").join(...args),
     dirname: (path) => require("path").dirname(path),
@@ -112,6 +118,8 @@ window.electronAPI = {
     onReceive: (callback) => ipcRenderer.on("window-receive", callback),
     // 检查窗口是否为活动窗口
     isFocused: () => ipcRenderer.sendSync("window-is-focused"),
+    // 检查窗口是否最小化
+    isMinimized: () => ipcRenderer.sendSync("window-is-minimized"),
     // 监听窗口获得焦点事件
     onFocus: (callback) => {
       const listener = () => callback();
@@ -124,10 +132,71 @@ window.electronAPI = {
       ipcRenderer.on("window-blur", listener);
       return () => ipcRenderer.removeListener("window-blur", listener);
     },
+    // 监听窗口全屏状态变化事件
+    onFullScreenChanged: (callback) => {
+      const listener = (event, isFullScreen) => callback(isFullScreen);
+      ipcRenderer.on("window-full-screen-changed", listener);
+      return () => ipcRenderer.removeListener("window-full-screen-changed", listener);
+    },
+    // 监听窗口最大化状态变化事件
+    onMaximizeChanged: (callback) => {
+      const listener = (event, isMaximized) => callback(isMaximized);
+      ipcRenderer.on("window-maximize-changed", listener);
+      return () => ipcRenderer.removeListener("window-maximize-changed", listener);
+    },
+    // 监听 Mac 平台下系统关闭按钮的关闭请求
+    onCloseRequest: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("window-close-request", listener);
+      return () => ipcRenderer.removeListener("window-close-request", listener);
+    },
+    // 确认关闭窗口（Mac 平台使用）
+    confirmClose: () => {
+      ipcRenderer.send("window-close-confirmed");
+    },
   },
-  subWindow: {
-    open: (options) => ipcRenderer.send("window-open", options),
-    close: () => ipcRenderer.send("window-close"),
+  projectLock: {
+    tryAcquire: (projectPath, options) =>
+      ipcRenderer.invoke("project-lock-try", {
+        projectPath,
+        force: options && options.force,
+      }),
+    release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
+  },
+  subWindow: (() => {
+    // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失
+    let _cachedInitData = null;
+    let _initDataReceived = false;
+    let _initDataCallback = null;
+    ipcRenderer.on("window-init-data", (_event, data) => {
+      _cachedInitData = data;
+      _initDataReceived = true;
+      if (_initDataCallback) {
+        _initDataCallback(data);
+      }
+    });
+    return {
+      open: (options) => ipcRenderer.send("window-open", options),
+      close: () => ipcRenderer.send("window-close"),
+      onInitData: (callback) => {
+        _initDataCallback = callback;
+        // 如果数据已到达，立即回调
+        if (_initDataReceived) {
+          callback(_cachedInitData);
+        }
+        return () => { _initDataCallback = null; };
+      },
+    };
+  })(),
+  codeViewer: {
+    publishState: (state) => ipcRenderer.send("blockly-code-viewer-state-update", state),
+    getState: () => ipcRenderer.invoke("blockly-code-viewer-state-get"),
+    onState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on("blockly-code-viewer-state", listener);
+      return () => ipcRenderer.removeListener("blockly-code-viewer-state", listener);
+    },
   },
   builder: {
     init: (data) => {
@@ -150,7 +219,10 @@ window.electronAPI = {
       const buffer = require("fs").readFileSync(path);
       return buffer.toString('base64');
     },
-    readDirSync: (path) => require("fs").readdirSync(path, { withFileTypes: true }),
+    readDirSync: (path) => {
+      const entries = require("fs").readdirSync(path, { withFileTypes: true });
+      return entries.map(e => ({ name: e.name, _isDirectory: e.isDirectory(), _isFile: e.isFile() }));
+    },
     readdirSync: (path) => require("fs").readdirSync(path),
     writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
     writeBase64File: (path, base64Data) => {
@@ -158,9 +230,12 @@ window.electronAPI = {
       require("fs").writeFileSync(path, buffer);
     },
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
-    copySync: (src, dest) => require("fs-extra").copySync(src, dest),
+    copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
     existsSync: (path) => require("fs").existsSync(path),
-    statSync: (path) => require("fs").statSync(path),
+    statSync: (path) => {
+      const s = require("fs").statSync(path);
+      return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
+    },
     isDirectory: (path) => require("fs").statSync(path).isDirectory(),
     unlinkSync: (path, cb) => require("fs").unlinkSync(path, cb),
     rmdirSync: (path) => require("fs").rmdirSync(path, { recursive: true, force: true }),
@@ -168,6 +243,16 @@ window.electronAPI = {
     renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
     linkSync: (existingPath, newPath) => require("fs").linkSync(existingPath, newPath),
     chmodSync: (path, mode) => require("fs").chmodSync(path, mode),
+    appendFileSync: (path, data) => require("fs").appendFileSync(path, data),
+    // ---- 异步方法（通过 IPC 在主进程执行，不阻塞渲染进程） ----
+    readFile: (path, encoding) => ipcRenderer.invoke("fs-readFile", path, encoding),
+    writeFile: (path, data, encoding) => ipcRenderer.invoke("fs-writeFile", path, data, encoding),
+    exists: (path) => ipcRenderer.invoke("fs-exists", path),
+    stat: (path) => ipcRenderer.invoke("fs-stat", path),
+    readdir: (path) => ipcRenderer.invoke("fs-readdir", path),
+    readDir: (path) => ipcRenderer.invoke("fs-readDir", path),
+    mkdir: (path, options) => ipcRenderer.invoke("fs-mkdir", path, options),
+    unlink: (path) => ipcRenderer.invoke("fs-unlink", path),
   },
   file: {
     /**
@@ -181,12 +266,12 @@ window.electronAPI = {
         if (webUtils && typeof webUtils.getPathForFile === 'function') {
           return webUtils.getPathForFile(file);
         }
-        
+
         // 方法 2: 降级方案，尝试直接访问 path 属性
         if (file && (file.path || file.webkitRelativePath)) {
           return file.path || file.webkitRelativePath;
         }
-        
+
         console.warn('无法获取文件路径: webUtils 不可用且 file.path 不存在');
         return null;
       } catch (error) {
@@ -210,32 +295,14 @@ window.electronAPI = {
     }
   },
   glob: {
-    // 使用glob模式查找文件
+    // 同步版本 - 通过 IPC 在主进程执行
     sync: (pattern, options = {}) => {
-      try {
-        const glob = require("glob");
-        return glob.sync(pattern, options);
-      } catch (error) {
-        console.error("Glob sync error:", error);
-        return [];
-      }
+      // 降级为异步调用（无法真正同步 IPC），返回 Promise
+      return ipcRenderer.invoke("glob-search", pattern, options);
     },
-    // 异步版本
+    // 异步版本 - 通过 IPC 在主进程执行
     async: (pattern, options = {}) => {
-      return new Promise((resolve, reject) => {
-        try {
-          const glob = require("glob");
-          glob(pattern, options, (error, files) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve(files);
-            }
-          });
-        } catch (error) {
-          reject(error);
-        }
-      });
+      return ipcRenderer.invoke("glob-search-async", pattern, options);
     }
   },
   ble: {
@@ -488,60 +555,57 @@ window.electronAPI = {
           .catch((error) => reject(error));
       });
     },
-    // Glob 工具 - 直接使用 glob API，不需要 IPC
-    globTool: (params) => {
-      return new Promise((resolve, reject) => {
-        try {
-          const { pattern, path: searchPath, limit = 100 } = params;
-          const glob = require("glob");
-          
-          const options = {
-            absolute: true,
-            nodir: true,
-            ignore: [
-              '**/node_modules/**',
-              '**/.git/**',
-              '**/dist/**',
-              '**/build/**',
-              '**/.angular/**'
-            ]
-          };
-          
-          if (searchPath) {
-            options.cwd = searchPath;
-          }
-          
-          const startTime = Date.now();
-          const files = glob.sync(pattern, options);
-          const durationMs = Date.now() - startTime;
-          
-          const truncated = files.length > limit;
-          const limitedFiles = files.slice(0, limit);
-          
-          resolve({
-            is_error: false,
-            content: limitedFiles.join('\n'),
-            metadata: {
-              pattern,
-              path: searchPath,
-              numFiles: limitedFiles.length,
-              totalFiles: files.length,
-              durationMs,
-              truncated
-            }
-          });
-        } catch (error) {
-          reject({
-            is_error: true,
-            content: `Glob 搜索失败: ${error.message}`,
-            metadata: {
-              pattern: params.pattern,
-              path: params.path,
-              error: error.message
-            }
-          });
+    // Glob 工具 - 通过 IPC 在主进程执行
+    globTool: async (params) => {
+      try {
+        const { pattern, path: searchPath, limit = 100 } = params;
+
+        const options = {
+          absolute: true,
+          nodir: true,
+          ignore: [
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/dist/**',
+            '**/build/**',
+            '**/.angular/**'
+          ]
+        };
+
+        if (searchPath) {
+          options.cwd = searchPath;
         }
-      });
+
+        const startTime = Date.now();
+        const files = await ipcRenderer.invoke("glob-search-async", pattern, options);
+        const durationMs = Date.now() - startTime;
+
+        const truncated = files.length > limit;
+        const limitedFiles = files.slice(0, limit);
+
+        return {
+          is_error: false,
+          content: limitedFiles.join('\n'),
+          metadata: {
+            pattern,
+            path: searchPath,
+            numFiles: limitedFiles.length,
+            totalFiles: files.length,
+            durationMs,
+            truncated
+          }
+        };
+      } catch (error) {
+        return {
+          is_error: true,
+          content: `Glob 搜索失败: ${error.message}`,
+          metadata: {
+            pattern: params.pattern,
+            path: params.path,
+            error: error.message
+          }
+        };
+      }
     }
   },
   // Ripgrep 搜索 API
@@ -628,6 +692,29 @@ window.electronAPI = {
   base64: {
     atob: (b64String) => Buffer.from(b64String, 'base64').toString('binary'),
   },
+  // probe-rs API - 调试探针检测与固件烧录
+  probeRs: {
+    /**
+     * 列出所有已连接的调试探针
+     * @returns {Promise<{success: boolean, count?: number, probes?: Array, error?: string}>}
+     */
+    list: () => ipcRenderer.invoke("probe-rs-list"),
+    /**
+     * 烧录固件到目标芯片
+     * @param {Object} options
+     * @param {string} options.firmwarePath - 固件文件路径 (.hex/.bin/.elf)
+     * @param {string} [options.chip] - 目标芯片型号（如 STM32F407VGTx）
+     * @param {string} [options.probe] - 指定调试探针 vid:pid[:serial]
+     * @param {string} [options.protocol] - 调试协议 "swd" | "jtag"
+     * @param {number} [options.speed] - 通信速度 kHz
+     * @param {string} [options.format] - 固件格式 "elf" | "hex" | "bin"
+     * @param {number} [options.baseAddress] - BIN 文件烧录基地址
+     * @param {number} [options.skipBytes] - 跳过固件文件开头的字节数
+     * @param {boolean} [options.verify] - 烧录后校验
+     * @returns {Promise<{success: boolean, firmware?: string, chip?: string, message?: string, error?: string}>}
+     */
+    download: (options) => ipcRenderer.invoke("probe-rs-download", options),
+  },
   // 日志 API - 将渲染进程的日志发送到主进程记录
   log: {
     error: (message, error) => {
@@ -642,5 +729,10 @@ window.electronAPI = {
     info: (message) => {
       ipcRenderer.invoke('log-info', message);
     }
+  },
+  // 系统剪贴板 API - 用于跨实例 block 复制粘贴
+  clipboard: {
+    writeText: (text) => clipboard.writeText(text),
+    readText: () => clipboard.readText(),
   }
 };

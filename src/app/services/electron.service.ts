@@ -96,6 +96,16 @@ export class ElectronService {
     return window['path'].join(...paths);
   }
 
+  // 写入系统剪贴板
+  clipboardWriteText(text: string) {
+    window['clipboard']?.writeText(text);
+  }
+
+  // 读取系统剪贴板
+  clipboardReadText(): string {
+    return window['clipboard']?.readText() || '';
+  }
+
   // 调用浏览器打开url
   openUrl(url) {
     window['other'].openByBrowser(url);
@@ -212,6 +222,23 @@ export class ElectronService {
   }
 
   /**
+   * 检查当前窗口是否最小化
+   * @returns boolean
+   */
+  isWindowMinimized(): boolean {
+    if (!this.isElectron) {
+      return false;
+    }
+
+    try {
+      return window['iWindow'].isMinimized();
+    } catch (error) {
+      console.error('Check window minimized error:', error);
+      return false;
+    }
+  }
+
+  /**
    * 监听窗口获得焦点事件
    * @param callback 回调函数
    * @returns 取消监听的函数
@@ -288,6 +315,41 @@ export class ElectronService {
     }
   }
 
+  /**
+   * 监听窗口全屏状态变化事件
+   * @param callback 回调函数，参数为是否全屏
+   * @returns 取消监听的函数
+   */
+  onWindowFullScreenChanged(callback: (isFullScreen: boolean) => void): () => void {
+    if (!this.isElectron) {
+      return () => {};
+    }
+
+    try {
+      return window['iWindow'].onFullScreenChanged(callback);
+    } catch (error) {
+      console.error('Listen window full screen changed error:', error);
+      return () => {};
+    }
+  }
+
+  /**
+   * 监听窗口最大化状态变化事件
+   * @param callback 回调函数，参数为是否最大化
+   * @returns 取消监听的函数
+   */
+  onWindowMaximizeChanged(callback: (isMaximized: boolean) => void): () => void {
+    if (!this.isElectron) {
+      return () => {};
+    }
+
+    try {
+      return window['iWindow'].onMaximizeChanged(callback);
+    } catch (error) {
+      console.error('Listen window maximize changed error:', error);
+      return () => {};
+    }
+  }
 
   openByExplorer(path){
     window['other'].openByExplorer(path);

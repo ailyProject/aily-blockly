@@ -1,0 +1,6 @@
+<app-base-dialog [title]="title" [buttons]="buttons" (closeDialog)="onClose()" (buttonClick)="onButtonClick($event)">
+  <div *ngIf="loading" class="loading-container">
+    <span nz-icon nzType="loading" nzTheme="outline"></span>
+  </div>
+  <div #markdown class="markdown-container sscroll"></div>
+</app-base-dialog>

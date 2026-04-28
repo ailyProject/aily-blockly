@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import mermaid from 'mermaid';
 import { NzModalService } from 'ng-zorro-antd/modal';
-import { MermaidComponent } from '../../../../app-store/mermaid/mermaid.component';
+import { MermaidComponent } from './mermaid/mermaid.component';
 
 export interface AilyMermaidData {
   type: 'aily-mermaid';

@@ -3,12 +3,33 @@
 }
 
 .menu-box {
-  background: #2b2d30;
+  background: var(--aily-bg-primary);
   border-radius: 5px;
   position: fixed;
   z-index: 999;
   flex-direction: column;
   padding: 3px 0;
+
+  // 滚动条样式
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--aily-border-tertiary);
+    border-radius: 2px;
+
+    &:hover {
+      background: var(--aily-scrollbar-thumb-hover);
+    }
+  }
+
+  scrollbar-width: thin;
+  scrollbar-color: var(--aily-border-tertiary) transparent;
 
   .menu-item {
     padding: 0 10px;
@@ -19,15 +40,15 @@
     margin: 0 3px;
     border-radius: 5px;
     cursor: pointer;
-    color: #ddd;
+    color: var(--aily-menu-text);
     position: relative;
     overflow: hidden;
 
     .name {
       white-space: nowrap;
-      // flex: 1;
       flex-shrink: 0;
       min-width: 0;
+      padding: 0 1px;
     }
 
     .icon {
@@ -40,25 +61,42 @@
       margin-left: auto;
       padding-left: 10px;
       white-space: nowrap;
-      color: #999;
+      color: var(--aily-menu-text-secondary);
       flex-shrink: 0;
     }
 
     &:hover {
-      background: #405e8d;
+      background: var(--aily-menu-hover);
     }
 
     &.active{
-      background: #405e8d;
+      background: var(--aily-menu-hover);
     }
 
     &.disabled {
       background: none;
     }
 
+    &.current {
+      .name::before {
+        content: '';
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--aily-color-accent);
+        margin-right: 6px;
+        vertical-align: middle;
+        flex-shrink: 0;
+      }
+      .name {
+        color: var(--aily-color-accent);
+      }
+    }
+
     &.highlight {
       .icon {
-        color: #f7ce42;
+        color: var(--aily-color-warning);
       }
     }
 
@@ -74,13 +112,41 @@
     .check {
       position: absolute;
       right: 5px;
-      color: #f7ce42;
+      color: var(--aily-color-warning);
+    }
+
+    .item-actions {
+      margin-left: auto;
+      display: none;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    &:hover .item-actions {
+      display: flex;
+    }
+
+    .item-action-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+      color: var(--aily-text-muted);
+      font-size: 12px;
+
+      &:hover {
+        background: var(--aily-highlight-bg);
+        color: var(--aily-text-primary);
+      }
     }
   }
 
   .sep {
     height: 1px;
-    background: #444;
+    background: var(--aily-menu-separator);
     margin: 2px 0;
   }
 }
@@ -105,20 +171,20 @@
   }
 
   &::-webkit-scrollbar-track {
-    background: #2b2d30;
+    background: var(--aily-bg-primary);
     border-radius: 4px;
   }
 
   &::-webkit-scrollbar-thumb {
-    background: #555;
+    background: var(--aily-border-tertiary);
     border-radius: 4px;
     
     &:hover {
-      background: #666;
+      background: var(--aily-text-disabled);
     }
   }
 
   // Firefox滚动条样式
   scrollbar-width: thin;
-  scrollbar-color: #555 #2b2d30;
+  scrollbar-color: var(--aily-border-tertiary) var(--aily-bg-primary);
 }

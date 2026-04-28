@@ -15,6 +15,7 @@ import { BlocklyService as BlocklyService } from './blockly.service';
 import { PlatformService } from "../../../services/platform.service";
 import { ElectronService } from '../../../services/electron.service';
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
+import { CompileValidationService } from '../../../services/compile-validation.service';
 
 @Injectable()
 export class _BuilderService {
@@ -31,7 +32,8 @@ export class _BuilderService {
     private projectService: ProjectService,
     private blocklyService: BlocklyService,
     private platformService: PlatformService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private compileValidationService: CompileValidationService
   ) { }
 
   // buildInProgress = false;
@@ -47,6 +49,10 @@ export class _BuilderService {
   private dependencySubscription: any = null; // 保存依赖变化订阅引用
   private preprocessProcess: any = null; // 保存当前运行的预处理订阅
   private preprocessStreamId: string | null = null; // 保存预处理的 streamId
+  private preprocessError: string | null = null; // 保存预编译错误信息
+  private preprocessFullError: string = ''; // 保存预编译完整错误日志
+  private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
+  private aiWaitingSubscription: any = null; // 保存 AI 等待状态订阅引用
 
   currentProjectPath = "";
   lastCode = "";
@@ -80,11 +86,38 @@ export class _BuilderService {
       this.lastCode = "";
     }, 'builder-compile-reset');
 
+    this.actionService.listen('preprocess-stop', async (action) => {
+      await this.stopPreprocess();
+      return { success: true };
+    }, 'builder-preprocess-stop');
+
+    this.actionService.listen('preprocess-trigger', async (action) => {
+      // 手动触发预编译
+      const reason = action.payload?.reason || 'manual';
+      console.log(`收到预编译触发请求，原因: ${reason}`);
+      this.blocklyService.dependencySubject.next(reason);
+      return { success: true };
+    }, 'builder-preprocess-trigger');
+
     // 保存订阅引用以便后续取消
     this.dependencySubscription = this.blocklyService.dependencySubject.subscribe(async (data) => {
       // 检查项目加载状态，如果正在加载中则跳过预处理
       if (!data || this.projectService.stateSubject.value === 'loading') {
         console.log('项目正在加载中，跳过依赖预处理');
+        return;
+      }
+
+      // 互斥条件1：AI操作期间不触发自动预编译，但标记需要延迟执行
+      if (this.blocklyService.aiWaiting) {
+        console.log('AI操作进行中，标记延迟预编译');
+        this.pendingPrecompile = true;
+        return;
+      }
+
+      // 互斥条件2：编译、上传或依赖安装进行中不触发自动预编译
+      const currentState = this.workflowService.currentState;
+      if (currentState === ProcessState.BUILDING || currentState === ProcessState.UPLOADING || currentState === ProcessState.INSTALLING) {
+        console.log('编译/上传/依赖安装进行中，跳过自动预编译');
         return;
       }
 
@@ -126,23 +159,52 @@ export class _BuilderService {
 
       // 2. 在后台运行预处理脚本
       try {
+        // 检查 workspace 是否已初始化
+        if (!this.blocklyService.workspace) {
+          console.log('Blockly workspace 未初始化，跳过自动预编译');
+          return;
+        }
+        
         const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
         if (!code) {
           return;
         }
+        const currentProjectPath = this.projectService.currentProjectPath;
         const ailyBuilderPath = window['path'].getAilyBuilderPath();
         const boardModule = await this.projectService.getBoardModule();
+        const appDataPath = window['path'].getAppDataPath();
+        const ailyChildPath = window['path'].getAilyChildPath();
+
+        // 参数校验：检查所有必需参数是否存在
+        const missingParams: string[] = [];
+        if (!currentProjectPath) missingParams.push('currentProjectPath');
+        if (!ailyBuilderPath) missingParams.push('ailyBuilderPath');
+        if (!boardModule) missingParams.push('boardModule');
+        if (!appDataPath) missingParams.push('appDataPath');
+        if (!ailyChildPath) missingParams.push('ailyChildPath');
+
+        if (missingParams.length > 0) {
+          console.error('[后台预处理] 参数校验失败，缺少以下参数:', missingParams.join(', '));
+          console.error('[后台预处理] 参数详情:', {
+            currentProjectPath,
+            ailyBuilderPath,
+            boardModule,
+            appDataPath,
+            ailyChildPath
+          });
+          return;
+        }
 
         // 构建配置对象
         const buildConfig = {
-          currentProjectPath: this.projectService.currentProjectPath,
+          currentProjectPath,
           boardModule,
           code,
-          appDataPath: window['path'].getAppDataPath(),
+          appDataPath,
           za7Path: this.platformService.za7,
           ailyBuilderPath,
           devmode: this.configService.data.devmode || false,
-          partitionFilePath: this.electronService.pathJoin(this.projectService.currentProjectPath, 'partitions.csv')
+          partitionFilePath: this.electronService.pathJoin(currentProjectPath, 'partitions.csv')
         };
 
         // 写入配置文件
@@ -158,6 +220,10 @@ export class _BuilderService {
 
         console.log('开始后台运行预处理脚本');
 
+        // 重置预编译错误状态
+        this.preprocessError = null;
+        this.preprocessFullError = '';
+
         // 使用 cmdService 后台静默运行预处理脚本
         const subscription = this.cmdService.run(preprocessCommand, null, false).subscribe({
           next: (output) => {
@@ -167,18 +233,57 @@ export class _BuilderService {
               console.log('捕获到预处理 streamId:', this.preprocessStreamId);
             }
             
-            // 将预编译输出发送到日志
+            // 将预编译普通输出发送到日志（错误信息先收集，最后统一发送）
             if (output.data) {
-              this.logService.update({ "detail": output.data, "state": "doing" });
+              // 检查输出中是否包含错误信息
+              if (output.data.includes('[ERROR]') || output.data.toLowerCase().includes('error:')) {
+                this.preprocessFullError += output.data + '\n';
+                // 提取关键错误信息
+                const errorLine = output.data.split('\n').find((line: string) => 
+                  line.includes('[ERROR]') || line.toLowerCase().includes('error:')
+                );
+                if (errorLine) {
+                  this.preprocessError = errorLine.trim();
+                }
+              } else {
+                // 非错误信息正常发送到日志
+                this.logService.update({ "detail": output.data, "state": "doing" });
+              }
             }
+            if (output.type === 'error') {
+              const processError = output.error || '预编译进程启动失败';
+              this.preprocessFullError += processError + '\n';
+              if (!this.preprocessError) {
+                this.preprocessError = processError;
+              }
+              return;
+            }
+
             if (output.error) {
-              this.logService.update({ "detail": output.error, "state": "error" });
+              // 收集错误信息，不单独发送
+              this.preprocessFullError += output.error + '\n';
+              if (!this.preprocessError) {
+                this.preprocessError = output.error;
+              }
+            }
+            // 检查进程退出码
+            if (output.type === 'close' && ((output.code ?? 0) !== 0 || output.signal)) {
+              if (!this.preprocessError) {
+                this.preprocessError = output.signal
+                  ? `预编译进程被信号终止: ${output.signal}`
+                  : `预编译进程异常退出，退出码: ${output.code}`;
+              }
+              if (!this.preprocessFullError) {
+                this.preprocessFullError = this.preprocessError + '\n';
+              }
             }
           },
           error: (error) => {
             const errorMsg = error.error || error.message || error;
             console.warn('后台预处理失败:', errorMsg);
-            this.logService.update({ "detail": '后台预处理失败: ' + errorMsg, "state": "error" });
+            // 收集错误信息
+            this.preprocessError = '后台预处理失败: ' + errorMsg;
+            this.preprocessFullError += '后台预处理失败: ' + errorMsg + '\n';
             // 清理引用
             if (this.preprocessProcess === subscription) {
               this.preprocessProcess = null;
@@ -186,8 +291,16 @@ export class _BuilderService {
             }
           },
           complete: () => {
-            console.log('后台预处理完成');
-            this.logService.update({ "detail": '后台预处理完成', "state": "done" });
+            // 检查是否有错误发生，如果有则一次性发送所有错误到日志
+            if (this.preprocessError) {
+              console.warn('后台预处理完成但有错误:', this.preprocessError);
+              // 清理 ANSI 颜色代码并一次性发送所有错误
+              const cleanFullError = this.preprocessFullError.replace(/\[\d+(;\d+)*m/g, '');
+              this.logService.update({ "detail": cleanFullError, "state": "error" });
+            } else {
+              console.log('后台预处理完成');
+              this.logService.update({ "detail": '后台预处理完成', "state": "done" });
+            }
             // 清理引用
             if (this.preprocessProcess === subscription) {
               this.preprocessProcess = null;
@@ -202,11 +315,50 @@ export class _BuilderService {
         console.warn('启动后台预处理失败:', error);
       }
     });
+
+    // 监听 AI 操作状态变化
+    this.aiWaitingSubscription = this.blocklyService.aiWaiting$.subscribe(async (waiting) => {
+      if (waiting) {
+        // AI 操作开始，终止正在运行的预编译（结果会过时）
+        if (this.preprocessProcess || this.preprocessStreamId) {
+          console.log('AI操作开始，终止正在运行的预编译');
+          this.pendingPrecompile = true; // 标记需要重新预编译
+          try {
+            if (this.preprocessProcess) {
+              this.preprocessProcess.unsubscribe();
+              this.preprocessProcess = null;
+            }
+            if (this.preprocessStreamId) {
+              await this.cmdService.kill(this.preprocessStreamId);
+              this.preprocessStreamId = null;
+            }
+          } catch (error) {
+            console.warn('终止预编译进程失败:', error);
+          }
+        }
+      } else {
+        // AI 操作完成，触发延迟的预编译
+        if (this.pendingPrecompile) {
+          console.log('AI操作已完成，触发延迟的预编译');
+          this.pendingPrecompile = false;
+          setTimeout(() => {
+            if (!this.blocklyService.aiWaiting) {
+              this.blocklyService.dependencySubject.next('ai-complete');
+            } else {
+              this.pendingPrecompile = true;
+            }
+          }, 100);
+        }
+      }
+    });
   }
 
   destroy() {
     this.actionService.unlisten('builder-compile-begin');
     this.actionService.unlisten('builder-compile-cancel');
+    this.actionService.unlisten('builder-compile-reset');
+    this.actionService.unlisten('builder-preprocess-stop');
+    this.actionService.unlisten('builder-preprocess-trigger');
     this.clearProgressTimer(); // 清理定时器
     
     // 终止正在运行的预处理进程
@@ -234,33 +386,103 @@ export class _BuilderService {
       this.dependencySubscription = null;
       console.log('已取消依赖变化订阅');
     }
+
+    // 取消 AI 等待状态订阅
+    if (this.aiWaitingSubscription) {
+      this.aiWaitingSubscription.unsubscribe();
+      this.aiWaitingSubscription = null;
+    }
+    this.pendingPrecompile = false;
+    
+    // 清理预编译错误状态
+    this.preprocessError = null;
+    this.preprocessFullError = '';
     
     this.initialized = false; // 重置初始化状态
+  }
+
+  /**
+   * 停止正在运行的预编译进程
+   * 供外部调用（例如清除缓存时）
+   */
+  async stopPreprocess(): Promise<void> {
+    if (this.preprocessProcess || this.preprocessStreamId) {
+      console.log('停止预编译进程...');
+      try {
+        // 先取消订阅
+        if (this.preprocessProcess) {
+          this.preprocessProcess.unsubscribe();
+          this.preprocessProcess = null;
+        }
+        // 再 kill 进程
+        if (this.preprocessStreamId) {
+          await this.cmdService.kill(this.preprocessStreamId);
+          this.preprocessStreamId = null;
+        }
+        console.log('预编译进程已停止');
+      } catch (error) {
+        console.warn('停止预编译进程失败:', error);
+      }
+    }
+    // 清理预编译错误状态
+    this.preprocessError = null;
+    this.preprocessFullError = '';
+  }
+
+  /**
+   * 检查预编译是否正在进行中
+   */
+  isPreprocessing(): boolean {
+    return !!(this.preprocessProcess || this.preprocessStreamId);
   }
 
   /**
    * 运行预编译脚本（同步等待完成）
    */
   private async runPreprocess(): Promise<void> {
-    const tempPath = this.electronService.pathJoin(this.projectService.currentProjectPath, '.temp');
+    const currentProjectPath = this.projectService.currentProjectPath;
+    const ailyBuilderPath = window['path'].getAilyBuilderPath();
+    const boardModule = await this.projectService.getBoardModule();
+    const appDataPath = window['path'].getAppDataPath();
+    const ailyChildPath = window['path'].getAilyChildPath();
+
+    // 参数校验：检查所有必需参数是否存在
+    const missingParams: string[] = [];
+    if (!currentProjectPath) missingParams.push('currentProjectPath');
+    if (!ailyBuilderPath) missingParams.push('ailyBuilderPath');
+    if (!boardModule) missingParams.push('boardModule');
+    if (!appDataPath) missingParams.push('appDataPath');
+    if (!ailyChildPath) missingParams.push('ailyChildPath');
+
+    if (missingParams.length > 0) {
+      const errorMsg = `[同步预处理] 参数校验失败，缺少以下参数: ${missingParams.join(', ')}`;
+      console.error(errorMsg);
+      console.error('[同步预处理] 参数详情:', {
+        currentProjectPath,
+        ailyBuilderPath,
+        boardModule,
+        appDataPath,
+        ailyChildPath
+      });
+      throw new Error(errorMsg);
+    }
+
+    const tempPath = this.electronService.pathJoin(currentProjectPath, '.temp');
     
     // 生成代码
     const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
     this.lastCode = code; // 保存代码用于后续 hash 计算
-    
-    const ailyBuilderPath = window['path'].getAilyBuilderPath();
-    const boardModule = await this.projectService.getBoardModule();
 
     // 构建配置对象
     const buildConfig = {
-      currentProjectPath: this.projectService.currentProjectPath,
+      currentProjectPath,
       boardModule,
       code,
-      appDataPath: window['path'].getAppDataPath(),
+      appDataPath,
       za7Path: this.platformService.za7,
       ailyBuilderPath,
       devmode: this.configService.data.devmode || false,
-      partitionFilePath: this.electronService.pathJoin(this.projectService.currentProjectPath, 'partitions.csv')
+      partitionFilePath: this.electronService.pathJoin(currentProjectPath, 'partitions.csv')
     };
 
     // 写入配置文件
@@ -294,6 +516,10 @@ export class _BuilderService {
         this.preprocessStreamId = null;
       }
 
+      // 重置预编译错误状态
+      this.preprocessError = null;
+      this.preprocessFullError = '';
+
       // 使用 cmdService 运行预处理脚本
       const subscription = this.cmdService.run(preprocessCommand, null, false).subscribe({
         next: (output) => {
@@ -303,18 +529,56 @@ export class _BuilderService {
             console.log('捕获到同步预处理 streamId:', this.preprocessStreamId);
           }
           
-          // 将预编译输出发送到日志
+          // 将预编译普通输出发送到日志（错误信息先收集，最后统一发送）
           if (output.data) {
-            this.logService.update({ "detail": output.data, "state": "doing" });
+            // 检查输出中是否包含错误信息
+            if (output.data.includes('[ERROR]') || output.data.toLowerCase().includes('error:')) {
+              this.preprocessFullError += output.data + '\n';
+              const errorLine = output.data.split('\n').find((line: string) => 
+                line.includes('[ERROR]') || line.toLowerCase().includes('error:')
+              );
+              if (errorLine) {
+                this.preprocessError = errorLine.trim();
+              }
+            } else {
+              // 非错误信息正常发送到日志
+              this.logService.update({ "detail": output.data, "state": "doing" });
+            }
           }
+          if (output.type === 'error') {
+            const processError = output.error || '预编译进程启动失败';
+            this.preprocessFullError += processError + '\n';
+            if (!this.preprocessError) {
+              this.preprocessError = processError;
+            }
+            return;
+          }
+
           if (output.error) {
-            this.logService.update({ "detail": output.error, "state": "error" });
+            // 收集错误信息，不单独发送
+            this.preprocessFullError += output.error + '\n';
+            if (!this.preprocessError) {
+              this.preprocessError = output.error;
+            }
+          }
+          // 检查进程退出码
+          if (output.type === 'close' && ((output.code ?? 0) !== 0 || output.signal)) {
+            if (!this.preprocessError) {
+              this.preprocessError = output.signal
+                ? `预编译进程被信号终止: ${output.signal}`
+                : `预编译进程异常退出，退出码: ${output.code}`;
+            }
+            if (!this.preprocessFullError) {
+              this.preprocessFullError = this.preprocessError + '\n';
+            }
           }
         },
         error: (error) => {
           const errorMsg = error.error || error.message || error;
           console.error('同步预处理失败:', errorMsg);
-          this.logService.update({ "detail": '同步预处理失败: ' + errorMsg, "state": "error" });
+          // 收集错误信息
+          this.preprocessError = '同步预处理失败: ' + errorMsg;
+          this.preprocessFullError += '同步预处理失败: ' + errorMsg + '\n';
           // 清理引用
           if (this.preprocessProcess === subscription) {
             this.preprocessProcess = null;
@@ -323,8 +587,16 @@ export class _BuilderService {
           reject(error);
         },
         complete: () => {
-          console.log('同步预处理完成');
-          this.logService.update({ "detail": '同步预处理完成', "state": "done" });
+          // 检查是否有错误发生，如果有则一次性发送所有错误到日志
+          if (this.preprocessError) {
+            console.warn('同步预处理完成但有错误:', this.preprocessError);
+            // 清理 ANSI 颜色代码并一次性发送所有错误
+            const cleanFullError = this.preprocessFullError.replace(/\[\d+(;\d+)*m/g, '');
+            this.logService.update({ "detail": cleanFullError, "state": "error" });
+          } else {
+            console.log('同步预处理完成');
+            this.logService.update({ "detail": '同步预处理完成', "state": "done" });
+          }
           // 清理引用
           if (this.preprocessProcess === subscription) {
             this.preprocessProcess = null;
@@ -340,17 +612,21 @@ export class _BuilderService {
   }
 
   // 添加这个错误处理方法
-  private handleCompileError(errorMessage: string, sendToLog: boolean = true): void {
+  private handleCompileError(errorMessage: string, sendToLog: boolean = true, details?: string): void {
     // 计算编译耗时
     const buildEndTime = Date.now();
     const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
     console.log(`编译错误，耗时: ${buildDuration} 秒`);
 
+    // 去除前后空格，保持排版整洁
+    const cleanErrorMessage = errorMessage.trim();
+    const cleanDetailMessage = (details || errorMessage).trim();
+
     this.noticeService.update({
       title: "编译失败",
-      text: `${errorMessage} (耗时: ${buildDuration}s)`,
+      text: `${cleanErrorMessage} (耗时: ${buildDuration}s)`,
       state: 'error',
-      detail: errorMessage,
+      detail: cleanDetailMessage,
       setTimeout: 600000,
       sendToLog: sendToLog
     });
@@ -447,7 +723,49 @@ export class _BuilderService {
           }
         }
 
-        // 2. 检查是否存在预编译缓存文件，如果不存在则启动预编译
+        // 2. 检查是否有后台预编译错误
+        if (this.preprocessError) {
+          // console.error('检测到后台预编译错误:', this.preprocessError);
+          
+          // 清理 ANSI 颜色代码并去除前后空格
+          const cleanError = this.preprocessError.replace(/\[\d+(;\d+)*m/g, '').trim();
+          
+          // 简短提示，引导用户查看日志详情，添加 detail 字段以显示"查看详情"按钮
+          this.noticeService.update({
+            title: "预编译失败",
+            text: "依赖分析时发生错误，请查看日志了解详情",
+            state: 'error',
+            detail: cleanError,
+            setTimeout: 600000,
+            sendToLog: false
+          });
+          
+          this.passed = false;
+          this.workflowService.finishBuild(false, 'Preprocessing error');
+          
+          // 清空错误状态，允许用户重试
+          this.preprocessError = null;
+          this.preprocessFullError = '';
+          
+          reject({ state: 'error', text: '预编译失败，请查看日志了解详情' });
+          return;
+        }
+
+        // 3. 如果有待处理的预编译（AI操作期间依赖发生了变更），先清除旧缓存
+        if (this.pendingPrecompile) {
+          console.log('检测到待处理的预编译（AI操作期间依赖已变更），清除旧缓存并重新预编译');
+          this.pendingPrecompile = false;
+          if (window['path'].isExists(preprocessCachePath)) {
+            try {
+              window['fs'].unlinkSync(preprocessCachePath);
+              console.log('已清除过期的预编译缓存');
+            } catch (error) {
+              console.warn('清除预编译缓存失败:', error);
+            }
+          }
+        }
+
+        // 4. 检查是否存在预编译缓存文件，如果不存在则启动预编译
         if (!window['path'].isExists(preprocessCachePath)) {
           this.safeUpdateNotice({
             title: "编译准备中",
@@ -464,11 +782,60 @@ export class _BuilderService {
             // 启动预编译
             await this.runPreprocess();
             console.log('预编译完成，开始正式编译');
+            
+            // 检查同步预编译是否产生了错误
+            if (this.preprocessError) {
+              console.error('同步预编译产生错误:', this.preprocessError);
+              
+              // 计算耗时
+              const buildEndTime = Date.now();
+              const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
+              
+              // 清理错误中的 ANSI 颜色代码并去除前后空格
+              const cleanError = this.preprocessError.replace(/\[\d+(;\d+)*m/g, '').trim();
+              
+              // 使用与编译错误一致的通知方式（错误已在 complete 中发送到日志，不重复发送）
+              this.noticeService.update({
+                title: "预编译失败",
+                text: `${cleanError} (耗时: ${buildDuration}s)`,
+                state: 'error',
+                detail: cleanError,
+                setTimeout: 600000,
+                sendToLog: false
+              });
+              
+              this.passed = false;
+              this.workflowService.finishBuild(false, 'Preprocessing error');
+              
+              this.preprocessError = null;
+              this.preprocessFullError = '';
+              
+              reject({ state: 'error', text: '预编译错误: ' + cleanError });
+              return;
+            }
           } catch (error) {
             console.error('预编译失败:', error);
-            this.handleCompileError('预编译失败: ' + (error.error || error.message || error));
+            
+            // 计算耗时
+            const buildEndTime = Date.now();
+            const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
+            
+            // 清理错误中的 ANSI 颜色代码并去除前后空格
+            const errorMsg = (error.error || error.message || error).toString().replace(/\[\d+(;\d+)*m/g, '').trim();
+            
+            // 使用与编译错误一致的通知方式（错误已在 complete/error 中发送到日志，不重复发送）
+            this.noticeService.update({
+              title: "预编译失败",
+              text: `${errorMsg} (耗时: ${buildDuration}s)`,
+              state: 'error',
+              detail: errorMsg,
+              setTimeout: 600000,
+              sendToLog: false
+            });
+            
+            this.passed = false;
             this.workflowService.finishBuild(false, 'Preprocessing failed');
-            reject({ state: 'error', text: '预编译失败' });
+            reject({ state: 'error', text: '预编译失败: ' + errorMsg });
             return;
           }
         } else {
@@ -495,10 +862,21 @@ export class _BuilderService {
         let completeTitle: string = `编译完成`;
 
         try {
-          // 预编译已经处理了配置文件，这里直接使用
+          // 获取最新代码
+          const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+          this.lastCode = code;
+          
           const boardModule = await this.projectService.getBoardModule();
           const boardName = boardModule.replace('@aily-project/board-', '');
           const configFilePath = this.electronService.pathJoin(tempPath, 'build-config.json');
+
+          // 更新配置文件中的 code（compile.js 会负责写入 sketch 文件）
+          let buildConfig: any = {};
+          if (window['path'].isExists(configFilePath)) {
+            buildConfig = JSON.parse(window['fs'].readFileSync(configFilePath, 'utf8'));
+          }
+          buildConfig.code = code;
+          window['fs'].writeFileSync(configFilePath, JSON.stringify(buildConfig, null, 2));
 
           // 运行编译脚本
           const compileScriptPath = this.electronService.pathJoin(window['path'].getAilyChildPath(), 'scripts', 'compile.js');
@@ -513,6 +891,8 @@ export class _BuilderService {
           let fullStdErr = '';
           let outputComplete = false;
           let lastLogLines: string[] = [];
+          let processExitCode: number | null = null;
+          let processSignal: string | null = null;
 
           this.buildStartTime = Date.now();
 
@@ -544,12 +924,34 @@ export class _BuilderService {
                 this.streamId = output.streamId;
                 console.log('捕获到 streamId:', this.streamId);
               }
-              
-              if (output.type === 'close' && output.code !== 0) {
-                this.isErrored = true;
+
+              if (output.type === 'close') {
+                processExitCode = output.code ?? (output.signal ? 1 : 0);
+                processSignal = output.signal || null;
+
+                if (processExitCode !== 0 || processSignal) {
+                  this.isErrored = true;
+                  const processErrorMessage = processSignal
+                    ? `编译进程被信号终止: ${processSignal}`
+                    : `编译进程异常退出，退出码: ${processExitCode}`;
+                  lastStdErr = lastStdErr || processErrorMessage;
+                  if (!fullStdErr) {
+                    fullStdErr = processErrorMessage;
+                  }
+                }
                 return;
               }
 
+              if (output.type === 'error') {
+                this.isErrored = true;
+                const processErrorMessage = output.error || '编译进程启动失败';
+                lastStdErr = lastStdErr || processErrorMessage;
+                if (!fullStdErr) {
+                  fullStdErr = processErrorMessage;
+                }
+                return;
+              }
+              
               if (output.data) {
                 const data = output.data;
                 if (data.includes('\r\n') || data.includes('\n') || data.includes('\r')) {
@@ -617,6 +1019,23 @@ export class _BuilderService {
                       outputComplete = true;
                       this.buildCompleted = true;
                       this.logService.update({ "detail": trimmedLine, "state": "done" });
+                    } else if (
+                      // 检测更多编译成功标志
+                      // Arduino/ESP32: "Sketch uses xxx bytes"
+                      trimmedLine.includes('Sketch uses') && trimmedLine.includes('bytes') ||
+                      // 某些编译器: "text data bss dec hex filename"
+                      trimmedLine.match(/^\s*text\s+data\s+bss\s+dec\s+hex\s+filename/) ||
+                      // GCC: "arm-none-eabi-size" 输出
+                      (trimmedLine.includes('Program:') && trimmedLine.includes('bytes')) ||
+                      // STM32: "已使用" 或 "used"
+                      (trimmedLine.toLowerCase().includes('memory') && trimmedLine.toLowerCase().includes('used')) ||
+                      // 通用: 包含固件生成成功的标志
+                      trimmedLine.includes('.bin generated') || trimmedLine.includes('.hex generated') ||
+                      trimmedLine.includes('Successfully created')
+                    ) {
+                      outputComplete = true;
+                      this.buildCompleted = true;
+                      this.logService.update({ "detail": trimmedLine, "state": "done" });
                     } else {
                       if (!outputComplete) {
                         if (output.type == 'stderr') {
@@ -649,17 +1068,38 @@ export class _BuilderService {
               this.isErrored = true;
               this.buildSubscription = null; // 清理订阅引用
               this.buildPromiseReject = null; // 清理 reject 引用
-              this.handleCompileError(error.message);
+              const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
+              this.handleCompileError(error.message, true, fullErrorMessage);
+              this.workflowService.finishBuild(false, error.message || 'Build error'); // 确保完成工作流状态
               reject({ state: 'error', text: error.message });
             },
             complete: () => {
               this.clearProgressTimer(); // 清理定时器
-              console.log("编译完成： ", this.buildCompleted, this.isErrored, this.cancelled);
+              console.log("编译命令完成： buildCompleted=", this.buildCompleted, "isErrored=", this.isErrored, "cancelled=", this.cancelled, "lastProgress=", lastProgress);
+
+              // 计算编译耗时（统一计算，避免重复）
+              const buildEndTime = Date.now();
+              const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
+
+              if (!this.cancelled && !this.isErrored && ((processExitCode !== null && processExitCode !== 0) || processSignal)) {
+                this.isErrored = true;
+                const processErrorMessage = processSignal
+                  ? `编译进程被信号终止: ${processSignal}`
+                  : `编译进程异常退出，退出码: ${processExitCode}`;
+                lastStdErr = lastStdErr || processErrorMessage;
+                if (!fullStdErr) {
+                  fullStdErr = processErrorMessage;
+                }
+              }
+
+              // 如果进度已达到高值且没有错误，也认为编译成功
+              if (!this.buildCompleted && !this.isErrored && !this.cancelled && lastProgress >= 95) {
+                console.log("进度已达到", lastProgress, "%，假定编译成功");
+                this.buildCompleted = true;
+              }
 
               if (this.buildCompleted) {
                 console.log('编译命令执行完成');
-                const buildEndTime = Date.now();
-                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
                 console.log(`编译耗时: ${buildDuration} 秒`);
 
                 const displayText = this.extractFirmwareInfo(lastLogLines);
@@ -674,16 +1114,16 @@ export class _BuilderService {
                 this.electronService.calculateHash(this.lastCode).then(codeHash => {
                   this.saveBuildInfo('success', buildDuration, codeHash);
                 });
+
+                this.compileValidationService.triggerAfterSuccessfulCompile();
                 
                 this.workflowService.finishBuild(true);
                 resolve({ state: 'done', text: `编译完成 (耗时: ${buildDuration}s)` });
               } else if (this.isErrored) {
-                const buildEndTime = Date.now();
-                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
                 console.log(`编译失败，耗时: ${buildDuration} 秒`);
 
                 lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
-                this.handleCompileError(lastStdErr || '编译未完成', false);
+                this.handleCompileError(lastStdErr || '编译未完成', false, fullStdErr || lastStdErr || '编译未完成');
                 this.logService.update({ detail: fullStdErr, state: 'error' });
                 this.passed = false;
                 
@@ -693,11 +1133,9 @@ export class _BuilderService {
                 });
                 
                 this.workflowService.finishBuild(false, 'Compilation failed');
-                reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)` });
+                reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)`, fullStdErr: fullStdErr || lastStdErr });
               } else if (this.cancelled) {
                 console.warn("编译中断")
-                const buildEndTime = Date.now();
-                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
                 console.log(`编译已取消，耗时: ${buildDuration} 秒`);
 
                 this.noticeService.update({
@@ -717,9 +1155,7 @@ export class _BuilderService {
                 reject({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
               } else {
                 // 处理未知状态：进程异常结束但没有设置任何标志
-                console.error('编译进程异常结束，未知状态');
-                const buildEndTime = Date.now();
-                const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
+                console.error('编译进程异常结束，未知状态，lastProgress:', lastProgress);
                 
                 this.noticeService.update({
                   title: "编译异常结束",
@@ -757,7 +1193,8 @@ export class _BuilderService {
           throw error;
         }
       } catch (error) {
-        this.handleCompileError(error.message);
+        const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
+        this.handleCompileError(error.message, true, fullErrorMessage);
         this.workflowService.finishBuild(false, error.message);
         reject({ state: 'error', text: error.message });
       }

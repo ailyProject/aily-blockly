@@ -49,4 +49,5 @@ export interface NoticeOptions {
   timestamp?: number,
   sendToLog?: boolean,
   closable?: boolean,
+  icon?: string,
 }

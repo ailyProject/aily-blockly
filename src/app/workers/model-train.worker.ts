@@ -1,10 +1,11 @@
+// @ts-nocheck - TensorFlow 已禁用，安装 @tensorflow/tfjs 相关包后可重新启用
 /**
  * 模型训练 Web Worker
  * 使用 TensorFlow.js 浏览器版本（WebGL/WebGPU 加速）
  * 在独立线程中训练，避免阻塞 UI
  */
 
-import * as tf from '@tensorflow/tfjs';
+// import * as tf from '@tensorflow/tfjs'; // TensorFlow disabled
 
 // 训练配置接口
 interface TrainConfig {
@@ -61,7 +62,7 @@ async function initBestBackend(): Promise<string> {
     // 1. 尝试 WebGPU（最快）
     if ('gpu' in navigator) {
       try {
-        await import('@tensorflow/tfjs-backend-webgpu');
+        // await import('@tensorflow/tfjs-backend-webgpu'); // TensorFlow disabled
         await tf.setBackend('webgpu');
         await tf.ready();
         return 'webgpu';

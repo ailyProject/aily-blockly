@@ -1,0 +1,96 @@
+:host {
+  position: relative;
+  display: block;
+  height: 100%;
+}
+
+// 外层包装：flex 布局，内容区 + 底部操作栏
+.content-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.content-inner {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  overflow: hidden;
+}
+
+iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  position: relative;
+  z-index: 10;
+}
+
+.loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  font-size: 14px;
+  gap: 10px;
+  z-index: 9;
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+// =====================================================
+// 自动更新提示条
+// =====================================================
+.update-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+  animation: slideDownFade 3s ease-out forwards;
+  cursor: pointer;
+
+  .update-icon {
+    font-size: 14px;
+  }
+
+  .update-text {
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+  }
+}
+
+@keyframes slideDownFade {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  10% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  80% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
+  }
+}

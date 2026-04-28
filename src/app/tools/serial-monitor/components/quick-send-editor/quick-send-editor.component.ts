@@ -1,9 +1,10 @@
-import { Component } from '@angular/core';
+import { Component, effect } from '@angular/core';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { SerialMonitorService } from '../../serial-monitor.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { FormsModule } from '@angular/forms';
 import { NzCodeEditorModule } from 'ng-zorro-antd/code-editor';
+import { ThemeService } from '../../../../services/theme.service';
 
 @Component({
   selector: 'app-quick-send-editor',
@@ -28,8 +29,15 @@ export class QuickSendEditorComponent {
 
   constructor(
     private serialMonitorService: SerialMonitorService,
-    private message: NzMessageService
-  ) { }
+    private message: NzMessageService,
+    private themeService: ThemeService
+  ) {
+    // 监听主题变化，动态切换 Monaco 主题
+    effect(() => {
+      const monacoTheme = this.themeService.getMonacoTheme();
+      this.options = { ...this.options, theme: monacoTheme };
+    });
+  }
 
   ngOnInit() {
     this.code = JSON.stringify(this.serialMonitorService.quickSendList, null, 2)

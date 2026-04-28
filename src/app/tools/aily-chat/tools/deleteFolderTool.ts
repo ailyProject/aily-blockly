@@ -1,4 +1,5 @@
-import { ToolUseResult } from "./tools";
+﻿import { ToolUseResult } from "./tools";
+import { AilyHost } from '../core/host';
 import { 
     PathSecurityContext, 
     validateDirectoryOperation,
@@ -71,7 +72,7 @@ export async function deleteFolderTool(
         // ==================== 安全验证结束 ====================
 
         // 检查文件夹是否存在
-        if (!window['fs'].existsSync(folderPath)) {
+        if (!AilyHost.get().fs.existsSync(folderPath)) {
             return {
                 is_error: true,
                 content: `文件夹不存在: ${folderPath}`
@@ -79,7 +80,7 @@ export async function deleteFolderTool(
         }
 
         // 检查是否为文件夹（不是文件）
-        const isDirectory = await window['fs'].isDirectory(folderPath);
+        const isDirectory = await AilyHost.get().fs.isDirectory(folderPath);
         if (!isDirectory) {
             return {
                 is_error: true,
@@ -91,25 +92,25 @@ export async function deleteFolderTool(
 
         // 创建备份
         if (createBackup) {
-            const dirName = window['path'].basename(folderPath);
-            const parentDir = window['path'].dirname(folderPath);
-            backupPath = window['path'].join(parentDir, `ABIBAK_${dirName}`);
+            const dirName = AilyHost.get().path.basename(folderPath);
+            const parentDir = AilyHost.get().path.dirname(folderPath);
+            backupPath = AilyHost.get().path.join(parentDir, `ABIBAK_${dirName}`);
 
-            await window['fs'].mkdirSync(backupPath, { recursive: true });
+            await AilyHost.get().fs.mkdirSync(backupPath, { recursive: true });
 
             // 递归复制目录内容
             async function copyDirRecursive(src: string, dest: string) {
-                const entries = await window['fs'].readDirSync(src);
+                const entries = await AilyHost.get().fs.readDirSync(src);
                 for (const entry of entries) {
-                    const srcPath = window['path'].join(src, entry.name);
-                    const destPath = window['path'].join(dest, entry.name);
+                    const srcPath = AilyHost.get().path.join(src, entry.name);
+                    const destPath = AilyHost.get().path.join(dest, entry.name);
 
-                    if (await window['fs'].isDirectory(srcPath)) {
-                        await window['fs'].mkdirSync(destPath, { recursive: true });
+                    if (await AilyHost.get().fs.isDirectory(srcPath)) {
+                        await AilyHost.get().fs.mkdirSync(destPath, { recursive: true });
                         await copyDirRecursive(srcPath, destPath);
                     } else {
-                        const content = await window['fs'].readFileSync(srcPath, 'utf-8');
-                        await window['fs'].writeFileSync(destPath, content);
+                        const content = await AilyHost.get().fs.readFileSync(srcPath, 'utf-8');
+                        await AilyHost.get().fs.writeFileSync(destPath, content);
                     }
                 }
             }
@@ -118,7 +119,7 @@ export async function deleteFolderTool(
         }
 
         // 删除文件夹
-        await window['fs'].rmdirSync(folderPath, { recursive, force: true });
+        await AilyHost.get().fs.rmdirSync(folderPath, { recursive, force: true });
         
         // 记录成功
         if (auditLogId) {

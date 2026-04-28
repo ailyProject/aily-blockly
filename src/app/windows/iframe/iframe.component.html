@@ -1,0 +1,29 @@
+<app-notification></app-notification>
+@if(embedded) {
+  <ng-container *ngTemplateOutlet="contentTpl"></ng-container>
+} @else {
+  <app-sub-window [title]="windowTitle" [winBtns]="['minimize', 'maximize', 'close']">
+    <ng-container *ngTemplateOutlet="contentTpl"></ng-container>
+  </app-sub-window>
+}
+
+<ng-template #contentTpl>
+  <div class="content-wrapper">
+    <div class="content-inner">
+      @if(isLoading) {
+      <div class="loading">
+        应用加载中...
+      </div>
+      }
+      @if(showEmptyState) {
+      <div class="loading">
+        加载失败
+      </div>
+      }
+      @if(iframeSrc) {
+      <iframe [src]="iframeSrc" (load)="onIframeLoad($event)" (error)="handleLoadError()"
+        [style.display]="isLoading || showEmptyState ? 'none' : 'block'"></iframe>
+      }
+    </div>
+  </div>
+</ng-template>

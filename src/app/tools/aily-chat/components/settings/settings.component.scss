@@ -1,34 +1,30 @@
-.test {
-    font-size: 14px;
-    color: #ccc;
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 9999;
-    height: 100%;
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.5);
-}
-
 .editor-box {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    background: #333;
+    background: var(--aily-bg-secondary);
     padding: 0 10px;
-    z-index: 9;
+    z-index: 19;
     overflow-y: auto;
     overflow-x: hidden;
+
+    .test{
+        position: absolute;
+        left: 0;
+        top: 0;
+        background: var(--aily-bg-overlay);
+        z-index: 999;
+        height: 100%;
+        width: 100%;
+    }
 
 
     .content {
         max-height: calc(100% - 50px);
         width: calc(100% + 10px);
+        padding-right: 2px;
         overflow-y: auto;
         padding-bottom: 60px;
     }
@@ -36,13 +32,11 @@
     .item {
         display: flex;
         flex-direction: column;
-        // align-items: center;
         margin-bottom: 10px;
         min-width: 32px;
         position: relative;
 
         >div:first-child {
-            // width: 80px;
             height: 32px;
             flex-shrink: 0;
             display: flex;
@@ -57,35 +51,23 @@
 
             .help-icon {
                 margin-top: 1px;
-                color: rgba(255, 255, 255, 0.45);
+                color: var(--aily-text-hint);
                 cursor: pointer;
                 font-size: 14px;
                 transition: color 0.3s;
 
                 &:hover {
-                    color: rgba(255, 255, 255, 0.85);
+                    color: var(--aily-text-tertiary);
                 }
             }
         }
 
         input {
-            background: #363636;
+            background: var(--aily-bg-input);
             z-index: 1;
             height: 32px;
             margin-bottom: 5px;
-            color: rgba(255, 255, 255, 0.7) !important;
-
-            &.board {
-                border-radius: 2px 0 0 2px;
-            }
-        }
-
-        .error {
-            color: rgb(255, 80, 80);
-            font-size: 12px;
-            position: absolute;
-            bottom: -15px;
-            left: 130px;
+            color: var(--aily-text-primary) !important;
         }
 
         // 通用的列表样式
@@ -93,9 +75,46 @@
             flex-direction: column;
             align-items: stretch;
 
+            // Agent 标签页样式
+            .agent-tabs {
+                display: flex;
+                gap: 0;
+                margin-bottom: 10px;
+                border-bottom: 1px solid var(--aily-border-secondary);
+
+                .agent-tab {
+                    padding: 8px 16px;
+                    cursor: pointer;
+                    color: var(--aily-text-secondary);
+                    font-size: 14px;
+                    border-bottom: 2px solid transparent;
+                    transition: all 0.2s;
+                    user-select: none;
+
+                    &:hover {
+                        color: var(--aily-text-primary);
+                        background: var(--aily-highlight-bg);
+                    }
+
+                    &.active {
+                        color: var(--aily-color-accent);
+                        border-bottom-color: var(--aily-color-accent);
+                        font-weight: 500;
+                    }
+                }
+            }
+
+            // 空工具提示
+            .empty-tools-tip {
+                text-align: center;
+                color: var(--aily-text-muted);
+                padding: 20px;
+                font-size: 13px;
+            }
+
             .items-list {
                 width: 100%;
-                background: #2a2a2a;
+                background: var(--aily-bg-card);
                 border-radius: 4px;
                 padding: 10px;
 
@@ -105,107 +124,11 @@
                     align-items: center;
                     margin-bottom: 10px;
                     padding-bottom: 10px;
-                    border-bottom: 1px solid #444;
+                    border-bottom: 1px solid var(--aily-border-secondary);
 
                     .items-count {
-                        color: rgba(255, 255, 255, 0.6);
+                        color: var(--aily-text-secondary);
                         font-size: 12px;
-                    }
-                }
-
-                // 添加API密钥表单样式
-                .add-api-form {
-                    background: #363636;
-                    padding: 12px;
-                    border-radius: 4px;
-                    margin-bottom: 10px;
-
-                    .form-row {
-                        margin-bottom: 8px;
-
-                        input {
-                            width: 100%;
-                            background: #2a2a2a;
-                            border: 1px solid #444;
-                            margin-bottom: 0;
-                            color: rgba(255, 255, 255, 0.7) !important;
-
-                            &:focus {
-                                border-color: #1890ff;
-                            }
-                        }
-
-                        // nz-select 样式覆盖
-                        ::ng-deep .ant-select-selector {
-                            background: #2a2a2a !important;
-                            border: 1px solid #444 !important;
-                            color: rgba(255, 255, 255, 0.7) !important;
-                        }
-
-                        ::ng-deep .ant-select-arrow {
-                            color: rgba(255, 255, 255, 0.45) !important;
-                        }
-
-                        ::ng-deep .ant-select-item-option-content {
-                            color: rgba(255, 255, 255, 0.7) !important;
-                        }
-
-                        &:last-of-type {
-                            margin-bottom: 0;
-                        }
-                    }
-
-                    .form-actions {
-                        margin-top: 10px;
-                        text-align: right;
-                    }
-                }
-
-                // 添加模型表单样式
-                .add-model-form {
-                    background: #363636;
-                    padding: 12px;
-                    border-radius: 4px;
-                    margin-bottom: 10px;
-
-                    .form-row {
-                        margin-bottom: 8px;
-
-                        input {
-                            width: 100%;
-                            background: #2a2a2a;
-                            border: 1px solid #444;
-                            margin-bottom: 0;
-                            color: rgba(255, 255, 255, 0.7) !important;
-
-                            &:focus {
-                                border-color: #1890ff;
-                            }
-                        }
-
-                        // nz-select 样式覆盖
-                        ::ng-deep .ant-select-selector {
-                            background: #2a2a2a !important;
-                            border: 1px solid #444 !important;
-                            color: rgba(255, 255, 255, 0.7) !important;
-                        }
-
-                        ::ng-deep .ant-select-arrow {
-                            color: rgba(255, 255, 255, 0.45) !important;
-                        }
-
-                        ::ng-deep .ant-select-item-option-content {
-                            color: rgba(255, 255, 255, 0.7) !important;
-                        }
-
-                        &:last-of-type {
-                            margin-bottom: 0;
-                        }
-                    }
-
-                    .form-actions {
-                        margin-top: 10px;
-                        text-align: right;
                     }
                 }
 
@@ -221,10 +144,13 @@
                     }
 
                     .item-wrapper {
+                        min-width: 0;
+                        overflow: hidden;
+
                         .list-item {
                             display: flex;
                             padding: 5px 10px;
-                            background: #363636;
+                            background: var(--aily-bg-input);
                             border-radius: 3px;
                             transition: all 0.2s;
                             cursor: pointer;
@@ -233,119 +159,68 @@
                             text-overflow: ellipsis;
 
                             &:hover {
-                                background: #404040;
-                            }
-                        }
-
-                        // API密钥项特定样式
-                        &.api-key-item {
-                            display: flex;
-                            align-items: center;
-                            gap: 8px;
-
-                            .api-key-info {
-                                flex: 1;
-
-                                .list-item {
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 6px;
-                                    padding: 8px 10px;
-
-                                    .api-key-name {
-                                        font-weight: 500;
-                                        color: rgba(255, 255, 255, 0.9);
-                                    }
-
-                                    .api-key-url {
-                                        color: rgba(255, 255, 255, 0.5);
-                                        font-size: 12px;
-                                        overflow: hidden;
-                                        text-overflow: ellipsis;
-                                        white-space: nowrap;
-                                        max-width: 200px;
-                                    }
-
-                                    .invalid-badge {
-                                        display: inline-block;
-                                        padding: 2px 6px;
-                                        background: #ff4d4f;
-                                        color: white;
-                                        font-size: 10px;
-                                        border-radius: 2px;
-                                        margin-left: auto;
-                                    }
-                                }
-                            }
-
-                            .delete-btn {
-                                flex-shrink: 0;
-                                padding: 4px 8px;
-                                height: auto;
-                                line-height: 1;
-
-                                i {
-                                    font-size: 14px;
-                                }
+                                background: var(--aily-bg-tertiary);
                             }
                         }
 
                         // 模型项特定样式
                         &.model-item {
-                            display: flex;
-                            align-items: center;
-                            gap: 8px;
-
                             .model-info {
-                                flex: 1;
+                                display: flex;
+                                align-items: center;
+                                padding: 5px 10px;
+                                background: var(--aily-bg-input);
+                                border-radius: 3px;
+                                transition: all 0.2s;
+                                overflow: hidden;
+
+                                &:hover {
+                                    background: var(--aily-bg-tertiary);
+                                }
 
                                 .list-item {
+                                    flex: 1;
                                     display: flex;
                                     align-items: center;
                                     gap: 6px;
-                                    padding: 8px 10px;
+                                    padding: 0;
+                                    background: transparent;
+                                    min-width: 0;
+                                    overflow: hidden;
 
-                                    .model-name {
-                                        font-weight: 500;
+                                    &:hover {
+                                        background: transparent;
+                                    }
+
+                                    // 让 checkbox 垂直居中
+                                    ::ng-deep .ant-checkbox {
+                                        top: 0;
+                                        align-self: center;
                                     }
 
                                     .model-id {
-                                        color: rgba(255, 255, 255, 0.5);
-                                        font-size: 12px;
-                                    }
-
-                                    .custom-badge {
-                                        display: inline-block;
-                                        padding: 2px 6px;
-                                        background: #1890ff;
-                                        color: white;
-                                        font-size: 10px;
-                                        border-radius: 2px;
-                                        margin-left: auto;
+                                        color: var(--aily-text-muted);
+                                        margin-left: 10px;
+                                        overflow: hidden;
+                                        text-overflow: ellipsis;
+                                        white-space: nowrap;
+                                        min-width: 0;
+                                        flex-shrink: 1;
                                     }
                                 }
 
-                                .model-api-info {
-                                    padding: 2px 10px;
-                                    font-size: 11px;
-                                    color: rgba(255, 255, 255, 0.5);
+                                .model-actions {
+                                    display: flex;
+                                    align-items: center;
+                                    flex-shrink: 0;
+                                    margin-left: auto;
 
-                                    .api关联 {
-                                        &.no-api {
-                                            color: #ff4d4f;
-                                        }
+                                    .edit-btn,
+                                    .delete-btn {
+                                        padding: 4px 6px;
+                                        height: auto;
+                                        line-height: 1;
                                     }
-                                }
-                            }
-
-                            .delete-btn {
-                                flex-shrink: 0;
-                                padding: 4px 8px;
-                                height: auto;
-                                line-height: 1;
-
-                                i {
-                                    font-size: 14px;
                                 }
                             }
                         }
@@ -356,6 +231,77 @@
     }
 }
 
+.model-item-add {
+    border: 1px dashed var(--aily-border-tertiary);
+    border-radius: 3px;
+    text-align: center;
+
+    .add-model-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        gap: 15px;
+        background: transparent;
+        border-radius: 3px;
+        color: var(--aily-text-muted);
+        cursor: pointer;
+        transition: all 0.2s;
+
+        &:hover {
+            background: var(--aily-bg-tertiary);
+        }
+
+        i {
+            margin-left: 1px;
+            font-size: 14px;
+        }
+    }
+}
+
+// 模型表单样式（添加和编辑共用）
+.add-model-form {
+    width: 100%;
+    background: transparent;
+    padding: 5px 0;
+
+    .form-row {
+        margin-bottom: 8px;
+
+        input {
+            width: 100%;
+            background: var(--aily-bg-card);
+            border: 1px solid var(--aily-border-secondary);
+            margin-bottom: 0;
+            color: var(--aily-text-primary) !important;
+
+            &[type="password"] {
+                letter-spacing: -5px;
+
+                &::placeholder {
+                    letter-spacing: normal;
+                }
+            }
+
+            &:focus {
+                border-color: var(--aily-color-accent);
+            }
+        }
+
+        &:last-of-type {
+            margin-bottom: 0;
+        }
+    }
+
+    .form-actions {
+        margin-top: 10px;
+        text-align: right;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+}
+
 .bottom {
     position: absolute;
     left: 0px;
@@ -363,10 +309,23 @@
     width: 100%;
     text-align: right;
     z-index: 9;
-    background: #3a3a3a;
+    background: var(--aily-bg-tertiary);
     padding: 10px;
 
     button {
         margin-left: 15px;
+    }
+}
+
+.setting-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+
+    .setting-hint {
+        font-size: 12px;
+        color: var(--aily-text-hint);
+        padding-left: 24px;
     }
 }

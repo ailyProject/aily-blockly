@@ -1,0 +1,38 @@
+<div class="aily-approval-viewer" (dblclick)="logDetail()">
+    @if (resolved) {
+    <div class="state-content ccenter">
+        <div class="state-icon">
+            @if (approved) {
+            <div class="icon ccenter done">
+                <i class="fa-light fa-circle-check"></i>
+            </div>
+            } @else {
+            <div class="icon ccenter warn">
+                <i class="fa-light fa-circle-xmark"></i>
+            </div>
+            }
+        </div>
+        <div class="state-text">
+            {{ approved ? '已批准: ' + title : '已拒绝: ' + title }}
+        </div>
+    </div>
+    } @else {
+    <div class="approval-content">
+        <div class="approval-header">
+            <div class="approval-icon">
+                <i class="fa-light fa-shield-check"></i>
+            </div>
+            <div class="approval-title">{{ title }}</div>
+        </div>
+        <div class="approval-message">{{ message }}</div>
+        <div class="approval-actions">
+            <button class="btn-approve" (click)="approve()">
+                <i class="fa-light fa-check"></i> 允许
+            </button>
+            <button class="btn-reject" (click)="reject()">
+                <i class="fa-light fa-xmark"></i> 拒绝
+            </button>
+        </div>
+    </div>
+    }
+</div>

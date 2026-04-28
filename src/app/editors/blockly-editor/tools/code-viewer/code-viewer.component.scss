@@ -3,3 +3,16 @@ nz-code-editor {
     width: 100% !important;
     background-color:transparent;
 }
+
+// Block 选中高亮样式（需要 ::ng-deep 穿透 Monaco 编辑器的 Shadow DOM）
+::ng-deep .block-highlight-line {
+    background-color: rgba(255, 213, 79, 0.15) !important;
+    border-left: 3px solid #FFD54F !important;
+}
+
+// 值块行内高亮样式（列级精度）
+::ng-deep .block-highlight-inline {
+    background-color: rgba(255, 213, 79, 0.35) !important;
+    border-bottom: 2px solid #FFD54F !important;
+    border-radius: 2px;
+}

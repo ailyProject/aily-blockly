@@ -5,20 +5,20 @@
     padding: 0 0 10px 10px;
     width: 100%;
     height: 100%;
-    background: #323437;
+    background: var(--aily-bg-secondary);
     font-size: 14px;
 
     .title {
         font-size: 18px;
         font-weight: bold;
         margin-bottom: 10px;
-        color: #ffffff;
+        color: var(--aily-text-primary);
     }
 
     .content {
         font-size: 14px;
         line-height: 1.8;
-        color: #ffffff;
+        color: var(--aily-text-primary);
         height: calc(100% - 78px);
         overflow-y: auto;
         padding-bottom: 50px;
@@ -28,7 +28,7 @@
         display: flex;
         gap: 16px;
         margin-bottom: 24px;
-        background: #2a2b2e;
+        background: var(--aily-bg-elevated);
         border-radius: 5px;
         padding: 10px;
 
@@ -64,7 +64,7 @@
 
                 .info-label {
                     font-size: 12px;
-                    color: #999;
+                    color: var(--aily-text-secondary);
                 }
 
                 .info-value {
@@ -119,13 +119,13 @@
         .section-title {
             font-size: 16px;
             font-weight: 600;
-            color: #ffffff;
+            color: var(--aily-text-primary);
             margin-bottom: 10px;
-            border-bottom: 1px solid #444;
+            border-bottom: 1px solid var(--aily-border-input);
         }
 
         .description {
-            color: #ccc;
+            color: var(--aily-text-quaternary);
             line-height: 1.6;
         }
 
@@ -134,16 +134,16 @@
                 display: flex;
                 align-items: center;
                 margin-bottom: 10px;
-                color: #ccc;
+                color: var(--aily-text-quaternary);
 
                 .label {
                     min-width: 100px;
                     font-weight: 500;
-                    color: #aaa;
+                    color: var(--aily-text-tertiary);
                 }
 
                 .value {
-                    color: #fff;
+                    color: var(--aily-text-primary);
                 }
 
                 .tag-list {
@@ -203,7 +203,7 @@
         }
 
         .detail-content {
-            color: #ccc;
+            color: var(--aily-text-quaternary);
             line-height: 1.8;
 
             ::ng-deep {
@@ -224,7 +224,7 @@
                 }
 
                 strong {
-                    color: #fff;
+                    color: var(--aily-text-primary);
                 }
 
                 img {

@@ -31,7 +31,8 @@
         "USER_SPACE": "Cloud-Speicher",
         "LIB_MANAGER": "Bibliotheksverwaltung",
         "AI_ASSISTANT": "KI-Assistent",
-        "PROJECT_HUB": "Projekt-Hub"
+        "PROJECT_HUB": "Projekt-Hub",
+        "NEW_INSTANCE": "Neues Fenster"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Upload-Geschwindigkeit",
@@ -46,6 +47,15 @@
         "BOARD": "Entwicklungsboard-Modell auswählen",
         "USB": "USB-Konfiguration",
         "UPLOAD_METHOD": "Upload-Methode"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "SoftDevice flashen",
+        "FLASH_SOFTDEVICE_CONFIRM": "Möchten Sie {{softdevice}} SoftDevice auf das Gerät flashen?",
+        "SELECT_PORT_FIRST": "Bitte wählen Sie zuerst einen Port aus",
+        "FLASHING_SOFTDEVICE": "SoftDevice wird geflasht...",
+        "FLASH_SUCCESS": "SoftDevice erfolgreich geflasht",
+        "FLASH_FAILED": "SoftDevice konnte nicht geflasht werden"
     },
     "GUIDE": {
         "START": "Start",
@@ -86,6 +96,15 @@
             "STEP7_DESC": "Haben Sie Fragen? Möchten Sie Ihre Arbeit teilen? Treten Sie unserer Benutzer-Community bei, um sich mit anderen Makern auszutauschen und zu lernen!"
         }
     },
+    "BLOCKLY": {
+        "CROSS_TAB_COPY": "An angegebenen Ort kopieren",
+        "CONTROLS_SWITCH_CASE": "Fall",
+        "CONTROLS_SWITCH_DO": "ausführen",
+        "CONTROLS_SWITCH_DEFAULT": "Standard",
+        "CROSS_TAB_PASTE": "Einfügen",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "%1 Elemente einfügen",
+        "WORKSPACE_SELECT_ALL": "Alle Blöcke auswählen"
+    },
     "APP_STORE": {
         "HEADER_INFO": "Die ersten {{count}} Apps werden in der Symbolleiste angezeigt",
         "RESET": "Zurücksetzen",
@@ -113,7 +132,8 @@
             "REPOSITORY": "Repository-Einstellungen",
             "DEPENDENCIES": "Globale Abhängigkeiten",
             "MCP": "MCP",
-            "DEVMODE": "Entwicklermodus"
+            "DEVMODE": "Entwicklermodus",
+            "CACHE": "Cache-Verwaltung"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Projektordner",
@@ -122,11 +142,28 @@
             "BLOCKLY_THEME": "Blockly-Theme",
             "BLOCKLY_MINIMAP": "Blockly-Miniaturansicht",
             "COMPILATION_OPTIONS": "Kompilierungsoptionen",
+            "REGION": "Service-Region",
+            "REGION_TITLE": "Service-Region wechseln",
+            "REGION_DESC": "Nach dem Wechsel der Service-Region müssen Sie sich erneut anmelden. Fortfahren?",
+            "REGION_CONFIRM": "Bestätigen",
+            "REGION_CANCEL": "Abbrechen",
             "REPOSITORY_URLS": "Repository-URLs",
             "BOARD_LIST": "Board-Liste",
             "LIBRARY_LIST": "Bibliotheksliste",
             "INSTALL": "Installieren",
-            "UNINSTALL": "Deinstallieren"
+            "UNINSTALL": "Deinstallieren",
+            "CLEAR_CACHE": "Cache leeren",
+            "CACHE_SIZE": "Cache-Größe",
+            "CACHE_LOADING": "Laden...",
+            "CACHE_ALL": "Alles löschen",
+            "CACHE_ONE_MONTH": "1 Monat alt löschen",
+            "CACHE_THREE_MONTHS": "3 Monate alt löschen",
+            "CACHE_CLEARING": "Wird gelöscht...",
+            "CACHE_CLEARED": "Cache geleert",
+            "CACHE_CLEAR_FAILED": "Löschen fehlgeschlagen",
+            "CACHE_CONFIRM_TITLE": "Löschen bestätigen",
+            "CACHE_CONFIRM_DESC": "Möchten Sie wirklich alle Kompilierungscaches löschen? Dies kann nicht rückgängig gemacht werden.",
+            "CACHE_CONFIRM_OK": "Bestätigen"
         },
         "BUTTONS": {
             "CANCEL": "Abbrechen",
@@ -153,7 +190,8 @@
             "BOARD": "Board",
             "PROJECT_NAME": "Projektname",
             "SAVE_PATH": "Speicherpfad",
-            "NAME_EXISTS": "Projektname existiert bereits, bitte ändern"
+            "NAME_EXISTS": "Projektname existiert bereits, bitte ändern",
+            "PATH_INVALID_CHARS": "Pfad enthält ungültige Zeichen (z.B. / : * ? \" < > |), bitte ändern"
         },
         "BUTTONS": {
             "USE_THIS": "Dieses Board verwenden",
@@ -164,14 +202,15 @@
             "CREATING": "Erstellen"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Beta-Version, ungeprüft, mit Vorsicht verwenden"
+            "BETA_VERSION": "Beta-Version, ungeprüft, mit Vorsicht verwenden",
+            "TODO": "Geräteunterstützung kommt bald"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "Bibliotheksverwaltung",
         "BACK": "Zurück",
         "SEARCH_LIBRARY": "Bibliothek suchen",
-        "ALL": "Alle Bibliotheken",
+        "ALL": "Alle",
         "INSTALLED": "Installiert",
         "CORE_LIBRARY": "Kernbibliothek",
         "IMPORT_LIBRARY": "Lokale Bibliothek importieren",
@@ -182,6 +221,7 @@
         "INSTALLED_TEXT": "Installiert",
         "REMOVE": "Entfernen",
         "INSTALLING": "Installiere",
+        "INSTALL_FAILED": "Installation fehlgeschlagen",
         "UNINSTALLING": "Deinstalliere",
         "UNINSTALLED": "Deinstalliert",
         "IMPORTING": "Importiere",
@@ -218,6 +258,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "Software-Update",
+        "TITLE_READY": "Update bereit",
+        "TITLE_NEW_VERSION": "Neue Version {{version}} verfügbar",
+        "TEXT_DOWNLOADED": "Version {{version}} wurde heruntergeladen. Jetzt installieren?",
+        "TEXT_AVAILABLE": "Aktuelle Version {{currentVersion}}, neue Version {{version}}<br>Möchten Sie dieses Update herunterladen und installieren?",
         "DOWNLOAD_FAILED": "Download fehlgeschlagen",
         "REMIND_LATER": "Später erinnern",
         "SKIP_VERSION": "Diese Version überspringen",
@@ -277,8 +321,9 @@
         "SETTINGS": "KI-Einstellungen",
         "HISTORY": "Chat-Verlauf",
         "NEW_CHAT": "Neuer Chat",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "KI-Antworten dienen nur als Referenz und sind möglicherweise nicht genau. Sie repräsentieren nicht die Meinungen der Software-Entwickler. Benutzer sollten die Informationen selbst überprüfen.",
+        "USAGE_GUIDE": "KI-Nutzung kennenlernen",
         "ADD_CONTEXT": "Kontext hinzufügen",
         "ADD_FILE": "Datei hinzufügen",
         "ADD_FOLDER": "Ordner hinzufügen",
@@ -290,6 +335,15 @@
         "MODE_AGENT_FULL": "Agent-Modus",
         "MODE_QA_FULL": "F&A-Modus",
         "STOP_CURRENT_SESSION_FIRST": "Bitte stoppen Sie zuerst die aktuelle Sitzung, bevor Sie eine neue erstellen",
+        "NO_HISTORY_SESSION": "Keine historischen Sitzungsaufzeichnungen",
+        "MERMAID_SAVE_ARCH": "Als Architekturdiagramm speichern",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "Überschreiben bestätigen",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "Architekturdiagramm-Datei existiert bereits im Projektverzeichnis. Überschreiben?",
+        "MERMAID_ARCH_CONFIRM": "Bestätigen",
+        "MERMAID_ARCH_CANCEL": "Abbrechen",
+        "MERMAID_COPY_FAILED": "Kopieren fehlgeschlagen",
+        "MERMAID_SAVE_FAILED": "Speichern fehlgeschlagen",
+        "CLICK_TO_EDIT": "Zum Bearbeiten klicken",
         "ONBOARDING": {
             "STEP1_TITLE": "Eingabefeld",
             "STEP1_DESC": "Geben Sie hier Ihre Fragen oder Aufgaben ein, bei denen die KI helfen soll. Enter zum Senden, Ctrl+Enter für neue Zeile",
@@ -337,11 +391,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Projekteinstellungen",
+        "ARCH": "Architekturdiagramm",
         "PINMAP": "Pin-Belegung",
+        "CIRCUIT": "Schaltplan",
         "DOCUMENTATION": "Dokumentation",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Pin-Belegung für dieses Board nicht verfügbar",
-        "NO_DOCUMENTATION": "Dokumentation für dieses Board nicht verfügbar"
+        "PINMAP_PARSE_ERROR": "Fehler beim Parsen der Pin-Belegung",
+        "NO_DOCUMENTATION": "Dokumentation für dieses Board nicht verfügbar",
+        "ARCH_ELECTRON_ONLY": "Architekturdiagramm nur in der Desktop-App verfügbar",
+        "NO_PROJECT": "Kein Projekt geöffnet",
+        "NO_ARCH": "arch.md im Projektverzeichnis nicht gefunden",
+        "ARCH_EMPTY": "Kein Mermaid-Diagramm in arch.md gefunden",
+        "ARCH_RENDER_FAILED": "Architekturdiagramm konnte nicht gerendert werden",
+        "GENERATE_ARCH_PROMPT": "Projektarchitekturdiagramm erstellen",
+        "ARCH_AI_BUSY": "KI ist gerade in einem Gespräch, bitte versuchen Sie es später erneut",
+        "LOGIN_REQUIRED": "Bitte melden Sie sich zuerst an, um diese Funktion zu nutzen"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "Bitte wählen Sie zuerst einen seriellen Port aus",
@@ -456,13 +521,17 @@
         "BENEFIT_SHARE": "Ihre Projekte teilen",
         "BENEFIT_EXPERIENCE": "Personalisierte Entwicklungserfahrung genießen",
         "NOTICE_LABEL": "Hinweis: ",
-        "NOTICE_CONTENT": "Wir werden Ihr GitHub-Konto verwenden, um unsere Open-Source-Repositories zu markieren, was die Projektentwicklung unterstützt.",
+        "NOTICE_CONTENT": "Nach der Anmeldung wird dieses Projekt mit einem Stern versehen, um unsere Projektentwicklung zu unterstützen",
         "GITHUB_LOGIN": "Mit Github anmelden",
         "WECHAT_SCAN": "QR-Code scannen, um zu folgen und anzumelden",
         "PHONE_NOT_OPEN": "Telefonregistrierung ist noch nicht verfügbar",
         "PHONE_BETA_ONLY": "Telefonanmeldung ist nur für AI-Beta-Tester",
         "PHONE_PLACEHOLDER": "Telefonnummer eingeben",
         "PASSWORD_PLACEHOLDER": "Passwort eingeben",
+        "EMAIL_PLACEHOLDER": "E-Mail-Adresse eingeben",
+        "CODE_PLACEHOLDER": "Bestätigungscode eingeben",
+        "SEND_CODE": "Code senden",
+        "CODE_SENDING": "Bitte zuerst den Bestätigungscode abrufen",
         "LOGGING_IN": "Anmeldung...",
         "LOGIN": "Anmelden",
         "SELECT_METHOD": "Klicken Sie, um eine Anmeldemethode auszuwählen",
@@ -472,6 +541,105 @@
         "ENTER_CREDENTIALS": "Bitte geben Sie Benutzername und Passwort ein",
         "LOGIN_SUCCESS": "Anmeldung erfolgreich",
         "LOGIN_FAILED": "Anmeldung fehlgeschlagen",
-        "LOGIN_NETWORK_ERROR": "Anmeldung fehlgeschlagen, bitte überprüfen Sie die Netzwerkverbindung"
+        "LOGIN_NETWORK_ERROR": "Anmeldung fehlgeschlagen, bitte überprüfen Sie die Netzwerkverbindung",
+        "AGREEMENT_PREFIX": "Ich akzeptiere die",
+        "USER_AGREEMENT": "Nutzungsbedingungen",
+        "AGREEMENT_AND": "und",
+        "PRIVACY_POLICY": "Datenschutzrichtlinie",
+        "AGREEMENT_REQUIRED": "Bitte stimmen Sie den Nutzungsbedingungen und der Datenschutzrichtlinie zu",
+        "MODAL_CLOSE": "Schließen",
+        "AGREEMENT_LOAD_FAILED": "Nutzungsbedingungen konnten nicht geladen werden",
+        "PRIVACY_LOAD_FAILED": "Datenschutzrichtlinie konnte nicht geladen werden",
+        "WECHAT_QRCODE_FAILED": "QR-Code konnte nicht abgerufen werden",
+        "WECHAT_REFRESH": "QR-Code aktualisieren",
+        "WECHAT_RETRY": "Erneut versuchen",
+        "INVITE_CODE_PLACEHOLDER": "Einladungscode (optional)",
+        "AGREEMENT_BY_LOGIN": "Mit der Anmeldung/Registrierung stimmen Sie zu",
+        "TERMS_OF_USE": "Nutzungsbedingungen",
+        "OTHER_LOGIN_METHODS": "Sie können sich auch anmelden mit",
+        "GITHUB_CONTINUE": "Bitte klicken Sie auf \"Continue\" auf der GitHub-Autorisierungsseite, um die Anmeldung abzuschließen",
+        "REGISTER": "Registrieren"
+    },
+    "COMMON": {
+        "FEATURE_COMING_SOON": "Funktion demnächst verfügbar"
+    },
+    "NPM": {
+        "INSTALLING": "{{name}} wird installiert...",
+        "INSTALLING_DEPENDENCY": "{{name}}-Abhängigkeit wird installiert...",
+        "INSTALL_TIMEOUT": "Installations-Timeout",
+        "INSTALL_COMPLETE": "{{name}} erfolgreich installiert",
+        "INSTALL_FAILED": "{{name}} Installation fehlgeschlagen",
+        "UNINSTALLING": "{{name}} wird deinstalliert...",
+        "UNINSTALLING_UNUSED_DEPS": "Nicht mehr benötigte Abhängigkeiten werden deinstalliert...",
+        "UNINSTALL_TIMEOUT": "Deinstallations-Timeout",
+        "UNINSTALL_COMPLETE": "{{name}} erfolgreich deinstalliert",
+        "BOARD_INSTALL_COMPLETE": "Board erfolgreich installiert",
+        "BOARD_UNINSTALL_COMPLETE": "Board erfolgreich deinstalliert",
+        "BOARD_DEPS_INSTALL_COMPLETE": "Board-Abhängigkeiten erfolgreich installiert",
+        "BOARD_DEPS_INSTALL_FAILED": "Board-Abhängigkeiten Installation fehlgeschlagen",
+        "DEPS_INSTALL_COMPLETE": "Abhängigkeiten erfolgreich installiert",
+        "DEPS_UNINSTALL_COMPLETE": "Abhängigkeiten erfolgreich deinstalliert",
+        "DEPS_UNINSTALL_FAILED": "Abhängigkeiten Deinstallation fehlgeschlagen",
+        "NAME_REQUIRED": "{{type}}-Name darf nicht leer sein",
+        "TYPE_TOOL": "Werkzeug",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "Compiler",
+        "INSTALLING_TITLE": "Installation",
+        "INSTALL_COMPLETE_TITLE": "Installation Abgeschlossen",
+        "INSTALL_FAILED_TITLE": "Installation Fehlgeschlagen",
+        "UNINSTALLING_TITLE": "Deinstallation",
+        "UNINSTALL_COMPLETE_TITLE": "Deinstallation Abgeschlossen",
+        "UNINSTALL_FAILED_TITLE": "Deinstallation Fehlgeschlagen"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "Abhängigkeiten werden installiert",
+        "LOADING_BOARD_CONFIG": "Board-Konfiguration wird geladen",
+        "LOADING_BLOCKLY_LIB": "Blockly-Bibliotheken werden geladen",
+        "LOADING_LIB": "{{name}} wird geladen",
+        "LOADING_BLOCKLY_PROGRAM": "Blockly-Programm wird geladen",
+        "PROJECT_LOAD_SUCCESS": "Projekt erfolgreich geladen"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "Beispiel wird geladen...",
+        "EXAMPLE_LOAD_SUCCESS": "Beispiel erfolgreich geladen",
+        "EXAMPLE_LOAD_FAILED": "Beispiel konnte nicht geladen werden",
+        "NO_TUTORIAL_PROVIDED": "Der Bibliotheksautor hat kein Tutorial bereitgestellt"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "Projekt kann nicht geöffnet werden: ",
+        "CREATING_PROJECT": "Projekt wird erstellt...",
+        "PROJECT_CREATED": "Projekt erfolgreich erstellt",
+        "CREATE_FAILED": "Projekt konnte nicht erstellt werden",
+        "PATH_NOT_EXIST": "Projektpfad existiert nicht, bitte wählen Sie ein anderes Projekt",
+        "SWITCHING_BOARD_CONFIG": "Board-Konfiguration wird gewechselt...",
+        "BOARD_SWITCH_COMPLETE": "Board-Wechsel abgeschlossen",
+        "BOARD_SWITCH_SUCCESS": "Board erfolgreich gewechselt",
+        "SWITCHING_BOARD": "Board wird gewechselt...",
+        "UNINSTALLING_CURRENT_BOARD": "Aktuelles Board wird deinstalliert...",
+        "INSTALLING_NEW_BOARD": "Neues Board wird installiert...",
+        "UPDATING_PROJECT_CONFIG": "Projektkonfiguration wird aktualisiert...",
+        "BOARD_SWITCH_FAILED": "Board-Wechsel fehlgeschlagen: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "Stoppen",
+        "VIEW_DETAIL": "Details anzeigen",
+        "AI_PROCESS": "AI-Verarbeitung"
+    },
+    "LOG": {
+        "TOOLTIP": "Klicken zum Kopieren, Doppelklick zum Senden an AI-Assistent",
+        "COPIED_TO_CLIPBOARD": "Protokollinhalt in die Zwischenablage kopiert",
+        "SENT_TO_AI": "Protokollinhalt an AI-Assistent gesendet",
+        "NO_DATA_TO_EXPORT": "Keine Protokolldaten zum Exportieren",
+        "EXPORT_TITLE": "Protokolldaten exportieren",
+        "TEXT_FILE": "Textdateien",
+        "ALL_FILES": "Alle Dateien",
+        "EXPORT_SUCCESS": "Protokolldaten erfolgreich exportiert nach "
     }
 }

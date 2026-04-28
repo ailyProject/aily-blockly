@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectorRef, Component, ElementRef, isDevMode, ViewChild, viewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, ElementRef, isDevMode, OnDestroy, ViewChild, viewChild } from '@angular/core';
 import { HEADER_BTNS, HEADER_MENU } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FormsModule } from '@angular/forms';
@@ -23,6 +23,7 @@ import { AuthService } from '../../../services/auth.service';
 import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
 import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 import { PlatformService } from '../../../services/platform.service';
+import { ProbeRsService } from '../../../services/probe-rs.service';
 // import { AppStoreService } from '../../../tools/app-store/app-store.service';
 import { AppItem } from '../../../tools/app-store/app-store.config';
 import { APP_LIST } from '../../../configs/tool.config';
@@ -39,7 +40,7 @@ import { APP_LIST } from '../../../configs/tool.config';
   templateUrl: './header.component.html',
   styleUrl: './header.component.scss',
 })
-export class HeaderComponent {
+export class HeaderComponent implements OnDestroy {
   headerBtns = HEADER_BTNS;
   headerMenu = HEADER_MENU;
   headerApps = APP_LIST;
@@ -48,12 +49,22 @@ export class HeaderComponent {
     return this.platformService.isMac();
   }
 
+  private _isWindowFullScreen = false;
+
   get isWindowFullScreen() {
-    return this.electronService.isWindowFullScreen();
+    return this._isWindowFullScreen;
   }
 
+  isMacFullScreen = false;
+  private unsubscribeFullScreenChanged?: () => void;
+  private unsubscribeMaximizeChanged?: () => void;
+  private unsubscribeCloseRequest?: () => void;
+  private unsaveDialogOpen = false; // 标记未保存对话框是否已打开
+  private selectDebounceTimer: ReturnType<typeof setTimeout> | null = null; // 防抖计时器
+  private lastSelectedSubItemKey: string | null = null; // 上次选择子菜单项的key（用于判断重复选择）
+
   get projectData() {
-    return this.projectService.currentPackageData;
+    return this.projectService.currentPackageData || { path: '', name: '' };
   }
 
   get openToolList() {
@@ -103,10 +114,44 @@ export class HeaderComponent {
     private authService: AuthService,
     private translate: TranslateService,
     private platformService: PlatformService,
+    private probeRsService: ProbeRsService,
     // private appStoreService: AppStoreService
   ) { }
 
   async ngAfterViewInit() {
+    if (this.electronService.isElectron) {
+      // 初始化窗口最大化状态缓存
+      this._isWindowFullScreen = this.electronService.isWindowFullScreen();
+
+      // 监听窗口全屏状态变化
+      this.unsubscribeFullScreenChanged = this.electronService.onWindowFullScreenChanged((isFullScreen: boolean) => {
+        this.isMacFullScreen = isFullScreen;
+        // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
+        setTimeout(() => {
+          this.cd.detectChanges();
+        }, 0);
+      });
+
+      // 监听窗口最大化状态变化（用于更新图标）
+      this.unsubscribeMaximizeChanged = this.electronService.onWindowMaximizeChanged((isMaximized: boolean) => {
+        this._isWindowFullScreen = isMaximized;
+        // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
+        setTimeout(() => {
+          this.cd.detectChanges();
+        }, 0);
+      });
+
+      // Mac 平台下监听系统关闭按钮的关闭请求
+      if (this.isMac && window['iWindow'] && window['iWindow'].onCloseRequest) {
+        this.unsubscribeCloseRequest = window['iWindow'].onCloseRequest(async () => {
+          const canClose = await this.checkUnsavedChanges('close');
+          if (canClose) {
+            window['iWindow'].confirmClose();
+          }
+        });
+      }
+    }
+
     this.projectService.stateSubject.subscribe((state) => {
       if (state == 'loaded' || state == 'saved') {
         // 将headerMenu中有disabled的按钮置为可用
@@ -130,13 +175,20 @@ export class HeaderComponent {
           }
         });
       }
-      this.cd.detectChanges();
+      // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
+      setTimeout(() => {
+        this.cd.detectChanges();
+      }, 0);
     });
 
     this.listenShortcutKeys();
 
     this.authService.showUser.subscribe(state => {
       this.showUser = state;
+      // 使用 setTimeout 将变更检测推迟到下一个变更检测周期
+      setTimeout(() => {
+        this.cd.markForCheck();
+      }, 0);
     })
     this.checkAndSetDefaultPort();
   }
@@ -148,7 +200,16 @@ export class HeaderComponent {
       if (ports && ports.length === 1 && !this.currentPort) {
         // 只有一个串口且当前没有选择串口时，设为默认
         this.currentPort = ports[0].name;
-        this.cd.detectChanges();
+        this.serialService.currentPortInfo = {
+          name: ports[0].name,
+          text: ports[0].text,
+          type: ports[0].type,
+          icon: ports[0].icon,
+        };
+        // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
+        setTimeout(() => {
+          this.cd.detectChanges();
+        }, 0);
       }
     } catch (error) {
       console.warn('获取串口列表失败:', error);
@@ -166,7 +227,46 @@ export class HeaderComponent {
 
   showPortList = false;
   configList: PortItem[] = []
-  boardKeywords = []; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
+  boardKeywords = [];
+  private cachedDebuggerItems: IMenuItem[] = [];
+  private portListGeneration = 0; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
+
+  /**
+   * 异步检测调试探针，完成后更新缓存并重建端口列表
+   */
+  private detectProbes(generation: number, portList: IMenuItem[], skipDetect: boolean) {
+    if (!skipDetect) {
+      if (this.cachedDebuggerItems.length > 0) {
+        portList.push(...this.cachedDebuggerItems);
+      }
+      this.probeRsService.listProbes().then(result => {
+        if (generation !== this.portListGeneration) return;
+        const newDebuggerItems: IMenuItem[] = [];
+        if (result.success && result.probes && result.probes.length > 0) {
+          newDebuggerItems.push({ sep: true });
+          for (const probe of result.probes) {
+            console.log('Detected probe:', probe);
+            const typeName = probe.type || probe.name || 'Unknown';
+            newDebuggerItems.push({
+              name: typeName,
+              text: probe.shortSerial || '',
+              type: 'debugger',
+              icon: 'fa-brands fa-usb',
+              extra: { vidPid: probe.vidPid, serial: probe.serial },
+            });
+          }
+        }
+        if (JSON.stringify(newDebuggerItems) !== JSON.stringify(this.cachedDebuggerItems)) {
+          this.cachedDebuggerItems = newDebuggerItems;
+          this.getDevicePortList(true);
+        }
+      }).catch(e => {
+        console.warn('调试探针检测失败:', e);
+      });
+    } else if (this.cachedDebuggerItems.length > 0) {
+      portList.push(...this.cachedDebuggerItems);
+    }
+  }
   openPortList(event?: MouseEvent) {
     if (event) {
       this.calculatePortListPosition(event);
@@ -186,9 +286,9 @@ export class HeaderComponent {
     }
     let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
     this.boardKeywords = [boardname];
-    this.getDevicePortList();
+    // 如果已有缓存列表，先展示旧数据，再后台刷新
     this.showPortList = true;
-    // this.cd.detectChanges();
+    this.getDevicePortList();
   }
 
   closePortList() {
@@ -202,10 +302,19 @@ export class HeaderComponent {
       return
     }
     this.currentPort = item.name;
+    this.serialService.currentPortInfo = {
+      name: item.name,
+      text: item.text,
+      type: item.type,
+      icon: item.icon,
+      probeSerial: item.extra?.serial || '',
+      probeVidPid: item.extra?.vidPid || '',
+    };
     this.closePortList();
   }
 
-  async getDevicePortList() {
+  async getDevicePortList(skipDetect = false) {
+    const generation = ++this.portListGeneration;
     let portList0: IMenuItem[] = await this.serialService.getSerialPorts();
     if (portList0.length == 0) {
       portList0 = [
@@ -219,8 +328,11 @@ export class HeaderComponent {
       ];
     }
 
+    let core = this.projectService.currentBoardConfig['core'].toLowerCase();
+
+
     // 添加ESP32相关配置选项
-    if (this.projectService.currentBoardConfig['core'].indexOf('esp32') > -1) {
+    if (core.indexOf('esp32') > -1) {
       let temp = this.projectService.currentBoardConfig['type'].split(':');
       let board = temp[temp.length - 1];
       let esp32config = await this.projectService.updateEsp32ConfigMenu(board);
@@ -231,16 +343,31 @@ export class HeaderComponent {
     }
 
     // 添加STM32相关配置选项
-    if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
+    if (core.indexOf('stm32') > -1 &&
       this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
+      // 异步检测调试探针，完成后更新缓存并重建列表
+      this.detectProbes(generation, portList0, skipDetect);
+
       let temp = this.projectService.currentBoardConfig['type'].split(':');
       let board = temp[temp.length - 1];
-      // console.log('STM32开发板标识:', board);
       let stm32config = await this.projectService.updateStm32ConfigMenu(board);
       if (stm32config) {
         portList0 = portList0.concat(stm32config)
       }
-      // console.log('STM32配置选项:', stm32config);
+    }
+
+    // 添加nRF5相关配置选项
+    if (core.indexOf('nrf5') > -1) {
+      // 异步检测调试探针（nRF52）
+      this.detectProbes(generation, portList0, skipDetect);
+
+      let temp = this.projectService.currentBoardConfig['type'].split(':');
+      let board = temp[temp.length - 1];
+      // console.log('nRF5开发板标识:', board);
+      let nrf5config = await this.projectService.updateNrf5ConfigMenu(board);
+      if (nrf5config) {
+        portList0 = portList0.concat(nrf5config)
+      }
     }
 
     // 添加切换开发板功能
@@ -252,7 +379,10 @@ export class HeaderComponent {
       // children: boardList
     })
     this.configList = portList0;
-    this.cd.detectChanges();
+    // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
+    setTimeout(() => {
+      this.cd.detectChanges();
+    }, 0);
   }
 
   onClick(item, event = null) {
@@ -347,8 +477,8 @@ export class HeaderComponent {
         this.builderService.build().then(result => {
           item.state = result.state || 'done';
         }).catch(err => {
-          console.log("编译未完成: ", JSON.stringify(err));
-          if (err && err.state) item.state = err.state;
+          // console.log("编译未完成: ", JSON.stringify(err));
+          item.state = this.resolveActionErrorState(err, ['buildResult']);
         })
         break;
       case 'upload':
@@ -363,8 +493,8 @@ export class HeaderComponent {
         this.uploaderService.upload().then(result => {
           item.state = result.state || 'done';
         }).catch(err => {
-          console.log("上传未完成: ", JSON.stringify(err));
-          if (err && err.state) item.state = err.state;
+          // console.log("上传未完成: ", JSON.stringify(err));
+          item.state = this.resolveActionErrorState(err, ['result']);
         });
         break;
       case 'settings-open':
@@ -407,6 +537,26 @@ export class HeaderComponent {
     }
   }
 
+  private resolveActionErrorState(err: any, nestedKeys: string[] = []): RunState['state'] {
+    const directState = err?.state;
+    if (this.isValidRunState(directState)) {
+      return directState;
+    }
+
+    for (const key of nestedKeys) {
+      const nestedState = err?.[key]?.state;
+      if (this.isValidRunState(nestedState)) {
+        return nestedState;
+      }
+    }
+
+    return 'error';
+  }
+
+  private isValidRunState(state: any): state is RunState['state'] {
+    return ['default', 'doing', 'done', 'error', 'warn'].includes(state);
+  }
+
   minimize() {
     window['iWindow'].minimize();
   }
@@ -416,6 +566,25 @@ export class HeaderComponent {
       window['iWindow'].unmaximize();
     } else {
       window['iWindow'].maximize();
+    }
+    // 立即更新缓存状态，避免 UI 延迟
+    this._isWindowFullScreen = window['iWindow'].isMaximized();
+  }
+
+  ngOnDestroy() {
+    if (this.electronService.isElectron) {
+      // 取消窗口全屏状态变化监听
+      if (this.unsubscribeFullScreenChanged) {
+        this.unsubscribeFullScreenChanged();
+      }
+      // 取消窗口最大化状态变化监听
+      if (this.unsubscribeMaximizeChanged) {
+        this.unsubscribeMaximizeChanged();
+      }
+      // 取消 Mac 平台关闭请求监听
+      if (this.unsubscribeCloseRequest) {
+        this.unsubscribeCloseRequest();
+      }
     }
   }
 
@@ -451,12 +620,15 @@ export class HeaderComponent {
     // console.log('已初始化快捷键映射:', Array.from(this.shortcutMap.keys()));
   }
 
-  // 转换快捷键文本为标准格式
+  // 转换快捷键文本为标准格式（Ctrl/⌘ 统一为 ctrl）
   private normalizeShortcutKey(shortcutText: string): string {
     if (!shortcutText) return '';
 
-    return shortcutText.toLowerCase().split('+')
+    return shortcutText.toLowerCase()
+      .replace(/ctrl\/⌘|⌘/g, 'ctrl')  // Mac Command 与 Ctrl 等效
+      .split('+')
       .map(part => part.trim())
+      .filter(part => part)
       .sort((a, b) => {
         // 保证修饰键的顺序：ctrl 在前，shift 在后，其他按字母顺序
         if (a === 'ctrl') return -1;
@@ -468,17 +640,17 @@ export class HeaderComponent {
       .join('+');
   }
 
-  // 从键盘事件生成标准化的快捷键字符串
+  // 从键盘事件生成标准化的快捷键字符串（Mac Command 与 Ctrl 等效）
   private getShortcutFromEvent(event: KeyboardEvent): string {
     const parts: string[] = [];
 
-    if (event.ctrlKey) parts.push('ctrl');
+    if (event.ctrlKey || event.metaKey) parts.push('ctrl');
     if (event.shiftKey) parts.push('shift');
     if (event.altKey) parts.push('alt');
 
     // 添加主键，忽略修饰键本身
     const key = event.key.toLowerCase();
-    if (!['control', 'shift', 'alt'].includes(key)) {
+    if (!['control', 'shift', 'alt', 'meta'].includes(key)) {
       parts.push(key);
     }
 
@@ -490,8 +662,8 @@ export class HeaderComponent {
   listenShortcutKeys() {
     this.initShortcutMap();
     window.addEventListener('keydown', (event: KeyboardEvent) => {
-      // 处理窗口缩放快捷键
-      if (event.ctrlKey && !event.shiftKey && !event.altKey) {
+      // 处理窗口缩放快捷键（Mac 上 Command 与 Ctrl 等效）
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
         if (event.key === '-' || event.key === '_') {
           event.preventDefault();
           this.zoomOut();
@@ -511,9 +683,9 @@ export class HeaderComponent {
 
       // 处理功能键 F1-F12
       const isFunctionKey = /^f([1-9]|1[0-2])$/i.test(event.key);
-      
-      // 处理包含修饰键的组合键或功能键
-      if (event.ctrlKey || event.shiftKey || event.altKey || isFunctionKey) {
+
+      // 处理包含修饰键的组合键或功能键（含 Mac Command）
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || isFunctionKey) {
         const shortcutKey = this.getShortcutFromEvent(event);
         const menuItem = this.shortcutMap.get(shortcutKey);
 
@@ -573,7 +745,15 @@ export class HeaderComponent {
       return true;
     }
 
+    // 如果弹窗已经打开，直接返回 false，避免重复弹出
+    if (this.unsaveDialogOpen) {
+      return false;
+    }
+
     return new Promise<boolean>((resolve) => {
+      // 标记弹窗已打开
+      this.unsaveDialogOpen = true;
+
       const modalRef = this.modal.create({
         nzTitle: null,
         nzFooter: null,
@@ -588,6 +768,9 @@ export class HeaderComponent {
       });
 
       modalRef.afterClose.subscribe(async result => {
+        // 弹窗关闭后重置标志位
+        this.unsaveDialogOpen = false;
+
         if (!result) {
           // 用户直接关闭对话框，视为取消操作
           resolve(false);
@@ -650,48 +833,78 @@ export class HeaderComponent {
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
     console.log('选择子菜单项:', subItem);
-    let packageJson = await this.projectService.getPackageJson();
-    packageJson['projectConfig'] = packageJson['projectConfig'] || {};
 
-    // // 判断是否为PartitionScheme并且值为'custom'，如果是则弹出文件选择
-    // if (subItem.key === 'PartitionScheme' && subItem.data.toLowerCase() === 'custom') {
-    //   const folderPath = await window['ipcRenderer'].invoke('select-file', {
-    //     title: '选择分区文件',
-    //     path: this.projectService.currentProjectPath,
-    //   });
-
-    //   // console.log('选中的分区文件路径：', folderPath);
-
-    //   if (!folderPath) {
-    //     this.message.warning('未选择分区文件，已取消');
-    //     return;
-    //   }
-
-    //   // 执行复制操作，复制到项目根目录下的 'partitions.csv'
-    //   const destPath = window['path'].join(this.projectService.currentProjectPath, 'partitions.csv');
-    //   if (folderPath != destPath) {
-    //     // console.log('复制分区文件到项目目录:', destPath);
-    //     try {
-    //       window['fs'].copySync(folderPath, destPath);
-    //     } catch (error) {
-    //       console.warn('复制分区文件失败:', error);
-    //       this.message.error('复制分区文件失败');
-    //       return;
-    //     }
-    //   }
-    // }
-
-    packageJson['projectConfig'][subItem.key] = subItem.data;
-    this.projectService.setPackageJson(packageJson);
-    // 判断是否是STM32，是则更新项目配置
-    if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
-      this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
-      // 如果subItem包含pnum variant字段，则调用比较函数
-      if (subItem.key === 'pnum' && subItem.extra?.build.variant) {
-        let newPinConfig = subItem;
-        this.projectService.compareStm32PinConfig(newPinConfig)
-      }
+    if (this.lastSelectedSubItemKey === (subItem.key + '_' + subItem.name)) {
+      return;
     }
+
+    if (this.selectDebounceTimer !== null) {
+      clearTimeout(this.selectDebounceTimer);
+    }
+
+    this.selectDebounceTimer = setTimeout(async () => {
+      this.selectDebounceTimer = null;
+      this.lastSelectedSubItemKey = subItem.key + '_' + subItem.name;
+
+      let packageJson = await this.projectService.getPackageJson();
+      packageJson['projectConfig'] = packageJson['projectConfig'] || {};
+
+      // // 判断是否为PartitionScheme并且值为'custom'，如果是则弹出文件选择
+      // if (subItem.key === 'PartitionScheme' && subItem.data.toLowerCase() === 'custom') {
+      //   const folderPath = await window['ipcRenderer'].invoke('select-file', {
+      //     title: '选择分区文件',
+      //     path: this.projectService.currentProjectPath,
+      //   });
+
+      //   // console.log('选中的分区文件路径：', folderPath);
+
+      //   if (!folderPath) {
+      //     this.message.warning('未选择分区文件，已取消');
+      //     return;
+      //   }
+
+      //   // 执行复制操作，复制到项目根目录下的 'partitions.csv'
+      //   const destPath = window['path'].join(this.projectService.currentProjectPath, 'partitions.csv');
+      //   if (folderPath != destPath) {
+      //     // console.log('复制分区文件到项目目录:', destPath);
+      //     try {
+      //       window['fs'].copySync(folderPath, destPath);
+      //     } catch (error) {
+      //       console.warn('复制分区文件失败:', error);
+      //       this.message.error('复制分区文件失败');
+      //       return;
+      //     }
+      //   }
+      // }
+
+      packageJson['projectConfig'][subItem.key] = subItem.data;
+      this.projectService.setPackageJson(packageJson);
+      // 判断是否是STM32，是则更新项目配置
+      if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
+        this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
+        // 如果subItem包含pnum variant字段，则调用比较函数
+        if (subItem.key === 'pnum' && subItem.extra?.build.variant) {
+          let newPinConfig = subItem;
+          this.projectService.compareStm32PinConfig(newPinConfig)
+        }
+      }
+
+      // 判断是否是nRF5的softdevice选择，如果是则直接烧录softdevice
+      if (this.projectService.currentBoardConfig['core']?.indexOf('nRF5') > -1 &&
+        subItem.key === 'softdevice') {
+        // 检查串口是否已选择
+        if (!this.serialService.currentPort) {
+          this.message.warning(this.translate.instant('NRF5.SELECT_PORT_FIRST') || '请先选择串口');
+          return;
+        }
+
+        // 通过 UploaderService 调用烧录方法（使用 ActionService 分发到 _UploaderService）
+        await this.uploaderService.flashSoftdevice(subItem.data, this.serialService.currentPort);
+      }
+
+      // 触发预编译操作：配置变更后自动触发预编译
+      this.builderService.triggerPreprocess('config-changed');
+    }, 500);
   }
 
   showUser = false;

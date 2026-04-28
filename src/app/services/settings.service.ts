@@ -179,8 +179,8 @@ export class SettingsService {
   // installed dependencies
   async getInstalledDependencies(prefix: string) {
     try {
-      // 首先尝试 npm ls
-      const cmd = `npm ls --json=true --depth=0 --silent --prefix ${prefix}`;
+      // 首先尝试 npm ls（prefix 必须加引号：macOS 常见路径含 Application Support 空格，否则 exec 会拆参失败）
+      const cmd = `npm ls --json=true --depth=0 --silent --prefix "${prefix}"`;
       const result = await window['npm'].run({ cmd });
       const installedDict = JSON.parse(result);
       return installedDict["dependencies"] || {};

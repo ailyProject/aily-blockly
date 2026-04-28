@@ -1,7 +1,6 @@
 .content-box {
     height: calc(100vh - 150px);
     padding: 15px;
-    overflow: auto;
 }
 
 .example-list {
@@ -14,7 +13,7 @@
     .example-item {
         width: 280px;
         height: 280px;
-        background: #2b2b2b;
+        background: var(--aily-bg-tertiary);
         border-radius: 5px;
         padding: 10px;
         position: relative;
@@ -24,7 +23,7 @@
         transition: all 0.3s;
 
         &:hover {
-            background: #3a3a3a;
+            background: var(--aily-bg-tertiary);
         }
 
         .img-box {
@@ -43,8 +42,8 @@
                 position: absolute;
                 top: 5px;
                 right: 5px;
-                background: rgba(0, 0, 0, 0.6);
-                color: #fff;
+                background: var(--aily-surface-scrim);
+                color: var(--aily-text-primary);
                 padding: 2px 6px;
                 border-radius: 3px;
                 font-size: 10px;
@@ -54,8 +53,8 @@
                 position: absolute;
                 bottom: 5px;
                 right: 5px;
-                background: rgba(0, 0, 0, 0.6);
-                color: #fff;
+                background: var(--aily-surface-scrim);
+                color: var(--aily-text-primary);
                 padding: 2px 6px;
                 border-radius: 3px;
                 font-size: 10px;
@@ -66,8 +65,8 @@
                 bottom: 0;
                 left: 0;
                 width: 100%;
-                background: rgba(0, 0, 0, 0.6);
-                color: #fff;
+                background: var(--aily-surface-scrim);
+                color: var(--aily-text-primary);
                 padding: 5px;
                 line-height: 18px;
                 font-size: 16px;
@@ -83,7 +82,7 @@
             display: flex;
 
             >div {
-                color: #c9c9c9;
+                color: var(--aily-text-tertiary);
                 margin-right: 15px;
             }
         }
@@ -91,7 +90,7 @@
         .text {
             margin-top: 10px;
             font-size: 14px;
-            color: #ccc;
+            color: var(--aily-text-quaternary);
             height: 86px;
             white-space: normal;
             overflow: hidden;
@@ -107,7 +106,7 @@
             align-items: center;
             margin-top: 10px;
             font-size: 12px;
-            color: #aaa;
+            color: var(--aily-text-muted);
 
             .btns {
                 display: flex;
@@ -131,10 +130,10 @@
             // }
 
             .doc-btn {
-                color: #ccc;
+                color: var(--aily-text-quaternary);
 
                 &:hover {
-                    color: #fff;
+                    color: var(--aily-text-primary);
                 }
             }
 

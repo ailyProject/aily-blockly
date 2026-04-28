@@ -42,7 +42,6 @@ export class CloudSpaceComponent {
   searchKeyword = ''; // 搜索关键词
   isLoginDialogOpen = false; // 标记登录对话框是否已打开
 
-  isLoggedIn = false;
   openingProjectIds = new Set<string>();
 
   constructor(
@@ -82,10 +81,8 @@ export class CloudSpaceComponent {
         if (!isLoggedIn) {
           this.itemList = [];
           this.filteredItemList = [];
-          this.isLoggedIn = false;
         } else {
           // 用户已登录时关闭可能存在的登录对话框状态标记
-          this.isLoggedIn = true;
           this.isLoginDialogOpen = false;
           this.getCloudProjects().then(
             () => { console.log('云项目列表获取完成'); }
@@ -253,7 +250,7 @@ export class CloudSpaceComponent {
     // -x!package-lock.json: 排除 package-lock.json
     // -x!project.7z: 排除自身
     // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
-    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-x!.chat" "-x!.history" "-x!.temp" "-x!package-lock.json" "-x!project.7z"`;
+    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-x!.chat" "-x!.history" "-x!.temp" "-x!.aily" "-x!.aily_checkpoints" "-x!.chat_history" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs"`;
     
     // console.log('执行打包命令:', packCommand);
     const result = await this.cmdService.runAsync(packCommand, prjPath, false);

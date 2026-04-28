@@ -59,15 +59,15 @@ export class _ProjectService {
 
   hasUnsavedChanges(): boolean {
     try {
-      // 获取当前工作区的 JSON 数据
-      const currentWorkspaceJson = this.blocklyService.getWorkspaceJson();
+      // 获取当前实际会保存到 project.abi 的数据；单页会保持旧版 workspace JSON 格式。
+      const currentProjectAbi = this.blocklyService.getProjectAbiForSave();
 
       // 读取并解析已保存的 JSON 数据
       const savedJsonStr = window['fs'].readFileSync(`${this.currentProjectPath}/project.abi`, 'utf8');
-      const savedJson = JSON.parse(savedJsonStr);
+      const savedJson = this.blocklyService.normalizeProjectAbi(JSON.parse(savedJsonStr));
 
       // 将当前工作区 JSON 和保存的 JSON 转为字符串进行比较
-      const currentJsonStr = JSON.stringify(currentWorkspaceJson);
+      const currentJsonStr = JSON.stringify(this.blocklyService.normalizeProjectAbi(currentProjectAbi));
       const normalizedSavedJsonStr = JSON.stringify(savedJson);
 
       // 比较两个 JSON 字符串是否相同
@@ -80,7 +80,7 @@ export class _ProjectService {
   }
 
   async save(path: string, createHistory: boolean = true) {
-    const jsonData = this.blocklyService.getWorkspaceJson();
+    const jsonData = this.blocklyService.getProjectAbiForSave();
     window['fs'].writeFileSync(`${path}/project.abi`, JSON.stringify(jsonData, null, 2));
     
     if (createHistory && this.currentProjectPath) {

@@ -33,9 +33,26 @@ export {
 export { newProjectTool } from './createProjectTool';
 export { executeCommandTool } from './executeCommandTool';
 export { askApprovalTool } from './askApprovalTool';
+export { askUserTool, registerAskUserCallback, unregisterAskUserCallback } from './askUserTool';
+export type { AskUserArgs, AskUserQuestion, AskUserOption, AskUserAnswer, AskUserFullResponse } from './askUserTool';
 export { getContextTool } from './getContextTool';
+export { getProjectInfoTool } from './getProjectInfoTool';
 export { fetchTool, FetchToolService } from './fetchTool';
-export { todoWriteTool } from './todoWriteTool';
+export { cloneRepositoryTool } from './cloneRepositoryTool';
+export { webSearchTool, WebSearchToolService } from './webSearchTool';
+export { todoWriteTool, injectTodoReminder } from './todoWriteTool';
+export { replaceStringInFileTool, multiReplaceStringInFileTool } from './replaceStringTool';
+export { memoryTool, getMemoryPromptSnippet } from './memoryTool';
+export { getErrorsTool, setLastBuildErrors, clearLastBuildErrors } from './getErrorsTool';
+export { startBackgroundCommandTool, getTerminalOutputTool, killTerminalTool, listTerminalSessionsTool, cleanupAllTerminalSessions } from './terminalSessionTool';
+export { registerSubagent, getRegisteredSubagents, getSubagentDefinition, buildRunSubagentDescription, buildRunSubagentSchema, validateRunSubagentArgs } from './runSubagentTool';
+export { syncAbsFileHandler } from './syncAbsFileTool';
+export { absVersionControlHandler } from './absVersionControlTool';
+export { getAbsSyntaxTool } from './getAbsSyntaxTool';
+
+// Skill 工具
+export { loadSkillHandler, LOAD_SKILL_SCHEMA } from './loadSkillTool';
+// export { manageSkillsHandler, MANAGE_SKILLS_SCHEMA } from './manageSkillsTool'; // TODO: Skills Hub 后续完善
 // export { reloadAbiJsonTool, reloadAbiJsonToolSimple, reloadAbiJsonToolDirect, ReloadAbiJsonToolService } from './reloadAbiJsonTool';
 
 // 安全服务

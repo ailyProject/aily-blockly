@@ -3,7 +3,7 @@
 .guide-box {
   min-height: 100%;
   min-width: 1197px;
-  background: #2b2d30;
+  background: var(--aily-bg-primary);
   display: flex;
   justify-content: flex-start;
 
@@ -43,7 +43,7 @@
     }
 
     .version {
-      color: #888888;
+      color: var(--aily-text-hint);
       font-size: 12px;
       margin: 0 0 5px 7px;
       line-height: 12px;
@@ -51,7 +51,7 @@
   }
 
   .title {
-    color: #d9d9d9;
+    color: var(--aily-text-tertiary);
     font-size: 23px;
     margin: 15px 0 5px 0;
   }
@@ -83,11 +83,42 @@
     height: 40px;
     line-height: 14px;
 
+    .name {
+      white-space: break-spaces;
+      word-break: break-all;
+    }
+
     .path {
-      color: #999;
+      color: var(--aily-text-secondary);
       margin-top: 5px;
       font-size: 10px;
       line-height: 13px;
+    }
+
+    &:hover {
+      .delete-btn {
+        display: block;
+      }
+    }
+  }
+
+  .project-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+
+    .delete-btn {
+      cursor: pointer;
+      color: var(--aily-text-secondary);
+      font-size: 12px;
+      margin-left: 5px;
+      display: none;
+    }
+
+    .delete-btn:hover {
+      color: red;
+      transition: all 0.2s;
     }
   }
 }
@@ -106,23 +137,23 @@
   height: 50px;
   display: flex;
   flex-direction: column;
-  background: #292929;
+  background: var(--aily-bg-card);
   border-radius: 5px;
   padding: 5px 10px;
   cursor: pointer;
-  box-shadow: 0 0 3px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--aily-shadow-sm);
   position: relative;
 
   >div:nth-child(1) {
     span {
-      color: #999;
+      color: var(--aily-text-secondary);
       font-size: 12px;
       margin-left: 5px;
     }
   }
 
   >div:nth-child(2) {
-    color: #999;
+    color: var(--aily-text-secondary);
     font-size: 12px;
   }
 
@@ -133,12 +164,12 @@
     transform: translateY(-50%);
     font-size: 20px;
     transition: all 0.2s;
-    color: #999;
+    color: var(--aily-text-secondary);
   }
 
   &:hover {
     .arrow {
-      color: #87b828;
+      color: var(--aily-color-success);
     }
   }
 }
@@ -185,7 +216,7 @@ img.qrcode {
     .sponsor-name {
       margin-bottom: 10px;
       font-size: 12px;
-      color: #ccc;
+      color: var(--aily-text-tertiary);
       text-align: center;
       white-space: nowrap;
     }
@@ -197,7 +228,7 @@ img.qrcode {
 
     .person-company {
       font-size: 12px;
-      color: #999;
+      color: var(--aily-text-secondary);
     }
   }
 }
@@ -212,7 +243,7 @@ img.qrcode {
 
     i {
       font-size: 26px;
-      color: #c5c5c5;
+      color: var(--aily-icon-color);
       transition: all 0.2s;
 
       &:hover {
@@ -225,7 +256,7 @@ img.qrcode {
         }
 
         &.fa-github {
-          color: #fff;
+          color: var(--aily-text-primary);
         }
 
         &.fa-discord {
@@ -243,7 +274,7 @@ img.qrcode {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--aily-bg-overlay);
   z-index: 99999;
   cursor: pointer;
 

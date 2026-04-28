@@ -9,6 +9,7 @@ import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.se
 import { ProjectService } from '../../../services/project.service';
 import { ActionState } from '../../../services/ui.service';
 import { PlatformService } from "../../../services/platform.service";
+import { CompileValidationService } from '../../../services/compile-validation.service';
 
 @Injectable({
   providedIn: 'root'
@@ -25,6 +26,7 @@ export class BuilderService {
     private npmService: NpmService,
     private configService: ConfigService,
     private platformService: PlatformService,
+    private compileValidationService: CompileValidationService,
   ) { }
 
   private buildInProgress = false;
@@ -397,7 +399,7 @@ export class BuilderService {
         let bufferData = '';
         let completeLines = '';
         let lastStdErr = '';
-        let isBuildText = false;
+        let fullStdErr = '';        let isBuildText = false;
         let outputComplete = false;
         let flashInfo = '';
         let ramInfo = '';
@@ -413,6 +415,7 @@ export class BuilderService {
             if (!this.isErrored && output.type == 'stderr') {
               if (output.data) {
                 lastStdErr = output.data.trim();
+                fullStdErr += output.data.trim() + '\n';
               }
             }
 
@@ -557,7 +560,7 @@ export class BuilderService {
               this.passed = false;
               // 终止Arduino CLI进程
               
-              reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)` });
+              reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)`, fullStdErr: fullStdErr || lastStdErr });
             } else if (this.buildCompleted) {
               console.log('编译命令执行完成');
               // 计算编译耗时
@@ -571,6 +574,7 @@ export class BuilderService {
               this.noticeService.update({ title: completeTitle, text: displayTextWithTime, state: 'done', setTimeout: 600000 });
               this.buildInProgress = false;
               this.passed = true;
+              this.compileValidationService.triggerAfterSuccessfulCompile();
               resolve({ state: 'done', text: `编译完成 (耗时: ${buildDuration}s)` });
             } else if (this.cancelled) {
               console.warn("编译中断")

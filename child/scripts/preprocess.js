@@ -10,6 +10,27 @@ const logger = {
     error: (...args) => console.error(...args)
 };
 
+function formatFatalError(error) {
+    if (!error) return 'Unknown error';
+    if (error instanceof Error) {
+        return error.stack || error.message;
+    }
+    return String(error);
+}
+
+function exitWithFatalError(error) {
+    logger.error(`[ERROR] ${formatFatalError(error)}`);
+    process.exit(1);
+}
+
+process.on('uncaughtException', (error) => {
+    exitWithFatalError(error);
+});
+
+process.on('unhandledRejection', (reason) => {
+    exitWithFatalError(reason);
+});
+
 async function main() {
     const configPath = process.argv[2];
     if (!configPath) {
@@ -297,13 +318,18 @@ async function main() {
                 stdio: 'inherit'
             });
 
-            preChild.on('close', (code) => {
+            preChild.on('close', (code, signal) => {
+                if (signal) {
+                    reject(new Error(`预编译进程被信号终止: ${signal}`));
+                    return;
+                }
+
                 if (code !== 0) {
                     reject(new Error(`预编译失败，退出码: ${code}`));
-                } else {
-                    // logger.log('预编译完成');
-                    resolve();
+                    return;
                 }
+
+                resolve();
             });
 
             preChild.on('error', (error) => {
@@ -554,6 +580,5 @@ async function syncCompilerToolsToToolsPath(compilerPath, toolsPath) {
 }
 
 main().catch(e => {
-    logger.error(e);
-    process.exit(1);
+    exitWithFatalError(e);
 });

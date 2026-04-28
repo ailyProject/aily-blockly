@@ -1,23 +1,22 @@
 .todo-panel {
-  background: var(--vscode-sideBar-background, #252526);
-  color: var(--vscode-sideBar-foreground, #cccccc);
-  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  background: var(--aily-bg-secondary);
+  color: var(--aily-text-tertiary);
   font-size: 13px;
-  border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
-  
+  border-top: 1px solid var(--aily-border-primary);
+
   .todo-panel-header {
     height: 30px;
     padding: 0 12px;
-    border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+    border-bottom: 1px solid var(--aily-border-primary);
     user-select: none;
-    background: var(--vscode-sideBar-background, #252526);
+    background: var(--aily-surface-header);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    
+
     &:hover {
-      background: var(--vscode-list-hoverBackground, #2a2d2e);
-      
+      background: var(--aily-bg-tertiary);
+
       .header-actions {
         opacity: 1;
       }
@@ -32,7 +31,7 @@
 
       .panel-icon {
         font-size: 12px;
-        color: var(--vscode-icon-foreground, #c5c5c5);
+        color: var(--aily-icon-color);
         transition: transform 0.2s ease;
 
         &.expanded {
@@ -43,56 +42,55 @@
       .panel-title {
         font-size: 12px;
         font-weight: 600;
-        color: var(--vscode-sideBar-foreground, #cccccc);
+        color: var(--aily-text-primary);
         text-transform: none;
         letter-spacing: 0.5px;
       }
     }
-    
+
     .header-actions {
       opacity: 0;
       transition: opacity 0.2s ease;
       display: flex;
       align-items: center;
       gap: 4px;
-      
+
       .delete-icon {
         font-size: 12px;
-        color: var(--vscode-icon-foreground, #c5c5c5);
+        color: var(--aily-icon-color);
         cursor: pointer;
         padding: 4px;
         border-radius: 2px;
-        transition: all 0.2s ease;
-        
+        transition: color 0.2s ease, background 0.2s ease;
+
         &:hover {
-          color: var(--vscode-errorForeground, #f48771);
-          background: var(--vscode-toolbar-hoverBackground, #37373a);
+          color: var(--aily-color-error-bright);
+          background: var(--aily-highlight-bg);
         }
       }
     }
   }
 
   .todo-panel-content {
-    background: var(--vscode-sideBar-background, #252526);
-    max-height: 270px; /* 为header留出30px，限制内容最大高度 */
-    overflow-y: auto; /* 内容超出时显示滚动条 */
+    background: var(--aily-bg-secondary);
+    max-height: 180px;
+    overflow-y: auto;
 
-    /* 滚动条样式 */
     &::-webkit-scrollbar {
       width: 6px;
     }
 
     &::-webkit-scrollbar-track {
-      background: var(--vscode-scrollbar-shadow, transparent);
+      background: var(--aily-scrollbar-track);
     }
 
     &::-webkit-scrollbar-thumb {
-      background: var(--vscode-scrollbarSlider-background, #424242);
+      background: var(--aily-scrollbar-thumb);
       border-radius: 3px;
     }
 
     &::-webkit-scrollbar-thumb:hover {
-      background: var(--vscode-scrollbarSlider-hoverBackground, #4f4f4f);
+      background: var(--aily-scrollbar-thumb-hover);
     }
 
     .todo-list {
@@ -102,16 +100,16 @@
         height: 30px;
         padding: 0 12px;
         gap: 8px;
-        border-bottom: 1px solid var(--vscode-panel-border, rgba(60, 60, 60, 0.3));
+        border-bottom: 1px solid var(--aily-border-primary);
         cursor: pointer;
-        
+
         &:hover {
-          background: var(--vscode-list-hoverBackground, #2a2d2e);
+          background: var(--aily-highlight-bg);
         }
 
         &.completed {
-          opacity: 0.6;
-          
+          opacity: 0.75;
+
           .todo-content .todo-text {
             text-decoration: line-through;
           }
@@ -125,25 +123,25 @@
           justify-content: center;
           width: 16px;
           height: 16px;
-          
+
           i {
             font-size: 12px;
-            
+
             &.status-pending {
-              color: var(--vscode-charts-orange, #ff8c00);
+              color: var(--aily-color-warning-alt);
             }
-            
+
             &.status-in-progress {
-              color: var(--vscode-charts-blue, #007acc);
+              color: var(--aily-color-accent);
             }
-            
+
             &.status-completed {
-              color: var(--vscode-charts-green, #4ec9b0);
+              color: var(--aily-color-success-alt);
             }
           }
 
           &:hover i {
-            opacity: 0.8;
+            opacity: 0.85;
           }
         }
 
@@ -151,7 +149,7 @@
           flex: 1;
           display: flex;
           align-items: center;
-          
+
           .todo-line {
             display: flex;
             align-items: center;
@@ -159,16 +157,16 @@
             gap: 8px;
             width: 100%;
           }
-          
+
           .todo-text {
-            color: var(--vscode-editor-foreground, #d4d4d4);
+            color: var(--aily-text-primary);
             font-size: 12px;
             line-height: 1;
             word-wrap: break-word;
             flex: 1;
-            
+
             &.completed-text {
-              color: var(--vscode-disabledForeground, #656565);
+              color: var(--aily-text-disabled);
               text-decoration: line-through;
             }
           }
@@ -185,42 +183,43 @@
             letter-spacing: 0.3px;
             flex-shrink: 0;
             line-height: 1;
-            
+
             &.priority-high {
-              background: var(--vscode-charts-red, #f85149);
-              color: white;
+              background: var(--aily-color-error-bright);
+              color: var(--aily-text-primary);
             }
-            
+
             &.priority-medium {
-              background: var(--vscode-charts-orange, #ff8c00);
-              color: white;
+              background: var(--aily-color-error-notice);
+              color: var(--aily-text-primary);
             }
-            
+
             &.priority-low {
-              background: var(--vscode-charts-gray, #6e7681);
-              color: var(--vscode-editor-foreground, #d4d4d4);
+              background: var(--aily-border-tertiary);
+              color: var(--aily-text-secondary);
             }
           }
         }
       }
     }
-    
+
     .empty-state {
       padding: 20px 12px;
       text-align: center;
-      color: var(--vscode-descriptionForeground, #999999);
-      
+      color: var(--aily-text-hint);
+
       .empty-message {
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 8px;
-        
+
         i {
           font-size: 24px;
           opacity: 0.5;
+          color: var(--aily-icon-color);
         }
-        
+
         span {
           font-size: 12px;
         }
@@ -229,7 +228,6 @@
   }
 }
 
-/* 动画效果 */
 .todo-panel-content {
   animation: slideDown 0.2s ease-out;
 }
@@ -245,23 +243,14 @@
   }
 }
 
-/* 响应式调整 */
 @media (max-width: 768px) {
   .todo-panel {
     .todo-item {
       padding: 8px 10px;
-      
+
       .todo-content .todo-text {
         font-size: 11px;
       }
     }
   }
-}
-
-/* VSCode主题适配 */
-:root {
-  --todo-panel-background: var(--vscode-sideBar-background, #252526);
-  --todo-panel-foreground: var(--vscode-sideBar-foreground, #cccccc);
-  --todo-panel-border: var(--vscode-panel-border, #3c3c3c);
-  --todo-hover-background: var(--vscode-list-hoverBackground, #2a2d2e);
 }

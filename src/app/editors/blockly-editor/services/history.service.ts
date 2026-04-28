@@ -248,7 +248,7 @@ export class HistoryService {
           event.type === 'change' || 
           event.type === 'move') {
         try {
-          const content = this.blocklyService.getWorkspaceJson();
+          const content = this.blocklyService.getProjectDocument();
           this.onWorkspaceChange(content);
         } catch (e) {
           console.error('自动保存失败', e);
@@ -267,7 +267,7 @@ export class HistoryService {
     if (!this.projectPath || !this.blocklyService) return;
 
     try {
-      const content = this.blocklyService.getWorkspaceJson();
+      const content = this.blocklyService.getProjectDocument();
       this.createVersion('manual', content, note);
     } catch (e) {
       console.error('创建手动版本失败', e);
@@ -291,7 +291,7 @@ export class HistoryService {
     try {
       // 1. 还原前自动备份当前状态(作为手动版本,带备份说明)
       try {
-        const currentJson = this.blocklyService.getWorkspaceJson();
+        const currentJson = this.blocklyService.getProjectDocument();
         this.createVersion('manual', currentJson, '还原前备份');
       } catch (e) {
         console.warn('还原前备份失败', e);

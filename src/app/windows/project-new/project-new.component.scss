@@ -16,7 +16,7 @@
 
     .left-inner {
       height: 100%;
-      border-right: 1px solid #43494b;
+      border-right: 1px solid var(--aily-border-active);
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -51,9 +51,9 @@
         }
 
         input {
-          background: #363636;
+          background: var(--aily-bg-input);
           z-index: 1;
-          color: rgba(255, 255, 255, 0.7) !important;
+          color: var(--aily-text-primary) !important;
 
           &.board {
             border-radius: 2px 0 0 2px;
@@ -64,7 +64,7 @@
           width: 150px;
           flex-shrink: 0;
           margin-left: -1px;
-          background: #363636;
+          background: var(--aily-bg-input);
 
           ::ng-deep {
             nz-select-top-control {
@@ -74,7 +74,7 @@
         }
 
         .error {
-          color: rgb(255, 80, 80);
+          color: var(--aily-color-error-bright);
           font-size: 12px;
           position: absolute;
           bottom: -15px;
@@ -83,7 +83,7 @@
       }
 
       nz-input-group {
-        background: #363636;
+        background: var(--aily-bg-input);
 
         ::ng-deep {
           .ant-input-group-addon {
@@ -98,7 +98,7 @@
 }
 
 .window-footer {
-  border-top: 1px solid #222427;
+  border-top: 1px solid var(--aily-border-primary);
   height: 60px;
   position: relative;
 
@@ -141,7 +141,7 @@
   .board {
     width: 180px;
     height: 110px;
-    background: #3e4243;
+    background: var(--aily-bg-tertiary);
     border-radius: 5px;
     flex-direction: column;
     justify-content: flex-start;
@@ -151,18 +151,18 @@
     }
 
     &.selected {
-      border: 2px solid #007bff;
+      border: 2px solid var(--aily-color-primary);
     }
 
     .name {
       white-space: nowrap;
       span{
-        color: rgb(154, 154, 255);
+        color: var(--aily-color-accent);
       }
     }
 
     &.disabled {
-      background: #3f3f3f;
+      background: var(--aily-bg-secondary);
     }
   }
 }
@@ -174,12 +174,12 @@
   bottom: 0;
   border-radius: 10px;
   padding: 5px 10px;
-  background: rgba(59, 59, 59, 0.9);
+  background: color-mix(in srgb, var(--aily-bg-card) 92%, transparent);
   overflow: hidden;
-  box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--aily-shadow-sm);
 
   .title {
-    border-bottom: 1px solid #43494b;
+    border-bottom: 1px solid var(--aily-border-active);
     margin-bottom: 3px;
     position: relative;
 
@@ -192,7 +192,7 @@
 
   .content {
     height: 65px;
-    color: #bbb;
+    color: var(--aily-text-tertiary);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;

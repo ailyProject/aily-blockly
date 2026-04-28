@@ -1,0 +1,27 @@
+<div class="aily-think-viewer" [class.expanded]="isExpanded" [class.thinking]="!isComplete">
+    <div class="think-header" (click)="toggleExpand()">
+        <div class="think-title">
+            <div class="think-icon">
+                @if (!isComplete) {
+                    <div class="icon loading ccenter">
+                        <i class="fa-duotone fa-solid fa-loader"></i>
+                    </div>
+                } @else {
+                    <div class="icon done ccenter">
+                        <i class="fa-light fa-circle-check"></i>
+                    </div>
+                }
+            </div>
+            <span class="think-label">{{ getTitle() }}</span>
+        </div>
+        <div class="think-toggle">
+            <i class="fa-light" [class.fa-chevron-down]="!isExpanded" [class.fa-chevron-up]="isExpanded"></i>
+        </div>
+    </div>
+    
+    @if (isExpanded) {
+        <div class="think-content sscroll" #thinkContentElement>
+            {{ thinkContent }}
+        </div>
+    }
+</div>

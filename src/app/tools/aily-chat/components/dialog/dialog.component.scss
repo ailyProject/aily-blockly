@@ -157,9 +157,14 @@
             font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
             font-size: 13px;
             line-height: 1.45;
+            width: 100%;
 
             .line {
                 min-height: 1em;
+            }
+
+            > code {
+                display: block !important;
             }
         }
 
@@ -171,7 +176,7 @@
             overflow: visible;
 
             code {
-                display: block;
+                display: flex;
                 overflow-x: auto;
                 padding: 0.5em;
             }
@@ -212,6 +217,13 @@
             .language-aily-button {
                 font-family: "MiSans Regular", "FiraCode Regular" !important;
                 overflow: hidden;
+                display: flex;
+                align-items: center;
+            }
+
+            .language-aily-think {
+                overflow: hidden;
+                font-family: "MiSans Regular", "FiraCode Regular" !important;
                 display: flex;
                 align-items: center;
             }
@@ -302,6 +314,64 @@
             margin-top: 5px;
             margin-bottom: 5px;
             font-size: 14px;
+        }
+
+        // 折叠式上下文块样式
+        .aily-context-block {
+            border-radius: 5px;
+            padding: 4px 8px;
+            margin: 4px 0;
+            background-color: rgba(212, 160, 23, 0.08);
+            border: 1px solid rgba(212, 160, 23, 0.25);
+            font-size: 12px;
+
+            .aily-context-summary {
+                cursor: pointer;
+                color: #d4a017;
+                font-size: 13px;
+                user-select: none;
+                list-style: none;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+
+                &::-webkit-details-marker {
+                    display: none;
+                }
+
+                &::after {
+                    content: '\f078'; // fa-chevron-down
+                    font-family: 'Font Awesome 6 Pro';
+                    font-weight: 300;
+                    font-size: 10px;
+                    color: #888;
+                    margin-left: auto;
+                    transition: transform 0.2s;
+                }
+
+                &:hover {
+                    opacity: 0.85;
+                }
+            }
+
+            &[open] .aily-context-summary::after {
+                transform: rotate(180deg);
+            }
+
+            .aily-context-content {
+                margin: 6px 0 2px;
+                padding: 6px 8px;
+                font-size: 12px;
+                line-height: 1.5;
+                color: #999;
+                background: rgba(0, 0, 0, 0.15);
+                border-radius: 3px;
+                max-height: 200px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+                word-break: break-word;
+                font-family: inherit;
+            }
         }
     }
 }

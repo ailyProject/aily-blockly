@@ -4,7 +4,7 @@
   height: 100%;
   padding: 0 10px;
   overflow: hidden;
-  background: #1e1f22;
+  background: var(--aily-bg-secondary);
 
   .app-store-header {
     display: flex;
@@ -12,12 +12,12 @@
     align-items: center;
     margin-bottom: 16px;
     padding-bottom: 12px;
-    border-bottom: 1px solid #3a3c3f;
+    border-bottom: 1px solid var(--aily-border-subtle);
 
     .header-info {
       .info-text {
         font-size: 13px;
-        color: #818992;
+        color: var(--aily-text-secondary);
       }
     }
 
@@ -26,18 +26,18 @@
       align-items: center;
       gap: 6px;
       padding: 6px 12px;
-      border: 1px solid #3a3c3f;
+      border: 1px solid var(--aily-border-subtle);
       border-radius: 4px;
       background: transparent;
-      color: #a5a5a5;
+      color: var(--aily-text-tertiary);
       cursor: pointer;
       font-size: 12px;
       transition: all 0.2s;
 
       &:hover {
-        background: #3a3c3f;
-        border-color: #4a8cca;
-        color: #fff;
+        background: var(--aily-border-subtle);
+        border-color: var(--aily-color-accent);
+        color: var(--aily-text-primary);
       }
     }
   }
@@ -70,7 +70,7 @@
     gap: 8px;
     font-size: 12px;
     font-weight: 500;
-    color: #818992;
+    color: var(--aily-text-secondary);
     margin-bottom: 10px;
     margin-top: 8px;
 
@@ -105,8 +105,8 @@
     &.other-zone {
       flex: 1;
       overflow-y: auto;
-      background: #2b2d30;
-      border: 1px solid #3a3c3f;
+      background: var(--aily-bg-primary);
+      border: 1px solid var(--aily-border-subtle);
       align-content: flex-start;
     }
 
@@ -119,14 +119,14 @@
       width: 50px;
       height: 50px;
       border-radius: 8px;
-      background: #2b2d30;
-      border: 1px solid #3a3c3f;
+      background: var(--aily-bg-primary);
+      border: 1px solid var(--aily-border-subtle);
       cursor: grab;
       transition: all 0.2s;
 
       &:hover {
-        border-color: #4a8cca;
-        background: #3a3c3f;
+        border-color: var(--aily-color-accent);
+        background: var(--aily-border-subtle);
       }
 
       &:active {
@@ -139,13 +139,13 @@
       }
 
       &.empty-slot {
-        border: 1px dashed #4a4a4a;
+        border: 1px dashed var(--aily-border-input);
         background: transparent;
         cursor: default;
 
         &:hover {
           background: transparent;
-          border-color: #4a4a4a;
+          border-color: var(--aily-border-input);
         }
 
         .empty-icon {
@@ -154,7 +154,7 @@
           justify-content: center;
           width: 24px;
           height: 24px;
-          color: #4a4a4a;
+          color: var(--aily-border-input);
           font-size: 14px;
         }
 
@@ -171,7 +171,7 @@
         width: 38px;
         height: 38px;
         border-radius: 8px;
-        color: #a5a5a5;
+        color: var(--aily-text-tertiary);
         font-size: 20px;
         transition: color 0.2s;
 
@@ -182,14 +182,14 @@
           padding: 1px 4px;
           border-radius: 4px;
           background: #e34c4c;
-          color: #fff;
+          color: var(--aily-text-primary);
           font-size: 8px;
           font-weight: bold;
         }
       }
 
       &:hover .app-icon {
-        color: #fff;
+        color: var(--aily-text-primary);
       }
 
       .app-name {

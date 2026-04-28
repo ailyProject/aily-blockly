@@ -6,9 +6,27 @@
 .header {
   display: flex;
   align-items: center;
-  height: 35px;
-  border-bottom: 1px solid #222427;
-  background: #2b2d30;
+  height: 38px;
+  border-bottom: 2px solid var(--aily-border-primary);
+  background: var(--aily-bg-primary);
+
+  &.darwin {
+    padding-left: 80px;
+
+    &.full-screen {
+      padding-left: 0;
+    }
+
+    .win-btns {
+      > div {
+        display: none;
+      }
+
+      .go-main {
+        display: flex;
+      }
+    }
+  }
 }
 
 .title {
@@ -32,7 +50,7 @@
     margin-right: 0;
 
     &:hover {
-      background: #3a3c3f;
+      background: var(--aily-bg-tertiary);
     }
   }
 
@@ -46,7 +64,7 @@
     font-size: 17px;
     background: transparent !important;
     &:hover {
-      color: rgb(75, 151, 221);
+      color: var(--aily-color-link-hover);
     }
   }
 
@@ -54,12 +72,12 @@
     font-size: 19px;
 
     &:hover {
-      color: rgb(145, 0, 0);
+      color: var(--aily-color-error);
     }
   }
 }
 
 .content{
   height: calc(100vh - 38px);
-  background: #323437;
+  background: var(--aily-bg-secondary);
 }

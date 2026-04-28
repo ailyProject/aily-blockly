@@ -1,12 +1,15 @@
-import { Component, Inject, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { Component, Inject, OnInit, OnDestroy, ChangeDetectorRef, ViewChild, ElementRef } from '@angular/core';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { NzIconModule } from 'ng-zorro-antd/icon';
 import { Observable, Subscription } from 'rxjs';
 import { UpdateService } from '../../../services/update.service';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
+import { ConfigService } from '../../../services/config.service';
+import { HttpClient } from '@angular/common/http';
+import { marked } from 'marked';
 
 @Component({
   selector: 'app-update-dialog',
@@ -20,30 +23,48 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
   mode: string;
   progress: number = 0;
   version: string;
+  currentVersion: string;
+
+  @ViewChild('markdown', { static: false }) markdownEl: ElementRef<HTMLDivElement>;
 
   constructor(
     @Inject(NZ_MODAL_DATA) public data: any,
     private modal: NzModalRef,
     private updateService: UpdateService,
-    private cd: ChangeDetectorRef
+    private cd: ChangeDetectorRef,
+    private configService: ConfigService,
+    private http: HttpClient,
+    private translate: TranslateService
   ) {
-    this.title = data.title || '';
-    this.text = data.text || '';
+    this.version = data.version || '';
+    this.currentVersion = data.currentVersion || '';
+    this.mode = data.mode || 'available';
+    this.updateTitleAndText();
+  }
 
-    console.log('UpdateDialogComponent data:', data);
-
+  private updateTitleAndText() {
+    const params = { version: this.version, currentVersion: this.currentVersion };
+    if (this.mode === 'downloaded') {
+      this.title = this.translate.instant('UPDATE_DIALOG.TITLE_READY');
+      this.text = this.translate.instant('UPDATE_DIALOG.TEXT_DOWNLOADED', params);
+    } else {
+      this.title = this.translate.instant('UPDATE_DIALOG.TITLE_NEW_VERSION', params);
+      this.text = this.translate.instant('UPDATE_DIALOG.TEXT_AVAILABLE', params);
+    }
   }
 
   updateStatusSubscription: Subscription;
   updateProgressSubscription: Subscription;
 
   ngOnInit() {
+    this.loadChangelog();
     // 订阅更新状态
     this.updateStatusSubscription = this.updateService.updateStatus.subscribe((status) => {
       // console.log('更新状态:', status);
       this.mode = status;
       if (this.mode === 'downloaded') {
-        this.progress = 100; 
+        this.progress = 100;
+        this.updateTitleAndText();
       }
       this.cd.detectChanges();
     })
@@ -101,5 +122,22 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
     this.updateService.dialogAction.next('download');
     this.mode = 'downloading';
     this.cd.detectChanges();
+  }
+
+  private loadChangelog() {
+    const lang = this.translate.currentLang || this.translate.defaultLang || '';
+    const isChinese = lang.toLowerCase().startsWith('zh');
+    const filename = isChinese ? 'CHANGELOG_ZH.md' : 'CHANGELOG.md';
+    const url = this.configService.getCurrentUpdaterUrl() + '/' + filename;
+    this.http.get(url, { responseType: 'text' }).subscribe({
+      next: async (md) => {
+        const html = await marked(md);
+        if (this.markdownEl?.nativeElement) {
+          this.markdownEl.nativeElement.innerHTML = html as string;
+        }
+        this.cd.detectChanges();
+      },
+      error: () => {}
+    });
   }
 }

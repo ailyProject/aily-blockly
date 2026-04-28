@@ -6,8 +6,8 @@ $footer-inner-height: 28px;
   justify-content: flex-start;
   align-items: center;
   height: $footer-height;
-  background: #2b2d30;
-  border-top: 2px solid #222427;
+  background: var(--aily-bg-primary);
+  border-top: 2px solid var(--aily-border-primary);
   position: relative;
 }
 
@@ -16,12 +16,12 @@ $footer-inner-height: 28px;
   height: $footer-inner-height;
 
   &:hover {
-    background: #3b3d40;
+    background: var(--aily-bg-tertiary);
   }
 
   &.active {
-    background: #007acc;
-    color: #ffffff;
+    background: var(--aily-bg-active);
+    color: var(--aily-text-primary);
   }
 }
 
@@ -39,11 +39,11 @@ $footer-inner-height: 28px;
   }
 
   .fa-circle-xmark{
-    color: rgb(210, 0, 0);
+    color: var(--aily-color-error-bright);
   }
 
   .fa-triangle-exclamation{
-    color: rgb(255, 136, 0);
+    color: var(--aily-color-error-notice);
   }
 
   .fa-circle-check{

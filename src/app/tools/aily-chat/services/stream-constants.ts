@@ -1,0 +1,97 @@
+/**
+ * streamConnect 内联常量：从 AilyChatComponent.streamConnect() 提取的常量定义
+ * 包括工具分类列表和规则文本模板
+ */
+
+/** 需要设置 aiWriting 状态的 block 工具列表 */
+export const BLOCK_TOOLS = [
+  'smart_block_tool',
+  'connect_blocks_tool',
+  'create_code_structure_tool',
+  'configure_block_tool',
+  'delete_block_tool',
+  'create_single_block',
+  'connect_blocks_simple',
+  'set_block_field',
+  'set_block_input',
+  'batch_create_blocks',
+  'sync_abs_file',
+];
+
+/** 判断是否是 Blockly 相关工具 */
+export const BLOCKLY_TOOL_NAMES = [
+  'smart_block_tool',
+  'create_code_structure_tool',
+  'configure_block_tool',
+  'connect_blocks_tool',
+  'delete_block_tool',
+  'get_workspace_overview_tool',
+  'edit_abi_file',
+  'reload_abi_json',
+  'create_single_block',
+  'connect_blocks_simple',
+  'set_block_field',
+  'set_block_input',
+  'batch_create_blocks',
+  'flat_create_blocks',
+  'sync_abs_file',
+];
+
+/** 需要路径信息的工具 */
+export const PATH_INFO_TOOL_NAMES = [
+  'create_project',
+  'execute_command',
+  'create_file',
+  'edit_file',
+  'delete_file',
+  'create_folder',
+  'delete_folder',
+  'check_exists',
+  'list_directory',
+  'get_directory_tree',
+  'grep_tool',
+  'glob_tool',
+  'edit_abi_file',
+  'reload_abi_json'
+];
+
+/** Blockly 代码编辑流程规则文本（注入到工具返回的 <rules> 标签中） */
+export const BLOCKLY_RULES_TEXT = `<rules># Blockly代码编辑流程:
+【需求分析】
+仔细分析用户需求，理解要实现的功能和目标。对于不明确的需求，提出澄清问题。
+
+【设计方案】
+使用工具了解当前工作区信息，仔细查询可使用的开发板和库，设计实现方案。方案设计要考虑功能实现的可行性、效率和可维护性。
+- 严禁假设应该使用的库或工具，必须通过工具查询确认。
+- 方案设计完成后输出完整方案设计及实现步骤。
+- 项目创建或者库安装必须询问用户确认。
+
+【准备工作】
+1. 使用分析当前工作区及当前项目状态，了解现有资源，确保项目已创建、库已安装。
+2. 安装所需库，确保所有依赖库已正确安装。
+3. 使用todo_write_tool规划项目流程，明确每一步要实现的功能和使用的工具。
+4. 列出需要使用的库，必须包含\`lib-core-*\`等核心库（如lib-core-logic、lib-core-variables等）。如果需要新库，使用search_boards_libraries工具查询并安装。
+5. 逐一阅读库的readme_ai.md，了解块定义和ABS语法。没有readme的库需要直接分析库文件获取信息。
+6. 必要时使用load_skill加载\`abs-syntax-reference\` skill，确认ABS语法规范后再修改代码。
+
+【实现阶段】
+1. 完整规划代码逻辑，构思ABS结构。
+2. 使用sync_abs_file工具的export操作获取当前代码。
+3. 编辑ABS代码：添加新块、修改参数、调整结构。遵守ABS编写规范，确保字段直接写值，输入连接值块，语句输入用缩进，多输入块用标记，空括号不可省略。
+4. 使用sync_abs_file工具的import操作导入修改后的ABS。
+5. 仔细分析错误信息，定位并修复ABS代码问题。遵循修复原则：诊断优先、最小改动、错误处理。
+6. 如果库功能不完善，安装lib-core-custom自定义库(需要用户确认)，重复步骤2-5直至完成。
+
+【修复原则】
+- 诊断优先：分析报错，定位问题，语法错误还是逻辑错误。
+- 最小改动：只修改需要变更的ABS行，保持其他结构不变。
+- 错误处理：读取库文件了解块定义和ABS语法，确保修复正确。
+
+【执行要求】
+- 安装操作必须询问用户确认，确保用户了解安装的库和功能。
+- 深入分析嵌入式代码逻辑和硬件特性，确保逻辑正确。
+- ABS代码保持清晰的缩进和换行，便于阅读和调试。
+</rules>`;
+
+/** ASK 模式下的角色提示文本 */
+export const ASK_MODE_ROLE_TEXT = `Your role is ASK (Advisory & Quick Support) - you provide analysis, recommendations, and guidance ONLY. You do NOT execute actual tasks or changes.`;

@@ -1,9 +1,5 @@
-import { Injectable } from '@angular/core';
-import { CmdService } from '../../../services/cmd.service';
-import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
-import { ProjectService } from '../../../services/project.service';
-import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
-import { PlatformService } from "../../../services/platform.service";
+﻿import { Injectable } from '@angular/core';
+import { AilyHost } from '../core/host';
 
 // Arduino 代码检查器
 declare const arduinoGenerator: any;
@@ -71,17 +67,18 @@ export class ArduinoLintService {
     targetNames: string[];
   }>();
 
-  constructor(
-    private cmdService: CmdService,
-    private crossPlatformCmdService: CrossPlatformCmdService,
-    private projectService: ProjectService,
-    private blocklyService: BlocklyService,
-    private platformService: PlatformService,
-  ) {
+  constructor() {
     // 将服务实例注册到全局对象，以便 ArduinoSyntaxTool 可以访问
     (window as any)['arduinoLintService'] = this;
     // console.log('🔧 ArduinoLintService 已注册到全局对象');
   }
+
+  // 通过 AilyHost 访问外部服务的便捷 getter
+  private get cmdService(): any { return AilyHost.get().cmd; }
+  private get crossPlatformCmdService(): any { return AilyHost.get().crossPlatformCmd; }
+  private get projectService(): any { return AilyHost.get().project; }
+  private get blocklyService(): any { return AilyHost.get().blockly; }
+  private get platformService(): any { return AilyHost.get().platform; }
 
   /**
    * 检查库缓存是否有效 - 参考 BuilderService.isLibraryCacheValid
@@ -94,8 +91,8 @@ export class ArduinoLintService {
     if (!cached) return false;
 
     try {
-      if (!window['fs'].existsSync(sourcePath)) return false;
-      const stat = window['fs'].statSync(sourcePath);
+      if (!AilyHost.get().fs.existsSync(sourcePath)) return false;
+      const stat = AilyHost.get().fs.statSync(sourcePath);
       return stat.mtime.getTime() <= cached.timestamp;
     } catch {
       return false;
@@ -236,19 +233,19 @@ export class ArduinoLintService {
 
     try {
       // 创建必要的目录结构（如果不存在）- 使用跨平台命令
-      if (!window['path'].isExists(tempPath)) {
+      if (!AilyHost.get().path.isExists(tempPath)) {
         await this.crossPlatformCmdService.createDirectory(tempPath, true);
         // console.log(`✅ 创建临时目录: ${tempPath}`);
       } else {
         // console.log(`♻️ 复用现有临时目录: ${tempPath}`);
       }
       
-      if (!window['path'].isExists(sketchPath)) {
+      if (!AilyHost.get().path.isExists(sketchPath)) {
         await this.crossPlatformCmdService.createDirectory(sketchPath, true);
         // console.log(`✅ 创建 sketch 目录: ${sketchPath}`);
       }
       
-      if (!window['path'].isExists(librariesPath)) {
+      if (!AilyHost.get().path.isExists(librariesPath)) {
         await this.crossPlatformCmdService.createDirectory(librariesPath, true);
         // console.log(`✅ 创建 libraries 目录: ${librariesPath}`);
       }
@@ -257,7 +254,7 @@ export class ArduinoLintService {
       await this.prepareProjectLibraries(librariesPath);
 
       // 高效写入代码到 sketch.ino 文件（覆盖模式，无需预先删除）
-      await window['fs'].writeFileSync(sketchFilePath, code);
+      await AilyHost.get().fs.writeFileSync(sketchFilePath, code);
       // console.log(`✅ 写入代码到: ${sketchFilePath} (${code.length} 字符)`);
 
       // console.log(`✅ 临时环境准备完成，复用项目 .temp 目录: ${tempPath}`);
@@ -295,7 +292,7 @@ export class ArduinoLintService {
       let errorMessage = '';
 
       return new Promise((resolve, reject) => {
-        this.cmdService.run(lintCommand).subscribe({
+        this.cmdService.run(lintCommand, undefined, true, true).subscribe({
           next: (output) => {
             // console.log('📋 cmdService 输出类型:', output.type);
             // console.log('📋 cmdService 输出数据:', output.data);
@@ -411,7 +408,7 @@ export class ArduinoLintService {
     // 构建完整的 lint 命令
     const lintCommandParts = [
       "node",
-      `"${window['path'].getAilyBuilderPath()}/index.js"`,
+      `"${AilyHost.get().path.getAilyBuilderPath()}/index.js"`,
       lintParam,
       `"${env.sketchFilePath}"`,
       '--board', `"${boardType}"`,
@@ -641,8 +638,8 @@ export class ArduinoLintService {
       if (shouldCleanup) {
         const sketchFilePath = tempPath + '/sketch/sketch.ino';
         
-        if (window['path'].isExists(sketchFilePath)) {
-          await window['fs'].unlinkSync(sketchFilePath);
+        if (AilyHost.get().path.isExists(sketchFilePath)) {
+          await AilyHost.get().fs.unlinkSync(sketchFilePath);
           // console.log(`🧹 定期清理临时文件: sketch.ino (第${this.lintSessionCount}次lint)`);
         }
       } else {
@@ -665,8 +662,8 @@ export class ArduinoLintService {
       const tempPath = this.currentProjectPath + '/.temp';
       const sketchFilePath = tempPath + '/sketch/sketch.ino';
       
-      if (window['path'].isExists(sketchFilePath)) {
-        await window['fs'].unlinkSync(sketchFilePath);
+      if (AilyHost.get().path.isExists(sketchFilePath)) {
+        await AilyHost.get().fs.unlinkSync(sketchFilePath);
         // console.log('🧹 手动清理 lint 临时文件完成');
       }
       
@@ -685,19 +682,19 @@ export class ArduinoLintService {
     try {
       // console.log('🔍 检查 aily-builder 可用性...');
       
-      // 检查 window['path'] 是否存在
-      if (!window['path']) {
+      // 检查 AilyHost.get().path 是否存在
+      if (!AilyHost.get().path) {
         // console.warn('❌ window.path 不存在');
         return false;
       }
       
       // 检查 getAilyBuilderPath 方法
-      if (typeof window['path'].getAilyBuilderPath !== 'function') {
+      if (typeof AilyHost.get().path.getAilyBuilderPath !== 'function') {
         // console.warn('❌ window.path.getAilyBuilderPath 方法不存在');
         return false;
       }
       
-      const ailyBuilderPath = window['path'].getAilyBuilderPath();
+      const ailyBuilderPath = AilyHost.get().path.getAilyBuilderPath();
       // console.log('- aily-builder 路径:', ailyBuilderPath);
       
       if (!ailyBuilderPath) {
@@ -706,12 +703,12 @@ export class ArduinoLintService {
       }
       
       // 检查 isExists 方法
-      if (typeof window['path'].isExists !== 'function') {
+      if (typeof AilyHost.get().path.isExists !== 'function') {
         // console.warn('❌ window.path.isExists 方法不存在');
         return false;
       }
       
-      const indexJsExists = window['path'].isExists(ailyBuilderPath + '/index.js');
+      const indexJsExists = AilyHost.get().path.isExists(ailyBuilderPath + '/index.js');
       // console.log('- index.js 存在:', indexJsExists);
       
       return indexJsExists;
@@ -834,15 +831,15 @@ export class ArduinoLintService {
   private async prepareLibrarySource(lib: string): Promise<string | null> {
     let sourcePath = `${this.currentProjectPath}/node_modules/${lib}/src`;
     
-    if (!window['path'].isExists(sourcePath)) {
+    if (!AilyHost.get().path.isExists(sourcePath)) {
       const sourceZipPath = `${this.currentProjectPath}/node_modules/${lib}/src.7z`;
       
-      if (!window['path'].isExists(sourceZipPath)) {
+      if (!AilyHost.get().path.isExists(sourceZipPath)) {
         return null;
       }
       
       try {
-        await this.cmdService.runAsync(`${this.platformService.za7} x "${sourceZipPath}" -o"${sourcePath}" -y`);
+        await this.cmdService.runAsync(`${this.platformService.za7} x "${sourceZipPath}" -o"${sourcePath}" -y`, undefined, true, true);
       } catch (error) {
         console.error(`解压库 ${lib} 失败:`, error);
         return null;
@@ -857,18 +854,18 @@ export class ArduinoLintService {
    * 解析嵌套的src目录结构
    */
   private resolveNestedSrcPath(sourcePath: string): string {
-    if (!window['fs'].existsSync(sourcePath)) {
+    if (!AilyHost.get().fs.existsSync(sourcePath)) {
       return sourcePath;
     }
     
     try {
-      const srcContents = window['fs'].readDirSync(sourcePath);
+      const srcContents = AilyHost.get().fs.readDirSync(sourcePath);
       
       if (srcContents.length === 1) {
         const firstItem = srcContents[0];
         const itemName = typeof firstItem === 'object' && firstItem !== null ? firstItem.name : firstItem;
 
-        if (itemName === 'src' && window['fs'].isDirectory(`${sourcePath}/${itemName}`)) {
+        if (itemName === 'src' && AilyHost.get().fs.isDirectory(`${sourcePath}/${itemName}`)) {
           return `${sourcePath}/src`;
         }
       }
@@ -883,15 +880,15 @@ export class ArduinoLintService {
    * 检查目录下是否包含头文件
    */
   private async checkForHeaderFiles(sourcePath: string): Promise<boolean> {
-    if (!window['fs'].existsSync(sourcePath)) {
+    if (!AilyHost.get().fs.existsSync(sourcePath)) {
       return false;
     }
     
     try {
-      const files = window['fs'].readDirSync(sourcePath);
+      const files = AilyHost.get().fs.readDirSync(sourcePath);
       
       for (const file of files) {
-        const fileName = typeof file === 'object' && file !== null ? file.name : file;
+        const fileName: string = typeof file === 'object' && file !== null ? file.name : file as any;
         
         if (fileName.endsWith('.h') || fileName.endsWith('.hpp')) {
           return true;
@@ -918,7 +915,7 @@ export class ArduinoLintService {
       const targetName = lib.split('@aily-project/')[1];
       const targetPath = `${librariesPath}/${targetName}`;
 
-      if (!window['path'].isExists(targetPath)) {
+      if (!AilyHost.get().path.isExists(targetPath)) {
         await this.crossPlatformCmdService.linkItem(sourcePath, targetPath);
       }
 
@@ -950,20 +947,20 @@ export class ArduinoLintService {
     try {
       const targetNames: string[] = [];
 
-      if (!window['fs'].existsSync(sourcePath)) {
+      if (!AilyHost.get().fs.existsSync(sourcePath)) {
         return { success: true, targetNames: [] };
       }
 
-      const items = window['fs'].readDirSync(sourcePath);
+      const items = AilyHost.get().fs.readDirSync(sourcePath);
 
       for (const item of items) {
-        const itemName = typeof item === 'object' && item !== null ? item.name : item;
+        const itemName: string = typeof item === 'object' && item !== null ? item.name : item as any;
         const fullSourcePath = `${sourcePath}/${itemName}`;
 
-        if (window['fs'].isDirectory(fullSourcePath)) {
+        if (AilyHost.get().fs.isDirectory(fullSourcePath)) {
           const targetPath = `${librariesPath}/${itemName}`;
 
-          if (!window['path'].isExists(targetPath)) {
+          if (!AilyHost.get().path.isExists(targetPath)) {
             await this.crossPlatformCmdService.linkItem(fullSourcePath, targetPath);
           }
           

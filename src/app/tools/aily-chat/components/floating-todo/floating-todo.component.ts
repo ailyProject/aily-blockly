@@ -62,26 +62,6 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
           this.loadTodosFromService();
         }
       });
-
-      // 订阅TODO数据变化
-      const dataSubscription = this.todoUpdateService.todoData$.subscribe((todoData: Map<string, TodoItem[]>) => {
-        // console.log('[TODO Panel] 接收到TODO数据变化:', todoData);
-        // 动态获取当前sessionId对应的TODO数据
-        const currentSessionId = this.sessionId || 'default';
-        const sessionTodos = todoData.get(currentSessionId);
-        if (sessionTodos) {
-          this.todoList = sessionTodos;
-        }
-      });
-
-      if (this.updateSubscription) {
-        const originalUnsubscribe = this.updateSubscription.unsubscribe.bind(this.updateSubscription);
-        this.updateSubscription.unsubscribe = () => {
-          originalUnsubscribe();
-          dataSubscription.unsubscribe();
-        };
-      }
-
     } catch (error) {
       console.warn('[TODO Panel] TodoUpdateService 初始化失败:', error);
     }
@@ -162,7 +142,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   toggleTodoStatus(todo: TodoItem) {
-    const statusOrder: Array<TodoItem['status']> = ['pending', 'in_progress', 'completed'];
+    const statusOrder: Array<TodoItem['status']> = ['not-started', 'in-progress', 'completed'];
     const currentIndex = statusOrder.indexOf(todo.status);
     const nextIndex = (currentIndex + 1) % statusOrder.length;
     
@@ -193,7 +173,7 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     return texts[priority || 'low'];
   }
 
-  trackByTodoId(index: number, todo: TodoItem): string {
+  trackByTodoId(index: number, todo: TodoItem): number {
     return todo.id;
   }
 

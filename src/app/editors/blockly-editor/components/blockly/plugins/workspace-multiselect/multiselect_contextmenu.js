@@ -13,6 +13,8 @@ import {
   dragSelectionWeakMap, hasSelectedParent, copyData,
   connectionDBList, dataCopyToStorage, dataCopyFromStorage,
   blockNumGetFromStorage, registeredContextMenu, multiDraggableWeakMap, getByID,
+  incrementFieldInputValues, checkMissingBlockTypes, moveBlocksToMousePosition,
+  resetConsecutivePasteStagger, applyConsecutivePasteStagger,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
 
@@ -119,6 +121,7 @@ const registerCopy = function(useCopyPasteCrossTab) {
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
+      resetConsecutivePasteStagger(workspace);
       Blockly.Events.setGroup(false);
       return true;
     },
@@ -189,8 +192,11 @@ const registerDuplicate = function() {
           // Set the new ID in the copy data
           blockCopyData.blockState.id = newId;
           // Paste the block with the modified copy data
-          duplicatedBlocks[block.id] =
-              Blockly.clipboard.paste(blockCopyData, workspace);
+          const duplicated = Blockly.clipboard.paste(blockCopyData, workspace);
+          duplicatedBlocks[block.id] = duplicated;
+          if (duplicated) {
+            incrementFieldInputValues(duplicated, workspace);
+          }
         }
       };
       const dragSelection = dragSelectionWeakMap.get(workspace);
@@ -687,6 +693,85 @@ const registerDelete = function() {
  * Paste multiple selected draggables from clipboard.
  * @param {boolean} useCopyPasteCrossTab Whether to use cross tab copy paste.
  */
+/**
+ * Execute the actual paste operation on a workspace.
+ * Extracted so it can be called after async library installation.
+ * @param {Blockly.WorkspaceSvg} workspace The target workspace.
+ */
+const executePaste = function(workspace) {
+  const dragSelection = dragSelectionWeakMap.get(workspace);
+  const multiDraggable = multiDraggableWeakMap.get(workspace);
+
+  Blockly.Events.setGroup(true);
+
+  // Clear current selection prior to pasting.
+  if (dragSelection.size) {
+    dragSelection.forEach(function(id) {
+      const element = getByID(workspace, id);
+      if (element) element.unselect();
+    });
+    dragSelection.clear();
+    multiDraggable.clearAll_();
+  }
+
+  const blockList = [];
+  copyData.forEach(function(stringData) {
+    const data = typeof stringData === 'string' ?
+        JSON.parse(stringData) : stringData;
+
+    let ws = workspace;
+
+    // Set unique id for data to prevent bug where
+    // blocks on multiple workspaces are highlighted.
+    if (ws.id !== Blockly.getMainWorkspace().id) {
+      if (data.blockState) {
+        data.blockState.id = Blockly.utils.idGenerator.genUid();
+      } else if (data.commentState) {
+        data.commentState.id = Blockly.utils.idGenerator.genUid();
+      }
+    }
+
+    if (data.source) {
+      ws = data.source;
+    }
+    if (ws.isFlyout) {
+      ws = ws.targetWorkspace;
+    }
+    if (data.typeCounts &&
+        ws.isCapacityAvailable(data.typeCounts)) {
+      const element = Blockly.clipboard.paste(data, ws);
+      if (element) {
+        blockList.push(element);
+        incrementFieldInputValues(element, ws);
+      }
+      if (element && element.type !== 'drag_to_dupe') {
+        dragSelectionWeakMap.get(ws).add(element.id);
+        multiDraggableWeakMap.get(ws).addSubDraggable_(element);
+      }
+    } else if (data.commentState) {
+      const element = Blockly.clipboard.paste(data, ws);
+      if (element) {
+        element.select();
+      }
+      if (element) {
+        dragSelectionWeakMap.get(ws).add(element.id);
+        multiDraggableWeakMap.get(ws).addSubDraggable_(element);
+      }
+    }
+  });
+  connectionDBList.forEach(function(connectionDB) {
+    if (blockList[connectionDB[0]] && blockList[connectionDB[1]]) {
+      blockList[connectionDB[0]].nextConnection.connect(
+          blockList[connectionDB[1]].previousConnection);
+    }
+  });
+  // Move pasted blocks to the mouse right-click position
+  moveBlocksToMousePosition(blockList, workspace);
+  applyConsecutivePasteStagger(blockList, workspace);
+  Blockly.Events.setGroup(false);
+  Blockly.common.setSelected(multiDraggable);
+};
+
 const registerPaste = function(useCopyPasteCrossTab) {
   const id = 'blockPasteFromStorage';
   const pasteOption = {
@@ -712,72 +797,25 @@ const registerPaste = function(useCopyPasteCrossTab) {
           'disabled': 'enabled');
     },
     callback: function(scope) {
-      let workspace = scope.workspace;
-      const dragSelection = dragSelectionWeakMap.get(workspace);
-      Blockly.Events.setGroup(true);
-      const multiDraggable = multiDraggableWeakMap.get(workspace);
-
-      // Update the dragSelection and multiDraggable object
-      // to remove current selection prior to pasting.
-      if (dragSelection.size) {
-        dragSelection.forEach(function(id) {
-          const element = getByID(workspace, id);
-          element.unselect();
-        });
-        dragSelection.clear();
-        multiDraggable.clearAll_();
-      }
-
-      const blockList = [];
+      const workspace = scope.workspace;
       if (useCopyPasteCrossTab) {
         dataCopyFromStorage();
       }
-      copyData.forEach(function(stringData) {
-        // Pasting always pastes to the main workspace, even if the copy
-        // started in a flyout workspace.
-        const data = JSON.parse(stringData);
-
-        // Set unique id for data to prevent bug where
-        // blocks on multiple workspaces are highlighted.
-        if (workspace.id !== Blockly.getMainWorkspace().id) {
-          if (data.blockState) {
-            data.blockState.id = Blockly.utils.idGenerator.genUid();
-          } else if (data.commentState) {
-            data.commentState.id = Blockly.utils.idGenerator.genUid();
-          }
+      // Check for missing block definitions (cross-instance paste)
+      const missingLibs = checkMissingBlockTypes();
+      if (missingLibs.length > 0) {
+        if (window.__ailyBlockPasteNeedsInstall) {
+          // Trigger async install dialog, paste after completion
+          window.__ailyBlockPasteNeedsInstall(missingLibs).then(() => {
+            executePaste(workspace);
+          }).catch(() => {
+            // User cancelled - do nothing
+          });
         }
-
-        if (data.source) {
-          workspace = data.source;
-        }
-        if (workspace.isFlyout) {
-          workspace = workspace.targetWorkspace;
-        }
-        if (data.typeCounts &&
-            workspace.isCapacityAvailable(data.typeCounts)) {
-          const element = Blockly.clipboard.paste(data, workspace);
-          if (element) {
-            blockList.push(element);
-          }
-          if (element.type !== 'drag_to_dupe') {
-            dragSelectionWeakMap.get(workspace).add(element.id);
-            multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
-          }
-        } else if (data.commentState) {
-          const element = Blockly.clipboard.paste(data, workspace);
-          if (element) {
-            element.select();
-          }
-          dragSelectionWeakMap.get(workspace).add(element.id);
-          multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
-        }
-      });
-      connectionDBList.forEach(function(connectionDB) {
-        blockList[connectionDB[0]].nextConnection.connect(
-            blockList[connectionDB[1]].previousConnection);
-      });
-      Blockly.Events.setGroup(false);
-      Blockly.common.setSelected(multiDraggable);
+        // Block paste when missing libs detected
+        return true;
+      }
+      executePaste(workspace);
       return true;
     },
     scopeType: Blockly.ContextMenuRegistry.ScopeType.WORKSPACE,
@@ -797,7 +835,8 @@ const registerSelectAll = function() {
   const id = 'workspaceSelectAll';
   const selectAllOption = {
     displayText: function() {
-      return 'Select all Blocks';
+      return Blockly.Msg['WORKSPACE_SELECT_ALL']?
+          Blockly.Msg['WORKSPACE_SELECT_ALL'] : 'Select all Blocks';
     },
     preconditionFn: function(scope) {
       return scope.workspace.getTopBlocks().some(
@@ -1224,6 +1263,7 @@ const registerCommentCopy = function(useCopyPasteCrossTab) {
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
+      resetConsecutivePasteStagger(workspace);
       Blockly.Events.setGroup(false);
       return true;
     },

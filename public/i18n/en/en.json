@@ -67,7 +67,8 @@
         "MULTI_COMPRESS": "Compress to ZIP",
         "LIB_MANAGER": "Library Manager",
         "AI_ASSISTANT": "AI Assistant",
-        "PROJECT_HUB": "Project Hub"
+        "PROJECT_HUB": "Project Hub",
+        "NEW_INSTANCE": "New Window"
     },
     "ESP32": {
         "UPLOAD_SPEED": "Upload Speed",
@@ -82,6 +83,15 @@
         "BOARD": "Select Board Model",
         "USB": "USB Configuration",
         "UPLOAD_METHOD": "Upload Method"
+    },
+    "NRF5": {
+        "SOFTDEVICE": "SoftDevice",
+        "FLASH_SOFTDEVICE_TITLE": "Flash SoftDevice",
+        "FLASH_SOFTDEVICE_CONFIRM": "Do you want to flash {{softdevice}} SoftDevice to the device?",
+        "SELECT_PORT_FIRST": "Please select a port first",
+        "FLASHING_SOFTDEVICE": "Flashing SoftDevice...",
+        "FLASH_SUCCESS": "SoftDevice flashed successfully",
+        "FLASH_FAILED": "Failed to flash SoftDevice"
     },
     "GUIDE": {
         "START": "Start",
@@ -123,6 +133,13 @@
         }
     },
     "BLOCKLY": {
+        "CROSS_TAB_COPY": "Copy to specified location",
+        "CONTROLS_SWITCH_CASE": "case",
+        "CONTROLS_SWITCH_DO": "do",
+        "CONTROLS_SWITCH_DEFAULT": "default",
+        "CROSS_TAB_PASTE": "Paste",
+        "CROSS_TAB_PASTE_X_ELEMENTS": "Paste %1 items",
+        "WORKSPACE_SELECT_ALL": "Select all blocks",
         "ONBOARDING": {
             "TOOLBOX_TITLE": "Block Toolbox",
             "TOOLBOX_DESC": "Find all available blocks here. Drag and drop blocks to the workspace to build your program.",
@@ -163,7 +180,8 @@
             "REPOSITORY": "Service Region",
             "DEPENDENCIES": "Dependencies",
             "MCP": "MCP",
-            "DEVMODE": "Developer Mode"
+            "DEVMODE": "Developer Mode",
+            "CACHE": "Cache Management"
         },
         "FIELDS": {
             "PROJECT_FOLDER": "Project Folder",
@@ -174,11 +192,27 @@
             "FLYOUT_AUTO_CLOSE": "Auto Close Toolbox",
             "COMPILATION_OPTIONS": "Compilation Options",
             "REGION": "Service Region",
+            "REGION_TITLE": "Switch Service Region",
+            "REGION_DESC": "You need to log in again after switching the service region. Continue?",
+            "REGION_CONFIRM": "Confirm",
+            "REGION_CANCEL": "Cancel",
             "REPOSITORY_URLS": "Repository URLs",
             "BOARD_LIST": "Board List",
             "LIBRARY_LIST": "Library List",
             "INSTALL": "Install",
-            "UNINSTALL": "Uninstall"
+            "UNINSTALL": "Uninstall",
+            "CLEAR_CACHE": "Clear Cache",
+            "CACHE_SIZE": "Cache Size",
+            "CACHE_LOADING": "Loading...",
+            "CACHE_ALL": "Clear All",
+            "CACHE_ONE_MONTH": "Clear 1 Month Old",
+            "CACHE_THREE_MONTHS": "Clear 3 Months Old",
+            "CACHE_CLEARING": "Clearing...",
+            "CACHE_CLEARED": "Cache cleared",
+            "CACHE_CLEAR_FAILED": "Clear failed",
+            "CACHE_CONFIRM_TITLE": "Confirm Clear",
+            "CACHE_CONFIRM_DESC": "Are you sure you want to clear all compilation cache? This cannot be undone.",
+            "CACHE_CONFIRM_OK": "Confirm"
         },
         "BUTTONS": {
             "CANCEL": "Cancel",
@@ -205,7 +239,8 @@
             "BOARD": "Board",
             "PROJECT_NAME": "Project Name",
             "SAVE_PATH": "Save Path",
-            "NAME_EXISTS": "Project name already exists, please modify"
+            "NAME_EXISTS": "Project name already exists, please modify",
+            "PATH_INVALID_CHARS": "Path contains invalid characters (e.g. / : * ? \" < > |), please modify"
         },
         "BUTTONS": {
             "USE_THIS": "Use This Board",
@@ -216,14 +251,15 @@
             "CREATING": "Creating"
         },
         "WARNINGS": {
-            "BETA_VERSION": "Beta version, unverified, use with caution"
+            "BETA_VERSION": "Beta version, unverified, use with caution",
+            "TODO": "Device support coming soon"
         }
     },
     "LIB_MANAGER": {
         "TITLE": "Library Manager",
         "BACK": "Back",
         "SEARCH_LIBRARY": "Search Library",
-        "ALL": "All Libraries",
+        "ALL": "All",
         "INSTALLED": "Installed",
         "CORE_LIBRARY": "Core Library",
         "IMPORT_LIBRARY": "Import Local Library",
@@ -234,6 +270,7 @@
         "INSTALLED_TEXT": "Installed",
         "REMOVE": "Remove",
         "INSTALLING": "Installing",
+        "INSTALL_FAILED": "Installation Failed",
         "UNINSTALLING": "Uninstalling",
         "UNINSTALLED": "Uninstalled",
         "IMPORTING": "Importing",
@@ -259,6 +296,12 @@
         "CANCEL": "Cancel",
         "CONTINUE_INSTALL": "Continue Install"
     },
+    "PASTE_INSTALL": {
+        "TITLE": "Libraries Required",
+        "MESSAGE": "The blocks you are pasting require the following libraries. Install them?",
+        "CANCEL": "Cancel",
+        "INSTALL_AND_PASTE": "Install & Paste"
+    },
     "BOARD_SELECTOR": {
         "TITLE": "Switch Board",
         "SEARCH_PLACEHOLDER": "Search board...",
@@ -270,6 +313,10 @@
     },
     "UPDATE_DIALOG": {
         "TITLE": "Software Update",
+        "TITLE_READY": "Update Ready",
+        "TITLE_NEW_VERSION": "New Version {{version}} Available",
+        "TEXT_DOWNLOADED": "Version {{version}} has been downloaded. Install now?",
+        "TEXT_AVAILABLE": "Current version {{currentVersion}}, new version {{version}}<br>Would you like to download and install this update?",
         "DOWNLOAD_FAILED": "Download Failed",
         "REMIND_LATER": "Remind Later",
         "SKIP_VERSION": "Skip This Version",
@@ -329,8 +376,9 @@
         "SETTINGS": "AI Settings",
         "HISTORY": "Chat History",
         "NEW_CHAT": "New Chat",
-        "SERVICE_TITLE": "aily assistant service",
+        "SERVICE_TITLE": "ai assistant service",
         "DISCLAIMER": "AI responses are for reference only and may not be accurate. They do not represent the views of the software developers. Users should verify the information themselves.",
+        "USAGE_GUIDE": "Learn AI Usage",
         "ADD_CONTEXT": "Add Context",
         "ADD_FILE": "Add File",
         "ADD_FOLDER": "Add Folder",
@@ -342,6 +390,15 @@
         "MODE_AGENT_FULL": "Agent Mode",
         "MODE_QA_FULL": "Q&A Mode",
         "STOP_CURRENT_SESSION_FIRST": "Please stop the current session before creating a new one",
+        "NO_HISTORY_SESSION": "No history session records",
+        "MERMAID_SAVE_ARCH": "Save as architecture diagram",
+        "MERMAID_ARCH_OVERWRITE_TITLE": "Overwrite confirmation",
+        "MERMAID_ARCH_OVERWRITE_CONTENT": "Architecture diagram file already exists in project directory. Overwrite?",
+        "MERMAID_ARCH_CONFIRM": "Confirm",
+        "MERMAID_ARCH_CANCEL": "Cancel",
+        "MERMAID_COPY_FAILED": "Copy failed",
+        "MERMAID_SAVE_FAILED": "Save failed",
+        "CLICK_TO_EDIT": "Click to edit",
         "ONBOARDING": {
             "STEP1_TITLE": "Input Box",
             "STEP1_DESC": "Type your questions or tasks here for AI assistance. Press Enter to send, Ctrl+Enter for new line",
@@ -389,11 +446,22 @@
     },
     "FLOAT_SIDER": {
         "PROJECT_SETTINGS": "Project Settings",
+        "ARCH": "Architecture Diagram",
         "PINMAP": "Pin Map",
+        "CIRCUIT": "Circuit Diagram",
         "DOCUMENTATION": "Documentation",
         "FEEDBACK": "Feedback",
         "NO_PINMAP": "Pin map not available for this board",
-        "NO_DOCUMENTATION": "Documentation not available for this board"
+        "PINMAP_PARSE_ERROR": "Pin map parsing failed",
+        "NO_DOCUMENTATION": "Documentation not available for this board",
+        "ARCH_ELECTRON_ONLY": "Architecture diagram is only available in desktop app",
+        "NO_PROJECT": "No project opened",
+        "NO_ARCH": "arch.md not found in project directory",
+        "ARCH_EMPTY": "No mermaid diagram found in arch.md",
+        "ARCH_RENDER_FAILED": "Failed to render architecture diagram",
+        "GENERATE_ARCH_PROMPT": "Generate project architecture diagram",
+        "ARCH_AI_BUSY": "AI is currently in a conversation, please try again later",
+        "LOGIN_REQUIRED": "Please log in first to use this feature"
     },
     "SERIAL": {
         "SELECT_PORT_FIRST": "Please select a serial port first",
@@ -503,18 +571,29 @@
     "LOGIN": {
         "HEADER": "Login to use our services",
         "PHONE": "Phone",
+        "EMAIL": "Email",
         "BENEFITS_TITLE": "After logging in, you can:",
         "BENEFIT_AI": "Try AI Q&A feature for free",
         "BENEFIT_SHARE": "Share your projects",
         "BENEFIT_EXPERIENCE": "Enjoy personalized development experience",
         "NOTICE_LABEL": "Note: ",
-        "NOTICE_CONTENT": "We will use your GitHub account to star our open source repositories, which helps support our project development.",
+        "NOTICE_CONTENT": "Logging in will star this project, helping support our project development",
         "GITHUB_LOGIN": "Login with Github",
         "WECHAT_SCAN": "Scan QR code to follow and login",
         "PHONE_NOT_OPEN": "Phone registration is not yet available",
         "PHONE_BETA_ONLY": "Phone login is only for AI beta testers",
         "PHONE_PLACEHOLDER": "Enter phone number",
         "PASSWORD_PLACEHOLDER": "Enter password",
+        "EMAIL_LOGIN_DESC": "Enter your email to receive a verification code and login",
+        "EMAIL_PLACEHOLDER": "Enter email address",
+        "CODE_PLACEHOLDER": "Enter verification code",
+        "SEND_CODE": "Get Code",
+        "ENTER_EMAIL": "Please enter email address",
+        "INVALID_EMAIL": "Please enter a valid email address",
+        "CODE_SENT": "Verification code sent, please check your email",
+        "CODE_SEND_FAILED": "Failed to send verification code, please try again",
+        "ENTER_CODE": "Please enter verification code",
+        "CODE_SENDING": "Please get verification code first",
         "LOGGING_IN": "Logging in...",
         "LOGIN": "Login",
         "SELECT_METHOD": "Click to select login method",
@@ -524,14 +603,116 @@
         "ENTER_CREDENTIALS": "Please enter username and password",
         "LOGIN_SUCCESS": "Login successful",
         "LOGIN_FAILED": "Login failed",
-        "LOGIN_NETWORK_ERROR": "Login failed, please check network connection"
+        "LOGIN_NETWORK_ERROR": "Login failed, please check network connection",
+        "AGREEMENT_PREFIX": "I have read and agree to the",
+        "USER_AGREEMENT": "User Agreement",
+        "AGREEMENT_AND": "and",
+        "PRIVACY_POLICY": "Privacy Policy",
+        "AGREEMENT_REQUIRED": "Please agree to the User Agreement and Privacy Policy first",
+        "MODAL_CLOSE": "Close",
+        "AGREEMENT_LOAD_FAILED": "Failed to load User Agreement",
+        "PRIVACY_LOAD_FAILED": "Failed to load Privacy Policy",
+        "WECHAT_QRCODE_FAILED": "Failed to get QRcode",
+        "WECHAT_REFRESH": "Refresh QR code",
+        "WECHAT_RETRY": "Retry",
+        "INVITE_CODE_PLACEHOLDER": "Invitation code (optional)",
+        "AGREEMENT_BY_LOGIN": "By logging in/registering, you agree to the",
+        "TERMS_OF_USE": "Terms of Use",
+        "OTHER_LOGIN_METHODS": "You can also log in with",
+        "GITHUB_CONTINUE": "Please click \"Continue\" on the GitHub authorization page to complete login",
+        "REGISTER": "Register",
+        "WECHAT_BIND_REQUIRED": "WeChat Binding Required",
+        "WECHAT_BIND_SCAN": "Scan QR code with WeChat to bind",
+        "WECHAT_BIND_SUCCESS": "Binding successful",
+        "WECHAT_BIND_CONFLICT": "This WeChat is already bound to another account",
+        "BACK_TO_LOGIN": "Back to Login"
     },
     "COMMON": {
+        "FEATURE_COMING_SOON": "Feature coming soon",
         "ONBOARDING": {
             "SKIP": "Skip",
             "PREV": "Previous",
             "NEXT": "Next",
             "DONE": "Done"
         }
+    },
+    "NPM": {
+        "INSTALLING": "Installing {{name}}...",
+        "INSTALLING_DEPENDENCY": "Installing {{name}} dependency...",
+        "INSTALL_TIMEOUT": "Installation timeout",
+        "INSTALL_COMPLETE": "{{name}} installed successfully",
+        "INSTALL_FAILED": "{{name}} installation failed",
+        "UNINSTALLING": "Uninstalling {{name}}...",
+        "UNINSTALLING_UNUSED_DEPS": "Uninstalling unused dependencies...",
+        "UNINSTALL_TIMEOUT": "Uninstallation timeout",
+        "UNINSTALL_COMPLETE": "{{name}} uninstalled successfully",
+        "BOARD_INSTALL_COMPLETE": "Board installed successfully",
+        "BOARD_UNINSTALL_COMPLETE": "Board uninstalled successfully",
+        "BOARD_DEPS_INSTALL_COMPLETE": "Board dependencies installed successfully",
+        "BOARD_DEPS_INSTALL_FAILED": "Board dependencies installation failed",
+        "DEPS_INSTALL_COMPLETE": "Dependencies installed successfully",
+        "DEPS_UNINSTALL_COMPLETE": "Dependencies uninstalled successfully",
+        "DEPS_UNINSTALL_FAILED": "Dependencies uninstallation failed",
+        "NAME_REQUIRED": "{{type}} name cannot be empty",
+        "TYPE_TOOL": "Tool",
+        "TYPE_SDK": "SDK",
+        "TYPE_COMPILER": "Compiler",
+        "INSTALLING_TITLE": "Installing",
+        "INSTALL_COMPLETE_TITLE": "Installation Complete",
+        "INSTALL_FAILED_TITLE": "Installation Failed",
+        "UNINSTALLING_TITLE": "Uninstalling",
+        "UNINSTALL_COMPLETE_TITLE": "Uninstallation Complete",
+        "UNINSTALL_FAILED_TITLE": "Uninstallation Failed"
+    },
+    "BLOCKLY_EDITOR": {
+        "INSTALLING_DEPS": "Installing dependencies",
+        "LOADING_BOARD_CONFIG": "Loading board configuration",
+        "LOADING_BLOCKLY_LIB": "Loading Blockly libraries",
+        "LOADING_LIB": "Loading {{name}}",
+        "LOADING_BLOCKLY_PROGRAM": "Loading Blockly program",
+        "PROJECT_LOAD_SUCCESS": "Project loaded successfully"
+    },
+    "PLAYGROUND": {
+        "LOADING_EXAMPLE": "Loading example...",
+        "EXAMPLE_LOAD_SUCCESS": "Example loaded successfully",
+        "EXAMPLE_LOAD_FAILED": "Failed to load example",
+        "NO_TUTORIAL_PROVIDED": "No tutorial provided by the library author"
+    },
+    "PROJECT": {
+        "CANNOT_OPEN_PROJECT": "Cannot open project: ",
+        "CREATING_PROJECT": "Creating project...",
+        "PROJECT_CREATED": "Project created successfully",
+        "CREATE_FAILED": "Project creation failed",
+        "PATH_NOT_EXIST": "Project path does not exist, please select another project",
+        "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
+        "BOARD_SWITCH_COMPLETE": "Board switch complete",
+        "BOARD_SWITCH_SUCCESS": "Board switched successfully",
+        "SWITCHING_BOARD": "Switching board...",
+        "UNINSTALLING_CURRENT_BOARD": "Uninstalling current board...",
+        "INSTALLING_NEW_BOARD": "Installing new board...",
+        "UPDATING_PROJECT_CONFIG": "Updating project configuration...",
+        "BOARD_SWITCH_FAILED": "Board switch failed: ",
+        "LOCK_CONFLICT_TITLE": "Project already open",
+        "LOCK_CONFLICT_MESSAGE": "Another window or version may be editing this project.",
+        "LOCK_CONFLICT_CONTENT": "Another instance may be editing this project.\nPID: {{pid}}\nVersion: {{version}}",
+        "LOCK_CANCEL": "Cancel",
+        "LOCK_FOCUS_OTHER": "Bring to front",
+        "LOCK_FORCE_OPEN": "Open anyway",
+        "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "NOTIFICATION": {
+        "STOP": "Stop",
+        "VIEW_DETAIL": "View Details",
+        "AI_PROCESS": "AI Process"
+    },
+    "LOG": {
+        "TOOLTIP": "Click to copy to clipboard, double-click to send to AI assistant",
+        "COPIED_TO_CLIPBOARD": "Log content copied to clipboard",
+        "SENT_TO_AI": "Log content sent to AI assistant",
+        "NO_DATA_TO_EXPORT": "No log data to export",
+        "EXPORT_TITLE": "Export Log Data",
+        "TEXT_FILE": "Text Files",
+        "ALL_FILES": "All Files",
+        "EXPORT_SUCCESS": "Log data exported to "
     }
 }

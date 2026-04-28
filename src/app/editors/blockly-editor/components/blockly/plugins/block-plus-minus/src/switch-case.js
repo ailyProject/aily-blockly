@@ -57,7 +57,7 @@ const switchCaseMutator = {
     if (this.hasDefault_ && !this.getInput('DEFAULT')) {
       this.appendStatementInput('DEFAULT')
         .appendField(createMinusField('default'), 'MINUS_DEFAULT')
-        .appendField('默认执行');
+        .appendField(Blockly.Msg['CONTROLS_SWITCH_DEFAULT'] || 'default');
     }
     this.updateShape_(targetCaseCount);
   },
@@ -86,7 +86,7 @@ const switchCaseMutator = {
     if (this.hasDefault_ && !this.getInput('DEFAULT')) {
       this.appendStatementInput('DEFAULT')
         .appendField(createMinusField('default'), 'MINUS_DEFAULT')
-        .appendField('默认执行');
+        .appendField(Blockly.Msg['CONTROLS_SWITCH_DEFAULT'] || 'default');
     }
     this.updateShape_(targetCount);
   },
@@ -145,11 +145,11 @@ const switchCaseMutator = {
     // Add case value input
     this.appendValueInput('CASE' + caseIndex)
       .appendField(createMinusField(caseIndex), 'MINUS' + caseIndex)
-      .appendField('情况');
+      .appendField(Blockly.Msg['CONTROLS_SWITCH_CASE'] || 'case');
     
     // Add case statement input
     this.appendStatementInput('DO' + caseIndex)
-      .appendField('执行');
+      .appendField(Blockly.Msg['CONTROLS_SWITCH_DO'] || 'do');
     
     // Move DEFAULT to the end if it exists
     if (this.getInput('DEFAULT')) {
