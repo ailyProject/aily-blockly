@@ -115,7 +115,7 @@ export class MonacoEditorComponent implements OnChanges, OnDestroy {
 
   /** 语言 id，供外部兜底使用 */
   getLanguageIdForCurrentFile(): string {
-    return this.textModel?.getLanguageId() ?? guessLanguageFromPath(this.filePath);
+    return this.textModel?.getLanguageId() ?? resolveLanguageId(this.filePath);
   }
 
   private normalizeFsPath(p: string): string {
@@ -137,7 +137,7 @@ export class MonacoEditorComponent implements OnChanges, OnDestroy {
       fs.registerFile(new RegisteredMemoryFile(uri, this.code ?? ''));
       this.overlayDisposable = registerFileSystemOverlay(1, fs);
 
-      const languageId = guessLanguageFromPath(this.filePath);
+      const languageId = resolveLanguageId(this.filePath);
       this.textModel = monaco.editor.createModel(this.code ?? '', languageId, uri);
 
       const textModel = this.textModel;
@@ -199,36 +199,36 @@ export class MonacoEditorComponent implements OnChanges, OnDestroy {
   }
 }
 
-function guessLanguageFromPath(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    js: 'javascript',
-    jsx: 'javascriptreact',
-    mjs: 'javascript',
-    cjs: 'javascript',
-    ts: 'typescript',
-    tsx: 'typescriptreact',
-    json: 'json',
-    md: 'markdown',
-    html: 'html',
-    htm: 'html',
-    css: 'css',
-    scss: 'scss',
-    less: 'less',
-    py: 'python',
-    cpp: 'cpp',
-    cc: 'cpp',
-    cxx: 'cpp',
-    hpp: 'cpp',
-    c: 'c',
-    h: 'c',
-    ino: 'cpp',
-    xml: 'xml',
-    yaml: 'yaml',
-    yml: 'yaml',
-    sh: 'shellscript',
-    ini: 'ini',
-    toml: 'toml'
+/**
+ * 决定当前文件的 monaco 语言 id：
+ *  1. 先用 monaco 已注册语言（含 public/vscode/extensions 通过 manifest 贡献的扩展名/文件名规则）做匹配；
+ *  2. 命中失败再回落到内建简表，覆盖 monaco 标准库尚未识别的扩展名（如 .ino → cpp）。
+ */
+function resolveLanguageId(path: string): string {
+  if (!path) {
+    return 'plaintext';
+  }
+  const fileName = path.replace(/\\/g, '/').split('/').pop() ?? path;
+  const lowerName = fileName.toLowerCase();
+  const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : '';
+
+  for (const language of monaco.languages.getLanguages()) {
+    if (language.filenames?.some((name) => name.toLowerCase() === lowerName)) {
+      return language.id;
+    }
+    if (ext && language.extensions?.some((e) => e.toLowerCase() === ext)) {
+      return language.id;
+    }
+  }
+
+  /** 兜底：覆盖一些 monaco 内置 language 未涵盖的别名/扩展名 */
+  const fallback: Record<string, string> = {
+    '.mjs': 'javascript',
+    '.cjs': 'javascript',
+    '.jsx': 'javascriptreact',
+    '.tsx': 'typescriptreact',
+    '.ino': 'cpp',
+    '.toml': 'ini'
   };
-  return map[ext] ?? 'plaintext';
+  return fallback[ext] ?? 'plaintext';
 }

@@ -70,7 +70,7 @@ export class MonacoVSCodeCSSLoader {
       'vscode/css/editor/browser/controller/editContext/native/nativeEditContext.css',
       'vscode/css/editor/browser/controller/editContext/textArea/textAreaEditContext.css',
       'vscode/css/editor/browser/gpu/css/media/decorationCssRuleExtractor.css',
-      'vscode/css/editor/browser/services/hoverService/hover.css',
+      'vscode/css/platform/hover/browser/hover.css',
       'vscode/css/editor/browser/viewParts/blockDecorations/blockDecorations.css',
       'vscode/css/editor/browser/viewParts/currentLineHighlight/currentLineHighlight.css',
       'vscode/css/editor/browser/viewParts/decorations/decorations.css',

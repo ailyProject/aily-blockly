@@ -50,7 +50,8 @@
               ".svg": "file",
               ".woff": "file",
               ".woff2": "file",
-              ".eot": "file"
+              ".eot": "file",
+              ".wasm": "file"
             },
             "assets": [
               {
@@ -83,28 +84,18 @@
                 "output": "/"
               },
               {
-                "glob": "**/*",
-                "input": "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources",
-                "output": "vscode/extension/theme"
-              },
-              {
-                "glob": "**/*",
-                "input": "node_modules/@codingame/monaco-vscode-cpp-default-extension/resources",
-                "output": "vscode/extension/cpp"
-              },
-              {
                 "glob": "**/*.css",
                 "input": "node_modules/@codingame/monaco-vscode-api/vscode/src/vs",
                 "output": "vscode/css"
               },
               {
                 "glob": "**/onig.wasm",
-                "input": "node_modules/vscode-oniguruma/release",
+                "input": "node_modules/@codingame/monaco-vscode-textmate-service-override/external/vscode-oniguruma/release",
                 "output": "vscode-oniguruma/release"
               },
               {
                 "glob": "**/onig.wasm",
-                "input": "node_modules/vscode-oniguruma/release",
+                "input": "node_modules/@codingame/monaco-vscode-textmate-service-override/external/vscode-oniguruma/release",
                 "output": "node_modules/vscode-oniguruma/release"
               },
               {
