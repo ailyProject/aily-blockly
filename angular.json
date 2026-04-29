@@ -25,7 +25,7 @@
           "builder": "@angular-devkit/build-angular:application",
           "options": {
             "outputPath": "dist/aily-blockly",
-            "preserveSymlinks": true,
+            "preserveSymlinks": false,
             "index": "src/index.html",
             "browser": "src/main.ts",
             "polyfills": [
@@ -38,8 +38,13 @@
               "vscode",
               "monaco-editor",
               "@codingame/monaco-vscode-base-service-override",
+              "@codingame/monaco-vscode-bulk-edit-service-override",
               "@codingame/monaco-vscode-extensions-service-override",
-              "@codingame/monaco-vscode-rollup-vsix-plugin"
+              "@codingame/monaco-vscode-environment-service-override",
+              "@codingame/monaco-vscode-layout-service-override",
+              "@codingame/monaco-vscode-rollup-vsix-plugin",
+              "@codingame/monaco-vscode-view-common-service-override",
+              "@codingame/monaco-vscode-views-service-override"
             ],
             "loader": {
               ".ttf": "file",
@@ -102,6 +107,11 @@
                 "glob": "**/codicon.ttf",
                 "input": "node_modules/@codingame/monaco-vscode-api/vscode/src/vs/base/browser/ui/codicons/codicon",
                 "output": "/"
+              },
+              {
+                "glob": "webWorkerExtensionHostIframe.html",
+                "input": "node_modules/@codingame/monaco-vscode-extensions-service-override/vscode/src/vs/workbench/services/extensions/worker",
+                "output": "/assets/vscode"
               }
             ],
             "styles": [
@@ -143,6 +153,37 @@
         },
         "serve": {
           "builder": "@angular-devkit/build-angular:dev-server",
+          "options": {
+            "prebundle": {
+              "exclude": [
+                "@codingame/monaco-vscode-api",
+                "@codingame/monaco-vscode-base-service-override",
+                "@codingame/monaco-vscode-bulk-edit-service-override",
+                "@codingame/monaco-vscode-configuration-service-override",
+                "@codingame/monaco-vscode-css-language-features-default-extension",
+                "@codingame/monaco-vscode-emmet-default-extension",
+                "@codingame/monaco-vscode-environment-service-override",
+                "@codingame/monaco-vscode-extensions-service-override",
+                "@codingame/monaco-vscode-files-service-override",
+                "@codingame/monaco-vscode-host-service-override",
+                "@codingame/monaco-vscode-html-language-features-default-extension",
+                "@codingame/monaco-vscode-json-language-features-default-extension",
+                "@codingame/monaco-vscode-keybindings-service-override",
+                "@codingame/monaco-vscode-languages-service-override",
+                "@codingame/monaco-vscode-layout-service-override",
+                "@codingame/monaco-vscode-markdown-language-features-default-extension",
+                "@codingame/monaco-vscode-model-service-override",
+                "@codingame/monaco-vscode-snippets-service-override",
+                "@codingame/monaco-vscode-textmate-service-override",
+                "@codingame/monaco-vscode-theme-service-override",
+                "@codingame/monaco-vscode-typescript-language-features-default-extension",
+                "@codingame/monaco-vscode-view-common-service-override",
+                "@codingame/monaco-vscode-views-service-override",
+                "monaco-editor",
+                "vscode"
+              ]
+            }
+          },
           "configurations": {
             "production": {
               "buildTarget": "aily-blockly:build:production"

@@ -2,21 +2,33 @@
  * 在应用启动阶段完成 monaco-vscode-api 与服务覆盖的初始化。
  * 必须在页面内第一次调用 monaco.editor.create 之前执行（含 Blockly 等处的 Monaco）。
  */
-import { initialize } from '@codingame/monaco-vscode-api';
+import {
+  IEditorOverrideServices,
+  IStorageService,
+  SyncDescriptor,
+  initialize
+} from '@codingame/monaco-vscode-api';
 import { registerAssets } from '@codingame/monaco-vscode-api/assets';
 import getBaseServiceOverride from '@codingame/monaco-vscode-base-service-override';
-import getHostServiceOverride from '@codingame/monaco-vscode-host-service-override';
-import getFilesServiceOverride from '@codingame/monaco-vscode-files-service-override';
 import getConfigurationServiceOverride, {
   initUserConfiguration
 } from '@codingame/monaco-vscode-configuration-service-override';
-import getExtensionsServiceOverride from '@codingame/monaco-vscode-extensions-service-override';
+import getDialogsServiceOverride from '@codingame/monaco-vscode-dialogs-service-override';
+import getLayoutServiceOverride from '@codingame/monaco-vscode-layout-service-override';
 import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-override';
 import getLanguagesServiceOverride from '@codingame/monaco-vscode-languages-service-override';
+import getOutlineServiceOverride from '@codingame/monaco-vscode-outline-service-override';
+import getStorageServiceOverride, {
+  BrowserStorageService as InjectedBrowserStorageService,
+  type DatabaseFactories
+} from '@codingame/monaco-vscode-storage-service-override';
 import getTextmateServiceOverride from '@codingame/monaco-vscode-textmate-service-override';
+import getBannerServiceOverride from '@codingame/monaco-vscode-view-banner-service-override';
+import getTitleBarServiceOverride from '@codingame/monaco-vscode-view-title-bar-service-override';
 
 import { MonacoVSCodeCSSLoader } from './monaco-vscode-css-loader';
-import { registerPublicVscodeSyntaxExtensions } from './register-public-vscode-syntax-extensions';
+
+import '@codingame/monaco-vscode-javascript-default-extension'
 
 /**
  * Angular esbuild 通过 `new URL('xxx.js', import.meta.url)` 触发资源跟踪并输出 chunk，
@@ -78,6 +90,26 @@ function attachMonacoWorkers(): void {
   };
 }
 
+/**
+ * 官方 storage override 使用 SyncDescriptor(..., true)（延迟实例化），InstantiationService 会用 Proxy
+ * 包装服务；在 GlobalIdleValue 完成前访问 getNumber 等非事件方法会得到 undefined，进而报错「不是函数」。
+ * 此处改为非延迟实例化（与 standalone 默认 InMemoryStorageService 注册方式一致）。
+ */
+function getEagerStorageServiceOverride(params?: {
+  fallbackOverride?: Record<string, unknown>;
+  databaseFactories?: DatabaseFactories;
+}): IEditorOverrideServices {
+  const base = getStorageServiceOverride(params);
+  return {
+    ...base,
+    [IStorageService.toString()]: new SyncDescriptor(
+      InjectedBrowserStorageService,
+      [params?.fallbackOverride, params?.databaseFactories],
+      false
+    )
+  };
+}
+
 let bootstrapPromise: Promise<void> | undefined;
 
 export async function ensureMonacoVsCodeApiInitialized(): Promise<void> {
@@ -120,27 +152,25 @@ export async function ensureMonacoVsCodeApiInitialized(): Promise<void> {
         )
       );
 
-      /**
-       * 必须在 initialize() 之前完成 registerExtension，
-       * 这样扩展会被收纳到 builtinExtensions，由 ExtensionsServiceOverride
-       * 在启动阶段统一扫描，并触发 grammars/languages/themes 等扩展点。
-       */
-      await registerPublicVscodeSyntaxExtensions();
-
-      await initialize({
-        ...getBaseServiceOverride(),
-        ...getHostServiceOverride(),
-        ...getFilesServiceOverride(),
+      const commonServices: IEditorOverrideServices = {
+        // ...getBaseServiceOverride(),
+        // ...getLayoutServiceOverride(),
+        ...getDialogsServiceOverride(),
         ...getConfigurationServiceOverride(),
-        /**
-         * `enableWorkerExtensionHost: false`：当前内置扩展只贡献语法/语言/主题等静态数据，
-         * 没有需要执行 JS 的扩展，禁用 worker 扩展宿主可避免额外 iframe / postMessage 通信开销。
-         */
-        ...getExtensionsServiceOverride({ enableWorkerExtensionHost: false }),
+        ...getTextmateServiceOverride(),
         ...getThemeServiceOverride(),
         ...getLanguagesServiceOverride(),
-        ...getTextmateServiceOverride()
-      });
+        ...getOutlineServiceOverride(),
+        ...getBannerServiceOverride(),
+        ...getTitleBarServiceOverride(),
+        // ...getEagerStorageServiceOverride({
+        //   fallbackOverride: {
+        //     'workbench.activity.showAccounts': false
+        //   }
+        // })
+      };
+
+      await initialize(commonServices);
     })();
   }
   await bootstrapPromise;
