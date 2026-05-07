@@ -1,4 +1,19 @@
-.monaco-editor-container {
-    height: 100% !important;
-    width: 100% !important;
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.monaco-editor-host {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.monaco-editor-host ngx-monaco-editor {
+  display: block;
+  position: absolute;
+  inset: 0;
 }

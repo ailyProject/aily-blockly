@@ -247,7 +247,7 @@ export class UiService {
     if (this.isMainWindow) {
       this.stateSubject.next(state);
     } else {
-      window['ipcRenderer'].send('state-update', state);
+      // window['ipcRenderer'].send('state-update', state);
     }
   }
 

@@ -1,0 +1,16 @@
+<div class="monaco-editor-pro-root">
+  <div class="monaco-editor-pro-toolbar">
+    <button type="button" class="test-open-btn" (click)="onTestOpenFile()">
+      {{ 'MONACO_EDITOR_PRO.TEST_OPEN_FILE' | translate }}
+    </button>
+  </div>
+  <div class="monaco-editor-pro-host">
+    <ngx-monaco-editor
+      [editorStyle]="editorHostStyle()"
+      [options]="editorExtraOptions()"
+      [language]="editorLanguage()"
+      [theme]="editorTheme()"
+      [(value)]="editorValue"
+    />
+  </div>
+</div>

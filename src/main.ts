@@ -4,13 +4,7 @@ import { AppComponent } from './app/app.component';
 
 // 导入全局聊天工具，注册全局方法
 import './app/utils/global-chat.utils';
-import { ensureMonacoVsCodeApiInitialized } from './app/utils/monaco-vscode-bootstrap';
 
 void (async () => {
-  try {
-    await ensureMonacoVsCodeApiInitialized();
-  } catch (e) {
-    console.error('Monaco VSCode API 初始化失败:', e);
-  }
   await bootstrapApplication(AppComponent, appConfig);
 })().catch((err) => console.error(err));

@@ -70,7 +70,7 @@
               },
               {
                 "glob": "**/*",
-                "input": "node_modules/monaco-editor/min/vs",
+                "input": "node_modules/monaco-editor-vs/min/vs",
                 "output": "/assets/vs"
               },
               {
@@ -132,8 +132,8 @@
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "500kB",
-                  "maximumError": "5MB"
+                  "maximumWarning": "8MB",
+                  "maximumError": "12MB"
                 },
                 {
                   "type": "anyComponentStyle",
@@ -168,6 +168,8 @@
                 "@codingame/monaco-vscode-host-service-override",
                 "@codingame/monaco-vscode-html-language-features-default-extension",
                 "@codingame/monaco-vscode-json-language-features-default-extension",
+                "@codingame/monaco-vscode-python-default-extension",
+                "@codingame/monaco-vscode-theme-defaults-default-extension",
                 "@codingame/monaco-vscode-keybindings-service-override",
                 "@codingame/monaco-vscode-languages-service-override",
                 "@codingame/monaco-vscode-layout-service-override",

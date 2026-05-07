@@ -6,18 +6,6 @@ import { ElectronService } from '../../services/electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ConfigService } from '../../services/config.service';
 
-// 声明Electron API全局接口
-declare global {
-  interface Window {
-    electronAPI: {
-      SerialPort: {
-        list: () => Promise<any[]>;
-        create: (options: any) => any;
-      }
-    }
-  }
-}
-
 @Injectable({
   providedIn: 'root'
 })

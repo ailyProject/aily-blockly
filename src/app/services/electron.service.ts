@@ -10,14 +10,14 @@ export class ElectronService {
   constructor() { }
 
   async init() {
-    if (this.electron && typeof this.electron.versions() == 'object') {
-      console.log('Running in electron', this.electron.versions());
+    const bridge: any = window.electronAPI ?? window['electronAPI'];
+    if (bridge && typeof bridge.versions === 'function' && typeof bridge.versions() === 'object') {
+      console.log('Running in electron', bridge.versions());
       this.isElectron = true;
-      // 在这里把 相关nodejs内容 挂载到 window 上
-      // 调用前先判断isElectron
-      for (let key in this.electron) {
-        // console.log('load ' + key);
-        window[key] = this.electron[key];
+      this.electron = bridge;
+      // contextBridge 暴露的对象用 Object.keys 遍历更可靠
+      for (const key of Object.keys(bridge)) {
+        window[key] = bridge[key];
       }
     } else {
       console.log('Running in browser');

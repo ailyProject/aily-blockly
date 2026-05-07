@@ -1,1 +1,10 @@
-<div #monacoEditorContainer class="monaco-editor-container"></div>
+<div class="monaco-editor-host">
+  <ngx-monaco-editor
+    [editorStyle]="editorHostStyle()"
+    [options]="editorExtraOptions()"
+    [language]="editorLanguage()"
+    [theme]="editorTheme()"
+    [value]="editorValue()"
+    (valueChange)="onValueChangeFromNgx($event)"
+  />
+</div>

@@ -1,100 +1,120 @@
 import {
   Component,
-  ElementRef,
   EventEmitter,
   Input,
   OnChanges,
   OnDestroy,
   Output,
   SimpleChanges,
-  ViewChild
+  model,
+  signal,
+  viewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import * as monaco from 'monaco-editor';
-import type { IDisposable } from '@codingame/monaco-vscode-api/vscode/vs/base/common/lifecycle';
+import type * as monaco from 'monaco-editor';
 
+import { NgxMonacoEsmLoader } from 'src/app/utils/ngx-monaco-esm-loader';
 import {
-  RegisteredFileSystemProvider,
-  RegisteredMemoryFile,
-  registerFileSystemOverlay
-} from '@codingame/monaco-vscode-files-service-override';
-import { ensureMonacoVsCodeApiInitialized } from 'src/app/utils/monaco-vscode-bootstrap';
+  NGX_MONACO_EDITOR_CONFIG,
+  NGX_MONACO_LOADER_PROVIDER,
+  NgxMonacoEditorComponent,
+  NgxMonacoEditorConfig,
+} from '@jean-merelis/ngx-monaco-editor';
 
 @Component({
   selector: 'app-monaco-editor',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, NgxMonacoEditorComponent],
   templateUrl: './monaco-editor.component.html',
-  styleUrl: './monaco-editor.component.scss'
+  styleUrl: './monaco-editor.component.scss',
+  providers: [
+    { provide: NGX_MONACO_LOADER_PROVIDER, useFactory: () => new NgxMonacoEsmLoader() },
+    {
+      provide: NGX_MONACO_EDITOR_CONFIG,
+      useValue: {
+        runInsideNgZone: false,
+        defaultOptions: {
+          automaticLayout: true,
+          fontSize: 14,
+          minimap: { enabled: true },
+          wordWrap: 'on',
+          lineNumbers: 'on',
+          roundedSelection: false,
+          scrollBeyondLastLine: false,
+          readOnly: false,
+          cursorStyle: 'line',
+          formatOnPaste: true,
+          formatOnType: true,
+        },
+      } satisfies NgxMonacoEditorConfig,
+    },
+  ],
 })
 export class MonacoEditorComponent implements OnChanges, OnDestroy {
-  @ViewChild('monacoEditorContainer', { static: true })
-  editorContainer!: ElementRef<HTMLDivElement>;
+  private readonly ngxEditor = viewChild(NgxMonacoEditorComponent);
 
   @Input({ required: true }) code!: string;
-  /** 本地绝对路径（与 Electron fs 一致），用于 file:// URI 与 VSCode 服务链路上的模型解析 */
+  /** 本地绝对路径，用于语法高亮后缀推断（与 Electron fs 路径一致） */
   @Input({ required: true }) filePath!: string;
-
-  /**
-   * 为 true 时以只读方式打开当前文件（预览），适合单次浏览、双击再「固定」等与标签联动的交互。
-   */
+  /** 预览 / 只读模式 */
   @Input() preview = false;
 
   @Output() codeChange = new EventEmitter<string>();
   @Output() openFileRequest = new EventEmitter<{ filePath: string; position: monaco.Position }>();
 
-  editorInstance: monaco.editor.IStandaloneCodeEditor | null = null;
+  /** 与 ngx-monaco-editor 同步的文档内容 */
+  readonly editorValue = model('');
+  readonly editorLanguage = signal('plaintext');
+  readonly editorTheme = signal('vs-dark');
+  readonly editorHostStyle = signal({
+    width: '100%',
+    height: '100%',
+    border: 'none',
+  });
+  readonly editorExtraOptions = signal<{ padding: { top: number }; readOnly?: boolean }>({
+    padding: { top: 4 },
+  });
 
-  /** 由 monaco.editor.createModel 管理，避免 createModelReference 内 writeFile 触发 getExtUri */
-  private textModel: monaco.editor.ITextModel | null = null;
-  private overlayDisposable: IDisposable | null = null;
-  private contentListener: monaco.IDisposable | null = null;
-  private layoutObserver: ResizeObserver | null = null;
-  private suppressContentEmit = false;
-  private currentUri: monaco.Uri | null = null;
-  private initializing = false;
+  get editorInstance(): monaco.editor.IStandaloneCodeEditor | null {
+    const ngx = this.ngxEditor() as unknown as { editor?: monaco.editor.IStandaloneCodeEditor };
+    return ngx?.editor ?? null;
+  }
 
-  async ngOnChanges(changes: SimpleChanges): Promise<void> {
-    if (!this.editorContainer?.nativeElement || !this.filePath) {
-      return;
-    }
-    await ensureMonacoVsCodeApiInitialized();
-
-    const pathChanged = !!changes['filePath'];
-    const codeChanged = !!changes['code'];
-    const previewChanged = !!changes['preview'];
-
-    if (pathChanged || (codeChanged && !this.textModel)) {
-      await this.openOrReplaceDocument();
-    } else if (codeChanged && this.textModel) {
-      const incoming = this.code ?? '';
-      if (this.textModel.getValue() !== incoming) {
-        this.suppressContentEmit = true;
-        this.textModel.setValue(incoming);
-        this.suppressContentEmit = false;
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['code']) {
+      const nv = changes['code'].currentValue ?? '';
+      if (nv !== this.editorValue()) {
+        this.editorValue.set(nv);
       }
     }
-
-    if (previewChanged || pathChanged) {
-      this.editorInstance?.updateOptions({ readOnly: this.preview });
+    if (changes['filePath']) {
+      this.editorLanguage.set(this.getLanguageFromPath(changes['filePath'].currentValue ?? ''));
+    }
+    if (changes['preview']) {
+      const ro = !!changes['preview'].currentValue;
+      this.editorExtraOptions.set({
+        padding: { top: 4 },
+        ...(ro ? { readOnly: true } : {}),
+      });
     }
   }
 
   ngOnDestroy(): void {
-    this.teardownOverlayAndModel(false);
-    this.layoutObserver?.disconnect();
-    this.layoutObserver = null;
-    if (this.editorInstance) {
-      this.editorInstance.dispose();
-      this.editorInstance = null;
-    }
+    // 子组件 ngx-monaco-editor 会在自身销毁时 dispose 编辑器实例
+  }
+
+  onValueChangeFromNgx(value: string): void {
+    this.editorValue.set(value);
+    this.codeChange.emit(value);
   }
 
   getViewState(): monaco.editor.ICodeEditorViewState | null {
     return this.editorInstance?.saveViewState() ?? null;
   }
 
-  async restoreViewStateSafely(viewState: monaco.editor.ICodeEditorViewState | undefined): Promise<boolean> {
+  async restoreViewStateSafely(
+    viewState: monaco.editor.ICodeEditorViewState | undefined,
+  ): Promise<boolean> {
     if (!this.editorInstance || !viewState) {
       return false;
     }
@@ -103,132 +123,44 @@ export class MonacoEditorComponent implements OnChanges, OnDestroy {
     return true;
   }
 
-  disposeModel(path: string): void {
-    if (!path || !this.currentUri || this.normalizeFsPath(path) !== this.normalizeFsPath(this.currentUri.fsPath)) {
-      return;
-    }
-    this.teardownOverlayAndModel(false);
-    if (this.editorInstance) {
-      this.editorInstance.setModel(null);
-    }
+  /**
+   * 旧版基于 URI 的多模型逻辑：当前由 ngx-monaco-editor 单一模型托管，
+   * 关闭标签时由父组件更新 code/filePath；此处保留空实现以免调用方报错。
+   */
+  disposeModel(_path: string): void {}
+
+  /** 语法 id，对齐 monaco-editor-pro 映射并补充 Arduino 等后缀 */
+  private getLanguageFromPath(filePath: string): string {
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+    const map: Record<string, string> = {
+      js: 'javascript',
+      jsx: 'javascript',
+      mjs: 'javascript',
+      cjs: 'javascript',
+      ts: 'typescript',
+      tsx: 'typescript',
+      py: 'python',
+      json: 'json',
+      html: 'html',
+      htm: 'html',
+      css: 'css',
+      scss: 'scss',
+      less: 'less',
+      md: 'markdown',
+      xml: 'xml',
+      yaml: 'yaml',
+      yml: 'yaml',
+      sh: 'shell',
+      cpp: 'cpp',
+      cc: 'cpp',
+      cxx: 'cpp',
+      h: 'cpp',
+      c: 'c',
+      ino: 'cpp',
+      rs: 'rust',
+      go: 'go',
+      toml: 'ini',
+    };
+    return map[ext] ?? 'plaintext';
   }
-
-  /** 语言 id，供外部兜底使用 */
-  getLanguageIdForCurrentFile(): string {
-    return this.textModel?.getLanguageId() ?? resolveLanguageId(this.filePath);
-  }
-
-  private normalizeFsPath(p: string): string {
-    return p.replace(/\\/g, '/');
-  }
-
-  private async openOrReplaceDocument(): Promise<void> {
-    if (this.initializing) {
-      return;
-    }
-    this.initializing = true;
-    try {
-      this.teardownOverlayAndModel(true);
-
-      const uri = monaco.Uri.file(this.filePath);
-      this.currentUri = uri;
-
-      const fs = new RegisteredFileSystemProvider(false);
-      fs.registerFile(new RegisteredMemoryFile(uri, this.code ?? ''));
-      this.overlayDisposable = registerFileSystemOverlay(1, fs);
-
-      const languageId = resolveLanguageId(this.filePath);
-      this.textModel = monaco.editor.createModel(this.code ?? '', languageId, uri);
-
-      const textModel = this.textModel;
-
-      if (!this.editorInstance) {
-        this.editorInstance = monaco.editor.create(this.editorContainer.nativeElement, {
-          model: textModel,
-          automaticLayout: false,
-          readOnly: this.preview,
-          theme: 'vs-dark',
-          minimap: { enabled: true },
-          scrollBeyondLastLine: false,
-          wordWrap: 'on'
-        });
-        this.contentListener = textModel.onDidChangeContent(() => {
-          if (this.suppressContentEmit) {
-            return;
-          }
-          this.codeChange.emit(textModel.getValue());
-        });
-        this.setupLayoutObserver();
-      } else {
-        this.editorInstance.setModel(textModel);
-        this.editorInstance.updateOptions({ readOnly: this.preview });
-        this.contentListener?.dispose();
-        this.contentListener = textModel.onDidChangeContent(() => {
-          if (this.suppressContentEmit) {
-            return;
-          }
-          this.codeChange.emit(textModel.getValue());
-        });
-      }
-    } finally {
-      this.initializing = false;
-    }
-  }
-
-  private setupLayoutObserver(): void {
-    const el = this.editorContainer.nativeElement;
-    this.layoutObserver = new ResizeObserver(() => {
-      this.editorInstance?.layout();
-    });
-    this.layoutObserver.observe(el);
-    queueMicrotask(() => this.editorInstance?.layout());
-  }
-
-  private teardownOverlayAndModel(disposeEditorListener: boolean): void {
-    if (disposeEditorListener) {
-      this.contentListener?.dispose();
-      this.contentListener = null;
-    }
-    if (this.textModel) {
-      this.textModel.dispose();
-      this.textModel = null;
-    }
-    this.overlayDisposable?.dispose();
-    this.overlayDisposable = null;
-    this.currentUri = null;
-  }
-}
-
-/**
- * 决定当前文件的 monaco 语言 id：
- *  1. 先用 monaco 已注册语言（含 public/vscode/extensions 通过 manifest 贡献的扩展名/文件名规则）做匹配；
- *  2. 命中失败再回落到内建简表，覆盖 monaco 标准库尚未识别的扩展名（如 .ino → cpp）。
- */
-function resolveLanguageId(path: string): string {
-  if (!path) {
-    return 'plaintext';
-  }
-  const fileName = path.replace(/\\/g, '/').split('/').pop() ?? path;
-  const lowerName = fileName.toLowerCase();
-  const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : '';
-
-  for (const language of monaco.languages.getLanguages()) {
-    if (language.filenames?.some((name) => name.toLowerCase() === lowerName)) {
-      return language.id;
-    }
-    if (ext && language.extensions?.some((e) => e.toLowerCase() === ext)) {
-      return language.id;
-    }
-  }
-
-  /** 兜底：覆盖一些 monaco 内置 language 未涵盖的别名/扩展名 */
-  const fallback: Record<string, string> = {
-    '.mjs': 'javascript',
-    '.cjs': 'javascript',
-    '.jsx': 'javascriptreact',
-    '.tsx': 'typescriptreact',
-    '.ino': 'cpp',
-    '.toml': 'ini'
-  };
-  return fallback[ext] ?? 'plaintext';
 }

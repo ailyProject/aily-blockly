@@ -1,0 +1,56 @@
+.monaco-editor-pro-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+}
+
+.monaco-editor-pro-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.test-open-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cccccc;
+  background: #3c3c3c;
+  border: 1px solid #555;
+  border-radius: 2px;
+  cursor: pointer;
+
+  &:hover {
+    background: #4a4a4a;
+    color: #ffffff;
+  }
+
+  &:active {
+    background: #2d2d2d;
+  }
+}
+
+.monaco-editor-pro-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  position: relative;
+
+  ngx-monaco-editor {
+    position: absolute;
+    inset: 0;
+    display: block;
+  }
+}
+
+:host {
+  display: block;
+  height: 100vh;
+  width: 100vw;
+}
