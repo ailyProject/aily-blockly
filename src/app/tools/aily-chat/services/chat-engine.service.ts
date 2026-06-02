@@ -769,9 +769,7 @@ export class ChatEngineService implements IChatContext {
     regenerateTurn: () => this.editActions.regenerateTurn(),
     undoLastEdits: () => this.editActions.undoLastEdits(),
     newChat: () => this.requestNewChatFromPane(),
-    queuePendingAutoSend: (text) => {
-      this._pendingAutoSendText = text;
-    },
+    ensureSessionReadyForSubmit: () => this.ensureSessionReadyForSubmit(),
     focusInput: () => {
       if (this.chatTextareaRef?.nativeElement) {
         const textarea = this.chatTextareaRef.nativeElement;
@@ -2856,6 +2854,7 @@ export class ChatEngineService implements IChatContext {
       else { console.error('[ChatEngine] aily-lex 模块加载失败，聊天功能不可用'); }
     });
 
+    this.cleanupSubscriptions();
     this.setupSubscriptions();
   }
 

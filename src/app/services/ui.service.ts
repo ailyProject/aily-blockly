@@ -2,6 +2,7 @@
  */
 import { Injectable, Injector } from '@angular/core';
 import { filter, Observable, Subject } from 'rxjs';
+import { ChatService } from '../tools/aily-chat/services/chat.service';
 import { ElectronService } from './electron.service';
 import { TerminalService } from '../tools/terminal/terminal.service';
 import { NavigationEnd, Router } from '@angular/router';
@@ -179,9 +180,15 @@ export class UiService {
    */
   openAndSendToChat(text: string, options?: Record<string, any>): void {
     this.openTool('aily-chat');
-    setTimeout(() => {
+    const deliver = () => {
+      if (ChatService.isReady) {
+        ChatService.sendToChat(text, options);
+        return;
+      }
       this.chatMessageSubject.next({ text, options });
-    }, 100);
+    };
+    setTimeout(deliver, 0);
+    setTimeout(deliver, 150);
   }
 
   openCodeEditorFile(

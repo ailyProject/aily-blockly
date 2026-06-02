@@ -424,6 +424,11 @@ export class ChatService {
   private static instance: ChatService;
   private static readonly maxRecentModelPresetIds = 5;
 
+  /** ChatService 是否已挂载（供 UiService 等外部模块判断能否直连发送） */
+  static get isReady(): boolean {
+    return !!ChatService.instance;
+  }
+
 
   constructor(
     private http: HttpClient,

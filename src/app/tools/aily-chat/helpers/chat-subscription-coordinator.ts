@@ -201,13 +201,14 @@ export class ChatSubscriptionCoordinator {
     this.aiWaitingSubscription = AilyHost.get().blockly.aiWaiting$.subscribe(this.callbacks.showAiWritingNotice);
 
     this.blockSelectionSubscription = combineLatest([
-      AilyHost.get().blockly.selectedBlockSubject,
+      AilyHost.get().blockly.selectedBlockIdsSubject,
       AilyHost.get().blockly.blockCodeMapSubject,
     ]).subscribe((results: any[]) => {
       this.ctx.resourceManager.updateBlockContexts(
-        results[0],
-        () => AilyHost.get().blockly.getSelectedBlockContextLabel(),
+        results[0] || [],
+        () => AilyHost.get().blockly.getSelectedBlockContextLabels(),
       );
+      this.ctx.triggerSyncDetectChanges();
     });
 
     this.taskActionHandler = (event: Event) => {

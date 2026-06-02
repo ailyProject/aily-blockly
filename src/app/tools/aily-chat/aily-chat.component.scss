@@ -101,8 +101,10 @@
   padding: 10px;
   flex: 1;
   /* 使用flex:1让对话区域占用剩余空间 */
+  overflow-x: hidden;
   overflow-y: auto;
   //scroll-behavior: smooth;
+  min-width: 0;
   min-height: 0;
   /* 确保flex子项可以收缩 */
   position: relative;
@@ -110,6 +112,15 @@
 
   .dialogs {
     padding: 10px 0;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+
+    aily-x-dialog {
+      display: block;
+      min-width: 0;
+      max-width: 100%;
+    }
   }
 }
 

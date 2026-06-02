@@ -1,5 +1,9 @@
 // ===== 气泡内局部别名：继承全局主题（--aily-chat-xdialog-* / --aily-text-*）=====
 :host {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   --chat-fg: var(--aily-text-tertiary, #cccccc);
   --chat-fg-dim: var(--aily-text-muted, #8e8e8e);
   --chat-fg-head: var(--aily-text-quaternary, #e3e3e3);
@@ -23,6 +27,9 @@
   margin: 2px 0;
   border-radius: 5px;
   background: transparent;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   
   // &.chat-most-recent-response {
   //   min-height: var(--chat-current-response-min-height, 0px);
@@ -351,6 +358,10 @@
 .content {
   padding: 4px 0 8px;
   user-select: text;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 // ===== 用户消息气泡（与输入框同色，右对齐）=====
@@ -503,6 +514,22 @@
 
     // x-markdown 暗色主题微调：兼容项目风格
     .x-markdown-dark {
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+
+      pre,
+      .shiki {
+        max-width: 100%;
+        overflow-x: auto;
+      }
+
+      table {
+        max-width: 100%;
+        display: block;
+        overflow-x: auto;
+      }
 
       h2 {
         border-left: 6px solid var(--aily-chat-xdialog-md-h2-border, #3794ff);
