@@ -13,6 +13,8 @@
   <div
     [class.session-list-row]="isListVariant"
     [class.session-picker-row]="isPickerVariant"
+    [class.session-list-row-has-toggle-action]="isListVariant && (item.pinned === true || item.archived === true)"
+    [class.session-picker-row-has-toggle-action]="isPickerVariant && (item.pinned === true || item.archived === true)"
     [class.current]="item.current"
     [class.selected]="isSelected(item)">
     <button
@@ -28,10 +30,24 @@
       (click)="selectItem(item)">
       <div [class.session-list-copy]="isListVariant" [class.session-picker-copy]="isPickerVariant">
         <div [class.session-list-item-title-row]="isListVariant" [class.session-picker-title-row]="isPickerVariant">
+          <span
+            [class.session-list-activity-indicator]="isListVariant"
+            [class.session-picker-activity-indicator]="isPickerVariant"
+            aria-hidden="true">
+            @if (showActivitySpinner(item)) {
+            <i class="fa-light fa-spinner-third session-list-activity-spinner"></i>
+            } @else if (showUnreadDot(item)) {
+            <span class="session-list-unread-dot"></span>
+            }
+          </span>
           <span [class.session-list-item-title]="isListVariant" [class.session-picker-title]="isPickerVariant">{{ item.title }}</span>
         </div>
         @if (formatStatusMeta(item)) {
-        <div [class.session-list-item-meta-row]="isListVariant" [class.session-picker-meta-row]="isPickerVariant">
+        <div
+          [class.session-list-item-meta-row]="isListVariant"
+          [class.session-picker-meta-row]="isPickerVariant"
+          [class.session-list-item-meta-row-indented]="isListVariant"
+          [class.session-picker-meta-row-indented]="isPickerVariant">
           <div [class.session-list-item-detail-row]="isListVariant" [class.session-picker-detail-row]="isPickerVariant">
             <div
               [class.session-list-item-status]="isListVariant"
@@ -51,10 +67,15 @@
         type="button"
         [class.session-list-action]="isListVariant"
         [class.session-picker-action]="isPickerVariant"
+        [class.session-list-action-toggle]="isListVariant && isToggleAction(action)"
+        [class.session-picker-action-toggle]="isPickerVariant && isToggleAction(action)"
         [class.active]="action.active === true"
         [attr.data-session-action]="action.action"
         [attr.aria-label]="action.title"
-        [title]="action.title"
+        nz-tooltip
+        nzTooltipPlacement="top"
+        [nzTooltipTitle]="action.title"
+        [nzTooltipOverlayStyle]="{ fontSize: '12px' }"
         (click)="triggerAction($event, action, item)">
         <i [class]="action.icon"></i>
       </button>

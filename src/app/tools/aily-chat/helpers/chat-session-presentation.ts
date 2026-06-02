@@ -272,6 +272,24 @@ function formatChatSessionStatusDescription(status?: string): string {
   }
 }
 
+export function isChatSessionActivityInProgress(status?: string): boolean {
+  return normalizeChatSessionStatus(status) === 'in_progress';
+}
+
+export function isChatSessionUnread(item: Pick<ChatSessionListItem, 'read' | 'markedUnread'>): boolean {
+  return item.read !== true || item.markedUnread === true;
+}
+
+export function shouldShowChatSessionActivitySpinner(item: Pick<ChatSessionListItem, 'status'>): boolean {
+  return isChatSessionActivityInProgress(item.status);
+}
+
+export function shouldShowChatSessionUnreadDot(
+  item: Pick<ChatSessionListItem, 'read' | 'markedUnread' | 'status'>,
+): boolean {
+  return isChatSessionUnread(item) && !isChatSessionActivityInProgress(item.status);
+}
+
 function isChatSessionInProgressStatus(status?: string): boolean {
   switch (normalizeChatSessionStatus(status)) {
     case 'in_progress':

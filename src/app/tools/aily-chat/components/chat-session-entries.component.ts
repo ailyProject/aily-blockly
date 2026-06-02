@@ -1,17 +1,20 @@
 import { CommonModule } from '@angular/common';
 import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output } from '@angular/core';
+import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 
 import type { ChatSessionListAction, ChatSessionListItem } from '../services/menu-manager.service';
 import {
   type ChatSessionInventoryGroup,
   formatChatSessionStatusMeta,
   getChatSessionStatusClass,
+  shouldShowChatSessionActivitySpinner,
+  shouldShowChatSessionUnreadDot,
 } from '../helpers/chat-session-presentation';
 
 @Component({
   selector: 'aily-chat-session-entries',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, NzToolTipModule],
   templateUrl: './chat-session-entries.component.html',
   styleUrl: './chat-session-entries.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -71,5 +74,20 @@ export class ChatSessionEntriesComponent {
 
   statusClass(status?: string): string {
     return getChatSessionStatusClass(status);
+  }
+
+  showActivitySpinner(item: ChatSessionListItem): boolean {
+    return shouldShowChatSessionActivitySpinner(item);
+  }
+
+  showUnreadDot(item: ChatSessionListItem): boolean {
+    return shouldShowChatSessionUnreadDot(item);
+  }
+
+  isToggleAction(action: ChatSessionListAction): boolean {
+    return action.action === 'pin-session'
+      || action.action === 'unpin-session'
+      || action.action === 'archive-session'
+      || action.action === 'unarchive-session';
   }
 }
