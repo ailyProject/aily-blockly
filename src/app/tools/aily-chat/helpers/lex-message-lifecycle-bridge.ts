@@ -10,12 +10,15 @@ import { findChatMessageHandleByMessage } from './chat-message-handle';
 
 type LexMessageLifecycleViewWriteContext = ConstructorParameters<typeof ChatViewWriteBridge>[0];
 
+import type { EditsSummary } from '../services/edit-checkpoint.service';
+
 type LexMessageLifecycleContext = LexMessageLifecycleViewWriteContext
   & Pick<IAgentLifecycle, 'isWaiting' | 'isCompleted' | 'isCancelled'>
   & Pick<IChatServiceAccess, 'editCheckpointService' | 'ailyChatConfigService'>
   & Pick<IChatCoordination, 'session' | 'applyPendingSwitch'>
   & {
     syncExecutionRuntimeState?(saveTarget?: HostSessionSaveTarget | null): void;
+    triggerAiEditDiffPreview?(summary: EditsSummary | null): void;
   };
 
 type LexMessageLifecycleViewWriteAccess = Pick<
@@ -163,11 +166,13 @@ export class LexMessageLifecycleBridge {
 
     this.ctx.editCheckpointService.commitCurrentTurn();
     if (this.ctx.editCheckpointService.hasEditsInCurrentTurn()) {
-      if (this.ctx.ailyChatConfigService.autoSaveEdits) {
+      const summary = await this.ctx.editCheckpointService.getEditsSummary();
+      const autoSave = this.ctx.ailyChatConfigService.autoSaveEdits;
+      this.ctx.triggerAiEditDiffPreview?.(summary);
+      if (autoSave) {
         this.ctx.editCheckpointService.acceptAllAsBaseline();
         this.ctx.editCheckpointService.dismissSummary();
       } else {
-        const summary = await this.ctx.editCheckpointService.getEditsSummary();
         this.ctx.editCheckpointService.publishSummary(summary);
       }
     }

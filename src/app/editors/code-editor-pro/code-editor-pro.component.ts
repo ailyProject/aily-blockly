@@ -1047,7 +1047,10 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
           const fsWatch = fsAny['watch'] as
             | ((
                 path: string,
-                cb: (ev: { eventType?: string; filename?: string }) => void,
+                cb: (
+                  eventTypeOrEvent: string | { eventType?: string; filename?: string },
+                  filename?: string | null,
+                ) => void,
                 options?: { recursive?: boolean },
               ) => () => void)
             | undefined;
@@ -1059,7 +1062,15 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
           try {
             const dispose = fsWatch(
               abs,
-              (event) => this.pushCoderNativeFsWatchEvent(watchId, event),
+              (eventTypeOrEvent, filenameArg) => {
+                const event = typeof eventTypeOrEvent === 'object' && eventTypeOrEvent !== null
+                  ? eventTypeOrEvent
+                  : {
+                      eventType: String(eventTypeOrEvent ?? ''),
+                      filename: filenameArg ?? undefined,
+                    };
+                this.pushCoderNativeFsWatchEvent(watchId, event);
+              },
               { recursive },
             );
             this.coderEmbedFsWatchers.set(watchId, dispose);

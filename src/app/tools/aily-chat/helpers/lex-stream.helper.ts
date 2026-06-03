@@ -222,6 +222,11 @@ export class LexOwnerFacade {
           // ignore if agent not ready
         }
 
+        this.ctx.editCheckpointService.setTimelineContext(
+          this.ctx.resolveActiveRuntimeSessionId?.() ?? this.ctx.sessionId ?? null,
+          this.ctx.prjPath || this.ctx.prjRootPath || null,
+        );
+
         currentTodoUnsubscribe?.();
         return null;
       },

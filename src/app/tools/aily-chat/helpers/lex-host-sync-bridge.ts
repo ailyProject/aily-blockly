@@ -73,6 +73,11 @@ export class LexHostSyncBridge {
     }
   }
 
+  /** 文件工具写盘完成后刷新 edits 摘要 UI（流式实时更新） */
+  refreshFileEditSummary(): void {
+    void this.ctx.editCheckpointService.publishCurrentSummary();
+  }
+
   applyLexTodos(sessionId: string, lexTodos: readonly LexTodoItem[]): void {
     const blocklyTodos: BlocklyTodoItem[] = lexTodos.map(t => ({
       id: t.id,

@@ -9,7 +9,7 @@ type LexTurnStartupContext = Pick<
   'isCompleted' | 'isCancelled' | 'isWaiting' | 'currentMessageSource' | 'toolCallingIteration'
 > & Pick<IChatViewAccess, 'list' | 'scrollManager'>
   & Pick<ISessionAccess, 'sessionId'>
-  & Pick<IProjectContext, 'currentModel'>
+  & Pick<IProjectContext, 'currentModel' | 'prjPath' | 'prjRootPath'>
   & Pick<IChatServiceAccess, 'repetitionDetectionService' | 'editCheckpointService' | 'ailyChatConfigService' | 'contextBudgetService'>
   & Pick<IChatCoordination, 'editActions'>
   & {
@@ -129,6 +129,12 @@ export class LexTurnStartupBridge {
     this.ctx.editActions.saveCheckpointToDisk();
 
     const conversationMessages = this.getConversationMessages();
+    const workspaceRoot = this.ctx.prjPath || this.ctx.prjRootPath || null;
+    this.ctx.editCheckpointService.setTimelineContext(
+      this.ctx.sessionId || null,
+      workspaceRoot,
+    );
+
     if (!isDetachedRuntimeOwner) {
       const responseStartListIndex = this.ctx.list.length - 1;
       const turnStartListIndex = responseStartListIndex > 0

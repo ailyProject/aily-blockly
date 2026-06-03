@@ -906,7 +906,6 @@ export class EditCheckpointService {
     const summarySnapshot = checkpointId
       ? (this.getSnapshotByCheckpointId(checkpointId) ?? latestSnapshot)
       : latestSnapshot;
-
     if (!checkpointId && this.keptTimelineIndex >= this.timelineIndex && this.currentTurnTrackedPaths.size === 0) {
       return null;
     }
