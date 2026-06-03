@@ -3,16 +3,16 @@
   flex-direction: column;
   min-height: 0;
   border-radius: 10px;
-  border: 1px solid var(--aily-border-secondary, rgba(255, 255, 255, 0.06));
-  background: var(--aily-chat-viewer-panel-raised, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--aily-chat-session-list-border, var(--aily-border-secondary, rgba(255, 255, 255, 0.06)));
+  background: var(--aily-chat-session-list-bg, var(--aily-chat-viewer-panel-raised, rgba(255, 255, 255, 0.02)));
   overflow: hidden;
 }
 
 .session-list-panel.entry {
   width: 100%;
   max-width: 420px;
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--aily-chat-session-list-border, var(--aily-border-secondary, rgba(255, 255, 255, 0.08)));
+  background: var(--aily-chat-session-list-bg, var(--aily-chat-viewer-panel-raised, rgba(255, 255, 255, 0.03)));
 }
 
 .session-list-header {
@@ -57,13 +57,18 @@
   gap: 8px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--aily-chat-session-list-skeleton-bg, rgba(255, 255, 255, 0.03));
 }
 
 .session-list-skeleton-title,
 .session-list-skeleton-meta {
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05));
+  background: linear-gradient(
+    90deg,
+    var(--aily-chat-session-list-skeleton-shimmer-start, rgba(255, 255, 255, 0.05)),
+    var(--aily-chat-session-list-skeleton-shimmer-mid, rgba(255, 255, 255, 0.12)),
+    var(--aily-chat-session-list-skeleton-shimmer-end, rgba(255, 255, 255, 0.05))
+  );
   background-size: 200% 100%;
   animation: session-list-skeleton-shimmer 1.2s ease-in-out infinite;
 }

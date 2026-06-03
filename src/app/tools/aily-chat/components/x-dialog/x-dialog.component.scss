@@ -125,219 +125,111 @@
   border-color: var(--aily-chat-xdialog-warn-surface-border-strong, rgba(250, 173, 20, 0.22));
 }
 
-// .checkpoint-action-row {
-//   display: flex;
-//   align-items: center;
-//   min-height: 18px;
-//   padding: 2px 6px 0;
-// }
-
-// .restore-checkpoint-text {
-//   font-size: 12px;
-//   margin: 0 auto;
-//   color: #888;
-//   cursor: pointer;
-//   user-select: none;
-//   pointer-events: none;
-//   opacity: 0;
-//   transform: translateY(-1px);
-//   transition: opacity 0.14s ease, color 0.14s ease;
-
-//   /* 基础动画属性 */
-//   opacity: 0;
-//   transform: translateY(-1px);
-//   transition: opacity 0.14s ease, color 0.14s ease;
-//   pointer-events: none;
-
-//   &.visible {
-//     opacity: 1;
-//     pointer-events: auto;
-//   }
-
-//   &:hover {
-//     color: #ccc;
-//   }
-
-//   /* 左侧线条 */
-//   &::before {
-//     content: "";
-//     height: 1px;
-//     flex: 1;             /* 线条自动伸展 */
-//     min-width: 30px;     /* 线条的最小长度 */
-//     /* 从右向左渐变消失 (transparent -> #888) */
-//     background: linear-gradient(to left, #888, transparent);
-//     transition: background 0.14s ease;
-//   }
-
-//   /* 右侧线条 */
-//   &::after {
-//     content: "";
-//     height: 1px;
-//     flex: 1;
-//     min-width: 30px;
-//     /* 从左向右渐变消失 (#888 -> transparent) */
-//     background: linear-gradient(to right, #888, transparent);
-//     transition: background 0.14s ease;
-//   }
-// }
-
-.checkpoint-action-row {
+// ===== 用户消息检查点操作（气泡下方，与 msg-actions 同系）=====
+.user-turn-actions {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 0;
-  padding: 0 12px;
-  width: 100%;
-  overflow: hidden;
-  transition: height 0.18s ease;
-
-  &.expanded {
-    height: 26px;
-  }
+  justify-content: flex-end;
+  align-self: flex-end;
+  gap: 2px;
+  max-width: 88%;
+  min-height: 24px;
+  margin: -2px 6px 0 0;
+  padding: 0;
+  opacity: 0.38;
+  pointer-events: auto;
+  transition: opacity 0.15s ease;
 }
 
-.checkpoint-action-line {
-  flex: 1;
-  height: 1px;
-  min-width: 24px;
-  background-color: var(--chat-border);
-  opacity: 0;
-  transition: opacity 0.14s ease;
-
-  &.visible {
-    opacity: 1;
-  }
+.dialog-box.user.has-turn-actions:hover .user-turn-actions,
+.dialog-box.user.has-turn-actions:focus-within .user-turn-actions {
+  opacity: 1;
 }
 
-.checkpoint-action-line-left {
-  mask-image: linear-gradient(to right, transparent, black);
-  -webkit-mask-image: linear-gradient(to right, transparent, black);
-}
-
-.checkpoint-action-line-right {
-  mask-image: linear-gradient(to left, transparent, black);
-  -webkit-mask-image: linear-gradient(to left, transparent, black);
-}
-
-.checkpoint-action-dot {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--aily-chat-xdialog-checkpoint-fg, var(--chat-fg-dim));
-  opacity: 0;
-  transform: translateY(-1px);
-  transition: opacity 0.14s ease;
-
-  &.visible {
-    opacity: 1;
-  }
-}
-
-.checkpoint-action-link {
-  display: flex;
+.user-turn-action {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
-  min-width: 0;
-  height: 18px;
-  padding: 0 2px;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
   border: none;
-  border-radius: 0;
+  border-radius: 5px;
   background: transparent;
   appearance: none;
   outline: none;
   box-sizing: border-box;
-  font-size: 12px;
+  font-size: 11px;
   font-family: inherit;
-  line-height: 18px;
-  color: var(--aily-chat-xdialog-checkpoint-fg, var(--chat-fg-dim));
+  line-height: 1;
+  color: var(--aily-chat-xdialog-msg-btn, var(--chat-fg-dim));
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
 
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-1px);
-  transition: opacity 0.14s ease, color 0.14s ease;
+  i {
+    font-size: 12px;
+    flex-shrink: 0;
+  }
 
-  &.visible {
-    opacity: 1;
-    pointer-events: auto;
+  span {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   &.disabled,
   &:disabled {
-    color: var(--chat-fg-muted);
-    opacity: 0.5;
+    opacity: 0.45;
+    cursor: default;
     pointer-events: none;
   }
 
   &:hover:not(.disabled):not(:disabled) {
-    color: var(--aily-chat-xdialog-checkpoint-fg-hover, var(--chat-fg));
+    background: var(--aily-chat-xdialog-msg-btn-hover-bg, var(--chat-bg-hover));
+    color: var(--aily-chat-xdialog-msg-btn-hover-fg, var(--chat-fg));
   }
 }
 
-.checkpoint-action-link-text {
-  padding: 0 4px;
+.user-turn-action--icon {
+  width: 24px;
+  padding: 0;
 }
 
-.checkpoint-action-link-icon {
-  width: 20px;
-  padding: 0 3px;
-  color: inherit;
-
-  i {
-    font-size: 11px;
-    color: currentColor;
-    opacity: 0.88;
-    transition: opacity 0.14s ease, color 0.14s ease;
-  }
-
-  &:hover:not(.disabled):not(:disabled) i {
-    opacity: 1;
-  }
-}
-
-.checkpoint-restore-row {
-  display: flex;
-  width: 100%;
-  position: relative;
-  align-items: center;
-  gap: 4px;
-  margin-top: 10px;
-  margin-bottom: 8px;
-}
-
-.checkpoint-restore-label {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--aily-chat-xdialog-checkpoint-fg, var(--chat-fg-dim));
+.turn-restore-hint {
   display: flex;
   align-items: center;
-  flex-shrink: 0;
-  padding: 1px 5px;
-  border: 1px solid transparent;
-}
-
-.checkpoint-restore-dot {
-  font-size: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 4px;
+  padding: 0 8px;
+  min-height: 20px;
+  font-size: 11px;
   line-height: 18px;
-  color: var(--aily-chat-xdialog-checkpoint-fg, var(--chat-fg-dim));
-  flex-shrink: 0;
+  color: var(--chat-fg-dim);
 }
 
-.checkpoint-restore-action {
+.turn-restore-hint-text {
+  color: var(--chat-success);
+  opacity: 0.9;
+}
+
+.turn-restore-hint-action {
   padding: 0;
   border: none;
   background: transparent;
   appearance: none;
   outline: none;
-  color: var(--aily-chat-xdialog-checkpoint-fg, var(--chat-fg-dim));
-  font-size: 12px;
-  line-height: 18px;
+  font-size: inherit;
   font-family: inherit;
+  line-height: inherit;
+  color: var(--aily-chat-xdialog-checkpoint-fg, var(--chat-fg-dim));
   cursor: pointer;
-  flex-shrink: 0;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 2px;
 
   &:hover {
     color: var(--aily-chat-xdialog-checkpoint-fg-hover, var(--chat-fg));
@@ -394,9 +286,14 @@
 
 // 操作栏：用户消息右对齐
 .dialog-box.user .msg-footer,
-.dialog-box.user .msg-actions {
+.dialog-box.user .msg-actions,
+.dialog-box.user .user-turn-actions {
   justify-content: flex-end;
   align-self: flex-end;
+}
+
+.dialog-box.user .msg-footer,
+.dialog-box.user .msg-actions {
   margin: -1px 8px 2px 0;
   padding: 0;
   min-height: 22px;
@@ -694,10 +591,9 @@
   40% { transform: translateY(-6px); }
 }
 
-// ===== 可编辑用户消息 =====
-.dialog-box.editable {
+// ===== 可编辑用户消息（仅气泡 content 可点击 / tooltip）=====
+.dialog-box.user.editable .content {
   cursor: pointer;
-  transition: background 0.15s;
 }
 
 // ===== 编辑模式输入框（与主输入框样式一致） =====

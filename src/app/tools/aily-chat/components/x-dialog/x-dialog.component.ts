@@ -122,9 +122,6 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
   /** 全局互斥：当前允许展开编辑框的用户 turnId；与本条不一致时需收起（由父级统一传入） */
   @Input() exclusiveEditTurnId: string | undefined;
 
-  /** 本组件 dialog-box 是否被 hover */
-  dialogBoxHovered = false;
-
   @Output() editAndResend = new EventEmitter<{ target: DialogTurnContext; newText: string; resources: ResourceItem[] }>();
   /** 本消息进入编辑态时发出 turnId，供父级互斥 */
   @Output() editSessionOpened = new EventEmitter<string>();
@@ -345,10 +342,6 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
     return this.role === 'aily' && this.isLastAily && this.effectiveDoing;
   }
 
-  get showCheckpointAnchor(): boolean {
-    return this.canRenderCheckpointAnchor && this.dialogBoxHovered;
-  }
-
   /** 是否可编辑用户消息（非 doing 的 user 消息） */
   get canEditUserMessage(): boolean {
     return !this.readOnly && this.role === 'user' && !this.effectiveDoing && !this.isWaiting && !!this.actionTurnId && !this.isRequestDisabled;
@@ -386,7 +379,7 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
     return previewLabel ? `点击编辑 · ${previewLabel}` : '点击编辑';
   }
 
-  private get isCheckpointCompatibilityMode(): boolean {
+  get isCheckpointCompatibilityMode(): boolean {
     return this.workspaceCheckpointPresentationMode === 'compatibility';
   }
 
@@ -406,6 +399,20 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
         : '还原检查点';
 
     return this.isCheckpointCompatibilityMode ? `${baseLabel} · 兼容模式` : baseLabel;
+  }
+
+  get checkpointActionShortLabel(): string {
+    if (this.isFirstUserTurn) {
+      return '重新开始';
+    }
+    if (this.roundCount > 0) {
+      return `还原 · ${this.roundCount} 轮`;
+    }
+    return '还原检查点';
+  }
+
+  get checkpointActionIconClass(): string {
+    return this.isFirstUserTurn ? 'fa-arrow-rotate-left' : 'fa-clock-rotate-left';
   }
 
   get forkSessionActionLabel(): string {
@@ -551,12 +558,10 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
 
   onDialogMouseEnter(): void {
     this.showActions = true;
-    this.dialogBoxHovered = true;
   }
 
   onDialogMouseLeave(): void {
     this.showActions = false;
-    this.dialogBoxHovered = false;
   }
 
   onRegenerate(): void {

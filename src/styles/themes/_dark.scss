@@ -196,6 +196,18 @@
   --aily-chat-viewer-mermaid-label: #333333;
   --aily-chat-viewer-panel: var(--aily-bg-elevated);
   --aily-chat-viewer-panel-raised: #252526;
+  --aily-chat-session-list-bg: var(--aily-chat-viewer-panel-raised);
+  --aily-chat-session-list-border: var(--aily-border-secondary);
+  --aily-chat-session-list-row-current-bg: rgba(97, 175, 239, 0.12);
+  --aily-chat-session-list-row-selected-bg: rgba(97, 175, 239, 0.08);
+  --aily-chat-session-list-row-selected-border: rgba(97, 175, 239, 0.26);
+  --aily-chat-session-list-row-current-selected-bg: rgba(97, 175, 239, 0.16);
+  --aily-chat-session-list-skeleton-bg: rgba(255, 255, 255, 0.03);
+  --aily-chat-session-list-skeleton-shimmer-start: rgba(255, 255, 255, 0.05);
+  --aily-chat-session-list-skeleton-shimmer-mid: rgba(255, 255, 255, 0.12);
+  --aily-chat-session-list-skeleton-shimmer-end: rgba(255, 255, 255, 0.05);
+  --aily-chat-session-list-picker-row-selected-bg: rgba(255, 255, 255, 0.06);
+  --aily-chat-session-list-picker-row-selected-border: rgba(255, 255, 255, 0.08);
   --aily-chat-viewer-option-hover: #2a2d2e;
   --aily-chat-viewer-option-selected-bg: rgba(24, 144, 255, 0.08);
   --aily-chat-viewer-option-selected-border: rgba(24, 144, 255, 0.4);

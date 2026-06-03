@@ -1,38 +1,15 @@
 <div
   class="dialog-box animate__animated animate__fadeIn animate__faster"
-  [ngClass]="{ user: role === 'user', editable: canEditUserMessage && !isEditing, 'request-disabled': isRequestDisabled, 'chat-most-recent-response': isCurrentStreamingResponse }"
+  [ngClass]="{
+    user: role === 'user',
+    editable: canEditUserMessage && !isEditing,
+    'request-disabled': isRequestDisabled,
+    'chat-most-recent-response': isCurrentStreamingResponse,
+    'has-turn-actions': canRenderCheckpointAnchor && !isEditing
+  }"
   (mouseenter)="onDialogMouseEnter()"
   (mouseleave)="onDialogMouseLeave()"
-  (click)="canEditUserMessage && !isEditing ? onUserMessageClick() : null"
-  nz-tooltip
-  [nzTooltipTitle]="editTooltipTitle || ((canEditUserMessage && !isEditing) ? ('AILY_CHAT.CLICK_TO_EDIT' | translate) : '')"
-  nzTooltipPlacement="bottom"
-  [nzTooltipOverlayStyle]="{ marginTop: '-10px', fontSize: '12px' }"
 >
-    @if (canRenderCheckpointAnchor) {
-      <div class="checkpoint-action-row" [class.expanded]="showCheckpointAnchor">
-        <span class="checkpoint-action-line checkpoint-action-line-left" [class.visible]="showCheckpointAnchor"></span>
-        <button
-          type="button"
-          class="checkpoint-action-link checkpoint-action-link-text"
-          [class.disabled]="checkpointActionDisabled"
-          [class.visible]="showCheckpointAnchor"
-          [title]="checkpointActionTitle"
-          (click)="onRestoreCheckpoint(); $event.stopPropagation()"
-        >{{ checkpointActionLabel }}</button>
-        <span class="checkpoint-action-dot" [class.visible]="showCheckpointAnchor" aria-hidden="true">·</span>
-        <button
-          type="button"
-          class="checkpoint-action-link checkpoint-action-link-icon"
-          [class.disabled]="forkSessionActionDisabled"
-          [class.visible]="showCheckpointAnchor"
-          [title]="forkSessionActionTitle"
-          [attr.aria-label]="forkSessionActionLabel"
-          (click)="onForkSession(); $event.stopPropagation()"
-        ><i class="fa-light fa-code-branch"></i></button>
-        <span class="checkpoint-action-line checkpoint-action-line-right" [class.visible]="showCheckpointAnchor"></span>
-      </div>
-    }
     <!-- @if (disabledRequestBadgeLabel || userTurnMetadataLabel || assistantTerminationLabel) {
       <div class="turn-meta-row">
         @if (disabledRequestBadgeLabel) {
@@ -101,7 +78,15 @@
         </div>
       </div>
     } @else {
-      <div class="content" [class.thinking]="effectiveDoing">
+      <div
+        class="content"
+        [class.thinking]="effectiveDoing"
+        (click)="canEditUserMessage ? onUserMessageClick() : null"
+        nz-tooltip
+        [nzTooltipTitle]="editTooltipTitle || (canEditUserMessage ? ('AILY_CHAT.CLICK_TO_EDIT' | translate) : '')"
+        nzTooltipPlacement="bottom"
+        [nzTooltipOverlayStyle]="{ marginTop: '-10px', fontSize: '12px' }"
+      >
         @if (hasStructuredAilyContent) {
           <!-- ★ Phase 2: aily 消息统一走 Part-based 渲染 -->
           <aily-chat-message-parts
@@ -120,6 +105,33 @@
           </x-markdown>
         }
       </div>
+
+      @if (canRenderCheckpointAnchor) {
+        <nav class="user-turn-actions" [attr.aria-label]="checkpointActionLabel">
+          <button
+            type="button"
+            class="user-turn-action"
+            [class.disabled]="checkpointActionDisabled"
+            [disabled]="checkpointActionDisabled"
+            [title]="checkpointActionTitle"
+            (click)="onRestoreCheckpoint(); $event.stopPropagation()"
+          >
+            <i class="fa-light" [ngClass]="checkpointActionIconClass"></i>
+            <span>{{ checkpointActionShortLabel }}</span>
+          </button>
+          <button
+            type="button"
+            class="user-turn-action user-turn-action--icon"
+            [class.disabled]="forkSessionActionDisabled"
+            [disabled]="forkSessionActionDisabled"
+            [title]="forkSessionActionTitle"
+            [attr.aria-label]="forkSessionActionLabel"
+            (click)="onForkSession(); $event.stopPropagation()"
+          >
+            <i class="fa-light fa-code-branch"></i>
+          </button>
+        </nav>
+      }
     }
 
     @if (effectiveDoing) {
@@ -163,17 +175,14 @@
     }
 
     @if (showCheckpointRestore) {
-      <div class="checkpoint-restore-row">
-        <span class="checkpoint-action-line checkpoint-action-line-left visible"></span>
-        <span class="checkpoint-restore-label">{{ checkpointRestoreStatusLabel }}</span>
-        <span class="checkpoint-restore-dot" aria-hidden="true">·</span>
+      <div class="turn-restore-hint">
+        <span class="turn-restore-hint-text">{{ checkpointRestoreStatusLabel }}</span>
         <button
           type="button"
-          class="checkpoint-restore-action"
+          class="turn-restore-hint-action"
           [title]="checkpointRestoreActionTitle"
           (click)="onRestoreCheckpointState(); $event.stopPropagation()"
         >{{ checkpointRestoreActionLabel }}</button>
-        <span class="checkpoint-action-line checkpoint-action-line-right visible"></span>
       </div>
     }
   </div>
