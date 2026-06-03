@@ -20,6 +20,8 @@ import {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ChatSessionEntriesComponent {
+  archivedExpanded = false;
+
   @Input() groups: ReadonlyArray<ChatSessionInventoryGroup> | null = null;
   @Input() items: readonly ChatSessionListItem[] = [];
   @Input() selectedSessionId = '';
@@ -89,5 +91,22 @@ export class ChatSessionEntriesComponent {
       || action.action === 'unpin-session'
       || action.action === 'archive-session'
       || action.action === 'unarchive-session';
+  }
+
+  isCollapsibleGroup(group: ChatSessionInventoryGroup): boolean {
+    return group.id === 'archived';
+  }
+
+  isGroupExpanded(group: ChatSessionInventoryGroup): boolean {
+    return !this.isCollapsibleGroup(group) || this.archivedExpanded;
+  }
+
+  toggleGroupExpanded(event: MouseEvent, group: ChatSessionInventoryGroup): void {
+    event.stopPropagation();
+    if (!this.isCollapsibleGroup(group)) {
+      return;
+    }
+
+    this.archivedExpanded = !this.archivedExpanded;
   }
 }

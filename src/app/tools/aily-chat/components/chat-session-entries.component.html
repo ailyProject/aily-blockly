@@ -7,8 +7,22 @@
   [attr.aria-label]="listAriaLabel">
   @for (group of displayGroups; track group.id) {
   @if (group.label) {
-  <div [class.session-list-section-label]="isListVariant" [class.session-picker-section-label]="isPickerVariant">{{ group.label }}</div>
+    @if (isCollapsibleGroup(group)) {
+    <button
+      type="button"
+      [class.session-list-section-toggle]="isListVariant"
+      [class.session-picker-section-toggle]="isPickerVariant"
+      [attr.aria-expanded]="isGroupExpanded(group)"
+      [attr.aria-label]="isGroupExpanded(group) ? '收起' + group.label : '展开' + group.label"
+      (click)="toggleGroupExpanded($event, group)">
+      <i class="fa-light fa-chevron-right session-section-toggle-icon" [class.expanded]="isGroupExpanded(group)"></i>
+      <span>{{ group.label }}</span>
+    </button>
+    } @else {
+    <div [class.session-list-section-label]="isListVariant" [class.session-picker-section-label]="isPickerVariant">{{ group.label }}</div>
+    }
   }
+  @if (isGroupExpanded(group)) {
   @for (item of group.items; track trackBySessionId($index, item)) {
   <div
     [class.session-list-row]="isListVariant"
@@ -83,6 +97,7 @@
     </div>
     }
   </div>
+  }
   }
   }
 </div>

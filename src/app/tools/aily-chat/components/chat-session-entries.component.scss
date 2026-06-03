@@ -34,6 +34,61 @@
   color: var(--aily-text-muted, #9d9d9d);
 }
 
+.session-list-section-toggle,
+.session-picker-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--aily-text-muted, #9d9d9d);
+  line-height: 1;
+
+  > span {
+    line-height: 1;
+  }
+
+  &:hover {
+    color: var(--aily-text-primary, #e0e0e0);
+  }
+}
+
+.session-list-section-toggle {
+  padding: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.session-picker-section-toggle {
+  padding: 8px 8px 2px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.session-section-toggle-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  // height: 12px;
+  font-size: 10px;
+  line-height: 1;
+  transform-origin: center center;
+  transition: transform 120ms ease;
+
+  &.expanded {
+    transform: rotate(90deg);
+  }
+}
+
 $session-activity-slot-width: 12px;
 $session-activity-slot-gap: 6px;
 $session-activity-slot-offset: $session-activity-slot-width + $session-activity-slot-gap;
