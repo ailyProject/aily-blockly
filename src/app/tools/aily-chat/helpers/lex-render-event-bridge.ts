@@ -268,8 +268,16 @@ export class LexRenderEventBridge {
         'completed',
         event.usage,
         event.continuation,
+        event.modelName,
+        event.modelBillingLabel,
+        event.modelRouting,
+        event.quotaSnapshot,
         event.terminationReason,
       );
+      if (event.modelName || event.modelBillingLabel || event.modelRouting || event.quotaSnapshot) {
+        this.ctx.invalidateHostRequestGraph();
+        this.ctx.triggerSyncDetectChanges();
+      }
       this._projectionSync.projectPendingChanges(this._currentTurn, this._streamBuilder);
       return;
     }
@@ -418,6 +426,10 @@ export class LexRenderEventBridge {
     fallbackStatus: TurnResponseStatus,
     usage?: TurnResponseTurn['usage'],
     continuation?: TurnResponseTurn['response']['continuation'],
+    modelName?: string,
+    modelBillingLabel?: string,
+    modelRouting?: NonNullable<TurnResponseTurn['responseModel']>['modelRouting'],
+    quotaSnapshot?: TurnResponseTurn['responseModel']['quotaSnapshot'],
     terminationReason?: TurnResponseTurn['response']['terminationReason'],
   ): void {
     if (!this._currentTurn) {
@@ -434,6 +446,10 @@ export class LexRenderEventBridge {
         hasExecutionError: this._currentTurnHasExecutionError,
         usage,
         continuation,
+        modelName,
+        modelBillingLabel,
+        modelRouting,
+        quotaSnapshot,
         terminationReason,
       },
     );
@@ -443,6 +459,22 @@ export class LexRenderEventBridge {
     }
 
     this._currentTurn = withExplicitAgentSummaryPreview(materialized);
+
+    const selectedPresetId = typeof this._currentTurn.responseModel?.modelRouting?.selectedPresetId === 'string'
+      ? this._currentTurn.responseModel.modelRouting.selectedPresetId
+      : undefined;
+    const selectedModel = typeof this._currentTurn.responseModel?.modelRouting?.selectedModel === 'string'
+      ? this._currentTurn.responseModel.modelRouting.selectedModel
+      : undefined;
+    if (selectedPresetId || selectedModel || this._currentTurn.responseModel?.modelName) {
+      console.log('[LexRender] materialized turn response model:', {
+        turnId: this._currentTurn.turnId,
+        modelName: this._currentTurn.responseModel?.modelName,
+        modelBillingLabel: this._currentTurn.responseModel?.modelBillingLabel,
+        selectedPresetId,
+        selectedModel,
+      });
+    }
 
     const previousModelName = getTurnResponseModelName(previousTurn);
     const currentModelName = getTurnResponseModelName(this._currentTurn);

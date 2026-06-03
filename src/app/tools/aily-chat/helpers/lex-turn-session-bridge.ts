@@ -199,6 +199,15 @@ export class LexTurnSessionBridge implements ITurnDataSource {
         ...(effectiveMetadata ? { metadata: effectiveMetadata } : {}),
       },
     );
+    const activeMetadata = agent.turnManager.activeTurn?.request.metadata;
+    const activeModelRouting = activeMetadata?.['modelRouting'];
+    if (effectiveMetadata?.['modelRouting'] || activeModelRouting) {
+      console.info('[LexTurnSession] startTurn request model routing:', {
+        incomingModelRouting: metadata?.['modelRouting'],
+        effectiveModelRouting: effectiveMetadata?.['modelRouting'],
+        activeModelRouting,
+      });
+    }
     return turn.id;
   }
 

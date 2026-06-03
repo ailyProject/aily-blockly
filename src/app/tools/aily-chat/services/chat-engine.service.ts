@@ -1068,18 +1068,6 @@ export class ChatEngineService implements IChatContext {
   }
 
   private getCurrentModelChipBaseLabel(): string {
-    const selectedModel = this.chatService.currentModel;
-    const resolvedModelName = typeof this.chatService.resolvedActiveModel?.name === 'string' && this.chatService.resolvedActiveModel.name.trim()
-      ? this.chatService.resolvedActiveModel.name.trim()
-      : '';
-
-    if (isDefaultAutoPresetSelected(selectedModel) && resolvedModelName) {
-      const selectedLabel = typeof selectedModel?.name === 'string' && selectedModel.name.trim()
-        ? selectedModel.name.trim()
-        : 'Auto';
-      return `${selectedLabel} -> ${resolvedModelName}`;
-    }
-
     return this.currentModelName ?? '';
   }
 
@@ -3184,6 +3172,26 @@ Do not create non-existent boards and libraries.
       if (typeof ensureBlankSessionRuntimeProviderOptions === 'function') {
         await ensureBlankSessionRuntimeProviderOptions.call(this, runtimeSessionId);
       }
+
+        if (sender === 'user') {
+          const currentModel = this.chatService.currentModel as { model?: string; presetId?: string; name?: string } | null;
+          const requestModelRouting = prepared.requestMetadata?.['modelRouting'] as Record<string, unknown> | undefined;
+          console.info('[AilyChat][Send] request model routing:', {
+            currentModel: currentModel
+              ? {
+                  model: currentModel.model,
+                  presetId: currentModel.presetId,
+                  name: currentModel.name,
+                }
+              : null,
+            modelRouting: requestModelRouting
+              ? { ...requestModelRouting }
+              : undefined,
+          });
+          console.info(
+            `[AilyChat][Send] request model routing scalar currentModel=${currentModel?.model ?? ''}/${currentModel?.presetId ?? ''}/${currentModel?.name ?? ''} requestedModel=${typeof requestModelRouting?.['requestedModel'] === 'string' ? requestModelRouting['requestedModel'] : ''} requestedPresetId=${typeof requestModelRouting?.['requestedPresetId'] === 'string' ? requestModelRouting['requestedPresetId'] : ''}`,
+          );
+        }
 
       this.lexStream.turn.begin(prepared.llmText, prepared.displayText, prepared.requestMetadata);
       if (sender === 'user') {

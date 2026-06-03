@@ -69,6 +69,7 @@ import {
   resolveHostSessionProviderOptionsFromInputState,
 } from '../helpers/host-session-input-state';
 import {
+  getTurnResponseResolvedPresetId,
   getTurnResponseResolvedModelBillingLabel,
   getTurnResponseResolvedModelName,
 } from '../helpers/turn-response-response-model';
@@ -89,7 +90,7 @@ export interface ChatTextOptions {
   autoSend?: boolean; // 是否自动发送
   newChatFirst?: boolean; // 发送前先新建会话
   action?: string;
-  payload?: any;
+  payload?: unknown;
 }
 
 export interface ChatTextMessage {
@@ -203,6 +204,7 @@ export class ChatService {
   private _currentSessionTitleRevision = 0;
   currentModel: ModelConfig | null = null; // 当前模型，在构造函数中初始化
   resolvedActiveModel: ModelConfig | null = null;
+  resolvedActiveDisplayModel: ModelConfig | null = null;
   resolvedActiveModelBillingLabel: string | undefined;
   private rateLimitAutoSwitchToAuto = false;
 
@@ -451,10 +453,17 @@ export class ChatService {
 
     // 订阅配置变更，当模型列表更新时重新加载
     this.ailyChatConfigService.configChanged$.subscribe(() => {
+      const savedModel = AilyHost.get().config.data?.aiChatModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+      console.info(
+        `[AilyChat][ModelState] configChanged -> loadChatModel savedModel=${savedModel?.model ?? ''}/${savedModel?.presetId ?? ''}/${savedModel?.name ?? ''}`,
+      );
       this.loadChatModel();
     });
 
     this.ailyChatConfigService.modelCatalogChanged$.subscribe(() => {
+      console.info(
+        `[AilyChat][ModelState] modelCatalogChanged -> refreshCurrentModelRuntimeMetadata currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+      );
       this.refreshCurrentModelRuntimeMetadata();
       this.notifySessionInputStateChanged();
     });
@@ -1547,6 +1556,11 @@ export class ChatService {
   private loadChatModel(): void {
     const savedModel = AilyHost.get().config.data?.aiChatModel;
     const enabledModels = this.ailyChatConfigService.getEnabledModels();
+    const savedModelInfo = savedModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+
+    console.info(
+      `[AilyChat][ModelState] loadChatModel start savedModel=${savedModelInfo?.model ?? ''}/${savedModelInfo?.presetId ?? ''}/${savedModelInfo?.name ?? ''} enabledCount=${enabledModels.length}`,
+    );
 
     // 重置当前模型，确保每次都重新验证
     this.currentModel = null;
@@ -1568,6 +1582,9 @@ export class ChatService {
     }
 
     this.currentModel = this.applyPersistedLanguageModelConfiguration(this.currentModel);
+    console.info(
+      `[AilyChat][ModelState] loadChatModel resolved currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
 
     this.clearResolvedActiveModel();
 
@@ -1585,11 +1602,28 @@ export class ChatService {
    */
   saveChatModel(model: ModelConfig, options?: { rememberRecent?: boolean }): boolean {
     const normalizedModel = this.resolveSelectableRuntimeModel(model);
+    console.info('[AilyChat][ModelSwitch] saveChatModel', {
+      incomingModel: model,
+      normalizedModel,
+      rememberRecent: options?.rememberRecent !== false,
+    });
+    console.info(
+      `[AilyChat][ModelSwitch] saveChatModel scalar incoming=${model?.model ?? ''}/${model?.presetId ?? ''}/${model?.name ?? ''} normalized=${normalizedModel?.model ?? ''}/${normalizedModel?.presetId ?? ''}/${normalizedModel?.name ?? ''} rememberRecent=${options?.rememberRecent !== false}`,
+    );
     if (!normalizedModel) {
+      console.info('[AilyChat][ModelSwitch] saveChatModel rejected model because normalization returned null', {
+        incomingModel: model,
+      });
       return false;
     }
 
     this.currentModel = this.applyPersistedLanguageModelConfiguration(normalizedModel);
+    console.info('[AilyChat][ModelSwitch] saveChatModel applied currentModel', {
+      currentModel: this.currentModel,
+    });
+    console.info(
+      `[AilyChat][ModelSwitch] saveChatModel applied scalar currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
     this.clearResolvedActiveModel();
     this.contextBudgetService.updateModelContextSize(this.currentModel);
     const config = AilyHost.get().config;
@@ -1599,6 +1633,10 @@ export class ChatService {
         config.data.aiChatRecentModelPresetIds = this.buildNextRecentModelPresetIds(this.currentModel);
       }
     }
+    const persistedModel = config.data?.aiChatModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+    console.info(
+      `[AilyChat][ModelSwitch] saveChatModel persisted scalar aiChatModel=${persistedModel?.model ?? ''}/${persistedModel?.presetId ?? ''}/${persistedModel?.name ?? ''}`,
+    );
     config.save?.();
     return true;
   }
@@ -1684,10 +1722,16 @@ export class ChatService {
   }
 
   private refreshCurrentModelRuntimeMetadata(): void {
+    console.info(
+      `[AilyChat][ModelState] refreshCurrentModelRuntimeMetadata start currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
     if (this.currentModel) {
       const refreshedModel = this.ailyChatConfigService.resolveSavedModel(this.currentModel);
       if (refreshedModel) {
         this.currentModel = this.applyPersistedLanguageModelConfiguration(refreshedModel);
+        console.info(
+          `[AilyChat][ModelState] refreshCurrentModelRuntimeMetadata resolved currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+        );
         this.refreshResolvedActiveModelRuntimeMetadata();
         this.contextBudgetService.updateModelContextSize(this.currentModel);
         return;
@@ -1696,6 +1740,9 @@ export class ChatService {
 
     this.currentModel = this.ailyChatConfigService.resolveSelectablePresetModel(
       this.ailyChatConfigService.getDefaultModelPresetId(),
+    );
+    console.info(
+      `[AilyChat][ModelState] refreshCurrentModelRuntimeMetadata fallback currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
     );
     this.refreshResolvedActiveModelRuntimeMetadata();
     this.contextBudgetService.updateModelContextSize(this.currentModel);
@@ -1829,11 +1876,12 @@ export class ChatService {
   }
 
   getActiveDisplayModel(): ModelConfig | null {
-    return this.resolvedActiveModel ?? this.currentModel;
+    return this.resolvedActiveDisplayModel ?? this.resolvedActiveModel ?? this.currentModel;
   }
 
   clearResolvedActiveModel(): void {
     this.resolvedActiveModel = null;
+    this.resolvedActiveDisplayModel = null;
     this.resolvedActiveModelBillingLabel = undefined;
   }
 
@@ -1863,6 +1911,8 @@ export class ChatService {
       contextInfo.model_name,
       { contextWindowTokens: contextInfo.model_context_limit },
     );
+    this.resolvedActiveDisplayModel = this.ailyChatConfigService.resolvePresetDisplayModel(contextInfo.model_preset_id)
+      ?? this.resolvedActiveModel;
     this.resolvedActiveModelBillingLabel = undefined;
 
     if (this.resolvedActiveModel) {
@@ -1929,21 +1979,35 @@ export class ChatService {
   private syncResolvedActiveModelFromTurnResponses(turnResponses: readonly TurnResponseTurn[]): void {
     for (let index = turnResponses.length - 1; index >= 0; index -= 1) {
       const modelName = getTurnResponseResolvedModelName(turnResponses[index]);
+      const presetId = getTurnResponseResolvedPresetId(turnResponses[index]);
       const modelBillingLabel = getTurnResponseResolvedModelBillingLabel(turnResponses[index]);
-      if (!modelName && !modelBillingLabel) {
+      if (!modelName && !modelBillingLabel && !presetId) {
         continue;
       }
 
       this.resolvedActiveModelBillingLabel = modelBillingLabel;
+      this.resolvedActiveDisplayModel = presetId
+        ? this.ailyChatConfigService.resolvePresetDisplayModel(presetId)
+        : null;
 
       if (!modelName) {
         this.resolvedActiveModel = null;
-        return;
+        if (this.resolvedActiveDisplayModel) {
+          return;
+        }
+        continue;
       }
 
       this.resolvedActiveModel = this.ailyChatConfigService.resolveRuntimeModelFromServerModelName(modelName);
+      if (!this.resolvedActiveDisplayModel) {
+        this.resolvedActiveDisplayModel = this.resolvedActiveModel;
+      }
       if (this.resolvedActiveModel) {
         this.contextBudgetService.updateModelContextSize(this.resolvedActiveModel);
+        return;
+      }
+
+      if (this.resolvedActiveDisplayModel) {
         return;
       }
     }
@@ -1960,6 +2024,13 @@ export class ChatService {
       this.resolvedActiveModel.model || this.resolvedActiveModel.name,
       { contextWindowTokens: this.resolvedActiveModel.contextWindowTokens },
     );
+
+    if (this.resolvedActiveDisplayModel?.presetId) {
+      this.resolvedActiveDisplayModel = this.ailyChatConfigService.resolvePresetDisplayModel(this.resolvedActiveDisplayModel.presetId);
+      return;
+    }
+
+    this.resolvedActiveDisplayModel = this.resolvedActiveModel;
   }
 
 
@@ -2071,6 +2142,7 @@ export class ChatService {
     tools_tokens: number;
     model_context_limit: number;
     model_name?: string;
+    model_preset_id?: string;
   } | null> {
     try {
       const token = await AilyHost.get().auth.getToken!();

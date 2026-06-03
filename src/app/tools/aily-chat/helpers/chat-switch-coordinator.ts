@@ -98,7 +98,21 @@ export class ChatSwitchCoordinator {
   }
 
   async switchToModel(model: ModelConfig): Promise<void> {
+    console.info('[AilyChat][ModelSwitch] switchToModel called', {
+      requestedModel: model,
+      currentModel: this.ctx.currentModel,
+      isWaiting: this.ctx.isWaiting,
+    });
+    const currentModel = this.ctx.currentModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+    console.info(
+      `[AilyChat][ModelSwitch] switchToModel scalar requested=${model?.model ?? ''}/${model?.presetId ?? ''}/${model?.name ?? ''} current=${currentModel?.model ?? ''}/${currentModel?.presetId ?? ''}/${currentModel?.name ?? ''} isWaiting=${this.ctx.isWaiting}`,
+    );
+
     if (this.isSameModelSelection(model)) {
+      console.info('[AilyChat][ModelSwitch] skipped because selection is unchanged', {
+        requestedModel: model,
+        currentModel: this.ctx.currentModel,
+      });
       return;
     }
 
@@ -276,7 +290,16 @@ export class ChatSwitchCoordinator {
   }
 
   private async doSwitchModel(model: ModelConfig): Promise<void> {
+    console.info('[AilyChat][ModelSwitch] doSwitchModel start', {
+      requestedModel: model,
+    });
+    console.info(
+      `[AilyChat][ModelSwitch] doSwitchModel scalar requested=${model?.model ?? ''}/${model?.presetId ?? ''}/${model?.name ?? ''}`,
+    );
     if (this.ctx.chatService.saveChatModel(model) === false) {
+      console.info('[AilyChat][ModelSwitch] doSwitchModel aborted because saveChatModel returned false', {
+        requestedModel: model,
+      });
       return;
     }
 

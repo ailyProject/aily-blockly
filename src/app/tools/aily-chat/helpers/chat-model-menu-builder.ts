@@ -248,6 +248,10 @@ class ChatModelMenuBuilder {
     const navigationConfigurationSummary = this.getNavigationConfigurationDisplayLabel(navigationConfigurationGroups);
     const configurationMenuItemsByAction = this.buildConfigurationMenuItemsByAction(model, modelConfigurationGroups);
     const reasoningMenuItems = configurationMenuItemsByAction[this.getModelConfigurationActionId('reasoningEffort')] ?? [];
+    const hoverConfigurationGroup = navigationConfigurationGroups.find((group) => group.key === 'reasoningEffort');
+    const hoverConfigurationMenuItems = hoverConfigurationGroup
+      ? this.createConfigurationMenuItems(model, hoverConfigurationGroup)
+      : [];
     const modelSelectionId = this.getModelSelectionId(model);
     const isPinned = !!modelSelectionId && this.deps.pinnedModelIds.includes(modelSelectionId);
     const actions = [
@@ -280,9 +284,10 @@ class ChatModelMenuBuilder {
         reasoningMenuItems,
         configurationMenuItemsByAction,
       },
+      children: hoverConfigurationMenuItems.length > 0 ? hoverConfigurationMenuItems : undefined,
       actions: actions.length > 0 ? actions : undefined,
       extra: {
-        hoverFlyout: this.buildModelHoverFlyout(model, displayModel, modelConfigurationGroups, options),
+        hoverFlyout: this.buildModelHoverFlyout(model, displayModel, modelConfigurationGroups, hoverConfigurationGroup?.label, options),
       },
       hideChildrenArrow: true,
     };
@@ -292,6 +297,7 @@ class ChatModelMenuBuilder {
     model: ChatCurrentModel,
     displayModel: ChatCurrentModel,
     modelConfigurationGroups: readonly NavigationConfigurationActionGroup[],
+    hoverConfigurationLabel?: string,
     options?: {
       description?: string | null;
       preferBillingMeta?: boolean;
@@ -313,7 +319,7 @@ class ChatModelMenuBuilder {
       description: descriptionLines || undefined,
       contextLabel: contextValue && contextValue !== '自动检测' ? '上下文长度' : undefined,
       contextValue: contextValue && contextValue !== '自动检测' ? contextValue : undefined,
-      sectionLabel: this.getModelHoverSectionLabel(modelConfigurationGroups),
+      sectionLabel: hoverConfigurationLabel ?? this.getModelHoverSectionLabel(modelConfigurationGroups),
     };
   }
 

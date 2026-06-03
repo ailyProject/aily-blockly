@@ -4,7 +4,7 @@ import { toTurnResponseStatus } from 'aily-lex/browser';
 
 import { TurnResponseIncrementalBuilder } from '../core/turn-response-stream-builder';
 import { getTurnResponseParticipant } from '../core/turn-response-stream-contract';
-import { getTurnResponseResolvedModelName } from './turn-response-response-model';
+import { cloneTurnResponseModelRouting, getTurnResponseResolvedModelName } from './turn-response-response-model';
 
 function mergeMaterializedTurnRequest(
   snapshotRequest: TurnResponseTurn['request'],
@@ -44,6 +44,10 @@ export class LexRenderTurnMaterializer {
       usage?: TurnResponseTurn['usage'];
       continuation?: TurnResponseTurn['response']['continuation'];
       terminationReason?: TurnResponseTurn['response']['terminationReason'];
+      modelName?: string;
+      modelBillingLabel?: string;
+      modelRouting?: NonNullable<TurnResponseTurn['responseModel']>['modelRouting'];
+      quotaSnapshot?: TurnResponseTurn['responseModel']['quotaSnapshot'];
     },
   ): TurnResponseTurn | null {
     const snapshotTurnId = streamBuilder.currentSourceTurnId ?? currentTurn.turnId;
@@ -60,6 +64,10 @@ export class LexRenderTurnMaterializer {
       usage: options.usage,
       continuation: options.continuation,
       terminationReason: options.terminationReason,
+      modelName: options.modelName,
+      modelBillingLabel: options.modelBillingLabel,
+      modelRouting: options.modelRouting,
+      quotaSnapshot: options.quotaSnapshot,
       participant: getTurnResponseParticipant(
         this.ctx.currentMessageSource || currentTurn.response.participant,
       ),
@@ -72,6 +80,7 @@ export class LexRenderTurnMaterializer {
           terminationReason: snapshotTurn.terminationReason,
           modelName: getTurnResponseResolvedModelName(snapshotTurn),
           modelBillingLabel: snapshotTurn.responseModel?.modelBillingLabel,
+          modelRouting: cloneTurnResponseModelRouting(snapshotTurn.responseModel?.modelRouting),
           quotaSnapshot: snapshotTurn.responseModel?.quotaSnapshot,
         }
         : undefined,

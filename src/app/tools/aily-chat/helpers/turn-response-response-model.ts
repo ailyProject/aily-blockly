@@ -14,7 +14,7 @@ function normalizeOptionalText(value: unknown): string | undefined {
     : undefined;
 }
 
-function cloneTurnResponseModelRouting(
+export function cloneTurnResponseModelRouting(
   modelRouting: TurnResponseTurn['responseModel']['modelRouting'] | undefined,
 ): TurnResponseTurn['responseModel']['modelRouting'] | undefined {
   const requestedModel = normalizeOptionalText(modelRouting?.requestedModel);
@@ -151,6 +151,38 @@ export function getTurnResponseResolvedModelName(
 
   return 'resolvedModel' in usage
     ? normalizeOptionalText(usage['resolvedModel'])
+    : undefined;
+}
+
+export function getTurnResponseResolvedPresetId(
+  turn:
+    | {
+      responseModel?: {
+        modelRouting?: { selectedPresetId?: string | null } | null;
+      } | null;
+      response?: unknown;
+    }
+    | null
+    | undefined,
+): string | undefined {
+  const routedPresetId = normalizeOptionalText(turn?.responseModel?.modelRouting?.selectedPresetId);
+  if (routedPresetId) {
+    return routedPresetId;
+  }
+
+  const response = turn?.response as { continuation?: { diagnostics?: unknown } | null } | null | undefined;
+  const continuationDiagnostics = response?.continuation?.diagnostics;
+  if (!continuationDiagnostics || typeof continuationDiagnostics !== 'object') {
+    return undefined;
+  }
+
+  const usage = 'usage' in continuationDiagnostics ? continuationDiagnostics['usage'] : undefined;
+  if (!usage || typeof usage !== 'object') {
+    return undefined;
+  }
+
+  return 'selectedPresetId' in usage
+    ? normalizeOptionalText(usage['selectedPresetId'])
     : undefined;
 }
 

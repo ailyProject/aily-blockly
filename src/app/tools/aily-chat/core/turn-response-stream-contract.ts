@@ -8,10 +8,29 @@ import {
   MAIN_AGENT_TYPE,
   normalizeAgentIdentifier,
 } from './agent-identifiers';
+import { cloneTurnResponseModelRouting } from '../helpers/turn-response-response-model';
 import {
   applyAutoDiscountToBillingLabel,
+  isAutoPresetIdentifier,
   isDefaultAutoPresetIdentifier,
 } from '../helpers/model-billing-label';
+
+function formatResolvedPresetDisplayName(presetId: string | undefined): string | undefined {
+  if (!presetId) {
+    return undefined;
+  }
+
+  const trimmedPresetId = presetId.trim();
+  if (!trimmedPresetId) {
+    return undefined;
+  }
+
+  return trimmedPresetId
+    .split('-')
+    .filter(segment => !!segment)
+    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join('-');
+}
 
 export type TurnResponseHostMessageState = 'doing' | 'done';
 
@@ -63,6 +82,7 @@ export interface TurnResponseStreamProjection {
   readonly followups?: readonly TurnResponseFollowup[];
   readonly modelName?: string;
   readonly modelBillingLabel?: string;
+  readonly modelRouting?: NonNullable<TurnResponseTurn['responseModel']>['modelRouting'];
   readonly quotaSnapshot?: TurnResponseQuotaSnapshot;
   readonly usedContext?: TurnResponseTurn['response']['usedContext'];
   readonly contentReferences?: TurnResponseTurn['response']['contentReferences'];
@@ -192,15 +212,23 @@ export function buildTurnResponseAssistantEntryProjection(
   const responseModelBillingLabel = typeof turn.responseModel?.modelBillingLabel === 'string' && turn.responseModel.modelBillingLabel.trim()
     ? turn.responseModel.modelBillingLabel.trim()
     : undefined;
+  const responseModelSelectedPresetId = typeof turn.responseModel?.modelRouting?.selectedPresetId === 'string' && turn.responseModel.modelRouting.selectedPresetId.trim()
+    ? turn.responseModel.modelRouting.selectedPresetId.trim()
+    : undefined;
   const continuationResolvedModelName = getContinuationResolvedModelName(turn.response.continuation);
   const continuationModelBillingLabel = getContinuationModelBillingLabel(turn.response.continuation);
-  const modelName = overrides.modelName
-    ?? continuationResolvedModelName
-    ?? responseModelName
-    ?? requestModelDisplayName;
   const requestModelPresetId = typeof requestMetadata?.['modelPresetId'] === 'string' && requestMetadata['modelPresetId'].trim()
     ? requestMetadata['modelPresetId'].trim()
     : undefined;
+  const resolvedPresetId = responseModelSelectedPresetId ?? requestModelPresetId;
+  const routedPresetDisplayName = responseModelSelectedPresetId && responseModelSelectedPresetId !== requestModelPresetId
+    ? formatResolvedPresetDisplayName(responseModelSelectedPresetId)
+    : undefined;
+  const modelName = overrides.modelName
+    ?? routedPresetDisplayName
+    ?? continuationResolvedModelName
+    ?? responseModelName
+    ?? requestModelDisplayName;
   const modelBillingLabel = overrides.modelBillingLabel
     ?? continuationModelBillingLabel
     ?? responseModelBillingLabel
@@ -308,6 +336,7 @@ export function buildTurnResponseTurn(
   const modelBillingLabel = typeof projection.modelBillingLabel === 'string' && projection.modelBillingLabel.trim()
     ? projection.modelBillingLabel.trim()
     : undefined;
+  const modelRouting = cloneTurnResponseModelRouting(projection.modelRouting);
   const requestUsage = projection.requestUsage ?? getContinuationRequestUsage(projection.continuation);
   const quotaSnapshot = projection.quotaSnapshot
     ? {
@@ -353,6 +382,7 @@ export function buildTurnResponseTurn(
           ...(projection.followups !== undefined ? { followups: [...projection.followups] } : {}),
           ...(modelName !== undefined ? { modelName } : {}),
           ...(modelBillingLabel !== undefined ? { modelBillingLabel } : {}),
+          ...(modelRouting !== undefined ? { modelRouting } : {}),
           ...(quotaSnapshot !== undefined ? { quotaSnapshot } : {}),
           ...(requestUsage !== undefined ? { requestUsage } : {}),
         },

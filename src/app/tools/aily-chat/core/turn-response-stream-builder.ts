@@ -7,6 +7,7 @@ import {
   DetachedChatPartRuntime,
   type DetachedRuntimeProjectionTargetHandle,
 } from './detached-chat-part-runtime';
+import { cloneTurnResponseModelRouting } from '../helpers/turn-response-response-model';
 import { buildTurnResponseTurn } from './turn-response-stream-contract';
 
 type IncrementalTurnResponseProjectionTargetStore = Pick<
@@ -38,6 +39,7 @@ interface TurnResponseIncrementalProjection {
   readonly followups?: readonly TurnResponseFollowup[];
   readonly modelName?: string;
   readonly modelBillingLabel?: string;
+  readonly modelRouting?: NonNullable<TurnResponseTurn['responseModel']>['modelRouting'];
   readonly quotaSnapshot?: TurnResponseTurn['responseModel']['quotaSnapshot'];
   readonly usedContext?: TurnResponseTurn['response']['usedContext'];
   readonly contentReferences?: readonly NonNullable<TurnResponseTurn['response']['contentReferences']>[number][];
@@ -70,6 +72,10 @@ export interface TurnResponseIncrementalMaterializeOptions {
   readonly continuation?: TurnResponseTurn['response']['continuation'];
   readonly usage?: TurnResponseTurn['usage'];
   readonly participant?: string;
+  readonly modelName?: string;
+  readonly modelBillingLabel?: string;
+  readonly modelRouting?: NonNullable<TurnResponseTurn['responseModel']>['modelRouting'];
+  readonly quotaSnapshot?: TurnResponseTurn['responseModel']['quotaSnapshot'];
   readonly snapshot?: {
     readonly request?: TurnResponseTurn['request'];
     readonly rounds?: TurnResponseTurn['rounds'];
@@ -80,6 +86,7 @@ export interface TurnResponseIncrementalMaterializeOptions {
     readonly terminationReason?: TurnResponseTurn['response']['terminationReason'];
     readonly modelName?: string;
     readonly modelBillingLabel?: string;
+    readonly modelRouting?: NonNullable<TurnResponseTurn['responseModel']>['modelRouting'];
     readonly quotaSnapshot?: TurnResponseTurn['responseModel']['quotaSnapshot'];
   };
 }
@@ -177,9 +184,12 @@ export class TurnResponseIncrementalBuilder {
       followups: this.currentProjection.followups
         ? [...this.currentProjection.followups]
         : undefined,
-      modelName: options.snapshot?.modelName ?? this.currentProjection.modelName,
-      modelBillingLabel: options.snapshot?.modelBillingLabel ?? this.currentProjection.modelBillingLabel,
-      quotaSnapshot: options.snapshot?.quotaSnapshot ?? this.currentProjection.quotaSnapshot,
+      modelName: options.modelName ?? options.snapshot?.modelName ?? this.currentProjection.modelName,
+      modelBillingLabel: options.modelBillingLabel ?? options.snapshot?.modelBillingLabel ?? this.currentProjection.modelBillingLabel,
+      modelRouting: cloneTurnResponseModelRouting(options.modelRouting)
+        ?? cloneTurnResponseModelRouting(options.snapshot?.modelRouting)
+        ?? cloneTurnResponseModelRouting(this.currentProjection.modelRouting),
+      quotaSnapshot: options.quotaSnapshot ?? options.snapshot?.quotaSnapshot ?? this.currentProjection.quotaSnapshot,
       usedContext: this.currentProjection.usedContext,
       contentReferences: this.currentProjection.contentReferences
         ? [...this.currentProjection.contentReferences]
@@ -205,6 +215,7 @@ export class TurnResponseIncrementalBuilder {
       followups: this.currentProjection.followups,
       modelName: this.currentProjection.modelName,
       modelBillingLabel: this.currentProjection.modelBillingLabel,
+      modelRouting: this.currentProjection.modelRouting,
       quotaSnapshot: this.currentProjection.quotaSnapshot,
       usedContext: this.currentProjection.usedContext,
       contentReferences: this.currentProjection.contentReferences,
@@ -254,6 +265,7 @@ export class TurnResponseIncrementalBuilder {
         ?? (turn.response as { followups?: readonly TurnResponseFollowup[] } | undefined)?.followups,
       modelName: turn.responseModel?.modelName,
       modelBillingLabel: turn.responseModel?.modelBillingLabel,
+      modelRouting: cloneTurnResponseModelRouting(turn.responseModel?.modelRouting),
       quotaSnapshot: turn.responseModel?.quotaSnapshot,
       usedContext: turn.response.usedContext,
       contentReferences: turn.response.contentReferences,

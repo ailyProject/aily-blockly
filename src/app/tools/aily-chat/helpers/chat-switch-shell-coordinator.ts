@@ -106,10 +106,38 @@ export class ChatSwitchShellCoordinator {
     this.deps.menuManager.showModelMenu = false;
 
     if (item.disabled) {
+      console.info('[AilyChat][ModelSwitch] ignored disabled menu item', {
+        name: item.name,
+        action: item.action,
+        dataModel: item.data?.model,
+      });
       return;
     }
 
     const model = item.data?.model as ModelConfig | undefined;
+    console.info('[AilyChat][ModelSwitch] menu click', {
+      name: item.name,
+      action: item.action,
+      dataModel: model,
+      currentModel: this.deps.getCurrentModel(),
+    });
+    const dataModel = item?.data?.['model'] as { model?: string; presetId?: string; name?: string } | undefined;
+    const currentModel = this.deps.getCurrentModel() as { model?: string; presetId?: string; name?: string } | null | undefined;
+    console.info(
+      `[AilyChat][ModelSwitch] menu click scalar item=${item?.name ?? ''} dataModel=${dataModel?.model ?? ''}/${dataModel?.presetId ?? ''}/${dataModel?.name ?? ''} currentModel=${currentModel?.model ?? ''}/${currentModel?.presetId ?? ''}/${currentModel?.name ?? ''}`,
+    );
+    const modelConfiguration = item.data?.modelConfiguration as { key?: string; value?: unknown } | undefined;
+    const configurationKey = typeof modelConfiguration?.key === 'string'
+      ? modelConfiguration.key.trim()
+      : '';
+    if (model?.model && configurationKey) {
+      void this.callbacks.switchToModelConfiguration(model, {
+        key: configurationKey,
+        value: modelConfiguration?.value,
+      });
+      return;
+    }
+
     if (model?.model && !isSameModelSelection(model, this.deps.getCurrentModel())) {
       void this.callbacks.switchToModel(model);
     }

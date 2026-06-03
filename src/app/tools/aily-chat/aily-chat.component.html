@@ -605,7 +605,7 @@
 
 @if(menuManager.showModelMenu){
 <app-menu class="model-menu" [menuList]="vm.modelMenuItems" [position]="menuManager.modelListPosition" [width]="320" [globalFilterPlaceholder]="'搜索模型'" [focusGlobalFilterOnOpen]="true" (closeEvent)="menuManager.closeAll()"
-  (itemClickEvent)="switchShellCoordinator.modelMenuClick($event)" (actionClickEvent)="handleModelMenuActionClick($event)"></app-menu>
+  (itemClickEvent)="switchShellCoordinator.modelMenuClick($event)" (subItemClickEvent)="switchShellCoordinator.modelMenuClick($event)" (actionClickEvent)="handleModelMenuActionClick($event)"></app-menu>
 }
 
 @if(menuManager.showReasoningMenu){
