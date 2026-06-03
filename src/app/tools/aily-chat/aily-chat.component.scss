@@ -56,9 +56,11 @@
   overflow: visible;
 
   .chat-session-sidebar-content {
-    display: block;
+    display: flex;
+    flex-direction: column;
     height: 100%;
     min-height: 0;
+    overflow: hidden;
   }
 
   nz-resize-handle {

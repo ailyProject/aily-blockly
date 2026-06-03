@@ -1,7 +1,22 @@
+:host {
+  display: block;
+  min-height: 0;
+}
+
+:host-context(.session-picker-panel),
+:host-context(.session-list-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .session-list-items {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding: 8px;
@@ -10,7 +25,8 @@
 .session-picker-list {
   display: flex;
   flex-direction: column;
-  max-height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 4px;
   gap: 2px;

@@ -1,7 +1,19 @@
-.session-list-panel {
+:host {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+:host(.chat-session-sidebar-content) {
+  height: 100%;
+}
+
+.session-list-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
   border-radius: 10px;
   border: 1px solid var(--aily-chat-session-list-border, var(--aily-border-secondary, rgba(255, 255, 255, 0.06)));
   background: var(--aily-chat-session-list-bg, var(--aily-chat-viewer-panel-raised, rgba(255, 255, 255, 0.02)));
@@ -16,6 +28,7 @@
 }
 
 .session-list-header {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -36,6 +49,19 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+
+  aily-chat-session-entries {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+}
+
+.session-list-panel.entry .session-list-body {
   min-height: 220px;
 }
 

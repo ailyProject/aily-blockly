@@ -498,7 +498,7 @@
   }
 }
 
-// 消息底部栏：左操作、右模型信息
+// 消息底部栏：左操作、右模型信息（固定占位 + hover 显影，无高度伸缩）
 .msg-footer {
   display: flex;
   align-items: center;
@@ -506,10 +506,25 @@
   gap: 8px;
   padding: 2px 2px 4px;
   min-height: 24px;
+  transition: opacity 0.15s ease;
 
   &.model-only {
     justify-content: flex-end;
   }
+}
+
+.dialog-box.has-hover-footer .msg-footer {
+  opacity: 0.38;
+  pointer-events: auto;
+}
+
+.dialog-box.has-hover-footer:hover .msg-footer,
+.dialog-box.has-hover-footer:focus-within .msg-footer {
+  opacity: 1;
+}
+
+.dialog-box.footer-always-visible .msg-footer {
+  opacity: 1;
 }
 
 // 消息操作栏（Copilot footer-toolbar 对齐）

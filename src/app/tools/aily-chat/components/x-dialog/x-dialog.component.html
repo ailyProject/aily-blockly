@@ -5,10 +5,10 @@
     editable: canEditUserMessage && !isEditing,
     'request-disabled': isRequestDisabled,
     'chat-most-recent-response': isCurrentStreamingResponse,
-    'has-turn-actions': canRenderCheckpointAnchor && !isEditing
+    'has-turn-actions': canRenderCheckpointAnchor && !isEditing,
+    'has-hover-footer': hasHoverFooterFade,
+    'footer-always-visible': canShowActions
   }"
-  (mouseenter)="onDialogMouseEnter()"
-  (mouseleave)="onDialogMouseLeave()"
 >
     <!-- @if (disabledRequestBadgeLabel || userTurnMetadataLabel || assistantTerminationLabel) {
       <div class="turn-meta-row">
@@ -137,7 +137,7 @@
     @if (effectiveDoing) {
       <div class="loader"></div>
     }
-    @if (showFooterActions) {
+    @if (shouldRenderFooter) {
       <div class="msg-footer">
         @if (canShowActions) {
           <div class="msg-actions">
@@ -154,7 +154,7 @@
               <i class="fa-light fa-thumbs-down"></i>
             </div>
           </div>
-        } @else if (canShowLimitActions && showActions) {
+        } @else if (canShowLimitActions) {
           <div class="msg-actions">
             <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
               <i class="fa-light fa-copy"></i>

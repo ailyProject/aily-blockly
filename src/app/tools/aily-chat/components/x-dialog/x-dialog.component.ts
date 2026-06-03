@@ -141,8 +141,6 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
   streamingConfig = signal<StreamingOption>({ hasNextChunk: false, enableAnimation: false });
   readonly componentMap: ComponentMap = { code: AilyChatCodeComponent };
 
-  /** 是否显示操作栏 */
-  showActions = false;
   /** 反馈状态 */
   feedbackState: 'helpful' | 'unhelpful' | null = null;
 
@@ -210,8 +208,14 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
     return !this.readOnly && this.role !== 'user' && !this.effectiveDoing;
   }
 
-  get showFooterActions(): boolean {
-    return this.canShowActions || (this.canShowLimitActions && this.showActions);
+  /** 是否渲染底部栏 DOM（非最后一条仅占位，hover 显影） */
+  get shouldRenderFooter(): boolean {
+    return this.canShowActions || this.canShowLimitActions;
+  }
+
+  /** 非最后一条助手消息：底部栏 hover 淡入，避免 @if 撑开布局 */
+  get hasHoverFooterFade(): boolean {
+    return this.canShowLimitActions && !this.canShowActions;
   }
 
   get actionTurnId(): string | undefined {
@@ -288,7 +292,7 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
   }
 
   get showAssistantModelBadge(): boolean {
-    return this.showFooterActions && this.role === 'aily' && !this.effectiveDoing && !!this.assistantModelBadgeLabel;
+    return this.shouldRenderFooter && this.role === 'aily' && !this.effectiveDoing && !!this.assistantModelBadgeLabel;
   }
 
   get assistantModelBadgeTitle(): string {
@@ -554,14 +558,6 @@ export class XDialogComponent implements OnChanges, AfterViewChecked, OnDestroy 
     return detail > 0
       ? `重新执行“${preview}” · ${detail} 轮`
       : `重新执行“${preview}”`;
-  }
-
-  onDialogMouseEnter(): void {
-    this.showActions = true;
-  }
-
-  onDialogMouseLeave(): void {
-    this.showActions = false;
   }
 
   onRegenerate(): void {
