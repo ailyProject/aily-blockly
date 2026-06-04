@@ -29,18 +29,18 @@ export const STOP_BITS_LIST = [
     { name: '2', value: 2 }
 ]
 
-// 校验位配置选项
+// 校验位配置选项（name 为 i18n key）
 export const PARITY_LIST = [
-    { name: '无', value: 'none', isDefault: true },
-    { name: '奇校验', value: 'odd' },
-    { name: '偶校验', value: 'even' },
-    { name: '标记', value: 'mark' },
-    { name: '空格', value: 'space' }
+    { name: 'SERIAL.PARITY_NONE', value: 'none', isDefault: true },
+    { name: 'SERIAL.PARITY_ODD', value: 'odd' },
+    { name: 'SERIAL.PARITY_EVEN', value: 'even' },
+    { name: 'SERIAL.PARITY_MARK', value: 'mark' },
+    { name: 'SERIAL.PARITY_SPACE', value: 'space' }
 ]
 
-// 流控制配置选项
+// 流控制配置选项（name 为 i18n key）
 export const FLOW_CONTROL_LIST = [
-    { name: '无', value: 'none', isDefault: true },
-    { name: 'RTS/CTS', value: 'hardware' },
-    { name: 'XON/XOFF', value: 'software' }
+    { name: 'SERIAL.FLOW_NONE', value: 'none', isDefault: true },
+    { name: 'SERIAL.FLOW_HARDWARE', value: 'hardware' },
+    { name: 'SERIAL.FLOW_SOFTWARE', value: 'software' }
 ]

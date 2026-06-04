@@ -642,7 +642,22 @@
         "END_N": "\\n Line Ending",
         "PORT_OPENED": "Serial port opened",
         "PORT_CLOSED": "Serial port closed",
-        "NO_CHART_DATA": "No data"
+        "NO_CHART_DATA": "No data",
+        "DATA_BITS": "Data Bits",
+        "STOP_BITS": "Stop Bits",
+        "PARITY": "Parity",
+        "FLOW_CONTROL": "Flow Control",
+        "PARITY_NONE": "None",
+        "PARITY_ODD": "Odd",
+        "PARITY_EVEN": "Even",
+        "PARITY_MARK": "Mark",
+        "PARITY_SPACE": "Space",
+        "FLOW_NONE": "None",
+        "FLOW_HARDWARE": "RTS/CTS",
+        "FLOW_SOFTWARE": "XON/XOFF",
+        "QUICK_SEND_SAVE": "Save",
+        "QUICK_SEND_SAVE_SUCCESS": "Saved successfully",
+        "QUICK_SEND_SAVE_FAIL": "Save failed, please check JSON format"
     },
     "MODEL_STORE": {
         "TITLE": "Model Store",

@@ -559,7 +559,22 @@
         "END_N": "\\n 줄 끝",
         "PORT_OPENED": "시리얼 포트가 열렸습니다",
         "PORT_CLOSED": "시리얼 포트가 닫혔습니다",
-        "NO_CHART_DATA": "데이터 없음"
+        "NO_CHART_DATA": "데이터 없음",
+        "DATA_BITS": "데이터 비트",
+        "STOP_BITS": "정지 비트",
+        "PARITY": "패리티",
+        "FLOW_CONTROL": "흐름 제어",
+        "PARITY_NONE": "없음",
+        "PARITY_ODD": "홀수",
+        "PARITY_EVEN": "짝수",
+        "PARITY_MARK": "마크",
+        "PARITY_SPACE": "스페이스",
+        "FLOW_NONE": "없음",
+        "FLOW_HARDWARE": "RTS/CTS",
+        "FLOW_SOFTWARE": "XON/XOFF",
+        "QUICK_SEND_SAVE": "저장",
+        "QUICK_SEND_SAVE_SUCCESS": "저장되었습니다",
+        "QUICK_SEND_SAVE_FAIL": "저장 실패, JSON 형식을 확인하세요"
     },
     "MODEL_DEPLOY": {
         "TITLE": "모델 배포",

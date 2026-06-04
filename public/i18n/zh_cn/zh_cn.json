@@ -642,7 +642,22 @@
         "END_N": "\\n 结束符",
         "PORT_OPENED": "串口已打开",
         "PORT_CLOSED": "串口已关闭",
-        "NO_CHART_DATA": "暂无数据"
+        "NO_CHART_DATA": "暂无数据",
+        "DATA_BITS": "数据位",
+        "STOP_BITS": "停止位",
+        "PARITY": "校验位",
+        "FLOW_CONTROL": "流控制",
+        "PARITY_NONE": "无",
+        "PARITY_ODD": "奇校验",
+        "PARITY_EVEN": "偶校验",
+        "PARITY_MARK": "标记",
+        "PARITY_SPACE": "空格",
+        "FLOW_NONE": "无",
+        "FLOW_HARDWARE": "RTS/CTS",
+        "FLOW_SOFTWARE": "XON/XOFF",
+        "QUICK_SEND_SAVE": "保存",
+        "QUICK_SEND_SAVE_SUCCESS": "保存成功",
+        "QUICK_SEND_SAVE_FAIL": "保存失败，请检查 JSON 格式"
     },
     "MODEL_DEPLOY": {
         "TITLE": "模型部署",

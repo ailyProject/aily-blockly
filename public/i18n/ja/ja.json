@@ -571,7 +571,22 @@
         "END_N": "\\n 改行",
         "PORT_OPENED": "シリアルポートが開かれました",
         "PORT_CLOSED": "シリアルポートが閉じられました",
-        "NO_CHART_DATA": "データがありません"
+        "NO_CHART_DATA": "データがありません",
+        "DATA_BITS": "データビット",
+        "STOP_BITS": "ストップビット",
+        "PARITY": "パリティ",
+        "FLOW_CONTROL": "フロー制御",
+        "PARITY_NONE": "なし",
+        "PARITY_ODD": "奇数",
+        "PARITY_EVEN": "偶数",
+        "PARITY_MARK": "マーク",
+        "PARITY_SPACE": "スペース",
+        "FLOW_NONE": "なし",
+        "FLOW_HARDWARE": "RTS/CTS",
+        "FLOW_SOFTWARE": "XON/XOFF",
+        "QUICK_SEND_SAVE": "保存",
+        "QUICK_SEND_SAVE_SUCCESS": "保存しました",
+        "QUICK_SEND_SAVE_FAIL": "保存に失敗しました。JSON形式を確認してください"
     },
     "MODEL_DEPLOY": {
         "TITLE": "モデルのデプロイ",

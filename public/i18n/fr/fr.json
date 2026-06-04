@@ -571,7 +571,22 @@
         "END_N": "Fin de ligne \\n",
         "PORT_OPENED": "Port série ouvert",
         "PORT_CLOSED": "Port série fermé",
-        "NO_CHART_DATA": "Aucune donnée"
+        "NO_CHART_DATA": "Aucune donnée",
+        "DATA_BITS": "Bits de données",
+        "STOP_BITS": "Bits d'arrêt",
+        "PARITY": "Parité",
+        "FLOW_CONTROL": "Contrôle de flux",
+        "PARITY_NONE": "Aucune",
+        "PARITY_ODD": "Impaire",
+        "PARITY_EVEN": "Paire",
+        "PARITY_MARK": "Marque",
+        "PARITY_SPACE": "Espace",
+        "FLOW_NONE": "Aucun",
+        "FLOW_HARDWARE": "RTS/CTS",
+        "FLOW_SOFTWARE": "XON/XOFF",
+        "QUICK_SEND_SAVE": "Enregistrer",
+        "QUICK_SEND_SAVE_SUCCESS": "Enregistré avec succès",
+        "QUICK_SEND_SAVE_FAIL": "Échec de l'enregistrement, vérifiez le format JSON"
     },
     "MODEL_DEPLOY": {
         "TITLE": "Déploiement de modèle",

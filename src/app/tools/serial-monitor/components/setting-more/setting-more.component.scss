@@ -1,5 +1,5 @@
 .settings {
-    background: #292929;
+    background: var(--aily-bg-elevated);
     margin: -17px 10px 10px 10px;
     padding-top: 7px;
     border-radius: 5px;
@@ -15,7 +15,7 @@
 .item {
     display: flex;
     align-items: center;
-    color: #eee;
+    color: var(--aily-text-primary);
     position: relative;
     height: 40px;
     font-size: 12px;
@@ -28,13 +28,13 @@
     .item-inner {
         height: 24px;
         width: 90px;
-        background-color: #333;
+        background-color: var(--aily-bg-tertiary);
         border-radius: 2px;
         position: relative;
         display: flex;
         justify-content: flex-start;
         padding-left: 10px;
-        color: #eee;
+        color: var(--aily-text-primary);
         font-size: 14px;
         cursor: pointer;
 
@@ -49,14 +49,14 @@
             height: 24px;
             position: absolute;
             right: 0;
-            color: rgb(0, 96, 160);
+            color: var(--aily-color-link);
 
             &:nth-child(2) {
                 right: 20px;
             }
 
             &:hover {
-                color: rgb(0, 140, 233);
+                color: var(--aily-color-link-hover);
             }
         }
 

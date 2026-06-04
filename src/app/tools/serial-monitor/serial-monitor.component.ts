@@ -412,11 +412,11 @@ export class SerialMonitorComponent {
       if (savedConfig.baudRate) {
         this.currentBaudRate = savedConfig.baudRate;
       }
-      if (savedConfig.dataBits) {
-        this.dataBits = savedConfig.dataBits;
+      if (savedConfig.dataBits != null && savedConfig.dataBits !== '') {
+        this.dataBits = String(savedConfig.dataBits);
       }
-      if (savedConfig.stopBits) {
-        this.stopBits = savedConfig.stopBits;
+      if (savedConfig.stopBits != null && savedConfig.stopBits !== '') {
+        this.stopBits = String(savedConfig.stopBits);
       }
       if (savedConfig.parity) {
         this.parity = savedConfig.parity;
@@ -675,9 +675,9 @@ export class SerialMonitorComponent {
 
   onSettingsChanged(settings) {
     this.cancelUploadReconnect();
-    // 更新组件中的高级设置
-    this.dataBits = settings.dataBits.value;
-    this.stopBits = settings.stopBits.value;
+    // 更新组件中的高级设置（统一存为字符串，便于配置持久化与模板绑定）
+    this.dataBits = String(settings.dataBits.value);
+    this.stopBits = String(settings.stopBits.value);
     this.parity = settings.parity.value;
     this.flowControl = settings.flowControl.value;
 
