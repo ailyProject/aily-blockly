@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, Injector } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { UiService } from './ui.service';
 import { ElectronService } from './electron.service';
@@ -24,6 +24,10 @@ import {
   readPlatformRefFromProjectAci,
   resolveEffectiveBoardDependencies,
 } from '../utils/platform-runtime.utils';
+import {
+  resolveCoderFrameworkOption,
+  resolveDefaultCoderFramework,
+} from '../utils/coder-board.mapper';
 
 interface ProjectPackageData {
   name: string;
@@ -86,6 +90,67 @@ export class ProjectService {
   set currentProjectPath(path: string) {
     this.currentProjectPathSubject.next(path);
   }
+
+  /** 当前工程是否为 Aily Code（根目录含 project.aci） */
+  isAilyCodeProject(projectPath = this.currentProjectPath): boolean {
+    if (!projectPath) {
+      return false;
+    }
+    return window['path'].isExists(window['path'].join(projectPath, 'project.aci'));
+  }
+
+  /** 与 AilyCodeProjectService.normalizeNpmDepRange 一致 */
+  private normalizeAilyCodeBoardDepRange(versionSpec: string): string {
+    const v = String(versionSpec ?? '').trim();
+    if (!v) {
+      return '*';
+    }
+    if (/^[\^~]|^>=|^<=|^>|^</.test(v) || v === '*' || v === 'latest') {
+      return v;
+    }
+    return `^${v}`;
+  }
+
+  /**
+   * 切换后保留的用户库：排除主板/模板自带的 lib-core-*（与新建 Coder 仅声明主板一致）。
+   */
+  private filterAilyCodeUserPreservedDeps(
+    deps: Record<string, string> | undefined,
+  ): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(deps || {}).filter(([key]) => {
+        if (key.startsWith('@aily-project/board-') || key.startsWith('@aily-project/coder-')) {
+          return false;
+        }
+        if (key.startsWith('@aily-project/lib-core-')) {
+          return false;
+        }
+        return true;
+      }),
+    );
+  }
+
+  /**
+   * Aily Code 切换开发板：dependencies / boardDependencies 仅声明主板 npm 包（+ 用户自装非 core 库），
+   * 不合并 Blockly 模板里的 lib-core-*，避免偶发多装基础库。
+   */
+  private applyAilyCodeBoardToPackageManifest(
+    packageJson: Record<string, unknown>,
+    boardInfo: { name: string; version: string },
+    currentPackageJson?: { dependencies?: Record<string, string> },
+  ): void {
+    const boardRange = this.normalizeAilyCodeBoardDepRange(boardInfo.version);
+    const preserved = this.filterAilyCodeUserPreservedDeps(currentPackageJson?.dependencies);
+
+    packageJson['dependencies'] = {
+      ...preserved,
+      [boardInfo.name]: boardRange,
+    };
+    packageJson['boardDependencies'] = {
+      [boardInfo.name]: boardRange,
+    };
+  }
+
   currentBoardConfig: any;
   isBoardSwitchInProgress = false;
   isPackageJsonBoardWatcherActive = false;
@@ -112,6 +177,7 @@ export class ProjectService {
     private noticeService: NoticeService,
     private modal: NzModalService,
     private appDataResourceLock: AppDataResourceLockService,
+    private injector: Injector,
   ) {
   }
 
@@ -1889,26 +1955,33 @@ export class ProjectService {
         // 读取模板package.json
         const templatePackageJson = JSON.parse(window['fs'].readFileSync(templatePackageJsonPath, 'utf8'));
 
+        const selectedFramework = String((boardInfo as { selectedFramework?: string }).selectedFramework ?? '').trim();
+        const isAilyCode = this.isAilyCodeProject();
+
         // 合并配置：保留当前项目的基本信息，使用新开发板的依赖和配置
-        const newPackageJson = {
+        const newPackageJson: Record<string, unknown> = {
           ...templatePackageJson,
-          name: currentPackageJson.name, // 保留项目名称
-          nickname: currentPackageJson.nickname, // 保留昵称
-          author: currentPackageJson.author, // 保留作者
-          description: currentPackageJson.description, // 保留描述
-          dependencies: {
-            // 从模板获取新的开发板依赖和基础库
+          name: currentPackageJson.name,
+          nickname: currentPackageJson.nickname,
+          author: currentPackageJson.author,
+          description: currentPackageJson.description,
+        };
+
+        if (isAilyCode) {
+          // 与新建 Coder 工程一致：不合并模板 dependencies 中的 lib-core-*，仅主板 + 用户自装库
+          this.applyAilyCodeBoardToPackageManifest(newPackageJson, boardInfo, currentPackageJson);
+          if (selectedFramework) {
+            newPackageJson['devmode'] = selectedFramework;
+          }
+        } else {
+          newPackageJson['dependencies'] = {
             ...templatePackageJson.dependencies,
-            // 保留当前项目的非开发板依赖（过滤掉 @aily-project/board-* 包）
             ...Object.fromEntries(
               Object.entries(currentPackageJson.dependencies || {})
-                .filter(([key]) => !key.startsWith('@aily-project/board-'))
+                .filter(([key]) => !key.startsWith('@aily-project/board-')),
             ),
-          },
-          // 不保留其他自定义配置
-          // ...(currentPackageJson.projectConfig && { projectConfig: currentPackageJson.projectConfig }),
-          // ...(currentPackageJson.cloudId && { cloudId: currentPackageJson.cloudId }),
-        };
+          };
+        }
 
         // 写入新的package.json
         const shouldUsePackageJsonWatcher = this.isPackageJsonBoardWatcherActive;
@@ -1916,6 +1989,10 @@ export class ProjectService {
         this.isBoardSwitchInProgress = false;
         window['fs'].writeFileSync(`${this.currentProjectPath}/package.json`, JSON.stringify(newPackageJson, null, 2));
         console.log('package.json 更新完成');
+
+        if (this.isAilyCodeProject()) {
+          this.syncAilyCodeProjectAciAfterBoardSwitch(newPackageJson, boardInfo);
+        }
 
         if (!shouldUsePackageJsonWatcher) {
           await this.finishBoardSwitchWithoutPackageWatcher(currentBoardModule, boardInfo.name);
@@ -1977,6 +2054,78 @@ export class ProjectService {
     waiter.reject(error);
   }
 
+  /**
+   * Aily Code 切换开发板后，将 package.json 与 coder_board_index 选中项同步到 project.aci。
+   */
+  private syncAilyCodeProjectAciAfterBoardSwitch(
+    packageJson: Record<string, unknown>,
+    boardInfo: {
+      name: string;
+      version: string;
+      boardId?: string;
+      nickname?: string;
+      defaultFramework?: string;
+      defaultPlatform?: string;
+      frameworkPlatforms?: unknown[];
+      mode?: string[];
+      selectedFramework?: string;
+    },
+  ): void {
+    const aciPath = `${this.currentProjectPath}/project.aci`;
+    if (!window['fs'].existsSync(aciPath)) {
+      return;
+    }
+    try {
+      const aci = JSON.parse(this.electronService.readFile(aciPath));
+      const framework = String(boardInfo.selectedFramework ?? '').trim()
+        || resolveDefaultCoderFramework(boardInfo);
+      const platformOption = resolveCoderFrameworkOption(boardInfo, framework);
+      const targetBoardId = platformOption?.boardId || boardInfo.boardId || boardInfo.name;
+
+      aci.name = packageJson['name'] ?? aci.name;
+      aci.nickname = packageJson['nickname'] ?? aci.nickname;
+      aci.version = packageJson['version'] ?? aci.version;
+      aci.description = packageJson['description'] ?? aci.description;
+      if (packageJson['devmode'] != null && packageJson['devmode'] !== '') {
+        aci.devmode = packageJson['devmode'];
+      }
+      aci.dependencies = packageJson['dependencies'] ?? aci.dependencies;
+      aci.boardDependencies = packageJson['boardDependencies'] ?? aci.boardDependencies;
+
+      aci.target = {
+        ...(aci.target || {}),
+        board: targetBoardId,
+        boardPackage: boardInfo.name,
+        boardPackageVersion: boardInfo.version,
+        framework,
+        ...(platformOption?.platform || boardInfo.defaultPlatform
+          ? { platform: platformOption?.platform || boardInfo.defaultPlatform }
+          : {}),
+      };
+
+      window['fs'].writeFileSync(aciPath, JSON.stringify(aci, null, 2));
+      console.log('[changeBoard] project.aci 已同步');
+    } catch (e) {
+      console.warn('[changeBoard] 同步 project.aci 失败:', e);
+    }
+  }
+
+  /**
+   * Aily Code：切换开发板/硬件平台后重装工程与平台依赖（与打开新 Coder 工程一致）。
+   */
+  private async reinstallAilyCodeDepsAfterBoardSwitch(): Promise<void> {
+    const projectPath = this.currentProjectPath;
+    if (!projectPath || !this.isAilyCodeProject()) {
+      return;
+    }
+    const { NpmService } = await import('./npm.service');
+    const npmService = this.injector.get(NpmService);
+    const ok = await npmService.reinstallDepsForAilyCodeBoardSwitch(projectPath);
+    if (!ok) {
+      throw new Error(this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'));
+    }
+  }
+
   /** package.json watcher 不活跃时，使用原流程完成旧开发板卸载、temp 同步和项目重载。 */
   private async finishBoardSwitchWithoutPackageWatcher(currentBoardModule: string | undefined, nextBoardModule: string): Promise<void> {
     if (currentBoardModule && currentBoardModule !== nextBoardModule) {
@@ -1986,6 +2135,11 @@ export class ProjectService {
     }
 
     await this.copyPackageJsonToTemp(this.currentProjectPath);
+
+    if (this.isAilyCodeProject()) {
+      await this.reinstallAilyCodeDepsAfterBoardSwitch();
+    }
+
     console.log('重新加载项目...');
     await this.projectOpen(this.currentProjectPath);
     this.boardChangeSubject.next();

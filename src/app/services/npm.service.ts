@@ -249,6 +249,140 @@ export class NpmService {
     return `${appDataPath}/node_modules/${board.name}/template/package.json`;
   }
 
+  /**
+   * 若主板包仅在 project.aci 中声明、工程 node_modules 未安装，则补写 package.json 并 npm install 主板包。
+   */
+  private async ensureAilyCodeBoardPackageInProjectNodeModules(projectPath: string): Promise<void> {
+    if (!this.isAilyCodeProjectRoot(projectPath)) {
+      return;
+    }
+    const boardModule = await this.prjService.getBoardModule();
+    if (!boardModule) {
+      return;
+    }
+    const boardPkgJsonPath = window['path'].join(projectPath, 'node_modules', boardModule, 'package.json');
+    if (window['path'].isExists(boardPkgJsonPath)) {
+      return;
+    }
+
+    const packageJsonPath = window['path'].join(projectPath, 'package.json');
+    const pkg = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+    let boardRange = String(pkg.dependencies?.[boardModule] ?? pkg.boardDependencies?.[boardModule] ?? '').trim();
+    if (!boardRange) {
+      try {
+        const aci = JSON.parse(window['fs'].readFileSync(window['path'].join(projectPath, 'project.aci'), 'utf8'));
+        const ver = String(aci?.target?.boardPackageVersion ?? '').trim();
+        if (!ver) {
+          boardRange = '*';
+        } else if (/^[\^~]|^>=|^<=|^>|^</.test(ver) || ver === '*' || ver === 'latest') {
+          boardRange = ver;
+        } else {
+          boardRange = `^${ver}`;
+        }
+      } catch {
+        boardRange = '*';
+      }
+      pkg.dependencies = { ...(pkg.dependencies || {}), [boardModule]: boardRange };
+      pkg.boardDependencies = { ...(pkg.boardDependencies || {}), [boardModule]: boardRange };
+      window['fs'].writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2));
+    }
+
+    await this.cmdService.runAsyncChecked(`npm install ${boardModule}@${boardRange}`, projectPath);
+  }
+
+  /**
+   * Aily Code 切换开发板或硬件平台后：与打开新 Coder 工程一致，
+   * 执行工程目录 npm install，并安装主板 boardDependencies + platform runtimeDependencies。
+   */
+  async reinstallDepsForAilyCodeBoardSwitch(projectPath: string): Promise<boolean> {
+    if (!this.isAilyCodeProjectRoot(projectPath)) {
+      return true;
+    }
+
+    const installStateStarted = this.workflowService.startInstall();
+    this.isInstalling = true;
+    try {
+      setTimeout(() => {
+        this.noticeService.update({
+          title: this.translate.instant('NPM.INSTALLING_TITLE'),
+          text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+          state: 'doing',
+          icon: 'fa-light fa-cubes',
+          showProgress: false,
+        });
+      }, 0);
+
+      this.uiService.updateFooterState({
+        state: 'doing',
+        text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+      });
+
+      await this.cmdService.runAsyncChecked(`npm install`, projectPath);
+      await this.ensureAilyCodeBoardPackageInProjectNodeModules(projectPath);
+
+      const installed = await this.installedOk(projectPath);
+      if (!installed) {
+        const detail = 'npm install 执行完成但工程依赖检查未通过';
+        setTimeout(() => {
+          this.noticeService.update({
+            title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+            text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+            detail,
+            state: 'error',
+            sendToLog: false,
+          });
+        }, 1000);
+        if (installStateStarted && this.workflowService.currentState === ProcessState.INSTALLING) {
+          this.workflowService.finishInstall(false, detail);
+        }
+        return false;
+      }
+
+      const boardModule = await this.prjService.getBoardModule();
+      if (boardModule) {
+        const boardPackageJson = (await this.prjService.getBoardPackageJson()) || {};
+        const boardDependencies = boardPackageJson.boardDependencies || {};
+        if (Object.keys(boardDependencies).length > 0) {
+          await this.installBoardDependencies(boardPackageJson, false, true);
+        }
+      }
+      await this.installPlatformPackageForAilyCodeProject({ force: true });
+
+      if (installStateStarted && this.workflowService.currentState === ProcessState.INSTALLING) {
+        this.workflowService.finishInstall(true);
+      }
+      setTimeout(() => {
+        this.noticeService.update({
+          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+          state: 'done',
+          showProgress: false,
+          setTimeout: 3000,
+        });
+      }, 100);
+      return true;
+    } catch (error) {
+      const errorMessage = this.getNpmErrorMessage(error);
+      if (installStateStarted && this.workflowService.currentState === ProcessState.INSTALLING) {
+        this.workflowService.finishInstall(false, errorMessage);
+      }
+      setTimeout(() => {
+        this.noticeService.update({
+          title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+          text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+          detail: errorMessage,
+          state: 'error',
+          sendToLog: false,
+        });
+      }, 1000);
+      console.error('[reinstallDepsForAilyCodeBoardSwitch]', error);
+      return false;
+    } finally {
+      this.isInstalling = false;
+      this.boardDependencyInstallProgress = undefined;
+    }
+  }
+
   /** Blockly / Aily Code 共用：工程 npm 就绪后后台检查主板平台依赖（与 blockly-editor loadProject 一致） */
   ensureProjectAndBoardDeps(
     projectPath: string,
@@ -302,7 +436,7 @@ export class NpmService {
    * Aily Code：将 frameworkPlatforms.platform 对应 npm 包安装到 AppData，
    * 再按 platform.json 的 runtimeDependencies 安装 sdk / compiler / tool（与 Blockly 一致）。
    */
-  async installPlatformPackageForAilyCodeProject(): Promise<void> {
+  async installPlatformPackageForAilyCodeProject(options?: { force?: boolean }): Promise<void> {
     const projectPath = this.prjService.currentProjectPath;
     if (!projectPath || !this.isAilyCodeProjectRoot(projectPath)) {
       return;
@@ -331,7 +465,7 @@ export class NpmService {
       name: manifest.id || platformRef.packageName,
       version: manifest.version || platformRef.version || '',
       boardDependencies,
-    }, false);
+    }, false, options?.force === true);
   }
 
   /** 安装 platform npm 包到 AppData（与 boardDependencies 包相同 prefix） */
@@ -486,9 +620,9 @@ export class NpmService {
   }
 
   // 安装开发板依赖
-  async installBoardDependencies(packageJson: any, manageInstallState: boolean = true) {
+  async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false) {
     const boardDependencies: Record<string, string> = packageJson.boardDependencies || {};
-    if (await this.areBoardPlatformDepsReady(boardDependencies)) {
+    if (!force && await this.areBoardPlatformDepsReady(boardDependencies)) {
       console.log('[installBoardDependencies] 平台依赖已就绪，跳过');
       return;
     }

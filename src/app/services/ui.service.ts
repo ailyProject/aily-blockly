@@ -353,10 +353,18 @@ export class UiService {
 
   /** 打开切换开发板弹窗（Header 菜单与 Aily View MCU 节点共用） */
   async openBoardSelector(): Promise<void> {
-    // 优先内存缓存，避免 await 远程 boards.json 阻塞弹窗
-    let boardList = this.configService.getBoardListForSelector();
+    const { ProjectService } = await import('./project.service');
+    const projectService = this.injector.get(ProjectService);
+    const useCoderBoardList = projectService.isAilyCodeProject();
+
+    // Aily Code 使用 coder_board_index；Blockly 使用 boards.json
+    let boardList = useCoderBoardList
+      ? this.configService.getCoderBoardListForSelector()
+      : this.configService.getBoardListForSelector();
     if (!boardList.length) {
-      boardList = await this.configService.loadBoardList();
+      boardList = useCoderBoardList
+        ? await this.configService.loadCoderBoardList()
+        : await this.configService.loadBoardList();
     }
 
     this.modal.create({
@@ -370,6 +378,7 @@ export class UiService {
       nzContent: BoardSelectorDialogComponent,
       nzData: {
         boardList,
+        isAilyCode: useCoderBoardList,
       },
     });
   }

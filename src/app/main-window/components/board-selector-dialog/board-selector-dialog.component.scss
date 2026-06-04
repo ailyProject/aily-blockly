@@ -4,6 +4,39 @@
   }
 }
 
+.platform-box {
+  margin-top: 10px;
+
+  .coder-platform-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+
+    .coder-platform-label {
+      flex-shrink: 0;
+      width: 64px;
+      font-size: 12px;
+      color: var(--aily-text-tertiary);
+      white-space: nowrap;
+      text-align: right;
+      line-height: 1;
+    }
+
+    .platform-select {
+      flex: 1;
+
+      ::ng-deep {
+        .ant-select-selector {
+          background: var(--aily-bg-tertiary) !important;
+          border-color: var(--aily-border-tertiary) !important;
+          color: var(--aily-text-quaternary) !important;
+        }
+      }
+    }
+  }
+}
+
 .search-box {
   margin-bottom: 10px;
 

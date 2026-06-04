@@ -42,4 +42,21 @@
     </div>
     }
   </div>
+
+  @if (showPlatformSelector) {
+  <div class="platform-box">
+    <div class="coder-platform-field">
+      <span class="coder-platform-label">{{ 'PROJECT_NEW.FORM.PLATFORM' | translate }}</span>
+      <nz-select
+        class="platform-select"
+        nzSize="small"
+        [(ngModel)]="selectedCoderPlatform"
+        [disabled]="isLoading">
+        @for (opt of coderPlatformOptions; track opt.value) {
+        <nz-option [nzValue]="opt.value" [nzLabel]="opt.label"></nz-option>
+        }
+      </nz-select>
+    </div>
+  </div>
+  }
 </app-base-dialog>

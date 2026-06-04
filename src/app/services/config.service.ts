@@ -713,6 +713,30 @@ export class ConfigService {
     return this.sortBoardsByUsage([...this.coderBoardList]);
   }
 
+  /**
+   * Aily Code 切换开发板弹窗：优先内存缓存（coder_board_index.json），并过滤尚未支持的板卡。
+   */
+  getCoderBoardListForSelector(): any[] {
+    if (!this.coderBoardList?.length) {
+      return [];
+    }
+    const list = this.coderBoardList.filter((board) => board.state !== 'todo');
+    return this.sortBoardsByUsage([...list]);
+  }
+
+  /** 线上刷新 Coder 开发板索引并返回选择器列表 */
+  async loadCoderBoardList(): Promise<any[]> {
+    try {
+      const entries = await this.loadCoderBoardIndexEntries();
+      if (entries.length > 0) {
+        this.coderBoardList = mapCoderBoardIndexToBoardList(entries);
+      }
+    } catch (error) {
+      console.error('Failed to load coder board list:', error);
+    }
+    return this.getCoderBoardListForSelector();
+  }
+
   libraryList = [];
   libraryDict = {};
 
