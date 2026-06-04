@@ -550,10 +550,29 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     return fileList.some((file) => file.name.toLowerCase().endsWith(extension.toLowerCase()));
   }
 
+  /**
+   * preload `fs.watch` 历史上可能返回 `() => void` 或 `{ close() }`（后者会覆盖前者定义）。
+   * 统一为可安全重复调用的 dispose 函数。
+   */
+  private coerceFsWatchDispose(handle: unknown): () => void {
+    if (typeof handle === 'function') {
+      return handle as () => void;
+    }
+    const close = (handle as { close?: () => void } | null)?.close;
+    if (typeof close === 'function') {
+      return () => close.call(handle);
+    }
+    return () => {};
+  }
+
   /** 销毁 iframe 时关闭全部 nativeFsWatchStart 注册的 fs.watch */
   private stopAllCoderEmbedFsWatchers(): void {
     for (const dispose of this.coderEmbedFsWatchers.values()) {
-      dispose();
+      try {
+        dispose();
+      } catch {
+        /* 路径已删或 watcher 已关闭 */
+      }
     }
     this.coderEmbedFsWatchers.clear();
   }
@@ -617,20 +636,16 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       }, 200);
     };
     try {
-      this.disposeBuildOutputsWatch = fsAny.watch(
-        buildRoot,
-        () => scheduleRefresh(),
-        { recursive: true },
+      this.disposeBuildOutputsWatch = this.coerceFsWatchDispose(
+        fsAny.watch(buildRoot, () => scheduleRefresh(), { recursive: true }),
       );
     } catch {
       /* watch 不可用时仍依赖 compile 完成后的主动推送 */
     }
     if (globalBuildRoot && fsAny.existsSync?.(globalBuildRoot)) {
       try {
-        this.disposeGlobalBuildOutputsWatch = fsAny.watch(
-          globalBuildRoot,
-          () => scheduleRefresh(),
-          { recursive: true },
+        this.disposeGlobalBuildOutputsWatch = this.coerceFsWatchDispose(
+          fsAny.watch(globalBuildRoot, () => scheduleRefresh(), { recursive: true }),
         );
       } catch {
         /* 全局缓存目录 watch 失败时仍依赖 buildFinished */
@@ -1073,7 +1088,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
               },
               { recursive },
             );
-            this.coderEmbedFsWatchers.set(watchId, dispose);
+            this.coderEmbedFsWatchers.set(watchId, this.coerceFsWatchDispose(dispose));
             this.replyCoderNativeFs(ev.source as Window, msg.id!, { watchId });
           } catch (e: unknown) {
             replyErr(e);
