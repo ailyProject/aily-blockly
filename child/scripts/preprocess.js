@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn, exec, execSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
+const platformRuntime = require('./platform-runtime');
 
 // 简单的日志工具
 const logger = {
@@ -97,7 +98,12 @@ async function main() {
         throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
     }
     const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
-    const boardDependencies = boardPackageJson.boardDependencies || {};
+    const platformRef = platformRuntime.readPlatformRefFromProjectAci(currentProjectPath);
+    const boardDependencies = platformRuntime.resolveEffectiveBoardDependencies(
+        boardPackageJson.boardDependencies,
+        appDataPath,
+        platformRef?.packageName,
+    );
 
     // 缓存文件路径
     const cacheFilePath = path.join(path.dirname(librariesPath), 'library-cache.json');

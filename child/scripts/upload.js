@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const os = require('os');
+const platformRuntime = require('./platform-runtime');
 
 // 简单的日志工具
 const logger = {
@@ -342,7 +343,12 @@ async function main() {
             throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
         }
         const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
-        const boardDependencies = boardPackageJson.boardDependencies || {};
+        const platformRef = platformRuntime.readPlatformRefFromProjectAci(currentProjectPath);
+        const boardDependencies = platformRuntime.resolveEffectiveBoardDependencies(
+            boardPackageJson.boardDependencies,
+            appDataPath,
+            platformRef?.packageName,
+        );
 
         // 4. 获取上传参数：优先尝试 preprocess.json，失败则回退到当前逻辑
         const fallbackUploadParam = normalizeUploadParam(configUploadParam || boardJson.uploadParam);
