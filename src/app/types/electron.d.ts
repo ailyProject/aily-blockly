@@ -5,6 +5,7 @@ declare global {
       SerialPort: {
         list: () => Promise<any[]>;
         create: (options: any) => any;
+        createRaw: (options: any) => any;
       };
       safeStorage: {
         isEncryptionAvailable: () => boolean;

@@ -210,13 +210,13 @@ export let GUIDE_MENU: IMenuItem[] = [
 export let FOOTER_BTNS: IMenuItem[] = [
   {
     name: 'MENU.PROJECT_NEW',
-    text: '日志',
+    text: 'MAIN_WINDOW.LOG_TAB',
     action: 'log-open',
     icon: 'fa-light fa-square-list',
   },
   {
     name: 'MENU.TERMINAL',
-    text: '终端',
+    text: 'MAIN_WINDOW.TERMINAL_TAB',
     action: 'terminal-open',
     icon: 'fa-light fa-square-terminal',
   }

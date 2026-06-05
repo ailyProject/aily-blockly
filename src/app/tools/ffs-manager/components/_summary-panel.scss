@@ -20,7 +20,7 @@
     padding-right: 0;
   }
 
-  & + .panel-section {
+  &+.panel-section {
     border-left: 1px solid var(--aily-border-color, rgba(255, 255, 255, 0.08));
   }
 }
@@ -31,6 +31,7 @@
   margin-bottom: 5px;
   color: var(--aily-text-primary);
   font-weight: 600;
+  font-size: 12px;
 }
 
 .info-list {

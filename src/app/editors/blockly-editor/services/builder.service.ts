@@ -129,6 +129,10 @@ export class _BuilderService {
       // 手动触发预编译
       const reason = action.payload?.reason || 'manual';
       console.log(`收到预编译触发请求，原因: ${reason}`);
+      // 配置变更时使编译缓存失效，强制下次上传重新编译
+      if (reason === 'config-changed') {
+        this.passed = false;
+      }
       this.blocklyService.dependencySubject.next(reason);
       return { success: true };
     }, 'builder-preprocess-trigger');

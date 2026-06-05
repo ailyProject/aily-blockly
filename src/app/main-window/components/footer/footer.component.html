@@ -3,7 +3,7 @@
   @for(item of FOOTER_BTNS; track item.name) {
   <div class="btn ccenter" 
        [class.active]="isButtonActive(item)" 
-       nzTooltipTitle="{{item.text}}" 
+       [nzTooltipTitle]="item.text | translate"
        nz-tooltip 
        (click)="process(item)">
     <i class="{{item.icon}}"></i>

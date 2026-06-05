@@ -31,7 +31,7 @@ import { ModelStoreComponent } from '../tools/model-store/model-store.component'
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
 import { OnboardingService } from '../services/onboarding.service';
 import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
-import { TranslateService } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-main-window',
@@ -60,6 +60,7 @@ import { TranslateService } from '@ngx-translate/core';
     ModelStoreComponent,
     OnboardingComponent,
     LibManagerToolComponent,
+    TranslateModule
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
@@ -267,6 +268,10 @@ export class MainWindowComponent {
 
   exportLog() {
     this.logComponent?.exportData();
+  }
+
+  toggleLogSearchToolbar() {
+    this.logComponent?.toggleSearchToolbar();
   }
 
   // 新手引导关闭事件

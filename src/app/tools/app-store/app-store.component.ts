@@ -10,6 +10,7 @@ import { TranslateModule } from '@ngx-translate/core';
 import { FormsModule } from '@angular/forms';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import Sortable, { SortableEvent } from 'sortablejs';
+import { ProjectService } from '../../services/project.service';
 
 @Component({
   selector: 'app-app-store',
@@ -41,6 +42,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
     private uiService: UiService,
     private router: Router,
     private appStoreService: AppStoreService,
+    private projectService: ProjectService,
     private cdr: ChangeDetectorRef
   ) { }
 
@@ -188,7 +190,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
 
   loadApps() {
     // 直接使用配置文件中的默认应用列表
-    const allApps = [...APP_LIST];
+    const allApps = APP_LIST.filter(app => this.showInCore(app));
     console.log('所有应用数据:', allApps);
     
     // 从存储中加载用户配置的 header 和 sidebar 应用
@@ -208,6 +210,24 @@ export class AppStoreComponent implements OnInit, AfterViewInit {
     console.log('otherZoneApps:', this.otherZoneApps);
     console.log('headerZoneApps:', this.headerZoneApps);
     console.log('sidebarZoneApps:', this.sidebarZoneApps);
+  }
+
+  private showInCore(app: AppItem) {
+    if (!app.core || app.core.length === 0) {
+      return true;
+    }
+
+    const currentCore = this.getCurrentBoardCore();
+    return app.core.some(core => this.matchesAppCore(core, currentCore));
+  }
+
+  private getCurrentBoardCore() {
+    return String(this.projectService.currentBoardConfig?.core || '').toLowerCase();
+  }
+
+  private matchesAppCore(appCore: string, currentCore: string) {
+    const normalizedAppCore = appCore.toLowerCase();
+    return currentCore === normalizedAppCore || currentCore.split(':').includes(normalizedAppCore);
   }
 
   // 从本地存储加载用户配置

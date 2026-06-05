@@ -1,11 +1,13 @@
 import { Injectable } from '@angular/core';
 import { ESPLoader, Transport } from 'esptool-js';
 import { NodeSerialPortAdapter } from './node-serial-port';
+import { ResolvedBaud, resolveDesiredBaud } from './usb-bridge';
 
 export interface EspSessionConnectOptions {
   portPath: string;
   baudRate: number;
   onLog?: (msg: string) => void;
+  onBaudResolved?: (result: ResolvedBaud, port: string) => void;
 }
 
 export interface EspChipInfo {
@@ -24,15 +26,17 @@ const FLASH_READ_MAX_CHUNK = 0x10000;
 const FLASH_READ_MIN_CHUNK = 0x1000;
 
 declare const window: any;
+type EspSerialPort = NodeSerialPortAdapter | any;
 
 @Injectable({ providedIn: 'root' })
 export class EspSessionService {
-  private port: NodeSerialPortAdapter | null = null;
+  private port: EspSerialPort | null = null;
   private transport: Transport | null = null;
   private loader: ESPLoader | null = null;
   private chipInfo: EspChipInfo | null = null;
   private currentPortPath: string | null = null;
   private currentBaud: number = 0;
+  private currentRequestedBaud: number = 0;
   private operationQueue: Promise<unknown> = Promise.resolve();
 
   get isConnected(): boolean {
@@ -51,25 +55,33 @@ export class EspSessionService {
     return this.currentBaud;
   }
 
+  get requestedBaudRate(): number {
+    return this.currentRequestedBaud;
+  }
+
   /**
-   * 复刻 ESPConnect 的 connectAndHandshake：通过 Node serialport 适配层以 115200 打开端口，
-   * 跑 ROM sync 上传 stub，再切到目标波特率。后续读写都复用这条会话。
+   * 复刻 ESPConnect 的 connectAndHandshake：以 115200 跑 ROM sync 上传 stub，
+   * 再按 VID/PID 策略切到目标波特率。
    */
   async connect(options: EspSessionConnectOptions): Promise<EspChipInfo> {
-    if (this.isConnected && this.currentPortPath === options.portPath && this.currentBaud === options.baudRate) {
+    if (
+      this.isConnected &&
+      this.currentPortPath === options.portPath &&
+      (this.currentRequestedBaud === options.baudRate || this.currentBaud === options.baudRate)
+    ) {
       return this.chipInfo!;
     }
     if (this.isConnected) {
       await this.disconnect();
     }
 
-    if (!window?.electronAPI?.SerialPort?.createRaw) {
-      throw new Error('当前环境不支持 Node SerialPort（请在 Electron 渲染端运行）');
+    const port = await this.createSerialPort(options.portPath);
+    const resolved = await resolveDesiredBaud(options.portPath, options.baudRate, port);
+    if (resolved.capped) {
+      try { options.onBaudResolved?.(resolved, options.portPath); } catch { /* ignore */ }
     }
-
-    const port = new NodeSerialPortAdapter({ path: options.portPath });
     const transport = new Transport(port as any, false);
-    const baudrate = options.baudRate;
+    const baudrate = resolved.baud;
     const loader = new ESPLoader({
       transport,
       baudrate,
@@ -92,6 +104,7 @@ export class EspSessionService {
       this.loader = loader;
       this.currentPortPath = options.portPath;
       this.currentBaud = baudrate;
+      this.currentRequestedBaud = options.baudRate;
       this.chipInfo = { chipName, mac, flashSize, description, features, crystalFreq };
       return this.chipInfo;
     } catch (error) {
@@ -101,7 +114,7 @@ export class EspSessionService {
         // ignore
       }
       try {
-        await port.dispose();
+        await this.disposePort(port);
       } catch {
         // ignore
       }
@@ -120,6 +133,7 @@ export class EspSessionService {
     this.chipInfo = null;
     this.currentPortPath = null;
     this.currentBaud = 0;
+    this.currentRequestedBaud = 0;
     // 中断已 chain 的操作，避免下一次 runExclusive 排在被遗弃的 readFlash 后面。
     this.operationQueue = Promise.resolve();
 
@@ -141,12 +155,15 @@ export class EspSessionService {
       }
     }
     if (port) {
-      // 无论 transport 是否已调用过 close，这里 dispose 会充分释放底层 OS 句柄（避免被 park）。
+      // Web Serial 由 transport.disconnect() 关闭；Node 兜底端口需要额外 dispose 释放底层 OS 句柄。
       try {
-        await port.dispose();
+        await this.disposePort(port);
       } catch (error) {
         console.warn('[EspSession] 释放串口失败:', error);
       }
+      // Windows 上 node-serialport 的 close 回调返回时驱动可能尚未释放独占句柄，
+      // 紧接着外部 esptool 启动会撞 PermissionError(13)/ACCESS_DENIED。等一拍。
+      await new Promise(resolve => setTimeout(resolve, 400));
     }
   }
 
@@ -235,13 +252,57 @@ export class EspSessionService {
     });
   }
 
+  private async createSerialPort(portPath: string): Promise<EspSerialPort> {
+    const electronSerialPort = window?.electronAPI?.SerialPort;
+    if (typeof electronSerialPort?.createRaw === 'function') {
+      return new NodeSerialPortAdapter({ path: portPath });
+    }
+    if (window?.electronAPI) {
+      throw new Error('当前 Electron 环境未暴露 Node SerialPort（electronAPI.SerialPort.createRaw 不可用）');
+    }
+
+    const serial = typeof navigator !== 'undefined' ? (navigator as any).serial : undefined;
+    if (serial && typeof serial.requestPort === 'function') {
+      const ipc = window?.electronAPI?.ipcRenderer;
+      if (ipc?.invoke && portPath) {
+        await ipc.invoke('webserial-set-preferred-port', portPath);
+      }
+      try {
+        return await serial.requestPort();
+      } finally {
+        if (ipc?.invoke) {
+          await ipc.invoke('webserial-clear-preferred-port');
+        }
+      }
+    }
+
+    throw new Error('当前环境不支持 Web Serial 或 Node SerialPort（请在 Electron 渲染端运行）');
+  }
+
+  private async disposePort(port: EspSerialPort): Promise<void> {
+    if (typeof port?.dispose === 'function') {
+      await port.dispose();
+      return;
+    }
+    if (typeof port?.close === 'function' && (port.readable || port.writable)) {
+      try {
+        await port.close();
+      } catch {
+        // Web Serial 端口通常已被 transport.disconnect() 关闭。
+      }
+    }
+  }
+
   /**
    * 不依赖 esptool-js loader，直接通过 DTR/RTS 把 ESP 拉回 ROM。
    * ESP32-S3 USB-JTAG-Serial 把 RTS 视作 EN/RESET，DTR 视作 GPIO0。
    * 序列：拉低 reset → 释放 reset（GPIO0=高）→ chip 从 flash 重新运行。
    */
-  private async pulseHardReset(port: NodeSerialPortAdapter): Promise<void> {
+  private async pulseHardReset(port: EspSerialPort): Promise<void> {
     const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+    if (typeof port?.setSignals !== 'function') {
+      return;
+    }
     // 进入 reset
     await port.setSignals({ dataTerminalReady: false, requestToSend: true });
     await sleep(100);

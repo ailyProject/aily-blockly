@@ -3,7 +3,7 @@
     <!-- 标题/分区信息 -->
     <div class="title-bar">
       <div class="title-left">
-        <span class="title-text">{{ fsLabel }} 资源管理器</span>
+        <span class="title-text">{{ fsLabel }} {{ 'FFS_MANAGER.FILESYSTEM.EXPLORER' | translate }}</span>
       </div>
       @if (hasSession && usage) {
       <div class="usage-mini" [nz-tooltip]="usageTipTpl">
@@ -13,7 +13,7 @@
         <span>{{ usage.usedPercent }}%</span>
       </div>
       <ng-template #usageTipTpl>
-        已用 {{ usage.usedText }} / {{ usage.capacityText }}（可用 {{ usage.freeText }}）
+        {{ 'FFS_MANAGER.FILESYSTEM.USAGE_TOOLTIP' | translate: { used: usage.usedText, capacity: usage.capacityText, free: usage.freeText } }}
       </ng-template>
       }
       <!-- @if (dirty) {
@@ -34,44 +34,42 @@
       </div>
 
       <div class="action-group">
-        <button class="tb-btn" [disabled]="!canManage" (click)="loadContent.emit()" nz-tooltip="读取文件系统">
-          <i class="fa-light fa-folder-open"></i>
-          <span>读取</span>
+        <button class="tb-btn" [disabled]="!canManage" (click)="loadContent.emit()" nz-tooltip
+          [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.RELOAD_PARTITION' | translate">
+          <i class="fa-light fa-arrows-rotate"></i>
         </button>
-        <button class="tb-btn" [disabled]="!hasSession || busy" (click)="triggerUploadFile()" nz-tooltip="上传文件到当前目录">
+        <button class="tb-btn" [disabled]="!hasSession || busy" (click)="triggerUploadFile()" nz-tooltip
+          [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.UPLOAD' | translate">
           <i class="fa-light fa-upload"></i>
-          <span>上传</span>
         </button>
         @if (supportsDirectory) {
-        <button class="tb-btn" [disabled]="!hasSession || busy" (click)="createDirectory.emit()" nz-tooltip="新建目录">
+        <button class="tb-btn" [disabled]="!hasSession || busy" (click)="createDirectory.emit(currentPath)" nz-tooltip
+          [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.NEW_FOLDER' | translate">
           <i class="fa-light fa-folder-plus"></i>
-          <span>新建目录</span>
         </button>
         }
-        <button class="tb-btn primary" [disabled]="!canSave"
-          nz-popconfirm
-          nzPopconfirmTitle="确认将当前镜像写回分区？"
-          nzOkText="写回"
-          nzCancelText="取消"
-          (nzOnConfirm)="saveContent.emit()"
-          nz-tooltip="将镜像写回 Flash">
-          <i class="fa-light fa-floppy-disk"></i>
-          <span>写回</span>
-        </button>
-        <span class="tb-divider"></span>
-        <button class="tb-btn" [disabled]="!canManage" (click)="downloadPartition.emit()" nz-tooltip="导出当前分区镜像">
+        <button class="tb-btn" [disabled]="!canManage" (click)="downloadPartition.emit()" nz-tooltip
+          [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.EXPORT_PARTITION_IMAGE' | translate">
           <i class="fa-light fa-file-arrow-down"></i>
         </button>
-        <button class="tb-btn" [disabled]="!canManage" (click)="triggerRestore()" nz-tooltip="导入镜像写入分区">
+        <button class="tb-btn" [disabled]="!canManage" (click)="triggerRestore()" nz-tooltip
+          [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.IMPORT_IMAGE' | translate">
           <i class="fa-light fa-file-arrow-up"></i>
         </button>
-        <button class="tb-btn danger dd ccenter" [disabled]="!hasSession || busy" (click)="formatFilesystem.emit()"
-          nz-tooltip="格式化镜像">
+        <button class="tb-btn danger dd ccenter" [disabled]="!hasSession || busy" nz-popconfirm
+          [nzPopconfirmTitle]="'FFS_MANAGER.FILESYSTEM.CONFIRM_FORMAT' | translate"
+          [nzOkText]="'FFS_MANAGER.FILESYSTEM.FORMAT' | translate"
+          [nzCancelText]="'FFS_MANAGER.COMMON.CANCEL' | translate"
+          (nzOnConfirm)="formatFilesystem.emit()">
           <i class="fa-light fa-broom-wide"></i>
         </button>
-        <button class="tb-btn danger dd ccenter" [disabled]="!canManage" (click)="erasePartition.emit()"
-          nz-tooltip="擦除分区">
-          <i class="fa-light fa-eraser"></i>
+        <span class="tb-divider"></span>
+        <button class="tb-btn primary" [disabled]="!canSave" nz-popconfirm
+          [nzPopconfirmTitle]="'FFS_MANAGER.FILESYSTEM.CONFIRM_WRITE_BACK' | translate"
+          [nzOkText]="'FFS_MANAGER.FILESYSTEM.WRITE_BACK' | translate"
+          [nzCancelText]="'FFS_MANAGER.COMMON.CANCEL' | translate" (nzOnConfirm)="saveContent.emit()">
+          <i class="fa-light fa-floppy-disk"></i>
+          <span>{{ 'FFS_MANAGER.FILESYSTEM.WRITE_BACK' | translate }}</span>
         </button>
       </div>
     </div>
@@ -93,16 +91,24 @@
     <!-- 文件列表（详细视图） -->
     <div class="list">
       <div class="list-head">
-        <div class="col-name">名称</div>
-        <div class="col-type">类型</div>
-        <div class="col-size">大小</div>
+        <div class="col-name">{{ 'FFS_MANAGER.FILESYSTEM.NAME' | translate }}</div>
+        <div class="col-type">{{ 'FFS_MANAGER.FILESYSTEM.TYPE' | translate }}</div>
+        <div class="col-size">{{ 'FFS_MANAGER.FILESYSTEM.SIZE' | translate }}</div>
         <div class="col-actions"></div>
       </div>
 
-      <div class="list-body sscroll" [class.is-loading]="busy">
+      <div class="list-body sscroll" [class.is-loading]="busy" [class.is-drag-over]="isDragOver"
+        (dragenter)="onDragEnter($event)" (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)"
+        (drop)="onDrop($event)">
         @if (busy) {
         <div class="loading-overlay">
           <i class="fa-duotone fa-solid fa-spinner fa-spin spinner"></i>
+        </div>
+        }
+        @if (isDragOver) {
+        <div class="drop-overlay">
+          <i class="fa-light fa-cloud-arrow-up"></i>
+          <p>{{ 'FFS_MANAGER.FILESYSTEM.DROP_UPLOAD' | translate: { path: currentPath } }}</p>
         </div>
         }
         @if (!hasSession) {
@@ -117,7 +123,7 @@
             <i class="fa-light fa-turn-up"></i>
             <span>..</span>
           </div>
-          <div class="col-type">上一级</div>
+          <div class="col-type">{{ 'FFS_MANAGER.FILESYSTEM.PARENT' | translate }}</div>
           <div class="col-size"></div>
           <div class="col-actions"></div>
         </div>
@@ -136,14 +142,26 @@
           <div class="col-actions">
             @if (entry.source) {
             @if (entry.type === 'file') {
-            <button class="icon-btn" [disabled]="busy" nz-tooltip="下载" (click)="emitDownload(entry, $event)">
+            @if (isViewable(entry)) {
+            <button class="icon-btn" [disabled]="busy" [nz-tooltip]="getPreviewLabel(entry.name)"
+              (click)="emitView(entry, $event)">
+              <i [class]="getPreviewIcon(entry.name)"></i>
+            </button>
+            }
+            <button class="icon-btn" [disabled]="busy" nz-tooltip
+              [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.DOWNLOAD' | translate" (click)="emitDownload(entry, $event)">
               <i class="fa-light fa-download"></i>
             </button>
             }
-            <button class="icon-btn" [disabled]="busy" nz-tooltip="重命名" (click)="emitRename(entry, $event)">
+            <button class="icon-btn" [disabled]="busy" nz-tooltip
+              [nzTooltipTitle]="'FFS_MANAGER.FILESYSTEM.RENAME' | translate" (click)="emitRename(entry, $event)">
               <i class="fa-light fa-pen"></i>
             </button>
-            <button class="icon-btn danger" [disabled]="busy" nz-tooltip="删除" (click)="emitDelete(entry, $event)">
+            <button class="icon-btn danger" [disabled]="busy" nz-popconfirm
+              [nzPopconfirmTitle]="getDeleteConfirmTitle(entry)"
+              [nzOkText]="'FFS_MANAGER.FILESYSTEM.DELETE' | translate"
+              [nzCancelText]="'FFS_MANAGER.COMMON.CANCEL' | translate" nzPopconfirmPlacement="left" (click)="$event.stopPropagation()"
+              (nzOnConfirm)="emitDelete(entry)">
               <i class="fa-light fa-trash"></i>
             </button>
             }
@@ -154,12 +172,12 @@
         @if (!displayEntries.length && currentPath === '/') {
         <div class="empty inner">
           <i class="fa-light fa-folder-open"></i>
-          <p>此文件系统为空</p>
+          <p>{{ 'FFS_MANAGER.FILESYSTEM.EMPTY_FILESYSTEM' | translate }}</p>
         </div>
         } @else if (!displayEntries.length) {
         <div class="empty inner">
           <i class="fa-light fa-folder-open"></i>
-          <p>此目录为空</p>
+          <p>{{ 'FFS_MANAGER.FILESYSTEM.EMPTY_DIRECTORY' | translate }}</p>
         </div>
         }
         }
@@ -173,10 +191,10 @@
       </div>
       <div class="status-right">
         @if (hasSession) {
-        <span>{{ displayEntries.length }} 项</span>
+        <span>{{ 'FFS_MANAGER.FILESYSTEM.ITEM_COUNT' | translate: { count: displayEntries.length } }}</span>
         @if (selectedEntry) {
         <span class="sep-dot">·</span>
-        <span>已选择：{{ selectedEntry.name }}</span>
+        <span>{{ 'FFS_MANAGER.FILESYSTEM.SELECTED' | translate: { name: selectedEntry.name } }}</span>
         }
         }
       </div>

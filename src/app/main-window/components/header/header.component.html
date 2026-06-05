@@ -31,8 +31,7 @@
     <!-- 动态 App 列表 -->
     <div class="zone ccenter">
       @for (app of headerApps; track app.id) {
-      @if(!app.dev||isDevMode) {
-      @if(showInRouter(app)){
+      @if(showApp(app)){
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ app.name | translate}}" (click)="onClick(app,$event)"
         [ngStyle]="{ color: app.color ? app.color : '' }" [ngClass]="{ selected: isOpenTool(app) }">
         <i class="{{ app.icon }}"></i>
@@ -40,7 +39,6 @@
         <div class="more ccenter">{{ app.more }}</div>
         }
       </div>
-      }
       }
       }
     </div>

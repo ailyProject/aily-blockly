@@ -24,8 +24,7 @@ import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 import { PlatformService } from '../../../services/platform.service';
 import { ProbeRsService } from '../../../services/probe-rs.service';
 // import { AppStoreService } from '../../../tools/app-store/app-store.service';
-import { AppItem } from '../../../tools/app-store/app-store.config';
-import { APP_LIST } from '../../../configs/tool.config';
+import { AppItem, APP_LIST } from '../../../configs/tool.config';
 import { Subscription } from 'rxjs';
 import { BleOtaDeviceItem, UploaderBleService } from '../../../services/uploader-ble.service';
 
@@ -972,6 +971,28 @@ export class HeaderComponent implements OnDestroy {
         }
       }
     }
+  }
+
+  showApp(app: AppItem) {
+    return (!app.dev || this.isDevMode) && this.showInRouter(app) && this.showInCore(app);
+  }
+
+  private showInCore(app: AppItem) {
+    if (!app.core || app.core.length === 0) {
+      return true;
+    }
+
+    const currentCore = this.getCurrentBoardCore();
+    return app.core.some(core => this.matchesAppCore(core, currentCore));
+  }
+
+  private getCurrentBoardCore() {
+    return String(this.projectService.currentBoardConfig?.core || '').toLowerCase();
+  }
+
+  private matchesAppCore(appCore: string, currentCore: string) {
+    const normalizedAppCore = appCore.toLowerCase();
+    return currentCore === normalizedAppCore || currentCore.split(':').includes(normalizedAppCore);
   }
 
   // 判断路由是否为 ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']中的一个，如果是返回true

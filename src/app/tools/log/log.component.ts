@@ -6,6 +6,7 @@ import { LogService, LogOptions } from '../../services/log.service';
 import { AnsiPipe } from './ansi.pipe';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
+import { NzInputModule } from 'ng-zorro-antd/input';
 import { UiService } from '../../services/ui.service';
 import { ProjectService } from '../../services/project.service';
 import { ElectronService } from '../../services/electron.service';
@@ -15,7 +16,7 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-log',
-  imports: [CommonModule, FormsModule, AnsiPipe, NzSwitchModule, TranslateModule],
+  imports: [CommonModule, FormsModule, AnsiPipe, NzSwitchModule, NzInputModule, TranslateModule],
   templateUrl: './log.component.html',
   styleUrl: './log.component.scss',
 })
@@ -35,6 +36,9 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // 只显示 error 类型日志
   showOnlyErrors = false;
+
+  logSearchKeyword = '';
+  showSearchToolbar = false;
 
   // 日志数量 signal，用于驱动 virtualizer 响应式更新
   logCount = signal(0);
@@ -101,11 +105,31 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   private scrollTimeoutId: any;
 
   private refreshLogList() {
-    const sourceList = this.logService.list;
-    this.logList = this.showOnlyErrors
-      ? sourceList.filter(item => item.state === 'error')
-      : [...sourceList];
+    let sourceList = this.showOnlyErrors
+      ? this.logService.list.filter(item => item.state === 'error')
+      : [...this.logService.list];
+
+    const keyword = this.normalizeSearchText(this.logSearchKeyword);
+    if (keyword) {
+      sourceList = sourceList.filter(item => this.matchesLogSearch(item, keyword));
+    }
+
+    this.logList = sourceList;
     this.logCount.set(this.logList.length);
+  }
+
+  private matchesLogSearch(item: LogOptions, keyword: string): boolean {
+    const searchableText = [
+      item.state,
+      item.title,
+      stripAnsi(item.detail || '')
+    ].join('\n');
+
+    return this.normalizeSearchText(searchableText).includes(keyword);
+  }
+
+  private normalizeSearchText(value: unknown): string {
+    return String(value ?? '').trim().toLowerCase();
   }
 
   // 处理日志更新
@@ -113,14 +137,49 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     this.refreshLogList();
     this.cdr.detectChanges();
     // 滚动到底部
-    this.scrollToBottom();
+    if (!this.normalizeSearchText(this.logSearchKeyword)) {
+      this.scrollToBottom();
+    }
   }
 
   onErrorFilterChange(showOnlyErrors: boolean) {
     this.showOnlyErrors = showOnlyErrors;
     this.refreshLogList();
     this.cdr.detectChanges();
-    this.scrollToBottom();
+
+    if (this.normalizeSearchText(this.logSearchKeyword)) {
+      this.scrollToTop();
+    } else {
+      this.scrollToBottom();
+    }
+  }
+
+  onLogSearchChange(keyword: string) {
+    this.logSearchKeyword = keyword || '';
+    this.refreshLogList();
+    this.cdr.detectChanges();
+
+    if (this.normalizeSearchText(this.logSearchKeyword)) {
+      this.scrollToTop();
+    } else {
+      this.scrollToBottom();
+    }
+  }
+
+  toggleSearchToolbar() {
+    this.showSearchToolbar = !this.showSearchToolbar;
+    this.cdr.detectChanges();
+  }
+
+  private scrollToTop() {
+    if (this.scrollTimeoutId) {
+      clearTimeout(this.scrollTimeoutId);
+    }
+    this.scrollTimeoutId = setTimeout(() => {
+      if (this.logCount() > 0) {
+        this.virtualizer.scrollToIndex(0, { align: 'start' });
+      }
+    }, 30);
   }
 
   clear() {
@@ -166,9 +225,31 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!text) return '';
     // 先去除 ANSI 格式化字符
     let cleaned = stripAnsi(text);
+    cleaned = this.applyBackspaceControl(cleaned);
+    cleaned = cleaned.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    cleaned = cleaned.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
     // 再去除每行开头的状态标识，如 [ERROR]、[INFO]、[WARN] 等
     cleaned = cleaned.replace(/^\s*\[(ERROR|INFO|WARN|WARNING|DEBUG|TRACE|FATAL)\]\s*/gim, '');
     return cleaned;
+  }
+
+  private applyBackspaceControl(text: string): string {
+    if (!text.includes('\b')) {
+      return text;
+    }
+
+    const output: string[] = [];
+    for (const char of text) {
+      if (char === '\b') {
+        const previousChar = output[output.length - 1];
+        if (previousChar && previousChar !== '\n' && previousChar !== '\r') {
+          output.pop();
+        }
+      } else {
+        output.push(char);
+      }
+    }
+    return output.join('');
   }
 
   // 单击复制日志内容到剪切板
@@ -225,7 +306,8 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
     for (const item of this.logService.list) {
       const timeString = new Date(item.timestamp).toLocaleTimeString();
-      fileContent += `[${timeString}] ${item.detail || ''}\n`;
+      const detail = this.cleanLogContent(item.detail || '');
+      fileContent += `[${timeString}] ${detail}\n`;
     }
 
     // 写入文件

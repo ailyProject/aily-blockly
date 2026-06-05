@@ -1,7 +1,7 @@
 <div class="summary-panel">
   <div class="partition-map-wrapper">
     @if (!partitions.length) {
-    <div class="empty-hint ccenter">暂无分区数据</div>
+    <div class="empty-hint ccenter">{{ 'FFS_MANAGER.PARTITION.NO_DATA' | translate }}</div>
     } @else {
     <div class="partition-map">
       <div class="partition-track">
@@ -28,10 +28,10 @@
         <span class="fs-dot" [ngClass]="getCategory(hoveredPartition)"></span>
         <span>{{ hoveredPartition.label || '-' }}</span>
       </div>
-      <div class="tt-row"><span class="tt-key">类型</span><span>{{ hoveredPartition.typeName }} / {{
+      <div class="tt-row"><span class="tt-key">{{ 'FFS_MANAGER.PARTITION.TYPE' | translate }}</span><span>{{ hoveredPartition.typeName }} / {{
           hoveredPartition.subtypeName }}</span></div>
       <div class="tt-row"><span class="tt-key">Offset</span><span>{{ hoveredPartition.offsetHex }}</span></div>
-      <div class="tt-row"><span class="tt-key">大小</span><span>{{ hoveredPartition.sizeText }}</span></div>
+      <div class="tt-row"><span class="tt-key">{{ 'FFS_MANAGER.PARTITION.SIZE' | translate }}</span><span>{{ hoveredPartition.sizeText }}</span></div>
     </div>
     }
   </div>

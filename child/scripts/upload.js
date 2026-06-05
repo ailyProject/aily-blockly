@@ -138,6 +138,140 @@ async function waitForNewPort(portsBefore, timeout = 10000, interval = 200) {
     return null;
 }
 
+function normalizeUploadParam(value) {
+    if (!value || typeof value !== 'string') {
+        return '';
+    }
+    return value.trim().replace(/;+$/, '').trim();
+}
+
+function resolvePlatformCmd(platformConfig, toolPrefix, platform) {
+    if (platform === 'win32' && platformConfig[`${toolPrefix}cmd.windows`]) {
+        return platformConfig[`${toolPrefix}cmd.windows`];
+    }
+    if (platform === 'darwin' && platformConfig[`${toolPrefix}cmd.macosx`]) {
+        return platformConfig[`${toolPrefix}cmd.macosx`];
+    }
+    if (platform === 'linux' && platformConfig[`${toolPrefix}cmd.linux`]) {
+        return platformConfig[`${toolPrefix}cmd.linux`];
+    }
+    return platformConfig[`${toolPrefix}cmd`] || '';
+}
+
+function renderArduinoPatternTemplate(pattern, resolver, maxDepth = 8) {
+    let result = pattern;
+
+    for (let i = 0; i < maxDepth; i++) {
+        let changed = false;
+        result = result.replace(/\{([^{}]+)\}/g, (match, rawKey) => {
+            const key = String(rawKey || '').trim();
+            const replacement = resolver(key);
+            if (replacement === undefined || replacement === null || replacement === '') {
+                return match;
+            }
+            changed = true;
+            return String(replacement);
+        });
+
+        if (!changed) {
+            break;
+        }
+    }
+
+    return result;
+}
+
+function buildUploadParamFromPreprocess(currentProjectPath, platform) {
+    const preprocessPath = path.join(currentProjectPath, '.temp', 'preprocess.json');
+
+    if (!fs.existsSync(preprocessPath)) {
+        return { success: false, reason: 'preprocess.json 不存在' };
+    }
+
+    let preprocess;
+    try {
+        preprocess = JSON.parse(fs.readFileSync(preprocessPath, 'utf8'));
+    } catch (error) {
+        return { success: false, reason: `preprocess.json 解析失败: ${error.message}` };
+    }
+
+    const boardConfig = preprocess?.arduinoConfig?.board || {};
+    const platformConfig = preprocess?.arduinoConfig?.platform || {};
+    const uploadEntries = Object.entries(boardConfig).filter(([key]) => key.startsWith('upload.'));
+    if (uploadEntries.length === 0) {
+        return { success: false, reason: 'arduinoConfig.board 中未找到 upload.* 参数' };
+    }
+
+    const toolName = boardConfig['upload.tool.default'] || boardConfig['upload.tool'];
+    if (!toolName) {
+        return { success: false, reason: '缺少 upload.tool.default / upload.tool' };
+    }
+
+    const toolPrefix = `tools.${toolName}.`;
+    const toolEntries = Object.entries(platformConfig).filter(([key]) => key.startsWith(toolPrefix));
+    if (toolEntries.length === 0) {
+        return { success: false, reason: `arduinoConfig.platform 中未找到 ${toolPrefix}* 参数` };
+    }
+
+    const uploadPattern = platformConfig[`${toolPrefix}upload.pattern`];
+    if (!uploadPattern || typeof uploadPattern !== 'string') {
+        return { success: false, reason: `缺少 ${toolPrefix}upload.pattern` };
+    }
+
+    const cmd = resolvePlatformCmd(platformConfig, toolPrefix, platform);
+    const sharedContext = {
+        path: platformConfig[`${toolPrefix}path`] || '',
+        cmd,
+        'upload.pattern_args': platformConfig[`${toolPrefix}upload.pattern_args`] || '',
+        'upload.params.verbose': platformConfig[`${toolPrefix}upload.params.verbose`] || '',
+        'upload.params.quiet': platformConfig[`${toolPrefix}upload.params.quiet`] || '',
+        'upload.verbose': platformConfig[`${toolPrefix}upload.params.verbose`] || '',
+        'upload.quiet': platformConfig[`${toolPrefix}upload.params.quiet`] || '',
+        'serial.port': '${serial}',
+        'serial.port.file': '${serial}',
+        'serial.port.label': '${serial}',
+        'upload.speed': '${baud}',
+        'build.path': platformConfig['build.path'] || '',
+        'runtime.platform.path': platformConfig['runtime.platform.path'] || ''
+    };
+
+    const resolver = (key) => {
+        if (Object.prototype.hasOwnProperty.call(sharedContext, key)) {
+            return sharedContext[key];
+        }
+
+        const scopedValue = platformConfig[`${toolPrefix}${key}`];
+        if (scopedValue !== undefined && scopedValue !== null) {
+            return scopedValue;
+        }
+
+        const globalValue = platformConfig[key];
+        if (globalValue !== undefined && globalValue !== null) {
+            return globalValue;
+        }
+
+        return undefined;
+    };
+
+    const renderedParam = normalizeUploadParam(renderArduinoPatternTemplate(uploadPattern, resolver));
+    if (!renderedParam) {
+        return { success: false, reason: 'upload.pattern 渲染后为空' };
+    }
+
+    return {
+        success: true,
+        uploadParam: renderedParam,
+        toolName,
+        uploadFlags: Object.fromEntries(uploadEntries)
+    };
+}
+
+function validateCommandResult(command, args) {
+    const commandText = String(command || '').replace(/^"|"$/g, '').trim();
+    const hasArgs = Array.isArray(args) ? args.some((item) => String(item || '').trim().length > 0) : false;
+    return commandText.length > 0 && hasArgs;
+}
+
 async function main() {
     const configPath = process.argv[2];
     if (!configPath) {
@@ -210,16 +344,11 @@ async function main() {
         const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
         const boardDependencies = boardPackageJson.boardDependencies || {};
 
-        // 4. 获取上传参数（优先使用配置中已清理的参数）
-        let uploadParam = configUploadParam || boardJson.uploadParam;
-        if (!uploadParam) {
+        // 4. 获取上传参数：优先尝试 preprocess.json，失败则回退到当前逻辑
+        const fallbackUploadParam = normalizeUploadParam(configUploadParam || boardJson.uploadParam);
+        if (!fallbackUploadParam) {
             throw new Error('未找到上传参数(uploadParam)');
         }
-
-        // 去掉末尾的分号
-        uploadParam = uploadParam.trim().replace(/;+$/, '');
-
-        logger.log('使用的上传参数:', uploadParam);
 
         // core
         const coreItem = boardJson?.core || 'arduino';
@@ -269,6 +398,20 @@ async function main() {
 
         const platform = os.platform() === 'win32' ? 'win32' : (os.platform() === 'darwin' ? 'darwin' : 'linux');
 
+        let uploadParamSource = 'fallback';
+        let uploadParam = fallbackUploadParam;
+        const preprocessResult = buildUploadParamFromPreprocess(currentProjectPath, platform);
+        if (preprocessResult.success) {
+            uploadParamSource = 'preprocess';
+            uploadParam = preprocessResult.uploadParam;
+            logger.log(`[preprocess] 命中 upload.pattern，tool=${preprocessResult.toolName}`);
+        } else {
+            logger.warn(`[preprocess] ${preprocessResult.reason}，回退到现有 uploadParam`);
+        }
+
+        logger.log(`上传参数来源: ${uploadParamSource}`);
+        logger.log('使用的上传参数:', uploadParam);
+
         if (isDebuggerUpload) {
             // ========== 调试探针上传路径（不涉及串口）==========
             logger.log('烧录方式: 调试探针 (debugger)', portText || '');
@@ -280,68 +423,85 @@ async function main() {
                 logger.log('芯片名称转换:', pnum, '→', chipName);
             }
 
-            // 按分号分割为多条命令（如 "probe-rs download ...;probe-rs reset ..."）
-            const uploadCommands = uploadParam.split(';').map(s => s.trim()).filter(s => s.length > 0);
-            logger.log(`共 ${uploadCommands.length} 条上传命令`);
-
-            for (let i = 0; i < uploadCommands.length; i++) {
-                const cmd = uploadCommands[i];
-                logger.log(`执行命令 [${i + 1}/${uploadCommands.length}]: ${cmd}`);
-
-                // skipToolResolve=true：工具已在 PATH 中，无需解析本地路径
-                const { command: cmdPath, args: cmdArgs } = await processUploadParams(
-                    cmd, buildPath, toolsPath, fullSdkPath, baudRate,
-                    toolDependencies, '', platform, chipName, true
-                );
-
-                // 追加 --probe VID:PID:Serial 参数（probe-rs 要求格式）
-                if (probeVidPid) {
-                    const probeSelector = probeSerial ? `${probeVidPid}:${probeSerial}` : probeVidPid;
-                    cmdArgs.push('--probe', probeSelector);
+            const runDebuggerUpload = async (activeUploadParam, sourceTag) => {
+                const uploadCommands = activeUploadParam.split(';').map(s => s.trim()).filter(s => s.length > 0);
+                if (uploadCommands.length === 0) {
+                    throw new Error('上传命令为空');
                 }
 
-                const shellCmd = wrapInQuotesIfNeeded(cmdPath);
-                logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
+                logger.log(`共 ${uploadCommands.length} 条上传命令，来源: ${sourceTag}`);
 
-                const exitCode = await new Promise((resolveCmd, rejectCmd) => {
-                    const child = spawn(shellCmd, cmdArgs, {
-                        cwd: buildPath,
-                        shell: true,
-                        stdio: ['inherit', 'pipe', 'pipe']
+                for (let i = 0; i < uploadCommands.length; i++) {
+                    const cmd = uploadCommands[i];
+                    logger.log(`执行命令 [${i + 1}/${uploadCommands.length}]: ${cmd}`);
+
+                    const skipToolResolve = sourceTag === 'preprocess' ? true : true;
+                    const { command: cmdPath, args: cmdArgs } = await processUploadParams(
+                        cmd, buildPath, toolsPath, fullSdkPath, baudRate,
+                        toolDependencies, '', platform, chipName, skipToolResolve
+                    );
+
+                    if (!validateCommandResult(cmdPath, cmdArgs)) {
+                        throw new Error('上传命令解析后为空');
+                    }
+
+                    if (probeVidPid) {
+                        const probeSelector = probeSerial ? `${probeVidPid}:${probeSerial}` : probeVidPid;
+                        cmdArgs.push('--probe', probeSelector);
+                    }
+
+                    const shellCmd = wrapInQuotesIfNeeded(cmdPath);
+                    logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
+
+                    const exitCode = await new Promise((resolveCmd, rejectCmd) => {
+                        const child = spawn(shellCmd, cmdArgs, {
+                            cwd: buildPath,
+                            shell: true,
+                            stdio: ['inherit', 'pipe', 'pipe']
+                        });
+
+                        const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+                        const detectPhase = (text) => {
+                            const clean = stripAnsi(text);
+                            const phaseMatch = clean.match(/(Erasing|Programming|Verifying)\s+.*?(\d+)%/i);
+                            if (phaseMatch) {
+                                logger.log(`[probe-rs:phase] ${phaseMatch[1]} ${phaseMatch[2]}%`);
+                            }
+                            if (/Finished\s+in\s+[\d.]+s/i.test(clean)) {
+                                logger.log('[probe-rs:phase] Finished');
+                            }
+                        };
+
+                        if (child.stdout) child.stdout.on('data', (data) => {
+                            process.stdout.write(data);
+                            detectPhase(data.toString());
+                        });
+                        if (child.stderr) child.stderr.on('data', (data) => {
+                            process.stderr.write(data);
+                            detectPhase(data.toString());
+                        });
+
+                        child.on('close', (code) => resolveCmd(code));
+                        child.on('error', (err) => rejectCmd(err));
                     });
 
-                    // 用于去除 ANSI 转义码
-                    const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+                    if (exitCode !== 0) {
+                        logger.error(`命令 [${i + 1}] 执行失败，退出码: ${exitCode}`);
+                        process.exit(exitCode);
+                    }
+                }
+            };
 
-                    // 检测 probe-rs 风格的进度阶段并输出标记
-                    const detectPhase = (text) => {
-                        const clean = stripAnsi(text);
-                        const phaseMatch = clean.match(/(Erasing|Programming|Verifying)\s+.*?(\d+)%/i);
-                        if (phaseMatch) {
-                            logger.log(`[probe-rs:phase] ${phaseMatch[1]} ${phaseMatch[2]}%`);
-                        }
-                        if (/Finished\s+in\s+[\d.]+s/i.test(clean)) {
-                            logger.log('[probe-rs:phase] Finished');
-                        }
-                    };
-
-                    // 转发输出到各自的流并检测进度
-                    if (child.stdout) child.stdout.on('data', (data) => {
-                        process.stdout.write(data);
-                        detectPhase(data.toString());
-                    });
-                    if (child.stderr) child.stderr.on('data', (data) => {
-                        process.stderr.write(data);
-                        detectPhase(data.toString());
-                    });
-
-                    child.on('close', (code) => resolveCmd(code));
-                    child.on('error', (err) => rejectCmd(err));
-                });
-
-                if (exitCode !== 0) {
-                    logger.error(`命令 [${i + 1}] 执行失败，退出码: ${exitCode}`);
-                    process.exit(exitCode);
+            try {
+                await runDebuggerUpload(uploadParam, uploadParamSource);
+            } catch (error) {
+                if (uploadParamSource === 'preprocess') {
+                    logger.warn(`[preprocess] 调试探针命令不可用(${error.message})，回退到现有 uploadParam`);
+                    uploadParamSource = 'fallback';
+                    uploadParam = fallbackUploadParam;
+                    await runDebuggerUpload(uploadParam, uploadParamSource);
+                } else {
+                    throw error;
                 }
             }
 
@@ -353,17 +513,41 @@ async function main() {
         logger.log('烧录方式: 串口 (serial)', initialSerialPort);
 
         const SERIAL_PLACEHOLDER = '__SERIAL_PORT_PLACEHOLDER__';
-        const { command, args: templateArgs } = await processUploadParams(
-            uploadParam,
-            buildPath,
-            toolsPath,
-            fullSdkPath,
-            baudRate,
-            toolDependencies,
-            SERIAL_PLACEHOLDER,
-            platform,
-            pnum
-        );
+        const resolveSerialCommand = async (activeUploadParam, sourceTag) => {
+            const skipToolResolve = sourceTag === 'preprocess';
+            const parsed = await processUploadParams(
+                activeUploadParam,
+                buildPath,
+                toolsPath,
+                fullSdkPath,
+                baudRate,
+                toolDependencies,
+                SERIAL_PLACEHOLDER,
+                platform,
+                pnum,
+                skipToolResolve
+            );
+
+            if (!validateCommandResult(parsed.command, parsed.args)) {
+                throw new Error('上传命令解析后为空');
+            }
+            return parsed;
+        };
+
+        let command;
+        let templateArgs;
+        try {
+            ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
+        } catch (error) {
+            if (uploadParamSource === 'preprocess') {
+                logger.warn(`[preprocess] 串口命令不可用(${error.message})，回退到现有 uploadParam`);
+                uploadParamSource = 'fallback';
+                uploadParam = fallbackUploadParam;
+                ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
+            } else {
+                throw error;
+            }
+        }
 
         // 上传预处理：处理 1200bps touch 和 wait_for_upload
         // 四种组合：

@@ -1,5 +1,6 @@
 import { CommonModule } from '@angular/common';
-import { Component, ElementRef, EventEmitter, Input, OnChanges, Output, SimpleChanges, ViewChild } from '@angular/core';
+import { Component, ElementRef, EventEmitter, HostListener, Input, OnChanges, Output, SimpleChanges, ViewChild } from '@angular/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzPopconfirmModule } from 'ng-zorro-antd/popconfirm';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
@@ -22,7 +23,7 @@ interface ExplorerEntry {
 @Component({
   selector: 'app-filesystem-manager',
   standalone: true,
-  imports: [CommonModule, NzButtonModule, NzToolTipModule, NzPopconfirmModule],
+  imports: [CommonModule, TranslateModule, NzButtonModule, NzToolTipModule, NzPopconfirmModule],
   templateUrl: './filesystem-manager.component.html',
   styleUrl: './filesystem-manager.component.scss',
 })
@@ -38,13 +39,14 @@ export class FilesystemManagerComponent implements OnChanges {
 
   @Output() loadContent = new EventEmitter<void>();
   @Output() uploadFile = new EventEmitter<File>();
-  @Output() createDirectory = new EventEmitter<void>();
+  @Output() createDirectory = new EventEmitter<string>();
   @Output() saveContent = new EventEmitter<void>();
   @Output() formatFilesystem = new EventEmitter<void>();
   @Output() downloadPartition = new EventEmitter<void>();
   @Output() restorePartition = new EventEmitter<File>();
   @Output() erasePartition = new EventEmitter<void>();
   @Output() downloadFile = new EventEmitter<FfsFileEntry>();
+  @Output() viewEntry = new EventEmitter<FfsFileEntry>();
   @Output() renameEntry = new EventEmitter<FfsFileEntry>();
   @Output() deleteEntry = new EventEmitter<FfsFileEntry>();
 
@@ -55,6 +57,10 @@ export class FilesystemManagerComponent implements OnChanges {
   history: string[] = ['/'];
   historyIndex = 0;
   selectedEntry: ExplorerEntry | null = null;
+  isDragOver = false;
+  private dragDepth = 0;
+
+  constructor(private translate: TranslateService) {}
 
   ngOnChanges(changes: SimpleChanges) {
     if (changes['filesystemSession'] || changes['selectedPartition']) {
@@ -94,7 +100,7 @@ export class FilesystemManagerComponent implements OnChanges {
 
   get breadcrumbs(): { name: string; path: string }[] {
     const segs = this.currentPath.split('/').filter(Boolean);
-    const items: { name: string; path: string }[] = [{ name: '根目录', path: '/' }];
+    const items: { name: string; path: string }[] = [{ name: this.t('FILESYSTEM.ROOT'), path: '/' }];
     let acc = '';
     for (const s of segs) {
       acc += '/' + s;
@@ -248,6 +254,70 @@ export class FilesystemManagerComponent implements OnChanges {
     input.value = '';
   }
 
+  // ============ 拖拽上传 ============
+  // 注意：Electron 渲染进程默认会把拖入的文件作为页面导航处理，
+  // 因此必须在 host 上无条件 preventDefault 才能截获 drop 事件。
+
+  private hasFiles(event: DragEvent): boolean {
+    const types = event.dataTransfer?.types;
+    if (!types) return false;
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === 'Files') return true;
+    }
+    return false;
+  }
+
+  @HostListener('dragenter', ['$event'])
+  onHostDragEnter(event: DragEvent) {
+    if (!this.hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.dragDepth++;
+    if (this.hasSession && !this.busy) this.isDragOver = true;
+  }
+
+  @HostListener('dragover', ['$event'])
+  onHostDragOver(event: DragEvent) {
+    if (!this.hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = this.hasSession && !this.busy ? 'copy' : 'none';
+    }
+    if (this.hasSession && !this.busy) this.isDragOver = true;
+  }
+
+  @HostListener('dragleave', ['$event'])
+  onHostDragLeave(event: DragEvent) {
+    if (!this.hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.dragDepth = Math.max(0, this.dragDepth - 1);
+    if (this.dragDepth === 0) this.isDragOver = false;
+  }
+
+  @HostListener('drop', ['$event'])
+  onHostDrop(event: DragEvent) {
+    if (!this.hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.dragDepth = 0;
+    this.isDragOver = false;
+    if (!this.hasSession || this.busy) return;
+    const files = event.dataTransfer?.files;
+    if (!files || !files.length) return;
+    for (let i = 0; i < files.length; i++) {
+      const f = files.item(i);
+      if (f) this.uploadFile.emit(f);
+    }
+  }
+
+  // 这些方法保留给模板内的 list-body 元素（仅用于显示拖拽高亮）
+  onDragEnter(event: DragEvent) { this.onHostDragEnter(event); }
+  onDragOver(event: DragEvent) { this.onHostDragOver(event); }
+  onDragLeave(event: DragEvent) { this.onHostDragLeave(event); }
+  onDrop(event: DragEvent) { this.onHostDrop(event); }
+
   triggerRestore() {
     if (!this.canManage) return;
     this.restoreInput.nativeElement.value = '';
@@ -266,13 +336,18 @@ export class FilesystemManagerComponent implements OnChanges {
     if (entry.source) this.downloadFile.emit(entry.source);
   }
 
+  emitView(entry: ExplorerEntry, evt: MouseEvent) {
+    evt.stopPropagation();
+    if (entry.source) this.viewEntry.emit(entry.source);
+  }
+
   emitRename(entry: ExplorerEntry, evt: MouseEvent) {
     evt.stopPropagation();
     if (entry.source) this.renameEntry.emit(entry.source);
   }
 
-  emitDelete(entry: ExplorerEntry, evt: MouseEvent) {
-    evt.stopPropagation();
+  emitDelete(entry: ExplorerEntry, evt?: MouseEvent) {
+    evt?.stopPropagation();
     if (entry.source) this.deleteEntry.emit(entry.source);
   }
 
@@ -282,7 +357,7 @@ export class FilesystemManagerComponent implements OnChanges {
     if (type === 'spiffs') return 'SPIFFS';
     if (type === 'littlefs') return 'LittleFS';
     if (type === 'fatfs') return 'FATFS';
-    return '普通分区';
+    return this.t('COMMON.NORMAL_PARTITION');
   }
 
   getIconClass(entry: ExplorerEntry): string {
@@ -300,9 +375,42 @@ export class FilesystemManagerComponent implements OnChanges {
   }
 
   getTypeLabel(entry: ExplorerEntry): string {
-    if (entry.type === 'dir') return '文件夹';
+    if (entry.type === 'dir') return this.t('FILESYSTEM.FOLDER');
     const ext = entry.name.split('.').pop()?.toUpperCase();
-    return ext ? `${ext} 文件` : '文件';
+    return ext ? this.t('FILESYSTEM.FILE_WITH_EXT', { ext }) : this.t('FILESYSTEM.FILE');
+  }
+
+  getPreviewMode(name: string): 'text' | 'image' | 'audio' | null {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'].includes(ext)) return 'image';
+    if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio';
+    if (['txt', 'log', 'md', 'cfg', 'ini', 'conf', 'json', 'yaml', 'yml', 'xml', 'toml',
+         'js', 'ts', 'py', 'c', 'cpp', 'h', 'hpp', 'sh', 'csv', 'html', 'htm', 'css'].includes(ext)) return 'text';
+    return null;
+  }
+
+  isViewable(entry: ExplorerEntry): boolean {
+    return entry.type === 'file' && this.getPreviewMode(entry.name) !== null;
+  }
+
+  getPreviewIcon(name: string): string {
+    const mode = this.getPreviewMode(name);
+    if (mode === 'image') return 'fa-light fa-image';
+    if (mode === 'audio') return 'fa-light fa-headphones';
+    return 'fa-light fa-eye';
+  }
+
+  getPreviewLabel(name: string): string {
+    const mode = this.getPreviewMode(name);
+    if (mode === 'audio') return this.t('FILESYSTEM.PREVIEW_AUDIO');
+    return this.t('FILESYSTEM.PREVIEW_VIEW');
+  }
+
+  getDeleteConfirmTitle(entry: ExplorerEntry): string {
+    return this.t('FILESYSTEM.CONFIRM_DELETE', {
+      type: entry.type === 'dir' ? this.t('FILESYSTEM.DIR') : this.t('FILESYSTEM.FILE'),
+      path: entry.fullPath,
+    });
   }
 
   trackEntry = (_: number, entry: ExplorerEntry) => entry.fullPath;
@@ -312,5 +420,9 @@ export class FilesystemManagerComponent implements OnChanges {
     this.history = ['/'];
     this.historyIndex = 0;
     this.selectedEntry = null;
+  }
+
+  private t(key: string, params?: Record<string, unknown>): string {
+    return this.translate.instant(`FFS_MANAGER.${key}`, params);
   }
 }

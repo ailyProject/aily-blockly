@@ -4,6 +4,7 @@ export interface AppItem extends IMenuItem {
   id: string;
   description?: string;
   enabled?: boolean;
+  core?: string[];
 }
 
 // 默认的 App 列表，前6个会显示在 header 上
@@ -43,8 +44,10 @@ export const APP_LIST: AppItem[] = [
     description: 'APP_STORE.FFS_MANAGER_DESC',
     action: 'tool-open',
     data: { type: 'tool', data: 'ffs-manager' },
-    icon: 'fa-light fa-folder-gear',
-    enabled: true
+    icon: 'fa-light fa-database',
+    enabled: true,
+    router: ['/main/blockly-editor'],
+    core: ['esp32'] // 仅 esp32 核心可用
   },
   {
     id: 'aily-chat',
@@ -83,15 +86,15 @@ export const APP_LIST: AppItem[] = [
     icon: 'fa-light fa-user',
     enabled: true
   },
-//   {
-//     id: 'simulator',
-//     name: 'MENU.SIMULATOR',
-//     description: 'APP_STORE.SIMULATOR_DESC',
-//     action: 'tool-open',
-//     data: { type: 'tool', data: 'simulator' },
-//     icon: 'fa-light fa-atom',
-//     router: ['/main/blockly-editor'],
-//     dev: true,
-//     enabled: false
-//   }
+  //   {
+  //     id: 'simulator',
+  //     name: 'MENU.SIMULATOR',
+  //     description: 'APP_STORE.SIMULATOR_DESC',
+  //     action: 'tool-open',
+  //     data: { type: 'tool', data: 'simulator' },
+  //     icon: 'fa-light fa-atom',
+  //     router: ['/main/blockly-editor'],
+  //     dev: true,
+  //     enabled: false
+  //   }
 ];

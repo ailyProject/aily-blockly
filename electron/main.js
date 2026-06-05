@@ -1994,6 +1994,18 @@ function createWindow() {
     }
   }
 
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('Renderer process gone:', details.reason, 'exitCode:', details.exitCode);
+    if (!serve) return;
+
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        console.log('Reloading renderer after crash...');
+        mainWindow.loadURL("http://localhost:4200");
+      }
+    }, 1000);
+  });
+
   // 开发环境下的热重载处理
   if (serve) {
     // 处理页面加载失败，支持自动恢复
@@ -2018,17 +2030,6 @@ function createWindow() {
     // 监听页面加载完成
     mainWindow.webContents.on('did-finish-load', () => {
       console.log('页面加载完成');
-    });
-
-    // 处理渲染进程崩溃，自动恢复
-    mainWindow.webContents.on('render-process-gone', (event, details) => {
-      console.error('渲染进程异常退出:', details.reason, 'exitCode:', details.exitCode);
-      setTimeout(() => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          console.log('尝试重新加载页面...');
-          mainWindow.loadURL("http://localhost:4200");
-        }
-      }, 1000);
     });
 
     // 开启 DevTools (可选)

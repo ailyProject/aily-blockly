@@ -92,6 +92,7 @@
 .toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   padding: 6px 8px;
   background: var(--aily-bg-elevated);
@@ -263,9 +264,9 @@
 .list-head,
 .row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 100px 90px 110px;
+  grid-template-columns: minmax(0, 1fr) 76px 50px 110px;
   align-items: center;
-  gap: 10px;
+  gap: 5px;
   padding: 0 10px;
 }
 
@@ -273,7 +274,6 @@
   height: 28px;
   font-size: 11px;
   color: var(--aily-text-tertiary);
-  background: var(--aily-bg-secondary);
   border-bottom: 1px solid var(--aily-border-input);
   user-select: none;
 }
@@ -283,6 +283,36 @@
   min-height: 0;
   overflow: auto;
   position: relative;
+
+  &.is-drag-over {
+    outline: 2px dashed var(--aily-primary, #4db2ff);
+    outline-offset: -4px;
+    background: rgba(77, 178, 255, 0.06);
+  }
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(77, 178, 255, 0.12);
+  color: var(--aily-text-primary);
+  font-size: 13px;
+  z-index: 6;
+  pointer-events: none;
+
+  i {
+    font-size: 36px;
+    color: var(--aily-primary, #4db2ff);
+  }
+
+  p {
+    margin: 0;
+  }
 }
 
 .loading-overlay {

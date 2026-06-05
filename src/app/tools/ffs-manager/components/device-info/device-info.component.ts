@@ -1,11 +1,12 @@
 import { CommonModule } from '@angular/common';
 import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { FfsDeviceInfo, FfsFilesystemType, FfsPartitionInfo } from '../../ffs-manager.service';
 
 @Component({
   selector: 'app-device-info',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, TranslateModule],
   templateUrl: './device-info.component.html',
   styleUrl: './device-info.component.scss',
 })
@@ -14,6 +15,8 @@ export class DeviceInfoComponent {
   @Input() partitions: FfsPartitionInfo[] = [];
   @Input() filesystemPartitions: FfsPartitionInfo[] = [];
   @Output() selectPartition = new EventEmitter<FfsPartitionInfo>();
+
+  constructor(private translate: TranslateService) {}
 
   get appSizeText(): string {
     const apps = this.partitions.filter(p => p.typeName === 'app');
@@ -38,7 +41,7 @@ export class DeviceInfoComponent {
     if (type === 'spiffs') return 'SPIFFS';
     if (type === 'littlefs') return 'LittleFS';
     if (type === 'fatfs') return 'FATFS';
-    return '普通分区';
+    return this.translate.instant('FFS_MANAGER.COMMON.NORMAL_PARTITION');
   }
 
   onSelect(partition: FfsPartitionInfo) {

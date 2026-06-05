@@ -10,10 +10,12 @@
   top: 5px;
   right: 14px;
   height: 28px;
+  max-width: calc(100% - 28px);
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 10px;
   padding: 0 8px;
   background: color-mix(in srgb, var(--aily-bg-elevated) 82%, transparent);
   border: 1px solid color-mix(in srgb, var(--aily-border-input) 70%, transparent);
@@ -21,9 +23,21 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   z-index: 1;
 
+  .log-search {
+    width: 220px;
+    min-width: 120px;
+    flex: 0 1 220px;
+
+    .fa-magnifying-glass {
+      color: var(--aily-text-tertiary);
+      font-size: 12px;
+    }
+  }
+
   .error-filter {
     display: flex;
     align-items: center;
+    flex-shrink: 0;
     gap: 6px;
     color: var(--aily-text-secondary);
     font-size: 12px;

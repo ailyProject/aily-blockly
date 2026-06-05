@@ -59,6 +59,8 @@ AI可以根据用户程序和需求生成模组连线图，方便用户参考。
 ## 本项目AI功能参考了以下项目
 [Kode](https://github.com/shareAI-lab/Kode-cli)  
 [copilot](https://github.com/microsoft/vscode-copilot-chat)  
+[ESPConnect](https://github.com/thelastoutpostworkshop/ESPConnect)  
+[BLEOTA](https://github.com/gb88/BLEOTA)  
 
 ## 附加权利说明  
 1. 本软件为GPL协议下的免费软件，在无授权的情况下，不得销售本软件及基于本软件的衍生软件；

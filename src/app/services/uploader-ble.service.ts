@@ -29,6 +29,7 @@ const GATT_CONNECT_MAX_ATTEMPTS = 3;
 const GATT_CONNECT_RETRY_DELAY_MS = 800;
 const GATT_DISCONNECT_CLEANUP_TIMEOUT_MS = 3000;
 const DEVICE_AUTHORIZATION_TIMEOUT_MS = 10000;
+const BLE_WRITE_YIELD_INTERVAL = 8;
 
 export type BleOtaUpdateType = 'flash' | 'filesystem';
 
@@ -545,6 +546,25 @@ export class UploaderBleService implements BleOtaTransport {
 
     let sectorIndex = 0;
     const startTime = Date.now();
+    let lastProgressValue = -1;
+    const reportSendingProgress = (bytesSent: number, currentSectorIndex: number) => {
+      const progressValue = Math.max(2, Math.floor((bytesSent / data.byteLength) * 98));
+      if (progressValue === lastProgressValue && bytesSent < data.byteLength) return;
+
+      lastProgressValue = progressValue;
+      const elapsed = Math.max(Date.now() - startTime, 1);
+      const percent = Math.floor((bytesSent / data.byteLength) * 100);
+      options.progress?.({
+        state: 'sending',
+        progress: progressValue,
+        text: this.t('SENDING_PROGRESS', { progress: percent }),
+        sectorIndex: currentSectorIndex,
+        sectorCount,
+        bytesSent,
+        totalBytes: data.byteLength,
+        speed: Math.round(bytesSent / (elapsed / 1000)),
+      });
+    };
 
     while (sectorIndex < sectorCount) {
       let sent = false;
@@ -557,7 +577,7 @@ export class UploaderBleService implements BleOtaTransport {
         const sector = data.subarray(sectorStart, sectorEnd);
 
         const ackPromise = this.waitForSectorAck(sectorIndex);
-        await this.writeSector(sectorIndex, sector, payloadSize, finalPayloadSize, data.byteLength, startTime, options.progress, options.signal);
+        await this.writeSector(sectorIndex, sector, payloadSize, finalPayloadSize, data.byteLength, reportSendingProgress, options.signal);
         const ack = await ackPromise;
 
         if (ack.status === ACK_OK) {
@@ -587,13 +607,13 @@ export class UploaderBleService implements BleOtaTransport {
     payloadSize: number,
     finalPayloadSize: number,
     totalBytes: number,
-    startTime: number,
-    progress?: (progress: BleOtaProgress) => void,
+    progress?: (bytesSent: number, sectorIndex: number) => void,
     signal?: AbortSignal,
   ): Promise<void> {
     const sectorCrc = this.crc16(sector);
     let offset = 0;
     let seq = 0;
+    let packetsWritten = 0;
 
     while (offset < sector.byteLength) {
       this.throwIfCancelled(signal);
@@ -614,20 +634,15 @@ export class UploaderBleService implements BleOtaTransport {
       }
 
       await this.writeCharacteristic(this.recvFwCharacteristic, packet, true);
+      packetsWritten++;
       offset += chunkSize;
 
       const bytesSent = Math.min((sectorIndex * SECTOR_SIZE) + offset, totalBytes);
-      const elapsed = Math.max(Date.now() - startTime, 1);
-      progress?.({
-        state: 'sending',
-        progress: Math.max(2, Math.floor((bytesSent / totalBytes) * 98)),
-        text: this.t('SENDING_PROGRESS', { progress: Math.floor((bytesSent / totalBytes) * 100) }),
-        sectorIndex,
-        sectorCount: Math.ceil(totalBytes / SECTOR_SIZE),
-        bytesSent,
-        totalBytes,
-        speed: Math.round(bytesSent / (elapsed / 1000)),
-      });
+      progress?.(bytesSent, sectorIndex);
+
+      if (packetsWritten % BLE_WRITE_YIELD_INTERVAL === 0) {
+        await this.delay(0);
+      }
     }
   }
 

@@ -19,16 +19,25 @@
               <div class="header">
                 <nz-tabset [nzSize]="'small'" [(nzSelectedIndex)]="selectedTabIndex"
                   (nzSelectChange)="onTabChange($event.index)">
-                  <nz-tab nzTitle="日志"></nz-tab>
-                  <nz-tab nzTitle="终端"></nz-tab>
+                  <nz-tab [nzTitle]="'MAIN_WINDOW.LOG_TAB' | translate"></nz-tab>
+                  <nz-tab [nzTitle]="'MAIN_WINDOW.TERMINAL_TAB' | translate"></nz-tab>
                 </nz-tabset>
                 <div class="tool-btns">
                   @if(selectedTabIndex === 0) {
-                  <div class="btn ccenter" (click)="exportLog()" nz-tooltip nzTooltipTitle="导出">
+                  <div class="btn ccenter" (click)="exportLog()" nz-tooltip [nzTooltipTitle]="'MAIN_WINDOW.EXPORT_LOG' | translate">
                     <i class="fa-light fa-download"></i>
                   </div>
+                  <div
+                    class="btn ccenter"
+                    [class.active]="logComponent?.showSearchToolbar"
+                    (click)="toggleLogSearchToolbar()"
+                    nz-tooltip
+                    [nzTooltipTitle]="'MAIN_WINDOW.SEARCH_LOG' | translate"
+                  >
+                    <i class="fa-light fa-search"></i>
+                  </div>
                   }
-                  <div class="btn ccenter" (click)="clearCurrentComponent()" nz-tooltip nzTooltipTitle="清除">
+                  <div class="btn ccenter" (click)="clearCurrentComponent()" nz-tooltip [nzTooltipTitle]="'MAIN_WINDOW.CLEAR_CURRENT' | translate">
                     <i class="fa-light fa-broom-wide"></i>
                   </div>
                   <div class="btn ccenter" (click)="closeBottomPanel()">
@@ -57,40 +66,40 @@
         </nz-resize-handle>
         <div class="right-box">
           @for (tool of openToolList; track tool) {
-            <div class="tool-panel" [style.z-index]="tool === topTool ? 100 : 1">
-              @switch (tool) {
-              @case ("code-viewer") {
-              <app-code-viewer></app-code-viewer>
-              }
-              @case ("serial-monitor") {
-              <app-serial-monitor></app-serial-monitor>
-              }
-              @case ("ffs-manager") {
-              <app-ffs-manager></app-ffs-manager>
-              }
-              @case ("aily-chat") {
-              <app-aily-chat></app-aily-chat>
-              }
-              @case ("simulator") {
-              <app-simulator></app-simulator>
-              }
-              @case ("app-store") {
-              <app-app-store></app-app-store>
-              }
-              @case ("cloud-space") {
-              <app-cloud-space></app-cloud-space>
-              }
-              @case ("model-store") {
-              <app-model-store></app-model-store>
-              }
-              @case ("user-center") {
-              <app-user-center></app-user-center>
-              }
-              @case ("lib-manager") {
-              <app-lib-manager-tool></app-lib-manager-tool>
-              }
-              }
-            </div>
+          <div class="tool-panel" [style.z-index]="tool === topTool ? 100 : 1">
+            @switch (tool) {
+            @case ("code-viewer") {
+            <app-code-viewer></app-code-viewer>
+            }
+            @case ("serial-monitor") {
+            <app-serial-monitor></app-serial-monitor>
+            }
+            @case ("ffs-manager") {
+            <app-ffs-manager></app-ffs-manager>
+            }
+            @case ("aily-chat") {
+            <app-aily-chat></app-aily-chat>
+            }
+            @case ("simulator") {
+            <app-simulator></app-simulator>
+            }
+            @case ("app-store") {
+            <app-app-store></app-app-store>
+            }
+            @case ("cloud-space") {
+            <app-cloud-space></app-cloud-space>
+            }
+            @case ("model-store") {
+            <app-model-store></app-model-store>
+            }
+            @case ("user-center") {
+            <app-user-center></app-user-center>
+            }
+            @case ("lib-manager") {
+            <app-lib-manager-tool></app-lib-manager-tool>
+            }
+            }
+          </div>
           }
         </div>
       </nz-sider>
@@ -102,10 +111,7 @@
 
 <!-- 新手引导组件 -->
 @if (onboardingConfig) {
-<app-onboarding 
-  [show]="showOnboarding" 
-  [config]="onboardingConfig"
-  (closed)="onOnboardingClosed()"
+<app-onboarding [show]="showOnboarding" [config]="onboardingConfig" (closed)="onOnboardingClosed()"
   (completed)="onOnboardingCompleted()">
 </app-onboarding>
 }

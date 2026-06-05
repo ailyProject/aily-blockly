@@ -1,20 +1,20 @@
 <div class="summary-panel">
   <div class="panel-section">
-    <div class="panel-title">设备信息</div>
+    <div class="panel-title">{{ 'FFS_MANAGER.DEVICE.INFO' | translate }}</div>
     <div class="info-list">
-      <div class="info-row"><span>芯片</span><strong>{{ deviceInfo?.chip || '-' }}</strong></div>
+      <div class="info-row"><span>{{ 'FFS_MANAGER.DEVICE.CHIP' | translate }}</span><strong>{{ deviceInfo?.chip || '-' }}</strong></div>
       <div class="info-row"><span>MAC</span><strong>{{ deviceInfo?.mac || '-' }}</strong></div>
-      <div class="info-row"><span>Flash容量</span><strong>{{ deviceInfo?.flashSize  || '-' }}</strong></div>
+      <div class="info-row"><span>{{ 'FFS_MANAGER.DEVICE.FLASH_SIZE' | translate }}</span><strong>{{ deviceInfo?.flashSize  || '-' }}</strong></div>
       <div class="info-row"><span>Flash ID</span><strong>{{ deviceInfo?.flashId || '-' }}</strong></div>
     </div>
   </div>
   <div class="panel-section">
-    <div class="panel-title">分区方案</div>
+    <div class="panel-title">{{ 'FFS_MANAGER.PARTITION.SCHEME' | translate }}</div>
     <div class="info-list">
-      <div class="info-row"><span>分区数量</span><strong>{{ partitions.length || '-' }}</strong></div>
-      <div class="info-row"><span>应用分区</span><strong>{{ appSizeText }}</strong></div>
-      <div class="info-row"><span>文件分区</span><strong>{{ filesystemSizeText }}</strong></div>
-      <div class="info-row"><span>文件系统</span><strong>{{ filesystemTypeText }}</strong></div>
+      <div class="info-row"><span>{{ 'FFS_MANAGER.PARTITION.COUNT' | translate }}</span><strong>{{ partitions.length || '-' }}</strong></div>
+      <div class="info-row"><span>{{ 'FFS_MANAGER.PARTITION.APP' | translate }}</span><strong>{{ appSizeText }}</strong></div>
+      <div class="info-row"><span>{{ 'FFS_MANAGER.PARTITION.FILE' | translate }}</span><strong>{{ filesystemSizeText }}</strong></div>
+      <div class="info-row"><span>{{ 'FFS_MANAGER.PARTITION.FILESYSTEM' | translate }}</span><strong>{{ filesystemTypeText }}</strong></div>
     </div>
   </div>
 </div>

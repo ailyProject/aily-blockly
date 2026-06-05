@@ -1,13 +1,28 @@
-<div class="log-toolbar">
-  <label class="error-filter">
-    <nz-switch
-      nzSize="small"
-      [ngModel]="showOnlyErrors"
-      (ngModelChange)="onErrorFilterChange($event)"
-    ></nz-switch>
-    <span>{{ 'LOG.SHOW_ERRORS_ONLY' | translate }}</span>
-  </label>
-</div>
+@if (showSearchToolbar) {
+  <div class="log-toolbar">
+    <nz-input-group class="log-search" [nzSize]="'small'" [nzPrefix]="searchIcon">
+      <input
+        type="search"
+        nz-input
+        [ngModel]="logSearchKeyword"
+        (ngModelChange)="onLogSearchChange($event)"
+        [placeholder]="'LOG.SEARCH_PLACEHOLDER' | translate"
+      />
+    </nz-input-group>
+    <ng-template #searchIcon>
+      <i class="fa-light fa-magnifying-glass"></i>
+    </ng-template>
+
+    <label class="error-filter">
+      <nz-switch
+        nzSize="small"
+        [ngModel]="showOnlyErrors"
+        (ngModelChange)="onErrorFilterChange($event)"
+      ></nz-switch>
+      <span>{{ 'LOG.SHOW_ERRORS_ONLY' | translate }}</span>
+    </label>
+  </div>
+}
 
 <div #scrollElement class="log-box">
   <div class="log-inner" [style.height.px]="virtualizer.getTotalSize()">

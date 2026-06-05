@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { EspSessionService } from './esp-session.service';
+import { ResolvedBaud } from './usb-bridge';
 
 export type FfsFilesystemType = 'spiffs' | 'littlefs' | 'fatfs';
 
@@ -61,6 +62,13 @@ export class FfsManagerService {
   constructor(private espSession: EspSessionService) { }
 
   /**
+   * 当波特率因为桥接芯片能力被自动钳制时调用，便于 UI 同步显示与提示用户。
+   * 仅在实际发生钳制时触发一次（同一会话内重复调用不会重复触发）。
+   */
+  onBaudResolved: ((result: ResolvedBaud, port: string) => void) | null = null;
+  private lastBaudNoticeKey: string | null = null;
+
+  /**
    * 兼容旧 UI 的能力探测：只要渲染端能拿到 Node SerialPort 就视为可用。
    * 返回一个伪 packageInfo 让 component 现有 `esptoolReady` 判断保持原样。
    */
@@ -74,6 +82,7 @@ export class FfsManagerService {
 
   /** 释放 ESP 长会话，关闭串口并 hard reset。组件销毁 / 切换工具时调用。 */
   async release(hardReset = true): Promise<void> {
+    this.lastBaudNoticeKey = null;
     if (this.espSession.isConnected) {
       await this.espSession.disconnect(hardReset);
     }
@@ -194,10 +203,27 @@ export class FfsManagerService {
   }
 
   private async ensureSession(port: string, baudRate: number): Promise<void> {
-    if (this.espSession.isConnected && this.espSession.portPath === port && this.espSession.baudRate === baudRate) {
+    if (
+      this.espSession.isConnected &&
+      this.espSession.portPath === port &&
+      (this.espSession.requestedBaudRate === baudRate || this.espSession.baudRate === baudRate)
+    ) {
       return;
     }
-    await this.espSession.connect({ portPath: port, baudRate });
+    await this.espSession.connect({
+      portPath: port,
+      baudRate,
+      onBaudResolved: (resolved, resolvedPort) => this.notifyBaudResolved(resolved, resolvedPort),
+    });
+  }
+
+  private notifyBaudResolved(resolved: ResolvedBaud, port: string): void {
+    const key = `${port}|${resolved.requested}|${resolved.baud}`;
+    if (this.lastBaudNoticeKey === key) {
+      return;
+    }
+    this.lastBaudNoticeKey = key;
+    try { this.onBaudResolved?.(resolved, port); } catch { /* ignore */ }
   }
 
   private async readFlashIdRaw(): Promise<number> {

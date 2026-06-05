@@ -35,6 +35,16 @@ const DEFAULT_BLOCK_SIZE = 4096;
 const SPIFFS_PAGE_SIZE = 256;
 const BLOCK_SIZE_CANDIDATES = [4096, 2048, 1024, 512];
 const FAT_MOUNT = '/fatfs';
+const FILE_NAME_MAX_BYTES: Record<FfsFilesystemType, number> = {
+  spiffs: 30,
+  littlefs: 63,
+  fatfs: 255,
+};
+const FILESYSTEM_LABELS: Record<FfsFilesystemType, string> = {
+  spiffs: 'SPIFFS',
+  littlefs: 'LittleFS',
+  fatfs: 'FATFS',
+};
 
 @Injectable({
   providedIn: 'root'
@@ -194,11 +204,26 @@ export class FfsFilesystemContentService {
   }
 
   getDefaultUploadPath(fileName: string, type: FfsFilesystemType): string {
-    const safeName = this.sanitizePathSegment(fileName || 'file.bin');
+    const safeName = this.getDefaultUploadFileName(fileName);
     if (type === 'spiffs') {
       return `/${safeName}`;
     }
     return `/${safeName}`;
+  }
+
+  validateUploadFileName(fileName: string, type: FfsFilesystemType): string | null {
+    const safeName = this.getDefaultUploadFileName(fileName);
+    const byteLength = this.getUtf8ByteLength(safeName);
+    const maxBytes = FILE_NAME_MAX_BYTES[type];
+    if (byteLength <= maxBytes) {
+      return null;
+    }
+
+    const originalName = fileName || 'file.bin';
+    const safeNameNote = safeName === originalName
+      ? ''
+      : `（清理后文件名：${this.truncateName(safeName)}）`;
+    return `${FILESYSTEM_LABELS[type]} 文件名过长${safeNameNote}：当前 ${byteLength} 字节，最多支持 ${maxBytes} 字节。请缩短文件名后再上传；中文通常每个字占 3 字节。`;
   }
 
   formatBytes(bytes: number): string {
@@ -450,8 +475,24 @@ export class FfsFilesystemContentService {
     return lowerPath === FAT_MOUNT || lowerPath.startsWith(`${FAT_MOUNT}/`);
   }
 
+  private getDefaultUploadFileName(fileName: string): string {
+    return this.sanitizePathSegment(fileName || 'file.bin');
+  }
+
   private sanitizePathSegment(value: string): string {
     return String(value || 'file.bin').replace(/[\\/:*?"<>|]+/g, '_').replace(/^_+|_+$/g, '') || 'file.bin';
+  }
+
+  private getUtf8ByteLength(value: string): number {
+    return new TextEncoder().encode(value).length;
+  }
+
+  private truncateName(value: string): string {
+    const chars = Array.from(value);
+    if (chars.length <= 48) {
+      return value;
+    }
+    return `${chars.slice(0, 24).join('')}...${chars.slice(-21).join('')}`;
   }
 
   private getWasmUrl(path: string): string {

@@ -78,29 +78,18 @@ export class NodeSerialPortAdapter {
       throw new Error('串口已打开');
     }
 
-    // 1) 若刚 close 过、句柄还在 park 窗口里 → 直接 update 波特率复用。
+    // 注意：早期实现会在 park 窗口内通过 port.update({baudRate}) 复用同一句柄。
+    // 这对原生 USB-CDC（ESP32-S3 0x303a）没问题——波特率本来就是占位值——但是对
+    // CH340 之类的硬件 UART 在 Windows 上不可靠：node-serialport 的 update 返回
+    // 成功，CH340 驱动却没有真正切到新波特率，host 仍以旧速率读取，esptool 在
+    // changeBaud 之后所有命令必然超时。
+    // 因此这里改为：始终把 parked 句柄真正关闭，再 createRaw + open 一次。
+    // Windows close→open 之间的 ACCESS DENIED 由下面的指数退避重试覆盖。
     if (this.parkedPort) {
       const parked = this.parkedPort;
       this.parkedPort = null;
       if (this.parkTimer) { clearTimeout(this.parkTimer); this.parkTimer = null; }
-      try {
-        if (typeof parked.update === 'function' && options.baudRate) {
-          await new Promise<void>((resolve, reject) => {
-            parked.update({ baudRate: options.baudRate }, (err: Error | null | undefined) => err ? reject(err) : resolve());
-          });
-        }
-        this.port = parked;
-        this.attachStreams(parked);
-        return;
-      } catch (err) {
-        console.warn('[NodeSerialPortAdapter] 复用 parked 串口失败，回退到 close+open:', err);
-        try {
-          await new Promise<void>((resolve) => {
-            if (!parked.isOpen) { resolve(); return; }
-            parked.close(() => resolve());
-          });
-        } catch { /* ignore */ }
-      }
+      await this.forceCloseRaw(parked);
     }
 
     const factory = window?.electronAPI?.SerialPort?.createRaw;

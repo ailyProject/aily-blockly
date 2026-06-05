@@ -1,5 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { Component, HostListener, Input } from '@angular/core';
+import { TranslateModule } from '@ngx-translate/core';
 import { FfsPartitionInfo } from '../../ffs-manager.service';
 
 type PartitionCategory = 'spiffs' | 'littlefs' | 'fatfs' | 'app' | 'bootloader' | 'nvs' | 'otadata' | 'phy' | 'coredump' | 'normal';
@@ -7,7 +8,7 @@ type PartitionCategory = 'spiffs' | 'littlefs' | 'fatfs' | 'app' | 'bootloader' 
 @Component({
   selector: 'app-partition-map',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, TranslateModule],
   templateUrl: './partition-map.component.html',
   styleUrl: './partition-map.component.scss',
 })

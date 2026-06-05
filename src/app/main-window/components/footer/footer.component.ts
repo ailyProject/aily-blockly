@@ -2,10 +2,11 @@ import { Component, ChangeDetectorRef } from '@angular/core';
 import { ActionState, UiService } from '../../../services/ui.service';
 import { FOOTER_BTNS, IMenuItem } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
+import { TranslateModule } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-footer',
-  imports: [NzToolTipModule],
+  imports: [NzToolTipModule, TranslateModule],
   templateUrl: './footer.component.html',
   styleUrl: './footer.component.scss'
 })

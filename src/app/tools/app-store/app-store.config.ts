@@ -4,6 +4,7 @@ export interface AppItem extends IMenuItem {
   id: string;
   description?: string;
   enabled?: boolean;
+  core?: string[];
 }
 
 // 默认的 App 列表，前6个会显示在 header 上
@@ -44,7 +45,8 @@ export const APP_LIST: AppItem[] = [
     action: 'tool-open',
     data: { type: 'tool', data: 'ffs-manager' },
     icon: 'fa-light fa-folder-gear',
-    enabled: true
+    enabled: true,
+    core: ['esp32']
   },
   {
     id: 'aily-chat',
