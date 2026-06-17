@@ -2,9 +2,8 @@ import type { BlocklyProjectDocument, BlocklyWorkspaceBlockNode, BlocklyWorkspac
 
 /**
  * 收集单个块树中的所有 block type
- * @param {BlocklyWorkspaceBlockNode | undefined} block - 当前块节点
- * @param {Set<string>} blockTypes - 收集结果集合
- * @returns {void}
+ * @param block - 当前块节点
+ * @param blockTypes - 收集结果集合
  */
 export const collectBlockTypesFromBlock = (
 	block: BlocklyWorkspaceBlockNode | undefined,
@@ -27,8 +26,7 @@ export const collectBlockTypesFromBlock = (
 
 /**
  * 从工作区内容中收集 block type
- * @param {BlocklyWorkspaceContent | null | undefined} content - 工作区内容
- * @returns {string[]}
+ * @param content - 工作区内容
  */
 export const collectBlockTypesFromWorkspaceContent = (
 	content: BlocklyWorkspaceContent | null | undefined
@@ -45,8 +43,7 @@ export const collectBlockTypesFromWorkspaceContent = (
 
 /**
  * 从项目文档中收集 block type
- * @param {BlocklyProjectDocument} document - 项目文档
- * @returns {string[]}
+ * @param document - 项目文档
  */
 export const collectBlockTypesFromProjectDocument = (document: BlocklyProjectDocument): Array<string> => {
 	const blockTypes = new Set<string>()

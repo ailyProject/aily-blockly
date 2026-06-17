@@ -1,2 +1,5 @@
 export * from './inputNames'
+export * from './portableState'
+export * from './strings'
+export * from './syntaxSugar'
 export * from './types'

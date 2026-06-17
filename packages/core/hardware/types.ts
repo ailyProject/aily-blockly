@@ -88,6 +88,55 @@ export interface LibraryIndexItem {
 }
 
 /**
+ * 旧格式开发板条目
+ */
+export interface LegacyBoardItem {
+	/** 包名或唯一名称 */
+	name: string
+	/** 展示昵称 */
+	nickname?: string
+	/** 描述 */
+	description?: string
+	/** 关键词 */
+	keywords?: Array<string>
+	/** 品牌 */
+	brand?: string
+	/** 类型 */
+	type?: string
+}
+
+/**
+ * 旧格式库条目
+ */
+export interface LegacyLibraryItem {
+	/** 包名或唯一名称 */
+	name: string
+	/** 展示昵称 */
+	nickname?: string
+	/** 描述 */
+	description?: string
+	/** 关键词 */
+	keywords?: Array<string>
+	/** 作者 */
+	author?: string
+	/** 兼容性信息 */
+	compatibility?: {
+		/** 支持的 core 列表 */
+		core?: Array<string>
+	}
+}
+
+/**
+ * 标签列表载荷
+ */
+export interface HardwareTagList {
+	/** 标签列表 */
+	tags?: Array<unknown>
+	/** 允许保留其它字段 */
+	[key: string]: unknown
+}
+
+/**
  * 硬件搜索范围
  */
 export type HardwareSearchType =
@@ -165,7 +214,7 @@ export interface HardwareSearchResult {
 	/** 命中的关键词 */
 	matchedQueries: Array<string>
 	/** 对应的原始索引条目 */
-	metadata: BoardIndexItem | LibraryIndexItem
+	metadata: BoardIndexItem | LibraryIndexItem | undefined
 }
 
 /**

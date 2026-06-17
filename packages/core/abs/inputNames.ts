@@ -11,8 +11,7 @@ const ABS_INPUT_NAME_MAPPING: Record<string, string> = {
 
 /**
  * 判断输入名是否可能是语句输入
- * @param {string} inputName - 输入名称
- * @returns {boolean}
+ * @param inputName - 输入名称
  */
 export const isLikelyStatementInput = (inputName: string): boolean => {
 	const patterns = [
@@ -31,8 +30,7 @@ export const isLikelyStatementInput = (inputName: string): boolean => {
 
 /**
  * 规范化输入名用于 ABS 展示
- * @param {string} inputName - 原始输入名
- * @returns {string}
+ * @param inputName - 原始输入名
  */
 export const normalizeInputNameForAbs = (inputName: string): string => {
 	if (ABS_INPUT_NAME_MAPPING[inputName]) {

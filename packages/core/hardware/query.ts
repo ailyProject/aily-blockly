@@ -3,10 +3,12 @@ import type {
 	HardwareSearchFilters,
 	HardwareSearchQuery,
 	HardwareSearchResult,
+	LegacyBoardItem,
+	LegacyLibraryItem,
 	LibraryIndexItem
 } from './types'
 
-const toKeywords = (input?: string | Array<string>) => {
+export const toKeywords = (input?: string | Array<string>) => {
 	if (!input) return []
 	if (Array.isArray(input)) return input.map(item => item.trim().toLowerCase()).filter(Boolean)
 
@@ -17,7 +19,7 @@ const toKeywords = (input?: string | Array<string>) => {
 		.filter(Boolean)
 }
 
-const compareNumeric = (value: number, condition?: string) => {
+export const compareNumeric = (value: number, condition?: string) => {
 	if (!condition) return true
 
 	const match = condition.match(/^([<>=!]+)?(\d+(?:\.\d+)?)$/)
@@ -52,12 +54,50 @@ const scoreText = (value: string, query: string, exact: number, partial: number)
 	return 0
 }
 
+export const convertFiltersToQueries = (
+	filters: HardwareSearchFilters | undefined,
+	type: 'boards' | 'libraries'
+): Array<string> => {
+	if (!filters) return []
+
+	const queries: Array<string> = []
+	if (type === 'boards') {
+		if (filters.architecture) {
+			queries.push(filters.architecture.toLowerCase())
+			if (filters.architecture.includes('xtensa')) queries.push('esp32')
+			if (filters.architecture === 'avr') queries.push('arduino')
+		}
+		if (filters.connectivity) queries.push(...filters.connectivity.map(item => item.toLowerCase()))
+		if (filters.interfaces) queries.push(...filters.interfaces.map(item => item.toLowerCase()))
+		if (filters.brand) queries.push(filters.brand.toLowerCase())
+		return queries
+	}
+
+	if (filters.category) queries.push(filters.category.toLowerCase())
+	if (filters.hardwareType) queries.push(...filters.hardwareType.map(item => item.toLowerCase()))
+	if (filters.communication) queries.push(...filters.communication.map(item => item.toLowerCase()))
+	if (filters.supportedCores) {
+		for (const core of filters.supportedCores) {
+			queries.push(...core.toLowerCase().split(':').filter(Boolean))
+		}
+	}
+
+	return queries
+}
+
+const findLegacyDescription = <T extends { name: string; description?: string }>(name: string, oldData?: Array<T>) => {
+	if (!oldData) return undefined
+	const found = oldData.find(
+		item => item.name === name || item.name === `@aily-project/${name}` || item.name.endsWith(`/${name}`)
+	)
+	return found?.description
+}
+
 /**
  * 对开发板执行结构化筛选与文本评分
- * @param {BoardIndexItem[]} boards - 开发板索引列表
- * @param {string[]} keywords - 规范化后的搜索关键词
- * @param {HardwareSearchFilters | undefined} filters - 结构化筛选条件
- * @returns {HardwareSearchResult[]}
+ * @param boards - 开发板索引列表
+ * @param keywords - 规范化后的搜索关键词
+ * @param filters - 结构化筛选条件
  */
 const searchBoards = (boards: Array<BoardIndexItem>, keywords: Array<string>, filters?: HardwareSearchFilters) =>
 	boards
@@ -107,10 +147,9 @@ const searchBoards = (boards: Array<BoardIndexItem>, keywords: Array<string>, fi
 
 /**
  * 对库索引执行结构化筛选与文本评分
- * @param {LibraryIndexItem[]} libraries - 库索引列表
- * @param {string[]} keywords - 规范化后的搜索关键词
- * @param {HardwareSearchFilters | undefined} filters - 结构化筛选条件
- * @returns {HardwareSearchResult[]}
+ * @param libraries - 库索引列表
+ * @param keywords - 规范化后的搜索关键词
+ * @param filters - 结构化筛选条件
  */
 const searchLibraries = (
 	libraries: Array<LibraryIndexItem>,
@@ -163,12 +202,72 @@ const searchLibraries = (
 		})
 		.filter(item => keywords.length === 0 || item.score > 0)
 
+const searchLegacyBoards = (boards: Array<LegacyBoardItem>, keywords: Array<string>) => {
+	const results: Array<HardwareSearchResult> = []
+	if (keywords.length === 0) return results
+
+	for (const board of boards) {
+		const haystack = [board.name, board.nickname, board.description, ...(board.keywords ?? []), board.brand]
+			.filter(Boolean)
+			.join(' ')
+			.toLowerCase()
+		const matchedQueries = keywords.filter(keyword => haystack.includes(keyword))
+		if (matchedQueries.length === 0) continue
+
+		results.push({
+			source: 'board',
+			name: board.name,
+			displayName: board.nickname || board.name,
+			description: board.description ?? '',
+			score: matchedQueries.length * 10,
+			matchedFields: ['legacy-text'],
+			matchedQueries,
+			metadata: undefined
+		})
+	}
+
+	return results
+}
+
+const searchLegacyLibraries = (libraries: Array<LegacyLibraryItem>, keywords: Array<string>) => {
+	const results: Array<HardwareSearchResult> = []
+	if (keywords.length === 0) return results
+
+	for (const library of libraries) {
+		const haystack = [
+			library.name,
+			library.nickname,
+			library.description,
+			...(library.keywords ?? []),
+			...(library.compatibility?.core ?? []),
+			library.author
+		]
+			.filter(Boolean)
+			.join(' ')
+			.toLowerCase()
+		const matchedQueries = keywords.filter(keyword => haystack.includes(keyword))
+		if (matchedQueries.length === 0) continue
+
+		results.push({
+			source: 'library',
+			name: library.name,
+			displayName: library.nickname || library.name,
+			description: library.description ?? '',
+			score: matchedQueries.length * 10,
+			matchedFields: ['legacy-text'],
+			matchedQueries,
+			metadata: undefined
+		})
+	}
+
+	return results
+}
+
 /**
  * 统一硬件搜索入口
- * @param {BoardIndexItem[]} boards - 开发板索引列表
- * @param {LibraryIndexItem[]} libraries - 库索引列表
- * @param {HardwareSearchQuery} query - 搜索参数
- * @returns {HardwareSearchResult[]}
+ * @param boards - 开发板索引列表
+ * @param libraries - 库索引列表
+ * @param query - 搜索参数
  */
 export const searchHardwareIndex = (
 	boards: Array<BoardIndexItem>,
@@ -184,4 +283,35 @@ export const searchHardwareIndex = (
 	]
 
 	return results.sort((left, right) => right.score - left.score).slice(0, maxResults)
+}
+
+export const searchHardwareIndexCompat = (
+	boards: Array<BoardIndexItem>,
+	libraries: Array<LibraryIndexItem>,
+	query: HardwareSearchQuery,
+	legacy?: { legacyBoards?: Array<LegacyBoardItem>; legacyLibraries?: Array<LegacyLibraryItem> }
+) => {
+	if (boards.length > 0 || libraries.length > 0) {
+		return searchHardwareIndex(boards, libraries, query).map(result => ({
+			...result,
+			description:
+				result.description ||
+				(result.source === 'board'
+					? findLegacyDescription(result.name, legacy?.legacyBoards)
+					: findLegacyDescription(result.name, legacy?.legacyLibraries)) ||
+				result.displayName
+		}))
+	}
+
+	const type = query.type ?? 'both'
+	const keywords = [
+		...toKeywords(query.filters?.keywords ?? query.query),
+		...convertFiltersToQueries(query.filters, type === 'libraries' ? 'libraries' : 'boards')
+	]
+	const legacyResults = [
+		...(type === 'boards' || type === 'both' ? searchLegacyBoards(legacy?.legacyBoards ?? [], keywords) : []),
+		...(type === 'libraries' || type === 'both' ? searchLegacyLibraries(legacy?.legacyLibraries ?? [], keywords) : [])
+	]
+
+	return legacyResults.slice(0, query.maxResults ?? 50)
 }

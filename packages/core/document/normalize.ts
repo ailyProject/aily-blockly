@@ -14,7 +14,6 @@ const clone = <T>(value: T): T => structuredClone(value)
 
 /**
  * 创建空工作区内容
- * @returns {BlocklyWorkspaceContent}
  */
 export const createEmptyWorkspaceContent = (): BlocklyWorkspaceContent =>
 	({
@@ -26,7 +25,6 @@ export const createEmptyWorkspaceContent = (): BlocklyWorkspaceContent =>
 
 /**
  * 创建默认视图状态
- * @returns {BlocklyWorkspaceViewState}
  */
 export const createDefaultViewState = (): BlocklyWorkspaceViewState => ({
 	scale: 1,
@@ -36,15 +34,13 @@ export const createDefaultViewState = (): BlocklyWorkspaceViewState => ({
 
 /**
  * 生成页面 ID
- * @returns {string}
  */
 export const generatePageId = () => `page-${Date.now()}-${randomUUID().slice(0, 6)}`
 
 /**
  * 创建空页面快照
- * @param {string} id - 页面 ID
- * @param {string} title - 页面标题
- * @returns {BlocklyPageSnapshot}
+ * @param id - 页面 ID
+ * @param title - 页面标题
  */
 export const createEmptyPageSnapshot = (id = generatePageId(), title = 'Page 1'): BlocklyPageSnapshot => ({
 	id,
@@ -55,8 +51,7 @@ export const createEmptyPageSnapshot = (id = generatePageId(), title = 'Page 1')
 
 /**
  * 归一化工作区 JSON
- * @param {unknown} workspaceJson - 原始工作区 JSON
- * @returns {BlocklyWorkspaceContent}
+ * @param workspaceJson - 原始工作区 JSON
  */
 export const normalizeWorkspaceJson = (workspaceJson: unknown): BlocklyWorkspaceContent => {
 	const nextJson = (clone(workspaceJson) as BlocklyWorkspaceContent | null) ?? createEmptyWorkspaceContent()
@@ -79,16 +74,14 @@ export const normalizeWorkspaceJson = (workspaceJson: unknown): BlocklyWorkspace
 
 /**
  * 判断块是否属于共享过程块
- * @param {BlocklyWorkspaceBlockNode | undefined} block - 块节点
- * @returns {boolean}
+ * @param block - 块节点
  */
 export const isSharedProcedureBlock = (block: BlocklyWorkspaceBlockNode | undefined) =>
 	Boolean(block?.type?.startsWith('procedures_'))
 
 /**
  * 归一化共享模型
- * @param {unknown} sharedModel - 原始共享模型
- * @returns {BlocklySharedModel}
+ * @param sharedModel - 原始共享模型
  */
 export const normalizeSharedModel = (sharedModel: unknown): BlocklySharedModel => ({
 	variables:
@@ -107,8 +100,7 @@ export const normalizeSharedModel = (sharedModel: unknown): BlocklySharedModel =
 
 /**
  * 从工作区提取共享模型
- * @param {BlocklyWorkspaceContent} workspaceJson - 工作区内容
- * @returns {BlocklySharedModel}
+ * @param workspaceJson - 工作区内容
  */
 export const extractSharedModel = (workspaceJson: BlocklyWorkspaceContent): BlocklySharedModel => {
 	const normalized = normalizeWorkspaceJson(workspaceJson)
@@ -122,8 +114,7 @@ export const extractSharedModel = (workspaceJson: BlocklyWorkspaceContent): Bloc
 
 /**
  * 从工作区中移除共享模型
- * @param {BlocklyWorkspaceContent} workspaceJson - 工作区内容
- * @returns {BlocklyWorkspaceContent}
+ * @param workspaceJson - 工作区内容
  */
 export const stripSharedModel = (workspaceJson: BlocklyWorkspaceContent): BlocklyWorkspaceContent => {
 	const normalized = normalizeWorkspaceJson(workspaceJson)
@@ -134,9 +125,8 @@ export const stripSharedModel = (workspaceJson: BlocklyWorkspaceContent): Blockl
 
 /**
  * 组合页面工作区与共享模型为实际工作区载荷
- * @param {BlocklyWorkspaceContent | null | undefined} pageContent - 页面工作区内容
- * @param {BlocklySharedModel} sharedModel - 共享模型
- * @returns {BlocklyWorkspaceContent}
+ * @param pageContent - 页面工作区内容
+ * @param sharedModel - 共享模型
  */
 export const composeWorkspacePayload = (
 	pageContent: BlocklyWorkspaceContent | null | undefined,
@@ -161,17 +151,15 @@ export const composeWorkspacePayload = (
 
 /**
  * 归一化页面内容
- * @param {unknown} content - 页面内容
- * @returns {BlocklyWorkspaceContent}
+ * @param content - 页面内容
  */
 export const normalizePageContent = (content: unknown): BlocklyWorkspaceContent =>
 	stripSharedModel(normalizeWorkspaceJson(content))
 
 /**
  * 归一化页面快照
- * @param {unknown} page - 原始页面数据
- * @param {number} index - 页面序号
- * @returns {BlocklyPageSnapshot}
+ * @param page - 原始页面数据
+ * @param index - 页面序号
  */
 export const normalizePageSnapshot = (page: unknown, index: number): BlocklyPageSnapshot => {
 	const source = page && typeof page === 'object' ? (page as Partial<BlocklyPageSnapshot>) : {}
@@ -186,10 +174,9 @@ export const normalizePageSnapshot = (page: unknown, index: number): BlocklyPage
 
 /**
  * 归一化打开页面 ID 列表
- * @param {unknown} openedPageIds - 原始打开页面列表
- * @param {BlocklyPageSnapshot[]} pages - 页面列表
- * @param {string} activePageId - 当前激活页面
- * @returns {string[]}
+ * @param openedPageIds - 原始打开页面列表
+ * @param pages - 页面列表
+ * @param activePageId - 当前激活页面
  */
 export const normalizeOpenedPageIds = (
 	openedPageIds: unknown,
@@ -208,9 +195,8 @@ export const normalizeOpenedPageIds = (
 
 /**
  * 归一化项目文档
- * @param {unknown} jsonData - 原始项目 ABI / 文档数据
- * @param {number} schemaVersion - 目标 schema 版本
- * @returns {BlocklyProjectDocument}
+ * @param jsonData - 原始项目 ABI / 文档数据
+ * @param schemaVersion - 目标 schema 版本
  */
 export const normalizeProjectDocument = (
 	jsonData: unknown,
@@ -248,8 +234,7 @@ export const normalizeProjectDocument = (
 
 /**
  * 生成用于保存的项目 ABI 载荷
- * @param {BlocklyProjectDocument} document - 项目文档
- * @returns {BlocklyProjectDocument | BlocklyWorkspaceContent}
+ * @param document - 项目文档
  */
 export const getProjectAbiForSave = (document: BlocklyProjectDocument) => {
 	if (document.pages.length === 1) {

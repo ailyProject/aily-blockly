@@ -1,4 +1,6 @@
 export * from './AgentRuntime'
 export * from './createAgentRuntime'
 export * from './events'
+export * from './httpErrors'
+export * from './httpErrors.types'
 export * from './types'

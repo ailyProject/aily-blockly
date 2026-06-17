@@ -1,12 +1,16 @@
-import type { CompileDiagnostic, CompileDiagnosticSeverity, ExtractedCompileErrors } from './types'
+import type {
+	CompileDiagnostic,
+	CompileDiagnosticSeverity,
+	CompileDiagnosticSummary,
+	ExtractedCompileErrors
+} from './types'
 
 const ANSI_PATTERN = /\u001b\[\d+(;\d+)*m/g
 const RAW_ANSI_PATTERN = /\[\d+(;\d+)*m/g
 
 /**
  * 清除 ANSI 转义码和构建器标签
- * @param {string} text - 原始输出文本
- * @returns {string}
+ * @param text - 原始输出文本
  */
 export const stripBuildOutputDecorators = (text: string) =>
 	text
@@ -17,16 +21,14 @@ export const stripBuildOutputDecorators = (text: string) =>
 
 /**
  * 将绝对路径缩短为 sketch 相对路径
- * @param {string} line - 单行输出
- * @returns {string}
+ * @param line - 单行输出
  */
 export const shortenBuildPath = (line: string) => line.replace(/[A-Za-z]:[\\/].*?[\\/]\.temp[\\/]sketch[\\/]/g, '')
 
 /**
  * 从完整 stderr 中提取关键编译错误
- * @param {string} fullStdErr - 编译 stderr
- * @param {number} maxLength - 最大返回长度
- * @returns {ExtractedCompileErrors}
+ * @param fullStdErr - 编译 stderr
+ * @param maxLength - 最大返回长度
  */
 export const extractCompileErrors = (fullStdErr: string, maxLength = 3000): ExtractedCompileErrors => {
 	if (!fullStdErr) {
@@ -88,8 +90,7 @@ const toSeverity = (value: string): CompileDiagnosticSeverity => {
 
 /**
  * 解析编译器诊断
- * @param {string} stderr - 编译 stderr
- * @returns {CompileDiagnostic[]}
+ * @param stderr - 编译 stderr
  */
 export const parseCompileDiagnostics = (stderr: string): Array<CompileDiagnostic> => {
 	const diagnostics: Array<CompileDiagnostic> = []
@@ -118,4 +119,56 @@ export const parseCompileDiagnostics = (stderr: string): Array<CompileDiagnostic
 	}
 
 	return diagnostics
+}
+
+/**
+ * 统计编译诊断摘要
+ * @param diagnostics - 编译诊断列表
+ */
+export const summarizeCompileDiagnostics = (diagnostics: Array<CompileDiagnostic>): CompileDiagnosticSummary => ({
+	errorCount: diagnostics.filter(item => item.severity === 'error').length,
+	warningCount: diagnostics.filter(item => item.severity === 'warning').length,
+	noteCount: diagnostics.filter(item => item.severity === 'note').length,
+	total: diagnostics.length
+})
+
+/**
+ * 格式化编译诊断为文本
+ * @param diagnostics - 编译诊断列表
+ */
+export const formatCompileDiagnostics = (diagnostics: Array<CompileDiagnostic>) =>
+	diagnostics
+		.map(diagnostic => {
+			const location = diagnostic.file
+				? `${diagnostic.file.split(/[/\\]/).pop()}${diagnostic.line ? `:${diagnostic.line}` : ''}${diagnostic.column ? `:${diagnostic.column}` : ''}`
+				: ''
+			const prefix = diagnostic.severity === 'error' ? '❌' : diagnostic.severity === 'warning' ? '⚠️' : 'ℹ️'
+			return location ? `- ${prefix} ${location}: ${diagnostic.message}` : `- ${prefix} ${diagnostic.message}`
+		})
+		.join('\n')
+
+/**
+ * 为旧编译错误快照补充“过期提醒”
+ * @param diagnostics - 编译诊断列表
+ * @param timestamp - 快照时间戳
+ * @param staleMinutes - 视为过期的分钟数
+ */
+export const withCompileStalenessWarning = (
+	diagnostics: Array<CompileDiagnostic>,
+	timestamp: number,
+	staleMinutes = 5
+) => {
+	const ageMinutes = (Date.now() - timestamp) / 60000
+	if (!diagnostics.some(item => item.source === 'build') || ageMinutes <= staleMinutes) {
+		return diagnostics
+	}
+
+	return [
+		...diagnostics,
+		{
+			source: 'build',
+			severity: 'warning',
+			message: `注意: 编译错误数据来自 ${Math.round(ageMinutes)} 分钟前，代码可能已修改。建议重新编译确认。`
+		} satisfies CompileDiagnostic
+	]
 }

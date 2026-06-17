@@ -59,6 +59,41 @@ export interface DeclaredDependencies {
 }
 
 /**
+ * 资源源配置
+ */
+export interface ResourceSourceConfig {
+	/** 资源源唯一键 */
+	key: string
+	/** 资源源显示名称 */
+	name?: string
+	/** 资源源 URL */
+	url: string
+	/** 是否启用 */
+	enabled?: boolean
+}
+
+/**
+ * 区域配置
+ */
+export interface RegionConfig {
+	/** 资源地址 */
+	resource?: string
+	/** NPM Registry 地址 */
+	npm_registry?: string
+	/** API 服务地址 */
+	api_server?: string
+	/** 工具 Web 地址 */
+	tool_web?: string
+	/** 是否为官方区域 */
+	official?: boolean
+}
+
+/**
+ * 区域配置映射
+ */
+export type RegionConfigMap = Record<string, RegionConfig>
+
+/**
  * 项目开发模式
  */
 export type ProjectDevMode =
@@ -67,4 +102,13 @@ export type ProjectDevMode =
 	/** MicroPython 模式 */
 	| 'micropython'
 	/** 其它未来扩展模式 */
+	| (string & {})
+
+/**
+ * 构建风味
+ */
+export type BuildFlavor =
+	/** 国际版构建风味 */
+	| 'global'
+	/** 默认/中国版构建风味 */
 	| (string & {})

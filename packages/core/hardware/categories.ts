@@ -20,9 +20,8 @@ const countValues = (values: Array<string>) => {
 
 /**
  * 统计开发板分类分布
- * @param {BoardIndexItem[]} boards - 开发板索引列表
- * @param {BoardCategoryDimension} dimension - 分类维度
- * @returns {HardwareCategoryResult}
+ * @param boards - 开发板索引列表
+ * @param dimension - 分类维度
  */
 export const getBoardCategories = (
 	boards: Array<BoardIndexItem>,
@@ -53,9 +52,8 @@ export const getBoardCategories = (
 
 /**
  * 统计库分类分布
- * @param {LibraryIndexItem[]} libraries - 库索引列表
- * @param {LibraryCategoryDimension} dimension - 分类维度
- * @returns {HardwareCategoryResult}
+ * @param libraries - 库索引列表
+ * @param dimension - 分类维度
  */
 export const getLibraryCategories = (
 	libraries: Array<LibraryIndexItem>,

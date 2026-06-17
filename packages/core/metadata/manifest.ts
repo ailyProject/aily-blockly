@@ -14,9 +14,8 @@ const getPackageDependencySpec = (packageJson: ProjectPackageJson | null | undef
 
 /**
  * 判断两份 used-library manifest entry 是否等价
- * @param {unknown} previousEntry - 旧 entry
- * @param {BlocklyUsedLibraryManifestEntry} nextEntry - 新 entry
- * @returns {boolean}
+ * @param previousEntry - 旧 entry
+ * @param nextEntry - 新 entry
  */
 export const isSameUsedLibraryManifestEntry = (
 	previousEntry: unknown,
@@ -40,8 +39,7 @@ export const isSameUsedLibraryManifestEntry = (
 
 /**
  * 规范化 used-library manifest
- * @param {unknown} value - 原始 manifest 值
- * @returns {BlocklyUsedLibraryManifest}
+ * @param value - 原始 manifest 值
  */
 export const normalizeUsedLibraryManifest = (value: unknown): BlocklyUsedLibraryManifest => {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -75,11 +73,10 @@ export const normalizeUsedLibraryManifest = (value: unknown): BlocklyUsedLibrary
 
 /**
  * 根据 block type 到库的映射生成项目 used-library manifest
- * @param {BlocklyProjectDocument} document - 项目文档
- * @param {Record<string, BlockLibraryBinding>} blockTypeBindings - block type 到库的映射
- * @param {ProjectPackageJson | null | undefined} packageJson - 当前 package.json
- * @param {BlocklyUsedLibraryManifest} previousManifest - 之前的 manifest
- * @returns {BlocklyUsedLibraryManifest}
+ * @param document - 项目文档
+ * @param blockTypeBindings - block type 到库的映射
+ * @param packageJson - 当前 package.json
+ * @param previousManifest - 之前的 manifest
  */
 export const buildUsedLibraryManifest = (
 	document: BlocklyProjectDocument,

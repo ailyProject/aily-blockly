@@ -19,6 +19,7 @@ TypeScript implementation in this rewrite must be type-first rather than "make i
 - Code should be implemented on top of explicit domain types, input/output contracts, and stable interfaces. Define the types first, then implement against them.
 - Do not trade away type completeness just to move faster. The intended baseline is code that is robust, verifiable, and maintainable because its behavior is constrained by types.
 - Public types, interfaces, type aliases, DTOs, and other important structured models should also carry JSDoc so later implementation work can understand boundaries from the type layer itself.
+- In TypeScript files, JSDoc should explain semantics and constraints rather than restating types that are already declared in TS syntax.
 - If a runtime boundary temporarily requires `unknown`, narrow it immediately with parsing, validation, guards, or schema-based decoding before the value is allowed to flow deeper into the codebase.
 - `any` should be treated as an exceptional last resort and not as a normal implementation tool during the rewrite.
 
@@ -27,9 +28,10 @@ TypeScript implementation in this rewrite must be type-first rather than "make i
 Complex functions added or rewritten during this refactor should prefer Chinese comments that explain their purpose and key behavior.
 
 - For complex functions, write Chinese comments to describe responsibility, important inputs and outputs, and non-obvious constraints or side effects.
-- Use a standard multi-line JSDoc block when writing these comments, and include `@param` / `@returns` tags when they add verification value.
+- Use a standard multi-line JSDoc block when writing these comments, and include `@param` / `@returns` tags only when they add semantic verification value.
+- In TypeScript, do not repeat parameter types, return types, or field types inside JSDoc tags such as `@param {T}`, `@returns {T}`, or field-level type restatements; keep the description text only.
 - Apply the same JSDoc style to important type declarations such as interfaces, type aliases, DTOs, configuration models, and event payloads.
-- Do not stop at a one-line summary for the whole type: important public fields should also have field-level JSDoc that explains business meaning, units, constraints, or optional semantics.
+- Do not stop at a one-line summary for the whole type: important public fields should also have field-level JSDoc that explains business meaning, units, constraints, or optional semantics, but should not redundantly restate the field's TS type.
 - For union types, especially string literal unions, document the meaning of each exposed literal value instead of only documenting the union as a whole.
 - Comments should improve readability and verification, not restate trivial syntax line by line.
 - Prefer a short Chinese summary comment above complex functions rather than leaving intent implicit in implementation details alone.
@@ -106,7 +108,7 @@ The rewrite should preserve the useful parts of the legacy style while making fo
 - Prefer external Angular template files (`*.html`) over inline template strings so component structure remains readable at a glance.
 - Normalize import ordering automatically instead of relying on manual grouping.
 - Prefer folder-level `index.ts` barrel exports so imports target stable module entry points and individual import statements stay smaller and easier to maintain.
-- Prefer Chinese JSDoc comments for complex rewritten TypeScript functions when they clarify responsibility or constraints.
+- Prefer Chinese JSDoc comments for complex rewritten TypeScript functions when they clarify responsibility or constraints, and keep those comments focused on meaning rather than duplicating TS type annotations.
 - Prefer ESM and typed TypeScript for new code unless a runtime constraint forces CommonJS.
 
 At the time of writing, the actual formatter baseline is whatever the current `.prettierrc` encodes. If prose in this document drifts from that file, follow `.prettierrc` and update this document instead of inventing a second formatting standard.

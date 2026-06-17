@@ -9,23 +9,20 @@ const isWorkspacePayload = (value: ProjectAbiPayload): value is BlocklyWorkspace
 
 /**
  * 归一化 project.abi 载荷
- * @param {unknown} jsonData - 原始 ABI 数据
- * @returns {BlocklyProjectDocument}
+ * @param jsonData - 原始 ABI 数据
  */
 export const normalizeProjectAbi = (jsonData: unknown): BlocklyProjectDocument => normalizeProjectDocument(jsonData)
 
 /**
  * 根据项目文档生成用于落盘的 ABI 载荷
- * @param {BlocklyProjectDocument} document - 项目文档
- * @returns {ProjectAbiPayload}
+ * @param document - 项目文档
  */
 export const buildProjectAbiPayload = (document: BlocklyProjectDocument): ProjectAbiPayload =>
 	getProjectAbiForSave(document)
 
 /**
  * 解析 ABI 文本并归一化
- * @param {string} raw - project.abi 文件内容
- * @returns {ParsedProjectAbi}
+ * @param raw - project.abi 文件内容
  */
 export const parseProjectAbiText = (raw: string): ParsedProjectAbi => {
 	const parsed = JSON.parse(raw)
@@ -40,15 +37,13 @@ export const parseProjectAbiText = (raw: string): ParsedProjectAbi => {
 
 /**
  * 序列化 ABI 载荷
- * @param {ProjectAbiPayload} payload - ABI 载荷
- * @returns {string}
+ * @param payload - ABI 载荷
  */
 export const stringifyProjectAbi = (payload: ProjectAbiPayload) => JSON.stringify(payload, null, 2)
 
 /**
  * 统计 ABI 中的块数量
- * @param {ProjectAbiPayload} payload - ABI 载荷
- * @returns {number}
+ * @param payload - ABI 载荷
  */
 export const countAbiBlocks = (payload: ProjectAbiPayload): number => {
 	const workspacePayload: BlocklyWorkspaceContent = isWorkspacePayload(payload)

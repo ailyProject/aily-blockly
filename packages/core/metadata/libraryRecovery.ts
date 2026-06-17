@@ -9,9 +9,8 @@ import type { BlocklyProjectDocument, BlocklyUsedLibraryManifestEntry, MissingBl
 
 /**
  * 对 Blockly 库名称进行稳定排序
- * @param {string} left - 左侧包名
- * @param {string} right - 右侧包名
- * @returns {number}
+ * @param left - 左侧包名
+ * @param right - 右侧包名
  */
 export const compareBlocklyLibraryNames = (left: string, right: string) => {
 	const leftIsCore = left.startsWith('@aily-project/lib-core-')
@@ -23,9 +22,8 @@ export const compareBlocklyLibraryNames = (left: string, right: string) => {
 
 /**
  * 解析 manifest 中的本地路径
- * @param {string} projectPath - 项目路径
- * @param {BlocklyUsedLibraryManifestEntry} entry - manifest 条目
- * @returns {string}
+ * @param projectPath - 项目路径
+ * @param entry - manifest 条目
  */
 export const resolveManifestLocalPath = (projectPath: string, entry: BlocklyUsedLibraryManifestEntry): string => {
 	if (entry.localPath) return entry.localPath
@@ -40,10 +38,9 @@ export const resolveManifestLocalPath = (projectPath: string, entry: BlocklyUsed
 
 /**
  * 判断项目是否仍声明使用某个库
- * @param {BlocklyProjectDocument} document - 当前项目文档
- * @param {unknown} manifestValue - 原始 manifest 值
- * @param {string} packageName - 库包名
- * @returns {boolean}
+ * @param document - 当前项目文档
+ * @param manifestValue - 原始 manifest 值
+ * @param packageName - 库包名
  */
 export const isProjectLibraryDeclaredAsUsed = (
 	document: BlocklyProjectDocument,
@@ -61,12 +58,11 @@ export const isProjectLibraryDeclaredAsUsed = (
 
 /**
  * 计算缺失的项目库
- * @param {string} projectPath - 项目路径
- * @param {ProjectPackageJson | null | undefined} packageJson - 项目 package.json
- * @param {unknown} manifestValue - 原始 used-library manifest
- * @param {BlocklyProjectDocument} projectDocument - 当前项目文档
- * @param {Iterable<string>} readyLibraryPackages - 已就绪的库包名集合
- * @returns {MissingBlocklyLibraryInfo[]}
+ * @param projectPath - 项目路径
+ * @param packageJson - 项目 package.json
+ * @param manifestValue - 原始 used-library manifest
+ * @param projectDocument - 当前项目文档
+ * @param readyLibraryPackages - 已就绪的库包名集合
  */
 export const getMissingProjectLibraries = (
 	projectPath: string,

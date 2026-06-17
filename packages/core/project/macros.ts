@@ -10,9 +10,8 @@ const normalizeMacros = (value: ProjectPackageJson['MACROS']) =>
 
 /**
  * 添加或覆盖同名宏定义，保持宏列表规范化后再返回新的 package.json
- * @param {ProjectPackageJson} packageJson - 项目 package.json
- * @param {string} macro - 宏定义字符串
- * @returns {ProjectPackageJson}
+ * @param packageJson - 项目 package.json
+ * @param macro - 宏定义字符串
  */
 export const upsertMacro = (packageJson: ProjectPackageJson, macro: string): ProjectPackageJson => {
 	const normalized = normalizeMacros(packageJson.MACROS)
