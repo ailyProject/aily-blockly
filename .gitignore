@@ -1,72 +1,28 @@
-# See https://docs.github.com/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+# dependencies
+node_modules
+npm-debug.log*
 
-# Compiled output
-/dist
-/tmp
-/out-tsc
-/bazel-out
-/out
+# production
+**/dist
+.turbo
+zip
+.pnpm-store
+tsconfig.tsbuildinfo
 
-# Node
-/node_modules
-npm-debug.log
-yarn-error.log
-yarn.lock
-/child/node
-/child/clangd
-/child/aily-builder
-/child/tools
-/child/7zz
-/child/7za.exe
-/child/rg
-/child/rg.exe
-
-# IDEs and editors
-.idea/
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# Visual Studio Code
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-.history/*
-
-# Project-local IDE lock (cross-instance)
-.aily/
-
-# Miscellaneous
-/.angular/cache
-.sass-cache/
-/connect.lock
-/coverage
-/libpeerconnection.log
-testem.log
-/typings
-
-# System files
+# misc
 .DS_Store
-Thumbs.db
-temp
-child/node*
-child/aily-builder*
+.idea
+.svn
+.swc
+.test
+.clinic
+@mf-types
 
-aily-todos/*.json
-docs/performance-optimization.md
+# temp
+**/.tmp
+**/.prompts
 
-# Playwright E2E
-/renderer
-/test-results
-/playwright-report
-/e2e/logs
-/out-tsc/e2e
-/e2e/.artifacts
-/child/rg.exe
-/child/probe-rs
-/child/tools/*/node_modules/*
+# electron
+release
+src/main/bundle.js
+src/main/bundle.js.map

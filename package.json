@@ -1,0 +1,27 @@
+{
+	"name": "monorepo",
+	"scripts": {
+		"deps:w": "ncu -u -i --workspaces",
+		"build:deps": "turbo run deps",
+		"build:workflows": "bun ./scripts/build_workflows.mjs",
+		"build:mac": "turbo run desktop#pack:mac",
+		"build:win": "turbo run desktop#pack:win"
+	},
+	"simple-git-hooks": {
+		"pre-commit": "npm pretty-quick --pattern \"**/*.*(md|css|js|jsx|ts|tsx)\" --staged"
+	},
+	"devDependencies": {
+		"@ianvs/prettier-plugin-sort-imports": "^4.7.1",
+		"@jlarky/gha-ts": "^0.2.2",
+		"@types/bun": "^1.3.14",
+		"@types/node": "catalog:",
+		"bun": "catalog:",
+		"bun-types": "catalog:",
+		"npm-check-updates": "^22.2.1",
+		"prettier": "^3.8.3",
+		"prettier-plugin-tailwindcss-pro": "^0.2.0",
+		"pretty-quick": "^4.2.2",
+		"simple-git-hooks": "^2.13.1",
+		"turbo": "^2.9.14"
+	}
+}

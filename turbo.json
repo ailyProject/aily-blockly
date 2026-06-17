@@ -1,0 +1,28 @@
+{
+	"$schema": "https://turborepo.dev/schema.json",
+	"tasks": {
+		"erpc#build": {
+			"outputs": ["dist/**"],
+			"cache": true
+		},
+		"shared#build": {
+			"outputs": ["dist/**"],
+			"cache": true
+		},
+		"deps": {
+			"dependsOn": ["erpc#build", "shared#build"]
+		},
+		"app#build": {
+			"dependsOn": ["deps"],
+			"outputs": ["dist/**"]
+		},
+		"desktop#pack:mac": {
+			"dependsOn": ["app#build"],
+			"outputs": ["dist/**"]
+		},
+		"desktop#pack:win": {
+			"dependsOn": ["app#build"],
+			"outputs": ["dist/**"]
+		}
+	}
+}
