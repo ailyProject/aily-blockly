@@ -58,7 +58,7 @@
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
 - `shared`
-  - 尚未建立成可编译 workspace 包
+  - 已建立成可编译 workspace 包骨架
 - `desktop`
   - 尚未建立成可承载迁移的薄壳包
 
@@ -70,9 +70,9 @@
    - `project`
    - `metadata`
    - `document`
-2. 建立 `packages/shared` 可编译骨架，并开始承接共用类型 / 常量
+2. 继续把共用类型 / 常量迁入 `packages/shared`
 3. 建立 `packages/desktop` 薄壳骨架，并明确与 `core` / `ui` 的边界
-4. 扁平化 `packages/ui/src/app -> packages/ui/src`
+4. 完成 `packages/ui/src/app -> packages/ui/src` 扁平化
 5. 对齐 `polywise` 的 turbo / packaging / tsflow
 6. 完整 review / legacy 对照 / 大文件诊断 / 重构报告
 

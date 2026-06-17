@@ -1,0 +1,24 @@
+{
+	"name": "desktop",
+	"version": "0.0.0",
+	"description": "Thin Electron shell for Aily Blockly",
+	"type": "module",
+	"main": "dist/main/index.js",
+	"files": ["dist"],
+	"scripts": {
+		"build": "rslib build",
+		"pack:mac": "pnpm run build",
+		"pack:win": "pnpm run build"
+	},
+	"dependencies": {
+		"core": "workspace:*",
+		"electron": "catalog:",
+		"erpc": "workspace:*"
+	},
+	"devDependencies": {
+		"@rslib/core": "catalog:",
+		"@types/node": "catalog:",
+		"deepmerge-ts": "catalog:",
+		"typescript": "catalog:"
+	}
+}

@@ -1,7 +1,7 @@
 :root,
 [data-theme='light'] {
 	color-scheme: light;
-	--font-sans: 'Google Sans', 'Segoe UI', sans-serif;
+	--font-sans: 'GoogleSans', -apple-system, BlinkMacSystemFont, ui-sans-serif, 'Segoe UI', 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
 	--font-mono: 'GeistMono', 'SFMono-Regular', monospace;
 	--radius: 0.625rem;
 	--background: #e8e8e8;
@@ -42,7 +42,7 @@
 :root.dark,
 [data-theme='dark'] {
 	color-scheme: dark;
-	--font-sans: 'Google Sans', 'Segoe UI', sans-serif;
+	--font-sans: 'GoogleSans', -apple-system, BlinkMacSystemFont, ui-sans-serif, 'Segoe UI', 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
 	--font-mono: 'GeistMono', 'SFMono-Regular', monospace;
 	--radius: 0.625rem;
 	--background: #2b2d30;

@@ -1,0 +1,21 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "ESNext",
+		"skipLibCheck": true,
+		"lib": ["ESNEXT", "DOM"],
+		"moduleResolution": "bundler",
+		"declaration": true,
+		"emitDeclarationOnly": true,
+		"strict": true,
+		"rootDir": ".",
+		"outDir": "dist",
+		"isolatedModules": true,
+		"esModuleInterop": true,
+		"importHelpers": true,
+		"allowImportingTsExtensions": true,
+		"forceConsistentCasingInFileNames": true,
+		"types": ["node"]
+	},
+	"include": ["src"]
+}
