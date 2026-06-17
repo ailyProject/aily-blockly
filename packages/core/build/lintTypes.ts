@@ -45,3 +45,15 @@ export interface LintResult {
 	/** 文件路径 */
 	filePath: string
 }
+
+/**
+ * lint 结果摘要
+ */
+export interface LintSummary {
+	/** 错误数量 */
+	errorCount: number
+	/** 警告数量 */
+	warningCount: number
+	/** 总数 */
+	total: number
+}

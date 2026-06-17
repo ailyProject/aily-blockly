@@ -1,6 +1,7 @@
 export * from './arduinoLint'
 export * from './arduinoLint.types'
 export * from './compileErrors'
+export * from './diagnostics'
 export * from './lint'
 export * from './lintTypes'
 export * from './report'

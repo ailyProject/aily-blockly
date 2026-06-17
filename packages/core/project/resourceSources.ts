@@ -7,8 +7,7 @@ const normalizeResourceSourceUrl = (url: string) =>
 
 /**
  * 从旧区域配置构建资源源列表
- * @param {{ eu?: { resource?: string }, cn?: { resource?: string }, localhost?: { resource?: string } }} regions - 旧区域配置
- * @returns {ResourceSourceConfig[]}
+ * @param regions - 旧区域配置
  */
 export const buildLegacyResourceSourceList = (regions?: {
 	eu?: { resource?: string }
@@ -40,9 +39,8 @@ export const buildLegacyResourceSourceList = (regions?: {
 
 /**
  * 归一化资源源列表
- * @param {Array<Partial<ResourceSourceConfig>>} configuredSources - 原始资源源配置
- * @param {Parameters<typeof buildLegacyResourceSourceList>[0]} legacyRegions - 旧区域配置
- * @returns {ResourceSourceConfig[]}
+ * @param configuredSources - 原始资源源配置
+ * @param legacyRegions - 旧区域配置
  */
 export const normalizeResourceSourceList = (
 	configuredSources: Array<Partial<ResourceSourceConfig>>,
@@ -72,24 +70,21 @@ export const normalizeResourceSourceList = (
 
 /**
  * 解析资源源选择键
- * @param {string | undefined} selectedKey - 原始选择值
- * @returns {string}
+ * @param selectedKey - 原始选择值
  */
 export const normalizeSelectedResourceSourceKey = (selectedKey?: string) =>
 	typeof selectedKey === 'string' && selectedKey.trim() ? selectedKey.trim() : 'auto'
 
 /**
  * 判断是否为自动资源源选择
- * @param {string} selectedKey - 当前选择键
- * @returns {boolean}
+ * @param selectedKey - 当前选择键
  */
 export const isAutoResourceSourceSelection = (selectedKey: string) => selectedKey === 'auto'
 
 /**
  * 获取手动选择的资源源
- * @param {ResourceSourceConfig[]} sources - 可用资源源列表
- * @param {string} selectedKey - 当前选择键
- * @returns {ResourceSourceConfig | null}
+ * @param sources - 可用资源源列表
+ * @param selectedKey - 当前选择键
  */
 export const getManualResourceSource = (sources: Array<ResourceSourceConfig>, selectedKey: string) => {
 	if (selectedKey === 'auto') return null
@@ -98,10 +93,9 @@ export const getManualResourceSource = (sources: Array<ResourceSourceConfig>, se
 
 /**
  * 获取当前生效的资源源
- * @param {ResourceSourceConfig[]} sources - 可用资源源列表
- * @param {string} selectedKey - 当前选择键
- * @param {string | null | undefined} activeResourceSourceKey - 当前活跃资源源键
- * @returns {ResourceSourceConfig | null}
+ * @param sources - 可用资源源列表
+ * @param selectedKey - 当前选择键
+ * @param activeResourceSourceKey - 当前活跃资源源键
  */
 export const getCurrentResourceSource = (
 	sources: Array<ResourceSourceConfig>,
@@ -118,10 +112,9 @@ export const getCurrentResourceSource = (
 
 /**
  * 获取资源源候选顺序
- * @param {ResourceSourceConfig[]} sources - 可用资源源列表
- * @param {string} selectedKey - 当前选择键
- * @param {string | null | undefined} activeResourceSourceKey - 当前活跃资源源键
- * @returns {ResourceSourceConfig[]}
+ * @param sources - 可用资源源列表
+ * @param selectedKey - 当前选择键
+ * @param activeResourceSourceKey - 当前活跃资源源键
  */
 export const getResourceSourceCandidates = (
 	sources: Array<ResourceSourceConfig>,
@@ -141,8 +134,7 @@ export const getResourceSourceCandidates = (
 
 /**
  * 构建资源 zip URL 候选列表
- * @param {ResourceSourceConfig[]} candidates - 资源源候选列表
- * @returns {string[]}
+ * @param candidates - 资源源候选列表
  */
 export const buildZipUrlCandidates = (candidates: Array<ResourceSourceConfig>) => {
 	const seenUrls = new Set<string>()

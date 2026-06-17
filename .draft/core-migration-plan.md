@@ -22,6 +22,14 @@
   - project.abi 载荷归一化
   - 文本 parse/stringify
   - 块数量统计
+- `core/abs`
+  - ABS 输入名规范化
+  - 解析结果类型
+  - 字符串工具与语法糖规则
+- `core/build`
+  - 编译错误提取与诊断解析
+  - lint 语法检查结果解析
+  - 诊断报告与快照恢复
 
 ## 当前迁移顺序
 
@@ -47,4 +55,4 @@
 
 ## 当前 focus
 
-当前 focus 是把旧 ABS / ABI 双向转换链中宿主无关的类型与工具函数迁到 `core/abs`。
+当前 focus 是继续把旧 tool / service 中的诊断、配置、文档状态和转换规则往 `core` 下沉，同时为后续更完整的 ABS parser / converter 迁移铺平底座。

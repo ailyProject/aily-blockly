@@ -35,16 +35,14 @@ const ABS_SYNTAX_SUGAR: Record<string, (args: Array<string>) => AbsSyntaxSugarRe
 
 /**
  * 判断名称是否命中 ABS 语法糖
- * @param {string} name - 语法糖名称
- * @returns {boolean}
+ * @param name - 语法糖名称
  */
 export const isAbsSyntaxSugar = (name: string) => name in ABS_SYNTAX_SUGAR
 
 /**
  * 解析 ABS 语法糖
- * @param {string} name - 语法糖名称
- * @param {string[]} args - 语法糖参数
- * @returns {AbsSyntaxSugarResult | null}
+ * @param name - 语法糖名称
+ * @param args - 语法糖参数
  */
 export const resolveAbsSyntaxSugar = (name: string, args: Array<string>): AbsSyntaxSugarResult | null => {
 	const handler = ABS_SYNTAX_SUGAR[name]

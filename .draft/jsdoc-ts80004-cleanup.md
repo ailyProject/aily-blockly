@@ -29,3 +29,6 @@ Clean up redundant JSDoc type annotations in TypeScript sources that trigger `ts
 - 2026-06-17: Removed empty `@returns` tags that remained after type cleanup.
 - 2026-06-17: Updated `REFACTOR.md` and `.codex/GLOBAL.md` to forbid repeating TS-declared types inside JSDoc.
 - 2026-06-17: Repository re-scan found no remaining `@param {T}` / `@returns {T}` style tags in `.ts` files.
+- 2026-06-17: Follow-up scan found additional `.ts` files with redundant JSDoc type tags; cleaned them repo-wide.
+- 2026-06-17: Updated `REFACTOR.md` to explicitly forbid generic placeholders and utility types inside TypeScript JSDoc tags.
+- 2026-06-17: Simplified `.codex/GLOBAL.md` so refactor-specific guidance points to `REFACTOR.md`, and removed the `polywise` path reference there.

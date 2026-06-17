@@ -53,8 +53,7 @@ const isGenericTransportErrorText = (text: string) => {
 
 /**
  * 提取 HTTP 状态码
- * @param {unknown} error - 原始错误
- * @returns {number}
+ * @param error - 原始错误
  */
 export const extractHttpStatusCode = (error: unknown): number => {
 	const target = error as Record<string, any>
@@ -109,8 +108,7 @@ export const extractHttpStatusCode = (error: unknown): number => {
 
 /**
  * 提取详细错误消息
- * @param {unknown} error - 原始错误
- * @returns {string}
+ * @param error - 原始错误
  */
 export const extractErrorDetailMessage = (error: unknown): string => {
 	if (!error) return ''
@@ -158,8 +156,7 @@ export const extractErrorDetailMessage = (error: unknown): string => {
 
 /**
  * 判断是否为 quota exceeded 错误
- * @param {unknown} error - 原始错误
- * @returns {boolean}
+ * @param error - 原始错误
  */
 export const isQuotaExceededError = (error: unknown) => {
 	if (!error) return false
@@ -202,16 +199,14 @@ export const isQuotaExceededError = (error: unknown) => {
 
 /**
  * 获取 quota exceeded 文案
- * @param {unknown} error - 原始错误
- * @returns {string}
+ * @param error - 原始错误
  */
 export const getQuotaExceededMessage = (error: unknown) =>
 	extractErrorDetailMessage(error) || '本月AI对话免费次数已用完'
 
 /**
  * 获取 quota 使用量文本
- * @param {unknown} error - 原始错误
- * @returns {string}
+ * @param error - 原始错误
  */
 export const getQuotaUsageText = (error: unknown) => {
 	for (const candidate of getNestedErrorData(error)) {
@@ -228,8 +223,7 @@ export const getQuotaUsageText = (error: unknown) => {
 
 /**
  * 根据状态码生成兜底错误文案
- * @param {unknown} error - 原始错误
- * @returns {string}
+ * @param error - 原始错误
  */
 export const getHttpErrorFallbackMessage = (error: unknown) => {
 	const status = extractHttpStatusCode(error)
@@ -251,8 +245,7 @@ export const getHttpErrorFallbackMessage = (error: unknown) => {
 
 /**
  * 获取首选 HTTP 错误消息
- * @param {unknown} error - 原始错误
- * @returns {string}
+ * @param error - 原始错误
  */
 export const getPreferredHttpErrorMessage = (error: unknown) => {
 	if (isQuotaExceededError(error)) {
@@ -269,8 +262,7 @@ export const getPreferredHttpErrorMessage = (error: unknown) => {
 
 /**
  * 判断是否为瞬态网络错误
- * @param {unknown} error - 原始错误
- * @returns {boolean}
+ * @param error - 原始错误
  */
 export const isTransientNetworkError = (error: unknown) => {
 	if (!error) return false
@@ -323,8 +315,7 @@ export const isTransientNetworkError = (error: unknown) => {
 
 /**
  * 判断是否可能是会话丢失错误
- * @param {unknown} error - 原始错误
- * @returns {boolean}
+ * @param error - 原始错误
  */
 export const isLikelySessionLostError = (error: unknown) => {
 	if (!error) return false

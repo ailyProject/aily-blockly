@@ -137,6 +137,20 @@ export interface HardwareTagList {
 }
 
 /**
+ * 索引缓存包装
+ */
+export type HardwareIndexCacheEnvelope<TItem, TKey extends string> = {
+	/** 缓存版本 */
+	version: string
+	/** 生成时间 */
+	generated: string
+	/** 条目数量 */
+	count: number
+	/** 实际数据字段 */
+	[key: string]: unknown
+} & Record<TKey, Array<TItem>>
+
+/**
  * 硬件搜索范围
  */
 export type HardwareSearchType =

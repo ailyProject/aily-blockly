@@ -30,6 +30,7 @@ Complex functions added or rewritten during this refactor should prefer Chinese 
 - For complex functions, write Chinese comments to describe responsibility, important inputs and outputs, and non-obvious constraints or side effects.
 - Use a standard multi-line JSDoc block when writing these comments, and include `@param` / `@returns` tags only when they add semantic verification value.
 - In TypeScript, do not repeat parameter types, return types, or field types inside JSDoc tags such as `@param {T}`, `@returns {T}`, or field-level type restatements; keep the description text only.
+- The same rule applies to generic placeholders, utility types, and inline object types inside JSDoc. Do not write tags such as `@param {Array<T>}`, `@returns {Record<string, T>}`, `@returns {ReturnType<typeof foo>}`, or `@param {Parameters<typeof foo>[0]}` in `.ts` files.
 - Apply the same JSDoc style to important type declarations such as interfaces, type aliases, DTOs, configuration models, and event payloads.
 - Do not stop at a one-line summary for the whole type: important public fields should also have field-level JSDoc that explains business meaning, units, constraints, or optional semantics, but should not redundantly restate the field's TS type.
 - For union types, especially string literal unions, document the meaning of each exposed literal value instead of only documenting the union as a whole.

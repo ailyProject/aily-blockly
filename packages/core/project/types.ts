@@ -84,14 +84,36 @@ export interface RegionConfig {
 	api_server?: string
 	/** 工具 Web 地址 */
 	tool_web?: string
+	/** 更新器地址 */
+	updater?: string
+	/** Web 站点地址 */
+	web?: string
+	/** 用户中心地址 */
+	ucenter_web?: string
+	/** 区域显示名称 */
+	name?: string
 	/** 是否为官方区域 */
 	official?: boolean
+	/** 是否启用 */
+	enabled?: boolean
 }
 
 /**
  * 区域配置映射
  */
 export type RegionConfigMap = Record<string, RegionConfig>
+
+/**
+ * 区域列表项
+ */
+export interface RegionListItem {
+	/** 区域键 */
+	key: string
+	/** 区域名称 */
+	name: string
+	/** 是否启用 */
+	enabled: boolean
+}
 
 /**
  * 项目开发模式

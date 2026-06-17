@@ -1,18 +1,16 @@
-import type { BuildFlavor, RegionConfigMap } from './types'
+import type { BuildFlavor, RegionConfigMap, RegionListItem } from './types'
 
 /**
  * 规范化构建风味
- * @param {string | undefined} flavor - 原始构建风味
- * @param {string} defaultBuildFlavor - 默认构建风味
- * @returns {string}
+ * @param flavor - 原始构建风味
+ * @param defaultBuildFlavor - 默认构建风味
  */
 export const normalizeBuildFlavor = (flavor: string | undefined, defaultBuildFlavor: string) =>
 	flavor === 'global' ? 'global' : defaultBuildFlavor
 
 /**
  * 解析官方区域键
- * @param {{ officialRegion?: string; buildFlavor?: string; defaultBuildFlavor: string; defaultOfficialRegion: string }} input - 区域选择输入
- * @returns {string}
+ * @param input - 区域选择输入
  */
 export const resolveOfficialRegionKey = (input: {
 	officialRegion?: string
@@ -31,9 +29,8 @@ export const resolveOfficialRegionKey = (input: {
 
 /**
  * 判断区域是否为官方区域
- * @param {RegionConfigMap | undefined} regions - 区域配置映射
- * @param {string} regionKey - 区域键
- * @returns {boolean}
+ * @param regions - 区域配置映射
+ * @param regionKey - 区域键
  */
 export const isOfficialRegionKey = (regions: RegionConfigMap | undefined, regionKey: string) => {
 	const regionConfig = regions?.[regionKey]
@@ -44,8 +41,7 @@ export const isOfficialRegionKey = (regions: RegionConfigMap | undefined, region
 
 /**
  * 判断区域是否允许被选择
- * @param {{ regions?: RegionConfigMap; regionKey: string; officialRegionKey: string }} input - 区域选择输入
- * @returns {boolean}
+ * @param input - 区域选择输入
  */
 export const isRegionSelectable = (input: {
 	regions?: RegionConfigMap
@@ -59,10 +55,9 @@ export const isRegionSelectable = (input: {
 
 /**
  * 获取当前区域配置
- * @param {RegionConfigMap | undefined} regions - 区域配置映射
- * @param {string | undefined} regionKey - 当前区域键
- * @param {string} fallbackRegionKey - 兜底区域键
- * @returns {RegionConfigMap[string] | undefined}
+ * @param regions - 区域配置映射
+ * @param regionKey - 当前区域键
+ * @param fallbackRegionKey - 兜底区域键
  */
 export const getCurrentRegionConfig = (
 	regions: RegionConfigMap | undefined,
@@ -75,15 +70,13 @@ export const getCurrentRegionConfig = (
 
 /**
  * 判断当前区域是否为中国区
- * @param {string | undefined} regionKey - 当前区域键
- * @returns {boolean}
+ * @param regionKey - 当前区域键
  */
 export const isCnRegion = (regionKey: string | undefined) => (regionKey || 'cn').toLowerCase() === 'cn'
 
 /**
  * 获取当前区域资源 URL
- * @param {{ currentSourceUrl?: string | null; regions?: RegionConfigMap; regionKey?: string; fallbackRegionKey: string }} input - 输入参数
- * @returns {string}
+ * @param input - 输入参数
  */
 export const getCurrentResourceUrl = (input: {
 	currentSourceUrl?: string | null
@@ -97,10 +90,9 @@ export const getCurrentResourceUrl = (input: {
 
 /**
  * 获取当前区域 NPM Registry
- * @param {RegionConfigMap | undefined} regions - 区域配置映射
- * @param {string | undefined} regionKey - 当前区域键
- * @param {string} fallbackRegionKey - 兜底区域键
- * @returns {string}
+ * @param regions - 区域配置映射
+ * @param regionKey - 当前区域键
+ * @param fallbackRegionKey - 兜底区域键
  */
 export const getCurrentNpmRegistry = (
 	regions: RegionConfigMap | undefined,
@@ -110,13 +102,85 @@ export const getCurrentNpmRegistry = (
 
 /**
  * 获取当前区域 API Server
- * @param {RegionConfigMap | undefined} regions - 区域配置映射
- * @param {string | undefined} regionKey - 当前区域键
- * @param {string} fallbackRegionKey - 兜底区域键
- * @returns {string}
+ * @param regions - 区域配置映射
+ * @param regionKey - 当前区域键
+ * @param fallbackRegionKey - 兜底区域键
  */
 export const getCurrentApiServer = (
 	regions: RegionConfigMap | undefined,
 	regionKey: string | undefined,
 	fallbackRegionKey: string
 ) => getCurrentRegionConfig(regions, regionKey, fallbackRegionKey)?.api_server || ''
+
+/**
+ * 获取当前区域更新器地址
+ * @param regions - 区域配置映射
+ * @param regionKey - 当前区域键
+ * @param fallbackRegionKey - 兜底区域键
+ */
+export const getCurrentUpdaterUrl = (
+	regions: RegionConfigMap | undefined,
+	regionKey: string | undefined,
+	fallbackRegionKey: string
+) => getCurrentRegionConfig(regions, regionKey, fallbackRegionKey)?.updater || ''
+
+const trimTrailingSlash = (url: string) => (url.endsWith('/') ? url.slice(0, -1) : url)
+
+/**
+ * 获取当前 Web 站点地址
+ * @param input - 输入参数
+ */
+export const getCurrentWebUrl = (input: {
+	regions?: RegionConfigMap
+	regionKey?: string
+	fallbackRegionKey: string
+	fallbackWeb?: string
+}) => {
+	const url =
+		getCurrentRegionConfig(input.regions, input.regionKey, input.fallbackRegionKey)?.web ||
+		input.fallbackWeb ||
+		'https://aily.pro'
+	return trimTrailingSlash(url)
+}
+
+/**
+ * 获取当前用户中心地址
+ * @param input - 输入参数
+ */
+export const getCurrentUcenterWebUrl = (input: {
+	regions?: RegionConfigMap
+	regionKey?: string
+	fallbackRegionKey: string
+	fallbackUcenterWeb?: string
+}) => {
+	const url =
+		getCurrentRegionConfig(input.regions, input.regionKey, input.fallbackRegionKey)?.ucenter_web ||
+		input.fallbackUcenterWeb ||
+		'https://c.aily.pro'
+	return trimTrailingSlash(url)
+}
+
+/**
+ * 获取全部区域列表
+ * @param regions - 区域配置映射
+ */
+export const getRegionList = (regions: RegionConfigMap | undefined): Array<RegionListItem> => {
+	if (!regions) return []
+
+	return Object.keys(regions).map(key => ({
+		key,
+		name: regions[key].name || key,
+		enabled: regions[key].enabled !== false
+	}))
+}
+
+/**
+ * 获取启用且允许选择的区域列表
+ * @param input - 输入参数
+ */
+export const getEnabledRegionList = (input: { regions?: RegionConfigMap; officialRegionKey: string }) =>
+	getRegionList(input.regions).filter(
+		region =>
+			region.enabled &&
+			isRegionSelectable({ regions: input.regions, regionKey: region.key, officialRegionKey: input.officialRegionKey })
+	)

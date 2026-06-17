@@ -9,16 +9,14 @@ import type { CompileDiagnosticReport, CompileErrorSnapshot } from './types'
 
 /**
  * 从编译错误快照恢复诊断列表
- * @param {CompileErrorSnapshot} snapshot - 编译错误快照
- * @returns {ReturnType<typeof withCompileStalenessWarning>}
+ * @param snapshot - 编译错误快照
  */
 export const diagnosticsFromCompileSnapshot = (snapshot: CompileErrorSnapshot) =>
 	withCompileStalenessWarning(parseCompileDiagnostics(snapshot.errors), snapshot.timestamp)
 
 /**
  * 生成编译诊断报告
- * @param {CompileErrorSnapshot} snapshot - 编译错误快照
- * @returns {CompileDiagnosticReport}
+ * @param snapshot - 编译错误快照
  */
 export const buildCompileDiagnosticReport = (snapshot: CompileErrorSnapshot): CompileDiagnosticReport => {
 	const diagnostics = diagnosticsFromCompileSnapshot(snapshot)

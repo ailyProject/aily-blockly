@@ -1,7 +1,6 @@
 /**
  * 创建可移植的 extraState
- * @param {unknown} extraState - 原始 extraState
- * @returns {Record<string, unknown> | null}
+ * @param extraState - 原始 extraState
  */
 export const makePortableExtraState = (extraState: unknown): Record<string, unknown> | null => {
 	if (!extraState || typeof extraState !== 'object') {

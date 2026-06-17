@@ -2,10 +2,9 @@ import type { ArduinoLintError, ArduinoLintFormat, ArduinoLintMode, ArduinoLintR
 
 /**
  * 解析 Arduino lint JSON 输出
- * @param {string} output - 原始输出
- * @param {number} executionTime - 执行耗时
- * @param {ArduinoLintMode} mode - 检测模式
- * @returns {ArduinoLintResult}
+ * @param output - 原始输出
+ * @param executionTime - 执行耗时
+ * @param mode - 检测模式
  */
 export const parseArduinoLintJson = (
 	output: string,
@@ -52,10 +51,9 @@ export const parseArduinoLintJson = (
 
 /**
  * 解析 Arduino lint VS Code 输出
- * @param {string} output - 原始输出
- * @param {number} executionTime - 执行耗时
- * @param {ArduinoLintMode} mode - 检测模式
- * @returns {ArduinoLintResult}
+ * @param output - 原始输出
+ * @param executionTime - 执行耗时
+ * @param mode - 检测模式
  */
 export const parseArduinoLintVSCode = (
 	output: string,
@@ -103,10 +101,9 @@ export const parseArduinoLintVSCode = (
 
 /**
  * 解析 Arduino lint 人类可读输出
- * @param {string} output - 原始输出
- * @param {number} executionTime - 执行耗时
- * @param {ArduinoLintMode} mode - 检测模式
- * @returns {ArduinoLintResult}
+ * @param output - 原始输出
+ * @param executionTime - 执行耗时
+ * @param mode - 检测模式
  */
 export const parseArduinoLintHuman = (
 	output: string,
@@ -154,11 +151,10 @@ export const parseArduinoLintHuman = (
 
 /**
  * 统一解析 Arduino lint 输出
- * @param {string} output - 原始输出
- * @param {number} startTime - 开始时间戳
- * @param {ArduinoLintMode} mode - 检测模式
- * @param {ArduinoLintFormat} format - 输出格式
- * @returns {ArduinoLintResult}
+ * @param output - 原始输出
+ * @param startTime - 开始时间戳
+ * @param mode - 检测模式
+ * @param format - 输出格式
  */
 export const parseArduinoLintResult = (
 	output: string,

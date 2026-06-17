@@ -2,8 +2,7 @@ import type { LintError, LintLanguage, LintResult } from './lintTypes'
 
 /**
  * 判断文件是否需要 lint
- * @param {string} filePath - 文件路径
- * @returns {boolean}
+ * @param filePath - 文件路径
  */
 export const shouldLint = (filePath: string): boolean => {
 	if (!filePath) return false
@@ -13,8 +12,7 @@ export const shouldLint = (filePath: string): boolean => {
 
 /**
  * 获取文件类型
- * @param {string} filePath - 文件路径
- * @returns {LintLanguage}
+ * @param filePath - 文件路径
  */
 export const getLintLanguage = (filePath: string): LintLanguage => {
 	if (!filePath) return 'unknown'
@@ -26,9 +24,9 @@ export const getLintLanguage = (filePath: string): LintLanguage => {
 
 /**
  * 根据字符位置计算行号和列号
- * @param {string} content - 文本内容
- * @param {number} position - 字符位置
- * @returns {{ line: number; column: number }}
+ * @param content - 文本内容
+ * @param position - 字符位置
+ * @returns}
  */
 export const getLineAndColumn = (content: string, position: number) => {
 	const lines = content.substring(0, position).split('\n')
@@ -40,9 +38,9 @@ export const getLineAndColumn = (content: string, position: number) => {
 
 /**
  * 解析 JSON 错误
- * @param {string} errorMessage - 错误消息
- * @param {string} content - 文件内容
- * @returns {{ line: number; column: number; message: string }}
+ * @param errorMessage - 错误消息
+ * @param content - 文件内容
+ * @returns}
  */
 export const parseJsonError = (errorMessage: string, content: string) => {
 	let line = 1
@@ -68,8 +66,8 @@ export const parseJsonError = (errorMessage: string, content: string) => {
 
 /**
  * 解析 JavaScript 语法错误
- * @param {Error} error - 语法错误对象
- * @returns {{ line: number; column: number; message: string }}
+ * @param error - 语法错误对象
+ * @returns}
  */
 export const parseJavaScriptError = (error: Error) => {
 	let line = 1
@@ -94,9 +92,8 @@ export const parseJavaScriptError = (error: Error) => {
 
 /**
  * lint JSON 内容
- * @param {string} content - 文件内容
- * @param {string} filePath - 文件路径
- * @returns {LintResult}
+ * @param content - 文件内容
+ * @param filePath - 文件路径
  */
 export const lintJson = (content: string, filePath: string): LintResult => {
 	const result: LintResult = {
@@ -128,9 +125,8 @@ export const lintJson = (content: string, filePath: string): LintResult => {
 
 /**
  * lint JavaScript 内容
- * @param {string} content - 文件内容
- * @param {string} filePath - 文件路径
- * @returns {LintResult}
+ * @param content - 文件内容
+ * @param filePath - 文件路径
  */
 export const lintJavaScript = (content: string, filePath: string): LintResult => {
 	const result: LintResult = {
@@ -162,9 +158,8 @@ export const lintJavaScript = (content: string, filePath: string): LintResult =>
 
 /**
  * 对文件内容执行 lint
- * @param {string} content - 文件内容
- * @param {string} filePath - 文件路径
- * @returns {LintResult | null}
+ * @param content - 文件内容
+ * @param filePath - 文件路径
  */
 export const lintContent = (content: string, filePath: string): LintResult | null => {
 	if (!shouldLint(filePath)) return null
@@ -177,8 +172,7 @@ export const lintContent = (content: string, filePath: string): LintResult | nul
 
 /**
  * 格式化 lint 错误
- * @param {LintResult} lintResult - lint 结果
- * @returns {string}
+ * @param lintResult - lint 结果
  */
 export const formatLintErrors = (lintResult: LintResult): string => {
 	if (lintResult.isValid || lintResult.errors.length === 0) return ''
@@ -202,9 +196,8 @@ export const formatLintErrors = (lintResult: LintResult): string => {
 
 /**
  * 执行 lint 并直接返回格式化错误
- * @param {string} content - 文件内容
- * @param {string} filePath - 文件路径
- * @returns {string}
+ * @param content - 文件内容
+ * @param filePath - 文件路径
  */
 export const lintAndFormat = (content: string, filePath: string) => {
 	const lintResult = lintContent(content, filePath)
@@ -214,11 +207,28 @@ export const lintAndFormat = (content: string, filePath: string) => {
 
 /**
  * 判断内容是否存在 lint 错误
- * @param {string} content - 文件内容
- * @param {string} filePath - 文件路径
- * @returns {boolean}
+ * @param content - 文件内容
+ * @param filePath - 文件路径
  */
 export const hasLintErrors = (content: string, filePath: string) => {
 	const lintResult = lintContent(content, filePath)
 	return lintResult ? !lintResult.isValid : false
 }
+
+/**
+ * 统计 lint 结果摘要
+ * @param lintResult - lint 结果
+ * @returns}
+ */
+export const summarizeLintResult = (lintResult: LintResult) => ({
+	errorCount: lintResult.errors.filter(error => error.severity === 'error').length,
+	warningCount: lintResult.errors.filter(error => error.severity === 'warning').length,
+	total: lintResult.errors.length
+})
+
+/**
+ * 过滤项目根目录下需要 lint 的文件
+ * @param entries - 项目根目录条目名称
+ */
+export const collectLintableProjectEntries = (entries: Array<string>) =>
+	entries.filter(entry => shouldLint(entry)).slice(0, 30)
