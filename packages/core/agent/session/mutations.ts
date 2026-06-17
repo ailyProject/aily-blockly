@@ -3,11 +3,19 @@ import { applySummaryToTurns } from './turns'
 
 import type { AgentSession } from './types'
 
+/**
+ * 应用摘要到会话的输入参数
+ */
 export interface ApplySessionSummaryArgs {
+	/** 被摘要覆盖的 turn ID 前缀 */
 	turnIds: Array<string>
+	/** 摘要锚定的 turn ID */
 	anchorTurnId: string
+	/** 摘要内容 */
 	summary: string
+	/** 可选的 round 锚点 */
 	anchorRoundId?: string
+	/** 期望的修订号 */
 	expectedRevision?: number
 }
 

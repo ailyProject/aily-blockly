@@ -15,8 +15,13 @@ const ASK_MODE_PROMPT = [
 	'Answer directly and do not run tools unless the user explicitly needs them.'
 ].join('\n')
 
+/**
+ * 构建系统提示词所需参数
+ */
 export interface BuildSystemPromptArgs {
+	/** 当前会话 */
 	session: AgentSession
+	/** 当前 runtime 配置 */
 	runtimeConfig: AgentRuntimeConfig
 }
 

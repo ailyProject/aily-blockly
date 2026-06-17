@@ -105,51 +105,99 @@ export interface AgentTurnSpan {
 	hasInfoTools: boolean
 }
 
+/**
+ * turn 请求部分
+ */
 export interface AgentTurnRequest {
+	/** 原始用户消息 */
 	message: AgentMessage
+	/** 请求时间戳 */
 	timestamp: number
+	/** 纯文本内容 */
 	content: string
 }
 
+/**
+ * turn 响应部分
+ */
 export interface AgentTurnResponse {
+	/** assistant 消息快照 */
 	messages: Array<AgentMessage>
+	/** assistant 总文本 */
 	assistantText: string
+	/** 最终总结文本 */
 	content: string
+	/** 工具轮次列表 */
 	toolCallRounds: Array<AgentToolCallRound>
 }
 
+/**
+ * 结构化 turn
+ */
 export interface AgentTurn {
+	/** turn ID */
 	id: string
+	/** 原始消息数组 */
 	messages: Array<AgentMessage>
+	/** 请求部分 */
 	request: AgentTurnRequest
+	/** 响应部分 */
 	response?: AgentTurnResponse
+	/** 创建时间戳 */
 	createdAt: number
+	/** 是否包含信息型工具 */
 	hasInfoTools?: boolean
+	/** turn 级摘要 */
 	summary?: string
+	/** 工具执行摘要 */
 	toolExecutions?: Array<AgentToolExecution>
 }
 
+/**
+ * 创建 turn 的输入参数
+ */
 export interface CreateAgentTurnInput {
+	/** 可选 turn ID */
 	id?: string
+	/** 原始消息数组 */
 	messages: Array<AgentMessage>
+	/** 显式请求部分 */
 	request?: AgentTurnRequest
+	/** 显式响应部分 */
 	response?: AgentTurnResponse
+	/** 创建时间戳 */
 	createdAt?: number
+	/** 是否包含信息型工具 */
 	hasInfoTools?: boolean
+	/** turn 级摘要 */
 	summary?: string
+	/** 工具执行摘要 */
 	toolExecutions?: Array<AgentToolExecution>
 }
 
+/**
+ * 应用摘要到 turns 的输入参数
+ */
 export interface ApplyTurnSummaryArgs {
+	/** 当前 turn 列表 */
 	turns: Array<AgentTurn>
+	/** 被覆盖的 turn ID 前缀 */
 	turnIds: Array<string>
+	/** 摘要锚定的 turn ID */
 	anchorTurnId: string
+	/** 摘要内容 */
 	summary: string
+	/** 可选 round 锚点 */
 	anchorRoundId?: string
 }
 
+/**
+ * 基于 turns 重建消息的结果
+ */
 export interface BuildTurnMessagesResult {
+	/** 重建后的消息数组 */
 	messages: Array<AgentMessage>
+	/** 每个 turn 的跨度信息 */
 	turnSpans: Array<AgentTurnSpan>
 }
 

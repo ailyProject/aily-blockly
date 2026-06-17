@@ -91,18 +91,34 @@ export interface AgentApprovalResponse {
 	raw?: unknown
 }
 
+/**
+ * 用户交互能力接口
+ */
 export interface AgentUserCapabilities {
+	/** 向用户发起结构化提问 */
 	ask?(request: AgentAskUserRequest): Promise<AgentAskUserResponse>
+	/** 请求用户审批 */
 	approve?(request: AgentApprovalRequest): Promise<AgentApprovalResponse>
 }
 
+/**
+ * 上下文注入能力接口
+ */
 export interface AgentContextCapabilities {
+	/** 读取项目上下文 */
 	getProjectContext?(): Promise<string | null> | string | null
+	/** 读取记忆片段 */
 	getMemoryPrompt?(): Promise<string | null> | string | null
+	/** 读取技能提示词 */
 	getSkillsPrompt?(): Promise<string | null> | string | null
 }
 
+/**
+ * Agent 可访问的外部能力集合
+ */
 export interface AgentCapabilities {
+	/** 用户交互能力 */
 	user?: AgentUserCapabilities
+	/** 上下文读取能力 */
 	context?: AgentContextCapabilities
 }

@@ -1,8 +1,14 @@
 import type { AgentToolDescriptor } from './types'
 
+/**
+ * deferred 工具列表渲染参数
+ */
 export interface DeferredToolListingOptions {
+	/** 当前 agent 名称 */
 	agentName: string
+	/** 可选启用白名单 */
 	enabledTools?: Array<string>
+	/** 可选禁用黑名单 */
 	disabledTools?: Array<string>
 }
 
