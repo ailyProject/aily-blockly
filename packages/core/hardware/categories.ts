@@ -18,7 +18,12 @@ const countValues = (values: Array<string>) => {
 		.sort((left, right) => right.count - left.count)
 }
 
-/** 中文注释：统计开发板分类分布，供引导式选型和结构化筛选面板复用。 */
+/**
+ * 统计开发板分类分布
+ * @param {BoardIndexItem[]} boards - 开发板索引列表
+ * @param {BoardCategoryDimension} dimension - 分类维度
+ * @returns {HardwareCategoryResult}
+ */
 export const getBoardCategories = (
 	boards: Array<BoardIndexItem>,
 	dimension: BoardCategoryDimension
@@ -46,7 +51,12 @@ export const getBoardCategories = (
 	}
 }
 
-/** 中文注释：统计库分类分布，让 agent 先看分类，再做精确搜索。 */
+/**
+ * 统计库分类分布
+ * @param {LibraryIndexItem[]} libraries - 库索引列表
+ * @param {LibraryCategoryDimension} dimension - 分类维度
+ * @returns {HardwareCategoryResult}
+ */
 export const getLibraryCategories = (
 	libraries: Array<LibraryIndexItem>,
 	dimension: LibraryCategoryDimension

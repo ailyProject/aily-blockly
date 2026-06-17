@@ -15,6 +15,16 @@ export default deepmerge(rslib, {
 			source: { entry: { hardware: './hardware/index.ts' } },
 			format: 'esm',
 			dts: true
+		},
+		{
+			source: { entry: { project: './project/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
+			source: { entry: { metadata: './metadata/index.ts' } },
+			format: 'esm',
+			dts: true
 		}
 	],
 	output: {

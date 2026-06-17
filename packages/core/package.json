@@ -13,6 +13,14 @@
 		"./hardware": {
 			"types": "./dist/hardware/index.d.ts",
 			"default": "./dist/hardware/index.js"
+		},
+		"./project": {
+			"types": "./dist/project/index.d.ts",
+			"default": "./dist/project/index.js"
+		},
+		"./metadata": {
+			"types": "./dist/metadata/index.d.ts",
+			"default": "./dist/metadata/index.js"
 		}
 	},
 	"scripts": {

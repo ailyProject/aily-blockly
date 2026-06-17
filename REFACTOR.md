@@ -18,6 +18,7 @@ TypeScript implementation in this rewrite must be type-first rather than "make i
 - Do not casually use `any` or `unknown` to bypass type design, suppress uncertainty, or quickly force code through compilation.
 - Code should be implemented on top of explicit domain types, input/output contracts, and stable interfaces. Define the types first, then implement against them.
 - Do not trade away type completeness just to move faster. The intended baseline is code that is robust, verifiable, and maintainable because its behavior is constrained by types.
+- Public types, interfaces, type aliases, DTOs, and other important structured models should also carry JSDoc so later implementation work can understand boundaries from the type layer itself.
 - If a runtime boundary temporarily requires `unknown`, narrow it immediately with parsing, validation, guards, or schema-based decoding before the value is allowed to flow deeper into the codebase.
 - `any` should be treated as an exceptional last resort and not as a normal implementation tool during the rewrite.
 
@@ -26,6 +27,10 @@ TypeScript implementation in this rewrite must be type-first rather than "make i
 Complex functions added or rewritten during this refactor should prefer Chinese comments that explain their purpose and key behavior.
 
 - For complex functions, write Chinese comments to describe responsibility, important inputs and outputs, and non-obvious constraints or side effects.
+- Use a standard multi-line JSDoc block when writing these comments, and include `@param` / `@returns` tags when they add verification value.
+- Apply the same JSDoc style to important type declarations such as interfaces, type aliases, DTOs, configuration models, and event payloads.
+- Do not stop at a one-line summary for the whole type: important public fields should also have field-level JSDoc that explains business meaning, units, constraints, or optional semantics.
+- For union types, especially string literal unions, document the meaning of each exposed literal value instead of only documenting the union as a whole.
 - Comments should improve readability and verification, not restate trivial syntax line by line.
 - Prefer a short Chinese summary comment above complex functions rather than leaving intent implicit in implementation details alone.
 - Do not add repetitive comments to every small helper just to satisfy a blanket rule.
@@ -85,7 +90,9 @@ The legacy codebase does not appear to be governed by a strong repo-level Pretti
 - Angular code favors standalone components, explicit `imports` arrays, class fields declared before the constructor, and getters placed near related state.
 - Import grouping is conceptually ordered as framework -> third-party -> app-local, but actual ordering is often manual and inconsistent. This is a good target for automatic import sorting in the rewrite.
 - Folder-level `index.ts` barrel exports should be used where they clarify module boundaries and reduce repetitive long import lists across the codebase.
+- These barrel files should prefer the `export * from './x'` form by default, and only use named forwarding when handling a real default export.
 - Templates prefer Angular's modern control-flow syntax such as `@if`, `@for`, and `@switch`, with compact markup and inline bindings rather than excessive wrapper elements.
+- Angular component templates should prefer standalone `.html` files referenced via `templateUrl` instead of inline template strings, because separate template files are easier to read, review, and maintain.
 - SCSS is component-scoped, nested, and variable-driven, relying on CSS custom properties like `var(--aily-...)` instead of utility-class-heavy styling.
 - Node-side helper scripts under `child/scripts/` are less consistent: they use CommonJS, 4-space indentation in places, and more manual formatting. These files should be treated as legacy exceptions rather than the new baseline.
 - Naming is pragmatic rather than purist: service-heavy Angular code, `*.service.ts` modules, and descriptive component filenames dominate. There is also frequent use of `any` in UI code, which should not be carried forward into the rewrite baseline.
@@ -96,9 +103,10 @@ The rewrite should preserve the useful parts of the legacy style while making fo
 
 - Treat the repository root `.prettierrc` as the single source of truth for formatting output.
 - Preserve Angular-oriented readability: concise decorators, explicit imports, and component-scoped SCSS.
+- Prefer external Angular template files (`*.html`) over inline template strings so component structure remains readable at a glance.
 - Normalize import ordering automatically instead of relying on manual grouping.
 - Prefer folder-level `index.ts` barrel exports so imports target stable module entry points and individual import statements stay smaller and easier to maintain.
-- Prefer Chinese comments for complex rewritten TypeScript functions when they clarify responsibility or constraints.
+- Prefer Chinese JSDoc comments for complex rewritten TypeScript functions when they clarify responsibility or constraints.
 - Prefer ESM and typed TypeScript for new code unless a runtime constraint forces CommonJS.
 
 At the time of writing, the actual formatter baseline is whatever the current `.prettierrc` encodes. If prose in this document drifts from that file, follow `.prettierrc` and update this document instead of inventing a second formatting standard.

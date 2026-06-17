@@ -1,25 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai'
 
 import type { ProviderOptions } from '@ai-sdk/provider-utils'
-import type { LanguageModel, ToolSet } from 'ai'
-
-export interface AgentModelConfig {
-	model: string
-	apiKey: string
-	baseUrl?: string
-	headers?: Record<string, string>
-	provider?: 'openai'
-	temperature?: number
-	topP?: number
-	maxOutputTokens?: number
-	reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high'
-}
-
-export interface ResolvedAgentModel {
-	model: LanguageModel
-	providerOptions?: ProviderOptions
-	tools?: ToolSet
-}
+import type { AgentModelConfig, ResolvedAgentModel } from './types'
 
 const buildProviderOptions = (config: AgentModelConfig): ProviderOptions | undefined => {
 	if (!config.reasoningEffort) return undefined

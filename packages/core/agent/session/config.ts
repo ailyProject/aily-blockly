@@ -1,16 +1,6 @@
-export type AgentMode = 'agent' | 'ask'
+import type { AgentRuntimeConfig } from './types'
 
-export interface AgentRuntimeConfig {
-	mode: AgentMode
-	agentName: string
-	maxSteps: number
-	maxPromptTokens: number
-	customSystemPrompt?: string
-	currentDate?: string
-	enabledTools?: Array<string>
-	disabledTools: Array<string>
-	useDeferredToolDiscovery: boolean
-}
+export type { AgentMode, AgentRuntimeConfig } from './types'
 
 const defaultRuntimeConfig: AgentRuntimeConfig = {
 	mode: 'agent',

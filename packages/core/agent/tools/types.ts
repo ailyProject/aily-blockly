@@ -4,21 +4,49 @@ import type { AgentRuntimeEventSink } from '../runtime/events'
 import type { AgentRuntimeConfig } from '../session/config'
 import type { AgentSession } from '../session/types'
 
+/**
+ * 工具可用性级别
+ */
+export type AgentToolAvailability =
+	/** 默认核心工具，始终可用 */
+	| 'core'
+	/** 按需发现和加载的工具 */
+	| 'deferred'
+
+/**
+ * 工具执行上下文
+ */
 export interface AgentToolExecutionContext {
+	/** 当前会话 */
 	session: AgentSession
+	/** 当前 runtime 配置 */
 	runtimeConfig: AgentRuntimeConfig
+	/** 外部能力集合 */
 	capabilities: AgentCapabilities
+	/** 取消信号 */
 	signal?: AbortSignal
+	/** 事件派发函数 */
 	emit: AgentRuntimeEventSink
 }
 
+/**
+ * 工具描述符
+ */
 export interface AgentToolDescriptor<TInput = unknown, TOutput = unknown> {
+	/** 工具名称 */
 	name: string
+	/** 工具说明 */
 	description: string
+	/** 输入 schema */
 	inputSchema: ZodTypeAny
-	availability?: 'core' | 'deferred'
+	/** 可用性级别 */
+	availability?: AgentToolAvailability
+	/** 所属分组 */
 	group?: string
+	/** 搜索标签 */
 	tags?: Array<string>
+	/** 可见的 agent 列表 */
 	visibleToAgents?: Array<string>
+	/** 实际执行函数 */
 	execute(input: TInput, context: AgentToolExecutionContext): Promise<TOutput> | TOutput
 }

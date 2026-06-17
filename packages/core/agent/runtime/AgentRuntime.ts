@@ -1,60 +1,42 @@
 import { convertToModelMessages, readUIMessageStream, smoothStream, stepCountIs, streamText } from 'ai'
 
-import { createNoopAgentCapabilities } from '../capabilities/noop'
-import { resolveAgentModel } from '../models/resolveModel'
-import { buildSystemPrompt } from '../prompts/buildSystemPrompt'
-import { PromptPipeline } from '../prompts/pipeline'
-import { ContextPromptProvider } from '../prompts/providers/context'
-import { HistoryPromptProvider } from '../prompts/providers/history'
-import { ToolContinuationPromptProvider } from '../prompts/providers/toolContinuation'
-import { normalizeAgentRuntimeConfig } from '../session/config'
-import { createAgentSession } from '../session/createSession'
-import { MemoryAgentSessionStore } from '../session/memorySessionStore'
+import { createNoopAgentCapabilities } from '../capabilities'
+import { resolveAgentModel } from '../models'
+import {
+	buildSystemPrompt,
+	ContextPromptProvider,
+	HistoryPromptProvider,
+	PromptPipeline,
+	ToolContinuationPromptProvider
+} from '../prompts'
 import {
 	applySummaryToSession,
+	createAgentSession,
+	MemoryAgentSessionStore,
+	normalizeAgentRuntimeConfig,
+	rebuildSessionFromTurns,
 	removeIncompleteLastTurn,
 	removeSessionFromTurn,
 	truncateSessionToTurn
-} from '../session/mutations'
-import { rebuildSessionFromTurns } from '../session/state'
+} from '../session'
 import { buildAgentTurnResponse, createAgentTurn } from '../session/turns'
-import { buildToolSet } from '../tools/buildToolSet'
-import { createDefaultToolRegistry } from '../tools/createDefaultToolRegistry'
-import { createMessageId } from '../utils/ids'
-import { createTextMessage } from '../utils/messages'
-import { estimateMessagesTokens } from '../utils/tokens'
+import { buildToolSet, createDefaultToolRegistry } from '../tools'
+import { createMessageId, createTextMessage, estimateMessagesTokens } from '../utils'
 import { mapUiChunkToRuntimeEvent } from './events'
 
-import type { AgentCapabilities } from '../capabilities/types'
-import type { AgentModelConfig } from '../models/resolveModel'
-import type { AgentRuntimeConfig } from '../session/config'
-import type { ApplySessionSummaryArgs } from '../session/mutations'
-import type { AgentSession, AgentSessionStore, CreateAgentSessionInput } from '../session/types'
+import type { AgentCapabilities } from '../capabilities'
+import type { AgentModelConfig } from '../models'
+import type {
+	AgentRuntimeConfig,
+	AgentSession,
+	AgentSessionStore,
+	ApplySessionSummaryArgs,
+	CreateAgentSessionInput
+} from '../session'
 import type { AgentToolRegistry } from '../tools/registry'
 import type { AgentMessage } from '../types/message'
 import type { AgentRuntimeEvent, AgentUiMessageChunk } from './events'
-
-export interface AgentRuntimeOptions {
-	capabilities?: AgentCapabilities
-	sessionStore?: AgentSessionStore
-	registry?: AgentToolRegistry
-	promptPipeline?: PromptPipeline
-}
-
-export interface AgentRunInput {
-	sessionId?: string
-	title?: string
-	text: string
-	model: AgentModelConfig
-	runtimeConfig?: Partial<AgentRuntimeConfig>
-	metadata?: Record<string, unknown>
-	signal?: AbortSignal
-}
-
-export interface AgentRunResult {
-	session: AgentSession
-	responseMessages: Array<AgentMessage>
-}
+import type { AgentRunInput, AgentRunResult, AgentRuntimeOptions } from './types'
 
 export class AgentRuntime {
 	readonly capabilities: AgentCapabilities

@@ -52,7 +52,13 @@ const scoreText = (value: string, query: string, exact: number, partial: number)
 	return 0
 }
 
-/** 中文注释：对开发板执行结构化筛选与文本评分，输出稳定的核心搜索结果。 */
+/**
+ * 对开发板执行结构化筛选与文本评分
+ * @param {BoardIndexItem[]} boards - 开发板索引列表
+ * @param {string[]} keywords - 规范化后的搜索关键词
+ * @param {HardwareSearchFilters | undefined} filters - 结构化筛选条件
+ * @returns {HardwareSearchResult[]}
+ */
 const searchBoards = (boards: Array<BoardIndexItem>, keywords: Array<string>, filters?: HardwareSearchFilters) =>
 	boards
 		.filter(board => compareNumeric(board.flash, filters?.flash))
@@ -99,7 +105,13 @@ const searchBoards = (boards: Array<BoardIndexItem>, keywords: Array<string>, fi
 		})
 		.filter(item => keywords.length === 0 || item.score > 0)
 
-/** 中文注释：对库索引执行结构化筛选与文本评分，保持 agent 和 UI 侧结果口径一致。 */
+/**
+ * 对库索引执行结构化筛选与文本评分
+ * @param {LibraryIndexItem[]} libraries - 库索引列表
+ * @param {string[]} keywords - 规范化后的搜索关键词
+ * @param {HardwareSearchFilters | undefined} filters - 结构化筛选条件
+ * @returns {HardwareSearchResult[]}
+ */
 const searchLibraries = (
 	libraries: Array<LibraryIndexItem>,
 	keywords: Array<string>,
@@ -151,7 +163,13 @@ const searchLibraries = (
 		})
 		.filter(item => keywords.length === 0 || item.score > 0)
 
-/** 中文注释：统一硬件搜索入口，优先服务“体验对齐”，内部实现保持纯函数、无宿主依赖。 */
+/**
+ * 统一硬件搜索入口
+ * @param {BoardIndexItem[]} boards - 开发板索引列表
+ * @param {LibraryIndexItem[]} libraries - 库索引列表
+ * @param {HardwareSearchQuery} query - 搜索参数
+ * @returns {HardwareSearchResult[]}
+ */
 export const searchHardwareIndex = (
 	boards: Array<BoardIndexItem>,
 	libraries: Array<LibraryIndexItem>,
