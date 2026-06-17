@@ -8,7 +8,7 @@
 		"build:win": "turbo run desktop#pack:win"
 	},
 	"simple-git-hooks": {
-		"pre-commit": "npm pretty-quick --pattern \"**/*.*(md|css|js|jsx|ts|tsx)\" --staged"
+		"pre-commit": "pnpm exec pretty-quick --pattern \"**/*.*(md|css|js|jsx|ts|tsx)\" --staged"
 	},
 	"devDependencies": {
 		"@ianvs/prettier-plugin-sort-imports": "^4.7.1",
