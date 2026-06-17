@@ -16,6 +16,8 @@ export interface BlocklyWorkspaceBlockNode {
 export interface BlocklyWorkspaceContent {
 	/** 工作区块集合 */
 	blocks?: {
+		/** Blockly 序列化 languageVersion */
+		languageVersion?: number
 		/** 顶层块数组 */
 		blocks?: Array<BlocklyWorkspaceBlockNode>
 	}
@@ -71,4 +73,18 @@ export interface BlockLibraryBinding {
 	version: string
 	/** 本地路径 */
 	localPath?: string
+}
+
+/**
+ * 缺失的 Blockly 库信息
+ */
+export interface MissingBlocklyLibraryInfo {
+	/** 触发该缺失判定的 block type */
+	blockType: string
+	/** 缺失的库包名 */
+	name: string
+	/** 希望安装或恢复的版本 */
+	version: string
+	/** 本地库路径，若为 file: 依赖则会解析到具体路径 */
+	localPath: string
 }

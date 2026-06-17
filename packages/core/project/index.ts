@@ -1,4 +1,5 @@
 export * from './macros'
 export * from './packageJson'
+export * from './packageRules'
 export * from './recent'
 export * from './types'

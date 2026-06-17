@@ -21,6 +21,22 @@
 		"./metadata": {
 			"types": "./dist/metadata/index.d.ts",
 			"default": "./dist/metadata/index.js"
+		},
+		"./document": {
+			"types": "./dist/document/index.d.ts",
+			"default": "./dist/document/index.js"
+		},
+		"./abi": {
+			"types": "./dist/abi/index.d.ts",
+			"default": "./dist/abi/index.js"
+		},
+		"./abs": {
+			"types": "./dist/abs/index.d.ts",
+			"default": "./dist/abs/index.js"
+		},
+		"./build": {
+			"types": "./dist/build/index.d.ts",
+			"default": "./dist/build/index.js"
 		}
 	},
 	"scripts": {

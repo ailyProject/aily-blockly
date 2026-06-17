@@ -25,6 +25,26 @@ export default deepmerge(rslib, {
 			source: { entry: { metadata: './metadata/index.ts' } },
 			format: 'esm',
 			dts: true
+		},
+		{
+			source: { entry: { document: './document/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
+			source: { entry: { abi: './abi/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
+			source: { entry: { abs: './abs/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
+			source: { entry: { build: './build/index.ts' } },
+			format: 'esm',
+			dts: true
 		}
 	],
 	output: {
