@@ -1,0 +1,23 @@
+{
+	"name": "shared",
+	"version": "0.0.0",
+	"description": "Shared contracts, constants, and reusable types for Aily Blockly",
+	"type": "module",
+	"license": "MIT",
+	"files": ["dist"],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build": "rslib build"
+	},
+	"devDependencies": {
+		"@rslib/core": "catalog:",
+		"@types/node": "catalog:",
+		"deepmerge-ts": "catalog:",
+		"typescript": "catalog:"
+	}
+}
