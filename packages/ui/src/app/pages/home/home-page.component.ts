@@ -6,9 +6,11 @@ import { HlmCardImports } from '@spartan-ng/helm/card'
 import { HlmInputImports } from '@spartan-ng/helm/input'
 import { HlmSeparatorImports } from '@spartan-ng/helm/separator'
 import { HlmTabsImports } from '@spartan-ng/helm/tabs'
+import { DataTableImports } from '@ui/components/ui/data-table/src'
 import { APP_ICON_IMPORTS } from '@ui/components/ui/icon/app-icons'
 import { AppShellComponent } from '@ui/layout/app-shell.component'
 import { bottomTabItems, inspectorCards, navigationCards } from '@ui/pages/home/home-page.data'
+import { boardColumns, boardRows } from '@ui/pages/home/home-page.table-data'
 import { applyThemeMode, getThemeMode, toggleThemeMode } from '@ui/runtime/theme'
 
 @Component({
@@ -19,6 +21,7 @@ import { applyThemeMode, getThemeMode, toggleThemeMode } from '@ui/runtime/theme
 		HlmBadgeImports,
 		HlmButtonImports,
 		HlmCardImports,
+		DataTableImports,
 		HlmInputImports,
 		HlmSeparatorImports,
 		HlmTabsImports,
@@ -33,6 +36,8 @@ export class HomePageComponent {
 	protected readonly tabItems = bottomTabItems
 	protected readonly navigationCards = navigationCards
 	protected readonly inspectorCards = inspectorCards
+	protected readonly boardColumns = boardColumns
+	protected readonly boardRows = boardRows
 
 	protected handleThemeToggle() {
 		this.themeMode.set(toggleThemeMode())

@@ -1,0 +1,87 @@
+<section class="toolbar">
+	@if (filterColumnId()) {
+		<input
+			hlmInput
+			class="toolbar-filter"
+			[value]="currentFilterValue()"
+			[placeholder]="filterPlaceholder()"
+			(input)="handleFilterChange($any($event.target).value)"
+		/>
+	}
+
+	<button hlmBtn variant="outline" size="sm" [hlmDropdownMenuTrigger]="columnsMenu">Columns</button>
+
+	<ng-template #columnsMenu>
+		<hlm-dropdown-menu class="w-48">
+			<hlm-dropdown-menu-label>Toggle columns</hlm-dropdown-menu-label>
+			<hlm-dropdown-menu-separator />
+			@for (column of visibleColumns(); track column.id) {
+				<button hlmDropdownMenuCheckbox [checked]="column.getIsVisible()" (triggered)="column.toggleVisibility()">
+					{{ getColumnLabel(column) }}
+				</button>
+			}
+		</hlm-dropdown-menu>
+	</ng-template>
+</section>
+
+<div hlmTableContainer class="table-shell">
+	<table hlmTable>
+		<thead hlmTableHeader>
+			@for (headerGroup of table().getHeaderGroups(); track headerGroup.id) {
+				<tr hlmTableRow>
+					@for (header of headerGroup.headers; track header.id) {
+						<th hlmTableHead>
+							@if (!header.isPlaceholder) {
+								<button
+									class="header-button"
+									[class.sortable]="header.column.getCanSort()"
+									(click)="header.column.getCanSort() && header.column.toggleSorting()"
+								>
+									<ng-container [flexRender]="header.column.columnDef.header" [flexRenderProps]="header.getContext()" />
+									@if (header.column.getIsSorted() === 'asc') {
+										<span class="sort-indicator">↑</span>
+									} @else if (header.column.getIsSorted() === 'desc') {
+										<span class="sort-indicator">↓</span>
+									}
+								</button>
+							}
+						</th>
+					}
+				</tr>
+			}
+		</thead>
+
+		<tbody hlmTableBody>
+			@if (table().getRowModel().rows.length) {
+				@for (row of table().getRowModel().rows; track row.id) {
+					<tr hlmTableRow>
+						@for (cell of row.getVisibleCells(); track cell.id) {
+							<td hlmTableCell>
+								<ng-container [flexRender]="cell.column.columnDef.cell" [flexRenderProps]="cell.getContext()" />
+							</td>
+						}
+					</tr>
+				}
+			} @else {
+				<tr hlmTableRow>
+					<td hlmTableCell class="empty-row" [attr.colspan]="table().getVisibleLeafColumns().length">
+						{{ emptyMessage() }}
+					</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+</div>
+
+<footer class="footer">
+	<span class="summary">{{ table().getFilteredRowModel().rows.length }} rows</span>
+	<div class="pager">
+		<button hlmBtn variant="outline" size="sm" [disabled]="!table().getCanPreviousPage()" (click)="table().previousPage()">
+			Previous
+		</button>
+		<span class="summary">{{ pageSummary() }}</span>
+		<button hlmBtn variant="outline" size="sm" [disabled]="!table().getCanNextPage()" (click)="table().nextPage()">
+			Next
+		</button>
+	</div>
+</footer>

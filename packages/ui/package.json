@@ -22,9 +22,11 @@
 		"@ng-icons/core": ">=32.0.0 <34.0.0",
 		"@ng-icons/lucide": ">=32.0.0 <34.0.0",
 		"@spartan-ng/brain": "0.0.1-alpha.715",
+		"@tanstack/angular-table": "8.21.4",
 		"class-variance-authority": "^0.7.0",
 		"clsx": "^2.1.1",
 		"luxon": "^3.7.2",
+		"ngx-scrollbar": "^19.1.5",
 		"rxjs": "~7.8.0",
 		"tailwind-merge": "^3.6.0",
 		"tslib": "^2.3.0"

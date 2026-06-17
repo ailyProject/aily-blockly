@@ -1,6 +1,13 @@
 @layer base {
 	* {
-		@apply border-border outline-ring/50;
+		@apply border-border;
+		--tw-ring-color: transparent;
+		--tw-ring-shadow: 0 0 #0000;
+		--tw-inset-ring-color: transparent;
+		--tw-inset-ring-shadow: 0 0 #0000;
+		--tw-ring-offset-shadow: 0 0 #0000;
+		--tw-ring-offset-width: 0px;
+		--tw-ring-offset-color: transparent;
 	}
 
 	html,
@@ -12,6 +19,12 @@
 
 	body {
 		user-select: none;
+	}
+
+	:focus,
+	:focus-visible {
+		outline: none;
+		box-shadow: none;
 	}
 
 	code,

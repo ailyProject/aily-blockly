@@ -48,20 +48,26 @@
         </div>
         <hlm-separator></hlm-separator>
         <div hlmCardContent class="workspace-grid">
-          <article class="workspace-surface">
-            <svg lucideBlocks class="surface-icon"></svg>
-            <h3>Blockly canvas area</h3>
-            <p>Reserved for the future editor shell, toolbox, and contextual panes.</p>
-          </article>
-          <aside class="workspace-side">
-            <hlm-alert>
-              <h4 hlmAlertTitle>Theme variables are ready</h4>
-              <p hlmAlertDescription>Light and dark tokens now map both Spartan and legacy aily naming.</p>
-            </hlm-alert>
-            <button hlmBtn class="fit" (click)="useDarkMode()">Use dark mode preset</button>
-          </aside>
-        </div>
-      </section>
+			<article class="workspace-surface">
+				<svg lucideBlocks class="surface-icon"></svg>
+				<h3>Blockly canvas area</h3>
+				<p>Reserved for the future editor shell, toolbox, and contextual panes.</p>
+			</article>
+			<aside class="workspace-side">
+				<hlm-alert>
+					<h4 hlmAlertTitle>Theme variables are ready</h4>
+					<p hlmAlertDescription>Light and dark tokens now map both Spartan and legacy aily naming.</p>
+				</hlm-alert>
+				<ui-data-table
+					[columns]="boardColumns"
+					[data]="boardRows"
+					filterColumnId="name"
+					filterPlaceholder="Filter boards..."
+				/>
+				<button hlmBtn class="fit" (click)="useDarkMode()">Use dark mode preset</button>
+			</aside>
+		</div>
+	</section>
 
       <section hlmCard class="tabs-card">
         <div hlmCardHeader>
