@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review"
+  short_description: "Review pending code and improve it"
+  default_prompt: "Use $review to review my uncommitted code and improve it."

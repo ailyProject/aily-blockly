@@ -1,0 +1,122 @@
+<app-shell>
+  <div shell-actions class="actions">
+    <button hlmBtn variant="outline" (click)="handleThemeToggle()">
+      @if (themeMode() === 'dark') {
+        <svg lucideSunMedium class="button-icon"></svg>
+      } @else {
+        <svg lucideMoonStar class="button-icon"></svg>
+      }
+      {{ themeActionLabel }}
+    </button>
+  </div>
+
+  <section class="workbench">
+    <aside class="rail">
+      <section hlmCard class="rail-card">
+        <div hlmCardHeader>
+          <h2 hlmCardTitle>Workbench</h2>
+          <p hlmCardDescription>structure inspired by the legacy desktop shell</p>
+        </div>
+        <div hlmCardContent class="stack">
+          <label class="search">
+            <svg lucideSearch class="inline-icon"></svg>
+            <input hlmInput placeholder="Search boards, tools, dialogs..." />
+          </label>
+          @for (item of navigationCards; track item.title) {
+            <button class="nav-item">
+              <span>{{ item.title }}</span>
+              <span hlmBadge [variant]="item.tone">{{ item.detail }}</span>
+            </button>
+          }
+        </div>
+      </section>
+    </aside>
+
+    <section class="center">
+      <section hlmCard class="workspace-card">
+        <div hlmCardHeader class="workspace-header">
+          <div>
+            <span hlmBadge variant="secondary">Tailwind CSS v4 + Spartan/ng</span>
+            <h2 hlmCardTitle>Desktop workbench shell</h2>
+            <p hlmCardDescription>header, center workspace, right tools, bottom tabs</p>
+          </div>
+          <div class="header-icons">
+            <svg lucidePanelLeft class="panel-icon"></svg>
+            <svg lucidePanelBottom class="panel-icon"></svg>
+            <svg lucideSlidersHorizontal class="panel-icon"></svg>
+          </div>
+        </div>
+        <hlm-separator></hlm-separator>
+        <div hlmCardContent class="workspace-grid">
+          <article class="workspace-surface">
+            <svg lucideBlocks class="surface-icon"></svg>
+            <h3>Blockly canvas area</h3>
+            <p>Reserved for the future editor shell, toolbox, and contextual panes.</p>
+          </article>
+          <aside class="workspace-side">
+            <hlm-alert>
+              <h4 hlmAlertTitle>Theme variables are ready</h4>
+              <p hlmAlertDescription>Light and dark tokens now map both Spartan and legacy aily naming.</p>
+            </hlm-alert>
+            <button hlmBtn class="fit" (click)="useDarkMode()">Use dark mode preset</button>
+          </aside>
+        </div>
+      </section>
+
+      <section hlmCard class="tabs-card">
+        <div hlmCardHeader>
+          <h3 hlmCardTitle>Bottom tools</h3>
+          <p hlmCardDescription>logs / terminal style region from the old UI</p>
+        </div>
+        <div hlmCardContent>
+          <hlm-tabs [tab]="bottomTab()" (tabActivated)="bottomTab.set($event)">
+            <hlm-tabs-list variant="line">
+              @for (tab of tabItems; track tab.id) {
+                <button [hlmTabsTrigger]="tab.id">{{ tab.title }}</button>
+              }
+            </hlm-tabs-list>
+            @for (tab of tabItems; track tab.id) {
+              <div [hlmTabsContent]="tab.id" class="tab-pane">
+                @for (item of tab.items; track item) {
+                  <p>{{ item }}</p>
+                }
+              </div>
+            }
+          </hlm-tabs>
+        </div>
+      </section>
+    </section>
+
+    <aside class="inspector">
+      <section hlmCard class="rail-card">
+        <div hlmCardHeader>
+          <h3 hlmCardTitle>Tool panes</h3>
+          <p hlmCardDescription>right-side utilities from the legacy layout</p>
+        </div>
+        <div hlmCardContent class="stack">
+          @for (tool of inspectorCards; track tool.title) {
+            <div class="tool-row">
+              <div class="tool-copy">
+                @switch (tool.title) {
+                  @case ('Aily Chat') { <svg lucideBot class="inline-icon"></svg> }
+                  @case ('Serial Monitor') { <svg lucideTerminal class="inline-icon"></svg> }
+                  @default { <svg lucideFolderOpen class="inline-icon"></svg> }
+                }
+                <div>
+                  <strong>{{ tool.title }}</strong>
+                  <p>{{ tool.detail }}</p>
+                </div>
+              </div>
+              <span hlmBadge variant="outline">ready</span>
+            </div>
+          }
+          <hlm-separator></hlm-separator>
+          <div class="tool-row compact">
+            <svg lucideCpu class="inline-icon"></svg>
+            <p>Future model-store / deploy / build diagnostics can stack here.</p>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </section>
+</app-shell>

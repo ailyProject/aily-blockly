@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Aily Blockly UI</title>
+    <base href="/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <script type="module">
+      const storedMode = localStorage.getItem('theme-mode');
+      const themeMode = storedMode === 'dark' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', themeMode);
+      document.documentElement.classList.toggle('dark', themeMode === 'dark');
+      document.documentElement.style.colorScheme = themeMode;
+    </script>
+  </head>
+  <body>
+    <app-root></app-root>
+  </body>
+</html>

@@ -11,10 +11,13 @@ This repository was reset on 2026-06-17 on branch `xwd-experimental` to start a 
 - DeepWiki page metadata generation time: `2026-06-10T07:45:14.433491`
 - DeepWiki snapshot retrieval date: `2026-06-17`
 - Architecture and best-practice reference repository: `/Users/xiewendao/Documents/Projects/polywise/`
+- Progressive Blockly optimization guidance directory: `/Users/xiewendao/Documents/aily/aily-blockly-experimental/blockly 渐进式优化方案（多轮）/`
 
 The DeepWiki documentation archive is retained as a refactor-time reference and should be consulted alongside the original source tree when rebuilding modules, boundaries, and workflows. The archive currently contains the full 35-page DeepWiki document set exported from the site payload.
 
 The `polywise` repository is retained as a secondary reference for architecture, project organization, and implementation best practices. For formatting, only its import-sorting Prettier plugin precedent should be inherited here; do not pull in unrelated styling plugins.
+
+The progressive optimization document set under `/Users/xiewendao/Documents/aily/aily-blockly-experimental/blockly 渐进式优化方案（多轮）/` is retained as a "window guidance" reference. It should be used to guide staged decision-making, package boundaries, migration sequencing, and acceptance criteria during the rewrite.
 
 ## Legacy SCC Snapshot
 
@@ -75,3 +78,16 @@ The rewrite should preserve the useful parts of the legacy style while making fo
 - Deliberate non-goals: Tailwind-specific Prettier plugins and unrelated formatter plugins from `polywise`
 
 The current Prettier setup intentionally uses the same file naming convention as `polywise`: `.prettierrc` and `.prettierignore`. Only `@ianvs/prettier-plugin-sort-imports` is retained from that precedent; Tailwind-specific and other unrelated formatter plugins are intentionally excluded.
+
+## Window Guidance
+
+The folder `/Users/xiewendao/Documents/aily/aily-blockly-experimental/blockly 渐进式优化方案（多轮）/` should be treated as window guidance for the rewrite.
+
+Its role is to provide staged guidance rather than hard implementation law:
+
+- `README.md` defines the overall target shape: monorepo, clear package boundaries, typed RPC, shared schema, AI workflow decoupling, and gradual decomposition.
+- `step-1-target-architecture-and-migration-principles.md` through `step-8-execution-roadmap-and-acceptance.md` define a recommended execution sequence covering architecture, monorepo packaging, AI runtime relocation, shared type systems, frontend shell modernization, giant-file decomposition, build-chain upgrades, and phased acceptance.
+- The package direction in these documents is especially relevant to this rewrite: `packages/ui`, `packages/desktop`, `packages/erpc`, `packages/shared`, and `packages/core/*`.
+- The guidance explicitly aligns with `polywise/packages` organizational ideas, so it should be read together with `/Users/xiewendao/Documents/Projects/polywise/`.
+
+When this guidance conflicts with current compatibility constraints, preserve compatibility first and adapt the staged plan instead of forcing a disruptive migration. In particular, the guidance itself already emphasizes path compatibility, phased rollout, and gradual replacement over one-shot rewrites.

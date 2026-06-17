@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "ESNext",
+		"skipLibCheck": true,
+		"lib": ["ESNEXT", "DOM"],
+		"moduleResolution": "bundler",
+		"declaration": true,
+		"emitDeclarationOnly": true,
+		"strict": false,
+		"rootDir": "./src",
+		"outDir": "dist",
+		"isolatedModules": true,
+		"esModuleInterop": true,
+		"importHelpers": true,
+		"jsx": "react-jsx",
+		"allowImportingTsExtensions": true,
+		"forceConsistentCasingInFileNames": true,
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+		"types": ["node"],
+		"emitDecoratorMetadata": true,
+		"experimentalDecorators": true
+	},
+	"include": ["src"]
+}

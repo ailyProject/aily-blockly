@@ -1,0 +1,81 @@
+:root,
+[data-theme='light'] {
+	color-scheme: light;
+	--font-sans: 'Google Sans', 'Segoe UI', sans-serif;
+	--font-mono: 'GeistMono', 'SFMono-Regular', monospace;
+	--radius: 0.625rem;
+	--background: #e8e8e8;
+	--foreground: #2e2e2e;
+	--card: #ededed;
+	--card-foreground: #2e2e2e;
+	--popover: #f4f4f4;
+	--popover-foreground: #2e2e2e;
+	--primary: #0078d4;
+	--primary-foreground: #ffffff;
+	--secondary: #d6d6d6;
+	--secondary-foreground: #2e2e2e;
+	--muted: #e0e0e0;
+	--muted-foreground: #636363;
+	--accent: #c5ddf3;
+	--accent-foreground: #1f3d5a;
+	--destructive: #c02020;
+	--border: #c8c8c8;
+	--input: #f5f5f5;
+	--ring: #7bb6ee;
+	--sidebar: #e2e2e2;
+	--sidebar-foreground: #2e2e2e;
+	--sidebar-primary: #0078d4;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #d6d6d6;
+	--sidebar-accent-foreground: #2e2e2e;
+	--sidebar-border: #c8c8c8;
+	--sidebar-ring: #7bb6ee;
+	--ui-header: #e2e2e2;
+	--ui-panel: #f1f1f1;
+	--ui-panel-muted: #dadada;
+	--ui-workspace: #f6f6f6;
+	--ui-grid-line: rgba(46, 46, 46, 0.08);
+	--ui-overlay: rgba(0, 0, 0, 0.45);
+	--ui-badge-info: rgba(0, 120, 212, 0.12);
+}
+
+:root.dark,
+[data-theme='dark'] {
+	color-scheme: dark;
+	--font-sans: 'Google Sans', 'Segoe UI', sans-serif;
+	--font-mono: 'GeistMono', 'SFMono-Regular', monospace;
+	--radius: 0.625rem;
+	--background: #2b2d30;
+	--foreground: #ffffff;
+	--card: #1f1f1f;
+	--card-foreground: #ffffff;
+	--popover: #252526;
+	--popover-foreground: #ffffff;
+	--primary: #61afef;
+	--primary-foreground: #0d1b2a;
+	--secondary: #3a3c3f;
+	--secondary-foreground: #ffffff;
+	--muted: #323437;
+	--muted-foreground: #a5a5a5;
+	--accent: #405e8d;
+	--accent-foreground: #dbeafe;
+	--destructive: #d20000;
+	--border: #444444;
+	--input: #363636;
+	--ring: #61afef;
+	--sidebar: #232528;
+	--sidebar-foreground: #ffffff;
+	--sidebar-primary: #61afef;
+	--sidebar-primary-foreground: #101418;
+	--sidebar-accent: #323437;
+	--sidebar-accent-foreground: #ffffff;
+	--sidebar-border: #3a3c3f;
+	--sidebar-ring: #61afef;
+	--ui-header: #202225;
+	--ui-panel: #26282b;
+	--ui-panel-muted: #323437;
+	--ui-workspace: #1c1d20;
+	--ui-grid-line: rgba(255, 255, 255, 0.06);
+	--ui-overlay: rgba(0, 0, 0, 0.68);
+	--ui-badge-info: rgba(97, 175, 239, 0.16);
+}

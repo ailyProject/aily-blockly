@@ -1,0 +1,48 @@
+:host {
+	display: block;
+	min-height: 100vh;
+}
+
+.shell {
+	min-height: 100vh;
+	background:
+		radial-gradient(circle at top left, color-mix(in oklch, var(--primary) 18%, transparent), transparent 28%),
+		linear-gradient(180deg, color-mix(in oklch, var(--background) 92%, white) 0%, var(--background) 100%);
+}
+
+.shell-header {
+	display: flex;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 1.5rem 2rem;
+	border-bottom: 1px solid var(--border);
+}
+
+.title {
+	display: flex;
+	align-items: center;
+	gap: 0.9rem;
+}
+
+.title-icon {
+	width: 2rem;
+	height: 2rem;
+	color: var(--primary);
+}
+
+.eyebrow {
+	margin: 0 0 0.35rem;
+	color: var(--muted-foreground);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	font-size: 0.75rem;
+}
+
+h1 {
+	margin: 0;
+	font-size: 1.75rem;
+}
+
+.shell-body {
+	padding: 2rem;
+}

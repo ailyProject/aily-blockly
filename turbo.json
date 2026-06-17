@@ -12,16 +12,16 @@
 		"deps": {
 			"dependsOn": ["erpc#build", "shared#build"]
 		},
-		"app#build": {
+		"ui#build": {
 			"dependsOn": ["deps"],
 			"outputs": ["dist/**"]
 		},
 		"desktop#pack:mac": {
-			"dependsOn": ["app#build"],
+			"dependsOn": ["ui#build"],
 			"outputs": ["dist/**"]
 		},
 		"desktop#pack:win": {
-			"dependsOn": ["app#build"],
+			"dependsOn": ["ui#build"],
 			"outputs": ["dist/**"]
 		}
 	}

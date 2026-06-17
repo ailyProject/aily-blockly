@@ -1,0 +1,8 @@
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import 'tailwindcss/utilities.css';
+@import '@spartan-ng/brain/hlm-tailwind-preset.css';
+@import './app/styles/theme-vars.css';
+@import './app/styles/legacy-aily-vars.css';
+@import './app/styles/base.css';

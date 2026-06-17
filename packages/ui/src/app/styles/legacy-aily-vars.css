@@ -1,0 +1,36 @@
+:root,
+[data-theme='light'],
+:root.dark,
+[data-theme='dark'] {
+	--aily-bg-primary: var(--background);
+	--aily-bg-secondary: var(--muted);
+	--aily-bg-tertiary: var(--secondary);
+	--aily-bg-elevated: var(--card);
+	--aily-bg-input: var(--input);
+	--aily-bg-hover: var(--accent);
+	--aily-bg-active: var(--primary);
+	--aily-bg-overlay: var(--ui-overlay);
+	--aily-text-primary: var(--foreground);
+	--aily-text-secondary: color-mix(in srgb, var(--foreground) 72%, transparent);
+	--aily-text-tertiary: color-mix(in srgb, var(--foreground) 84%, transparent);
+	--aily-text-hint: var(--muted-foreground);
+	--aily-border-primary: var(--border);
+	--aily-border-secondary: color-mix(in srgb, var(--border) 88%, transparent);
+	--aily-border-input: var(--input);
+	--aily-color-link: var(--primary);
+	--aily-color-link-hover: color-mix(in srgb, var(--primary) 82%, white);
+	--aily-color-accent: var(--primary);
+	--aily-scrollbar-thumb: color-mix(in srgb, var(--foreground) 22%, transparent);
+	--aily-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
+	--aily-menu-hover: var(--accent);
+	--aily-menu-text: var(--foreground);
+	--aily-menu-text-secondary: var(--muted-foreground);
+	--aily-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+	--aily-shadow-md: 0 6px 18px rgba(0, 0, 0, 0.18);
+	--aily-shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.24);
+	--aily-editor-bg: var(--ui-workspace);
+	--aily-editor-flyout-bg: var(--ui-panel);
+	--aily-tab-active-text: var(--foreground);
+	--aily-tab-inactive-text: var(--muted-foreground);
+	--aily-highlight-bg: color-mix(in srgb, var(--foreground) 10%, transparent);
+}
