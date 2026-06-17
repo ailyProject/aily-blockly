@@ -10,7 +10,7 @@
 			"cache": true
 		},
 		"deps": {
-			"dependsOn": ["erpc#build", "shared#build"]
+			"dependsOn": ["erpc#build", "shared#build", "core#build"]
 		},
 		"ui#build": {
 			"dependsOn": ["deps"],

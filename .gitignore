@@ -21,6 +21,7 @@ tsconfig.tsbuildinfo
 # temp
 **/.tmp
 **/.prompts
+.codex-fable5
 
 # electron
 release

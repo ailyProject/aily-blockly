@@ -1,0 +1,35 @@
+{
+	"name": "core",
+	"version": "0.0.0",
+	"description": "Aily Blockly core domains",
+	"type": "module",
+	"license": "MIT",
+	"files": ["dist"],
+	"exports": {
+		"./agent": {
+			"types": "./dist/agent/index.d.ts",
+			"default": "./dist/agent/index.js"
+		},
+		"./hardware": {
+			"types": "./dist/hardware/index.d.ts",
+			"default": "./dist/hardware/index.js"
+		}
+	},
+	"scripts": {
+		"build": "rslib build"
+	},
+	"dependencies": {
+		"@ai-sdk/openai": "catalog:",
+		"@ai-sdk/provider-utils": "catalog:",
+		"ai": "catalog:",
+		"dayjs": "catalog:",
+		"uuid": "catalog:",
+		"zod": "catalog:"
+	},
+	"devDependencies": {
+		"@rslib/core": "catalog:",
+		"@types/node": "catalog:",
+		"deepmerge-ts": "catalog:",
+		"typescript": "catalog:"
+	}
+}
