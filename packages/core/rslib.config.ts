@@ -7,53 +7,53 @@ import type { RslibConfig } from '@rslib/core'
 export default deepmerge(rslib, {
 	lib: [
 		{
-			source: { entry: { agent: './agent/index.ts' } },
+			source: { entry: { agent: './src/agent/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
 			source: {
 				entry: {
-					api: './api/index.ts',
-					rpc: './rpc/index.ts',
-					'rpc-standalone': './rpc/standalone.ts'
+					api: './src/api/index.ts',
+					rpc: './src/rpc/index.ts',
+					'rpc-standalone': './src/rpc/standalone.ts'
 				}
 			},
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { hardware: './hardware/index.ts' } },
+			source: { entry: { hardware: './src/hardware/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { project: './project/index.ts' } },
+			source: { entry: { project: './src/project/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { metadata: './metadata/index.ts' } },
+			source: { entry: { metadata: './src/metadata/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { document: './document/index.ts' } },
+			source: { entry: { document: './src/document/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { abi: './abi/index.ts' } },
+			source: { entry: { abi: './src/abi/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { abs: './abs/index.ts' } },
+			source: { entry: { abs: './src/abs/index.ts' } },
 			format: 'esm',
 			dts: true
 		},
 		{
-			source: { entry: { build: './build/index.ts' } },
+			source: { entry: { build: './src/build/index.ts' } },
 			format: 'esm',
 			dts: true
 		}

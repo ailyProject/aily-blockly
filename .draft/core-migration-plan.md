@@ -198,6 +198,9 @@
   - `packages/desktop` 可单独 `rslib build`
   - `packages/core` 已可单独 `rslib build`
   - `packages/ui` 已可单独 `ng build`
+  - 当前 `ui` build 仍有两个已知 warning：
+    - 初始包体积超预算
+    - `@vercel/oidc` CommonJS 依赖警告
 - 已完成的 domain 级 RPC 形状调整
   - `ui` 首页聚合调用已不再使用 `core.app.*`
   - `core/rpc` 根路由已新增并挂载：
@@ -217,10 +220,28 @@
   - 当前不再是构建阻塞，而是结构继续演进的问题：
     - `ui` 为兼容 Angular 编译器对跨包声明解析的限制，当前保留了最小的 `src/types/core-modules.d.ts` shim
     - packaging / release 工具链仍只是初始骨架，尚未补齐 desktop release 配置、trim package 和 release 产物裁剪
+    - `ui` 目前已经补了 legacy 风格的路由骨架，但大量功能页仍是迁移占位态，真正的编辑器/工具 UI 还需逐域落地
 - 下一个执行切面
   1. 继续检查 `ui` / `desktop` 中是否还有应下沉到 `core` 的纯 domain 逻辑
   2. 对齐 packaging / workflow：desktop packaging skeleton、standalone workflow、trim package 流程
   3. 继续按 legacy / deepwiki 对照补漏
+
+## UI 基线（2026-06-18）
+
+- `packages/ui/src/app.routes.ts` 已对齐 legacy 的大体结构，当前包含：
+  - `main/*` 壳层
+  - tools 路由骨架
+  - windows / editor 路由骨架
+- 已新增：
+  - `pages/main/*` 作为新的 workspace 壳层
+  - `pages/migration/*` 作为迁移中的功能页占位承接
+  - `routes/main-routes.ts`
+  - `routes/tool-routes.ts`
+  - `routes/window-routes.ts`
+- 当前真实接入的页面仍主要是：
+  - `main/guide` -> 现有 home diagnostics 页
+  - `aily-chat` -> 现有 agent 页
+- 其余 legacy 页面当前先通过占位壳承接，等待逐域替换
 
 ## Workflow 基线（2026-06-18）
 

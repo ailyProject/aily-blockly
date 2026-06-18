@@ -3,7 +3,7 @@ import { createTRPCClient, httpBatchLink } from '@trpc/client'
 
 import { resolveCoreServiceBaseUrl } from './config'
 
-import type { Router } from '@core/rpc'
+import type { Router } from '@core'
 import type { Core, CreateCoreOptions } from './types'
 
 export const CORE = new InjectionToken<Core>('CORE')

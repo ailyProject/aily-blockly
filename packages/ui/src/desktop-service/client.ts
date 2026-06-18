@@ -2,7 +2,7 @@ import { inject, InjectionToken, makeEnvironmentProviders } from '@angular/core'
 import { createTRPCClient } from '@trpc/client'
 import { ipcLink } from 'erpc/renderer'
 
-import type { Router } from '@desktop/rpc'
+import type { Router } from '@desktop'
 import type { CreateDesktopOptions, Desktop } from './types'
 
 export const DESKTOP = new InjectionToken<Desktop>('DESKTOP')

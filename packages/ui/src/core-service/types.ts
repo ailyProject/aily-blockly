@@ -1,5 +1,4 @@
-import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@core/hardware'
-import type { Router } from '@core/rpc'
+import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem, Router } from '@core'
 import type { AilyAgentConfig, AilyAppConfig, AilyCoreServiceAddress, AppRegistryItem } from '@shared'
 import type { TRPCClient } from '@trpc/client'
 

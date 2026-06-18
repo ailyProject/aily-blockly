@@ -1,0 +1,20 @@
+<section class="migration-page">
+  <article hlmCard class="migration-card">
+    <header class="migration-header">
+      <div>
+        <p class="eyebrow">{{ domain() }}</p>
+        <h2>{{ title() }}</h2>
+      </div>
+      <span hlmBadge variant="secondary">In Migration</span>
+    </header>
+
+    <p class="summary">{{ summary() }}</p>
+
+    <div class="hint">
+      <strong>Legacy hint</strong>
+      <span>{{ legacyHint() }}</span>
+    </div>
+
+    <a routerLink="/main/guide" class="return-link">Back to workspace shell</a>
+  </article>
+</section>

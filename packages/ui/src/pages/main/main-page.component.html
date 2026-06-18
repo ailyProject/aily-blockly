@@ -1,0 +1,39 @@
+<app-shell>
+  <div class="workspace">
+    <aside class="sidebar">
+      <section class="nav-group">
+        <p class="group-label">Workspace</p>
+        @for (item of primaryRouteLinks; track item.href) {
+          <a
+            class="nav-card"
+            [routerLink]="item.href"
+            routerLinkActive="active"
+            [routerLinkActiveOptions]="{ exact: true }">
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.detail }}</span>
+          </a>
+        }
+      </section>
+
+      <hlm-separator />
+
+      <section class="nav-group">
+        <p class="group-label">Tools</p>
+        @for (item of utilityRouteLinks; track item.href) {
+          <a
+            class="nav-card"
+            [routerLink]="item.href"
+            routerLinkActive="active"
+            [routerLinkActiveOptions]="{ exact: true }">
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.detail }}</span>
+          </a>
+        }
+      </section>
+    </aside>
+
+    <section class="canvas">
+      <router-outlet />
+    </section>
+  </div>
+</app-shell>

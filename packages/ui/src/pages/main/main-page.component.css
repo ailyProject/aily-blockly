@@ -1,0 +1,57 @@
+.workspace {
+	display: grid;
+	grid-template-columns: 280px minmax(0, 1fr);
+	gap: 24px;
+	min-height: 0;
+}
+
+.sidebar {
+	display: grid;
+	align-content: start;
+	gap: 16px;
+}
+
+.nav-group {
+	display: grid;
+	gap: 10px;
+}
+
+.group-label {
+	margin: 0;
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.nav-card {
+	display: grid;
+	gap: 4px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--card) 92%, transparent);
+	border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+	text-decoration: none;
+	color: inherit;
+}
+
+.nav-card span {
+	font-size: 13px;
+	color: var(--muted-foreground);
+}
+
+.nav-card.active {
+	border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+	background: color-mix(in srgb, var(--primary) 10%, var(--card));
+}
+
+.canvas {
+	min-width: 0;
+}
+
+@media (max-width: 960px) {
+	.workspace {
+		grid-template-columns: 1fr;
+	}
+}

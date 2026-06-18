@@ -15,12 +15,10 @@
 		"importHelpers": true,
 		"allowImportingTsExtensions": true,
 		"forceConsistentCasingInFileNames": true,
-		"baseUrl": "..",
 		"paths": {
-			"@shared": ["./shared/index.ts"],
-			"@core/*": ["./core/*"]
+			"@shared": ["../shared/index.ts"],
+			"@core": ["../core/src/index.ts"]
 		},
-		"ignoreDeprecations": "6.0",
 		"types": ["node"]
 	},
 	"include": ["src"]

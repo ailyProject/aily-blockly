@@ -1,0 +1,53 @@
+.migration-page {
+	padding: 8px 0;
+}
+
+.migration-card {
+	display: grid;
+	gap: 18px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.migration-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.migration-header h2,
+.summary,
+.eyebrow,
+.hint,
+.hint strong,
+.hint span {
+	margin: 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.summary,
+.hint span {
+	color: var(--muted-foreground);
+}
+
+.hint {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.return-link {
+	font-weight: 600;
+	color: var(--primary);
+	text-decoration: none;
+}

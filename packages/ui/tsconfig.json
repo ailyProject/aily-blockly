@@ -11,14 +11,12 @@
 		"importHelpers": true,
 		"target": "ES2022",
 		"module": "preserve",
-		"ignoreDeprecations": "6.0",
-		"baseUrl": "..",
 		"paths": {
-			"@/*": ["./ui/src/*"],
-			"spartan/*": ["./ui/src/components/ui/*/src/index.ts"],
-			"@shared": ["./shared/index.ts"],
-			"@core/*": ["./core/*"],
-			"@desktop/*": ["./desktop/src/*"]
+			"@/*": ["./src/*"],
+			"@shared": ["../shared/index.ts"],
+			"@core": ["../core/src/index.ts"],
+			"@desktop": ["../desktop/index.ts"],
+			"spartan/*": ["./src/components/ui/*/src/index.ts"]
 		}
 	},
 	"angularCompilerOptions": {

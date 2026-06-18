@@ -68,7 +68,7 @@ export const loadHomePageCoreState = async (core: Core): Promise<HomePageCoreSta
 			themeMode: preview.appConfigSummary.themeMode,
 			devmodeEnabled: preview.appConfigSummary.devmode.enabled,
 			devmodeAutoSave: preview.appConfigSummary.devmode.autoSave,
-			aiChatMode: preview.appConfigSummary.aiChatMode,
+			aiChatMode: preview.appConfigSummary.aiChatMode ?? 'agent',
 			selectedModel: preview.resolvedModel.currentModel?.name ?? null,
 			toolbarAppCount: preview.appConfigSummary.toolbarAppIds.length,
 			visibleToolbarAppCount: preview.appStoreSummary.visibleHeaderIds.length,

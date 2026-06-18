@@ -1,4 +1,4 @@
-import type { Router } from '@desktop/rpc'
+import type { Router } from '@desktop'
 import type { TRPCClient } from '@trpc/client'
 import type { GlobalERPC } from 'erpc/renderer'
 
