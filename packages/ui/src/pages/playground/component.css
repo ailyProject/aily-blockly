@@ -1,0 +1,48 @@
+.playground-page {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header h2,
+.eyebrow,
+.link-item span {
+	margin: 0;
+}
+
+.eyebrow,
+.link-item span {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.link-list {
+	display: grid;
+	gap: 10px;
+}
+
+.link-item {
+	display: grid;
+	gap: 4px;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}

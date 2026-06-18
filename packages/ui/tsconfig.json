@@ -13,9 +13,8 @@
 		"module": "preserve",
 		"paths": {
 			"@/*": ["./src/*"],
-			"@shared": ["../shared/index.ts"],
 			"@core": ["../core/src/index.ts"],
-			"@desktop": ["../desktop/index.ts"],
+			"@desktop": ["../desktop/src/index.ts"],
 			"spartan/*": ["./src/components/ui/*/src/index.ts"]
 		}
 	},

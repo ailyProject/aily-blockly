@@ -1,0 +1,34 @@
+<section class="playground-page">
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Playground</p>
+        <h2>Route Sandbox</h2>
+      </div>
+    </header>
+
+    <div class="link-list">
+      @for (item of links; track item.href) {
+        <div class="link-item">
+          <strong>{{ item.label }}</strong>
+          <span>{{ item.detail }}</span>
+        </div>
+      }
+    </div>
+  </article>
+
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Hardware</p>
+        <h2>Brand Buckets</h2>
+      </div>
+    </header>
+
+    <div class="badge-row">
+      @for (item of categories(); track item.name) {
+        <span hlmBadge variant="outline">{{ item.name }} {{ item.count }}</span>
+      }
+    </div>
+  </article>
+</section>

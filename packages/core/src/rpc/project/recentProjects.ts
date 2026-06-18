@@ -4,7 +4,7 @@ import { addRecentlyProject, getRecentProjects as getProjectRecentProjects, remo
 import { appConfigInputSchema, normalizeAppConfigInput } from '../config/schemas'
 import { p } from '../trpc'
 
-import type { RecentlyProjectEntry } from '@shared'
+import type { RecentlyProjectEntry } from 'shared'
 
 const recentProjectSchema: z.ZodType<RecentlyProjectEntry> = z.object({
 	name: z.string(),

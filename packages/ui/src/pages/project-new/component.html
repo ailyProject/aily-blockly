@@ -1,0 +1,73 @@
+<section class="project-new-page">
+  @if (loading()) {
+    <article hlmCard class="panel">
+      <strong>Loading project defaults...</strong>
+    </article>
+  } @else if (error()) {
+    <article hlmCard class="panel error">
+      <strong>Failed to load project defaults</strong>
+      <p>{{ error() }}</p>
+    </article>
+  } @else {
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Project Setup</p>
+          <h2>New Project</h2>
+        </div>
+        <button hlmBtn variant="outline" size="sm" (click)="refresh()">Reload</button>
+      </header>
+
+      <label class="field">
+        <span>Project name</span>
+        <input hlmInput [value]="projectName()" (input)="updateProjectName($event)" />
+      </label>
+
+      <div class="field">
+        <span>Default root path</span>
+        <strong>{{ rootPath() }}</strong>
+      </div>
+
+      <div class="field">
+        <span>Resolved path</span>
+        <strong>{{ resolvedProjectPath() || 'preview unavailable' }}</strong>
+      </div>
+    </article>
+
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Board</p>
+          <h2>Target Selection</h2>
+        </div>
+        <span hlmBadge>{{ selectedBoardName() }}</span>
+      </header>
+
+      <div class="badge-row">
+        @for (board of boardOptions; track board.name) {
+          <button hlmBtn variant="outline" size="sm" (click)="chooseBoard(board.displayName)">
+            {{ board.displayName }}
+          </button>
+        }
+      </div>
+    </article>
+
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Recent</p>
+          <h2>Previous Projects</h2>
+        </div>
+      </header>
+
+      <div class="list">
+        @for (project of recentProjects(); track project.path) {
+          <div class="list-item">
+            <strong>{{ project.nickname || project.name }}</strong>
+            <span>{{ project.path }}</span>
+          </div>
+        }
+      </div>
+    </article>
+  }
+</section>

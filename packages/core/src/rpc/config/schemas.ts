@@ -12,7 +12,7 @@ import type {
 	RegionConfig,
 	ResourceSourceConfig,
 	SerialMonitorConfig
-} from '@shared'
+} from 'shared'
 
 const appDataPathSchema: z.ZodType<AppDataPathConfig> = z.object({
 	win32: z.string(),

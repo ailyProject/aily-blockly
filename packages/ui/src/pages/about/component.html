@@ -1,0 +1,22 @@
+<app-shell>
+  @if (health(); as healthValue) {
+    <section class="about-page">
+      <article hlmCard class="panel">
+        <header class="panel-header">
+          <div>
+            <p class="eyebrow">About</p>
+            <h2>Aily Blockly Experimental</h2>
+          </div>
+          <span hlmBadge>{{ healthValue.status }}</span>
+        </header>
+
+        <div class="metric-grid">
+          <div><span>Version</span><strong>{{ healthValue.version }}</strong></div>
+          <div><span>Transport</span><strong>{{ healthValue.transport }}</strong></div>
+          <div><span>Host</span><strong>{{ healthValue.address.host }}</strong></div>
+          <div><span>Port</span><strong>{{ healthValue.address.port }}</strong></div>
+        </div>
+      </article>
+    </section>
+  }
+</app-shell>

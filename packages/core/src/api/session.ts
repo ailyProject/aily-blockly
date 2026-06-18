@@ -4,8 +4,8 @@ import { createAgentRuntime } from '../agent'
 import { createAgentRunStream } from '../agent/runtime'
 import { hasExistingStream, resumableStream } from './rstream'
 
-import type { AgentSessionRequest } from '@shared'
 import type { Context } from 'hono'
+import type { AgentSessionRequest } from 'shared'
 
 const runtime = createAgentRuntime()
 

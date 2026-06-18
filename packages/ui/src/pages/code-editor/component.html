@@ -1,0 +1,33 @@
+@if (lintResult(); as result) {
+  <section class="code-page">
+    <article hlmCard class="editor-card">
+      <header class="card-header">
+        <div>
+          <p class="eyebrow">Code</p>
+          <h2>Editor Diagnostics</h2>
+        </div>
+        <span hlmBadge [variant]="result.success ? 'default' : 'secondary'">
+          {{ result.success ? 'clean' : 'issues' }}
+        </span>
+      </header>
+
+      <pre class="code-preview">void setup() &#123;
+  Serial.begin(115200)
+&#125;</pre>
+    </article>
+
+    <article hlmCard class="editor-card">
+      <header class="card-header">
+        <div>
+          <p class="eyebrow">Build</p>
+          <h2>Parsed Lint Result</h2>
+        </div>
+      </header>
+
+      <div class="metric"><span>Mode</span><strong>{{ result.mode }}</strong></div>
+      <div class="metric"><span>Errors</span><strong>{{ result.errors.length }}</strong></div>
+      <div class="metric"><span>Warnings</span><strong>{{ result.warnings.length }}</strong></div>
+      <div class="metric"><span>Execution</span><strong>{{ result.executionTime }} ms</strong></div>
+    </article>
+  </section>
+}

@@ -1,4 +1,4 @@
-import type { AilyAgentConfig, WorkspaceSecurityName, WorkspaceSecurityOption } from '@shared'
+import type { AilyAgentConfig, WorkspaceSecurityName, WorkspaceSecurityOption } from 'shared'
 
 const securityLabels: Record<WorkspaceSecurityName, string> = {
 	project: '项目文件',

@@ -1,37 +1,19 @@
 import { Routes } from '@angular/router'
 
-import { MigrationPageComponent } from '@/pages/migration/migration-page.component'
+import { MigrationPageComponent } from '@/pages/migration/component'
 
 export const windowRoutes: Routes = [
 	{
 		path: 'project-new',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Project New Window',
-			domain: 'ui.window',
-			summary: 'Detached project creation window and modal flow still need migration.',
-			legacyHint: 'legacy: windows/project-new'
-		}
+		loadComponent: () => import('@/pages/project-new/component').then(module => module.ProjectNewPageComponent)
 	},
 	{
 		path: 'settings',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Settings',
-			domain: 'ui.window',
-			summary: 'Settings window, region switching, and update preferences are still pending migration.',
-			legacyHint: 'legacy: windows/settings'
-		}
+		loadComponent: () => import('@/pages/settings/component').then(module => module.SettingsPageComponent)
 	},
 	{
 		path: 'about',
-		component: MigrationPageComponent,
-		data: {
-			title: 'About',
-			domain: 'ui.window',
-			summary: 'About dialog, version details, and links are pending migration.',
-			legacyHint: 'legacy: windows/about'
-		}
+		loadComponent: () => import('@/pages/about/component').then(module => module.AboutPageComponent)
 	},
 	{
 		path: 'iframe',

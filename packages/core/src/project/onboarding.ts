@@ -1,4 +1,4 @@
-import type { AilyAppConfig, AppOnboardingKey } from '@shared'
+import type { AilyAppConfig, AppOnboardingKey } from 'shared'
 
 /**
  * 读取应用内 onboarding 完成状态。

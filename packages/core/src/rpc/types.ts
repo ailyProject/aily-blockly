@@ -1,4 +1,4 @@
-import type { AilyCoreServiceAddress, AilyCoreServiceHealth, AilyCoreServiceStartOptions } from '@shared'
+import type { AilyCoreServiceAddress, AilyCoreServiceHealth, AilyCoreServiceStartOptions } from 'shared'
 
 /**
  * Core 服务 tRPC 上下文

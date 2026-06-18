@@ -7,7 +7,7 @@ import type { RslibConfig } from '@rslib/core'
 export default deepmerge(rslib, {
 	lib: [
 		{
-			source: { entry: { index: './index.ts' } },
+			source: { entry: { index: './src/index.ts' } },
 			format: 'esm',
 			dts: true
 		}

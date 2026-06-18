@@ -1,7 +1,5 @@
 import { createColumnHelper } from '@tanstack/angular-table'
 
-import type { DataTableColumn } from '@/components/ui/data-table/src/lib/data-table.types'
-
 type BoardRow = {
 	name: string
 	core: string
@@ -18,7 +16,7 @@ export const boardRows: BoardRow[] = [
 	{ name: 'stm32f103', core: 'stm32', status: 'preview', updatedAt: '2026-06-03' }
 ]
 
-export const boardColumns: DataTableColumn<BoardRow>[] = [
+export const boardColumns = [
 	columnHelper.accessor('name', { header: 'Board', cell: info => info.getValue() }),
 	columnHelper.accessor('core', { header: 'Core', cell: info => info.getValue() }),
 	columnHelper.accessor('status', { header: 'Status', cell: info => info.getValue() }),

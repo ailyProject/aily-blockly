@@ -1,6 +1,6 @@
-import { createAilyCoreServiceAddress } from '@shared'
+import { createAilyCoreServiceAddress } from 'shared'
 
-import type { AilyCoreServiceHealth } from '@shared'
+import type { AilyCoreServiceHealth } from 'shared'
 import type { CreateAilyCoreRouterOptions } from './types'
 
 /**

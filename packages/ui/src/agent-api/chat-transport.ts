@@ -2,8 +2,8 @@ import { DefaultChatTransport } from 'ai'
 
 import { resolveAgentSessionApi } from './config'
 
-import type { AgentSessionRequest } from '@shared'
 import type { UIMessage } from 'ai'
+import type { AgentSessionRequest } from 'shared'
 import type { CreateAgentApiOptions } from './types'
 
 const getLastUserText = (messages: UIMessage[]) => {

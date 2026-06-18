@@ -1,8 +1,8 @@
-import { HEADER_APP_LIMIT } from '@shared'
+import { HEADER_APP_LIMIT } from 'shared'
 
 import { createDefaultAppStoreLayout, normalizeAppStoreLayout, sanitizeAppZoneIds } from './appStore'
 
-import type { AppPlacementZone, AppRegistryItem, AppStoreLayout } from '@shared'
+import type { AppPlacementZone, AppRegistryItem, AppStoreLayout } from 'shared'
 
 const canRegisterApp = (appMap: Map<string, AppRegistryItem>, appId: string) => {
 	const app = appMap.get(appId)

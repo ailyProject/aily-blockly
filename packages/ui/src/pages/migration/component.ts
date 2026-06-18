@@ -6,8 +6,8 @@ import { HlmCardImports } from 'spartan/card'
 @Component({
 	selector: 'migration-page',
 	imports: [HlmBadgeImports, HlmCardImports, RouterLink],
-	templateUrl: './migration-page.component.html',
-	styleUrl: './migration-page.component.css'
+	templateUrl: './component.html',
+	styleUrl: './component.css'
 })
 export class MigrationPageComponent {
 	private readonly route = inject(ActivatedRoute)

@@ -1,7 +1,7 @@
 import { Routes } from '@angular/router'
 
-import { MainPageComponent } from '@/pages/main/main-page.component'
-import { MigrationPageComponent } from '@/pages/migration/migration-page.component'
+import { MainPageComponent } from '@/pages/main/component'
+import { MigrationPageComponent } from '@/pages/migration/component'
 
 export const mainRoutes: Routes = [
 	{
@@ -11,47 +11,24 @@ export const mainRoutes: Routes = [
 			{ path: '', redirectTo: 'guide', pathMatch: 'full' },
 			{
 				path: 'guide',
-				loadComponent: () => import('@/pages/home/home-page.component').then(module => module.HomePageComponent)
+				loadComponent: () => import('@/pages/home/component').then(module => module.HomePageComponent)
 			},
 			{
 				path: 'project-new',
-				component: MigrationPageComponent,
-				data: {
-					title: 'Project New',
-					domain: 'ui.project',
-					summary: 'Project creation flow, save path presets, and board bootstrapping are pending migration.',
-					legacyHint: 'legacy: pages/project-new + windows/project-new'
-				}
+				loadComponent: () => import('@/pages/project-new/component').then(module => module.ProjectNewPageComponent)
 			},
 			{
 				path: 'playground',
-				component: MigrationPageComponent,
-				data: {
-					title: 'Playground',
-					domain: 'ui.playground',
-					summary: 'Example catalog, subject pages, and legacy playground flows still need migration.',
-					legacyHint: 'legacy: pages/playground'
-				}
+				loadComponent: () => import('@/pages/playground/component').then(module => module.PlaygroundPageComponent)
 			},
 			{
 				path: 'blockly-editor',
-				component: MigrationPageComponent,
-				data: {
-					title: 'Blockly Editor',
-					domain: 'ui.editor',
-					summary: 'Main visual editor shell, block workspace, and tool integration are still being migrated.',
-					legacyHint: 'legacy: editors/blockly-editor'
-				}
+				loadComponent: () =>
+					import('@/pages/blockly-editor/component').then(module => module.BlocklyEditorPageComponent)
 			},
 			{
 				path: 'code-editor',
-				component: MigrationPageComponent,
-				data: {
-					title: 'Code Editor',
-					domain: 'ui.editor',
-					summary: 'Generated code editor, diagnostics, and build panel still need migration.',
-					legacyHint: 'legacy: editors/code-editor'
-				}
+				loadComponent: () => import('@/pages/code-editor/component').then(module => module.CodeEditorPageComponent)
 			}
 		]
 	}

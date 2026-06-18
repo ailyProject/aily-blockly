@@ -1,4 +1,4 @@
-import type { AilyAppConfig, DevModeConfig } from '@shared'
+import type { AilyAppConfig, DevModeConfig } from 'shared'
 
 const defaultDevmode: DevModeConfig = {
 	enabled: false,

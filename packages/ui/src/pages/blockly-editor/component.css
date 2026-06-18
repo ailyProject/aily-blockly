@@ -1,0 +1,53 @@
+.editor-page {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 320px;
+	gap: 18px;
+}
+
+.canvas-card,
+.side-card {
+	display: grid;
+	gap: 18px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.card-header h2,
+.eyebrow,
+.workspace-canvas span {
+	margin: 0;
+}
+
+.eyebrow,
+.workspace-canvas span {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.workspace-canvas {
+	display: grid;
+	place-items: center;
+	min-height: 420px;
+	border-radius: 24px;
+	background:
+		linear-gradient(135deg, color-mix(in srgb, var(--primary) 10%, transparent), transparent),
+		color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+@media (max-width: 960px) {
+	.editor-page {
+		grid-template-columns: 1fr;
+	}
+}

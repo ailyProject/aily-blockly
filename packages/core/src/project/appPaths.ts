@@ -1,4 +1,4 @@
-import type { AilyAppConfig } from '@shared'
+import type { AilyAppConfig } from 'shared'
 
 const normalizePlatform = (platform?: string) => {
 	const value = String(platform || '').toLowerCase()

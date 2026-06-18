@@ -5,9 +5,9 @@ import {
 	DEFAULT_AGENT_MAX_COUNT,
 	DEFAULT_AGENT_SUBAGENT_TIMEOUT,
 	DEFAULT_AGENT_SUMMARIZATION_THRESHOLD_RATIO
-} from '@shared'
+} from 'shared'
 
-import type { AilyAgentConfig } from '@shared'
+import type { AilyAgentConfig } from 'shared'
 
 /**
  * 判断当前配置是否启用了自定义 API 能力。

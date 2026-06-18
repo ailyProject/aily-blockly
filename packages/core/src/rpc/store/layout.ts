@@ -1,4 +1,4 @@
-import { HEADER_APP_LIMIT, TOOLBAR_APP_IDS_CONFIG_KEY } from '@shared'
+import { HEADER_APP_LIMIT, TOOLBAR_APP_IDS_CONFIG_KEY } from 'shared'
 import { z } from 'zod'
 
 import {

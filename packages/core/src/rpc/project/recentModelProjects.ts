@@ -8,7 +8,7 @@ import {
 import { appConfigInputSchema, normalizeAppConfigInput } from '../config/schemas'
 import { p } from '../trpc'
 
-import type { RecentModelProject } from '@shared'
+import type { RecentModelProject } from 'shared'
 
 const recentModelProjectSchema: z.ZodType<RecentModelProject> = z.object({
 	name: z.string(),

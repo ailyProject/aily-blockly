@@ -9,10 +9,10 @@ import {
 	demoLegacyLibraries,
 	demoRecentProject,
 	demoToolbarApps
-} from './home-page.data'
+} from './data'
 
 import type { Core } from '@/core-service'
-import type { AilyAppConfig, RecentModelProject } from '@shared'
+import type { AilyAppConfig, RecentModelProject } from 'shared'
 import type { HomePageCoreState } from './types'
 
 /**

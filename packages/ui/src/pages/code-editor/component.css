@@ -1,0 +1,54 @@
+.code-page {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 320px;
+	gap: 18px;
+}
+
+.editor-card {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.card-header h2,
+.eyebrow,
+.metric span {
+	margin: 0;
+}
+
+.eyebrow,
+.metric span {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.code-preview {
+	margin: 0;
+	padding: 20px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+	font-family: 'GeistMono', monospace;
+	white-space: pre-wrap;
+}
+
+.metric {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+@media (max-width: 960px) {
+	.code-page {
+		grid-template-columns: 1fr;
+	}
+}

@@ -3,6 +3,7 @@
 	"version": "0.0.0",
 	"description": "Shared contracts, constants, and reusable types for Aily Blockly",
 	"type": "module",
+	"types": "./dist/index.d.ts",
 	"license": "MIT",
 	"files": ["dist"],
 	"exports": {

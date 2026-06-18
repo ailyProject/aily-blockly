@@ -6,9 +6,9 @@ import {
 	DEFAULT_AGENT_SUBAGENT_TIMEOUT,
 	DEFAULT_AGENT_SUMMARIZATION_THRESHOLD_RATIO,
 	DEFAULT_AILY_AGENT_CONFIG
-} from '@shared'
+} from 'shared'
 
-import type { AgentToolsConfig, AilyAgentConfig } from '@shared'
+import type { AgentToolsConfig, AilyAgentConfig } from 'shared'
 
 const defaultMainAgentTools = (): AgentToolsConfig => ({ enabledTools: [], disabledTools: [] })
 

@@ -1,4 +1,4 @@
-import type { AilyAppConfig, ThemeMode } from '@shared'
+import type { AilyAppConfig, ThemeMode } from 'shared'
 
 /**
  * 从配置读取当前主题模式。

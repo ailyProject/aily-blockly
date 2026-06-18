@@ -241,7 +241,26 @@
 - 当前真实接入的页面仍主要是：
   - `main/guide` -> 现有 home diagnostics 页
   - `aily-chat` -> 现有 agent 页
+  - `settings` -> 已接入真实 settings 页面
+  - `serial-monitor` -> 已接入真实 serial monitor 页面
+  - `main/project-new` -> 已接入真实 project new 页面
+  - `main/blockly-editor` -> 已接入真实 blockly editor shell 页面
+  - `main/code-editor` -> 已接入真实 code editor shell 页面
+  - `main/playground` -> 已接入真实 playground 页面
+  - `about` -> 已接入真实 about 页面
+  - `project-new` window route -> 已复用真实 project new 页面
 - 其余 legacy 页面当前先通过占位壳承接，等待逐域替换
+- 新增的真实 UI 页面
+  - `pages/about/*`
+  - `pages/playground/*`
+  - `pages/project-new/*`
+  - `pages/blockly-editor/*`
+  - `pages/code-editor/*`
+  - `pages/settings/*`
+  - `pages/serial-monitor/*`
+- 路由优化
+  - 新接入的真实页面已改成 `loadComponent` 懒加载
+  - `ng build` 后初始包体已从约 `970 kB` 降到约 `846 kB`
 
 ## Workflow 基线（2026-06-18）
 

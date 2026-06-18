@@ -8,13 +8,13 @@ import { HlmTextareaImports } from 'spartan/textarea'
 import { injectAgentApi } from '@/agent-api'
 import { createAgentChatTransport } from '@/agent-api/chat-transport'
 import { AppShellComponent } from '@/layout/app-shell.component'
-import { demoAgentRequestBody } from '@/pages/agent/agent-page.data'
+import { demoAgentRequestBody } from '@/pages/agent/data'
 
 @Component({
 	selector: 'agent-page',
 	imports: [AppShellComponent, HlmBadgeImports, HlmButtonImports, HlmCardImports, HlmTextareaImports],
-	templateUrl: './agent-page.component.html',
-	styleUrl: './agent-page.component.css'
+	templateUrl: './component.html',
+	styleUrl: './component.css'
 })
 export class AgentPageComponent {
 	private readonly agentApi = injectAgentApi()

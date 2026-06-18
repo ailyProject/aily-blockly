@@ -10,7 +10,7 @@ export type {
 	RegionListItem,
 	ResourceRuntimeEnvPayload,
 	ResourceSourceConfig
-} from '@shared'
+} from 'shared'
 
 /**
  * 项目 package.json 的核心模型

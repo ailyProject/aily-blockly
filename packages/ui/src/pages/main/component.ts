@@ -5,13 +5,13 @@ import { HlmSeparatorImports } from 'spartan/separator'
 
 import { AppShellComponent } from '@/layout/app-shell.component'
 
-import { primaryRouteLinks, utilityRouteLinks } from './main-page.data'
+import { primaryRouteLinks, utilityRouteLinks } from './data'
 
 @Component({
 	selector: 'main-page',
 	imports: [AppShellComponent, HlmCardImports, HlmSeparatorImports, RouterLink, RouterLinkActive, RouterOutlet],
-	templateUrl: './main-page.component.html',
-	styleUrl: './main-page.component.css'
+	templateUrl: './component.html',
+	styleUrl: './component.css'
 })
 export class MainPageComponent {
 	protected readonly primaryRouteLinks = primaryRouteLinks

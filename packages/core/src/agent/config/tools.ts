@@ -1,4 +1,4 @@
-import type { AgentToolsConfig, AilyAgentConfig } from '@shared'
+import type { AgentToolsConfig, AilyAgentConfig } from 'shared'
 
 const emptyToolsConfig = (): AgentToolsConfig => ({ enabledTools: [], disabledTools: [] })
 

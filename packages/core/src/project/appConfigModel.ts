@@ -1,4 +1,4 @@
-import type { AgentModelConfigOption, AilyAppConfig } from '@shared'
+import type { AgentModelConfigOption, AilyAppConfig } from 'shared'
 
 /**
  * 根据配置和已启用模型列表解析当前应使用的 AI 模型。

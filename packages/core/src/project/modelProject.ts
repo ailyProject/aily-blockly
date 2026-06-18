@@ -1,4 +1,4 @@
-import type { AilyAppConfig, RecentModelProject } from '@shared'
+import type { AilyAppConfig, RecentModelProject } from 'shared'
 
 const maxRecentModelProjects = 6
 

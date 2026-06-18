@@ -16,7 +16,6 @@
 		"allowImportingTsExtensions": true,
 		"forceConsistentCasingInFileNames": true,
 		"paths": {
-			"@shared": ["../shared/index.ts"],
 			"@core": ["../core/src/index.ts"]
 		},
 		"types": ["node"]

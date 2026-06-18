@@ -1,6 +1,6 @@
-import { AUTO_AGENT_MODEL, DEFAULT_AGENT_MODELS } from '@shared'
+import { AUTO_AGENT_MODEL, DEFAULT_AGENT_MODELS } from 'shared'
 
-import type { AgentModelConfigOption, AilyAgentConfig } from '@shared'
+import type { AgentModelConfigOption, AilyAgentConfig } from 'shared'
 
 /**
  * 返回当前可用于下拉展示的模型列表。

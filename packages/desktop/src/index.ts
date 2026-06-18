@@ -8,6 +8,7 @@ import type { BootstrapDesktopMainOptions, BootstrapDesktopMainResult, DesktopMa
 export * from './core-service'
 export * from './rpc'
 export * from './types'
+export type { Router } from './rpc/types'
 
 /**
  * Electron 主进程薄壳入口

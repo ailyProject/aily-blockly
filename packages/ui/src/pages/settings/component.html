@@ -1,0 +1,80 @@
+<app-shell>
+  <div shell-actions>
+    <button hlmBtn variant="outline" size="sm" (click)="refresh()">Refresh</button>
+  </div>
+
+  <section class="settings-page">
+    @if (loading()) {
+      <article hlmCard class="settings-card">
+        <strong>Loading settings snapshot...</strong>
+      </article>
+    } @else if (error()) {
+      <article hlmCard class="settings-card error">
+        <strong>Failed to load settings</strong>
+        <p>{{ error() }}</p>
+      </article>
+    } @else if (state(); as stateValue) {
+      <article hlmCard class="settings-card">
+        <header class="card-header">
+          <div>
+            <p class="eyebrow">Config</p>
+            <h2>Runtime Settings</h2>
+          </div>
+          <span hlmBadge variant="secondary">{{ stateValue.appConfigSummary.selectedLanguage }}</span>
+        </header>
+
+        <div class="metrics-grid">
+          <div><span>Theme</span><strong>{{ stateValue.appConfigSummary.themeMode }}</strong></div>
+          <div><span>Preview Theme</span><strong>{{ stateValue.appConfigSummary.previewThemeMode }}</strong></div>
+          <div><span>Dev Mode</span><strong>{{ stateValue.appConfigSummary.devmodeEnabled ? 'on' : 'off' }}</strong></div>
+          <div><span>Auto Save</span><strong>{{ stateValue.appConfigSummary.devmodeAutoSave ? 'on' : 'off' }}</strong></div>
+          <div><span>AI Mode</span><strong>{{ stateValue.appConfigSummary.aiChatMode }}</strong></div>
+          <div><span>Selected Model</span><strong>{{ stateValue.appConfigSummary.selectedModel ?? 'none' }}</strong></div>
+          <div><span>Quick Sends</span><strong>{{ stateValue.appConfigSummary.quickSendCount }}</strong></div>
+          <div><span>Skipped Versions</span><strong>{{ stateValue.appConfigSummary.skippedVersionCount }}</strong></div>
+        </div>
+      </article>
+
+      <article hlmCard class="settings-card">
+        <header class="card-header">
+          <div>
+            <p class="eyebrow">Project State</p>
+            <h2>Persistence Summary</h2>
+          </div>
+        </header>
+
+        <div class="metrics-grid">
+          <div><span>Recent Projects</span><strong>{{ stateValue.appConfigSummary.recentProjectCount }}</strong></div>
+          <div><span>Recent Model Projects</span><strong>{{ stateValue.appConfigSummary.recentModelProjectCount }}</strong></div>
+          <div><span>Toolbar Apps</span><strong>{{ stateValue.appConfigSummary.toolbarAppCount }}</strong></div>
+          <div><span>Visible Apps</span><strong>{{ stateValue.appConfigSummary.visibleToolbarAppCount }}</strong></div>
+          <div><span>Default Layout</span><strong>{{ stateValue.appConfigSummary.defaultToolbarAppCount }}</strong></div>
+          <div><span>Reset Layout</span><strong>{{ stateValue.appConfigSummary.resetToolbarAppCount }}</strong></div>
+          <div><span>Added Projects</span><strong>{{ stateValue.appConfigSummary.addedRecentProjectCount }}</strong></div>
+          <div><span>Removed Projects</span><strong>{{ stateValue.appConfigSummary.removedRecentProjectCount }}</strong></div>
+        </div>
+      </article>
+
+      <article hlmCard class="settings-card">
+        <header class="card-header">
+          <div>
+            <p class="eyebrow">Onboarding</p>
+            <h2>Guided Flow Status</h2>
+          </div>
+        </header>
+
+        <div class="badge-row">
+          <span hlmBadge [variant]="stateValue.appConfigSummary.onboardingCompleted ? 'default' : 'outline'">
+            guide {{ stateValue.appConfigSummary.onboardingCompleted ? 'done' : 'todo' }}
+          </span>
+          <span hlmBadge [variant]="stateValue.appConfigSummary.blocklyOnboardingCompleted ? 'default' : 'outline'">
+            blockly {{ stateValue.appConfigSummary.blocklyOnboardingCompleted ? 'done' : 'todo' }}
+          </span>
+          <span hlmBadge [variant]="stateValue.appConfigSummary.ailyChatOnboardingCompleted ? 'default' : 'outline'">
+            chat {{ stateValue.appConfigSummary.ailyChatOnboardingCompleted ? 'done' : 'todo' }}
+          </span>
+        </div>
+      </article>
+    }
+  </section>
+</app-shell>

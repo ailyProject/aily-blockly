@@ -1,4 +1,4 @@
-import type { AgentSessionRequest } from '@shared'
+import type { AgentSessionRequest } from 'shared'
 
 /**
  * 构建 agent API 句柄时的地址覆盖项

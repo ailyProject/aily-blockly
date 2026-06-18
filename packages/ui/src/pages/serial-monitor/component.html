@@ -1,0 +1,55 @@
+<app-shell>
+  <div shell-actions>
+    <button hlmBtn variant="outline" size="sm" (click)="refresh()">Refresh</button>
+  </div>
+
+  <section class="serial-page">
+    @if (loading()) {
+      <article hlmCard class="serial-card">
+        <strong>Loading serial monitor snapshot...</strong>
+      </article>
+    } @else if (error()) {
+      <article hlmCard class="serial-card error">
+        <strong>Failed to load serial monitor state</strong>
+        <p>{{ error() }}</p>
+      </article>
+    } @else if (state(); as stateValue) {
+      <article hlmCard class="serial-card">
+        <header class="card-header">
+          <div>
+            <p class="eyebrow">Serial Runtime</p>
+            <h2>Connection Summary</h2>
+          </div>
+          <span hlmBadge>{{ serialModeLabel() }}</span>
+        </header>
+
+        <div class="metrics-grid">
+          <div><span>Baud</span><strong>{{ stateValue.appConfigSummary.serialBaudRate }}</strong></div>
+          <div><span>Connect Baud</span><strong>{{ stateValue.appConfigSummary.serialConnectBaudRate }}</strong></div>
+          <div><span>Auto Scroll</span><strong>{{ stateValue.appConfigSummary.serialAutoScroll ? 'on' : 'off' }}</strong></div>
+          <div><span>Hex Input</span><strong>{{ stateValue.appConfigSummary.serialInputHexMode ? 'on' : 'off' }}</strong></div>
+          <div><span>Preview Port</span><strong>{{ stateValue.appConfigSummary.previewSerialPort }}</strong></div>
+          <div><span>Quick Sends</span><strong>{{ stateValue.appConfigSummary.quickSendCount }}</strong></div>
+        </div>
+      </article>
+
+      <article hlmCard class="serial-card">
+        <header class="card-header">
+          <div>
+            <p class="eyebrow">Store + Layout</p>
+            <h2>Tool Placement</h2>
+          </div>
+        </header>
+
+        <div class="badge-row">
+          <span hlmBadge variant="secondary">toolbar {{ stateValue.appConfigSummary.toolbarAppCount }}</span>
+          <span hlmBadge variant="secondary">visible {{ stateValue.appConfigSummary.visibleToolbarAppCount }}</span>
+          <span hlmBadge variant="outline">default {{ stateValue.appConfigSummary.defaultToolbarAppCount }}</span>
+          <span hlmBadge variant="outline">merged {{ stateValue.appConfigSummary.mergedToolbarOrderCount }}</span>
+          <span hlmBadge variant="outline">toggled {{ stateValue.appConfigSummary.toggledToolbarAppCount }}</span>
+          <span hlmBadge variant="outline">reset {{ stateValue.appConfigSummary.resetToolbarAppCount }}</span>
+        </div>
+      </article>
+    }
+  </section>
+</app-shell>

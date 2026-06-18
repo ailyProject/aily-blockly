@@ -1,6 +1,6 @@
 import { getQuickSendList, getSkippedVersions, getToolbarAppIds } from './appConfig'
 
-import type { AilyAiChatMode, AilyAppConfig, QuickSendItem, SerialMonitorConfig } from '@shared'
+import type { AilyAiChatMode, AilyAppConfig, QuickSendItem, SerialMonitorConfig } from 'shared'
 
 /**
  * 更新当前选中的语言。

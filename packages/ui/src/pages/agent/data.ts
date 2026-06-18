@@ -1,4 +1,4 @@
-import type { AgentSessionRequest } from '@shared'
+import type { AgentSessionRequest } from 'shared'
 
 export const demoAgentRequestBody: Omit<AgentSessionRequest, 'id' | 'text'> = {
 	title: 'Aily Agent Demo',

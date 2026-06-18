@@ -13,9 +13,9 @@ import { injectCore } from '@/core-service'
 import { injectDesktop } from '@/desktop-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
 import { HomePageStatusComponent } from '@/pages/home/components/home-page-status.component'
-import { bottomTabItems, inspectorCards, navigationCards } from '@/pages/home/home-page.data'
-import { loadHomePageCoreState } from '@/pages/home/home-page.runtime'
-import { boardColumns, boardRows } from '@/pages/home/home-page.table-data'
+import { bottomTabItems, inspectorCards, navigationCards } from '@/pages/home/data'
+import { loadHomePageCoreState } from '@/pages/home/runtime'
+import { boardColumns, boardRows } from '@/pages/home/table-data'
 import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
 
 @Component({
@@ -34,8 +34,8 @@ import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
 		...APP_ICON_IMPORTS
 	],
 	providers: [...APP_ICON_PROVIDERS],
-	templateUrl: './home-page.component.html',
-	styleUrl: './home-page.component.css'
+	templateUrl: './component.html',
+	styleUrl: './component.css'
 })
 export class HomePageComponent implements OnInit {
 	private readonly core = injectCore()

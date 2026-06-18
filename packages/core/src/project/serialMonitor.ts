@@ -2,7 +2,7 @@ import {
 	DEFAULT_SERIAL_MONITOR_CONFIG,
 	DEFAULT_SERIAL_MONITOR_INPUT_MODE,
 	DEFAULT_SERIAL_MONITOR_VIEW_MODE
-} from '@shared'
+} from 'shared'
 
 import type {
 	AilyAppConfig,
@@ -10,7 +10,7 @@ import type {
 	SerialMonitorConnectOptions,
 	SerialMonitorInputMode,
 	SerialMonitorViewMode
-} from '@shared'
+} from 'shared'
 
 /**
  * 返回带默认值的串口监视器持久化配置。

@@ -11,6 +11,6 @@ export const routes: Routes = [
 	...windowRoutes,
 	{
 		path: 'lab/agent',
-		loadComponent: () => import('@/pages/agent/agent-page.component').then(module => module.AgentPageComponent)
+		loadComponent: () => import('@/pages/agent/component').then(module => module.AgentPageComponent)
 	}
 ]

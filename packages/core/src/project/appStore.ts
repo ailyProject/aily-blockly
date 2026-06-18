@@ -1,6 +1,6 @@
-import { HEADER_APP_LIMIT } from '@shared'
+import { HEADER_APP_LIMIT } from 'shared'
 
-import type { AppPlacementZone, AppRegistryItem, AppStoreLayout, AppVisibilityContext } from '@shared'
+import type { AppPlacementZone, AppRegistryItem, AppStoreLayout, AppVisibilityContext } from 'shared'
 
 /**
  * 读取配置中的 toolbar app id 列表。

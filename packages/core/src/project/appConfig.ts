@@ -1,8 +1,8 @@
-import { DEFAULT_AI_CHAT_MODE, DEFAULT_QUICK_SEND_LIST } from '@shared'
+import { DEFAULT_AI_CHAT_MODE, DEFAULT_QUICK_SEND_LIST } from 'shared'
 
 import { normalizeLanguageFileName } from './language'
 
-import type { AilyAiChatMode, AilyAppConfig, QuickSendItem } from '@shared'
+import type { AilyAiChatMode, AilyAppConfig, QuickSendItem } from 'shared'
 
 /**
  * 读取当前选中的语言，并兼容 fallback 语言归一化。

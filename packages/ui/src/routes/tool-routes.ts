@@ -1,17 +1,11 @@
 import { Routes } from '@angular/router'
 
-import { MigrationPageComponent } from '@/pages/migration/migration-page.component'
+import { MigrationPageComponent } from '@/pages/migration/component'
 
 export const toolRoutes: Routes = [
 	{
 		path: 'serial-monitor',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Serial Monitor',
-			domain: 'ui.tools',
-			summary: 'Serial console, quick send, and chart-capable monitor UI are pending migration.',
-			legacyHint: 'legacy: tools/serial-monitor'
-		}
+		loadComponent: () => import('@/pages/serial-monitor/component').then(module => module.SerialMonitorPageComponent)
 	},
 	{
 		path: 'child-tool/:toolId',
@@ -35,7 +29,7 @@ export const toolRoutes: Routes = [
 	},
 	{
 		path: 'aily-chat',
-		loadComponent: () => import('@/pages/agent/agent-page.component').then(module => module.AgentPageComponent)
+		loadComponent: () => import('@/pages/agent/component').then(module => module.AgentPageComponent)
 	},
 	{
 		path: 'simulator',
