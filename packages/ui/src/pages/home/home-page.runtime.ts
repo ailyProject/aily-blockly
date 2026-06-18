@@ -1,3 +1,5 @@
+import { loadHomePreview } from '@ui/core-service'
+
 import {
 	demoAgentConfig,
 	demoAppConfig,
@@ -8,10 +10,9 @@ import {
 	demoRecentProject,
 	demoToolbarApps
 } from './home-page.data'
-import type { HomePageCoreState } from './types'
 
-import { loadHomePreview } from '@ui/core-service'
 import type { Core } from '@ui/core-service'
+import type { HomePageCoreState } from './types'
 
 /**
  * 从 core/rpc 加载首页演示状态。

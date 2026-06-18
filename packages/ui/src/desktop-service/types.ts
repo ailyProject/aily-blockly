@@ -1,6 +1,6 @@
 import type { TRPCClient } from '@trpc/client'
-import type { GlobalERPC } from '@ui/workspace/erpc-renderer'
 import type { Router } from '@ui/workspace/desktop'
+import type { GlobalERPC } from '@ui/workspace/erpc-renderer'
 
 /**
  * UI 侧 desktop ERPC 句柄的可选创建参数

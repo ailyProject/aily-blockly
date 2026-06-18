@@ -14,7 +14,9 @@
 			"default": "./dist/preload/index.js"
 		}
 	},
-	"files": ["dist"],
+	"files": [
+		"dist"
+	],
 	"scripts": {
 		"build": "rslib build",
 		"pack:mac": "pnpm run build",

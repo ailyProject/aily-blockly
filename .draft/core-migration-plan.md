@@ -181,3 +181,33 @@
 
 1. 继续把旧 tool / service 中的诊断、配置、文档状态和转换规则往 `core` 下沉
 2. 把刚建立的 `core/rpc + core/api + shared + desktop manager` 骨架继续接上真实启动链路与 UI typed handle / ERPC handle
+
+## 最新进展（2026-06-18）
+
+- 已完成的本轮规范收口
+  - `ui/pages/home/home-page.types.ts` 已改为 `ui/pages/home/types.ts`
+  - `core-service` / `desktop-service` 的公开类型已回收到 `types.ts`
+  - `core/agent` 下 `prompts` / `tools` / `session` / `utils` 新增或拆分了多处 `types.ts`
+  - `core/agent/session/turns.ts` 与 `serialization.ts` 的类型已拆到 `session/turns/types.ts`、`session/serialization/types.ts`
+  - `core/agent/types` 已新增 `types.ts` 与 `index.ts`
+  - `core/api/types.ts`、`desktop/src/rpc/types.ts` 已补上
+  - `packages/core/rpc/app/layout.ts` 的语法错误已修复
+- 已完成的构建验证
+  - `packages/shared` 可单独 `rslib build`
+  - `packages/erpc` 可单独 `rslib build`
+  - `packages/desktop` 可单独 `rslib build`
+  - `packages/core` 在只生成既有 domain 声明时可 build；把 `rpc/api` 纳入声明生成后，暴露出一批真实的 `core/rpc` 严格类型问题
+- 当前主要阻塞
+  - `packages/core/tsconfig.json` 纳入 `rpc/api` 后，`core/rpc` 暴露出较多声明生成错误
+  - 典型问题包括：
+    - `api/types.ts` 从 `index.ts` 引用未导出的 `api`
+    - `rpc/app/*` 中 RPC action 与 project 层同名导入冲突
+    - `rpc/app/*` 直接把 `zod` 推导出的宽松配置对象传给严格的 `AilyAppConfig`
+    - `rpc/document.ts` 里 `unknown` 未做窄化就传给 ABI 函数
+    - `rpc/server.ts` 的 `createContext` 返回类型不满足 `Record<string, unknown>`
+  - `packages/ui` 当前不再卡 `ai` 包缺失，但仍依赖 `core/rpc` 的稳定声明出口；要等 `core/rpc` 的 d.ts 真正稳定后再完全收口
+- 下一个执行切面
+  1. 修 `packages/core/api/types.ts` 的 `api` 类型导出方式
+  2. 批量修 `packages/core/rpc/app/*` 的命名冲突与 config 输入收窄
+  3. 修 `packages/core/rpc/document.ts` / `server.ts` 的严格类型错误
+  4. 重跑 `core -> desktop -> ui`

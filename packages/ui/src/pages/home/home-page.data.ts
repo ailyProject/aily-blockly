@@ -72,13 +72,33 @@ export const demoBoardIndex: Array<BoardIndexItem> = [
 ]
 
 export const demoLegacyBoards: Array<LegacyBoardItem> = [
-	{ name: 'xiao-esp32s3', nickname: 'Seeed XIAO ESP32S3', displayName: 'XIAO ESP32S3', description: 'ESP32-S3 board for compact builds.' },
-	{ name: 'uno-r4', nickname: 'UNO R4', displayName: 'Arduino UNO R4', description: 'Classic Arduino board with refreshed silicon.' }
+	{
+		name: 'xiao-esp32s3',
+		nickname: 'Seeed XIAO ESP32S3',
+		displayName: 'XIAO ESP32S3',
+		description: 'ESP32-S3 board for compact builds.'
+	},
+	{
+		name: 'uno-r4',
+		nickname: 'UNO R4',
+		displayName: 'Arduino UNO R4',
+		description: 'Classic Arduino board with refreshed silicon.'
+	}
 ]
 
 export const demoLegacyLibraries: Array<LegacyLibraryItem> = [
-	{ name: '@aily-project/lib-oled-ssd1306', nickname: 'SSD1306 OLED', description: 'OLED display driver library.', keywords: ['oled', 'ssd1306', 'display'] },
-	{ name: '@aily-project/lib-rc522', nickname: 'RC522 RFID', description: 'RFID reader support for RC522 modules.', keywords: ['rc522', 'rfid', 'nfc'] }
+	{
+		name: '@aily-project/lib-oled-ssd1306',
+		nickname: 'SSD1306 OLED',
+		description: 'OLED display driver library.',
+		keywords: ['oled', 'ssd1306', 'display']
+	},
+	{
+		name: '@aily-project/lib-rc522',
+		nickname: 'RC522 RFID',
+		description: 'RFID reader support for RC522 modules.',
+		keywords: ['rc522', 'rfid', 'nfc']
+	}
 ]
 
 export const demoAgentConfig: AilyAgentConfig = {
@@ -102,7 +122,16 @@ export const demoAgentConfig: AilyAgentConfig = {
 	},
 	models: [
 		{ model: 'gpt-5', name: 'GPT-5', family: 'openai', speed: 'fast', enabled: true },
-		{ model: 'custom-hw', name: 'Custom HW', family: 'custom', speed: 'balanced', enabled: true, isCustom: true, baseUrl: 'https://llm.example.com', apiKey: 'demo-key' }
+		{
+			model: 'custom-hw',
+			name: 'Custom HW',
+			family: 'custom',
+			speed: 'balanced',
+			enabled: true,
+			isCustom: true,
+			baseUrl: 'https://llm.example.com',
+			apiKey: 'demo-key'
+		}
 	]
 }
 
