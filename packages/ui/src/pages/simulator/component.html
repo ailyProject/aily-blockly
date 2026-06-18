@@ -5,7 +5,21 @@
         <p class="eyebrow">Simulator</p>
         <h2>Compatibility Snapshot</h2>
       </div>
-      <span hlmBadge>{{ compatCount() }} matches</span>
+      <span hlmBadge>{{ state()?.matchCount ?? 0 }} matches</span>
     </header>
+
+    @if (state(); as viewState) {
+      <div class="badge-row">
+        @for (name of viewState.boardNames; track name) {
+          <span hlmBadge>{{ name }}</span>
+        }
+      </div>
+
+      <div class="badge-row">
+        @for (name of viewState.interfaceNames; track name) {
+          <span hlmBadge variant="outline">{{ name }}</span>
+        }
+      </div>
+    }
   </article>
 </section>

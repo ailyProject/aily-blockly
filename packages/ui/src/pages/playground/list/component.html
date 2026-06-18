@@ -1,7 +1,7 @@
 <section class="subject-filter">
   <label class="filter-box">
-    <span>Search examples</span>
-    <input hlmInput [value]="query()" (input)="updateQuery($event)" placeholder="keyword or board..." />
+    <span>Search subjects</span>
+    <input hlmInput [value]="query()" (input)="updateQuery($event)" placeholder="board, sensor, protocol..." />
   </label>
 </section>
 
@@ -18,7 +18,7 @@
   } @empty {
     <article hlmCard class="subject-card empty">
       <strong>No subjects match the current filter.</strong>
-      <span class="meta">Try another board or keyword.</span>
+      <span class="meta">Try another board or topic.</span>
     </article>
   }
 </section>

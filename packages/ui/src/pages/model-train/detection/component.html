@@ -6,4 +6,14 @@
       <div class="step">{{ item }}</div>
     }
   </div>
+
+  <div class="catalog-grid">
+    @for (item of models; track item.id) {
+      <div class="catalog-card">
+        <strong>{{ item.name }}</strong>
+        <span>{{ item.board }}</span>
+        <span>{{ item.summary }}</span>
+      </div>
+    }
+  </div>
 </article>

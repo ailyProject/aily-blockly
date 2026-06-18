@@ -3,13 +3,40 @@
     <header class="panel-header">
       <div>
         <p class="eyebrow">Child Tool Host</p>
-        <h2>{{ toolId() }}</h2>
+        <h2>{{ state().tool?.title ?? 'Unknown Tool' }}</h2>
       </div>
-      <span hlmBadge variant="secondary">route attached</span>
+      <span hlmBadge variant="secondary">{{ state().tool?.id ?? 'unregistered' }}</span>
     </header>
 
     <p class="summary">
-      This host route is now a real page. The next migration step is wiring individual embedded tools and bridge context.
+      {{ state().tool?.summary ?? 'This route is reserved for child tools that will later be launched through the desktop bridge.' }}
     </p>
+
+    @if (state().frameUrl) {
+      <iframe class="frame" [src]="state().frameUrl" [title]="state().tool?.title ?? 'Child Tool'"></iframe>
+    } @else {
+      <div class="empty-card">
+        <strong>Desktop host pending</strong>
+        <span>Pass a `url` query parameter to preview a hosted tool before the desktop process bridge is wired back in.</span>
+      </div>
+    }
+  </article>
+
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Registry</p>
+        <h2>Known Child Tools</h2>
+      </div>
+    </header>
+
+    <div class="tool-grid">
+      @for (tool of tools; track tool.id) {
+        <div class="tool-card">
+          <strong>{{ tool.title }}</strong>
+          <span>{{ tool.summary }}</span>
+        </div>
+      }
+    </div>
   </article>
 </section>

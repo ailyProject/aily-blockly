@@ -1,15 +1,10 @@
 import { createColumnHelper } from '@tanstack/angular-table'
 
-type BoardRow = {
-	name: string
-	core: string
-	status: string
-	updatedAt: string
-}
+import type { HomeBoardRow } from './types'
 
-const columnHelper = createColumnHelper<BoardRow>()
+const columnHelper = createColumnHelper<HomeBoardRow>()
 
-export const boardRows: BoardRow[] = [
+export const boardRows: HomeBoardRow[] = [
 	{ name: 'xiao-esp32s3', core: 'esp32', status: 'stable', updatedAt: '2026-06-10' },
 	{ name: 'microbit-v2', core: 'nrf52', status: 'beta', updatedAt: '2026-06-08' },
 	{ name: 'uno-r4', core: 'renesas', status: 'stable', updatedAt: '2026-06-06' },

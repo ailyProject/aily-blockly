@@ -1,15 +1,7 @@
-import { sampleLintOutput } from './data'
+import { lintOutputSeed } from './data'
 
 import type { Core } from '@/core-service'
-
-export interface CodeEditorState {
-	lintMode: string
-	errorCount: number
-	warningCount: number
-	executionTime: number
-	parsedBlockCount: number
-	stringifiedLength: number
-}
+import type { CodeEditorState } from './types'
 
 export const loadCodeEditorState = async (core: Core): Promise<CodeEditorState> => {
 	const abiPayload = {
@@ -30,7 +22,7 @@ export const loadCodeEditorState = async (core: Core): Promise<CodeEditorState> 
 
 	const [lintResult, blockCount, stringified] = await Promise.all([
 		core.build.parseArduinoLintResult.query({
-			output: sampleLintOutput,
+			output: lintOutputSeed,
 			startTime: Date.now() - 32,
 			mode: 'fast',
 			format: 'vscode'

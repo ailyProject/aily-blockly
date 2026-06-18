@@ -5,24 +5,10 @@ import { HlmCardImports } from 'spartan/card'
 
 import { injectCore } from '@/core-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
-import { seedAppConfig, seedToolbarApps } from '@/pages/home/data'
+import { config, toolbarApps } from '@/workspace'
 
 import type { AilyAppConfig } from 'shared'
-
-export interface SerialMonitorSnapshot {
-	baudRate: string
-	connectBaudRate: number
-	autoScroll: boolean
-	hexInput: boolean
-	previewPort: string
-	quickSendCount: number
-	toolbarAppCount: number
-	visibleToolbarAppCount: number
-	defaultToolbarAppCount: number
-	mergedToolbarOrderCount: number
-	toggledToolbarAppCount: number
-	resetToolbarAppCount: number
-}
+import type { SerialMonitorSnapshot } from './types'
 
 @Component({
 	selector: 'serial-monitor-page',
@@ -53,31 +39,31 @@ export class SerialMonitorPageComponent implements OnInit {
 		try {
 			const [configSummary, previewConfigRaw, defaultLayout, merged, toggled, reset, serialConnect] = await Promise.all(
 				[
-					this.core.config.get.query({ config: seedAppConfig, fallbackLanguage: seedAppConfig.lang }),
+					this.core.config.get.query({ config, fallbackLanguage: config.lang }),
 					this.core.config.previewUpdate.query({
-						config: seedAppConfig,
+						config,
 						serialMonitor: { port: 'COM9', baudRate: '921600' }
 					}),
 					this.core.store.createDefaultLayout.query({
-						defaultToolbarAppIds: seedAppConfig.toolbarAppIds ?? [],
-						apps: seedToolbarApps
+						defaultToolbarAppIds: config.toolbarAppIds ?? [],
+						apps: toolbarApps
 					}),
 					this.core.store.mergeVisibleOrder.query({
-						currentZoneIds: seedAppConfig.toolbarAppIds ?? [],
+						currentZoneIds: config.toolbarAppIds ?? [],
 						visibleIds: ['flash-fs', 'aily-chat'],
-						visibleCatalogIds: seedToolbarApps.map(app => app.id)
+						visibleCatalogIds: toolbarApps.map(app => app.id)
 					}),
 					this.core.store.toggleApp.query({
-						layout: { version: 2, zones: { header: seedAppConfig.toolbarAppIds ?? [] } },
+						layout: { version: 2, zones: { header: config.toolbarAppIds ?? [] } },
 						zone: 'header',
 						appId: 'dev-tool',
-						apps: seedToolbarApps
+						apps: toolbarApps
 					}),
 					this.core.store.reset.query({
-						defaultToolbarAppIds: seedAppConfig.toolbarAppIds ?? [],
-						apps: seedToolbarApps
+						defaultToolbarAppIds: config.toolbarAppIds ?? [],
+						apps: toolbarApps
 					}),
-					this.core.config.buildSerialConnectOptions.query({ config: seedAppConfig, port: 'COM9' })
+					this.core.config.buildSerialConnectOptions.query({ config, port: 'COM9' })
 				]
 			)
 			const previewConfig = previewConfigRaw as AilyAppConfig

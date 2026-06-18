@@ -39,7 +39,7 @@ export const playgroundSubjects: Array<PlaygroundSubjectItem> = [
 	{
 		id: 'iot',
 		title: 'IoT Patterns',
-		summary: 'Connectivity-oriented samples around MQTT, sensors, and cloud messaging.',
+		summary: 'Connectivity-oriented projects around MQTT, sensors, and cloud messaging.',
 		tag: 'IoT',
 		examples: [
 			{ id: 'wifi-scan', title: 'Wi-Fi Scan', summary: 'List nearby SSIDs on boot.', board: 'XIAO ESP32S3' },

@@ -1,15 +1,13 @@
 import { loadHomePreview } from '@/core-service'
-
 import {
-	seedAgentConfig,
-	seedAppConfig,
-	seedAppConfigMutationInput,
-	seedBoardIndex,
-	seedLegacyBoards,
-	seedLegacyLibraries,
-	seedRecentProject,
-	seedToolbarApps
-} from './data'
+	agentConfig,
+	boardIndex,
+	config,
+	configMutationInput,
+	legacyBoards,
+	legacyLibraries,
+	toolbarApps
+} from '@/workspace'
 
 import type { Core } from '@/core-service'
 import type { AilyAppConfig, RecentModelProject } from 'shared'
@@ -21,15 +19,15 @@ import type { HomePageCoreState } from './types'
  */
 export const loadHomePageCoreState = async (core: Core): Promise<HomePageCoreState> => {
 	const preview = await loadHomePreview(core, {
-		boardIndex: seedBoardIndex,
-		legacyBoards: seedLegacyBoards,
-		legacyLibraries: seedLegacyLibraries,
-		agentConfig: seedAgentConfig,
-		appConfig: seedAppConfig,
-		toolbarApps: seedToolbarApps,
-		mutationInput: seedAppConfigMutationInput,
+		boardIndex,
+		legacyBoards,
+		legacyLibraries,
+		agentConfig,
+		appConfig: config,
+		toolbarApps,
+		mutationInput: configMutationInput,
 		context: {
-			fallbackLanguage: seedAppConfig.lang,
+			fallbackLanguage: config.lang,
 			routeUrl: '/main/blockly-editor',
 			boardCore: 'esp32',
 			isDevMode: false

@@ -9,6 +9,20 @@ export interface HomePageCategoryCount {
 }
 
 /**
+ * 首页板卡表格行
+ */
+export interface HomeBoardRow {
+	/** 开发板名称 */
+	name: string
+	/** 开发板核心平台 */
+	core: string
+	/** 当前支持状态 */
+	status: string
+	/** 最近更新时间 */
+	updatedAt: string
+}
+
+/**
  * 首页 legacy 校验结果
  */
 export interface HomePageValidationState {

@@ -7,11 +7,7 @@ import { injectCore } from '@/core-service'
 
 import { guideCommunityLinks, guideQuickActions } from './data'
 
-export interface GuideRecentProject {
-	name: string
-	path: string
-	nickname?: string
-}
+import type { GuideRecentProject } from './types'
 
 @Component({
 	selector: 'guide-page',

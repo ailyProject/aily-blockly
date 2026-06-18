@@ -17,3 +17,12 @@
     <article hlmCard class="check-card">{{ item }}</article>
   }
 </section>
+
+<section class="check-grid">
+  @for (item of deployModels; track item.id) {
+    <article hlmCard class="check-card">
+      <strong>{{ item.name }}</strong>
+      <p>{{ item.board }} · {{ item.framework }}</p>
+    </article>
+  }
+</section>

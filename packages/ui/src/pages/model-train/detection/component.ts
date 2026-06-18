@@ -2,6 +2,8 @@ import { Component } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
+import { modelCatalog } from '@/workspace'
+
 import { detectionChecklist } from '../data'
 
 @Component({
@@ -12,4 +14,5 @@ import { detectionChecklist } from '../data'
 })
 export class DetectionTrainPageComponent {
 	protected readonly checklist = detectionChecklist
+	protected readonly models = modelCatalog.filter(item => item.task === 'detection')
 }

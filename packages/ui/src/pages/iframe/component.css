@@ -15,6 +15,12 @@
 	margin: 0;
 }
 
+.summary {
+	margin: 0;
+	color: var(--muted-foreground);
+	word-break: break-all;
+}
+
 .eyebrow {
 	font-size: 12px;
 	font-weight: 700;
@@ -29,4 +35,22 @@
 	border: 0;
 	border-radius: 18px;
 	background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.preset-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}
+
+.preset-card {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.preset-card span {
+	color: var(--muted-foreground);
 }

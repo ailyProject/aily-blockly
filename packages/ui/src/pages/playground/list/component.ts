@@ -17,18 +17,18 @@ export class PlaygroundListPageComponent {
 
 	protected readonly query = signal('')
 	protected readonly subjects = computed(() => {
-		const keyword = this.query().trim().toLowerCase()
+		const searchText = this.query().trim().toLowerCase()
 		const boardFilter = String(this.route.snapshot.queryParamMap.get('board') ?? '')
 			.trim()
 			.toLowerCase()
 
 		return playgroundSubjects.filter(subject => {
 			const matchesKeyword =
-				!keyword ||
-				subject.title.toLowerCase().includes(keyword) ||
-				subject.summary.toLowerCase().includes(keyword) ||
+				!searchText ||
+				subject.title.toLowerCase().includes(searchText) ||
+				subject.summary.toLowerCase().includes(searchText) ||
 				subject.examples.some(example =>
-					`${example.title} ${example.summary} ${example.board}`.toLowerCase().includes(keyword)
+					`${example.title} ${example.summary} ${example.board}`.toLowerCase().includes(searchText)
 				)
 
 			const matchesBoard =

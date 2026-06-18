@@ -4,6 +4,10 @@ import { HlmCardImports } from 'spartan/card'
 
 import { injectCore } from '@/core-service'
 
+import { loadSimulatorState } from './runtime'
+
+import type { SimulatorState } from './types'
+
 @Component({
 	selector: 'simulator-page',
 	imports: [HlmBadgeImports, HlmCardImports],
@@ -13,34 +17,9 @@ import { injectCore } from '@/core-service'
 export class SimulatorPageComponent implements OnInit {
 	private readonly core = injectCore()
 
-	protected readonly compatCount = signal(0)
+	protected readonly state = signal<SimulatorState | null>(null)
 
 	async ngOnInit() {
-		const result = await this.core.hardware.searchCompat.query({
-			boards: [
-				{
-					name: 'xiao-esp32s3',
-					displayName: 'XIAO ESP32S3',
-					brand: 'Seeed',
-					type: 'board',
-					architecture: 'xtensa',
-					cores: 2,
-					frequency: 240,
-					frequencyUnit: 'MHz',
-					flash: 8192,
-					sram: 512,
-					psram: 8192,
-					connectivity: ['wifi', 'ble'],
-					interfaces: ['i2c', 'spi', 'uart'],
-					core: 'esp32',
-					voltage: 3.3,
-					tags: ['compact', 'wifi']
-				}
-			],
-			libraries: [],
-			query: { query: 'esp32', type: 'boards' }
-		})
-
-		this.compatCount.set(result.length)
+		this.state.set(await loadSimulatorState(this.core))
 	}
 }

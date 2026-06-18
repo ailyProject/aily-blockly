@@ -26,6 +26,13 @@
 }
 
 .check-card {
+	display: grid;
+	gap: 6px;
 	padding: 16px;
 	border-radius: 18px;
+}
+
+.check-card p {
+	margin: 0;
+	color: var(--muted-foreground);
 }

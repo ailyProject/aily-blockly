@@ -1,6 +1,6 @@
 export const guideQuickActions = [
 	{ href: '/main/project-new', label: 'Create Project', detail: 'start a new workspace from a board preset' },
-	{ href: '/main/playground/list', label: 'Explore Examples', detail: 'open curated subjects and sample projects' },
+	{ href: '/main/playground/list', label: 'Open Playground', detail: 'browse curated subjects and starter projects' },
 	{ href: '/main/blockly-editor', label: 'Open Blockly Editor', detail: 'jump into the visual editor shell' }
 ]
 

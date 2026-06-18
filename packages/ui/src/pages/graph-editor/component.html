@@ -3,28 +3,26 @@
     <header class="panel-header">
       <div>
         <p class="eyebrow">Graph Editor</p>
-        <h2>Connection Overview</h2>
+        <h2>{{ state().title }}</h2>
       </div>
+      <span hlmBadge variant="secondary">{{ state().origin }}</span>
     </header>
 
-    <div class="badge-row">
-      @for (item of connectivityCategories(); track item.name) {
-        <span hlmBadge>{{ item.name }} {{ item.count }}</span>
-      }
-    </div>
+    <p class="summary">{{ state().url }}</p>
+    <iframe class="frame" [src]="state().frameUrl" [title]="state().title"></iframe>
   </article>
 
   <article hlmCard class="panel">
     <header class="panel-header">
       <div>
-        <p class="eyebrow">Interfaces</p>
-        <h2>Signal Families</h2>
+        <p class="eyebrow">Boards</p>
+        <h2>Attached Workspace Targets</h2>
       </div>
     </header>
 
     <div class="badge-row">
-      @for (item of interfaceCategories(); track item.name) {
-        <span hlmBadge variant="outline">{{ item.name }} {{ item.count }}</span>
+      @for (board of boards; track board.name) {
+        <span hlmBadge>{{ board.displayName }}</span>
       }
     </div>
   </article>

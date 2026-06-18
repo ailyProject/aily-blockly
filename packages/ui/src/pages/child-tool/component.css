@@ -27,3 +27,31 @@
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 }
+
+.frame {
+	width: 100%;
+	min-height: 420px;
+	border: 0;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.empty-card,
+.tool-card {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.empty-card span,
+.tool-card span {
+	color: var(--muted-foreground);
+}
+
+.tool-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}

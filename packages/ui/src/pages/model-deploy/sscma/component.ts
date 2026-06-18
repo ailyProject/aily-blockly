@@ -3,6 +3,8 @@ import { RouterLink } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
+import { modelCatalog } from '@/workspace'
+
 import { deployChecks } from '../data'
 
 @Component({
@@ -13,4 +15,5 @@ import { deployChecks } from '../data'
 })
 export class SscmaDeployPageComponent {
 	protected readonly checks = deployChecks
+	protected readonly deployModels = modelCatalog.filter(item => item.deployTarget === 'sscma')
 }

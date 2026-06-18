@@ -300,6 +300,24 @@
   - `code-editor` 已拆出 `runtime`，开始承载 ABI / lint 两类 core 数据
   - `playground/list` 已补本地关键字与 board 过滤
   - `blockly-editor` 已补真实硬件搜索输入，不再只展示静态结果
+  - `workspace/*` 已建立共享页面域种子层，承接板卡、库、配置、模型与嵌入目标数据
+  - `home/data.ts` 已从 227 行压缩到 24 行，其他页面不再反向依赖首页种子
+  - `ffs-manager` 已补 `types.ts + runtime.ts`，不再把连接摘要直接内联在组件里
+  - `iframe` 已从空白壳升级为真实嵌入页，补了目标解析、origin 展示和 preset 列表
+  - `graph-editor` 已从硬编码分类卡片改回接近 legacy 的 connection-graph iframe 容器
+  - `child-tool` 已改成子工具元数据页 + 可选 iframe host，暂不伪造 desktop 子进程能力
+  - `model-store` 已从单个 badge 面板升级为可搜索、可按 task 筛选的模型目录
+  - `simulator` 已改为直接消费 `core.hardware` 搜索与分类结果，不再内联板卡假数据
+  - 本轮新触达页面中的内联类型已开始回收到各自 `types.ts`
+  - 当前 `packages/ui` 最近一次 `ng build` 仍通过，产物初始包体约 `847 kB`
+  - 已清理本轮新增页面里的 `sample / keyword / samples` 用户可见措辞
+
+## 当前待续动作（2026-06-18 / latest）
+
+1. 继续把 `ui` 剩余页面中留在 `component.ts` / `runtime.ts` 的内联类型迁到 `types.ts`
+2. 继续检查 `playground/subject`、`model-train/*`、`model-deploy/*` 是否还只是轻量壳层
+3. 评估是否开始把 `model-store` 的远端 API 拉取逻辑正式下沉到 `core` 域，而不是留在 UI
+4. UI 收口后切回 `desktop` packaging / release 脚手架
 
 ## Workflow 基线（2026-06-18）
 

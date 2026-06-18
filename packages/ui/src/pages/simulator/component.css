@@ -22,3 +22,9 @@
 	text-transform: uppercase;
 	color: var(--muted-foreground);
 }
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}

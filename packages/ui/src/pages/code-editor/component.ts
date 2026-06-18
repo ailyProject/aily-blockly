@@ -6,14 +6,7 @@ import { injectCore } from '@/core-service'
 
 import { loadCodeEditorState } from './runtime'
 
-export interface CodeEditorStateView {
-	lintMode: string
-	errorCount: number
-	warningCount: number
-	executionTime: number
-	parsedBlockCount: number
-	stringifiedLength: number
-}
+import type { CodeEditorState } from './types'
 
 @Component({
 	selector: 'code-editor-page',
@@ -24,7 +17,7 @@ export interface CodeEditorStateView {
 export class CodeEditorPageComponent implements OnInit {
 	private readonly core = injectCore()
 
-	protected readonly state = signal<CodeEditorStateView | null>(null)
+	protected readonly state = signal<CodeEditorState | null>(null)
 	protected readonly compileSummary = signal('')
 
 	async ngOnInit() {

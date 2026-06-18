@@ -1,10 +1,5 @@
 import type { Core } from '@/core-service'
-import type { AilyCoreServiceHealth } from 'shared'
-
-export interface ModelDeployState {
-	health: AilyCoreServiceHealth
-	deployTargetCount: number
-}
+import type { ModelDeployState } from './types'
 
 export const loadModelDeployState = async (core: Core): Promise<ModelDeployState> => {
 	const health = await core.health.query()

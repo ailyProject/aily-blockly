@@ -3,13 +3,47 @@
     <header class="panel-header">
       <div>
         <p class="eyebrow">Model Store</p>
-        <h2>Library Categories</h2>
+        <h2>Deployable Catalog</h2>
       </div>
+      <span hlmBadge variant="secondary">{{ filteredCatalog().length }} models</span>
     </header>
 
+    <label class="filter-box">
+      <span>Search models</span>
+      <input hlmInput [value]="query()" (input)="updateQuery($event)" placeholder="model, board, author..." />
+    </label>
+
     <div class="badge-row">
-      @for (item of categories(); track item.name) {
-        <span hlmBadge>{{ item.name }} {{ item.count }}</span>
+      @for (item of taskCounts(); track item.task) {
+        <button hlmBadge [variant]="activeTask() === item.task ? 'default' : 'outline'" (click)="setActiveTask(item.task)">
+          {{ item.task }} {{ item.count }}
+        </button>
+      }
+    </div>
+
+    <div class="catalog-grid">
+      @for (item of filteredCatalog(); track item.id) {
+        <article class="catalog-card">
+          <div class="catalog-copy">
+            <strong>{{ item.name }}</strong>
+            <span>{{ item.summary }}</span>
+          </div>
+          <div class="catalog-meta">
+            <span>{{ item.author }}</span>
+            <span>{{ item.board }}</span>
+            <span>{{ item.framework }}</span>
+            <span>{{ item.size }}</span>
+          </div>
+          <div class="badge-row compact">
+            <span hlmBadge>{{ item.task }}</span>
+            <span hlmBadge variant="outline">{{ item.deployTarget }}</span>
+          </div>
+        </article>
+      } @empty {
+        <article class="catalog-card empty">
+          <strong>No model matches the current filter.</strong>
+          <span>Try another task or a shorter query.</span>
+        </article>
       }
     </div>
   </article>

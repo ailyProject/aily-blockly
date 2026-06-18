@@ -5,21 +5,9 @@ import { HlmCardImports } from 'spartan/card'
 
 import { injectCore } from '@/core-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
-import { seedAppConfig } from '@/pages/home/data'
+import { config } from '@/workspace'
 
-export interface SettingsSnapshot {
-	selectedLanguage: string
-	themeMode: string
-	devmodeEnabled: boolean
-	devmodeAutoSave: boolean
-	aiChatMode: string
-	selectedModel: string | null
-	recentProjectCount: number
-	recentModelProjectCount: number
-	onboardingCompleted: boolean
-	blocklyOnboardingCompleted: boolean
-	ailyChatOnboardingCompleted: boolean
-}
+import type { SettingsSnapshot } from './types'
 
 @Component({
 	selector: 'settings-page',
@@ -44,12 +32,12 @@ export class SettingsPageComponent implements OnInit {
 
 		try {
 			const [configSummary, recentProjects, recentModels, onboarding, resolvedModel] = await Promise.all([
-				this.core.config.get.query({ config: seedAppConfig, fallbackLanguage: seedAppConfig.lang }),
-				this.core.project.getRecentProjects.query({ config: seedAppConfig }),
-				this.core.project.getRecentModelProjects.query({ config: seedAppConfig }),
-				this.core.onboarding.getOnboarding.query({ config: seedAppConfig }),
+				this.core.config.get.query({ config, fallbackLanguage: config.lang }),
+				this.core.project.getRecentProjects.query({ config }),
+				this.core.project.getRecentModelProjects.query({ config }),
+				this.core.onboarding.getOnboarding.query({ config }),
 				this.core.config.resolveModel.query({
-					config: seedAppConfig,
+					config,
 					enabledModels: []
 				})
 			])
@@ -60,7 +48,7 @@ export class SettingsPageComponent implements OnInit {
 				devmodeEnabled: configSummary.devmodeEnabled,
 				devmodeAutoSave: configSummary.devmode.autoSave,
 				aiChatMode: configSummary.aiChatMode ?? 'agent',
-				selectedModel: resolvedModel.currentModel?.name ?? seedAppConfig.aiChatModel?.name ?? null,
+				selectedModel: resolvedModel.currentModel?.name ?? config.aiChatModel?.name ?? null,
 				recentProjectCount: recentProjects.length,
 				recentModelProjectCount: recentModels.length,
 				onboardingCompleted: onboarding.onboardingCompleted,

@@ -14,11 +14,7 @@ import {
 	projectNewUserDocuments
 } from './data'
 
-export interface ProjectNewRecentItem {
-	name: string
-	path: string
-	nickname?: string
-}
+import type { ProjectNewRecentItem } from './types'
 
 @Component({
 	selector: 'project-new-page',

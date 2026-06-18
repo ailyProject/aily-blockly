@@ -24,3 +24,21 @@
 	border-radius: 14px;
 	background: color-mix(in srgb, var(--muted) 60%, transparent);
 }
+
+.catalog-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}
+
+.catalog-card {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.catalog-card span {
+	color: var(--muted-foreground);
+}

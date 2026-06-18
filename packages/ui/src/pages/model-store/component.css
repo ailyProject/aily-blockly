@@ -28,3 +28,41 @@
 	flex-wrap: wrap;
 	gap: 10px;
 }
+
+.filter-box {
+	display: grid;
+	gap: 8px;
+}
+
+.filter-box span,
+.catalog-card span {
+	color: var(--muted-foreground);
+}
+
+.catalog-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	gap: 12px;
+}
+
+.catalog-card {
+	display: grid;
+	gap: 12px;
+	padding: 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.catalog-copy,
+.catalog-meta {
+	display: grid;
+	gap: 6px;
+}
+
+.catalog-meta {
+	font-size: 13px;
+}
+
+.badge-row.compact {
+	gap: 8px;
+}

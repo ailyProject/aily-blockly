@@ -7,10 +7,10 @@
       </div>
     </header>
 
-    @if (serialSummary(); as serial) {
+    @if (state(); as viewState) {
       <div class="metric-grid">
-        <div><span>Port</span><strong>{{ serial.port || 'unset' }}</strong></div>
-        <div><span>Baud</span><strong>{{ serial.baudRate }}</strong></div>
+        <div><span>Port</span><strong>{{ viewState.serial.port }}</strong></div>
+        <div><span>Baud</span><strong>{{ viewState.serial.baudRate }}</strong></div>
       </div>
     }
   </article>
@@ -23,10 +23,10 @@
       </div>
     </header>
 
-    @if (connectSummary(); as connect) {
+    @if (state(); as viewState) {
       <div class="metric-grid">
-        <div><span>Path</span><strong>{{ connect.path }}</strong></div>
-        <div><span>Baud</span><strong>{{ connect.baudRate }}</strong></div>
+        <div><span>Path</span><strong>{{ viewState.connect.path }}</strong></div>
+        <div><span>Baud</span><strong>{{ viewState.connect.baudRate }}</strong></div>
       </div>
     }
   </article>

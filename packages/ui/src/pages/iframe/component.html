@@ -3,10 +3,30 @@
     <header class="panel-header">
       <div>
         <p class="eyebrow">Iframe</p>
-        <h2>Embedded Window</h2>
+        <h2>{{ state().title }}</h2>
+      </div>
+      <span hlmBadge variant="secondary">{{ state().origin }}</span>
+    </header>
+
+    <p class="summary">{{ state().url }}</p>
+    <iframe class="frame" [src]="state().frameUrl" [title]="state().title"></iframe>
+  </article>
+
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Presets</p>
+        <h2>Quick Targets</h2>
       </div>
     </header>
 
-    <iframe class="frame" [src]="targetUrl()" title="Embedded Tool"></iframe>
+    <div class="preset-grid">
+      @for (target of targets; track target.id) {
+        <div class="preset-card">
+          <strong>{{ target.title }}</strong>
+          <span>{{ target.summary }}</span>
+        </div>
+      }
+    </div>
   </article>
 </section>
