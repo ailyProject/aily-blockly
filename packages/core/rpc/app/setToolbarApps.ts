@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { setToolbarAppIds } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const setToolbarApps = p
 	.input(
@@ -11,4 +11,4 @@ export const setToolbarApps = p
 			toolbarAppIds: z.array(z.string())
 		})
 	)
-	.query(({ input }) => setToolbarAppIds(input.config, input.toolbarAppIds))
+	.query(({ input }) => setToolbarAppIds(normalizeAppConfigInput(input.config), input.toolbarAppIds))

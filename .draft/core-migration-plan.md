@@ -196,18 +196,13 @@
   - `packages/shared` 可单独 `rslib build`
   - `packages/erpc` 可单独 `rslib build`
   - `packages/desktop` 可单独 `rslib build`
-  - `packages/core` 在只生成既有 domain 声明时可 build；把 `rpc/api` 纳入声明生成后，暴露出一批真实的 `core/rpc` 严格类型问题
+  - `packages/core` 已可单独 `rslib build`
+  - `packages/ui` 已可单独 `ng build`
 - 当前主要阻塞
-  - `packages/core/tsconfig.json` 纳入 `rpc/api` 后，`core/rpc` 暴露出较多声明生成错误
-  - 典型问题包括：
-    - `api/types.ts` 从 `index.ts` 引用未导出的 `api`
-    - `rpc/app/*` 中 RPC action 与 project 层同名导入冲突
-    - `rpc/app/*` 直接把 `zod` 推导出的宽松配置对象传给严格的 `AilyAppConfig`
-    - `rpc/document.ts` 里 `unknown` 未做窄化就传给 ABI 函数
-    - `rpc/server.ts` 的 `createContext` 返回类型不满足 `Record<string, unknown>`
-  - `packages/ui` 当前不再卡 `ai` 包缺失，但仍依赖 `core/rpc` 的稳定声明出口；要等 `core/rpc` 的 d.ts 真正稳定后再完全收口
+  - 当前不再是构建阻塞，而是结构继续演进的问题：
+    - `core/rpc/app/*` 仍然承载了大量本该按子域拆到 `project`、`agent` 等分组下的动作
+    - `ui` 为了先跑通构建，临时引入了 `src/workspace/*` bridge；后续应随着 rpc/public type 进一步稳定，评估是否继续保留或收口
 - 下一个执行切面
-  1. 修 `packages/core/api/types.ts` 的 `api` 类型导出方式
-  2. 批量修 `packages/core/rpc/app/*` 的命名冲突与 config 输入收窄
-  3. 修 `packages/core/rpc/document.ts` / `server.ts` 的严格类型错误
-  4. 重跑 `core -> desktop -> ui`
+  1. 继续把 `core/rpc/app/*` 中 project/config/recent/onboarding/layout 相关动作迁到更合理的分组
+  2. 继续排查 UI / desktop 中残留的“应下沉到 core 的纯逻辑”
+  3. 完成 rpc 模块命名与层级对齐 polywise 风格

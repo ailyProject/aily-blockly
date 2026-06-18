@@ -1,8 +1,8 @@
 import { z } from 'zod'
 
-import { removeRecentlyProject } from '../../project'
+import { getRecentProjects, removeRecentlyProject } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const removeRecentProject = p
 	.input(
@@ -11,4 +11,10 @@ export const removeRecentProject = p
 			projectPath: z.string()
 		})
 	)
-	.query(({ input }) => removeRecentlyProject(input.config, input.projectPath))
+	.query(({ input }) => {
+		const config = normalizeAppConfigInput(input.config)
+		return {
+			...(config ?? {}),
+			recentlyProjects: removeRecentlyProject(getRecentProjects(config), input.projectPath)
+		}
+	})

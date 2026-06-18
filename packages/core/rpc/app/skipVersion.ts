@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { skipAppVersion } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const skipVersion = p
 	.input(
@@ -11,4 +11,4 @@ export const skipVersion = p
 			version: z.string()
 		})
 	)
-	.query(({ input }) => skipAppVersion(input.config, input.version))
+	.query(({ input }) => skipAppVersion(normalizeAppConfigInput(input.config), input.version))

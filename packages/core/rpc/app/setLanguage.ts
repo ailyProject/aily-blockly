@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { setSelectedLanguage } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const setLanguage = p
 	.input(
@@ -11,4 +11,4 @@ export const setLanguage = p
 			selectedLanguage: z.string()
 		})
 	)
-	.query(({ input }) => setSelectedLanguage(input.config, input.selectedLanguage))
+	.query(({ input }) => setSelectedLanguage(normalizeAppConfigInput(input.config), input.selectedLanguage))

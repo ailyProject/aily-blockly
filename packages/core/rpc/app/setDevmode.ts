@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { setDevmodeConfig } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const setDevmode = p
 	.input(
@@ -14,4 +14,4 @@ export const setDevmode = p
 			})
 		})
 	)
-	.query(({ input }) => setDevmodeConfig(input.config, input.devmode))
+	.query(({ input }) => setDevmodeConfig(normalizeAppConfigInput(input.config), input.devmode))

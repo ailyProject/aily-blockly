@@ -1,1 +1,1 @@
-export type { Router } from '../../../core/dist/rpc/index'
+export type { Router } from '../../../core/dist/rpc/index.d.ts'

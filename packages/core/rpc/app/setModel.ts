@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { setAiChatModel } from '../../project'
 import { p } from '../trpc'
-import { appModelSchema, appSchema } from './schemas'
+import { appModelSchema, appSchema, normalizeAppConfigInput } from './schemas'
 
 export const setModel = p
 	.input(
@@ -11,4 +11,4 @@ export const setModel = p
 			model: appModelSchema
 		})
 	)
-	.query(({ input }) => setAiChatModel(input.config, input.model))
+	.query(({ input }) => setAiChatModel(normalizeAppConfigInput(input.config), input.model))

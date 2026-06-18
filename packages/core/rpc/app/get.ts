@@ -19,7 +19,7 @@ import {
 	resolveSerialMonitorConfig
 } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const get = p
 	.input(
@@ -29,21 +29,24 @@ export const get = p
 			userHome: z.string().optional()
 		})
 	)
-	.query(({ input }) => ({
-		selectedLanguage: getSelectedLanguage(input.config, input.fallbackLanguage),
-		themeMode: getThemeMode(input.config),
-		monacoTheme: getMonacoTheme(input.config),
-		mermaidTheme: getMermaidTheme(input.config),
-		blocklyThemeId: getBlocklyThemeId(input.config),
-		devmodeEnabled: isDevmodeEnabled(input.config),
-		devmode: resolveDevmodeConfig(input.config),
-		appDataPathTemplate: getAppDataPathTemplate(input.config),
-		appDataPath: input.userHome ? resolveAppDataPath(input.config, input.userHome) : '',
-		toolbarAppIds: getToolbarAppIds(input.config),
-		skippedVersions: getSkippedVersions(input.config),
-		aiChatMode: getAiChatMode(input.config),
-		quickSendList: getQuickSendList(input.config),
-		serialMonitor: resolveSerialMonitorConfig(input.config),
-		serialViewMode: getDefaultSerialMonitorViewMode(),
-		serialInputMode: getDefaultSerialMonitorInputMode()
-	}))
+	.query(({ input }) => {
+		const config = normalizeAppConfigInput(input.config)
+		return {
+			selectedLanguage: getSelectedLanguage(config, input.fallbackLanguage),
+			themeMode: getThemeMode(config),
+			monacoTheme: getMonacoTheme(config),
+			mermaidTheme: getMermaidTheme(config),
+			blocklyThemeId: getBlocklyThemeId(config),
+			devmodeEnabled: isDevmodeEnabled(config),
+			devmode: resolveDevmodeConfig(config),
+			appDataPathTemplate: getAppDataPathTemplate(config),
+			appDataPath: input.userHome ? resolveAppDataPath(config, input.userHome) : '',
+			toolbarAppIds: getToolbarAppIds(config),
+			skippedVersions: getSkippedVersions(config),
+			aiChatMode: getAiChatMode(config),
+			quickSendList: getQuickSendList(config),
+			serialMonitor: resolveSerialMonitorConfig(config),
+			serialViewMode: getDefaultSerialMonitorViewMode(),
+			serialInputMode: getDefaultSerialMonitorInputMode()
+		}
+	})

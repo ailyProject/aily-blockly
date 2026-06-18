@@ -1,10 +1,12 @@
 import { z } from 'zod'
 
-import { addRecentModelProject } from '../../project'
+import { addRecentModelProject as addRecentModelProjectConfig } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
-const recentModelProjectSchema = z.object({
+import type { RecentModelProject } from 'shared'
+
+const recentModelProjectSchema: z.ZodType<RecentModelProject> = z.object({
 	name: z.string(),
 	nickname: z.string().optional(),
 	path: z.string(),
@@ -19,4 +21,4 @@ export const addRecentModelProject = p
 			project: recentModelProjectSchema
 		})
 	)
-	.query(({ input }) => addRecentModelProject(input.config, input.project))
+	.query(({ input }) => addRecentModelProjectConfig(normalizeAppConfigInput(input.config), input.project))

@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { setSerialMonitorConfig } from '../../project'
 import { p } from '../trpc'
-import { appSchema, serialMonitorSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput, serialMonitorSchema } from './schemas'
 
 export const setSerialMonitor = p
 	.input(
@@ -11,4 +11,4 @@ export const setSerialMonitor = p
 			serialMonitor: serialMonitorSchema
 		})
 	)
-	.query(({ input }) => setSerialMonitorConfig(input.config, input.serialMonitor))
+	.query(({ input }) => setSerialMonitorConfig(normalizeAppConfigInput(input.config), input.serialMonitor))

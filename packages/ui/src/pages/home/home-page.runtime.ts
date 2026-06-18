@@ -12,6 +12,7 @@ import {
 } from './home-page.data'
 
 import type { Core } from '@ui/core-service'
+import type { AilyAppConfig, RecentModelProject } from '@ui/workspace/shared'
 import type { HomePageCoreState } from './types'
 
 /**
@@ -34,6 +35,16 @@ export const loadHomePageCoreState = async (core: Core): Promise<HomePageCoreSta
 			isDevMode: false
 		}
 	})
+	const previewConfig = preview.previewConfig as AilyAppConfig
+	const previewOnboarding = preview.previewOnboarding as {
+		ailyChatOnboardingCompleted?: boolean
+	}
+	const addedRecentModelProjects = preview.addedRecentModelProjects as {
+		recentModelProjects?: Array<RecentModelProject>
+	}
+	const removedRecentModelProjects = preview.removedRecentModelProjects as {
+		recentModelProjects?: Array<RecentModelProject>
+	}
 
 	return {
 		architectureCategories: preview.boardCategories.categories.slice(0, 4),
@@ -72,24 +83,24 @@ export const loadHomePageCoreState = async (core: Core): Promise<HomePageCoreSta
 			onboardingCompleted: preview.onboarding.onboardingCompleted,
 			blocklyOnboardingCompleted: preview.onboarding.blocklyOnboardingCompleted,
 			ailyChatOnboardingCompleted: preview.onboarding.ailyChatOnboardingCompleted,
-			previewSelectedLanguage: preview.previewConfig.selectedLanguage ?? preview.appConfigSummary.selectedLanguage,
-			previewThemeMode: preview.previewConfig.theme === 'light' ? 'light' : 'dark',
-			previewDevmodeEnabled: preview.previewConfig.devmode?.enabled ?? preview.appConfigSummary.devmode.enabled,
-			previewDevmodeAutoSave: preview.previewConfig.devmode?.autoSave ?? preview.appConfigSummary.devmode.autoSave,
-			previewSerialPort: preview.previewConfig.serialMonitor?.port ?? 'unset',
-			previewAiChatMode: preview.previewConfig.aiChatMode ?? 'agent',
-			previewToolbarAppCount: preview.previewConfig.toolbarAppIds?.length ?? 0,
-			previewQuickSendCount: preview.previewConfig.quickSendList?.length ?? 0,
-			previewSkippedVersionCount: preview.previewConfig.skippedVersions?.length ?? 0,
+			previewSelectedLanguage: previewConfig.selectedLanguage ?? preview.appConfigSummary.selectedLanguage,
+			previewThemeMode: previewConfig.theme === 'light' ? 'light' : 'dark',
+			previewDevmodeEnabled: previewConfig.devmode?.enabled ?? preview.appConfigSummary.devmode.enabled,
+			previewDevmodeAutoSave: previewConfig.devmode?.autoSave ?? preview.appConfigSummary.devmode.autoSave,
+			previewSerialPort: previewConfig.serialMonitor?.port ?? 'unset',
+			previewAiChatMode: previewConfig.aiChatMode ?? 'agent',
+			previewToolbarAppCount: previewConfig.toolbarAppIds?.length ?? 0,
+			previewQuickSendCount: previewConfig.quickSendList?.length ?? 0,
+			previewSkippedVersionCount: previewConfig.skippedVersions?.length ?? 0,
 			defaultToolbarAppCount: preview.defaultAppStore.zones.header.length,
 			mergedToolbarOrderCount: preview.mergedToolbarOrder.length,
 			toggledToolbarAppCount: preview.toggledLayout.zones.header.length,
 			resetToolbarAppCount: preview.resetLayout.zones.header.length,
 			addedRecentProjectCount: preview.addedRecentProjects.recentlyProjects?.length ?? 0,
 			removedRecentProjectCount: preview.removedRecentProjects.recentlyProjects?.length ?? 0,
-			previewAilyChatOnboardingCompleted: preview.previewOnboarding.ailyChatOnboardingCompleted,
-			addedRecentModelProjectCount: preview.addedRecentModelProjects.recentModelProjects?.length ?? 0,
-			removedRecentModelProjectCount: preview.removedRecentModelProjects.recentModelProjects?.length ?? 0
+			previewAilyChatOnboardingCompleted: previewOnboarding.ailyChatOnboardingCompleted ?? false,
+			addedRecentModelProjectCount: addedRecentModelProjects.recentModelProjects?.length ?? 0,
+			removedRecentModelProjectCount: removedRecentModelProjects.recentModelProjects?.length ?? 0
 		}
 	}
 }

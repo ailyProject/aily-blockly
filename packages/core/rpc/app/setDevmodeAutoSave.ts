@@ -1,8 +1,8 @@
 import { z } from 'zod'
 
-import { setDevmodeAutoSave } from '../../project'
+import { setDevmodeAutoSave as setDevmodeAutoSaveConfig } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const setDevmodeAutoSave = p
 	.input(
@@ -11,4 +11,4 @@ export const setDevmodeAutoSave = p
 			autoSave: z.boolean()
 		})
 	)
-	.query(({ input }) => setDevmodeAutoSave(input.config, input.autoSave))
+	.query(({ input }) => setDevmodeAutoSaveConfig(normalizeAppConfigInput(input.config), input.autoSave))

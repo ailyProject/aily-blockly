@@ -1,9 +1,11 @@
 import { z } from 'zod'
 
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
-const recentModelProjectSchema = z.object({
+import type { RecentModelProject } from 'shared'
+
+const recentModelProjectSchema: z.ZodType<RecentModelProject> = z.object({
 	name: z.string(),
 	nickname: z.string().optional(),
 	path: z.string(),
@@ -19,6 +21,6 @@ export const setRecentModelProjects = p
 		})
 	)
 	.query(({ input }) => ({
-		...(input.config ?? {}),
+		...(normalizeAppConfigInput(input.config) ?? {}),
 		recentModelProjects: input.projects
 	}))

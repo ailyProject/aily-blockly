@@ -21,6 +21,8 @@ export default r({
 	normalizeProjectDocument: p.input(abiPayloadSchema).query(({ input }) => normalizeProjectDocument(input.payload)),
 	normalizeProjectAbi: p.input(abiPayloadSchema).query(({ input }) => normalizeProjectAbi(input.payload)),
 	parseProjectAbiText: p.input(abiTextSchema).query(({ input }) => parseProjectAbiText(input.raw)),
-	stringifyProjectAbi: p.input(abiPayloadSchema).query(({ input }) => stringifyProjectAbi(input.payload)),
-	countAbiBlocks: p.input(abiPayloadSchema).query(({ input }) => countAbiBlocks(input.payload))
+	stringifyProjectAbi: p
+		.input(abiPayloadSchema)
+		.query(({ input }) => stringifyProjectAbi(normalizeProjectAbi(input.payload))),
+	countAbiBlocks: p.input(abiPayloadSchema).query(({ input }) => countAbiBlocks(normalizeProjectAbi(input.payload)))
 })

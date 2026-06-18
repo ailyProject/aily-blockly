@@ -14,7 +14,7 @@ import {
 	skipAppVersion
 } from '../../project'
 import { p } from '../trpc'
-import { appSchema, quickSendItemSchema, serialMonitorSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput, quickSendItemSchema, serialMonitorSchema } from './schemas'
 
 export const previewUpdate = p
 	.input(
@@ -33,7 +33,7 @@ export const previewUpdate = p
 		})
 	)
 	.query(({ input }) => {
-		let nextConfig = { ...(input.config ?? {}) }
+		let nextConfig = normalizeAppConfigInput(input.config) ?? {}
 
 		if (input.versionToSkip) nextConfig = skipAppVersion(nextConfig, input.versionToSkip)
 		if (input.clearSkippedVersions) nextConfig = clearSkippedAppVersions(nextConfig)

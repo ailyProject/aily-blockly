@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { completeOnboarding as completeOnboardingState } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const completeOnboarding = p
 	.input(
@@ -11,4 +11,4 @@ export const completeOnboarding = p
 			key: z.enum(['onboardingCompleted', 'blocklyOnboardingCompleted', 'ailyChatOnboardingCompleted'])
 		})
 	)
-	.query(({ input }) => completeOnboardingState(input.config, input.key))
+	.query(({ input }) => completeOnboardingState(normalizeAppConfigInput(input.config), input.key))

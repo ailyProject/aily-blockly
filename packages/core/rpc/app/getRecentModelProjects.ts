@@ -1,9 +1,9 @@
 import { z } from 'zod'
 
-import { getRecentModelProjects } from '../../project'
+import { getRecentModelProjects as getConfigRecentModelProjects } from '../../project'
 import { p } from '../trpc'
-import { appSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput } from './schemas'
 
 export const getRecentModelProjects = p
 	.input(z.object({ config: appSchema.partial().optional() }))
-	.query(({ input }) => getRecentModelProjects(input.config))
+	.query(({ input }) => getConfigRecentModelProjects(normalizeAppConfigInput(input.config)))

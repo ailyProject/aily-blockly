@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { resolveAiChatModelSelection } from '../../project'
 import { p } from '../trpc'
-import { appModelSchema, appSchema } from './schemas'
+import { appModelSchema, appSchema, normalizeAppConfigInput } from './schemas'
 
 export const resolveModel = p
 	.input(
@@ -11,4 +11,4 @@ export const resolveModel = p
 			enabledModels: z.array(appModelSchema)
 		})
 	)
-	.query(({ input }) => resolveAiChatModelSelection(input.config, input.enabledModels))
+	.query(({ input }) => resolveAiChatModelSelection(normalizeAppConfigInput(input.config), input.enabledModels))

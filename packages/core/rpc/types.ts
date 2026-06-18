@@ -9,6 +9,8 @@ export interface AilyCoreServiceContext {
 	requestId: string
 	/** 服务进程启动时间戳 */
 	startedAt: number
+	/** 兼容 hono/trpc createContext 约束的扩展字段入口 */
+	[key: string]: unknown
 }
 
 /**

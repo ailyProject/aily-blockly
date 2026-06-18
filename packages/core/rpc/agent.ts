@@ -30,7 +30,7 @@ const configSchema = z.object({
 	maxCount: z.number().optional(),
 	enabledTools: z.array(z.string()).optional(),
 	disabledTools: z.array(z.string()).optional(),
-	agentTools: z.record(z.string(), toolsSchema).optional(),
+	agentTools: z.record(z.string(), toolsSchema.optional()).optional(),
 	securityWorkspaces: z.object({ project: z.boolean().optional(), library: z.boolean().optional() }).optional(),
 	models: z.array(modelSchema).optional()
 })

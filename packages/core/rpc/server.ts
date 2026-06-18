@@ -33,7 +33,7 @@ export const createAilyCoreServer = (options: CreateAilyCoreServerOptions = {}):
 		`${address.trpcPath}/*`,
 		trpcServer({
 			router: routes,
-			createContext: async () => createAilyCoreServiceContext(startedAt)
+			createContext: async () => ({ ...createAilyCoreServiceContext(startedAt) })
 		})
 	)
 

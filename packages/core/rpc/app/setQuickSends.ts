@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import { setQuickSendList } from '../../project'
 import { p } from '../trpc'
-import { appSchema, quickSendItemSchema } from './schemas'
+import { appSchema, normalizeAppConfigInput, quickSendItemSchema } from './schemas'
 
 export const setQuickSends = p
 	.input(
@@ -11,4 +11,4 @@ export const setQuickSends = p
 			quickSendList: z.array(quickSendItemSchema)
 		})
 	)
-	.query(({ input }) => setQuickSendList(input.config, input.quickSendList))
+	.query(({ input }) => setQuickSendList(normalizeAppConfigInput(input.config), input.quickSendList))
