@@ -15,6 +15,13 @@
 		"importHelpers": true,
 		"allowImportingTsExtensions": true,
 		"forceConsistentCasingInFileNames": true,
+		"baseUrl": ".",
+		"paths": {
+			"shared": ["../shared/dist/index.d.ts"],
+			"core/*": ["../core/dist/*/index.d.ts"],
+			"erpc/main": ["../erpc/dist/main/index.d.ts"]
+		},
+		"ignoreDeprecations": "6.0",
 		"types": ["node"]
 	},
 	"include": ["src"]

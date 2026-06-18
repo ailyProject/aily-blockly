@@ -12,6 +12,17 @@ export default deepmerge(rslib, {
 			dts: true
 		},
 		{
+			source: {
+				entry: {
+					api: './api/index.ts',
+					rpc: './rpc/index.ts',
+					'rpc-standalone': './rpc/standalone.ts'
+				}
+			},
+			format: 'esm',
+			dts: true
+		},
+		{
 			source: { entry: { hardware: './hardware/index.ts' } },
 			format: 'esm',
 			dts: true

@@ -1,4 +1,5 @@
 export * from './categories'
+export * from './fuzzy'
 export * from './indexData'
 export * from './query'
 export * from './resourceErrors'

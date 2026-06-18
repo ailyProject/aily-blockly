@@ -1,19 +1,9 @@
 import { buildMessagesFromTurnsWithSpans } from './turns'
 
 import type { AgentTurn } from './turns'
-import type { AgentSession } from './types'
+import type { AgentSession, RebuildSessionFromTurnsOptions } from './types'
 
 export const deriveSessionHistory = (turns: Array<AgentTurn>) => buildMessagesFromTurnsWithSpans(turns)
-
-/**
- * 基于 turns 重建会话的选项
- */
-export interface RebuildSessionFromTurnsOptions {
-	/** 是否递增修订号 */
-	incrementRevision?: boolean
-	/** 指定更新时间 */
-	updatedAt?: Date
-}
 
 export const rebuildSessionFromTurns = (
 	session: AgentSession,

@@ -1,4 +1,4 @@
-import type { ResourceSourceConfig } from './types'
+import type { ResourceRuntimeEnvPayload, ResourceSourceConfig } from './types'
 
 const normalizeResourceSourceUrl = (url: string) =>
 	String(url || '')
@@ -148,3 +148,16 @@ export const buildZipUrlCandidates = (candidates: Array<ResourceSourceConfig>) =
 
 	return urls
 }
+
+/**
+ * 构建资源源运行时环境变量载荷。
+ * @param currentUrl - 当前生效资源地址
+ * @param candidates - 资源源候选列表
+ */
+export const buildResourceRuntimeEnvPayload = (
+	currentUrl: string,
+	candidates: Array<ResourceSourceConfig>
+): ResourceRuntimeEnvPayload => ({
+	AILY_ZIP_URL: currentUrl,
+	AILY_ZIP_URLS: JSON.stringify(buildZipUrlCandidates(candidates))
+})

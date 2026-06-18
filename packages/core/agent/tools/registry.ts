@@ -1,18 +1,6 @@
 import { buildDeferredToolsListing, searchDeferredTools } from './deferred'
 
-import type { AgentToolDescriptor } from './types'
-
-/**
- * 工具过滤条件
- */
-export interface AgentToolFilter {
-	/** 当前 agent 名称 */
-	agentName: string
-	/** 可选启用白名单 */
-	enabledTools?: Array<string>
-	/** 可选禁用黑名单 */
-	disabledTools?: Array<string>
-}
+import type { AgentToolDescriptor, AgentToolFilter } from './types'
 
 export class AgentToolRegistry {
 	private readonly tools = new Map<string, AgentToolDescriptor>()

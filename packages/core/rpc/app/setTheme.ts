@@ -1,0 +1,14 @@
+import { z } from 'zod'
+
+import { setThemeMode } from '../../project'
+import { p } from '../trpc'
+import { appSchema } from './schemas'
+
+export const setTheme = p
+	.input(
+		z.object({
+			config: appSchema.partial().optional(),
+			themeMode: z.enum(['dark', 'light'])
+		})
+	)
+	.query(({ input }) => setThemeMode(input.config, input.themeMode))

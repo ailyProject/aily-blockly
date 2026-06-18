@@ -33,10 +33,31 @@
 
 - `core/agent`
   - AI SDK runtime、prompt、session、tool registry、事件协议
+  - 已新增 agent config 纯逻辑层
+  - 包含默认值、旧版迁移、tool/security/model/api-key 选择与更新规则
+  - 已新增可直接输出 UI message stream 的 run-stream helper
 - `core/hardware`
   - 开发板/库索引模型、结构化搜索、分类统计
+  - 已新增 legacy board/library 模糊校验与关键词提取
 - `core/project`
   - package.json 语义、依赖聚合、最近项目规则、宏定义更新
+  - 已新增语言文件名归一化
+  - 已新增开发板使用次数记录/查询/排序规则
+  - 已新增资源源运行时环境变量载荷生成
+  - 已新增 `appdata_path + platform` 解析 helper
+  - 已新增 `projectRootPath / projectPath` 解析与比较 helper
+  - 已新增 app config 只读 selector（语言、toolbar、skip versions、quick send、serial monitor、ai mode）
+  - 已新增 app config mutation / model-selection 纯逻辑
+  - 已新增 app store 布局归一化与可见性判定规则
+  - 已补 selectedLanguage 写回逻辑
+  - 已补默认布局创建与可见顺序合并规则
+  - 已补 layout set/add/remove/toggle/reset 状态转换规则
+  - 已新增串口监视器配置规范化、默认模式与连接参数构造
+  - 已新增 theme / devmode 纯规则
+  - 已补 `toggleThemeMode` / `setDevmodeConfig`
+  - 已补 Monaco / Mermaid / Blockly 主题映射与 `devmode.enabled` selector
+  - 已新增 recent model projects 与 onboarding 状态规则
+  - 已补普通 recent projects 读写规则到 app 路由
 - `core/metadata`
   - block type 收集、used-library manifest 规范化与生成
 - `core/document`
@@ -55,12 +76,73 @@
   - 编译错误提取与诊断解析
   - lint 语法检查结果解析
   - 诊断报告与快照恢复
+- `core/rpc`
+  - 已建立 `hono + trpc` 独立服务骨架
+  - 已暴露 health / document / abi / build / project 纯逻辑 RPC 面
+  - 已补 standalone 入口，供 desktop 后续通过 `utilityProcess.fork` 启动
+  - 已新增 hardware / agent / app 路由
+  - 已把硬件模糊校验、分类、兼容搜索与 agent 配置归一化/只读规则挂到 typed router
+  - 已新增 app 路由，暴露应用配置摘要 `get` selector
+  - `app.get` 已补 `appDataPathTemplate / appDataPath`
+  - `project` 路由已补 `resolveProjectPath / resolveProjectRootPath / getDefaultProjectRootPath / isSameProjectPath`
+  - `app.get` 已补 `monacoTheme / mermaidTheme / blocklyThemeId / devmodeEnabled`
+  - 已新增 app 的 `resolveModel` / `previewUpdate` / `resolveLayout` 路由
+  - app 路由已覆盖 selector / resolve / update preview 三类能力
+  - app update preview 已覆盖 selectedLanguage / serialMonitor 等写回场景
+  - app 已新增 `setTheme` / `setLanguage` / `setDevmodeAutoSave` / `skipVersion` / `clearSkippedVersions` / `setToolbarApps` / `setQuickSends` / `setSerialMonitor`
+  - app 已新增 `toggleTheme` / `setDevmode`
+  - app 已新增 `setModel`
+  - RPC 命名与组织方式已开始对齐 polywise（`p` / `r` / `router` / `Router`）
+  - app 已新增 `createDefaultLayout` 与 `mergeVisibleOrder` 能力
+  - `core/rpc/app/*` 已按子域拆分，不再维持单个大路由文件
+  - `core/rpc/app/*` 已开始按“单动作单文件”方式拆分
+  - app layout 已新增 `setLayout` / `addApp` / `removeApp` / `toggleApp` / `reset`
+  - app 已新增 `buildSerialConnectOptions`，`app.get` 也开始返回串口默认模式
+  - app.get / app.previewUpdate 已新增 theme / devmode 相关结果
+  - app 已新增 recent model project / onboarding 读写能力
+  - app 已新增 recent project 读写能力
+  - app 已新增 recent project / recent model project 的整表写回动作
+  - 这批动作已经足以直接承接 theme / devmode / recent / onboarding 的 legacy 写回路径
+  - 已新增 `/api/agent/session` hono API 骨架，预留 AI SDK Angular 通过 API + resumable stream 接入
+  - stream resume 语义已对齐为“无活跃流返回 204”，并补了 resumable stream 的恢复/取消 helper
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
+  - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
+  - 已新增 `agent-api` 句柄 provider，明确 AI 通过 `core` 的 hono API 接入
+  - 已新增 `agent` 页面，使用 `@ai-sdk/angular` + `agent-api` transport，并预留 resume
+  - 首页与 bridge 层命名已统一使用 `core` / `desktop`
+  - 启动层已切到 zoneless change detection
+  - 首页已开始消费 `core/rpc` 的 `hardware` / `agent` 路由结果
+  - 首页已开始消费 `core/rpc` 下的 `app` 路由结果
+  - 首页已开始消费 app 的 `resolveModel` 结果
+  - 首页已开始消费 app 的 `resolveLayout` 结果
+  - 首页已开始消费 app 的 `previewUpdate` 结果
+  - 首页已开始消费 `previewUpdate` 的 selectedLanguage / serialMonitor 结果
+  - `ui -> core` 保持直连 `core/rpc`；`ui -> desktop` 仅承接 desktop 自身 erpc 能力
+  - 首页已开始消费 `createDefaultLayout` 与 `mergeVisibleOrder` 结果
+  - 首页已开始消费 `toggleApp` 与 `reset` 结果
+  - 首页已开始消费串口默认模式与连接参数结果
+  - 首页已开始消费 theme / devmode 结果
+  - 首页已开始消费 recent model project / onboarding 结果
+  - 首页已开始消费 recent project 结果
 - `shared`
   - 已建立成可编译 workspace 包骨架
+  - 已新增 core service 地址、健康检查、启动选项等共享协议类型与常量
+  - 已新增 agent config 公共类型与默认值
+  - 已新增 project 公共类型与 app-config 公共模型/默认值
+  - 已新增 app-store 公共类型
+  - 已新增 model-project 与 onboarding 公共类型
+  - 已新增 AI API 请求载荷公共类型
 - `desktop`
-  - 尚未建立成可承载迁移的薄壳包
+  - 已新增 core service manager 薄壳骨架
+  - 已通过 `utilityProcess.fork` 约定好 core standalone 进程启动边界
+  - 已新增 desktop main `trpc + erpc` 根路由与 preload 暴露入口
+  - RPC 命名与组织方式已开始对齐 polywise（`p` / `router` / `routers` / `Router`）
+  - desktop 不再代理 core 规则 RPC，仅保留 desktop 自身 erpc 能力
+  - desktop 对 core 进程控制能力通过 `desktop.core.*` 分组暴露
+- 规范收口
+  - 已补齐当前 `types.ts` 的类型级 / 字段级 / 联合值级 JSDoc
+  - 已清理剩余不符合要求的非 default barrel 导出
 
 ## 当前迁移顺序
 
@@ -70,9 +152,10 @@
    - `project`
    - `metadata`
    - `document`
+   - `agent config`
 2. 继续把共用类型 / 常量迁入 `packages/shared`
-3. 建立 `packages/desktop` 薄壳骨架，并明确与 `core` / `ui` 的边界
-4. 完成 `packages/ui/src/app -> packages/ui/src` 扁平化
+3. 把 `core/rpc + core/api` 与 `desktop/core-service manager` 接到真实业务入口
+4. 完成 `packages/ui/src/app -> packages/ui/src` 扁平化，并把 typed handle / erpc handle 接到真实页面
 5. 对齐 `polywise` 的 turbo / packaging / tsflow
 6. 完整 review / legacy 对照 / 大文件诊断 / 重构报告
 
@@ -97,4 +180,4 @@
 当前 focus 是两条线并行推进：
 
 1. 继续把旧 tool / service 中的诊断、配置、文档状态和转换规则往 `core` 下沉
-2. 建立 `shared` / `desktop` / `ui` 迁移所需的可运行骨架，避免后续迁移卡在包结构上
+2. 把刚建立的 `core/rpc + core/api + shared + desktop manager` 骨架继续接上真实启动链路与 UI typed handle / ERPC handle

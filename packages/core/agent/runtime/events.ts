@@ -1,43 +1,6 @@
-import type { UIMessageChunk } from 'ai'
-import type { AgentDataParts, AgentMessageMetadata } from '../types/message'
+import type { AgentRuntimeEvent, AgentUiMessageChunk } from './types'
 
-export type AgentUiMessageChunk = UIMessageChunk<AgentMessageMetadata, AgentDataParts>
-
-export type AgentRuntimeEvent =
-	| { type: 'raw-chunk'; chunkType: string; chunk: AgentUiMessageChunk }
-	| { type: 'text-start'; id: string; chunk: AgentUiMessageChunk }
-	| { type: 'text-delta'; id: string; text: string; chunk: AgentUiMessageChunk }
-	| { type: 'text-end'; id: string; chunk: AgentUiMessageChunk }
-	| { type: 'reasoning-start'; id: string; chunk: AgentUiMessageChunk }
-	| { type: 'reasoning-delta'; id: string; text: string; chunk: AgentUiMessageChunk }
-	| { type: 'reasoning-end'; id: string; chunk: AgentUiMessageChunk }
-	| { type: 'tool-input-start'; toolCallId: string; toolName: string; chunk: AgentUiMessageChunk }
-	| { type: 'tool-input-delta'; toolCallId: string; delta: string; chunk: AgentUiMessageChunk }
-	| { type: 'tool-input-available'; toolCallId: string; toolName: string; input: unknown; chunk: AgentUiMessageChunk }
-	| { type: 'tool-input-error'; toolCallId: string; toolName: string; errorText: string; chunk: AgentUiMessageChunk }
-	| {
-			type: 'tool-output-available'
-			toolCallId: string
-			toolName?: string
-			output: unknown
-			preliminary: boolean
-			chunk: AgentUiMessageChunk
-	  }
-	| {
-			type: 'tool-output-error'
-			toolCallId: string
-			toolName?: string
-			errorText: string
-			chunk: AgentUiMessageChunk
-	  }
-	| { type: 'tool-output-denied'; toolCallId: string; toolName?: string; chunk: AgentUiMessageChunk }
-	| { type: 'source-url'; sourceId: string; url: string; chunk: AgentUiMessageChunk }
-	| { type: 'source-document'; sourceId: string; title?: string; mediaType?: string; chunk: AgentUiMessageChunk }
-	| { type: 'file'; url: string; mediaType?: string; chunk: AgentUiMessageChunk }
-	| { type: 'finish'; chunk: AgentUiMessageChunk }
-	| { type: 'error'; error: unknown; message: string }
-
-export type AgentRuntimeEventSink = (event: AgentRuntimeEvent) => Promise<void> | void
+export type { AgentRuntimeEvent, AgentUiMessageChunk } from './types'
 
 export const mapUiChunkToRuntimeEvent = (chunk: AgentUiMessageChunk): AgentRuntimeEvent => {
 	switch (chunk.type) {

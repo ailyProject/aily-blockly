@@ -7,7 +7,7 @@ import type { RslibConfig } from '@rslib/core'
 export default deepmerge(rslib, {
 	lib: [
 		{
-			source: { entry: { main: './src/main/index.ts' } },
+			source: { entry: { main: './src/index.ts' } },
 			format: 'cjs',
 			dts: true,
 			externals: ['electron'],

@@ -4,6 +4,16 @@
 	"description": "Thin Electron shell for Aily Blockly",
 	"type": "module",
 	"main": "dist/main/index.js",
+	"exports": {
+		".": {
+			"types": "./dist/src/index.d.ts",
+			"default": "./dist/main/index.js"
+		},
+		"./preload": {
+			"types": "./dist/src/preload/index.d.ts",
+			"default": "./dist/preload/index.js"
+		}
+	},
 	"files": ["dist"],
 	"scripts": {
 		"build": "rslib build",
@@ -11,9 +21,11 @@
 		"pack:win": "pnpm run build"
 	},
 	"dependencies": {
+		"@trpc/server": "catalog:",
 		"core": "workspace:*",
 		"electron": "catalog:",
-		"erpc": "workspace:*"
+		"erpc": "workspace:*",
+		"shared": "workspace:*"
 	},
 	"devDependencies": {
 		"@rslib/core": "catalog:",

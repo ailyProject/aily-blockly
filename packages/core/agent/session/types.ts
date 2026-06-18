@@ -1,5 +1,5 @@
 import type { AgentMessage } from '../types/message'
-import type { AgentTurn, AgentTurnSpan } from './turns'
+import type { AgentTurn, AgentTurnSpan } from './turns/types'
 
 /**
  * Agent 运行模式
@@ -84,6 +84,32 @@ export interface CreateAgentSessionInput {
 	createdAt?: Date
 	/** 更新时间 */
 	updatedAt?: Date
+}
+
+/**
+ * 基于 turns 重建会话的选项
+ */
+export interface RebuildSessionFromTurnsOptions {
+	/** 是否递增修订号 */
+	incrementRevision?: boolean
+	/** 指定更新时间 */
+	updatedAt?: Date
+}
+
+/**
+ * 应用摘要到会话的输入参数
+ */
+export interface ApplySessionSummaryArgs {
+	/** 被摘要覆盖的 turn ID 前缀 */
+	turnIds: Array<string>
+	/** 摘要锚定的 turn ID */
+	anchorTurnId: string
+	/** 摘要内容 */
+	summary: string
+	/** 可选的 round 锚点 */
+	anchorRoundId?: string
+	/** 期望的修订号 */
+	expectedRevision?: number
 }
 
 /**

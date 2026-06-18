@@ -1,4 +1,5 @@
 export * from './capabilities'
+export * from './config'
 export * from './models'
 export * from './prompts'
 export * from './runtime'

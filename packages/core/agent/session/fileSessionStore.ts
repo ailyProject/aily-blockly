@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import { deserializeAgentSession, serializeAgentSession } from './serialization'
 
-import type { SerializedAgentSession } from './serialization'
+import type { SerializedAgentSession } from './serialization/types'
 import type { AgentSession, AgentSessionStore } from './types'
 
 interface SessionIndexEntry {

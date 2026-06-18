@@ -1,4 +1,4 @@
-import type { PromptBuildContext, PromptElement, PromptElementProvider, PromptRenderResult } from './elements'
+import type { PromptBuildContext, PromptElement, PromptElementProvider, PromptRenderResult } from './types'
 
 interface FlattenedUnit {
 	elementId: string

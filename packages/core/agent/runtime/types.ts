@@ -1,3 +1,4 @@
+import type { UIMessageChunk } from 'ai'
 import type { AgentCapabilities } from '../capabilities'
 import type { AgentModelConfig } from '../models'
 import type { PromptPipeline } from '../prompts'
@@ -9,7 +10,7 @@ import type {
 	CreateAgentSessionInput
 } from '../session'
 import type { AgentToolRegistry } from '../tools/registry'
-import type { AgentMessage } from '../types/message'
+import type { AgentDataParts, AgentMessage, AgentMessageMetadata } from '../types/message'
 
 /**
  * Agent runtime 初始化选项
@@ -73,7 +74,55 @@ export interface AgentRuntimeSessionControls {
 	removeIncompleteLast(sessionId: string): Promise<AgentSession | null>
 	/** 应用摘要 */
 	applySummary(
+		/** 需要写入摘要的会话 ID */
 		sessionId: string,
+		/** 本次要应用的摘要参数 */
 		args: ApplySessionSummaryArgs
 	): Promise<{ applied: boolean; session: AgentSession | null }>
 }
+
+/**
+ * HTTP 错误状态码
+ */
+export type HttpStatusCode = number
+
+/**
+ * AI SDK UI 消息流片段
+ */
+export type AgentUiMessageChunk = UIMessageChunk<AgentMessageMetadata, AgentDataParts>
+
+/**
+ * Agent runtime 事件
+ */
+export type AgentRuntimeEvent =
+	| { type: 'raw-chunk'; chunkType: string; chunk: AgentUiMessageChunk }
+	| { type: 'text-start'; id: string; chunk: AgentUiMessageChunk }
+	| { type: 'text-delta'; id: string; text: string; chunk: AgentUiMessageChunk }
+	| { type: 'text-end'; id: string; chunk: AgentUiMessageChunk }
+	| { type: 'reasoning-start'; id: string; chunk: AgentUiMessageChunk }
+	| { type: 'reasoning-delta'; id: string; text: string; chunk: AgentUiMessageChunk }
+	| { type: 'reasoning-end'; id: string; chunk: AgentUiMessageChunk }
+	| { type: 'tool-input-start'; toolCallId: string; toolName: string; chunk: AgentUiMessageChunk }
+	| { type: 'tool-input-delta'; toolCallId: string; delta: string; chunk: AgentUiMessageChunk }
+	| { type: 'tool-input-available'; toolCallId: string; toolName: string; input: unknown; chunk: AgentUiMessageChunk }
+	| { type: 'tool-input-error'; toolCallId: string; toolName: string; errorText: string; chunk: AgentUiMessageChunk }
+	| {
+			type: 'tool-output-available'
+			toolCallId: string
+			toolName?: string
+			output: unknown
+			preliminary: boolean
+			chunk: AgentUiMessageChunk
+	  }
+	| { type: 'tool-output-error'; toolCallId: string; toolName?: string; errorText: string; chunk: AgentUiMessageChunk }
+	| { type: 'tool-output-denied'; toolCallId: string; toolName?: string; chunk: AgentUiMessageChunk }
+	| { type: 'source-url'; sourceId: string; url: string; chunk: AgentUiMessageChunk }
+	| { type: 'source-document'; sourceId: string; title?: string; mediaType?: string; chunk: AgentUiMessageChunk }
+	| { type: 'file'; url: string; mediaType?: string; chunk: AgentUiMessageChunk }
+	| { type: 'finish'; chunk: AgentUiMessageChunk }
+	| { type: 'error'; error: unknown; message: string }
+
+/**
+ * Agent runtime 事件派发函数
+ */
+export type AgentRuntimeEventSink = (event: AgentRuntimeEvent) => Promise<void> | void

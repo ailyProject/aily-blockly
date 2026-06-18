@@ -95,6 +95,8 @@ export interface LegacyBoardItem {
 	name: string
 	/** 展示昵称 */
 	nickname?: string
+	/** 展示名称 */
+	displayName?: string
 	/** 描述 */
 	description?: string
 	/** 关键词 */
@@ -124,6 +126,34 @@ export interface LegacyLibraryItem {
 		/** 支持的 core 列表 */
 		core?: Array<string>
 	}
+}
+
+/**
+ * 开发板验证结果
+ */
+export interface BoardValidationResult {
+	/** 是否命中开发板 */
+	exists: boolean
+	/** 命中的开发板条目 */
+	board: LegacyBoardItem | null
+	/** 是否通过模糊匹配命中 */
+	fuzzyMatch: boolean
+	/** 原始查询词 */
+	originalQuery: string
+}
+
+/**
+ * 扩展库验证结果
+ */
+export interface LibraryValidationResult {
+	/** 是否命中扩展库 */
+	exists: boolean
+	/** 命中的扩展库条目 */
+	library: LegacyLibraryItem | null
+	/** 是否通过模糊匹配命中 */
+	fuzzyMatch: boolean
+	/** 原始查询词 */
+	originalQuery: string
 }
 
 /**

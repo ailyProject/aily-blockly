@@ -1,7 +1,7 @@
 import { estimateMessagesTokens } from '../../utils/tokens'
-import { PromptPriority } from '../elements'
+import { PromptPriority } from '../types'
 
-import type { PromptBuildContext, PromptElement, PromptElementProvider } from '../elements'
+import type { PromptBuildContext, PromptElement, PromptElementProvider } from '../types'
 
 export class HistoryPromptProvider implements PromptElementProvider {
 	id = 'conversation-history'

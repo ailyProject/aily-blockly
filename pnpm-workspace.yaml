@@ -6,11 +6,14 @@ ignoreWorkspaceRootCheck: true
 allowBuilds:
   '@swc/core': true
   bun: true
-  electron-winstaller: true
   esbuild: true
   simple-git-hooks: true
   electron: true
   nx: true
+  '@parcel/watcher': true
+  less: true
+  lmdb: true
+  msgpackr-extract: true
 
 catalog:
   '@abraham/reflection': ^0.13.0
@@ -52,15 +55,6 @@ catalog:
   uuid: 14.0.0
   watchpack: ^2.5.1
   zod: 4.4.3
-
-ignoredBuiltDependencies:
-  - electron-winstaller
-
-onlyBuiltDependencies:
-  - bun
-  - electron
-  - esbuild
-  - simple-git-hooks
 
 minimumReleaseAgeExclude:
   - '@spartan-ng/cli@0.0.1-alpha.715'

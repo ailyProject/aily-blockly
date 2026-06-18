@@ -55,7 +55,11 @@
 			"@spartan-ng/helm/table": ["./src/components/ui/table/src/index.ts"],
 			"@spartan-ng/helm/toggle": ["./src/components/ui/toggle/src/index.ts"],
 			"@spartan-ng/helm/toggle-group": ["./src/components/ui/toggle-group/src/index.ts"],
-			"@spartan-ng/helm/tooltip": ["./src/components/ui/tooltip/src/index.ts"]
+			"@spartan-ng/helm/tooltip": ["./src/components/ui/tooltip/src/index.ts"],
+			"shared": ["../shared/dist/index.d.ts"],
+			"core/*": ["../core/dist/*/index.d.ts"],
+			"desktop": ["../desktop/dist/main/index.d.ts"],
+			"erpc/renderer": ["../erpc/dist/renderer/index.d.ts"]
 		}
 	},
 	"angularCompilerOptions": {

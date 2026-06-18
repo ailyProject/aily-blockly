@@ -10,6 +10,14 @@
 			"types": "./dist/agent/index.d.ts",
 			"default": "./dist/agent/index.js"
 		},
+		"./api": {
+			"types": "./dist/api/index.d.ts",
+			"default": "./dist/api/index.js"
+		},
+		"./rpc": {
+			"types": "./dist/rpc/index.d.ts",
+			"default": "./dist/rpc/index.js"
+		},
 		"./hardware": {
 			"types": "./dist/hardware/index.d.ts",
 			"default": "./dist/hardware/index.js"
@@ -45,8 +53,13 @@
 	"dependencies": {
 		"@ai-sdk/openai": "catalog:",
 		"@ai-sdk/provider-utils": "catalog:",
+		"@hono/node-server": "catalog:",
+		"@hono/trpc-server": "catalog:",
+		"@trpc/server": "catalog:",
 		"ai": "catalog:",
 		"dayjs": "catalog:",
+		"hono": "catalog:",
+		"shared": "workspace:*",
 		"uuid": "catalog:",
 		"zod": "catalog:"
 	},

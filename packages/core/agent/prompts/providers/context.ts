@@ -1,8 +1,8 @@
 import { createTextMessage } from '../../utils/messages'
 import { estimateMessageTokens } from '../../utils/tokens'
-import { PromptPriority } from '../elements'
+import { PromptPriority } from '../types'
 
-import type { PromptBuildContext, PromptElement, PromptElementProvider } from '../elements'
+import type { PromptBuildContext, PromptElement, PromptElementProvider } from '../types'
 
 const ASK_MODE_ROLE_TEXT =
 	'Answer questions directly and keep tool usage to a minimum unless the user explicitly needs an action.'

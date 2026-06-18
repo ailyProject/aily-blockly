@@ -89,7 +89,7 @@ export class HlmTabsPaginatedList extends BrnTabsPaginatedList {
 	public readonly paginationButtonClass = input<ClassValue>('', { alias: 'paginationButtonClass' })
 	protected readonly _paginationButtonClass = computed(() =>
 		hlm(
-			'relative z-[2] select-none disabled:cursor-default',
+			'relative z-2 select-none disabled:cursor-default',
 			buttonVariants({ variant: 'ghost', size: 'icon' }),
 			this.paginationButtonClass()
 		)

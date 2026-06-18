@@ -1,6 +1,13 @@
 import type { RecentlyProjectEntry } from './types'
 
 /**
+ * 从应用配置中读取最近项目列表。
+ * @param config - 当前应用配置
+ */
+export const getRecentProjects = (config: { recentlyProjects?: Array<RecentlyProjectEntry> } | null | undefined) =>
+	config?.recentlyProjects ?? []
+
+/**
  * 按路径去重并把最近访问的项目提升到最前，同时控制列表长度
  * @param current - 当前最近项目列表
  * @param entry - 新进入列表的项目

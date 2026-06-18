@@ -17,5 +17,5 @@
 		"forceConsistentCasingInFileNames": true,
 		"types": ["node"]
 	},
-	"include": ["agent", "hardware", "project", "metadata", "document", "abi", "abs", "build"]
+	"include": ["agent", "api", "rpc", "hardware", "project", "metadata", "document", "abi", "abs", "build"]
 }

@@ -1,0 +1,58 @@
+:host {
+	display: block;
+}
+
+.agent-page {
+	display: grid;
+	gap: 1rem;
+}
+
+.composer-card,
+.messages-card {
+	background: var(--ui-panel);
+}
+
+.composer-body,
+.messages {
+	display: grid;
+	gap: 0.75rem;
+}
+
+.prompt {
+	min-height: 9rem;
+}
+
+.actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	align-items: center;
+}
+
+.message {
+	display: grid;
+	gap: 0.5rem;
+	padding: 0.85rem;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) * 1.2);
+	background: color-mix(in srgb, var(--card) 86%, var(--ui-panel-muted));
+}
+
+.message.assistant {
+	background: color-mix(in srgb, var(--primary) 8%, var(--card));
+}
+
+.message header {
+	text-transform: capitalize;
+	font-weight: 600;
+}
+
+.message p,
+.error {
+	margin: 0;
+	white-space: pre-wrap;
+}
+
+.error {
+	color: var(--destructive);
+}

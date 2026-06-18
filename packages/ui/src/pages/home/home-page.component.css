@@ -113,10 +113,6 @@
 	color: var(--primary);
 }
 
-.fit {
-	width: 100%;
-}
-
 .tab-pane {
 	display: grid;
 	gap: 0.55rem;

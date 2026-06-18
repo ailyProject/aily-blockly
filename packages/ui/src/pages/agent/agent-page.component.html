@@ -1,0 +1,53 @@
+<app-shell>
+	<section class="agent-page">
+		<section hlmCard class="composer-card">
+			<div hlmCardHeader>
+				<span hlmBadge variant="secondary">AI SDK Angular + core hono api</span>
+				<h2 hlmCardTitle>Agent Stream Panel</h2>
+				<p hlmCardDescription>Transport uses <code>/api/agent/session</code> and keeps resume on the API path.</p>
+			</div>
+			<div hlmCardContent class="composer-body">
+				<textarea
+					hlmTextarea
+					class="prompt"
+					[value]="draft()"
+					(input)="draft.set(($any($event.target)).value)"
+					rows="4"
+				></textarea>
+				<div class="actions">
+					<button hlmBtn (click)="send()" [disabled]="!canSend()">Send</button>
+					<button hlmBtn variant="outline" (click)="chat.stop()" [disabled]="chat.status === 'ready'">Stop</button>
+					<button hlmBtn variant="outline" (click)="resume()" [disabled]="chat.status !== 'error'">Resume</button>
+					<span hlmBadge variant="outline">{{ chat.status }}</span>
+				</div>
+			</div>
+		</section>
+
+		<section hlmCard class="messages-card">
+			<div hlmCardHeader>
+				<h3 hlmCardTitle>Messages</h3>
+				<p hlmCardDescription>Minimal signal-driven page without zone-based state flow.</p>
+			</div>
+			<div hlmCardContent class="messages">
+				@for (message of chat.messages; track message.id) {
+					<article class="message" [class.assistant]="message.role === 'assistant'">
+						<header>{{ message.role }}</header>
+						@for (part of message.parts; track $index) {
+							@if (part.type === 'text') {
+								<p>{{ part.text }}</p>
+							} @else if (part.type === 'reasoning') {
+								<details>
+									<summary>reasoning</summary>
+									<p>{{ part.text }}</p>
+								</details>
+							}
+						}
+					</article>
+				}
+				@if (chat.error) {
+					<p class="error">{{ chat.error.message }}</p>
+				}
+			</div>
+		</section>
+	</section>
+</app-shell>

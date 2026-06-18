@@ -1,7 +1,6 @@
 import dayjs from 'dayjs'
 
-import type { AgentRuntimeConfig } from '../session/config'
-import type { AgentSession } from '../session/types'
+import type { BuildSystemPromptArgs } from './types'
 
 const AGENT_MODE_PROMPT = [
 	'You are the Aily Blockly agent runtime.',
@@ -14,16 +13,6 @@ const ASK_MODE_PROMPT = [
 	'You are the Aily Blockly assistant in QA mode.',
 	'Answer directly and do not run tools unless the user explicitly needs them.'
 ].join('\n')
-
-/**
- * 构建系统提示词所需参数
- */
-export interface BuildSystemPromptArgs {
-	/** 当前会话 */
-	session: AgentSession
-	/** 当前 runtime 配置 */
-	runtimeConfig: AgentRuntimeConfig
-}
 
 export const buildSystemPrompt = ({ session, runtimeConfig }: BuildSystemPromptArgs): string => {
 	const modePrompt = runtimeConfig.mode === 'ask' ? ASK_MODE_PROMPT : AGENT_MODE_PROMPT

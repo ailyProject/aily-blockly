@@ -12,6 +12,12 @@ catalogs:
     '@ai-sdk/provider-utils':
       specifier: 4.0.27
       version: 4.0.27
+    '@hono/node-server':
+      specifier: 2.0.4
+      version: 2.0.4
+    '@hono/trpc-server':
+      specifier: ^0.4.2
+      version: 0.4.2
     '@rslib/core':
       specifier: 0.21.5
       version: 0.21.5
@@ -42,6 +48,9 @@ catalogs:
     electron:
       specifier: 41.6.1
       version: 41.6.1
+    hono:
+      specifier: 4.12.23
+      version: 4.12.23
     typescript:
       specifier: 6.0.3
       version: 6.0.3
@@ -101,18 +110,64 @@ importers:
       '@ai-sdk/provider-utils':
         specifier: 'catalog:'
         version: 4.0.27(zod@4.4.3)
+      '@hono/node-server':
+        specifier: 'catalog:'
+        version: 2.0.4(hono@4.12.23)
+      '@hono/trpc-server':
+        specifier: 'catalog:'
+        version: 0.4.2(@trpc/server@11.17.0(typescript@6.0.3))(hono@4.12.23)
+      '@trpc/server':
+        specifier: 'catalog:'
+        version: 11.17.0(typescript@6.0.3)
       ai:
         specifier: 'catalog:'
         version: 6.0.191(zod@4.4.3)
       dayjs:
         specifier: 'catalog:'
         version: 1.11.21
+      hono:
+        specifier: 'catalog:'
+        version: 4.12.23
+      shared:
+        specifier: workspace:*
+        version: link:../shared
       uuid:
         specifier: 'catalog:'
         version: 14.0.0
       zod:
         specifier: 'catalog:'
         version: 4.4.3
+    devDependencies:
+      '@rslib/core':
+        specifier: 'catalog:'
+        version: 0.21.5(@module-federation/runtime-tools@2.5.1(node-fetch@2.7.0(encoding@0.1.13)))(typescript@6.0.3)
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.1
+      deepmerge-ts:
+        specifier: 'catalog:'
+        version: 7.1.5
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
+  packages/desktop:
+    dependencies:
+      '@trpc/server':
+        specifier: 'catalog:'
+        version: 11.17.0(typescript@6.0.3)
+      core:
+        specifier: workspace:*
+        version: link:../core
+      electron:
+        specifier: 'catalog:'
+        version: 41.6.1
+      erpc:
+        specifier: workspace:*
+        version: link:../erpc
+      shared:
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@rslib/core':
         specifier: 'catalog:'
@@ -147,6 +202,21 @@ importers:
       electron:
         specifier: 'catalog:'
         version: 41.6.1
+
+  packages/shared:
+    devDependencies:
+      '@rslib/core':
+        specifier: 'catalog:'
+        version: 0.21.5(@module-federation/runtime-tools@2.5.1(node-fetch@2.7.0(encoding@0.1.13)))(typescript@6.0.3)
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.1
+      deepmerge-ts:
+        specifier: 'catalog:'
+        version: 7.1.5
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
 
   packages/ui:
     dependencies:
@@ -189,12 +259,30 @@ importers:
       '@tanstack/angular-table':
         specifier: 8.21.4
         version: 8.21.4(@angular/core@22.0.1(@angular/compiler@22.0.1)(rxjs@7.8.2))
+      '@trpc/client':
+        specifier: 'catalog:'
+        version: 11.17.0(@trpc/server@11.17.0(typescript@6.0.3))(typescript@6.0.3)
+      '@trpc/server':
+        specifier: 'catalog:'
+        version: 11.17.0(typescript@6.0.3)
+      ai:
+        specifier: 'catalog:'
+        version: 6.0.191(zod@4.4.3)
       class-variance-authority:
         specifier: ^0.7.0
         version: 0.7.1
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      core:
+        specifier: workspace:*
+        version: link:../core
+      desktop:
+        specifier: workspace:*
+        version: link:../desktop
+      erpc:
+        specifier: workspace:*
+        version: link:../erpc
       luxon:
         specifier: ^3.7.2
         version: 3.7.2
@@ -204,6 +292,9 @@ importers:
       rxjs:
         specifier: ~7.8.0
         version: 7.8.2
+      shared:
+        specifier: workspace:*
+        version: link:../shared
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
@@ -1572,6 +1663,19 @@ packages:
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
+
+  '@hono/node-server@2.0.4':
+    resolution: {integrity: sha512-Ut3y0dMMPWy6bZ2kVfx25EOVbZlm15dhF4mOsezMlhpNHy+4MkU1qN9Y6lnruYi4wPmFzimGX2X7LF/FwHli4A==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      hono: ^4
+
+  '@hono/trpc-server@0.4.2':
+    resolution: {integrity: sha512-3TDrc42CZLgcTFkXQba+y7JlRWRiyw1AqhLqztWyNS2IFT+3bHld0lxKdGBttCtGKHYx0505dM67RMazjhdZqw==}
+    engines: {node: '>=16.0.0'}
+    peerDependencies:
+      '@trpc/server': ^10.10.0 || >11.0.0-rc
+      hono: '>=4.0.0'
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -4954,6 +5058,10 @@ packages:
   homedir-polyfill@1.0.3:
     resolution: {integrity: sha512-eSmmWE5bZTK2Nou4g0AI3zZ9rswp7GRKoKXS1BLUkvPviOqs4YTN1djQIqrXy9k5gEtdLPy86JjRwsNM9tnDcA==}
     engines: {node: '>=0.10.0'}
+
+  hono@4.12.23:
+    resolution: {integrity: sha512-eIaZ9qDgu7XV0pxOCrg7/WhnQ6Ivm22UcxhXx/A3dcbqbbYgBEkc6e/J/s7j2tS96zoB0S9VBdLwQNCWwUo4LA==}
+    engines: {node: '>=16.9.0'}
 
   hono@4.12.25:
     resolution: {integrity: sha512-2NFaIyNVgJmBs/ecmtGzlmluTFs5cHEWGTdu0t1HBwYzoGXOL5nUQBRMXsXWla5i4KkG//QMzVP88m1+I3fdAQ==}
@@ -9186,6 +9294,15 @@ snapshots:
     dependencies:
       hono: 4.12.25
 
+  '@hono/node-server@2.0.4(hono@4.12.23)':
+    dependencies:
+      hono: 4.12.23
+
+  '@hono/trpc-server@0.4.2(@trpc/server@11.17.0(typescript@6.0.3))(hono@4.12.23)':
+    dependencies:
+      '@trpc/server': 11.17.0(typescript@6.0.3)
+      hono: 4.12.23
+
   '@humanfs/core@0.19.2':
     dependencies:
       '@humanfs/types': 0.15.0
@@ -13075,6 +13192,8 @@ snapshots:
   homedir-polyfill@1.0.3:
     dependencies:
       parse-passwd: 1.0.0
+
+  hono@4.12.23: {}
 
   hono@4.12.25: {}
 

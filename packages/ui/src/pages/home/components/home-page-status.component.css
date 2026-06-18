@@ -1,0 +1,48 @@
+:host {
+	display: grid;
+	gap: 0.75rem;
+}
+
+.status-card {
+	display: grid;
+	gap: 0.75rem;
+	padding: 0.85rem;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) * 1.2);
+	background: color-mix(in srgb, var(--card) 82%, var(--ui-panel-muted));
+}
+
+.status-copy,
+.status-actions,
+.signal-row,
+.chip-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.status-copy,
+.status-actions,
+.signal-row {
+	justify-content: space-between;
+}
+
+.signal-grid {
+	display: grid;
+	gap: 0.5rem;
+}
+
+.chip-row {
+	flex-wrap: wrap;
+}
+
+.status-copy p,
+.status-meta,
+.status-error {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.fit {
+	width: 100%;
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fable"
+  short_description: "Fable-style Codex agent workflow"
+  default_prompt: "Use $fable to run this task with a Fable-style, tool-first Codex workflow."
