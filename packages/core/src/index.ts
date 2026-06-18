@@ -1,5 +1,6 @@
 export type { Router } from './rpc/types'
 export * from './connection'
+export * from './hardware'
 export type {
 	BoardIndexItem,
 	CategoryCount,

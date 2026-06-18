@@ -8,4 +8,14 @@ export interface ModelDeployState {
 	health: AilyCoreServiceHealth
 	/** 当前可用部署目标数量 */
 	deployTargetCount: number
+	/** desktop 串口数量 */
+	serialPortCount: number
+	/** desktop 宿主平台 */
+	platform: string
+	/** probe 设备数量 */
+	probeCount: number
+	/** esptool 是否可用 */
+	esptoolAvailable: boolean
+	/** 固件版本 */
+	firmwareVersion: string | null
 }

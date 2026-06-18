@@ -68,6 +68,8 @@ export class SerialMonitorPageComponent implements OnInit {
 			)
 			const previewConfig = previewConfigRaw as AilyAppConfig
 
+			const serialPorts = await this.core.hardware.listSerialPorts.query()
+
 			this.state.set({
 				baudRate: configSummary.serialMonitor.baudRate,
 				connectBaudRate: serialConnect.baudRate,
@@ -80,7 +82,10 @@ export class SerialMonitorPageComponent implements OnInit {
 				defaultToolbarAppCount: defaultLayout.zones.header.length,
 				mergedToolbarOrderCount: merged.length,
 				toggledToolbarAppCount: toggled.zones.header.length,
-				resetToolbarAppCount: reset.zones.header.length
+				resetToolbarAppCount: reset.zones.header.length,
+				serialPortCount: serialPorts.ports.length,
+				serialPlatform: serialPorts.platform,
+				desktopSerialAvailable: serialPorts.available
 			})
 		} catch (error) {
 			this.error.set((error as Error).message)

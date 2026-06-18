@@ -1,5 +1,6 @@
 {
 	"compilerOptions": {
+		"baseUrl": ".",
 		"target": "ESNext",
 		"module": "ESNext",
 		"skipLibCheck": true,
@@ -15,8 +16,10 @@
 		"importHelpers": true,
 		"allowImportingTsExtensions": true,
 		"forceConsistentCasingInFileNames": true,
+		"ignoreDeprecations": "6.0",
 		"paths": {
-			"@core": ["../core/src/index.ts"]
+			"@core": ["../core/src/index.ts"],
+			"shared": ["../shared/src/index.ts"]
 		},
 		"types": ["node"]
 	},

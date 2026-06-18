@@ -26,4 +26,10 @@ export interface SerialMonitorSnapshot {
 	toggledToolbarAppCount: number
 	/** reset 动作后的工具栏应用数量 */
 	resetToolbarAppCount: number
+	/** desktop 串口列表数量 */
+	serialPortCount: number
+	/** desktop 当前宿主平台 */
+	serialPlatform: string
+	/** desktop 串口宿主是否可用 */
+	desktopSerialAvailable: boolean
 }

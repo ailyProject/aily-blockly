@@ -15,6 +15,11 @@
         <div><span>Core URL</span><strong>{{ healthValue.address.baseUrl }}</strong></div>
         <div><span>Uptime</span><strong>{{ healthValue.uptimeMs }} ms</strong></div>
         <div><span>Targets</span><strong>{{ deployTargetCount() }}</strong></div>
+        <div><span>Host Platform</span><strong>{{ platform() }}</strong></div>
+        <div><span>Serial Ports</span><strong>{{ serialPortCount() }}</strong></div>
+        <div><span>Probe Count</span><strong>{{ probeCount() }}</strong></div>
+        <div><span>Esptool</span><strong>{{ esptoolAvailable() ? 'ready' : 'missing' }}</strong></div>
+        <div><span>Firmware</span><strong>{{ firmwareVersion() || 'unknown' }}</strong></div>
       </div>
 
       <div class="toolbar">

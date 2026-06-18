@@ -30,6 +30,9 @@
           <div><span>Hex Input</span><strong>{{ stateValue.hexInput ? 'on' : 'off' }}</strong></div>
           <div><span>Preview Port</span><strong>{{ stateValue.previewPort }}</strong></div>
           <div><span>Quick Sends</span><strong>{{ stateValue.quickSendCount }}</strong></div>
+          <div><span>Desktop Serial</span><strong>{{ stateValue.desktopSerialAvailable ? 'ready' : 'missing' }}</strong></div>
+          <div><span>Serial Platform</span><strong>{{ stateValue.serialPlatform }}</strong></div>
+          <div><span>Detected Ports</span><strong>{{ stateValue.serialPortCount }}</strong></div>
         </div>
       </article>
 

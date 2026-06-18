@@ -25,6 +25,13 @@
 - 对联合类型（尤其是字符串字面量联合），不仅要给整个联合类型写说明，每个可选字面量值也要逐项加注释，说明该值代表的语义。
 - 数据交互默认使用 `hono` / `trpc` / `erpc` 这一套组合。
 - HTTP 服务入口优先使用 `hono`；跨端数据契约优先使用 `trpc`；Electron 主进程与渲染进程通信优先使用 `erpc`。
+- RPC 能放在 `packages/core/src/rpc` 的，优先放 `core`，不要默认放进 `packages/desktop/src/rpc`。
+- 只有明确依赖 Electron 主进程、preload、BrowserWindow、dialog、nativeImage、系统托盘、应用菜单等 Electron 运行时专属能力时，才允许放在 `desktop` 的 RPC 中。
+- 不要把“当前由桌面端发起”误判成“必须放 desktop”；只要本质上是通用业务逻辑、文件系统逻辑、网络逻辑、硬件探测逻辑、构建逻辑或二进制调用逻辑，就优先收敛到 `core`。二进制调用也可以通过 Node 在 `core` 中完成，不应仅因调用了可执行文件就下沉到 `desktop`。
+- `desktop` 中的 RPC 应尽量薄，职责应限定为暴露 Electron 专属能力，或把 Electron 专属输入转换后转交给 `core`；不要在 `desktop` RPC 中堆积可迁移的业务逻辑。
+- RPC 写法必须优先参考 `packages/core/src/rpc` 和 `polywise` 的组织方式，保持稳定的目录边界、聚合入口和清晰的 procedure 拆分。
+- 不要在 `desktop` 或其他位置随意发明零散、临时、扁平化的 RPC 写法；不要把多个无关 procedure、类型、输入校验和实现细节混塞在一个文件里。
+- RPC 目录组织优先采用“域目录 + `index.ts` 聚合 + 单 procedure/单职责文件”的模式；同域下的 schema、types、shared helper 应就近收敛，整体风格向 `packages/core/src/rpc` 对齐。
 - 不要随意引入自定义 REST 风格约定、松散类型的 fetch 封装、手写 RPC 协议或零散 IPC channel 来替代这套统一边界。
 - 不要新增以 RxJS 为核心的状态管理或数据流组织；能用 Angular Signals、普通函数和简单可读状态组织解决的，就不要额外引入 RxJS 方案。
 - 如果框架、现有依赖或明确的边界接口天然使用 RxJS，可以在该边界内使用，但不要把它继续扩散成项目默认状态模型。

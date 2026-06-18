@@ -39,6 +39,21 @@
 - `core/hardware`
   - 开发板/库索引模型、结构化搜索、分类统计
   - 已新增 legacy board/library 模糊校验与关键词提取
+  - 已开始拆入 `hardware/firmware/*`
+  - 已开始拆入 `hardware/ports/*`
+  - 已开始拆入 `hardware/upload/*`
+  - 已开始拆入 `hardware/probe/*`
+  - 已开始拆入 `hardware/esptool/*`
+  - 已迁入固件信息远端获取
+  - 已迁入模型文件元数据远端获取
+  - 已迁入模型烧录地址与固件更新判定纯逻辑
+  - 已迁入串口枚举结果按平台规整的纯逻辑
+  - 已迁入上传超时、串口释放判定、上传反馈成功判定等纯逻辑
+  - 已迁入 probe-rs 目标参数与结果规整逻辑
+  - 已迁入 esptool 包检测、缓存目录解析与烧录命令拼装逻辑
+  - 已迁入 probe-rs 二进制路径解析、设备枚举与下载调用
+  - 已迁入宿主串口列表读取（Node + serialport）
+  - 已迁入 esptool 安装逻辑
 - `core/project`
   - package.json 语义、依赖聚合、最近项目规则、宏定义更新
   - 已新增语言文件名归一化
@@ -124,6 +139,32 @@
     - `listAvailablePinmapIds`
     - `getSensorPickerData`
     - `collectConfigs`
+    - `getLibraryInfo`
+    - `getPinmapTemplate`
+    - `savePinmap`
+    - `readGraph`
+    - `hasGraph`
+    - `saveGraph`
+    - `readAws`
+    - `hasAws`
+    - `saveAws`
+  - `core.rpc.hardware` 已从单文件拆成目录：
+    - `legacy.ts`
+    - `categories.ts`
+    - `search.ts`
+    - `firmware.ts`
+    - `schemas.ts`
+    - `index.ts`
+  - 已新增 `core.hardware.*`
+    - `getFirmwareInfo`
+    - `getModelFile`
+    - `getModelAddress`
+    - `needFirmwareUpdate`
+    - `detectEsptool`
+    - `installEsptool`
+    - `resolveEsptoolTempDir`
+    - `listProbes`
+    - `downloadProbe`
 - `core/model`
   - 已迁入模型目录远端访问、fallback 目录、任务/开发板/部署目标归一化
 - `core/tool`
@@ -140,6 +181,13 @@
   - 已迁入库扫描、catalog 扫描、可用 pinmapId 汇总、sensor picker 数据组装
   - 已迁入 schematic prompt 组装
   - 已迁入 component config 收集与 similar-components 基础组装
+  - 已迁入 pinmap 模板生成
+  - 已迁入库 README / 示例 / package.json 信息读取
+  - 已迁入 pinmap 保存与 catalog 状态回写
+  - 已迁入 connection_output.json / connection.aws 的 read/save/exists 文件读写封装
+  - 已迁入 pinmap 模板生成
+  - 已迁入库 README / 示例 / package.json 信息读取
+  - 已迁入 pinmap 保存与 catalog 状态回写
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
   - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
@@ -163,6 +211,8 @@
   - `model-store` / `model-train/*` / `model-deploy/sscma` 已改为消费 `core.model.*`
   - `child-tool` 页已改为消费 `core.tool.*`
   - `graph-editor` 已开始消费 `core.connection.resolvePaths`
+  - `serial-monitor` 已改为直接消费 `core.hardware.listSerialPorts`
+  - `model-deploy` 顶层页已改为组合消费 `desktop.host.getRuntimeInfo` 与 `core.hardware.*`
 - `shared`
   - 已建立成可编译 workspace 包骨架
   - 已新增 core service 地址、健康检查、启动选项等共享协议类型与常量
@@ -178,6 +228,13 @@
   - RPC 命名与组织方式已开始对齐 polywise（`p` / `router` / `routers` / `Router`）
   - desktop 不再代理 core 规则 RPC，仅保留 desktop 自身 erpc 能力
   - desktop 对 core 进程控制能力通过 `desktop.core.*` 分组暴露
+  - `desktop.rpc` 已开始按目录模块化收口：
+    - `core/*`
+    - `serial/*`
+  - `desktop.serial.*` 已新增：
+    - `list`
+  - `probe-rs` / `esptool` 已从 `desktop` 薄桥回收至 `core.hardware.*`
+  - `desktop.serial.list` 结果模型已补平台字段，开始形成稳定宿主串口枚举桥
 - 规范收口
   - 已补齐当前 `types.ts` 的类型级 / 字段级 / 联合值级 JSDoc
   - 已清理剩余不符合要求的非 default barrel 导出
@@ -360,14 +417,19 @@
 
 ## 当前待续动作（2026-06-18 / latest）
 
-1. 继续把 `connection-graph` 的 pinmap 保存/更新、catalog 回写、project 文件读写封装等逻辑下沉到 `core`
-2. 评估 `firmware` / `upload` / `serial` 相关远端请求和状态机是否要继续拆成 `core.hardware.*`
+1. 继续把 `connection-graph` 的云端 pinmap 同步、project context、当前 schematic 读取桥接等剩余逻辑下沉到 `core`
+2. 继续把真正 Electron-bound 的 `serial` 宿主桥、窗口/对话框等能力往 `desktop.*` 收口，并让更多 UI 页面消费更薄的 desktop/core 句柄
 3. 继续把 child tool 的真实目录扫描、启动参数和 desktop 薄桥能力往 `core` / `desktop` 收口
 4. UI 收口后切回 `desktop` packaging / release 脚手架
 
 ## 当前风险提示
 
-- `packages/core/src/connection/types.ts` 已超过 300 行，如果 `connection` 域继续扩张，需要按子域拆到更细目录，否则会在后续大型单文件诊断里再次成为热点。
+- `packages/core/src/connection/types.ts` 已超过 300 行，`packages/core/src/connection/persistence.ts` 已接近 300 行；如果 `connection` 域继续扩张，需要按子域拆到更细目录，否则会在后续大型单文件诊断里再次成为热点。
+- `packages/core/src/rpc/index.ts` 与 `packages/core/src/rpc/connection/index.ts` 还在继续膨胀，后续如果再新增 domain/action，需要留意按更细目录拆分 router 组合层。
+- `packages/core/src/connection/remote.ts` 也已接近 300 行，如果继续承接云端同步细节，下一轮需要继续拆成更细文件。
+- `packages/core/src/rpc/index.ts` 依旧是聚合热点；如果 hardware / connection / tool 继续扩张，需要考虑二级 router 聚合辅助文件，避免它持续膨胀。
+- `packages/desktop/src/rpc/types.ts` 当前同时承载 desktop RPC 公共结果类型与 Router 类型，后续如果 desktop 宿主桥能力继续扩张，应拆成更细的 `types.ts` / `results.ts`。
+- `packages/core/src/connection/types.ts` 已超过 300 行，`packages/core/src/connection/persistence.ts` 已接近 300 行；如果 `connection` 域继续扩张，需要按子域拆到更细目录，否则会在后续大型单文件诊断里再次成为热点。
 
 ## 当前风险提示
 
