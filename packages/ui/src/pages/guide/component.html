@@ -1,0 +1,75 @@
+<section class="guide-page">
+  <article hlmCard class="hero-card">
+    <div class="hero-copy">
+      <span hlmBadge>{{ language() }}</span>
+      <h2>Aily Blockly</h2>
+      <p>Workspace entrypoint, onboarding hub, and navigation surface for the rebuilt Angular shell.</p>
+    </div>
+
+    <div class="hero-meta">
+      <strong>Onboarding</strong>
+      <span>{{ onboardingCompleted() ? 'completed' : 'pending' }}</span>
+    </div>
+  </article>
+
+  <section class="grid">
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Quick Actions</p>
+          <h3>Start Here</h3>
+        </div>
+      </header>
+
+      <div class="action-list">
+        @for (item of quickActions; track item.href) {
+          <a class="action-card" [routerLink]="item.href">
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.detail }}</span>
+          </a>
+        }
+      </div>
+    </article>
+
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Recent Projects</p>
+          <h3>Continue Working</h3>
+        </div>
+      </header>
+
+      <div class="recent-list">
+        @for (project of recentProjects(); track project.path) {
+          <div class="recent-item">
+            <strong>{{ project.nickname || project.name }}</strong>
+            <span>{{ project.path }}</span>
+          </div>
+        } @empty {
+          <div class="recent-item">
+            <strong>No recent projects</strong>
+            <span>Create a new project to seed the workspace list.</span>
+          </div>
+        }
+      </div>
+    </article>
+  </section>
+
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Community</p>
+        <h3>References</h3>
+      </div>
+    </header>
+
+    <div class="action-list">
+      @for (item of communityLinks; track item.href) {
+        <a class="action-card" [href]="item.href" target="_blank" rel="noreferrer">
+          <strong>{{ item.label }}</strong>
+          <span>{{ item.detail }}</span>
+        </a>
+      }
+    </div>
+  </article>
+</section>

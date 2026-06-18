@@ -33,6 +33,7 @@
 .workspace-canvas {
 	display: grid;
 	place-items: center;
+	gap: 10px;
 	min-height: 420px;
 	border-radius: 24px;
 	background:
@@ -40,10 +41,37 @@
 		color-mix(in srgb, var(--muted) 55%, transparent);
 }
 
+.search-box {
+	display: grid;
+	gap: 6px;
+}
+
+.search-box span {
+	color: var(--muted-foreground);
+	font-size: 13px;
+}
+
+.hint-list {
+	display: grid;
+	gap: 6px;
+	text-align: center;
+}
+
 .badge-row {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 10px;
+}
+
+.search-list {
+	display: grid;
+	gap: 8px;
+}
+
+.search-item {
+	padding: 10px 12px;
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--muted) 60%, transparent);
 }
 
 @media (max-width: 960px) {

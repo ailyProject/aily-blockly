@@ -47,6 +47,11 @@
 	background: color-mix(in srgb, var(--muted) 65%, transparent);
 }
 
+.build-copy {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
 @media (max-width: 960px) {
 	.code-page {
 		grid-template-columns: 1fr;

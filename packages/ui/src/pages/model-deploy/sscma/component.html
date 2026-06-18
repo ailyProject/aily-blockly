@@ -1,0 +1,19 @@
+<section class="deploy-grid">
+  <a hlmCard class="deploy-card" routerLink="/model-deploy/sscma">
+    <span hlmBadge>SSCMA</span>
+    <strong>Deploy Flow</strong>
+    <p>Flash and runtime validation entrypoint for SSCMA-compatible model bundles.</p>
+  </a>
+
+  <a hlmCard class="deploy-card" routerLink="/model-deploy/sscma/test">
+    <span hlmBadge variant="secondary">SSCMA Test</span>
+    <strong>Config + Test</strong>
+    <p>Board-side validation, runtime checks, and quick sanity test entrypoint.</p>
+  </a>
+</section>
+
+<section class="check-grid">
+  @for (item of checks; track item) {
+    <article hlmCard class="check-card">{{ item }}</article>
+  }
+</section>

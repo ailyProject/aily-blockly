@@ -1,0 +1,44 @@
+.vision-page {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header h2,
+.eyebrow,
+.link-card p {
+	margin: 0;
+}
+
+.eyebrow,
+.link-card p {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.link-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+}
+
+.link-card {
+	display: grid;
+	gap: 8px;
+	padding: 18px;
+	border-radius: 20px;
+	text-decoration: none;
+	color: inherit;
+}

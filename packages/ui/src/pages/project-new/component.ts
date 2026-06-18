@@ -36,6 +36,7 @@ export class ProjectNewPageComponent implements OnInit {
 	protected readonly rootPath = signal('')
 	protected readonly resolvedProjectPath = signal('')
 	protected readonly recentProjects = signal<Array<ProjectNewRecentItem>>([])
+	protected readonly pathConflict = signal<boolean | null>(null)
 	protected readonly boardOptions = projectNewBoardOptions
 	protected readonly canPreview = computed(() => this.rootPath().length > 0 && this.projectName().trim().length > 0)
 
@@ -81,9 +82,16 @@ export class ProjectNewPageComponent implements OnInit {
 		})
 
 		this.resolvedProjectPath.set(path)
+		this.pathConflict.set(this.recentProjects().some(item => item.path === path))
 	}
 
 	protected chooseBoard(boardName: string) {
 		this.selectedBoardName.set(boardName)
+	}
+
+	protected useRecentProject(project: ProjectNewRecentItem) {
+		this.projectName.set(project.nickname || project.name)
+		this.resolvedProjectPath.set(project.path)
+		this.pathConflict.set(true)
 	}
 }

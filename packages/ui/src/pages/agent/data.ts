@@ -1,10 +1,10 @@
 import type { AgentSessionRequest } from 'shared'
 
-export const demoAgentRequestBody: Omit<AgentSessionRequest, 'id' | 'text'> = {
-	title: 'Aily Agent Demo',
+export const agentRequestSeed: Omit<AgentSessionRequest, 'id' | 'text'> = {
+	title: 'Aily Agent Session',
 	model: {
 		model: 'gpt-5',
-		apiKey: 'demo-api-key'
+		apiKey: 'local-api-key'
 	},
 	runtimeConfig: {
 		mode: 'agent',
@@ -12,6 +12,6 @@ export const demoAgentRequestBody: Omit<AgentSessionRequest, 'id' | 'text'> = {
 		maxSteps: 8
 	},
 	metadata: {
-		source: 'ui-agent-page'
+		source: 'ui-agent'
 	}
 }

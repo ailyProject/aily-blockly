@@ -1,4 +1,5 @@
 import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@core'
+import type { LibraryIndexItem } from 'core/hardware'
 import type { AilyAgentConfig, AilyAppConfig, AppRegistryItem } from 'shared'
 
 type BadgeTone = 'default' | 'secondary' | 'outline'
@@ -28,7 +29,7 @@ export const navigationCards = [
 	{ title: 'Panes', detail: 'right tools, bottom logs, shell layout', tone: 'outline' as BadgeTone }
 ]
 
-export const demoBoardIndex: Array<BoardIndexItem> = [
+export const seedBoardIndex: Array<BoardIndexItem> = [
 	{
 		name: 'xiao-esp32s3',
 		displayName: 'XIAO ESP32S3',
@@ -71,7 +72,7 @@ export const demoBoardIndex: Array<BoardIndexItem> = [
 	}
 ]
 
-export const demoLegacyBoards: Array<LegacyBoardItem> = [
+export const seedLegacyBoards: Array<LegacyBoardItem> = [
 	{
 		name: 'xiao-esp32s3',
 		nickname: 'Seeed XIAO ESP32S3',
@@ -86,7 +87,7 @@ export const demoLegacyBoards: Array<LegacyBoardItem> = [
 	}
 ]
 
-export const demoLegacyLibraries: Array<LegacyLibraryItem> = [
+export const seedLegacyLibraries: Array<LegacyLibraryItem> = [
 	{
 		name: '@aily-project/lib-oled-ssd1306',
 		nickname: 'SSD1306 OLED',
@@ -101,7 +102,36 @@ export const demoLegacyLibraries: Array<LegacyLibraryItem> = [
 	}
 ]
 
-export const demoAgentConfig: AilyAgentConfig = {
+export const seedLibraryIndex: Array<LibraryIndexItem> = [
+	{
+		name: '@aily-project/lib-oled-ssd1306',
+		displayName: 'SSD1306 OLED',
+		category: 'display',
+		supportedCores: ['esp32'],
+		communication: ['i2c'],
+		voltage: [3.3],
+		hardwareType: ['display'],
+		compatibleHardware: ['xiao-esp32s3'],
+		tags: ['oled', 'screen'],
+		keywords: ['oled', 'ssd1306', 'display'],
+		description: 'Small OLED display driver for I2C workflows.'
+	},
+	{
+		name: '@aily-project/lib-rc522',
+		displayName: 'RC522 RFID',
+		category: 'wireless',
+		supportedCores: ['esp32', 'renesas'],
+		communication: ['spi'],
+		voltage: [3.3, 5],
+		hardwareType: ['sensor'],
+		compatibleHardware: ['uno-r4', 'xiao-esp32s3'],
+		tags: ['rfid', 'nfc'],
+		keywords: ['rc522', 'rfid', 'reader'],
+		description: 'RC522 RFID reader support for card and tag scenarios.'
+	}
+]
+
+export const seedAgentConfig: AilyAgentConfig = {
 	useCustomApiKey: true,
 	maxCount: 12,
 	enabledTools: ['searchBoardsLibraries', 'readProjectFile'],
@@ -130,17 +160,17 @@ export const demoAgentConfig: AilyAgentConfig = {
 			enabled: true,
 			isCustom: true,
 			baseUrl: 'https://llm.example.com',
-			apiKey: 'demo-key'
+			apiKey: 'local-key'
 		}
 	]
 }
 
-export const demoAppConfig: AilyAppConfig = {
+export const seedAppConfig: AilyAppConfig = {
 	lang: 'en_US',
 	selectedLanguage: 'en',
 	recentlyProjects: [
-		{ name: 'Aily Blocks', path: '/Users/demo/projects/aily-blocks' },
-		{ name: 'Robot Arm', path: '/Users/demo/projects/robot-arm' }
+		{ name: 'Aily Blocks', path: '/Users/workspace/projects/aily-blocks' },
+		{ name: 'Robot Arm', path: '/Users/workspace/projects/robot-arm' }
 	],
 	toolbarAppIds: ['aily-chat', 'serial-monitor', 'flash-fs'],
 	skippedVersions: ['1.2.0'],
@@ -166,19 +196,19 @@ export const demoAppConfig: AilyAppConfig = {
 	}
 }
 
-export const demoRecentProject = {
+export const seedRecentProject = {
 	name: 'Vision Station',
-	path: '/Users/demo/projects/vision-station'
+	path: '/Users/workspace/projects/vision-station'
 }
 
-export const demoToolbarApps: Array<AppRegistryItem> = [
+export const seedToolbarApps: Array<AppRegistryItem> = [
 	{ id: 'aily-chat', enabled: true, lock: true, router: ['/main/blockly-editor'] },
 	{ id: 'serial-monitor', enabled: true, router: ['/main/blockly-editor'], core: ['esp32', 'renesas'] },
 	{ id: 'flash-fs', enabled: true, router: ['/main/blockly-editor'] },
 	{ id: 'dev-tool', enabled: true, dev: true, router: ['/main/blockly-editor'] }
 ]
 
-export const demoAppConfigMutationInput = {
+export const seedAppConfigMutationInput = {
 	versionToSkip: '1.3.0',
 	themeMode: 'light' as const,
 	aiChatMode: 'agent' as const,
@@ -188,7 +218,7 @@ export const demoAppConfigMutationInput = {
 	toolbarAppIds: ['aily-chat', 'flash-fs'],
 	quickSendList: [
 		{ name: 'RST', type: 'signal' as const, data: 'RTS' },
-		{ name: 'Ping', type: 'text' as const, data: 'ping from mutation preview' }
+		{ name: 'Ping', type: 'text' as const, data: 'ping from config update' }
 	],
 	serialMonitor: {
 		port: 'COM9',

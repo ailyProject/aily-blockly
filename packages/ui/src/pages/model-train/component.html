@@ -1,0 +1,50 @@
+<section class="model-page">
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Model Train</p>
+        <h2>Recent Training Projects</h2>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      @for (tab of tabs; track tab.href) {
+        <a
+          class="tab-link"
+          [routerLink]="tab.href"
+          routerLinkActive="active"
+          [routerLinkActiveOptions]="{ exact: tab.href === '/model-train' }">
+          {{ tab.label }}
+        </a>
+      }
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-card">
+        <span>classification</span>
+        <strong>{{ classificationCount() }}</strong>
+      </div>
+      <div class="summary-card">
+        <span>detection</span>
+        <strong>{{ detectionCount() }}</strong>
+      </div>
+    </div>
+
+    <div class="list">
+      @for (item of recentModels(); track item.path) {
+        <div class="item">
+          <strong>{{ item.name }}</strong>
+          <span>{{ item.modelType }}</span>
+          <span>{{ item.path }}</span>
+        </div>
+      } @empty {
+        <div class="item">
+          <strong>No model projects yet</strong>
+          <span>Seed data has not been written to config.</span>
+        </div>
+      }
+    </div>
+  </article>
+
+  <router-outlet />
+</section>

@@ -1,0 +1,32 @@
+.iframe-page {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.frame {
+	width: 100%;
+	min-height: 480px;
+	border: 0;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 55%, transparent);
+}

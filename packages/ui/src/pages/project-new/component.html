@@ -32,6 +32,12 @@
         <span>Resolved path</span>
         <strong>{{ resolvedProjectPath() || 'preview unavailable' }}</strong>
       </div>
+
+      @if (pathConflict() === true) {
+        <span hlmBadge variant="secondary">matches an existing recent project path</span>
+      } @else if (pathConflict() === false) {
+        <span hlmBadge variant="outline">path looks unused in recent list</span>
+      }
     </article>
 
     <article hlmCard class="panel">
@@ -62,10 +68,10 @@
 
       <div class="list">
         @for (project of recentProjects(); track project.path) {
-          <div class="list-item">
+          <button class="list-item" type="button" (click)="useRecentProject(project)">
             <strong>{{ project.nickname || project.name }}</strong>
             <span>{{ project.path }}</span>
-          </div>
+          </button>
         }
       </div>
     </article>

@@ -1,0 +1,35 @@
+.subject-page {
+	display: grid;
+	gap: 16px;
+}
+
+.subject-summary,
+.example-card {
+	display: grid;
+	gap: 10px;
+	padding: 18px;
+	border-radius: 20px;
+}
+
+.subject-summary h3,
+.subject-summary p,
+.example-card span {
+	margin: 0;
+}
+
+.subject-summary p,
+.example-card span {
+	color: var(--muted-foreground);
+}
+
+.example-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+}
+
+.back-link {
+	color: var(--primary);
+	text-decoration: none;
+	font-weight: 600;
+}

@@ -1,0 +1,33 @@
+<section class="ffs-page">
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Flash FS</p>
+        <h2>Transport Snapshot</h2>
+      </div>
+    </header>
+
+    @if (serialSummary(); as serial) {
+      <div class="metric-grid">
+        <div><span>Port</span><strong>{{ serial.port || 'unset' }}</strong></div>
+        <div><span>Baud</span><strong>{{ serial.baudRate }}</strong></div>
+      </div>
+    }
+  </article>
+
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Prepared Connect</p>
+        <h2>ESP Session Seed</h2>
+      </div>
+    </header>
+
+    @if (connectSummary(); as connect) {
+      <div class="metric-grid">
+        <div><span>Path</span><strong>{{ connect.path }}</strong></div>
+        <div><span>Baud</span><strong>{{ connect.baudRate }}</strong></div>
+      </div>
+    }
+  </article>
+</section>

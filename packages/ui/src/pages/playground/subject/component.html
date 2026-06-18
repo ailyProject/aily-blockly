@@ -1,0 +1,25 @@
+@if (subject(); as subjectValue) {
+  <section class="subject-page">
+    <article hlmCard class="subject-summary">
+      <span hlmBadge>{{ subjectValue.tag }}</span>
+      <h3>{{ subjectValue.title }}</h3>
+      <p>{{ subjectValue.summary }}</p>
+      <a routerLink="/main/playground/list" class="back-link">Back to catalog</a>
+    </article>
+
+    <section class="example-list">
+      @for (example of subjectValue.examples; track example.id) {
+        <article hlmCard class="example-card">
+          <strong>{{ example.title }}</strong>
+          <span>{{ example.summary }}</span>
+          <span hlmBadge variant="outline">{{ example.board }}</span>
+        </article>
+      }
+    </section>
+  </section>
+} @else {
+  <article hlmCard class="subject-summary">
+    <strong>Subject not found</strong>
+    <a routerLink="/main/playground/list" class="back-link">Back to catalog</a>
+  </article>
+}

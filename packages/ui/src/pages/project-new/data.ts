@@ -1,8 +1,8 @@
-import { demoAppConfig, demoBoardIndex, demoRecentProject } from '@/pages/home/data'
+import { seedAppConfig, seedBoardIndex, seedRecentProject } from '@/pages/home/data'
 
-export const projectNewUserDocuments = '/Users/demo/Documents'
+export const projectNewUserDocuments = '/Users/workspace/Documents'
 export const projectNewSeparator = '/'
 export const projectNewInitialName = 'vision-station'
-export const projectNewBoardOptions = demoBoardIndex.slice(0, 4)
-export const projectNewRecentConfig = demoAppConfig
-export const suggestedProject = demoRecentProject
+export const projectNewBoardOptions = seedBoardIndex.slice(0, 4)
+export const projectNewRecentConfig = seedAppConfig
+export const suggestedProject = seedRecentProject

@@ -1,0 +1,31 @@
+.deploy-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+}
+
+.deploy-card {
+	display: grid;
+	gap: 8px;
+	padding: 18px;
+	border-radius: 20px;
+	text-decoration: none;
+	color: inherit;
+}
+
+.deploy-card p {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.check-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+	margin-top: 14px;
+}
+
+.check-card {
+	padding: 16px;
+	border-radius: 18px;
+}

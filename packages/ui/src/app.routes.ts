@@ -10,6 +10,10 @@ export const routes: Routes = [
 	...toolRoutes,
 	...windowRoutes,
 	{
+		path: 'lab/home',
+		loadComponent: () => import('@/pages/home/component').then(module => module.HomePageComponent)
+	},
+	{
 		path: 'lab/agent',
 		loadComponent: () => import('@/pages/agent/component').then(module => module.AgentPageComponent)
 	}

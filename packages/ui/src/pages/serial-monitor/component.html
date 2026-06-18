@@ -24,12 +24,12 @@
         </header>
 
         <div class="metrics-grid">
-          <div><span>Baud</span><strong>{{ stateValue.appConfigSummary.serialBaudRate }}</strong></div>
-          <div><span>Connect Baud</span><strong>{{ stateValue.appConfigSummary.serialConnectBaudRate }}</strong></div>
-          <div><span>Auto Scroll</span><strong>{{ stateValue.appConfigSummary.serialAutoScroll ? 'on' : 'off' }}</strong></div>
-          <div><span>Hex Input</span><strong>{{ stateValue.appConfigSummary.serialInputHexMode ? 'on' : 'off' }}</strong></div>
-          <div><span>Preview Port</span><strong>{{ stateValue.appConfigSummary.previewSerialPort }}</strong></div>
-          <div><span>Quick Sends</span><strong>{{ stateValue.appConfigSummary.quickSendCount }}</strong></div>
+          <div><span>Baud</span><strong>{{ stateValue.baudRate }}</strong></div>
+          <div><span>Connect Baud</span><strong>{{ stateValue.connectBaudRate }}</strong></div>
+          <div><span>Auto Scroll</span><strong>{{ stateValue.autoScroll ? 'on' : 'off' }}</strong></div>
+          <div><span>Hex Input</span><strong>{{ stateValue.hexInput ? 'on' : 'off' }}</strong></div>
+          <div><span>Preview Port</span><strong>{{ stateValue.previewPort }}</strong></div>
+          <div><span>Quick Sends</span><strong>{{ stateValue.quickSendCount }}</strong></div>
         </div>
       </article>
 
@@ -42,12 +42,12 @@
         </header>
 
         <div class="badge-row">
-          <span hlmBadge variant="secondary">toolbar {{ stateValue.appConfigSummary.toolbarAppCount }}</span>
-          <span hlmBadge variant="secondary">visible {{ stateValue.appConfigSummary.visibleToolbarAppCount }}</span>
-          <span hlmBadge variant="outline">default {{ stateValue.appConfigSummary.defaultToolbarAppCount }}</span>
-          <span hlmBadge variant="outline">merged {{ stateValue.appConfigSummary.mergedToolbarOrderCount }}</span>
-          <span hlmBadge variant="outline">toggled {{ stateValue.appConfigSummary.toggledToolbarAppCount }}</span>
-          <span hlmBadge variant="outline">reset {{ stateValue.appConfigSummary.resetToolbarAppCount }}</span>
+          <span hlmBadge variant="secondary">toolbar {{ stateValue.toolbarAppCount }}</span>
+          <span hlmBadge variant="secondary">visible {{ stateValue.visibleToolbarAppCount }}</span>
+          <span hlmBadge variant="outline">default {{ stateValue.defaultToolbarAppCount }}</span>
+          <span hlmBadge variant="outline">merged {{ stateValue.mergedToolbarOrderCount }}</span>
+          <span hlmBadge variant="outline">toggled {{ stateValue.toggledToolbarAppCount }}</span>
+          <span hlmBadge variant="outline">reset {{ stateValue.resetToolbarAppCount }}</span>
         </div>
       </article>
     }

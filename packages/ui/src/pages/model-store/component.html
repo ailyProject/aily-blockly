@@ -1,0 +1,16 @@
+<section class="model-store-page">
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Model Store</p>
+        <h2>Library Categories</h2>
+      </div>
+    </header>
+
+    <div class="badge-row">
+      @for (item of categories(); track item.name) {
+        <span hlmBadge>{{ item.name }} {{ item.count }}</span>
+      }
+    </div>
+  </article>
+</section>

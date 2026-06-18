@@ -1,0 +1,9 @@
+<article hlmCard class="panel">
+  <span hlmBadge variant="secondary">SSCMA Test</span>
+  <h3>Runtime Test Surface</h3>
+  <div class="steps">
+    @for (item of checks(); track item) {
+      <div class="step">{{ item }}</div>
+    }
+  </div>
+</article>

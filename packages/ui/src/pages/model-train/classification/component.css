@@ -1,0 +1,26 @@
+.panel {
+	display: grid;
+	gap: 10px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel h3,
+.panel p {
+	margin: 0;
+}
+
+.panel p {
+	color: var(--muted-foreground);
+}
+
+.steps {
+	display: grid;
+	gap: 10px;
+}
+
+.step {
+	padding: 10px 12px;
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--muted) 60%, transparent);
+}

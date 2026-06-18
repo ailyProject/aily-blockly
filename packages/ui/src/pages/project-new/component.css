@@ -52,7 +52,11 @@
 	display: grid;
 	gap: 4px;
 	min-width: 220px;
+	width: 100%;
 	padding: 12px 14px;
 	border-radius: 16px;
 	background: color-mix(in srgb, var(--muted) 65%, transparent);
+	border: 0;
+	text-align: left;
+	cursor: pointer;
 }

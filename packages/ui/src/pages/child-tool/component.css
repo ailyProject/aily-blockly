@@ -1,0 +1,29 @@
+.tool-page {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header h2,
+.eyebrow,
+.summary {
+	margin: 0;
+}
+
+.eyebrow,
+.summary {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}

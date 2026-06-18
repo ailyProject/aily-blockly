@@ -1,0 +1,30 @@
+.model-store-page {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}

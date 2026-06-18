@@ -8,7 +8,7 @@ import { HlmTextareaImports } from 'spartan/textarea'
 import { injectAgentApi } from '@/agent-api'
 import { createAgentChatTransport } from '@/agent-api/chat-transport'
 import { AppShellComponent } from '@/layout/app-shell.component'
-import { demoAgentRequestBody } from '@/pages/agent/data'
+import { agentRequestSeed } from '@/pages/agent/data'
 
 @Component({
 	selector: 'agent-page',
@@ -21,7 +21,7 @@ export class AgentPageComponent {
 
 	protected readonly draft = signal('Summarize the current core migration shape in 3 short bullets.')
 	protected readonly chat = new Chat({
-		id: 'agent-page-demo',
+		id: 'agent-page-session',
 		transport: createAgentChatTransport({ api: this.agentApi.api })
 	})
 	protected readonly canSend = computed(() => this.draft().trim().length > 0 && this.chat.status === 'ready')
@@ -34,14 +34,14 @@ export class AgentPageComponent {
 		await this.chat.sendMessage(
 			{ text },
 			{
-				body: demoAgentRequestBody
+				body: agentRequestSeed
 			}
 		)
 	}
 
 	protected async resume() {
 		await this.chat.resumeStream({
-			body: demoAgentRequestBody
+			body: agentRequestSeed
 		})
 	}
 }

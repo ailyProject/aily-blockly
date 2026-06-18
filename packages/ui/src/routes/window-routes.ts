@@ -1,7 +1,5 @@
 import { Routes } from '@angular/router'
 
-import { MigrationPageComponent } from '@/pages/migration/component'
-
 export const windowRoutes: Routes = [
 	{
 		path: 'project-new',
@@ -17,42 +15,52 @@ export const windowRoutes: Routes = [
 	},
 	{
 		path: 'iframe',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Iframe Tool Window',
-			domain: 'ui.window',
-			summary: 'Iframe-hosted tool window integration is still pending migration.',
-			legacyHint: 'legacy: windows/iframe'
-		}
+		loadComponent: () => import('@/pages/iframe/component').then(module => module.IframePageComponent)
 	},
 	{
 		path: 'graph-editor',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Graph Editor',
-			domain: 'ui.editor',
-			summary: 'Connection graph editor and themed viewer are pending migration.',
-			legacyHint: 'legacy: editors/graph-editor'
-		}
+		loadComponent: () => import('@/pages/graph-editor/component').then(module => module.GraphEditorPageComponent)
 	},
 	{
 		path: 'model-train',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Model Train',
-			domain: 'ui.window',
-			summary: 'Vision training flows and related project handling are pending migration.',
-			legacyHint: 'legacy: windows/model-train'
-		}
+		loadComponent: () => import('@/pages/model-train/component').then(module => module.ModelTrainPageComponent),
+		children: [
+			{
+				path: 'vision',
+				loadComponent: () =>
+					import('@/pages/model-train/vision/component').then(module => module.VisionTrainPageComponent)
+			},
+			{
+				path: 'vision/classification',
+				loadComponent: () =>
+					import('@/pages/model-train/classification/component').then(module => module.ClassificationTrainPageComponent)
+			},
+			{
+				path: 'vision/detection',
+				loadComponent: () =>
+					import('@/pages/model-train/detection/component').then(module => module.DetectionTrainPageComponent)
+			}
+		]
 	},
 	{
 		path: 'model-deploy',
-		component: MigrationPageComponent,
-		data: {
-			title: 'Model Deploy',
-			domain: 'ui.window',
-			summary: 'Deployment wizard and SSCMA-specific flows are pending migration.',
-			legacyHint: 'legacy: windows/model-deploy'
-		}
+		loadComponent: () => import('@/pages/model-deploy/component').then(module => module.ModelDeployPageComponent),
+		children: [
+			{
+				path: '',
+				loadComponent: () =>
+					import('@/pages/model-deploy/sscma/component').then(module => module.SscmaDeployPageComponent)
+			},
+			{
+				path: 'sscma',
+				loadComponent: () =>
+					import('@/pages/model-deploy/sscma/component').then(module => module.SscmaDeployPageComponent)
+			},
+			{
+				path: 'sscma/test',
+				loadComponent: () =>
+					import('@/pages/model-deploy/sscma-test/component').then(module => module.SscmaTestPageComponent)
+			}
+		]
 	}
 ]

@@ -33,6 +33,24 @@
 	gap: 10px;
 }
 
+.tab-row {
+	display: flex;
+	gap: 10px;
+}
+
+.tab-link {
+	padding: 8px 12px;
+	border-radius: 999px;
+	text-decoration: none;
+	color: var(--muted-foreground);
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.tab-link.active {
+	color: var(--foreground);
+	background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
 .link-item {
 	display: grid;
 	gap: 4px;

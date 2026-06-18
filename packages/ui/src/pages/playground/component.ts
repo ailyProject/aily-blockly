@@ -1,4 +1,5 @@
 import { Component, OnInit, signal } from '@angular/core'
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
@@ -7,7 +8,7 @@ import { primaryRouteLinks } from '@/pages/main/data'
 
 @Component({
 	selector: 'playground-page',
-	imports: [HlmBadgeImports, HlmCardImports],
+	imports: [HlmBadgeImports, HlmCardImports, RouterLink, RouterLinkActive, RouterOutlet],
 	templateUrl: './component.html',
 	styleUrl: './component.css'
 })
@@ -15,7 +16,7 @@ export class PlaygroundPageComponent implements OnInit {
 	private readonly core = injectCore()
 
 	protected readonly categories = signal<Array<{ name: string; count: number }>>([])
-	protected readonly links = primaryRouteLinks
+	protected readonly links = primaryRouteLinks.filter(item => item.href !== '/main/playground')
 
 	async ngOnInit() {
 		const boards = await this.core.hardware.getBoardCategories.query({

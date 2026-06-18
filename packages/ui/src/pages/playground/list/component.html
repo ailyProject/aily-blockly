@@ -1,0 +1,24 @@
+<section class="subject-filter">
+  <label class="filter-box">
+    <span>Search examples</span>
+    <input hlmInput [value]="query()" (input)="updateQuery($event)" placeholder="keyword or board..." />
+  </label>
+</section>
+
+<section class="subject-grid">
+  @for (subject of subjects(); track subject.id) {
+    <a hlmCard class="subject-card" [routerLink]="['/main/playground/s', subject.id]">
+      <div class="subject-copy">
+        <span hlmBadge variant="secondary">{{ subject.tag }}</span>
+        <strong>{{ subject.title }}</strong>
+        <p>{{ subject.summary }}</p>
+      </div>
+      <span class="meta">{{ subject.examples.length }} examples</span>
+    </a>
+  } @empty {
+    <article hlmCard class="subject-card empty">
+      <strong>No subjects match the current filter.</strong>
+      <span class="meta">Try another board or keyword.</span>
+    </article>
+  }
+</section>

@@ -1,7 +1,6 @@
 import { Routes } from '@angular/router'
 
 import { MainPageComponent } from '@/pages/main/component'
-import { MigrationPageComponent } from '@/pages/migration/component'
 
 export const mainRoutes: Routes = [
 	{
@@ -11,7 +10,7 @@ export const mainRoutes: Routes = [
 			{ path: '', redirectTo: 'guide', pathMatch: 'full' },
 			{
 				path: 'guide',
-				loadComponent: () => import('@/pages/home/component').then(module => module.HomePageComponent)
+				loadComponent: () => import('@/pages/guide/component').then(module => module.GuidePageComponent)
 			},
 			{
 				path: 'project-new',
@@ -19,7 +18,20 @@ export const mainRoutes: Routes = [
 			},
 			{
 				path: 'playground',
-				loadComponent: () => import('@/pages/playground/component').then(module => module.PlaygroundPageComponent)
+				loadComponent: () => import('@/pages/playground/component').then(module => module.PlaygroundPageComponent),
+				children: [
+					{ path: '', redirectTo: 'list', pathMatch: 'full' },
+					{
+						path: 'list',
+						loadComponent: () =>
+							import('@/pages/playground/list/component').then(module => module.PlaygroundListPageComponent)
+					},
+					{
+						path: 's/:name',
+						loadComponent: () =>
+							import('@/pages/playground/subject/component').then(module => module.PlaygroundSubjectPageComponent)
+					}
+				]
 			},
 			{
 				path: 'blockly-editor',

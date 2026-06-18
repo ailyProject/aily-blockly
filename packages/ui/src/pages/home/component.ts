@@ -15,6 +15,7 @@ import { AppShellComponent } from '@/layout/app-shell.component'
 import { HomePageStatusComponent } from '@/pages/home/components/home-page-status.component'
 import { bottomTabItems, inspectorCards, navigationCards } from '@/pages/home/data'
 import { loadHomePageCoreState } from '@/pages/home/runtime'
+import { applyHomePageCoreState, createHomePageState } from '@/pages/home/state'
 import { boardColumns, boardRows } from '@/pages/home/table-data'
 import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
 
@@ -40,6 +41,7 @@ import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
 export class HomePageComponent implements OnInit {
 	private readonly core = injectCore()
 	private readonly desktop = injectDesktop()
+	private readonly pageState = createHomePageState()
 
 	protected readonly bottomTab = signal('logs')
 	protected readonly themeMode = signal(getThemeMode())
@@ -48,52 +50,52 @@ export class HomePageComponent implements OnInit {
 	protected readonly inspectorCards = inspectorCards
 	protected readonly boardColumns = boardColumns
 	protected readonly boardRows = boardRows
-	protected readonly desktopBackendReachable = signal(false)
-	protected readonly desktopBackendManaged = signal(false)
-	protected readonly desktopBackendBaseUrl = signal('http://127.0.0.1:3072')
-	protected readonly desktopBackendError = signal<string | null>(null)
-	protected readonly hardwareCategories = signal<Array<{ name: string; count: number }>>([])
-	protected readonly boardValidationText = signal('pending')
-	protected readonly libraryValidationText = signal('pending')
-	protected readonly enabledModelCount = signal(0)
-	protected readonly securitySummary = signal<Array<{ name: string; enabled: boolean }>>([])
-	protected readonly appLanguage = signal('unknown')
-	protected readonly appThemeMode = signal('dark')
-	protected readonly devmodeEnabled = signal(false)
-	protected readonly devmodeAutoSave = signal(true)
-	protected readonly appAiChatMode = signal('agent')
-	protected readonly appSelectedModel = signal('none')
-	protected readonly toolbarAppCount = signal(0)
-	protected readonly visibleToolbarAppCount = signal(0)
-	protected readonly quickSendCount = signal(0)
-	protected readonly skippedVersionCount = signal(0)
-	protected readonly serialBaudRate = signal('9600')
-	protected readonly serialAutoScroll = signal(true)
-	protected readonly serialInputHexMode = signal(false)
-	protected readonly serialConnectBaudRate = signal(9600)
-	protected readonly recentProjectCount = signal(0)
-	protected readonly recentModelProjectCount = signal(0)
-	protected readonly onboardingCompleted = signal(false)
-	protected readonly blocklyOnboardingCompleted = signal(false)
-	protected readonly ailyChatOnboardingCompleted = signal(false)
-	protected readonly previewSelectedLanguage = signal('unknown')
-	protected readonly previewThemeMode = signal('dark')
-	protected readonly previewDevmodeEnabled = signal(false)
-	protected readonly previewDevmodeAutoSave = signal(true)
-	protected readonly previewSerialPort = signal('unset')
-	protected readonly previewAiChatMode = signal('agent')
-	protected readonly previewToolbarAppCount = signal(0)
-	protected readonly previewQuickSendCount = signal(0)
-	protected readonly previewSkippedVersionCount = signal(0)
-	protected readonly defaultToolbarAppCount = signal(0)
-	protected readonly mergedToolbarOrderCount = signal(0)
-	protected readonly toggledToolbarAppCount = signal(0)
-	protected readonly resetToolbarAppCount = signal(0)
-	protected readonly addedRecentProjectCount = signal(0)
-	protected readonly removedRecentProjectCount = signal(0)
-	protected readonly previewAilyChatOnboardingCompleted = signal(false)
-	protected readonly addedRecentModelProjectCount = signal(0)
-	protected readonly removedRecentModelProjectCount = signal(0)
+	protected readonly desktopBackendReachable = this.pageState.desktopBackendReachable
+	protected readonly desktopBackendManaged = this.pageState.desktopBackendManaged
+	protected readonly desktopBackendBaseUrl = this.pageState.desktopBackendBaseUrl
+	protected readonly desktopBackendError = this.pageState.desktopBackendError
+	protected readonly hardwareCategories = this.pageState.hardwareCategories
+	protected readonly boardValidationText = this.pageState.boardValidationText
+	protected readonly libraryValidationText = this.pageState.libraryValidationText
+	protected readonly enabledModelCount = this.pageState.enabledModelCount
+	protected readonly securitySummary = this.pageState.securitySummary
+	protected readonly appLanguage = this.pageState.appLanguage
+	protected readonly appThemeMode = this.pageState.appThemeMode
+	protected readonly devmodeEnabled = this.pageState.devmodeEnabled
+	protected readonly devmodeAutoSave = this.pageState.devmodeAutoSave
+	protected readonly appAiChatMode = this.pageState.appAiChatMode
+	protected readonly appSelectedModel = this.pageState.appSelectedModel
+	protected readonly toolbarAppCount = this.pageState.toolbarAppCount
+	protected readonly visibleToolbarAppCount = this.pageState.visibleToolbarAppCount
+	protected readonly quickSendCount = this.pageState.quickSendCount
+	protected readonly skippedVersionCount = this.pageState.skippedVersionCount
+	protected readonly serialBaudRate = this.pageState.serialBaudRate
+	protected readonly serialAutoScroll = this.pageState.serialAutoScroll
+	protected readonly serialInputHexMode = this.pageState.serialInputHexMode
+	protected readonly serialConnectBaudRate = this.pageState.serialConnectBaudRate
+	protected readonly recentProjectCount = this.pageState.recentProjectCount
+	protected readonly recentModelProjectCount = this.pageState.recentModelProjectCount
+	protected readonly onboardingCompleted = this.pageState.onboardingCompleted
+	protected readonly blocklyOnboardingCompleted = this.pageState.blocklyOnboardingCompleted
+	protected readonly ailyChatOnboardingCompleted = this.pageState.ailyChatOnboardingCompleted
+	protected readonly previewSelectedLanguage = this.pageState.previewSelectedLanguage
+	protected readonly previewThemeMode = this.pageState.previewThemeMode
+	protected readonly previewDevmodeEnabled = this.pageState.previewDevmodeEnabled
+	protected readonly previewDevmodeAutoSave = this.pageState.previewDevmodeAutoSave
+	protected readonly previewSerialPort = this.pageState.previewSerialPort
+	protected readonly previewAiChatMode = this.pageState.previewAiChatMode
+	protected readonly previewToolbarAppCount = this.pageState.previewToolbarAppCount
+	protected readonly previewQuickSendCount = this.pageState.previewQuickSendCount
+	protected readonly previewSkippedVersionCount = this.pageState.previewSkippedVersionCount
+	protected readonly defaultToolbarAppCount = this.pageState.defaultToolbarAppCount
+	protected readonly mergedToolbarOrderCount = this.pageState.mergedToolbarOrderCount
+	protected readonly toggledToolbarAppCount = this.pageState.toggledToolbarAppCount
+	protected readonly resetToolbarAppCount = this.pageState.resetToolbarAppCount
+	protected readonly addedRecentProjectCount = this.pageState.addedRecentProjectCount
+	protected readonly removedRecentProjectCount = this.pageState.removedRecentProjectCount
+	protected readonly previewAilyChatOnboardingCompleted = this.pageState.previewAilyChatOnboardingCompleted
+	protected readonly addedRecentModelProjectCount = this.pageState.addedRecentModelProjectCount
+	protected readonly removedRecentModelProjectCount = this.pageState.removedRecentModelProjectCount
 
 	async ngOnInit() {
 		await this.refreshDesktopBackendStatus()
@@ -136,57 +138,7 @@ export class HomePageComponent implements OnInit {
 
 	protected async refreshCoreDerivedState() {
 		try {
-			const state = await loadHomePageCoreState(this.core)
-			this.hardwareCategories.set(state.architectureCategories)
-			this.boardValidationText.set(
-				state.boardValidation.exists
-					? `${state.boardValidation.fuzzyMatch ? 'fuzzy' : 'exact'} -> ${state.boardValidation.matchedName}`
-					: 'not found'
-			)
-			this.libraryValidationText.set(
-				state.libraryValidation.exists
-					? `${state.libraryValidation.fuzzyMatch ? 'fuzzy' : 'exact'} -> ${state.libraryValidation.matchedName}`
-					: 'not found'
-			)
-			this.enabledModelCount.set(state.enabledModelCount)
-			this.securitySummary.set(state.securityOptions)
-			this.appLanguage.set(state.appConfigSummary.selectedLanguage)
-			this.appThemeMode.set(state.appConfigSummary.themeMode)
-			this.devmodeEnabled.set(state.appConfigSummary.devmodeEnabled)
-			this.devmodeAutoSave.set(state.appConfigSummary.devmodeAutoSave)
-			this.appAiChatMode.set(state.appConfigSummary.aiChatMode)
-			this.appSelectedModel.set(state.appConfigSummary.selectedModel ?? 'none')
-			this.recentModelProjectCount.set(state.appConfigSummary.recentModelProjectCount)
-			this.toolbarAppCount.set(state.appConfigSummary.toolbarAppCount)
-			this.visibleToolbarAppCount.set(state.appConfigSummary.visibleToolbarAppCount)
-			this.quickSendCount.set(state.appConfigSummary.quickSendCount)
-			this.skippedVersionCount.set(state.appConfigSummary.skippedVersionCount)
-			this.serialBaudRate.set(state.appConfigSummary.serialBaudRate)
-			this.serialAutoScroll.set(state.appConfigSummary.serialAutoScroll)
-			this.serialInputHexMode.set(state.appConfigSummary.serialInputHexMode)
-			this.serialConnectBaudRate.set(state.appConfigSummary.serialConnectBaudRate)
-			this.recentProjectCount.set(state.appConfigSummary.recentProjectCount)
-			this.onboardingCompleted.set(state.appConfigSummary.onboardingCompleted)
-			this.blocklyOnboardingCompleted.set(state.appConfigSummary.blocklyOnboardingCompleted)
-			this.ailyChatOnboardingCompleted.set(state.appConfigSummary.ailyChatOnboardingCompleted)
-			this.previewSelectedLanguage.set(state.appConfigSummary.previewSelectedLanguage)
-			this.previewThemeMode.set(state.appConfigSummary.previewThemeMode)
-			this.previewDevmodeEnabled.set(state.appConfigSummary.previewDevmodeEnabled)
-			this.previewDevmodeAutoSave.set(state.appConfigSummary.previewDevmodeAutoSave)
-			this.previewSerialPort.set(state.appConfigSummary.previewSerialPort)
-			this.previewAiChatMode.set(state.appConfigSummary.previewAiChatMode)
-			this.previewToolbarAppCount.set(state.appConfigSummary.previewToolbarAppCount)
-			this.previewQuickSendCount.set(state.appConfigSummary.previewQuickSendCount)
-			this.previewSkippedVersionCount.set(state.appConfigSummary.previewSkippedVersionCount)
-			this.defaultToolbarAppCount.set(state.appConfigSummary.defaultToolbarAppCount)
-			this.mergedToolbarOrderCount.set(state.appConfigSummary.mergedToolbarOrderCount)
-			this.toggledToolbarAppCount.set(state.appConfigSummary.toggledToolbarAppCount)
-			this.resetToolbarAppCount.set(state.appConfigSummary.resetToolbarAppCount)
-			this.addedRecentProjectCount.set(state.appConfigSummary.addedRecentProjectCount)
-			this.removedRecentProjectCount.set(state.appConfigSummary.removedRecentProjectCount)
-			this.previewAilyChatOnboardingCompleted.set(state.appConfigSummary.previewAilyChatOnboardingCompleted)
-			this.addedRecentModelProjectCount.set(state.appConfigSummary.addedRecentModelProjectCount)
-			this.removedRecentModelProjectCount.set(state.appConfigSummary.removedRecentModelProjectCount)
+			applyHomePageCoreState(this.pageState, await loadHomePageCoreState(this.core))
 		} catch (error) {
 			this.boardValidationText.set(`core route error: ${(error as Error).message}`)
 			this.libraryValidationText.set('core route error')

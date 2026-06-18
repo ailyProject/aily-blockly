@@ -1,0 +1,35 @@
+@if (health(); as healthValue) {
+  <section class="deploy-page">
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Model Deploy</p>
+          <h2>Runtime Health</h2>
+        </div>
+        <span hlmBadge>{{ healthValue.transport }}</span>
+      </header>
+
+      <div class="metric-grid">
+        <div><span>Version</span><strong>{{ healthValue.version }}</strong></div>
+        <div><span>Status</span><strong>{{ healthValue.status }}</strong></div>
+        <div><span>Core URL</span><strong>{{ healthValue.address.baseUrl }}</strong></div>
+        <div><span>Uptime</span><strong>{{ healthValue.uptimeMs }} ms</strong></div>
+        <div><span>Targets</span><strong>{{ deployTargetCount() }}</strong></div>
+      </div>
+
+      <div class="toolbar">
+        @for (tab of tabs; track tab.href) {
+          <a
+            class="tab-link"
+            [routerLink]="tab.href"
+            routerLinkActive="active"
+            [routerLinkActiveOptions]="{ exact: tab.href === '/model-deploy/sscma' }">
+            {{ tab.label }}
+          </a>
+        }
+      </div>
+    </article>
+
+    <router-outlet />
+  </section>
+}

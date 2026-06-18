@@ -1,0 +1,48 @@
+.subject-filter {
+	margin-bottom: 14px;
+}
+
+.filter-box {
+	display: grid;
+	gap: 6px;
+}
+
+.filter-box span {
+	font-size: 13px;
+	color: var(--muted-foreground);
+}
+
+.subject-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+}
+
+.subject-card {
+	display: grid;
+	gap: 16px;
+	padding: 18px;
+	border-radius: 20px;
+	text-decoration: none;
+	color: inherit;
+}
+
+.subject-card.empty {
+	text-decoration: none;
+}
+
+.subject-copy,
+.subject-copy p {
+	display: grid;
+	gap: 8px;
+	margin: 0;
+}
+
+.subject-copy p,
+.meta {
+	color: var(--muted-foreground);
+}
+
+.meta {
+	font-size: 13px;
+}

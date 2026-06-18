@@ -239,7 +239,7 @@
   - `routes/tool-routes.ts`
   - `routes/window-routes.ts`
 - 当前真实接入的页面仍主要是：
-  - `main/guide` -> 现有 home diagnostics 页
+  - `main/guide` -> 已切成真实 guide 页面
   - `aily-chat` -> 现有 agent 页
   - `settings` -> 已接入真实 settings 页面
   - `serial-monitor` -> 已接入真实 serial monitor 页面
@@ -249,9 +249,25 @@
   - `main/playground` -> 已接入真实 playground 页面
   - `about` -> 已接入真实 about 页面
   - `project-new` window route -> 已复用真实 project new 页面
-- 其余 legacy 页面当前先通过占位壳承接，等待逐域替换
+  - `graph-editor` -> 已接入真实 graph editor 页面
+  - `model-train` -> 已接入真实 model train 页面
+  - `model-deploy` -> 已接入真实 model deploy 页面
+- `child-tool/:toolId` -> 已接入真实 child tool host 页面
+- `ffs-manager` -> 已接入真实 flash fs 页面
+- `simulator` -> 已接入真实 simulator 页面
+- `model-store` -> 已接入真实 model store 页面
+- `iframe` -> 已接入真实 iframe 页面
+- 当前已经没有路由继续使用迁移占位页
 - 新增的真实 UI 页面
   - `pages/about/*`
+  - `pages/guide/*`
+  - `pages/child-tool/*`
+  - `pages/ffs-manager/*`
+  - `pages/graph-editor/*`
+  - `pages/iframe/*`
+  - `pages/model-train/*`
+  - `pages/model-deploy/*`
+  - `pages/model-store/*`
   - `pages/playground/*`
   - `pages/project-new/*`
   - `pages/blockly-editor/*`
@@ -261,6 +277,29 @@
 - 路由优化
   - 新接入的真实页面已改成 `loadComponent` 懒加载
   - `ng build` 后初始包体已从约 `970 kB` 降到约 `846 kB`
+  - 进一步清理后，当前初始包体约为 `840 kB`
+- 页面命名约束
+  - 页面目录已改为 `pages/x/*.*`
+  - 页面主文件统一收口到 `component.*`
+  - 相关辅助文件统一收口到 `data.ts` / `runtime.ts` / `table-data.ts` / `state.ts`
+- 大文件收口
+  - `pages/home/component.ts` 已拆到 180 行以内
+  - 新增 `pages/home/state.ts` 以承接首页状态字段与写回逻辑
+- 页面深化进展
+  - `settings` 已从单纯读取首页聚合状态，改为直接组合 `core.config` / `core.project` / `core.onboarding` 数据
+  - `serial-monitor` 已从单纯读取首页聚合状态，改为直接组合 `core.config` / `core.store` 数据
+  - `project-new` 已补路径冲突判断与 recent 项目回填交互
+  - `blockly-editor` 已从首页聚合壳升级为直接组合 `core.config` / `core.store` / `core.hardware`
+  - `code-editor` 已补基础 build 诊断视图承接
+  - `playground` 已从单页壳升级为 `list` / `s/:name` 子路由结构
+  - `model-train` 已补 `vision / classification / detection` 子路由骨架
+  - `model-deploy` 已补 `sscma / sscma/test` 子路由骨架
+  - `model-train` 与 `model-deploy` 顶层页面已补 `router-outlet`，开始承载真实子路由内容
+  - `guide` 已从诊断页占位改为真实入口页，首页诊断页保留到 `/lab/home`
+  - `blockly-editor` 已拆出 `data/runtime`，不再把状态拼装全塞进单组件
+  - `code-editor` 已拆出 `runtime`，开始承载 ABI / lint 两类 core 数据
+  - `playground/list` 已补本地关键字与 board 过滤
+  - `blockly-editor` 已补真实硬件搜索输入，不再只展示静态结果
 
 ## Workflow 基线（2026-06-18）
 

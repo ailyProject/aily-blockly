@@ -4,7 +4,16 @@ import { HlmCardImports } from 'spartan/card'
 
 import { injectCore } from '@/core-service'
 
-import { sampleLintOutput } from './data'
+import { loadCodeEditorState } from './runtime'
+
+export interface CodeEditorStateView {
+	lintMode: string
+	errorCount: number
+	warningCount: number
+	executionTime: number
+	parsedBlockCount: number
+	stringifiedLength: number
+}
 
 @Component({
 	selector: 'code-editor-page',
@@ -15,18 +24,11 @@ import { sampleLintOutput } from './data'
 export class CodeEditorPageComponent implements OnInit {
 	private readonly core = injectCore()
 
-	protected readonly lintResult = signal<Awaited<
-		ReturnType<typeof this.core.build.parseArduinoLintResult.query>
-	> | null>(null)
+	protected readonly state = signal<CodeEditorStateView | null>(null)
+	protected readonly compileSummary = signal('')
 
 	async ngOnInit() {
-		this.lintResult.set(
-			await this.core.build.parseArduinoLintResult.query({
-				output: sampleLintOutput,
-				startTime: Date.now() - 32,
-				mode: 'fast',
-				format: 'vscode'
-			})
-		)
+		this.state.set(await loadCodeEditorState(this.core))
+		this.compileSummary.set('Build diagnostics stream will be wired here after editor migration.')
 	}
 }

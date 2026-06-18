@@ -77,11 +77,11 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 		core.project.getRecentModelProjects.query({ config: options.appConfig }),
 		core.project.addRecentProject.query({
 			config: options.appConfig,
-			project: { name: 'Vision Station', path: '/Users/demo/projects/vision-station' }
+			project: { name: 'Vision Station', path: '/Users/workspace/projects/vision-station' }
 		}),
 		core.project.removeRecentProject.query({
 			config: options.appConfig,
-			projectPath: '/Users/demo/projects/robot-arm'
+			projectPath: '/Users/workspace/projects/robot-arm'
 		}),
 		core.onboarding.getOnboarding.query({ config: options.appConfig }),
 		core.onboarding.completeOnboarding.query({
@@ -92,13 +92,13 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 			config: options.appConfig,
 			project: {
 				name: 'Fruit Classifier',
-				path: '/Users/demo/projects/fruit-classifier',
+				path: '/Users/workspace/projects/fruit-classifier',
 				modelType: 'classification'
 			}
 		}),
 		core.project.removeRecentModelProject.query({
 			config: options.appConfig,
-			projectPath: '/Users/demo/projects/fruit-classifier'
+			projectPath: '/Users/workspace/projects/fruit-classifier'
 		})
 	])
 
