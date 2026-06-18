@@ -4,59 +4,13 @@
 	"description": "Aily Blockly core domains",
 	"type": "module",
 	"license": "MIT",
-	"files": ["dist"],
+	"files": [
+		"dist"
+	],
 	"exports": {
-		"./agent": {
-			"types": "./dist/core/src/agent/index.d.ts",
-			"default": "./dist/agent/index.js"
-		},
-		"./api": {
-			"types": "./dist/core/src/api/index.d.ts",
-			"default": "./dist/api/index.js"
-		},
-		"./rpc": {
-			"types": "./dist/core/src/rpc/index.d.ts",
-			"default": "./dist/rpc/index.js"
-		},
-		"./hardware": {
-			"types": "./dist/core/src/hardware/index.d.ts",
-			"default": "./dist/hardware/index.js"
-		},
-		"./model": {
-			"types": "./dist/core/src/model/index.d.ts",
-			"default": "./dist/model/index.js"
-		},
-		"./tool": {
-			"types": "./dist/core/src/tool/index.d.ts",
-			"default": "./dist/tool/index.js"
-		},
-		"./project": {
-			"types": "./dist/core/src/project/index.d.ts",
-			"default": "./dist/project/index.js"
-		},
-		"./metadata": {
-			"types": "./dist/core/src/metadata/index.d.ts",
-			"default": "./dist/metadata/index.js"
-		},
-		"./document": {
-			"types": "./dist/core/src/document/index.d.ts",
-			"default": "./dist/document/index.js"
-		},
-		"./abi": {
-			"types": "./dist/core/src/abi/index.d.ts",
-			"default": "./dist/abi/index.js"
-		},
-		"./abs": {
-			"types": "./dist/core/src/abs/index.d.ts",
-			"default": "./dist/abs/index.js"
-		},
-		"./build": {
-			"types": "./dist/core/src/build/index.d.ts",
-			"default": "./dist/build/index.js"
-		},
-		"./connection": {
-			"types": "./dist/core/src/connection/index.d.ts",
-			"default": "./dist/connection/index.js"
+		".": {
+			"types": "./dist/core/src/index.d.ts",
+			"default": "./dist/index.js"
 		}
 	},
 	"scripts": {
@@ -70,7 +24,9 @@
 		"@trpc/server": "catalog:",
 		"ai": "catalog:",
 		"dayjs": "catalog:",
+		"esptool-js": "^0.6.0",
 		"hono": "catalog:",
+		"serialport": "^13.0.0",
 		"shared": "workspace:*",
 		"uuid": "catalog:",
 		"zod": "catalog:"

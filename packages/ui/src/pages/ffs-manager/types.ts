@@ -19,6 +19,20 @@ export interface FfsManagerConnectSummary {
 }
 
 /**
+ * Flash FS 页面波特率解析摘要
+ */
+export interface FfsManagerBaudSummary {
+	/** 用户原始请求的波特率 */
+	requestedBaudRate: number
+	/** 当前最终应使用的波特率 */
+	resolvedBaudRate: number
+	/** 当前是否发生自动降速 */
+	capped: boolean
+	/** 探测到的桥接芯片显示名 */
+	bridgeName: string
+}
+
+/**
  * Flash FS 页面展示状态
  */
 export interface FfsManagerState {
@@ -26,4 +40,8 @@ export interface FfsManagerState {
 	serial: FfsManagerSerialSummary
 	/** 当前准备连接参数 */
 	connect: FfsManagerConnectSummary
+	/** 当前波特率解析摘要 */
+	baud: FfsManagerBaudSummary
+	/** 当前宿主可见串口数量 */
+	serialPortCount: number
 }

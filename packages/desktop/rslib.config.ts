@@ -10,14 +10,14 @@ export default deepmerge(rslib, {
 			source: { entry: { main: './src/index.ts' } },
 			format: 'cjs',
 			dts: true,
-			externals: ['electron'],
+			output: { externals: ['electron'] },
 			tools: { rspack: { target: 'electron-main' } }
 		},
 		{
 			source: { entry: { preload: './src/preload/index.ts' } },
 			format: 'cjs',
 			dts: true,
-			externals: ['electron'],
+			output: { externals: ['electron'] },
 			tools: { rspack: { target: 'electron-preload' } }
 		}
 	],

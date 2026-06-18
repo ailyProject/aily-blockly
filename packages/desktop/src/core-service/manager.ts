@@ -1,5 +1,4 @@
 import { createRequire } from 'node:module'
-import path from 'node:path'
 import { utilityProcess } from 'electron'
 import { createAilyCoreServiceAddress } from 'shared'
 
@@ -10,9 +9,19 @@ import type { DesktopCoreServiceManager, DesktopCoreServiceManagerOptions } from
 const require = createRequire(import.meta.url)
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
 const DEFAULT_HEALTHCHECK_INTERVAL_MS = 250
+const AILY_CORE_PLATFORM = 'electron'
 
 const sleep = async (timeout: number) => {
 	await new Promise(resolve => setTimeout(resolve, timeout))
+}
+
+const logChildOutput = (stream: 'stdout' | 'stderr', chunk: Buffer | string) => {
+	const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+	const message = text.trim()
+	if (!message) return
+
+	const logger = stream === 'stderr' ? console.warn : console.log
+	logger(`[aily-core:${stream}] ${message}`)
 }
 
 const isServiceHealthy = async (healthUrl: string) => {
@@ -47,8 +56,7 @@ const readServiceHealth = async (healthUrl: string): Promise<AilyCoreServiceHeal
 const resolveStandaloneEntrypoint = (entryOverride?: string) => {
 	if (entryOverride) return entryOverride
 
-	const rpcEntrypoint = require.resolve('core/rpc')
-	return path.resolve(path.dirname(rpcEntrypoint), '../rpc-standalone/index.js')
+	return require.resolve('core')
 }
 
 /**
@@ -69,12 +77,39 @@ export const createDesktopCoreServiceManager = (
 			}
 
 			if (!child) {
-				child = utilityProcess.fork(resolveStandaloneEntrypoint(options.entryOverride), [], {
-					env: {
-						...process.env,
-						AILY_CORE_SERVICE_HOST: address.host,
-						AILY_CORE_SERVICE_PORT: String(address.port)
+				child = utilityProcess.fork(
+					resolveStandaloneEntrypoint(options.entryOverride),
+					[`--platform=${AILY_CORE_PLATFORM}`],
+					{
+						env: {
+							...process.env,
+							AILY_CORE_PLATFORM,
+							AILY_CORE_SERVICE_HOST: address.host,
+							AILY_CORE_SERVICE_PORT: String(address.port)
+						},
+						stdio: 'pipe',
+						serviceName: 'Aily Core Service',
+						allowLoadingUnsignedLibraries: process.platform === 'darwin'
 					}
+				)
+
+				child.stdout?.on('data', chunk => {
+					logChildOutput('stdout', chunk)
+				})
+
+				child.stderr?.on('data', chunk => {
+					logChildOutput('stderr', chunk)
+				})
+
+				child.on('error', (type, location, report) => {
+					console.warn(`[aily-core:child-error] ${type}: ${location}`)
+					if (report) {
+						console.warn(report)
+					}
+				})
+
+				child.on('exit', code => {
+					console.log(`[aily-core] process exited with code ${code}`)
 				})
 			}
 

@@ -194,6 +194,13 @@
   - 已迁入 SPIFFS / LittleFS / FATFS 推断规则
   - 已迁入分区镜像默认文件名生成规则
   - 已迁入上传路径规范化与文件名长度校验规则
+  - 已迁入桥接芯片识别与波特率钳制规则
+  - 已迁入 Node 版串口适配器骨架
+  - 已迁入 `esptool-js` 驱动的 ESP 会话骨架
+  - 已迁入分区分类 / 大小汇总 / 渲染百分比规则
+  - 已迁入文件系统挂载尝试计划规则
+  - 已迁入 Node 侧 FatFS / SPIFFS / LittleFS client 骨架
+  - 已迁入统一 `mountFfsFilesystem` 工厂
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
   - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
@@ -220,6 +227,7 @@
   - `serial-monitor` 已改为直接消费 `core.hardware.listSerialPorts`
   - `model-deploy` 顶层页已改为组合消费 `desktop.host.getRuntimeInfo` 与 `core.hardware.*`
   - FFS 的核心规则已开始从 UI/legacy service 抽往 `core.ffs.*`
+  - `ffs-manager` 已开始消费 `core.ffs.resolveBaud`
 - `shared`
   - 已建立成可编译 workspace 包骨架
   - 已新增 core service 地址、健康检查、启动选项等共享协议类型与常量
@@ -247,6 +255,8 @@
   - 已清理剩余不符合要求的非 default barrel 导出
   - 已把 `project` 域内部旧过渡文件名整理成 `config/*`、`store/*`、`model/*`
   - 已补 `core.config.get` 的显式返回类型，避免 UI 继续扩散索引签名类型
+  - `packages/core` 的 `rslib` 已从多 entry 收口为单入口构建
+  - `packages/core/dist/index.js` 已验证可直接启动 standalone core 服务
 
 ## 当前迁移顺序
 
@@ -303,14 +313,22 @@
     - `parsePartitionTable`
     - `isPlausiblePartitionEntry`
     - `buildPartitionFileName`
+    - `buildMountPlan`
     - `getDefaultUploadPath`
     - `validateUploadFileName`
+    - `resolveBaud`
+    - `summarizePartitions`
   - `core/ffs/*` 已新增：
     - `partition.ts`
     - `paths.ts`
     - `entries.ts`
     - `image.ts`
     - `types.ts`
+    - `runtime/bridge.ts`
+    - `runtime/nodeSerialPort.ts`
+    - `runtime/session.ts`
+    - `runtime/clients/*`
+    - `runtime/mountFilesystem.ts`
 - 已完成的构建验证
   - `packages/shared` 可单独 `rslib build`
   - `packages/erpc` 可单独 `rslib build`

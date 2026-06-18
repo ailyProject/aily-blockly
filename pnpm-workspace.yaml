@@ -14,6 +14,7 @@ allowBuilds:
   less: true
   lmdb: true
   msgpackr-extract: true
+  '@serialport/bindings-cpp': true
 
 catalog:
   '@abraham/reflection': ^0.13.0

@@ -84,7 +84,7 @@ class IPCHandler<TRouter extends AnyTRPCRouter> {
 			if (!isSameDocument) {
 				this.#cleanUpSubscriptions({
 					webContentsId: webContentsId,
-					frameRoutingId: frame.routingId
+					frameRoutingId: frame?.routingId
 				})
 			}
 		})

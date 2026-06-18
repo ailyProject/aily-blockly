@@ -8,15 +8,13 @@ const includesAnyKeyword = (value: string, keywords: Array<string>) =>
 
 /**
  * 判断端口类型是否应按串口处理。
- * @param {string | null | undefined} type - 端口类型
- * @returns {boolean}
+ * @param type - 端口类型
  */
 export const isHardwareSerialPortType = (type: string | null | undefined) => !type || type === 'serial'
 
 /**
  * 规范化 Windows 串口列表。
- * @param {Array<HardwareRawSerialPortItem>} ports - 原始串口列表
- * @returns {Array<HardwareSerialPortItem>}
+ * @param ports - 原始串口列表
  */
 export const normalizeWindowsSerialPorts = (ports: Array<HardwareRawSerialPortItem>): Array<HardwareSerialPortItem> =>
 	ports.map(item => {
@@ -33,8 +31,7 @@ export const normalizeWindowsSerialPorts = (ports: Array<HardwareRawSerialPortIt
 
 /**
  * 规范化 macOS 串口列表。
- * @param {Array<HardwareRawSerialPortItem>} ports - 原始串口列表
- * @returns {Array<HardwareSerialPortItem>}
+ * @param ports - 原始串口列表
  */
 export const normalizeMacosSerialPorts = (ports: Array<HardwareRawSerialPortItem>): Array<HardwareSerialPortItem> =>
 	ports.map(item => {
@@ -55,8 +52,7 @@ export const normalizeMacosSerialPorts = (ports: Array<HardwareRawSerialPortItem
 
 /**
  * 规范化 Linux 串口列表。
- * @param {Array<HardwareRawSerialPortItem>} ports - 原始串口列表
- * @returns {Array<HardwareSerialPortItem>}
+ * @param ports - 原始串口列表
  */
 export const normalizeLinuxSerialPorts = (ports: Array<HardwareRawSerialPortItem>): Array<HardwareSerialPortItem> =>
 	ports.map(item => ({
@@ -68,9 +64,8 @@ export const normalizeLinuxSerialPorts = (ports: Array<HardwareRawSerialPortItem
 
 /**
  * 按平台规范化串口列表。
- * @param {HardwareSerialPlatform} platform - 宿主平台
- * @param {Array<HardwareRawSerialPortItem>} ports - 原始串口列表
- * @returns {Array<HardwareSerialPortItem>}
+ * @param platform - 宿主平台
+ * @param ports - 原始串口列表
  */
 export const normalizeHardwareSerialPorts = (
 	platform: HardwareSerialPlatform,

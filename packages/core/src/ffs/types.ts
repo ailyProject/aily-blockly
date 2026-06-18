@@ -85,3 +85,23 @@ export interface FfsPartitionInfo {
 	/** 根据类型、子类型和标签推断出的文件系统类型。 */
 	filesystemType: FfsFilesystemType | null
 }
+
+/**
+ * 已挂载的文件系统会话。
+ */
+export interface FfsMountedFilesystem<TClient = unknown> {
+	/** 当前文件系统类型。 */
+	type: FfsFilesystemType
+	/** 当前挂载对应的分区。 */
+	partition: FfsPartitionInfo
+	/** 底层文件系统客户端。 */
+	client: TClient
+	/** 当前挂载对应的镜像副本。 */
+	image: Uint8Array
+	/** 当前挂载推断出的块大小。 */
+	blockSize?: number
+	/** 当前文件列表快照。 */
+	files: Array<FfsFileEntry>
+	/** 当前容量统计快照。 */
+	usage: FfsFilesystemUsage | null
+}

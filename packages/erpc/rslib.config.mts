@@ -9,7 +9,7 @@ export default deepmerge(rslib, {
 		{
 			source: { entry: { main: './src/main/index.ts' } },
 			format: 'cjs',
-			externals: ['electron'],
+			output: { externals: ['electron'] },
 			tools: { rspack: { target: 'electron-main' } },
 			dts: true
 		},

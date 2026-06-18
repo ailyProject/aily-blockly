@@ -11,7 +11,7 @@ This document is the outline-level map and code-style routing table for `package
 
 ```json
 {
-	"entry": ["package.json", "rslib.config.ts", "tsconfig.json"],
+	"entry": ["package.json", "rslib.config.mts", "tsconfig.json"],
 	"shared_contracts": {
 		"src/constants.ts": "IPC channel and protocol constants shared across processes.",
 		"src/types.ts": "Cross-process public type contracts."
@@ -31,7 +31,7 @@ This routing table is scoped to outline-level folder matching. Match by `path_sc
 {
 	"package root": {
 		"path_scope": "packages/erpc",
-		"sample_pool": ["packages/erpc/package.json", "packages/erpc/rslib.config.ts"]
+		"sample_pool": ["packages/erpc/package.json", "packages/erpc/rslib.config.mts"]
 	},
 	"src root contracts": {
 		"path_scope": "packages/erpc/src",
