@@ -1,7 +1,7 @@
 import { router } from '../../trpc'
-import { ensureCoreStarted } from './ensureCoreStarted'
-import { getCoreStatus } from './getCoreStatus'
-import { stopCore } from './stopCore'
+import { default as ensureCoreStarted } from './ensureCoreStarted'
+import { default as getCoreStatus } from './getCoreStatus'
+import { default as stopCore } from './stopCore'
 
 export default router({
 	getCoreStatus,

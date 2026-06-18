@@ -4,7 +4,7 @@ import { getHardwareModelFile } from '../../hardware'
 import { appSchema, normalizeAppConfigInput } from '../config/schemas'
 import { p } from '../trpc'
 
-export const getModelFile = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

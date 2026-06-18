@@ -4,7 +4,7 @@ import { setSelectedLanguage } from '../../project'
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput } from './schemas'
 
-export const setLanguage = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

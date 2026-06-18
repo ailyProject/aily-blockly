@@ -4,7 +4,7 @@ import { setDevmodeAutoSave as setDevmodeAutoSaveConfig } from '../../project'
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput } from './schemas'
 
-export const setDevmodeAutoSave = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

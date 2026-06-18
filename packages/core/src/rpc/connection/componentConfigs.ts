@@ -4,7 +4,7 @@ import { collectConnectionComponentConfigs } from '../../connection'
 import { p } from '../trpc'
 import { connectionGraphSchema } from './schemas'
 
-export const collectConfigs = p
+export default p
 	.input(
 		z.object({
 			boardPackagePath: z.string(),

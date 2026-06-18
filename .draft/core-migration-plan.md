@@ -188,6 +188,12 @@
   - 已迁入 pinmap 模板生成
   - 已迁入库 README / 示例 / package.json 信息读取
   - 已迁入 pinmap 保存与 catalog 状态回写
+- `core/ffs`
+  - 已迁入 Flash FS 纯逻辑骨架
+  - 已迁入分区表解析与首项探测规则
+  - 已迁入 SPIFFS / LittleFS / FATFS 推断规则
+  - 已迁入分区镜像默认文件名生成规则
+  - 已迁入上传路径规范化与文件名长度校验规则
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
   - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
@@ -213,6 +219,7 @@
   - `graph-editor` 已开始消费 `core.connection.resolvePaths`
   - `serial-monitor` 已改为直接消费 `core.hardware.listSerialPorts`
   - `model-deploy` 顶层页已改为组合消费 `desktop.host.getRuntimeInfo` 与 `core.hardware.*`
+  - FFS 的核心规则已开始从 UI/legacy service 抽往 `core.ffs.*`
 - `shared`
   - 已建立成可编译 workspace 包骨架
   - 已新增 core service 地址、健康检查、启动选项等共享协议类型与常量
@@ -238,6 +245,8 @@
 - 规范收口
   - 已补齐当前 `types.ts` 的类型级 / 字段级 / 联合值级 JSDoc
   - 已清理剩余不符合要求的非 default barrel 导出
+  - 已把 `project` 域内部旧过渡文件名整理成 `config/*`、`store/*`、`model/*`
+  - 已补 `core.config.get` 的显式返回类型，避免 UI 继续扩散索引签名类型
 
 ## 当前迁移顺序
 
@@ -269,6 +278,7 @@
   - typed contract 明确
   - 不把宿主细节反向污染到 core
   - 构建链可验证
+- 新增 `core/rpc` 子域时也应尽量同步提供单动作单文件 procedure，并保持匿名 `export default` + router 聚合 `import { default as x }` 风格。
 
 ## 当前 focus
 
@@ -276,6 +286,7 @@
 
 1. 继续把旧 tool / service 中的诊断、配置、文档状态和转换规则往 `core` 下沉
 2. 把刚建立的 `core/rpc + core/api + shared + desktop manager` 骨架继续接上真实启动链路与 UI typed handle / ERPC handle
+3. 以 FFS 为下一批重点域，先完成纯规则层，再决定 WASM 文件系统客户端与 `esptool-js` 会话的最终运行时归属
 
 ## 最新进展（2026-06-18）
 
@@ -287,6 +298,19 @@
   - `core/agent/types` 已新增 `types.ts` 与 `index.ts`
   - `core/api/types.ts`、`desktop/src/rpc/types.ts` 已补上
   - `packages/core/rpc/app/layout.ts` 的语法错误已修复
+  - `project` 域内部命名已进一步收口为 `config/*`、`store/*`、`model/*`
+  - `core/rpc/ffs/*` 已新增：
+    - `parsePartitionTable`
+    - `isPlausiblePartitionEntry`
+    - `buildPartitionFileName`
+    - `getDefaultUploadPath`
+    - `validateUploadFileName`
+  - `core/ffs/*` 已新增：
+    - `partition.ts`
+    - `paths.ts`
+    - `entries.ts`
+    - `image.ts`
+    - `types.ts`
 - 已完成的构建验证
   - `packages/shared` 可单独 `rslib build`
   - `packages/erpc` 可单独 `rslib build`

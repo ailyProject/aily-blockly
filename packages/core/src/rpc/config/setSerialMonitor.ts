@@ -4,7 +4,7 @@ import { setSerialMonitorConfig } from '../../project'
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput, serialMonitorSchema } from './schemas'
 
-export const setSerialMonitor = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

@@ -56,7 +56,7 @@ export interface LoadHomePreviewOptions {
 	/** 当前 agent 配置 */
 	agentConfig: AilyAgentConfig
 	/** 当前应用配置 */
-	appConfig: AilyAppConfig
+	config: AilyAppConfig
 	/** 工具栏应用目录 */
 	toolbarApps: Array<AppRegistryItem>
 	/** 预览配置写回时使用的 mutation 载荷 */

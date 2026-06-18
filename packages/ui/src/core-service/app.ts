@@ -12,10 +12,10 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 		boardValidation,
 		libraryValidation,
 		securityOptions,
-		appConfigSummary,
-		appStoreSummary,
+		configSummary,
+		storeSummary,
 		previewConfig,
-		defaultAppStore,
+		defaultStore,
 		mergedToolbarOrder,
 		toggledLayout,
 		resetLayout,
@@ -34,23 +34,23 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 		core.hardware.validateLegacyBoard.query({ boardName: 'esp32s3 xiao', boards: options.legacyBoards }),
 		core.hardware.validateLegacyLibrary.query({ libraryName: 'rc522 reader', libraries: options.legacyLibraries }),
 		core.agent.getSecurityOptions.query({ config: options.agentConfig }),
-		core.config.get.query({ config: options.appConfig, fallbackLanguage: options.context.fallbackLanguage }),
+		core.config.get.query({ config: options.config, fallbackLanguage: options.context.fallbackLanguage }),
 		core.store.resolveLayout.query({
-			config: options.appConfig,
+			config: options.config,
 			apps: options.toolbarApps,
-			defaultToolbarAppIds: options.appConfig.toolbarAppIds ?? [],
+			defaultToolbarAppIds: options.config.toolbarAppIds ?? [],
 			context: options.context
 		}),
 		core.config.previewUpdate.query({
-			config: options.appConfig,
+			config: options.config,
 			...(options.mutationInput as object)
 		}),
 		core.store.createDefaultLayout.query({
-			defaultToolbarAppIds: options.appConfig.toolbarAppIds ?? [],
+			defaultToolbarAppIds: options.config.toolbarAppIds ?? [],
 			apps: options.toolbarApps
 		}),
 		core.store.mergeVisibleOrder.query({
-			currentZoneIds: options.appConfig.toolbarAppIds ?? [],
+			currentZoneIds: options.config.toolbarAppIds ?? [],
 			visibleIds: ['flash-fs', 'aily-chat'],
 			visibleCatalogIds: options.toolbarApps.map(app => app.id)
 		}),
@@ -58,7 +58,7 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 			layout: {
 				version: 2,
 				zones: {
-					header: options.appConfig.toolbarAppIds ?? []
+					header: options.config.toolbarAppIds ?? []
 				}
 			},
 			zone: 'header',
@@ -66,30 +66,30 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 			apps: options.toolbarApps
 		}),
 		core.store.reset.query({
-			defaultToolbarAppIds: options.appConfig.toolbarAppIds ?? [],
+			defaultToolbarAppIds: options.config.toolbarAppIds ?? [],
 			apps: options.toolbarApps
 		}),
 		core.config.buildSerialConnectOptions.query({
-			config: options.appConfig,
+			config: options.config,
 			port: 'COM7'
 		}),
-		core.project.getRecentProjects.query({ config: options.appConfig }),
-		core.project.getRecentModelProjects.query({ config: options.appConfig }),
+		core.project.getRecentProjects.query({ config: options.config }),
+		core.project.getRecentModelProjects.query({ config: options.config }),
 		core.project.addRecentProject.query({
-			config: options.appConfig,
+			config: options.config,
 			project: { name: 'Vision Station', path: '/Users/workspace/projects/vision-station' }
 		}),
 		core.project.removeRecentProject.query({
-			config: options.appConfig,
+			config: options.config,
 			projectPath: '/Users/workspace/projects/robot-arm'
 		}),
-		core.onboarding.getOnboarding.query({ config: options.appConfig }),
+		core.onboarding.getOnboarding.query({ config: options.config }),
 		core.onboarding.completeOnboarding.query({
-			config: options.appConfig,
+			config: options.config,
 			key: 'ailyChatOnboardingCompleted'
 		}),
 		core.project.addRecentModelProject.query({
-			config: options.appConfig,
+			config: options.config,
 			project: {
 				name: 'Fruit Classifier',
 				path: '/Users/workspace/projects/fruit-classifier',
@@ -97,13 +97,13 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 			}
 		}),
 		core.project.removeRecentModelProject.query({
-			config: options.appConfig,
+			config: options.config,
 			projectPath: '/Users/workspace/projects/fruit-classifier'
 		})
 	])
 
 	const resolvedModel = await core.config.resolveModel.query({
-		config: options.appConfig,
+		config: options.config,
 		enabledModels
 	})
 
@@ -113,10 +113,10 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 		boardValidation,
 		libraryValidation,
 		securityOptions,
-		appConfigSummary,
-		appStoreSummary,
+		configSummary,
+		storeSummary,
 		previewConfig,
-		defaultAppStore,
+		defaultStore,
 		mergedToolbarOrder,
 		toggledLayout,
 		resetLayout,

@@ -32,6 +32,8 @@
 - RPC 写法必须优先参考 `packages/core/src/rpc` 和 `polywise` 的组织方式，保持稳定的目录边界、聚合入口和清晰的 procedure 拆分。
 - 不要在 `desktop` 或其他位置随意发明零散、临时、扁平化的 RPC 写法；不要把多个无关 procedure、类型、输入校验和实现细节混塞在一个文件里。
 - RPC 目录组织优先采用“域目录 + `index.ts` 聚合 + 单 procedure/单职责文件”的模式；同域下的 schema、types、shared helper 应就近收敛，整体风格向 `packages/core/src/rpc` 对齐。
+- RPC procedure 文件统一使用匿名 `export default` 导出；router 聚合层统一使用 `import { default as x } from './x'` 的形式导入后再组合。
+- 不要在 RPC procedure 文件里继续使用 `export const foo = p.query(...)` 这类具名导出风格；如果一个文件里出现多个 procedure，必须继续拆分成单 procedure 单文件。
 - 不要随意引入自定义 REST 风格约定、松散类型的 fetch 封装、手写 RPC 协议或零散 IPC channel 来替代这套统一边界。
 - 不要新增以 RxJS 为核心的状态管理或数据流组织；能用 Angular Signals、普通函数和简单可读状态组织解决的，就不要额外引入 RxJS 方案。
 - 如果框架、现有依赖或明确的边界接口天然使用 RxJS，可以在该边界内使用，但不要把它继续扩散成项目默认状态模型。

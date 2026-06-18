@@ -47,7 +47,7 @@ export interface HomePageSecurityOption {
 /**
  * 首页应用配置摘要
  */
-export interface HomePageAppConfigSummary {
+export interface HomePageConfigSummary {
 	/** 当前选中的界面语言 */
 	selectedLanguage: string
 	/** 当前主题模式 */
@@ -139,5 +139,5 @@ export interface HomePageCoreState {
 	/** 工作区安全选项摘要 */
 	securityOptions: Array<HomePageSecurityOption>
 	/** 语言、主题、串口和 onboarding 等配置摘要 */
-	appConfigSummary: HomePageAppConfigSummary
+	configSummary: HomePageConfigSummary
 }

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { buildConnectionPrompt } from '../../connection'
 import { p } from '../trpc'
 
-export const buildPrompt = p
+export default p
 	.input(
 		z.object({
 			boardPackagePath: z.string(),

@@ -1,5 +1,5 @@
 import { router } from '../../trpc'
-import { getRuntimeInfo } from './getRuntimeInfo'
+import { default as getRuntimeInfo } from './getRuntimeInfo'
 
 export default router({
 	getRuntimeInfo

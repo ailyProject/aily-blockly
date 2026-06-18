@@ -4,7 +4,7 @@ import { getHardwareFirmwareInfo } from '../../hardware'
 import { appSchema, normalizeAppConfigInput } from '../config/schemas'
 import { p } from '../trpc'
 
-export const getFirmwareInfo = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

@@ -1,5 +1,6 @@
 import { r } from '../trpc'
-import { completeOnboarding, getOnboarding } from './onboarding'
+import { default as completeOnboarding } from './completeOnboarding'
+import { default as getOnboarding } from './getOnboarding'
 
 export default r({
 	getOnboarding,

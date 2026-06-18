@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { needHardwareFirmwareUpdate } from '../../hardware'
 import { p } from '../trpc'
 
-export const needFirmwareUpdate = p
+export default p
 	.input(
 		z.object({
 			currentVersion: z.string().optional(),

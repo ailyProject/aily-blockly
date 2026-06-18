@@ -4,7 +4,7 @@ import { syncConnectionPinmapComponentsFromApi } from '../../connection'
 import { appSchema, normalizeAppConfigInput } from '../config/schemas'
 import { p } from '../trpc'
 
-export const syncCloudPinmaps = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

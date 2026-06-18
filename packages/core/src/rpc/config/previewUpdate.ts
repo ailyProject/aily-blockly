@@ -15,7 +15,7 @@ import {
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput, quickSendItemSchema, serialMonitorSchema } from './schemas'
 
-export const previewUpdate = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

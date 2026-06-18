@@ -4,7 +4,7 @@ import { setQuickSendList } from '../../project'
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput, quickSendItemSchema } from './schemas'
 
-export const setQuickSends = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

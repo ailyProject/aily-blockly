@@ -21,7 +21,9 @@ import {
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput } from './schemas'
 
-export const get = p
+import type { ConfigSummary } from './types'
+
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),
@@ -29,7 +31,7 @@ export const get = p
 			userHome: z.string().optional()
 		})
 	)
-	.query(({ input }) => {
+	.query(({ input }): ConfigSummary => {
 		const config = normalizeAppConfigInput(input.config)
 		return {
 			selectedLanguage: getSelectedLanguage(config, input.fallbackLanguage),

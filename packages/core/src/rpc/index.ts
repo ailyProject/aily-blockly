@@ -3,6 +3,7 @@ import build from './build'
 import config from './config/index'
 import connection from './connection/index'
 import document from './document'
+import ffs from './ffs/index'
 import hardware from './hardware'
 import { createAilyCoreServiceHealth } from './health'
 import model from './model/index'
@@ -19,6 +20,7 @@ export { default as build } from './build'
 export { default as connection } from './connection/index'
 export { default as config } from './config/index'
 export { default as document } from './document'
+export { default as ffs } from './ffs/index'
 export * from './health'
 export { default as hardware } from './hardware'
 export { default as model } from './model/index'
@@ -39,6 +41,7 @@ export const router = (options: CreateAilyCoreRouterOptions) =>
 		build,
 		connection,
 		document,
+		ffs,
 		hardware,
 		model,
 		onboarding,

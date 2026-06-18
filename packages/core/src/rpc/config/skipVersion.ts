@@ -4,7 +4,7 @@ import { skipAppVersion } from '../../project'
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput } from './schemas'
 
-export const skipVersion = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

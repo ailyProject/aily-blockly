@@ -4,7 +4,7 @@ import { searchHardwareIndexCompat } from '../../hardware'
 import { p } from '../trpc'
 import { boardIndexItemSchema, legacyBoardItemSchema, legacyLibraryItemSchema, libraryIndexItemSchema } from './schemas'
 
-export const searchCompat = p
+export default p
 	.input(
 		z.object({
 			boards: z.array(boardIndexItemSchema),

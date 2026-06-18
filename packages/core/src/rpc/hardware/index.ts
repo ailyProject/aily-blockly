@@ -1,23 +1,25 @@
 import { r } from '../trpc'
-import { boardCategories, libraryCategories } from './categories'
-import { detectEsptool } from './detectEsptool'
-import { downloadProbe } from './downloadProbe'
-import { getFirmwareInfo } from './getFirmwareInfo'
-import { getModelAddress } from './getModelAddress'
-import { getModelFile } from './getModelFile'
-import { installEsptool } from './installEsptool'
-import { validateBoard, validateLibrary } from './legacy'
-import { listProbes } from './listProbes'
-import { listSerialPorts } from './listSerialPorts'
-import { needFirmwareUpdate } from './needFirmwareUpdate'
-import { resolveEsptoolTempDir } from './resolveEsptoolTempDir'
-import { searchCompat } from './search'
+import { default as detectEsptool } from './detectEsptool'
+import { default as downloadProbe } from './downloadProbe'
+import { default as getBoardCategories } from './getBoardCategories'
+import { default as getFirmwareInfo } from './getFirmwareInfo'
+import { default as getLibraryCategories } from './getLibraryCategories'
+import { default as getModelAddress } from './getModelAddress'
+import { default as getModelFile } from './getModelFile'
+import { default as installEsptool } from './installEsptool'
+import { default as listProbes } from './listProbes'
+import { default as listSerialPorts } from './listSerialPorts'
+import { default as needFirmwareUpdate } from './needFirmwareUpdate'
+import { default as resolveEsptoolTempDir } from './resolveEsptoolTempDir'
+import { default as searchCompat } from './search'
+import { default as validateLegacyBoard } from './validateLegacyBoard'
+import { default as validateLegacyLibrary } from './validateLegacyLibrary'
 
 export default r({
-	validateLegacyBoard: validateBoard,
-	validateLegacyLibrary: validateLibrary,
-	getBoardCategories: boardCategories,
-	getLibraryCategories: libraryCategories,
+	validateLegacyBoard,
+	validateLegacyLibrary,
+	getBoardCategories,
+	getLibraryCategories,
 	searchCompat,
 	listSerialPorts,
 	getFirmwareInfo,

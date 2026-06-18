@@ -4,7 +4,7 @@ import { resolveAiChatModelSelection } from '../../project'
 import { p } from '../trpc'
 import { appModelSchema, appSchema, normalizeAppConfigInput } from './schemas'
 
-export const resolveModel = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

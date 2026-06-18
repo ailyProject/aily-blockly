@@ -1,6 +1,6 @@
 import { r } from '../trpc'
-import { detail } from './detail'
-import { list } from './list'
+import { default as detail } from './detail'
+import { default as list } from './list'
 
 export default r({
 	list,

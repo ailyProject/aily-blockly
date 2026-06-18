@@ -2,7 +2,7 @@ import { listModelCatalog } from '../../model'
 import { p } from '../trpc'
 import { modelCatalogListSchema, normalizeModelCatalogListInput } from './schemas'
 
-export const list = p.input(modelCatalogListSchema).query(({ input }) =>
+export default p.input(modelCatalogListSchema).query(({ input }) =>
 	listModelCatalog({
 		config: normalizeModelCatalogListInput(input).config,
 		query: {

@@ -36,7 +36,7 @@ const regionConfigSchema = z.object({
 	enabled: z.boolean().optional()
 })
 
-export const resolveRegions = p
+export default p
 	.input(
 		z.object({
 			regions: z.record(z.string(), regionConfigSchema).optional(),

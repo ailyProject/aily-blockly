@@ -7,7 +7,7 @@ import type { DesktopHostRuntimeInfo } from '../types'
 const resolvePlatform = (): 'windows' | 'macos' | 'linux' =>
 	process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
 
-export const getRuntimeInfo = p.query(
+export default p.query(
 	async (): Promise<DesktopHostRuntimeInfo> => ({
 		available: true,
 		appDataPath: app.getPath('userData'),

@@ -4,7 +4,7 @@ import { setToolbarAppIds } from '../../project'
 import { p } from '../trpc'
 import { appSchema, normalizeAppConfigInput } from './schemas'
 
-export const setToolbarApps = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

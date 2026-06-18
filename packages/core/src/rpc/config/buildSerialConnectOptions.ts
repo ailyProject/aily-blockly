@@ -4,7 +4,7 @@ import { buildSerialMonitorConnectOptions } from '../../project'
 import { p } from '../trpc'
 import { appSchema } from './schemas'
 
-export const buildSerialConnectOptions = p
+export default p
 	.input(
 		z.object({
 			config: appSchema.partial().optional(),

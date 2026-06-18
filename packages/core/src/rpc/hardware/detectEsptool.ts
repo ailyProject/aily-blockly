@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { detectHardwareEsptool } from '../../hardware'
 import { p } from '../trpc'
 
-export const detectEsptool = p
+export default p
 	.input(
 		z.object({
 			appDataPath: z.string(),

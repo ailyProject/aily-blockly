@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { downloadWithHardwareProbeRs } from '../../hardware'
 import { p } from '../trpc'
 
-export const downloadProbe = p
+export default p
 	.input(
 		z.object({
 			firmwarePath: z.string(),
