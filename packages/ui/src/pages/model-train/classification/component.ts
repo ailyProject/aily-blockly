@@ -1,10 +1,13 @@
-import { Component } from '@angular/core'
+import { Component, OnInit, signal } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { modelCatalog } from '@/workspace'
+import { injectCore } from '@/core-service'
+import { loadModelCatalog } from '@/runtime/model-catalog'
 
 import { classificationChecklist } from '../data'
+
+import type { ModelCatalogItem } from 'shared'
 
 @Component({
 	selector: 'classification-train-page',
@@ -12,7 +15,14 @@ import { classificationChecklist } from '../data'
 	templateUrl: './component.html',
 	styleUrl: './component.css'
 })
-export class ClassificationTrainPageComponent {
+export class ClassificationTrainPageComponent implements OnInit {
+	private readonly core = injectCore()
+
 	protected readonly checklist = classificationChecklist
-	protected readonly models = modelCatalog.filter(item => item.task === 'classification')
+	protected readonly models = signal<Array<ModelCatalogItem>>([])
+
+	async ngOnInit() {
+		const result = await loadModelCatalog(this.core)
+		this.models.set(result.items.filter(item => item.task === 'classification'))
+	}
 }

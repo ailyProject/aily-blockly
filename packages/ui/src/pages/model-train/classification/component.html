@@ -8,11 +8,11 @@
   </div>
 
   <div class="catalog-grid">
-    @for (item of models; track item.id) {
+    @for (item of models(); track item.id) {
       <div class="catalog-card">
         <strong>{{ item.name }}</strong>
-        <span>{{ item.board }}</span>
-        <span>{{ item.summary }}</span>
+        <span>{{ item.supportedBoards.join(', ') || 'Board pending' }}</span>
+        <span>{{ item.description }}</span>
       </div>
     }
   </div>

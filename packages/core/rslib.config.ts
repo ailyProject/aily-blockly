@@ -28,6 +28,16 @@ export default deepmerge(rslib, {
 			dts: true
 		},
 		{
+			source: { entry: { model: './src/model/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
+			source: { entry: { tool: './src/tool/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
 			source: { entry: { project: './src/project/index.ts' } },
 			format: 'esm',
 			dts: true
@@ -54,6 +64,11 @@ export default deepmerge(rslib, {
 		},
 		{
 			source: { entry: { build: './src/build/index.ts' } },
+			format: 'esm',
+			dts: true
+		},
+		{
+			source: { entry: { connection: './src/connection/index.ts' } },
 			format: 'esm',
 			dts: true
 		}

@@ -12,14 +12,14 @@
         <span hlmBadge>Classification</span>
         <strong>Image Classification</strong>
         <p>Prepare category-based training data and export a classifier.</p>
-        <span>{{ classificationCount }} curated model paths</span>
+        <span>{{ classificationCount() }} curated model paths</span>
       </a>
 
       <a hlmCard class="link-card" routerLink="/model-train/vision/detection">
         <span hlmBadge variant="secondary">Detection</span>
         <strong>Object Detection</strong>
         <p>Prepare box annotations and inspect deploy-ready detector settings.</p>
-        <span>{{ detectionCount }} curated model paths</span>
+        <span>{{ detectionCount() }} curated model paths</span>
       </a>
     </div>
   </article>

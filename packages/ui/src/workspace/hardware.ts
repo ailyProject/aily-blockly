@@ -1,5 +1,4 @@
-import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@core'
-import type { LibraryIndexItem } from 'core/hardware'
+import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem, LibraryIndexItem } from '@core'
 
 export const boardIndex: Array<BoardIndexItem> = [
 	{

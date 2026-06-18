@@ -1,0 +1,6 @@
+import { z } from 'zod'
+
+import { parseConnectionGraphJson } from '../../connection'
+import { p } from '../trpc'
+
+export const parse = p.input(z.object({ raw: z.string() })).query(({ input }) => parseConnectionGraphJson(input.raw))

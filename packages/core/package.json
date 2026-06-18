@@ -22,6 +22,14 @@
 			"types": "./dist/core/src/hardware/index.d.ts",
 			"default": "./dist/hardware/index.js"
 		},
+		"./model": {
+			"types": "./dist/core/src/model/index.d.ts",
+			"default": "./dist/model/index.js"
+		},
+		"./tool": {
+			"types": "./dist/core/src/tool/index.d.ts",
+			"default": "./dist/tool/index.js"
+		},
 		"./project": {
 			"types": "./dist/core/src/project/index.d.ts",
 			"default": "./dist/project/index.js"
@@ -45,6 +53,10 @@
 		"./build": {
 			"types": "./dist/core/src/build/index.d.ts",
 			"default": "./dist/build/index.js"
+		},
+		"./connection": {
+			"types": "./dist/core/src/connection/index.d.ts",
+			"default": "./dist/connection/index.js"
 		}
 	},
 	"scripts": {

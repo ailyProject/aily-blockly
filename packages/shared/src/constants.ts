@@ -9,6 +9,21 @@ export const DEFAULT_REGION_KEY = 'cn'
 export const DEFAULT_RESOURCE_SOURCE_KEY = 'auto'
 
 /**
+ * 默认 API 服务地址
+ */
+export const AILY_API_SERVER = 'https://api.aily.pro'
+
+/**
+ * 模型列表接口路径
+ */
+export const AILY_MODEL_LIST_PATH = '/api/v1/model/list'
+
+/**
+ * 模型详情接口路径
+ */
+export const AILY_MODEL_DETAIL_PATH = '/api/v1/model'
+
+/**
  * Core 服务默认监听地址
  */
 export const AILY_CORE_SERVICE_HOST = '127.0.0.1'

@@ -1,4 +1,4 @@
-import type { CategoryCount } from 'core/hardware'
+import type { CategoryCount } from '@core'
 
 /**
  * Blockly 编辑器页面展示状态

@@ -12,4 +12,8 @@ export interface GraphEditorState {
 	origin: string
 	/** 可绑定到 iframe 的安全资源 URL */
 	frameUrl: SafeResourceUrl
+	/** 连线图 JSON 文件路径 */
+	jsonPath: string
+	/** 连线图 AWS 文件路径 */
+	awsPath: string
 }

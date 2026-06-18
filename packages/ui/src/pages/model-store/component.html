@@ -5,7 +5,7 @@
         <p class="eyebrow">Model Store</p>
         <h2>Deployable Catalog</h2>
       </div>
-      <span hlmBadge variant="secondary">{{ filteredCatalog().length }} models</span>
+      <span hlmBadge variant="secondary">{{ filteredCatalog().length }} models · {{ source() ?? 'loading' }}</span>
     </header>
 
     <label class="filter-box">
@@ -26,13 +26,13 @@
         <article class="catalog-card">
           <div class="catalog-copy">
             <strong>{{ item.name }}</strong>
-            <span>{{ item.summary }}</span>
+            <span>{{ item.description }}</span>
           </div>
           <div class="catalog-meta">
-            <span>{{ item.author }}</span>
-            <span>{{ item.board }}</span>
-            <span>{{ item.framework }}</span>
-            <span>{{ item.size }}</span>
+            <span>{{ item.authorName }}</span>
+            <span>{{ item.supportedBoards.join(', ') || 'Board pending' }}</span>
+            <span>{{ item.aiFramework }}</span>
+            <span>{{ item.modelSize }}</span>
           </div>
           <div class="badge-row compact">
             <span hlmBadge>{{ item.task }}</span>
@@ -41,8 +41,8 @@
         </article>
       } @empty {
         <article class="catalog-card empty">
-          <strong>No model matches the current filter.</strong>
-          <span>Try another task or a shorter query.</span>
+          <strong>{{ loading() ? 'Loading model catalog...' : 'No model matches the current filter.' }}</strong>
+          <span>{{ error() || 'Try another task or a shorter query.' }}</span>
         </article>
       }
     </div>

@@ -105,6 +105,22 @@
   - 这批动作已经足以直接承接 theme / devmode / recent / onboarding 的 legacy 写回路径
   - 已新增 `/api/agent/session` hono API 骨架，预留 AI SDK Angular 通过 API + resumable stream 接入
   - stream resume 语义已对齐为“无活跃流返回 204”，并补了 resumable stream 的恢复/取消 helper
+  - 已新增 `core.model.*`
+    - `list`
+    - `detail`
+  - 已新增 `core.tool.*`
+    - `list`
+    - `get`
+- `core/model`
+  - 已迁入模型目录远端访问、fallback 目录、任务/开发板/部署目标归一化
+- `core/tool`
+  - 已迁入子工具目录 fallback 与基础扫描逻辑
+  - 当前支持 `childPath/tools/*` 下按 `package.json` 发现子工具元数据
+- `core/connection`
+  - 已迁入连线图 JSON 解析
+  - 已迁入基础安全校验
+  - 已迁入 `connection_output.json` / `connection.aws` 路径解析
+  - 已迁入 iframe payload 组装 helper
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
   - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
@@ -125,6 +141,9 @@
   - 首页已开始消费 theme / devmode 结果
   - 首页已开始消费 recent model project / onboarding 结果
   - 首页已开始消费 recent project 结果
+  - `model-store` / `model-train/*` / `model-deploy/sscma` 已改为消费 `core.model.*`
+  - `child-tool` 页已改为消费 `core.tool.*`
+  - `graph-editor` 已开始消费 `core.connection.resolvePaths`
 - `shared`
   - 已建立成可编译 workspace 包骨架
   - 已新增 core service 地址、健康检查、启动选项等共享协议类型与常量
@@ -308,15 +327,22 @@
   - `child-tool` 已改成子工具元数据页 + 可选 iframe host，暂不伪造 desktop 子进程能力
   - `model-store` 已从单个 badge 面板升级为可搜索、可按 task 筛选的模型目录
   - `simulator` 已改为直接消费 `core.hardware` 搜索与分类结果，不再内联板卡假数据
+  - `model-store` 的模型目录远端访问已正式下沉到 `core.model`
+  - `workspace/models.ts` 已删除，UI 不再维护模型目录假数据
+  - `child-tool` 的注册目录已开始下沉到 `core.tool`
+  - `workspace/tools.ts` 已不再维护 child tool 静态表，仅保留 iframe/embed target
+  - `shared/src/*.js` 误入源码目录的问题已清理，shared 源码重新统一为 `ts`
+  - `connection-graph` 的第一批纯逻辑已开始下沉到 `core.connection`
   - 本轮新触达页面中的内联类型已开始回收到各自 `types.ts`
-  - 当前 `packages/ui` 最近一次 `ng build` 仍通过，产物初始包体约 `847 kB`
+  - 当前 `packages/shared` / `packages/core` / `packages/ui` 最近一次构建均通过
+  - 当前 `packages/ui` 最近一次 `ng build` 产物初始包体约 `847 kB`
   - 已清理本轮新增页面里的 `sample / keyword / samples` 用户可见措辞
 
 ## 当前待续动作（2026-06-18 / latest）
 
-1. 继续把 `ui` 剩余页面中留在 `component.ts` / `runtime.ts` 的内联类型迁到 `types.ts`
-2. 继续检查 `playground/subject`、`model-train/*`、`model-deploy/*` 是否还只是轻量壳层
-3. 评估是否开始把 `model-store` 的远端 API 拉取逻辑正式下沉到 `core` 域，而不是留在 UI
+1. 继续把 `connection-graph` 的 pinmap catalog 读取、组件配置收集、prompt 组装等纯逻辑下沉到 `core`
+2. 评估 `firmware` / `upload` / `serial` 相关远端请求和状态机是否要继续拆成 `core.hardware.*`
+3. 继续把 child tool 的真实目录扫描、启动参数和 desktop 薄桥能力往 `core` / `desktop` 收口
 4. UI 收口后切回 `desktop` packaging / release 脚手架
 
 ## Workflow 基线（2026-06-18）

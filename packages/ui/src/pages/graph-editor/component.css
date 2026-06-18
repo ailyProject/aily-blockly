@@ -35,6 +35,24 @@
 	gap: 10px;
 }
 
+.file-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}
+
+.file-card {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.file-card span {
+	color: var(--muted-foreground);
+}
+
 .frame {
 	width: 100%;
 	min-height: 560px;

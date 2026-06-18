@@ -1,9 +1,12 @@
-import { Component, computed, signal } from '@angular/core'
+import { Component, computed, OnInit, signal } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 import { HlmInputImports } from 'spartan/input'
 
-import { modelCatalog } from '@/workspace'
+import { injectCore } from '@/core-service'
+import { loadModelCatalog } from '@/runtime/model-catalog'
+
+import type { ModelCatalogItem, ModelCatalogSource } from 'shared'
 
 @Component({
 	selector: 'model-store-page',
@@ -11,28 +14,48 @@ import { modelCatalog } from '@/workspace'
 	templateUrl: './component.html',
 	styleUrl: './component.css'
 })
-export class ModelStorePageComponent {
-	protected readonly catalog = modelCatalog
+export class ModelStorePageComponent implements OnInit {
+	private readonly core = injectCore()
+
+	protected readonly catalog = signal<Array<ModelCatalogItem>>([])
 	protected readonly query = signal('')
 	protected readonly activeTask = signal('all')
-	protected readonly taskOptions = ['all', ...new Set(modelCatalog.map(item => item.task))]
+	protected readonly source = signal<ModelCatalogSource | null>(null)
+	protected readonly loading = signal(true)
+	protected readonly error = signal<string | null>(null)
+	protected readonly taskOptions = computed(() => ['all', ...new Set(this.catalog().map(item => item.task))])
 	protected readonly filteredCatalog = computed(() => {
 		const query = this.query().trim().toLowerCase()
 		const task = this.activeTask()
 
-		return this.catalog.filter(item => {
+		return this.catalog().filter(item => {
 			const matchesTask = task === 'all' || item.task === task
 			const matchesQuery =
-				!query || `${item.name} ${item.author} ${item.board} ${item.summary}`.toLowerCase().includes(query)
+				!query ||
+				`${item.name} ${item.authorName} ${item.supportedBoards.join(' ')} ${item.description}`
+					.toLowerCase()
+					.includes(query)
 			return matchesTask && matchesQuery
 		})
 	})
 	protected readonly taskCounts = computed(() =>
-		this.taskOptions.map(task => ({
+		this.taskOptions().map(task => ({
 			task,
-			count: task === 'all' ? this.catalog.length : this.catalog.filter(item => item.task === task).length
+			count: task === 'all' ? this.catalog().length : this.catalog().filter(item => item.task === task).length
 		}))
 	)
+
+	async ngOnInit() {
+		try {
+			const result = await loadModelCatalog(this.core)
+			this.catalog.set(result.items)
+			this.source.set(result.source)
+		} catch (error) {
+			this.error.set((error as Error).message)
+		} finally {
+			this.loading.set(false)
+		}
+	}
 
 	protected updateQuery(event: Event) {
 		this.query.set((event.target as HTMLInputElement).value)

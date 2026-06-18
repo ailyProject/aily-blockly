@@ -15,10 +15,21 @@
   <article hlmCard class="panel">
     <header class="panel-header">
       <div>
-        <p class="eyebrow">Boards</p>
-        <h2>Attached Workspace Targets</h2>
+        <p class="eyebrow">Workspace Files</p>
+        <h2>Connection Artifacts</h2>
       </div>
     </header>
+
+    <div class="file-grid">
+      <div class="file-card">
+        <span>JSON</span>
+        <strong>{{ state().jsonPath || 'loading...' }}</strong>
+      </div>
+      <div class="file-card">
+        <span>AWS</span>
+        <strong>{{ state().awsPath || 'loading...' }}</strong>
+      </div>
+    </div>
 
     <div class="badge-row">
       @for (board of boards; track board.name) {
