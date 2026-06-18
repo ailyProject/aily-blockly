@@ -111,6 +111,19 @@
   - 已新增 `core.tool.*`
     - `list`
     - `get`
+  - 已新增 `core.connection.*`
+    - `parse`
+    - `validate`
+    - `resolvePaths`
+    - `getBoardPinSummary`
+    - `getPinSummaryById`
+    - `generatePinSummariesForBoard`
+    - `buildPrompt`
+    - `listCatalogs`
+    - `listLibraries`
+    - `listAvailablePinmapIds`
+    - `getSensorPickerData`
+    - `collectConfigs`
 - `core/model`
   - 已迁入模型目录远端访问、fallback 目录、任务/开发板/部署目标归一化
 - `core/tool`
@@ -121,6 +134,12 @@
   - 已迁入基础安全校验
   - 已迁入 `connection_output.json` / `connection.aws` 路径解析
   - 已迁入 iframe payload 组装 helper
+  - 已迁入 pinmapId 解析 / 构建
+  - 已迁入 pinmap catalog 读取
+  - 已迁入开发板 pinmap 解析与 pin summary 提取
+  - 已迁入库扫描、catalog 扫描、可用 pinmapId 汇总、sensor picker 数据组装
+  - 已迁入 schematic prompt 组装
+  - 已迁入 component config 收集与 similar-components 基础组装
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
   - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
@@ -333,6 +352,7 @@
   - `workspace/tools.ts` 已不再维护 child tool 静态表，仅保留 iframe/embed target
   - `shared/src/*.js` 误入源码目录的问题已清理，shared 源码重新统一为 `ts`
   - `connection-graph` 的第一批纯逻辑已开始下沉到 `core.connection`
+  - `connection-graph` 的 pinmap / catalog / prompt 纯逻辑也已开始并入 `core.connection`
   - 本轮新触达页面中的内联类型已开始回收到各自 `types.ts`
   - 当前 `packages/shared` / `packages/core` / `packages/ui` 最近一次构建均通过
   - 当前 `packages/ui` 最近一次 `ng build` 产物初始包体约 `847 kB`
@@ -340,10 +360,18 @@
 
 ## 当前待续动作（2026-06-18 / latest）
 
-1. 继续把 `connection-graph` 的 pinmap catalog 读取、组件配置收集、prompt 组装等纯逻辑下沉到 `core`
+1. 继续把 `connection-graph` 的 pinmap 保存/更新、catalog 回写、project 文件读写封装等逻辑下沉到 `core`
 2. 评估 `firmware` / `upload` / `serial` 相关远端请求和状态机是否要继续拆成 `core.hardware.*`
 3. 继续把 child tool 的真实目录扫描、启动参数和 desktop 薄桥能力往 `core` / `desktop` 收口
 4. UI 收口后切回 `desktop` packaging / release 脚手架
+
+## 当前风险提示
+
+- `packages/core/src/connection/types.ts` 已超过 300 行，如果 `connection` 域继续扩张，需要按子域拆到更细目录，否则会在后续大型单文件诊断里再次成为热点。
+
+## 当前风险提示
+
+- `packages/core/src/connection/types.ts` 已超过 300 行，如果 `connection` 域继续扩张，需要按子域拆到更细目录，否则会在后续大型单文件诊断里再次成为热点。
 
 ## Workflow 基线（2026-06-18）
 
