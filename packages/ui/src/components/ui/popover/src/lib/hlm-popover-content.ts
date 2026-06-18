@@ -1,6 +1,6 @@
 import { Directive, effect, ElementRef, inject, Renderer2, signal } from '@angular/core'
 import { injectExposesStateProvider } from '@spartan-ng/brain/core'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmPopoverContent],hlm-popover-content'

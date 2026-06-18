@@ -1,21 +1,22 @@
 import { Component, OnInit, signal } from '@angular/core'
-import { HlmAlertImports } from '@spartan-ng/helm/alert'
-import { HlmBadgeImports } from '@spartan-ng/helm/badge'
-import { HlmButtonImports } from '@spartan-ng/helm/button'
-import { HlmCardImports } from '@spartan-ng/helm/card'
-import { HlmInputImports } from '@spartan-ng/helm/input'
-import { HlmSeparatorImports } from '@spartan-ng/helm/separator'
-import { HlmTabsImports } from '@spartan-ng/helm/tabs'
-import { DataTableImports } from '@ui/components/ui/data-table/src'
-import { APP_ICON_IMPORTS } from '@ui/components/ui/icon/app-icons'
-import { injectCore } from '@ui/core-service'
-import { injectDesktop } from '@ui/desktop-service'
-import { AppShellComponent } from '@ui/layout/app-shell.component'
-import { HomePageStatusComponent } from '@ui/pages/home/components/home-page-status.component'
-import { bottomTabItems, inspectorCards, navigationCards } from '@ui/pages/home/home-page.data'
-import { loadHomePageCoreState } from '@ui/pages/home/home-page.runtime'
-import { boardColumns, boardRows } from '@ui/pages/home/home-page.table-data'
-import { applyThemeMode, getThemeMode, toggleThemeMode } from '@ui/runtime/theme'
+import { HlmAlertImports } from 'spartan/alert'
+import { HlmBadgeImports } from 'spartan/badge'
+import { HlmButtonImports } from 'spartan/button'
+import { HlmCardImports } from 'spartan/card'
+import { HlmInputImports } from 'spartan/input'
+import { HlmSeparatorImports } from 'spartan/separator'
+import { HlmTabsImports } from 'spartan/tabs'
+
+import { DataTableImports } from '@/components/ui/data-table/src'
+import { APP_ICON_IMPORTS, APP_ICON_PROVIDERS } from '@/components/ui/icon/app-icons'
+import { injectCore } from '@/core-service'
+import { injectDesktop } from '@/desktop-service'
+import { AppShellComponent } from '@/layout/app-shell.component'
+import { HomePageStatusComponent } from '@/pages/home/components/home-page-status.component'
+import { bottomTabItems, inspectorCards, navigationCards } from '@/pages/home/home-page.data'
+import { loadHomePageCoreState } from '@/pages/home/home-page.runtime'
+import { boardColumns, boardRows } from '@/pages/home/home-page.table-data'
+import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
 
 @Component({
 	selector: 'home-page',
@@ -32,6 +33,7 @@ import { applyThemeMode, getThemeMode, toggleThemeMode } from '@ui/runtime/theme
 		HlmTabsImports,
 		...APP_ICON_IMPORTS
 	],
+	providers: [...APP_ICON_PROVIDERS],
 	templateUrl: './home-page.component.html',
 	styleUrl: './home-page.component.css'
 })

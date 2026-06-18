@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnSeparator } from '@spartan-ng/brain/separator'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 export const hlmSeparatorClass =
 	'inline-flex shrink-0 bg-border data-horizontal:h-px data-horizontal:w-full data-vertical:w-px data-vertical:self-stretch'

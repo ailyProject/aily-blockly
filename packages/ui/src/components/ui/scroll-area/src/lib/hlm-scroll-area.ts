@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
-import { classes } from '@spartan-ng/helm/utils'
 import { provideScrollbarOptions } from 'ngx-scrollbar'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'ng-scrollbar[hlm],ng-scrollbar[hlmScrollbar]',

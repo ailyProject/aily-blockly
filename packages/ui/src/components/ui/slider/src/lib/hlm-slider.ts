@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core'
 import { BrnSlider, BrnSliderImports, injectBrnSlider } from '@spartan-ng/brain/slider'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Component({
 	selector: 'hlm-slider, brn-slider [hlm]',

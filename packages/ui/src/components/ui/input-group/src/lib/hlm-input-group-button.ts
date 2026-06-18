@@ -1,7 +1,7 @@
 import { Directive, input } from '@angular/core'
-import { HlmButton, provideBrnButtonConfig } from '@spartan-ng/helm/button'
-import { classes } from '@spartan-ng/helm/utils'
 import { cva } from 'class-variance-authority'
+import { HlmButton, provideBrnButtonConfig } from 'spartan/button'
+import { classes } from 'spartan/utils'
 
 import type { VariantProps } from 'class-variance-authority'
 

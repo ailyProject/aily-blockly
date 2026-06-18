@@ -1,6 +1,6 @@
 import { Directive, input } from '@angular/core'
-import { classes } from '@spartan-ng/helm/utils'
 import { cva } from 'class-variance-authority'
+import { classes } from 'spartan/utils'
 
 const buttonGroupVariants = cva(
 	"has-[>[data-slot=button-group]]:gap-2 has-[select[aria-hidden=true]:last-child]:[&>[data-slot=select-trigger]:last-of-type]:rounded-r-md flex w-fit items-stretch *:focus-visible:relative *:focus-visible:z-10 [&>[data-slot=select-trigger]:not([class*='w-'])]:w-fit [&>input]:flex-1",

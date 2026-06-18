@@ -2,7 +2,7 @@ import { booleanAttribute, ChangeDetectionStrategy, Component, input } from '@an
 import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideX } from '@ng-icons/lucide'
 import { BrnComboboxChip } from '@spartan-ng/brain/combobox'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 import { HlmComboboxChipRemove } from './hlm-combobox-chip-remove'
 

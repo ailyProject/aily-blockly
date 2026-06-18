@@ -1,5 +1,5 @@
 import { Directive, input } from '@angular/core'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'legend[hlmFieldLegend]',

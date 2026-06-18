@@ -1,6 +1,6 @@
 import { Directive, input } from '@angular/core'
 import { BrnTabs } from '@spartan-ng/brain/tabs'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmTabs],hlm-tabs',

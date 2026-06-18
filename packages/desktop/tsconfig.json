@@ -8,18 +8,17 @@
 		"declaration": true,
 		"emitDeclarationOnly": true,
 		"strict": true,
-		"rootDir": ".",
+		"rootDir": "..",
 		"outDir": "dist",
 		"isolatedModules": true,
 		"esModuleInterop": true,
 		"importHelpers": true,
 		"allowImportingTsExtensions": true,
 		"forceConsistentCasingInFileNames": true,
-		"baseUrl": ".",
+		"baseUrl": "..",
 		"paths": {
-			"shared": ["../shared/dist/index.d.ts"],
-			"core/*": ["../core/dist/*/index.d.ts"],
-			"erpc/main": ["../erpc/dist/main/index.d.ts"]
+			"@shared": ["./shared/index.ts"],
+			"@core/*": ["./core/*"]
 		},
 		"ignoreDeprecations": "6.0",
 		"types": ["node"]

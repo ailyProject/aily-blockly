@@ -1,8 +1,4 @@
 import { Component, computed, input, signal } from '@angular/core'
-import { HlmButtonImports } from '@spartan-ng/helm/button'
-import { HlmDropdownMenuImports } from '@spartan-ng/helm/dropdown-menu'
-import { HlmInputImports } from '@spartan-ng/helm/input'
-import { HlmTableImports } from '@spartan-ng/helm/table'
 import {
 	createAngularTable,
 	FlexRenderDirective,
@@ -11,6 +7,10 @@ import {
 	getPaginationRowModel,
 	getSortedRowModel
 } from '@tanstack/angular-table'
+import { HlmButtonImports } from 'spartan/button'
+import { HlmDropdownMenuImports } from 'spartan/dropdown-menu'
+import { HlmInputImports } from 'spartan/input'
+import { HlmTableImports } from 'spartan/table'
 
 import { getColumnLabel, resolveUpdater } from './data-table.utils'
 

@@ -28,9 +28,14 @@ const SESSION_LOST_GENERIC_PATTERNS: Array<RegExp> = [
 
 const getNestedErrorData = (error: unknown) => {
 	const target = error as Record<string, any>
-	return [target, target?.error, target?.data, target?.response?.data, target?.cause, target?.cause?.error].filter(
-		Boolean
-	)
+	return [
+		target,
+		target?.['error'],
+		target?.['data'],
+		target?.['response']?.['data'],
+		target?.['cause'],
+		target?.['cause']?.['error']
+	].filter(Boolean)
 }
 
 const isGenericTransportErrorText = (text: string) => {
@@ -58,13 +63,13 @@ const isGenericTransportErrorText = (text: string) => {
 export const extractHttpStatusCode = (error: unknown): number => {
 	const target = error as Record<string, any>
 	const directCandidate =
-		target?.status ??
-		target?.statusCode ??
-		target?.response?.status ??
-		target?.error?.status ??
-		target?.error?.statusCode ??
-		target?.cause?.status ??
-		target?.cause?.statusCode
+		target?.['status'] ??
+		target?.['statusCode'] ??
+		target?.['response']?.['status'] ??
+		target?.['error']?.['status'] ??
+		target?.['error']?.['statusCode'] ??
+		target?.['cause']?.['status'] ??
+		target?.['cause']?.['statusCode']
 
 	const directStatus = Number(directCandidate)
 	if (Number.isFinite(directStatus) && directStatus >= 100 && directStatus <= 599) {
@@ -72,10 +77,10 @@ export const extractHttpStatusCode = (error: unknown): number => {
 	}
 
 	const textCandidates = [
-		target?.message,
-		target?.error?.message,
-		target?.response?.statusText,
-		target?.cause?.message,
+		target?.['message'],
+		target?.['error']?.['message'],
+		target?.['response']?.['statusText'],
+		target?.['cause']?.['message'],
 		typeof error === 'string' ? error : ''
 	].filter(Boolean)
 
@@ -114,7 +119,8 @@ export const extractErrorDetailMessage = (error: unknown): string => {
 	if (!error) return ''
 
 	const target = error as Record<string, any>
-	const detailCandidate = target?.error ?? target?.response?.data ?? target?.data ?? target?.cause?.error
+	const detailCandidate =
+		target?.['error'] ?? target?.['response']?.['data'] ?? target?.['data'] ?? target?.['cause']?.['error']
 	const objectCandidate = detailCandidate && typeof detailCandidate === 'object' ? detailCandidate : null
 	if (objectCandidate) {
 		const objectCode = objectCandidate.code
@@ -135,12 +141,12 @@ export const extractErrorDetailMessage = (error: unknown): string => {
 	}
 
 	const directTextCandidates = [
-		target?.detail,
-		target?.error?.detail,
-		target?.error?.message,
-		target?.response?.data?.message,
-		target?.response?.data?.detail,
-		target?.message,
+		target?.['detail'],
+		target?.['error']?.['detail'],
+		target?.['error']?.['message'],
+		target?.['response']?.['data']?.['message'],
+		target?.['response']?.['data']?.['detail'],
+		target?.['message'],
 		typeof error === 'string' ? error : ''
 	]
 
@@ -172,12 +178,12 @@ export const isQuotaExceededError = (error: unknown) => {
 
 		if (!candidate || typeof candidate !== 'object') continue
 		const codeCandidates = [
-			candidate.error,
-			candidate.code,
-			candidate.error_code,
-			candidate.errorCode,
-			candidate.type,
-			candidate.reason
+			candidate['error'],
+			candidate['code'],
+			candidate['error_code'],
+			candidate['errorCode'],
+			candidate['type'],
+			candidate['reason']
 		]
 
 		if (codeCandidates.some(code => code === 'quota_exceeded')) {
@@ -191,7 +197,7 @@ export const isQuotaExceededError = (error: unknown) => {
 			const text =
 				typeof candidate === 'string'
 					? candidate
-					: [candidate?.message, candidate?.detail, candidate?.msg].filter(Boolean).join(' ')
+					: [candidate?.['message'], candidate?.['detail'], candidate?.['msg']].filter(Boolean).join(' ')
 			return /quota_exceeded|AI对话免费次数已用完|对话次数已用完/.test(String(text))
 		})
 	)
@@ -211,8 +217,8 @@ export const getQuotaExceededMessage = (error: unknown) =>
 export const getQuotaUsageText = (error: unknown) => {
 	for (const candidate of getNestedErrorData(error)) {
 		if (!candidate || typeof candidate !== 'object') continue
-		const limit = Number(candidate.limit)
-		const used = Number(candidate.used)
+		const limit = Number(candidate['limit'])
+		const used = Number(candidate['used'])
 		if (Number.isFinite(limit) && limit > 0 && Number.isFinite(used)) {
 			return `本月已用 ${used}/${limit} 次。`
 		}
@@ -297,7 +303,7 @@ export const isTransientNetworkError = (error: unknown) => {
 	const status = extractHttpStatusCode(error)
 	if (status === 502 || status === 503 || status === 504) {
 		const detail = extractErrorDetailMessage(error)
-		const message = ((error as Record<string, any>)?.message || '').toLowerCase()
+		const message = ((error as Record<string, any>)?.['message'] || '').toLowerCase()
 		const combined = `${detail} ${message}`.toLowerCase()
 		if (TRANSIENT_CONNECTIVITY_PATTERNS.some(pattern => pattern.test(combined))) {
 			return true
@@ -322,7 +328,7 @@ export const isLikelySessionLostError = (error: unknown) => {
 
 	const status = extractHttpStatusCode(error)
 	const target = error as Record<string, any>
-	const code = target?.code ?? target?.error?.code
+	const code = target?.['code'] ?? target?.['error']?.['code']
 
 	if (status === 404 && code === 21001) return true
 	if (status !== 500) return false

@@ -1,4 +1,4 @@
-import { createAilyCoreServiceAddress } from '@ui/workspace/shared'
+import { createAilyCoreServiceAddress } from '@shared'
 
 import type { CoreServiceWindowConfig, CreateCoreOptions } from './types'
 

@@ -10,7 +10,7 @@ import {
 } from '@angular/core'
 import { NG_VALUE_ACCESSOR } from '@angular/forms'
 import { BrnSwitch, BrnSwitchThumb } from '@spartan-ng/brain/switch'
-import { hlm } from '@spartan-ng/helm/utils'
+import { hlm } from 'spartan/utils'
 
 import { HlmSwitchThumb } from './hlm-switch-thumb'
 

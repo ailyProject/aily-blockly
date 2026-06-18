@@ -1,4 +1,4 @@
-import type { AilyCoreServiceAddress, AilyCoreServiceRuntimeStatus, AilyCoreServiceStartOptions } from 'shared'
+import type { AilyCoreServiceAddress, AilyCoreServiceRuntimeStatus, AilyCoreServiceStartOptions } from '@shared'
 
 /**
  * 桌面壳管理 Core 服务时的附加选项

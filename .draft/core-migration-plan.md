@@ -198,11 +198,35 @@
   - `packages/desktop` 可单独 `rslib build`
   - `packages/core` 已可单独 `rslib build`
   - `packages/ui` 已可单独 `ng build`
+- 已完成的 domain 级 RPC 形状调整
+  - `ui` 首页聚合调用已不再使用 `core.app.*`
+  - `core/rpc` 根路由已新增并挂载：
+    - `core.config.*`
+    - `core.store.*`
+    - `core.onboarding.*`
+    - `core.project.*`
+  - `core.project.*` 现已收缩为更接近项目域的动作：
+    - 项目路径
+    - 区域解析
+    - 最近项目列表
+    - 最近模型项目列表
+  - `config` / `store` / `onboarding` 已开始形成真实目录模块，而不是只有顶层 router 名
+  - 旧 `core/rpc/app/*` 的活跃配置实现已整体迁入 `core/rpc/config/*`
+  - `core/rpc/app` 当前已不再承载活跃实现文件
 - 当前主要阻塞
   - 当前不再是构建阻塞，而是结构继续演进的问题：
-    - `core/rpc/app/*` 仍然承载了大量本该按子域拆到 `project`、`agent` 等分组下的动作
-    - `ui` 为了先跑通构建，临时引入了 `src/workspace/*` bridge；后续应随着 rpc/public type 进一步稳定，评估是否继续保留或收口
+    - `ui` 为兼容 Angular 编译器对跨包声明解析的限制，当前保留了最小的 `src/types/core-modules.d.ts` shim
+    - packaging / release 工具链仍只是初始骨架，尚未补齐 desktop release 配置、trim package 和 release 产物裁剪
 - 下一个执行切面
-  1. 继续把 `core/rpc/app/*` 中 project/config/recent/onboarding/layout 相关动作迁到更合理的分组
-  2. 继续排查 UI / desktop 中残留的“应下沉到 core 的纯逻辑”
-  3. 完成 rpc 模块命名与层级对齐 polywise 风格
+  1. 继续检查 `ui` / `desktop` 中是否还有应下沉到 `core` 的纯 domain 逻辑
+  2. 对齐 packaging / workflow：desktop packaging skeleton、standalone workflow、trim package 流程
+  3. 继续按 legacy / deepwiki 对照补漏
+
+## Workflow 基线（2026-06-18）
+
+- root `package.json` 已补 `packageManager: pnpm@11.7.0`
+- `.github/tsflows/desktop.ts` 已改为从 root `packageManager` 读取 pnpm 版本，并补 `Setup Bun`
+- 已新增 `.github/tsflows/standalone.ts`
+- 已重新生成：
+  - `.github/workflows/desktop.generated.yml`
+  - `.github/workflows/standalone.generated.yml`

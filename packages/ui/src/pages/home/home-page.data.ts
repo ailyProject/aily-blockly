@@ -1,5 +1,5 @@
-import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@ui/workspace/core-hardware'
-import type { AilyAgentConfig, AilyAppConfig, AppRegistryItem } from '@ui/workspace/shared'
+import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@core/hardware'
+import type { AilyAgentConfig, AilyAppConfig, AppRegistryItem } from '@shared'
 
 type BadgeTone = 'default' | 'secondary' | 'outline'
 

@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnCollapsibleContent } from '@spartan-ng/brain/collapsible'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmCollapsibleContent],hlm-collapsible-content',

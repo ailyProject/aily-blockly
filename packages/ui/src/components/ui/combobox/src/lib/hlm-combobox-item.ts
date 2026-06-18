@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, inject } from '@angular/core'
 import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideCheck } from '@ng-icons/lucide'
 import { BrnComboboxItem } from '@spartan-ng/brain/combobox'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Component({
 	selector: 'hlm-combobox-item',

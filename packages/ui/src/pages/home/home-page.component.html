@@ -2,9 +2,9 @@
   <div shell-actions class="actions">
     <button hlmBtn variant="outline" (click)="handleThemeToggle()">
       @if (themeMode() === 'dark') {
-        <svg lucideSunMedium class="button-icon"></svg>
+        <ng-icon name="lucideSunMedium" class="button-icon"></ng-icon>
       } @else {
-        <svg lucideMoonStar class="button-icon"></svg>
+        <ng-icon name="lucideMoonStar" class="button-icon"></ng-icon>
       }
       {{ themeActionLabel }}
     </button>
@@ -19,7 +19,7 @@
         </div>
         <div hlmCardContent class="stack">
           <label class="search">
-            <svg lucideSearch class="inline-icon"></svg>
+            <ng-icon name="lucideSearch" class="inline-icon"></ng-icon>
             <input hlmInput placeholder="Search boards, tools, dialogs..." />
           </label>
           @for (item of navigationCards; track item.title) {
@@ -41,15 +41,15 @@
             <p hlmCardDescription>header, center workspace, right tools, bottom tabs</p>
           </div>
           <div class="header-icons">
-            <svg lucidePanelLeft class="panel-icon"></svg>
-            <svg lucidePanelBottom class="panel-icon"></svg>
-            <svg lucideSlidersHorizontal class="panel-icon"></svg>
+            <ng-icon name="lucidePanelLeft" class="panel-icon"></ng-icon>
+            <ng-icon name="lucidePanelBottom" class="panel-icon"></ng-icon>
+            <ng-icon name="lucideSlidersHorizontal" class="panel-icon"></ng-icon>
           </div>
         </div>
         <hlm-separator></hlm-separator>
         <div hlmCardContent class="workspace-grid">
 			<article class="workspace-surface">
-				<svg lucideBlocks class="surface-icon"></svg>
+				<ng-icon name="lucideBlocks" class="surface-icon"></ng-icon>
 				<h3>Blockly canvas area</h3>
 				<p>Reserved for the future editor shell, toolbox, and contextual panes.</p>
 			</article>
@@ -154,9 +154,9 @@
             <div class="tool-row">
               <div class="tool-copy">
                 @switch (tool.title) {
-                  @case ('Aily Chat') { <svg lucideBot class="inline-icon"></svg> }
-                  @case ('Serial Monitor') { <svg lucideTerminal class="inline-icon"></svg> }
-                  @default { <svg lucideFolderOpen class="inline-icon"></svg> }
+                  @case ('Aily Chat') { <ng-icon name="lucideBot" class="inline-icon"></ng-icon> }
+                  @case ('Serial Monitor') { <ng-icon name="lucideTerminal" class="inline-icon"></ng-icon> }
+                  @default { <ng-icon name="lucideFolderOpen" class="inline-icon"></ng-icon> }
                 }
                 <div>
                   <strong>{{ tool.title }}</strong>
@@ -168,7 +168,7 @@
           }
           <hlm-separator></hlm-separator>
           <div class="tool-row compact">
-            <svg lucideCpu class="inline-icon"></svg>
+            <ng-icon name="lucideCpu" class="inline-icon"></ng-icon>
             <p>Future model-store / deploy / build diagnostics can stack here.</p>
           </div>
         </div>

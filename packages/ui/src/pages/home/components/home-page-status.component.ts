@@ -1,6 +1,6 @@
 import { Component, input, output } from '@angular/core'
-import { HlmBadgeImports } from '@spartan-ng/helm/badge'
-import { HlmButtonImports } from '@spartan-ng/helm/button'
+import { HlmBadgeImports } from 'spartan/badge'
+import { HlmButtonImports } from 'spartan/button'
 
 @Component({
 	selector: 'home-page-status',

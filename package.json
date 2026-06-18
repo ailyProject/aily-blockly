@@ -1,5 +1,6 @@
 {
 	"name": "monorepo",
+	"packageManager": "pnpm@11.7.0",
 	"scripts": {
 		"deps:w": "ncu -u -i --workspaces",
 		"build:deps": "turbo run deps",

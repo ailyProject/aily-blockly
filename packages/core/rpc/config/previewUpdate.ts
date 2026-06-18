@@ -4,7 +4,6 @@ import {
 	clearSkippedAppVersions,
 	setAiChatMode,
 	setDevmodeAutoSave,
-	setDevmodeConfig,
 	setDevmodeEnabled,
 	setQuickSendList,
 	setSelectedLanguage,

@@ -2,7 +2,7 @@ import { booleanAttribute, ChangeDetectionStrategy, Component, computed, input, 
 import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideCircleCheck, lucideInfo, lucideLoader2, lucideOctagonX, lucideTriangleAlert } from '@ng-icons/lucide'
 import { BrnSonnerImports } from '@spartan-ng/brain/sonner'
-import { hlm } from '@spartan-ng/helm/utils'
+import { hlm } from 'spartan/utils'
 
 import type { BooleanInput, NumberInput } from '@angular/cdk/coercion'
 import type { ToasterProps } from '@spartan-ng/brain/sonner'

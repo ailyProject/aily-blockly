@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnComboboxContent } from '@spartan-ng/brain/combobox'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmComboboxContent],hlm-combobox-content',

@@ -40,13 +40,13 @@ const regionSchema: z.ZodType<RegionConfig> = z.object({
 	enabled: z.boolean().optional()
 })
 
-const recentProjectSchema: z.ZodType<RecentlyProjectEntry> = z.object({
+export const recentProjectSchema: z.ZodType<RecentlyProjectEntry> = z.object({
 	name: z.string(),
 	nickname: z.string().optional(),
 	path: z.string()
 })
 
-const recentModelProjectSchema: z.ZodType<RecentModelProject> = z.object({
+export const recentModelProjectSchema: z.ZodType<RecentModelProject> = z.object({
 	name: z.string(),
 	nickname: z.string().optional(),
 	path: z.string(),

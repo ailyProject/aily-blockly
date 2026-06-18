@@ -1,7 +1,7 @@
 import { Directive, input, signal } from '@angular/core'
 import { BrnButton } from '@spartan-ng/brain/button'
-import { classes } from '@spartan-ng/helm/utils'
 import { cva } from 'class-variance-authority'
+import { classes } from 'spartan/utils'
 
 import { injectBrnButtonConfig } from './hlm-button.token'
 

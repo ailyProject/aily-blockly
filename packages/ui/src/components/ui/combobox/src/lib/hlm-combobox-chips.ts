@@ -1,7 +1,7 @@
 import { BooleanInput } from '@angular/cdk/coercion'
 import { booleanAttribute, computed, Directive, input } from '@angular/core'
 import { BrnComboboxAnchor, BrnComboboxPopoverTrigger, injectBrnComboboxBase } from '@spartan-ng/brain/combobox'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmComboboxChips],hlm-combobox-chips',

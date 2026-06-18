@@ -2,7 +2,7 @@ import { type NumberInput } from '@angular/cdk/coercion'
 import { CdkMenu } from '@angular/cdk/menu'
 import { Directive, inject, input, numberAttribute, signal } from '@angular/core'
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmDropdownMenu],hlm-dropdown-menu',

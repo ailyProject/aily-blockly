@@ -3,7 +3,7 @@ import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideChevronDown } from '@ng-icons/lucide'
 import { BrnFieldControlDescribedBy } from '@spartan-ng/brain/field'
 import { BrnSelectTrigger } from '@spartan-ng/brain/select'
-import { hlm } from '@spartan-ng/helm/utils'
+import { hlm } from 'spartan/utils'
 
 import type { BooleanInput } from '@angular/cdk/coercion'
 import type { ClassValue } from 'clsx'

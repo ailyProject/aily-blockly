@@ -3,7 +3,7 @@ import { booleanAttribute, ChangeDetectionStrategy, Component, input } from '@an
 import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideChevronDown, lucideX } from '@ng-icons/lucide'
 import { BrnComboboxImports, BrnComboboxPopoverTrigger } from '@spartan-ng/brain/combobox'
-import { HlmInputGroupImports } from '@spartan-ng/helm/input-group'
+import { HlmInputGroupImports } from 'spartan/input-group'
 
 @Component({
 	selector: 'hlm-combobox-input',

@@ -1,13 +1,14 @@
 import { Chat } from '@ai-sdk/angular'
 import { Component, computed, signal } from '@angular/core'
-import { HlmBadgeImports } from '@spartan-ng/helm/badge'
-import { HlmButtonImports } from '@spartan-ng/helm/button'
-import { HlmCardImports } from '@spartan-ng/helm/card'
-import { HlmTextareaImports } from '@spartan-ng/helm/textarea'
-import { injectAgentApi } from '@ui/agent-api'
-import { createAgentChatTransport } from '@ui/agent-api/chat-transport'
-import { AppShellComponent } from '@ui/layout/app-shell.component'
-import { demoAgentRequestBody } from '@ui/pages/agent/agent-page.data'
+import { HlmBadgeImports } from 'spartan/badge'
+import { HlmButtonImports } from 'spartan/button'
+import { HlmCardImports } from 'spartan/card'
+import { HlmTextareaImports } from 'spartan/textarea'
+
+import { injectAgentApi } from '@/agent-api'
+import { createAgentChatTransport } from '@/agent-api/chat-transport'
+import { AppShellComponent } from '@/layout/app-shell.component'
+import { demoAgentRequestBody } from '@/pages/agent/agent-page.data'
 
 @Component({
 	selector: 'agent-page',

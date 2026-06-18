@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core'
 import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideLoader2 } from '@ng-icons/lucide'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Component({
 	selector: 'hlm-spinner',

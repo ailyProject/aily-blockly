@@ -1,4 +1,4 @@
-import { resolveCoreServiceBaseUrl } from '@ui/core-service/config'
+import { resolveCoreServiceBaseUrl } from '@/core-service/config'
 
 import type { CreateAgentApiOptions } from './types'
 

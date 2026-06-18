@@ -23,7 +23,7 @@ const clampRatio = (value: unknown, fallback: number) => {
  */
 export const normalizeAilyAgentConfig = (value: unknown): AilyAgentConfig => {
 	const source = value && typeof value === 'object' ? (value as AilyAgentConfig) : {}
-	const mainAgentTools = source.agentTools?.mainAgent ?? defaultMainAgentTools()
+	const mainAgentTools = source['agentTools']?.['mainAgent'] ?? defaultMainAgentTools()
 
 	const normalized: AilyAgentConfig = {
 		...DEFAULT_AILY_AGENT_CONFIG,
@@ -42,7 +42,7 @@ export const normalizeAilyAgentConfig = (value: unknown): AilyAgentConfig => {
 		enabledTools: Array.isArray(source.enabledTools) ? [...source.enabledTools] : [...mainAgentTools.enabledTools],
 		disabledTools: Array.isArray(source.disabledTools) ? [...source.disabledTools] : [...mainAgentTools.disabledTools],
 		agentTools: {
-			...(source.agentTools ?? {}),
+			...(source['agentTools'] ?? {}),
 			mainAgent: {
 				enabledTools: Array.isArray(mainAgentTools.enabledTools)
 					? [...mainAgentTools.enabledTools]
@@ -53,8 +53,8 @@ export const normalizeAilyAgentConfig = (value: unknown): AilyAgentConfig => {
 			}
 		},
 		securityWorkspaces: {
-			project: source.securityWorkspaces?.project ?? true,
-			library: source.securityWorkspaces?.library ?? true
+			project: source['securityWorkspaces']?.['project'] ?? true,
+			library: source['securityWorkspaces']?.['library'] ?? true
 		},
 		apiKeys: Array.isArray(source.apiKeys) ? source.apiKeys.map(item => ({ ...item })) : [],
 		models: Array.isArray(source.models) ? source.models.map(item => ({ ...item })) : []

@@ -8,13 +8,18 @@
 		"declaration": true,
 		"emitDeclarationOnly": true,
 		"strict": true,
-		"rootDir": ".",
+		"rootDir": "..",
 		"outDir": "dist",
 		"isolatedModules": true,
 		"esModuleInterop": true,
 		"importHelpers": true,
 		"allowImportingTsExtensions": true,
 		"forceConsistentCasingInFileNames": true,
+		"ignoreDeprecations": "6.0",
+		"baseUrl": "..",
+		"paths": {
+			"@shared": ["./shared/index.ts"]
+		},
 		"types": ["node"]
 	},
 	"include": ["agent", "api", "rpc", "hardware", "project", "metadata", "document", "abi", "abs", "build"]

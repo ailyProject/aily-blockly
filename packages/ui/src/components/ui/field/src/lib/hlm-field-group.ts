@@ -1,5 +1,5 @@
 import { Directive } from '@angular/core'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmFieldGroup],hlm-field-group',

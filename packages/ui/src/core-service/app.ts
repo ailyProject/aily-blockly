@@ -34,27 +34,27 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 		core.hardware.validateLegacyBoard.query({ boardName: 'esp32s3 xiao', boards: options.legacyBoards }),
 		core.hardware.validateLegacyLibrary.query({ libraryName: 'rc522 reader', libraries: options.legacyLibraries }),
 		core.agent.getSecurityOptions.query({ config: options.agentConfig }),
-		core.app.get.query({ config: options.appConfig, fallbackLanguage: options.context.fallbackLanguage }),
-		core.app.resolveLayout.query({
+		core.config.get.query({ config: options.appConfig, fallbackLanguage: options.context.fallbackLanguage }),
+		core.store.resolveLayout.query({
 			config: options.appConfig,
 			apps: options.toolbarApps,
 			defaultToolbarAppIds: options.appConfig.toolbarAppIds ?? [],
 			context: options.context
 		}),
-		core.app.previewUpdate.query({
+		core.config.previewUpdate.query({
 			config: options.appConfig,
 			...(options.mutationInput as object)
 		}),
-		core.app.createDefaultLayout.query({
+		core.store.createDefaultLayout.query({
 			defaultToolbarAppIds: options.appConfig.toolbarAppIds ?? [],
 			apps: options.toolbarApps
 		}),
-		core.app.mergeVisibleOrder.query({
+		core.store.mergeVisibleOrder.query({
 			currentZoneIds: options.appConfig.toolbarAppIds ?? [],
 			visibleIds: ['flash-fs', 'aily-chat'],
 			visibleCatalogIds: options.toolbarApps.map(app => app.id)
 		}),
-		core.app.toggleApp.query({
+		core.store.toggleApp.query({
 			layout: {
 				version: 2,
 				zones: {
@@ -65,30 +65,30 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 			appId: 'dev-tool',
 			apps: options.toolbarApps
 		}),
-		core.app.reset.query({
+		core.store.reset.query({
 			defaultToolbarAppIds: options.appConfig.toolbarAppIds ?? [],
 			apps: options.toolbarApps
 		}),
-		core.app.buildSerialConnectOptions.query({
+		core.config.buildSerialConnectOptions.query({
 			config: options.appConfig,
 			port: 'COM7'
 		}),
-		core.app.getRecentProjects.query({ config: options.appConfig }),
-		core.app.getRecentModelProjects.query({ config: options.appConfig }),
-		core.app.addRecentProject.query({
+		core.project.getRecentProjects.query({ config: options.appConfig }),
+		core.project.getRecentModelProjects.query({ config: options.appConfig }),
+		core.project.addRecentProject.query({
 			config: options.appConfig,
 			project: { name: 'Vision Station', path: '/Users/demo/projects/vision-station' }
 		}),
-		core.app.removeRecentProject.query({
+		core.project.removeRecentProject.query({
 			config: options.appConfig,
 			projectPath: '/Users/demo/projects/robot-arm'
 		}),
-		core.app.getOnboarding.query({ config: options.appConfig }),
-		core.app.completeOnboarding.query({
+		core.onboarding.getOnboarding.query({ config: options.appConfig }),
+		core.onboarding.completeOnboarding.query({
 			config: options.appConfig,
 			key: 'ailyChatOnboardingCompleted'
 		}),
-		core.app.addRecentModelProject.query({
+		core.project.addRecentModelProject.query({
 			config: options.appConfig,
 			project: {
 				name: 'Fruit Classifier',
@@ -96,13 +96,13 @@ export const loadHomePreview = async (core: Core, options: LoadHomePreviewOption
 				modelType: 'classification'
 			}
 		}),
-		core.app.removeRecentModelProject.query({
+		core.project.removeRecentModelProject.query({
 			config: options.appConfig,
 			projectPath: '/Users/demo/projects/fruit-classifier'
 		})
 	])
 
-	const resolvedModel = await core.app.resolveModel.query({
+	const resolvedModel = await core.config.resolveModel.query({
 		config: options.appConfig,
 		enabledModels
 	})

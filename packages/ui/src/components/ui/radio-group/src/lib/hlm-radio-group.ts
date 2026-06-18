@@ -1,7 +1,7 @@
 import { computed, Directive, inject, input } from '@angular/core'
 import { BrnFieldControlDescribedBy } from '@spartan-ng/brain/field'
 import { BrnRadioGroup } from '@spartan-ng/brain/radio-group'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 import type { ClassValue } from 'clsx'
 

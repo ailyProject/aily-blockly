@@ -2,7 +2,7 @@ import { DefaultChatTransport } from 'ai'
 
 import { resolveAgentSessionApi } from './config'
 
-import type { AgentSessionRequest } from '@ui/workspace/shared'
+import type { AgentSessionRequest } from '@shared'
 import type { UIMessage } from 'ai'
 import type { CreateAgentApiOptions } from './types'
 

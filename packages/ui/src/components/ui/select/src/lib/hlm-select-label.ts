@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnSelectLabel } from '@spartan-ng/brain/select'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmSelectLabel],hlm-select-label',

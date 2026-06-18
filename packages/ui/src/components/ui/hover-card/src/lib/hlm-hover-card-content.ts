@@ -1,6 +1,6 @@
 import { Directive, effect, ElementRef, inject, Renderer2, signal } from '@angular/core'
 import { injectExposedSideProvider, injectExposesStateProvider } from '@spartan-ng/brain/core'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmHoverCardContent],hlm-hover-card-content',

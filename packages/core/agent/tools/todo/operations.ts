@@ -57,17 +57,17 @@ export const addTodos = (
 	}
 
 	if (!todosArray) {
-		const content = String(singleTodoFallback?.content || singleTodoFallback?.title || '').trim()
+		const content = String(singleTodoFallback?.['content'] || singleTodoFallback?.['title'] || '').trim()
 		if (!content) {
 			return { ok: false, message: 'add 需要 content 或 todos 数组' }
 		}
 		todosArray = [
 			{
 				content,
-				status: singleTodoFallback?.status,
-				priority: singleTodoFallback?.priority,
-				tags: singleTodoFallback?.tags,
-				estimatedHours: singleTodoFallback?.estimatedHours
+				status: singleTodoFallback?.['status'],
+				priority: singleTodoFallback?.['priority'],
+				tags: singleTodoFallback?.['tags'],
+				estimatedHours: singleTodoFallback?.['estimatedHours']
 			}
 		]
 	}

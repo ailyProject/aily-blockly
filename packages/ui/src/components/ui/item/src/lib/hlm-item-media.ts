@@ -1,6 +1,6 @@
 import { Directive, input } from '@angular/core'
-import { classes } from '@spartan-ng/helm/utils'
 import { cva } from 'class-variance-authority'
+import { classes } from 'spartan/utils'
 
 import { injectHlmItemMediaConfig } from './hlm-item-token'
 

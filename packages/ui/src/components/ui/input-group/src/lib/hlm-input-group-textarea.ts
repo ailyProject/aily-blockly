@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
-import { HlmTextarea } from '@spartan-ng/helm/textarea'
-import { classes } from '@spartan-ng/helm/utils'
+import { HlmTextarea } from 'spartan/textarea'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'textarea[hlmInputGroupTextarea]',

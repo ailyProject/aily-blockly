@@ -127,23 +127,23 @@ export const formatProjectDiagnostics = (diagnostics: Array<ProjectDiagnostic>) 
 
 	const sections: Array<string> = []
 
-	if (grouped.lint?.length) {
+	if (grouped['lint']?.length) {
 		const lintResult: LintResult = {
-			isValid: grouped.lint.length === 0,
-			errors: grouped.lint.map(diagnostic => ({
+			isValid: grouped['lint'].length === 0,
+			errors: grouped['lint'].map(diagnostic => ({
 				line: diagnostic.line ?? 0,
 				column: diagnostic.column ?? 0,
 				message: diagnostic.message,
 				severity: diagnostic.severity === 'warning' ? 'warning' : 'error'
 			})),
 			language: 'unknown',
-			filePath: grouped.lint[0]?.file || ''
+			filePath: grouped['lint'][0]?.file || ''
 		}
-		sections.push(`## Lint 错误 (${grouped.lint.length})\n${formatLintErrors(lintResult)}`)
+		sections.push(`## Lint 错误 (${grouped['lint'].length})\n${formatLintErrors(lintResult)}`)
 	}
 
-	if (grouped.build?.length) {
-		const compileDiagnostics: Array<CompileDiagnostic> = grouped.build.map(diagnostic => ({
+	if (grouped['build']?.length) {
+		const compileDiagnostics: Array<CompileDiagnostic> = grouped['build'].map(diagnostic => ({
 			source: 'build',
 			file: diagnostic.file,
 			line: diagnostic.line,
@@ -151,16 +151,16 @@ export const formatProjectDiagnostics = (diagnostics: Array<ProjectDiagnostic>) 
 			severity: diagnostic.severity === 'warning' || diagnostic.severity === 'note' ? diagnostic.severity : 'error',
 			message: diagnostic.message
 		}))
-		sections.push(`## 编译错误 (${grouped.build.length})\n${formatCompileDiagnostics(compileDiagnostics)}`)
+		sections.push(`## 编译错误 (${grouped['build'].length})\n${formatCompileDiagnostics(compileDiagnostics)}`)
 	}
 
-	if (grouped.abs?.length) {
-		const lines = grouped.abs.map(diagnostic => {
+	if (grouped['abs']?.length) {
+		const lines = grouped['abs'].map(diagnostic => {
 			const prefix = diagnostic.severity === 'error' ? '❌' : diagnostic.severity === 'warning' ? '⚠️' : 'ℹ️'
 			const location = diagnostic.line ? `Line ${diagnostic.line}` : ''
 			return location ? `- ${prefix} ${location}: ${diagnostic.message}` : `- ${prefix} ${diagnostic.message}`
 		})
-		sections.push(`## ABS 错误 (${grouped.abs.length})\n${lines.join('\n')}`)
+		sections.push(`## ABS 错误 (${grouped['abs'].length})\n${lines.join('\n')}`)
 	}
 
 	return sections.join('\n\n')

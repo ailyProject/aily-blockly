@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnNavigationMenuTrigger } from '@spartan-ng/brain/navigation-menu'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'button[hlmNavigationMenuTrigger]',

@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnProgress } from '@spartan-ng/brain/progress'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'hlm-progress,[hlmProgress]',

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core'
-import { HlmSeparator } from '@spartan-ng/helm/separator'
-import { classes } from '@spartan-ng/helm/utils'
+import { HlmSeparator } from 'spartan/separator'
+import { classes } from 'spartan/utils'
 
 @Component({
 	selector: 'hlm-field-separator',

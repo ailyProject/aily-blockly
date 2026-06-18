@@ -15,7 +15,7 @@ import {
 	Renderer2
 } from '@angular/core'
 import { BrnRadio, BrnRadioGroup } from '@spartan-ng/brain/radio-group'
-import { hlm } from '@spartan-ng/helm/utils'
+import { hlm } from 'spartan/utils'
 
 import type { BrnRadioChange } from '@spartan-ng/brain/radio-group'
 import type { ClassValue } from 'clsx'

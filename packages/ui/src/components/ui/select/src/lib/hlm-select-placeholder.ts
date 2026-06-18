@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnSelectPlaceholder } from '@spartan-ng/brain/select'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmSelectPlaceholder],hlm-select-placeholder',

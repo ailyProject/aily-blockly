@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
-import { HlmInput } from '@spartan-ng/helm/input'
-import { classes } from '@spartan-ng/helm/utils'
+import { HlmInput } from 'spartan/input'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'input[hlmInputGroupInput]',

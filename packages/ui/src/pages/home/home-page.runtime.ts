@@ -1,4 +1,4 @@
-import { loadHomePreview } from '@ui/core-service'
+import { loadHomePreview } from '@/core-service'
 
 import {
 	demoAgentConfig,
@@ -11,8 +11,8 @@ import {
 	demoToolbarApps
 } from './home-page.data'
 
-import type { Core } from '@ui/core-service'
-import type { AilyAppConfig, RecentModelProject } from '@ui/workspace/shared'
+import type { Core } from '@/core-service'
+import type { AilyAppConfig, RecentModelProject } from '@shared'
 import type { HomePageCoreState } from './types'
 
 /**

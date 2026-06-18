@@ -3,9 +3,9 @@ import { booleanAttribute, ChangeDetectionStrategy, Component, computed, inject,
 import { provideIcons } from '@ng-icons/core'
 import { lucideX } from '@ng-icons/lucide'
 import { BrnDialogRef, injectBrnDialogContext } from '@spartan-ng/brain/dialog'
-import { HlmButton } from '@spartan-ng/helm/button'
-import { HlmIconImports } from '@spartan-ng/helm/icon'
-import { classes } from '@spartan-ng/helm/utils'
+import { HlmButton } from 'spartan/button'
+import { HlmIconImports } from 'spartan/icon'
+import { classes } from 'spartan/utils'
 
 import { HlmDialogClose } from './hlm-dialog-close'
 

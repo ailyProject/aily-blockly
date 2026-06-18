@@ -1,7 +1,7 @@
 import { Directive, input } from '@angular/core'
 import { BrnToggle } from '@spartan-ng/brain/toggle'
-import { classes } from '@spartan-ng/helm/utils'
 import { cva } from 'class-variance-authority'
+import { classes } from 'spartan/utils'
 
 import type { VariantProps } from 'class-variance-authority'
 

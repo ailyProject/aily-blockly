@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { readFileSync } from 'fs'
 import { dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { createSerializer } from '@jlarky/gha-ts/render'
@@ -6,6 +7,25 @@ import { workflow } from '@jlarky/gha-ts/workflow-types'
 import { YAML } from 'bun'
 
 const current_dir = dirname(fileURLToPath(import.meta.url))
+
+const readPnpmVersion = () => {
+	const package_json = JSON.parse(readFileSync(resolve(current_dir, '../../package.json'), 'utf8'))
+	const package_manager = package_json?.packageManager
+
+	if (typeof package_manager !== 'string') {
+		throw new Error('packageManager is missing in root package.json')
+	}
+
+	const match = package_manager.match(/^pnpm@(.+)$/)
+
+	if (!match?.[1]) {
+		throw new Error(`Unsupported packageManager: ${package_manager}`)
+	}
+
+	return match[1]
+}
+
+const pnpm_version = readPnpmVersion()
 
 const workflow_definition = workflow({
 	name: 'Desktop Build',
@@ -29,9 +49,13 @@ const workflow_definition = workflow({
 				{
 					uses: 'pnpm/action-setup@v6',
 					with: {
-						version: '11.7.0',
+						version: pnpm_version,
 						run_install: false
 					}
+				},
+				{
+					name: 'Setup Bun',
+					uses: 'oven-sh/setup-bun@v2'
 				},
 				{
 					name: 'Install dependencies',

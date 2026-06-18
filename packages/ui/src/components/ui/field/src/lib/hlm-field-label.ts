@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
-import { HlmLabel } from '@spartan-ng/helm/label'
-import { classes } from '@spartan-ng/helm/utils'
+import { HlmLabel } from 'spartan/label'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmFieldLabel],hlm-field-label',

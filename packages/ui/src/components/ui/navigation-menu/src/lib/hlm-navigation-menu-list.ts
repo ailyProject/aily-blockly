@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnNavigationMenuList } from '@spartan-ng/brain/navigation-menu'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: 'ul[hlmNavigationMenuList]',

@@ -14,13 +14,13 @@ import {
 	setLayoutZoneApps,
 	toggleLayoutApp
 } from '../../project'
+import { appConfigInputSchema, appRegistryItemSchema } from '../config/schemas'
 import { p } from '../trpc'
-import { appRegistryItemSchema, appSchema } from './schemas'
 
 export const resolveLayout = p
 	.input(
 		z.object({
-			config: appSchema.partial().optional(),
+			config: appConfigInputSchema.optional(),
 			apps: z.array(appRegistryItemSchema),
 			defaultToolbarAppIds: z.array(z.string()).optional(),
 			context: z
@@ -50,28 +50,21 @@ export const resolveLayout = p
 			HEADER_APP_LIMIT,
 			appMap
 		)
-		const visibleHeaderIds = layout.zones.header.filter(appId => {
-			const app = appMap.get(appId)
-			return app ? isAppVisibleInContext(app, input.context) : false
-		})
 
 		return {
 			layout,
-			visibleHeaderIds
+			visibleHeaderIds: layout.zones.header.filter(appId => {
+				const app = appMap.get(appId)
+				return app ? isAppVisibleInContext(app, input.context) : false
+			})
 		}
 	})
 
 export const createDefaultLayout = p
-	.input(
-		z.object({
-			defaultToolbarAppIds: z.array(z.string()),
-			apps: z.array(appRegistryItemSchema)
-		})
+	.input(z.object({ defaultToolbarAppIds: z.array(z.string()), apps: z.array(appRegistryItemSchema) }))
+	.query(({ input }) =>
+		createDefaultAppStoreLayout(input.defaultToolbarAppIds, new Map(input.apps.map(app => [app.id, app])))
 	)
-	.query(({ input }) => {
-		const appMap = new Map(input.apps.map(app => [app.id, app]))
-		return createDefaultAppStoreLayout(input.defaultToolbarAppIds, appMap)
-	})
 
 export const mergeVisibleOrder = p
 	.input(
@@ -92,10 +85,9 @@ export const setLayout = p
 			apps: z.array(appRegistryItemSchema)
 		})
 	)
-	.query(({ input }) => {
-		const appMap = new Map(input.apps.map(app => [app.id, app]))
-		return setLayoutZoneApps(input.layout, input.zone, input.appIds, appMap)
-	})
+	.query(({ input }) =>
+		setLayoutZoneApps(input.layout, input.zone, input.appIds, new Map(input.apps.map(app => [app.id, app])))
+	)
 
 export const addApp = p
 	.input(
@@ -106,10 +98,9 @@ export const addApp = p
 			apps: z.array(appRegistryItemSchema)
 		})
 	)
-	.query(({ input }) => {
-		const appMap = new Map(input.apps.map(app => [app.id, app]))
-		return addLayoutApp(input.layout, input.zone, input.appId, appMap)
-	})
+	.query(({ input }) =>
+		addLayoutApp(input.layout, input.zone, input.appId, new Map(input.apps.map(app => [app.id, app])))
+	)
 
 export const removeApp = p
 	.input(
@@ -120,10 +111,9 @@ export const removeApp = p
 			apps: z.array(appRegistryItemSchema)
 		})
 	)
-	.query(({ input }) => {
-		const appMap = new Map(input.apps.map(app => [app.id, app]))
-		return removeLayoutApp(input.layout, input.zone, input.appId, appMap)
-	})
+	.query(({ input }) =>
+		removeLayoutApp(input.layout, input.zone, input.appId, new Map(input.apps.map(app => [app.id, app])))
+	)
 
 export const toggleApp = p
 	.input(
@@ -134,19 +124,10 @@ export const toggleApp = p
 			apps: z.array(appRegistryItemSchema)
 		})
 	)
-	.query(({ input }) => {
-		const appMap = new Map(input.apps.map(app => [app.id, app]))
-		return toggleLayoutApp(input.layout, input.zone, input.appId, appMap)
-	})
+	.query(({ input }) =>
+		toggleLayoutApp(input.layout, input.zone, input.appId, new Map(input.apps.map(app => [app.id, app])))
+	)
 
 export const reset = p
-	.input(
-		z.object({
-			defaultToolbarAppIds: z.array(z.string()),
-			apps: z.array(appRegistryItemSchema)
-		})
-	)
-	.query(({ input }) => {
-		const appMap = new Map(input.apps.map(app => [app.id, app]))
-		return resetLayout(input.defaultToolbarAppIds, appMap)
-	})
+	.input(z.object({ defaultToolbarAppIds: z.array(z.string()), apps: z.array(appRegistryItemSchema) }))
+	.query(({ input }) => resetLayout(input.defaultToolbarAppIds, new Map(input.apps.map(app => [app.id, app]))))

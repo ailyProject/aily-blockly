@@ -3,8 +3,8 @@ import { NgIcon, provideIcons } from '@ng-icons/core'
 import { lucideChevronDown } from '@ng-icons/lucide'
 import { BrnComboboxAnchor, BrnComboboxPopoverTrigger, BrnComboboxTrigger } from '@spartan-ng/brain/combobox'
 import { BrnFieldControlDescribedBy } from '@spartan-ng/brain/field'
-import { ButtonVariants, HlmButton } from '@spartan-ng/helm/button'
-import { hlm } from '@spartan-ng/helm/utils'
+import { ButtonVariants, HlmButton } from 'spartan/button'
+import { hlm } from 'spartan/utils'
 
 import type { ClassValue } from 'clsx'
 

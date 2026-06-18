@@ -1,7 +1,7 @@
 import { computed, Directive, effect, input, untracked } from '@angular/core'
 import { injectCustomClassSettable } from '@spartan-ng/brain/core'
 import { BrnDialogOverlay } from '@spartan-ng/brain/dialog'
-import { hlm } from '@spartan-ng/helm/utils'
+import { hlm } from 'spartan/utils'
 
 import type { ClassValue } from 'clsx'
 

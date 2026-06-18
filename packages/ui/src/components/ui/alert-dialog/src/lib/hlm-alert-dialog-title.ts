@@ -1,6 +1,6 @@
 import { Directive } from '@angular/core'
 import { BrnAlertDialogTitle } from '@spartan-ng/brain/alert-dialog'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmAlertDialogTitle]',

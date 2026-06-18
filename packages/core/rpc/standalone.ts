@@ -6,10 +6,10 @@ const parsePort = (value: string | undefined) => {
 }
 
 const server = createAilyCoreServer({
-	host: process.env.AILY_CORE_SERVICE_HOST,
-	port: parsePort(process.env.AILY_CORE_SERVICE_PORT),
+	host: process.env['AILY_CORE_SERVICE_HOST'],
+	port: parsePort(process.env['AILY_CORE_SERVICE_PORT']),
 	transport: 'utility-process',
-	version: process.env.npm_package_version || '0.0.0'
+	version: process.env['npm_package_version'] || '0.0.0'
 })
 
 const shutdown = async () => {

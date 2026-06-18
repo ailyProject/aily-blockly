@@ -1,7 +1,7 @@
 import { Directive } from '@angular/core'
 import { BrnTooltip, BrnTooltipPosition, provideBrnTooltipDefaultOptions } from '@spartan-ng/brain/tooltip'
-import { hlm } from '@spartan-ng/helm/utils'
 import { cva } from 'class-variance-authority'
+import { hlm } from 'spartan/utils'
 
 export const DEFAULT_TOOLTIP_SVG_CLASS =
 	'bg-foreground fill-foreground z-50 block size-2.5 translate-y-[calc(-50%-2px)] rotate-45 rounded-[2px]'

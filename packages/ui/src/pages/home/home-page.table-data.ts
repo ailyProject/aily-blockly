@@ -1,6 +1,6 @@
 import { createColumnHelper } from '@tanstack/angular-table'
 
-import type { DataTableColumn } from '@ui/components/ui/data-table/src/lib/data-table.types'
+import type { DataTableColumn } from '@/components/ui/data-table/src/lib/data-table.types'
 
 type BoardRow = {
 	name: string

@@ -1,7 +1,7 @@
+import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@core/hardware'
+import type { Router } from '@core/rpc'
+import type { AilyAgentConfig, AilyAppConfig, AilyCoreServiceAddress, AppRegistryItem } from '@shared'
 import type { TRPCClient } from '@trpc/client'
-import type { BoardIndexItem, LegacyBoardItem, LegacyLibraryItem } from '@ui/workspace/core-hardware'
-import type { Router } from '@ui/workspace/core-rpc'
-import type { AilyAgentConfig, AilyAppConfig, AilyCoreServiceAddress, AppRegistryItem } from '@ui/workspace/shared'
 
 /**
  * 浏览器全局注入的 Core 服务地址覆盖项

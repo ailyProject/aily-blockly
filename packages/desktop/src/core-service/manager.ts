@@ -1,10 +1,10 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { createAilyCoreServiceAddress } from '@shared'
 import { utilityProcess } from 'electron'
-import { createAilyCoreServiceAddress } from 'shared'
 
+import type { AilyCoreServiceHealth, AilyCoreServiceRuntimeStatus } from '@shared'
 import type { UtilityProcess } from 'electron'
-import type { AilyCoreServiceHealth, AilyCoreServiceRuntimeStatus } from 'shared'
 import type { DesktopCoreServiceManager, DesktopCoreServiceManagerOptions } from './types'
 
 const require = createRequire(import.meta.url)

@@ -1,6 +1,6 @@
 import { Directive, input, signal } from '@angular/core'
 import { injectExposesStateProvider } from '@spartan-ng/brain/core'
-import { classes } from '@spartan-ng/helm/utils'
+import { classes } from 'spartan/utils'
 
 @Directive({
 	selector: '[hlmAlertDialogContent],hlm-alert-dialog-content',

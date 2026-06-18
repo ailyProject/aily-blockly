@@ -1,21 +1,25 @@
 import agent from './agent'
-import app from './app'
 import build from './build'
+import config from './config/index'
 import document from './document'
 import hardware from './hardware'
 import { createAilyCoreServiceHealth } from './health'
+import onboarding from './onboarding/index'
 import project from './project'
+import store from './store/index'
 import { p, r } from './trpc'
 
 import type { CreateAilyCoreRouterOptions } from './types'
 
 export { default as agent } from './agent'
-export { default as app } from './app'
 export { default as build } from './build'
+export { default as config } from './config/index'
 export { default as document } from './document'
 export * from './health'
 export { default as hardware } from './hardware'
+export { default as onboarding } from './onboarding/index'
 export { default as project } from './project'
+export { default as store } from './store/index'
 export * from './server'
 export * from './standalone'
 export * from './trpc'
@@ -23,11 +27,13 @@ export * from './types'
 
 export const router = (options: CreateAilyCoreRouterOptions) =>
 	r({
-		app,
 		agent,
+		config,
 		health: p.query(() => createAilyCoreServiceHealth(options)),
 		build,
 		document,
 		hardware,
-		project
+		onboarding,
+		project,
+		store
 	})

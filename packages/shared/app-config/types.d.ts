@@ -25,7 +25,6 @@ export type {
 	ThemeMode,
 	UpdateDownloadStrategyConfig
 } from './base'
-
 export type {
 	QuickSendItem,
 	SerialMonitorConfig,

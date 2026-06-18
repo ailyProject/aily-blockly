@@ -1,6 +1,6 @@
 import { resolveAgentSessionApi } from './config'
 
-import type { AgentSessionRequest } from '@ui/workspace/shared'
+import type { AgentSessionRequest } from '@shared'
 import type { AgentApi, AgentApiSendOptions, CreateAgentApiOptions } from './types'
 
 /**
