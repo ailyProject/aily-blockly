@@ -5,10 +5,9 @@ import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
 import { HlmTextareaImports } from 'spartan/textarea'
 
-import { injectAgentApi } from '@/agent-api'
-import { createAgentChatTransport } from '@/agent-api/chat-transport'
 import { AppShellComponent } from '@/layout/app-shell.component'
 import { agentRequestSeed } from '@/pages/agent/data'
+import { createAgentChatTransport, injectAgentApi } from '@/utils/chat'
 
 @Component({
 	selector: 'agent-page',

@@ -1,4 +1,4 @@
-import type { Core, LoadHomePreviewOptions } from './core.types'
+import type { Core, LoadHomePreviewOptions } from './core/types'
 
 /**
  * 聚合首页当前所需的 core.app / core.agent / core.hardware 调用。

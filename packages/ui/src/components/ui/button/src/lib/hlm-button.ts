@@ -3,7 +3,7 @@ import { BrnButton } from '@spartan-ng/brain/button'
 import { cva } from 'class-variance-authority'
 import { classes } from 'spartan/utils'
 
-import { injectBrnButtonConfig } from './hlm-button.token'
+import { injectBrnButtonConfig } from './hlm-button-token'
 
 import type { VariantProps } from 'class-variance-authority'
 import type { ClassValue } from 'clsx'

@@ -1,6 +1,6 @@
 import { hlm } from 'spartan/utils'
 
-import { HLM_CHECKBOX_BASE_CLASS } from './hlm-checkbox.constants'
+import { HLM_CHECKBOX_BASE_CLASS } from './hlm-checkbox-constants'
 
 import type { ClassValue } from 'clsx'
 

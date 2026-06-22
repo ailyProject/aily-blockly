@@ -1,4 +1,4 @@
-import type { DesktopBleBrowserApi, DesktopBleBrowserDevice } from './desktop.ble.types'
+import type { DesktopBleBrowserApi, DesktopBleBrowserDevice } from './types'
 
 const BLE_OTA_SERVICE_UUID = '00008018-0000-1000-8000-00805f9b34fb'
 const BLE_PREFERRED_DEVICE_STORAGE_KEY = 'aily.ble.preferredDeviceId'

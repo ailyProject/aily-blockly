@@ -4,7 +4,7 @@ import {
 	readDesktopPreferredBleDeviceId,
 	rememberDesktopBleDevice,
 	writeDesktopPreferredBleDeviceId
-} from './desktop.ble.shared'
+} from './shared'
 
 import type { BleDeviceItem } from 'shared'
 

@@ -448,6 +448,9 @@ Before starting `review`, confirm all of the following are true:
 - remaining `*.types.ts` files are intentional runtime-local boundaries under nested subsystems, not root-domain type fragmentation
 - active UI pages no longer rely on rejected `component.*.ts` / `page-actions.*.ts` helper naming for newly touched hotspots; helper logic should be converging toward page-local `utils/` layout
 - current `packages/ui/src/pages` helper naming debt for non-Angular `.ts` files has been cleared under the current audit
+- current `packages/ui/src` frontend helper naming debt for non-Angular `.ts` files has also been cleared under the current audit
+- future page splits should keep using `utils/` and directory-based helper groupings instead of reintroducing multi-dot page helper files
+- repo-wide re-scan of `packages/ui/src` after the latest cleanup still returns zero violating helper filenames
 - legacy walkthrough matrix has no hidden unknowns in the currently active user flows
 - `core` and `ui` builds pass on the current worktree
 - `.draft/legacy-gap-audit.md` and this file agree on the top remaining risks

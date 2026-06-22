@@ -1483,6 +1483,16 @@
     - `explorer.runtime.ts` / `preview.runtime.ts` -> `utils/{explorer,preview}.ts`
     - `explorer.types.ts` / `component.handlers.types.ts` 已并回根 `types.ts`
   - 截至当前批次，`packages/ui/src/pages` 下非 Angular 组件辅助 `.ts` 文件的多层点号命名债已清空
+  - 继续扩大到整个 `packages/ui/src` 后：
+    - `app.config.ts` -> `config.ts`
+    - `app.routes.ts` -> `routes.ts`
+    - `app.spec.ts` -> `app-spec.ts`
+    - `runtime/ble-upload.*` -> `runtime/ble-upload/*`
+    - `utils/core.types.ts` -> `utils/core/types.ts`
+    - `utils/desktop.*` -> `utils/desktop/*` 与 `utils/desktop/ble/*`
+    - 多个 `components/ui/*` 内部的 `*.token.ts` / `*.utils.ts` / `*.service.ts` / `*.types.ts` 也已改成无点号辅助命名
+  - 截至当前审计，`packages/ui/src` 下非 Angular 组件辅助 `.ts` 文件的多层点号命名债已清空
+  - 并已再次通过 repo 级扫描与 `pnpm --filter ui build` 复核，不是一次性偶然状态
   - `code-editor` 本轮补上轻量 lifecycle 对齐：
     - 已新增 `lifecycle.watch.ts`，按 5s 轮询 `core.project.getLifecycleStatus`
     - 当前会跟随 `projectPath` 变化自动重置签名，而不是只在首个项目上生效

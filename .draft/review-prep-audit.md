@@ -308,7 +308,14 @@ Latest source-level hotspot snapshot after excluding `dist`, `node_modules`, and
 Outstanding frontend page-helper naming debt after this change:
 
 - none in `packages/ui/src/pages` for non-Angular helper `.ts` files under the current rule set
-- `graph-editor`
+
+Repository-wide frontend helper naming debt after the latest batch:
+
+- none in `packages/ui/src` for non-Angular helper `.ts` files under the current rule set
+- remaining dotted files in `ui/src` are now limited to:
+  - Angular component convention files such as `*.component.ts`
+  - explicit test file `app-spec.ts`
+- verified again after the latest repo-wide sweep and `pnpm --filter ui build`
 
 ## Current Recommendation
 

@@ -1,10 +1,10 @@
 import { openProjectInEditor } from '@/runtime/project-routing'
 import { getCurrentProjectPath, setCurrentProjectEditorRoute, setCurrentProjectPath } from '@/runtime/project-session'
+import { getCore } from '@/utils/core'
 
-import { getCore } from './core'
-import { getDesktop } from './desktop.client'
-import { syncDesktopCoreBridge } from './desktop.core'
-import { consumeDesktopPendingProjectOpen } from './desktop.host'
+import { getDesktop } from './client'
+import { syncDesktopCoreBridge } from './core'
+import { consumeDesktopPendingProjectOpen } from './host'
 
 import type { Router as AngularRouter } from '@angular/router'
 

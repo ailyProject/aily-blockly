@@ -7,8 +7,8 @@ import {
 } from '@angular/core'
 import { provideRouter, Router } from '@angular/router'
 
-import { provideAgentApi } from './agent-api'
-import { routes } from './app.routes'
+import { routes } from './routes'
+import { provideAgentApi } from './utils/chat'
 import {
 	initializeDesktopCoreBridge,
 	initializeDesktopPendingProjectOpen,

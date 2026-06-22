@@ -10,15 +10,15 @@ import {
 	runInInjectionContext
 } from '@angular/core'
 
-import { toClassList } from './hlm.class'
+import { toClassList } from './hlm-class'
 import {
 	cleanupManager,
 	handleTransitionSuppression,
 	restoreManagerTransition,
 	setupGlobalObserver,
 	updateElement
-} from './hlm.classes.manager'
-import { ClassesOptions, elementClassManagers, nextSourceId, observedElements } from './hlm.classes.state'
+} from './hlm-classes-manager'
+import { ClassesOptions, elementClassManagers, nextSourceId, observedElements } from './hlm-classes-state'
 
 import type { ClassValue } from 'clsx'
 

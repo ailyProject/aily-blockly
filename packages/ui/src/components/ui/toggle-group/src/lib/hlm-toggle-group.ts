@@ -4,7 +4,7 @@ import { BrnToggleGroup } from '@spartan-ng/brain/toggle-group'
 import { ToggleVariants } from 'spartan/toggle'
 import { classes } from 'spartan/utils'
 
-import { provideHlmToggleGroup } from './hlm-toggle-group.token'
+import { provideHlmToggleGroup } from './hlm-toggle-group-token'
 
 @Directive({
 	selector: '[hlmToggleGroup],hlm-toggle-group',

@@ -1,6 +1,6 @@
 import { getAuthorizedBleOtaDevice } from '@/utils/desktop'
 
-import type { BleCharacteristic, BleDevice } from './ble-upload.types'
+import type { BleCharacteristic, BleDevice } from './types'
 
 export const BLE_OTA_SERVICE_UUID = '00008018-0000-1000-8000-00805f9b34fb'
 export const BLE_OTA_RECV_FW_CHAR_UUID = '00008020-0000-1000-8000-00805f9b34fb'

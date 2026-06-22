@@ -1,4 +1,4 @@
-import { BLE_PACKET_SIZE_CANDIDATES, openBleOtaSession, writeCharacteristic } from './ble-upload.shared'
+import { BLE_PACKET_SIZE_CANDIDATES, openBleOtaSession, writeCharacteristic } from './shared'
 
 /**
  * 探测当前 BLE 设备支持的最大 packet size。

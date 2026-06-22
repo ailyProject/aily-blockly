@@ -1,7 +1,8 @@
-import { assignCoreWindowConfig } from './core'
-import { getDesktop } from './desktop.client'
+import { assignCoreWindowConfig } from '@/utils/core'
 
-import type { Desktop } from './desktop.types'
+import { getDesktop } from './client'
+
+import type { Desktop } from './types'
 
 /**
  * 同步 desktop 侧 core 地址到浏览器全局配置。

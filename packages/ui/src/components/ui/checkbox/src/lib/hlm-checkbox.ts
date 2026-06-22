@@ -16,8 +16,8 @@ import { BrnCheckbox } from '@spartan-ng/brain/checkbox'
 import { BrnFieldControlDescribedBy } from '@spartan-ng/brain/field'
 import { HlmIcon } from 'spartan/icon'
 
-import { createHlmCheckboxValueAccessor, HLM_CHECKBOX_HOST, HLM_CHECKBOX_TEMPLATE } from './hlm-checkbox.constants'
-import { resolveHlmCheckboxClass } from './hlm-checkbox.utils'
+import { createHlmCheckboxValueAccessor, HLM_CHECKBOX_HOST, HLM_CHECKBOX_TEMPLATE } from './hlm-checkbox-constants'
+import { resolveHlmCheckboxClass } from './hlm-checkbox-utils'
 
 import type { BooleanInput } from '@angular/cdk/coercion'
 import type { ControlValueAccessor } from '@angular/forms'

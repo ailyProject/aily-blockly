@@ -1,8 +1,8 @@
-import { waitForBleCommandAck, waitForBleSectorAck } from './ble-upload.acks'
-import { classifyBleUploadError } from './ble-upload.errors'
-import { decodeBase64, openBleOtaSession, writeCharacteristic } from './ble-upload.shared'
+import { waitForBleCommandAck, waitForBleSectorAck } from './acks'
+import { classifyBleUploadError } from './errors'
+import { decodeBase64, openBleOtaSession, writeCharacteristic } from './shared'
 
-import type { BleOtaExecutionProgress, BleOtaExecutionResult } from './ble-upload.types'
+import type { BleOtaExecutionProgress, BleOtaExecutionResult } from './types'
 
 /**
  * 执行 BLE OTA 上传。

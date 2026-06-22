@@ -6,7 +6,7 @@ import {
 	isValidFrame,
 	readUint16LE,
 	SECTOR_ACK_TIMEOUT_MS
-} from './ble-upload.shared'
+} from './shared'
 
 const waitForCharacteristicMatch = (
 	target: { addEventListener: Function; removeEventListener: Function },

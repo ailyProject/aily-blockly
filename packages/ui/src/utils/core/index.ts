@@ -2,16 +2,10 @@ import { createTRPCClient, httpBatchLink } from '@trpc/client'
 import { createAilyCoreServiceAddress } from 'shared'
 
 import type { Router } from '@core'
-import type { Core, CoreWindowConfig, CreateCoreOptions } from './core.types'
+import type { Core, CoreWindowConfig, CreateCoreOptions } from './types'
 
-export type {
-	Core,
-	CoreWindowConfig,
-	CreateCoreOptions,
-	LoadHomePreviewContext,
-	LoadHomePreviewOptions
-} from './core.types'
-export { loadHomePreview } from './home-preview'
+export type { Core, CoreWindowConfig, CreateCoreOptions, LoadHomePreviewContext, LoadHomePreviewOptions } from './types'
+export { loadHomePreview } from '../home-preview'
 let coreSingleton: Core | null = null
 
 /**

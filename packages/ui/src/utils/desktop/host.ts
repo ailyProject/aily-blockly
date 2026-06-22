@@ -1,4 +1,4 @@
-import type { Desktop } from './desktop.types'
+import type { Desktop } from './types'
 
 /**
  * 从 desktop 宿主读取运行时信息。

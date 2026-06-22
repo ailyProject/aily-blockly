@@ -1,13 +1,13 @@
 import { isPlatformBrowser } from '@angular/common'
 
-import { hlm, toClassList } from './hlm.class'
+import { hlm, toClassList } from './hlm-class'
 import {
 	ElementClassManager,
 	elementClassManagers,
 	globalObserver,
 	observedElements,
 	setGlobalObserver
-} from './hlm.classes.state'
+} from './hlm-classes-state'
 
 const restoreTransitionSuppression = (manager: ElementClassManager): void => {
 	const prev = manager.previousTransition

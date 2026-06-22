@@ -12,7 +12,7 @@ import { HlmDropdownMenuImports } from 'spartan/dropdown-menu'
 import { HlmInputImports } from 'spartan/input'
 import { HlmTableImports } from 'spartan/table'
 
-import { getColumnLabel, resolveUpdater } from './data-table.utils'
+import { getColumnLabel, resolveUpdater } from './data-table-utils'
 
 import type {
 	ColumnFiltersState,
@@ -21,7 +21,7 @@ import type {
 	SortingState,
 	VisibilityState
 } from '@tanstack/angular-table'
-import type { DataTableColumn } from './data-table.types'
+import type { DataTableColumn } from './data-table-types'
 
 @Component({
 	selector: 'ui-data-table',

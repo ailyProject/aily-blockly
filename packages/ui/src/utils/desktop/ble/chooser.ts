@@ -4,10 +4,10 @@ import {
 	readDesktopPreferredBleDeviceId,
 	rememberDesktopBleDevice,
 	writeDesktopPreferredBleDeviceId
-} from './desktop.ble.shared'
+} from './shared'
 
 import type { BleDeviceItem } from 'shared'
-import type { Desktop } from './desktop'
+import type { Desktop } from '../types'
 
 /**
  * 判断当前运行时是否存在 desktop BLE chooser bridge。

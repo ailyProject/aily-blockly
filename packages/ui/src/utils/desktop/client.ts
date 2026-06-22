@@ -2,7 +2,7 @@ import { createTRPCClient } from '@trpc/client'
 import { ipcLink } from 'erpc/renderer'
 
 import type { Router } from '@desktop'
-import type { CreateDesktopOptions, Desktop } from './desktop.types'
+import type { CreateDesktopOptions, Desktop } from './types'
 
 let desktopSingleton: Desktop | null | undefined
 
