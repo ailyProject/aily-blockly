@@ -11,14 +11,10 @@ export * from './types'
 export type { Router } from './rpc/types'
 
 /**
- * 仅当当前包被 Electron 直接作为主进程入口执行时，自动启动应用。
+ * 当当前 bundle 运行在 Electron 主进程里时，自动启动桌面应用。
  */
 const shouldAutoLaunchDesktopApp = () =>
-	typeof process !== 'undefined' &&
-	Boolean(process.versions?.electron) &&
-	typeof require !== 'undefined' &&
-	typeof module !== 'undefined' &&
-	require.main === module
+	typeof process !== 'undefined' && Boolean(process.versions?.electron) && process.type !== 'renderer'
 
 if (shouldAutoLaunchDesktopApp()) {
 	void launchDesktopApp().catch(error => {

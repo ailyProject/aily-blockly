@@ -282,6 +282,7 @@ Status markers:
   - Electron 主进程已补主窗口启动链，默认开发态加载 `http://127.0.0.1:4200`
   - preload 入口已改为自动暴露 ERPC bridge
   - 根脚本已新增 `pnpm run start:electron`
+  - `desktop#dev` 已切到 Electron dev runner，根 `pnpm run dev` 会尝试在 watch 构建完成后拉起 Electron
 - `done` thin ERPC bridge
   - host / terminal / BLE / core status
 - `partial` project-open desktop integration

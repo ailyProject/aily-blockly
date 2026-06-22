@@ -23,7 +23,7 @@ export default deepmerge(rslib, {
 	],
 	output: {
 		filename: {
-			js: '[name]/index.js'
+			js: '[name]/index.cjs'
 		}
 	}
 } as Partial<RslibConfig>)

@@ -7,7 +7,7 @@ const DEFAULT_UI_DEV_SERVER_URL = 'http://127.0.0.1:4200'
 /**
  * 解析当前 desktop 主进程使用的 preload 文件路径。
  */
-export const resolveDesktopPreloadPath = () => path.resolve(__dirname, '../preload/index.js')
+export const resolveDesktopPreloadPath = () => path.resolve(__dirname, '../preload/index.cjs')
 
 /**
  * 解析当前桌面壳在生产态回退使用的 UI `index.html` 路径。

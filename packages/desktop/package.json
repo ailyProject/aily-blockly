@@ -1,25 +1,29 @@
 {
 	"name": "desktop",
+	"productName": "Aily Blockly",
 	"version": "0.0.0",
 	"description": "Thin Electron shell for Aily Blockly",
 	"type": "module",
-	"main": "dist/main/index.js",
+	"main": "dist/main/index.cjs",
 	"exports": {
 		".": {
 			"types": "./dist/src/index.d.ts",
-			"default": "./dist/main/index.js"
+			"default": "./dist/main/index.cjs"
 		},
 		"./preload": {
 			"types": "./dist/src/preload/index.d.ts",
-			"default": "./dist/preload/index.js"
+			"default": "./dist/preload/index.cjs"
 		}
 	},
 	"files": [
 		"dist"
 	],
 	"scripts": {
-		"dev": "rslib build --watch",
-		"start": "electron dist/main/index.js",
+		"dev": "node ./scripts/dev.mjs",
+		"main:dev": "rslib build --watch",
+		"watch": "node ./scripts/dev-runner.mjs",
+		"start": "node ./scripts/start-electron.mjs",
+		"shell": "electron .",
 		"build": "rslib build",
 		"pack:mac": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform mac",
 		"pack:win": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform win"
@@ -36,7 +40,9 @@
 	"devDependencies": {
 		"@rslib/core": "catalog:",
 		"@types/node": "catalog:",
+		"@types/watchpack": "catalog:",
 		"deepmerge-ts": "catalog:",
-		"typescript": "catalog:"
+		"typescript": "catalog:",
+		"watchpack": "catalog:"
 	}
 }
