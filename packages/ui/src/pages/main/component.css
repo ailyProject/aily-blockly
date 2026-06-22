@@ -29,6 +29,14 @@
 	border-bottom: 2px solid var(--aily-border-primary);
 }
 
+.header-box.darwin {
+	padding-left: 80px;
+}
+
+.header-box.darwin .win-btns {
+	display: none;
+}
+
 .menu {
 	width: 38px;
 	height: 38px;
@@ -87,6 +95,7 @@
 	text-align: center;
 	color: var(--aily-text-tertiary);
 	pointer-events: none;
+	text-transform: lowercase;
 }
 
 .toolbox {

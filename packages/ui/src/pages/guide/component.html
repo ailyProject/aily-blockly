@@ -2,25 +2,41 @@
 	<div class="left-box">
 		<div class="stitle">
 			<img class="logo" [src]="logoSrc" alt="Aily Blockly" draggable="false" />
-			<div class="version">desktop preview</div>
+			<div class="version">ver 0.9.60-cn</div>
 		</div>
 
-		<div class="title">Start</div>
+		<div class="title">开始</div>
 
-		<div class="menu-box">
-			@for (item of quickActions; track item.id) {
-			<button class="menu-btn" type="button" (click)="onQuickAction(item.id)">
+		<div class="menu-box action-box">
+			<button class="menu-btn" type="button" (click)="onQuickAction('project-new')">
 				<span class="icon">
-					<ng-icon [name]="item.icon"></ng-icon>
+					<ng-icon name="lucideBlocks"></ng-icon>
 				</span>
-				<span class="text">{{ item.label }}</span>
+				<span class="text">新建项目</span>
 			</button>
-			}
+			<button class="menu-btn" type="button" (click)="onQuickAction('project-open')">
+				<span class="icon">
+					<ng-icon name="lucideFolderOpen"></ng-icon>
+				</span>
+				<span class="text">打开项目</span>
+			</button>
+			<button class="menu-btn" type="button" (click)="onQuickAction('playground-open')">
+				<span class="icon">
+					<ng-icon name="lucideCpu"></ng-icon>
+				</span>
+				<span class="text">项目广场</span>
+			</button>
+			<button class="menu-btn" type="button" (click)="onQuickAction('tool-open')">
+				<span class="icon">
+					<ng-icon name="lucideBot"></ng-icon>
+				</span>
+				<span class="text">AI助手</span>
+			</button>
 		</div>
 
 		<div class="recent-box">
+			<div class="title">最近</div>
 			@if (recentProjects().length > 0) {
-			<div class="title">Recently</div>
 			<div class="menu-box">
 				@for (project of recentProjects(); track project.path) {
 				<button class="project menu-btn" type="button" (click)="openProjectByPath(project.path)">
@@ -40,10 +56,10 @@
 		<button class="item sensecraft-item" type="button" (click)="openUrl('https://sensecraft.seeed.cc/ai/application')">
 			<div class="item-title">
 				<img [src]="sensecraftImg" alt="SenseCraft" />
-				<span>AI App Center</span>
+				<span>AI应用中心</span>
 			</div>
 			<div class="desc-scroll">
-				<span>Explore AI hardware application workflows and deployment presets.</span>
+				<span>点击前往探索AI硬件与边缘计算应用</span>
 			</div>
 			<div class="arrow">
 				<img src="imgs/chevron-right.svg" alt="" />
@@ -51,25 +67,35 @@
 		</button>
 
 		<div class="item news-item">
-			<div class="item-title">News</div>
-			<iframe [src]="guidePageIframeSrc" frameborder="0" title="Aily Blockly News"></iframe>
+			<div class="item-title">动态</div>
+			<div class="news-list">
+				@for (post of newsPosts(); track post.slug) {
+				<a class="news-item-row" [href]="post.url" target="_blank" rel="noreferrer">
+					<span class="tag"><ng-icon name="lucideMegaphone"></ng-icon></span>
+					<span class="news-title">{{ post.title }}</span>
+					<span class="news-date">{{ post.date }}</span>
+				</a>
+				} @empty {
+				<div class="news-state">暂时无法加载博客内容，请稍后再试。</div>
+				}
+			</div>
 		</div>
 
 		<div class="item group-item">
-			<div class="item-title">User Group</div>
+			<div class="item-title">用户社区</div>
 			<div class="desc-scroll">
-				<span>{{ isCnRegion() ? 'Join the community channels for support and updates.' : 'Join GitHub and Discord for support and updates.' }}</span>
+				<span>{{ isCnRegion() ? '加入社区，与其他用户交流' : 'Join GitHub and Discord for support and updates.' }}</span>
 			</div>
 			<div class="group-btn">
-				<button type="button" (click)="openUrl('https://github.com/orgs/ailyProject/discussions')">GitHub</button>
-				<button type="button" (click)="openUrl('https://discord.gg/ddMbGVmpQ8')">Discord</button>
+				<button type="button" (click)="openUrl('https://github.com/orgs/ailyProject/discussions')">微</button>
+				<button type="button" (click)="openUrl('https://discord.gg/ddMbGVmpQ8')">Q</button>
 			</div>
 		</div>
 
 		<div class="item sponsors-item">
-			<div class="item-title">Sponsors</div>
+			<div class="item-title">项目赞助者</div>
 			<div class="desc-scroll">
-				<span>Hardware partners and ecosystem contributors.</span>
+				<span>本项目得到了以下企业/个人的赞助</span>
 			</div>
 			@if (sponsors().length > 0) {
 			<div class="sponsor-carousel" [class.is-static]="sponsorPages().length <= 1">

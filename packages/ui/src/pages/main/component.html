@@ -1,15 +1,17 @@
 <div class="main-window-box">
-	<header class="header-box">
+	<header class="header-box" [class.darwin]="isMac">
 		<div class="menu no-drag">
 			<button class="btn" type="button" (click)="navigateToGuide()" title="Menu">
 				<ng-icon name="lucideMenu"></ng-icon>
 			</button>
 		</div>
 
+		@if (!isGuideRoute) {
 		<button class="board no-drag" type="button" (click)="navigateToProjectOpen()">
 			workspace (-)
 			<span class="down"><ng-icon name="lucideChevronDown"></ng-icon></span>
 		</button>
+		}
 
 		<div class="null-box drag" (dblclick)="toggleWindowMaximize()"></div>
 

@@ -24,6 +24,13 @@ interface GuideSponsorItem {
 	imgLight?: string
 }
 
+interface GuideNewsItem {
+	slug: string
+	title: string
+	date: string
+	url: string
+}
+
 @Component({
 	selector: 'guide-page',
 	imports: [...APP_ICON_IMPORTS],
@@ -41,16 +48,11 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	private readonly sponsorPauseMs = 3000
 	private readonly sponsorTransitionMs = 500
 
-	protected readonly quickActions: Array<GuideActionItem> = [
-		{ id: 'project-new', label: 'Create Project', icon: 'lucideBlocks' },
-		{ id: 'project-open', label: 'Open Project', icon: 'lucideFolderOpen' },
-		{ id: 'playground-open', label: 'Project Hub', icon: 'lucideCpu' },
-		{ id: 'tool-open', label: 'AI Assistant', icon: 'lucideBot' }
-	]
 	protected readonly recentProjects = signal<Array<GuideRecentProject>>([])
-	protected readonly language = signal('en_US')
+	protected readonly language = signal('zh_CN')
 	protected readonly onboardingCompleted = signal(false)
 	protected readonly runtimeInfo = signal<DesktopHostRuntimeInfo | null>(null)
+	protected readonly newsPosts = signal<Array<GuideNewsItem>>([])
 	protected readonly sponsors = signal<Array<GuideSponsorItem>>([])
 	protected readonly sponsorPages = signal<Array<Array<GuideSponsorItem>>>([])
 	protected readonly sponsorRenderPages = signal<Array<Array<GuideSponsorItem>>>([])
@@ -72,22 +74,25 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	protected readonly isCnRegion = () => this.language().toLowerCase().startsWith('zh')
 
 	async ngOnInit() {
-		const runtimeInfoPromise = this.desktop
-			? loadDesktopHostRuntimeInfo(this.desktop).catch(() => null)
-			: Promise.resolve(null)
-		const [configSummary, onboarding, runtimeInfo] = await Promise.all([
-			this.core.config.get.query({ fallbackLanguage: 'en_US' }),
-			this.core.onboarding.getOnboarding.query({}),
-			runtimeInfoPromise
-		])
+		const runtimeInfo = this.desktop ? await loadDesktopHostRuntimeInfo(this.desktop).catch(() => null) : null
+		this.runtimeInfo.set(runtimeInfo)
+
+		const configSummary = await this.core.config.get.query({ fallbackLanguage: 'zh_CN' }).catch(() => ({
+			selectedLanguage: 'zh_CN'
+		}))
+		const onboarding = await this.core.onboarding.getOnboarding.query({}).catch(() => ({
+			onboardingCompleted: false
+		}))
 		const recentProjects = runtimeInfo?.appDataPath
 			? await this.core.project.getStoredRecentProjects.query({ appDataPath: runtimeInfo.appDataPath }).catch(() => [])
 			: await this.core.project.getRecentProjects.query({}).catch(() => [])
+		const nextRecentProjects =
+			recentProjects.length > 0 ? recentProjects : await this.loadLegacyRecentProjectsFallback(runtimeInfo)
 
 		this.language.set(configSummary.selectedLanguage)
-		this.recentProjects.set(recentProjects)
+		this.recentProjects.set(nextRecentProjects)
 		this.onboardingCompleted.set(onboarding.onboardingCompleted)
-		this.runtimeInfo.set(runtimeInfo)
+		await this.loadNewsPosts()
 		await this.loadSponsors()
 	}
 
@@ -157,6 +162,61 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 
 	protected openUrl(url: string) {
 		window.open(url, '_blank', 'noopener,noreferrer')
+	}
+
+	private async loadLegacyRecentProjectsFallback(
+		runtimeInfo: DesktopHostRuntimeInfo | null
+	): Promise<Array<GuideRecentProject>> {
+		if (!runtimeInfo?.documentsPath) return []
+
+		const userHome = runtimeInfo.documentsPath.replace(/\/Documents$/, '')
+		const legacyAppDataPath = `${userHome}/Library/aily-project`
+		return this.core.project.getStoredRecentProjects.query({ appDataPath: legacyAppDataPath }).catch(() => [])
+	}
+
+	private async loadNewsPosts() {
+		try {
+			const blogSupabaseUrl = 'https://tzhextxhguabwgfonuau.supabase.co'
+			const blogSupabaseKey = 'sb_publishable_zVE3BAH9HKfscdtPQjEN0g_MHyoJz77'
+			const tableName = this.isCnRegion() ? 'blog_posts' : 'blog_posts_en'
+			const blogBaseUrl = this.isCnRegion() ? 'https://yiyu.pro' : 'https://aily.pro'
+			const dateLocale = this.isCnRegion() ? 'zh-CN' : 'en-US'
+			const url = new URL(`${blogSupabaseUrl}/rest/v1/${tableName}`)
+			url.searchParams.set('select', 'slug,title,published_at,created_at')
+			url.searchParams.set('is_published', 'eq.true')
+			url.searchParams.set('order', 'published_at.desc')
+			url.searchParams.set('limit', '10')
+
+			const response = await fetch(url.toString(), {
+				headers: {
+					apikey: blogSupabaseKey,
+					Authorization: `Bearer ${blogSupabaseKey}`
+				}
+			})
+			if (!response.ok) return
+
+			const posts = (await response.json()) as Array<{
+				slug: string
+				title?: string
+				published_at?: string
+				created_at?: string
+			}>
+
+			this.newsPosts.set(
+				posts.map(post => ({
+					slug: post.slug,
+					title: post.title || post.slug,
+					date: new Intl.DateTimeFormat(dateLocale, {
+						year: 'numeric',
+						month: 'numeric',
+						day: 'numeric'
+					}).format(new Date(post.published_at || post.created_at || Date.now())),
+					url: `${blogBaseUrl}/blog/${encodeURIComponent(post.slug)}`
+				}))
+			)
+		} catch {
+			this.newsPosts.set([])
+		}
 	}
 
 	private async loadSponsors() {

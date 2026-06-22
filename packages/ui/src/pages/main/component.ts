@@ -8,11 +8,12 @@ import {
 	closeDesktopWindow,
 	getDesktop,
 	getDesktopWindowState,
+	loadDesktopHostRuntimeInfo,
 	minimizeDesktopWindow,
 	toggleDesktopWindowMaximize
 } from '@/utils/desktop'
 
-import type { DesktopWindowStateResult } from '@desktop'
+import type { DesktopHostRuntimeInfo, DesktopWindowStateResult } from '@desktop'
 
 @Component({
 	selector: 'main-page',
@@ -27,17 +28,29 @@ export class MainPageComponent implements OnInit {
 
 	protected readonly isWindowMaximized = signal(false)
 	protected readonly themeMode = signal(getThemeMode())
+	protected readonly runtimeInfo = signal<DesktopHostRuntimeInfo | null>(null)
 
 	async ngOnInit() {
+		if (this.desktop) {
+			this.runtimeInfo.set(await loadDesktopHostRuntimeInfo(this.desktop).catch(() => null))
+		}
 		await this.refreshWindowState()
 	}
 
 	protected get currentProjectLabel(): string {
 		const currentProjectPath = getCurrentProjectPath().trim()
-		if (!currentProjectPath) return ''
+		if (!currentProjectPath) return 'aily blockly'
 
 		const segments = currentProjectPath.split(/[\\/]/).filter(Boolean)
 		return segments.at(-1) ?? ''
+	}
+
+	protected get isMac(): boolean {
+		return this.runtimeInfo()?.platform === 'macos' || navigator.platform.toLowerCase().includes('mac')
+	}
+
+	protected get isGuideRoute(): boolean {
+		return this.router.url.startsWith('/main/guide') || this.router.url === '/main'
 	}
 
 	protected async navigateToGuide() {

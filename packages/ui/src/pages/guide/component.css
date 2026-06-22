@@ -4,6 +4,7 @@
 	background: var(--aily-bg-primary);
 	display: flex;
 	justify-content: flex-start;
+	align-items: center;
 	padding: 10px 0;
 	color: var(--aily-text-primary);
 }
@@ -78,6 +79,11 @@
 
 .menu-btn:hover .text {
 	color: var(--aily-color-accent);
+}
+
+.action-box .menu-btn .icon,
+.action-box .menu-btn .text {
+	color: #1890ff;
 }
 
 .icon {
@@ -212,7 +218,9 @@ button.item {
 .arrow img {
 	width: 12px;
 	height: 12px;
-	opacity: 0.55;
+	opacity: 0.85;
+	filter: brightness(0) saturate(100%) invert(72%) sepia(9%) saturate(6%) hue-rotate(318deg) brightness(95%)
+		contrast(91%);
 }
 
 button.item:hover .desc-scroll span {
@@ -238,9 +246,71 @@ button.item:hover .arrow img {
 	padding: 5px 10px;
 }
 
-.news-item iframe {
+.news-list {
+	position: relative;
+	padding: 0 10px 10px;
+	color: #fff;
 	height: 100%;
-	background: transparent;
+	user-select: none;
+	overflow-y: auto;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.news-list::-webkit-scrollbar {
+	display: none;
+}
+
+.news-item-row {
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	min-height: 28px;
+	margin-bottom: 1px;
+	color: #888888;
+	transition: all 0.2s;
+	text-decoration: none;
+}
+
+.news-item-row:hover {
+	color: #ffffff;
+}
+
+.tag {
+	margin-right: 6px;
+	width: 20px;
+	height: 1.4em;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.tag ng-icon {
+	width: 14px;
+	height: 14px;
+}
+
+.news-title {
+	flex: 1;
+	margin-right: 10px;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.news-date {
+	color: #666;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.news-state {
+	padding-top: 6px;
+	color: #666;
+	font-size: 14px;
+	line-height: 1.6;
 }
 
 .group-item {
@@ -259,17 +329,19 @@ button.item:hover .arrow img {
 
 .group-btn button {
 	height: 28px;
-	padding: 0 10px;
-	border-radius: 4px;
-	border: 1px solid var(--aily-border-secondary);
-	background: var(--aily-bg-secondary);
-	color: var(--aily-text-primary);
+	width: 28px;
+	padding: 0;
+	border-radius: 999px;
+	border: 0;
+	background: transparent;
+	color: var(--aily-icon-color);
 	cursor: pointer;
+	font-size: 22px;
+	line-height: 28px;
 }
 
 .group-btn button:hover {
-	background: var(--aily-bg-hover);
-	color: #ffffff;
+	color: var(--aily-text-primary);
 }
 
 .sponsor-carousel {
