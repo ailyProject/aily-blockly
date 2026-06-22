@@ -1,7 +1,7 @@
 import { subscribeProjectMutationEvent } from '@/runtime/project-events'
 
 import { startCodeEditorBleDiscovery } from '../ble/actions'
-import { refreshCodeEditorPlan } from '../build/actions'
+import { markPendingCodeEditorExternalRefresh, refreshCodeEditorPlan } from '../refresh'
 import { initializeCodeEditorDesktopRuntime, initializeCodeEditorPage } from '../session'
 import { startCodeEditorLifecycleWatch } from './watch'
 
@@ -51,8 +51,10 @@ export const initializeCodeEditorLifecycle = async (input: {
 		if (detail.projectPath !== input.signals.projectPath().trim()) return
 
 		if (input.signals.buildBusy() || input.signals.uploadBusy()) {
-			input.signals.projectReloadMessage.set(
-				`${detail.type === 'cloud-sync' ? 'Project cloud binding' : `Library ${detail.packageName}`} changed while ${input.signals.buildBusy() ? 'build' : 'upload'} is running. Refresh project state when the current action finishes.`
+			markPendingCodeEditorExternalRefresh(
+				input.signals,
+				detail.type === 'cloud-sync' ? 'Project cloud binding' : `Library ${detail.packageName}`,
+				input.signals.buildBusy() ? 'build' : 'upload'
 			)
 			return
 		}
@@ -60,12 +62,6 @@ export const initializeCodeEditorLifecycle = async (input: {
 		input.signals.projectReloadBusy.set(true)
 		input.signals.projectReloadMessage.set(null)
 		try {
-			await initializeCodeEditorPage({
-				core: input.core,
-				desktop: input.desktop,
-				initialProjectPath: input.signals.projectPath().trim(),
-				signals: input.signals
-			})
 			await refreshCodeEditorPlan({
 				core: input.core,
 				signals: input.signals

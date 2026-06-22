@@ -15,7 +15,7 @@ import {
 	runCodeEditorBleUploadAction,
 	selectCodeEditorBleDevice
 } from './utils/ble/actions'
-import { refreshCodeEditorPlan, runCodeEditorBuildAction, runCodeEditorUploadAction } from './utils/build/actions'
+import { runCodeEditorBuildAction, runCodeEditorUploadAction } from './utils/build/actions'
 import { disposeCodeEditorLifecycle, initializeCodeEditorLifecycle } from './utils/lifecycle'
 import {
 	chooseCodeEditorProject,
@@ -25,6 +25,7 @@ import {
 	updateCodeEditorSerialPortValue,
 	updateCodeEditorSourceCode
 } from './utils/project'
+import { refreshCodeEditorPlan } from './utils/refresh'
 import { createCodeEditorSignals } from './utils/signals'
 
 import type { DesktopHostRuntimeInfo } from '@desktop'
@@ -78,6 +79,7 @@ export class CodeEditorPageComponent implements OnInit, OnDestroy {
 	protected readonly buildError = signal<string | null>(null)
 	protected readonly projectReloadMessage = signal<string | null>(null)
 	protected readonly projectReloadBusy = signal(false)
+	protected readonly pendingExternalRefreshReason = signal<string | null>(null)
 	protected readonly buildBusy = signal(false)
 	protected readonly uploadBusy = signal(false)
 
@@ -99,6 +101,7 @@ export class CodeEditorPageComponent implements OnInit, OnDestroy {
 		buildError: this.buildError,
 		projectReloadMessage: this.projectReloadMessage,
 		projectReloadBusy: this.projectReloadBusy,
+		pendingExternalRefreshReason: this.pendingExternalRefreshReason,
 		buildBusy: this.buildBusy,
 		uploadBusy: this.uploadBusy
 	})
@@ -133,7 +136,7 @@ export class CodeEditorPageComponent implements OnInit, OnDestroy {
 		selectBleDevice: () => selectCodeEditorBleDevice({ desktop: this.desktop, signals: this.signals }),
 		reconnectBleDevice: () => selectCodeEditorBleDevice({ desktop: this.desktop, signals: this.signals }),
 		prepareBleUpload: () => prepareCodeEditorBleUpload({ core: this.core, signals: this.signals }),
-		runBleUpload: () => runCodeEditorBleUploadAction({ signals: this.signals }),
+		runBleUpload: () => runCodeEditorBleUploadAction({ core: this.core, signals: this.signals }),
 		selectVisibleBleDevice: (device: CodeEditorBleDeviceListItem) => this.bleDevice.set(device)
 	}
 }

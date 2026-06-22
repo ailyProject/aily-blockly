@@ -4,7 +4,7 @@ import {
 	setCurrentProjectSourceCode
 } from '@/runtime/project-session'
 
-import { refreshCodeEditorPlan, refreshCodeEditorUploadPlan } from './build/actions'
+import { refreshCodeEditorPlan, refreshCodeEditorUploadPlan } from './refresh'
 import { syncCodeEditorProjectSource } from './session'
 
 import type { Core } from '@/utils/core'

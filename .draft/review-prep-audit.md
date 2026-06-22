@@ -175,6 +175,8 @@ Meaning:
 
 Recently found and fixed during review-prep:
 
+- `blockly-editor` now refreshes missing-library / ABI / page-summary state on external library/cloud mutations even while the current workspace draft is dirty, instead of only leaving the page in a stale prompted state
+- `code-editor` now queues external library/cloud mutations that arrive during build/upload/BLE actions and auto-refreshes plans afterwards, while non-busy refreshes no longer need to reinitialize and risk disturbing the current source draft
 - `blockly-editor` no longer dispatches self-originated library-mutation events during in-page missing-library restore, avoiding redundant concurrent reloads
 - `desktop.host.focusProcess` Windows branch now inlines the validated pid into the PowerShell command instead of relying on fragile trailing script arguments
 - `desktop.host.focusProcess` Linux `xdotool` fallback now performs an actual `search` followed by `windowactivate`, rather than incorrectly treating `windowactivate` as a search pattern
@@ -256,8 +258,9 @@ Latest source-level hotspot snapshot after excluding `dist`, `node_modules`, and
 - `packages/ui/src/pages/lib-manager/component.html` has already been reduced by splitting declared/missing/catalog/registry/activity rendering into page-local section components
 - `packages/ui/src/pages/cloud-space/component.html` has already been reduced by moving controls/status/binding cards into `components/overview-panel.*`
 - `packages/ui/src/pages/cloud-space/component.ts` has already been reduced further by moving refresh/session-binding orchestration into `component.runtime.ts`
-- `packages/ui/src/pages/lib-manager/component.ts` has already been reduced further by moving local signals/derived views into `component.state.ts`
-- `packages/ui/src/pages/lib-manager/component.interactions.ts` is now only a barrel; install/refresh/registry/scope flows live in dedicated page-local interaction modules
+- `packages/ui/src/pages/lib-manager/component.ts` has already been reduced further by moving local signals/derived views into `pages/lib-manager/utils/state.ts`
+- `packages/ui/src/pages/lib-manager/component.ts` has since been reduced further to ~120 lines by moving template-facing handler wiring into `pages/lib-manager/utils/handlers.ts`
+- `packages/ui/src/pages/terminal/component.ts` has since been reduced to the 180-line limit by moving xterm effect wiring and clipboard/BLE helpers into page-local `utils/`
 - `packages/ui/src/pages/project-open` has also been migrated away from page-local `component.actions.*` helper naming:
   - helper logic now lives under `pages/project-open/utils/*`
 - `packages/ui/src/pages/lib-manager` has already been migrated away from page-local `component.*.ts` helper naming:

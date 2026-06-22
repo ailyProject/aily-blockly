@@ -22,6 +22,7 @@ export const createCodeEditorSignals = (input: CodeEditorSignals): CodeEditorSig
 	buildError: input.buildError,
 	projectReloadMessage: input.projectReloadMessage,
 	projectReloadBusy: input.projectReloadBusy,
+	pendingExternalRefreshReason: input.pendingExternalRefreshReason,
 	buildBusy: input.buildBusy,
 	uploadBusy: input.uploadBusy
 })

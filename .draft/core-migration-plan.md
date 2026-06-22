@@ -16,6 +16,7 @@
   - Electron main / preload / capability bridge
   - 与前端通过 `erpc` 交互
   - BLE 仅保留 chooser / permission / device-list bridge，不暴露 `window.ble`
+  - 其余 BLE 协议规划、上传准备与切片逻辑继续收敛在 `core`，不把 Electron `BrowserWindow/session/WebContents` 相关桥接误迁到 `core`
 - `packages/shared`
   - 前后端共用类型、常量、协议载荷
 - `core <-> ui`
@@ -258,6 +259,8 @@
   - `serial-monitor` 已支持 connect / disconnect / send / drain / quick send / DTR-RTS signal
   - `model-deploy` 顶层页已改为组合消费 `desktop.host.getRuntimeInfo` 与 `core.hardware.*`
   - FFS 的核心规则已开始从 UI/legacy service 抽往 `core.ffs.*`
+  - `blockly-editor` 在 dirty workspace 下已支持“保留当前草稿，同时刷新库状态 / ABI / 页面摘要”等非破坏性状态
+  - `code-editor` 外部 library/cloud 变更已改为“运行中排队、结束后自动刷新计划；空闲时就地刷新且不重置源码草稿”
   - `ffs-manager` 已开始消费 `core.ffs.resolveBaud`
   - `ffs-manager` 已开始消费 `core.ffs.previewBlankMount`
   - `ffs-manager` 已支持加载镜像、浏览目录、预览文本文件、上传文件写回镜像、格式化镜像、删除条目、导出镜像

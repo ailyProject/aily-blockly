@@ -35,6 +35,7 @@
     - lifecycle polling + `Reload Project State` prompt in `code-editor`
     - lifecycle signature now includes dependency signature fields, so same-count dependency swaps are also detected
     - lightweight project mutation events for library/cloud-sync driven refreshes
+    - `code-editor` now also auto-queues external library/cloud changes that happen during build/upload and refreshes plans after the current action finishes
   - conflict handling is still only partially aligned:
     - current `project-open` flow has lifecycle preview + explicit `Cancel / Focus Existing Window / Force Open`
     - the normal `Open Project` action no longer bypasses a detected open-session conflict
@@ -86,7 +87,11 @@
 - Still missing or partial:
   - Blockly hot-load is now partial:
     - mounted Blockly editor can auto-refresh when there is no dirty workspace draft
-    - dirty workspace still falls back to a prompt instead of forced reload
+    - when the draft is dirty, ancillary project state now refreshes without overwriting the current workspace JSON
+    - there is still no full watcher-equivalent end-to-end reload model
+  - code-editor hot-refresh is now stronger:
+    - non-busy external library/cloud mutations refresh plans in place without reinitializing the source draft
+    - busy build/upload windows queue a pending refresh and auto-consume it afterwards
 
 ### Terminal / Build / Upload
 
@@ -144,6 +149,7 @@
     - `core` owns packet/protocol/preparation logic
     - `desktop` owns Electron chooser/permission/device-list bridge
     - `ui` owns `navigator.bluetooth` transport because it must execute in the browser runtime
+  - this means the remaining BLE bridge cannot be fully moved into `core` without losing the Electron `BrowserWindow/session/WebContents` hooks it depends on
 
 ### Cloud Space
 

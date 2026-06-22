@@ -1,6 +1,6 @@
 import '@xterm/xterm/css/xterm.css'
 
-import { Component, effect, ElementRef, OnDestroy, OnInit, signal, viewChild } from '@angular/core'
+import { Component, ElementRef, OnDestroy, OnInit, signal, viewChild } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
@@ -10,17 +10,14 @@ import { getCore } from '@/utils/core'
 import { getDesktop, hasBleChooserBridge, loadDesktopHostRuntimeInfo, selectDesktopDirectory } from '@/utils/desktop'
 
 import { createTerminalBuildActions, createTerminalOutputActions, createTerminalSessionActions } from './actions'
-import { writeTerminalInput } from './runtime'
-import {
-	createTerminalXtermRuntime,
-	disposeTerminalXtermRuntime,
-	resolveTerminalXtermViewport,
-	syncTerminalXtermOutput
-} from './runtime/xterm'
-import { selectTerminalBleDevice, startTerminalBleDiscovery } from './utils/ble'
+import { startTerminalBleDiscovery } from './utils/ble'
+import { setupTerminalPageEffects } from './utils/effects'
+import { chooseTerminalBleDevice, copyTerminalOutput, pasteTerminalClipboard } from './utils/interactions'
 import { createTerminalPageState } from './utils/state'
+import { mountTerminalXterm, unmountTerminalXterm } from './utils/xterm'
 
 import type { Unsubscribable } from '@trpc/server/observable'
+import type { TerminalXtermRuntime } from './runtime/xterm'
 
 @Component({
 	selector: 'terminal-page',
@@ -35,7 +32,7 @@ export class TerminalPageComponent implements OnInit, OnDestroy {
 	private subscription: Unsubscribable | null = null
 	private bleSubscription: Unsubscribable | null = null
 	private readonly state = createTerminalPageState()
-	private xtermRuntime: ReturnType<typeof createTerminalXtermRuntime> | null = null
+	private xtermRuntime: TerminalXtermRuntime | null = null
 	private renderedChunkCount = 0
 	private renderedSessionId = ''
 	private readonly terminalReady = signal(0)
@@ -80,50 +77,28 @@ export class TerminalPageComponent implements OnInit, OnDestroy {
 	})
 
 	constructor() {
-		effect(onCleanup => {
-			const host = this.terminalHost()?.nativeElement
-			if (!host || this.xtermRuntime) return
-
-			this.initializeTerminal(host)
-			onCleanup(() => {
+		setupTerminalPageEffects({
+			desktop: this.desktop,
+			terminalHost: this.terminalHost,
+			terminalReady: this.terminalReady,
+			getSessionId: () => this.session()?.id || '',
+			getLines: () => this.lines(),
+			getRuntime: () => this.xtermRuntime,
+			getRenderedSessionId: () => this.renderedSessionId,
+			getRenderedChunkCount: () => this.renderedChunkCount,
+			setRenderedState: state => {
+				this.renderedSessionId = state.renderedSessionId
+				this.renderedChunkCount = state.renderedChunkCount
+			},
+			initializeTerminal: host => {
+				this.initializeTerminal(host)
+			},
+			disposeTerminal: () => {
 				this.disposeTerminal()
-			})
-		})
-
-		effect(onCleanup => {
-			const terminalHost = this.terminalHost()?.nativeElement
-			this.terminalReady()
-			if (!this.desktop || !this.session() || !terminalHost || !this.xtermRuntime) return
-
-			const syncViewport = async () => {
-				const nextViewport = resolveTerminalXtermViewport(this.xtermRuntime, terminalHost)
-				await this.sessionActions.syncViewport(this.terminalHost()!, nextViewport)
+			},
+			syncViewport: async (host, viewport) => {
+				await this.sessionActions.syncViewport(host, viewport)
 			}
-
-			const observer = new ResizeObserver(() => {
-				void syncViewport().catch(() => null)
-			})
-			observer.observe(terminalHost)
-			void syncViewport().catch(() => null)
-
-			onCleanup(() => {
-				observer.disconnect()
-			})
-		})
-
-		effect(() => {
-			this.terminalReady()
-			if (!this.xtermRuntime) return
-
-			const nextState = syncTerminalXtermOutput({
-				runtime: this.xtermRuntime,
-				sessionId: this.session()?.id || '',
-				renderedSessionId: this.renderedSessionId,
-				renderedChunkCount: this.renderedChunkCount,
-				chunks: this.lines()
-			})
-			this.renderedSessionId = nextState.renderedSessionId
-			this.renderedChunkCount = nextState.renderedChunkCount
 		})
 	}
 
@@ -161,43 +136,18 @@ export class TerminalPageComponent implements OnInit, OnDestroy {
 	protected readonly runCurrentBuild = this.buildActions.runCurrentBuild
 	protected readonly runCurrentUpload = this.buildActions.runCurrentUpload
 	protected readonly retryCurrentUpload = () => this.buildActions.runCurrentUpload()
-	protected readonly copyOutput = async () => {
-		const selectedText = this.xtermRuntime?.terminal.getSelection() || ''
-		const text = selectedText.trim() ? selectedText : this.lines().join('')
-		if (!text.trim()) return
-
-		try {
-			if (navigator.clipboard?.writeText) {
-				await navigator.clipboard.writeText(text)
-				return
+	protected readonly copyOutput = () => copyTerminalOutput({ runtime: this.xtermRuntime, lines: this.lines() })
+	protected readonly pasteClipboard = () =>
+		pasteTerminalClipboard({
+			desktop: this.desktop,
+			getSessionId: () => this.session()?.id || '',
+			runtime: this.xtermRuntime,
+			onError: error => {
+				this.error.set(error instanceof Error ? error.message : String(error))
 			}
-		} catch {
-			// fall through to legacy copy path
-		}
-
-		const textarea = document.createElement('textarea')
-		textarea.value = text
-		textarea.setAttribute('readonly', 'true')
-		textarea.style.position = 'fixed'
-		textarea.style.opacity = '0'
-		document.body.appendChild(textarea)
-		textarea.select()
-		document.execCommand('copy')
-		document.body.removeChild(textarea)
-	}
-	protected readonly pasteClipboard = async () => {
-		try {
-			const text = await navigator.clipboard?.readText()
-			const sessionId = this.session()?.id
-			if (!text || !this.desktop || !sessionId) return
-			await writeTerminalInput(this.desktop, sessionId, text)
-			this.xtermRuntime?.terminal.focus()
-		} catch (error) {
-			this.error.set(error instanceof Error ? error.message : String(error))
-		}
-	}
+		})
 	protected readonly selectBleDevice = () =>
-		selectTerminalBleDevice({
+		chooseTerminalBleDevice({
 			desktop: this.desktop,
 			uploadTargets: this.uploadTargets,
 			selectedUploadTargetId: this.selectedUploadTargetId,
@@ -208,12 +158,13 @@ export class TerminalPageComponent implements OnInit, OnDestroy {
 		})
 
 	private initializeTerminal(host: HTMLElement) {
-		this.xtermRuntime = createTerminalXtermRuntime(host, data => {
-			const sessionId = this.session()?.id
-			if (!this.desktop || !sessionId) return
-			void writeTerminalInput(this.desktop, sessionId, data).catch(error => {
+		this.xtermRuntime = mountTerminalXterm({
+			host,
+			desktop: this.desktop,
+			getSessionId: () => this.session()?.id || '',
+			onError: error => {
 				this.error.set(error instanceof Error ? error.message : String(error))
-			})
+			}
 		})
 		this.renderedChunkCount = 0
 		this.renderedSessionId = ''
@@ -221,7 +172,7 @@ export class TerminalPageComponent implements OnInit, OnDestroy {
 	}
 
 	private disposeTerminal() {
-		disposeTerminalXtermRuntime(this.xtermRuntime)
+		unmountTerminalXterm(this.xtermRuntime)
 		this.xtermRuntime = null
 		this.renderedChunkCount = 0
 		this.renderedSessionId = ''

@@ -1,5 +1,6 @@
 import { authorizeBleOtaDevice, getPreferredBleDeviceId, subscribeBleDevices } from '@/utils/desktop'
 
+import { flushPendingCodeEditorExternalRefresh } from '../refresh'
 import { runCodeEditorBleUpload } from './execute'
 import { detectCodeEditorBlePacketSize, loadCodeEditorBleUploadPlan } from './plan'
 
@@ -45,13 +46,14 @@ export const prepareCodeEditorBleUpload = async (input: { core: Core; signals: C
 		input.signals.buildError.set(error instanceof Error ? error.message : String(error))
 	} finally {
 		input.signals.uploadBusy.set(false)
+		await flushPendingCodeEditorExternalRefresh(input)
 	}
 }
 
 /**
  * 执行 BLE 上传动作。
  */
-export const runCodeEditorBleUploadAction = async (input: { signals: CodeEditorSignals }) => {
+export const runCodeEditorBleUploadAction = async (input: { core: Core; signals: CodeEditorSignals }) => {
 	const plan = input.signals.bleUploadPlan()
 	const deviceId = input.signals.bleDevice()?.deviceId || ''
 	if (!plan || !deviceId) return
@@ -70,6 +72,7 @@ export const runCodeEditorBleUploadAction = async (input: { signals: CodeEditorS
 		input.signals.buildError.set(error instanceof Error ? error.message : String(error))
 	} finally {
 		input.signals.uploadBusy.set(false)
+		await flushPendingCodeEditorExternalRefresh(input)
 	}
 }
 

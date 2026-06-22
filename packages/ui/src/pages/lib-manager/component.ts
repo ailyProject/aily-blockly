@@ -15,26 +15,8 @@ import {
 	LibManagerMissingSectionComponent,
 	LibManagerRegistrySectionComponent
 } from './components'
-import {
-	confirmLibManagerInstallPrompt,
-	focusLibManagerCoreLibraries,
-	importLocalLibManagerLibrary,
-	loadLibManagerVersions,
-	refreshLibManagerPage,
-	removeLibManagerLibrary,
-	requestLibManagerRestore,
-	searchLibManagerRegistry,
-	selectLibManagerLibraryScope
-} from './utils/interactions'
-import {
-	createLibManagerActionContext,
-	isLibManagerScopeSelected,
-	resolveLibManagerLiveActionLatestLine,
-	resolveLibManagerLiveActionProgressPercent,
-	shouldShowLibManagerCatalogSection,
-	shouldShowLibManagerDeclaredSection,
-	shouldShowLibManagerMissingSection
-} from './utils/runtime'
+import { createLibManagerPageHandlers } from './utils/handlers'
+import { createLibManagerActionContext } from './utils/runtime'
 import { createLibManagerPageState } from './utils/state'
 
 import type { LibManagerActionContext, LibManagerLibraryScope } from './types'
@@ -94,100 +76,45 @@ export class LibManagerPageComponent implements OnInit {
 		versionLoadingPackage: this.versionLoadingPackage,
 		libraryVersionsByPackage: this.libraryVersionsByPackage,
 		npmRegistry: this.npmRegistry,
-		refresh: () => this.refresh()
+		refresh: () => this.handlers.refresh()
+	})
+	private readonly handlers = createLibManagerPageHandlers({
+		core: this.core,
+		state: this.state,
+		loading: this.loading,
+		error: this.error,
+		npmRegistry: this.npmRegistry,
+		libraryScope: this.libraryScope,
+		libraryQuery: this.libraryQuery,
+		actionBusyKey: this.actionBusyKey,
+		pendingInstallPrompt: this.pendingInstallPrompt,
+		registrySearchResults: this.registrySearchResults,
+		libraryVersionsByPackage: this.libraryVersionsByPackage,
+		catalogLibraryViews: this.catalogLibraryViews,
+		liveActionStatus: this.liveActionStatus,
+		context: this.actionContext
 	})
 
 	async ngOnInit() {
-		await this.refresh()
+		await this.handlers.refresh()
 	}
-
-	protected readonly refresh = () =>
-		refreshLibManagerPage({
-			core: this.core,
-			setLoading: loading => this.loading.set(loading),
-			setError: message => this.error.set(message),
-			clearPendingInstallPrompt: () => this.pendingInstallPrompt.set(null),
-			setState: state => this.state.set(state),
-			setNpmRegistry: registry => this.npmRegistry.set(registry)
-		})
-
-	protected readonly requestRestoreLibrary = (packageName: string, version?: string, localPath?: string) =>
-		requestLibManagerRestore({
-			context: this.actionContext,
-			state: this.state(),
-			setPendingInstallPrompt: prompt => this.pendingInstallPrompt.set(prompt),
-			packageName,
-			version,
-			localPath
-		})
-
-	protected readonly importLocalLibrary = () =>
-		importLocalLibManagerLibrary({
-			context: this.actionContext,
-			state: this.state(),
-			setPendingInstallPrompt: prompt => this.pendingInstallPrompt.set(prompt)
-		})
-
-	protected readonly removeLibrary = (packageName: string) =>
-		removeLibManagerLibrary({
-			context: this.actionContext,
-			packageName
-		})
-
-	protected actionBusy(action: 'install' | 'remove', packageName: string) {
-		return this.actionBusyKey() === `${action}:${packageName}`
-	}
-
-	protected readonly selectLibraryScope = (scope: LibManagerLibraryScope) =>
-		selectLibManagerLibraryScope(nextScope => this.libraryScope.set(nextScope), scope)
-
-	protected readonly focusCoreLibraries = () =>
-		focusLibManagerCoreLibraries(
-			nextScope => this.libraryScope.set(nextScope),
-			nextQuery => {
-				this.libraryQuery.set(nextQuery)
-				this.registrySearchResults.set([])
-			}
-		)
-
-	protected readonly scopeSelected = (scope: LibManagerLibraryScope) =>
-		isLibManagerScopeSelected(this.libraryScope(), scope)
-	protected readonly showDeclaredSection = () => shouldShowLibManagerDeclaredSection(this.libraryScope())
-	protected readonly showMissingSection = () => shouldShowLibManagerMissingSection(this.libraryScope())
-	protected readonly showCatalogSection = () => shouldShowLibManagerCatalogSection(this.libraryScope())
-
-	protected updateLibraryQuery(event: Event) {
-		this.libraryQuery.set((event.target as HTMLInputElement).value)
-		this.registrySearchResults.set([])
-	}
-
-	protected readonly searchRegistryLibraries = () =>
-		searchLibManagerRegistry({
-			context: this.actionContext,
-			query: this.libraryQuery(),
-			catalogNames: this.catalogLibraryViews().map(item => item.name)
-		})
-
-	protected readonly cancelInstallPrompt = () => this.pendingInstallPrompt.set(null)
-
-	protected readonly confirmInstallPrompt = () =>
-		confirmLibManagerInstallPrompt({
-			context: this.actionContext,
-			prompt: this.pendingInstallPrompt(),
-			setPendingInstallPrompt: prompt => this.pendingInstallPrompt.set(prompt)
-		})
-
-	protected readonly loadLibraryVersions = (packageName: string) =>
-		loadLibManagerVersions({
-			context: this.actionContext,
-			packageName
-		})
-
-	protected getLibraryVersions(packageName: string) {
-		return this.libraryVersionsByPackage()[packageName] ?? null
-	}
-
-	protected readonly resolveLiveActionProgressPercent = () =>
-		resolveLibManagerLiveActionProgressPercent(this.liveActionStatus())
-	protected readonly resolveLiveActionLatestLine = () => resolveLibManagerLiveActionLatestLine(this.liveActionStatus())
+	protected readonly refresh = this.handlers.refresh
+	protected readonly requestRestoreLibrary = this.handlers.requestRestoreLibrary
+	protected readonly importLocalLibrary = this.handlers.importLocalLibrary
+	protected readonly removeLibrary = this.handlers.removeLibrary
+	protected readonly actionBusy = this.handlers.actionBusy
+	protected readonly selectLibraryScope = this.handlers.selectLibraryScope
+	protected readonly focusCoreLibraries = this.handlers.focusCoreLibraries
+	protected readonly scopeSelected = this.handlers.scopeSelected
+	protected readonly showDeclaredSection = this.handlers.showDeclaredSection
+	protected readonly showMissingSection = this.handlers.showMissingSection
+	protected readonly showCatalogSection = this.handlers.showCatalogSection
+	protected readonly updateLibraryQuery = this.handlers.updateLibraryQuery
+	protected readonly searchRegistryLibraries = this.handlers.searchRegistryLibraries
+	protected readonly cancelInstallPrompt = this.handlers.cancelInstallPrompt
+	protected readonly confirmInstallPrompt = this.handlers.confirmInstallPrompt
+	protected readonly loadLibraryVersions = this.handlers.loadLibraryVersions
+	protected readonly getLibraryVersions = this.handlers.getLibraryVersions
+	protected readonly resolveLiveActionProgressPercent = this.handlers.resolveLiveActionProgressPercent
+	protected readonly resolveLiveActionLatestLine = this.handlers.resolveLiveActionLatestLine
 }

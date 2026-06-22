@@ -209,11 +209,14 @@ Status markers:
   - generic project mutation events now also cover cloud-sync driven reload/prompt behavior
   - lifecycle watch now also keys off a stable dependency signature, not only library counts
   - in-editor missing Blockly library restore panel now exists, including `Restore` and `Restore All`
+  - when the workspace draft is dirty, external library/cloud mutations now refresh non-destructive project state while preserving the current JSON draft
   - still not full legacy Blockly runtime parity
 - `partial` `code-editor`
   - build/upload/BLE paths, lifecycle polling, library mutation refresh
   - generic project mutation events now also cover cloud-sync driven plan refresh/prompt behavior
   - lifecycle watch now also keys off a stable dependency signature, so same-count dependency swaps are no longer missed
+  - external library/cloud mutations that land during build/upload/BLE prepare-run are now queued and auto-refresh build/upload plans after the current action finishes
+  - non-busy external library/cloud mutations now refresh plans without reinitializing and overwriting the current source draft
 - `partial` `terminal`
   - serial/debugger/BLE live paths exist
   - upload summary card and BLE retry/reconnect actions now exist
@@ -226,7 +229,8 @@ Status markers:
   - invalid BLE targets now auto-fallback to a preferred / available target instead of staying stale
   - BLE discovery/selection logic is now split out of the page component; main component file is no longer the primary terminal hotspot
   - command upload and BLE upload action branches are now split into focused action files
-  - page-local signals/computed state are now split into `component.state.ts`; main component file is down to ~150 lines
+  - page-local signals/computed state are now split into `utils/state.ts`
+  - xterm mount/effects and clipboard/BLE helper interactions are now split into page-local `utils/`, and `component.ts` has been reduced back to the 180-line limit
   - still no xterm-level parity and fuller BLE UX
 - `partial` `lib-manager`
   - filtering, compatibility prompt, parsed progress events, source labels, project mutation events
@@ -235,10 +239,10 @@ Status markers:
   - remote registry search results now exist alongside local catalog and prefer registry package-version indexes when available
   - polling-based live action status now exists
   - explicit local-library import entry now exists and reuses desktop directory picker + core inspection/install flow
-  - component orchestration layer has been split; `component.ts` is no longer the primary hotspot
+  - component orchestration layer has been split; page handlers now live in `utils/handlers.ts` and `component.ts` is no longer the primary hotspot
   - helper layer has been split by concern
   - page-local types 保持为单个 `types.ts`
-  - `component.ts` has been reduced back under the file-size limit; interaction orchestration now lives in `component.interactions.ts`
+  - `component.ts` has been reduced back under the file-size limit
   - true subscription-based streaming still pending
 - `partial` `cloud-space`
   - scope switching, import, sync, editor, sync summary/history, details panel

@@ -208,6 +208,8 @@ export interface CodeEditorSignals {
 	buildError: WritableSignal<string | null>
 	projectReloadMessage: WritableSignal<string | null>
 	projectReloadBusy: WritableSignal<boolean>
+	/** 当前是否存在等待当前动作结束后再处理的外部刷新原因。 */
+	pendingExternalRefreshReason: WritableSignal<string | null>
 	buildBusy: WritableSignal<boolean>
 	uploadBusy: WritableSignal<boolean>
 }

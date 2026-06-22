@@ -13,7 +13,7 @@ import { getCore } from '@/utils/core'
 import { BlocklyEditorInspectorPanelComponent, BlocklyEditorWorkspaceShellComponent } from './components'
 import { blocklyEditorWorkspaceHints } from './data'
 import { createBlocklyEditorPageActions } from './utils/page-actions'
-import { initializeBlocklyEditorPage } from './utils/runtime'
+import { initializeBlocklyEditorPage, refreshBlocklyEditorPage } from './utils/runtime'
 import { startBlocklyEditorLifecycleWatch } from './utils/runtime/lifecycle-watch'
 import { createBlocklyEditorPageState } from './utils/state'
 
@@ -109,11 +109,22 @@ export class BlocklyEditorPageComponent implements OnInit, OnDestroy {
 			if (detail.projectPath !== this.projectPath().trim()) return
 
 			if (this.activeWorkspaceDirty()) {
-				this.projectReloadMessage.set(
-					detail.type === 'cloud-sync'
-						? 'Project cloud binding changed outside the editor. Save or reset the current workspace, then reload project state.'
-						: `Library ${detail.packageName} was ${renderBlocklyLibraryMutationVerb(detail.action!)} outside the editor. Save or reset the current workspace, then reload project state.`
-				)
+				this.projectReloadBusy.set(true)
+				this.projectReloadMessage.set(null)
+				try {
+					await refreshBlocklyEditorPage(this.core, this.projectPath().trim(), this.signals, {
+						preserveActiveWorkspaceDraft: true
+					})
+					this.projectReloadMessage.set(
+						detail.type === 'cloud-sync'
+							? 'Project cloud binding changed outside the editor. Library and ABI state were refreshed while preserving the current workspace draft.'
+							: `Library ${detail.packageName} was ${renderBlocklyLibraryMutationVerb(detail.action!)} outside the editor. Related project state was refreshed while preserving the current workspace draft.`
+					)
+				} catch (error) {
+					this.projectReloadMessage.set(error instanceof Error ? error.message : String(error))
+				} finally {
+					this.projectReloadBusy.set(false)
+				}
 				return
 			}
 
