@@ -145,6 +145,10 @@
 	height: 18px;
 }
 
+.btn i {
+	font-size: 18px;
+}
+
 .divider {
 	border-left: 1px solid var(--aily-border-primary);
 	height: 24px;
@@ -201,6 +205,7 @@
 	background: var(--aily-bg-primary);
 	border-top: 2px solid var(--aily-border-primary);
 	position: relative;
+	padding-left: 12px;
 }
 
 .footer-box .btn {

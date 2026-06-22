@@ -29,7 +29,7 @@ export function createDesktop(options: CreateDesktopOptions = {}) {
  * @param options - 创建选项。
  */
 export const getDesktop = (options: CreateDesktopOptions = {}) => {
-	if (desktopSingleton === undefined || options.allowMissingBridge === false) {
+	if (desktopSingleton === undefined || desktopSingleton === null || options.allowMissingBridge === false) {
 		desktopSingleton = createDesktop(options)
 	}
 	return desktopSingleton ?? null

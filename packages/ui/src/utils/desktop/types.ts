@@ -39,5 +39,9 @@ declare global {
 	interface Window {
 		/** Electron preload 暴露到浏览器环境的 ERPC 桥。 */
 		$erpc?: GlobalERPC
+		/** 桌面 preload 最小自检标记。 */
+		$desktopPreload?: {
+			ready: boolean
+		}
 	}
 }

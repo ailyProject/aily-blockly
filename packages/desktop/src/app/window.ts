@@ -11,8 +11,8 @@ import type { DesktopAppLaunchOptions } from './types'
  */
 export const createDesktopMainWindow = () =>
 	new BrowserWindow({
-		width: 1440,
-		height: 920,
+		width: 1200,
+		height: 780,
 		minWidth: 800,
 		minHeight: 600,
 		show: false,
@@ -23,6 +23,7 @@ export const createDesktopMainWindow = () =>
 		backgroundColor: '#2b2d30',
 		webPreferences: {
 			preload: resolveDesktopPreloadPath(),
+			sandbox: false,
 			contextIsolation: true,
 			nodeIntegration: false
 		}
@@ -33,6 +34,12 @@ export const createDesktopMainWindow = () =>
  * @param window - 目标窗口
  */
 export const attachDesktopWindowDebugLogging = (window: BrowserWindow) => {
+	window.on('ready-to-show', () => {
+		writeDesktopStartupLog('[desktop-window] ready-to-show')
+	})
+	window.on('close', () => {
+		writeDesktopStartupLog('[desktop-window] close')
+	})
 	window.on('show', () => {
 		console.log('[desktop-window] show')
 		writeDesktopStartupLog('[desktop-window] show')
@@ -52,6 +59,18 @@ export const attachDesktopWindowDebugLogging = (window: BrowserWindow) => {
 	window.on('closed', () => {
 		console.log('[desktop-window] closed')
 		writeDesktopStartupLog('[desktop-window] closed')
+	})
+	window.on('minimize', () => {
+		writeDesktopStartupLog('[desktop-window] minimize')
+	})
+	window.on('restore', () => {
+		writeDesktopStartupLog('[desktop-window] restore')
+	})
+	window.on('maximize', () => {
+		writeDesktopStartupLog('[desktop-window] maximize')
+	})
+	window.on('unmaximize', () => {
+		writeDesktopStartupLog('[desktop-window] unmaximize')
 	})
 	window.webContents.on('did-finish-load', () => {
 		console.log('[desktop-window] did-finish-load', window.webContents.getURL())

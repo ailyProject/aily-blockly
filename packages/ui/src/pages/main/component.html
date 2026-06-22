@@ -2,7 +2,7 @@
 	<header class="header-box" [class.darwin]="isMac">
 		<div class="menu no-drag">
 			<button class="btn" type="button" (click)="navigateToGuide()" title="Menu">
-				<ng-icon name="lucideMenu"></ng-icon>
+				<i class="fa-regular fa-bars"></i>
 			</button>
 		</div>
 
@@ -19,47 +19,41 @@
 
 		<div class="toolbox no-drag">
 			<div class="zone">
-				<button class="btn" type="button" (click)="navigateToProjectNew()" title="New Project">
-					<ng-icon name="lucideBlocks"></ng-icon>
-				</button>
-				<button class="btn" type="button" (click)="navigateToProjectOpen()" title="Open Project">
-					<ng-icon name="lucideFolderOpen"></ng-icon>
-				</button>
-			</div>
-			<div class="zone">
-				<button class="btn" type="button" (click)="navigateToPlayground()" title="Project Hub">
-					<ng-icon name="lucideCpu"></ng-icon>
+				<button class="btn ai-btn" type="button" (click)="navigateToProjectOpen()" title="Serial">
+					<i class="fa-light fa-monitor-waveform"></i>
 				</button>
 				<button class="btn ai-btn" type="button" (click)="navigateToChat()" title="AI Assistant">
-					<ng-icon name="lucideBot"></ng-icon>
+					<i class="fa-light fa-star-christmas"></i>
 					<span class="more">AI</span>
+				</button>
+				<button class="btn" type="button" (click)="navigateToPlayground()" title="Cloud Space">
+					<i class="fa-light fa-album-collection"></i>
+				</button>
+				<button class="btn" type="button" title="User Center">
+					<i class="fa-light fa-user"></i>
 				</button>
 			</div>
 			<div class="divider"></div>
 			<div class="zone">
-				<button class="btn" type="button" (click)="toggleTheme()" title="Toggle Theme">
-					@if (themeMode() === 'dark') {
-					<ng-icon name="lucideSunMedium"></ng-icon>
-					} @else {
-					<ng-icon name="lucideMoonStar"></ng-icon>
-					}
+				<button class="btn" type="button" (click)="navigateToGuide()" title="App Store">
+					<i class="fa-light fa-grid-2-plus"></i>
 				</button>
 			</div>
 		</div>
 
 		<div class="win-btns no-drag">
 			<button class="btn minimize" type="button" (click)="minimizeWindow()" title="Minimize">
-				<ng-icon name="lucideMinus"></ng-icon>
+				<i class="fa-regular fa-minus"></i>
 			</button>
 			<button class="btn maximize" type="button" (click)="toggleWindowMaximize()" title="Maximize">
 				@if (isWindowMaximized()) {
-				<ng-icon name="lucideSquare"></ng-icon>
+				<i class="fa-regular fa-window-restore"></i>
 				} @else {
-				<ng-icon name="lucideSquare"></ng-icon>
+				<i class="fa-regular fa-window-maximize"></i>
 				}
 			</button>
 			<button class="btn close" type="button" (click)="closeWindow()" title="Close">
-				<ng-icon name="lucideX"></ng-icon>
+				<i class="fa-regular fa-xmark"></i>
 			</button>
 		</div>
 	</header>
@@ -72,10 +66,10 @@
 
 	<footer class="footer-box">
 		<button class="btn no-drag" type="button" (click)="openBottomLog()" title="Log">
-			<ng-icon name="lucidePanelBottom"></ng-icon>
+			<i class="fa-light fa-square-list"></i>
 		</button>
 		<button class="btn no-drag" type="button" (click)="openBottomTerminal()" title="Terminal">
-			<ng-icon name="lucideTerminal"></ng-icon>
+			<i class="fa-light fa-square-terminal"></i>
 		</button>
 	</footer>
 </div>

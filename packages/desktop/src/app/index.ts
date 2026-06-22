@@ -1,8 +1,8 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { app } from 'electron'
 
 import { bootstrapDesktopMain } from '../bootstrap'
+import { createDesktopCoreServiceManager } from '../core-service'
+import { ensureLegacyDesktopAppDataPath } from './appdata'
 import { resetDesktopStartupLog, writeDesktopStartupLog } from './log'
 import {
 	attachDesktopWindowDebugLogging,
@@ -17,27 +17,7 @@ import type { DesktopAppLaunchOptions } from './types'
 
 let desktopMainWindow: ReturnType<typeof createDesktopMainWindow> | null = null
 let desktopMainRuntime: BootstrapDesktopMainResult | null = null
-const execFileAsync = promisify(execFile)
 let desktopWindowCreationLoggingAttached = false
-
-/**
- * 在 macOS 上强制把当前桌面应用切到前台。
- * @param appName - 当前应用名
- */
-const activateDesktopAppOnMac = async (appName: string) => {
-	if (process.platform !== 'darwin') return
-
-	try {
-		await execFileAsync('/usr/bin/osascript', ['-e', `tell application "${appName}" to activate`], {
-			encoding: 'utf8'
-		})
-		writeDesktopStartupLog(`[desktop-app] osascript-activate ${appName}`)
-	} catch (error) {
-		writeDesktopStartupLog(
-			`[desktop-app] osascript-activate-failed ${error instanceof Error ? error.message : String(error)}`
-		)
-	}
-}
 
 /**
  * 记录当前 Electron 进程里所有窗口创建事件。
@@ -45,6 +25,19 @@ const activateDesktopAppOnMac = async (appName: string) => {
 const attachDesktopWindowCreationLogging = () => {
 	if (desktopWindowCreationLoggingAttached) return
 	desktopWindowCreationLoggingAttached = true
+
+	app.on('before-quit', _event => {
+		writeDesktopStartupLog('[desktop-app] before-quit')
+	})
+	app.on('will-quit', _event => {
+		writeDesktopStartupLog('[desktop-app] will-quit')
+	})
+	app.on('quit', (_event, exitCode) => {
+		writeDesktopStartupLog(`[desktop-app] quit ${String(exitCode)}`)
+	})
+	app.on('child-process-gone', (_event, details) => {
+		writeDesktopStartupLog(`[desktop-app] child-process-gone ${JSON.stringify(details)}`)
+	})
 
 	app.on('browser-window-created', (_event, window) => {
 		writeDesktopStartupLog(
@@ -95,6 +88,7 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		return
 	}
 	await app.whenReady()
+	ensureLegacyDesktopAppDataPath()
 	writeDesktopStartupLog('[desktop-app] app-ready')
 	if (typeof app.setActivationPolicy === 'function') {
 		app.setActivationPolicy('regular')
@@ -107,8 +101,12 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		writeDesktopStartupLog('[desktop-app] dock-show')
 	}
 	app.focus({ steal: true })
-	await activateDesktopAppOnMac(app.getName())
 	writeDesktopStartupLog('[desktop-app] app-focus')
+
+	const coreService = createDesktopCoreServiceManager({ transport: 'utility-process' })
+	writeDesktopStartupLog('[desktop-app] core-service-start-begin')
+	await coreService.start()
+	writeDesktopStartupLog('[desktop-app] core-service-start-finish')
 
 	const mainWindow = createDesktopMainWindow()
 	desktopMainWindow = mainWindow
@@ -119,12 +117,12 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		writeDesktopStartupLog('[desktop-app] webcontents-did-finish-load')
 		presentDesktopMainWindow(mainWindow)
 		logDesktopWindowState(mainWindow, 'after-load')
-		void activateDesktopAppOnMac(app.getName())
 	})
 
 	desktopMainRuntime ??= bootstrapDesktopMain({
 		app,
-		windows: [mainWindow]
+		windows: [mainWindow],
+		coreService
 	})
 	writeDesktopStartupLog('[desktop-app] desktop-main-bootstrapped')
 	desktopMainRuntime.handler.attachWindow(mainWindow)
@@ -142,7 +140,6 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		if (desktopMainWindow) {
 			desktopMainWindow.show()
 			desktopMainWindow.focus()
-			await activateDesktopAppOnMac(app.getName())
 			writeDesktopStartupLog('[desktop-app] existing-window-focused')
 			return
 		}
@@ -156,7 +153,6 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 			writeDesktopStartupLog('[desktop-app] next-webcontents-did-finish-load')
 			presentDesktopMainWindow(nextWindow)
 			logDesktopWindowState(nextWindow, 'next-after-load')
-			void activateDesktopAppOnMac(app.getName())
 		})
 		desktopMainRuntime?.handler.attachWindow(nextWindow)
 		desktopMainRuntime?.bleBridge.registerChooser(nextWindow)
@@ -174,7 +170,6 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		if (!desktopMainWindow) return
 
 		presentDesktopMainWindow(desktopMainWindow)
-		void activateDesktopAppOnMac(app.getName())
 	})
 
 	app.on('window-all-closed', () => {

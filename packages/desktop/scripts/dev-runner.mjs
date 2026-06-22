@@ -101,9 +101,17 @@ const startElectronProcess = async () => {
 	writeDesktopPid(electronProcess.pid)
 
 	electronProcess.once('exit', code => {
-		writeDesktopStartupLog(`[dev-runner] electron-exit ${String(code ?? 0)}`)
+		writeDesktopStartupLog(`[dev-runner] electron-exit ${String(code ?? 0)} signal:none`)
 		clearDesktopPid()
 		electronProcess = null
+	})
+	electronProcess.once('close', (code, signal) => {
+		writeDesktopStartupLog(`[dev-runner] electron-close ${String(code ?? 0)} signal:${String(signal ?? 'none')}`)
+	})
+	electronProcess.once('error', error => {
+		writeDesktopStartupLog(
+			`[dev-runner] electron-error ${error instanceof Error ? error.stack || error.message : String(error)}`
+		)
 	})
 	writeDesktopStartupLog('[dev-runner] electron-start-finish')
 }

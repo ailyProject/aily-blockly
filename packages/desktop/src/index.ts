@@ -1,4 +1,5 @@
 import { launchDesktopApp } from './app'
+import { installDesktopProcessErrorLogging, writeDesktopStartupLog } from './app/log'
 
 export * from './app'
 export * from './bootstrap'
@@ -17,7 +18,11 @@ const shouldAutoLaunchDesktopApp = () =>
 	typeof process !== 'undefined' && Boolean(process.versions?.electron) && process.type !== 'renderer'
 
 if (shouldAutoLaunchDesktopApp()) {
+	installDesktopProcessErrorLogging()
 	void launchDesktopApp().catch(error => {
+		writeDesktopStartupLog(
+			`[desktop-process] launchDesktopApp-catch ${error instanceof Error ? error.stack || error.message : String(error)}`
+		)
 		console.error(error)
 		process.exitCode = 1
 	})

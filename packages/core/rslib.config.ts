@@ -15,6 +15,15 @@ export default deepmerge(rslib, {
 			},
 			format: 'esm',
 			dts: true
+		},
+		{
+			source: {
+				entry: {
+					server: './src/rpc/standalone.ts'
+				}
+			},
+			format: 'esm',
+			dts: true
 		}
 	],
 	output: {

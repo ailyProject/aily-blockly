@@ -108,6 +108,26 @@
 	min-height: 150px;
 }
 
+.recent-debug {
+	margin: 4px 0 10px;
+	padding: 8px 10px;
+	width: min(420px, 100%);
+	border-radius: 4px;
+	background: rgba(0, 0, 0, 0.16);
+	color: var(--aily-text-secondary);
+	font:
+		11px/1.45 'GeistMono',
+		monospace;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.recent-debug__path {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .project {
 	display: flex;
 	flex-direction: column;
@@ -344,6 +364,11 @@ button.item:hover .arrow img {
 	color: var(--aily-text-primary);
 }
 
+.social-icon i {
+	font-size: 24px;
+	line-height: 1;
+}
+
 .sponsor-carousel {
 	width: 100%;
 	overflow: hidden;
@@ -426,20 +451,5 @@ button.item:hover .arrow img {
 @keyframes guide-desc-scroll {
 	to {
 		transform: translateX(min(0px, calc(100cqw - 100%)));
-	}
-}
-
-@media (max-width: 1280px) {
-	.guide-box {
-		min-width: 0;
-		flex-direction: column;
-		padding: 16px;
-	}
-
-	.left-box,
-	.right-box {
-		width: auto;
-		height: auto;
-		padding: 0;
 	}
 }

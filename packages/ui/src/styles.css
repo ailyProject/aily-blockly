@@ -3,6 +3,7 @@
 @import 'tailwindcss/preflight.css' layer(base);
 @import 'tailwindcss/utilities.css';
 @import '@spartan-ng/brain/hlm-tailwind-preset.css';
+@import './styles/fontawesome-legacy.css';
 @import './styles/fonts.css';
 @import './styles/theme-vars.css';
 @import './styles/legacy-aily-vars.css';

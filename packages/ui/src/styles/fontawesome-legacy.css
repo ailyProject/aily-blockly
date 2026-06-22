@@ -1,0 +1,130 @@
+@font-face {
+	font-family: 'Font Awesome 6 Brands';
+	font-style: normal;
+	font-weight: 400;
+	font-display: block;
+	src:
+		url('/fonts/fontawesome6/webfonts/fa-brands-400.woff2') format('woff2'),
+		url('/fonts/fontawesome6/webfonts/fa-brands-400.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Font Awesome 6 Pro';
+	font-style: normal;
+	font-weight: 300;
+	font-display: block;
+	src:
+		url('/fonts/fontawesome6/webfonts/fa-light-300.woff2') format('woff2'),
+		url('/fonts/fontawesome6/webfonts/fa-light-300.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Font Awesome 6 Pro';
+	font-style: normal;
+	font-weight: 400;
+	font-display: block;
+	src:
+		url('/fonts/fontawesome6/webfonts/fa-regular-400.woff2') format('woff2'),
+		url('/fonts/fontawesome6/webfonts/fa-regular-400.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Font Awesome 6 Pro';
+	font-style: normal;
+	font-weight: 900;
+	font-display: block;
+	src:
+		url('/fonts/fontawesome6/webfonts/fa-solid-900.woff2') format('woff2'),
+		url('/fonts/fontawesome6/webfonts/fa-solid-900.ttf') format('truetype');
+}
+
+.fa-light,
+.fa-regular,
+.fa-solid,
+.fa-brands {
+	-moz-osx-font-smoothing: grayscale;
+	-webkit-font-smoothing: antialiased;
+	display: var(--fa-display, inline-block);
+	font-style: normal;
+	font-variant: normal;
+	line-height: 1;
+	text-rendering: auto;
+}
+
+.fa-light,
+.fa-regular,
+.fa-solid {
+	font-family: 'Font Awesome 6 Pro';
+}
+
+.fa-brands {
+	font-family: 'Font Awesome 6 Brands';
+}
+
+.fa-light {
+	font-weight: 300;
+}
+
+.fa-regular {
+	font-weight: 400;
+}
+
+.fa-solid {
+	font-weight: 900;
+}
+
+.fa-bars::before {
+	content: '\f0c9';
+}
+
+.fa-minus::before {
+	content: '\f068';
+}
+
+.fa-window-maximize::before {
+	content: '\f2d0';
+}
+
+.fa-window-restore::before {
+	content: '\f2d2';
+}
+
+.fa-xmark::before {
+	content: '\f00d';
+}
+
+.fa-square-list::before {
+	content: '\e489';
+}
+
+.fa-square-terminal::before {
+	content: '\e32a';
+}
+
+.fa-monitor-waveform::before {
+	content: '\f611';
+}
+
+.fa-star-christmas::before {
+	content: '\f7d4';
+}
+
+.fa-album-collection::before {
+	content: '\f8a0';
+}
+
+.fa-user::before {
+	content: '\f007';
+}
+
+.fa-grid-2-plus::before {
+	content: '\e197';
+}
+
+.fa-weixin::before {
+	content: '\f1d7';
+}
+
+.fa-qq::before {
+	content: '\f1d6';
+}

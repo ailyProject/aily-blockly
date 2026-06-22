@@ -23,16 +23,20 @@ import type { DesktopHostRuntimeInfo, DesktopWindowStateResult } from '@desktop'
 	styleUrl: './component.css'
 })
 export class MainPageComponent implements OnInit {
-	private readonly desktop = getDesktop()
 	private readonly router = inject(Router)
 
 	protected readonly isWindowMaximized = signal(false)
 	protected readonly themeMode = signal(getThemeMode())
 	protected readonly runtimeInfo = signal<DesktopHostRuntimeInfo | null>(null)
 
+	private get desktop() {
+		return getDesktop()
+	}
+
 	async ngOnInit() {
-		if (this.desktop) {
-			this.runtimeInfo.set(await loadDesktopHostRuntimeInfo(this.desktop).catch(() => null))
+		const desktop = this.desktop
+		if (desktop) {
+			this.runtimeInfo.set(await loadDesktopHostRuntimeInfo(desktop).catch(() => null))
 		}
 		await this.refreshWindowState()
 	}
@@ -86,13 +90,15 @@ export class MainPageComponent implements OnInit {
 	}
 
 	protected async minimizeWindow() {
-		if (!this.desktop) return
-		await minimizeDesktopWindow(this.desktop).catch(() => null)
+		const desktop = this.desktop
+		if (!desktop) return
+		await minimizeDesktopWindow(desktop).catch(() => null)
 	}
 
 	protected async toggleWindowMaximize() {
-		if (!this.desktop) return
-		const result = await toggleDesktopWindowMaximize(this.desktop).catch(() => null)
+		const desktop = this.desktop
+		if (!desktop) return
+		const result = await toggleDesktopWindowMaximize(desktop).catch(() => null)
 		if (result?.available) {
 			this.isWindowMaximized.set(result.isMaximized)
 			return
@@ -102,14 +108,16 @@ export class MainPageComponent implements OnInit {
 	}
 
 	protected async closeWindow() {
-		if (!this.desktop) return
-		await closeDesktopWindow(this.desktop).catch(() => null)
+		const desktop = this.desktop
+		if (!desktop) return
+		await closeDesktopWindow(desktop).catch(() => null)
 	}
 
 	private async refreshWindowState() {
-		if (!this.desktop) return
+		const desktop = this.desktop
+		if (!desktop) return
 
-		const state = (await getDesktopWindowState(this.desktop).catch(() => null)) as DesktopWindowStateResult | null
+		const state = (await getDesktopWindowState(desktop).catch(() => null)) as DesktopWindowStateResult | null
 		if (!state?.available) return
 
 		this.isWindowMaximized.set(state.isMaximized)

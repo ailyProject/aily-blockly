@@ -1,4 +1,4 @@
-import { Component, inject, OnDestroy, OnInit, signal } from '@angular/core'
+import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core'
 import { Router } from '@angular/router'
 
 import { APP_ICON_IMPORTS, APP_ICON_PROVIDERS } from '@/components/ui/icon/app-icons'
@@ -6,6 +6,7 @@ import { openProjectInEditor } from '@/runtime/project-routing'
 import { getThemeMode } from '@/runtime/theme'
 import { getCore } from '@/utils/core'
 import { getDesktop, loadDesktopHostRuntimeInfo, selectDesktopProjectPath } from '@/utils/desktop'
+import { syncDesktopCoreBridge } from '@/utils/desktop/core'
 
 import type { DesktopHostRuntimeInfo } from '@desktop'
 import type { GuideRecentProject } from './types'
@@ -40,7 +41,6 @@ interface GuideNewsItem {
 })
 export class GuidePageComponent implements OnInit, OnDestroy {
 	private readonly core = getCore()
-	private readonly desktop = getDesktop()
 	private readonly router = inject(Router)
 	private sponsorCarouselTimer: ReturnType<typeof setTimeout> | null = null
 	private sponsorResetTimer: ReturnType<typeof setTimeout> | null = null
@@ -58,6 +58,20 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	protected readonly sponsorRenderPages = signal<Array<Array<GuideSponsorItem>>>([])
 	protected readonly sponsorPageIndex = signal(0)
 	protected readonly sponsorPageTransitionEnabled = signal(true)
+	protected readonly desktopAvailable = signal(false)
+	protected readonly preloadReady = signal(false)
+	protected readonly primaryRecentCount = signal(0)
+	protected readonly fallbackRecentCount = signal(0)
+	protected readonly mergedRecentCount = signal(0)
+	protected readonly recentDebugSummary = computed(() => ({
+		desktopAvailable: this.desktopAvailable(),
+		preloadReady: this.preloadReady(),
+		appDataPath: this.runtimeInfo()?.appDataPath || 'n/a',
+		primaryCount: this.primaryRecentCount(),
+		fallbackCount: this.fallbackRecentCount(),
+		mergedCount: this.mergedRecentCount(),
+		firstProject: this.recentProjects()[0] || null
+	}))
 
 	protected get logoSrc(): string {
 		return getThemeMode() === 'light' ? 'imgs/logo-light.webp' : 'imgs/logo.webp'
@@ -73,8 +87,25 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 
 	protected readonly isCnRegion = () => this.language().toLowerCase().startsWith('zh')
 
+	private get desktop() {
+		return getDesktop()
+	}
+
 	async ngOnInit() {
-		const runtimeInfo = this.desktop ? await loadDesktopHostRuntimeInfo(this.desktop).catch(() => null) : null
+		const desktop = this.desktop
+		this.preloadReady.set(Boolean(window.$desktopPreload?.ready))
+		console.log(
+			'[recent-debug] desktop-available',
+			Boolean(desktop),
+			Boolean(window.$erpc),
+			Boolean(window.$desktopPreload?.ready)
+		)
+		this.desktopAvailable.set(Boolean(desktop))
+		if (desktop) {
+			await syncDesktopCoreBridge(desktop).catch(() => null)
+		}
+		const runtimeInfo = desktop ? await loadDesktopHostRuntimeInfo(desktop).catch(() => null) : null
+		console.log('[recent-debug] runtime-info', runtimeInfo)
 		this.runtimeInfo.set(runtimeInfo)
 
 		const configSummary = await this.core.config.get.query({ fallbackLanguage: 'zh_CN' }).catch(() => ({
@@ -86,8 +117,14 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 		const recentProjects = runtimeInfo?.appDataPath
 			? await this.core.project.getStoredRecentProjects.query({ appDataPath: runtimeInfo.appDataPath }).catch(() => [])
 			: await this.core.project.getRecentProjects.query({}).catch(() => [])
-		const nextRecentProjects =
-			recentProjects.length > 0 ? recentProjects : await this.loadLegacyRecentProjectsFallback(runtimeInfo)
+		this.primaryRecentCount.set(recentProjects.length)
+		console.log('[recent-debug] primary-recent-count', recentProjects.length, recentProjects)
+		const fallbackRecentProjects = await this.loadLegacyRecentProjectsFallback(runtimeInfo)
+		this.fallbackRecentCount.set(fallbackRecentProjects.length)
+		console.log('[recent-debug] fallback-recent-count', fallbackRecentProjects.length, fallbackRecentProjects)
+		const nextRecentProjects = this.mergeRecentProjects(recentProjects, fallbackRecentProjects)
+		this.mergedRecentCount.set(nextRecentProjects.length)
+		console.log('[recent-debug] merged-recent-count', nextRecentProjects.length, nextRecentProjects)
 
 		this.language.set(configSummary.selectedLanguage)
 		this.recentProjects.set(nextRecentProjects)
@@ -133,12 +170,13 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	}
 
 	protected async openProjectBySelection() {
-		if (!this.desktop) {
+		const desktop = this.desktop
+		if (!desktop) {
 			await this.router.navigate(['/main/project-open'])
 			return
 		}
 
-		const selectedPath = await selectDesktopProjectPath(this.desktop, '').catch(() => '')
+		const selectedPath = await selectDesktopProjectPath(desktop, '').catch(() => '')
 		if (!selectedPath) return
 
 		await this.openProjectByPath(selectedPath)
@@ -167,11 +205,26 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	private async loadLegacyRecentProjectsFallback(
 		runtimeInfo: DesktopHostRuntimeInfo | null
 	): Promise<Array<GuideRecentProject>> {
-		if (!runtimeInfo?.documentsPath) return []
-
-		const userHome = runtimeInfo.documentsPath.replace(/\/Documents$/, '')
+		const userHome = runtimeInfo?.documentsPath?.replace(/\/Documents$/, '') || '/Users/xiewendao'
 		const legacyAppDataPath = `${userHome}/Library/aily-project`
-		return this.core.project.getStoredRecentProjects.query({ appDataPath: legacyAppDataPath }).catch(() => [])
+		const fallback = await this.core.project.getStoredRecentProjects
+			.query({ appDataPath: legacyAppDataPath })
+			.catch(() => [])
+		console.log('[recent-debug] core-legacy-recent-count', fallback.length, fallback, legacyAppDataPath)
+		return fallback
+	}
+
+	private mergeRecentProjects(
+		primary: Array<GuideRecentProject>,
+		fallback: Array<GuideRecentProject>
+	): Array<GuideRecentProject> {
+		const merged = [...primary, ...fallback]
+		const seen = new Set<string>()
+		return merged.filter(project => {
+			if (!project?.path || seen.has(project.path)) return false
+			seen.add(project.path)
+			return true
+		})
 	}
 
 	private async loadNewsPosts() {

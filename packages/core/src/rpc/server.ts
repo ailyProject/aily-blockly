@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server'
 import { trpcServer } from '@hono/trpc-server'
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { createAilyCoreServiceAddress } from 'shared'
 
 import { router } from '.'
@@ -26,6 +27,15 @@ export const createAilyCoreServer = (options: CreateAilyCoreServerOptions = {}):
 	const routes = router(runtime)
 	const app = new Hono()
 	let nodeServer: { close(callback?: () => void): void } | null = null
+
+	app.use(
+		'*',
+		cors({
+			origin: '*',
+			allowMethods: ['GET', 'POST', 'OPTIONS'],
+			allowHeaders: ['Content-Type', 'Authorization', 'x-trpc-source']
+		})
+	)
 
 	app.get(address.healthPath, c => c.json(createAilyCoreServiceHealth(runtime)))
 	app.route('/api/agent', api)

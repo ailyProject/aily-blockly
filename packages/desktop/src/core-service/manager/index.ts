@@ -1,5 +1,6 @@
 import { createAilyCoreServiceAddress } from 'shared'
 
+import { writeDesktopStartupLog } from '../../app/log'
 import { readDesktopCoreServiceHealth, waitForDesktopCoreServiceHealthy } from './health'
 import { createDesktopCoreServiceChild, resolveDesktopCoreServiceEntrypoint } from './process'
 
@@ -20,11 +21,14 @@ export const createDesktopCoreServiceManager = (
 	return {
 		address,
 		start: async () => {
+			writeDesktopStartupLog(`[core-service] start-begin ${address.baseUrl}`)
 			if (await waitForDesktopCoreServiceHealthy(address, { timeoutMs: 1_000, intervalMs: 0 })) {
+				writeDesktopStartupLog('[core-service] already-healthy')
 				return address
 			}
 
 			if (!child) {
+				writeDesktopStartupLog('[core-service] spawn-child')
 				child = createDesktopCoreServiceChild(address, {
 					entry: resolveDesktopCoreServiceEntrypoint(options.entryOverride)
 				})
@@ -34,8 +38,12 @@ export const createDesktopCoreServiceManager = (
 				timeoutMs: options.startupTimeoutMs,
 				intervalMs: options.healthcheckIntervalMs
 			})
-			if (healthy) return address
+			if (healthy) {
+				writeDesktopStartupLog('[core-service] start-healthy')
+				return address
+			}
 
+			writeDesktopStartupLog('[core-service] start-timeout')
 			throw new Error(`Core service failed to start before timeout: ${address.healthUrl}`)
 		},
 		stop: async () => {
