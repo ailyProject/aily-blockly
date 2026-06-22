@@ -1,57 +1,204 @@
-.workspace {
-	display: grid;
-	grid-template-columns: 280px minmax(0, 1fr);
-	gap: 24px;
+:host {
+	display: block;
+	height: 100%;
+}
+
+.main-window-box {
+	height: 100vh;
+	width: 100vw;
+	border-radius: 5px;
+	overflow: hidden;
+	background: var(--aily-bg-primary);
+}
+
+.content-box {
+	height: calc(100vh - 70px);
+	width: 100%;
+	position: relative;
+	overflow: hidden;
+}
+
+.header-box {
+	display: flex;
+	justify-content: flex-start;
+	align-items: center;
+	position: relative;
+	height: 40px;
+	width: 100%;
+	background: var(--aily-bg-primary);
+	border-bottom: 2px solid var(--aily-border-primary);
+}
+
+.menu {
+	width: 38px;
+	height: 38px;
+}
+
+.menu .btn:hover {
+	background: var(--aily-bg-tertiary);
+}
+
+.board {
+	padding-left: 10px;
+	height: 38px;
+	color: var(--aily-text-hint);
+	cursor: pointer;
+	opacity: 0.7;
+	padding-top: 2px;
+	background: transparent;
+	border: 0;
+	display: flex;
+	align-items: center;
+	font: inherit;
+}
+
+.board:hover {
+	opacity: 1;
+}
+
+.down {
+	padding-top: 2px;
+	margin-left: 5px;
+	font-size: 18px;
+	display: flex;
+	align-items: center;
+}
+
+.null-box {
+	flex-grow: 1;
+	height: 100%;
+	position: relative;
+}
+
+.drag {
+	-webkit-app-region: drag;
+}
+
+.no-drag,
+.no-drag * {
+	-webkit-app-region: no-drag;
+}
+
+.project-box {
+	position: absolute;
+	width: 20vw;
+	left: 40vw;
+	white-space: nowrap;
+	text-align: center;
+	color: var(--aily-text-tertiary);
+	pointer-events: none;
+}
+
+.toolbox {
+	position: relative;
+	display: flex;
+	align-items: center;
+	height: 100%;
+	background: var(--aily-bg-primary);
+}
+
+.zone {
+	padding: 5px;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.btn {
+	width: 38px;
+	height: 38px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-direction: column;
+	color: var(--aily-text-muted);
+	opacity: 0.7;
+	font-size: 19px;
+	transition: opacity 0.3s;
+	position: relative;
+	background: transparent;
+	border: 0;
+	cursor: pointer;
+}
+
+.btn:hover {
+	opacity: 1;
+}
+
+.btn.selected {
+	color: var(--aily-text-primary);
+	opacity: 1;
+}
+
+.btn ng-icon {
+	width: 18px;
+	height: 18px;
+}
+
+.divider {
+	border-left: 1px solid var(--aily-border-primary);
+	height: 24px;
+}
+
+.more {
+	position: absolute;
+	top: 3px;
+	right: -3px;
+	font-size: 10px;
+	color: #fff;
+	background: red;
+	border-radius: 10px;
+	height: 12px;
+	padding: 0 5px;
+	padding-top: 1px;
+	line-height: 12px;
+}
+
+.win-btns {
+	display: flex;
+	align-items: center;
+	margin-left: 10px;
+	font-size: 15px;
+}
+
+.win-btns .btn {
+	font-size: 16px;
+	width: 38px;
+	height: 38px;
+	margin-right: 0;
+}
+
+.win-btns .btn:hover {
+	background: var(--aily-bg-tertiary);
+}
+
+.win-btns .close:hover {
+	color: var(--aily-color-error);
+}
+
+.middle-box {
+	width: 100%;
+	height: 100%;
+	position: relative;
 	min-height: 0;
 }
 
-.sidebar {
-	display: grid;
-	align-content: start;
-	gap: 16px;
+.footer-box {
+	display: flex;
+	justify-content: flex-start;
+	align-items: center;
+	height: 30px;
+	background: var(--aily-bg-primary);
+	border-top: 2px solid var(--aily-border-primary);
+	position: relative;
 }
 
-.nav-group {
-	display: grid;
-	gap: 10px;
+.footer-box .btn {
+	width: 28px;
+	height: 28px;
 }
 
-.group-label {
-	margin: 0;
-	font-size: 12px;
-	font-weight: 700;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: var(--muted-foreground);
-}
-
-.nav-card {
-	display: grid;
-	gap: 4px;
-	padding: 14px 16px;
-	border-radius: 16px;
-	background: color-mix(in srgb, var(--card) 92%, transparent);
-	border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-	text-decoration: none;
-	color: inherit;
-}
-
-.nav-card span {
-	font-size: 13px;
-	color: var(--muted-foreground);
-}
-
-.nav-card.active {
-	border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
-	background: color-mix(in srgb, var(--primary) 10%, var(--card));
-}
-
-.canvas {
-	min-width: 0;
-}
-
-@media (max-width: 960px) {
-	.workspace {
-		grid-template-columns: 1fr;
-	}
+.footer-box .btn:hover {
+	background: var(--aily-bg-tertiary);
 }

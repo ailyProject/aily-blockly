@@ -1,13 +1,64 @@
 .project-new-page {
 	display: grid;
+	gap: 16px;
+	padding: 18px;
+}
+
+.page-header,
+.project-column {
+	display: grid;
+}
+
+.page-header {
+	grid-template-columns: minmax(0, 1fr) minmax(260px, 420px);
 	gap: 18px;
+	align-items: end;
+	padding: 0 2px;
+}
+
+.page-header h1,
+.page-header p,
+.page-eyebrow {
+	margin: 0;
+}
+
+.page-header h1 {
+	font-size: 24px;
+	font-weight: 600;
+	color: var(--aily-text-tertiary);
+}
+
+.page-header p {
+	color: var(--aily-text-secondary);
+}
+
+.page-eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--aily-text-secondary);
+}
+
+.project-grid {
+	display: grid;
+	grid-template-columns: 320px minmax(0, 1fr);
+	gap: 16px;
+	align-items: start;
+}
+
+.project-column {
+	gap: 16px;
 }
 
 .panel {
 	display: grid;
 	gap: 16px;
-	padding: 24px;
-	border-radius: 24px;
+	padding: 16px;
+	border-radius: 6px;
+	background: var(--aily-bg-elevated);
+	border: 1px solid var(--aily-border-primary);
+	box-shadow: var(--aily-shadow-sm);
 }
 
 .panel.error p,
@@ -15,7 +66,7 @@
 .field span,
 .list-item span {
 	margin: 0;
-	color: var(--muted-foreground);
+	color: var(--aily-text-secondary);
 }
 
 .panel-header {
@@ -54,9 +105,16 @@
 	min-width: 220px;
 	width: 100%;
 	padding: 12px 14px;
-	border-radius: 16px;
-	background: color-mix(in srgb, var(--muted) 65%, transparent);
-	border: 0;
+	border-radius: 6px;
+	background: var(--aily-bg-secondary);
+	border: 1px solid var(--aily-border-primary);
 	text-align: left;
 	cursor: pointer;
+}
+
+@media (max-width: 1100px) {
+	.page-header,
+	.project-grid {
+		grid-template-columns: 1fr;
+	}
 }

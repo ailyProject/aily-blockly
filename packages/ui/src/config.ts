@@ -1,6 +1,6 @@
 import {
+	APP_INITIALIZER,
 	ApplicationConfig,
-	ENVIRONMENT_INITIALIZER,
 	inject,
 	provideBrowserGlobalErrorListeners,
 	provideZonelessChangeDetection
@@ -21,16 +21,17 @@ export const appConfig: ApplicationConfig = {
 		provideZonelessChangeDetection(),
 		provideRouter(routes),
 		{
-			provide: ENVIRONMENT_INITIALIZER,
+			provide: APP_INITIALIZER,
 			multi: true,
-			useValue: () => {
-				initializeDesktopCoreBridge()
+			useFactory: () => {
 				const router = inject(Router)
-				void initializeDesktopPendingProjectOpen(router).then(openedByDesktop => {
+				return async () => {
+					await initializeDesktopCoreBridge()
+					const openedByDesktop = await initializeDesktopPendingProjectOpen(router)
 					if (!openedByDesktop) {
-						void initializeStoredProjectSession(router)
+						await initializeStoredProjectSession(router)
 					}
-				})
+				}
 			}
 		},
 		provideAgentApi()

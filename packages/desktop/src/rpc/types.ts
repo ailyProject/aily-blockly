@@ -45,6 +45,16 @@ export interface DesktopFocusProcessResult extends DesktopHostCapabilityResult {
 }
 
 /**
+ * 当前窗口状态。
+ */
+export interface DesktopWindowStateResult extends DesktopHostCapabilityResult {
+	/** 当前窗口是否已最大化。 */
+	isMaximized: boolean
+	/** 当前窗口是否全屏。 */
+	isFullScreen: boolean
+}
+
+/**
  * desktop 根 ERPC 路由类型
  */
 type RoutersFactory = (typeof import('./index'))['default']

@@ -18,6 +18,10 @@
 			"outputs": ["dist/**"],
 			"cache": true
 		},
+		"core#build": {
+			"outputs": ["dist/**"],
+			"cache": true
+		},
 		"deps": {
 			"dependsOn": ["erpc#build", "shared#build", "core#build"]
 		},

@@ -1,0 +1,78 @@
+[
+    {
+        "name": "点灯科技",
+        "img": "diandeng/logo.webp",
+        "imgLight": "diandeng/logo-light.webp",
+        "url": "https://diandeng.tech"
+    },
+    {
+        "name": "Emakefun",
+        "img": "emakefun/logo.webp",
+        "imgLight": "emakefun/logo-light.webp",
+        "url": "https://emakefun.com"
+    },
+    {
+        "name": "科易互动",
+        "img": "keyes/logo.webp",
+        "imgLight": "keyes/logo-light.webp",
+        "url": "https://www.keyesrobot.cn"
+    },
+    {
+        "name": "OpenJumper",
+        "img": "openjumper/logo.webp",
+        "url": "https://openjumper.com"
+    },
+    {
+        "name": "怦德电子",
+        "img": "pengde/logo.webp",
+        "url": "https://www.pdmicro.cn"
+    },
+    {
+        "name": "SeeedStudio",
+        "img": "seeedstudio/logo.webp",
+        "imgLight": "seeedstudio/logo-light.webp",
+        "url": "https://www.seeedstudio.com"
+    },
+    {
+        "name": "逐飞科技",
+        "img": "seekfree/logo.webp",
+        "imgLight": "seekfree/logo-light.webp",
+        "url": "https://www.seekfree.cn"
+    },
+    {
+        "name": "三塔科技",
+        "img": "titlab/logo.webp",
+        "imgLight": "titlab/logo-light.webp",
+        "url": "https://titlab.cn"
+    },
+    {
+        "name": "陶冬",
+        "company": "来自 天微电子",
+        "img": null,
+        "url": null
+    },
+    {
+        "name": "夏青",
+        "company": "来自 蘑菇云创客空间",
+        "img": null,
+        "url": "https://github.com/rockets-cn"
+    },
+    {
+        "name": "Dzz",
+        "company": "社区伙伴",
+        "img": null,
+        "url": null
+    },
+    {
+        "name": "李端",
+        "company": "来自 益学汇",
+        "img": null,
+        "url": null
+    },
+    {
+        "name": "孙俊杰",
+        "company": "来自 爱比邻科技",
+        "img": null,
+        "url": null
+    }
+]

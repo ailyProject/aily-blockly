@@ -13,11 +13,14 @@ export const createDesktopMainWindow = () =>
 	new BrowserWindow({
 		width: 1440,
 		height: 920,
-		minWidth: 1120,
-		minHeight: 720,
+		minWidth: 800,
+		minHeight: 600,
 		show: false,
 		title: 'Aily Blockly',
-		backgroundColor: '#f6f5ef',
+		frame: false,
+		titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+		autoHideMenuBar: true,
+		backgroundColor: '#2b2d30',
 		webPreferences: {
 			preload: resolveDesktopPreloadPath(),
 			contextIsolation: true,

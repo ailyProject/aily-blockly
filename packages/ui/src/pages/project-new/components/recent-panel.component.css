@@ -1,8 +1,11 @@
 .panel {
 	display: grid;
 	gap: 16px;
-	padding: 24px;
-	border-radius: 24px;
+	padding: 16px;
+	border-radius: 6px;
+	background: var(--aily-bg-elevated);
+	border: 1px solid var(--aily-border-primary);
+	box-shadow: var(--aily-shadow-sm);
 }
 
 .panel-header h2,
@@ -13,7 +16,7 @@
 
 .eyebrow,
 .list-item span {
-	color: var(--muted-foreground);
+	color: var(--aily-text-secondary);
 }
 
 .eyebrow {
@@ -35,9 +38,9 @@
 	min-width: 220px;
 	width: 100%;
 	padding: 12px 14px;
-	border-radius: 16px;
-	background: color-mix(in srgb, var(--muted) 65%, transparent);
-	border: 0;
+	border-radius: 6px;
+	background: var(--aily-bg-secondary);
+	border: 1px solid var(--aily-border-primary);
 	text-align: left;
 	cursor: pointer;
 }

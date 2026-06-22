@@ -1,8 +1,11 @@
 .panel {
 	display: grid;
 	gap: 16px;
-	padding: 24px;
-	border-radius: 24px;
+	padding: 16px;
+	border-radius: 6px;
+	background: var(--aily-bg-elevated);
+	border: 1px solid var(--aily-border-primary);
+	box-shadow: var(--aily-shadow-sm);
 }
 
 .panel-header {
@@ -22,7 +25,7 @@
 	font-weight: 700;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
-	color: var(--muted-foreground);
+	color: var(--aily-text-secondary);
 }
 
 .badge-row {

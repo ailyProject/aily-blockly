@@ -25,7 +25,7 @@ export const syncDesktopCoreBridge = async (desktop: NonNullable<Desktop>) => {
  */
 export const initializeDesktopCoreBridge = () => {
 	const desktop = getDesktop()
-	if (!desktop) return
+	if (!desktop) return Promise.resolve(null)
 
-	void syncDesktopCoreBridge(desktop).catch(() => null)
+	return syncDesktopCoreBridge(desktop).catch(() => null)
 }

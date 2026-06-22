@@ -1,39 +1,79 @@
-<app-shell>
-  <div class="workspace">
-    <aside class="sidebar">
-      <section class="nav-group">
-        <p class="group-label">Workspace</p>
-        @for (item of primaryRouteLinks; track item.href) {
-          <a
-            class="nav-card"
-            [routerLink]="item.href"
-            routerLinkActive="active"
-            [routerLinkActiveOptions]="{ exact: true }">
-            <strong>{{ item.label }}</strong>
-            <span>{{ item.detail }}</span>
-          </a>
-        }
-      </section>
+<div class="main-window-box">
+	<header class="header-box">
+		<div class="menu no-drag">
+			<button class="btn" type="button" (click)="navigateToGuide()" title="Menu">
+				<ng-icon name="lucideMenu"></ng-icon>
+			</button>
+		</div>
 
-      <hlm-separator />
+		<button class="board no-drag" type="button" (click)="navigateToProjectOpen()">
+			workspace (-)
+			<span class="down"><ng-icon name="lucideChevronDown"></ng-icon></span>
+		</button>
 
-      <section class="nav-group">
-        <p class="group-label">Tools</p>
-        @for (item of utilityRouteLinks; track item.href) {
-          <a
-            class="nav-card"
-            [routerLink]="item.href"
-            routerLinkActive="active"
-            [routerLinkActiveOptions]="{ exact: true }">
-            <strong>{{ item.label }}</strong>
-            <span>{{ item.detail }}</span>
-          </a>
-        }
-      </section>
-    </aside>
+		<div class="null-box drag" (dblclick)="toggleWindowMaximize()"></div>
 
-    <section class="canvas">
-      <router-outlet />
-    </section>
-  </div>
-</app-shell>
+		<div class="project-box">{{ currentProjectLabel }}</div>
+
+		<div class="toolbox no-drag">
+			<div class="zone">
+				<button class="btn" type="button" (click)="navigateToProjectNew()" title="New Project">
+					<ng-icon name="lucideBlocks"></ng-icon>
+				</button>
+				<button class="btn" type="button" (click)="navigateToProjectOpen()" title="Open Project">
+					<ng-icon name="lucideFolderOpen"></ng-icon>
+				</button>
+			</div>
+			<div class="zone">
+				<button class="btn" type="button" (click)="navigateToPlayground()" title="Project Hub">
+					<ng-icon name="lucideCpu"></ng-icon>
+				</button>
+				<button class="btn ai-btn" type="button" (click)="navigateToChat()" title="AI Assistant">
+					<ng-icon name="lucideBot"></ng-icon>
+					<span class="more">AI</span>
+				</button>
+			</div>
+			<div class="divider"></div>
+			<div class="zone">
+				<button class="btn" type="button" (click)="toggleTheme()" title="Toggle Theme">
+					@if (themeMode() === 'dark') {
+					<ng-icon name="lucideSunMedium"></ng-icon>
+					} @else {
+					<ng-icon name="lucideMoonStar"></ng-icon>
+					}
+				</button>
+			</div>
+		</div>
+
+		<div class="win-btns no-drag">
+			<button class="btn minimize" type="button" (click)="minimizeWindow()" title="Minimize">
+				<ng-icon name="lucideMinus"></ng-icon>
+			</button>
+			<button class="btn maximize" type="button" (click)="toggleWindowMaximize()" title="Maximize">
+				@if (isWindowMaximized()) {
+				<ng-icon name="lucideSquare"></ng-icon>
+				} @else {
+				<ng-icon name="lucideSquare"></ng-icon>
+				}
+			</button>
+			<button class="btn close" type="button" (click)="closeWindow()" title="Close">
+				<ng-icon name="lucideX"></ng-icon>
+			</button>
+		</div>
+	</header>
+
+	<div class="content-box">
+		<div class="middle-box">
+			<router-outlet />
+		</div>
+	</div>
+
+	<footer class="footer-box">
+		<button class="btn no-drag" type="button" (click)="openBottomLog()" title="Log">
+			<ng-icon name="lucidePanelBottom"></ng-icon>
+		</button>
+		<button class="btn no-drag" type="button" (click)="openBottomTerminal()" title="Terminal">
+			<ng-icon name="lucideTerminal"></ng-icon>
+		</button>
+	</footer>
+</div>

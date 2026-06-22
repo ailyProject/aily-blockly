@@ -8,7 +8,7 @@
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
     <script type="module">
       const storedMode = localStorage.getItem('theme-mode');
-      const themeMode = storedMode === 'dark' ? 'dark' : 'light';
+      const themeMode = storedMode === 'light' ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', themeMode);
       document.documentElement.classList.toggle('dark', themeMode === 'dark');
       document.documentElement.style.colorScheme = themeMode;

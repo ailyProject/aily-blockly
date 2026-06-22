@@ -1,7 +1,6 @@
 @font-face {
-	font-family: 'GoogleSans';
-	src:
-		url('/fonts/GoogleSans/GoogleSans.ttf') format('truetype');
+	font-family: 'MiSans';
+	src: url('/fonts/MiSans-Regular.woff2') format('woff2');
 	font-style: normal;
 	font-weight: 400;
 	font-display: swap;
@@ -9,8 +8,15 @@
 
 @font-face {
 	font-family: 'GoogleSans';
-	src:
-		url('/fonts/GoogleSans/GoogleSans-Italic.ttf') format('truetype');
+	src: url('/fonts/GoogleSans/GoogleSans.ttf') format('truetype');
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: 'GoogleSans';
+	src: url('/fonts/GoogleSans/GoogleSans-Italic.ttf') format('truetype');
 	font-style: italic;
 	font-weight: 400;
 	font-display: swap;
@@ -18,8 +24,7 @@
 
 @font-face {
 	font-family: 'GeistMono';
-	src:
-		url('/fonts/GeistMono/GeistMono.ttf') format('truetype');
+	src: url('/fonts/GeistMono/GeistMono.ttf') format('truetype');
 	font-style: normal;
 	font-weight: 400;
 	font-display: swap;
@@ -27,8 +32,7 @@
 
 @font-face {
 	font-family: 'GeistMono';
-	src:
-		url('/fonts/GeistMono/GeistMono-Italic.ttf') format('truetype');
+	src: url('/fonts/GeistMono/GeistMono-Italic.ttf') format('truetype');
 	font-style: italic;
 	font-weight: 400;
 	font-display: swap;

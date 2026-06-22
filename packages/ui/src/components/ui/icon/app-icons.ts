@@ -2,15 +2,20 @@ import { NgIcon, provideIcons } from '@ng-icons/core'
 import {
 	lucideBlocks,
 	lucideBot,
+	lucideChevronDown,
 	lucideCpu,
 	lucideFolderOpen,
+	lucideMenu,
+	lucideMinus,
 	lucideMoonStar,
 	lucidePanelBottom,
 	lucidePanelLeft,
 	lucideSearch,
 	lucideSlidersHorizontal,
+	lucideSquare,
 	lucideSunMedium,
-	lucideTerminal
+	lucideTerminal,
+	lucideX
 } from '@ng-icons/lucide'
 
 export const APP_ICON_IMPORTS = [NgIcon] as const
@@ -19,14 +24,19 @@ export const APP_ICON_PROVIDERS = [
 	provideIcons({
 		lucideBlocks,
 		lucideBot,
+		lucideChevronDown,
 		lucideCpu,
 		lucideFolderOpen,
+		lucideMenu,
+		lucideMinus,
 		lucideMoonStar,
 		lucidePanelBottom,
 		lucidePanelLeft,
 		lucideSearch,
+		lucideSquare,
 		lucideSlidersHorizontal,
 		lucideSunMedium,
-		lucideTerminal
+		lucideTerminal,
+		lucideX
 	})
 ] as const

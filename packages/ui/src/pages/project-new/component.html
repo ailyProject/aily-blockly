@@ -1,4 +1,15 @@
 <section class="project-new-page">
+	<header class="page-header">
+		<div>
+			<p class="page-eyebrow">Project New</p>
+			<h1>Create Or Import A Project</h1>
+		</div>
+		<p>
+			Keep the legacy board-first workflow: choose target hardware, confirm project location, then import a cloud
+			template only when needed.
+		</p>
+	</header>
+
 	@if (loading()) {
 	<article hlmCard class="panel">
 		<strong>Loading project defaults...</strong>
@@ -9,44 +20,50 @@
 		<p>{{ error() }}</p>
 	</article>
 	} @else {
-	<project-new-setup-panel
-		[projectName]="projectName()"
-		[nameValidationMessage]="nameValidationMessage()"
-		[rootPath]="rootPath()"
-		[resolvedProjectPath]="resolvedProjectPath()"
-		[pathConflict]="pathConflict()"
-		[importBusy]="importBusy()"
-		[runtimeAvailable]="!!runtimeInfo()"
-		[canCreate]="canCreateBlankProject()"
-		(reload)="refresh()"
-		(projectNameChange)="updateProjectNameValue($event)"
-		(chooseRootFolder)="chooseRootPath()"
-		(suggestAvailableName)="suggestAvailableName()"
-		(createBlankProject)="createBlankProject()"
-	/>
+	<div class="project-grid">
+		<div class="project-column project-column--meta">
+			<project-new-setup-panel
+				[projectName]="projectName()"
+				[nameValidationMessage]="nameValidationMessage()"
+				[rootPath]="rootPath()"
+				[resolvedProjectPath]="resolvedProjectPath()"
+				[pathConflict]="pathConflict()"
+				[importBusy]="importBusy()"
+				[runtimeAvailable]="!!runtimeInfo()"
+				[canCreate]="canCreateBlankProject()"
+				(reload)="refresh()"
+				(projectNameChange)="updateProjectNameValue($event)"
+				(chooseRootFolder)="chooseRootPath()"
+				(suggestAvailableName)="suggestAvailableName()"
+				(createBlankProject)="createBlankProject()"
+			/>
 
-	<project-new-board-panel
-		[selectedBoardName]="selectedBoardName()"
-		[hasExamples]="hasExamples()"
-		[boardOptions]="boardOptions"
-		(boardSelect)="chooseBoard($event)"
-	/>
+			<project-new-recent-panel [recentProjects]="recentProjects()" (projectSelect)="useRecentProject($event)" />
+		</div>
 
-	<project-new-recent-panel [recentProjects]="recentProjects()" (projectSelect)="useRecentProject($event)" />
+		<div class="project-column">
+			<project-new-board-panel
+				[selectedBoardName]="selectedBoardName()"
+				[hasExamples]="hasExamples()"
+				[boardOptions]="boardOptions"
+				(boardSelect)="chooseBoard($event)"
+			/>
 
-	<project-new-template-panel
-		[templateSourceMode]="templateSourceMode()"
-		[authToken]="authToken()"
-		[templates]="templates()"
-		[selectedTemplate]="selectedTemplate()"
-		[importBusy]="importBusy()"
-		[pathConflict]="pathConflict()"
-		[nameValidationMessage]="nameValidationMessage()"
-		[importMessage]="importMessage()"
-		(templateSourceModeSelect)="selectTemplateSourceMode($event)"
-		(authTokenChange)="updateAuthTokenValue($event)"
-		(templateSelect)="chooseTemplate($event)"
-		(importTemplate)="importSelectedTemplate()"
-	/>
+			<project-new-template-panel
+				[templateSourceMode]="templateSourceMode()"
+				[authToken]="authToken()"
+				[templates]="templates()"
+				[selectedTemplate]="selectedTemplate()"
+				[importBusy]="importBusy()"
+				[pathConflict]="pathConflict()"
+				[nameValidationMessage]="nameValidationMessage()"
+				[importMessage]="importMessage()"
+				(templateSourceModeSelect)="selectTemplateSourceMode($event)"
+				(authTokenChange)="updateAuthTokenValue($event)"
+				(templateSelect)="chooseTemplate($event)"
+				(importTemplate)="importSelectedTemplate()"
+			/>
+		</div>
+	</div>
 	}
 </section>

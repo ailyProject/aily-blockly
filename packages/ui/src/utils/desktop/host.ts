@@ -22,6 +22,30 @@ export const focusDesktopProcess = (desktop: NonNullable<Desktop>, pid: number) 
 	desktop.host.focusProcess.mutate({ pid })
 
 /**
+ * 读取当前 Electron 窗口状态。
+ * @param desktop - desktop ERPC 句柄
+ */
+export const getDesktopWindowState = (desktop: NonNullable<Desktop>) => desktop.host.getWindowState.query()
+
+/**
+ * 最小化当前 Electron 窗口。
+ * @param desktop - desktop ERPC 句柄
+ */
+export const minimizeDesktopWindow = (desktop: NonNullable<Desktop>) => desktop.host.minimizeWindow.mutate()
+
+/**
+ * 切换当前 Electron 窗口最大化状态。
+ * @param desktop - desktop ERPC 句柄
+ */
+export const toggleDesktopWindowMaximize = (desktop: NonNullable<Desktop>) => desktop.host.toggleMaximizeWindow.mutate()
+
+/**
+ * 关闭当前 Electron 窗口。
+ * @param desktop - desktop ERPC 句柄
+ */
+export const closeDesktopWindow = (desktop: NonNullable<Desktop>) => desktop.host.closeWindow.mutate()
+
+/**
  * 通过 desktop 宿主选择目录。
  * @param desktop - desktop ERPC 句柄。
  * @param path - 当前默认目录。

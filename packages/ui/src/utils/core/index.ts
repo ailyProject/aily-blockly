@@ -7,6 +7,7 @@ import type { Core, CoreWindowConfig, CreateCoreOptions } from './types'
 export type { Core, CoreWindowConfig, CreateCoreOptions, LoadHomePreviewContext, LoadHomePreviewOptions } from './types'
 export { loadHomePreview } from '../home-preview'
 let coreSingleton: Core | null = null
+let coreSingletonBaseUrl = ''
 
 /**
  * 解析 UI 当前应连接到的 Core 服务根地址。
@@ -35,6 +36,9 @@ export const assignCoreWindowConfig = (config: CoreWindowConfig) => {
 		...(window.__AILY_CORE__ ?? {}),
 		...config
 	}
+
+	coreSingleton = null
+	coreSingletonBaseUrl = ''
 }
 
 /**
@@ -56,8 +60,10 @@ export function createCore(options: CreateCoreOptions = {}) {
  * @param options - 地址解析选项。
  */
 export const getCore = (options: CreateCoreOptions = {}) => {
-	if (!coreSingleton || options.baseUrl || options.address) {
+	const nextBaseUrl = resolveCoreBaseUrl(options)
+	if (!coreSingleton || options.baseUrl || options.address || coreSingletonBaseUrl !== nextBaseUrl) {
 		coreSingleton = createCore(options)
+		coreSingletonBaseUrl = nextBaseUrl
 	}
 	return coreSingleton
 }

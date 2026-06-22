@@ -1,75 +1,105 @@
-<section class="guide-page">
-  <article hlmCard class="hero-card">
-    <div class="hero-copy">
-      <span hlmBadge>{{ language() }}</span>
-      <h2>Aily Blockly</h2>
-      <p>Workspace entrypoint, onboarding hub, and navigation surface for the rebuilt Aily Blockly desktop app.</p>
-    </div>
+<div class="guide-box">
+	<div class="left-box">
+		<div class="stitle">
+			<img class="logo" [src]="logoSrc" alt="Aily Blockly" draggable="false" />
+			<div class="version">desktop preview</div>
+		</div>
 
-    <div class="hero-meta">
-      <strong>Onboarding</strong>
-      <span>{{ onboardingCompleted() ? 'completed' : 'pending' }}</span>
-    </div>
-  </article>
+		<div class="title">Start</div>
 
-  <section class="grid">
-    <article hlmCard class="panel">
-      <header class="panel-header">
-        <div>
-          <p class="eyebrow">Quick Actions</p>
-          <h3>Start Here</h3>
-        </div>
-      </header>
+		<div class="menu-box">
+			@for (item of quickActions; track item.id) {
+			<button class="menu-btn" type="button" (click)="onQuickAction(item.id)">
+				<span class="icon">
+					<ng-icon [name]="item.icon"></ng-icon>
+				</span>
+				<span class="text">{{ item.label }}</span>
+			</button>
+			}
+		</div>
 
-      <div class="action-list">
-        @for (item of quickActions; track item.href) {
-          <a class="action-card" [routerLink]="item.href">
-            <strong>{{ item.label }}</strong>
-            <span>{{ item.detail }}</span>
-          </a>
-        }
-      </div>
-    </article>
+		<div class="recent-box">
+			@if (recentProjects().length > 0) {
+			<div class="title">Recently</div>
+			<div class="menu-box">
+				@for (project of recentProjects(); track project.path) {
+				<button class="project menu-btn" type="button" (click)="openProjectByPath(project.path)">
+					<div class="project-info">
+						<div class="name">{{ project.nickname || project.name }}</div>
+						<div class="delete-btn" (click)="removeProject($event, project)">×</div>
+					</div>
+					<div class="path">{{ project.path }}</div>
+				</button>
+				}
+			</div>
+			}
+		</div>
+	</div>
 
-    <article hlmCard class="panel">
-      <header class="panel-header">
-        <div>
-          <p class="eyebrow">Recent Projects</p>
-          <h3>Continue Working</h3>
-        </div>
-      </header>
+	<div class="right-box">
+		<button class="item sensecraft-item" type="button" (click)="openUrl('https://sensecraft.seeed.cc/ai/application')">
+			<div class="item-title">
+				<img [src]="sensecraftImg" alt="SenseCraft" />
+				<span>AI App Center</span>
+			</div>
+			<div class="desc-scroll">
+				<span>Explore AI hardware application workflows and deployment presets.</span>
+			</div>
+			<div class="arrow">
+				<img src="imgs/chevron-right.svg" alt="" />
+			</div>
+		</button>
 
-      <div class="recent-list">
-        @for (project of recentProjects(); track project.path) {
-          <div class="recent-item">
-            <strong>{{ project.nickname || project.name }}</strong>
-            <span>{{ project.path }}</span>
-          </div>
-        } @empty {
-          <div class="recent-item">
-            <strong>No recent projects</strong>
-            <span>Create a new project to seed the workspace list.</span>
-          </div>
-        }
-      </div>
-    </article>
-  </section>
+		<div class="item news-item">
+			<div class="item-title">News</div>
+			<iframe [src]="guidePageIframeSrc" frameborder="0" title="Aily Blockly News"></iframe>
+		</div>
 
-  <article hlmCard class="panel">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">Community</p>
-        <h3>References</h3>
-      </div>
-    </header>
+		<div class="item group-item">
+			<div class="item-title">User Group</div>
+			<div class="desc-scroll">
+				<span>{{ isCnRegion() ? 'Join the community channels for support and updates.' : 'Join GitHub and Discord for support and updates.' }}</span>
+			</div>
+			<div class="group-btn">
+				<button type="button" (click)="openUrl('https://github.com/orgs/ailyProject/discussions')">GitHub</button>
+				<button type="button" (click)="openUrl('https://discord.gg/ddMbGVmpQ8')">Discord</button>
+			</div>
+		</div>
 
-    <div class="action-list">
-      @for (item of communityLinks; track item.href) {
-        <a class="action-card" [href]="item.href" target="_blank" rel="noreferrer">
-          <strong>{{ item.label }}</strong>
-          <span>{{ item.detail }}</span>
-        </a>
-      }
-    </div>
-  </article>
-</section>
+		<div class="item sponsors-item">
+			<div class="item-title">Sponsors</div>
+			<div class="desc-scroll">
+				<span>Hardware partners and ecosystem contributors.</span>
+			</div>
+			@if (sponsors().length > 0) {
+			<div class="sponsor-carousel" [class.is-static]="sponsorPages().length <= 1">
+				<div
+					class="sponsor-page-track"
+					[class.no-transition]="!sponsorPageTransitionEnabled()"
+					[style.transform]="'translateX(-' + sponsorPageIndex() * 100 + '%)'"
+				>
+					@for (page of sponsorRenderPages(); track $index) {
+					<div class="sponsor-page" [attr.aria-hidden]="$index >= sponsorPages().length ? 'true' : null">
+						@for (sponsor of page; track sponsor.name + ':' + $index) {
+						<div class="sponsor-slide">
+							<button class="sponsor-item" type="button" (click)="sponsor.url && openUrl(sponsor.url)">
+								@if (sponsor.img) {
+								<div class="img-box">
+									<img [src]="getSponsorImg(sponsor)" [alt]="sponsor.name" [title]="sponsor.name" />
+								</div>
+								<div class="sponsor-name">{{ sponsor.name }}</div>
+								} @else {
+								<div class="img-box person-name">{{ sponsor.name }}</div>
+								<div class="person-company">{{ sponsor.company }}</div>
+								}
+							</button>
+						</div>
+						}
+					</div>
+					}
+				</div>
+			</div>
+			}
+		</div>
+	</div>
+</div>
