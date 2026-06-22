@@ -1,14 +1,7 @@
-import { app } from 'electron'
-import { createIPCHandler } from 'erpc/main'
+import { launchDesktopApp } from './app'
 
-import { createDesktopBleBridge } from './ble'
-import { createDesktopCoreServiceManager } from './core-service'
-import { registerDesktopProjectOpenEvents } from './project-open'
-import { default as rpc } from './rpc'
-import { createDesktopTerminalManager } from './terminal'
-
-import type { BootstrapDesktopMainOptions, BootstrapDesktopMainResult, DesktopMainContext } from './types'
-
+export * from './app'
+export * from './bootstrap'
 export * from './core-service'
 export * from './rpc'
 export * from './ble'
@@ -18,42 +11,18 @@ export * from './types'
 export type { Router } from './rpc/types'
 
 /**
- * Electron 主进程薄壳入口
- * @param options - bootstrap 选项
+ * 仅当当前包被 Electron 直接作为主进程入口执行时，自动启动应用。
  */
-export const bootstrapDesktopMain = (options: BootstrapDesktopMainOptions = {}): BootstrapDesktopMainResult => {
-	const coreService = options.coreService ?? createDesktopCoreServiceManager({ transport: 'utility-process' })
-	const terminalManager = options.terminalManager ?? createDesktopTerminalManager()
-	const bleBridge = createDesktopBleBridge()
-	registerDesktopProjectOpenEvents(options.app ?? app)
-	bleBridge.registerHandlers()
-	for (const window of options.windows ?? []) {
-		bleBridge.registerChooser(window)
-	}
-	const handler = createIPCHandler({
-		router: rpc,
-		windows: options.windows ?? [],
-		createContext: async ({ event }) => {
-			const baseContext: DesktopMainContext = {
-				coreService,
-				bleBridge,
-				terminalManager,
-				event
-			}
+const shouldAutoLaunchDesktopApp = () =>
+	typeof process !== 'undefined' &&
+	Boolean(process.versions?.electron) &&
+	typeof require !== 'undefined' &&
+	typeof module !== 'undefined' &&
+	require.main === module
 
-			const extension = (await options.createContext?.(baseContext)) ?? {}
-			return {
-				...baseContext,
-				...extension
-			}
-		}
+if (shouldAutoLaunchDesktopApp()) {
+	void launchDesktopApp().catch(error => {
+		console.error(error)
+		process.exitCode = 1
 	})
-
-	return {
-		coreService,
-		bleBridge,
-		terminalManager,
-		router: rpc,
-		handler
-	}
 }

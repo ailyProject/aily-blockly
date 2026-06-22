@@ -175,6 +175,7 @@ Meaning:
 
 Recently found and fixed during review-prep:
 
+- `desktop` now has a real Electron app entry path: the main bundle auto-launches a BrowserWindow, the preload bundle auto-exposes ERPC, and dev-mode window loading defaults to `http://127.0.0.1:4200`
 - `blockly-editor` now refreshes missing-library / ABI / page-summary state on external library/cloud mutations even while the current workspace draft is dirty, instead of only leaving the page in a stale prompted state
 - `code-editor` now queues external library/cloud mutations that arrive during build/upload/BLE actions and auto-refreshes plans afterwards, while non-busy refreshes no longer need to reinitialize and risk disturbing the current source draft
 - `blockly-editor` no longer dispatches self-originated library-mutation events during in-page missing-library restore, avoiding redundant concurrent reloads

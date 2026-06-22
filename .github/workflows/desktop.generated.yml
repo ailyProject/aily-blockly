@@ -25,4 +25,4 @@ jobs:
       - name: Build monorepo
         run: pnpm run build
       - name: Package desktop
-        run: "pnpm turbo run desktop#pack:mac\npnpm turbo run desktop#pack:win\npnpm turbo run desktop#pack:linux"
+        run: "pnpm turbo run desktop#pack:mac\npnpm turbo run desktop#pack:win"

@@ -8,3 +8,5 @@ export const bootstrapDesktopPreload = (): void => {
 		exposeElectronTRPC()
 	})
 }
+
+bootstrapDesktopPreload()

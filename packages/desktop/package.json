@@ -19,10 +19,10 @@
 	],
 	"scripts": {
 		"dev": "rslib build --watch",
+		"start": "electron dist/main/index.js",
 		"build": "rslib build",
 		"pack:mac": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform mac",
-		"pack:win": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform win",
-		"pack:linux": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform linux"
+		"pack:win": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform win"
 	},
 	"dependencies": {
 		"@lydell/node-pty": "^1.1.0",

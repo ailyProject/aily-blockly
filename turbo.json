@@ -32,10 +32,6 @@
 		"desktop#pack:win": {
 			"dependsOn": ["build"],
 			"outputs": ["dist/**", "../../release/desktop-win/**"]
-		},
-		"desktop#pack:linux": {
-			"dependsOn": ["build"],
-			"outputs": ["dist/**", "../../release/desktop-linux/**"]
 		}
 	}
 }

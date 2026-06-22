@@ -2,14 +2,14 @@
 	"name": "monorepo",
 	"packageManager": "pnpm@11.7.0",
 	"scripts": {
-		"dev": "turbo run dev --parallel",
+		"dev": "turbo run dev",
+		"start:electron": "pnpm run build && pnpm --filter desktop start",
 		"build": "turbo run build",
 		"deps:w": "ncu -u -i --workspaces",
 		"build:deps": "turbo run deps",
 		"build:workflows": "pnpm exec bun ./scripts/build_workflows.mjs",
 		"build:mac": "turbo run desktop#pack:mac",
-		"build:win": "turbo run desktop#pack:win",
-		"build:linux": "turbo run desktop#pack:linux"
+		"build:win": "turbo run desktop#pack:win"
 	},
 	"simple-git-hooks": {
 		"pre-commit": "pnpm exec pretty-quick --pattern \"**/*.*(md|css|js|jsx|ts|tsx)\" --staged"

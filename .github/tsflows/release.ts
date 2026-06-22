@@ -15,11 +15,6 @@ const workflow_definition = workflow({
 			uses: './.github/workflows/prepare.generated.yml',
 			secrets: 'inherit'
 		},
-		standalone: {
-			needs: ['prepare'],
-			uses: './.github/workflows/standalone.generated.yml',
-			secrets: 'inherit'
-		},
 		desktop: {
 			needs: ['prepare'],
 			uses: './.github/workflows/desktop.generated.yml',

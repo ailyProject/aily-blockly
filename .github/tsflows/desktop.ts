@@ -67,11 +67,7 @@ const workflow_definition = workflow({
 				},
 				{
 					name: 'Package desktop',
-					run: [
-						'pnpm turbo run desktop#pack:mac',
-						'pnpm turbo run desktop#pack:win',
-						'pnpm turbo run desktop#pack:linux'
-					].join('\n')
+					run: ['pnpm turbo run desktop#pack:mac', 'pnpm turbo run desktop#pack:win'].join('\n')
 				}
 			]
 		}
