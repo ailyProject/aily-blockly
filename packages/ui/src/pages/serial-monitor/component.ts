@@ -13,18 +13,17 @@ import {
 	createSerialMonitorSessionActions,
 	createSerialMonitorUploadActions
 } from './actions'
-import { createSerialMonitorSignals } from './component.signals'
-import { createSerialMonitorViewActions } from './component.view-actions'
 import {
 	SerialMonitorConnectionCardComponent,
 	SerialMonitorQuickSendCardComponent,
 	SerialMonitorStreamCardComponent,
 	SerialMonitorUploadCardComponent
 } from './components'
+import { createSerialMonitorSignals } from './utils/signals'
+import { createSerialMonitorViewActions } from './utils/view'
 
 import type { SerialSessionMessage } from '@core'
-import type { SerialMonitorSignals } from './component.types'
-import type { SerialMonitorPageState, SerialMonitorUploadResultView } from './types'
+import type { SerialMonitorPageState, SerialMonitorSignals, SerialMonitorUploadResultView } from './types'
 
 @Component({
 	selector: 'serial-monitor-page',

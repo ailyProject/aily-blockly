@@ -47,6 +47,7 @@
 - 变量命名统一使用驼峰命名法。
 - 组件命名统一遵循 Angular 风格，使用中横线形式组织 selector、文件名和相关模块命名。
 - 除前端 Angular 组件因框架约定使用 `x.component.ts` / `x.directive.ts` / `x.pipe.ts` 等命名外，后端与通用层文件禁止使用 `a.b.ts` 这类点号级联命名；命名冲突或子域区分优先通过增加一层目录来表达，而不是追加统一前缀。
+- 前端页面目录中的非 Angular 组件辅助文件同样不要使用 `a.*.ts` 这类多层点号命名；如果页面逻辑需要拆分，应优先使用同级 `utils.ts` 或 `utils/` 目录，用普通文件名表达职责，例如 `utils/state.ts`、`utils/runtime.ts`、`utils/interactions/*`。
 - 编写代码时，优先参考同级目录下相似模块的写法、结构和命名风格，保持风格统一。
 - 优先使用文件夹下的 `index.ts` 做 barrel 导出，统一对外暴露稳定入口，减少 import 语句的规模和路径噪音。
 - barrel 导出默认直接写成 `export * from './x'`；只有处理 default export 时才使用具名导出转发。

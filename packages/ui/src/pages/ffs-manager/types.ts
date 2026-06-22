@@ -1,5 +1,6 @@
+import type { Core } from '@/utils/core'
+import type { WritableSignal } from '@angular/core'
 import type { FfsPartitionInfo } from '@core'
-import type { FfsExplorerEntry } from './explorer.types'
 
 /**
  * Flash FS 页面串口摘要
@@ -62,6 +63,34 @@ export interface FfsManagerPreviewSummary {
 }
 
 /**
+ * Flash FS 资源浏览条目。
+ */
+export interface FfsExplorerEntry {
+	/** 当前条目名称。 */
+	name: string
+	/** 当前条目完整路径。 */
+	fullPath: string
+	/** 当前条目类型。 */
+	type: 'file' | 'dir'
+	/** 当前条目大小展示文本。 */
+	sizeText: string
+	/** 当前条目原始字节大小。 */
+	size: number
+	/** 当前条目预览模式。 */
+	previewMode: 'text' | 'image' | 'audio' | null
+}
+
+/**
+ * Flash FS 面包屑条目。
+ */
+export interface FfsExplorerBreadcrumb {
+	/** 展示名称。 */
+	name: string
+	/** 跳转目标路径。 */
+	path: string
+}
+
+/**
  * Flash FS 页面展示状态
  */
 export interface FfsManagerState {
@@ -75,4 +104,19 @@ export interface FfsManagerState {
 	serialPortCount: number
 	/** 当前空白挂载预览摘要 */
 	preview: FfsManagerPreviewSummary
+}
+
+/**
+ * FFS 页面交互所需的上下文。
+ */
+export interface FfsManagerHandlerContext {
+	core: Core
+	state: WritableSignal<FfsManagerState | null>
+	imageBytes: WritableSignal<Uint8Array | null>
+	imageName: WritableSignal<string | null>
+	previewText: WritableSignal<string | null>
+	previewFilePath: WritableSignal<string | null>
+	actionMessage: WritableSignal<string | null>
+	previewBusy: WritableSignal<boolean>
+	currentPath: WritableSignal<string>
 }

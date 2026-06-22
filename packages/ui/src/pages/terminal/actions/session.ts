@@ -1,16 +1,16 @@
-import { createTerminalInteractionActions } from './session.interact'
-import { createTerminalLifecycleActions } from './session.lifecycle'
+import { createTerminalInteractionActions } from './session/interact'
+import { createTerminalLifecycleActions } from './session/lifecycle'
 
 import type { Core } from '@/utils/core'
 import type { Desktop, SelectDesktopDirectory } from '@/utils/desktop'
 import type { ElementRef } from '@angular/core'
 import type { DesktopHostRuntimeInfo } from '@desktop'
 import type { Unsubscribable } from '@trpc/server/observable'
-import type { TerminalPageSignals } from '../component.types'
 import type { TerminalViewportSize } from '../types'
+import type { TerminalPageSignals } from '../utils/types'
 
-export * from './session.interact'
-export * from './session.lifecycle'
+export * from './session/interact'
+export * from './session/lifecycle'
 
 /**
  * 创建 terminal 会话相关动作。

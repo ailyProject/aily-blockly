@@ -10,8 +10,6 @@ import { getCore } from '@/utils/core'
 import { getDesktop, hasBleChooserBridge, loadDesktopHostRuntimeInfo, selectDesktopDirectory } from '@/utils/desktop'
 
 import { createTerminalBuildActions, createTerminalOutputActions, createTerminalSessionActions } from './actions'
-import { selectTerminalBleDevice, startTerminalBleDiscovery } from './component.ble'
-import { createTerminalPageState } from './component.state'
 import { writeTerminalInput } from './runtime'
 import {
 	createTerminalXtermRuntime,
@@ -19,6 +17,8 @@ import {
 	resolveTerminalXtermViewport,
 	syncTerminalXtermOutput
 } from './runtime/xterm'
+import { selectTerminalBleDevice, startTerminalBleDiscovery } from './utils/ble'
+import { createTerminalPageState } from './utils/state'
 
 import type { Unsubscribable } from '@trpc/server/observable'
 

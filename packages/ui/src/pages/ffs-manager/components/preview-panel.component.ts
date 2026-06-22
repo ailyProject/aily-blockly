@@ -3,8 +3,7 @@ import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
 
-import type { FfsExplorerEntry } from '../explorer.types'
-import type { FfsManagerState } from '../types'
+import type { FfsExplorerEntry, FfsManagerState } from '../types'
 
 /**
  * FFS Manager 镜像预览面板。

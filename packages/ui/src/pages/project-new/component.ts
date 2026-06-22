@@ -6,7 +6,6 @@ import { getCore } from '@/utils/core'
 import { getDesktop, loadDesktopHostRuntimeInfo, selectDesktopDirectory } from '@/utils/desktop'
 
 import { createProjectNewFormActions, createProjectNewProjectActions } from './actions'
-import { createProjectNewPageState } from './component.state'
 import {
 	ProjectNewBoardPanelComponent,
 	ProjectNewRecentPanelComponent,
@@ -15,6 +14,7 @@ import {
 } from './components'
 import { projectNewConfig, projectNewSeparator, projectNewUserDocuments } from './data'
 import { loadProjectNewDefaults } from './runtime'
+import { createProjectNewPageState } from './utils/state'
 
 @Component({
 	selector: 'project-new-page',

@@ -258,6 +258,57 @@ Latest source-level hotspot snapshot after excluding `dist`, `node_modules`, and
 - `packages/ui/src/pages/cloud-space/component.ts` has already been reduced further by moving refresh/session-binding orchestration into `component.runtime.ts`
 - `packages/ui/src/pages/lib-manager/component.ts` has already been reduced further by moving local signals/derived views into `component.state.ts`
 - `packages/ui/src/pages/lib-manager/component.interactions.ts` is now only a barrel; install/refresh/registry/scope flows live in dedicated page-local interaction modules
+- `packages/ui/src/pages/project-open` has also been migrated away from page-local `component.actions.*` helper naming:
+  - helper logic now lives under `pages/project-open/utils/*`
+- `packages/ui/src/pages/lib-manager` has already been migrated away from page-local `component.*.ts` helper naming:
+  - helper logic now lives under `pages/lib-manager/utils/*`
+  - this is the new preferred cleanup pattern for other page hotspots under the user's latest naming rule
+- `packages/ui/src/pages/cloud-space` has also been migrated to the same page-local `utils/*` pattern:
+  - former `component.*` and `page-actions.*` helpers now live under `pages/cloud-space/utils/*`
+  - page-only action/context types were folded back into the root `types.ts`
+- `packages/ui/src/pages/terminal` has now started the same page-local `utils/*` migration:
+  - `component.state.ts` -> `utils/state.ts`
+  - `component.types.ts` -> `utils/types.ts`
+  - `component.ble.ts` -> `utils/ble.ts`
+  - `sizing.runtime.ts` -> `utils/sizing.ts`
+  - former `build.*` and `session.*` helper filenames are now expressed as directories such as `actions/build/*`, `actions/session/*`, `runtime/build/*`
+- `packages/ui/src/pages/code-editor` has now also completed the same page-local `utils/*` migration:
+  - former `component.signals.ts` / `page-actions.runtime.ts` / `session.runtime.ts` / `build-actions.runtime.ts` / `ble-actions.runtime.ts` now live under `utils/*`
+  - former `ble.runtime.*` helper files now live under `utils/ble/*`
+  - `component.types.ts` was folded back into the root `types.ts`
+  - the page no longer appears in the remaining non-Angular multi-dot helper naming debt list
+- `packages/ui/src/pages/serial-monitor` has now also completed the same page-local `utils/*` migration:
+  - `component.signals.ts` -> `utils/signals.ts`
+  - `component.view-actions.ts` -> `utils/view.ts`
+  - `upload.runtime.ts` -> `utils/upload.ts`
+  - `component.types.ts` was folded back into the root `types.ts`
+- `packages/ui/src/pages/project-new` has now also completed the same page-local `utils/*` migration:
+  - `component.signals.ts` -> `utils/signals.ts`
+  - `component.state.ts` -> `utils/state.ts`
+  - `component.types.ts` was folded back into the root `types.ts`
+- `packages/ui/src/pages/home` has now also completed the same page-local `utils/*` migration:
+  - `component.actions.ts` -> `utils/actions.ts`
+- `packages/ui/src/pages/graph-editor` has now also completed the same page-local naming cleanup that does not require a full `utils/` tree:
+  - `component.types.ts` was folded back into the root `types.ts`
+  - `actions/edit.drafts.ts` / `edit.persistence.ts` / `edit.sync.ts` are now expressed as `actions/edit/{drafts,persistence,sync}.ts`
+- `packages/ui/src/pages/blockly-editor` has now also completed the same page-local `utils/*` migration:
+  - `component.signals.ts` -> `utils/signals.ts`
+  - `component.state.ts` -> `utils/state.ts`
+  - `page-actions.runtime.ts` -> `utils/page-actions.ts`
+  - `workspace-editor.runtime.ts` -> `utils/workspace-editor.ts`
+  - `component.runtime/*` now lives under `utils/runtime/*`
+- `packages/ui/src/pages/ffs-manager` has now also completed the same page-local `utils/*` migration:
+  - former `component.actions.*` now lives under `utils/actions/*`
+  - former `component.handlers.*` now lives under `utils/handlers/*`
+  - `component.edit.actions.ts` -> `utils/edit.ts`
+  - `component.viewmodel.ts` -> `utils/view-model.ts`
+  - `explorer.runtime.ts` / `preview.runtime.ts` -> `utils/{explorer,preview}.ts`
+  - `explorer.types.ts` / `component.handlers.types.ts` were folded back into the root `types.ts`
+
+Outstanding frontend page-helper naming debt after this change:
+
+- none in `packages/ui/src/pages` for non-Angular helper `.ts` files under the current rule set
+- `graph-editor`
 
 ## Current Recommendation
 

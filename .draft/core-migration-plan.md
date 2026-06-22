@@ -1419,6 +1419,70 @@
       - 当 catalog 已知且与当前 board 不兼容时
       - 不再直接安装，而是先展示 supported boards / current board / continue install
     - 本轮顺手把 `lib-manager` 页面的类型继续收口回 `types.ts`
+    - 在用户补充“页面辅助文件不要再用 `a.*.ts` 多层点号命名”之后，`lib-manager` 已率先开始执行新的页面拆分规则：
+      - `component.state.ts` -> `utils/state.ts`
+      - `component.runtime.ts` -> `utils/runtime.ts`
+      - `component.helpers.*` -> `utils/helpers/*`
+      - `component.actions.*` -> `utils/actions/*`
+      - `component.interactions.*` -> `utils/interactions/*`
+    - 这为后续 `cloud-space` / `code-editor` / `terminal` 等页面提供了新的前端拆分基线
+  - `project-open` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.actions.ts` -> `utils/actions/index.ts`
+    - `component.actions.open.ts` -> `utils/actions/open.ts`
+    - `component.actions.preview.ts` -> `utils/actions/preview.ts`
+    - `component.actions.types.ts` -> `utils/types.ts`
+  - `cloud-space` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.helpers.ts` -> `utils/helpers.ts`
+    - `component.runtime.ts` -> `utils/runtime.ts`
+    - `component.state.ts` -> `utils/state.ts`
+    - `page-actions.runtime*.ts` -> `utils/actions/*`
+    - `page-actions.types.ts` / `component.types.ts` 已并回根 `types.ts`
+  - `terminal` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.state.ts` -> `utils/state.ts`
+    - `component.types.ts` -> `utils/types.ts`
+    - `component.ble.ts` -> `utils/ble.ts`
+    - `sizing.runtime.ts` -> `utils/sizing.ts`
+    - `build.preview.ts` / `build.run.*` / `session.*` / `runtime/build.*` 已改成目录式命名
+  - `code-editor` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.signals.ts` -> `utils/signals.ts`
+    - `page-actions.runtime.ts` -> `utils/project.ts`
+    - `session.runtime.ts` -> `utils/session.ts`
+    - `build-actions.runtime.ts` -> `utils/build/actions.ts`
+    - `build.runtime.ts` -> `utils/build/runtime.ts`
+    - `ble-actions.runtime.ts` -> `utils/ble/actions.ts`
+    - `ble.runtime.*` -> `utils/ble/{execute,plan,result}.ts`
+    - `lifecycle.runtime.ts` / `lifecycle.watch.ts` -> `utils/lifecycle/{index,watch}.ts`
+    - `upload.runtime.ts` -> `utils/upload.ts`
+    - `component.types.ts` 已并回根 `types.ts`
+    - 这一页当前也已整体通过 `pnpm --filter ui build` 验证，不再残留旧的 `component.*` / `*.runtime.ts` 页面辅助命名引用
+  - `serial-monitor` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.signals.ts` -> `utils/signals.ts`
+    - `component.view-actions.ts` -> `utils/view.ts`
+    - `upload.runtime.ts` -> `utils/upload.ts`
+    - `component.types.ts` 已并回根 `types.ts`
+  - `project-new` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.signals.ts` -> `utils/signals.ts`
+    - `component.state.ts` -> `utils/state.ts`
+    - `component.types.ts` 已并回根 `types.ts`
+  - `home` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.actions.ts` -> `utils/actions.ts`
+  - `graph-editor` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.types.ts` 已并回根 `types.ts`
+    - `actions/edit.drafts.ts` / `edit.persistence.ts` / `edit.sync.ts` 已改成 `actions/edit/{drafts,persistence,sync}.ts`
+  - `blockly-editor` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.signals.ts` -> `utils/signals.ts`
+    - `component.state.ts` -> `utils/state.ts`
+    - `page-actions.runtime.ts` -> `utils/page-actions.ts`
+    - `workspace-editor.runtime.ts` -> `utils/workspace-editor.ts`
+    - `component.runtime/*` -> `utils/runtime/*`
+  - `ffs-manager` 当前也已开始对齐同一条前端页面命名规则：
+    - `component.actions.*` -> `utils/actions/*`
+    - `component.handlers.*` -> `utils/handlers/*`
+    - `component.edit.actions.ts` -> `utils/edit.ts`
+    - `component.viewmodel.ts` -> `utils/view-model.ts`
+    - `explorer.runtime.ts` / `preview.runtime.ts` -> `utils/{explorer,preview}.ts`
+    - `explorer.types.ts` / `component.handlers.types.ts` 已并回根 `types.ts`
+  - 截至当前批次，`packages/ui/src/pages` 下非 Angular 组件辅助 `.ts` 文件的多层点号命名债已清空
   - `code-editor` 本轮补上轻量 lifecycle 对齐：
     - 已新增 `lifecycle.watch.ts`，按 5s 轮询 `core.project.getLifecycleStatus`
     - 当前会跟随 `projectPath` 变化自动重置签名，而不是只在首个项目上生效

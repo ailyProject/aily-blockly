@@ -15,7 +15,7 @@ import type { Core } from '@/utils/core'
 import type { Desktop } from '@/utils/desktop'
 import type { DomSanitizer } from '@angular/platform-browser'
 import type { ActivatedRoute } from '@angular/router'
-import type { GraphEditorSignals } from '../component.types'
+import type { GraphEditorSignals } from '../types'
 
 /**
  * 创建 Graph Editor 载入与切换动作。

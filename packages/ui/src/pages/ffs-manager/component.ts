@@ -5,11 +5,11 @@ import { HlmCardImports } from 'spartan/card'
 
 import { getCore } from '@/utils/core'
 
-import { createFfsPreviewDirectory, renameFfsPreviewEntry } from './component.edit.actions'
-import { createFfsManagerHandlers } from './component.handlers'
-import { createFfsManagerViewModel } from './component.viewmodel'
 import { FfsManagerPreviewPanelComponent, FfsManagerSummaryPanelsComponent } from './components'
 import { loadFfsManagerState } from './runtime'
+import { createFfsPreviewDirectory, renameFfsPreviewEntry } from './utils/edit'
+import { createFfsManagerHandlers } from './utils/handlers'
+import { createFfsManagerViewModel } from './utils/view-model'
 
 import type { FfsManagerState } from './types'
 

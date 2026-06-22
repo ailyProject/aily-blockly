@@ -1,10 +1,10 @@
-import { createTerminalBuildPreviewActions } from './build.preview'
-import { createTerminalBuildRunActions } from './build.run'
+import { createTerminalBuildPreviewActions } from './build/preview'
+import { createTerminalBuildRunActions } from './build/run'
 
 import type { Core } from '@/utils/core'
 import type { Desktop } from '@/utils/desktop'
 import type { UploadProgressEvent } from 'shared'
-import type { TerminalPageSignals } from '../component.types'
+import type { TerminalPageSignals } from '../utils/types'
 
 /**
  * 创建 terminal 构建与上传动作。

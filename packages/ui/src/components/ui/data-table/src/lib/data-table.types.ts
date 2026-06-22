@@ -3,7 +3,7 @@ import type { ColumnDef } from '@tanstack/angular-table'
 /**
  * 数据表格列定义别名
  */
-export type DataTableColumn<TData extends object = Record<string, unknown>> = ColumnDef<TData, unknown>
+export type DataTableColumn<TData extends object = Record<string, unknown>> = ColumnDef<TData, any>
 
 /**
  * 数据表格行数据别名

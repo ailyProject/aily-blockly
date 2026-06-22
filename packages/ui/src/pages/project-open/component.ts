@@ -9,11 +9,11 @@ import { getCore } from '@/utils/core'
 import { getDesktop, loadDesktopHostRuntimeInfo, selectDesktopProjectPath } from '@/utils/desktop'
 import { config } from '@/workspace'
 
-import { createProjectOpenActions } from './component.actions'
 import { loadProjectOpenLifecycle, loadProjectOpenRecentProjects, loadProjectOpenRuntimeInfo } from './runtime'
+import { createProjectOpenActions } from './utils/actions'
 
 import type { RecentlyProjectEntry } from 'shared'
-import type { ProjectOpenSessionConflict } from './component.actions.types'
+import type { ProjectOpenSessionConflict } from './utils/types'
 
 @Component({
 	selector: 'project-open-page',

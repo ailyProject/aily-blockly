@@ -2,7 +2,7 @@ import { ClipboardAddon } from '@xterm/addon-clipboard'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 
-import { measureTerminalViewport } from '../sizing.runtime'
+import { measureTerminalViewport } from '../utils/sizing'
 
 import type { TerminalViewportSize } from '../types'
 

@@ -446,6 +446,8 @@ Before starting `review`, confirm all of the following are true:
 
 - remaining backend naming debt is no longer in active business implementation paths
 - remaining `*.types.ts` files are intentional runtime-local boundaries under nested subsystems, not root-domain type fragmentation
+- active UI pages no longer rely on rejected `component.*.ts` / `page-actions.*.ts` helper naming for newly touched hotspots; helper logic should be converging toward page-local `utils/` layout
+- current `packages/ui/src/pages` helper naming debt for non-Angular `.ts` files has been cleared under the current audit
 - legacy walkthrough matrix has no hidden unknowns in the currently active user flows
 - `core` and `ui` builds pass on the current worktree
 - `.draft/legacy-gap-audit.md` and this file agree on the top remaining risks

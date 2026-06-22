@@ -1,7 +1,7 @@
 import { renderUploadRecoveryHint, renderUploadStatusText, summarizeUploadResult } from 'shared'
 
 import type { UploadErrorCode, UploadProgressEvent } from 'shared'
-import type { TerminalPageSignals } from '../component.types'
+import type { TerminalPageSignals } from '../utils/types'
 
 /**
  * 创建 terminal 输出写入动作。

@@ -5,7 +5,7 @@ import type { Desktop, LoadDesktopHostRuntimeInfo, SelectDesktopProjectPath } fr
 import type { Router } from '@angular/router'
 import type { DesktopHostRuntimeInfo } from '@desktop'
 import type { RecentlyProjectEntry } from 'shared'
-import type { ProjectOpenSessionConflict } from './component.actions.types'
+import type { ProjectOpenSessionConflict } from './utils/types'
 
 /**
  * 读取 desktop 宿主运行时信息。

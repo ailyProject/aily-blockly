@@ -13,7 +13,7 @@ import { createGraphEditorEditActions, createGraphEditorLoadActions } from './ac
 import { GraphEditorFramePanelComponent, GraphEditorWorkspacePanelComponent } from './components'
 import { resolveGraphEditorProjectPath, resolveGraphEditorState } from './runtime'
 
-import type { GraphEditorSignals } from './component.types'
+import type { GraphEditorSignals } from './types'
 
 @Component({
 	selector: 'graph-editor-page',

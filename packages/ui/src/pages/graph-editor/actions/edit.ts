@@ -1,13 +1,13 @@
-import { createGraphEditorDraftActions } from './edit.drafts'
-import { createGraphEditorPersistenceActions } from './edit.persistence'
-import { createGraphEditorSyncActions } from './edit.sync'
+import { createGraphEditorDraftActions } from './edit/drafts'
+import { createGraphEditorPersistenceActions } from './edit/persistence'
+import { createGraphEditorSyncActions } from './edit/sync'
 
 import type { Core } from '@/utils/core'
-import type { GraphEditorSignals } from '../component.types'
+import type { GraphEditorSignals } from '../types'
 
-export * from './edit.drafts'
-export * from './edit.persistence'
-export * from './edit.sync'
+export * from './edit/drafts'
+export * from './edit/persistence'
+export * from './edit/sync'
 
 /**
  * 组合 Graph Editor 的全部编辑类动作。

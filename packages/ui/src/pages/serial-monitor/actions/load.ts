@@ -2,7 +2,7 @@ import { loadSerialMonitorPageState } from '../runtime'
 
 import type { Core } from '@/utils/core'
 import type { Desktop, LoadDesktopHostRuntimeInfo } from '@/utils/desktop'
-import type { SerialMonitorSignals } from '../component.types'
+import type { SerialMonitorSignals } from '../types'
 
 /**
  * 创建 Serial Monitor 载入动作。

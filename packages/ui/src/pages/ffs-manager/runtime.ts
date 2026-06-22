@@ -1,6 +1,6 @@
 import { config } from '@/workspace'
 
-import { getFfsPreviewMode } from './explorer.runtime'
+import { getFfsPreviewMode } from './utils/explorer'
 
 import type { Core } from '@/utils/core'
 import type { FfsManagerState } from './types'

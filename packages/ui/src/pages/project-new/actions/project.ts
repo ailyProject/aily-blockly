@@ -2,8 +2,7 @@ import { createProjectNewBlank, importProjectNewTemplate, openProjectNewProject 
 
 import type { Core } from '@/utils/core'
 import type { Router } from '@angular/router'
-import type { ProjectNewSignals } from '../component.types'
-import type { ProjectNewCloudTemplate } from '../types'
+import type { ProjectNewCloudTemplate, ProjectNewSignals } from '../types'
 
 /**
  * 创建 Project New 页面项目动作。

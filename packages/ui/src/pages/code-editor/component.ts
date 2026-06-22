@@ -9,17 +9,14 @@ import { HlmInputImports } from 'spartan/input'
 import { getCore } from '@/utils/core'
 import { getDesktop, loadDesktopHostRuntimeInfo } from '@/utils/desktop'
 
+import { CodeEditorBuildPanelComponent, CodeEditorProjectPanelComponent } from './components'
 import {
 	prepareCodeEditorBleUpload,
-	refreshCodeEditorPlan,
 	runCodeEditorBleUploadAction,
-	runCodeEditorBuildAction,
-	runCodeEditorUploadAction,
 	selectCodeEditorBleDevice
-} from './component.runtime'
-import { createCodeEditorSignals } from './component.signals'
-import { CodeEditorBuildPanelComponent, CodeEditorProjectPanelComponent } from './components'
-import { disposeCodeEditorLifecycle, initializeCodeEditorLifecycle } from './lifecycle.runtime'
+} from './utils/ble/actions'
+import { refreshCodeEditorPlan, runCodeEditorBuildAction, runCodeEditorUploadAction } from './utils/build/actions'
+import { disposeCodeEditorLifecycle, initializeCodeEditorLifecycle } from './utils/lifecycle'
 import {
 	chooseCodeEditorProject,
 	reloadCodeEditorProjectState,
@@ -27,7 +24,8 @@ import {
 	updateCodeEditorSerialPort,
 	updateCodeEditorSerialPortValue,
 	updateCodeEditorSourceCode
-} from './page-actions.runtime'
+} from './utils/project'
+import { createCodeEditorSignals } from './utils/signals'
 
 import type { DesktopHostRuntimeInfo } from '@desktop'
 import type { Unsubscribable } from '@trpc/server/observable'

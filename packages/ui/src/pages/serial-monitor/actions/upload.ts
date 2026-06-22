@@ -1,9 +1,9 @@
 import { getCurrentProjectPath, getCurrentProjectSourceCode } from '@/runtime/project-session'
 
-import { runSerialMonitorUpload } from '../upload.runtime'
+import { runSerialMonitorUpload } from '../utils/upload'
 
 import type { Core } from '@/utils/core'
-import type { SerialMonitorSignals } from '../component.types'
+import type { SerialMonitorSignals } from '../types'
 
 /**
  * 创建 Serial Monitor 上传动作。

@@ -10,8 +10,7 @@ import {
 
 import type { Core } from '@/utils/core'
 import type { QuickSendItem } from 'shared'
-import type { SerialMonitorSignals } from '../component.types'
-import type { SerialMonitorConfigPatch, SerialMonitorPageState } from '../types'
+import type { SerialMonitorConfigPatch, SerialMonitorPageState, SerialMonitorSignals } from '../types'
 
 /**
  * 创建 Serial Monitor 会话动作。

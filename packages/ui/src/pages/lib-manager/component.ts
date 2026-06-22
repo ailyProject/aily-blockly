@@ -1,4 +1,4 @@
-import { Component, OnInit, signal } from '@angular/core'
+import { Component, OnInit } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
@@ -9,6 +9,13 @@ import { getCore } from '@/utils/core'
 import { getDesktop, selectDesktopDirectory } from '@/utils/desktop'
 
 import {
+	LibManagerActivitySectionComponent,
+	LibManagerCatalogSectionComponent,
+	LibManagerDeclaredSectionComponent,
+	LibManagerMissingSectionComponent,
+	LibManagerRegistrySectionComponent
+} from './components'
+import {
 	confirmLibManagerInstallPrompt,
 	focusLibManagerCoreLibraries,
 	importLocalLibManagerLibrary,
@@ -18,7 +25,7 @@ import {
 	requestLibManagerRestore,
 	searchLibManagerRegistry,
 	selectLibManagerLibraryScope
-} from './component.interactions'
+} from './utils/interactions'
 import {
 	createLibManagerActionContext,
 	isLibManagerScopeSelected,
@@ -27,15 +34,8 @@ import {
 	shouldShowLibManagerCatalogSection,
 	shouldShowLibManagerDeclaredSection,
 	shouldShowLibManagerMissingSection
-} from './component.runtime'
-import { createLibManagerPageState } from './component.state'
-import {
-	LibManagerActivitySectionComponent,
-	LibManagerCatalogSectionComponent,
-	LibManagerDeclaredSectionComponent,
-	LibManagerMissingSectionComponent,
-	LibManagerRegistrySectionComponent
-} from './components'
+} from './utils/runtime'
+import { createLibManagerPageState } from './utils/state'
 
 import type { LibManagerActionContext, LibManagerLibraryScope } from './types'
 

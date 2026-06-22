@@ -3,8 +3,7 @@ import { loadProjectBoardCloudState, loadProjectNewRuntimeInfo, previewProjectNe
 import type { Core } from '@/utils/core'
 import type { Desktop, SelectDesktopDirectory } from '@/utils/desktop'
 import type { DesktopHostRuntimeInfo } from '@desktop'
-import type { ProjectNewSignals } from '../component.types'
-import type { ProjectNewTemplateSourceMode } from '../types'
+import type { ProjectNewSignals, ProjectNewTemplateSourceMode } from '../types'
 
 /**
  * 创建 Project New 页面表单动作。

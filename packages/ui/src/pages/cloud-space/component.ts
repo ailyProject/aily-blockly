@@ -7,15 +7,15 @@ import { getCurrentProjectPath } from '@/runtime/project-session'
 import { getCore } from '@/utils/core'
 import { getDesktop, loadDesktopHostRuntimeInfo, selectDesktopDirectory } from '@/utils/desktop'
 
-import { createCloudSpaceActionState, createEditingCloudSpaceProject } from './component.helpers'
-import { refreshCloudSpacePage, watchCloudSpaceProjectMutations } from './component.runtime'
-import { createCloudSpacePageState } from './component.state'
 import {
 	CloudSpaceEditorPanelComponent,
 	CloudSpaceOverviewPanelComponent,
 	CloudSpaceProjectCardComponent
 } from './components'
-import { createCloudSpacePageActions } from './page-actions.runtime'
+import { createCloudSpacePageActions } from './utils/actions/interactions'
+import { createCloudSpaceActionState, createEditingCloudSpaceProject } from './utils/helpers'
+import { refreshCloudSpacePage, watchCloudSpaceProjectMutations } from './utils/runtime'
+import { createCloudSpacePageState } from './utils/state'
 
 import type { CloudProjectMutationAction, CloudProjectScope } from 'shared'
 
