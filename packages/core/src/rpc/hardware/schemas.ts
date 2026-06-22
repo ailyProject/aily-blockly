@@ -59,3 +59,28 @@ export const libraryIndexItemSchema = z.object({
 	description: z.string().optional(),
 	author: z.string().optional()
 })
+
+export const hardwareRunUploadInputSchema = z.object({
+	projectPath: z.string(),
+	appDataPath: z.string(),
+	childPath: z.string(),
+	code: z.string().optional(),
+	portType: z.enum(['serial', 'ble', 'debugger']).optional(),
+	serialPort: z.string().optional(),
+	probeSerial: z.string().optional(),
+	probeVidPid: z.string().optional(),
+	pnum: z.string().optional(),
+	rebuildBeforeUpload: z.boolean().optional(),
+	use1200bpsTouch: z.boolean().optional(),
+	waitForUpload: z.boolean().optional()
+})
+
+export const hardwarePrepareBleUploadInputSchema = z.object({
+	projectPath: z.string(),
+	appDataPath: z.string(),
+	childPath: z.string(),
+	code: z.string().optional(),
+	rebuildBeforeUpload: z.boolean().optional(),
+	updateType: z.enum(['flash', 'filesystem']).optional(),
+	packetSize: z.number().int().positive().optional()
+})

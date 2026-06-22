@@ -1,0 +1,97 @@
+<section class="cloud-space-page">
+	<cloud-space-overview-panel
+		[scope]="scope()"
+		[totalItems]="state()?.total ?? 0"
+		[query]="query()"
+		[board]="board()"
+		[authToken]="authToken()"
+		[rootPath]="rootPath()"
+		[loading]="loading()"
+		[runtimeAvailable]="!!runtimeInfo()"
+		[syncBusy]="syncBusy()"
+		[hasOpenedProject]="hasOpenedProject()"
+		[page]="page()"
+		[pageSize]="pageSize()"
+		[totalPages]="totalPages()"
+		[statusMessage]="statusMessage()"
+		[pendingTargetPath]="pendingTargetPath()"
+		[targetPathConflict]="targetPathConflict()"
+		[suggestedImportName]="suggestedImportName() || ''"
+		[syncSummary]="syncSummary()"
+		[syncHistory]="syncHistory()"
+		[currentProjectBinding]="currentProjectBinding()"
+		(scopeChange)="selectScope($event)"
+		(queryChange)="updateQueryValue($event)"
+		(boardChange)="updateBoardValue($event)"
+		(authTokenChange)="updateAuthTokenValue($event)"
+		(refresh)="refresh()"
+		(chooseRootPath)="chooseRootPath()"
+		(syncCurrentProject)="syncCurrentProject()"
+		(pageSizeChange)="selectPageSize($event)"
+		(previousPage)="goToPreviousPage()"
+		(nextPage)="goToNextPage()"
+		(importSuggestedName)="importProjectWithSuggestedName()"
+	/>
+
+	@if (editorDraft() && editingProject() && scope() === 'mine') {
+	<cloud-space-editor-panel
+		[project]="editingProject()!"
+		[nickname]="editorDraft()!.nickname"
+		[description]="editorDraft()!.description"
+		[docUrl]="editorDraft()!.docUrl"
+		[tags]="editorDraft()!.tagsText"
+		[imagePreviewUrl]="editorDraft()!.imagePreviewUrl"
+		[removeCover]="editorDraft()!.removeCover"
+		[saveBusy]="editorBusy()"
+		[imageBusy]="editorImageBusy()"
+		[errorMessage]="editorError()"
+		(cancel)="cancelEditProject()"
+		(nicknameChange)="updateEditorNickname($event)"
+		(descriptionChange)="updateEditorDescription($event)"
+		(docUrlChange)="updateEditorDocUrl($event)"
+		(tagsChange)="updateEditorTags($event)"
+		(imageSelect)="selectEditorImage($event)"
+		(imageClear)="clearEditorImage()"
+		(save)="saveEditedProject()"
+	/>
+	}
+
+	<article hlmCard class="panel">
+		<div class="project-grid">
+			@if (loading()) {
+			<article class="project-card">
+				<strong>Loading cloud projects...</strong>
+			</article>
+			} @else if (error()) {
+			<article class="project-card">
+				<strong>Cloud projects unavailable</strong>
+				<span>{{ error() }}</span>
+			</article>
+			} @else if (state()?.requiresAuth) {
+			<article class="project-card">
+				<strong>Bearer token required</strong>
+				<span>Switching to Mine scope needs a valid cloud token before loading your projects.</span>
+			</article>
+			} @else { @for (item of state()?.items ?? []; track item.id) {
+			<cloud-space-project-card
+				[item]="item"
+				[attr.data-current-project]="currentProjectBinding()?.cloudId === item.id ? 'true' : null"
+				[currentProject]="currentProjectBinding()?.cloudId === item.id"
+				[showActions]="scope() === 'mine'"
+				[importBusy]="importBusyId() === item.id"
+				[publishBusy]="actionBusy(item.id, item.isPublished ? 'unpublish' : 'publish')"
+				[templateBusy]="actionBusy(item.id, item.isTemplate ? 'unset-template' : 'set-template')"
+				[deleteBusy]="actionBusy(item.id, 'delete')"
+				(editProject)="beginEditProject($event)"
+				(importProject)="importProject($event)"
+				(runAction)="runProjectAction($event.projectId, $event.action)"
+			/>
+			} @empty {
+			<article class="project-card">
+				<strong>No cloud project found</strong>
+				<span>Try a different keyword.</span>
+			</article>
+			} }
+		</div>
+	</article>
+</section>

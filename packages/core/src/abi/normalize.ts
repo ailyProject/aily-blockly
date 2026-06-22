@@ -7,6 +7,23 @@ import type { ParsedProjectAbi, ProjectAbiPayload } from './types'
 const isWorkspacePayload = (value: ProjectAbiPayload): value is BlocklyWorkspaceContent =>
 	Boolean(value && typeof value === 'object' && 'blocks' in value && !('pages' in value))
 
+const countBlocksRecursively = (block: BlocklyWorkspaceBlockNode | undefined): number => {
+	if (!block) return 0
+
+	let count = 1
+	const inputs = block.inputs && typeof block.inputs === 'object' ? block.inputs : {}
+	for (const input of Object.values(inputs) as Array<{
+		block?: BlocklyWorkspaceBlockNode
+		shadow?: BlocklyWorkspaceBlockNode
+	}>) {
+		count += countBlocksRecursively(input?.block)
+		count += countBlocksRecursively(input?.shadow)
+	}
+
+	count += countBlocksRecursively(block.next?.block)
+	return count
+}
+
 /**
  * 归一化 project.abi 载荷
  * @param jsonData - 原始 ABI 数据
@@ -46,31 +63,20 @@ export const stringifyProjectAbi = (payload: ProjectAbiPayload) => JSON.stringif
  * @param payload - ABI 载荷
  */
 export const countAbiBlocks = (payload: ProjectAbiPayload): number => {
-	const workspacePayload: BlocklyWorkspaceContent = isWorkspacePayload(payload)
-		? payload
-		: (buildProjectAbiPayload(normalizeProjectDocument(payload)) as BlocklyWorkspaceContent)
-
-	let count = 0
-
-	const countRecursive = (block: BlocklyWorkspaceBlockNode | undefined): void => {
-		if (!block) return
-		count += 1
-
-		const inputs = block.inputs && typeof block.inputs === 'object' ? block.inputs : {}
-		for (const input of Object.values(inputs) as Array<{
-			block?: BlocklyWorkspaceBlockNode
-			shadow?: BlocklyWorkspaceBlockNode
-		}>) {
-			countRecursive(input?.block)
-			countRecursive(input?.shadow)
-		}
-
-		countRecursive(block.next?.block)
+	if (isWorkspacePayload(payload)) {
+		return (payload.blocks?.blocks ?? []).reduce((count, block) => count + countBlocksRecursively(block), 0)
 	}
 
-	for (const block of workspacePayload.blocks?.blocks ?? []) {
-		countRecursive(block)
-	}
+	const document = normalizeProjectDocument(payload)
+	const pageBlockCount = document.pages.reduce(
+		(count, page) =>
+			count + (page.content?.blocks?.blocks ?? []).reduce((sum, block) => sum + countBlocksRecursively(block), 0),
+		0
+	)
+	const sharedProcedureCount = (document.sharedModel.procedureBlocks ?? []).reduce(
+		(count, block) => count + countBlocksRecursively(block),
+		0
+	)
 
-	return count
+	return pageBlockCount + sharedProcedureCount
 }

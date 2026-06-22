@@ -1,3 +1,6 @@
+import type { FfsPartitionInfo } from '@core'
+import type { FfsExplorerEntry } from './explorer.types'
+
 /**
  * Flash FS 页面串口摘要
  */
@@ -33,6 +36,32 @@ export interface FfsManagerBaudSummary {
 }
 
 /**
+ * Flash FS 页面空白挂载预览摘要
+ */
+export interface FfsManagerPreviewSummary {
+	/** 当前预览对应的分区定义 */
+	partition: FfsPartitionInfo
+	/** 当前预览的文件系统类型 */
+	type: string
+	/** 当前预览分区标签 */
+	partitionLabel: string
+	/** 当前挂载推断出的块大小 */
+	blockSize: number | null
+	/** 当前挂载后文件数量 */
+	fileCount: number
+	/** 当前容量总字节数 */
+	capacityBytes: number | null
+	/** 当前已使用字节数 */
+	usedBytes: number | null
+	/** 当前挂载尝试次数 */
+	attemptCount: number
+	/** 当前挂载尝试说明 */
+	attemptReasons: Array<string>
+	/** 当前文件列表 */
+	files: Array<FfsExplorerEntry>
+}
+
+/**
  * Flash FS 页面展示状态
  */
 export interface FfsManagerState {
@@ -44,4 +73,6 @@ export interface FfsManagerState {
 	baud: FfsManagerBaudSummary
 	/** 当前宿主可见串口数量 */
 	serialPortCount: number
+	/** 当前空白挂载预览摘要 */
+	preview: FfsManagerPreviewSummary
 }

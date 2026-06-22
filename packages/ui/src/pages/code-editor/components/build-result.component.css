@@ -1,0 +1,50 @@
+.metric {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.build-copy {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.build-copy.error {
+	color: var(--destructive);
+}
+
+.list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.list-item {
+	display: grid;
+	gap: 4px;
+	width: 100%;
+	padding: 12px 14px;
+	border: 0;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+	text-align: left;
+	cursor: pointer;
+}
+
+.build-output {
+	min-height: 220px;
+	max-height: 320px;
+	overflow: auto;
+	margin: 0;
+	padding: 16px;
+	border-radius: 18px;
+	background: #0b1020;
+	color: #d7e4ff;
+	font-family: 'GeistMono', monospace;
+	font-size: 13px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+}

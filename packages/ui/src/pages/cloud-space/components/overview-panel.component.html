@@ -1,0 +1,132 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Cloud Space</p>
+			<h2>
+				{{ scope() === 'template' ? 'Template Projects' : scope() === 'mine' ? 'My Cloud Projects' : 'Public Projects' }}
+			</h2>
+		</div>
+		<span hlmBadge variant="secondary">{{ totalItems() }} items</span>
+	</header>
+
+	<div class="badge-row">
+		<button hlmBtn size="sm" [variant]="scope() === 'public' ? 'default' : 'outline'" (click)="scopeChange.emit('public')">
+			Public
+		</button>
+		<button hlmBtn size="sm" [variant]="scope() === 'template' ? 'default' : 'outline'" (click)="scopeChange.emit('template')">
+			Templates
+		</button>
+		<button hlmBtn size="sm" [variant]="scope() === 'mine' ? 'default' : 'outline'" (click)="scopeChange.emit('mine')">
+			Mine
+		</button>
+	</div>
+
+	<label class="filter-box">
+		<span>Search projects</span>
+		<input hlmInput [value]="query()" (input)="updateQuery($event)" placeholder="project, board, tag..." />
+	</label>
+
+	<label class="filter-box">
+		<span>Board filter</span>
+		<input hlmInput [value]="board()" (input)="updateBoard($event)" placeholder="esp32, renesas, xiao..." />
+	</label>
+
+	@if (scope() === 'mine' || authToken()) {
+	<label class="filter-box">
+		<span>Bearer token</span>
+		<input
+			hlmInput
+			type="password"
+			[value]="authToken()"
+			(input)="updateAuthToken($event)"
+			placeholder="stored in-memory only"
+		/>
+	</label>
+	}
+
+	<div class="filter-box">
+		<span>Import root path</span>
+		<strong>{{ rootPath() || 'path unavailable' }}</strong>
+	</div>
+
+	<div class="badge-row">
+		<button hlmBtn size="sm" variant="outline" [disabled]="loading()" (click)="refresh.emit()">Refresh</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="!runtimeAvailable()" (click)="chooseRootPath.emit()">
+			Choose Root Folder
+		</button>
+		<button
+			hlmBtn
+			size="sm"
+			variant="outline"
+			[disabled]="syncBusy() || !authToken().trim() || !hasOpenedProject()"
+			(click)="syncCurrentProject.emit()"
+		>
+			{{ syncBusy() ? 'Syncing...' : 'Sync Current Project' }}
+		</button>
+	</div>
+
+	<div class="pagination-row">
+		<div class="badge-row">
+			<button hlmBtn size="sm" [variant]="pageSize() === 20 ? 'default' : 'outline'" (click)="pageSizeChange.emit(20)">20</button>
+			<button hlmBtn size="sm" [variant]="pageSize() === 50 ? 'default' : 'outline'" (click)="pageSizeChange.emit(50)">50</button>
+			<button hlmBtn size="sm" [variant]="pageSize() === 100 ? 'default' : 'outline'" (click)="pageSizeChange.emit(100)">100</button>
+		</div>
+		<div class="badge-row">
+			<button hlmBtn size="sm" variant="outline" [disabled]="loading() || page() <= 1" (click)="previousPage.emit()">Previous</button>
+			<span hlmBadge variant="outline">Page {{ page() }} / {{ totalPages() }}</span>
+			<button hlmBtn size="sm" variant="outline" [disabled]="loading() || page() >= totalPages()" (click)="nextPage.emit()">
+				Next
+			</button>
+		</div>
+	</div>
+
+	@if (statusMessage()) {
+	<article class="project-card">
+		<strong>Cloud status</strong>
+		<span>{{ statusMessage() }}</span>
+		@if (pendingTargetPath()) {
+		<span>target {{ pendingTargetPath() }}</span>
+		} @if (targetPathConflict()) {
+		<span>target directory already exists</span>
+		@if (suggestedImportName()) {
+		<div class="badge-row">
+			<button hlmBtn size="sm" variant="outline" (click)="importSuggestedName.emit()">Use Suggested Name</button>
+		</div>
+		} }
+	</article>
+	}
+
+	@if (syncSummary()) {
+	<article class="project-card">
+		<strong>Last Sync</strong>
+		<span>project {{ syncSummary()!.projectPath }}</span>
+		<span>cloud id {{ syncSummary()!.projectId }}</span>
+		<span>archive {{ syncSummary()!.archiveSize }} bytes</span>
+		<span>{{ syncSummary()!.cloudIdUpdated ? 'cloudId updated locally' : 'cloudId unchanged locally' }}</span>
+		<span>synced at {{ syncSummary()!.syncedAt }}</span>
+	</article>
+	}
+
+	@if (syncHistory().length > 1) {
+	<article class="project-card">
+		<strong>Recent Syncs</strong>
+		<div class="tag-row">
+			@for (entry of syncHistory(); track entry.syncedAt + entry.projectId) {
+			<span hlmBadge variant="outline">{{ entry.projectId }} · {{ entry.archiveSize }} bytes · {{ entry.syncedAt }}</span>
+			}
+		</div>
+	</article>
+	}
+
+	@if (currentProjectBinding()) {
+	<article class="project-card">
+		<strong>Current Project Binding</strong>
+		<span>project {{ currentProjectBinding()!.projectPath }}</span>
+		@if (currentProjectBinding()!.nickname || currentProjectBinding()!.name) {
+		<span>{{ currentProjectBinding()!.nickname || currentProjectBinding()!.name }}</span>
+		}
+		<span>cloud id {{ currentProjectBinding()!.cloudId || 'unbound' }}</span>
+	</article>
+	}
+</article>
+

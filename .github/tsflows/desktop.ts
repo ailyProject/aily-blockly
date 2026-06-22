@@ -62,18 +62,16 @@ const workflow_definition = workflow({
 					run: "printf '\\ntrustLockfile: true\\n' >> pnpm-workspace.yaml\npnpm install --frozen-lockfile"
 				},
 				{
-					name: 'Build workspaces',
-					run: [
-						'pnpm --filter "./packages/erpc" run build',
-						'pnpm --filter "./packages/shared" run build',
-						'pnpm --filter "./packages/core" run build',
-						'pnpm --filter "./packages/ui" run build',
-						'pnpm --filter "./packages/desktop" run build'
-					].join('\n')
+					name: 'Build monorepo',
+					run: 'pnpm run build'
 				},
 				{
 					name: 'Package desktop',
-					run: ['pnpm turbo run desktop#pack:mac', 'pnpm turbo run desktop#pack:win'].join('\n')
+					run: [
+						'pnpm turbo run desktop#pack:mac',
+						'pnpm turbo run desktop#pack:win',
+						'pnpm turbo run desktop#pack:linux'
+					].join('\n')
 				}
 			]
 		}

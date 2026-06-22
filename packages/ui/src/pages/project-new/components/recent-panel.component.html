@@ -1,0 +1,17 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Recent</p>
+			<h2>Previous Projects</h2>
+		</div>
+	</header>
+
+	<div class="list">
+		@for (project of recentProjects(); track project.path) {
+		<button class="list-item" type="button" (click)="projectSelect.emit(project)">
+			<strong>{{ project.nickname || project.name }}</strong>
+			<span>{{ project.path }}</span>
+		</button>
+		}
+	</div>
+</article>

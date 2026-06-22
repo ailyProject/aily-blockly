@@ -2,6 +2,7 @@
 	"name": "ui",
 	"version": "0.0.0",
 	"scripts": {
+		"dev": "ng serve",
 		"ng": "ng",
 		"start": "ng serve",
 		"build": "ng build",
@@ -25,6 +26,9 @@
 		"@tanstack/angular-table": "8.21.4",
 		"@trpc/client": "catalog:",
 		"@trpc/server": "catalog:",
+		"@xterm/addon-clipboard": "^0.2.0",
+		"@xterm/addon-fit": "^0.10.0",
+		"@xterm/xterm": "^5.5.0",
 		"ai": "catalog:",
 		"class-variance-authority": "^0.7.0",
 		"clsx": "^2.1.1",

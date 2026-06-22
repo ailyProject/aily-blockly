@@ -46,6 +46,59 @@
         </div>
       </article>
 
+      @if (stateValue.projectLifecycle; as lifecycleValue) {
+      <article hlmCard class="settings-card">
+        <header class="card-header">
+          <div>
+            <p class="eyebrow">Lifecycle</p>
+            <h2>Current Project Snapshot</h2>
+          </div>
+          <span hlmBadge variant="outline">{{ lifecycleValue.editorRoute }}</span>
+        </header>
+
+        <div class="badge-row">
+          <button hlmBtn size="sm" variant="outline" [disabled]="closeBusy()" (click)="closeProject()">
+            {{ closeBusy() ? 'Closing...' : 'Close Project' }}
+          </button>
+        </div>
+
+        <div class="metrics-grid">
+          <div><span>Project Path</span><strong>{{ lifecycleValue.projectPath }}</strong></div>
+          <div><span>package.json</span><strong>{{ lifecycleValue.hasPackageJson ? 'ready' : 'missing' }}</strong></div>
+          <div><span>project.abi</span><strong>{{ lifecycleValue.hasProjectDocument ? 'ready' : 'missing' }}</strong></div>
+          <div><span>project.abi.temp</span><strong>{{ lifecycleValue.hasTempDocument ? 'ready' : 'missing' }}</strong></div>
+          <div>
+            <span>Mutation Lock</span>
+            <strong>
+              {{ lifecycleValue.hasMutationLock ? (lifecycleValue.mutationLockStale ? 'stale' : 'locked') : 'idle' }}
+            </strong>
+          </div>
+          <div><span>Lock Owner</span><strong>{{ lifecycleValue.mutationLockOwner || 'n/a' }}</strong></div>
+          <div><span>Lock PID</span><strong>{{ lifecycleValue.mutationLockPid ?? 'n/a' }}</strong></div>
+          <div>
+            <span>Open Session Lock</span>
+            <strong>
+              {{ lifecycleValue.hasOpenSessionLock ? (lifecycleValue.openSessionLockStale ? 'stale' : 'locked') : 'idle' }}
+            </strong>
+          </div>
+          <div><span>Open Owner</span><strong>{{ lifecycleValue.openSessionLockOwner || 'n/a' }}</strong></div>
+          <div><span>Open PID</span><strong>{{ lifecycleValue.openSessionLockPid ?? 'n/a' }}</strong></div>
+          <div><span>Recovered From Temp</span><strong>{{ lifecycleValue.recoveredFromTemp ? 'yes' : 'no' }}</strong></div>
+          <div><span>Source File</span><strong>{{ lifecycleValue.sourceFilePath || 'n/a' }}</strong></div>
+          <div><span>Declared Libraries</span><strong>{{ lifecycleValue.declaredLibraryCount }}</strong></div>
+          <div><span>Ready Libraries</span><strong>{{ lifecycleValue.readyLibraryCount }}</strong></div>
+          <div><span>Missing Libraries</span><strong>{{ lifecycleValue.missingLibraryCount }}</strong></div>
+          <div><span>Board Package</span><strong>{{ lifecycleValue.boardPackageName || 'n/a' }}</strong></div>
+          <div><span>Board Package Ready</span><strong>{{ lifecycleValue.boardPackageReady === undefined ? 'n/a' : lifecycleValue.boardPackageReady ? 'yes' : 'no' }}</strong></div>
+          <div><span>codeHash</span><strong>{{ lifecycleValue.codeHash || 'n/a' }}</strong></div>
+          <div><span>Build Status</span><strong>{{ lifecycleValue.buildStatus || 'n/a' }}</strong></div>
+          <div><span>Build Time</span><strong>{{ lifecycleValue.buildTime || 'n/a' }}</strong></div>
+          <div><span>Build Duration</span><strong>{{ lifecycleValue.buildDuration ?? 'n/a' }}</strong></div>
+          <div><span>Parse Error</span><strong>{{ lifecycleValue.parseError || 'n/a' }}</strong></div>
+        </div>
+      </article>
+      }
+
       <article hlmCard class="settings-card">
         <header class="card-header">
           <div>

@@ -1,6 +1,6 @@
 import { config } from '@/workspace'
 
-import type { Core } from '@/core-service'
+import type { Core } from '@/utils/core'
 import type { RecentModelProject } from 'shared'
 import type { ModelTrainState } from './types'
 

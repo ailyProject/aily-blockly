@@ -5,7 +5,7 @@ import {
 	withCompileStalenessWarning
 } from './compileErrors'
 
-import type { CompileDiagnosticReport, CompileErrorSnapshot } from './types'
+import type { CompileDiagnosticReport, CompileErrorSnapshot } from './compileErrors'
 
 /**
  * 从编译错误快照恢复诊断列表

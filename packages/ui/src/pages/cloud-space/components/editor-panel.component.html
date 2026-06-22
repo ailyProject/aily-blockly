@@ -1,0 +1,95 @@
+<article hlmCard class="editor-panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Metadata Editor</p>
+			<h3>{{ project().nickname || project().name }}</h3>
+		</div>
+		<div class="badge-row">
+			@if (project().board) {
+			<span hlmBadge>{{ project().board }}</span>
+			}
+			@if (project().isTemplate) {
+			<span hlmBadge variant="outline">template</span>
+			}
+			@if (project().isPublished) {
+			<span hlmBadge variant="secondary">public</span>
+			}
+		</div>
+	</header>
+
+	<label class="field">
+		<span>Nickname</span>
+		<input hlmInput [value]="nickname()" (input)="updateNickname($event)" />
+	</label>
+
+	<label class="field">
+		<span>Description</span>
+		<textarea class="textarea" [value]="description()" (input)="updateDescription($event)"></textarea>
+	</label>
+
+	<label class="field">
+		<span>Doc URL</span>
+		<input hlmInput [value]="docUrl()" (input)="updateDocUrl($event)" placeholder="https://..." />
+	</label>
+
+	<label class="field">
+		<span>Tags</span>
+		<input hlmInput [value]="tags()" (input)="updateTags($event)" placeholder="vision, esp32, demo" />
+	</label>
+
+	<div class="field">
+		<span>Cover Image</span>
+		@if (imagePreviewUrl()) {
+		<img class="cover" [src]="imagePreviewUrl()!" [alt]="(project().nickname || project().name) + ' preview'" />
+		}
+		@if (removeCover() && !imagePreviewUrl()) {
+		<p class="cover-note">Current save will remove the existing cloud cover image.</p>
+		}
+		<div class="button-row">
+			<label class="upload-label" hlmBtn variant="outline">
+				<input class="hidden-input" type="file" accept="image/*" (change)="selectImage($event)" />
+				{{ imageBusy() ? 'Processing...' : 'Choose Cover' }}
+			</label>
+			@if (imagePreviewUrl()) {
+			<button hlmBtn variant="outline" [disabled]="imageBusy() || saveBusy()" (click)="imageClear.emit()">Clear Cover</button>
+			}
+		</div>
+	</div>
+
+	<div class="field">
+		<span>Project Details</span>
+		<div class="details-grid">
+			<div>
+				<strong>Cloud ID</strong>
+				<span>{{ project().id }}</span>
+			</div>
+			<div>
+				<strong>Board</strong>
+				<span>{{ project().board || 'unknown' }}</span>
+			</div>
+			<div>
+				<strong>Archive</strong>
+				<span>{{ project().archiveUrl || 'unavailable' }}</span>
+			</div>
+			<div>
+				<strong>Doc Link</strong>
+				@if (project().docUrl) {
+				<a class="detail-link" [href]="project().docUrl!" target="_blank" rel="noreferrer">{{ project().docUrl }}</a>
+				} @else {
+				<span>unavailable</span>
+				}
+			</div>
+		</div>
+	</div>
+
+	@if (errorMessage()) {
+	<p class="error">{{ errorMessage() }}</p>
+	}
+
+	<div class="button-row">
+		<button hlmBtn variant="outline" [disabled]="saveBusy()" (click)="cancel.emit()">Cancel</button>
+		<button hlmBtn [disabled]="saveBusy() || imageBusy()" (click)="save.emit()">
+			{{ saveBusy() ? 'Saving...' : 'Save Metadata' }}
+		</button>
+	</div>
+</article>

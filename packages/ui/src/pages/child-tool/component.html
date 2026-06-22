@@ -5,19 +5,40 @@
         <p class="eyebrow">Child Tool Host</p>
         <h2>{{ state().tool?.title ?? 'Unknown Tool' }}</h2>
       </div>
-      <span hlmBadge variant="secondary">{{ state().tool?.id ?? 'unregistered' }}</span>
+      <div class="header-meta">
+        <span hlmBadge variant="secondary">{{ state().tool?.id ?? 'unregistered' }}</span>
+        <span hlmBadge [variant]="state().usingHost ? 'default' : 'outline'">{{ state().usingHost ? 'hosted' : 'preview' }}</span>
+        <button hlmBtn type="button" size="sm" variant="outline" [disabled]="loading()" (click)="restart()">Restart</button>
+      </div>
     </header>
 
     <p class="summary">
-      {{ state().tool?.summary ?? 'This route is reserved for child tools that will later be launched through the desktop bridge.' }}
+      {{ state().tool?.summary ?? 'This child tool is not registered in the current runtime.' }}
     </p>
 
-    @if (state().frameUrl) {
+    @if (loading()) {
+      <div class="empty-card">
+        <strong>Starting child tool...</strong>
+        <span>Waiting for the child process to report its host URL.</span>
+      </div>
+    } @else if (error()) {
+      <div class="empty-card error-card">
+        <strong>Child tool host failed</strong>
+        <span>{{ error() }}</span>
+      </div>
+    } @else if (state().frameUrl) {
       <iframe class="frame" [src]="state().frameUrl" [title]="state().tool?.title ?? 'Child Tool'"></iframe>
     } @else {
       <div class="empty-card">
-        <strong>Desktop host pending</strong>
-        <span>Pass a `url` query parameter to preview a hosted tool before the desktop process bridge is wired back in.</span>
+        <strong>Desktop host unavailable</strong>
+        <span>Pass a `url` query parameter to inspect an externally hosted child tool when no local host is available.</span>
+      </div>
+    }
+
+    @if (state().hostInfo) {
+      <div class="host-meta">
+        <span hlmBadge variant="outline">port {{ state().hostInfo?.port ?? 'n/a' }}</span>
+        <span hlmBadge variant="outline">pid {{ state().hostInfo?.pid ?? 'n/a' }}</span>
       </div>
     }
   </article>

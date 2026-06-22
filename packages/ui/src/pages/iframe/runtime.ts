@@ -8,10 +8,9 @@ const defaultIframeTarget = embedTargets[0]
 
 /**
  * 解析 iframe 页面状态。
- * @param {DomSanitizer} sanitizer - Angular 资源 URL 处理器
- * @param {string | null | undefined} rawUrl - 原始输入 URL
- * @param {string | null | undefined} rawTitle - 原始标题
- * @returns {IframePageState}
+ * @param sanitizer - Angular 资源 URL 处理器
+ * @param rawUrl - 原始输入 URL
+ * @param rawTitle - 原始标题
  */
 export const resolveIframePageState = (
 	sanitizer: DomSanitizer,

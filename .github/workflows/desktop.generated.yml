@@ -22,7 +22,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: "printf '\\ntrustLockfile: true\\n' >> pnpm-workspace.yaml\npnpm install --frozen-lockfile"
-      - name: Build workspaces
-        run: "pnpm --filter \"./packages/erpc\" run build\npnpm --filter \"./packages/shared\" run build\npnpm --filter \"./packages/core\" run build\npnpm --filter \"./packages/ui\" run build\npnpm --filter \"./packages/desktop\" run build"
+      - name: Build monorepo
+        run: pnpm run build
       - name: Package desktop
-        run: "pnpm turbo run desktop#pack:mac\npnpm turbo run desktop#pack:win"
+        run: "pnpm turbo run desktop#pack:mac\npnpm turbo run desktop#pack:win\npnpm turbo run desktop#pack:linux"

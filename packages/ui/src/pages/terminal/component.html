@@ -1,0 +1,112 @@
+<app-shell>
+	<div shell-actions>
+		<button hlmBtn size="sm" variant="outline" (click)="clear()">Clear</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="!lines().length" (click)="copyOutput()">Copy Output</button>
+		<button hlmBtn size="sm" variant="outline" (click)="pasteClipboard()">Paste Clipboard</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="!runtimeInfo()" (click)="chooseWorkingDirectory()">
+			Choose Working Directory
+		</button>
+		<button hlmBtn size="sm" variant="outline" (click)="runPwd()">Run `pwd`</button>
+		<button
+			hlmBtn
+			size="sm"
+			variant="outline"
+			[disabled]="actionBusy() || !runtimeInfo() || !session()"
+			(click)="runCurrentBuild()"
+		>
+			Run Build
+		</button>
+		<button
+			hlmBtn
+			size="sm"
+			variant="outline"
+			[disabled]="actionBusy() || !runtimeInfo() || !session() || !selectedUploadTarget()"
+			(click)="runCurrentUpload()"
+		>
+			Run Upload
+		</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="actionBusy() || !bleBridgeAvailable()" (click)="selectBleDevice()">
+			Select BLE Device
+		</button>
+		<button hlmBtn size="sm" variant="outline" (click)="interrupt()">Interrupt</button>
+	</div>
+
+	<section class="terminal-page">
+		@if (loading()) {
+		<article hlmCard class="terminal-card">
+			<strong>Starting terminal session...</strong>
+		</article>
+		} @else if (error()) {
+		<article hlmCard class="terminal-card error">
+			<strong>Terminal unavailable</strong>
+			<p>{{ error() }}</p>
+		</article>
+		} @else {
+		<article hlmCard class="terminal-card">
+			<header class="card-header">
+				<div>
+					<p class="eyebrow">Terminal</p>
+					<h2>{{ session()?.cwd || 'Shell Session' }}</h2>
+				</div>
+				<div class="badge-row">
+					<span hlmBadge>{{ session()?.shell }}</span>
+					<span hlmBadge variant="outline">pid {{ session()?.pid }}</span>
+					<span hlmBadge variant="outline"
+						>{{ viewport()?.cols || session()?.cols }} x {{ viewport()?.rows || session()?.rows }}</span
+					>
+					<span hlmBadge variant="outline">target {{ selectedUploadTargetLabel() || 'n/a' }}</span>
+					<span hlmBadge variant="secondary">{{ lineCount() }} lines</span>
+				</div>
+			</header>
+
+			@if (uploadTargets().length) {
+			<div class="badge-row">
+				@for (target of uploadTargets(); track target.id) {
+				<button
+					hlmBtn
+					size="sm"
+					[variant]="selectedUploadTargetId() === target.id ? 'default' : 'outline'"
+					[disabled]="actionBusy()"
+					(click)="chooseUploadTarget(target.id)"
+				>
+					{{ target.label }}
+				</button>
+				}
+			</div>
+			}
+
+			@if (lastUploadSummary(); as uploadSummary) {
+			<div class="upload-summary-card">
+				<strong>Last Upload</strong>
+				<span>{{ uploadSummary.channel }} / {{ uploadSummary.status }}</span>
+				<span>{{ uploadSummary.message }}</span>
+				@if (uploadSummary.artifactPath) {
+				<span>{{ uploadSummary.artifactPath }}</span>
+				}
+				@if (uploadSummary.latestPhaseText) {
+				<span>latest {{ uploadSummary.latestPhaseText }}</span>
+				}
+				@if (uploadSummary.recoveryHint) {
+				<span>{{ uploadSummary.recoveryHint }}</span>
+				}
+				@if (uploadSummary.status !== 'success') {
+				<div class="badge-row">
+					<button hlmBtn size="sm" variant="outline" [disabled]="actionBusy()" (click)="retryCurrentUpload()">Retry Upload</button>
+					@if (uploadSummary.channel === 'ble') {
+					<button hlmBtn size="sm" variant="outline" [disabled]="actionBusy() || !bleBridgeAvailable()" (click)="selectBleDevice()">
+						Reconnect BLE Device
+					</button>
+					}
+				</div>
+				}
+			</div>
+			}
+
+			<div #terminalHost class="terminal-output"></div>
+			<span class="terminal-shortcut">
+				Interactive shell input is handled directly in the terminal surface. The toolbar above still exposes structured build and upload actions.
+			</span>
+		</article>
+		}
+	</section>
+</app-shell>

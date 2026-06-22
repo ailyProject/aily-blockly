@@ -51,7 +51,9 @@ export const createHomePageState = () => ({
 	removedRecentModelProjectCount: signal(0)
 })
 
-export const applyHomePageCoreState = (target: ReturnType<typeof createHomePageState>, state: HomePageCoreState) => {
+export type HomePageStateSignals = ReturnType<typeof createHomePageState>
+
+export const applyHomePageCoreState = (target: HomePageStateSignals, state: HomePageCoreState) => {
 	target.hardwareCategories.set(state.architectureCategories)
 	target.boardValidationText.set(
 		state.boardValidation.exists

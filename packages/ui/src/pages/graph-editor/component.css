@@ -53,6 +53,42 @@
 	color: var(--muted-foreground);
 }
 
+.file-card small {
+	color: var(--muted-foreground);
+}
+
+.editor-box {
+	min-height: 180px;
+	width: 100%;
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--background) 80%, transparent);
+	font:
+		12px/1.55 'GeistMono',
+		ui-monospace,
+		monospace;
+	resize: vertical;
+}
+
+.metrics-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+	gap: 12px;
+}
+
+.metrics-grid div {
+	display: grid;
+	gap: 4px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.metrics-grid span {
+	color: var(--muted-foreground);
+}
+
 .frame {
 	width: 100%;
 	min-height: 560px;

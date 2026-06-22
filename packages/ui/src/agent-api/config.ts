@@ -1,4 +1,4 @@
-import { resolveCoreServiceBaseUrl } from '@/core-service/config'
+import { resolveCoreBaseUrl } from '@/utils/core'
 
 import type { CreateAgentApiOptions } from './types'
 
@@ -7,4 +7,4 @@ import type { CreateAgentApiOptions } from './types'
  * @param options - 地址覆盖项
  */
 export const resolveAgentSessionApi = (options: CreateAgentApiOptions = {}) =>
-	`${resolveCoreServiceBaseUrl({ baseUrl: options.baseUrl })}/api/agent/session`
+	`${resolveCoreBaseUrl({ baseUrl: options.baseUrl })}/api/agent/session`

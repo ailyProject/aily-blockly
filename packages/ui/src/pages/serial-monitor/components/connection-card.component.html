@@ -1,0 +1,44 @@
+<article hlmCard class="serial-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Connection</p>
+			<h2>{{ state().connectOptions.path || 'No Port Selected' }}</h2>
+		</div>
+		<span hlmBadge>{{ state().session?.connected ? 'connected' : 'idle' }}</span>
+	</header>
+
+	<div class="metrics-grid">
+		<div><span>Platform</span><strong>{{ state().serialPlatform }}</strong></div>
+		<div><span>Available</span><strong>{{ state().serialAvailable ? 'ready' : 'missing' }}</strong></div>
+		<div><span>Baud</span><strong>{{ state().connectOptions.baudRate }}</strong></div>
+		<div><span>Data Bits</span><strong>{{ state().connectOptions.dataBits }}</strong></div>
+		<div><span>Stop Bits</span><strong>{{ state().connectOptions.stopBits }}</strong></div>
+		<div><span>Parity</span><strong>{{ state().connectOptions.parity }}</strong></div>
+		<div><span>Flow Control</span><strong>{{ state().connectOptions.flowControl }}</strong></div>
+		<div><span>Quick Sends</span><strong>{{ state().quickSendList.length }}</strong></div>
+	</div>
+
+	<div class="picker-group">
+		<div class="picker">
+			<span class="picker-label">Ports</span>
+			<div class="badge-row">
+				@for (port of state().availablePorts; track port) {
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!state().session?.connected" (click)="choosePort.emit(port)">
+					{{ port }}
+				</button>
+				}
+			</div>
+		</div>
+
+		<div class="picker">
+			<span class="picker-label">Baud Rates</span>
+			<div class="badge-row">
+				@for (baudRate of state().availableBaudRates; track baudRate) {
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!state().session?.connected" (click)="chooseBaudRate.emit(baudRate)">
+					{{ baudRate }}
+				</button>
+				}
+			</div>
+		</div>
+	</div>
+</article>

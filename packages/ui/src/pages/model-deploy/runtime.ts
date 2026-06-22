@@ -1,7 +1,7 @@
 import { loadHardwareHostSnapshot } from '@/runtime/hardware-host'
 
-import type { Core } from '@/core-service'
-import type { Desktop } from '@/desktop-service'
+import type { Core } from '@/utils/core'
+import type { Desktop } from '@/utils/desktop'
 import type { ModelDeployState } from './types'
 
 export const loadModelDeployState = async (

@@ -18,16 +18,20 @@
 		"dist"
 	],
 	"scripts": {
+		"dev": "rslib build --watch",
 		"build": "rslib build",
-		"pack:mac": "pnpm run build",
-		"pack:win": "pnpm run build"
+		"pack:mac": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform mac",
+		"pack:win": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform win",
+		"pack:linux": "pnpm run build && node ../../scripts/trim_desktop_release.mjs --platform linux"
 	},
 	"dependencies": {
+		"@lydell/node-pty": "^1.1.0",
 		"@trpc/server": "catalog:",
 		"core": "workspace:*",
 		"electron": "catalog:",
 		"erpc": "workspace:*",
-		"shared": "workspace:*"
+		"shared": "workspace:*",
+		"zod": "catalog:"
 	},
 	"devDependencies": {
 		"@rslib/core": "catalog:",

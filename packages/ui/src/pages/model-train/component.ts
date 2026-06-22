@@ -4,7 +4,7 @@ import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
+import { getCore } from '@/utils/core'
 
 import { modelTrainTabs } from './data'
 import { loadModelTrainState } from './runtime'
@@ -18,7 +18,7 @@ import type { RecentModelProject } from 'shared'
 	styleUrl: './component.css'
 })
 export class ModelTrainPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly tabs = modelTrainTabs
 	protected readonly recentModels = signal<Array<RecentModelProject>>([])

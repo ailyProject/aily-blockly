@@ -1,0 +1,49 @@
+@if (uploadResult(); as uploadValue) {
+	<div class="metric"><span>Upload</span><strong>{{ uploadValue.success ? 'success' : 'failed' }}</strong></div>
+	<div class="metric"><span>Channel</span><strong>{{ uploadValue.channel }}</strong></div>
+	<div class="metric"><span>Status</span><strong>{{ uploadValue.statusText || uploadValue.status }}</strong></div>
+	<div class="metric"><span>Error Code</span><strong>{{ uploadValue.errorCode || 'n/a' }}</strong></div>
+	<div class="metric"><span>Upload Port</span><strong>{{ uploadValue.port || 'n/a' }}</strong></div>
+	<div class="metric"><span>Upload Time</span><strong>{{ uploadValue.durationMs }} ms</strong></div>
+	<div class="metric"><span>Artifact</span><strong>{{ uploadValue.artifactPath || 'n/a' }}</strong></div>
+	<div class="metric"><span>Upload Events</span><strong>{{ uploadValue.progressEventCount }}</strong></div>
+	<div class="metric"><span>Latest Phase</span><strong>{{ uploadValue.latestProgressText || 'n/a' }}</strong></div>
+	@if (uploadValue.error) {
+	<p class="build-copy error">{{ uploadValue.error }}</p>
+	}
+	@if (uploadValue.recoveryHint) {
+	<p class="build-copy">{{ uploadValue.recoveryHint }}</p>
+	}
+	<div class="button-row">
+		@if (uploadValue.recoveryActions?.shouldFixBuild) {
+		<button hlmBtn variant="outline" [disabled]="buildBusy()" (click)="runBuild.emit()">Build Again</button>
+		}
+		@if (uploadValue.recoveryActions?.shouldReconnect && uploadValue.channel === 'ble') {
+		<button hlmBtn variant="outline" [disabled]="uploadBusy()" (click)="reconnectBleDevice.emit()">Reconnect BLE Device</button>
+		}
+		@if (uploadValue.recoveryActions?.canRetry && uploadValue.channel !== 'ble') {
+		<button hlmBtn variant="outline" [disabled]="uploadBusy()" (click)="runUpload.emit()">Retry Upload</button>
+		}
+		@if (uploadValue.recoveryActions?.canRetry && uploadValue.channel === 'ble') {
+		<button hlmBtn variant="outline" [disabled]="uploadBusy() || !bleUploadPlan()?.ready || !bleDevice()" (click)="runBleUpload.emit()">
+			Retry BLE Upload
+		</button>
+		}
+		@if (uploadValue.recoveryActions?.canReprepare && uploadValue.channel === 'ble') {
+		<button hlmBtn variant="outline" [disabled]="uploadBusy() || !bleDevice()" (click)="prepareBleUpload.emit()">
+			Reprepare BLE Upload
+		</button>
+		}
+	</div>
+	@if (uploadValue.logs.length) {
+	<div class="list">
+		@for (log of uploadValue.logs; track log.step) {
+		<div class="list-item static">
+			<strong>{{ log.step }}</strong>
+			<pre class="build-output">{{ log.stdout || log.stderr || 'No step output.' }}</pre>
+		</div>
+		}
+	</div>
+	}
+	<pre class="build-output">{{ uploadValue.stdout || uploadValue.stderr || 'No upload output.' }}</pre>
+}

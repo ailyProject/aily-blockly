@@ -1,20 +1,22 @@
 import { r } from '../trpc'
-import { default as buildMountPlan } from './buildMountPlan'
-import { default as buildPartitionFileName } from './buildPartitionFileName'
-import { default as getDefaultUploadPath } from './getDefaultUploadPath'
-import { default as isPlausiblePartitionEntry } from './isPlausiblePartitionEntry'
-import { default as parsePartitionTable } from './parsePartitionTable'
+import { default as createImageDirectory } from './createImageDirectory'
+import { default as deleteImageEntry } from './deleteImageEntry'
+import { default as formatImageFilesystem } from './formatImageFilesystem'
+import { default as getPreviewSnapshot } from './getPreviewSnapshot'
+import { default as inspectImage } from './inspectImage'
+import { default as readImageFilePreview } from './readImageFilePreview'
+import { default as renameImageEntry } from './renameImageEntry'
 import { default as resolveBaud } from './resolveBaud'
-import { default as summarizePartitions } from './summarizePartitions'
-import { default as validateUploadFileName } from './validateUploadFileName'
+import { default as writeImageFile } from './writeImageFile'
 
 export default r({
-	parsePartitionTable,
-	isPlausiblePartitionEntry,
-	buildPartitionFileName,
-	buildMountPlan,
-	getDefaultUploadPath,
+	createImageDirectory,
+	deleteImageEntry,
+	formatImageFilesystem,
+	getPreviewSnapshot,
+	inspectImage,
+	readImageFilePreview,
+	renameImageEntry,
 	resolveBaud,
-	summarizePartitions,
-	validateUploadFileName
+	writeImageFile
 })

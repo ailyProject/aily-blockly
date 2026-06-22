@@ -3,8 +3,8 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
 import { primaryRouteLinks } from '@/pages/main/data'
+import { getCore } from '@/utils/core'
 
 @Component({
 	selector: 'playground-page',
@@ -13,7 +13,7 @@ import { primaryRouteLinks } from '@/pages/main/data'
 	styleUrl: './component.css'
 })
 export class PlaygroundPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly categories = signal<Array<{ name: string; count: number }>>([])
 	protected readonly links = primaryRouteLinks.filter(item => item.href !== '/main/playground')

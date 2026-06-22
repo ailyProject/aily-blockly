@@ -2,36 +2,29 @@ import { Component, OnInit, signal } from '@angular/core'
 import { HlmAlertImports } from 'spartan/alert'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
-import { HlmCardImports } from 'spartan/card'
-import { HlmInputImports } from 'spartan/input'
-import { HlmSeparatorImports } from 'spartan/separator'
-import { HlmTabsImports } from 'spartan/tabs'
 
-import { DataTableImports } from '@/components/ui/data-table/src'
 import { APP_ICON_IMPORTS, APP_ICON_PROVIDERS } from '@/components/ui/icon/app-icons'
-import { injectCore } from '@/core-service'
-import { injectDesktop } from '@/desktop-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
-import { HomePageStatusComponent } from '@/pages/home/components/home-page-status.component'
+import { createHomePageActions } from '@/pages/home/component.actions'
+import { HomeInspectorRailComponent } from '@/pages/home/components/inspector-rail.component'
+import { HomeNavigationRailComponent } from '@/pages/home/components/navigation-rail.component'
+import { HomeWorkspaceCenterComponent } from '@/pages/home/components/workspace-center.component'
 import { bottomTabItems, inspectorCards, navigationCards } from '@/pages/home/data'
-import { loadHomePageCoreState } from '@/pages/home/runtime'
-import { applyHomePageCoreState, createHomePageState } from '@/pages/home/state'
+import { createHomePageState } from '@/pages/home/state'
 import { boardColumns, boardRows } from '@/pages/home/table-data'
-import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
+import { getThemeMode } from '@/runtime/theme'
+import { getCore } from '@/utils/core'
+import { getDesktop } from '@/utils/desktop'
 
 @Component({
 	selector: 'home-page',
 	imports: [
 		AppShellComponent,
-		HlmAlertImports,
 		HlmBadgeImports,
 		HlmButtonImports,
-		HlmCardImports,
-		DataTableImports,
-		HomePageStatusComponent,
-		HlmInputImports,
-		HlmSeparatorImports,
-		HlmTabsImports,
+		HomeInspectorRailComponent,
+		HomeNavigationRailComponent,
+		HomeWorkspaceCenterComponent,
 		...APP_ICON_IMPORTS
 	],
 	providers: [...APP_ICON_PROVIDERS],
@@ -39,12 +32,18 @@ import { applyThemeMode, getThemeMode, toggleThemeMode } from '@/runtime/theme'
 	styleUrl: './component.css'
 })
 export class HomePageComponent implements OnInit {
-	private readonly core = injectCore()
-	private readonly desktop = injectDesktop()
+	private readonly core = getCore()
+	private readonly desktop = getDesktop()
 	private readonly pageState = createHomePageState()
-
 	protected readonly bottomTab = signal('logs')
 	protected readonly themeMode = signal(getThemeMode())
+	private readonly actions = createHomePageActions({
+		core: this.core,
+		desktop: this.desktop,
+		pageState: this.pageState,
+		themeMode: this.themeMode
+	})
+
 	protected readonly tabItems = bottomTabItems
 	protected readonly navigationCards = navigationCards
 	protected readonly inspectorCards = inspectorCards
@@ -98,62 +97,18 @@ export class HomePageComponent implements OnInit {
 	protected readonly removedRecentModelProjectCount = this.pageState.removedRecentModelProjectCount
 
 	async ngOnInit() {
-		await this.refreshDesktopBackendStatus()
-		if (this.desktop && !this.desktopBackendReachable()) await this.ensureDesktopBackendStarted()
-		await this.refreshCoreDerivedState()
+		await this.actions.refreshDesktopBackendStatus()
+		if (this.desktop && !this.desktopBackendReachable()) await this.actions.ensureDesktopBackendStarted()
+		await this.actions.refreshCoreDerivedState()
 	}
 
-	protected async refreshDesktopBackendStatus() {
-		if (!this.desktop) {
-			this.desktopBackendManaged.set(false)
-			this.desktopBackendReachable.set(false)
-			return
-		}
-
-		try {
-			const status = await this.desktop.core.getCoreStatus.query()
-			this.desktopBackendManaged.set(status.managed)
-			this.desktopBackendReachable.set(status.reachable)
-			this.desktopBackendBaseUrl.set(status.address.baseUrl)
-			this.desktopBackendError.set(null)
-		} catch (error) {
-			this.desktopBackendError.set((error as Error).message)
-		}
-	}
-
-	protected async ensureDesktopBackendStarted() {
-		if (!this.desktop) return
-
-		try {
-			const status = await this.desktop.core.ensureCoreStarted.query()
-			this.desktopBackendManaged.set(status.managed)
-			this.desktopBackendReachable.set(status.reachable)
-			this.desktopBackendBaseUrl.set(status.address.baseUrl)
-			this.desktopBackendError.set(null)
-			await this.refreshCoreDerivedState()
-		} catch (error) {
-			this.desktopBackendError.set((error as Error).message)
-		}
-	}
-
-	protected async refreshCoreDerivedState() {
-		try {
-			applyHomePageCoreState(this.pageState, await loadHomePageCoreState(this.core))
-		} catch (error) {
-			this.boardValidationText.set(`core route error: ${(error as Error).message}`)
-			this.libraryValidationText.set('core route error')
-		}
-	}
-
-	protected handleThemeToggle() {
-		this.themeMode.set(toggleThemeMode())
-	}
-
-	protected useDarkMode() {
-		this.themeMode.set(applyThemeMode('dark'))
-	}
+	protected readonly refreshDesktopBackendStatus = () => this.actions.refreshDesktopBackendStatus()
+	protected readonly ensureDesktopBackendStarted = () => this.actions.ensureDesktopBackendStarted()
+	protected readonly refreshCoreDerivedState = () => this.actions.refreshCoreDerivedState()
+	protected readonly handleThemeToggle = () => this.actions.handleThemeToggle()
+	protected readonly useDarkMode = () => this.actions.useDarkMode()
 
 	protected get themeActionLabel() {
-		return this.themeMode() === 'dark' ? 'Switch to light' : 'Switch to dark'
+		return this.actions.getThemeActionLabel()
 	}
 }

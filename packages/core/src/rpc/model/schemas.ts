@@ -25,8 +25,7 @@ export const modelCatalogDetailSchema = z.object({
 
 /**
  * 归一化模型目录列表输入。
- * @param {z.infer<typeof modelCatalogListSchema>} input - 原始输入
- * @returns {{config: ReturnType<typeof normalizeAppConfigInput>, page?: number, pageSize?: number, search?: string, uniformType?: string, language?: string}}
+ * @param input - 原始输入
  */
 export const normalizeModelCatalogListInput = (input: z.infer<typeof modelCatalogListSchema>) => ({
 	config: normalizeAppConfigInput(input.config),
@@ -39,8 +38,7 @@ export const normalizeModelCatalogListInput = (input: z.infer<typeof modelCatalo
 
 /**
  * 归一化模型目录详情输入。
- * @param {z.infer<typeof modelCatalogDetailSchema>} input - 原始输入
- * @returns {{config: ReturnType<typeof normalizeAppConfigInput>, modelId: string, language?: string}}
+ * @param input - 原始输入
  */
 export const normalizeModelCatalogDetailInput = (input: z.infer<typeof modelCatalogDetailSchema>) => ({
 	config: normalizeAppConfigInput(input.config),

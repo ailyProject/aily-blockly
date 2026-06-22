@@ -1,4 +1,13 @@
 /**
+ * 开发板索引条目类型
+ */
+export type BoardIndexItemType =
+	/** 单块开发板 */
+	| 'board'
+	/** 系列或聚合占位条目 */
+	| 'series'
+
+/**
  * 开发板索引条目
  */
 export interface BoardIndexItem {
@@ -54,6 +63,88 @@ export interface BoardIndexItem {
 }
 
 /**
+ * 旧格式开发板条目
+ */
+export interface LegacyBoardItem {
+	/** 包名或唯一名称 */
+	name: string
+	/** 展示昵称 */
+	nickname?: string
+	/** 展示名称 */
+	displayName?: string
+	/** 描述 */
+	description?: string
+	/** 关键词 */
+	keywords?: Array<string>
+	/** 品牌 */
+	brand?: string
+	/** 类型 */
+	type?: string
+}
+
+/**
+ * 开发板验证结果
+ */
+export interface BoardValidationResult {
+	/** 是否命中开发板 */
+	exists: boolean
+	/** 命中的开发板条目 */
+	board: LegacyBoardItem | null
+	/** 是否通过模糊匹配命中 */
+	fuzzyMatch: boolean
+	/** 原始查询词 */
+	originalQuery: string
+}
+
+/**
+ * 开发板分类维度
+ */
+export type BoardCategoryDimension =
+	/** 按品牌分类 */
+	| 'brand'
+	/** 按处理器架构分类 */
+	| 'architecture'
+	/** 按连接能力分类 */
+	| 'connectivity'
+	/** 按接口能力分类 */
+	| 'interfaces'
+	/** 按标签分类 */
+	| 'tags'
+
+/**
+ * 分类统计项
+ */
+export interface CategoryCount {
+	/** 分类名称 */
+	name: string
+	/** 命中数量 */
+	count: number
+}
+
+/**
+ * 分类聚合来源
+ */
+export type HardwareCategorySource =
+	/** 开发板分类统计 */
+	| 'boards'
+	/** 库分类统计 */
+	| 'libraries'
+
+/**
+ * 硬件分类聚合结果
+ */
+export interface HardwareCategoryResult {
+	/** 分类结果来源 */
+	type: HardwareCategorySource
+	/** 当前统计维度 */
+	dimension: string
+	/** 参与统计的总条目数 */
+	total: number
+	/** 分类统计列表 */
+	categories: Array<CategoryCount>
+}
+
+/**
  * 库索引条目
  */
 export interface LibraryIndexItem {
@@ -88,26 +179,6 @@ export interface LibraryIndexItem {
 }
 
 /**
- * 旧格式开发板条目
- */
-export interface LegacyBoardItem {
-	/** 包名或唯一名称 */
-	name: string
-	/** 展示昵称 */
-	nickname?: string
-	/** 展示名称 */
-	displayName?: string
-	/** 描述 */
-	description?: string
-	/** 关键词 */
-	keywords?: Array<string>
-	/** 品牌 */
-	brand?: string
-	/** 类型 */
-	type?: string
-}
-
-/**
  * 旧格式库条目
  */
 export interface LegacyLibraryItem {
@@ -129,20 +200,6 @@ export interface LegacyLibraryItem {
 }
 
 /**
- * 开发板验证结果
- */
-export interface BoardValidationResult {
-	/** 是否命中开发板 */
-	exists: boolean
-	/** 命中的开发板条目 */
-	board: LegacyBoardItem | null
-	/** 是否通过模糊匹配命中 */
-	fuzzyMatch: boolean
-	/** 原始查询词 */
-	originalQuery: string
-}
-
-/**
  * 扩展库验证结果
  */
 export interface LibraryValidationResult {
@@ -155,6 +212,19 @@ export interface LibraryValidationResult {
 	/** 原始查询词 */
 	originalQuery: string
 }
+
+/**
+ * 库分类维度
+ */
+export type LibraryCategoryDimension =
+	/** 按主分类统计 */
+	| 'category'
+	/** 按硬件类型统计 */
+	| 'hardwareType'
+	/** 按通信协议统计 */
+	| 'communication'
+	/** 按支持的 core 统计 */
+	| 'supportedCores'
 
 /**
  * 标签列表载荷
@@ -240,6 +310,15 @@ export interface HardwareSearchQuery {
 }
 
 /**
+ * 硬件搜索结果来源
+ */
+export type HardwareSearchSource =
+	/** 开发板结果 */
+	| 'board'
+	/** 库结果 */
+	| 'library'
+
+/**
  * 统一硬件搜索结果
  */
 export interface HardwareSearchResult {
@@ -262,79 +341,11 @@ export interface HardwareSearchResult {
 }
 
 /**
- * 开发板分类维度
+ * legacy 搜索兼容输入。
  */
-export type BoardCategoryDimension =
-	/** 按品牌分类 */
-	| 'brand'
-	/** 按处理器架构分类 */
-	| 'architecture'
-	/** 按连接能力分类 */
-	| 'connectivity'
-	/** 按接口能力分类 */
-	| 'interfaces'
-	/** 按标签分类 */
-	| 'tags'
-/**
- * 库分类维度
- */
-export type LibraryCategoryDimension =
-	/** 按主分类统计 */
-	| 'category'
-	/** 按硬件类型统计 */
-	| 'hardwareType'
-	/** 按通信协议统计 */
-	| 'communication'
-	/** 按支持的 core 统计 */
-	| 'supportedCores'
-
-/**
- * 开发板索引条目类型
- */
-export type BoardIndexItemType =
-	/** 单块开发板 */
-	| 'board'
-	/** 系列或聚合占位条目 */
-	| 'series'
-
-/**
- * 硬件搜索结果来源
- */
-export type HardwareSearchSource =
-	/** 开发板结果 */
-	| 'board'
-	/** 库结果 */
-	| 'library'
-
-/**
- * 分类统计项
- */
-export interface CategoryCount {
-	/** 分类名称 */
-	name: string
-	/** 命中数量 */
-	count: number
+export interface HardwareLegacySearchInput {
+	/** legacy 开发板列表。 */
+	legacyBoards?: Array<LegacyBoardItem>
+	/** legacy 库列表。 */
+	legacyLibraries?: Array<LegacyLibraryItem>
 }
-
-/**
- * 硬件分类聚合结果
- */
-export interface HardwareCategoryResult {
-	/** 分类结果来源 */
-	type: HardwareCategorySource
-	/** 当前统计维度 */
-	dimension: string
-	/** 参与统计的总条目数 */
-	total: number
-	/** 分类统计列表 */
-	categories: Array<CategoryCount>
-}
-
-/**
- * 分类聚合来源
- */
-export type HardwareCategorySource =
-	/** 开发板分类统计 */
-	| 'boards'
-	/** 库分类统计 */
-	| 'libraries'

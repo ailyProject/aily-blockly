@@ -1,0 +1,110 @@
+<section class="center">
+	<section hlmCard class="workspace-card">
+		<div hlmCardHeader class="workspace-header">
+			<div>
+				<span hlmBadge variant="secondary">Tailwind CSS v4 + Spartan/ng</span>
+				<h2 hlmCardTitle>Desktop workbench shell</h2>
+				<p hlmCardDescription>header, center workspace, right tools, bottom tabs</p>
+			</div>
+			<div class="header-icons">
+				<ng-icon name="lucidePanelLeft" class="panel-icon"></ng-icon>
+				<ng-icon name="lucidePanelBottom" class="panel-icon"></ng-icon>
+				<ng-icon name="lucideSlidersHorizontal" class="panel-icon"></ng-icon>
+			</div>
+		</div>
+		<hlm-separator></hlm-separator>
+		<div hlmCardContent class="workspace-grid">
+			<article class="workspace-surface">
+				<ng-icon name="lucideBlocks" class="surface-icon"></ng-icon>
+				<h3>Blockly canvas area</h3>
+				<p>Reserved for the future editor shell, toolbox, and contextual panes.</p>
+			</article>
+			<aside class="workspace-side">
+				<hlm-alert>
+					<h4 hlmAlertTitle>Theme variables are ready</h4>
+					<p hlmAlertDescription>Light and dark tokens now map both Spartan and legacy aily naming.</p>
+				</hlm-alert>
+				<home-page-status
+					[desktopBackendBaseUrl]="desktopBackendBaseUrl()"
+					[desktopBackendReachable]="desktopBackendReachable()"
+					[desktopBackendManaged]="desktopBackendManaged()"
+					[desktopBackendError]="desktopBackendError()"
+					[enabledModelCount]="enabledModelCount()"
+					[boardValidationText]="boardValidationText()"
+					[libraryValidationText]="libraryValidationText()"
+					[hardwareCategories]="hardwareCategories()"
+					[securitySummary]="securitySummary()"
+					[appLanguage]="appLanguage()"
+					[appThemeMode]="appThemeMode()"
+					[devmodeEnabled]="devmodeEnabled()"
+					[devmodeAutoSave]="devmodeAutoSave()"
+					[appAiChatMode]="appAiChatMode()"
+					[appSelectedModel]="appSelectedModel()"
+					[recentModelProjectCount]="recentModelProjectCount()"
+					[toolbarAppCount]="toolbarAppCount()"
+					[visibleToolbarAppCount]="visibleToolbarAppCount()"
+					[quickSendCount]="quickSendCount()"
+					[skippedVersionCount]="skippedVersionCount()"
+					[serialBaudRate]="serialBaudRate()"
+					[serialAutoScroll]="serialAutoScroll()"
+					[serialInputHexMode]="serialInputHexMode()"
+					[serialConnectBaudRate]="serialConnectBaudRate()"
+					[recentProjectCount]="recentProjectCount()"
+					[onboardingCompleted]="onboardingCompleted()"
+					[blocklyOnboardingCompleted]="blocklyOnboardingCompleted()"
+					[ailyChatOnboardingCompleted]="ailyChatOnboardingCompleted()"
+					[previewSelectedLanguage]="previewSelectedLanguage()"
+					[previewThemeMode]="previewThemeMode()"
+					[previewDevmodeEnabled]="previewDevmodeEnabled()"
+					[previewDevmodeAutoSave]="previewDevmodeAutoSave()"
+					[previewSerialPort]="previewSerialPort()"
+					[previewAiChatMode]="previewAiChatMode()"
+					[previewToolbarAppCount]="previewToolbarAppCount()"
+					[previewQuickSendCount]="previewQuickSendCount()"
+					[previewSkippedVersionCount]="previewSkippedVersionCount()"
+					[defaultToolbarAppCount]="defaultToolbarAppCount()"
+					[mergedToolbarOrderCount]="mergedToolbarOrderCount()"
+					[toggledToolbarAppCount]="toggledToolbarAppCount()"
+					[resetToolbarAppCount]="resetToolbarAppCount()"
+					[addedRecentProjectCount]="addedRecentProjectCount()"
+					[removedRecentProjectCount]="removedRecentProjectCount()"
+					[previewAilyChatOnboardingCompleted]="previewAilyChatOnboardingCompleted()"
+					[addedRecentModelProjectCount]="addedRecentModelProjectCount()"
+					[removedRecentModelProjectCount]="removedRecentModelProjectCount()"
+					(refresh)="refresh.emit()"
+					(startBackend)="startBackend.emit()"
+				/>
+				<ui-data-table
+					[columns]="boardColumns()"
+					[data]="boardRows()"
+					filterColumnId="name"
+					filterPlaceholder="Filter boards..."
+				/>
+				<button hlmBtn class="fit" (click)="useDarkMode.emit()">Use dark mode preset</button>
+			</aside>
+		</div>
+	</section>
+
+	<section hlmCard class="tabs-card">
+		<div hlmCardHeader>
+			<h3 hlmCardTitle>Bottom tools</h3>
+			<p hlmCardDescription>build logs, terminal context, and long-running task output</p>
+		</div>
+		<div hlmCardContent>
+			<hlm-tabs [tab]="bottomTab()" (tabActivated)="bottomTabChange.emit($event)">
+				<hlm-tabs-list variant="line">
+					@for (tab of tabItems(); track tab.id) {
+					<button [hlmTabsTrigger]="tab.id">{{ tab.title }}</button>
+					}
+				</hlm-tabs-list>
+				@for (tab of tabItems(); track tab.id) {
+				<div [hlmTabsContent]="tab.id" class="tab-pane">
+					@for (item of tab.items; track item) {
+					<p>{{ item }}</p>
+					}
+				</div>
+				}
+			</hlm-tabs>
+		</div>
+	</section>
+</section>

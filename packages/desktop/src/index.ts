@@ -1,12 +1,19 @@
+import { app } from 'electron'
 import { createIPCHandler } from 'erpc/main'
 
+import { createDesktopBleBridge } from './ble'
 import { createDesktopCoreServiceManager } from './core-service'
-import { routers } from './rpc'
+import { registerDesktopProjectOpenEvents } from './project-open'
+import { default as rpc } from './rpc'
+import { createDesktopTerminalManager } from './terminal'
 
 import type { BootstrapDesktopMainOptions, BootstrapDesktopMainResult, DesktopMainContext } from './types'
 
 export * from './core-service'
 export * from './rpc'
+export * from './ble'
+export * from './project-open'
+export * from './terminal'
 export * from './types'
 export type { Router } from './rpc/types'
 
@@ -16,12 +23,21 @@ export type { Router } from './rpc/types'
  */
 export const bootstrapDesktopMain = (options: BootstrapDesktopMainOptions = {}): BootstrapDesktopMainResult => {
 	const coreService = options.coreService ?? createDesktopCoreServiceManager({ transport: 'utility-process' })
+	const terminalManager = options.terminalManager ?? createDesktopTerminalManager()
+	const bleBridge = createDesktopBleBridge()
+	registerDesktopProjectOpenEvents(options.app ?? app)
+	bleBridge.registerHandlers()
+	for (const window of options.windows ?? []) {
+		bleBridge.registerChooser(window)
+	}
 	const handler = createIPCHandler({
-		router: routers,
+		router: rpc,
 		windows: options.windows ?? [],
 		createContext: async ({ event }) => {
 			const baseContext: DesktopMainContext = {
 				coreService,
+				bleBridge,
+				terminalManager,
 				event
 			}
 
@@ -35,7 +51,9 @@ export const bootstrapDesktopMain = (options: BootstrapDesktopMainOptions = {}):
 
 	return {
 		coreService,
-		router: routers,
+		bleBridge,
+		terminalManager,
+		router: rpc,
 		handler
 	}
 }

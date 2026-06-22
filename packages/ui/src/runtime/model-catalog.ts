@@ -1,12 +1,11 @@
 import { config } from '@/workspace'
 
-import type { Core } from '@/core-service'
+import type { Core } from '@/utils/core'
 
 /**
  * 加载模型目录列表。
- * @param {Core} core - core 服务句柄
- * @param {{search?: string, page?: number, pageSize?: number, uniformType?: string}} [query] - 模型目录查询参数
- * @returns {Promise<Awaited<ReturnType<Core['model']['list']['query']>>>}
+ * @param core - core 服务句柄
+ * @param query - 模型目录查询参数
  */
 export const loadModelCatalog = (
 	core: Core,

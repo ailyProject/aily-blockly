@@ -1,7 +1,6 @@
 import { isBlankFfsImage } from './image'
 
-import type { FfsMountAttempt, FfsMountPlan } from './mount.types'
-import type { FfsFilesystemType } from './types'
+import type { FfsFilesystemType, FfsMountAttempt, FfsMountPlan } from './types'
 
 export const FFS_DEFAULT_BLOCK_SIZE = 4096
 export const FFS_SPIFFS_PAGE_SIZE = 256

@@ -1,0 +1,74 @@
+.app-store-page {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.eyebrow {
+	margin: 0;
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.panel-header h2 {
+	margin: 0;
+}
+
+.summary-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+	gap: 12px;
+}
+
+.summary-grid div,
+.app-card {
+	display: grid;
+	gap: 8px;
+	padding: 14px 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 68%, transparent);
+}
+
+.summary-grid span {
+	color: var(--muted-foreground);
+}
+
+.pinned-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}
+
+.pinned-card {
+	display: grid;
+	gap: 10px;
+	padding: 14px 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--card) 72%, var(--muted));
+}
+
+.pinned-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.app-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}
+
+.badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}

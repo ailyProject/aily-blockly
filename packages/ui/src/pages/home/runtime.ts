@@ -1,4 +1,4 @@
-import { loadHomePreview } from '@/core-service'
+import { loadHomePreview } from '@/utils/core'
 import {
 	agentConfig,
 	boardIndex,
@@ -9,7 +9,7 @@ import {
 	toolbarApps
 } from '@/workspace'
 
-import type { Core } from '@/core-service'
+import type { Core } from '@/utils/core'
 import type { AilyAppConfig, RecentModelProject } from 'shared'
 import type { HomePageCoreState } from './types'
 

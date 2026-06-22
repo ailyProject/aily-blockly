@@ -4,8 +4,7 @@ import type { ConnectionGraphData } from './types'
 
 /**
  * 解析连线图 JSON 字符串。
- * @param {string} raw - 原始文本，支持 markdown code block
- * @returns {ConnectionGraphData | null}
+ * @param raw - 原始文本，支持 markdown code block
  */
 export const parseConnectionGraphJson = (raw: string): ConnectionGraphData | null => {
 	try {

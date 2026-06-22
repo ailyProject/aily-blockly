@@ -7,41 +7,13 @@ import type {
 } from 'shared'
 
 /**
- * 模型目录查询参数
+ * 模型目录 fallback 数据
  */
-export interface ModelCatalogQuery {
-	/** 页码，从 1 开始 */
-	page: number
-	/** 每页条数 */
-	pageSize: number
-	/** 搜索关键词 */
-	search?: string
-	/** 统一开发板类型 */
-	uniformType?: string
-	/** 指定语言 */
-	language?: string
-}
-
-/**
- * 模型目录远端访问参数
- */
-export interface ModelCatalogRequest {
-	/** 应用配置 */
-	config?: AilyAppConfig
-	/** 查询参数 */
-	query?: Partial<ModelCatalogQuery>
-}
-
-/**
- * 模型目录详情访问参数
- */
-export interface ModelCatalogDetailRequest {
-	/** 应用配置 */
-	config?: AilyAppConfig
-	/** 模型标识 */
-	modelId: string
-	/** 指定语言 */
-	language?: string
+export interface ModelCatalogFallback {
+	/** fallback 列表 */
+	items: Array<ModelCatalogItem>
+	/** fallback 详情映射 */
+	details: Record<string, ModelCatalogDetail>
 }
 
 /**
@@ -148,13 +120,41 @@ export interface RemoteModelDetailResponse {
 }
 
 /**
- * 模型目录 fallback 数据
+ * 模型目录查询参数
  */
-export interface ModelCatalogFallback {
-	/** fallback 列表 */
-	items: Array<ModelCatalogItem>
-	/** fallback 详情映射 */
-	details: Record<string, ModelCatalogDetail>
+export interface ModelCatalogQuery {
+	/** 页码，从 1 开始 */
+	page: number
+	/** 每页条数 */
+	pageSize: number
+	/** 搜索关键词 */
+	search?: string
+	/** 统一开发板类型 */
+	uniformType?: string
+	/** 指定语言 */
+	language?: string
+}
+
+/**
+ * 模型目录远端访问参数
+ */
+export interface ModelCatalogRequest {
+	/** 应用配置 */
+	config?: AilyAppConfig
+	/** 查询参数 */
+	query?: Partial<ModelCatalogQuery>
+}
+
+/**
+ * 模型目录详情访问参数
+ */
+export interface ModelCatalogDetailRequest {
+	/** 应用配置 */
+	config?: AilyAppConfig
+	/** 模型标识 */
+	modelId: string
+	/** 指定语言 */
+	language?: string
 }
 
 /**
@@ -166,3 +166,5 @@ export type ModelTaskMap = Record<string, ModelCatalogTask>
  * 模型目录列表加载结果
  */
 export interface LoadModelCatalogResult extends ModelCatalogListResult {}
+
+export type { ModelCatalogDetail, ModelCatalogItem }

@@ -1,0 +1,150 @@
+<article hlmCard class="side-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Hardware</p>
+			<h2>Board Signals</h2>
+		</div>
+	</header>
+
+	<div class="badge-row">
+		@for (category of categories(); track category.name) {
+		<span hlmBadge variant="outline">{{ category.name }} {{ category.count }}</span>
+		}
+	</div>
+
+	<div class="search-list">
+		<div class="search-item">
+			<strong>Active Workspace JSON</strong>
+			<div class="badge-row">
+				<button hlmBtn size="sm" variant="outline" [disabled]="projectReloadBusy()" (click)="reloadProjectState.emit()">
+					{{ projectReloadBusy() ? 'Reloading...' : 'Reload Project' }}
+				</button>
+				<button hlmBtn size="sm" variant="outline" [disabled]="activeWorkspaceSaveBusy() || !activeWorkspaceDirty()" (click)="resetActiveWorkspace.emit()">
+					Reset
+				</button>
+				<button hlmBtn size="sm" variant="outline" [disabled]="!canSaveActiveWorkspace()" (click)="saveActiveWorkspace.emit()">
+					{{ activeWorkspaceSaveBusy() ? 'Saving...' : 'Save Workspace' }}
+				</button>
+			</div>
+			@if (activeWorkspaceParseError()) {
+			<p class="workspace-error">{{ activeWorkspaceParseError() }}</p>
+			}
+			@if (activeWorkspaceSaveMessage()) {
+			<p class="workspace-note">{{ activeWorkspaceSaveMessage() }}</p>
+			}
+			@if (projectReloadMessage()) {
+			<p class="workspace-note">{{ projectReloadMessage() }}</p>
+			}
+			<textarea
+				class="workspace-json-editor"
+				[ngModel]="activeWorkspaceJson()"
+				(ngModelChange)="activeWorkspaceJsonChange.emit($event)"
+			></textarea>
+		</div>
+
+		@if (missingLibraries().length) {
+		<div class="search-item">
+			<strong>Missing Blockly Libraries</strong>
+			@if (missingLibraryActionMessage()) {
+			<p class="workspace-note">{{ missingLibraryActionMessage() }}</p>
+			}
+			<div class="hint-list align-left">
+				<div class="badge-row">
+					<button hlmBtn size="sm" variant="outline" [disabled]="!!missingLibraryActionBusyKey()" (click)="restoreAllMissingLibraries.emit()">
+						Restore All
+					</button>
+				</div>
+				@for (library of missingLibraries(); track library.name + ':' + library.version + ':' + library.blockType) {
+				<div class="missing-library-row">
+					<div class="missing-library-copy">
+						<strong>{{ library.name }}</strong>
+						<span>version {{ library.version || 'unknown' }}</span>
+						<span>block {{ library.blockType || 'n/a' }}</span>
+						@if (library.localPath) {
+						<span>{{ library.localPath }}</span>
+						}
+					</div>
+					<button
+						hlmBtn
+						size="sm"
+						variant="outline"
+						[disabled]="!!missingLibraryActionBusyKey()"
+						(click)="restoreMissingLibrary.emit(library)"
+					>
+						{{ isMissingLibraryBusy(library.name) ? 'Restoring...' : 'Restore' }}
+					</button>
+				</div>
+				}
+			</div>
+		</div>
+		}
+
+		@if (activeTopLevelBlockTypes().length) {
+		<div class="search-item">
+			<strong>Active Page Blocks</strong>
+			<div class="hint-list align-left">
+				@for (blockType of activeTopLevelBlockTypes(); track blockType) {
+				<span>{{ blockType }}</span>
+				}
+			</div>
+		</div>
+		}
+
+		@if (openedPages().length) {
+		<div class="search-item">
+			<strong>Opened Pages</strong>
+			<div class="hint-list align-left">
+				@for (page of openedPages(); track page.id) {
+				<button class="page-row" type="button" (click)="switchPage.emit(page.id)">
+					<div class="page-row-header">
+						@if (renamingPageId() === page.id) {
+						<div class="rename-row">
+							<input hlmInput [ngModel]="renamingPageTitle()" (ngModelChange)="renamingPageTitleChange.emit($event)" />
+							<div class="badge-row">
+								<button hlmBtn size="sm" variant="outline" (click)="emitConfirmRename(page, $event)">Save</button>
+								<button hlmBtn size="sm" variant="outline" (click)="emitCancelRename($event)">Cancel</button>
+							</div>
+						</div>
+						} @else {
+						<strong>{{ page.title }}</strong>
+						<div class="badge-row">
+							<button hlmBtn size="sm" variant="outline" (click)="emitBeginRename(page, $event)">Rename</button>
+							<button hlmBtn size="sm" variant="outline" (click)="emitTogglePageOpen(page.id, page.opened, $event)">
+								{{ page.opened ? 'Close' : 'Reopen' }}
+							</button>
+						</div>
+						}
+					</div>
+					<span>{{ page.blockCount }} blocks @if (page.active) { · active } @if (page.opened) { · opened }</span>
+				</button>
+				}
+			</div>
+		</div>
+		}
+
+		@if (closedPages().length) {
+		<div class="search-item">
+			<strong>Closed Pages</strong>
+			<div class="hint-list align-left">
+				@for (page of closedPages(); track page.id) {
+				<button class="page-row" type="button" (click)="switchPage.emit(page.id)">
+					<div class="page-row-header">
+						<strong>{{ page.title }}</strong>
+						<div class="badge-row">
+							<button hlmBtn size="sm" variant="outline" (click)="emitTogglePageOpen(page.id, page.opened, $event)">
+								Reopen
+							</button>
+						</div>
+					</div>
+					<span>{{ page.blockCount }} blocks</span>
+				</button>
+				}
+			</div>
+		</div>
+		}
+
+		@for (result of searchResultNames(); track result) {
+		<div class="search-item">{{ result }}</div>
+		}
+	</div>
+</article>

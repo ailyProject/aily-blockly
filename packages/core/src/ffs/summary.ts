@@ -2,11 +2,12 @@ import { formatFfsBytes } from './format'
 
 import type {
 	FfsFilesystemLabelInput,
+	FfsFilesystemType,
 	FfsPartitionCategory,
 	FfsPartitionCollectionSummary,
+	FfsPartitionInfo,
 	FfsPartitionSummary
-} from './summary.types'
-import type { FfsFilesystemType, FfsPartitionInfo } from './types'
+} from './types'
 
 /**
  * 将文件系统类型转换为展示标签。

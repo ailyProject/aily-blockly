@@ -19,7 +19,12 @@
           "options": {
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
-            "allowedCommonJsDependencies": ["@vercel/oidc"],
+            "allowedCommonJsDependencies": [
+              "@vercel/oidc",
+              "@xterm/xterm",
+              "@xterm/addon-fit",
+              "@xterm/addon-clipboard"
+            ],
             "assets": [
               {
                 "glob": "**/*",

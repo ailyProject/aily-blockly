@@ -1,22 +1,15 @@
 import { HEADER_APP_LIMIT } from 'shared'
 
-import { createDefaultAppStoreLayout, normalizeAppStoreLayout, sanitizeAppZoneIds } from './layout'
+import {
+	canRegisterApp,
+	createDefaultAppStoreLayout,
+	getLayoutZoneIds,
+	isAppLocked,
+	normalizeAppStoreLayout,
+	sanitizeAppZoneIds
+} from './layout'
 
 import type { AppPlacementZone, AppRegistryItem, AppStoreLayout } from 'shared'
-
-const canRegisterApp = (appMap: Map<string, AppRegistryItem>, appId: string) => {
-	const app = appMap.get(appId)
-	return Boolean(app && app.enabled !== false)
-}
-
-const isAppLocked = (appMap: Map<string, AppRegistryItem>, appId: string) => appMap.get(appId)?.lock === true
-
-/**
- * 从布局中读取某个区域的 app id 列表。
- * @param layout - 当前布局
- * @param zone - 目标区域
- */
-export const getLayoutZoneIds = (layout: AppStoreLayout, zone: AppPlacementZone) => [...(layout.zones[zone] ?? [])]
 
 /**
  * 覆盖设置某个区域的 app 列表，并做归一化。

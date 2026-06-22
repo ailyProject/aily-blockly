@@ -88,7 +88,6 @@ const createFallbackDetail = (item: ModelCatalogItem): ModelCatalogDetail => ({
 
 /**
  * 获取模型目录 fallback 数据。
- * @returns {ModelCatalogFallback}
  */
 export const getModelCatalogFallback = (): ModelCatalogFallback => ({
 	items: fallbackItems,

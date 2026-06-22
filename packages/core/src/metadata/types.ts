@@ -1,3 +1,5 @@
+import type { MissingBlocklyLibraryInfo } from 'shared'
+
 /**
  * Blockly 块节点
  */
@@ -75,16 +77,4 @@ export interface BlockLibraryBinding {
 	localPath?: string
 }
 
-/**
- * 缺失的 Blockly 库信息
- */
-export interface MissingBlocklyLibraryInfo {
-	/** 触发该缺失判定的 block type */
-	blockType: string
-	/** 缺失的库包名 */
-	name: string
-	/** 希望安装或恢复的版本 */
-	version: string
-	/** 本地库路径，若为 file: 依赖则会解析到具体路径 */
-	localPath: string
-}
+export type { MissingBlocklyLibraryInfo }

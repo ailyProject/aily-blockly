@@ -1,18 +1,8 @@
 import type { SafeResourceUrl } from '@angular/platform-browser'
+import type { ChildToolHostInfo, ChildToolItem } from 'shared'
 
-/**
- * 子工具目录条目
- */
-export interface ChildToolListItem {
-	/** 子工具唯一标识 */
-	id: string
-	/** 子工具显示标题 */
-	title: string
-	/** 子工具用途摘要 */
-	summary: string
-	/** 子工具启动路径 */
-	launchPath: string
-}
+export type ChildToolListItem = ChildToolItem
+export type ChildToolPageHostInfo = ChildToolHostInfo
 
 /**
  * 子工具页面展示状态
@@ -26,4 +16,8 @@ export interface ChildToolPageState {
 	origin: string | null
 	/** 可绑定到 iframe 的安全资源 URL */
 	frameUrl: SafeResourceUrl | null
+	/** 当前真实宿主信息 */
+	hostInfo?: ChildToolPageHostInfo | null
+	/** 当前页面是否在使用真实宿主 */
+	usingHost?: boolean
 }

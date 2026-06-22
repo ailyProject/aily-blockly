@@ -1,0 +1,80 @@
+<article hlmCard class="canvas-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Editor Shell</p>
+			<h2>Blockly Workspace</h2>
+		</div>
+		<span hlmBadge>{{ language() }}</span>
+	</header>
+
+	<label class="search-box">
+		<span>Search board and library catalog</span>
+		<input hlmInput [value]="searchQuery()" (input)="updateSearchQuery($event)" placeholder="esp32, oled, rfid..." />
+	</label>
+
+	<div class="workspace-canvas">
+		<strong>{{ abiExists() ? 'Project ABI loaded' : 'Project ABI not found' }}</strong>
+		<span>project {{ projectPath() || 'unbound' }}</span>
+		<span>Toolbar {{ toolbarCount() }} / visible {{ visibleToolbarCount() }}</span>
+		<span>board {{ boardValidation() }} / library {{ libraryValidation() }}</span>
+		<span>ABI schema {{ abiSchemaVersion() ?? 'n/a' }} / pages {{ pageCount() }} / blocks {{ totalBlockCount() }}</span>
+		<span>shared vars {{ sharedVariableCount() }} / procedures {{ sharedProcedureCount() }}</span>
+		@if (abiExists()) {
+		<span>active {{ activePageId() || 'n/a' }} / opened {{ openedPageCount() }}</span>
+		<span>active title {{ activePageTitle() || 'n/a' }}</span>
+		@if (activeViewState(); as viewState) {
+		<span>view {{ viewState.scale }}x / {{ viewState.scrollX }}, {{ viewState.scrollY }}</span>
+		}
+		<span>active top-level {{ activeTopLevelBlockCount() }}</span>
+		<span>{{ abiFilePath() }}</span>
+		@if (abiParseError()) {
+		<p class="workspace-error">{{ abiParseError() }}</p>
+		}
+		<div class="badge-row">
+			<input
+				hlmInput
+				class="viewstate-input"
+				[ngModel]="activeViewScaleDraft()"
+				(ngModelChange)="updateViewStateDraft('scale', $event)"
+				placeholder="scale"
+			/>
+			<input
+				hlmInput
+				class="viewstate-input"
+				[ngModel]="activeViewScrollXDraft()"
+				(ngModelChange)="updateViewStateDraft('scrollX', $event)"
+				placeholder="scrollX"
+			/>
+			<input
+				hlmInput
+				class="viewstate-input"
+				[ngModel]="activeViewScrollYDraft()"
+				(ngModelChange)="updateViewStateDraft('scrollY', $event)"
+				placeholder="scrollY"
+			/>
+			<button hlmBtn size="sm" variant="outline" [disabled]="!canSaveActiveViewState()" (click)="saveViewState.emit()">
+				Save ViewState
+			</button>
+		</div>
+		}
+		@if (openedPages().length) {
+		<div class="page-tabs">
+			@for (page of openedPages(); track page.id) {
+			<button class="page-tab" [class.active]="page.active" type="button" (click)="switchPage.emit(page.id)">
+				{{ page.title }}
+			</button>
+			}
+		</div>
+		}
+
+		<div class="hint-list">
+			@for (hint of workspaceHints(); track hint) {
+			<span>{{ hint }}</span>
+			}
+		</div>
+
+		<div class="badge-row">
+			<button hlmBtn size="sm" variant="outline" [disabled]="!projectPath()" (click)="createPage.emit()">Add Page</button>
+		</div>
+	</div>
+</article>

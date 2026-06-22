@@ -1,0 +1,105 @@
+<app-shell>
+	<div shell-actions>
+		<button hlmBtn size="sm" variant="outline" [disabled]="loading()" (click)="chooseProjectPath()">
+			Choose Project File or Folder
+		</button>
+		<button
+			hlmBtn
+			size="sm"
+			[disabled]="openBusy() || !resolvedProjectPath().trim() || !!openSessionConflict()"
+			(click)="openProject()"
+		>
+			{{ openBusy() ? 'Opening...' : 'Open Project' }}
+		</button>
+	</div>
+
+	<section class="page-shell">
+		<article hlmCard class="panel">
+			<header class="panel-header">
+				<div>
+					<p class="eyebrow">Project Open</p>
+					<h2>{{ selectedPath() || 'Choose an existing project directory' }}</h2>
+				</div>
+				@if (runtimeInfo()) {
+				<span hlmBadge variant="outline">{{ runtimeInfo()!.documentsPath }}</span>
+				}
+			</header>
+
+			@if (resolvedProjectPath()) {
+			<div class="section">
+				<strong>Resolved Project Root</strong>
+				<p>{{ resolvedProjectPath() }}</p>
+			</div>
+			}
+
+			@if (previewLifecycle(); as lifecycleValue) {
+			<div class="metrics-grid">
+				<div><span>Editor</span><strong>{{ lifecycleValue.editorRoute }}</strong></div>
+				<div><span>package.json</span><strong>{{ lifecycleValue.hasPackageJson ? 'ready' : 'missing' }}</strong></div>
+				<div><span>project.abi</span><strong>{{ lifecycleValue.hasProjectDocument ? 'ready' : 'missing' }}</strong></div>
+				<div><span>Temp ABI</span><strong>{{ lifecycleValue.hasTempDocument ? 'ready' : 'missing' }}</strong></div>
+				<div><span>Recovered</span><strong>{{ lifecycleValue.recoveredFromTemp ? 'yes' : 'no' }}</strong></div>
+				<div><span>Declared Libraries</span><strong>{{ lifecycleValue.declaredLibraryCount }}</strong></div>
+				<div><span>Missing Libraries</span><strong>{{ lifecycleValue.missingLibraryCount }}</strong></div>
+				<div><span>Board Package</span><strong>{{ lifecycleValue.boardPackageName || 'n/a' }}</strong></div>
+				<div><span>Board Ready</span><strong>{{ lifecycleValue.boardPackageReady === undefined ? 'n/a' : lifecycleValue.boardPackageReady ? 'yes' : 'no' }}</strong></div>
+				<div><span>Open Lock</span><strong>{{ lifecycleValue.hasOpenSessionLock ? (lifecycleValue.openSessionLockStale ? 'stale' : 'locked') : 'idle' }}</strong></div>
+				<div><span>Parse Error</span><strong>{{ lifecycleValue.parseError || 'n/a' }}</strong></div>
+			</div>
+			}
+
+			@if (openSessionConflict(); as conflict) {
+			<div class="conflict-card">
+				<div class="section">
+					<strong>Open Session Conflict</strong>
+					<p>
+						This project is currently locked by
+						<strong>{{ conflict.owner || 'another desktop session' }}</strong>.
+					</p>
+					@if (conflict.pid !== null) {
+					<p>Process ID: {{ conflict.pid }}</p>
+					}
+					<p>{{ conflict.projectPath }}</p>
+				</div>
+				<div class="conflict-actions">
+					<button hlmBtn size="sm" variant="outline" [disabled]="openBusy()" (click)="cancelConflictOpen()">
+						Cancel
+					</button>
+					<button
+						hlmBtn
+						size="sm"
+						variant="outline"
+						[disabled]="openBusy() || conflict.pid === null"
+						(click)="focusConflictOwner()"
+					>
+						Focus Existing Window
+					</button>
+					<button hlmBtn size="sm" [disabled]="openBusy()" (click)="forceOpenProject()">
+						{{ openBusy() ? 'Forcing...' : 'Force Open' }}
+					</button>
+				</div>
+			</div>
+			}
+
+			@if (statusMessage()) {
+			<p>{{ statusMessage() }}</p>
+			}
+
+			<div class="section">
+				<strong>Recent Projects</strong>
+				@if (recentProjects().length) {
+				<div class="list">
+					@for (project of recentProjects(); track project.path) {
+					<button class="list-item" type="button" (click)="useRecentProject(project)">
+						<strong>{{ project.nickname || project.name }}</strong>
+						<span>{{ project.path }}</span>
+					</button>
+					}
+				</div>
+				} @else {
+				<p>No recent project is available yet.</p>
+				}
+			</div>
+		</article>
+	</section>
+</app-shell>

@@ -1,0 +1,115 @@
+<div class="panel-section">
+	<div class="metrics-grid">
+		<div><span>Components</span><strong>{{ state().componentCount }}</strong></div>
+		<div><span>Connections</span><strong>{{ state().connectionCount }}</strong></div>
+		<div><span>AWS Lines</span><strong>{{ state().awsLineCount }}</strong></div>
+		<div><span>Libraries</span><strong>{{ state().libraryCount }}</strong></div>
+		<div><span>Catalogs</span><strong>{{ state().catalogCount }}</strong></div>
+		<div><span>Missing Catalogs</span><strong>{{ state().missingCatalogCount }}</strong></div>
+		<div><span>Board Package</span><strong>{{ state().boardPackageName || 'n/a' }}</strong></div>
+		<div><span>Pin Summaries</span><strong>{{ state().promptInfo.pinSummaryCount }}</strong></div>
+	</div>
+
+	<p class="summary">{{ state().graphDescription || 'No graph description saved yet.' }}</p>
+
+	<div class="badge-row">
+		@for (board of boards(); track board.name) {
+		<span hlmBadge>{{ board.displayName }}</span>
+		}
+	</div>
+
+	@if (state().libraryNames.length) {
+	<div class="search-item">
+		<strong>Libraries</strong>
+		<div class="badge-row">
+			@for (name of state().libraryNames; track name) {
+			<span hlmBadge variant="outline">{{ name }}</span>
+			}
+		</div>
+	</div>
+	}
+
+	@if (state().missingCatalogNames.length) {
+	<div class="search-item">
+		<strong>Missing Catalogs</strong>
+		<div class="badge-row">
+			@for (name of state().missingCatalogNames; track name) {
+			<span hlmBadge variant="secondary">{{ name }}</span>
+			}
+		</div>
+	</div>
+	}
+
+	@if (state().availablePinmapIds.length) {
+	<div class="search-item">
+		<strong>Available PinmapIds</strong>
+		<div class="badge-row">
+			@for (pinmapIdValue of state().availablePinmapIds; track pinmapIdValue) {
+			<button hlmBtn size="sm" variant="outline" (click)="usePinmapId.emit(pinmapIdValue)">{{ pinmapIdValue }}</button>
+			}
+		</div>
+	</div>
+	}
+
+	@if (state().sensorPickerGroups.length) {
+	<div class="search-item">
+		<strong>Sensor Picker</strong>
+		@for (group of state().sensorPickerGroups; track group.displayName) {
+		<div class="picker-group">
+			<strong>{{ group.displayName }}</strong>
+			<div class="badge-row">
+				@for (model of group.models; track model.id) {
+				<div class="picker-model">
+					<strong>{{ model.name }}</strong>
+					<div class="badge-row">
+						@for (variant of model.variants; track variant.fullId) {
+						<button hlmBtn size="sm" variant="outline" (click)="usePinmapVariant.emit(variant)">{{ variant.name }}</button>
+						}
+					</div>
+				</div>
+				}
+			</div>
+		</div>
+		}
+	</div>
+	}
+
+	@if (saveMessage()) {
+	<p class="summary">{{ saveMessage() }}</p>
+	}
+
+	@if (state().libraryInfo.readme || state().libraryInfo.exampleCode || state().libraryInfo.existingPinmaps.length) {
+	<div class="file-grid">
+		<div class="file-card">
+			<span>Library README</span>
+			<pre class="editor-box">{{ state().libraryInfo.readme || 'No README available.' }}</pre>
+		</div>
+		<div class="file-card">
+			<span>Example Code</span>
+			<pre class="editor-box">{{ state().libraryInfo.exampleCode || 'No example code available.' }}</pre>
+		</div>
+		<div class="file-card">
+			<span>Existing Pinmaps</span>
+			<div class="badge-row">
+				@for (fileName of state().libraryInfo.existingPinmaps; track fileName) {
+				<span hlmBadge variant="outline">{{ fileName }}</span>
+				}
+			</div>
+		</div>
+	</div>
+	}
+
+	@if (state().promptInfo.systemPrompt || state().componentConfigsJson) {
+	<div class="file-grid">
+		<div class="file-card">
+			<span>Connection Prompt</span>
+			<pre class="editor-box">{{ state().promptInfo.systemPrompt || 'No system prompt.' }}</pre>
+			<pre class="editor-box">{{ state().promptInfo.userPrompt || 'No user prompt.' }}</pre>
+		</div>
+		<div class="file-card">
+			<span>Component Configs</span>
+			<pre class="editor-box">{{ state().componentConfigsJson || 'No component configs.' }}</pre>
+		</div>
+	</div>
+	}
+</div>

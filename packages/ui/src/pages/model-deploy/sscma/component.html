@@ -22,7 +22,7 @@
   @for (item of deployModels(); track item.id) {
     <article hlmCard class="check-card">
       <strong>{{ item.name }}</strong>
-      <p>{{ item.supportedBoards.join(', ') || 'Board pending' }} · {{ item.aiFramework }}</p>
+      <p>{{ item.supportedBoards.join(', ') || 'Board support unknown' }} · {{ item.aiFramework }}</p>
     </article>
   }
 </section>

@@ -141,6 +141,8 @@ The rewrite should standardize on `hono` + `trpc` + `erpc` as the primary data i
 - Use `erpc` for Electron main/renderer typed IPC interaction instead of introducing ad hoc IPC event contracts.
 - Prefer this stack over custom REST handlers, loosely typed fetch wrappers, handwritten RPC conventions, or one-off message channels unless a clearly documented exception is required.
 - Shared schemas, router input/output types, and transport contracts should be defined once and reused across callers instead of duplicated at each boundary.
+- Do not reintroduce Electron-only BLE globals such as `window.ble`. If the desktop host needs to participate in BLE device selection or permissions, expose that surface through typed `desktop.ble.*` ERPC routes instead.
+- Keep BLE responsibilities split by runtime boundary: protocol preparation and upload planning belong in `core`, Electron chooser/permission bridging belongs in `desktop`, and the actual browser-side Web Bluetooth transport belongs in `ui`.
 
 ## Reactive State Baseline
 

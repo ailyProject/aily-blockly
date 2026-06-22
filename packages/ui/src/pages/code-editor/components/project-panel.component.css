@@ -1,0 +1,59 @@
+.editor-card {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.card-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.command-box {
+	display: grid;
+	gap: 8px;
+}
+
+.notice-box {
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--warning, #f59e0b) 10%, var(--muted) 90%);
+	border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+}
+
+.notice-box p {
+	margin: 0;
+	color: var(--foreground);
+}
+
+.list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.list-item {
+	display: grid;
+	gap: 4px;
+	width: 100%;
+	padding: 12px 14px;
+	border: 0;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+	text-align: left;
+	cursor: pointer;
+}
+
+.list-item span,
+.command-box span {
+	color: var(--muted-foreground);
+}

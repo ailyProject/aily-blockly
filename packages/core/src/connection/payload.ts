@@ -2,10 +2,9 @@ import type { ConnectionComponentConfig, ConnectionGraphData, ConnectionGraphPay
 
 /**
  * 构建连线图 iframe 载荷。
- * @param {ConnectionGraphData} data - 连线图数据
- * @param {Record<string, ConnectionComponentConfig>} componentConfigs - 组件配置映射
- * @param {'light' | 'dark'} [theme='dark'] - 页面主题
- * @returns {ConnectionGraphPayload}
+ * @param data - 连线图数据
+ * @param componentConfigs - 组件配置映射
+ * @param theme - 页面主题
  */
 export const buildConnectionGraphPayload = (
 	data: ConnectionGraphData,

@@ -18,6 +18,34 @@ export interface SettingsSnapshot {
 	recentProjectCount: number
 	/** 最近模型项目数量 */
 	recentModelProjectCount: number
+	/** 当前项目生命周期摘要 */
+	projectLifecycle?: {
+		projectPath: string
+		editorRoute: string
+		hasPackageJson: boolean
+		hasProjectDocument: boolean
+		hasTempDocument: boolean
+		hasMutationLock: boolean
+		mutationLockStale?: boolean
+		mutationLockOwner?: string
+		mutationLockPid?: number
+		hasOpenSessionLock: boolean
+		openSessionLockStale?: boolean
+		openSessionLockOwner?: string
+		openSessionLockPid?: number
+		recoveredFromTemp: boolean
+		sourceFilePath?: string
+		parseError?: string
+		boardPackageName?: string
+		boardPackageReady?: boolean
+		declaredLibraryCount: number
+		readyLibraryCount: number
+		missingLibraryCount: number
+		codeHash?: string
+		buildStatus?: string
+		buildTime?: string
+		buildDuration?: number
+	}
 	/** 通用 onboarding 是否完成 */
 	onboardingCompleted: boolean
 	/** Blockly onboarding 是否完成 */

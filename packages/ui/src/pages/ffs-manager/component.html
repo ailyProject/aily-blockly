@@ -1,52 +1,51 @@
 <section class="ffs-page">
-  <article hlmCard class="panel">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">Flash FS</p>
-        <h2>Transport Snapshot</h2>
-      </div>
-    </header>
+  <input #imageInputEl type="file" class="hidden-input" (change)="handleImageFileChange($event)" />
+  <input #fileInputEl type="file" class="hidden-input" (change)="handleFileUploadChange($event)" />
 
-    @if (state(); as viewState) {
-      <div class="metric-grid">
-        <div><span>Port</span><strong>{{ viewState.serial.port }}</strong></div>
-        <div><span>Baud</span><strong>{{ viewState.serial.baudRate }}</strong></div>
-      </div>
-    }
-  </article>
+  <ffs-manager-summary-panels [state]="state()" />
 
-  <article hlmCard class="panel">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">Prepared Connect</p>
-        <h2>ESP Session Seed</h2>
-      </div>
-    </header>
+  <ffs-manager-preview-panel
+    [state]="state()"
+    [imageName]="imageName()"
+    [hasImageBytes]="!!imageBytes()"
+    [previewBusy]="previewBusy()"
+    [currentPath]="currentPath()"
+    [breadcrumbs]="breadcrumbs()"
+    [explorerEntries]="explorerEntries()"
+    (imageInputClick)="imageInputEl.click()"
+    (fileInputClick)="fileInputEl.click()"
+    (formatImage)="formatCurrentImage()"
+    (createDirectory)="createDirectory()"
+    (downloadImage)="downloadImage()"
+    (currentPathChange)="currentPath.set($event)"
+    (previewEntry)="previewEntry($event)"
+    (renameEntry)="renameEntry($event)"
+    (deleteEntry)="deleteEntry($event)"
+  />
 
-    @if (state(); as viewState) {
-      <div class="metric-grid">
-        <div><span>Path</span><strong>{{ viewState.connect.path }}</strong></div>
-        <div><span>Baud</span><strong>{{ viewState.connect.baudRate }}</strong></div>
-      </div>
-    }
-  </article>
+  @if (previewFilePath()) {
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">File Preview</p>
+          <h2>{{ previewFilePath() }}</h2>
+        </div>
+      </header>
 
-  <article hlmCard class="panel">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">Resolved Baud</p>
-        <h2>Bridge Policy</h2>
-      </div>
-    </header>
+      <pre class="text-preview">{{ previewText() }}</pre>
+    </article>
+  }
 
-    @if (state(); as viewState) {
-      <div class="metric-grid">
-        <div><span>Requested</span><strong>{{ viewState.baud.requestedBaudRate }}</strong></div>
-        <div><span>Resolved</span><strong>{{ viewState.baud.resolvedBaudRate }}</strong></div>
-        <div><span>Bridge</span><strong>{{ viewState.baud.bridgeName }}</strong></div>
-        <div><span>Capped</span><strong>{{ viewState.baud.capped ? 'yes' : 'no' }}</strong></div>
-        <div><span>Visible Ports</span><strong>{{ viewState.serialPortCount }}</strong></div>
-      </div>
-    }
-  </article>
+  @if (actionMessage()) {
+    <article hlmCard class="panel">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Activity</p>
+          <h2>Last Action</h2>
+        </div>
+      </header>
+
+      <strong>{{ actionMessage() }}</strong>
+    </article>
+  }
 </section>

@@ -13,7 +13,6 @@ const connectionColorMap: Record<string, string> = {
 
 /**
  * 获取连线类型对应的颜色。
- * @param {string} type - 连线类型
- * @returns {string}
+ * @param type - 连线类型
  */
 export const getConnectionColor = (type: string) => connectionColorMap[type] || connectionColorMap['other']

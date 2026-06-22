@@ -14,9 +14,11 @@
 		}
 	},
 	"scripts": {
+		"dev": "rslib build --watch",
 		"build": "rslib build"
 	},
 	"dependencies": {
+		"7zip-bin": "^5.2.0",
 		"@ai-sdk/openai": "catalog:",
 		"@ai-sdk/provider-utils": "catalog:",
 		"@hono/node-server": "catalog:",
@@ -25,6 +27,7 @@
 		"ai": "catalog:",
 		"dayjs": "catalog:",
 		"esptool-js": "^0.6.0",
+		"extract-zip": "^2.0.1",
 		"hono": "catalog:",
 		"serialport": "^13.0.0",
 		"shared": "workspace:*",

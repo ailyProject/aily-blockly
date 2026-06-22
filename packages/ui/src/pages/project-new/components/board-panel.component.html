@@ -1,0 +1,25 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Board</p>
+			<h2>Target Selection</h2>
+		</div>
+		<span hlmBadge>{{ selectedBoardName() }}</span>
+	</header>
+
+	<div class="badge-row">
+		@if (hasExamples()) {
+		<span hlmBadge variant="secondary">public examples available</span>
+		} @else {
+		<span hlmBadge variant="outline">no public examples detected</span>
+		}
+	</div>
+
+	<div class="badge-row">
+		@for (board of boardOptions(); track board.name) {
+		<button hlmBtn variant="outline" size="sm" (click)="boardSelect.emit(board.displayName)">
+			{{ board.displayName }}
+		</button>
+		}
+	</div>
+</article>

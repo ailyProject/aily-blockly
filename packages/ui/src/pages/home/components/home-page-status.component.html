@@ -1,6 +1,6 @@
 <section class="status-card">
 	<div class="status-copy">
-		<strong>Desktop core service</strong>
+		<strong>Core runtime</strong>
 		<p>{{ desktopBackendBaseUrl() }}</p>
 	</div>
 	<div class="status-actions">
@@ -25,14 +25,12 @@
 		<span hlmBadge variant="secondary">{{ enabledModelCount() }} models</span>
 	</div>
 	<div class="signal-grid">
+		@for (row of coreRouteRows(); track row.label) {
 		<div class="signal-row">
-			<span>board validate</span>
-			<strong>{{ boardValidationText() }}</strong>
+			<span>{{ row.label }}</span>
+			<strong>{{ row.value }}</strong>
 		</div>
-		<div class="signal-row">
-			<span>library validate</span>
-			<strong>{{ libraryValidationText() }}</strong>
-		</div>
+		}
 	</div>
 	<div class="chip-row">
 		@for (category of hardwareCategories(); track category.name) {
@@ -47,129 +45,17 @@
 		}
 	</div>
 	<div class="signal-grid">
+		@for (row of configRows(); track row.label) {
 		<div class="signal-row">
-			<span>language</span>
-			<strong>{{ appLanguage() }}</strong>
+			<span>{{ row.label }}</span>
+			<strong>{{ row.value }}</strong>
 		</div>
+		}
+		@for (row of previewRows(); track row.label) {
 		<div class="signal-row">
-			<span>theme</span>
-			<strong>{{ appThemeMode() }}</strong>
+			<span>{{ row.label }}</span>
+			<strong>{{ row.value }}</strong>
 		</div>
-		<div class="signal-row">
-			<span>dev enabled</span>
-			<strong>{{ devmodeEnabled() ? 'on' : 'off' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>dev autoSave</span>
-			<strong>{{ devmodeAutoSave() ? 'on' : 'off' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>ai mode</span>
-			<strong>{{ appAiChatMode() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>selected model</span>
-			<strong>{{ appSelectedModel() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>recent model projects</span>
-			<strong>{{ recentModelProjectCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>toolbar apps</span>
-			<strong>{{ toolbarAppCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>visible toolbar apps</span>
-			<strong>{{ visibleToolbarAppCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>quick send presets</span>
-			<strong>{{ quickSendCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>skipped versions</span>
-			<strong>{{ skippedVersionCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>serial baud</span>
-			<strong>{{ serialBaudRate() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>serial autoscroll</span>
-			<strong>{{ serialAutoScroll() ? 'on' : 'off' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>serial hex input</span>
-			<strong>{{ serialInputHexMode() ? 'on' : 'off' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>serial connect baud</span>
-			<strong>{{ serialConnectBaudRate() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>recent projects</span>
-			<strong>{{ recentProjectCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>guide onboarding</span>
-			<strong>{{ onboardingCompleted() ? 'done' : 'todo' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>blockly onboarding</span>
-			<strong>{{ blocklyOnboardingCompleted() ? 'done' : 'todo' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>chat onboarding</span>
-			<strong>{{ ailyChatOnboardingCompleted() ? 'done' : 'todo' }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>preview mode</span>
-			<strong>{{ previewAiChatMode() }}</strong>
-		</div>
-		<div class="signal-row"><span>preview language</span><strong>{{ previewSelectedLanguage() }}</strong></div>
-		<div class="signal-row"><span>preview theme</span><strong>{{ previewThemeMode() }}</strong></div>
-		<div class="signal-row"><span>preview dev enabled</span><strong>{{ previewDevmodeEnabled() ? 'on' : 'off' }}</strong></div>
-		<div class="signal-row"><span>preview dev autoSave</span><strong>{{ previewDevmodeAutoSave() ? 'on' : 'off' }}</strong></div>
-		<div class="signal-row"><span>preview serial port</span><strong>{{ previewSerialPort() }}</strong></div>
-		<div class="signal-row"><span>preview toolbar apps</span><strong>{{ previewToolbarAppCount() }}</strong></div>
-		<div class="signal-row">
-			<span>preview quick sends</span>
-			<strong>{{ previewQuickSendCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>preview skipped versions</span>
-			<strong>{{ previewSkippedVersionCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>default toolbar apps</span>
-			<strong>{{ defaultToolbarAppCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>merged toolbar order</span>
-			<strong>{{ mergedToolbarOrderCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>toggled toolbar apps</span>
-			<strong>{{ toggledToolbarAppCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>reset toolbar apps</span>
-			<strong>{{ resetToolbarAppCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>added recent projects</span>
-			<strong>{{ addedRecentProjectCount() }}</strong>
-		</div>
-		<div class="signal-row">
-			<span>removed recent projects</span>
-			<strong>{{ removedRecentProjectCount() }}</strong>
-		</div>
-		<div class="signal-row"><span>added recent models</span><strong>{{ addedRecentModelProjectCount() }}</strong></div>
-		<div class="signal-row"><span>removed recent models</span><strong>{{ removedRecentModelProjectCount() }}</strong></div>
-		<div class="signal-row">
-			<span>preview chat onboarding</span>
-			<strong>{{ previewAilyChatOnboardingCompleted() ? 'done' : 'todo' }}</strong>
-		</div>
+		}
 	</div>
 </section>

@@ -1,6 +1,36 @@
 import type { AgentMessage } from '../../types/message'
 
 /**
+ * 当前摘要锚点
+ */
+export interface AgentSummaryAnchor {
+	/** 锚定 turn ID */
+	turnId: string
+	/** 锚定 turn 在会话中的索引 */
+	turnIndex: number
+	/** 锚定 round ID */
+	roundId?: string
+	/** 锚定 round 在 turn 中的索引 */
+	roundIndex?: number
+	/** 摘要内容 */
+	summary: string
+}
+
+/** turn 在消息数组中的跨度 */
+export interface AgentTurnSpan {
+	/** 对应 turn ID */
+	turnId: string
+	/** turn 顺序索引 */
+	turnIndex: number
+	/** 消息起始下标，含当前值 */
+	startIdx: number
+	/** 消息结束下标，不含当前值 */
+	endIdx: number
+	/** 该 turn 是否包含信息型工具 */
+	hasInfoTools: boolean
+}
+
+/**
  * 工具执行状态
  */
 export type AgentToolExecutionState =
@@ -51,34 +81,6 @@ export interface AgentToolCallRound {
 	toolExecutions: Array<AgentToolExecution>
 	/** 用于覆盖更早历史的摘要 */
 	summary?: string
-}
-
-/** 当前摘要锚点 */
-export interface AgentSummaryAnchor {
-	/** 锚定 turn ID */
-	turnId: string
-	/** 锚定 turn 在会话中的索引 */
-	turnIndex: number
-	/** 锚定 round ID */
-	roundId?: string
-	/** 锚定 round 在 turn 中的索引 */
-	roundIndex?: number
-	/** 摘要内容 */
-	summary: string
-}
-
-/** turn 在消息数组中的跨度 */
-export interface AgentTurnSpan {
-	/** 对应 turn ID */
-	turnId: string
-	/** turn 顺序索引 */
-	turnIndex: number
-	/** 消息起始下标，含当前值 */
-	startIdx: number
-	/** 消息结束下标，不含当前值 */
-	endIdx: number
-	/** 该 turn 是否包含信息型工具 */
-	hasInfoTools: boolean
 }
 
 /** turn 请求部分 */

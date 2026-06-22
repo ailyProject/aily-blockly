@@ -3,8 +3,8 @@ import { RouterLink } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
 import { loadModelCatalog } from '@/runtime/model-catalog'
+import { getCore } from '@/utils/core'
 
 import { deployChecks } from '../data'
 
@@ -17,7 +17,7 @@ import type { ModelCatalogItem } from 'shared'
 	styleUrl: './component.css'
 })
 export class SscmaDeployPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly checks = deployChecks
 	protected readonly deployModels = signal<Array<ModelCatalogItem>>([])

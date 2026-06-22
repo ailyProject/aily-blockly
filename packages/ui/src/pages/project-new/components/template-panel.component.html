@@ -1,0 +1,85 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Templates</p>
+			<h2>Cloud Templates</h2>
+		</div>
+		<span hlmBadge variant="outline">{{ templates().length }} available</span>
+	</header>
+
+	<div class="badge-row">
+		<button
+			hlmBtn
+			size="sm"
+			[variant]="templateSourceMode() === 'public' ? 'default' : 'outline'"
+			(click)="templateSourceModeSelect.emit('public')"
+		>
+			Public
+		</button>
+		<button
+			hlmBtn
+			size="sm"
+			[variant]="templateSourceMode() === 'mine' ? 'default' : 'outline'"
+			(click)="templateSourceModeSelect.emit('mine')"
+		>
+			Mine
+		</button>
+	</div>
+
+	@if (templateSourceMode() === 'mine') {
+	<label class="field">
+		<span>Bearer token</span>
+		<input
+			hlmInput
+			type="password"
+			[value]="authToken()"
+			(input)="updateAuthToken($event)"
+			placeholder="stored in-memory only"
+		/>
+	</label>
+	}
+
+	<div class="list">
+		@for (template of templates(); track template.id) {
+		<button class="list-item" type="button" (click)="templateSelect.emit(template.id)">
+			<strong>{{ template.nickname || template.name }}</strong>
+			<span>{{ template.description || 'No description' }}</span>
+		</button>
+		} @empty {
+		<div class="list-item static">
+			<strong>{{ templateSourceMode() === 'mine' ? 'No personal template found' : 'No template found' }}</strong>
+			<span>
+				{{
+					templateSourceMode() === 'mine'
+						? 'Provide a bearer token or publish templates under the current board.'
+						: 'The current board has no cloud template result yet.'
+				}}
+			</span>
+		</div>
+		}
+	</div>
+
+	@if (selectedTemplate(); as templateValue) {
+	<div class="field">
+		<span>Selected template</span>
+		<strong>{{ templateValue.nickname || templateValue.name }}</strong>
+		<p>{{ templateValue.description || 'No description' }}</p>
+	</div>
+
+	<div class="button-row">
+		<button
+			hlmBtn
+			[disabled]="importBusy() || !templateValue.id || pathConflict() === true || !!nameValidationMessage()"
+			(click)="importTemplate.emit()"
+		>
+			{{ importBusy() ? 'Importing...' : 'Import Template' }}
+		</button>
+	</div>
+	}
+	@if (importMessage()) {
+	<div class="field">
+		<span>Import status</span>
+		<p>{{ importMessage() }}</p>
+	</div>
+	}
+</article>

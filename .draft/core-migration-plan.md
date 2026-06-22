@@ -15,6 +15,7 @@
   - 保持为很薄的一层
   - Electron main / preload / capability bridge
   - 与前端通过 `erpc` 交互
+  - BLE 仅保留 chooser / permission / device-list bridge，不暴露 `window.ble`
 - `packages/shared`
   - 前后端共用类型、常量、协议载荷
 - `core <-> ui`
@@ -36,6 +37,10 @@
   - 已新增 agent config 纯逻辑层
   - 包含默认值、旧版迁移、tool/security/model/api-key 选择与更新规则
   - 已新增可直接输出 UI message stream 的 run-stream helper
+  - `core.agent.runtime.httpErrors.ts` 已拆成 `httpErrors.shared.ts` / `httpErrors.status.ts` / `httpErrors.quota.ts` / `httpErrors.network.ts`
+  - `core.agent.session.turns.ts` 已拆成 `turns.shared.ts` / `turns.extract.ts` / `turns.summary.ts` / `turns.messages.ts`
+  - `core.agent.runtime.AgentRuntime.ts` 与 `streamRun.ts` 的重复运行链路已抽到 `runCore.ts`
+  - `core.agent.tools.todo.operations.ts` 已拆成 `operations.update.ts` / `operations.modify.ts` / `operations.report.ts`
 - `core/hardware`
   - 开发板/库索引模型、结构化搜索、分类统计
   - 已新增 legacy board/library 模糊校验与关键词提取
@@ -73,12 +78,14 @@
   - 已补 Monaco / Mermaid / Blockly 主题映射与 `devmode.enabled` selector
   - 已新增 recent model projects 与 onboarding 状态规则
   - 已补普通 recent projects 读写规则到 app 路由
+  - `core.project.regions.ts` 已拆成 `regions.base.ts` / `regions.urls.ts` / `regions.list.ts`
 - `core/metadata`
   - block type 收集、used-library manifest 规范化与生成
 - `core/document`
   - Blockly 项目文档模型
   - 单页 / 多页 ABI 归一化
   - workspace payload 组合与 shared model 抽离
+  - `core.document.normalize.ts` 已拆成 `workspace.ts` / `pageState.ts` / 薄 `normalize.ts`
 - `core/abi`
   - project.abi 载荷归一化
   - 文本 parse/stringify
@@ -91,6 +98,9 @@
   - 编译错误提取与诊断解析
   - lint 语法检查结果解析
   - 诊断报告与快照恢复
+  - `core.build.lint.ts` 已拆成 `lint.rules.ts` / `lint.parsers.ts` / `lint.run.ts` / `lint.format.ts`
+  - `core.build.diagnostics.ts` 已拆成 `diagnostics.types.ts` / `diagnostics.convert.ts` / `diagnostics.format.ts`
+  - `core.build.arduinoLint.ts` 已拆成 `arduinoLint.json.ts` / `arduinoLint.vscode.ts` / `arduinoLint.human.ts`
 - `core/rpc`
   - 已建立 `hono + trpc` 独立服务骨架
   - 已暴露 health / document / abi / build / project 纯逻辑 RPC 面
@@ -165,11 +175,18 @@
     - `resolveEsptoolTempDir`
     - `listProbes`
     - `downloadProbe`
+  - `core.hardware.types.ts` 已拆成 `board.types.ts` / `library.types.ts` / `search.types.ts` / `category.types.ts`
+  - `core.hardware.query.ts` 已拆成 `query.common.ts` / `query.structured.ts` / `query.legacy.ts`
+  - `hardware` 域中 `upload/probe/esptool/firmware` 触及文件的旧式 `@param {T}` / `@returns {T}` JSDoc 已开始清理
 - `core/model`
   - 已迁入模型目录远端访问、fallback 目录、任务/开发板/部署目标归一化
+- `core/cloud`
+  - 已新增公开项目列表与模板列表远端访问
+  - 已新增 `core.cloud.listPublicProjects` / `core.cloud.listTemplates`
 - `core/tool`
   - 已迁入子工具目录 fallback 与基础扫描逻辑
   - 当前支持 `childPath/tools/*` 下按 `package.json` 发现子工具元数据
+  - `ChildToolItem` / `ChildToolHostInfo` 已回收到 `shared/tool/*`
 - `core/connection`
   - 已迁入连线图 JSON 解析
   - 已迁入基础安全校验
@@ -201,6 +218,9 @@
   - 已迁入文件系统挂载尝试计划规则
   - 已迁入 Node 侧 FatFS / SPIFFS / LittleFS client 骨架
   - 已迁入统一 `mountFfsFilesystem` 工厂
+  - 已新增空白镜像挂载预览 RPC，可直接返回文件系统快照
+  - 已新增镜像文件写入、格式化、删除、创建目录、重命名、导出等高层 RPC
+  - `core.ffs.runtime.clients.littlefs.ts` 已拆出 `littlefs.directory.ts` / `littlefs.image.ts`
 - `ui`
   - 已开始 `src/app -> src` 扁平化，当前入口和路径别名已部分切换
   - 已新增 `core-service` / `desktop-service` 句柄 provider 骨架
@@ -223,11 +243,25 @@
   - 首页已开始消费 recent project 结果
   - `model-store` / `model-train/*` / `model-deploy/sscma` 已改为消费 `core.model.*`
   - `child-tool` 页已改为消费 `core.tool.*`
+  - `child-tool` 页已改为优先把 desktop 返回的 `childPath` 传给 `core.tool.list/acquire/restart`
+  - `child-tool` 已开始优先展示真实子工具目录，而不是只读 fallback 列表
   - `graph-editor` 已开始消费 `core.connection.resolvePaths`
-  - `serial-monitor` 已改为直接消费 `core.hardware.listSerialPorts`
+  - `graph-editor` 已补 `core.connection.hasGraph/readGraph/hasAws/readAws` 资产状态读取
+  - `core.connection` 已新增 `getWorkspaceState`
+  - `graph-editor` 已改为直接消费 `core.connection.getWorkspaceState`
+  - `core.connection.pinmap.ts` 已拆成 `pinmap.id.ts` / `pinmap.read.ts` / `pinmap.summary.ts` / `prompt.ts`
+  - `core.connection.persistence.ts` 已拆成 `pinmap.catalog.ts` / `pinmap.library.ts` / `pinmap.template.ts` / `pinmap.save.ts`
+  - `core.connection.remote.ts` 已拆出 `remote.normalize.ts` / `remote.fetch.ts`
+  - `core.connection.types.ts` 已改为 barrel，具体类型拆到 `graph.types.ts` / `pin.types.ts` / `catalog.types.ts` / `workspace.types.ts`
+  - `serial-monitor` 已开始消费 `core.hardware.listSerialPorts`
+  - `serial-monitor` 已接入 `core.serial.*` 真实串口会话
+  - `serial-monitor` 已支持 connect / disconnect / send / drain / quick send / DTR-RTS signal
   - `model-deploy` 顶层页已改为组合消费 `desktop.host.getRuntimeInfo` 与 `core.hardware.*`
   - FFS 的核心规则已开始从 UI/legacy service 抽往 `core.ffs.*`
   - `ffs-manager` 已开始消费 `core.ffs.resolveBaud`
+  - `ffs-manager` 已开始消费 `core.ffs.previewBlankMount`
+  - `ffs-manager` 已支持加载镜像、浏览目录、预览文本文件、上传文件写回镜像、格式化镜像、删除条目、导出镜像
+  - `ffs-manager` 组件已拆成 `component.ts` + `component.handlers.ts` + `component.viewmodel.ts` + `preview.runtime.ts`
 - `shared`
   - 已建立成可编译 workspace 包骨架
   - 已新增 core service 地址、健康检查、启动选项等共享协议类型与常量
@@ -236,13 +270,16 @@
   - 已新增 app-store 公共类型
   - 已新增 model-project 与 onboarding 公共类型
   - 已新增 AI API 请求载荷公共类型
+  - 已新增 `shared/tool/*`
+  - 已新增 `shared/terminal/*`
 - `desktop`
   - 已新增 core service manager 薄壳骨架
   - 已通过 `utilityProcess.fork` 约定好 core standalone 进程启动边界
   - 已新增 desktop main `trpc + erpc` 根路由与 preload 暴露入口
-  - RPC 命名与组织方式已开始对齐 polywise（`p` / `router` / `routers` / `Router`）
+  - RPC 命名与组织方式已开始对齐 polywise（`p` / `router` / `Router`）
   - desktop 不再代理 core 规则 RPC，仅保留 desktop 自身 erpc 能力
   - desktop 对 core 进程控制能力通过 `desktop.core.*` 分组暴露
+  - desktop 根 RPC 已统一为 default export 聚合
   - `desktop.rpc` 已开始按目录模块化收口：
     - `core/*`
     - `serial/*`
@@ -250,6 +287,16 @@
     - `list`
   - `probe-rs` / `esptool` 已从 `desktop` 薄桥回收至 `core.hardware.*`
   - `desktop.serial.list` 结果模型已补平台字段，开始形成稳定宿主串口枚举桥
+  - 已新增 `desktop.terminal.*`
+  - `desktop` 已开始使用 `@lydell/node-pty` 托管真实 PTY 会话
+- `erpc`
+  - `erpc.main.handleIPCMessage.ts` 已拆出 `handleIPCShared.ts` / `handleIPCSubscription.ts`
+- packaging / trim
+  - 已新增 `scripts/trim_desktop_release.mjs`
+  - `desktop pack:mac/pack:win` 已不再只是别名 build，会进入 trim release 流程
+  - 已验证 `node ./scripts/trim_desktop_release.mjs --platform smoke5` 可生成 `release/desktop-smoke5/{vendor,local-packages,app}`
+  - `release/desktop-smoke5/app/node_modules` 已验证可生成
+  - 根目录已新增 `.npmrc` 中的 `confirmModulesPurge=false`，避免非 TTY 环境下 pnpm 因 modules purge 中断
 - 规范收口
   - 已补齐当前 `types.ts` 的类型级 / 字段级 / 联合值级 JSDoc
   - 已清理剩余不符合要求的非 default barrel 导出
@@ -318,6 +365,13 @@
     - `validateUploadFileName`
     - `resolveBaud`
     - `summarizePartitions`
+    - `previewBlankMount`
+    - `writeImageFile`
+    - `formatImageFilesystem`
+    - `deleteImageEntry`
+    - `createImageDirectory`
+    - `renameImageEntry`
+    - `exportImage`
   - `core/ffs/*` 已新增：
     - `partition.ts`
     - `paths.ts`
@@ -335,6 +389,7 @@
   - `packages/desktop` 可单独 `rslib build`
   - `packages/core` 已可单独 `rslib build`
   - `packages/ui` 已可单独 `ng build`
+  - `ui/tsconfig.json` 已补 `shared -> ../shared/src/index.ts` path 映射，Angular 编译器不再把 workspace `shared` 当成无声明 JS 包
   - 当前 `ui` build 仍有两个已知 warning：
     - 初始包体积超预算
     - `@vercel/oidc` CommonJS 依赖警告
@@ -355,7 +410,6 @@
   - `core/rpc/app` 当前已不再承载活跃实现文件
 - 当前主要阻塞
   - 当前不再是构建阻塞，而是结构继续演进的问题：
-    - `ui` 为兼容 Angular 编译器对跨包声明解析的限制，当前保留了最小的 `src/types/core-modules.d.ts` shim
     - packaging / release 工具链仍只是初始骨架，尚未补齐 desktop release 配置、trim package 和 release 产物裁剪
     - `ui` 目前已经补了 legacy 风格的路由骨架，但大量功能页仍是迁移占位态，真正的编辑器/工具 UI 还需逐域落地
 - 下一个执行切面
@@ -424,24 +478,575 @@
   - 新增 `pages/home/state.ts` 以承接首页状态字段与写回逻辑
 - 页面深化进展
   - `settings` 已从单纯读取首页聚合状态，改为直接组合 `core.config` / `core.project` / `core.onboarding` 数据
-  - `serial-monitor` 已从单纯读取首页聚合状态，改为直接组合 `core.config` / `core.store` 数据
+  - `serial-monitor` 已从单纯读取首页聚合状态，改为直接组合 `core.config` / `core.hardware` / `core.serial` 数据
+  - `serial-monitor` 已不再夹带 `core.store` 的演示型聚合调用
   - `project-new` 已补路径冲突判断与 recent 项目回填交互
   - `blockly-editor` 已从首页聚合壳升级为直接组合 `core.config` / `core.store` / `core.hardware`
+  - `graph-editor` 已开始展示当前工程的 graph/aws 存在状态、描述、组件数与连线数
+  - `connection` 域已开始清理旧式 `@param {T}` / `@returns {T}` JSDoc
+  - `child-tool` 页已移除“以后再接”的保留文案，改成真实 runtime 不可用提示
+  - `hardware` 域的大型 `types.ts` / `query.ts` 已收口成薄 barrel，开始为后续细分 `probe` / `upload` / `firmware` 旧注释清理铺路
+  - `ui/components/ui/utils/src/lib/hlm.ts` 已拆成 `hlm.class.ts` / `hlm.classes.state.ts` / `hlm.classes.manager.ts` / `hlm.classes.ts`
+  - `simulator/runtime.ts` 与 `iframe/runtime.ts` 的旧式 JSDoc 已清理
+  - 已新增 `pages/cloud-space/*`，开始消费 `core.cloud.listPublicProjects`
+  - `project-new` 已开始消费 `core.cloud.listTemplates`，补模板列表入口
+  - 已新增 `pages/terminal/*`，直接消费 `desktop.terminal.*`
+  - `terminal` 已加入 UI 工具路由与 workspace 工具目录
+  - `code-editor` 已开始消费真实 desktop terminal，会话默认绑定当前 desktop cwd
+  - 已新增 `pages/terminal/*`，直接消费 `desktop.terminal.*`
+  - `terminal` 已加入 UI 工具路由与 workspace 工具目录
   - `code-editor` 已补基础 build 诊断视图承接
+  - `core.build` 已新增项目级预处理/编译计划与执行链，开始复刻 legacy `preprocess.js + compile.js` 的核心流程
+  - `core.rpc.build` 已从单文件升级为目录式 router，新增 `planProjectBuild` / `runProjectBuild`
+  - `code-editor` 已从 desktop shell 命令 runner 改为调用 `core.build.planProjectBuild/runProjectBuild` 的真实项目构建入口
+  - `code-editor` 当前仅保留 desktop 运行时探测（`appDataPath` / `childPath`），不再依赖 desktop PTY 承担构建本身
+  - `desktop.terminal` 已新增 `interrupt` 能力，terminal 页已补最小 Ctrl+C 控制
+  - `desktop.terminal.stream` 已开始同时提供原始 `data` chunk 与归一化 `line` 事件
+  - `desktop.terminal` 已新增 `executeOnce`，开始承接 legacy 中“发送命令并等待输出稳定”的薄宿主能力
+  - `terminal` 页已开始消费 line 级事件并展示完整行计数，为后续 builder/uploader 稳定日志消费铺路
+  - `terminal` 页已开始消费 `executeOnce`，证明该薄能力已可被 UI 复用，而不必每个页面重新拼接“发送命令并等待输出”的逻辑
+  - `terminal` 页已不再固定用宿主默认目录创建会话
+    - 当前会优先绑定 `project-session` 中的当前项目路径作为 `cwd`
+    - 更接近 legacy 中“终端跟随当前工程”的使用方式
+  - `terminal` 页已开始真实消费 `desktop.terminal.resize`
+    - UI 侧会根据输出容器像素尺寸测量字符网格
+    - 容器变化后会把 `cols / rows` 同步回 desktop PTY，而不再固定停留在 `120x32`
+  - `terminal` 页内部状态已从单个聚合对象收口为更细粒度的 signals，避免输出流更新反复污染会话/viewport 依赖
+  - `terminal` 页已开始与 `core.build / core.hardware.runUpload` 做最小编排接入
+    - 当前支持直接从 terminal 页触发当前项目 `Run Build`
+    - 当前支持直接从 terminal 页触发当前项目 `Run Upload`
+    - build/upload 的 step logs 会被追加进 terminal 输出区，terminal 不再只是纯 PTY 壳
+    - `terminal` 当前也已接上工作目录切换
+    - 可通过 desktop 宿主重新选择工作目录
+    - 会话会在新 cwd 下重建，并同步写回当前 project path
+    - 当前也已接上可见串口列表与默认串口切换，并会写回真实配置
+    - `Interrupt` 当前已改为在 build/upload 运行时优先调 core 取消入口，而不再只发 PTY Ctrl+C
+  - `desktop.ble.*` 已开始薄迁 legacy 的 Electron BLE chooser bridge
+    - 主进程已注册 BLE chooser 选择/取消/首选设备/设备列表更新 handler
+    - 已改为通过 `desktop.ble.*` ERPC 调用，不再暴露 `window.ble`
+  - BLE 共享 DTO 已从 `desktop/ui` 的重复定义收口到 `shared.ble.*`
+    - `BleDeviceItem` 已成为跨 `desktop` / `ui` 的统一类型出口
+    - `desktop` 当前只保留 Electron chooser / permission / device-list bridge，自身不再维护独立的渲染层 BLE DTO
+  - `core.cloud.normalize` 已修复 `archiveUrl` 归一化基地址错误；legacy 云项目归档实际应落到 `/api/v1/cloud/files/*`
+  - `core.cloud` 已从“只读公开列表”扩展到真实项目域动作边界
+    - 已新增当前用户项目列表 `core.cloud.listProjects`
+    - 已新增项目状态动作：`publishProject / unpublishProject / setProjectTemplate / unsetProjectTemplate / deleteProject`
+    - 这批动作已经按 `core.rpc.cloud.*` 的单文件 procedure 暴露，后续 UI 可直接接入
+  - 已确认当前云项目归档真实格式为 `.7z`，并已在 `core` 引入 `7zip-bin`
+  - `core.project` 已新增云项目归档导入能力：下载、7z/zip 解压、识别项目根目录、复制到目标目录并写回 package.json 元数据
+  - `core.project.importCloudProject` 已支持两种输入：
+    - 直接提供 `archiveUrl`
+    - 仅提供 `projectId`（可选 `authToken`），由 core 自行解析 `/cloud/projects/:id/download`
+  - `core.project` 已新增最小配置文件读写边界，可直接读写 `${appDataPath}/config.json`
+  - `core.project.configPatch` 已新增统一配置 patch 应用器
+  - `core.project` 已新增 `createProject`，支持优先复用已安装 board template 创建空白项目；模板缺失时回退为最小骨架工程
+  - `core.project` 已新增 `resolveProjectEditorRoute`，可根据项目内容推断应进入 blockly 还是 code editor
+  - `core.rpc.project` 已新增 `importCloudProject`
+  - `core.rpc.project` 已新增 `getStoredRecentProjects` / `addStoredRecentProject`
+  - `core.rpc.project` 已新增 `createProject`
+  - `core.rpc.project` 已新增 `resolveEditorRoute`
+  - `core.rpc.config` 已新增 `getStored` / `updateStored`
+  - `project-new` 已开始通过 `core.project.importCloudProject` 导入模板项目
+  - `project-new` 刷新时已开始优先读取存储的 recent projects；模板导入后也会真实写回 `${appDataPath}/config.json`
+  - `project-new` 已新增 “Create Blank Project” 真实入口，不再只支持模板导入
+  - `project-new` 在创建/导入成功后，已开始根据 `resolveEditorRoute` 自动跳转到对应 editor，并附带 `?path=`
+  - `project-new` 已开始同时探测当前板卡是否存在公开示例项目，不再只看模板列表
+  - `cloud-space` 已开始通过同一条 `core.project.importCloudProject` 链导入公开项目
+  - `cloud-space` 导入公开项目成功后，也已开始自动跳转到对应 editor
+  - `ui/runtime/project-session.ts` 已新增最小共享 projectPath 状态，开始为多个 editor/tool 页面承接“当前项目”
+  - `ui/runtime/project-session.ts` 已继续补 editorRoute 共享状态，避免后续页面重复探测当前项目应进入哪个 editor
+  - `ui/runtime/project-session.ts` 已开始共享当前项目源码，避免其它工具页发起 upload 时继续使用 placeholder source
+  - `core.project` 已新增 `readSource`
+    - 优先读取 `.temp/sketch/sketch.ino`
+    - 其次回退到项目根目录常见入口（如 `sketch.ino`、`${projectName}.ino`、`src/main.cpp`、`main.py`）
+  - `core.build.runProjectBuild` 已开始统一处理源码 fallback
+    - 当 RPC 未显式传 `code` 时，会自动回退到 `core.project.readSource`
+    - 这让 build 链不再被“当前 UI 页面是否正持有源码字符串”硬性卡死
+  - `core.hardware.runUpload / prepareBleUpload` 已同步对齐到同一条源码 fallback 逻辑
+    - `rebuildBeforeUpload` 不再要求前端同时显式传 `code`
+    - upload/BLE prepare 在需要先构建时会自动回退到项目现有源码
+  - `code-editor` 初始化时已不再只回退到 seed 源码
+    - 当前会优先通过 `core.project.readSource` 读取项目现有源码
+  - `code-editor` 切换项目时，已开始同步刷新对应项目的源码快照
+    - 不再继续保留上一个项目的编辑缓冲内容
+    - 页面会开始展示 `sourceKind / sourceFilePath`，便于区分是构建缓存、工程入口还是手动编辑
+  - `blockly-editor` 进入时已不再无条件清空共享源码
+    - 当前会优先通过 `core.project.readSource` 恢复已有源码或最近构建缓存
+    - 这至少补上了 Blockly 项目进入后 upload/build 链完全失去源码的回归
+  - `core.project` 已新增 `readAbiSummary`
+    - 会直接读取项目 `project.abi`
+    - 会返回存在状态、schemaVersion、activePageId、opened/page 计数、总块数与页面级 block 摘要
+  - `core.project` 已新增 `project.abi` 文档读写边界与最小页面生命周期动作
+    - `readDocument / writeDocument / updateDocument`
+    - `createDocumentPage / switchDocumentPage / openDocumentPage / closeDocumentPage / renameDocumentPage`
+    - 这批动作已经通过 `core.rpc.project.*` 以单文件 procedure 暴露
+  - `blockly-editor` 已开始消费真实 ABI 摘要，而不再只展示静态 shell 文案
+    - 当前会展示 `project.abi` 是否存在、文件路径、schema、页面数、总块数、active page 与页面级 block 摘要
+    - 这让 Blockly 页至少回到“可反映当前项目真实文档状态”的程度，而不是完全静态占位
+  - `blockly-editor` 已开始接入最小的页面生命周期交互
+    - 当前支持 `Add Page`
+    - 当前支持点击页面摘要切换 active page
+    - 页面摘要已开始展示 `opened / active` 状态
+    - 当前也支持 `Rename / Close / Reopen` 的最小交互
+    - 这意味着 page lifecycle 已不再只是只读展示，而是开始真实走 `core.project.*` 文档动作
+    - `Rename` 已从浏览器 `prompt` 收口为页内 inline 编辑交互，更符合当前 UI 基线
+  - `blockly-editor` 当前已进一步接近 legacy 的多页面项目结构
+    - 已补打开页面的标签栏展示
+    - 已把页面摘要拆成 `Opened Pages / Closed Pages`
+    - 已开始展示 shared model 摘要（shared vars / procedures）
+  - `blockly-editor` 已开始直接消费 `core.project.readDocument`
+    - 当前会展示 active page title
+    - 当前会展示 active page viewState（scale / scrollX / scrollY）
+    - 当前会展示 active page 顶层块类型预览
+    - 这意味着 Blockly 页已经开始触达 workspace 内容本身，而不再只停留在文档计数层
+  - `core.project` 已新增 `readActiveWorkspace`
+    - 会基于 active page + shared model 生成当前合成 workspace payload
+    - 会返回顶层块数量与顶层块类型预览
+  - `core.project` 已新增 `updateActiveWorkspace`
+    - 会把编辑后的 workspace payload 重新拆回 active page content + shared model
+    - 这让 `project.abi` 不再只是只读文档，而开始具备最小工作区写回边界
+    - 保存后会经由 `invalidateProjectGeneratedState` 清理 `.temp` 与旧 build 元数据
+    - 这避免 Blockly 修改后继续误用 stale sketch / stale build cache
+  - `core.project` 已新增 `updateActiveViewState`
+    - 当前 active page 的 `scale / scrollX / scrollY` 也已进入可写边界
+    - 这让 Blockly 的页面视图状态不再只是只读展示
+  - `blockly-editor` 已开始展示 active workspace JSON 预览
+    - 当前不只是知道 active page 有哪些块类型
+    - 也能直接看到当前合成 workspace payload 的真实结构
+    - 同轮已补 `active top-level` 数量展示
+    - 这让 Blockly 页开始具备“当前页面内容预览面板”的雏形
+  - `blockly-editor` 当前已支持最小的 active workspace JSON 编辑闭环
+    - 页面可直接编辑 active workspace JSON
+    - 当前支持 `Save Workspace / Reset`
+    - 保存后会经由 `core.project.updateActiveWorkspace` 写回 `project.abi`
+    - 当前已补本地 JSON 解析校验、保存条件与错误提示
+    - 不再只是 `JSON.parse + alert` 的裸写回
+    - 保存成功后也会清空共享源码，避免其它页面继续误用旧生成代码
+    - 同轮已支持 `Save ViewState`，可直接写回当前 active page 的 `scale / scrollX / scrollY`
+  - `core.project.readDocument / readAbiSummary` 已开始把 `project.abi` 解析失败转成结构化 `parseError`
+    - 坏掉的 ABI 文档不再直接把 Blockly 页读链打挂
+    - `blockly-editor` 已开始显式展示该 parse error，而不是伪装成空项目
+  - `core.abi.countAbiBlocks` 已修正为真正支持多页面文档
+    - 当前会统计各页面内容与 shared procedures，而不是只在单页 workspace 语义下工作
+    - `readAbiSummary.totalBlockCount` 也已同步对齐到这条修正后的统计语义
+  - `serial-monitor` 已不再在 UI 层抢先把“当前没有共享源码”判定为失败
+    - 当前会直接调用 core 上传链
+    - 是否能回退到项目现有源码，统一由 core 决定
+  - `code-editor` 与 `serial-monitor` 已开始真正消费 core 已有的 step logs
+    - build 结果会展示 `preprocess / compile` 等分步骤日志
+    - upload 结果会展示分步骤日志，而不再只有聚合后的 stdout / stderr
+    - 这为后续把 terminal 与 builder/uploader 进一步串联提供了最小的 line-oriented / step-oriented 调试视图
+  - `serial-monitor` 已开始优先读取并写回真实 stored config，不再只依赖 `workspace/config` 的静态假数据
+  - `core.hardware.upload.*` 已从纯 helper 扩展到项目级上传 orchestrator，开始复刻 legacy `upload.js` 的串口/调试探针主链
+  - `core.rpc.hardware` 已新增 `runUpload`
+  - `core.rpc.hardware` 已新增 `planUpload`
+  - `core.hardware.runUpload` 当前已接上：
+    - 可选的上传前构建
+    - aily-builder buildPath 推导
+    - preprocess/fallback uploadParam 选择
+    - 串口 1200bps touch 与重新枚举等待
+    - 串口/probe 命令解析与执行
+    - shell 兼容执行路径（更接近 legacy `upload.js`）
+  - `core.hardware.upload.artifact` 已新增实际上传产物解析 helper
+    - `runUpload` 的 `artifactPath` 当前已不再回成整个 build 目录
+    - UI 上展示的产物路径开始接近真正被上传的 `.bin/.hex/.uf2/...` 文件
+    - `prepareBleUpload` 的构建失败分支已修正 `buildPath` 语义
+    - 不再把 `projectPath` 误写进 `buildPath`
+    - 已修正取消分支里 `artifactPath` 的先用后定义问题
+  - `core.hardware.planUpload` 已支持纯预览上传命令步骤
+  - `core.hardware.upload.progress` 已新增结构化上传进度解析，开始复刻 legacy 中对 esptool / probe-rs / generic progress bar 的正则匹配
+    - 同轮已补 legacy 常见的 `[...] 84% (11/13 pages)` 与进度条尾部百分比模式
+  - `code-editor` 已补最小 upload 入口，默认复用 config 中的 serial port，并直接调用 `core.hardware.runUpload`
+  - `code-editor` 已开始展示 `core.hardware.planUpload` 生成的上传命令预览
+  - `code-editor` 已开始展示 `runUpload` 返回的结构化上传阶段摘要与事件数量
+  - `code-editor` 已开始承接 `?path=` 查询参数，避免创建/导入后的跳转只改 URL 不改当前项目
+  - `blockly-editor` 也已开始承接并展示 `?path=` 查询参数，至少可跟随后续 project 路由流转
+  - `code-editor / blockly-editor` 已开始优先复用共享的 project session 路径，而不是各自完全孤立维护
+  - `code-editor / blockly-editor` 已开始同时写回共享的 editorRoute，为后续工具页“返回当前项目 editor”铺路
+  - BLE OTA 的纯协议层已开始下沉到 `core.hardware.upload.ble.*`
+    - CRC16 / command frame / stop frame
+    - 固件字节分片规则
+    - BLE 可上传固件产物识别
+  - `core.hardware.runUpload` 的 BLE 分支不再是完全空白；当前已可返回可上传固件产物路径，并明确保留“传输宿主待迁移”的边界
+  - `core.hardware.upload.ble.preparation` 已新增结构化 BLE 准备状态解析，可返回固件路径、默认 packet size、预估分片数量和面向 UI 的消息
+  - `ui/runtime/ble-bridge.ts` 已新增最小 BLE chooser runtime helper，并已改为消费 `desktop.ble.*` 而不是 `window.ble`
+  - `desktop.ble.deviceList` 已新增订阅路径，开始把 chooser 发现到的设备列表以 ERPC subscription 暴露给 UI
+  - `code-editor` 已开始展示通过 `desktop.ble.deviceList` 发现到的 BLE 设备列表，不再只是盲调 `requestDevice`
+  - `code-editor` 已开始支持选择 BLE 设备，并触发 “Prepare BLE Upload” 走 `core.hardware.runUpload(portType=ble)` 的准备链
+  - `core.hardware.prepareBleUpload` 已新增结构化 BLE 上传计划，可返回固件路径、packet size、packet count、start/stop frame 与 packet payload 列表
+  - `code-editor` 的 BLE prepare 已改为消费 `core.hardware.prepareBleUpload`，开始展示 ready/artifact/packet size/packet count/message
+  - `ui/runtime/ble-upload.ts` 已继续补实时阶段回调，开始上报 `starting / sending / stopping / done` 与分片确认进度
+  - `ui/runtime/ble-upload.ts` 已新增最小 BLE OTA 发送执行链，开始消费已授权设备 + core 生成的 plan 执行 start/packet/stop 流程
+  - `code-editor` 已新增 “Run BLE Upload”，当前可在 UI 侧通过 Web Bluetooth 执行最小 OTA 发送
+  - `code-editor` 的 BLE 上传执行已开始展示实时阶段、百分比与 ack 进度
+  - `ui/runtime/ble-upload.ts` 已补超时监听清理、最小 sector 重试、错误阶段上报与执行完成后 GATT 断开清理
+  - `ui/runtime/ble-upload.ts` 已补 packet size probe，BLE prepare plan 不再只用固定默认包大小
+  - `code-editor` 的 BLE upload plan 已开始标记 packet size 是否来自运行时探测（probed）
+  - 本轮已把新增后再次超限的文件继续拆细：
+    - `ui/runtime/ble-upload.ts` 已拆为 `ble-upload.shared.ts` / `ble-upload.probe.ts` / `ble-upload.execute.ts` / `ble-upload.types.ts`
+    - `core.hardware.upload.types.ts` 已拆为 `workflow.types.ts` / `ble-execution.types.ts`，当前 `types.ts` 仅作为 barrel
+    - `pages/code-editor/runtime.ts` 已拆为 `build.runtime.ts` / `upload.runtime.ts` / `ble.runtime.ts`
+    - `pages/code-editor/component.runtime.ts` 已进一步拆为 `session.runtime.ts` / `build-actions.runtime.ts` / `ble-actions.runtime.ts` / `component.types.ts`
+  - `shared.upload.summary` 已新增统一上传摘要 helper，开始为 serial / debugger / BLE 三条路径收口共同的结果语义
+  - `code-editor` 已开始在界面上真正消费统一上传摘要（channel / status / latestPhaseText），不再完全依赖各通道各自拼文案
+  - `core.hardware.runUpload` 已开始回填统一 `summary` 字段，避免统一语义只停留在 UI 层二次计算
+  - `pages/code-editor/ble.runtime.ts` 的 not-ready / success 分支也已改为走统一 upload summary，而不是继续保留一套 BLE 特例文案判断
+  - `serial-monitor` 已开始通过当前串口配置触发现有 serial upload workflow，并展示统一上传摘要；本轮已移除 placeholder source，改为复用共享 project source
+  - `shared.upload.types` 已新增 `UploadErrorCode`，开始把失败语义从 message 文案进一步收口到稳定错误码
+  - `core.hardware.runUpload` / `code-editor` / `serial-monitor` 当前已开始回填并消费统一 `errorCode`
+  - `pages/code-editor/ble.runtime.ts` 的执行失败分支也已改为回填统一 `errorCode / status / message`，不再只 throw 后让页面兜底
+  - `serial-monitor` 与 `code-editor` 页面都已开始直接展示 `status + errorCode`，统一失败语义不再只停在底层 helper/类型层
+  - `ui/runtime/ble-upload.execute.ts` 已开始直接产出结构化 `errorCode`（如 `timeout / disconnected / ack-failed / unknown`），BLE 执行链不再只靠 message 文案二次推断
+  - `shared.upload.present.renderUploadRecoveryHint` 已新增最小恢复建议映射，`code-editor` / `serial-monitor` 已开始直接展示面向用户的下一步建议
+  - 当前统一 upload workflow 已经同时覆盖：状态文案、错误码和恢复建议三层展示语义
+  - `shared.upload.present.renderUploadStatusText` 已开始被页面直接消费，模板层不再手拼 `status + errorCode` 字符串
+  - `code-editor` 已开始把结构化恢复动作接成真实交互：
+    - `shouldFixBuild` -> `Build Again`
+    - `shouldReconnect` 且 `channel=ble` -> `Reconnect BLE Device`
+    - `canRetry / canReprepare` -> 分别触发重试与重新准备 BLE 上传
+  - `serial-monitor` 已开始消费结构化恢复动作：
+    - `shouldReconnect` -> 真实串口重连
+    - `shouldSelectPort` -> 刷新端口列表
+    - `canRetry` -> 直接重试上传
+  - `serial-monitor` 在共享源码为空时会显式返回 `not-ready`，不再拿空源码盲目触发上传
+  - `code-editor` 的 BLE prepare 结果已开始展示 artifact 路径，不再只有一条泛化错误文案
+  - `cloud-space` 导入公开项目后，也已开始通过 `core.project.addRecentProject` 收口 recent 持久化逻辑
+  - `cloud-space` 导入公开项目后，也已开始优先通过 `core.project.addStoredRecentProject` 写回真实 recent 配置
+  - `cloud-space` 已不再只固定展示 public scope
+    - 当前已接上 `public / template` scope 切换
+    - 当前已接上 board 过滤，并直接复用 `core.cloud.listPublicProjects / listTemplates`
+  - `cloud-space` 与 `project-new` 当前已不再自己持有云归档 URL 细节
+    - UI 导入动作已改为优先传 `projectId`
+    - 归档下载路径解析与认证头拼装已回收到 `core.project.importCloudProject`
+    - `project-new` 模板导入按钮也已不再残留旧的 `archiveUrl` 可用性判断
+  - `core.project.createProject / importCloudProjectArchive` 已补失败清理
+    - 创建或导入过程中若在目标目录写到一半失败，会主动清理半截项目目录
+    - 这避免 `project-new / cloud-space` 后续再遇到“残留目标目录已存在”的连锁问题
+  - `core.project.pathExists` 已补齐到 project 路径边界
+    - `project-new` 当前已不再只靠 recent 列表判断冲突
+    - preview 阶段会直接用文件系统真实存在结果更新 `pathConflict`
+  - `core.project.validateName` 已补齐到 project 命名边界
+    - `project-new` 当前会在 preview 阶段做宿主相关的项目名合法性校验
+    - macOS 的空格/特殊符号限制与通用非法路径字符限制已开始回到创建链
+  - `core.project.findAvailableName` 已补齐到 project 命名辅助边界
+    - `project-new` 在目标目录冲突时，当前可直接生成一个可用项目名
+    - 不再只能靠用户手动反复改名试错
+  - `desktop.host.selectDirectory` 已新增最小目录选择薄桥
+    - `project-new` 当前已可通过 desktop 宿主选择项目根目录
+    - root path 不再只是固定默认路径文案
+    - `cloud-space` 当前也已可通过同一条薄桥选择导入根目录
+  - `desktop.host.getRuntimeInfo` 已补 `documentsPath / pathSeparator`
+    - `project-new / cloud-space` 当前默认根目录与路径拼装已开始跟随真实宿主语义
+    - 不再只依赖静态 `Documents` 与写死的 `'/'`
+  - `cloud-space` 导入前已开始预判目标路径冲突
+    - 当前会展示待导入 target path
+    - 当前会通过 `core.project.pathExists` 检查目标目录是否已存在
+    - 当前在冲突时也已接上 `core.project.findAvailableName`，可直接使用建议名称继续导入
+  - `cloud-space` 已开始补齐认证态联动
+    - 当前已接上 `mine` scope，不再只停留在 `public / template`
+    - 当前支持手动输入 bearer token，并通过 `core.cloud.listProjects` 读取 owned projects
+    - 当前支持对 owned project 直接执行 `publish / unpublish / set-template / unset-template / delete`
+    - 当前 token 仅保存在页面内存，不会额外发明一套假认证状态
+    - 本轮也已把 `cloud-space` 页按功能继续拆成 `components/*` 与 `runtime/*`
+  - `project-new` 已开始补齐模板认证态联动
+    - 当前模板来源已补 `public / mine` 两种模式切换
+    - `mine` 模式支持手动输入 bearer token，并优先通过 `core.cloud.listTemplates(authToken)` 读取用户可见模板
+    - `mine` 模式在缺失 token 时会显式返回空模板列表并提示，不再错误回落为公共模板
+    - `project-new` 也已继续按功能拆到 `runtime/*`、`actions/*` 与 `component.types.ts`
+  - BLE 边界已进一步澄清
+    - `core.hardware.upload.ble.*` 继续承接协议、分包、构建物准备与执行计划
+    - `desktop.ble.*` 仅保留 Electron chooser / permission bridge
+    - 不再暴露 `window.ble`，UI 侧统一通过 `desktop.ble.*` 调用 chooser 桥
+    - Web Bluetooth 传输执行仍保留在 UI runtime，等待后续决定是否需要新的宿主实现
+  - `terminal` 页与 desktop terminal manager 已继续按作用拆分
+    - `ui/pages/terminal/component.ts` 已压回 124 行，页面动作拆到 `actions/*`
+    - `ui/pages/terminal/runtime.ts` 已拆成 `runtime/session.ts` / `runtime/serial.ts` / `runtime/build.ts`
+    - `desktop/src/terminal/manager.ts` 已拆成 `manager.ts` / `manager.env.ts` / `manager.sessions.ts`
+    - 这轮仍保持现有 terminal 功能与 build/upload orchestration 语义不变，但为后续继续补 live protocol 留出了更清晰边界
+  - `core.hardware.upload.progress` 已继续补 legacy 常见模式
+    - 当前已新增 `70% 13/18` 这类页分数格式
+    - 当前已新增 `Progress 70%` / `进度 70%` 这类文本格式
+    - 与之前已支持的 esptool / probe-rs / bracket bar / trailing percent 组合后，已更接近 legacy 解析覆盖面
+  - `graph-editor` 已继续承接 `core.connection` 的 project context 能力
+    - `core.connection.getWorkspaceState` 当前已开始返回 `boardPackageName / boardPackagePath`
+    - `graph-editor` 当前已开始展示 `buildPrompt` 生成的 connection prompt
+    - `graph-editor` 当前也已开始展示 `collectConfigs` 汇总出的 component configs JSON
+    - `graph-editor/component.ts` 已压回 113 行，`runtime.ts` 已拆成 `runtime/state.ts` / `assets.ts` / `library.ts` / `context.ts`
+  - `serial-monitor` 也已继续做分形拆分
+    - `serial-monitor/component.ts` 已压回 131 行
+    - 串口配置、串口会话、上传动作分别拆到 `runtime/*` 与 `actions/*`
+    - 现有 connect / disconnect / reconnect / quick send / upload 语义保持不变
+  - `blockly-editor/component.runtime.ts` 已从 282 行拆为目录级 barrel + 4 个子文件
+    - `apply.ts`
+    - `page-actions.ts`
+    - `workspace-actions.ts`
+    - `view-actions.ts`
+    - 先消除了 blockly runtime 热点，后续若继续接入真实 Blockly canvas，可直接沿这些职责边界继续下钻
+  - `core.hardware.upload.runtime.ts` 已继续拆分
+    - 进程执行细节已抽到 `runtime.execute.ts`
+    - 统一结果构造已抽到 `runtime.results.ts`
+    - 主 `runtime.ts` 已压回 135 行，剩余主要是流程编排本身
+  - `desktop/src/ble/bridge.ts` 已继续拆分
+    - Electron session 权限配置已抽到 `bridge.permissions.ts`
+    - chooser 选择状态、设备列表广播与调试态已抽到 `bridge.state.ts`
+    - 主 `bridge.ts` 已压回 95 行
+  - `code-editor/types.ts` 已拆成 barrel + 4 个子文件
+    - `types.state.ts`
+    - `types.build.ts`
+    - `types.upload.ts`
+    - `types.ble.ts`
+    - 先消除了代码编辑器类型热点，后续再继续下钻组件与模板逻辑
+  - `code-editor` 已继续做页面级拆分
+    - `code-editor/component.ts` 已压回 154 行
+    - 项目路径、串口、源码、最近项目切换等页面级交互已抽到 `page-actions.runtime.ts`
+    - 项目选择卡已拆成 `components/project-panel.component.*`
+    - `component.html` 已从 195 行压回 177 行
+  - `ui/runtime/ble-upload.execute.ts` 已继续拆分
+    - ACK 等待逻辑已抽到 `ble-upload.acks.ts`
+    - 错误分类已抽到 `ble-upload.errors.ts`
+    - `ble-upload.execute.ts` 已压回 122 行
+  - `project-new` 的模板层已继续拆成页面子组件
+    - `component.html` 已从 198 行压回 52 行
+    - 当前已拆出：
+      - `components/setup-panel.component.*`
+      - `components/board-panel.component.*`
+      - `components/recent-panel.component.*`
+      - `components/template-panel.component.*`
+    - 创建/导入逻辑仍保留在原有 actions/runtime 边界，没有回流到模板组件中
+  - `serial-monitor` 的模板层也已继续拆分
+    - `component.html` 已从 194 行压回 148 行
+    - 当前已拆出：
+      - `components/quick-send-card.component.*`
+      - `components/upload-card.component.*`
+    - 串口会话、上传与轮询逻辑仍保持在原有 actions/runtime 边界
+  - `blockly-editor` 已继续做页面级拆分
+    - `component.ts` 已从 210+ 行压回 142 行
+    - 页面交互动作已抽到 `page-actions.runtime.ts`
+    - `component.signals.ts` 当前承接 signal 聚合装配
+    - 这使后续继续拆 `component.html` 时，不需要再反复搬动页面交互逻辑
+  - `blockly-editor` 的模板层已继续拆分
+    - `component.html` 已从 201 行压回 60 行
+    - 当前已拆出：
+      - `components/workspace-shell.component.*`
+      - `components/inspector-panel.component.*`
+    - page lifecycle / workspace / viewState 逻辑仍保留在既有 runtime/page-actions 边界
+  - `graph-editor` 的模板层已继续拆分
+    - `component.html` 已从 230 行压回 37 行
+    - 当前已拆出：
+      - `components/frame-panel.component.*`
+      - `components/workspace-panel.component.*`
+      - `components/insights-card.component.*`
+      - `components/editor-card.component.*`
+    - 其中 `workspace-panel.component.html` 也已从 200+ 行压回 63 行
+  - `project-new/runtime/project.ts` 已继续按职责拆分
+    - `runtime/project.ts` 当前仅保留 barrel 导出
+    - 具体逻辑已拆到：
+      - `runtime/project/defaults.ts`
+      - `runtime/project/preview.ts`
+      - `runtime/project/create.ts`
+  - `core.build.compileErrors.ts` 已继续拆分
+    - 当前已拆成：
+      - `compileErrors.clean.ts`
+      - `compileErrors.extract.ts`
+      - `compileErrors.diagnostics.ts`
+      - `compileErrors.staleness.ts`
+    - 主 `compileErrors.ts` 当前仅保留 barrel 导出
+  - `core.serial.manager.ts` 已继续拆分
+    - 当前已拆成：
+      - `manager.shared.ts`
+      - `manager.connect.ts`
+      - `manager.send.ts`
+      - `manager.signal.ts`
+      - `manager.messages.ts`
+    - 主 `manager.ts` 当前仅保留 barrel 导出
+  - `core.agent.session.turns.types.ts` 已继续拆成多文件类型层
+    - `types.execution.ts`
+    - `types.anchor.ts`
+    - `types.turn.ts`
+    - `types.result.ts`
+    - 主 `types.ts` 当前仅保留 barrel 导出
+  - `cloud-space/component.ts` 已继续压回页面编排层
+    - 页面动作已抽到 `page-actions.runtime.ts`
+    - 主组件当前已压回 123 行
+  - `desktop BLE chooser state` 已继续拆层
+    - 当前已拆成：
+      - `bridge.shared.ts`
+      - `bridge.devices.ts`
+      - `bridge.selection.ts`
+    - `bridge.state.ts` 当前仅保留 barrel 导出
+  - `core.ffs.runtime.session.ts` 已继续拆分
+    - 当前已拆成：
+      - `session.shared.ts`
+      - `session.connect.ts`
+    - 主 `session.ts` 当前主要保留类封装与对外 API，已压回 100 行
+  - `cloud-space/component.ts` 已进一步回到编排层
+    - 页面动作已集中到 `page-actions.runtime.ts`
+    - 主组件当前稳定在 123 行
+  - `home` 的模板层也已开始拆分
+    - `home/component.html` 已从 179 行压回 73 行
+    - 当前已拆出：
+      - `components/navigation-rail.component.*`
+      - `components/workspace-center.component.*`
+      - `components/inspector-rail.component.*`
+    - 现有 desktop/core 状态聚合仍保留在 `home/component.ts`
+  - `home-page-status` 的模板已进一步收口
+    - `home-page-status.component.html` 已从 176 行压回 61 行
+    - 重复的状态行已改为 `computed` 数组驱动渲染
+    - 这减少了首页状态模板的重复结构，同时不改变任何对外输入输出
+  - `core.model.types.ts` 已继续拆成请求/远端/fallback 三层
+    - `types.request.ts`
+    - `types.remote.ts`
+    - `types.fallback.ts`
+    - 主 `types.ts` 当前仅保留 barrel 导出
+  - `core.ffs.runtime.nodeSerialPort.ts` 已继续拆分
+    - 运行时状态、事件挂接和 readable 构造已抽到 `nodeSerialPort.shared.ts`
+    - 主 `nodeSerialPort.ts` 当前主要保留适配器外壳
+  - `core.ffs.runtime.clients.fatfs.ts` 已继续拆分
+    - wasm 内存访问 helper 已抽到 `fatfs.memory.ts`
+    - 挂载路径与断言 helper 已抽到 `fatfs.shared.ts`
+    - 主 `fatfs.ts` 当前主要保留客户端 API 组装
+  - `core.tool.process.ts` 已继续拆分
+    - 当前已拆成：
+      - `process.shared.ts`
+      - `process.start.ts`
+      - `process.acquire.ts`
+      - `process.release.ts`
+    - 主 `process.ts` 当前仅保留 barrel 导出
+  - `core.build.projectBuild.resolve.ts` 已继续拆分
+    - 当前已拆成：
+      - `projectBuild.resolve.board.ts`
+      - `projectBuild.resolve.command.ts`
+    - 主 `projectBuild.resolve.ts` 当前主要保留流程拼装
+  - `core.hardware.esptool.logic.ts` 已继续拆分
+    - 当前已拆成：
+      - `logic.shared.ts`
+      - `logic.detect.ts`
+      - `logic.install.ts`
+      - `logic.command.ts`
+    - 主 `logic.ts` 当前仅保留 barrel 导出
+  - `core.hardware.query.structured.ts` 已继续拆分
+    - 当前已拆成：
+      - `query.structured.boards.ts`
+      - `query.structured.libraries.ts`
+      - `query.structured.search.ts`
+    - 主 `query.structured.ts` 当前仅保留 barrel 导出
+  - `core.hardware.upload.workflow.types.ts` 已继续拆成多文件类型层
+    - `workflow.types.input.ts`
+    - `workflow.types.context.ts`
+    - `workflow.types.events.ts`
+    - `workflow.types.result.ts`
+    - 主 `workflow.types.ts` 当前仅保留 barrel 导出
+  - `core.agent.session.fileSessionStore.ts` 已继续拆分
+    - 当前已拆成：
+      - `fileSessionStore.types.ts`
+      - `fileSessionStore.paths.ts`
+      - `fileSessionStore.index.ts`
+      - `fileSessionStore.store.ts`
+    - 主 `fileSessionStore.ts` 当前仅保留 barrel 导出
+  - `core.agent.session.turns.messages.ts` 已继续拆分
+    - 当前已拆成：
+      - `turns.messages.parts.ts`
+      - `turns.messages.rounds.ts`
+      - `turns.messages.turns.ts`
+    - 主 `turns.messages.ts` 当前仅保留 barrel 导出
+  - `cloud-space/page-actions.runtime.ts` 已继续按职责拆分
+    - 当前已拆成：
+      - `page-actions.types.ts`
+      - `page-actions.runtime.load.ts`
+      - `page-actions.runtime.interactions.ts`
+    - 主 `page-actions.runtime.ts` 当前仅保留 barrel 导出
+  - `code-editor/ble.runtime.ts` 已继续拆分
+    - 当前已拆成：
+      - `ble.runtime.plan.ts`
+      - `ble.runtime.result.ts`
+      - `ble.runtime.execute.ts`
+    - 主 `ble.runtime.ts` 当前仅保留 barrel 导出
+  - `terminal/actions/session.ts` 已继续拆分
+    - 当前已拆成：
+      - `session.lifecycle.ts`
+      - `session.interact.ts`
+    - 主 `session.ts` 当前保留组合工厂与 viewport 同步逻辑
+  - `serial-monitor/component.ts` 已继续向编排层收口
+    - 当前 signal 聚合已抽到 `component.signals.ts`
+    - 视图 toggle 与 polling 行为已抽到 `component.view-actions.ts`
+    - 主组件当前已压回 124 行
+  - `code-editor/component.ts` 已继续向编排层收口
+    - 当前 signal 聚合已抽到 `component.signals.ts`
+    - 页面主组件当前已压回 142 行
+    - 当前页面交互 wrapper 已进一步收口为 `pageActions` 对象
+  - `ffs-manager/component.actions.ts` 已继续拆分
+    - 当前已拆成：
+      - `component.actions.shared.ts`
+      - `component.actions.image.ts`
+      - `component.actions.files.ts`
+      - `component.actions.preview.ts`
+    - 主 `component.actions.ts` 当前仅保留 barrel 导出
+  - `core.agent.tools.todo.normalize.ts` 已继续拆分
+    - 当前已拆成：
+      - `normalize.status.ts`
+      - `normalize.parse.ts`
+      - `normalize.format.ts`
+      - `normalize.assign.ts`
+      - `normalize.summary.ts`
+    - 主 `normalize.ts` 当前仅保留 barrel 导出
+  - `core.project.archive.ts` 已继续拆分
+    - 当前已拆成：
+      - `archive.download.ts`
+      - `archive.extract.ts`
+      - `archive.package.ts`
+      - `archive.import.ts`
+    - 主 `archive.ts` 当前仅保留 barrel 导出
   - `playground` 已从单页壳升级为 `list` / `s/:name` 子路由结构
   - `model-train` 已补 `vision / classification / detection` 子路由骨架
   - `model-deploy` 已补 `sscma / sscma/test` 子路由骨架
   - `model-train` 与 `model-deploy` 顶层页面已补 `router-outlet`，开始承载真实子路由内容
   - `guide` 已从诊断页占位改为真实入口页，首页诊断页保留到 `/lab/home`
   - `blockly-editor` 已拆出 `data/runtime`，不再把状态拼装全塞进单组件
+  - `blockly-editor/component.ts` 已继续把初始化、page lifecycle、workspace draft 编辑动作下沉到 `component.runtime.ts`
+    - 当前页面不再把所有业务动作都堆在单组件类里
+    - 这为后续继续接入真实 workspace 能力留下了更稳定的文件边界
   - `code-editor` 已拆出 `runtime`，开始承载 ABI / lint 两类 core 数据
   - `playground/list` 已补本地关键字与 board 过滤
   - `blockly-editor` 已补真实硬件搜索输入，不再只展示静态结果
   - `workspace/*` 已建立共享页面域种子层，承接板卡、库、配置、模型与嵌入目标数据
   - `home/data.ts` 已从 227 行压缩到 24 行，其他页面不再反向依赖首页种子
   - `ffs-manager` 已补 `types.ts + runtime.ts`，不再把连接摘要直接内联在组件里
+  - `ffs-manager` 当前已不再硬编码 `COM9`
+    - 会优先使用当前配置端口
+    - 没有配置时会回退到当前可见串口首项
   - `iframe` 已从空白壳升级为真实嵌入页，补了目标解析、origin 展示和 preset 列表
   - `graph-editor` 已从硬编码分类卡片改回接近 legacy 的 connection-graph iframe 容器
+  - `graph-editor` 当前已不再用静态 `recentProject.path` 读取 workspace state
+    - 会优先绑定 `?path=` 或当前 `project-session` 路径
+    - 这让 connection graph 的项目上下文开始跟随真实当前项目
+  - `graph-editor` 当前已接入最小 graph/aws 文本读写闭环
+    - 会读取当前项目的 graph JSON 与 AWS 文本
+    - 支持本地编辑并通过 `core.connection.saveGraph / saveAws` 写回
+    - graph JSON 也已补最小本地 JSON 校验
+  - `graph-editor` 当前也已接入项目目录选择
+    - 可通过 desktop 宿主重新选择目标项目目录
+    - 切换后会重载对应的 graph/aws 资产状态与编辑内容
+    - iframe 目标 URL 也已开始显式带上 `projectPath + theme`
+    - 外部 connection-graph 视图不再只依赖本地状态卡片感知当前项目
+  - `core.connection.getWorkspaceState` 已开始回传 `packagesBasePath`
+    - `graph-editor` 当前已能用真实当前项目的依赖根路径驱动 `syncCloudPinmaps`
+    - 这让 `core.connection.remote` 不再只是底层 RPC，而开始有实际页面入口
+    - 当前也会从 graph JSON 自动提取 `pinmapId` hints 传给同步动作
+    - 同步完成后会立即刷新 libraries / catalogs 状态，形成可观察闭环
+  - `graph-editor` 当前也已接入库 / pinmap catalog 状态展示
+    - 会读取当前项目依赖根路径下的 libraries / catalogs
+    - 会展示缺少 pinmap catalog 的库列表，便于观察 `syncCloudPinmaps` 前后状态
+    - 当前也已接入 available pinmapIds、sensor picker 数据和 pinmap template 预览
+    - 这让 `core.connection.listAvailablePinmapIds / getSensorPickerData / getPinmapTemplate` 不再只停留在 RPC 层
+    - 当前也已接入最小 pinmap 保存入口
+    - 可编辑 pinmapId + pinmap template JSON，并通过 `core.connection.savePinmap` 写回
+    - 当前会从 graph JSON 自动回填首个 `pinmapId`，减少手工输入
+    - 当前也可直接点击 `available pinmapIds` 回填到保存表单
+    - graph 保存后也会同步刷新 `pinmapHints`，减少上下文漂移
+    - 当前也可从 sensor picker 直接点击 variant 回填 `pinmapId`
+    - 若 variant 带 `protocol`，会同步刷新 pinmap template 预览
+    - 当前也会在选定 `pinmapId` 后拉取 `libraryInfo`
+    - 页面可直接查看 README / 示例代码 / 已有 pinmap 文件列表
   - `child-tool` 已改成子工具元数据页 + 可选 iframe host，暂不伪造 desktop 子进程能力
   - `model-store` 已从单个 badge 面板升级为可搜索、可按 task 筛选的模型目录
   - `simulator` 已改为直接消费 `core.hardware` 搜索与分类结果，不再内联板卡假数据
@@ -457,14 +1062,23 @@
   - 当前 `packages/ui` 最近一次 `ng build` 产物初始包体约 `847 kB`
   - 已清理本轮新增页面里的 `sample / keyword / samples` 用户可见措辞
 
-## 当前待续动作（2026-06-18 / latest）
+## 当前待续动作（2026-06-19 / latest）
 
-1. 继续把 `connection-graph` 的云端 pinmap 同步、project context、当前 schematic 读取桥接等剩余逻辑下沉到 `core`
-2. 继续把真正 Electron-bound 的 `serial` 宿主桥、窗口/对话框等能力往 `desktop.*` 收口，并让更多 UI 页面消费更薄的 desktop/core 句柄
-3. 继续把 child tool 的真实目录扫描、启动参数和 desktop 薄桥能力往 `core` / `desktop` 收口
-4. UI 收口后切回 `desktop` packaging / release 脚手架
+1. 继续补 `core.hardware.runUpload` 的剩余分支，优先是 BLE 传输宿主桥、更多 probe/upload pattern 兼容，以及上传结果的更细粒度进度/阶段解析
+2. 把 `terminal` 与 `builder/uploader` 串起来，至少补齐步骤日志、必要的 line-oriented 展示协议，以及对 build/upload 的中断联动
+3. 继续补 terminal 与 upload orchestration 的剩余深水区，例如更接近 line-oriented/live protocol 的输出编排，以及更多 legacy upload pattern 对齐
+4. 回到 `connection-graph` 剩余的云端 pinmap 同步、project context、schematic 读取桥接，继续往 `core.connection.*` 收口
+5. 完成上述切面后，再做一轮完整 legacy 功能对齐走查，确认剩余缺口
 
 ## 当前风险提示
+
+- 对照 `legacy_deepwiki` 初步识别的未完成大块仍包括：
+  - 终端集成：已有最小 PTY 宿主与 terminal 页面，但仍缺少 xterm 级交互细节、stream line protocol 与 builder/uploader 的编排接入
+  - 硬件上传工作流编排：`core.build` 的 preprocess/compile 已起链，`core.hardware.runUpload` 也已承接串口/探针主链，但 BLE OTA、细粒度进度解析和更多 legacy 分支仍未对齐
+  - cloud / template / cloud-space 已有最小公开项目与模板入口，但仍缺少项目下载解包、个人空间编辑/同步、认证态联动
+  - 通知、反馈、更新弹窗、认证/用户管理等外围 UI 域仍未系统迁移
+
+- `packages/ui` 单独 `ng build` 在本轮出现过一次 Angular compiler 内部异常（`Cannot read properties of undefined (reading 'isDeclarationFile')`），但同轮 `pnpm run build` 已完整通过；当前判断更像编译器/缓存抖动，而不是本次改动的稳定类型错误。按当前迁移原则，这类非稳定噪声不阻断继续重构，但后续若反复出现，需要单独隔离根因。
 
 - `packages/core/src/connection/types.ts` 已超过 300 行，`packages/core/src/connection/persistence.ts` 已接近 300 行；如果 `connection` 域继续扩张，需要按子域拆到更细目录，否则会在后续大型单文件诊断里再次成为热点。
 - `packages/core/src/rpc/index.ts` 与 `packages/core/src/rpc/connection/index.ts` 还在继续膨胀，后续如果再新增 domain/action，需要留意按更细目录拆分 router 组合层。
@@ -485,3 +1099,827 @@
 - 已重新生成：
   - `.github/workflows/desktop.generated.yml`
   - `.github/workflows/standalone.generated.yml`
+
+## 本轮续跑追加记录（2026-06-20）
+
+- BLE 边界复核：
+  - 当前未发现 `window.ble` / `Window.ble` 全局桥接
+  - preload 仍只暴露统一 `$erpc`
+  - UI 侧 BLE 入口继续保持 `desktop.ble.*` 订阅/命令 + renderer 内 Web Bluetooth 传输
+  - 这与“desktop 负责 chooser/rpc、renderer 负责 Web Bluetooth 传输、core 负责 BLE 业务协议”的边界保持一致
+- `core` 热点拆分继续推进：
+  - `core.ffs.partition.ts` 已拆成：
+    - `partition.shared.ts`
+    - `partition.detect.ts`
+    - `partition.parse.ts`
+    - `partition.filename.ts`
+    - 主 `partition.ts` 当前仅保留 barrel 导出
+  - `core.agent.runtime.runCore.ts` 已拆成：
+    - `runCore.types.ts`
+    - `runCore.session.ts`
+    - `runCore.messages.ts`
+    - `runCore.start.ts`
+    - 主 `runCore.ts` 当前仅保留 barrel 导出
+  - `core.agent.runtime.AgentRuntime.ts` 已把会话控制面下沉到 `sessionControls.ts`
+  - `core.project.store.layout.ts` 已拆成：
+    - `layout.config.ts`
+    - `layout.shared.ts`
+    - `layout.zones.ts`
+    - `layout.normalize.ts`
+    - `layout.visibility.ts`
+    - 主 `layout.ts` 当前仅保留 barrel 导出
+  - `core.metadata.manifest.ts` 已拆成：
+    - `manifest.shared.ts`
+    - `manifest.normalize.ts`
+    - `manifest.build.ts`
+    - 主 `manifest.ts` 当前仅保留 barrel 导出
+- `ui/desktop` 热点继续收口：
+  - `project-new/component.ts` 已把本地 signal 初始化下沉到 `component.state.ts`
+  - `blockly-editor/component.ts` 已把本地 signal 初始化与派生状态下沉到 `component.state.ts`
+  - `home/types.ts` 已拆成：
+    - `types.category.ts`
+    - `types.validation.ts`
+    - `types.config.ts`
+    - 主 `types.ts` 负责 barrel + `HomePageCoreState`
+  - `desktop/terminal/manager.ts` 已拆出：
+    - `manager.listeners.ts`
+    - `manager.shared.ts`
+    - `manager.kill.ts`
+  - `desktop terminal` 关闭链路已补最小进程树清理：
+    - Windows 通过 `taskkill /PID /T /F`
+    - Unix 侧先发 `SIGTERM`
+    - 以减少关闭 PTY 后残留 builder/uploader 子进程的概率
+  - `code-editor/components/build-panel.component.ts` 已删掉未被模板消费的冗余 computed 派生状态
+  - `cloud-space/project-card` 已补封面图与标签展示
+    - 开始更接近 legacy 的云项目卡片信息密度
+    - 但项目元数据编辑、封面上传与云端同步动作仍未迁完
+  - `cloud/project sync` 第一批底层能力已迁入：
+    - `shared.cloud` 已补 `CloudProjectMetadata` / `CloudProjectSyncResult`
+    - `shared.constants` 已补 `AILY_CLOUD_SYNC_PATH`
+    - `core.project` 已补：
+      - `packageArchive.ts`
+      - `packageArchive.types.ts`
+      - `readPackageJson.ts`
+      - `writePackageJson.ts`
+      - `syncCloud.ts`
+      - `syncCloud.types.ts`
+    - `core.cloud` 已补：
+      - `request.sync.ts`
+      - `request.update.ts`
+      - `syncProject.ts`
+      - `updateProject.ts`
+    - `core.rpc.cloud` 已补：
+      - `schemas.ts`
+      - `syncProject.ts`
+      - `updateProject.ts`
+    - `core.rpc.project` 已补：
+      - `syncCloudProject.ts`
+  - `cloud-space` 页面已补“同步当前项目”最小入口
+    - 通过 `core.project.syncCloudProject` 打包当前本地项目并同步到云端
+    - 成功后会把新的 `cloudId` 回写到本地 `package.json`
+  - `cloud-space` 已补第一版 metadata editor
+    - 新增 `components/editor-panel.component.*`
+    - 支持编辑 `nickname / description / docUrl / tags`
+    - 封面图在 UI 内压缩为 `500x250 WebP` 后，以 `base64 + fileName` 直接发送给 `core.cloud.updateProject`
+    - 不再依赖 desktop 侧临时文件桥接，边界更贴近“desktop 保持薄层”的目标
+    - 当前仍缺更完整的编辑体验（例如单独详情流、保存后更细的回显、可能的封面移除语义）
+  - `desktop terminal` 的 line-oriented 流解析继续补强：
+    - 新增 `manager.stream.ts`
+    - 已开始正确处理 PTY 常见的单独 `\r`、`CRLF` 与 `Ctrl+C`
+    - 这比之前仅按 `\n` 拆分更接近 legacy `terminal.service.ts` 的流式行边界处理
+  - `shared.upload` 已补 `UploadProgressPhase / UploadProgressEvent`
+    - UI 不再为了上传进度事件类型反向依赖 `core`
+    - `core.hardware.upload` 与 `ui.terminal` 已共同复用同一份 shared 契约
+  - `terminal` 的 build/upload 输出规整继续补强：
+    - `upload.progressEvents` 已开始写入 terminal 视图
+    - 分步骤日志不再只整块追加，而是按行规整后输出
+    - 当前仍不是完全实时 streaming，但终端可观察粒度已经明显高于之前的最终汇总 dump
+  - `terminal` 已开始补“执行前准备”边界：
+    - `core.build.prepareProjectBuild` 已新增
+    - `core.rpc.build.prepareProjectBuild` 已挂到路由
+    - 当前可先由 core 负责 `.temp / sketch / libraries / tools` 准备，再决定后续是否把 preprocess/compile 真正切到 live PTY 会话
+    - 这避免以后为了 live build 又把副作用重新散回 UI 或 desktop
+  - `terminal` 当前也会在执行 build/upload 前先输出 command preview
+    - 至少能明确展示当前页到底要跑哪些核心命令
+    - 更接近 legacy builder/uploader 的“编排器”感
+  - `desktop.terminal.executeOnce` 已开始具备退出码捕获能力
+    - 新增 `manager.execute.ts`
+    - 通过 marker + capture 的方式在 desktop 内部解析 `exitCode`
+    - marker 不再直接透传到 UI 视图
+    - 这为后续 terminal 页真正承接 build/upload live 执行提供了必要基础
+  - `terminal` 的 build 已开始切到当前 PTY 会话内执行
+    - `ui.terminal.runtime.build.ts` 新增 `runTerminalProjectBuildLive`
+    - 当前链路为：
+      - `core.build.prepareProjectBuild`
+      - terminal session 内 `preprocess`
+      - terminal session 内 `compile`
+    - 终端页不再只依赖 `core.build.runProjectBuild` 的最终结果 dump
+    - 当前也已补失败回退策略：
+    - 若 live build 失败且看起来不是用户主动 `Ctrl+C`
+    - 会自动回退执行一次 `core.build.runProjectBuild`
+    - 用于补齐结构化 `logs/stdout/stderr/errorText`
+    - 当前 `upload` 仍主要依赖 `core.hardware.runUpload` 的结果与进度汇总，live upload 尚未切换
+  - `upload` 也已开始向 build 对称的准备边界靠拢：
+    - `core.hardware.prepareUploadExecution` 已新增
+    - `core.rpc.hardware.prepareUploadExecution` 已挂到路由
+    - 当前会统一准备：
+      - 可选预构建
+      - 上传端口准备
+      - 命令解析
+      - 产物识别
+    - terminal 页的 upload plan 也已切到消费这层结果
+    - 当 `prepareUploadExecution` 明确返回未就绪状态时，terminal 不再盲目继续执行 `runUpload`
+  - `lib-manager` 已补第一版真实入口
+    - `shared.constants` 已补 `AILY_BLOCKLY_USED_LIBRARIES_FIELD`
+    - `shared.project` 已补 `MissingBlocklyLibraryInfo`
+    - `core.project` 已补：
+      - `libraryStatus.ts`
+      - `libraryStatus.ready.ts`
+      - `libraryStatus.types.ts`
+    - `core.rpc.project` 已补：
+      - `getBlocklyLibraryStatus.ts`
+    - `ui` 已补：
+      - `pages/lib-manager/*`
+      - `main-routes.ts` 中的 `/main/lib-manager`
+    - 当前页可直接展示：
+      - manifest 字段名
+      - declared Blockly libraries
+      - ready library packages
+      - missing libraries
+    - 当前也已补最小安装/卸载闭环：
+      - `core.project.installProjectBlocklyLibrary`
+      - `core.project.removeProjectBlocklyLibrary`
+      - `core.rpc.project.installBlocklyLibrary`
+      - `core.rpc.project.removeBlocklyLibrary`
+    - `ui.lib-manager` 页已支持 restore/remove
+    - 当前页也已补基于现有 `workspace.libraryIndex` 的 compatible catalog
+      - 会根据当前项目 boardId 显示可直接安装的候选库
+    - 当前页也已补 declared libraries 的兼容性提示
+      - 会直接标出 `compatible / incompatible / unknown-catalog / unknown-board`
+      - 不再只告诉用户“缺了哪些库”，也开始说明“哪些库和当前 board 不匹配”
+    - `main` 导航当前也已补：
+      - `Lib Manager`
+      - `Cloud Space`
+      - `Terminal`
+      - `Model Store`
+      - 这些已迁移工具页不再只能靠手输 URL 访问
+    - 当前仍未补更完整的 registry 同步、下载进度、兼容对话框和动态已安装库热加载
+  - `project lifecycle` 已开始补 `project.abi.temp` 镜像写回
+    - 新增 `core.project.documentPaths.ts`
+    - `writeProjectDocument` 现在会同时写 `project.abi` 与 `project.abi.temp`
+    - `readProjectDocument` 在主文件缺失时会回退读取 `project.abi.temp`
+    - 这让当前仓库开始具备更接近 legacy 的 crash-safe 文档恢复路径
+    - 当前也已补“主文件存在但解析失败时”回退到 `.temp`
+    - dirty-state 镜像不再只在主文件缺失时才有意义
+  - `project lifecycle` 已补第一版状态摘要面
+    - `core.project.getProjectLifecycleStatus`
+    - `core.rpc.project.getLifecycleStatus`
+    - `ui.settings` 当前已开始展示：
+      - editorRoute
+      - package.json / project.abi / project.abi.temp 是否存在
+      - recoveredFromTemp
+      - boardPackageName
+      - declaredLibraryCount
+      - codeHash
+      - buildInfo(lastBuildStatus / lastBuildTime / lastBuildDuration)
+    - 这让前面已经迁入的 `.temp` 恢复和 build metadata 不再只是底层内部逻辑
+  - `blockly-editor` 当前也已补最小的“手动重载项目状态”
+    - inspector 侧边栏新增 `Reload Project`
+    - 会重新拉取：
+      - ABI / workspace 快照
+      - lifecycle 摘要
+      - 当前源码快照
+    - 并把结果回写到 `project-session`
+    - 作为当前没有真正 fs watcher 时的可操作过渡方案
+  - `project lifecycle` 的 mutation lock 已继续收紧到更多关键写路径
+    - `updateProjectDocument`
+    - `invalidateProjectGeneratedState`
+    - `saveProjectBuildMetadata`
+    - `createProject`
+    - `importCloudProjectArchive`
+    - 其中 `createProject/importCloudProjectArchive` 走的是目录级 scoped lock
+    - 这让“目标项目目录尚未存在”的场景也能进入同一套保护语义
+  - `mutation lock` 当前也已支持 stale lock 检测与自动回收
+    - stale 判断基于 pid 是否仍存活
+    - `settings` 当前也已能展示 lock 是否是 `stale`
+  - `project lifecycle` 当前也已开始补“打开会话锁”
+    - `core.rpc.project.acquireOpenSessionLock`
+    - `core.rpc.project.releaseOpenSessionLock`
+    - `ui.runtime.project-routing.openProjectInEditor` 现在会在切换项目前：
+      - 释放旧项目的 open session lock
+      - 申请新项目的 open session lock
+    - 当前 owner 语义基于 desktop 主进程 pid
+    - 这还不是 legacy 那种完整的冲突弹窗/前置其他实例流程，但项目打开已不再完全无锁
+    - 当前也已修正一个关键实现缺陷：
+      - 之前 open session lock 实际上是瞬时锁，函数返回后就释放了
+      - 现在改成持久 scoped lock 文件，直到显式 release 才释放
+      - 这让 open session lock 终于真正具备跨会话持有语义
+    - 当前也已补 pid 透传与同会话豁免判断
+      - lifecycle 摘要会返回 mutation/open session lock 的 pid
+      - `Project Open` 预览时，若锁就是当前 desktop 自己持有，则不再误判成“其他会话占用”
+    - `Project Open` 当前也已补最小版冲突处置路径
+      - 不再只有“已被其他会话打开”的提示
+      - 也已支持 `Force Open`
+      - 会先释放现有 open session lock，再继续打开目标项目
+    - `settings` 当前也已补最小版“关闭当前项目”
+      - 会释放当前 open session lock
+      - 清空 `project-session`
+      - 并返回 `/main/guide`
+  - `project session` 已开始补最小持久化连续性
+    - `ui.runtime.project-session.ts` 当前会把：
+      - `currentProjectPath`
+      - `currentProjectEditorRoute`
+      - 持久化到 `localStorage`
+    - 当前不会持久化 `sourceCode`
+    - 这让刷新或重启后不会完全丢失当前项目上下文
+    - 当前启动链路也已补“恢复上次项目会话”
+      - 若没有 desktop 待打开项目
+      - 会尝试用持久化的 `currentProjectPath/currentProjectEditorRoute` 恢复上次项目
+      - 若路径已失效，则会自动清空本地持久化会话
+  - `project lifecycle` 已补最小的 desktop -> UI 打开项目桥
+    - `desktop.project-open/*` 新增待打开项目路径队列
+    - `desktop.host.consumePendingProjectOpen` 已挂到 ERPC
+    - `core.project.resolveOpenPath` / `core.rpc.project.resolveOpenPath` 已新增
+    - `ui.utils.desktop.initializeDesktopPendingProjectOpen` 会在启动时消费待打开项目并自动跳转到对应 editor
+    - 目前优先覆盖的是 Electron `open-file` 事件和显式队列消费
+    - 这已经开始对齐 legacy `open-project-from-file`，但还不是完整的多平台文件关联实现
+  - `project lifecycle` 也已补最小的现有项目打开入口
+    - 新增 `ui.pages.project-open/*`
+    - `main` 导航里已补 `Project Open`
+    - 当前可以从 UI 里选择已有项目目录并跳转到对应 editor
+    - 当前也已补“选文件或目录”两种入口
+      - `desktop.host.selectProjectPath`
+      - `ui.utils.selectDesktopProjectPath`
+      - `Project Open` 页不再只能挑目录，也可以直接挑项目文件
+    - 当前也已补“选文件 -> 解析项目根目录 -> 预览 -> 打开”闭环
+      - `core.project.resolveOpenPath`
+      - `ui.pages.project-open.runtime.resolveProjectOpenSelection`
+      - `Project Open` 页现在会明确展示解析后的项目根目录
+      - 手动选文件时不再把文件路径直接误当成项目目录
+    - `Project Open` 当前也已补更完整的 lifecycle 预览面
+      - editorRoute
+      - package.json / project.abi / project.abi.temp
+      - recoveredFromTemp
+      - declaredLibraryCount / missingLibraryCount
+      - boardPackageName / boardPackageReady
+      - open session lock 状态
+      - parseError
+      - 打开前诊断不再只是一句文案
+    - `desktop.project-open.events` 当前也已补 `second-instance` argv 解析
+      - 除了 macOS `open-file`
+      - Windows/Linux 通过第二实例 argv 带进来的项目路径也会进入同一待打开队列
+    - 当前也已补首次启动时的 argv 项目路径消费
+      - 不是只有 `second-instance`
+      - 首次启动直接带文件/目录路径时也会进入待打开项目队列
+  - `terminal` 的串口 upload 也已开始切到当前 PTY 会话
+    - 当前会优先：
+      - 读取 `prepareUploadExecution`
+      - 显示 `status / message / port / artifact / command`
+      - 若已就绪，则在当前 PTY 会话内执行上传命令
+    - 若准备阶段已触发预构建，terminal 也会把这部分 prebuild logs 打出来
+    - 这让上传链路不再完全是黑盒的 `core.runUpload` 结果回显
+    - 当前仍未补和 live build 对称的失败回退策略，也尚未覆盖 BLE / probe live host
+  - 本轮继续清理了重构过程中重新膨胀的热点文件：
+    - `ui.pages.cloud-space.page-actions.runtime.interactions.ts` 已拆成：
+      - `page-actions.runtime.project.ts`
+      - `page-actions.runtime.editor.ts`
+      - `page-actions.runtime.sync.ts`
+      - 主 `page-actions.runtime.interactions.ts` 负责组合
+    - `ui.pages.terminal.actions.build.ts` 已拆成：
+      - `build.preview.ts`
+      - `build.run.ts`
+      - `build.run.build.ts`
+      - `build.run.upload.ts`
+    - `ui.pages.terminal.runtime.build.ts` 已拆成：
+      - `build.plan.ts`
+      - `build.live.ts`
+      - `build.run.ts`
+      - 主 `build.ts` 当前仅保留 barrel 导出
+    - `core.hardware.upload.runtime.prepare.ts` 已拆出 `runtime.prepare.shared.ts`
+    - `ui.pages.cloud-space.component.ts` 已把 state 装配与编辑项目派生状态下沉到：
+      - `component.state.ts`
+      - `component.helpers.ts`
+      - `component.types.ts`
+    - `ui.components.ui.checkbox.src.lib.hlm-checkbox.ts` 已拆出：
+      - `hlm-checkbox.constants.ts`
+      - `hlm-checkbox.utils.ts`
+  - BLE 边界本轮再次收口并复核：
+    - UI 侧原 `runtime/ble-bridge.ts` 已迁到 `ui/utils/desktop.ble.ts`
+    - `code-editor` 与 BLE OTA 传输链当前统一从 `@/utils/desktop` 进入 `desktop.ble.*`
+    - 当前仓库内未发现 `window.ble` / `Window.ble` 暴露
+    - 结论保持不变：
+      - `core.hardware.upload.ble.*` 承接协议、分包、构建物准备、执行计划
+      - `desktop.ble.*` 仅承接 Electron chooser / permission / device-list bridge
+      - 真正的 Web Bluetooth `requestDevice` / GATT 传输仍必须留在 renderer，不能直接下沉到 `core` 的 Node 服务
+  - `lib-manager` 本轮继续补齐 legacy 工作流缺口：
+    - 页面已新增统一搜索框与视图筛选：`all / installed / missing / catalog`
+    - 已声明库、缺失库、catalog 库当前都会共同响应同一套 fuzzy filter
+    - `catalog` 不再只展示兼容项；当前会展示 undeclared catalog，并把兼容状态直接标到卡片上
+    - 安装前兼容确认已补最小版 review 卡片
+      - 当 catalog 已知且与当前 board 不兼容时
+      - 不再直接安装，而是先展示 supported boards / current board / continue install
+    - 本轮顺手把 `lib-manager` 页面的类型继续收口回 `types.ts`
+  - `code-editor` 本轮补上轻量 lifecycle 对齐：
+    - 已新增 `lifecycle.watch.ts`，按 5s 轮询 `core.project.getLifecycleStatus`
+    - 当前会跟随 `projectPath` 变化自动重置签名，而不是只在首个项目上生效
+    - 当 board / declared libraries / missing libraries / temp recovery / parse error 发生变化时
+      - 会在 `project-panel` 上展示 `Lifecycle Notice`
+      - 并提供 `Reload Project State` 动作
+    - reload 会重新读取源码快照并刷新 build/upload 计划，然后清空提示
+  - `project-open` 页面本轮也已继续做页面层拆分：
+    - `component.ts` 的预览/打开/强制打开/最近项目剪枝逻辑已抽到 `component.actions.ts`
+    - 当前页面组件主文件已不再是新的大型热点
+    - open-session conflict 处置已进一步补齐：
+      - 当前会明确展示冲突卡片
+      - 已支持显式 `Cancel / Force Open`
+      - 普通 `Open Project` 动作不再绕过已检测到的冲突锁
+      - 当前也已补 `Focus Existing Window`
+        - UI 通过 `desktop.host.focusProcess` 调用
+        - 宿主前置逻辑保持在 `desktop/project-open/focus/*`
+        - macOS / Windows 走显式实现
+        - Linux 当前走 `wmctrl -> xdotool` best-effort fallback
+      - 结合 legacy `ProjectService` 复核后，这一块剩余工作已经从“缺能力”收敛为“验证 packaged/runtime 可靠性”
+- `.abi` file association 证据本轮也继续收紧：
+  - `release/desktop-app/package.json` 已明确携带 `win/mac/linux` 的 `.abi` fileAssociations
+  - 生成后的 `release/desktop-{mac,win,linux}/app/package.json` 也已保留这批元数据
+  - 当前剩余差异主要不是“是否配置了元数据”，而是“安装后系统级注册是否已被实际验证”
+  - `ffs` 域的拆散类型文件本轮也已继续回收：
+    - `ffs/mount.types.ts` / `ffs/summary.types.ts` 已并回 `ffs/types.ts`
+    - 当前 `core/src` 中剩余点号命名已进一步收敛到 `ffs/runtime/wasm/littlefs/littlefs.d.ts` 这一类声明文件
+  - `terminal/upload` 本轮继续去串口特例化：
+    - `core.hardware.upload.context` 已开始自动从 `package.json.projectConfig.pnum` 解析 debugger 默认芯片型号
+    - debugger 上传不再要求 UI/terminal 显式传入 `pnum` 才能生成上传命令
+    - `terminal` 页面当前不再把上传目标硬编码成“串口”
+      - 已把页面状态和 runtime 从 `serial port` 语义扩成 `upload target`
+      - 当前 upload targets 会同时合并：
+        - `core.hardware.listSerialPorts`
+        - `core.hardware.listProbes`
+      - terminal live upload / fallback upload / upload preview 都已统一消费同一份 target 结构
+    - 对 serial target 仍会写回 `serialMonitor.port`
+    - 对 debugger target 则只保留在 terminal 页面当前状态，不污染 serial monitor 配置
+    - terminal 顶部当前也已展示选中 target 的 label，而不是内部 id
+  - `cloud-space` 本轮继续补同步反馈与详情面：
+    - `sync current project` 不再只返回一条 message
+    - 页面当前会额外保留并回显：
+      - `projectPath`
+      - `projectId`
+      - `archiveSize`
+      - `cloudIdUpdated`
+      - `syncedAt`
+    - metadata editor 当前也已补只读 `Project Details` 区
+      - `cloud id`
+      - `board`
+      - `archive url`
+      - `doc url`
+    - 页面当前也已开始保留最近 5 次 `sync current project` 的本地 history
+      - 以最小 `Recent Syncs` 视图回显 `projectId / archiveSize / syncedAt`
+      - 当前也已写回本地持久化，刷新后不会完全丢失
+    - metadata editor 当前也已把“清空封面”提升为显式编辑意图
+      - UI draft 会记录 `removeCover`
+      - `core.cloud.updateProject` 当前也会透传 `remove_cover=true`
+      - 结合旧仓库与 DeepWiki 证据，`remove_cover` 当前视为本地已闭环的增强能力，而不是 legacy 阻塞项
+    - `cloud-space` 当前也已开始回显“当前本地项目绑定的 cloud item”
+      - `core.project.getCloudBinding` 已新增
+      - 列表中与当前本地项目 `cloudId` 对应的卡片会标记 `current project`
+    - `cloud-space` 当前也已补最小分页控制
+      - `page / pageSize` 当前会透传到 `core.cloud.list*`
+      - `public / template / mine` 三个 scope 都支持前后翻页
+    - `code-editor / blockly-editor` 当前也已增强依赖变更感知
+      - `core.project.getLifecycleStatus` 已新增稳定 `dependencySignature`
+      - lifecycle poll 不再只看 `declaredLibraryCount`
+      - 同数量但依赖集合或版本发生变化时，也会提示 `Reload recommended`
+    - 这让 `cloud-space` 不再只有“列表卡片 + 裸编辑表单”，开始接近更完整的详情/编辑/同步反馈一体面
+  - `lib-manager` 本轮继续补命令反馈可读性：
+    - `core.project.libraryManage.progress.ts` 已新增 `pnpm` 输出解析
+    - install/remove 结果当前会额外携带结构化 `progressEvents`
+      - `resolving`
+      - `downloading`
+      - `linking`
+      - `done`
+      - `error`
+    - `lib-manager` 的 `Last Action` 面板已开始展示这批结构化进度事件
+    - declared / missing / catalog 三组卡片当前也已补显式 `source`
+      - `registry`
+      - `local file`
+    - 这还不是实时 progress streaming，但已经把“纯 stdout/stderr 大块文本”提升为更接近 legacy 的阶段式可读反馈
+    - 本轮也已补按需版本深度：
+      - `core.config.get` 当前会返回 `npmRegistry`
+      - `core.project.listBlocklyLibraryVersions` 已新增
+      - `lib-manager` 当前可按库加载可安装版本列表，并直接按所选版本安装/恢复
+    - 本轮也已补远程 registry 搜索：
+      - `core.project.searchBlocklyLibraryRegistry` 已新增
+      - `lib-manager` 当前可基于当前 `npmRegistry` 搜索远程 registry 中存在、但本地 catalog 尚未收录的库
+    - 本轮也已补 install/remove 的实时动作状态：
+      - `core.project.getBlocklyLibraryActionStatus` 已新增
+      - `runProjectPackageManagerCommand` 执行期间会把 stdout/stderr/progressEvents 写入内存状态
+      - `lib-manager` 当前会以 500ms 轮询这份状态，并展示 `Live Action` 面板
+    - 本轮也已补本地库导入入口：
+      - `core.project.inspectBlocklyLibrarySource` 已新增
+      - `lib-manager` 当前可通过 desktop 目录选择器导入本地 Blockly 库目录
+      - 导入前会先检查 `package.json / block.json / generator.js / toolbox.json`
+      - 通过检查后会复用现有 `installBlocklyLibrary(localPath)` 链安装
+    - `lib-manager` 当前也已补 `Core Libraries` 快捷筛选
+      - 不再只依赖手输 `lib-core`
+      - 与旧版顶部快捷筛选更接近
+    - 本轮也已继续做页面层拆分：
+      - `lib-manager/component.ts` 的异步动作与轮询逻辑已抽到 `component.actions.ts`
+      - 当前页面编排层已从 300+ 行压回约 200 行
+  - `core.rpc` 本轮继续做 API 面去重与目录清理：
+    - 未发现仓内对 `core.project.addRecentlyProject/removeRecentlyProject` 的实际调用
+    - 这两个重复 RPC 已从 router 移除，避免和 `addRecentProject/removeRecentProject` 并存
+    - 仓内同样未发现对以下 project RPC 的实际消费：
+      - `setRecentProjects`
+      - `setRecentModelProjects`
+      - `isSameProjectPath`
+      - `regions`
+    - 这四个未消费入口也已从 `core.project` router 移除
+    - `packages/core/src/rpc` 下已空置的旧命名目录也已删除：
+      - `app`
+      - `appConfig`
+      - `appStore`
+      - `modelProject`
+    - 当前保留的顶层 RPC 分组已继续收敛到 domain 语义：
+      - `agent / build / cloud / config / connection / document / ffs / hardware / model / onboarding / project / serial / store / tool`
+    - 本轮也已继续裁掉仓内未消费的 `config/store` router 入口：
+      - `config`
+        - `clearSkippedVersions`
+        - `setDevmode`
+        - `setDevmodeAutoSave`
+        - `setLanguage`
+        - `setModel`
+        - `setQuickSends`
+        - `setSerialMonitor`
+        - `setTheme`
+        - `setToolbarApps`
+        - `skipVersion`
+        - `toggleTheme`
+      - `store`
+        - `addApp`
+        - `removeApp`
+    - 这些裁剪项已同步记录到 `.draft/refactor_goal_todo_list.md`
+    - 本轮继续按仓内真实消费裁掉以下 dead router surface：
+      - 整组 `document`
+      - `agent.getTools`
+      - `build.parseArduinoLintResult`
+      - `cloud.syncProject`
+      - `model.detail`
+      - `tool.get`
+      - 一批未消费的 `hardware / connection / ffs` 只读 helper procedure
+    - 当前 dead-surface 清理已不再只针对 `project/config/store`，而是开始覆盖其余主域
+  - `desktop.rpc` 本轮也已开始做同类 dead-surface 清理：
+    - 未消费的 `desktop.ble` ERPC 入口已移除：
+      - `cancelDeviceRequest`
+      - `debugState`
+      - `selectDevice`
+    - 未消费的 `desktop.core.stopCore` 也已移除
+    - 这样 desktop 薄桥当前只保留 UI 确实会触发的宿主能力
+  - `release` 本轮已补最小打包模板元数据链：
+    - `release/desktop-app/package.json` 当前已承载：
+      - `productName`
+      - `build.appId`
+      - `build.protocols`
+      - `build.win/mac/linux.fileAssociations`
+    - `scripts/trim_desktop_release.mjs` 已改为复用这份模板元数据
+    - 生成出的 `release/desktop-mac/app/package.json` 当前也已保留这些打包元数据
+    - 同时避免把模板里的 `scripts / devDependencies / exports / files` 带进 trimmed release app manifest
+    - `desktop` / root / turbo / tsflow 当前也已补：
+      - `pack:linux`
+      - `build:linux`
+      - `desktop#pack:linux`
+      - desktop workflow 中的 linux pack 命令
+    - 当前 root 级脚本链也已验证通过：
+      - `pnpm run build:mac`
+      - `pnpm run build:win`
+      - `pnpm run build:linux`
+  - `terminal` 本轮已补最小 BLE live host path：
+    - terminal 页已新增 `Select BLE Device`
+    - 当前通过 `desktop.ble.*` chooser 授权后，会把 BLE 设备加入统一 `upload target` 列表
+    - 当选中目标为 BLE 时：
+      - terminal upload preview 会改走 `core.hardware.prepareBleUpload`
+      - terminal live upload 会改走 UI 侧 `executeBleOtaUpload`
+      - 进度会按 `starting / sending / stopping / done / error` 写回 terminal 输出区
+    - 这让 terminal 不再只覆盖 serial/debugger，开始具备最小 BLE OTA live path
+    - 当前仍未做：
+      - BLE device list 订阅式选择器
+      - 更丰富的 BLE 恢复动作和结果摘要
+    - 本轮也已补 BLE 首选设备持久化：
+      - `ui/utils/desktop.ble.ts` 当前会把最近一次成功授权的 `deviceId` 写入本地
+      - 下一次 chooser 流程会自动把它作为 preferred device 传给 `desktop.ble.setPreferredDevice`
+      - 这让 terminal / code-editor 两条 BLE 路径都开始具备最小“记住上次设备”体验
+    - 本轮也已补“已授权 BLE 设备恢复”：
+      - 若运行时支持 `bluetooth.getDevices()`
+      - `code-editor` 初始化时会尝试恢复已授权 BLE 设备列表与 preferred device
+      - `terminal` 初始化时也会把可恢复 BLE 设备补进统一 upload target 列表
+      - 这让刷新后不再总是完全丢失 BLE 目标上下文
+    - terminal 当前也已订阅 `desktop.ble.deviceList`
+      - chooser 发现到的 BLE 设备会并入 terminal 的 upload target 列表
+      - 这让 terminal 的 BLE 选择体验不再只有“点按钮后盲选”
+    - terminal 当前也已把 BLE 执行结果接到统一 upload summary 语义：
+      - `channel / status / errorCode / artifact / recovery hint`
+      - 不再只剩阶段日志
+    - terminal 页面当前也已补最近一次上传摘要卡片：
+      - 失败时可直接 `Retry Upload`
+      - BLE 通道失败时还会显示 `Reconnect BLE Device`
+    - terminal 当前也已把选中的 upload target 做本地持久化：
+      - serial / debugger / BLE 三类目标都会保留当前选中项
+      - 页面刷新后不再只靠 `serialMonitor.port` 或 BLE preferred device 猜测恢复目标
+    - terminal 当前也已补最小剪贴板与快捷键体验：
+      - `Copy Output`
+      - `Paste Clipboard`
+      - 直接 `Enter` 发送输入
+      - `Shift+Enter` 插入换行
+      - `Ctrl/Cmd + L` 清空输出
+      - 输出区当前也会自动滚动到最新内容
+    - terminal 当前也已补轻量命令历史回看：
+      - `ArrowUp / ArrowDown` 可在当前页面输入框中回看最近发送的命令
+      - 这虽然不是 xterm 的原生 shell 体验，但补上了当前 textarea 模型下最常用的一层历史导航
+    - terminal 当前也已从 `pre + textarea` 重新收口为 `xterm` 交互面：
+      - shell 输入重新直接发生在 terminal surface 内
+      - `desktop.terminal.write/resize/stream` 仍复用现有薄宿主链
+      - toolbar 上的 build/upload/BLE 编排动作仍保持现有结构化能力
+    - 本轮也已继续做 terminal 动作层拆分：
+      - `build.run.upload.ts` 的 BLE 分支与命令型上传分支已拆到独立文件
+      - `terminal/component.ts` 与 `terminal/actions/build.run.upload.ts` 这两处热点都已继续回压
+  - `lib-manager -> blockly-editor` 本轮已补最小热联动：
+    - 新增 `ui/runtime/project-events.ts`
+    - `lib-manager` 在 install/remove 成功后会广播统一的 project library mutation 事件
+    - `blockly-editor` 当前会订阅这条事件
+      - 若当前项目匹配且 workspace 没有未保存草稿，则自动刷新页面状态
+      - 若当前 workspace 有未保存草稿，则不强制覆盖，只提示用户手动 reload
+    - 这让“装完库后运行中的 Blockly 编辑面完全无感知”的缺口开始收敛
+  - `blockly-editor` 当前也已补最小缺库恢复面板：
+    - 当前会直接展示 `core.project.getBlocklyLibraryStatus.missingLibraries`
+    - 支持逐个 `Restore`
+    - 支持批量 `Restore All`
+    - 成功后会复用现有 `installBlocklyLibrary` + project mutation 事件刷新工作区状态
+    - 当前也已补“缺库阻断态”：
+      - 若仍存在缺失 Blockly 库，则不会直接进入可编辑工作区
+      - 页面会优先要求 `Restore` / `Restore All`，或 `Leave Project`
+      - 这开始对齐 legacy 中“先恢复缺失库，再继续加载项目”的保护语义
+  - `lib-manager` 相关 legacy 证据本轮继续收紧：
+    - 旧版版本查询本身就是 `npm view <package> versions --json`
+    - 旧版安装进度通过 `NoticeService` 展示，而不是通过 terminal/xterm 流展示
+    - 因此当前 `registry search + version list + polling live status` 已足够覆盖 legacy 功能语义
+  - `lib-manager -> code-editor` 当前也已接上同一条 project library mutation 事件：
+    - 若当前项目匹配且 build/upload 没在运行，则自动刷新源码快照与 build/upload 计划
+    - 若 build 或 upload 正在运行，则回退为提示，避免在执行中打断当前动作
+  - `project-events` 本轮已从“仅库变更”升级为更通用的轻量项目变更总线：
+    - 当前事件类型至少包括：
+      - `library-mutation`
+      - `cloud-sync`
+    - `cloud-space sync` 完成后会发出 `cloud-sync`
+    - `blockly-editor` / `code-editor` 当前都已开始消费这类事件并做刷新或提示
+- 当前大文件诊断结果更新：
+  - 手写 `.ts` 热点已全部压回阈值内
+  - 目前超过阈值的仅剩：
+    - `packages/erpc/src/vendor/unpromise/unpromise.ts`（vendor）
+- 本轮验证：
+  - `pnpm --filter core build` 通过
+  - `pnpm --filter desktop build` 通过
+  - `pnpm --filter ui build` 通过
+  - 补 terminal 进程树清理后再次执行：
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud-space` 封面图与标签展示后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud/project sync` 底层能力与 `cloud-space` 同步当前项目入口后再次执行：
+    - `pnpm --filter shared build` 通过
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+    - `pnpm --filter desktop build` 通过
+  - 补 `cloud-space` metadata editor 后再次执行：
+    - `pnpm --filter shared build` 通过
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+    - `pnpm --filter desktop build` 通过
+  - 补 `desktop terminal` 行边界解析后再次执行：
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 shared 上传进度事件契约与 terminal 输出规整后再次执行：
+    - `pnpm --filter shared build` 通过
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `core.build.prepareProjectBuild` 与 terminal command preview 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `executeOnce` 退出码捕获与 live build 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 live build 失败回退策略后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `prepareUploadExecution` 与 terminal upload plan 对接后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 live upload session 与 prebuild logs 可见性后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 清理本轮新热点并再次扫描后确认：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+    - 非 vendor 手写 `.ts` 热点已清零
+  - 补 `lib-manager` 第一版入口后再次执行：
+    - `pnpm --filter shared build` 通过
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 的 restore/remove + compatible catalog 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 兼容性提示与主导航入口后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `project.abi.temp` 镜像写回与读取回退后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `project lifecycle` 状态摘要与 settings 展示后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 mutation lock 的关键写路径覆盖与目录级 scoped lock 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `blockly-editor` 手动 Reload Project 后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `project-session` 最小持久化连续性后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补最小 `open-project-from-file` 桥与 `Project Open` 页面后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `Project Open` 的选文件/目录双入口后再次执行：
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `Project Open` 的路径解析闭环后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补“启动时恢复上次项目会话”后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `second-instance` argv 解析后再次执行：
+    - `pnpm --filter desktop build` 通过
+  - 补首次启动 argv 项目路径消费后再次执行：
+    - `pnpm --filter desktop build` 通过
+  - 补 open session lock 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补同会话豁免判断后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `Project Open` 的最小冲突处置路径后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补“关闭当前项目”动作后再次执行：
+    - `pnpm --filter ui build` 通过
+  - BLE desktop helper 收口后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 搜索/筛选/兼容确认后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `code-editor` lifecycle watch 与 reload 动作后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `core.hardware.upload` 的 debugger pnum 兜底与 terminal upload target 抽象后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud-space` sync summary 与 editor details 后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 结构化 progress events 与 source label 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 按需版本列表后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 远程 registry 搜索后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `lib-manager` 轮询式实时动作状态后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud-space` 的 recent sync history 后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud-space` 的 remove-cover 编辑意图与载荷透传后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud-space` 的 sync history 本地持久化后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 `cloud-space` current-project cloud binding 回显后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 release 打包模板元数据链后再次执行：
+    - `pnpm --filter desktop build` 通过
+    - `node scripts/trim_desktop_release.mjs --platform mac --no-install` 通过
+  - 补 linux pack task 与 trimmed linux release 后再次执行：
+    - `pnpm --filter desktop run pack:linux` 通过
+  - 验证 root 级打包脚本链后再次执行：
+    - `pnpm run build:mac` 通过
+    - `pnpm run build:win` 通过
+    - `pnpm run build:linux` 通过
+  - 清理重复 project RPC 与空置 rpc 目录后再次执行：
+    - `pnpm --filter core build` 通过
+  - 继续清理未消费 project RPC 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 继续清理未消费 config/store RPC 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 继续清理未消费 `document/agent/model/tool/hardware/connection/ffs` RPC 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 继续清理未消费 `build/cloud` dead RPC 后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter ui build` 通过
+  - 继续清理未消费 `desktop` ERPC surface 后再次执行：
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+  - 补 terminal BLE live host path 后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 BLE preferred device 本地持久化后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补已授权 BLE 设备恢复后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 terminal BLE 发现列表联动后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 terminal BLE upload summary 后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 terminal upload summary card 与 BLE 恢复动作后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 terminal upload target 本地持久化后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 继续拆分 terminal upload 动作层后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 project library mutation 事件与 blockly-editor 自动刷新后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 补 code-editor 的 project library mutation 自动刷新后再次执行：
+    - `pnpm --filter ui build` 通过
+  - 继续回收 `desktop/core` 活跃实现层的点号命名并复核 BLE 边界后再次执行：
+    - `pnpm --filter core build` 通过
+    - `pnpm --filter desktop build` 通过
+    - `pnpm --filter ui build` 通过
+
+## 续跑记录（2026-06-21）
+
+- BLE 边界本轮再次源码级复核：
+  - 当前未发现 `window.ble` / `Window.ble` / `globalThis.ble` 暴露
+  - UI 侧 BLE chooser / 设备列表统一通过 `desktop.ble.*` 进入
+  - Electron chooser / permission / device-list bridge 仍只保留在 `desktop`
+  - BLE 业务协议、准备链、分包与上传计划仍保留在 `core`
+- 本轮继续回收目录式命名：
+  - `packages/desktop/src/ble/bridge.*` -> `packages/desktop/src/ble/bridge/{index,devices,permissions,selection,shared,state}.ts`
+  - `packages/desktop/src/terminal/manager.*` -> `packages/desktop/src/terminal/manager/{index,env,execute,kill,listeners,sessions,shared,stream}.ts`
+  - `packages/desktop/src/core-service/manager.*` -> `packages/desktop/src/core-service/manager/{index,health,process}.ts`
+  - `packages/core/src/serial/manager.*` -> `packages/core/src/serial/manager/{index,connect,messages,send,signal,shared}.ts`
+  - `packages/core/src/metadata/libraryRecovery.*` -> `packages/core/src/metadata/libraryRecovery/{index,missing,shared}.ts`
+  - `packages/core/src/metadata/manifest.*` -> `packages/core/src/metadata/manifest/{index,build,normalize,shared}.ts`
+  - `packages/core/src/tool/discovery.*` -> `packages/core/src/tool/discovery/{index,list,runtime,shared}.ts`
+- 本轮继续回收 `ffs/runtime` 目录式命名：
+  - `packages/core/src/ffs/runtime/bridge.*` -> `packages/core/src/ffs/runtime/bridge/{index,catalog,parse,lookup,baud}.ts`
+  - `packages/core/src/ffs/runtime/filesystem.*` -> `packages/core/src/ffs/runtime/filesystem/{index,mutate,read,shared,types}.ts`
+  - `packages/core/src/ffs/runtime/nodeSerialPort.*` -> `packages/core/src/ffs/runtime/nodeSerialPort/{index,open,close,signals,shared,types}.ts`
+  - `packages/core/src/ffs/runtime/session.*` -> `packages/core/src/ffs/runtime/session/{index,connect,shared,types}.ts`
+  - `packages/core/src/ffs/runtime/clients/fatfs.*` -> `packages/core/src/ffs/runtime/clients/fatfs/{index,entries,files,image,init,memory,shared}.ts`
+  - `packages/core/src/ffs/runtime/clients/littlefs.*` -> `packages/core/src/ffs/runtime/clients/littlefs/{index,directory,image,shared}.ts`
+  - `packages/core/src/ffs/runtime/clients/spiffs.*` -> `packages/core/src/ffs/runtime/clients/spiffs/{index,files,image,init,shared}.ts`
+- 本轮继续回收 `rpc/config` 目录式命名：
+  - `packages/core/src/rpc/config/schemas.*` -> `packages/core/src/rpc/config/schemas/{index,app,model,recent,region,serial}.ts`
+- 本轮继续回收 `connection` 目录式命名：
+  - `packages/core/src/connection/catalog.*` -> `packages/core/src/connection/catalog/{index,libraries,pinmaps,scan}.ts`
+  - `packages/core/src/connection/remote*.ts` -> `packages/core/src/connection/remote/{index,fetch,shared,normalize/*,sync/{index,library,shared}}.ts`
+  - `packages/core/src/connection/pinmap.*` -> `packages/core/src/connection/pinmap/{index,id,extract,summary,library,save,template,catalog/{index,document,variant},read/{index,board,catalog,id}}.ts`
+- 本轮继续回收 `build` 目录式命名：
+  - `packages/core/src/build/arduinoLint.*` -> `packages/core/src/build/arduinoLint/{index,human,json,vscode,types}.ts`
+  - `packages/core/src/build/compileErrors.*` -> `packages/core/src/build/compileErrors/{index,clean,diagnostics,extract,staleness,types}.ts`
+  - `packages/core/src/build/diagnostics.*` -> `packages/core/src/build/diagnostics/{index,convert,format,types}.ts`
+  - `packages/core/src/build/lint.*` + `lintTypes.ts` -> `packages/core/src/build/lint/{index,format,parsers,rules,run,types}.ts`
+  - `packages/core/src/build/projectBuild.*` -> `packages/core/src/build/projectBuild/{index,filesystem,helpers,prepare,shared,types,resolve/{index,board,command},run/{index,command,execute,persist,prepare,results}}.ts`
+- 本轮继续回收 `project` 目录式命名：
+  - `packages/core/src/project/libraryManage.*` -> `packages/core/src/project/libraryManage/{index,command,install,progress,remove,shared,status,versions,registry/*}.ts`
+  - `packages/core/src/project/lock.*` -> `packages/core/src/project/lock/{index,openSession,paths,status,acquire/{index,persistent,scoped,shared}}.ts`
+  - `packages/core/src/project/packageArchive.*` -> `packages/core/src/project/packageArchive/{index,command,shared}.ts`
+  - `packages/core/src/project/resourceSources.*` -> `packages/core/src/project/resourceSources/{index,candidates,normalize,select}.ts`
+  - `packages/core/src/project/libraryStatus.ready.ts` -> `packages/core/src/project/libraryStatus/{index,ready}.ts`
+  - `packages/core/src/project/readAbi.helpers.ts` -> `packages/core/src/project/readAbi/helpers.ts`
+- 本轮继续回收 `hardware.upload` 目录式命名：
+  - `packages/core/src/hardware/upload/ble.*` -> `packages/core/src/hardware/upload/ble/{index,firmware,packets,plan,preparation,protocol}.ts`
+  - `packages/core/src/hardware/upload/command.*` -> `packages/core/src/hardware/upload/command/{index,parse,preprocess,resolve}.ts`
+  - `packages/core/src/hardware/upload/runtime.*` -> `packages/core/src/hardware/upload/runtime/{index,execute,preflight,run,prepare/{index,build,ready,shared},results/{index,complete,preflight,shared}}.ts`
+  - `packages/core/src/hardware/upload/{ble-execution.types,ble.types,workflow.types*}` -> `packages/core/src/hardware/upload/types.ts`
+- 本轮继续回收剩余小型实现链：
+  - `packages/core/src/agent/tools/todo/{normalize.*,operations.*}` -> `packages/core/src/agent/tools/todo/{normalize/{index,assign,format,parse,status,summary},operations/{index,modify,report,update}}.ts`
+  - `packages/core/src/agent/session/turns.extract.ts` -> `packages/core/src/agent/session/turns/extract.ts`
+  - `packages/core/src/hardware/fuzzy/validate.*` -> `packages/core/src/hardware/fuzzy/validate/{index,board,library,shared}.ts`
+  - `packages/core/src/ffs/paths.*` -> `packages/core/src/ffs/paths/{index,normalize,upload}.ts`
+  - `packages/core/src/ffs/partition.*` -> `packages/core/src/ffs/partition/{index,detect,filename,parse,shared}.ts`
+  - `packages/core/src/ffs/imageWorkflow.*` -> `packages/core/src/ffs/imageWorkflow/{index,inspect,shared,mutate/{index,main,shared}}.ts`
+- 本轮继续回收域内拆散类型文件：
+  - `packages/core/src/connection/{catalog.types,graph.types,pin.types,workspace.types}` -> `packages/core/src/connection/types.ts`
+  - `packages/core/src/hardware/{board.types,category.types,library.types,search.types}` -> `packages/core/src/hardware/types.ts`
+  - `packages/core/src/project/{buildMetadata.types,configFile.types,createProject.types,document.types,libraryManage.types,libraryStatus.types,lifecycle.types,lock.types,packageArchive.types,syncCloud.types}` -> `packages/core/src/project/types.ts`
+- 当前状态：
+  - `desktop/src` 已无 `a.b.ts` 命名残留
+  - `ffs/runtime` 已无后端业务实现层 `a.b.ts` 命名残留；当前仅剩 `wasm/littlefs/littlefs.d.ts` 这一类 Wasm 声明文件保留点号命名
+  - `rpc/config` 当前已无业务实现层 `schemas.*` 点号命名残留
+  - `connection` 当前业务实现层点号命名已清空
+  - `build` 当前业务实现层点号命名已清空
+  - `project` 当前业务实现层点号命名已清空
+  - `hardware.upload` 当前业务实现层点号命名已清空
+  - `core/src` 剩余点号命名当前主要是明确子域边界下的 `types.ts`，以及 `ffs/runtime/wasm/littlefs/littlefs.d.ts`
+  - 功能行为保持不变，本轮仅做目录表达与导入收口
+
+## 当前待续动作（2026-06-20 / latest）
+
+1. 继续做完整 legacy 功能对齐审计，优先把剩余不确定项压成“已证据化结论”
+2. 仅在 walkthrough 明确证明仍有必要时，继续补 library management / terminal 的深水区能力
+3. 在上述差异收敛后执行完整 review、legacy 对齐走查与根目录最终重构报告

@@ -1,0 +1,52 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Project Setup</p>
+			<h2>New Project</h2>
+		</div>
+		<button hlmBtn variant="outline" size="sm" (click)="reload.emit()">Reload</button>
+	</header>
+
+	<label class="field">
+		<span>Project name</span>
+		<input hlmInput [value]="projectName()" (input)="updateProjectName($event)" />
+	</label>
+
+	@if (nameValidationMessage()) {
+	<span hlmBadge variant="secondary">{{ nameValidationMessage() }}</span>
+	}
+
+	<div class="field">
+		<span>Default root path</span>
+		<strong>{{ rootPath() }}</strong>
+	</div>
+
+	<div class="button-row">
+		<button hlmBtn variant="outline" size="sm" [disabled]="!runtimeAvailable()" (click)="chooseRootFolder.emit()">
+			Choose Root Folder
+		</button>
+	</div>
+
+	<div class="field">
+		<span>Resolved path</span>
+		<strong>{{ resolvedProjectPath() || 'path unavailable' }}</strong>
+	</div>
+
+	@if (pathConflict() === true) {
+	<span hlmBadge variant="secondary">target directory already exists</span>
+	} @else if (pathConflict() === false) {
+	<span hlmBadge variant="outline">target directory looks available</span>
+	} @if (pathConflict() === true) {
+	<div class="button-row">
+		<button hlmBtn variant="outline" size="sm" [disabled]="importBusy()" (click)="suggestAvailableName.emit()">
+			Suggest Available Name
+		</button>
+	</div>
+	}
+
+	<div class="button-row">
+		<button hlmBtn [disabled]="!canCreate()" (click)="createBlankProject.emit()">
+			{{ importBusy() ? 'Working...' : 'Create Blank Project' }}
+		</button>
+	</div>
+</article>

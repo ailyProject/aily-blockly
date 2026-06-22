@@ -1,0 +1,19 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Graph Editor</p>
+			<h2>{{ state().title }}</h2>
+		</div>
+		<span hlmBadge variant="secondary">{{ state().origin }}</span>
+	</header>
+
+	<p class="summary">project {{ state().projectPath || 'unbound' }}</p>
+	<p class="summary">packages {{ state().packagesBasePath || 'unbound' }}</p>
+	<div class="badge-row">
+		<button hlmBtn size="sm" variant="outline" [disabled]="!desktopAvailable()" (click)="chooseProjectPath.emit()">
+			Choose Project Folder
+		</button>
+	</div>
+	<p class="summary">{{ state().url }}</p>
+	<iframe class="frame" [src]="state().frameUrl" [title]="state().title"></iframe>
+</article>

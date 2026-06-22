@@ -19,6 +19,7 @@
 		"dist"
 	],
 	"scripts": {
+		"dev": "rslib build --watch",
 		"build": "rslib build"
 	},
 	"devDependencies": {

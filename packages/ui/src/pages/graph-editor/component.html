@@ -1,40 +1,37 @@
 <section class="graph-page">
-  <article hlmCard class="panel">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">Graph Editor</p>
-        <h2>{{ state().title }}</h2>
-      </div>
-      <span hlmBadge variant="secondary">{{ state().origin }}</span>
-    </header>
+	<graph-editor-frame-panel [state]="state()" [desktopAvailable]="!!desktop" (chooseProjectPath)="chooseProjectPath()" />
 
-    <p class="summary">{{ state().url }}</p>
-    <iframe class="frame" [src]="state().frameUrl" [title]="state().title"></iframe>
-  </article>
-
-  <article hlmCard class="panel">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">Workspace Files</p>
-        <h2>Connection Artifacts</h2>
-      </div>
-    </header>
-
-    <div class="file-grid">
-      <div class="file-card">
-        <span>JSON</span>
-        <strong>{{ state().jsonPath || 'loading...' }}</strong>
-      </div>
-      <div class="file-card">
-        <span>AWS</span>
-        <strong>{{ state().awsPath || 'loading...' }}</strong>
-      </div>
-    </div>
-
-    <div class="badge-row">
-      @for (board of boards; track board.name) {
-        <span hlmBadge>{{ board.displayName }}</span>
-      }
-    </div>
-  </article>
+	<graph-editor-workspace-panel
+		[state]="state()"
+		[boards]="boards"
+		[loading]="loading()"
+		[error]="error()"
+		[graphJson]="graphJson()"
+		[graphJsonDirty]="graphJsonDirty()"
+		[graphJsonError]="graphJsonError()"
+		[awsContent]="awsContent()"
+		[awsDirty]="awsDirty()"
+		[cloudAuthToken]="cloudAuthToken()"
+		[pinmapHints]="pinmapHints()"
+		[pinmapId]="pinmapId()"
+		[pinmapJson]="pinmapJson()"
+		[pinmapJsonError]="pinmapJsonError()"
+		[pinmapSaveBusy]="pinmapSaveBusy()"
+		[pinmapTemplateProtocol]="pinmapTemplateProtocol()"
+		[pinmapTemplateJson]="pinmapTemplateJson()"
+		[syncBusy]="syncBusy()"
+		[saveMessage]="saveMessage()"
+		(cloudAuthTokenChange)="updateCloudAuthToken($event)"
+		(pinmapTemplateProtocolChange)="updatePinmapTemplateProtocol($event)"
+		(pinmapIdChange)="updatePinmapId($event)"
+		(pinmapJsonChange)="updatePinmapJson($event)"
+		(graphJsonChange)="updateGraphJson($event)"
+		(awsContentChange)="updateAwsContent($event)"
+		(usePinmapId)="usePinmapId($event)"
+		(usePinmapVariant)="usePinmapVariant($event)"
+		(syncCloudPinmaps)="syncCloudPinmaps()"
+		(savePinmap)="savePinmap()"
+		(saveGraph)="saveGraph()"
+		(saveAws)="saveAws()"
+	/>
 </section>

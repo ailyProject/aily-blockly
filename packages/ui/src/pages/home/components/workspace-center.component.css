@@ -1,0 +1,83 @@
+.center {
+	display: grid;
+	grid-template-rows: minmax(0, 1fr) 16rem;
+	gap: 1rem;
+	min-width: 0;
+}
+
+.workspace-card,
+.tabs-card {
+	height: 100%;
+	background: var(--ui-panel);
+}
+
+.workspace-header {
+	display: flex;
+	gap: 0.75rem;
+}
+
+.header-icons {
+	display: flex;
+	gap: 0.5rem;
+	color: var(--muted-foreground);
+}
+
+.panel-icon,
+.surface-icon {
+	width: 1rem;
+	height: 1rem;
+}
+
+.workspace-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 18rem;
+	gap: 1rem;
+}
+
+.workspace-surface,
+.workspace-side {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1rem;
+	border-radius: calc(var(--radius) * 1.5);
+	border: 1px solid var(--border);
+}
+
+.workspace-surface {
+	align-content: center;
+	min-height: 22rem;
+	background:
+		linear-gradient(var(--ui-grid-line) 1px, transparent 1px),
+		linear-gradient(90deg, var(--ui-grid-line) 1px, transparent 1px), var(--ui-workspace);
+	background-size:
+		2rem 2rem,
+		2rem 2rem,
+		auto;
+}
+
+.surface-icon {
+	width: 2.5rem;
+	height: 2.5rem;
+	color: var(--primary);
+}
+
+.tab-pane {
+	display: grid;
+	gap: 0.55rem;
+	padding-top: 1rem;
+}
+
+.tab-pane p {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+@media (max-width: 1200px) {
+	.center {
+		grid-template-rows: auto auto;
+	}
+
+	.workspace-grid {
+		grid-template-columns: 1fr;
+	}
+}

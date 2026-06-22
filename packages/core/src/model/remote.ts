@@ -23,8 +23,7 @@ const resolveLanguage = (config?: AilyAppConfig, language?: string) =>
 
 /**
  * 加载模型目录列表。
- * @param {ModelCatalogRequest} input - 模型目录查询参数
- * @returns {Promise<ModelCatalogListResult>}
+ * @param input - 模型目录查询参数
  */
 export const listModelCatalog = async (input: ModelCatalogRequest = {}): Promise<ModelCatalogListResult> => {
 	const page = input.query?.page ?? 1
@@ -73,8 +72,7 @@ export const listModelCatalog = async (input: ModelCatalogRequest = {}): Promise
 
 /**
  * 加载模型目录详情。
- * @param {ModelCatalogDetailRequest} input - 模型详情查询参数
- * @returns {Promise<ModelCatalogDetail | null>}
+ * @param input - 模型详情查询参数
  */
 export const getModelCatalogDetail = async (input: ModelCatalogDetailRequest): Promise<ModelCatalogDetail | null> => {
 	try {

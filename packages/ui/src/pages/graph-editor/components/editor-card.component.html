@@ -1,0 +1,65 @@
+<div class="panel-section">
+	<div class="file-grid">
+		<div class="file-card">
+			<span>Cloud Pinmaps</span>
+			<input hlmInput [value]="cloudAuthToken()" (input)="updateCloudAuthToken($event)" placeholder="Bearer token" />
+			@if (pinmapHints().length) {
+			<small>hints {{ pinmapHints().join(', ') }}</small>
+			}
+			<button
+				hlmBtn
+				size="sm"
+				variant="outline"
+				[disabled]="syncBusy() || !cloudAuthToken().trim() || !state().packagesBasePath"
+				(click)="syncCloudPinmaps.emit()"
+			>
+				{{ syncBusy() ? 'Syncing...' : 'Sync Cloud Pinmaps' }}
+			</button>
+		</div>
+		<div class="file-card">
+			<span>Pinmap Template</span>
+			<input
+				hlmInput
+				[value]="pinmapTemplateProtocol()"
+				(input)="updatePinmapTemplateProtocol($event)"
+				placeholder="protocol"
+			/>
+			<pre class="editor-box">{{ pinmapTemplateJson() }}</pre>
+		</div>
+		<div class="file-card">
+			<span>Save Pinmap</span>
+			<input hlmInput [value]="pinmapId()" (input)="updatePinmapId($event)" placeholder="pinmapId" />
+			@if (pinmapJsonError()) {
+			<small>{{ pinmapJsonError() }}</small>
+			}
+			<textarea class="editor-box" [ngModel]="pinmapJson()" (ngModelChange)="pinmapJsonChange.emit($event)"></textarea>
+			<button
+				hlmBtn
+				size="sm"
+				variant="outline"
+				[disabled]="pinmapSaveBusy() || !pinmapId().trim() || !!pinmapJsonError() || !state().packagesBasePath"
+				(click)="savePinmap.emit()"
+			>
+				{{ pinmapSaveBusy() ? 'Saving...' : 'Save Pinmap' }}
+			</button>
+		</div>
+	</div>
+
+	<div class="file-grid">
+		<div class="file-card">
+			<span>Graph JSON</span>
+			@if (graphJsonError()) {
+			<small>{{ graphJsonError() }}</small>
+			}
+			<textarea class="editor-box" [ngModel]="graphJson()" (ngModelChange)="graphJsonChange.emit($event)"></textarea>
+			<button hlmBtn size="sm" variant="outline" [disabled]="!!graphJsonError() || !graphJsonDirty()" (click)="saveGraph.emit()">
+				Save Graph
+			</button>
+		</div>
+		<div class="file-card">
+			<span>AWS</span>
+			<textarea class="editor-box" [ngModel]="awsContent()" (ngModelChange)="awsContentChange.emit($event)"></textarea>
+			<button hlmBtn size="sm" variant="outline" [disabled]="!awsDirty()" (click)="saveAws.emit()">Save AWS</button>
+		</div>
+	</div>
+</div>

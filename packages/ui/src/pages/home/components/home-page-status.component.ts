@@ -1,4 +1,4 @@
-import { Component, input, output } from '@angular/core'
+import { Component, computed, input, output } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 
@@ -58,4 +58,52 @@ export class HomePageStatusComponent {
 
 	readonly refresh = output<void>()
 	readonly startBackend = output<void>()
+
+	protected readonly coreRouteRows = computed(() => [
+		{ label: 'board validate', value: this.boardValidationText() },
+		{ label: 'library validate', value: this.libraryValidationText() }
+	])
+
+	protected readonly configRows = computed(() => [
+		{ label: 'language', value: this.appLanguage() },
+		{ label: 'theme', value: this.appThemeMode() },
+		{ label: 'dev enabled', value: this.devmodeEnabled() ? 'on' : 'off' },
+		{ label: 'dev autoSave', value: this.devmodeAutoSave() ? 'on' : 'off' },
+		{ label: 'ai mode', value: this.appAiChatMode() },
+		{ label: 'selected model', value: this.appSelectedModel() },
+		{ label: 'recent model projects', value: String(this.recentModelProjectCount()) },
+		{ label: 'toolbar apps', value: String(this.toolbarAppCount()) },
+		{ label: 'visible toolbar apps', value: String(this.visibleToolbarAppCount()) },
+		{ label: 'quick send presets', value: String(this.quickSendCount()) },
+		{ label: 'skipped versions', value: String(this.skippedVersionCount()) },
+		{ label: 'serial baud', value: this.serialBaudRate() },
+		{ label: 'serial autoscroll', value: this.serialAutoScroll() ? 'on' : 'off' },
+		{ label: 'serial hex input', value: this.serialInputHexMode() ? 'on' : 'off' },
+		{ label: 'serial connect baud', value: String(this.serialConnectBaudRate()) },
+		{ label: 'recent projects', value: String(this.recentProjectCount()) },
+		{ label: 'guide onboarding', value: this.onboardingCompleted() ? 'done' : 'todo' },
+		{ label: 'blockly onboarding', value: this.blocklyOnboardingCompleted() ? 'done' : 'todo' },
+		{ label: 'chat onboarding', value: this.ailyChatOnboardingCompleted() ? 'done' : 'todo' }
+	])
+
+	protected readonly previewRows = computed(() => [
+		{ label: 'preview mode', value: this.previewAiChatMode() },
+		{ label: 'preview language', value: this.previewSelectedLanguage() },
+		{ label: 'preview theme', value: this.previewThemeMode() },
+		{ label: 'preview dev enabled', value: this.previewDevmodeEnabled() ? 'on' : 'off' },
+		{ label: 'preview dev autoSave', value: this.previewDevmodeAutoSave() ? 'on' : 'off' },
+		{ label: 'preview serial port', value: this.previewSerialPort() },
+		{ label: 'preview toolbar apps', value: String(this.previewToolbarAppCount()) },
+		{ label: 'preview quick sends', value: String(this.previewQuickSendCount()) },
+		{ label: 'preview skipped versions', value: String(this.previewSkippedVersionCount()) },
+		{ label: 'default toolbar apps', value: String(this.defaultToolbarAppCount()) },
+		{ label: 'merged toolbar order', value: String(this.mergedToolbarOrderCount()) },
+		{ label: 'toggled toolbar apps', value: String(this.toggledToolbarAppCount()) },
+		{ label: 'reset toolbar apps', value: String(this.resetToolbarAppCount()) },
+		{ label: 'added recent projects', value: String(this.addedRecentProjectCount()) },
+		{ label: 'removed recent projects', value: String(this.removedRecentProjectCount()) },
+		{ label: 'added recent models', value: String(this.addedRecentModelProjectCount()) },
+		{ label: 'removed recent models', value: String(this.removedRecentModelProjectCount()) },
+		{ label: 'preview chat onboarding', value: this.previewAilyChatOnboardingCompleted() ? 'done' : 'todo' }
+	])
 }

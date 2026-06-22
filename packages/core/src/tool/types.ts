@@ -1,15 +1,23 @@
+import type { ChildToolHostInfo, ChildToolItem } from 'shared'
+
 /**
- * 子工具目录条目
+ * 子工具运行时配置。
  */
-export interface ChildToolItem {
-	/** 子工具唯一标识 */
-	id: string
-	/** 子工具显示标题 */
-	title: string
-	/** 子工具用途摘要 */
-	summary: string
-	/** 子工具推荐启动路径 */
-	launchPath: string
+export interface ChildToolRuntimeConfig extends ChildToolItem {
+	/** 子工具目录名。 */
+	dirName: string
+	/** 子工具脚本入口。 */
+	entry: string
+	/** 子工具 UI 首页。 */
+	uiIndex: string
+	/** 启动超时。 */
+	startupTimeoutMs?: number
+	/** 子工具工作目录。 */
+	projectPath: string
+	/** 子工具脚本绝对路径。 */
+	scriptPath: string
+	/** 子工具 UI 绝对路径。 */
+	uiPath: string
 }
 
 /**
@@ -31,3 +39,5 @@ export interface ChildToolPackageJson {
 	/** 子工具描述 */
 	description?: string
 }
+
+export type { ChildToolHostInfo, ChildToolItem }

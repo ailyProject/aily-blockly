@@ -1,0 +1,40 @@
+<div class="button-row">
+	<button hlmBtn variant="outline" [disabled]="!bleBridgeAvailable()" (click)="selectBleDevice.emit()">Select BLE Device</button>
+	<button hlmBtn variant="outline" [disabled]="uploadBusy() || !bleDevice()" (click)="prepareBleUpload.emit()">Prepare BLE Upload</button>
+	<button hlmBtn variant="outline" [disabled]="uploadBusy() || !bleUploadPlan()?.ready || !bleDevice()" (click)="runBleUpload.emit()">
+		Run BLE Upload
+	</button>
+</div>
+
+@if (bleDevice(); as bleDeviceValue) {
+<div class="metric"><span>BLE Device</span><strong>{{ bleDeviceValue.deviceName }}</strong></div>
+<div class="metric"><span>BLE ID</span><strong>{{ bleDeviceValue.deviceId }}</strong></div>
+} @else if (bleBridgeAvailable()) {
+<div class="metric"><span>BLE</span><strong>bridge ready</strong></div>
+}
+
+@if (bleUploadPlan(); as blePlanValue) {
+<div class="metric"><span>BLE Ready</span><strong>{{ blePlanValue.ready ? 'yes' : 'no' }}</strong></div>
+<div class="metric"><span>BLE Artifact</span><strong>{{ blePlanValue.artifactPath || 'n/a' }}</strong></div>
+<div class="metric"><span>BLE Packet Size</span><strong>{{ blePlanValue.packetSize }}{{ blePlanValue.packetSizeProbed ? ' (probed)' : '' }}</strong></div>
+<div class="metric"><span>BLE Packets</span><strong>{{ blePlanValue.packetCount }}</strong></div>
+<p class="build-copy">{{ blePlanValue.message }}</p>
+}
+
+@if (bleUploadProgress(); as bleProgressValue) {
+<div class="metric"><span>BLE Phase</span><strong>{{ bleProgressValue.phase }}</strong></div>
+<div class="metric"><span>BLE Progress</span><strong>{{ bleProgressValue.progress }}%</strong></div>
+<div class="metric"><span>BLE Ack</span><strong>{{ bleProgressValue.acknowledgedPackets ?? 0 }} / {{ bleProgressValue.totalPackets ?? 0 }}</strong></div>
+<p class="build-copy">{{ bleProgressValue.text }}</p>
+}
+
+@if (bleDevices().length) {
+<div class="list">
+	@for (device of bleDevices(); track device.deviceId) {
+	<button class="list-item" type="button" (click)="selectVisibleBleDevice.emit(device)">
+		<strong>{{ device.deviceName }}</strong>
+		<span>{{ device.deviceId }}</span>
+	</button>
+	}
+</div>
+}

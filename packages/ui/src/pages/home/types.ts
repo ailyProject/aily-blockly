@@ -23,28 +23,6 @@ export interface HomeBoardRow {
 }
 
 /**
- * 首页 legacy 校验结果
- */
-export interface HomePageValidationState {
-	/** 是否在索引中找到匹配项 */
-	exists: boolean
-	/** 是否通过模糊匹配得到结果 */
-	fuzzyMatch: boolean
-	/** 最终命中的条目名称 */
-	matchedName: string | null
-}
-
-/**
- * 首页安全选项摘要
- */
-export interface HomePageSecurityOption {
-	/** 安全项名称 */
-	name: string
-	/** 当前是否启用 */
-	enabled: boolean
-}
-
-/**
  * 首页应用配置摘要
  */
 export interface HomePageConfigSummary {
@@ -122,6 +100,28 @@ export interface HomePageConfigSummary {
 	addedRecentModelProjectCount: number
 	/** remove recent model project 后的项目数量 */
 	removedRecentModelProjectCount: number
+}
+
+/**
+ * 首页 legacy 校验结果
+ */
+export interface HomePageValidationState {
+	/** 是否在索引中找到匹配项 */
+	exists: boolean
+	/** 是否通过模糊匹配得到结果 */
+	fuzzyMatch: boolean
+	/** 最终命中的条目名称 */
+	matchedName: string | null
+}
+
+/**
+ * 首页安全选项摘要
+ */
+export interface HomePageSecurityOption {
+	/** 安全项名称 */
+	name: string
+	/** 当前是否启用 */
+	enabled: boolean
 }
 
 /**

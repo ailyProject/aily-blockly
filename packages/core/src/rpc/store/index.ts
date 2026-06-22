@@ -1,8 +1,6 @@
 import { r } from '../trpc'
-import { default as addApp } from './addApp'
 import { default as createDefaultLayout } from './createDefaultLayout'
 import { default as mergeVisibleOrder } from './mergeVisibleOrder'
-import { default as removeApp } from './removeApp'
 import { default as reset } from './reset'
 import { default as resolveLayout } from './resolveLayout'
 import { default as setLayout } from './setLayout'
@@ -13,8 +11,6 @@ export default r({
 	createDefaultLayout,
 	mergeVisibleOrder,
 	setLayout,
-	addApp,
-	removeApp,
 	toggleApp,
 	reset
 })

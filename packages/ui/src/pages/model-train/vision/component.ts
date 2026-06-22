@@ -3,8 +3,8 @@ import { RouterLink } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
 import { loadModelCatalog } from '@/runtime/model-catalog'
+import { getCore } from '@/utils/core'
 
 @Component({
 	selector: 'vision-train-page',
@@ -13,7 +13,7 @@ import { loadModelCatalog } from '@/runtime/model-catalog'
 	styleUrl: './component.css'
 })
 export class VisionTrainPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly classificationCount = signal(0)
 	protected readonly detectionCount = signal(0)

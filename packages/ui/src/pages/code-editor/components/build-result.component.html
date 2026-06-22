@@ -1,0 +1,21 @@
+@if (buildResult(); as resultValue) {
+	<div class="metric"><span>Success</span><strong>{{ resultValue.success ? 'yes' : 'no' }}</strong></div>
+	<div class="metric"><span>Duration</span><strong>{{ resultValue.durationMs }} ms</strong></div>
+	<div class="metric"><span>Exit Code</span><strong>{{ resultValue.exitCode }}</strong></div>
+	@if (resultValue.errorText) {
+	<p class="build-copy error">{{ resultValue.errorText }}</p>
+	}
+	@if (resultValue.logs.length) {
+	<div class="list">
+		@for (log of resultValue.logs; track log.step) {
+		<div class="list-item static">
+			<strong>{{ log.step }}</strong>
+			<pre class="build-output">{{ log.stdout || log.stderr || 'No step output.' }}</pre>
+		</div>
+		}
+	</div>
+	}
+	<pre class="build-output">{{ resultValue.stdout || resultValue.stderr || 'No build output.' }}</pre>
+} @else {
+	<pre class="build-output">Build a recent project through core.build to inspect preprocess and compile output.</pre>
+}

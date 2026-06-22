@@ -11,7 +11,7 @@
     @for (item of models(); track item.id) {
       <div class="catalog-card">
         <strong>{{ item.name }}</strong>
-        <span>{{ item.supportedBoards.join(', ') || 'Board pending' }}</span>
+        <span>{{ item.supportedBoards.join(', ') || 'Board support unknown' }}</span>
         <span>{{ item.description }}</span>
       </div>
     }

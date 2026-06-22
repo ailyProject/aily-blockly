@@ -1,40 +1,4 @@
-import { buildFrameTarget } from '@/runtime/frame'
-import { getThemeMode } from '@/runtime/theme'
-import { embedTargets, recentProject } from '@/workspace'
-
-import type { Core } from '@/core-service'
-import type { DomSanitizer } from '@angular/platform-browser'
-import type { GraphEditorState } from './types'
-
-const graphEditorTarget = embedTargets.find(target => target.id === 'connection-graph') ?? embedTargets[0]
-
-/**
- * 解析连线图页面状态。
- * @param {DomSanitizer} sanitizer - Angular 资源 URL 处理器
- * @param {string | null | undefined} rawUrl - 原始输入 URL
- * @returns {GraphEditorState}
- */
-export const resolveGraphEditorState = (
-	sanitizer: DomSanitizer,
-	rawUrl: string | null | undefined
-): GraphEditorState => {
-	const fallbackUrl = `${graphEditorTarget.url}&theme=${getThemeMode()}`
-	const target = buildFrameTarget(sanitizer, rawUrl, fallbackUrl)
-
-	return {
-		title: graphEditorTarget.title,
-		url: target.url,
-		origin: target.origin,
-		frameUrl: target.frameUrl,
-		jsonPath: '',
-		awsPath: ''
-	}
-}
-
-/**
- * 加载连线图文件路径。
- * @param {Core} core - core 服务句柄
- * @returns {Promise<{jsonPath: string, awsPath: string}>}
- */
-export const loadGraphEditorPaths = (core: Core) =>
-	core.connection.resolvePaths.query({ projectPath: recentProject.path })
+export * from './runtime/assets'
+export * from './runtime/context'
+export * from './runtime/library'
+export * from './runtime/state'

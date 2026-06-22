@@ -1,96 +1,124 @@
-import { Component, computed, OnInit, signal } from '@angular/core'
+import { Component, ElementRef, OnDestroy, OnInit, signal, viewChild } from '@angular/core'
+import { FormsModule } from '@angular/forms'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
-import { config, toolbarApps } from '@/workspace'
+import { getCore } from '@/utils/core'
+import { getDesktop, loadDesktopHostRuntimeInfo } from '@/utils/desktop'
 
-import type { AilyAppConfig } from 'shared'
-import type { SerialMonitorSnapshot } from './types'
+import {
+	createSerialMonitorLoadActions,
+	createSerialMonitorSessionActions,
+	createSerialMonitorUploadActions
+} from './actions'
+import { createSerialMonitorSignals } from './component.signals'
+import { createSerialMonitorViewActions } from './component.view-actions'
+import {
+	SerialMonitorConnectionCardComponent,
+	SerialMonitorQuickSendCardComponent,
+	SerialMonitorStreamCardComponent,
+	SerialMonitorUploadCardComponent
+} from './components'
+
+import type { SerialSessionMessage } from '@core'
+import type { SerialMonitorSignals } from './component.types'
+import type { SerialMonitorPageState, SerialMonitorUploadResultView } from './types'
 
 @Component({
 	selector: 'serial-monitor-page',
-	imports: [AppShellComponent, HlmBadgeImports, HlmButtonImports, HlmCardImports],
+	imports: [
+		AppShellComponent,
+		FormsModule,
+		HlmBadgeImports,
+		HlmButtonImports,
+		HlmCardImports,
+		SerialMonitorConnectionCardComponent,
+		SerialMonitorQuickSendCardComponent,
+		SerialMonitorStreamCardComponent,
+		SerialMonitorUploadCardComponent
+	],
 	templateUrl: './component.html',
 	styleUrl: './component.css'
 })
-export class SerialMonitorPageComponent implements OnInit {
-	private readonly core = injectCore()
+export class SerialMonitorPageComponent implements OnInit, OnDestroy {
+	private readonly core = getCore()
+	private readonly desktop = getDesktop()
+	private readonly logBox = viewChild<ElementRef<HTMLDivElement>>('logBox')
 
-	protected readonly state = signal<SerialMonitorSnapshot | null>(null)
+	protected readonly state = signal<SerialMonitorPageState | null>(null)
+	protected readonly messages = signal<Array<SerialSessionMessage>>([])
+	protected readonly inputValue = signal('')
+	protected readonly runtimeInfo = signal<Awaited<ReturnType<typeof loadDesktopHostRuntimeInfo>> | null>(null)
+	protected readonly uploadResult = signal<SerialMonitorUploadResultView | null>(null)
 	protected readonly loading = signal(true)
+	protected readonly busy = signal(false)
 	protected readonly error = signal<string | null>(null)
-	protected readonly serialModeLabel = computed(() => {
-		const current = this.state()
-		if (!current) return 'loading'
-		return current.hexInput ? 'hex input' : 'text input'
+	private readonly signals: SerialMonitorSignals = createSerialMonitorSignals({
+		state: this.state,
+		messages: this.messages,
+		inputValue: this.inputValue,
+		runtimeInfo: this.runtimeInfo,
+		uploadResult: this.uploadResult,
+		loading: this.loading,
+		busy: this.busy,
+		error: this.error
+	})
+	private readonly viewActions = createSerialMonitorViewActions({
+		state: this.state,
+		inputValue: this.inputValue,
+		getLogBox: () => this.logBox()?.nativeElement,
+		pullMessages: port => this.sessionActions.pullMessages(port),
+		patchInputMode: patch => this.sessionActions.patchInputMode(patch),
+		patchViewMode: patch => this.sessionActions.patchViewMode(patch)
+	})
+	private readonly sessionActions = createSerialMonitorSessionActions({
+		core: this.core,
+		signals: this.signals,
+		startPolling: port => this.viewActions.startPolling(port),
+		stopPolling: () => this.viewActions.stopPolling(),
+		scrollToBottom: () => this.viewActions.scrollToBottom()
+	})
+	private readonly loadActions = createSerialMonitorLoadActions({
+		core: this.core,
+		desktop: this.desktop,
+		signals: this.signals,
+		loadDesktopHostRuntimeInfo,
+		startPolling: port => this.viewActions.startPolling(port),
+		stopPolling: () => this.viewActions.stopPolling(),
+		pullMessages: port => this.sessionActions.pullMessages(port)
+	})
+	private readonly uploadActions = createSerialMonitorUploadActions({
+		core: this.core,
+		signals: this.signals
 	})
 
 	async ngOnInit() {
-		await this.refresh()
+		await this.loadActions.loadRuntimeInfo()
+		await this.loadActions.refresh()
 	}
 
-	protected async refresh() {
-		this.loading.set(true)
-		this.error.set(null)
-
-		try {
-			const [configSummary, previewConfigRaw, defaultLayout, merged, toggled, reset, serialConnect] = await Promise.all(
-				[
-					this.core.config.get.query({ config, fallbackLanguage: config.lang }),
-					this.core.config.previewUpdate.query({
-						config,
-						serialMonitor: { port: 'COM9', baudRate: '921600' }
-					}),
-					this.core.store.createDefaultLayout.query({
-						defaultToolbarAppIds: config.toolbarAppIds ?? [],
-						apps: toolbarApps
-					}),
-					this.core.store.mergeVisibleOrder.query({
-						currentZoneIds: config.toolbarAppIds ?? [],
-						visibleIds: ['flash-fs', 'aily-chat'],
-						visibleCatalogIds: toolbarApps.map(app => app.id)
-					}),
-					this.core.store.toggleApp.query({
-						layout: { version: 2, zones: { header: config.toolbarAppIds ?? [] } },
-						zone: 'header',
-						appId: 'dev-tool',
-						apps: toolbarApps
-					}),
-					this.core.store.reset.query({
-						defaultToolbarAppIds: config.toolbarAppIds ?? [],
-						apps: toolbarApps
-					}),
-					this.core.config.buildSerialConnectOptions.query({ config, port: 'COM9' })
-				]
-			)
-			const previewConfig = previewConfigRaw as AilyAppConfig
-
-			const serialPorts = await this.core.hardware.listSerialPorts.query()
-
-			this.state.set({
-				baudRate: configSummary.serialMonitor.baudRate,
-				connectBaudRate: serialConnect.baudRate,
-				autoScroll: configSummary.serialViewMode.autoScroll,
-				hexInput: configSummary.serialInputMode.hexMode,
-				previewPort: previewConfig.serialMonitor?.port ?? 'unset',
-				quickSendCount: configSummary.quickSendList.length,
-				toolbarAppCount: configSummary.toolbarAppIds.length,
-				visibleToolbarAppCount: merged.length,
-				defaultToolbarAppCount: defaultLayout.zones.header.length,
-				mergedToolbarOrderCount: merged.length,
-				toggledToolbarAppCount: toggled.zones.header.length,
-				resetToolbarAppCount: reset.zones.header.length,
-				serialPortCount: serialPorts.ports.length,
-				serialPlatform: serialPorts.platform,
-				desktopSerialAvailable: serialPorts.available
-			})
-		} catch (error) {
-			this.error.set((error as Error).message)
-		} finally {
-			this.loading.set(false)
-		}
+	async ngOnDestroy() {
+		this.viewActions.dispose()
+		await this.sessionActions.disconnectCurrent()
 	}
+
+	protected readonly refresh = this.loadActions.refresh
+	protected readonly toggleConnection = this.sessionActions.toggleConnection
+	protected readonly choosePort = this.sessionActions.choosePort
+	protected readonly chooseBaudRate = this.sessionActions.chooseBaudRate
+	protected readonly clearMessages = this.sessionActions.clearMessages
+	protected readonly send = this.sessionActions.send
+	protected readonly sendQuick = this.sessionActions.sendQuick
+	protected readonly onInputKeydown = this.sessionActions.onInputKeydown
+	protected readonly runUpload = this.uploadActions.runUpload
+	protected readonly reconnect = this.sessionActions.reconnect
+	protected readonly toggleHexView = () => this.viewActions.toggleHexView()
+	protected readonly toggleTimestamp = () => this.viewActions.toggleTimestamp()
+	protected readonly toggleAutoScroll = () => this.viewActions.toggleAutoScroll()
+	protected readonly toggleHexInput = () => this.viewActions.toggleHexInput()
+	protected readonly toggleSendByEnter = () => this.viewActions.toggleSendByEnter()
+	protected readonly toggleEndR = () => this.viewActions.toggleEndR()
+	protected readonly toggleEndN = () => this.viewActions.toggleEndN()
 }

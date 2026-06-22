@@ -1,0 +1,71 @@
+<article hlmCard class="editor-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Build</p>
+			<h2>Core Compile Pipeline</h2>
+		</div>
+	</header>
+
+	@for (item of buildMetrics(); track item.label) {
+	<div class="metric"><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div>
+	}
+
+	<label class="command-box">
+		<span>Serial port</span>
+		<input
+			hlmInput
+			[value]="serialPort()"
+			(input)="updateSerialPort($event)"
+			placeholder="COM3 / /dev/tty.usbmodem..."
+		/>
+	</label>
+
+	<label class="command-box">
+		<span>Source</span>
+		<textarea class="build-output" [ngModel]="sourceCode()" (ngModelChange)="sourceCodeChange.emit($event)"></textarea>
+	</label>
+
+	<div class="button-row">
+		<button hlmBtn variant="outline" [disabled]="buildBusy()" (click)="refreshPlan.emit()">Refresh Plan</button>
+		<button hlmBtn [disabled]="buildBusy()" (click)="runBuild.emit()">Build</button>
+		<button hlmBtn variant="outline" [disabled]="uploadBusy() || !serialPort().trim()" (click)="runUpload.emit()">Upload</button>
+	</div>
+
+	<code-editor-ble-panel
+		[bleBridgeAvailable]="bleBridgeAvailable()"
+		[bleDevice]="bleDevice()"
+		[bleDevices]="bleDevices()"
+		[bleUploadPlan]="bleUploadPlan()"
+		[bleUploadProgress]="bleUploadProgress()"
+		[uploadBusy]="uploadBusy()"
+		(selectBleDevice)="selectBleDevice.emit()"
+		(reconnectBleDevice)="reconnectBleDevice.emit()"
+		(prepareBleUpload)="prepareBleUpload.emit()"
+		(runBleUpload)="runBleUpload.emit()"
+		(selectVisibleBleDevice)="selectVisibleBleDevice.emit($event)"
+	/>
+
+	@if (uploadPlan(); as uploadPlanValue) {
+	<div class="metric"><span>Upload Step</span><strong>{{ uploadPlanValue.label }}</strong></div>
+	<pre class="build-output">{{ uploadPlanValue.commandPreview }}</pre>
+	}
+
+	@if (buildError()) {
+	<p class="build-copy error">{{ buildError() }}</p>
+	}
+
+	<code-editor-build-result [buildResult]="buildResult()" />
+
+	<code-editor-upload-result
+		[uploadResult]="uploadResult()"
+		[buildBusy]="buildBusy()"
+		[uploadBusy]="uploadBusy()"
+		[bleUploadPlan]="bleUploadPlan()"
+		[bleDevice]="bleDevice()"
+		(runBuild)="runBuild.emit()"
+		(runUpload)="runUpload.emit()"
+		(reconnectBleDevice)="reconnectBleDevice.emit()"
+		(prepareBleUpload)="prepareBleUpload.emit()"
+		(runBleUpload)="runBleUpload.emit()"
+	/>
+</article>

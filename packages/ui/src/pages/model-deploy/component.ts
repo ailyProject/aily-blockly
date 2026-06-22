@@ -3,8 +3,8 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
-import { injectDesktop } from '@/desktop-service'
+import { getCore } from '@/utils/core'
+import { getDesktop } from '@/utils/desktop'
 
 import { deployTabs } from './data'
 import { loadModelDeployState } from './runtime'
@@ -18,8 +18,8 @@ import type { AilyCoreServiceHealth } from 'shared'
 	styleUrl: './component.css'
 })
 export class ModelDeployPageComponent implements OnInit {
-	private readonly core = injectCore()
-	private readonly desktop = injectDesktop()
+	private readonly core = getCore()
+	private readonly desktop = getDesktop()
 
 	protected readonly tabs = deployTabs
 	protected readonly health = signal<AilyCoreServiceHealth | null>(null)

@@ -1,0 +1,59 @@
+@if (lastActionOutput(); as actionOutput) {
+<div class="section">
+	<strong>Last Action</strong>
+	<div class="list-item">
+		<strong>{{ actionOutput.action }} {{ actionOutput.packageName }}</strong>
+		<span>{{ actionOutput.success ? 'success' : 'failed' }}</span>
+		<span>exit {{ actionOutput.exitCode }}</span>
+		@if (actionOutput.progressEvents.length) {
+		<div class="progress-list">
+			@for (event of actionOutput.progressEvents; track event.phase + event.line) {
+			<div class="progress-item">
+				<strong>{{ event.phase }}</strong>
+				<span>{{ event.line }}</span>
+			</div>
+			}
+		</div>
+		}
+		@if (actionOutput.stdout) {
+		<pre class="log-output">{{ actionOutput.stdout }}</pre>
+		}
+		@if (actionOutput.stderr) {
+		<pre class="log-output error">{{ actionOutput.stderr }}</pre>
+		}
+	</div>
+</div>
+}
+
+@if (liveActionStatus(); as liveStatus) {
+<div class="section">
+	<strong>Live Action</strong>
+	<div class="list-item">
+		<strong>{{ liveStatus.action }} {{ liveStatus.packageName }}</strong>
+		<span>{{ liveStatus.running ? 'running' : 'settled' }}</span>
+		<span>updated {{ liveStatus.updatedAt }}</span>
+		@if (liveActionProgressPercent() !== null) {
+		<div class="progress-shell">
+			<hlm-progress [value]="liveActionProgressPercent()!" [max]="100">
+				<div hlmProgressIndicator></div>
+			</hlm-progress>
+			<span>{{ liveActionProgressPercent() }}%</span>
+		</div>
+		}
+		@if (liveActionLatestLine()) {
+		<span>{{ liveActionLatestLine() }}</span>
+		}
+		@if (liveStatus.progressEvents.length) {
+		<div class="progress-list">
+			@for (event of liveStatus.progressEvents; track event.phase + event.line) {
+			<div class="progress-item">
+				<strong>{{ event.phase }}</strong>
+				<span>{{ event.line }}</span>
+			</div>
+			}
+		</div>
+		}
+	</div>
+</div>
+}
+

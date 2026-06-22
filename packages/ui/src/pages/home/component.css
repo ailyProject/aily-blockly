@@ -7,10 +7,7 @@
 	align-items: center;
 }
 
-.button-icon,
-.inline-icon,
-.panel-icon,
-.surface-icon {
+.button-icon {
 	width: 1rem;
 	height: 1rem;
 }
@@ -22,123 +19,8 @@
 	min-height: calc(100vh - 9rem);
 }
 
-.rail,
-.inspector,
-.center {
-	min-width: 0;
-}
-
-.center {
-	display: grid;
-	grid-template-rows: minmax(0, 1fr) 16rem;
-	gap: 1rem;
-}
-
-.rail-card,
-.workspace-card,
-.tabs-card {
-	height: 100%;
-	background: var(--ui-panel);
-}
-
-.stack {
-	display: grid;
-	gap: 0.85rem;
-}
-
-.search {
-	display: flex;
-	align-items: center;
-	gap: 0.65rem;
-}
-
-.nav-item,
-.tool-row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 0.75rem;
-	padding: 0.75rem 0.85rem;
-	border: 1px solid var(--border);
-	border-radius: calc(var(--radius) * 1.2);
-	background: color-mix(in srgb, var(--card) 84%, var(--ui-panel-muted));
-}
-
-.nav-item {
-	text-align: left;
-}
-
-.workspace-header,
-.tool-copy {
-	display: flex;
-	gap: 0.75rem;
-}
-
-.header-icons {
-	display: flex;
-	gap: 0.5rem;
-	color: var(--muted-foreground);
-}
-
-.workspace-grid {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) 18rem;
-	gap: 1rem;
-}
-
-.workspace-surface,
-.workspace-side {
-	display: grid;
-	gap: 0.75rem;
-	padding: 1rem;
-	border-radius: calc(var(--radius) * 1.5);
-	border: 1px solid var(--border);
-}
-
-.workspace-surface {
-	align-content: center;
-	min-height: 22rem;
-	background:
-		linear-gradient(var(--ui-grid-line) 1px, transparent 1px),
-		linear-gradient(90deg, var(--ui-grid-line) 1px, transparent 1px), var(--ui-workspace);
-	background-size:
-		2rem 2rem,
-		2rem 2rem,
-		auto;
-}
-
-.surface-icon {
-	width: 2.5rem;
-	height: 2.5rem;
-	color: var(--primary);
-}
-
-.tab-pane {
-	display: grid;
-	gap: 0.55rem;
-	padding-top: 1rem;
-}
-
-.tab-pane p,
-.tool-row p {
-	margin: 0;
-	color: var(--muted-foreground);
-}
-
-.tool-row.compact {
-	justify-content: flex-start;
-}
-
 @media (max-width: 1200px) {
 	.workbench {
-		grid-template-columns: 1fr;
-	}
-
-	.center {
-		grid-template-rows: auto auto;
-	}
-
-	.workspace-grid {
 		grid-template-columns: 1fr;
 	}
 }

@@ -3,11 +3,21 @@
 	gap: 18px;
 }
 
+.hidden-input {
+	display: none;
+}
+
 .panel {
 	display: grid;
 	gap: 16px;
 	padding: 24px;
 	border-radius: 24px;
+}
+
+.panel-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
 }
 
 .panel-header h2,
@@ -40,4 +50,50 @@
 	padding: 12px 14px;
 	border-radius: 16px;
 	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.preview-files {
+	display: grid;
+	gap: 8px;
+	padding: 14px 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--card) 70%, var(--muted));
+}
+
+.file-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.breadcrumbs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.file-chip {
+	display: grid;
+	justify-items: start;
+	gap: 4px;
+	height: auto;
+	padding: 12px 14px;
+	text-align: left;
+}
+
+.file-chip small {
+	color: var(--muted-foreground);
+}
+
+.text-preview {
+	margin: 0;
+	padding: 14px 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 72%, transparent);
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font: 12px/1.6 var(--font-mono, monospace);
 }

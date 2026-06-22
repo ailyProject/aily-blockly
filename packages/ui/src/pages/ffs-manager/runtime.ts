@@ -1,27 +1,31 @@
 import { config } from '@/workspace'
 
-import type { Core } from '@/core-service'
-import type { FfsManagerState } from './types'
+import { getFfsPreviewMode } from './explorer.runtime'
 
-const flashFsPort = 'COM9'
+import type { Core } from '@/utils/core'
+import type { FfsManagerState } from './types'
 
 /**
  * 加载 Flash FS 页面状态。
  * @param core - core 服务句柄
  */
 export const loadFfsManagerState = async (core: Core): Promise<FfsManagerState> => {
-	const [configSummary, connect, serialPorts] = await Promise.all([
+	const [configSummary, serialPorts] = await Promise.all([
 		core.config.get.query({ config }),
-		core.config.buildSerialConnectOptions.query({ config, port: flashFsPort }),
 		core.hardware.listSerialPorts.query()
 	])
-	const portPath = configSummary.serialMonitor.port || flashFsPort
+	const availablePorts = serialPorts.ports.map(port => port.name || '').filter(Boolean)
+	const portPath = configSummary.serialMonitor.port || availablePorts[0] || ''
+	const connect = await core.config.buildSerialConnectOptions.query({ config, port: portPath })
 	const requestedBaudRate = Number.parseInt(configSummary.serialMonitor.baudRate, 10) || connect.baudRate
-	const baud = await core.ffs.resolveBaud.query({ portPath, requestedBaud: requestedBaudRate })
+	const [baud, preview] = await Promise.all([
+		core.ffs.resolveBaud.query({ portPath, requestedBaud: requestedBaudRate }),
+		core.ffs.getPreviewSnapshot.query()
+	])
 
 	return {
 		serial: {
-			port: configSummary.serialMonitor.port ?? 'unset',
+			port: portPath || 'unset',
 			baudRate: configSummary.serialMonitor.baudRate
 		},
 		connect,
@@ -31,6 +35,25 @@ export const loadFfsManagerState = async (core: Core): Promise<FfsManagerState> 
 			capped: baud.capped,
 			bridgeName: baud.bridge?.productName ?? baud.bridge?.vendorName ?? 'unknown'
 		},
-		serialPortCount: serialPorts.ports.length
+		serialPortCount: serialPorts.ports.length,
+		preview: {
+			partition: preview.partition,
+			type: preview.type,
+			partitionLabel: preview.partition.label,
+			blockSize: preview.blockSize,
+			fileCount: preview.fileCount,
+			capacityBytes: preview.usage?.capacityBytes ?? null,
+			usedBytes: preview.usage?.usedBytes ?? null,
+			attemptCount: 1,
+			attemptReasons: preview.files.length === 0 ? ['blank-image-init'] : ['mounted'],
+			files: preview.files.map(item => ({
+				name: item.name || item.path || 'unknown',
+				fullPath: item.path || '/',
+				type: item.type,
+				sizeText: item.sizeText,
+				size: item.size,
+				previewMode: getFfsPreviewMode(item.path || item.name || '')
+			}))
+		}
 	}
 }

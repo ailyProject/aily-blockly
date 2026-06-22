@@ -12,8 +12,7 @@ const shortenSerial = (serial: string | null | undefined) => {
 
 /**
  * 规范化 probe-rs 设备列表结果。
- * @param {HardwareProbeRsListResult} result - 原始列表结果
- * @returns {HardwareProbeRsListResult}
+ * @param result - 原始列表结果
  */
 export const normalizeHardwareProbeRsListResult = (result: HardwareProbeRsListResult): HardwareProbeRsListResult => ({
 	...result,
@@ -25,16 +24,14 @@ export const normalizeHardwareProbeRsListResult = (result: HardwareProbeRsListRe
 
 /**
  * 构建 probe 标识。
- * @param {{vidPid?: string, serial?: string | null}} probe - probe 信息
- * @returns {string | undefined}
+ * @param probe - probe 信息
  */
 export const buildHardwareProbeTarget = (probe: { vidPid?: string; serial?: string | null }) =>
 	probe.vidPid ? `${probe.vidPid}${probe.serial ? `:${probe.serial}` : ''}` : undefined
 
 /**
  * 规范化 probe-rs 下载参数。
- * @param {HardwareProbeRsDownloadOptions} options - 原始下载参数
- * @returns {HardwareProbeRsDownloadOptions}
+ * @param options - 原始下载参数
  */
 export const normalizeHardwareProbeRsDownloadOptions = (
 	options: HardwareProbeRsDownloadOptions
@@ -52,8 +49,7 @@ export const normalizeHardwareProbeRsDownloadOptions = (
 
 /**
  * 规范化 probe-rs 下载结果。
- * @param {HardwareProbeRsDownloadResult} result - 原始下载结果
- * @returns {HardwareProbeRsDownloadResult}
+ * @param result - 原始下载结果
  */
 export const normalizeHardwareProbeRsDownloadResult = (
 	result: HardwareProbeRsDownloadResult

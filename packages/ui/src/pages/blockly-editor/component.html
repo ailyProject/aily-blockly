@@ -1,49 +1,127 @@
-<section class="editor-page">
-  <article hlmCard class="canvas-card">
-    <header class="card-header">
-      <div>
-        <p class="eyebrow">Editor Shell</p>
-        <h2>Blockly Workspace</h2>
-      </div>
-      <span hlmBadge>{{ language() }}</span>
-    </header>
+@if (hasBlockingMissingLibraries()) {
+<section class="blocking-shell">
+	<article hlmCard class="blocking-card">
+		<header class="blocking-header">
+			<div>
+				<p class="blocking-eyebrow">Blockly Libraries Required</p>
+				<h2>Restore missing Blockly libraries before editing this project</h2>
+			</div>
+			<div class="blocking-actions">
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!missingLibraryActionBusyKey()" (click)="reloadProjectState()">
+					Reload Project
+				</button>
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!missingLibraryActionBusyKey()" (click)="leaveProject()">
+					Leave Project
+				</button>
+				<button hlmBtn size="sm" [disabled]="!!missingLibraryActionBusyKey()" (click)="restoreAllMissingLibraries()">
+					{{ missingLibraryActionBusyKey() ? 'Restoring...' : 'Restore All' }}
+				</button>
+			</div>
+		</header>
 
-    <label class="search-box">
-      <span>Search board and library catalog</span>
-      <input hlmInput [value]="searchQuery()" (input)="updateSearchQuery($event)" placeholder="esp32, oled, rfid..." />
-    </label>
+		<p class="blocking-copy">
+			This project still references Blockly libraries that are missing from `package.json` or `node_modules`.
+			Editing is paused until the libraries are restored or you leave the project.
+		</p>
 
-    <div class="workspace-canvas">
-      <strong>Workspace shell ready for deeper migration</strong>
-      <span>Toolbar {{ toolbarCount() }} / visible {{ visibleToolbarCount() }}</span>
-      <span>board {{ boardValidation() }} / library {{ libraryValidation() }}</span>
+		@if (missingLibraryActionMessage()) {
+		<p class="blocking-note">{{ missingLibraryActionMessage() }}</p>
+		}
 
-      <div class="hint-list">
-        @for (hint of workspaceHints; track hint) {
-          <span>{{ hint }}</span>
-        }
-      </div>
-    </div>
-  </article>
-
-  <article hlmCard class="side-card">
-    <header class="card-header">
-      <div>
-        <p class="eyebrow">Hardware</p>
-        <h2>Board Signals</h2>
-      </div>
-    </header>
-
-    <div class="badge-row">
-      @for (category of categories(); track category.name) {
-        <span hlmBadge variant="outline">{{ category.name }} {{ category.count }}</span>
-      }
-    </div>
-
-    <div class="search-list">
-      @for (result of searchResultNames(); track result) {
-        <div class="search-item">{{ result }}</div>
-      }
-    </div>
-  </article>
+		<div class="blocking-library-list">
+			@for (library of missingLibraries(); track library.name + ':' + library.version + ':' + library.blockType) {
+			<div class="blocking-library-row">
+				<div class="blocking-library-copy">
+					<div class="blocking-badges">
+						<span hlmBadge variant="outline">{{ library.name }}</span>
+						<span hlmBadge variant="outline">{{ library.version || 'unknown version' }}</span>
+					</div>
+					<p>Block: {{ library.blockType || 'n/a' }}</p>
+					@if (library.localPath) {
+					<p>{{ library.localPath }}</p>
+					}
+				</div>
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!missingLibraryActionBusyKey()"
+					(click)="restoreMissingLibrary(library)"
+				>
+					{{ missingLibraryActionBusyKey() === library.name ? 'Restoring...' : 'Restore' }}
+				</button>
+			</div>
+			}
+		</div>
+	</article>
 </section>
+} @else {
+<section class="editor-page">
+	<blockly-editor-workspace-shell
+		[language]="language()"
+		[searchQuery]="searchQuery()"
+		[projectPath]="projectPath()"
+		[abiExists]="abiExists()"
+		[toolbarCount]="toolbarCount()"
+		[visibleToolbarCount]="visibleToolbarCount()"
+		[boardValidation]="boardValidation()"
+		[libraryValidation]="libraryValidation()"
+		[abiSchemaVersion]="abiSchemaVersion()"
+		[pageCount]="pageCount()"
+		[totalBlockCount]="totalBlockCount()"
+		[sharedVariableCount]="sharedVariableCount()"
+		[sharedProcedureCount]="sharedProcedureCount()"
+		[activePageId]="activePageId()"
+		[openedPageCount]="openedPageCount()"
+		[activePageTitle]="activePageTitle()"
+		[activeViewState]="activeViewState()"
+		[activeTopLevelBlockCount]="activeTopLevelBlockCount()"
+		[abiFilePath]="abiFilePath()"
+		[abiParseError]="abiParseError()"
+		[activeViewScaleDraft]="activeViewScaleDraft()"
+		[activeViewScrollXDraft]="activeViewScrollXDraft()"
+		[activeViewScrollYDraft]="activeViewScrollYDraft()"
+		[canSaveActiveViewState]="canSaveActiveViewState()"
+		[openedPages]="openedPages()"
+		[workspaceHints]="workspaceHints"
+		(searchQueryChange)="updateSearchQueryValue($event)"
+		(viewStateDraftChange)="updateActiveViewStateDraft($event.field, $event.value)"
+		(saveViewState)="saveActiveViewState()"
+		(switchPage)="switchPage($event)"
+		(createPage)="createPage()"
+	/>
+
+	<blockly-editor-inspector-panel
+		[categories]="categories()"
+		[activeWorkspaceSaveBusy]="activeWorkspaceSaveBusy()"
+		[activeWorkspaceDirty]="activeWorkspaceDirty()"
+		[canSaveActiveWorkspace]="canSaveActiveWorkspace()"
+		[activeWorkspaceParseError]="activeWorkspaceParseError()"
+		[activeWorkspaceSaveMessage]="activeWorkspaceSaveMessage()"
+		[projectReloadBusy]="projectReloadBusy()"
+		[projectReloadMessage]="projectReloadMessage()"
+		[missingLibraries]="missingLibraries()"
+		[missingLibraryActionBusyKey]="missingLibraryActionBusyKey()"
+		[missingLibraryActionMessage]="missingLibraryActionMessage()"
+		[activeWorkspaceJson]="activeWorkspaceJson()"
+		[activeTopLevelBlockTypes]="activeTopLevelBlockTypes()"
+		[openedPages]="openedPages()"
+		[closedPages]="closedPages()"
+		[renamingPageId]="renamingPageId()"
+		[renamingPageTitle]="renamingPageTitle()"
+		[searchResultNames]="searchResultNames()"
+		(resetActiveWorkspace)="resetActiveWorkspaceJson()"
+		(saveActiveWorkspace)="saveActiveWorkspaceJson()"
+		(activeWorkspaceJsonChange)="updateActiveWorkspaceJson($event)"
+		(switchPage)="switchPage($event)"
+		(beginRenamePage)="beginRenamePage($event)"
+		(cancelRenamePage)="cancelRenamePage()"
+		(renamingPageTitleChange)="updateRenamingPageTitle($event)"
+		(confirmRenamePage)="confirmRenamePage($event)"
+		(togglePageOpen)="togglePageOpen($event.pageId, $event.opened)"
+		(reloadProjectState)="reloadProjectState()"
+		(restoreMissingLibrary)="restoreMissingLibrary($event)"
+		(restoreAllMissingLibraries)="restoreAllMissingLibraries()"
+	/>
+</section>
+}

@@ -1,0 +1,83 @@
+.page-shell {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel p,
+.panel-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.panel-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.eyebrow,
+.panel p,
+.list-item span {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.section,
+.list {
+	display: grid;
+	gap: 10px;
+}
+
+.conflict-card {
+	display: grid;
+	gap: 12px;
+	padding: 16px 18px;
+	border: 1px solid color-mix(in srgb, var(--destructive) 24%, var(--border));
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--destructive) 8%, transparent);
+}
+
+.conflict-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.metrics-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 10px;
+}
+
+.metrics-grid div {
+	display: grid;
+	gap: 4px;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.list-item {
+	display: grid;
+	gap: 4px;
+	padding: 12px 14px;
+	border: 0;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+	text-align: left;
+	cursor: pointer;
+}

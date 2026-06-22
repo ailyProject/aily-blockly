@@ -1,0 +1,41 @@
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.panel-header h2 {
+	margin: 2px 0 0;
+}
+
+.eyebrow,
+.field span {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.field {
+	display: grid;
+	gap: 6px;
+}
+
+.button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}

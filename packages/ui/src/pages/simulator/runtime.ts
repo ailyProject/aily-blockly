@@ -1,12 +1,11 @@
 import { boardIndex, libraryIndex } from '@/workspace'
 
-import type { Core } from '@/core-service'
+import type { Core } from '@/utils/core'
 import type { SimulatorState } from './types'
 
 /**
  * 加载仿真器页面状态。
- * @param {Core} core - core 服务句柄
- * @returns {Promise<SimulatorState>}
+ * @param core - core 服务句柄
  */
 export const loadSimulatorState = async (core: Core): Promise<SimulatorState> => {
 	const [compatResults, interfaces] = await Promise.all([

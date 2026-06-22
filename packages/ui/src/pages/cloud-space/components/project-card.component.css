@@ -1,0 +1,41 @@
+.project-card {
+	display: grid;
+	gap: 8px;
+	padding: 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+:host([data-current-project='true']) .project-card {
+	outline: 1px solid color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+.cover {
+	width: 100%;
+	aspect-ratio: 2 / 1;
+	object-fit: cover;
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--background) 72%, transparent);
+}
+
+.project-card span {
+	color: var(--muted-foreground);
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.tag-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.action-row {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}

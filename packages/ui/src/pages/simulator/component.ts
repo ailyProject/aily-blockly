@@ -2,7 +2,7 @@ import { Component, OnInit, signal } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
+import { getCore } from '@/utils/core'
 
 import { loadSimulatorState } from './runtime'
 
@@ -15,7 +15,7 @@ import type { SimulatorState } from './types'
 	styleUrl: './component.css'
 })
 export class SimulatorPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly state = signal<SimulatorState | null>(null)
 

@@ -23,6 +23,7 @@
 - 类型声明的注释也使用标准 JSDoc 多行块格式；为接口、类型别名、DTO、事件载荷和配置模型补充职责说明。
 - 不仅要给整个类型写一句概述，公开类型的关键字段也要写字段级 JSDoc，解释该字段的业务含义、单位、取值约束或是否可选；不要在字段注释里重复字段本身的 TypeScript 类型。
 - 对联合类型（尤其是字符串字面量联合），不仅要给整个联合类型写说明，每个可选字面量值也要逐项加注释，说明该值代表的语义。
+- `types.ts` 保持为单文件稳定入口，不要再把同域类型继续拆成 `types.*.ts`；如果类型过多，应优先拆分非类型实现文件或重构类型本身的组织方式，而不是把 `types.ts` 裂成多个同名前缀文件。
 - 数据交互默认使用 `hono` / `trpc` / `erpc` 这一套组合。
 - HTTP 服务入口优先使用 `hono`；跨端数据契约优先使用 `trpc`；Electron 主进程与渲染进程通信优先使用 `erpc`。
 - RPC 能放在 `packages/core/src/rpc` 的，优先放 `core`，不要默认放进 `packages/desktop/src/rpc`。
@@ -35,6 +36,8 @@
 - RPC procedure 文件统一使用匿名 `export default` 导出；router 聚合层统一使用 `import { default as x } from './x'` 的形式导入后再组合。
 - 不要在 RPC procedure 文件里继续使用 `export const foo = p.query(...)` 这类具名导出风格；如果一个文件里出现多个 procedure，必须继续拆分成单 procedure 单文件。
 - 不要随意引入自定义 REST 风格约定、松散类型的 fetch 封装、手写 RPC 协议或零散 IPC channel 来替代这套统一边界。
+- Electron 专属 BLE 能力不要通过 `window.ble`、`globalThis.ble` 之类的自定义全局对象暴露；统一通过 `desktop.ble.*` 这一层 typed ERPC / RPC 能力访问。
+- BLE 边界统一为：协议规划、固件切片、上传计划、构建产物解析放 `core`；Electron chooser、权限与窗口级设备列表桥接放 `desktop`；`navigator.bluetooth` 驱动的实际 Web Bluetooth 连接与传输留在 `ui`。
 - 不要新增以 RxJS 为核心的状态管理或数据流组织；能用 Angular Signals、普通函数和简单可读状态组织解决的，就不要额外引入 RxJS 方案。
 - 如果框架、现有依赖或明确的边界接口天然使用 RxJS，可以在该边界内使用，但不要把它继续扩散成项目默认状态模型。
 - 以上限制的目标是让 AI 更容易持续产出可维护、可理解、可拆分的代码。
@@ -43,6 +46,7 @@
 
 - 变量命名统一使用驼峰命名法。
 - 组件命名统一遵循 Angular 风格，使用中横线形式组织 selector、文件名和相关模块命名。
+- 除前端 Angular 组件因框架约定使用 `x.component.ts` / `x.directive.ts` / `x.pipe.ts` 等命名外，后端与通用层文件禁止使用 `a.b.ts` 这类点号级联命名；命名冲突或子域区分优先通过增加一层目录来表达，而不是追加统一前缀。
 - 编写代码时，优先参考同级目录下相似模块的写法、结构和命名风格，保持风格统一。
 - 优先使用文件夹下的 `index.ts` 做 barrel 导出，统一对外暴露稳定入口，减少 import 语句的规模和路径噪音。
 - barrel 导出默认直接写成 `export * from './x'`；只有处理 default export 时才使用具名导出转发。

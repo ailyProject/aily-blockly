@@ -1,0 +1,44 @@
+<article hlmCard class="serial-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Stream</p>
+			<h2>Serial Log</h2>
+		</div>
+		<div class="badge-row">
+			<span hlmBadge variant="outline">{{ messages().length }} lines</span>
+			<button hlmBtn size="sm" variant="ghost" (click)="toggleHexView.emit()">Hex</button>
+			<button hlmBtn size="sm" variant="ghost" (click)="toggleTimestamp.emit()">Timestamp</button>
+			<button hlmBtn size="sm" variant="ghost" (click)="toggleAutoScroll.emit()">Auto Scroll</button>
+			<button hlmBtn size="sm" variant="ghost" (click)="clearMessages.emit()">Clear</button>
+		</div>
+	</header>
+
+	<div class="log-box">
+		@for (message of messages(); track $index) {
+		<div class="log-item">
+			<span class="log-dir">{{ message.direction }}</span>
+			@if (state().viewMode.showTimestamp) { <span class="log-time">{{ message.timestamp }}</span> }
+			<span class="log-text">{{ state().viewMode.showHex ? (message.hex || message.text) : message.text }}</span>
+		</div>
+		} @if (messages().length === 0) {
+		<div class="log-empty">No serial output yet.</div>
+		}
+	</div>
+
+	<div class="input-box">
+		<textarea
+			class="serial-input"
+			[ngModel]="inputValue()"
+			(ngModelChange)="inputValueChange.emit($event)"
+			(keydown)="onInputKeydown.emit($event)"
+			placeholder="Send text or hex payload..."
+		></textarea>
+		<div class="badge-row">
+			<button hlmBtn size="sm" variant="outline" (click)="toggleHexInput.emit()">Hex Input</button>
+			<button hlmBtn size="sm" variant="outline" (click)="toggleSendByEnter.emit()">Enter Send</button>
+			<button hlmBtn size="sm" variant="outline" (click)="toggleEndR.emit()">Append CR</button>
+			<button hlmBtn size="sm" variant="outline" (click)="toggleEndN.emit()">Append LF</button>
+			<button hlmBtn size="sm" [disabled]="!state().session?.connected || busy()" (click)="send.emit()">Send</button>
+		</div>
+	</div>
+</article>

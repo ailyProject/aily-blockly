@@ -72,6 +72,8 @@ export const recentProject = {
 
 export const toolbarApps: Array<AppRegistryItem> = [
 	{ id: 'aily-chat', enabled: true, lock: true, router: ['/main/blockly-editor'] },
+	{ id: 'cloud-space', enabled: true, router: ['/main/blockly-editor'] },
+	{ id: 'terminal', enabled: true, router: ['/main/blockly-editor'] },
 	{ id: 'serial-monitor', enabled: true, router: ['/main/blockly-editor'], core: ['esp32', 'renesas'] },
 	{ id: 'flash-fs', enabled: true, router: ['/main/blockly-editor'] },
 	{ id: 'dev-tool', enabled: true, dev: true, router: ['/main/blockly-editor'] }

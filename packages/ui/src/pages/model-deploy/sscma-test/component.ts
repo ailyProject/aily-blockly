@@ -2,9 +2,9 @@ import { Component, OnInit, signal } from '@angular/core'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
-import { injectDesktop } from '@/desktop-service'
 import { loadHardwareHostSnapshot } from '@/runtime/hardware-host'
+import { getCore } from '@/utils/core'
+import { getDesktop } from '@/utils/desktop'
 
 @Component({
 	selector: 'sscma-test-page',
@@ -13,8 +13,8 @@ import { loadHardwareHostSnapshot } from '@/runtime/hardware-host'
 	styleUrl: './component.css'
 })
 export class SscmaTestPageComponent implements OnInit {
-	private readonly core = injectCore()
-	private readonly desktop = injectDesktop()
+	private readonly core = getCore()
+	private readonly desktop = getDesktop()
 
 	protected readonly checks = signal<Array<string>>([])
 

@@ -3,8 +3,8 @@ import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 import { HlmInputImports } from 'spartan/input'
 
-import { injectCore } from '@/core-service'
 import { loadModelCatalog } from '@/runtime/model-catalog'
+import { getCore } from '@/utils/core'
 
 import type { ModelCatalogItem, ModelCatalogSource } from 'shared'
 
@@ -15,7 +15,7 @@ import type { ModelCatalogItem, ModelCatalogSource } from 'shared'
 	styleUrl: './component.css'
 })
 export class ModelStorePageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly catalog = signal<Array<ModelCatalogItem>>([])
 	protected readonly query = signal('')

@@ -3,7 +3,7 @@ import { RouterLink } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
+import { getCore } from '@/utils/core'
 
 import { guideCommunityLinks, guideQuickActions } from './data'
 
@@ -16,7 +16,7 @@ import type { GuideRecentProject } from './types'
 	styleUrl: './component.css'
 })
 export class GuidePageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly quickActions = guideQuickActions
 	protected readonly communityLinks = guideCommunityLinks

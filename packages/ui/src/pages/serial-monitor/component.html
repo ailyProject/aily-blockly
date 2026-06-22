@@ -1,58 +1,71 @@
 <app-shell>
-  <div shell-actions>
-    <button hlmBtn variant="outline" size="sm" (click)="refresh()">Refresh</button>
-  </div>
+	<div shell-actions>
+		<button hlmBtn variant="outline" size="sm" (click)="refresh()">Refresh</button>
+		<button hlmBtn size="sm" [disabled]="loading() || busy()" (click)="toggleConnection()">
+			{{ state()?.session?.connected ? 'Disconnect' : 'Connect' }}
+		</button>
+		<button
+			hlmBtn
+			variant="outline"
+			size="sm"
+			[disabled]="loading() || busy() || !state()?.connectOptions?.path"
+			(click)="runUpload()"
+		>
+			Upload
+		</button>
+	</div>
 
-  <section class="serial-page">
-    @if (loading()) {
-      <article hlmCard class="serial-card">
-        <strong>Loading serial monitor snapshot...</strong>
-      </article>
-    } @else if (error()) {
-      <article hlmCard class="serial-card error">
-        <strong>Failed to load serial monitor state</strong>
-        <p>{{ error() }}</p>
-      </article>
-    } @else if (state(); as stateValue) {
-      <article hlmCard class="serial-card">
-        <header class="card-header">
-          <div>
-            <p class="eyebrow">Serial Runtime</p>
-            <h2>Connection Summary</h2>
-          </div>
-          <span hlmBadge>{{ serialModeLabel() }}</span>
-        </header>
+	<section class="serial-page">
+		@if (loading()) {
+		<article hlmCard class="serial-card"><strong>Loading serial monitor...</strong></article>
+		} @else if (error()) {
+		<article hlmCard class="serial-card error">
+			<strong>Failed to load serial monitor</strong>
+			<p>{{ error() }}</p>
+		</article>
+		} @else if (state(); as stateValue) {
+		<serial-monitor-connection-card
+			[state]="stateValue"
+			[busy]="busy()"
+			(choosePort)="choosePort($event)"
+			(chooseBaudRate)="chooseBaudRate($event)"
+		/>
 
-        <div class="metrics-grid">
-          <div><span>Baud</span><strong>{{ stateValue.baudRate }}</strong></div>
-          <div><span>Connect Baud</span><strong>{{ stateValue.connectBaudRate }}</strong></div>
-          <div><span>Auto Scroll</span><strong>{{ stateValue.autoScroll ? 'on' : 'off' }}</strong></div>
-          <div><span>Hex Input</span><strong>{{ stateValue.hexInput ? 'on' : 'off' }}</strong></div>
-          <div><span>Preview Port</span><strong>{{ stateValue.previewPort }}</strong></div>
-          <div><span>Quick Sends</span><strong>{{ stateValue.quickSendCount }}</strong></div>
-          <div><span>Desktop Serial</span><strong>{{ stateValue.desktopSerialAvailable ? 'ready' : 'missing' }}</strong></div>
-          <div><span>Serial Platform</span><strong>{{ stateValue.serialPlatform }}</strong></div>
-          <div><span>Detected Ports</span><strong>{{ stateValue.serialPortCount }}</strong></div>
-        </div>
-      </article>
+		<serial-monitor-quick-send-card
+			[quickSendList]="stateValue.quickSendList"
+			[connected]="!!stateValue.session?.connected"
+			[busy]="busy()"
+			(quickSend)="sendQuick($event)"
+		/>
 
-      <article hlmCard class="serial-card">
-        <header class="card-header">
-          <div>
-            <p class="eyebrow">Store + Layout</p>
-            <h2>Tool Placement</h2>
-          </div>
-        </header>
+		@if (uploadResult(); as uploadValue) {
+		<serial-monitor-upload-card
+			[uploadResult]="uploadValue"
+			[currentPort]="stateValue.connectOptions.path"
+			[busy]="busy()"
+			(reconnect)="reconnect()"
+			(refresh)="refresh()"
+			(retryUpload)="runUpload()"
+		/>
+		}
 
-        <div class="badge-row">
-          <span hlmBadge variant="secondary">toolbar {{ stateValue.toolbarAppCount }}</span>
-          <span hlmBadge variant="secondary">visible {{ stateValue.visibleToolbarAppCount }}</span>
-          <span hlmBadge variant="outline">default {{ stateValue.defaultToolbarAppCount }}</span>
-          <span hlmBadge variant="outline">merged {{ stateValue.mergedToolbarOrderCount }}</span>
-          <span hlmBadge variant="outline">toggled {{ stateValue.toggledToolbarAppCount }}</span>
-          <span hlmBadge variant="outline">reset {{ stateValue.resetToolbarAppCount }}</span>
-        </div>
-      </article>
-    }
-  </section>
+		<serial-monitor-stream-card
+			[state]="stateValue"
+			[messages]="messages()"
+			[inputValue]="inputValue()"
+			[busy]="busy()"
+			(inputValueChange)="inputValue.set($event)"
+			(onInputKeydown)="onInputKeydown($event)"
+			(toggleHexView)="toggleHexView()"
+			(toggleTimestamp)="toggleTimestamp()"
+			(toggleAutoScroll)="toggleAutoScroll()"
+			(clearMessages)="clearMessages()"
+			(toggleHexInput)="toggleHexInput()"
+			(toggleSendByEnter)="toggleSendByEnter()"
+			(toggleEndR)="toggleEndR()"
+			(toggleEndN)="toggleEndN()"
+			(send)="send()"
+		/>
+		}
+	</section>
 </app-shell>

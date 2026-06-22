@@ -1,0 +1,166 @@
+<app-shell>
+	<div shell-actions>
+		<button hlmBtn size="sm" variant="outline" (click)="refresh()">Refresh</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="importLocalLibrary()">
+			Import Local Library
+		</button>
+	</div>
+
+	<section class="page-shell">
+		@if (loading()) {
+		<article hlmCard class="panel">
+			<strong>Loading library status...</strong>
+		</article>
+		} @else if (error()) {
+		<article hlmCard class="panel">
+			<strong>Library manager unavailable</strong>
+			<p>{{ error() }}</p>
+		</article>
+		} @else if (!state()) {
+		<article hlmCard class="panel">
+			<strong>No opened project</strong>
+			<p>Open a Blockly project first to inspect its library status.</p>
+		</article>
+		} @else {
+		<article hlmCard class="panel">
+			<header class="panel-header">
+				<div>
+					<p class="eyebrow">Library Manager</p>
+					<h2>{{ state()!.projectPath }}</h2>
+				</div>
+				<div class="badge-row">
+					@if (state()!.boardId) {
+					<span hlmBadge variant="outline">board {{ state()!.boardId }}</span>
+					}
+					<span hlmBadge variant="outline">manifest {{ state()!.manifestField }}</span>
+					@if (npmRegistry()) {
+					<span hlmBadge variant="outline">registry {{ npmRegistry() }}</span>
+					}
+					<span hlmBadge>{{ state()!.declaredLibraries.length }} declared</span>
+					<span hlmBadge variant="secondary">
+						{{ declaredLibraryViews().filter(item => item.compatibility === 'incompatible').length }} incompatible
+					</span>
+					<span hlmBadge variant="secondary">{{ state()!.missingLibraries.length }} missing</span>
+				</div>
+			</header>
+
+			<div class="status-grid">
+				<div><span>package.json</span><strong>{{ state()!.hasPackageJson ? 'ready' : 'missing' }}</strong></div>
+				<div><span>project.abi</span><strong>{{ state()!.hasProjectDocument ? 'ready' : 'missing' }}</strong></div>
+				<div><span>ready libraries</span><strong>{{ state()!.readyLibraryPackages.length }}</strong></div>
+			</div>
+
+			<div class="section">
+				<label class="filter-box">
+					<span>Search libraries</span>
+					<input hlmInput [value]="libraryQuery()" (input)="updateLibraryQuery($event)" placeholder="oled, installed, rc522..." />
+				</label>
+				<div class="button-row">
+					<button hlmBtn size="sm" variant="outline" [disabled]="registrySearchBusy()" (click)="searchRegistryLibraries()">
+						{{ registrySearchBusy() ? 'Searching Registry...' : 'Search Registry' }}
+					</button>
+					<button hlmBtn size="sm" [variant]="scopeSelected('all') ? 'default' : 'outline'" (click)="selectLibraryScope('all')">
+						All
+					</button>
+					<button hlmBtn size="sm" variant="outline" (click)="focusCoreLibraries()">Core Libraries</button>
+					<button
+						hlmBtn
+						size="sm"
+						[variant]="scopeSelected('installed') ? 'default' : 'outline'"
+						(click)="selectLibraryScope('installed')"
+					>
+						Installed Only
+					</button>
+					<button
+						hlmBtn
+						size="sm"
+						[variant]="scopeSelected('missing') ? 'default' : 'outline'"
+						(click)="selectLibraryScope('missing')"
+					>
+						Missing
+					</button>
+					<button
+						hlmBtn
+						size="sm"
+						[variant]="scopeSelected('catalog') ? 'default' : 'outline'"
+						(click)="selectLibraryScope('catalog')"
+					>
+						Catalog
+					</button>
+				</div>
+			</div>
+
+			@if (statusMessage()) {
+			<p>{{ statusMessage() }}</p>
+			}
+
+			@if (pendingInstallPrompt(); as prompt) {
+			<div class="section prompt-card">
+				<strong>Compatibility Review</strong>
+				<p>
+					{{ prompt.displayName }} ({{ prompt.packageName }}) is not listed for board
+					<strong>{{ prompt.currentBoardId }}</strong>.
+				</p>
+				<p>Supported boards: {{ prompt.supportedBoards.join(', ') || 'none declared' }}</p>
+				<p>{{ prompt.compatibilityText }}</p>
+				<div class="button-row">
+					<button hlmBtn variant="outline" [disabled]="!!actionBusyKey()" (click)="cancelInstallPrompt()">Cancel</button>
+					<button hlmBtn [disabled]="!!actionBusyKey()" (click)="confirmInstallPrompt()">Continue Install</button>
+				</div>
+			</div>
+			}
+
+			<lib-manager-activity-section
+				[lastActionOutput]="lastActionOutput()"
+				[liveActionStatus]="liveActionStatus()"
+				[liveActionProgressPercent]="resolveLiveActionProgressPercent() ?? null"
+				[liveActionLatestLine]="resolveLiveActionLatestLine() ?? null"
+			/>
+
+			@if (showDeclaredSection()) {
+			<lib-manager-declared-section
+				[libraries]="filteredDeclaredLibraryViews()"
+				[actionBusyKey]="actionBusyKey()"
+				[versionLoadingPackage]="versionLoadingPackage()"
+				[libraryVersionsByPackage]="libraryVersionsByPackage()"
+				(loadVersions)="loadLibraryVersions($event)"
+				(restore)="requestRestoreLibrary($event.packageName, $event.version, $event.localPath)"
+				(remove)="removeLibrary($event)"
+			/>
+			}
+
+			@if (showMissingSection()) {
+			<lib-manager-missing-section
+				[libraries]="filteredMissingLibraries()"
+				[actionBusyKey]="actionBusyKey()"
+				[versionLoadingPackage]="versionLoadingPackage()"
+				[libraryVersionsByPackage]="libraryVersionsByPackage()"
+				(loadVersions)="loadLibraryVersions($event)"
+				(restore)="requestRestoreLibrary($event.packageName, $event.version, $event.localPath)"
+			/>
+			}
+
+			@if (showCatalogSection()) {
+			<lib-manager-catalog-section
+				[libraries]="catalogLibraryViews()"
+				[actionBusyKey]="actionBusyKey()"
+				[versionLoadingPackage]="versionLoadingPackage()"
+				[libraryVersionsByPackage]="libraryVersionsByPackage()"
+				(loadVersions)="loadLibraryVersions($event)"
+				(install)="requestRestoreLibrary($event.packageName, $event.version)"
+			/>
+			@if (registrySearchResults().length) {
+			<lib-manager-registry-section
+				[libraries]="registrySearchResults()"
+				[actionBusyKey]="actionBusyKey()"
+				[versionLoadingPackage]="versionLoadingPackage()"
+				[libraryVersionsByPackage]="libraryVersionsByPackage()"
+				(loadVersions)="loadLibraryVersions($event)"
+				(install)="requestRestoreLibrary($event.packageName, $event.version)"
+			/>
+			}
+			}
+		</article>
+		}
+	</section>
+</app-shell>

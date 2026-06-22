@@ -1,0 +1,42 @@
+.inspector {
+	min-width: 0;
+}
+
+.rail-card {
+	height: 100%;
+	background: var(--ui-panel);
+}
+
+.stack {
+	display: grid;
+	gap: 0.85rem;
+}
+
+.inline-icon {
+	width: 1rem;
+	height: 1rem;
+}
+
+.tool-row,
+.tool-copy {
+	display: flex;
+	gap: 0.75rem;
+}
+
+.tool-row {
+	align-items: center;
+	justify-content: space-between;
+	padding: 0.75rem 0.85rem;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) * 1.2);
+	background: color-mix(in srgb, var(--card) 84%, var(--ui-panel-muted));
+}
+
+.tool-row p {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.tool-row.compact {
+	justify-content: flex-start;
+}

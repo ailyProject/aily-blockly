@@ -1,0 +1,64 @@
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.panel-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.filter-box {
+	display: grid;
+	gap: 8px;
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.pagination-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.project-card {
+	display: grid;
+	gap: 8px;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.project-card span,
+.filter-box span {
+	color: var(--muted-foreground);
+}
+
+.tag-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}

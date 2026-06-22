@@ -3,7 +3,6 @@ import {
 	ChangeDetectionStrategy,
 	Component,
 	computed,
-	forwardRef,
 	input,
 	linkedSignal,
 	model,
@@ -16,18 +15,16 @@ import { lucideCheck } from '@ng-icons/lucide'
 import { BrnCheckbox } from '@spartan-ng/brain/checkbox'
 import { BrnFieldControlDescribedBy } from '@spartan-ng/brain/field'
 import { HlmIcon } from 'spartan/icon'
-import { hlm } from 'spartan/utils'
+
+import { createHlmCheckboxValueAccessor, HLM_CHECKBOX_HOST, HLM_CHECKBOX_TEMPLATE } from './hlm-checkbox.constants'
+import { resolveHlmCheckboxClass } from './hlm-checkbox.utils'
 
 import type { BooleanInput } from '@angular/cdk/coercion'
 import type { ControlValueAccessor } from '@angular/forms'
 import type { ChangeFn, TouchFn } from '@spartan-ng/brain/forms'
 import type { ClassValue } from 'clsx'
 
-export const HLM_CHECKBOX_VALUE_ACCESSOR = {
-	provide: NG_VALUE_ACCESSOR,
-	useExisting: forwardRef(() => HlmCheckbox),
-	multi: true
-}
+export const HLM_CHECKBOX_VALUE_ACCESSOR = createHlmCheckboxValueAccessor(() => HlmCheckbox)
 
 @Component({
 	selector: 'hlm-checkbox',
@@ -36,47 +33,13 @@ export const HLM_CHECKBOX_VALUE_ACCESSOR = {
 	viewProviders: [provideIcons({ lucideCheck })],
 	changeDetection: ChangeDetectionStrategy.OnPush,
 	hostDirectives: [BrnFieldControlDescribedBy],
-	host: {
-		class: 'contents peer',
-		'data-slot': 'checkbox',
-		'[attr.aria-label]': 'null',
-		'[attr.aria-labelledby]': 'null',
-		'[attr.data-disabled]': '_disabled() ? "" : null'
-	},
-	template: `
-		<brn-checkbox
-			[id]="inputId()"
-			[name]="name()"
-			[class]="_computedClass()"
-			[checked]="checked()"
-			[(indeterminate)]="indeterminate"
-			[disabled]="_disabled()"
-			[required]="required()"
-			[aria-label]="ariaLabel()"
-			[aria-labelledby]="ariaLabelledby()"
-			[aria-describedby]="ariaDescribedby()"
-			[forceInvalid]="forceInvalid()"
-			(checkedChange)="_handleChange($event)"
-			(touched)="_onTouched?.()"
-		>
-			@if (checked() || indeterminate()) {
-				<span class="flex items-center justify-center text-current transition-none">
-					<ng-icon hlm size="14px" name="lucideCheck" />
-				</span>
-			}
-		</brn-checkbox>
-	`
+	host: HLM_CHECKBOX_HOST,
+	template: HLM_CHECKBOX_TEMPLATE
 })
 export class HlmCheckbox implements ControlValueAccessor {
 	public readonly userClass = input<ClassValue>('', { alias: 'class' })
 
-	protected readonly _computedClass = computed(() =>
-		hlm(
-			'border-input dark:bg-input/30 data-checked:bg-primary data-checked:text-primary-foreground dark:data-checked:bg-primary data-checked:border-primary data-[matches-spartan-invalid=true]:aria-checked:border-primary data-[matches-spartan-invalid=true]:border-destructive dark:data-[matches-spartan-invalid=true]:border-destructive/50 focus-visible:border-ring focus-visible:ring-ring/50 data-[matches-spartan-invalid=true]:ring-destructive/20 dark:data-[matches-spartan-invalid=true]:ring-destructive/40 flex size-4 items-center justify-center rounded-[4px] border shadow-xs transition-shadow group-has-disabled/field:opacity-50 focus-visible:ring-3 data-[matches-spartan-invalid=true]:ring-3 peer shrink-0 cursor-default outline-none disabled:cursor-not-allowed disabled:opacity-50',
-			this.userClass(),
-			this._errorStateClass()
-		)
-	)
+	protected readonly _computedClass = computed(() => resolveHlmCheckboxClass(this.userClass(), this._errorStateClass()))
 
 	/** Used to set the id on the underlying brn element. */
 	public readonly inputId = input<string | null>(null)

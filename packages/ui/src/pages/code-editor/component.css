@@ -52,6 +52,36 @@
 	color: var(--muted-foreground);
 }
 
+.build-copy.error {
+	color: var(--destructive);
+}
+
+.command-box {
+	display: grid;
+	gap: 8px;
+}
+
+.button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.build-output {
+	min-height: 220px;
+	max-height: 320px;
+	overflow: auto;
+	margin: 0;
+	padding: 16px;
+	border-radius: 18px;
+	background: #0b1020;
+	color: #d7e4ff;
+	font-family: 'GeistMono', monospace;
+	font-size: 13px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+}
+
 @media (max-width: 960px) {
 	.code-page {
 		grid-template-columns: 1fr;

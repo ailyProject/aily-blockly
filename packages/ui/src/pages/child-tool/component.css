@@ -21,6 +21,14 @@
 	color: var(--muted-foreground);
 }
 
+.header-meta,
+.host-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
 .eyebrow {
 	font-size: 12px;
 	font-weight: 700;
@@ -48,6 +56,10 @@
 .empty-card span,
 .tool-card span {
 	color: var(--muted-foreground);
+}
+
+.error-card {
+	background: color-mix(in srgb, var(--destructive) 12%, var(--card));
 }
 
 .tool-grid {

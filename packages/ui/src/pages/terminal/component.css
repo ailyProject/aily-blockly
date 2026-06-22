@@ -1,0 +1,68 @@
+.terminal-page {
+	display: grid;
+	gap: 18px;
+}
+
+.terminal-card {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.terminal-card.error p,
+.eyebrow {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.card-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.card-header h2 {
+	margin: 2px 0 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.upload-summary-card {
+	display: grid;
+	gap: 6px;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.terminal-output {
+	min-height: 420px;
+	max-height: 60vh;
+	overflow: auto;
+	padding: 10px 12px;
+	border-radius: 18px;
+	background: #0b1020;
+	color: #d7e4ff;
+	font:
+		13px/1.45 'GeistMono',
+		ui-monospace,
+		monospace;
+}
+
+.terminal-shortcut {
+	font-size: 12px;
+	color: var(--muted-foreground);
+}

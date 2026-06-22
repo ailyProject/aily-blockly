@@ -1,0 +1,82 @@
+.serial-card {
+	display: grid;
+	gap: 18px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.card-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.card-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-foreground);
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.log-box {
+	max-height: 360px;
+	overflow: auto;
+	padding: 16px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+.log-item {
+	display: grid;
+	grid-template-columns: 56px 96px 1fr;
+	gap: 10px;
+	padding: 6px 0;
+	font-family: var(--font-mono, monospace);
+	font-size: 12px;
+	line-height: 1.6;
+	border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.log-dir,
+.log-time,
+.log-empty {
+	color: var(--muted-foreground);
+}
+
+.log-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.log-empty {
+	font-family: var(--font-mono, monospace);
+	font-size: 12px;
+}
+
+.input-box {
+	display: grid;
+	gap: 12px;
+}
+
+.serial-input {
+	min-height: 120px;
+	padding: 14px 16px;
+	border: 1px solid var(--border);
+	border-radius: 18px;
+	resize: vertical;
+	font-family: var(--font-mono, monospace);
+	background: transparent;
+}

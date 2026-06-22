@@ -1,0 +1,75 @@
+.panel-section {
+	display: grid;
+	gap: 16px;
+}
+
+.summary {
+	margin: 0;
+	color: var(--muted-foreground);
+	word-break: break-all;
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.metrics-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+	gap: 12px;
+}
+
+.metrics-grid div {
+	display: grid;
+	gap: 4px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.metrics-grid span,
+.file-card span {
+	color: var(--muted-foreground);
+}
+
+.search-item {
+	padding: 10px 12px;
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--muted) 60%, transparent);
+}
+
+.picker-group,
+.picker-model {
+	display: grid;
+	gap: 10px;
+}
+
+.file-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 12px;
+}
+
+.file-card {
+	display: grid;
+	gap: 6px;
+	padding: 14px 16px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.editor-box {
+	min-height: 180px;
+	width: 100%;
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--background) 80%, transparent);
+	font:
+		12px/1.55 'GeistMono',
+		ui-monospace,
+		monospace;
+	resize: vertical;
+}

@@ -1,0 +1,35 @@
+<article hlmCard class="editor-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Code</p>
+			<h2>Project Build Runner</h2>
+		</div>
+		<span hlmBadge [variant]="buildFailed() ? 'secondary' : 'default'">
+			{{ buildFailed() ? 'failed' : 'ready' }}
+		</span>
+	</header>
+
+	<label class="command-box">
+		<span>Project path</span>
+		<input hlmInput [value]="projectPath()" (input)="updateProjectPath($event)" />
+	</label>
+
+	@if (projectReloadMessage()) {
+	<div class="command-box notice-box">
+		<span>Lifecycle Notice</span>
+		<p>{{ projectReloadMessage() }}</p>
+		<button hlmBtn size="sm" variant="outline" [disabled]="projectReloadBusy()" (click)="reloadProjectState.emit()">
+			{{ projectReloadBusy() ? 'Reloading...' : 'Reload Project State' }}
+		</button>
+	</div>
+	}
+
+	<div class="list">
+		@for (project of recentProjects(); track project.path) {
+		<button class="list-item" type="button" (click)="chooseProject(project.path)">
+			<strong>{{ project.nickname || project.name }}</strong>
+			<span>{{ project.path }}</span>
+		</button>
+		}
+	</div>
+</article>

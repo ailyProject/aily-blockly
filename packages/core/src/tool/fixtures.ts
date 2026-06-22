@@ -35,6 +35,5 @@ const fallbackChildTools: Array<ChildToolItem> = [
 
 /**
  * 获取子工具 fallback 目录。
- * @returns {Array<ChildToolItem>}
  */
 export const getChildToolFallback = (): Array<ChildToolItem> => fallbackChildTools.map(item => ({ ...item }))

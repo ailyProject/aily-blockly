@@ -4,8 +4,7 @@ const isPowerFunction = (name: string) => /VCC|3V3|5V/.test(name)
 
 /**
  * 校验连线图安全性与基础合理性。
- * @param {ConnectionGraphData} data - 连线图数据
- * @returns {Array<ConnectionValidationResult>}
+ * @param data - 连线图数据
  */
 export const validateConnectionGraph = (data: ConnectionGraphData): Array<ConnectionValidationResult> => {
 	const results: Array<ConnectionValidationResult> = []

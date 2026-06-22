@@ -1,0 +1,20 @@
+<aside class="rail">
+	<section hlmCard class="rail-card">
+		<div hlmCardHeader>
+			<h2 hlmCardTitle>Workbench</h2>
+			<p hlmCardDescription>structure inspired by the legacy desktop shell</p>
+		</div>
+		<div hlmCardContent class="stack">
+			<label class="search">
+				<ng-icon name="lucideSearch" class="inline-icon"></ng-icon>
+				<input hlmInput placeholder="Search boards, tools, dialogs..." />
+			</label>
+			@for (item of navigationCards(); track item.title) {
+			<button class="nav-item">
+				<span>{{ item.title }}</span>
+				<span hlmBadge [variant]="item.tone">{{ item.detail }}</span>
+			</button>
+			}
+		</div>
+	</section>
+</aside>

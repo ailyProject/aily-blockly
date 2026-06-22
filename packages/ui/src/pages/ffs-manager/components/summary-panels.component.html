@@ -1,0 +1,43 @@
+@if (state(); as viewState) {
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Flash FS</p>
+			<h2>Transport Snapshot</h2>
+		</div>
+	</header>
+	<div class="metric-grid">
+		<div><span>Port</span><strong>{{ viewState.serial.port }}</strong></div>
+		<div><span>Baud</span><strong>{{ viewState.serial.baudRate }}</strong></div>
+	</div>
+</article>
+
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Prepared Connect</p>
+			<h2>ESP Session Seed</h2>
+		</div>
+	</header>
+	<div class="metric-grid">
+		<div><span>Path</span><strong>{{ viewState.connect.path }}</strong></div>
+		<div><span>Baud</span><strong>{{ viewState.connect.baudRate }}</strong></div>
+	</div>
+</article>
+
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Resolved Baud</p>
+			<h2>Bridge Policy</h2>
+		</div>
+	</header>
+	<div class="metric-grid">
+		<div><span>Requested</span><strong>{{ viewState.baud.requestedBaudRate }}</strong></div>
+		<div><span>Resolved</span><strong>{{ viewState.baud.resolvedBaudRate }}</strong></div>
+		<div><span>Bridge</span><strong>{{ viewState.baud.bridgeName }}</strong></div>
+		<div><span>Capped</span><strong>{{ viewState.baud.capped ? 'yes' : 'no' }}</strong></div>
+		<div><span>Visible Ports</span><strong>{{ viewState.serialPortCount }}</strong></div>
+	</div>
+</article>
+}

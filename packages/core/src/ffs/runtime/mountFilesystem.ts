@@ -1,8 +1,9 @@
-import { buildFfsMountPlan, listMountedFfsFiles, readMountedFfsUsage } from '..'
+import { buildFfsMountPlan } from '../mount'
 import { createFatfsClient, createLittlefsClient, createSpiffsClient } from './clients'
+import { listMountedFfsFiles, readMountedFfsUsage } from './filesystem'
 
-import type { FfsMountedFilesystem, FfsPartitionInfo } from '..'
-import type { FfsRuntimeClient } from './filesystem.types'
+import type { FfsMountedFilesystem, FfsPartitionInfo } from '../types'
+import type { FfsRuntimeClient } from './filesystem/types'
 
 /**
  * 挂载分区镜像并返回统一文件系统会话。

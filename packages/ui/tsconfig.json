@@ -15,6 +15,7 @@
 			"@/*": ["./src/*"],
 			"@core": ["../core/src/index.ts"],
 			"@desktop": ["../desktop/src/index.ts"],
+			"shared": ["../shared/src/index.ts"],
 			"spartan/*": ["./src/components/ui/*/src/index.ts"]
 		}
 	},

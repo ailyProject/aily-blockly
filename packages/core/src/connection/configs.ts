@@ -44,10 +44,9 @@ const buildSimilarComponentsFromCatalog = (packagePath: string, currentFullId: s
 
 /**
  * 收集连线图所需的组件配置映射。
- * @param {string} boardPackagePath - 开发板包路径
- * @param {ConnectionGraphData} connectionData - 连线图数据
- * @param {string} [packagesBasePath] - 包基础目录
- * @returns {Record<string, ConnectionPinmapConfig>}
+ * @param boardPackagePath - 开发板包路径
+ * @param connectionData - 连线图数据
+ * @param packagesBasePath - 包基础目录
  */
 export const collectConnectionComponentConfigs = (
 	boardPackagePath: string,

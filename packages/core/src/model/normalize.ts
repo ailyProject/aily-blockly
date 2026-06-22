@@ -28,15 +28,13 @@ const normalizeDeployTarget = (authorName: string) =>
 
 /**
  * 归一化模型任务类型。
- * @param {string | undefined} task - 远端任务编号
- * @returns {ModelCatalogTask}
+ * @param task - 远端任务编号
  */
 export const normalizeModelTask = (task: string | undefined): ModelCatalogTask => modelTaskMap[task || ''] || 'unknown'
 
 /**
  * 归一化远端模型列表条目。
- * @param {RemoteModelListItem} item - 远端模型列表条目
- * @returns {ModelCatalogItem}
+ * @param item - 远端模型列表条目
  */
 export const normalizeModelCatalogItem = (item: RemoteModelListItem): ModelCatalogItem => ({
 	id: item.id,
@@ -64,8 +62,7 @@ export const normalizeModelCatalogItem = (item: RemoteModelListItem): ModelCatal
 
 /**
  * 归一化远端模型详情。
- * @param {RemoteModelDetail} detail - 远端模型详情
- * @returns {ModelCatalogDetail}
+ * @param detail - 远端模型详情
  */
 export const normalizeModelCatalogDetail = (detail: RemoteModelDetail): ModelCatalogDetail => ({
 	...normalizeModelCatalogItem(detail),

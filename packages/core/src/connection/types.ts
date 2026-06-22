@@ -280,6 +280,33 @@ export interface ConnectionPinmapCatalog {
 }
 
 /**
+ * 库目录的 pinmap catalog 状态。
+ */
+export type ConnectionLibraryCatalogStatus =
+	/** 当前库目录下已经存在可读的 pinmap_catalog.json。 */
+	| 'available'
+	/** 当前库目录下还缺少 pinmap_catalog.json。 */
+	| 'missing_catalog'
+
+/**
+ * 当前依赖目录中的库摘要。
+ */
+export interface ConnectionLibraryCatalogEntry {
+	/** 库包标识。 */
+	packageSlug: string
+	/** 库目录绝对路径。 */
+	packagePath: string
+	/** 面向用户展示的库名称。 */
+	displayName: string
+	/** 当前是否存在 pinmap catalog。 */
+	hasPinmapCatalog: boolean
+	/** 当前 catalog 状态。 */
+	catalogStatus: ConnectionLibraryCatalogStatus
+	/** 已读取到的 pinmap catalog；缺失时不返回。 */
+	catalog?: ConnectionPinmapCatalog
+}
+
+/**
  * pinmap 标识解析结果
  */
 export interface ConnectionPinmapReference {
@@ -303,4 +330,62 @@ export interface ConnectionPromptBundle {
 	userPrompt: string
 	/** 当前参与 prompt 的引脚摘要 */
 	pinSummaries: Array<ConnectionPinSummary>
+}
+
+/**
+ * 生成 pinmap 时参考的库信息。
+ */
+export interface ConnectionLibraryInfo {
+	/** README 摘要文本。 */
+	readme?: string
+	/** 示例代码摘要。 */
+	exampleCode?: string
+	/** 包描述文件内容。 */
+	packageJson?: unknown
+	/** 当前目录下已有的 pinmap 文件列表。 */
+	existingPinmaps?: Array<string>
+}
+
+/**
+ * pinmap 保存结果。
+ */
+export interface ConnectionPinmapSaveResult {
+	/** 当前保存是否成功。 */
+	success: boolean
+	/** 保存成功时的 pinmap 文件路径。 */
+	filePath?: string
+	/** 回写后的 catalog 文件路径。 */
+	catalogPath?: string
+	/** 实际命中的包目录路径。 */
+	resolvedPackagePath?: string
+	/** 保存失败时的错误文本。 */
+	error?: string
+}
+
+/**
+ * 当前工程的连线资产状态。
+ */
+export interface ConnectionWorkspaceState {
+	/** 当前项目依赖根路径。 */
+	packagesBasePath: string
+	/** 当前项目声明的开发板包名。 */
+	boardPackageName: string
+	/** 当前开发板包在 node_modules 中的绝对路径。 */
+	boardPackagePath: string
+	/** 连线图 JSON 文件路径。 */
+	jsonPath: string
+	/** AWS 源文件路径。 */
+	awsPath: string
+	/** 当前是否存在连线图 JSON。 */
+	graphExists: boolean
+	/** 当前是否存在 AWS 源文件。 */
+	awsExists: boolean
+	/** 当前连线图描述。 */
+	graphDescription: string
+	/** 当前连线图中的组件数量。 */
+	componentCount: number
+	/** 当前连线数量。 */
+	connectionCount: number
+	/** 当前 AWS 文本行数。 */
+	awsLineCount: number
 }

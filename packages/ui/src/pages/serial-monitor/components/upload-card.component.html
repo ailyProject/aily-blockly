@@ -1,0 +1,44 @@
+<article hlmCard class="serial-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Upload</p>
+			<h2>{{ uploadResult().channel }}</h2>
+		</div>
+		<span hlmBadge>{{ uploadResult().status }}</span>
+	</header>
+	<div class="metrics-grid">
+		<div><span>Duration</span><strong>{{ uploadResult().durationMs }} ms</strong></div>
+		<div><span>Port</span><strong>{{ uploadResult().port || currentPort() }}</strong></div>
+		<div><span>Artifact</span><strong>{{ uploadResult().artifactPath || 'n/a' }}</strong></div>
+		<div><span>Phase</span><strong>{{ uploadResult().latestPhaseText || 'n/a' }}</strong></div>
+		<div><span>Status</span><strong>{{ uploadResult().statusText || uploadResult().status }}</strong></div>
+	</div>
+	<p class="build-copy">{{ uploadResult().message }}</p>
+	@if (uploadResult().error) {
+	<p class="build-copy error">{{ uploadResult().error }}</p>
+	}
+	@if (uploadResult().recoveryHint) {
+	<p class="build-copy">{{ uploadResult().recoveryHint }}</p>
+	}
+	@if (uploadResult().recoveryActions) {
+	<div class="badge-row">
+		@if (uploadResult().recoveryActions?.shouldReconnect) {
+		<button hlmBtn size="sm" variant="outline" [disabled]="busy()" (click)="reconnect.emit()">Reconnect Serial</button>
+		}
+		@if (uploadResult().recoveryActions?.shouldSelectPort) {
+		<button hlmBtn size="sm" variant="outline" [disabled]="busy()" (click)="refresh.emit()">Refresh Ports</button>
+		}
+		@if (uploadResult().recoveryActions?.canRetry) {
+		<button hlmBtn size="sm" variant="outline" [disabled]="busy()" (click)="retryUpload.emit()">Retry Upload</button>
+		}
+	</div>
+	}
+	@if (uploadResult().logs.length) {
+		@for (log of uploadResult().logs; track log.step) {
+		<div class="input-box">
+			<strong>{{ log.step }}</strong>
+			<pre class="serial-input">{{ log.stdout || log.stderr || 'No step output.' }}</pre>
+		</div>
+		}
+	}
+</article>

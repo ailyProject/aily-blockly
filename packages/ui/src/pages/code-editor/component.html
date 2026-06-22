@@ -1,36 +1,42 @@
 @if (state(); as result) {
-  <section class="code-page">
-    <article hlmCard class="editor-card">
-      <header class="card-header">
-        <div>
-          <p class="eyebrow">Code</p>
-          <h2>Editor Diagnostics</h2>
-        </div>
-        <span hlmBadge [variant]="result.errorCount === 0 ? 'default' : 'secondary'">
-          {{ result.errorCount === 0 ? 'clean' : 'issues' }}
-        </span>
-      </header>
-
-      <pre class="code-preview">void setup() &#123;
-  Serial.begin(115200)
-&#125;</pre>
-    </article>
-
-    <article hlmCard class="editor-card">
-      <header class="card-header">
-        <div>
-          <p class="eyebrow">Build</p>
-          <h2>Parsed Lint Result</h2>
-        </div>
-      </header>
-
-      <div class="metric"><span>Mode</span><strong>{{ result.lintMode }}</strong></div>
-      <div class="metric"><span>Errors</span><strong>{{ result.errorCount }}</strong></div>
-      <div class="metric"><span>Warnings</span><strong>{{ result.warningCount }}</strong></div>
-      <div class="metric"><span>Execution</span><strong>{{ result.executionTime }} ms</strong></div>
-      <div class="metric"><span>ABI Blocks</span><strong>{{ result.parsedBlockCount }}</strong></div>
-      <div class="metric"><span>ABI Length</span><strong>{{ result.stringifiedLength }}</strong></div>
-      <p class="build-copy">{{ compileSummary() }}</p>
-    </article>
-  </section>
+<section class="code-page">
+	<code-editor-project-panel
+		[recentProjects]="result.recentProjects"
+		[projectPath]="projectPath()"
+		[buildFailed]="buildResult()?.success === false"
+		[projectReloadMessage]="projectReloadMessage()"
+		[projectReloadBusy]="projectReloadBusy()"
+		(projectPathChange)="pageActions.updateProjectPathValue($event)"
+		(projectSelect)="pageActions.chooseProject($event)"
+		(reloadProjectState)="pageActions.reloadProjectState()"
+	/>
+	<code-editor-build-panel
+		[runtimeInfo]="runtimeInfo()"
+		[state]="state()"
+		[serialPort]="serialPort()"
+		[sourceCode]="sourceCode()"
+		[buildPlan]="buildPlan()"
+		[buildResult]="buildResult()"
+		[uploadPlan]="uploadPlan()"
+		[bleUploadPlan]="bleUploadPlan()"
+		[uploadResult]="uploadResult()"
+		[bleDevice]="bleDevice()"
+		[bleDevices]="bleDevices()"
+		[bleUploadProgress]="bleUploadProgress()"
+		[bleBridgeAvailable]="bleBridgeAvailable()"
+		[buildError]="buildError()"
+		[buildBusy]="buildBusy()"
+		[uploadBusy]="uploadBusy()"
+		(serialPortChange)="pageActions.updateSerialPortValue($event)"
+		(sourceCodeChange)="pageActions.updateSourceCode($event)"
+		(refreshPlan)="pageActions.refreshPlan()"
+		(runBuild)="pageActions.runBuild()"
+		(runUpload)="pageActions.runUpload()"
+		(selectBleDevice)="pageActions.selectBleDevice()"
+		(reconnectBleDevice)="pageActions.reconnectBleDevice()"
+		(prepareBleUpload)="pageActions.prepareBleUpload()"
+		(runBleUpload)="pageActions.runBleUpload()"
+		(selectVisibleBleDevice)="pageActions.selectVisibleBleDevice($event)"
+	/>
+</section>
 }

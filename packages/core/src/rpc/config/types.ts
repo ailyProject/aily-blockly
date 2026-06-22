@@ -30,6 +30,8 @@ export interface ConfigSummary {
 	appDataPathTemplate: string
 	/** 结合用户目录解析后的应用数据路径。 */
 	appDataPath: string
+	/** 当前区域解析出的 npm registry。 */
+	npmRegistry: string
 	/** 当前工具栏应用标识列表。 */
 	toolbarAppIds: Array<string>
 	/** 当前跳过更新的版本列表。 */

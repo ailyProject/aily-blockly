@@ -1,0 +1,109 @@
+.editor-panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.panel-header h3,
+.eyebrow,
+.field span,
+.error {
+	margin: 0;
+}
+
+.eyebrow,
+.field span {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.field {
+	display: grid;
+	gap: 8px;
+}
+
+.details-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 10px;
+}
+
+.details-grid > div {
+	display: grid;
+	gap: 4px;
+	padding: 12px 14px;
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.details-grid strong {
+	font-size: 12px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.detail-link {
+	color: var(--primary);
+	word-break: break-word;
+}
+
+.textarea {
+	min-height: 120px;
+	padding: 12px 14px;
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	background: transparent;
+	resize: vertical;
+}
+
+.badge-row,
+.button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.cover {
+	width: 100%;
+	max-width: 420px;
+	aspect-ratio: 2 / 1;
+	object-fit: cover;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--background) 72%, transparent);
+}
+
+.cover-note {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.upload-label {
+	position: relative;
+	overflow: hidden;
+	cursor: pointer;
+}
+
+.hidden-input {
+	position: absolute;
+	inset: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.error {
+	color: var(--destructive);
+}

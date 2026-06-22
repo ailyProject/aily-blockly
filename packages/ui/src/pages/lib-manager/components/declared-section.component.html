@@ -1,0 +1,76 @@
+<div class="section">
+	<strong>Declared Libraries</strong>
+	@if (libraries().length) {
+	<div class="list">
+		@for (library of libraries(); track library.name) {
+		<div class="list-item">
+			<strong>{{ library.displayName || library.name }}</strong>
+			<span>{{ library.name }}</span>
+			<span>version {{ library.version || 'unknown' }}</span>
+			<span>source {{ library.sourceLabel }}</span>
+			@if (library.localPath) {
+			<span>{{ library.localPath }}</span>
+			}
+			<span>{{ library.ready ? 'ready' : 'not ready' }}</span>
+			<span>{{ library.compatibilityText }}</span>
+			@if (library.tags.length) {
+			<div class="chip-row">
+				@for (tag of library.tags; track tag) {
+				<span hlmBadge variant="outline">{{ tag }}</span>
+				}
+			</div>
+			}
+			<div class="button-row">
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="loadVersions.emit(library.name)">
+					{{ versionLoadingPackage() === library.name ? 'Loading Versions...' : 'Load Versions' }}
+				</button>
+				@if (!library.ready) {
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="restore.emit({ packageName: library.name, version: library.version, localPath: library.localPath })"
+				>
+					{{ actionBusy('install', library.name) ? 'Restoring...' : 'Restore' }}
+				</button>
+				}
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="remove.emit(library.name)"
+				>
+					{{ actionBusy('remove', library.name) ? 'Removing...' : 'Remove' }}
+				</button>
+			</div>
+			@if (getLibraryVersions(library.name); as versionState) {
+			<div class="chip-row">
+				@if (versionState.latestVersion) {
+				<span hlmBadge>latest {{ versionState.latestVersion }}</span>
+				}
+				@for (version of versionState.versions.slice(0, 8); track version) {
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="restore.emit({ packageName: library.name, version, localPath: library.localPath })"
+				>
+					{{ version }}
+				</button>
+				}
+				@if (versionState.error) {
+				<span>{{ versionState.error }}</span>
+				}
+			</div>
+			}
+		</div>
+		}
+	</div>
+	} @else {
+	<p>No declared library matches the current filter.</p>
+	}
+</div>
+

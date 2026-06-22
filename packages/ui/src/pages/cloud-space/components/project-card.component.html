@@ -1,0 +1,43 @@
+<article class="project-card">
+	@if (item().imageUrl) {
+	<img class="cover" [src]="item().imageUrl" [alt]="(item().nickname || item().name) + ' cover'" />
+	}
+	<strong>{{ item().nickname || item().name }}</strong>
+	<span>{{ item().description || 'No description' }}</span>
+	<div class="badge-row">
+		@if (currentProject()) {
+		<span hlmBadge>current project</span>
+		}
+		@if (item().board) {
+		<span hlmBadge>{{ item().board }}</span>
+		} @if (item().isTemplate) {
+		<span hlmBadge variant="outline">template</span>
+		} @if (item().isPublished) {
+		<span hlmBadge variant="secondary">public</span>
+		}
+	</div>
+	@if (item().tags.length) {
+	<div class="tag-row">
+		@for (tag of item().tags; track tag) {
+		<span hlmBadge variant="outline">{{ tag }}</span>
+		}
+	</div>
+	}
+	<button hlmBtn size="sm" variant="outline" [disabled]="importBusy()" (click)="triggerImport()">
+		{{ importBusy() ? 'Importing...' : 'Import' }}
+	</button>
+	@if (showActions()) {
+	<div class="action-row">
+		<button hlmBtn size="sm" variant="outline" [disabled]="importBusy()" (click)="triggerEdit()">Edit</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="publishBusy() || importBusy()" (click)="triggerAction(visibilityAction)">
+			{{ publishBusy() ? 'Working...' : item().isPublished ? 'Unpublish' : 'Publish' }}
+		</button>
+		<button hlmBtn size="sm" variant="outline" [disabled]="templateBusy() || importBusy()" (click)="triggerAction(templateAction)">
+			{{ templateBusy() ? 'Working...' : item().isTemplate ? 'Unset Template' : 'Set Template' }}
+		</button>
+		<button hlmBtn size="sm" variant="destructive" [disabled]="deleteBusy() || importBusy()" (click)="triggerAction('delete')">
+			{{ deleteBusy() ? 'Deleting...' : 'Delete' }}
+		</button>
+	</div>
+	}
+</article>

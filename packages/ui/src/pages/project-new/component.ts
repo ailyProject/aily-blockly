@@ -1,42 +1,77 @@
-import { Component, computed, inject, OnInit, signal } from '@angular/core'
-import { HlmBadgeImports } from 'spartan/badge'
-import { HlmButtonImports } from 'spartan/button'
+import { Component, computed, inject, OnInit } from '@angular/core'
+import { Router } from '@angular/router'
 import { HlmCardImports } from 'spartan/card'
-import { HlmInputImports } from 'spartan/input'
 
-import { injectCore } from '@/core-service'
+import { getCore } from '@/utils/core'
+import { getDesktop, loadDesktopHostRuntimeInfo, selectDesktopDirectory } from '@/utils/desktop'
 
+import { createProjectNewFormActions, createProjectNewProjectActions } from './actions'
+import { createProjectNewPageState } from './component.state'
 import {
-	projectNewBoardOptions,
-	projectNewInitialName,
-	projectNewRecentConfig,
-	projectNewSeparator,
-	projectNewUserDocuments
-} from './data'
-
-import type { ProjectNewRecentItem } from './types'
+	ProjectNewBoardPanelComponent,
+	ProjectNewRecentPanelComponent,
+	ProjectNewSetupPanelComponent,
+	ProjectNewTemplatePanelComponent
+} from './components'
+import { projectNewConfig, projectNewSeparator, projectNewUserDocuments } from './data'
+import { loadProjectNewDefaults } from './runtime'
 
 @Component({
 	selector: 'project-new-page',
-	imports: [HlmBadgeImports, HlmButtonImports, HlmCardImports, HlmInputImports],
+	imports: [
+		HlmCardImports,
+		ProjectNewBoardPanelComponent,
+		ProjectNewRecentPanelComponent,
+		ProjectNewSetupPanelComponent,
+		ProjectNewTemplatePanelComponent
+	],
 	templateUrl: './component.html',
 	styleUrl: './component.css'
 })
 export class ProjectNewPageComponent implements OnInit {
-	private readonly core = injectCore()
-
-	protected readonly loading = signal(true)
-	protected readonly error = signal<string | null>(null)
-	protected readonly projectName = signal(projectNewInitialName)
-	protected readonly selectedBoardName = signal(projectNewBoardOptions[0]?.displayName ?? 'XIAO ESP32S3')
-	protected readonly rootPath = signal('')
-	protected readonly resolvedProjectPath = signal('')
-	protected readonly recentProjects = signal<Array<ProjectNewRecentItem>>([])
-	protected readonly pathConflict = signal<boolean | null>(null)
-	protected readonly boardOptions = projectNewBoardOptions
-	protected readonly canPreview = computed(() => this.rootPath().length > 0 && this.projectName().trim().length > 0)
+	private readonly core = getCore()
+	private readonly desktop = getDesktop()
+	private readonly router = inject(Router)
+	private readonly state = createProjectNewPageState()
+	protected readonly loading = this.state.loading
+	protected readonly error = this.state.error
+	protected readonly authToken = this.state.authToken
+	protected readonly projectName = this.state.projectName
+	protected readonly selectedBoardName = this.state.selectedBoardName
+	protected readonly rootPath = this.state.rootPath
+	protected readonly resolvedProjectPath = this.state.resolvedProjectPath
+	protected readonly recentProjects = this.state.recentProjects
+	protected readonly templates = this.state.templates
+	protected readonly hasExamples = this.state.hasExamples
+	protected readonly selectedTemplateId = this.state.selectedTemplateId
+	protected readonly pathConflict = this.state.pathConflict
+	protected readonly nameValidationMessage = this.state.nameValidationMessage
+	protected readonly importBusy = this.state.importBusy
+	protected readonly importMessage = this.state.importMessage
+	protected readonly templateSourceMode = this.state.templateSourceMode
+	protected readonly runtimeInfo = this.state.runtimeInfo
+	protected readonly boardOptions = this.state.boardOptions
+	protected readonly selectedTemplate = this.state.selectedTemplate
+	private readonly signals = this.state.signals
+	private readonly formActions = createProjectNewFormActions({
+		core: this.core,
+		desktop: this.desktop,
+		signals: this.signals,
+		boardOptions: this.boardOptions,
+		projectNewSeparator,
+		loadDesktopHostRuntimeInfo,
+		selectDesktopDirectory
+	})
+	private readonly projectActions = createProjectNewProjectActions({
+		core: this.core,
+		router: this.router,
+		signals: this.signals,
+		boardOptions: this.boardOptions,
+		selectedTemplate: () => this.selectedTemplate()
+	})
 
 	async ngOnInit() {
+		await this.formActions.loadRuntimeInfo()
 		await this.refresh()
 	}
 
@@ -45,17 +80,16 @@ export class ProjectNewPageComponent implements OnInit {
 		this.error.set(null)
 
 		try {
-			const [rootPath, recentProjects] = await Promise.all([
-				this.core.project.getDefaultProjectRootPath.query({
-					userDocuments: projectNewUserDocuments,
-					separator: projectNewSeparator
-				}),
-				this.core.project.getRecentProjects.query({ config: projectNewRecentConfig })
-			])
-
-			this.rootPath.set(rootPath)
-			this.recentProjects.set(recentProjects)
-			await this.preview()
+			const defaults = await loadProjectNewDefaults(this.core, {
+				userDocuments: this.runtimeInfo()?.documentsPath || projectNewUserDocuments,
+				separator: this.runtimeInfo()?.pathSeparator || projectNewSeparator,
+				config: projectNewConfig,
+				runtimeInfo: this.runtimeInfo()
+			})
+			this.rootPath.set(defaults.rootPath)
+			this.recentProjects.set(defaults.recentProjects)
+			await this.formActions.preview()
+			await this.formActions.refreshTemplates()
 		} catch (error) {
 			this.error.set((error as Error).message)
 		} finally {
@@ -63,31 +97,23 @@ export class ProjectNewPageComponent implements OnInit {
 		}
 	}
 
-	protected updateProjectName(event: Event) {
-		this.projectName.set((event.target as HTMLInputElement).value)
-		void this.preview()
-	}
-
-	protected async preview() {
-		if (!this.canPreview()) return
-
-		const path = await this.core.project.resolveProjectPath.query({
-			basePath: this.rootPath(),
-			name: this.projectName().trim(),
-			separator: projectNewSeparator
-		})
-
-		this.resolvedProjectPath.set(path)
-		this.pathConflict.set(this.recentProjects().some(item => item.path === path))
-	}
-
-	protected chooseBoard(boardName: string) {
-		this.selectedBoardName.set(boardName)
-	}
-
-	protected useRecentProject(project: ProjectNewRecentItem) {
-		this.projectName.set(project.nickname || project.name)
-		this.resolvedProjectPath.set(project.path)
-		this.pathConflict.set(true)
-	}
+	protected readonly updateProjectName = this.formActions.updateProjectName
+	protected readonly updateAuthToken = this.formActions.updateAuthToken
+	protected readonly updateProjectNameValue = this.formActions.updateProjectNameValue
+	protected readonly updateAuthTokenValue = this.formActions.updateAuthTokenValue
+	protected readonly selectTemplateSourceMode = this.formActions.selectTemplateSourceMode
+	protected readonly chooseBoard = this.formActions.chooseBoard
+	protected readonly chooseRootPath = this.formActions.chooseRootPath
+	protected readonly useRecentProject = this.formActions.useRecentProject
+	protected readonly chooseTemplate = this.formActions.chooseTemplate
+	protected readonly suggestAvailableName = this.formActions.suggestAvailableName
+	protected readonly createBlankProject = this.projectActions.createBlankProject
+	protected readonly importSelectedTemplate = this.projectActions.importSelectedTemplate
+	protected readonly canCreateBlankProject = computed(
+		() =>
+			!this.importBusy() &&
+			this.pathConflict() !== true &&
+			!this.nameValidationMessage() &&
+			!!this.runtimeInfo()?.appDataPath
+	)
 }

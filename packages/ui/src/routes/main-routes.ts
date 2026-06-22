@@ -13,6 +13,10 @@ export const mainRoutes: Routes = [
 				loadComponent: () => import('@/pages/guide/component').then(module => module.GuidePageComponent)
 			},
 			{
+				path: 'project-open',
+				loadComponent: () => import('@/pages/project-open/component').then(module => module.ProjectOpenPageComponent)
+			},
+			{
 				path: 'project-new',
 				loadComponent: () => import('@/pages/project-new/component').then(module => module.ProjectNewPageComponent)
 			},
@@ -41,6 +45,10 @@ export const mainRoutes: Routes = [
 			{
 				path: 'code-editor',
 				loadComponent: () => import('@/pages/code-editor/component').then(module => module.CodeEditorPageComponent)
+			},
+			{
+				path: 'lib-manager',
+				loadComponent: () => import('@/pages/lib-manager/component').then(module => module.LibManagerPageComponent)
 			}
 		]
 	}

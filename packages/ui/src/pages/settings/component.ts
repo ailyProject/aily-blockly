@@ -1,10 +1,13 @@
-import { Component, OnInit, signal } from '@angular/core'
+import { Component, inject, OnInit, signal } from '@angular/core'
+import { Router } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
+import { closeProjectInEditor } from '@/runtime/project-routing'
+import { getCurrentProjectPath } from '@/runtime/project-session'
+import { getCore } from '@/utils/core'
 import { config } from '@/workspace'
 
 import type { SettingsSnapshot } from './types'
@@ -16,11 +19,13 @@ import type { SettingsSnapshot } from './types'
 	styleUrl: './component.css'
 })
 export class SettingsPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
+	private readonly router = inject(Router)
 
 	protected readonly state = signal<SettingsSnapshot | null>(null)
 	protected readonly loading = signal(true)
 	protected readonly error = signal<string | null>(null)
+	protected readonly closeBusy = signal(false)
 
 	async ngOnInit() {
 		await this.refresh()
@@ -31,16 +36,19 @@ export class SettingsPageComponent implements OnInit {
 		this.error.set(null)
 
 		try {
-			const [configSummary, recentProjects, recentModels, onboarding, resolvedModel] = await Promise.all([
-				this.core.config.get.query({ config, fallbackLanguage: config.lang }),
-				this.core.project.getRecentProjects.query({ config }),
-				this.core.project.getRecentModelProjects.query({ config }),
-				this.core.onboarding.getOnboarding.query({ config }),
-				this.core.config.resolveModel.query({
-					config,
-					enabledModels: []
-				})
-			])
+			const projectPath = getCurrentProjectPath()
+			const [configSummary, recentProjects, recentModels, onboarding, resolvedModel, projectLifecycle] =
+				await Promise.all([
+					this.core.config.get.query({ config, fallbackLanguage: config.lang }),
+					this.core.project.getRecentProjects.query({ config }),
+					this.core.project.getRecentModelProjects.query({ config }),
+					this.core.onboarding.getOnboarding.query({ config }),
+					this.core.config.resolveModel.query({
+						config,
+						enabledModels: []
+					}),
+					projectPath ? this.core.project.getLifecycleStatus.query({ projectPath }) : Promise.resolve(null)
+				])
 
 			this.state.set({
 				selectedLanguage: configSummary.selectedLanguage,
@@ -51,6 +59,53 @@ export class SettingsPageComponent implements OnInit {
 				selectedModel: resolvedModel.currentModel?.name ?? config.aiChatModel?.name ?? null,
 				recentProjectCount: recentProjects.length,
 				recentModelProjectCount: recentModels.length,
+				...(projectLifecycle
+					? {
+							projectLifecycle: {
+								projectPath: projectLifecycle.projectPath,
+								editorRoute: projectLifecycle.editorRoute,
+								hasPackageJson: projectLifecycle.hasPackageJson,
+								hasProjectDocument: projectLifecycle.hasProjectDocument,
+								hasTempDocument: projectLifecycle.hasTempDocument,
+								hasMutationLock: projectLifecycle.hasMutationLock,
+								...(projectLifecycle.mutationLockStale ? { mutationLockStale: true } : {}),
+								...(projectLifecycle.hasMutationLock && projectLifecycle.mutationLockOwner
+									? { mutationLockOwner: projectLifecycle.mutationLockOwner }
+									: {}),
+								...(typeof projectLifecycle.mutationLockPid === 'number'
+									? { mutationLockPid: projectLifecycle.mutationLockPid }
+									: {}),
+								hasOpenSessionLock: projectLifecycle.hasOpenSessionLock,
+								...(projectLifecycle.openSessionLockStale ? { openSessionLockStale: true } : {}),
+								...(projectLifecycle.hasOpenSessionLock && projectLifecycle.openSessionLockOwner
+									? { openSessionLockOwner: projectLifecycle.openSessionLockOwner }
+									: {}),
+								...(typeof projectLifecycle.openSessionLockPid === 'number'
+									? { openSessionLockPid: projectLifecycle.openSessionLockPid }
+									: {}),
+								recoveredFromTemp: projectLifecycle.recoveredFromTemp,
+								...(projectLifecycle.sourceFilePath ? { sourceFilePath: projectLifecycle.sourceFilePath } : {}),
+								...(projectLifecycle.parseError ? { parseError: projectLifecycle.parseError } : {}),
+								...(projectLifecycle.boardPackageName ? { boardPackageName: projectLifecycle.boardPackageName } : {}),
+								...(typeof projectLifecycle.boardPackageReady === 'boolean'
+									? { boardPackageReady: projectLifecycle.boardPackageReady }
+									: {}),
+								declaredLibraryCount: projectLifecycle.declaredLibraryCount,
+								readyLibraryCount: projectLifecycle.readyLibraryCount,
+								missingLibraryCount: projectLifecycle.missingLibraryCount,
+								...(projectLifecycle.codeHash ? { codeHash: projectLifecycle.codeHash } : {}),
+								...(projectLifecycle.buildInfo?.lastBuildStatus
+									? { buildStatus: projectLifecycle.buildInfo.lastBuildStatus }
+									: {}),
+								...(projectLifecycle.buildInfo?.lastBuildTime
+									? { buildTime: projectLifecycle.buildInfo.lastBuildTime }
+									: {}),
+								...(typeof projectLifecycle.buildInfo?.lastBuildDuration === 'number'
+									? { buildDuration: projectLifecycle.buildInfo.lastBuildDuration }
+									: {})
+							}
+						}
+					: {}),
 				onboardingCompleted: onboarding.onboardingCompleted,
 				blocklyOnboardingCompleted: onboarding.blocklyOnboardingCompleted,
 				ailyChatOnboardingCompleted: onboarding.ailyChatOnboardingCompleted
@@ -59,6 +114,15 @@ export class SettingsPageComponent implements OnInit {
 			this.error.set((error as Error).message)
 		} finally {
 			this.loading.set(false)
+		}
+	}
+
+	protected async closeProject() {
+		this.closeBusy.set(true)
+		try {
+			await closeProjectInEditor(this.core, this.router)
+		} finally {
+			this.closeBusy.set(false)
 		}
 	}
 }

@@ -1,0 +1,22 @@
+<article hlmCard class="serial-card">
+	<header class="card-header">
+		<div>
+			<p class="eyebrow">Quick Send</p>
+			<h2>Reusable Actions</h2>
+		</div>
+	</header>
+
+	<div class="badge-row">
+		@for (item of quickSendList(); track item.name) {
+		<button
+			hlmBtn
+			size="sm"
+			variant="secondary"
+			[disabled]="!connected() || busy()"
+			(click)="quickSend.emit(item)"
+		>
+			{{ item.name }}
+		</button>
+		}
+	</div>
+</article>

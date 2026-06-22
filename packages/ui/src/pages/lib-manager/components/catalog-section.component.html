@@ -1,0 +1,53 @@
+<div class="section">
+	<strong>Catalog Libraries</strong>
+	@if (libraries().length) {
+	<div class="list">
+		@for (library of libraries(); track library.name) {
+		<div class="list-item">
+			<strong>{{ library.displayName }}</strong>
+			<span>{{ library.name }}</span>
+			<span>source {{ library.sourceLabel }}</span>
+			<span>{{ library.description || 'No description' }}</span>
+			<span>{{ library.compatibilityText }}</span>
+			<div class="chip-row">
+				@for (tag of library.tags; track tag) {
+				<span hlmBadge variant="outline">{{ tag }}</span>
+				}
+			</div>
+			<div class="button-row">
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="loadVersions.emit(library.name)">
+					{{ versionLoadingPackage() === library.name ? 'Loading Versions...' : 'Load Versions' }}
+				</button>
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="install.emit({ packageName: library.name })"
+				>
+					{{ actionBusy(library.name) ? 'Installing...' : 'Install' }}
+				</button>
+			</div>
+			@if (getLibraryVersions(library.name); as versionState) {
+			<div class="chip-row">
+				@if (versionState.latestVersion) {
+				<span hlmBadge>latest {{ versionState.latestVersion }}</span>
+				}
+				@for (version of versionState.versions.slice(0, 8); track version) {
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="install.emit({ packageName: library.name, version })">
+					{{ version }}
+				</button>
+				}
+				@if (versionState.error) {
+				<span>{{ versionState.error }}</span>
+				}
+			</div>
+			}
+		</div>
+		}
+	</div>
+	} @else {
+	<p>No catalog library matches the current filter.</p>
+	}
+</div>
+

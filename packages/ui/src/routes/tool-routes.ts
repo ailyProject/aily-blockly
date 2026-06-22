@@ -10,6 +10,10 @@ export const toolRoutes: Routes = [
 		loadComponent: () => import('@/pages/child-tool/component').then(module => module.ChildToolPageComponent)
 	},
 	{
+		path: 'app-store',
+		loadComponent: () => import('@/pages/app-store/component').then(module => module.AppStorePageComponent)
+	},
+	{
 		path: 'ffs-manager',
 		loadComponent: () => import('@/pages/ffs-manager/component').then(module => module.FfsManagerPageComponent)
 	},
@@ -24,5 +28,13 @@ export const toolRoutes: Routes = [
 	{
 		path: 'model-store',
 		loadComponent: () => import('@/pages/model-store/component').then(module => module.ModelStorePageComponent)
+	},
+	{
+		path: 'cloud-space',
+		loadComponent: () => import('@/pages/cloud-space/component').then(module => module.CloudSpacePageComponent)
+	},
+	{
+		path: 'terminal',
+		loadComponent: () => import('@/pages/terminal/component').then(module => module.TerminalPageComponent)
 	}
 ]

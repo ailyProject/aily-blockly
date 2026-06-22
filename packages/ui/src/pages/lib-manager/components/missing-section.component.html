@@ -1,0 +1,56 @@
+<div class="section">
+	<strong>Missing Libraries</strong>
+	@if (libraries().length) {
+	<div class="list">
+		@for (library of libraries(); track library.name) {
+		<div class="list-item">
+			<strong>{{ library.name }}</strong>
+			<span>version {{ library.version || 'unknown' }}</span>
+			<span>source {{ library.localPath ? 'local file' : 'registry' }}</span>
+			<span>block {{ library.blockType || 'n/a' }}</span>
+			@if (library.localPath) {
+			<span>{{ library.localPath }}</span>
+			}
+			<div class="button-row">
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="loadVersions.emit(library.name)">
+					{{ versionLoadingPackage() === library.name ? 'Loading Versions...' : 'Load Versions' }}
+				</button>
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="restore.emit({ packageName: library.name, version: library.version, localPath: library.localPath })"
+				>
+					{{ actionBusy(library.name) ? 'Restoring...' : 'Restore' }}
+				</button>
+			</div>
+			@if (getLibraryVersions(library.name); as versionState) {
+			<div class="chip-row">
+				@if (versionState.latestVersion) {
+				<span hlmBadge>latest {{ versionState.latestVersion }}</span>
+				}
+				@for (version of versionState.versions.slice(0, 8); track version) {
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="restore.emit({ packageName: library.name, version, localPath: library.localPath })"
+				>
+					{{ version }}
+				</button>
+				}
+				@if (versionState.error) {
+				<span>{{ versionState.error }}</span>
+				}
+			</div>
+			}
+		</div>
+		}
+	</div>
+	} @else {
+	<p>No missing Blockly library is detected for the current project.</p>
+	}
+</div>
+

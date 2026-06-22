@@ -3,8 +3,8 @@ import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
 import { HlmCardImports } from 'spartan/card'
 
-import { injectCore } from '@/core-service'
 import { AppShellComponent } from '@/layout/app-shell.component'
+import { getCore } from '@/utils/core'
 
 import type { AilyCoreServiceHealth } from 'shared'
 
@@ -15,7 +15,7 @@ import type { AilyCoreServiceHealth } from 'shared'
 	styleUrl: './component.css'
 })
 export class AboutPageComponent implements OnInit {
-	private readonly core = injectCore()
+	private readonly core = getCore()
 
 	protected readonly health = signal<AilyCoreServiceHealth | null>(null)
 

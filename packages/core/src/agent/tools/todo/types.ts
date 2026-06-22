@@ -43,6 +43,28 @@ export interface TodoItem {
 }
 
 /**
+ * Todo 工具在解析入参时接受的原始任务形状。
+ */
+export interface RawTodoInput {
+	/** 可选现有 ID。 */
+	id?: number
+	/** 任务内容。 */
+	content?: string
+	/** 兼容旧入参的标题字段。 */
+	title?: string
+	/** 原始状态值。 */
+	status?: unknown
+	/** 原始优先级值。 */
+	priority?: unknown
+	/** 原始标签列表。 */
+	tags?: Array<string> | unknown
+	/** 原始预估工时。 */
+	estimatedHours?: number | unknown
+	/** 原始创建时间。 */
+	createdAt?: number | unknown
+}
+
+/**
  * Todo 统计结果
  */
 export interface TodoStatistics {

@@ -1,0 +1,52 @@
+<div class="section">
+	<strong>Registry Results</strong>
+	<div class="list">
+		@for (library of libraries(); track library.name) {
+		<div class="list-item">
+			<strong>{{ library.displayName }}</strong>
+			<span>{{ library.name }}</span>
+			<span>source {{ library.sourceLabel }}</span>
+			@if (library.latestVersion) {
+			<span>latest {{ library.latestVersion }}</span>
+			}
+			<span>{{ library.description || 'No description' }}</span>
+			@if (library.keywords.length) {
+			<div class="chip-row">
+				@for (keyword of library.keywords; track keyword) {
+				<span hlmBadge variant="outline">{{ keyword }}</span>
+				}
+			</div>
+			}
+			<div class="button-row">
+				<button
+					hlmBtn
+					size="sm"
+					variant="outline"
+					[disabled]="!!actionBusyKey()"
+					(click)="install.emit({ packageName: library.name, version: library.latestVersion })"
+				>
+					{{ actionBusy(library.name) ? 'Installing...' : 'Install Latest' }}
+				</button>
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="loadVersions.emit(library.name)">
+					{{ versionLoadingPackage() === library.name ? 'Loading Versions...' : 'Load Versions' }}
+				</button>
+			</div>
+			@if (getLibraryVersions(library.name); as versionState) {
+			<div class="chip-row">
+				@if (versionState.latestVersion) {
+				<span hlmBadge>latest {{ versionState.latestVersion }}</span>
+				}
+				@for (version of versionState.versions.slice(0, 8); track version) {
+				<button hlmBtn size="sm" variant="outline" [disabled]="!!actionBusyKey()" (click)="install.emit({ packageName: library.name, version })">
+					{{ version }}
+				</button>
+				}
+				@if (versionState.error) {
+				<span>{{ versionState.error }}</span>
+				}
+			</div>
+			}
+		</div>
+		}
+	</div>
+</div>

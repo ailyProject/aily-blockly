@@ -1,0 +1,119 @@
+.page-shell {
+	display: grid;
+	gap: 18px;
+}
+
+.panel {
+	display: grid;
+	gap: 16px;
+	padding: 24px;
+	border-radius: 24px;
+}
+
+.panel p,
+.panel-header h2,
+.eyebrow {
+	margin: 0;
+}
+
+.panel-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.filter-box {
+	display: grid;
+	gap: 8px;
+}
+
+.eyebrow,
+.status-grid span,
+.list-item span,
+.panel p {
+	color: var(--muted-foreground);
+}
+
+.eyebrow {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.badge-row,
+.chip-row,
+.button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.status-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 10px;
+}
+
+.status-grid > div,
+.list-item {
+	display: grid;
+	gap: 4px;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.section {
+	display: grid;
+	gap: 10px;
+}
+
+.prompt-card {
+	padding: 14px;
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--warning, #f59e0b) 10%, var(--card) 90%);
+	border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+}
+
+.list {
+	display: grid;
+	gap: 10px;
+}
+
+.progress-list {
+	display: grid;
+	gap: 8px;
+}
+
+.progress-shell {
+	display: grid;
+	gap: 6px;
+}
+
+.progress-item {
+	display: grid;
+	gap: 4px;
+	padding: 10px 12px;
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.log-output {
+	margin: 0;
+	padding: 12px 14px;
+	border-radius: 14px;
+	background: #0b1020;
+	color: #d7e4ff;
+	font:
+		12px/1.5 'GeistMono',
+		ui-monospace,
+		monospace;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.log-output.error {
+	color: #ffb4b4;
+}

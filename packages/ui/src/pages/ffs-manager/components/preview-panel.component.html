@@ -1,0 +1,77 @@
+<article hlmCard class="panel">
+	<header class="panel-header">
+		<div>
+			<p class="eyebrow">Blank Mount</p>
+			<h2>Filesystem Preview</h2>
+		</div>
+		<div class="panel-actions">
+			<button hlmBtn type="button" variant="outline" (click)="imageInputClick.emit()">
+				{{ imageName() ?? 'Load partition image' }}
+			</button>
+			<button hlmBtn type="button" variant="outline" [disabled]="previewBusy()" (click)="fileInputClick.emit()">
+				Upload file
+			</button>
+			<button hlmBtn type="button" variant="outline" [disabled]="previewBusy()" (click)="formatImage.emit()">
+				Format image
+			</button>
+			<button hlmBtn type="button" variant="outline" [disabled]="previewBusy() || !hasImageBytes()" (click)="createDirectory.emit()">
+				New folder
+			</button>
+			<button hlmBtn type="button" variant="outline" [disabled]="!hasImageBytes()" (click)="downloadImage.emit()">
+				Export image
+			</button>
+		</div>
+	</header>
+
+	@if (state(); as viewState) {
+	<div class="metric-grid">
+		<div><span>Partition</span><strong>{{ viewState.preview.partitionLabel }}</strong></div>
+		<div><span>Type</span><strong>{{ viewState.preview.type }}</strong></div>
+		<div><span>Block Size</span><strong>{{ viewState.preview.blockSize ?? 'unset' }}</strong></div>
+		<div><span>Files</span><strong>{{ viewState.preview.fileCount }}</strong></div>
+		<div><span>Capacity</span><strong>{{ viewState.preview.capacityBytes ?? 0 }}</strong></div>
+		<div><span>Used</span><strong>{{ viewState.preview.usedBytes ?? 0 }}</strong></div>
+		<div><span>Attempts</span><strong>{{ viewState.preview.attemptCount }}</strong></div>
+	</div>
+
+	<div class="metric-grid">
+		<div>
+			<span>Attempt Reasons</span>
+			<strong>{{ viewState.preview.attemptReasons.join(', ') || 'none' }}</strong>
+		</div>
+	</div>
+
+	<div class="preview-files">
+		<div>
+			<span>Files</span>
+			@if (viewState.preview.files.length > 0) {
+			<div class="breadcrumbs">
+				@for (crumb of breadcrumbs(); track crumb.path) {
+				<button hlmBtn variant="ghost" size="sm" type="button" (click)="currentPathChange.emit(crumb.path)">
+					{{ crumb.name }}
+				</button>
+				}
+			</div>
+
+			<div class="file-list">
+				@for (entry of explorerEntries(); track entry.fullPath) {
+				<button hlmBtn class="file-chip" variant="outline" type="button" (click)="openEntry(entry)">
+					<span>{{ entry.name }}</span>
+					<small>{{ entry.type === 'dir' ? 'dir' : entry.sizeText }}</small>
+					@if (entry.previewMode && entry.type === 'file') {
+					<span hlmBadge variant="secondary" (click)="$event.stopPropagation(); previewEntry.emit(entry)">
+						{{ entry.previewMode }}
+					</span>
+					}
+					<span hlmBadge variant="outline" (click)="$event.stopPropagation(); renameEntry.emit(entry)">rename</span>
+					<span hlmBadge variant="outline" (click)="$event.stopPropagation(); deleteEntry.emit(entry)">delete</span>
+				</button>
+				}
+			</div>
+			} @else {
+			<strong>empty</strong>
+			}
+		</div>
+	</div>
+	}
+</article>

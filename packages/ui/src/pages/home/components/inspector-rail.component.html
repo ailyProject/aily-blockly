@@ -1,0 +1,31 @@
+<aside class="inspector">
+	<section hlmCard class="rail-card">
+		<div hlmCardHeader>
+			<h3 hlmCardTitle>Tool panes</h3>
+			<p hlmCardDescription>right-side utilities for chat, device I/O, and filesystem tools</p>
+		</div>
+		<div hlmCardContent class="stack">
+			@for (tool of inspectorCards(); track tool.title) {
+			<div class="tool-row">
+				<div class="tool-copy">
+					@switch (tool.title) {
+						@case ('Aily Chat') { <ng-icon name="lucideBot" class="inline-icon"></ng-icon> }
+						@case ('Serial Monitor') { <ng-icon name="lucideTerminal" class="inline-icon"></ng-icon> }
+						@default { <ng-icon name="lucideFolderOpen" class="inline-icon"></ng-icon> }
+					}
+					<div>
+						<strong>{{ tool.title }}</strong>
+						<p>{{ tool.detail }}</p>
+					</div>
+				</div>
+				<span hlmBadge variant="outline">ready</span>
+			</div>
+			}
+			<hlm-separator></hlm-separator>
+			<div class="tool-row compact">
+				<ng-icon name="lucideCpu" class="inline-icon"></ng-icon>
+				<p>Model deployment, build diagnostics, and hardware tools surface here as they are activated.</p>
+			</div>
+		</div>
+	</section>
+</aside>

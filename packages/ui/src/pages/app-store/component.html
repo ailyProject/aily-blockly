@@ -1,0 +1,62 @@
+<section class="app-store-page">
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">App Store</p>
+        <h2>Toolbar Layout</h2>
+      </div>
+      <button hlmBtn type="button" variant="outline" (click)="resetLayout()">Reset</button>
+    </header>
+
+    @if (state(); as viewState) {
+      <div class="summary-grid">
+        <div><span>Toolbar</span><strong>{{ viewState.toolbarCount }}</strong></div>
+        <div><span>Visible</span><strong>{{ viewState.visibleToolbarCount }}</strong></div>
+      </div>
+
+      <div class="pinned-list">
+        @for (appId of viewState.pinnedIds; track appId) {
+          <div class="pinned-card">
+            <strong>{{ appId }}</strong>
+            <div class="pinned-actions">
+              <button hlmBtn type="button" size="sm" variant="outline" (click)="movePinnedApp(appId, -1)">Up</button>
+              <button hlmBtn type="button" size="sm" variant="outline" (click)="movePinnedApp(appId, 1)">Down</button>
+            </div>
+          </div>
+        }
+      </div>
+    }
+  </article>
+
+  <article hlmCard class="panel">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Catalog</p>
+        <h2>Available Apps</h2>
+      </div>
+    </header>
+
+    @if (state(); as viewState) {
+      <div class="app-grid">
+        @for (app of viewState.apps; track app.id) {
+          <div class="app-card">
+            <strong>{{ app.id }}</strong>
+            <div class="badges">
+              <span hlmBadge [variant]="app.pinned ? 'default' : 'outline'">{{ app.pinned ? 'pinned' : 'not pinned' }}</span>
+              <span hlmBadge [variant]="app.visible ? 'secondary' : 'outline'">{{ app.visible ? 'visible' : 'hidden' }}</span>
+              @if (app.lock) {
+                <span hlmBadge variant="secondary">locked</span>
+              }
+              @if (app.devOnly) {
+                <span hlmBadge variant="outline">dev</span>
+              }
+            </div>
+            <button hlmBtn type="button" size="sm" [disabled]="app.lock" (click)="toggleApp(app.id)">
+              {{ app.pinned ? 'Unpin' : 'Pin' }}
+            </button>
+          </div>
+        }
+      </div>
+    }
+  </article>
+</section>

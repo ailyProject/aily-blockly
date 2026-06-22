@@ -1,0 +1,32 @@
+.button-row,
+.list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.metric {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 14px;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.build-copy {
+	margin: 0;
+	color: var(--muted-foreground);
+}
+
+.list-item {
+	display: grid;
+	gap: 4px;
+	width: 100%;
+	padding: 12px 14px;
+	border: 0;
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--muted) 65%, transparent);
+	text-align: left;
+	cursor: pointer;
+}

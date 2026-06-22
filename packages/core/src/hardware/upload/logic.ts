@@ -13,16 +13,14 @@ const SERIAL_RELEASE_DELAY_MS = 300
 
 /**
  * 解析上传超时时间。
- * @param {HardwareUploadPortType | null | undefined} portType - 上传端口类型
- * @returns {number}
+ * @param portType - 上传端口类型
  */
 export const resolveHardwareUploadTimeout = (portType: HardwareUploadPortType | null | undefined) =>
 	portType === 'ble' ? BLE_UPLOAD_TIMEOUT_MS : DEFAULT_UPLOAD_TIMEOUT_MS
 
 /**
  * 判断是否需要向串口类工具发送释放信号。
- * @param {{port: string | null | undefined, portType: HardwareUploadPortType | null | undefined}} input - 端口信息
- * @returns {boolean}
+ * @param input - 端口信息
  */
 export const shouldNotifySerialToolsForUpload = (input: {
 	port: string | null | undefined
@@ -31,16 +29,14 @@ export const shouldNotifySerialToolsForUpload = (input: {
 
 /**
  * 获取串口释放后的缓冲时间。
- * @param {string} signal - 工具信号名
- * @returns {number}
+ * @param signal - 工具信号名
  */
 export const getHardwareUploadSignalDelay = (signal: string) =>
 	signal === 'serial-monitor:disconnect' ? SERIAL_RELEASE_DELAY_MS : 0
 
 /**
  * 判断上传反馈是否成功。
- * @param {HardwareUploadFeedback | null | undefined} feedback - 上传反馈
- * @returns {boolean}
+ * @param feedback - 上传反馈
  */
 export const isHardwareUploadFeedbackSuccess = (feedback: HardwareUploadFeedback | null | undefined) => {
 	const result = feedback?.data?.result
@@ -49,8 +45,7 @@ export const isHardwareUploadFeedbackSuccess = (feedback: HardwareUploadFeedback
 
 /**
  * 提取上传错误摘要。
- * @param {HardwareUploadFeedback | null | undefined} feedback - 上传反馈
- * @returns {HardwareUploadErrorSummary}
+ * @param feedback - 上传反馈
  */
 export const getHardwareUploadErrorSummary = (
 	feedback: HardwareUploadFeedback | null | undefined
@@ -61,9 +56,8 @@ export const getHardwareUploadErrorSummary = (
 
 /**
  * 归一化 SoftDevice 烧录结果。
- * @param {HardwareSoftdeviceFlashResult | null | undefined} result - 原始结果
- * @param {unknown} error - 捕获到的异常
- * @returns {HardwareSoftdeviceFlashResult}
+ * @param result - 原始结果
+ * @param error - 捕获到的异常
  */
 export const normalizeHardwareSoftdeviceFlashResult = (
 	result: HardwareSoftdeviceFlashResult | null | undefined,

@@ -6,8 +6,7 @@ import type { ConnectionGraphData } from './types'
 
 /**
  * 读取已保存的连线图数据。
- * @param {string} projectPath - 项目根路径
- * @returns {ConnectionGraphData | null}
+ * @param projectPath - 项目根路径
  */
 export const readConnectionGraph = (projectPath: string): ConnectionGraphData | null => {
 	try {
@@ -21,16 +20,14 @@ export const readConnectionGraph = (projectPath: string): ConnectionGraphData | 
 
 /**
  * 检查项目是否存在连线图 JSON。
- * @param {string} projectPath - 项目根路径
- * @returns {boolean}
+ * @param projectPath - 项目根路径
  */
 export const hasConnectionGraph = (projectPath: string) => existsSync(resolveConnectionGraphPaths(projectPath).jsonPath)
 
 /**
  * 保存连线图 JSON。
- * @param {ConnectionGraphData} data - 连线图数据
- * @param {string} projectPath - 项目根路径
- * @returns {{success: boolean, filePath: string, error?: string}}
+ * @param data - 连线图数据
+ * @param projectPath - 项目根路径
  */
 export const saveConnectionGraph = (data: ConnectionGraphData, projectPath: string) => {
 	const { jsonPath } = resolveConnectionGraphPaths(projectPath)
@@ -45,9 +42,8 @@ export const saveConnectionGraph = (data: ConnectionGraphData, projectPath: stri
 
 /**
  * 保存 AWS 源文件。
- * @param {string} awsContent - AWS 文本内容
- * @param {string} projectPath - 项目根路径
- * @returns {{success: boolean, filePath: string, error?: string}}
+ * @param awsContent - AWS 文本内容
+ * @param projectPath - 项目根路径
  */
 export const saveConnectionAws = (awsContent: string, projectPath: string) => {
 	const { awsPath } = resolveConnectionGraphPaths(projectPath)
@@ -62,8 +58,7 @@ export const saveConnectionAws = (awsContent: string, projectPath: string) => {
 
 /**
  * 读取 AWS 源文件。
- * @param {string} projectPath - 项目根路径
- * @returns {string | null}
+ * @param projectPath - 项目根路径
  */
 export const readConnectionAws = (projectPath: string) => {
 	try {
@@ -76,7 +71,6 @@ export const readConnectionAws = (projectPath: string) => {
 
 /**
  * 检查项目是否存在 AWS 源文件。
- * @param {string} projectPath - 项目根路径
- * @returns {boolean}
+ * @param projectPath - 项目根路径
  */
 export const hasConnectionAws = (projectPath: string) => existsSync(resolveConnectionGraphPaths(projectPath).awsPath)
