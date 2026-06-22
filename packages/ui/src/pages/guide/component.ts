@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core'
+import { Component, inject, OnDestroy, OnInit, signal } from '@angular/core'
 import { Router } from '@angular/router'
 
 import { APP_ICON_IMPORTS, APP_ICON_PROVIDERS } from '@/components/ui/icon/app-icons'
@@ -58,20 +58,6 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	protected readonly sponsorRenderPages = signal<Array<Array<GuideSponsorItem>>>([])
 	protected readonly sponsorPageIndex = signal(0)
 	protected readonly sponsorPageTransitionEnabled = signal(true)
-	protected readonly desktopAvailable = signal(false)
-	protected readonly preloadReady = signal(false)
-	protected readonly primaryRecentCount = signal(0)
-	protected readonly fallbackRecentCount = signal(0)
-	protected readonly mergedRecentCount = signal(0)
-	protected readonly recentDebugSummary = computed(() => ({
-		desktopAvailable: this.desktopAvailable(),
-		preloadReady: this.preloadReady(),
-		appDataPath: this.runtimeInfo()?.appDataPath || 'n/a',
-		primaryCount: this.primaryRecentCount(),
-		fallbackCount: this.fallbackRecentCount(),
-		mergedCount: this.mergedRecentCount(),
-		firstProject: this.recentProjects()[0] || null
-	}))
 
 	protected get logoSrc(): string {
 		return getThemeMode() === 'light' ? 'imgs/logo-light.webp' : 'imgs/logo.webp'
@@ -93,19 +79,10 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 
 	async ngOnInit() {
 		const desktop = this.desktop
-		this.preloadReady.set(Boolean(window.$desktopPreload?.ready))
-		console.log(
-			'[recent-debug] desktop-available',
-			Boolean(desktop),
-			Boolean(window.$erpc),
-			Boolean(window.$desktopPreload?.ready)
-		)
-		this.desktopAvailable.set(Boolean(desktop))
 		if (desktop) {
 			await syncDesktopCoreBridge(desktop).catch(() => null)
 		}
 		const runtimeInfo = desktop ? await loadDesktopHostRuntimeInfo(desktop).catch(() => null) : null
-		console.log('[recent-debug] runtime-info', runtimeInfo)
 		this.runtimeInfo.set(runtimeInfo)
 
 		const configSummary = await this.core.config.get.query({ fallbackLanguage: 'zh_CN' }).catch(() => ({
@@ -117,14 +94,8 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 		const recentProjects = runtimeInfo?.appDataPath
 			? await this.core.project.getStoredRecentProjects.query({ appDataPath: runtimeInfo.appDataPath }).catch(() => [])
 			: await this.core.project.getRecentProjects.query({}).catch(() => [])
-		this.primaryRecentCount.set(recentProjects.length)
-		console.log('[recent-debug] primary-recent-count', recentProjects.length, recentProjects)
 		const fallbackRecentProjects = await this.loadLegacyRecentProjectsFallback(runtimeInfo)
-		this.fallbackRecentCount.set(fallbackRecentProjects.length)
-		console.log('[recent-debug] fallback-recent-count', fallbackRecentProjects.length, fallbackRecentProjects)
 		const nextRecentProjects = this.mergeRecentProjects(recentProjects, fallbackRecentProjects)
-		this.mergedRecentCount.set(nextRecentProjects.length)
-		console.log('[recent-debug] merged-recent-count', nextRecentProjects.length, nextRecentProjects)
 
 		this.language.set(configSummary.selectedLanguage)
 		this.recentProjects.set(nextRecentProjects)
@@ -207,11 +178,7 @@ export class GuidePageComponent implements OnInit, OnDestroy {
 	): Promise<Array<GuideRecentProject>> {
 		const userHome = runtimeInfo?.documentsPath?.replace(/\/Documents$/, '') || '/Users/xiewendao'
 		const legacyAppDataPath = `${userHome}/Library/aily-project`
-		const fallback = await this.core.project.getStoredRecentProjects
-			.query({ appDataPath: legacyAppDataPath })
-			.catch(() => [])
-		console.log('[recent-debug] core-legacy-recent-count', fallback.length, fallback, legacyAppDataPath)
-		return fallback
+		return this.core.project.getStoredRecentProjects.query({ appDataPath: legacyAppDataPath }).catch(() => [])
 	}
 
 	private mergeRecentProjects(

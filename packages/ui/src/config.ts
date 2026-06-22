@@ -9,11 +9,7 @@ import { provideRouter, Router } from '@angular/router'
 
 import { routes } from './routes'
 import { provideAgentApi } from './utils/chat'
-import {
-	initializeDesktopCoreBridge,
-	initializeDesktopPendingProjectOpen,
-	initializeStoredProjectSession
-} from './utils/desktop'
+import { initializeDesktopCoreBridge, initializeDesktopPendingProjectOpen } from './utils/desktop'
 
 export const appConfig: ApplicationConfig = {
 	providers: [
@@ -27,10 +23,7 @@ export const appConfig: ApplicationConfig = {
 				const router = inject(Router)
 				return async () => {
 					await initializeDesktopCoreBridge()
-					const openedByDesktop = await initializeDesktopPendingProjectOpen(router)
-					if (!openedByDesktop) {
-						await initializeStoredProjectSession(router)
-					}
+					await initializeDesktopPendingProjectOpen(router)
 				}
 			}
 		},

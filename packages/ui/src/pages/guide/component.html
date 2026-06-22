@@ -36,19 +36,6 @@
 
 		<div class="recent-box">
 			<div class="title">最近</div>
-			<div class="recent-debug">
-				<div>desktop: {{ recentDebugSummary().desktopAvailable ? 'yes' : 'no' }}</div>
-				<div>preload: {{ recentDebugSummary().preloadReady ? 'yes' : 'no' }}</div>
-				<div>appData: {{ recentDebugSummary().appDataPath }}</div>
-				<div>
-					counts:
-					{{ recentDebugSummary().primaryCount }}/{{ recentDebugSummary().fallbackCount }}/{{ recentDebugSummary().mergedCount }}
-				</div>
-				@if (recentDebugSummary().firstProject; as firstProject) {
-				<div>first: {{ firstProject.nickname || firstProject.name }}</div>
-				<div class="recent-debug__path">{{ firstProject.path }}</div>
-				}
-			</div>
 			@if (recentProjects().length > 0) {
 			<div class="menu-box">
 				@for (project of recentProjects(); track project.path) {
