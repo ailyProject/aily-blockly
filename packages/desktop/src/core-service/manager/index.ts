@@ -1,7 +1,7 @@
 import { createAilyCoreServiceAddress } from 'shared'
 
 import { readDesktopCoreServiceHealth, waitForDesktopCoreServiceHealthy } from './health'
-import { createDesktopCoreServiceChild, resolveDesktopCoreStandaloneEntrypoint } from './process'
+import { createDesktopCoreServiceChild, resolveDesktopCoreServiceEntrypoint } from './process'
 
 import type { UtilityProcess } from 'electron'
 import type { AilyCoreServiceRuntimeStatus } from 'shared'
@@ -26,7 +26,7 @@ export const createDesktopCoreServiceManager = (
 
 			if (!child) {
 				child = createDesktopCoreServiceChild(address, {
-					entry: resolveDesktopCoreStandaloneEntrypoint(options.entryOverride)
+					entry: resolveDesktopCoreServiceEntrypoint(options.entryOverride)
 				})
 			}
 

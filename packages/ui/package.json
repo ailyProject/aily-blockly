@@ -2,9 +2,9 @@
 	"name": "ui",
 	"version": "0.0.0",
 	"scripts": {
-		"dev": "ng serve",
+		"dev": "ng serve --open false --host 127.0.0.1 --port 4200",
 		"ng": "ng",
-		"start": "ng serve",
+		"start": "ng serve --open false --host 127.0.0.1 --port 4200",
 		"build": "ng build",
 		"watch": "ng build --watch --configuration development",
 		"test": "ng test"

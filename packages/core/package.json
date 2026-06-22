@@ -11,6 +11,10 @@
 		".": {
 			"types": "./dist/core/src/index.d.ts",
 			"default": "./dist/index.js"
+		},
+		"./service": {
+			"types": "./dist/core/src/rpc/standalone.d.ts",
+			"default": "./dist/server.js"
 		}
 	},
 	"scripts": {

@@ -9,8 +9,7 @@ import {
 	createDesktopMainWindow,
 	loadDesktopMainWindow,
 	logDesktopWindowState,
-	presentDesktopMainWindow,
-	renderDesktopLoadingPage
+	presentDesktopMainWindow
 } from './window'
 
 import type { BootstrapDesktopMainResult } from '../types'
@@ -19,6 +18,7 @@ import type { DesktopAppLaunchOptions } from './types'
 let desktopMainWindow: ReturnType<typeof createDesktopMainWindow> | null = null
 let desktopMainRuntime: BootstrapDesktopMainResult | null = null
 const execFileAsync = promisify(execFile)
+let desktopWindowCreationLoggingAttached = false
 
 /**
  * 在 macOS 上强制把当前桌面应用切到前台。
@@ -40,12 +40,54 @@ const activateDesktopAppOnMac = async (appName: string) => {
 }
 
 /**
+ * 记录当前 Electron 进程里所有窗口创建事件。
+ */
+const attachDesktopWindowCreationLogging = () => {
+	if (desktopWindowCreationLoggingAttached) return
+	desktopWindowCreationLoggingAttached = true
+
+	app.on('browser-window-created', (_event, window) => {
+		writeDesktopStartupLog(
+			`[desktop-app] browser-window-created ${JSON.stringify({
+				id: window.id,
+				title: window.getTitle(),
+				bounds: window.getBounds()
+			})}`
+		)
+
+		window.on('closed', () => {
+			writeDesktopStartupLog(`[desktop-app] browser-window-closed ${window.id}`)
+		})
+
+		window.webContents.on('did-finish-load', () => {
+			writeDesktopStartupLog(
+				`[desktop-app] browser-window-created-did-finish-load ${JSON.stringify({
+					id: window.id,
+					title: window.getTitle(),
+					url: window.webContents.getURL()
+				})}`
+			)
+		})
+	})
+
+	app.on('web-contents-created', (_event, webContents) => {
+		writeDesktopStartupLog(
+			`[desktop-app] web-contents-created ${JSON.stringify({
+				id: webContents.id,
+				type: webContents.getType()
+			})}`
+		)
+	})
+}
+
+/**
  * 启动 Electron 桌面应用。
  * @param options - 启动参数
  */
 export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) => {
 	resetDesktopStartupLog()
 	writeDesktopStartupLog('[desktop-app] launch-start')
+	attachDesktopWindowCreationLogging()
 	const gotSingleInstanceLock = app.requestSingleInstanceLock()
 	writeDesktopStartupLog(`[desktop-app] single-instance-lock ${gotSingleInstanceLock ? 'granted' : 'rejected'}`)
 	if (!gotSingleInstanceLock) {
@@ -71,19 +113,14 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 	const mainWindow = createDesktopMainWindow()
 	desktopMainWindow = mainWindow
 	writeDesktopStartupLog('[desktop-app] main-window-created')
+	writeDesktopStartupLog(`[desktop-app] main-window-id ${mainWindow.id}`)
 	attachDesktopWindowDebugLogging(mainWindow)
-	mainWindow.once('ready-to-show', () => {
-		writeDesktopStartupLog('[desktop-app] ready-to-show')
-		presentDesktopMainWindow(mainWindow)
-	})
 	mainWindow.webContents.on('did-finish-load', () => {
 		writeDesktopStartupLog('[desktop-app] webcontents-did-finish-load')
 		presentDesktopMainWindow(mainWindow)
 		logDesktopWindowState(mainWindow, 'after-load')
 		void activateDesktopAppOnMac(app.getName())
 	})
-	presentDesktopMainWindow(mainWindow)
-	await activateDesktopAppOnMac(app.getName())
 
 	desktopMainRuntime ??= bootstrapDesktopMain({
 		app,
@@ -97,7 +134,6 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		writeDesktopStartupLog('[desktop-app] main-window-cleared')
 	})
 
-	await renderDesktopLoadingPage(mainWindow)
 	await loadDesktopMainWindow(mainWindow, options)
 	writeDesktopStartupLog('[desktop-app] main-window-load-complete')
 
@@ -114,19 +150,14 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 		const nextWindow = createDesktopMainWindow()
 		desktopMainWindow = nextWindow
 		writeDesktopStartupLog('[desktop-app] next-window-created')
+		writeDesktopStartupLog(`[desktop-app] next-window-id ${nextWindow.id}`)
 		attachDesktopWindowDebugLogging(nextWindow)
-		nextWindow.once('ready-to-show', () => {
-			writeDesktopStartupLog('[desktop-app] next-ready-to-show')
-			presentDesktopMainWindow(nextWindow)
-		})
 		nextWindow.webContents.on('did-finish-load', () => {
 			writeDesktopStartupLog('[desktop-app] next-webcontents-did-finish-load')
 			presentDesktopMainWindow(nextWindow)
 			logDesktopWindowState(nextWindow, 'next-after-load')
 			void activateDesktopAppOnMac(app.getName())
 		})
-		presentDesktopMainWindow(nextWindow)
-		await activateDesktopAppOnMac(app.getName())
 		desktopMainRuntime?.handler.attachWindow(nextWindow)
 		desktopMainRuntime?.bleBridge.registerChooser(nextWindow)
 		writeDesktopStartupLog('[desktop-app] next-window-attached')
@@ -134,7 +165,6 @@ export const launchDesktopApp = async (options: DesktopAppLaunchOptions = {}) =>
 			desktopMainWindow = null
 			writeDesktopStartupLog('[desktop-app] next-window-cleared')
 		})
-		await renderDesktopLoadingPage(nextWindow)
 		await loadDesktopMainWindow(nextWindow, options)
 		writeDesktopStartupLog('[desktop-app] next-window-load-complete')
 	})

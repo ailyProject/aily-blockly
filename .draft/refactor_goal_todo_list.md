@@ -283,6 +283,8 @@ Status markers:
   - preload 入口已改为自动暴露 ERPC bridge
   - 根脚本已新增 `pnpm run start:electron`
   - `desktop#dev` 已切到 Electron dev runner，根 `pnpm run dev` 会尝试在 watch 构建完成后拉起 Electron
+  - desktop dev 脚本结构已向 polywise 对齐为 `main:dev + watch + shell + dev`
+  - 已补 `requestSingleInstanceLock` 与 watcher 启动前的旧 Electron pid 清理，避免重复窗口残留
 - `done` thin ERPC bridge
   - host / terminal / BLE / core status
 - `partial` project-open desktop integration
@@ -322,6 +324,12 @@ Status markers:
   - BLE, cloud, terminal, tool, upload, project/common types
 - `audit` naming and field docs
   - keep checking new additions for field-level JSDoc compliance
+
+### `dev startup`
+
+- `done` root `dev` task narrowing
+  - 根目录 `pnpm run dev` 已收窄为 `ui + desktop`
+  - 避免 `core#dev` 与 `core#build` 并发命中同一 rspack cache 锁，导致启动阶段 panic
 
 ## Current High-Value Remaining Gaps
 

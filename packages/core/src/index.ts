@@ -22,14 +22,3 @@ export type {
 	SerialSignalKind,
 	SerialSignalResult
 } from './serial/types'
-
-const maybeStartStandalone = async () => {
-	if (typeof process === 'undefined' || !process.argv[1]) return
-
-	const [{ resolve }, { fileURLToPath }] = await Promise.all([import('node:path'), import('node:url')])
-	if (resolve(process.argv[1]) !== fileURLToPath(import.meta.url)) return
-
-	await import('./rpc/standalone')
-}
-
-void maybeStartStandalone()

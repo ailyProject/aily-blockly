@@ -31,7 +31,6 @@ export { default as serial } from './serial/index'
 export { default as store } from './store/index'
 export { default as tool } from './tool/index'
 export * from './server'
-export * from './standalone'
 export * from './trpc'
 export * from './types'
 

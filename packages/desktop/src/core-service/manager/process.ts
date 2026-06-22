@@ -17,12 +17,12 @@ const logDesktopCoreChildOutput = (stream: 'stdout' | 'stderr', chunk: Buffer | 
 }
 
 /**
- * 解析 standalone 入口。
+ * 解析 Core service 入口。
  * @param entryOverride - 可选手动覆盖入口
  */
-export const resolveDesktopCoreStandaloneEntrypoint = (entryOverride?: string) => {
+export const resolveDesktopCoreServiceEntrypoint = (entryOverride?: string) => {
 	if (entryOverride) return entryOverride
-	return require.resolve('core')
+	return require.resolve('core/service')
 }
 
 /**

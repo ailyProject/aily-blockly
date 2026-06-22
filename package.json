@@ -2,7 +2,7 @@
 	"name": "monorepo",
 	"packageManager": "pnpm@11.7.0",
 	"scripts": {
-		"dev": "turbo run dev --filter=ui --filter=core --filter=desktop",
+		"dev": "node ./scripts/dev.mjs",
 		"start:electron": "pnpm run build && pnpm --filter desktop start",
 		"build": "turbo run build",
 		"deps:w": "ncu -u -i --workspaces",

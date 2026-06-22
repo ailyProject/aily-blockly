@@ -15,7 +15,7 @@ export const createDesktopMainWindow = () =>
 		height: 920,
 		minWidth: 1120,
 		minHeight: 720,
-		show: true,
+		show: false,
 		title: 'Aily Blockly',
 		backgroundColor: '#f6f5ef',
 		webPreferences: {
@@ -115,56 +115,6 @@ export const presentDesktopMainWindow = (window: BrowserWindow) => {
 }
 
 /**
- * 在主窗口里渲染启动中的占位页。
- * @param window - 目标窗口
- */
-export const renderDesktopLoadingPage = async (window: BrowserWindow) => {
-	writeDesktopStartupLog('[desktop-window] loading-page-render-start')
-	const html = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Aily Blockly</title>
-    <style>
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background: linear-gradient(160deg, #f6f5ef 0%, #ece9df 100%);
-        color: #16202a;
-        font-family: system-ui, sans-serif;
-      }
-      main {
-        width: min(560px, calc(100vw - 48px));
-        padding: 28px 32px;
-        border-radius: 24px;
-        background: rgba(255, 255, 255, 0.84);
-        box-shadow: 0 18px 60px rgba(18, 29, 43, 0.14);
-      }
-      h1 {
-        margin: 0 0 12px;
-        font-size: 28px;
-      }
-      p {
-        margin: 0;
-        line-height: 1.6;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Aily Blockly</h1>
-      <p>Desktop shell is starting. Waiting for the workspace UI and core runtime to become ready.</p>
-    </main>
-  </body>
-</html>`
-
-	await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-	writeDesktopStartupLog('[desktop-window] loading-page-render-finish')
-}
-
-/**
  * 等待开发态前端服务可访问。
  * @param url - 前端 dev server 地址
  * @param timeoutMs - 最大等待时间
@@ -202,6 +152,20 @@ const waitForDesktopUiDevServer = async (url: string, timeoutMs = 8_000): Promis
 export const loadDesktopMainWindow = async (window: BrowserWindow, options: DesktopAppLaunchOptions = {}) => {
 	const devServerUrl = resolveDesktopUiUrl(options)
 	const indexHtmlPath = resolveDesktopUiIndexHtmlPath(options)
+	const useDevServerOnly = Boolean(options.devServerUrl || process.env['AILY_UI_DEV_SERVER_URL'])
+
+	if (useDevServerOnly) {
+		writeDesktopStartupLog('[desktop-window] dev-server-only')
+		const ready = await waitForDesktopUiDevServer(devServerUrl, 120_000)
+		if (!ready) {
+			writeDesktopStartupLog(`[desktop-window] dev-server-unavailable ${devServerUrl}`)
+			throw new Error(`Desktop UI dev server did not become ready: ${devServerUrl}`)
+		}
+
+		writeDesktopStartupLog(`[desktop-window] load-url ${devServerUrl}`)
+		await window.loadURL(devServerUrl)
+		return
+	}
 
 	if (await waitForDesktopUiDevServer(devServerUrl)) {
 		writeDesktopStartupLog(`[desktop-window] load-url ${devServerUrl}`)

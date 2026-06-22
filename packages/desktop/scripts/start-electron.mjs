@@ -1,9 +1,33 @@
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 
-import { resetDesktopStartupLog, writeDesktopStartupLog } from './log.mjs'
+import { clearDesktopPid, resetDesktopStartupLog, writeDesktopPid, writeDesktopStartupLog } from './log.mjs'
 import { resolveElectronBinaryPath } from './electron-runtime.mjs'
 
-resetDesktopStartupLog()
+const mainEntryPath = path.resolve(process.cwd(), 'dist/main/index.cjs')
+const preloadEntryPath = path.resolve(process.cwd(), 'dist/preload/index.cjs')
+
+/**
+ * 等待 desktop 主进程与 preload 产物就绪。
+ */
+const waitForDesktopBuildOutput = async () => {
+	writeDesktopStartupLog('[start-electron] wait-build-output-start')
+
+	for (;;) {
+		if (fs.existsSync(mainEntryPath) && fs.existsSync(preloadEntryPath)) {
+			writeDesktopStartupLog('[start-electron] wait-build-output-finish')
+			return
+		}
+
+		await new Promise(resolve => setTimeout(resolve, 250))
+	}
+}
+
+if (process.env['AILY_DESKTOP_PRESERVE_LOG'] !== '1') {
+	resetDesktopStartupLog()
+}
+await waitForDesktopBuildOutput()
 writeDesktopStartupLog('[start-electron] resolve-binary-start')
 const electronBinaryPath = await resolveElectronBinaryPath()
 writeDesktopStartupLog(`[start-electron] resolve-binary-finish ${electronBinaryPath}`)
@@ -14,6 +38,7 @@ const child = spawn(electronBinaryPath, ['.'], {
 	env: process.env
 })
 writeDesktopStartupLog('[start-electron] spawn-finish')
+writeDesktopPid(child.pid)
 
 let shuttingDown = false
 
@@ -29,6 +54,7 @@ const shutdown = code => {
 		child.kill('SIGTERM')
 	}
 	setTimeout(() => {
+		clearDesktopPid()
 		process.exit(code)
 	}, 1_000)
 }
@@ -43,6 +69,7 @@ process.on('SIGTERM', () => {
 
 child.once('exit', code => {
 	writeDesktopStartupLog(`[start-electron] child-exit ${String(code ?? 0)}`)
+	clearDesktopPid()
 	process.exit(code ?? 0)
 })
 

@@ -8,7 +8,7 @@ export interface DesktopCoreServiceManagerOptions extends AilyCoreServiceStartOp
 	startupTimeoutMs?: number
 	/** 启动阶段的健康检查轮询间隔 */
 	healthcheckIntervalMs?: number
-	/** 手动覆盖 standalone 入口路径 */
+	/** 手动覆盖 Core service 入口路径 */
 	entryOverride?: string
 }
 
