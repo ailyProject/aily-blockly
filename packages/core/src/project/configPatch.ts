@@ -4,6 +4,9 @@ import {
 	setDevmodeAutoSave,
 	setDevmodeEnabled,
 	setQuickSendList,
+	setRegion,
+	setResourceSource,
+	setResourceSources,
 	setSelectedLanguage,
 	setSerialMonitorConfig,
 	setThemeMode,
@@ -11,7 +14,14 @@ import {
 	skipAppVersion
 } from './index'
 
-import type { AilyAiChatMode, AilyAppConfig, QuickSendItem, SerialMonitorConfig, ThemeMode } from 'shared'
+import type {
+	AilyAiChatMode,
+	AilyAppConfig,
+	QuickSendItem,
+	ResourceSourceConfig,
+	SerialMonitorConfig,
+	ThemeMode
+} from 'shared'
 
 /**
  * 应用配置更新片段。
@@ -23,6 +33,12 @@ export interface ProjectConfigPatch {
 	clearSkippedVersions?: boolean
 	/** 新主题模式。 */
 	themeMode?: ThemeMode
+	/** 新区域键。 */
+	region?: string
+	/** 新资源源键。 */
+	resourceSource?: string
+	/** 新资源源列表。 */
+	resourceSources?: Array<Partial<ResourceSourceConfig>>
 	/** 新 AI 聊天模式。 */
 	aiChatMode?: AilyAiChatMode
 	/** 新选中语言。 */
@@ -53,6 +69,9 @@ export const applyProjectConfigPatch = (
 	if (patch.versionToSkip) nextConfig = skipAppVersion(nextConfig, patch.versionToSkip)
 	if (patch.clearSkippedVersions) nextConfig = clearSkippedAppVersions(nextConfig)
 	if (patch.themeMode) nextConfig = setThemeMode(nextConfig, patch.themeMode)
+	if (patch.region) nextConfig = setRegion(nextConfig, patch.region)
+	if (patch.resourceSource) nextConfig = setResourceSource(nextConfig, patch.resourceSource)
+	if (patch.resourceSources) nextConfig = setResourceSources(nextConfig, patch.resourceSources)
 	if (patch.aiChatMode) nextConfig = setAiChatMode(nextConfig, patch.aiChatMode)
 	if (patch.selectedLanguage) nextConfig = setSelectedLanguage(nextConfig, patch.selectedLanguage)
 	if (typeof patch.devmodeEnabled === 'boolean') nextConfig = setDevmodeEnabled(nextConfig, patch.devmodeEnabled)

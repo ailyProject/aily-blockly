@@ -1,7 +1,9 @@
 import { writeFile } from 'node:fs/promises'
+import path from 'node:path'
 
 import { buildProjectAbiPayload } from '../abi'
 import { resolveProjectTempDocumentPathFromPrimary } from './documentPaths'
+import { syncProjectUsedLibraryManifest } from './syncUsedLibraryManifest'
 
 import type { BlocklyProjectDocument } from '../document'
 
@@ -15,4 +17,5 @@ export const writeProjectDocument = async (filePath: string, document: BlocklyPr
 	const text = JSON.stringify(payload, null, 2) + '\n'
 	await writeFile(filePath, text, 'utf8')
 	await writeFile(resolveProjectTempDocumentPathFromPrimary(filePath), text, 'utf8')
+	await syncProjectUsedLibraryManifest(path.dirname(filePath), document)
 }

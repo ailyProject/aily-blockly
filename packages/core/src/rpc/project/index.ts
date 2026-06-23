@@ -4,6 +4,7 @@ import { default as addRecentModelProject } from './addRecentModelProject'
 import { default as addRecentProject } from './addRecentProject'
 import { default as addStoredRecentProject } from './addStoredRecentProject'
 import { default as closePage } from './closePage'
+import { default as compareActiveWorkspace } from './compareActiveWorkspace'
 import { default as createPage } from './createPage'
 import { default as createProject } from './createProject'
 import { default as findAvailableName } from './findAvailableName'
@@ -46,6 +47,7 @@ export default r({
 	getRecentProjects,
 	getStoredRecentProjects,
 	acquireOpenSessionLock,
+	compareActiveWorkspace,
 	getBlocklyLibraryActionStatus,
 	getBlocklyLibraryStatus,
 	getCloudBinding,

@@ -53,6 +53,11 @@ export class SettingsPageComponent implements OnInit {
 			this.state.set({
 				selectedLanguage: configSummary.selectedLanguage,
 				themeMode: configSummary.themeMode,
+				regionKey: configSummary.regionKey,
+				resourceSourceKey: configSummary.resourceSourceKey,
+				currentResourceSourceUrl: configSummary.currentResourceSource?.url || null,
+				enabledRegionCount: configSummary.enabledRegions.length,
+				resourceSourceCount: configSummary.resourceSources.length,
 				devmodeEnabled: configSummary.devmodeEnabled,
 				devmodeAutoSave: configSummary.devmode.autoSave,
 				aiChatMode: configSummary.aiChatMode ?? 'agent',

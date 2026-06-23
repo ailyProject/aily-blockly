@@ -1,3 +1,4 @@
+import { default as abi } from './abi/index'
 import { default as agent } from './agent/index'
 import { default as build } from './build/index'
 import { default as cloud } from './cloud/index'
@@ -16,6 +17,7 @@ import { p, r } from './trpc'
 
 import type { CreateAilyCoreRouterOptions } from './types'
 
+export { default as abi } from './abi/index'
 export { default as agent } from './agent/index'
 export { default as build } from './build/index'
 export { default as cloud } from './cloud/index'
@@ -36,6 +38,7 @@ export * from './types'
 
 export const router = (options: CreateAilyCoreRouterOptions) =>
 	r({
+		abi,
 		agent,
 		config,
 		cloud,

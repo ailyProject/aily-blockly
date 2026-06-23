@@ -2,6 +2,8 @@ import type {
 	AilyAiChatMode,
 	DevModeConfig,
 	QuickSendItem,
+	RegionListItem,
+	ResourceSourceConfig,
 	SerialMonitorConfig,
 	SerialMonitorInputMode,
 	SerialMonitorViewMode,
@@ -16,6 +18,18 @@ export interface ConfigSummary {
 	selectedLanguage: string
 	/** 当前生效的主题模式。 */
 	themeMode: ThemeMode
+	/** 当前官方区域键。 */
+	officialRegionKey: string
+	/** 当前选中的区域键。 */
+	regionKey: string
+	/** 当前可选区域列表。 */
+	enabledRegions: Array<RegionListItem>
+	/** 当前选中的资源源键。 */
+	resourceSourceKey: string
+	/** 当前可用资源源列表。 */
+	resourceSources: Array<ResourceSourceConfig>
+	/** 当前生效资源源。 */
+	currentResourceSource: ResourceSourceConfig | null
 	/** Monaco 编辑器应使用的主题标识。 */
 	monacoTheme: string
 	/** Mermaid 图表应使用的主题标识。 */

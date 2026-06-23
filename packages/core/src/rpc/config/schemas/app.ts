@@ -54,6 +54,9 @@ export const appConfigInputSchema = appSchema.partial()
 export const configPatchSchema = z.object({
 	versionToSkip: z.string().optional(),
 	themeMode: z.enum(['dark', 'light']).optional(),
+	region: z.string().optional(),
+	resourceSource: z.string().optional(),
+	resourceSources: z.array(resourceSourceSchema).optional(),
 	aiChatMode: z.enum(['agent', 'ask']).optional(),
 	selectedLanguage: z.string().optional(),
 	devmodeEnabled: z.boolean().optional(),

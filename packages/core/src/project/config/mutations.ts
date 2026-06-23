@@ -1,4 +1,5 @@
 export * from './mutations/ai'
+export * from './mutations/environment'
 export * from './mutations/language'
 export * from './mutations/serial'
 export * from './mutations/toolbar'

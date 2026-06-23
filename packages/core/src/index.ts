@@ -1,3 +1,12 @@
+export * from './abs'
+export { normalizeProjectAbi, parseProjectAbiText, stringifyProjectAbi } from './abi'
+export {
+	readProjectAbiSummary,
+	readProjectActiveWorkspace,
+	readProjectDocument,
+	syncProjectUsedLibraryManifest,
+	writeProjectDocument
+} from './project'
 export type {
 	BoardIndexItem,
 	CategoryCount,

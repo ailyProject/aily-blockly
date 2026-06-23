@@ -13,6 +13,82 @@ export interface AbiToAbsOptions {
 }
 
 /**
+ * 块参数在声明中的类别。
+ */
+export type AbsBlockArgKind = 'field' | 'valueInput' | 'statementInput'
+
+/**
+ * 块参数顺序项。
+ */
+export interface AbsBlockArgOrderEntry {
+	/** 参数名。 */
+	name: string
+	/** 参数类别。 */
+	kind: AbsBlockArgKind
+}
+
+/**
+ * ABS / ABI 转换时使用的块元数据。
+ */
+export interface AbsBlockMeta {
+	/** 块类型。 */
+	type: string
+	/** 字段名列表。 */
+	fieldNames: Array<string>
+	/** 字段类型映射。 */
+	fieldTypes: Map<string, string>
+	/** 值输入名称列表。 */
+	valueInputNames: Array<string>
+	/** 语句输入名称列表。 */
+	statementInputNames: Array<string>
+	/** 是否存在语句输入。 */
+	hasStatementInput?: boolean
+	/** 所有参数的原始顺序。 */
+	argsOrder: Array<AbsBlockArgOrderEntry>
+	/** 是否有输出。 */
+	hasOutput: boolean
+	/** 输出类型定义。 */
+	outputType?: string | Array<string>
+	/** 是否有 previousStatement。 */
+	hasPrevious: boolean
+	/** 是否有 nextStatement。 */
+	hasNext: boolean
+	/** 是否可作为根块。 */
+	isRootBlock: boolean
+	/** 是否是简单值块。 */
+	isValueBlock?: boolean
+	/** 所属库包名。 */
+	library: string
+	/** mutator 名称。 */
+	mutator?: string
+}
+
+/**
+ * ABS 解析后的中间块配置。
+ */
+export interface AbsBlockConfig {
+	/** 块类型。 */
+	type: string
+	/** 可选序列化 ID。 */
+	id?: string
+	/** 字段映射。 */
+	fields?: Record<string, unknown>
+	/** 输入映射。 */
+	inputs?: Record<string, { block?: AbsBlockConfig; shadow?: AbsBlockConfig }>
+	/** Blockly 画布位置。 */
+	position?: {
+		x: number
+		y: number
+	}
+	/** next 链。 */
+	next?: {
+		block: AbsBlockConfig
+	}
+	/** mutator / extraState。 */
+	extraState?: Record<string, unknown>
+}
+
+/**
  * ABS 变量定义
  */
 export interface AbsVariableDefinition {

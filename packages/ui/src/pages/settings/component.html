@@ -25,6 +25,11 @@
 
         <div class="metrics-grid">
           <div><span>Theme</span><strong>{{ stateValue.themeMode }}</strong></div>
+          <div><span>Region</span><strong>{{ stateValue.regionKey }}</strong></div>
+          <div><span>Resource Source</span><strong>{{ stateValue.resourceSourceKey }}</strong></div>
+          <div><span>Source URL</span><strong>{{ stateValue.currentResourceSourceUrl || 'n/a' }}</strong></div>
+          <div><span>Enabled Regions</span><strong>{{ stateValue.enabledRegionCount }}</strong></div>
+          <div><span>Sources</span><strong>{{ stateValue.resourceSourceCount }}</strong></div>
           <div><span>Dev Mode</span><strong>{{ stateValue.devmodeEnabled ? 'on' : 'off' }}</strong></div>
           <div><span>Auto Save</span><strong>{{ stateValue.devmodeAutoSave ? 'on' : 'off' }}</strong></div>
           <div><span>AI Mode</span><strong>{{ stateValue.aiChatMode }}</strong></div>
