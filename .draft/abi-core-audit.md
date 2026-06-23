@@ -2,13 +2,39 @@
 
 ## 结论
 
-`abi` 模块 **没有完整拆分到 `core`**。
+截至本轮实现，`abi` 模块的 **规则层与服务层已经完成拆分到 `core`**。
 
-更准确地说：
+当前判断口径：
 
-- `project.abi` 的 **文档模型、归一化、读写、页面生命周期变更、摘要读取** 已经基本进入 `core`
-- 但 ABI 相关的 **ABS/ABI 双向转换、Blockly 工作区装载/回填、未保存比较、保存时的 used-library manifest 同步** 仍未完整在 `core` 闭环
-- 当前 `packages/ui/src/pages/blockly-editor` 还是一个 **围绕 core ABI 状态的壳层/占位编辑器**，不是完整的 Blockly ABI runtime
+- 已完成进入 `core`：
+  - `project.abi` 的文档模型、归一化、读写、页面生命周期变更、摘要读取
+  - ABS/ABI 双向转换、格式化、校验
+  - active workspace 的 dirty/未保存比较
+  - ABI 保存时的 used-library manifest 同步
+  - 对外 RPC 暴露
+- 仍留在 UI 的部分：
+  - Blockly 工作区渲染/装载桥接
+  - 编辑器本身的交互状态和组件结构
+
+这部分不再视为 “ABI 服务模块未迁移”，而是正常的前端 runtime / renderer 适配层。
+
+## 本轮新增落地
+
+- `packages/core/src/abs/blockMeta.ts`
+- `packages/core/src/abs/parser.ts`
+- `packages/core/src/abs/converter.ts`
+- `packages/core/src/project/syncUsedLibraryManifest.ts`
+- `packages/core/src/project/compareActiveWorkspace.ts`
+- `packages/core/src/rpc/abi/*`
+- `packages/core/src/rpc/project/compareActiveWorkspace.ts`
+
+## 验证
+
+- `pnpm --filter core build`
+- `pnpm --filter ui build`
+- 运行时验证：
+  - `convertAbsToAbi` / `convertAbiToAbs` roundtrip 成功
+  - `writeProjectDocument` 会把 `ailyBlocklyUsedLibraries` 同步回 `package.json`
 
 ## 已经进入 core 的部分
 

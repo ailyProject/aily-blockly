@@ -22,3 +22,48 @@
     </article>
   }
 </section>
+
+<section class="cloud-section">
+  <header class="cloud-header">
+    <div>
+      <strong>Cloud Examples</strong>
+      <p>Public projects loaded from cloud space and importable into the local workspace.</p>
+    </div>
+    <button hlmBtn variant="outline" size="sm" [disabled]="cloudLoading()" (click)="refreshCloudExamples()">
+      {{ cloudLoading() ? 'Loading...' : 'Refresh Cloud Examples' }}
+    </button>
+  </header>
+
+  @if (statusMessage()) {
+    <p class="cloud-status">{{ statusMessage() }}</p>
+  }
+
+  <div class="cloud-grid">
+    @for (project of cloudExamples(); track project.id) {
+      <article hlmCard class="cloud-card">
+        <div class="subject-copy">
+          <div class="cloud-title-row">
+            <strong>{{ project.nickname || project.name }}</strong>
+            @if (project.board) {
+              <span hlmBadge variant="outline">{{ project.board }}</span>
+            }
+          </div>
+          <p>{{ project.description || 'No description provided.' }}</p>
+        </div>
+        <div class="badge-row">
+          @for (tag of project.tags.slice(0, 3); track tag) {
+            <span hlmBadge variant="secondary">{{ tag }}</span>
+          }
+        </div>
+        <button hlmBtn size="sm" [disabled]="importBusyId() === project.id" (click)="importExample(project)">
+          {{ importBusyId() === project.id ? 'Importing...' : 'Import And Open' }}
+        </button>
+      </article>
+    } @empty {
+      <article hlmCard class="subject-card empty">
+        <strong>{{ cloudLoading() ? 'Loading cloud examples...' : 'No public cloud examples are available.' }}</strong>
+        <span class="meta">Refresh the catalog or try again later.</span>
+      </article>
+    }
+  </div>
+</section>

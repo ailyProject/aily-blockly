@@ -1,3 +1,5 @@
+import type { RegionListItem, ResourceSourceConfig } from 'shared'
+
 /**
  * 设置页展示快照
  */
@@ -16,6 +18,10 @@ export interface SettingsSnapshot {
 	enabledRegionCount: number
 	/** 当前可用资源源数量 */
 	resourceSourceCount: number
+	/** 当前可选区域列表 */
+	enabledRegions: Array<RegionListItem>
+	/** 当前可用资源源列表 */
+	resourceSources: Array<ResourceSourceConfig>
 	/** 当前是否启用开发者模式 */
 	devmodeEnabled: boolean
 	/** 当前开发者模式自动保存开关 */

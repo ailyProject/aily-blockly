@@ -1,6 +1,9 @@
 <app-shell>
   <div shell-actions>
     <button hlmBtn variant="outline" size="sm" (click)="refresh()">Refresh</button>
+    <button hlmBtn size="sm" [disabled]="saveBusy()" (click)="saveConfig()">
+      {{ saveBusy() ? 'Saving...' : 'Save Config' }}
+    </button>
   </div>
 
   <section class="settings-page">
@@ -22,6 +25,49 @@
           </div>
           <span hlmBadge variant="secondary">{{ stateValue.selectedLanguage }}</span>
         </header>
+
+        <div class="editor-grid">
+          <label class="field">
+            <span>Theme</span>
+            <select [ngModel]="themeModeDraft()" (ngModelChange)="themeModeDraft.set($event)">
+              @for (option of themeOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Language</span>
+            <select [ngModel]="selectedLanguageDraft()" (ngModelChange)="selectedLanguageDraft.set($event)">
+              @for (option of languageOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Region</span>
+            <select [ngModel]="regionKeyDraft()" (ngModelChange)="regionKeyDraft.set($event)">
+              @for (region of stateValue.enabledRegions; track region.key) {
+                <option [value]="region.key">{{ region.name }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Resource Source</span>
+            <select [ngModel]="resourceSourceKeyDraft()" (ngModelChange)="resourceSourceKeyDraft.set($event)">
+              <option value="auto">Auto</option>
+              @for (source of stateValue.resourceSources; track source.key) {
+                <option [value]="source.key">{{ source.name || source.key }}</option>
+              }
+            </select>
+          </label>
+        </div>
+
+        @if (saveMessage()) {
+          <p class="save-message">{{ saveMessage() }}</p>
+        }
 
         <div class="metrics-grid">
           <div><span>Theme</span><strong>{{ stateValue.themeMode }}</strong></div>

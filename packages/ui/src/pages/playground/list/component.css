@@ -46,3 +46,48 @@
 .meta {
 	font-size: 13px;
 }
+
+.cloud-section {
+	display: grid;
+	gap: 14px;
+	margin-top: 22px;
+}
+
+.cloud-header {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.cloud-header p,
+.cloud-status {
+	margin: 4px 0 0;
+	color: var(--muted-foreground);
+}
+
+.cloud-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 14px;
+}
+
+.cloud-card {
+	display: grid;
+	gap: 14px;
+	padding: 18px;
+	border-radius: 20px;
+}
+
+.cloud-title-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.badge-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}

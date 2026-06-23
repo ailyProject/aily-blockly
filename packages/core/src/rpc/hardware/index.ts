@@ -3,6 +3,7 @@ import { default as cancelUpload } from './cancelUpload'
 import { default as detectEsptool } from './detectEsptool'
 import { default as getBoardCategories } from './getBoardCategories'
 import { default as getFirmwareInfo } from './getFirmwareInfo'
+import { default as installEsptool } from './installEsptool'
 import { default as listProbes } from './listProbes'
 import { default as listSerialPorts } from './listSerialPorts'
 import { default as planUpload } from './planUpload'
@@ -21,6 +22,7 @@ export default r({
 	searchCompat,
 	listSerialPorts,
 	getFirmwareInfo,
+	installEsptool,
 	planUpload,
 	prepareBleUpload,
 	prepareUploadExecution,

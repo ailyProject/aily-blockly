@@ -48,6 +48,12 @@
 	gap: 10px;
 }
 
+.status-line {
+	margin: 0;
+	color: var(--muted-foreground);
+	font-size: 13px;
+}
+
 .tab-link {
 	padding: 8px 12px;
 	border-radius: 999px;

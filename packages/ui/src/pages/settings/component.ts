@@ -1,4 +1,5 @@
 import { Component, inject, OnInit, signal } from '@angular/core'
+import { FormsModule } from '@angular/forms'
 import { Router } from '@angular/router'
 import { HlmBadgeImports } from 'spartan/badge'
 import { HlmButtonImports } from 'spartan/button'
@@ -8,26 +9,47 @@ import { AppShellComponent } from '@/layout/app-shell.component'
 import { closeProjectInEditor } from '@/runtime/project-routing'
 import { getCurrentProjectPath } from '@/runtime/project-session'
 import { getCore } from '@/utils/core'
+import { getDesktop, loadDesktopHostRuntimeInfo } from '@/utils/desktop'
 import { config } from '@/workspace'
 
+import type { DesktopHostRuntimeInfo } from '@desktop'
 import type { SettingsSnapshot } from './types'
 
 @Component({
 	selector: 'settings-page',
-	imports: [AppShellComponent, HlmBadgeImports, HlmButtonImports, HlmCardImports],
+	imports: [AppShellComponent, FormsModule, HlmBadgeImports, HlmButtonImports, HlmCardImports],
 	templateUrl: './component.html',
 	styleUrl: './component.css'
 })
 export class SettingsPageComponent implements OnInit {
 	private readonly core = getCore()
 	private readonly router = inject(Router)
+	private readonly desktop = getDesktop()
 
 	protected readonly state = signal<SettingsSnapshot | null>(null)
 	protected readonly loading = signal(true)
 	protected readonly error = signal<string | null>(null)
 	protected readonly closeBusy = signal(false)
+	protected readonly saveBusy = signal(false)
+	protected readonly saveMessage = signal<string | null>(null)
+	protected readonly runtimeInfo = signal<DesktopHostRuntimeInfo | null>(null)
+	protected readonly selectedLanguageDraft = signal('zh_CN')
+	protected readonly themeModeDraft = signal<'dark' | 'light'>('dark')
+	protected readonly regionKeyDraft = signal('cn')
+	protected readonly resourceSourceKeyDraft = signal('auto')
+	protected readonly themeOptions = [
+		{ value: 'dark', label: 'Dark' },
+		{ value: 'light', label: 'Light' }
+	] as const
+	protected readonly languageOptions = [
+		{ value: 'zh_CN', label: 'Chinese (Simplified)' },
+		{ value: 'en_US', label: 'English (US)' }
+	] as const
 
 	async ngOnInit() {
+		if (this.desktop) {
+			this.runtimeInfo.set(await loadDesktopHostRuntimeInfo(this.desktop).catch(() => null))
+		}
 		await this.refresh()
 	}
 
@@ -58,6 +80,8 @@ export class SettingsPageComponent implements OnInit {
 				currentResourceSourceUrl: configSummary.currentResourceSource?.url || null,
 				enabledRegionCount: configSummary.enabledRegions.length,
 				resourceSourceCount: configSummary.resourceSources.length,
+				enabledRegions: configSummary.enabledRegions,
+				resourceSources: configSummary.resourceSources,
 				devmodeEnabled: configSummary.devmodeEnabled,
 				devmodeAutoSave: configSummary.devmode.autoSave,
 				aiChatMode: configSummary.aiChatMode ?? 'agent',
@@ -115,10 +139,42 @@ export class SettingsPageComponent implements OnInit {
 				blocklyOnboardingCompleted: onboarding.blocklyOnboardingCompleted,
 				ailyChatOnboardingCompleted: onboarding.ailyChatOnboardingCompleted
 			})
+			this.selectedLanguageDraft.set(configSummary.selectedLanguage)
+			this.themeModeDraft.set(configSummary.themeMode)
+			this.regionKeyDraft.set(configSummary.regionKey)
+			this.resourceSourceKeyDraft.set(configSummary.resourceSourceKey)
 		} catch (error) {
 			this.error.set((error as Error).message)
 		} finally {
 			this.loading.set(false)
+		}
+	}
+
+	protected async saveConfig() {
+		const runtimeInfo = this.runtimeInfo()
+		if (!runtimeInfo?.available || !runtimeInfo.appDataPath) {
+			this.saveMessage.set('Desktop runtime info is unavailable, so settings cannot be persisted here.')
+			return
+		}
+
+		this.saveBusy.set(true)
+		this.saveMessage.set(null)
+
+		try {
+			await this.core.config.updateStored.mutate({
+				appDataPath: runtimeInfo.appDataPath,
+				fallbackLanguage: config.lang,
+				themeMode: this.themeModeDraft(),
+				selectedLanguage: this.selectedLanguageDraft(),
+				region: this.regionKeyDraft(),
+				resourceSource: this.resourceSourceKeyDraft()
+			})
+			this.saveMessage.set('Settings saved to config.json.')
+			await this.refresh()
+		} catch (error) {
+			this.saveMessage.set(error instanceof Error ? error.message : String(error))
+		} finally {
+			this.saveBusy.set(false)
 		}
 	}
 

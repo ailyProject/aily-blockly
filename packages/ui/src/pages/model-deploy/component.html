@@ -23,6 +23,19 @@
       </div>
 
       <div class="toolbar">
+        @if (!esptoolAvailable()) {
+          <button hlmBtn size="sm" [disabled]="installBusy()" (click)="installEsptool()">
+            {{ installBusy() ? 'Installing esptool...' : 'Install Esptool' }}
+          </button>
+        }
+        <button hlmBtn variant="outline" size="sm" [disabled]="installBusy()" (click)="refresh()">Refresh Host Checks</button>
+      </div>
+
+      @if (installMessage()) {
+        <p class="status-line">{{ installMessage() }}</p>
+      }
+
+      <div class="toolbar">
         @for (tab of tabs; track tab.href) {
           <a
             class="tab-link"

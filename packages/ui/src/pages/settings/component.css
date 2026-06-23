@@ -41,6 +41,35 @@
 	gap: 12px;
 }
 
+.editor-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+}
+
+.field {
+	display: grid;
+	gap: 6px;
+}
+
+.field span {
+	margin: 0;
+	color: var(--muted-foreground);
+	font-size: 12px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.field select {
+	height: 42px;
+	border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--background) 88%, var(--muted));
+	padding: 0 12px;
+	color: var(--foreground);
+}
+
 .metrics-grid div {
 	display: grid;
 	gap: 4px;
@@ -53,4 +82,10 @@
 	display: flex;
 	flex-wrap: wrap;
 	gap: 10px;
+}
+
+.save-message {
+	margin: 0;
+	color: var(--muted-foreground);
+	font-size: 13px;
 }
