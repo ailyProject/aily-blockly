@@ -1,3 +1,11 @@
 {
-	"css.customData": [".vscode/tailwind.json"]
+	"css.customData": [".vscode/tailwind.json"],
+	"json.schemaDownload.enable": true,
+	"json.schemaDownload.allow": ["https://turborepo.dev/*"],
+	"json.schemas": [
+		{
+			"fileMatch": ["turbo.json"],
+			"url": "https://turborepo.dev/schema.json"
+		}
+	]
 }
