@@ -84,7 +84,7 @@
       "target": "nsis",
       "sign": false,
       "signAndEditExecutable": true,
-      "artifactName": "aily-blockly-${version}.${ext}",
+      "artifactName": "aily-blockly-win-${version}.${ext}",
       "icon": "public/icon.ico",
       "fileAssociations": [
         {
@@ -141,7 +141,7 @@
       "include": "build/installer.nsh",
       "runAfterFinish": true,
       "differentialPackage": false,
-      "artifactName": "aily-blockly-Setup-${version}.${ext}",
+      "artifactName": "aily-blockly-win-${version}.${ext}",
       "createStartMenuShortcut": true,
       "shortcutName": "aily blockly"
     }

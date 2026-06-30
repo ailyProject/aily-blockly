@@ -24,8 +24,8 @@ const builderArgs = [
   `-c.extraMetadata.ailyBuildFlavor=${buildFlavor}`,
   '-c.publish.provider=generic',
   `-c.publish.url=${updateBaseUrl}`,
-  `-c.win.artifactName=${artifactPrefix}-\${version}${artifactVersionSuffix}.\${ext}`,
-  `-c.nsis.artifactName=${artifactPrefix}-Setup-\${version}${artifactVersionSuffix}.\${ext}`,
+  `-c.win.artifactName=${artifactPrefix}-win-\${version}${artifactVersionSuffix}.\${ext}`,
+  `-c.nsis.artifactName=${artifactPrefix}-win-\${version}${artifactVersionSuffix}.\${ext}`,
   `-c.mac.artifactName=${artifactPrefix}-macos-\${version}${artifactVersionSuffix}-\${arch}.\${ext}`
 ];
 const ngCliPath = path.join(workspaceRoot, 'node_modules', '@angular', 'cli', 'bin', 'ng.js');

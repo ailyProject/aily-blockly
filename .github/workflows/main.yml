@@ -74,7 +74,7 @@ jobs:
           Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
           
           # 获取签名后的 exe 文件（优先匹配安装包命名模式）
-          $exeFile = Get-ChildItem -Filter "aily-blockly-Setup-*.exe" | Select-Object -First 1
+          $exeFile = Get-ChildItem -Filter "aily-blockly-win-*.exe" | Select-Object -First 1
           if (-not $exeFile) {
             $exeFile = Get-ChildItem -Filter "*.exe" | Select-Object -First 1
           }
@@ -203,7 +203,7 @@ jobs:
           Write-Host "Files in dist/aily-blockly:"
           Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
 
-          $exeFile = Get-ChildItem -Filter "aily-blockly-CN-Setup-*.exe" | Select-Object -First 1
+          $exeFile = Get-ChildItem -Filter "aily-blockly-CN-win-*.exe" | Select-Object -First 1
           if (-not $exeFile) {
             $exeFile = Get-ChildItem -Filter "*.exe" | Select-Object -First 1
           }
