@@ -7,12 +7,12 @@ const rootDir = path.join(__dirname, '..');
 const childDir = path.join(rootDir, 'child');
 
 const REPOS = [
-  // {
-  //   name: 'aily-coder',
-  //   url: 'https://github.com/ailyProject/aily-coder.git',
-  //   branch: 'downey',
-  //   buildScript: 'build:netlify',
-  // },
+  {
+    name: 'aily-coder',
+    url: 'https://github.com/ailyProject/aily-coder.git',
+    branch: 'downey',
+    buildScript: 'build:netlify',
+  },
   {
     name: 'aily-lex',
     url: 'https://github.com/ailyProject/aily-lex.git',
