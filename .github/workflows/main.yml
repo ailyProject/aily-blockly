@@ -24,11 +24,13 @@ jobs:
             electron/package-lock.json
 
       - name: Install Dependencies
+        env:
+          CHILD_REPOS_TOKEN: ${{ secrets.CHILD_REPOS_TOKEN }}
         run: |
           npm install -g @angular/cli
+          npm run setup:child-repos
           npm ci --include=dev
           npm --prefix electron ci --include=dev --force
-          npm run setup:child-repos
 
       - name: Build Windows Package (Global)
         run: |
@@ -157,11 +159,13 @@ jobs:
             electron/package-lock.json
 
       - name: Install Dependencies
+        env:
+          CHILD_REPOS_TOKEN: ${{ secrets.CHILD_REPOS_TOKEN }}
         run: |
           npm install -g @angular/cli
+          npm run setup:child-repos
           npm ci --include=dev
           npm --prefix electron ci --include=dev --force
-          npm run setup:child-repos
 
       - name: Build Windows Package (CN)
         run: |
@@ -275,11 +279,13 @@ jobs:
             electron/package-lock.json
 
       - name: Install Dependencies
+        env:
+          CHILD_REPOS_TOKEN: ${{ secrets.CHILD_REPOS_TOKEN }}
         run: |
           npm install -g @angular/cli
+          npm run setup:child-repos
           npm ci --include=dev
           npm --prefix electron ci --include=dev --force
-          npm run setup:child-repos
 
       # --- 导入代码签名证书到 Keychain ---
       - name: Import Codesign Certificates
@@ -377,11 +383,13 @@ jobs:
             electron/package-lock.json
 
       - name: Install Dependencies
+        env:
+          CHILD_REPOS_TOKEN: ${{ secrets.CHILD_REPOS_TOKEN }}
         run: |
           npm install -g @angular/cli
+          npm run setup:child-repos
           npm ci --include=dev
           npm --prefix electron ci --include=dev --force
-          npm run setup:child-repos
 
       - name: Import Codesign Certificates
         uses: apple-actions/import-codesign-certs@v2

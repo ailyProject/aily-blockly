@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { Buffer } = require('buffer');
 const path = require('path');
 const { execSync } = require('child_process');
 
@@ -6,12 +7,12 @@ const rootDir = path.join(__dirname, '..');
 const childDir = path.join(rootDir, 'child');
 
 const REPOS = [
-  {
-    name: 'aily-coder',
-    url: 'https://github.com/ailyProject/aily-coder.git',
-    branch: 'downey',
-    buildScript: 'build:netlify',
-  },
+  // {
+  //   name: 'aily-coder',
+  //   url: 'https://github.com/ailyProject/aily-coder.git',
+  //   branch: 'downey',
+  //   buildScript: 'build:netlify',
+  // },
   {
     name: 'aily-lex',
     url: 'https://github.com/ailyProject/aily-lex.git',
@@ -32,9 +33,32 @@ const NATIVE_RUNTIME_PACKAGES = new Set([
   'serialport',
 ]);
 
-function run(command, cwd) {
+function getGitAuthEnv() {
+  const token = process.env.CHILD_REPOS_TOKEN;
+
+  if (!token) {
+    return {};
+  }
+
+  const credential = Buffer.from(`x-access-token:${token}`).toString('base64');
+
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${credential}`,
+  };
+}
+
+function run(command, cwd, options = {}) {
   console.log(`\n> (${path.relative(rootDir, cwd)}) ${command}\n`);
-  execSync(command, { cwd, stdio: 'inherit' });
+  execSync(command, {
+    cwd,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      ...(options.env || {}),
+    },
+  });
 }
 
 function runOptional(command, cwd) {
@@ -179,12 +203,14 @@ function syncExistingRepo(repoDir, branch) {
     return;
   }
 
+  const gitAuthEnv = getGitAuthEnv();
+
   if (branch) {
-    run(`git fetch origin ${branch}`, repoDir);
-    run(`git checkout ${branch}`, repoDir);
+    run(`git fetch origin ${branch}`, repoDir, { env: gitAuthEnv });
+    run(`git checkout ${branch}`, repoDir, { env: gitAuthEnv });
   }
 
-  run('git pull --ff-only', repoDir);
+  run('git pull --ff-only', repoDir, { env: gitAuthEnv });
 }
 
 function ensureRepoDir(name, url, branch) {
@@ -201,7 +227,7 @@ function ensureRepoDir(name, url, branch) {
   const cloneCmd = branch
     ? `git clone -b ${branch} ${url} ${JSON.stringify(name)}`
     : `git clone ${url} ${JSON.stringify(name)}`;
-  run(cloneCmd, childDir);
+  run(cloneCmd, childDir, { env: getGitAuthEnv() });
   return { repoDir, existed: false };
 }
 
