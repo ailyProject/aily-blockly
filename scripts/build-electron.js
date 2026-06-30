@@ -8,9 +8,7 @@ const buildFlavor = requestedFlavor === 'global' ? 'global' : 'cn';
 const releaseChannel = process.env.AILY_RELEASE_CHANNEL || process.env.GITHUB_REF_NAME || 'deploy';
 const isBetaRelease = releaseChannel === 'beta';
 const betaBuildNumber = process.env.GITHUB_RUN_NUMBER || 'local';
-const artifactPrefix = buildFlavor === 'cn'
-  ? `aily-blockly-CN${isBetaRelease ? '-Beta' : ''}`
-  : `aily-blockly${isBetaRelease ? '-Beta' : ''}`;
+const artifactPrefix = buildFlavor === 'cn' ? 'aily-blockly-CN' : 'aily-blockly';
 const artifactVersionSuffix = isBetaRelease ? `-beta.${betaBuildNumber}` : '';
 const officialRegionKey = buildFlavor === 'global' ? 'eu' : 'cn';
 const workspaceRoot = path.resolve(__dirname, '..');
