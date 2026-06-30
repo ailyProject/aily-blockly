@@ -492,8 +492,8 @@ jobs:
         run: |
           VERSION=$(node -e "console.log(require('./package.json').version)")
           if [ "${{ github.ref_name }}" = "beta" ]; then
-            TAG="v${VERSION}-beta.${GITHUB_RUN_NUMBER}"
-            RELEASE_NAME="Aily Blockly ${VERSION} Beta ${GITHUB_RUN_NUMBER}"
+            TAG="v${VERSION}-beta"
+            RELEASE_NAME="Aily Blockly ${VERSION} Beta"
           else
             TAG="v${VERSION}"
             RELEASE_NAME="Aily Blockly ${VERSION}"
