@@ -10,7 +10,7 @@ on:
 jobs:
   # 任务 1：Windows 国际版客户端构建
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +22,14 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             electron/package-lock.json
+
+      - name: Print Windows build environment
+        run: |
+          node -v
+          npm -v
+          npm config get msvs_version
+          where cl
+          where msbuild
 
       - name: Install Dependencies
         env:
@@ -145,7 +153,7 @@ jobs:
 
   # 任务 1b：Windows 国内版客户端构建
   build-windows-cn:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -157,6 +165,14 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             electron/package-lock.json
+
+      - name: Print Windows build environment
+        run: |
+          node -v
+          npm -v
+          npm config get msvs_version
+          where cl
+          where msbuild
 
       - name: Install Dependencies
         env:
