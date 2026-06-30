@@ -28,8 +28,9 @@ jobs:
           node -v
           npm -v
           npm config get msvs_version
-          where cl
-          where msbuild
+          Get-Command cl.exe -ErrorAction SilentlyContinue | Format-List Source
+          Get-Command msbuild.exe -ErrorAction SilentlyContinue | Format-List Source
+          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
 
       - name: Install Dependencies
         env:
@@ -171,8 +172,9 @@ jobs:
           node -v
           npm -v
           npm config get msvs_version
-          where cl
-          where msbuild
+          Get-Command cl.exe -ErrorAction SilentlyContinue | Format-List Source
+          Get-Command msbuild.exe -ErrorAction SilentlyContinue | Format-List Source
+          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue
 
       - name: Install Dependencies
         env:
