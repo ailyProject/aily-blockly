@@ -5,7 +5,13 @@ const args = process.argv.slice(2);
 const flavorIndex = args.indexOf('--flavor');
 const requestedFlavor = flavorIndex >= 0 ? args[flavorIndex + 1] : 'cn';
 const buildFlavor = requestedFlavor === 'global' ? 'global' : 'cn';
-const artifactPrefix = buildFlavor === 'cn' ? 'aily-blockly-CN' : 'aily-blockly';
+const releaseChannel = process.env.AILY_RELEASE_CHANNEL || process.env.GITHUB_REF_NAME || 'deploy';
+const isBetaRelease = releaseChannel === 'beta';
+const betaBuildNumber = process.env.GITHUB_RUN_NUMBER || 'local';
+const artifactPrefix = buildFlavor === 'cn'
+  ? `aily-blockly-CN${isBetaRelease ? '-Beta' : ''}`
+  : `aily-blockly${isBetaRelease ? '-Beta' : ''}`;
+const artifactVersionSuffix = isBetaRelease ? `-beta.${betaBuildNumber}` : '';
 const officialRegionKey = buildFlavor === 'global' ? 'eu' : 'cn';
 const workspaceRoot = path.resolve(__dirname, '..');
 const appConfig = require(path.join(workspaceRoot, 'electron', 'config', 'config.json'));
@@ -21,9 +27,9 @@ const builderArgs = [
   `-c.extraMetadata.ailyBuildFlavor=${buildFlavor}`,
   '-c.publish.provider=generic',
   `-c.publish.url=${updateBaseUrl}`,
-  `-c.win.artifactName=${artifactPrefix}-\${version}.\${ext}`,
-  `-c.nsis.artifactName=${artifactPrefix}-Setup-\${version}.\${ext}`,
-  `-c.mac.artifactName=${artifactPrefix}-macos-\${version}-\${arch}.\${ext}`
+  `-c.win.artifactName=${artifactPrefix}-\${version}${artifactVersionSuffix}.\${ext}`,
+  `-c.nsis.artifactName=${artifactPrefix}-Setup-\${version}${artifactVersionSuffix}.\${ext}`,
+  `-c.mac.artifactName=${artifactPrefix}-macos-\${version}${artifactVersionSuffix}-\${arch}.\${ext}`
 ];
 const ngCliPath = path.join(workspaceRoot, 'node_modules', '@angular', 'cli', 'bin', 'ng.js');
 const electronBuilderCliPath = path.join(workspaceRoot, 'node_modules', 'electron-builder', 'cli.js');

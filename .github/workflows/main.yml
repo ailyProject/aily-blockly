@@ -27,7 +27,8 @@ jobs:
         run: |
           npm install -g @angular/cli
           npm ci --include=dev
-          cd electron && npm ci --include=dev --force
+          npm --prefix electron ci --include=dev --force
+          npm run setup:child-repos
 
       - name: Build Windows Package (Global)
         run: |
@@ -159,7 +160,8 @@ jobs:
         run: |
           npm install -g @angular/cli
           npm ci --include=dev
-          cd electron && npm ci --include=dev --force
+          npm --prefix electron ci --include=dev --force
+          npm run setup:child-repos
 
       - name: Build Windows Package (CN)
         run: |
@@ -276,7 +278,8 @@ jobs:
         run: |
           npm install -g @angular/cli
           npm ci --include=dev
-          cd electron && npm ci --include=dev --force
+          npm --prefix electron ci --include=dev --force
+          npm run setup:child-repos
 
       # --- 导入代码签名证书到 Keychain ---
       - name: Import Codesign Certificates
@@ -377,7 +380,8 @@ jobs:
         run: |
           npm install -g @angular/cli
           npm ci --include=dev
-          cd electron && npm ci --include=dev --force
+          npm --prefix electron ci --include=dev --force
+          npm run setup:child-repos
 
       - name: Import Codesign Certificates
         uses: apple-actions/import-codesign-certs@v2
@@ -479,8 +483,16 @@ jobs:
         id: version
         run: |
           VERSION=$(node -e "console.log(require('./package.json').version)")
-          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
-          echo "Version: v${VERSION}"
+          if [ "${{ github.ref_name }}" = "beta" ]; then
+            TAG="v${VERSION}-beta.${GITHUB_RUN_NUMBER}"
+            RELEASE_NAME="Aily Blockly ${VERSION} Beta ${GITHUB_RUN_NUMBER}"
+          else
+            TAG="v${VERSION}"
+            RELEASE_NAME="Aily Blockly ${VERSION}"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+          echo "Version: ${TAG}"
 
       - name: Get Git Commits Since Last Release
         id: commits
@@ -1053,6 +1065,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.release_name }}
           body: ${{ steps.release_body.outputs.body }}
           files: |
             ./release/*.exe
