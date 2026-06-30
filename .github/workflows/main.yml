@@ -39,7 +39,7 @@ jobs:
           npm install -g @angular/cli
           npm run setup:child-repos
           npm ci --include=dev
-          npm --prefix electron ci --include=dev --force
+          npm --prefix electron ci --include=dev --force --ignore-scripts
 
       - name: Build Windows Package (Global)
         run: |
@@ -183,7 +183,7 @@ jobs:
           npm install -g @angular/cli
           npm run setup:child-repos
           npm ci --include=dev
-          npm --prefix electron ci --include=dev --force
+          npm --prefix electron ci --include=dev --force --ignore-scripts
 
       - name: Build Windows Package (CN)
         run: |
@@ -303,7 +303,7 @@ jobs:
           npm install -g @angular/cli
           npm run setup:child-repos
           npm ci --include=dev
-          npm --prefix electron ci --include=dev --force
+          npm --prefix electron ci --include=dev --force --ignore-scripts
 
       # --- 导入代码签名证书到 Keychain ---
       - name: Import Codesign Certificates
@@ -407,7 +407,7 @@ jobs:
           npm install -g @angular/cli
           npm run setup:child-repos
           npm ci --include=dev
-          npm --prefix electron ci --include=dev --force
+          npm --prefix electron ci --include=dev --force --ignore-scripts
 
       - name: Import Codesign Certificates
         uses: apple-actions/import-codesign-certs@v2
