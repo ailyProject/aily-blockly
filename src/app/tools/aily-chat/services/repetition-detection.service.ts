@@ -248,11 +248,29 @@ export class RepetitionDetectionService {
     return this._cachedStreamText;
   }
 
-  /** Think 缓冲区最大长度 */
-  private readonly MAX_THINK_TOKENS = 1500;
+  /** Think 缓冲区最大 token 数（元素数量上限，防止数组无限增长） */
+  private readonly MAX_THINK_TOKENS = 12000;
+
+  /**
+   * Think 缓冲区最大字符数。与 MAX_THINK_TOKENS 双重限制，取先到者。
+   * 当 SSE chunk 很小（如 1-3 字符/chunk）时，MAX_THINK_TOKENS 可能只保留很少字符。
+   * 此限制确保无论 chunk 大小，缓冲区至少保留足够的文本用于句子级检测。
+   */
+  private readonly MAX_THINK_CHARS = 12000;
+
+  /** Think 缓冲区当前字符总数（增量跟踪，避免反复 join 计算） */
+  private thinkCharsCount = 0;
 
   /** Think 内检测间隔（每 N 个 token 检测一次） */
   private readonly THINK_CHECK_INTERVAL = 8;
+
+  /**
+   * Think token 推入计数器（独立于 thinkTokens.length，不受 trim 影响）。
+   * 修复：旧方案用 thinkTokens.length % interval 做节流，但当
+   * MAX_THINK_TOKENS % THINK_CHECK_INTERVAL ≠ 0 时，trim 后长度固定
+   * 在非零余数上，导致检测永远不再触发。
+   */
+  private thinkPushCounter = 0;
 
   // ==================== Think 标签检测状态机 ====================
 
@@ -347,6 +365,8 @@ export class RepetitionDetectionService {
         this.insideThink = true;
         this.thinkTokens = [];
         this._cachedThinkText = null;
+        this.thinkCharsCount = 0;
+        this.thinkPushCounter = 0;
         this.lastThinkTransition = 'entered';
       }
 
@@ -380,11 +400,21 @@ export class RepetitionDetectionService {
 
     if (insideThink) {
       this.thinkTokens.push(text);
+      this.thinkCharsCount += text.length;
+      this.thinkPushCounter++;
       if (this._cachedThinkText !== null) {
         this._cachedThinkText += text;
       }
-      if (this.thinkTokens.length > this.MAX_THINK_TOKENS) {
-        this.thinkTokens = this.thinkTokens.slice(-this.MAX_THINK_TOKENS);
+      // 双重限制：token 数量上限 OR 字符数量上限
+      if (this.thinkTokens.length > this.MAX_THINK_TOKENS || this.thinkCharsCount > this.MAX_THINK_CHARS) {
+        // 按字符数裁剪：从头部移除 token 直到字符数和 token 数都在限制内
+        while (
+          this.thinkTokens.length > 0 &&
+          (this.thinkTokens.length > this.MAX_THINK_TOKENS || this.thinkCharsCount > this.MAX_THINK_CHARS)
+        ) {
+          this.thinkCharsCount -= this.thinkTokens[0].length;
+          this.thinkTokens.shift();
+        }
         this._cachedThinkText = null; // trim 后缓存失效
       }
       return;
@@ -447,37 +477,20 @@ export class RepetitionDetectionService {
   }
 
   private checkThinkRepetition(): RepetitionCheckResult {
-    if (this.thinkTokens.length % this.THINK_CHECK_INTERVAL !== 0) {
+    // 使用独立计数器做节流，不依赖 thinkTokens.length（trim 后长度固定会导致检测停滞）
+    if (this.thinkPushCounter % this.THINK_CHECK_INTERVAL !== 0) {
       return { isRepetitive: false };
     }
     if (this.thinkTokens.length < this.MIN_TOKENS_FOR_DETECTION) {
       return { isRepetitive: false };
     }
 
-    // ★ 性能优化：预计算一次 join text，传给所有子检查（原来每个子检查各自 join 一次）
     const thinkText = this.getThinkText();
 
-    const thinkJunkResult = this.checkJunkTokenRepetition(this.thinkTokens, thinkText);
-    if (thinkJunkResult.isRepetitive) {
-      return thinkJunkResult;
-    }
-
-    const thinkPhraseResult = this.checkPhraseRepetitionOn(this.thinkTokens, this.THINK_DETECTION_PROFILE, thinkText);
-    if (thinkPhraseResult.isRepetitive) {
-      return thinkPhraseResult;
-    }
-
-    const thinkSentenceResult = this.checkConsecutiveSentenceRepetitionOn(this.thinkTokens, this.THINK_DETECTION_PROFILE, thinkText);
-    if (thinkSentenceResult.isRepetitive) {
-      return thinkSentenceResult;
-    }
-
-    const thinkParagraphResult = this.checkParagraphCycleRepetitionOn(this.thinkTokens, this.THINK_DETECTION_PROFILE, thinkText);
-    if (thinkParagraphResult.isRepetitive) {
-      return thinkParagraphResult;
-    }
-
-    return this.checkSentenceFrequencyRepetition(this.thinkTokens, this.THINK_DETECTION_PROFILE, thinkText);
+    // ★ 统一检测：内容无关的文本循环检测（rolling hash）
+    // 替代原有的 Layer 0/1/2/2.5/2.75 五层语义启发式检测
+    // 优势：不依赖句子切分、叙事提取、代码识别等任何内容理解，零误报风险
+    return this.checkTextCycleRepetition(thinkText, 3);
   }
 
   // ==================== 工具调用重复检测 ====================
@@ -504,6 +517,16 @@ export class RepetitionDetectionService {
       return exactMatchResult;
     }
 
+    const resultPattern = this.checkResultDrivenRetryPattern(toolName, retryFamilyHash);
+    if (resultPattern.isRepetitive) {
+      return resultPattern;
+    }
+
+    const crossToolResultPattern = this.checkCrossToolResultStagnation();
+    if (crossToolResultPattern.isRepetitive) {
+      return crossToolResultPattern;
+    }
+
     const retryFamilyResult = this.checkRetryFamilyMatch(toolName, retryFamilyHash);
     if (retryFamilyResult.isRepetitive) {
       return retryFamilyResult;
@@ -523,16 +546,6 @@ export class RepetitionDetectionService {
     const looseCycleResult = this.checkLooseCyclePattern();
     if (looseCycleResult.isRepetitive) {
       return looseCycleResult;
-    }
-
-    const resultPattern = this.checkResultDrivenRetryPattern(toolName, retryFamilyHash);
-    if (resultPattern.isRepetitive) {
-      return resultPattern;
-    }
-
-    const crossToolResultPattern = this.checkCrossToolResultStagnation();
-    if (crossToolResultPattern.isRepetitive) {
-      return crossToolResultPattern;
     }
 
     // 记录本次调用
@@ -609,7 +622,8 @@ export class RepetitionDetectionService {
 
     if (
       trailingFamilyCalls.length >= this.SAME_TOOL_FAMILY_THRESHOLD - 1 &&
-      distinctArgs.size >= 2
+      distinctArgs.size >= 2 &&
+      !this.shouldSuppressRetryFamilyWarning(trailingFamilyCalls)
     ) {
       return {
         isRepetitive: true,
@@ -750,7 +764,7 @@ export class RepetitionDetectionService {
       this.CYCLE_PATTERN_LENGTH + this.CYCLE_PATTERN_NOISE_TOLERANCE * 2
     );
 
-    for (let patternLength = 2; patternLength <= 3; patternLength++) {
+    for (let patternLength = 3; patternLength >= 2; patternLength--) {
       const exactRounds = this.findLooseCycleRounds(completedHistory, patternLength, false);
       if (exactRounds) {
         return {
@@ -972,6 +986,27 @@ export class RepetitionDetectionService {
       .filter(record => record.name === toolName && record.retryFamilyHash === retryFamilyHash);
   }
 
+  private shouldSuppressRetryFamilyWarning(records: readonly ToolCallRecord[]): boolean {
+    const successPayloadRecords = records.filter(record => record.resultCategory === 'success_payload');
+    if (successPayloadRecords.length < records.length || successPayloadRecords.length < 3) {
+      return false;
+    }
+
+    const structuredRecords = successPayloadRecords.filter(
+      (record): record is ToolCallRecord & { resultStructuredItems: string[] } =>
+        Array.isArray(record.resultStructuredItems) && record.resultStructuredItems.length > 0
+    );
+    if (structuredRecords.length < 3) {
+      return false;
+    }
+
+    const firstPageItemCount = new Set(structuredRecords[0].resultStructuredItems).size;
+    const totalKnownItems = new Set(structuredRecords.flatMap(record => record.resultStructuredItems)).size;
+    const structuredNoGrowthRun = this.getLongestStructuredNoGrowthRun(structuredRecords);
+
+    return totalKnownItems > firstPageItemCount && structuredNoGrowthRun < 3;
+  }
+
   private evaluateResultRetryRisk(records: readonly ToolCallRecord[]): {
     score: number;
     threshold: number;
@@ -1015,6 +1050,9 @@ export class RepetitionDetectionService {
     const distinctArgs = new Set(categorizedRecords.map(record => record.argsHash)).size;
     const problematicRecords = categorizedRecords.filter(record => this.isProblematicToolOutcome(record.resultCategory!));
     const successPayloadRecords = categorizedRecords.filter(record => record.resultCategory === 'success_payload');
+    const hasStructuredPayloadSignals = successPayloadRecords.some(record =>
+      !!record.resultStructuredSignature || !!record.resultStructuredItems?.length
+    );
     const similarPayloadClusterSize = this.getLargestSimilarSignatureCluster(
       successPayloadRecords
         .map(record => record.resultSignature)
@@ -1028,9 +1066,9 @@ export class RepetitionDetectionService {
     const structuredNoGrowthRun = this.getLongestStructuredNoGrowthRun(successPayloadRecords);
     const structuredNoveltyStats = this.getStructuredNoveltyStats(successPayloadRecords);
     const isStalePayload = strongestCategory === 'success_payload' && (
-      similarPayloadClusterSize >= 3 ||
-      structuredPayloadClusterSize >= 3 ||
-      structuredNoGrowthRun >= 3
+      hasStructuredPayloadSignals
+        ? (structuredPayloadClusterSize >= 3 || structuredNoGrowthRun >= 3)
+        : similarPayloadClusterSize >= 3
     );
     const isLowNoveltyPayload = strongestCategory === 'success_payload' && !isStalePayload && (
       structuredNoveltyStats.longestLowNoveltyRun >= 4 ||
@@ -1593,6 +1631,8 @@ export class RepetitionDetectionService {
       if (chunkResult.thinkClosedInChunk) {
         this.thinkTokens = [];
         this._cachedThinkText = null;
+        this.thinkCharsCount = 0;
+        this.thinkPushCounter = 0;
       }
       if (thinkResult.isRepetitive) {
         return {
@@ -1628,6 +1668,14 @@ export class RepetitionDetectionService {
     if (junkResult.isRepetitive) {
       return junkResult;
     }
+
+    // ★ 统一 Layer：文本循环检测（rolling hash，内容无关）
+    // 直接在原始文本上检测周期性重复，不依赖句子切分/叙事提取等启发式
+    const cycleResult = this.checkTextCycleRepetition(nonThinkText, 3);
+    if (cycleResult.isRepetitive) {
+      return cycleResult;
+    }
+
     const insideMarkdownFence = this.isInsideMarkdownCodeFence(nonThinkText);
 
     // Layer 1: Token 级连续短语重复（"哈哈哈哈哈" 或 token 卡顿）
@@ -1815,6 +1863,11 @@ export class RepetitionDetectionService {
         continue;
       }
 
+      // 纯空格跳过：代码缩进 / Markdown 格式中常见连续空格，不应视为垃圾
+      if (/^ +$/.test(pattern)) {
+        continue;
+      }
+
       let consecutiveCount = 0;
       let pos = checkText.length;
 
@@ -1849,6 +1902,100 @@ export class RepetitionDetectionService {
     }
 
     return { isRepetitive: false };
+  }
+
+  // -------------------- 统一层：文本循环检测（Z-Algorithm） --------------------
+  //
+  // 内容无关的循环检测：不做任何句子切分、叙事提取、代码识别。
+  // 使用 Z-algorithm 在 O(N) 时间内检测文本末尾是否存在任意长度的周期性重复。
+  //
+  // 原理：
+  //   对缓冲区文本做反转，计算 Z-function。Z[d] 表示从位置 d 开始的子串与开头前缀
+  //   的最长匹配长度。在原始文本中，这意味着末尾的文本以周期 d 重复了 ⌊Z[d]/d⌋+1 次。
+  //   若 Z[d] >= d × (minRepeats - 1)，则末尾至少有 minRepeats 次连续重复。
+  //
+  // 优势：
+  //   - O(N) 线性时间，无论周期长度是 20 还是 2000 都一样快
+  //   - 能检测到任意长度的循环，不需要猜测/枚举窗口大小
+  //   - 零启发式假设，数学上精确（相同文本块连续出现 = 循环）
+  //   - 不依赖句子切分、叙事提取、代码过滤等脆弱规则
+  //   - 对正常内容不可能误报（正常文本不会有 ≥20 字符的完全相同块连续出现 3 次）
+  //
+
+  /** 循环检测的最小周期长度（避免正常的短文本/换行重复） */
+  private readonly MIN_CYCLE_PERIOD = 20;
+
+  /**
+   * Z-algorithm 文本循环检测
+   * @param text 要检测的文本
+   * @param minRepeats 最少连续重复次数（含 pattern 本身），默认 3
+   * @returns 检测结果
+   */
+  private checkTextCycleRepetition(text: string, minRepeats: number = 3): RepetitionCheckResult {
+    const n = text.length;
+    if (n < this.MIN_CYCLE_PERIOD * minRepeats) {
+      return { isRepetitive: false };
+    }
+
+    // 对反转文本计算 Z-function
+    // Z[d] = reversed text 位置 d 起与前缀的最长匹配
+    //       = 原始文本末尾以回退 d 步为周期的最长匹配长度
+    const z = this.computeZFunction(text, n);
+
+    const maxPeriod = Math.floor(n / minRepeats);
+
+    for (let d = this.MIN_CYCLE_PERIOD; d <= maxPeriod; d++) {
+      // z[d] >= d * (minRepeats - 1) 意味着末尾 d 字符的 pattern 向前连续出现了 minRepeats 次
+      if (z[d] >= d * (minRepeats - 1)) {
+        // 跳过纯空白内容（大段空行换行不算循环）
+        const pattern = text.slice(n - d);
+        if (!pattern.trim()) {
+          continue;
+        }
+
+        const repeatCount = Math.floor(z[d] / d) + 1;
+        const trimmedPattern = pattern.trim();
+        const display = trimmedPattern.length > 40
+          ? trimmedPattern.substring(0, 40) + '...'
+          : trimmedPattern;
+        return {
+          isRepetitive: true,
+          pattern: `${d} 字符文本块连续循环 ${repeatCount} 次: "${display}"`,
+          suggestion: '检测到相同内容的周期性重复输出。'
+        };
+      }
+    }
+
+    return { isRepetitive: false };
+  }
+
+  /**
+   * 计算 Z-function（反向，从末尾往前）
+   *
+   * 标准 Z-function 定义：Z[i] = s[i..] 与 s[0..] 的最长公共前缀长度
+   * 本方法在反转的文本上计算，等价于从原始文本末尾向前匹配。
+   *
+   * 时间复杂度 O(N)，空间复杂度 O(N)
+   */
+  private computeZFunction(text: string, n: number): number[] {
+    // 直接在原始文本上反向计算 Z 函数，避免创建反转字符串
+    // 等价于对 reversed(text) 计算标准 Z 函数
+    // s_rev[i] = text[n-1-i]，所以 s_rev[i] == s_rev[j] ⟺ text[n-1-i] == text[n-1-j]
+    const z = new Array<number>(n).fill(0);
+    let l = 0, r = 0;
+    for (let i = 1; i < n; i++) {
+      if (i < r) {
+        z[i] = Math.min(r - i, z[i - l]);
+      }
+      while (i + z[i] < n && text[n - 1 - z[i]] === text[n - 1 - (i + z[i])]) {
+        z[i]++;
+      }
+      if (i + z[i] > r) {
+        l = i;
+        r = i + z[i];
+      }
+    }
+    return z;
   }
 
   // -------------------- Layer 2: 句子级连续重复 --------------------
@@ -1973,8 +2120,8 @@ export class RepetitionDetectionService {
 
     const normalized = sentences.map(s => this.normalizeSentence(s));
 
-    // 尝试不同的块大小（2~20 句为一个块）
-    const maxBlockSize = Math.min(20, Math.floor(normalized.length / 3));
+    // 尝试不同的块大小（2~40 句为一个块）
+    const maxBlockSize = Math.min(40, Math.floor(normalized.length / 3));
 
     for (let blockSize = 2; blockSize <= maxBlockSize; blockSize++) {
       // 取末尾 blockSize 个句子作为模式块
@@ -2588,6 +2735,8 @@ export class RepetitionDetectionService {
     this._fenceCount = 0;
     this.thinkTokens = [];
     this._cachedThinkText = null;
+    this.thinkCharsCount = 0;
+    this.thinkPushCounter = 0;
     this.contentBlocks = [];
     this.toolCallHistory = [];
     this.tagBuffer = '';

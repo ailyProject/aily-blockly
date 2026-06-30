@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "سيتم عرض أول {{count}} تطبيقات في شريط الأدوات",
+        "RESET": "إعادة تعيين",
+        "IN_HEADER": "شريط الأدوات",
+        "TOOLBAR_APPS": "تطبيقات شريط الأدوات",
+        "ALL_APPS": "كل التطبيقات",
+        "DRAG_HERE": "اسحب إلى هنا",
+        "CODE_DESC": "عرض الكود المولد",
+        "LIB_MANAGER_DESC": "إدارة تبعيات مكتبة المشروع",
+        "SERIAL_DESC": "أداة مراقبة المنفذ التسلسلي",
+        "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
+        "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
+        "FFS_MANAGER_DESC": "أداة إدارة أقسام نظام الملفات ESP32",
+        "AI_DESC": "مساعد الذكاء الاصطناعي",
+        "MODEL_STORE_DESC": "متجر نماذج الذكاء الاصطناعي",
+        "CLOUD_SPACE_DESC": "مساحة تخزين سحابية",
+        "USER_CENTER_DESC": "مركز المستخدم والإعدادات",
+        "SIMULATOR_DESC": "المحاكي (قيد التطوير)",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN, RS485 and Modbus frame builder/debugger",
+        "BLE_DEBUGGER_DESC": "BLE scan, GATT read/write and notification debugger"
+    }
+}

@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectorRef, Component, ElementRef, isDevMode, OnDestroy, ViewChild, viewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, ElementRef, isDevMode, NgZone, OnDestroy, OnInit, ViewChild, viewChild } from '@angular/core';
 import { HEADER_BTNS, HEADER_MENU } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FormsModule } from '@angular/forms';
@@ -20,13 +20,27 @@ import { Router } from '@angular/router';
 import { ElectronService } from '../../../services/electron.service';
 import { ConfigService } from '../../../services/config.service';
 import { AuthService } from '../../../services/auth.service';
-import { BoardSelectorDialogComponent } from '../board-selector-dialog/board-selector-dialog.component';
 import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 import { PlatformService } from '../../../services/platform.service';
 import { ProbeRsService } from '../../../services/probe-rs.service';
-// import { AppStoreService } from '../../../tools/app-store/app-store.service';
-import { AppItem } from '../../../tools/app-store/app-store.config';
-import { APP_LIST } from '../../../configs/tool.config';
+import { AppItem } from '../../../configs/tool.config';
+import { AppStoreService } from '../../../tools/app-store/app-store.service';
+import { Subscription } from 'rxjs';
+import { BleOtaDeviceItem, UploaderBleService } from '../../../services/uploader-ble.service';
+import { ToolI18nService } from '../../../services/tool-i18n.service';
+import { CmdOutput, CmdService } from '../../../services/cmd.service';
+
+interface NetworkOtaTarget {
+  id: string;
+  name?: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  uploadPath: string;
+  ssl?: boolean;
+  timeoutMs?: number;
+}
 
 @Component({
   selector: 'app-header',
@@ -40,10 +54,10 @@ import { APP_LIST } from '../../../configs/tool.config';
   templateUrl: './header.component.html',
   styleUrl: './header.component.scss',
 })
-export class HeaderComponent implements OnDestroy {
+export class HeaderComponent implements OnInit, OnDestroy {
   headerBtns = HEADER_BTNS;
   headerMenu = HEADER_MENU;
-  headerApps = APP_LIST;
+  headerApps: AppItem[] = [];
 
   get isMac() {
     return this.platformService.isMac();
@@ -59,6 +73,13 @@ export class HeaderComponent implements OnDestroy {
   private unsubscribeFullScreenChanged?: () => void;
   private unsubscribeMaximizeChanged?: () => void;
   private unsubscribeCloseRequest?: () => void;
+  private bleDevicesSubscription?: Subscription;
+  private appStoreSubscription?: Subscription;
+  private blePortListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private networkOtaDiscoveredTargets: NetworkOtaTarget[] = [];
+  private networkOtaScanInProgress = false;
+  private networkOtaScanCancelled = false;
+  private networkOtaScanStreamId: string | null = null;
   private unsaveDialogOpen = false; // 标记未保存对话框是否已打开
   private selectDebounceTimer: ReturnType<typeof setTimeout> | null = null; // 防抖计时器
   private lastSelectedSubItemKey: string | null = null; // 上次选择子菜单项的key（用于判断重复选择）
@@ -76,6 +97,10 @@ export class HeaderComponent implements OnDestroy {
   }
 
   get currentPort() {
+    if (this.serialService.currentPortInfo?.type === 'ble'
+      || this.serialService.currentPortInfo?.type === 'network-ota') {
+      return this.serialService.currentPortInfo?.text || this.serialService.currentPort;
+    }
     return this.serialService.currentPort;
   }
 
@@ -92,11 +117,6 @@ export class HeaderComponent implements OnDestroy {
   get isDevMode() {
     return isDevMode()
   }
-
-  // 从 AppStoreService 获取要显示在 header 上的 apps
-  // get headerApps(): AppItem[] {
-  //   return this.appStoreService.getHeaderApps();
-  // }
 
   constructor(
     private projectService: ProjectService,
@@ -115,10 +135,31 @@ export class HeaderComponent implements OnDestroy {
     private translate: TranslateService,
     private platformService: PlatformService,
     private probeRsService: ProbeRsService,
-    // private appStoreService: AppStoreService
+    private uploaderBleService: UploaderBleService,
+    private ngZone: NgZone,
+    private appStoreService: AppStoreService,
+    private toolI18n: ToolI18nService,
+    private cmdService: CmdService
   ) { }
 
+  ngOnInit(): void {
+    void this.toolI18n.load('serial-monitor');
+
+    this.refreshHeaderApps();
+    this.appStoreSubscription = this.appStoreService.layout$.subscribe(() => {
+      this.refreshHeaderApps();
+      setTimeout(() => this.cd.detectChanges(), 0);
+    });
+  }
+
   async ngAfterViewInit() {
+    this.bleDevicesSubscription = this.uploaderBleService.scanStateChanged.subscribe((state) => {
+      //console.log('[BLE:header] scan state changed', state);
+      this.ngZone.run(() => {
+        this.scheduleBlePortListRefresh();
+      });
+    });
+
     if (this.electronService.isElectron) {
       // 初始化窗口最大化状态缓存
       this._isWindowFullScreen = this.electronService.isWindowFullScreen();
@@ -219,6 +260,55 @@ export class HeaderComponent implements OnDestroy {
   showMenu = false;
   openMenu() {
     this.showMenu = !this.showMenu;
+    // 展开主菜单时刷新「最近的项目」二级列表（来自配置中的 recentlyProjects）
+    if (this.showMenu) {
+      this.refreshHeaderRecentProjectsMenu();
+    }
+  }
+
+  /** 同步左上角菜单中「最近的项目」子项 */
+  private refreshHeaderRecentProjectsMenu(): void {
+    const entry = this.headerMenu.find((m) => m.action === 'recent-projects-root');
+    if (!entry) {
+      return;
+    }
+    const recent = this.projectService.recentlyProjects || [];
+    entry.children =
+      recent.length > 0
+        ? recent.map((p: { name?: string; nickname?: string; path: string }) => ({
+            name: p.nickname || p.name || p.path,
+            text: p.path,
+            action: 'recent-project-open',
+            data: { path: p.path },
+          }))
+        : [
+            {
+              name: this.translate.instant('MENU.RECENT_PROJECTS_EMPTY'),
+              disabled: true,
+              action: 'noop',
+            },
+          ];
+  }
+
+  /** 主菜单二级项：打开最近项目 */
+  async onHeaderMenuSubItemClick(subItem: IMenuItem) {
+    if (subItem.disabled || subItem.action === 'noop') {
+      return;
+    }
+    if (subItem.action === 'recent-project-open') {
+      const path = subItem.data?.path as string | undefined;
+      if (!path) {
+        return;
+      }
+      if (this.isLoaded()) {
+        const canContinue = await this.checkUnsavedChanges('open');
+        if (!canContinue) {
+          return;
+        }
+      }
+      await this.projectService.projectOpen(path);
+      this.closeMenu();
+    }
   }
 
   closeMenu() {
@@ -235,6 +325,9 @@ export class HeaderComponent implements OnDestroy {
    * 异步检测调试探针，完成后更新缓存并重建端口列表
    */
   private detectProbes(generation: number, portList: IMenuItem[], skipDetect: boolean) {
+
+    // console.log('detectProbes');
+
     if (!skipDetect) {
       if (this.cachedDebuggerItems.length > 0) {
         portList.push(...this.cachedDebuggerItems);
@@ -284,24 +377,65 @@ export class HeaderComponent implements OnDestroy {
         this.portListPosition = { x: 40, y: 40 };
       }
     }
-    let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
-    this.boardKeywords = [boardname];
+    // Aily Code 在 npm 主板包就绪前可能尚无 currentBoardConfig
+    const boardLabel = this.currentBoard ?? '';
+    const boardname = boardLabel.replace(' 2560', ' ').replace(' R3', '');
+    this.boardKeywords = boardname ? [boardname] : [];
     // 如果已有缓存列表，先展示旧数据，再后台刷新
     this.showPortList = true;
     this.getDevicePortList();
   }
 
   closePortList() {
+    if (this.uploaderBleService.isScanning() || this.uploaderBleService.hasActiveRequest()) {
+      this.uploaderBleService.cancelScan();
+    }
+    if (this.networkOtaScanInProgress && this.networkOtaScanStreamId) {
+      this.networkOtaScanCancelled = true;
+      this.cmdService.kill(this.networkOtaScanStreamId);
+      this.networkOtaScanStreamId = null;
+      this.networkOtaScanInProgress = false;
+    }
     this.showPortList = false;
     // this.cd.detectChanges();
   }
 
-  selectPort(item) {
+  async selectPort(item) {
     if (item.action) {
       this.process(item)
       return
     }
-    this.currentPort = item.name;
+
+    if (item.type === 'ble') {
+      try {
+        const device = await this.uploaderBleService.selectDevice(item.extra?.deviceId || item.name);
+        item = {
+          ...item,
+          name: device.id,
+          text: device.name,
+          icon: item.icon || 'fa-brands fa-bluetooth-b',
+          extra: {
+            ...(item.extra || {}),
+            deviceId: device.id,
+          }
+        };
+      } catch (error) {
+        this.message.error(error?.message || '选择 BLE 设备失败');
+        return;
+      }
+    }
+
+    if (item.type === 'network-ota') {
+      const target = this.normalizeNetworkOtaTarget(item.extra?.target);
+      if (!target) {
+        this.message.error(this.translate.instant('NETWORK_OTA.INVALID_HOST'));
+        return;
+      }
+      this.selectNetworkOtaTarget(target);
+      return;
+    }
+
+    this.serialService.currentPort = item.name;
     this.serialService.currentPortInfo = {
       name: item.name,
       text: item.text,
@@ -309,6 +443,7 @@ export class HeaderComponent implements OnDestroy {
       icon: item.icon,
       probeSerial: item.extra?.serial || '',
       probeVidPid: item.extra?.vidPid || '',
+      extra: item.extra,
     };
     this.closePortList();
   }
@@ -316,7 +451,37 @@ export class HeaderComponent implements OnDestroy {
   async getDevicePortList(skipDetect = false) {
     const generation = ++this.portListGeneration;
     let portList0: IMenuItem[] = await this.serialService.getSerialPorts();
-    if (portList0.length == 0) {
+    let hasSelectablePort = portList0.length > 0;
+
+    let core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase();
+    const isEsp32Core = this.isEsp32Core(core);
+    const canShowBleOtaPorts = await this.canShowBleOtaPorts(core);
+    const canShowNetworkOtaPorts = await this.canShowNetworkOtaPorts(core);
+
+    if (canShowBleOtaPorts) {
+      const bleItems = this.uploaderBleService.getPortMenuItems(this.serialService.currentPort);
+      //console.log('[BLE:header] getDevicePortList BLE items', bleItems.length, bleItems);
+      if (bleItems.length > 0) {
+        if (portList0.length > 0) {
+          portList0.push({ sep: true });
+        }
+        portList0 = portList0.concat(bleItems);
+        hasSelectablePort = true;
+      }
+    }
+
+    if (canShowNetworkOtaPorts) {
+      const networkOtaItems = await this.getNetworkOtaPortMenuItems(this.serialService.currentPort);
+      if (networkOtaItems.length > 0) {
+        if (portList0.length > 0) {
+          portList0.push({ sep: true });
+        }
+        portList0 = portList0.concat(networkOtaItems);
+        hasSelectablePort = true;
+      }
+    }
+
+    if (!hasSelectablePort) {
       portList0 = [
         {
           name: 'Device not found',
@@ -328,45 +493,38 @@ export class HeaderComponent implements OnDestroy {
       ];
     }
 
-    let core = this.projectService.currentBoardConfig['core'].toLowerCase();
+    const boardConfig = this.projectService.currentBoardConfig;
+    const coreRaw = boardConfig?.core;
+    if (coreRaw) {
+      const boardCore = String(coreRaw).toLowerCase();
+      const boardType = boardConfig['type'];
+      const boardId =
+        typeof boardType === 'string' && boardType.includes(':')
+          ? boardType.split(':').pop()
+          : '';
 
-
-    // 添加ESP32相关配置选项
-    if (core.indexOf('esp32') > -1) {
-      let temp = this.projectService.currentBoardConfig['type'].split(':');
-      let board = temp[temp.length - 1];
-      let esp32config = await this.projectService.updateEsp32ConfigMenu(board);
-      if (esp32config) {
-        portList0 = portList0.concat(esp32config)
+      // 添加ESP32相关配置选项
+      if (this.isEsp32Core(boardCore) && boardId) {
+        const esp32config = await this.projectService.updateEsp32ConfigMenu(boardId);
+        if (esp32config) {
+          portList0 = portList0.concat(esp32config);
+        }
       }
-      // console.log('ESP32配置选项:', esp32config);
-    }
-
-    // 添加STM32相关配置选项
-    if (core.indexOf('stm32') > -1 &&
-      this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
-      // 异步检测调试探针，完成后更新缓存并重建列表
-      this.detectProbes(generation, portList0, skipDetect);
-
-      let temp = this.projectService.currentBoardConfig['type'].split(':');
-      let board = temp[temp.length - 1];
-      let stm32config = await this.projectService.updateStm32ConfigMenu(board);
-      if (stm32config) {
-        portList0 = portList0.concat(stm32config)
+      // 添加STM32相关配置选项
+      else if (boardCore.indexOf('stm32') > -1 && boardId) {
+        this.detectProbes(generation, portList0, skipDetect);
+        const stm32config = await this.projectService.updateStm32ConfigMenu(boardId);
+        if (stm32config) {
+          portList0 = portList0.concat(stm32config);
+        }
       }
-    }
-
-    // 添加nRF5相关配置选项
-    if (core.indexOf('nrf5') > -1) {
-      // 异步检测调试探针（nRF52）
-      this.detectProbes(generation, portList0, skipDetect);
-
-      let temp = this.projectService.currentBoardConfig['type'].split(':');
-      let board = temp[temp.length - 1];
-      // console.log('nRF5开发板标识:', board);
-      let nrf5config = await this.projectService.updateNrf5ConfigMenu(board);
-      if (nrf5config) {
-        portList0 = portList0.concat(nrf5config)
+      // 添加nRF5相关配置选项
+      else if (boardCore.indexOf('nrf5') > -1 && boardId) {
+        this.detectProbes(generation, portList0, skipDetect);
+        const nrf5config = await this.projectService.updateNrf5ConfigMenu(boardId);
+        if (nrf5config) {
+          portList0 = portList0.concat(nrf5config);
+        }
       }
     }
 
@@ -385,6 +543,125 @@ export class HeaderComponent implements OnDestroy {
     }, 0);
   }
 
+  private isEsp32Core(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): boolean {
+    return core === 'esp32' || core.startsWith('esp32:');
+  }
+
+  private async canShowBleOtaPorts(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): Promise<boolean> {
+    return this.isEsp32Core(core) && await this.hasProjectDependency('@aily-project/lib-bleota');
+  }
+
+  private async canShowNetworkOtaPorts(core = (this.projectService.currentBoardConfig?.['core'] || '').toLowerCase()): Promise<boolean> {
+    return this.isEsp32Core(core) && await this.hasProjectDependency('@aily-project/lib-wifiota');
+  }
+
+  private async getNetworkOtaPortMenuItems(currentPort?: string): Promise<IMenuItem[]> {
+    const savedTargets = await this.getNetworkOtaTargets();
+    const targets = this.mergeNetworkOtaTargets(savedTargets, this.networkOtaDiscoveredTargets);
+    const items: IMenuItem[] = [{
+      name: this.translate.instant(this.networkOtaScanInProgress ? 'NETWORK_OTA.SEARCHING_DEVICE' : 'NETWORK_OTA.SEARCH_DEVICE'),
+      action: 'network-ota-scan',
+      type: 'network-ota-action',
+      icon: this.networkOtaScanInProgress ? 'fa-light fa-spinner fa-spin' : 'fa-light fa-magnifying-glass',
+      disabled: this.networkOtaScanInProgress,
+    }];
+
+    for (const target of targets) {
+      items.push({
+        name: target.name || this.translate.instant('NETWORK_OTA.DEFAULT_TARGET_NAME'),
+        text: `${target.host}:${target.port}`,
+        type: 'network-ota',
+        icon: 'fa-light fa-wifi',
+        current: currentPort === target.id,
+        extra: { target },
+      });
+    }
+
+    return items;
+  }
+
+  private mergeNetworkOtaTargets(...targetGroups: NetworkOtaTarget[][]): NetworkOtaTarget[] {
+    const targetMap = new Map<string, NetworkOtaTarget>();
+
+    for (const targetGroup of targetGroups) {
+      for (const target of targetGroup || []) {
+        const normalized = this.normalizeNetworkOtaTarget(target);
+        if (!normalized) continue;
+
+        const key = `${normalized.host}:${normalized.port}:${normalized.uploadPath}`;
+        if (!targetMap.has(key)) {
+          targetMap.set(key, normalized);
+        }
+      }
+    }
+
+    return Array.from(targetMap.values());
+  }
+
+  private async getNetworkOtaTargets(): Promise<NetworkOtaTarget[]> {
+    try {
+      const packageJson = await this.projectService.getPackageJson();
+      const targets = packageJson?.projectConfig?.networkOtaTargets;
+      if (!Array.isArray(targets)) return [];
+
+      return targets
+        .map((target: any) => this.normalizeNetworkOtaTarget(target))
+        .filter((target: NetworkOtaTarget | null): target is NetworkOtaTarget => !!target);
+    } catch (error) {
+      console.warn('读取 WiFi OTA 目标失败:', error);
+      return [];
+    }
+  }
+
+  private normalizeNetworkOtaTarget(target: any): NetworkOtaTarget | null {
+    const host = (target?.host || '').toString().trim();
+    const port = Number(target?.port || 65280);
+    const uploadPath = (target?.uploadPath || '/sketch').toString().trim();
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+
+    const normalizedUploadPath = uploadPath.startsWith('/') ? uploadPath : `/${uploadPath}`;
+    return {
+      id: target?.id || `network-ota:${host}:${port}:${normalizedUploadPath}`,
+      name: (target?.name || '').toString().trim(),
+      host,
+      port,
+      username: (target?.username || 'arduino').toString(),
+      password: (target?.password || 'password').toString(),
+      uploadPath: normalizedUploadPath,
+      ssl: !!target?.ssl,
+      timeoutMs: Math.max(1000, Number(target?.timeoutMs || 60000)),
+    };
+  }
+
+  private selectNetworkOtaTarget(target: NetworkOtaTarget): void {
+    this.serialService.currentPort = target.id;
+    this.serialService.currentPortInfo = {
+      name: target.id,
+      text: target.name || `${target.host}:${target.port}`,
+      type: 'network-ota',
+      icon: 'fa-light fa-wifi',
+      extra: { target },
+    };
+    this.closePortList();
+  }
+
+  private async hasProjectDependency(dependencyName: string): Promise<boolean> {
+    try {
+      const packageJson = await this.projectService.getPackageJson();
+      const dependencies = {
+        ...(packageJson?.dependencies || {}),
+        ...(packageJson?.devDependencies || {}),
+        ...(packageJson?.optionalDependencies || {}),
+        ...(packageJson?.peerDependencies || {}),
+      };
+
+      return Object.prototype.hasOwnProperty.call(dependencies, dependencyName);
+    } catch (error) {
+      console.warn('读取项目依赖失败:', error);
+      return false;
+    }
+  }
+
   onClick(item, event = null) {
     this.process(item, event);
   }
@@ -393,7 +670,7 @@ export class HeaderComponent implements OnDestroy {
     if (btn.data.type == 'terminal') {
       return this.terminalIsOpen;
     } else if (btn.data && btn.data.data) {
-      return this.openToolList.indexOf(btn.data.data) !== -1;
+      return this.uiService.isToolOpen(btn.data.data);
     }
     return false;
   }
@@ -468,6 +745,12 @@ export class HeaderComponent implements OnDestroy {
       case 'tool-open':
         this.uiService.turnTool(item.data);
         break;
+      case 'ble-scan':
+        this.startBleScan();
+        break;
+      case 'network-ota-scan':
+        this.startNetworkOtaMdnsSearch();
+        break;
       // case 'terminal':
       //   this.uiService.turnTerminal(item.data);
       //   break;
@@ -539,13 +822,13 @@ export class HeaderComponent implements OnDestroy {
 
   private resolveActionErrorState(err: any, nestedKeys: string[] = []): RunState['state'] {
     const directState = err?.state;
-    if (this.isValidRunState(directState)) {
+    if (this.isFailureRunState(directState)) {
       return directState;
     }
 
     for (const key of nestedKeys) {
       const nestedState = err?.[key]?.state;
-      if (this.isValidRunState(nestedState)) {
+      if (this.isFailureRunState(nestedState)) {
         return nestedState;
       }
     }
@@ -553,8 +836,8 @@ export class HeaderComponent implements OnDestroy {
     return 'error';
   }
 
-  private isValidRunState(state: any): state is RunState['state'] {
-    return ['default', 'doing', 'done', 'error', 'warn'].includes(state);
+  private isFailureRunState(state: any): state is Extract<RunState['state'], 'error' | 'warn'> {
+    return state === 'error' || state === 'warn';
   }
 
   minimize() {
@@ -572,6 +855,19 @@ export class HeaderComponent implements OnDestroy {
   }
 
   ngOnDestroy() {
+    this.appStoreSubscription?.unsubscribe();
+    if (this.bleDevicesSubscription) {
+      this.bleDevicesSubscription.unsubscribe();
+    }
+    if (this.blePortListRefreshTimer) {
+      clearTimeout(this.blePortListRefreshTimer);
+      this.blePortListRefreshTimer = null;
+    }
+    if (this.networkOtaScanStreamId) {
+      this.networkOtaScanCancelled = true;
+      this.cmdService.kill(this.networkOtaScanStreamId);
+      this.networkOtaScanStreamId = null;
+    }
     if (this.electronService.isElectron) {
       // 取消窗口全屏状态变化监听
       if (this.unsubscribeFullScreenChanged) {
@@ -821,19 +1117,204 @@ export class HeaderComponent implements OnDestroy {
     }
   }
 
-  // 判断路由是否为 ['/main/blockly-editor', '/main/code-editor']中的一个，如果是返回true
+  showApp(app: AppItem) {
+    return this.appStoreService.isAppVisible(app, {
+      routeUrl: this.router.url,
+      boardCore: this.projectService.currentBoardConfig?.core,
+      isDevMode: this.isDevMode
+    });
+  }
+
+  private refreshHeaderApps(): void {
+    this.headerApps = this.appStoreService.getAppsForZone('header');
+  }
+
+  private showInCore(app: AppItem) {
+    if (!app.core || app.core.length === 0) {
+      return true;
+    }
+
+    const currentCore = this.getCurrentBoardCore();
+    return app.core.some(core => this.matchesAppCore(core, currentCore));
+  }
+
+  private getCurrentBoardCore() {
+    return String(this.projectService.currentBoardConfig?.core || '').toLowerCase();
+  }
+
+  private matchesAppCore(appCore: string, currentCore: string) {
+    const normalizedAppCore = appCore.toLowerCase();
+    return currentCore === normalizedAppCore || currentCore.split(':').includes(normalizedAppCore);
+  }
+
+  // 判断路由是否为 ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']中的一个，如果是返回true
   isLoaded() {
-    for (const router of ['/main/blockly-editor', '/main/code-editor']) {
+    for (const router of ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']) {
       if (this.router.url.indexOf(router) > -1) {
         return true;
       }
     }
   }
 
+  private async startBleScan() {
+    if (!await this.canShowBleOtaPorts()) {
+      if (this.showPortList) {
+        this.getDevicePortList(true);
+      }
+      return;
+    }
+
+    //console.log('[BLE:header] start scan clicked');
+    this.getDevicePortList(true);
+    this.uploaderBleService.beginScan().then((device: BleOtaDeviceItem) => {
+      //console.log('[BLE:header] scan selected device', device);
+      this.selectBleDevice(device);
+      if (this.showPortList) {
+        this.getDevicePortList(true);
+      }
+    }).catch(error => {
+      const message = error?.message || String(error || '');
+      console.warn('[BLE:header] scan failed', error);
+      if (message && !/cancel|cancelled|no device selected|user cancelled/i.test(message)) {
+        this.message.warning(message);
+      }
+      if (this.showPortList) {
+        this.getDevicePortList(true);
+      }
+    });
+  }
+
+  private scheduleBlePortListRefresh() {
+    if (!this.showPortList || this.blePortListRefreshTimer) return;
+
+    this.blePortListRefreshTimer = setTimeout(() => {
+      this.blePortListRefreshTimer = null;
+      if (this.showPortList) {
+        //console.log('[BLE:header] refresh port list after BLE state change');
+        this.getDevicePortList(true);
+      }
+    }, 100);
+  }
+
+  private selectBleDevice(device: BleOtaDeviceItem) {
+    this.serialService.currentPort = device.id;
+    this.serialService.currentPortInfo = {
+      name: device.id,
+      text: device.name,
+      type: 'ble',
+      icon: 'fa-brands fa-bluetooth-b',
+      extra: { deviceId: device.id },
+    };
+    this.closePortList();
+  }
+
+  private async startNetworkOtaMdnsSearch() {
+    if (this.networkOtaScanInProgress) return;
+    if (!await this.canShowNetworkOtaPorts()) {
+      return;
+    }
+
+    this.networkOtaScanInProgress = true;
+    this.networkOtaScanCancelled = false;
+    this.networkOtaDiscoveredTargets = [];
+    if (this.showPortList) {
+      this.getDevicePortList(true);
+    }
+
+    const searchScriptPath = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'network-ota-mdns-search.js');
+    const searchCmd = `node "${searchScriptPath}" --timeout 4000`;
+    let outputText = '';
+    let errorText = '';
+    let exitCode = 0;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.cmdService.run(searchCmd, null, false, true).subscribe({
+          next: (output: CmdOutput) => {
+            this.networkOtaScanStreamId = output.streamId;
+            if (output.data) {
+              outputText += output.data;
+            }
+
+            if (output.type === 'error') {
+              errorText = output.error || this.translate.instant('NETWORK_OTA.SEARCH_FAILED');
+              exitCode = 1;
+              return;
+            }
+
+            if (output.type === 'close') {
+              exitCode = output.code ?? (output.signal ? 1 : 0);
+              if (exitCode !== 0 && !errorText) {
+                errorText = output.stderr || output.stdout || this.translate.instant('NETWORK_OTA.SEARCH_FAILED');
+              }
+            }
+          },
+          error: reject,
+          complete: () => resolve(),
+        });
+      });
+
+      if (this.networkOtaScanCancelled) {
+        return;
+      }
+
+      if (exitCode !== 0) {
+        throw new Error(errorText || this.translate.instant('NETWORK_OTA.SEARCH_FAILED'));
+      }
+
+      const discoveredTargets = this.parseNetworkOtaMdnsResult(outputText);
+      this.networkOtaDiscoveredTargets = discoveredTargets;
+
+      if (discoveredTargets.length > 0) {
+        this.message.success(this.translate.instant('NETWORK_OTA.SEARCH_DONE', { count: discoveredTargets.length }));
+      } else {
+        this.message.warning(this.translate.instant('NETWORK_OTA.SEARCH_EMPTY'));
+      }
+    } catch (error) {
+      if (!this.networkOtaScanCancelled) {
+        this.message.error(error?.message || this.translate.instant('NETWORK_OTA.SEARCH_FAILED'));
+      }
+    } finally {
+      this.networkOtaScanInProgress = false;
+      this.networkOtaScanStreamId = null;
+      if (this.showPortList) {
+        this.getDevicePortList(true);
+      }
+    }
+  }
+
+  private parseNetworkOtaMdnsResult(outputText: string): NetworkOtaTarget[] {
+    const resultLine = String(outputText || '')
+      .split(/\r\n|\n|\r/)
+      .map(line => line.trim())
+      .reverse()
+      .find(line => line.startsWith('[network-ota-mdns:result]'));
+
+    if (!resultLine) {
+      return [];
+    }
+
+    const rawJson = resultLine.slice('[network-ota-mdns:result]'.length).trim();
+    let targets: any[] = [];
+    try {
+      targets = JSON.parse(rawJson);
+    } catch (error) {
+      console.warn('Parse WiFi OTA mDNS result failed:', error);
+      return [];
+    }
+
+    if (!Array.isArray(targets)) {
+      return [];
+    }
+
+    return targets
+      .map(target => this.normalizeNetworkOtaTarget(target))
+      .filter((target: NetworkOtaTarget | null): target is NetworkOtaTarget => !!target);
+  }
+
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
-    console.log('选择子菜单项:', subItem);
-
+    // console.log('选择子菜单项:', subItem);
     if (this.lastSelectedSubItemKey === (subItem.key + '_' + subItem.name)) {
       return;
     }
@@ -879,6 +1360,9 @@ export class HeaderComponent implements OnDestroy {
 
       packageJson['projectConfig'][subItem.key] = subItem.data;
       this.projectService.setPackageJson(packageJson);
+      if (subItem.key === 'CDCOnBoot') {
+        await this.projectService.refreshRuntimeBoardConfig();
+      }
       // 判断是否是STM32，是则更新项目配置
       if (this.projectService.currentBoardConfig['core'].indexOf('stm32') > -1 &&
         this.projectService.currentBoardConfig['description'].indexOf('Series') > -1) {
@@ -940,32 +1424,7 @@ export class HeaderComponent implements OnDestroy {
   }
 
   async openBoardSelectorDialog() {
-    // 获取开发板列表
-    let boardList = await this.configService.loadBoardList();
-    console.log(boardList);
-
-    // 显示开发板选择对话框
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzWidth: '400px',
-      nzContent: BoardSelectorDialogComponent,
-      nzData: {
-        boardList: boardList
-      }
-    });
-
-    // // 处理对话框返回结果
-    // modalRef.afterClose.subscribe(result => {
-    //   if (result && result.result === 'confirm') {
-    //     // 开发板已经在对话框内切换完成，只需要更新UI
-    //     this.cd.detectChanges();
-    //   }
-    // });
+    await this.uiService.openBoardSelector();
   }
 
   appStoreBtn = {

@@ -45,7 +45,7 @@ import { CommonModule } from '@angular/common';
     }
     .ac-chip {
       display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 8px; border-radius: 4px;
+      padding: 3px 8px; border-radius: 5px;
       background: var(--aily-chat-viewer-blockly-chip-bg, rgba(24,144,255,.12));
       border: 1px solid var(--aily-chat-viewer-blockly-chip-border, rgba(24,144,255,.25));
       font-size: 11px; color: var(--aily-chat-viewer-blockly-chip-fg, #91caff);
@@ -57,7 +57,7 @@ import { CommonModule } from '@angular/common';
       background: var(--aily-chat-viewer-blockly-code-bg, #1e1e1e); color: var(--aily-chat-viewer-code-fg, #abb2bf);
       border-top: 1px solid var(--aily-chat-viewer-border, #444444);
       font-family: Consolas, 'Courier New', monospace;
-      border-radius: 4px;
+      border-radius: 5px;
     }
   `],
 })

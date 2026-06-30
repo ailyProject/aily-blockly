@@ -1,0 +1,116 @@
+:host {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.process-detail-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.process-detail-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.process-detail-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.process-detail-panel-action-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 10px;
+  background: var(--aily-bg-primary, #fff);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    background: var(--aily-highlight-bg, rgba(127, 127, 127, 0.12));
+  }
+}
+
+.process-detail-panel-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.meta-card {
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--aily-bg-primary, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  .label {
+    color: var(--aily-text-tertiary, #8c8c8c);
+    font-size: 12px;
+  }
+
+  .value {
+    font-size: 13px;
+    font-weight: 600;
+    word-break: break-word;
+  }
+}
+
+:host(.process-detail-panel-embedded) {
+  .meta-card {
+    border: 1px solid var(--aily-chat-viewer-border, var(--aily-border-secondary, rgba(127, 127, 127, 0.3)));
+  }
+}
+
+.process-detail-panel-output {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  overflow: hidden;
+
+  .process-detail-panel-output-title {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  pre {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    margin: 0;
+    padding: 14px;
+    border-radius: 16px;
+    overflow: auto;
+    background: var(--aily-chat-viewer-code-bg, #181818);
+    color: var(--aily-chat-viewer-code-fg, #d4d4d4);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}

@@ -12,13 +12,6 @@
 npm-debug.log
 yarn-error.log
 yarn.lock
-/child/node
-/child/clangd
-/child/aily-builder
-/child/7zz
-/child/7za.exe
-/child/rg
-/child/rg.exe
 
 # IDEs and editors
 .idea/
@@ -53,10 +46,49 @@ testem.log
 .DS_Store
 Thumbs.db
 temp
-child/node*
-child/aily-builder*
 
 aily-todos/*.json
 docs/performance-optimization.md
+
+# child
+child/node*
+child/aily-builder*
+/child/node
+/child/clangd
+/child/aily-builder
+/child/tools
+/child/7zz
+/child/7za.exe
+/child/rg
 /child/rg.exe
 /child/probe-rs
+/child/aily-coder
+/child/tools/*/node_modules/*
+/child/aily-lex
+/child/aily-subapp
+/child/xpm
+
+# Playwright E2E
+/renderer
+/test-results
+/playwright-report
+/e2e/logs
+/out-tsc/e2e
+/e2e/.artifacts
+
+**/*.spec.ts
+!src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts
+!src/app/tools/aily-chat/tools/blocklyEditorOperationQueue.spec.ts
+!/e2e/tests/**/*.spec.ts
+**/__tests__/**/*
+.tmp
+src/app/tools/aily-chat/logs
+src/app/components/float-sider/new_idea
+src/app/tools/aily-chat/docs
+src/app/tools/aily-chat/tools/kode
+src/app/tools/aily-chat/tools/info
+src/app/tools/aily-chat/tools/docs
+src/app/tools/aily-chat/tools/libraries
+src/app/tools/aily-chat/tools/new_idea
+src/app/tools/aily-chat/tools/tests
+src/app/tools/aily-chat/tools/自定义库-函数

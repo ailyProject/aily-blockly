@@ -75,17 +75,14 @@ $header-inner-height: 38px;
   .toolbox {
     position: relative;
     display: flex;
+    align-items: center;
     height: 100%;
     background: var(--aily-bg-primary);
 
     .zone {
-      margin-left: 8px;
       padding: 5px;
       height: 100%;
-
-      &:first-child {
-        margin-left: 0;
-      }
+      gap: 6px;
     }
   }
 
@@ -93,12 +90,9 @@ $header-inner-height: 38px;
     width: $header-inner-height;
     height: $header-inner-height;
     flex-direction: column;
-    border-radius: 8px;
     color: var(--aily-text-muted);
     opacity: 0.7;
     font-size: 19px;
-    margin-right: 8px;
-    padding-top: 2px;
     transition: opacity 0.3s;
     position: relative;
 
@@ -137,7 +131,7 @@ $header-inner-height: 38px;
 .win-btns {
   display: flex;
   align-items: center;
-  margin-left: 15px;
+  margin-left: 10px;
   font-size: 15px;
 
   .btn {

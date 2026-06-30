@@ -7,74 +7,97 @@
     <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-tool-container>
 }
+
 <ng-template #windowBoxTemplate>
     <div class="app-store-container">
-        <!-- <div class="app-store-header">
-            <button class="reset-btn" (click)="resetToDefault()">
+        <!-- <div class="store-toolbar">
+            <div class="zone-summary">
+                @for (zone of zones; track zone.id) {
+                <div class="summary-item">
+                    <i class="{{ zone.icon }}"></i>
+                    <span>{{ zone.name | translate }}</span>
+                    <b>{{ getZoneApps(zone.id).length }}/{{ zone.limit }}</b>
+                </div>
+                }
+            </div>
+            <button class="icon-btn" type="button" (click)="resetToDefault()" nz-tooltip
+                [nzTooltipTitle]="'APP_STORE.RESET' | translate">
                 <i class="fa-light fa-rotate-left"></i>
-                {{ 'APP_STORE.RESET' | translate }}
             </button>
         </div> -->
 
-        <div class="app-store-content">
-            <!-- 左侧主内容区 -->
-            <div class="main-content">
-                <!-- Header 区域：前6个 -->
-                <div class="section-title">
-                    <i class="fa-light fa-window-flip"></i>
-                    {{ 'APP_STORE.TOOLBAR_APPS' | translate }}
-                </div>
-                <div class="app-grid header-zone" #headerZone>
-                    @for (app of headerZoneApps; track app.id; let i = $index) {
-                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" (dblclick)="openApp(app)">
-                        <div class="app-icon">
-                            <i class="{{ app.icon }}"></i>
-                        </div>
-                        <div class="app-name">
-                            {{ app.name | translate}}
-                        </div>
+        <div class="store-body">
+            <div class="placement-column">
+                @for (zone of zones; track zone.id) {
+                <section class="placement-section">
+                    <div class="section-title">
+                        <i class="fa-light fa-window-flip"></i>
+                        <span>{{ 'APP_STORE.TOOLBAR_APPS' | translate }}
+                            <b>{{ getZoneApps(zone.id).length }}/{{ zone.limit }}</b>
+                        </span>
                     </div>
-                    }
-                </div>
 
-                <!-- 所有应用区域 -->
-                <div class="section-title">
-                    <i class="fa-light fa-grid-3"></i>
-                    {{ 'APP_STORE.ALL_APPS' | translate }}
-                </div>
-                <div class="app-grid other-zone" #otherZone>
-                    @for (app of otherZoneApps; track app.id) {
-                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" (dblclick)="openApp(app)">
-                        <div class="app-icon">
-                            <i class="{{ app.icon }}"></i>
+                    <div class="placement-list" #headerZone>
+                        @for (app of headerZoneApps; track app.id) {
+                        <div class="placement-card" [attr.data-id]="app.id" [class.dev]="app.dev"
+                            [class.locked]="app.lock">
+                            <button class="placement-main" type="button" (click)="openToolbarApp(app)" nz-tooltip
+                                [nzTooltipTitle]="app.name | translate">
+                                <i class="{{ app.icon }}"></i>
+                                @if (app.more) {
+                                <span class="app-badge">{{ app.more }}</span>
+                                }
+                            </button>
                         </div>
-                        <div class="app-name">
-                            {{ app.name | translate }}
+                        }
+                        <!-- @for (slot of emptySlots('header'); track slot) {
+                        <div class="empty-slot">
+                            <i class="fa-light fa-plus"></i>
                         </div>
+                        } -->
                     </div>
-                    }
-                </div>
+                </section>
+                }
             </div>
 
-            <!-- 右侧侧边栏区域 -->
-            <div class="sidebar-content">
+            <section class="catalog-panel">
                 <div class="section-title">
-                    <i class="fa-light fa-sidebar-flip"></i>
-                    {{ 'APP_STORE.SIDEBAR_APPS' | translate }}
+                    <i class="fa-light fa-grid-2"></i>
+                    <span>{{ 'APP_STORE.ALL_APPS' | translate }}</span>
                 </div>
-                <div class="app-grid sidebar-zone" #sidebarZone>
-                    @for (app of sidebarZoneApps; track app.id) {
-                    <div class="app-card" [attr.data-id]="app.id" [class.dev]="app.dev" (dblclick)="openApp(app)">
-                        <div class="app-icon">
-                            <i class="{{ app.icon }}"></i>
+
+                <div class="catalog-grid sscroll">
+                    @for (app of catalogApps; track app.id) {
+                    <div class="catalog-card" [class.dev]="app.dev" [class.locked]="app.lock">
+                        <div class="catalog-main">
+                            <button class="app-icon app-open-btn" type="button" (click)="openApp(app)" nz-tooltip
+                                [nzTooltipTitle]="app.name | translate">
+                                <i class="{{ app.icon }}"></i>
+                                @if (app.more) {
+                                <span class="app-badge">{{ app.more }}</span>
+                                }
+                            </button>
+                            <span class="app-copy">
+                                <span class="app-name">{{ app.name | translate }}</span>
+                                <span class="app-desc">{{ (app.description || app.name) | translate }}</span>
+                            </span>
                         </div>
-                        <div class="app-name">
-                            {{ app.name | translate }}
+                        <div class="placement-actions">
+                            <button class="icon-btn pin-btn" type="button" [class.active]="isPinned(app, 'header')"
+                                [disabled]="app.lock || (isZoneFull('header') && !isPinned(app, 'header'))"
+                                (click)="toggleZone(app, 'header')" nz-tooltip
+                                [nzTooltipTitle]="'APP_STORE.TOOLBAR_APPS' | translate">
+                                @if (app.lock) {
+                                <i class="fa-light fa-lock"></i>
+                                } @else {
+                                <i class="fa-light fa-thumbtack"></i>
+                                }
+                            </button>
                         </div>
                     </div>
                     }
                 </div>
-            </div>
+            </section>
         </div>
     </div>
 </ng-template>

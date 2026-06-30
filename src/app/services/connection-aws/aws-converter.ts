@@ -13,7 +13,9 @@ import {
   AWSToJSONResult,
   CONNECTION_COLORS,
   ConnectionType,
+  AnimationPattern,
   AWS_SYNTAX_REFERENCE,
+  inferDataFlow,
 } from './aws-types';
 
 // =====================================================
@@ -122,6 +124,9 @@ export class AWSConverter {
       label: string;
       color: string;
       bus?: number;
+      direction?: 'forward' | 'backward' | 'bidirectional';
+      half?: boolean;
+      animationPattern?: AnimationPattern;
     }> = [];
     const resolveErrors: ParsedError[] = [];
 
@@ -179,6 +184,9 @@ export class AWSConverter {
       const label = conn.note || `${conn.type.toUpperCase()}: ${conn.fromPin} → ${conn.toPin}`;
       const color = CONNECTION_COLORS[connType] || CONNECTION_COLORS.other;
 
+      // 推断数据流向
+      const flow = inferDataFlow(conn.type, fromResolved.functionName, toResolved.functionName, conn.arrow);
+
       connections.push({
         id: `conn_${connIndex++}`,
         from: {
@@ -195,6 +203,9 @@ export class AWSConverter {
         label,
         color,
         bus: conn.bus,
+        direction: flow.direction,
+        half: flow.half,
+        animationPattern: flow.animationPattern,
       });
     }
 

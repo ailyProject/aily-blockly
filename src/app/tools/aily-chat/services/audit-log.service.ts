@@ -519,6 +519,7 @@ export function completeAuditLog(
         duration?: number;
         errorMessage?: string;
         blockReason?: string;
+        metadata?: Record<string, any>;
     }
 ): void {
     auditLogService.completeOperation(

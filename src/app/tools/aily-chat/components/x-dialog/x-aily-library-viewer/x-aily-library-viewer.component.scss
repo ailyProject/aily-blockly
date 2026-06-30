@@ -12,6 +12,14 @@
   }
 }
 
+:host-context([data-theme='light']) .aily-library-viewer {
+  background-color: var(--aily-bg-tertiary, #d6d6d6);
+
+  &:hover {
+    background-color: color-mix(in srgb, var(--aily-bg-tertiary, #d6d6d6) 94%, #000 6%);
+  }
+}
+
 // 加载卡片
 .loading-card {
   display: flex;

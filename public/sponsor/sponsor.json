@@ -71,7 +71,8 @@
     },
     {
         "name": "孙俊杰",
-        "img": "other/sjj.webp",
-        "url": "https://www.aibilin.com"
+        "company": "来自 爱比邻科技",
+        "img": null,
+        "url": null
     }
 ]

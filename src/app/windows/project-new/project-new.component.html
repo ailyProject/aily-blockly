@@ -16,25 +16,19 @@
         @if (currentStep == 0) {
         <div class="right-inner flex-start">
           <div class="search-box">
-            <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
-              <input nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
-                (ngModelChange)="search()" />
-            </nz-input-group>
-            <ng-template #suffixIconSearch>
-              @if(keyword.length > 0){
-              <i class="fa-light fa-xmark" (click)="keyword='';search()"></i>
-              } @else {
-              <i class="fa-light fa-search"></i>
-              }
-            </ng-template>
-            <!-- <div class="tag-list">
-              @for (tag of tagListRandom; track tag) {
-              <nz-tag (click)="keyword=tag;search()">{{ tag }}</nz-tag>
-              }
-            </div> -->
+            <div class="search-field">
+              <nz-input-group [nzPrefix]="prefixIconSearch" [nzSize]="'small'">
+                <input #boardSearchInput nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
+                  (ngModelChange)="search()" />
+              </nz-input-group>
+              <span class="search-shortcut">{{ searchShortcutHint }}</span>
+              <ng-template #prefixIconSearch>
+                <i class="fa-light fa-search"></i>
+              </ng-template>
+            </div>
             <div class="btns">
-              <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
-                <i class="fa-light fa-question"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
+              <button nz-button nzType="primary" nzGhost nzSize="small" (click)="help()">
+                <i class="fa-light fa-plus"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
               </button>
             </div>
           </div>
@@ -70,7 +64,8 @@
         } @else {
         <!-- 基本设定页面 -->
         <div class="right-inner">
-          <div class="item">
+          <div class="right-content">
+            <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.BOARD' | translate }}:</div>
             <nz-input-group [nzSuffix]="suffixIconSearch">
               <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
@@ -84,9 +79,29 @@
               }
             </nz-select>
           </div>
+          @if (selectedProjectCategory === 'blockly' && !isLoadingTemplates && myTemplateList.length > 0) {
+          <div class="item template-row">
+            <div>{{ 'PROJECT_NEW.FORM.TEMPLATE' | translate }}:</div>
+            <div class="template-select-box">
+              <nz-select [(ngModel)]="selectedTemplateName"
+                [nzAllowClear]="true"
+                [nzPlaceHolder]="'PROJECT_NEW.TEMPLATES.SELECT' | translate">
+                <nz-option [nzValue]="''" [nzLabel]="'PROJECT_NEW.TEMPLATES.NONE' | translate"></nz-option>
+                @for (template of myTemplateList; track template.name) {
+                <nz-option [nzValue]="template.name" [nzLabel]="template.nickname || template.name" nzCustomContent>
+                  <span [title]="template.description || ''" style="display: block; width: 100%;">{{ template.nickname || template.name }}</span>
+                </nz-option>
+                }
+              </nz-select>
+              @if (selectedTemplateDescription) {
+              <div class="template-selected-description">{{ selectedTemplateDescription }}</div>
+              }
+            </div>
+          </div>
+          }
           <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div>
-            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
+            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="onProjectNameChange()" />
             @if(showIsExist){
             <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' |
               translate }}</div>
@@ -102,6 +117,23 @@
                 <i class="fa-light fa-folder"></i>
               </div>
             </ng-template>
+            @if(showIsPathPassed){
+            <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.PATH_INVALID_CHARS' |
+              translate }}</div>
+            }
+          </div>
+          @if (selectedProjectCategory === 'coder') {
+          <div class="item platform-row">
+            <div>{{ 'PROJECT_NEW.FORM.PLATFORM' | translate }}:</div>
+            <div class="platform-select-box">
+              <nz-select [(ngModel)]="selectedCoderPlatform">
+                @for (opt of coderPlatformOptions; track opt.value) {
+                <nz-option [nzValue]="opt.value" [nzLabel]="opt.label"></nz-option>
+                }
+              </nz-select>
+            </div>
+          </div>
+          }
           </div>
         </div>
         }
@@ -118,14 +150,17 @@
         <button nz-button nzType="default" (click)="currentStep = 0">
           {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
         </button>
-        <button nz-button nzType="primary" [disabled]="showIsExist" (click)="createProject()">
+        <button nz-button nzType="primary" [disabled]="showIsExist || showIsPathPassed" (click)="onCreateProject()">
           {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
         </button>
         }
         }
         @if (currentStep == 2) {
         <button nz-button nzType="default" nzLoading>
-          {{ 'PROJECT_NEW.BUTTONS.CREATING' | translate }}
+          {{
+            (creatingMode === 'aily' ? 'PROJECT_NEW.BUTTONS.CREATING_AILY_CODE' : 'PROJECT_NEW.BUTTONS.CREATING')
+              | translate
+          }}
         </button>
         }
       </div>

@@ -11,107 +11,94 @@ export class SettingsService {
   sdkList: any[] = [];
   compilerList: any[] = [];
 
-  // 缓存 verdaccio-db 数据，避免重复请求
-  private verdaccioDbCache: { list: string[], timestamp: number } | null = null;
+  // 缓存版本清单数据，避免重复请求
+  private packageVersionListCache = new Map<string, { list: string[], timestamp: number }>();
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5分钟缓存
+  /** 同一 registry 并发请求时共用一个请求，避免并行三次 vc-package-versions.json */
+  private packageVersionListInflight = new Map<string, Promise<string[]>>();
 
   constructor(
     private http: HttpClient
   ) { }
 
   /**
-   * 直接从 verdaccio 获取 .verdaccio-db.json 文件
-   * 这个文件包含所有包的列表，比使用 search API 更快
+   * 直接从 verdaccio 获取带版本的包列表，比逐包获取版本更快
    */
-  async getVerdaccioDb(registry: string): Promise<string[]> {
-    // 检查缓存是否有效
-    if (this.verdaccioDbCache && (Date.now() - this.verdaccioDbCache.timestamp) < this.CACHE_TTL) {
-      console.log('Using cached verdaccio-db');
-      return this.verdaccioDbCache.list;
+  async getPackageVersionList(registry: string): Promise<string[]> {
+    const registryKey = registry.replace(/\/?$/, '/');
+    const cached = this.packageVersionListCache.get(registryKey);
+    if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
+      console.log('Using cached package version list');
+      return cached.list;
     }
 
-    try {
-      // 直接获取 .verdaccio-db.json 静态文件
-      const dbJsonUrl = registry.replace(/\/?$/, '/') + 'vc-packages.json';
-      const response: any = await this.http.get(dbJsonUrl).toPromise();
-      
-      // .verdaccio-db.json 格式: { "list": ["package1", "package2", ...], "secret": "..." }
-      const packageList = response.list || [];
-      
-      this.verdaccioDbCache = {
-        list: packageList,
-        timestamp: Date.now()
-      };
-      
-      console.log('Fetched verdaccio-db.json:', packageList.length);
-      return packageList;
-    } catch (error) {
-      console.error('Failed to fetch verdaccio-db.json:', error);
-      return [];
+    let inflight = this.packageVersionListInflight.get(registryKey);
+    if (inflight) {
+      return inflight;
     }
+
+    inflight = (async (): Promise<string[]> => {
+      try {
+        const packageVersionsUrl = registryKey + 'vc-package-versions.json';
+        const response: any = await this.http.get(packageVersionsUrl).toPromise();
+
+        const packageList = response.list || [];
+
+        this.packageVersionListCache.set(registryKey, {
+          list: packageList,
+          timestamp: Date.now()
+        });
+
+        console.log('Fetched vc-package-versions.json:', packageList.length);
+        return packageList;
+      } catch (error) {
+        console.error('Failed to fetch vc-package-versions.json:', error);
+        throw error;
+      } finally {
+        this.packageVersionListInflight.delete(registryKey);
+      }
+    })();
+
+    this.packageVersionListInflight.set(registryKey, inflight);
+    return inflight;
   }
 
-  /**
-   * 获取单个包的详细信息（版本等）
-   */
-  async getPackageInfo(packageName: string, registry: string): Promise<any> {
-    try {
-      // 使用标准 npm registry API 获取包信息
-      const apiUrl = registry.replace(/\/?$/, '/') + encodeURIComponent(packageName);
-      const response: any = await this.http.get(apiUrl).toPromise();
-      return response;
-    } catch (error) {
-      console.warn(`Failed to fetch package info for ${packageName}:`, error);
+  private parsePackageVersion(packageVersion: string): { name: string, version: string } | null {
+    const value = packageVersion.trim();
+    const versionSeparatorIndex = value.lastIndexOf('@');
+    if (versionSeparatorIndex <= 0 || versionSeparatorIndex === value.length - 1) {
       return null;
     }
+
+    return {
+      name: value.slice(0, versionSeparatorIndex),
+      version: value.slice(versionSeparatorIndex + 1)
+    };
   }
 
   /**
-   * 使用 verdaccio-db 快速筛选包列表
-   * 先从 db 获取所有包名，筛选出匹配的，再批量获取详情
+   * 使用带版本的包列表快速筛选依赖，不再逐包获取版本详情
    */
   async searchByVerdaccioDb(searchKey: string, prefix: string, registry: string) {
     try {
-      // 1. 获取所有包名列表
-      const allPackages = await this.getVerdaccioDb(registry);
+      const allPackageVersions = await this.getPackageVersionList(registry);
       
-      // 2. 筛选匹配的包名
-      const matchedPackages = allPackages.filter(name => name.startsWith(searchKey));
-      console.log(`Found ${matchedPackages.length} packages matching "${searchKey}"`);
+      const matchedPackages = allPackageVersions
+        .map(item => this.parsePackageVersion(item))
+        .filter((item): item is { name: string, version: string } => !!item && item.name.startsWith(searchKey));
+      console.log(`Found ${matchedPackages.length} package versions matching "${searchKey}"`);
       
       if (matchedPackages.length === 0) {
         return [];
       }
       
-      // 3. 获取已安装的依赖
       const installedDict = await this.getInstalledDependencies(prefix);
       
-      // 4. 并行获取所有匹配包的详细信息
-      const packageInfoPromises = matchedPackages.map(name => this.getPackageInfo(name, registry));
-      const packageInfos = await Promise.all(packageInfoPromises);
-      
-      // 5. 构建结果列表
-      const resultList = [];
-      for (const packageInfo of packageInfos) {
-        if (!packageInfo || !packageInfo.versions) continue;
-        
-        const packageName = packageInfo.name;
-        const versions = packageInfo.versions;
-        
-        Object.keys(versions).forEach(version => {
-          let installed = false;
-          if (installedDict[packageName] && installedDict[packageName].version === version) {
-            installed = true;
-          }
-          
-          resultList.push({
-            name: packageName,
-            version: version,
-            installed: installed,
-            ...versions[version]
-          });
-        });
-      }
+      const resultList = matchedPackages.map(item => ({
+        name: item.name,
+        version: item.version,
+        installed: installedDict[item.name]?.version === item.version
+      }));
       
       console.log('searchByVerdaccioDb result:', resultList.length);
       return resultList;
@@ -179,8 +166,8 @@ export class SettingsService {
   // installed dependencies
   async getInstalledDependencies(prefix: string) {
     try {
-      // 首先尝试 npm ls
-      const cmd = `npm ls --json=true --depth=0 --silent --prefix ${prefix}`;
+      // 首先尝试 npm ls（prefix 必须加引号：macOS 常见路径含 Application Support 空格，否则 exec 会拆参失败）
+      const cmd = `npm ls --json=true --depth=0 --silent --prefix "${prefix}"`;
       const result = await window['npm'].run({ cmd });
       const installedDict = JSON.parse(result);
       return installedDict["dependencies"] || {};

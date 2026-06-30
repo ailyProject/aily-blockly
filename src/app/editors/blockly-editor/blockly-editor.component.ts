@@ -6,10 +6,17 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ActivatedRoute } from '@angular/router';
 import { ElectronService } from '../../services/electron.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzModalService } from 'ng-zorro-antd/modal';
 import { ConfigService } from '../../services/config.service';
 import { NpmService } from '../../services/npm.service';
 import { CmdService } from '../../services/cmd.service';
-import { BlocklyService } from './services/blockly.service';
+import {
+  AILY_BLOCKLY_USED_LIBRARIES_FIELD,
+  BlocklyProjectDocument,
+  BlocklyService,
+  BlocklyUsedLibraryManifest,
+  BlocklyUsedLibraryManifestEntry,
+} from './services/blockly.service';
 import { BlocklyComponent } from './components/blockly/blockly.component';
 import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
@@ -17,12 +24,16 @@ import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
 import { ProjectService } from '../../services/project.service';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
-import { HistoryService } from './services/history.service';
 import { OnboardingService } from '../../services/onboarding.service';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { NoticeService } from '../../services/notice.service';
 import { FloatSiderComponent } from '../../components/float-sider/float-sider.component';
 import { LocalLibrarySyncService } from '../../services/local-library-sync.service';
+import { CodeViewerIpcService } from './services/code-viewer-ipc.service';
+import { CrossPlatformCmdService } from '../../services/cross-platform-cmd.service';
+import { MissingLibInfo, PasteInstallDialogComponent } from './components/paste-install-dialog/paste-install-dialog.component';
+import { Subscription } from 'rxjs';
+import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -42,8 +53,35 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
   showLibraryManager = false;
   showFloatSider = false;
 
+  private readonly packageJsonWatchDebounceMs = 300;
+  private readonly pendingLibraryLoadRetryMs = 1000;
+  private readonly maxPendingLibraryLoadAttempts = 120;
+  private readonly pendingBoardReloadRetryMs = 1000;
+  private readonly maxPendingBoardReloadAttempts = 120;
+  private readonly projectLoadedCodeRefreshDelayMs = 1000;
   private _onMouseMoveBound = this._onMouseMove.bind(this);
   private _onMouseLeaveBound = this._onMouseLeave.bind(this);
+  private packageJsonWatcherDispose: (() => void) | null = null;
+  private packageJsonWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingLibraryLoadTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingBoardReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private projectLoadedCodeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchedPackageJsonProjectPath: string | null = null;
+  private watchedPackageJsonSignature = '';
+  private watchedLibraryDependencies = new Map<string, string>();
+  private watchedBoardDependencies = new Map<string, string>();
+  private pendingLibraryDependencies = new Set<string>();
+  private pendingLibraryLoadAttempts = new Map<string, number>();
+  private pendingLibraryLoadInProgress = false;
+  private pendingBoardDependencyReload: {
+    projectPath: string;
+    addedBoardNames: string[];
+    previousBoardNames: string[];
+    attempts: number;
+  } | null = null;
+  private boardDependencyReloadInProgress = false;
+  private boardConfigUpdatedSubscription: Subscription | null = null;
+  private runtimeCdcEnabled: boolean | undefined;
 
   devmode;
 
@@ -58,9 +96,11 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
     private blocklyService: BlocklyService,
     private electronService: ElectronService,
     private message: NzMessageService,
+    private modal: NzModalService,
     private configService: ConfigService,
     private npmService: NpmService,
     private cmdService: CmdService,
+    private crossPlatformCmdService: CrossPlatformCmdService,
     private projectService: ProjectService,
     private _projectService: _ProjectService,
     private _builderService: _BuilderService,
@@ -71,6 +111,8 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
     private el: ElementRef,
     private ngZone: NgZone,
     private localLibrarySyncService: LocalLibrarySyncService,
+    private codeViewerIpcService: CodeViewerIpcService,
+    private blocklyLibraryPackageService: BlocklyLibraryPackageService,
   ) { }
 
   ngOnInit(): void {
@@ -80,7 +122,6 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
         try {
           this._projectService.currentProjectPath = params['path'];
           this.projectService.currentProjectPath = params['path'];
-          // this._projectService.initHistory(); // 初始化历史服务
           this.loadProject(params['path']);
         } catch (error) {
           console.error('加载项目失败', error);
@@ -94,6 +135,9 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
     this._projectService.init();
     this._builderService.init();
     this._uploadService.init();
+    this.boardConfigUpdatedSubscription = this.projectService.boardConfigUpdatedSubject.subscribe((boardConfig) => {
+      this.applyRuntimeBoardConfig(boardConfig);
+    });
 
     // 阻止鼠标按键前进后退
     window.history.replaceState(null, '', window.location.href);
@@ -126,13 +170,18 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   ngOnDestroy(): void {
+    this.boardConfigUpdatedSubscription?.unsubscribe();
+    this.boardConfigUpdatedSubscription = null;
     this.uiService.closeTool('code-viewer');
+    this.clearProjectLoadedCodeRefreshTimer();
     this.localLibrarySyncService.stop();
+    this.stopPackageJsonDependencyWatch();
     this._projectService.destroy();
     this._builderService.cancel();
     this._builderService.destroy();
     this._uploadService.cancel();
     this._uploadService.destroy();
+    this.codeViewerIpcService.clear();
     this.electronService.setTitle('aily blockly');
     this.blocklyService.reset();
     this.el.nativeElement.removeEventListener('mousemove', this._onMouseMoveBound);
@@ -140,10 +189,12 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   async loadProject(projectPath) {
+    this.stopPackageJsonDependencyWatch();
+    this.clearProjectLoadedCodeRefreshTimer();
     // 处理 temp 下的 package.json：有则覆盖主项目，无则从主项目复制到 temp
     await this.projectService.syncPackageJsonWithTemp(projectPath);
     // 加载项目package.json
-    const packageJson = JSON.parse(
+    let packageJson = JSON.parse(
       this.electronService.readFile(`${projectPath}/package.json`),
     );
     // 加载项目开发框架
@@ -157,57 +208,25 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
       nickname: packageJson.nickname || packageJson.name,
     });
     // 设置当前项目路径和package.json数据
-    this._projectService.currentPackageData = packageJson;
-    this.projectService.currentPackageData = packageJson;
-    window['packageJson'] = packageJson;
+    this.applyProjectPackageJson(packageJson);
     // 暴露 ProjectService 到全局，供 generator.js 使用
     window['projectService'] = this.projectService;
 
-    if (!(await this.npmService.installedOk(projectPath))) {
-      // 终端进入项目目录，安装项目依赖
-      // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
-      setTimeout(() => {
-        this.noticeService.update({
-          title: this.translate.instant('NPM.INSTALLING_TITLE'),
-          text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
-          state: 'doing',
-          icon: 'fa-light fa-cubes',
-          showProgress: false,
-        });
-      }, 0);
-      const npmResult = await this.cmdService.runAsync(`npm install`, projectPath);
-      if (!(await this.npmService.installedOk(projectPath))) {
-        setTimeout(() => {
-          this.noticeService.update({
-            title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
-            text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
-            detail: npmResult?.stderr || 'npm install 执行完成但依赖检查未通过',
-            state: 'error',
-            sendToLog: false,
-          });
-        }, 1000);
-        return;
-      }
-      setTimeout(() => {
-        this.noticeService.update({
-          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
-          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
-          state: 'done',
-          showProgress: false,
-          setTimeout: 3000,
-        });
-      }, 100);
+    // 与 Aily Code（code-editor-pro）共用：node_modules 不齐则 npm install
+    if (!(await this.npmService.ensureProjectDependenciesInstalled(projectPath))) {
+      return;
     }
     // 3. 加载开发板module中的board.json
     this.uiService.updateFooterState({
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG'),
     });
-    const boardJson = await this.projectService.getBoardJson();
+    const boardJson = await this.projectService.resolveBoardConfigForRuntime();
 
     this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
+    this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
       state: 'doing',
@@ -218,7 +237,7 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
       await this.npmService.getAllInstalledLibraries(projectPath)
     ).map((item) => item.name);
 
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await this.blocklyService.waitForWorkspace();
 
     for (let index = 0; index < libraryModuleList.length; index++) {
       const libPackageName = libraryModuleList[index];
@@ -235,10 +254,27 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BLOCKLY_PROGRAM'),
     });
-    let jsonData = JSON.parse(
-      this.electronService.readFile(`${projectPath}/project.abi`),
-    );
-    this.blocklyService.loadAbiJson(jsonData);
+    const projectDocument = await this.loadProjectAbiDocument(projectPath);
+
+    const missingProjectLibraries = this.getMissingProjectLibraries(projectPath, packageJson, projectDocument);
+    if (missingProjectLibraries.length > 0) {
+      const restored = await this.restoreMissingProjectLibraries(projectPath, missingProjectLibraries);
+      if (!restored) {
+        this.handleMissingProjectLibrariesCancelled(missingProjectLibraries);
+        return;
+      }
+
+      packageJson = this.readProjectPackageJson(projectPath) || packageJson;
+      this.applyProjectPackageJson(packageJson);
+      await this.loadInstalledBlocklyLibraries(projectPath);
+    }
+
+    await this.waitForNextFrame();
+    this.blocklyService.loadProjectDocument(projectDocument, false);
+    if (this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
+      packageJson = this.readProjectPackageJson(projectPath) || packageJson;
+      this.applyProjectPackageJson(packageJson);
+    }
 
     // 6. 加载项目目录中project.abi（这是blockly格式的json文本必须要先安装库才能加载这个json，因为其中可能会用到一些库）
     this.uiService.updateFooterState({
@@ -246,8 +282,16 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
       text: this.translate.instant('BLOCKLY_EDITOR.PROJECT_LOAD_SUCCESS'),
     });
     this.projectService.stateSubject.next('loaded');
+    this.scheduleProjectLoadedCodeRefresh();
 
+    this.startPackageJsonDependencyWatch(projectPath);
     this.localLibrarySyncService.start(projectPath);
+    // 项目加载完成后自动生成 sketch.ino，供 AI 工具和代码预览使用（无需触发完整编译）
+    setTimeout(() => {
+      this._builderService.generateAndWriteSketchIno().catch(e => {
+        console.warn('[loadProject] 自动生成 sketch.ino 失败:', e);
+      });
+    }, 600); // 等待 Blockly 渲染完成（debounce 500ms + 余量）
 
     // 检查是否需要显示新手引导
     this.checkBlocklyOnboarding();
@@ -258,9 +302,810 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
       .then(() => {
         console.log('install board dependencies success');
       })
-      .catch((err) => {
-        console.error('install board dependencies error', err);
+      .catch(() => undefined);
+  }
+
+  private async loadProjectAbiDocument(projectPath: string): Promise<BlocklyProjectDocument> {
+    const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
+    let abiContent = await this.electronService.readFileAsync(abiPath);
+    const projectAbi = await this.parseProjectAbiContent(abiContent);
+    abiContent = '';
+    return this.blocklyService.normalizeProjectAbiForLoad(projectAbi);
+  }
+
+  private async parseProjectAbiContent(content: string): Promise<any> {
+    if (typeof Worker === 'undefined') {
+      return this.parseProjectAbiContentOnMainThread(content);
+    }
+
+    try {
+      return await this.parseProjectAbiContentInWorker(content);
+    } catch (error) {
+      if ((error as Error)?.name === 'ProjectAbiParseError') {
+        throw error;
+      }
+
+      console.warn('[ProjectAbiParser] worker unavailable, falling back to main thread parse:', error);
+      return this.parseProjectAbiContentOnMainThread(content);
+    }
+  }
+
+  private parseProjectAbiContentInWorker(content: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const requestId = Date.now();
+      let worker: Worker;
+
+      try {
+        worker = new Worker(
+          new URL('./workers/project-abi-parser.worker.ts', import.meta.url),
+          { type: 'module' },
+        );
+      } catch (error) {
+        reject(error);
+        return;
+      }
+
+      const cleanup = () => worker.terminate();
+
+      worker.onmessage = (event: MessageEvent<{ id: number; data?: any; error?: string }>) => {
+        const message = event.data;
+        if (!message || message.id !== requestId) {
+          return;
+        }
+
+        cleanup();
+        if (message.error) {
+          const parseError = new Error(message.error);
+          parseError.name = 'ProjectAbiParseError';
+          reject(parseError);
+          return;
+        }
+
+        resolve(message.data);
+      };
+
+      worker.onerror = (error) => {
+        cleanup();
+        reject(new Error(error.message || 'Project ABI parser worker failed'));
+      };
+
+      try {
+        worker.postMessage({ id: requestId, content });
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  private async parseProjectAbiContentOnMainThread(content: string): Promise<any> {
+    await this.waitForNextFrame();
+    return JSON.parse(content);
+  }
+
+  private waitForNextFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => resolve());
+        return;
+      }
+
+      setTimeout(resolve, 0);
+    });
+  }
+
+  private scheduleProjectLoadedCodeRefresh(): void {
+    this.clearProjectLoadedCodeRefreshTimer();
+    this.projectLoadedCodeRefreshTimer = setTimeout(() => {
+      this.projectLoadedCodeRefreshTimer = null;
+      this.blocklyService.requestCodeViewerRefresh(true);
+    }, this.projectLoadedCodeRefreshDelayMs);
+  }
+
+  private applyRuntimeBoardConfig(boardConfig: any): void {
+    const cdcEnabled = !!boardConfig?._cdcEnabled;
+    const shouldRestoreSerialFields = this.runtimeCdcEnabled === true && !cdcEnabled;
+    const serialFieldSnapshots = shouldRestoreSerialFields && Array.isArray(boardConfig?.cdcSerialPort)
+      ? this.blocklyService.snapshotSerialFieldValues()
+      : null;
+
+    this.blocklyService.boardConfig = boardConfig;
+    window['boardConfig'] = boardConfig;
+    this.blocklyService.refreshBoardDependentBlockDefinitions();
+    this.blocklyService.syncSerialDynamicToolboxBlocks();
+    const updateSerialCustomPorts = (window as any).updateSerialCustomPorts;
+    if (typeof updateSerialCustomPorts === 'function') {
+      updateSerialCustomPorts();
+    }
+
+    if (serialFieldSnapshots && Array.isArray(boardConfig?.cdcSerialPort)) {
+      this.blocklyService.applySerialPortFieldsAfterCdcDisabled(boardConfig.cdcSerialPort, serialFieldSnapshots);
+    }
+
+    this.runtimeCdcEnabled = cdcEnabled;
+  }
+
+  private clearProjectLoadedCodeRefreshTimer(): void {
+    if (this.projectLoadedCodeRefreshTimer) {
+      clearTimeout(this.projectLoadedCodeRefreshTimer);
+      this.projectLoadedCodeRefreshTimer = null;
+    }
+  }
+
+  private startPackageJsonDependencyWatch(projectPath: string): void {
+    this.stopPackageJsonDependencyWatch();
+
+    const fsApi = window['fs'];
+    const watch = fsApi?.watch;
+    if (typeof watch !== 'function') {
+      console.warn('[PackageJsonWatch] fs.watch is unavailable');
+      return;
+    }
+
+    if (!this.refreshPackageJsonDependencySnapshot(projectPath)) {
+      return;
+    }
+
+    this.watchedPackageJsonProjectPath = projectPath;
+    this.projectService.isPackageJsonBoardWatcherActive = true;
+    this.ngZone.runOutsideAngular(() => {
+      try {
+        this.packageJsonWatcherDispose = watch(projectPath, (event) => {
+          if (event?.eventType === 'error') {
+            console.warn('[PackageJsonWatch] watch error:', event.error);
+            return;
+          }
+
+          if (event?.filename && window['path']?.basename(event.filename) !== 'package.json') {
+            return;
+          }
+
+          this.schedulePackageJsonDependencyCheck(projectPath);
+        });
+      } catch (error) {
+        console.warn('[PackageJsonWatch] failed to start:', error);
+        this.stopPackageJsonDependencyWatch();
+      }
+    });
+  }
+
+  private stopPackageJsonDependencyWatch(): void {
+    if (this.packageJsonWatcherDispose) {
+      try {
+        this.packageJsonWatcherDispose();
+      } catch (error) {
+        console.warn('[PackageJsonWatch] failed to stop:', error);
+      }
+      this.packageJsonWatcherDispose = null;
+    }
+
+    if (this.packageJsonWatchDebounceTimer) {
+      clearTimeout(this.packageJsonWatchDebounceTimer);
+      this.packageJsonWatchDebounceTimer = null;
+    }
+
+    if (this.pendingLibraryLoadTimer) {
+      clearTimeout(this.pendingLibraryLoadTimer);
+      this.pendingLibraryLoadTimer = null;
+    }
+
+    if (this.pendingBoardReloadTimer) {
+      clearTimeout(this.pendingBoardReloadTimer);
+      this.pendingBoardReloadTimer = null;
+    }
+
+    this.watchedPackageJsonProjectPath = null;
+    this.projectService.isPackageJsonBoardWatcherActive = false;
+    this.watchedPackageJsonSignature = '';
+    this.watchedLibraryDependencies.clear();
+    this.watchedBoardDependencies.clear();
+    this.pendingLibraryDependencies.clear();
+    this.pendingLibraryLoadAttempts.clear();
+    this.pendingLibraryLoadInProgress = false;
+    this.pendingBoardDependencyReload = null;
+    this.boardDependencyReloadInProgress = false;
+  }
+
+  private schedulePackageJsonDependencyCheck(projectPath: string): void {
+    if (this.packageJsonWatchDebounceTimer) {
+      clearTimeout(this.packageJsonWatchDebounceTimer);
+    }
+
+    this.packageJsonWatchDebounceTimer = setTimeout(() => {
+      this.packageJsonWatchDebounceTimer = null;
+      void this.handlePackageJsonDependencyChange(projectPath);
+    }, this.packageJsonWatchDebounceMs);
+  }
+
+  private async handlePackageJsonDependencyChange(projectPath: string): Promise<void> {
+    if (this.watchedPackageJsonProjectPath !== projectPath) {
+      return;
+    }
+
+    let nextPackageJson: any;
+    try {
+      const packageJsonPath = this.electronService.pathJoin(projectPath, 'package.json');
+      const nextContent = this.electronService.readFile(packageJsonPath);
+      if (nextContent === this.watchedPackageJsonSignature) {
+        return;
+      }
+
+      nextPackageJson = JSON.parse(nextContent);
+      this.watchedPackageJsonSignature = nextContent;
+    } catch (error) {
+      console.warn('[PackageJsonWatch] package.json read failed:', error);
+      return;
+    }
+
+    this.applyProjectPackageJson(nextPackageJson);
+
+    const nextBoardDependencies = this.getDeclaredBoardDependencies(nextPackageJson);
+    const nextLibraryDependencies = this.getDeclaredBlocklyLibraryDependencies(nextPackageJson);
+
+    if (this.projectService.isBoardSwitchInProgress) {
+      this.watchedBoardDependencies = nextBoardDependencies;
+      this.watchedLibraryDependencies = nextLibraryDependencies;
+      return;
+    }
+
+    const previousBoardDependencies = this.watchedBoardDependencies;
+    const addedBoardNames = Array.from(nextBoardDependencies.keys()).filter(
+      (name) => !previousBoardDependencies.has(name),
+    ).sort((a, b) => a.localeCompare(b));
+    this.watchedBoardDependencies = nextBoardDependencies;
+
+    if (addedBoardNames.length > 0) {
+      this.handleAddedBoardDependencies(projectPath, addedBoardNames, previousBoardDependencies);
+      return;
+    }
+
+    // 对比新旧 package.json 中的 blockly library 依赖变化，找出新增和移除的库
+    const previousLibraryDependencies = this.watchedLibraryDependencies;
+    const addedLibraryNames = Array.from(nextLibraryDependencies.keys()).filter(
+      (name) => !previousLibraryDependencies.has(name),
+    ).sort((a, b) => this.compareBlocklyLibraryNames(a, b));
+    const removedLibraryNames = Array.from(previousLibraryDependencies.keys()).filter(
+      (name) => !nextLibraryDependencies.has(name),
+    ).sort((a, b) => this.compareBlocklyLibraryNames(a, b));
+    this.watchedLibraryDependencies = nextLibraryDependencies;
+
+    if (removedLibraryNames.length > 0) {
+      await this.handleRemovedLibraryDependencies(projectPath, removedLibraryNames);
+    }
+
+    if (addedLibraryNames.length === 0) {
+      return;
+    }
+
+    for (const libPackageName of addedLibraryNames) {
+      if (this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
+        continue;
+      }
+      this.pendingLibraryDependencies.add(libPackageName);
+      if (!this.pendingLibraryLoadAttempts.has(libPackageName)) {
+        this.pendingLibraryLoadAttempts.set(libPackageName, 0);
+      }
+    }
+
+    this.schedulePendingLibraryLoad(projectPath, 0);
+  }
+
+  private applyProjectPackageJson(packageJson: any): void {
+    this._projectService.currentPackageData = packageJson;
+    this.projectService.currentPackageData = packageJson;
+    window['packageJson'] = packageJson;
+    this.blocklyService.setToolboxSortOrder(packageJson?.blocklyToolboxOrder);
+  }
+
+  private async handleRemovedLibraryDependencies(projectPath: string, removedLibraryNames: string[]): Promise<void> {
+    for (const libPackageName of removedLibraryNames) {
+      this.clearPendingLibrary(libPackageName);
+
+      if (!this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
+        continue;
+      }
+
+      if (
+        this.blocklyService.isLibraryPackageNameUsedByCurrentProject(libPackageName)
+        || this.isProjectLibraryDeclaredAsUsed(projectPath, libPackageName)
+      ) {
+        console.warn('[PackageJsonWatch] library dependency removed but still used:', libPackageName);
+        this.message.warning(`${libPackageName} 已从 package.json 移除，但项目中仍有相关积木`, { nzDuration: 5000 });
+        continue;
+      }
+
+      await this.blocklyService.unloadLibrary(libPackageName, projectPath);
+    }
+  }
+
+  private refreshPackageJsonDependencySnapshot(projectPath: string): boolean {
+    try {
+      const packageJsonPath = this.electronService.pathJoin(projectPath, 'package.json');
+      const content = this.electronService.readFile(packageJsonPath);
+      const packageJson = JSON.parse(content);
+      this.watchedPackageJsonSignature = content;
+      this.watchedLibraryDependencies = this.getDeclaredBlocklyLibraryDependencies(packageJson);
+      this.watchedBoardDependencies = this.getDeclaredBoardDependencies(packageJson);
+      return true;
+    } catch (error) {
+      console.warn('[PackageJsonWatch] failed to snapshot package.json:', error);
+      return false;
+    }
+  }
+
+  private getDeclaredBlocklyLibraryDependencies(packageJson: any): Map<string, string> {
+    const dependencies = {
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+    };
+
+    const libraryDependencies = new Map<string, string>();
+    for (const [name, version] of Object.entries(dependencies)) {
+      if (typeof name === 'string' && this.isBlocklyLibraryPackageName(name)) {
+        libraryDependencies.set(name, String(version ?? ''));
+      }
+    }
+
+    return libraryDependencies;
+  }
+
+  /** 从项目 dependencies 中提取已声明的开发板包依赖。 */
+  private getDeclaredBoardDependencies(packageJson: any): Map<string, string> {
+    const dependencies = packageJson?.dependencies || {};
+
+    const boardDependencies = new Map<string, string>();
+    for (const [name, version] of Object.entries(dependencies)) {
+      if (typeof name === 'string' && this.isBoardPackageName(name)) {
+        boardDependencies.set(name, String(version ?? ''));
+      }
+    }
+
+    return boardDependencies;
+  }
+
+  /** 记录新增开发板依赖，并进入等待安装完成后的重载流程。 */
+  private handleAddedBoardDependencies(
+    projectPath: string,
+    addedBoardNames: string[],
+    previousBoardDependencies: Map<string, string>,
+  ): void {
+    const addedBoardNameSet = new Set(addedBoardNames);
+    const previousBoardNames = Array.from(previousBoardDependencies.keys())
+      .filter((name) => !addedBoardNameSet.has(name))
+      .sort((a, b) => a.localeCompare(b));
+
+    this.pendingBoardDependencyReload = {
+      projectPath,
+      addedBoardNames,
+      previousBoardNames,
+      attempts: 0,
+    };
+    this.schedulePendingBoardReload(projectPath, 0);
+  }
+
+  /** 安排一次开发板切换重载检查，用于等待 npm install 写完新开发板文件。 */
+  private schedulePendingBoardReload(projectPath: string, delayMs: number): void {
+    if (this.pendingBoardReloadTimer) {
+      clearTimeout(this.pendingBoardReloadTimer);
+    }
+
+    this.pendingBoardReloadTimer = setTimeout(() => {
+      this.pendingBoardReloadTimer = null;
+      void this.reloadProjectAfterBoardDependencyChange(projectPath);
+    }, delayMs);
+  }
+
+  /** 在新开发板包就绪后，移除旧开发板、同步 temp/package.json，并重新打开项目。 */
+  private async reloadProjectAfterBoardDependencyChange(projectPath: string): Promise<void> {
+    const pending = this.pendingBoardDependencyReload;
+    if (!pending || pending.projectPath !== projectPath || this.boardDependencyReloadInProgress) {
+      return;
+    }
+
+    if (this.watchedPackageJsonProjectPath !== projectPath) {
+      return;
+    }
+
+    const notReadyBoardNames = pending.addedBoardNames.filter(
+      (boardName) => !this.isBoardPackageReady(projectPath, boardName),
+    );
+    if (notReadyBoardNames.length > 0 && pending.attempts < this.maxPendingBoardReloadAttempts) {
+      pending.attempts += 1;
+      this.schedulePendingBoardReload(projectPath, this.pendingBoardReloadRetryMs);
+      return;
+    }
+
+    if (notReadyBoardNames.length > 0) {
+      console.warn('[PackageJsonWatch] board dependency was not ready before reload:', notReadyBoardNames);
+    }
+
+    const previousBoardNames = [...pending.previousBoardNames];
+    const addedBoardNames = [...pending.addedBoardNames];
+    this.stopPackageJsonDependencyWatch();
+    this.boardDependencyReloadInProgress = true;
+
+    try {
+      if (previousBoardNames.length > 0) {
+        this.uiService.updateFooterState({ state: 'doing', text: `正在移除旧开发板: ${previousBoardNames.join(', ')}` });
+        await this.cmdService.runAsyncChecked(`npm uninstall ${previousBoardNames.join(' ')}`, projectPath);
+      }
+
+      this.copyProjectPackageJsonToTemp(projectPath);
+      this.message.success(`开发板已切换为 ${addedBoardNames.join(', ')}，正在重新加载项目`, { nzDuration: 3000 });
+      await this.projectService.projectOpen(projectPath, { reason: 'reload' });
+      this.projectService.boardChangeSubject.next();
+      this.projectService.resolveBoardSwitchReload();
+    } catch (error) {
+      this.boardDependencyReloadInProgress = false;
+      this.projectService.rejectBoardSwitchReload(error);
+      console.error('[PackageJsonWatch] reload after board dependency change failed:', error);
+      this.message.error(`切换开发板后重新加载项目失败: ${(error as Error)?.message || String(error)}`);
+      this.startPackageJsonDependencyWatch(projectPath);
+    }
+  }
+
+  /** 将主项目 package.json 同步到 .temp，避免重载时被旧 temp 配置覆盖。 */
+  private copyProjectPackageJsonToTemp(projectPath: string): void {
+    const mainPackagePath = this.electronService.pathJoin(projectPath, 'package.json');
+    const tempDir = this.electronService.pathJoin(projectPath, '.temp');
+    const tempPackagePath = this.electronService.pathJoin(tempDir, 'package.json');
+
+    if (!this.electronService.exists(mainPackagePath)) {
+      return;
+    }
+
+    try {
+      if (!this.electronService.exists(tempDir)) {
+        window['fs'].mkdirSync(tempDir, { recursive: true });
+      }
+      const mainContent = this.electronService.readFile(mainPackagePath);
+      window['fs'].writeFileSync(tempPackagePath, mainContent);
+    } catch (error) {
+      console.warn('[PackageJsonWatch] failed to sync package.json to temp:', error);
+    }
+  }
+
+  private schedulePendingLibraryLoad(projectPath: string, delayMs: number): void {
+    if (this.pendingLibraryLoadTimer) {
+      clearTimeout(this.pendingLibraryLoadTimer);
+    }
+
+    this.pendingLibraryLoadTimer = setTimeout(() => {
+      this.pendingLibraryLoadTimer = null;
+      void this.loadPendingLibraries(projectPath);
+    }, delayMs);
+  }
+
+  private async loadPendingLibraries(projectPath: string): Promise<void> {
+    if (this.pendingLibraryLoadInProgress || this.pendingLibraryDependencies.size === 0) {
+      return;
+    }
+
+    if (this.watchedPackageJsonProjectPath !== projectPath) {
+      return;
+    }
+
+    this.pendingLibraryLoadInProgress = true;
+    let shouldLoadInstalledLibraries = false;
+    try {
+      const pendingLibraryNames = Array.from(this.pendingLibraryDependencies).sort((a, b) =>
+        this.compareBlocklyLibraryNames(a, b),
+      );
+      for (const libPackageName of pendingLibraryNames) {
+        if (this.watchedPackageJsonProjectPath !== projectPath) {
+          return;
+        }
+
+        if (this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
+          shouldLoadInstalledLibraries = true;
+          this.clearPendingLibrary(libPackageName);
+          continue;
+        }
+
+        if (this.isBlocklyLibraryPackageReady(projectPath, libPackageName)) {
+          await this.blocklyService.loadLibrary(libPackageName, projectPath);
+          if (this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
+            shouldLoadInstalledLibraries = true;
+            this.clearPendingLibrary(libPackageName);
+            continue;
+          }
+        }
+
+        const attempts = (this.pendingLibraryLoadAttempts.get(libPackageName) || 0) + 1;
+        if (attempts >= this.maxPendingLibraryLoadAttempts) {
+          console.warn('[PackageJsonWatch] library dependency was not ready:', libPackageName);
+          this.clearPendingLibrary(libPackageName);
+        } else {
+          this.pendingLibraryLoadAttempts.set(libPackageName, attempts);
+        }
+      }
+    } finally {
+      this.pendingLibraryLoadInProgress = false;
+    }
+
+    if (shouldLoadInstalledLibraries && this.watchedPackageJsonProjectPath === projectPath) {
+      await this.loadInstalledBlocklyLibraries(projectPath);
+    }
+
+    if (this.pendingLibraryDependencies.size > 0 && this.watchedPackageJsonProjectPath === projectPath) {
+      this.schedulePendingLibraryLoad(projectPath, this.pendingLibraryLoadRetryMs);
+    }
+  }
+
+  private async loadInstalledBlocklyLibraries(projectPath: string): Promise<void> {
+    try {
+      const installedLibraries = await this.npmService.getAllInstalledLibraries(projectPath);
+      for (const lib of installedLibraries) {
+        const libPackageName = lib?.name;
+        if (typeof libPackageName !== 'string') {
+          continue;
+        }
+        if (this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
+          continue;
+        }
+        if (!this.isBlocklyLibraryPackageReady(projectPath, libPackageName)) {
+          continue;
+        }
+
+        await this.blocklyService.loadLibrary(libPackageName, projectPath);
+      }
+    } catch (error) {
+      console.warn('[PackageJsonWatch] failed to load installed Blockly libraries:', error);
+    }
+  }
+
+  private clearPendingLibrary(libPackageName: string): void {
+    this.pendingLibraryDependencies.delete(libPackageName);
+    this.pendingLibraryLoadAttempts.delete(libPackageName);
+  }
+
+  private compareBlocklyLibraryNames(a: string, b: string): number {
+    return this.blocklyLibraryPackageService.compareLibraryNames(a, b);
+  }
+
+  private isBlocklyLibraryLoaded(projectPath: string, libPackageName: string): boolean {
+    return this.blocklyService.loadedLibraries.has(
+      this.blocklyLibraryPackageService.getPackagePath(projectPath, libPackageName),
+    );
+  }
+
+  private isBlocklyLibraryPackageReady(projectPath: string, libPackageName: string): boolean {
+    return this.blocklyLibraryPackageService.isPackageReady(projectPath, libPackageName);
+  }
+
+  /** 判断开发板包的核心文件是否已经安装完成。 */
+  private isBoardPackageReady(projectPath: string, boardPackageName: string): boolean {
+    const boardPackagePath = this.getNodeModulePackagePath(projectPath, boardPackageName);
+    return ['package.json', 'board.json'].every((fileName) =>
+      this.electronService.exists(this.electronService.pathJoin(boardPackagePath, fileName)),
+    );
+  }
+
+  /** 生成 node_modules 下包路径，兼容 @scope/name 包名。 */
+  private getNodeModulePackagePath(projectPath: string, packageName: string): string {
+    return this.electronService.pathJoin(projectPath, 'node_modules', ...packageName.split('/'));
+  }
+
+  private getMissingProjectLibraries(
+    projectPath: string,
+    packageJson: any,
+    projectDocument: BlocklyProjectDocument,
+  ): MissingLibInfo[] {
+    const manifest = this.normalizeUsedLibraryManifest(packageJson?.[AILY_BLOCKLY_USED_LIBRARIES_FIELD]);
+    const manifestEntries = Object.entries(manifest);
+    if (manifestEntries.length === 0) {
+      return [];
+    }
+
+    const projectBlockTypes = new Set(this.blocklyService.collectBlockTypesFromProjectDocument(projectDocument));
+    const declaredLibraryDependencies = this.getDeclaredBlocklyLibraryDependencies(packageJson);
+    const missingLibraries: MissingLibInfo[] = [];
+
+    for (const [packageName, entry] of manifestEntries) {
+      if (!this.isBlocklyLibraryPackageName(packageName)) {
+        continue;
+      }
+
+      const usedBlockType = entry.blockTypes.find((blockType) => projectBlockTypes.has(blockType));
+      if (entry.blockTypes.length > 0 && !usedBlockType) {
+        continue;
+      }
+
+      const declaredVersion = declaredLibraryDependencies.get(packageName) || '';
+      if (declaredVersion && this.isBlocklyLibraryPackageReady(projectPath, packageName)) {
+        continue;
+      }
+
+      missingLibraries.push({
+        blockType: usedBlockType || entry.blockTypes[0] || '',
+        name: packageName,
+        version: declaredVersion || entry.version || '',
+        localPath: this.resolveManifestLocalPath(projectPath, entry),
       });
+    }
+
+    return missingLibraries.sort((a, b) => this.compareBlocklyLibraryNames(a.name, b.name));
+  }
+
+  private normalizeUsedLibraryManifest(value: any): BlocklyUsedLibraryManifest {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+
+    const manifest: BlocklyUsedLibraryManifest = {};
+    for (const [packageName, rawEntry] of Object.entries(value)) {
+      if (!this.isBlocklyLibraryPackageName(packageName) || !rawEntry || typeof rawEntry !== 'object') {
+        continue;
+      }
+
+      const entry = rawEntry as Partial<BlocklyUsedLibraryManifestEntry>;
+      const blockTypes = Array.isArray(entry.blockTypes)
+        ? entry.blockTypes.filter((blockType): blockType is string => typeof blockType === 'string' && blockType.length > 0)
+        : [];
+      const localPath = typeof entry.localPath === 'string' && entry.localPath.length > 0
+        ? entry.localPath
+        : undefined;
+
+      manifest[packageName] = {
+        version: typeof entry.version === 'string' ? entry.version : String(entry.version || ''),
+        localPath,
+        blockTypes: Array.from(new Set(blockTypes)).sort(),
+        updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : 0,
+      };
+    }
+
+    return manifest;
+  }
+
+  private resolveManifestLocalPath(projectPath: string, entry: BlocklyUsedLibraryManifestEntry): string {
+    if (entry.localPath) {
+      return entry.localPath;
+    }
+
+    if (!entry.version?.startsWith('file:')) {
+      return '';
+    }
+
+    const filePath = entry.version.slice(5);
+    if (!filePath) {
+      return '';
+    }
+
+    if (window['path']?.isAbsolute?.(filePath)) {
+      return filePath;
+    }
+
+    return this.electronService.pathJoin(projectPath, filePath);
+  }
+
+  private async restoreMissingProjectLibraries(projectPath: string, missingLibraries: MissingLibInfo[]): Promise<boolean> {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const modalRef = this.modal.create({
+          nzTitle: null,
+          nzFooter: null,
+          nzClosable: false,
+          nzBodyStyle: { padding: '0' },
+          nzContent: PasteInstallDialogComponent,
+          nzData: {
+            missingLibs: missingLibraries,
+            title: '项目缺少积木库',
+            message: '项目中仍在使用以下积木库，但 package.json 或 node_modules 中已缺失。需要先恢复库，再加载项目。',
+            confirmText: '恢复并加载项目',
+            installFn: async (libs: MissingLibInfo[]) => {
+              await this.installMissingBlocklyLibraries(projectPath, libs);
+            },
+          },
+          nzWidth: '450px',
+        });
+
+        modalRef.afterClose.subscribe((result: any) => {
+          if (result?.result === 'installed') {
+            resolve();
+          } else {
+            reject(new Error('cancelled'));
+          }
+        });
+      });
+      return true;
+    } catch (error) {
+      if ((error as Error)?.message !== 'cancelled') {
+        console.error('恢复项目缺失库失败:', error);
+      }
+      return false;
+    }
+  }
+
+  private async installMissingBlocklyLibraries(projectPath: string, libraries: MissingLibInfo[]): Promise<void> {
+    const localLibraries = libraries.filter((lib) => lib.localPath);
+    const npmLibraries = libraries.filter((lib) => !lib.localPath);
+
+    for (const lib of localLibraries) {
+      if (!lib.localPath || !this.electronService.exists(lib.localPath)) {
+        throw new Error(`${lib.name} 的本地库路径不存在: ${lib.localPath || 'unknown'}`);
+      }
+
+      const folderName = lib.localPath.split(/[/\\]/).pop();
+      if (!folderName) {
+        throw new Error(`${lib.name} 的本地库路径无效: ${lib.localPath}`);
+      }
+
+      const destPath = this.electronService.pathJoin(projectPath, folderName);
+      if (lib.localPath !== destPath) {
+        if (this.electronService.exists(destPath)) {
+          await this.crossPlatformCmdService.removeItem(destPath, true, true);
+        }
+        await this.crossPlatformCmdService.copyItem(lib.localPath, destPath, true, true);
+      }
+
+      await this.cmdService.runAsyncChecked(`npm install "${destPath}"`, projectPath);
+    }
+
+    if (npmLibraries.length > 0) {
+      const packageSpecs = npmLibraries.map((lib) => this.getNpmInstallSpec(lib)).join(' ');
+      await this.cmdService.runAsyncChecked(`npm install ${packageSpecs}`, projectPath);
+    }
+
+    for (const lib of libraries) {
+      await this.blocklyService.loadLibrary(lib.name, projectPath);
+    }
+  }
+
+  private getNpmInstallSpec(lib: MissingLibInfo): string {
+    const version = (lib.version || '').trim();
+    if (!version || version.startsWith('file:') || /[\s"'`]/.test(version)) {
+      return lib.name;
+    }
+    return `${lib.name}@${version}`;
+  }
+
+  private handleMissingProjectLibrariesCancelled(missingLibraries: MissingLibInfo[]): void {
+    const libraryNames = missingLibraries.map((lib) => lib.name).join(', ');
+    const text = `项目缺少仍在使用的积木库：${libraryNames}`;
+    this.projectService.stateSubject.next('error');
+    this.uiService.updateFooterState({ state: 'error', text });
+    this.noticeService.update({
+      title: '项目加载已暂停',
+      text,
+      detail: '请恢复缺失库后重新打开项目，避免未知积木在加载后被丢失。',
+      state: 'error',
+      sendToLog: false,
+    });
+  }
+
+  private readProjectPackageJson(projectPath: string): any | null {
+    try {
+      const packageJsonPath = this.electronService.pathJoin(projectPath, 'package.json');
+      return JSON.parse(this.electronService.readFile(packageJsonPath));
+    } catch (error) {
+      console.warn('读取项目 package.json 失败:', error);
+      return null;
+    }
+  }
+
+  private isProjectLibraryDeclaredAsUsed(projectPath: string, packageName: string): boolean {
+    const packageJson = this.readProjectPackageJson(projectPath);
+    const manifest = this.normalizeUsedLibraryManifest(packageJson?.[AILY_BLOCKLY_USED_LIBRARIES_FIELD]);
+    const entry = manifest[packageName];
+    if (!entry) {
+      return false;
+    }
+
+    if (entry.blockTypes.length === 0) {
+      return true;
+    }
+
+    const currentBlockTypes = new Set(this.blocklyService.collectBlockTypesFromProjectDocument(this.blocklyService.getProjectDocument()));
+    return entry.blockTypes.some((blockType) => currentBlockTypes.has(blockType));
+  }
+
+  private isBlocklyLibraryPackageName(packageName: string): boolean {
+    return /^@aily-project\/lib-[a-zA-Z0-9._-]+$/.test(packageName);
+  }
+
+  /** 判断包名是否为 Aily 开发板包。 */
+  private isBoardPackageName(packageName: string): boolean {
+    return /^@aily-project\/board-[a-zA-Z0-9._-]+$/.test(packageName);
   }
 
   openProjectManager(event?: MouseEvent) {

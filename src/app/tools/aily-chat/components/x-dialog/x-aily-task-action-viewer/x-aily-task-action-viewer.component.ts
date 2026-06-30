@@ -1,5 +1,6 @@
 import { Component, Input, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import type { ChatTaskActionDetail, ChatTaskActionName } from '../../../helpers/chat-task-action-coordinator';
 
 @Component({
   selector: 'x-aily-task-action-viewer',
@@ -33,7 +34,7 @@ import { CommonModule } from '@angular/common';
   `,
   styles: [`
     .ac-task {
-      border-radius: 8px; padding: 12px 16px; margin: 8px 0;
+      border-radius: 5px; padding: 12px 16px; margin: 8px 0;
       background-color: var(--aily-chat-viewer-task-bg, #2d2d2d); border: 1px solid var(--aily-chat-viewer-task-border, #404040);
       color: var(--aily-text-quaternary, #e0e0e0); overflow: hidden;
     }
@@ -49,7 +50,7 @@ import { CommonModule } from '@angular/common';
     .ac-task-done { display: block; padding: 4px 0 0 34px; font-size: 12px; color: var(--aily-text-disabled, #666666); }
     .ac-btn {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+      padding: 6px 12px; border-radius: 5px; font-size: 12px; font-weight: 500;
       cursor: pointer; border: none; outline: none;
       transition: all 0.2s ease;
     }
@@ -100,7 +101,7 @@ export class XAilyTaskActionViewerComponent {
     return map[this.data?.actionType || ''] || '任务操作';
   }
 
-  taskAction(action: string): void {
+  taskAction(action: Extract<ChatTaskActionName, 'continue' | 'retry' | 'newChat' | 'dismiss'>): void {
     if (this.actionTaken) return;
     this.actionTaken = true;
     const labels: Record<string, string> = {
@@ -110,9 +111,11 @@ export class XAilyTaskActionViewerComponent {
     this.actionTakenText = labels[action] || '处理中...';
     this.cdr.markForCheck();
 
+    const detail: ChatTaskActionDetail = { action, data: this.data };
+
     document.dispatchEvent(new CustomEvent('aily-task-action', {
       bubbles: true,
-      detail: { action, data: this.data },
+      detail,
     }));
   }
 }

@@ -12,6 +12,7 @@ export interface SkillMetadata {
   // ---- Agent Skills 规范标准字段 ----
   name: string;
   description: string;
+  displayName?: string;
   license?: string;
   compatibility?: string;
   allowedTools?: string;
@@ -26,6 +27,41 @@ export interface SkillMetadata {
   tags?: string[];
   author?: string;
   sourceUrl?: string;
+  userInvocable?: boolean;
+  disableModelInvocation?: boolean;
+  context?: SkillContextMode;
+  targets?: string[];
+}
+
+export type SkillContextMode = 'inline' | 'fork';
+
+export interface SkillRelatedFile {
+  readonly path: string;
+  readonly uri: string;
+  readonly category: 'script' | 'reference' | 'asset' | 'other';
+}
+
+export interface SkillInvocationContext {
+  readonly name: string;
+  readonly displayName: string;
+  readonly description: string;
+  readonly body: string;
+  readonly skillMdPath: string;
+  readonly baseDir?: string;
+  readonly mode: SkillContextMode;
+  readonly userInvocable: boolean;
+  readonly modelInvocable: boolean;
+  readonly relatedFiles: readonly SkillRelatedFile[];
+}
+
+export interface LoadedSkillSummary {
+  readonly name: string;
+  readonly displayName: string;
+  readonly description: string;
+  readonly skillMdPath: string;
+  readonly baseDir?: string;
+  readonly mode: SkillContextMode;
+  readonly relatedFileCount: number;
 }
 
 // ============================
@@ -37,6 +73,8 @@ export interface IAilySkill {
   readonly metadata: SkillMetadata;
   /** 技能文件夹的绝对路径（URL 来源的为空字符串） */
   readonly folderPath: string;
+  /** Aily runtime skill directory root. */
+  readonly baseDir: string;
   /** SKILL.md 文件绝对路径或 URL */
   readonly skillMdPath: string;
   /** 来源标记 */
@@ -52,7 +90,7 @@ export interface IAilySkill {
 export type SkillOrigin =
   | { type: 'builtin' }
   | { type: 'project'; projectRoot: string }
-  | { type: 'global' }
+  | { type: 'user' }
   | { type: 'hub'; registryUrl: string; installedAt: number }
   | { type: 'url'; sourceUrl: string };
 

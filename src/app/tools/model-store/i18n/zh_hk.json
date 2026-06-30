@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "模型商店",
+        "DESCRIPTION": "模型簡介",
+        "MODEL_INFO": "模型信息",
+        "SUPPORTED_BOARDS": "支持設備",
+        "MODEL_TYPE": "模型類型",
+        "MODEL_FORMAT": "模型格式",
+        "MODEL_PRECISION": "模型精度",
+        "MODEL_SIZE": "模型大小",
+        "VERSION": "版本",
+        "MODEL_DETAILS": "模型詳情",
+        "MODEL_LABELS": "模型類別",
+        "AUTHOR": "作者",
+        "DEPLOY_COUNT": "部署次數",
+        "VIEW_COUNT": "瀏覽次數",
+        "LIKE_COUNT": "點贊數",
+        "TAG_VISION": "視覺",
+        "TAG_AUDIO": "聲音",
+        "SEARCH_PLACEHOLDER": "搜索可用模型",
+        "MODEL_LIST": "模型列表",
+        "LOADING": "載入中...",
+        "BACK": "返回",
+        "TEST_MODEL": "測試模型",
+        "DEPLOY_MODEL": "部署模型",
+        "SELF_TRAINED_MODEL": "自訓練模型"
+    }
+}

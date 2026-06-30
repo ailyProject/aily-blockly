@@ -1,11 +1,15 @@
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const http = require("http");
+const { spawn, exec } = require("child_process");
+const url = require("url");
 const WinState = require('electron-win-state').default;
-const { app, BrowserWindow, ipcMain, dialog, screen, shell, net, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, Menu } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 const projectLock = require("./project-lock");
+const ORIGINAL_PROCESS_PATH = process.env.PATH || process.env.Path || "";
 
 // 设置应用名称，用于 Windows 系统通知显示
 app.setName("aily blockly");
@@ -295,6 +299,12 @@ const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
 process.env.DEV = serve;
 
+// Angular dev server 会把依赖预构建到 .angular/cache 下；重启后路径可能变化。
+// 开发态若继续复用 Electron 的 HTTP cache，容易命中已失效的旧 chunk URL
+if (serve) {
+  app.commandLine.appendSwitch('disable-http-cache');
+}
+
 // 注册协议处理
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
@@ -311,6 +321,285 @@ let pendingQueryParams = null;
 /** 当前主进程已持有的项目锁（规范化路径） */
 let heldProjectLockNormalized = null;
 
+/** 内嵌 coder：开发态挂 child/coder 的 Vite；生产态本地静态 child/coder/dist */
+let coderEmbedHttpServer = null;
+/** 防止并发多次进入启动逻辑（重复 spawn Vite） */
+let coderEmbedEnsureInFlight = null;
+
+const CODER_EMBED_VITE_PORT_MIN = 5174;
+const CODER_EMBED_VITE_PORT_RANGE = 24;
+
+function getCoderEmbedPackageDir() {
+  const childRoot = serve
+    ? path.join(__dirname, "..", "child")
+    : path.join(process.resourcesPath, "child");
+  return path.join(childRoot, "aily-coder");
+}
+
+function getCoderEmbedDistPath() {
+  return path.join(getCoderEmbedPackageDir(), "dist");
+}
+
+function probeCoderEmbedViteListening(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/`, { timeout: 800 }, (res) => {
+      res.resume();
+      resolve(true);
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function findListeningCoderEmbedDevPort() {
+  for (let i = 0; i < CODER_EMBED_VITE_PORT_RANGE; i++) {
+    const port = CODER_EMBED_VITE_PORT_MIN + i;
+    if (await probeCoderEmbedViteListening(port)) {
+      return port;
+    }
+  }
+  return null;
+}
+
+function spawnCoderEmbedViteDevServer(coderDir) {
+  // Windows 上直接 spawn npm.cmd 会 EINVAL（Node 22+）；与 electron/npm.js 一致需 shell: true
+  if (isWin32) {
+    return spawn("npm run start", {
+      cwd: coderDir,
+      env: process.env,
+      stdio: "inherit",
+      shell: true,
+      windowsHide: true,
+    });
+  }
+  return spawn("npm", ["run", "start"], {
+    cwd: coderDir,
+    env: process.env,
+    stdio: "inherit",
+  });
+}
+
+function killCoderEmbedSpawnedDevProcess(devProcess) {
+  if (!devProcess || typeof devProcess.pid !== "number") {
+    return;
+  }
+  try {
+    if (isWin32) {
+      exec(`taskkill /pid ${devProcess.pid} /T /F`, () => {});
+    } else {
+      devProcess.kill("SIGTERM");
+    }
+  } catch (e) {
+    console.warn("kill coder vite dev:", e.message);
+  }
+}
+
+function coderEmbedMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const map = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".wasm": "application/wasm",
+    ".map": "application/json; charset=utf-8",
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+function ensureCoderEmbedServerStartedImpl() {
+  if (serve) {
+    const coderDir = getCoderEmbedPackageDir();
+    const pkgJson = path.join(coderDir, "package.json");
+    if (!fs.existsSync(pkgJson)) {
+      return Promise.reject(new Error(`Coder 开发目录无效，缺少 package.json: ${coderDir}`));
+    }
+    return findListeningCoderEmbedDevPort().then((existingPort) => {
+      if (existingPort != null) {
+        coderEmbedHttpServer = {
+          kind: "dev",
+          port: existingPort,
+          devProcess: null,
+          spawned: false,
+        };
+        return existingPort;
+      }
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const devProcess = spawnCoderEmbedViteDevServer(coderDir);
+        const deadline = Date.now() + 120000;
+        const fail = (err) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          killCoderEmbedSpawnedDevProcess(devProcess);
+          reject(err);
+        };
+        devProcess.on("error", (err) => {
+          fail(new Error(`无法启动 child/coder 开发服务器: ${err.message}`));
+        });
+        devProcess.once("exit", (code) => {
+          if (!settled) {
+            fail(new Error(`child/coder Vite 异常退出，代码: ${code}`));
+          }
+        });
+        const poll = () => {
+          if (settled) {
+            return;
+          }
+          findListeningCoderEmbedDevPort()
+            .then((port) => {
+              if (port != null) {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                coderEmbedHttpServer = {
+                  kind: "dev",
+                  port,
+                  devProcess,
+                  spawned: true,
+                };
+                resolve(port);
+                return;
+              }
+              if (Date.now() > deadline) {
+                fail(new Error("等待 child/coder Vite 就绪超时"));
+                return;
+              }
+              setTimeout(poll, 400);
+            })
+            .catch((e) => fail(e || new Error(String(e))));
+        };
+        devProcess.once("spawn", () => poll());
+      });
+    });
+  }
+  const dist = getCoderEmbedDistPath();
+  if (!fs.existsSync(dist)) {
+    return Promise.reject(new Error(`Coder 静态资源未找到: ${dist}`));
+  }
+  const distResolved = path.resolve(dist);
+  const distPrefix = distResolved.endsWith(path.sep) ? distResolved : distResolved + path.sep;
+
+  const server = http.createServer((req, res) => {
+    res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405);
+      res.end();
+      return;
+    }
+    const parsed = url.parse(req.url);
+    let pathname = decodeURIComponent(parsed.pathname || "/");
+    if (pathname.includes("\0")) {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    pathname = path.posix.normalize("/" + pathname.replace(/\\/g, "/"));
+    if (pathname.includes("..")) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    let rel = pathname.replace(/^\//, "");
+    if (!rel || rel.endsWith("/")) {
+      rel = path.posix.join(rel || ".", "index.html");
+    }
+    const filePath = path.join(distResolved, rel);
+    const fileResolved = path.resolve(filePath);
+    if (fileResolved !== distResolved && !fileResolved.startsWith(distPrefix)) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    fs.stat(fileResolved, (err, st) => {
+      if (!err && st.isFile()) {
+        if (req.method === "HEAD") {
+          res.writeHead(200, { "Content-Type": coderEmbedMimeType(fileResolved) });
+          res.end();
+          return;
+        }
+        fs.readFile(fileResolved, (e2, data) => {
+          if (e2) {
+            res.writeHead(500);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { "Content-Type": coderEmbedMimeType(fileResolved) });
+          res.end(data);
+        });
+        return;
+      }
+      const indexPath = path.join(distResolved, "index.html");
+      if (req.method === "HEAD") {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end();
+        return;
+      }
+      fs.readFile(indexPath, (e3, data) => {
+        if (e3) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(data);
+      });
+    });
+  });
+
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : null;
+      if (!port) {
+        try {
+          server.close();
+        } catch (_) {}
+        reject(new Error("无法为 Coder 嵌入服务分配端口"));
+        return;
+      }
+      coderEmbedHttpServer = { kind: "static", server, port };
+      resolve(port);
+    });
+    server.on("error", reject);
+  });
+}
+
+function ensureCoderEmbedServerStarted() {
+  if (coderEmbedHttpServer) {
+    return Promise.resolve(coderEmbedHttpServer.port);
+  }
+  if (coderEmbedEnsureInFlight) {
+    return coderEmbedEnsureInFlight;
+  }
+  coderEmbedEnsureInFlight = ensureCoderEmbedServerStartedImpl().finally(() => {
+    coderEmbedEnsureInFlight = null;
+  });
+  return coderEmbedEnsureInFlight;
+}
+
+/** 主进程读取 i18n JSON：开发态在仓库 public；打包后 Angular 资源在 app.asar/renderer */
+function getMainProcessI18nJsonPath(pack) {
+  const file = path.join(pack, `${pack}.json`);
+  if (app.isPackaged) {
+    return path.join(__dirname, "..", "renderer", "i18n", file);
+  }
+  return path.join(__dirname, "..", "public", "i18n", file);
+}
+
 function getProjectLockStringsForMain() {
   const defaults = {
     LOCK_CONFLICT_TITLE: "Project already open",
@@ -322,7 +611,7 @@ function getProjectLockStringsForMain() {
   try {
     const loc = (app.getLocale() || "").toLowerCase();
     const pack = loc.startsWith("zh") ? "zh_cn" : "en";
-    const fp = path.join(__dirname, `../public/i18n/${pack}/${pack}.json`);
+    const fp = getMainProcessI18nJsonPath(pack);
     if (!fs.existsSync(fp)) {
       return defaults;
     }
@@ -345,7 +634,7 @@ function getMenuStringForMain(key, fallback) {
   try {
     const loc = (app.getLocale() || "").toLowerCase();
     const pack = loc.startsWith("zh") ? "zh_cn" : "en";
-    const fp = path.join(__dirname, `../public/i18n/${pack}/${pack}.json`);
+    const fp = getMainProcessI18nJsonPath(pack);
     if (!fs.existsSync(fp)) {
       return fallback;
     }
@@ -588,21 +877,177 @@ function handleProtocol(url) {
 }
 
 // ipc handlers模块
-const { registerTerminalHandlers } = require("./terminal");
+const { registerTerminalHandlers, killAllTerminals, getActiveTerminals } = require("./terminal");
 const { registerWindowHandlers } = require("./window");
-const { registerNpmHandlers } = require("./npm");
+const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
-const { registerCmdHandlers } = require("./cmd");
+const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
+const { registerAilyServicesStreamHandlers, cancelAllAilyServicesStreams, getActiveAilyServicesStreams } = require("./aily-services-stream");
+const { registerWebviewBridgeHandlers } = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
+const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks } = require("./appdata-resource-lock");
 // debug模块
 const { initLogger, registerLoggerHandlers } = require("./logger");
 // tools
 const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
 const { registerProbeRsHandlers } = require("./probe-rs");
+const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
 
 let mainWindow;
 let userConf;
+let isProcessCleanupInProgress = false;
+let hasProcessCleanupCompleted = false;
+const DEFAULT_BUILD_FLAVOR = 'cn';
+const BUILD_FLAVOR_TO_OFFICIAL_REGION = {
+  cn: 'cn',
+  global: 'eu'
+};
+const OFFICIAL_REGION_KEYS = new Set(Object.values(BUILD_FLAVOR_TO_OFFICIAL_REGION));
+const ZIP_URL_REGION_KEYS = ['eu', 'cn'];
+
+function normalizeBuildFlavor(flavor) {
+  if (typeof flavor !== 'string') {
+    return DEFAULT_BUILD_FLAVOR;
+  }
+
+  const normalizedFlavor = flavor.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(BUILD_FLAVOR_TO_OFFICIAL_REGION, normalizedFlavor)
+    ? normalizedFlavor
+    : DEFAULT_BUILD_FLAVOR;
+}
+
+let cachedPackagedBuildFlavor;
+
+function getPackagedBuildFlavor() {
+  if (cachedPackagedBuildFlavor !== undefined) {
+    return cachedPackagedBuildFlavor;
+  }
+
+  const candidatePaths = [];
+  try {
+    candidatePaths.push(path.join(app.getAppPath(), 'package.json'));
+  } catch (error) {
+    // ignore before app is fully ready
+  }
+  candidatePaths.push(path.join(__dirname, '..', 'package.json'));
+
+  for (const packageJsonPath of candidatePaths) {
+    try {
+      if (!packageJsonPath || !fs.existsSync(packageJsonPath)) {
+        continue;
+      }
+
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      cachedPackagedBuildFlavor = packageJson.ailyBuildFlavor;
+      return cachedPackagedBuildFlavor;
+    } catch (error) {
+      console.warn('读取构建版型失败:', error.message || error);
+    }
+  }
+
+  cachedPackagedBuildFlavor = null;
+  return cachedPackagedBuildFlavor;
+}
+
+function getBuildFlavor(conf) {
+  return normalizeBuildFlavor(process.env.AILY_BUILD_FLAVOR || getPackagedBuildFlavor() || conf?.build_flavor);
+}
+
+function getOfficialRegionForFlavor(flavor) {
+  return BUILD_FLAVOR_TO_OFFICIAL_REGION[normalizeBuildFlavor(flavor)] || BUILD_FLAVOR_TO_OFFICIAL_REGION[DEFAULT_BUILD_FLAVOR];
+}
+
+function isOfficialRegion(regionKey, regions = {}) {
+  if (!regionKey || !regions[regionKey]) {
+    return false;
+  }
+
+  if (typeof regions[regionKey].official === 'boolean') {
+    return regions[regionKey].official;
+  }
+
+  return OFFICIAL_REGION_KEYS.has(regionKey);
+}
+
+function shouldFallbackToOfficialRegion(regionKey, officialRegion, regions = {}) {
+  if (!regionKey || !officialRegion || !regions[regionKey]) {
+    return true;
+  }
+
+  return isOfficialRegion(regionKey, regions) && regionKey !== officialRegion;
+}
+
+function normalizeResourceUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+function getConfiguredResourceSources(conf = {}) {
+  const seenUrls = new Set();
+  const configuredSources = Array.isArray(conf.resource_sources) ? conf.resource_sources : [];
+  const normalizedConfiguredSources = [];
+
+  for (const source of configuredSources) {
+    const url = normalizeResourceUrl(source && source.url);
+    if (!url || source?.enabled === false || seenUrls.has(url)) {
+      continue;
+    }
+
+    seenUrls.add(url);
+    normalizedConfiguredSources.push({
+      key: typeof source.key === 'string' && source.key.trim() ? source.key.trim() : `resource_${normalizedConfiguredSources.length + 1}`,
+      url,
+    });
+  }
+
+  if (normalizedConfiguredSources.length > 0) {
+    return normalizedConfiguredSources;
+  }
+
+  const legacySources = [];
+  for (const regionKey of ZIP_URL_REGION_KEYS) {
+    const resource = normalizeResourceUrl(conf.regions?.[regionKey]?.resource);
+    if (!resource || seenUrls.has(resource)) {
+      continue;
+    }
+
+    seenUrls.add(resource);
+    legacySources.push({ key: regionKey, url: resource });
+  }
+
+  return legacySources;
+}
+
+function getSelectedResourceSourceKey(conf = {}) {
+  return typeof conf.resource_source === 'string' && conf.resource_source.trim()
+    ? conf.resource_source.trim()
+    : 'auto';
+}
+
+function getZipUrlState(conf = {}) {
+  const sources = getConfiguredResourceSources(conf);
+  if (sources.length === 0) {
+    return { currentUrl: '', urls: [] };
+  }
+
+  const selectedKey = getSelectedResourceSourceKey(conf);
+  if (selectedKey !== 'auto') {
+    const selectedSource = sources.find((source) => source.key === selectedKey) || sources[0];
+    return {
+      currentUrl: selectedSource.url,
+      urls: [selectedSource.url],
+    };
+  }
+
+  return {
+    currentUrl: sources[0].url,
+    urls: sources.map((source) => source.url),
+  };
+}
+
+function buildZipUrls(conf = {}) {
+  return JSON.stringify(getZipUrlState(conf).urls);
+}
 let isRendererReady = false;
 
 // 监听渲染进程就绪事件
@@ -625,9 +1070,17 @@ ipcMain.on('renderer-ready', () => {
   }
 });
 
-// macos检查安装环境
-function macosInstallEnv(childPath) {
+// 检查并解压 child 目录下的平台组件包
+function installChildEnv(childPath, options) {
   const child_process = require("child_process");
+  const {
+    platformDir,
+    z7Name,
+    extraExtractArgs = [],
+    isNodeInstallComplete,
+    isProbeRsInstallComplete,
+    afterNodeInstall,
+  } = options;
 
   // 从文件名中提取版本号
   function extractVersion(filename, keyword) {
@@ -709,81 +1162,327 @@ function macosInstallEnv(childPath) {
     }
   }
 
-  const z7Name = "7zz";
-  const z7Path = path.join(childPath, z7Name);
-  if (serve && !fs.existsSync(z7Path)) {
-    const z7SourcePath = path.join(childPath, "macos", z7Name);
+  function ensure7z() {
+    const z7Path = path.join(childPath, z7Name);
+    if (fs.existsSync(z7Path)) {
+      return z7Path;
+    }
+
+    const z7SourcePath = path.join(childPath, platformDir, z7Name);
+    if (!fs.existsSync(z7SourcePath)) {
+      return null;
+    }
+
     try {
-      const escapeZ7SourcePath = escapePath(z7SourcePath);
-      const escapeZ7Path = escapePath(z7Path);
-      child_process.execSync(`cp ${escapeZ7SourcePath} ${escapeZ7Path}`, { stdio: 'inherit' });
-      console.log('安装解压7zz成功！');
+      fs.copyFileSync(z7SourcePath, z7Path);
+      if (!isWin32) {
+        fs.chmodSync(z7Path, 0o755);
+      }
+      console.log(`安装 ${z7Name} 成功！`);
+      return z7Path;
     } catch (error) {
-      console.error("安装解压7zz失败，错误码:", error);
+      console.error(`安装 ${z7Name} 失败，错误码:`, error);
+      return null;
     }
   }
-  const nodeName = "node";
-  const nodePath = path.join(childPath, nodeName);
-  if (!fs.existsSync(nodePath)) {
-    const sourceDir = path.join(childPath, serve ? "macos" : "");
-    const nodeZipPath = findLatestVersionFile(sourceDir, nodeName);
-    if (nodeZipPath && fs.existsSync(nodeZipPath)) {
-      try {
-        const escapeNodePath = escapePath(nodePath);
-        const escapeNodeZipPath = escapePath(nodeZipPath);
-        child_process.execSync(`mkdir -p ${escapeNodePath} && tar -xzf ${escapeNodeZipPath} -C ${escapeNodePath}`, { stdio: 'inherit' });
-        console.log(`安装解压 ${nodeName}: ${nodeZipPath}成功！`);
-        if (!serve) fs.unlinkSync(nodeZipPath);
-      } catch (error) {
-        console.error(`安装解压 ${nodeName}: ${nodeZipPath}失败，错误码:`, error);
+
+  function ensureRg() {
+    const rgName = isWin32 ? "rg.exe" : "rg";
+    const rgPath = path.join(childPath, rgName);
+    if (fs.existsSync(rgPath)) {
+      return rgPath;
+    }
+
+    const rgSourcePath = path.join(childPath, platformDir, rgName);
+    if (!fs.existsSync(rgSourcePath)) {
+      return null;
+    }
+
+    try {
+      fs.copyFileSync(rgSourcePath, rgPath);
+      if (!isWin32) {
+        fs.chmodSync(rgPath, 0o755);
       }
-    } else {
-      console.error(`未找到 ${nodeName}: ${nodeZipPath}，搜索目录: ${sourceDir}`);
+      console.log(`安装 ${rgName} 成功！`);
+      return rgPath;
+    } catch (error) {
+      console.error(`安装 ${rgName} 失败，错误码:`, error);
+      return null;
     }
   }
-  const ailyBuilderName = "aily-builder";
-  const ailyBuilderPath = path.join(childPath, ailyBuilderName);
-  if (!fs.existsSync(ailyBuilderPath)) {
-    const sourceDir = path.join(childPath, serve ? "macos" : "");
-    const ailyBuilderZipPath = findLatestVersionFile(sourceDir, ailyBuilderName);
-    if (ailyBuilderZipPath && fs.existsSync(ailyBuilderZipPath)) {
-      try {
-        const escapeAilyBuilderPath = escapePath(ailyBuilderPath);
-        const escapeAilyBuilderZipPath = escapePath(ailyBuilderZipPath);
-        child_process.execSync(`mkdir -p ${escapeAilyBuilderPath} && tar -xzf ${escapeAilyBuilderZipPath} -C ${escapeAilyBuilderPath}`, { stdio: 'inherit' });
-        console.log(`安装解压 ${ailyBuilderName}: ${ailyBuilderZipPath}成功！`);
-        if (!serve) fs.unlinkSync(ailyBuilderZipPath);
-      } catch (error) {
-        console.error(`安装解压 ${ailyBuilderName}: ${ailyBuilderZipPath}失败，错误码:`, error);
+
+  function readInstalledVersion(targetPath) {
+    const versionFile = path.join(targetPath, ".installed-version");
+    if (!fs.existsSync(versionFile)) {
+      return null;
+    }
+    try {
+      return fs.readFileSync(versionFile, "utf8").trim() || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeInstalledVersion(targetPath, version) {
+    if (!version) {
+      return;
+    }
+    fs.writeFileSync(path.join(targetPath, ".installed-version"), version);
+  }
+
+  function removeInstallDir(targetPath) {
+    if (!fs.existsSync(targetPath)) {
+      return;
+    }
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`清理目录失败: ${targetPath}`, error);
+    }
+  }
+
+  function run7zExtract(z7Path, extractArgs) {
+    const result = child_process.spawnSync(z7Path, extractArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    if (result.error) {
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      const message = result.stderr?.toString()?.trim() || `exit code ${result.status}`;
+      throw new Error(message);
+    }
+  }
+
+  function extract7zPackage(z7Path, archivePath, targetPath, keyword, validateComplete) {
+    const installedVersion = readInstalledVersion(targetPath);
+    const isComplete = validateComplete(targetPath);
+
+    if (!archivePath || !fs.existsSync(archivePath)) {
+      if (isComplete) {
+        return true;
       }
-    } else {
-      console.error(`未找到 ${ailyBuilderName}: ${ailyBuilderZipPath}，搜索目录: ${sourceDir}`);
+      console.error(`未找到 ${keyword} 压缩包: ${archivePath}`);
+      return false;
+    }
+
+    const archiveVersion = extractVersion(path.basename(archivePath), keyword);
+
+    if (isComplete) {
+      if (!installedVersion && archiveVersion) {
+        writeInstalledVersion(targetPath, archiveVersion);
+      }
+      if (!archiveVersion || !installedVersion || installedVersion === archiveVersion) {
+        return true;
+      }
+      console.warn(`${keyword} 版本不匹配，准备重新解压: ${installedVersion} -> ${archiveVersion}`);
+      removeInstallDir(targetPath);
+    } else if (fs.existsSync(targetPath)) {
+      console.warn(`${keyword} 安装不完整，准备重新解压: ${targetPath}`);
+      removeInstallDir(targetPath);
+    }
+
+    try {
+      fs.mkdirSync(targetPath, { recursive: true });
+      const extractArgs = ["x", archivePath, `-o${targetPath}`, "-y", ...extraExtractArgs];
+      if (!isWin32) {
+        extractArgs.push("-t7z");
+      }
+      run7zExtract(z7Path, extractArgs);
+
+      if (!validateComplete(targetPath)) {
+        throw new Error(`${keyword} 解压后缺少关键文件`);
+      }
+
+      writeInstalledVersion(targetPath, archiveVersion);
+      console.log(`安装解压 ${keyword}: ${archivePath} 成功！`);
+      if (!serve) {
+        fs.unlinkSync(archivePath);
+      }
+      return true;
+    } catch (error) {
+      console.error(`安装解压 ${keyword}: ${archivePath} 失败，错误码:`, error);
+      return false;
     }
   }
-  const probeRsName = "probe-rs";
-  const probeRsPath = path.join(childPath, probeRsName);
-  if (!fs.existsSync(probeRsPath)) {
-    const sourceDir = path.join(childPath, serve ? "macos" : "");
-    const probeRsZipPath = findLatestVersionFile(sourceDir, probeRsName);
-    if (probeRsZipPath && fs.existsSync(probeRsZipPath)) {
-      if (!fs.existsSync(z7Path)) {
-        console.error(`解压 ${probeRsName} 需要 7zz，但未找到: ${z7Path}`);
-      } else {
-        try {
-          const escapeProbeRsPath = escapePath(probeRsPath);
-          const escapeProbeRsZipPath = escapePath(probeRsZipPath);
-          const escapeZ7Path = escapePath(z7Path);
-          child_process.execSync(`mkdir -p ${escapeProbeRsPath} && ${escapeZ7Path} x ${escapeProbeRsZipPath} -o${escapeProbeRsPath} -t7z -y`, { stdio: 'inherit' });
-          console.log(`安装解压 ${probeRsName}: ${probeRsZipPath}成功！`);
-          if (!serve) fs.unlinkSync(probeRsZipPath);
-        } catch (error) {
-          console.error(`安装解压 ${probeRsName}: ${probeRsZipPath}失败，错误码:`, error);
+
+  function isAilyBuilderInstallComplete(targetPath) {
+    const requiredFiles = [
+      path.join(targetPath, "index.js"),
+      path.join(targetPath, "node_modules/tree-sitter/build/Release/tree_sitter_runtime_binding.node"),
+      path.join(targetPath, "node_modules/tree-sitter-cpp/build/Release/tree_sitter_cpp_binding.node"),
+    ];
+    return requiredFiles.every((filePath) => fs.existsSync(filePath));
+  }
+
+  const z7Path = ensure7z();
+  const sourceDir = path.join(childPath, serve ? platformDir : "");
+
+  const packages = [
+    { name: "node", afterExtract: afterNodeInstall },
+    { name: "aily-builder" },
+    { name: "probe-rs" },
+  ];
+  const validators = {
+    node: isNodeInstallComplete,
+    "aily-builder": isAilyBuilderInstallComplete,
+    "probe-rs": isProbeRsInstallComplete,
+  };
+
+  for (const pkg of packages) {
+    const targetPath = path.join(childPath, pkg.name);
+    const archivePath =
+      findLatestVersionFile(sourceDir, pkg.name) ||
+      findLatestVersionFile(path.join(childPath, platformDir), pkg.name);
+    if (z7Path) {
+      extract7zPackage(z7Path, archivePath, targetPath, pkg.name, validators[pkg.name]);
+    } else {
+      console.error(`解压 ${pkg.name} 需要 ${z7Name}，但未找到`);
+    }
+    if (typeof pkg.afterExtract === "function") {
+      pkg.afterExtract(targetPath);
+    }
+  }
+
+  ensureRg();
+}
+
+// macos 检查安装环境
+function macosInstallEnv(childPath) {
+  const NODE_BIN_LINKS = [
+    ["corepack", "../lib/node_modules/corepack/dist/corepack.js"],
+    ["npm", "../lib/node_modules/npm/bin/npm-cli.js"],
+    ["npx", "../lib/node_modules/npm/bin/npx-cli.js"],
+  ];
+
+  function isNodeBinEntryValid(binPath, name, relativeTarget) {
+    const entryPath = path.join(binPath, name);
+    const expectedTarget = path.resolve(binPath, relativeTarget);
+
+    if (!fs.existsSync(entryPath)) {
+      return false;
+    }
+
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isSymbolicLink()) {
+      return fs.existsSync(path.resolve(binPath, fs.readlinkSync(entryPath)));
+    }
+
+    if (stat.isFile()) {
+      return stat.size > 0 && fs.existsSync(expectedTarget);
+    }
+
+    return false;
+  }
+
+  function repairNodeBinSymlinks(nodePath) {
+    const binPath = path.join(nodePath, "bin");
+    if (!fs.existsSync(binPath)) {
+      return;
+    }
+
+    for (const [name, relativeTarget] of NODE_BIN_LINKS) {
+      const entryPath = path.join(binPath, name);
+      const targetPath = path.join(binPath, relativeTarget);
+
+      if (!fs.existsSync(targetPath)) {
+        continue;
+      }
+
+      let needsRepair = true;
+      if (fs.existsSync(entryPath)) {
+        const stat = fs.lstatSync(entryPath);
+        if (stat.isSymbolicLink()) {
+          const resolvedTarget = path.resolve(binPath, fs.readlinkSync(entryPath));
+          needsRepair = resolvedTarget !== path.resolve(targetPath) || !fs.existsSync(resolvedTarget);
+        } else if (stat.isFile() && stat.size > 0) {
+          needsRepair = false;
         }
       }
-    } else {
-      console.error(`未找到 ${probeRsName}: ${probeRsZipPath}，搜索目录: ${sourceDir}`);
+
+      if (!needsRepair) {
+        continue;
+      }
+
+      try {
+        if (fs.existsSync(entryPath)) {
+          fs.unlinkSync(entryPath);
+        }
+        fs.symlinkSync(relativeTarget, entryPath);
+        console.log(`已修复 node 软链: ${name} -> ${relativeTarget}`);
+      } catch (error) {
+        console.warn(`修复 node 软链失败: ${name}`, error);
+      }
     }
   }
+
+  function ensureNodeBinExecutable(nodePath) {
+    const binPath = path.join(nodePath, "bin");
+    if (!fs.existsSync(binPath)) {
+      return;
+    }
+
+    repairNodeBinSymlinks(nodePath);
+
+    const chmodExecutable = (entryPath, dirent) => {
+      try {
+        if (dirent.isSymbolicLink()) {
+          return;
+        }
+        if (dirent.isDirectory()) {
+          fs.chmodSync(entryPath, 0o755);
+          for (const child of fs.readdirSync(entryPath, { withFileTypes: true })) {
+            chmodExecutable(path.join(entryPath, child.name), child);
+          }
+          return;
+        }
+        fs.chmodSync(entryPath, 0o755);
+      } catch (error) {
+        console.warn(`设置可执行权限失败: ${entryPath}`, error);
+      }
+    };
+
+    for (const entry of fs.readdirSync(binPath, { withFileTypes: true })) {
+      chmodExecutable(path.join(binPath, entry.name), entry);
+    }
+  }
+
+  installChildEnv(childPath, {
+    platformDir: "macos",
+    z7Name: "7zz",
+    extraExtractArgs: ["-snld20"],
+    isNodeInstallComplete(targetPath) {
+      const binPath = path.join(targetPath, "bin");
+      if (!fs.existsSync(path.join(binPath, "node"))) {
+        return false;
+      }
+
+      return NODE_BIN_LINKS.every(([name, relativeTarget]) => (
+        isNodeBinEntryValid(binPath, name, relativeTarget)
+      ));
+    },
+    isProbeRsInstallComplete(targetPath) {
+      return fs.existsSync(path.join(targetPath, "probe-rs"));
+    },
+    afterNodeInstall: ensureNodeBinExecutable,
+  });
+}
+
+// windows 检查安装环境
+function windowsInstallEnv(childPath) {
+  installChildEnv(childPath, {
+    platformDir: "windows",
+    z7Name: "7za.exe",
+    isNodeInstallComplete(targetPath) {
+      return fs.existsSync(path.join(targetPath, "node.exe"));
+    },
+    isProbeRsInstallComplete(targetPath) {
+      return fs.existsSync(path.join(targetPath, "probe-rs.exe"));
+    },
+  });
 }
 
 // 路径转义
@@ -794,226 +1493,186 @@ function escapePath(path) {
   return path.replace(/(\s|[()&|;<>`$\\])/g, '\\$1');
 }
 
-// 检查URL延迟
-function checkLatency(url, resource=false) {
-  return new Promise((resolve) => {
-    const start = Date.now();
-    let pingUrl = url;
-    if (!pingUrl.endsWith('/')) {
-      pingUrl += '/';
-    }
-    if (resource) {
-      pingUrl += 'boards-ai.json';
-    } else {
-      pingUrl += 'ping';
-    }
-    try {
-      // console.log('[节点检测] Checking latency for URL:', pingUrl);
-      const request = net.request({ method: 'HEAD', url: pingUrl });
-      request.on('response', (response) => {
-        const end = Date.now();
-        response.on('end', () => {
-          if (response.statusCode >= 200 && response.statusCode < 300) {
-            resolve({ url, latency: end - start });
-          } else {
-            // console.warn(`[节点检测] ${pingUrl} 返回状态码: ${response.statusCode}`);
-            resolve({ url, latency: Infinity, error: `Status ${response.statusCode}` });
-          }
-        });
-        response.on('error', (err) => {
-          // console.warn(`[节点检测] ${pingUrl} 响应错误:`, err);
-          resolve({ url, latency: Infinity, error: 'Response error' });
-        });
-        response.resume();
-      });
-      request.on('error', (error) => {
-        console.warn(`[节点检测] ${pingUrl} 请求错误:`, error);
-        resolve({ url, latency: Infinity, error: error.message || 'Request error' });
-      });
-      request.end();
-    } catch (e) {
-      console.warn(`[节点检测] ${pingUrl} 异常:`, e);
-      resolve({ url, latency: Infinity, error: e.message || 'Exception' });
-    }
-  });
-}
-
-// 获取最快URL
-async function getFastestUrl(urls, item_key='') {
-
-  console.log('[节点检测] 检测最快URL列表:', urls);
-  if (!urls || urls.length === 0) return null;
-  if (urls.length === 1) return urls[0];
-
-  const isResource = item_key === 'resource';
-  const timeout = isResource ? 8000 : 5000; // resource 检测需要下载文件，给更长超时
-  
-  try {
-    // 使用 Promise.allSettled 确保获取所有结果，不会因为某个失败而中断
-    const promises = urls.map(url => checkLatency(url, isResource));
-    
-    // 创建一个可以提前返回的 Promise
-    // 当有任意一个成功的结果时，等待一小段时间收集更多结果后返回
-    const results = await Promise.race([
-      // 等待所有请求完成
-      Promise.allSettled(promises).then(settled => 
-        settled
-          .filter(r => r.status === 'fulfilled')
-          .map(r => r.value)
-      ),
-      // 超时后返回已完成的结果
-      new Promise(resolve => {
-        setTimeout(async () => {
-          // 超时时，尝试获取已完成的 Promise 结果
-          const settledResults = [];
-          for (let i = 0; i < promises.length; i++) {
-            try {
-              // 使用 Promise.race 检查是否已完成
-              const result = await Promise.race([
-                promises[i],
-                new Promise((_, reject) => setTimeout(() => reject(new Error('still pending')), 10))
-              ]);
-              settledResults.push(result);
-            } catch (e) {
-              // Promise 还未完成，跳过
-            }
-          }
-          // console.log(`[节点检测] 超时(${timeout}ms)，已完成 ${settledResults.length}/${urls.length} 个检测`);
-          resolve(settledResults);
-        }, timeout);
-      })
-    ]);
-    
-    // console.log('[节点检测] results: ', results);
-    
-    if (!results || results.length === 0) {
-      console.warn(`[节点检测] 超时且无结果，返回第一个节点: ${urls[0]}`);
-      return urls[0];
-    }
-    
-    const validResults = results.filter(r => r && r.latency !== Infinity);
-    if (validResults.length === 0) {
-      // 输出所有失败节点和原因
-      // console.warn('[节点检测] 所有已完成的节点检测都失败，详细信息如下:');
-      // results.forEach(r => {
-      //   if (r) {
-      //     console.warn(`  节点: ${r.url}, 错误: ${r.error || '未知'}, latency: ${r.latency}`);
-      //   }
-      // });
-      console.warn(`[节点检测] 所有节点检测失败，返回第一个节点: ${urls[0]}`);
-      return urls[0];
-    }
-    
-    validResults.sort((a, b) => a.latency - b.latency);
-    // console.log(`[节点检测] 成功检测 ${validResults.length} 个节点，最快: ${validResults[0].url} (${validResults[0].latency}ms)`);
-    return validResults[0].url;
-  } catch (e) {
-    console.error('[节点检测] getFastestUrl error:', e);
-    return urls[0];
+function appendPathSegment(pathValue, segment) {
+  if (!segment || !fs.existsSync(segment)) {
+    return pathValue;
   }
+  return `${pathValue}${path.delimiter}${segment}`;
 }
 
-// 初始化最快服务器配置（非阻塞异步方式，不影响启动速度）
-// 现在改为基于 region 配置，检测各个区域的服务延迟来自动选择最优区域
-function initFastestServersAsync() {
-  const configPath = path.join(__dirname, 'config', "config.json");
-  if (!fs.existsSync(configPath)) return;
-  
-  try {
-    const conf = JSON.parse(fs.readFileSync(configPath));
-    const regions = conf.regions;
-    if (!regions || Object.keys(regions).length === 0) return;
+function normalizeWindowsPathValue(value) {
+  if (!isWin32 || !value || typeof value !== 'string') {
+    return value;
+  }
 
-    // console.log('[节点检测] 后台开始检测最优区域节点...');
-    
-    // 获取所有启用区域的 api_server 进行延迟检测（过滤掉未启用的区域、空URL和localhost）
-    const regionKeys = Object.keys(regions).filter(key => 
-      key !== 'localhost' && regions[key].enabled && regions[key].api_server
+  let normalized = value.trim().replace(/\//g, '\\');
+  normalized = normalized.replace(/^([a-zA-Z]):(?!\\)/, '$1:\\');
+  return normalized;
+}
+
+function appendExecutableDirIfExists(pathValue, segment, executableName) {
+  if (!segment || !executableName) {
+    return pathValue;
+  }
+  const executablePath = path.join(segment, executableName);
+  if (!fs.existsSync(executablePath)) {
+    return pathValue;
+  }
+  return appendPathSegment(pathValue, segment);
+}
+
+function uniquePathSegments(segments) {
+  const seen = new Set();
+  const result = [];
+  for (const segment of segments) {
+    if (!segment || typeof segment !== "string") {
+      continue;
+    }
+    const normalized = segment.trim();
+    if (!normalized) {
+      continue;
+    }
+    const key = isWin32 ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function appendGitToolPaths(pathValue) {
+  const envGitPath = process.env.AILY_GIT_PATH || process.env.GIT_EXECUTABLE || "";
+  if (envGitPath) {
+    const gitPathStatTarget = fs.existsSync(envGitPath) ? envGitPath : "";
+    if (gitPathStatTarget) {
+      try {
+        const stat = fs.statSync(gitPathStatTarget);
+        const gitDir = stat.isDirectory() ? gitPathStatTarget : path.dirname(gitPathStatTarget);
+        pathValue = appendExecutableDirIfExists(pathValue, gitDir, isWin32 ? "git.exe" : "git");
+      } catch (_) {}
+    }
+  }
+
+  if (isWin32) {
+    const pathGitDirs = uniquePathSegments(
+      ORIGINAL_PROCESS_PATH
+        .split(path.delimiter)
+        .filter(segment => segment && fs.existsSync(path.join(segment, "git.exe")))
     );
-    const regionUrls = regionKeys.map(key => regions[key].api_server);
-    
-    getFastestUrl(regionUrls, 'api_server').then(fastestUrl => {
-      if (fastestUrl) {
-        // 找到对应的区域
-        const fastestRegionKey = regionKeys.find(key => regions[key].api_server === fastestUrl);
-        if (fastestRegionKey) {
-          const fastestRegion = regions[fastestRegionKey];
-          console.log(`[节点检测] 检测到最优区域: ${fastestRegion.name} (${fastestRegionKey})`);
-          
-          // 设置环境变量
-          process.env.AILY_NPM_REGISTRY = fastestRegion.npm_registry;
-          process.env.AILY_ZIP_URL = fastestRegion.resource;
-          process.env.AILY_API_SERVER = fastestRegion.api_server;
-          process.env.AILY_REGION = fastestRegionKey;
-          
-          // 通知渲染进程区域已更新
-          if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.send('server-node-updated', { 
-              region: fastestRegionKey,
-              npm_registry: fastestRegion.npm_registry,
-              resource: fastestRegion.resource,
-              api_server: fastestRegion.api_server
-            });
-          }
-          // console.log('[节点检测] 区域节点检测完成');
-        }
-      }
-    }).catch(e => {
-      console.error('[节点检测] 检测过程出错:', e);
-    });
-    
-  } catch (e) {
-    console.error('Error initializing fastest servers:', e);
+    for (const gitDir of pathGitDirs) {
+      pathValue = appendExecutableDirIfExists(pathValue, gitDir, "git.exe");
+    }
+
+    const programFilesRoots = uniquePathSegments([
+      process.env.ProgramFiles,
+      process.env["ProgramFiles(x86)"],
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs") : "",
+      "C:\\Program Files",
+      "C:\\Program Files (x86)",
+    ]);
+    for (const root of programFilesRoots) {
+      pathValue = appendExecutableDirIfExists(pathValue, path.join(root, "Git", "cmd"), "git.exe");
+      pathValue = appendExecutableDirIfExists(pathValue, path.join(root, "Git", "bin"), "git.exe");
+    }
+    return pathValue;
   }
+
+  if (isDarwin) {
+    for (const gitDir of ["/usr/bin", "/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]) {
+      pathValue = appendExecutableDirIfExists(pathValue, gitDir, "git");
+    }
+    return pathValue;
+  }
+
+  if (isLinux) {
+    for (const gitDir of ["/usr/bin", "/usr/local/bin", "/snap/bin"]) {
+      pathValue = appendExecutableDirIfExists(pathValue, gitDir, "git");
+    }
+  }
+
+  return pathValue;
+}
+
+// child 工具解压完成后再注入 PATH 与相关环境变量
+function applyChildToolEnv(childPath) {
+  const nodeBinPath = path.join(childPath, isDarwin ? "node/bin" : "node");
+  let customPath = childPath;
+
+  if (fs.existsSync(nodeBinPath)) {
+    customPath = `${nodeBinPath}${path.delimiter}${customPath}`;
+  }
+
+  if (isWin32) {
+    const systemRoot = normalizeWindowsPathValue(process.env.SystemRoot || process.env.windir || 'C:\\Windows');
+    const programFiles = normalizeWindowsPathValue(process.env.ProgramFiles || 'C:\\Program Files');
+    const systemPaths = [
+      path.join(systemRoot, 'System32'),
+      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
+      path.join(programFiles, 'PowerShell', '7'),
+      systemRoot
+    ];
+    systemPaths.forEach((sysPath) => {
+      customPath = appendPathSegment(customPath, sysPath);
+    });
+    process.env.SystemRoot = systemRoot;
+    process.env.windir = normalizeWindowsPathValue(process.env.windir || systemRoot);
+    process.env.ComSpec = normalizeWindowsPathValue(process.env.ComSpec || path.join(systemRoot, 'System32', 'cmd.exe'));
+  } else if (isDarwin) {
+    ['/bin', '/usr/bin'].forEach((sysPath) => {
+      customPath = appendPathSegment(customPath, sysPath);
+    });
+  } else if (isLinux) {
+    customPath = appendPathSegment(customPath, '/bin');
+  }
+
+  const ailyBuilderPath = path.join(childPath, "aily-builder");
+  const ninjaPath = path.join(ailyBuilderPath, "ninja");
+  const probeRsDir = path.join(childPath, "probe-rs");
+  const z7Path = path.join(childPath, isWin32 ? "7za.exe" : "7zz");
+  const rgPath = path.join(childPath, isWin32 ? "rg.exe" : "rg");
+  const probeRsPath = path.join(probeRsDir, `probe-rs${isWin32 ? ".exe" : ""}`);
+
+  customPath = appendPathSegment(customPath, ailyBuilderPath);
+  customPath = appendPathSegment(customPath, ninjaPath);
+  customPath = appendPathSegment(customPath, probeRsDir);
+  customPath = appendGitToolPaths(customPath);
+
+  process.env.PATH = customPath;
+  process.env.AILY_CHILD_PATH = childPath;
+  process.env.AILY_7ZA_PATH = fs.existsSync(z7Path) ? z7Path : path.join(childPath, isWin32 ? "7za.exe" : "7zz");
+  process.env.AILY_RG_PATH = fs.existsSync(rgPath) ? rgPath : path.join(childPath, isWin32 ? "rg.exe" : "rg");
+  process.env.AILY_PROBE_RS_PATH = probeRsPath;
+  process.env.AILY_BUILDER_PATH = ailyBuilderPath;
+}
+
+function runInstallEnv(childPath) {
+  try {
+    if (isDarwin) {
+      macosInstallEnv(childPath);
+    } else if (isWin32) {
+      windowsInstallEnv(childPath);
+    }
+  } catch (error) {
+    console.error("installEnv error: ", error);
+  }
+  applyChildToolEnv(childPath);
 }
 
 // 环境变量加载
 function loadEnv() {
-  // 将child目录添加到环境变量PATH中
-  const childPath = serve
+  let childPath = serve
     ? path.join(__dirname, "..", "child")
     : path.join(process.resourcesPath, "child");
-  const nodePath = path.join(childPath, isDarwin ? "node/bin" : "node");
 
-  // 只保留PowerShell路径，移除其他系统PATH
-  let customPath = nodePath + path.delimiter + childPath;
-
-  if (isWin32) {
-    // 使用环境变量获取系统路径，支持系统安装在任意盘符
-    const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
-    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    
-    // 添加必要的系统路径
-    const systemPaths = [
-      path.join(systemRoot, 'System32'),
-      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
-      path.join(programFiles, 'PowerShell', '7'), // PowerShell 7 (如果存在)
-      systemRoot
-    ];
-
-    // 检查路径是否存在，只添加存在的路径
-    systemPaths.forEach(sysPath => {
-      if (fs.existsSync(sysPath)) {
-        customPath += path.delimiter + sysPath;
-      }
-    });
+  if (!fs.existsSync(childPath)) {
+    const devChildPath = path.join(__dirname, "..", "child");
+    if (fs.existsSync(devChildPath)) {
+      console.warn(`child 工具目录不存在，回退到开发目录: ${childPath} -> ${devChildPath}`);
+      childPath = devChildPath;
+    }
   }
-  if (isDarwin) {
-    const systemPaths = [
-      '/bin',
-      '/usr/bin'
-    ];
-    systemPaths.forEach(sysPath => {
-      if (fs.existsSync(sysPath)) {
-        customPath += path.delimiter + sysPath;
-      }
-    });
-  } else if (isLinux) {
-    customPath += path.delimiter + '/bin';
-  }
-
-  // 完全替换PATH
-  process.env.PATH = customPath;  
 
   // 读取config.json文件
   const configPath = path.join(__dirname, 'config', "config.json");
@@ -1050,9 +1709,7 @@ function loadEnv() {
     console.error("initLogger error: ", error);
   }
 
-  if (isDarwin) {
-    macosInstallEnv(childPath);
-  }
+  registerAppDataResourceLockHandlers();
 
   // 检测并读取appdata_path目录下是否有config.json文件
   const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
@@ -1067,24 +1724,67 @@ function loadEnv() {
     }
   }
 
+  const cnRegionUrlKeys = [
+    "api_server",
+    "web",
+    "ucenter_web",
+    "tool_web",
+    "npm_registry",
+    "resource",
+    "updater",
+  ];
+  const defaultCnRegion = (conf.regions && conf.regions.cn) || {};
+  const forcedCnRegionUrls = cnRegionUrlKeys.reduce((urls, key) => {
+    if (typeof defaultCnRegion[key] === 'string') {
+      urls[key] = defaultCnRegion[key];
+    }
+    return urls;
+  }, {});
+  const hasCnRegionUrlChanges = (region) => {
+    if (!region) {
+      return true;
+    }
+    return cnRegionUrlKeys.some((key) => {
+      const correctValue = forcedCnRegionUrls[key];
+      return typeof correctValue === 'string' && region[key] !== correctValue;
+    });
+  };
+
   // 读取用户配置文件
   try {
     userConf = JSON.parse(fs.readFileSync(userConfigPath));
-    
-    // TODO: 下一版删除，统一修正 regions.cn.api_server 地址为标准地址
+
+    // TODO: 下一版删除，统一修正 regions.cn 下所有地址为标准地址
     let needSave = false;
     if (userConf.regions && userConf.regions.cn) {
-      const correctApiServer = "https://api.yysc.tech";
-      const currentApiServer = userConf.regions.cn.api_server;
-      
-      // 检查当前地址是否需要修正（只要不是正确地址就修正）
-      if (currentApiServer !== correctApiServer) {
-        console.log(`检测到需要更新的 API 地址: ${currentApiServer || '(空)'} → ${correctApiServer}`);
-        userConf.regions.cn.api_server = correctApiServer;
-        needSave = true;
+      for (const key of cnRegionUrlKeys) {
+        const correctValue = forcedCnRegionUrls[key];
+        if (typeof correctValue !== 'string') {
+          continue;
+        }
+
+        const currentValue = userConf.regions.cn[key];
+        if (currentValue !== correctValue) {
+          console.log(`检测到需要更新的 cn.${key} 地址: ${currentValue || '(空)'} → ${correctValue}`);
+          userConf.regions.cn[key] = correctValue;
+          needSave = true;
+        }
       }
     }
-    
+
+    // 合并配置文件
+    Object.assign(conf, userConf);
+
+    const buildFlavor = getBuildFlavor(conf);
+    const officialRegion = getOfficialRegionForFlavor(buildFlavor);
+    const configuredRegion = conf.region || officialRegion;
+
+    if (shouldFallbackToOfficialRegion(configuredRegion, officialRegion, conf.regions)) {
+      conf.region = officialRegion;
+      userConf.region = officialRegion;
+      needSave = true;
+    }
+
     // 如果配置被修改，保存回文件
     if (needSave) {
       try {
@@ -1094,26 +1794,27 @@ function loadEnv() {
         console.error("保存用户配置文件失败:", error);
       }
     }
-    
-    // 合并配置文件
-    Object.assign(conf, userConf);
   } catch (error) {
     console.error("读取用户配置文件失败:", error);
     userConf = {}; // 确保userConf是一个对象
   }
 
-  // child Path
-  process.env.AILY_CHILD_PATH = childPath;
+  // TODO 下一版本删除，强制将 cn 区域所有地址设置为标准地址
+  if (hasCnRegionUrlChanges(conf.regions && conf.regions["cn"])) {
+    Object.assign(conf.regions["cn"], forcedCnRegionUrls);
+  }
+  const buildFlavor = getBuildFlavor(conf);
+  const officialRegion = getOfficialRegionForFlavor(buildFlavor);
+  const currentRegion = shouldFallbackToOfficialRegion(conf.region, officialRegion, conf.regions)
+    ? officialRegion
+    : (conf.region || officialRegion);
+  const regionConfig = conf.regions && conf.regions[currentRegion] ? conf.regions[currentRegion] : conf.regions[officialRegion];
+  const zipUrlState = getZipUrlState(conf);
 
-  // TODO 下一版本删除，强制将cn区域的api_server地址设置为https://api.yysc.tech
-  conf.regions["cn"]["api_server"] = "https://api.yysc.tech";
-  // console.log("conf: ", conf);
-  // 从 regions 配置中获取当前区域的服务地址
-  const currentRegion = conf.region || 'cn';
-  const regionConfig = conf.regions && conf.regions[currentRegion] ? conf.regions[currentRegion] : conf.regions['cn'];
-  
   // 当前区域
   process.env.AILY_REGION = currentRegion;
+  process.env.AILY_BUILD_FLAVOR = buildFlavor;
+  process.env.AILY_OFFICIAL_REGION = officialRegion;
   // npm registry
   process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
   // 设置 npm 使用应用数据目录下的配置文件，忽略系统 .npmrc
@@ -1146,14 +1847,6 @@ function loadEnv() {
   } catch (e) {
     console.error('清理代理环境变量失败:', e);
   }
-  // 7za path
-  process.env.AILY_7ZA_PATH = path.join(childPath, isWin32 ? "7za.exe" : "7zz");
-  // rg path
-  process.env.AILY_RG_PATH = path.join(childPath, isWin32 ? "rg.exe" : "rg");
-  // probe-rs path
-  process.env.AILY_PROBE_RS_PATH = path.join(childPath, "probe-rs", "probe-rs" + (isWin32 ? ".exe" : ""));
-  // aily builder path
-  process.env.AILY_BUILDER_PATH = path.join(childPath, "aily-builder");
   // 全局npm包路径
   process.env.AILY_NPM_PREFIX = process.env.AILY_APPDATA_PATH;
   // 默认全局编译器路径
@@ -1162,28 +1855,23 @@ function loadEnv() {
   process.env.AILY_TOOLS_PATH = path.join(process.env.AILY_APPDATA_PATH, "tools");
   // 默认全局SDK路径
   process.env.AILY_SDK_PATH = path.join(process.env.AILY_APPDATA_PATH, "sdk");
+  // zip包下载镜像地址：auto 模式输出完整列表，手动模式仅输出选中地址
+  process.env.AILY_ZIP_URLS = buildZipUrls(conf);
   // zip包下载地址
-  process.env.AILY_ZIP_URL = regionConfig.resource;
+  process.env.AILY_ZIP_URL = zipUrlState.currentUrl || regionConfig.resource;
   // API服务器地址
   process.env.AILY_API_SERVER = regionConfig.api_server;
+  process.env.AILY_TOOL_WEB = regionConfig.tool_web || '';
 
   process.env.AILY_PROJECT_PATH = conf["project_path"];
 
-  // 将aily builder以及其中的ninja添加到PATH中
-  const ailyBuilderPath = path.join(process.env.AILY_BUILDER_PATH);
-  if (fs.existsSync(ailyBuilderPath)) {
-    process.env.PATH = `${process.env.PATH}${path.delimiter}${ailyBuilderPath}`;
+  // macOS 生产/开发均走异步自解压，完成后再次覆盖 child 环境变量；Windows 生产包由 NSIS 预解压
+  if (isDarwin || serve) {
+    applyChildToolEnv(childPath);
+    setImmediate(() => runInstallEnv(childPath));
+  } else {
+    runInstallEnv(childPath);
   }
-  const ninjaPath = path.join(process.env.AILY_BUILDER_PATH, 'ninja');
-  if (fs.existsSync(ninjaPath)) {
-    process.env.PATH = `${process.env.PATH}${path.delimiter}${ninjaPath}`;
-  }
-  // 将 probe-rs 添加到 PATH 中
-  const probeRsDir = path.join(childPath, 'probe-rs');
-  if (fs.existsSync(probeRsDir)) {
-    process.env.PATH = `${process.env.PATH}${path.delimiter}${probeRsDir}`;
-  }
-
   // 当前系统语言
   process.env.AILY_SYSTEM_LANG = app.getLocale();
 
@@ -1240,6 +1928,54 @@ async function updateMainWindowWithPendingData() {
   }
 }
 
+function rectsOverlap(a, b) {
+  return !(
+    a.x + a.width <= b.x ||
+    a.x >= b.x + b.width ||
+    a.y + a.height <= b.y ||
+    a.y >= b.y + b.height
+  );
+}
+
+/** Windows：持久化坐标可能落在已移除的显示器上；electron-win-state 不会按当前屏幕校验。macOS 不处理。 */
+function ensureWinStateOnVisibleDisplay(winState) {
+  if (!isWin32) {
+    return;
+  }
+  const s = winState.state;
+  const w = Number(s.width);
+  const h = Number(s.height);
+  const x = Number(s.x);
+  const y = Number(s.y);
+  if (![w, h].every((n) => Number.isFinite(n) && n > 0) || ![x, y].every((n) => Number.isFinite(n))) {
+    return;
+  }
+  const winRect = { x, y, width: w, height: h };
+  const displays = screen.getAllDisplays();
+  const visible = displays.some((d) => rectsOverlap(winRect, d.workArea));
+  if (visible) {
+    return;
+  }
+  const wa = screen.getPrimaryDisplay().workArea;
+  let nw = w;
+  let nh = h;
+  if (nw > wa.width) {
+    nw = wa.width;
+  }
+  if (nh > wa.height) {
+    nh = wa.height;
+  }
+  s.width = nw;
+  s.height = nh;
+  s.x = Math.round(wa.x + Math.max(0, (wa.width - nw) / 2));
+  s.y = Math.round(wa.y + Math.max(0, (wa.height - nh) / 2));
+  try {
+    winState.saveState();
+  } catch (e) {
+    console.warn('修正窗口位置后保存状态失败:', e);
+  }
+}
+
 function createWindow() {
   // 检查是否为首次启动（没有窗口状态记录文件）
   const winStateFilePath = path.join(process.env.AILY_APPDATA_PATH, 'window-state.json');
@@ -1252,7 +1988,8 @@ function createWindow() {
       name: 'window-state',
       cwd: process.env.AILY_APPDATA_PATH,
     },
-  })
+  });
+  ensureWinStateOnVisibleDisplay(winState);
 
   mainWindow = new BrowserWindow({
     ...winState.winOptions,
@@ -1268,6 +2005,7 @@ function createWindow() {
       nodeIntegration: true,
       webSecurity: false,
       preload: path.join(__dirname, "preload.js"),
+      enableBlinkFeatures: 'WebBluetooth',
       // 启用 Web Serial API 支持
       // enableBlinkFeatures: 'Serial',
       // 禁用后台节流和页面可见性，避免在后台时停止渲染
@@ -1275,6 +2013,8 @@ function createWindow() {
       pageVisibility: true,
     },
   });
+
+  registerWebBluetoothChooser(mainWindow);
 
   mainWindow.setBounds(winState.state);
 
@@ -1344,6 +2084,18 @@ function createWindow() {
     }
   }
 
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('Renderer process gone:', details.reason, 'exitCode:', details.exitCode);
+    if (!serve) return;
+
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        console.log('Reloading renderer after crash...');
+        mainWindow.loadURL("http://localhost:4200");
+      }
+    }, 1000);
+  });
+
   // 开发环境下的热重载处理
   if (serve) {
     // 处理页面加载失败，支持自动恢复
@@ -1370,17 +2122,6 @@ function createWindow() {
       console.log('页面加载完成');
     });
 
-    // 处理渲染进程崩溃，自动恢复
-    mainWindow.webContents.on('render-process-gone', (event, details) => {
-      console.error('渲染进程异常退出:', details.reason, 'exitCode:', details.exitCode);
-      setTimeout(() => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          console.log('尝试重新加载页面...');
-          mainWindow.loadURL("http://localhost:4200");
-        }
-      }, 1000);
-    });
-
     // 开启 DevTools (可选)
     // mainWindow.webContents.openDevTools();
   }
@@ -1398,10 +2139,13 @@ function createWindow() {
   registerWindowHandlers(mainWindow);
   registerNpmHandlers(mainWindow);
   registerCmdHandlers(mainWindow);
+  registerAilyServicesStreamHandlers(mainWindow);
+  registerWebviewBridgeHandlers();
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
   registerNotificationHandlers(mainWindow);
   registerProbeRsHandlers(mainWindow);
+  registerBleHandlers();
 
   // 检查是否有待处理的OAuth回调
   // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
@@ -1691,8 +2435,6 @@ app.on("ready", async () => {
   try {
     ensureRosettaIfNeededOnDarwin();
     loadEnv();
-    // 异步检测最优服务器，不阻塞窗口创建
-    initFastestServersAsync();
   } catch (error) {
     console.error("loadEnv error: ", error);
   }
@@ -1723,47 +2465,79 @@ app.on("ready", async () => {
   createWindow();
 });
 
-// // 处理 Web Serial API 的串口选择请求
-// app.on('web-contents-created', (event, contents) => {
-//   contents.session.on('select-serial-port', (event, portList, webContents, callback) => {
-//     event.preventDefault();
-//     console.log('Web Serial API: 可用串口列表', portList);
+// === Web Serial API 支持 ===
+// 渲染端选择串口路径后，通过 IPC 设置首选端口；随后调用 navigator.serial.requestPort()
+// 时由主进程 select-serial-port 事件按路径匹配并自动选中，与 ESPConnect 在浏览器内
+// 直接用 WebSerial 的体验一致。
+const webSerialPreferredPortByContents = new WeakMap();
 
-//     // 如果有可用的串口，选择第一个（或者可以根据 VID/PID 筛选）
-//     if (portList && portList.length > 0) {
-//       // 查找 ESP32S3 设备 (VID: 0x303a, PID: 0x1001)
-//       const esp32Port = portList.find(port =>
-//         port.vendorId === '303a' && port.productId === '1001'
-//       );
+ipcMain.handle('webserial-set-preferred-port', (event, portPath) => {
+  if (event?.sender && typeof portPath === 'string' && portPath) {
+    webSerialPreferredPortByContents.set(event.sender, portPath);
+  }
+  return true;
+});
 
-//       if (esp32Port) {
-//         console.log('选择 ESP32S3 串口:', esp32Port.portId);
-//         callback(esp32Port.portId);
-//       } else {
-//         // 如果没找到 ESP32S3，选择第一个
-//         console.log('未找到 ESP32S3，选择第一个串口:', portList[0].portId);
-//         callback(portList[0].portId);
-//       }
-//     } else {
-//       console.log('没有可用的串口');
-//       callback('');
-//     }
-//   });
+ipcMain.handle('webserial-clear-preferred-port', (event) => {
+  if (event?.sender) {
+    webSerialPreferredPortByContents.delete(event.sender);
+  }
+  return true;
+});
 
-//   contents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
-//     if (permission === 'serial') {
-//       return true;
-//     }
-//     return false;
-//   });
+function normalizePortPath(value) {
+  return typeof value === 'string' ? value.toLowerCase().replace(/[\\/]/g, '') : '';
+}
 
-//   contents.session.setDevicePermissionHandler((details) => {
-//     if (details.deviceType === 'serial') {
-//       return true;
-//     }
-//     return false;
-//   });
-// });
+function isAllowedWebDevicePermission(permission) {
+  return permission === 'serial' || permission === 'bluetooth' || permission === 'bluetoothScanning';
+}
+
+function isAllowedWebDeviceType(deviceType) {
+  return deviceType === 'serial' || deviceType === 'bluetooth' || deviceType === 'bluetoothLE';
+}
+
+app.on('web-contents-created', (event, contents) => {
+  contents.session.on('select-serial-port', (event, portList, webContents, callback) => {
+    event.preventDefault();
+    if (!Array.isArray(portList) || portList.length === 0) {
+      callback('');
+      return;
+    }
+
+    const preferred = webSerialPreferredPortByContents.get(contents);
+    if (preferred) {
+      const target = normalizePortPath(preferred);
+      const match = portList.find(p => normalizePortPath(p.portName) === target || normalizePortPath(p.path) === target);
+      if (match) {
+        callback(match.portId);
+        return;
+      }
+    }
+
+    // 兜底：优先匹配 ESP 系常见 VID/PID
+    const espVids = new Set(['303a', '10c4', '1a86', '0403', '067b']);
+    const espMatch = portList.find(p => espVids.has(String(p.vendorId || '').toLowerCase()));
+    if (espMatch) {
+      callback(espMatch.portId);
+      return;
+    }
+
+    callback(portList[0].portId);
+  });
+
+  contents.session.setPermissionCheckHandler((wc, permission) => {
+    return isAllowedWebDevicePermission(permission);
+  });
+
+  contents.session.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(isAllowedWebDevicePermission(permission));
+  });
+
+  contents.session.setDevicePermissionHandler((details) => {
+    return isAllowedWebDeviceType(details.deviceType);
+  });
+});
 
 // 当所有窗口都被关闭时退出应用（macOS 除外）
 app.on("window-all-closed", () => {
@@ -1772,7 +2546,56 @@ app.on("window-all-closed", () => {
   }
 });
 
+function cleanupRegisteredChildProcesses() {
+  console.info('[PROC_TRACE][APP_CLEANUP_START]', {
+    cmd: getActiveCmdProcesses(),
+    npm: getActiveNpmProcesses(),
+    terminals: getActiveTerminals(),
+    ailyServicesStreams: getActiveAilyServicesStreams()
+  });
+
+  return Promise.allSettled([
+    killAllCmdProcesses(),
+    killAllNpmProcesses(),
+    killAllTerminals(),
+    cancelAllAilyServicesStreams()
+  ]).then((results) => {
+    // console.info('[PROC_TRACE][APP_CLEANUP_DONE]', { results });
+  });
+}
+
+app.on("before-quit", (event) => {
+  if (hasProcessCleanupCompleted) {
+    return;
+  }
+
+  event.preventDefault();
+  if (isProcessCleanupInProgress) {
+    return;
+  }
+
+  isProcessCleanupInProgress = true;
+  cleanupRegisteredChildProcesses()
+    .catch((error) => {
+      console.warn('[PROC_TRACE][APP_CLEANUP_ERROR]', error?.message || String(error));
+    })
+    .finally(() => {
+      hasProcessCleanupCompleted = true;
+      isProcessCleanupInProgress = false;
+      app.quit();
+    });
+});
+
 app.on("will-quit", () => {
+  console.info('[PROC_TRACE][APP_WILL_QUIT]', {
+    cmd: getActiveCmdProcesses(),
+    npm: getActiveNpmProcesses(),
+    terminals: getActiveTerminals(),
+    ailyServicesStreams: getActiveAilyServicesStreams()
+  });
+
+  releaseAllAppDataResourceLocks();
+
   if (heldProjectLockNormalized) {
     try {
       projectLock.releaseLock(heldProjectLockNormalized);
@@ -1790,6 +2613,19 @@ app.on("will-quit", () => {
     }
     heldInstanceLockPath = null;
   }
+  if (coderEmbedHttpServer) {
+    if (coderEmbedHttpServer.kind === "static") {
+      try {
+        coderEmbedHttpServer.server.close();
+      } catch (e) {
+        console.warn("will-quit coder embed server:", e.message);
+      }
+    } else if (coderEmbedHttpServer.spawned && coderEmbedHttpServer.devProcess) {
+      killCoderEmbedSpawnedDevProcess(coderEmbedHttpServer.devProcess);
+    }
+    coderEmbedHttpServer = null;
+  }
+  coderEmbedEnsureInFlight = null;
 });
 
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
@@ -1847,6 +2683,12 @@ app.on('open-url', (event, url) => {
   event.preventDefault();
   console.log('macOS open-url:', url);
   handleProtocol(url);
+});
+
+// 内嵌 Coder（开发: child/coder Vite；生产: child/coder/dist）服务根地址
+ipcMain.handle("coder-embed-get-base-url", async () => {
+  const port = await ensureCoderEmbedServerStarted();
+  return `http://127.0.0.1:${port}/`;
 });
 
 // 文件选择
@@ -1946,7 +2788,13 @@ ipcMain.handle("select-folder-saveAs", async (event, data) => {
 ipcMain.handle("dialog-select-files", async (event, options) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
   try {
-    const result = await dialog.showOpenDialog(senderWindow, options);
+    const normalizedOptions = {
+      ...(options || {}),
+      properties: Array.isArray(options?.properties) && options.properties.length > 0
+        ? options.properties
+        : ["openFile"],
+    };
+    const result = await dialog.showOpenDialog(senderWindow, normalizedOptions);
     return result;
   } catch (error) {
     throw error;
@@ -2057,8 +2905,15 @@ ipcMain.handle("open-new-instance", async (event, data) => {
 
 // settingChanged
 ipcMain.on("setting-changed", (event, data) => {
-  const senderWindow = BrowserWindow.fromWebContents(event.sender);
-  mainWindow.webContents.send("setting-changed", data);
+  BrowserWindow.getAllWindows().forEach((win) => {
+    try {
+      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+        win.webContents.send("setting-changed", data);
+      }
+    } catch (error) {
+      console.error("setting-changed broadcast failed:", error.message);
+    }
+  });
 });
 
 // OAuth状态管理的IPC处理器

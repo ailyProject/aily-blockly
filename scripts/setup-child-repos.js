@@ -1,0 +1,306 @@
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+const rootDir = path.join(__dirname, '..');
+const childDir = path.join(rootDir, 'child');
+
+const REPOS = [
+  {
+    name: 'aily-coder',
+    url: 'https://github.com/ailyProject/aily-coder.git',
+    branch: 'downey',
+    buildScript: 'build:netlify',
+  },
+  {
+    name: 'aily-lex',
+    url: 'https://github.com/ailyProject/aily-lex.git',
+    buildCommand: 'npx tsc -b --force',
+  },
+];
+
+const SUBAPP_REPO = {
+  name: 'aily-subapp',
+  url: 'https://github.com/ailyProject/aily-subapp.git',
+  branch: 'main',
+  buildScript: 'build',
+  skipDirNames: new Set(['node_modules', 'scripts', 'dist', 'templates']),
+};
+
+const NATIVE_RUNTIME_PACKAGES = new Set([
+  '@abandonware/noble',
+  'serialport',
+]);
+
+function run(command, cwd) {
+  console.log(`\n> (${path.relative(rootDir, cwd)}) ${command}\n`);
+  execSync(command, { cwd, stdio: 'inherit' });
+}
+
+function runOptional(command, cwd) {
+  try {
+    run(command, cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyScopedModule(sourceModules, destModules, packageName) {
+  const segments = packageName.split('/');
+  const source = path.join(sourceModules, ...segments);
+  const destination = path.join(destModules, ...segments);
+
+  if (!fs.existsSync(source)) {
+    return false;
+  }
+
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.cpSync(source, destination, { recursive: true });
+  return true;
+}
+
+function copyNativeRuntimeModules(sourceDir, packageDir, packageJson) {
+  const sourceModules = path.join(sourceDir, 'node_modules');
+  const destModules = path.join(packageDir, 'node_modules');
+  const dependencies = packageJson.dependencies || {};
+
+  fs.mkdirSync(destModules, { recursive: true });
+
+  for (const packageName of Object.keys(dependencies)) {
+    if (NATIVE_RUNTIME_PACKAGES.has(packageName)) {
+      copyScopedModule(sourceModules, destModules, packageName);
+    }
+  }
+
+  const serialportScope = path.join(sourceModules, '@serialport');
+  if (fs.existsSync(serialportScope)) {
+    fs.cpSync(serialportScope, path.join(destModules, '@serialport'), { recursive: true });
+  }
+
+  const nobleScope = path.join(sourceModules, '@abandonware');
+  if (fs.existsSync(nobleScope)) {
+    fs.cpSync(nobleScope, path.join(destModules, '@abandonware'), { recursive: true });
+  }
+}
+
+function copyToolAssets(sourceDir, packageDir) {
+  for (const dirName of ['i18n', 'skill', 'vendor', 'ui']) {
+    const source = path.join(sourceDir, dirName);
+    if (!fs.existsSync(source)) {
+      continue;
+    }
+
+    fs.cpSync(source, path.join(packageDir, dirName), { recursive: true });
+  }
+}
+
+function publishToolDist(repoDir, toolName) {
+  const packageDir = path.join(repoDir, toolName, 'dist', toolName);
+  const workspaceDir = path.join(repoDir, 'dist', toolName);
+
+  fs.mkdirSync(path.dirname(workspaceDir), { recursive: true });
+  fs.rmSync(workspaceDir, { recursive: true, force: true });
+  fs.cpSync(packageDir, workspaceDir, { recursive: true });
+}
+
+function recoverNativeToolDist(repoDir, toolName) {
+  const sourceDir = path.join(repoDir, toolName);
+  const packageDir = path.join(sourceDir, 'dist', toolName);
+  const packageJsonPath = path.join(sourceDir, 'package.json');
+
+  if (!fs.existsSync(path.join(packageDir, 'index.js'))) {
+    console.warn(`[subapp] cannot recover ${toolName}: esbuild output missing`);
+    return false;
+  }
+
+  if (!fs.existsSync(path.join(sourceDir, 'node_modules'))) {
+    console.warn(`[subapp] cannot recover ${toolName}: source node_modules missing`);
+    return false;
+  }
+
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  copyNativeRuntimeModules(sourceDir, packageDir, packageJson);
+
+  if (packageJson.scripts?.['build:ui']) {
+    const uiOutDir = path.join(packageDir, 'ui');
+    run(`npm run build:ui -- --outdir ${JSON.stringify(uiOutDir)}`, sourceDir);
+  } else {
+    copyToolAssets(sourceDir, packageDir);
+  }
+
+  publishToolDist(repoDir, toolName);
+  console.log(`[subapp] recovered native tool ${toolName} from source node_modules`);
+  return true;
+}
+
+function buildSubappTools(repoDir) {
+  const toolNames = listToolProjects(repoDir, SUBAPP_REPO.skipDirNames)
+    .map((toolDir) => path.basename(toolDir));
+  const built = [];
+  const skipped = [];
+
+  for (const toolName of toolNames) {
+    const buildCommand = `npm run ${SUBAPP_REPO.buildScript} -- ${JSON.stringify(toolName)}`;
+
+    if (runOptional(buildCommand, repoDir)) {
+      built.push(toolName);
+      continue;
+    }
+
+    console.warn(`[subapp] build failed for ${toolName}, attempting recovery...`);
+    if (recoverNativeToolDist(repoDir, toolName)) {
+      built.push(toolName);
+      continue;
+    }
+
+    skipped.push(toolName);
+  }
+
+  if (!built.length) {
+    throw new Error('No subapp tools were built or recovered');
+  }
+
+  if (skipped.length) {
+    console.warn(`[subapp] skipped tools: ${skipped.join(', ')}`);
+  }
+
+  console.log(`[subapp] ready tools: ${built.join(', ')}`);
+  return built;
+}
+
+function isGitRepo(repoDir) {
+  return fs.existsSync(path.join(repoDir, '.git'));
+}
+
+function syncExistingRepo(repoDir, branch) {
+  if (!isGitRepo(repoDir)) {
+    return;
+  }
+
+  if (branch) {
+    run(`git fetch origin ${branch}`, repoDir);
+    run(`git checkout ${branch}`, repoDir);
+  }
+
+  run('git pull --ff-only', repoDir);
+}
+
+function ensureRepoDir(name, url, branch) {
+  const repoDir = path.join(childDir, name);
+  const existed = fs.existsSync(repoDir);
+
+  if (existed) {
+    console.log(`[exists] ${name}: ${repoDir}`);
+    syncExistingRepo(repoDir, branch);
+    return { repoDir, existed: true };
+  }
+
+  fs.mkdirSync(childDir, { recursive: true });
+  const cloneCmd = branch
+    ? `git clone -b ${branch} ${url} ${JSON.stringify(name)}`
+    : `git clone ${url} ${JSON.stringify(name)}`;
+  run(cloneCmd, childDir);
+  return { repoDir, existed: false };
+}
+
+function listToolProjects(repoDir, skipDirNames) {
+  return fs.readdirSync(repoDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .filter((entry) => !entry.name.startsWith('.'))
+    .filter((entry) => !skipDirNames.has(entry.name))
+    .map((entry) => path.join(repoDir, entry.name))
+    .filter((toolDir) => fs.existsSync(path.join(toolDir, 'package.json')));
+}
+
+function installSubappToolProjects(repoDir) {
+  const toolDirs = listToolProjects(repoDir, SUBAPP_REPO.skipDirNames);
+
+  for (const toolDir of toolDirs) {
+    run('npm install', toolDir);
+
+    const uiDir = path.join(toolDir, 'ui');
+    if (fs.existsSync(path.join(uiDir, 'package.json'))) {
+      run('npm install', uiDir);
+    }
+  }
+}
+
+function syncBuiltTools(repoDir, builtToolNames, toolsDir) {
+  if (!builtToolNames.length) {
+    throw new Error('No built subapp tools to sync');
+  }
+
+  fs.mkdirSync(toolsDir, { recursive: true });
+
+  for (const toolName of builtToolNames) {
+    const sourceDir = path.join(repoDir, toolName, 'dist', toolName);
+    const targetDir = path.join(toolsDir, toolName);
+
+    if (!fs.existsSync(path.join(sourceDir, 'index.js'))) {
+      throw new Error(`Built subapp tool output was not found: ${sourceDir}`);
+    }
+
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    fs.cpSync(sourceDir, targetDir, { recursive: true });
+    console.log(`[copy] ${path.relative(rootDir, sourceDir)} -> ${path.relative(rootDir, targetDir)}`);
+  }
+
+  for (const entry of fs.readdirSync(toolsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || builtToolNames.includes(entry.name)) {
+      continue;
+    }
+
+    const staleDir = path.join(toolsDir, entry.name);
+    fs.rmSync(staleDir, { recursive: true, force: true });
+    console.log(`[remove] stale tool directory ${path.relative(rootDir, staleDir)}`);
+  }
+}
+
+function setupSubapp() {
+  console.log('\n[subapp] preparing aily-subapp child tools...');
+  ensureRepoDir(SUBAPP_REPO.name, SUBAPP_REPO.url, SUBAPP_REPO.branch);
+
+  const repoDir = path.join(childDir, SUBAPP_REPO.name);
+  const toolsDir = path.join(childDir, 'tools');
+
+  run('npm install', repoDir);
+  installSubappToolProjects(repoDir);
+  const builtToolNames = buildSubappTools(repoDir);
+  syncBuiltTools(repoDir, builtToolNames, toolsDir);
+
+  console.log(`\n[subapp] copied ${builtToolNames.length} tool(s) to ${path.relative(rootDir, toolsDir)}`);
+}
+
+function installRootLocalDependency(relativePath) {
+  const dependencyDir = path.join(rootDir, relativePath);
+  if (!fs.existsSync(path.join(dependencyDir, 'package.json'))) {
+    console.warn(`[skip] local dependency not found: ${relativePath}`);
+    return;
+  }
+
+  run(`npm install --no-audit --no-fund ${JSON.stringify(`file:${relativePath.replace(/\\/g, '/')}`)}`, rootDir);
+}
+
+function main() {
+  for (const repo of REPOS) {
+    const { repoDir, existed } = ensureRepoDir(repo.name, repo.url, repo.branch);
+
+    if (!existed) {
+      run('npm install', repoDir);
+    }
+
+    if (repo.buildCommand) {
+      run(repo.buildCommand, repoDir);
+    } else if (repo.buildScript) {
+      run(`npm run ${repo.buildScript}`, repoDir);
+    }
+  }
+
+  installRootLocalDependency('child/aily-lex');
+  setupSubapp();
+  console.log('\n[done] child repos ready.');
+}
+
+main();

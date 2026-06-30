@@ -2,8 +2,8 @@
     <div class="drag-handle" (mousedown)="onDragStart($event)" nz-tooltip nzTooltipTitle="drag to move">
         <i class="fa-solid fa-grip-dots-vertical"></i>
     </div>
-    <div class="btn ccenter" (click)="reload()" nz-tooltip nzTooltipTitle="reload project">
-        <i class="fa-light fa-sync"></i>
+    <div class="btn ccenter" [class.disabled]="reloadDisabled" (click)="reload()" nz-tooltip nzTooltipTitle="reload project">
+        <i class="fa-light fa-sync" [class.reloading]="reloadDisabled"></i>
     </div>
     <div class="btn ccenter" (click)="clear()" nz-tooltip nzTooltipTitle="clear cache">
         <i class="fa-light fa-broom-wide"></i>

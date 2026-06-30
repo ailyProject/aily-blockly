@@ -1,4 +1,4 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 
 /**
  * ABS (Aily Block Syntax) Syntax Reference Tool

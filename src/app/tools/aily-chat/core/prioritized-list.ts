@@ -17,7 +17,7 @@
  *   - 本质相同：Budget-first，声明式，自动淘汰
  */
 
-import { fastEstimateMessageTokens, fastEstimateMessagesTokens } from './prompt-providers';
+import { fastEstimateMessageTokens, fastEstimateMessagesTokens } from './prompt-token-estimation';
 
 // ==================== 类型定义 ====================
 
@@ -267,7 +267,7 @@ export class PrioritizedListEngine {
  */
 export function annotateWithPriority(
   messages: any[],
-  turnSpans: readonly import('./turn-types').TurnSpan[],
+  turnSpans: readonly import('./turn-data-source').TurnSpan[],
   infoToolNames: Set<string>
 ): PrioritizedItem[] {
   const items: PrioritizedItem[] = [];

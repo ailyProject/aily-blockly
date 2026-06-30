@@ -1,4 +1,4 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { ProjectService } from "../../../services/project.service";
 
 export async function reloadProjectTool(

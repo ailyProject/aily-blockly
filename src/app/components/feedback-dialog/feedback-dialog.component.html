@@ -1,12 +1,12 @@
 <app-base-dialog [title]="'FEEDBACK_DIALOG.TITLE' | translate" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
-    [loading]="isSubmitting" (closeDialog)="onCloseDialog()" (buttonClick)="onButtonClick($event)">
+    [loading]="isSubmitting" customClass="dialog-scrollable" (closeDialog)="onCloseDialog()" (buttonClick)="onButtonClick($event)">
 
     <div class="feedback-form">
         <div class="form-item">
             <label class="form-label">{{ 'FEEDBACK_DIALOG.FEEDBACK_TYPE' | translate }}
                 <span class="required">*</span>
             </label>
-            <nz-radio-group [(ngModel)]="feedbackType">
+            <nz-radio-group [(ngModel)]="feedbackType" (ngModelChange)="onFeedbackTypeChange($event)">
                 @for(type of feedbackTypes; track type.value) {
                 <label nz-radio [nzValue]="type.value">{{ type.label }}</label>
                 }
@@ -67,6 +67,7 @@
         <div class="tips">
             <div>{{ 'FEEDBACK_DIALOG.TIP_1' | translate }}</div>
             <div>{{ 'FEEDBACK_DIALOG.TIP_2' | translate }} <a (click)="openUrl()">{{ 'FEEDBACK_DIALOG.TIP_2_LINK' | translate }}</a> {{ 'FEEDBACK_DIALOG.TIP_2_END' | translate }}</div>
+            <div>{{ 'FEEDBACK_DIALOG.TIP_3' | translate }}</div>
         </div>
     </div>
 

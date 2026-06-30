@@ -1,13 +1,174 @@
 const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, clipboard } = require("electron");
 const { SerialPort } = require("serialport");
-const { createThrottledSerialPort, listPorts } = require("./serial");
+const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
-const { existsSync, statSync } = require("fs");
+const { createHash } = require("crypto");
+const { existsSync, statSync, createReadStream } = require("fs");
+const { createInterface } = require("readline");
 const { isAbsolute } = require("path");
 const { tmpdir } = require("os");
+const nodeFsp = require("node:fs/promises");
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
+
+const pathApi = {
+  getUserHome: () => require("os").homedir(),
+  getAilyChildPath: () => process.env.AILY_CHILD_PATH,
+  getAppDataPath: () => process.env.AILY_APPDATA_PATH,
+  getAilyBuilderPath: () => process.env.AILY_BUILDER_PATH,
+  getAilyBuilderBuildPath: () => process.env.AILY_BUILDER_BUILD_PATH,
+  getUserDocuments: () => require("os").homedir() + `${pt}Documents`,
+  isExists: (path) => existsSync(path),
+  getElectronPath: () => {
+    if (__dirname.includes('app.asar.unpacked')) {
+      return __dirname.replace('app.asar.unpacked', 'app.asar');
+    }
+    return __dirname;
+  },
+  isDir: (path) => statSync(path).isDirectory(),
+  join: (...args) => require("path").join(...args),
+  dirname: (path) => require("path").dirname(path),
+  extname: (path) => require("path").extname(path),
+  normalize: (path) => require("path").normalize(path),
+  resolve: (path) => require("path").resolve(path),
+  relative: (from, to) => require("path").relative(from, to),
+  basename: (path, suffix = undefined) => require("path").basename(path, suffix),
+  isAbsolute: (path) => isAbsolute(path),
+};
+
+const fspApi = {
+  glob: (...args) => nodeFsp.glob(...args),
+  readFile: (...args) => nodeFsp.readFile(...args),
+  writeFile: (...args) => nodeFsp.writeFile(...args),
+  appendFile: (...args) => nodeFsp.appendFile(...args),
+  readdir: (...args) => nodeFsp.readdir(...args),
+  stat: (...args) => nodeFsp.stat(...args),
+  mkdir: (...args) => nodeFsp.mkdir(...args),
+  rm: (...args) => nodeFsp.rm(...args),
+  access: (...args) => nodeFsp.access(...args),
+  unlink: (...args) => nodeFsp.unlink(...args),
+  open: (...args) => nodeFsp.open(...args),
+};
+
+async function readLinesWithMode(filePath, options = {}) {
+  const mode = options?.mode === 'head' || options?.mode === 'sed' ? options.mode : 'tail';
+  const maxLines = Number.isFinite(options?.maxLines) ? Math.max(1, Math.floor(options.maxLines)) : 20;
+  const startLine = Number.isFinite(options?.startLine) ? Math.max(1, Math.floor(options.startLine)) : 1;
+  const endLine = Number.isFinite(options?.endLine) ? Math.max(startLine, Math.floor(options.endLine)) : startLine;
+  const filterPattern = typeof options?.filterPattern === 'string' && options.filterPattern.trim() ? new RegExp(options.filterPattern) : null;
+  const timestampFromMs = Number.isFinite(options?.timestampFromMs) ? Number(options.timestampFromMs) : null;
+  const timestampToMs = Number.isFinite(options?.timestampToMs) ? Number(options.timestampToMs) : null;
+
+  return await new Promise((resolve, reject) => {
+    const input = createReadStream(filePath, { encoding: 'utf8' });
+    const rl = createInterface({
+      input,
+      crlfDelay: Infinity,
+    });
+
+    const headLines = [];
+    const tailLines = [];
+    const sedLines = [];
+    let matchedLineNumber = 0;
+    let settled = false;
+
+    const finalize = (lines) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(lines);
+    };
+    const fail = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      rl.removeAllListeners();
+      input.removeAllListeners();
+    };
+    const stopEarly = (lines) => {
+      rl.close();
+      input.destroy();
+      finalize(lines);
+    };
+
+    rl.on('line', (line) => {
+      if (filterPattern && !filterPattern.test(line)) {
+        return;
+      }
+      if (!matchesTimestampRange(line, timestampFromMs, timestampToMs)) {
+        return;
+      }
+
+      matchedLineNumber += 1;
+      if (mode === 'head') {
+        headLines.push(line);
+        if (headLines.length >= maxLines) {
+          stopEarly(headLines);
+        }
+        return;
+      }
+
+      if (mode === 'sed') {
+        if (matchedLineNumber >= startLine && matchedLineNumber <= endLine) {
+          sedLines.push(line);
+        }
+        if (matchedLineNumber >= endLine) {
+          stopEarly(sedLines);
+        }
+        return;
+      }
+
+      tailLines.push(line);
+      if (tailLines.length > maxLines) {
+        tailLines.shift();
+      }
+    });
+
+    rl.once('close', () => {
+      if (settled) {
+        return;
+      }
+      finalize(mode === 'head' ? headLines : mode === 'sed' ? sedLines : tailLines);
+    });
+    rl.once('error', fail);
+    input.once('error', fail);
+  });
+}
+
+function matchesTimestampRange(line, timestampFromMs, timestampToMs) {
+  if (timestampFromMs === null && timestampToMs === null) {
+    return true;
+  }
+
+  const timestampMs = extractLeadingTimestampMs(line);
+  if (timestampMs === null) {
+    return false;
+  }
+  if (timestampFromMs !== null && timestampMs < timestampFromMs) {
+    return false;
+  }
+  if (timestampToMs !== null && timestampMs > timestampToMs) {
+    return false;
+  }
+  return true;
+}
+
+function extractLeadingTimestampMs(line) {
+  const match = String(line || '').match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]/);
+  if (!match) {
+    return null;
+  }
+  const parsed = Date.parse(match[1].replace(' ', 'T'));
+  return Number.isNaN(parsed) ? null : parsed;
+}
 
 contextBridge.exposeInMainWorld("electronAPI", {
   ipcRenderer: {
@@ -15,35 +176,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     on: (channel, callback) => ipcRenderer.on(channel, callback),
     invoke: (channel, data) => ipcRenderer.invoke(channel, data),
   },
-  path: {
-    getUserHome: () => require("os").homedir(),
-    getAilyChildPath: () => process.env.AILY_CHILD_PATH,
-    getAppDataPath: () => process.env.AILY_APPDATA_PATH,
-    getAilyBuilderPath: () => process.env.AILY_BUILDER_PATH,
-    getAilyBuilderBuildPath: () => process.env.AILY_BUILDER_BUILD_PATH,
-    getUserDocuments: () => require("os").homedir() + `${pt}Documents`,
-    isExists: (path) => existsSync(path),
-    getElectronPath: () => {
-      // 当 preload.js 从 asar 解包后，将路径重定向到 asar 内部以便 fs 操作正常工作
-      if (__dirname.includes('app.asar.unpacked')) {
-        return __dirname.replace('app.asar.unpacked', 'app.asar');
-      }
-      return __dirname;
-    },
-    isDir: (path) => statSync(path).isDirectory(),
-    join: (...args) => require("path").join(...args),
-    dirname: (path) => require("path").dirname(path),
-    extname: (path) => require("path").extname(path),
-    normalize: (path) => require("path").normalize(path),
-    resolve: (path) => require("path").resolve(path),
-    relative: (from, to) => require("path").relative(from, to),
-    basename: (path, suffix = undefined) => require("path").basename(path, suffix),
-    isAbsolute: (path) => isAbsolute(path),
-  },
+  path: pathApi,
+  fsp: fspApi,
   versions: () => process.versions,
   SerialPort: {
     list: async () => await listPorts(),
-    create: (options) => createThrottledSerialPort(options)
+    create: (options) => createThrottledSerialPort(options),
+    createRaw: (options) => createRawSerialPort(options)
   },
   os: {
     tmpdir: () => tmpdir(),
@@ -56,6 +195,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     isLinux: process.platform === "linux",
     lang: process.env.AILY_SYSTEM_LANG || 'zh-CN'
   },
+  /** 在访达 / 资源管理器中高亮真实路径（须为绝对路径） */
+  shell: {
+    showItemInFolder: (fullPath) => {
+      if (typeof fullPath !== "string" || !fullPath) {
+        return;
+      }
+      shell.showItemInFolder(fullPath);
+    },
+  },
   terminal: {
     init: (data) => ipcRenderer.invoke("terminal-create", data),
     getShell: () => ipcRenderer.invoke("terminal-get-shell"),
@@ -64,7 +212,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
         callback(data);
       });
     },
+    onPidData: (pid, callback) => {
+      const channel = `terminal-inc-data-${pid}`;
+      const listener = (event, payload) => {
+        callback(payload);
+      };
+      ipcRenderer.on(channel, listener);
+      return () => {
+        ipcRenderer.removeListener(channel, listener);
+      };
+    },
+    onPidExit: (pid, callback) => {
+      const channel = `terminal-exit-${pid}`;
+      const listener = (event, payload) => {
+        callback(payload);
+      };
+      ipcRenderer.on(channel, listener);
+      return () => {
+        ipcRenderer.removeListener(channel, listener);
+      };
+    },
     sendInput: (data) => ipcRenderer.send("terminal-to-pty", data),
+    spawnCommand: (data) => ipcRenderer.invoke("terminal-spawn-command", data),
     sendInputAsync: (data) => ipcRenderer.invoke("terminal-to-pty-async", data),
     close: (data) => ipcRenderer.send("terminal-close", data),
     resize: (data) => ipcRenderer.send("terminal-resize", data),
@@ -104,19 +273,64 @@ contextBridge.exposeInMainWorld("electronAPI", {
     // 强制终止进程（当普通中断无效时）
     killProcess: (pid, processName) => ipcRenderer.invoke("terminal-kill-process", { pid, processName }),
   },
+  ailyServicesStream: {
+    start: (data) => ipcRenderer.invoke("aily-services-stream-start", data),
+    cancel: (streamId) => ipcRenderer.invoke("aily-services-stream-cancel", { streamId }),
+    onEvent: (streamId, callback) => {
+      const channel = `aily-services-stream-event-${streamId}`;
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on(channel, listener);
+      return () => {
+        ipcRenderer.removeListener(channel, listener);
+      };
+    },
+  },
+  chatRuntimeHost: {
+    registerRuntimeOwner: (runtimeOwnerId) => ipcRenderer.invoke("aily-chat-runtime-owner-register", { runtimeOwnerId }),
+    unregisterRuntimeOwner: (runtimeOwnerId) => ipcRenderer.invoke("aily-chat-runtime-owner-unregister", { runtimeOwnerId }),
+    registerResourceOperationHandler: (handlerId) => ipcRenderer.invoke("aily-chat-runtime-resource-handler-register", { handlerId }),
+    unregisterResourceOperationHandler: (handlerId) => ipcRenderer.invoke("aily-chat-runtime-resource-handler-unregister", { handlerId }),
+    call: (method, args) => ipcRenderer.invoke("aily-chat-runtime-host-command", { method, args }),
+    onRuntimeOwnerCommand: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("aily-chat-runtime-owner-command", listener);
+      return () => ipcRenderer.removeListener("aily-chat-runtime-owner-command", listener);
+    },
+    onResourceOperationCommand: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("aily-chat-runtime-resource-handler-command", listener);
+      return () => ipcRenderer.removeListener("aily-chat-runtime-resource-handler-command", listener);
+    },
+    sendRuntimeOwnerResponse: (payload) => ipcRenderer.send("aily-chat-runtime-owner-response", payload),
+    sendResourceOperationResponse: (payload) => ipcRenderer.send("aily-chat-runtime-resource-handler-response", payload),
+    emitRuntimeOwnerEvent: (payload) => ipcRenderer.send("aily-chat-runtime-owner-event", payload),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("aily-chat-runtime-host-event", listener);
+      return () => ipcRenderer.removeListener("aily-chat-runtime-host-event", listener);
+    },
+  },
+  webviewBridge: {
+    fetchPage: (data) => ipcRenderer.invoke("webview-bridge-fetch", data),
+    searchWeb: (data) => ipcRenderer.invoke("webview-bridge-search", data),
+  },
   iWindow: {
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
     isMaximized: () => ipcRenderer.sendSync("window-is-maximized"),
     unmaximize: () => ipcRenderer.send("window-unmaximize"),
+    setSize: (data) => ipcRenderer.invoke("window-set-size", data),
     close: () => ipcRenderer.send("window-close"),
     // 子窗口收回到主窗口事件
     goMain: (data) => ipcRenderer.send("window-go-main", data),
+    returnMain: (data) => ipcRenderer.invoke("window-return-main", data),
     // 向其他窗口发送消息
     send: (data) => ipcRenderer.invoke("window-send", data),
     onReceive: (callback) => ipcRenderer.on("window-receive", callback),
     // 检查窗口是否为活动窗口
     isFocused: () => ipcRenderer.sendSync("window-is-focused"),
+    // 后台时需要用户注意时：闪烁任务栏 / Dock 弹跳等（见 main 进程 window-request-attention）
+    requestAttention: () => ipcRenderer.invoke('window-request-attention'),
     // 检查窗口是否最小化
     isMinimized: () => ipcRenderer.sendSync("window-is-minimized"),
     // 监听窗口获得焦点事件
@@ -163,6 +377,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
     focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
   },
+  coderEmbed: {
+    getBaseUrl: () => ipcRenderer.invoke("coder-embed-get-base-url"),
+  },
   subWindow: (() => {
     // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失
     let _cachedInitData = null;
@@ -177,6 +394,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     });
     return {
       open: (options) => ipcRenderer.send("window-open", options),
+      focus: (path) => ipcRenderer.invoke("window-focus-by-url", path),
       close: () => ipcRenderer.send("window-close"),
       onInitData: (callback) => {
         _initDataCallback = callback;
@@ -188,6 +406,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
       },
     };
   })(),
+  childToolSession: {
+    acquire: (toolId) => ipcRenderer.invoke("child-tool-session-acquire", toolId),
+    register: (payload) => ipcRenderer.invoke("child-tool-session-register", payload),
+    release: (toolId) => ipcRenderer.invoke("child-tool-session-release", toolId),
+    restart: (toolId) => ipcRenderer.invoke("child-tool-session-restart", toolId),
+    unregister: (payload) => ipcRenderer.invoke("child-tool-session-unregister", payload),
+  },
+  codeViewer: {
+    publishState: (state) => ipcRenderer.send("blockly-code-viewer-state-update", state),
+    getState: () => ipcRenderer.invoke("blockly-code-viewer-state-get"),
+    onState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on("blockly-code-viewer-state", listener);
+      return () => ipcRenderer.removeListener("blockly-code-viewer-state", listener);
+    },
+  },
   builder: {
     init: (data) => {
       return new Promise((resolve, reject) => {
@@ -205,6 +439,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   fs: {
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
+    readFileBuffer: (path) => {
+      const buffer = require("fs").readFileSync(path);
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    },
     readFileAsBase64: (path) => {
       const buffer = require("fs").readFileSync(path);
       return buffer.toString('base64');
@@ -215,6 +453,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
     readdirSync: (path) => require("fs").readdirSync(path),
     writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
+    writeFileBuffer: (path, data) => {
+      require("fs").writeFileSync(path, Buffer.from(data));
+    },
+    md5Buffer: (data) => {
+      return createHash("md5").update(Buffer.from(data)).digest("hex");
+    },
     writeBase64File: (path, base64Data) => {
       const buffer = Buffer.from(base64Data, 'base64');
       require("fs").writeFileSync(path, buffer);
@@ -234,6 +478,30 @@ contextBridge.exposeInMainWorld("electronAPI", {
     linkSync: (existingPath, newPath) => require("fs").linkSync(existingPath, newPath),
     chmodSync: (path, mode) => require("fs").chmodSync(path, mode),
     appendFileSync: (path, data) => require("fs").appendFileSync(path, data),
+    readHeadLines: async (path, options = {}) => {
+      return await readLinesWithMode(path, { ...options, mode: 'head' });
+    },
+    readTailLines: async (path, options = {}) => {
+      return await readLinesWithMode(path, { ...options, mode: 'tail' });
+    },
+    readLineRange: async (path, options = {}) => {
+      return await readLinesWithMode(path, { ...options, mode: 'sed' });
+    },
+    watch: (path, callback, options = {}) => {
+      const watcher = require("fs").watch(
+        path,
+        { persistent: false, ...options },
+        (eventType, filename) => callback({
+          eventType,
+          filename: filename ? filename.toString() : '',
+        })
+      );
+      watcher.on('error', (error) => callback({
+        eventType: 'error',
+        error: error?.message || String(error),
+      }));
+      return () => watcher.close();
+    },
     // ---- 异步方法（通过 IPC 在主进程执行，不阻塞渲染进程） ----
     readFile: (path, encoding) => ipcRenderer.invoke("fs-readFile", path, encoding),
     writeFile: (path, data, encoding) => ipcRenderer.invoke("fs-writeFile", path, data, encoding),
@@ -243,6 +511,24 @@ contextBridge.exposeInMainWorld("electronAPI", {
     readDir: (path) => ipcRenderer.invoke("fs-readDir", path),
     mkdir: (path, options) => ipcRenderer.invoke("fs-mkdir", path, options),
     unlink: (path) => ipcRenderer.invoke("fs-unlink", path),
+    watch: (path, listener, options = {}) => {
+      const watcher = require("fs").watch(
+        path,
+        {
+          persistent: options?.persistent !== false,
+          recursive: options?.recursive === true,
+        },
+        (eventType, filename) => {
+          if (typeof listener === 'function') {
+            listener(eventType, typeof filename === 'string' ? filename : filename?.toString?.() ?? null);
+          }
+        },
+      );
+
+      return {
+        close: () => watcher.close(),
+      };
+    },
   },
   glob: {
     // 同步版本 - 通过 IPC 在主进程执行
@@ -254,9 +540,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     async: (pattern, options = {}) => {
       return ipcRenderer.invoke("glob-search-async", pattern, options);
     }
-  },
-  ble: {
-
   },
   wifi: {
 
@@ -604,6 +887,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
           .catch((error) => reject(error));
       });
     }
+  },
+  // BLE API
+  ble: {
+    onDeviceList: (callback) => {
+      const listener = (_event, devices) => {
+        console.log('[BLE:preload] device list from main:', Array.isArray(devices) ? devices.length : 'invalid', devices);
+        callback(devices);
+      };
+      ipcRenderer.on('ble-device-list', listener);
+      return () => ipcRenderer.removeListener('ble-device-list', listener);
+    },
+    selectDevice: (deviceId) => ipcRenderer.invoke('ble-select-device', deviceId),
+    setPreferredDevice: (deviceId) => ipcRenderer.invoke('ble-set-preferred-device', deviceId),
+    cancelDeviceRequest: () => ipcRenderer.invoke('ble-cancel-device-request'),
+    startDeviceListUpdates: () => ipcRenderer.invoke('ble-start-device-list-updates'),
+    stopDeviceListUpdates: () => ipcRenderer.invoke('ble-stop-device-list-updates'),
+    debugState: () => ipcRenderer.invoke('ble-debug-state'),
   },
   // 系统通知 API
   notification: {

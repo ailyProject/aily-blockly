@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "Os primeiros {{count}} aplicativos serão mostrados na barra de ferramentas",
+        "RESET": "Redefinir",
+        "IN_HEADER": "Barra de ferramentas",
+        "TOOLBAR_APPS": "Aplicativos da barra de ferramentas",
+        "ALL_APPS": "Todos os aplicativos",
+        "DRAG_HERE": "Arraste aqui",
+        "CODE_DESC": "Ver código gerado",
+        "LIB_MANAGER_DESC": "Gerenciar dependências de biblioteca do projeto",
+        "SERIAL_DESC": "Ferramenta de monitor serial",
+        "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
+        "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
+        "FFS_MANAGER_DESC": "Ferramenta de gerenciamento de partições do sistema de arquivos ESP32",
+        "AI_DESC": "Assistente de IA",
+        "MODEL_STORE_DESC": "Loja de modelos de IA",
+        "CLOUD_SPACE_DESC": "Espaço de armazenamento em nuvem",
+        "USER_CENTER_DESC": "Centro de usuário e configurações",
+        "SIMULATOR_DESC": "Simulador (Em desenvolvimento)",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN, RS485 and Modbus frame builder/debugger",
+        "BLE_DEBUGGER_DESC": "BLE scan, GATT read/write and notification debugger"
+    }
+}

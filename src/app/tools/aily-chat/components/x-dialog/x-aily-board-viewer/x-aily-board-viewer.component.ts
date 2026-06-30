@@ -83,6 +83,6 @@ export class XAilyBoardViewerComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   logDetail() {
-    console.log('状态详情:', this.boardInfo);
+    // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
   }
 }

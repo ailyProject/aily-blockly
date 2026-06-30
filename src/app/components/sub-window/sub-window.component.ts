@@ -1,4 +1,4 @@
-import { Component, Input, ChangeDetectorRef, OnDestroy } from '@angular/core';
+import { Component, Input, Output, EventEmitter, ChangeDetectorRef, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
 import { PlatformService } from '../../services/platform.service';
 import { ElectronService } from '../../services/electron.service';
@@ -12,6 +12,8 @@ import { ElectronService } from '../../services/electron.service';
 export class SubWindowComponent implements OnDestroy {
   @Input() title = 'sub-window';
   @Input() winBtns = ['gomain', 'minimize', 'maximize', 'close'];
+  @Output() goMainEvent = new EventEmitter<void>();
+  @Output() closeEvent = new EventEmitter<void>();
 
   currentUrl;
   isMacFullScreen = false;
@@ -72,6 +74,10 @@ export class SubWindowComponent implements OnDestroy {
   }
 
   goMain() {
+    if (this.goMainEvent.observed) {
+      this.goMainEvent.emit();
+      return;
+    }
     window['iWindow'].goMain(this.currentUrl);
   }
 
@@ -89,6 +95,10 @@ export class SubWindowComponent implements OnDestroy {
   }
 
   close() {
+    if (this.closeEvent.observed) {
+      this.closeEvent.emit();
+      return;
+    }
     window['iWindow'].close();
   }
 }

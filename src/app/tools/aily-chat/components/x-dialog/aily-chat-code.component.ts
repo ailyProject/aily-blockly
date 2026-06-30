@@ -6,22 +6,22 @@ import {
   OnDestroy,
   ChangeDetectionStrategy,
   ChangeDetectorRef,
+  forwardRef,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { XAilyStateViewerComponent } from './x-aily-state-viewer/x-aily-state-viewer.component';
 import { XAilyButtonViewerComponent } from './x-aily-button-viewer/x-aily-button-viewer.component';
 import { XAilyBoardViewerComponent } from './x-aily-board-viewer/x-aily-board-viewer.component';
 import { XAilyLibraryViewerComponent } from './x-aily-library-viewer/x-aily-library-viewer.component';
-import { XAilyThinkViewerComponent } from './x-aily-think-viewer/x-aily-think-viewer.component';
 import { MermaidCodeComponent } from 'ngx-x-markdown';
 import { XAilyContextViewerComponent } from './x-aily-context-viewer/x-aily-context-viewer.component';
 import { XAilyBlocklyViewerComponent } from './x-aily-blockly-viewer/x-aily-blockly-viewer.component';
-import { XAilyErrorViewerComponent } from './x-aily-error-viewer/x-aily-error-viewer.component';
+import { XAilyErrorViewerComponent, type ErrorActionItem } from './x-aily-error-viewer/x-aily-error-viewer.component';
 import { XAilyTaskActionViewerComponent } from './x-aily-task-action-viewer/x-aily-task-action-viewer.component';
-import { XAilyQuestionViewerComponent } from './x-aily-question-viewer/x-aily-question-viewer.component';
-import { XAilyApprovalViewerComponent } from './x-aily-approval-viewer/x-aily-approval-viewer.component';
 import { XAilyCodeViewerComponent } from './x-aily-code-viewer/x-aily-code-viewer.component';
 import { XAilyDefaultViewerComponent } from './x-aily-default-viewer/x-aily-default-viewer.component';
+import { ChatActivityGroupComponent } from './chat-activity-group.component';
+import type { ChatPart } from '../../core/chat-parts';
+import { buildCompatActivityParts } from './chat-activity-compat';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
@@ -31,12 +31,13 @@ import { MermaidComponent } from '../aily-mermaid-viewer/mermaid/mermaid.compone
 import mermaid from 'mermaid';
 import { AilyHost } from '../../core/host';
 import { ChatService } from '../../services/chat.service';
+import { ChatEngineService } from '../../services/chat-engine.service';
 
 /** 所有 aily-* 自定义代码块类型 */
 const AILY_TYPES = [
   'aily-state', 'aily-button', 'aily-board', 'aily-library',
   'aily-think', 'aily-mermaid', 'aily-context', 'aily-blockly',
-  'aily-error', 'aily-task-action', 'aily-question', 'aily-approval',
+  'aily-error', 'aily-task-action',
 ] as const;
 
 /**
@@ -54,6 +55,9 @@ const AILY_TYPES = [
  * - aily-blockly:     Blockly 积木代码查看器
  * - aily-error:       错误信息卡片
  * - aily-task-action: 任务动作面板
+ *
+* `aily-question` / `aily-approval` 已迁到 Part-based 主路径并已降为非渲染入口，
+ * 这里只保留 active source 仍会直接渲染的 code-block 类型。
  * - 其他:             标准代码块
  */
 @Component({
@@ -64,25 +68,22 @@ const AILY_TYPES = [
     NzToolTipModule,
     NzPopconfirmModule,
     TranslateModule,
-    XAilyStateViewerComponent,
     XAilyButtonViewerComponent,
     XAilyBoardViewerComponent,
     XAilyLibraryViewerComponent,
-    XAilyThinkViewerComponent,
     MermaidCodeComponent,
     XAilyContextViewerComponent,
     XAilyBlocklyViewerComponent,
     XAilyErrorViewerComponent,
     XAilyTaskActionViewerComponent,
-    XAilyQuestionViewerComponent,
-    XAilyApprovalViewerComponent,
     XAilyCodeViewerComponent,
     XAilyDefaultViewerComponent,
+    forwardRef(() => ChatActivityGroupComponent),
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    @if (isType('aily-state') && parsedData) {
-      <x-aily-state-viewer [data]="parsedData" />
+    @if (isType('aily-state') && compatActivityParts.length > 0) {
+      <aily-chat-activity-group [parts]="compatActivityParts" [doing]="streamStatus === 'loading'" />
     }
     @if (isType('aily-button') && (parsedArray || streamStatus === 'loading')) {
       <x-aily-button-viewer [data]="parsedArray" [streamStatus]="streamStatus" />
@@ -93,8 +94,8 @@ const AILY_TYPES = [
     @if (isType('aily-library')) {
       <x-aily-library-viewer [data]="parsedData" />
     }
-    @if (isType('aily-think') && parsedData) {
-      <x-aily-think-viewer [data]="parsedData" />
+    @if (isType('aily-think') && compatActivityParts.length > 0) {
+      <aily-chat-activity-group [parts]="compatActivityParts" [doing]="streamStatus === 'loading'" />
     }
     @if (isType('aily-mermaid') || isMermaidStd) {
       <div class="aily-mermaid-wrapper" (click)="openMermaidFullscreen()" title="点击全屏查看">
@@ -152,16 +153,10 @@ const AILY_TYPES = [
       <x-aily-blockly-viewer [data]="parsedData" />
     }
     @if (isType('aily-error') && parsedData) {
-      <x-aily-error-viewer [data]="parsedData" />
+      <x-aily-error-viewer [data]="parsedData" (action)="handleErrorAction($event)" />
     }
     @if (isType('aily-task-action') && parsedData) {
       <x-aily-task-action-viewer [data]="parsedData" />
-    }
-    @if (isType('aily-question') && (parsedData || parsedArray)) {
-      <x-aily-question-viewer [data]="parsedData || parsedArray" [streamStatus]="streamStatus" />
-    }
-    @if (isType('aily-approval') && parsedData) {
-      <x-aily-approval-viewer [data]="parsedData" />
     }
     @if (isRegularCode) {
       <x-aily-code-viewer [children]="children" [block]="block" [lang]="lang" />
@@ -186,7 +181,7 @@ const AILY_TYPES = [
       transition: opacity 0.2s;
       z-index: 1;
       border: 1px solid var(--aily-border-tertiary, #767676);
-      border-radius: 8px;
+      border-radius: 5px;
       padding: 3px;
       background: var(--aily-bg-tertiary, #333333);
     }
@@ -198,7 +193,7 @@ const AILY_TYPES = [
       height: 20px;
       padding: 0;
       border: none;
-      border-radius: 4px;
+      border-radius: 5px;
       background: transparent;
       color: var(--aily-text-muted, #bababa);
       cursor: pointer;
@@ -238,10 +233,12 @@ export class AilyChatCodeComponent implements OnChanges, OnDestroy {
   // ===== State =====
   parsedData: any = null;
   parsedArray: any[] | null = null;
+  compatActivityParts: readonly ChatPart[] = [];
   mermaidCopySuccess = false;
   mermaidDownloadSuccess = false;
   private copySuccessTimer: ReturnType<typeof setTimeout> | null = null;
   private downloadSuccessTimer: ReturnType<typeof setTimeout> | null = null;
+  private errorActionInFlight = false;
 
   constructor(
     private cdr: ChangeDetectorRef,
@@ -249,6 +246,7 @@ export class AilyChatCodeComponent implements OnChanges, OnDestroy {
     private message: NzMessageService,
     private translate: TranslateService,
     private chatService: ChatService,
+    private chatEngine: ChatEngineService,
   ) {}
 
   // ===== Getters =====
@@ -327,6 +325,7 @@ export class AilyChatCodeComponent implements OnChanges, OnDestroy {
     const prevParsedArray = this.lang === 'aily-button' ? this.parsedArray : null;
     this.parsedData = null;
     this.parsedArray = null;
+    this.compatActivityParts = [];
 
     if (!this.block || !AILY_TYPES.includes(this.lang as any)) return;
 
@@ -339,6 +338,7 @@ export class AilyChatCodeComponent implements OnChanges, OnDestroy {
         this.parsedArray = parsed;
       } else {
         this.parsedData = parsed;
+        this.compatActivityParts = this.buildCompatActivityParts(parsed);
       }
     } catch {
       // 流式过程中 parse 可能因中间 chunk 失败，保留上次成功结果避免按钮闪烁
@@ -346,6 +346,92 @@ export class AilyChatCodeComponent implements OnChanges, OnDestroy {
         this.parsedArray = prevParsedArray;
       }
     }
+  }
+
+  private buildCompatActivityParts(parsed: unknown): readonly ChatPart[] {
+    if (this.isType('aily-think')) {
+      return buildCompatActivityParts(parsed, 'aily-think');
+    }
+    if (this.isType('aily-state')) {
+      return buildCompatActivityParts(parsed, 'aily-state');
+    }
+    return [];
+  }
+
+  async handleErrorAction(action: ErrorActionItem): Promise<void> {
+    if (this.isRetryLastAction(action)) {
+      if (this.errorActionInFlight) {
+        return;
+      }
+
+      this.errorActionInFlight = true;
+      try {
+        await this.chatEngine.retryLastAction();
+      } catch (error) {
+        console.warn('[AilyChatCode] retry-last action failed', error);
+        this.message.error('重试请求发送失败');
+      } finally {
+        this.errorActionInFlight = false;
+        this.cdr.markForCheck();
+      }
+      return;
+    }
+
+    const confirmationData = this.readRetryConfirmationData(action);
+    if (!confirmationData || this.errorActionInFlight) {
+      return;
+    }
+
+    const sessionId = this.chatService.currentSessionId;
+    if (!sessionId) {
+      this.message.error('当前会话不可用，无法重试');
+      return;
+    }
+
+    this.errorActionInFlight = true;
+    try {
+      await this.chatEngine.submitInteractionActionRequest(
+        action.label,
+        {
+          kind: 'confirmation',
+          payload: {
+            result: 'approved',
+            source: 'error_details',
+            acceptedConfirmationData: [confirmationData],
+          },
+        },
+        undefined,
+        sessionId,
+      );
+    } catch (error) {
+      console.warn('[AilyChatCode] error action failed', error);
+      this.message.error('重试请求发送失败');
+    } finally {
+      this.errorActionInFlight = false;
+      this.cdr.markForCheck();
+    }
+  }
+
+  private readRetryConfirmationData(action: ErrorActionItem): { ailyContinueOnError: true } | null {
+    const data = action.data;
+    if (data && typeof data === 'object' && !Array.isArray(data) && (data as Record<string, unknown>)['ailyContinueOnError'] === true) {
+      return { ailyContinueOnError: true };
+    }
+
+    const actionRecord = action as ErrorActionItem & { action?: unknown };
+    if (action.id === 'retry-stream-response' || action.id === 'try_again' || actionRecord.action === 'try_again') {
+      return { ailyContinueOnError: true };
+    }
+
+    return null;
+  }
+
+  private isRetryLastAction(action: ErrorActionItem): boolean {
+    const data = action.data;
+    return !!data
+      && typeof data === 'object'
+      && !Array.isArray(data)
+      && (data as Record<string, unknown>)['ailyRetryLastAction'] === true;
   }
 
   private decodeEntities(html: string): string {

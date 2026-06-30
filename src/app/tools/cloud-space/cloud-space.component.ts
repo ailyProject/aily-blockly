@@ -436,6 +436,24 @@ export class CloudSpaceComponent {
     }
   }
 
+  toggleTemplate(item) {
+    if (item.is_template) {
+      this.cloudService.unsetTemplate(item.id).subscribe(res => {
+        this.message.info(`项目 "${item.nickname}" 已取消模板`);
+        item.is_template = false;
+      });
+    } else {
+      this.cloudService.setTemplate(item.id).subscribe(res => {
+        if (res.status !== 200) {
+          this.message.error(`${res.messages}`);
+          return;
+        }
+        this.message.info(`项目 "${item.nickname}" 已设为模板`);
+        item.is_template = true;
+      });
+    }
+  }
+
   deleteCloudProject(item) {
     if (!item || !item.id) return;
     this.cloudService.deleteProject(item.id).subscribe(res => {

@@ -1,5 +1,5 @@
-import { ToolUseResult } from "./tools";
-import { CmdService } from "../../../services/cmd.service";
+import type { ToolUseResult } from '../core/tool-types';
+import { CmdOutput, CmdService } from '../../../services/cmd.service';
 import { 
     CommandSecurity, 
     validateCommand, 
@@ -110,8 +110,9 @@ export async function executeCommandTool(
         // ==================== 安全验证结束 ====================
 
         // 使用 Promise 包装 Observable 来等待命令执行完成
-        const result = await new Promise<string>((resolve, reject) => {
+        const result = await new Promise<{ output: string; closeEvent: CmdOutput | null }>((resolve, reject) => {
             let output = '';
+            let closeEvent: CmdOutput | null = null;
             
             // 设置超时
             const timeoutId = setTimeout(() => {
@@ -119,17 +120,22 @@ export async function executeCommandTool(
             }, COMMAND_EXECUTION_LIMITS.timeout);
             
             cmdService.run(data.command, data.cwd, false, true).subscribe({
-                next: (data) => {
+                next: (chunk: CmdOutput) => {
                     // console.log(`Command output received:`, data);
+
+                    if (chunk?.type === 'close') {
+                        closeEvent = chunk;
+                        return;
+                    }
 
                     // 正确处理CmdOutput对象，提取data字段
                     let textOutput = '';
-                    if (data && data.data) {
-                        textOutput = data.data;
-                    } else if (data && data.error) {
-                        textOutput = data.error;
+                    if (chunk && chunk.data) {
+                        textOutput = chunk.data;
+                    } else if (chunk && chunk.error) {
+                        textOutput = chunk.error;
                     } else {
-                        textOutput = JSON.stringify(data);
+                        textOutput = '';
                     }
                     // console.log(`Command output: ${textOutput}`);
                     output += textOutput;
@@ -149,17 +155,27 @@ export async function executeCommandTool(
                 complete: () => {
                     clearTimeout(timeoutId);
                     // console.log('Command execution completed');
-                    resolve(output);
+                    resolve({ output, closeEvent });
                 }
             });
         });
 
-        toolResult = result || '命令执行完成';
-        
-        // 记录成功
+        const normalizedOutput = normalizeCommandOutput(result.output, result.closeEvent);
+        const exitCode = result.closeEvent?.code;
+        toolResult = normalizedOutput || '命令执行完成';
+        if (typeof exitCode === 'number' && exitCode !== 0) {
+            is_error = true;
+            if (!normalizedOutput) {
+                toolResult = `命令执行失败，退出码 ${exitCode}`;
+            }
+        }
+
+        // 记录执行结果
         if (auditLogId) {
-            completeAuditLog(auditLogId, true, {
-                duration: Date.now() - startTime
+            completeAuditLog(auditLogId, !is_error, {
+                duration: Date.now() - startTime,
+                metadata: typeof exitCode === 'number' ? { exitCode } : undefined,
+                errorMessage: is_error ? toolResult : undefined
             });
         }
         
@@ -182,4 +198,18 @@ export async function executeCommandTool(
             content: toolResult
         } as ToolUseResult;
     }
+}
+
+function normalizeCommandOutput(output: string, closeEvent: CmdOutput | null): string {
+    const combined = output.trim();
+    if (combined) {
+        return combined;
+    }
+
+    const fallback = [closeEvent?.stderr, closeEvent?.stdout]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .join('\n')
+        .trim();
+
+    return fallback;
 }

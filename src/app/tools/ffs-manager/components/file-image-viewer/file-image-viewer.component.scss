@@ -1,0 +1,93 @@
+.image-viewer {
+  position: relative;
+  width: 100%;
+  height: 70vh;
+  overflow: hidden;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
+  background-color: #1e1e1e;
+  cursor: grab;
+  user-select: none;
+
+  &:active,
+  &.dragging {
+    cursor: grabbing;
+  }
+}
+
+.content {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s ease-out;
+  pointer-events: none;
+
+  img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    pointer-events: auto;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+}
+
+.toolbar {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 12px;
+  z-index: 10;
+
+  .name {
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .size {
+    opacity: 0.7;
+  }
+
+  .sep {
+    opacity: 0.4;
+  }
+
+  .scale-text {
+    min-width: 42px;
+    text-align: center;
+    opacity: 0.85;
+  }
+
+  .tb-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    border-radius: 4px;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+  }
+}

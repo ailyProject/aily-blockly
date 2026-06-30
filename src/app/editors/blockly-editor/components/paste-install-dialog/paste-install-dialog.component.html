@@ -1,6 +1,6 @@
 <div class="prompt-box bborder">
     <div class="header">
-        <div class="title"><i class="fa-solid fa-puzzle-piece"></i>{{ 'PASTE_INSTALL.TITLE' | translate }}</div>
+        <div class="title"><i class="fa-solid fa-puzzle-piece"></i>{{ title }}</div>
         <div class="win-btns">
             <div class="btn ccenter close" (click)="cancel()" *ngIf="!installing">
                 <i class="fa-light fa-xmark"></i>
@@ -9,7 +9,7 @@
     </div>
     <div class="content">
         <div class="text">
-            <div class="t1">{{ 'PASTE_INSTALL.MESSAGE' | translate }}</div>
+            <div class="t1">{{ message }}</div>
             <div class="lib-list">
                 @for(lib of missingLibs; track lib.name) {
                 <div class="lib-item">
@@ -27,7 +27,7 @@
                 {{ 'PASTE_INSTALL.CANCEL' | translate }}
             </button>
             <button nz-button [nzSize]="'small'" nzType="primary" (click)="installAndPaste()" [nzLoading]="installing">
-                {{ 'PASTE_INSTALL.INSTALL_AND_PASTE' | translate }}
+                {{ confirmText }}
             </button>
         </div>
     </div>

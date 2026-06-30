@@ -2,7 +2,7 @@
   <div class="left-box">
     <div class="stitle">
       <img class="logo" [src]="logoSrc" alt="" draggable="false">
-      <div class="version">ver {{version}}</div>
+      <div class="version">ver {{version}}{{ isCnRegion ? '-cn' : '' }}</div>
     </div>
     <div class="title">{{'GUIDE.START' | translate}}</div>
     @if (showMenu) {
@@ -46,13 +46,14 @@
   </div>
   <div class="right-box ccenter">
     <div class="item" style="height: 50px;" (click)="openUrl('https://sensecraft.seeed.cc/ai/application')">
-      <div><img style="height: 16px;margin-top: -5px;" [src]="sensecraftImg" alt=""> {{'GUIDE.AI_APP_CENTER' | translate}}</div>
-      <div>{{'GUIDE.AI_APP_CENTER_DESC' | translate}}</div>
+      <div><img style="height: 16px;margin-top: -5px;" [src]="sensecraftImg" alt=""> {{'GUIDE.AI_APP_CENTER' |
+        translate}}</div>
+      <div class="desc-scroll"><span>{{'GUIDE.AI_APP_CENTER_DESC' | translate}}</span></div>
       <div class="arrow"><i class=" fa-regular fa-angle-right"></i></div>
     </div>
     <div class="item" style="height: 120px;flex-grow: 1;padding: 0;overflow: hidden;">
       <div style="padding: 5px 10px;">{{'GUIDE.NEWS' | translate}}</div>
-      <iframe src="http://guide-page.aily.pro" frameborder="0" style="height: 100%;background: transparent;"></iframe>
+      <iframe [src]="guidePageIframeSrc" frameborder="0" style="height: 100%;background: transparent;"></iframe>
     </div>
     <!-- <div class="item" (click)="gotoPlayground()">
       <div>{{'GUIDE.TUTORIAL' | translate}}</div>
@@ -68,31 +69,36 @@
     </div> -->
     <div class="item" style="height: 90px;">
       <div>{{'GUIDE.USER_GROUP' | translate}}</div>
-      <div>{{'GUIDE.USER_GROUP_DESC' | translate}}</div>
+      <div class="desc-scroll"><span>{{'GUIDE.USER_GROUP_DESC' | translate}}</span></div>
       <div class="group-btn">
-        <div (click)="showImg('https://dl.yysc.tech/blockly/wechat.jpg')">
+        @if (isCnRegion) {
+        <div (click)="showImg(wechatQrcodeUrl)">
           <i class="fa-brands fa-weixin"></i>
         </div>
-        <div (click)="showImg('https://dl.yysc.tech/blockly/qq.jpg')">
+        <div (click)="showImg(qqQrcodeUrl)">
           <i class="fa-brands fa-qq"></i>
         </div>
+        } @else {
         <div (click)="openUrl('https://github.com/orgs/ailyProject/discussions')">
           <i class="fa-brands fa-github"></i>
         </div>
         <div (click)="openUrl('https://discord.gg/ddMbGVmpQ8')">
-          <i class="fa-brands fa-discord"></i>
+          <i class="fa-brands fa-discord" style="font-size: 24px"></i>
         </div>
+        }
       </div>
     </div>
     <div class="item" style="height: 165px;">
       <div>{{'GUIDE.SPONSORS' | translate}}</div>
-      <div>{{'GUIDE.SPONSORS_DESC' | translate}}</div>
+      <div class="desc-scroll"><span>{{'GUIDE.SPONSORS_DESC' | translate}}</span></div>
       @if (sponsors.length > 0) {
-      <div id="sponsor-splide" class="splide sponsor-carousel">
-        <div class="splide__track">
-          <ul class="splide__list">
-            @for (sponsor of sponsors; track $index) {
-            <li class="splide__slide">
+      <div class="sponsor-carousel" [class.is-static]="sponsorPages.length <= 1">
+        <div class="sponsor-page-track" [class.no-transition]="!sponsorPageTransitionEnabled"
+          [style.transform]="'translateX(-' + (sponsorPageIndex * 100) + '%)'">
+          @for (page of sponsorRenderPages; track $index) {
+          <div class="sponsor-page" [attr.aria-hidden]="$index >= sponsorPages.length ? 'true' : null">
+            @for (sponsor of page; track $index) {
+            <div class="sponsor-slide">
               <div class="sponsor-item" (click)="sponsor.url && openUrl(sponsor.url)">
                 @if (sponsor.img) {
                 <div class="ccenter img-box">
@@ -106,9 +112,10 @@
                 <div class="sponsor-name">{{ sponsor.company }}</div>
                 }
               </div>
-            </li>
+            </div>
             }
-          </ul>
+          </div>
+          }
         </div>
       </div>
       }
@@ -123,9 +130,6 @@
     <div class="spinner"></div>
   </div>
   }
-  <img [src]="showImgUrl" alt="预览图片" 
-       [class.hidden]="imgLoading" 
-       (load)="onImgLoad()" 
-       (error)="onImgError()">
+  <img [src]="showImgUrl" alt="预览图片" [class.hidden]="imgLoading" (load)="onImgLoad()" (error)="onImgError()">
 </div>
 }

@@ -6,8 +6,8 @@
 .header {
   display: flex;
   align-items: center;
-  height: 35px;
-  border-bottom: 1px solid var(--aily-border-primary);
+  height: 38px;
+  border-bottom: 2px solid var(--aily-border-primary);
   background: var(--aily-bg-primary);
 
   &.darwin {
@@ -22,6 +22,10 @@
         display: none;
       }
 
+      .header-btns {
+        display: flex;
+      }
+
       .go-main {
         display: flex;
       }
@@ -34,14 +38,28 @@
   padding-left: 10px;
   display: flex;
   align-items: center;
+  gap: 6px;
   flex-grow: 1;
+  min-width: 0;
+  overflow: hidden;
   -webkit-app-region: drag;
+}
+
+.title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .win-btns {
   display: flex;
   align-items: center;
   font-size: 15px;
+
+  .header-btns {
+    display: flex;
+    align-items: center;
+  }
 
   .btn {
     font-size: 16px;

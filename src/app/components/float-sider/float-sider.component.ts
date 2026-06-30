@@ -102,7 +102,6 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   }
 
   showPinmap() {
-    if (!this.requireLogin()) return;
     let boardPackageData = JSON.parse(this.electronService.readFile(this.boardPackagePath + '/package.json'));
 
     // 如果 pinmap 被禁用，直接显示 webp 图片
@@ -247,10 +246,6 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
 
   openFeedback() {
     this.uiService.openFeedback();
-  }
-
-  openHistory() {
-    this.uiService.openHistory();
   }
 
   async showCircuit() {

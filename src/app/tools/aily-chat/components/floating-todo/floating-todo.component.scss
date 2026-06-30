@@ -1,256 +1,267 @@
-.todo-panel {
-  background: var(--aily-bg-secondary);
-  color: var(--aily-text-tertiary);
-  font-size: 13px;
-  border-top: 1px solid var(--aily-border-primary);
+:host {
+  display: block;
+  width: 100%;
+}
 
-  .todo-panel-header {
-    height: 30px;
-    padding: 0 12px;
-    border-bottom: 1px solid var(--aily-border-primary);
-    user-select: none;
-    background: var(--aily-surface-header);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+.chat-todo-list-widget {
+  padding: 0 3px;
+  box-sizing: border-box;
+  border: 1px solid var(--aily-chat-xdialog-msg-divider, rgba(255, 255, 255, 0.08));
+  border-bottom: none;
+  border-radius: var(--aily-chat-widget-top-radius, 8px) var(--aily-chat-widget-top-radius, 8px) 0 0;
+  background: color-mix(in srgb, var(--aily-bg-elevated, #1f1f1f) 72%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--aily-text-tertiary, #cccccc);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+}
 
-    &:hover {
-      background: var(--aily-bg-tertiary);
+.todo-list-expand {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
 
-      .header-actions {
-        opacity: 1;
-      }
-    }
+.todo-list-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  align-self: stretch;
+  width: 100%;
+  min-height: 30px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--aily-text-tertiary, #cccccc);
+  cursor: pointer;
 
-    .header-content {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      cursor: pointer;
-      flex: 1;
-
-      .panel-icon {
-        font-size: 12px;
-        color: var(--aily-icon-color);
-        transition: transform 0.2s ease;
-
-        &.expanded {
-          transform: rotate(90deg);
-        }
-      }
-
-      .panel-title {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--aily-text-primary);
-        text-transform: none;
-        letter-spacing: 0.5px;
-      }
-    }
-
-    .header-actions {
-      opacity: 0;
-      transition: opacity 0.2s ease;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-
-      .delete-icon {
-        font-size: 12px;
-        color: var(--aily-icon-color);
-        cursor: pointer;
-        padding: 4px;
-        border-radius: 2px;
-        transition: color 0.2s ease, background 0.2s ease;
-
-        &:hover {
-          color: var(--aily-color-error-bright);
-          background: var(--aily-highlight-bg);
-        }
-      }
-    }
+  &:focus {
+    outline: none;
+    box-shadow: none;
   }
 
-  .todo-panel-content {
-    background: var(--aily-bg-secondary);
-    max-height: 180px;
-    overflow-y: auto;
+  &:focus-visible {
+    outline: 1px solid var(--aily-color-accent, #007fd4);
+    outline-offset: -1px;
+  }
+}
 
-    &::-webkit-scrollbar {
-      width: 6px;
-    }
+.todo-list-title-section {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding-left: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-    &::-webkit-scrollbar-track {
-      background: var(--aily-scrollbar-track);
-    }
+.expand-icon {
+  flex-shrink: 0;
+  width: 16px;
+  font-size: 12px;
+  color: var(--aily-text-tertiary, #cccccc);
+  margin-right: 3px;
+  transition: transform 0.2s ease;
 
-    &::-webkit-scrollbar-thumb {
-      background: var(--aily-scrollbar-thumb);
-      border-radius: 3px;
-    }
+  &.expanded {
+    transform: rotate(90deg);
+  }
+}
 
-    &::-webkit-scrollbar-thumb:hover {
-      background: var(--aily-scrollbar-thumb-hover);
-    }
+.todo-list-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--aily-text-tertiary, #cccccc);
+}
 
-    .todo-list {
-      .todo-item {
-        display: flex;
-        align-items: center;
-        height: 30px;
-        padding: 0 12px;
-        gap: 8px;
-        border-bottom: 1px solid var(--aily-border-primary);
-        cursor: pointer;
+.todo-list-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-        &:hover {
-          background: var(--aily-highlight-bg);
-        }
+.todo-header-status-icon {
+  flex-shrink: 0;
+  width: 12px;
+  font-size: 11px;
+  line-height: 1;
+}
 
-        &.completed {
-          opacity: 0.75;
+.todo-clear-button-container {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  min-height: 30px;
+  padding-right: 3px;
+  flex-shrink: 0;
+  opacity: 1;
+}
 
-          .todo-content .todo-text {
-            text-decoration: line-through;
-          }
-        }
+.todo-clear-button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--aily-text-tertiary, #cccccc);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  min-width: unset;
+  transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 
-        .todo-status-icon {
-          padding: 0;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 16px;
-          height: 16px;
+  &:hover {
+    background: var(--aily-chat-viewer-overlay-hover, rgba(255, 255, 255, 0.08));
+  }
 
-          i {
-            font-size: 12px;
+  &:focus {
+    outline: none;
+  }
 
-            &.status-pending {
-              color: var(--aily-color-warning-alt);
-            }
+  &:focus-visible {
+    outline: 1px solid var(--aily-color-accent, #007fd4);
+    outline-offset: 1px;
+  }
 
-            &.status-in-progress {
-              color: var(--aily-color-accent);
-            }
+  &:disabled {
+    cursor: default;
+    color: var(--aily-text-muted, #6a6a6a);
+    opacity: 0.65;
+  }
 
-            &.status-completed {
-              color: var(--aily-color-success-alt);
-            }
-          }
+  &:disabled:hover {
+    background: transparent;
+  }
 
-          &:hover i {
-            opacity: 0.85;
-          }
-        }
+  i {
+    font-size: 10px;
+  }
+}
 
-        .todo-content {
-          flex: 1;
-          display: flex;
-          align-items: center;
+.todo-list-container {
+  margin-top: 0;
+  max-height: calc(6.5 * 24px + 8px);
+  padding: 4px 0;
+  border-top: 1px solid var(--aily-chat-xdialog-msg-divider, rgba(255, 255, 255, 0.06));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scroll-padding-top: 8px;
+  scroll-padding-bottom: 8px;
 
-          .todo-line {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            width: 100%;
-          }
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
 
-          .todo-text {
-            color: var(--aily-text-primary);
-            font-size: 12px;
-            line-height: 1;
-            word-wrap: break-word;
-            flex: 1;
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-            &.completed-text {
-              color: var(--aily-text-disabled);
-              text-decoration: line-through;
-            }
-          }
+  &::-webkit-scrollbar-thumb {
+    background: var(--aily-scrollbar-thumb-hover, #424242);
+    border-radius: 3px;
+  }
+}
 
-          .todo-priority {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2px 4px;
-            border-radius: 2px;
-            font-size: 10px;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            flex-shrink: 0;
-            line-height: 1;
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scroll-snap-type: y proximity;
+}
 
-            &.priority-high {
-              background: var(--aily-color-error-bright);
-              color: var(--aily-text-primary);
-            }
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  scroll-snap-align: start;
+  font-size: 12px;
+  text-align: left;
+  transition: background-color 0.12s ease, color 0.12s ease;
 
-            &.priority-medium {
-              background: var(--aily-color-error-notice);
-              color: var(--aily-text-primary);
-            }
+  &:hover {
+    background: var(--aily-chat-viewer-overlay-hover, rgba(255, 255, 255, 0.06));
+  }
 
-            &.priority-low {
-              background: var(--aily-border-tertiary);
-              color: var(--aily-text-secondary);
-            }
-          }
-        }
-      }
-    }
+  &:focus {
+    outline: 1px solid var(--aily-color-accent, #007fd4);
+    outline-offset: -1px;
+  }
 
-    .empty-state {
-      padding: 20px 12px;
-      text-align: center;
-      color: var(--aily-text-hint);
-
-      .empty-message {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-
-        i {
-          font-size: 24px;
-          opacity: 0.5;
-          color: var(--aily-icon-color);
-        }
-
-        span {
-          font-size: 12px;
-        }
-      }
+  &.completed {
+    .todo-text {
+      color: var(--aily-text-disabled, #8a8a8a);
+      text-decoration: line-through;
     }
   }
 }
 
-.todo-panel-content {
-  animation: slideDown 0.2s ease-out;
-}
+.todo-status-icon {
+  flex-shrink: 0;
+  width: 16px;
+  font-size: 14px;
+  line-height: 1;
 
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@media (max-width: 768px) {
-  .todo-panel {
-    .todo-item {
-      padding: 8px 10px;
-
-      .todo-content .todo-text {
-        font-size: 11px;
-      }
+  &.status-pending,
+  &.status-in-progress,
+  &.status-completed {
+    &.todo-header-status-icon {
+      width: 12px;
+      font-size: 11px;
     }
   }
+
+  &.status-pending {
+    color: var(--aily-chat-viewer-state-warn, #cca700);
+  }
+
+  &.status-in-progress {
+    color: var(--aily-chat-xdialog-md-h2-border, #3794ff);
+  }
+
+  &.status-completed {
+    color: var(--aily-chat-viewer-state-done, #89d185);
+  }
+}
+
+.todo-content {
+  flex-grow: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 18px;
+}
+
+.todo-text {
+  color: var(--aily-text-tertiary, #cccccc);
+  line-height: 18px;
 }

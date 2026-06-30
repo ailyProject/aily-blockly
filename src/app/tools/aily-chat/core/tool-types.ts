@@ -1,8 +1,8 @@
 /**
  * Aily Tool System - 核心类型定义
  *
- * 所有工具必须实现 IAilyTool 接口，通过 ToolRegistry 自注册。
- * 每个工具文件自包含：schema + handler + 显示文本逻辑。
+ * 历史工具类仍实现 IAilyTool 接口，并通过副作用模块注册显示文案。
+ * runtime 执行权已迁移到 lex；blockly 侧保留的主要是 schema/文案兼容层。
  */
 
 // ============================
@@ -45,7 +45,7 @@ export interface ToolContext {
   editCheckpoint?: {
     recordEdit(filePath: string, type: 'create' | 'modify' | 'delete'): void;
     /** 重新计算并推送当前摘要到面板（工具写盘后调用） */
-    publishCurrentSummary(): void;
+    publishCurrentSummary(): void | Promise<void>;
   };
 
   /** 中止信号，工具在长时间操作中应定期检查 signal.aborted */

@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "モデルストア",
+        "DESCRIPTION": "モデル概要",
+        "MODEL_INFO": "モデル情報",
+        "SUPPORTED_BOARDS": "対応デバイス",
+        "MODEL_TYPE": "モデルタイプ",
+        "MODEL_FORMAT": "モデル形式",
+        "MODEL_PRECISION": "モデル精度",
+        "MODEL_SIZE": "モデルサイズ",
+        "VERSION": "バージョン",
+        "MODEL_DETAILS": "モデル詳細",
+        "MODEL_LABELS": "モデルカテゴリ",
+        "AUTHOR": "作者",
+        "DEPLOY_COUNT": "デプロイ回数",
+        "VIEW_COUNT": "閲覧数",
+        "LIKE_COUNT": "いいね",
+        "TAG_VISION": "ビジョン",
+        "TAG_AUDIO": "オーディオ",
+        "SEARCH_PLACEHOLDER": "利用可能なモデルを検索",
+        "MODEL_LIST": "モデル一覧",
+        "LOADING": "読み込み中...",
+        "BACK": "戻る",
+        "TEST_MODEL": "モデルをテスト",
+        "DEPLOY_MODEL": "モデルをデプロイ",
+        "SELF_TRAINED_MODEL": "自己学習モデル"
+    }
+}

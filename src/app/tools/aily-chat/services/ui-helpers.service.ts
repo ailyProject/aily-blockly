@@ -80,7 +80,7 @@ export function getResourcesText(selectContent: ResourceItem[]): string {
   }
 
   if (blockItems.length > 0) {
-    text += blockItems.map(item => item.blockContext || item.name).join('\n');
+    text += blockItems.map(item => item.blockContext || item.name).join('\n\n');
     text += '\n\n';
   }
 

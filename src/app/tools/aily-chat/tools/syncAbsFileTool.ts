@@ -7,28 +7,123 @@
 import { convertAbiToAbs, convertAbsToAbi, inferFieldVariableType } from './abiAbsConverter';
 import { getActiveWorkspace, createBlockFromConfig } from './editBlockTool';
 import { AbsAutoSyncService } from '../services/abs-auto-sync.service';
+import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 import { loadProjectBlockDefinitions, parseAbs, BlocklyAbsParser } from './absParser';
+import { arduinoGenerator } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
+import {
+  yieldToBrowserIdle,
+  type BrowserFrameBudgetController,
+} from './browserTaskScheduler';
+import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
+import {
+  getSharedBlocklyEditorOperationQueue,
+  type BlocklyEditorOperationQueue,
+  type BlocklyEditorOperationProgressReporter,
+} from './blocklyEditorOperationQueue';
+import type { EditorOperationEventSink } from './editorOperationEvents';
+import type {
+  ChatRuntimeHostResourceRequestKind,
+} from '../core/chat-runtime-host-contract';
+import { createElectronChatRuntimeHostTransport } from '../core/electron-chat-runtime-host-transport';
 
 declare const Blockly: any;
 
-/**
- * 让出渲染线程，允许浏览器处理 UI 更新和动画帧。
- * 在密集的同步 DOM 操作循环中定期调用，防止 UI 冻结。
- */
-function yieldToEventLoop(): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, 0));
+function shouldLogSyncAbsImportDebug(): boolean {
+  try {
+    const globalScope = typeof window !== 'undefined'
+      ? (window as any)
+      : (globalThis as Record<string, unknown>);
+    return globalScope.__AILY_DEBUG_BLOCKLY_IMPORT__ === true
+      || globalScope.localStorage?.getItem?.('aily.debug.blocklyImport') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function describeSyncAbsImportError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function debugSyncAbsImportIssue(message: string, error?: unknown): void {
+  if (!shouldLogSyncAbsImportDebug()) {
+    return;
+  }
+  if (error === undefined) {
+    console.warn(message);
+    return;
+  }
+  console.warn(`${message}: ${describeSyncAbsImportError(error)}`);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return !!value && typeof (value as { then?: unknown }).then === 'function';
+}
+
+export function runWithBlocklyEventsDisabled<T>(operation: () => T): T {
+  Blockly.Events.disable();
+  try {
+    const result = operation();
+    if (isPromiseLike(result)) {
+      throw new Error('Blockly.Events.disable() scope must stay synchronous');
+    }
+    return result;
+  } finally {
+    Blockly.Events.enable();
+  }
+}
+
+async function writeGeneratedSketchIno(
+  projectPath: string,
+  electronService: any,
+  workspace: any,
+  invocationContext?: SyncAbsInvocationContext,
+): Promise<{ filePath: string; generated: boolean }> {
+  throwIfSyncAbsCancelled(invocationContext);
+  const tempPath = electronService.pathJoin(projectPath, '.temp');
+  const sketchPath = electronService.pathJoin(tempPath, 'sketch');
+  const sketchFilePath = electronService.pathJoin(sketchPath, 'sketch.ino');
+
+  if (!electronService.exists(tempPath)) {
+    window['fs'].mkdirSync(tempPath, { recursive: true });
+  }
+  if (!electronService.exists(sketchPath)) {
+    window['fs'].mkdirSync(sketchPath, { recursive: true });
+  }
+
+  await yieldToBrowserIdle(300);
+  throwIfSyncAbsCancelled(invocationContext);
+  const codegenStartedAt = performance.now();
+  const generatedCode = await ChatPerformanceTracer.runWithSurface(
+    'builder_preprocess',
+    () => arduinoGenerator.workspaceToCode(workspace) || '',
+    'syncAbs.import:sketch.ino',
+  );
+  ChatPerformanceTracer.recordDuration(
+    'syncAbs_sketch_codegen',
+    performance.now() - codegenStartedAt,
+    sketchFilePath,
+    { slowThresholdMs: 16 },
+  );
+  throwIfSyncAbsCancelled(invocationContext);
+  await writeTimelineAwareTextFile(sketchFilePath, generatedCode, electronService, invocationContext);
+
+  return {
+    filePath: sketchFilePath,
+    generated: generatedCode.length > 0
+  };
 }
 
 // =============================================================================
 // 类型定义
 // =============================================================================
 
-interface SyncAbsArgs {
+export interface SyncAbsArgs {
   operation: 'export' | 'import' | 'status';
   includeHeader?: boolean;
+  pendingAbsContent?: string;
 }
 
-interface SyncAbsResult {
+export interface SyncAbsResult {
   is_error: boolean;
   content: string;
   metadata?: {
@@ -38,6 +133,249 @@ interface SyncAbsResult {
     blockCount?: number;
     variableCount?: number;
     versionSaved?: boolean;
+    readBackVerified?: boolean;
+    previewSource?: 'disk-readback';
+  };
+}
+
+export interface SyncAbsInvocationContext {
+  sessionId?: string;
+  turnId?: string;
+  toolCallId?: string;
+  signal?: AbortSignal;
+  isStale?: () => boolean;
+  timelineWriter?: EditingTimelineWriter;
+  editorOperationQueue?: BlocklyEditorOperationQueue;
+  progressSink?: EditorOperationEventSink;
+  reportOperationProgress?: BlocklyEditorOperationProgressReporter;
+  runOutsideAngular?: <T>(operation: () => Promise<T> | T) => Promise<T> | T;
+  editorFrameBudget?: BrowserFrameBudgetController;
+}
+
+async function checkpointSyncAbsFrameBudget(
+  invocationContext: SyncAbsInvocationContext | undefined,
+  label: string,
+): Promise<void> {
+  throwIfSyncAbsCancelled(invocationContext);
+  await invocationContext?.editorFrameBudget?.checkpoint(label);
+  throwIfSyncAbsCancelled(invocationContext);
+}
+
+async function disposeBlocklyBlocksInBatches(
+  blocks: readonly any[],
+  invocationContext: SyncAbsInvocationContext | undefined,
+  label: string,
+  batchSize = 3,
+): Promise<number> {
+  let disposedCount = 0;
+  for (const block of blocks) {
+    throwIfSyncAbsCancelled(invocationContext);
+    runWithBlocklyEventsDisabled(() => {
+      block?.dispose?.(true);
+      disposedCount++;
+    });
+    if (disposedCount % batchSize === 0) {
+      await checkpointSyncAbsFrameBudget(invocationContext, `${label}.${disposedCount}`);
+    }
+  }
+  if (disposedCount > 0) {
+    await checkpointSyncAbsFrameBudget(invocationContext, `${label}.done`);
+  }
+  return disposedCount;
+}
+
+function getWorkspaceRenderRoots(workspace: any): readonly any[] {
+  if (workspace && typeof workspace.getTopBlocks === 'function') {
+    const topBlocks = workspace.getTopBlocks(false);
+    if (Array.isArray(topBlocks)) {
+      return topBlocks;
+    }
+  }
+
+  if (!workspace || typeof workspace.getAllBlocks !== 'function') {
+    return [];
+  }
+  const allBlocks = workspace.getAllBlocks(false);
+  if (!Array.isArray(allBlocks)) {
+    return [];
+  }
+  return allBlocks.filter(block => {
+    if (!block) {
+      return false;
+    }
+    if (typeof block.getParent === 'function') {
+      return !block.getParent();
+    }
+    if (typeof block.getSurroundParent === 'function') {
+      return !block.getSurroundParent();
+    }
+    return true;
+  });
+}
+
+async function renderBlocklyRootBlocksInBatches(
+  blocks: readonly any[],
+  invocationContext: SyncAbsInvocationContext | undefined,
+  label: string,
+  batchSize = 3,
+): Promise<void> {
+  let renderedCount = 0;
+  for (const block of blocks) {
+    throwIfSyncAbsCancelled(invocationContext);
+    if (typeof block?.render === 'function') {
+      block.render();
+      renderedCount++;
+    }
+    if (renderedCount > 0 && renderedCount % batchSize === 0) {
+      await checkpointSyncAbsFrameBudget(invocationContext, `${label}.${renderedCount}`);
+    }
+  }
+  if (renderedCount > 0) {
+    await checkpointSyncAbsFrameBudget(invocationContext, `${label}.done`);
+  }
+}
+
+export async function refreshBlocklyWorkspaceRenderInBatches(
+  workspace: any,
+  invocationContext: SyncAbsInvocationContext | undefined,
+  label: string,
+): Promise<void> {
+  throwIfSyncAbsCancelled(invocationContext);
+  const renderRoots = getWorkspaceRenderRoots(workspace);
+  await renderBlocklyRootBlocksInBatches(renderRoots, invocationContext, `${label}.roots`);
+  throwIfSyncAbsCancelled(invocationContext);
+  if (typeof Blockly !== 'undefined' && Blockly && typeof Blockly.svgResize === 'function') {
+    await checkpointSyncAbsFrameBudget(invocationContext, `${label}.before-resize`);
+    Blockly.svgResize(workspace);
+    await checkpointSyncAbsFrameBudget(invocationContext, `${label}.resize`);
+  } else {
+    await checkpointSyncAbsFrameBudget(invocationContext, `${label}.no-resize`);
+  }
+}
+
+export async function writeTimelineAwareTextFile(
+  filePath: string,
+  content: string,
+  electronService: {
+    exists(path: string): Promise<boolean> | boolean;
+    readFile(path: string): Promise<string> | string;
+    writeFile(path: string, data: string): Promise<void> | void;
+  },
+  invocationContext?: SyncAbsInvocationContext,
+): Promise<void> {
+  const timelineWriter = invocationContext?.timelineWriter;
+  const turnId = invocationContext?.turnId;
+  let existedBefore = false;
+  let beforeContent: string | null = null;
+
+  if (timelineWriter?.recordFileWrite && turnId) {
+    existedBefore = await Promise.resolve(electronService.exists(filePath));
+    beforeContent = existedBefore ? await Promise.resolve(electronService.readFile(filePath)) : null;
+  }
+
+  await Promise.resolve(electronService.writeFile(filePath, content));
+
+  if (!timelineWriter?.recordFileWrite || !turnId) {
+    return;
+  }
+
+  try {
+    await timelineWriter.recordFileWrite({
+      turnId,
+      toolCallId: invocationContext?.toolCallId,
+      filePath,
+      existedBefore,
+      beforeContent,
+      afterContent: content,
+    });
+  } catch (error) {
+    console.warn('[syncAbsFile] editing timeline recording failed:', error);
+  }
+}
+
+export async function backupAbiFileIfPresent(
+  abiFilePath: string,
+  electronService: {
+    exists(path: string): Promise<boolean> | boolean;
+    readFile(path: string): Promise<string> | string;
+    writeFile(path: string, data: string): Promise<void> | void;
+  },
+  projectService?: {
+    currentProjectPath?: string;
+    copyPackageJsonToTemp?(projectPath?: string): void;
+  },
+  invocationContext?: SyncAbsInvocationContext,
+): Promise<string | null> {
+  if (!await Promise.resolve(electronService.exists(abiFilePath))) {
+    return null;
+  }
+
+  const backupPath = `${abiFilePath}.backup`;
+  const currentAbi = await Promise.resolve(electronService.readFile(abiFilePath));
+  await writeTimelineAwareTextFile(backupPath, currentAbi, electronService, invocationContext);
+  projectService?.copyPackageJsonToTemp?.(projectService?.currentProjectPath);
+  return backupPath;
+}
+
+async function reportSyncAbsImportProgress(
+  invocationContext: SyncAbsInvocationContext | undefined,
+  summary: string,
+  progress: number,
+  detail?: string,
+): Promise<void> {
+  try {
+    await invocationContext?.reportOperationProgress?.({
+      summary,
+      progress,
+      detail,
+    });
+  } catch (error) {
+    console.warn('[syncAbsFile] operation progress reporting failed:', error);
+  }
+}
+
+function createSyncAbsCancellationError(): Error {
+  const error = new Error('ABS import cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isSyncAbsStale(invocationContext?: SyncAbsInvocationContext): boolean {
+  try {
+    return invocationContext?.isStale?.() === true;
+  } catch {
+    return true;
+  }
+}
+
+function throwIfSyncAbsCancelled(invocationContext?: SyncAbsInvocationContext): void {
+  if (invocationContext?.signal?.aborted || isSyncAbsStale(invocationContext)) {
+    throw createSyncAbsCancellationError();
+  }
+}
+
+function isSyncAbsCancellationError(error: unknown): boolean {
+  return error instanceof Error
+    && (error.name === 'AbortError' || /cancelled|canceled|aborted/i.test(error.message));
+}
+
+function normalizeSyncAbsSessionId(invocationContext?: SyncAbsInvocationContext): string {
+  return typeof invocationContext?.sessionId === 'string'
+    ? invocationContext.sessionId.trim()
+    : '';
+}
+
+function toSyncAbsResourceError(error: unknown): { readonly message: string; readonly code?: string; readonly retryable?: boolean } {
+  if (error instanceof Error) {
+    return {
+      message: error.message || 'syncAbs resource operation failed.',
+      retryable: isSyncAbsCancellationError(error) ? false : undefined,
+    };
+  }
+  return {
+    message: typeof error === 'string' && error.trim().length > 0
+      ? error.trim()
+      : 'syncAbs resource operation failed.',
   };
 }
 
@@ -85,7 +423,45 @@ export async function syncAbsFileHandler(
   args: SyncAbsArgs,
   projectService: any,
   electronService: any,
-  absAutoSyncService?: AbsAutoSyncService
+  absAutoSyncService?: AbsAutoSyncService,
+  invocationContext?: SyncAbsInvocationContext,
+): Promise<SyncAbsResult> {
+  const sessionId = normalizeSyncAbsSessionId(invocationContext);
+  if (!sessionId) {
+    return {
+      is_error: true,
+      content: 'syncAbs requires a host session id.',
+    };
+  }
+
+  const runtimeHost = createElectronChatRuntimeHostTransport();
+  if (!runtimeHost) {
+    return {
+      is_error: true,
+      content: 'syncAbs requires the Electron runtime host resource operation boundary.',
+    };
+  }
+
+  const hostOperation = buildSyncAbsHostResourceOperation(args, projectService, sessionId);
+  try {
+    const result = await runtimeHost.requestResourceOperation(hostOperation);
+    return normalizeSyncAbsHostOperationResult(result.result);
+  } catch (error: unknown) {
+    return {
+      is_error: true,
+      content: error instanceof Error
+        ? error.message
+        : String(error),
+    };
+  }
+}
+
+export async function runSyncAbsFileConcreteHandler(
+  args: SyncAbsArgs,
+  projectService: any,
+  electronService: any,
+  absAutoSyncService?: AbsAutoSyncService,
+  invocationContext?: SyncAbsInvocationContext,
 ): Promise<SyncAbsResult> {
   const { operation, includeHeader = true } = args;
   
@@ -103,13 +479,55 @@ export async function syncAbsFileHandler(
   
   const absFilePath = `${projectPath}/project.abs`;
   const abiFilePath = `${projectPath}/project.abi`;
+  const resourceBase = {
+    projectPath,
+    absFilePath,
+    abiFilePath,
+    toolName: 'syncAbs',
+  };
   
   switch (operation) {
-    case 'export':
-      return await exportToAbs(abiFilePath, absFilePath, includeHeader, electronService);
+    case 'export': {
+      const editorOperationQueue = invocationContext?.editorOperationQueue ?? getSharedBlocklyEditorOperationQueue();
+      return await editorOperationQueue.enqueue(
+        'blockly.syncAbs.export',
+        'Export Blockly workspace to ABS',
+        () => exportToAbs(abiFilePath, absFilePath, includeHeader, electronService, invocationContext),
+        {
+          sessionId: invocationContext?.sessionId,
+          turnId: invocationContext?.turnId,
+          toolCallId: invocationContext?.toolCallId,
+          signal: invocationContext?.signal,
+          isStale: invocationContext?.isStale,
+          progressSink: invocationContext?.progressSink,
+          runOutsideAngular: invocationContext?.runOutsideAngular,
+        },
+      );
+    }
     
-    case 'import':
-      return await importFromAbs(absFilePath, abiFilePath, electronService, absAutoSyncService, projectService);
+    case 'import': {
+      const editorOperationQueue = invocationContext?.editorOperationQueue ?? getSharedBlocklyEditorOperationQueue();
+      return await editorOperationQueue.enqueue(
+        'blockly.syncAbs.import',
+        'Apply ABS to Blockly workspace',
+        (reportOperationProgress, operationContext) => importFromAbs(absFilePath, abiFilePath, electronService, absAutoSyncService, projectService, {
+          ...invocationContext,
+          reportOperationProgress,
+          editorFrameBudget: operationContext.frameBudget,
+        },
+        args.pendingAbsContent),
+        {
+          sessionId: invocationContext?.sessionId,
+          turnId: invocationContext?.turnId,
+          toolCallId: invocationContext?.toolCallId,
+          signal: invocationContext?.signal,
+          isStale: invocationContext?.isStale,
+          progressSink: invocationContext?.progressSink,
+          runOutsideAngular: invocationContext?.runOutsideAngular,
+          editorFrameBudget: invocationContext?.editorFrameBudget,
+        },
+      );
+    }
     
     case 'status':
       return await getAbsStatus(absFilePath, abiFilePath, electronService);
@@ -122,6 +540,88 @@ export async function syncAbsFileHandler(
   }
 }
 
+function buildSyncAbsHostResourceOperation(
+  args: SyncAbsArgs,
+  projectService: any,
+  sessionId: string,
+) {
+  const projectPath = projectService?.currentProjectPath || projectService?.projectRootPath || '';
+  const absFilePath = projectPath ? `${projectPath}/project.abs` : '';
+  const abiFilePath = projectPath ? `${projectPath}/project.abi` : '';
+  const operation = args.operation;
+  const kind: ChatRuntimeHostResourceRequestKind = operation === 'import'
+    ? 'workspace-mutation'
+    : operation === 'export'
+      ? 'file-write'
+      : 'file-read';
+  const operationKind = `blockly.syncAbs.${operation}`;
+  const labels = readSyncAbsResourceLabels(operation);
+
+  return {
+    sessionId,
+    kind,
+    label: labels.startedLabel,
+    detail: labels.detail,
+    resource: {
+      projectPath,
+      absFilePath,
+      abiFilePath,
+      toolName: 'syncAbs',
+      operation,
+      operationKind,
+      ...(operation === 'import'
+        ? { hasPendingAbsContent: typeof args.pendingAbsContent === 'string' && args.pendingAbsContent.trim().length > 0 }
+        : {}),
+    },
+    payload: {
+      adapter: 'syncAbs',
+      args: {
+        operation,
+        includeHeader: args.includeHeader,
+        pendingAbsContent: args.pendingAbsContent,
+      },
+    },
+  } as const;
+}
+
+function readSyncAbsResourceLabels(operation: SyncAbsArgs['operation']): {
+  readonly startedLabel: string;
+  readonly detail: string;
+} {
+  switch (operation) {
+    case 'export':
+      return {
+        startedLabel: 'Exporting Blockly workspace to ABS',
+        detail: 'syncAbs export serializes the Blockly workspace and writes project.abs.',
+      };
+    case 'import':
+      return {
+        startedLabel: 'Applying ABS to Blockly workspace',
+        detail: 'syncAbs import parses project.abs and mutates the Blockly workspace in frame-budgeted batches.',
+      };
+    case 'status':
+      return {
+        startedLabel: 'Reading ABS sync status',
+        detail: 'syncAbs status reads project.abs/project.abi availability and metadata.',
+      };
+  }
+}
+
+function normalizeSyncAbsHostOperationResult(result: unknown): SyncAbsResult {
+  if (!result || typeof result !== 'object') {
+    return {
+      is_error: true,
+      content: 'syncAbs host resource operation returned an invalid result.',
+    };
+  }
+  const candidate = result as Partial<SyncAbsResult>;
+  return {
+    is_error: candidate.is_error === true,
+    content: typeof candidate.content === 'string' ? candidate.content : '',
+    ...(candidate.metadata ? { metadata: candidate.metadata } : {}),
+  };
+}
+
 /**
  * 导出 Blockly 工作区到 ABS 文件
  */
@@ -129,9 +629,12 @@ async function exportToAbs(
   abiFilePath: string,
   absFilePath: string,
   includeHeader: boolean,
-  electronService: any
+  electronService: any,
+  invocationContext?: SyncAbsInvocationContext,
 ): Promise<SyncAbsResult> {
   try {
+    throwIfSyncAbsCancelled(invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'Reading Blockly workspace', 0.2, abiFilePath);
     // 方法1：从工作区获取
     const workspace = getActiveWorkspace();
     let abiJson: any;
@@ -149,19 +652,34 @@ async function exportToAbs(
         content: '无法获取 Blockly 工作区或 ABI 文件'
       };
     }
+    throwIfSyncAbsCancelled(invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'Converting Blockly workspace to ABS', 0.5);
     
     // 转换为 ABS 格式
     const absContent = convertAbiToAbs(abiJson, { includeHeader });
+    throwIfSyncAbsCancelled(invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'Writing ABS file', 0.75, absFilePath);
     
     // 写入 ABS 文件
-    await electronService.writeFile(absFilePath, absContent);
+    await writeTimelineAwareTextFile(absFilePath, absContent, electronService, invocationContext);
+
+    // 写盘后立即回读，确保返回给模型的是磁盘上可观察到的实际内容
+    const readBackContent = await electronService.readFile(absFilePath);
+    if (readBackContent !== absContent) {
+      return {
+        is_error: true,
+        content: `导出失败: ABS 文件写盘后回读结果与导出内容不一致\n\n文件路径: ${absFilePath}\n这说明导出阶段生成的内存内容与磁盘实际可读取内容未对齐，当前不返回未确认的预览。`
+      };
+    }
+    throwIfSyncAbsCancelled(invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'ABS export finished', 0.95, absFilePath);
     
     // 统计信息
     const blockCount = countBlocks(abiJson);
     const variableCount = abiJson.variables?.length || 0;
     
     // 生成预览（前 30 行）
-    const absLines = absContent.split('\n');
+    const absLines = readBackContent.split('\n');
     const preview = absLines.slice(0, 30).join('\n') + 
       (absLines.length > 30 ? '\n... (more lines)' : '');
     
@@ -171,6 +689,7 @@ async function exportToAbs(
 
 **文件路径:** \`${absFilePath}\`
 **统计:** ${blockCount} 个块, ${variableCount} 个变量
+**写盘确认:** 已通过磁盘回读确认
 
 **ABS 预览:**
 \`\`\`
@@ -180,16 +699,21 @@ ${preview}
 **下一步操作建议:**
 1. 使用 \`read_file\` 读取完整的 ABS 文件
 2. 使用 \`edit_file\` 修改 ABS 内容
-3. 修改完成后使用 \`sync_abs_file(operation: "import")\` 应用更改`,
+3. 修改完成后使用 \`syncAbs action="import"\` 应用更改`,
       metadata: {
         operation: 'export',
         filePath: absFilePath,
         absPreview: preview,
         blockCount,
-        variableCount
+        variableCount,
+        readBackVerified: true,
+        previewSource: 'disk-readback'
       }
     };
   } catch (error) {
+    if (isSyncAbsCancellationError(error)) {
+      throw error;
+    }
     return {
       is_error: true,
       content: `导出失败: ${error instanceof Error ? error.message : String(error)}`
@@ -206,17 +730,29 @@ async function importFromAbs(
   abiFilePath: string,
   electronService: any,
   absAutoSyncService?: AbsAutoSyncService,
-  projectService?: any
+  projectService?: any,
+  invocationContext?: SyncAbsInvocationContext,
+  pendingAbsContent?: string,
 ): Promise<SyncAbsResult> {
   try {
+    throwIfSyncAbsCancelled(invocationContext);
+    if (typeof pendingAbsContent === 'string' && pendingAbsContent.trim().length > 0) {
+      await reportSyncAbsImportProgress(invocationContext, 'Writing pending ABS content', 0.05, absFilePath);
+      throwIfSyncAbsCancelled(invocationContext);
+      await writeTimelineAwareTextFile(absFilePath, pendingAbsContent, electronService, invocationContext);
+      throwIfSyncAbsCancelled(invocationContext);
+    }
+
     // 检查 ABS 文件是否存在
     if (!await electronService.exists(absFilePath)) {
       return {
         is_error: true,
-        content: `ABS 文件不存在: ${absFilePath}\n\n请先使用 \`sync_abs_file(operation: "export")\` 生成 ABS 文件`
+        content: `ABS 文件不存在: ${absFilePath}\n\n请先使用 \`syncAbs action="export"\` 生成 ABS 文件`
       };
     }
-    
+    await reportSyncAbsImportProgress(invocationContext, 'Preparing pre-import backup', 0.1, absFilePath);
+    throwIfSyncAbsCancelled(invocationContext);
+
     // 在修改前保存当前版本（AI 修改时的版本控制）
     // 注意：使用 getWorkspaceAbsContent 而不是 exportToAbs，避免覆盖用户编辑的 ABS 文件
     let versionSaved = false;
@@ -232,10 +768,14 @@ async function importFromAbs(
         console.warn('[syncAbsFile] 保存版本失败:', e);
       }
     }
-    
+    await reportSyncAbsImportProgress(invocationContext, 'Reading ABS file', 0.15, absFilePath);
+    throwIfSyncAbsCancelled(invocationContext);
+
     // 读取 ABS 文件
     const absContent = await electronService.readFile(absFilePath);
-    
+    await reportSyncAbsImportProgress(invocationContext, 'Parsing ABS blocks', 0.2);
+    throwIfSyncAbsCancelled(invocationContext);
+
     // 解析 ABS（不转换为 ABI JSON，而是获取 BlockConfig）
     const parser = new BlocklyAbsParser();
     const parseResult = parser.parse(absContent);
@@ -256,7 +796,14 @@ async function importFromAbs(
         content: `ABS 解析失败:\n${errorMessages}\n\n请检查 ABS 文件语法，读取对应库 reademe_ai.md 或使用 \`get_block_info_tool\` 查询正确的块定义和参数格式。`
       };
     }
-    
+    await reportSyncAbsImportProgress(
+      invocationContext,
+      'Preparing Blockly workspace update',
+      0.35,
+      `${parseResult.rootBlocks.length} root blocks`,
+    );
+    throwIfSyncAbsCancelled(invocationContext);
+
     // 获取工作区
     const workspace = getActiveWorkspace();
     if (!workspace) {
@@ -267,12 +814,10 @@ async function importFromAbs(
     }
     
     // 备份当前 ABI 文件
-    if (await electronService.exists(abiFilePath)) {
-      const backupPath = `${abiFilePath}.backup`;
-      const currentAbi = await electronService.readFile(abiFilePath);
-      await electronService.writeFile(backupPath, currentAbi);
-      projectService?.copyPackageJsonToTemp(projectService?.currentProjectPath);
-    }
+    await backupAbiFileIfPresent(abiFilePath, electronService, projectService, invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'Backed up current Blockly artifacts', 0.45);
+    throwIfSyncAbsCancelled(invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'Applying Blockly workspace changes', 0.5);
     
     // 收集所有变量：从 @var 声明 + 从 $varName 引用自动推断
     const allVariables = new Map<string, string>(); // name → type
@@ -308,17 +853,21 @@ async function importFromAbs(
     const variableMap = workspace.getVariableMap();
     const existingVars = workspace.getAllVariables();
     if (variableMap && existingVars.length > 0) {
-      Blockly.Events.disable();
-      try {
-        for (const oldVar of existingVars) {
-          if (!allVariables.has(oldVar.name) && !autoCreatedVars.has(oldVar.name)) {
+      let deletedVariableCount = 0;
+      for (const oldVar of existingVars) {
+        throwIfSyncAbsCancelled(invocationContext);
+        if (!allVariables.has(oldVar.name) && !autoCreatedVars.has(oldVar.name)) {
+          runWithBlocklyEventsDisabled(() => {
             variableMap.deleteVariable(oldVar);
+            deletedVariableCount++;
+          });
+          if (deletedVariableCount % 8 === 0) {
+            await checkpointSyncAbsFrameBudget(invocationContext, 'variables.delete-batch');
           }
         }
-      } finally {
-        Blockly.Events.enable();
       }
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, 'variables.deleted');
     
     // 同步 ABS 中声明的变量到工作区（只创建不存在的，保留已有的）
     // 注意：当推断出变量类型时，必须精确匹配（名称+类型），
@@ -326,10 +875,11 @@ async function importFromAbs(
     // 禁用事件，避免删除/重建变量时触发代码生成导致 getVariableById 返回 null
     const variableNameToId = new Map<string, string>();
     
-    Blockly.Events.disable();
-    try {
-      for (const [name, type] of allVariables) {
-        let variable: any;
+    let syncedVariableCount = 0;
+    for (const [name, type] of allVariables) {
+      throwIfSyncAbsCancelled(invocationContext);
+      let variable: any;
+      runWithBlocklyEventsDisabled(() => {
         if (type) {
           // 类型已知时，按名称+类型精确查找
           variable = workspace.getVariable(name, type);
@@ -338,7 +888,7 @@ async function importFromAbs(
             const wrongTypeVar = workspace.getVariable(name);
             if (wrongTypeVar && wrongTypeVar.type !== type) {
               // 删除旧的错误类型变量，用正确类型重建
-              variableMap.deleteVariable(wrongTypeVar);
+              variableMap?.deleteVariable(wrongTypeVar);
             }
             variable = workspace.createVariable(name, type);
           }
@@ -349,10 +899,13 @@ async function importFromAbs(
           }
         }
         variableNameToId.set(name, variable.getId());
+        syncedVariableCount++;
+      });
+      if (syncedVariableCount % 8 === 0) {
+        await checkpointSyncAbsFrameBudget(invocationContext, 'variables.sync-batch');
       }
-    } finally {
-      Blockly.Events.enable();
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, 'variables.synced');
     // console.log(`📋 同步 ${allVariables.size} 个变量`);
     
     // 🆕 尝试增量更新
@@ -367,11 +920,19 @@ async function importFromAbs(
           workspace,
           parseResult.rootBlocks,
           variableNameToId,
-          preprocessVariableReferences
+          preprocessVariableReferences,
+          invocationContext,
         );
+        await reportSyncAbsImportProgress(
+          invocationContext,
+          'Applied incremental Blockly update',
+          0.75,
+          `added ${updateResult.added}, removed ${updateResult.removed}, unchanged ${updateResult.unchanged}`,
+        );
+        throwIfSyncAbsCancelled(invocationContext);
         // console.log(`📊 增量更新完成: +${updateResult.added}, -${updateResult.removed}, =${updateResult.unchanged}`);
       } catch (e) {
-        console.warn('⚠️ 增量更新失败，回退到全量更新:', e);
+        debugSyncAbsImportIssue('Incremental Blockly update failed, falling back to full rebuild', e);
         useIncrementalUpdate = false;
       }
     }
@@ -397,52 +958,70 @@ async function importFromAbs(
         }
       }
       
-      // 清空非受保护块，删除重复的受保护块
-      Blockly.Events.disable();
-      try {
-        let disposeCount = 0;
-        for (const block of existingTopBlocks) {
-          if (!PROTECTED_ROOT_BLOCKS.has(block.type)) {
+      // 清空非受保护块，删除重复的受保护块。使用短事件事务，避免
+      // Blockly workspace mutation 长时间占用主线程。
+      let disposeCount = 0;
+      for (const block of existingTopBlocks) {
+        throwIfSyncAbsCancelled(invocationContext);
+        if (!PROTECTED_ROOT_BLOCKS.has(block.type)) {
+          runWithBlocklyEventsDisabled(() => {
             block.dispose(true);
             disposeCount++;
-            // 每销毁 3 个块后让出事件循环，允许 UI 刷新
-            if (disposeCount % 3 === 0) {
-              Blockly.Events.enable();
-              await yieldToEventLoop();
-              Blockly.Events.disable();
-            }
-          } else {
-            // 受保护块：只保留 protectedBlocksMap 中记录的那个（第一个），删除重复的
-            const protectedInfo = protectedBlocksMap.get(block.type);
-            if (protectedInfo && protectedInfo.block === block) {
-              // 这是要保留的块，清空其子块
-              for (const input of block.inputList || []) {
-                if (input.connection?.isConnected()) {
-                  const child = input.connection.targetBlock();
-                  if (child && !child.isShadow()) {
+          });
+          // 每销毁 3 个块后让出事件循环，允许 UI 刷新
+          if (disposeCount % 3 === 0) {
+            await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.dispose-batch');
+          }
+        } else {
+          // 受保护块：只保留 protectedBlocksMap 中记录的那个（第一个），删除重复的
+          const protectedInfo = protectedBlocksMap.get(block.type);
+          if (protectedInfo && protectedInfo.block === block) {
+            // 这是要保留的块，清空其子块
+            let clearedProtectedChildCount = 0;
+            for (const input of block.inputList || []) {
+              if (input.connection?.isConnected()) {
+                const child = input.connection.targetBlock();
+                if (child && !child.isShadow()) {
+                  throwIfSyncAbsCancelled(invocationContext);
+                  runWithBlocklyEventsDisabled(() => {
                     input.connection.disconnect();
                     child.dispose(true);
+                    clearedProtectedChildCount++;
+                  });
+                  if (clearedProtectedChildCount % 4 === 0) {
+                    await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.protected-children-batch');
                   }
                 }
               }
-            } else {
-              // 这是重复的受保护块，删除
+            }
+          } else {
+            // 这是重复的受保护块，删除
+            runWithBlocklyEventsDisabled(() => {
               block.dispose(true);
+              disposeCount++;
+            });
+            if (disposeCount % 3 === 0) {
+              await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.dispose-batch');
             }
           }
         }
-      } finally {
-        Blockly.Events.enable();
       }
       
       // 重新创建变量
+      await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.cleaned');
       variableNameToId.clear();
+      let recreatedVariableCount = 0;
       for (const [name, type] of allVariables) {
+        throwIfSyncAbsCancelled(invocationContext);
         let variable = workspace.getVariable(name);
         if (!variable) {
           variable = workspace.createVariable(name, type || undefined);
         }
         variableNameToId.set(name, variable.getId());
+        recreatedVariableCount++;
+        if (recreatedVariableCount % 8 === 0) {
+          await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.variables-batch');
+        }
       }
       
       let yPosition = 30;
@@ -450,6 +1029,7 @@ async function importFromAbs(
       let blockCreateCount = 0;
       
       for (const blockConfig of parseResult.rootBlocks) {
+        throwIfSyncAbsCancelled(invocationContext);
         // 检查是否有受保护块需要重建子块
         if (PROTECTED_ROOT_BLOCKS.has(blockConfig.type) && protectedBlocksMap.has(blockConfig.type)) {
           const protectedInfo = protectedBlocksMap.get(blockConfig.type);
@@ -460,7 +1040,8 @@ async function importFromAbs(
           try {
             const rebuildResult = await rebuildBlockChildren(
               workspace, protectedInfo.block, blockConfig,
-              variableNameToId, preprocessVariableReferences
+              variableNameToId, preprocessVariableReferences,
+              invocationContext,
             );
             totalBlocks++;
             blockCreateCount++;
@@ -468,14 +1049,15 @@ async function importFromAbs(
               failedBlocks.push(...rebuildResult.failedBlocks);
             }
           } catch (error) {
-            console.warn(`重建受保护块子块失败: ${blockConfig.type}`, error);
+            debugSyncAbsImportIssue(`Protected block child rebuild failed: ${blockConfig.type}`, error);
             failedBlocks.push({
               blockType: blockConfig.type,
               error: error instanceof Error ? error.message : String(error)
             });
           }
           // 每创建 2 个根块后让出事件循环，允许 UI 刷新
-          if (blockCreateCount % 2 === 0) { await yieldToEventLoop(); }
+            if (blockCreateCount % 2 === 0) { await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.protected-blocks'); }
+          throwIfSyncAbsCancelled(invocationContext);
           continue;
         }
         
@@ -489,7 +1071,7 @@ async function importFromAbs(
         preprocessVariableReferences(configWithPosition, variableNameToId);
         
         try {
-          const result = await createBlockFromConfig(workspace, configWithPosition);
+          const result = await createBlockFromConfig(workspace, configWithPosition, undefined, invocationContext);
           if (result.block) {
             totalBlocks += result.totalBlocks;
             yPosition += calculateBlockHeight(result.block) + 50;
@@ -498,7 +1080,7 @@ async function importFromAbs(
             failedBlocks.push(...result.failedBlocks);
           }
         } catch (error) {
-          console.warn(`创建块失败: ${blockConfig.type}`, error);
+          debugSyncAbsImportIssue(`Block creation failed: ${blockConfig.type}`, error);
           failedBlocks.push({
             blockType: blockConfig.type,
             error: error instanceof Error ? error.message : String(error)
@@ -506,7 +1088,16 @@ async function importFromAbs(
         }
         blockCreateCount++;
         // 每创建 2 个根块后让出事件循环，允许 UI 刷新
-        if (blockCreateCount % 2 === 0) { await yieldToEventLoop(); }
+        if (blockCreateCount % 2 === 0) { await checkpointSyncAbsFrameBudget(invocationContext, 'full-recreate.root-blocks'); }
+        throwIfSyncAbsCancelled(invocationContext);
+        if (blockCreateCount % 10 === 0) {
+          await reportSyncAbsImportProgress(
+            invocationContext,
+            'Rebuilding Blockly blocks',
+            Math.min(0.74, 0.5 + (blockCreateCount / Math.max(1, parseResult.rootBlocks.length)) * 0.24),
+            `${blockCreateCount}/${parseResult.rootBlocks.length} root blocks`,
+          );
+        }
       }
     } else {
       // 使用增量更新结果
@@ -544,15 +1135,11 @@ async function importFromAbs(
         if (blocks.length > minKeep) {
           // 有多余的块，删除多余的（保留前 minKeep 个）
           const toDelete = blocks.slice(minKeep);
-          Blockly.Events.disable();
-          try {
-            for (const block of toDelete) {
-              block.dispose(true);
-              orphanCleanupCount++;
-            }
-          } finally {
-            Blockly.Events.enable();
-          }
+          orphanCleanupCount += await disposeBlocklyBlocksInBatches(
+            toDelete,
+            invocationContext,
+            `full-recreate.final-orphan-cleanup.${type}`,
+          );
         }
       }
       
@@ -564,19 +1151,55 @@ async function importFromAbs(
     // 触发 FINISHED_LOADING 事件，让各库的初始化逻辑执行
     // （如 _initFunctionLibOnLoad 绑定 FUNC 变量到 custom_function_def）
     // createBlockFromConfig 路径不像 Blockly.serialization.workspaces.load 那样自动触发此事件
+    await checkpointSyncAbsFrameBudget(invocationContext, 'finished-loading.before');
     try {
       const finishedLoadingEvent = new Blockly.Events.FinishedLoading(workspace);
       Blockly.Events.fire(finishedLoadingEvent);
     } catch (e) {
       console.warn('[syncAbsFile] 触发 FINISHED_LOADING 事件失败:', e);
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, 'finished-loading.after');
     
     // 保存工作区到 ABI 文件
-    const abiJson = Blockly.serialization.workspaces.save(workspace);
-    await electronService.writeFile(abiFilePath, JSON.stringify(abiJson, null, 2));
+    await reportSyncAbsImportProgress(invocationContext, 'Saving Blockly workspace snapshot', 0.8, abiFilePath);
+    throwIfSyncAbsCancelled(invocationContext);
+    await checkpointSyncAbsFrameBudget(invocationContext, 'workspace-save.before');
+    const workspaceSaveStartedAt = performance.now();
+    const abiJson = await ChatPerformanceTracer.runWithSurface(
+      'editor_operation',
+      () => Blockly.serialization.workspaces.save(workspace),
+      'syncAbs.import:workspace.save',
+    );
+    ChatPerformanceTracer.recordDuration(
+      'syncAbs_workspace_save',
+      performance.now() - workspaceSaveStartedAt,
+      abiFilePath,
+      { slowThresholdMs: 16 },
+    );
+    await checkpointSyncAbsFrameBudget(invocationContext, 'workspace-save.after');
+    await writeTimelineAwareTextFile(abiFilePath, JSON.stringify(abiJson), electronService, invocationContext);
+    await reportSyncAbsImportProgress(invocationContext, 'Saving generated project files', 0.85);
+    throwIfSyncAbsCancelled(invocationContext);
+
+    // 在 AI 回合中 builder 的自动预处理会因 aiWaiting 被延后。
+    // 这里直接同步刷新 sketch.ino，避免同一 turn 立即读取时仍看到旧代码。
+    let sketchSyncInfo: { filePath: string; generated: boolean } | null = null;
+    let sketchSyncWarning = '';
+    try {
+      await reportSyncAbsImportProgress(invocationContext, 'Refreshing generated sketch', 0.9);
+      throwIfSyncAbsCancelled(invocationContext);
+      sketchSyncInfo = await writeGeneratedSketchIno(projectService?.currentProjectPath || projectService?.projectRootPath, electronService, workspace, invocationContext);
+    } catch (error) {
+      if (isSyncAbsCancellationError(error)) {
+        throw error;
+      }
+      sketchSyncWarning = `\n\n**⚠️ 代码生成告警:** 未能立即刷新 sketch.ino: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    throwIfSyncAbsCancelled(invocationContext);
     
     const variableCount = allVariables.size;  // 使用收集到的所有变量数量
-    
+    await reportSyncAbsImportProgress(invocationContext, 'Blockly workspace import finished', 0.95);
+
     // 警告信息
     let warnings = '';
     if (parseResult.warnings && parseResult.warnings.length > 0) {
@@ -620,9 +1243,11 @@ async function importFromAbs(
       content: `✅ 已从 ABS 文件导入
 
 **统计:** ${totalBlocks} 个块, ${variableCount} 个变量${updateModeInfo}
-**备份:** 原 ABI 文件已备份为 \`project.abi.backup\`${versionInfo}${warnings}${failedInfo}
+**备份:** 原 ABI 文件已备份为 \`project.abi.backup\`${versionInfo}${warnings}${failedInfo}${sketchSyncWarning}
 
-工作区已更新，请使用get_workspace_overview_tool检查工作区实际的代码是否符合用户需求。`,
+${sketchSyncInfo ? `**代码同步:** 已刷新 \`${sketchSyncInfo.filePath}\`${sketchSyncInfo.generated ? '' : '（当前生成结果为空）'}
+
+` : ''}工作区已更新。请使用 \`lint\` 验证生成代码；如需检查结构，请读取 \`project.abs\` 或导出的 sketch 文件，不要调用旧的直接 Blockly mutation/overview 工具。`,
       metadata: {
         operation: 'import',
         filePath: absFilePath,
@@ -632,6 +1257,9 @@ async function importFromAbs(
       }
     };
   } catch (error) {
+    if (isSyncAbsCancellationError(error)) {
+      throw error;
+    }
     return {
       is_error: true,
       content: `导入失败: ${error instanceof Error ? error.message : String(error)}`
@@ -876,10 +1504,10 @@ async function getAbsStatus(
     
     content += `\n**建议操作:**\n`;
     if (!absExists && abiExists) {
-      content += `- 使用 \`sync_abs_file(operation: "export")\` 生成 ABS 文件\n`;
+      content += `- 使用 \`syncAbs action="export"\` 生成 ABS 文件\n`;
     } else if (absExists) {
       content += `- 使用 \`read_file\` 读取完整 ABS 内容\n`;
-      content += `- 使用 \`edit_file\` 修改后 \`sync_abs_file(operation: "import")\` 应用\n`;
+      content += `- 使用 \`edit_file\` 修改后 \`syncAbs action="import"\` 应用\n`;
     }
     
     return {
@@ -1276,7 +1904,7 @@ function remapAndExpandInputs(block: any, inputs: Record<string, any>): Record<s
   }
   for (let i = availableInputs.length; i < extraInputs.length; i++) {
     result[extraInputs[i].key] = extraInputs[i].value;
-    console.warn(`    ⚠️ 无法映射输入 ${extraInputs[i].key}，块上没有更多可用值输入`);
+    debugSyncAbsImportIssue(`Unable to map extra input, no available value input remains: ${extraInputs[i].key}`);
   }
 
   return result;
@@ -1300,7 +1928,8 @@ async function rebuildBlockChildren(
   existingBlock: any,
   newConfig: any,
   variableNameToId: Map<string, string>,
-  preprocessVariableReferences: (config: any, mapping: Map<string, string>) => void
+  preprocessVariableReferences: (config: any, mapping: Map<string, string>) => void,
+  invocationContext?: SyncAbsInvocationContext,
 ): Promise<{ failedBlocks: Array<{ blockType: string; error: string }> }> {
   const failedBlocks: Array<{ blockType: string; error: string }> = [];
   // console.log(`    🔧 开始重建子树: ${existingBlock.type}`);
@@ -1315,7 +1944,7 @@ async function rebuildBlockChildren(
         // console.log(`    ✅ loadExtraState 调用完成`);
       }
     } catch (e) {
-      console.warn(`    ⚠️ 更新 extraState 失败:`, e);
+        debugSyncAbsImportIssue('Updating block extraState failed', e);
     }
   }
   
@@ -1344,29 +1973,42 @@ async function rebuildBlockChildren(
   // 4. 禁用事件，清空所有子块
   if (blocksToDelete.length > 0) {
     // console.log(`    🗑️ 清空 ${blocksToDelete.length} 个子块`);
-    Blockly.Events.disable();
-    try {
-      // 先断开所有输入连接
-      for (const input of existingBlock.inputList || []) {
-        if (input.connection?.isConnected()) {
-          const child = input.connection.targetBlock();
-          if (child && !child.isShadow()) {
+    // 先断开所有输入连接。每个 Blockly mutation 使用短事件事务，避免一整段
+    // Events.disable() 阻塞聊天 UI 的 hover/loading/scrollbar 动画。
+    let disconnectedChildCount = 0;
+    for (const input of existingBlock.inputList || []) {
+      if (input.connection?.isConnected()) {
+        const child = input.connection.targetBlock();
+        if (child && !child.isShadow()) {
+          throwIfSyncAbsCancelled(invocationContext);
+          runWithBlocklyEventsDisabled(() => {
             input.connection.disconnect();
+            disconnectedChildCount++;
+          });
+          if (disconnectedChildCount % 8 === 0) {
+            await checkpointSyncAbsFrameBudget(invocationContext, `rebuild.${existingBlock.type}.children-disconnected`);
           }
         }
       }
-      
-      // 删除所有收集的块（去重）
-      const deletedIds = new Set<string>();
-      for (const { block } of blocksToDelete) {
-        if (!deletedIds.has(block.id) && !block.disposed) {
+    }
+
+    // 删除所有收集的块（去重）
+    const deletedIds = new Set<string>();
+    let deletedChildCount = 0;
+    for (const { block } of blocksToDelete) {
+      if (!deletedIds.has(block.id) && !block.disposed) {
+        throwIfSyncAbsCancelled(invocationContext);
+        runWithBlocklyEventsDisabled(() => {
           block.dispose(false);
           deletedIds.add(block.id);
+          deletedChildCount++;
+        });
+        if (deletedChildCount % 8 === 0) {
+          await checkpointSyncAbsFrameBudget(invocationContext, `rebuild.${existingBlock.type}.children-delete-batch`);
         }
       }
-    } finally {
-      Blockly.Events.enable();
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, `rebuild.${existingBlock.type}.children-deleted`);
   }
   
   // 5. 根据新配置重建子块
@@ -1390,7 +2032,7 @@ async function rebuildBlockChildren(
       preprocessVariableReferences(childConfig, variableNameToId);
       
       try {
-        const result = await createBlockFromConfig(workspace, childConfig);
+        const result = await createBlockFromConfig(workspace, childConfig, undefined, invocationContext);
         if (result.block) {
           const targetConnection = result.block.outputConnection || result.block.previousConnection;
           if (targetConnection) {
@@ -1398,7 +2040,7 @@ async function rebuildBlockChildren(
               input.connection.connect(targetConnection);
             } catch (connectError) {
               // 连接失败，销毁孤立块避免残留
-              console.warn(`    ⚠️ 连接失败，清理孤立块: ${childConfig.type}`, connectError);
+              debugSyncAbsImportIssue(`Child connection failed, cleaning orphan block: ${childConfig.type}`, connectError);
               try { result.block.dispose(true); } catch (_) { /* ignore */ }
               failedBlocks.push({
                 blockType: childConfig.type,
@@ -1407,7 +2049,7 @@ async function rebuildBlockChildren(
             }
           } else {
             // 无可用连接点，销毁孤立块
-            console.warn(`    ⚠️ ${childConfig.type} 无 outputConnection/previousConnection，清理`);
+            debugSyncAbsImportIssue(`Child block has no output/previous connection, cleaning: ${childConfig.type}`);
             try { result.block.dispose(true); } catch (_) { /* ignore */ }
             failedBlocks.push({
               blockType: childConfig.type,
@@ -1420,12 +2062,13 @@ async function rebuildBlockChildren(
           failedBlocks.push(...result.failedBlocks);
         }
       } catch (e) {
-        console.warn(`    ⚠️ 重建子块失败: ${childConfig.type}`, e);
+        debugSyncAbsImportIssue(`Child rebuild failed: ${childConfig.type}`, e);
         failedBlocks.push({
           blockType: childConfig.type,
           error: e instanceof Error ? e.message : String(e)
         });
       }
+      await checkpointSyncAbsFrameBudget(invocationContext, `rebuild.${existingBlock.type}.child`);
     }
   }
   
@@ -1468,7 +2111,8 @@ async function incrementalUpdate(
   workspace: any,
   newBlocks: any[],
   variableNameToId: Map<string, string>,
-  preprocessVariableReferences: (config: any, mapping: Map<string, string>) => void
+  preprocessVariableReferences: (config: any, mapping: Map<string, string>) => void,
+  invocationContext?: SyncAbsInvocationContext,
 ): Promise<{
   added: number;
   removed: number;
@@ -1593,14 +2237,15 @@ async function incrementalUpdate(
     if (matchingNewBlock) {
       // console.log(`  🔄 类型匹配，重建子树: ${currentType}`);
       try {
-        const rebuildResult = await rebuildBlockChildren(
-          workspace, currentItem.block, matchingNewBlock.config,
-          variableNameToId, preprocessVariableReferences
-        );
+          const rebuildResult = await rebuildBlockChildren(
+            workspace, currentItem.block, matchingNewBlock.config,
+            variableNameToId, preprocessVariableReferences,
+            invocationContext,
+          );
         if (rebuildResult.failedBlocks?.length) failedBlocks.push(...rebuildResult.failedBlocks);
         // console.log(`    ✅ 子树重建成功: ${currentType}`);
       } catch (error) {
-        console.warn(`子树重建失败: ${currentType}`, error);
+        debugSyncAbsImportIssue(`Subtree rebuild failed: ${currentType}`, error);
         failedBlocks.push({ blockType: currentType, error: error instanceof Error ? error.message : String(error) });
       }
       processedExistingBlocks.add(currentItem.block.id);
@@ -1608,10 +2253,11 @@ async function incrementalUpdate(
       validBlockIds.add(currentItem.block.id);
       updatedCount++;
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, `incremental.rebuild-root.${currentType}`);
   }
   
   // 2b: 添加所有未匹配的非 setup/loop 新块
-  await yieldToEventLoop();
+  await checkpointSyncAbsFrameBudget(invocationContext, 'incremental.phase-2b');
   let yPosition = 30;
   const calcYPosition = () => {
     let y = 30;
@@ -1632,7 +2278,7 @@ async function incrementalUpdate(
     const configWithPosition = { ...config, position: { x: 30, y: yPosition } };
     preprocessVariableReferences(configWithPosition, variableNameToId);
     try {
-      const result = await createBlockFromConfig(workspace, configWithPosition);
+      const result = await createBlockFromConfig(workspace, configWithPosition, undefined, invocationContext);
       if (result.block) {
         addedCount++;
         validBlockIds.add(result.block.id);
@@ -1642,14 +2288,15 @@ async function incrementalUpdate(
       if (result.failedBlocks?.length) failedBlocks.push(...result.failedBlocks);
       processedNewBlocks.add(newItem.index);
     } catch (error) {
-      console.warn(`添加块失败: ${config.type}`, error);
+      debugSyncAbsImportIssue(`Adding block failed: ${config.type}`, error);
       failedBlocks.push({ blockType: config.type, error: error instanceof Error ? error.message : String(error) });
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, `incremental.add.${config.type}`);
   }
   
   // ============ 阶段 3：处理 setup/loop 块 ============
   // 所有独立块已就绪，现在重建 setup/loop 子树
-  await yieldToEventLoop();
+  await checkpointSyncAbsFrameBudget(invocationContext, 'incremental.phase-3');
   // console.log(`🔍 阶段 3: 处理 setup/loop 块`);
   
   for (const currentItem of currentRootBlocks) {
@@ -1664,14 +2311,15 @@ async function incrementalUpdate(
     if (matchingNewBlock) {
       // console.log(`  🔄 重建 ${currentType} 子树`);
       try {
-        const rebuildResult = await rebuildBlockChildren(
-          workspace, currentItem.block, matchingNewBlock.config,
-          variableNameToId, preprocessVariableReferences
-        );
+          const rebuildResult = await rebuildBlockChildren(
+            workspace, currentItem.block, matchingNewBlock.config,
+            variableNameToId, preprocessVariableReferences,
+            invocationContext,
+          );
         if (rebuildResult.failedBlocks?.length) failedBlocks.push(...rebuildResult.failedBlocks);
         // console.log(`    ✅ ${currentType} 子树重建成功`);
       } catch (error) {
-        console.warn(`子树重建失败: ${currentType}`, error);
+        debugSyncAbsImportIssue(`Subtree rebuild failed: ${currentType}`, error);
         failedBlocks.push({ blockType: currentType, error: error instanceof Error ? error.message : String(error) });
       }
       processedExistingBlocks.add(currentItem.block.id);
@@ -1679,6 +2327,7 @@ async function incrementalUpdate(
       validBlockIds.add(currentItem.block.id);
       updatedCount++;
     }
+    await checkpointSyncAbsFrameBudget(invocationContext, `incremental.rebuild-setup.${currentType}`);
   }
   
   // 输出匹配后的状态
@@ -1701,7 +2350,7 @@ async function incrementalUpdate(
   // console.log(`${'─'.repeat(60)}`);
   
   // ============ 阶段 4：删除无匹配的旧块（保护关键块）============
-  await yieldToEventLoop();
+  await checkpointSyncAbsFrameBudget(invocationContext, 'incremental.phase-4');
   // console.log(`🔍 阶段 4: 清理无匹配的旧块（保留受保护块）`);
   
   for (const item of currentRootBlocks) {
@@ -1721,11 +2370,12 @@ async function incrementalUpdate(
           try {
             const rebuildResult = await rebuildBlockChildren(
               workspace, item.block, matchingNewConfig.config,
-              variableNameToId, preprocessVariableReferences
+              variableNameToId, preprocessVariableReferences,
+              invocationContext,
             );
             if (rebuildResult.failedBlocks?.length) failedBlocks.push(...rebuildResult.failedBlocks);
           } catch (error) {
-            console.warn(`重建受保护块子块失败: ${blockType}`, error);
+            debugSyncAbsImportIssue(`Protected block child rebuild failed: ${blockType}`, error);
             failedBlocks.push({ blockType: blockType, error: error instanceof Error ? error.message : String(error) });
           }
           processedNewBlocks.add(matchingNewConfig.index);
@@ -1739,54 +2389,61 @@ async function incrementalUpdate(
           if (alreadyHasValid) {
             // 已有同类型有效块，这是重复块，直接删除
             // console.log(`  🗑️ 删除重复受保护块: ${blockType} (ID: ${item.block.id})`);
-            Blockly.Events.disable();
             try {
-              item.block.dispose(true);
-              removedCount++;
+              runWithBlocklyEventsDisabled(() => {
+                item.block.dispose(true);
+                removedCount++;
+              });
             } catch (e) {
-              console.warn(`删除重复受保护块失败: ${blockType}`, e);
-            } finally {
-              Blockly.Events.enable();
+              debugSyncAbsImportIssue(`Deleting duplicate protected block failed: ${blockType}`, e);
             }
             processedExistingBlocks.add(item.block.id);
+            await checkpointSyncAbsFrameBudget(invocationContext, `incremental.cleanup-duplicate-protected.${blockType}`);
             continue;
           }
           // 没有同类型有效块，保留此块（清空子块）
           // console.log(`  🛡️ 保留受保护块: ${blockType} (ID: ${item.block.id})，清空其子块`);
-          Blockly.Events.disable();
           try {
-            // 清空受保护块的所有子块
+            // 清空受保护块的所有子块。短事务 + 批次 checkpoint，避免大块
+            // workspace mutation 抢占聊天流式渲染。
+            let clearedChildCount = 0;
             for (const input of item.block.inputList || []) {
               if (input.connection?.isConnected()) {
                 const child = input.connection.targetBlock();
                 if (child && !child.isShadow()) {
-                  input.connection.disconnect();
-                  child.dispose(true);
+                  throwIfSyncAbsCancelled(invocationContext);
+                  runWithBlocklyEventsDisabled(() => {
+                    input.connection.disconnect();
+                    child.dispose(true);
+                    clearedChildCount++;
+                  });
+                  if (clearedChildCount % 4 === 0) {
+                    await checkpointSyncAbsFrameBudget(invocationContext, `incremental.cleanup-protected-children.${blockType}`);
+                  }
                 }
               }
             }
           } catch (e) {
-            console.warn(`清空受保护块子块失败: ${blockType}`, e);
-          } finally {
-            Blockly.Events.enable();
+            debugSyncAbsImportIssue(`Clearing protected block children failed: ${blockType}`, e);
           }
           validBlockIds.add(item.block.id);
         }
         // 标记为已处理，避免后续再次删除
         processedExistingBlocks.add(item.block.id);
+        await checkpointSyncAbsFrameBudget(invocationContext, `incremental.cleanup-protected.${blockType}`);
         continue;
       }
       
       // console.log(`  🗑️ 删除无匹配块: ${blockType} (ID: ${item.block.id})`);
-      Blockly.Events.disable();
       try {
-        item.block.dispose(true);
-        removedCount++;
+        runWithBlocklyEventsDisabled(() => {
+          item.block.dispose(true);
+          removedCount++;
+        });
       } catch (e) {
-        console.warn(`删除块失败: ${blockType}`, e);
-      } finally {
-        Blockly.Events.enable();
+        debugSyncAbsImportIssue(`Deleting unmatched block failed: ${blockType}`, e);
       }
+      await checkpointSyncAbsFrameBudget(invocationContext, `incremental.cleanup.${blockType}`);
     }
   }
   
@@ -1802,7 +2459,7 @@ async function incrementalUpdate(
       const configWithPosition = { ...config, position: { x: 30, y: yPosition } };
       preprocessVariableReferences(configWithPosition, variableNameToId);
       try {
-        const result = await createBlockFromConfig(workspace, configWithPosition);
+        const result = await createBlockFromConfig(workspace, configWithPosition, undefined, invocationContext);
         if (result.block) {
           addedCount++;
           validBlockIds.add(result.block.id);
@@ -1811,9 +2468,10 @@ async function incrementalUpdate(
         }
         if (result.failedBlocks?.length) failedBlocks.push(...result.failedBlocks);
       } catch (error) {
-        console.warn(`添加块失败: ${config.type}`, error);
+        debugSyncAbsImportIssue(`Adding block failed: ${config.type}`, error);
         failedBlocks.push({ blockType: config.type, error: error instanceof Error ? error.message : String(error) });
       }
+      await checkpointSyncAbsFrameBudget(invocationContext, `incremental.add-remaining.${config.type}`);
     }
   }
   
@@ -1825,45 +2483,29 @@ async function incrementalUpdate(
   // console.log(`🔍 阶段 6: 最终清理残留块 (基于 ID 追踪)`);
   
   const currentTopBlocks = workspace.getTopBlocks(false);
-  let cleanupCount = 0;
+  const residualBlocks: any[] = [];
   
   for (const block of currentTopBlocks) {
     if (!validBlockIds.has(block.id)) {
-      // console.log(`  🗑️ 清理残留块: ${block.type} (ID: ${block.id})`);
-      Blockly.Events.disable();
-      try {
-        block.dispose(true);
-        cleanupCount++;
-      } catch (e) {
-        console.warn(`清理残留块失败: ${block.type}`, e);
-      } finally {
-        Blockly.Events.enable();
-      }
+      residualBlocks.push(block);
     }
   }
+  const cleanupCount = await disposeBlocklyBlocksInBatches(
+    residualBlocks,
+    invocationContext,
+    'incremental.cleanup-residual',
+  );
   if (cleanupCount > 0) {
     // console.log(`  ✅ 清理了 ${cleanupCount} 个残留块`);
     removedCount += cleanupCount;
   }
   
-  // 强制重新渲染工作区，确保视觉状态正确
+  // 终端刷新工作区，确保视觉状态正确；只渲染顶层块树，避免对子块重复 render。
   try {
-    // 方法1: 重新渲染所有块
-    if (workspace.render) {
-      workspace.render();
-    }
-    // 方法2: 重新计算连接
-    if (workspace.getAllBlocks) {
-      const allBlocks = workspace.getAllBlocks(false);
-      for (const block of allBlocks) {
-        if (block.render) {
-          block.render();
-        }
-      }
-    }
+    await refreshBlocklyWorkspaceRenderInBatches(workspace, invocationContext, 'incremental.workspace-render');
     // console.log(`🎨 工作区渲染刷新完成`);
   } catch (e) {
-    console.warn(`渲染刷新失败:`, e);
+    debugSyncAbsImportIssue('Workspace render refresh failed', e);
   }
   
   return {

@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "Model Store",
+        "DESCRIPTION": "Description",
+        "MODEL_INFO": "Model Info",
+        "SUPPORTED_BOARDS": "Supported Boards",
+        "MODEL_TYPE": "Model Type",
+        "MODEL_FORMAT": "Model Format",
+        "MODEL_PRECISION": "Model Precision",
+        "MODEL_SIZE": "Model Size",
+        "VERSION": "Version",
+        "MODEL_DETAILS": "Model Details",
+        "MODEL_LABELS": "Model Labels",
+        "AUTHOR": "Author",
+        "DEPLOY_COUNT": "Deploy Count",
+        "VIEW_COUNT": "View Count",
+        "LIKE_COUNT": "Like Count",
+        "TAG_VISION": "Vision",
+        "TAG_AUDIO": "Audio",
+        "SEARCH_PLACEHOLDER": "Search available models",
+        "MODEL_LIST": "Model List",
+        "LOADING": "Loading...",
+        "BACK": "Back",
+        "TEST_MODEL": "Test Model",
+        "DEPLOY_MODEL": "Deploy Model",
+        "SELF_TRAINED_MODEL": "Self-Trained Model"
+    }
+}

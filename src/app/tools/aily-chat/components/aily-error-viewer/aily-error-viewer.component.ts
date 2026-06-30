@@ -88,6 +88,6 @@ export class AilyErrorViewerComponent implements OnInit, OnDestroy {
 
 
     logDetail() {
-        console.log('Error Viewer Data:', this.data);
+        // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
     }
 }

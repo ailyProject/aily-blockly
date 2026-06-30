@@ -2,232 +2,345 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 0 10px;
-  overflow: hidden;
+  min-height: 0;
   background: var(--aily-bg-secondary);
+  color: var(--aily-text-primary);
+}
 
-  .app-store-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--aily-border-subtle);
+.store-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--aily-border-primary);
+  background: var(--aily-bg-primary);
+}
 
-    .header-info {
-      .info-text {
-        font-size: 13px;
-        color: var(--aily-text-secondary);
-      }
-    }
+.zone-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 
-    .reset-btn {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border: 1px solid var(--aily-border-subtle);
-      border-radius: 4px;
-      background: transparent;
-      color: var(--aily-text-tertiary);
-      cursor: pointer;
-      font-size: 12px;
-      transition: all 0.2s;
+.summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--aily-border-subtle);
+  border-radius: 6px;
+  color: var(--aily-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
 
-      &:hover {
-        background: var(--aily-border-subtle);
-        border-color: var(--aily-color-accent);
-        color: var(--aily-text-primary);
-      }
-    }
+  i {
+    color: var(--aily-text-tertiary);
   }
 
-  .app-store-content {
-    display: flex;
-    gap: 16px;
-    flex: 1;
-    overflow: hidden;
+  b {
+    color: var(--aily-text-primary);
+    font-weight: 600;
+  }
+}
 
-    .main-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
+.store-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+  overflow: hidden;
+}
 
-    .sidebar-content {
-      width: 70px;
-      // height: 100%;
-      // // display: flex;
-      // // flex-direction: column;
-      // // overflow: hidden;
-    }
+.placement-column,
+.catalog-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.placement-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: none;
+}
+
+.placement-section,
+.catalog-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--aily-border-subtle);
+  border-radius: 8px;
+  background: var(--aily-bg-primary);
+}
+
+.placement-section {
+  flex: none;
+}
+
+.catalog-panel {
+  flex: 1;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--aily-border-subtle);
+  color: var(--aily-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  i {
+    color: var(--aily-text-tertiary);
+  }
+}
+
+.placement-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 0;
+  max-height: 104px;
+  padding: 8px 10px;
+  overflow: auto;
+}
+
+.placement-card,
+.catalog-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--aily-border-subtle);
+  border-radius: 8px;
+  background: var(--aily-bg-secondary);
+  transition: border-color 0.18s, background 0.18s, transform 0.18s;
+
+  &.dev {
+    border-style: dashed;
+    opacity: 0.65;
   }
 
-  .section-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--aily-text-secondary);
-    margin-bottom: 10px;
-    margin-top: 8px;
+  &:hover {
+    border-color: var(--aily-primary);
+    background: var(--aily-bg-tertiary);
+  }
+}
 
-    i {
-      font-size: 13px;
-    }
+.placement-card {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-color: transparent;
+  background: transparent;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
   }
 
-  .app-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    padding: 10px;
-    border-radius: 4px;
+  &:hover {
+    border-color: transparent;
+    background: transparent;
+  }
+}
 
-    &.header-zone {
-      background: rgba(74, 140, 202, 0.08);
-      border: 1px dashed #4a8cca;
-      height: 70px;
-    }
+.catalog-card {
+  min-height: 70px;
+  padding: 8px;
+  gap: 8px;
+}
 
-    &.sidebar-zone {
-      width: 70px;
-      height: 100%;
-      flex-direction: column;
-      align-items: center;
-      background: rgba(138, 43, 226, 0.08);
-      border: 1px dashed #8a2be2;
-      overflow-y: auto;
-    }
+.catalog-main,
+.placement-main,
+.icon-btn {
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
 
-    &.other-zone {
-      flex: 1;
-      overflow-y: auto;
-      background: var(--aily-bg-primary);
-      border: 1px solid var(--aily-border-subtle);
-      align-content: flex-start;
-    }
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  color: var(--aily-text-tertiary);
+  cursor: pointer;
 
-    .app-card {
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      width: 50px;
-      height: 50px;
-      border-radius: 8px;
-      background: var(--aily-bg-primary);
-      border: 1px solid var(--aily-border-subtle);
-      cursor: grab;
-      transition: all 0.2s;
+  &:hover:not(:disabled) {
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-primary);
+  }
 
-      &:hover {
-        border-color: var(--aily-color-accent);
-        background: var(--aily-border-subtle);
-      }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
+  }
+}
 
-      &:active {
-        cursor: grabbing;
-      }
+.placement-main,
+.catalog-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  text-align: left;
+}
 
-      &.dev {
-        border-style: dashed;
-        opacity: 0.6;
-      }
+.placement-main {
+  position: relative;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  color: var(--aily-text-muted);
+  cursor: grab;
+  font-size: 19px;
+  opacity: 0.75;
 
-      &.empty-slot {
-        border: 1px dashed var(--aily-border-input);
-        background: transparent;
-        cursor: default;
+  &:active {
+    cursor: grabbing;
+  }
 
-        &:hover {
-          background: transparent;
-          border-color: var(--aily-border-input);
-        }
+  &:hover {
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+    opacity: 1;
+  }
+}
 
-        .empty-icon {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 24px;
-          height: 24px;
-          color: var(--aily-border-input);
-          font-size: 14px;
-        }
+.catalog-main {
+  flex: 1;
+  gap: 10px;
+  cursor: pointer;
+}
 
-        .empty-text {
-          display: none;
-        }
-      }
+.app-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--aily-bg-primary);
+  color: var(--aily-text-secondary);
+  font-size: 18px;
+}
 
-      .app-icon {
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 38px;
-        height: 38px;
-        border-radius: 8px;
-        color: var(--aily-text-tertiary);
-        font-size: 20px;
-        transition: color 0.2s;
+.app-open-btn {
+  border: 0;
+  outline: none;
+  cursor: pointer;
 
-        .app-badge {
-          position: absolute;
-          top: -4px;
-          right: -4px;
-          padding: 1px 4px;
-          border-radius: 4px;
-          background: #e34c4c;
-          color: var(--aily-text-primary);
-          font-size: 8px;
-          font-weight: bold;
-        }
-      }
+  &:hover {
+    color: var(--aily-text-primary);
+    // background: var(--aily-bg-tertiary);
+  }
+}
 
-      &:hover .app-icon {
-        color: var(--aily-text-primary);
-      }
+.app-badge {
+  position: absolute;
+  top: 3px;
+  right: -3px;
+  height: 12px;
+  padding: 0 5px;
+  padding-top: 1px;
+  border-radius: 10px;
+  background: red;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+}
 
-      .app-name {
-        // display: none;
-        font-size: 10px;
-        white-space: nowrap;
-      }
+.app-name {
+  display: block;
+  overflow: hidden;
+  color: var(--aily-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-      .header-indicator {
-        position: absolute;
-        top: 2px;
-        right: 2px;
-        color: #52c41a;
-        font-size: 10px;
-      }
+.app-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
 
-      .sidebar-indicator {
-        position: absolute;
-        top: 2px;
-        right: 2px;
-        color: #8a2be2;
-        font-size: 10px;
-      }
-    }
+.app-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--aily-text-tertiary);
+  font-size: 11px;
+  line-height: 1.35;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
 
-    // Sortable.js 拖拽样式
-    .sortable-ghost {
-      opacity: 0.4;
-      background: rgba(74, 140, 202, 0.2);
-    }
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+}
 
-    .sortable-chosen {
-      cursor: grabbing;
-    }
+.placement-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 
-    .sortable-drag {
-      opacity: 1;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    }
+.pin-btn.active {
+  color: var(--aily-color-primary);
+  background: transparent;
+}
+
+.empty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px dashed var(--aily-border-input);
+  border-radius: 8px;
+  color: var(--aily-text-hint);
+}
+
+.sortable-ghost {
+  opacity: 0.4;
+}
+
+.sortable-chosen {
+  border-color: var(--aily-primary);
+}
+
+.sortable-drag {
+  opacity: 1;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+}
+
+@media (max-width: 720px) {
+  .catalog-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -94,17 +94,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this._ProjectService.registerCodeEditor(this);
 
     this.activatedRoute.queryParams.subscribe(params => {
-      if (params['path']) {
-        console.log('project path', params['path']);
-        try {
-          this.loadProject(params['path']);
-        } catch (error) {
-          console.error('加载项目失败', error);
-          this.message.error('加载项目失败，请检查项目文件是否完整');
-        }
-      } else {
-        this.message.error('没有找到项目路径');
-      }
+      void this.applyRouteQueryParams(params);
     });
 
     // 初始化快捷键监听
@@ -142,6 +132,49 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngAfterViewInit(): void {
 
+  }
+
+  private async applyRouteQueryParams(params: Record<string, unknown>): Promise<void> {
+    const projectPath = typeof params['path'] === 'string' ? params['path'].trim() : '';
+    if (!projectPath) {
+      this.message.error('没有找到项目路径');
+      return;
+    }
+
+    try {
+      if (this.projectService.currentProjectPath !== projectPath) {
+        console.log('project path', projectPath);
+        await this.loadProject(projectPath);
+      }
+
+      const openFilePath = typeof params['openFile'] === 'string' ? params['openFile'].trim() : '';
+      if (!openFilePath) {
+        return;
+      }
+
+      this.openFileByPath(openFilePath, {
+        title: openFilePath.split(/[\/\\]/).pop() || '',
+        position: this.readRoutePosition(params),
+      });
+    } catch (error) {
+      console.error('加载项目失败', error);
+      this.message.error('加载项目失败，请检查项目文件是否完整');
+    }
+  }
+
+  private readRoutePosition(params: Record<string, unknown>): { lineNumber?: number; column?: number } | undefined {
+    const lineNumber = Number(params['lineNumber']);
+    const column = Number(params['column']);
+    const position: { lineNumber?: number; column?: number } = {};
+
+    if (Number.isFinite(lineNumber) && lineNumber > 0) {
+      position.lineNumber = lineNumber;
+    }
+    if (Number.isFinite(column) && column > 0) {
+      position.column = column;
+    }
+
+    return Object.keys(position).length > 0 ? position : undefined;
   }
 
   async loadProject(projectPath: string) {
@@ -184,32 +217,9 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // 先保存当前标签页的状态
     this.saveCurrentTabState();
 
-    const filePath = file.path;
-    // 检查文件是否已经打开
-    const existingFileIndex = this.openedFiles.findIndex(f => f.path === filePath);
-
-    if (existingFileIndex >= 0) {
-      // 如果已经打开，切换到该标签页
-      this.selectedIndex = existingFileIndex;
-    } else {
-      // 否则新建标签页
-      const content = window['fs'].readFileSync(filePath);
-      const newFile: OpenedFile = {
-        path: filePath,
-        title: file.title,
-        content: content,
-        isDirty: false,
-        editorState: {} // 初始化编辑器状态
-      };
-
-      this.openedFiles.push(newFile);
-      this.selectedIndex = this.openedFiles.length - 1;
-    }
-
-    // 延迟更新代码，确保界面已更新
-    setTimeout(() => {
-      this.updateCurrentCode();
-    }, 0);
+    this.openFileByPath(file.path, {
+      title: file.title,
+    });
   }
 
   /**
@@ -400,14 +410,31 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onOpenFileRequest(event: { filePath: string, position: any }): void {
     console.log('收到打开文件请求:', event);
 
+    this.openFileByPath(event.filePath, {
+      position: event.position,
+    });
+  }
+
+  private openFileByPath(
+    filePath: string,
+    options?: {
+      title?: string;
+      position?: any;
+    },
+  ): boolean {
+    const normalizedPath = typeof filePath === 'string' ? filePath.trim() : '';
+    if (!normalizedPath) {
+      return false;
+    }
+
     // 检查文件是否存在
-    if (!this.electronService.exists(event.filePath)) {
-      this.message.error(`文件不存在: ${event.filePath}`);
-      return;
+    if (!this.electronService.exists(normalizedPath)) {
+      this.message.error(`文件不存在: ${normalizedPath}`);
+      return false;
     }
 
     // 检查文件是否已经打开
-    const existingFileIndex = this.openedFiles.findIndex(f => f.path === event.filePath);
+    const existingFileIndex = this.openedFiles.findIndex(f => f.path === normalizedPath);
 
     if (existingFileIndex >= 0) {
       // 如果已经打开，切换到该标签页
@@ -415,11 +442,11 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     } else {
       try {
         // 否则新建标签页
-        const content = window['fs'].readFileSync(event.filePath);
-        const fileName = event.filePath.split(/[\/\\]/).pop() || '';
+        const content = window['fs'].readFileSync(normalizedPath);
+        const fileName = options?.title || normalizedPath.split(/[\/\\]/).pop() || '';
 
         const newFile: OpenedFile = {
-          path: event.filePath,
+          path: normalizedPath,
           title: fileName,
           content: content,
           isDirty: false,
@@ -430,8 +457,8 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.selectedIndex = this.openedFiles.length - 1;
       } catch (error) {
         console.error('读取文件失败:', error);
-        this.message.error(`无法打开文件: ${event.filePath}`);
-        return;
+        this.message.error(`无法打开文件: ${normalizedPath}`);
+        return false;
       }
     }
 
@@ -440,10 +467,14 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.updateCurrentCode();
 
       // 等待编辑器准备就绪后跳转到指定位置
-      setTimeout(() => {
-        this.jumpToPosition(event.position);
-      }, 100);
+      if (options?.position) {
+        setTimeout(() => {
+          this.jumpToPosition(options.position);
+        }, 100);
+      }
     }, 0);
+
+    return true;
   }
 
   /**

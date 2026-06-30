@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { TranslateService } from '@ngx-translate/core';
 import { CmdOutput, CmdService } from '../../../services/cmd.service';
 import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -16,6 +17,19 @@ import { PlatformService } from "../../../services/platform.service";
 import { ElectronService } from '../../../services/electron.service';
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { CompileValidationService } from '../../../services/compile-validation.service';
+import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
+import { NpmService } from '../../../services/npm.service';
+import { debounceTime } from 'rxjs/operators';
+import { ChatPerformanceTracer } from '../../../tools/aily-chat/services/chat-perf-tracer';
+import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
+
+const AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY = '__AILY_CHAT_LEX_COMPLETION_PENDING_COUNT__';
+const AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY = '__AILY_CHAT_AGENT_LOOP_PENDING_COUNT__';
+const PREPROCESS_IDLE_TIMEOUT_MS = 1800;
+const PREPROCESS_PENDING_CHAT_POLL_MS = 500;
+const PREPROCESS_PENDING_CHAT_MAX_WAIT_MS = 10_000;
+const PREPROCESS_POST_CHAT_QUIET_MS = 1500;
+const PREPROCESS_SLOW_PHASE_MS = 32;
 
 @Injectable()
 export class _BuilderService {
@@ -24,6 +38,7 @@ export class _BuilderService {
     private cmdService: CmdService,
     private crossPlatformCmdService: CrossPlatformCmdService,
     private message: NzMessageService,
+    private translate: TranslateService,
     private noticeService: NoticeService,
     private logService: LogService,
     private workflowService: WorkflowService,
@@ -33,7 +48,9 @@ export class _BuilderService {
     private blocklyService: BlocklyService,
     private platformService: PlatformService,
     private electronService: ElectronService,
-    private compileValidationService: CompileValidationService
+    private npmService: NpmService,
+    private compileValidationService: CompileValidationService,
+    private appDataResourceLock: AppDataResourceLockService
   ) { }
 
   // buildInProgress = false;
@@ -53,6 +70,8 @@ export class _BuilderService {
   private preprocessFullError: string = ''; // 保存预编译完整错误日志
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
   private aiWaitingSubscription: any = null; // 保存 AI 等待状态订阅引用
+  private workflowStateSubscription: any = null; // 保存流程状态订阅引用
+  private lastWorkflowState: ProcessState | null = null;
 
   currentProjectPath = "";
   lastCode = "";
@@ -62,6 +81,227 @@ export class _BuilderService {
   isUploading = false;
 
   private initialized = false; // 防止重复初始化
+
+  private t(key: string, params?: Record<string, any>): string {
+    return this.translate.instant(`BLOCKLY_EDITOR.BUILD.${key}`, params);
+  }
+
+  private buildNoticeTitle(boardName: string): string {
+    return this.t('RUNNING_TITLE', { board: boardName });
+  }
+
+  private appendCompileLog(message: string, level: ProjectLogLevel = 'INFO'): void {
+    appendProjectLog(this.projectService.currentProjectPath, 'compile', level, message);
+  }
+
+  private messageWithDuration(message: string, seconds: string): string {
+    return this.t('MESSAGE_WITH_DURATION', { message, seconds });
+  }
+
+  private updateCancelledNotice(buildDuration: string, setTimeout = 5000): void {
+    this.noticeService.update({
+      title: this.t('CANCELLED_TITLE'),
+      text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }),
+      state: 'warn',
+      setTimeout,
+      isCancellationNotice: true
+    });
+  }
+
+  private isInstallInProgress(): boolean {
+    return this.npmService.isInstalling || this.workflowService.currentState === ProcessState.INSTALLING;
+  }
+
+  private getPendingChatBackgroundOperationCount(): number {
+    const value = (globalThis as Record<string, unknown>)[AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY];
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+  }
+
+  private getPendingChatAgentLoopCount(): number {
+    const value = (globalThis as Record<string, unknown>)[AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY];
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+  }
+
+  private getPendingChatBlockingOperationCount(): number {
+    return this.getPendingChatBackgroundOperationCount() + this.getPendingChatAgentLoopCount();
+  }
+
+  private waitForOneIdleBoundary(): Promise<void> {
+    return new Promise(resolve => {
+      const requestIdle = (globalThis as any).requestIdleCallback as
+        | ((callback: () => void, options?: { timeout?: number }) => number)
+        | undefined;
+      if (typeof requestIdle === 'function') {
+        requestIdle(() => resolve(), { timeout: PREPROCESS_IDLE_TIMEOUT_MS });
+        return;
+      }
+
+      setTimeout(resolve, PREPROCESS_PENDING_CHAT_POLL_MS);
+    });
+  }
+
+  private waitForDelay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private recordPreprocessDuration(tag: string, startedAt: number, detail?: string): void {
+    const durationMs = Date.now() - startedAt;
+    ChatPerformanceTracer.recordDuration(
+      `builder_preprocess_${tag}`,
+      durationMs,
+      detail,
+      { slowThresholdMs: PREPROCESS_SLOW_PHASE_MS },
+    );
+    if (durationMs >= PREPROCESS_SLOW_PHASE_MS) {
+      console.info('[Builder][PreprocessSchedule] slow phase', {
+        tag,
+        durationMs,
+        detail,
+      });
+    }
+  }
+
+  private async runBuilderPreprocessPhase<T>(
+    tag: string,
+    operation: () => T | Promise<T>,
+    detail?: string,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await ChatPerformanceTracer.runWithSurface(
+        'builder_preprocess',
+        operation,
+        detail ? `${tag}:${detail}` : tag,
+      );
+    } finally {
+      this.recordPreprocessDuration(tag, startedAt, detail);
+    }
+  }
+
+  private async generateWorkspaceCodeForPreprocess(
+    workspace: unknown,
+    detail?: string,
+  ): Promise<string> {
+    await this.waitForOneIdleBoundary();
+    return this.runBuilderPreprocessPhase(
+      'workspace_to_code',
+      () => arduinoGenerator.workspaceToCode(workspace as any) || '',
+      detail,
+    );
+  }
+
+  private async unlinkFileIfExists(filePath: string): Promise<boolean> {
+    if (!window['path'].isExists(filePath)) {
+      return false;
+    }
+
+    const fsApi = window['fs'] as {
+      unlinkSync?: (path: string) => void;
+      promises?: {
+        unlink?: (path: string) => Promise<void>;
+      };
+    };
+
+    if (typeof fsApi.promises?.unlink === 'function') {
+      await fsApi.promises.unlink(filePath);
+      return true;
+    }
+
+    await this.waitForOneIdleBoundary();
+    fsApi.unlinkSync?.(filePath);
+    return true;
+  }
+
+  private async writeTextFile(filePath: string, content: string): Promise<void> {
+    const fsApi = window['fs'] as {
+      writeFileSync?: (path: string, content: string) => void;
+      promises?: {
+        writeFile?: (path: string, content: string) => Promise<void>;
+      };
+    };
+
+    if (typeof fsApi.promises?.writeFile === 'function') {
+      await fsApi.promises.writeFile(filePath, content);
+      return;
+    }
+
+    await this.waitForOneIdleBoundary();
+    fsApi.writeFileSync?.(filePath, content);
+  }
+
+  private async waitForBackgroundPreprocessIdle(reason: string): Promise<void> {
+    const startedAt = Date.now();
+    let pendingChatOperations = this.getPendingChatBlockingOperationCount();
+
+    while (pendingChatOperations > 0 && Date.now() - startedAt < PREPROCESS_PENDING_CHAT_MAX_WAIT_MS) {
+      console.info('[Builder][PreprocessSchedule] waiting for chat background completion', {
+        reason,
+        pendingChatOperations,
+        pendingAgentLoops: this.getPendingChatAgentLoopCount(),
+        pendingCompletions: this.getPendingChatBackgroundOperationCount(),
+        waitMs: Date.now() - startedAt,
+      });
+      await this.waitForDelay(PREPROCESS_PENDING_CHAT_POLL_MS);
+      pendingChatOperations = this.getPendingChatBlockingOperationCount();
+    }
+
+    if (reason === 'ai-complete') {
+      await this.waitForDelay(PREPROCESS_POST_CHAT_QUIET_MS);
+    }
+    await this.waitForOneIdleBoundary();
+
+    console.info('[Builder][PreprocessSchedule] idle boundary reached', {
+      reason,
+      waitMs: Date.now() - startedAt,
+      pendingChatOperations: this.getPendingChatBlockingOperationCount(),
+      pendingAgentLoops: this.getPendingChatAgentLoopCount(),
+      pendingCompletions: this.getPendingChatBackgroundOperationCount(),
+    });
+  }
+
+  private triggerPendingPrecompile(reason: string, logMessage: string): void {
+    if (!this.pendingPrecompile) {
+      return;
+    }
+
+    console.log(logMessage);
+    this.pendingPrecompile = false;
+    setTimeout(() => {
+      const pendingChatOperations = this.getPendingChatBlockingOperationCount();
+      if (this.blocklyService.aiWaiting || pendingChatOperations > 0) {
+        if (pendingChatOperations > 0) {
+          console.info('[Builder][PreprocessSchedule] agent loop still active, keep preprocess pending', {
+            reason,
+            pendingChatOperations,
+            pendingAgentLoops: this.getPendingChatAgentLoopCount(),
+            pendingCompletions: this.getPendingChatBackgroundOperationCount(),
+          });
+        }
+        this.pendingPrecompile = true;
+        setTimeout(() => {
+          this.triggerPendingPrecompile(reason, logMessage);
+        }, PREPROCESS_PENDING_CHAT_POLL_MS);
+        return;
+      }
+
+      const currentState = this.workflowService.currentState;
+      if (currentState === ProcessState.BUILDING || currentState === ProcessState.UPLOADING || this.isInstallInProgress()) {
+        this.pendingPrecompile = true;
+        return;
+      }
+
+      this.blocklyService.dependencySubject.next(reason);
+    }, 800);
+  }
+
+  private async getMissingBoardDependencies(): Promise<string[]> {
+    const boardPackageJson = await this.projectService.getBoardPackageJson();
+    return this.npmService.getMissingBoardDependencies(boardPackageJson);
+  }
+
+  private formatMissingBoardDependenciesMessage(missingDependencies: string[]): string {
+    return `开发板依赖未安装完成，请先修复依赖安装: ${missingDependencies.join(', ')}`;
+  }
 
   init() {
     if (this.initialized) {
@@ -95,12 +335,18 @@ export class _BuilderService {
       // 手动触发预编译
       const reason = action.payload?.reason || 'manual';
       console.log(`收到预编译触发请求，原因: ${reason}`);
+      // 配置变更时使编译缓存失效，强制下次上传重新编译
+      if (reason === 'config-changed') {
+        this.passed = false;
+      }
       this.blocklyService.dependencySubject.next(reason);
       return { success: true };
     }, 'builder-preprocess-trigger');
 
     // 保存订阅引用以便后续取消
-    this.dependencySubscription = this.blocklyService.dependencySubject.subscribe(async (data) => {
+    this.dependencySubscription = this.blocklyService.dependencySubject.pipe(
+      debounceTime(500),
+    ).subscribe(async (data) => {
       // 检查项目加载状态，如果正在加载中则跳过预处理
       if (!data || this.projectService.stateSubject.value === 'loading') {
         console.log('项目正在加载中，跳过依赖预处理');
@@ -108,16 +354,49 @@ export class _BuilderService {
       }
 
       // 互斥条件1：AI操作期间不触发自动预编译，但标记需要延迟执行
-      if (this.blocklyService.aiWaiting) {
+      if (this.blocklyService.aiWaiting || this.getPendingChatBlockingOperationCount() > 0) {
         console.log('AI操作进行中，标记延迟预编译');
         this.pendingPrecompile = true;
         return;
       }
 
-      // 互斥条件2：编译、上传或依赖安装进行中不触发自动预编译
+      // 互斥条件2：依赖安装进行中不触发自动预编译，但保留一次待补执行
+      if (this.isInstallInProgress()) {
+        console.log('依赖安装进行中，标记延迟预编译');
+        this.pendingPrecompile = true;
+        return;
+      }
+
+      await this.waitForBackgroundPreprocessIdle(String(data || 'dependency'));
+      if (this.blocklyService.aiWaiting || this.getPendingChatBlockingOperationCount() > 0) {
+        console.log('AI操作进行中，idle 后继续延迟预编译');
+        this.pendingPrecompile = true;
+        return;
+      }
+
+      if (this.isInstallInProgress()) {
+        console.log('依赖安装进行中，idle 后继续延迟预编译');
+        this.pendingPrecompile = true;
+        return;
+      }
+
+      // 互斥条件3：编译或上传进行中不触发自动预编译
       const currentState = this.workflowService.currentState;
-      if (currentState === ProcessState.BUILDING || currentState === ProcessState.UPLOADING || currentState === ProcessState.INSTALLING) {
-        console.log('编译/上传/依赖安装进行中，跳过自动预编译');
+      if (currentState === ProcessState.BUILDING || currentState === ProcessState.UPLOADING) {
+        console.log('编译/上传进行中，跳过自动预编译');
+        return;
+      }
+
+      let missingBoardDependencies: string[] = [];
+      try {
+        missingBoardDependencies = await this.getMissingBoardDependencies();
+      } catch (error) {
+        console.warn('[后台预处理] 检查开发板依赖失败，跳过自动预编译:', error);
+        return;
+      }
+      if (missingBoardDependencies.length > 0) {
+        console.warn('[后台预处理] 开发板依赖未安装完成，跳过自动预编译:', missingBoardDependencies);
+        this.pendingPrecompile = false;
         return;
       }
 
@@ -130,6 +409,7 @@ export class _BuilderService {
       // 1. 先终止正在运行的预处理进程（如果有）
       if (this.preprocessProcess || this.preprocessStreamId) {
         console.log('终止正在运行的预处理进程...');
+        const stopStartedAt = Date.now();
         try {
           // 先取消订阅
           if (this.preprocessProcess) {
@@ -143,32 +423,38 @@ export class _BuilderService {
           }
         } catch (error) {
           console.warn('终止旧的预处理进程失败:', error);
+        } finally {
+          this.recordPreprocessDuration('stop_existing_process', stopStartedAt);
         }
       }
 
       // 2. 删除预编译缓存文件
-      if (window['path'].isExists(preprocessCachePath)) {
-        try {
-          window['fs'].unlinkSync(preprocessCachePath);
+      try {
+        const unlinkStartedAt = Date.now();
+        if (await this.unlinkFileIfExists(preprocessCachePath)) {
           console.log('已删除预编译缓存文件:', preprocessCachePath);
-        } catch (error) {
-          console.warn('删除预编译缓存文件失败:', error);
-          return;
+          this.recordPreprocessDuration('delete_cache', unlinkStartedAt);
         }
+      } catch (error) {
+        console.warn('删除预编译缓存文件失败:', error);
+        return;
       }
 
       // 2. 在后台运行预处理脚本
       try {
+        await this.waitForOneIdleBoundary();
         // 检查 workspace 是否已初始化
         if (!this.blocklyService.workspace) {
           console.log('Blockly workspace 未初始化，跳过自动预编译');
           return;
         }
         
-        const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+        const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'background_preprocess');
         if (!code) {
           return;
         }
+        await this.waitForOneIdleBoundary();
+
         const currentProjectPath = this.projectService.currentProjectPath;
         const ailyBuilderPath = window['path'].getAilyBuilderPath();
         const boardModule = await this.projectService.getBoardModule();
@@ -210,9 +496,14 @@ export class _BuilderService {
         // 写入配置文件
         const configFilePath = this.electronService.pathJoin(tempPath, 'build-config.json');
         if (!window['path'].isExists(tempPath)) {
+          const mkdirStartedAt = Date.now();
           await this.crossPlatformCmdService.createDirectory(tempPath, true);
+          this.recordPreprocessDuration('create_temp_dir', mkdirStartedAt);
         }
-        await window['fs'].writeFileSync(configFilePath, JSON.stringify(buildConfig, null, 2));
+        const writeConfigStartedAt = Date.now();
+        await this.writeTextFile(configFilePath, JSON.stringify(buildConfig, null, 2));
+        this.recordPreprocessDuration('write_config', writeConfigStartedAt);
+        await this.waitForOneIdleBoundary();
 
         // 运行预处理脚本（后台运行）
         const preprocessScriptPath = this.electronService.pathJoin(window['path'].getAilyChildPath(), 'scripts', 'preprocess.js');
@@ -225,6 +516,7 @@ export class _BuilderService {
         this.preprocessFullError = '';
 
         // 使用 cmdService 后台静默运行预处理脚本
+        const spawnStartedAt = Date.now();
         const subscription = this.cmdService.run(preprocessCommand, null, false).subscribe({
           next: (output) => {
             // 捕获 streamId
@@ -248,6 +540,7 @@ export class _BuilderService {
               } else {
                 // 非错误信息正常发送到日志
                 this.logService.update({ "detail": output.data, "state": "doing" });
+                this.appendCompileLog(output.data, 'DEBUG');
               }
             }
             if (output.type === 'error') {
@@ -297,9 +590,10 @@ export class _BuilderService {
               // 清理 ANSI 颜色代码并一次性发送所有错误
               const cleanFullError = this.preprocessFullError.replace(/\[\d+(;\d+)*m/g, '');
               this.logService.update({ "detail": cleanFullError, "state": "error" });
+              this.appendCompileLog(cleanFullError, 'ERROR');
             } else {
               console.log('后台预处理完成');
-              this.logService.update({ "detail": '后台预处理完成', "state": "done" });
+              // this.logService.update({ "detail": '后台预处理完成', "state": "done" });
             }
             // 清理引用
             if (this.preprocessProcess === subscription) {
@@ -308,11 +602,35 @@ export class _BuilderService {
             }
           }
         });
+        this.recordPreprocessDuration('spawn_command_stream', spawnStartedAt);
         
         // 保存订阅引用以便后续终止
         this.preprocessProcess = subscription;
       } catch (error) {
         console.warn('启动后台预处理失败:', error);
+      }
+    });
+
+    this.lastWorkflowState = this.workflowService.currentState;
+    this.workflowStateSubscription = this.workflowService.state$.subscribe(async (state) => {
+      const previousState = this.lastWorkflowState;
+      this.lastWorkflowState = state;
+
+      if (state === previousState) {
+        return;
+      }
+
+      if (state === ProcessState.INSTALLING) {
+        if (this.preprocessProcess || this.preprocessStreamId) {
+          console.log('依赖安装开始，终止正在运行的预编译');
+          this.pendingPrecompile = true;
+          await this.stopPreprocess();
+        }
+        return;
+      }
+
+      if (previousState === ProcessState.INSTALLING && state === ProcessState.IDLE) {
+        this.triggerPendingPrecompile('install-complete', '依赖安装完成，触发延迟的预编译');
       }
     });
 
@@ -338,17 +656,7 @@ export class _BuilderService {
         }
       } else {
         // AI 操作完成，触发延迟的预编译
-        if (this.pendingPrecompile) {
-          console.log('AI操作已完成，触发延迟的预编译');
-          this.pendingPrecompile = false;
-          setTimeout(() => {
-            if (!this.blocklyService.aiWaiting) {
-              this.blocklyService.dependencySubject.next('ai-complete');
-            } else {
-              this.pendingPrecompile = true;
-            }
-          }, 100);
-        }
+        this.triggerPendingPrecompile('ai-complete', 'AI操作已完成，触发延迟的预编译');
       }
     });
   }
@@ -392,6 +700,11 @@ export class _BuilderService {
       this.aiWaitingSubscription.unsubscribe();
       this.aiWaitingSubscription = null;
     }
+    if (this.workflowStateSubscription) {
+      this.workflowStateSubscription.unsubscribe();
+      this.workflowStateSubscription = null;
+    }
+    this.lastWorkflowState = null;
     this.pendingPrecompile = false;
     
     // 清理预编译错误状态
@@ -437,6 +750,39 @@ export class _BuilderService {
   }
 
   /**
+   * 从当前工作区生成并写入 sketch.ino 文件（不触发完整预编译）
+   * 在项目打开时调用，确保 sketch.ino 文件可供 AI 工具和代码预览读取
+   */
+  async generateAndWriteSketchIno(): Promise<void> {
+    try {
+      const workspace = this.blocklyService.workspace;
+      if (!workspace) return;
+
+      const code = await this.generateWorkspaceCodeForPreprocess(workspace, 'sketch_ino');
+      if (!code) return;
+
+      const currentProjectPath = this.projectService.currentProjectPath;
+      if (!currentProjectPath) return;
+
+      const tempPath = this.electronService.pathJoin(currentProjectPath, '.temp');
+      const sketchPath = this.electronService.pathJoin(tempPath, 'sketch');
+      const sketchFilePath = this.electronService.pathJoin(sketchPath, 'sketch.ino');
+
+      if (!window['path'].isExists(tempPath)) {
+        await this.crossPlatformCmdService.createDirectory(tempPath, true);
+      }
+      if (!window['path'].isExists(sketchPath)) {
+        await this.crossPlatformCmdService.createDirectory(sketchPath, true);
+      }
+
+      await this.writeTextFile(sketchFilePath, code);
+      console.log('[Builder] sketch.ino 已自动生成:', sketchFilePath);
+    } catch (error) {
+      console.warn('[Builder] 自动生成 sketch.ino 失败:', error);
+    }
+  }
+
+  /**
    * 运行预编译脚本（同步等待完成）
    */
   private async runPreprocess(): Promise<void> {
@@ -445,6 +791,11 @@ export class _BuilderService {
     const boardModule = await this.projectService.getBoardModule();
     const appDataPath = window['path'].getAppDataPath();
     const ailyChildPath = window['path'].getAilyChildPath();
+    const missingBoardDependencies = await this.getMissingBoardDependencies();
+
+    if (missingBoardDependencies.length > 0) {
+      throw new Error(this.formatMissingBoardDependenciesMessage(missingBoardDependencies));
+    }
 
     // 参数校验：检查所有必需参数是否存在
     const missingParams: string[] = [];
@@ -470,7 +821,7 @@ export class _BuilderService {
     const tempPath = this.electronService.pathJoin(currentProjectPath, '.temp');
     
     // 生成代码
-    const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+    const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'sync_preprocess');
     this.lastCode = code; // 保存代码用于后续 hash 计算
 
     // 构建配置对象
@@ -490,7 +841,7 @@ export class _BuilderService {
     if (!window['path'].isExists(tempPath)) {
       await this.crossPlatformCmdService.createDirectory(tempPath, true);
     }
-    await window['fs'].writeFileSync(configFilePath, JSON.stringify(buildConfig, null, 2));
+    await this.writeTextFile(configFilePath, JSON.stringify(buildConfig, null, 2));
 
     // 运行预处理脚本（同步等待完成）
     const preprocessScriptPath = this.electronService.pathJoin(window['path'].getAilyChildPath(), 'scripts', 'preprocess.js');
@@ -543,6 +894,7 @@ export class _BuilderService {
             } else {
               // 非错误信息正常发送到日志
               this.logService.update({ "detail": output.data, "state": "doing" });
+              this.appendCompileLog(output.data, 'DEBUG');
             }
           }
           if (output.type === 'error') {
@@ -593,9 +945,11 @@ export class _BuilderService {
             // 清理 ANSI 颜色代码并一次性发送所有错误
             const cleanFullError = this.preprocessFullError.replace(/\[\d+(;\d+)*m/g, '');
             this.logService.update({ "detail": cleanFullError, "state": "error" });
+            this.appendCompileLog(cleanFullError, 'ERROR');
           } else {
             console.log('同步预处理完成');
             this.logService.update({ "detail": '同步预处理完成', "state": "done" });
+            this.appendCompileLog('同步预处理完成', 'INFO');
           }
           // 清理引用
           if (this.preprocessProcess === subscription) {
@@ -623,8 +977,8 @@ export class _BuilderService {
     const cleanDetailMessage = (details || errorMessage).trim();
 
     this.noticeService.update({
-      title: "编译失败",
-      text: `${cleanErrorMessage} (耗时: ${buildDuration}s)`,
+      title: this.t('FAILED_TITLE'),
+      text: this.messageWithDuration(cleanErrorMessage, buildDuration),
       state: 'error',
       detail: cleanDetailMessage,
       setTimeout: 600000,
@@ -640,13 +994,13 @@ export class _BuilderService {
   async build(): Promise<ActionState> {
     if (!this.workflowService.startBuild()) {
       const state = this.workflowService.currentState;
-      let msg = "系统繁忙";
-      if (state === ProcessState.BUILDING) msg = "编译正在进行中";
-      else if (state === ProcessState.UPLOADING) msg = "上传正在进行中";
-      else if (state === ProcessState.INSTALLING) msg = "依赖安装中";
+      let msg = this.t('BUSY_SYSTEM');
+      if (state === ProcessState.BUILDING) msg = this.t('BUSY_BUILDING');
+      else if (state === ProcessState.UPLOADING) msg = this.t('BUSY_UPLOADING');
+      else if (state === ProcessState.INSTALLING) msg = this.t('BUSY_INSTALLING');
       
-      this.message.warning(msg + "，请稍后再试");
-      return Promise.reject({ state: 'warn', text: msg + "，请稍后" });
+      this.message.warning(this.t('BUSY_RETRY_LATER', { message: msg }));
+      return Promise.reject({ state: 'warn', text: this.t('BUSY_WAIT', { message: msg }) });
     }
 
     this.buildCompleted = false;
@@ -658,7 +1012,12 @@ export class _BuilderService {
     this.currentProgress = 0; // 重置进度
     this.hasReceivedRealProgress = false; // 重置进度标记
 
-    return new Promise<ActionState>(async (resolve, reject) => {
+    return this.appDataResourceLock.runShared('build:preprocess-and-compile', () => {
+      if (this.cancelled) {
+        return Promise.reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
+      }
+
+      return new Promise<ActionState>(async (resolve, reject) => {
       // 保存 reject 函数，以便在 cancel 时使用
       this.buildPromiseReject = reject;
       
@@ -673,8 +1032,8 @@ export class _BuilderService {
         // 1. 检查是否有预编译程序正在运行，等待其完成
         if (this.preprocessProcess) {
           this.safeUpdateNotice({
-            title: "编译准备中",
-            text: "预编译正在运行",
+            title: this.t('PREPARING_TITLE'),
+            text: this.t('PRECOMPILE_RUNNING'),
             state: 'doing',
             progress: 0,
             setTimeout: 0,
@@ -698,7 +1057,7 @@ export class _BuilderService {
             if (this.cancelled) {
               console.log('等待预编译时被取消');
               this.workflowService.finishBuild(false, 'Cancelled while waiting for preprocessing');
-              reject({ state: 'warn', text: '编译已取消' });
+              reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
               return;
             }
           }
@@ -732,8 +1091,8 @@ export class _BuilderService {
           
           // 简短提示，引导用户查看日志详情，添加 detail 字段以显示"查看详情"按钮
           this.noticeService.update({
-            title: "预编译失败",
-            text: "依赖分析时发生错误，请查看日志了解详情",
+            title: this.t('PRECOMPILE_FAILED_TITLE'),
+            text: this.t('PRECOMPILE_FAILED_DETAIL'),
             state: 'error',
             detail: cleanError,
             setTimeout: 600000,
@@ -747,7 +1106,7 @@ export class _BuilderService {
           this.preprocessError = null;
           this.preprocessFullError = '';
           
-          reject({ state: 'error', text: '预编译失败，请查看日志了解详情' });
+          reject({ state: 'error', text: this.t('PRECOMPILE_FAILED_RETRY') });
           return;
         }
 
@@ -768,8 +1127,8 @@ export class _BuilderService {
         // 4. 检查是否存在预编译缓存文件，如果不存在则启动预编译
         if (!window['path'].isExists(preprocessCachePath)) {
           this.safeUpdateNotice({
-            title: "编译准备中",
-            text: "依赖分析系统正在运行",
+            title: this.t('PREPARING_TITLE'),
+            text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
             state: 'doing',
             progress: 0,
             setTimeout: 0,
@@ -796,8 +1155,8 @@ export class _BuilderService {
               
               // 使用与编译错误一致的通知方式（错误已在 complete 中发送到日志，不重复发送）
               this.noticeService.update({
-                title: "预编译失败",
-                text: `${cleanError} (耗时: ${buildDuration}s)`,
+                title: this.t('PRECOMPILE_FAILED_TITLE'),
+                text: this.messageWithDuration(cleanError, buildDuration),
                 state: 'error',
                 detail: cleanError,
                 setTimeout: 600000,
@@ -810,7 +1169,7 @@ export class _BuilderService {
               this.preprocessError = null;
               this.preprocessFullError = '';
               
-              reject({ state: 'error', text: '预编译错误: ' + cleanError });
+              reject({ state: 'error', text: this.t('PRECOMPILE_ERROR_WITH_MESSAGE', { message: cleanError }) });
               return;
             }
           } catch (error) {
@@ -825,8 +1184,8 @@ export class _BuilderService {
             
             // 使用与编译错误一致的通知方式（错误已在 complete/error 中发送到日志，不重复发送）
             this.noticeService.update({
-              title: "预编译失败",
-              text: `${errorMsg} (耗时: ${buildDuration}s)`,
+              title: this.t('PRECOMPILE_FAILED_TITLE'),
+              text: this.messageWithDuration(errorMsg, buildDuration),
               state: 'error',
               detail: errorMsg,
               setTimeout: 600000,
@@ -835,14 +1194,14 @@ export class _BuilderService {
             
             this.passed = false;
             this.workflowService.finishBuild(false, 'Preprocessing failed');
-            reject({ state: 'error', text: '预编译失败: ' + errorMsg });
+            reject({ state: 'error', text: this.t('PRECOMPILE_FAILED_WITH_MESSAGE', { message: errorMsg }) });
             return;
           }
         } else {
           console.log('发现预编译缓存，跳过预编译');
           // 即使有缓存，也需要生成代码以保存到 lastCode（用于后续 hash 计算）
           if (!this.lastCode) {
-            const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+            const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'cache_hit');
             this.lastCode = code;
           }
         }
@@ -859,30 +1218,30 @@ export class _BuilderService {
         }
 
         let compileCommand: string = "";
-        let completeTitle: string = `编译完成`;
+        let completeTitle: string = this.t('COMPLETE_TITLE');
 
         try {
           // 获取最新代码
-          const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+          const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'compile_config');
           this.lastCode = code;
           
           const boardModule = await this.projectService.getBoardModule();
           const boardName = boardModule.replace('@aily-project/board-', '');
           const configFilePath = this.electronService.pathJoin(tempPath, 'build-config.json');
 
-          // 更新配置文件中的 code（compile.js 会负责写入 sketch 文件）
+          // 更新配置文件中的 code（compile.js：Blockly 写入 sketch.ino；Aily Code 写入 project.aci.entry）
           let buildConfig: any = {};
           if (window['path'].isExists(configFilePath)) {
             buildConfig = JSON.parse(window['fs'].readFileSync(configFilePath, 'utf8'));
           }
           buildConfig.code = code;
-          window['fs'].writeFileSync(configFilePath, JSON.stringify(buildConfig, null, 2));
+          await this.writeTextFile(configFilePath, JSON.stringify(buildConfig, null, 2));
 
           // 运行编译脚本
           const compileScriptPath = this.electronService.pathJoin(window['path'].getAilyChildPath(), 'scripts', 'compile.js');
           compileCommand = `node "${compileScriptPath}" "${configFilePath}"`;
 
-          completeTitle = `编译完成`;
+          completeTitle = this.t('COMPLETE_TITLE');
 
           let lastProgress = 0;
           let lastBuildText = '';
@@ -896,10 +1255,10 @@ export class _BuilderService {
 
           this.buildStartTime = Date.now();
 
-          const buildText = isFirstBuild ? "首次编译可能需要较长时间" : "闪电构建系统正在运行";
+          const buildText = isFirstBuild ? this.t('FIRST_BUILD_HINT') : this.t('FAST_BUILD_HINT');
           
           this.safeUpdateNotice({
-            title: `正在编译${boardName}`,
+            title: this.buildNoticeTitle(boardName),
             text: buildText,
             state: 'doing',
             progress: 0,
@@ -932,8 +1291,8 @@ export class _BuilderService {
                 if (processExitCode !== 0 || processSignal) {
                   this.isErrored = true;
                   const processErrorMessage = processSignal
-                    ? `编译进程被信号终止: ${processSignal}`
-                    : `编译进程异常退出，退出码: ${processExitCode}`;
+                    ? this.t('PROCESS_SIGNAL_TERMINATED', { signal: processSignal })
+                    : this.t('PROCESS_EXITED_WITH_CODE', { code: processExitCode });
                   lastStdErr = lastStdErr || processErrorMessage;
                   if (!fullStdErr) {
                     fullStdErr = processErrorMessage;
@@ -944,7 +1303,7 @@ export class _BuilderService {
 
               if (output.type === 'error') {
                 this.isErrored = true;
-                const processErrorMessage = output.error || '编译进程启动失败';
+                const processErrorMessage = output.error || this.t('PROCESS_START_FAILED');
                 lastStdErr = lastStdErr || processErrorMessage;
                 if (!fullStdErr) {
                   fullStdErr = processErrorMessage;
@@ -999,7 +1358,7 @@ export class _BuilderService {
                         
                         // 安全更新UI
                         this.safeUpdateNotice({
-                          title: `正在编译${boardName}`,
+                          title: this.buildNoticeTitle(boardName),
                           text: lastBuildText,
                           state: 'doing',
                           progress: this.currentProgress,
@@ -1019,6 +1378,7 @@ export class _BuilderService {
                       outputComplete = true;
                       this.buildCompleted = true;
                       this.logService.update({ "detail": trimmedLine, "state": "done" });
+                      this.appendCompileLog(trimmedLine, 'INFO');
                     } else if (
                       // 检测更多编译成功标志
                       // Arduino/ESP32: "Sketch uses xxx bytes"
@@ -1036,6 +1396,7 @@ export class _BuilderService {
                       outputComplete = true;
                       this.buildCompleted = true;
                       this.logService.update({ "detail": trimmedLine, "state": "done" });
+                      this.appendCompileLog(trimmedLine, 'INFO');
                     } else {
                       if (!outputComplete) {
                         if (output.type == 'stderr') {
@@ -1048,6 +1409,7 @@ export class _BuilderService {
                           }
                         } else {
                           this.logService.update({ "detail": trimmedLine, "state": "doing" });
+                          this.appendCompileLog(trimmedLine, 'DEBUG');
                         }
                       }
                     }
@@ -1084,8 +1446,8 @@ export class _BuilderService {
               if (!this.cancelled && !this.isErrored && ((processExitCode !== null && processExitCode !== 0) || processSignal)) {
                 this.isErrored = true;
                 const processErrorMessage = processSignal
-                  ? `编译进程被信号终止: ${processSignal}`
-                  : `编译进程异常退出，退出码: ${processExitCode}`;
+                  ? this.t('PROCESS_SIGNAL_TERMINATED', { signal: processSignal })
+                  : this.t('PROCESS_EXITED_WITH_CODE', { code: processExitCode });
                 lastStdErr = lastStdErr || processErrorMessage;
                 if (!fullStdErr) {
                   fullStdErr = processErrorMessage;
@@ -1103,7 +1465,7 @@ export class _BuilderService {
                 console.log(`编译耗时: ${buildDuration} 秒`);
 
                 const displayText = this.extractFirmwareInfo(lastLogLines);
-                const displayTextWithTime = `${displayText} (耗时: ${buildDuration}s)`;
+                const displayTextWithTime = this.messageWithDuration(displayText, buildDuration);
                 
                 // 安全更新UI
                 this.safeUpdateNotice({ title: completeTitle, text: displayTextWithTime, state: 'done', setTimeout: 600000 });
@@ -1118,13 +1480,14 @@ export class _BuilderService {
                 this.compileValidationService.triggerAfterSuccessfulCompile();
                 
                 this.workflowService.finishBuild(true);
-                resolve({ state: 'done', text: `编译完成 (耗时: ${buildDuration}s)` });
+                resolve({ state: 'done', text: this.t('COMPLETE_WITH_TIME', { seconds: buildDuration }) });
               } else if (this.isErrored) {
                 console.log(`编译失败，耗时: ${buildDuration} 秒`);
 
                 lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
-                this.handleCompileError(lastStdErr || '编译未完成', false, fullStdErr || lastStdErr || '编译未完成');
+                this.handleCompileError(lastStdErr || this.t('INCOMPLETE'), false, fullStdErr || lastStdErr || this.t('INCOMPLETE'));
                 this.logService.update({ detail: fullStdErr, state: 'error' });
+                this.appendCompileLog(fullStdErr || lastStdErr || this.t('INCOMPLETE'), 'ERROR');
                 this.passed = false;
                 
                 // 记录编译失败状态（不阻塞）
@@ -1133,17 +1496,12 @@ export class _BuilderService {
                 });
                 
                 this.workflowService.finishBuild(false, 'Compilation failed');
-                reject({ state: 'error', text: `编译失败 (耗时: ${buildDuration}s)`, fullStdErr: fullStdErr || lastStdErr });
+                reject({ state: 'error', text: this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: fullStdErr || lastStdErr });
               } else if (this.cancelled) {
                 console.warn("编译中断")
                 console.log(`编译已取消，耗时: ${buildDuration} 秒`);
 
-                this.noticeService.update({
-                  title: "编译已取消",
-                  text: `编译已取消 (耗时: ${buildDuration}s)`,
-                  state: 'warn',
-                  setTimeout: 55000
-                });
+                this.updateCancelledNotice(buildDuration, 55000);
                 this.passed = false;
                 
                 // 记录编译取消状态（不阻塞）
@@ -1152,20 +1510,20 @@ export class _BuilderService {
                 });
                 
                 this.workflowService.finishBuild(false, 'Cancelled');
-                reject({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
+                reject({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
               } else {
                 // 处理未知状态：进程异常结束但没有设置任何标志
                 console.error('编译进程异常结束，未知状态，lastProgress:', lastProgress);
                 
                 this.noticeService.update({
-                  title: "编译异常结束",
-                  text: `编译进程异常结束 (耗时: ${buildDuration}s)`,
+                  title: this.t('ABNORMAL_END_TITLE'),
+                  text: this.t('ABNORMAL_END_WITH_TIME', { seconds: buildDuration }),
                   state: 'error',
                   setTimeout: 60000
                 });
                 this.passed = false;
                 this.workflowService.finishBuild(false, 'Abnormal termination');
-                reject({ state: 'error', text: `编译进程异常结束 (耗时: ${buildDuration}s)` });
+                reject({ state: 'error', text: this.t('ABNORMAL_END_WITH_TIME', { seconds: buildDuration }) });
               }
               
               // 最后清理订阅和 reject 引用
@@ -1174,20 +1532,15 @@ export class _BuilderService {
             }
           })
         } catch (error) {
-          if (error.message === '编译已取消') {
+          if (error.message === '编译已取消' || error.message === this.t('CANCELLED_TITLE')) {
             const buildEndTime = Date.now();
             const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
 
-            this.noticeService.update({
-              title: "编译已取消",
-              text: `编译已取消 (耗时: ${buildDuration}s)`,
-              state: 'warn',
-              setTimeout: 5000
-            });
+            this.updateCancelledNotice(buildDuration);
             this.cancelled = true;
             this.workflowService.finishBuild(false, 'Cancelled');
 
-            reject({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
+            reject({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
             return;
           }
           throw error;
@@ -1198,6 +1551,7 @@ export class _BuilderService {
         this.workflowService.finishBuild(false, error.message);
         reject({ state: 'error', text: error.message });
       }
+      });
     });
   }
 
@@ -1265,7 +1619,7 @@ export class _BuilderService {
       return `Flash use ${flashPercent}%   Ram use ${ramPercent}%`;
     }
 
-    return "编译完成";
+    return this.t('FIRMWARE_INFO_FALLBACK');
   }
 
 
@@ -1306,8 +1660,8 @@ export class _BuilderService {
         
         // 安全更新UI
         this.safeUpdateNotice({
-          title: `正在编译${boardName}`,
-          text: '正在分析依赖...',
+          title: this.buildNoticeTitle(boardName),
+          text: this.t('ANALYZING_DEPS'),
           state: 'doing',
           progress: this.currentProgress,
           setTimeout: 0,
@@ -1328,8 +1682,8 @@ export class _BuilderService {
         
         // 安全更新UI
         this.safeUpdateNotice({
-          title: `正在编译${boardName}`,
-          text: '正在处理...',
+          title: this.buildNoticeTitle(boardName),
+          text: this.t('PROCESSING'),
           state: 'doing',
           progress: this.currentProgress,
           setTimeout: 0,
@@ -1359,7 +1713,7 @@ export class _BuilderService {
     // 如果已取消，只允许更新为取消状态
     if (this.cancelled) {
       // 只允许显示取消相关的通知
-      if (config.state === 'warn' && config.title && config.title.includes('取消')) {
+      if (config.state === 'warn' && config.isCancellationNotice) {
         this.noticeService.update(config);
       }
       // 其他所有更新都被忽略
@@ -1381,12 +1735,7 @@ export class _BuilderService {
       setTimeout(() => {
         // 再次检查是否仍处于取消状态
         if (this.cancelled && !this.buildCompleted && !this.isErrored) {
-          this.noticeService.update({
-            title: "编译已取消",
-            text: `编译已取消 (耗时: ${buildDuration}s)`,
-            state: 'warn',
-            setTimeout: 5000
-          });
+          this.updateCancelledNotice(buildDuration);
         }
       }, delay);
     });
@@ -1447,35 +1796,13 @@ export class _BuilderService {
       );
     }
     
-    // 3. 添加备用终止方案：强制杀死所有相关的 node 进程（compile.js）
-    const killBackupCommand = this.platformService.isWindows
-      ? `taskkill /F /FI "COMMANDLINE like %compile.js%" /T`
-      : `pkill -f "compile.js"`;
-    
-    killPromises.push(
-      this.cmdService.run(killBackupCommand, null, false).toPromise()
-        .then(() => {
-          console.log('备用终止方案执行成功');
-          return true;
-        })
-        .catch(err => {
-          console.log('备用终止方案执行（可能没有匹配的进程）');
-          return false;
-        })
-    );
-
-    // 等待所有终止操作完成
+    // 等待已登记的终止操作完成
     Promise.all(killPromises).then(() => {
       console.log('所有终止操作已完成');
     });
 
     // 4. 立即更新 UI 状态
-    this.noticeService.update({
-      title: "编译已取消",
-      text: `编译已取消 (耗时: ${buildDuration}s)`,
-      state: 'warn',
-      setTimeout: 5000
-    });
+    this.updateCancelledNotice(buildDuration);
 
     // 5. 完成 workflow 状态
     this.workflowService.finishBuild(false, 'Cancelled');
@@ -1489,7 +1816,7 @@ export class _BuilderService {
       
       // 使用 setTimeout 确保同步操作完成后再 reject
       setTimeout(() => {
-        rejectFunc({ state: 'warn', text: `编译已取消 (耗时: ${buildDuration}s)` });
+        rejectFunc({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
       }, 0);
     } else {
       console.log('Promise 已完成，仅清理资源');

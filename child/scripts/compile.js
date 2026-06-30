@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const ailyCodeProject = require('./aily-code-project');
 
 // 简单的日志工具
 const logger = {
@@ -60,16 +61,35 @@ async function main() {
     }
 
     try {
-        // 1. 路径准备
+        // 1. 路径准备（Aily Code 编译入口见 project.aci.entry，产物输出到 .aily/build/<framework>）
         const tempPath = path.join(currentProjectPath, '.temp');
         const sketchPath = path.join(tempPath, 'sketch');
         const sketchFilePath = path.join(sketchPath, 'sketch.ino');
+        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+        const compileSourcePath = isAilyCode
+            ? ailyCodeProject.resolveCompileSourcePath(currentProjectPath)
+            : sketchFilePath;
         const preprocessCachePath = path.join(tempPath, 'preprocess.json');
+        let frameworkOutputDir = null;
+        if (isAilyCode) {
+            frameworkOutputDir = ailyCodeProject.resolveFrameworkBuildDir(currentProjectPath);
+        }
 
-        // 2. 确保目录存在并写入最新代码
+        // 2. 确保目录存在并写入最新 Blockly 生成的代码（与 preprocess 同源路径）
         mkdirp(tempPath);
         mkdirp(sketchPath);
-        fs.writeFileSync(sketchFilePath, code);
+        mkdirp(path.dirname(compileSourcePath));
+        fs.writeFileSync(compileSourcePath, code);
+
+        // 纯 Blockly 仍会写 sketch.ino，便于与其它工具对齐；Aily Code 仅以 entry 为准
+        if (!isAilyCode) {
+            fs.writeFileSync(sketchFilePath, code);
+        }
+
+        // 输出目录就绪（upload / getBuildPath 与此一致）
+        if (frameworkOutputDir) {
+            mkdirp(frameworkOutputDir);
+        }
 
         // 3. 检查预编译缓存是否存在
         if (!fs.existsSync(preprocessCachePath)) {
@@ -107,22 +127,33 @@ async function main() {
             throw new Error('未找到板子类型(boardType)');
         }
 
-        // 5. 执行编译
+        // 5. 执行编译；Aily Code 时将 AILY_BUILDER_BUILD_PATH 指到 `.aily/build/<framework>`，
+        // 与 Electron 全局行为一致（aily-builder 可能在其下再分子目录，upload 递归查找固件）。
         const args = [
             `"${path.join(ailyBuilderPath, 'index.js')}"`,
             'compile',
-            `"${sketchFilePath}"`,
+            `"${compileSourcePath}"`,
             '--board', `"${boardType}"`,
             '--preprocess-result', `"${preprocessCachePath}"`,
         ];
 
         logger.log(`执行编译: node ${args.join(' ')}`);
 
-        const child = spawn('node', args, {
+        /** @type {{ cwd: string, shell: boolean, stdio: string[], env?: NodeJS.ProcessEnv }} */
+        const spawnOpts = {
             cwd: currentProjectPath,
             shell: true,
             stdio: 'inherit'
-        });
+        };
+
+        if (frameworkOutputDir) {
+            spawnOpts.env = {
+                ...process.env,
+                AILY_BUILDER_BUILD_PATH: frameworkOutputDir
+            };
+        }
+
+        const child = spawn('node', args, spawnOpts);
 
         child.on('close', (code, signal) => {
             if (signal) {

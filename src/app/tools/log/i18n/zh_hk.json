@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "單擊複製到剪貼簿，雙擊複製到AI助手",
+        "COPIED_TO_CLIPBOARD": "日誌內容已複製到剪貼簿",
+        "SENT_TO_AI": "日誌內容已發送到AI助手",
+        "NO_DATA_TO_EXPORT": "沒有日誌資料可以匯出",
+        "EXPORT_TITLE": "匯出日誌資料",
+        "TEXT_FILE": "文字檔案",
+        "ALL_FILES": "所有檔案",
+        "EXPORT_SUCCESS": "日誌資料已成功匯出到",
+        "SHOW_ERRORS_ONLY": "只顯示錯誤",
+        "SEARCH_PLACEHOLDER": "搜尋日誌"
+    }
+}

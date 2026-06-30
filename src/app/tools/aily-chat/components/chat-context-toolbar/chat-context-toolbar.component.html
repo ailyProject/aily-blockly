@@ -1,0 +1,103 @@
+<div
+  class="acc-clip ccenter"
+  nz-tooltip
+  nzTooltipPlacement="bottom"
+  [nzTooltipTitle]="'AILY_CHAT.ADD_CONTEXT' | translate"
+  (click)="toggleAddList.emit()"
+>
+  <i class="fa-light fa-paperclip"></i>
+</div>
+@if (showAddList) {
+  <div class="acc-expand-backdrop" [style.width.px]="expandedBackdropWidth">
+    <div
+      class="acc-back ccenter"
+      [class.acc-back--composer]="appearance === 'composer'"
+      nz-tooltip
+      nzTooltipPlacement="bottom"
+      [nzTooltipTitle]="'AILY_CHAT.ADD_CONTEXT' | translate"
+      (click)="toggleAddList.emit()"
+    >
+      <i class="fa-light fa-angle-left"></i>
+    </div>
+  </div>
+  <div
+    class="acc-sub ccenter"
+    nz-tooltip
+    nzTooltipPlacement="bottom"
+    [nzTooltipTitle]="'AILY_CHAT.ADD_FILE' | translate"
+    (click)="addFile.emit()"
+  >
+    <i class="fa-light fa-file-plus"></i>
+  </div>
+  <div
+    class="acc-sub ccenter"
+    nz-tooltip
+    nzTooltipPlacement="bottom"
+    [nzTooltipTitle]="'AILY_CHAT.ADD_FOLDER' | translate"
+    (click)="addFolder.emit()"
+  >
+    <i class="fa-light fa-folder-plus"></i>
+  </div>
+  @if (showManageMemoryAction) {
+    <div
+      class="acc-sub ccenter"
+      nz-tooltip
+      nzTooltipPlacement="bottom"
+      [nzTooltipTitle]="'AILY_CHAT.MANAGE_MEMORY' | translate"
+      (click)="onManageMemory()"
+    >
+      <i class="fa-light fa-brain"></i>
+    </div>
+  }
+}
+@if (showProcessButton) {
+  <div
+    class="acc-process ccenter"
+    nz-tooltip
+    nzTooltipPlacement="bottom"
+    [nzTooltipTitle]="'AILY_CHAT.PROCESS_TOOLTIP_SESSION_PROCESSES' | translate"
+    (click)="onOpenProcessManager()"
+  >
+    <i class="fa-light fa-square-terminal"></i>
+    @if (runningProcessCount > 0) {
+      <span class="acc-process-badge">{{ runningProcessCount }}</span>
+    }
+  </div>
+}
+<div
+  #modeChipTooltip="nzTooltip"
+  class="acc-chip ccenter"
+  [class.acc-chip--after-expanded-context]="showAddList"
+  [class.acc-chip--after-process]="showAddList && showProcessButton"
+  nz-tooltip
+  nzTooltipPlacement="bottom"
+  [nzTooltipTrigger]="modeTooltipTrigger"
+  [nzTooltipTitle]="currentCustomAgentTarget && currentMode === 'agent' ? currentCustomAgentTarget : (modeTooltipTitle | translate)"
+  (click)="onModeClick($event)"
+>
+  <i [class]="modeIconClass"></i>
+  @if (displayCustomAgentTarget) {
+    <span>{{ displayCustomAgentTarget }}</span>
+  } @else if (showModeLabel && modeLabelKey) {
+    <span>{{ modeLabelKey | translate }}</span>
+  } @else if (modePlainLabel) {
+    <span>{{ modePlainLabel }}</span>
+  }
+</div>
+@if (showModelChip) {
+  <div
+    #modelChipTooltip="nzTooltip"
+    class="acc-chip ccenter"
+    [class.acc-chip--after-expanded-context]="showAddList"
+    nz-tooltip
+    nzTooltipPlacement="bottom"
+    [nzTooltipTrigger]="modelTooltipTrigger"
+    [nzTooltipTitle]="modelChipLabel"
+    (click)="onModelClick($event)"
+  >
+    <i class="fa-light fa-star-christmas"></i><span>{{ modelChipLabel }}</span>
+    <!-- @if (modelBillingLabel) {
+      <span class="acc-mini-tag">{{ modelBillingLabel }}</span>
+    } -->
+  </div>
+}

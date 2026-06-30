@@ -1,5 +1,5 @@
 ﻿import path from "path";
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { normalizePath } from "../services/security.service";
 import { AilyHost } from '../core/host';
 
@@ -346,9 +346,10 @@ export async function editAbiFileTool(
             // console.log(`追加ABI内容长度: ${content.length}`);
         }
 
-        // 验证最终内容是否为有效的JSON格式
+        // 验证最终内容是否为有效的JSON格式，并压缩结构空白以减小 project.abi 体积
+        let minifiedContent: string;
         try {
-            JSON.parse(finalContent);
+            minifiedContent = JSON.stringify(JSON.parse(finalContent));
         } catch (jsonError) {
             return {
                 is_error: true,
@@ -357,7 +358,7 @@ export async function editAbiFileTool(
         }
 
         // 写入文件
-        await AilyHost.get().fs.writeFileSync(filePath, finalContent, encoding);
+        await AilyHost.get().fs.writeFileSync(filePath, minifiedContent, encoding);
         
         return { 
             is_error: false, 

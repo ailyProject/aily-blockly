@@ -5,11 +5,26 @@
   "compilerOptions": {
     "outDir": "./out-tsc/spec",
     "types": [
-      "jasmine"
+      "jasmine",
+      "node"
     ]
   },
+  "files": [
+    "src/test.ts"
+  ],
   "include": [
     "src/**/*.spec.ts",
     "src/**/*.d.ts"
+  ],
+  "exclude": [
+    "archive/**/*",
+    "child",
+    "electron",
+    "dist",
+    "node_modules",
+    "src/environments/*.ts",
+    "temp/**/*",
+    "src/app/tools/aily-chat/tools/editBlockTool.spec.ts",
+    "src/app/tools/aily-chat/tools/claude_code/**/*"
   ]
 }

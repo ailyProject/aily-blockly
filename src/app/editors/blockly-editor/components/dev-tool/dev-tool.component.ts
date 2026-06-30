@@ -29,9 +29,14 @@ export class DevToolComponent implements OnInit {
   offsetY = 0;
 
   private _autoSave: boolean = true;
+  isReloading = false;
 
   get autoSave(): boolean {
     return this._autoSave;
+  }
+
+  get reloadDisabled(): boolean {
+    return this.isReloading || this.projectService.isProjectOpening;
   }
 
   set autoSave(value: boolean) {
@@ -119,17 +124,33 @@ export class DevToolComponent implements OnInit {
     document.removeEventListener('mouseup', this.onDragEnd);
   }
 
-  reload() {
-    // 如果开启了自动保存,先保存项目
-    if (this.autoSave) {
-      this.projectService.save();
-      // 给一点时间让保存完成
-      // console.log('页面重载中...');
-      setTimeout(() => {
-        this.projectService.projectOpen();
-      }, 100);
-    } else {
-      this.projectService.projectOpen();
+  async reload() {
+    if (this.reloadDisabled) {
+      return;
+    }
+
+    const projectPath = this.projectService.currentProjectPath;
+    if (!projectPath) {
+      return;
+    }
+
+    this.isReloading = true;
+    try {
+      // 如果开启了自动保存,先保存项目。必须等待保存完成后再重新打开，避免快速连点时读到中间态。
+      if (this.autoSave) {
+        const result = await this.projectService.save(projectPath);
+        if (!result.success) {
+          this.messageService.error('Save project failed: ' + (result.error || 'unknown error'));
+          return;
+        }
+      }
+
+      await this.projectService.projectOpen(projectPath, { reason: 'reload' });
+    } catch (error) {
+      console.error('Reload project failed:', error);
+      this.messageService.error('Reload project failed: ' + ((error as Error)?.message || String(error)));
+    } finally {
+      this.isReloading = false;
     }
   }
 

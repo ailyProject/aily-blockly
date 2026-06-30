@@ -1,8 +1,10 @@
-<div class="lib-manager-box">
+<div class="lib-manager-box" [class.lib-manager-box--panel]="embedInPanel">
     <div class="header">
+        @if (!embedInPanel) {
         <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
             <i class="fa-regular fa-chevron-left"></i>
         </div>
+        }
         <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
             <input type="text" nz-input [placeholder]="'LIB_MANAGER.SEARCH_LIBRARY' | translate" [(ngModel)]="keyword"
                 (ngModelChange)="search()" />
@@ -41,13 +43,16 @@
     <div class="lib-list">
         @for( lib of libraryList;track lib.name ) {
         <div class="lib-item">
-            <div class="name ellipsis" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">{{lib._nickname}}
-                @if(lib.tested){
-                <i class="fa-regular fa-badge-check"></i>
-                }@else {
-                <i class="fa-regular fa-circle-exclamation"></i>
-                }
-                <span>{{lib.author}}</span>
+            <div class="name" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">
+                <div class="name-main">
+                    <span class="nickname ellipsis" [title]="lib._nickname">{{lib._nickname}}</span>
+                    @if(lib.tested){
+                    <i class="fa-regular fa-badge-check"></i>
+                    }@else {
+                    <i class="fa-regular fa-circle-exclamation"></i>
+                    }
+                </div>
+                <span class="author ellipsis" [title]="lib.author">{{lib.author}}</span>
             </div>
             <div class="desc ellipsis">
                 <div class="icon ccenter">
@@ -88,9 +93,9 @@
                         (click)="openExample(lib.example)">示例</button>
                     } -->
                     @if(lib.state=='installed') {
-                    <button nz-button nzType="text" nzSize="small" [disabled]="true">
+                    <!-- <button nz-button nzType="text" nzSize="small" [disabled]="true">
                         {{ 'LIB_MANAGER.INSTALLED_TEXT' | translate }}
-                    </button>
+                    </button> -->
                     <button nz-button nzType="default" nzDanger nzSize="small" (click)="removeLib(lib)">
                         {{'LIB_MANAGER.REMOVE' | translate }}
                     </button>
@@ -109,8 +114,7 @@
                         {{'LIB_MANAGER.INSTALL' | translate }}
                     </button>
                     }@else{
-                    <button nz-button nzType="primary" nzSize="small" [disabled]="isInstalling"
-                        (click)="installLib(lib)">
+                    <button nz-button nzType="primary" nzSize="small" (click)="installLib(lib)">
                         {{ 'LIB_MANAGER.INSTALL'| translate }}
                     </button>
                     }

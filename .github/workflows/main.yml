@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 任务 1：Windows 客户端构建
+  # 任务 1：Windows 国际版客户端构建
   build-windows:
     runs-on: windows-latest
     steps:
@@ -26,24 +26,12 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
-          npm ci
-          cd electron && npm ci --force
+          npm ci --include=dev
+          cd electron && npm ci --include=dev --force
 
-      - name: Build Angular App
+      - name: Build Windows Package (Global)
         run: |
-          ng build --base-href ./
-        env:
-          NODE_ENV: production
-
-      - name: Build Windows Unpacked
-        run: |
-          npx electron-builder build --win --dir
-        env:
-          NODE_ENV: production
-
-      - name: Build NSIS Installer
-        run: |
-          npx electron-builder build --win nsis --prepackaged "dist/aily-blockly/win-unpacked"
+          npm run build:global
         env:
           NODE_ENV: production
 
@@ -53,7 +41,7 @@ jobs:
         id: upload_unsigned
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-installer
+          name: unsigned-installer-global
           path: dist/aily-blockly/*.exe
 
       - name: Sign Installer with SignPath
@@ -151,7 +139,124 @@ jobs:
         with:
           name: AilyBlockly-Windows-Package
           path: dist/aily-blockly/
-  
+
+  # 任务 1b：Windows 国内版客户端构建
+  build-windows-cn:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            electron/package-lock.json
+
+      - name: Install Dependencies
+        run: |
+          npm install -g @angular/cli
+          npm ci --include=dev
+          cd electron && npm ci --include=dev --force
+
+      - name: Build Windows Package (CN)
+        run: |
+          npm run build:cn
+        env:
+          NODE_ENV: production
+
+      - name: Upload Unsigned Installer for Signing (CN)
+        id: upload_unsigned_cn
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer-cn
+          path: dist/aily-blockly/*.exe
+
+      - name: Sign Installer with SignPath (CN)
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: 'bd01a768-a9e3-4a62-945d-fcfdc37a299e'
+          project-slug: 'aily-blockly'
+          signing-policy-slug: ${{ github.ref_name == 'beta' && 'test-signing' || 'release-signing' }}
+          github-artifact-id: '${{ steps.upload_unsigned_cn.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'dist/aily-blockly'
+
+      - name: Remove stale blockmap files (CN)
+        run: |
+          Remove-Item -Path "dist/aily-blockly/*.blockmap" -Force -ErrorAction SilentlyContinue
+          Write-Host "✓ Removed stale blockmap files"
+
+      - name: Regenerate latest.yml with signed exe hash (CN)
+        run: |
+          cd dist/aily-blockly
+
+          Write-Host "Files in dist/aily-blockly:"
+          Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+
+          $exeFile = Get-ChildItem -Filter "aily-blockly-CN-Setup-*.exe" | Select-Object -First 1
+          if (-not $exeFile) {
+            $exeFile = Get-ChildItem -Filter "*.exe" | Select-Object -First 1
+          }
+          if (-not $exeFile) {
+            Write-Error "No exe file found in dist/aily-blockly!"
+            exit 1
+          }
+          $exeSize = $exeFile.Length
+          $exeName = $exeFile.Name
+
+          Write-Host "✓ Signed exe: $exeName ($exeSize bytes)"
+
+          $hash = Get-FileHash -Path $exeFile.FullName -Algorithm SHA512
+          $hashBytes = [System.Convert]::FromHexString($hash.Hash)
+          $sha512Base64 = [System.Convert]::ToBase64String($hashBytes)
+
+          Write-Host "✓ SHA512: $sha512Base64"
+          Write-Host "✓ SHA512 length: $($sha512Base64.Length) chars"
+
+          $packageJson = Get-Content "../../package.json" -Raw | ConvertFrom-Json
+          $version = $packageJson.version
+          $releaseDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+
+          $lf = "`n"
+          $content = "version: $version" + $lf +
+                     "files:" + $lf +
+                     "  - url: $exeName" + $lf +
+                     "    sha512: $sha512Base64" + $lf +
+                     "    size: $exeSize" + $lf +
+                     "path: $exeName" + $lf +
+                     "sha512: $sha512Base64" + $lf +
+                     "releaseDate: '$releaseDate'" + $lf
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "latest-cn.yml"),
+            $content,
+            $utf8NoBom
+          )
+
+          Write-Host "✓ latest-cn.yml regenerated with signed exe hash"
+          Write-Host ""
+          Write-Host "Content:"
+          Get-Content "latest-cn.yml"
+
+          $verify = [System.IO.File]::ReadAllText((Join-Path $PWD "latest-cn.yml"))
+          if ($verify -notmatch [regex]::Escape($sha512Base64)) {
+            Write-Error "Verification FAILED: sha512 not found in generated latest-cn.yml!"
+            Write-Host "Expected sha512: $sha512Base64"
+            exit 1
+          }
+          Write-Host "✓ Verification passed: sha512 matches in latest-cn.yml"
+
+      - name: Archive Windows Artifact (CN)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package-cn
+          path: dist/aily-blockly/
+
   # 任务 2：macOS 客户端构建
   build-macos:
     runs-on: macos-latest
@@ -170,8 +275,8 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
-          npm ci
-          cd electron && npm ci --force
+          npm ci --include=dev
+          cd electron && npm ci --include=dev --force
 
       # --- 导入代码签名证书到 Keychain ---
       - name: Import Codesign Certificates
@@ -196,7 +301,7 @@ jobs:
       # --- 构建 + 签名 + 公证（仅构建 arm64）---
       - name: Build, Sign & Notarize
         run: |
-          npm run build
+          npm run build:global
         env:
           NODE_ENV: production
           # electron-builder 签名配置
@@ -253,9 +358,115 @@ jobs:
           name: AilyBlockly-macOS-Package
           path: dist/aily-blockly/
 
+  # 任务 2b：macOS 国内版客户端构建
+  build-macos-cn:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            electron/package-lock.json
+
+      - name: Install Dependencies
+        run: |
+          npm install -g @angular/cli
+          npm ci --include=dev
+          cd electron && npm ci --include=dev --force
+
+      - name: Import Codesign Certificates
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.APPLE_SIGNING_CERT }}
+          p12-password: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+
+      - name: Verify Certificate Import
+        run: |
+          echo "Available signing identities:"
+          security find-identity -v -p codesigning
+          echo ""
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n 1)
+          if [ -z "$IDENTITY" ]; then
+            echo "❌ No Developer ID Application certificate found!"
+            exit 1
+          else
+            echo "✅ Found: $IDENTITY"
+          fi
+
+      - name: Build, Sign & Notarize (CN)
+        run: |
+          npm run build:cn
+        env:
+          NODE_ENV: production
+          CSC_LINK: ${{ secrets.APPLE_SIGNING_CERT }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Manual Notarization (if needed) (CN)
+        if: success() || failure()
+        run: |
+          DMG_FILES=$(find dist/aily-blockly -name "aily-blockly-CN-*.dmg" -type f)
+
+          if [ -z "$DMG_FILES" ]; then
+            echo "❌ CN DMG not found!"
+            exit 1
+          fi
+
+          while IFS= read -r DMG_PATH; do
+            echo "=== Processing: $DMG_PATH ==="
+
+            echo "Checking if already notarized..."
+            if xcrun stapler validate "$DMG_PATH" 2>/dev/null; then
+              echo "✅ Already notarized and stapled: $DMG_PATH"
+              continue
+            fi
+
+            echo "Submitting for notarization: $DMG_PATH"
+            xcrun notarytool submit "$DMG_PATH" \
+              --apple-id "${{ secrets.APPLE_ID }}" \
+              --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+              --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+              --wait \
+              --timeout 30m
+
+            echo "Stapling..."
+            xcrun stapler staple "$DMG_PATH"
+            echo "✅ Notarization completed: $DMG_PATH"
+          done <<< "$DMG_FILES"
+
+      - name: Final Verification (CN)
+        run: |
+          echo "=== Verification ==="
+          while IFS= read -r DMG_PATH; do
+            xcrun stapler validate "$DMG_PATH" && echo "✅ Notarized: $DMG_PATH" || echo "⚠️ Not notarized: $DMG_PATH"
+          done < <(find dist/aily-blockly -name "aily-blockly-CN-*.dmg" -type f)
+
+      - name: Rename latest-mac manifest (CN)
+        run: |
+          if [ -f "dist/aily-blockly/latest-mac.yml" ]; then
+            mv "dist/aily-blockly/latest-mac.yml" "dist/aily-blockly/latest-mac-cn.yml"
+            echo "✓ latest-mac-cn.yml generated"
+          else
+            echo "❌ latest-mac.yml not found after cn mac build"
+            exit 1
+          fi
+
+      - name: Archive macOS Artifact (CN)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package-cn
+          path: dist/aily-blockly/
+
   # 任务 3：发布到 GitHub Release
   release:
-    needs: [build-windows, build-macos]
+    needs: [build-windows, build-windows-cn, build-macos, build-macos-cn]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -303,19 +514,29 @@ jobs:
           if [ -z "$BASE_SHA" ]; then
             CURRENT_TAG="${{ steps.version.outputs.tag }}"
             echo "--- 降级：通过 GitHub API 获取上一个 Release tag ---"
-            LATEST_RELEASE_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
             PREV_TAG=""
 
-            if [ -n "$LATEST_RELEASE_TAG" ] && [ "$LATEST_RELEASE_TAG" != "$CURRENT_TAG" ]; then
-              echo "✓ GitHub API 返回上一个 Release tag: $LATEST_RELEASE_TAG"
-              PREV_TAG="$LATEST_RELEASE_TAG"
-            elif [ "$LATEST_RELEASE_TAG" = "$CURRENT_TAG" ]; then
-              echo "⚠️ 最新 Release 就是当前版本，尝试获取上一个..."
-              PREV_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq ".[].tag_name" 2>/dev/null \
-                | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
-              [ -n "$PREV_TAG" ] && echo "✓ 找到上一个 Release tag: $PREV_TAG"
-            else
-              echo "⚠️ GitHub API 未返回有效 Release"
+              if [ "$BRANCH_NAME" = "beta" ]; then
+                echo "按 beta 预发布记录查找上一个 Release tag..."
+                PREV_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
+                  --jq '.[] | select(.prerelease == true) | .tag_name' 2>/dev/null \
+                  | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
+                [ -n "$PREV_TAG" ] && echo "✓ 找到上一个 beta Release tag: $PREV_TAG"
+              else
+                LATEST_RELEASE_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+
+                if [ -n "$LATEST_RELEASE_TAG" ] && [ "$LATEST_RELEASE_TAG" != "$CURRENT_TAG" ]; then
+                  echo "✓ GitHub API 返回上一个正式 Release tag: $LATEST_RELEASE_TAG"
+                  PREV_TAG="$LATEST_RELEASE_TAG"
+                elif [ "$LATEST_RELEASE_TAG" = "$CURRENT_TAG" ]; then
+                  echo "⚠️ 最新正式 Release 就是当前版本，尝试获取上一个..."
+                  PREV_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
+                    --jq '.[] | select(.prerelease == false) | .tag_name' 2>/dev/null \
+                    | grep -v "^${CURRENT_TAG}$" | head -n 1 || echo "")
+                  [ -n "$PREV_TAG" ] && echo "✓ 找到上一个正式 Release tag: $PREV_TAG"
+                else
+                  echo "⚠️ GitHub API 未返回有效正式 Release"
+                fi
             fi
 
             # 策略3（再降级）：git tag
@@ -355,10 +576,157 @@ jobs:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
+          AI_API_KEY2: ${{ secrets.AI_API_KEY2 }}
+          AI_BASE_URL2: ${{ secrets.AI_BASE_URL2 }}
+          AI_MODEL2: ${{ secrets.AI_MODEL2 }}
+          AI_API_KEY3: ${{ secrets.AI_API_KEY3 }}
+          AI_BASE_URL3: ${{ secrets.AI_BASE_URL3 }}
+          AI_MODEL3: ${{ secrets.AI_MODEL3 }}
           RELEASE_VERSION: ${{ steps.version.outputs.tag }}
         run: |
           python3 << 'PYTHON_EOF'
+          import textwrap
+
+          exec(compile(textwrap.dedent(r'''
           import json, os, re, urllib.request, sys
+
+          EN_SECTION_TITLE = "### Changes"
+          ZH_SECTION_TITLE = "### 更新内容"
+          EN_CATEGORY_ORDER = [
+              "✨ New Features",
+              "🐛 Bug Fixes",
+              "⚡ Performance",
+              "🔧 Improvements",
+          ]
+          ZH_CATEGORY_ORDER = [
+              "✨ 新功能",
+              "🐛 问题修复",
+              "⚡ 性能优化",
+              "🔧 体验改进",
+          ]
+          EN_CATEGORY_ALIASES = {
+              "✨ New Features": "✨ New Features",
+              "New Features": "✨ New Features",
+              "### ✨ New Features": "✨ New Features",
+              "### New Features": "✨ New Features",
+              "🐛 Bug Fixes": "🐛 Bug Fixes",
+              "Bug Fixes": "🐛 Bug Fixes",
+              "### 🐛 Bug Fixes": "🐛 Bug Fixes",
+              "### Bug Fixes": "🐛 Bug Fixes",
+              "⚡ Performance": "⚡ Performance",
+              "Performance": "⚡ Performance",
+              "### ⚡ Performance": "⚡ Performance",
+              "### Performance": "⚡ Performance",
+              "🔧 Improvements": "🔧 Improvements",
+              "Improvements": "🔧 Improvements",
+              "### 🔧 Improvements": "🔧 Improvements",
+              "### Improvements": "🔧 Improvements",
+          }
+          ZH_CATEGORY_ALIASES = {
+              "✨ 新功能": "✨ 新功能",
+              "新功能": "✨ 新功能",
+              "### ✨ 新功能": "✨ 新功能",
+              "### 新功能": "✨ 新功能",
+              "🐛 问题修复": "🐛 问题修复",
+              "问题修复": "🐛 问题修复",
+              "### 🐛 问题修复": "🐛 问题修复",
+              "### 问题修复": "🐛 问题修复",
+              "⚡ 性能优化": "⚡ 性能优化",
+              "性能优化": "⚡ 性能优化",
+              "### ⚡ 性能优化": "⚡ 性能优化",
+              "### 性能优化": "⚡ 性能优化",
+              "🔧 体验改进": "🔧 体验改进",
+              "体验改进": "🔧 体验改进",
+              "### 🔧 体验改进": "🔧 体验改进",
+              "### 体验改进": "🔧 体验改进",
+          }
+
+          def log_model_configs(request_label, model_configs):
+              models = [model or "(unnamed-model)" for _, _, model in model_configs]
+              print(f"ℹ️ {request_label}: available model configs ({len(model_configs)}): {models}")
+
+          def build_repair_prompt(version, raw_changelog, section_title, category_order, language):
+              ordered_categories = ", ".join(category_order)
+              return (
+                f"Rewrite the following {language} desktop application changelog so it strictly matches the required Markdown format.\n\n"
+                f"Required first line: ## {version}\n"
+                f"Required second line: {section_title}\n"
+                f"Allowed category headings in order: {ordered_categories}\n\n"
+                "Rules:\n"
+                "- Keep only user-facing release notes.\n"
+                "- Use bullet points only under category headings.\n"
+                "- Omit empty categories.\n"
+                "- Do not add explanations, summaries, or code fences.\n"
+                "- Output pure Markdown only.\n\n"
+                "Source changelog to repair:\n"
+                f"{raw_changelog}"
+              )
+
+          def normalize_changelog_output(raw_output, version, section_title, category_aliases, category_order):
+              text = strip_think_tags(raw_output or "")
+              text = text.replace('\r\n', '\n').replace('\r', '\n')
+              lines = [line.rstrip() for line in text.split('\n')]
+
+              categories = {heading: [] for heading in category_order}
+              current_category = None
+              bullet_count = 0
+              saw_section_title = False
+              unexpected_content = False
+
+              for raw_line in lines:
+                line = raw_line.strip()
+                if not line:
+                  continue
+
+                if line == f"## {version}":
+                  continue
+
+                if line == section_title or line.lstrip('#').strip() == section_title.lstrip('#').strip():
+                  saw_section_title = True
+                  continue
+
+                normalized_heading = category_aliases.get(line)
+                if normalized_heading is None:
+                  normalized_heading = category_aliases.get(line.lstrip('#').strip())
+
+                if normalized_heading:
+                  current_category = normalized_heading
+                  continue
+
+                if line.startswith('- ') or line.startswith('* '):
+                  bullet_text = re.sub(r'^[*-]\s+', '', line).strip()
+                  while bullet_text.startswith('- ') or bullet_text.startswith('* '):
+                    bullet_text = re.sub(r'^[*-]\s+', '', bullet_text).strip()
+                  if not bullet_text:
+                    unexpected_content = True
+                    continue
+                  if current_category is None:
+                    current_category = category_order[-1]
+                  categories[current_category].append(f"- {bullet_text}")
+                  bullet_count += 1
+                  continue
+
+                if current_category and categories[current_category]:
+                  categories[current_category][-1] += f" {line}"
+                  continue
+
+                unexpected_content = True
+
+              normalized_sections = []
+              for heading in category_order:
+                bullets = categories[heading]
+                if not bullets:
+                  continue
+                normalized_sections.append(heading)
+                normalized_sections.extend(bullets)
+                normalized_sections.append("")
+
+              if not normalized_sections:
+                return f"## {version}\n\n{section_title}\n", False, 0
+
+              normalized = f"## {version}\n\n{section_title}\n\n" + "\n".join(normalized_sections).rstrip() + "\n"
+              is_valid = saw_section_title and bullet_count > 0 and not unexpected_content
+              return normalized, is_valid, bullet_count
 
           def strip_think_tags(text):
               """Remove <think>...</think> blocks and standalone tags from AI output."""
@@ -366,17 +734,39 @@ jobs:
               text = re.sub(r'</?think>', '', text)
               return text.strip()
 
-          def call_ai(base_url, api_key, model, prompt, max_retries=3):
-              import time
-              payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2000,
-                "temperature": 0.3
-              }
+          def call_ai_with_fallbacks(*args):
+              """Try one or more model configs and return on the first successful response."""
+              if len(args) == 2:
+                model_configs, prompt = args
+                request_label = "AI request"
+              elif len(args) == 3:
+                model_configs, prompt, request_label = args
+              elif len(args) == 4:
+                base_url, api_key, model, prompt = args
+                model_configs = [(base_url, api_key, model)]
+                request_label = "AI request"
+              elif len(args) == 5:
+                base_url, api_key, model, prompt, request_label = args
+                model_configs = [(base_url, api_key, model)]
+              else:
+                raise TypeError(
+                  "call_ai_with_fallbacks expects (model_configs, prompt[, request_label]) "
+                  "or (base_url, api_key, model, prompt[, request_label])"
+                )
+
               last_exc = None
-              for attempt in range(1, max_retries + 1):
+              for idx, (base_url, api_key, model) in enumerate(model_configs, 1):
+                if not base_url or not api_key:
+                  print(f"⚠️ {request_label}: model config #{idx} skipped (base_url or api_key is empty)")
+                  continue
+                payload = {
+                  "model": model,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 2000,
+                  "temperature": 0.3
+                }
                 try:
+                  print(f"→ {request_label}: calling model config #{idx}: {model}")
                   req = urllib.request.Request(
                     f'{base_url}/chat/completions',
                     data=json.dumps(payload).encode('utf-8'),
@@ -387,19 +777,29 @@ jobs:
                   )
                   with urllib.request.urlopen(req, timeout=60) as resp:
                     data = json.loads(resp.read())
-                  return strip_think_tags(data['choices'][0]['message']['content'])
+                  result = strip_think_tags(data['choices'][0]['message']['content'])
+                  print(f"✓ {request_label}: succeeded with model config #{idx} ({model})")
+                  return {
+                    "content": result,
+                    "model": model,
+                    "config_index": idx,
+                  }
                 except Exception as e:
                   last_exc = e
-                  print(f"⚠️ AI request attempt {attempt}/{max_retries} failed: {e}")
-                  if attempt < max_retries:
-                    time.sleep(3 * attempt)
-              raise last_exc
+                  print(f"⚠️ {request_label}: model config #{idx} ({model}) failed: {e}, trying next...")
+              raise last_exc if last_exc else RuntimeError("No valid model config available")
 
           try:
             version  = os.environ.get('RELEASE_VERSION', '')
-            api_key  = os.environ.get('AI_API_KEY', '')
-            base_url = os.environ.get('AI_BASE_URL', '').rstrip('/')
-            model    = os.environ.get('AI_MODEL', 'gpt-4o-mini')
+
+            # 构建最多 3 组模型配置，跳过未配置的
+            def _cfg(suffix):
+              url = os.environ.get(f'AI_BASE_URL{suffix}', '').rstrip('/')
+              key = os.environ.get(f'AI_API_KEY{suffix}', '')
+              mdl = os.environ.get(f'AI_MODEL{suffix}', '')
+              return (url, key, mdl)
+
+            model_configs = [c for c in [_cfg(''), _cfg('2'), _cfg('3')] if c[0] and c[1]]
 
             try:
               commits = open('/tmp/commits.txt').read().strip()
@@ -410,16 +810,20 @@ jobs:
             if not commits:
               commits = "(no commit records)"
 
-            if not base_url:
-              print("⚠️ AI_BASE_URL is not set, skipping AI generation")
-              fallback = f"## {version}\n\n### Changes\n\n{commits}"
+            if not model_configs:
+              print("⚠️ No AI model config is set, skipping AI generation")
+              fallback_en = f"## {version}\n\n{EN_SECTION_TITLE}\n\n- {commits}"
+              fallback_zh = f"## {version}\n\n{ZH_SECTION_TITLE}\n\n- {commits}"
               with open('/tmp/changelog_en.md', 'w', encoding='utf-8') as f:
-                f.write(fallback)
+                f.write(fallback_en)
               with open('/tmp/changelog_zh.md', 'w', encoding='utf-8') as f:
-                f.write(fallback)
+                f.write(fallback_zh)
               exit(0)
 
+            print(f"✓ {len(model_configs)} model config(s) available: {[c[2] for c in model_configs]}")
+
             # --- Generate English changelog ---
+            log_model_configs("Changelog generation", model_configs)
             prompt_en = (
               f"You are a professional software release note writer for a desktop application (Electron + Angular). "
               f"Analyze the following Git commit records and produce a polished, user-facing changelog IN ENGLISH ONLY.\n\n"
@@ -446,19 +850,59 @@ jobs:
               "3. Aim for 3–10 bullet points total. If fewer meaningful changes exist, output fewer. Quality over quantity.\n"
               "4. If a feature was added then immediately fixed in follow-up commits, describe only the final working state.\n\n"
               "## Output format\n"
-              "- Categorize using these emoji headers (omit a category if empty):\n"
-              "  ✨ New Features / 🐛 Bug Fixes / ⚡ Performance / 🔧 Improvements\n"
-              "- Use bullet points under each category.\n"
-              "- Output in pure Markdown. No code block wrappers.\n"
+              "- Output must start with exactly these two lines:\n"
+              f"  ## {version}\n"
+              "  ### Changes\n"
+              "- After that, use ONLY these category headings and keep them in this exact order when present: ✨ New Features, 🐛 Bug Fixes, ⚡ Performance, 🔧 Improvements. Omit empty categories.\n"
+              "- Do not use any other headings, labels, intro text, outro text, summary sentence, or notes.\n"
+              "- Under each category, use bullet points only. No paragraphs outside bullets.\n"
+              "- Keep the total bullet count between 3 and 10 when possible.\n"
+              "- Do not duplicate categories or repeat the same change in multiple categories.\n"
+              "- Output pure Markdown only. No code block wrappers.\n"
               "- Do NOT wrap output in <think> tags or any XML-like tags."
             )
 
             try:
-              changelog_en = call_ai(base_url, api_key, model, prompt_en)
+              en_result = call_ai_with_fallbacks(model_configs, prompt_en, "English changelog generation")
+              raw_changelog_en = en_result["content"]
+              print(f"ℹ️ English changelog generation final model: {en_result['model']} (config #{en_result['config_index']})")
               print("✓ English changelog generated successfully")
             except Exception as e:
-              print(f"⚠️ English changelog AI generation failed: {e}")
-              changelog_en = f"## {version}\n\n### Changes\n\n{commits}"
+              print(f"⚠️ English changelog AI generation failed on all models: {e}")
+              raw_changelog_en = f"## {version}\n\n{EN_SECTION_TITLE}\n\n- {commits}"
+
+            changelog_en, en_valid, en_bullet_count = normalize_changelog_output(
+              raw_changelog_en,
+              version,
+              EN_SECTION_TITLE,
+              EN_CATEGORY_ALIASES,
+              EN_CATEGORY_ORDER,
+            )
+
+            if not en_valid:
+              print("⚠️ English changelog format invalid, retrying with repair prompt")
+              try:
+                repaired_en_result = call_ai_with_fallbacks(
+                  model_configs,
+                  build_repair_prompt(version, raw_changelog_en, EN_SECTION_TITLE, EN_CATEGORY_ORDER, "English"),
+                  "English changelog repair",
+                )
+                repaired_en = repaired_en_result["content"]
+                print(f"ℹ️ English changelog repair final model: {repaired_en_result['model']} (config #{repaired_en_result['config_index']})")
+                changelog_en, en_valid, en_bullet_count = normalize_changelog_output(
+                  repaired_en,
+                  version,
+                  EN_SECTION_TITLE,
+                  EN_CATEGORY_ALIASES,
+                  EN_CATEGORY_ORDER,
+                )
+              except Exception as e:
+                print(f"⚠️ English changelog repair failed: {e}")
+
+            if not en_valid:
+              print("⚠️ Falling back to minimal English changelog due to invalid format")
+              changelog_en = f"## {version}\n\n{EN_SECTION_TITLE}\n\n🔧 Improvements\n- {commits}\n"
+              en_bullet_count = 1
 
             with open('/tmp/changelog_en.md', 'w', encoding='utf-8') as f:
               f.write(changelog_en)
@@ -466,46 +910,65 @@ jobs:
             print("--- English Changelog Preview ---")
             print(changelog_en[:500])
 
-            # --- Generate Chinese changelog ---
+            # --- Translate English changelog to Chinese ---
+            log_model_configs("Changelog translation", model_configs)
             prompt_zh = (
-              f"你是一款桌面应用（Electron + Angular）的专业版本发布文案撰写者。"
-              f"请分析以下 Git commit 记录，为终端用户撰写一份精炼、易读的版本更新说明，全部使用中文。\n\n"
-              f"版本：{version}\n\n"
-              f"原始 Commit 记录：\n{commits}\n\n"
-              "## 你的任务\n"
-              "理解这些 commit **对用户产生了什么实际影响**，然后用用户能理解的语言进行总结。"
-              "绝对不要机械搬运 commit 信息 — 你需要理解、归纳、提炼。\n\n"
-              "## 过滤规则（必须遵守）\n"
-              "完全忽略以下对用户不可见的纯内部改动，包括但不限于：\n"
-              "- CI/CD 流水线变更（GitHub Actions、构建脚本、签名、部署相关）\n"
-              "- 代码重构、重命名、目录结构调整等不改变行为的改动\n"
-              "- 依赖版本升级（npm update、package-lock 变更），除非修复了已知的用户可感知问题\n"
-              "- 代码或注释中的拼写修正（非界面文案）\n"
-              "- 代码格式化、Lint 风格调整\n"
-              "- Merge commit、revert 后又恢复的操作\n"
-              "- 测试用例的增删改\n"
-              "- 开发文档变更（README、开发者文档），除非是面向用户的帮助文档\n"
-              "- 调试日志的增删\n\n"
-              "## 总结规则\n"
-              "1. 将相关 commit 合并归纳（例如 5 条关于改善串口连接的提交 → 一条描述最终效果的要点）\n"
-              "2. 聚焦用户能感知到的变化，而非实现方式。"
-              "反面例子：'重构了 WebSocket 重连逻辑'。正面例子：'提升了连接稳定性'\n"
-              "3. 总共控制在 3–10 条要点。如果有意义的改动较少，就写少一些。质量优先于数量。\n"
-              "4. 如果某功能是本次新增后又在后续 commit 中修复的，只描述最终完成的状态。\n\n"
-              "## 输出格式\n"
-              "- 使用以下 emoji 分类标题（如果某分类为空则省略）：\n"
-              "  ✨ 新功能 / 🐛 问题修复 / ⚡ 性能优化 / 🔧 体验改进\n"
-              "- 每个分类下使用列表形式\n"
-              "- 输出纯 Markdown，不要代码块包裹\n"
-              "- 不要在输出中包含 <think> 标签或任何 XML 标签"
+              "You are a professional technical translator for desktop software release notes. "
+              "Translate the following English changelog into Simplified Chinese.\n\n"
+              f"Version: {version}\n\n"
+              "## Source Markdown\n"
+              f"{changelog_en}\n\n"
+              "## Translation requirements\n"
+              "1. Preserve the original Markdown structure exactly: keep the same headings, emoji category markers, bullet structure, and paragraph grouping.\n"
+              "2. Use these exact heading translations when they appear in the source: '### Changes' -> '### 更新内容', '✨ New Features' -> '✨ 新功能', '🐛 Bug Fixes' -> '🐛 问题修复', '⚡ Performance' -> '⚡ 性能优化', '🔧 Improvements' -> '🔧 体验改进'. Do not invent extra headings.\n"
+              "3. Keep the exact same number of sections and bullet points in the exact same order. Do not merge, split, drop, or add bullets.\n"
+              "4. Translate only the user-facing natural language into Simplified Chinese. Keep version numbers, file names, tag names, product names, API names, branch names, and technical identifiers unchanged unless they have a well-established Chinese translation.\n"
+              "5. Do not add, remove, infer, soften, or amplify meaning. The Chinese output must be a faithful translation of the English source only.\n"
+              "6. Output pure Markdown only. No code fences, no explanations, and no <think> tags or XML-like tags."
             )
 
             try:
-              changelog_zh = call_ai(base_url, api_key, model, prompt_zh)
-              print("✓ Chinese changelog generated successfully")
+              zh_result = call_ai_with_fallbacks(model_configs, prompt_zh, "Chinese changelog translation")
+              raw_changelog_zh = zh_result["content"]
+              print(f"ℹ️ Chinese changelog translation final model: {zh_result['model']} (config #{zh_result['config_index']})")
+              print("✓ Chinese changelog translated successfully")
             except Exception as e:
-              print(f"⚠️ Chinese changelog AI generation failed: {e}")
-              changelog_zh = f"## {version}\n\n### 更新内容\n\n{commits}"
+              print(f"⚠️ Chinese changelog translation failed on all models: {e}")
+              raw_changelog_zh = f"## {version}\n\n{ZH_SECTION_TITLE}\n\n🔧 体验改进\n- （中文翻译生成失败，请查阅 CHANGELOG.md）\n"
+
+            changelog_zh, zh_valid, zh_bullet_count = normalize_changelog_output(
+              raw_changelog_zh,
+              version,
+              ZH_SECTION_TITLE,
+              ZH_CATEGORY_ALIASES,
+              ZH_CATEGORY_ORDER,
+            )
+
+            if not zh_valid or zh_bullet_count != en_bullet_count:
+              print("⚠️ Chinese changelog format invalid or bullet count mismatch, retrying with stricter translation")
+              strict_prompt_zh = (
+                prompt_zh
+                + f"\n\n## Additional hard constraints\n"
+                + f"- The output must contain exactly {en_bullet_count} bullet points in total.\n"
+                + "- Keep every bullet aligned one-to-one with the English source.\n"
+              )
+              try:
+                repaired_zh_result = call_ai_with_fallbacks(model_configs, strict_prompt_zh, "Chinese changelog repair")
+                repaired_zh = repaired_zh_result["content"]
+                print(f"ℹ️ Chinese changelog repair final model: {repaired_zh_result['model']} (config #{repaired_zh_result['config_index']})")
+                changelog_zh, zh_valid, zh_bullet_count = normalize_changelog_output(
+                  repaired_zh,
+                  version,
+                  ZH_SECTION_TITLE,
+                  ZH_CATEGORY_ALIASES,
+                  ZH_CATEGORY_ORDER,
+                )
+              except Exception as e:
+                print(f"⚠️ Chinese changelog repair failed: {e}")
+
+            if not zh_valid or zh_bullet_count != en_bullet_count:
+              print("⚠️ Falling back to minimal Chinese changelog due to invalid format")
+              changelog_zh = f"## {version}\n\n{ZH_SECTION_TITLE}\n\n🔧 体验改进\n- （中文翻译生成失败，请查阅 CHANGELOG.md）\n"
 
             with open('/tmp/changelog_zh.md', 'w', encoding='utf-8') as f:
               f.write(changelog_zh)
@@ -522,6 +985,7 @@ jobs:
                 f.write(f"## {os.environ.get('RELEASE_VERSION', 'Unknown')}\n\n### 更新内容\n\n（Changelog 生成失败，请查阅 git log）")
             except Exception:
               pass
+          '''), '<generate-changelog>', 'exec'))
           PYTHON_EOF
 
       - name: Download Windows Artifact
@@ -530,11 +994,23 @@ jobs:
           name: AilyBlockly-Windows-Package
           path: ./release
 
+      - name: Download Windows CN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package-cn
+          path: ./release-cn
+
       - name: Download macOS Artifact
         uses: actions/download-artifact@v4
         with:
           name: AilyBlockly-macOS-Package
           path: ./release
+
+      - name: Download macOS CN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package-cn
+          path: ./release-mac-cn
 
       - name: Prepare Changelog Files
         id: release_body
@@ -580,7 +1056,9 @@ jobs:
           body: ${{ steps.release_body.outputs.body }}
           files: |
             ./release/*.exe
+            ./release-cn/*.exe
             ./release/*.dmg
+            ./release-mac-cn/*.dmg
             ./release/CHANGELOG.md
             ./release/CHANGELOG_ZH.md
           draft: false
@@ -642,15 +1120,21 @@ jobs:
 
   # 任务 4a：上传 Windows 文件到 Cloudflare R2 存储（与Release并行执行）
   upload-windows-to-r2:
-    needs: [build-windows]
+    needs: [build-windows, build-windows-cn]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
-      - name: Download Windows Artifact
+      - name: Download Windows Global Artifact
         uses: actions/download-artifact@v4
         with:
           name: AilyBlockly-Windows-Package
-          path: ./artifacts/windows
+          path: ./artifacts/windows/global
+
+      - name: Download Windows CN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package-cn
+          path: ./artifacts/windows/cn
 
       - name: Ensure AWS CLI is available
         run: |
@@ -679,27 +1163,41 @@ jobs:
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           
           echo "准备上传 Windows 文件到 Cloudflare R2..."
-          
-          # 先上传 Windows 安装包
-          echo "上传 Windows exe 文件..."
-          for file in ./artifacts/windows/*.exe; do
-            if [ -f "$file" ]; then
-              filename=$(basename "$file")
-              echo "  上传: $filename"
-              aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
-                --endpoint-url "$R2_ENDPOINT" \
-                --content-type "application/x-msdownload"
+
+          upload_windows_dir() {
+            local artifact_dir="$1"
+            local manifest_name="$2"
+
+            if [ ! -d "$artifact_dir" ]; then
+              echo "  ⚠️ 目录不存在，跳过: $artifact_dir"
+              return
             fi
-          done
           
-          # 最后上传 latest.yml（确保安装包已上传完成，禁用 CDN 缓存防止新旧文件不匹配）
-          echo "上传 latest.yml 配置文件..."
-          if [ -f "./artifacts/windows/latest.yml" ]; then
-            aws s3 cp "./artifacts/windows/latest.yml" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/latest.yml" \
-              --endpoint-url "$R2_ENDPOINT" \
-              --content-type "text/yaml" \
-              --cache-control "no-cache, no-store, must-revalidate"
-          fi
+            echo "上传 ${artifact_dir} 下的 Windows exe 文件..."
+            for file in "$artifact_dir"/*.exe; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                echo "  上传: $filename"
+                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
+                  --endpoint-url "$R2_ENDPOINT" \
+                  --content-type "application/x-msdownload"
+              fi
+            done
+
+            local manifest_path="${artifact_dir}/${manifest_name}"
+            echo "上传 ${manifest_name} 配置文件..."
+            if [ -f "$manifest_path" ]; then
+              aws s3 cp "$manifest_path" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${manifest_name}" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --content-type "text/yaml" \
+                --cache-control "no-cache, no-store, must-revalidate"
+            else
+              echo "  ⚠️ ${manifest_name} not found under ${artifact_dir}, skipping"
+            fi
+          }
+
+          upload_windows_dir "./artifacts/windows/global" "latest.yml"
+          upload_windows_dir "./artifacts/windows/cn" "latest-cn.yml"
           
           echo "✓ Windows 文件上传到 Cloudflare R2 完成"
           echo "公开访问地址: ${R2_PUBLIC_URL}"
@@ -760,15 +1258,21 @@ jobs:
 
   # 任务 4b：上传 macOS 文件到 Cloudflare R2 存储（与Release并行执行）
   upload-macos-to-r2:
-    needs: [build-macos]
+    needs: [build-macos, build-macos-cn]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS Artifact
+      - name: Download macOS Global Artifact
         uses: actions/download-artifact@v4
         with:
           name: AilyBlockly-macOS-Package
-          path: ./artifacts/macos
+          path: ./artifacts/macos/global
+
+      - name: Download macOS CN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package-cn
+          path: ./artifacts/macos/cn
 
       - name: Ensure AWS CLI is available
         run: |
@@ -797,35 +1301,48 @@ jobs:
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           
           echo "准备上传 macOS 文件到 Cloudflare R2..."
-          
-          # 上传 macOS 安装包
-          echo "上传 macOS 文件..."
-          for file in ./artifacts/macos/*.dmg ./artifacts/macos/*.zip; do
-            if [ -f "$file" ]; then
-              filename=$(basename "$file")
-              echo "  上传: $filename"
-              
-              # 根据文件类型设置 Content-Type
-              if [[ "$filename" == *.dmg ]]; then
-                content_type="application/x-apple-diskimage"
-              else
-                content_type="application/zip"
-              fi
-              
-              aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
-                --endpoint-url "$R2_ENDPOINT" \
-                --content-type "$content_type"
+
+          upload_macos_dir() {
+            local artifact_dir="$1"
+            local manifest_name="$2"
+
+            if [ ! -d "$artifact_dir" ]; then
+              echo "  ⚠️ 目录不存在，跳过: $artifact_dir"
+              return
             fi
-          done
-          
-          # 最后上传 latest-mac.yml（确保安装包已上传完成，禁用 CDN 缓存防止新旧文件不匹配）
-          echo "上传 latest-mac.yml 配置文件..."
-          if [ -f "./artifacts/macos/latest-mac.yml" ]; then
-            aws s3 cp "./artifacts/macos/latest-mac.yml" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/latest-mac.yml" \
-              --endpoint-url "$R2_ENDPOINT" \
-              --content-type "text/yaml" \
-              --cache-control "no-cache, no-store, must-revalidate"
-          fi
+
+            echo "上传 ${artifact_dir} 下的 macOS 文件..."
+            for file in "$artifact_dir"/*.dmg "$artifact_dir"/*.zip; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                echo "  上传: $filename"
+
+                if [[ "$filename" == *.dmg ]]; then
+                  content_type="application/x-apple-diskimage"
+                else
+                  content_type="application/zip"
+                fi
+
+                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
+                  --endpoint-url "$R2_ENDPOINT" \
+                  --content-type "$content_type"
+              fi
+            done
+
+            local manifest_path="${artifact_dir}/${manifest_name}"
+            echo "上传 ${manifest_name} 配置文件..."
+            if [ -f "$manifest_path" ]; then
+              aws s3 cp "$manifest_path" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${manifest_name}" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --content-type "text/yaml" \
+                --cache-control "no-cache, no-store, must-revalidate"
+            else
+              echo "  ⚠️ ${manifest_name} not found under ${artifact_dir}, skipping"
+            fi
+          }
+
+          upload_macos_dir "./artifacts/macos/global" "latest-mac.yml"
+          upload_macos_dir "./artifacts/macos/cn" "latest-mac-cn.yml"
           
           echo "✓ macOS 文件上传到 Cloudflare R2 完成"
           echo "公开访问地址: ${R2_PUBLIC_URL}"

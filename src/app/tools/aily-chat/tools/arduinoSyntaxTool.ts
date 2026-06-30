@@ -1,4 +1,4 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { ArduinoLintService, LintResult, LintError } from "../services/arduino-lint.service";
 
 /**
@@ -9,12 +9,19 @@ export class ArduinoSyntaxTool {
 
   private lintService: ArduinoLintService | undefined;
 
+  private static getGlobalLintService(): ArduinoLintService | undefined {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    return (window as any)['arduinoLintService'];
+  }
+
   constructor() {
     // 参照 TodoUpdateService 的模式，直接从全局对象获取服务
     // console.log('🔧 ArduinoSyntaxTool 初始化...');
     
     // 直接从全局对象获取服务实例
-    this.lintService = (window as any)['arduinoLintService'];
+    this.lintService = ArduinoSyntaxTool.getGlobalLintService();
     
     // if (this.lintService) {
     //   console.log('✅ Arduino Lint Service 获取成功（通过全局对象）');

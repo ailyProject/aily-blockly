@@ -19,11 +19,17 @@ import { AilyMermaidViewerComponent } from '../components/aily-mermaid-viewer/ai
 import { AilyTaskActionViewerComponent } from '../components/aily-task-action-viewer/aily-task-action-viewer.component';
 import { AilyThinkViewerComponent } from '../components/aily-think-viewer/aily-think-viewer.component';
 import { AilyContextViewerComponent } from '../components/aily-context-viewer/aily-context-viewer.component';
-import { AilyApprovalViewerComponent } from '../components/aily-approval-viewer/aily-approval-viewer.component';
+import { AilyConfirmationViewerComponent } from '../components/aily-confirmation-viewer/aily-confirmation-viewer.component';
 import { safeBase64Decode } from '../pipes/markdown.pipe';
 
 /**
  * 动态组件指令 - 用于在 DOM 中查找 Aily 组件占位符并替换为真正的 Angular 组件
+ *
+ * Active chat rendering no longer mounts this directive. It is retained only for
+ * the archived aily-dialog compatibility chain that still consumes MarkdownPipe
+ * placeholders.
+ *
+ * @deprecated Legacy compatibility only.
  */
 @Directive({
   selector: '[ailyDynamicComponent]',
@@ -344,8 +350,8 @@ export class AilyDynamicComponentDirective implements OnInit, OnDestroy {
         return AilyThinkViewerComponent;
       case 'aily-context':
         return AilyContextViewerComponent;
-      case 'aily-approval':
-        return AilyApprovalViewerComponent;
+      case 'aily-confirmation':
+        return AilyConfirmationViewerComponent;
       default:
         return null;
     }

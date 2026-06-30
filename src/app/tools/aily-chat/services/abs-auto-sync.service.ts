@@ -71,6 +71,9 @@ export class AbsAutoSyncService implements OnDestroy {
   
   /** 是否正在同步（防止循环） */
   private isSyncing = false;
+
+  /** 会话开始自动导出的延迟任务，避免阻塞发送帧。 */
+  private scheduledExportHandle: ReturnType<typeof setTimeout> | null = null;
   
   /** 当前项目路径 */
   private currentProjectPath = '';
@@ -95,7 +98,7 @@ export class AbsAutoSyncService implements OnDestroy {
    */
   initialize(projectPath: string): void {
     this.currentProjectPath = projectPath;
-    console.log('[AbsAutoSync] Initialized for project:', projectPath);
+    this.trace('Initialized for project', { projectPath });
   }
 
   /**
@@ -110,7 +113,7 @@ export class AbsAutoSyncService implements OnDestroy {
     try {
       const dslContent = await this.exportToAbs();
       if (dslContent) {
-        console.log('[AbsAutoSync] Auto-exported ABS on session start');
+        this.trace('Auto-exported ABS on session start');
       }
       return dslContent;
     } catch (error) {
@@ -164,10 +167,9 @@ export class AbsAutoSyncService implements OnDestroy {
       
       // 写入 ABS 文件
       const absFilePath = this.getAbsFilePath();
-      console.log('[AbsAutoSync] Writing ABS file to:', absFilePath);
-      console.log('[AbsAutoSync] Content length:', absContent?.length || 0);
+      this.trace('Writing ABS file', { absFilePath, contentLength: absContent?.length || 0 });
       await asyncFs.writeFile(absFilePath, absContent);
-      console.log('[AbsAutoSync] Write completed for:', absFilePath);
+      this.trace('Write completed', { absFilePath });
       
       // 版本历史已迁移到 EditCheckpointService，不再单独保存
       
@@ -178,6 +180,26 @@ export class AbsAutoSyncService implements OnDestroy {
     } finally {
       this.isSyncing = false;
     }
+  }
+
+  /**
+   * Schedule a session-start export after the current UI frame.
+   *
+   * Tools that need a strict workspace -> ABS barrier still call exportToAbs()
+   * directly through syncAbs. This path is only a warm mirror so chat submit can
+   * paint immediately, matching VS Code's request/progress ownership model.
+   */
+  scheduleSessionStartExport(): void {
+    if (!this.config.exportOnSessionStart || !this.currentProjectPath || this.scheduledExportHandle) {
+      return;
+    }
+
+    this.scheduledExportHandle = setTimeout(() => {
+      this.scheduledExportHandle = null;
+      void this.exportToAbs().catch((error: any) => {
+        console.warn('[AbsAutoSync] Failed to auto-export on session start:', error);
+      });
+    }, 0);
   }
 
   /**
@@ -373,7 +395,24 @@ export class AbsAutoSyncService implements OnDestroy {
    * 清理资源
    */
   private cleanup(): void {
+    if (this.scheduledExportHandle) {
+      clearTimeout(this.scheduledExportHandle);
+      this.scheduledExportHandle = null;
+    }
     this.subscriptions.forEach(sub => sub.unsubscribe());
     this.subscriptions = [];
+  }
+
+  private trace(message: string, details?: Record<string, unknown>): void {
+    try {
+      const enabled = globalThis.localStorage?.getItem?.('aily.absAutoSync.trace') === '1'
+        || (globalThis as Record<string, unknown>)['__AILY_ABS_AUTO_SYNC_TRACE__'] === true;
+      if (!enabled) {
+        return;
+      }
+      console.info(`[AbsAutoSync] ${message}`, details ?? {});
+    } catch {
+      // Debug tracing must never affect the chat submit hot path.
+    }
   }
 }

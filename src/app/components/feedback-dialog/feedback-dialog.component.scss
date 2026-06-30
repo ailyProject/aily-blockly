@@ -1,4 +1,33 @@
+:host {
+    display: block;
+    max-height: calc(100vh - 48px);
+}
+
 .feedback-form {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--aily-scrollbar-thumb) var(--aily-scrollbar-track);
+
+    &::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    &::-webkit-scrollbar-track {
+        background: var(--aily-scrollbar-track);
+    }
+
+    &::-webkit-scrollbar-thumb {
+        background: var(--aily-scrollbar-thumb);
+        border-radius: 4px;
+
+        &:hover {
+            background: var(--aily-scrollbar-thumb-hover);
+        }
+    }
+
     .form-item {
         margin-bottom: 16px;
 

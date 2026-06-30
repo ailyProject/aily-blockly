@@ -64,7 +64,7 @@ interface ButtonData {
     .ac-btns { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0; }
     .ac-btn {
       align-items: center;
-      border-radius: 6px;
+      border-radius: 5px;
       cursor: pointer;
       transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1);
 
@@ -88,7 +88,7 @@ interface ButtonData {
       align-items: center;
       justify-content: flex-start;
       margin: 0;
-      border-radius: 4px;
+      border-radius: 5px;
       overflow-x: auto;
       background: var(--aily-chat-viewer-code-bg, #0d1117);
       padding: 12px;
@@ -164,7 +164,13 @@ export class XAilyButtonViewerComponent implements OnChanges {
         this.handlePath(btn);
         break;
       default:
-        this.chatService.sendTextToChat(btn.text, { sender: 'button', type: 'button', cover: false });
+        this.chatService.sendTextToChat(btn.text, {
+          sender: 'button',
+          type: 'button',
+          cover: false,
+          action: btn.action,
+          payload: btn.actionPayload || btn
+        });
         break;
     }
   }

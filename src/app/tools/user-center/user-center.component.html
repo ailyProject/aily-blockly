@@ -1,4 +1,4 @@
-<app-tool-container [title]="'USER CENTER'" (closeEvent)="close()">
+<app-tool-container [title]="'USER_CENTER.TITLE' | translate" (closeEvent)="close()">
     <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-tool-container>
 <ng-template #windowBoxTemplate>
@@ -6,7 +6,7 @@
         <div class="user-info">
             <div class="avatar ccenter" (click)="onAvatarClick()">
                 @if (currentUser?.avatar) {
-                <img [src]="currentUser.avatar" alt="用户头像" />
+                <img class="avatar-img" [src]="currentUser.avatar" [alt]="'USER_CENTER.AVATAR_ALT' | translate" />
                 } @else {
                 <i class="fa-thin fa-user"></i>
                 }
@@ -16,14 +16,17 @@
                     {{ displayNickname }}
                 </div>
                 <div class="plan">
-                    Free Plan
+                    {{ 'USER_CENTER.PLAN_LABEL' | translate: { plan: displayPlanName } }}
+                    @if (displayPlanEndDate) {
+                    <span class="plan-expires">({{ displayPlanEndDate }})</span>
+                    }
                 </div>
             </div>
             <div class="action">
-                <div class="btn link" nz-tooltip="设置" (click)="onAvatarClick()">
+                <div class="btn link" nz-tooltip [nzTooltipTitle]="'USER_CENTER.SETTINGS' | translate" (click)="onAvatarClick()">
                     <i class="fa-light fa-gear"></i>
                 </div>
-                <div class="btn link" nz-tooltip="登出" (click)="onLogout()">
+                <div class="btn link" nz-tooltip [nzTooltipTitle]="'USER_CENTER.LOGOUT' | translate" (click)="onLogout()">
                     <i class="fa-light fa-right-from-bracket"></i>
                 </div>
             </div>
@@ -35,12 +38,17 @@
                     <i class="fa-light fa-star-christmas"></i>
                 </div>
                 <div class="content">
-                    <span class="label">AI可用次数</span>
-                    <span class="value">{{ benefits?.ai_calls?.unlimited ? '♾️' : (benefits?.ai_calls?.used ?? 0) + '/' + (benefits?.ai_calls?.total ?? 0) }}</span>
+                    <span class="label">{{ 'USER_CENTER.AI_CALLS' | translate }}</span>
+                    <span class="value">{{ aiAvailableValue }}</span>
+                    @if(aiAvailableMeta) {
+                    <span class="meta">{{ aiAvailableMeta }}</span>
+                    }
                 </div>
-                <div class="action btn link" (click)="OpenUrl('')">
-                    增加使用次数
+                @if (!isProPlanSubscriber) {
+                <div class="action btn link" (click)="OpenUrl('/user/subscription')">
+                    {{ 'USER_CENTER.ADD_AI_CALLS' | translate }}
                 </div>
+                }
             </div>
             <!-- 云存储使用 -->
             <div class="item">
@@ -48,12 +56,14 @@
                     <i class="fa-album-collection fa-light"></i>
                 </div>
                 <div class="content">
-                    <span class="label">云存储</span>
+                    <span class="label">{{ 'USER_CENTER.CLOUD_STORAGE' | translate }}</span>
                     <span class="value">{{ benefits?.cloud_storage?.unlimited ? '♾️' : (benefits?.cloud_storage?.used ?? 0) + '/' + (benefits?.cloud_storage?.total ?? 0) }}</span>
                 </div>
-                <div class="action btn link" (click)="OpenUrl('')">
-                    增加存储空间
+                @if (!isProPlanSubscriber) {
+                <div class="action btn link" (click)="OpenUrl('/user/subscription')">
+                    {{ 'USER_CENTER.ADD_STORAGE' | translate }}
                 </div>
+                }
             </div>
             <!-- 物联网设备 -->
             <div class="item">
@@ -61,12 +71,14 @@
                     <i class="fa-light fa-chart-network"></i>
                 </div>
                 <div class="content">
-                    <span class="label">物联网设备</span>
+                    <span class="label">{{ 'USER_CENTER.IOT_DEVICES' | translate }}</span>
                     <span class="value">{{ benefits?.iot_devices?.unlimited ? '♾️' : (benefits?.iot_devices?.used ?? 0) + '/' + (benefits?.iot_devices?.total ?? 0) }}</span>
                 </div>
-                <div class="action btn link" (click)="OpenUrl('')">
-                    增加设备数量
+                @if (!isProPlanSubscriber) {
+                <div class="action btn link" (click)="OpenUrl('/user/subscription')">
+                    {{ 'USER_CENTER.ADD_DEVICES' | translate }}
                 </div>
+                }
             </div>
             <!-- 积分 -->
             <div class="item">
@@ -74,11 +86,11 @@
                     <i class="fa-light fa-award"></i>
                 </div>
                 <div class="content">
-                    <span class="label">账户积分<i class="fa-light fa-circle-question" style="margin-left: 5px;"></i></span>
+                    <span class="label">{{ 'USER_CENTER.POINTS' | translate }}</span>
                     <span class="value">{{ benefits?.points ?? 0 }}</span>
                 </div>
-                <div class="action btn link" (click)="OpenUrl('')">
-                    积分兑换
+                <div class="action btn link" (click)="OpenUrl('/user/gift')">
+                    {{ 'USER_CENTER.REDEEM_POINTS' | translate }}
                 </div>
             </div>
         </div>

@@ -1,5 +1,5 @@
 .quick-send-editor {
-    background: #323437;
+    background: var(--aily-bg-secondary);
     padding-top: 7px;
     border-radius: 5px;
     height: calc(100% - 50px);
@@ -9,7 +9,7 @@
 
     .content {
         margin: -10px 10px 0 10px;
-        background: #292929;
+        background: var(--aily-bg-card);
         height: calc(100% - 28px);
         border-radius: 0 0 5px 5px;
         overflow: hidden;

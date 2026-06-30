@@ -1,0 +1,198 @@
+<div #panelRoot class="chat-debug-detail-panel" tabindex="-1">
+  <div class="chat-debug-detail-panel-header">
+    <div class="chat-debug-detail-panel-heading">
+      <div class="chat-debug-detail-panel-eyebrow">事件详情</div>
+      <div class="chat-debug-detail-panel-title">{{ title }}</div>
+      @if (event) {
+      <div class="chat-debug-detail-panel-meta">
+        {{ event.kind }}
+        @if (event.created > 0) {
+        · {{ event.created | date:'yyyy-MM-dd HH:mm:ss' }}
+        }
+      </div>
+      }
+    </div>
+    <button type="button" class="chat-debug-detail-panel-close" (click)="closeRequested.emit()">关闭</button>
+  </div>
+
+  <div class="chat-debug-detail-panel-body sscroll">
+    @if (eventBoundaryTags.length > 0) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">事件边界</div>
+      <div class="chat-debug-detail-panel-tags">
+        @for (tag of eventBoundaryTags; track tag.label) {
+        <span class="chat-debug-detail-panel-tag">{{ tag.label }} {{ tag.value }}</span>
+        }
+      </div>
+    </div>
+    }
+    @if (messageContent; as content) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">{{ content.type === 'user' ? '用户消息' : '代理响应' }}</div>
+      <pre class="chat-debug-detail-panel-pre">{{ content.message }}</pre>
+    </div>
+    @for (section of content.sections; track section.name) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">{{ section.name }}</div>
+      <pre class="chat-debug-detail-panel-pre">{{ section.content }}</pre>
+    </div>
+    }
+    } @else {
+    @if (toolCallContent; as content) {
+    <div class="chat-debug-detail-panel-grid">
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">工具</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.toolName }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">结果</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.result || 'unknown' }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">耗时</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.durationInMillis ?? 0 }}ms</span>
+      </div>
+    </div>
+    @if (content.input) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">输入</div>
+      <pre class="chat-debug-detail-panel-pre">{{ content.input }}</pre>
+    </div>
+    }
+    @if (content.output) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">输出</div>
+      <pre class="chat-debug-detail-panel-pre">{{ content.output }}</pre>
+    </div>
+    }
+    } @else {
+    @if (modelTurnContent; as content) {
+    <div class="chat-debug-detail-panel-grid">
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">请求</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.requestName }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">模型</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.model || 'unknown' }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">状态</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.status || 'unknown' }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">输入 Tokens</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.inputTokens ?? 0 }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">输出 Tokens</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.outputTokens ?? 0 }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">缓存 Tokens</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.cachedTokens ?? 0 }}</span>
+      </div>
+    </div>
+    @for (section of content.sections || []; track section.name) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">{{ section.name }}</div>
+      <pre class="chat-debug-detail-panel-pre">{{ section.content }}</pre>
+    </div>
+    }
+    } @else {
+    @if (customizationSummaryContent; as content) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">自定义解析结果</div>
+      <div class="chat-debug-detail-panel-fallback">{{ customizationSummaryLine }}</div>
+    </div>
+    <div class="chat-debug-detail-panel-grid">
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">指令</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.counts.instructions }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">跳过</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.counts.skipped }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">技能</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.counts.skills }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">Agents</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.counts.agents }}</span>
+      </div>
+      <div class="chat-debug-detail-panel-stat">
+        <span class="chat-debug-detail-panel-stat-label">Hooks</span>
+        <span class="chat-debug-detail-panel-stat-value">{{ content.counts.hooks }}</span>
+      </div>
+    </div>
+    @if (content.hostId || content.modelFamily || (content.capabilities?.length ?? 0) > 0) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">环境</div>
+      <div class="chat-debug-detail-panel-tags">
+        @if (content.hostId) {
+        <span class="chat-debug-detail-panel-tag">Host {{ content.hostId }}</span>
+        }
+        @if (content.modelFamily) {
+        <span class="chat-debug-detail-panel-tag">Model {{ content.modelFamily }}</span>
+        }
+        @for (capability of content.capabilities || []; track capability) {
+        <span class="chat-debug-detail-panel-tag">{{ capability }}</span>
+        }
+      </div>
+    </div>
+    }
+    @if (customizationSections.length > 0) {
+    @for (section of customizationSections; track section.title) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">{{ section.title }}</div>
+      <div class="chat-debug-detail-panel-list">
+        @for (entry of section.entries; track $index) {
+        <div class="chat-debug-detail-panel-list-row">
+          <div class="chat-debug-detail-panel-list-main">
+            <span class="chat-debug-detail-panel-list-name">{{ entry.name }}</span>
+            @if (entry.source) {
+            <span class="chat-debug-detail-panel-tag">{{ entry.source }}</span>
+            }
+            @if (entry.reason) {
+            <span class="chat-debug-detail-panel-list-detail">{{ entry.reason }}</span>
+            }
+          </div>
+          @if (entry.reference) {
+          <div class="chat-debug-detail-panel-list-reference-shell">
+            <div class="chat-debug-detail-panel-list-reference">{{ getReferenceDisplay(entry.reference) }}</div>
+            @if (canOpenReference(entry.reference)) {
+            <button type="button" class="chat-debug-detail-panel-open" (click)="openReference(entry.reference, $event)">打开</button>
+            }
+          </div>
+          }
+        </div>
+        }
+      </div>
+    </div>
+    }
+    } @else {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">内容</div>
+      <div class="chat-debug-detail-panel-fallback">没有捕获到自定义解析条目。</div>
+    </div>
+    }
+    } @else {
+    @if (textContent; as content) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">内容</div>
+      <pre class="chat-debug-detail-panel-pre">{{ content.text }}</pre>
+    </div>
+    } @else if (event) {
+    <div class="chat-debug-detail-panel-section">
+      <div class="chat-debug-detail-panel-section-title">事件摘要</div>
+      <div class="chat-debug-detail-panel-fallback">{{ summary || title }}</div>
+    </div>
+    }
+    }
+    }
+    }
+    }
+  </div>
+</div>

@@ -14,7 +14,7 @@
  * - get_workspace_blocks: 获取工作区块列表
  */
 
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { getActiveWorkspace, getBlockByIdSmart, fixJsonString, getWorkspaceOverviewTool } from "./editBlockTool";
 import { injectTodoReminder } from './todoWriteTool';
 

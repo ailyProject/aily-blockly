@@ -1,74 +1,561 @@
 // 窗口控制
-const { ipcMain, BrowserWindow, app } = require("electron");
+const { ipcMain, BrowserWindow, app, screen } = require("electron");
+const { requestWindowAttention } = require('./window-attention');
+const { killCmdProcess, getActiveCmdProcesses } = require('./cmd');
+const {
+    registerChatRuntimeHostIpc,
+    setChatRuntimeOwnerWindow,
+} = require('./chat-runtime-host');
 const { exec, execSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
-function terminateAilyProcess() {
-    const platform = process.platform;
-    let checkCommand;
-    let killCommand;
-    const processName = platform === 'win32' ? 'aily blockly.exe' : 'aily blockly';
+const CODE_VIEWER_STATE_CHANNEL = 'blockly-code-viewer-state';
+const CODE_VIEWER_STATE_UPDATE_CHANNEL = 'blockly-code-viewer-state-update';
+const CODE_VIEWER_STATE_GET_CHANNEL = 'blockly-code-viewer-state-get';
 
-    if (platform === 'win32') {
-        checkCommand = `tasklist /FI "IMAGENAME eq ${processName}" /FO CSV`;
-        killCommand = `taskkill /F /IM "${processName}"`;
-    } else {
-        checkCommand = `pgrep -f "${processName}"`;
-        killCommand = `pkill -f "${processName}"`;
-    }
+/** 后台预缓冲子窗口数量�? 个待�?+ 1 个备�?*/
+const SUB_WINDOW_POOL_SIZE = 2;
 
+/** 子窗口最小尺寸（4:3，约为原 800×600 �?80%�?*/
+const SUB_WINDOW_MIN_WIDTH = 640;
+const SUB_WINDOW_MIN_HEIGHT = 480;
+const CHILD_TOOL_RELEASE_GRACE_MS = 15000;
+
+/** @type {Map<string, { hostInfo: any, streamId: string, refCount: number, releaseTimer: NodeJS.Timeout | null }>} */
+const childToolSessions = new Map();
+const SUB_WINDOW_DARK_BACKGROUND_COLOR = '#2b2d30';
+const SUB_WINDOW_LIGHT_BACKGROUND_COLOR = '#e8e8e8';
+
+function readThemeFromConfigFile(configPath) {
     try {
-        let count = 0;
-        try {
-            const stdout = execSync(checkCommand, { encoding: 'utf8' });
-            if (platform === 'win32') {
-                const matches = stdout.match(new RegExp(processName.replace('.', '\\.'), 'gi'));
-                count = matches ? matches.length : 0;
-            } else {
-                count = stdout.trim().split('\n').length;
-            }
-        } catch (e) {
-            if (platform !== 'win32' && e.status === 1) {
-                count = 0;
-            } else {
-                console.warn('Error checking process count:', e.message);
-            }
+        if (fs.existsSync(configPath)) {
+            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            return config && config.theme;
         }
+    } catch (e) {
+        console.warn('[SubWindowPool] 读取主题配置失败:', e.message);
+    }
+    return null;
+}
 
-        console.log(`Current aily-blockly process count: ${count}`);
+function getSubWindowBackgroundColor() {
+    const appDataPath = process.env.AILY_APPDATA_PATH || app.getPath('userData');
+    const theme =
+        readThemeFromConfigFile(path.join(appDataPath, 'config.json')) ||
+        readThemeFromConfigFile(path.join(__dirname, 'config', 'config.json'));
 
-        if (count > 1) {
-            console.log('Multiple instances detected. Skipping forced termination.');
-            return;
-        }
+    return theme === 'light'
+        ? SUB_WINDOW_LIGHT_BACKGROUND_COLOR
+        : SUB_WINDOW_DARK_BACKGROUND_COLOR;
+}
 
-        exec(killCommand, (error, stdout, stderr) => {
-            if (error) {
-                const notFound =
-                    (platform === 'win32' && stderr && stderr.includes('not found')) ||
-                    (platform !== 'win32' && error.code === 1);
-                if (notFound) {
-                    console.log('No aily-blockly process found to terminate.');
-                    return;
-                }
-                console.error(`Error killing aily-blockly process: ${error.message}`);
-                return;
-            }
-            if (stdout) {
-                console.log(`aily-blockly process terminated: ${stdout}`);
-            }
-        });
-    } catch (commandError) {
-        console.warn('Error attempting to kill aily-blockly process:', commandError.message);
+function applySubWindowMinimumSize(win) {
+    if (!win || win.isDestroyed()) {
+        return;
+    }
+    try {
+        win.setMinimumSize(SUB_WINDOW_MIN_WIDTH, SUB_WINDOW_MIN_HEIGHT);
+    } catch (e) {
+        console.warn('[SubWindowPool] 子窗口最小尺寸设置失�?', e.message);
     }
 }
 
+/** 首次 before-quit 即置位；池窗�?closed �?Electron �?app.isQuitting 在实测中仍为 false */
+let applicationIsQuitting = false;
+app.once('before-quit', () => {
+    applicationIsQuitting = true;
+});
+
+function isDevServeSubWindow() {
+    return process.env.DEV === 'true' || process.env.DEV === true;
+}
+
+/**
+ * 与正式子窗口一致的 webPreferences，用于预热池与即用窗口�?
+ */
+function getSubWindowWebPreferences() {
+    return {
+        nodeIntegration: true,
+        webSecurity: false,
+        preload: path.join(__dirname, 'preload.js'),
+        backgroundThrottling: false,
+    };
+}
+
+function sanitizeChildToolId(toolId) {
+    return String(toolId || '').trim();
+}
+
+function cloneChildToolSession(session) {
+    return session
+        ? {
+            hostInfo: session.hostInfo,
+            streamId: session.streamId,
+            refCount: session.refCount,
+        }
+        : null;
+}
+
+function cancelChildToolRelease(session) {
+    if (!session || !session.releaseTimer) {
+        return;
+    }
+    clearTimeout(session.releaseTimer);
+    session.releaseTimer = null;
+}
+
+function scheduleChildToolRelease(toolId, session) {
+    if (!session || session.releaseTimer) {
+        return;
+    }
+
+    session.releaseTimer = setTimeout(() => {
+        session.releaseTimer = null;
+        if (session.refCount > 0) {
+            return;
+        }
+        if (session.streamId) {
+            killCmdProcess(session.streamId);
+        }
+        childToolSessions.delete(toolId);
+    }, CHILD_TOOL_RELEASE_GRACE_MS);
+}
+
+function releaseChildToolSession(toolId) {
+    const normalizedToolId = sanitizeChildToolId(toolId);
+    const session = childToolSessions.get(normalizedToolId);
+    if (!session) {
+        return { success: false, reason: 'not-found' };
+    }
+
+    session.refCount = Math.max(0, session.refCount - 1);
+    if (session.refCount === 0) {
+        scheduleChildToolRelease(normalizedToolId, session);
+    }
+
+    return { success: true, session: cloneChildToolSession(session) };
+}
+
+function restartChildToolSession(toolId) {
+    const normalizedToolId = sanitizeChildToolId(toolId);
+    const session = childToolSessions.get(normalizedToolId);
+    if (!session) {
+        return { success: false, reason: 'not-found' };
+    }
+
+    cancelChildToolRelease(session);
+    if (session.streamId) {
+        killCmdProcess(session.streamId);
+    }
+    childToolSessions.delete(normalizedToolId);
+    return { success: true };
+}
+
+function isChildToolSessionAlive(session) {
+    if (!session?.streamId) {
+        return false;
+    }
+    return getActiveCmdProcesses().some(processInfo => processInfo.streamId === session.streamId);
+}
+
+/** @type {import('electron').BrowserWindow[]} */
+let subWindowPool = [];
+/** @type {boolean} */
+let subWindowReplenishScheduled = false;
+/** @type {import('electron').BrowserWindow | null} */
+let chatRuntimeOwnerWindow = null;
+/** @type {NodeJS.Timeout | null} */
+let chatRuntimeOwnerRestartTimer = null;
+
+function scheduleReplenishSubWindowPool(loadBasePage) {
+    if (applicationIsQuitting) {
+        return;
+    }
+    if (subWindowReplenishScheduled) {
+        return;
+    }
+    subWindowReplenishScheduled = true;
+    setImmediate(() => {
+        subWindowReplenishScheduled = false;
+        if (applicationIsQuitting) {
+            return;
+        }
+        replenishSubWindowPool(loadBasePage);
+    });
+}
+
+/**
+ * 创建不可见（opacity 0）、不出现在任务栏的预缓冲子窗口并完成首屏加载�?
+ * Windows 上不可设 transparent: true，否则会禁用 thickFrame 带来的边缘吸附与标题栏双击最大化�?
+ */
+function pushPooledSubWindow(loadBasePage) {
+    if (applicationIsQuitting) {
+        return;
+    }
+    try {
+        const win = new BrowserWindow({
+            frame: false,
+            show: false,
+            opacity: 0,
+            backgroundColor: getSubWindowBackgroundColor(),
+            skipTaskbar: true,
+            autoHideMenuBar: true,
+            thickFrame: true,
+            titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+            alwaysOnTop: false,
+            width: 800,
+            height: 600,
+            minWidth: SUB_WINDOW_MIN_WIDTH,
+            minHeight: SUB_WINDOW_MIN_HEIGHT,
+            webPreferences: getSubWindowWebPreferences(),
+        });
+
+        const onClosedWhilePooled = () => {
+            const idx = subWindowPool.indexOf(win);
+            if (idx !== -1) {
+                subWindowPool.splice(idx, 1);
+            }
+            delete win.__subWindowPoolClosedHandler;
+            if (!applicationIsQuitting) {
+                scheduleReplenishSubWindowPool(loadBasePage);
+            }
+        };
+        win.__subWindowPoolClosedHandler = onClosedWhilePooled;
+        win.once('closed', onClosedWhilePooled);
+        subWindowPool.push(win);
+        loadBasePage(win.webContents);
+    } catch (e) {
+        console.warn('[SubWindowPool] 预缓冲子窗口创建失败:', e.message);
+    }
+}
+
+function replenishSubWindowPool(loadBasePage) {
+    if (applicationIsQuitting) {
+        return;
+    }
+    while (subWindowPool.length < SUB_WINDOW_POOL_SIZE) {
+        const prevLen = subWindowPool.length;
+        pushPooledSubWindow(loadBasePage);
+        if (subWindowPool.length === prevLen) {
+            break;
+        }
+    }
+}
+
+/**
+ * 从池中取出窗口后移除池的 closed 监听并触发补位�?
+ * @param {import('electron').BrowserWindow} win
+ * @param {(wc: import('electron').WebContents) => void} loadBasePage
+ */
+function loadChatRuntimeOwnerWindow(win) {
+    if (!win || win.isDestroyed()) {
+        return;
+    }
+    if (isDevServeSubWindow()) {
+        win.loadURL('http://localhost:4200/#/aily-chat-runtime-owner');
+    } else {
+        win.loadFile('renderer/index.html', { hash: '#/aily-chat-runtime-owner' });
+    }
+}
+
+function scheduleChatRuntimeOwnerWindowRestart(mainWindow) {
+    if (applicationIsQuitting || chatRuntimeOwnerRestartTimer) {
+        return;
+    }
+    chatRuntimeOwnerRestartTimer = setTimeout(() => {
+        chatRuntimeOwnerRestartTimer = null;
+        startChatRuntimeOwnerWindow(mainWindow);
+    }, 500);
+}
+
+function startChatRuntimeOwnerWindow(mainWindow) {
+    if (applicationIsQuitting) {
+        return;
+    }
+    if (chatRuntimeOwnerWindow && !chatRuntimeOwnerWindow.isDestroyed()) {
+        return;
+    }
+    try {
+        const runtimeOwnerWindow = new BrowserWindow({
+            frame: false,
+            show: false,
+            opacity: 0,
+            backgroundColor: getSubWindowBackgroundColor(),
+            skipTaskbar: true,
+            autoHideMenuBar: true,
+            width: 800,
+            height: 600,
+            webPreferences: getSubWindowWebPreferences(),
+        });
+        chatRuntimeOwnerWindow = runtimeOwnerWindow;
+        setChatRuntimeOwnerWindow(runtimeOwnerWindow);
+        runtimeOwnerWindow.once('closed', () => {
+            if (chatRuntimeOwnerWindow === runtimeOwnerWindow) {
+                chatRuntimeOwnerWindow = null;
+                setChatRuntimeOwnerWindow(null);
+                scheduleChatRuntimeOwnerWindowRestart(mainWindow);
+            }
+        });
+        runtimeOwnerWindow.webContents.once('render-process-gone', (_event, details = {}) => {
+            console.warn('[AilyChat][RuntimeOwnerWindow] render process gone:', details.reason || 'unknown');
+            if (!runtimeOwnerWindow.isDestroyed()) {
+                runtimeOwnerWindow.close();
+            }
+        });
+        loadChatRuntimeOwnerWindow(runtimeOwnerWindow);
+    } catch (error) {
+        console.error('[AilyChat][RuntimeOwnerWindow] Failed to start runtime owner window:', error.message);
+        scheduleChatRuntimeOwnerWindowRestart(mainWindow);
+    }
+}
+
+function removePoolHandlersFromWin(win, loadBasePage) {
+    const h = win.__subWindowPoolClosedHandler;
+    if (typeof h === 'function') {
+        win.removeListener('closed', h);
+        delete win.__subWindowPoolClosedHandler;
+    }
+    scheduleReplenishSubWindowPool(loadBasePage);
+}
+
+/**
+ * 将子窗口居中到「主窗口当前所在显示器」的工作区内（多屏跟随主窗口）�?
+ * @param {import('electron').BrowserWindow} subWindow
+ * @param {import('electron').BrowserWindow | null} mainWin
+ * @param {number} width
+ * @param {number} height
+ */
+function centerSubWindowOnMainDisplay(subWindow, mainWin, width, height) {
+    try {
+        if (!subWindow || subWindow.isDestroyed()) {
+            return;
+        }
+        const wa =
+            mainWin && !mainWin.isDestroyed()
+                ? screen.getDisplayMatching(mainWin.getBounds()).workArea
+                : screen.getPrimaryDisplay().workArea;
+        const w = Math.min(Math.max(SUB_WINDOW_MIN_WIDTH, width), wa.width);
+        const h = Math.min(Math.max(SUB_WINDOW_MIN_HEIGHT, height), wa.height);
+        const x = Math.round(wa.x + Math.max(0, (wa.width - w) / 2));
+        const y = Math.round(wa.y + Math.max(0, (wa.height - h) / 2));
+        subWindow.setBounds({ x, y, width: w, height: h });
+    } catch (e) {
+        console.warn('[SubWindowPool] 子窗口居中定位失�?', e.message);
+    }
+}
+
+function clampNumber(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
+function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeight) {
+    if (!senderWindow || senderWindow.isDestroyed()) {
+        return { success: false, error: 'window-not-found' };
+    }
+
+    const width = Math.round(Number(requestedWidth));
+    const height = Math.round(Number(requestedHeight));
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return { success: false, error: 'invalid-size' };
+    }
+
+    const display = screen.getDisplayMatching(senderWindow.getBounds());
+    const workArea = display.workArea;
+    const [minWidth, minHeight] = senderWindow.getMinimumSize();
+    const nextWidth = clampNumber(width, minWidth || 1, workArea.width);
+    const nextHeight = clampNumber(height, minHeight || 1, workArea.height);
+    const currentBounds = senderWindow.getBounds();
+    const centerX = currentBounds.x + currentBounds.width / 2;
+    const centerY = currentBounds.y + currentBounds.height / 2;
+    const nextX = clampNumber(
+        Math.round(centerX - nextWidth / 2),
+        workArea.x,
+        workArea.x + workArea.width - nextWidth
+    );
+    const nextY = clampNumber(
+        Math.round(centerY - nextHeight / 2),
+        workArea.y,
+        workArea.y + workArea.height - nextHeight
+    );
+
+    if (senderWindow.isFullScreen()) {
+        senderWindow.setFullScreen(false);
+    }
+    if (senderWindow.isMaximized()) {
+        senderWindow.unmaximize();
+    }
+
+    senderWindow.setBounds({
+        x: nextX,
+        y: nextY,
+        width: nextWidth,
+        height: nextHeight,
+    });
+
+    return {
+        success: true,
+        requested: { width, height },
+        bounds: senderWindow.getBounds(),
+    };
+}
+
+function terminateAilyProcess() {
+    console.info('[PROC_TRACE][APP_NAME_KILL_DISABLED]');
+}
+
 function registerWindowHandlers(mainWindow) {
-    // 添加一个映射来存储已打开的窗口
+    registerChatRuntimeHostIpc(mainWindow);
+    startChatRuntimeOwnerWindow(mainWindow);
+
+    // 添加一个映射来存储已打开的窗�?
     const openWindows = new Map();
+    let codeViewerState = {
+        code: '',
+        selectedBlockId: null,
+        blockCodeMap: [],
+        updatedAt: 0,
+    };
+
+    const sendCodeViewerState = (targetWindow) => {
+        try {
+            if (targetWindow && !targetWindow.isDestroyed() && targetWindow.webContents && !targetWindow.webContents.isDestroyed()) {
+                targetWindow.webContents.send(CODE_VIEWER_STATE_CHANNEL, codeViewerState);
+            }
+        } catch (error) {
+            console.error('[IPC] send blockly code-viewer state failed:', error.message);
+        }
+    };
+
+    const broadcastCodeViewerState = () => {
+        sendCodeViewerState(mainWindow);
+        openWindows.forEach((subWindow) => sendCodeViewerState(subWindow));
+    };
+
+    const normalizeSubWindowUrl = (windowUrl) => {
+        if (typeof windowUrl !== 'string') {
+            return '';
+        }
+        const trimmedUrl = windowUrl.trim();
+        if (!trimmedUrl) {
+            return '';
+        }
+        const hashRouteIndex = trimmedUrl.indexOf('#/');
+        const routeUrl = hashRouteIndex >= 0 ? trimmedUrl.slice(hashRouteIndex + 2) : trimmedUrl;
+        return `/${routeUrl.replace(/^\/+/, '')}`;
+    };
+
+    const notifySubWindowState = (windowUrl, isOpen) => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+                mainWindow.webContents.send('sub-window-state-changed', {
+                    path: normalizeSubWindowUrl(windowUrl),
+                    open: !!isOpen,
+                });
+            }
+        } catch (error) {
+            console.error('Error sending sub-window-state-changed:', error.message);
+        }
+    };
+
+    const focusSubWindow = (targetWindow) => {
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            return false;
+        }
+        if (targetWindow.isMinimized()) {
+            targetWindow.restore();
+        }
+        if (!targetWindow.isVisible()) {
+            targetWindow.setOpacity(1);
+            targetWindow.show();
+        }
+        if (typeof targetWindow.moveTop === 'function') {
+            targetWindow.moveTop();
+        }
+        targetWindow.focus();
+        return true;
+    };
+
+    const focusSubWindowByUrl = (windowUrl) => {
+        const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
+        if (!normalizedWindowUrl) {
+            return false;
+        }
+        const existingWindow = openWindows.get(normalizedWindowUrl);
+        if (existingWindow && !existingWindow.isDestroyed()) {
+            notifySubWindowState(normalizedWindowUrl, true);
+            return focusSubWindow(existingWindow);
+        }
+        openWindows.delete(normalizedWindowUrl);
+        return false;
+    };
+
+    const loadSubWindowBasePage = (webContents) => {
+        /** 池中仅占位，不加�?SPA 根页，避免出�?index / 首页再切目标页的闪屏；正式打开时再 load 路由 */
+        webContents.loadURL('about:blank');
+    };
+
+    /**
+     * @param {import('electron').BrowserWindow} subWindow
+     * @param {string} windowUrl
+     */
+    const attachSubWindowLifecycleListeners = (subWindow, windowUrl) => {
+        subWindow.on('enter-full-screen', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-full-screen-changed', true);
+                }
+            } catch (error) {
+                console.error('Error sending sub-window-full-screen-changed:', error.message);
+            }
+        });
+
+        subWindow.on('leave-full-screen', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-full-screen-changed', false);
+                }
+            } catch (error) {
+                console.error('Error sending sub-window-full-screen-changed:', error.message);
+            }
+        });
+
+        subWindow.on('maximize', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-maximize-changed', true);
+                }
+            } catch (error) {
+                console.error('Error sending window-maximize-changed:', error.message);
+            }
+        });
+
+        subWindow.on('unmaximize', () => {
+            try {
+                if (subWindow && subWindow.webContents) {
+                    subWindow.webContents.send('window-maximize-changed', false);
+                }
+            } catch (error) {
+                console.error('Error sending window-maximize-changed:', error.message);
+            }
+        });
+
+        subWindow.on('closed', () => {
+            openWindows.delete(windowUrl);
+            notifySubWindowState(windowUrl, false);
+        });
+    };
 
     mainWindow.on('focus', () => {
         try {
+            // 仅清除本功能设置�?Dock 角标，避免覆盖其它模块可能的徽章
+            if (process.platform === 'darwin' && app.dock && typeof app.dock.getBadge === 'function') {
+                try {
+                    if (app.dock.getBadge() === '!') {
+                        app.dock.setBadge('');
+                    }
+                } catch (_e) { /* dock API 不可用时忽略 */ }
+            }
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-focus');
             }
@@ -79,7 +566,7 @@ function registerWindowHandlers(mainWindow) {
     });
 
     mainWindow.on('blur', () => {
-        // 检查窗口是否已销毁以及 webContents 是否有效
+        // 检查窗口是否已销毁以�?webContents 是否有效
         try {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send('window-blur');
@@ -110,7 +597,7 @@ function registerWindowHandlers(mainWindow) {
         }
     });
 
-    // 为主窗口注册最大化/还原状态监听
+    // 为主窗口注册最大化/还原状态监�?
     mainWindow.on('maximize', () => {
         try {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
@@ -133,15 +620,20 @@ function registerWindowHandlers(mainWindow) {
 
 
     ipcMain.on("window-open", (event, data) => {
-        const windowUrl = data.path;
+        const windowUrl = normalizeSubWindowUrl(data.path);
+        const width = data.width ? data.width : 800;
+        const height = data.height ? data.height : 600;
+        const alwaysOnTop = data.alwaysOnTop ? data.alwaysOnTop : false;
+        const needInitPayload = !!(data.data || data.url || data.title);
 
-        // 检查是否已存在该URL的窗口
+        // 检查是否已存在该URL的窗�?
         if (openWindows.has(windowUrl)) {
             const existingWindow = openWindows.get(windowUrl);
             // 确保窗口仍然有效
             if (existingWindow && !existingWindow.isDestroyed()) {
-                // 激活已存在的窗口
-                existingWindow.focus();
+                // 激活已存在的窗�?
+                notifySubWindowState(windowUrl, true);
+                focusSubWindow(existingWindow);
                 return;
             } else {
                 // 如果窗口已被销毁，从映射中移除
@@ -149,90 +641,171 @@ function registerWindowHandlers(mainWindow) {
             }
         }
 
-        // 创建新窗口
-        const subWindow = new BrowserWindow({
-            frame: false,
-            autoHideMenuBar: true,
-            thickFrame: true,
-            titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-            alwaysOnTop: data.alwaysOnTop ? data.alwaysOnTop : false,
-            width: data.width ? data.width : 800,
-            height: data.height ? data.height : 600,
-            webPreferences: {
-                nodeIntegration: true,
-                webSecurity: false,
-                preload: path.join(__dirname, "preload.js"),
-            },
-        });
+        let subWindow = null;
+        while (subWindowPool.length > 0) {
+            const candidate = subWindowPool.shift();
+            if (!candidate || candidate.isDestroyed()) {
+                continue;
+            }
+            removePoolHandlersFromWin(candidate, loadSubWindowBasePage);
+            subWindow = candidate;
+            subWindow.setBackgroundColor(getSubWindowBackgroundColor());
+            break;
+        }
 
-        // 将新窗口添加到映射
+        if (!subWindow) {
+            subWindow = new BrowserWindow({
+                frame: false,
+                show: false,
+                opacity: 0,
+                backgroundColor: getSubWindowBackgroundColor(),
+                autoHideMenuBar: true,
+                thickFrame: true,
+                titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+                alwaysOnTop,
+                width,
+                height,
+                minWidth: SUB_WINDOW_MIN_WIDTH,
+                minHeight: SUB_WINDOW_MIN_HEIGHT,
+                webPreferences: getSubWindowWebPreferences(),
+            });
+        } else {
+            try {
+                subWindow.setAlwaysOnTop(!!alwaysOnTop);
+            } catch (e) {
+                console.warn('[SubWindowPool] 子窗口置顶设置失�?', e.message);
+            }
+        }
+
+        applySubWindowMinimumSize(subWindow);
+        centerSubWindowOnMainDisplay(subWindow, mainWindow, width, height);
+
         openWindows.set(windowUrl, subWindow);
+        notifySubWindowState(windowUrl, true);
+        attachSubWindowLifecycleListeners(subWindow, windowUrl);
 
-        // 为子窗口注册全屏状态监听
-        subWindow.on('enter-full-screen', () => {
-            try {
-                if (subWindow && subWindow.webContents) {
-                    subWindow.webContents.send('window-full-screen-changed', true);
-                }
-            } catch (error) {
-                console.error('Error sending sub-window-full-screen-changed:', error.message);
-            }
-        });
-
-        subWindow.on('leave-full-screen', () => {
-            try {
-                if (subWindow && subWindow.webContents) {
-                    subWindow.webContents.send('window-full-screen-changed', false);
-                }
-            } catch (error) {
-                console.error('Error sending sub-window-full-screen-changed:', error.message);
-            }
-        });
-
-        // 为子窗口注册最大化/还原状态监听
-        subWindow.on('maximize', () => {
-            try {
-                if (subWindow && subWindow.webContents) {
-                    subWindow.webContents.send('window-maximize-changed', true);
-                }
-            } catch (error) {
-                console.error('Error sending window-maximize-changed:', error.message);
-            }
-        });
-
-        subWindow.on('unmaximize', () => {
-            try {
-                if (subWindow && subWindow.webContents) {
-                    subWindow.webContents.send('window-maximize-changed', false);
-                }
-            } catch (error) {
-                console.error('Error sending window-maximize-changed:', error.message);
-            }
-        });
-
-        // 当窗口关闭时，从映射中移除
-        subWindow.on('closed', () => {
-            openWindows.delete(windowUrl);
-        });
-
-        // 页面加载完成后，将 data/url/title 发送给子窗口
-        if (data.data || data.url || data.title) {
-            subWindow.webContents.on('did-finish-load', () => {
+        const sendInitToSubWindow = () => {
+            if (needInitPayload) {
                 subWindow.webContents.send('window-init-data', {
                     url: data.url,
                     title: data.title,
                     data: data.data,
                 });
-            });
+            }
+        };
+
+        const revealPooledSubWindow = () => {
+            try {
+                if (subWindow.isDestroyed()) {
+                    return;
+                }
+                subWindow.setOpacity(1);
+                subWindow.setSkipTaskbar(false);
+                subWindow.show();
+                subWindow.focus();
+            } catch (e) {
+                console.warn('[SubWindowPool] 显示子窗口失�?', e.message);
+            }
+        };
+
+        let subWindowRevealFinalized = false;
+        let revealFallbackTimer = null;
+        const finalizeSubWindowReveal = () => {
+            if (subWindowRevealFinalized || subWindow.isDestroyed()) {
+                return;
+            }
+            subWindowRevealFinalized = true;
+            if (revealFallbackTimer) {
+                clearTimeout(revealFallbackTimer);
+                revealFallbackTimer = null;
+            }
+            sendInitToSubWindow();
+            revealPooledSubWindow();
+        };
+        const revealAfterRendererPaint = () => {
+            if (subWindowRevealFinalized || subWindow.isDestroyed()) {
+                return;
+            }
+            subWindow.webContents.executeJavaScript(
+                'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+                true
+            ).then(finalizeSubWindowReveal).catch(finalizeSubWindowReveal);
+        };
+
+        subWindow.once('ready-to-show', revealAfterRendererPaint);
+        subWindow.webContents.once('did-finish-load', revealAfterRendererPaint);
+        subWindow.webContents.once('did-navigate-in-page', revealAfterRendererPaint);
+        revealFallbackTimer = setTimeout(revealAfterRendererPaint, 3000);
+
+        if (isDevServeSubWindow()) {
+            subWindow.loadURL(`http://localhost:4200/#/${data.path}`);
+        } else {
+            subWindow.loadFile('renderer/index.html', { hash: `#/${data.path}` });
+        }
+    });
+
+    ipcMain.handle("window-focus-by-url", (_event, windowUrl) => {
+        return focusSubWindowByUrl(windowUrl);
+    });
+
+    ipcMain.handle("child-tool-session-acquire", (_event, toolId) => {
+        const normalizedToolId = sanitizeChildToolId(toolId);
+        const session = childToolSessions.get(normalizedToolId);
+        if (!session?.hostInfo) {
+            return null;
         }
 
-        if (process.env.DEV === 'true' || process.env.DEV === true) {
-            subWindow.loadURL(`http://localhost:4200/#/${data.path}`);
-            // subWindow.webContents.openDevTools();
-        } else {
-            subWindow.loadFile(`renderer/index.html`, { hash: `#/${data.path}` });
-            // subWindow.webContents.openDevTools();
+        if (!isChildToolSessionAlive(session)) {
+            cancelChildToolRelease(session);
+            childToolSessions.delete(normalizedToolId);
+            return null;
         }
+
+        cancelChildToolRelease(session);
+        session.refCount += 1;
+        return cloneChildToolSession(session);
+    });
+
+    ipcMain.handle("child-tool-session-register", (_event, payload = {}) => {
+        const toolId = sanitizeChildToolId(payload.toolId);
+        if (!toolId || !payload.hostInfo || !payload.streamId) {
+            return { success: false, reason: 'invalid-payload' };
+        }
+
+        const existing = childToolSessions.get(toolId);
+        if (existing && existing.streamId && existing.streamId !== payload.streamId) {
+            cancelChildToolRelease(existing);
+            killCmdProcess(existing.streamId);
+        }
+
+        childToolSessions.set(toolId, {
+            hostInfo: payload.hostInfo,
+            streamId: payload.streamId,
+            refCount: 1,
+            releaseTimer: null,
+        });
+
+        return { success: true, session: cloneChildToolSession(childToolSessions.get(toolId)) };
+    });
+
+    ipcMain.handle("child-tool-session-release", (_event, toolId) => {
+        return releaseChildToolSession(toolId);
+    });
+
+    ipcMain.handle("child-tool-session-restart", (_event, toolId) => {
+        return restartChildToolSession(toolId);
+    });
+
+    ipcMain.handle("child-tool-session-unregister", (_event, payload = {}) => {
+        const toolId = sanitizeChildToolId(payload.toolId);
+        const session = childToolSessions.get(toolId);
+        if (!session || (payload.streamId && session.streamId !== payload.streamId)) {
+            return { success: false, reason: 'not-found' };
+        }
+
+        cancelChildToolRelease(session);
+        childToolSessions.delete(toolId);
+        return { success: true };
     });
 
     ipcMain.on("window-minimize", (event) => {
@@ -249,9 +822,14 @@ function registerWindowHandlers(mainWindow) {
         }
     });
 
+    ipcMain.handle("window-set-size", (event, data = {}) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        return setCurrentWindowSize(senderWindow, data.width, data.height);
+    });
+
     ipcMain.on("window-close", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        // 检查是否是主窗口，如果是主窗口，关闭整个应用程序
+        // 检查是否是主窗口，如果是主窗口，关闭整个应用程�?
         if (senderWindow === mainWindow) {
             app.quit();
             // Attempt to terminate any residual helper processes on exit.
@@ -261,14 +839,14 @@ function registerWindowHandlers(mainWindow) {
         }
     });
 
-    // Mac 平台下处理系统关闭按钮的关闭检查
+    // Mac 平台下处理系统关闭按钮的关闭检�?
     if (process.platform === 'darwin') {
         mainWindow.on('close', (event) => {
             event.preventDefault();
             mainWindow.webContents.send('window-close-request');
         });
 
-        // 监听渲染进程返回的关闭确认结果
+        // 监听渲染进程返回的关闭确认结�?
         ipcMain.on('window-close-confirmed', (event) => {
             const senderWindow = BrowserWindow.fromWebContents(event.sender);
             if (senderWindow === mainWindow) {
@@ -280,7 +858,7 @@ function registerWindowHandlers(mainWindow) {
         });
     }
 
-    // 修改为同步处理程序
+    // 修改为同步处理程�?
     ipcMain.on("window-is-maximized", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         const isMaximized = senderWindow ? senderWindow.isMaximized() : false;
@@ -301,11 +879,20 @@ function registerWindowHandlers(mainWindow) {
         return senderWindow.isFullScreen();
     });
 
-    // 检查窗口是否获得焦点（同步）
+    // 检查窗口是否获得焦点（同步�?
     ipcMain.on("window-is-focused", (event) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         const isFocused = senderWindow ? senderWindow.isFocused() : false;
         event.returnValue = isFocused;
+    });
+
+    /**
+     * 在应用处于后台时请求用户注意：任务栏闪烁（Windows）、Dock 弹跳与角标（macOS）�?
+     * 与系统通知配合，解决「通知一闪而过不易察觉」的问题�?
+     */
+    ipcMain.handle('window-request-attention', (event) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        return requestWindowAttention(senderWindow);
     });
 
     // 检查窗口是否最小化（同步）
@@ -317,8 +904,28 @@ function registerWindowHandlers(mainWindow) {
 
     ipcMain.on("window-go-main", (event, data) => {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        mainWindow.webContents.send("window-go-main", data.replace('/', ''));
+        mainWindow.webContents.send("window-go-main", normalizeSubWindowUrl(data));
         senderWindow.close();
+    });
+
+    ipcMain.handle("window-return-main", (event, data) => {
+        const senderWindow = BrowserWindow.fromWebContents(event.sender);
+        const normalizedPath = normalizeSubWindowUrl(data);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("window-go-main", normalizedPath);
+            if (mainWindow.isMinimized()) {
+                mainWindow.restore();
+            }
+            mainWindow.show();
+            if (typeof mainWindow.moveTop === 'function') {
+                mainWindow.moveTop();
+            }
+            mainWindow.focus();
+        }
+        if (senderWindow && senderWindow !== mainWindow && !senderWindow.isDestroyed()) {
+            senderWindow.hide();
+        }
+        return { success: true };
     });
 
     ipcMain.on("window-alwaysOnTop", (event, alwaysOnTop) => {
@@ -342,7 +949,7 @@ function registerWindowHandlers(mainWindow) {
                         resolve(response.data || "success");
                     }
                 };
-                // 注册监听器
+                // 注册监听�?
                 ipcMain.on('main-window-response', responseListener);
                 // 发送消息到main窗口，带上messageId
                 mainWindow.webContents.send("window-receive", {
@@ -350,7 +957,7 @@ function registerWindowHandlers(mainWindow) {
                     data: data.data,
                     messageId: messageId
                 });
-                // 自定义超时或默认9秒超时
+                // 自定义超时或默认9秒超�?
                 setTimeout(() => {
                     ipcMain.removeListener('main-window-response', responseListener);
                     resolve("timeout");
@@ -360,14 +967,25 @@ function registerWindowHandlers(mainWindow) {
         return true;
     });
 
-    // 用于sub窗口改变main窗口状态显示
+    ipcMain.on(CODE_VIEWER_STATE_UPDATE_CHANNEL, (_event, data = {}) => {
+        codeViewerState = {
+            ...codeViewerState,
+            ...data,
+            updatedAt: Date.now(),
+        };
+        broadcastCodeViewerState();
+    });
+
+    ipcMain.handle(CODE_VIEWER_STATE_GET_CHANNEL, () => codeViewerState);
+
+    // 用于sub窗口改变main窗口状态显�?
     ipcMain.on('state-update', (event, data) => {
         console.log('state-update: ', data);
         mainWindow.webContents.send('state-update', data);
     });
 
     // =====================================================
-    // iframe 模块 IPC 通讯（规范：iframe-message-{模块名}，参数 {type, data}）
+    // iframe 模块 IPC 通讯（规范：iframe-message-{模块名}，参�?{type, data}�?
     // =====================================================
 
     const IFRAME_CHANNEL_CONNECTION_GRAPH = 'iframe-message-connection-graph';
@@ -376,7 +994,7 @@ function registerWindowHandlers(mainWindow) {
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         const isFromMain = senderWindow && senderWindow.id === mainWindow.id;
         if (isFromMain) {
-            // 主窗口 → 子窗口：广播给所有子窗口，由各模块按 type 自行处理（含 get-graph-data）
+            // 主窗�?�?子窗口：广播给所有子窗口，由各模块按 type 自行处理（含 get-graph-data�?
             openWindows.forEach((subWindow) => {
                 try {
                     if (subWindow && !subWindow.isDestroyed() && subWindow.webContents && !subWindow.webContents.isDestroyed()) {
@@ -386,18 +1004,20 @@ function registerWindowHandlers(mainWindow) {
                     console.error('[IPC] 转发 iframe-message-connection-graph 失败:', error.message);
                 }
             });
-            // 嵌入模式：主窗口内的 connection-graph（如 blockly-editor 的 graph-editor tab）也会发送 get-graph-data，
-            // 主窗口的 ConnectionGraphService 需要收到请求并响应，故主窗口发出的消息也需回传主窗口
+            // 嵌入模式：主窗口内的 connection-graph（如 blockly-editor �?graph-editor tab）也会发�?get-graph-data�?
+            // 主窗口的 ConnectionGraphService 需要收到请求并响应，故主窗口发出的消息也需回传主窗�?
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
             }
         } else {
-            // 子窗口 → 主窗口：转发给主窗口（含 get-graph-data）
+            // 子窗�?�?主窗口：转发给主窗口（含 get-graph-data�?
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
                 mainWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
             }
         }
     });
+
+    scheduleReplenishSubWindowPool(loadSubWindowBasePage);
 }
 
 

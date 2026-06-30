@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "最初の {{count}} 個のアプリがツールバーに表示されます",
+        "RESET": "リセット",
+        "IN_HEADER": "ツールバー",
+        "TOOLBAR_APPS": "ツールバーアプリ",
+        "ALL_APPS": "すべてのアプリ",
+        "DRAG_HERE": "ここにドラッグ",
+        "CODE_DESC": "生成されたコードを表示",
+        "LIB_MANAGER_DESC": "プロジェクトライブラリの依存関係を管理",
+        "SERIAL_DESC": "シリアルモニターツール",
+        "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
+        "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
+        "FFS_MANAGER_DESC": "ESP32ファイルシステムパーティション管理ツール",
+        "AI_DESC": "AIアシスタント",
+        "MODEL_STORE_DESC": "AIモデルストア",
+        "CLOUD_SPACE_DESC": "クラウドストレージ",
+        "USER_CENTER_DESC": "ユーザーセンターと設定",
+        "SIMULATOR_DESC": "シミュレータ（開発中）",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN, RS485 and Modbus frame builder/debugger",
+        "BLE_DEBUGGER_DESC": "BLE scan, GATT read/write and notification debugger"
+    }
+}

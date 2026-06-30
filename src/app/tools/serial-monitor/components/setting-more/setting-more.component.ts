@@ -1,17 +1,18 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { TranslateModule } from '@ngx-translate/core';
 import { DATA_BITS_LIST, STOP_BITS_LIST, PARITY_LIST, FLOW_CONTROL_LIST } from '../../config';
 import { MenuComponent } from '../../../../components/menu/menu.component';
 
 
 @Component({
   selector: 'app-setting-more',
-  imports: [CommonModule, FormsModule, MenuComponent],
+  imports: [CommonModule, FormsModule, TranslateModule, MenuComponent],
   templateUrl: './setting-more.component.html',
   styleUrl: './setting-more.component.scss'
 })
-export class SettingMoreComponent {
+export class SettingMoreComponent implements OnChanges {
   dataBitsList = DATA_BITS_LIST;
   stopBitsList = STOP_BITS_LIST;
   parityList = PARITY_LIST;
@@ -45,19 +46,34 @@ export class SettingMoreComponent {
   @Input() initialFlowControl: string = 'none';
 
   ngOnInit(): void {
-    // 根据传入的初始值查找对应的选项，如果找不到则使用默认值
-    // dataBits 和 stopBits 的 value 是 number 类型，需要转换比较
-    this.selectedDataBits = this.dataBitsList.find(item => item.value === Number(this.initialDataBits)) 
-      || this.dataBitsList.find(item => item.isDefault) 
+    this.syncSelections();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (
+      changes['initialDataBits'] ||
+      changes['initialStopBits'] ||
+      changes['initialParity'] ||
+      changes['initialFlowControl']
+    ) {
+      this.syncSelections();
+    }
+  }
+
+  private syncSelections(): void {
+    const dataBits = Number(this.initialDataBits);
+    const stopBits = Number(this.initialStopBits);
+    this.selectedDataBits = this.dataBitsList.find(item => item.value === dataBits)
+      || this.dataBitsList.find(item => item.isDefault)
       || this.dataBitsList[0];
-    this.selectedStopBits = this.stopBitsList.find(item => item.value === Number(this.initialStopBits)) 
-      || this.stopBitsList.find(item => item.isDefault) 
+    this.selectedStopBits = this.stopBitsList.find(item => item.value === stopBits)
+      || this.stopBitsList.find(item => item.isDefault)
       || this.stopBitsList[0];
-    this.selectedParity = this.parityList.find(item => item.value === this.initialParity) 
-      || this.parityList.find(item => item.isDefault) 
+    this.selectedParity = this.parityList.find(item => item.value === this.initialParity)
+      || this.parityList.find(item => item.isDefault)
       || this.parityList[0];
-    this.selectedFlowControl = this.flowControlList.find(item => item.value === this.initialFlowControl) 
-      || this.flowControlList.find(item => item.isDefault) 
+    this.selectedFlowControl = this.flowControlList.find(item => item.value === this.initialFlowControl)
+      || this.flowControlList.find(item => item.isDefault)
       || this.flowControlList[0];
   }
 

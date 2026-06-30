@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "클릭하여 클립보드에 복사, 더블클릭하여 AI 어시스턴트로 전송",
+        "COPIED_TO_CLIPBOARD": "로그 내용이 클립보드에 복사되었습니다",
+        "SENT_TO_AI": "로그 내용이 AI 어시스턴트로 전송되었습니다",
+        "NO_DATA_TO_EXPORT": "내보낼 로그 데이터가 없습니다",
+        "EXPORT_TITLE": "로그 데이터 내보내기",
+        "TEXT_FILE": "텍스트 파일",
+        "ALL_FILES": "모든 파일",
+        "EXPORT_SUCCESS": "로그 데이터가 성공적으로 내보내졌습니다: ",
+        "SHOW_ERRORS_ONLY": "오류만 표시",
+        "SEARCH_PLACEHOLDER": "로그 검색"
+    }
+}

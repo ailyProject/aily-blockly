@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "모델 스토어",
+        "DESCRIPTION": "모델 소개",
+        "MODEL_INFO": "모델 정보",
+        "SUPPORTED_BOARDS": "지원 장치",
+        "MODEL_TYPE": "모델 유형",
+        "MODEL_FORMAT": "모델 형식",
+        "MODEL_PRECISION": "모델 정밀도",
+        "MODEL_SIZE": "모델 크기",
+        "VERSION": "버전",
+        "MODEL_DETAILS": "모델 세부 정보",
+        "MODEL_LABELS": "모델 분류",
+        "AUTHOR": "작성자",
+        "DEPLOY_COUNT": "배포 횟수",
+        "VIEW_COUNT": "조회수",
+        "LIKE_COUNT": "좋아요",
+        "TAG_VISION": "비전",
+        "TAG_AUDIO": "오디오",
+        "SEARCH_PLACEHOLDER": "사용 가능한 모델 검색",
+        "MODEL_LIST": "모델 목록",
+        "LOADING": "로딩 중...",
+        "BACK": "뒤로",
+        "TEST_MODEL": "모델 테스트",
+        "DEPLOY_MODEL": "모델 배포",
+        "SELF_TRAINED_MODEL": "자체 학습 모델"
+    }
+}

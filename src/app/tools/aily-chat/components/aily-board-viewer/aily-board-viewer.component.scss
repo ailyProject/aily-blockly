@@ -63,6 +63,8 @@
 .board-card {
   display: flex;
   position: relative;
+  border-radius: 5px;
+  cursor: pointer;
 
   .img-box {
     width: 50px;
@@ -72,17 +74,25 @@
   }
 
   .text-box {
+    flex: 1 1 auto;
+    min-width: 0;
     padding: 5px;
-    width: calc(100% - 125px);
+    width: auto;
 
     .title {
       font-size: 14px;
       font-weight: bold;
+      cursor: inherit;
     }
 
     .text{
       color: #999;
+      cursor: inherit;
     }
+  }
+
+  &.has-actions .text-box {
+    padding-right: 35px;
   }
 
   .action-btns {

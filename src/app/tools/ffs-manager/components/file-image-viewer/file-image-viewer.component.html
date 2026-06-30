@@ -1,0 +1,17 @@
+<div class="image-viewer" [class.dragging]="isDragging"
+  (wheel)="onWheel($event)" (mousedown)="onMouseDown($event)" (click)="onContainerClick($event)">
+  <div class="content" #contentEl [style.transform]="getTransform()" [style.transform-origin]="'0 0'">
+    <img [src]="imageUrl" [alt]="data.name" draggable="false" />
+  </div>
+
+  <div class="toolbar" (click)="$event.stopPropagation()" (mousedown)="$event.stopPropagation()">
+    <span class="name" [title]="data.name">{{ data.name }}</span>
+    <span class="size">{{ sizeText }}</span>
+    <span class="sep">·</span>
+    <button class="tb-btn" (click)="zoomOut()" [title]="'FFS_MANAGER.VIEWER.ZOOM_OUT' | translate"><i class="fa-light fa-magnifying-glass-minus"></i></button>
+    <span class="scale-text">{{ (scale * 100).toFixed(0) }}%</span>
+    <button class="tb-btn" (click)="zoomIn()" [title]="'FFS_MANAGER.VIEWER.ZOOM_IN' | translate"><i class="fa-light fa-magnifying-glass-plus"></i></button>
+    <button class="tb-btn" (click)="resetTransform()" [title]="'FFS_MANAGER.VIEWER.RESET' | translate"><i class="fa-light fa-arrows-to-dot"></i></button>
+    <button class="tb-btn" (click)="close()" [title]="'FFS_MANAGER.VIEWER.CLOSE' | translate"><i class="fa-light fa-xmark"></i></button>
+  </div>
+</div>

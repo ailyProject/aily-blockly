@@ -37,6 +37,9 @@ export interface ParsedAssign {
   line: number;
 }
 
+/** 箭头方向类型 */
+export type ArrowDirection = '->' | '<-' | '<->';
+
 /** CONNECT 语句解析结果 */
 export interface ParsedConnect {
   /** 源组件别名 */
@@ -53,6 +56,8 @@ export interface ParsedConnect {
   bus?: number;
   /** 连线备注 */
   note?: string;
+  /** 箭头方向: -> 正向, <- 反向, <-> 双向 */
+  arrow: ArrowDirection;
   /** 源码行号 */
   line: number;
 }
@@ -136,6 +141,175 @@ export function isValidConnectionType(type: string): type is ConnectionType {
 }
 
 // =====================================================
+// 数据流向推断
+// =====================================================
+
+/** 动画模式 */
+export type AnimationPattern =
+  | 'flow-forward'       // 单向正向：粒子 from → to
+  | 'flow-backward'      // 单向反向：粒子 to → from
+  | 'flow-bidirectional' // 全双工：双向同时
+  | 'flow-half-duplex'   // 半双工：交替往返
+  | 'flow-static'        // 静态（电源/地线等）
+  | 'none';              // 无动画
+
+/** 数据流向信息（附加到每条连线） */
+export interface DataFlowInfo {
+  /** 数据方向: forward(from→to), backward(to→from), bidirectional */
+  direction: 'forward' | 'backward' | 'bidirectional';
+  /** 是否半双工 */
+  half: boolean;
+  /** 渲染动画模式 */
+  animationPattern: AnimationPattern;
+}
+
+/**
+ * 协议流向推断规则表
+ * key = connectionType, value = 按引脚功能名匹配的规则数组
+ * 匹配顺序：先匹配 pinPatterns（正则），无匹配则用 default
+ */
+export const PROTOCOL_FLOW_RULES: Record<string, {
+  pinPatterns?: Array<{
+    /** 匹配 fromPin 或 toPin 的正则（不区分大小写） */
+    pattern: RegExp;
+    /** 匹配哪端: 'from' | 'to' | 'either'（默认 either） */
+    matchSide?: 'from' | 'to' | 'either';
+    flow: DataFlowInfo;
+  }>;
+  default: DataFlowInfo;
+}> = {
+  power: {
+    default: { direction: 'forward', half: false, animationPattern: 'flow-static' },
+  },
+  gnd: {
+    default: { direction: 'forward', half: false, animationPattern: 'flow-static' },
+  },
+  i2c: {
+    pinPatterns: [
+      {
+        pattern: /^SDA$/i,
+        flow: { direction: 'bidirectional', half: true, animationPattern: 'flow-half-duplex' },
+      },
+      {
+        pattern: /^SCL$/i,
+        flow: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+      },
+    ],
+    default: { direction: 'bidirectional', half: true, animationPattern: 'flow-half-duplex' },
+  },
+  spi: {
+    pinPatterns: [
+      {
+        pattern: /^MISO$/i,
+        flow: { direction: 'backward', half: false, animationPattern: 'flow-backward' },
+      },
+      {
+        pattern: /^(MOSI|SCK|SCLK|CS|SS|CE)$/i,
+        flow: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+      },
+    ],
+    default: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+  },
+  uart: {
+    pinPatterns: [
+      {
+        pattern: /^TX$/i,
+        matchSide: 'from',
+        flow: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+      },
+      {
+        pattern: /^RX$/i,
+        matchSide: 'from',
+        flow: { direction: 'backward', half: false, animationPattern: 'flow-backward' },
+      },
+    ],
+    default: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+  },
+  digital: {
+    pinPatterns: [
+      {
+        pattern: /^(IN|BTN|BUTTON|IRQ|INT|ALERT|READY|BUSY|DETECT)$/i,
+        matchSide: 'to',
+        flow: { direction: 'backward', half: false, animationPattern: 'flow-backward' },
+      },
+      {
+        pattern: /^(OUT|LED|EN|ENABLE|RST|RESET|TRIG|TRIGGER)$/i,
+        matchSide: 'to',
+        flow: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+      },
+      {
+        pattern: /^(DATA|IO|SIG|SIGNAL|DQ|DOUT)$/i,
+        flow: { direction: 'bidirectional', half: true, animationPattern: 'flow-half-duplex' },
+      },
+    ],
+    default: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+  },
+  gpio: {
+    pinPatterns: [
+      {
+        pattern: /^(IN|BTN|BUTTON|IRQ|INT|DETECT)$/i,
+        matchSide: 'to',
+        flow: { direction: 'backward', half: false, animationPattern: 'flow-backward' },
+      },
+      {
+        pattern: /^(DATA|IO|SIG|DQ)$/i,
+        flow: { direction: 'bidirectional', half: true, animationPattern: 'flow-half-duplex' },
+      },
+    ],
+    default: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+  },
+  analog: {
+    default: { direction: 'backward', half: false, animationPattern: 'flow-backward' },
+  },
+  pwm: {
+    default: { direction: 'forward', half: false, animationPattern: 'flow-forward' },
+  },
+  other: {
+    default: { direction: 'forward', half: false, animationPattern: 'none' },
+  },
+};
+
+/**
+ * 根据连接类型、引脚功能名和箭头方向推断数据流向
+ */
+export function inferDataFlow(
+  type: string,
+  fromPin: string,
+  toPin: string,
+  arrow: ArrowDirection = '->',
+): DataFlowInfo {
+  // 显式箭头优先
+  if (arrow === '<->') {
+    // 判断是否半双工：类型后缀 +half 由调用者处理，这里默认按协议判断
+    const rules = PROTOCOL_FLOW_RULES[type];
+    const defaultFlow = rules?.default || PROTOCOL_FLOW_RULES['other'].default;
+    return { direction: 'bidirectional', half: defaultFlow.half, animationPattern: defaultFlow.half ? 'flow-half-duplex' : 'flow-bidirectional' };
+  }
+  if (arrow === '<-') {
+    return { direction: 'backward', half: false, animationPattern: 'flow-backward' };
+  }
+
+  // -> 箭头：按规则表推断
+  const rules = PROTOCOL_FLOW_RULES[type];
+  if (!rules) {
+    return PROTOCOL_FLOW_RULES['other'].default;
+  }
+
+  if (rules.pinPatterns) {
+    for (const rule of rules.pinPatterns) {
+      const side = rule.matchSide || 'either';
+      const matchFrom = (side === 'from' || side === 'either') && rule.pattern.test(fromPin);
+      const matchTo = (side === 'to' || side === 'either') && rule.pattern.test(toPin);
+      if (matchFrom || matchTo) {
+        return { ...rule.flow };
+      }
+    }
+  }
+
+  return { ...rules.default };
+}
+
+// =====================================================
 // 转换结果类型
 // =====================================================
 
@@ -169,6 +343,12 @@ export interface AWSToJSONResult {
       label: string;
       color: string;
       bus?: number;
+      /** 数据方向 */
+      direction?: 'forward' | 'backward' | 'bidirectional';
+      /** 是否半双工 */
+      half?: boolean;
+      /** 渲染动画模式 */
+      animationPattern?: AnimationPattern;
     }>;
   };
   /** 错误列表（失败时） */
@@ -205,12 +385,25 @@ USE <pinmapId> AS <别名> "显示名"
 
 ### CONNECT - 创建连线
 \`\`\`
-CONNECT <组件.引脚> -> <组件.引脚> @<类型>
+CONNECT <组件.引脚> -> <组件.引脚> @<类型>          # 正向（默认）
+CONNECT <组件.引脚> <- <组件.引脚> @<类型>          # 反向
+CONNECT <组件.引脚> <-> <组件.引脚> @<类型>         # 双向
 CONNECT <组件.引脚> -> <组件.引脚> @<类型>:<总线号> "备注"
 \`\`\`
 类型: power, gnd, i2c, spi, uart, digital, gpio, analog, pwm
-例: \`CONNECT board.SDA -> dht.SDA @i2c\`
-例: \`CONNECT board.D2 -> dht.SDA @i2c:1 "自定义I2C"\`
+
+**箭头说明：**
+- \`->\` 正向数据/电流流动（默认，大多数情况用这个）
+- \`<-\` 反向（如传感器数据回传到开发板）
+- \`<->\` 双向（如 I2C SDA 半双工、1-Wire DATA）
+
+**自动推断：** 使用 \`->\` 时系统会根据协议类型和引脚名自动推断流向。
+例如 I2C 的 SDA 自动识别为半双工，SPI 的 MISO 自动识别为反向。
+仅在自动推断不准确时才需要用 \`<-\` 或 \`<->\` 显式覆盖。
+
+例:
+\`CONNECT board.SDA -> dht.SDA @i2c\`        (自动推断为半双工)
+\`CONNECT board.D2 -> dht.SDA @i2c:1 "自定义I2C"\`
 
 ### ASSIGN - 引脚重映射（可选）
 \`\`\`

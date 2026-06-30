@@ -24,6 +24,8 @@ interface ConnectionDef {
   label?: string;
   color?: string;
   bus?: number;
+  direction?: 'forward' | 'backward' | 'bidirectional';
+  half?: boolean;
 }
 
 interface ComponentDef {
@@ -96,9 +98,17 @@ export function generateAWS(data: ConnectionOutput): string {
       const note = conn.label ? ` "${conn.label}"` : '';
       const bus = conn.bus !== undefined ? `:${conn.bus}` : '';
       
+      // 根据 direction/half 字段选择箭头
+      let arrow = '->';
+      if (conn.direction === 'bidirectional' || conn.half) {
+        arrow = '<->';
+      } else if (conn.direction === 'backward') {
+        arrow = '<-';
+      }
+
       // CONNECT ref.func -> ref.func @type[:bus] ["note"]
       lines.push(
-        `CONNECT ${conn.from.ref}.${conn.from.function} -> ` +
+        `CONNECT ${conn.from.ref}.${conn.from.function} ${arrow} ` +
         `${conn.to.ref}.${conn.to.function} @${conn.type}${bus}${note}`
       );
     }

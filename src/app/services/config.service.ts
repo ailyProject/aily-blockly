@@ -1,24 +1,41 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { NzMessageService } from 'ng-zorro-antd/message';
-import { lastValueFrom, Subject } from 'rxjs';
+import { lastValueFrom, Subject, timeout } from 'rxjs';
 import { ElectronService } from './electron.service';
 import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../configs/api.config';
 import { calculateSimilarity, extractKeywords } from '../utils/fuzzy-search.utils';
+import { mapCoderBoardIndexToBoardList, type CoderBoardIndexEntry } from '../utils/coder-board.mapper';
+
+export const DEVELOPMENT_MODE_PREFERENCES = ['coder', 'blockly'] as const;
+export type DevelopmentModePreference = typeof DEVELOPMENT_MODE_PREFERENCES[number];
+export type DevelopmentModePreferenceSource = 'onboarding' | 'settings' | 'migration';
+
+export interface ConfigServiceNotice {
+  key: string;
+  type: 'error';
+  message: string;
+}
 
 @Injectable({
   providedIn: 'root',
 })
 export class ConfigService {
   private static readonly ERROR_MESSAGE_DEDUP_MS = 10000;
+  private static readonly DEFAULT_BUILD_FLAVOR = 'cn';
+  private static readonly DEFAULT_OFFICIAL_REGION = 'cn';
+  private static readonly RESOURCE_REQUEST_TIMEOUT_MS = 8000;
+  private static readonly HARDWARE_INDEX_BACKGROUND_REFRESH_MIN_INTERVAL_MS = 30000;
+  private static readonly HARDWARE_INDEX_CHAT_SEND_REFRESH_DELAY_MS = 5000;
 
   data: AppConfig | any = {};
 
   /** 配置重新加载完成时发出，供 blockly 等组件实时应用新配置 */
   configReloaded$ = new Subject<void>();
+  readonly configNotice$ = new Subject<ConfigServiceNotice>();
   
   // 数据加载状态标识
   private _isDataReady = false;
+  private activeResourceSourceKey: string | null = null;
   
   // 测试用：模拟慢速加载（毫秒），设为0禁用
   private readonly SIMULATE_SLOW_LOADING = 0; // 改为2000可以看到loading效果
@@ -32,11 +49,11 @@ export class ConfigService {
            (this.libraryDict && Object.keys(this.libraryDict).length > 0);
     
     if (!ready) {
-      console.log('[ConfigService] isDataReady=false', {
-        _isDataReady: this._isDataReady,
-        boardDictSize: Object.keys(this.boardDict || {}).length,
-        libraryDictSize: Object.keys(this.libraryDict || {}).length
-      });
+      //console.log('[ConfigService] isDataReady=false', {
+      //   _isDataReady: this._isDataReady,
+      //   boardDictSize: Object.keys(this.boardDict || {}).length,
+      //   libraryDictSize: Object.keys(this.libraryDict || {}).length
+      // });
     }
     
     return ready;
@@ -44,20 +61,136 @@ export class ConfigService {
 
   constructor(
     private http: HttpClient,
-    private electronService: ElectronService,
-    private message: NzMessageService
+    private electronService: ElectronService
   ) { }
+
+  private normalizeBuildFlavor(flavor?: string): string {
+    return flavor === 'global' ? 'global' : ConfigService.DEFAULT_BUILD_FLAVOR;
+  }
+
+  private resolveOfficialRegionKey(): string {
+    if (typeof this.data?.official_region === 'string' && this.data.official_region) {
+      return this.data.official_region;
+    }
+
+    return this.normalizeBuildFlavor(this.data?.build_flavor) === 'global'
+      ? 'eu'
+      : ConfigService.DEFAULT_OFFICIAL_REGION;
+  }
+
+  private isOfficialRegionKey(regionKey: string): boolean {
+    const regionConfig = this.data?.regions?.[regionKey];
+    if (!regionConfig) {
+      return false;
+    }
+
+    if (typeof regionConfig.official === 'boolean') {
+      return regionConfig.official;
+    }
+
+    return regionKey === 'cn' || regionKey === 'eu';
+  }
+
+  private isRegionSelectable(regionKey: string): boolean {
+    if (!this.data?.regions?.[regionKey]) {
+      return false;
+    }
+
+    if (!this.isOfficialRegionKey(regionKey)) {
+      return true;
+    }
+
+    return regionKey === this.resolveOfficialRegionKey();
+  }
+
+  private applyRegionRuntimeConfig(regionKey: string): void {
+    if (!regionKey || !this.data?.regions?.[regionKey]) {
+      return;
+    }
+
+    this.data.region = regionKey;
+    setRegistryUrl(this.data.regions[regionKey].npm_registry);
+    setServerUrl(this.data.regions[regionKey].api_server);
+    setToolWebUrl(this.data.regions[regionKey].tool_web);
+  }
+
+  normalizeDevelopmentModePreference(value: unknown): DevelopmentModePreference {
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'auto') {
+        return 'blockly';
+      }
+      if ((DEVELOPMENT_MODE_PREFERENCES as readonly string[]).includes(normalized)) {
+        return normalized as DevelopmentModePreference;
+      }
+    }
+
+    return 'blockly';
+  }
+
+  isCoderEnabled(): boolean {
+    return this.data?.coder?.enabled === true;
+  }
+
+  getDevelopmentModePreference(): DevelopmentModePreference {
+    if (!this.isCoderEnabled()) {
+      return 'blockly';
+    }
+    return this.normalizeDevelopmentModePreference(this.data?.developmentModePreference);
+  }
+
+  async setDevelopmentModePreference(
+    preference: unknown,
+    source: DevelopmentModePreferenceSource = 'settings',
+    options: { save?: boolean } = {},
+  ): Promise<DevelopmentModePreference> {
+    const normalized = this.isCoderEnabled()
+      ? this.normalizeDevelopmentModePreference(preference)
+      : 'blockly';
+    this.data.developmentModePreference = normalized;
+    this.data.developmentModePreferenceSource = source;
+    this.data.developmentModePreferenceUpdatedAt = Date.now();
+    console.info('[ConfigService] development mode preference updated', {
+      preference: normalized,
+      source,
+    });
+    this.configReloaded$.next();
+
+    if (options.save !== false) {
+      await this.save();
+    }
+
+    return normalized;
+  }
+
+  async markDevelopmentModePreferencePrompted(options: { save?: boolean } = {}): Promise<void> {
+    this.data.developmentModePreferencePromptedAt = Date.now();
+    if (options.save !== false) {
+      await this.save();
+    }
+  }
+
+  shouldPromptDevelopmentModePreference(): boolean {
+    if (!this.isCoderEnabled()) {
+      return false;
+    }
+    return !this.data?.developmentModePreferenceSource && !this.data?.developmentModePreferencePromptedAt;
+  }
+
+  getPreferredChatAgentRuntimeMode(): 'coder' | 'blockly' {
+    return this.getDevelopmentModePreference() === 'coder' ? 'coder' : 'blockly';
+  }
 
   async init() {
     if (!this.electronService.isElectron) {
-      console.log('[ConfigService] 非Electron环境，跳过数据加载，直接标记就绪');
+      //console.log('[ConfigService] 非Electron环境，跳过数据加载，直接标记就绪');
       // 非 Electron 环境下，跳过 loading 状态（没有数据源）
       this._isDataReady = true;
       return;
     }
-    console.log('[ConfigService] 开始初始化...');
+    //console.log('[ConfigService] 开始初始化...');
     await this.load();
-    console.log('[ConfigService] 初始化完成, isDataReady=', this.isDataReady);
+    //console.log('[ConfigService] 初始化完成, isDataReady=', this.isDataReady);
   }
 
   get_lang_filename(lang: string) {
@@ -74,7 +207,7 @@ export class ConfigService {
   }
 
   async load() {
-    console.log('[ConfigService] load() 开始执行...');
+    //console.log('[ConfigService] load() 开始执行...');
     let defaultConfigFilePath = window['path'].getElectronPath();
     let defaultConfigFile = window['fs'].readFileSync(`${defaultConfigFilePath}/config/config.json`);
     this.data = await JSON.parse(defaultConfigFile);
@@ -92,68 +225,55 @@ export class ConfigService {
 
     // 合并用户配置和默认配置
     this.data = { ...this.data, ...userConfData };
-    this.configReloaded$.next();
+    this.data.developmentModePreference = this.isCoderEnabled()
+      ? this.normalizeDevelopmentModePreference(this.data.developmentModePreference)
+      : 'blockly';
+    this.data.build_flavor = this.normalizeBuildFlavor(this.data.build_flavor);
+    this.data.official_region = this.resolveOfficialRegionKey();
 
-    // 使用Electron检测到的最优区域覆盖配置
+    // 使用主进程已确定的 region 与官方 region 覆盖配置
     if (this.electronService.isElectron) {
       try {
-        // 获取当前区域
-        const region = await this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_REGION');
+        const [region, officialRegion, buildFlavor] = await Promise.all([
+          this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_REGION'),
+          this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_OFFICIAL_REGION'),
+          this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_BUILD_FLAVOR')
+        ]);
+
+        this.data.build_flavor = this.normalizeBuildFlavor(buildFlavor || this.data.build_flavor);
+        this.data.official_region = officialRegion || this.resolveOfficialRegionKey();
+
         if (region && this.data.regions && this.data.regions[region]) {
-          this.data.region = region;
-          // 更新 API 配置模块的缓存
-          setRegistryUrl(this.data.regions[region].npm_registry);
-          setServerUrl(this.data.regions[region].api_server);
+          this.applyRegionRuntimeConfig(region);
         } else {
-          // 使用默认区域
-          const defaultRegion = this.data.region || 'cn';
-          if (this.data.regions && this.data.regions[defaultRegion]) {
-            setRegistryUrl(this.data.regions[defaultRegion].npm_registry);
-            setServerUrl(this.data.regions[defaultRegion].api_server);
-          }
+          this.applyRegionRuntimeConfig(this.data.region || this.resolveOfficialRegionKey());
         }
       } catch (e) {
         console.error('Failed to get env vars', e);
+        this.applyRegionRuntimeConfig(this.data.region || this.resolveOfficialRegionKey());
       }
+    } else {
+      this.applyRegionRuntimeConfig(this.data.region || this.resolveOfficialRegionKey());
     }
+
+    await this.applyResourceSourceRuntimeSelection();
 
     // 添加当前系统类型到data中
     this.data["platform"] = window['platform'].type;
     this.data["lang"] = this.get_lang_filename(window['platform'].lang);
+    this.configReloaded$.next();
 
     // 并行加载缓存的boards.json、libraries.json和tags.json（旧格式，用于基础功能）
     // await Promise.all([
     this.loadAndCacheBoardList(configFilePath);
     this.loadAndCacheLibraryList(configFilePath);
     this.loadAndCacheTagList(configFilePath);
+    this.loadAndCacheCoderBoardIndex(configFilePath);
     // ]);
 
     // 注意：boardIndex 和 libraryIndex（新格式索引）延迟到 AI 组件加载时再加载
     // 以减轻软件启动耗时，参见 loadHardwareIndexForAI()
 
-    // 延迟后再次尝试加载，确保最优节点检测完成后能成功下载最新数据
-    if (this.electronService.isElectron) {
-      setTimeout(async () => {
-        try {
-          // 重新获取区域配置（可能已经由主进程检测到最优节点并更新）
-          const newRegion = await this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_REGION');
-          if (newRegion && this.data.regions && this.data.regions[newRegion]) {
-            // 更新区域配置
-            if (newRegion !== this.data.region) {
-              this.data.region = newRegion;
-              setRegistryUrl(this.data.regions[newRegion].npm_registry);
-              setServerUrl(this.data.regions[newRegion].api_server);
-            }
-            // 重新加载数据，确保获取最新内容
-            this.loadAndCacheBoardList(configFilePath);
-            this.loadAndCacheLibraryList(configFilePath);
-            this.loadAndCacheTagList(configFilePath);
-          }
-        } catch (e) {
-          console.error('Failed to reload data after region detection:', e);
-        }
-      }, 5000); // 5秒后重试，给主进程足够时间完成最优节点检测
-    }
   }
 
   private async loadAndCacheBoardList(configFilePath: string): Promise<void> {
@@ -183,7 +303,7 @@ export class ConfigService {
     this.boardList.forEach(board => {
       this.boardDict[board.name] = board;
     });
-    console.log(`[ConfigService] boardDict创建完成，共 ${Object.keys(this.boardDict).length} 个开发板`);
+    // console.log(`[ConfigService] boardDict创建完成，共 ${Object.keys(this.boardDict).length} 个开发板`);
   }
 
   private async loadAndCacheLibraryList(configFilePath: string): Promise<void> {
@@ -213,7 +333,7 @@ export class ConfigService {
     this.libraryList.forEach(library => {
       this.libraryDict[library.name] = library;
     });
-    console.log(`[ConfigService] libraryDict创建完成，共 ${Object.keys(this.libraryDict).length} 个库`);
+    // console.log(`[ConfigService] libraryDict创建完成，共 ${Object.keys(this.libraryDict).length} 个库`);
   }
 
   async save() {
@@ -230,11 +350,196 @@ export class ConfigService {
     return this.data.regions && this.data.regions[region] ? this.data.regions[region] : this.data.regions['cn'];
   }
 
+  private normalizeResourceSourceUrl(url: string): string {
+    return String(url || '').trim().replace(/\/+$/, '');
+  }
+
+  private buildLegacyResourceSourceList(): ResourceSourceConfig[] {
+    const fallbackSources = [
+      { key: 'primary', url: this.data?.regions?.eu?.resource },
+      { key: 'mirror', url: this.data?.regions?.cn?.resource },
+      { key: 'localhost', url: this.data?.regions?.localhost?.resource }
+    ];
+    const seenUrls = new Set<string>();
+    const normalizedSources: ResourceSourceConfig[] = [];
+
+    for (const source of fallbackSources) {
+      const url = this.normalizeResourceSourceUrl(source.url || '');
+      if (!url || seenUrls.has(url)) {
+        continue;
+      }
+
+      seenUrls.add(url);
+      normalizedSources.push({
+        key: source.key,
+        url,
+        enabled: true
+      });
+    }
+
+    return normalizedSources;
+  }
+
+  getResourceSourceList(): ResourceSourceConfig[] {
+    const configuredSources = Array.isArray(this.data?.resource_sources) ? this.data.resource_sources : [];
+    const seenUrls = new Set<string>();
+    const normalizedSources: ResourceSourceConfig[] = [];
+
+    for (const source of configuredSources) {
+      const url = this.normalizeResourceSourceUrl(source?.url || '');
+      if (!url || source?.enabled === false || seenUrls.has(url)) {
+        continue;
+      }
+
+      seenUrls.add(url);
+      normalizedSources.push({
+        key: typeof source.key === 'string' && source.key.trim() ? source.key.trim() : `resource_${normalizedSources.length + 1}`,
+        name: typeof source.name === 'string' && source.name.trim() ? source.name.trim() : undefined,
+        url,
+        enabled: source.enabled !== false
+      });
+    }
+
+    return normalizedSources.length > 0 ? normalizedSources : this.buildLegacyResourceSourceList();
+  }
+
+  getSelectedResourceSourceKey(): string {
+    return typeof this.data?.resource_source === 'string' && this.data.resource_source.trim()
+      ? this.data.resource_source.trim()
+      : 'auto';
+  }
+
+  private isAutoResourceSourceSelection(): boolean {
+    return this.getSelectedResourceSourceKey() === 'auto';
+  }
+
+  private getManualResourceSource(): ResourceSourceConfig | null {
+    const selectedKey = this.getSelectedResourceSourceKey();
+    if (selectedKey === 'auto') {
+      return null;
+    }
+
+    return this.getResourceSourceList().find((source) => source.key === selectedKey) || null;
+  }
+
+  private getCurrentResourceSource(): ResourceSourceConfig | null {
+    const sources = this.getResourceSourceList();
+    if (sources.length === 0) {
+      return null;
+    }
+
+    if (!this.isAutoResourceSourceSelection()) {
+      return this.getManualResourceSource() || sources[0];
+    }
+
+    return sources.find((source) => source.key === this.activeResourceSourceKey) || sources[0];
+  }
+
+  private getResourceSourceCandidates(): ResourceSourceConfig[] {
+    const sources = this.getResourceSourceList();
+    if (sources.length === 0) {
+      return [];
+    }
+
+    if (!this.isAutoResourceSourceSelection()) {
+      return [this.getManualResourceSource() || sources[0]];
+    }
+
+    const currentSource = this.getCurrentResourceSource();
+    if (!currentSource) {
+      return sources;
+    }
+
+    return [currentSource, ...sources.filter((source) => source.key !== currentSource.key)];
+  }
+
+  private buildZipUrlCandidates(): string[] {
+    const seenUrls = new Set<string>();
+    const urls: string[] = [];
+
+    for (const source of this.getResourceSourceCandidates()) {
+      if (!source.url || seenUrls.has(source.url)) {
+        continue;
+      }
+
+      seenUrls.add(source.url);
+      urls.push(source.url);
+    }
+
+    return urls;
+  }
+
+  async applyResourceSourceRuntimeSelection(): Promise<void> {
+    const currentSource = this.getCurrentResourceSource();
+    this.activeResourceSourceKey = currentSource?.key || null;
+    await this.syncResourceRuntimeEnv();
+    this.configReloaded$.next();
+  }
+
+  private async syncResourceRuntimeEnv(): Promise<void> {
+    const currentUrl = this.getCurrentResourceUrl();
+    const zipUrls = JSON.stringify(this.buildZipUrlCandidates());
+
+    if (window['process']?.env) {
+      window['process'].env['AILY_ZIP_URL'] = currentUrl;
+      window['process'].env['AILY_ZIP_URLS'] = zipUrls;
+    }
+
+    if (window['ipcRenderer']) {
+      await Promise.all([
+        window['ipcRenderer'].invoke('env-set', { key: 'AILY_ZIP_URL', value: currentUrl }),
+        window['ipcRenderer'].invoke('env-set', { key: 'AILY_ZIP_URLS', value: zipUrls })
+      ]);
+    }
+  }
+
+  private async fetchResourceJsonOrThrow<T>(pathname: string): Promise<T> {
+    const candidates = this.getResourceSourceCandidates();
+    if (candidates.length === 0) {
+      throw new Error('未配置可用的资源地址');
+    }
+
+    let lastError: unknown;
+    for (let index = 0; index < candidates.length; index++) {
+      const source = candidates[index];
+      try {
+        const response = await lastValueFrom(
+          this.http.get<T>(`${source.url}${pathname}`, {
+            responseType: 'json',
+          }).pipe(timeout(ConfigService.RESOURCE_REQUEST_TIMEOUT_MS)),
+        );
+
+        if (this.activeResourceSourceKey !== source.key) {
+          this.activeResourceSourceKey = source.key;
+          void this.syncResourceRuntimeEnv();
+          this.configReloaded$.next();
+        }
+
+        return response;
+      } catch (error) {
+        lastError = error;
+        console.warn(`[ConfigService] 资源请求失败 (${source.key}) ${pathname}:`, error);
+        if (!this.isAutoResourceSourceSelection() || index === candidates.length - 1) {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('资源请求失败');
+  }
+
+  /**
+   * 当前服务区域是否为中国区
+   */
+  get isCnRegion(): boolean {
+    return (this.data?.region || 'cn').toLowerCase() === 'cn';
+  }
+
   /**
    * 获取当前区域的资源URL
    */
   getCurrentResourceUrl(): string {
-    return this.getCurrentRegionConfig()?.resource || '';
+    return this.getCurrentResourceSource()?.url || this.getCurrentRegionConfig()?.resource || '';
   }
 
   /**
@@ -291,14 +596,15 @@ export class ConfigService {
    * 获取启用的区域列表
    */
   getEnabledRegionList(): Array<{key: string, name: string, enabled: boolean}> {
-    return this.getRegionList().filter(region => region.enabled);
+    return this.getRegionList().filter(region => region.enabled && this.isRegionSelectable(region.key));
   }
 
   /**
    * 设置当前区域
    */
   async setRegion(regionKey: string) {
-    if (this.data.regions && this.data.regions[regionKey]) {
+    if (this.data.regions && this.data.regions[regionKey] && this.isRegionSelectable(regionKey)) {
+      const previousApiServer = this.getCurrentApiServer();
       this.data.region = regionKey;
       const regionConfig = this.data.regions[regionKey];
       
@@ -311,7 +617,6 @@ export class ConfigService {
       if (window['process']?.env) {
         window['process'].env['AILY_REGION'] = regionKey;
         window['process'].env['AILY_NPM_REGISTRY'] = regionConfig.npm_registry;
-        window['process'].env['AILY_ZIP_URL'] = regionConfig.resource;
         window['process'].env['AILY_API_SERVER'] = regionConfig.api_server;
         window['process'].env['AILY_TOOL_WEB'] = regionConfig.tool_web;
       }
@@ -321,14 +626,19 @@ export class ConfigService {
         await Promise.all([
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_REGION', value: regionKey }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_NPM_REGISTRY', value: regionConfig.npm_registry }),
-          window['ipcRenderer'].invoke('env-set', { key: 'AILY_ZIP_URL', value: regionConfig.resource }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_API_SERVER', value: regionConfig.api_server }),
           window['ipcRenderer'].invoke('env-set', { key: 'AILY_TOOL_WEB', value: regionConfig.tool_web })
         ]);
       }
+
+      await this.syncResourceRuntimeEnv();
       
       // 保存配置
       await this.save();
+
+      if (previousApiServer !== this.getCurrentApiServer()) {
+        this.configReloaded$.next();
+      }
     }
   }
 
@@ -349,12 +659,12 @@ export class ConfigService {
       const latestBoardList = await this.fetchBoardListOrThrow();
       this.boardList = latestBoardList;
       this.electronService.writeFile(localPath, JSON.stringify(latestBoardList));
-      console.log('[ConfigService] 已使用线上最新 boards.json 覆盖本地缓存');
+      //console.log('[ConfigService] 已使用线上最新 boards.json 覆盖本地缓存');
     } catch (remoteError) {
       this.boardList = [];
       const message = this.getBoardReloadFailureMessage(remoteError, originalError);
       console.error('[ConfigService] 从线上恢复 boards.json 失败:', remoteError);
-      this.showBoardLoadError(message);
+      this.emitBoardLoadError(message);
     }
   }
 
@@ -381,8 +691,8 @@ export class ConfigService {
     return '未知错误';
   }
 
-  private showBoardLoadError(message: string): void {
-    this.showDedupedError('board-list', message);
+  private emitBoardLoadError(message: string): void {
+    this.emitDedupedError('board-list', message);
   }
 
   async loadBoardList(): Promise<any[]> {
@@ -392,6 +702,139 @@ export class ConfigService {
       console.error('Failed to load board list:', error);
       return [];
     }
+  }
+
+  /**
+   * 开发板选择弹窗：优先返回已缓存列表（启动时已加载 boards.json），避免每次打开都请求线上。
+   */
+  getBoardListForSelector(): any[] {
+    if (!this.boardList?.length) {
+      return [];
+    }
+    return this.sortBoardsByUsage([...this.boardList]);
+  }
+
+  /** Coder 新建项目使用的开发板索引（由 coder_board_index.json 映射而来） */
+  coderBoardList: any[] = [];
+
+  private async loadAndCacheCoderBoardIndex(configFilePath: string): Promise<void> {
+    const localPath = `${configFilePath}/coder_board_index.json`;
+
+    try {
+      if (this.electronService.exists(localPath)) {
+        const entries = this.parseCoderBoardIndexEntries(this.electronService.readFile(localPath));
+        this.coderBoardList = mapCoderBoardIndexToBoardList(entries);
+        const remoteEntries = await this.loadCoderBoardIndexEntries();
+        if (remoteEntries.length > 0) {
+          this.coderBoardList = mapCoderBoardIndexToBoardList(remoteEntries);
+          this.writeCoderBoardIndexCache(localPath, remoteEntries);
+        }
+      } else {
+        const remoteEntries = await this.fetchCoderBoardIndexEntriesOrThrow();
+        this.coderBoardList = mapCoderBoardIndexToBoardList(remoteEntries);
+        this.writeCoderBoardIndexCache(localPath, remoteEntries);
+      }
+    } catch (error) {
+      console.error('[ConfigService] coder_board_index.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadCoderBoardIndexFromRemote(localPath, error);
+    }
+
+    console.log(`[ConfigService] coderBoardList 加载完成，共 ${this.coderBoardList.length} 个开发板`);
+  }
+
+  private parseCoderBoardIndexEntries(raw: string): CoderBoardIndexEntry[] {
+    return this.parseArrayPayload(raw, 'coder_board_index.json 格式无效', 'boards') as CoderBoardIndexEntry[];
+  }
+
+  private writeCoderBoardIndexCache(localPath: string, entries: CoderBoardIndexEntry[]): void {
+    this.electronService.writeFile(localPath, JSON.stringify({ boards: entries }));
+  }
+
+  /** Coder 开发板索引固定走 regions.cn.resource，不走 resource_sources 镜像链 */
+  private getCoderBoardResourceUrl(): string {
+    return this.normalizeResourceSourceUrl(this.data?.regions?.cn?.resource || '');
+  }
+
+  private async fetchCoderBoardIndexEntriesOrThrow(): Promise<CoderBoardIndexEntry[]> {
+    const resourceUrl = this.getCoderBoardResourceUrl();
+    if (!resourceUrl) {
+      throw new Error('未配置 Coder 开发板资源地址 (regions.cn.resource)');
+    }
+
+    const response: any = await lastValueFrom(
+      this.http.get(`${resourceUrl}/coder_board_index.json`, {
+        responseType: 'json',
+      }).pipe(timeout(ConfigService.RESOURCE_REQUEST_TIMEOUT_MS)),
+    );
+
+    if (Array.isArray(response)) {
+      return response as CoderBoardIndexEntry[];
+    }
+    if (response && Array.isArray(response.boards)) {
+      return response.boards as CoderBoardIndexEntry[];
+    }
+
+    throw new Error('线上 coder_board_index.json 格式无效');
+  }
+
+  private async reloadCoderBoardIndexFromRemote(localPath: string, originalError: unknown): Promise<void> {
+    try {
+      const latestEntries = await this.fetchCoderBoardIndexEntriesOrThrow();
+      this.coderBoardList = mapCoderBoardIndexToBoardList(latestEntries);
+      this.writeCoderBoardIndexCache(localPath, latestEntries);
+      console.log('[ConfigService] 已使用线上最新 coder_board_index.json 覆盖本地缓存');
+    } catch (remoteError) {
+      this.coderBoardList = [];
+      const message = this.buildReloadFailureMessage(
+        'Coder 开发板列表',
+        'coder_board_index.json',
+        remoteError,
+        originalError
+      );
+      console.error('[ConfigService] 从线上恢复 coder_board_index.json 失败:', remoteError);
+      this.emitDedupedError('coder-board-list', message);
+    }
+  }
+
+  async loadCoderBoardIndexEntries(): Promise<CoderBoardIndexEntry[]> {
+    try {
+      return await this.fetchCoderBoardIndexEntriesOrThrow();
+    } catch (error) {
+      console.error('Failed to load coder board index:', error);
+      return [];
+    }
+  }
+
+  /** Aily Code 新建向导：返回已映射、按使用次数排序的开发板列表 */
+  getCoderBoardList(): any[] {
+    if (!this.coderBoardList?.length) {
+      return [];
+    }
+    return this.sortBoardsByUsage([...this.coderBoardList]);
+  }
+
+  /**
+   * Aily Code 切换开发板弹窗：优先内存缓存（coder_board_index.json），并过滤尚未支持的板卡。
+   */
+  getCoderBoardListForSelector(): any[] {
+    if (!this.coderBoardList?.length) {
+      return [];
+    }
+    const list = this.coderBoardList.filter((board) => board.state !== 'todo');
+    return this.sortBoardsByUsage([...list]);
+  }
+
+  /** 线上刷新 Coder 开发板索引并返回选择器列表 */
+  async loadCoderBoardList(): Promise<any[]> {
+    try {
+      const entries = await this.loadCoderBoardIndexEntries();
+      if (entries.length > 0) {
+        this.coderBoardList = mapCoderBoardIndexToBoardList(entries);
+      }
+    } catch (error) {
+      console.error('Failed to load coder board list:', error);
+    }
+    return this.getCoderBoardListForSelector();
   }
 
   libraryList = [];
@@ -412,12 +855,12 @@ export class ConfigService {
       const latestLibraryList = await this.fetchLibraryListOrThrow();
       this.libraryList = latestLibraryList;
       this.electronService.writeFile(localPath, JSON.stringify(latestLibraryList));
-      console.log('[ConfigService] 已使用线上最新 libraries.json 覆盖本地缓存');
+      //console.log('[ConfigService] 已使用线上最新 libraries.json 覆盖本地缓存');
     } catch (remoteError) {
       this.libraryList = [];
       const message = this.getLibraryReloadFailureMessage(remoteError, originalError);
       console.error('[ConfigService] 从线上恢复 libraries.json 失败:', remoteError);
-      this.showLibraryLoadError(message);
+      this.emitLibraryLoadError(message);
     }
   }
 
@@ -425,8 +868,8 @@ export class ConfigService {
     return this.buildReloadFailureMessage('扩展库列表', 'libraries.json', remoteError, originalError);
   }
 
-  private showLibraryLoadError(message: string): void {
-    this.showDedupedError('library-list', message);
+  private emitLibraryLoadError(message: string): void {
+    this.emitDedupedError('library-list', message);
   }
 
   async loadLibraryList(): Promise<any[]> {
@@ -464,16 +907,12 @@ export class ConfigService {
       await this.reloadTagListFromRemote(localPath, error);
     }
 
-    console.log('[ConfigService] tagList加载完成:', this.tagList?.tags?.length || 0, '个标签');
+    //console.log('[ConfigService] tagList加载完成:', this.tagList?.tags?.length || 0, '个标签');
   }
 
   private async fetchTagList(): Promise<any> {
     try {
-      return await lastValueFrom(
-        this.http.get(this.getCurrentResourceUrl() + '/tags.json', {
-          responseType: 'json',
-        }),
-      );
+      return await this.fetchResourceJsonOrThrow('/tags.json');
     } catch (error) {
       console.error('Failed to load tag list:', error);
       return null;
@@ -486,13 +925,13 @@ export class ConfigService {
       if (latestTagList) {
         this.tagList = latestTagList;
         this.electronService.writeFile(localPath, JSON.stringify(latestTagList));
-        console.log('[ConfigService] 已使用线上最新 tags.json 覆盖本地缓存');
+        //console.log('[ConfigService] 已使用线上最新 tags.json 覆盖本地缓存');
       }
     } catch (remoteError) {
       this.tagList = {};
       const message = this.buildReloadFailureMessage('标签列表', 'tags.json', remoteError, originalError);
       console.error('[ConfigService] 从线上恢复 tags.json 失败:', remoteError);
-      this.showDedupedError('tag-list', message);
+      this.emitDedupedError('tag-list', message);
     }
   }
 
@@ -500,6 +939,11 @@ export class ConfigService {
   boardIndex: any[] = [];  // 新格式开发板索引
   libraryIndex: any[] = [];  // 新格式库索引
   private _hardwareIndexLoaded = false;  // 标记索引是否已加载
+  private hardwareIndexLoadPromise: Promise<void> | null = null;
+  private hardwareIndexBackgroundRefreshPromise: Promise<void> | null = null;
+  private hardwareIndexBackgroundRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private hardwareIndexLastLoadedAt = 0;
+  private hardwareIndexLastRefreshScheduledAt = 0;
 
   /**
    * 为 AI 工具加载硬件索引数据（boardIndex 和 libraryIndex）
@@ -509,11 +953,78 @@ export class ConfigService {
   async loadHardwareIndexForAI(): Promise<void> {
     // 避免重复加载
     if (this._hardwareIndexLoaded) {
-      console.log('[ConfigService] 硬件索引已加载，跳过');
+      this.traceHardwareIndexRefresh('hardware index already loaded');
       return;
     }
 
-    console.log('[ConfigService] 开始加载 AI 硬件索引...');
+    if (this.hardwareIndexLoadPromise) {
+      return this.hardwareIndexLoadPromise;
+    }
+
+    this.hardwareIndexLoadPromise = this.loadHardwareIndexForAIInternal();
+    try {
+      await this.hardwareIndexLoadPromise;
+    } finally {
+      this.hardwareIndexLoadPromise = null;
+    }
+  }
+
+  scheduleHardwareIndexRefreshForAI(reason: string, options: { readonly force?: boolean } = {}): void {
+    const normalizedReason = typeof reason === 'string' && reason.trim().length > 0
+      ? reason.trim()
+      : 'unspecified';
+    const now = Date.now();
+    if (!options.force) {
+      if (this.hardwareIndexBackgroundRefreshPromise) {
+        this.traceHardwareIndexRefresh('skip background hardware refresh while in flight', { reason: normalizedReason });
+        return;
+      }
+
+      if (this.hardwareIndexBackgroundRefreshTimer) {
+        this.traceHardwareIndexRefresh('skip background hardware refresh while scheduled', { reason: normalizedReason });
+        return;
+      }
+
+      if (this.hardwareIndexLastRefreshScheduledAt > 0
+        && now - this.hardwareIndexLastRefreshScheduledAt < ConfigService.HARDWARE_INDEX_BACKGROUND_REFRESH_MIN_INTERVAL_MS) {
+        this.traceHardwareIndexRefresh('skip background hardware refresh due to min interval', {
+          reason: normalizedReason,
+          elapsedMs: now - this.hardwareIndexLastRefreshScheduledAt,
+        });
+        return;
+      }
+    }
+
+    if (options.force && this.hardwareIndexBackgroundRefreshTimer) {
+      clearTimeout(this.hardwareIndexBackgroundRefreshTimer);
+      this.hardwareIndexBackgroundRefreshTimer = null;
+    }
+
+    this.hardwareIndexLastRefreshScheduledAt = now;
+    const delayMs = !options.force && normalizedReason === 'chat-send-latest'
+      ? ConfigService.HARDWARE_INDEX_CHAT_SEND_REFRESH_DELAY_MS
+      : 0;
+    const startRefresh = () => {
+      this.hardwareIndexBackgroundRefreshTimer = null;
+      this.hardwareIndexBackgroundRefreshPromise = this.refreshHardwareIndexForAIInternal(normalizedReason)
+        .catch(error => {
+          console.warn('[ConfigService] 后台刷新 AI 硬件索引失败:', error);
+        })
+        .finally(() => {
+          this.hardwareIndexBackgroundRefreshPromise = null;
+        });
+    };
+
+    if (delayMs > 0) {
+      this.hardwareIndexBackgroundRefreshTimer = setTimeout(startRefresh, delayMs);
+      return;
+    }
+
+    startRefresh();
+  }
+
+  private async loadHardwareIndexForAIInternal(): Promise<void> {
+    this.traceHardwareIndexRefresh('start loading hardware index');
     const configFilePath = window['path'].getAppDataPath();
     
     await Promise.all([
@@ -522,7 +1033,50 @@ export class ConfigService {
     ]);
     
     this._hardwareIndexLoaded = true;
-    console.log('[ConfigService] AI 硬件索引加载完成, boardIndex:', this.boardIndex?.length, 'libraryIndex:', this.libraryIndex?.length);
+    this.hardwareIndexLastLoadedAt = Date.now();
+    this.traceHardwareIndexRefresh('hardware index loaded', {
+      boardCount: this.boardIndex?.length ?? 0,
+      libraryCount: this.libraryIndex?.length ?? 0,
+    });
+  }
+
+  private async refreshHardwareIndexForAIInternal(reason: string): Promise<void> {
+    this.traceHardwareIndexRefresh('start background hardware refresh', {
+      reason,
+      alreadyLoaded: this._hardwareIndexLoaded,
+      lastLoadedAt: this.hardwareIndexLastLoadedAt || null,
+    });
+
+    if (!this._hardwareIndexLoaded) {
+      await this.loadHardwareIndexForAI();
+      return;
+    }
+
+    const configFilePath = window['path'].getAppDataPath();
+    await Promise.all([
+      this.loadAndCacheBoardIndex(configFilePath),
+      this.loadAndCacheLibraryIndex(configFilePath)
+    ]);
+
+    this.hardwareIndexLastLoadedAt = Date.now();
+    this.traceHardwareIndexRefresh('background hardware refresh finished', {
+      reason,
+      boardCount: this.boardIndex?.length ?? 0,
+      libraryCount: this.libraryIndex?.length ?? 0,
+    });
+  }
+
+  private traceHardwareIndexRefresh(message: string, details?: Record<string, unknown>): void {
+    try {
+      const enabled = globalThis.localStorage?.getItem?.('aily.config.traceHardwareIndexRefresh') === '1'
+        || (globalThis as Record<string, unknown>)['__AILY_CONFIG_TRACE_HARDWARE_INDEX_REFRESH__'] === true;
+      if (!enabled) {
+        return;
+      }
+      console.info(`[ConfigService][debug] ${message}`, details ?? {});
+    } catch {
+      // Debug tracing must never affect the chat submit hot path.
+    }
   }
 
   /**
@@ -539,14 +1093,14 @@ export class ConfigService {
       // 优先从本地缓存读取
       if (this.electronService.exists(localPath)) {
         this.boardIndex = this.parseBoardIndex(this.electronService.readFile(localPath));
-        console.log('[ConfigService] 本地 boardIndex 加载成功, 数量:', this.boardIndex?.length || 0);
+        this.traceHardwareIndexRefresh('local board index loaded', { count: this.boardIndex?.length || 0 });
       }
       // 从远程加载最新数据
       const boardIndex = await this.loadBoardIndex();
       if (boardIndex.length > 0) {
         this.boardIndex = boardIndex;
         this.writeBoardIndexCache(localPath, boardIndex);
-        console.log('[ConfigService] 远程 boardIndex 加载成功并缓存, 数量:', boardIndex.length);
+        this.traceHardwareIndexRefresh('remote board index loaded and cached', { count: boardIndex.length });
       }
     } catch (error) {
       console.error('[ConfigService] boards-index.json 加载失败，尝试从线上恢复:', error);
@@ -556,19 +1110,19 @@ export class ConfigService {
 
   private async loadAndCacheLibraryIndex(configFilePath: string): Promise<void> {
     const localPath = `${configFilePath}/libraries-index.json`;
-    console.log('[ConfigService] 检查 libraries-index.json 路径:', localPath);
+    this.traceHardwareIndexRefresh('checking libraries index path', { localPath });
 
     try {
       // 优先从本地缓存读取
       if (this.electronService.exists(localPath)) {
         const fileContent = this.electronService.readFile(localPath);
-        console.log('[ConfigService] 本地 libraries-index.json 文件大小:', fileContent?.length || 0, '字节');
+        this.traceHardwareIndexRefresh('local libraries index file read', { byteLength: fileContent?.length || 0 });
         this.libraryIndex = this.parseLibraryIndex(fileContent);
-        console.log('[ConfigService] 本地 libraryIndex 加载成功, 数量:', this.libraryIndex?.length || 0);
+        this.traceHardwareIndexRefresh('local library index loaded', { count: this.libraryIndex?.length || 0 });
 
         if (this.libraryIndex.length > 0) {
           const sample = this.libraryIndex[0];
-          console.log('[ConfigService] libraryIndex 示例数据:', {
+          this.traceHardwareIndexRefresh('library index sample', {
             name: sample.name,
             displayName: sample.displayName,
             category: sample.category,
@@ -576,7 +1130,7 @@ export class ConfigService {
           });
         }
       } else {
-        console.log('[ConfigService] 本地 libraries-index.json 不存在');
+        this.traceHardwareIndexRefresh('local libraries index file missing');
       }
 
       // 从远程加载最新数据
@@ -584,7 +1138,7 @@ export class ConfigService {
       if (libraryIndex.length > 0) {
         this.libraryIndex = libraryIndex;
         this.writeLibraryIndexCache(localPath, libraryIndex);
-        console.log('[ConfigService] 远程 libraryIndex 加载成功并缓存, 数量:', libraryIndex.length);
+        this.traceHardwareIndexRefresh('remote library index loaded and cached', { count: libraryIndex.length });
       }
     } catch (error) {
       console.error('[ConfigService] libraries-index.json 加载失败，尝试从线上恢复:', error);
@@ -633,12 +1187,12 @@ export class ConfigService {
       const latestBoardIndex = await this.fetchBoardIndexOrThrow();
       this.boardIndex = latestBoardIndex;
       this.writeBoardIndexCache(localPath, latestBoardIndex);
-      console.log('[ConfigService] 已使用线上最新 boards-index.json 覆盖本地缓存');
+      //console.log('[ConfigService] 已使用线上最新 boards-index.json 覆盖本地缓存');
     } catch (remoteError) {
       this.boardIndex = [];
       const message = this.getBoardIndexReloadFailureMessage(remoteError, originalError);
       console.error('[ConfigService] 从线上恢复 boards-index.json 失败:', remoteError);
-      this.showBoardIndexLoadError(message);
+      this.emitBoardIndexLoadError(message);
     }
   }
 
@@ -647,12 +1201,12 @@ export class ConfigService {
       const latestLibraryIndex = await this.fetchLibraryIndexOrThrow();
       this.libraryIndex = latestLibraryIndex;
       this.writeLibraryIndexCache(localPath, latestLibraryIndex);
-      console.log('[ConfigService] 已使用线上最新 libraries-index.json 覆盖本地缓存');
+      //console.log('[ConfigService] 已使用线上最新 libraries-index.json 覆盖本地缓存');
     } catch (remoteError) {
       this.libraryIndex = [];
       const message = this.getLibraryIndexReloadFailureMessage(remoteError, originalError);
       console.error('[ConfigService] 从线上恢复 libraries-index.json 失败:', remoteError);
-      this.showLibraryIndexLoadError(message);
+      this.emitLibraryIndexLoadError(message);
     }
   }
 
@@ -664,12 +1218,12 @@ export class ConfigService {
     return this.buildReloadFailureMessage('扩展库索引', 'libraries-index.json', remoteError, originalError);
   }
 
-  private showBoardIndexLoadError(message: string): void {
-    this.showDedupedError('board-index', message);
+  private emitBoardIndexLoadError(message: string): void {
+    this.emitDedupedError('board-index', message);
   }
 
-  private showLibraryIndexLoadError(message: string): void {
-    this.showDedupedError('library-index', message);
+  private emitLibraryIndexLoadError(message: string): void {
+    this.emitDedupedError('library-index', message);
   }
 
   private parseArrayPayload(raw: string, invalidMessage: string, wrapperKey?: string): any[] {
@@ -684,11 +1238,7 @@ export class ConfigService {
   }
 
   private async fetchRemoteArrayOrThrow(pathname: string, invalidMessage: string, wrapperKey?: string): Promise<any[]> {
-    const response: any = await lastValueFrom(
-      this.http.get(this.getCurrentResourceUrl() + pathname, {
-        responseType: 'json',
-      }),
-    );
+    const response: any = await this.fetchResourceJsonOrThrow(pathname);
 
     if (Array.isArray(response)) {
       return response;
@@ -718,7 +1268,7 @@ export class ConfigService {
     return `${resourceLabel}加载失败${compactMessage}`;
   }
 
-  private showDedupedError(key: string, message: string): void {
+  private emitDedupedError(key: string, message: string): void {
     const now = Date.now();
     const state = this.errorNoticeState[key];
     if (state?.message === message && now - state.at < ConfigService.ERROR_MESSAGE_DEDUP_MS) {
@@ -726,7 +1276,8 @@ export class ConfigService {
     }
 
     this.errorNoticeState[key] = { message, at: now };
-    this.message.error(message);
+    this.configNotice$.next({ key, type: 'error', message });
+    console.warn('[ConfigService]', message);
   }
 
   async loadBoardIndex(): Promise<any[]> {
@@ -967,6 +1518,13 @@ export class ConfigService {
 
 }
 
+interface ResourceSourceConfig {
+  key: string;
+  name?: string;
+  url: string;
+  enabled?: boolean;
+}
+
 interface AppConfig {
   /** 语言设置，例如 "zh_CN" */
   lang: string;
@@ -990,19 +1548,56 @@ interface AppConfig {
   /** 项目默认路径 */
   project_path: string;
 
+  /** 用户默认开发模式偏好：blockly 或 coder */
+  developmentModePreference?: DevelopmentModePreference;
+
+  /** 开发模式偏好来源 */
+  developmentModePreferenceSource?: DevelopmentModePreferenceSource;
+
+  /** 开发模式偏好更新时间 */
+  developmentModePreferenceUpdatedAt?: number;
+
+  /** 开发模式偏好首次提示时间 */
+  developmentModePreferencePromptedAt?: number;
+
+  /** 打包版型 */
+  build_flavor?: string;
+
+  /** 当前版型允许的官方区域 */
+  official_region?: string;
+
   /** 当前选中的区域 */
   region: string;
+
+  /** 当前选中的资源源，auto 表示自动模式 */
+  resource_source?: string;
+
+  /** 资源源列表 */
+  resource_sources?: ResourceSourceConfig[];
 
   /** 区域配置 */
   regions: {
     [key: string]: {
       name: string;
+      enabled?: boolean;
+      official?: boolean;
       api_server: string;
+      web?: string;
+      ucenter_web?: string;
       tool_web: string;
       npm_registry: string;
       resource: string;
       updater: string;
     }
+  };
+
+  /** 更新包下载镜像策略 */
+  update_download_strategy?: {
+    enabled?: boolean;
+    mirror_region_order?: string[];
+    fallback_on_error?: boolean;
+    first_byte_timeout_ms?: number;
+    stall_timeout_ms?: number;
   };
 
   /** 编译选项 */
@@ -1030,6 +1625,11 @@ interface AppConfig {
     renderer: string; // Blockly渲染器
   }
 
+  /** Coder 模式开关（由 electron/config/config.json 控制） */
+  coder?: {
+    enabled?: boolean;
+  };
+
   /** 串口监视器快速发送列表 */
   quickSendList?: Array<{ name: string, type: "signal" | "text" | "hex", data: string }>;
 
@@ -1039,6 +1639,9 @@ interface AppConfig {
   /** 当前选择的语言 */
   selectedLanguage?: string;
 
+  /** Header toolbar app ids saved by AppStoreService. */
+  toolbarAppIds?: string[];
+
   /** 跳过更新的版本列表 */
   skippedVersions?: string[];
 
@@ -1046,7 +1649,10 @@ interface AppConfig {
   boardUsageCount?: Record<string, number>;
 
   /** AI聊天模式 */
-  aiChatMode?: 'agent' | 'ask';
+  aiChatMode?: 'agent' | 'ask' | 'edit';
+
+  /** AI聊天当前自定义智能体目标 */
+  aiChatCustomAgentTarget?: string;
 
   /** 串口监视器配置 */
   serialMonitor?: {

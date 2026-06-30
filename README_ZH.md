@@ -10,11 +10,18 @@ aily Blockly是aily Project下的blockly IDE，前期面向非专业用户提供
 
 > 我们以提供工业级别软件为目标，进行本项目的设计和开发，但本项目目前还处于alpha阶段，不建议用于量产设备固件开发，但当前版本用于原型验证、教育教学是完全没有问题的。  
 
+## 视频介绍
+[ailyblockly-2min.webm](https://github.com/user-attachments/assets/bc8da095-2e4d-4ba0-ad31-2a4824a21576)  
+
+## 中国版下载地址
+[下载](https://yiyu.pro/download)  
+
+
 ## 当前版本亮点  
 1. 工程化项目管理
 使用npm进行项目管理，做到以项目为单位进行开发板和库的管理。解决了诸多传统嵌入式开发环境的工程化不足的问题。如，使用Arduino IDE可能出现board package、库和当前项目不匹配，造成编译失败，运行错误的问题。在本软件上，各项目中的开发板版本和库版本是独立的，项目间互不影响。
 2. 库管理器
-虽然我们已经准备了很多库（几乎涵盖了常用模组），但实际上这些库都是AI生成的，我们没有经过详细验证。需要内测参与者和我们一道进行验证和完善。
+已有200多个常用扩展库，能满足大部分开发需求，且还在不断增加中。
 3. 全能且小巧的串口调试工具
 试图打造一个全能的串口工具，欢迎大家测试、反馈、提出新的想法。
 4. AI项目生成
@@ -24,7 +31,7 @@ aily Blockly是aily Project下的blockly IDE，前期面向非专业用户提供
 6. AI转库
 原生C/C++库都可以轻松转换成本软件使用的库。基于大模型的配置生成，开发过程中，如果想使用arduino库，但没有对应的blockly库，只用将arduino库提供给AI，AI自动分析，生成对应的blockly库。借助该功能，本软件可以成为blockly最多的开发平台。
 7. AI开发板配置生成（完善中）  
-基于大模型的配置生成，添加开发板时不用再纯手写新配置，只用提供开发板文档（md格式），AI自动分析，帮你生成开发板配置文件。（仅支持esp32、avr、renesas、rp2040、stm32为核心的开发板，因为编译器和核心sdk，还是需要我们提前准备的到仓库的）
+基于大模型的配置生成，添加开发板时不用再纯手写新配置，只用提供开发板文档（md格式），AI自动分析，帮你生成开发板配置文件。（仅支持esp32、avr、renesas、rp2040、stm32为核心的开发板，因为编译器和核心sdk，还是需要我们提前准备的到仓库的，对于二进制程序，我们只能这样确保来源的安全性）
 8. 闪电编译工具（一期已上线，二期还将提速！）
 端云协同，闪电连编 将原本1小时的编译工作缩短到1分钟！  
 9. 引脚图  
@@ -38,7 +45,7 @@ AI可以根据用户程序和需求生成模组连线图，方便用户参考。
 当前版本不建议实际用于工作，因为后期我们做出的诸多调整，可能会导致版本间的不兼容。
 
 ## 文档
-[使用文档](https://aily.pro/doc)  
+[使用文档](https://yiyu.pro/doc)  
 [库适配文档](https://github.com/ailyProject/aily-blockly-libraries/blob/main/%E5%BA%93%E8%A7%84%E8%8C%83.md)  
 [软件开发文档](./develop.md)  
 
@@ -59,6 +66,8 @@ AI可以根据用户程序和需求生成模组连线图，方便用户参考。
 ## 本项目AI功能参考了以下项目
 [Kode](https://github.com/shareAI-lab/Kode-cli)  
 [copilot](https://github.com/microsoft/vscode-copilot-chat)  
+[ESPConnect](https://github.com/thelastoutpostworkshop/ESPConnect)  
+[BLEOTA](https://github.com/gb88/BLEOTA)  
 
 ## 附加权利说明  
 1. 本软件为GPL协议下的免费软件，在无授权的情况下，不得销售本软件及基于本软件的衍生软件；

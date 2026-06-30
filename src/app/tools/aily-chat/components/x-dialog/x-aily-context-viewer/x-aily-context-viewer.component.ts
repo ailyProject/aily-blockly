@@ -7,7 +7,7 @@ import { CommonModule } from '@angular/common';
   imports: [CommonModule],
   template: `
     <div class="ac-context" [class.expanded]="!collapsed">
-      <div class="ac-context-header" (click)="collapsed = !collapsed">
+      <div class="ac-context-header" (click)="collapsed = !collapsed; $event.stopPropagation()">
         <i class="fa-light fa-file-code ac-context-icon"></i>
         <span>{{ data?.label || '代码上下文' }}</span>
         <i class="fa-light fa-chevron-down ac-context-arrow"></i>

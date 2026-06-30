@@ -12,6 +12,7 @@ import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.se
 import { PlaygroundService } from '../playground.service';
 import { UiService } from '../../../services/ui.service';
 import { PlatformService } from '../../../services/platform.service';
+import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
 
 @Component({
   selector: 'app-subject-item',
@@ -49,6 +50,7 @@ export class SubjectItemComponent {
     private uiService: UiService,
     private platformService: PlatformService,
     private translate: TranslateService,
+    private appDataResourceLock: AppDataResourceLockService,
   ) { }
 
   ngOnInit() {
@@ -94,13 +96,11 @@ export class SubjectItemComponent {
       const abiFilePath = `${examplePath}/project.abi`;
 
       this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PLAYGROUND.LOADING_EXAMPLE'), timeout: 300000 });
-      // 避免缓存，一律重新安装加载
-      await this.cmdService.runAsync(`npm cache clean --force`);
-      await this.cmdService.runAsync(`npm install ${this.exampleItem.name} --prefix "${appDataPath}" --force`);
-
-      // if (!this.electronService.exists(examplePath) || !this.electronService.exists(abiFilePath)) {
-      //   await this.cmdService.runAsync(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`)
-      // }
+      if (!this.electronService.exists(examplePath) || !this.electronService.exists(abiFilePath)) {
+        await this.appDataResourceLock.runExclusive(`example:install:${this.exampleItem.name}`, () =>
+          this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`)
+        );
+      }
 
       // 将path路径中的最后文件夹名添加"_`generateDateString()`"后缀
       const lastFolderName = path.split('/').pop();

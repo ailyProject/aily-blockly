@@ -36,6 +36,11 @@
                 color: var(--aily-text-tertiary);
             }
 
+            .plan-expires {
+                margin-left: 0.35em;
+                color: var(--aily-text-hint);
+            }
+
         }
 
 
@@ -94,6 +99,20 @@
                     font-size: 20px;
                     font-weight: 500;
                     color: rgba(255, 166, 0, 0.86);
+                    display: flex;
+                    align-items: center;
+
+                    .mode{
+                        font-size: 14px;
+                        color: var(--aily-text-secondary);
+                        margin-right: 5px;
+                    }
+                }
+
+                .meta {
+                    margin-top: 2px;
+                    font-size: 12px;
+                    color: var(--aily-text-secondary);
                 }
             }
         }

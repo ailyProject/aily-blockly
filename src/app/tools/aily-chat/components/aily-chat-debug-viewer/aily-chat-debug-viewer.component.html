@@ -1,0 +1,50 @@
+<div class="chat-debug-viewer">
+  <aily-chat-debug-breadcrumb
+    [sessionTitle]="session.title"
+    (homeRequested)="homeRequested.emit()"></aily-chat-debug-breadcrumb>
+
+  <div class="chat-debug-viewer-header">
+    <div class="chat-debug-viewer-heading">
+      <div class="chat-debug-viewer-eyebrow">调试概览</div>
+      <div class="chat-debug-viewer-title">{{ session.title }}</div>
+      <div class="chat-debug-viewer-meta">
+        源会话 {{ session.sourceSessionId }} · 导入于 {{ session.importedAt | date:'yyyy-MM-dd HH:mm:ss' }}
+      </div>
+    </div>
+    <div class="chat-debug-viewer-actions">
+      <button type="button" class="chat-debug-viewer-close" (click)="closeRequested.emit()">返回聊天</button>
+    </div>
+  </div>
+
+  <div class="chat-debug-viewer-section-title">会话详情</div>
+  <div class="chat-debug-viewer-details">
+    @for (detail of sessionDetails; track detail.label) {
+    <div class="chat-debug-viewer-detail-row">
+      <span class="chat-debug-viewer-detail-label">{{ detail.label }}</span>
+      <span class="chat-debug-viewer-detail-main">
+        <span class="chat-debug-viewer-detail-value">{{ detail.value }}</span>
+        @if (detail.reference && canOpenReference(detail.reference)) {
+        <button type="button" class="chat-debug-viewer-detail-open" (click)="openReference(detail.reference, $event)">打开</button>
+        }
+      </span>
+    </div>
+    }
+  </div>
+
+  <div class="chat-debug-viewer-section-title">摘要</div>
+  <div class="chat-debug-viewer-overview">
+    @for (metric of summaryMetrics; track metric.label) {
+    <div class="chat-debug-viewer-stat">
+      <span class="chat-debug-viewer-stat-label">{{ metric.label }}</span>
+      <span class="chat-debug-viewer-stat-value">{{ metric.value }}</span>
+    </div>
+    }
+  </div>
+
+  <div class="chat-debug-viewer-section-title">探索跟踪数据</div>
+  <div class="chat-debug-viewer-explore-actions">
+    <button type="button" class="chat-debug-viewer-close secondary" (click)="logsRequested.emit()">查看日志</button>
+    <button type="button" class="chat-debug-viewer-close secondary" (click)="flowRequested.emit()">查看流程</button>
+    <button type="button" class="chat-debug-viewer-close secondary" (click)="cacheRequested.emit()">查看缓存</button>
+  </div>
+</div>

@@ -133,7 +133,6 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
       // 这里需要根据实际的应用架构来实现
       // 可能需要通过服务来调用安装功能
 
-      console.log('安装库包:', this.libraryInfo.name);
       // 可以添加成功提示
       this.chatService.sendTextToChat(`安装库包: ${this.libraryInfo.name}`, { sender: 'library', type: 'install', autoSend: true });
     } catch (error) {
@@ -161,6 +160,6 @@ export class AilyLibraryViewerComponent implements OnInit, OnDestroy {
   }
 
   logDetail() {
-    console.log('状态详情:', this.libraryInfo);
+    // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
   }
 }

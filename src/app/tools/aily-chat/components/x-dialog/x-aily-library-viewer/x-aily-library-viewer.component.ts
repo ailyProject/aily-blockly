@@ -79,6 +79,6 @@ export class XAilyLibraryViewerComponent implements OnInit, OnDestroy, OnChanges
   }
 
   logDetail() {
-    console.log('状态详情:', this.libraryInfo);
+    // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
   }
 }

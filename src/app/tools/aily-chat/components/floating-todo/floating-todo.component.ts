@@ -1,7 +1,7 @@
-import { Component, Input, OnInit, OnDestroy, OnChanges, SimpleChanges, inject } from '@angular/core';
+import { Component, Input, OnInit, OnDestroy, OnChanges, SimpleChanges, inject, ChangeDetectorRef, ElementRef, ViewChild, ViewChildren, QueryList, HostBinding } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Subscription } from 'rxjs';
-import { TodoUpdateService } from '../../services/todoUpdate.service';
+import { TodoListSnapshot, TodoUpdateService } from '../../services/todoUpdate.service';
 import { TodoItem, clearTodos } from '../../utils/todoStorage';
 
 @Component({
@@ -13,13 +13,32 @@ import { TodoItem, clearTodos } from '../../utils/todoStorage';
 })
 export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   @Input() sessionId: string = '';
+  @Input() requestInProgress: boolean = false;
   
   todoList: TodoItem[] = [];
+  todoListSnapshot: TodoListSnapshot | null = null;
   isCollapsed: boolean = false;
+
+  @ViewChild('todoListContainer') private todoListContainerRef?: ElementRef<HTMLElement>;
+  @ViewChildren('todoItemButton') private todoItemButtonRefs?: QueryList<ElementRef<HTMLButtonElement>>;
   
   private updateSubscription?: Subscription;
   private backupTimer?: any;
+  private userManuallyExpanded = false;
   private todoUpdateService = inject(TodoUpdateService);
+  private cdr = inject(ChangeDetectorRef);
+
+  @HostBinding('class.chat-todo-widget-host')
+  readonly hostClass = true;
+
+  @HostBinding('class.has-todos')
+  get hasTodosClass(): boolean {
+    return this.hasTodos;
+  }
+
+  get hasTodos(): boolean {
+    return this.todoList.length > 0;
+  }
 
   ngOnInit() {
     // console.log('[TODO Panel] 初始化组件, sessionId:', this.sessionId);
@@ -33,6 +52,9 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     if (changes['sessionId'] && !changes['sessionId'].firstChange) {
       const newSessionId = changes['sessionId'].currentValue;
       const oldSessionId = changes['sessionId'].previousValue;
+
+      this.userManuallyExpanded = false;
+      this.isCollapsed = false;
       
       // console.log('[TODO Panel] sessionId发生变化:', oldSessionId, '->', newSessionId);
       
@@ -56,12 +78,32 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
       
       // 订阅TODO更新事件
       this.updateSubscription = this.todoUpdateService.todoUpdated$.subscribe((sessionId: string) => {
-        // console.log('[TODO Panel] 接收到TODO更新事件:', sessionId);
         // 检查更新的sessionId是否与当前sessionId匹配
         if (sessionId === this.sessionId || sessionId === 'default') {
           this.loadTodosFromService();
         }
       });
+
+      // 订阅TODO语义快照变化
+      const dataSubscription = this.todoUpdateService.todoListSnapshot$.subscribe((todoData: Map<string, TodoListSnapshot>) => {
+        const currentSessionId = this.sessionId || 'default';
+        const snapshot = todoData.get(currentSessionId);
+        if (snapshot) {
+          this.todoListSnapshot = snapshot;
+          this.todoList = snapshot.items;
+          this.applyAutoCollapseState(snapshot.items);
+          this.cdr.detectChanges();
+        }
+      });
+
+      if (this.updateSubscription) {
+        const originalUnsubscribe = this.updateSubscription.unsubscribe.bind(this.updateSubscription);
+        this.updateSubscription.unsubscribe = () => {
+          originalUnsubscribe();
+          dataSubscription.unsubscribe();
+        };
+      }
+
     } catch (error) {
       console.warn('[TODO Panel] TodoUpdateService 初始化失败:', error);
     }
@@ -70,11 +112,11 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   private loadTodosFromService() {
     try {
       const sessionId = this.sessionId || 'default';
-      this.todoList = this.todoUpdateService.getTodosForSession(sessionId);
-    //   console.log('[TODO Panel] 从服务加载TODO列表:', this.todoList.length, '项');
-    //   console.log('[TODO Panel] ✅ 详细数据:', this.todoList);
-    //   console.log('[TODO Panel] ✅ isCollapsed:', this.isCollapsed);
-    //   console.log('[TODO Panel] ✅ 组件状态检查 - todoList存在:', !!this.todoList, 'length:', this.todoList?.length);
+      const snapshot = this.todoUpdateService.getTodoListSnapshotForSession(sessionId);
+      this.todoListSnapshot = snapshot;
+      this.todoList = snapshot.items;
+      this.applyAutoCollapseState(snapshot.items);
+      this.cdr.detectChanges();
     } catch (error) {
       console.warn('[TODO Panel] 加载TODO列表失败:', error);
     }
@@ -134,11 +176,145 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   // 模板绑定方法
   toggleCollapse() {
     this.isCollapsed = !this.isCollapsed;
+    this.userManuallyExpanded = !this.isCollapsed;
     // console.log('[TODO Panel] 切换折叠状态:', this.isCollapsed);
   }
 
+  hasFocus(): boolean {
+    const container = this.todoListContainerRef?.nativeElement;
+    const activeElement = document.activeElement;
+    return !!container && !!activeElement && container.contains(activeElement);
+  }
+
+  focus(): boolean {
+    if (this.todoList.length === 0) {
+      return false;
+    }
+
+    if (this.isCollapsed) {
+      this.toggleCollapse();
+    }
+
+    this.cdr.detectChanges();
+    this.todoItemButtonRefs?.first?.nativeElement.focus();
+    return this.hasFocus();
+  }
+
+  private applyAutoCollapseState(todos: readonly TodoItem[]): void {
+    if (todos.length === 0) {
+      this.userManuallyExpanded = false;
+      this.isCollapsed = false;
+      return;
+    }
+
+    const allIncomplete = todos.every(todo => todo.status === 'not-started');
+    if (allIncomplete) {
+      this.userManuallyExpanded = false;
+      return;
+    }
+
+    const hasInProgressOrCompleted = todos.some(todo => todo.status === 'in-progress' || todo.status === 'completed');
+    if (hasInProgressOrCompleted && !this.userManuallyExpanded) {
+      this.isCollapsed = true;
+    }
+  }
+
+  getToggleAriaLabel(): string {
+    return this.isCollapsed ? 'Expand Todos' : 'Collapse Todos';
+  }
+
+  getTodoListTitleId(): string {
+    return `todo-list-title-${this.sessionId || 'default'}`;
+  }
+
+  getTodoListContainerId(): string {
+    return `todo-list-container-${this.sessionId || 'default'}`;
+  }
+
   getCompletedCount(): number {
-    return this.todoList.filter(todo => todo.status === 'completed').length;
+    return this.todoListSnapshot?.completedCount
+      ?? this.todoList.filter(todo => todo.status === 'completed').length;
+  }
+
+  getCurrentTodo(): TodoItem | null {
+    return this.todoList.find(todo => todo.status === 'in-progress')
+      ?? this.todoList.find(todo => todo.status === 'not-started')
+      ?? null;
+  }
+
+  getCurrentStep(): number {
+    if (this.todoListSnapshot) {
+      return this.todoListSnapshot.currentStep;
+    }
+
+    if (!this.todoList.length) {
+      return 0;
+    }
+
+    const currentTodo = this.getCurrentTodo();
+    return currentTodo ? Math.min(this.todoList.length, this.getCompletedCount() + 1) : this.todoList.length;
+  }
+
+  getHeaderTitle(): string {
+    const totalCount = this.todoListSnapshot?.totalCount ?? this.todoList.length;
+    if (!totalCount) {
+      return 'Todos';
+    }
+
+    if (!this.isCollapsed) {
+      return `Todos (${this.getCurrentStep()}/${totalCount})`;
+    }
+
+    const currentTodoTitle = this.todoListSnapshot?.currentTask ?? this.getCurrentTodo()?.content;
+    if (currentTodoTitle) {
+      return `${currentTodoTitle} (${this.getCurrentStep()}/${totalCount})`;
+    }
+
+    return `Todos (${totalCount}/${totalCount})`;
+  }
+
+  getHeaderStatus(): TodoItem['status'] | null {
+    if (!this.isCollapsed) {
+      return null;
+    }
+
+    const semanticCurrentTask = this.todoListSnapshot?.currentTask;
+    if (semanticCurrentTask) {
+      return this.todoList.find(todo => todo.content === semanticCurrentTask)?.status
+        ?? this.getCurrentTodo()?.status
+        ?? (this.todoList.length ? 'completed' : null);
+    }
+
+    return this.getCurrentTodo()?.status ?? (this.todoList.length ? 'completed' : null);
+  }
+
+  hasInProgressTodo(): boolean {
+    return this.todoList.some(todo => todo.status === 'in-progress');
+  }
+
+  isClearDisabled(): boolean {
+    return this.requestInProgress && this.hasInProgressTodo();
+  }
+
+  getClearButtonTitle(): string {
+    return this.isClearDisabled()
+      ? 'Cannot clear todos while a task is in progress'
+      : 'Clear all todos';
+  }
+
+  getTodoAriaLabel(todo: TodoItem): string {
+    return `${todo.content}, ${this.getTodoStatusLabel(todo.status)}`;
+  }
+
+  private getTodoStatusLabel(status: TodoItem['status']): string {
+    switch (status) {
+      case 'completed':
+        return 'completed';
+      case 'in-progress':
+        return 'in progress';
+      default:
+        return 'not started';
+    }
   }
 
   toggleTodoStatus(todo: TodoItem) {
@@ -180,6 +356,10 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   clearAllTodos(event: Event) {
     // 阻止事件冒泡，避免触发header的折叠/展开
     event.stopPropagation();
+
+    if (this.isClearDisabled()) {
+      return;
+    }
     
     const sessionId = this.sessionId || 'default';
     // console.log('[TODO Panel] 清空所有TODO项, sessionId:', sessionId);
@@ -190,6 +370,9 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
       
       // 更新本地数组
       this.todoList = [];
+      this.userManuallyExpanded = false;
+      this.isCollapsed = false;
+      this.todoListSnapshot = this.todoUpdateService.getTodoListSnapshotForSession(sessionId);
       
       // 通知服务数据已更新
       this.todoUpdateService.updateTodoData(sessionId, []);

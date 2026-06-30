@@ -1,4 +1,4 @@
-﻿import { ToolUseResult } from "./tools";
+﻿import type { ToolUseResult } from '../core/tool-types';
 import { AilyHost } from '../core/host';
 
 interface LibraryInfo {
@@ -73,7 +73,7 @@ function collectProjectInfo(projectPath: string, projectName: string): CreatePro
         const libCount = libraries.length;
         const libsWithReadme = libraries.filter(lib => lib.readmeAiPath).length;
 
-        result.message = `项目 "${projectName}" 创建成功！\n${boardSummary}\n已安装 ${libCount} 个库${libsWithReadme > 0 ? `，其中 ${libsWithReadme} 个包含 readme_ai.md 文档，可使用 analyze_library_blocks 分析没有 readme_ai.md 文档的库` : ''}`;
+        result.message = `项目 "${projectName}" 创建成功！\n${boardSummary}\n已安装 ${libCount} 个库${libsWithReadme > 0 ? `，其中 ${libsWithReadme} 个包含 readme_ai.md 文档，可使用 analyzeLibrary 分析没有 readme_ai.md 文档的库` : ''}`;
     } catch (e) {
         console.warn('收集项目信息失败:', e);
         result.message = `项目 "${projectName}" 创建成功！（获取详细信息时出错: ${e.message}）`;
@@ -126,9 +126,11 @@ export async function newProjectTool(prjRootPath: string, toolArgs: any, prjServ
             name: prjName,
             path: prjRootPath,
             board: boardInfo
+        }, {
+            activationReason: 'chat-tool-create'
         });
 
-        const projectPath = window["path"].join(prjRootPath, prjName);
+        const projectPath = window['path'].join(prjRootPath, prjName);
         const result = collectProjectInfo(projectPath, prjName);
         toolResult = JSON.stringify(result, null, 2);
     } catch (e) {

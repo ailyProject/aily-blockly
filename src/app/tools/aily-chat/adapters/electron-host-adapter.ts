@@ -24,6 +24,7 @@ import {
   IEnvProvider,
   IShellUtils,
   IEditorProvider,
+  IConnectionGraphProvider,
   IMcpProvider,
 } from '../core/host-api';
 
@@ -43,8 +44,7 @@ export interface ElectronAdapterDeps {
   cmdService?: any;
   crossPlatformCmdService?: any;
   absAutoSyncService?: any;
-  fetchToolService?: any;
-  webSearchToolService?: any;
+  arduinoLintService?: any;
   electronService?: any;
   uiService?: any;
   onboardingService?: any;
@@ -54,32 +54,139 @@ export interface ElectronAdapterDeps {
  * 创建基于 Electron window[] API 的 IAilyHostAPI 实现。
  */
 export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostAPI {
-  // 缓存 window 引用，避免每次访问都查找
-  const wFs = (window as any)['fs'];
-  const wPath = (window as any)['path'];
-  const wTerminal = (window as any)['terminal'];
-  const wCmd = (window as any)['cmd'];
-  const wDialog = (window as any)['dialog'];
-  const wPlatform = (window as any)['platform'];
-  const wOther = (window as any)['other'];
-  const wEnv = (window as any)['env'];
-  const wMcp = (window as any)['mcp'];
-  const wOs = (window as any)['os'];
+  const getElectronAPI = () => (window as any)['electronAPI'] ?? {};
+  const getWindowBridge = (key: string) => getElectronAPI()[key] ?? (window as any)[key];
+  const getFs = () => getWindowBridge('fs');
+  const getPath = () => getWindowBridge('path');
+  const getTerminal = () => getWindowBridge('terminal');
+  const getCmd = () => getWindowBridge('cmd');
+  const getDialog = () => getWindowBridge('dialog');
+  const getPlatform = () => getWindowBridge('platform');
+  const getOther = () => (window as any)['other'] ?? getElectronAPI().shell;
+  const getEnv = () => getWindowBridge('env');
+  const getMcp = () => getWindowBridge('mcp');
+  const getOs = () => getWindowBridge('os');
+  const getLog = () => getWindowBridge('log');
+  const getClipboard = () => getElectronAPI().clipboard ?? (window as any)['clipboard'];
+  const textDocumentContentProviders = new Map<string, {
+    provideTextDocumentContent(uri: string): Promise<string | undefined> | string | undefined;
+  }>();
+  const getDep = <K extends keyof ElectronAdapterDeps>(key: K): ElectronAdapterDeps[K] => deps[key];
+  let cachedHostConfigApiEndpoint: string | null | undefined;
+
+  const normalizeStringValue = (value: unknown): string => typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : '';
+
+  const normalizeComparablePath = (value: unknown): string => normalizeStringValue(value)
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+
+  const resolveActiveProjectPath = (rawProjectService: any): string => {
+    const currentProjectPath = normalizeStringValue(rawProjectService?.currentProjectPath);
+    const projectRootPath = normalizeStringValue(rawProjectService?.projectRootPath);
+    if (!currentProjectPath) {
+      return '';
+    }
+    if (projectRootPath && normalizeComparablePath(currentProjectPath) === normalizeComparablePath(projectRootPath)) {
+      return '';
+    }
+    return currentProjectPath;
+  };
+
+  const resolveProjectPath = (rawProjectService: any): string =>
+    resolveActiveProjectPath(rawProjectService);
+
+  const resolveProjectRootPath = (rawProjectService: any): string =>
+    normalizeStringValue(rawProjectService?.projectRootPath)
+    || resolveProjectPath(rawProjectService);
+
+  const resolveProjectBoardFromPackageData = (packageData: any): string | undefined => {
+    const explicitBoard = normalizeStringValue(packageData?.board);
+    if (explicitBoard) {
+      return explicitBoard;
+    }
+
+    const dependencies = packageData?.dependencies;
+    if (!dependencies || typeof dependencies !== 'object') {
+      return undefined;
+    }
+
+    const boardDependency = Object.keys(dependencies)
+      .find(dependencyName => dependencyName.startsWith('@aily-project/board-'));
+    return boardDependency
+      ? boardDependency.slice('@aily-project/'.length)
+      : undefined;
+  };
+
+  const resolveProjectBoard = (rawProjectService: any): string | undefined => {
+    if (!resolveActiveProjectPath(rawProjectService)) {
+      return undefined;
+    }
+    return resolveProjectBoardFromPackageData(rawProjectService?.currentPackageData)
+      || normalizeStringValue(rawProjectService?.currentBoardConfig?.name)
+      || normalizeStringValue(rawProjectService?.currentBoard)
+      || undefined;
+  };
+
+  const resolveProjectName = (rawProjectService: any): string | undefined => {
+    if (!resolveActiveProjectPath(rawProjectService)) {
+      return undefined;
+    }
+    return normalizeStringValue(rawProjectService?.currentPackageData?.name)
+      || normalizeStringValue(rawProjectService?.projectName)
+      || undefined;
+  };
+
+  const readHostConfigApiEndpoint = (): string | null => {
+    if (cachedHostConfigApiEndpoint !== undefined) {
+      return cachedHostConfigApiEndpoint;
+    }
+
+    cachedHostConfigApiEndpoint = null;
+    try {
+      const pathApi = getPath();
+      const fsApi = getFs();
+      if (!pathApi || !fsApi || typeof fsApi.readFileSync !== 'function') {
+        return cachedHostConfigApiEndpoint;
+      }
+
+      const electronPath = typeof pathApi.getElectronPath === 'function' ? pathApi.getElectronPath() : '';
+      const appDataPath = typeof pathApi.getAppDataPath === 'function' ? pathApi.getAppDataPath() : '';
+      const defaultConfigPath = electronPath && typeof pathApi.join === 'function'
+        ? pathApi.join(electronPath, 'config', 'config.json')
+        : '';
+      const userConfigPath = appDataPath && typeof pathApi.join === 'function'
+        ? pathApi.join(appDataPath, 'config.json')
+        : '';
+      const defaultConfig = readJsonFileSync(fsApi, defaultConfigPath);
+      const userConfig = userConfigPath && fsExistsSync(fsApi, userConfigPath)
+        ? readJsonFileSync(fsApi, userConfigPath)
+        : null;
+      const mergedConfig = mergeHostConfig(defaultConfig, userConfig);
+      cachedHostConfigApiEndpoint = resolveHostConfigApiEndpoint(mergedConfig);
+      return cachedHostConfigApiEndpoint;
+    } catch {
+      cachedHostConfigApiEndpoint = null;
+      return cachedHostConfigApiEndpoint;
+    }
+  };
 
   // ----- fs -----
   const fs: IFileSystem = {
-    readFileSync: (path, encoding?) => wFs.readFileSync(path, encoding ?? 'utf8'),
-    readFileAsBase64: (path) => wFs.readFileAsBase64?.(path),
-    writeFileSync: (path, data) => wFs.writeFileSync(path, data),
-    appendFileSync: (path, data) => wFs.appendFileSync?.(path, data),
-    existsSync: (path) => wFs.existsSync(path),
-    mkdirSync: (path, options?) => wFs.mkdirSync(path, options),
-    unlinkSync: (path) => wFs.unlinkSync(path),
-    rmdirSync: (path, options?) => wFs.rmdirSync(path, options),
-    renameSync: (oldPath, newPath) => wFs.renameSync?.(oldPath, newPath),
-    copySync: (src, dest) => wFs.copySync?.(src, dest),
+    readFileSync: (path, encoding?) => getFs().readFileSync(path, encoding ?? 'utf8'),
+    readFileAsBase64: (path) => getFs().readFileAsBase64?.(path),
+    writeFileSync: (path, data) => getFs().writeFileSync(path, data),
+    appendFileSync: (path, data) => getFs().appendFileSync?.(path, data),
+    existsSync: (path) => getFs()?.existsSync?.(path) ?? false,
+    mkdirSync: (path, options?) => getFs().mkdirSync(path, options),
+    unlinkSync: (path) => getFs().unlinkSync(path),
+    rmdirSync: (path, options?) => getFs().rmdirSync(path, options),
+    renameSync: (oldPath, newPath) => getFs().renameSync?.(oldPath, newPath),
+    copySync: (src, dest) => getFs().copySync?.(src, dest),
     statSync: (path) => {
-      const raw = wFs.statSync(path);
+      const raw = getFs().statSync(path);
       return {
         size: raw.size,
         mtime: new Date(raw.mtime),
@@ -88,10 +195,10 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
         isFile: () => raw._isFile,
       };
     },
-    isDirectory: (path) => wFs.isDirectory(path),
-    readdirSync: (path) => wFs.readdirSync(path),
+    isDirectory: (path) => getFs().isDirectory(path),
+    readdirSync: (path) => getFs().readdirSync(path),
     readDirSync: (path) => {
-      const entries = wFs.readDirSync?.(path);
+      const entries = getFs().readDirSync?.(path);
       if (!entries) return undefined;
       return entries.map((e: any) => ({
         name: e.name,
@@ -99,13 +206,13 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
         isFile: () => e._isFile,
       }));
     },
-    realpathSync: (path) => wFs.realpathSync?.(path),
+    realpathSync: (path) => getFs().realpathSync?.(path),
     // ---- 异步方法（IPC 到主进程） ----
-    readFile: (path, encoding?) => wFs.readFile(path, encoding ?? 'utf8'),
-    writeFile: (path, data, encoding?) => wFs.writeFile(path, data, encoding),
-    exists: (path) => wFs.exists(path),
+    readFile: (path, encoding?) => getFs().readFile(path, encoding ?? 'utf8'),
+    writeFile: (path, data, encoding?) => getFs().writeFile(path, data, encoding),
+    exists: (path) => getFs().exists(path),
     stat: async (path) => {
-      const raw = await wFs.stat(path);
+      const raw = await getFs().stat(path);
       return {
         size: raw.size,
         mtime: new Date(raw.mtime),
@@ -114,191 +221,533 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
         isFile: () => raw._isFile,
       };
     },
-    readdir: (path) => wFs.readdir(path),
+    readdir: (path) => getFs().readdir(path),
     readDir: async (path) => {
-      const entries = await wFs.readDir(path);
+      const entries = await getFs().readDir(path);
       return entries.map((e: any) => ({
         name: e.name,
         isDirectory: () => e._isDirectory,
         isFile: () => e._isFile,
       }));
     },
-    mkdir: (path, options?) => wFs.mkdir(path, options),
-    unlink: (path) => wFs.unlink(path),
+    mkdir: (path, options?) => getFs().mkdir(path, options),
+    unlink: (path) => getFs().unlink(path),
+    watch: (watchPath, listener, options) => {
+      const handle = getFs().watch?.(watchPath, listener, options);
+      if (!handle) {
+        return undefined;
+      }
+
+      return {
+        close: () => handle.close?.(),
+        dispose: () => handle.dispose?.() ?? handle.close?.(),
+        unsubscribe: () => handle.unsubscribe?.() ?? handle.close?.(),
+      };
+    },
   };
 
   // ----- path -----
   const path: IPathUtils = {
-    join: (...paths) => wPath.join(...paths),
-    resolve: (...paths) => wPath.resolve(...paths),
-    dirname: (p) => wPath.dirname(p),
-    basename: (p, ext?) => wPath.basename(p, ext),
-    extname: (p) => wPath.extname(p),
-    relative: (from, to) => wPath.relative(from, to),
-    isAbsolute: (p) => wPath.isAbsolute(p),
-    normalize: (p) => wPath.normalize?.(p),
-    getAppDataPath: () => wPath.getAppDataPath(),
-    getUserDocuments: () => wPath.getUserDocuments(),
-    getUserHome: () => wPath.getUserHome(),
-    getAilyBuilderPath: () => wPath.getAilyBuilderPath?.(),
-    getAilyBuilderBuildPath: () => wPath.getAilyBuilderBuildPath?.(),
-    getAilyChildPath: () => wPath.getAilyChildPath?.(),
-    getElectronPath: () => wPath.getElectronPath?.(),
-    isExists: (p) => wPath.isExists?.(p),
-    isDir: (p) => wPath.isDir?.(p),
+    join: (...paths) => getPath()?.join?.(...paths) ?? paths.filter(Boolean).join('/'),
+    resolve: (...paths) => getPath()?.resolve?.(...paths) ?? paths.filter(Boolean).join('/'),
+    dirname: (p) => getPath()?.dirname?.(p) ?? String(p).replace(/[\\/][^\\/]*$/, ''),
+    basename: (p, ext?) => getPath()?.basename?.(p, ext) ?? String(p).split(/[\\/]/).pop() ?? '',
+    extname: (p) => getPath()?.extname?.(p) ?? '',
+    relative: (from, to) => getPath()?.relative?.(from, to) ?? to,
+    isAbsolute: (p) => getPath()?.isAbsolute?.(p) ?? /^[A-Za-z]:[\\/]|^\//.test(String(p)),
+    normalize: (p) => getPath()?.normalize?.(p) ?? p,
+    getAppDataPath: () => getPath()?.getAppDataPath?.() ?? '',
+    getUserDocuments: () => getPath()?.getUserDocuments?.() ?? '',
+    getUserHome: () => getPath()?.getUserHome?.() ?? '',
+    getAilyBuilderPath: () => getPath()?.getAilyBuilderPath?.(),
+    getAilyBuilderBuildPath: () => getPath()?.getAilyBuilderBuildPath?.(),
+    getAilyChildPath: () => getPath()?.getAilyChildPath?.(),
+    getElectronPath: () => getPath()?.getElectronPath?.(),
+    isExists: (p) => getPath()?.isExists?.(p) ?? false,
+    isDir: (p) => getPath()?.isDir?.(p) ?? false,
   };
 
   // ----- terminal (合并 window['terminal'] + window['cmd']) -----
   const terminal: ITerminal = {
-    getShell: () => wTerminal?.getShell(),
-    init: (data) => wTerminal?.init(data),
-    sendInput: (data) => wTerminal?.sendInput(data),
-    sendInputAsync: (data) => wTerminal?.sendInputAsync(data),
-    close: (data) => wTerminal?.close(data),
-    resize: (data) => wTerminal?.resize(data),
-    interrupt: (pid) => wTerminal?.interrupt(pid),
-    killProcess: (pid, name) => wTerminal?.killProcess(pid, name),
-    startStream: (pid) => wTerminal?.startStream(pid),
-    stopStream: (pid, sid) => wTerminal?.stopStream(pid, sid),
-    onStreamData: (sid, cb) => wTerminal?.onStreamData(sid, cb),
-    executeWithStream: (pid, cmd) => wTerminal?.executeWithStream(pid, cmd),
+    getShell: () => getTerminal()?.getShell(),
+    init: (data) => getTerminal()?.init(data),
+    onPidData: (pid, cb) => getTerminal()?.onPidData?.(pid, cb),
+    onPidExit: (pid, cb) => getTerminal()?.onPidExit?.(pid, cb),
+    sendInput: (data) => getTerminal()?.sendInput(data),
+    spawnCommand: (data) => getTerminal()?.spawnCommand?.(data),
+    sendInputAsync: (data) => getTerminal()?.sendInputAsync(data),
+    close: (data) => getTerminal()?.close(data),
+    resize: (data) => getTerminal()?.resize(data),
+    interrupt: (pid) => getTerminal()?.interrupt(pid),
+    killProcess: (pid, name) => getTerminal()?.killProcess(pid, name),
+    startStream: (pid) => getTerminal()?.startStream(pid),
+    stopStream: (pid, sid) => getTerminal()?.stopStream(pid, sid),
+    onStreamData: (sid, cb) => getTerminal()?.onStreamData(sid, cb),
+    executeWithStream: (pid, cmd) => getTerminal()?.executeWithStream(pid, cmd),
     // window['cmd'] 映射
-    run: (options) => wCmd?.run(options),
-    kill: (streamId) => wCmd?.kill(streamId),
-    killByName: (name) => wCmd?.killByName(name),
-    input: (streamId, input) => wCmd?.input(streamId, input),
-    onData: (streamId, cb) => wCmd?.onData(streamId, cb),
-    execBackground: (command, options?) => wCmd?.execBackground(command, options),
-    killBackgroundProcess: (pid) => wCmd?.killBackgroundProcess(pid),
+    run: (options) => getCmd()?.run(options),
+    kill: (streamId) => getCmd()?.kill(streamId),
+    killByName: (name) => getCmd()?.killByName(name),
+    input: (streamId, input) => getCmd()?.input(streamId, input),
+    onData: (streamId, cb) => getCmd()?.onData(streamId, cb),
+    execBackground: (command, options?) => getCmd()?.execBackground(command, options),
+    killBackgroundProcess: (pid) => getCmd()?.killBackgroundProcess(pid),
   };
 
   // ----- dialog -----
   const dialog: IDialog = {
-    selectFiles: (options?) => wDialog?.selectFiles(options),
+    selectFiles: (options?) => getDialog()?.selectFiles(options),
   };
 
   // ----- platform -----
   const platform: IPlatform = {
-    type: wPlatform?.type ?? 'linux',
-    pathSeparator: wPlatform?.pt ?? '/',
-    isWindows: wPlatform?.isWindows ?? false,
-    isMacOS: wPlatform?.isMacOS ?? false,
-    isLinux: wPlatform?.isLinux ?? true,
-    lang: wPlatform?.lang ?? 'zh-CN',
-    za7: wPlatform?.isWindows ? '7za.exe' : '7zz',
-    homedir: () => wOs?.homedir?.() ?? wPath?.getUserHome?.() ?? '',
-    tmpdir: () => wOs?.tmpdir?.() ?? '',
+    get type() { return getPlatform()?.type ?? 'linux'; },
+    get pathSeparator() { return getPlatform()?.pt ?? '/'; },
+    get isWindows() { return getPlatform()?.isWindows ?? false; },
+    get isMacOS() { return getPlatform()?.isMacOS ?? false; },
+    get isLinux() { return getPlatform()?.isLinux ?? true; },
+    get lang() { return getPlatform()?.lang ?? 'zh-CN'; },
+    get za7() { return getPlatform()?.isWindows ? '7za.exe' : '7zz'; },
+    homedir: () => getOs()?.homedir?.() ?? getPath()?.getUserHome?.() ?? '',
+    tmpdir: () => getOs()?.tmpdir?.() ?? '',
   };
 
-  // ----- project (直接透传 Angular 服务，保留完整 API 供 handler 使用) -----
-  const project: IProjectProvider = deps.projectService ?? {} as IProjectProvider;
+  // ----- project (lazy Angular ProjectService -> IProjectProvider) -----
+  const project: IProjectProvider = new Proxy({} as IProjectProvider, {
+    get(_target, prop: string | symbol) {
+      const rawProjectService = getDep('projectService');
+      if (!rawProjectService) {
+        return undefined;
+      }
+
+      if (prop === 'currentProjectPath') {
+        return resolveProjectPath(rawProjectService);
+      }
+      if (prop === 'projectRootPath') {
+        return resolveProjectRootPath(rawProjectService);
+      }
+      if (prop === 'currentBoard') {
+        return resolveProjectBoard(rawProjectService);
+      }
+      if (prop === 'projectName') {
+        return resolveProjectName(rawProjectService);
+      }
+      if (prop === 'getProjectPath') {
+        return () => resolveProjectPath(rawProjectService);
+      }
+      if (prop === 'getBoard') {
+        return () => resolveProjectBoard(rawProjectService);
+      }
+      if (prop === 'getProjectInfo') {
+        return async () => {
+          const activeProjectPath = resolveProjectPath(rawProjectService);
+          if (typeof rawProjectService.getProjectInfo === 'function') {
+            const info = await rawProjectService.getProjectInfo();
+            if (info && typeof info === 'object') {
+              const infoRecord = info as Record<string, unknown>;
+              if (!activeProjectPath && infoRecord['projectOpened'] !== true) {
+                return {
+                  ...infoRecord,
+                  projectOpened: false,
+                };
+              }
+              return {
+                ...infoRecord,
+                path: normalizeStringValue(infoRecord['path']) || activeProjectPath,
+                board: infoRecord['board'] ?? resolveProjectBoard(rawProjectService),
+                name: infoRecord['name'] ?? resolveProjectName(rawProjectService),
+              };
+            }
+            return info;
+          }
+          return {
+            projectOpened: Boolean(activeProjectPath),
+            path: activeProjectPath,
+            rootPath: resolveProjectRootPath(rawProjectService),
+            board: resolveProjectBoard(rawProjectService),
+            name: resolveProjectName(rawProjectService),
+          };
+        };
+      }
+      if (prop === 'getPackageJsonSync') {
+        return () => {
+          try { return rawProjectService.currentPackageData ?? undefined; }
+          catch { return undefined; }
+        };
+      }
+
+      const value = rawProjectService[prop as keyof typeof rawProjectService];
+      return typeof value === 'function' ? value.bind(rawProjectService) : value;
+    },
+    set(_target, prop: string | symbol, value) {
+      const rawProjectService = getDep('projectService');
+      if (!rawProjectService) {
+        return false;
+      }
+
+      rawProjectService[prop as keyof typeof rawProjectService] = value;
+      return true;
+    },
+    has(_target, prop: string | symbol) {
+      const rawProjectService = getDep('projectService');
+      if (!rawProjectService) {
+        return false;
+      }
+      if ([
+        'currentProjectPath',
+        'projectRootPath',
+        'currentBoard',
+        'projectName',
+        'getProjectPath',
+        'getProjectInfo',
+        'getBoard',
+        'getPackageJsonSync',
+      ].includes(String(prop))) {
+        return true;
+      }
+      return prop in rawProjectService;
+    },
+  });
 
   // ----- auth -----
   // ----- auth (映射 getToken2 → getToken) -----
   const auth: IAuthProvider = {
-    get isLoggedIn() { return deps.authService?.isLoggedIn ?? false; },
-    get token() { return deps.authService?.token ?? ''; },
-    get userInfo() { return deps.authService?.userInfo; },
-    getAuthHeaders: () => deps.authService?.getAuthHeaders?.() ?? {},
-    getToken: () => deps.authService?.getToken2?.() ?? Promise.resolve(''),
-    promptLogin: () => deps.authService?.promptLogin?.() ?? Promise.resolve(false),
+    get isLoggedIn() { return getDep('authService')?.isLoggedIn ?? false; },
+    get isLoggedIn$() { return getDep('authService')?.isLoggedIn$; },
+    get authChanged$() { return getDep('authService')?.authChanged$; },
+    get token() { return getDep('authService')?.token ?? ''; },
+    get userInfo() { return getDep('authService')?.userInfo; },
+    get userInfo$() { return getDep('authService')?.userInfo$; },
+    get authSnapshot$() { return getDep('authService')?.authSnapshot$; },
+    getAuthHeaders: () => getDep('authService')?.getAuthHeaders?.() ?? {},
+    initializeAuth: () => getDep('authService')?.initializeAuth?.() ?? Promise.resolve(),
+    getToken: () => getDep('authService')?.getToken2?.() ?? Promise.resolve(''),
+    getSnapshot: () => getDep('authService')?.getAuthSnapshot?.() ?? null,
+    refreshMe: () => getDep('authService')?.refreshMe?.() ?? Promise.resolve(null),
+    promptLogin: () => getDep('authService')?.promptLogin?.() ?? Promise.resolve(false),
   };
 
   // ----- config (透传 data/save) -----
   const config: IConfigProvider = {
     get apiEndpoint() {
-      // wEnv.get() returns a Promise (IPC), cannot use directly in sync getter.
-      // Use configService's synchronous API, fall back to process.env, then default.
-      return deps.configService?.getCurrentApiServer?.()
-        || (typeof process !== 'undefined' ? process.env?.['AILY_API_SERVER'] : undefined)
-        || 'https://api.aily.pro';
+      const envEndpoint = (typeof process !== 'undefined' ? process.env?.['AILY_API_SERVER'] : undefined)
+        || (typeof window !== 'undefined' ? (window as any)?.process?.env?.['AILY_API_SERVER'] : undefined);
+      if (typeof envEndpoint === 'string' && envEndpoint.trim()) {
+        return envEndpoint.trim();
+      }
+
+      return readHostConfigApiEndpoint() || 'https://api.aily.pro';
     },
-    get locale() { return deps.configService?.data?.lang ?? 'zh-CN'; },
-    get: (key: string) => deps.configService?.data?.[key],
-    set: (key: string, value: any) => { if (deps.configService?.data) deps.configService.data[key] = value; },
-    get data() { return deps.configService?.data; },
-    save: () => deps.configService?.save?.(),
-    getBoardsList: () => deps.configService?.getBoardsList?.(),
-    getLibrariesList: () => deps.configService?.getLibrariesList?.(),
-    getHardwareCategories: () => deps.configService?.getHardwareCategories?.(),
-    loadHardwareIndexForAI: () => deps.configService?.loadHardwareIndexForAI?.(),
-    get boardIndex() { return (deps.configService as any)?.boardIndex; },
-    get boardList() { return (deps.configService as any)?.boardList; },
-    get boardDict() { return (deps.configService as any)?.boardDict; },
-    get libraryIndex() { return (deps.configService as any)?.libraryIndex; },
-    get libraryList() { return (deps.configService as any)?.libraryList; },
-    get libraryDict() { return (deps.configService as any)?.libraryDict; },
+    get locale() { return getDep('configService')?.data?.lang ?? 'zh-CN'; },
+    get: (key: string) => getDep('configService')?.data?.[key],
+    set: (key: string, value: any) => {
+      const configService = getDep('configService');
+      if (configService?.data) configService.data[key] = value;
+    },
+    get data() { return getDep('configService')?.data; },
+    save: () => getDep('configService')?.save?.(),
+    getBoardsList: () => getDep('configService')?.getBoardsList?.(),
+    getLibrariesList: () => getDep('configService')?.getLibrariesList?.(),
+    getHardwareCategories: () => getDep('configService')?.getHardwareCategories?.(),
+    loadHardwareIndexForAI: () => getDep('configService')?.loadHardwareIndexForAI?.(),
+    scheduleHardwareIndexRefreshForAI: (reason: string, options?: { force?: boolean }) => getDep('configService')?.scheduleHardwareIndexRefreshForAI?.(reason, options),
+    get boardIndex() { return (getDep('configService') as any)?.boardIndex; },
+    get boardList() { return (getDep('configService') as any)?.boardList; },
+    get boardDict() { return (getDep('configService') as any)?.boardDict; },
+    get libraryIndex() { return (getDep('configService') as any)?.libraryIndex; },
+    get libraryList() { return (getDep('configService') as any)?.libraryList; },
+    get libraryDict() { return (getDep('configService') as any)?.libraryDict; },
   };
 
   // ----- builder -----
-  const builder: IBuildProvider = deps.builderService ?? {} as IBuildProvider;
+  const builder: IBuildProvider = {
+    build: async (projectPath: string) => {
+      if (!projectPath) {
+        return { success: false, output: 'No active project is available for build.' };
+      }
+      const builderService = getDep('builderService');
+      if (!builderService || typeof builderService.build !== 'function') {
+        return { success: false, output: 'Build system is not available.' };
+      }
+
+      try {
+        const result = await builderService.build(projectPath);
+        return {
+          success: result?.state !== 'error' && result?.state !== 'warn',
+          output: result?.text ?? result?.output ?? JSON.stringify(result ?? null),
+        };
+      } catch (error: any) {
+        return {
+          success: false,
+          output: error?.text || error?.message || String(error),
+        };
+      }
+    },
+    upload: async (projectPath: string, port: string) => {
+      const builderService = getDep('builderService');
+      const upload = builderService?.upload;
+      if (typeof upload !== 'function') {
+        return { success: false, output: 'Upload system is not available.' };
+      }
+
+      try {
+        const result = await upload.call(builderService, projectPath, port);
+        return {
+          success: result?.state !== 'error' && result?.state !== 'warn',
+          output: result?.text ?? result?.output ?? JSON.stringify(result ?? null),
+        };
+      } catch (error: any) {
+        return {
+          success: false,
+          output: error?.text || error?.message || String(error),
+        };
+      }
+    },
+  };
 
   // ----- notification -----
   const notification: INotificationProvider = {
-    success: (msg) => deps.noticeService?.success?.(msg),
-    error: (msg) => deps.noticeService?.error?.(msg),
-    warning: (msg) => deps.noticeService?.warning?.(msg),
-    info: (msg) => deps.noticeService?.info?.(msg),
+    success: (msg) => getDep('noticeService')?.success?.(msg),
+    error: (msg) => getDep('noticeService')?.error?.(msg),
+    warning: (msg) => getDep('noticeService')?.warning?.(msg),
+    info: (msg) => getDep('noticeService')?.info?.(msg),
   };
 
   // ----- env -----
   const env: IEnvProvider = {
-    get: (key) => wEnv?.get(key),
-    set: (data) => wEnv?.set(data),
+    get: (key) => getEnv()?.get(key),
+    set: (data) => getEnv()?.set(data),
   };
 
   // ----- shell -----
   const shell: IShellUtils = {
-    openByExplorer: (p) => wOther?.openByExplorer(p),
-    openByBrowser: (url) => wOther?.openByBrowser(url),
-    moveToTrash: (filePath) => wOther?.moveToTrash(filePath),
+    openByExplorer: (p) => getOther()?.openByExplorer?.(p) ?? getOther()?.showItemInFolder?.(p),
+    openByBrowser: (url) => getOther()?.openByBrowser?.(url),
+    moveToTrash: (filePath) => getOther()?.moveToTrash?.(filePath),
   };
 
-  // ----- editor (可选) -----
-  let editor: IEditorProvider | undefined;
-  if (deps.blocklyService) {
-    editor = {
-      getWorkspaceXml: () => deps.blocklyService?.getWorkspaceXml?.(),
-      loadWorkspace: (xml) => deps.blocklyService?.loadWorkspace?.(xml),
-      getGeneratedCode: () => deps.blocklyService?.getGeneratedCode?.(),
-      reloadAbiJson: () => deps.blocklyService?.reloadAbiJson?.(),
-      getBlockDefinitions: () => deps.blocklyService?.getBlockDefinitions?.(),
-      connectionGraph: deps.connectionGraphService ? {
-        generateConnectionGraph: (args) => deps.connectionGraphService?.generateConnectionGraph?.(args),
-        getPinmapSummary: (args) => deps.connectionGraphService?.getPinmapSummary?.(args),
-        validateConnectionGraph: (args) => deps.connectionGraphService?.validateConnectionGraph?.(args),
-        getSensorPinmapCatalog: (args) => deps.connectionGraphService?.getSensorPinmapCatalog?.(args),
-        generatePinmap: (args) => deps.connectionGraphService?.generatePinmap?.(args),
-        savePinmap: (args) => deps.connectionGraphService?.savePinmap?.(args),
-        getCurrentSchematic: (args) => deps.connectionGraphService?.getCurrentSchematic?.(args),
-        applySchematic: (args) => deps.connectionGraphService?.applySchematic?.(args),
-      } : undefined,
-    };
-  }
+  const log = {
+    info: (message: string) => getLog()?.info?.(message),
+    warn: (message: string) => getLog()?.warn?.(message),
+    error: (message: string, error?: unknown) => getLog()?.error?.(message, error),
+  };
+
+  // ----- editor (optional, lazy) -----
+  const connectionGraph: IConnectionGraphProvider = {
+    generateConnectionGraph: (args) => getDep('connectionGraphService')?.generateConnectionGraph?.(args),
+    getPinmapSummary: (args) => getDep('connectionGraphService')?.getPinmapSummary?.(args),
+    validateConnectionGraph: (args) => getDep('connectionGraphService')?.validateConnectionGraph?.(args),
+    getSensorPinmapCatalog: (args) => getDep('connectionGraphService')?.getSensorPinmapCatalog?.(args),
+    generatePinmap: (args) => getDep('connectionGraphService')?.generatePinmap?.(args),
+    savePinmap: (args) => getDep('connectionGraphService')?.savePinmap?.(args),
+    getCurrentSchematic: (args) => getDep('connectionGraphService')?.getCurrentSchematic?.(args),
+    applySchematic: (args) => getDep('connectionGraphService')?.applySchematic?.(args),
+  };
+
+  const editor: IEditorProvider = {
+    registerTextDocumentContentProvider: (scheme, provider) => {
+      const normalizedScheme = normalizeTextDocumentProviderScheme(scheme);
+      if (!normalizedScheme || !provider || typeof provider.provideTextDocumentContent !== 'function') {
+        return { dispose() {} };
+      }
+
+      textDocumentContentProviders.set(normalizedScheme, provider);
+      return {
+        dispose() {
+          if (textDocumentContentProviders.get(normalizedScheme) === provider) {
+            textDocumentContentProviders.delete(normalizedScheme);
+          }
+        },
+      };
+    },
+    showTextDocument: (targetPath, options) => {
+      const projectPath = options?.projectPath?.trim()
+        || getDep('projectService')?.currentProjectPath
+        || getDep('projectService')?.projectRootPath;
+      const uiService = getDep('uiService');
+      if (!uiService?.openCodeEditorFile || !projectPath || !targetPath?.trim()) {
+        return false;
+      }
+
+      return uiService.openCodeEditorFile(projectPath, targetPath, options?.selection);
+    },
+    readTextDocument: async (uri) => {
+      const registeredProvider = resolveRegisteredTextDocumentContentProvider(textDocumentContentProviders, uri);
+      if (registeredProvider) {
+        const content = await Promise.resolve(registeredProvider.provideTextDocumentContent(uri));
+        if (typeof content === 'string') {
+          return content;
+        }
+      }
+
+      const readTextDocument = getDep('uiService')?.readTextDocument
+        ?? getDep('electronService')?.readTextDocument
+        ?? (window as any)['editor']?.readTextDocument;
+      if (typeof readTextDocument !== 'function') {
+        return undefined;
+      }
+
+      return await Promise.resolve(readTextDocument(uri));
+    },
+    getWorkspaceXml: () => getDep('blocklyService')?.getWorkspaceXml?.(),
+    loadWorkspace: (xml) => getDep('blocklyService')?.loadWorkspace?.(xml),
+    getGeneratedCode: () => getDep('blocklyService')?.getGeneratedCode?.(),
+    reloadAbiJson: () => getDep('blocklyService')?.reloadAbiJson?.(),
+    getBlockDefinitions: () => getDep('blocklyService')?.getBlockDefinitions?.(),
+    get connectionGraph() {
+      return getDep('connectionGraphService') ? connectionGraph : undefined;
+    },
+  };
 
   // ----- mcp (可选) -----
-  const mcp: IMcpProvider | undefined = wMcp ? {
-    connect: (name, command, args) => wMcp.connect(name, command, args),
-    getTools: (name) => wMcp.getTools(name),
-    useTool: (toolName, args) => wMcp.useTool(toolName, args),
-  } : undefined;
+  const mcp: IMcpProvider = {
+    connect: (name, command, args) => getMcp()?.connect(name, command, args),
+    getTools: (name) => getMcp()?.getTools(name),
+    useTool: (toolName, args) => getMcp()?.useTool(toolName, args),
+  };
 
   return {
     fs, path, terminal, dialog, platform,
     project, auth, config, builder, notification,
-    env, shell, editor, mcp,
+    env, shell,
+    clipboard: {
+      writeText: (text: string) => getClipboard()?.writeText(text),
+      readText: () => getClipboard()?.readText?.() ?? '',
+    },
+    log, editor, mcp,
     // 宿主特有服务透传
-    blockly: deps.blocklyService,
-    connectionGraph: deps.connectionGraphService,
-    cmd: deps.cmdService,
-    crossPlatformCmd: deps.crossPlatformCmdService,
-    notice: deps.noticeService,
-    electron: deps.electronService,
-    absSync: deps.absAutoSyncService,
-    fetch: deps.fetchToolService,
-    webSearch: deps.webSearchToolService,
-    ui: deps.uiService,
-    authFull: deps.authService,
-    onboarding: deps.onboardingService,
+    get blockly() { return getDep('blocklyService'); },
+    get connectionGraph() { return getDep('connectionGraphService'); },
+    get cmd() { return getDep('cmdService'); },
+    get crossPlatformCmd() { return getDep('crossPlatformCmdService'); },
+    get notice() { return getDep('noticeService'); },
+    get electron() { return getDep('electronService'); },
+    get absSync() { return getDep('absAutoSyncService'); },
+    get arduinoLint() { return getDep('arduinoLintService'); },
+    get ui() { return getDep('uiService'); },
+    get onboarding() { return getDep('onboardingService'); },
   };
+}
+
+function readJsonFileSync(fsApi: any, filePath: string): Record<string, any> | null {
+  if (!filePath || typeof fsApi?.readFileSync !== 'function') {
+    return null;
+  }
+
+  const raw = fsApi.readFileSync(filePath, 'utf8');
+  if (typeof raw !== 'string') {
+    return null;
+  }
+
+  const parsed = JSON.parse(raw);
+  return parsed && typeof parsed === 'object' ? parsed : null;
+}
+
+function fsExistsSync(fsApi: any, filePath: string): boolean {
+  if (!filePath) {
+    return false;
+  }
+
+  if (typeof fsApi?.existsSync === 'function') {
+    return fsApi.existsSync(filePath) === true;
+  }
+
+  return true;
+}
+
+function mergeHostConfig(
+  defaultConfig: Record<string, any> | null,
+  userConfig: Record<string, any> | null,
+): Record<string, any> | null {
+  if (!defaultConfig && !userConfig) {
+    return null;
+  }
+
+  return {
+    ...(defaultConfig ?? {}),
+    ...(userConfig ?? {}),
+    regions: {
+      ...((defaultConfig?.['regions'] && typeof defaultConfig['regions'] === 'object') ? defaultConfig['regions'] : {}),
+      ...((userConfig?.['regions'] && typeof userConfig['regions'] === 'object') ? userConfig['regions'] : {}),
+    },
+  };
+}
+
+function resolveHostConfigApiEndpoint(config: Record<string, any> | null): string | null {
+  const regions = config?.['regions'];
+  if (!regions || typeof regions !== 'object') {
+    return null;
+  }
+
+  const buildFlavor = normalizeBuildFlavor(config?.['build_flavor']);
+  const officialRegion = typeof config?.['official_region'] === 'string' && config['official_region'].trim()
+    ? config['official_region'].trim()
+    : buildFlavor === 'global' ? 'eu' : 'cn';
+  const configuredRegion = typeof config?.['region'] === 'string' && config['region'].trim()
+    ? config['region'].trim()
+    : officialRegion;
+  const currentRegion = shouldFallbackToOfficialRegion(configuredRegion, officialRegion, regions)
+    ? officialRegion
+    : configuredRegion;
+  const regionConfig = regions[currentRegion] ?? regions[officialRegion] ?? regions['cn'] ?? regions['eu'];
+  const apiServer = typeof regionConfig?.['api_server'] === 'string'
+    ? regionConfig['api_server'].trim()
+    : '';
+  return apiServer || null;
+}
+
+function normalizeBuildFlavor(flavor: unknown): string {
+  return flavor === 'global' ? 'global' : 'cn';
+}
+
+function isOfficialRegion(regionKey: string, regions: Record<string, any>): boolean {
+  const regionConfig = regions?.[regionKey];
+  if (!regionConfig) {
+    return false;
+  }
+
+  if (typeof regionConfig['official'] === 'boolean') {
+    return regionConfig['official'];
+  }
+
+  return regionKey === 'cn' || regionKey === 'eu';
+}
+
+function shouldFallbackToOfficialRegion(
+  regionKey: string,
+  officialRegion: string,
+  regions: Record<string, any>,
+): boolean {
+  if (!regionKey || !officialRegion || !regions?.[regionKey]) {
+    return false;
+  }
+
+  return isOfficialRegion(regionKey, regions) && regionKey !== officialRegion;
+}
+
+function normalizeTextDocumentProviderScheme(scheme: string): string {
+  return typeof scheme === 'string' ? scheme.trim().toLowerCase() : '';
+}
+
+function getUriScheme(uri: string): string {
+  const match = typeof uri === 'string'
+    ? uri.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/)
+    : null;
+  return match?.[1]?.toLowerCase() ?? '';
+}
+
+function resolveRegisteredTextDocumentContentProvider(
+  providers: ReadonlyMap<string, {
+    provideTextDocumentContent(uri: string): Promise<string | undefined> | string | undefined;
+  }>,
+  uri: string,
+): {
+  provideTextDocumentContent(uri: string): Promise<string | undefined> | string | undefined;
+} | undefined {
+  const scheme = getUriScheme(uri);
+  if (!scheme) {
+    return undefined;
+  }
+
+  return providers.get(scheme);
 }

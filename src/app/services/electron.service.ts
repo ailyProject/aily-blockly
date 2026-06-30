@@ -31,6 +31,15 @@ export class ElectronService {
     return window['fs'].readFileSync(filePath, 'utf8');
   }
 
+  async readFileAsync(filePath: string, encoding = 'utf8'): Promise<string> {
+    const fsApi = window['fs'];
+    if (fsApi?.readFile) {
+      return await fsApi.readFile(filePath, encoding);
+    }
+
+    return this.readFile(filePath);
+  }
+
   /**
    * 读取目录内容
    */
@@ -97,13 +106,48 @@ export class ElectronService {
   }
 
   // 写入系统剪贴板
-  clipboardWriteText(text: string) {
-    window['clipboard']?.writeText(text);
+  async clipboardWriteText(text: string): Promise<void> {
+    if (window['clipboard']?.writeText) {
+      window['clipboard'].writeText(text);
+      return;
+    }
+
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    this.writeTextWithTextarea(text);
   }
 
   // 读取系统剪贴板
-  clipboardReadText(): string {
-    return window['clipboard']?.readText() || '';
+  async clipboardReadText(): Promise<string> {
+    if (window['clipboard']?.readText) {
+      return window['clipboard'].readText() || '';
+    }
+
+    if (navigator.clipboard?.readText && window.isSecureContext) {
+      return await navigator.clipboard.readText();
+    }
+
+    return '';
+  }
+
+  private writeTextWithTextarea(text: string) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    try {
+      document.execCommand('copy');
+    } finally {
+      document.body.removeChild(textarea);
+    }
   }
 
   // 调用浏览器打开url
@@ -183,6 +227,26 @@ export class ElectronService {
     } catch (error) {
       console.warn('Show notification error:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 请求用户注意当前窗口：Windows 任务栏闪烁、macOS Dock 弹跳与角标等（需在后台时使用）。
+   * 与系统通知互补，避免仅依赖短时气泡。
+   */
+  async requestWindowAttention(): Promise<{ success: boolean; error?: string }> {
+    if (!this.isElectron) {
+      return { success: false, error: 'Not in Electron environment' };
+    }
+    try {
+      const w = window['iWindow'] as { requestAttention?: () => Promise<{ success: boolean; error?: string }> } | undefined;
+      if (w?.requestAttention) {
+        return await w.requestAttention();
+      }
+      return { success: false, error: 'requestAttention unavailable' };
+    } catch (error: any) {
+      console.warn('requestWindowAttention error:', error);
+      return { success: false, error: error?.message };
     }
   }
 

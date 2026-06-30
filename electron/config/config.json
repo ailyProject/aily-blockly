@@ -8,21 +8,44 @@
     "darwin": "~/Library/aily-project"
   },
   "project_path": "%HOMEPATH%\\Documents\\aily-project",
+  "build_flavor": "cn",
   "region": "cn",
+  "resource_source": "auto",
+  "resource_sources": [
+    {
+      "key": "primary",
+      "url": "https://rs1.aily.pro",
+      "enabled": true
+    },
+    {
+      "key": "mirror",
+      "url": "https://blockly.yiyu.pro",
+      "enabled": true
+    }
+  ],
+  "update_download_strategy": {
+    "enabled": true,
+    "mirror_region_order": ["eu", "cn"],
+    "fallback_on_error": true,
+    "first_byte_timeout_ms": 15000,
+    "stall_timeout_ms": 20000
+  },
   "regions": {
     "cn": {
       "name": "China",
+      "official": true,
       "enabled": true,
-      "api_server": "https://api.yysc.tech",
-      "web": "https://yysc.tech",
-      "ucenter_web": "https://c.yysc.tech",
-      "tool_web": "https://tool.yysc.tech",
-      "npm_registry": "https://registry.yysc.tech",
-      "resource": "https://blockly.yysc.tech",
-      "updater": "https://dl.yysc.tech/blockly"
+      "api_server": "https://api.yiyu.pro",
+      "web": "https://yiyu.pro",
+      "ucenter_web": "https://c.yiyu.pro",
+      "tool_web": "https://tool.yiyu.pro",
+      "npm_registry": "https://registry.yiyu.pro",
+      "resource": "https://blockly.yiyu.pro",
+      "updater": "https://dl.yiyu.pro/blockly"
     },
     "eu": {
       "name": "Europe",
+      "official": true,
       "enabled": true,
       "api_server": "https://api.aily.pro",
       "web": "https://aily.pro",
@@ -34,11 +57,12 @@
     },
     "localhost": {
       "name": "Local",
+      "official": false,
       "enabled": true,
-      "api_server": "https://api.yysc.tech",
-      "web": "https://aily.pro",
-      "ucenter_web": "https://c.aily.pro",
-      "tool_web": "https://tool.aily.pro",
+      "api_server": "https://api.yiyu.pro",
+      "web": "https://yiyu.pro",
+      "ucenter_web": "https://c.yiyu.pro",
+      "tool_web": "https://tool.yiyu.pro",
       "npm_registry": "http://localhost:4873",
       "resource": "http://localhost:4874",
       "updater": ""

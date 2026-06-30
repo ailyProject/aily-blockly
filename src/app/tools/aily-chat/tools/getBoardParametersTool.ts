@@ -1,4 +1,4 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 
 interface GetBoardParametersParams {
   parameters?: string | string[]; // 支持字符串或数组

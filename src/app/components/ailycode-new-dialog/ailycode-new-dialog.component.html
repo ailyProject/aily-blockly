@@ -1,0 +1,52 @@
+<app-base-dialog
+    [title]="'AILYCODE_NEW_DIALOG.TITLE' | translate"
+    [buttons]="buttons"
+    [showCloseButton]="true"
+    [showFooter]="true"
+    [loading]="isSubmitting"
+    (closeDialog)="onCloseDialog()"
+    (buttonClick)="onButtonClick($event)">
+
+    <div class="ailycode-new-form">
+        <div class="hint">{{ 'AILYCODE_NEW_DIALOG.HINT' | translate }}</div>
+
+        <div class="form-item">
+            <label class="form-label">
+                {{ 'AILYCODE_NEW_DIALOG.NAME' | translate }}
+                <span class="required">*</span>
+            </label>
+            <input
+                class="form-control"
+                nz-input
+                [(ngModel)]="form.name"
+                (ngModelChange)="checkPathExists()"
+                [placeholder]="'AILYCODE_NEW_DIALOG.NAME_PLACEHOLDER' | translate"
+                [disabled]="isSubmitting" />
+            @if (showIsExist) {
+                <div class="error">{{ 'AILYCODE_NEW_DIALOG.ERR_PATH_EXISTS' | translate }}</div>
+            }
+        </div>
+
+        <div class="form-item">
+            <label class="form-label">
+                {{ 'AILYCODE_NEW_DIALOG.PATH' | translate }}
+                <span class="required">*</span>
+            </label>
+            <nz-input-group [nzAddOnAfter]="folderBtn">
+                <input
+                    nz-input
+                    [(ngModel)]="form.path"
+                    [disabled]="true" />
+            </nz-input-group>
+            <ng-template #folderBtn>
+                <div class="btn-folder ccenter" (click)="selectFolder()">
+                    <i class="fa-light fa-folder"></i>
+                </div>
+            </ng-template>
+            @if (showInvalidChars) {
+                <div class="error">{{ 'AILYCODE_NEW_DIALOG.ERR_PATH_INVALID' | translate }}</div>
+            }
+        </div>
+    </div>
+
+</app-base-dialog>

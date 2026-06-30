@@ -12,6 +12,7 @@ export interface ButtonData {
     disabled?: boolean;
     loading?: boolean;
     id?: string;
+    actionPayload?: any;
 }
 
 @Component({
@@ -84,7 +85,8 @@ export class AilyButtonViewerComponent {
             icon: buttonData.icon,
             disabled: buttonData.disabled,
             loading: buttonData.loading,
-            id: buttonData.id || ''
+            id: buttonData.id || '',
+            actionPayload: buttonData.actionPayload ?? buttonData.action_payload ?? buttonData.payload
         };
     }
 
@@ -100,10 +102,16 @@ export class AilyButtonViewerComponent {
         const sendData = button.text
 
         // 直接往大模型发送按钮点击的消息
-        this.chatService.sendTextToChat(sendData, { sender: 'button', type: 'button', cover: false });
+        this.chatService.sendTextToChat(sendData, {
+            sender: 'button',
+            type: 'button',
+            cover: false,
+            action: button.action,
+            payload: button.actionPayload ?? button
+        });
     }
 
     logDetail() {
-        console.log('Button Viewer Data:', this.data);
+        // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
     }
 }

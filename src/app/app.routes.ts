@@ -1,4 +1,8 @@
 import { Routes } from '@angular/router';
+import {
+    AILY_CHAT_RUNTIME_OWNER_PROVIDERS,
+    AILY_CHAT_VIEW_PROVIDERS,
+} from './tools/aily-chat/aily-chat.providers';
 
 export const routes: Routes = [
     {
@@ -8,6 +12,9 @@ export const routes: Routes = [
     },
     {
         path: 'main',
+        providers: [
+            ...AILY_CHAT_VIEW_PROVIDERS,
+        ],
         loadComponent: () => import('./main-window/main-window.component').then(m => m.MainWindowComponent),
         children: [
             {
@@ -49,6 +56,10 @@ export const routes: Routes = [
             {
                 path: 'code-editor',
                 loadComponent: () => import('./editors/code-editor/code-editor.component').then(m => m.CodeEditorComponent)
+            },
+            {
+                path: 'code-editor-pro',
+                loadComponent: () => import('./editors/code-editor-pro/code-editor-pro.component').then(m => m.CodeEditorProComponent)
             }
         ]
     },
@@ -77,8 +88,56 @@ export const routes: Routes = [
         loadComponent: () => import('./tools/serial-monitor/serial-monitor.component').then(m => m.SerialMonitorComponent)
     },
     {
+        path: "mqtt-debugger",
+        redirectTo: "child-tool/mqtt-debugger",
+        pathMatch: "full"
+    },
+    {
+        path: "network-debugger",
+        redirectTo: "child-tool/network-debugger",
+        pathMatch: "full"
+    },
+    {
+        path: "industrial-bus-debugger",
+        redirectTo: "child-tool/industrial-bus-debugger",
+        pathMatch: "full"
+    },
+    {
+        path: "child-tool/:toolId",
+        loadComponent: () => import('./tools/child-tool-host/child-tool-host.component').then(m => m.ChildToolHostComponent)
+    },
+    {
+        path: "ble-debugger",
+        redirectTo: "child-tool/ble-debugger",
+        pathMatch: "full"
+    },
+    {
+        path: "ffs-manager",
+        loadComponent: () => import('./tools/ffs-manager/ffs-manager.component').then(m => m.FfsManagerComponent)
+    },
+    {
+        path: "ffs-manager-child",
+        redirectTo: "child-tool/ffs-manager-child",
+        pathMatch: "full"
+    },
+    {
         path: "aily-chat",
+        providers: [
+            ...AILY_CHAT_VIEW_PROVIDERS,
+        ],
         loadComponent: () => import('./tools/aily-chat/aily-chat.component').then(m => m.AilyChatComponent)
+    },
+    {
+        path: "aily-chat-process-detail/:sessionId/:processId",
+        loadComponent: () => import('./tools/aily-chat/components/process-detail-window/chat-process-detail-window.component').then(m => m.ChatProcessDetailWindowComponent)
+    },
+    {
+        path: "aily-chat-runtime-owner",
+        providers: [
+            ...AILY_CHAT_RUNTIME_OWNER_PROVIDERS,
+        ],
+        loadComponent: () => import('./tools/aily-chat/runtime-owner/chat-runtime-owner.component')
+            .then(m => m.AilyChatRuntimeOwnerComponent)
     },
     {
         path: "code-viewer",

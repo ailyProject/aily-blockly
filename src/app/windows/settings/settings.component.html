@@ -12,7 +12,7 @@
           }
         </div>
       </div>
-      <ngx-simplebar class="right" #scrollContainer [options]="options" (scroll)="onScroll()">
+      <ngx-simplebar class="right" #scrollContainer [options]="options">
         <div class="right-inner-container">
           <!-- 基础设置 -->
           <div id="SETTINGS.SECTIONS.BASIC" class="section" style="padding-bottom: 100px;">
@@ -22,7 +22,7 @@
                 <div>{{ 'SETTINGS.FIELDS.PROJECT_FOLDER' | translate }}:</div>
                 <input nz-input [(ngModel)]="configData.project_path" [disabled]="true" />
               </div>
-              <div class="item">
+              <div class="item lang-item">
                 <div>{{ 'SETTINGS.FIELDS.LANGUAGE' | translate }}:</div>
                 <div class="langs">
                   @for(lang of langList; track lang) {
@@ -30,6 +30,27 @@
                     <img src="i18n/{{ lang.code }}/{{ lang.code }}.jpg" alt="" srcset="" />
                     <span>{{ lang.name }}</span>
                   </div>
+                  }
+                </div>
+              </div>
+              <div class="item development-mode-item">
+                <div>{{ 'SETTINGS.FIELDS.DEVELOPMENT_MODE_PREFERENCE' | translate }}:</div>
+                <div class="development-mode-buttons">
+                  <button
+                    nz-button
+                    nzSize="small"
+                    [nzType]="developmentModePreference === 'blockly' ? 'primary' : 'default'"
+                    (click)="onDevelopmentModePreferenceChange('blockly')">
+                    {{ 'PROJECT_NEW.BOARD.MODE_BLOCKLY' | translate }}
+                  </button>
+                  @if (coderEnabled) {
+                  <button
+                    nz-button
+                    nzSize="small"
+                    [nzType]="developmentModePreference === 'coder' ? 'primary' : 'default'"
+                    (click)="onDevelopmentModePreferenceChange('coder')">
+                    {{ 'PROJECT_NEW.BOARD.MODE_CODER' | translate }}
+                  </button>
                   }
                 </div>
               </div>
@@ -65,12 +86,12 @@
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_MINIMAP' | translate }}:</div>
                 <nz-switch [(ngModel)]="configData.blockly.minimap"></nz-switch>
               </div>
-              <div class="item">
+              <!-- <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.FLYOUT_AUTO_CLOSE' | translate }}:</div>
                 <nz-switch [(ngModel)]="configData.blockly.flyoutAutoClose" [ngModelOptions]="{standalone: true}"
                   [ngModel]="configData.blockly.flyoutAutoClose !== false"
                   (ngModelChange)="configData.blockly.flyoutAutoClose = $event"></nz-switch>
-              </div>
+              </div> -->
             </div>
           </div>
 
@@ -107,6 +128,27 @@
                     [nzType]="selectedRegion === region.key ? 'primary' : 'default'"
                     (click)="onRegionChange(region.key)">
                     {{ region.name }}
+                  </button>
+                  }
+                </div>
+              </div>
+              <div class="item">
+                <div>{{ 'SETTINGS.FIELDS.RESOURCE_SOURCE' | translate }}:</div>
+                <div class="region-buttons">
+                  <button
+                    nz-button
+                    nzSize="small"
+                    [nzType]="selectedResourceSource === 'auto' ? 'primary' : 'default'"
+                    (click)="selectedResourceSource = 'auto'">
+                    {{ 'SETTINGS.FIELDS.RESOURCE_SOURCE_AUTO' | translate }}
+                  </button>
+                  @for (source of resourceSourceList; track source.key) {
+                  <button
+                    nz-button
+                    nzSize="small"
+                    [nzType]="selectedResourceSource === source.key ? 'primary' : 'default'"
+                    (click)="selectedResourceSource = source.key">
+                    {{ getResourceSourceLabel(source) }}
                   </button>
                   }
                 </div>

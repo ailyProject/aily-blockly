@@ -1,7 +1,56 @@
 import { Injectable } from '@angular/core';
 import { Subject, BehaviorSubject } from 'rxjs';
 import { getTodos, TodoItem } from '../utils/todoStorage';
-import { AilyHost } from '../core/host';
+
+export interface TodoListSemanticItem {
+  id: string;
+  title: string;
+  status: TodoItem['status'];
+}
+
+export interface TodoListSemanticData {
+  kind: 'todoList';
+  todoList: TodoListSemanticItem[];
+  currentTask?: string;
+  totalCount: number;
+  completedCount: number;
+  currentStep: number;
+  summary?: string;
+}
+
+export interface TodoListSnapshot extends TodoListSemanticData {
+  items: TodoItem[];
+  source: 'storage' | 'lex';
+  updatedAt: number;
+}
+
+export function buildTodoListSemanticDataFromTodos(todos: TodoItem[]): TodoListSemanticData {
+  const completedCount = todos.filter(todo => todo.status === 'completed').length;
+  const currentTodo = todos.find(todo => todo.status === 'in-progress')
+    ?? todos.find(todo => todo.status === 'not-started')
+    ?? null;
+  const currentStep = todos.length === 0
+    ? 0
+    : currentTodo
+      ? Math.min(todos.length, completedCount + 1)
+      : todos.length;
+
+  return {
+    kind: 'todoList',
+    todoList: todos.map(todo => ({
+      id: String(todo.id),
+      title: todo.content,
+      status: todo.status,
+    })),
+    currentTask: currentTodo?.content,
+    totalCount: todos.length,
+    completedCount,
+    currentStep,
+    summary: todos.length
+      ? `Todos (${currentStep}/${todos.length})`
+      : 'Todos',
+  };
+}
 
 @Injectable({
   providedIn: 'root'
@@ -12,10 +61,12 @@ export class TodoUpdateService {
   
   // 使用BehaviorSubject来保存最新的TODO数据
   private todoDataSubject = new BehaviorSubject<Map<string, TodoItem[]>>(new Map());
+  private todoListSnapshotSubject = new BehaviorSubject<Map<string, TodoListSnapshot>>(new Map());
 
   // 公开的Observable供组件订阅
   public todoUpdated$ = this.todoUpdatedSubject.asObservable();
   public todoData$ = this.todoDataSubject.asObservable();
+  public todoListSnapshot$ = this.todoListSnapshotSubject.asObservable();
 
   constructor() {
     // 将服务实例注册到全局对象，以便notifyTodoUpdate函数可以访问
@@ -37,30 +88,12 @@ export class TodoUpdateService {
    * @param sessionId 会话ID
    */
   refreshTodoData(sessionId: string): void {
-    const todos = this.readTodosFromDisk(sessionId);
+    // console.log('🔄 从存储重新加载TODO数据:', sessionId);
     
-    const currentData = this.todoDataSubject.value;
-    const newData = new Map(currentData);
-    newData.set(sessionId, todos);
-    this.todoDataSubject.next(newData);
-    
-    this.todoUpdatedSubject.next(sessionId);
-  }
+    // 获取最新的TODO数据
+    const updatedTodos = getTodos(sessionId);
 
-  /**
-   * 直接从磁盘读取TODO数据，绕过内存缓存
-   */
-  private readTodosFromDisk(sessionId: string): TodoItem[] {
-    const todoFile = `${AilyHost.get().path.getAppDataPath()}/aily-todos/todos_${sessionId}.json`;
-    try {
-      if (AilyHost.get().fs.existsSync(todoFile)) {
-        const fileContent = AilyHost.get().fs.readFileSync(todoFile, 'utf-8');
-        return JSON.parse(fileContent);
-      }
-    } catch (error) {
-      console.warn('[TodoUpdateService] 读取TODO文件失败:', error);
-    }
-    return [];
+    this.commitTodoState(sessionId, updatedTodos, buildTodoListSemanticDataFromTodos(updatedTodos), 'storage');
   }
 
   /**
@@ -70,13 +103,18 @@ export class TodoUpdateService {
    */
   getTodosForSession(sessionId: string): TodoItem[] {
     const currentData = this.todoDataSubject.value;
-    const cached = currentData.get(sessionId);
-    // 优先使用缓存，缓存为空时直接从磁盘读取（绕过缓存）
-    if (cached && cached.length > 0) {
-      return cached;
+    return currentData.get(sessionId) || getTodos(sessionId);
+  }
+
+  getTodoListSnapshotForSession(sessionId: string): TodoListSnapshot {
+    const currentSnapshots = this.todoListSnapshotSubject.value;
+    const existingSnapshot = currentSnapshots.get(sessionId);
+    if (existingSnapshot) {
+      return existingSnapshot;
     }
-    // 缓存为空或不存在时，直接从磁盘读取
-    return getTodos(sessionId);
+
+    const todos = this.getTodosForSession(sessionId);
+    return this.createTodoListSnapshot(todos, buildTodoListSemanticDataFromTodos(todos), 'storage');
   }
 
   /**
@@ -112,10 +150,7 @@ export class TodoUpdateService {
    */
   preloadTodos(sessionId: string): void {
     const todos = getTodos(sessionId);
-    const currentData = this.todoDataSubject.value;
-    const newData = new Map(currentData);
-    newData.set(sessionId, todos);
-    this.todoDataSubject.next(newData);
+    this.commitTodoState(sessionId, todos, buildTodoListSemanticDataFromTodos(todos), 'storage', false);
   }
 
   /**
@@ -125,12 +160,55 @@ export class TodoUpdateService {
    */
   updateTodoData(sessionId: string, todos: TodoItem[]): void {
     // console.log('📝 更新TODO数据:', sessionId, todos);
+    this.commitTodoState(sessionId, todos, buildTodoListSemanticDataFromTodos(todos), 'storage');
+  }
+
+  updateTodoListSemanticData(
+    sessionId: string,
+    semanticData: TodoListSemanticData,
+    todos?: TodoItem[],
+  ): void {
+    const normalizedTodos = todos ?? semanticData.todoList.map(item => ({
+      id: Number(item.id),
+      content: item.title,
+      status: item.status,
+      priority: 'medium' as const,
+      updatedAt: Date.now(),
+    }));
+    this.commitTodoState(sessionId, normalizedTodos, semanticData, 'lex');
+  }
+
+  private commitTodoState(
+    sessionId: string,
+    todos: TodoItem[],
+    semanticData: TodoListSemanticData,
+    source: TodoListSnapshot['source'],
+    emitUpdate: boolean = true,
+  ): void {
     const newData = new Map(this.todoDataSubject.value);
     newData.set(sessionId, todos);
     this.todoDataSubject.next(newData);
-    
-    // 同时触发更新通知
-    this.todoUpdatedSubject.next(sessionId);
+
+    const newSnapshots = new Map(this.todoListSnapshotSubject.value);
+    newSnapshots.set(sessionId, this.createTodoListSnapshot(todos, semanticData, source));
+    this.todoListSnapshotSubject.next(newSnapshots);
+
+    if (emitUpdate) {
+      this.todoUpdatedSubject.next(sessionId);
+    }
+  }
+
+  private createTodoListSnapshot(
+    todos: TodoItem[],
+    semanticData: TodoListSemanticData,
+    source: TodoListSnapshot['source'],
+  ): TodoListSnapshot {
+    return {
+      ...semanticData,
+      items: [...todos],
+      source,
+      updatedAt: Date.now(),
+    };
   }
 }
 

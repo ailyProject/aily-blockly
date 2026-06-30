@@ -205,6 +205,49 @@ export class SscmaDeployComponent implements OnInit {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private async waitForAtReady(preferredPort: string, maxAttempts: number = 8): Promise<string> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (this.isCancelling) {
+        throw new Error('用户取消部署');
+      }
+
+      const candidatePorts = await this.getAtProbePorts(preferredPort);
+
+      for (const port of candidatePorts) {
+        try {
+          await this.sscmaCommandService.disconnect().catch(() => undefined);
+          await this.sscmaCommandService.connect(port);
+          await this.delay(300);
+          await this.sscmaCommandService.getDeviceId();
+          return port;
+        } catch (error) {
+          lastError = error as Error;
+          await this.sscmaCommandService.disconnect().catch(() => undefined);
+        }
+      }
+
+      await this.delay(500);
+    }
+
+    throw new Error(`设备重启后未进入 AT 通信状态: ${lastError?.message || '未知错误'}`);
+  }
+
+  private async getAtProbePorts(preferredPort: string): Promise<string[]> {
+    const ports = await this.serialService.getSerialPorts().catch(() => [] as PortItem[]);
+    const portNames = ports
+      .map(port => port.name)
+      .filter((name): name is string => !!name);
+
+    if (portNames.length === 0) {
+      return [preferredPort];
+    }
+
+    const candidates = [preferredPort, ...portNames];
+    return Array.from(new Set(candidates));
+  }
+
   /**
    * 根据任务类型获取 XIAO 设备类型
    */
@@ -720,22 +763,14 @@ export class SscmaDeployComponent implements OnInit {
       };
 
       try {
-        // 使用 Native Service 连接串口
-        await this.sscmaCommandService.connect(this.currentPort!);
-        // console.log('[AT Native] 串口连接成功');
-
-        // 等待设备完全准备好（设备可能刚重启）
-        // console.log('[AT Native] 等待设备准备就绪...');
-        await this.delay(500);
+        const readyPort = await this.waitForAtReady(this.currentPort!);
+        this.currentPort = readyPort;
+        this.serialService.currentPort = readyPort;
+        localStorage.setItem('current_model_deploy_port', readyPort);
 
         this.deployProgress = 95;
         this.deployStatus = '正在设置模型信息...';
         this.cd.detectChanges();
-
-        // console.log('[AT Native] 测试连接，发送 AT+STAT?...');
-        await this.sscmaCommandService.sendCommand('AT+STAT?');
-        // console.log('[AT Native] AT+STAT? 命令已发送，等待响应...');
-        await this.delay(500);
 
         // console.log('[AT Native] 发送模型信息...');
         const infoJson = JSON.stringify(modelInfo);

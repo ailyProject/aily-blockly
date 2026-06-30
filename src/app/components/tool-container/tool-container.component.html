@@ -1,7 +1,8 @@
 <div class="tool-container">
   <div class="header">
     <div class="title ccenter">
-      {{ title }}
+      <ng-content select="[header-title-prefix]"></ng-content>
+      <span class="title-text">{{ title }}</span>
     </div>
     <div class="tool-btns">
       <!-- <div class="btn ccenter" (click)="copy()">

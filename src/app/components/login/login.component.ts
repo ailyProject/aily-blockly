@@ -14,6 +14,7 @@ import { ConfigService } from '../../services/config.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ElectronService } from '../../services/electron.service';
 import { AltchaComponent } from './altcha/altcha.component';
+import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 
 @Component({
   selector: 'app-login',
@@ -130,7 +131,7 @@ export class LoginComponent implements OnDestroy {
   }
 
   get showWeChatLogin(): boolean {
-    return this.getCurrentRegionKey() === 'cn';
+    return this.configService.isCnRegion;
   }
 
   get isZhLang(): boolean {
@@ -138,8 +139,11 @@ export class LoginComponent implements OnDestroy {
     return lang === 'zh_cn' || lang === 'zh_hk' || lang === 'zh-CN' || lang === 'zh-HK';
   }
 
-  private getCurrentRegionKey(): string {
-    return (this.configService.data?.region || 'cn').toLowerCase();
+  private getLoginErrorMessage(error: any, fallback?: string): string {
+    const defaultMessage = fallback || this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败';
+    return resolveTranslatedApiErrorMessage(error, this.translate, {
+      fallbackMessage: defaultMessage,
+    });
   }
 
   mode = 'mail'; // 默认选中邮箱登录
@@ -180,7 +184,10 @@ export class LoginComponent implements OnDestroy {
           this.startWeChatStatusCheck();
         } else {
           this.wechatStatus = 'error';
-          this.wechatStatusMessage = response.message || this.translate.instant('LOGIN.WECHAT_QRCODE_FAILED') || '获取二维码失败';
+          this.wechatStatusMessage = this.getLoginErrorMessage(
+            response,
+            this.translate.instant('LOGIN.WECHAT_QRCODE_FAILED') || '获取二维码失败',
+          );
           this.message.error(this.wechatStatusMessage);
         }
         this.cdr.detectChanges();
@@ -476,8 +483,10 @@ export class LoginComponent implements OnDestroy {
             this.startCountdown();
           } else {
             this.message.error(
-              response.message ||
-                this.translate.instant('LOGIN.CODE_SEND_FAILED'),
+              this.getLoginErrorMessage(
+                response,
+                this.translate.instant('LOGIN.CODE_SEND_FAILED') || '验证码发送失败',
+              ),
             );
           }
         },
@@ -548,7 +557,7 @@ export class LoginComponent implements OnDestroy {
           if (response.status === 200 && response.data) {
             // 检查是否需要绑定微信
             if ((response.data as any).status === 'needs_wechat_bind' && (response.data as any).pending_ticket) {
-              this.message.info((response.data as any).message || '请先绑定微信后再继续登录');
+              this.message.info(this.getLoginErrorMessage(response, '请先绑定微信后再继续登录'));
               this.enterLoginBindMode((response.data as any).pending_ticket);
               this.isWaiting = false;
               this.cdr.detectChanges();
@@ -561,15 +570,16 @@ export class LoginComponent implements OnDestroy {
             this.codeSent = false;
             this.message.success(this.translate.instant('LOGIN.LOGIN_SUCCESS'));
           } else {
-            this.message.error(
-              response.message || this.translate.instant('LOGIN.LOGIN_FAILED'),
-            );
+            this.message.error(this.getLoginErrorMessage(response));
           }
         },
         error: (error) => {
           console.error('邮箱登录错误:', error);
           this.message.error(
-            this.translate.instant('LOGIN.LOGIN_NETWORK_ERROR'),
+            this.getLoginErrorMessage(
+              error,
+              this.translate.instant('LOGIN.LOGIN_NETWORK_ERROR') || '登录失败，请检查网络连接',
+            ),
           );
         },
         complete: () => {
@@ -578,7 +588,7 @@ export class LoginComponent implements OnDestroy {
       });
     } catch (error) {
       console.error('邮箱登录过程中出错:', error);
-      this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED'));
+      this.message.error(this.getLoginErrorMessage(error));
       this.isWaiting = false;
     }
   }
@@ -638,7 +648,7 @@ export class LoginComponent implements OnDestroy {
           this.startWeChatLoginBindCheck();
         } else {
           this.loginBindStatus = 'error';
-          this.loginBindStatusMessage = response.message || '获取二维码失败';
+          this.loginBindStatusMessage = this.getLoginErrorMessage(response, '获取二维码失败');
           this.message.error(this.loginBindStatusMessage);
         }
         this.cdr.detectChanges();
@@ -725,14 +735,13 @@ export class LoginComponent implements OnDestroy {
                           this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败');
                         });
                       } else {
-                        this.message.error('合并失败，请重试');
+                          this.message.error(this.getLoginErrorMessage(mergeResponse, '合并失败，请重试'));
                         // 恢复轮询以便用户重试
                         this.startWeChatLoginBindCheck();
                       }
                     },
                     error: (err) => {
-                      const msg = err?.error?.messages || err?.error?.message || '合并失败，请重试';
-                      this.message.error(msg);
+                        this.message.error(this.getLoginErrorMessage(err, '合并失败，请重试'));
                       this.startWeChatLoginBindCheck();
                     },
                   });
@@ -827,11 +836,21 @@ export class LoginComponent implements OnDestroy {
           this.message.success(this.translate.instant('LOGIN.CODE_SENT'));
           this.startEmailBindCountdown();
         } else {
-          this.message.error(response.message || this.translate.instant('LOGIN.CODE_SEND_FAILED'));
+          this.message.error(
+            this.getLoginErrorMessage(
+              response,
+              this.translate.instant('LOGIN.CODE_SEND_FAILED') || '验证码发送失败',
+            ),
+          );
         }
       },
-      error: () => {
-        this.message.error(this.translate.instant('LOGIN.CODE_SEND_FAILED'));
+      error: (error) => {
+        this.message.error(
+          this.getLoginErrorMessage(
+            error,
+            this.translate.instant('LOGIN.CODE_SEND_FAILED') || '验证码发送失败',
+          ),
+        );
       },
     });
   }
@@ -895,14 +914,13 @@ export class LoginComponent implements OnDestroy {
                         this.cdr.detectChanges();
                       });
                     } else {
-                      this.message.error('合并失败，请重试');
+                      this.message.error(this.getLoginErrorMessage(mergeResponse, '合并失败，请重试'));
                       this.emailBindIsSubmitting = false;
                       this.cdr.detectChanges();
                     }
                   },
                   error: (err) => {
-                    const msg = err?.error?.messages || err?.error?.message || '合并失败，请重试';
-                    this.message.error(msg);
+                    this.message.error(this.getLoginErrorMessage(err, '合并失败，请重试'));
                     this.emailBindIsSubmitting = false;
                     this.cdr.detectChanges();
                   },
@@ -933,15 +951,14 @@ export class LoginComponent implements OnDestroy {
             this.cdr.detectChanges();
           });
         } else {
-          this.message.error(response.message || '绑定失败');
+          this.message.error(this.getLoginErrorMessage(response, '绑定失败'));
           this.emailBindIsSubmitting = false;
           this.cdr.detectChanges();
         }
       },
       error: (error) => {
         console.error('邮箱绑定登录失败:', error);
-        const msg = error?.error?.messages || error?.error?.message || '绑定失败，请重试';
-        this.message.error(msg);
+        this.message.error(this.getLoginErrorMessage(error, '绑定失败，请重试'));
         this.emailBindIsSubmitting = false;
         this.cdr.detectChanges();
       },

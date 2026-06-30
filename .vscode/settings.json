@@ -1,0 +1,11 @@
+{
+  "python-envs.pythonProjects": [
+    {
+      "path": ".",
+      "envManager": "ms-python.python:conda",
+      "packageManager": "ms-python.python:conda"
+    }
+  ],
+  "git.repositoryScanMaxDepth": 4,
+  "git.scanRepositories": ["child/aily-lex"]
+}

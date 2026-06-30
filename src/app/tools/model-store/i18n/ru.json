@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "Магазин моделей",
+        "DESCRIPTION": "Описание модели",
+        "MODEL_INFO": "Информация о модели",
+        "SUPPORTED_BOARDS": "Поддерживаемые устройства",
+        "MODEL_TYPE": "Тип модели",
+        "MODEL_FORMAT": "Формат модели",
+        "MODEL_PRECISION": "Точность модели",
+        "MODEL_SIZE": "Размер модели",
+        "VERSION": "Версия",
+        "MODEL_DETAILS": "Детали модели",
+        "MODEL_LABELS": "Категории модели",
+        "AUTHOR": "Автор",
+        "DEPLOY_COUNT": "Количество развертываний",
+        "VIEW_COUNT": "Просмотры",
+        "LIKE_COUNT": "Лайки",
+        "TAG_VISION": "Зрение",
+        "TAG_AUDIO": "Аудио",
+        "SEARCH_PLACEHOLDER": "Поиск доступных моделей",
+        "MODEL_LIST": "Список моделей",
+        "LOADING": "Загрузка...",
+        "BACK": "Назад",
+        "TEST_MODEL": "Тест модели",
+        "DEPLOY_MODEL": "Развернуть модель",
+        "SELF_TRAINED_MODEL": "Самообученная модель"
+    }
+}

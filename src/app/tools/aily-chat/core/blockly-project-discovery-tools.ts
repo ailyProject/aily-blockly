@@ -1,0 +1,508 @@
+import type { IToolContribution } from 'aily-lex/browser';
+import type { IExternalHostAPI } from 'aily-lex/host/blockly';
+
+import { getBlocklyContextSnapshotService } from './blockly-context-snapshot-service';
+import { searchBoardsLibrariesTool } from '../tools/searchBoardsLibrariesTool';
+import { getBoardParametersTool } from '../tools/getBoardParametersTool';
+import { getHardwareCategoriesTool } from '../tools/getHardwareCategoriesTools';
+import { setBoardConfigTool } from '../tools/boardConfigTool';
+import { reloadProjectTool } from '../tools/reloadProjectTool';
+import { switchBoardTool } from '../tools/switchBoardTool';
+import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
+import { error, fromToolResult, text, type InvokeHandler } from './blockly-contributed-tool-runtime';
+
+type DeferredFactory = (group: string, reason: string) => { group: string; reason: string };
+type RuntimeScopedToolContribution = IToolContribution & {
+  readonly toolSet?: string;
+  readonly runtimeModes?: readonly string[];
+};
+
+type ExternalProjectServiceView = NonNullable<IExternalHostAPI['project']> & Record<string, unknown>;
+
+interface AskUserExtension {
+  ask(options: {
+    question: string;
+    options?: { label: string; description?: string; recommended?: boolean }[];
+    multiSelect: boolean;
+    allowFreeform?: boolean;
+    signal?: AbortSignal;
+    toolCallId?: string;
+    trace?: unknown;
+  }): Promise<{ answer: string; cancelled: boolean }>;
+}
+
+function readActiveProjectPath(project: NonNullable<IExternalHostAPI['project']>): string {
+  const getProjectPath = project.getProjectPath;
+  if (typeof getProjectPath === 'function') {
+    const projectPath = String(getProjectPath.call(project) ?? '').trim();
+    if (projectPath) {
+      return projectPath;
+    }
+  }
+
+  const projectRecord = project as Record<string, unknown>;
+  return typeof projectRecord['currentProjectPath'] === 'string'
+    ? projectRecord['currentProjectPath'].trim()
+    : '';
+}
+
+function readExternalProjectPath(project: ExternalProjectServiceView | undefined): string {
+  const currentProjectPath = typeof project?.['currentProjectPath'] === 'string' ? project['currentProjectPath'].trim() : '';
+  if (currentProjectPath) {
+    return currentProjectPath;
+  }
+
+  const getProjectPath = project?.['getProjectPath'];
+  if (typeof getProjectPath === 'function') {
+    const projectPath = String(getProjectPath.call(project) ?? '').trim();
+    if (projectPath) {
+      return projectPath;
+    }
+  }
+
+  return typeof project?.['projectRootPath'] === 'string' ? project['projectRootPath'].trim() : '';
+}
+
+function createExternalProjectServiceView(project: NonNullable<IExternalHostAPI['project']>): ExternalProjectServiceView {
+  const source = project as ExternalProjectServiceView;
+  const projectService = Object.create(source) as ExternalProjectServiceView;
+
+  Object.defineProperties(projectService, {
+    currentProjectPath: {
+      enumerable: true,
+      configurable: true,
+      get: () => readExternalProjectPath(source),
+    },
+    projectRootPath: {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        const rootPath = typeof source['projectRootPath'] === 'string' ? source['projectRootPath'].trim() : '';
+        return rootPath || readExternalProjectPath(source);
+      },
+    },
+  });
+
+  if (typeof source['getBoardJson'] !== 'function' && typeof source.getBoardConfig === 'function') {
+    projectService['getBoardJson'] = () => source.getBoardConfig?.();
+  }
+  if (typeof source['getBoardModule'] !== 'function' && typeof source.getBoard === 'function') {
+    projectService['getBoardModule'] = () => source.getBoard?.();
+  }
+  if (typeof source['currentBoard'] !== 'string' && typeof source.getBoard === 'function') {
+    Object.defineProperty(projectService, 'currentBoard', {
+      enumerable: true,
+      configurable: true,
+      get: () => source.getBoard?.(),
+    });
+  }
+
+  return projectService;
+}
+
+function formatExternalResult(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2);
+}
+
+function makeProjectContribution(createDeferred: DeferredFactory): RuntimeScopedToolContribution {
+  return {
+    name: 'project',
+    toolSet: 'blockly-project',
+    description: 'Manage the current project (create, reload, switch board, configure)',
+    prompt: `Use this tool to manage the current project. Actions:
+- "create": Create a new project (requires name and board)
+- "reload": Reload the current project
+- "switch_board": Switch the development board
+- "get_board_config": Get board compile/upload configuration
+- "set_board_config": Modify board compile/upload configuration
+
+Project creation mutates the workspace and may require host-side user confirmation before execution.
+Before action="create" in a no-project request, the agent must have loaded blockly-project-planning, used board/library discovery to produce researched candidate options, and obtained the user's selected/confirmed option. Do not ask the user to choose a board before discovery, and do not use this tool to skip the candidate-plan workflow.
+Basic project info (path, board, libraries) is already in the environment section. Do not call this tool for read-only info.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'reload', 'switch_board', 'get_board_config', 'set_board_config'],
+          description: 'Action to perform',
+        },
+        name: { type: 'string', description: 'Project name (for create)' },
+        board: { type: 'string', description: 'Board identifier (for create/switch_board)' },
+        path: { type: 'string', description: 'Project path (for create, optional)' },
+        config: { type: 'object', description: 'Board config key-value pairs (for set_board_config)' },
+      },
+      required: ['action'],
+    },
+    annotations: { readOnly: false },
+    runtimeModes: ['unbound', 'coder', 'blockly'],
+    agentScope: ['main'],
+    deferred: createDeferred('blockly-project-management', '项目创建、切板与配置通常按需使用'),
+  };
+}
+
+function makeBuildProjectContribution(createDeferred: DeferredFactory): RuntimeScopedToolContribution {
+  return {
+    name: 'buildProject',
+    toolSet: 'blockly-project',
+    description: 'Build/compile the current project',
+    prompt: `Use this tool to compile the current project. Returns the build output including any errors.
+Set verbose to true for detailed compiler output.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        verbose: { type: 'boolean', description: 'Show detailed compiler output', default: false },
+      },
+    },
+    annotations: { readOnly: false },
+    runtimeModes: ['unbound', 'coder', 'blockly'],
+    agentScope: ['main'],
+    deferred: createDeferred('blockly-project-management', '构建属于按需执行的低频宿主能力'),
+  };
+}
+
+function makeBoardSearchContribution(createDeferred: DeferredFactory): RuntimeScopedToolContribution {
+  return {
+    name: 'boardSearch',
+    toolSet: 'blockly-discovery',
+    description: 'Search for development boards and libraries',
+    prompt: `Use this tool to find development boards and libraries by keyword or filter.
+- Search by name, description, or tags
+- Filter by type: "boards", "libraries", or "both"
+- Get board parameters for a specific board
+- Get hardware categories for browsing`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['search', 'get_categories', 'get_board_parameters'] },
+        query: { type: 'string', description: 'Search keyword' },
+        type: { type: 'string', enum: ['boards', 'libraries', 'both'], default: 'both', description: 'Search scope: boards, libraries, or both' },
+        boardId: { type: 'string', description: 'Board ID for get_board_parameters' },
+      },
+      required: ['action'],
+    },
+    annotations: { readOnly: true },
+    runtimeModes: ['unbound', 'coder', 'blockly'],
+    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+    deferred: createDeferred('blockly-library-discovery', '开发板与库搜索只在特定查询场景下需要'),
+  };
+}
+
+function makeSearchBoardsLibrariesContribution(): RuntimeScopedToolContribution {
+  return {
+    name: 'search_boards_libraries',
+    toolSet: 'blockly-discovery',
+    description: 'Search Aily development boards and libraries by text query or structured filters',
+    prompt: searchBoardsLibrariesTool.description,
+    inputSchema: searchBoardsLibrariesTool.parameters,
+    annotations: { readOnly: true },
+    runtimeModes: ['unbound', 'coder', 'blockly'],
+    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+  };
+}
+
+function makeGetHardwareCategoriesContribution(): RuntimeScopedToolContribution {
+  return {
+    name: 'get_hardware_categories',
+    toolSet: 'blockly-discovery',
+    description: 'Get board or library category facets for guided hardware selection',
+    prompt: getHardwareCategoriesTool.description,
+    inputSchema: getHardwareCategoriesTool.parameters,
+    annotations: { readOnly: true },
+    runtimeModes: ['unbound', 'coder', 'blockly'],
+    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+  };
+}
+
+function makeGetBoardParametersContribution(): RuntimeScopedToolContribution {
+  return {
+    name: 'get_board_parameters',
+    toolSet: 'blockly-discovery',
+    description: 'Read detailed parameters from the current project board configuration',
+    prompt: 'Use this read-only tool when you need the current board pins, serial/I2C/SPI configuration, PWM pins, builtin LEDs, or other board.json parameters.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parameters: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Optional parameter name or list. Omit to return all board parameters.',
+        },
+      },
+    },
+    annotations: { readOnly: true },
+    runtimeModes: ['unbound', 'coder', 'blockly'],
+    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+  };
+}
+
+export function appendBlocklyProjectContributions(
+  contributions: IToolContribution[],
+  hostAPI: IExternalHostAPI,
+  createDeferred: DeferredFactory,
+): void {
+  if (hostAPI.project) {
+    contributions.push(makeProjectContribution(createDeferred));
+  }
+
+  if (hostAPI.builder?.build) {
+    contributions.push(makeBuildProjectContribution(createDeferred));
+  }
+}
+
+export function appendBlocklyDiscoveryContributions(
+  contributions: IToolContribution[],
+  hostAPI: IExternalHostAPI,
+  createDeferred: DeferredFactory,
+): void {
+  if (hostAPI.boardSearch?.search) {
+    contributions.push(makeSearchBoardsLibrariesContribution());
+    contributions.push(makeGetHardwareCategoriesContribution());
+    if (hostAPI.project) {
+      contributions.push(makeGetBoardParametersContribution());
+    }
+    contributions.push(makeBoardSearchContribution(createDeferred));
+  }
+}
+
+export function createBlocklyProjectDiscoveryHandlers(): Record<string, InvokeHandler> {
+  return {
+    project: async (input, hostAPI, invocationContext) => {
+      if (!hostAPI.project) return error('Project management is not available.');
+      const projectService = createExternalProjectServiceView(hostAPI.project);
+      const contextSnapshotService = getBlocklyContextSnapshotService();
+      const editingTimeline = invocationContext?.host?.getExtension<EditingTimelineWriter>('editingTimeline');
+
+      const action = input['action'] as string;
+      switch (action) {
+        case 'create': {
+          const name = input['name'] as string | undefined;
+          const board = input['board'] as string | undefined;
+          if (!name || !board) return error('name and board are required for create.');
+          if (typeof hostAPI.project.createProject !== 'function') {
+            return error('Project creation is not available in the current host context.');
+          }
+          if (!readActiveProjectPath(hostAPI.project)) {
+            const askUser = invocationContext?.host?.getExtension<AskUserExtension>('askUser');
+            if (!askUser?.ask) {
+              return error('Project creation requires user confirmation, but user interaction is not available.');
+            }
+            const confirmation = await askUser.ask({
+              question: `Create project "${name}" for board "${board}" now?`,
+              options: [
+                {
+                  label: 'Create project',
+                  description: 'Create the Blockly project and switch this chat to the new project workspace.',
+                  recommended: true,
+                },
+                {
+                  label: 'Cancel',
+                  description: 'Do not create a project yet.',
+                },
+              ],
+              multiSelect: false,
+              allowFreeform: false,
+              signal: invocationContext?.signal,
+              toolCallId: invocationContext?.toolCallId,
+              trace: invocationContext?.trace,
+            });
+            if (confirmation.cancelled || confirmation.answer !== 'Create project') {
+              return text('Project creation cancelled by user.');
+            }
+          }
+          const result = await hostAPI.project.createProject(name, board, typeof input['path'] === 'string' ? input['path'] : undefined);
+          contextSnapshotService.invalidate([
+            'workspaceIdentity',
+            'projectInfo',
+            'boardInfo',
+            'libraryIndex',
+            'libraryReadmeRefs',
+            'workspaceArtifacts',
+            'workspaceState',
+          ], 'project create');
+          return text(formatExternalResult(result));
+        }
+        case 'reload': {
+          if (typeof hostAPI.project.reloadProject === 'function') {
+            await hostAPI.project.reloadProject();
+            contextSnapshotService.invalidate([
+              'projectInfo',
+              'boardInfo',
+              'libraryIndex',
+              'libraryReadmeRefs',
+              'workspaceArtifacts',
+              'workspaceState',
+            ], 'project reload');
+            return text('Project reloaded.');
+          }
+          const result = await reloadProjectTool(projectService as any, input);
+          if (!result.is_error) {
+            contextSnapshotService.invalidate([
+              'projectInfo',
+              'boardInfo',
+              'libraryIndex',
+              'libraryReadmeRefs',
+              'workspaceArtifacts',
+              'workspaceState',
+            ], 'project reload');
+          }
+          return fromToolResult(result);
+        }
+        case 'switch_board': {
+          const board = input['board'] as string | undefined;
+          if (!board) return error('board is required for switch_board.');
+          if (typeof hostAPI.project.switchBoard === 'function') {
+            await hostAPI.project.switchBoard(board);
+            contextSnapshotService.invalidate([
+              'boardInfo',
+              'libraryIndex',
+              'libraryReadmeRefs',
+              'workspaceArtifacts',
+              'workspaceState',
+            ], 'switch board');
+            return text(`Switched board to ${board}.`);
+          }
+          const result = await switchBoardTool(projectService, { board_name: board }, {
+            turnId: invocationContext?.trace?.turnId,
+            toolCallId: invocationContext?.toolCallId,
+            timelineWriter: editingTimeline,
+          });
+          if (!result.is_error) {
+            contextSnapshotService.invalidate([
+              'boardInfo',
+              'libraryIndex',
+              'libraryReadmeRefs',
+              'workspaceArtifacts',
+              'workspaceState',
+            ], 'switch board');
+          }
+          return fromToolResult(result);
+        }
+        case 'get_board_config':
+          return fromToolResult(await getBoardParametersTool.handler(projectService, { parameters: input['parameters'] as any }));
+        case 'set_board_config': {
+          const config = input['config'] as Record<string, unknown> | undefined;
+          const directConfigKey = input['config_key'] as string | undefined;
+          const directConfigValue = input['config_value'] as string | undefined;
+
+          let configKey = directConfigKey;
+          let configValue = directConfigValue;
+
+          if (!configKey && config && Object.keys(config).length === 1) {
+            const [entryKey, entryValue] = Object.entries(config)[0];
+            configKey = entryKey;
+            configValue = entryValue === undefined || entryValue === null ? '' : String(entryValue);
+          }
+
+          if (!configKey || configValue === undefined) {
+            return error('set_board_config requires config_key/config_value, or a single-entry config object.');
+          }
+
+          if (typeof hostAPI.project.setBoardConfig === 'function') {
+            await hostAPI.project.setBoardConfig({ [configKey]: configValue });
+            contextSnapshotService.invalidate([
+              'boardInfo',
+              'workspaceArtifacts',
+              'workspaceState',
+            ], 'set board config');
+            return text(`Updated board config ${configKey}.`);
+          }
+
+          const result = await setBoardConfigTool(projectService as any, hostAPI.builder as any, {
+            config_key: configKey,
+            config_value: configValue,
+          }, {
+            turnId: invocationContext?.trace?.turnId,
+            toolCallId: invocationContext?.toolCallId,
+            timelineWriter: editingTimeline,
+          });
+          if (!result.is_error) {
+            contextSnapshotService.invalidate([
+              'boardInfo',
+              'workspaceArtifacts',
+              'workspaceState',
+            ], 'set board config');
+          }
+          return fromToolResult(result);
+        }
+        default:
+          return error(`Unknown action: ${action}`);
+      }
+    },
+
+    buildProject: async (_input, hostAPI) => {
+      if (!hostAPI.builder?.build) return error('Build system is not available.');
+      const projectPath = readActiveProjectPath(hostAPI.project);
+      if (!projectPath) return error('No active project is available for build.');
+      const result = await (hostAPI.builder.build as unknown as (projectPath: string) => Promise<unknown>)(projectPath);
+      return text(formatExternalResult(result));
+    },
+
+    boardSearch: async (input, hostAPI) => {
+      if (!hostAPI.boardSearch) return error('Board search is not available.');
+
+      const action = input['action'] as string;
+      switch (action) {
+        case 'search': {
+          const query = input['query'] as string | undefined;
+          if (!query) return error('query is required for search.');
+          const typeMap: Record<string, 'boards' | 'libraries' | 'both'> = {
+            board: 'boards', library: 'libraries', all: 'both',
+            boards: 'boards', libraries: 'libraries', both: 'both',
+          };
+          const rawType = (input['type'] as string) || 'both';
+          const result = await hostAPI.boardSearch.search?.(query, typeMap[rawType] ?? 'both');
+          return text(formatExternalResult(result ?? []));
+        }
+        case 'get_categories': {
+          try {
+            const cats = await hostAPI.boardSearch.getCategories?.();
+            return text(Array.isArray(cats) ? cats.join('\n') : JSON.stringify(cats ?? []));
+          } catch {
+            return text('[]');
+          }
+        }
+        case 'get_board_parameters': {
+          const boardId = input['boardId'] as string | undefined;
+          if (!boardId) return error('boardId is required.');
+          if (hostAPI.boardSearch.getBoardParameters) {
+            const parameters = await hostAPI.boardSearch.getBoardParameters(boardId);
+            return text(formatExternalResult(parameters));
+          }
+          if (!hostAPI.project) {
+            return error('Board parameters are not available.');
+          }
+          return fromToolResult(await getBoardParametersTool.handler(
+            createExternalProjectServiceView(hostAPI.project),
+            { parameters: boardId },
+          ));
+        }
+        default:
+          return error(`Unknown action: ${action}`);
+      }
+    },
+
+    search_boards_libraries: async (input, hostAPI) => {
+      if (!hostAPI.boardSearch?.search) return error('Board/library search is not available.');
+      const query = typeof input['query'] === 'string' ? input['query'] : '';
+      if (!query) return error('query is required.');
+      const result = await hostAPI.boardSearch.search(query, typeof input['type'] === 'string' ? input['type'] : undefined);
+      return text(formatExternalResult(result));
+    },
+
+    get_hardware_categories: async (_input, hostAPI) => {
+      if (!hostAPI.boardSearch?.getCategories) return error('Hardware category search is not available.');
+      const result = await hostAPI.boardSearch.getCategories();
+      return text(formatExternalResult(result));
+    },
+
+    get_board_parameters: async (input, hostAPI) => {
+      if (!hostAPI.project) return error('Board parameters are not available.');
+      return fromToolResult(await getBoardParametersTool.handler(createExternalProjectServiceView(hostAPI.project), {
+        parameters: input['parameters'] as any,
+      }));
+    },
+  };
+}

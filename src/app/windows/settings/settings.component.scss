@@ -15,8 +15,13 @@
   }
 }
 
+.lang-item {
+  align-items: flex-start !important;
+  height: auto !important;
+  min-height: 40px;
+}
+
 .langs {
-  margin-top: 100px;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -215,12 +220,66 @@ ngx-simplebar {
   font-size: 16px;
 }
 
+.development-mode-item {
+  align-items: flex-start !important;
+  height: auto !important;
+  min-height: 40px;
+  margin-top: 15px;
+}
+
+.development-mode-buttons {
+  display: flex;
+  flex-wrap: wrap;
+
+  button {
+    position: relative;
+    margin-right: -1px;
+    margin-bottom: -1px;
+    border-radius: 0;
+
+    &:first-child {
+      border-top-left-radius: 2px;
+      border-bottom-left-radius: 2px;
+    }
+
+    &:last-child {
+      border-top-right-radius: 2px;
+      border-bottom-right-radius: 2px;
+    }
+
+    &:hover,
+    &:focus,
+    &.ant-btn-primary {
+      z-index: 1;
+    }
+  }
+}
+
 .region-buttons {
   display: flex;
   flex-wrap: wrap;
 
   button {
+    position: relative;
     margin-right: -1px;
+    margin-bottom: -1px;
+    border-radius: 0;
+
+    &:first-child {
+      border-top-left-radius: 2px;
+      border-bottom-left-radius: 2px;
+    }
+
+    &:last-child {
+      border-top-right-radius: 2px;
+      border-bottom-right-radius: 2px;
+    }
+
+    &:hover,
+    &:focus,
+    &.ant-btn-primary {
+      z-index: 1;
+    }
   }
 }
 

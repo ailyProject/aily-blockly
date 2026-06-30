@@ -12,8 +12,19 @@
                     <span class="required">*</span>
                     <span class="more">{{ 'PROJECT_SETTING_DIALOG.NAME_RULE' | translate }}</span>
                 </label>
-                <input class="form-control" nz-input [(ngModel)]="projectSettings.name" 
+                <input class="form-control" nz-input [(ngModel)]="projectSettings.nickname"
                     [placeholder]="'PROJECT_SETTING_DIALOG.NAME_PLACEHOLDER' | translate"
+                    [disabled]="isSubmitting">
+            </div>
+
+            <div class="form-item">
+                <label class="form-label">
+                    {{ 'PROJECT_SETTING_DIALOG.PACKAGE_NAME' | translate }}
+                    <span class="required">*</span>
+                    <span class="more">{{ 'PROJECT_SETTING_DIALOG.PACKAGE_NAME_RULE' | translate }}</span>
+                </label>
+                <input class="form-control" nz-input [(ngModel)]="projectSettings.name"
+                    [placeholder]="'PROJECT_SETTING_DIALOG.PACKAGE_NAME_PLACEHOLDER' | translate"
                     [disabled]="isSubmitting">
             </div>
 
@@ -26,16 +37,6 @@
                     [placeholder]="'PROJECT_SETTING_DIALOG.VERSION_PLACEHOLDER' | translate"
                     [disabled]="isSubmitting">
             </div>
-
-            <div class="form-item">
-                <label class="form-label">
-                    {{ 'PROJECT_SETTING_DIALOG.NICKNAME' | translate }}
-                </label>
-                <input class="form-control" nz-input [(ngModel)]="projectSettings.nickname" 
-                    [placeholder]="'PROJECT_SETTING_DIALOG.NICKNAME_PLACEHOLDER' | translate"
-                    [disabled]="isSubmitting">
-            </div>
-
             <div class="form-item">
                 <label class="form-label">
                     {{ 'PROJECT_SETTING_DIALOG.DESCRIPTION' | translate }}

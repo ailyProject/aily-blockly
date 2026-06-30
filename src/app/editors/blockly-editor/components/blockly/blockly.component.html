@@ -1,6 +1,52 @@
-<div class="blocklyBox" id="blocklyDiv" #blocklyDiv></div>
+<div #layoutElement class="blockly-layout" [style.grid-template-columns]="toolboxWidth + 'px minmax(0, 1fr)'">
+     <div
+          #toolboxPane
+          class="toolbox-pane"
+          nz-resizable
+          [nzMinWidth]="toolboxMinWidth"
+          [nzMaxWidth]="toolboxMaxWidth"
+          (nzResizeStart)="onToolboxResizeStart()"
+          (nzResize)="onToolboxResize($event)"
+          (nzResizeEnd)="onToolboxResizeEnd($event)">
+          <nz-resize-handle nzDirection="right" nzCursorType="grid">
+               <div class="toolbox-pane__resize-handle"></div>
+          </nz-resize-handle>
+          <app-blockly-toolbox-pane
+               (libraryManagerRequested)="libraryManagerRequested.emit()"></app-blockly-toolbox-pane>
+     </div>
 
-<div class="blockly-spin" 
-     *ngIf="showSpinOverlay"
-     [class.show]="aiWriting && !isFadingOut"
-     [class.fade-out]="isFadingOut"></div>
+     <div class="workspace-pane">
+          @if (workspaceSearchState.isOpen) {
+          <div class="workspace-search" (keydown)="onWorkspaceSearchKeydown($event)">
+               <span class="workspace-search__icon ccenter">
+                    <i class="fa-light fa-magnifying-glass"></i>
+               </span>
+               <input #workspaceSearchInput class="workspace-search__input" type="search" placeholder="Search blocks"
+                    [value]="workspaceSearchState.query" (input)="onWorkspaceSearchQueryChange($any($event.target).value)">
+               <span class="workspace-search__count">{{ workspaceSearchResultLabel }}</span>
+               <button type="button" class="workspace-search__button" [disabled]="!workspaceSearchHasResults"
+                    title="Previous result" (click)="onWorkspaceSearchPrevious()">
+                    <i class="fa-light fa-chevron-up"></i>
+               </button>
+               <button type="button" class="workspace-search__button" [disabled]="!workspaceSearchHasResults"
+                    title="Next result" (click)="onWorkspaceSearchNext()">
+                    <i class="fa-light fa-chevron-down"></i>
+               </button>
+               <button type="button" class="workspace-search__button" title="Close" (click)="closeWorkspaceBlockSearch()">
+                    <i class="fa-light fa-xmark"></i>
+               </button>
+          </div>
+          }
+          <app-blockly-workspace-pages
+               [pages]="pages"
+               [closedPages]="closedPages"
+               [activePageId]="activePageId"
+               [aiWriting]="aiWriting"
+               [showSpinOverlay]="showSpinOverlay"
+               [isFadingOut]="isFadingOut"
+               (pageSelected)="onPageSelected($event)"
+               (pageAdded)="onPageAdded()"
+               (pageClosed)="onPageClosed($event)"
+               (pageReopened)="onPageReopened($event)"></app-blockly-workspace-pages>
+     </div>
+</div>

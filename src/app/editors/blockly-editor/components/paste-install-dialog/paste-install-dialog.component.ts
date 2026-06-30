@@ -22,9 +22,13 @@ export interface MissingLibInfo {
 export class PasteInstallDialogComponent {
 
   readonly modal = inject(NzModalRef);
+  readonly translate = inject(TranslateService);
   readonly data: {
     missingLibs: MissingLibInfo[];
     installFn: (libs: MissingLibInfo[]) => Promise<void>;
+    title?: string;
+    message?: string;
+    confirmText?: string;
   } = inject(NZ_MODAL_DATA);
 
   installing = false;
@@ -33,6 +37,18 @@ export class PasteInstallDialogComponent {
 
   get missingLibs(): MissingLibInfo[] {
     return this.data.missingLibs;
+  }
+
+  get title(): string {
+    return this.data.title || this.translate.instant('PASTE_INSTALL.TITLE');
+  }
+
+  get message(): string {
+    return this.data.message || this.translate.instant('PASTE_INSTALL.MESSAGE');
+  }
+
+  get confirmText(): string {
+    return this.data.confirmText || this.translate.instant('PASTE_INSTALL.INSTALL_AND_PASTE');
   }
 
   getVersionDisplay(lib: MissingLibInfo): string {

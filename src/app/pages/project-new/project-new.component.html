@@ -1,41 +1,47 @@
 <div class="project-new-box">
   <div class="header">
-    <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
-      <i class="fa-regular fa-chevron-left"></i>
-    </div>
-    <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
-      <input type="text" nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
-        (ngModelChange)="search()" />
-    </nz-input-group>
-    <ng-template #suffixIconSearch>
-      @if(keyword.length > 0){
-      <i class="fa-light fa-xmark" (click)="keyword='';search()"></i>
-      } @else {
-      <i class="fa-light fa-search"></i>
+    <div class="header-left-zone">
+      <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
+        <i class="fa-regular fa-chevron-left"></i>
+      </div>
+      @if (currentStep == 0) {
+      <div class="search-field">
+        <nz-input-group [nzPrefix]="prefixIconSearch" [nzSize]="'small'">
+          <input #boardSearchInput type="text" nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate"
+            [(ngModel)]="keyword" (ngModelChange)="search()" />
+        </nz-input-group>
+        <span class="search-shortcut">{{ searchShortcutHint }}</span>
+        <ng-template #prefixIconSearch>
+          <i class="fa-light fa-search"></i>
+        </ng-template>
+      </div>
       }
-    </ng-template>
-    <!-- 查看模式：-->
-    @if(currentStep == 0){
-    <div class="tag-list">
-      <nz-tag (click)="changeViewMode('brand')" [nzColor]="listMode === 'brand' ? '#108ee9' : null">{{
-        'PROJECT_NEW.BOARD.BY_BRAND' | translate }}</nz-tag>
-      <nz-tag (click)="changeViewMode('core')" [nzColor]="listMode === 'core' ? '#108ee9' : null">{{
-        'PROJECT_NEW.BOARD.BY_CORE' | translate }}</nz-tag>
-      <!-- <nz-tag (click)="listMode = 'function'">按功能</nz-tag> -->
+    </div>
+    @if (currentStep == 0) {
+    <div class="header-board-toolbar">
+      <div class="btns">
+        <button nz-button nzType="primary" nzGhost nzSize="small" (click)="help()">
+          <i class="fa-light fa-plus"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
+        </button>
+      </div>
+    </div>
+    <div class="header-view-mode">
+      <div class="segmented-control view-mode-control">
+        <button type="button" class="segment-btn" [class.active]="listMode === 'brand'"
+          (click)="changeViewMode('brand')">
+          {{ 'PROJECT_NEW.BOARD.BY_BRAND' | translate }}
+        </button>
+        <button type="button" class="segment-btn" [class.active]="listMode === 'core'"
+          (click)="changeViewMode('core')">
+          {{ 'PROJECT_NEW.BOARD.BY_CORE' | translate }}
+        </button>
+      </div>
+    </div>
+    } @else {
+    <div class="header-step-title">
+      {{ 'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate }}
     </div>
     }
-    <!-- <nz-steps [nzCurrent]="currentStep" nzSize="small">
-      <nz-step [nzTitle]="'PROJECT_NEW.STEPS.SELECT_BOARD' | translate"></nz-step>
-      <nz-step [nzTitle]="'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate"></nz-step>
-      <nz-step [nzTitle]="'PROJECT_NEW.STEPS.CREATE_PROJECT' | translate"
-        [nzIcon]="currentStep == 2 ? iconTemplate : null"></nz-step>
-    </nz-steps>
-    <ng-template #iconTemplate><i class="fa-duotone fa-solid fa-spinner-third"></i></ng-template> -->
-    <div class="btns">
-      <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
-        <i class="fa-light fa-question"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
-      </button>
-    </div>
   </div>
   <div class="content">
     <div class="left">
@@ -93,7 +99,8 @@
               }
             </div>
             <div class="text sscroll">{{ currentBoard._description }}</div>
-            <div class="next">
+            <div class="desc-footer">
+              <div class="next">
               @if(currentBoard.state!='todo'){
               <button nz-button nzType="primary" (click)="nextStep()">
                 {{ 'PROJECT_NEW.BUTTONS.USE_THIS' | translate }}
@@ -105,7 +112,7 @@
               <button nz-button nzType="primary" (click)="nextStep()">
                 AI创建项目
               </button> -->
-              @if(hasExamples){
+              @if(selectedProjectCategory === 'blockly' && hasExamples){
               <button nz-button nzType="primary" (click)="nextStepFromProjectHub()">
                 {{ 'PROJECT_NEW.BUTTONS.USE_THIS_FROM_HUB' | translate }}
               </button>
@@ -122,6 +129,7 @@
                 <div class="btn link ccenter" (click)="openUrl(currentBoard.url)">
                   {{ '购买' | translate }}
                 </div> -->
+              </div>
               </div>
             </div>
           </div>
@@ -169,9 +177,29 @@
             <input class="board" nz-input [(ngModel)]="newProjectData.board.name" [disabled]="true" />
             } -->
           </div>
+          @if (selectedProjectCategory === 'blockly' && !isLoadingTemplates && myTemplateList.length > 0) {
+          <div class="item template-row">
+            <div>{{ 'PROJECT_NEW.FORM.TEMPLATE' | translate }}:</div>
+            <div class="template-select-box">
+              <nz-select [(ngModel)]="selectedTemplateName"
+                [nzAllowClear]="true"
+                [nzPlaceHolder]="'PROJECT_NEW.TEMPLATES.SELECT' | translate">
+                <nz-option [nzValue]="''" [nzLabel]="'PROJECT_NEW.TEMPLATES.NONE' | translate"></nz-option>
+                @for (template of myTemplateList; track template.name) {
+                <nz-option [nzValue]="template.name" [nzLabel]="template.nickname || template.name" nzCustomContent>
+                  <span [title]="template.description || ''" style="display: block; width: 100%;">{{ template.nickname || template.name }}</span>
+                </nz-option>
+                }
+              </nz-select>
+              @if (selectedTemplateDescription) {
+              <div class="template-selected-description">{{ selectedTemplateDescription }}</div>
+              }
+            </div>
+          </div>
+          }
           <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.PROJECT_NAME' | translate }}:</div>
-            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="checkPathIsExist()" />
+            <input nz-input [(ngModel)]="newProjectData.name" (ngModelChange)="onProjectNameChange()" />
             @if(showIsExist){
             <div class="error animate__animated animate__faster animate__fadeInDown">{{ 'PROJECT_NEW.FORM.NAME_EXISTS' |
               translate }}</div>
@@ -192,17 +220,32 @@
               translate }}</div>
             }
           </div>
+          @if (selectedProjectCategory === 'coder') {
+          <div class="item platform-row">
+            <div>{{ 'PROJECT_NEW.FORM.PLATFORM' | translate }}:</div>
+            <div class="platform-select-box">
+              <nz-select [(ngModel)]="selectedCoderPlatform" (ngModelChange)="onCoderPlatformChange()">
+                @for (opt of coderPlatformOptions; track opt.value) {
+                <nz-option [nzValue]="opt.value" [nzLabel]="opt.label"></nz-option>
+                }
+              </nz-select>
+            </div>
+          </div>
+          }
           <div class="step-btns">
             <button nz-button nzType="default" (click)="currentStep = 0">
               {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
             </button>
             @if (currentStep == 1) {
-            <button nz-button nzType="primary" [disabled]="showIsExist || showIsPathPassed" (click)="createProject()">
+            <button nz-button nzType="primary" [disabled]="showIsExist || showIsPathPassed" (click)="onCreateProject()">
               {{ 'PROJECT_NEW.BUTTONS.CREATE' | translate }}
             </button>
-            }@else if (currentStep == 2) {
+            } @else if (currentStep == 2) {
             <button nz-button nzType="default" nzLoading>
-              {{ 'PROJECT_NEW.BUTTONS.CREATING' | translate }}
+              {{
+                (creatingMode === 'aily' ? 'PROJECT_NEW.BUTTONS.CREATING_AILY_CODE' : 'PROJECT_NEW.BUTTONS.CREATING')
+                  | translate
+              }}
             </button>
             }
           </div>

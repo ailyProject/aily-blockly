@@ -81,11 +81,17 @@ export class ProjectSettingDialogComponent {
       
       if (packageJson) {
         // 保留所有原始属性,只更新我们需要编辑的字段
+        const nm = packageJson.name || '';
         this.projectSettings = {
-          name: packageJson.name || '',
+          name: nm,
           version: packageJson.version || '',
           description: packageJson.description || '',
-          nickname: packageJson.nickname || '',
+          nickname: (
+            packageJson.nickname != null &&
+            String(packageJson.nickname).trim() !== ''
+          )
+            ? String(packageJson.nickname)
+            : nm,
           doc_url: packageJson.doc_url || '',
         };
       }
@@ -109,7 +115,12 @@ export class ProjectSettingDialogComponent {
 
   // 保存设置
   async saveSettings(): Promise<void> {
-    // 验证基本信息
+    // 项目名称（nickname）：支持中文；空则沿用包名
+    const nickTrimmed = (this.projectSettings.nickname ?? '').trim();
+    this.projectSettings.nickname =
+      nickTrimmed || (this.projectSettings.name ?? '').trim();
+
+    // 验证包名（npm name）
     if (!this.projectSettings.name || this.projectSettings.name.trim() === '') {
       this.message.warning(this.translate.instant('PROJECT_SETTING_DIALOG.WARNING_NAME_EMPTY'));
       return;
@@ -161,6 +172,17 @@ export class ProjectSettingDialogComponent {
       
       // 保存更新后的完整配置
       await this.projectService.setPackageJson(updatedPackageJson);
+
+      // 同步「最近打开」列表中的项目名称 / 昵称（关闭项目后主界面立即显示）
+      const openPath = this.projectService.currentProjectPath;
+      if (openPath) {
+        const pkgName = this.projectSettings.name.trim();
+        this.projectService.addRecentlyProject({
+          name: pkgName,
+          path: openPath,
+          nickname: this.projectSettings.nickname || pkgName,
+        });
+      }
       
       this.message.success(this.translate.instant('PROJECT_SETTING_DIALOG.SUCCESS_SAVE'));
       this.modal.close({ result: 'success', data: this.projectSettings });

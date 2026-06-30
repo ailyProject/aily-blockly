@@ -8,7 +8,16 @@
 import { AilyHost } from './host';
 
 function base(): string {
-  return AilyHost.get().config.apiEndpoint;
+  const hostApiEndpoint = AilyHost.get().config?.apiEndpoint;
+  if (typeof hostApiEndpoint === 'string' && hostApiEndpoint.trim()) {
+    return hostApiEndpoint.trim().replace(/\/$/, '');
+  }
+
+  const envApiEndpoint = (typeof window !== 'undefined' ? (window as any)?.env?.get?.('AILY_API_SERVER') : undefined)
+    || (typeof process !== 'undefined' ? process.env?.['AILY_API_SERVER'] : undefined)
+    || 'https://api.aily.pro';
+
+  return String(envApiEndpoint).trim().replace(/\/$/, '');
 }
 
 export const ChatAPI = {
@@ -17,6 +26,9 @@ export const ChatAPI = {
   get streamConnect() { return `${base()}/api/v1/stream`; },
   get sendMessage()   { return `${base()}/api/v1/send_message`; },
   get chatRequest()   { return `${base()}/api/v1/chat`; },
+  get chatStateless() { return `${base()}/api/v2/chat_stateless`; },
+  get interactionQuotaSnapshot() { return `${base()}/api/v3/interaction_quotas/snapshot`; },
+  get modelCatalog()  { return `${base()}/api/v2/model_catalog`; },
   get contextInfo()   { return `${base()}/api/v1/context_info`; },
   get getHistory()    { return `${base()}/api/v1/conversation_history`; },
   get stopSession()   { return `${base()}/api/v1/stop_session`; },

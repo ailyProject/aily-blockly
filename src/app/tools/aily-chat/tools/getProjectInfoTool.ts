@@ -1,4 +1,4 @@
-﻿import { ToolUseResult } from "./tools";
+﻿import type { ToolUseResult } from '../core/tool-types';
 import { ProjectService } from "../../../services/project.service";
 import { AilyHost } from '../core/host';
 
@@ -150,7 +150,7 @@ export async function getProjectInfoTool(prjService: ProjectService, input: GetP
         const libCount = libraries.length;
         const libsWithReadme = libraries.filter(lib => lib.readmePath).length;
         
-        result.message = `${boardSummary}\n已安装 ${libCount} 个库${libsWithReadme > 0 ? `，其中 ${libsWithReadme} 个包含 readme_ai.md 文档，可使用 analyze_library_blocks 分析没有 readme_ai.md 文档的库` : ''}`;
+        result.message = `${boardSummary}\n已安装 ${libCount} 个库${libsWithReadme > 0 ? `，其中 ${libsWithReadme} 个包含 readme_ai.md 文档，可使用 analyzeLibrary 分析没有 readme_ai.md 文档的库` : ''}`;
 
     } catch (error) {
         console.warn('获取项目信息失败:', error);

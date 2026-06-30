@@ -3,108 +3,200 @@
     width: 100%;
 }
 
-.edits-panel {
-    background: var(--vscode-sideBar-background, #252526);
-    color: var(--vscode-sideBar-foreground, #cccccc);
-    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-    font-size: 13px;
-    border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+.chat-editing-session-container {
+    padding: 4px 3px;
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--aily-bg-elevated, #1f1f1f) 72%, transparent);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--aily-chat-xdialog-msg-divider, rgba(255, 255, 255, 0.08));
+    border-bottom: none;
+    border-radius: var(--aily-chat-widget-top-radius, 8px) var(--aily-chat-widget-top-radius, 8px) 0 0;
+    color: var(--aily-text-tertiary, #cccccc);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
 
-    .edits-panel-header {
-        height: 30px;
-        padding: 0 12px;
-        border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
-        user-select: none;
-        background: var(--vscode-sideBar-background, #252526);
+    .chat-editing-session-overview {
         display: flex;
+        flex-direction: row;
         align-items: center;
         justify-content: space-between;
+        gap: 6px;
+        min-height: 22px;
+        padding-right: 3px;
+        user-select: none;
+        cursor: pointer;
 
-        &:hover {
-            background: var(--vscode-list-hoverBackground, #2a2d2e);
-        }
+        .working-set-title {
+            flex: 1;
+            min-width: 0;
 
-        .header-content {
+            width: 100%;
             display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            gap: 0;
+            padding: 0;
+            border: none;
+            border-radius: 2px;
+            background: transparent;
+            color: var(--aily-text-tertiary, #cccccc);
             cursor: pointer;
-            flex: 1;
 
-            .panel-icon {
-                font-size: 10px;
-                color: var(--vscode-icon-foreground, #c5c5c5);
-                transition: transform 0.2s ease;
-
-                &.expanded {
-                    transform: rotate(90deg);
-                }
+            &:focus {
+                outline: none;
+                box-shadow: none;
             }
 
-            .panel-title {
-                font-size: 12px;
-                font-weight: 600;
-                color: var(--vscode-sideBar-foreground, #cccccc);
-                letter-spacing: 0.5px;
+            &:focus-visible {
+                outline: 1px solid var(--aily-color-accent, #007fd4);
+                outline-offset: -1px;
             }
         }
 
-        .header-actions {
+        .working-set-title-section {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding-left: 3px;
+            font-size: 12px;
+            line-height: 22px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .panel-icon {
+            flex-shrink: 0;
+            width: 16px;
+            font-size: 12px;
+            color: var(--aily-text-tertiary, #cccccc);
+            margin-right: 3px;
+            transition: transform 0.2s ease;
+
+            &.expanded {
+                transform: rotate(90deg);
+            }
+        }
+
+        .panel-title {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 12px;
+            font-weight: 400;
+            line-height: 22px;
+            color: var(--aily-text-tertiary, #cccccc);
+        }
+
+        .panel-title-text {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .working-set-line-counts {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            flex-shrink: 0;
+            margin-left: 6px;
+        }
+
+        .chat-editing-session-actions {
             display: flex;
             align-items: center;
             gap: 6px;
+            flex-shrink: 0;
+            padding-right: 0;
+
+            .chat-editing-session-actions-group {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                flex-wrap: nowrap;
+            }
 
             .action-btn {
-                padding: 1px 10px;
-                border-radius: 3px;
-                font-size: 11px;
-                cursor: pointer;
+                min-width: unset;
+                width: fit-content;
+                padding: 3px 6px;
+                border-radius: 4px;
                 border: 1px solid transparent;
-                line-height: 20px;
+                font-size: 11px;
+                line-height: 14px;
+                cursor: pointer;
                 white-space: nowrap;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 
-                &.primary {
-                    background-color: var(--vscode-button-background, #0078d4);
-                    color: var(--vscode-button-foreground, #fff);
-                    border-color: var(--vscode-button-background, #0078d4);
+                &:focus {
+                    outline: none;
+                    box-shadow: none;
+                }
+
+                &:focus-visible {
+                    outline: 1px solid var(--aily-color-accent, #007fd4);
+                    outline-offset: -1px;
+                }
+
+                &.secondary {
+                    background: var(--aily-button-secondary-bg, var(--aily-bg-tertiary, rgba(255, 255, 255, 0.08)));
+                    color: var(--aily-button-secondary-text, var(--aily-text-quaternary, #d4d4d4));
 
                     &:hover {
-                        background-color: var(--vscode-button-hoverBackground, #1a8ae8);
+                        background: var(--aily-button-secondary-hover-bg, var(--aily-chat-viewer-overlay-hover, rgba(255, 255, 255, 0.08)));
+                        color: var(--aily-button-secondary-text, var(--aily-text-quaternary, #d4d4d4));
                     }
                 }
 
-                &.icon-btn {
-                    padding: 1px 4px;
-                    background: transparent;
-                    color: var(--vscode-icon-foreground, #c5c5c5);
-                    border: none;
-                    font-size: 13px;
-                    line-height: 20px;
+                &.text-btn {
+                    padding: 3px 6px;
+                }
 
-                    &:hover:not(:disabled) {
-                        background: var(--vscode-toolbar-hoverBackground, #37373a);
-                        color: var(--vscode-sideBar-foreground, #cccccc);
-                    }
+                &.keep-btn {
+                    background: var(--aily-button-secondary-bg, var(--aily-bg-tertiary, rgba(255, 255, 255, 0.08)));
+                    color: var(--aily-button-secondary-text, var(--aily-text-quaternary, #d4d4d4));
+                }
 
-                    &:disabled {
-                        opacity: 0.35;
-                        cursor: default;
-                    }
+                &.undo-btn {
+                    background: var(--aily-button-secondary-bg, var(--aily-bg-tertiary, rgba(255, 255, 255, 0.08)));
+                    color: var(--aily-button-secondary-text, var(--aily-text-quaternary, #d4d4d4));
+                }
+
+                &:disabled {
+                    opacity: 0.4;
+                    cursor: default;
                 }
             }
 
             .action-taken-text {
                 font-size: 11px;
-                color: var(--vscode-descriptionForeground, #888);
-                font-style: italic;
+                color: var(--aily-text-hint, #888);
+            }
+
+            &.accepted-state {
+                padding-right: 2px;
             }
         }
     }
 
-    .edits-panel-content {
+    .chat-editing-session-list {
+        margin-top: 2px;
         max-height: 200px;
         overflow-y: auto;
-        background: var(--vscode-sideBar-background, #252526);
+        background: transparent;
 
         &::-webkit-scrollbar {
             width: 6px;
@@ -115,49 +207,77 @@
         }
 
         &::-webkit-scrollbar-thumb {
-            background: var(--vscode-scrollbarSlider-background, #424242);
+            background: var(--aily-scrollbar-thumb-hover, #424242);
             border-radius: 3px;
         }
 
         .file-entry {
             display: flex;
             align-items: center;
-            height: 22px;
-            padding: 0 12px 0 20px;
-            gap: 8px;
+            gap: 4px;
+            min-height: 22px;
+            padding: 0 3px;
             cursor: default;
+            border-radius: 2px;
+            position: relative;
 
             &:hover {
-                background: var(--vscode-list-hoverBackground, #2a2d2e);
+                background: var(--aily-chat-viewer-overlay-hover, rgba(255, 255, 255, 0.06));
+            }
+
+            .file-main {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                flex: 1;
+                min-width: 0;
+                cursor: pointer;
+            }
+
+            .file-copy {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                min-width: 0;
+                flex: 1;
             }
 
             .file-icon {
+                width: 16px;
                 font-size: 11px;
-                width: 14px;
                 text-align: center;
                 flex-shrink: 0;
 
                 &.icon-created {
-                    color: var(--vscode-charts-green, #3fb950);
+                    color: var(--aily-color-success-alt, #3fb950);
                 }
 
                 &.icon-modified {
-                    color: var(--vscode-charts-blue, #58a6ff);
+                    color: var(--aily-color-accent, #58a6ff);
                 }
 
                 &.icon-deleted {
-                    color: var(--vscode-charts-red, #f85149);
+                    color: var(--aily-color-error-bright, #f85149);
                 }
             }
 
             .file-path {
-                flex: 1;
                 min-width: 0;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
                 font-size: 12px;
-                color: var(--vscode-editor-foreground, #d4d4d4);
+                color: var(--aily-text-quaternary, #d4d4d4);
+            }
+
+            .file-kind-badge {
+                flex-shrink: 0;
+                padding: 0 4px;
+                border-radius: 3px;
+                background: color-mix(in srgb, var(--aily-bg-tertiary, rgba(255, 255, 255, 0.08)) 70%, transparent);
+                color: var(--aily-text-hint, #9b9b9b);
+                font-size: 10px;
+                line-height: 14px;
             }
 
             .file-stats {
@@ -165,44 +285,62 @@
                 gap: 4px;
                 flex-shrink: 0;
                 font-size: 11px;
+                margin-left: auto;
+                margin-right: 6px;
             }
 
             .file-actions {
                 display: flex;
                 gap: 2px;
                 flex-shrink: 0;
+                width: 0;
+                padding-left: 0;
+                overflow: hidden;
                 opacity: 0;
-                transition: opacity 0.15s ease;
+                transition: width 0.15s ease, padding-left 0.15s ease, opacity 0.15s ease;
 
                 .file-action-btn {
-                    width: 18px;
-                    height: 18px;
+                    width: 16px;
+                    height: 16px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    border-radius: 3px;
+                    border: none;
+                    border-radius: 2px;
+                    background: transparent;
                     cursor: pointer;
                     font-size: 10px;
 
+                    &:focus {
+                        outline: none;
+                    }
+
+                    &:focus-visible {
+                        outline: 1px solid var(--aily-color-accent, #007fd4);
+                        outline-offset: -1px;
+                    }
+
                     &.accept {
-                        color: var(--vscode-charts-green, #3fb950);
+                        color: var(--aily-color-success-alt, #3fb950);
 
                         &:hover {
-                            background: rgba(63, 185, 80, 0.15);
+                            background: color-mix(in srgb, var(--aily-color-success-alt) 15%, transparent);
                         }
                     }
 
                     &.reject {
-                        color: var(--vscode-charts-red, #f85149);
+                        color: var(--aily-color-error-bright, #f85149);
 
                         &:hover {
-                            background: rgba(248, 81, 73, 0.15);
+                            background: color-mix(in srgb, var(--aily-color-error-bright) 15%, transparent);
                         }
                     }
                 }
             }
 
             &:hover .file-actions {
+                width: 34px;
+                padding-left: 5px;
                 opacity: 1;
             }
         }
@@ -210,17 +348,17 @@
 }
 
 .stat-added {
-    color: var(--vscode-charts-green, #3fb950);
+    color: var(--aily-color-success-alt, #3fb950);
     font-weight: 500;
 }
 
 .stat-removed {
-    color: var(--vscode-charts-red, #f85149);
+    color: var(--aily-color-error-bright, #f85149);
     font-weight: 500;
 }
 
 /* 动画 */
-.edits-panel-content {
+.chat-editing-session-list {
     animation: slideDown 0.2s ease-out;
 }
 

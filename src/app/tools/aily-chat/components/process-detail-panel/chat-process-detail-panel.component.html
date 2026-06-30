@@ -1,0 +1,35 @@
+<div class="process-detail-panel">
+  <div class="process-detail-panel-head">
+    <div class="process-detail-panel-title">{{ title || ('AILY_CHAT.PROCESS_FALLBACK_TERMINAL_COMMAND' | translate) }}</div>
+    @if (actionVisible) {
+      <button
+        type="button"
+        class="process-detail-panel-action-btn"
+        (click)="onActionClick()"
+      >
+        <i [class]="actionIconClass"></i>
+        <span>{{ actionLabel | translate }}</span>
+      </button>
+    }
+  </div>
+
+  <div class="process-detail-panel-meta">
+    <div class="meta-card">
+      <span class="label">{{ 'AILY_CHAT.PROCESS_LABEL_STATUS' | translate }}</span>
+      <span class="value">{{ statusText || '-' }}</span>
+    </div>
+    <div class="meta-card">
+      <span class="label">{{ 'AILY_CHAT.PROCESS_LABEL_ELAPSED' | translate }}</span>
+      <span class="value">{{ displayElapsedText }}</span>
+    </div>
+    <div class="meta-card">
+      <span class="label">{{ 'AILY_CHAT.PROCESS_LABEL_EXIT_CODE' | translate }}</span>
+      <span class="value">{{ exitCode ?? '-' }}</span>
+    </div>
+  </div>
+
+  <div class="process-detail-panel-output">
+    <div class="process-detail-panel-output-title">{{ outputTitle | translate }}</div>
+    <pre #outputPreview><code [textContent]="output || (emptyOutputText | translate)"></code></pre>
+  </div>
+</div>

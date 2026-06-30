@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "처음 {{count}}개의 앱이 도구 모음에 표시됩니다",
+        "RESET": "초기화",
+        "IN_HEADER": "도구 모음",
+        "TOOLBAR_APPS": "도구 모음 앱",
+        "ALL_APPS": "모든 앱",
+        "DRAG_HERE": "여기로 끌어다 놓기",
+        "CODE_DESC": "생성된 코드 보기",
+        "LIB_MANAGER_DESC": "프로젝트 라이브러리 종속성 관리",
+        "SERIAL_DESC": "시리얼 모니터 도구",
+        "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
+        "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
+        "FFS_MANAGER_DESC": "ESP32 파일 시스템 파티션 관리 도구",
+        "AI_DESC": "AI 비서",
+        "MODEL_STORE_DESC": "AI 모델 스토어",
+        "CLOUD_SPACE_DESC": "클라우드 저장 공간",
+        "USER_CENTER_DESC": "사용자 센터 및 설정",
+        "SIMULATOR_DESC": "시뮬레이터 (개발 중)",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN, RS485 and Modbus frame builder/debugger",
+        "BLE_DEBUGGER_DESC": "BLE scan, GATT read/write and notification debugger"
+    }
+}

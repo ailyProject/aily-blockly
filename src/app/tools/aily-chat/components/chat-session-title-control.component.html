@@ -1,0 +1,54 @@
+@if (surface.shouldRender) {
+<div class="session-title-control" [class.surface-click-enabled]="surfaceClickEnabled" (click)="requestSurfaceClick()">
+  @if (surface.navigationIconActions.length > 0) {
+  <div class="session-title-navigation-actions">
+    @for (action of surface.navigationIconActions; track action.id) {
+    <button
+      type="button"
+      class="session-title-navigation-action"
+      [class.active]="action.active === true"
+      [attr.aria-label]="action.label"
+      [attr.aria-pressed]="action.active === true"
+      [attr.data-title-action-id]="action.id"
+      [title]="action.tooltip"
+      (click)="requestAction(action, $event)">
+      <i [class]="action.iconClass"></i>
+    </button>
+    }
+  </div>
+  }
+  @if (surface.titleAction; as titleAction) {
+  <button
+    type="button"
+    class="session-title-picker"
+    [attr.aria-label]="titleAction.label"
+    [attr.data-title-action-id]="titleAction.id"
+    [title]="titleAction.tooltip"
+    (click)="requestAction(titleAction, $event)">
+    <span class="session-title-text">{{ surface.title }}</span>
+    <i class="fa-light fa-chevron-down session-title-icon"></i>
+  </button>
+  } @else if (showStaticTitle) {
+  <div class="session-title-static">
+    <span class="session-title-text">{{ surface.title }}</span>
+  </div>
+  }
+  @if (surface.actions.length > 0) {
+  <div class="session-title-actions">
+    @for (action of surface.actions; track action.id) {
+    <button
+      type="button"
+      class="session-title-action"
+      [class.active]="action.active === true"
+      [attr.aria-label]="action.label"
+      [attr.aria-pressed]="action.active === true"
+      [attr.data-title-action-id]="action.id"
+      [title]="action.tooltip"
+      (click)="requestAction(action, $event)">
+      <i [class]="action.iconClass"></i>
+    </button>
+    }
+  </div>
+  }
+</div>
+}

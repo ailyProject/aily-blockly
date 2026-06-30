@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "Clique para copiar, clique duplo para enviar ao assistente AI",
+        "COPIED_TO_CLIPBOARD": "Conteúdo do log copiado para a área de transferência",
+        "SENT_TO_AI": "Conteúdo do log enviado ao assistente AI",
+        "NO_DATA_TO_EXPORT": "Nenhum dado de log para exportar",
+        "EXPORT_TITLE": "Exportar dados de log",
+        "TEXT_FILE": "Arquivos de texto",
+        "ALL_FILES": "Todos os arquivos",
+        "EXPORT_SUCCESS": "Dados de log exportados com sucesso para ",
+        "SHOW_ERRORS_ONLY": "Mostrar apenas erros",
+        "SEARCH_PLACEHOLDER": "Pesquisar logs"
+    }
+}

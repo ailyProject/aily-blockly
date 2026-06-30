@@ -2,10 +2,11 @@ import { Component, ChangeDetectorRef } from '@angular/core';
 import { ActionState, UiService } from '../../../services/ui.service';
 import { FOOTER_BTNS, IMenuItem } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
+import { TranslateModule } from '@ngx-translate/core';
 
 @Component({
   selector: 'app-footer',
-  imports: [NzToolTipModule],
+  imports: [NzToolTipModule, TranslateModule],
   templateUrl: './footer.component.html',
   styleUrl: './footer.component.scss'
 })
@@ -23,7 +24,7 @@ export class FooterComponent {
       this.changeState(state);
     });
     // 其他窗口通过electron侧改变主窗口状态
-    window['ipcRenderer'].on('state-update', (event, state: ActionState) => {
+    window['ipcRenderer']?.on?.('state-update', (event, state: ActionState) => {
       this.changeState(state);
     });
   }

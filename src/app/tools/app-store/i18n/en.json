@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "First {{count}} apps will be shown in the toolbar",
+        "RESET": "Reset",
+        "IN_HEADER": "Toolbar",
+        "TOOLBAR_APPS": "Toolbar Apps",
+        "ALL_APPS": "All Apps",
+        "DRAG_HERE": "Drag here",
+        "CODE_DESC": "View generated code",
+        "LIB_MANAGER_DESC": "Manage project library dependencies",
+        "SERIAL_DESC": "Serial monitor tool",
+        "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
+        "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
+        "FFS_MANAGER_DESC": "ESP32 filesystem partition manager",
+        "AI_DESC": "AI Assistant",
+        "MODEL_STORE_DESC": "AI Model Store",
+        "CLOUD_SPACE_DESC": "Cloud storage space",
+        "USER_CENTER_DESC": "User center and settings",
+        "SIMULATOR_DESC": "Simulator (In Development)",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN, RS485 and Modbus frame builder/debugger",
+        "BLE_DEBUGGER_DESC": "BLE scan, GATT read/write and notification debugger"
+    }
+}

@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "Первые {{count}} приложения будут отображаться на панели инструментов",
+        "RESET": "Сбросить",
+        "IN_HEADER": "Панель инструментов",
+        "TOOLBAR_APPS": "Приложения панели инструментов",
+        "ALL_APPS": "Все приложения",
+        "DRAG_HERE": "Перетащите сюда",
+        "CODE_DESC": "Просмотр сгенерированного кода",
+        "LIB_MANAGER_DESC": "Управление зависимостями библиотек проекта",
+        "SERIAL_DESC": "Инструмент серийного монитора",
+        "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
+        "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
+        "FFS_MANAGER_DESC": "Инструмент управления разделами файловой системы ESP32",
+        "AI_DESC": "Ассистент ИИ",
+        "MODEL_STORE_DESC": "Магазин моделей ИИ",
+        "CLOUD_SPACE_DESC": "Облачное хранилище",
+        "USER_CENTER_DESC": "Центр пользователя и настройки",
+        "SIMULATOR_DESC": "Симулятор (В разработке)",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN, RS485 and Modbus frame builder/debugger",
+        "BLE_DEBUGGER_DESC": "BLE scan, GATT read/write and notification debugger"
+    }
+}

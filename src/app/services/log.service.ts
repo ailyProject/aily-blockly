@@ -27,6 +27,19 @@ export class LogService {
     if (opts.detail === 'undefined') opts.detail = '';
 
     opts['timestamp'] = Date.now();
+
+    if (opts.mergeKey) {
+      const existingIndex = this.list.findIndex(item => item.mergeKey === opts.mergeKey);
+      if (existingIndex !== -1) {
+        this.list[existingIndex] = {
+          ...this.list[existingIndex],
+          ...opts
+        };
+        this.stateSubject.next(this.list[existingIndex]);
+        return;
+      }
+    }
+
     // opts['showDetail'] = false;
     this.list.push(opts);
     if (this.list.length > this.CLEANUP_THRESHOLD) {
@@ -46,4 +59,5 @@ export interface LogOptions {
   detail?: string;
   state?: string;
   timestamp?: number;
+  mergeKey?: string;
 }

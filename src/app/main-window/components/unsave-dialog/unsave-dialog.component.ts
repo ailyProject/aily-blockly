@@ -4,6 +4,19 @@ import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
 import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
 
+export interface UnsaveDialogCustomData {
+  title: string;
+  text: string;
+  detail?: string;
+  buttons: DialogButton[];
+}
+
+export interface UnsaveDialogActionData {
+  action: 'close' | 'open' | 'new';
+}
+
+export type UnsaveDialogData = UnsaveDialogActionData | UnsaveDialogCustomData;
+
 @Component({
   selector: 'app-unsave-dialog',
   imports: [CommonModule, TranslateModule, BaseDialogComponent],
@@ -13,14 +26,26 @@ import { BaseDialogComponent, DialogButton } from '../../../components/base-dial
 export class UnsaveDialogComponent {
 
   readonly modal = inject(NzModalRef);
-  readonly data: { action: 'close' | 'open' | 'new' } = inject(NZ_MODAL_DATA);
+  readonly data: UnsaveDialogData = inject(NZ_MODAL_DATA);
+
+  private get customData(): UnsaveDialogCustomData | null {
+    return 'action' in this.data ? null : this.data;
+  }
+
+  private get actionData(): UnsaveDialogActionData | null {
+    return 'action' in this.data ? this.data : null;
+  }
 
   get title(): string {
-    return 'UNSAVE_DIALOG.TITLE';
+    return this.customData?.title ?? 'UNSAVE_DIALOG.TITLE';
   }
 
   get text(): string {
-    const action = this.data.action;
+    if (this.customData) {
+      return this.customData.text;
+    }
+
+    const action = this.actionData?.action;
     if (action === 'open') {
       return 'UNSAVE_DIALOG.MESSAGE_OPEN';
     } else if (action === 'new') {
@@ -31,7 +56,15 @@ export class UnsaveDialogComponent {
     return 'UNSAVE_DIALOG.MESSAGE_DEFAULT';
   }
 
+  get detail(): string | null {
+    return this.customData?.detail ?? null;
+  }
+
   get buttons(): DialogButton[] {
+    if (this.customData) {
+      return this.customData.buttons;
+    }
+
     return [
       {
         text: 'UNSAVE_DIALOG.CANCEL',

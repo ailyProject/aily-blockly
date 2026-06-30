@@ -1,0 +1,72 @@
+<div class="chat-debug-logs">
+  <aily-chat-debug-breadcrumb
+    [sessionTitle]="sessionTitle"
+    [currentLabel]="'调试日志'"
+    (homeRequested)="homeRequested.emit()"
+    (overviewRequested)="overviewRequested.emit()"></aily-chat-debug-breadcrumb>
+
+  <div class="chat-debug-logs-header">
+    <div class="chat-debug-logs-heading">
+      <div class="chat-debug-logs-eyebrow">调试日志</div>
+      <div class="chat-debug-logs-title">{{ sessionTitle }}</div>
+      <div class="chat-debug-logs-meta">
+        源会话 {{ sourceSessionId || sessionId }} · 导入于 {{ importedAt | date:'yyyy-MM-dd HH:mm:ss' }}
+      </div>
+    </div>
+    <div class="chat-debug-logs-actions">
+      <button type="button" class="chat-debug-logs-action" (click)="closeRequested.emit()">返回聊天</button>
+    </div>
+  </div>
+
+  <div class="chat-debug-logs-summary">
+    <div class="chat-debug-logs-stat">
+      <span class="chat-debug-logs-stat-label">事件数</span>
+      <span class="chat-debug-logs-stat-value">{{ summary.totalEvents }}</span>
+    </div>
+    <div class="chat-debug-logs-stat">
+      <span class="chat-debug-logs-stat-label">错误</span>
+      <span class="chat-debug-logs-stat-value">{{ summary.errorCount }}</span>
+    </div>
+    <div class="chat-debug-logs-stat">
+      <span class="chat-debug-logs-stat-label">工具调用</span>
+      <span class="chat-debug-logs-stat-value">{{ summary.toolCallCount }}</span>
+    </div>
+  </div>
+
+  <div class="chat-debug-logs-content-wrapper">
+    <div class="chat-debug-logs-list sscroll">
+      @for (event of events; track event.id) {
+      <button type="button" class="chat-debug-logs-item" [class.error]="isErrorEvent(event)" [class.selected]="isSelected(event)" (click)="selectEvent(event)">
+        <div class="chat-debug-logs-item-header">
+          <span class="chat-debug-logs-item-kind">{{ event.kind }}</span>
+          <span class="chat-debug-logs-item-title">{{ getEventTitle(event) }}</span>
+          <span class="chat-debug-logs-item-time">
+            @if (event.created > 0) {
+            {{ event.created | date:'HH:mm:ss' }}
+            } @else {
+            #{{ event.sequence + 1 }}
+            }
+          </span>
+        </div>
+        <div class="chat-debug-logs-item-detail boundary">{{ getEventBoundaryDetails(event) }}</div>
+        @if (getEventDetails(event); as details) {
+        <div class="chat-debug-logs-item-detail">{{ details }}</div>
+        }
+        @if (event.kind === 'modelTurn') {
+        <div class="chat-debug-logs-item-detail tokens">
+          输入 {{ event.inputTokens ?? 0 }} · 输出 {{ event.outputTokens ?? 0 }}
+        </div>
+        }
+      </button>
+      } @empty {
+      <div class="chat-debug-logs-empty">当前导入快照没有可显示的调试事件。</div>
+      }
+    </div>
+    @if (selectedEvent) {
+    <aily-chat-debug-detail-panel
+      [event]="selectedEvent"
+      [resolvedContent]="selectedResolvedContent"
+      (closeRequested)="clearSelection()"></aily-chat-debug-detail-panel>
+    }
+  </div>
+</div>

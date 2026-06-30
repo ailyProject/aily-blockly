@@ -1,4 +1,5 @@
 import { Injectable, signal } from '@angular/core';
+import { Subject } from 'rxjs';
 import { ConfigService } from './config.service';
 
 export type ThemeMode = 'dark' | 'light';
@@ -9,6 +10,8 @@ export type ThemeMode = 'dark' | 'light';
 export class ThemeService {
   /** 当前主题的响应式信号 */
   readonly theme = signal<ThemeMode>('dark');
+  private readonly themeChangedSubject = new Subject<ThemeMode>();
+  readonly themeChanged$ = this.themeChangedSubject.asObservable();
 
   /** ng-zorro 主题 link 元素 */
   private nzThemeLinkEl: HTMLLinkElement | null = null;
@@ -65,6 +68,7 @@ export class ThemeService {
 
   private applyTheme(mode: ThemeMode): void {
     this.theme.set(mode);
+    this.themeChangedSubject.next(mode);
 
     // 设置 html 元素上的 data-theme 属性
     document.documentElement.setAttribute('data-theme', mode);

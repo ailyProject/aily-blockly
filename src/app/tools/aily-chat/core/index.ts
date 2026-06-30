@@ -3,23 +3,10 @@
  */
 
 export type { IAilyTool, ToolContext, ToolSchema, ToolUseResult, ToolExecutionCallbacks } from './tool-types';
-export { ToolRegistry } from './tool-registry';
 
 // 工具审批系统
-export {
-  toolRequiresApproval,
-  addToolRequiringApproval,
-  removeToolApprovalRequirement,
-  registerToolApprovalCallback,
-  unregisterToolApprovalCallback,
-  approveToolForSession,
-  enableSessionSafeMode,
-  clearSessionApprovals,
-  isReadOnlyCommand,
-  isDestructiveOperation,
-  isDestructiveCommand,
-} from './tool-approval';
-export type { ToolApprovalRequest, ToolApprovalResult, ToolApprovalCallback } from './tool-approval';
+export { generateApprovalMessage } from '../helpers/tool-approval-ui';
+export type { ToolApprovalRequest, ToolApprovalResult, ToolApprovalCallback } from '../helpers/tool-approval-ui';
 
 // Skills 系统
 export type { IAilySkill, SkillMetadata, SkillOrigin, SkillSearchResult } from './skill-types';
@@ -43,4 +30,5 @@ export type {
   IEditorProvider, IConnectionGraphProvider,
   IMcpProvider, IMcpToolDef,
 } from './host-api';
+export type { AuthQuotaSummary, AuthSnapshot } from './auth-snapshot';
 export { AILY_HOST_TOKEN } from './host-api-token';

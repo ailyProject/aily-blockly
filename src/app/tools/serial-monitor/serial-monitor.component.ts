@@ -32,6 +32,12 @@ import { Buffer } from 'buffer';
 import { TranslateService, TranslateModule } from '@ngx-translate/core';
 import { ConfigService } from '../../services/config.service';
 import { ElectronService } from '../../services/electron.service';
+import { ToolI18nService } from '../../services/tool-i18n.service';
+
+interface UploadRestoreContext {
+  port: string;
+  connectOptions: any;
+}
 
 @Component({
   selector: 'app-serial-monitor',
@@ -143,6 +149,80 @@ export class SerialMonitorComponent {
   currentPort;
   currentBaudRate = '9600';
   currentUrl;
+  private connectedPort: string | null = null;
+  private uploadRestoreContext: UploadRestoreContext | null = null;
+
+  private cancelUploadReconnect() {
+    this.uploadRestoreContext = null;
+  }
+
+  private getConnectOptions(port = this.currentPort) {
+    return {
+      path: port,
+      baudRate: parseInt(this.currentBaudRate),
+      dataBits: parseInt(this.dataBits),
+      stopBits: parseFloat(this.stopBits),
+      parity: this.parity,
+      flowControl: this.flowControl
+    };
+  }
+
+  private getUploadPortFromSignal(action: any) {
+    return action?.payload?.port || this.serialService.currentPort || null;
+  }
+
+  private pauseForUpload(uploadPort: string | null): Promise<void> | null {
+    this.uploadRestoreContext = null;
+    if (!uploadPort || !this.switchValue || this.connectedPort !== uploadPort) {
+      return null;
+    }
+
+    this.uploadRestoreContext = {
+      port: uploadPort,
+      connectOptions: this.getConnectOptions(uploadPort)
+    };
+    this.switchValue = false;
+    const released = this.serialMonitorService.disconnect().then(result => {
+      if (result) {
+        this.connectedPort = null;
+      } else {
+        this.uploadRestoreContext = null;
+        this.switchValue = true;
+      }
+      this.cd.detectChanges();
+    }).catch(() => {
+      this.uploadRestoreContext = null;
+      this.switchValue = true;
+      this.cd.detectChanges();
+    });
+    this.cd.detectChanges();
+    return released;
+  }
+
+  private restoreAfterUpload(uploadPort: string | null) {
+    const context = this.uploadRestoreContext;
+    this.uploadRestoreContext = null;
+    if (!context || !uploadPort || context.port !== uploadPort || this.switchValue) {
+      return;
+    }
+
+    this.currentPort = context.port;
+    this.switchValue = true;
+    this.serialMonitorService.connect(context.connectOptions).then(result => {
+      if (result) {
+        this.connectedPort = context.port;
+      } else {
+        this.connectedPort = null;
+        this.switchValue = false;
+      }
+      this.cd.detectChanges();
+    }).catch(() => {
+      this.connectedPort = null;
+      this.switchValue = false;
+      this.cd.detectChanges();
+    });
+    this.cd.detectChanges();
+  }
 
   // 添加高级串口设置相关属性
   dataBits = '8';
@@ -168,7 +248,8 @@ export class SerialMonitorComponent {
     private message: NzMessageService,
     private translate: TranslateService,
     private configService: ConfigService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private toolI18n: ToolI18nService
   ) {
     // 当虚拟行元素变化时，动态测量每个元素的实际高度
     effect(() => {
@@ -182,6 +263,8 @@ export class SerialMonitorComponent {
   }
 
   async ngOnInit() {
+    await this.toolI18n.load('serial-monitor');
+
     this.currentUrl = this.router.url;
 
     // 加载保存的串口监视器配置
@@ -205,6 +288,14 @@ export class SerialMonitorComponent {
         this.handleDataUpdate(data);
       });
 
+    this.serialMonitorService.connectionStatus
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((isConnected) => {
+        if (!isConnected) {
+          this.connectedPort = null;
+        }
+      });
+
     // 检查并设置默认串口
     this.checkAndSetDefaultPort();
 
@@ -212,30 +303,18 @@ export class SerialMonitorComponent {
     this.uiService.actionSubject
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((action: any) => {
-      if (action.action === 'signal' && action.type === 'tool') {
-        const signal = action.data as string;
-        if (signal === 'serial-monitor:disconnect' && this.switchValue) {
-          this.switchValue = false;
-          this.serialMonitorService.disconnect();
-          this.cd.detectChanges();
-        } else if (signal === 'serial-monitor:connect' && !this.switchValue && this.currentPort) {
-          this.switchValue = true;
-          this.serialMonitorService.connect({
-            path: this.currentPort,
-            baudRate: parseInt(this.currentBaudRate),
-            dataBits: parseInt(this.dataBits),
-            stopBits: parseFloat(this.stopBits),
-            parity: this.parity,
-            flowControl: this.flowControl
-          }).then(result => {
-            if (!result) {
-              this.switchValue = false;
+        if (action.action === 'signal' && action.type === 'tool') {
+          const signal = action.data as string;
+          if (signal === 'serial-monitor:disconnect') {
+            const releasePromise = this.pauseForUpload(this.getUploadPortFromSignal(action));
+            if (releasePromise && Array.isArray(action?.payload?.waitFor)) {
+              action.payload.waitFor.push(releasePromise);
             }
-            this.cd.detectChanges();
-          });
+          } else if (signal === 'serial-monitor:connect') {
+            this.restoreAfterUpload(this.getUploadPortFromSignal(action));
+          }
         }
-      }
-    });
+      });
 
     // 如果已有数据,滚动到底部
     if (this.dataList.length > 0) {
@@ -247,15 +326,53 @@ export class SerialMonitorComponent {
 
   private scrollTimeoutId: any;
 
+  /** 用户是否停留在列表尾部（上滚查看历史时为 false，避免新数据强行拉到底） */
+  private userFollowingTail = true;
+  /** 距底部 ≤ 此值视为贴底（与 RELEASE 形成滞回，避免阈值附近上下抖动） */
+  private static readonly FOLLOW_STICK_PX = 40;
+  /** 距底部 ≥ 此值视为已离开尾部（须大于 STICK） */
+  private static readonly FOLLOW_RELEASE_PX = 100;
+  /** scrollToIndex 触发的 scroll 期间为 true，用于避免误判贴底 */
+  private serialScrollProgrammatic = false;
+
+  onDataListScroll(): void {
+    const el = this.dataListScrollEl()?.nativeElement;
+    if (!el) return;
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    const distanceFromBottom = maxScroll - el.scrollTop;
+    const prevFollowing = this.userFollowingTail;
+
+    // 跟到底过程中中间帧 distanceFromBottom 可能暂时很大，不得误判为用户离开
+    if (this.serialScrollProgrammatic && prevFollowing) {
+      return;
+    }
+
+    if (distanceFromBottom >= SerialMonitorComponent.FOLLOW_RELEASE_PX) {
+      this.userFollowingTail = false;
+    } else if (distanceFromBottom <= SerialMonitorComponent.FOLLOW_STICK_PX) {
+      // 程序滚动且用户已上滚时，不得把 false 误判成贴底
+      if (!(this.serialScrollProgrammatic && !prevFollowing)) {
+        this.userFollowingTail = true;
+      }
+    }
+    // STICK～RELEASE 之间保持原状态（滞回带）
+  }
+
   private scrollToBottom() {
-    if (!this.autoScroll) return;
+    if (!this.autoScroll || !this.userFollowingTail) return;
     if (this.scrollTimeoutId) {
       clearTimeout(this.scrollTimeoutId);
     }
     this.scrollTimeoutId = setTimeout(() => {
       const count = this.dataCount();
       if (count > 0) {
+        this.serialScrollProgrammatic = true;
         this.virtualizer.scrollToIndex(count - 1, { align: 'end' });
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            this.serialScrollProgrammatic = false;
+          });
+        });
       }
     }, 30);
   }
@@ -299,11 +416,11 @@ export class SerialMonitorComponent {
       if (savedConfig.baudRate) {
         this.currentBaudRate = savedConfig.baudRate;
       }
-      if (savedConfig.dataBits) {
-        this.dataBits = savedConfig.dataBits;
+      if (savedConfig.dataBits != null && savedConfig.dataBits !== '') {
+        this.dataBits = String(savedConfig.dataBits);
       }
-      if (savedConfig.stopBits) {
-        this.stopBits = savedConfig.stopBits;
+      if (savedConfig.stopBits != null && savedConfig.stopBits !== '') {
+        this.stopBits = String(savedConfig.stopBits);
       }
       if (savedConfig.parity) {
         this.parity = savedConfig.parity;
@@ -354,6 +471,8 @@ export class SerialMonitorComponent {
   portList: PortItem[] = []
   boardKeywords = []; // 这个用来高亮显示正确开发板，如['arduino uno']，则端口菜单中如有包含'arduino uno'的串口则高亮显示
   position = { x: 0, y: 0 }; // 右键菜单位置
+  private portListGeneration = 0;
+
   openPortList(el) {
     // console.log(el.srcElement);
     // 获取元素左下角位置
@@ -365,12 +484,34 @@ export class SerialMonitorComponent {
       let boardname = this.currentBoard.replace(' 2560', ' ').replace(' R3', '');
       this.boardKeywords = [boardname];
     }
-    this.getDevicePortList();
+    if (this.portList.length === 0) {
+      this.portList = [
+        {
+          name: 'Loading...',
+          text: '',
+          type: 'serial',
+          icon: 'fa-light fa-spinner',
+          disabled: true,
+        }
+      ];
+    }
     this.showPortList = true;
+    this.getDevicePortList();
   }
 
   async getDevicePortList() {
-    let ports = await this.serialService.getSerialPorts();
+    const generation = ++this.portListGeneration;
+    let ports: PortItem[] = [];
+    try {
+      ports = await this.serialService.getSerialPorts();
+    } catch (error) {
+      console.warn('获取串口列表失败:', error);
+    }
+
+    if (generation !== this.portListGeneration) {
+      return;
+    }
+
     if (ports && ports.length > 0) {
       this.portList = ports;
     } else {
@@ -384,6 +525,7 @@ export class SerialMonitorComponent {
         }
       ]
     }
+    this.cd.detectChanges();
   }
 
   closePortList() {
@@ -392,6 +534,7 @@ export class SerialMonitorComponent {
   }
 
   selectPort(portItem) {
+    this.cancelUploadReconnect();
     this.currentPort = portItem.name;
     this.closePortList();
     this.saveSerialConfig();
@@ -416,15 +559,18 @@ export class SerialMonitorComponent {
   }
 
   selectBaud(item) {
+    this.cancelUploadReconnect();
     this.currentBaudRate = item.name;
     this.closeBaudList();
     this.saveSerialConfig();
   }
 
   async switchPort() {
+    this.cancelUploadReconnect();
     if (!this.switchValue) {
       const result = await this.serialMonitorService.disconnect();
       if (result) {
+        this.connectedPort = null;
         this.message.success(this.translate.instant('SERIAL.PORT_CLOSED'));
       }
       return;
@@ -439,16 +585,10 @@ export class SerialMonitorComponent {
     }
 
     try {
-      const result = await this.serialMonitorService.connect({
-        path: this.currentPort,
-        baudRate: parseInt(this.currentBaudRate),
-        dataBits: parseInt(this.dataBits),
-        stopBits: parseFloat(this.stopBits),
-        parity: this.parity,
-        flowControl: this.flowControl
-      });
+      const result = await this.serialMonitorService.connect(this.getConnectOptions());
 
       if (result) {
+        this.connectedPort = this.currentPort;
         this.message.success(this.translate.instant('SERIAL.PORT_OPENED'));
         // 发送DTR信号
         setTimeout(() => {
@@ -456,11 +596,13 @@ export class SerialMonitorComponent {
         }, 50);
       } else {
         // 连接失败，关闭开关
+        this.connectedPort = null;
         this.switchValue = false;
         this.cd.detectChanges();
       }
     } catch (error) {
       // 连接失败，关闭开关
+      this.connectedPort = null;
       this.switchValue = false;
       this.cd.detectChanges();
     }
@@ -468,11 +610,16 @@ export class SerialMonitorComponent {
 
   changeViewMode(name) {
     this.serialMonitorService.viewMode[name] = !this.serialMonitorService.viewMode[name];
+    if (name === 'autoScroll' && this.serialMonitorService.viewMode.autoScroll) {
+      this.userFollowingTail = true;
+      this.scrollToBottom();
+    }
   }
 
   clearView() {
     this.serialMonitorService.clearData();
     this.dataCount.set(0);
+    this.userFollowingTail = true;
     this.cd.detectChanges();
     // 清空图表数据
     if (this.serialChartRef) {
@@ -484,18 +631,25 @@ export class SerialMonitorComponent {
     this.serialMonitorService.inputMode[name] = !this.serialMonitorService.inputMode[name];
   }
 
-  send(data = this.inputValue) {
-    this.serialMonitorService.sendData(data);
-    // this.serialMonitorService.dataUpdated.next({});
-    if (this.inputValue.trim() !== '') {
-      // 避免保存空内容到历史记录
-      if (!this.serialMonitorService.sendHistoryList.includes(this.inputValue)) {
-        this.serialMonitorService.sendHistoryList.unshift(this.inputValue); // 添加到列表开头
-        // 限制历史记录数量，例如最多保存20条
+  async send(data?: string) {
+    const fromTextarea = arguments.length === 0;
+    const payload = fromTextarea ? this.inputValue : data;
+
+    const ok = await this.serialMonitorService.sendData(payload);
+
+    const histRaw = typeof payload === 'string' ? payload : String(payload ?? '');
+    if (ok && histRaw.trim() !== '') {
+      if (!this.serialMonitorService.sendHistoryList.includes(histRaw)) {
+        this.serialMonitorService.sendHistoryList.unshift(histRaw);
         if (this.serialMonitorService.sendHistoryList.length > 20) {
           this.serialMonitorService.sendHistoryList.pop();
         }
       }
+    }
+
+    if (ok && fromTextarea) {
+      this.inputValue = '';
+      this.cd.detectChanges();
     }
   }
 
@@ -549,9 +703,10 @@ export class SerialMonitorComponent {
   }
 
   onSettingsChanged(settings) {
-    // 更新组件中的高级设置
-    this.dataBits = settings.dataBits.value;
-    this.stopBits = settings.stopBits.value;
+    this.cancelUploadReconnect();
+    // 更新组件中的高级设置（统一存为字符串，便于配置持久化与模板绑定）
+    this.dataBits = String(settings.dataBits.value);
+    this.stopBits = String(settings.stopBits.value);
     this.parity = settings.parity.value;
     this.flowControl = settings.flowControl.value;
 
@@ -682,24 +837,37 @@ export class SerialMonitorComponent {
     this.cd.detectChanges();
   }
 
-  contextMenuClick(menuItem: any) {
-    if (!this.contextMenuItem) return;
+  async contextMenuClick(menuItem: any) {
+    const contextMenuItem = this.contextMenuItem;
+    if (!contextMenuItem) return;
     switch (menuItem.data.action) {
       case 'copy':
-        navigator.clipboard.writeText(this.contextMenuItem.data).then(() => {
+        try {
+          await this.electronService.clipboardWriteText(this.getDataItemCopyText(contextMenuItem));
           this.message.info('已复制到剪贴板');
-        });
+        } catch (error) {
+          console.error('Copy serial data failed:', error);
+          this.message.error('复制失败');
+        }
         break;
       case 'hex':
-        this.contextMenuItem.showHex = !this.contextMenuItem.showHex;
+        contextMenuItem.showHex = !contextMenuItem.showHex;
         break;
       case 'highlight':
-        this.contextMenuItem.highlight = !this.contextMenuItem.highlight;
+        contextMenuItem.highlight = !contextMenuItem.highlight;
         break;
     }
     this.showContextMenu = false;
     this.contextMenuItem = null;
     this.cd.detectChanges();
+  }
+
+  private getDataItemCopyText(item: dataItem): string {
+    if (Buffer.isBuffer(item.data)) {
+      return item.data.toString();
+    }
+
+    return item.data == null ? '' : String(item.data);
   }
 
   showChartBox = false;

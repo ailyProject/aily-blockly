@@ -1,0 +1,107 @@
+@if (show) {
+<div class="mw-overlay" [class.mw-chosen]="!!chosenSide">
+  <!-- 动态背景：渐变光晕 + 漂浮光斑 -->
+  <div class="mw-bg">
+    <span class="mw-blob mw-blob--blockly"></span>
+    <span class="mw-blob mw-blob--coder"></span>
+    <span class="mw-grid"></span>
+  </div>
+
+  <!-- 顶部标题区 -->
+  <header class="mw-header">
+    <img class="mw-logo" [src]="logoSrc" alt="aily" draggable="false" />
+    <h1 class="mw-title">{{ 'MODE_WELCOME.TITLE' | translate }}</h1>
+    <p class="mw-subtitle">{{ 'MODE_WELCOME.SUBTITLE' | translate }}</p>
+  </header>
+
+  <!-- 左右对立面板 -->
+  <main
+    class="mw-stage"
+    [class.is-hovering]="hoveredSide !== null"
+    [attr.data-hover]="hoveredSide"
+    [attr.data-chosen]="chosenSide"
+  >
+    <!-- Blockly 面板 -->
+    <section
+      class="mw-panel mw-panel--blockly"
+      [class.is-active]="hoveredSide === 'blockly'"
+      [class.is-dimmed]="hoveredSide === 'coder'"
+      [class.is-chosen]="chosenSide === 'blockly'"
+      [class.is-discarded]="chosenSide === 'coder'"
+      (mouseenter)="onHover('blockly')"
+      (mouseleave)="onHover(null)"
+      (click)="choose('blockly')"
+    >
+      <div class="mw-panel-inner">
+        <div class="mw-icon">
+          <i class="fa-light fa-puzzle-piece"></i>
+        </div>
+        <h2 class="mw-panel-title">{{ 'MODE_WELCOME.BLOCKLY_TITLE' | translate }}</h2>
+        <p class="mw-panel-tagline">{{ 'MODE_WELCOME.BLOCKLY_TAGLINE' | translate }}</p>
+        <ul class="mw-features">
+          @for (key of blocklyFeatures; track key) {
+          <li>
+            <i class="fa-light fa-check"></i>
+            <span>{{ key | translate }}</span>
+          </li>
+          }
+        </ul>
+        <button type="button" class="mw-choose-btn">
+          <span>{{ 'MODE_WELCOME.CHOOSE' | translate }}</span>
+          <i class="fa-light fa-arrow-right"></i>
+        </button>
+      </div>
+    </section>
+
+    <!-- 中间分隔 + VS -->
+    <div class="mw-divider">
+      <span class="mw-divider-line"></span>
+      <span class="mw-vs">VS</span>
+      <span class="mw-divider-line"></span>
+    </div>
+
+    <!-- Coder 面板 -->
+    <section
+      class="mw-panel mw-panel--coder"
+      [class.is-active]="hoveredSide === 'coder'"
+      [class.is-dimmed]="hoveredSide === 'blockly'"
+      [class.is-chosen]="chosenSide === 'coder'"
+      [class.is-discarded]="chosenSide === 'blockly'"
+      (mouseenter)="onHover('coder')"
+      (mouseleave)="onHover(null)"
+      (click)="choose('coder')"
+    >
+      <div class="mw-panel-inner">
+        <div class="mw-icon">
+          <i class="fa-light fa-code"></i>
+        </div>
+        <h2 class="mw-panel-title">{{ 'MODE_WELCOME.CODER_TITLE' | translate }}</h2>
+        <p class="mw-panel-tagline">{{ 'MODE_WELCOME.CODER_TAGLINE' | translate }}</p>
+        <ul class="mw-features">
+          @for (key of coderFeatures; track key) {
+          <li>
+            <i class="fa-light fa-check"></i>
+            <span>{{ key | translate }}</span>
+          </li>
+          }
+        </ul>
+        <button type="button" class="mw-choose-btn">
+          <span>{{ 'MODE_WELCOME.CHOOSE' | translate }}</span>
+          <i class="fa-light fa-arrow-right"></i>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <!-- 底部：重置说明 + 稍后再说 -->
+  <footer class="mw-footer">
+    <p class="mw-reset-hint">
+      <i class="fa-light fa-circle-info"></i>
+      <span>{{ 'MODE_WELCOME.RESET_HINT' | translate }}</span>
+    </p>
+    <button type="button" class="mw-skip" (click)="onSkip()">
+      {{ 'MODE_WELCOME.SKIP' | translate }}
+    </button>
+  </footer>
+</div>
+}

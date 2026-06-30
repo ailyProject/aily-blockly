@@ -1,0 +1,159 @@
+@if (displayGroups.length > 0) {
+<div
+  [class.session-list-items]="isListVariant"
+  [class.session-picker-list]="isPickerVariant"
+  [class.sscroll]="isListVariant || isPickerVariant"
+  role="listbox"
+  [attr.aria-label]="listAriaLabel">
+  @for (group of displayGroups; track group.id) {
+  @if (group.label) {
+    @if (isCollapsibleGroup(group)) {
+    <button
+      type="button"
+      [class.session-list-section-toggle]="isListVariant"
+      [class.session-picker-section-toggle]="isPickerVariant"
+      [attr.aria-expanded]="isGroupExpanded(group)"
+      [attr.aria-label]="isGroupExpanded(group) ? '收起' + group.label : '展开' + group.label"
+      (click)="toggleGroupExpanded($event, group)">
+      <i class="fa-light fa-chevron-right session-section-toggle-icon" [class.expanded]="isGroupExpanded(group)"></i>
+      <span>{{ group.label }}</span>
+    </button>
+    } @else {
+    <div [class.session-list-section-label]="isListVariant" [class.session-picker-section-label]="isPickerVariant">{{ group.label }}</div>
+    }
+  }
+  @if (isGroupExpanded(group)) {
+  @for (item of group.items; track trackBySessionId($index, item)) {
+  <div
+    [class.session-list-row]="isListVariant"
+    [class.session-picker-row]="isPickerVariant"
+    [class.session-list-row-has-toggle-action]="isListVariant && (item.pinned === true || item.archived === true)"
+    [class.session-picker-row-has-toggle-action]="isPickerVariant && (item.pinned === true || item.archived === true)"
+    [class.session-list-row-overflow-open]="isListVariant && isOverflowOpen(item)"
+    [class.session-picker-row-overflow-open]="isPickerVariant && isOverflowOpen(item)"
+    [class.current]="item.current"
+    [class.selected]="isSelected(item)">
+    <button
+      type="button"
+      [class.session-list-item]="isListVariant"
+      [class.session-picker-item]="isPickerVariant"
+      [class.current]="isPickerVariant && item.current"
+      [class.selected]="isPickerVariant && isSelected(item)"
+      [attr.data-session-id]="item.sessionId"
+      role="option"
+      [attr.aria-selected]="isSelected(item)"
+      [attr.aria-current]="item.current ? 'true' : null"
+      (mouseenter)="preloadItem(item)"
+      (focus)="preloadItem(item)"
+      (click)="selectItem(item)">
+      <div [class.session-list-copy]="isListVariant" [class.session-picker-copy]="isPickerVariant">
+        <div [class.session-list-item-title-row]="isListVariant" [class.session-picker-title-row]="isPickerVariant">
+          <span
+            [class.session-list-activity-indicator]="isListVariant"
+            [class.session-picker-activity-indicator]="isPickerVariant"
+            aria-hidden="true">
+            @if (showActivitySpinner(item)) {
+            <i class="fa-light fa-spinner-third session-list-activity-spinner"></i>
+            } @else if (showUnreadDot(item)) {
+            <span class="session-list-unread-dot"></span>
+            }
+          </span>
+          <span [class.session-list-item-title]="isListVariant" [class.session-picker-title]="isPickerVariant">{{ item.title }}</span>
+        </div>
+        @if (detailSegments(item).length > 0 || formatStatusMeta(item)) {
+        <div
+          [class.session-list-item-meta-row]="isListVariant"
+          [class.session-picker-meta-row]="isPickerVariant"
+          [class.session-list-item-meta-row-indented]="isListVariant"
+          [class.session-picker-meta-row-indented]="isPickerVariant">
+          <div [class.session-list-item-detail-row]="isListVariant" [class.session-picker-detail-row]="isPickerVariant">
+            @for (detail of detailSegments(item); track detail) {
+            <span [class.session-list-item-detail]="isListVariant" [class.session-picker-detail]="isPickerVariant">{{ detail }}</span>
+            }
+            @if (formatStatusMeta(item)) {
+            <div
+              [class.session-list-item-status]="isListVariant"
+              [class.session-picker-status]="isPickerVariant"
+              [class.has-separator]="hasStatusSeparator(item)"
+              [class]="(isListVariant ? 'session-list-item-status' : 'session-picker-status') + ' status-' + statusClass(item.status)">
+              {{ formatStatusMeta(item) }}
+            </div>
+            }
+          </div>
+        </div>
+        }
+      </div>
+    </button>
+    @if (item.actions.length > 0) {
+    <div [class.session-list-actions]="isListVariant" [class.session-picker-actions]="isPickerVariant">
+      @for (action of primaryActions(item); track action.action) {
+      <button
+        type="button"
+        [class.session-list-action]="isListVariant"
+        [class.session-picker-action]="isPickerVariant"
+        [class.session-list-action-toggle]="isListVariant && isToggleAction(action)"
+        [class.session-picker-action-toggle]="isPickerVariant && isToggleAction(action)"
+        [class.active]="action.active === true"
+        [attr.data-session-action]="action.action"
+        [attr.aria-label]="action.title"
+        nz-tooltip
+        nzTooltipPlacement="top"
+        [nzTooltipTitle]="action.title"
+        [nzTooltipOverlayStyle]="{ fontSize: '12px' }"
+        (click)="triggerAction($event, action, item)">
+        <i [class]="action.icon"></i>
+      </button>
+      }
+      @if (hasOverflowActions(item)) {
+      <div
+        [class.session-list-actions-more]="isListVariant"
+        [class.session-picker-actions-more]="isPickerVariant"
+        [class.open]="isOverflowOpen(item)">
+        <button
+          type="button"
+          [class.session-list-action]="isListVariant"
+          [class.session-picker-action]="isPickerVariant"
+          [class.session-list-action-more]="isListVariant"
+          [class.session-picker-action-more]="isPickerVariant"
+          aria-label="更多"
+          aria-haspopup="menu"
+          [attr.aria-expanded]="isOverflowOpen(item)"
+          (click)="toggleOverflow($event, item)">
+          <i class="fa-light fa-ellipsis"></i>
+        </button>
+        <div
+          [class.session-list-actions-overflow]="isListVariant"
+          [class.session-picker-actions-overflow]="isPickerVariant"
+          role="menu">
+          @for (action of overflowActions(item); track action.action) {
+          <button
+            type="button"
+            [class.session-list-action]="isListVariant"
+            [class.session-picker-action]="isPickerVariant"
+            [class.session-list-action-toggle]="isListVariant && isToggleAction(action)"
+            [class.session-picker-action-toggle]="isPickerVariant && isToggleAction(action)"
+            [class.active]="action.active === true"
+            [attr.data-session-action]="action.action"
+            [attr.aria-label]="action.title"
+            role="menuitem"
+            nz-tooltip
+            nzTooltipPlacement="left"
+            [nzTooltipTitle]="action.title"
+            [nzTooltipOverlayStyle]="{ fontSize: '12px' }"
+            (click)="triggerAction($event, action, item)">
+            <i [class]="action.icon"></i>
+          </button>
+          }
+        </div>
+      </div>
+      }
+    </div>
+    }
+  </div>
+  }
+  }
+  }
+</div>
+} @else {
+<div [class.session-list-empty]="isListVariant" [class.session-picker-empty]="isPickerVariant">{{ emptyLabel }}</div>
+}

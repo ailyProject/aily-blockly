@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "متجر النماذج",
+        "DESCRIPTION": "وصف النموذج",
+        "MODEL_INFO": "معلومات النموذج",
+        "SUPPORTED_BOARDS": "الأجهزة المدعومة",
+        "MODEL_TYPE": "نوع النموذج",
+        "MODEL_FORMAT": "تنسيق النموذج",
+        "MODEL_PRECISION": "دقة النموذج",
+        "MODEL_SIZE": "حجم النموذج",
+        "VERSION": "الإصدار",
+        "MODEL_DETAILS": "تفاصيل النموذج",
+        "MODEL_LABELS": "فئات النموذج",
+        "AUTHOR": "المؤلف",
+        "DEPLOY_COUNT": "عدد النشر",
+        "VIEW_COUNT": "المشاهدات",
+        "LIKE_COUNT": "الإعجابات",
+        "TAG_VISION": "الرؤية",
+        "TAG_AUDIO": "الصوت",
+        "SEARCH_PLACEHOLDER": "البحث عن النماذج المتاحة",
+        "MODEL_LIST": "قائمة النماذج",
+        "LOADING": "جاري التحميل...",
+        "BACK": "رجوع",
+        "TEST_MODEL": "اختبار النموذج",
+        "DEPLOY_MODEL": "نشر النموذج",
+        "SELF_TRAINED_MODEL": "نموذج مدرب ذاتيًا"
+    }
+}

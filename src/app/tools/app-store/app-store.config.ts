@@ -1,94 +1,31 @@
-import { IMenuItem } from '../../configs/menu.config';
+export { APP_LIST, AVAILABLE_APP_IDS, DEFAULT_TOOLBAR_APP_IDS } from '../../configs/tool.config';
+export type { AppItem } from '../../configs/tool.config';
 
-export interface AppItem extends IMenuItem {
-  id: string;
-  description?: string;
-  enabled?: boolean;
+export type AppPlacementZone = 'header';
+
+export interface AppStoreZone {
+  id: AppPlacementZone;
+  name: string;
+  icon: string;
+  limit: number;
 }
 
-// 默认的 App 列表，前6个会显示在 header 上
-export const APP_LIST: AppItem[] = [
-  {
-    id: 'code-viewer',
-    name: 'MENU.CODE',
-    description: 'APP_STORE.CODE_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'code-viewer' },
-    icon: 'fa-light fa-rectangle-code',
-    router: ['/main/blockly-editor'],
-    enabled: true
-  },
-  {
-    id: 'lib-manager',
-    name: 'MENU.LIB_MANAGER',
-    description: 'APP_STORE.LIB_MANAGER_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'lib-manager' },
-    icon: 'fa-light fa-books',
-    router: ['/main/code-editor'],
-    enabled: true
-  },
-  {
-    id: 'serial-monitor',
-    name: 'MENU.TOOL_SERIAL',
-    description: 'APP_STORE.SERIAL_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'serial-monitor' },
-    icon: 'fa-light fa-monitor-waveform',
-    enabled: true
-  },
-  {
-    id: 'aily-chat',
-    name: 'MENU.AI',
-    description: 'APP_STORE.AI_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'aily-chat' },
-    icon: 'fa-light fa-star-christmas',
-    more: 'AI',
-    enabled: true
-  },
-  {
-    id: 'model-store',
-    name: 'MENU.MODEL_STORE',
-    description: 'APP_STORE.MODEL_STORE_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'model-store' },
-    icon: 'fa-light fa-microchip-ai',
-    enabled: true
-  },
-  {
-    id: 'cloud-space',
-    name: 'MENU.USER_SPACE',
-    description: 'APP_STORE.CLOUD_SPACE_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'cloud-space' },
-    icon: 'fa-light fa-cloud',
-    enabled: true
-  },
-  {
-    id: 'user-center',
-    name: 'MENU.USER_AUTH',
-    description: 'APP_STORE.USER_CENTER_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'user-center' },
-    icon: 'fa-light fa-user',
-    enabled: true
-  },
-  {
-    id: 'simulator',
-    name: 'MENU.SIMULATOR',
-    description: 'APP_STORE.SIMULATOR_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'simulator' },
-    icon: 'fa-light fa-atom',
-    router: ['/main/blockly-editor'],
-    dev: true,
-    enabled: false
-  }
-];
+export interface AppStoreLayout {
+  version: 2;
+  zones: Record<AppPlacementZone, string[]>;
+}
 
 // Header 上显示的 app 数量上限
-export const HEADER_APP_LIMIT = 6;
+export const HEADER_APP_LIMIT = 8;
 
-// Sidebar 上显示的 app 数量上限
-export const SIDEBAR_APP_LIMIT = 4;
+export const APP_STORE_STORAGE_KEY = 'app-store-zones-config';
+export const TOOLBAR_APP_IDS_CONFIG_KEY = 'toolbarAppIds';
+
+export const APP_STORE_ZONES: AppStoreZone[] = [
+  {
+    id: 'header',
+    name: 'APP_STORE.TOOLBAR_APPS',
+    icon: 'fa-light fa-window-flip',
+    limit: HEADER_APP_LIMIT
+  },
+];

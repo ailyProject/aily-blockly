@@ -30,6 +30,14 @@ export function makeJsonSafe(str: string): string {
 }
 
 /**
+ * 剥离历史 markdown-first transcript 遗留的 thinking 前缀占位。
+ */
+export function stripHistoricalThinkingPrefix(content: string): string {
+  if (!content) return content;
+  return content.replace(/^\[thinking\.\.\.?\](?=<|\s|$)/, '');
+}
+
+/**
  * 清理 assistant 内容，移除仅供 UI 渲染的元素（think/aily-state/aily-button/aily-mermaid）
  */
 export function sanitizeAssistantContent(content: string): string {
@@ -153,15 +161,15 @@ export function markContentAsHistory(content: string): string {
     }
   );
 
-  // aily-approval: 标记为已解决状态以便历史恢复时以只读模式展示
+  // aily-confirmation: 标记为已解决状态以便历史恢复时以只读模式展示
   content = content.replace(
-    /```aily-approval\n([\s\S]*?)```/g,
-    (match, json) => {
+    /```(aily-confirmation)\n([\s\S]*?)```/g,
+    (match, lang, json) => {
       try {
         const data = JSON.parse(json.trim());
         if (data && typeof data === 'object') {
           data.resolved = true;
-          return '```aily-approval\n' + JSON.stringify(data) + '\n```';
+          return '```' + lang + '\n' + JSON.stringify(data) + '\n```';
         }
       } catch {}
       return match;

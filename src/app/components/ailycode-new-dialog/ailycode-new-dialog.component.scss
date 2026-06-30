@@ -1,0 +1,56 @@
+// Aily Code 新建项目对话框样式
+// 暗系 IDE 主题，参考项目 user-rule 中的色板与圆角
+
+.ailycode-new-form {
+    padding: 4px 0;
+    min-width: 380px;
+
+    .hint {
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 14px;
+        line-height: 1.5;
+    }
+
+    .form-item {
+        margin-bottom: 14px;
+
+        &:last-of-type {
+            margin-bottom: 0;
+        }
+    }
+
+    .form-label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+        color: #d4d4d4;
+
+        .required {
+            color: #ff4d4f;
+            margin-left: 4px;
+        }
+    }
+
+    .form-control {
+        width: 100%;
+    }
+
+    .btn-folder {
+        width: 30px;
+        height: 100%;
+        cursor: pointer;
+        color: #a5a5a5;
+        transition: color 0.2s;
+
+        &:hover {
+            color: #fff;
+        }
+    }
+
+    .error {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #ff4d4f;
+    }
+}

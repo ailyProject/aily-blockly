@@ -103,7 +103,6 @@ export class AilyBlocklyViewerComponent implements OnInit, OnChanges {
       // 这里应该调用实际的 Blockly 导入服务
       // 暂时使用 alert 提示
       alert('Blockly 代码导入功能需要集成到具体的 Blockly 服务中');
-      console.log('导入 Blockly 数据:', this.blocklyData);
     } catch (error) {
       alert('导入失败: ' + (error as Error).message);
     }

@@ -99,5 +99,9 @@ export interface PortItem {
   disabled?: boolean,
   probeSerial?: string,
   probeVidPid?: string,
+  action?: string,
+  sep?: boolean,
+  extra?: any,
+  current?: boolean,
 }
 

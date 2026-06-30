@@ -17,12 +17,11 @@ npm i
 **开发环境配置**
 
 - windows
-    - 复制child/windows/* 到child
-    - 解压child/node-v22.*.*-win-x64.7z并重命名为node
-    - 解压child/aily-builder-*.7z并重命名为aily-builder 
+    - 与 macos 相同，启动时会自动从 child/windows 解压各组件到 child
+    - 需确保 child/windows 目录下有 7za.exe 及各组件 .7z 包
 
 - macos
-    - 复制child/macos/* 到child即可
+    - 启动时会自动从 child/macos 解压各组件到 child
 
 
 **electron运行**

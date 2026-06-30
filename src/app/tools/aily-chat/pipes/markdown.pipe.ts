@@ -9,6 +9,7 @@ import { codeToHtml } from 'shiki';
 import { Observable, from, of } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { ConfigService } from '../../../services/config.service';
+import { chatI18n } from '../helpers/chat-i18n';
 
 /**
  * 库/开发板验证回调事件
@@ -46,6 +47,12 @@ function addCorrectionEvent(event: ValidationCorrectionEvent) {
  *
  * 此管道将在检测到特殊的 Aily 代码块时，生成带有特殊标记的 HTML，
  * 然后通过指令系统将这些标记替换为真正的 Angular 组件
+ *
+ * Active chat rendering no longer uses this pipeline. The live path is
+ * x-dialog plus AilyChatCodeComponent and Part-based viewers. This file remains
+ * only for the archived aily-dialog compatibility chain.
+ *
+ * @deprecated Legacy compatibility only.
  */
 @Pipe({
   name: 'markdown',
@@ -128,9 +135,15 @@ export class MarkdownPipe implements PipeTransform {
 
   /**
    * 检查是否为特殊的 Aily 代码块类型
+   *
+   * Active chat rendering no longer mounts this directive. It is retained only for
+   * the archived aily-dialog compatibility chain that still consumes MarkdownPipe
+   * placeholders.
+   *
+   * @deprecated Legacy compatibility only.
    */
   private isAilyCodeBlock(lang: string): boolean {
-    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid', 'mermaid', 'aily-task-action', 'aily-think', 'aily-context', 'aily-approval'];
+    const ailyTypes = ['aily-blockly', 'aily-board', 'aily-library', 'aily-state', 'aily-button', 'aily-error', 'aily-mermaid', 'mermaid', 'aily-task-action', 'aily-think', 'aily-context', 'aily-confirmation'];
     // 确保 lang 被正确 trim，避免空格或换行符导致匹配失败
     const normalizedLang = lang?.trim()?.toLowerCase() || '';
     return ailyTypes.includes(normalizedLang);
@@ -308,19 +321,26 @@ export class MarkdownPipe implements PipeTransform {
             content: String(ctxContent),
             metadata: jsonData.metadata || {}
           };
-        case 'aily-approval':
+        case 'aily-confirmation':
+          const askId = jsonData.askId || '';
           return {
-            type: 'aily-approval',
-            toolCallId: jsonData.toolCallId || '',
+            type: 'aily-confirmation',
+            partId: jsonData.partId || (askId ? `confirmation:${askId}` : ''),
+            askId,
             toolName: jsonData.toolName || '',
-            title: jsonData.title || '确认操作',
+            title: jsonData.title || chatI18n('AILY_CHAT.PROCESS_APPROVAL_DEFAULT_TITLE', undefined, 'Confirm Action'),
+            subtitle: jsonData.subtitle || '',
             message: jsonData.message || '',
             args: jsonData.args,
-            resolved: jsonData.resolved || false,
-            approved: jsonData.approved || false,
+            source: jsonData.source || '',
+            actions: Array.isArray(jsonData.actions) ? jsonData.actions : [],
+            primaryScope: jsonData.primaryScope || 'once',
+            resolved: jsonData.resolved || jsonData.result === 'approved' || jsonData.result === 'rejected' || false,
+            approved: jsonData.approved || jsonData.result === 'approved' || false,
+            result: jsonData.result,
+            scope: jsonData.scope,
           };
         default:
-          console.warn(`Unknown aily type: ${type}, using raw data`);
           return {
             type: type,
             raw: cleanedCode,
@@ -329,8 +349,6 @@ export class MarkdownPipe implements PipeTransform {
           };
       }
     } catch (parseError) {
-      console.warn(`Failed to parse JSON for ${type}:`, parseError);
-      console.log('Using raw content for rendering:', code);
       // 如果不是 JSON，返回原始字符串格式的数据
       return {
         type: type,
@@ -387,7 +405,6 @@ export class MarkdownPipe implements PipeTransform {
       if (detectedType === 'library') {
         const libValidation = this.configService.validateLibrary(queryName);
         if (libValidation.exists && libValidation.library) {
-          console.log(`[MarkdownPipe] 类型修正: "${queryName}" 被错误放入 aily-board，实际是库`);
           addCorrectionEvent({
             type: 'library',
             originalQuery: queryName,
@@ -415,7 +432,6 @@ export class MarkdownPipe implements PipeTransform {
         // 找到了真实存在的开发板
         if (validation.fuzzyMatch) {
           // 模糊匹配，记录校正事件，通知大模型
-          console.log(`[MarkdownPipe] 开发板模糊匹配: "${queryName}" -> "${validation.board.name}"`);
           addCorrectionEvent({
             type: 'board',
             originalQuery: validation.originalQuery,
@@ -438,7 +454,6 @@ export class MarkdownPipe implements PipeTransform {
       if (detectedType !== 'library') {
         const libFallback = this.configService.validateLibrary(queryName);
         if (libFallback.exists && libFallback.library) {
-          console.log(`[MarkdownPipe] 类型修正(兜底): "${queryName}" 在开发板中未找到，但在库中找到`);
           addCorrectionEvent({
             type: 'library',
             originalQuery: queryName,
@@ -497,7 +512,6 @@ export class MarkdownPipe implements PipeTransform {
       if (detectedType === 'board') {
         const boardValidation = this.configService.validateBoard(queryName);
         if (boardValidation.exists && boardValidation.board) {
-          console.log(`[MarkdownPipe] 类型修正: "${queryName}" 被错误放入 aily-library，实际是开发板`);
           addCorrectionEvent({
             type: 'board',
             originalQuery: queryName,
@@ -525,7 +539,6 @@ export class MarkdownPipe implements PipeTransform {
         // 找到了真实存在的库
         if (validation.fuzzyMatch) {
           // 模糊匹配，记录校正事件，通知大模型
-          console.log(`[MarkdownPipe] 库模糊匹配: "${queryName}" -> "${validation.library.name}"`);
           addCorrectionEvent({
             type: 'library',
             originalQuery: validation.originalQuery,
@@ -548,7 +561,6 @@ export class MarkdownPipe implements PipeTransform {
       if (detectedType !== 'board') {
         const boardFallback = this.configService.validateBoard(queryName);
         if (boardFallback.exists && boardFallback.board) {
-          console.log(`[MarkdownPipe] 类型修正(兜底): "${queryName}" 在库中未找到，但在开发板中找到`);
           addCorrectionEvent({
             type: 'board',
             originalQuery: queryName,

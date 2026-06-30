@@ -1,7 +1,6 @@
 import { Injectable } from '@angular/core';
-import { BlocklyService } from './blockly.service';
+import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyProjectDocument, BlocklyService } from './blockly.service';
 import { ActionService } from '../../../services/action.service';
-import { HistoryService } from './history.service';
 import { arduinoGenerator } from '../components/blockly/generators/arduino/arduino';
 import { ElectronService } from '../../../services/electron.service';
 
@@ -18,7 +17,6 @@ export class _ProjectService {
   constructor(
     private blocklyService: BlocklyService,
     private actionService: ActionService,
-    private historyService: HistoryService,
     private electronService: ElectronService
   ) { }
 
@@ -39,17 +37,9 @@ export class _ProjectService {
     }, 'project-check-unsaved-handler');
   }
 
-  // 初始化历史服务（在设置 currentProjectPath 后调用）
-  initHistory() {
-    if (this.currentProjectPath) {
-      this.historyService.init(this.currentProjectPath, this.blocklyService);
-    }
-  }
-
   destroy() {
     this.actionService.unlisten('project-save-handler');
     this.actionService.unlisten('project-check-unsaved-handler');
-    this.historyService.destroy();
     this.initialized = false; // 重置初始化状态
   }
 
@@ -59,15 +49,15 @@ export class _ProjectService {
 
   hasUnsavedChanges(): boolean {
     try {
-      // 获取当前工作区的 JSON 数据
-      const currentWorkspaceJson = this.blocklyService.getWorkspaceJson();
+      // 获取当前实际会保存到 project.abi 的数据；单页会保持旧版 workspace JSON 格式。
+      const currentProjectAbi = this.blocklyService.getProjectAbiForSave();
 
       // 读取并解析已保存的 JSON 数据
       const savedJsonStr = window['fs'].readFileSync(`${this.currentProjectPath}/project.abi`, 'utf8');
-      const savedJson = JSON.parse(savedJsonStr);
+      const savedJson = this.blocklyService.normalizeProjectAbi(JSON.parse(savedJsonStr));
 
       // 将当前工作区 JSON 和保存的 JSON 转为字符串进行比较
-      const currentJsonStr = JSON.stringify(currentWorkspaceJson);
+      const currentJsonStr = JSON.stringify(this.blocklyService.normalizeProjectAbi(currentProjectAbi));
       const normalizedSavedJsonStr = JSON.stringify(savedJson);
 
       // 比较两个 JSON 字符串是否相同
@@ -80,19 +70,39 @@ export class _ProjectService {
   }
 
   async save(path: string, createHistory: boolean = true) {
-    const jsonData = this.blocklyService.getWorkspaceJson();
-    window['fs'].writeFileSync(`${path}/project.abi`, JSON.stringify(jsonData, null, 2));
-    
-    if (createHistory && this.currentProjectPath) {
-      // 创建手动保存的历史版本
-      this.historyService.createManualVersion();
-    }
+    const projectDocument = this.blocklyService.getProjectDocument();
+    const jsonData = this.blocklyService.getProjectAbiForSave(projectDocument);
+    window['fs'].writeFileSync(`${path}/project.abi`, JSON.stringify(jsonData));
+    this.syncUsedLibraryManifest(path, projectDocument);
     
     // 更新 codeHash 以反映当前代码状态
     // 这样当代码改变后同步时，服务器能够检测到代码已改变
     await this.updateCodeHash(path);
     
     // this.stateSubject.next('saved');
+  }
+
+  syncUsedLibraryManifest(path: string, projectDocument?: BlocklyProjectDocument): boolean {
+    const packageJsonPath = `${path}/package.json`;
+    try {
+      if (!window['fs'].existsSync(packageJsonPath)) {
+        return false;
+      }
+
+      const originalContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+      const packageJson = JSON.parse(originalContent);
+      packageJson[AILY_BLOCKLY_USED_LIBRARIES_FIELD] = this.blocklyService.getProjectUsedLibraryManifest(packageJson, projectDocument);
+      const nextContent = JSON.stringify(packageJson, null, 2);
+      if (nextContent !== originalContent) {
+        window['fs'].writeFileSync(packageJsonPath, nextContent);
+      }
+      this.currentPackageData = packageJson;
+      window['packageJson'] = packageJson;
+      return nextContent !== originalContent;
+    } catch (error) {
+      console.error('更新项目使用库清单失败:', error);
+      return false;
+    }
   }
 
   /**
@@ -106,8 +116,10 @@ export class _ProjectService {
         return;
       }
 
-      // 生成当前代码
-      const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+      // 复用最近一次成功生成的代码；如果工作区已变更但防抖生成尚未完成，再同步生成一次。
+      const code = this.blocklyService.getReusableGeneratedCode()
+        ?? arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+      this.blocklyService.publishGeneratedCode(code);
       
       // 计算哈希
       if (this.electronService && this.electronService.calculateHash) {
@@ -128,10 +140,4 @@ export class _ProjectService {
     }
   }
 
-  restoreVersion(versionId: string) {
-    this.historyService.restoreVersion(versionId, (path: string) => {
-      // 保存到文件 (覆盖当前项目文件)
-      this.save(path, false);
-    });
-  }
 }

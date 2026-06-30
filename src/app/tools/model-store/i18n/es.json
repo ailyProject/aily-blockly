@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "Tienda de Modelos",
+        "DESCRIPTION": "Descripción del modelo",
+        "MODEL_INFO": "Información del modelo",
+        "SUPPORTED_BOARDS": "Dispositivos soportados",
+        "MODEL_TYPE": "Tipo de modelo",
+        "MODEL_FORMAT": "Formato de modelo",
+        "MODEL_PRECISION": "Precisión del modelo",
+        "MODEL_SIZE": "Tamaño del modelo",
+        "VERSION": "Versión",
+        "MODEL_DETAILS": "Detalles del modelo",
+        "MODEL_LABELS": "Categorías del modelo",
+        "AUTHOR": "Autor",
+        "DEPLOY_COUNT": "Despliegues",
+        "VIEW_COUNT": "Vistas",
+        "LIKE_COUNT": "Me gusta",
+        "TAG_VISION": "Visión",
+        "TAG_AUDIO": "Audio",
+        "SEARCH_PLACEHOLDER": "Buscar modelos disponibles",
+        "MODEL_LIST": "Lista de modelos",
+        "LOADING": "Cargando...",
+        "BACK": "Volver",
+        "TEST_MODEL": "Probar modelo",
+        "DEPLOY_MODEL": "Desplegar modelo",
+        "SELF_TRAINED_MODEL": "Modelo Auto-entrenado"
+    }
+}

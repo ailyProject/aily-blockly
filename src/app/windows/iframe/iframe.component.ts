@@ -20,6 +20,7 @@ import { WindowMessenger, connect, Connection } from 'penpal';
 import { UiService } from '../../services/ui.service';
 import { TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
+import { ToolI18nService } from '../../services/tool-i18n.service';
 
 /** iframe IPC 统一载荷（规范：docs/iframe-ipc-spec.md） */
 export interface IframeIpcPayload<T = unknown> {
@@ -100,6 +101,7 @@ export class IframeComponent implements OnInit, OnDestroy {
     private ngZone: NgZone,
     private uiService: UiService,
     private translate: TranslateService,
+    private toolI18n: ToolI18nService,
   ) {
     if (this.data) {
       if (this.data.url) {
@@ -115,6 +117,8 @@ export class IframeComponent implements OnInit, OnDestroy {
   }
 
   async ngOnInit() {
+    await this.toolI18n.load('aily-chat');
+
     // 延迟显示无数据状态（如果加载失败）
     setTimeout(() => {
       if (this.isLoading) {
@@ -239,8 +243,8 @@ export class IframeComponent implements OnInit, OnDestroy {
               showProgress: false,
             });
             // this.backgroundAgent.generateSchematic();
-            // this.uiService.openAndSendToChat('@schematicAgent 生成项目连线图', { autoSend: true });
-            this.sendToChat('@schematicAgent 生成项目连线图');
+            // this.uiService.openAndSendToChat('@SchematicAgent 生成项目连线图', { autoSend: true });
+            this.sendToChat('@SchematicAgent 生成项目连线图');
             // this.sendToMain('generate-graph-data');
           },
           regenerateGraphData: () => {
@@ -554,7 +558,7 @@ export class IframeComponent implements OnInit, OnDestroy {
       state: 'doing',
       showProgress: false,
     });
-    this.sendToChat('@schematicAgent 请根据当前项目的引脚配置和组件信息，重新生成连线图方案。');
+    this.sendToChat('@SchematicAgent 请根据当前项目的引脚配置和组件信息，重新生成连线图方案。');
   }
 
   /**

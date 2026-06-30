@@ -8,42 +8,31 @@
     // border-bottom: 1px solid #444;
 }
 
-
-
-.sync-btn {
-    width: 100%;
-
-    i {
-        margin-right: 10px;
-        transition: transform 0.3s ease;
-
-        &.spinning {
-            animation: spin 1s linear infinite;
-        }
-    }
-
-}
-
-@keyframes spin {
-    from {
-        transform: rotate(0deg);
-    }
-
-    to {
-        transform: rotate(360deg);
-    }
-}
-
 .section-title {
-    // margin: 15px 10px 0 10px;
     padding: 10px;
     font-size: 14px;
     color: var(--aily-text-primary);
     border-bottom: 1px solid var(--aily-border-input);
     position: relative;
 
-    .title {
-        height: 30px;
+    .sync-btn {
+        padding: 0 10px;
+        margin-right: 10px;
+
+        i {
+            margin-right: 10px;
+            transition: transform 0.3s ease;
+
+            &.spinning {
+                animation: spin 1s linear infinite;
+            }
+        }
+
+    }
+
+    .search-bar {
+        display: flex;
+        align-items: center;
     }
 
     .search-btn {
@@ -59,25 +48,35 @@
         }
     }
 
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
     .search-box {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        width: calc(100% - 20px);
-        height: 32px;
+        flex-grow: 1;
         display: flex;
-        padding-left: 10px;
+        align-items: center;
+        padding-left: 5px;
         background: var(--aily-bg-tertiary);
         border: 1px solid var(--aily-bg-tertiary);
-        border-radius: 5px;
+        border-radius: 3px;
         overflow: hidden;
 
+
         input {
-            background: transparent;
-            height: 30px;
+            background: var(--aily-bg-tertiary);
+            border: 1px solid var(--aily-bg-tertiary);
+            height: 28px;
             border: none;
             outline: none;
             color: var(--aily-text-primary);
+            flex-grow: 1;
         }
 
         .close-btn {

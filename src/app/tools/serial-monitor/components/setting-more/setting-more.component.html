@@ -1,7 +1,7 @@
 <div class="settings">
     <div class="line">
         <div class="item">
-            <div class="title">数据位</div>
+            <div class="title">{{ 'SERIAL.DATA_BITS' | translate }}</div>
             <div class="item-inner ccenter" [ngClass]="{'selected':menuList == dataBitsList}"
                 (click)="openMenu($event, dataBitsList)">
                 <div class="value">{{selectedDataBits.name}}</div>
@@ -11,7 +11,7 @@
             </div>
         </div>
         <div class="item">
-            <div class="title">停止位</div>
+            <div class="title">{{ 'SERIAL.STOP_BITS' | translate }}</div>
             <div class="item-inner ccenter" [ngClass]="{'selected':menuList == stopBitsList}"
                 (click)="openMenu($event, stopBitsList)">
                 <div class="value">{{selectedStopBits.name}}</div>
@@ -21,20 +21,20 @@
             </div>
         </div>
         <div class="item">
-            <div class="title">校验位</div>
+            <div class="title">{{ 'SERIAL.PARITY' | translate }}</div>
             <div class="item-inner ccenter" [ngClass]="{'selected':menuList == parityList}"
                 (click)="openMenu($event, parityList)">
-                <div class="value">{{selectedParity.name}}</div>
+                <div class="value">{{selectedParity.name | translate}}</div>
                 <div class="arrow-box">
                     <i class="fa-light fa-angle-right arrow"></i>
                 </div>
             </div>
         </div>
         <div class="item">
-            <div class="title">流控制</div>
+            <div class="title">{{ 'SERIAL.FLOW_CONTROL' | translate }}</div>
             <div class="item-inner ccenter" style="width: 100px;" [ngClass]="{'selected':menuList == flowControlList}"
                 (click)="openMenu($event, flowControlList)">
-                <div class="value">{{selectedFlowControl.name}}</div>
+                <div class="value">{{selectedFlowControl.name | translate}}</div>
                 <div class="arrow-box">
                     <i class="fa-light fa-angle-right arrow"></i>
                 </div>

@@ -1,0 +1,23 @@
+{
+    "APP_STORE": {
+        "HEADER_INFO": "前 {{count}} 个应用会显示在顶部工具栏",
+        "RESET": "重置",
+        "IN_HEADER": "工具栏",
+        "TOOLBAR_APPS": "工具栏",
+        "ALL_APPS": "全部应用",
+        "DRAG_HERE": "拖拽到此处",
+        "CODE_DESC": "查看生成的代码",
+        "LIB_MANAGER_DESC": "管理项目库依赖",
+        "SERIAL_DESC": "串口监视器工具",
+        "MQTT_DEBUGGER_DESC": "MQTT连接、订阅和发布调试工具",
+        "NETWORK_DEBUGGER_DESC": "HTTP与WebSocket调试工具",
+        "FFS_MANAGER_DESC": "ESP32 文件系统分区管理工具",
+        "AI_DESC": "AI 智能助手",
+        "MODEL_STORE_DESC": "AI 模型商店",
+        "CLOUD_SPACE_DESC": "云端存储空间",
+        "USER_CENTER_DESC": "用户中心与设置",
+        "SIMULATOR_DESC": "仿真器（开发中）",
+        "INDUSTRIAL_BUS_DEBUGGER_DESC": "CAN、RS485、Modbus 帧构造与调试工具",
+        "BLE_DEBUGGER_DESC": "BLE 扫描、GATT 读写和通知调试工具"
+    }
+}

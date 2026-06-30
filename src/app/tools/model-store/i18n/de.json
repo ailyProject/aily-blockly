@@ -1,0 +1,28 @@
+{
+    "MODEL_STORE": {
+        "TITLE": "Modell Store",
+        "DESCRIPTION": "Modellbeschreibung",
+        "MODEL_INFO": "Modellinformationen",
+        "SUPPORTED_BOARDS": "Unterstützte Geräte",
+        "MODEL_TYPE": "Modelltyp",
+        "MODEL_FORMAT": "Modellformat",
+        "MODEL_PRECISION": "Modellgenauigkeit",
+        "MODEL_SIZE": "Modellgröße",
+        "VERSION": "Version",
+        "MODEL_DETAILS": "Modelldetails",
+        "MODEL_LABELS": "Modellkategorien",
+        "AUTHOR": "Autor",
+        "DEPLOY_COUNT": "Bereitstellungen",
+        "VIEW_COUNT": "Aufrufe",
+        "LIKE_COUNT": "Gefällt mir",
+        "TAG_VISION": "Vision",
+        "TAG_AUDIO": "Audio",
+        "SEARCH_PLACEHOLDER": "Verfügbare Modelle suchen",
+        "MODEL_LIST": "Modellliste",
+        "LOADING": "Laden...",
+        "BACK": "Zurück",
+        "TEST_MODEL": "Modell testen",
+        "DEPLOY_MODEL": "Modell bereitstellen",
+        "SELF_TRAINED_MODEL": "Selbst trainiertes Modell"
+    }
+}

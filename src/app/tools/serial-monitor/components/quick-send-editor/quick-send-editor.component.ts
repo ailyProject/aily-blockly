@@ -4,6 +4,7 @@ import { SerialMonitorService } from '../../serial-monitor.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { FormsModule } from '@angular/forms';
 import { NzCodeEditorModule } from 'ng-zorro-antd/code-editor';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ThemeService } from '../../../../services/theme.service';
 
 @Component({
@@ -11,7 +12,8 @@ import { ThemeService } from '../../../../services/theme.service';
   imports: [
     NzButtonModule,
     FormsModule,
-    NzCodeEditorModule
+    NzCodeEditorModule,
+    TranslateModule
   ],
   templateUrl: './quick-send-editor.component.html',
   styleUrl: './quick-send-editor.component.scss'
@@ -30,13 +32,24 @@ export class QuickSendEditorComponent {
   constructor(
     private serialMonitorService: SerialMonitorService,
     private message: NzMessageService,
-    private themeService: ThemeService
+    private themeService: ThemeService,
+    private translate: TranslateService
   ) {
-    // 监听主题变化，动态切换 Monaco 主题
     effect(() => {
       const monacoTheme = this.themeService.getMonacoTheme();
       this.options = { ...this.options, theme: monacoTheme };
+      const monaco = (window as any).monaco;
+      if (monaco) {
+        monaco.editor.setTheme(monacoTheme);
+      }
     });
+  }
+
+  onEditorInitialized(): void {
+    const monaco = (window as any).monaco;
+    if (monaco) {
+      monaco.editor.setTheme(this.themeService.getMonacoTheme());
+    }
   }
 
   ngOnInit() {
@@ -52,9 +65,9 @@ export class QuickSendEditorComponent {
       this.serialMonitorService.quickSendList = data;
       this.serialMonitorService.saveQuickSendList();
       this.serialMonitorService.loadQuickSendList();
-      this.message.success('保存成功');
+      this.message.success(this.translate.instant('SERIAL.QUICK_SEND_SAVE_SUCCESS'));
     } catch (e) {
-      this.message.error('保存失败，请检查json格式');
+      this.message.error(this.translate.instant('SERIAL.QUICK_SEND_SAVE_FAIL'));
     }
   }
 

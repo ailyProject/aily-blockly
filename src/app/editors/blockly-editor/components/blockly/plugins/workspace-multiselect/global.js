@@ -472,9 +472,10 @@ export const centerBlocksInViewport = function(blockList, workspace) {
  * @param {string} name The current field value.
  * @param {!Blockly.Workspace} workspace The workspace to check against.
  * @param {string} fieldName The field name to check.
+ * @param {string=} excludeBlockId Block id to exclude from duplicate scan.
  * @returns {string} The next available name.
  */
-const getNextAvailableName = function(name, workspace, fieldName) {
+const getNextAvailableName = function(name, workspace, fieldName, excludeBlockId) {
   const match = name.match(/^(.*?)(\d+)$/);
   let baseName, num;
   if (match) {
@@ -489,6 +490,9 @@ const getNextAvailableName = function(name, workspace, fieldName) {
   const existingValues = new Set();
   const allBlocks = workspace.getAllBlocks(false);
   for (const block of allBlocks) {
+    if (excludeBlockId && block.id === excludeBlockId) {
+      continue;
+    }
     for (const input of block.inputList || []) {
       for (const field of input.fieldRow || []) {
         if (field instanceof Blockly.FieldTextInput &&
@@ -530,7 +534,7 @@ export const incrementFieldInputValues = function(block, workspace) {
         if (field instanceof Blockly.FieldTextInput) {
           const currentValue = field.getValue();
           const newValue = getNextAvailableName(
-              currentValue, workspace, field.name);
+              currentValue, workspace, field.name, b.id);
           if (newValue !== currentValue) {
             field.setValue(newValue);
           }
@@ -538,4 +542,71 @@ export const incrementFieldInputValues = function(block, workspace) {
       }
     }
   }
+};
+
+/**
+ * Main workspace receiving a block dragged from the toolbox flyout.
+ * @type {Blockly.WorkspaceSvg|null}
+ */
+let fieldIncrementFlyoutTargetWorkspace = null;
+
+/** @type {boolean} */
+let flyoutDragFieldIncrementHooksInstalled = false;
+
+/**
+ * Patch Blockly gesture handlers once to detect toolbox flyout drags.
+ */
+export const installFlyoutDragFieldIncrementHooks = function() {
+  if (flyoutDragFieldIncrementHooksInstalled) {
+    return;
+  }
+  flyoutDragFieldIncrementHooksInstalled = true;
+
+  const origHandleFlyoutStart = Blockly.Gesture.prototype.handleFlyoutStart;
+  Blockly.Gesture.prototype.handleFlyoutStart = function(e, flyout) {
+    origHandleFlyoutStart.call(this, e, flyout);
+    const flyoutWorkspace = flyout.getWorkspace && flyout.getWorkspace();
+    const targetWorkspace = flyout.targetWorkspace ||
+        (flyoutWorkspace && flyoutWorkspace.targetWorkspace);
+    if (targetWorkspace && !targetWorkspace.isFlyout) {
+      fieldIncrementFlyoutTargetWorkspace = targetWorkspace;
+    }
+  };
+
+  const origHandleUp = Blockly.Gesture.prototype.handleUp;
+  Blockly.Gesture.prototype.handleUp = function(e) {
+    try {
+      return origHandleUp.call(this, e);
+    } finally {
+      fieldIncrementFlyoutTargetWorkspace = null;
+    }
+  };
+};
+
+/**
+ * Auto-increment FieldTextInput names when blocks are dragged from toolbox.
+ * @param {!Blockly.WorkspaceSvg} workspace The main workspace.
+ * @returns {function(!Event): void} The change listener.
+ */
+export const registerFlyoutDragFieldIncrementListener = function(workspace) {
+  installFlyoutDragFieldIncrementHooks();
+
+  return function(e) {
+    if (e.type !== Blockly.Events.BLOCK_CREATE) {
+      return;
+    }
+    if (!Blockly.Events.isEnabled() || !e.recordUndo) {
+      return;
+    }
+    if (fieldIncrementFlyoutTargetWorkspace !== workspace) {
+      return;
+    }
+
+    const block = workspace.getBlockById(e.blockId);
+    if (!block || block.isInFlyout || block.isInsertionMarker()) {
+      return;
+    }
+
+    incrementFieldInputValues(block, workspace);
+  };
 };

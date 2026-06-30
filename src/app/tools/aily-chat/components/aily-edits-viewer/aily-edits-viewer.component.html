@@ -1,47 +1,92 @@
-<div class="edits-panel" *ngIf="summary">
-    <!-- 头部摘要栏 -->
-    <div class="edits-panel-header">
-        <div class="header-content" (click)="toggleExpanded()">
-            <i class="fas fa-chevron-right panel-icon" [class.expanded]="isExpanded"></i>
-            <span class="panel-title">{{ summary.fileCount }} files changed</span>
-            <span class="stat-added" *ngIf="summary.totalAdded > 0">+{{ summary.totalAdded }}</span>
-            <span class="stat-removed" *ngIf="summary.totalRemoved > 0">-{{ summary.totalRemoved }}</span>
+<div class="chat-editing-session-container" *ngIf="summary">
+    <div class="chat-editing-session-overview" (click)="onOverviewClick($event)">
+        <button
+            type="button"
+            class="working-set-toggle working-set-title"
+            (click)="toggleExpanded()"
+            [attr.aria-expanded]="isExpanded"
+            aria-label="切换文件变更列表展开状态">
+            <span class="working-set-title-section">
+                <i class="fas fa-chevron-right panel-icon" [class.expanded]="isExpanded"></i>
+                <span class="panel-title">
+                    <span class="panel-title-text">{{ summaryTitle }}</span>
+                </span>
+            </span>
+            <span class="working-set-line-counts" *ngIf="summary.totalAdded > 0 || summary.totalRemoved > 0">
+                <span class="stat-added working-set-lines-added" *ngIf="summary.totalAdded > 0">+{{ summary.totalAdded }}</span>
+                <span class="stat-removed working-set-lines-removed" *ngIf="summary.totalRemoved > 0">-{{ summary.totalRemoved }}</span>
+            </span>
+        </button>
+
+        <div class="chat-editing-session-actions" *ngIf="!isAccepted">
+            <div class="chat-editing-session-actions-group primary-actions">
+                <button
+                    type="button"
+                    class="action-btn secondary text-btn diff-btn"
+                    (click)="onOpenAllDiffs($event)"
+                    title="在编辑器中查看 Diff 对比"
+                    aria-label="在编辑器中查看 Diff 对比">Diff</button>
+                <button
+                    type="button"
+                    class="action-btn secondary text-btn keep-btn"
+                    (click)="onKeep()"
+                    [title]="keepActionTitle"
+                    aria-label="保留当前文件变更">保留</button>
+                <button
+                    type="button"
+                    class="action-btn secondary text-btn undo-btn"
+                    (click)="onUndo()"
+                    [disabled]="!canUndo"
+                    [title]="undoActionTitle"
+                    aria-label="撤销最近一轮文件变更">撤销</button>
+            </div>
         </div>
-        <div class="header-actions" *ngIf="!isAccepted">
-            <button class="action-btn icon-btn" (click)="onUndo()" [disabled]="!canUndo" title="撤销">
-                <i class="fas fa-arrow-rotate-left"></i>
-            </button>
-            <button class="action-btn icon-btn" (click)="onRedo()" [disabled]="!canRedo" title="重做">
-                <i class="fas fa-arrow-rotate-right"></i>
-            </button>
-            <button class="action-btn primary" (click)="onKeep()" title="保留所有变更">保留</button>
-        </div>
-        <div class="header-actions" *ngIf="isAccepted">
+
+        <div class="chat-editing-session-actions accepted-state" *ngIf="isAccepted">
             <span class="action-taken-text">已保留</span>
         </div>
     </div>
 
-    <!-- 文件列表（展开时） -->
-    <div class="edits-panel-content" *ngIf="isExpanded && files.length > 0">
+    <div class="chat-editing-session-list" *ngIf="isExpanded && files.length > 0">
         <div class="file-entry" *ngFor="let file of files; trackBy: trackByPath"
             [class.file-created]="file.type === 'create'"
             [class.file-deleted]="file.type === 'delete'">
-            <i class="fas file-icon"
-                [class.fa-file-circle-plus]="file.type === 'create'"
-                [class.fa-file-pen]="file.type === 'modify'"
-                [class.fa-file-circle-minus]="file.type === 'delete'"
-                [class.icon-created]="file.type === 'create'"
-                [class.icon-modified]="file.type === 'modify'"
-                [class.icon-deleted]="file.type === 'delete'"></i>
-            <span class="file-path" [title]="file.fullPath">{{ file.path }}</span>
-            <span class="file-stats">
-                <span class="stat-added" *ngIf="file.added > 0">+{{ file.added }}</span>
-                <span class="stat-removed" *ngIf="file.removed > 0">-{{ file.removed }}</span>
+            <div class="file-main" (click)="onPreviewFile(file, $event)" [title]="file.contentKind === 'text' ? '在编辑器中查看 Diff' : file.fullPath">
+                <i class="fas file-icon"
+                    [class.fa-file-circle-plus]="file.type === 'create'"
+                    [class.fa-file-pen]="file.type === 'modify'"
+                    [class.fa-file-circle-minus]="file.type === 'delete'"
+                    [class.icon-created]="file.type === 'create'"
+                    [class.icon-modified]="file.type === 'modify'"
+                    [class.icon-deleted]="file.type === 'delete'"></i>
+                <div class="file-copy">
+                    <span class="file-path" [title]="file.fullPath">{{ file.path }}</span>
+                    <span class="file-kind-badge" *ngIf="getFileKindBadge(file) as badge">{{ badge }}</span>
+                </div>
+            </div>
+
+            <span class="working-set-line-counts file-stats">
+                <span class="stat-added working-set-lines-added" *ngIf="file.added > 0">+{{ file.added }}</span>
+                <span class="stat-removed working-set-lines-removed" *ngIf="file.removed > 0">-{{ file.removed }}</span>
             </span>
-            <!-- 单文件操作按钮 -->
+
             <span class="file-actions" *ngIf="!isAccepted">
-                <i class="fas fa-check file-action-btn accept" (click)="onAcceptFile(file)" title="接受此文件变更"></i>
-                <i class="fas fa-xmark file-action-btn reject" (click)="onRejectFile(file)" title="拒绝并还原此文件"></i>
+                <button
+                    type="button"
+                    class="file-action-btn accept"
+                    (click)="onAcceptFile(file)"
+                    title="接受此文件变更"
+                    aria-label="接受此文件变更">
+                    <i class="fas fa-check"></i>
+                </button>
+                <button
+                    type="button"
+                    class="file-action-btn reject"
+                    (click)="onRejectFile(file)"
+                    title="拒绝并还原此文件"
+                    aria-label="拒绝并还原此文件">
+                    <i class="fas fa-xmark"></i>
+                </button>
             </span>
         </div>
     </div>

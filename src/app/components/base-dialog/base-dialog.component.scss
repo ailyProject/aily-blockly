@@ -5,6 +5,29 @@
     width: 100%;
     overflow: hidden;
 
+    &.dialog-scrollable {
+        display: flex;
+        flex-direction: column;
+        max-height: calc(100vh - 48px);
+        overflow: hidden;
+
+        .content {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .header {
+            flex-shrink: 0;
+        }
+
+        .footer {
+            flex-shrink: 0;
+        }
+    }
+
     &.loading {
         pointer-events: none;
         opacity: 0.7;

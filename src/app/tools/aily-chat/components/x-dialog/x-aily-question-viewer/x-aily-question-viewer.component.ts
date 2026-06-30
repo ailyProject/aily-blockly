@@ -1,10 +1,13 @@
-import { Component, Input, OnChanges, SimpleChanges, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges, ChangeDetectionStrategy, ChangeDetectorRef, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { AskUserOption, AskUserQuestion, AskUserAnswer } from '../../../tools/askUserTool';
+import { AskUserOption, AskUserQuestion, AskUserAnswer } from '../../../core/ask-user';
+import { ChatPartHeaderShellComponent } from '../chat-part-header-shell.component';
 
 /** 组件内部归一化的问题（所有字段必填） */
 interface NormalizedQuestion {
+  id?: string;
+  header?: string;
   question: string;
   options: AskUserOption[];
   multi_select: boolean;
@@ -16,201 +19,292 @@ interface AnswerRecord {
   freeform: string;
 }
 
+interface QuestionAnsweredEvent {
+  answers: Record<string, AskUserAnswer>;
+}
+
+interface HistorySummaryItem {
+  key: string;
+  question: string;
+  answer: string;
+  skipped: boolean;
+  options: HistorySummaryOption[];
+}
+
+interface HistorySummaryOption {
+  label: string;
+  description?: string;
+  selected: boolean;
+}
+
 @Component({
   selector: 'x-aily-question-viewer',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, ChatPartHeaderShellComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (questions.length > 0) {
       <div class="aq-container" [class.aq-all-done]="allDone">
-        <!-- Header -->
-        <div class="aq-header">
-          <div class="aq-question">{{ currentQ.question }}</div>
-          @if (!allDone && !isHistory) {
-            <button class="aq-close" (click)="onSkip()" title="跳过">
-              <i class="fa-solid fa-xmark"></i>
-            </button>
+        <div class="aq-card" [class.aq-card-collapsed]="collapsed">
+          <aily-chat-part-header-shell
+            [title]="currentQ.question"
+            [meta]="headerMeta"
+            [pill]="headerPill"
+            [pillTone]="headerTone"
+            [tone]="headerTone"
+            [iconClass]="headerIconClass"
+            [showChevron]="true"
+            [showExpandedConnector]="false"
+            [clickable]="true"
+            [expanded]="!collapsed"
+            (toggleRequested)="toggleCollapsed()">
+            @if (!allDone && !isHistory && interactive) {
+              <span header-actions class="aq-header-actions">
+                <button class="aq-close" type="button" (click)="onSkipFromHeader($event)" title="跳过" aria-label="跳过当前问题">
+                  <i class="fa-solid fa-xmark"></i>
+                </button>
+              </span>
+            }
+          </aily-chat-part-header-shell>
+
+          @if (!collapsed) {
+            <div class="aq-body">
+              <div class="aq-input-container">
+                @if (!showHistorySummaryList && currentQ.options.length > 0) {
+                  <div class="aq-options">
+                    @for (opt of currentQ.options; track $index) {
+                      <label class="aq-option"
+                        [class.aq-checked]="isOptionSelected($index)"
+                        [class.aq-disabled]="interactionLocked">
+                        <span class="aq-opt-num">{{ $index + 1 }}</span>
+                        <span class="aq-option-body">
+                          <span class="aq-option-label">
+                            <span>{{ opt.label }}</span>
+                            @if (opt.recommended) {
+                              <span class="aq-badge-rec">推荐</span>
+                            }
+                          </span>
+                          @if (opt.description) {
+                            <span class="aq-option-desc">{{ opt.description }}</span>
+                          }
+                        </span>
+                        @if (isOptionSelected($index)) {
+                          <i class="fa-solid fa-check aq-check-icon"></i>
+                        }
+                        <input type="checkbox" class="aq-hidden-input"
+                          [checked]="isOptionSelected($index)"
+                          [disabled]="interactionLocked"
+                          (change)="toggleOption($index)" />
+                      </label>
+                    }
+                  </div>
+                }
+
+                @if (!showHistorySummaryList && currentQ.allow_freeform) {
+                  <div class="aq-freeform" [class.aq-freeform-only]="currentQ.options.length === 0">
+                    @if (currentQ.options.length > 0) {
+                      <span class="aq-opt-num aq-opt-num-free">{{ currentQ.options.length + 1 }}</span>
+                    }
+                    <input
+                      class="aq-freeform-input"
+                      type="text"
+                      placeholder="Enter custom answer"
+                      [ngModel]="currentAnswer.freeform"
+                      (ngModelChange)="onFreeformChange($event)"
+                      [disabled]="interactionLocked"
+                      (keydown.enter)="onConfirm()" />
+                  </div>
+                }
+
+                @if (showHistorySummaryList) {
+                  <div class="aq-history-summary">
+                    @for (item of historySummaryItems; track item.key) {
+                      <div class="aq-history-summary-item" [class.aq-history-summary-skipped]="item.skipped">
+                        <div class="aq-history-summary-question">{{ item.question }}</div>
+                        <div class="aq-history-summary-answer">{{ item.answer }}</div>
+                        @if (item.options.length > 0) {
+                          <div class="aq-history-options">
+                            @for (option of item.options; track option.label) {
+                              <span class="aq-history-option" [class.aq-history-option-selected]="option.selected">
+                                @if (option.selected) {
+                                  <i class="fa-solid fa-check aq-history-option-check"></i>
+                                }
+                                <span class="aq-history-option-label">{{ option.label }}</span>
+                                @if (option.description) {
+                                  <span class="aq-history-option-desc">{{ option.description }}</span>
+                                }
+                              </span>
+                            }
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
+                } @else if (resultSummary) {
+                  <div class="aq-result-note">{{ resultSummary }}</div>
+                }
+              </div>
+
+              @if (!showHistorySummaryList && questions.length > 1) {
+                <div class="aq-nav">
+                  <div class="aq-nav-left">
+                    <button class="aq-nav-btn" [disabled]="currentIndex === 0" (click)="goPrev()">
+                      <i class="fa-solid fa-chevron-left"></i>
+                    </button>
+                    @if (interactive && !isHistory) {
+                      <button class="aq-nav-btn" (click)="goNextOrConfirm()">
+                        <i class="fa-solid fa-chevron-right"></i>
+                      </button>
+                    } @else {
+                      <button class="aq-nav-btn" [disabled]="isLastQuestion" (click)="goNext()">
+                        <i class="fa-solid fa-chevron-right"></i>
+                      </button>
+                    }
+                    <span class="aq-nav-page">{{ currentIndex + 1 }}/{{ questions.length }}</span>
+                  </div>
+                  @if (interactive && !isHistory && isLastQuestion) {
+                    <div class="aq-nav-right">
+                      <button class="aq-nav-submit" [disabled]="!canSubmitAll" (click)="submitAll()">确认提交</button>
+                    </div>
+                  }
+                </div>
+              }
+
+              @if (interactive && !allDone && !isHistory && questions.length === 1 && hasCurrentSelection) {
+                <div class="aq-nav aq-nav-single">
+                  <div class="aq-nav-right">
+                    <button class="aq-nav-submit" (click)="onConfirm()">确认提交</button>
+                  </div>
+                </div>
+              }
+            </div>
           }
         </div>
-
-        <!-- Options -->
-        @if (currentQ.options.length > 0) {
-          <div class="aq-options">
-            @for (opt of currentQ.options; track $index) {
-              <label class="aq-option"
-                [class.aq-checked]="isOptionSelected($index)"
-                [class.aq-disabled]="allDone || isHistory">
-                <span class="aq-opt-num">{{ $index + 1 }}</span>
-                <span class="aq-option-body">
-                  <span class="aq-option-label">
-                    {{ opt.label }}
-                    @if (opt.recommended) {
-                      <span class="aq-badge-rec">推荐</span>
-                    }
-                  </span>
-                  @if (opt.description) {
-                    <span class="aq-option-desc">{{ opt.description }}</span>
-                  }
-                </span>
-                @if (isOptionSelected($index)) {
-                  <i class="fa-solid fa-check aq-check-icon"></i>
-                }
-                <input type="checkbox" class="aq-hidden-input"
-                  [checked]="isOptionSelected($index)"
-                  [disabled]="allDone || isHistory"
-                  (change)="toggleOption($index)" />
-              </label>
-            }
-          </div>
-        }
-
-        <!-- Freeform input -->
-        @if (currentQ.allow_freeform) {
-          <div class="aq-freeform" [class.aq-freeform-only]="currentQ.options.length === 0">
-            @if (currentQ.options.length > 0) {
-              <span class="aq-opt-num aq-opt-num-free">{{ currentQ.options.length + 1 }}</span>
-            }
-            <input
-              class="aq-freeform-input"
-              type="text"
-              placeholder="Enter custom answer"
-              [ngModel]="currentAnswer.freeform"
-              (ngModelChange)="onFreeformChange($event)"
-              [disabled]="allDone || isHistory"
-              (keydown.enter)="onConfirm()" />
-          </div>
-        }
-
-        <!-- Bottom nav (Copilot style) -->
-        @if (questions.length > 1 && (!allDone || isHistory)) {
-          <div class="aq-nav">
-            <button class="aq-nav-btn" [disabled]="currentIndex === 0" (click)="goPrev()">
-              <i class="fa-solid fa-chevron-left"></i>
-            </button>
-            @if (!isHistory) {
-              <button class="aq-nav-btn" (click)="goNextOrConfirm()">
-                <i class="fa-solid fa-chevron-right"></i>
-              </button>
-            } @else {
-              <button class="aq-nav-btn" [disabled]="isLastQuestion" (click)="goNext()">
-                <i class="fa-solid fa-chevron-right"></i>
-              </button>
-            }
-            <span class="aq-nav-page">{{ currentIndex + 1 }}/{{ questions.length }}</span>
-            @if (!isHistory && isLastQuestion) {
-              <button class="aq-nav-submit" [disabled]="!canSubmitAll" (click)="submitAll()">确认提交</button>
-            }
-          </div>
-        }
-
-        <!-- Single question: confirm button (same style as multi-question submit) -->
-        @if (!allDone && !isHistory && questions.length === 1 && hasCurrentSelection) {
-          <div class="aq-nav">
-            <button class="aq-nav-submit" (click)="onConfirm()">确认提交</button>
-          </div>
-        }
-
-        <!-- History: skipped indicator -->
-        @if (isHistory && isCurrentSkipped) {
-          <div class="aq-skipped-bar">
-            <i class="fa-solid fa-forward"></i>
-            <span>已跳过</span>
-          </div>
-        }
-
-        <!-- All done result -->
-        @if (allDone && !isHistory) {
-          <div class="aq-done-bar">
-            <i class="fa-solid fa-circle-check"></i>
-            <span>{{ submittedSummary }}</span>
-          </div>
-        }
-        @if (allDone && isHistory && !isMultiQuestion && !isCurrentSkipped) {
-          <div class="aq-done-bar">
-            <i class="fa-solid fa-circle-check"></i>
-            <span>{{ historySummary || '已回答' }}</span>
-          </div>
-        }
       </div>
     }
   `,
   styles: [`
-    .aq-container {
-      border-radius: 10px;
-      padding: 10px;
-      margin: 0;
-      background: var(--aily-chat-viewer-panel, #1e1e1e);
-      border: 1px solid var(--aily-chat-viewer-border-soft, #333333);
-      transition: border-color 0.2s;
-      overflow: hidden;
+    :host {
+      display: block;
       min-width: 0;
+      --aq-fg: var(--chat-fg-head, var(--aily-text-quaternary, #e3e3e3));
+      --aq-fg-dim: var(--chat-fg-dim, var(--aily-text-muted, #8e8e8e));
+      --aq-fg-muted: var(--chat-fg-muted, var(--aily-text-disabled, #6a6a6a));
+      --aq-border: var(--chat-border, var(--aily-chat-xdialog-msg-divider, rgba(255,255,255,0.12)));
+      --aq-border-soft: color-mix(in srgb, var(--aq-border) 70%, transparent);
+      --aq-bg: var(--aily-chat-viewer-overlay-soft, rgba(255,255,255,0.05));
+      --aq-bg-hover: var(--aily-chat-viewer-option-hover, var(--chat-bg-hover, rgba(255,255,255,0.06)));
+      --aq-bg-selected: var(--aily-chat-viewer-option-selected-bg, rgba(24,144,255,0.08));
+      --aq-border-selected: var(--aily-chat-viewer-option-selected-border, rgba(24,144,255,0.35));
+      --aq-info: var(--chat-info, var(--aily-chat-viewer-state-info, #75beff));
     }
-    .aq-container:not(.aq-all-done):hover { border-color: var(--aily-chat-viewer-border, #444444); }
-    .aq-all-done { opacity: 0.72; }
 
-    /* Header */
-    .aq-header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 10px;
-    }
-    .aq-question {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--aily-chat-viewer-title-fg, #d4d4d4);
-      line-height: 1.5;
-      flex: 1;
+    .aq-container {
+      padding: 2px 0;
+      margin: 0;
       min-width: 0;
-      word-break: break-word;
-      overflow-wrap: break-word;
-      white-space: pre-wrap;
     }
+    .aq-all-done { opacity: 0.88; }
+
+    .aq-card {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      margin: 0;
+      border: 1px solid var(--chat-border, rgba(255,255,255,0.10));
+      border-radius: 5px;
+      background: rgba(255,255,255,0.02);
+      overflow: hidden;
+    }
+
+    .aq-body {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-top: 1px solid var(--chat-border, rgba(255,255,255,0.10));
+    }
+
+    .aq-header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: -2px;
+    }
+
+    :host ::ng-deep .aq-card .cphs-header {
+      margin-bottom: 0;
+      padding: 8px 8px 8px 12px;
+      border-radius: 0;
+    }
+
     .aq-close {
-      flex-shrink: 0;
-      width: 24px; height: 24px;
-      display: flex; align-items: center; justify-content: center;
-      background: transparent; border: none; outline: none;
-      color: var(--aily-text-disabled, #666666); font-size: 13px; cursor: pointer;
-      border-radius: 4px; transition: all 0.15s;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--chat-fg-dim, #8e8e8e);
+      outline: none;
+      cursor: pointer;
     }
-    .aq-close:hover { color: var(--aily-text-quaternary, #bbbbbb); background: var(--aily-chat-viewer-overlay-hover, rgba(255,255,255,0.06)); }
+
+    .aq-close:hover {
+      background: rgba(255,255,255,0.04);
+      color: var(--chat-fg, #cccccc);
+    }
+
+    .aq-input-container {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
+      min-width: 0;
+    }
 
     /* Options */
-    .aq-options { display: flex; flex-direction: column; gap: 6px; }
+    .aq-options { display: flex; flex-direction: column; gap: 8px; }
     .aq-option {
       display: flex;
       align-items: flex-start;
-      gap: 10px;
-      padding: 10px;
-      border-radius: 8px;
+      gap: 8px;
+      padding: 9px 10px;
+      border-radius: 5px;
       cursor: pointer;
-      background: var(--aily-chat-viewer-panel-raised, #252526);
-      border: 1px solid var(--aily-chat-viewer-border-soft, #333333);
-      transition: all 0.15s ease;
+      background: var(--aq-bg);
+      border: 1px solid var(--aq-border-soft);
+      color: var(--aq-fg);
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
       user-select: none;
     }
-    .aq-option:hover:not(.aq-disabled) { background: var(--aily-chat-viewer-option-hover, #2a2d2e); border-color: var(--aily-chat-viewer-border, #444444); }
-    .aq-option.aq-checked:not(.aq-disabled) {
-      background: var(--aily-chat-viewer-option-selected-bg, rgba(24, 144, 255, 0.08));
-      border-color: var(--aily-chat-viewer-option-selected-border, rgba(24, 144, 255, 0.4));
+    .aq-option:hover:not(.aq-disabled) {
+      background: var(--aq-bg-hover);
+      border-color: color-mix(in srgb, var(--aq-border) 88%, var(--aq-info) 12%);
+      color: var(--aq-fg);
+    }
+    .aq-option.aq-checked {
+      background: var(--aq-bg-selected);
+      border-color: var(--aq-border-selected);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--aq-border-selected) 18%, transparent);
     }
     .aq-option.aq-disabled { cursor: default; opacity: 0.6; }
+    .aq-option.aq-disabled.aq-checked { opacity: 0.86; }
 
     /* Option number prefix (Copilot style) */
     .aq-opt-num {
       flex-shrink: 0;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
-      color: var(--aily-chat-viewer-muted, #888888);
-      line-height: 1.4;
+      color: var(--aq-fg-muted);
+      line-height: 1.35;
     }
     .aq-check-icon {
       flex-shrink: 0;
-      font-size: 12px;
-      color: var(--aily-chat-viewer-title-fg, #d4d4d4);
+      font-size: 11px;
+      color: var(--aq-info);
       margin-left: auto;
       align-self: center;
     }
@@ -224,33 +318,35 @@ interface AnswerRecord {
       min-width: 0;
     }
     .aq-option-label {
-      font-size: 13px;
-      color: var(--aily-chat-viewer-fg, #cccccc);
+      font-size: 12px;
+      color: var(--aq-fg);
       line-height: 1.4;
       display: inline-flex;
       align-items: center;
       gap: 6px;
       white-space: pre-wrap;
-      word-break: break-all;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     .aq-badge-rec {
       display: inline-block;
       font-size: 10px;
       font-weight: 600;
-      color: var(--aily-chat-viewer-primary, #1890ff);
-      background: var(--aily-chat-viewer-badge-bg, rgba(24, 144, 255, 0.12));
-      border-radius: 4px;
-      padding: 1px 5px;
+      color: var(--aq-info);
+      background: var(--aily-chat-viewer-badge-bg, rgba(116, 179, 255, 0.12));
+      border-radius: 5px;
+      padding: 1px 6px;
       line-height: 1.4;
       vertical-align: middle;
       white-space: nowrap;
     }
     .aq-option-desc {
       font-size: 11px;
-      color: var(--aily-chat-viewer-option-desc, #777777);
-      line-height: 1.3;
+      color: var(--aq-fg-dim);
+      line-height: 1.4;
       white-space: pre-wrap;
-      word-break: break-all;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .aq-hidden-input {
@@ -259,90 +355,185 @@ interface AnswerRecord {
 
     /* Freeform */
     .aq-freeform {
-      margin-top: 6px;
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 0 12px;
+      gap: 8px;
+      padding: 0;
     }
     .aq-freeform-only { margin-top: 0; padding: 0; }
     .aq-opt-num-free { flex-shrink: 0; }
     .aq-freeform-input {
       width: 100%;
       box-sizing: border-box;
-      padding: 8px 12px;
-      border-radius: 8px;
-      border: 1px solid var(--aily-chat-viewer-border-soft, #333333);
-      background: var(--aily-chat-viewer-panel-raised, #252526);
-      color: var(--aily-chat-viewer-title-fg, #d4d4d4);
-      font-size: 13px;
+      min-height: 22px;
+      padding: 0 10px;
+      border-radius: 5px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.02);
+      color: var(--chat-fg, #cccccc);
+      font-size: 12px;
       outline: none;
       transition: border-color 0.2s;
     }
-    .aq-freeform-input:focus { border-color: var(--aily-chat-viewer-primary, #1890ff); }
+    .aq-freeform-input:focus { border-color: #74b3ff; }
     .aq-freeform-input:disabled { opacity: 0.5; cursor: not-allowed; }
-    .aq-freeform-input::placeholder { color: var(--aily-text-disabled, #666666); }
+    .aq-freeform-input::placeholder { color: var(--chat-fg-muted, #6a6a6a); }
 
     /* Bottom nav (Copilot style) */
     .aq-nav {
-      margin-top: 10px;
       display: flex;
       align-items: center;
-      gap: 4px;
+      justify-content: space-between;
+      gap: 5px;
+      padding: 5px;
+      border-top: 1px solid var(--chat-border, rgba(255,255,255,0.10));
+      min-width: 0;
     }
+
+    .aq-nav-left,
+    .aq-nav-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .aq-nav-single {
+      justify-content: flex-end;
+    }
+
     .aq-nav-btn {
-      width: 28px; height: 28px;
+      width: 22px; height: 22px;
       display: flex; align-items: center; justify-content: center;
-      background: transparent; border: none; outline: none;
-      color: var(--aily-chat-viewer-subtle, #999999); font-size: 12px; cursor: pointer;
-      border-radius: 4px; transition: all 0.15s;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--chat-fg-dim, #8e8e8e);
+      font-size: 11px;
+      cursor: pointer;
+      border-radius: 5px; transition: all 0.15s;
     }
-    .aq-nav-btn:hover:not(:disabled) { color: var(--aily-text-quaternary, #dddddd); background: var(--aily-chat-viewer-overlay-hover, rgba(255,255,255,0.06)); }
+    .aq-nav-btn:hover:not(:disabled) { color: var(--chat-fg, #cccccc); background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); }
     .aq-nav-btn:disabled { opacity: 0.3; cursor: default; }
     .aq-nav-page {
-      font-size: 12px;
-      color: var(--aily-text-disabled, #666666);
-      margin-left: 4px;
+      font-size: 11px;
+      color: var(--chat-fg-muted, #6a6a6a);
       user-select: none;
     }
     .aq-nav-confirm {
-      padding: 4px 14px; border-radius: 4px;
+      padding: 4px 14px; border-radius: 5px;
       font-size: 12px; font-weight: 500;
-      background: transparent; color: var(--aily-chat-viewer-subtle, #999999);
-      border: 1px solid var(--aily-chat-viewer-border, #444444); outline: none;
+      background: transparent; color: #999;
+      border: 1px solid #444; outline: none;
       cursor: pointer; transition: all 0.15s;
     }
-    .aq-nav-confirm:hover { color: var(--aily-text-quaternary, #dddddd); border-color: var(--aily-chat-viewer-btn-secondary-hover-border, #666666); }
+    .aq-nav-confirm:hover { color: #ddd; border-color: #666; }
     .aq-nav-submit {
       margin-left: auto;
-      padding: 4px 14px; border-radius: 6px;
-      font-size: 12px; font-weight: 500;
-      background: var(--aily-chat-viewer-primary, #1890ff); color: var(--aily-chat-viewer-on-primary, #ffffff);
-      border: none; outline: none;
+      min-height: 22px;
+      padding: 0 10px; border-radius: 5px;
+      font-size: 12px; font-weight: 400;
+      background: #0e639c; color: #ffffff;
+      border: 1px solid transparent; outline: none;
       cursor: pointer; transition: all 0.15s;
     }
-    .aq-nav-submit:hover:not(:disabled) { background: var(--aily-chat-viewer-primary-hover, #40a9ff); }
+    .aq-nav-submit:hover:not(:disabled) { background: #1177bb; }
     .aq-nav-submit:disabled { opacity: 0.35; cursor: not-allowed; }
 
-    /* Skipped indicator */
-    .aq-skipped-bar {
-      margin-top: 10px;
-      display: flex; align-items: center; gap: 6px;
-      font-size: 12px; color: var(--aily-chat-viewer-muted, #888888);
+    .aq-result-note {
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--chat-fg-dim, #8e8e8e);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
-    .aq-skipped-bar i { font-size: 11px; color: var(--aily-text-disabled, #666666); }
 
-    /* Done bar */
-    .aq-done-bar {
-      margin-top: 10px;
+    .aq-history-summary {
       display: flex;
-      align-items: center;
+      flex-direction: column;
       gap: 6px;
-      font-size: 12px;
-      color: var(--aily-chat-viewer-state-done, #52c41a);
+      min-width: 0;
     }
-    .aq-done-bar i { font-size: 13px; }
-    .aq-done-bar span { color: var(--aily-chat-viewer-muted, #888888); white-space: pre-wrap; word-break: break-all; }
+
+    .aq-history-summary-item {
+      padding: 6px 8px;
+      border: 1px solid var(--aq-border-soft);
+      border-radius: 5px;
+      background: rgba(255,255,255,0.025);
+      min-width: 0;
+    }
+
+    .aq-history-summary-question {
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--aq-fg-dim);
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .aq-history-summary-answer {
+      margin-top: 2px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--aq-fg);
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .aq-history-summary-skipped .aq-history-summary-answer {
+      color: var(--aq-fg-muted);
+    }
+
+    .aq-history-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 6px;
+      min-width: 0;
+    }
+
+    .aq-history-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 100%;
+      min-width: 0;
+      padding: 2px 6px;
+      border: 1px solid var(--aq-border-soft);
+      border-radius: 5px;
+      color: var(--aq-fg-dim);
+      background: rgba(255,255,255,0.018);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .aq-history-option-selected {
+      color: var(--aq-fg);
+      border-color: color-mix(in srgb, var(--aq-accent, #60a5fa) 55%, var(--aq-border));
+      background: color-mix(in srgb, var(--aq-accent, #60a5fa) 14%, transparent);
+    }
+
+    .aq-history-option-check {
+      flex: 0 0 auto;
+      font-size: 10px;
+      color: var(--aq-fg);
+    }
+
+    .aq-history-option-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .aq-history-option-desc {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--aq-fg-muted);
+    }
 
 
   `],
@@ -350,20 +541,31 @@ interface AnswerRecord {
 export class XAilyQuestionViewerComponent implements OnChanges {
   @Input() data: any = null;
   @Input() streamStatus: string = 'done';
+  @Input() interactive = true;
+  @Output() answered = new EventEmitter<QuestionAnsweredEvent>();
 
   questions: NormalizedQuestion[] = [];
   currentIndex = 0;
   isHistory = false;
   allDone = false;
   submittedSummary = '';
+  collapsed = false;
 
   answers = new Map<number, AnswerRecord>();
   answeredSet = new Set<number>();
 
+  /** ★ 引用守卫：防止 parent CD 导致 processData 反复重置用户选择（参考 VSCode hasSameContent 模式） */
+  private _lastQuestionsRef: any = null;
+  private _lastAnswersRef: Record<string, AskUserAnswer> | undefined = undefined;
+  private _lastHistoryFlag = false;
+
   constructor(private cdr: ChangeDetectorRef) {}
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['data']) this.processData();
+    if (changes['data']) {
+      this.collapsed = false;
+      this.processData();
+    }
   }
 
   // ===== Getters =====
@@ -379,8 +581,84 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     return this.answers.get(this.currentIndex)!;
   }
 
+  get headerIconClass(): string {
+    if (this.allDone && !this.isHistory) {
+      return 'fa-light fa-circle-check';
+    }
+
+    if (this.isHistory && this.isCurrentSkipped) {
+      return 'fa-light fa-forward';
+    }
+
+    return 'fa-light fa-circle-question';
+  }
+
+  get headerTone(): 'neutral' | 'success' {
+    return this.allDone && !this.isHistory ? 'success' : 'neutral';
+  }
+
+  get headerMeta(): string | undefined {
+    return undefined;
+  }
+
+  get headerPill(): string | undefined {
+    if (this.allDone && !this.isHistory) {
+      return '已提交';
+    }
+
+    if (this.isHistory && this.isCurrentSkipped) {
+      return '已跳过';
+    }
+
+    if (this.isHistory && !this.isMultiQuestion) {
+      return '已回答';
+    }
+
+    return undefined;
+  }
+
+  get resultSummary(): string {
+    if (this.allDone && !this.isHistory) {
+      return this.submittedSummary;
+    }
+
+    if (this.isHistory) {
+      return this.historySummary || (this.isCurrentSkipped ? '已跳过' : '');
+    }
+
+    return '';
+  }
+
+  get showHistorySummaryList(): boolean {
+    return this.isHistory && this.historySummaryItems.length > 0;
+  }
+
+  get historySummaryItems(): HistorySummaryItem[] {
+    if (!this.isHistory) return [];
+    return this.questions.map((question, index) => {
+      const answerRecord = this.answers.get(index);
+      const answer = this.formatAnswerSummary(question, answerRecord);
+      return {
+        key: this.getQuestionAnswerKey(question),
+        question: question.question,
+        answer: answer || '已跳过',
+        skipped: !answer,
+        options: this.formatHistoryOptions(question, answerRecord),
+      };
+    });
+  }
+
+  toggleCollapsed(): void {
+    this.collapsed = !this.collapsed;
+    this.cdr.markForCheck();
+  }
+
   get hasCurrentSelection(): boolean {
     return this.currentAnswer.selected.size > 0 || this.currentAnswer.freeform.trim().length > 0;
+  }
+
+  get interactionLocked(): boolean {
+    return this.allDone || this.isHistory || !this.interactive;
   }
 
   get isLastQuestion(): boolean {
@@ -409,15 +687,34 @@ export class XAilyQuestionViewerComponent implements OnChanges {
 
   /** 历史模式摘要：显示用户之前的选择 */
   get historySummary(): string {
-    const ans = this.answers.get(0);
-    if (!ans) return '';
-    const q = this.questions[0];
+    const ans = this.answers.get(this.currentIndex);
+    const q = this.questions[this.currentIndex];
     if (!q) return '';
-    const labels = Array.from(ans.selected).sort((a, b) => a - b)
-      .map(idx => q.options[idx]?.label).filter(Boolean);
+    const answer = this.formatAnswerSummary(q, ans);
+    return answer ? '已选择: ' + answer : '';
+  }
+
+  private formatAnswerSummary(question: NormalizedQuestion, answer: AnswerRecord | undefined): string {
+    if (!answer) return '';
+    const labels = Array.from(answer.selected).sort((a, b) => a - b)
+      .map(idx => question.options[idx]?.label)
+      .filter((label): label is string => Boolean(label));
     const parts = [...labels];
-    if (ans.freeform.trim()) parts.push(ans.freeform.trim());
-    return parts.length > 0 ? '已选择: ' + parts.join(', ') : '';
+    const freeform = answer.freeform.trim();
+    if (freeform) parts.push(freeform);
+    return parts.join(', ');
+  }
+
+  private formatHistoryOptions(question: NormalizedQuestion, answer: AnswerRecord | undefined): HistorySummaryOption[] {
+    return question.options.map((option, index) => ({
+      label: option.label,
+      description: option.description,
+      selected: answer?.selected.has(index) ?? false,
+    }));
+  }
+
+  private getQuestionAnswerKey(question: NormalizedQuestion): string {
+    return question.id || question.header || question.question;
   }
 
   isOptionSelected(idx: number): boolean {
@@ -427,7 +724,7 @@ export class XAilyQuestionViewerComponent implements OnChanges {
   // ===== Actions =====
 
   toggleOption(index: number): void {
-    if (this.allDone || this.isHistory) return;
+    if (this.interactionLocked) return;
     const ans = this.currentAnswer;
     if (this.currentQ.multi_select) {
       if (ans.selected.has(index)) {
@@ -438,17 +735,22 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     } else {
       ans.selected.clear();
       ans.selected.add(index);
+      this.onConfirm();
+      return;
     }
-    this.cdr.markForCheck();
+    // ★ detectChanges 替代 markForCheck：仅触发自身 CD，
+    // 阻断脏标记冒泡到 parent 导致 getQuestionData() 创建新对象
+    this.cdr.detectChanges();
   }
 
   onFreeformChange(value: string): void {
+    if (this.interactionLocked) return;
     this.currentAnswer.freeform = value;
-    this.cdr.markForCheck();
+    this.cdr.detectChanges();
   }
 
   onConfirm(): void {
-    if (this.allDone || !this.hasCurrentSelection) return;
+    if (this.interactionLocked || !this.hasCurrentSelection) return;
     this.answeredSet.add(this.currentIndex);
 
     if (this.isLastQuestion) {
@@ -456,18 +758,18 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     } else {
       this.currentIndex++;
       this.initRecommended(this.currentIndex);
-      this.cdr.markForCheck();
+      this.cdr.detectChanges();
     }
   }
 
   /** 多问题模式 > 按钮：非末页前进，末页不做操作（由提交按钮负责） */
   goNextOrConfirm(): void {
-    if (this.allDone || this.isHistory) return;
+    if (this.interactionLocked) return;
     this.answeredSet.add(this.currentIndex);
     if (!this.isLastQuestion) {
       this.currentIndex++;
       this.initRecommended(this.currentIndex);
-      this.cdr.markForCheck();
+      this.cdr.detectChanges();
     }
   }
 
@@ -475,12 +777,12 @@ export class XAilyQuestionViewerComponent implements OnChanges {
   goNext(): void {
     if (this.currentIndex < this.questions.length - 1) {
       this.currentIndex++;
-      this.cdr.markForCheck();
+      this.cdr.detectChanges();
     }
   }
 
   onSkip(): void {
-    if (this.allDone || this.isHistory) return;
+    if (this.interactionLocked) return;
     // 清空当前回答，标记为已处理（跳过）
     this.answers.set(this.currentIndex, { selected: new Set(), freeform: '' });
     this.answeredSet.add(this.currentIndex);
@@ -490,20 +792,29 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     } else {
       this.currentIndex++;
       this.initRecommended(this.currentIndex);
-      this.cdr.markForCheck();
+      this.cdr.detectChanges();
     }
+  }
+
+  onSkipFromHeader(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.onSkip();
   }
 
   goPrev(): void {
     if (this.currentIndex > 0) {
       this.currentIndex--;
-      this.cdr.markForCheck();
+      this.cdr.detectChanges();
     }
   }
 
   // ===== Submit =====
 
   submitAll(): void {
+    if (!this.interactive || this.isHistory) {
+      return;
+    }
     this.allDone = true;
 
     const answersMap: Record<string, AskUserAnswer> = {};
@@ -511,9 +822,10 @@ export class XAilyQuestionViewerComponent implements OnChanges {
 
     for (let i = 0; i < this.questions.length; i++) {
       const q = this.questions[i];
+      const answerKey = this.getQuestionAnswerKey(q);
       const ans = this.answers.get(i);
       if (!ans) {
-        answersMap[q.question] = { selected: [], freeText: null, skipped: true };
+        answersMap[answerKey] = { selected: [], freeText: null, skipped: true };
         continue;
       }
 
@@ -524,7 +836,7 @@ export class XAilyQuestionViewerComponent implements OnChanges {
 
       const freeText = ans.freeform.trim() || null;
 
-      answersMap[q.question] = {
+      answersMap[answerKey] = {
         selected: selectedLabels,
         freeText,
         skipped: selectedLabels.length === 0 && !freeText,
@@ -538,24 +850,23 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     this.submittedSummary = summaryParts.length > 0
       ? '已提交: ' + summaryParts.join(' | ')
       : '已提交';
-    this.cdr.markForCheck();
+    this.cdr.detectChanges();
 
     // 直接写入 data 对象，确保后续 saveSession 时 JSON.stringify 能序列化出 answers
     if (this.data && typeof this.data === 'object') {
       this.data.answers = answersMap;
     }
 
-    document.dispatchEvent(new CustomEvent('aily-question-answer', {
-      bubbles: true,
-      detail: { answers: answersMap },
-    }));
+    this.answered.emit({ answers: answersMap });
   }
 
   // ===== Data processing =====
 
   private processData(): void {
     // 已提交后忽略后续数据变更（防止 _patchAilyQuestionBlock 触发 re-render 导致重置）
-    if (this.allDone && !this.isHistory) return;
+    const incomingAnswers = this.readSavedAnswers();
+    const incomingIsHistory = this.data?.isHistory === true;
+    if (this.allDone && !this.isHistory && !incomingIsHistory && !incomingAnswers) return;
 
     if (!this.data) {
       if (this.streamStatus === 'done') this.questions = [];
@@ -563,6 +874,8 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     }
     try {
       let rawQuestions: AskUserQuestion[];
+      const savedAnswers = incomingAnswers;
+      const nextIsHistory = incomingIsHistory;
 
       // 主格式：{ questions: AskUserQuestion[] }（来自 chat-engine._handleAskUser）
       if (this.data.questions && Array.isArray(this.data.questions)) {
@@ -575,7 +888,22 @@ export class XAilyQuestionViewerComponent implements OnChanges {
         return;
       }
 
-      this.isHistory = this.data.isHistory === true;
+      // VS Code question carousel 会复用同一个 runtime widget。
+      // 这里至少要把“语义相同但对象重建”的 live question 视为同一交互，
+      // 避免映射层 remap 后把当前选择和分页重置掉。
+      if (
+        this.areQuestionsEquivalent(this._lastQuestionsRef, rawQuestions)
+        && this.areSavedAnswersEquivalent(this._lastAnswersRef, savedAnswers)
+        && this._lastHistoryFlag === nextIsHistory
+        && this.questions.length > 0
+      ) {
+        return;
+      }
+      this._lastQuestionsRef = rawQuestions;
+      this._lastAnswersRef = savedAnswers;
+      this._lastHistoryFlag = nextIsHistory;
+
+      this.isHistory = nextIsHistory;
       this.questions = rawQuestions
         .filter((d: any) => d.question && typeof d.question === 'string')
         .map((d: AskUserQuestion) => this.normalizeQuestion(d));
@@ -606,9 +934,14 @@ export class XAilyQuestionViewerComponent implements OnChanges {
 
     return {
       question: d.question,
+      id: (d as { id?: string }).id,
+      header: (d as { header?: string }).header,
       options,
-      multi_select: d.multi_select ?? false,
-      allow_freeform: d.allow_freeform ?? (options.length === 0),
+      multi_select: d.multi_select ?? (d as { multiSelect?: boolean }).multiSelect ?? false,
+      allow_freeform: d.allow_freeform
+        ?? (d as { allowFreeform?: boolean }).allowFreeform
+        ?? (d as { allowFreeformInput?: boolean }).allowFreeformInput
+        ?? (options.length === 0),
     };
   }
 
@@ -637,13 +970,14 @@ export class XAilyQuestionViewerComponent implements OnChanges {
    * 数据格式：data.answers = { [questionText]: { selected: string[], freeText: string|null, skipped: boolean } }
    */
   private restoreAnswersFromHistory(): void {
-    const savedAnswers: Record<string, AskUserAnswer> | undefined = this.data?.answers;
-    console.log('[AilyQuestion] restoreAnswersFromHistory, data.answers:', savedAnswers, 'data keys:', Object.keys(this.data || {}));
+    const savedAnswers = this.readSavedAnswers();
     if (!savedAnswers) return;
 
     for (let i = 0; i < this.questions.length; i++) {
       const q = this.questions[i];
-      const saved = savedAnswers[q.question];
+      const saved = (q.id ? savedAnswers[q.id] : undefined)
+        ?? (q.header ? savedAnswers[q.header] : undefined)
+        ?? savedAnswers[q.question];
       if (!saved) continue;
 
       const ans: AnswerRecord = { selected: new Set(), freeform: saved.freeText || '' };
@@ -658,5 +992,94 @@ export class XAilyQuestionViewerComponent implements OnChanges {
 
       this.answers.set(i, ans);
     }
+  }
+
+  private readSavedAnswers(): Record<string, AskUserAnswer> | undefined {
+    const answers = this.data?.answers;
+    if (!answers || typeof answers !== 'object') {
+      return undefined;
+    }
+    return answers as Record<string, AskUserAnswer>;
+  }
+
+  private areQuestionsEquivalent(
+    previous: AskUserQuestion[] | null | undefined,
+    next: AskUserQuestion[] | null | undefined,
+  ): boolean {
+    if (previous === next) {
+      return true;
+    }
+    if (!Array.isArray(previous) || !Array.isArray(next) || previous.length !== next.length) {
+      return false;
+    }
+
+    return previous.every((prevQuestion, index) => {
+      const nextQuestion = next[index];
+      if (!nextQuestion) {
+        return false;
+      }
+      if (
+        prevQuestion.question !== nextQuestion.question
+        || (prevQuestion as { id?: string }).id !== (nextQuestion as { id?: string }).id
+        || (prevQuestion as { header?: string }).header !== (nextQuestion as { header?: string }).header
+        || (prevQuestion.multi_select ?? false) !== (nextQuestion.multi_select ?? false)
+        || ((prevQuestion as { multiSelect?: boolean }).multiSelect ?? false) !== ((nextQuestion as { multiSelect?: boolean }).multiSelect ?? false)
+        || (prevQuestion.allow_freeform ?? false) !== (nextQuestion.allow_freeform ?? false)
+        || ((prevQuestion as { allowFreeform?: boolean }).allowFreeform ?? false) !== ((nextQuestion as { allowFreeform?: boolean }).allowFreeform ?? false)
+        || ((prevQuestion as { allowFreeformInput?: boolean }).allowFreeformInput ?? false) !== ((nextQuestion as { allowFreeformInput?: boolean }).allowFreeformInput ?? false)
+      ) {
+        return false;
+      }
+
+      const prevOptions = Array.isArray(prevQuestion.options) ? prevQuestion.options : [];
+      const nextOptions = Array.isArray(nextQuestion.options) ? nextQuestion.options : [];
+      if (prevOptions.length !== nextOptions.length) {
+        return false;
+      }
+
+      return prevOptions.every((prevOption, optionIndex) => {
+        const nextOption = nextOptions[optionIndex];
+        return !!nextOption
+          && prevOption.label === nextOption.label
+          && prevOption.description === nextOption.description
+          && !!prevOption.recommended === !!nextOption.recommended;
+      });
+    });
+  }
+
+  private areSavedAnswersEquivalent(
+    previous: Record<string, AskUserAnswer> | undefined,
+    next: Record<string, AskUserAnswer> | undefined,
+  ): boolean {
+    if (previous === next) {
+      return true;
+    }
+    if (!previous || !next) {
+      return false;
+    }
+
+    const previousKeys = Object.keys(previous);
+    const nextKeys = Object.keys(next);
+    if (previousKeys.length !== nextKeys.length) {
+      return false;
+    }
+
+    return previousKeys.every((key) => {
+      const prevAnswer = previous[key];
+      const nextAnswer = next[key];
+      if (!prevAnswer || !nextAnswer) {
+        return false;
+      }
+
+      const prevSelected = Array.isArray(prevAnswer.selected) ? prevAnswer.selected : [];
+      const nextSelected = Array.isArray(nextAnswer.selected) ? nextAnswer.selected : [];
+      if (prevSelected.length !== nextSelected.length) {
+        return false;
+      }
+
+      return prevAnswer.freeText === nextAnswer.freeText
+        && !!prevAnswer.skipped === !!nextAnswer.skipped
+        && prevSelected.every((value, index) => value === nextSelected[index]);
+    });
   }
 }

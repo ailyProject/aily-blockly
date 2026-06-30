@@ -1,5 +1,5 @@
 import { Component, inject, OnDestroy, ViewChild, ElementRef } from '@angular/core';
-import { NzModalRef } from 'ng-zorro-antd/modal';
+import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
@@ -12,10 +12,13 @@ import { ElectronService } from '../../services/electron.service';
 import { NzRadioModule } from 'ng-zorro-antd/radio';
 import { ProjectService } from '../../services/project.service';
 import { LogService } from '../../services/log.service';
+import { ConfigService } from '../../services/config.service';
+import { AuthService } from '../../services/auth.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { stripAnsi } from 'fancy-ansi';
+import { Subscription } from 'rxjs';
 
-import { version } from '../../../../package.json';
+import packageJson from '../../../../package.json';
 
 @Component({
   selector: 'app-feedback-dialog',
@@ -35,6 +38,12 @@ import { version } from '../../../../package.json';
 })
 export class FeedbackDialogComponent implements OnDestroy {
   readonly modal = inject(NzModalRef);
+  readonly data: {
+    feedbackType?: string;
+    feedbackTitle?: string;
+    feedbackContent?: string;
+    feedbackLibraryName?: string;
+  } | null = inject(NZ_MODAL_DATA, { optional: true });
 
   // textarea 元素引用
   @ViewChild('contentTextarea') contentTextarea!: ElementRef<HTMLTextAreaElement>;
@@ -47,6 +56,8 @@ export class FeedbackDialogComponent implements OnDestroy {
   // 图片上传计数器，用于生成唯一占位符
   private uploadCounter: number = 0;
 
+  private userInfoSubscription?: Subscription;
+
   // 反馈类型
   feedbackType: string = 'bug';
 
@@ -54,6 +65,7 @@ export class FeedbackDialogComponent implements OnDestroy {
     return [
       { label: this.translate.instant('FEEDBACK_DIALOG.TYPE_BUG'), value: 'bug' },
       { label: this.translate.instant('FEEDBACK_DIALOG.TYPE_BUILD_UPLOAD'), value: 'build&upload' },
+      { label: this.translate.instant('FEEDBACK_DIALOG.TYPE_LIBRARY'), value: 'library' },
       { label: this.translate.instant('FEEDBACK_DIALOG.TYPE_OTHER'), value: 'other' },
       { label: this.translate.instant('FEEDBACK_DIALOG.TYPE_FEATURE'), value: 'feature' },
     ];
@@ -66,6 +78,8 @@ export class FeedbackDialogComponent implements OnDestroy {
   // 表单数据
   feedbackTitle: string = '';
   feedbackContent: string = '';
+  feedbackLibraryName: string = '';
+  private hasLibraryContext: boolean = false;
   contactInfo: string = '';
 
   // 提交状态
@@ -98,18 +112,76 @@ export class FeedbackDialogComponent implements OnDestroy {
     private electronService: ElectronService,
     private projectService: ProjectService,
     private logService: LogService,
+    private configService: ConfigService,
+    private authService: AuthService,
     private translate: TranslateService
   ) { }
 
+  get isCnRegion(): boolean {
+    return this.configService.isCnRegion;
+  }
+
   ngOnInit(): void {
     this.loadDraft();
+    this.applyInitialData();
+    this.applyUserEmail(this.authService.currentUser);
+    this.userInfoSubscription = this.authService.userInfo$.subscribe(userInfo => {
+      this.applyUserEmail(userInfo);
+    });
   }
 
   ngOnDestroy(): void {
+    this.userInfoSubscription?.unsubscribe();
     // 组件销毁时，如果未成功提交，则保存草稿
     if (!this.isSubmitted) {
       this.saveDraft();
     }
+  }
+
+  private applyUserEmail(userInfo: any): void {
+    const userEmail = userInfo?.email?.trim();
+    if (!this.email.trim() && userEmail) {
+      this.email = userEmail;
+    }
+  }
+
+  private applyInitialData(): void {
+    if (!this.data) {
+      return;
+    }
+
+    if (this.data.feedbackType) {
+      this.feedbackType = this.data.feedbackType;
+    }
+    if (this.data.feedbackTitle) {
+      this.feedbackTitle = this.data.feedbackTitle;
+    }
+    if (this.data.feedbackContent) {
+      this.feedbackContent = this.data.feedbackContent;
+    }
+    if (this.data.feedbackLibraryName) {
+      this.feedbackLibraryName = this.data.feedbackLibraryName;
+      this.hasLibraryContext = true;
+    }
+  }
+
+  onFeedbackTypeChange(type: string): void {
+    if (type === 'library') {
+      this.feedbackContent = this.getLibraryIssueContent();
+      return;
+    }
+
+    this.feedbackContent = '';
+  }
+
+  private getLibraryIssueContent(): string {
+    const libraryName = this.hasLibraryContext && this.feedbackLibraryName.trim()
+      ? this.feedbackLibraryName.trim()
+      : this.translate.instant('FEEDBACK_DIALOG.LIBRARY_NAME_PLACEHOLDER');
+
+    return this.translate.instant('FEEDBACK_DIALOG.LIBRARY_ISSUE_CONTENT', {
+      name: libraryName,
+    });
   }
 
   // 从 localStorage 加载草稿数据
@@ -180,7 +252,7 @@ export class FeedbackDialogComponent implements OnDestroy {
 
     return `
 - OS Version: ${window['platform'].type}
-- Software Version: ${version}
+- Software Version: ${packageJson.version}${this.isCnRegion ? '-cn' : ''}
 - Project Dependencies:
 \`\`\`json
 ${dependenciesStr}
@@ -285,7 +357,7 @@ ${descriptionStr}
       // 构建反馈数据
       const feedbackData = {
         label: this.feedbackType,
-        title: this.feedbackTitle.trim(),
+        title: this.getSubmitTitle(),
         content: content + `\n> This issue was sent by the user using the built-in feedback function.`,
         contact: this.contactInfo.trim(),
         timestamp: new Date().toISOString(),
@@ -297,6 +369,7 @@ ${descriptionStr}
         this.message.success(this.translate.instant('FEEDBACK_DIALOG.SUCCESS_MESSAGE'));
         this.isSubmitted = true;
         this.clearDraft();
+        this.resetForm();
         this.modal.close({ result: 'success', data: feedbackData });
         this.isSubmitting = false;
       }, err => {
@@ -309,6 +382,85 @@ ${descriptionStr}
       this.message.error(this.translate.instant('FEEDBACK_DIALOG.ERROR_SUBMIT_FAILED'));
       this.isSubmitting = false;
     }
+  }
+
+  private getSubmitTitle(): string {
+    const title = this.feedbackTitle.trim();
+    const libraryName = this.getFeedbackLibraryNameForSubmit();
+    if (this.feedbackType !== 'library' || !libraryName) {
+      return title;
+    }
+
+    const prefix = `[${libraryName}]`;
+    if (title.startsWith(prefix) || title.startsWith(`<${libraryName}>`)) {
+      return title;
+    }
+
+    return `${prefix} ${title}`;
+  }
+
+  private getFeedbackLibraryNameForSubmit(): string {
+    const libraryName = this.feedbackLibraryName.trim();
+    if (libraryName) {
+      return libraryName;
+    }
+
+    const parsedName = this.parseLibraryNameFromContent();
+    const placeholder = this.translate.instant('FEEDBACK_DIALOG.LIBRARY_NAME_PLACEHOLDER').trim();
+    if (!parsedName || parsedName === placeholder) {
+      return '';
+    }
+
+    return parsedName.replace(/^<(.+)>$/, '$1').trim();
+  }
+
+  private parseLibraryNameFromContent(): string {
+    const marker = '__LIBRARY_NAME__';
+    const template = this.translate.instant('FEEDBACK_DIALOG.LIBRARY_ISSUE_CONTENT', {
+      name: marker,
+    });
+    const [prefix, suffix = ''] = template.split(marker);
+    const content = this.feedbackContent.trim();
+    let parsedName = '';
+
+    if (prefix && content.startsWith(prefix)) {
+      parsedName = content.slice(prefix.length).trim();
+    } else {
+      const firstLine = content
+        .split(/\r\n|\n|\r/)
+        .map(line => line.trim())
+        .find(line => line.length > 0) || '';
+      const fullWidthSeparatorIndex = firstLine.indexOf('：');
+      const separatorIndex = fullWidthSeparatorIndex >= 0 ? fullWidthSeparatorIndex : firstLine.indexOf(':');
+      if (separatorIndex < 0) {
+        return '';
+      }
+      parsedName = firstLine.slice(separatorIndex + 1).trim();
+    }
+
+    const suffixMarker = suffix
+      .split(/\r\n|\n|\r/)
+      .map(line => line.trim())
+      .find(line => line.length > 0);
+    if (suffixMarker) {
+      const suffixIndex = parsedName.indexOf(suffixMarker);
+      if (suffixIndex >= 0) {
+        parsedName = parsedName.slice(0, suffixIndex).trim();
+      }
+    }
+
+    return parsedName.split(/\r\n|\n|\r/)[0].trim();
+  }
+
+  private resetForm(): void {
+    this.feedbackType = 'bug';
+    this.feedbackTitle = '';
+    this.feedbackContent = '';
+    this.feedbackLibraryName = '';
+    this.hasLibraryContext = false;
+    this.contactInfo = '';
+    this.email = '';
+    this.isDragOver = false;
   }
 
   /**

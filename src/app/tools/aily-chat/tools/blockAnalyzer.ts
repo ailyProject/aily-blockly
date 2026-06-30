@@ -1,4 +1,4 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { templateCacheService } from './services/templateCacheService';
 
 // 核心接口定义

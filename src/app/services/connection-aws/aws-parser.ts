@@ -11,6 +11,7 @@ import {
   ParsedConnect,
   ParsedError,
   ParsedWarning,
+  ArrowDirection,
   isValidConnectionType,
 } from './aws-types';
 
@@ -27,8 +28,10 @@ const USE_REGEX = /^USE\s+([\w\-:]+)(?:\s+AS\s+(\w+))?(?:\s+"([^"]*)")?$/i;
 const ASSIGN_REGEX = /^ASSIGN\s+(\w+)\.(\w+)\s+AS\s+(\w+)\s+@(\w+)(?::(\d+))?$/i;
 
 // CONNECT ref1.pin -> ref2.pin @type[:bus] ["note"]
+// 支持三种箭头: -> (正向), <- (反向), <-> (双向)
 // 例: CONNECT esp.SDA -> dht.SDA @i2c "默认I2C"
-const CONNECT_REGEX = /^CONNECT\s+(\w+)\.([\w\d]+)\s*->\s*(\w+)\.([\w\d]+)\s+@(\w+)(?::(\d+))?(?:\s+"([^"]*)")?$/i;
+// 例: CONNECT esp.SDA <-> dht.SDA @i2c "半双工"
+const CONNECT_REGEX = /^CONNECT\s+(\w+)\.([\w\d]+)\s*(<->|<-|->)\s*(\w+)\.([\w\d]+)\s+@(\w+)(?::(\d+))?(?:\s+"([^"]*)")?$/i;
 
 // =====================================================
 // 解析器主函数
@@ -122,7 +125,7 @@ export function parseAWS(aws: string): ParsedAWS {
     // 尝试匹配 CONNECT
     const connectMatch = line.match(CONNECT_REGEX);
     if (connectMatch) {
-      const [, fromRef, fromPin, toRef, toPin, type, bus, note] = connectMatch;
+      const [, fromRef, fromPin, arrow, toRef, toPin, type, bus, note] = connectMatch;
       
       // 验证连接类型
       if (!isValidConnectionType(type)) {
@@ -141,6 +144,7 @@ export function parseAWS(aws: string): ParsedAWS {
         type: isValidConnectionType(type) ? type : 'other',
         bus: bus ? parseInt(bus, 10) : undefined,
         note,
+        arrow: arrow as ArrowDirection,
         line: lineNumber,
       });
       continue;

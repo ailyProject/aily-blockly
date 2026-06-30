@@ -1,13 +1,90 @@
-import { Injectable } from '@angular/core';
+﻿import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, ReplaySubject, Subscription } from 'rxjs';
+import { Observable, ReplaySubject, Subject } from 'rxjs';
+import type { TurnResponseTurn } from 'aily-lex/browser';
 import { MCPTool } from './mcp.service';
 import { ChatAPI } from '../core/api-endpoints';
 import { AilyChatConfigService, ModelConfigOption } from './aily-chat-config.service';
+import { AilyChatLanguageModelsService } from './aily-chat-language-models.service';
+import { ContextBudgetService } from './context-budget.service';
+import {
+  ChatRuntimeModeService,
+  type ChatCustomModeSourceKind,
+  type ChatCustomAgentProviderSource,
+  type ChatSessionCustomizationAgentCatalogEntry,
+  type ChatSessionCustomizationProviderMetadata,
+  type ChatSessionCustomizationProviderBinding,
+  type ChatSessionCustomizationContentProvider,
+  type ChatSessionCustomizationItem,
+} from './chat-runtime-mode.service';
+import {
+  type ChatSessionProviderOptionsSource,
+  type ChatSessionProviderOptionsSourceBinding,
+  type ChatSessionProviderOptionsSourceContext,
+  type ChatSessionProviderOptionsSourceRepository,
+  type ChatSessionProviderOptionsSourceSnapshot,
+  type ChatSessionProviderOptionsSourceSubscription,
+} from './chat-session-provider-options-source.service';
 import { AilyHost } from '../core/host';
-import { isTransientNetworkError, isLikelySessionLostError } from './http-error-handler.service';
-import { asyncJsonStringify } from '../core/async-json-stringify';
-import { ChatKernelProxy } from './chat-kernel-proxy';
+import { normalizeAgentIdentifier } from '../core/agent-identifiers';
+import {
+  DEFAULT_CHAT_RESOLVED_MODE,
+  DEFAULT_CHAT_SESSION_PERMISSION_MODE,
+  DEFAULT_CHAT_SESSION_TYPE,
+  DEFAULT_CHAT_SELECTED_MODE,
+  DEFAULT_CHAT_SURFACE_MODE_ID,
+  createBuiltinChatResolvedMode,
+  createPlanChatResolvedMode,
+  createChatSessionInputModeFromResolvedMode,
+  isPlanChatAgentTarget,
+  normalizeChatSelectedMode,
+  normalizeChatSessionProviderOptionGroups,
+  normalizeChatSessionPermissionMode,
+  type ChatSessionInputMode,
+  type ChatSessionInputModeInstructions,
+  type ChatSessionInputState,
+  type ChatSessionProviderOptionGroup,
+  type ChatSessionProviderOptionIcon,
+  type ChatSessionProviderOptionItem,
+  normalizeChatSessionType,
+  resolveChatSessionCustomAgentTarget,
+  resolveChatCurrentMode,
+  resolveChatSelectedCustomAgentTarget,
+  resolveChatSurfaceModeId,
+  type ChatSessionPermissionMode,
+  type ChatResolvedModeTarget,
+  type ChatSessionType,
+  type ChatResolvedMode,
+  type ChatRuntimeModeCollection,
+  type ChatSelectedMode,
+  normalizeChatSurfaceModeId,
+  type ChatSurfaceModeId,
+} from '../core/chat-mode';
+import {
+  HOST_SESSION_FOLDER_OPTION_ID,
+  HOST_SESSION_PERMISSION_MODE_OPTION_ID,
+  normalizeHostSessionProviderOptions,
+  resolveHostSessionProviderOptionGroups,
+  resolveHostSessionProviderOptionsFromInputState,
+} from '../helpers/host-session-input-state';
+import {
+  getTurnResponseResolvedPresetId,
+  getTurnResponseResolvedModelBillingLabel,
+  getTurnResponseResolvedModelName,
+} from '../helpers/turn-response-response-model';
+import {
+  isCustomSessionTitleSource,
+  normalizeChatSessionTitleSource,
+  type ChatSessionTitleCandidate,
+  type ChatSessionTitleSource,
+} from '../core/chat-session-title';
+import {
+  normalizeChatAgentRuntimeMode,
+  normalizeChatAgentRuntimeModeSource,
+  type ChatAgentRuntimeMode,
+  type ChatAgentRuntimeModeSource,
+} from '../core/chat-agent-runtime-mode';
+import { auditLogService } from './audit-log.service';
 
 // 使用 ModelConfigOption 作为统一的模型配置类型，保留 ModelConfig 别名以兼容旧代码
 export type ModelConfig = ModelConfigOption;
@@ -18,6 +95,8 @@ export interface ChatTextOptions {
   cover?: boolean;  // 是否覆盖之前的内容
   autoSend?: boolean; // 是否自动发送
   newChatFirst?: boolean; // 发送前先新建会话
+  action?: string;
+  payload?: unknown;
 }
 
 export interface ChatTextMessage {
@@ -26,24 +105,333 @@ export interface ChatTextMessage {
   timestamp?: number;
 }
 
+export interface ChatServiceSessionProviderOptions {
+  readonly folderPath?: unknown;
+  readonly permissionMode?: unknown;
+  readonly permissionLevel?: unknown;
+  readonly approvalsReviewer?: unknown;
+  readonly approvalPolicy?: unknown;
+}
+
+export interface ChatServiceSessionIdentity {
+  readonly sessionId?: unknown;
+  readonly sessionType?: unknown;
+  readonly providerOptions?: ChatServiceSessionProviderOptions | null;
+  readonly inputState?: unknown;
+}
+
+export interface ChatServiceSessionOptionUpdate {
+  readonly optionId: string;
+  readonly value?: unknown;
+}
+
+export interface ChatServiceSessionProviderOptionsResult {
+  readonly optionGroups: readonly ChatSessionProviderOptionGroup[];
+  readonly newSessionOptions: Record<string, string>;
+}
+
+const AILY_AGENT_ISOLATION_OPTION_ID = 'isolation';
+const AILY_AGENT_REPOSITORY_OPTION_ID = 'repository';
+const AILY_AGENT_BRANCH_OPTION_ID = 'branch';
+const AILY_AGENT_WORKSPACE_ISOLATION_ID = 'workspace';
+const AILY_AGENT_WORKTREE_ISOLATION_ID = 'worktree';
+
+type ChatServiceProviderSelectionState = Record<string, string>;
+
+function normalizeChatSessionPermissionLevel(value: unknown): string | undefined {
+  const normalizedValue = typeof value === 'string'
+    ? value.trim()
+    : '';
+  return normalizedValue || undefined;
+}
+
+function normalizeChatSessionApprovalsReviewer(value: unknown): 'user' | 'auto_review' | undefined {
+  return value === 'auto_review' || value === 'user'
+    ? value
+    : undefined;
+}
+
+function normalizeChatSessionApprovalPolicy(value: unknown): 'on_request' | 'never' | undefined {
+  return value === 'never' || value === 'on_request'
+    ? value
+    : undefined;
+}
+
+function disposeSessionProviderOptionsSourceSubscription(
+  subscription: ChatSessionProviderOptionsSourceSubscription | null,
+): void {
+  if (!subscription) {
+    return;
+  }
+
+  if (typeof subscription === 'function') {
+    subscription();
+    return;
+  }
+
+  if (typeof subscription.unsubscribe === 'function') {
+    subscription.unsubscribe();
+    return;
+  }
+
+  subscription.dispose?.();
+}
+
 @Injectable({
   providedIn: 'root'
 })
 export class ChatService {
 
-  currentMode = 'agent'; // 默认为代理模式
+  private _currentModeId = DEFAULT_CHAT_RESOLVED_MODE.id;
+  private _currentResolvedMode: ChatResolvedMode = DEFAULT_CHAT_RESOLVED_MODE;
+  private _currentAgentRuntimeMode: ChatAgentRuntimeMode = 'unbound';
+  private _currentAgentRuntimeModeSource: ChatAgentRuntimeModeSource = 'fallback';
+  /**
+   * @deprecated Adapter for the currently attached chat view selection.
+   * Do not use this as session/model truth; read/write the target ChatSessionModel
+   * through ChatSessionModelStore/ChatSessionViewModelStore instead.
+   */
+  private _currentSessionId = '';
+  private _currentSessionPath = '';
+  private _currentSessionType: ChatSessionType = DEFAULT_CHAT_SESSION_TYPE;
+  private _currentSessionPermissionMode: ChatSessionPermissionMode = DEFAULT_CHAT_SESSION_PERMISSION_MODE;
+  private _currentSessionPermissionLevel: string | undefined;
+  private _currentSessionApprovalsReviewer: 'user' | 'auto_review' | undefined;
+  private _currentSessionApprovalPolicy: 'on_request' | 'never' | undefined;
+  private _hasBlankSessionShell = false;
+  private _newSessionFolderPath: string | undefined;
+  private _newSessionPermissionMode: ChatSessionPermissionMode | undefined;
+  private _currentSessionProviderSelections: ChatServiceProviderSelectionState = {};
+  private _newSessionProviderSelections: ChatServiceProviderSelectionState = {};
+  private readonly sessionInputStateChangedSubject = new Subject<void>();
+  private readonly sessionProviderOptionsChangedSubject = new Subject<void>();
+  private readonly sessionDisplayTitleChangedSubject = new Subject<void>();
+  private readonly sessionDurableTitleChangedSubject = new Subject<void>();
+  private boundSessionProviderOptionsSources: readonly ChatSessionProviderOptionsSourceBinding[] = [];
+  private boundSessionProviderOptionsSource: ChatSessionProviderOptionsSource | null = null;
+  private boundSessionProviderOptionsSourceSubscription: ChatSessionProviderOptionsSourceSubscription | null = null;
+  private sessionProviderOptionsSourceBindingGeneration = 0;
+  private readonly runtimeModeService: ChatRuntimeModeService;
+  private _currentSessionTitle = '';
+  private _currentSessionTitleSource: ChatSessionTitleSource = 'empty';
+  private _currentSessionTitleRevision = 0;
   currentModel: ModelConfig | null = null; // 当前模型，在构造函数中初始化
+  resolvedActiveModel: ModelConfig | null = null;
+  resolvedActiveDisplayModel: ModelConfig | null = null;
+  resolvedActiveModelBillingLabel: string | undefined;
+  private rateLimitAutoSwitchToAuto = false;
 
-  currentSessionId = '';
-  currentSessionTitle = '';
+  readonly sessionInputStateChanged$ = this.sessionInputStateChangedSubject.asObservable();
+  readonly sessionProviderOptionsChanged$ = this.sessionProviderOptionsChangedSubject.asObservable();
+  readonly sessionDisplayTitleChanged$ = this.sessionDisplayTitleChangedSubject.asObservable();
+  readonly sessionTitleChanged$ = this.sessionDisplayTitleChanged$;
+  readonly sessionDurableTitleChanged$ = this.sessionDurableTitleChangedSubject.asObservable();
+
+  get currentSessionId(): string {
+    return this._currentSessionId;
+  }
+
+  /**
+   * @deprecated Adapter for the currently attached chat view selection.
+   * Do not use this as session/model truth; attach/acquire the target model
+   * through ChatSessionModelStore/ChatSessionViewModelStore instead.
+   */
+  set currentSessionId(sessionId: string) {
+    const normalizedSessionId = typeof sessionId === 'string'
+      ? sessionId.trim()
+      : '';
+    if (this._currentSessionId === normalizedSessionId) {
+      return;
+    }
+
+    this._currentSessionProviderSelections = {};
+    this._currentSessionPermissionLevel = undefined;
+    this._currentSessionApprovalsReviewer = undefined;
+    this._currentSessionApprovalPolicy = undefined;
+    this._currentSessionId = normalizedSessionId;
+    if (normalizedSessionId.length > 0) {
+      this._hasBlankSessionShell = false;
+    }
+    this.notifySessionInputStateChanged();
+  }
+
+  get hasBlankSessionShell(): boolean {
+    return this._hasBlankSessionShell;
+  }
+
+  set hasBlankSessionShell(value: boolean) {
+    const normalizedValue = value === true;
+    if (this._hasBlankSessionShell === normalizedValue) {
+      return;
+    }
+
+    this._hasBlankSessionShell = normalizedValue;
+    this.notifySessionInputStateChanged();
+  }
+
+  get currentSessionTitle(): string {
+    return this._currentSessionTitle;
+  }
+
+  set currentSessionTitle(title: string) {
+    const normalizedTitle = typeof title === 'string' ? title : '';
+    this.setCurrentSessionTitle({
+      text: normalizedTitle,
+      source: normalizedTitle ? 'legacy-custom' : 'empty',
+    });
+  }
+
+  get currentSessionTitleSource(): ChatSessionTitleSource {
+    return this._currentSessionTitleSource;
+  }
+
+  get currentSessionTitleRevision(): number {
+    return this._currentSessionTitleRevision;
+  }
+
+  readCurrentSessionTitleCandidate(): ChatSessionTitleCandidate {
+    return {
+      text: this._currentSessionTitle,
+      source: this._currentSessionTitleSource,
+      revision: this._currentSessionTitleRevision,
+    };
+  }
+
+  setCurrentSessionTitle(candidate: {
+    readonly text?: unknown;
+    readonly source?: unknown;
+    readonly revision?: unknown;
+  }): void {
+    const previousDurableIdentity = this.buildDurableSessionTitleIdentity(
+      this._currentSessionTitle,
+      this._currentSessionTitleSource,
+    );
+    const normalizedTitle = typeof candidate.text === 'string' ? candidate.text : '';
+    const normalizedSource = normalizedTitle
+      ? normalizeChatSessionTitleSource(candidate.source)
+      : 'empty';
+    const effectiveSource = normalizedTitle && normalizedSource !== 'empty'
+      ? normalizedSource
+      : 'empty';
+    const nextRevision = typeof candidate.revision === 'number' && Number.isFinite(candidate.revision)
+      ? Math.max(this._currentSessionTitleRevision + 1, Math.floor(candidate.revision))
+      : this._currentSessionTitleRevision + 1;
+
+    if (this._currentSessionTitle === normalizedTitle
+      && this._currentSessionTitleSource === effectiveSource) {
+      return;
+    }
+
+    this._currentSessionTitle = normalizedTitle;
+    this._currentSessionTitleSource = effectiveSource;
+    this._currentSessionTitleRevision = nextRevision;
+    this.sessionDisplayTitleChangedSubject.next();
+
+    const nextDurableIdentity = this.buildDurableSessionTitleIdentity(
+      this._currentSessionTitle,
+      this._currentSessionTitleSource,
+    );
+    if (previousDurableIdentity !== nextDurableIdentity) {
+      this.sessionDurableTitleChangedSubject.next();
+    }
+  }
+
+  private buildDurableSessionTitleIdentity(title: string, source: ChatSessionTitleSource): string {
+    return title && isCustomSessionTitleSource(source)
+      ? `${source}\u0000${title}`
+      : '';
+  }
 
   // 记录当前会话创建时的项目路径，用于确保历史记录保存到正确位置
-  currentSessionPath = '';
+  get currentSessionPath(): string {
+    return this._currentSessionPath;
+  }
 
-  titleIsGenerating = false;
+  set currentSessionPath(path: string) {
+    const normalizedPath = typeof path === 'string'
+      ? path.trim()
+      : '';
+    if (this._currentSessionPath === normalizedPath) {
+      return;
+    }
 
-  /** SSE Worker 代理 — 将 fetch + JSON.stringify + SSE 解析移至 Worker 线程 */
-  readonly sseProxy = new ChatKernelProxy();
+    this._currentSessionPath = normalizedPath;
+    this.refreshBoundSessionProviderOptionsSource();
+    this.notifySessionInputStateChanged();
+  }
+
+  get currentSessionType(): ChatSessionType {
+    return this._currentSessionType;
+  }
+
+  set currentSessionType(sessionType: ChatSessionType) {
+    const normalizedSessionType = normalizeChatSessionType(sessionType);
+    if (this._currentSessionType === normalizedSessionType) {
+      return;
+    }
+
+    this.runtimeModeService.setCurrentSessionType(normalizedSessionType);
+    this._currentSessionType = normalizedSessionType;
+    this.refreshResolvedCurrentMode();
+    void this.activateBoundSessionProviderOptionsSourceForCurrentSessionType(undefined, true);
+    this.notifySessionInputStateChanged();
+  }
+
+  get currentSessionPermissionMode(): ChatSessionPermissionMode {
+    return this._currentSessionPermissionMode;
+  }
+
+  set currentSessionPermissionMode(permissionMode: ChatSessionPermissionMode) {
+    const normalizedPermissionMode = normalizeChatSessionPermissionMode(permissionMode);
+    if (this._currentSessionPermissionMode === normalizedPermissionMode) {
+      return;
+    }
+
+    this._currentSessionPermissionMode = normalizedPermissionMode;
+    this.notifySessionInputStateChanged();
+  }
+
+  get currentSessionPermissionLevel(): string | undefined {
+    return this._currentSessionPermissionLevel;
+  }
+
+  set currentSessionPermissionLevel(permissionLevel: string | undefined) {
+    const normalizedPermissionLevel = normalizeChatSessionPermissionLevel(permissionLevel);
+    if (this._currentSessionPermissionLevel === normalizedPermissionLevel) {
+      return;
+    }
+
+    this._currentSessionPermissionLevel = normalizedPermissionLevel;
+    this.notifySessionInputStateChanged();
+  }
+
+  get currentSessionApprovalsReviewer(): 'user' | 'auto_review' | undefined {
+    return this._currentSessionApprovalsReviewer;
+  }
+
+  set currentSessionApprovalsReviewer(approvalsReviewer: 'user' | 'auto_review' | undefined) {
+    const normalizedApprovalsReviewer = normalizeChatSessionApprovalsReviewer(approvalsReviewer);
+    if (this._currentSessionApprovalsReviewer === normalizedApprovalsReviewer) {
+      return;
+    }
+
+    this._currentSessionApprovalsReviewer = normalizedApprovalsReviewer;
+    this.notifySessionInputStateChanged();
+  }
+
+  get currentSessionApprovalPolicy(): 'on_request' | 'never' | undefined {
+    return this._currentSessionApprovalPolicy;
+  }
+
+  set currentSessionApprovalPolicy(approvalPolicy: 'on_request' | 'never' | undefined) {
+    const normalizedApprovalPolicy = normalizeChatSessionApprovalPolicy(approvalPolicy);
+    if (this._currentSessionApprovalPolicy === normalizedApprovalPolicy) {
+      return;
+    }
+
+    this._currentSessionApprovalPolicy = normalizedApprovalPolicy;
+    this.notifySessionInputStateChanged();
+  }
 
   /** 由 ChatEngineService 同步：是否正在等待 AI 响应 */
   isWaiting = false;
@@ -53,88 +441,291 @@ export class ChatService {
    * 消息被 ChatEngineService 消费后会立即清空，避免重新打开面板时重复自动发送。
    */
   private textSubject = new ReplaySubject<ChatTextMessage | null>(1);
+  private static instance: ChatService;
+  private static readonly maxRecentModelPresetIds = 5;
 
-  private async readHttpErrorBody(response: Response): Promise<any> {
-    try {
-      const rawText = await response.clone().text();
-      if (!rawText) {
-        return null;
-      }
-
-      try {
-        return JSON.parse(rawText);
-      } catch {
-        return { message: rawText, detail: rawText };
-      }
-    } catch {
-      return null;
-    }
+  /** ChatService 是否已挂载（供 UiService 等外部模块判断能否直连发送） */
+  static get isReady(): boolean {
+    return !!ChatService.instance;
   }
 
-  private extractErrorCode(errorBody: any): string | number | undefined {
-    if (!errorBody || typeof errorBody !== 'object') {
-      return undefined;
-    }
-
-    return errorBody.code ?? errorBody.error?.code ?? errorBody.data?.code;
-  }
-
-  private extractErrorMessage(errorBody: any): string {
-    if (!errorBody) {
-      return '';
-    }
-
-    if (typeof errorBody === 'string') {
-      return errorBody.trim();
-    }
-
-    if (typeof errorBody !== 'object') {
-      return '';
-    }
-
-    const messageCandidate =
-      errorBody.message ??
-      errorBody.msg ??
-      errorBody.detail ??
-      errorBody.error_description ??
-      errorBody.error?.message ??
-      errorBody.error;
-
-    return typeof messageCandidate === 'string' ? messageCandidate.trim() : '';
-  }
-
-  private createNormalizedHttpError(response: Response, errorBody: any, fallbackMessage?: string): any {
-    const detail = this.extractErrorMessage(errorBody);
-    const code = this.extractErrorCode(errorBody);
-
-    return {
-      name: 'HttpRequestError',
-      status: response.status,
-      statusCode: response.status,
-      code,
-      message: detail || fallbackMessage || `HTTP error! Status: ${response.status}`,
-      detail,
-      error: errorBody,
-      response: {
-        status: response.status,
-        statusText: response.statusText
-      }
-    };
-  }
 
   constructor(
     private http: HttpClient,
     private ailyChatConfigService: AilyChatConfigService,
+    private contextBudgetService: ContextBudgetService,
+    private languageModelsService: AilyChatLanguageModelsService,
+    runtimeModeService?: ChatRuntimeModeService,
   ) {
+    ChatService.instance = this;
+    this.runtimeModeService = runtimeModeService ?? new ChatRuntimeModeService(this.ailyChatConfigService);
+    this.runtimeModeService.setCurrentSessionType(this._currentSessionType);
+    this.runtimeModeService.runtimeModeCollection.onDidChange.subscribe(() => {
+      this.refreshResolvedCurrentMode();
+    });
     // 从配置加载AI聊天模式
     this.loadChatMode();
+    this.loadRateLimitAutoSwitchToAuto();
     // 从配置加载AI模型
     this.loadChatModel();
 
     // 订阅配置变更，当模型列表更新时重新加载
     this.ailyChatConfigService.configChanged$.subscribe(() => {
+      const savedModel = AilyHost.get().config.data?.aiChatModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+      console.info(
+        `[AilyChat][ModelState] configChanged -> loadChatModel savedModel=${savedModel?.model ?? ''}/${savedModel?.presetId ?? ''}/${savedModel?.name ?? ''}`,
+      );
       this.loadChatModel();
     });
+
+    this.ailyChatConfigService.modelCatalogChanged$.subscribe(() => {
+      console.info(
+        `[AilyChat][ModelState] modelCatalogChanged -> refreshCurrentModelRuntimeMetadata currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+      );
+      this.refreshCurrentModelRuntimeMetadata();
+      this.notifySessionInputStateChanged();
+    });
+  }
+
+  get selectedMode(): ChatSelectedMode {
+    return normalizeChatSelectedMode({
+      modeId: this._currentResolvedMode.kind,
+      customAgentTarget: this._currentResolvedMode.customAgentTarget,
+    });
+  }
+
+  get currentResolvedMode(): ChatResolvedMode {
+    return this._currentResolvedMode;
+  }
+
+  getCurrentSessionCustomAgentTarget(): ChatResolvedModeTarget | undefined {
+    return this.getCustomAgentTargetForSessionType(this.currentSessionType);
+  }
+
+  getCustomAgentTargetForSessionType(sessionType: unknown): ChatResolvedModeTarget | undefined {
+    return resolveChatSessionCustomAgentTarget(sessionType);
+  }
+
+  get runtimeModeCollection(): ChatRuntimeModeCollection {
+    return this.runtimeModeService.runtimeModeCollection;
+  }
+
+  get availableResolvedCustomModes(): readonly ChatResolvedMode[] {
+    return this.runtimeModeService.availableResolvedCustomModes;
+  }
+
+  get activeCustomModeSource(): ChatCustomModeSourceKind {
+    return this.runtimeModeService.activeCustomModeSource;
+  }
+
+  get activeSessionCustomizationProviderMetadata(): ChatSessionCustomizationProviderMetadata | undefined {
+    return this.runtimeModeService.activeSessionCustomizationProviderMetadata;
+  }
+
+  get activeSessionCustomizationAgentEntries(): readonly ChatSessionCustomizationAgentCatalogEntry[] {
+    return this.runtimeModeService.activeSessionCustomizationAgentEntries;
+  }
+
+  findResolvedModeById(modeId: string | null | undefined): ChatResolvedMode | undefined {
+    const normalizedModeId = typeof modeId === 'string'
+      ? modeId.trim()
+      : '';
+    if (!normalizedModeId) {
+      return undefined;
+    }
+
+    const builtinModeId = resolveChatSurfaceModeId(normalizedModeId);
+    if (builtinModeId) {
+      return createBuiltinChatResolvedMode(builtinModeId);
+    }
+
+    return this.runtimeModeService.findResolvedModeById(normalizedModeId)
+      ?? this.findRuntimeModeByCustomAgentTarget(normalizedModeId)
+      ?? (isPlanChatAgentTarget(normalizedModeId) ? createPlanChatResolvedMode() : undefined)
+      ?? (this._currentResolvedMode.id === normalizedModeId ? this._currentResolvedMode : undefined);
+  }
+
+  findResolvedModeByName(modeName: string | null | undefined): ChatResolvedMode | undefined {
+    const normalizedModeName = typeof modeName === 'string'
+      ? modeName.trim()
+      : '';
+    if (!normalizedModeName) {
+      return undefined;
+    }
+
+    return this.runtimeModeService.findResolvedModeByName(normalizedModeName)
+      ?? this.findRuntimeModeByCustomAgentTarget(normalizedModeName)
+      ?? (isPlanChatAgentTarget(normalizedModeName) ? createPlanChatResolvedMode() : undefined)
+      ?? (this._currentResolvedMode.name === normalizedModeName ? this._currentResolvedMode : undefined);
+  }
+
+  get currentMode(): ChatSurfaceModeId {
+    return this._currentResolvedMode.kind;
+  }
+
+  set currentMode(mode: ChatSurfaceModeId) {
+    this.setChatMode(mode, false);
+  }
+
+  get currentAgentRuntimeMode(): ChatAgentRuntimeMode {
+    return this._currentAgentRuntimeMode;
+  }
+
+  set currentAgentRuntimeMode(mode: ChatAgentRuntimeMode | string | null | undefined) {
+    this._currentAgentRuntimeMode = normalizeChatAgentRuntimeMode(mode, 'unbound');
+  }
+
+  get currentAgentRuntimeModeSource(): ChatAgentRuntimeModeSource {
+    return this._currentAgentRuntimeModeSource;
+  }
+
+  set currentAgentRuntimeModeSource(source: ChatAgentRuntimeModeSource | string | null | undefined) {
+    this._currentAgentRuntimeModeSource = normalizeChatAgentRuntimeModeSource(source, 'fallback');
+  }
+
+  setCurrentAgentRuntimeMode(
+    mode: ChatAgentRuntimeMode | string | null | undefined,
+    source: ChatAgentRuntimeModeSource | string | null | undefined = this._currentAgentRuntimeModeSource,
+  ): ChatAgentRuntimeMode {
+    const previousMode = this._currentAgentRuntimeMode;
+    const previousSource = this._currentAgentRuntimeModeSource;
+    const nextMode = normalizeChatAgentRuntimeMode(mode, 'unbound');
+    const nextSource = normalizeChatAgentRuntimeModeSource(source, 'fallback');
+    this._currentAgentRuntimeMode = nextMode;
+    this._currentAgentRuntimeModeSource = nextSource;
+    this.recordRuntimeModeTelemetry(previousMode, previousSource, nextMode, nextSource);
+    return this._currentAgentRuntimeMode;
+  }
+
+  private recordRuntimeModeTelemetry(
+    previousMode: ChatAgentRuntimeMode,
+    previousSource: ChatAgentRuntimeModeSource,
+    mode: ChatAgentRuntimeMode,
+    source: ChatAgentRuntimeModeSource,
+  ): void {
+    if (previousMode === mode && previousSource === source) {
+      return;
+    }
+
+    auditLogService.logSuccess({
+      operation: 'setRuntimeMode',
+      tool: 'chatRuntimeMode',
+      target: mode,
+      sessionId: this.currentSessionId || undefined,
+      riskLevel: 'low',
+      metadata: {
+        previousMode,
+        previousSource,
+        mode,
+        source,
+      },
+    });
+  }
+
+  get currentCustomAgentTarget(): string | undefined {
+    return this._currentResolvedMode.kind === 'agent'
+      ? this._currentResolvedMode.customAgentTarget
+      : undefined;
+  }
+
+  set currentCustomAgentTarget(agentTarget: string | undefined) {
+    const normalizedAgentTarget = normalizeAgentIdentifier(agentTarget);
+    if (!normalizedAgentTarget) {
+      if (this._currentResolvedMode.kind === 'agent' && !this._currentResolvedMode.isBuiltin) {
+        this.applyResolvedModeSelection(createBuiltinChatResolvedMode('agent'), false);
+      }
+      return;
+    }
+
+    this.applyResolvedModeSelection(
+      this.resolveCompatSelectionMode({
+        modeId: 'agent',
+        customAgentTarget: normalizedAgentTarget,
+      }),
+      false,
+    );
+  }
+
+  setCustomAgentProviderModes(agentModes: readonly unknown[] | PromiseLike<readonly unknown[]>): Promise<void> {
+    return this.runtimeModeService.setCustomAgentProviderModes(agentModes);
+  }
+
+  bindCustomAgentProviderSource(
+    agentModeSource: ChatCustomAgentProviderSource | PromiseLike<ChatCustomAgentProviderSource | null> | null,
+  ): Promise<void> {
+    return this.runtimeModeService.bindCustomAgentProviderSource(agentModeSource);
+  }
+
+  setSessionCustomizationItems(
+    items: readonly ChatSessionCustomizationItem[] | PromiseLike<readonly ChatSessionCustomizationItem[]>,
+  ): Promise<void> {
+    return this.runtimeModeService.setSessionCustomizationItems(items);
+  }
+
+  bindSessionCustomizationProvider(
+    providerBinding: ChatSessionCustomizationProviderBinding | PromiseLike<ChatSessionCustomizationProviderBinding | null> | null,
+  ): Promise<void> {
+    return this.runtimeModeService.bindSessionCustomizationProvider(providerBinding);
+  }
+
+  bindSessionCustomizationProviders(
+    providerBindings: readonly ChatSessionCustomizationProviderBinding[] | PromiseLike<readonly ChatSessionCustomizationProviderBinding[] | null> | null,
+  ): Promise<void> {
+    return this.runtimeModeService.bindSessionCustomizationProviders(providerBindings);
+  }
+
+  bindSessionCustomizationContentProvider(
+    contentProvider: ChatSessionCustomizationContentProvider | PromiseLike<ChatSessionCustomizationContentProvider | null> | null,
+  ): Promise<void> {
+    return this.runtimeModeService.bindSessionCustomizationContentProvider(contentProvider);
+  }
+
+  bindSessionProviderOptionsSource(
+    source: ChatSessionProviderOptionsSource | PromiseLike<ChatSessionProviderOptionsSource | null> | null,
+  ): Promise<void> {
+    const sourceBindingsPromise = Promise.resolve(source).then((resolvedSource) => {
+      return resolvedSource ? [{ source: resolvedSource }] : [];
+    });
+    return this.bindSessionProviderOptionsSources(sourceBindingsPromise);
+  }
+
+  bindSessionProviderOptionsSources(
+    sourceBindings: readonly ChatSessionProviderOptionsSourceBinding[] | PromiseLike<readonly ChatSessionProviderOptionsSourceBinding[] | null> | null,
+  ): Promise<void> {
+    const bindingGeneration = ++this.sessionProviderOptionsSourceBindingGeneration;
+    return Promise.resolve(sourceBindings)
+      .then((resolvedBindings) => {
+        if (bindingGeneration !== this.sessionProviderOptionsSourceBindingGeneration) {
+          return;
+        }
+
+        this.boundSessionProviderOptionsSources = Array.isArray(resolvedBindings)
+          ? resolvedBindings.filter((entry): entry is ChatSessionProviderOptionsSourceBinding => !!entry?.source)
+          : [];
+        return this.activateBoundSessionProviderOptionsSourceForCurrentSessionType(bindingGeneration, true);
+      })
+      .catch(() => undefined);
+  }
+
+  refreshSessionProviderOptionsSources(): Promise<void> {
+    return Promise.resolve(this.refreshBoundSessionProviderOptionsSource())
+      .then(() => undefined);
+  }
+
+  setChatMode(mode: ChatSurfaceModeId | string, storeSelection = true): void {
+    const normalizedMode = typeof mode === 'string'
+      ? mode.trim()
+      : '';
+    if (!normalizedMode) {
+      return;
+    }
+
+    const resolvedMode = this.findResolvedModeById(normalizedMode)
+      ?? this.findResolvedModeByName(normalizedMode)
+      ?? this.findResolvedModeById('agent')
+      ?? DEFAULT_CHAT_RESOLVED_MODE;
+
+    this.applyResolvedModeSelection(resolvedMode, storeSelection);
   }
 
   /**
@@ -142,18 +733,857 @@ export class ChatService {
    */
   private loadChatMode(): void {
     const config = AilyHost.get().config;
-    if (config.data?.aiChatMode) {
-      this.currentMode = config.data.aiChatMode;
+    const persistedMode = config.data?.aiChatMode;
+    const persistedCustomAgentTarget = normalizeAgentIdentifier(config.data?.aiChatCustomAgentTarget);
+    if (persistedMode !== undefined) {
+      const normalizedMode = normalizeChatSurfaceModeId(persistedMode);
+      if (normalizedMode === 'agent' && persistedCustomAgentTarget) {
+        this.setSelectedMode({
+          modeId: 'agent',
+          customAgentTarget: persistedCustomAgentTarget,
+        }, { persist: false });
+      } else {
+        this.setChatMode(normalizedMode, false);
+      }
+
+      if (config.data && (persistedMode !== normalizedMode || config.data.aiChatCustomAgentTarget !== persistedCustomAgentTarget)) {
+        config.data.aiChatMode = normalizedMode;
+        config.data.aiChatCustomAgentTarget = normalizedMode === 'agent'
+          ? persistedCustomAgentTarget || undefined
+          : undefined;
+        config.save?.();
+      }
     }
+  }
+
+  private loadRateLimitAutoSwitchToAuto(): void {
+    this.rateLimitAutoSwitchToAuto = AilyHost.get().config.data?.aiChatRateLimitAutoSwitchToAuto === true;
   }
 
   /**
    * 保存AI聊天模式到配置
    */
-  saveChatMode(mode: 'agent' | 'ask'): void {
-    this.currentMode = mode;
+  saveChatMode(mode: ChatSurfaceModeId): void {
+    this.setChatMode(mode, true);
+  }
+
+  saveSelectedMode(selectedMode: { readonly modeId?: unknown; readonly customAgentTarget?: unknown }): void {
+    this.setSelectedMode(selectedMode);
+  }
+
+  setSelectedMode(
+    selectedMode: { readonly modeId?: unknown; readonly customAgentTarget?: unknown },
+    options?: { persist?: boolean },
+  ): void {
+    const nextSelectedMode = normalizeChatSelectedMode(selectedMode, this.selectedMode);
+    this.applyResolvedModeSelection(
+      this.resolveCompatSelectionMode(nextSelectedMode),
+      options?.persist !== false,
+    );
+  }
+
+  saveCurrentCustomAgentTarget(agentTarget: string | null | undefined): void {
+    const normalizedAgentTarget = normalizeAgentIdentifier(agentTarget);
+    this.setSelectedMode(
+      normalizedAgentTarget
+        ? { modeId: 'agent', customAgentTarget: normalizedAgentTarget }
+        : { modeId: 'agent' },
+    );
+  }
+
+  setCurrentSessionPermissionMode(permissionMode: unknown): void {
+    this.currentSessionPermissionMode = normalizeChatSessionPermissionMode(permissionMode);
+  }
+
+  setCurrentSessionPermissionLevel(permissionLevel: unknown): void {
+    this.currentSessionPermissionLevel = normalizeChatSessionPermissionLevel(permissionLevel);
+  }
+
+  setCurrentSessionApprovalsReviewer(approvalsReviewer: unknown): void {
+    this.currentSessionApprovalsReviewer = normalizeChatSessionApprovalsReviewer(approvalsReviewer);
+  }
+
+  setCurrentSessionApprovalPolicy(approvalPolicy: unknown): void {
+    this.currentSessionApprovalPolicy = normalizeChatSessionApprovalPolicy(approvalPolicy);
+  }
+
+  setCurrentSessionType(sessionType: unknown): void {
+    this.currentSessionType = normalizeChatSessionType(sessionType);
+  }
+
+  getCurrentSessionProviderOptions(): { folderPath: string; permissionMode: ChatSessionPermissionMode; permissionLevel?: string; approvalsReviewer?: 'user' | 'auto_review'; approvalPolicy?: 'on_request' | 'never' } {
+    return {
+      folderPath: this.currentSessionPath,
+      permissionMode: this.currentSessionPermissionMode,
+      ...(this.currentSessionPermissionLevel ? { permissionLevel: this.currentSessionPermissionLevel } : {}),
+      ...(this.currentSessionApprovalsReviewer ? { approvalsReviewer: this.currentSessionApprovalsReviewer } : {}),
+      ...(this.currentSessionApprovalPolicy ? { approvalPolicy: this.currentSessionApprovalPolicy } : {}),
+    };
+  }
+
+  getNewSessionProviderOptions(
+    fallback?: ChatServiceSessionProviderOptions | null,
+  ): { folderPath: string; permissionMode: ChatSessionPermissionMode; permissionLevel?: string; approvalsReviewer?: 'user' | 'auto_review'; approvalPolicy?: 'on_request' | 'never' } {
+    const normalizedFallback = this.normalizeProviderOptionsInput(fallback);
+    return normalizeHostSessionProviderOptions({
+      folderPath: this._newSessionFolderPath,
+      permissionMode: this._newSessionPermissionMode,
+    }, normalizedFallback);
+  }
+
+  buildCurrentSessionProviderOptionGroups(
+    previousInputState?: ChatSessionInputState | null,
+    fallback?: ChatServiceSessionProviderOptions | null,
+  ): readonly ChatSessionProviderOptionGroup[] {
+    const normalizedFallback = this.normalizeProviderOptionsInput(fallback);
+    const providerOptions = normalizeHostSessionProviderOptions(
+      this.getCurrentSessionProviderOptions(),
+      normalizedFallback,
+    );
+    return this.buildProviderOptionGroupsForSessionType(
+      this.currentSessionType,
+      previousInputState,
+      providerOptions,
+      this._currentSessionProviderSelections,
+      'current',
+    );
+  }
+
+  buildNewSessionProviderOptionGroups(
+    previousInputState?: ChatSessionInputState | null,
+    fallback?: ChatServiceSessionProviderOptions | null,
+  ): readonly ChatSessionProviderOptionGroup[] {
+    const providerOptions = this.getNewSessionProviderOptions(fallback);
+    return this.buildProviderOptionGroupsForSessionType(
+      this.currentSessionType,
+      previousInputState,
+      providerOptions,
+      this._newSessionProviderSelections,
+      'new',
+    );
+  }
+
+  provideSessionProviderOptions(
+    previousInputState?: ChatSessionInputState | null,
+    fallback?: ChatServiceSessionProviderOptions | null,
+  ): ChatServiceSessionProviderOptionsResult {
+    const providerOptions = this.getNewSessionProviderOptions(fallback);
+    return {
+      optionGroups: this.buildNewSessionProviderOptionGroups(previousInputState, fallback),
+      newSessionOptions: this.buildNewSessionOptionSelections(this.currentSessionType, providerOptions, this._newSessionProviderSelections),
+    };
+  }
+
+  applySessionProviderOptionUpdates(
+    updates: ReadonlyArray<ChatServiceSessionOptionUpdate>,
+    options?: {
+      readonly sessionId?: unknown;
+      readonly applyToCurrentSession?: boolean;
+      readonly fallbackProviderOptions?: ChatServiceSessionProviderOptions | null;
+    },
+  ): { folderPath: string; permissionMode: ChatSessionPermissionMode } {
+    let nextProviderOptions = this.getNewSessionProviderOptions(options?.fallbackProviderOptions);
+    let nextNewSelections = { ...this._newSessionProviderSelections };
+    let nextCurrentSelections = { ...this._currentSessionProviderSelections };
+    let hadProviderOptionsChange = false;
+    let hadNewSelectionChange = false;
+    let shouldApplyToCurrentSession = options?.applyToCurrentSession !== false;
+
+    if (options?.sessionId !== undefined) {
+      shouldApplyToCurrentSession = shouldApplyToCurrentSession && this.isCurrentSessionTarget(options.sessionId);
+    }
+
+    for (const update of updates) {
+      const optionId = typeof update.optionId === 'string'
+        ? update.optionId.trim()
+        : '';
+      if (!optionId) {
+        continue;
+      }
+
+      if (optionId === HOST_SESSION_PERMISSION_MODE_OPTION_ID) {
+        if (typeof update.value !== 'string' || update.value.trim().length === 0) {
+          continue;
+        }
+
+        const permissionMode = normalizeChatSessionPermissionMode(update.value, nextProviderOptions.permissionMode);
+        if (permissionMode !== nextProviderOptions.permissionMode) {
+          nextProviderOptions = {
+            ...nextProviderOptions,
+            permissionMode,
+          };
+          hadProviderOptionsChange = true;
+        }
+        continue;
+      }
+
+      if ((optionId === HOST_SESSION_FOLDER_OPTION_ID || optionId === AILY_AGENT_REPOSITORY_OPTION_ID) && typeof update.value === 'string') {
+        const folderPath = update.value.trim();
+        if (folderPath !== nextProviderOptions.folderPath) {
+          nextProviderOptions = {
+            ...nextProviderOptions,
+            folderPath,
+          };
+          hadProviderOptionsChange = true;
+        }
+
+        if (nextNewSelections[AILY_AGENT_REPOSITORY_OPTION_ID] !== folderPath) {
+          nextNewSelections = {
+            ...nextNewSelections,
+            [AILY_AGENT_REPOSITORY_OPTION_ID]: folderPath,
+          };
+          hadNewSelectionChange = true;
+        }
+
+        if (shouldApplyToCurrentSession && nextCurrentSelections[AILY_AGENT_REPOSITORY_OPTION_ID] !== folderPath) {
+          nextCurrentSelections = {
+            ...nextCurrentSelections,
+            [AILY_AGENT_REPOSITORY_OPTION_ID]: folderPath,
+          };
+        }
+        continue;
+      }
+
+      if (typeof update.value !== 'string' || update.value.trim().length === 0) {
+        continue;
+      }
+
+      const selectionValue = update.value.trim();
+      if (nextNewSelections[optionId] !== selectionValue) {
+        nextNewSelections = {
+          ...nextNewSelections,
+          [optionId]: selectionValue,
+        };
+        hadNewSelectionChange = true;
+      }
+
+      if (shouldApplyToCurrentSession && nextCurrentSelections[optionId] !== selectionValue) {
+        nextCurrentSelections = {
+          ...nextCurrentSelections,
+          [optionId]: selectionValue,
+        };
+      }
+    }
+
+    if (hadProviderOptionsChange || hadNewSelectionChange) {
+      this._newSessionFolderPath = nextProviderOptions.folderPath;
+      this._newSessionPermissionMode = nextProviderOptions.permissionMode;
+      this._newSessionProviderSelections = nextNewSelections;
+      this.sessionProviderOptionsChangedSubject.next();
+    }
+
+    if (shouldApplyToCurrentSession) {
+      const hadCurrentSelectionChange = !this.areProviderSelectionsEqual(this._currentSessionProviderSelections, nextCurrentSelections);
+      if (hadProviderOptionsChange || hadCurrentSelectionChange) {
+        this._currentSessionProviderSelections = nextCurrentSelections;
+        if (hadProviderOptionsChange) {
+          this.applySessionProviderOptions(nextProviderOptions);
+        } else {
+          this.notifySessionInputStateChanged();
+        }
+      }
+    }
+
+    return nextProviderOptions;
+  }
+
+  applySessionProviderOptions(
+    providerOptions?: ChatServiceSessionProviderOptions | null,
+  ): { folderPath: string; permissionMode: ChatSessionPermissionMode; permissionLevel?: string; approvalsReviewer?: 'user' | 'auto_review'; approvalPolicy?: 'on_request' | 'never' } {
+    const folderPath = typeof providerOptions?.folderPath === 'string'
+      ? providerOptions.folderPath.trim()
+      : '';
+    const permissionMode = normalizeChatSessionPermissionMode(
+      providerOptions?.permissionMode,
+      this.currentSessionPermissionMode,
+    );
+    const permissionLevel = normalizeChatSessionPermissionLevel(
+      providerOptions?.permissionLevel,
+    ) ?? this.currentSessionPermissionLevel;
+    const approvalsReviewer = normalizeChatSessionApprovalsReviewer(providerOptions?.approvalsReviewer)
+      ?? this.currentSessionApprovalsReviewer
+      ?? this.ailyChatConfigService.getLexApprovalsReviewer?.();
+    const approvalPolicy = normalizeChatSessionApprovalPolicy(providerOptions?.approvalPolicy)
+      ?? this.currentSessionApprovalPolicy
+      ?? this.ailyChatConfigService.getLexApprovalPolicy?.();
+
+    this.currentSessionPath = folderPath;
+    this.currentSessionPermissionMode = permissionMode;
+    this.currentSessionPermissionLevel = permissionLevel;
+    this.currentSessionApprovalsReviewer = approvalsReviewer;
+    this.currentSessionApprovalPolicy = approvalPolicy;
+
+    return {
+      folderPath,
+      permissionMode,
+      ...(permissionLevel ? { permissionLevel } : {}),
+      ...(approvalsReviewer ? { approvalsReviewer } : {}),
+      ...(approvalPolicy ? { approvalPolicy } : {}),
+    };
+  }
+
+  applySessionIdentity(identity?: ChatServiceSessionIdentity | null): void {
+    if (!identity) {
+      return;
+    }
+
+    if (identity.sessionId !== undefined) {
+      this.currentSessionId = typeof identity.sessionId === 'string'
+        ? identity.sessionId.trim()
+        : '';
+    }
+
+    if (identity.sessionType !== undefined) {
+      this.currentSessionType = normalizeChatSessionType(identity.sessionType, this.currentSessionType);
+    }
+
+    let normalizedProviderOptions: { folderPath: string; permissionMode: ChatSessionPermissionMode; permissionLevel?: string; approvalsReviewer?: 'user' | 'auto_review'; approvalPolicy?: 'on_request' | 'never' } | undefined;
+    if (identity.providerOptions !== undefined) {
+      normalizedProviderOptions = this.applySessionProviderOptions(identity.providerOptions);
+    }
+
+    if (identity.inputState !== undefined) {
+      this.applyCurrentSessionProviderStateFromInputState(identity.inputState, normalizedProviderOptions);
+    }
+  }
+
+  clearCurrentCustomAgentTarget(): void {
+    this.currentCustomAgentTarget = undefined;
+  }
+
+  private isCurrentSessionTarget(sessionId: unknown): boolean {
+    if (sessionId === undefined || sessionId === null) {
+      return true;
+    }
+
+    return (typeof sessionId === 'string' ? sessionId.trim() : '') === this.currentSessionId;
+  }
+
+  private normalizeProviderOptionsInput(
+    providerOptions?: ChatServiceSessionProviderOptions | null,
+  ): { folderPath?: string; permissionMode?: ChatSessionPermissionMode; permissionLevel?: string; approvalsReviewer?: 'user' | 'auto_review'; approvalPolicy?: 'on_request' | 'never' } {
+    return {
+      ...(typeof providerOptions?.folderPath === 'string'
+        ? { folderPath: providerOptions.folderPath.trim() }
+        : {}),
+      ...(providerOptions?.permissionMode !== undefined
+        ? { permissionMode: normalizeChatSessionPermissionMode(providerOptions.permissionMode, DEFAULT_CHAT_SESSION_PERMISSION_MODE) }
+        : {}),
+      ...(providerOptions?.permissionLevel !== undefined
+        ? { permissionLevel: normalizeChatSessionPermissionLevel(providerOptions.permissionLevel) }
+        : {}),
+      ...(providerOptions?.approvalsReviewer !== undefined
+        ? { approvalsReviewer: normalizeChatSessionApprovalsReviewer(providerOptions.approvalsReviewer) }
+        : {}),
+      ...(providerOptions?.approvalPolicy !== undefined
+        ? { approvalPolicy: normalizeChatSessionApprovalPolicy(providerOptions.approvalPolicy) }
+        : {}),
+    };
+  }
+
+  private buildProviderOptionGroupsForSessionType(
+    sessionType: ChatSessionType,
+    previousInputState: ChatSessionInputState | null | undefined,
+    providerOptions: { folderPath: string; permissionMode: ChatSessionPermissionMode; permissionLevel?: string; approvalsReviewer?: 'user' | 'auto_review'; approvalPolicy?: 'on_request' | 'never' },
+    selectionState: ChatServiceProviderSelectionState,
+    scope: 'current' | 'new',
+  ): readonly ChatSessionProviderOptionGroup[] {
+    if (sessionType === 'aily-agent') {
+      return this.buildAilyAgentProviderOptionGroups(
+        previousInputState,
+        providerOptions,
+        selectionState,
+        scope,
+        this.readSessionProviderOptionsSourceSnapshot(sessionType),
+      );
+    }
+
+    return resolveHostSessionProviderOptionGroups(previousInputState, providerOptions);
+  }
+
+  private buildNewSessionOptionSelections(
+    sessionType: ChatSessionType,
+    providerOptions: { folderPath: string; permissionMode: ChatSessionPermissionMode },
+    selectionState: ChatServiceProviderSelectionState,
+  ): Record<string, string> {
+    if (sessionType === 'aily-agent') {
+      const sourceSnapshot = this.readSessionProviderOptionsSourceSnapshot(sessionType);
+      const sourceRepository = this.readSourceRepository(
+        sourceSnapshot,
+        providerOptions.folderPath || this.readSelectionStateValue(selectionState, AILY_AGENT_REPOSITORY_OPTION_ID),
+      );
+      const newSessionOptions: Record<string, string> = {
+        [AILY_AGENT_ISOLATION_OPTION_ID]: this.readSelectionStateValue(selectionState, AILY_AGENT_ISOLATION_OPTION_ID)
+          ?? AILY_AGENT_WORKSPACE_ISOLATION_ID,
+      };
+
+      const repository = this.readSelectionStateValue(selectionState, AILY_AGENT_REPOSITORY_OPTION_ID)
+        || sourceRepository?.path
+        || sourceSnapshot?.repositories[0]?.path
+        || providerOptions.folderPath;
+      if (repository) {
+        newSessionOptions[AILY_AGENT_REPOSITORY_OPTION_ID] = repository;
+      }
+
+      const branch = sourceRepository?.kind === 'folder'
+        ? undefined
+        : this.readSelectionStateValue(selectionState, AILY_AGENT_BRANCH_OPTION_ID)
+          || sourceRepository?.currentBranch
+          || sourceSnapshot?.repositories.find((repositoryEntry) => repositoryEntry.kind === 'repository')?.currentBranch;
+      if (branch) {
+        newSessionOptions[AILY_AGENT_BRANCH_OPTION_ID] = branch;
+      }
+
+      return newSessionOptions;
+    }
+
+    return {
+      [HOST_SESSION_PERMISSION_MODE_OPTION_ID]: providerOptions.permissionMode,
+      ...(providerOptions.folderPath
+        ? { [HOST_SESSION_FOLDER_OPTION_ID]: providerOptions.folderPath }
+        : {}),
+    };
+  }
+
+  private buildAilyAgentProviderOptionGroups(
+    previousInputState: ChatSessionInputState | null | undefined,
+    providerOptions: { folderPath: string; permissionMode: ChatSessionPermissionMode },
+    selectionState: ChatServiceProviderSelectionState,
+    scope: 'current' | 'new',
+    sourceSnapshot: ChatSessionProviderOptionsSourceSnapshot | null,
+  ): readonly ChatSessionProviderOptionGroup[] {
+    const storedGroups = normalizeChatSessionProviderOptionGroups(previousInputState);
+    const storedGroupById = new Map(storedGroups.map((group) => [group.id, group]));
+    const groups: ChatSessionProviderOptionGroup[] = [];
+    const supportsWorktree = sourceSnapshot?.supportsWorktree !== false;
+    const isCurrentScope = scope === 'current';
+
+    const isolationGroup = storedGroupById.get(AILY_AGENT_ISOLATION_OPTION_ID);
+    const isolationItems: readonly ChatSessionProviderOptionItem[] = supportsWorktree
+      ? [
+        { id: AILY_AGENT_WORKSPACE_ISOLATION_ID, name: 'Workspace', icon: this.createProviderOptionIcon('folder') },
+        { id: AILY_AGENT_WORKTREE_ISOLATION_ID, name: 'Worktree', icon: this.createProviderOptionIcon('worktree') },
+      ]
+      : [
+        { id: AILY_AGENT_WORKSPACE_ISOLATION_ID, name: 'Workspace', icon: this.createProviderOptionIcon('folder') },
+      ];
+    const isolationSelectedId = this.readSelectionStateValue(selectionState, AILY_AGENT_ISOLATION_OPTION_ID)
+      ?? this.readSelectedOptionIdFromGroup(isolationGroup)
+      ?? AILY_AGENT_WORKSPACE_ISOLATION_ID;
+    const isolationSelected = isolationItems.find((item) => item.id === isolationSelectedId) ?? isolationItems[0];
+    groups.push(this.withSelectedDefaultMetadata({
+      id: AILY_AGENT_ISOLATION_OPTION_ID,
+      name: isolationGroup?.name ?? 'Isolation',
+      ...(isolationGroup?.description ? { description: isolationGroup.description } : { description: 'Pick Isolation Mode' }),
+      ...(isolationGroup?.icon ? { icon: isolationGroup.icon } : {}),
+      items: isolationItems,
+      selected: isCurrentScope ? this.withLockedMetadata(isolationSelected) : isolationSelected,
+    }, scope));
+
+    const repositoryGroup = storedGroupById.get(AILY_AGENT_REPOSITORY_OPTION_ID);
+    const sourceRepositories = sourceSnapshot?.repositories ?? [];
+    const repositorySelectedId = this.readSelectionStateValue(selectionState, AILY_AGENT_REPOSITORY_OPTION_ID)
+      || this.readSelectedOptionIdFromGroup(repositoryGroup)
+      || this.readSourceRepository(sourceSnapshot, providerOptions.folderPath)?.path
+      || sourceRepositories[0]?.path;
+    const sourceRepository = this.readSourceRepository(sourceSnapshot, repositorySelectedId);
+    const repositorySelectedBase = repositorySelectedId
+      ? (sourceRepository
+        ? this.createSourceRepositoryOptionItem(sourceRepository)
+        : repositoryGroup?.items.find((item) => item.id === repositorySelectedId)
+          ? this.withFallbackIcon(repositoryGroup.items.find((item) => item.id === repositorySelectedId)!, 'folder')
+          : this.createPathOptionItem(repositorySelectedId, 'folder'))
+      : (repositoryGroup?.selected ? this.withFallbackIcon(repositoryGroup.selected, 'folder') : undefined);
+    const repositorySelected = repositorySelectedBase
+      ? (isCurrentScope ? this.withLockedMetadata(repositorySelectedBase) : repositorySelectedBase)
+      : undefined;
+    const repositoryItems = isCurrentScope
+      ? (repositorySelected ? [repositorySelected] : [])
+      : sourceRepositories.length > 0
+      ? sourceRepositories.map((repository) => this.createSourceRepositoryOptionItem(repository))
+      : repositoryGroup?.items.length
+      ? repositoryGroup.items.map((item) => this.withFallbackIcon(item, 'folder'))
+      : (repositorySelectedId ? [this.createPathOptionItem(repositorySelectedId, 'folder')] : []);
+    groups.push(this.withSelectedDefaultMetadata({
+      id: AILY_AGENT_REPOSITORY_OPTION_ID,
+      name: repositoryGroup?.name ?? 'Folder',
+      ...(repositoryGroup?.description
+        ? { description: repositoryGroup.description }
+        : { description: 'Pick Folder' }),
+      ...(repositoryGroup?.icon ? { icon: repositoryGroup.icon } : { icon: this.createProviderOptionIcon('folder') }),
+      ...(!isCurrentScope && (repositoryGroup?.commands?.length || sourceSnapshot?.repositoryCommands?.length)
+        ? { commands: repositoryGroup?.commands?.length ? repositoryGroup.commands : sourceSnapshot?.repositoryCommands }
+        : {}),
+      items: repositoryItems,
+      ...(repositorySelected ? { selected: repositorySelected } : {}),
+    }, scope));
+
+    const branchGroup = storedGroupById.get(AILY_AGENT_BRANCH_OPTION_ID);
+    const branchSelectedId = sourceRepository?.kind === 'folder'
+      ? undefined
+      : this.readSelectionStateValue(selectionState, AILY_AGENT_BRANCH_OPTION_ID)
+        ?? this.readSelectedOptionIdFromGroup(branchGroup)
+        ?? sourceRepository?.currentBranch;
+    const sourceBranchItems = sourceRepository?.kind === 'repository'
+      ? sourceRepository.branches
+      : [];
+    const branchSelectedBase = branchSelectedId
+      ? (sourceBranchItems.includes(branchSelectedId)
+        ? this.createNamedOptionItem(branchSelectedId, branchSelectedId, 'git-branch')
+        : branchGroup?.items.find((item) => item.id === branchSelectedId)
+          ? this.withFallbackIcon(branchGroup.items.find((item) => item.id === branchSelectedId)!, 'git-branch')
+          : this.createNamedOptionItem(branchSelectedId, branchSelectedId, 'git-branch'))
+      : (branchGroup?.selected ? this.withFallbackIcon(branchGroup.selected, 'git-branch') : undefined);
+    const branchSelected = branchSelectedBase
+      ? (isCurrentScope ? this.withLockedMetadata(branchSelectedBase) : branchSelectedBase)
+      : undefined;
+    if ((isCurrentScope || ((sourceRepository?.kind === 'repository' || !sourceRepository) && (branchGroup || branchSelectedId || sourceBranchItems.length > 0))) && supportsWorktree) {
+      const branchItems = isCurrentScope
+        ? (branchSelected ? [branchSelected] : [])
+        : sourceBranchItems.length > 0
+        ? sourceBranchItems.map((branch) => this.createNamedOptionItem(branch, branch, 'git-branch'))
+        : branchGroup?.items.length
+        ? branchGroup.items.map((item) => this.withFallbackIcon(item, 'git-branch'))
+        : (branchSelectedId ? [this.createNamedOptionItem(branchSelectedId, branchSelectedId, 'git-branch')] : []);
+      groups.push(this.withSelectedDefaultMetadata({
+        id: AILY_AGENT_BRANCH_OPTION_ID,
+        name: branchGroup?.name ?? 'Branch',
+        ...(branchGroup?.description ? { description: branchGroup.description } : { description: 'Pick Branch' }),
+        ...(branchGroup?.icon ? { icon: branchGroup.icon } : { icon: this.createProviderOptionIcon('git-branch') }),
+        ...(!isCurrentScope && branchGroup?.commands?.length ? { commands: branchGroup.commands } : {}),
+        when: branchGroup?.when ?? `chatSessionOption.${AILY_AGENT_ISOLATION_OPTION_ID} == '${AILY_AGENT_WORKTREE_ISOLATION_ID}'`,
+        items: branchItems,
+        ...(branchSelected ? { selected: branchSelected } : {}),
+      }, scope));
+    }
+
+    return groups;
+  }
+
+  private withSelectedDefaultMetadata(
+    group: ChatSessionProviderOptionGroup,
+    scope: 'current' | 'new',
+  ): ChatSessionProviderOptionGroup {
+    if (scope !== 'new' || !group.selected) {
+      return group;
+    }
+
+    const items = group.items.map((item) => ({
+      ...item,
+      ...(item.id === group.selected?.id ? { default: true } : {}),
+    }));
+    const selected = items.find((item) => item.id === group.selected?.id) ?? { ...group.selected, default: true };
+
+    return {
+      ...group,
+      items,
+      selected,
+    };
+  }
+
+  private withFallbackIcon(
+    item: ChatSessionProviderOptionItem,
+    iconId: string,
+  ): ChatSessionProviderOptionItem {
+    if (item.icon) {
+      return item;
+    }
+
+    return {
+      ...item,
+      icon: this.createProviderOptionIcon(iconId),
+    };
+  }
+
+  private withLockedMetadata(
+    item: ChatSessionProviderOptionItem,
+  ): ChatSessionProviderOptionItem {
+    if (item.locked) {
+      return item;
+    }
+
+    return {
+      ...item,
+      locked: true,
+    };
+  }
+
+  private createPathOptionItem(
+    path: string,
+    iconId: string,
+  ): ChatSessionProviderOptionItem {
+    return this.createNamedOptionItem(path, this.readPathLabel(path), iconId);
+  }
+
+  private createSourceRepositoryOptionItem(
+    repository: ChatSessionProviderOptionsSourceRepository,
+  ): ChatSessionProviderOptionItem {
+    return this.createNamedOptionItem(
+      repository.path,
+      repository.label,
+      repository.kind === 'repository' ? 'repo' : 'folder',
+    );
+  }
+
+  private createNamedOptionItem(
+    id: string,
+    name: string,
+    iconId: string,
+  ): ChatSessionProviderOptionItem {
+    return {
+      id,
+      name,
+      icon: this.createProviderOptionIcon(iconId),
+    };
+  }
+
+  private createProviderOptionIcon(iconId: string): ChatSessionProviderOptionIcon {
+    return { id: iconId };
+  }
+
+  private readPathLabel(path: string): string {
+    const normalizedPath = path.replace(/\\/g, '/').replace(/\/+$/, '').trim();
+    if (!normalizedPath) {
+      return path;
+    }
+
+    const segments = normalizedPath.split('/').filter(Boolean);
+    return segments[segments.length - 1] || normalizedPath;
+  }
+
+  private readSelectedOptionIdFromGroup(
+    group: ChatSessionProviderOptionGroup | undefined,
+  ): string | undefined {
+    const selectedId = typeof group?.selected?.id === 'string'
+      ? group.selected.id.trim()
+      : '';
+    if (selectedId) {
+      return selectedId;
+    }
+
+    const firstItemId = typeof group?.items?.[0]?.id === 'string'
+      ? group.items[0].id.trim()
+      : '';
+    return firstItemId || undefined;
+  }
+
+  private readSelectionStateValue(
+    selectionState: ChatServiceProviderSelectionState,
+    optionId: string,
+  ): string | undefined {
+    const value = selectionState[optionId];
+    return typeof value === 'string' && value.trim()
+      ? value.trim()
+      : undefined;
+  }
+
+  private areProviderSelectionsEqual(
+    left: ChatServiceProviderSelectionState,
+    right: ChatServiceProviderSelectionState,
+  ): boolean {
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) {
+      return false;
+    }
+
+    return leftKeys.every((key) => left[key] === right[key]);
+  }
+
+  private applyCurrentSessionProviderStateFromInputState(
+    inputState?: unknown,
+    fallbackProviderOptions?: ChatServiceSessionProviderOptions | null,
+  ): void {
+    const groups = normalizeChatSessionProviderOptionGroups(inputState);
+    const nextSelections = this.readSelectionStateFromGroups(groups);
+    const normalizedProviderOptions = resolveHostSessionProviderOptionsFromInputState(
+      inputState,
+      this.normalizeProviderOptionsInput(fallbackProviderOptions),
+    );
+    const hadSelectionChange = !this.areProviderSelectionsEqual(this._currentSessionProviderSelections, nextSelections);
+    const hadProviderOptionsChange = this.currentSessionPath !== (normalizedProviderOptions.folderPath ?? '')
+      || this.currentSessionPermissionMode !== normalizedProviderOptions.permissionMode;
+
+    this._currentSessionProviderSelections = nextSelections;
+
+    if (hadProviderOptionsChange) {
+      this.applySessionProviderOptions(normalizedProviderOptions);
+      return;
+    }
+
+    if (hadSelectionChange) {
+      this.notifySessionInputStateChanged();
+    }
+  }
+
+  private readSelectionStateFromGroups(
+    groups: readonly ChatSessionProviderOptionGroup[],
+  ): ChatServiceProviderSelectionState {
+    const selectionState: ChatServiceProviderSelectionState = {};
+
+    for (const group of groups) {
+      const selectedId = this.readSelectedOptionIdFromGroup(group);
+      if (!selectedId) {
+        continue;
+      }
+
+      selectionState[group.id] = selectedId;
+    }
+
+    return selectionState;
+  }
+
+  private activateBoundSessionProviderOptionsSourceForCurrentSessionType(
+    bindingGeneration = this.sessionProviderOptionsSourceBindingGeneration,
+    forceRefresh = false,
+  ): Promise<void> | void {
+    if (bindingGeneration !== this.sessionProviderOptionsSourceBindingGeneration) {
+      return;
+    }
+
+    const nextBinding = this.selectSessionProviderOptionsSourceBindingForCurrentSessionType();
+    const nextSource = nextBinding?.source ?? null;
+    const didSourceChange = this.boundSessionProviderOptionsSource !== nextSource;
+
+    if (didSourceChange) {
+      this.detachSessionProviderOptionsSource();
+      this.boundSessionProviderOptionsSource = nextSource;
+    }
+
+    if (didSourceChange && nextSource?.onDidChange) {
+      const subscription = nextSource.onDidChange(() => {
+        this.sessionProviderOptionsChangedSubject.next();
+      });
+      if (bindingGeneration === this.sessionProviderOptionsSourceBindingGeneration) {
+        this.boundSessionProviderOptionsSourceSubscription = subscription ?? null;
+      } else {
+        disposeSessionProviderOptionsSourceSubscription(subscription ?? null);
+      }
+    }
+
+    if (forceRefresh) {
+      return this.refreshBoundSessionProviderOptionsSource();
+    }
+
+    if (didSourceChange) {
+      this.sessionProviderOptionsChangedSubject.next();
+    }
+  }
+
+  private selectSessionProviderOptionsSourceBindingForCurrentSessionType(): ChatSessionProviderOptionsSourceBinding | null {
+    const exactMatch = this.boundSessionProviderOptionsSources.find((entry) => {
+      const normalizedSessionType = typeof entry.sessionType === 'string'
+        ? entry.sessionType.trim()
+        : '';
+      return normalizedSessionType === this.currentSessionType;
+    });
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    return this.boundSessionProviderOptionsSources.find((entry) => !entry.sessionType) ?? null;
+  }
+
+  private detachSessionProviderOptionsSource(): void {
+    disposeSessionProviderOptionsSourceSubscription(this.boundSessionProviderOptionsSourceSubscription);
+    this.boundSessionProviderOptionsSourceSubscription = null;
+    this.boundSessionProviderOptionsSource = null;
+  }
+
+  private refreshBoundSessionProviderOptionsSource(): Promise<void> | void {
+    const source = this.boundSessionProviderOptionsSource;
+    if (!source?.refresh) {
+      return;
+    }
+
+    return Promise.resolve(source.refresh(this.createSessionProviderOptionsSourceContext()))
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+
+  private createSessionProviderOptionsSourceContext(): ChatSessionProviderOptionsSourceContext {
+    return {
+      workspacePath: this.currentSessionPath || AilyHost.get().project.currentProjectPath || null,
+      projectPath: AilyHost.get().project.currentProjectPath || null,
+      projectRootPath: AilyHost.get().project.projectRootPath || null,
+    };
+  }
+
+  private readSessionProviderOptionsSourceSnapshot(
+    sessionType: ChatSessionType,
+  ): ChatSessionProviderOptionsSourceSnapshot | null {
+    if (sessionType !== this.currentSessionType) {
+      return null;
+    }
+
+    return this.boundSessionProviderOptionsSource?.getSnapshot() ?? null;
+  }
+
+  private readSourceRepository(
+    sourceSnapshot: ChatSessionProviderOptionsSourceSnapshot | null,
+    repositoryPath?: string,
+  ): ChatSessionProviderOptionsSourceRepository | undefined {
+    if (!sourceSnapshot?.repositories.length) {
+      return undefined;
+    }
+
+    const normalizedRepositoryPath = typeof repositoryPath === 'string'
+      ? repositoryPath.trim()
+      : '';
+    if (normalizedRepositoryPath) {
+      const exactMatch = sourceSnapshot.repositories.find((repository) => this.isSameOrEquivalentPath(repository.path, normalizedRepositoryPath));
+      if (exactMatch) {
+        return exactMatch;
+      }
+
+      const containingMatches = sourceSnapshot.repositories
+        .filter((repository) => this.isParentPathOf(repository.path, normalizedRepositoryPath))
+        .sort((left, right) => right.path.length - left.path.length);
+      if (containingMatches.length > 0) {
+        return containingMatches[0];
+      }
+
+      return sourceSnapshot.repositories[0];
+    }
+
+    return sourceSnapshot.repositories[0];
+  }
+
+  private isSameOrEquivalentPath(left: string, right: string): boolean {
+    return this.normalizeProviderPath(left) === this.normalizeProviderPath(right);
+  }
+
+  private isParentPathOf(parent: string, child: string): boolean {
+    const normalizedParent = this.normalizeProviderPath(parent);
+    const normalizedChild = this.normalizeProviderPath(child);
+    if (!normalizedParent || !normalizedChild) {
+      return false;
+    }
+
+    return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+  }
+
+  private normalizeProviderPath(path: string): string {
+    const normalizedPath = path.replace(/\\/g, '/').replace(/\/+$/, '').trim();
+    if (!normalizedPath) {
+      return '';
+    }
+
+    return (AilyHost.get().platform?.isWindows ?? false)
+      ? normalizedPath.toLowerCase()
+      : normalizedPath;
+  }
+
+  getRateLimitAutoSwitchToAutoEnabled(): boolean {
+    return this.rateLimitAutoSwitchToAuto;
+  }
+
+  setRateLimitAutoSwitchToAuto(enabled: boolean): void {
+    this.rateLimitAutoSwitchToAuto = enabled === true;
     const config = AilyHost.get().config;
-    if (config.data) config.data.aiChatMode = mode;
+    if (config.data) {
+      config.data.aiChatRateLimitAutoSwitchToAuto = this.rateLimitAutoSwitchToAuto;
+    }
     config.save?.();
   }
 
@@ -163,34 +1593,481 @@ export class ChatService {
   private loadChatModel(): void {
     const savedModel = AilyHost.get().config.data?.aiChatModel;
     const enabledModels = this.ailyChatConfigService.getEnabledModels();
+    const savedModelInfo = savedModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+
+    console.info(
+      `[AilyChat][ModelState] loadChatModel start savedModel=${savedModelInfo?.model ?? ''}/${savedModelInfo?.presetId ?? ''}/${savedModelInfo?.name ?? ''} enabledCount=${enabledModels.length}`,
+    );
 
     // 重置当前模型，确保每次都重新验证
     this.currentModel = null;
 
-    if (savedModel && enabledModels.length > 0) {
-      // 尝试找到匹配的模型配置（从已启用的模型中查找）
-      const foundModel = enabledModels.find(m => m.model === savedModel.model);
-      if (foundModel) {
-        this.currentModel = foundModel;
-      }
+    if (savedModel) {
+      this.currentModel = this.ailyChatConfigService.resolveSavedModel(savedModel);
     }
 
-    // 如果没有找到保存的模型或保存的模型不可用（如自定义模型但未启用自定义API KEY），使用第一个已启用的模型
+    // 如果没有保存模型或保存的模型不可用，优先回退到内置 Auto preset。
+    if (!this.currentModel) {
+      this.currentModel = this.ailyChatConfigService.resolveSelectablePresetModel(
+        this.ailyChatConfigService.getDefaultModelPresetId(),
+      );
+    }
+
+    // 如果 Auto preset 也不可用，再回退到第一个已启用的具体模型。
     if (!this.currentModel && enabledModels.length > 0) {
       this.currentModel = enabledModels[0];
-      // 更新保存的模型配置
-      this.saveChatModel(this.currentModel);
     }
+
+    this.currentModel = this.applyPersistedLanguageModelConfiguration(this.currentModel);
+    console.info(
+      `[AilyChat][ModelState] loadChatModel resolved currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
+
+    this.clearResolvedActiveModel();
+
+    if (this.currentModel) {
+      // 更新保存的模型配置，但不要把启动恢复路径计入 recent。
+      this.saveChatModel(this.currentModel, { rememberRecent: false });
+      return;
+    }
+
+    this.contextBudgetService.updateModelContextSize(this.currentModel);
   }
 
   /**
    * 保存AI模型到配置
    */
-  saveChatModel(model: ModelConfig): void {
-    this.currentModel = model;
+  saveChatModel(model: ModelConfig, options?: { rememberRecent?: boolean }): boolean {
+    const normalizedModel = this.resolveSelectableRuntimeModel(model);
+    console.info('[AilyChat][ModelSwitch] saveChatModel', {
+      incomingModel: model,
+      normalizedModel,
+      rememberRecent: options?.rememberRecent !== false,
+    });
+    console.info(
+      `[AilyChat][ModelSwitch] saveChatModel scalar incoming=${model?.model ?? ''}/${model?.presetId ?? ''}/${model?.name ?? ''} normalized=${normalizedModel?.model ?? ''}/${normalizedModel?.presetId ?? ''}/${normalizedModel?.name ?? ''} rememberRecent=${options?.rememberRecent !== false}`,
+    );
+    if (!normalizedModel) {
+      console.info('[AilyChat][ModelSwitch] saveChatModel rejected model because normalization returned null', {
+        incomingModel: model,
+      });
+      return false;
+    }
+
+    this.currentModel = this.applyPersistedLanguageModelConfiguration(normalizedModel);
+    console.info('[AilyChat][ModelSwitch] saveChatModel applied currentModel', {
+      currentModel: this.currentModel,
+    });
+    console.info(
+      `[AilyChat][ModelSwitch] saveChatModel applied scalar currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
+    this.clearResolvedActiveModel();
+    this.contextBudgetService.updateModelContextSize(this.currentModel);
     const config = AilyHost.get().config;
-    if (config.data) config.data.aiChatModel = model;
+    if (config.data) {
+      config.data.aiChatModel = this.buildPersistedChatModel(this.currentModel);
+      if (options?.rememberRecent !== false) {
+        config.data.aiChatRecentModelPresetIds = this.buildNextRecentModelPresetIds(this.currentModel);
+      }
+    }
+    const persistedModel = config.data?.aiChatModel as { model?: string; presetId?: string; name?: string } | null | undefined;
+    console.info(
+      `[AilyChat][ModelSwitch] saveChatModel persisted scalar aiChatModel=${persistedModel?.model ?? ''}/${persistedModel?.presetId ?? ''}/${persistedModel?.name ?? ''}`,
+    );
     config.save?.();
+    return true;
+  }
+
+  getRecentModelPresetIds(): string[] {
+    const rawRecentPresetIds = AilyHost.get().config.data?.aiChatRecentModelPresetIds;
+    if (!Array.isArray(rawRecentPresetIds)) {
+      return [];
+    }
+
+    return [...new Set(rawRecentPresetIds
+      .filter((presetId): presetId is string => typeof presetId === 'string')
+      .map(presetId => presetId.trim())
+      .filter(presetId => presetId.length > 0 && presetId !== this.ailyChatConfigService.getDefaultModelPresetId())
+      .filter((presetId) => {
+        const preset = this.ailyChatConfigService.getModelPresetById(presetId);
+        return !preset || preset.enabled;
+      }))]
+      .slice(0, ChatService.maxRecentModelPresetIds);
+  }
+
+  getPinnedModelIds(): string[] {
+    const rawPinnedModelIds = AilyHost.get().config.data?.aiChatPinnedModelIds;
+    if (!Array.isArray(rawPinnedModelIds)) {
+      return [];
+    }
+
+    const defaultPresetId = this.ailyChatConfigService.getDefaultModelPresetId();
+    return [...new Set(rawPinnedModelIds
+      .filter((modelId): modelId is string => typeof modelId === 'string')
+      .map(modelId => modelId.trim())
+      .filter(modelId => modelId.length > 0 && modelId !== defaultPresetId)
+      .filter((modelId) => {
+        const preset = this.ailyChatConfigService.getModelPresetById(modelId);
+        return !preset || preset.enabled;
+      }))];
+  }
+
+  pinModelId(modelId: string): void {
+    const normalizedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+    if (!normalizedModelId || normalizedModelId === this.ailyChatConfigService.getDefaultModelPresetId()) {
+      return;
+    }
+
+    const pinnedModelIds = this.getPinnedModelIds();
+    if (pinnedModelIds.includes(normalizedModelId)) {
+      return;
+    }
+
+    const config = AilyHost.get().config;
+    if (config.data) {
+      config.data.aiChatPinnedModelIds = [...pinnedModelIds, normalizedModelId];
+    }
+    config.save?.();
+  }
+
+  unpinModelId(modelId: string): void {
+    const normalizedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+    if (!normalizedModelId) {
+      return;
+    }
+
+    const config = AilyHost.get().config;
+    if (config.data) {
+      config.data.aiChatPinnedModelIds = this.getPinnedModelIds().filter((id) => id !== normalizedModelId);
+    }
+    config.save?.();
+  }
+
+  isModelPinned(modelId: string): boolean {
+    const normalizedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+    return !!normalizedModelId && this.getPinnedModelIds().includes(normalizedModelId);
+  }
+
+  private buildNextRecentModelPresetIds(model: ModelConfig | null): string[] {
+    const presetId = typeof model?.presetId === 'string' ? model.presetId.trim() : '';
+    if (!presetId || presetId === this.ailyChatConfigService.getDefaultModelPresetId()) {
+      return this.getRecentModelPresetIds();
+    }
+
+    return [presetId, ...this.getRecentModelPresetIds().filter(id => id !== presetId)]
+      .slice(0, ChatService.maxRecentModelPresetIds);
+  }
+
+  private refreshCurrentModelRuntimeMetadata(): void {
+    console.info(
+      `[AilyChat][ModelState] refreshCurrentModelRuntimeMetadata start currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
+    if (this.currentModel) {
+      const refreshedModel = this.ailyChatConfigService.resolveSavedModel(this.currentModel);
+      if (refreshedModel) {
+        this.currentModel = this.applyPersistedLanguageModelConfiguration(refreshedModel);
+        console.info(
+          `[AilyChat][ModelState] refreshCurrentModelRuntimeMetadata resolved currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+        );
+        this.refreshResolvedActiveModelRuntimeMetadata();
+        this.contextBudgetService.updateModelContextSize(this.currentModel);
+        return;
+      }
+    }
+
+    this.currentModel = this.ailyChatConfigService.resolveSelectablePresetModel(
+      this.ailyChatConfigService.getDefaultModelPresetId(),
+    );
+    console.info(
+      `[AilyChat][ModelState] refreshCurrentModelRuntimeMetadata fallback currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
+    );
+    this.refreshResolvedActiveModelRuntimeMetadata();
+    this.contextBudgetService.updateModelContextSize(this.currentModel);
+  }
+
+  private resolveSelectableRuntimeModel(model: ModelConfig | null | undefined): ModelConfig | null {
+    if (!model) {
+      return null;
+    }
+
+    const explicitPresetId = typeof model.presetId === 'string' ? model.presetId.trim() : '';
+    const implicitPresetId = !explicitPresetId && typeof model.model === 'string'
+      ? this.ailyChatConfigService.getModelPresetById(model.model)?.id ?? ''
+      : '';
+    const presetId = explicitPresetId || implicitPresetId;
+    if (presetId) {
+      const selectablePresetModel = this.ailyChatConfigService.resolveSelectablePresetModel(presetId);
+      if (!selectablePresetModel) {
+        return null;
+      }
+
+      return this.ailyChatConfigService.normalizeRuntimeModel({
+        ...selectablePresetModel,
+        reasoningEffort: model.reasoningEffort ?? selectablePresetModel.reasoningEffort,
+      });
+    }
+
+    return this.ailyChatConfigService.normalizeRuntimeModel(model);
+  }
+
+  private refreshResolvedCurrentMode(): void {
+    const builtinModeId = resolveChatSurfaceModeId(this._currentModeId);
+    if (builtinModeId) {
+      this.updateResolvedModeSelection(
+        this.constrainResolvedModeToCurrentSession(createBuiltinChatResolvedMode(builtinModeId)),
+      );
+      return;
+    }
+
+    const previousCustomAgentTarget = this._currentResolvedMode.kind === 'agent'
+      ? this._currentResolvedMode.customAgentTarget
+      : undefined;
+    const normalizedCurrentModeId = typeof this._currentModeId === 'string'
+      ? this._currentModeId.trim()
+      : '';
+    const resolvedMode = this.findRuntimeModeByCustomAgentTarget(previousCustomAgentTarget)
+      ?? this.findRuntimeModeByCustomAgentTarget(normalizedCurrentModeId)
+      ?? (normalizedCurrentModeId ? this.runtimeModeService.findResolvedModeById(normalizedCurrentModeId) : undefined)
+      ?? (normalizedCurrentModeId ? this.runtimeModeService.findResolvedModeByName(normalizedCurrentModeId) : undefined);
+    if (resolvedMode) {
+      this.updateResolvedModeSelection(this.constrainResolvedModeToCurrentSession(resolvedMode));
+      return;
+    }
+
+    this.updateResolvedModeSelection(createBuiltinChatResolvedMode('agent'));
+  }
+
+  private applyResolvedModeSelection(mode: ChatResolvedMode, storeSelection: boolean): void {
+    const constrainedMode = this.constrainResolvedModeToCurrentSession(mode);
+    this.updateResolvedModeSelection(constrainedMode);
+
+    if (!storeSelection) {
+      return;
+    }
+
+    const config = AilyHost.get().config;
+    if (config.data) {
+      config.data.aiChatMode = mode.kind;
+      config.data.aiChatCustomAgentTarget = mode.kind === 'agent' && mode.isBuiltin === false
+        ? normalizeAgentIdentifier(mode.customAgentTarget ?? mode.name) || undefined
+        : undefined;
+    }
+    config.save?.();
+  }
+
+  private constrainResolvedModeToCurrentSession(mode: ChatResolvedMode): ChatResolvedMode {
+    const currentSessionCustomAgentTarget = this.getCurrentSessionCustomAgentTarget();
+    if (!currentSessionCustomAgentTarget) {
+      return mode;
+    }
+
+    if (mode.isBuiltin) {
+      return mode.kind === 'agent'
+        ? mode
+        : createBuiltinChatResolvedMode('agent');
+    }
+
+    return mode.target === undefined
+      || mode.target === 'undefined'
+      || mode.target === currentSessionCustomAgentTarget
+      ? mode
+      : createBuiltinChatResolvedMode('agent');
+  }
+
+  private resolveCompatSelectionMode(selectedMode: ChatSelectedMode): ChatResolvedMode {
+    if (selectedMode.modeId !== 'agent' || !selectedMode.customAgentTarget) {
+      return createBuiltinChatResolvedMode(selectedMode.modeId);
+    }
+
+    return this.findRuntimeModeByCustomAgentTarget(selectedMode.customAgentTarget)
+      ?? this.findResolvedModeByName(selectedMode.customAgentTarget)
+      ?? resolveChatCurrentMode(selectedMode, {
+        resolveAgentModeDefinition: (agentId) => this.runtimeModeService.getRuntimeAgentModeDefinition(agentId),
+      });
+  }
+
+  private findRuntimeModeByCustomAgentTarget(agentTarget: string | null | undefined): ChatResolvedMode | undefined {
+    const normalizedAgentTarget = normalizeAgentIdentifier(agentTarget);
+    if (!normalizedAgentTarget) {
+      return undefined;
+    }
+
+    return this.runtimeModeService.findResolvedModeByCustomAgentTarget(normalizedAgentTarget);
+  }
+
+  private updateResolvedModeSelection(mode: ChatResolvedMode): void {
+    const previousInputMode = createChatSessionInputModeFromResolvedMode(this._currentResolvedMode);
+    const nextInputMode = createChatSessionInputModeFromResolvedMode(mode);
+    const didChange = !areChatSessionInputModesEqual(previousInputMode, nextInputMode);
+
+    this._currentModeId = mode.id;
+    this._currentResolvedMode = mode;
+
+    if (didChange) {
+      this.notifySessionInputStateChanged();
+    }
+  }
+
+  private notifySessionInputStateChanged(): void {
+    this.sessionInputStateChangedSubject.next();
+  }
+
+  getActiveDisplayModel(): ModelConfig | null {
+    return this.resolvedActiveDisplayModel ?? this.resolvedActiveModel ?? this.currentModel;
+  }
+
+  clearResolvedActiveModel(): void {
+    this.resolvedActiveModel = null;
+    this.resolvedActiveDisplayModel = null;
+    this.resolvedActiveModelBillingLabel = undefined;
+  }
+
+  private isLegacyContextInfoSession(sessionId: string): boolean {
+    return !!sessionId && !sessionId.startsWith('lex-');
+  }
+
+  async syncResolvedActiveModelFromContextInfo(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      this.clearResolvedActiveModel();
+      return;
+    }
+
+    // /api/v1/context_info only understands legacy stateful sessions stored on the service.
+    // Lex stateless sessions use lex-* ids and already stream context budget + response model metadata.
+    if (!this.isLegacyContextInfoSession(sessionId)) {
+      this.clearResolvedActiveModel();
+      return;
+    }
+
+    const contextInfo = await this.fetchContextInfo(sessionId);
+    if (!contextInfo) {
+      return;
+    }
+
+    this.resolvedActiveModel = this.ailyChatConfigService.resolveRuntimeModelFromServerModelName(
+      contextInfo.model_name,
+      { contextWindowTokens: contextInfo.model_context_limit },
+    );
+    this.resolvedActiveDisplayModel = this.ailyChatConfigService.resolvePresetDisplayModel(contextInfo.model_preset_id)
+      ?? this.resolvedActiveModel;
+    this.resolvedActiveModelBillingLabel = undefined;
+
+    if (this.resolvedActiveModel) {
+      this.contextBudgetService.updateModelContextSize(this.resolvedActiveModel);
+      return;
+    }
+
+    if (typeof contextInfo.model_context_limit === 'number' && contextInfo.model_context_limit > 0) {
+      this.contextBudgetService.maxContextTokens = contextInfo.model_context_limit;
+    }
+  }
+
+  private applyPersistedLanguageModelConfiguration(model: ModelConfig | null): ModelConfig | null {
+    if (!model) {
+      return null;
+    }
+
+    const modelId = typeof model.presetId === 'string' && model.presetId.trim()
+      ? model.presetId.trim()
+      : typeof model.model === 'string'
+        ? model.model.trim()
+        : '';
+    if (!modelId) {
+      return this.ailyChatConfigService.normalizeRuntimeModel(model);
+    }
+
+    const configuredReasoningEffort = this.languageModelsService.getModelConfiguration(modelId)?.['reasoningEffort'];
+    if (typeof configuredReasoningEffort !== 'string') {
+      return this.ailyChatConfigService.normalizeRuntimeModel(model);
+    }
+
+    return this.ailyChatConfigService.normalizeRuntimeModel({
+      ...model,
+      reasoningEffort: configuredReasoningEffort as ModelConfig['reasoningEffort'],
+    });
+  }
+
+  private buildPersistedChatModel(model: ModelConfig | null): ModelConfig | null {
+    if (!model) {
+      return null;
+    }
+
+    const { reasoningEffort: _reasoningEffort, ...persistedModel } = model;
+    return persistedModel as ModelConfig;
+  }
+
+  async syncResolvedActiveModelAfterSuccessfulTurn(
+    sessionId: string,
+    turnResponses: readonly TurnResponseTurn[],
+  ): Promise<void> {
+    if (!sessionId) {
+      this.clearResolvedActiveModel();
+      return;
+    }
+
+    if (this.isLegacyContextInfoSession(sessionId)) {
+      await this.syncResolvedActiveModelFromContextInfo(sessionId);
+      return;
+    }
+
+    this.syncResolvedActiveModelFromTurnResponses(turnResponses);
+  }
+
+  private syncResolvedActiveModelFromTurnResponses(turnResponses: readonly TurnResponseTurn[]): void {
+    for (let index = turnResponses.length - 1; index >= 0; index -= 1) {
+      const modelName = getTurnResponseResolvedModelName(turnResponses[index]);
+      const presetId = getTurnResponseResolvedPresetId(turnResponses[index]);
+      const modelBillingLabel = getTurnResponseResolvedModelBillingLabel(turnResponses[index]);
+      if (!modelName && !modelBillingLabel && !presetId) {
+        continue;
+      }
+
+      this.resolvedActiveModelBillingLabel = modelBillingLabel;
+      this.resolvedActiveDisplayModel = presetId
+        ? this.ailyChatConfigService.resolvePresetDisplayModel(presetId)
+        : null;
+
+      if (!modelName) {
+        this.resolvedActiveModel = null;
+        if (this.resolvedActiveDisplayModel) {
+          return;
+        }
+        continue;
+      }
+
+      this.resolvedActiveModel = this.ailyChatConfigService.resolveRuntimeModelFromServerModelName(modelName);
+      if (!this.resolvedActiveDisplayModel) {
+        this.resolvedActiveDisplayModel = this.resolvedActiveModel;
+      }
+      if (this.resolvedActiveModel) {
+        this.contextBudgetService.updateModelContextSize(this.resolvedActiveModel);
+        return;
+      }
+
+      if (this.resolvedActiveDisplayModel) {
+        return;
+      }
+    }
+
+    this.clearResolvedActiveModel();
+  }
+
+  private refreshResolvedActiveModelRuntimeMetadata(): void {
+    if (!this.resolvedActiveModel) {
+      return;
+    }
+
+    this.resolvedActiveModel = this.ailyChatConfigService.resolveRuntimeModelFromServerModelName(
+      this.resolvedActiveModel.model || this.resolvedActiveModel.name,
+      { contextWindowTokens: this.resolvedActiveModel.contextWindowTokens },
+    );
+
+    if (this.resolvedActiveDisplayModel?.presetId) {
+      this.resolvedActiveDisplayModel = this.ailyChatConfigService.resolvePresetDisplayModel(this.resolvedActiveDisplayModel.presetId);
+      return;
+    }
+
+    this.resolvedActiveDisplayModel = this.resolvedActiveModel;
   }
 
 
@@ -235,12 +2112,37 @@ export class ChatService {
     this.textSubject.next(null);
   }
 
-  startSession(mode: string, tools: MCPTool[] | null = null, maxCount?: number, customllmConfig?: any, selectModel?: string, customSessionId?: string): Observable<any> {
+  /**
+   * 静态方法，提供全局访问
+   * @param text 要发送的文本内容
+   * @param options 发送选项，包含 sender、type、cover 等参数
+   */
+  static sendToChat(text: string, options?: ChatTextOptions): void {
+    if (ChatService.instance) {
+      ChatService.instance.sendTextToChat(text, options);
+    } else {
+      console.warn('ChatService尚未初始化');
+    }
+  }
+
+  startSession(
+    mode: string,
+    tools: MCPTool[] | null = null,
+    maxCount?: number,
+    customllmConfig?: any,
+    selectModel?: string,
+    customSessionId?: string,
+    modelPresetId?: string,
+    reasoningEffort?: ModelConfig['reasoningEffort'],
+  ): Observable<any> {
     const payload: any = {
       session_id: customSessionId || this.currentSessionId,
       tools: tools || [],
       mode
     };
+
+    const effectiveModelPresetId = modelPresetId ?? this.currentModel?.presetId;
+    const effectiveReasoningEffort = reasoningEffort ?? this.currentModel?.reasoningEffort;
 
     // 如果提供了 maxCount 参数，添加到请求中
     if (maxCount !== undefined && maxCount > 0) {
@@ -257,18 +2159,27 @@ export class ChatService {
       payload.select_model = selectModel;
     }
 
+    if (effectiveModelPresetId) {
+      payload.model_preset_id = effectiveModelPresetId;
+    }
+
+    if (effectiveReasoningEffort) {
+      payload.reasoning_effort = effectiveReasoningEffort;
+    }
+
     return this.http.post(ChatAPI.startSession, payload);
   }
 
   /**
-   * 获取服务端准确的系统提示词 / 工具定义 token 数和模型上下文窗口大小。
-   * 用于前端 ContextBudgetService 精确计算可用 token 预算。
+    * 获取旧版有状态会话的系统提示词 / 工具定义 token 数和模型上下文窗口大小。
+    * Lex 无状态会话不走这里，而是依赖流式 context_budget / responseModel 元数据。
    */
   async fetchContextInfo(sessionId: string): Promise<{
     system_tokens: number;
     tools_tokens: number;
     model_context_limit: number;
     model_name?: string;
+    model_preset_id?: string;
   } | null> {
     try {
       const token = await AilyHost.get().auth.getToken!();
@@ -287,582 +2198,6 @@ export class ChatService {
     return this.http.post(`${ChatAPI.closeSession}/${sessionId}`, {});
   }
 
-  // 本地调试用：模拟服务端流式返回的字符串数据
-  debugStream(sessionId: string = 'downey-test'): Observable<any> {
-    return new Observable(observer => {
-      let aborted = false;
-
-      const thinking = `
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.862986Z", "content": "<think>\u7528\u6237", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.863805Z", "content": "\u8981\u6c42", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.864465Z", "content": "\\"", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.866282Z", "content": "\u6e32\u67d3", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.867863Z", "content": "\u6d41\u7a0b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.869158Z", "content": "\u56fe", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.870102Z", "content": "\u6d4b\u8bd5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.870590Z", "content": "\\"\uff0c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.871155Z", "content": "\u8fd9\u662f\u4e00\u4e2a", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:01.871718Z", "content": "\u6d4b\u8bd5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.080280Z", "content": "\u8bf7\u6c42", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.081117Z", "content": "\uff0c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.081892Z", "content": "\u60f3", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.083477Z", "content": "\u770b\u770b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.085274Z", "content": "\u6d41\u7a0b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.450694Z", "content": "\u56fe", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.451908Z", "content": "\u6e32\u67d3", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.453456Z", "content": "\u6548\u679c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.793694Z", "content": "\u3002", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.794670Z", "content": "\u8fd9", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.795590Z", "content": "\u4e0d\u9700\u8981", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.797254Z", "content": "\u6267\u884c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.799429Z", "content": "\u4efb\u4f55", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.800124Z", "content": "\u5177\u4f53\u7684", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.800915Z", "content": "\u5de5\u7a0b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.801702Z", "content": "\u4efb\u52a1", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.802513Z", "content": "\uff0c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.803142Z", "content": "\u4e5f\u4e0d", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.804690Z", "content": "\u9700\u8981", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.806506Z", "content": "\u4f7f\u7528", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.836511Z", "content": "\u5de5\u5177", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.837150Z", "content": "\u3002", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:02.993466Z", "content": "\u6211\u5e94\u8be5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.855674Z", "content": "\u76f4\u63a5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.856587Z", "content": "\u8f93\u51fa", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.857478Z", "content": "\u4e00\u4e2a", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.859465Z", "content": "\u7b80\u5355\u7684", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.861708Z", "content": "\u6d41\u7a0b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.862542Z", "content": "\u56fe", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.863239Z", "content": "\u793a\u4f8b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.863901Z", "content": "\u6765", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.864521Z", "content": "\u5c55\u793a", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.865165Z", "content": "\u6e32\u67d3", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:03.865823Z", "content": "\u6548\u679c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.207133Z", "content": "\u3002\\n\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.207926Z", "content": "\u6839\u636e", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.208543Z", "content": "\u6307\u5bfc", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.210213Z", "content": "\u539f\u5219", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.212085Z", "content": "\uff0c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.212722Z", "content": "\u6211\u5e94\u8be5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.213414Z", "content": "\u7b80\u6d01", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:04.214136Z", "content": "\u3001", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.343760Z", "content": "\u76f4\u63a5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.344453Z", "content": "\uff0c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.346415Z", "content": "\u4e0d\u9700\u8981", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.348056Z", "content": "\u8fc7\u591a\u7684", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.376601Z", "content": "\u89e3\u91ca", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.386191Z", "content": "\u3002", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.387115Z", "content": "\u76f4\u63a5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.694118Z", "content": "\u8f93\u51fa", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.694789Z", "content": "\u4e00\u4e2a", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.695412Z", "content": "\u6d41\u7a0b", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.697009Z", "content": "\u56fe", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.698790Z", "content": "\u5373\u53ef", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.699440Z", "content": "\u3002", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.700118Z", "content": "</think>", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      `;
-      
-      const mermaid = `{"type": "connected", "session_id": "2eaf05cb-e537-4639-8372-088b927c9d3b"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.700241Z", "content": "\`\`\`", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.700817Z", "content": "aily", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.701529Z", "content": "-", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.703277Z", "content": "mer", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.703843Z", "content": "maid", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.705310Z", "content": "\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.705981Z", "content": "flow", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.706533Z", "content": "chart", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.707068Z", "content": " TD", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.707778Z", "content": "\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.708332Z", "content": " ", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.709632Z", "content": " A", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.711406Z", "content": "[", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.713304Z", "content": "\u5f00\u59cb", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.836274Z", "content": "]", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.836949Z", "content": " -->", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.837831Z", "content": " B", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.839311Z", "content": "[", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.850558Z", "content": "\u521d\u59cb\u5316", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.852040Z", "content": "]\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.853567Z", "content": " ", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:26.854903Z", "content": " B", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.278951Z", "content": " -->", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.279802Z", "content": " C", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.280443Z", "content": "{", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.568027Z", "content": "\u68c0\u67e5", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.569190Z", "content": "\u6761\u4ef6", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.570282Z", "content": "}\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.572606Z", "content": " ", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.574603Z", "content": " C", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.575549Z", "content": " -->", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.576464Z", "content": "|", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.577302Z", "content": "true", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.578203Z", "content": "|", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.578923Z", "content": " D", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.580676Z", "content": "[", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.582676Z", "content": "\u6267\u884c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.610695Z", "content": "\u64cd\u4f5c", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.611601Z", "content": "]\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.612395Z", "content": " ", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.614248Z", "content": " C", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.689452Z", "content": " -->", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.690373Z", "content": "|", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.691296Z", "content": "false", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.693229Z", "content": "|", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.724845Z", "content": " E", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.725744Z", "content": "[", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.727476Z", "content": "\u8df3", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.833416Z", "content": "\u8fc7", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.834355Z", "content": "]\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.835222Z", "content": " ", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.836857Z", "content": " D", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.974536Z", "content": " -->", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.976012Z", "content": " F", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.977719Z", "content": "[", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.979504Z", "content": "\u7ed3\u675f", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.980305Z", "content": "]\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:27.981136Z", "content": " ", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.111976Z", "content": " E", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.113152Z", "content": " -->", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.114414Z", "content": " F", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.117694Z", "content": "\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.118426Z", "content": "\`\`", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.119284Z", "content": "\`\\n", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      `;
-
-      const terminate = `
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.224952Z", "content": "TER", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.225782Z", "content": "MIN", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      {"id": "58061d03-24ab-4d38-b989-74553f7025fb", "source": "mainAgent", "models_usage": null, "metadata": {}, "created_at": "2026-02-10T08:41:28.226586Z", "content": "ATE", "full_message_id": null, "type": "ModelClientStreamingChunkEvent"}
-      
-      {"type": "TaskCompleted", "stop_reason": "Text 'TERMINATE' mentioned"}
-      `
-      
-      // 原始文本流数据（模拟服务端返回的格式）
-      let mockText = [
-        thinking,
-        mermaid,
-        terminate,
-      ].join('\n');
-      
-      try {
-        const logPath = AilyHost.get().project.projectRootPath + AilyHost.get().platform.pathSeparator + 'stream_mock.txt';
-        const mockfile = AilyHost.get().fs.readFileSync(logPath, 'utf-8');
-        mockText = mockfile;
-      } catch (error) {
-        console.warn('读取流式数据失败:', error);
-      }
-
-      let buffer = '';
-      let offset = 0;
-      const chunkSize = 100; // 模拟分块到达
-
-      const intervalId = setInterval(() => {
-        if (aborted) return;
-
-        if (offset >= mockText.length) {
-          clearInterval(intervalId);
-          if (!aborted && buffer.trim()) {
-            try {
-              const msg = JSON.parse(buffer);
-              observer.next(msg);
-            } catch (error) {
-              console.warn('解析最后的JSON失败:', error, buffer);
-            }
-          }
-          if (!aborted) observer.complete();
-          return;
-        }
-
-        buffer += mockText.slice(offset, offset + chunkSize);
-        offset += chunkSize;
-
-        const lines = buffer.split('\n');
-
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (aborted) break;
-          if (!line.trim()) continue;
-          try {
-            const msg = JSON.parse(line);
-            observer.next(msg);
-            if (msg.type === 'TaskCompleted') {
-              clearInterval(intervalId);
-              observer.complete();
-              return;
-            }
-          } catch (error) {
-            console.warn('解析JSON失败:', error, line);
-          }
-        }
-      }, 300);
-
-      // 取消订阅时停止定时器
-      return () => {
-        aborted = true;
-        clearInterval(intervalId);
-      };
-    });
-  }
-
-  streamConnect(sessionId: string, options?: any): Observable<any> {
-    // 使用 Observable 构造函数，确保只有在订阅时才开始执行
-    return new Observable(observer => {
-      let aborted = false;
-      let workerSub: Subscription | null = null;
-      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-      const abortCtrl = new AbortController();
-
-      // 获取 token 并添加 Authorization 头部
-      AilyHost.get().auth.getToken!().then(token => {
-        if (aborted) return;
-
-        const headers: Record<string, string> = {};
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const url = `${ChatAPI.streamConnect}/${sessionId}`;
-
-        // ★ Worker 路径：fetch + SSE 解析在 Worker 线程执行
-        if (this.sseProxy.isReady) {
-          workerSub = this.sseProxy.sseFetch(url, 'GET', headers).subscribe({
-            next: data => { if (!aborted) observer.next(data); },
-            complete: () => { if (!aborted) observer.complete(); },
-            error: err => { if (!aborted) observer.error(err); },
-          });
-          return;
-        }
-
-        // ★ 降级：主线程直接 fetch（原始实现）
-        fetch(url, { headers, signal: abortCtrl.signal })
-          .then(async response => {
-          if (aborted) return;
-
-          if (!response.ok) {
-            const errorBody = await this.readHttpErrorBody(response);
-            observer.error(this.createNormalizedHttpError(response, errorBody));
-            return;
-          }
-
-          reader = response.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-
-          try {
-            while (!aborted) {
-              const { value, done } = await reader.read();
-              if (done) break;
-
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-
-              for (const line of lines) {
-                if (aborted) break;
-                if (!line.trim()) continue;
-                try {
-                  const msg = JSON.parse(line);
-                  observer.next(msg);
-                  // console.log("recv: ", msg);
-
-                  if (msg.type === 'TaskCompleted') {
-                    observer.complete();
-                    return;
-                  }
-                } catch (error) {
-                  console.warn('解析JSON失败:', error, line);
-                }
-              }
-            }
-
-            // 处理缓冲区中剩余的内容
-            if (!aborted && buffer.trim()) {
-              try {
-                const msg = JSON.parse(buffer);
-                observer.next(msg);
-              } catch (error) {
-                console.warn('解析最后的JSON失败:', error, buffer);
-              }
-            }
-
-            if (!aborted) {
-              observer.complete();
-            }
-          } catch (error) {
-            if ((error as Error)?.name === 'AbortError' || aborted) return;
-            observer.error(error);
-          }
-        })
-        .catch(error => {
-          if ((error as Error)?.name === 'AbortError') return;
-          if (!aborted) {
-            observer.error(error);
-          }
-        });
-      }).catch(error => {
-        if (!aborted) {
-          observer.error(error);
-        }
-      });
-
-      // 返回清理函数，在取消订阅时调用
-      return () => {
-        aborted = true;
-        workerSub?.unsubscribe();
-        abortCtrl.abort();
-        if (reader) {
-          reader.cancel().catch(() => {});
-        }
-      };
-    });
-  }
-
-  sendMessage(sessionId: string, content: string, source: string = 'user') {
-    return this.http.post(`${ChatAPI.sendMessage}/${sessionId}`, { content, source });
-  }
-
-  /**
-   * 无状态聊天请求（Copilot 式 Request-per-Turn）
-   * 每次请求携带完整对话历史（含工具结果），返回 SSE 流。
-   * 服务端不需要等待工具执行结果，工具调用由前端控制循环。
-   *
-   * @param sessionId  会话ID
-   * @param messages   完整对话历史 [{role,content,tool_calls?,tool_call_id?,name?}]
-   * @param tools      可用工具列表
-   * @param mode       模式 'agent' | 'ask'
-   * @param llmConfig  自定义 LLM 配置（可选）
-   * @param selectModel 选择的模型名称（可选）
-   * @param maxCount   最大消息轮数（可选）
-   */
-  chatRequest(
-    sessionId: string,
-    messages: any[],
-    tools: any[] | null = null,
-    mode: string = 'agent',
-    llmConfig?: any,
-    selectModel?: string,
-    maxCount?: number,
-    agent?: string,
-  ): Observable<any> {
-    return new Observable(observer => {
-      let aborted = false;
-      let workerSub: Subscription | null = null;
-      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-      const abortCtrl = new AbortController();
-
-      const payload: any = {
-        session_id: sessionId,
-        messages,
-        tools: tools || [],
-        mode
-      };
-
-      if (maxCount !== undefined && maxCount > 0) {
-        payload.max_count = maxCount;
-      }
-      if (llmConfig) {
-        payload.llm_config = llmConfig;
-      }
-      if (selectModel) {
-        payload.select_model = selectModel;
-      }
-      if (agent) {
-        payload.agent = agent;
-      }
-
-      AilyHost.get().auth.getToken!().then(async (token) => {
-        if (aborted) return;
-
-        // 调试异常注入：在控制台设置 localStorage.ailyChatDebugForceError 后自动附带请求头
-        let debugForceErrorCode = '';
-        try {
-          debugForceErrorCode = (localStorage.getItem('ailyChatDebugForceError') || '').trim();
-        } catch {
-          debugForceErrorCode = '';
-        }
-
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json'
-        };
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-        if (debugForceErrorCode) {
-          headers['X-Debug-Force-Error'] = debugForceErrorCode;
-        }
-
-        const url = `${ChatAPI.chatRequest}/${sessionId}`;
-
-        // ★ Worker 路径：JSON.stringify + fetch + SSE 解析均在 Worker 线程
-        // 替代 asyncJsonStringify（payload 直接传给 Worker，Worker 内部 JSON.stringify）
-        if (this.sseProxy.isReady) {
-          workerSub = this.sseProxy.sseFetch(url, 'POST', headers, payload).subscribe({
-            next: data => { if (!aborted) observer.next(data); },
-            complete: () => { if (!aborted) observer.complete(); },
-            error: err => { if (!aborted) observer.error(err); },
-          });
-          return;
-        }
-
-        // ★ 降级：主线程直接 fetch（原始实现，含完整重试逻辑）
-        // P0: 将 JSON 序列化移至 Web Worker，避免 100KB+ payload 阻塞主线程
-        const buildRequestBody = (effectiveSessionId: string) => asyncJsonStringify({
-          ...payload,
-          session_id: effectiveSessionId,
-        });
-
-        const MAX_NETWORK_RETRIES = 3;
-        const RETRY_BASE_DELAY = 2000; // ms
-        const RETRY_INITIAL_DELAY = 3000; // ms — 首次重试多等一会，服务重启通常需要几秒
-
-        const attemptFetch = async (attempt: number): Promise<void> => {
-          try {
-            let effectiveSessionId = sessionId;
-            let requestBody = await buildRequestBody(effectiveSessionId);
-            if (aborted) return;
-
-            const response = await fetch(`${ChatAPI.chatRequest}/${effectiveSessionId}`, {
-              method: 'POST',
-              headers,
-              body: requestBody,
-              signal: abortCtrl.signal
-            });
-            if (aborted) return;
-
-            let streamResponse = response;
-            if (!response.ok) {
-              const errorBody = await this.readHttpErrorBody(response);
-              const normalizedErr = this.createNormalizedHttpError(response, errorBody);
-
-              // 会话丢失（404/21001 或 500 通用错误）→ 重建会话并重试
-              if (isLikelySessionLostError(normalizedErr) && attempt === 0) {
-                try {
-                  console.warn(`[chatRequest] 检测到会话可能丢失 (HTTP ${response.status})，重建会话...`);
-                  await this.startSession(mode, tools as any, maxCount, llmConfig, selectModel).toPromise();
-                  if (aborted) return;
-                  effectiveSessionId = this.currentSessionId || sessionId;
-                  requestBody = await buildRequestBody(effectiveSessionId);
-                  const retryResp = await fetch(`${ChatAPI.chatRequest}/${effectiveSessionId}`, {
-                    method: 'POST',
-                    headers,
-                    body: requestBody,
-                    signal: abortCtrl.signal
-                  });
-                  if (aborted) return;
-                  if (!retryResp.ok) {
-                    const retryErrorBody = await this.readHttpErrorBody(retryResp);
-                    observer.error(this.createNormalizedHttpError(
-                      retryResp,
-                      retryErrorBody,
-                      `HTTP error after session restart! Status: ${retryResp.status}`
-                    ));
-                    return;
-                  }
-                  streamResponse = retryResp;
-                } catch (retryErr) {
-                  if (!aborted) observer.error(retryErr);
-                  return;
-                }
-              } else if (isTransientNetworkError(normalizedErr) && attempt < MAX_NETWORK_RETRIES) {
-                // 502/503/504 + 连接类错误消息 → 瞬态，可重试
-                const delay = attempt === 0 ? RETRY_INITIAL_DELAY : RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
-                console.warn(`[chatRequest] HTTP ${response.status} 瞬态错误，${delay}ms 后第 ${attempt + 1} 次重试`);
-                await new Promise(r => setTimeout(r, delay));
-                if (!aborted) {
-                  return attemptFetch(attempt + 1);
-                }
-                return;
-              } else {
-                observer.error(normalizedErr);
-                return;
-              }
-            }
-
-            reader = streamResponse.body!.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            try {
-              while (!aborted) {
-                const { value, done } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                  if (aborted) break;
-                  if (!line.trim()) continue;
-                  try {
-                    const msg = JSON.parse(line);
-                    observer.next(msg);
-
-                    if (msg.type === 'TaskCompleted') {
-                      observer.complete();
-                      return;
-                    }
-                  } catch (error) {
-                    console.warn('解析JSON失败:', error, line);
-                  }
-                }
-              }
-
-              // 处理缓冲区中剩余的内容
-              if (!aborted && buffer.trim()) {
-                try {
-                  const msg = JSON.parse(buffer);
-                  observer.next(msg);
-                } catch (error) {
-                  console.warn('解析最后的JSON失败:', error, buffer);
-                }
-              }
-
-              if (!aborted) {
-                observer.complete();
-              }
-            } catch (error) {
-              if ((error as Error)?.name === 'AbortError' || aborted) return;
-              // 流读取中途断连（如 ERR_INCOMPLETE_CHUNKED_ENCODING）→ 向外抛给重试逻辑
-              throw error;
-            }
-          } catch (error) {
-            if ((error as Error)?.name === 'AbortError' || aborted) return;
-            // 瞬态网络错误自动重试（如 TypeError: network / ERR_INCOMPLETE_CHUNKED_ENCODING）
-            if (isTransientNetworkError(error) && attempt < MAX_NETWORK_RETRIES) {
-              const delay = attempt === 0 ? RETRY_INITIAL_DELAY : RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
-              console.warn(`[chatRequest] 网络错误，${delay}ms 后第 ${attempt + 1} 次重试:`, (error as Error).message);
-              await new Promise(r => setTimeout(r, delay));
-              if (!aborted) {
-                return attemptFetch(attempt + 1);
-              }
-              return;
-            }
-            if (!aborted) {
-              observer.error(error);
-            }
-          }
-        };
-
-        attemptFetch(0);
-      }).catch(error => {
-        if (!aborted) {
-          observer.error(error);
-        }
-      });
-
-      // 返回清理函数，在取消订阅时调用
-      return () => {
-        aborted = true;
-        workerSub?.unsubscribe();
-        abortCtrl.abort();
-        if (reader) {
-          reader.cancel().catch(() => {});
-        }
-      };
-    });
-  }
-
   getHistory(sessionId: string) {
     return this.http.get(`${ChatAPI.getHistory}/${sessionId}`);
   }
@@ -874,44 +2209,45 @@ export class ChatService {
   cancelTask(sessionId: string) {
     return this.http.post(`${ChatAPI.cancelTask}/${sessionId}`,{});
   }
+}
 
-  /**
-   * 生成会话标题
-   * @param sessionId 会话ID
-   * @param content 用户消息内容
-   * @param onTitleReady 标题生成成功时的回调（可选）
-   */
-  generateTitle(sessionId: string, content: string, onTitleReady?: (title: string) => void) {
-    if (this.titleIsGenerating) {
-      console.warn('标题生成中，忽略重复请求');
-      return;
-    }
-    this.titleIsGenerating = true;
-    this.http.post(`${ChatAPI.generateTitle}`, { content }).subscribe(
-      (res) => {
-        if ((res as any).status === 'success' && sessionId === this.currentSessionId) {
-          let title: string;
-          try {
-            title = JSON.parse((res as any).data).title;
-          } catch (error) {
-            title = (res as any).data;
-          }
+function areChatSessionInputModesEqual(left: ChatSessionInputMode, right: ChatSessionInputMode): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && areChatSessionInputModeInstructionsEqual(left.modeInstructions, right.modeInstructions);
+}
 
-          this.currentSessionTitle = title;
-          console.log("currentSessionTitle:", this.currentSessionTitle);
-
-          // 调用回调，通知标题已就绪
-          if (onTitleReady && title) {
-            onTitleReady(title);
-          }
-        }
-
-        this.titleIsGenerating = false;
-      },
-      (error) => {
-        console.error('生成标题失败:', error);
-        this.titleIsGenerating = false;
-      }
-    );
+function areChatSessionInputModeInstructionsEqual(
+  left: ChatSessionInputModeInstructions | undefined,
+  right: ChatSessionInputModeInstructions | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
   }
+
+  if (left.uri !== right.uri
+    || left.name !== right.name
+    || left.content !== right.content
+    || left.isBuiltin !== right.isBuiltin) {
+    return false;
+  }
+
+  return areInstructionMetadataEqual(left.metadata, right.metadata);
+}
+
+function areInstructionMetadataEqual(
+  left: Readonly<Record<string, boolean | string | number>> | undefined,
+  right: Readonly<Record<string, boolean | string | number>> | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every(key => left[key] === right[key]);
 }

@@ -11,6 +11,8 @@ import { Subject, takeUntil } from 'rxjs';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ElectronService } from '../../../services/electron.service';
 import { sha256Hex } from '../../../utils/crypto.utils';
+import { TranslateService } from '@ngx-translate/core';
+import { resolveTranslatedApiErrorMessage } from '../../../utils/api-error.utils';
 
 @Component({
   selector: 'app-login-dialog',
@@ -40,7 +42,8 @@ export class LoginDialogComponent {
   constructor(
     private authService: AuthService,
     private message: NzMessageService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private translate: TranslateService,
   ) {
     // 监听登录状态
     this.authService.isLoggedIn$
@@ -126,13 +129,19 @@ export class LoginDialogComponent {
         },
         error: (error) => {
           console.warn('启动 GitHub OAuth 失败:', error);
-          this.message.error('启动 GitHub 登录失败，请检查网络连接');
+          this.message.error(this.getAuthErrorMessage(error, '启动 GitHub 登录失败，请检查网络连接'));
         }
       });
     } catch (error) {
       console.warn('GitHub 登录出错:', error);
-      this.message.error('GitHub 登录失败');
+      this.message.error(this.getAuthErrorMessage(error, 'GitHub 登录失败'));
     }
+  }
+
+  private getAuthErrorMessage(error: unknown, fallback: string): string {
+    return resolveTranslatedApiErrorMessage(error, this.translate, {
+      fallbackMessage: fallback,
+    });
   }
 
   async loginByPhone() {
@@ -152,14 +161,14 @@ export class LoginDialogComponent {
         this.authService.login(loginData).subscribe({
           next: (response) => {
             if (response.status === 200 && response.data) {
-              this.message.success('登录成功');
+              this.message.success(this.translate.instant('LOGIN.LOGIN_SUCCESS') || '登录成功');
             } else {
-              this.message.error(response.message || '登录失败');
+              this.message.error(this.getAuthErrorMessage(response, this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败'));
             }
           },
           error: (error) => {
             console.warn('登录错误:', error);
-            this.message.error('登录失败，请检查网络连接');
+            this.message.error(this.getAuthErrorMessage(error, this.translate.instant('LOGIN.LOGIN_NETWORK_ERROR') || '登录失败，请检查网络连接'));
           },
           complete: () => {
             this.isWaiting = false;
@@ -167,7 +176,7 @@ export class LoginDialogComponent {
         });
       } catch (error) {
         console.warn('登录过程中出错:', error);
-        this.message.error('登录失败');
+        this.message.error(this.getAuthErrorMessage(error, this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败'));
         this.isWaiting = false;
       }
     }

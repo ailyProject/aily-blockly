@@ -123,6 +123,7 @@ export class ImageUploadDialogComponent implements OnInit, AfterViewInit, OnDest
     if (this.cropChangeTimer) {
       clearTimeout(this.cropChangeTimer);
     }
+    this.converterService.cancel();
     this.releaseImageResources();
   }
 
@@ -132,6 +133,7 @@ export class ImageUploadDialogComponent implements OnInit, AfterViewInit, OnDest
       this.message.error('请先选择图片');
       return;
     }
+    await this.convert2bitmap();
     // const blob = await new Promise<Blob>((resolve) => {
     //   this.myCanvas.nativeElement.toBlob(resolve, 'image/png');
     // });
@@ -333,8 +335,11 @@ export class ImageUploadDialogComponent implements OnInit, AfterViewInit, OnDest
         height: Math.round(cropBoxData.height)
       };
       // 转换成bitmap
-      this.convert2bitmap();
+      await this.convert2bitmap();
     } catch (error) {
+      if ((error as any)?.name === 'AbortError') {
+        return;
+      }
       console.error('处理裁剪变化失败:', error);
     }
   }
@@ -423,6 +428,9 @@ export class ImageUploadDialogComponent implements OnInit, AfterViewInit, OnDest
   async convert2bitmap() {
     let canvas: HTMLCanvasElement = this.myCanvas.nativeElement;
     let context = canvas.getContext("2d");
+    if (!context || !this.cropper) {
+      return;
+    }
 
     this.renderer.setAttribute(canvas, "width", this.currentCropSize.width.toString());
     this.renderer.setAttribute(canvas, "height", this.currentCropSize.height.toString());

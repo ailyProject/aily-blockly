@@ -1,60 +1,31 @@
-@if (isSubagent) {
-  <!-- 子Agent消息折叠视图 -->
-  <div
-    class="subagent-fold animate__animated animate__fadeIn animate__faster"
-    (mouseenter)="onDialogMouseEnter()"
-    (mouseleave)="onDialogMouseLeave()"
-  >
-    <div class="subagent-fold-header" (click)="subagentExpanded = !subagentExpanded">
-      @if (doing) {
-        <i class="fa-duotone fa-solid fa-loader subagent-fold-icon loading ac-spin"></i>
-      } @else {
-        <i class="fa-light fa-circle-check subagent-fold-icon done"></i>
-      }
-      <span class="subagent-fold-label">{{ doing ? subagentDisplayName + '...' : subagentDisplayName }}</span>
-      <i class="fa-light fa-chevron-down subagent-fold-arrow" [class.expanded]="subagentExpanded"></i>
-    </div>
-    @if (subagentExpanded) {
-      <div class="subagent-fold-body" #subagentBody (scroll)="onSubagentBodyScroll($event)">
-        @if (streamContent()) {
-          <x-markdown
-            [content]="streamContent()"
-            [streaming]="streamingConfig()"
-            [components]="componentMap"
-            rootClassName="x-markdown-dark"
-          >
-          </x-markdown>
+<div
+  class="dialog-box animate__animated animate__fadeIn animate__faster"
+  [ngClass]="{
+    user: role === 'user',
+    editable: canEditUserMessage && !isEditing,
+    'request-disabled': isRequestDisabled,
+    'chat-most-recent-response': isCurrentStreamingResponse,
+    'has-turn-actions': canRenderCheckpointAnchor && !isEditing,
+    'has-hover-footer': hasHoverFooterFade,
+    'footer-always-visible': canShowActions
+  }"
+>
+    <!-- @if (disabledRequestBadgeLabel || userTurnMetadataLabel || assistantTerminationLabel) {
+      <div class="turn-meta-row">
+        @if (disabledRequestBadgeLabel) {
+          <span class="turn-meta-label request-disabled-label" [title]="disabledRequestBadgeTitle">{{ disabledRequestBadgeLabel }}</span>
+        }
+        @if (userTurnMetadataLabel) {
+          <span class="turn-meta-label subtle-meta-label" [title]="checkpointActionTitle">{{ userTurnMetadataLabel }}</span>
+        } @else if (assistantTerminationLabel) {
+          <span class="turn-meta-label assistant-termination-label" [title]="assistantTerminationTitle">{{ assistantTerminationLabel }}</span>
         }
       </div>
-    }
-  </div>
-} @else {
-  <div
-    class="dialog-box animate__animated animate__fadeIn animate__faster"
-    [ngClass]="{ user: role === 'user', editable: canEditUserMessage && !isEditing }"
-    (mouseenter)="onDialogMouseEnter()"
-    (mouseleave)="onDialogMouseLeave()"
-  >
-    @if (canRenderCheckpointAnchor) {
-      <div class="checkpoint-action-row" [class.expanded]="showCheckpointAnchor">
-        <span
-          class="restore-checkpoint-text"
-          [class.visible]="showCheckpointAnchor"
-          (click)="onRestoreCheckpoint(); $event.stopPropagation()"
-        >还原检查点</span>
-      </div>
-    }
-    <div class="username">
-      @if (role === "user") {
-        <i class="fa-light fa-user-vneck"></i>&nbsp;&nbsp;me
-      } @else {
-        <i class="fa-light fa-user-astronaut"></i>&nbsp;&nbsp;aily
-      }
-    </div>
+    } -->
 
     @if (isEditing) {
       <!-- 编辑模式：模拟输入框样式 -->
-      <div class="edit-input-box" (click)="$event.stopPropagation()">
+      <div class="edit-input-box" #editInputBox (click)="$event.stopPropagation()">
         @if (editResources.length > 0) {
           <div class="resource-list">
             @for (item of editResources; track $index) {
@@ -83,36 +54,23 @@
           </textarea>
         </div>
         <div class="edit-btns">
-          <div class="edit-btn ccenter" title="添加上下文" (click)="onEditToggleAddList()">
-            <i class="fa-light fa-paperclip"></i>
-          </div>
-          @if (showEditAddList) {
-            <div class="edit-list-box">
-              <div class="edit-btn2 ccenter" (click)="onEditToggleAddList()">
-                <i class="fa-light fa-angle-left"></i>
-              </div>
-            </div>
-            <div class="edit-btn2 ccenter" title="添加文件" (click)="editAddFile.emit()">
-              <i class="fa-light fa-file-plus"></i>
-            </div>
-            <div class="edit-btn2 ccenter" title="添加文件夹" (click)="editAddFolder.emit()">
-              <i class="fa-light fa-folder-plus"></i>
-            </div>
-          }
-          <!-- 模式选择 -->
-          <div class="edit-btn edit-mode-btn ccenter" (click)="editModeToggle.emit({ event: $event, type: 'mode' })">
-            @if (currentMode === 'agent') {
-              <i class="fa-light fa-user-astronaut"></i><span>Agent</span>
-            } @else {
-              <i class="fa-light fa-comment-smile"></i><span>Q&A</span>
-            }
-          </div>
-          <!-- 模型选择 -->
-          @if (currentModelName) {
-            <div class="edit-btn edit-mode-btn ccenter" (click)="editModelToggle.emit({ event: $event, type: 'model' })">
-              <i class="fa-light fa-star-christmas"></i><span>{{ currentModelName }}</span>
-            </div>
-          }
+          <aily-chat-context-toolbar
+            appearance="edit"
+            [showAddList]="showEditAddList"
+            [showModeMenu]="showModeMenu"
+            [showModelMenu]="showModelMenu"
+            [currentMode]="currentMode"
+            [currentCustomAgentTarget]="currentCustomAgentTarget"
+            [selectedMode]="selectedMode"
+            [showModelChip]="!!(currentModelChipLabel || currentModelName)"
+            [modelChipLabel]="currentModelChipLabel || currentModelName"
+            [modelBillingLabel]="currentModelBillingLabel"
+            (toggleAddList)="onEditToggleAddList()"
+            (addFile)="onEditAddFileRequest()"
+            (addFolder)="onEditAddFolderRequest()"
+            (modeClick)="editModeToggle.emit({ event: $event, type: 'mode' })"
+            (modelClick)="editModelToggle.emit({ event: $event, type: 'model' })"
+          />
           <!-- 发送/取消 -->
           <div class="edit-btn edit-cancel-btn ccenter" title="取消 (Esc)" (click)="onCancelEdit()">
             <i class="fa-light fa-xmark"></i>
@@ -123,63 +81,115 @@
         </div>
       </div>
     } @else {
+      @if (canRenderCheckpointAnchor) {
+        <nav class="user-turn-actions" [attr.aria-label]="checkpointActionLabel">
+          <button
+            type="button"
+            class="user-turn-action"
+            [class.disabled]="checkpointActionDisabled"
+            [disabled]="checkpointActionDisabled"
+            [title]="checkpointActionTitle"
+            (click)="onRestoreCheckpoint(); $event.stopPropagation()"
+          >
+            <i class="fa-light" [ngClass]="checkpointActionIconClass"></i>
+            @if (isFirstUserTurn) {
+              <span>{{ 'AILY_CHAT.TURN_ACTION_RESTART' | translate }}</span>
+            } @else if (roundCount > 0) {
+              <span>{{ 'AILY_CHAT.TURN_ACTION_RESTORE_ROUNDS' | translate:{ count: roundCount } }}</span>
+            } @else {
+              <span>{{ 'AILY_CHAT.TURN_ACTION_RESTORE' | translate }}</span>
+            }
+          </button>
+          <button
+            type="button"
+            class="user-turn-action user-turn-action--icon"
+            [class.disabled]="forkSessionActionDisabled"
+            [disabled]="forkSessionActionDisabled"
+            [title]="forkSessionActionTitle"
+            [attr.aria-label]="'AILY_CHAT.TURN_ACTION_FORK' | translate"
+            (click)="onForkSession(); $event.stopPropagation()"
+          >
+            <i class="fa-light fa-code-branch"></i>
+          </button>
+        </nav>
+      }
+
       <div
         class="content"
-        [class.thinking]="content==='[thinking...]'"
-        (click)="canEditUserMessage && !isEditing ? onUserMessageClick() : null"
+        #contentRoot
+        [class.thinking]="effectiveDoing"
+        [class.virtualized-content]="!shouldRenderHeavyContent"
+        [style.min-height.px]="shouldRenderHeavyContent ? null : virtualizedPlaceholderHeight"
+        (click)="canEditUserMessage ? onUserMessageClick() : null"
         nz-tooltip
-        [nzTooltipTitle]="(canEditUserMessage && !isEditing) ? ('AILY_CHAT.CLICK_TO_EDIT' | translate) : ''"
+        [nzTooltipTitle]="editTooltipTitle || (canEditUserMessage ? ('AILY_CHAT.CLICK_TO_EDIT' | translate) : '')"
         nzTooltipPlacement="bottom"
         [nzTooltipOverlayStyle]="{ marginTop: '-10px', fontSize: '12px' }"
       >
-        @if (streamContent()) {
-          <x-markdown
-            [content]="streamContent()"
-            [streaming]="streamingConfig()"
-            [components]="componentMap"
-            rootClassName="x-markdown-dark"
-          >
-          </x-markdown>
+        @if (shouldRenderHeavyContent) {
+          @if (hasStructuredAilyContent) {
+            <!-- ★ Phase 2: aily 消息统一走 Part-based 渲染 -->
+            <aily-chat-message-parts
+              [parts]="effectiveParts"
+              [sessionId]="sessionId"
+              [doing]="effectiveDoing"
+              [turnResponse]="activityTurnResponse"
+              [detailProjectionEnabled]="isViewportVisible"
+            />
+          } @else if (streamContent()) {
+            <x-markdown
+              [content]="streamContent()"
+              [streaming]="streamingConfig()"
+              [components]="componentMap"
+              rootClassName="x-markdown-dark"
+              ailyMarkdownExternalLinks
+            >
+            </x-markdown>
+          }
+        } @else {
+          <div class="virtualized-content-placeholder" aria-hidden="true"></div>
         }
       </div>
     }
 
-    @if (doing || content==='[thinking...]') {
+    @if (effectiveDoing && role !== 'user') {
       <div class="loader"></div>
     }
-    @if (canShowActions) {
-      <div class="msg-actions">
-        <div class="msg-action-btn" (click)="onRegenerate(); $event.stopPropagation()" title="重试">
-          <i class="fa-light fa-rotate-right"></i>
-        </div>
-        <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
-          <i class="fa-light fa-copy"></i>
-        </div>
-        <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
-          <i class="fa-light fa-thumbs-up"></i>
-        </div>
-        <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
-          <i class="fa-light fa-thumbs-down"></i>
-        </div>
-        @if (turnModelName && showActions) {
-          <span class="msg-model-label" title="本轮使用模型">{{ turnModelName }}</span>
+    @if (shouldRenderFooter) {
+      <div class="msg-footer">
+        @if (canShowActions) {
+          <div class="msg-actions">
+            <div class="msg-action-btn" [class.disabled]="regenerateActionDisabled" (click)="onRegenerate(); $event.stopPropagation()" [title]="regenerateActionTitle">
+              <i class="fa-light fa-rotate-right"></i>
+            </div>
+            <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
+              <i class="fa-light fa-copy"></i>
+            </div>
+            <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
+              <i class="fa-light fa-thumbs-up"></i>
+            </div>
+            <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
+              <i class="fa-light fa-thumbs-down"></i>
+            </div>
+          </div>
+        } @else if (canShowLimitActions) {
+          <div class="msg-actions">
+            <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
+              <i class="fa-light fa-copy"></i>
+            </div>
+            <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
+              <i class="fa-light fa-thumbs-up"></i>
+            </div>
+            <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
+              <i class="fa-light fa-thumbs-down"></i>
+            </div>
+          </div>
         }
-      </div>
-    } @else if (canShowLimitActions && showActions) {
-      <div class="msg-actions">
-        <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
-          <i class="fa-light fa-copy"></i>
-        </div>
-        <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
-          <i class="fa-light fa-thumbs-up"></i>
-        </div>
-        <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
-          <i class="fa-light fa-thumbs-down"></i>
-        </div>
-        @if (turnModelName) {
-          <span class="msg-model-label" title="本轮使用模型">{{ turnModelName }}</span>
+
+        @if (showAssistantModelBadge) {
+          <span class="msg-model-label" [title]="assistantModelBadgeTitle">{{ assistantModelBadgeLabel }}</span>
         }
       </div>
     }
+
   </div>
-}

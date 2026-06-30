@@ -2,15 +2,18 @@
  */
 import { Injectable, Injector } from '@angular/core';
 import { filter, Observable, Subject } from 'rxjs';
+import { ChatService } from '../tools/aily-chat/services/chat.service';
 import { ElectronService } from './electron.service';
 import { TerminalService } from '../tools/terminal/terminal.service';
-import { NavigationEnd, Router } from '@angular/router';
+import { Router } from '@angular/router';
 import { FeedbackDialogComponent } from '../components/feedback-dialog/feedback-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { ProjectSettingDialogComponent } from '../components/project-setting-dialog/project-setting-dialog.component';
-import { HistoryDialogComponent } from '../editors/blockly-editor/components/history-dialog/history-dialog.component';
 import { AuthService } from './auth.service';
 import { LogService } from './log.service';
+import { getChildToolConfig } from '../configs/tool.config';
+import { ConfigService } from './config.service';
+import { BoardSelectorDialogComponent } from '../main-window/components/board-selector-dialog/board-selector-dialog.component';
 
 @Injectable({
   providedIn: 'root',
@@ -24,6 +27,8 @@ export class UiService {
 
   // 用来记录当前已打开的工具
   openToolList: string[] = [];
+
+  openWindowPathList: string[] = [];
 
   // 用来获取当前最上层的工具
   get topTool() {
@@ -44,17 +49,25 @@ export class UiService {
    */
   private chatMessageSubject = new Subject<{ text: string; options?: Record<string, any> }>();
   chatMessage$ = this.chatMessageSubject.asObservable();
+  private modalService: NzModalService | null = null;
 
 
   constructor(
     private electronService: ElectronService,
     private terminalService: TerminalService,
     private router: Router,
-    private modal: NzModalService,
     private authService: AuthService,
     private logService: LogService,
+    private configService: ConfigService,
     private injector: Injector
   ) { }
+
+  private get modal(): NzModalService {
+    if (!this.modalService) {
+      this.modalService = this.injector.get(NzModalService);
+    }
+    return this.modalService;
+  }
 
 
   // 初始化UI服务，这个init函数仅供main-window使用
@@ -66,11 +79,15 @@ export class UiService {
     if (this.electronService.isElectron) {
       this.isMainWindow = true;
       window['ipcRenderer'].on('window-go-main', (event, toolName) => {
-        this.openTool(toolName);
+        this.openToolInMainWindow(this.resolveToolNameFromWindowPath(toolName));
+      });
+
+      window['ipcRenderer'].on('sub-window-state-changed', (_event, state) => {
+        this.updateSubWindowState(state?.path, !!state?.open);
       });
 
       window['ipcRenderer'].on('window-receive', async (event, message) => {
-        console.log('window-receive', message);
+        // console.log('window-receive', message);
         let data;
         if (message.data?.action === 'logout') {
           // 处理登出请求
@@ -122,6 +139,7 @@ export class UiService {
   }
 
   openWindow(opt: WindowOpts) {
+    this.updateSubWindowState(opt.path, true);
     window['subWindow'].open(opt);
   }
 
@@ -140,12 +158,101 @@ export class UiService {
     //   this.openTerminal();
     //   return;
     // }
+    const toolWindowPath = this.getToolWindowPath(name);
+    if (this.isMainWindow && toolWindowPath && window['subWindow']?.focus) {
+      void window['subWindow'].focus(toolWindowPath)
+        .then((focused: boolean) => {
+          if (!focused) {
+            this.openToolInMainWindow(name);
+          }
+        })
+        .catch(() => this.openToolInMainWindow(name));
+      return;
+    }
+
+    this.openToolInMainWindow(name);
+  }
+
+  private openToolInMainWindow(name: string) {
+    if (!name) {
+      return;
+    }
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.openToolList.push(name);
     this.actionSubject.next({ action: 'open', type: 'tool', data: name });
   }
 
-  // 如果其它组件/程序要关闭工具，调用这个方法
+  private resolveToolNameFromWindowPath(pathOrName: string | null | undefined): string {
+    const normalizedPath = this.normalizeToolWindowPath(pathOrName);
+    if (!normalizedPath) {
+      return '';
+    }
+
+    const childToolMatch = normalizedPath.match(/^\/child-tool\/([^/?#]+)/);
+    if (childToolMatch?.[1]) {
+      return decodeURIComponent(childToolMatch[1]);
+    }
+
+    return normalizedPath.replace(/^\/+/, '');
+  }
+
+  private getToolWindowPath(name: string): string | null {
+    const childToolConfig = getChildToolConfig(name);
+    if (childToolConfig) {
+      return childToolConfig.routePath || `/child-tool/${childToolConfig.id}`;
+    }
+
+    switch (name) {
+      case 'code-viewer':
+      case 'serial-monitor':
+      case 'ffs-manager':
+      case 'simulator':
+      case 'model-store':
+        return `/${name}`;
+      default:
+        return null;
+    }
+  }
+
+  private normalizeToolWindowPath(path: string | null | undefined): string | null {
+    if (typeof path !== 'string') {
+      return null;
+    }
+    const trimmedPath = path.trim();
+    if (!trimmedPath) {
+      return null;
+    }
+    const hashRouteIndex = trimmedPath.indexOf('#/');
+    const routePath = hashRouteIndex >= 0 ? trimmedPath.slice(hashRouteIndex + 2) : trimmedPath;
+    return `/${routePath.replace(/^\/+/, '')}`;
+  }
+
+  private updateSubWindowState(path: string | null | undefined, open: boolean) {
+    const normalizedPath = this.normalizeToolWindowPath(path);
+    if (!normalizedPath) {
+      return;
+    }
+
+    const isOpen = this.openWindowPathList.includes(normalizedPath);
+    if (open && !isOpen) {
+      this.openWindowPathList.push(normalizedPath);
+      this.actionSubject.next({ action: 'open', type: 'sub-window', data: normalizedPath });
+    } else if (!open && isOpen) {
+      this.openWindowPathList = this.openWindowPathList.filter((path) => path !== normalizedPath);
+      this.actionSubject.next({ action: 'close', type: 'sub-window', data: normalizedPath });
+    }
+  }
+
+  private isToolWindowOpen(name: string): boolean {
+    const toolWindowPath = this.getToolWindowPath(name);
+    if (!toolWindowPath) {
+      return false;
+    }
+
+    const normalizedPath = this.normalizeToolWindowPath(toolWindowPath);
+    return !!normalizedPath && this.openWindowPathList.includes(normalizedPath);
+  }
+
   closeTool(name: string) {
     if (name == 'terminal') {
       this.closeTerminal();
@@ -163,8 +270,8 @@ export class UiService {
   }
 
   // 发送工具信号，格式为 "toolname:action"，如 "serial-monitor:disconnect"
-  sendToolSignal(signal: string) {
-    this.actionSubject.next({ action: 'signal', type: 'tool', data: signal });
+  sendToolSignal(signal: string, payload?: unknown) {
+    this.actionSubject.next({ action: 'signal', type: 'tool', data: signal, payload });
   }
 
   /**
@@ -177,14 +284,64 @@ export class UiService {
    */
   openAndSendToChat(text: string, options?: Record<string, any>): void {
     this.openTool('aily-chat');
-    setTimeout(() => {
+    const deliver = () => {
+      if (ChatService.isReady) {
+        ChatService.sendToChat(text, options);
+        return;
+      }
       this.chatMessageSubject.next({ text, options });
-    }, 100);
+    };
+    setTimeout(deliver, 0);
+    setTimeout(deliver, 150);
+  }
+
+  openCodeEditorFile(
+    projectPath: string,
+    filePath: string,
+    position?: {
+      lineNumber?: number;
+      column?: number;
+      line?: number;
+      character?: number;
+    },
+  ): Promise<boolean> {
+    const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
+    const normalizedFilePath = typeof filePath === 'string' ? filePath.trim() : '';
+    if (!normalizedProjectPath || !normalizedFilePath) {
+      return Promise.resolve(false);
+    }
+
+    const lineNumber = typeof position?.lineNumber === 'number'
+      ? position.lineNumber
+      : typeof position?.line === 'number'
+        ? position.line + 1
+        : undefined;
+    const column = typeof position?.column === 'number'
+      ? position.column
+      : typeof position?.character === 'number'
+        ? position.character + 1
+        : undefined;
+
+    const queryParams: Record<string, string | number> = {
+      path: normalizedProjectPath,
+      openFile: normalizedFilePath,
+    };
+    if (typeof lineNumber === 'number' && Number.isFinite(lineNumber) && lineNumber > 0) {
+      queryParams['lineNumber'] = lineNumber;
+    }
+    if (typeof column === 'number' && Number.isFinite(column) && column > 0) {
+      queryParams['column'] = column;
+    }
+
+    return this.router.navigate(['/main/code-editor'], {
+      queryParams,
+      replaceUrl: true,
+    });
   }
 
   // 判断某个工具是否打开
   isToolOpen(name: string): boolean {
-    return this.openToolList.includes(name);
+    return this.openToolList.includes(name) || this.isToolWindowOpen(name);
   }
 
   turnBottomSider(data = 'default') {
@@ -244,7 +401,7 @@ export class UiService {
   // 更新footer右下角的状态
   updateFooterState(state: ActionState) {
     // 判断当前url是否是main-window
-    if (this.isMainWindow) {
+    if (this.isMainWindow || !window['ipcRenderer']?.send) {
       this.stateSubject.next(state);
     } else {
       window['ipcRenderer'].send('state-update', state);
@@ -257,16 +414,19 @@ export class UiService {
   }
 
 
-  openFeedback() {
+  openFeedback(data?: any) {
     const modalRef = this.modal.create({
       nzTitle: null,
       nzFooter: null,
       nzClosable: false,
+      nzCentered: true,
+      nzWrapClassName: 'feedback-modal-wrap',
       nzBodyStyle: {
         padding: '0',
       },
       nzContent: FeedbackDialogComponent,
       nzWidth: '520px',
+      nzData: data,
     });
 
     // 处理反馈结果
@@ -275,26 +435,6 @@ export class UiService {
         console.log('反馈已提交:', result.data);
       }
     });
-  }
-
-  openHistory() {
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzContent: HistoryDialogComponent,
-      nzWidth: '520px',
-    });
-
-    // 处理反馈结果
-    // modalRef.afterClose.subscribe(result => {
-    //   if (result?.result === 'success') {
-    //     console.log('反馈已提交:', result.data);
-    //   }
-    // });
   }
 
   openProjectSettings() {
@@ -317,9 +457,43 @@ export class UiService {
       }
     });
   }
+
+  /** 打开切换开发板弹窗（Header 菜单与 Aily View MCU 节点共用） */
+  async openBoardSelector(): Promise<void> {
+    const { ProjectService } = await import('./project.service');
+    const projectService = this.injector.get(ProjectService);
+    const useCoderBoardList = projectService.isAilyCodeProject();
+
+    // Aily Code 使用 coder_board_index；Blockly 使用 boards.json
+    let boardList = useCoderBoardList
+      ? this.configService.getCoderBoardListForSelector()
+      : this.configService.getBoardListForSelector();
+    if (!boardList.length) {
+      boardList = useCoderBoardList
+        ? await this.configService.loadCoderBoardList()
+        : await this.configService.loadBoardList();
+    }
+
+    this.modal.create({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzBodyStyle: {
+        padding: '0',
+      },
+      nzWidth: '400px',
+      nzContent: BoardSelectorDialogComponent,
+      nzData: {
+        boardList,
+        isAilyCode: useCoderBoardList,
+      },
+    });
+  }
 }
 
 export interface WindowOpts {
+  /** 子窗口业务标识，如 settings-open / project-new，与 preload 路由一致 */
+  type?: string;
   path: string;
   data?: any;
   title?: string;

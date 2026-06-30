@@ -23,6 +23,7 @@ export interface CmdOptions {
   cwd?: string;
   env?: { [key: string]: string };
   streamId?: string;
+  shellProfile?: boolean;
 }
 
 interface QueuedTask {
@@ -236,6 +237,14 @@ export class CmdService {
     return lastValueFrom(this.run(command, cwd, useQueue, silent))
   }
 
+  async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false): Promise<CmdOutput> {
+    const result = await this.runAsync(command, cwd, useQueue, silent);
+    if (result.type === 'error' || (result.code ?? 0) !== 0) {
+      throw new Error(result.error || result.stderr || result.stdout || `Command failed with exit code ${result.code ?? 'unknown'}: ${command}`);
+    }
+    return result;
+  }
+
   /**
    * 终止命令执行
    * @param streamId 流ID
@@ -258,9 +267,8 @@ export class CmdService {
    * 按进程名终止命令执行
    */
   async killByName(processName: string): Promise<boolean> {
-    const result = await window['cmd'].killByName(processName);
-    // console.log(`Kill process by name ${processName}:`, result);
-    return result.success;
+    console.warn(`Refusing to kill process by name: ${processName}`);
+    return false;
   }
 
   /**

@@ -173,23 +173,25 @@ export class ToolboxSearchCategory extends Blockly.ToolboxCategory {
    * Filters the available blocks based on the current query string.
    */
   private matchBlocks() {
-    const query = this.searchField?.value || '';
+    const query = this.searchField?.value.trim() || '';
 
-    this.flyoutItems_ = query
-      ? this.blockSearcher.blockTypesMatching(query).map((blockType) => {
-        return {
-          kind: 'block',
-          type: blockType,
-        };
-      })
-      : [];
+    if (!query) {
+      this.flyoutItems_ = [];
+      (this.workspace_ as Blockly.WorkspaceSvg).getFlyout()?.hide();
+      return;
+    }
+
+    this.flyoutItems_ = this.blockSearcher.blockTypesMatching(query).map((blockType) => {
+      return {
+        kind: 'block',
+        type: blockType,
+      };
+    });
 
     if (!this.flyoutItems_.length) {
       this.flyoutItems_.push({
         kind: 'label',
-        text: query
-          ? 'No matching blocks found'
-          : 'Type to search for blocks',
+        text: 'No matching blocks found',
       });
     }
     this.parentToolbox_.refreshSelection();

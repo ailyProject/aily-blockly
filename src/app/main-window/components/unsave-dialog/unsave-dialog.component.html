@@ -4,4 +4,7 @@
     (closeDialog)="onClose()"
     (buttonClick)="onButtonClick($event)">
     <div class="text">{{text | translate}}</div>
+    @if (detail) {
+    <div class="text">{{detail | translate}}</div>
+    }
 </app-base-dialog>

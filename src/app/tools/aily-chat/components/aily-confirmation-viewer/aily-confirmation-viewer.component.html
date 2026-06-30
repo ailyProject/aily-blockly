@@ -1,0 +1,8 @@
+<div class="aily-confirmation-viewer" (dblclick)="logDetail()">
+  @if (viewerData) {
+    <x-aily-confirmation-viewer
+      [data]="viewerData"
+      [interactive]="!viewerData['resolved']"
+      (decision)="onDecision($event)" />
+  }
+</div>

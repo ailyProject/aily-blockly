@@ -1,4 +1,4 @@
-<div class="aily-approval-viewer" (dblclick)="logDetail()">
+<div class="aily-confirmation-viewer" (dblclick)="logDetail()">
     @if (resolved) {
     <div class="state-content ccenter">
         <div class="state-icon">
@@ -17,15 +17,15 @@
         </div>
     </div>
     } @else {
-    <div class="approval-content">
-        <div class="approval-header">
-            <div class="approval-icon">
+    <div class="confirmation-content">
+        <div class="confirmation-header">
+            <div class="confirmation-icon">
                 <i class="fa-light fa-shield-check"></i>
             </div>
-            <div class="approval-title">{{ title }}</div>
+            <div class="confirmation-title">{{ title }}</div>
         </div>
-        <div class="approval-message">{{ message }}</div>
-        <div class="approval-actions">
+        <div class="confirmation-message">{{ message }}</div>
+        <div class="confirmation-actions">
             <button class="btn-approve" (click)="approve()">
                 <i class="fa-light fa-check"></i> 允许
             </button>

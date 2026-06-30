@@ -6,29 +6,93 @@ import { Injectable } from '@angular/core';
 export class ConverterService {
   context: CanvasRenderingContext2D;
   image: ImageData;
+  private worker: Worker | null = null;
+  private requestId = 0;
+  private cancelActiveConversion: (() => void) | null = null;
+
   convert(context: CanvasRenderingContext2D, image: ImageData, options: convertOptions) {
+    this.terminateWorker(true);
+
     return new Promise<string>((resolve, reject) => {
       this.context = context;
       this.image = image;
-      if (options.dither) {
-        this.dither()
-      } else {
-        this.pickColor(options);
-      }
-      if (options.invert) {
-        this.invertColor()
-      }
-      // const bitmapArray = this.getBitmapArray(options);
-      resolve('')
-    })
+      this.bitmap2DArray = [];
+      const requestId = ++this.requestId;
+      const worker = new Worker(
+        new URL('./bitmap-converter.worker.ts', import.meta.url),
+        { type: 'module' },
+      );
+
+      this.worker = worker;
+      this.cancelActiveConversion = () => {
+        const error = new Error('Bitmap conversion canceled');
+        error.name = 'AbortError';
+        reject(error);
+      };
+
+      worker.onmessage = (event: MessageEvent<ConvertWorkerMessage>) => {
+        const message = event.data;
+        if (!message || message.requestId !== requestId) return;
+
+        if (message.type === 'done') {
+          this.image = message.imageData;
+          this.context.putImageData(message.imageData, 0, 0);
+          this.bitmap2DArray = message.bitmapArray;
+          this.terminateWorker();
+          resolve('');
+          return;
+        }
+
+        this.terminateWorker();
+        reject(new Error(message.message || 'Bitmap conversion failed'));
+      };
+
+      worker.onerror = (error) => {
+        this.terminateWorker();
+        reject(new Error(error.message || 'Worker conversion failed'));
+      };
+
+      const transferableImage = new ImageData(
+        new Uint8ClampedArray(image.data),
+        image.width,
+        image.height,
+      );
+      worker.postMessage({
+        type: 'convert',
+        requestId,
+        imageData: transferableImage,
+        options: { ...options },
+      }, [transferableImage.data.buffer]);
+    });
+  }
+
+  private bitmap2DArray: number[][] = [];
+
+  cancel() {
+    this.terminateWorker(true);
+  }
+
+  private terminateWorker(cancel = false) {
+    if (cancel && this.cancelActiveConversion) {
+      this.cancelActiveConversion();
+    }
+    this.cancelActiveConversion = null;
+
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
   }
   /**
    * 将当前图像转换为二维bitmap数组
    * @returns 二维数组，0表示空白，1表示填充
    */
   getBitmap2DArray(): number[][] {
-    const bitmap: number[][] = [];
+    if (this.bitmap2DArray.length) {
+      return this.bitmap2DArray.map(row => [...row]);
+    }
 
+    const bitmap: number[][] = [];
     for (let y = 0; y < this.image.height; y++) {
       const row: number[] = [];
       for (let x = 0; x < this.image.width; x++) {
@@ -52,6 +116,7 @@ export class ConverterService {
       bitmap.push(row);
     }
 
+    this.bitmap2DArray = bitmap.map(row => [...row]);
     return bitmap;
   }
 
@@ -161,3 +226,18 @@ export interface convertOptions {
   dither: boolean,
   threshold: number,
 }
+
+interface ConvertDoneMessage {
+  type: 'done';
+  requestId: number;
+  imageData: ImageData;
+  bitmapArray: number[][];
+}
+
+interface ConvertErrorMessage {
+  type: 'error';
+  requestId: number;
+  message: string;
+}
+
+type ConvertWorkerMessage = ConvertDoneMessage | ConvertErrorMessage;

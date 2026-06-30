@@ -1,0 +1,35 @@
+<div class="code-editor-pro">
+    @if (coderEmbedSrc) {
+    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="代码编辑器 Pro"
+        [src]="coderEmbedSrc" (load)="onCoderEmbedFrameLoad()"></iframe>
+    } @else if (coderEmbedError) {
+    <div class="coder-embed-fallback">
+        <p>无法加载内嵌编辑器：{{ coderEmbedError }}</p>
+        <p class="hint">Electron 请确认已构建 child/coder（dist 在 child/coder/dist）；浏览器开发时可执行 <code>cd child/coder && npm run start</code>（默认 127.0.0.1:5174）。</p>
+    </div>
+    }
+
+    @if (!coderEmbedError && coderEmbedLoading) {
+    <div class="coder-projector-loader" [class.is-revealing]="coderEmbedRevealing" role="status" aria-live="polite"
+        aria-busy="true">
+        <div class="projector-stage" aria-hidden="true">
+            <div class="projector">
+                <span class="projector-reel reel-left"></span>
+                <span class="projector-reel reel-right"></span>
+                <span class="projector-body"></span>
+                <span class="projector-lens"></span>
+                <span class="projector-spark spark-a"></span>
+                <span class="projector-spark spark-b"></span>
+                <span class="projector-spark spark-c"></span>
+            </div>
+            <div class="projector-beam"></div>
+            <div class="projection-screen">
+                <span class="screen-line line-a"></span>
+                <span class="screen-line line-b"></span>
+                <span class="screen-line line-c"></span>
+            </div>
+        </div>
+    </div>
+    }
+</div>
+<app-notification></app-notification>

@@ -1,4 +1,4 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { BlockAnalyzer, LibraryBlockKnowledge, EnrichedBlockDefinition, UsagePattern, BlockRelationGraph } from "./blockAnalyzer";
 
 // 智能块助手相关接口

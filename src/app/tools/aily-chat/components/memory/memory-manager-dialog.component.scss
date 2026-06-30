@@ -1,0 +1,415 @@
+.memory-manager {
+  min-width: 880px;
+  max-width: min(96vw, 980px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  .memory-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .memory-tabs,
+  .memory-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .memory-tab,
+  .memory-icon-btn,
+  .memory-delete-btn,
+  .memory-nav-item {
+    border: none;
+    background: var(--aily-bg-primary, #fff);
+    color: var(--aily-text-primary, #1f1f1f);
+    transition:
+      border-color 0.15s ease,
+      background 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .memory-tab {
+    min-width: 76px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    outline: none;
+    box-shadow: none;
+
+    &:focus,
+    &:focus-visible,
+    &:active {
+      outline: none;
+      box-shadow: none;
+    }
+
+    &.active {
+      border-color: var(
+        --aily-chat-viewer-blockly-chip-border,
+        rgba(0, 120, 212, 0.28)
+      );
+      background: var(
+        --aily-chat-viewer-blockly-chip-bg,
+        rgba(0, 120, 212, 0.12)
+      );
+      color: var(--aily-chat-viewer-blockly-chip-fg, #005fb8);
+    }
+  }
+
+  .memory-search {
+    width: 240px;
+    height: 32px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 999px;
+    background: var(--aily-bg-primary, #fff);
+    color: var(--aily-text-primary, #1f1f1f);
+    outline: none;
+    transition:
+      border-color 0.15s ease,
+      background 0.15s ease;
+
+    &:focus {
+      border-color: var(
+        --aily-chat-viewer-blockly-chip-border,
+        rgba(0, 120, 212, 0.28)
+      );
+    }
+  }
+
+  .memory-icon-btn,
+  .memory-delete-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      opacity 0.15s ease;
+
+    &:hover {
+      color: var(--aily-chat-viewer-blockly-chip-fg, #005fb8);
+    }
+  }
+
+  .memory-delete-btn {
+    opacity: 0.15;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+
+  .memory-body {
+    min-height: 520px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+
+    &.memory-body--split {
+      flex-direction: row;
+      align-items: stretch;
+    }
+
+    &.memory-body--project {
+      .memory-content {
+        flex: 1 1 420px;
+      }
+    }
+
+    .memory-nav {
+      flex: 0 0 220px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 520px;
+      overflow: auto;
+
+      .memory-nav-item {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+
+        &:hover,
+        &.active {
+          border-color: var(
+            --aily-chat-viewer-blockly-chip-border,
+            rgba(0, 120, 212, 0.28)
+          );
+          background: var(--aily-highlight-bg, rgba(127, 127, 127, 0.12));
+        }
+      }
+
+      .memory-nav-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .memory-nav-time {
+        flex: 0 0 auto;
+        color: var(--aily-text-tertiary, #8c8c8c);
+        font-size: 12px;
+      }
+    }
+
+    .memory-content {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+
+      .memory-entry-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 520px;
+        overflow: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+
+        &::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
+        }
+      }
+
+      .memory-entry-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        border-radius: 12px;
+        padding: 6px 0;
+        padding-left: 12px;
+        background: var(--aily-bg-primary, #fff);
+
+        &:focus-within {
+          border-color: var(
+            --aily-chat-viewer-blockly-chip-border,
+            rgba(0, 120, 212, 0.28)
+          );
+          background: var(--aily-bg-primary, #fff);
+        }
+
+        .memory-entry-input {
+          flex: 1 1 auto;
+          min-width: 0;
+          height: 32px;
+          padding: 0;
+          border: 0;
+          outline: 0;
+          background: transparent;
+          color: var(--aily-text-primary, #1f1f1f);
+          font-size: 13px;
+          line-height: 32px;
+          box-shadow: none;
+
+          &::placeholder {
+            color: var(--aily-text-tertiary, #8c8c8c);
+          }
+        }
+      }
+
+      .memory-empty {
+        flex: 1 1 auto;
+        min-height: 220px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 16px;
+        color: var(--aily-text-tertiary, #8c8c8c);
+        background: var(--aily-bg-primary, #fff);
+        text-align: center;
+        padding: 24px;
+
+        &.memory-empty--sidebar {
+          min-height: 120px;
+        }
+
+        &.memory-empty--related {
+          min-height: 160px;
+        }
+      }
+    }
+
+    .memory-related-panel {
+      flex: 0 0 260px;
+      width: 260px;
+      min-width: 260px;
+      max-width: 260px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 0 12px;
+      border-radius: 12px;
+      background: var(--aily-bg-primary, #fff);
+
+      .memory-related-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--aily-border-secondary, #e5e7eb);
+
+        .memory-related-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--aily-text-primary, #1f1f1f);
+        }
+
+        .memory-related-actions {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+
+          .memory-icon-btn {
+            margin-right: -4px;
+          }
+        }
+      }
+
+      .memory-related-link-input {
+        width: 100%;
+        height: 32px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 10px;
+        background: var(--aily-bg-secondary, #fafafa);
+        color: var(--aily-text-primary, #1f1f1f);
+        outline: none;
+        box-shadow: none;
+
+        &::placeholder {
+          color: var(--aily-text-tertiary, #8c8c8c);
+        }
+      }
+
+      .memory-related-list {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        max-height: 460px;
+        overflow: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        padding-bottom: 8px;
+
+        &::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
+        }
+      }
+
+      .memory-related-group {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .memory-related-group-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--aily-text-tertiary, #8c8c8c);
+        padding: 0 2px;
+
+        .memory-related-group-badge {
+          min-width: 18px;
+          height: 18px;
+          padding: 0 6px;
+          border-radius: 999px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--aily-bg-secondary, #f3f3f3);
+          color: var(--aily-text-secondary, #666666);
+          font-size: 10px;
+          font-weight: 600;
+          line-height: 1;
+        }
+      }
+
+      .memory-related-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--aily-bg-secondary, #fafafa);
+        position: relative;
+
+        &:hover {
+          .memory-delete-btn {
+            opacity: 1;
+          }
+        }
+
+        .memory-delete-btn {
+          width: 24px;
+          height: 24px;
+          position: absolute;
+          right: 8px;
+          opacity: 0;
+        }
+      }
+
+      .memory-related-item-copy {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .memory-related-item-name {
+        display: block;
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--aily-text-primary, #1f1f1f);
+      }
+
+      .memory-related-item-path {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        color: var(--aily-text-tertiary, #8c8c8c);
+        border: 0;
+        padding: 0;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+
+        &:hover {
+          color: var(--aily-chat-viewer-blockly-chip-fg, #005fb8);
+        }
+      }
+    }
+  }
+}

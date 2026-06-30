@@ -182,6 +182,6 @@ export class AilyStateViewerComponent implements OnInit, OnDestroy {
   }
 
   logDetail() {
-    console.log('状态详情:', this.stateInfo);
+    // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
   }
 }

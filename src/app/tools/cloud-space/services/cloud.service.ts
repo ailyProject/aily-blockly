@@ -1,11 +1,12 @@
 
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders, HttpErrorResponse } from '@angular/common/http';
-import { Observable, throwError, from } from 'rxjs';
+import { Observable, throwError, from, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
 import { CmdService, CmdOutput } from '../../../services/cmd.service';
 import { PlatformService } from "../../../services/platform.service";
+import { AuthService } from '../../../services/auth.service';
 
 declare global {
   interface Window {
@@ -29,7 +30,8 @@ export class CloudService {
   constructor(
       private http: HttpClient,
       private cmdService: CmdService,
-      private platformService: PlatformService
+      private platformService: PlatformService,
+      private authService: AuthService
   ) { }
 
   /** 
@@ -172,6 +174,62 @@ export class CloudService {
       .pipe(
         catchError(this.handleError)
       );
+  }
+
+  /**
+   * 将项目设为模板
+   * @param projectId 项目ID
+   */
+  setTemplate(projectId: string): Observable<any> {
+    return this.http.post<any>(`${this.cloudProjectsUrl}/${projectId}/template`, {})
+      .pipe(
+        catchError(this.handleError)
+      );
+  }
+
+  /**
+   * 取消项目模板状态
+   * @param projectId 项目ID
+   */
+  unsetTemplate(projectId: string): Observable<any> {
+    return this.http.delete<any>(`${this.cloudProjectsUrl}/${projectId}/template`)
+      .pipe(
+        catchError(this.handleError)
+      );
+  }
+
+  /**
+   * 获取当前用户的模板项目列表
+   * @param page 页码
+   * @param perPage 每页数量
+   * @param board 开发板包名
+   */
+  getMyTemplates(page: number = 1, perPage: number = 100, board?: string): Observable<any> {
+    if (!this.authService.isLoggedIn) {
+      return of({
+        status: 401,
+        message: '未登录',
+        data: {
+          list: [],
+          total: 0
+        }
+      });
+    }
+
+    const params: Record<string, string> = {
+      page: page.toString(),
+      perPage: perPage.toString()
+    };
+
+    if (board?.trim()) {
+      params['board'] = board.trim();
+    }
+
+    return this.http.get<any>(`${this.cloudProjectsUrl}/templates`, {
+      params
+    }).pipe(
+      catchError(this.handleError)
+    );
   }
 
   /**
@@ -465,7 +523,7 @@ export class CloudService {
       }
     } else {
       // 非标准错误对象（可能是网络错误、CORS错误等）
-      console.error('非标准HTTP错误:', error);
+      console.debug('非标准HTTP错误:', error);
       if (error.message) {
         errMsg = `网络错误: ${error.message}`;
       } else if (typeof error === 'string') {
@@ -475,7 +533,7 @@ export class CloudService {
       }
     }
     
-    console.error('处理后的错误信息:', errMsg);
+    console.debug('处理后的错误信息:', errMsg);
     return throwError(() => errMsg);
   }
 }

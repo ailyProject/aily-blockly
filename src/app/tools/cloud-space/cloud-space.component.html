@@ -3,21 +3,12 @@
 </app-tool-container>
 <ng-template #windowBoxTemplate>
     <div class="window-box">
-        @if (canSync) {
-        <div class="top">
-            <button class="sync-btn" nz-button nzType="primary" (click)="syncToCloud()" [disabled]="isSyncing">
-                <i class="fa-regular fa-arrows-rotate" [class.spinning]="isSyncing"></i>
-                {{ isSyncing ? '正在同步' : '同步本项目到云端' }}
-            </button>
-        </div>
-        }
-        <div class="section-title">
+        <!-- <div class="section-title">
             <div class="title ccenter">
                 云存储列表
                 <div class="search-btn ccenter" (click)="openSearch()"><i class="fa-light fa-magnifying-glass"></i>
                 </div>
             </div>
-            <!-- <div class="search-btn ccenter" (click)="openSearch()"><i class="fa-light fa-magnifying-glass"></i></div> -->
             @if(showSearch){
             <div class="search-box">
                 <input nz-input placeholder="搜索已存储的项目" [(ngModel)]="searchKeyword" (ngModelChange)="onSearchChange()" />
@@ -26,6 +17,28 @@
                 </div>
             </div>
             }
+        </div> -->
+
+        <div class="section-title">
+            <div class="search-bar">
+                @if (canSync) {
+                <button class="sync-btn ccenter" nz-button nzType="primary" (click)="syncToCloud()" [disabled]="isSyncing">
+                    <i class="fa-regular fa-arrows-rotate" [class.spinning]="isSyncing"></i>
+                    {{ isSyncing ? '正在同步' : '同步本项目到云端' }}
+                </button>
+                }
+                <div class="search-box">
+                    <input nz-input placeholder="搜索已存储的项目" [(ngModel)]="searchKeyword"
+                        (ngModelChange)="onSearchChange()" />
+                    <div class="close-btn ccenter" (click)="closeSearch()">
+                        @if(searchKeyword.length > 0) {
+                        <i class="fa-light fa-xmark"></i>
+                        }@else {
+                        <i class="fa-light fa-magnifying-glass"></i>
+                        }
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="item-list sscroll">
@@ -61,7 +74,7 @@
                         私有
                         }
                     </button>
-                    <!-- <button (click)="toggleVisibility(item)">
+                    <button (click)="toggleTemplate(item)">
                         @if (item?.is_template === false) {
                         <i class="fa-light fa-box-check"></i>
                         设为模板
@@ -69,7 +82,7 @@
                         <i class="fa-light fa-box"></i>
                         取消模板
                         }
-                    </button> -->
+                    </button>
                     <button class="delete" (click)="deleteCloudProject(item)">
                         <i class="fa-light fa-trash"></i>
                         删除

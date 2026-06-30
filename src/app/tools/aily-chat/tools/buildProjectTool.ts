@@ -1,6 +1,6 @@
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { BuilderService } from "../../../services/builder.service";
-import { setLastBuildErrors, clearLastBuildErrors } from './getErrorsTool';
+import { setLastBuildErrors, clearLastBuildErrors } from '../core/diagnostics';
 
 interface BuildProjectInput {
     /** 是否仅做预编译检查（更快，但不生成完整产物） */
@@ -103,7 +103,7 @@ export async function buildProjectTool(
         }
 
         // 执行完整编译 - 成功时返回结果，失败时会 throw
-        const result = await builderService.build();
+        const result = await builderService.build(projectPath);
 
         // 编译成功 → 清除缓存的编译错误
         clearLastBuildErrors();

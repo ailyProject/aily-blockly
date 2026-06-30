@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "单击复制到剪切板，双击复制到AI助手",
+        "COPIED_TO_CLIPBOARD": "日志内容已复制到剪切板",
+        "SENT_TO_AI": "日志内容已发送到AI助手",
+        "NO_DATA_TO_EXPORT": "没有日志数据可以导出",
+        "EXPORT_TITLE": "导出日志数据",
+        "TEXT_FILE": "文本文件",
+        "ALL_FILES": "所有文件",
+        "EXPORT_SUCCESS": "日志数据已成功导出到",
+        "SHOW_ERRORS_ONLY": "只显示错误",
+        "SEARCH_PLACEHOLDER": "搜索日志"
+    }
+}

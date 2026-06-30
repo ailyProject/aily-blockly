@@ -1,5 +1,9 @@
 @use './styles/themes/index';
 
+html {
+  overflow: hidden;
+}
+
 body {
   width: 100vw;
   height: 100vh;
@@ -9,6 +13,10 @@ body {
   background-color: var(--aily-bg-primary) !important;
   color: var(--aily-text-primary);
   user-select: none;
+}
+
+img {
+  -webkit-user-drag: none;
 }
 
 .loading-box {
@@ -65,12 +73,132 @@ body {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
 }
 
+.project-lock-conflict-modal {
+  .ant-modal-content {
+    background: var(--aily-bg-elevated) !important;
+    border: 1px solid var(--aily-border-input);
+    box-shadow: var(--aily-shadow-lg) !important;
+  }
+
+  .ant-modal-header,
+  .ant-modal-footer {
+    background: transparent;
+    border-color: var(--aily-border-secondary);
+  }
+
+  .ant-modal-title,
+  .ant-modal-body {
+    color: var(--aily-text-primary);
+  }
+
+  .ant-modal-body {
+    line-height: 1.6;
+  }
+
+  .ant-modal-close {
+    color: var(--aily-text-hint);
+
+    &:hover {
+      color: var(--aily-text-primary);
+    }
+  }
+}
+
+.development-mode-preference-modal {
+  .ant-modal-content {
+    background: #161616 !important;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8) !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+  }
+
+  .ant-modal-header,
+  .ant-modal-footer {
+    background: transparent;
+    padding: 12px 16px;
+    border-color: rgba(255, 255, 255, 0.06);
+  }
+
+  .ant-modal-title,
+  .ant-modal-close:hover {
+    color: #ffffff;
+  }
+
+  .ant-modal-body {
+    padding: 16px;
+    background: transparent !important;
+    color: #e6e6e6;
+    line-height: 1.6;
+  }
+}
+
 nz-modal-container {
   overflow: hidden !important;
 }
 
+.feedback-modal-wrap {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  text-align: initial;
+
+  &::before {
+    display: none !important;
+  }
+
+  .ant-modal {
+    top: auto;
+    display: block;
+    max-height: calc(100vh - 48px);
+    margin: 0;
+    padding-bottom: 0;
+    vertical-align: initial;
+  }
+}
+
 .cdk-overlay-container {
   z-index: 10000 !important;
+}
+
+.aily-chat-menu-left-tooltip.ant-tooltip {
+  max-width: min(180px, calc(100vw - 24px));
+  z-index: 1000040;
+
+  .ant-tooltip-inner {
+    max-width: min(180px, calc(100vw - 24px));
+    max-height: min(240px, calc(100vh - 24px));
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px 9px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 16px;
+    white-space: pre-line;
+    word-break: break-word;
+    scrollbar-width: thin;
+  }
+
+  .ant-tooltip-inner::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .ant-tooltip-inner::-webkit-scrollbar-thumb {
+    background: var(--aily-scrollbar-thumb);
+    border-radius: 4px;
+  }
+}
+
+body.aily-chat-model-submenu-open {
+  nz-resize-handle.layout-resize-handle {
+    z-index: 0 !important;
+    pointer-events: none !important;
+  }
+
+  nz-resize-handle.layout-resize-handle .toolbox-pane__resize-handle::after {
+    background: transparent !important;
+    opacity: 0 !important;
+  }
 }
 
 .cdk-global-scrollblock {
@@ -162,7 +290,103 @@ nz-sider {
 }
 
 .blocklyWidgetDiv {
+  // Blockly 默认 z-index 为 99999，需低于 cdk-overlay-container(10000) 以免遮挡弹窗
+  z-index: 9999 !important;
+
   .blocklyHtmlInput {
     color: var(--aily-blockly-text-primary);
+  }
+}
+
+// Blockly 下拉选择框 美化（对齐 menu 组件风格）
+.blocklyDropDownDiv {
+  // 与 blocklyWidgetDiv 一致，低于 cdk-overlay-container(10000)
+  z-index: 9999 !important;
+  background: var(--aily-bg-primary) !important;
+  border: 1px solid var(--aily-border-subtle) !important;
+  border-radius: 5px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25) !important;
+  padding: 3px 0 !important;
+  color: var(--aily-menu-text) !important;
+
+  .blocklyDropDownContent {
+    background: transparent !important;
+    max-height: 320px;
+    overflow-y: auto;
+
+    // 滚动条
+    scrollbar-width: thin;
+    scrollbar-color: var(--aily-border-tertiary) transparent;
+
+    &::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: var(--aily-border-tertiary);
+      border-radius: 2px;
+
+      &:hover {
+        background: var(--aily-scrollbar-thumb-hover);
+      }
+    }
+  }
+
+  .blocklyMenu {
+    background: transparent !important;
+    padding: 0 !important;
+    outline: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  .blocklyMenuItem {
+    display: flex;
+    align-items: center;
+    min-width: 50px;
+    padding: 6px 10px !important;
+    margin: 0 3px !important;
+    border-radius: 5px !important;
+    color: var(--aily-menu-text) !important;
+    cursor: pointer;
+    background: transparent !important;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    font-size: 14px;
+
+    &:hover,
+    &.blocklyMenuItemHighlight,
+    &.goog-menuitem-highlight,
+    &.goog-menuitem-hover {
+      background: var(--aily-menu-hover) !important;
+      color: var(--aily-menu-text) !important;
+    }
+
+    &.blocklyMenuItemSelected,
+    &.goog-option-selected {
+      font-weight: bold;
+      color: var(--aily-color-accent) !important;
+    }
+  }
+
+  .blocklyMenuItemContent {
+    display: flex;
+    align-items: center;
+    padding: 0 !important;
+    background: transparent !important;
+    color: inherit !important;
+  }
+
+  .goog-menuitem-checkbox {
+    display: none;
+  }
+
+  // 底部/顶部小箭头与容器同色
+  .blocklyDropDownArrow {
+    background-color: var(--aily-bg-primary) !important;
+    border-color: var(--aily-border-subtle) !important;
   }
 }

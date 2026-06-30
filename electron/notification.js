@@ -1,5 +1,8 @@
-const { Notification, ipcMain } = require('electron');
-const path = require('path');
+const { Notification, ipcMain, BrowserWindow } = require('electron');
+const { requestWindowAttention } = require('./window-attention');
+
+/** @type {import('electron').BrowserWindow | null} */
+let cachedMainWindow = null;
 
 /**
  * 显示系统通知
@@ -10,9 +13,10 @@ const path = require('path');
  * @param {boolean} options.silent - 是否静音（可选，默认 false）
  * @param {string} options.timeoutType - 超时类型（可选，'default' | 'never'）
  * @param {string} options.urgency - 紧急程度（可选，'normal' | 'critical' | 'low'）
+ * @param {import('electron').BrowserWindow | null | undefined} browserWindow - 用于平台级注意提示
  * @returns {Promise<void>}
  */
-function showNotification(options) {
+function showNotification(options, browserWindow) {
   return new Promise((resolve, reject) => {
     try {
       // 检查是否支持通知
@@ -60,6 +64,9 @@ function showNotification(options) {
         reject(error);
       });
 
+      // 与 window-request-attention 一致：任务栏/Dock 等持久提示，避免仅依赖短时气泡
+      requestWindowAttention(browserWindow);
+
       // 显示通知
       notification.show();
 
@@ -73,10 +80,16 @@ function showNotification(options) {
  * 初始化通知模块的 IPC 监听器
  */
 function registerNotificationHandlers(mainWindow) {
+  cachedMainWindow = mainWindow;
+
   // 处理来自渲染进程的通知请求
   ipcMain.handle('notification-show', async (event, options) => {
     try {
-      const result = await showNotification(options);
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      const targetWindow = senderWindow && !senderWindow.isDestroyed()
+        ? senderWindow
+        : cachedMainWindow;
+      const result = await showNotification(options, targetWindow);
       return { success: true, result };
     } catch (error) {
       console.error('显示通知失败:', error);

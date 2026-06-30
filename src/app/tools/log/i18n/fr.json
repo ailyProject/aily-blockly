@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "Cliquer pour copier, double-cliquer pour envoyer à l'assistant AI",
+        "COPIED_TO_CLIPBOARD": "Contenu du journal copié dans le presse-papiers",
+        "SENT_TO_AI": "Contenu du journal envoyé à l'assistant AI",
+        "NO_DATA_TO_EXPORT": "Aucune donnée de journal à exporter",
+        "EXPORT_TITLE": "Exporter les données du journal",
+        "TEXT_FILE": "Fichiers texte",
+        "ALL_FILES": "Tous les fichiers",
+        "EXPORT_SUCCESS": "Données du journal exportées avec succès vers ",
+        "SHOW_ERRORS_ONLY": "Afficher uniquement les erreurs",
+        "SEARCH_PLACEHOLDER": "Rechercher dans les journaux"
+    }
+}

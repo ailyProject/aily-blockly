@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "クリックでクリップボードにコピー、ダブルクリックでAIアシスタントに送信",
+        "COPIED_TO_CLIPBOARD": "ログ内容がクリップボードにコピーされました",
+        "SENT_TO_AI": "ログ内容がAIアシスタントに送信されました",
+        "NO_DATA_TO_EXPORT": "エクスポートするログデータがありません",
+        "EXPORT_TITLE": "ログデータをエクスポート",
+        "TEXT_FILE": "テキストファイル",
+        "ALL_FILES": "すべてのファイル",
+        "EXPORT_SUCCESS": "ログデータが正常にエクスポートされました: ",
+        "SHOW_ERRORS_ONLY": "エラーのみ表示",
+        "SEARCH_PLACEHOLDER": "ログを検索"
+    }
+}

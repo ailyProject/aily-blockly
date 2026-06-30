@@ -5,7 +5,7 @@
  * TERMINATE 前缀检测、aily-button 截断等逻辑。
  */
 
-import type { ChatEngineService } from '../services/chat-engine.service';
+import type { IChatViewAccess } from '../core/chat-context';
 import { ChatMessage, ToolCallState, ToolCallInfo } from '../core/chat-types';
 import {
   makeJsonSafe as _makeJsonSafe,
@@ -20,8 +20,13 @@ import {
   generateToolResultText as _generateToolResultText,
 } from '../services/tool-display.service';
 
+type MessageDisplayContext = Pick<
+  IChatViewAccess,
+  'viewAdapter' | 'toolCallStates'
+>;
+
 export class MessageDisplayHelper {
-  constructor(private engine: ChatEngineService) {}
+  constructor(private ctx: MessageDisplayContext) {}
 
   // ==================== 纯函数包装 ====================
 
@@ -31,7 +36,7 @@ export class MessageDisplayHelper {
   truncateToolResult(content: string, toolName?: string, maxChars?: number): string { return _truncateToolResult(content, toolName, maxChars); }
 
   getClosingTagsForOpenBlocks(): string {
-    return this.engine.viewAdapter.getClosingTagsForOpenBlocks(_getClosingTagsForOpenBlocks);
+    return this.ctx.viewAdapter.getClosingTagsForOpenBlocks(_getClosingTagsForOpenBlocks);
   }
 
   cleanupLastAiMessage(): void {
@@ -39,13 +44,13 @@ export class MessageDisplayHelper {
   }
 
   checkAndTruncateAilyButtonBlock(): boolean {
-    return this.engine.viewAdapter.checkAndTruncateAilyButtonBlock();
+    return this.ctx.viewAdapter.checkAndTruncateAilyButtonBlock();
   }
 
   // ==================== 工具调用状态显示 ====================
 
   displayToolCallState(toolCallInfo: ToolCallInfo, source?: string): void {
-    this.engine.viewAdapter.displayToolCallState(toolCallInfo, source, this.engine.toolCallStates);
+    this.ctx.viewAdapter.displayToolCallState(toolCallInfo, source, this.ctx.toolCallStates);
   }
 
   startToolCall(toolId: string, toolName: string, text: string, args?: any, source?: string): void {
@@ -55,10 +60,10 @@ export class MessageDisplayHelper {
   }
 
   completeToolCall(toolId: string, toolName: string, state: ToolCallState, text: string, source?: string): void {
-    const displayText = text || this.engine.toolCallStates[toolId] || '';
+    const displayText = text || this.ctx.toolCallStates[toolId] || '';
     const toolCallInfo: ToolCallInfo = { id: toolId, name: toolName, state, text: displayText };
     this.displayToolCallState(toolCallInfo, source);
-    delete this.engine.toolCallStates[toolId];
+    delete this.ctx.toolCallStates[toolId];
   }
 
   // ==================== 历史解析 ====================
@@ -107,16 +112,16 @@ export class MessageDisplayHelper {
    * 所有非流式内容（aily-state/error/button 块、工具结果等）走 appendMessage()。
    */
   appendStreaming(role: string, text: string, source?: string): void {
-    this.engine.viewAdapter.appendStreaming(role, text, source);
+    this.ctx.viewAdapter.appendStreaming(role, text, source);
   }
 
   setLastMsgContent(role: string, text: string, source?: string): void {
     // 立即路径：先 flush 所有 pending streaming
-    this.engine.viewAdapter.appendImmediate(role, text, source);
+    this.ctx.viewAdapter.appendImmediate(role, text, source);
   }
 
   appendMessage(role: string, text: string, source?: string): void {
     // 非流式追加：先 flush pending，再立即写入
-    this.engine.viewAdapter.appendImmediate(role, text, source);
+    this.ctx.viewAdapter.appendImmediate(role, text, source);
   }
 }

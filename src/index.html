@@ -11,28 +11,75 @@
   <link rel="stylesheet" href="fonts/fontawesome6/css/all.min.css" />
   <!-- Icon-font -->
   <link rel="stylesheet" href="fonts/iconfont/iconfont.css">
+  <script>
+    (function () {
+      function readThemeFromConfig(configPath) {
+        try {
+          var api = window.electronAPI;
+          if (!api || !api.fs || !api.path || !api.fs.existsSync(configPath)) {
+            return null;
+          }
+          var config = JSON.parse(api.fs.readFileSync(configPath, 'utf8'));
+          return config && config.theme;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      try {
+        var api = window.electronAPI;
+        var appDataPath = api && api.path && api.path.getAppDataPath && api.path.getAppDataPath();
+        var electronPath = api && api.path && api.path.getElectronPath && api.path.getElectronPath();
+        var theme =
+          (appDataPath && readThemeFromConfig(api.path.join(appDataPath, 'config.json'))) ||
+          (electronPath && readThemeFromConfig(api.path.join(electronPath, 'config', 'config.json')));
+
+        document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
   <!-- 内联启动画面样式，确保在 Angular 加载前就能显示 -->
   <style>
+    :root,
+    [data-theme="dark"] {
+      --startup-bg-primary: #2b2d30;
+      --startup-text-primary: #ffffff;
+      --startup-loader-dot: #ffffff;
+    }
+    [data-theme="light"] {
+      --startup-bg-primary: #e8e8e8;
+      --startup-text-primary: #2e2e2e;
+      --startup-loader-dot: #2e2e2e;
+    }
     body {
       margin: 0;
-      background-color: #2b2d30;
+      background-color: var(--startup-bg-primary);
     }
     .loading-box {
       width: 100vw;
       height: 100vh;
-      background: #2b2d30;
+      background: var(--startup-bg-primary);
       position: fixed;
       top: 0;
       left: 0;
-      z-index: 99;
+      z-index: 999999;
       display: flex;
       justify-content: center;
       align-items: center;
       flex-direction: column;
       border-radius: 5px;
+      opacity: 1;
+      transition: opacity 0.2s ease;
+      pointer-events: auto;
+    }
+    .loading-box.loading-box--hidden {
+      opacity: 0;
+      pointer-events: none;
     }
     .loading-box .text {
-      color: #fff;
+      color: var(--startup-text-primary);
       margin-left: 12px;
       margin-top: 5px;
       font-size: 18px;
@@ -48,7 +95,7 @@
       height: 15px;
       margin: 2px;
       border-radius: 100%;
-      background-color: #fff;
+      background-color: var(--startup-loader-dot);
       animation: ball-grid-beat 1.3s ease infinite;
     }
     .ball-grid-beat > div:nth-child(1) { animation-delay: 0.36s; animation-duration: 1.18s; }
@@ -69,24 +116,23 @@
 </head>
 
 <body spellcheck="false">
-  <app-root class="ddark">
-    <div class="loading-box">
-      <div class="loader">
-        <div class="ball-grid-beat">
-          <div></div>
-          <div></div>
-          <div></div>
-          <div></div>
-          <div></div>
-          <div></div>
-          <div></div>
-          <div></div>
-          <div></div>
-        </div>
+  <app-root class="ddark"></app-root>
+  <div id="app-loading-box" class="loading-box">
+    <div class="loader">
+      <div class="ball-grid-beat">
+        <div></div>
+        <div></div>
+        <div></div>
+        <div></div>
+        <div></div>
+        <div></div>
+        <div></div>
+        <div></div>
+        <div></div>
       </div>
-      <div class="text">Loading...</div>
     </div>
-  </app-root>
+    <div class="text">Loading...</div>
+  </div>
 </body>
 
 </html>

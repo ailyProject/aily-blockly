@@ -1,4 +1,4 @@
-import { Component, OnDestroy, effect } from '@angular/core';
+import { ChangeDetectorRef, Component, NgZone, OnDestroy, effect } from '@angular/core';
 import { ToolContainerComponent } from '../../../../components/tool-container/tool-container.component';
 import { UiService } from '../../../../services/ui.service';
 import { SubWindowComponent } from '../../../../components/sub-window/sub-window.component';
@@ -11,6 +11,7 @@ import { Subject, combineLatest } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { BlockCodeMapping } from '../../components/blockly/generators/arduino/arduino';
 import { ThemeService } from '../../../../services/theme.service';
+import { CodeViewerIpcService, CodeViewerIpcState } from '../../services/code-viewer-ipc.service';
 
 @Component({
   selector: 'app-code-viewer',
@@ -44,12 +45,18 @@ export class CodeViewerComponent implements OnDestroy {
   private monacoInstance: any = null;
   private oldDecorations: string[] = [];
   private destroy$ = new Subject<void>();
+  private currentBlockCodeMap = new Map<string, BlockCodeMapping>();
+  private currentSelectedBlockId: string | null = null;
+  private ipcStateCleanup: (() => void) | null = null;
 
   constructor(
     private blocklyService: BlocklyService,
     private uiService: UiService,
     private router: Router,
-    private themeService: ThemeService
+    private themeService: ThemeService,
+    private codeViewerIpcService: CodeViewerIpcService,
+    private ngZone: NgZone,
+    private cdr: ChangeDetectorRef,
   ) {
     // 监听主题变化，动态切换 Monaco 主题
     effect(() => {
@@ -63,11 +70,32 @@ export class CodeViewerComponent implements OnDestroy {
   }
 
   ngAfterViewInit(): void {
+    if (this.codeViewerIpcService.isAvailable) {
+      this.initElectronStateSync();
+      return;
+    }
+
+    this.initAngularStateSync();
+  }
+
+  private initElectronStateSync(): void {
+    this.ipcStateCleanup = this.codeViewerIpcService.onState((state) => {
+      this.ngZone.run(() => this.applyIpcState(state));
+    });
+
+    this.codeViewerIpcService.getState().then((state) => {
+      if (!state) return;
+      this.ngZone.run(() => this.applyIpcState(state));
+    });
+  }
+
+  private initAngularStateSync(): void {
     this.blocklyService.codeSubject
       .pipe(takeUntil(this.destroy$))
       .subscribe((code) => {
         setTimeout(() => {
           this.code = code;
+          this.cdr.markForCheck();
         }, 100);
       });
 
@@ -78,18 +106,44 @@ export class CodeViewerComponent implements OnDestroy {
     ])
       .pipe(takeUntil(this.destroy$))
       .subscribe(([blockId, codeMap]) => {
-        if (blockId && codeMap.has(blockId)) {
-          const mapping = codeMap.get(blockId)!;
-          this.highlightBlock(mapping);
-        } else {
-          this.clearHighlight();
-        }
+        this.currentSelectedBlockId = blockId;
+        this.currentBlockCodeMap = codeMap;
+        this.updateHighlight();
       });
   }
 
   ngOnDestroy(): void {
+    if (this.ipcStateCleanup) {
+      this.ipcStateCleanup();
+      this.ipcStateCleanup = null;
+    }
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  private applyIpcState(state: CodeViewerIpcState): void {
+    if (typeof state.code === 'string') {
+      this.code = state.code;
+    }
+
+    if (state.blockCodeMap) {
+      this.currentBlockCodeMap = this.codeViewerIpcService.toMap(state.blockCodeMap);
+    }
+
+    if ('selectedBlockId' in state) {
+      this.currentSelectedBlockId = state.selectedBlockId ?? null;
+    }
+
+    this.updateHighlight();
+    this.cdr.markForCheck();
+  }
+
+  private updateHighlight(): void {
+    if (this.currentSelectedBlockId && this.currentBlockCodeMap.has(this.currentSelectedBlockId)) {
+      this.highlightBlock(this.currentBlockCodeMap.get(this.currentSelectedBlockId)!);
+    } else {
+      this.clearHighlight();
+    }
   }
 
   /**
@@ -98,6 +152,7 @@ export class CodeViewerComponent implements OnDestroy {
   onEditorInitialized(editor: any): void {
     this.editorInstance = editor;
     this.monacoInstance = (window as any).monaco;
+    this.updateHighlight();
   }
 
   /**

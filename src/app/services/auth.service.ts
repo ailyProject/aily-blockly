@@ -4,10 +4,21 @@ import { BehaviorSubject, Observable, Subject, throwError, from } from 'rxjs';
 import { catchError, map, switchMap } from 'rxjs/operators';
 import { API } from '../configs/api.config';
 import { ElectronService } from './electron.service';
+import { extractApiErrorDetails } from '../utils/api-error.utils';
+import type {
+  AuthQuotaInfoSnapshot,
+  AuthQuotaInfoSnapshotItem,
+  AuthSnapshot,
+  AuthUserInfo,
+} from '../tools/aily-chat/core/auth-snapshot';
 
 export interface CommonResponse {
   status: number;
-  message: string;
+  message?: string | null;
+  messages?: string | string[] | null;
+  errorCode?: string | null;
+  errorArgs?: Record<string, unknown>;
+  errorMessage?: string | null;
   data?: any;
 }
 
@@ -19,7 +30,11 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   status: number;
-  message: string;
+  message?: string | null;
+  messages?: string | string[] | null;
+  errorCode?: string | null;
+  errorArgs?: Record<string, unknown>;
+  errorMessage?: string | null;
   data?: {
     access_token: string;
     refresh_token?: string;
@@ -73,8 +88,19 @@ export class AuthService {
   }
 
   // 用户信息
-  private userInfoSubject = new BehaviorSubject<any>(null);
+  private userInfoSubject = new BehaviorSubject<AuthUserInfo | null>(null);
   public userInfo$ = this.userInfoSubject.asObservable();
+
+  // 归一化 auth snapshot，避免 chat 等消费者依赖原始 userInfo 结构
+  private authSnapshotSubject = new BehaviorSubject<AuthSnapshot | null>(null);
+  public authSnapshot$ = this.authSnapshotSubject.asObservable();
+  private authChangedSubject = new Subject<void>();
+  public authChanged$ = this.authChangedSubject.asObservable();
+  private authQuotaInfoSnapshotOverride: AuthQuotaInfoSnapshot | null = null;
+  private authQuotaInfoRefreshRetryHandle: ReturnType<typeof setTimeout> | null = null;
+  private authHydrationRetryHandle: ReturnType<typeof setTimeout> | null = null;
+  private readonly authQuotaInfoRefreshRetryDelaysMs = [0, 1000, 5000] as const;
+  private readonly authHydrationRetryDelaysMs = [1000, 5000] as const;
 
   // 登录弹窗显示状态
   showUser = new BehaviorSubject<any>(null);
@@ -102,7 +128,6 @@ export class AuthService {
           this.getMe(token).then(userInfo => {
             // console.log('获取用户信息:', userInfo);
             if (userInfo) {
-              this.userInfoSubject.next(userInfo);
               this.isLoggedInSubject.next(true);
             } else {
               this.isLoggedInSubject.next(false);
@@ -132,22 +157,22 @@ export class AuthService {
    */
   login(loginData: LoginRequest): Observable<LoginResponse> {
     return this.http.post<LoginResponse>(API.login, { ...loginData, device_id: 'pc' }).pipe(
-      map((response) => {
+      switchMap((response) => {
         // console.log("登录响应: ", response);
         if (response.status === 200 && response.data) {
-          // console.log("登录成功，token: ", response.data.access_token);
-          // 保存 token 和用户信息
-          this.saveToken2(response.data.access_token);
-          this.getMe(response.data.access_token);
-          // if (response.data.user) {
-          //   this.saveUserInfo(response.data.user);
-          //   this.userInfoSubject.next(response.data.user);
-          // }
-          this.isLoggedInSubject.next(true);
+          return from((async () => {
+            await this.saveToken2(response.data.access_token);
+            await this.handleSuccessfulTokenAcquisition(
+              response.data.access_token,
+              response.data.user as AuthUserInfo | undefined,
+            );
+            return response;
+          })());
         } else {
           this.isLoggedInSubject.next(false);
         }
-        return response;
+
+        return from(Promise.resolve(response));
       }),
       catchError(this.handleError)
     );
@@ -185,19 +210,25 @@ export class AuthService {
    */
   loginByEmail(email: string, code: string, inviteCode: string): Observable<LoginResponse> {
     return this.http.post<LoginResponse>(API.loginByEmail, { email, code, device_id: 'pc', invite_code: inviteCode }).pipe(
-      map((response) => {
+      switchMap((response) => {
         if (response.status === 200 && response.data) {
           // 需要绑定微信时不保存 token
           if ((response.data as any).status === 'needs_wechat_bind') {
-            return response;
+            return from(Promise.resolve(response));
           }
-          this.saveToken2(response.data.access_token);
-          this.getMe(response.data.access_token);
-          this.isLoggedInSubject.next(true);
+          return from((async () => {
+            await this.saveToken2(response.data!.access_token);
+            await this.handleSuccessfulTokenAcquisition(
+              response.data!.access_token,
+              response.data!.user as AuthUserInfo | undefined,
+            );
+            return response;
+          })());
         } else {
           this.isLoggedInSubject.next(false);
         }
-        return response;
+
+        return from(Promise.resolve(response));
       }),
       catchError(this.handleError)
     );
@@ -242,14 +273,28 @@ export class AuthService {
   /**
    * 获取当前登录用户信息
    */
-  private getMe(token: string): Promise<any> {
+  private getMe(token: string): Promise<AuthUserInfo | null> {
     return new Promise((resolve, reject) => {
       this.http.get<CommonResponse>(API.me, {
         headers: { Authorization: `Bearer ${token}` }
       }).subscribe({
-        next: (response) => {
+        next: async (response) => {
           if (response.status === 200 && response.data) {
-            this.userInfoSubject.next(response.data);
+            try {
+              const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
+              this.setCurrentUserInfo(response.data, quotaInfoSnapshot);
+            } catch (quotaError) {
+              console.warn('获取独立配额快照失败，回退到 auth/me:', quotaError);
+              const recoveredQuotaInfoSnapshot = await this.retryAuthQuotaInfoSnapshotImmediately(token);
+              if (recoveredQuotaInfoSnapshot) {
+                this.setCurrentUserInfo(response.data, recoveredQuotaInfoSnapshot);
+              } else {
+                this.setCurrentUserInfo(response.data, null);
+                if (this.getAuthSnapshot()?.quotaInfoSnapshot?.source !== 'token') {
+                  this.scheduleAuthQuotaInfoSnapshotRetry(token, response.data, 1);
+                }
+              }
+            }
             resolve(response.data);
           } else {
             console.warn('获取用户信息失败:', response);
@@ -267,11 +312,7 @@ export class AuthService {
     if (!token) {
       return;
     }
-    return this.http.get<CommonResponse>(API.me).subscribe( (res) => {
-      if (res.status === 200 && res.data) {
-        this.userInfoSubject.next(res.data);
-      };
-    });
+    return this.getMe(token);
   }
 
   /**
@@ -391,7 +432,6 @@ export class AuthService {
             try {
               const userInfo = await this.getMe(token);
               if (userInfo) {
-                this.userInfoSubject.next(userInfo);
                 this.isLoggedInSubject.next(true);
               }
             } catch (error) {
@@ -653,9 +693,11 @@ export class AuthService {
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.REFRESH_TOKEN_KEY);
     localStorage.removeItem(this.USER_INFO_KEY);
+    this.clearPendingAuthQuotaInfoSnapshotRetry();
+    this.clearPendingAuthHydrationRetry();
     this.clearAuthDataFile();
     this.isLoggedInSubject.next(false);
-    this.userInfoSubject.next(null);
+    this.setCurrentUserInfo(null);
   }
 
   /**
@@ -668,8 +710,16 @@ export class AuthService {
   /**
    * 获取当前用户信息
    */
-  get currentUser(): any {
+  get currentUser(): AuthUserInfo | null {
     return this.userInfoSubject.value;
+  }
+
+  get userInfo(): AuthUserInfo | null {
+    return this.userInfoSubject.value;
+  }
+
+  getAuthSnapshot(): AuthSnapshot | null {
+    return this.authSnapshotSubject.value;
   }
 
   /**
@@ -681,6 +731,288 @@ export class AuthService {
       return false;
     }
     return Boolean(entitlements[entitlementKey]);
+  }
+
+  private async getAuthQuotaInfoSnapshot(token: string): Promise<AuthQuotaInfoSnapshot | null> {
+    return new Promise((resolve, reject) => {
+      this.http.get<CommonResponse>(API.authQuotaInfo, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).subscribe({
+        next: (response) => {
+          if (response.status !== 200 || !response.data) {
+            resolve(null);
+            return;
+          }
+
+          resolve(normalizeAuthQuotaInfoSnapshotPayload(response.data, { source: 'token' }) ?? null);
+        },
+        error: (error) => reject(error),
+      });
+    });
+  }
+
+  private async retryAuthQuotaInfoSnapshotImmediately(
+    token: string,
+  ): Promise<AuthQuotaInfoSnapshot | null> {
+    try {
+      return await this.getAuthQuotaInfoSnapshot(token);
+    } catch (error) {
+      console.warn('立即重试独立配额快照失败:', error);
+      return null;
+    }
+  }
+
+  private scheduleAuthQuotaInfoSnapshotRetry(
+    token: string,
+    expectedUserInfo: AuthUserInfo,
+    attemptIndex = 0,
+  ): void {
+    if (attemptIndex >= this.authQuotaInfoRefreshRetryDelaysMs.length) {
+      return;
+    }
+
+    this.clearPendingAuthQuotaInfoSnapshotRetry();
+    const retryDelay = this.authQuotaInfoRefreshRetryDelaysMs[attemptIndex];
+    this.authQuotaInfoRefreshRetryHandle = setTimeout(() => {
+      this.authQuotaInfoRefreshRetryHandle = null;
+      void this.refreshAuthQuotaInfoSnapshotForCurrentUser(token, expectedUserInfo, attemptIndex);
+    }, retryDelay);
+  }
+
+  private clearPendingAuthQuotaInfoSnapshotRetry(): void {
+    if (this.authQuotaInfoRefreshRetryHandle !== null) {
+      clearTimeout(this.authQuotaInfoRefreshRetryHandle);
+      this.authQuotaInfoRefreshRetryHandle = null;
+    }
+  }
+
+  private scheduleAuthHydrationRetry(
+    token: string,
+    expectedUserInfo: AuthUserInfo,
+    attemptIndex = 0,
+  ): void {
+    if (attemptIndex >= this.authHydrationRetryDelaysMs.length) {
+      return;
+    }
+
+    this.clearPendingAuthHydrationRetry();
+    const retryDelay = this.authHydrationRetryDelaysMs[attemptIndex];
+    this.authHydrationRetryHandle = setTimeout(() => {
+      this.authHydrationRetryHandle = null;
+      void this.refreshHydratedAuthStateForCurrentUser(token, expectedUserInfo, attemptIndex);
+    }, retryDelay);
+  }
+
+  private clearPendingAuthHydrationRetry(): void {
+    if (this.authHydrationRetryHandle !== null) {
+      clearTimeout(this.authHydrationRetryHandle);
+      this.authHydrationRetryHandle = null;
+    }
+  }
+
+  private async refreshAuthQuotaInfoSnapshotForCurrentUser(
+    token: string,
+    expectedUserInfo: AuthUserInfo,
+    attemptIndex: number,
+  ): Promise<void> {
+    const currentUserInfo = this.userInfoSubject.getValue();
+    if (!currentUserInfo || !isSameAuthUser(currentUserInfo, expectedUserInfo)) {
+      return;
+    }
+
+    if (this.authQuotaInfoSnapshotOverride?.source === 'token') {
+      return;
+    }
+
+    try {
+      const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
+      if (!quotaInfoSnapshot) {
+        this.retryAuthQuotaInfoSnapshotIfStillPending(token, expectedUserInfo, attemptIndex + 1);
+        return;
+      }
+
+      const latestUserInfo = this.userInfoSubject.getValue();
+      if (!latestUserInfo || !isSameAuthUser(latestUserInfo, expectedUserInfo)) {
+        return;
+      }
+
+      this.setCurrentUserInfo(latestUserInfo, quotaInfoSnapshot);
+    } catch (error) {
+      console.warn('后台刷新独立配额快照失败:', error);
+      this.retryAuthQuotaInfoSnapshotIfStillPending(token, expectedUserInfo, attemptIndex + 1);
+    }
+  }
+
+  private retryAuthQuotaInfoSnapshotIfStillPending(
+    token: string,
+    expectedUserInfo: AuthUserInfo,
+    nextAttemptIndex: number,
+  ): void {
+    const latestUserInfo = this.userInfoSubject.getValue();
+    if (!latestUserInfo || !isSameAuthUser(latestUserInfo, expectedUserInfo)) {
+      return;
+    }
+
+    if (this.authQuotaInfoSnapshotOverride?.source === 'token') {
+      return;
+    }
+
+    this.scheduleAuthQuotaInfoSnapshotRetry(token, expectedUserInfo, nextAttemptIndex);
+  }
+
+  private async refreshHydratedAuthStateForCurrentUser(
+    token: string,
+    expectedUserInfo: AuthUserInfo,
+    attemptIndex: number,
+  ): Promise<void> {
+    const currentUserInfo = this.userInfoSubject.getValue();
+    if (!currentUserInfo || !isSameAuthUser(currentUserInfo, expectedUserInfo)) {
+      return;
+    }
+
+    try {
+      const userInfo = await this.getMe(token);
+      if (!userInfo) {
+        this.scheduleAuthHydrationRetry(token, expectedUserInfo, attemptIndex + 1);
+        return;
+      }
+
+      const latestUserInfo = this.userInfoSubject.getValue();
+      if (!latestUserInfo || !isSameAuthUser(latestUserInfo, expectedUserInfo)) {
+        return;
+      }
+
+      await this.saveUserInfo(userInfo);
+    } catch (error) {
+      console.warn('后台刷新完整认证快照失败:', error);
+      this.scheduleAuthHydrationRetry(token, expectedUserInfo, attemptIndex + 1);
+    }
+  }
+
+  private async retryHydratedAuthStateImmediately(
+    token: string,
+  ): Promise<AuthUserInfo | null> {
+    try {
+      return await this.getMe(token);
+    } catch (error) {
+      console.warn('立即重试完整认证快照失败:', error);
+      return null;
+    }
+  }
+
+  private handleSuccessfulTokenAcquisition(
+    token: string,
+    fallbackUser?: AuthUserInfo | null,
+  ): Promise<boolean> {
+    return this.hydrateAuthStateFromToken(token, fallbackUser ?? null)
+      .then((user) => {
+        const isLoggedIn = !!user;
+        this.isLoggedInSubject.next(isLoggedIn);
+        return isLoggedIn;
+      });
+  }
+
+  private async hydrateAuthStateFromToken(
+    token: string,
+    fallbackUser?: AuthUserInfo | null,
+  ): Promise<AuthUserInfo | null> {
+    try {
+      const userInfo = await this.getMe(token);
+      if (userInfo) {
+        await this.saveUserInfo(userInfo);
+        return userInfo;
+      }
+    } catch (error) {
+      console.warn('获取完整认证快照失败，立即重试一次:', error);
+      const recoveredUser = await this.retryHydratedAuthStateImmediately(token);
+      if (recoveredUser) {
+        await this.saveUserInfo(recoveredUser);
+        return recoveredUser;
+      }
+      console.warn('完整认证快照立即重试仍失败，尝试使用回退用户信息');
+    }
+
+    if (fallbackUser) {
+      await this.saveUserInfo(fallbackUser);
+      this.setCurrentUserInfo(fallbackUser);
+      this.scheduleAuthHydrationRetry(token, fallbackUser);
+      return fallbackUser;
+    }
+
+    return null;
+  }
+
+  private setCurrentUserInfo(
+    userInfo: AuthUserInfo | null,
+    quotaInfoSnapshotOverride?: AuthQuotaInfoSnapshot | null,
+  ): void {
+    const previousUserInfo = this.userInfoSubject.getValue();
+    if (!userInfo || !isSameAuthUser(previousUserInfo, userInfo)) {
+      this.clearPendingAuthQuotaInfoSnapshotRetry();
+      this.clearPendingAuthHydrationRetry();
+    }
+    this.authQuotaInfoSnapshotOverride = resolveAuthQuotaInfoSnapshotOverride(
+      this.authQuotaInfoSnapshotOverride,
+      quotaInfoSnapshotOverride,
+      userInfo,
+      previousUserInfo,
+    );
+
+    this.userInfoSubject.next(userInfo);
+    this.authSnapshotSubject.next(this.buildAuthSnapshot(userInfo, this.authQuotaInfoSnapshotOverride));
+    this.authChangedSubject.next();
+  }
+
+  private buildAuthSnapshot(
+    userInfo: AuthUserInfo | null,
+    quotaInfoSnapshotOverride?: AuthQuotaInfoSnapshot | null,
+  ): AuthSnapshot | null {
+    if (!userInfo) {
+      return null;
+    }
+
+    const subscriptionPlan = userInfo.subscription_plan;
+    const quota = userInfo.quota;
+    const entitlements = userInfo.entitlements;
+    const groups = userInfo.groups;
+    const quotaInfoSnapshot = quotaInfoSnapshotOverride ?? buildAuthQuotaInfoSnapshot(userInfo);
+
+    const snapshot: AuthSnapshot = {
+      ...(subscriptionPlan && typeof subscriptionPlan === 'object' && typeof subscriptionPlan.name === 'string'
+        ? { plan: subscriptionPlan.name }
+        : {}),
+      ...(subscriptionPlan && typeof subscriptionPlan === 'object' && typeof subscriptionPlan.service_tier === 'string'
+        ? { serviceTier: subscriptionPlan.service_tier }
+        : {}),
+      ...(subscriptionPlan && typeof subscriptionPlan === 'object' && typeof subscriptionPlan.status === 'string'
+        ? { subscriptionStatus: subscriptionPlan.status }
+        : {}),
+      ...(subscriptionPlan && typeof subscriptionPlan === 'object' && typeof subscriptionPlan.end_date === 'string'
+        ? { subscriptionEndDate: subscriptionPlan.end_date }
+        : {}),
+      ...(Array.isArray(groups)
+        ? { groups: groups.filter((group): group is string => typeof group === 'string' && group.trim().length > 0) }
+        : {}),
+      ...(quota && typeof quota === 'object'
+        && typeof quota.total_token === 'number'
+        && typeof quota.used_token === 'number'
+        && typeof quota.remaining_token === 'number'
+        ? {
+            quotaSummary: {
+              totalToken: quota.total_token,
+              usedToken: quota.used_token,
+              remainingToken: quota.remaining_token,
+              ...(typeof quota.reset_time === 'string' ? { resetTime: quota.reset_time } : {}),
+            },
+          }
+        : {}),
+      ...(quotaInfoSnapshot ? { quotaInfoSnapshot } : {}),
+      ...(entitlements && typeof entitlements === 'object'
+        ? { entitlements: entitlements as Readonly<Record<string, unknown>> }
+        : {}),
+    };
+
+    return Object.keys(snapshot).length > 0 ? snapshot : null;
   }
 
   /**
@@ -924,7 +1256,7 @@ export class AuthService {
     state?: string;
     error?: string;
     error_description?: string;
-  }): Promise<{ success: boolean; data?: any; error?: string; message?: string }> {
+  }): Promise<{ success: boolean; data?: any; error?: string; message?: string; errorCode?: string | null; errorArgs?: Record<string, unknown> }> {
     try {
       // 检查是否有错误
       if (callbackData.error) {
@@ -964,11 +1296,14 @@ export class AuthService {
 
       // 检查是否需要绑定微信
       if (tokenData?.status === 'needs_wechat_bind') {
+        const authError = extractApiErrorDetails(tokenData, '请先绑定微信后再继续登录');
         return {
           success: false,
           error: 'needs_wechat_bind',
           data: tokenData,
-          message: tokenData.message || '请先绑定微信后再继续登录'
+          message: authError.message,
+          errorCode: authError.errorCode,
+          errorArgs: authError.errorArgs,
         };
       }
 
@@ -981,11 +1316,14 @@ export class AuthService {
       };
 
     } catch (error) {
+      const authError = extractApiErrorDetails(error, '处理回调失败');
       this.clearOAuthState();
       return {
         success: false,
         error: 'callback_processing_failed',
-        message: error instanceof Error ? error.message : '处理回调失败'
+        message: authError.message,
+        errorCode: authError.errorCode,
+        errorArgs: authError.errorArgs,
       };
     }
   }
@@ -996,11 +1334,7 @@ export class AuthService {
   async handleGitHubOAuthSuccess(data: { access_token: string; user?: any }): Promise<void> {
     try {
       await this.saveToken2(data.access_token);
-      if (data.user) {
-        await this.saveUserInfo(data.user);
-        this.userInfoSubject.next(data.user);
-      }
-      this.isLoggedInSubject.next(true);
+      await this.handleSuccessfulTokenAcquisition(data.access_token, data.user as AuthUserInfo | undefined);
     } catch (error) {
       console.error('处理 GitHub OAuth 成功数据失败:', error);
       throw error;
@@ -1104,11 +1438,7 @@ export class AuthService {
       // if (data.refresh_token) {
       //   await this.saveRefreshToken(data.refresh_token);
       // }
-      if (data.user) {
-        await this.saveUserInfo(data.user);
-        this.userInfoSubject.next(data.user);
-      }
-      this.isLoggedInSubject.next(true);
+      await this.handleSuccessfulTokenAcquisition(data.access_token, data.user as AuthUserInfo | undefined);
     } catch (error) {
       console.error('处理微信 OAuth 成功数据失败:', error);
       throw error;
@@ -1335,4 +1665,216 @@ export class AuthService {
     console.error('认证服务错误:', error);
     return throwError(() => error);
   }
+}
+
+export function normalizeAuthQuotaInfoSnapshotPayload(
+  value: unknown,
+  options?: {
+    source?: 'auth-me' | 'token';
+    fallbackQuotaResetDate?: string;
+    fallbackQuota?: NonNullable<AuthUserInfo['quota']>;
+  },
+): AuthQuotaInfoSnapshot | undefined {
+  const detailRecord = isRecord(value) ? value : undefined;
+  const normalizedQuotaSnapshots = normalizeAuthQuotaSnapshots(
+    detailRecord?.['quota_snapshots'] ?? detailRecord?.['quotaSnapshots'],
+  );
+  const fallbackQuotaSnapshots = normalizedQuotaSnapshots
+    ?? (options?.fallbackQuota ? buildFallbackQuotaSnapshots(options.fallbackQuota) : undefined);
+  const limitedUserQuotas = normalizeNumericRecord(
+    detailRecord?.['limited_user_quotas'] ?? detailRecord?.['limitedUserQuotas'],
+  );
+  const quotaResetDate = typeof detailRecord?.['quota_reset_date'] === 'string'
+    ? detailRecord['quota_reset_date']
+    : typeof detailRecord?.['quotaResetDate'] === 'string'
+      ? detailRecord['quotaResetDate']
+      : options?.fallbackQuotaResetDate;
+  const source = detailRecord?.['source'] === 'auth-me' || detailRecord?.['source'] === 'token'
+    ? detailRecord['source']
+    : options?.source ?? 'auth-me';
+
+  if (!fallbackQuotaSnapshots && !limitedUserQuotas && !quotaResetDate) {
+    return undefined;
+  }
+
+  return {
+    source,
+    ...(quotaResetDate ? { quotaResetDate } : {}),
+    ...(fallbackQuotaSnapshots ? { quotaSnapshots: fallbackQuotaSnapshots } : {}),
+    ...(limitedUserQuotas ? { limitedUserQuotas } : {}),
+  };
+}
+
+export function resolveAuthQuotaInfoSnapshotOverride(
+  currentOverride: AuthQuotaInfoSnapshot | null,
+  nextOverride: AuthQuotaInfoSnapshot | null | undefined,
+  userInfo: AuthUserInfo | null,
+  previousUserInfo?: AuthUserInfo | null,
+): AuthQuotaInfoSnapshot | null {
+  if (!userInfo) {
+    return null;
+  }
+
+  if (nextOverride === undefined) {
+    return isSameAuthUser(previousUserInfo, userInfo)
+      ? currentOverride
+      : null;
+  }
+
+  if (nextOverride) {
+    return nextOverride;
+  }
+
+  return currentOverride?.source === 'token' && isSameAuthUser(previousUserInfo, userInfo)
+    ? currentOverride
+    : null;
+}
+
+function isSameAuthUser(
+  previousUserInfo: AuthUserInfo | null | undefined,
+  nextUserInfo: AuthUserInfo | null | undefined,
+): boolean {
+  const previousIdentity = readAuthUserIdentity(previousUserInfo);
+  const nextIdentity = readAuthUserIdentity(nextUserInfo);
+
+  return !previousIdentity || !nextIdentity || previousIdentity === nextIdentity;
+}
+
+function readAuthUserIdentity(userInfo: AuthUserInfo | null | undefined): string | null {
+  if (!userInfo || typeof userInfo !== 'object') {
+    return null;
+  }
+
+  if (typeof userInfo.id === 'string' && userInfo.id.trim().length > 0) {
+    return `id:${userInfo.id}`;
+  }
+
+  if (typeof userInfo.email === 'string' && userInfo.email.trim().length > 0) {
+    return `email:${userInfo.email}`;
+  }
+
+  if (typeof userInfo.login === 'string' && userInfo.login.trim().length > 0) {
+    return `login:${userInfo.login}`;
+  }
+
+  if (typeof userInfo.phone === 'string' && userInfo.phone.trim().length > 0) {
+    return `phone:${userInfo.phone}`;
+  }
+
+  return null;
+}
+
+function buildAuthQuotaInfoSnapshot(userInfo: AuthUserInfo): AuthQuotaInfoSnapshot | undefined {
+  const quota = userInfo.quota;
+  if (!quota || typeof quota !== 'object') {
+    return undefined;
+  }
+
+  const normalized = normalizeAuthQuotaInfoSnapshotPayload(quota.details, {
+    source: 'auth-me',
+    fallbackQuotaResetDate: typeof quota.reset_time === 'string' ? quota.reset_time : undefined,
+  });
+
+  return normalized?.quotaSnapshots || normalized?.limitedUserQuotas
+    ? normalized
+    : undefined;
+}
+
+function buildFallbackQuotaSnapshots(
+  quota: NonNullable<AuthUserInfo['quota']>,
+): Readonly<Record<string, AuthQuotaInfoSnapshotItem>> | undefined {
+  if (
+    typeof quota.total_token !== 'number'
+    || typeof quota.remaining_token !== 'number'
+  ) {
+    return undefined;
+  }
+
+  const percentRemaining = typeof quota.total_token === 'number' && quota.total_token > 0
+    ? Math.max(0, Math.min(100, (quota.remaining_token / quota.total_token) * 100))
+    : 0;
+
+  return {
+    chat: {
+      entitlement: quota.total_token,
+      remaining: quota.remaining_token,
+      percentRemaining,
+      ...(quota.total_token < 0 ? { unlimited: true } : {}),
+      ...(typeof quota.reset_time === 'string' ? { resetDate: quota.reset_time } : {}),
+    },
+  };
+}
+
+function normalizeAuthQuotaSnapshots(
+  value: unknown,
+): Readonly<Record<string, AuthQuotaInfoSnapshotItem>> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const entries = Object.entries(value)
+    .map(([key, rawSnapshot]) => {
+      if (!isRecord(rawSnapshot)) {
+        return undefined;
+      }
+
+      const entitlement = readNumber(rawSnapshot['entitlement']);
+      const remaining = readNumber(rawSnapshot['remaining']);
+      const percentRemaining = readNumber(rawSnapshot['percent_remaining']) ?? readNumber(rawSnapshot['percentRemaining']);
+      if (entitlement === undefined || remaining === undefined || percentRemaining === undefined) {
+        return undefined;
+      }
+
+      return [key, {
+        entitlement,
+        remaining,
+        percentRemaining,
+        ...(typeof rawSnapshot['unlimited'] === 'boolean' ? { unlimited: rawSnapshot['unlimited'] } : {}),
+        ...(readNumber(rawSnapshot['overage_count']) !== undefined
+          ? { overageCount: readNumber(rawSnapshot['overage_count']) }
+          : readNumber(rawSnapshot['overageCount']) !== undefined
+            ? { overageCount: readNumber(rawSnapshot['overageCount']) }
+            : {}),
+        ...(typeof rawSnapshot['overage_permitted'] === 'boolean'
+          ? { overagePermitted: rawSnapshot['overage_permitted'] }
+          : typeof rawSnapshot['overagePermitted'] === 'boolean'
+            ? { overagePermitted: rawSnapshot['overagePermitted'] }
+            : {}),
+        ...(typeof rawSnapshot['reset_date'] === 'string'
+          ? { resetDate: rawSnapshot['reset_date'] }
+          : typeof rawSnapshot['resetDate'] === 'string'
+            ? { resetDate: rawSnapshot['resetDate'] }
+            : typeof rawSnapshot['resetAt'] === 'string'
+              ? { resetDate: rawSnapshot['resetAt'] }
+              : {}),
+      } satisfies AuthQuotaInfoSnapshotItem] as const;
+    })
+    .filter((entry): entry is readonly [string, AuthQuotaInfoSnapshotItem] => !!entry);
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeNumericRecord(
+  value: unknown,
+): Readonly<Record<string, number>> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const entries = Object.entries(value)
+    .map(([key, rawValue]) => {
+      const numberValue = readNumber(rawValue);
+      return typeof numberValue === 'number' ? [key, numberValue] as const : undefined;
+    })
+    .filter((entry): entry is readonly [string, number] => !!entry);
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

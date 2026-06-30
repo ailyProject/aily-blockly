@@ -1,0 +1,578 @@
+:host {
+  --mw-blockly-accent: #2fb673;
+  --mw-blockly-accent-2: #1f9e92;
+  --mw-coder-accent: #7c6cf0;
+  --mw-coder-accent-2: #4f8cf5;
+}
+
+/* ───────────────── 整体遮罩 ───────────────── */
+.mw-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100050;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 4vw;
+  gap: clamp(18px, 3vh, 40px);
+  overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 50% -10%, rgba(124, 108, 240, 0.18), transparent 60%),
+    radial-gradient(120% 90% at 50% 110%, rgba(47, 182, 115, 0.16), transparent 60%),
+    var(--aily-bg-elevated, #1f1f1f);
+  -webkit-user-select: none;
+  user-select: none;
+  animation: mw-overlay-in 0.45s ease both;
+}
+
+.mw-overlay.mw-chosen {
+  animation: mw-overlay-out 0.6s 0.18s ease forwards;
+}
+
+/* ───────────────── 动态背景 ───────────────── */
+.mw-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.mw-blob {
+  position: absolute;
+  width: 46vmax;
+  height: 46vmax;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.5;
+  will-change: transform;
+}
+
+.mw-blob--blockly {
+  left: -12vmax;
+  top: -10vmax;
+  background: radial-gradient(circle at 30% 30%, var(--mw-blockly-accent), transparent 70%);
+  animation: mw-float-a 13s ease-in-out infinite;
+}
+
+.mw-blob--coder {
+  right: -12vmax;
+  bottom: -10vmax;
+  background: radial-gradient(circle at 70% 70%, var(--mw-coder-accent), transparent 70%);
+  animation: mw-float-b 16s ease-in-out infinite;
+}
+
+.mw-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at 50% 45%, #000 0%, transparent 75%);
+  -webkit-mask-image: radial-gradient(circle at 50% 45%, #000 0%, transparent 75%);
+  opacity: 0.6;
+}
+
+/* ───────────────── 顶部标题 ───────────────── */
+.mw-header {
+  position: relative;
+  text-align: center;
+  animation: mw-fade-down 0.6s 0.1s ease both;
+}
+
+.mw-logo {
+  height: clamp(28px, 4vh, 44px);
+  margin-bottom: 14px;
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.4));
+}
+
+.mw-title {
+  margin: 0;
+  font-size: clamp(22px, 3.4vh, 34px);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--aily-text-primary, #fff);
+}
+
+.mw-subtitle {
+  margin: 8px 0 0;
+  font-size: clamp(13px, 1.8vh, 15px);
+  color: var(--aily-text-muted, #a5a5a5);
+}
+
+/* ───────────────── 舞台 / 双面板 ───────────────── */
+.mw-stage {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  width: min(1080px, 96vw);
+  max-height: 60vh;
+}
+
+.mw-panel {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  cursor: pointer;
+  border-radius: 18px;
+  padding: 2px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.4s ease,
+    filter 0.4s ease,
+    box-shadow 0.4s ease;
+  will-change: transform, opacity;
+}
+
+.mw-panel--blockly {
+  animation: mw-slide-from-left 0.6s 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mw-panel--coder {
+  animation: mw-slide-from-right 0.6s 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.mw-panel-inner {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: clamp(22px, 4vh, 40px) clamp(20px, 3vw, 38px);
+  border-radius: 16px;
+  background: var(--aily-bg-card, #292929);
+  overflow: hidden;
+}
+
+/* 面板顶部渐变描边光带 */
+.mw-panel-inner::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  opacity: 0.9;
+}
+
+.mw-panel--blockly .mw-panel-inner::before {
+  background: linear-gradient(90deg, var(--mw-blockly-accent), var(--mw-blockly-accent-2));
+}
+
+.mw-panel--coder .mw-panel-inner::before {
+  background: linear-gradient(90deg, var(--mw-coder-accent-2), var(--mw-coder-accent));
+}
+
+/* hover/对立强调 */
+.mw-stage.is-hovering .mw-panel.is-dimmed {
+  opacity: 0.45;
+  filter: saturate(0.7) brightness(0.85);
+  transform: scale(0.96);
+}
+
+.mw-panel.is-active {
+  transform: translateY(-8px) scale(1.03);
+}
+
+.mw-panel--blockly.is-active {
+  box-shadow: 0 22px 50px -18px rgba(47, 182, 115, 0.55);
+}
+
+.mw-panel--coder.is-active {
+  box-shadow: 0 22px 50px -18px rgba(124, 108, 240, 0.55);
+}
+
+.mw-panel--blockly.is-active {
+  background: linear-gradient(180deg, rgba(47, 182, 115, 0.55), rgba(47, 182, 115, 0.08));
+}
+
+.mw-panel--coder.is-active {
+  background: linear-gradient(180deg, rgba(124, 108, 240, 0.55), rgba(124, 108, 240, 0.08));
+}
+
+/* 选定 / 落选收尾动画 */
+.mw-panel.is-chosen {
+  animation: mw-chosen-pop 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  z-index: 2;
+}
+
+.mw-panel.is-discarded {
+  animation: mw-discard 0.5s ease forwards;
+}
+
+/* 图标 */
+.mw-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(56px, 8vh, 76px);
+  height: clamp(56px, 8vh, 76px);
+  border-radius: 20px;
+  font-size: clamp(26px, 4vh, 36px);
+  color: #fff;
+  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mw-panel--blockly .mw-icon {
+  background: linear-gradient(135deg, var(--mw-blockly-accent), var(--mw-blockly-accent-2));
+  box-shadow: 0 10px 26px -10px rgba(47, 182, 115, 0.8);
+}
+
+.mw-panel--coder .mw-icon {
+  background: linear-gradient(135deg, var(--mw-coder-accent), var(--mw-coder-accent-2));
+  box-shadow: 0 10px 26px -10px rgba(124, 108, 240, 0.8);
+}
+
+.mw-panel.is-active .mw-icon {
+  transform: rotate(-6deg) scale(1.08);
+}
+
+.mw-panel--coder.is-active .mw-icon {
+  transform: rotate(6deg) scale(1.08);
+}
+
+.mw-panel-title {
+  margin: 0;
+  font-size: clamp(18px, 2.6vh, 24px);
+  font-weight: 700;
+  color: var(--aily-text-primary, #fff);
+}
+
+.mw-panel-tagline {
+  margin: 0;
+  font-size: clamp(12px, 1.7vh, 14px);
+  line-height: 1.5;
+  color: var(--aily-text-muted, #a5a5a5);
+  max-width: 320px;
+}
+
+.mw-features {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 100%;
+  max-width: 300px;
+}
+
+.mw-features li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: clamp(12px, 1.6vh, 13.5px);
+  color: var(--aily-text-tertiary, #ccc);
+  text-align: left;
+}
+
+.mw-features li i {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.mw-panel--blockly .mw-features li i {
+  color: var(--mw-blockly-accent);
+}
+
+.mw-panel--coder .mw-features li i {
+  color: var(--mw-coder-accent);
+}
+
+.mw-choose-btn {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 26px;
+  border: none;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.92;
+  transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease;
+}
+
+.mw-panel--blockly .mw-choose-btn {
+  background: linear-gradient(135deg, var(--mw-blockly-accent), var(--mw-blockly-accent-2));
+}
+
+.mw-panel--coder .mw-choose-btn {
+  background: linear-gradient(135deg, var(--mw-coder-accent), var(--mw-coder-accent-2));
+}
+
+.mw-choose-btn i {
+  transition: transform 0.3s ease;
+}
+
+.mw-panel.is-active .mw-choose-btn {
+  opacity: 1;
+  transform: translateY(-2px);
+}
+
+.mw-panel.is-active .mw-choose-btn i {
+  transform: translateX(4px);
+}
+
+/* ───────────────── 中间分隔 / VS ───────────────── */
+.mw-divider {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 0 -22px;
+  padding: 0 6px;
+  pointer-events: none;
+}
+
+.mw-divider-line {
+  flex: 1 1 auto;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+}
+
+.mw-vs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--aily-text-primary, #fff);
+  background: var(--aily-bg-elevated, #1f1f1f);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  animation: mw-vs-pop 0.6s 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    mw-vs-pulse 3.2s 1.2s ease-in-out infinite;
+}
+
+/* ───────────────── 底部 ───────────────── */
+.mw-footer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  animation: mw-fade-up 0.6s 0.4s ease both;
+}
+
+.mw-reset-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--aily-text-muted, #a5a5a5);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mw-reset-hint i {
+  color: var(--aily-color-accent, #61afef);
+}
+
+.mw-skip {
+  background: transparent;
+  border: none;
+  color: var(--aily-text-hint, #888);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+
+.mw-skip:hover {
+  color: var(--aily-text-primary, #fff);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ───────────────── 关键帧 ───────────────── */
+@keyframes mw-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes mw-overlay-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes mw-slide-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-40px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes mw-slide-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(40px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes mw-fade-down {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes mw-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes mw-vs-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.3) rotate(-30deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+@keyframes mw-vs-pulse {
+  0%,
+  100% {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 0 rgba(255, 255, 255, 0.12);
+  }
+  50% {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 8px rgba(255, 255, 255, 0);
+  }
+}
+
+@keyframes mw-chosen-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.06) translateY(-10px);
+  }
+  100% {
+    transform: scale(1.12) translateY(-6px);
+    box-shadow: 0 30px 70px -20px rgba(0, 0, 0, 0.7);
+  }
+}
+
+@keyframes mw-discard {
+  to {
+    opacity: 0;
+    transform: scale(0.9) translateY(10px);
+    filter: blur(2px);
+  }
+}
+
+@keyframes mw-float-a {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(6vmax, 4vmax) scale(1.08);
+  }
+}
+
+@keyframes mw-float-b {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(-5vmax, -4vmax) scale(1.1);
+  }
+}
+
+/* ───────────────── 响应式：窄屏改纵向堆叠 ───────────────── */
+@media (max-width: 760px), (max-height: 560px) {
+  .mw-stage {
+    flex-direction: column;
+    max-height: none;
+    gap: 14px;
+    overflow-y: auto;
+  }
+
+  .mw-divider {
+    flex-direction: row;
+    margin: -8px 0;
+    width: 100%;
+  }
+
+  .mw-divider-line {
+    width: auto;
+    height: 1px;
+    flex: 1 1 auto;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.18),
+      transparent
+    );
+  }
+
+  .mw-stage.is-hovering .mw-panel.is-dimmed {
+    transform: none;
+  }
+
+  .mw-panel.is-active {
+    transform: translateY(-4px);
+  }
+}
+
+/* 降低动态效果偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .mw-overlay,
+  .mw-header,
+  .mw-footer,
+  .mw-panel,
+  .mw-vs,
+  .mw-blob {
+    animation: none !important;
+  }
+}

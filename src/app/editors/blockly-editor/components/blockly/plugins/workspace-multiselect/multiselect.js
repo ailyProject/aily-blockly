@@ -16,6 +16,7 @@ import {
   dragSelectionWeakMap, inMultipleSelectionModeWeakMap,
   hasSelectedParent,
   multiselectControlsList, multiDraggableWeakMap,
+  registerFlyoutDragFieldIncrementListener,
 } from './global';
 import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
@@ -73,6 +74,10 @@ export class Multiselect {
     });
     this.eventListenerWrapper_ = this.eventListener_.bind(this);
     this.workspace_.addChangeListener(this.eventListenerWrapper_);
+
+    this.flyoutDragFieldIncrementListener_ =
+        registerFlyoutDragFieldIncrementListener(this.workspace_);
+    this.workspace_.addChangeListener(this.flyoutDragFieldIncrementListener_);
 
     this.eventListenerAllWrapper_ = this.eventListenerAll_.bind(this);
     Blockly.Workspace.getAll().forEach((ws) => {
@@ -184,6 +189,11 @@ export class Multiselect {
     if (this.eventListenerWrapper_) {
       this.workspace_.removeChangeListener(this.eventListenerWrapper_);
       this.eventListenerWrapper_ = null;
+    }
+    if (this.flyoutDragFieldIncrementListener_) {
+      this.workspace_.removeChangeListener(
+          this.flyoutDragFieldIncrementListener_);
+      this.flyoutDragFieldIncrementListener_ = null;
     }
     if (this.eventListenerAllWrapper_) {
       Blockly.Workspace.getAll().forEach((ws) => {

@@ -147,6 +147,11 @@ export class NotificationComponent {
     this.data.stop();
   }
 
+  /** 通知条「重试」：由业务注入 onRetry（须自行幂等/防并发） */
+  onRetryClick() {
+    this.data?.onRetry?.();
+  }
+
   view() {
     console.log('viewDetail');
     console.log(this.data);

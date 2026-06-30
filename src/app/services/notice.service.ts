@@ -50,4 +50,7 @@ export interface NoticeOptions {
   sendToLog?: boolean,
   closable?: boolean,
   icon?: string,
+  isCancellationNotice?: boolean,
+  /** 错误通知上的「重试」动作（例如 Aily Code npm install 失败后再跑一次） */
+  onRetry?: () => void,
 }

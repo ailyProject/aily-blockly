@@ -1,7 +1,17 @@
-﻿import { ToolUseResult } from './tools';
+﻿import type { ToolUseResult } from '../core/tool-types';
 import { ProjectService } from '../../../services/project.service';
-import { ConnectionGraphService, PinSummary, PinmapCatalog, ComponentInstanceInput, ComponentConfig, PinmapProtocol } from '../../../services/connection-graph.service';
+import {
+  ConnectionGraphService,
+  PinSummary,
+  PinmapCatalog,
+  ComponentInstanceInput,
+  ComponentConfig,
+  PinmapProtocol,
+  type ConnectionGraphTextFileWriteEvent,
+} from '../../../services/connection-graph.service';
+import { API, getServerUrl } from '../../../configs/api.config';
 import { AilyHost } from '../core/host';
+import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 
 /**
  * 解析后的组件实例信息（内部使用）
@@ -15,6 +25,110 @@ interface ParsedComponentInstance {
   label?: string;
   /** 同一 pinmapId 的第几个实例 (0-based) */
   instance: number;
+}
+
+export interface ConnectionGraphInvocationContext {
+  turnId?: string;
+  toolCallId?: string;
+  timelineWriter?: EditingTimelineWriter;
+}
+
+export async function saveTimelineAwareConnectionGraphTextFile(
+  filePath: string,
+  content: string,
+  save: () => boolean | Promise<boolean>,
+  invocationContext?: ConnectionGraphInvocationContext,
+): Promise<boolean> {
+  const timelineWriter = invocationContext?.timelineWriter;
+  const turnId = invocationContext?.turnId;
+  let existedBefore = false;
+  let beforeContent: string | null = null;
+
+  if (timelineWriter?.recordFileWrite && turnId) {
+    const fs = AilyHost.get().fs;
+    try {
+      existedBefore = fs.existsSync(filePath);
+      beforeContent = existedBefore ? fs.readFileSync(filePath, 'utf-8') : null;
+    } catch {
+      existedBefore = false;
+      beforeContent = null;
+    }
+  }
+
+  const saved = await Promise.resolve(save());
+  if (!saved) {
+    return false;
+  }
+
+  if (!timelineWriter?.recordFileWrite || !turnId) {
+    return true;
+  }
+
+  try {
+    await timelineWriter.recordFileWrite({
+      turnId,
+      toolCallId: invocationContext?.toolCallId,
+      filePath,
+      existedBefore,
+      beforeContent,
+      afterContent: content,
+    });
+  } catch (error) {
+    console.warn('[connectionGraphTool] editing timeline recording failed:', error);
+  }
+
+  return true;
+}
+
+function createConnectionGraphTimelineObserver(invocationContext?: ConnectionGraphInvocationContext) {
+  const timelineWriter = invocationContext?.timelineWriter;
+  const turnId = invocationContext?.turnId;
+  if (!timelineWriter?.recordFileWrite || !turnId) {
+    return undefined;
+  }
+
+  return (event: ConnectionGraphTextFileWriteEvent): void => {
+    void Promise.resolve(timelineWriter.recordFileWrite({
+      turnId,
+      toolCallId: invocationContext?.toolCallId,
+      filePath: event.filePath,
+      existedBefore: event.existedBefore,
+      beforeContent: event.beforeContent,
+      afterContent: event.afterContent,
+    })).catch(error => {
+      console.warn('[connectionGraphTool] editing timeline recording failed:', error);
+    });
+  };
+}
+
+/**
+ * 从 generate_schematic 的 pinmapIds 入参提取用于云端同步的 pinmapId 字符串。
+ * 空数组表示与 get_pinmap_summary 一致：同步所有已安装 lib-* 的云端列表。
+ */
+function collectPinmapIdHintsFromGenerateInput(input: {
+  pinmapIds?: ComponentInstanceInput[] | string;
+}): string[] {
+  const hints: string[] = [];
+  if (input.pinmapIds == null) return hints;
+  let raw: ComponentInstanceInput[] = [];
+  if (Array.isArray(input.pinmapIds)) {
+    raw = input.pinmapIds;
+  } else if (typeof input.pinmapIds === 'string') {
+    try {
+      const parsed = JSON.parse(input.pinmapIds);
+      raw = Array.isArray(parsed) ? parsed : [input.pinmapIds];
+    } catch {
+      raw = [input.pinmapIds];
+    }
+  }
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      hints.push(item);
+    } else if (typeof item === 'object' && item !== null && 'id' in item && typeof (item as { id: string }).id === 'string') {
+      hints.push((item as { id: string }).id);
+    }
+  }
+  return hints;
 }
 
 /**
@@ -54,6 +168,17 @@ export async function generateConnectionGraphTool(
     const currentProjectPath = projectService.currentProjectPath;
     // 使用字符串模板确保类型正确
     const packagesBasePath = currentProjectPath ? `${currentProjectPath}/node_modules` : null;
+
+    // 与 get_pinmap_summary 一致：加载外设前先尝试从云端同步 pinmap 到本地 pinmaps/
+    let cloudPinmapSynced = 0;
+    if (packagesBasePath) {
+      const syncHints = collectPinmapIdHintsFromGenerateInput(input);
+      cloudPinmapSynced = await trySyncPinmapComponentsFromApi(
+        connectionGraphService,
+        packagesBasePath,
+        syncHints,
+      );
+    }
 
     // 收集引脚摘要
     const pinSummaries: PinSummary[] = [];
@@ -290,6 +415,7 @@ export async function generateConnectionGraphTool(
         is_error: failedPinmapIds.length > 0,  // 如果有加载失败则标记为错误
         content: JSON.stringify({
           message,
+          ...(cloudPinmapSynced > 0 ? { cloudPinmapSynced } : {}),
           failedPinmapIds: failedPinmapIds.length > 0 ? failedPinmapIds : undefined,
           pinSummaries,
           loadedPinmapIds,
@@ -316,6 +442,7 @@ export async function generateConnectionGraphTool(
         is_error: false,
         content: JSON.stringify({
           message: '检测到软件/云端通信组件（无物理引脚），不需要生成物理连线图。',
+          ...(cloudPinmapSynced > 0 ? { cloudPinmapSynced } : {}),
           softwareComponents,
           softwareComponentsNote: `以下软件组件将在连线图中以信息卡片形式展示：\n${softwareDetails}`,
           instructions: `请在 connection_output.json 的 components 数组中添加软件组件，设置 componentType: "software" 和 softwareConfig 字段。
@@ -477,6 +604,7 @@ ${failedPinmapIds.map(f => `- ${f.pinmapId}: ${f.reason}`).join('\n')}
 
     const result: any = {
       awsPinmapSummary,  // AWS 格式的引脚摘要
+      ...(cloudPinmapSynced > 0 ? { cloudPinmapSynced } : {}),
       loadedPinmapIds,
       failedPinmapIds: failedPinmapIds.length > 0 ? failedPinmapIds : undefined,
       componentInstances: componentInstances.length > 0 ? componentInstances : undefined,
@@ -503,6 +631,327 @@ ${failedPinmapIds.map(f => `- ${f.pinmapId}: ${f.reason}`).join('\n')}
       is_error: true,
       content: `生成连线图失败: ${error.message || error}`,
     };
+  }
+}
+
+/** 解析工具入参中的 pinmapIds（兼容字符串 / JSON 字符串） */
+function parsePinmapIdsArgument(input: { pinmapIds?: string[] | string }): string[] {
+  if (input.pinmapIds == null) return [];
+  if (Array.isArray(input.pinmapIds)) return input.pinmapIds;
+  if (typeof input.pinmapIds === 'string') {
+    try {
+      const parsed = JSON.parse(input.pinmapIds);
+      return Array.isArray(parsed) ? parsed : [input.pinmapIds];
+    } catch {
+      return [input.pinmapIds];
+    }
+  }
+  return [];
+}
+
+function normalizePackageSlugFromApi(lib: unknown): string {
+  if (lib == null || typeof lib !== 'string') return '';
+  let s = lib.trim();
+  const idx = s.lastIndexOf('/');
+  if (idx >= 0) s = s.slice(idx + 1);
+  if (s.startsWith('@aily-project/')) s = s.slice('@aily-project/'.length);
+  return s;
+}
+
+function resolveDownloadUrl(apiBase: string, u: unknown): string | null {
+  if (u == null || typeof u !== 'string' || !u.length) return null;
+  if (/^https?:\/\//i.test(u)) return u;
+  const base = apiBase.replace(/\/$/, '');
+  if (u.startsWith('/')) return `${base}${u}`;
+  return null;
+}
+
+function normalizeRemotePinmapConfig(raw: any): ComponentConfig | null {
+  if (!raw || typeof raw !== 'object') return null;
+  if (typeof raw.id !== 'string' || !Array.isArray(raw.pins)) return null;
+  return {
+    ...raw,
+    name: typeof raw.name === 'string' ? raw.name : raw.id,
+    width: typeof raw.width === 'number' ? raw.width : 200,
+    height: typeof raw.height === 'number' ? raw.height : 200,
+    images: Array.isArray(raw.images) ? raw.images : [],
+    functionTypes: Array.isArray(raw.functionTypes) ? raw.functionTypes : [],
+    pins: raw.pins,
+  } as ComponentConfig;
+}
+
+/**
+ * 云端列表项里的 config 可能与本地 ComponentConfig 略有差异（缺 id、用 pin_list 等），用 list 行上的 full_id / model_id 补全后再规范化。
+ */
+function normalizeRemotePinmapConfigFromApiItem(raw: any, item: any): ComponentConfig | null {
+  const direct = normalizeRemotePinmapConfig(raw);
+  if (direct) return direct;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const pins =
+    Array.isArray(raw.pins) ? raw.pins
+    : Array.isArray((raw as any).pin_list) ? (raw as any).pin_list
+    : Array.isArray((raw as any).pinList) ? (raw as any).pinList
+    : null;
+  if (!pins) return null;
+
+  let id: string | undefined = typeof raw.id === 'string' ? raw.id : undefined;
+  if (!id && item?.model_id != null && String(item.model_id).length > 0) {
+    id = String(item.model_id);
+  }
+  if (!id && typeof item?.full_id === 'string' && item.full_id.includes(':')) {
+    const parts = item.full_id.split(':');
+    if (parts[1]) id = parts[1];
+  }
+  if (!id && typeof item?.slug === 'string') id = item.slug;
+  if (!id) return null;
+
+  const merged = {
+    ...raw,
+    id,
+    pins,
+    name: typeof raw.name === 'string' ? raw.name : id,
+    width: typeof raw.width === 'number' ? raw.width : 200,
+    height: typeof raw.height === 'number' ? raw.height : 200,
+    images: Array.isArray(raw.images) ? raw.images : [],
+    functionTypes: Array.isArray(raw.functionTypes)
+      ? raw.functionTypes
+      : Array.isArray((raw as any).function_types)
+        ? (raw as any).function_types
+        : [],
+  };
+  return normalizeRemotePinmapConfig(merged);
+}
+
+function buildPinmapIdFromApiItem(item: any): string | null {
+  if (typeof item?.pinmapId === 'string' && item.pinmapId.includes(':')) return item.pinmapId;
+  if (typeof item?.fullId === 'string' && item.fullId.includes(':')) return item.fullId;
+  // 后端常见 snake_case：full_id（如 lib-dht:dht01:downey）
+  if (typeof item?.full_id === 'string' && item.full_id.includes(':')) return item.full_id;
+  if (typeof item?.pin_map_id === 'string' && item.pin_map_id.includes(':')) return item.pin_map_id;
+  const lib = normalizePackageSlugFromApi(
+    item?.library ?? item?.librarySlug ?? item?.packageSlug ?? item?.package,
+  );
+  const model =
+    (typeof item?.modelId === 'string' && item.modelId) ||
+    (item?.model && typeof item.model.id === 'string' ? item.model.id : null) ||
+    (typeof item?.slug === 'string' ? item.slug : null);
+  const variant =
+    (typeof item?.variantId === 'string' && item.variantId) ||
+    (item?.variant && typeof item.variant.id === 'string' ? item.variant.id : null) ||
+    'default';
+  if (!lib || !model) return null;
+  return `${lib}:${model}:${variant}`;
+}
+
+async function resolvePinmapConfigFromApiItem(
+  item: any,
+  apiBase: string,
+  headers: Record<string, string>,
+): Promise<ComponentConfig | null> {
+  let raw =
+    item?.pinmapConfig ??
+    item?.config ??
+    item?.pinmap ??
+    item?.componentConfig ??
+    item?.component ??
+    item?.pinmap_config ??
+    item?.config_json ??
+    item?.pinmap_json;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  let normalized = normalizeRemotePinmapConfigFromApiItem(raw, item);
+  if (normalized) return normalized;
+
+  const url =
+    resolveDownloadUrl(apiBase, item?.pinmapUrl) ||
+    resolveDownloadUrl(apiBase, item?.downloadUrl) ||
+    resolveDownloadUrl(apiBase, item?.configUrl) ||
+    resolveDownloadUrl(apiBase, item?.assetUrl) ||
+    resolveDownloadUrl(apiBase, item?.pinmap_url) ||
+    resolveDownloadUrl(apiBase, item?.download_url) ||
+    resolveDownloadUrl(apiBase, item?.config_url) ||
+    resolveDownloadUrl(apiBase, item?.asset_url);
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { headers });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return normalizeRemotePinmapConfigFromApiItem(j, item);
+  } catch {
+    return null;
+  }
+}
+
+/** 云端列表项中的版本号，用于与 pinmap_catalog 变体 version 比对 */
+function extractCloudPinmapItemVersion(item: any): string | number | undefined {
+  const v = item?.version ?? item?.itemVersion;
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === 'string' || typeof v === 'number') return v;
+  return undefined;
+}
+
+function pinmapSourceVersionsEqual(a: unknown, b: unknown): boolean {
+  return String(a).trim() === String(b).trim();
+}
+
+/**
+ * 优先从 GET /api/v1/pinmap/components 拉取库绑定元件与开发板 pinmap 并写入本地 pinmaps/；
+ * 开发板包若根目录有 pinmap.json 会同步覆盖，失败或无可同步项时返回 0（不抛错，由调用方继续走本地逻辑）。
+ */
+async function trySyncPinmapComponentsFromApi(
+  connectionGraphService: ConnectionGraphService,
+  packagesBasePath: string,
+  pinmapIdHints: string[],
+): Promise<number> {
+  try {
+    const host = AilyHost.get();
+    if (!packagesBasePath) return 0;
+    const apiBase = getServerUrl();
+
+    const fs = host.fs;
+    const pathUtil = host.path;
+    const ailyRoot = pathUtil.join(packagesBasePath, '@aily-project');
+    if (!fs.existsSync(ailyRoot)) return 0;
+
+    let pkgDirs: string[] = [];
+    try {
+      pkgDirs = fs.readdirSync(ailyRoot).filter(name => {
+        const full = pathUtil.join(ailyRoot, name);
+        return (name.startsWith('lib-') || name.startsWith('board-')) && fs.isDirectory(full);
+      });
+    } catch {
+      return 0;
+    }
+    if (pkgDirs.length === 0) return 0;
+
+    const allLib = pkgDirs.filter(d => d.startsWith('lib-'));
+    const allBoard = pkgDirs.filter(d => d.startsWith('board-'));
+
+    const hinted = new Set<string>();
+    for (const id of pinmapIdHints) {
+      const { packageSlug } = connectionGraphService.parsePinmapId(id);
+      if (packageSlug) hinted.add(packageSlug);
+    }
+    // 有 pinmap 提示时仅按提示拉库；开发板只要 node_modules 里存在即始终参与云端版本检查
+    const targetLibs =
+      hinted.size > 0
+        ? Array.from(
+            new Set([...allLib.filter(d => hinted.has(d)), ...allBoard]),
+          )
+        : [...allLib, ...allBoard];
+    if (targetLibs.length === 0) return 0;
+
+    // AuthService 未实现同步 getAuthHeaders 时为空对象，必须用 getToken()（→ getToken2）带 Bearer
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...(host.auth?.getAuthHeaders?.() ?? {}),
+    };
+    const rawToken = await (host.auth?.getToken?.() ?? Promise.resolve(null as string | null));
+    const token =
+      typeof rawToken === 'string' && rawToken.trim().length > 0 ? rawToken.trim() : null;
+    if (token && !headers['Authorization'] && !headers['authorization']) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    if (!headers['Authorization'] && !headers['authorization']) {
+      return 0;
+    }
+
+    const localPackageSet = new Set(pkgDirs);
+    let synced = 0;
+    const MAX_PAGES = 40;
+    const pageSize = 50;
+    const listUrl = API.pinmapComponents;
+
+    for (const library of targetLibs) {
+      let page = 1;
+      let seenCountForLib = 0;
+
+      // 分页：拉完该库下所有已审核项。未返回 total 时不能拿首屏 items.length 当 total（会导致只同步一条就停）；也不可用 items.length < pageSize 作为结束（服务端每页条数可能小于请求的 pageSize）。
+      for (;;) {
+        if (page > MAX_PAGES) break;
+
+        const sp = new URLSearchParams({
+          q: library,
+          status: 'approved',
+          page: String(page),
+          pageSize: String(pageSize),
+          sort: 'updated_at',
+        });
+        const res = await fetch(`${listUrl}?${sp.toString()}`, { headers });
+        if (!res.ok) {
+          break;
+        }
+
+        const body = await res.json();
+        const data = body?.data ?? body;
+        const items: any[] = Array.isArray(data?.items) ? data.items : [];
+        const totalReported =
+          typeof data?.total === 'number'
+            ? data.total
+            : typeof (data as any)?.count === 'number'
+              ? (data as any).count
+              : null;
+
+        if (items.length === 0) break;
+
+        seenCountForLib += items.length;
+
+        for (const item of items) {
+          const pinmapId = buildPinmapIdFromApiItem(item);
+          if (!pinmapId) continue;
+          const { packageSlug } = connectionGraphService.parsePinmapId(pinmapId);
+          if (!localPackageSet.has(packageSlug)) continue;
+
+          const config = await resolvePinmapConfigFromApiItem(item, apiBase, headers);
+          if (!config) continue;
+
+          const cloudVer = extractCloudPinmapItemVersion(item);
+          if (cloudVer !== undefined) {
+            const existingVariant = connectionGraphService.getCatalogVariantForPinmapId(
+              pinmapId,
+              packagesBasePath,
+            );
+            if (
+              existingVariant?.version !== undefined &&
+              existingVariant.version !== null &&
+              pinmapSourceVersionsEqual(cloudVer, existingVariant.version)
+            ) {
+              continue;
+            }
+          }
+
+          const save = connectionGraphService.savePinmapConfig(
+            pinmapId,
+            config,
+            packagesBasePath,
+            cloudVer,
+          );
+          if (save.success) {
+            synced++;
+            if (save.resolvedPackagePath) {
+              connectionGraphService.overwriteBoardRootPinmapIfPresent(
+                packageSlug,
+                save.resolvedPackagePath,
+                config,
+              );
+            }
+          }
+        }
+
+        page++;
+        if (totalReported !== null && seenCountForLib >= totalReported) break;
+      }
+    }
+
+    return synced;
+  } catch {
+    return 0;
   }
 }
 
@@ -533,27 +982,24 @@ export async function getPinmapSummaryTool(
     const pinSummaries: PinSummary[] = [];
     const loadedPinmapIds: string[] = [];
 
+    const pinmapIdList = parsePinmapIdsArgument(input);
+
+    let cloudPinmapSynced = 0;
+    if (packagesBasePath) {
+      cloudPinmapSynced = await trySyncPinmapComponentsFromApi(
+        connectionGraphService,
+        packagesBasePath,
+        pinmapIdList,
+      );
+    }
+
     // 1. 添加开发板引脚摘要
     const boardSummary = connectionGraphService.getBoardPinSummary(boardPackagePath);
     if (boardSummary) {
       pinSummaries.push(boardSummary);
     }
 
-    // 2. 如果指定了 pinmapIds，加载对应的摘要
-    // 确保 pinmapIds 是数组（Agent 可能传入字符串）
-    let pinmapIdList: string[] = [];
-    if (input.pinmapIds) {
-      if (Array.isArray(input.pinmapIds)) {
-        pinmapIdList = input.pinmapIds;
-      } else if (typeof input.pinmapIds === 'string') {
-        try {
-          const parsed = JSON.parse(input.pinmapIds);
-          pinmapIdList = Array.isArray(parsed) ? parsed : [input.pinmapIds];
-        } catch {
-          pinmapIdList = [input.pinmapIds];
-        }
-      }
-    }
+    // 2. 如果指定了 pinmapIds，加载对应的摘要（云端同步成功后此处可读到新写入的 pinmaps）
     if (pinmapIdList.length > 0 && packagesBasePath) {
       for (const fullId of pinmapIdList) {
         const summary = connectionGraphService.loadPinSummaryById(fullId, packagesBasePath);
@@ -579,6 +1025,10 @@ export async function getPinmapSummaryTool(
       loadedPinmapIds: loadedPinmapIds.length > 0 ? loadedPinmapIds : undefined,
     };
 
+    if (cloudPinmapSynced > 0) {
+      result.cloudPinmapSynced = cloudPinmapSynced;
+    }
+
     if (existingConnections) {
       result.existingConnectionGraph = {
         description: existingConnections.description,
@@ -593,7 +1043,7 @@ export async function getPinmapSummaryTool(
     }
 
     // 如果没有指定 pinmapIds，提示可用的传感器
-    if (!input.pinmapIds && packagesBasePath) {
+    if (pinmapIdList.length === 0 && packagesBasePath) {
       const availableIds = connectionGraphService.getAvailablePinmapIds(packagesBasePath, { status: 'available' });
       if (availableIds.length > 0) {
         result.availableSensorPinmapIds = availableIds.slice(0, 10); // 最多显示 10 个
@@ -617,8 +1067,9 @@ export async function getPinmapSummaryTool(
 /**
  * get_project_context 工具
  *
- * 合并 get_context + get_component_catalog 的功能，一次返回项目上下文 + 组件目录。
- * 替代原先需要依次调用两个工具的两步操作。
+ * 返回组件目录 + 生成的 C++ 代码（用于推断硬件外设）。
+ * 项目基本信息（path, board, libraries）已注入系统提示词的 environment 段，
+ * 此工具只提供动态数据（pinmap 状态、catalog entries、C++ code）。
  */
 export async function getProjectContextTool(
   connectionGraphService: ConnectionGraphService,
@@ -626,15 +1077,14 @@ export async function getProjectContextTool(
   input: { includeNeedsGeneration?: boolean }
 ): Promise<ToolUseResult> {
   try {
-    // === Part 1: 项目上下文（来自 getContextTool 逻辑）===
-    const { getContextTool } = await import('./getContextTool');
-    const contextResult = await getContextTool(projectService, { info_type: 'all' });
-    let contextData: any = {};
+    // === Part 1: 生成的 C++ 代码（用于推断硬件外设需求）===
+    let cppCode = '';
     try {
-      contextData = JSON.parse(contextResult.content);
+      const host = (await import('../core/host')).AilyHost.get();
+      cppCode = host.editor?.getGeneratedCode?.() || '';
     } catch { /* ignore */ }
 
-    // === Part 2: 组件目录（来自 getSensorPinmapCatalogTool 逻辑）===
+    // === Part 2: 组件目录（pinmap 状态是动态数据，需实时获取）===
     const catalogResult = await getSensorPinmapCatalogTool(
       connectionGraphService,
       projectService,
@@ -647,16 +1097,11 @@ export async function getProjectContextTool(
 
     // === 合并结果 ===
     const merged: any = {
-      // 项目基本信息
-      project: contextData.project,
-      editingMode: contextData.editingMode,
-      cppCode: contextData.cppCode,
-      // 组件目录信息
       currentBoard: catalogData.currentBoard,
     };
 
-    if (contextData.warn) {
-      merged.warn = contextData.warn;
+    if (cppCode) {
+      merged.cppCode = cppCode;
     }
 
     if (catalogData.catalogs) {
@@ -770,6 +1215,7 @@ export async function getSensorPinmapCatalogTool(
                     status: v.status,
                     isDefault: v.isDefault,
                     previewPins: v.previewPins,
+                    version: v.version,
                   })),
               })).filter(m => m.variants.length > 0),
             };
@@ -851,6 +1297,7 @@ export async function getSensorPinmapCatalogTool(
                 status: v.status,
                 isDefault: v.isDefault,
                 previewPins: v.previewPins,
+                version: v.version,
               })),
           })).filter(m => m.variants.length > 0),
         });
@@ -930,7 +1377,8 @@ export async function getSensorPinmapCatalogTool(
 export async function validateConnectionGraphTool(
   connectionGraphService: ConnectionGraphService,
   projectService: ProjectService,
-  input: { aws?: string }
+  input: { aws?: string },
+  invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
     const currentProjectPath = projectService.currentProjectPath;
@@ -943,7 +1391,10 @@ export async function validateConnectionGraphTool(
       return { is_error: true, content: '当前项目没有配置开发板，请先选择开发板。' };
     }
 
-    const { parseAWS, hasErrors, formatErrors, AWS_SYNTAX_REFERENCE, CONNECTION_COLORS, resolvePin } = await import('../../../services/connection-aws');
+    const { parseAWS, hasErrors, formatErrors, AWS_SYNTAX_REFERENCE, CONNECTION_COLORS, resolvePin, inferDataFlow } = await import('../../../services/connection-aws');
+
+    const awsFilePath = connectionGraphService.getAWSFilePath();
+    const jsonFilePath = connectionGraphService.getJSONFilePath();
 
     // 1. 获取 AWS 内容
     let awsContent: string;
@@ -1074,11 +1525,15 @@ export async function validateConnectionGraphTool(
       const color = CONNECTION_COLORS[connType] || CONNECTION_COLORS.other;
       const label = conn.note || `${conn.type.toUpperCase()}: ${conn.fromPin} → ${conn.toPin}`;
 
+      // 推断数据流向
+      const flow = inferDataFlow(conn.type, fromResolved.functionName, toResolved.functionName, conn.arrow);
+
       connections.push({
         id: `conn_${connIndex++}`,
         from: { ref: conn.fromRef, pinId: fromResolved.pinId, function: fromResolved.functionName },
         to: { ref: conn.toRef, pinId: toResolved.pinId, function: toResolved.functionName },
         type: conn.type, label, color, bus: conn.bus,
+        direction: flow.direction, half: flow.half, animationPattern: flow.animationPattern,
       });
     }
 
@@ -1120,9 +1575,20 @@ export async function validateConnectionGraphTool(
 
     // 7. 保存 AWS 和 JSON
     if (input.aws) {
-      connectionGraphService.saveAWSFile(awsContent);
+      await saveTimelineAwareConnectionGraphTextFile(
+        awsFilePath,
+        awsContent,
+        () => connectionGraphService.saveAWSFile(awsContent),
+        invocationContext,
+      );
     }
-    connectionGraphService.saveJSONFile(jsonData);
+    const jsonContent = JSON.stringify(jsonData, null, 2);
+    await saveTimelineAwareConnectionGraphTextFile(
+      jsonFilePath,
+      jsonContent,
+      () => connectionGraphService.saveJSONFile(jsonData),
+      invocationContext,
+    );
 
     // 8. 通知 iframe 刷新（嵌入模式；子窗口模式已由 saveJSONFile → IPC 处理）
     if (connectionGraphService.hasActiveIframe) {
@@ -1354,7 +1820,8 @@ export async function generatePinmapTool(
 export async function savePinmapTool(
   connectionGraphService: ConnectionGraphService,
   projectService: ProjectService,
-  input: { pinmapId: string; pinmapConfig: ComponentConfig | string }
+  input: { pinmapId: string; pinmapConfig: ComponentConfig | string },
+  invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
     if (!input.pinmapId) {
@@ -1405,7 +1872,9 @@ export async function savePinmapTool(
     }
 
     // 保存 pinmap
-    const saveResult = connectionGraphService.savePinmapConfig(input.pinmapId, config, packagesBasePath);
+    const saveResult = connectionGraphService.savePinmapConfig(input.pinmapId, config, packagesBasePath, {
+      onFileWrite: createConnectionGraphTimelineObserver(invocationContext),
+    });
 
     if (!saveResult.success) {
       return {
@@ -1508,7 +1977,8 @@ export async function getCurrentSchematicTool(
 export async function applySchematicTool(
   connectionGraphService: ConnectionGraphService,
   projectService: ProjectService,
-  input: { aws?: string }
+  input: { aws?: string },
+  invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
     const currentProjectPath = projectService.currentProjectPath;
@@ -1538,7 +2008,12 @@ export async function applySchematicTool(
     if (input.aws) {
       awsContent = input.aws;
       // 同时保存 .aws 文件
-      connectionGraphService.saveAWSFile(awsContent);
+      await saveTimelineAwareConnectionGraphTextFile(
+        awsFilePath,
+        awsContent,
+        () => connectionGraphService.saveAWSFile(awsContent),
+        invocationContext,
+      );
     } else {
       // 从文件读取
       if (!connectionGraphService.hasAWSFile()) {
@@ -1634,7 +2109,7 @@ export async function applySchematicTool(
     }
 
     // 5. 解析引脚并构建连线
-    const { resolvePin } = await import('../../../services/connection-aws');
+    const { resolvePin, inferDataFlow: inferDataFlow2 } = await import('../../../services/connection-aws');
     const connections: any[] = [];
     const resolveErrors: Array<{ message: string; line: number; source: string }> = [];
 
@@ -1687,6 +2162,9 @@ export async function applySchematicTool(
       const color = CONNECTION_COLORS[connType] || CONNECTION_COLORS.other;
       const label = conn.note || `${conn.type.toUpperCase()}: ${conn.fromPin} → ${conn.toPin}`;
 
+      // 推断数据流向
+      const flow2 = inferDataFlow2(conn.type, fromResolved.functionName, toResolved.functionName, conn.arrow);
+
       connections.push({
         id: `conn_${connIndex++}`,
         from: {
@@ -1703,6 +2181,9 @@ export async function applySchematicTool(
         label,
         color,
         bus: conn.bus,
+        direction: flow2.direction,
+        half: flow2.half,
+        animationPattern: flow2.animationPattern,
       });
     }
 
@@ -1767,7 +2248,13 @@ export async function applySchematicTool(
     const validationResult = connectionGraphService.validateConnectionGraph(jsonData);
 
     // 8. 保存 JSON
-    connectionGraphService.saveJSONFile(jsonData);
+    const jsonContent = JSON.stringify(jsonData, null, 2);
+    await saveTimelineAwareConnectionGraphTextFile(
+      jsonFilePath,
+      jsonContent,
+      () => connectionGraphService.saveJSONFile(jsonData),
+      invocationContext,
+    );
 
     // 9. 同步保存 AWS（确保两个文件一致）
     if (!input.aws) {

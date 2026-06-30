@@ -1,18 +1,18 @@
-import { Component, OnInit, AfterViewInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
 import { GUIDE_MENU } from '../../configs/menu.config';
 import { UiService } from '../../services/ui.service';
 import { ProjectService } from '../../services/project.service';
 import { ConfigService } from '../../services/config.service';
-import { version } from '../../../../package.json';
+import packageJson from '../../../../package.json';
 import { TranslateModule } from '@ngx-translate/core';
 import { Router } from '@angular/router';
 import { ElectronService } from '../../services/electron.service';
-import Splide from '@splidejs/splide';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { OnboardingService } from '../../services/onboarding.service';
 import { GUIDE_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { ThemeService } from '../../services/theme.service';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 
 @Component({
   selector: 'app-guide',
@@ -20,10 +20,12 @@ import { ThemeService } from '../../services/theme.service';
   templateUrl: './guide.component.html',
   styleUrl: './guide.component.scss'
 })
-export class GuideComponent implements OnInit, AfterViewInit {
-  version = version;
+export class GuideComponent implements OnInit, OnDestroy {
+  version = packageJson.version;
   guideMenu = GUIDE_MENU;
   showMenu = true;
+  private readonly guidePageDefaultUrl: SafeResourceUrl;
+  private readonly guidePageCnUrl: SafeResourceUrl;
 
   get logoSrc(): string {
     return this.themeService.theme() === 'light' ? 'imgs/logo-light.webp' : 'imgs/logo.webp';
@@ -31,6 +33,10 @@ export class GuideComponent implements OnInit, AfterViewInit {
 
   get sensecraftImg(): string {
     return this.themeService.theme() === 'light' ? 'brands/sensecraft-light.webp' : 'brands/sensecraft.webp';
+  }
+
+  get guidePageIframeSrc(): SafeResourceUrl {
+    return this.isCnRegion ? this.guidePageCnUrl : this.guidePageDefaultUrl;
   }
 
   getSponsorImg(sponsor: any): string {
@@ -41,10 +47,19 @@ export class GuideComponent implements OnInit, AfterViewInit {
   }
   showMore = false;
   sponsors: any[] = [];
+  sponsorPages: any[][] = [];
+  sponsorRenderPages: any[][] = [];
+  sponsorPageIndex = 0;
+  sponsorPageTransitionEnabled = true;
   showImgUrl: string | null = null;
   imgLoading = false;
   private imgRetryCount = 0;
   private readonly maxRetry = 1;
+  private readonly sponsorPageSize = 3;
+  private readonly sponsorPauseMs = 3000;
+  private readonly sponsorTransitionMs = 500;
+  private sponsorCarouselTimer: ReturnType<typeof setTimeout> | null = null;
+  private sponsorResetTimer: ReturnType<typeof setTimeout> | null = null;
 
   showImg(url: string) {
     this.imgLoading = true;
@@ -90,8 +105,12 @@ export class GuideComponent implements OnInit, AfterViewInit {
     private http: HttpClient,
     private configService: ConfigService,
     private onboardingService: OnboardingService,
-    private themeService: ThemeService
-  ) { }
+    private themeService: ThemeService,
+    private sanitizer: DomSanitizer
+  ) {
+    this.guidePageDefaultUrl = this.sanitizer.bypassSecurityTrustResourceUrl('https://guide-page.aily.pro');
+    this.guidePageCnUrl = this.sanitizer.bypassSecurityTrustResourceUrl('https://guide-page.yiyu.pro');
+  }
 
   /**
    * 获取微信二维码 URL（根据当前 region 动态生成）
@@ -106,9 +125,17 @@ export class GuideComponent implements OnInit, AfterViewInit {
     return `${resourceUrl}/qq.jpg`
   }
 
+  get isCnRegion(): boolean {
+    return this.configService.isCnRegion;
+  }
+
   ngOnInit() {
     this.loadSponsors();
     this.checkFirstLaunch();
+  }
+
+  ngOnDestroy() {
+    this.stopSponsorCarousel();
   }
 
   // 检查是否是第一次启动
@@ -131,22 +158,13 @@ export class GuideComponent implements OnInit, AfterViewInit {
     this.configService.save();
   }
 
-  ngAfterViewInit() {
-    // 延迟初始化轮播，确保DOM已渲染
-    setTimeout(() => {
-      this.initSplide();
-    }, 100);
-  }
-
   private loadSponsors() {
     this.http.get<any[]>('sponsor/sponsor.json').subscribe({
       next: (data) => {
         // 对获取到的数据进行随机排序
         this.sponsors = this.shuffleArray([...data]);
-        // 数据加载完成后重新初始化轮播
-        setTimeout(() => {
-          this.initSplide();
-        }, 100);
+        this.buildSponsorPages();
+        this.startSponsorCarousel();
       },
       error: (error) => {
         console.error('Failed to load sponsors:', error);
@@ -163,29 +181,66 @@ export class GuideComponent implements OnInit, AfterViewInit {
     return shuffled;
   }
 
-  private initSplide() {
-    const splideElement = document.querySelector('#sponsor-splide');
-    if (splideElement && this.sponsors.length > 0) {
-      const splide = new Splide('#sponsor-splide', {
-        type: 'loop',
-        autoplay: true,
-        interval: 3000,
-        perPage: 3,
-        perMove: 1,
-        gap: '10px',
-        arrows: false,
-        pagination: false,
-        breakpoints: {
-          400: {
-            perPage: 2,
-          },
-          300: {
-            perPage: 1,
-          }
-        }
-      });
-      splide.mount();
+  private buildSponsorPages() {
+    const pages: any[][] = [];
+
+    for (let i = 0; i < this.sponsors.length; i += this.sponsorPageSize) {
+      const page = this.sponsors.slice(i, i + this.sponsorPageSize);
+      let padIndex = 0;
+      while (page.length > 0 && page.length < this.sponsorPageSize) {
+        page.push(this.sponsors[padIndex % this.sponsors.length]);
+        padIndex++;
+      }
+      pages.push(page);
     }
+
+    this.sponsorPages = pages;
+    this.sponsorRenderPages = pages.length > 1 ? [...pages, pages[0]] : pages;
+    this.sponsorPageIndex = 0;
+    this.sponsorPageTransitionEnabled = true;
+  }
+
+  private startSponsorCarousel() {
+    this.stopSponsorCarousel();
+    if (this.sponsorPages.length <= 1) {
+      return;
+    }
+
+    this.sponsorCarouselTimer = setTimeout(() => {
+      this.advanceSponsorPage();
+    }, this.sponsorPauseMs);
+  }
+
+  private stopSponsorCarousel() {
+    if (this.sponsorCarouselTimer) {
+      clearTimeout(this.sponsorCarouselTimer);
+      this.sponsorCarouselTimer = null;
+    }
+    if (this.sponsorResetTimer) {
+      clearTimeout(this.sponsorResetTimer);
+      this.sponsorResetTimer = null;
+    }
+  }
+
+  private advanceSponsorPage() {
+    this.sponsorPageTransitionEnabled = true;
+    this.sponsorPageIndex++;
+
+    if (this.sponsorPageIndex === this.sponsorPages.length) {
+      this.sponsorResetTimer = setTimeout(() => {
+        this.sponsorPageTransitionEnabled = false;
+        this.sponsorPageIndex = 0;
+
+        this.sponsorResetTimer = setTimeout(() => {
+          this.sponsorPageTransitionEnabled = true;
+          this.sponsorResetTimer = null;
+        }, 50);
+      }, this.sponsorTransitionMs);
+    }
+
+    this.sponsorCarouselTimer = setTimeout(() => {
+      this.advanceSponsorPage();
+    }, this.sponsorPauseMs + this.sponsorTransitionMs);
   }
 
   onMenuClick(e: any) {

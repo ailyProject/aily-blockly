@@ -46,6 +46,9 @@
             @if (data.state=='doing'&& data.stop) {
             <div class="btn link red" (click)="stop()">{{ 'NOTIFICATION.STOP' | translate }}</div>
             }
+            @if (data.state=='error' && data.onRetry) {
+            <div class="btn link" (click)="onRetryClick()">{{ 'NOTIFICATION.RETRY' | translate }}</div>
+            }
             @if (data.detail) {
             <div class="btn link" (click)="view()">{{ 'NOTIFICATION.VIEW_DETAIL' | translate }}</div>
             <div class="btn link" (click)="sendAI()">{{ 'NOTIFICATION.AI_PROCESS' | translate }}</div>

@@ -175,6 +175,31 @@ export interface ValidationResult {
   message: string;
 }
 
+export interface ConnectionGraphTextFileWriteEvent {
+  filePath: string;
+  existedBefore: boolean;
+  beforeContent: string | null;
+  afterContent: string;
+}
+
+/** savePinmapConfig / updateCatalogStatus 的可选写入回调与 catalog 版本 */
+export type SavePinmapConfigOptions = {
+  catalogVersion?: string | number;
+  onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void | Promise<void>;
+};
+
+function normalizeSavePinmapConfigOptions(
+  options?: string | number | SavePinmapConfigOptions,
+): SavePinmapConfigOptions {
+  if (typeof options === 'string' || typeof options === 'number') {
+    return { catalogVersion: options };
+  }
+  if (typeof options === 'object' && options !== null) {
+    return options;
+  }
+  return {};
+}
+
 // =====================================================
 // Pinmap Catalog 类型定义
 // =====================================================
@@ -211,6 +236,9 @@ export interface SensorVariant {
   isDefault?: boolean;
   previewPins?: string[];             // ["VCC", "SDA", "SCL", "GND"]
   note?: string;
+
+  /** 云端同步写入时与云端元件 version 对齐，用于跳过同版本重复落盘 */
+  version?: string | number;
 }
 
 /** 传感器/芯片型号 */
@@ -661,6 +689,46 @@ export class ConnectionGraphService {
       console.error('读取 pinmap_catalog.json 失败:', e);
       return null;
     }
+  }
+
+  /**
+   * 从已安装库中查找某 pinmapId 对应的 catalog 变体（用于云端同步前比对 version）
+   * 包路径解析与 savePinmapConfig 一致：优先精确 packageSlug，再前缀匹配 lib-xxx-yyy
+   */
+  getCatalogVariantForPinmapId(pinmapId: string, packagesBasePath: string): SensorVariant | null {
+    const ref = this.parsePinmapId(pinmapId);
+    const tryFind = (packagePath: string): SensorVariant | null => {
+      const catalog = this.readPinmapCatalog(packagePath);
+      if (!catalog?.models) return null;
+      const model = catalog.models.find(m => m.id === ref.modelId);
+      const variant = model?.variants?.find(v => v.id === ref.variantId);
+      return variant ?? null;
+    };
+
+    let packagePath = this.electronService.pathJoin(packagesBasePath, '@aily-project', ref.packageSlug);
+    if (this.electronService.exists(packagePath)) {
+      const v = tryFind(packagePath);
+      if (v) return v;
+    }
+
+    const ailyProjectPath = this.electronService.pathJoin(packagesBasePath, '@aily-project');
+    if (!this.electronService.exists(ailyProjectPath)) {
+      return null;
+    }
+    try {
+      const packages = this.electronService.readDir(ailyProjectPath);
+      for (const pkg of packages) {
+        const pkgName = typeof pkg === 'string' ? pkg : (pkg?.name || String(pkg));
+        if (pkgName.startsWith(ref.packageSlug + '-') || pkgName === ref.packageSlug) {
+          const candidatePath = this.electronService.pathJoin(ailyProjectPath, pkgName);
+          const v = tryFind(candidatePath);
+          if (v) return v;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
   }
 
   /**
@@ -1827,12 +1895,43 @@ export class ConnectionGraphService {
    * @param pinmapId 完整标识符
    * @param config pinmap 配置
    * @param packagesBasePath 包基础路径
+   * @param catalogVersion 可选，写入 pinmap_catalog 变体上的 version（云端同步时传云端 item.version）
    */
-  savePinmapConfig(pinmapId: string, config: ComponentConfig, packagesBasePath: string): {
+  /**
+   * 若开发板包根目录已有 pinmap.json，getBoardPinSummary 会优先读该文件；云端已写入 pinmaps/ 后需同步覆盖根文件，否则引脚表仍为旧数据。
+   */
+  overwriteBoardRootPinmapIfPresent(
+    packageSlug: string,
+    resolvedPackagePath: string,
+    config: ComponentConfig,
+  ): void {
+    if (!packageSlug.startsWith('board-')) {
+      return;
+    }
+    try {
+      const rootPath = this.electronService.pathJoin(resolvedPackagePath, 'pinmap.json');
+      if (!this.electronService.exists(rootPath)) {
+        return;
+      }
+      this.electronService.writeFile(rootPath, JSON.stringify(config, null, 2));
+    } catch (e) {
+      console.warn('[overwriteBoardRootPinmapIfPresent] 写入根目录 pinmap.json 失败:', e);
+    }
+  }
+
+  savePinmapConfig(
+    pinmapId: string,
+    config: ComponentConfig,
+    packagesBasePath: string,
+    options?: string | number | SavePinmapConfigOptions,
+  ): {
     success: boolean;
     filePath?: string;
+    /** 实际写入的 @aily-project 包目录（与 parsePinmapId 的 packageSlug 或前缀匹配结果一致） */
+    resolvedPackagePath?: string;
     error?: string;
   } {
+    const normalizedOptions = normalizeSavePinmapConfigOptions(options);
     try {
       const ref = this.parsePinmapId(pinmapId);
       let packagePath = `${packagesBasePath}/@aily-project/${ref.packageSlug}`;
@@ -1889,20 +1988,82 @@ export class ConnectionGraphService {
       // 生成文件名
       const fileName = `${ref.modelId}_${ref.variantId}.json`;
       const filePath = this.electronService.pathJoin(pinmapsDir, fileName);
+      const pinmapContent = JSON.stringify(config, null, 2);
 
       // 保存文件
-      this.electronService.writeFile(filePath, JSON.stringify(config, null, 2));
+      this.writeTextFileWithObserver(filePath, pinmapContent, normalizedOptions.onFileWrite);
 
       // 更新 catalog 状态（传入已解析的 packagePath，避免重新从 packageSlug 构建错误路径）
-      const catalogUpdated = this.updateCatalogStatus(pinmapId, 'available', `pinmaps/${fileName}`, packagePath, config);
+      const catalogUpdated = this.updateCatalogStatus(
+        pinmapId,
+        'available',
+        `pinmaps/${fileName}`,
+        packagePath,
+        config,
+        normalizedOptions,
+      );
       if (!catalogUpdated) {
         console.warn('[savePinmapConfig] catalog 更新失败，但 pinmap 文件已保存');
       }
 
-      return { success: true, filePath };
+      return { success: true, filePath, resolvedPackagePath: packagePath };
     } catch (e: any) {
       console.error('保存 pinmap 配置失败:', e);
       return { success: false, error: e.message || String(e) };
+    }
+  }
+
+  /**
+   * 从 pinmap JSON 推导变体 protocol（与手写 pinmap_catalog 中 SensorVariant.protocol 对齐）
+   */
+  private deriveVariantProtocolFromPinmap(config: ComponentConfig): PinmapProtocol | undefined {
+    const primary = new Set<string>();
+    for (const pin of config.pins || []) {
+      if (pin.visible === false || pin.disabled === true) continue;
+      for (const fn of pin.functions || []) {
+        if (fn.visible === false || fn.disabled === true) continue;
+        const t = (fn.type || '').trim().toLowerCase();
+        if (!t || t === 'power' || t === 'gnd') continue;
+        primary.add(t);
+      }
+    }
+    if (primary.size === 0) return undefined;
+    const order: PinmapProtocol[] = ['i2c', 'spi', 'uart', 'pwm', 'analog', 'digital'];
+    for (const p of order) {
+      if (primary.has(p)) return p;
+    }
+    return 'other';
+  }
+
+  /**
+   * 从 pinmap JSON 推导 previewPins（每引脚取首个可见 function 的 name，与手写 catalog 一致）
+   */
+  private derivePreviewPinsFromPinmap(config: ComponentConfig): string[] | undefined {
+    const names: string[] = [];
+    for (const pin of config.pins || []) {
+      if (pin.visible === false || pin.disabled === true) continue;
+      const fns = pin.functions || [];
+      const first =
+        fns.find(fn => fn.visible !== false && fn.disabled !== true) || fns[0];
+      if (first?.name?.trim()) {
+        names.push(first.name.trim());
+      }
+    }
+    return names.length > 0 ? names : undefined;
+  }
+
+  /**
+   * 将 pinmap 中的元数据写入 catalog 变体（protocol / previewPins）
+   */
+  private enrichVariantFromPinmapConfig(variant: SensorVariant, config?: ComponentConfig): void {
+    if (!config) return;
+    const protocol = this.deriveVariantProtocolFromPinmap(config);
+    const previewPins = this.derivePreviewPinsFromPinmap(config);
+    if (protocol) {
+      variant.protocol = protocol;
+    }
+    if (previewPins && previewPins.length > 0) {
+      variant.previewPins = previewPins;
     }
   }
 
@@ -1913,14 +2074,17 @@ export class ConnectionGraphService {
    * @param pinmapFile pinmap 文件路径
    * @param resolvedPackagePath 已解析的库包完整路径（由调用者传入，避免从 packageSlug 重新推导出错）
    * @param componentConfig 可选，组件配置（用于创建新条目时提取信息）
+   * @param catalogVersion 可选，写入变体的 version（云端同步时）；未传则不修改已有 version
    */
   private updateCatalogStatus(
     pinmapId: string,
     status: 'available' | 'needs_generation',
     pinmapFile: string,
     resolvedPackagePath: string,
-    componentConfig?: ComponentConfig
+    componentConfig?: ComponentConfig,
+    options?: SavePinmapConfigOptions,
   ): boolean {
+    const catalogVersion = options?.catalogVersion;
     try {
       const ref = this.parsePinmapId(pinmapId);
       const packagePath = resolvedPackagePath;
@@ -1970,17 +2134,25 @@ export class ConnectionGraphService {
           pinmapFile: pinmapFile,
           isDefault: model.variants.length === 0 // 第一个变体设为默认
         };
+        this.enrichVariantFromPinmapConfig(variant, componentConfig);
+        if (catalogVersion !== undefined) {
+          variant.version = catalogVersion;
+        }
         model.variants.push(variant);
       } else {
         // 更新现有变体
         variant.status = status;
         variant.pinmapFile = pinmapFile;
+        this.enrichVariantFromPinmapConfig(variant, componentConfig);
+        if (catalogVersion !== undefined) {
+          variant.version = catalogVersion;
+        }
       }
 
       // 保存 catalog
       console.log('[updateCatalogStatus] 保存前 models 数量:', catalog.models.length, 'model IDs:', catalog.models.map(m => m.id).join(', '));
       const catalogContent = JSON.stringify(catalog, null, 2);
-      this.electronService.writeFile(catalogPath, catalogContent);
+      this.writeTextFileWithObserver(catalogPath, catalogContent, options?.onFileWrite);
       console.log('[updateCatalogStatus] catalog 已更新:', catalogPath);
       
       return true;
@@ -2006,6 +2178,45 @@ export class ConnectionGraphService {
       type: 'library',
       models: []
     };
+  }
+
+  private writeTextFileWithObserver(
+    filePath: string,
+    content: string,
+    onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void | Promise<void>,
+  ): void {
+    let existedBefore = false;
+    let beforeContent: string | null = null;
+
+    try {
+      existedBefore = this.electronService.exists(filePath);
+      beforeContent = existedBefore ? this.electronService.readFile(filePath) : null;
+    } catch {
+      existedBefore = false;
+      beforeContent = null;
+    }
+
+    this.electronService.writeFile(filePath, content);
+
+    if (!onFileWrite) {
+      return;
+    }
+
+    try {
+      const result = onFileWrite({
+        filePath,
+        existedBefore,
+        beforeContent,
+        afterContent: content,
+      });
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        void (result as Promise<void>).catch(error => {
+          console.warn('[ConnectionGraphService] file write observer failed:', error);
+        });
+      }
+    } catch (error) {
+      console.warn('[ConnectionGraphService] file write observer failed:', error);
+    }
   }
 
   /**

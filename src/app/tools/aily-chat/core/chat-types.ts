@@ -31,6 +31,10 @@ export interface ChatMessage {
   source?: string;
   /** 该消息对应的模型名称（创建时快照） */
   modelName?: string;
+  /** 该消息对应的计费倍率（创建时快照） */
+  modelBillingLabel?: string;
+  /** ★ Phase 1.3：关联的 lex turn ID，用于恢复时按 turn 粒度分消息 */
+  turnId?: string;
 }
 
 export enum ToolCallState {

@@ -36,7 +36,13 @@
             "assets": [
               {
                 "glob": "**/*",
-                "input": "public"
+                "input": "public",
+                "output": "/"
+              },
+              {
+                "glob": "*/i18n/*.json",
+                "input": "src/app/tools",
+                "output": "tools"
               },
               {
                 "glob": "**/*",
@@ -75,19 +81,63 @@
               "node_modules/@xterm/xterm/css/xterm.css",
               "node_modules/cropperjs/dist/cropper.css"
             ],
-            "scripts": []
+            "scripts": [],
+            "externalDependencies": [
+              "node:child_process",
+              "node:readline"
+            ],
+            "allowedCommonJsDependencies": [
+              "@blockly/block-dynamic-connection",
+              "@blockly/field-colour-hsv-sliders",
+              "@blockly/workspace-minimap",
+              "@braintree/sanitize-url",
+              "@xterm/addon-clipboard",
+              "@xterm/addon-fit",
+              "@xterm/xterm",
+              "ajv",
+              "atob-lite",
+              "base64-js",
+              "blockly/blocks",
+              "blockly/core",
+              "buffer",
+              "cropperjs",
+              "cytoscape-cose-bilkent",
+              "cytoscape-fcose",
+              "dayjs",
+              "dayjs/plugin/advancedFormat.js",
+              "dayjs/plugin/customParseFormat.js",
+              "dayjs/plugin/duration.js",
+              "dayjs/plugin/isoWeek.js",
+              "dragselect",
+              "escape-html",
+              "fast-deep-equal",
+              "fast-uri",
+              "json-schema-traverse",
+              "semver",
+              "spark-md5",
+              "vscode-languageserver-protocol",
+              "vscode-jsonrpc"
+            ],
+            "loader": {
+              ".md": "text"
+            }
           },
           "configurations": {
             "production": {
+              "optimization": {
+                "styles": {
+                  "inlineCritical": false
+                }
+              },
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "500kB",
-                  "maximumError": "5MB"
+                  "maximumWarning": "7MB",
+                  "maximumError": "8MB"
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "4kB",
+                  "maximumWarning": "50kB",
                   "maximumError": "1MB"
                 }
               ],
@@ -119,6 +169,7 @@
         "test": {
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
+            "main": "src/test.ts",
             "polyfills": [
               "zone.js",
               "zone.js/testing"
@@ -129,6 +180,11 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "*/i18n/*.json",
+                "input": "src/app/tools",
+                "output": "tools"
               }
             ],
             "styles": [

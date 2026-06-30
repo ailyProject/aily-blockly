@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "Klicken zum Kopieren, Doppelklick zum Senden an AI-Assistent",
+        "COPIED_TO_CLIPBOARD": "Protokollinhalt in die Zwischenablage kopiert",
+        "SENT_TO_AI": "Protokollinhalt an AI-Assistent gesendet",
+        "NO_DATA_TO_EXPORT": "Keine Protokolldaten zum Exportieren",
+        "EXPORT_TITLE": "Protokolldaten exportieren",
+        "TEXT_FILE": "Textdateien",
+        "ALL_FILES": "Alle Dateien",
+        "EXPORT_SUCCESS": "Protokolldaten erfolgreich exportiert nach ",
+        "SHOW_ERRORS_ONLY": "Nur Fehler anzeigen",
+        "SEARCH_PLACEHOLDER": "Protokolle suchen"
+    }
+}

@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import type { ChatTaskActionDetail, ChatTaskActionName } from '../../helpers/chat-task-action-coordinator';
 
 export type TaskActionType = 'max_messages' | 'error' | 'timeout' | 'unknown';
 
@@ -38,7 +39,7 @@ export interface AilyTaskActionData {
 })
 export class AilyTaskActionViewerComponent implements OnInit, OnDestroy {
   @Input() data: AilyTaskActionData | null = null;
-  @Output() actionTriggered = new EventEmitter<{ action: string; data?: any }>();
+  @Output() actionTriggered = new EventEmitter<ChatTaskActionDetail>();
 
   actionType: TaskActionType = 'unknown';
   message: string = '';
@@ -184,17 +185,15 @@ export class AilyTaskActionViewerComponent implements OnInit, OnDestroy {
   /**
    * 触发操作事件
    */
-  private dispatchAction(action: string): void {
+  private dispatchAction(action: Extract<ChatTaskActionName, 'continue' | 'retry' | 'newChat' | 'dismiss'>): void {
+    const detail: ChatTaskActionDetail = { action, data: this.data };
     // 发送到父组件
-    this.actionTriggered.emit({ action, data: this.data });
+    this.actionTriggered.emit(detail);
     
     // 同时触发自定义 DOM 事件，以便在 directive 场景下也能被捕获
     const event = new CustomEvent('aily-task-action', {
       bubbles: true,
-      detail: {
-        action,
-        data: this.data
-      }
+      detail,
     });
     document.dispatchEvent(event);
   }
@@ -203,6 +202,6 @@ export class AilyTaskActionViewerComponent implements OnInit, OnDestroy {
    * 调试日志
    */
   logDetail(): void {
-    console.log('Task Action Viewer Data:', this.data);
+    // Intentionally quiet: chat renderers must not dump large payloads to DevTools.
   }
 }

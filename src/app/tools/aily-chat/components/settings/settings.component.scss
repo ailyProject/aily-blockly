@@ -1,331 +1,538 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
 .editor-box {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--aily-bg-primary, #2b2d30);
+  color: var(--aily-text-primary, #ffffff);
+  padding: 0 10px;
+  z-index: 19;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-color: var(--aily-scrollbar-thumb, rgba(255, 255, 255, 0.2)) var(--aily-scrollbar-track, transparent);
+
+  ::ng-deep .ant-checkbox-wrapper {
+    color: var(--aily-text-primary, #ffffff);
+  }
+
+  ::ng-deep .ant-btn.ant-btn-link {
+    color: var(--aily-color-link, #1e7cd3);
+
+    &:hover {
+      color: var(--aily-color-link-hover, #4b97dd);
+    }
+  }
+
+  ::ng-deep .ant-input,
+  ::ng-deep textarea.ant-input {
+    background: var(--aily-bg-input, #363636);
+    color: var(--aily-text-tertiary, #cccccc);
+    border-color: var(--aily-border-input, #434343);
+
+    &::placeholder {
+      color: var(--aily-text-muted, #a5a5a5);
+    }
+
+    &:hover {
+      border-color: var(--aily-border-secondary, #444444);
+    }
+
+    &:focus,
+    &-focused {
+      border-color: var(--aily-color-primary, #007bff);
+    }
+  }
+
+  .test {
     position: absolute;
-    top: 0;
     left: 0;
-    width: 100%;
+    top: 0;
+    background: var(--aily-bg-overlay, rgba(0, 0, 0, 0.6));
+    z-index: 999;
     height: 100%;
-    background: var(--aily-bg-secondary);
-    padding: 0 10px;
-    z-index: 19;
+    width: 100%;
+  }
+
+  .content {
+    max-height: calc(100% - 50px);
+    width: calc(100% + 10px);
+    padding-right: 2px;
     overflow-y: auto;
-    overflow-x: hidden;
+    padding-bottom: 60px;
+    scrollbar-color: var(--aily-scrollbar-thumb, rgba(255, 255, 255, 0.2)) var(--aily-scrollbar-track, transparent);
+  }
 
-    .test{
-        position: absolute;
-        left: 0;
-        top: 0;
-        background: var(--aily-bg-overlay);
-        z-index: 999;
-        height: 100%;
-        width: 100%;
+  .item {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 10px;
+    min-width: 32px;
+    position: relative;
+
+    > div:first-child {
+      height: 32px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
     }
 
+    .item-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 32px;
+      color: var(--aily-text-primary, #ffffff);
 
-    .content {
-        max-height: calc(100% - 50px);
-        width: calc(100% + 10px);
-        padding-right: 2px;
-        overflow-y: auto;
-        padding-bottom: 60px;
+      .help-icon {
+        margin-top: 1px;
+        color: var(--aily-text-hint, #888888);
+        cursor: pointer;
+        font-size: 14px;
+        transition: color 0.3s;
+
+        &:hover {
+          color: var(--aily-text-secondary, #999999);
+        }
+      }
     }
 
-    .item {
+    input {
+      background: var(--aily-bg-input, #363636);
+      border-color: var(--aily-border-input, #434343);
+      z-index: 1;
+      height: 32px;
+      margin-bottom: 5px;
+      color: var(--aily-text-tertiary, #cccccc);
+
+      &::placeholder {
+        color: var(--aily-text-muted, #a5a5a5);
+      }
+    }
+
+    textarea {
+      background: var(--aily-bg-input, #363636);
+      border-color: var(--aily-border-input, #434343);
+      z-index: 1;
+      margin-bottom: 5px;
+      color: var(--aily-text-tertiary, #cccccc);
+      min-height: 84px;
+      resize: vertical;
+
+      &::placeholder {
+        color: var(--aily-text-muted, #a5a5a5);
+      }
+    }
+
+    &.items-section {
+      flex-direction: column;
+      align-items: stretch;
+
+      .agent-tabs {
         display: flex;
-        flex-direction: column;
+        gap: 0;
         margin-bottom: 10px;
-        min-width: 32px;
-        position: relative;
+        border-bottom: 1px solid var(--aily-border-secondary, #444444);
 
-        >div:first-child {
-            height: 32px;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
+        .agent-tab {
+          padding: 8px 16px;
+          cursor: pointer;
+          color: var(--aily-text-muted, #a5a5a5);
+          font-size: 14px;
+          border-bottom: 2px solid transparent;
+          transition: background 0.2s, color 0.2s, border-color 0.2s;
+          user-select: none;
+
+          &:hover {
+            color: var(--aily-text-primary, #ffffff);
+            background: var(--aily-highlight-bg, rgba(255, 255, 255, 0.06));
+          }
+
+          &.active {
+            color: var(--aily-color-accent, #61afef);
+            border-bottom-color: var(--aily-color-accent, #61afef);
+            font-weight: 500;
+          }
+        }
+      }
+
+      .empty-tools-tip {
+        text-align: center;
+        color: var(--aily-text-disabled, #666666);
+        padding: 20px;
+        font-size: 13px;
+      }
+
+      .items-list {
+        width: 100%;
+        background: var(--aily-chat-viewer-panel, var(--aily-bg-secondary, #323437));
+        border: 1px solid var(--aily-border-primary, #222427);
+        border-radius: 4px;
+        padding: 10px;
+
+        .items-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 10px;
+          padding-bottom: 10px;
+          border-bottom: 1px solid var(--aily-border-secondary, #444444);
+
+          .items-count {
+            color: var(--aily-text-muted, #a5a5a5);
+            font-size: 12px;
+          }
         }
 
-        .item-title {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            height: 32px;
+        .items-container {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 8px;
+          max-height: 320px;
+          overflow-y: auto;
+          scrollbar-color: var(--aily-scrollbar-thumb, rgba(255, 255, 255, 0.2)) var(--aily-scrollbar-track, transparent);
 
-            .help-icon {
-                margin-top: 1px;
-                color: var(--aily-text-hint);
-                cursor: pointer;
-                font-size: 14px;
-                transition: color 0.3s;
+          &.sscroll {
+            margin-right: -10px;
+          }
+
+          .item-wrapper {
+            min-width: 0;
+            overflow: hidden;
+
+            .list-item {
+              display: flex;
+              padding: 5px 10px;
+              background: var(--aily-chat-viewer-card-bg, var(--aily-bg-tertiary, #3a3c3f));
+              border: 1px solid var(--aily-chat-viewer-border-soft, var(--aily-border-primary, #222427));
+              border-radius: 3px;
+              transition: background 0.2s;
+              cursor: pointer;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
+
+              &:hover {
+                background: var(--aily-chat-viewer-card-hover, var(--aily-editor-flyout-bg, #333333));
+              }
+
+              &.preset-list-item {
+                justify-content: space-between;
+                gap: 12px;
+                align-items: flex-start;
+              }
+            }
+
+            &.model-item {
+              .model-info {
+                display: flex;
+                align-items: center;
+                padding: 5px 10px;
+                background: var(--aily-chat-viewer-card-bg, var(--aily-bg-tertiary, #3a3c3f));
+                border: 1px solid var(--aily-chat-viewer-border-soft, var(--aily-border-primary, #222427));
+                border-radius: 3px;
+                transition: background 0.2s;
+                overflow: hidden;
 
                 &:hover {
-                    color: var(--aily-text-tertiary);
+                  background: var(--aily-chat-viewer-card-hover, var(--aily-editor-flyout-bg, #333333));
                 }
+
+                .list-item {
+                  flex: 1;
+                  display: flex;
+                  align-items: flex-start;
+                  gap: 6px;
+                  padding: 0;
+                  background: transparent;
+                  border: none;
+                  min-width: 0;
+                  overflow: hidden;
+
+                  &:hover {
+                    background: transparent;
+                  }
+
+                  ::ng-deep .ant-checkbox {
+                    top: 0;
+                    align-self: flex-start;
+                    margin-top: 3px;
+                  }
+                }
+
+                .model-actions {
+                  display: flex;
+                  align-items: center;
+                  flex-shrink: 0;
+                  margin-left: auto;
+
+                  .edit-btn,
+                  .delete-btn {
+                    padding: 4px 6px;
+                    height: auto;
+                    line-height: 1;
+                  }
+                }
+              }
             }
+          }
         }
-
-        input {
-            background: var(--aily-bg-input);
-            z-index: 1;
-            height: 32px;
-            margin-bottom: 5px;
-            color: var(--aily-text-primary) !important;
-        }
-
-        // 通用的列表样式
-        &.items-section {
-            flex-direction: column;
-            align-items: stretch;
-
-            // Agent 标签页样式
-            .agent-tabs {
-                display: flex;
-                gap: 0;
-                margin-bottom: 10px;
-                border-bottom: 1px solid var(--aily-border-secondary);
-
-                .agent-tab {
-                    padding: 8px 16px;
-                    cursor: pointer;
-                    color: var(--aily-text-secondary);
-                    font-size: 14px;
-                    border-bottom: 2px solid transparent;
-                    transition: all 0.2s;
-                    user-select: none;
-
-                    &:hover {
-                        color: var(--aily-text-primary);
-                        background: var(--aily-highlight-bg);
-                    }
-
-                    &.active {
-                        color: var(--aily-color-accent);
-                        border-bottom-color: var(--aily-color-accent);
-                        font-weight: 500;
-                    }
-                }
-            }
-
-            // 空工具提示
-            .empty-tools-tip {
-                text-align: center;
-                color: var(--aily-text-muted);
-                padding: 20px;
-                font-size: 13px;
-            }
-
-            .items-list {
-                width: 100%;
-                background: var(--aily-bg-card);
-                border-radius: 4px;
-                padding: 10px;
-
-                .items-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 10px;
-                    padding-bottom: 10px;
-                    border-bottom: 1px solid var(--aily-border-secondary);
-
-                    .items-count {
-                        color: var(--aily-text-secondary);
-                        font-size: 12px;
-                    }
-                }
-
-                .items-container {
-                    display: grid;
-                    grid-template-columns: 1fr;
-                    gap: 8px;
-                    max-height: 320px;
-                    overflow-y: auto;
-
-                    &.sscroll {
-                        margin-right: -10px;
-                    }
-
-                    .item-wrapper {
-                        min-width: 0;
-                        overflow: hidden;
-
-                        .list-item {
-                            display: flex;
-                            padding: 5px 10px;
-                            background: var(--aily-bg-input);
-                            border-radius: 3px;
-                            transition: all 0.2s;
-                            cursor: pointer;
-                            white-space: nowrap;
-                            overflow: hidden;
-                            text-overflow: ellipsis;
-
-                            &:hover {
-                                background: var(--aily-bg-tertiary);
-                            }
-                        }
-
-                        // 模型项特定样式
-                        &.model-item {
-                            .model-info {
-                                display: flex;
-                                align-items: center;
-                                padding: 5px 10px;
-                                background: var(--aily-bg-input);
-                                border-radius: 3px;
-                                transition: all 0.2s;
-                                overflow: hidden;
-
-                                &:hover {
-                                    background: var(--aily-bg-tertiary);
-                                }
-
-                                .list-item {
-                                    flex: 1;
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 6px;
-                                    padding: 0;
-                                    background: transparent;
-                                    min-width: 0;
-                                    overflow: hidden;
-
-                                    &:hover {
-                                        background: transparent;
-                                    }
-
-                                    // 让 checkbox 垂直居中
-                                    ::ng-deep .ant-checkbox {
-                                        top: 0;
-                                        align-self: center;
-                                    }
-
-                                    .model-id {
-                                        color: var(--aily-text-muted);
-                                        margin-left: 10px;
-                                        overflow: hidden;
-                                        text-overflow: ellipsis;
-                                        white-space: nowrap;
-                                        min-width: 0;
-                                        flex-shrink: 1;
-                                    }
-                                }
-
-                                .model-actions {
-                                    display: flex;
-                                    align-items: center;
-                                    flex-shrink: 0;
-                                    margin-left: auto;
-
-                                    .edit-btn,
-                                    .delete-btn {
-                                        padding: 4px 6px;
-                                        height: auto;
-                                        line-height: 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+      }
     }
+  }
+}
+
+.model-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.model-primary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-secondary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-name {
+  color: var(--aily-text-primary, #ffffff);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-id {
+  color: var(--aily-text-hint, #888888);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-kind-tag,
+.model-locked-tag,
+.model-default-tag,
+.model-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.model-kind-tag {
+  background: var(--aily-chat-viewer-badge-bg, rgba(97, 175, 239, 0.14));
+  color: var(--aily-chat-viewer-blockly-chip-fg, #91caff);
+  border: 1px solid var(--aily-chat-viewer-blockly-chip-border, rgba(24, 144, 255, 0.25));
+}
+
+.model-default-tag {
+  flex-shrink: 0;
+  background: rgba(52, 211, 153, 0.14);
+  color: var(--aily-color-success-alt, #10b981);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+}
+
+.model-locked-tag {
+    background: rgba(245, 158, 11, 0.16);
+    color: #ffd089;
+}
+
+.model-meta-pill {
+  background: var(--aily-highlight-bg, rgba(255, 255, 255, 0.08));
+  color: var(--aily-text-secondary, #999999);
+}
+
+.model-description {
+  color: var(--aily-text-muted, #a5a5a5);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-item-add {
-    border: 1px dashed var(--aily-border-tertiary);
+  border: 1px dashed var(--aily-border-tertiary, #555555);
+  border-radius: 3px;
+  text-align: center;
+
+  .add-model-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    gap: 15px;
+    background: transparent;
     border-radius: 3px;
-    text-align: center;
+    color: var(--aily-text-hint, #888888);
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
 
-    .add-model-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        gap: 15px;
-        background: transparent;
-        border-radius: 3px;
-        color: var(--aily-text-muted);
-        cursor: pointer;
-        transition: all 0.2s;
-
-        &:hover {
-            background: var(--aily-bg-tertiary);
-        }
-
-        i {
-            margin-left: 1px;
-            font-size: 14px;
-        }
+    &:hover {
+      background: var(--aily-chat-viewer-option-hover, var(--aily-bg-tertiary, #3a3c3f));
+      color: var(--aily-text-tertiary, #cccccc);
     }
+
+    i {
+      margin-left: 1px;
+      font-size: 14px;
+    }
+  }
 }
 
-// 模型表单样式（添加和编辑共用）
 .add-model-form {
-    width: 100%;
-    background: transparent;
-    padding: 5px 0;
+  width: 100%;
+  background: transparent;
+  padding: 5px 0;
 
-    .form-row {
-        margin-bottom: 8px;
+  .form-row {
+    margin-bottom: 8px;
 
-        input {
-            width: 100%;
-            background: var(--aily-bg-card);
-            border: 1px solid var(--aily-border-secondary);
-            margin-bottom: 0;
-            color: var(--aily-text-primary) !important;
+    input {
+      width: 100%;
+      background: var(--aily-bg-secondary, #323437);
+      border: 1px solid var(--aily-border-secondary, #444444);
+      margin-bottom: 0;
+      color: var(--aily-text-tertiary, #cccccc);
 
-            &[type="password"] {
-                letter-spacing: -5px;
+      &[type='password'] {
+        letter-spacing: -5px;
 
-                &::placeholder {
-                    letter-spacing: normal;
-                }
-            }
-
-            &:focus {
-                border-color: var(--aily-color-accent);
-            }
+        &::placeholder {
+          letter-spacing: normal;
         }
+      }
 
-        &:last-of-type {
-            margin-bottom: 0;
-        }
+      &:focus {
+        border-color: var(--aily-color-primary, #007bff);
+      }
     }
 
-    .form-actions {
-        margin-top: 10px;
-        text-align: right;
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
+    &:last-of-type {
+      margin-bottom: 0;
     }
+  }
+
+  .form-actions {
+    margin-top: 10px;
+    text-align: right;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
 }
 
 .bottom {
-    position: absolute;
-    left: 0px;
-    bottom: 0px;
-    width: 100%;
-    text-align: right;
-    z-index: 9;
-    background: var(--aily-bg-tertiary);
-    padding: 10px;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  text-align: right;
+  z-index: 9;
+  background: var(--aily-bg-tertiary, #3a3c3f);
+  border-top: 1px solid var(--aily-border-primary, #222427);
+  padding: 10px;
+  box-shadow: var(--aily-shadow-sm, 0 0 3px rgba(0, 0, 0, 0.3));
 
-    button {
-        margin-left: 15px;
-    }
+  button {
+    margin-left: 15px;
+  }
 }
 
 .setting-row {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
 
-    .setting-hint {
-        font-size: 12px;
-        color: var(--aily-text-hint);
-        padding-left: 24px;
+  .setting-hint {
+    font-size: 12px;
+    color: var(--aily-text-hint, #888888);
+    padding-left: 24px;
+  }
+}
+
+.setting-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+
+  &--section-gap {
+    margin-bottom: 12px;
+  }
+
+  .setting-label {
+    color: var(--aily-text-primary, #ffffff);
+    font-size: 13px;
+
+    .help-icon {
+      margin-top: 1px;
+      color: var(--aily-text-hint, #888888);
+      cursor: pointer;
+      font-size: 14px;
+      transition: color 0.3s;
+
+      &:hover {
+        color: var(--aily-text-secondary, #999999);
+      }
     }
+  }
+}
+
+.setting-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--aily-text-muted, #a5a5a5);
+
+  &--warning {
+    color: var(--aily-color-warning-alt, var(--aily-color-warning, #f7ce42));
+  }
+}
+
+.custom-agent-visibility-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.custom-agent-visibility-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--aily-chat-viewer-border-soft, var(--aily-border-primary, #222427));
+  border-radius: 4px;
+  background: var(--aily-chat-viewer-card-bg, var(--aily-bg-tertiary, #3a3c3f));
+}
+
+.custom-agent-visibility-label {
+  color: var(--aily-text-primary, #ffffff);
+}
+
+.custom-agent-visibility-description {
+  font-size: 12px;
+  color: var(--aily-text-muted, #a5a5a5);
 }

@@ -1,0 +1,203 @@
+:host {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-debug-viewer {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.chat-debug-viewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.chat-debug-viewer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-debug-viewer-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-debug-viewer-eyebrow {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--aily-text-secondary, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chat-debug-viewer-title {
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--aily-text-primary, #e6edf3);
+}
+
+.chat-debug-viewer-meta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--aily-text-secondary, #8b949e);
+}
+
+.chat-debug-viewer-close {
+  border: 1px solid var(--aily-border-primary, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--aily-text-primary, #e6edf3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.chat-debug-viewer-close.secondary {
+  color: var(--aily-text-secondary, #8b949e);
+}
+
+.chat-debug-viewer-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chat-debug-viewer-explore-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-debug-viewer-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--aily-border-primary, rgba(255, 255, 255, 0.08));
+  background: var(--aily-chat-viewer-panel-raised, #252526);
+  min-width: 0;
+}
+
+.chat-debug-viewer-stat-label {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--aily-text-secondary, #8b949e);
+}
+
+.chat-debug-viewer-stat-value {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--aily-text-primary, #e6edf3);
+  word-break: break-all;
+}
+
+.chat-debug-viewer-section-title {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--aily-text-secondary, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.chat-debug-viewer-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chat-debug-viewer-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--aily-border-primary, rgba(255, 255, 255, 0.08));
+  background: var(--aily-chat-viewer-panel-raised, #252526);
+}
+
+.chat-debug-viewer-detail-label {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--aily-text-secondary, #8b949e);
+}
+
+.chat-debug-viewer-detail-value {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--aily-text-primary, #e6edf3);
+}
+
+.chat-debug-viewer-detail-main {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-debug-viewer-detail-open {
+  border: 1px solid var(--aily-border-primary, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--aily-text-secondary, #8b949e);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+@media (max-width: 960px) {
+  .chat-debug-viewer-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .chat-debug-viewer-header {
+    flex-direction: column;
+  }
+
+  .chat-debug-viewer-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .chat-debug-viewer-explore-actions {
+    flex-direction: column;
+  }
+
+  .chat-debug-viewer-close {
+    width: 100%;
+  }
+
+  .chat-debug-viewer-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-debug-viewer-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-debug-viewer-detail-row,
+  .chat-debug-viewer-detail-main {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chat-debug-viewer-detail-open {
+    width: 100%;
+  }
+}

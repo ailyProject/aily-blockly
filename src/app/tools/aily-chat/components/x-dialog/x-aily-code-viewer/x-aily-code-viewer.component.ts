@@ -16,7 +16,7 @@ import { CommonModule } from '@angular/common';
     `
       pre {
         margin: 0;
-        border-radius: 4px;
+        border-radius: 5px;
         overflow-x: auto;
         background: var(--aily-chat-viewer-code-bg, #0d1117);
         padding: 12px;
@@ -33,7 +33,7 @@ import { CommonModule } from '@angular/common';
         font-size: 12px;
         color: var(--aily-chat-viewer-inline-code, #ffbd08);
         padding: 0;
-        border-radius: 3px;
+        border-radius: 5px;
       }
     `,
   ],

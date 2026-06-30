@@ -16,14 +16,16 @@ import {
   makeJsonSafe as _makeJsonSafe,
 } from './content-sanitizer.service';
 import { NgZone } from '@angular/core';
+import { findChatMessageHandleByMessage, findLatestChatMessageHandle } from '../helpers/chat-message-handle';
+import { getTurnResponseParticipant } from '../core/turn-response-stream-contract';
 
 export class ChatViewAdapter {
   /** 待合并的流式 chunk 缓冲区 */
   private pendingChunks: StreamingChunkEvent[] = [];
   /** rAF 句柄 */
   private rafId: number | null = null;
-  /** ★ 性能优化：toolCallId → list 索引，避免 displayToolCallState 全量 regex 扫描 */
-  private toolCallStateIndex = new Map<string, number>();
+  /** ★ 性能优化：toolCallId → 消息引用，避免 displayToolCallState 全量 regex 扫描 */
+  private toolCallStateMessage = new Map<string, ChatMessage>();
 
   /** flush 回调（由 engine 注册，在 rAF 内执行实际 list 修改） */
   private onFlushCallback: (() => void) | null = null;
@@ -36,6 +38,8 @@ export class ChatViewAdapter {
     private getCurrentSource: () => string,
     /** 获取当前模型名 */
     private getCurrentModelName: () => string | undefined,
+    /** 获取当前模型倍率 */
+    private getCurrentModelBillingLabel: () => string | undefined,
     /** 获取 isWaiting 状态 */
     private getIsWaiting: () => boolean,
     /** 标记历史脏位 */
@@ -44,8 +48,10 @@ export class ChatViewAdapter {
     private ngZone?: NgZone,
     /** 变更检测回调（OnPush 模式下由组件注入 cdr.markForCheck） */
     private cdCallback?: () => void,
-    /** 滚动到底部（可选，flush 后调用） */
-    private scrollToBottom?: () => void,
+    /** 记录 flush 前是否应维持贴底 */
+    private captureAutoScrollState?: () => boolean,
+    /** 根据 flush 前快照决定是否滚动到底部 */
+    private scrollToBottom?: (shouldFollow: boolean) => void,
   ) {}
 
   /**
@@ -53,6 +59,14 @@ export class ChatViewAdapter {
    */
   onFlush(cb: () => void): void {
     this.onFlushCallback = cb;
+  }
+
+  setCdCallback(cb: (() => void) | undefined): void {
+    this.cdCallback = cb;
+  }
+
+  requestChangeDetection(): void {
+    this.cdCallback?.();
   }
 
   // ==================== 公共接口 ====================
@@ -89,7 +103,7 @@ export class ChatViewAdapter {
       const stateMessage = `\n\`\`\`aily-state\n{\n  "state": "${toolCallInfo.state}",\n  "text": "${_makeJsonSafe(toolCallInfo.text)}",\n  "id": "${toolCallInfo.id}"\n}\n\`\`\`\n\n\n`;
 
       if (toolCallInfo.state !== ToolCallState.DOING) {
-        const cachedIdx = this.toolCallStateIndex.get(toolCallInfo.id);
+        const cachedMessage = this.toolCallStateMessage.get(toolCallInfo.id);
         const newBlock =
           '```aily-state\n{\n  "state": "' + toolCallInfo.state +
           '",\n  "text": "' + _makeJsonSafe(toolCallInfo.text) +
@@ -98,21 +112,24 @@ export class ChatViewAdapter {
         // ★ 性能优化：用 indexOf 定位代替正则扫描，避免 O(content_length) 回溯
         const idNeedle = '"id": "' + toolCallInfo.id + '"';
 
-        if (cachedIdx !== undefined && cachedIdx < list.length && list[cachedIdx].role === 'aily') {
-          const replaced = this._replaceAilyStateBlock(list[cachedIdx].content, idNeedle, newBlock);
+        const cachedHandle = cachedMessage
+          ? findChatMessageHandleByMessage(list, cachedMessage, { role: 'aily' })
+          : null;
+        if (cachedHandle) {
+          const replaced = this._replaceAilyStateBlock(cachedHandle.message.content, idNeedle, newBlock);
           if (replaced !== null) {
-            list[cachedIdx].content = replaced;
+            cachedHandle.message.content = replaced;
             this.markHistoryDirty();
             return;
           }
         }
 
-        for (let i = list.length - 1; i >= 0; i--) {
-          if (list[i].role !== 'aily') continue;
-          const replaced = this._replaceAilyStateBlock(list[i].content, idNeedle, newBlock);
+        const fallbackHandle = this.findAilyStateMessageHandleByToolCallId(list, idNeedle);
+        if (fallbackHandle) {
+          const replaced = this._replaceAilyStateBlock(fallbackHandle.message.content, idNeedle, newBlock);
           if (replaced !== null) {
-            list[i].content = replaced;
-            this.toolCallStateIndex.set(toolCallInfo.id, i);
+            fallbackHandle.message.content = replaced;
+            this.toolCallStateMessage.set(toolCallInfo.id, fallbackHandle.message);
             this.markHistoryDirty();
             return;
           }
@@ -120,7 +137,10 @@ export class ChatViewAdapter {
       }
 
       this._doAppendMessage('aily', stateMessage, source);
-      this.toolCallStateIndex.set(toolCallInfo.id, list.length - 1);
+      const latestMessage = findLatestChatMessageHandle(list)?.message;
+      if (latestMessage) {
+        this.toolCallStateMessage.set(toolCallInfo.id, latestMessage);
+      }
 
       if (toolCallInfo.state === ToolCallState.DOING && toolCallStates) {
         toolCallStates[toolCallInfo.id] = toolCallInfo.text;
@@ -135,8 +155,9 @@ export class ChatViewAdapter {
   markLastMessageDone(): void {
     this._immediateFlushAndRun(() => {
       const list = this.getList();
-      if (list.length > 0 && list[list.length - 1].role === 'aily') {
-        list[list.length - 1].state = 'done';
+      const trailingHandle = findLatestChatMessageHandle(list);
+      if (trailingHandle?.message.role === 'aily') {
+        trailingHandle.message.state = 'done';
       }
     });
   }
@@ -155,8 +176,9 @@ export class ChatViewAdapter {
     if (!hasPendingButton) {
       // 也检查已 flush 的内容（极少走到这里，因为 button 通常在 pending 中）
       const list = this.getList();
-      if (list.length === 0 || list[list.length - 1].role !== 'aily') return false;
-      const tail = list[list.length - 1].content;
+      const trailingHandle = findLatestChatMessageHandle(list);
+      if (!trailingHandle || trailingHandle.message.role !== 'aily') return false;
+      const tail = trailingHandle.message.content;
       // 只检查尾部一小段即可（aily-button 块不会超过 200 字符）
       const checkLen = Math.min(tail.length, 300);
       if (!tail.substring(tail.length - checkLen).includes('aily-button')) return false;
@@ -165,8 +187,9 @@ export class ChatViewAdapter {
     // 仅在可能有 aily-button 时才 flush（极少数情况）
     this.flushNow();
     const list = this.getList();
-    if (list.length === 0 || list[list.length - 1].role !== 'aily') return false;
-    const content = list[list.length - 1].content;
+    const trailingHandle = findLatestChatMessageHandle(list);
+    if (!trailingHandle || trailingHandle.message.role !== 'aily') return false;
+    const content = trailingHandle.message.content;
     const lastThinkEnd = content.lastIndexOf('</think>');
     if (lastThinkEnd < 0 && content.includes('<think>')) return false;
     const searchStart = lastThinkEnd >= 0 ? lastThinkEnd : 0;
@@ -175,7 +198,7 @@ export class ChatViewAdapter {
     if (!match) return false;
     const blockEnd = searchStart + match.index! + match[0].length;
     if (blockEnd < content.length) {
-      list[list.length - 1].content = content.substring(0, blockEnd);
+      trailingHandle.message.content = content.substring(0, blockEnd);
     }
     return true;
   }
@@ -185,8 +208,8 @@ export class ChatViewAdapter {
    */
   getClosingTagsForOpenBlocks(getClosingTags: (content: string) => string): string {
     const list = this.getList();
-    if (list.length === 0) return '';
-    const lastMsg = list[list.length - 1];
+    const lastMsg = findLatestChatMessageHandle(list)?.message;
+    if (!lastMsg) return '';
     if (lastMsg.role !== 'aily') return '';
     return getClosingTags(lastMsg.content || '');
   }
@@ -196,7 +219,7 @@ export class ChatViewAdapter {
    */
   reset(): void {
     this.cancelPending();
-    this.toolCallStateIndex.clear();
+    this.toolCallStateMessage.clear();
   }
 
   /**
@@ -268,6 +291,7 @@ export class ChatViewAdapter {
     const _s = ChatPerformanceTracer.begin('doFlush');
     const segments = this._computeMergedChunks();
     if (segments.length === 0) { ChatPerformanceTracer.end(_s, 'doFlush', 'empty'); return; }
+    const shouldFollow = this.captureAutoScrollState?.() ?? true;
 
     // 进入 Angular Zone 执行 list 变更 → 触发 CD
     this._runInZone(() => {
@@ -275,7 +299,7 @@ export class ChatViewAdapter {
         this._doAppendMessage(seg.role, seg.content, seg.source);
       }
       this.cdCallback?.();
-      this.scrollToBottom?.();
+      this.scrollToBottom?.(shouldFollow);
       this.onFlushCallback?.();
       ChatPerformanceTracer.end(_s, 'doFlush');
     });
@@ -300,6 +324,13 @@ export class ChatViewAdapter {
     return content.substring(0, blockStart) + newBlock + content.substring(blockEnd + 3);
   }
 
+  private findAilyStateMessageHandleByToolCallId(list: readonly ChatMessage[], idNeedle: string) {
+    return findLatestChatMessageHandle(
+      list,
+      message => message.role === 'aily' && message.content.includes(idNeedle),
+    );
+  }
+
   /**
    * ★ 合并 flush + 立即操作为单次 CD 周期
    * 旧版 flushNow()→CD + _runInZone()→CD = 2 次 CD，每次都触发 x-dialog preprocess O(n)。
@@ -312,6 +343,7 @@ export class ChatViewAdapter {
     }
     // 在 zone 外完成纯计算
     const segments = this._computeMergedChunks();
+    const shouldFollow = this.captureAutoScrollState?.() ?? true;
 
     // 单次 zone entry：flush mutations + action → 1 次 CD
     const _imfSpan = ChatPerformanceTracer.begin('_immediateFlushAndRun', `${segments.length}segs`);
@@ -321,7 +353,7 @@ export class ChatViewAdapter {
       }
       fn();
       this.cdCallback?.();
-      this.scrollToBottom?.();
+      this.scrollToBottom?.(shouldFollow);
       this.onFlushCallback?.();
     });
     ChatPerformanceTracer.end(_imfSpan, '_immediateFlushAndRun');
@@ -338,7 +370,7 @@ export class ChatViewAdapter {
     let current: { role: string; content: string; source?: string } | null = null;
 
     for (const chunk of this.pendingChunks) {
-      const effectiveSource = chunk.source || this.getCurrentSource();
+      const effectiveSource = getTurnResponseParticipant(chunk.source || this.getCurrentSource());
       if (current && current.role === chunk.role && current.source === effectiveSource) {
         current.content += chunk.content;
       } else {
@@ -376,14 +408,13 @@ export class ChatViewAdapter {
    * 低级 list 操作：追加到最后一条同角色消息或创建新消息
    */
   private _setLastMsgContent(role: string, text: string, source?: string): void {
-    const msgSource = source || this.getCurrentSource();
+    const msgSource = getTurnResponseParticipant(source || this.getCurrentSource());
     const list = this.getList();
-    if (list.length > 0 &&
-        list[list.length - 1].role === role &&
-        list[list.length - 1].source === msgSource) {
-      list[list.length - 1].content += text;
+    const trailingHandle = findLatestChatMessageHandle(list);
+    if (trailingHandle?.message.role === role && trailingHandle.message.source === msgSource) {
+      trailingHandle.message.content += text;
       if (role === 'aily' && this.getIsWaiting()) {
-        list[list.length - 1].state = 'doing';
+        trailingHandle.message.state = 'doing';
       }
     } else {
       this.pushToList({
@@ -391,6 +422,7 @@ export class ChatViewAdapter {
         state: (role === 'aily' && this.getIsWaiting()) ? 'doing' : 'done',
         source: msgSource,
         modelName: this.getCurrentModelName(),
+        modelBillingLabel: this.getCurrentModelBillingLabel(),
       });
     }
     this.markHistoryDirty();

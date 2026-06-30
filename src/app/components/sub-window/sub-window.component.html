@@ -1,7 +1,13 @@
 <div class="sub-window-box bborder">
   <div class="header" [class.darwin]="isMac" [class.full-screen]="isMacFullScreen">
-    <div class="title">{{ title }}</div>
+    <div class="title" (dblclick)="maximize()">
+      <ng-content select="[header-title-prefix]"></ng-content>
+      <span class="title-text">{{ title }}</span>
+    </div>
     <div class="win-btns">
+      <div class="header-btns">
+        <ng-content select="[header-btns]"></ng-content>
+      </div>
       @for (btn of winBtns; track btn) {
         @if (btn === "go-main") {
           <div class="btn ccenter go-main" (click)="goMain()">

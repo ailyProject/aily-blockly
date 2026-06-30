@@ -1,5 +1,3 @@
-@use '@splidejs/splide/css';
-
 .guide-box {
   min-height: 100%;
   min-width: 1197px;
@@ -157,6 +155,18 @@
     font-size: 12px;
   }
 
+  .desc-scroll {
+    container-type: inline-size;
+    width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+
+    span {
+      display: inline-block;
+      min-width: 100%;
+    }
+  }
+
   .arrow {
     position: absolute;
     top: 50%;
@@ -168,9 +178,19 @@
   }
 
   &:hover {
+    .desc-scroll span {
+      animation: guide-desc-scroll 6s linear infinite alternate;
+    }
+
     .arrow {
       color: var(--aily-color-success);
     }
+  }
+}
+
+@keyframes guide-desc-scroll {
+  to {
+    transform: translateX(min(0px, calc(100cqw - 100%)));
   }
 }
 
@@ -183,11 +203,30 @@ img.qrcode {
 
 // 赞助商轮播样式
 .sponsor-carousel {
+  width: 100%;
   overflow: hidden;
 
-  .splide__slide {
+  .sponsor-page-track {
+    display: flex;
+    transition: transform 0.5s ease;
+    will-change: transform;
+
+    &.no-transition {
+      transition: none;
+    }
+  }
+
+  .sponsor-page {
+    flex: 0 0 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    column-gap: 10px;
+  }
+
+  .sponsor-slide {
     display: flex;
     justify-content: center;
+    min-width: 0;
   }
 
   .sponsor-item {
@@ -235,11 +274,15 @@ img.qrcode {
 
 .group-btn {
   display: flex;
+  gap: 15px;
   margin-top: 8px;
 
   >div {
     height: 30px;
-    width: 50px;
+    width: 30px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
 
     i {
       font-size: 26px;

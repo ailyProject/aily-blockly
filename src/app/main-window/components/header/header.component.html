@@ -23,7 +23,8 @@
       @for (btn of headerBtns; track $index) {
       @if(showInRouter(btn)){
       <app-act-btn [icon]="btn.icon" [color]="btn.color" [(state)]="btn.state" nz-tooltip
-        nzTooltipTitle="{{ btn.name | translate}}({{btn.text}})" (click)="onClick(btn,$event)" [attr.data-action]="btn.action">
+        nzTooltipTitle="{{ btn.name | translate}}({{btn.text}})" (click)="onClick(btn,$event)"
+        [attr.data-action]="btn.action">
       </app-act-btn>
       }
       }
@@ -31,8 +32,7 @@
     <!-- 动态 App 列表 -->
     <div class="zone ccenter">
       @for (app of headerApps; track app.id) {
-      @if(!app.dev||isDevMode) {
-      @if(showInRouter(app)){
+      @if(showApp(app)){
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ app.name | translate}}" (click)="onClick(app,$event)"
         [ngStyle]="{ color: app.color ? app.color : '' }" [ngClass]="{ selected: isOpenTool(app) }">
         <i class="{{ app.icon }}"></i>
@@ -42,14 +42,14 @@
       </div>
       }
       }
-      }
     </div>
-    <!-- <div class="zone ccenter">
+    <div style="border-left: 1px solid var(--aily-border-primary);height: 24px;"></div>
+    <div class="zone ccenter">
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ 'MENU.APP_STORE' | translate }}"
         (click)="onClick(appStoreBtn,$event)" [ngClass]="{ selected: isOpenTool(appStoreBtn) }">
         <i class="fa-light fa-grid-2-plus"></i>
       </div>
-    </div> -->
+    </div>
   </div>
   <div class="win-btns">
     <div class="btn ccenter minimize" (click)="minimize()">
@@ -69,8 +69,8 @@
 </div>
 <!-- menu -->
 @if (showMenu) {
-<app-menu [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()"
-  (itemClickEvent)="onMenuClick($event)"></app-menu>
+<app-menu [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"
+  (subItemClickEvent)="onHeaderMenuSubItemClick($event)"></app-menu>
 }
 <!-- device port list -->
 @if (showPortList) {

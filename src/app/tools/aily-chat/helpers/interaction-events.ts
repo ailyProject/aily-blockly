@@ -1,0 +1,1 @@
+export const AILY_CONFIRMATION_RESULT_EVENT = 'aily-confirmation-result';

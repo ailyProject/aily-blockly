@@ -14,6 +14,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzPaginationModule } from 'ng-zorro-antd/pagination';
 import { ElectronService } from '../../services/electron.service';
 import { TranslateModule } from '@ngx-translate/core';
+import { ToolI18nService } from '../../services/tool-i18n.service';
 
 @Component({
   selector: 'app-model-store',
@@ -41,7 +42,8 @@ export class ModelStoreComponent implements OnInit, AfterViewInit {
     private router: Router,
     private modelStoreService: ModelStoreService,
     private message: NzMessageService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private toolI18n: ToolI18nService
   ) { }
 
   itemList: ModelItem[] = []
@@ -57,6 +59,11 @@ export class ModelStoreComponent implements OnInit, AfterViewInit {
   loading = false;  // 加载状态
 
   ngOnInit() {
+    void this.initTool();
+  }
+
+  private async initTool(): Promise<void> {
+    await this.toolI18n.load('model-store');
     this.currentUrl = this.router.url;
   }
 

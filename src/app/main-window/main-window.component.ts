@@ -1,4 +1,4 @@
-import { Component, ChangeDetectorRef, ViewChild } from '@angular/core';
+import { Component, ChangeDetectorRef, OnDestroy, ViewChild } from '@angular/core';
 import { FooterComponent } from './components/footer/footer.component';
 import { HeaderComponent } from './components/header/header.component';
 import { CommonModule } from '@angular/common';
@@ -10,6 +10,8 @@ import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService } from '../services/ui.service';
 import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
+import { FfsManagerComponent } from '../tools/ffs-manager/ffs-manager.component';
+import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '../services/project.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
@@ -20,7 +22,7 @@ import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '../services/npm.service';
 import { SimulatorComponent } from '../tools/simulator/simulator.component';
 import { NavigationEnd, Router, RouterModule } from '@angular/router';
-import { filter } from 'rxjs';
+import { filter, Subscription } from 'rxjs';
 import { ConfigService } from '../services/config.service';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
@@ -28,6 +30,16 @@ import { UserCenterComponent } from '../tools/user-center/user-center.component'
 import { ModelStoreComponent } from '../tools/model-store/model-store.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
 import { OnboardingService } from '../services/onboarding.service';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { isChildTool } from '../configs/tool.config';
+import { AuthService } from '../services/auth.service';
+import { ElectronService } from '../services/electron.service';
+import { resolveTranslatedApiErrorMessage } from '../utils/api-error.utils';
+import { ToolI18nService } from '../services/tool-i18n.service';
+import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
+import { ModeWelcomeComponent } from '../components/mode-welcome/mode-welcome.component';
+import type { DevelopmentModePreference } from '../services/config.service';
+import { ChatRuntimeHostResourceOperationHandlerService } from '../tools/aily-chat/services/chat-runtime-host-resource-operation-handler.service';
 
 @Component({
   selector: 'app-main-window',
@@ -42,6 +54,8 @@ import { OnboardingService } from '../services/onboarding.service';
     TerminalComponent,
     LogComponent,
     SerialMonitorComponent,
+    FfsManagerComponent,
+    ChildToolHostComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
     AppStoreComponent,
@@ -53,12 +67,15 @@ import { OnboardingService } from '../services/onboarding.service';
     CloudSpaceComponent,
     UserCenterComponent,
     ModelStoreComponent,
-    OnboardingComponent
+    OnboardingComponent,
+    TranslateModule,
+    LibManagerToolComponent,
+    ModeWelcomeComponent,
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
 })
-export class MainWindowComponent {
+export class MainWindowComponent implements OnDestroy {
   @ViewChild('logComponent') logComponent!: LogComponent;
   @ViewChild('terminalComponent') terminalComponent!: TerminalComponent;
 
@@ -75,6 +92,10 @@ export class MainWindowComponent {
     return this.uiService.openToolList;
   }
 
+  isChildTool(toolId: string): boolean {
+    return isChildTool(toolId);
+  }
+
   options = {
     autoHide: true,
     clickOnTrack: true,
@@ -84,25 +105,49 @@ export class MainWindowComponent {
   // 新手引导相关
   showOnboarding = false;
   onboardingConfig = null;
+  private oauthResultListener: (() => void) | null = null;
+  private exampleListListener: (() => void) | null = null;
+  private configNoticeSubscription: Subscription | null = null;
+  private developmentModePreferencePromptOpen = false;
+
+  // 首次开发模式选择（全屏引导）
+  showModeWelcome = false;
 
   constructor(
     private uiService: UiService,
     private projectService: ProjectService,
     private message: NzMessageService,
+    private translate: TranslateService,
     private cd: ChangeDetectorRef,
     private updateService: UpdateService,
     private npmService: NpmService,
     private router: Router,
     private configService: ConfigService,
     private modal: NzModalService,
-    private onboardingService: OnboardingService
+    private onboardingService: OnboardingService,
+    private authService: AuthService,
+    private electronService: ElectronService,
+    private toolI18n: ToolI18nService,
+    private readonly chatRuntimeHostResourceOperationHandler: ChatRuntimeHostResourceOperationHandlerService
   ) { }
 
-  ngOnInit(): void {
+  async ngOnInit(): Promise<void> {
+    void this.chatRuntimeHostResourceOperationHandler.start().catch(error => {
+        console.error('[AilyChat][RuntimeHostResourceOperationHandler] Failed to start:', error);
+    });
+    this.watchConfigNotices();
+    await Promise.all([
+      this.toolI18n.loadChildTools(),
+      this.toolI18n.load('aily-chat'),
+    ]);
     this.uiService.init();
     this.projectService.init();
     this.updateService.init();
     this.npmService.init();
+    await this.authService.initializeAuth();
+    this.setupGlobalOAuthListener();
+    this.setupExampleListListener();
+    this.electronService.sendRendererReady();
     // 重置 footer 状态
     this.uiService.updateFooterState({ text: '', timeout: 0 });
 
@@ -124,7 +169,7 @@ export class MainWindowComponent {
     });
 
     // 语言设置变化后，重新加载项目
-    window['ipcRenderer'].on('setting-changed', async (event, data) => {
+    window['ipcRenderer']?.on?.('setting-changed', async (event, data) => {
       await this.configService.load();
       if (data.action == 'language-changed' && this.router.url.includes('/main/blockly-editor')) {
         console.log('mainwindow setLanguage', data);
@@ -134,6 +179,129 @@ export class MainWindowComponent {
         }, 100);
       }
     });
+
+    setTimeout(() => {
+      void this.promptDevelopmentModePreferenceIfNeeded();
+    }, 0);
+  }
+
+  private async promptDevelopmentModePreferenceIfNeeded(): Promise<void> {
+    if (this.developmentModePreferencePromptOpen || this.showModeWelcome) {
+      return;
+    }
+
+    if (!this.configService.data || Object.keys(this.configService.data).length === 0) {
+      await this.configService.init();
+    }
+
+    if (!this.configService.shouldPromptDevelopmentModePreference()) {
+      return;
+    }
+
+    this.developmentModePreferencePromptOpen = true;
+    this.showModeWelcome = true;
+    this.cd.detectChanges();
+  }
+
+  // 用户在全屏引导中选择了某个开发模式
+  async onModeWelcomeSelect(preference: DevelopmentModePreference): Promise<void> {
+    await this.configService.setDevelopmentModePreference(preference, 'onboarding');
+    this.closeModeWelcome();
+  }
+
+  // 用户选择「稍后再说」
+  async onModeWelcomeSkip(): Promise<void> {
+    await this.configService.markDevelopmentModePreferencePrompted();
+    this.closeModeWelcome();
+  }
+
+  private closeModeWelcome(): void {
+    this.showModeWelcome = false;
+    this.developmentModePreferencePromptOpen = false;
+    this.cd.detectChanges();
+  }
+
+  ngOnDestroy(): void {
+    this.configNoticeSubscription?.unsubscribe();
+    this.configNoticeSubscription = null;
+    this.oauthResultListener?.();
+    this.oauthResultListener = null;
+    this.exampleListListener?.();
+    this.exampleListListener = null;
+  }
+
+  private watchConfigNotices() {
+    this.configNoticeSubscription = this.configService.configNotice$.subscribe((notice) => {
+      if (notice.type === 'error') {
+        this.message.error(notice.message);
+      }
+    });
+  }
+
+  private setupGlobalOAuthListener() {
+    if (window['oauth'] && window['oauth'].onCallback) {
+      this.oauthResultListener = window['oauth'].onCallback(async (callbackData: any) => {
+        try {
+          const result = await this.authService.handleOAuthCallback(callbackData);
+
+          if (result.success) {
+            this.message.success('GitHub 登录成功');
+          } else {
+            let errorMessage = 'GitHub 登录超时，请重试';
+
+            switch (result.error) {
+              case 'needs_wechat_bind':
+                this.authService.emitNeedsWechatBind(result.data?.pending_ticket);
+                return;
+              case 'timeout':
+              case 'invalid_state':
+                errorMessage = '登录状态无效或已超时，请重试';
+                break;
+              case 'missing_parameters':
+                errorMessage = '授权参数缺失，请重试';
+                break;
+              case 'access_denied':
+                errorMessage = '您取消了授权';
+                break;
+              case 'callback_processing_failed':
+                errorMessage = resolveTranslatedApiErrorMessage(result, this.translate, {
+                  fallbackMessage: result.message || '处理授权回调失败',
+                });
+                break;
+              default:
+                errorMessage = resolveTranslatedApiErrorMessage(result, this.translate, {
+                  fallbackMessage: result.message || 'GitHub 登录超时，请重试',
+                });
+            }
+
+            this.message.error(errorMessage);
+          }
+        } catch (error) {
+          console.error('处理OAuth回调异常:', error);
+          this.message.error(resolveTranslatedApiErrorMessage(error, this.translate, {
+            fallbackMessage: '登录处理失败，请重试',
+          }));
+        }
+      });
+    }
+  }
+
+  private setupExampleListListener() {
+    if (window['exampleList'] && window['exampleList'].onOpen) {
+      this.exampleListListener = window['exampleList'].onOpen((data: any) => {
+        console.log('收到打开示例列表请求:', data);
+
+        this.router.navigate(['/main/playground'], {
+          queryParams: {
+            keyword: data.keyword || '',
+            id: data.id || '',
+            sessionId: data.sessionId || '',
+            params: data.params || '',
+            version: data.version || ''
+          }
+        });
+      });
+    }
   }
 
   ngAfterViewInit(): void {
@@ -185,23 +353,23 @@ export class MainWindowComponent {
         case 'loading':
           // this.loaded = false;
           setTimeout(() => {
-            this.message.loading('Project Loading...');
+            this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
             // this.loaded = true;
           }, 20);
           break;
         case 'loaded':
           this.message.remove();
-          this.message.success('Project Loaded');
+          this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_LOADED'));
           break;
         case 'saving':
-          this.message.loading('Project Saving...');
+          this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'));
           break;
         case 'saved':
           this.message.remove();
-          this.message.success('Project Saved');
+          this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_SAVED'));
           break;
         case 'default':
-          // this.message.success('Project Closed');
+          // this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_CLOSED'));
           // this.loaded = false;
           break;
         default:
@@ -259,6 +427,10 @@ export class MainWindowComponent {
 
   exportLog() {
     this.logComponent?.exportData();
+  }
+
+  toggleLogSearchToolbar() {
+    this.logComponent?.toggleSearchToolbar();
   }
 
   // 新手引导关闭事件

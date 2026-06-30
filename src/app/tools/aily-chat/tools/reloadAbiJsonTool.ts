@@ -1,6 +1,6 @@
 ﻿import { Injectable } from '@angular/core';
 import { ProjectService } from '../../../services/project.service';
-import { ToolUseResult } from "./tools";
+import type { ToolUseResult } from '../core/tool-types';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { AilyHost } from '../core/host';
 

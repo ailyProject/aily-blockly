@@ -56,13 +56,13 @@ export const GUIDE_ONBOARDING_CONFIG: OnboardingConfig = {
 export const BLOCKLY_ONBOARDING_CONFIG: OnboardingConfig = {
   steps: [
     {
-      target: '.blocklyToolboxDiv',
+      target: '.blockly-layout .toolbox-list',
       titleKey: 'BLOCKLY.ONBOARDING.TOOLBOX_TITLE',
       descKey: 'BLOCKLY.ONBOARDING.TOOLBOX_DESC',
       position: 'right'
     },
     {
-      target: '.project-mangager-btn',
+      target: '.blockly-layout .toolbox-footer__button',
       titleKey: 'BLOCKLY.ONBOARDING.LIB_MANAGER_TITLE',
       descKey: 'BLOCKLY.ONBOARDING.LIB_MANAGER_DESC',
       position: 'top'

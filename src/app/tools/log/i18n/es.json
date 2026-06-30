@@ -1,0 +1,14 @@
+{
+    "LOG": {
+        "TOOLTIP": "Clic para copiar al portapapeles, doble clic para enviar al asistente AI",
+        "COPIED_TO_CLIPBOARD": "Contenido del registro copiado al portapapeles",
+        "SENT_TO_AI": "Contenido del registro enviado al asistente AI",
+        "NO_DATA_TO_EXPORT": "No hay datos de registro para exportar",
+        "EXPORT_TITLE": "Exportar datos de registro",
+        "TEXT_FILE": "Archivos de texto",
+        "ALL_FILES": "Todos los archivos",
+        "EXPORT_SUCCESS": "Datos de registro exportados exitosamente a ",
+        "SHOW_ERRORS_ONLY": "Mostrar solo errores",
+        "SEARCH_PLACEHOLDER": "Buscar registros"
+    }
+}

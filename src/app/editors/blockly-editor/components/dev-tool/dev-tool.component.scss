@@ -58,8 +58,18 @@
             background: var(--aily-border-tertiary);
         }
 
+        &.disabled {
+            cursor: wait;
+            opacity: 0.55;
+            pointer-events: none;
+        }
+
         i {
             font-size: 18px;
+        }
+
+        i.reloading {
+            animation: devtool-reload-spin 0.8s linear infinite;
         }
 
         i.fa-xmark {
@@ -81,5 +91,15 @@
         width: 1px;
         height: 20px;
         background: var(--aily-border-tertiary);
+    }
+}
+
+@keyframes devtool-reload-spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
     }
 }
