@@ -27,6 +27,8 @@ export class TerminalComponent {
   private terminalInputLine = '';
   private sizeCommandBuffer = '';
   private isCapturingSizeCommand = false;
+  private ptyOperation: Promise<void> = Promise.resolve();
+  private isDestroyed = false;
 
   constructor(
     private electronService: ElectronService,
@@ -53,6 +55,36 @@ export class TerminalComponent {
     }
   }
 
+  reload(): Promise<void> {
+    return this.runPtyOperation(async () => {
+      if (this.isDestroyed || !this.terminal) {
+        return;
+      }
+
+      if (this.electronService.isElectron) {
+        this.closeNodePty();
+      }
+
+      if (this.isDestroyed) {
+        return;
+      }
+
+      this.terminalInputLine = '';
+      this.resetSizeCommandCapture();
+      this.terminal.reset();
+
+      if (this.electronService.isElectron) {
+        await this.nodePtyInit();
+      } else {
+        await this.cloudPtyInit();
+      }
+
+      if (!this.isDestroyed) {
+        this.fitAddon?.fit();
+      }
+    });
+  }
+
   async ngAfterViewInit() {
     this.terminal = new Terminal({
       fontFamily: 'Consolas, "Courier New", monospace',
@@ -65,9 +97,13 @@ export class TerminalComponent {
     this.terminal.open(this.terminalEl.nativeElement);
 
     if (this.electronService.isElectron) {
-      await this.nodePtyInit();
+      await this.runPtyOperation(() => this.nodePtyInit());
     } else {
       await this.cloudPtyInit();
+    }
+
+    if (this.isDestroyed) {
+      return;
     }
 
     this.fitContainer();
@@ -83,7 +119,10 @@ export class TerminalComponent {
   }
 
   ngOnDestroy(): void {
-    this.closeNodePty();
+    this.isDestroyed = true;
+    if (this.electronService.isElectron) {
+      void this.runPtyOperation(async () => this.closeNodePty());
+    }
     this.terminalEl.nativeElement.removeEventListener('contextmenu', this.contextMenuListener);
     this.resizeObserver?.disconnect();
     this.terminal.dispose();
@@ -357,7 +396,13 @@ export class TerminalComponent {
     // 初始化云端工具
   }
 
-  closeNodePty() {
+  closeNodePty(): void {
     this.terminalService.close();
+  }
+
+  private runPtyOperation(operation: () => Promise<void>): Promise<void> {
+    const result = this.ptyOperation.then(operation, operation);
+    this.ptyOperation = result.catch(() => undefined);
+    return result;
   }
 }

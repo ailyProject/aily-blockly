@@ -38,6 +38,18 @@ function isLexAgentLifecycleTraceEnabled(): boolean {
   ]);
 }
 
+function shortConfigKeyHash(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 export class LexAgentLifecycleBridge {
   private _lex: AilyLexModule | null = null;
   private _activeSessionId: string | null = null;
@@ -259,7 +271,37 @@ export class LexAgentLifecycleBridge {
       this.disposeSessionEntry(existingEntry);
     }
 
-    const created = this.deps.createAgent(lex, targetSessionId, normalizedConfigKey);
+    console.info('[AilyChat][LexAgentLifecycleTrace]', {
+      phase: 'create-agent-enter',
+      targetSessionId,
+      configKey: normalizedConfigKey,
+      configKeyHash: shortConfigKeyHash(normalizedConfigKey),
+      existingConfigKeyHash: shortConfigKeyHash(existingEntry?.configKey),
+      runtimeMode: extractChatAgentRuntimeModeFromConfigKey(normalizedConfigKey) ?? null,
+      hadExistingEntry: !!existingEntry,
+      hasSnapshotToRestore: !!snapshotToRestore,
+    });
+    let created: LexAgentCreationResult;
+    try {
+      created = this.deps.createAgent(lex, targetSessionId, normalizedConfigKey);
+      console.info('[AilyChat][LexAgentLifecycleTrace]', {
+        phase: 'create-agent-created',
+        targetSessionId,
+        configKey: normalizedConfigKey,
+        configKeyHash: shortConfigKeyHash(normalizedConfigKey),
+        runtimeMode: extractChatAgentRuntimeModeFromConfigKey(normalizedConfigKey) ?? null,
+      });
+    } catch (error) {
+      console.error('[AilyChat][LexAgentLifecycleTrace]', {
+        phase: 'create-agent-failed',
+        targetSessionId,
+        configKey: normalizedConfigKey,
+        runtimeMode: extractChatAgentRuntimeModeFromConfigKey(normalizedConfigKey) ?? null,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
+    }
     const nextEntry = this.createSessionEntry(targetSessionId, created, normalizedConfigKey);
     this._sessionEntries.set(targetSessionId, nextEntry);
     if (shouldActivate) {

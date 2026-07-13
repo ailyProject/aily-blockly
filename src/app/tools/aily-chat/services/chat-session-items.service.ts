@@ -298,8 +298,11 @@ export class ChatSessionItemsService implements OnDestroy {
     }
 
     const cachedItem = this.readCachedSessionItem(normalizedSessionId);
-    if (cachedItem) {
-      return this.overlayModelSessionListItem(normalizedSessionId, cachedItem, projectPath, projectRootPath);
+    if (cachedItem && this.isSessionItemInViewScope(cachedItem, projectPath, projectRootPath)) {
+      const overlaidCachedItem = this.overlayModelSessionListItem(normalizedSessionId, cachedItem, projectPath, projectRootPath);
+      return overlaidCachedItem && this.isSessionItemInViewScope(overlaidCachedItem, projectPath, projectRootPath)
+        ? overlaidCachedItem
+        : null;
     }
 
     const summaryItem = this.hostSessionItemController.readSummaryItem(
@@ -309,7 +312,10 @@ export class ChatSessionItemsService implements OnDestroy {
       projectRootPath ?? AilyHost.get().project.projectRootPath ?? null,
     );
     const projectedSummary = summaryItem ? this.toSessionListItem(summaryItem, projectPath, projectRootPath) : null;
-    return this.overlayModelSessionListItem(normalizedSessionId, projectedSummary, projectPath, projectRootPath);
+    const overlaidSummary = this.overlayModelSessionListItem(normalizedSessionId, projectedSummary, projectPath, projectRootPath);
+    return overlaidSummary && this.isSessionItemInViewScope(overlaidSummary, projectPath, projectRootPath)
+      ? overlaidSummary
+      : null;
   }
 
   loadInitialSummaries(
@@ -531,7 +537,7 @@ export class ChatSessionItemsService implements OnDestroy {
       resolvedProjectPath,
       resolvedProjectRootPath,
     );
-    const nextItem = projectionItem
+    const projectedNextItem = projectionItem
       ? this.overlayModelSessionListItem(
           normalizedSessionId,
           this.toSessionListItem(projectionItem, resolvedProjectPath, resolvedProjectRootPath),
@@ -539,6 +545,9 @@ export class ChatSessionItemsService implements OnDestroy {
           resolvedProjectRootPath,
         )
       : this.overlayModelSessionListItem(normalizedSessionId, null, resolvedProjectPath, resolvedProjectRootPath);
+    const nextItem = projectedNextItem && this.isListableSessionListItem(projectedNextItem)
+      ? projectedNextItem
+      : null;
 
     const previousItems = this._sessionListItems;
     const previousIndex = previousItems.findIndex(item => item.sessionId === normalizedSessionId);
@@ -1067,7 +1076,8 @@ export class ChatSessionItemsService implements OnDestroy {
     }
     this.mergeHostInventorySessionListItems(mergedItems, projectPath, projectRootPath);
 
-    const nextItems = [...mergedItems.values()];
+    const nextItems = [...mergedItems.values()]
+      .filter(item => this.isListableSessionListItem(item));
     nextItems.sort((left, right) => this.compareSessionListItems(left, right));
     return nextItems;
   }
@@ -1081,6 +1091,10 @@ export class ChatSessionItemsService implements OnDestroy {
     const model = this.chatSessionModelStore?.get(sessionId);
     if (!model) {
       return this.overlayHostInventorySessionListItem(sessionId, item, projectPath, projectRootPath);
+    }
+
+    if (!item && !this.shouldProjectModelOnlySession(model)) {
+      return this.overlayHostInventorySessionListItem(sessionId, null, projectPath, projectRootPath);
     }
 
     const modelItem = this.toModelSessionListItem(model, item, projectPath, projectRootPath);
@@ -1205,6 +1219,9 @@ export class ChatSessionItemsService implements OnDestroy {
     if (!hostState) {
       return item;
     }
+    if (!item && !this.shouldProjectHostInventoryOnlySession(hostState)) {
+      return null;
+    }
     const hostItem = this.toHostInventorySessionListItem(hostState, item, projectPath, projectRootPath);
     return hostItem && this.isSessionItemInViewScope(hostItem, projectPath, projectRootPath)
       ? hostItem
@@ -1222,12 +1239,10 @@ export class ChatSessionItemsService implements OnDestroy {
       return null;
     }
     const status = this.toSessionListStatusFromHostState(state, existing?.status);
-    const latestRevisionTime = state.transcriptRevision > 0 ? state.transcriptRevision : undefined;
-    const timing = existing?.timing ?? (
-      latestRevisionTime !== undefined
-        ? { created: latestRevisionTime, updated: latestRevisionTime }
-        : undefined
-    );
+    // transcriptRevision is an ordering token, not wall-clock time. Session
+    // timing belongs to durable inventory; a host-only running row can render
+    // without a relative timestamp until that inventory exists.
+    const timing = existing?.timing;
 
     return this.toSessionListItem({
       sessionId,
@@ -1529,6 +1544,65 @@ export class ChatSessionItemsService implements OnDestroy {
 
   private resolveUntitledSessionFallback(item: SessionListSourceLike): string {
     return '新对话';
+  }
+
+  private isListableSessionListItem(item: ChatSessionListItem | null | undefined): item is ChatSessionListItem {
+    if (!item?.sessionId) {
+      return false;
+    }
+
+    if (item.status === 'in_progress' || item.status === 'needs_input') {
+      return true;
+    }
+
+    if (item.titleDurable === true) {
+      return true;
+    }
+
+    if (this.isMeaningfulSessionListTitle(item.title, item.sessionId)) {
+      return true;
+    }
+
+    if (typeof item.description === 'string' && item.description.trim().length > 0) {
+      return true;
+    }
+
+    if (typeof item.badge === 'string' && item.badge.trim().length > 0) {
+      return true;
+    }
+
+    return !!item.changes;
+  }
+
+  private isMeaningfulSessionListTitle(title: unknown, sessionId?: string): boolean {
+    if (typeof title !== 'string') {
+      return false;
+    }
+
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      return false;
+    }
+
+    if (this.isPlaceholderSessionListTitle(normalizedTitle)) {
+      return false;
+    }
+
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (normalizedSessionId && normalizedTitle === normalizedSessionId) {
+      return false;
+    }
+
+    return !/^lex-\d{6,}$/i.test(normalizedTitle);
+  }
+
+  private isPlaceholderSessionListTitle(title: string): boolean {
+    const normalizedTitle = title.trim().toLowerCase();
+    return normalizedTitle === 'new chat'
+      || normalizedTitle === 'new session'
+      || normalizedTitle === '新对话'
+      || normalizedTitle === '新会话'
+      || /^untitled(?:\s+chat)?(?:\s*\d+)?$/i.test(normalizedTitle);
   }
 
   private markRequestedSessionListLoadState(request: SessionListRefreshRequest | null): void {

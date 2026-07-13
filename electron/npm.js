@@ -1,56 +1,9 @@
-// 这个文件用于和npm交互，获取仓库信息
+// 管理 npm 命令进程，并将执行状态和日志回传给渲染进程。
 const { ipcMain } = require("electron");
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
+const { killRegisteredProcessTree } = require('./process-tree');
 
 const activeNpmProcesses = new Map();
-
-function killRegisteredProcessTree(pid, label) {
-    if (!pid) {
-        return Promise.resolve(false);
-    }
-
-    return new Promise((resolve) => {
-        const startedAt = Date.now();
-        if (process.platform === 'win32') {
-            exec(`taskkill /PID ${pid} /T /F`, (error, stdout, stderr) => {
-                const success = !error;
-                console.info('[PROC_TRACE][PROCESS_TREE_KILL]', {
-                    label,
-                    pid,
-                    method: 'taskkill',
-                    success,
-                    durationMs: Date.now() - startedAt,
-                    error: error?.message || '',
-                    stderr: stderr?.trim?.() || ''
-                });
-                resolve(success);
-            });
-            return;
-        }
-
-        try {
-            process.kill(pid, 'SIGTERM');
-            console.info('[PROC_TRACE][PROCESS_TREE_KILL]', {
-                label,
-                pid,
-                method: 'SIGTERM',
-                success: true,
-                durationMs: Date.now() - startedAt
-            });
-            resolve(true);
-        } catch (error) {
-            console.warn('[PROC_TRACE][PROCESS_TREE_KILL]', {
-                label,
-                pid,
-                method: 'SIGTERM',
-                success: false,
-                durationMs: Date.now() - startedAt,
-                error: error?.message || String(error)
-            });
-            resolve(false);
-        }
-    });
-}
 
 function ensureForegroundScripts(cmd) {
     if (!/^npm(\.cmd)?\s+(install|i)\b/i.test(cmd)) {
@@ -189,7 +142,7 @@ function runNpmCommand(cmd, option, mainWindow) {
         const shouldLogOutput = shouldLogStreamingOutput(cmd);
         const sourceId = `npm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         activeNpmProcesses.set(sourceId, { process: child, cmd, startedAt });
-        console.info('[PROC_TRACE][NPM_SPAWN]', { sourceId, pid: child.pid, cmd: cmd.slice(0, 1000) });
+        // console.info('[PROC_TRACE][NPM_SPAWN]', { sourceId, pid: child.pid, cmd: cmd.slice(0, 1000) });
         let stdout = '';
         let stderr = '';
 
@@ -227,14 +180,14 @@ function runNpmCommand(cmd, option, mainWindow) {
         child.on('close', (code) => {
             activeNpmProcesses.delete(sourceId);
             const busyRename = isBusyRenameError(stderr);
-            console.info('[PROC_TRACE][NPM_CLOSE]', {
-                sourceId,
-                pid: child.pid,
-                code,
-                durationMs: Date.now() - startedAt,
-                busyRename,
-                ...extractBusyRenameDetails(stderr)
-            });
+            // console.info('[PROC_TRACE][NPM_CLOSE]', {
+            //     sourceId,
+            //     pid: child.pid,
+            //     code,
+            //     durationMs: Date.now() - startedAt,
+            //     busyRename,
+            //     ...extractBusyRenameDetails(stderr)
+            // });
             if (code !== 0) {
                 if (option?.ignoreErr) {
                     return resolve(false);

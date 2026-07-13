@@ -1,3 +1,4 @@
+// 通过预加载桥接向渲染进程安全暴露 Electron 和原生能力。
 const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, clipboard } = require("electron");
 const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
@@ -11,16 +12,30 @@ const nodeFsp = require("node:fs/promises");
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
+const ailyBuilderEnv = {
+  path: process.env.AILY_BUILDER_PATH,
+  command: process.env.AILY_BUILDER_COMMAND,
+};
+
+function updateAilyBuilderEnv(result) {
+  if (result?.path) {
+    ailyBuilderEnv.path = result.path;
+  }
+  if (result?.command) {
+    ailyBuilderEnv.command = result.command;
+  }
+  return result;
+}
 
 const pathApi = {
   getUserHome: () => require("os").homedir(),
   getAilyChildPath: () => process.env.AILY_CHILD_PATH,
   getAppDataPath: () => process.env.AILY_APPDATA_PATH,
   getAilyBuilderPath: () => process.env.AILY_BUILDER_PATH,
-  getAilyBuilderBuildPath: () => process.env.AILY_BUILDER_BUILD_PATH,
   getUserDocuments: () => require("os").homedir() + `${pt}Documents`,
   isExists: (path) => existsSync(path),
   getElectronPath: () => {
+    // 当 preload.js 从 asar 解包后，将路径重定向到 asar 内部以便 fs 操作正常工作
     if (__dirname.includes('app.asar.unpacked')) {
       return __dirname.replace('app.asar.unpacked', 'app.asar');
     }
@@ -412,6 +427,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     release: (toolId) => ipcRenderer.invoke("child-tool-session-release", toolId),
     restart: (toolId) => ipcRenderer.invoke("child-tool-session-restart", toolId),
     unregister: (payload) => ipcRenderer.invoke("child-tool-session-unregister", payload),
+    list: () => ipcRenderer.invoke("child-tool-session-list"),
+    stop: (toolId) => ipcRenderer.invoke("child-tool-session-stop", toolId),
+    onStateChanged: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("child-tool-session-state-changed", listener);
+      return () => ipcRenderer.removeListener("child-tool-session-state-changed", listener);
+    },
   },
   codeViewer: {
     publishState: (state) => ipcRenderer.send("blockly-code-viewer-state-update", state),
@@ -423,16 +445,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   builder: {
-    init: (data) => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke("builder-init", data)
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      });
-    },
-    codeGen: (data) => ipcRenderer.invoke("builder-codeGen", data),
-    build: (data) => ipcRenderer.invoke("builder-build", data),
+    status: () => ipcRenderer.invoke("aily-builder-status"),
+    checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
+    update: () => ipcRenderer.invoke("aily-builder-update"),
+    waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
+  },
+  linter: {
+    status: () => ipcRenderer.invoke("aily-linter-status"),
+    checkForUpdate: () => ipcRenderer.invoke("aily-linter-check-update"),
+    update: () => ipcRenderer.invoke("aily-linter-update"),
+    waitForReady: () => ipcRenderer.invoke("aily-linter-wait-ready"),
   },
   uploader: {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
@@ -511,24 +533,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     readDir: (path) => ipcRenderer.invoke("fs-readDir", path),
     mkdir: (path, options) => ipcRenderer.invoke("fs-mkdir", path, options),
     unlink: (path) => ipcRenderer.invoke("fs-unlink", path),
-    watch: (path, listener, options = {}) => {
-      const watcher = require("fs").watch(
-        path,
-        {
-          persistent: options?.persistent !== false,
-          recursive: options?.recursive === true,
-        },
-        (eventType, filename) => {
-          if (typeof listener === 'function') {
-            listener(eventType, typeof filename === 'string' ? filename : filename?.toString?.() ?? null);
-          }
-        },
-      );
-
-      return {
-        close: () => watcher.close(),
-      };
-    },
   },
   glob: {
     // 同步版本 - 通过 IPC 在主进程执行
@@ -871,7 +875,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     listAllContentFiles: (searchPath, limit) => {
       return new Promise((resolve, reject) => {
         ipcRenderer
-          .invoke("ripgrep-list-files", searchPath, limit)
+          .invoke('ripgrep-list-files-v2', {
+            pattern: '**/*',
+            path: searchPath,
+            maxResults: limit,
+            includeHidden: true
+          })
           .then((result) => resolve(result))
           .catch((error) => reject(error));
       });
@@ -882,11 +891,26 @@ contextBridge.exposeInMainWorld("electronAPI", {
     searchContent: (params) => {
       return new Promise((resolve, reject) => {
         ipcRenderer
-          .invoke("ripgrep-search-content", params)
+          .invoke('ripgrep-search-text-v2', {
+            ...params,
+            includeHidden: true
+          })
           .then((result) => resolve(result))
           .catch((error) => reject(error));
       });
-    }
+    },
+    /**
+     * v2 path-only file search backed by `rg --files`.
+     */
+    listFiles: (params) => ipcRenderer.invoke('ripgrep-list-files-v2', params),
+    /**
+     * v2 structured content search backed by `rg --json`.
+     */
+    searchText: (params) => ipcRenderer.invoke('ripgrep-search-text-v2', params),
+    /**
+     * Cancel an active v2 search by request id.
+     */
+    cancelSearch: (requestId) => ipcRenderer.send('ripgrep-cancel-search', requestId)
   },
   // BLE API
   ble: {

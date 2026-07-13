@@ -8,10 +8,15 @@ import { ElectronService } from '../../../services/electron.service';
 import { LogService } from '../../../services/log.service';
 import { NoticeService } from '../../../services/notice.service';
 import { BlocklyLibraryDiagnostics, BlocklyLibraryPackageService, BlocklyLibraryPackageSnapshot } from '../../../services/blockly-library-package.service';
-import { BlockCodeMapping, CodeLineRange } from '../components/blockly/generators/arduino/arduino';
+import {
+  BlockCodeMapping,
+  CodeLineRange,
+  normalizeArduinoGeneratedCode,
+} from '../components/blockly/generators/arduino/arduino';
 import { convertBlockTreeToAbs, convertAbiToAbsWithLineMap } from '../../../tools/aily-chat/public-api';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import { dragSelectionWeakMap } from '../components/blockly/plugins/workspace-multiselect/index.js';
+import { exportWorkspaceToSvg } from './workspace-svg-exporter';
 
 export interface BlockContextLabel {
   label: string;
@@ -106,9 +111,26 @@ export class BlocklyService {
   private readonly projectDocumentSchemaVersion = 3;
   private readonly sharedProcedureBlockPrefixes = ['procedures_'];
   private readonly toolboxSearchKey = BLOCKLY_TOOLBOX_SEARCH_KEY;
+  private readonly deferredWorkspaceRenderBlockTypes = new Set([
+    'u8g2_draw_bitmap',
+    'u8g2_bitmap',
+    'u8g2_icon_16x16',
+    'u8g2_icon_32x32',
+    'u8g2_icon_64x64',
+    'u8g2_play_animation',
+    'u8g2_draw_animation_frame',
+    'u8g2_animation',
+    'u8g2_animation_frame_count',
+    'tftespi_play_animation',
+    'tftespi_draw_animation_frame',
+    'tftespi_animation',
+    'tftespi_animation_frame_count',
+  ]);
 
   private _workspace: Blockly.WorkspaceSvg | null = null;
   private workspaceReadySubject = new BehaviorSubject<Blockly.WorkspaceSvg | null>(null);
+  private workspaceRenderAfterLoadAnimationFrame: number | null = null;
+  private workspaceRenderAfterLoadTimeout: ReturnType<typeof setTimeout> | null = null;
 
   get workspace(): Blockly.WorkspaceSvg {
     return this._workspace as Blockly.WorkspaceSvg;
@@ -183,28 +205,46 @@ export class BlocklyService {
   private toolboxSortOrder: string[] = [];
   private loadLibraryFinishedLoadingSubject = new Subject<void>();
 
-  aiWaiting = false;
   private _aiWriting = new BehaviorSubject<boolean>(false);
   aiWriting$ = this._aiWriting.asObservable();
+  private _aiExecutionActive = new BehaviorSubject<boolean>(false);
+  aiExecutionActive$ = this._aiExecutionActive.asObservable();
   private _aiWaiting = new BehaviorSubject<boolean>(false);
   aiWaiting$ = this._aiWaiting.asObservable();
+
+  get aiWaiting() {
+    return this._aiExecutionActive.value;
+  }
+
+  set aiWaiting(value: boolean) {
+    if (this._aiExecutionActive.value !== value) {
+      this._aiExecutionActive.next(value);
+    }
+  }
 
   get aiWaitWriting() {
     return this._aiWaiting.value;
   }
 
   set aiWaitWriting(value: boolean) {
-    this._aiWaiting.next(value);
+    if (this._aiWaiting.value !== value) {
+      this._aiWaiting.next(value);
+    }
   }
 
   markWorkspaceCodeDirty(): void {
     this.workspaceCodeRevision++;
   }
 
-  publishGeneratedCode(code: string): void {
-    this.latestGeneratedCode = code;
+  publishGeneratedCode(code: unknown): void {
+    const normalizedCode = normalizeArduinoGeneratedCode(code);
+    this.latestGeneratedCode = normalizedCode;
     this.generatedCodeRevision = this.workspaceCodeRevision;
-    this.codeSubject.next(code);
+    this.codeSubject.next(normalizedCode);
+  }
+
+  getGeneratedCode(): string {
+    return this.latestGeneratedCode || this.codeSubject.value || '';
   }
 
   getReusableGeneratedCode(): string | null {
@@ -340,6 +380,13 @@ export class BlocklyService {
       filter((workspace): workspace is Blockly.WorkspaceSvg => !!workspace),
       take(1),
     ));
+  }
+
+  /** 生成当前工作区的独立 SVG；具体导出细节由 workspace-svg-exporter 负责。 */
+  async createWorkspaceImageExportSvg(): Promise<string | null> {
+    const workspace = await this.waitForWorkspace();
+    this.hideChaff(true);
+    return exportWorkspaceToSvg(workspace);
   }
 
   registerExternalToolboxHost(host: HTMLElement | null) {
@@ -918,7 +965,59 @@ export class BlocklyService {
       }
     });
 
+    const shouldRenderAfterLoad = this.shouldRenderWorkspaceAfterLoad(workspaceJson);
     Blockly.serialization.workspaces.load(workspaceJson, this.workspace);
+    if (shouldRenderAfterLoad) {
+      this.scheduleWorkspaceRenderAfterLoad();
+    }
+  }
+
+  private scheduleWorkspaceRenderAfterLoad(): void {
+    const workspace = this._workspace;
+    if (!workspace) {
+      return;
+    }
+
+    if (this.workspaceRenderAfterLoadAnimationFrame !== null) {
+      cancelAnimationFrame(this.workspaceRenderAfterLoadAnimationFrame);
+      this.workspaceRenderAfterLoadAnimationFrame = null;
+    }
+    if (this.workspaceRenderAfterLoadTimeout !== null) {
+      clearTimeout(this.workspaceRenderAfterLoadTimeout);
+      this.workspaceRenderAfterLoadTimeout = null;
+    }
+
+    const renderWorkspace = () => {
+      this.workspaceRenderAfterLoadAnimationFrame = null;
+      this.workspaceRenderAfterLoadTimeout = null;
+      if (this._workspace === workspace) {
+        workspace.render();
+      }
+    };
+
+    if (typeof requestAnimationFrame === 'function') {
+      this.workspaceRenderAfterLoadAnimationFrame = requestAnimationFrame(renderWorkspace);
+    } else {
+      this.workspaceRenderAfterLoadTimeout = setTimeout(renderWorkspace, 0);
+    }
+  }
+
+  private shouldRenderWorkspaceAfterLoad(workspaceJson: any): boolean {
+    const blocks = Array.isArray(workspaceJson?.blocks?.blocks)
+      ? workspaceJson.blocks.blocks
+      : [];
+    const blockTypes = new Set<string>();
+
+    for (const block of blocks) {
+      this.collectBlockTypesFromBlock(block, blockTypes);
+      for (const blockType of this.deferredWorkspaceRenderBlockTypes) {
+        if (blockTypes.has(blockType)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   // 通过node_modules加载库

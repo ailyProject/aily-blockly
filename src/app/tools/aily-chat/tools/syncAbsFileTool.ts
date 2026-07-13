@@ -9,7 +9,10 @@ import { getActiveWorkspace, createBlockFromConfig } from './editBlockTool';
 import { AbsAutoSyncService } from '../services/abs-auto-sync.service';
 import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 import { loadProjectBlockDefinitions, parseAbs, BlocklyAbsParser } from './absParser';
-import { arduinoGenerator } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
+import {
+  arduinoGenerator,
+  normalizeArduinoGeneratedCode,
+} from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
 import {
   yieldToBrowserIdle,
   type BrowserFrameBudgetController,
@@ -95,7 +98,7 @@ async function writeGeneratedSketchIno(
   const codegenStartedAt = performance.now();
   const generatedCode = await ChatPerformanceTracer.runWithSurface(
     'builder_preprocess',
-    () => arduinoGenerator.workspaceToCode(workspace) || '',
+    () => normalizeArduinoGeneratedCode(arduinoGenerator.workspaceToCode(workspace)),
     'syncAbs.import:sketch.ino',
   );
   ChatPerformanceTracer.recordDuration(

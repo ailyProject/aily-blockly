@@ -1,0 +1,7 @@
+<app-base-dialog
+  [title]="data.title"
+  [buttons]="buttons"
+  (closeDialog)="onClose()"
+  (buttonClick)="onButtonClick($event)">
+  <div class="text">{{ data.content }}</div>
+</app-base-dialog>

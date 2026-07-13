@@ -1,3 +1,4 @@
+// 提供系统通知和窗口注意提醒功能。
 const { Notification, ipcMain, BrowserWindow } = require('electron');
 const { requestWindowAttention } = require('./window-attention');
 

@@ -9,15 +9,18 @@ import {
   createChatSessionInputStateFromResolvedMode,
   createChatSessionInputState,
   DEFAULT_CHAT_SESSION_PERMISSION_MODE,
+  DEFAULT_CHAT_SESSION_PERMISSION_PROFILE,
   normalizeChatSessionProviderOptionGroups,
   normalizeChatSelectedMode,
   normalizeChatSessionModeDescriptor,
   normalizeChatSessionInputMode,
   normalizeChatSessionInputState,
   normalizeChatSessionPermissionMode,
+  normalizeChatSessionPermissionProfile,
   isPlanChatAgentTarget,
   resolveChatModeId,
   type ChatSessionPermissionMode,
+  type ChatSessionPermissionProfile,
   type ChatSessionModeDescriptor,
   type ChatSessionProviderOptionGroup,
   type ChatSessionProviderOptionItem,
@@ -47,6 +50,7 @@ export interface HostSessionSelectedModeResolveOptions {
 export interface HostSessionProviderOptions {
   readonly folderPath: string | null;
   readonly permissionMode: ChatSessionPermissionMode;
+  readonly permissionProfile?: ChatSessionPermissionProfile;
   readonly permissionLevel?: string;
   readonly approvalsReviewer?: 'user' | 'auto_review';
   readonly approvalPolicy?: 'on_request' | 'never';
@@ -54,13 +58,18 @@ export interface HostSessionProviderOptions {
 
 export const HOST_SESSION_FOLDER_OPTION_ID = 'folder';
 export const HOST_SESSION_PERMISSION_MODE_OPTION_ID = 'permissionMode';
+export const HOST_SESSION_PERMISSION_PROFILE_OPTION_ID = 'permissionProfile';
 export const HOST_SESSION_APPROVALS_REVIEWER_OPTION_ID = 'approvalsReviewer';
 
 const HOST_SESSION_PERMISSION_MODE_ITEMS: readonly ChatSessionProviderOptionItem[] = [
   { id: 'default', name: 'Ask before edits', slashCommand: 'ask' },
   { id: 'acceptEdits', name: 'Edit automatically', slashCommand: 'edit' },
   { id: 'plan', name: 'Plan mode', slashCommand: 'plan' },
-  { id: 'bypassPermissions', name: 'Bypass all permissions', slashCommand: 'yolo' },
+];
+
+const HOST_SESSION_PERMISSION_PROFILE_ITEMS: readonly ChatSessionProviderOptionItem[] = [
+  { id: 'workspace-write', name: 'Workspace write' },
+  { id: 'danger-full-access', name: 'Full access', slashCommand: 'yolo' },
 ];
 
 const HOST_SESSION_APPROVALS_REVIEWER_ITEMS: readonly ChatSessionProviderOptionItem[] = [
@@ -166,6 +175,7 @@ export function buildHostSessionProviderOptionGroups(
   }
 
   groups.push(createPermissionModeOptionGroup(providerOptions.permissionMode));
+  groups.push(createPermissionProfileOptionGroup(providerOptions.permissionProfile ?? DEFAULT_CHAT_SESSION_PERMISSION_PROFILE));
   groups.push(createApprovalsReviewerOptionGroup(providerOptions.approvalsReviewer));
   return groups;
 }
@@ -184,10 +194,10 @@ export function resolveHostSessionProviderOptionGroups(
     return storedGroups;
   }
 
-  const storedById = new Map(storedGroups.map((group) => [group.id, group]));
-  const mergedGroups = fallbackGroups.map((group) => storedById.get(group.id) ?? group);
+  const canonicalGroupIds = new Set(fallbackGroups.map((group) => group.id));
+  const mergedGroups = [...fallbackGroups];
   for (const group of storedGroups) {
-    if (!fallbackGroups.some((fallbackGroup) => fallbackGroup.id === group.id)) {
+    if (!canonicalGroupIds.has(group.id)) {
       mergedGroups.push(group);
     }
   }
@@ -199,19 +209,37 @@ export function normalizeHostSessionProviderOptions(
   value?: Partial<HostSessionProviderOptions> | null,
   fallback?: Partial<HostSessionProviderOptions> | null,
 ): HostSessionProviderOptions {
+  const legacyValuePermissionMode = readOptionalChatSessionPermissionMode(value?.permissionMode);
+  const legacyFallbackPermissionMode = readOptionalChatSessionPermissionMode(fallback?.permissionMode);
+  const inferredPermissionProfile = value?.permissionProfile
+    ?? (legacyValuePermissionMode === 'bypassPermissions' ? 'danger-full-access' : undefined)
+    ?? fallback?.permissionProfile
+    ?? (legacyFallbackPermissionMode === 'bypassPermissions' ? 'danger-full-access' : undefined);
+  const normalizedPermissionProfile = normalizeChatSessionPermissionProfile(
+    inferredPermissionProfile,
+    DEFAULT_CHAT_SESSION_PERMISSION_PROFILE,
+  );
   const permissionLevel = normalizeHostSessionPermissionLevel(value?.permissionLevel)
     ?? normalizeHostSessionPermissionLevel(fallback?.permissionLevel);
   const approvalsReviewer = normalizeHostSessionApprovalsReviewer(value?.approvalsReviewer)
     ?? normalizeHostSessionApprovalsReviewer(fallback?.approvalsReviewer);
+  const hasLegacyFullAccessPreset = legacyValuePermissionMode === 'bypassPermissions'
+    || legacyFallbackPermissionMode === 'bypassPermissions';
   const approvalPolicy = normalizeHostSessionApprovalPolicy(value?.approvalPolicy)
+    ?? (hasLegacyFullAccessPreset ? 'never' : undefined)
     ?? normalizeHostSessionApprovalPolicy(fallback?.approvalPolicy);
+
+  const normalizedPermissionMode = normalizeChatSessionPermissionMode(
+    value?.permissionMode,
+    normalizeChatSessionPermissionMode(fallback?.permissionMode, DEFAULT_CHAT_SESSION_PERMISSION_MODE),
+  );
 
   return {
     folderPath: normalizeHostSessionFolderPath(value?.folderPath) ?? normalizeHostSessionFolderPath(fallback?.folderPath) ?? null,
-    permissionMode: normalizeChatSessionPermissionMode(
-      value?.permissionMode,
-      normalizeChatSessionPermissionMode(fallback?.permissionMode, DEFAULT_CHAT_SESSION_PERMISSION_MODE),
-    ),
+    permissionMode: normalizedPermissionMode === 'bypassPermissions'
+      ? DEFAULT_CHAT_SESSION_PERMISSION_MODE
+      : normalizedPermissionMode,
+    permissionProfile: normalizedPermissionProfile,
     ...(permissionLevel ? { permissionLevel } : {}),
     ...(approvalsReviewer ? { approvalsReviewer } : {}),
     ...(approvalPolicy ? { approvalPolicy } : {}),
@@ -254,20 +282,32 @@ export function resolveHostSessionProviderOptionsFromInputState(
   fallback?: Partial<HostSessionProviderOptions> | null,
 ): HostSessionProviderOptions {
   const normalizedFallback = normalizeHostSessionProviderOptions(undefined, fallback);
+  const selectedPermissionMode = normalizeChatSessionPermissionMode(
+    readSelectedGroupOptionId(inputState, HOST_SESSION_PERMISSION_MODE_OPTION_ID),
+    normalizedFallback.permissionMode,
+  );
+  const selectedPermissionModeId = readSelectedGroupOptionId(inputState, HOST_SESSION_PERMISSION_MODE_OPTION_ID);
+  const selectedLegacyFullAccessPreset = selectedPermissionModeId === 'bypassPermissions';
 
   return {
     folderPath: normalizeHostSessionFolderPath(readSelectedGroupOptionId(inputState, HOST_SESSION_FOLDER_OPTION_ID))
       ?? normalizedFallback.folderPath,
-    permissionMode: normalizeChatSessionPermissionMode(
-      readSelectedGroupOptionId(inputState, HOST_SESSION_PERMISSION_MODE_OPTION_ID),
-      normalizedFallback.permissionMode,
+    permissionMode: selectedPermissionMode === 'bypassPermissions'
+      ? DEFAULT_CHAT_SESSION_PERMISSION_MODE
+      : selectedPermissionMode,
+    permissionProfile: normalizeChatSessionPermissionProfile(
+      readSelectedGroupOptionId(inputState, HOST_SESSION_PERMISSION_PROFILE_OPTION_ID)
+        ?? readSelectedGroupOptionId(inputState, HOST_SESSION_PERMISSION_MODE_OPTION_ID),
+      normalizedFallback.permissionProfile,
     ),
     ...(normalizedFallback.permissionLevel ? { permissionLevel: normalizedFallback.permissionLevel } : {}),
     ...(normalizeHostSessionApprovalsReviewer(readSelectedGroupOptionId(inputState, HOST_SESSION_APPROVALS_REVIEWER_OPTION_ID))
       ?? normalizedFallback.approvalsReviewer
       ? { approvalsReviewer: normalizeHostSessionApprovalsReviewer(readSelectedGroupOptionId(inputState, HOST_SESSION_APPROVALS_REVIEWER_OPTION_ID)) ?? normalizedFallback.approvalsReviewer }
       : {}),
-    ...(normalizedFallback.approvalPolicy ? { approvalPolicy: normalizedFallback.approvalPolicy } : {}),
+    ...(selectedLegacyFullAccessPreset
+      ? { approvalPolicy: 'never' as const }
+      : (normalizedFallback.approvalPolicy ? { approvalPolicy: normalizedFallback.approvalPolicy } : {})),
   };
 }
 
@@ -278,6 +318,7 @@ export function createHostSessionProviderOptionsKey(
   const segments = [
     providerOptions.folderPath ?? '',
     providerOptions.permissionMode,
+    providerOptions.permissionProfile ?? DEFAULT_CHAT_SESSION_PERMISSION_PROFILE,
     providerOptions.permissionLevel ?? '',
     providerOptions.approvalsReviewer ?? '',
     providerOptions.approvalPolicy ?? '',
@@ -983,6 +1024,22 @@ function createPermissionModeOptionGroup(
   };
 }
 
+function createPermissionProfileOptionGroup(
+  permissionProfile: ChatSessionPermissionProfile,
+): ChatSessionProviderOptionGroup {
+  const selectedItem = HOST_SESSION_PERMISSION_PROFILE_ITEMS.find((item) => item.id === permissionProfile)
+    ?? HOST_SESSION_PERMISSION_PROFILE_ITEMS[0];
+
+  return {
+    id: HOST_SESSION_PERMISSION_PROFILE_OPTION_ID,
+    name: 'Permission Profile',
+    description: 'Codex-style sandbox profile. Full access disables filesystem sandbox restrictions.',
+    kind: 'permissions',
+    items: HOST_SESSION_PERMISSION_PROFILE_ITEMS.map((item) => ({ ...item })),
+    selected: { ...selectedItem },
+  };
+}
+
 function createApprovalsReviewerOptionGroup(
   approvalsReviewer: 'user' | 'auto_review' | undefined,
 ): ChatSessionProviderOptionGroup {
@@ -997,6 +1054,17 @@ function createApprovalsReviewerOptionGroup(
     items: HOST_SESSION_APPROVALS_REVIEWER_ITEMS.map((item) => ({ ...item })),
     selected: { ...selectedItem },
   };
+}
+
+function readOptionalChatSessionPermissionMode(value: unknown): ChatSessionPermissionMode | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalizedValue = value.trim();
+  return (['default', 'plan', 'acceptEdits', 'bypassPermissions'] as readonly string[]).includes(normalizedValue)
+    ? normalizedValue as ChatSessionPermissionMode
+    : undefined;
 }
 
 function readSelectedGroupOptionId(

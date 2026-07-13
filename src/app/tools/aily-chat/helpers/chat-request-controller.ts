@@ -45,7 +45,7 @@ export class ChatRequestController {
     private readonly deps: {
       sendNow: (text: string, sessionId?: string | null) => Promise<unknown>;
       queue: (text: string, sessionId?: string | null, options?: QueueOptionsLike) => Promise<boolean> | boolean;
-      stop: (sessionId?: string | null) => boolean;
+      stop: (sessionId?: string | null) => boolean | Promise<boolean>;
       getPending: (sessionId?: string | null) => readonly PendingFollowupRequest[];
       hasPending: (sessionId?: string | null) => boolean;
       clearPending: (sessionId?: string | null) => void;
@@ -57,14 +57,16 @@ export class ChatRequestController {
   ) {}
 
   async sendNow(text: string, sessionId?: string | null): Promise<unknown> {
-    return this.deps.sendNow(text, sessionId);
+    return typeof sessionId === 'undefined'
+      ? this.deps.sendNow(text)
+      : this.deps.sendNow(text, sessionId);
   }
 
   queue(text: string, sessionId?: string | null, options?: QueueOptionsLike): Promise<boolean> | boolean {
     return this.deps.queue(text, sessionId, options);
   }
 
-  stop(sessionId?: string | null, _source?: string): boolean {
+  stop(sessionId?: string | null, _source?: string): boolean | Promise<boolean> {
     return this.deps.stop(sessionId);
   }
 

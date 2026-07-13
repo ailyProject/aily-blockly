@@ -32,6 +32,7 @@ export class ChatSessionListComponent {
   @Output() selectSession = new EventEmitter<{ sessionId: string; item: ChatSessionListItem }>();
   @Output() preloadSession = new EventEmitter<{ sessionId: string; item: ChatSessionListItem }>();
   @Output() actionClick = new EventEmitter<{ action: string; data: ChatSessionListItem }>();
+  @Output() overflowOpenChange = new EventEmitter<boolean>();
   @Output() newSession = new EventEmitter<void>();
   @Output() retryRequested = new EventEmitter<void>();
 

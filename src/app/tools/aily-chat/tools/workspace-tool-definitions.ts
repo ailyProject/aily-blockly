@@ -25,11 +25,13 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
 - 已知行号：使用行范围读取 (startLine + lineCount)，工具会自动优化
 - **库readme或文档**：完整读取
 - 搜索内容：使用 grep_tool 工具
+- **不要读取命令输出路径**：如果其他工具返回了 processId、outputSessionId 或 outputFilePath，请改用 command_status / command_tail / command_read / command_search，或在项目日志场景使用 log_tool
 
 **注意：**
 - 行号从 1 开始计数
 - 字节位置从 0 开始计数
-- 字节范围读取优先级最高`,
+- 字节范围读取优先级最高
+- 不要把终端输出文件或瞬时 \`.log\` 路径当作普通源码/文档文件交给本工具`,
         input_schema: {
             type: 'object',
             properties: {

@@ -525,8 +525,9 @@ class SkillRegistryImpl {
         const host = AilyHost.get();
         const raw = host.fs.readFileSync(skill.skillMdPath, 'utf-8');
         const { body } = parseSkillMd(raw);
-        (skill as any).content = body;
-        return body;
+        const normalizedBody = this.decorateSkillBody(skill, body);
+        (skill as any).content = normalizedBody;
+        return normalizedBody;
       } catch (e) {
         console.warn(`[SkillRegistry] 加载 skill 内容失败: ${skill.skillMdPath}`, e);
         return null;
@@ -573,6 +574,28 @@ class SkillRegistryImpl {
 
   private getSkillMode(skill: IAilySkill): SkillContextMode {
     return skill.metadata.context || 'inline';
+  }
+
+  private isChildToolSkill(skill: IAilySkill): boolean {
+    const skillPath = normalizeSkillPath(skill.skillMdPath);
+    return skillPath.includes('/child/tools/');
+  }
+
+  private decorateSkillBody(skill: IAilySkill, body: string): string {
+    if (!this.isChildToolSkill(skill)) {
+      return body;
+    }
+
+    return [
+      body,
+      '',
+      '## Host Runtime Notes',
+      '',
+      '- In this packaged app, child tool folders may only expose bundled entrypoints and assets such as `index.js`, `package.json`, `ui/`, `i18n/`, or `vendor/`.',
+      '- Before reading implementation files, inspect the current packaged folder with `list_dir` and then read concrete files such as `package.json` or `index.js` that actually exist.',
+      '- Do not assume repo-only source files like `core.js`, `server.js`, `cli.js`, `ui/src/*`, or registry files like `child/tools/index.json` exist in the current workspace unless you have listed them first.',
+      '- If a child tool process returns `processId`, `outputSessionId`, or `outputFilePath`, inspect its output with `command_status`, `command_tail`, `command_read`, `command_search`, or `log_tool` instead of `read_file` on the output path.',
+    ].join('\n');
   }
 
   private getSkillRelatedFiles(skill: IAilySkill): SkillRelatedFile[] {

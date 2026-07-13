@@ -1,4 +1,4 @@
-import { ChatPart, ConfirmationPart, MarkdownPart, StatePart, TerminalPart, ThinkingPart, ToolCallPart, getParentToolCallId, getSubAgentInvocationId, isSubagentChildPart } from '../../core/chat-parts';
+import { ChatPart, ConfirmationPart, MarkdownPart, StatePart, TerminalPart, ThinkingPart, ToolCallPart, buildScopedTextPartId, getParentToolCallId, getSubAgentInvocationId, isSubagentChildPart } from '../../core/chat-parts';
 import { projectToolCallApprovalDisplayData } from '../../core/tool-call-approval';
 import {
   buildActivityItemsFromDetailSections,
@@ -128,10 +128,10 @@ export function buildChatPartIdentity(part: ChatPart, index: number): string {
     return part.partId || `question-${index}`;
   }
   if (part.type === 'thinking') {
-    return part.partId || `thinking-${index}`;
+    return part.partId || part.contentRef || buildScopedTextPartId('thinking', part, index);
   }
   if (part.type === 'markdown') {
-    return part.partId || `markdown-${index}`;
+    return part.partId || part.contentRef || buildScopedTextPartId('markdown', part, index);
   }
   if (part.type === 'plan') {
     return part.partId || `plan-${index}`;
@@ -141,15 +141,15 @@ export function buildChatPartIdentity(part: ChatPart, index: number): string {
 
 export function buildActivityGroupIdentity(parts: readonly ChatPart[], startIndex = 0): string {
   const firstPart = parts[0];
-  const lastPart = parts[parts.length - 1];
-  const lastIndex = startIndex + parts.length - 1;
-  const groupId = [
-    buildChatPartIdentity(firstPart, startIndex),
-    buildChatPartIdentity(lastPart, lastIndex),
-    String(parts.length),
-  ].join('::');
+  if (!firstPart) {
+    return `activity:empty:${startIndex}`;
+  }
 
-  return `activity:${groupId}`;
+  return `activity:${buildChatPartIdentity(firstPart, startIndex)}`;
+}
+
+export function buildSubagentActivityGroupIdentity(subagentInvocationId: string): string {
+  return `activity:subagent:${subagentInvocationId.trim() || 'unknown'}`;
 }
 
 export function isGroupableActivityPart(part: ChatPart): boolean {
@@ -190,6 +190,7 @@ export function getPreparedDetailSections(part: ChatPart): readonly DetailSectio
 
     const sections = buildToolCallDetailSections({
       id: part.toolCallId,
+      toolName: part.toolName,
       metadata: part.metadata || null,
       args: part.args,
       text: part.text,
@@ -711,8 +712,30 @@ export function buildTerminalActivityDisplayItem(
   part: TerminalPart,
   options?: { id?: string },
 ): ActivityGroupDisplayItem {
-  const detailSections = buildTerminalDetailSections(part);
-  const invocationDetail = buildInvocationDetailDisplay({ detailSections });
+  const approval = part.toolCallId
+    ? projectToolCallApprovalDisplayData({
+      toolCallId: part.toolCallId,
+      toolName: 'run_in_terminal',
+      state: part.isRunning ? 'doing' : 'done',
+      args: { command: part.command, cwd: part.cwd },
+      metadata: part.metadata,
+    })
+    : undefined;
+  const approvalSummary = approval?.resolved ? buildResolvedApprovalSummary(approval) : undefined;
+  const approvalDetailSections = approval
+    ? buildApprovalDetailSections({
+      message: approval.message,
+      description: approval.description,
+    })
+    : [];
+  const detailSections = [
+    ...approvalDetailSections,
+    ...buildTerminalDetailSections(part),
+  ];
+  const invocationDetail = buildInvocationDetailDisplay({
+    detailSections,
+    postConfirmation: !!approvalSummary,
+  });
   const pill = part.isRunning ? '进行中' : (part.exitCode != null && part.exitCode !== 0 ? '失败' : '');
   const tone = part.isRunning ? 'info' : (part.exitCode != null && part.exitCode !== 0 ? 'error' : 'neutral');
   const meta = part.exitCode != null && part.exitCode !== 0 ? `退出码 ${part.exitCode}` : undefined;
@@ -723,7 +746,7 @@ export function buildTerminalActivityDisplayItem(
     headerKind: 'tool',
     toolHeader: {
       title: chatI18n('AILY_CHAT.PROCESS_TOOL_RUN_COMMAND'),
-      subtitle: part.command || undefined,
+      subtitle: formatTerminalHeaderCommand(part.command),
       meta,
       pill: pill || undefined,
       pillTone: tone,
@@ -740,8 +763,8 @@ export function buildTerminalActivityDisplayItem(
     headerMeta: undefined,
     pill: '',
     pillTone: 'neutral',
-    approval: undefined,
-    approvalSummary: undefined,
+    approval,
+    approvalSummary,
     invocationDetail,
     toolbarActions: buildTerminalToolbarActions(part),
     children: undefined,
@@ -749,6 +772,20 @@ export function buildTerminalActivityDisplayItem(
     detailExpanded: shouldExpandTerminalOutput(part),
     detailKind: invocationDetail ? 'invocation' : undefined,
   };
+}
+
+function formatTerminalHeaderCommand(command: string | undefined): string | undefined {
+  const normalized = typeof command === 'string'
+    ? command.replace(/\s+/g, ' ').trim()
+    : '';
+  if (!normalized) {
+    return undefined;
+  }
+
+  const maxLength = 72;
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 3)}...`
+    : normalized;
 }
 
 function buildTerminalToolbarActions(part: TerminalPart): readonly ActivityToolbarActionDisplayData[] {
@@ -821,7 +858,7 @@ function shouldExpandTerminalOutput(part: TerminalPart): boolean {
   if (part.exitCode != null && part.exitCode !== 0) {
     return true;
   }
-  return !!(part.output || part.stderr);
+  return false;
 }
 
 export function buildToolActivityShellPresentation(input: {
@@ -1103,6 +1140,10 @@ function buildActivityGroupHeader(parts: readonly ChatPart[]): ActivityGroupHead
 }
 
 function buildThinkingGroupSummaryTitle(parts: readonly ChatPart[]): { title: string; detail?: string } | undefined {
+  if (parts.some((part) => part.type === 'thinking' && part.isComplete === false)) {
+    return undefined;
+  }
+
   const toolSummaries = parts
     .filter((part): part is ToolCallPart => part.type === 'tool_call')
     .map((part) => buildActivityToolSummaryCandidate(part))
@@ -1134,12 +1175,18 @@ function isInternalDiscoveryToolSummary(summary: ActivityToolSummaryCandidate): 
 }
 
 function buildToolOnlyGroupHeader(parts: readonly ChatPart[]): ActivityGroupHeaderDisplayData | undefined {
-  const latestToolPart = parts
-    .filter((part) => isToolLikeActivityPart(part))
-    .at(-1);
+  const toolParts = parts.filter((part) => isToolLikeActivityPart(part));
+  const latestToolPart = toolParts.at(-1);
 
   if (!latestToolPart) {
     return undefined;
+  }
+
+  if (toolParts.length === 1) {
+    return {
+      kind: 'tool',
+      title: '工具',
+    };
   }
 
   const summary = buildActivityToolSummaryCandidate(latestToolPart);

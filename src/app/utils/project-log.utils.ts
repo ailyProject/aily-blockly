@@ -47,7 +47,7 @@ export function resolveProcessLogStoragePaths(
   projectPath: string | undefined,
   processId: string,
   at = new Date(),
-  _subapp = DEFAULT_PROCESS_LOG_SUBAPP,
+  subapp = DEFAULT_PROCESS_LOG_SUBAPP,
 ): { outputFilePath: string; metadataFilePath: string } | null {
   const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
   if (!normalizedProjectPath || !(window as any)?.path || !(window as any)?.fs) {
@@ -56,7 +56,7 @@ export function resolveProcessLogStoragePaths(
 
   const pathApi = (window as any).path;
   const fsApi = (window as any).fs;
-  const processRootDir = resolveProcessLogProjectDir(normalizedProjectPath);
+  const processRootDir = resolveProcessLogProjectDir(normalizedProjectPath, subapp);
   if (!processRootDir) {
     return null;
   }
@@ -94,9 +94,16 @@ export function resolveProcessLogSubappNameFromOutputFilePath(outputFilePath: st
     .split(/[\\/]+/)
     .map(segment => segment.trim())
     .filter(Boolean);
-  const processSegmentIndex = segments.lastIndexOf('process');
-  if (processSegmentIndex >= 0) {
-    return DEFAULT_PROCESS_LOG_SUBAPP;
+  const logSegmentIndex = segments.lastIndexOf('.log');
+  if (logSegmentIndex >= 0) {
+    const subappSegment = segments[logSegmentIndex + 1];
+    if (subappSegment && subappSegment !== 'process') {
+      return normalizeProcessLogSubappName(subappSegment);
+    }
+    if (subappSegment === 'process') {
+      const inferredLegacySubapp = inferLegacyProcessSubappNameFromFileName(segments[segments.length - 1] || '');
+      return inferredLegacySubapp || DEFAULT_PROCESS_LOG_SUBAPP;
+    }
   }
 
   if (segments.length < 4) {
@@ -106,14 +113,57 @@ export function resolveProcessLogSubappNameFromOutputFilePath(outputFilePath: st
   return normalizeProcessLogSubappName(segments[segments.length - 4]);
 }
 
-export function resolveProcessLogProjectDir(projectPath: string | undefined): string | null {
+export function resolveProcessLogSubappNameFromCommand(command: string | undefined): string {
+  const normalizedCommand = typeof command === 'string' ? command.trim() : '';
+  if (!normalizedCommand) {
+    return DEFAULT_PROCESS_LOG_SUBAPP;
+  }
+
+  const patterns = [
+    /child\/tools\/([^/\s'"\\]+)\/index\.js/i,
+    /child\/tools\/([^/\s'"\\]+)(?:\s|&&|;|$)/i,
+    /cd\s+.+?child\/tools\/([^/\s'"\\]+)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedCommand.match(pattern);
+    if (match?.[1]) {
+      return normalizeProcessLogSubappName(match[1]);
+    }
+  }
+
+  return DEFAULT_PROCESS_LOG_SUBAPP;
+}
+
+export function resolveProcessLogSubappNameFromCwd(cwd: string | undefined): string {
+  const normalizedCwd = typeof cwd === 'string' ? cwd.trim() : '';
+  if (!normalizedCwd) {
+    return DEFAULT_PROCESS_LOG_SUBAPP;
+  }
+
+  const patterns = [
+    /child\/tools\/([^/\s'"\\]+)$/i,
+    /child\/tools\/([^/\s'"\\]+)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedCwd.match(pattern);
+    if (match?.[1]) {
+      return normalizeProcessLogSubappName(match[1]);
+    }
+  }
+
+  return DEFAULT_PROCESS_LOG_SUBAPP;
+}
+
+export function resolveProcessLogProjectDir(projectPath: string | undefined, subapp = DEFAULT_PROCESS_LOG_SUBAPP): string | null {
   const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
   if (!normalizedProjectPath || !(window as any)?.path) {
     return null;
   }
 
   const pathApi = (window as any).path;
-  return pathApi.join(normalizedProjectPath, '.log', 'process');
+  return pathApi.join(normalizedProjectPath, '.log', normalizeProcessLogSubappName(subapp));
 }
 
 export function resolveProjectLogRootDir(projectPath: string | undefined, pathApi?: any): string | null {
@@ -148,6 +198,26 @@ function normalizeLogSource(source: string): string {
 function sanitizeProcessFileName(processId: string): string {
   const trimmed = typeof processId === 'string' ? processId.trim() : '';
   return trimmed.replace(/[^a-zA-Z0-9._-]/g, '_') || 'process';
+}
+
+function inferLegacyProcessSubappNameFromFileName(fileName: string): string | null {
+  const trimmed = typeof fileName === 'string' ? fileName.trim() : '';
+  if (!trimmed) {
+    return null;
+  }
+
+  const baseName = trimmed.replace(/\.(log|json)$/i, '');
+  const match = baseName.match(/^\d{2}-\d{2}-(.+)$/);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const candidate = match[1].trim();
+  if (!candidate || candidate.startsWith('terminal_')) {
+    return null;
+  }
+
+  return normalizeProcessLogSubappName(candidate);
 }
 
 function formatDateSegment(value: Date): string {

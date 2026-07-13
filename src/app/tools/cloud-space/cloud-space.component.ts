@@ -244,13 +244,11 @@ export class CloudSpaceComponent {
     // 构建更安全的打包命令
     // 打包所有文件，但排除特定目录和文件
     // -x!node_modules: 排除 node_modules
-    // -x!.chat: 排除 .chat
-    // -x!.history: 排除 .history
-    // -x!.temp: 排除 .temp
+    // -xr!.*: 递归排除所有以 "." 开头的文件和目录
     // -x!package-lock.json: 排除 package-lock.json
     // -x!project.7z: 排除自身
     // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
-    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-x!.chat" "-x!.history" "-x!.temp" "-x!.aily" "-x!.aily_checkpoints" "-x!.chat_history" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs"`;
+    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs"`;
     
     // console.log('执行打包命令:', packCommand);
     const result = await this.cmdService.runAsync(packCommand, prjPath, false);

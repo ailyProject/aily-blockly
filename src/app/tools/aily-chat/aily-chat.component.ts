@@ -1,9 +1,10 @@
-import { Component, ElementRef, ViewChild, ViewChildren, QueryList, OnDestroy, ChangeDetectorRef, ChangeDetectionStrategy, AfterViewChecked, NgZone, effect } from '@angular/core';
+import { Component, ElementRef, ViewChild, OnDestroy, ChangeDetectorRef, ChangeDetectionStrategy, AfterViewChecked, NgZone, effect } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { FormsModule } from '@angular/forms';
 import type { NzResizeEvent } from 'ng-zorro-antd/resizable';
-import { XDialogComponent } from './components/x-dialog/x-dialog.component';
+import type { ChatDialogItemHeightChange } from './components/x-dialog/x-dialog.component';
+import { ChatTranscriptListRendererComponent } from './components/chat-transcript-list-renderer.component';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { UiService } from '../../services/ui.service';
@@ -55,7 +56,11 @@ import { ChatViewportShellCoordinator } from './helpers/chat-viewport-shell-coor
 import { ChatComponentLifecycleCoordinator } from './helpers/chat-component-lifecycle-coordinator';
 import { ChatActionRegistry } from './helpers/chat-action-registry';
 import { ChatComponentViewModel } from './helpers/chat-component-view-model';
-import type { ChatVisibleTranscriptDialogItem } from './core/chat-visible-transcript-model';
+import type {
+  ChatVisibleTranscriptDialogItem,
+  ChatVisibleTranscriptDialogItemPatch,
+} from './core/chat-visible-transcript-model';
+import type { ChatPart } from './core/chat-parts';
 import { resolveChatDialogRevealTargetIndex } from './helpers/chat-dialog-reveal-target';
 import { exposeAilyChatE2eHarness, type AilyChatE2eRenderingDiagnostics } from './helpers/aily-chat-e2e-harness';
 import { importDebugSnapshotFromDialog } from './helpers/chat-debug-import.helper';
@@ -64,6 +69,13 @@ import { runChatTodoFocusAction } from './helpers/chat-todo-focus-action';
 import { ChatProcessManagerDialogComponent } from './components/process-manager-dialog/chat-process-manager-dialog.component';
 import { isSessionLifecycleSupersededError, readSessionLifecycleRestoreErrorDetails } from './helpers/session-lifecycle.helper';
 import { openChatProcessWindow } from './helpers/chat-process-window';
+import {
+  buildChildToolProcessSummaries,
+  collapseActiveChildToolServeProcesses,
+  resolveChildToolIdFromProcess,
+  type ChildToolSessionListItem,
+} from './helpers/child-tool-process-summary';
+import { getChildToolConfig } from '../../configs/tool.config';
 import {
   listPersistedBlocklyCommandSessionSnapshots,
   listPersistedBlocklyProjectCommandSessionSnapshots,
@@ -135,6 +147,25 @@ interface PendingFollowupSection {
   readonly requests: readonly PendingFollowupRequest[];
 }
 
+function readUnpatchedAilyChatTimer<T extends (...args: any[]) => any>(name: 'setTimeout' | 'clearTimeout'): T | null {
+  const runtime = globalThis as any;
+  const zoneSymbol = typeof runtime.Zone?.__symbol__ === 'function'
+    ? runtime.Zone.__symbol__(name)
+    : `__zone_symbol__${name}`;
+  const candidate = runtime[zoneSymbol];
+  return typeof candidate === 'function' ? candidate.bind(runtime) as T : null;
+}
+
+function setTimeoutOutsideAngular(callback: () => void, delayMs: number): ReturnType<typeof setTimeout> {
+  const nativeSetTimeout = readUnpatchedAilyChatTimer<typeof setTimeout>('setTimeout');
+  return (nativeSetTimeout ?? globalThis.setTimeout.bind(globalThis))(callback, delayMs);
+}
+
+function clearTimeoutOutsideAngular(handle: ReturnType<typeof setTimeout>): void {
+  const nativeClearTimeout = readUnpatchedAilyChatTimer<typeof clearTimeout>('clearTimeout');
+  (nativeClearTimeout ?? globalThis.clearTimeout.bind(globalThis))(handle);
+}
+
 // import { reloadAbiJsonTool, reloadAbiJsonToolSimple } from './tools';
 
 @Component({
@@ -144,7 +175,7 @@ interface PendingFollowupSection {
     NzInputModule,
     FormsModule,
     CommonModule,
-    XDialogComponent,
+    ChatTranscriptListRendererComponent,
     NzButtonModule,
     ToolContainerComponent,
     NzResizableModule,
@@ -176,6 +207,7 @@ interface PendingFollowupSection {
 })
 export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   readonly chatInputMaxChars = AILY_CHAT_INPUT_MAX_CHARS;
+  sessionOverflowMenuOpen = false;
 
   readonly debugBrowserViewState = {
     Home: ChatDebugBrowserViewState.Home,
@@ -187,25 +219,64 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   @ViewChild('chatContainer') chatContainer: ElementRef;
   private chatTextareaRef?: ElementRef;
+  private chatTextareaSubmitCleanup: (() => void) | null = null;
   @ViewChild('chatTextarea')
   set chatTextarea(ref: ElementRef | undefined) {
+    this.chatTextareaSubmitCleanup?.();
+    this.chatTextareaSubmitCleanup = null;
     this.chatTextareaRef = ref;
     this.engine.bindChatTextareaRef(ref ?? null);
+    const element = ref?.nativeElement as HTMLTextAreaElement | undefined;
+    if (element && typeof element.addEventListener === 'function') {
+      const listener = (event: KeyboardEvent) => {
+        const legacyKeyCode = (event as KeyboardEvent & { keyCode?: number }).keyCode;
+        if (event.key !== 'Enter' || event.isComposing || legacyKeyCode === 229) {
+          return;
+        }
+        event.stopImmediatePropagation();
+        void this.composerShellCoordinator.handleKeyDown(event);
+      };
+      this.ngZone.runOutsideAngular(() => {
+        element.addEventListener('keydown', listener, { capture: true });
+      });
+      this.chatTextareaSubmitCleanup = () => element.removeEventListener('keydown', listener, { capture: true });
+    }
   }
   get chatTextarea(): ElementRef | undefined {
     return this.chatTextareaRef;
   }
+  private composerSendActionCleanup: (() => void) | null = null;
+  @ViewChild('composerSendAction', { read: ElementRef })
+  set composerSendAction(ref: ElementRef<HTMLElement> | undefined) {
+    this.composerSendActionCleanup?.();
+    this.composerSendActionCleanup = null;
+    const element = ref?.nativeElement;
+    if (!element) {
+      return;
+    }
+    const listener = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void this.submitCurrentDraftAction();
+    };
+    this.ngZone.runOutsideAngular(() => {
+      element.addEventListener('click', listener, { capture: true });
+    });
+    this.composerSendActionCleanup = () => element.removeEventListener('click', listener, { capture: true });
+  }
   @ViewChild('windowBoxRoot')
   set windowBoxRoot(ref: ElementRef<HTMLElement> | undefined) {
-    this.observeSessionViewport(ref?.nativeElement ?? null);
+    this.windowBoxElement = ref?.nativeElement ?? null;
+    this.observeSessionViewport(this.windowBoxElement);
   }
+  private windowBoxElement: HTMLElement | null = null;
   @ViewChild(ChatInputPartHostComponent) inputPartHost?: ChatInputPartHostComponent;
-  @ViewChild('dialogsContent')
-  set dialogsContent(ref: ElementRef<HTMLElement> | undefined) {
-    this.observeDialogContent(ref?.nativeElement ?? null);
+  @ViewChild(FloatingTodoComponent) floatingTodo?: FloatingTodoComponent;
+  @ViewChild('inputPartHostElement', { read: ElementRef })
+  set inputPartHostElement(ref: ElementRef<HTMLElement> | undefined) {
+    this.observeInputPart(ref?.nativeElement ?? null);
   }
-  @ViewChildren(XDialogComponent) xDialogComponents: QueryList<XDialogComponent>;
-  @ViewChildren('dialogVirtualRow', { read: ElementRef }) dialogVirtualRows: QueryList<ElementRef<HTMLElement>>;
+  @ViewChild(ChatTranscriptListRendererComponent) transcriptListRenderer?: ChatTranscriptListRendererComponent;
   @ViewChild('permissionModeTooltip', { read: NzTooltipDirective })
   private permissionModeTooltip?: NzTooltipDirective;
   @ViewChild('composerModelTooltip', { read: NzTooltipDirective })
@@ -226,10 +297,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   public readonly memoryShellCoordinator: ChatMemoryShellCoordinator;
   public readonly actionRegistry: ChatActionRegistry;
   private readonly lifecycleCoordinator: ChatComponentLifecycleCoordinator;
-  private dialogsResizeObserver: ResizeObserver | null = null;
   private sessionViewportResizeObserver: ResizeObserver | null = null;
-  private observedDialogsElement: HTMLElement | null = null;
+  private inputPartResizeObserver: ResizeObserver | null = null;
   private observedSessionViewportElement: HTMLElement | null = null;
+  private observedInputPartElement: HTMLElement | null = null;
   private readonly rememberedFullAccessSessions = new Set<string>();
   private readonly inputHistoryNavigator = new ChatInputHistoryNavigator([], entries => this.persistInputHistoryEntries(entries));
   private inputHistoryStorageKey: string | null = null;
@@ -243,14 +314,32 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   private dialogVirtualEndIndex = Number.POSITIVE_INFINITY;
   private dialogVirtualRefreshRaf: number | null = null;
   private dialogVirtualMeasureRaf: number | null = null;
+  private dialogContentDeltaRaf: number | null = null;
+  private readonly pendingDialogContentDeltaItemIds = new Set<string>();
   private dialogBottomFollowRaf: number | null = null;
   private dialogBottomFollowRequestId = 0;
   private syncViewRefreshRaf: number | null = null;
+  private rendererStreamingSamplerActive = false;
+  private rendererStreamingSamplerStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private rendererStreamingCounterBaseline: Readonly<Record<string, number>> = {};
+  private submitToFirstRenderSamplerStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private rendererStreamingBudgetStartedAt = 0;
+  private submitToFirstRenderStartedAt: number | null = null;
+  private visibleTurnSubmitStartedAt: number | null = null;
+  private visibleTurnLastContentAt: number | null = null;
+  private visibleTurnCompletionTailOverrideMs: number | null = null;
+  private visibleTurnResponseCompleteObservedAt: number | null = null;
+  private visibleTurnCompletionFrameId: number | null = null;
+  private visibleTurnObservedStreaming = false;
+  private conversationScrollCleanup: (() => void) | null = null;
+  private lastSessionListLayoutKey = '';
   public dialogVirtualTopSpacerHeight = 0;
   public dialogVirtualBottomSpacerHeight = 0;
   private readonly debugBrowserChangeSubscription: Subscription;
   private readonly sessionViewModelChangeSubscription: Subscription;
   private readonly runtimeProcessSnapshotSubscription: { dispose(): void };
+  private childToolSessionStateCleanup: (() => void) | null = null;
+  private childToolSessions: readonly ChildToolSessionListItem[] = [];
   private runtimeInteractionRevealEffect: { destroy(): void } | null = null;
   private runtimeInteractionRevealTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRuntimeInteractionRevealKey = '';
@@ -319,12 +408,16 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       engine: this.engine,
       viewState: this.viewState,
       readRenderingDiagnostics: () => this.readRenderingDiagnostics(),
-      readPerformanceDiagnostics: () => ChatPerformanceTracer.snapshotPerformanceState(),
+      readPerformanceDiagnostics: () => ({
+        ...ChatPerformanceTracer.snapshotPerformanceState(),
+        rendererStreamingBudget: ChatPerformanceTracer.snapshotRendererStreamingBudget(),
+      }),
       runWorkspaceFinalizeBoundaryProbe: () => this.engine.runE2eWorkspaceFinalizeBoundaryProbe(),
     });
     this.engine.setPaneSessionCommandHandlers({
       requestNewChat: () => this.requestNewChat(),
     });
+    this.engine.setSchematicIframeProgressTarget(this.connectionGraphService);
     this.debugBrowserChangeSubscription = this.debugBrowser.onDidChange.subscribe(() => {
       this.cdr.markForCheck();
     });
@@ -346,6 +439,39 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.engine.setSyncDetectChanges(() => {
       this.scheduleSyncViewRefresh();
     });
+    this.engine.setVisibleTranscriptItemPatchCallback((patch) => this.applyVisibleTranscriptItemPatch(patch));
+    this.engine.setVisibleResponseRevisionObservedCallback((event) => {
+      if (event.sessionId !== this.vm.sessionId || this.visibleTurnSubmitStartedAt === null) {
+        return;
+      }
+      if (event.sourceEventType === 'response_complete') {
+        this.visibleTurnResponseCompleteObservedAt = performance.now();
+        this.visibleTurnCompletionTailOverrideMs = typeof event.sourceGapMs === 'number'
+          ? event.sourceGapMs
+          : null;
+        this.scheduleVisibleResponseCompletionObservation();
+      } else {
+        this.visibleTurnLastContentAt = performance.now();
+      }
+    });
+    this.engine.setSubmittedRequestPaintObservedCallback((event) => {
+      if (event.sessionId !== this.vm.sessionId || this.visibleTurnSubmitStartedAt === null) {
+        return;
+      }
+      console.info(
+        '[AilyChat][SubmittedRequestPaintScalar]',
+        [
+          `sessionId=${event.sessionId}`,
+          `turnId=${event.turnId}`,
+          `submitToPaintMs=${(performance.now() - this.visibleTurnSubmitStartedAt).toFixed(1)}`,
+          `executionToPaintMs=${event.executionToPaintMs.toFixed(1)}`,
+          `checkpointMs=${event.checkpointMs.toFixed(1)}`,
+          `projectionMs=${event.projectionMs.toFixed(1)}`,
+          `projectionToPaintMs=${event.projectionToPaintMs.toFixed(1)}`,
+        ].join(' '),
+      );
+    });
+    this.engine.setRuntimeRequestStatePatchCallback((patch) => this.applyRuntimeRequestStatePatch(patch));
     this.switchShellCoordinator = new ChatSwitchShellCoordinator({
       menuManager: this.menuManager,
       viewState: this.viewState,
@@ -363,9 +489,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     });
     this.editResourceShellCoordinator = new ChatEditResourceShellCoordinator({
       getDialog: () => AilyHost.get().dialog,
-      resolveTarget: ({ turnId }) => this.xDialogComponents?.find((dialog) => {
-          return dialog.role === 'user' && dialog.actionTurnId === turnId;
-      }),
+      resolveTarget: ({ turnId }) => this.transcriptListRenderer?.findDialogByTurnId(turnId),
     });
     this.surfaceShellCoordinator = new ChatSurfaceShellCoordinator({
       editAndResendFromTurn: (target, newText, resources) => this.engine.editAndResendFromTurn(target, newText, resources),
@@ -375,7 +499,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.requestController = new ChatRequestController({
       sendNow: (text, sessionId) => this.engine.submitUserText(text, { clearInput: true, sessionId }),
       queue: (text, sessionId, options) => this.engine.queueFollowupMessage(text, sessionId, options),
-      stop: (sessionId) => this.engine.stop(sessionId),
+      stop: (sessionId) => this.engine.stopAndWait(sessionId),
       getPending: (sessionId) => this.engine.getPendingFollowupRequests?.(sessionId) ?? [],
       hasPending: (sessionId) => this.engine.hasPendingFollowupRequests?.(sessionId) === true,
       clearPending: (sessionId) => this.engine.clearPendingFollowupRequests?.(sessionId),
@@ -490,6 +614,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       initializeEngine: () => this.engine.init(this.chatTextarea ?? null),
       detachEngineView: () => this.engine.detachView(),
     });
+    this.childToolSessionStateCleanup = window['childToolSession']?.onStateChanged?.((payload: unknown) => {
+      this.updateChildToolSessions(payload);
+    }) ?? null;
+    void this.refreshChildToolSessions();
   }
 
   shouldShowStopPrimaryAction(): boolean {
@@ -558,6 +686,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     }
 
     const submittedText = this.vm.inputValue.trim();
+    this.startSubmitToFirstRenderPerformanceSampler();
     const queueKind = options?.queueKind ?? this.getCurrentPendingFollowupEditKind() ?? undefined;
     const submitted = await this.submitShellCoordinator.submitCurrentInput(
       queueKind ? { queueKind } : undefined,
@@ -684,6 +813,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     ChatPerformanceTracer.increment('entry_open.pane_setup_complete');
     ChatPerformanceTracer.mark('entry_open.pane_setup_complete');
     this.viewportShellCoordinator.initialize(this.chatContainer);
+    this.bindConversationScrollListener(this.chatContainer.nativeElement);
     this.scrollManager.handleContentHeightChange();
     this.syncSessionListDisplayState();
     this.scheduleChatInputFocusAfterSessionChange();
@@ -921,18 +1051,47 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   ngOnDestroy() {
+    this.chatTextareaSubmitCleanup?.();
+    this.chatTextareaSubmitCleanup = null;
+    this.composerSendActionCleanup?.();
+    this.composerSendActionCleanup = null;
+    this.conversationScrollCleanup?.();
+    this.conversationScrollCleanup = null;
     this.debugBrowserChangeSubscription.unsubscribe();
     this.sessionViewModelChangeSubscription.unsubscribe();
     this.runtimeProcessSnapshotSubscription.dispose();
-    this.disconnectDialogContentObserver();
+    this.childToolSessionStateCleanup?.();
+    this.childToolSessionStateCleanup = null;
     this.disconnectSessionViewportObserver();
+    this.disconnectInputPartObserver();
     this.cancelDialogVirtualRafs();
+    this.cancelVisibleResponseCompletionObservation();
+    this.cancelDialogContentDeltaRaf();
     this.cancelSyncViewRefreshRaf();
+    this.stopRendererStreamingPerformanceSampler();
     this.runtimeInteractionRevealEffect?.destroy();
     this.runtimeInteractionRevealEffect = null;
     this.cancelRuntimeInteractionReveal();
     this.scrollManager.setRevealHostDelegate?.(null);
+    this.engine.setVisibleTranscriptItemPatchCallback(null);
+    this.engine.setVisibleResponseRevisionObservedCallback(null);
+    this.engine.setSubmittedRequestPaintObservedCallback(null);
+    this.engine.setRuntimeRequestStatePatchCallback(null);
     this.lifecycleCoordinator.detachView();
+  }
+
+  private stopRendererStreamingPerformanceSampler(): void {
+    if (this.rendererStreamingSamplerStopTimer !== null) {
+      clearTimeoutOutsideAngular(this.rendererStreamingSamplerStopTimer);
+      this.rendererStreamingSamplerStopTimer = null;
+    }
+    this.clearSubmitToFirstRenderSamplerStopTimer();
+    if (!this.rendererStreamingSamplerActive) {
+      ChatPerformanceTracer.stopEventLoopLagSampler();
+      return;
+    }
+    this.rendererStreamingSamplerActive = false;
+    ChatPerformanceTracer.stopEventLoopLagSampler();
   }
 
   shouldShowProcessEntryButton(): boolean {
@@ -942,6 +1101,12 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   getRunningProcessCount(): number {
     return this.readVisibleProcessScopeProcesses()
       .filter(process => process.removed !== true && process.running === true)
+      .length;
+  }
+
+  getProcessEntryBadgeCount(): number {
+    return this.readVisibleProcessScopeProcesses()
+      .filter(process => process.removed !== true)
       .length;
   }
 
@@ -971,9 +1136,30 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     });
   }
 
-  openProcessWindowForCurrentSession(processId: string, outputSessionId?: string, outputFilePath?: string, command?: string): void {
+  openProcessWindowForCurrentSession(
+    processId: string,
+    outputSessionId?: string,
+    outputFilePath?: string,
+    command?: string,
+    subappName?: string,
+  ): void {
     const sessionId = this.getCurrentSessionId();
     if (!sessionId || !processId) {
+      return;
+    }
+    const toolId = resolveChildToolIdFromProcess({ processId, command, subappName });
+    const resolvedToolId = toolId || resolveChildToolIdFromProcess({
+      processId,
+      command,
+      subappName,
+      outputFilePath,
+      cwd: this.resolveCurrentProjectPathForProcessUi(),
+    });
+    if (resolvedToolId) {
+      const config = getChildToolConfig(resolvedToolId);
+      this.uiService.openToolWindow(resolvedToolId, {
+        title: this.resolveChildToolDisplayName(resolvedToolId, config),
+      });
       return;
     }
     openChatProcessWindow({
@@ -996,13 +1182,16 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   private readCurrentSessionProcesses(): readonly ChatRuntimeHostSessionProcessSummary[] {
     const sessionId = this.getCurrentSessionId();
     if (!sessionId) {
-      return [];
+      return this.readActiveChildToolProcesses();
     }
     const snapshot = this.runtimeInteractionHost.readSnapshot(sessionId);
     const liveProcesses = Array.isArray(snapshot.processes) ? snapshot.processes : [];
     const projectPathHint = this.chatHistoryService.findEntry(sessionId)?.projectPath ?? null;
     const persistedProcesses = listPersistedBlocklyCommandSessionSnapshots(sessionId, projectPathHint);
-    return this.mergeProcessSummaries(liveProcesses, persistedProcesses);
+    return this.mergeProcessSummaries(
+      [...liveProcesses, ...this.readActiveChildToolProcesses()],
+      persistedProcesses,
+    );
   }
 
   private readCurrentProjectProcesses(): readonly ChatRuntimeHostSessionProcessSummary[] {
@@ -1014,12 +1203,15 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     const persistedProcesses = listPersistedBlocklyProjectCommandSessionSnapshots(projectPath);
     const sessionId = this.getCurrentSessionId();
     if (!sessionId) {
-      return persistedProcesses;
+      return this.mergeProcessSummaries(this.readActiveChildToolProcesses(), persistedProcesses);
     }
 
     const snapshot = this.runtimeInteractionHost.readSnapshot(sessionId);
     const liveProcesses = Array.isArray(snapshot.processes) ? snapshot.processes : [];
-    return this.mergeProcessSummaries(liveProcesses, persistedProcesses);
+    return this.mergeProcessSummaries(
+      [...liveProcesses, ...this.readActiveChildToolProcesses()],
+      persistedProcesses,
+    );
   }
 
   private readVisibleProcessScopeProcesses(): readonly ChatRuntimeHostSessionProcessSummary[] {
@@ -1060,7 +1252,50 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
           }
         : process);
     }
-    return [...merged.values()].sort((left, right) => right.startedAt - left.startedAt);
+    return collapseActiveChildToolServeProcesses(
+      [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
+    );
+  }
+
+  private readActiveChildToolProcesses(): readonly ChatRuntimeHostSessionProcessSummary[] {
+    return buildChildToolProcessSummaries(this.childToolSessions, {
+      sessionId: this.getCurrentSessionId(),
+      projectPath: this.resolveCurrentProjectPathForProcessUi(),
+    });
+  }
+
+  private async refreshChildToolSessions(): Promise<void> {
+    try {
+      const sessions = await window['childToolSession']?.list?.();
+      this.updateChildToolSessions(sessions);
+    } catch (error) {
+      console.warn('[AilyChat] Failed to refresh child tool sessions:', error);
+    }
+  }
+
+  private updateChildToolSessions(payload: unknown): void {
+    this.childToolSessions = Array.isArray(payload)
+      ? payload as ChildToolSessionListItem[]
+      : [];
+    this.cdr.markForCheck();
+  }
+
+  private resolveChildToolDisplayName(toolId: string, config = getChildToolConfig(toolId)): string {
+    if (!config) {
+      return toolId;
+    }
+
+    const globalName = this.translate.instant(config.namespace);
+    if (typeof globalName === 'string' && globalName && globalName !== config.namespace) {
+      return globalName;
+    }
+
+    const title = this.translate.instant(config.titleKey);
+    if (typeof title === 'string' && title && title !== config.titleKey) {
+      return title;
+    }
+
+    return toolId;
   }
 
   returnStandaloneSurfaceToMain(): void {
@@ -1146,8 +1381,8 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   get permissionMenuItems(): IMenuItem[] {
-    const isAutoReview = this.engine.currentSessionApprovalsReviewer === 'auto_review';
-    const isFullAccess = this.engine.currentSessionPermissionMode === 'bypassPermissions';
+    const isFullAccess = this.engine.currentSessionPermissionProfile === 'danger-full-access';
+    const isAutoReview = !isFullAccess && this.engine.currentSessionApprovalsReviewer === 'auto_review';
     const isDefault = !isAutoReview && !isFullAccess;
 
     return [
@@ -1177,7 +1412,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   get permissionButtonIconClass(): string {
-    if (this.engine.currentSessionPermissionMode === 'bypassPermissions') {
+    if (this.engine.currentSessionPermissionProfile === 'danger-full-access') {
       return 'fa-light fa-triangle-exclamation';
     }
 
@@ -1227,13 +1462,13 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       return;
     }
 
+    const sessionId = this.resolvePermissionTargetSessionId();
     if (action !== 'permission-full-access') {
-      this.engine.applyComposerPermissionPreset(action);
+      this.engine.applyComposerPermissionPreset(action, sessionId || undefined);
       this.notifyPermissionPresetApplied(action);
       return;
     }
 
-    const sessionId = this.resolvePermissionTargetSessionId();
     if (sessionId && this.rememberedFullAccessSessions.has(sessionId)) {
       this.engine.applyComposerPermissionPreset(action, sessionId);
       this.notifyPermissionPresetApplied(action);
@@ -1521,8 +1756,157 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   ngAfterViewChecked(): void {
+    this.syncRendererStreamingPerformanceSampler();
     if (this.shouldUseDialogVirtualization(this.vm.dialogItems)) {
       this.scheduleDialogWindowMeasurement();
+    }
+  }
+
+  private syncRendererStreamingPerformanceSampler(): void {
+    const hasStreamingDialog = this.vm.dialogItems.some(item => item.doing);
+    if (hasStreamingDialog) {
+      this.visibleTurnObservedStreaming = true;
+      this.reportSubmitToFirstRenderLatency();
+      if (this.rendererStreamingSamplerStopTimer !== null) {
+        clearTimeout(this.rendererStreamingSamplerStopTimer);
+        this.rendererStreamingSamplerStopTimer = null;
+      }
+      if (!this.rendererStreamingSamplerActive) {
+        this.rendererStreamingSamplerActive = true;
+        this.rendererStreamingBudgetStartedAt = performance.now();
+        this.rendererStreamingCounterBaseline = ChatPerformanceTracer.snapshotCounters();
+        this.clearSubmitToFirstRenderSamplerStopTimer();
+        this.ngZone.runOutsideAngular(() => {
+          // Submit and streaming are separate VS Code-style response-model
+          // phases. Reset the interval baseline so a delayed submit sample
+          // cannot be attributed to list-item streaming work.
+          ChatPerformanceTracer.stopEventLoopLagSampler();
+          ChatPerformanceTracer.startEventLoopLagSampler({ intervalMs: 100, thresholdMs: 24, enableTrace: false });
+          ChatPerformanceTracer.mark('renderer_streaming_sampler.start');
+        });
+      }
+      return;
+    }
+
+    this.reportVisibleTurnCompletionLatency();
+
+    if (!this.rendererStreamingSamplerActive || this.rendererStreamingSamplerStopTimer !== null) {
+      return;
+    }
+
+    this.ngZone.runOutsideAngular(() => {
+      this.rendererStreamingSamplerStopTimer = setTimeoutOutsideAngular(() => {
+        this.rendererStreamingSamplerStopTimer = null;
+        this.rendererStreamingSamplerActive = false;
+        ChatPerformanceTracer.mark('renderer_streaming_sampler.stop');
+        const rendererStreamingBudget = ChatPerformanceTracer.snapshotRendererStreamingBudget({
+          recentSampleCount: 40,
+          sinceT: this.rendererStreamingBudgetStartedAt,
+          maxRecentEventLoopLagMs: 50,
+          maxRecentEventLoopLagTotalMs: 120,
+          maxRecentLongTaskMs: 50,
+          maxRecentLongTaskTotalMs: 120,
+        });
+        const rendererStreamingCounters = ChatPerformanceTracer.snapshotCounters();
+        if (!rendererStreamingBudget.ok) {
+          console.warn(
+            '[AilyChat][RendererStreamingJankScalar]',
+            [
+              `lagCount=${rendererStreamingBudget.recentEventLoopLag.count}`,
+              `lagMaxMs=${rendererStreamingBudget.recentEventLoopLag.maxMs}`,
+              `lagTotalMs=${rendererStreamingBudget.recentEventLoopLag.totalMs}`,
+              `longTaskCount=${rendererStreamingBudget.recentLongTasks.count}`,
+              `longTaskMaxMs=${rendererStreamingBudget.recentLongTasks.maxMs}`,
+              `longTaskTotalMs=${rendererStreamingBudget.recentLongTasks.totalMs}`,
+              `lagSurfaces=${summarizeLagSurfaces(rendererStreamingBudget.recentEventLoopLag.samples)}`,
+              `lagDetails=${summarizeLagDetails(rendererStreamingBudget.recentEventLoopLag.samples)}`,
+              `actualDurations=${summarizeDurationCounterDeltas(
+                rendererStreamingCounters,
+                this.rendererStreamingCounterBaseline,
+                [
+                  'message_parts_incremental_patch_actual',
+                  'activity_group_refresh',
+                  'dialog_content_delta_flush',
+                  'scroll_height_update',
+                  'activity_group_scroll_sync',
+                ],
+              )}`,
+              `violations=${rendererStreamingBudget.violations.join('|')}`,
+            ].join(' '),
+          );
+          console.warn('[AilyChat][RendererStreamingJank]', rendererStreamingBudget);
+        }
+        ChatPerformanceTracer.stopEventLoopLagSampler();
+      }, 1000);
+    });
+  }
+
+  private startSubmitToFirstRenderPerformanceSampler(): void {
+    this.cancelVisibleResponseCompletionObservation();
+    this.clearSubmitToFirstRenderSamplerStopTimer();
+    const startedAt = performance.now();
+    this.rendererStreamingBudgetStartedAt = startedAt;
+    this.submitToFirstRenderStartedAt = startedAt;
+    this.visibleTurnSubmitStartedAt = startedAt;
+    this.visibleTurnLastContentAt = null;
+    this.visibleTurnCompletionTailOverrideMs = null;
+    this.visibleTurnResponseCompleteObservedAt = null;
+    this.visibleTurnObservedStreaming = false;
+    this.ngZone.runOutsideAngular(() => {
+      ChatPerformanceTracer.startEventLoopLagSampler({ intervalMs: 50, thresholdMs: 24, enableTrace: false });
+      ChatPerformanceTracer.mark('submit_to_first_render_sampler.start');
+      this.submitToFirstRenderSamplerStopTimer = setTimeoutOutsideAngular(() => {
+        this.submitToFirstRenderSamplerStopTimer = null;
+        if (this.rendererStreamingSamplerActive) {
+          return;
+        }
+        this.reportSubmitToFirstRenderLatency();
+        ChatPerformanceTracer.stopEventLoopLagSampler();
+      }, 5000);
+    });
+  }
+
+  private clearSubmitToFirstRenderSamplerStopTimer(): void {
+    if (this.submitToFirstRenderSamplerStopTimer !== null) {
+      clearTimeoutOutsideAngular(this.submitToFirstRenderSamplerStopTimer);
+      this.submitToFirstRenderSamplerStopTimer = null;
+    }
+  }
+
+  private reportSubmitToFirstRenderLatency(): void {
+    const startedAt = this.submitToFirstRenderStartedAt;
+    if (startedAt === null) {
+      return;
+    }
+    this.submitToFirstRenderStartedAt = null;
+    this.clearSubmitToFirstRenderSamplerStopTimer();
+    ChatPerformanceTracer.mark('submit_to_first_render_sampler.stop');
+    const budget = ChatPerformanceTracer.snapshotRendererStreamingBudget({
+      recentSampleCount: 80,
+      sinceT: startedAt,
+      maxRecentEventLoopLagMs: 40,
+      maxRecentEventLoopLagTotalMs: 120,
+      maxRecentLongTaskMs: 50,
+      maxRecentLongTaskTotalMs: 120,
+    });
+    const elapsedMs = performance.now() - startedAt;
+    console.info(
+      '[AilyChat][SubmitToFirstRenderLatencyScalar]',
+      `elapsedMs=${elapsedMs.toFixed(1)} lagMaxMs=${budget.recentEventLoopLag.maxMs} lagTotalMs=${budget.recentEventLoopLag.totalMs}`,
+    );
+    if (!budget.ok) {
+      console.warn(
+        '[AilyChat][SubmitToFirstRenderJankScalar]',
+        [
+          `lagCount=${budget.recentEventLoopLag.count}`,
+          `lagMaxMs=${budget.recentEventLoopLag.maxMs}`,
+          `lagTotalMs=${budget.recentEventLoopLag.totalMs}`,
+          `longTaskCount=${budget.recentLongTasks.count}`,
+          `longTaskMaxMs=${budget.recentLongTasks.maxMs}`,
+          `longTaskTotalMs=${budget.recentLongTasks.totalMs}`,
+          `violations=${budget.violations.join('|')}`,
+        ].join(' '),
+      );
     }
   }
 
@@ -1547,8 +1931,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     const items = this.vm.dialogItems;
     const usesVirtualization = this.shouldUseDialogVirtualization(items);
     const container = this.chatContainer?.nativeElement as HTMLElement | undefined;
-    const queryRoot = (this.observedDialogsElement
-      ?? container
+    const queryRoot = (container
       ?? document.querySelector('app-aily-chat')) as HTMLElement | null;
     return {
       totalDialogItems: items.length,
@@ -1568,8 +1951,94 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   handleConversationScroll(): void {
+    const previousFollowButton = this.scrollManager.showFollowBottomButton;
     this.scrollManager.checkUserScroll();
     this.scheduleDialogWindowRefresh();
+    if (previousFollowButton !== this.scrollManager.showFollowBottomButton) {
+      this.cdr.detectChanges();
+    }
+  }
+
+  private bindConversationScrollListener(element: HTMLElement): void {
+    this.conversationScrollCleanup?.();
+    const listener = () => this.handleConversationScroll();
+    this.ngZone.runOutsideAngular(() => {
+      element.addEventListener('scroll', listener, { passive: true });
+    });
+    this.conversationScrollCleanup = () => element.removeEventListener('scroll', listener);
+  }
+
+  readonly dialogContentHeightChangeHandler = (change: ChatDialogItemHeightChange): void => {
+    this.handleDialogContentDelta(change);
+  };
+
+  private handleDialogContentDelta(change: ChatDialogItemHeightChange): void {
+    const itemId = typeof change?.itemId === 'string' ? change.itemId.trim() : '';
+    const height = typeof change?.height === 'number' && Number.isFinite(change.height)
+      ? Math.ceil(change.height)
+      : 0;
+    if (!itemId || height <= 0) {
+      return;
+    }
+    this.pendingDialogContentDeltaItemIds.add(itemId);
+    const previousHeight = this.dialogVirtualHeightByItemId.get(itemId);
+    if (previousHeight == null || Math.abs(previousHeight - height) > 1) {
+      this.dialogVirtualHeightByItemId.set(itemId, height);
+    }
+
+    if (this.dialogContentDeltaRaf !== null) {
+      return;
+    }
+
+    const flush = () => {
+      ChatPerformanceTracer.runWithSurface('renderer_content_delta', () => {
+        const startedAt = performance.now();
+        this.dialogContentDeltaRaf = null;
+        const pendingItemIds = Array.from(this.pendingDialogContentDeltaItemIds);
+        const measureAll = false;
+        this.pendingDialogContentDeltaItemIds.clear();
+        const items = this.vm.dialogItems;
+        const usesVirtualization = this.shouldUseDialogVirtualization(items);
+        let measured = pendingItemIds.length > 0;
+        let virtualWindowChanged = false;
+        if (usesVirtualization) {
+          if (measured) {
+            virtualWindowChanged = this.computeDialogVirtualWindow(items);
+            if (virtualWindowChanged) {
+              this.cdr.markForCheck();
+            }
+          }
+        }
+        ChatPerformanceTracer.runWithSurface('renderer_scroll', () => {
+          this.scrollManager.handleItemHeightChange(itemId, height);
+        }, 'conversation_content_delta');
+        ChatPerformanceTracer.recordDuration(
+          'dialog_content_delta_flush',
+          performance.now() - startedAt,
+          `items=${pendingItemIds.length},all=${measureAll},virtual=${usesVirtualization},measured=${measured},window=${virtualWindowChanged}`,
+          { slowThresholdMs: 8 },
+        );
+      }, 'conversation');
+    };
+
+    if (typeof globalThis.requestAnimationFrame === 'function') {
+      this.dialogContentDeltaRaf = globalThis.requestAnimationFrame(flush);
+      return;
+    }
+
+    this.dialogContentDeltaRaf = setTimeout(flush, 16) as unknown as number;
+  }
+
+  private cancelDialogContentDeltaRaf(): void {
+    if (this.dialogContentDeltaRaf === null) {
+      return;
+    }
+    if (typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(this.dialogContentDeltaRaf);
+    } else {
+      clearTimeout(this.dialogContentDeltaRaf as unknown as ReturnType<typeof setTimeout>);
+    }
+    this.dialogContentDeltaRaf = null;
   }
 
   resumeConversationAutoScroll(event?: Event): void {
@@ -1644,11 +2113,135 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       ? globalThis.requestAnimationFrame.bind(globalThis)
       : (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 16) as unknown as number;
 
-    this.syncViewRefreshRaf = schedule(() => {
-      this.syncViewRefreshRaf = null;
-      this.syncSessionListDisplayState();
-      this.cdr.markForCheck();
+    this.ngZone.runOutsideAngular(() => {
+      this.syncViewRefreshRaf = schedule(() => {
+        this.syncViewRefreshRaf = null;
+        this.syncSessionListDisplayState();
+        this.cdr.detectChanges();
+      });
     });
+  }
+
+  private reportVisibleTurnCompletionLatency(): void {
+    if (!this.visibleTurnObservedStreaming || this.visibleTurnSubmitStartedAt === null) {
+      return;
+    }
+
+    const completedAt = performance.now();
+    const totalMs = completedAt - this.visibleTurnSubmitStartedAt;
+    const tailMs = this.visibleTurnCompletionTailOverrideMs
+      ?? (this.visibleTurnLastContentAt === null
+        ? 0
+        : completedAt - this.visibleTurnLastContentAt);
+    const responseCompleteToVisibleCompleteMs = this.visibleTurnResponseCompleteObservedAt === null
+      ? null
+      : Math.max(0, completedAt - this.visibleTurnResponseCompleteObservedAt);
+    console.info(
+      '[AilyChat][VisibleTurnLatencyScalar]',
+      [
+        `submitToVisibleCompleteMs=${totalMs.toFixed(1)}`,
+        `lastContentToVisibleCompleteMs=${tailMs.toFixed(1)}`,
+        `responseCompleteToVisibleCompleteMs=${responseCompleteToVisibleCompleteMs === null ? '<unknown>' : responseCompleteToVisibleCompleteMs.toFixed(1)}`,
+      ].join(' '),
+    );
+    this.visibleTurnSubmitStartedAt = null;
+    this.visibleTurnLastContentAt = null;
+    this.visibleTurnCompletionTailOverrideMs = null;
+    this.visibleTurnResponseCompleteObservedAt = null;
+    this.visibleTurnObservedStreaming = false;
+  }
+
+  private scheduleVisibleResponseCompletionObservation(): void {
+    this.cancelVisibleResponseCompletionObservation();
+    const schedule = typeof globalThis.requestAnimationFrame === 'function'
+      ? globalThis.requestAnimationFrame.bind(globalThis)
+      : (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 16) as unknown as number;
+    this.ngZone.runOutsideAngular(() => {
+      this.visibleTurnCompletionFrameId = schedule(() => {
+        this.visibleTurnCompletionFrameId = schedule(() => {
+          this.visibleTurnCompletionFrameId = null;
+          // The first frame applies the mounted list-item/part completion
+          // patch; the second observes its final markdown/group DOM. This is
+          // the response-model completion boundary and must not depend on an
+          // unrelated application-wide Angular tick.
+          this.reportVisibleTurnCompletionLatency();
+          this.syncRendererStreamingPerformanceSampler();
+        });
+      });
+    });
+  }
+
+  private cancelVisibleResponseCompletionObservation(): void {
+    if (this.visibleTurnCompletionFrameId === null) {
+      return;
+    }
+    if (typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(this.visibleTurnCompletionFrameId);
+    } else {
+      clearTimeout(this.visibleTurnCompletionFrameId as unknown as ReturnType<typeof setTimeout>);
+    }
+    this.visibleTurnCompletionFrameId = null;
+  }
+
+  private applyVisibleTranscriptItemPatch(patch: {
+    readonly sessionId: string;
+    readonly patches: readonly ChatVisibleTranscriptDialogItemPatch[];
+  }): boolean {
+    if (!patch.sessionId || patch.sessionId !== this.vm.sessionId) {
+      return false;
+    }
+    if (patch.patches.length === 0 || this.shouldUseDialogVirtualization(this.vm.dialogItems)) {
+      return false;
+    }
+    if (this.visibleTurnSubmitStartedAt !== null && patch.patches.some(itemPatch =>
+      itemPatch.item.role === 'aily'
+      && itemPatch.item.doing
+      && (itemPatch.kind === 'added' || itemPatch.kind === 'updated')
+    )) {
+      this.visibleTurnLastContentAt = performance.now();
+    }
+    const result = this.transcriptListRenderer?.applyPatches(
+      patch.patches,
+      canPatchVisibleTranscriptItemWithoutRowDetect,
+    );
+    if (!result?.applied) {
+      return false;
+    }
+    if (result.requiresRowMeasurement) {
+      this.scheduleDialogWindowMeasurement();
+    }
+    return true;
+  }
+
+  private applyRuntimeRequestStatePatch(patch: {
+    readonly sessionId: string;
+    readonly requestInProgress: boolean;
+    readonly activeTurnId: string | null;
+    readonly previousActiveTurnId: string | null;
+  }): void {
+    if (!patch.sessionId || patch.sessionId !== this.vm.sessionId) {
+      return;
+    }
+
+    const root = this.windowBoxElement;
+    root?.classList.toggle('request-in-progress', patch.requestInProgress);
+    root?.setAttribute('aria-busy', patch.requestInProgress ? 'true' : 'false');
+    root?.querySelector<HTMLElement>('.input-box')?.classList.toggle('working', patch.requestInProgress);
+
+    const sendAction = root?.querySelector<HTMLElement>('.composer-send-action');
+    const stopAction = root?.querySelector<HTMLElement>('.composer-stop-action');
+    sendAction?.classList.toggle('action-hidden', patch.requestInProgress || !this.shouldShowSendPrimaryAction());
+    stopAction?.classList.toggle('action-hidden', !patch.requestInProgress);
+
+    for (const control of Array.from(root?.querySelectorAll<HTMLButtonElement>('[data-disable-during-request]') ?? [])) {
+      control.disabled = patch.requestInProgress || control.dataset['disabledForLocalState'] === 'true';
+    }
+
+    this.transcriptListRenderer?.applySessionRequestState(
+      patch.activeTurnId ?? patch.previousActiveTurnId,
+      patch.requestInProgress,
+    );
+    this.floatingTodo?.applyRequestInProgress(patch.requestInProgress);
   }
 
   private cancelSyncViewRefreshRaf(): void {
@@ -1939,7 +2532,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   private measureRenderedDialogRows(): boolean {
-    const rows = this.dialogVirtualRows?.toArray() ?? [];
+    const rows = this.transcriptListRenderer?.readVirtualRows() ?? [];
     let changed = false;
 
     for (const rowRef of rows) {
@@ -2041,6 +2634,11 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   handleSessionAction(event: { action: string; data: any }): void {
     this.sessionActions.sessionActionClick(event, this.chatService.currentSessionId, this.createSessionRowActionCallbacks());
+  }
+
+  handleSessionOverflowOpenChange(open: boolean): void {
+    this.sessionOverflowMenuOpen = open;
+    this.cdr.markForCheck();
   }
 
   requestNewChat(): void {
@@ -2245,6 +2843,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   closeChatSessionMenus(): void {
     this.vm.closeSessionPicker();
     this.menuManager.closeAll();
+    this.sessionOverflowMenuOpen = false;
     this.cdr.markForCheck();
   }
 
@@ -2283,26 +2882,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     }
   }
 
-  private observeDialogContent(element: HTMLElement | null): void {
-    if (this.observedDialogsElement === element) {
-      return;
-    }
-
-    this.disconnectDialogContentObserver();
-    this.observedDialogsElement = element;
-
-    if (!element || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-
-    this.dialogsResizeObserver = new ResizeObserver(() => {
-      this.scheduleDialogWindowMeasurement();
-      this.scheduleDialogWindowRefresh();
-      this.scrollManager.handleContentHeightChange();
-    });
-    this.dialogsResizeObserver.observe(element);
-  }
-
   private observeSessionViewport(element: HTMLElement | null): void {
     if (this.observedSessionViewportElement === element) {
       return;
@@ -2332,6 +2911,47 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.sessionViewportResizeObserver.observe(element);
   }
 
+  private observeInputPart(element: HTMLElement | null): void {
+    if (this.observedInputPartElement === element) {
+      return;
+    }
+
+    this.disconnectInputPartObserver();
+    this.observedInputPartElement = element;
+
+    if (!element || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    let lastHeight = element.getBoundingClientRect().height;
+    this.inputPartResizeObserver = new ResizeObserver((entries) => {
+      const nextHeight = entries[0]?.contentRect?.height ?? element.getBoundingClientRect().height;
+      if (Math.abs(nextHeight - lastHeight) < 1) {
+        return;
+      }
+
+      lastHeight = nextHeight;
+      this.ngZone.run(() => this.handleInputPartHeightChanged());
+    });
+    this.inputPartResizeObserver.observe(element);
+  }
+
+  private handleInputPartHeightChanged(): void {
+    this.scheduleDialogWindowMeasurement();
+    this.scheduleDialogWindowRefresh();
+
+    if (!this.scrollManager.scrollLock) {
+      this.scrollManager.handleContentHeightChange();
+      this.cdr.markForCheck();
+      return;
+    }
+
+    this.prepareDialogBottomReveal();
+    this.scrollManager.resumeFollowBottom('auto');
+    this.scheduleDialogBottomFollowConfirmation();
+    this.cdr.markForCheck();
+  }
+
   private disconnectSessionViewportObserver(): void {
     this.sessionViewportResizeObserver?.disconnect();
     this.sessionViewportResizeObserver = null;
@@ -2339,6 +2959,15 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   private syncSessionListDisplayState(): void {
+    const layoutKey = [
+      this.viewState.currentViewSessionId,
+      this.vm.hasConversationContent ? 'content' : 'empty',
+      this.vm.isLoggedIn ? 'auth' : 'anonymous',
+    ].join('|');
+    if (layoutKey === this.lastSessionListLayoutKey) {
+      return;
+    }
+    this.lastSessionListLayoutKey = layoutKey;
     this.viewState.syncSessionViewerLayout({
       hasConversationContent: this.vm.hasConversationContent,
       isAuthenticated: this.vm.isLoggedIn,
@@ -2346,10 +2975,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.cdr.markForCheck();
   }
 
-  private disconnectDialogContentObserver(): void {
-    this.dialogsResizeObserver?.disconnect();
-    this.dialogsResizeObserver = null;
-    this.observedDialogsElement = null;
+  private disconnectInputPartObserver(): void {
+    this.inputPartResizeObserver?.disconnect();
+    this.inputPartResizeObserver = null;
+    this.observedInputPartElement = null;
   }
 
   private cancelDialogVirtualRafs(): void {
@@ -2373,4 +3002,95 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
     this.cancelDialogBottomFollowConfirmation();
   }
+}
+
+function summarizeLagSurfaces(samples: readonly Readonly<Record<string, unknown>>[]): string {
+  const totals = new Map<string, { count: number; totalMs: number; maxMs: number }>();
+  for (const sample of samples) {
+    const surface = typeof sample['surface'] === 'string' && sample['surface']
+      ? sample['surface']
+      : 'unknown';
+    const lagMs = Number(sample['lagMs']);
+    const current = totals.get(surface) ?? { count: 0, totalMs: 0, maxMs: 0 };
+    current.count += 1;
+    if (Number.isFinite(lagMs)) {
+      current.totalMs += lagMs;
+      current.maxMs = Math.max(current.maxMs, lagMs);
+    }
+    totals.set(surface, current);
+  }
+  return [...totals.entries()]
+    .sort((left, right) => right[1].totalMs - left[1].totalMs)
+    .map(([surface, value]) => `${surface}:${value.count}/${value.totalMs.toFixed(1)}/${value.maxMs.toFixed(1)}`)
+    .join(',') || '<none>';
+}
+
+function summarizeLagDetails(samples: readonly Readonly<Record<string, unknown>>[]): string {
+  const totals = new Map<string, { count: number; totalMs: number; maxMs: number }>();
+  for (const sample of samples) {
+    const surface = typeof sample['surface'] === 'string' && sample['surface']
+      ? sample['surface']
+      : 'unknown';
+    const detail = typeof sample['detail'] === 'string' && sample['detail']
+      ? sample['detail']
+      : '<none>';
+    const key = `${surface}/${detail}`;
+    const lagMs = Number(sample['lagMs']);
+    const current = totals.get(key) ?? { count: 0, totalMs: 0, maxMs: 0 };
+    current.count += 1;
+    if (Number.isFinite(lagMs)) {
+      current.totalMs += lagMs;
+      current.maxMs = Math.max(current.maxMs, lagMs);
+    }
+    totals.set(key, current);
+  }
+  return [...totals.entries()]
+    .sort((left, right) => right[1].totalMs - left[1].totalMs)
+    .map(([key, value]) => `${key}:${value.count}/${value.totalMs.toFixed(1)}/${value.maxMs.toFixed(1)}`)
+    .join(',') || '<none>';
+}
+
+function summarizeDurationCounterDeltas(
+  counters: Readonly<Record<string, number>>,
+  baseline: Readonly<Record<string, number>>,
+  tags: readonly string[],
+): string {
+  const values: string[] = [];
+  for (const tag of tags) {
+    const prefix = `duration.${tag}`;
+    const count = Math.max(0, (counters[`${prefix}.count`] ?? 0) - (baseline[`${prefix}.count`] ?? 0));
+    const totalMs = Math.max(0, (counters[`${prefix}.totalMs`] ?? 0) - (baseline[`${prefix}.totalMs`] ?? 0));
+    if (count > 0 || totalMs > 0) {
+      values.push(`${tag}:${count}/${totalMs.toFixed(0)}`);
+    }
+  }
+  return values.join(',') || '<none>';
+}
+
+function canPatchVisibleTranscriptItemWithoutRowDetect(
+  previousItem: ChatVisibleTranscriptDialogItem | null | undefined,
+  nextItem: ChatVisibleTranscriptDialogItem,
+): boolean {
+  if (!previousItem || previousItem.id !== nextItem.id) {
+    return false;
+  }
+  if (previousItem.role !== 'aily' || nextItem.role !== 'aily') {
+    return false;
+  }
+  if (!previousItem.doing || !nextItem.doing) {
+    return false;
+  }
+  if (previousItem.turnId !== nextItem.turnId
+    || previousItem.responseId !== nextItem.responseId
+    || previousItem.turnModelName !== nextItem.turnModelName
+    || previousItem.turnModelBillingLabel !== nextItem.turnModelBillingLabel
+    || previousItem.responseVote !== nextItem.responseVote
+    || previousItem.isLastAily !== nextItem.isLastAily
+    || previousItem.showCheckpointRestore !== nextItem.showCheckpointRestore) {
+    return false;
+  }
+
+  // The response content renderer owns every structured part mutation,
+  // including insert/remove/reorder. Row detection is reserved for row chrome.
+  return previousItem.parts.length > 0 && nextItem.parts.length > 0;
 }

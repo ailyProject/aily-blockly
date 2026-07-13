@@ -19,7 +19,7 @@ type ChatStopCoordinatorContext = Pick<
     markExplicitInterrupt?(sessionId?: string | null): void;
     awaitPendingLexRequestCompleted?(sessionId?: string | null): Promise<void>;
     stopSettleTimeoutMs?: number;
-    requestStop?(sessionId?: string | null): boolean;
+    requestStop?(sessionId?: string | null): boolean | Promise<boolean>;
   };
 
 const DEFAULT_STOP_SETTLE_TIMEOUT_MS = 1000;
@@ -83,8 +83,9 @@ export class ChatStopCoordinator {
     const pendingUserInputBeforeStop = this.ctx.pendingUserInput === true;
     const activeToolExecutionsBeforeStop = this.ctx.activeToolExecutions;
     this.ctx.isCancelled = true;
+    let requestStopPromise: Promise<boolean> | null = null;
     if (typeof this.ctx.requestStop === 'function') {
-      this.ctx.requestStop(sessionId);
+      requestStopPromise = Promise.resolve(this.ctx.requestStop(sessionId));
     } else {
       this.ctx.lexStream.agent.stop(sessionId);
     }
@@ -117,18 +118,21 @@ export class ChatStopCoordinator {
       );
     }
 
-    this.ctx.viewAdapter.markLastMessageDone();
-    this.ctx.isWaiting = false;
-    this.ctx.isCompleted = true;
-    this.ctx.session.saveCurrentSession();
-    this.ctx.markExplicitInterrupt?.(sessionId);
-
     const checkpointPromise = this.commitCurrentTurnCheckpoint(sessionId ?? this.ctx.sessionId)
       .catch((error) => {
         console.warn('[AilyChat][RuntimeHost] stopped turn checkpoint commit failed:', error);
       });
 
+    await requestStopPromise?.catch((error) => {
+      console.warn('[AilyChat][RuntimeHost] stop request failed before settle:', error);
+      return false;
+    });
     await this.waitForAbortSettle(sessionId);
+    this.ctx.markExplicitInterrupt?.(sessionId);
+    this.ctx.viewAdapter.markLastMessageDone();
+    this.ctx.isWaiting = false;
+    this.ctx.isCompleted = true;
+    this.ctx.session.saveCurrentSession();
     void checkpointPromise;
     if (options.applyPendingSwitch !== false) {
       await this.ctx.applyPendingSwitch(sessionId);

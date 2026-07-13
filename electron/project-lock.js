@@ -1,6 +1,4 @@
-/**
- * 跨版本 / 多实例：项目目录内 .aily/project-open.lock 独占与检测
- */
+// 管理项目目录独占锁，防止多个应用实例重复打开同一项目。
 const fs = require("fs");
 const path = require("path");
 const os = require("os");

@@ -6,6 +6,7 @@
 /out-tsc
 /bazel-out
 /out
+/electron/chat-runtime-lex-execution-runtime.bundle.mjs
 
 # Node
 /node_modules
@@ -79,6 +80,7 @@ child/aily-builder*
 **/*.spec.ts
 !src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts
 !src/app/tools/aily-chat/tools/blocklyEditorOperationQueue.spec.ts
+!src/app/tools/aily-chat/components/x-dialog/x-markdown-target-morph.spec.ts
 !/e2e/tests/**/*.spec.ts
 **/__tests__/**/*
 .tmp

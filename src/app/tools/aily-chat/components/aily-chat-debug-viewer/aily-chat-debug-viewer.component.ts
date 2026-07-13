@@ -86,6 +86,7 @@ export class AilyChatDebugViewerComponent {
             value: this.view.interactionActionSummary.actionId,
           }]
         : []),
+      ...this.runtimeTruthDetailRows,
       ...(this.view.pendingPlanReview
         ? [{
             label: '待恢复 Plan 审查',
@@ -100,10 +101,31 @@ export class AilyChatDebugViewerComponent {
           }]
         : []),
       ...this.planPartDetailRows,
+      ...this.deniedToolCallDetailRows,
       ...this.dualPersistenceDetailRows,
       ...this.restoreDiagnosticsDetailRows,
       ...this.restoreFailureDetailRows,
       ...this.liveRuntimeDetailRows,
+    ];
+  }
+
+  get runtimeTruthDetailRows(): readonly DebugSessionDetailRow[] {
+    const runtimeTruth = this.view.runtimeTruth;
+    if (!runtimeTruth) {
+      return [];
+    }
+
+    const value = [
+      runtimeTruth.chatMode ? `chat=${runtimeTruth.chatMode}` : '',
+      runtimeTruth.runtimeMode ? `runtime=${runtimeTruth.runtimeMode}` : '',
+      runtimeTruth.runtimeSource ? `source=${runtimeTruth.runtimeSource}` : '',
+      runtimeTruth.agentRole ? `role=${runtimeTruth.agentRole}` : '',
+      runtimeTruth.permissionMode ? `permission=${runtimeTruth.permissionMode}` : '',
+    ].filter(Boolean).join(', ');
+    return [
+      { label: 'Latest runtime truth', value: value || 'unknown' },
+      { label: 'Latest runtime turn', value: runtimeTruth.turnId || '<unknown>' },
+      ...(runtimeTruth.projectPath ? [{ label: 'Latest runtime project', value: runtimeTruth.projectPath }] : []),
     ];
   }
 
@@ -116,6 +138,7 @@ export class AilyChatDebugViewerComponent {
     const latestPlan = planParts[planParts.length - 1];
     const latestStatus = [
       latestPlan.status,
+      latestPlan.owner ? `owner=${latestPlan.owner}` : '',
       latestPlan.source ? `source=${latestPlan.source}` : '',
       latestPlan.partId ? `part=${latestPlan.partId}` : '',
     ].filter(Boolean).join(', ');
@@ -123,8 +146,37 @@ export class AilyChatDebugViewerComponent {
       { label: 'Plan parts', value: String(planParts.length) },
       { label: 'Latest plan status', value: latestStatus || 'unknown' },
       { label: 'Latest plan turn', value: latestPlan.turnId || '<unknown>' },
+      ...(latestPlan.subAgentInvocationId ? [{ label: 'Latest plan subagent', value: latestPlan.subAgentInvocationId }] : []),
+      ...(latestPlan.parentToolCallId ? [{ label: 'Latest plan parent tool', value: latestPlan.parentToolCallId }] : []),
       { label: 'Latest plan chars', value: String(latestPlan.charLength) },
       ...(latestPlan.preview ? [{ label: 'Latest plan preview', value: latestPlan.preview }] : []),
+    ];
+  }
+
+  get deniedToolCallDetailRows(): readonly DebugSessionDetailRow[] {
+    const deniedToolCalls = this.view.deniedToolCalls ?? [];
+    if (!deniedToolCalls.length) {
+      return [];
+    }
+
+    const latestDenied = deniedToolCalls[deniedToolCalls.length - 1];
+    const profile = [
+      latestDenied.chatMode ? `chat=${latestDenied.chatMode}` : '',
+      latestDenied.runtimeMode ? `runtime=${latestDenied.runtimeMode}` : '',
+      latestDenied.agentRole ? `role=${latestDenied.agentRole}` : '',
+    ].filter(Boolean).join(', ');
+    return [
+      { label: 'Denied tool calls', value: String(deniedToolCalls.length) },
+      {
+        label: 'Latest denied tool',
+        value: [
+          latestDenied.toolName,
+          latestDenied.source ? `source=${latestDenied.source}` : '',
+          latestDenied.toolCallId ? `call=${latestDenied.toolCallId}` : '',
+        ].filter(Boolean).join(', '),
+      },
+      ...(profile ? [{ label: 'Latest denied profile', value: profile }] : []),
+      { label: 'Latest denied reason', value: latestDenied.reason },
     ];
   }
 

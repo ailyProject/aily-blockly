@@ -307,6 +307,7 @@ class ChatViewPartMutationHelper {
       args: request.args,
       metadata: {
         approval: buildPendingToolCallApprovalMetadata({
+          approvalTraceId: request.approvalTraceId,
           toolCallId: request.toolCallId,
           toolName: request.toolName,
           message: request.message,

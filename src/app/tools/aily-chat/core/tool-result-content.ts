@@ -95,6 +95,7 @@ export function buildToolResultMetadataPatch(input: {
     ...(typeof input.durationMs === 'number' ? { duration: input.durationMs / 1000 } : {}),
     phase,
     timeline: [{
+      ...resultMetadata,
       recordId: `${input.toolCallId}:${phase}`,
       phase,
       ...(input.resultText ? { resultText: input.resultText } : {}),

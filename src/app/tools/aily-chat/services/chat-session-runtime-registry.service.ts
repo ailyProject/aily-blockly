@@ -224,6 +224,15 @@ export class ChatSessionRuntimeRegistryService implements ChatRuntimeOwnerRuntim
       return false;
     }
 
+    const runtimeState = this.runtimeMirror.read(normalizedSessionId);
+    if (this.projectionCore.hasPendingToolResults(runtimeState?.turnResponses)) {
+      console.info('[AilyChat][RuntimeRequestInvariant] keep request active while waiting for tool results', {
+        sessionId: normalizedSessionId,
+        turnCount: runtimeState?.turnResponses.length ?? 0,
+      });
+      return false;
+    }
+
     this.markRequestComplete(normalizedSessionId, debugSummary);
     return true;
   }

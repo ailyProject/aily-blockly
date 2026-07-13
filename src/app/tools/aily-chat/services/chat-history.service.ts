@@ -6,8 +6,8 @@
  * - 项目索引：{projectPath}/.chat_history/chat_history_index.json（项目级，仅该项目的条目）
  *   · 项目索引优先：加载时项目级条目覆盖全局同 ID 条目
  *   · 项目索引条目不含冗余的 projectPath / projectName（已隐含于存储路径）
- * - 聊天数据：有项目 → {projectPath}/.chat_history/{sessionId}.json
- *             无项目 → ~/.aily/chat_history/{sessionId}.json
+ * - 聊天数据：有项目 → {projectPath}/.chat_history/{sessionId}.jsonl
+ *             无项目 → ~/.aily/chat_history/{sessionId}.jsonl
  *
  * 持久化策略：关键节点立即保存 + 30s 定时兜底
  * - 每轮对话结束（SSE complete）立即保存
@@ -55,7 +55,7 @@ import {
 } from './host-session-debug-export';
 import { resolveHostSessionRuntimeAuxiliary } from '../helpers/host-session-runtime-auxiliary';
 import { HostSessionAdoptionBridge } from './host-session-adoption-bridge';
-import { HostSessionPersistenceBridge, type HostSessionDirtyOptions, type HostSessionFlushOptions } from './host-session-persistence-bridge';
+import { HostSessionPersistenceBridge, type HostSessionDirtyOptions, type HostSessionDirtyPolicy, type HostSessionFlushOptions } from './host-session-persistence-bridge';
 import { HostSessionRecordStore } from './host-session-record-store';
 import { ChatService } from './chat.service';
 import { ChatSessionEntryStateService } from './chat-session-entry-state.service';
@@ -85,6 +85,7 @@ import {
   normalizeHostSessionInteractionActionSummary,
   type HostSessionInteractionActionSummary,
 } from '../helpers/host-session-interaction-action';
+import type { HostSessionTurnRuntimeTruth } from '../helpers/host-session-runtime-truth';
 import type { PendingFollowupRequest } from '../helpers/chat-pending-request';
 import {
   type HostSessionSelectedModeResolveOptions,
@@ -158,6 +159,8 @@ export type PersistedHostTurnResponse = Omit<TurnResponseTurn, 'response'> & {
   planPart?: PlanPart;
   /** Latest handoff / restored interaction action associated with this turn. */
   handoffAction?: HostSessionInteractionActionSummary;
+  /** Per-turn runtime/profile truth captured at submit time. */
+  runtimeTruth?: HostSessionTurnRuntimeTruth;
   response: TurnResponseTurn['response'] & PersistedHostResponseData;
 };
 
@@ -385,6 +388,9 @@ export class ChatHistoryService implements OnDestroy {
   private readonly historyListCache = new Map<string, SessionIndexEntry[]>();
   /** 定时兜底保存的 timer ID */
   private autoSaveTimer: any = null;
+  private saveStateFlushTimer: any = null;
+  private saveStateFlushAllowsActiveRecoverySnapshot = false;
+  private readonly pendingRecoverySnapshotSessionIds = new Set<string>();
 
   // ===== 路径常量 =====
   private readonly INDEX_FILE = 'chat_history_index.json';
@@ -444,6 +450,7 @@ export class ChatHistoryService implements OnDestroy {
       upsertIndexEntry: (sessionId, metadata, messageCount, updateTimestamp, options) =>
         this.upsertIndexEntry(sessionId, metadata, messageCount, updateTimestamp, options),
       writeIndex: () => this.writeIndex(),
+      writeIndexAsync: () => this.writeIndexAsync(),
       markIndexDirty: () => { this.indexDirty = true; },
       hasDirtyIndex: () => this.indexDirty,
       isSamePath: (a, b) => this.isSamePath(a ?? null, b ?? null),
@@ -558,6 +565,13 @@ export class ChatHistoryService implements OnDestroy {
     }
   }
 
+  async saveHostRecordAsync(record: LiveHostSessionRecord): Promise<void> {
+    await this.hostSessionPersistenceBridge.saveHostRecordAsync(record);
+    if (record.sessionId) {
+      this.emitHostSessionChanged({ sessionId: record.sessionId, scope: 'persisted', kind: 'updated' });
+    }
+  }
+
   /**
    * 仅保存宿主会话元数据/索引，不重写完整 transcript 数据文件。
    * 对齐 VS Code `storeSessionsMetadataOnly(...)`：用于标题、模式、草稿/输入状态等
@@ -565,6 +579,13 @@ export class ChatHistoryService implements OnDestroy {
    */
   saveHostRecordMetadataOnly(record: LiveHostSessionRecord): void {
     this.hostSessionPersistenceBridge.saveHostRecordMetadataOnly(record);
+    if (record.sessionId) {
+      this.emitHostSessionChanged({ sessionId: record.sessionId, scope: 'persisted', kind: 'updated' });
+    }
+  }
+
+  async saveHostRecordMetadataOnlyAsync(record: LiveHostSessionRecord): Promise<void> {
+    await this.hostSessionPersistenceBridge.saveHostRecordMetadataOnlyAsync(record);
     if (record.sessionId) {
       this.emitHostSessionChanged({ sessionId: record.sessionId, scope: 'persisted', kind: 'updated' });
     }
@@ -584,7 +605,18 @@ export class ChatHistoryService implements OnDestroy {
    * 标记会话数据有变更（用于 dirty 跟踪，30s 兜底保存时使用）
    */
   markDirty(sessionId: string, options?: HostSessionDirtyOptions): void {
+    const policy = options?.policy ?? 'recovery-snapshot';
     this.hostSessionPersistenceBridge.markDirty(sessionId, options);
+    if (policy === 'authoritative') {
+      this.scheduleSaveStateFlush();
+    }
+  }
+
+  async updateTitleAsync(sessionId: string, title: string, options?: SessionTitleUpdateOptions): Promise<void> {
+    await this.hostSessionPersistenceBridge.updateTitleAsync(sessionId, title, options);
+    if (sessionId) {
+      this.emitHostSessionChanged({ sessionId, scope: 'persisted', kind: 'updated' });
+    }
   }
 
   // =========================================================================
@@ -920,6 +952,34 @@ export class ChatHistoryService implements OnDestroy {
     this.hostSessionPersistenceBridge.flushAll(options);
   }
 
+  async flushAllAsync(options?: HostSessionFlushOptions): Promise<void> {
+    try {
+      await this.hostSessionPersistenceBridge.flushAllAsync(options);
+    } catch (error) {
+      console.warn('[ChatHistory] Failed to flush sessions asynchronously:', error);
+    }
+  }
+
+  flushSession(sessionId: string, options?: HostSessionFlushOptions): void {
+    this.hostSessionPersistenceBridge.flushSession(sessionId, options);
+  }
+
+  async flushSessionAsync(sessionId: string, options?: HostSessionFlushOptions): Promise<void> {
+    try {
+      await this.hostSessionPersistenceBridge.flushSessionAsync(sessionId, options);
+    } catch (error) {
+      console.warn(`[ChatHistory] Failed to flush session asynchronously (${sessionId}):`, error);
+    }
+  }
+
+  scheduleRecoverySnapshotFlush(sessionId?: string): void {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (normalizedSessionId) {
+      this.pendingRecoverySnapshotSessionIds.add(normalizedSessionId);
+    }
+    this.scheduleSaveStateFlush({ allowActiveRecoverySnapshots: true });
+  }
+
   // =========================================================================
   // 索引操作
   // =========================================================================
@@ -1135,12 +1195,12 @@ export class ChatHistoryService implements OnDestroy {
 
     try {
       if (projectPath) {
-        const filePath = this.joinPath(projectPath, this.PROJECT_CHAT_DIR, `${sessionId}.json`);
+        const filePath = this.joinPath(projectPath, this.PROJECT_CHAT_DIR, `${sessionId}.jsonl`);
         if (this.fileExists(filePath)) {
           AilyHost.get().fs.unlinkSync(filePath);
         }
       } else {
-        const filePath = this.joinPath(this.getGlobalChatDataDir(), `${sessionId}.json`);
+        const filePath = this.joinPath(this.getGlobalChatDataDir(), `${sessionId}.jsonl`);
         if (this.fileExists(filePath)) {
           AilyHost.get().fs.unlinkSync(filePath);
         }
@@ -1152,14 +1212,14 @@ export class ChatHistoryService implements OnDestroy {
     if (!this.hasFs()) return;
 
     if (projectPath) {
-      const filePath = this.joinPath(projectPath, this.PROJECT_CHAT_DIR, `${sessionId}.json`);
+      const filePath = this.joinPath(projectPath, this.PROJECT_CHAT_DIR, `${sessionId}.jsonl`);
       if (this.fileExists(filePath)) {
         AilyHost.get().fs.unlinkSync(filePath);
       }
       return;
     }
 
-    const filePath = this.joinPath(this.getGlobalChatDataDir(), `${sessionId}.json`);
+    const filePath = this.joinPath(this.getGlobalChatDataDir(), `${sessionId}.jsonl`);
     if (this.fileExists(filePath)) {
       AilyHost.get().fs.unlinkSync(filePath);
     }
@@ -1244,7 +1304,7 @@ export class ChatHistoryService implements OnDestroy {
     this.autoSaveTimer = setInterval(() => {
       if (this.hostSessionPersistenceBridge.hasDirtySessions() || this.indexDirty) {
         console.log(`[ChatHistory] 定时保存: ${this.hostSessionPersistenceBridge.getDirtySessionCount()} 个脏会话, 索引dirty=${this.indexDirty}`);
-        this.flushAll({
+        void this.flushAllAsync({
           shouldSkipSession: (sessionId, policy) => {
             const active = this.autoSaveSessionActiveProvider?.(sessionId) === true;
             if (active && policy === 'recovery-snapshot') {
@@ -1258,11 +1318,59 @@ export class ChatHistoryService implements OnDestroy {
     }, 30000); // 30s
   }
 
+  private async writeIndexAsync(): Promise<void> {
+    if (await this.indexStore.writeIndexesAsync(this.index)) {
+      this.indexDirty = false;
+    }
+  }
+
   private stopAutoSave(): void {
     if (this.autoSaveTimer) {
       clearInterval(this.autoSaveTimer);
       this.autoSaveTimer = null;
     }
+    if (this.saveStateFlushTimer) {
+      clearTimeout(this.saveStateFlushTimer);
+      this.saveStateFlushTimer = null;
+    }
+  }
+
+  private scheduleSaveStateFlush(options?: { readonly allowActiveRecoverySnapshots?: boolean }): void {
+    if (options?.allowActiveRecoverySnapshots === true) {
+      this.saveStateFlushAllowsActiveRecoverySnapshot = true;
+    }
+    if (this.saveStateFlushTimer) {
+      return;
+    }
+
+    this.saveStateFlushTimer = setTimeout(() => {
+      this.saveStateFlushTimer = null;
+      const allowActiveRecoverySnapshot = this.saveStateFlushAllowsActiveRecoverySnapshot;
+      this.saveStateFlushAllowsActiveRecoverySnapshot = false;
+      const pendingRecoverySnapshotSessionIds = allowActiveRecoverySnapshot
+        ? [...this.pendingRecoverySnapshotSessionIds]
+        : [];
+      if (pendingRecoverySnapshotSessionIds.length > 0) {
+        this.pendingRecoverySnapshotSessionIds.clear();
+        for (const sessionId of pendingRecoverySnapshotSessionIds) {
+          void this.flushSessionAsync(sessionId);
+        }
+      }
+      if (this.hostSessionPersistenceBridge.hasDirtySessions() || this.indexDirty) {
+        void this.flushAllAsync({
+          shouldSkipSession: (sessionId, policy) => this.shouldSkipActiveRecoverySnapshot(sessionId, policy),
+        });
+      }
+    }, 1000);
+  }
+
+  private shouldSkipActiveRecoverySnapshot(sessionId: string, policy: HostSessionDirtyPolicy): boolean {
+    const active = this.autoSaveSessionActiveProvider?.(sessionId) === true;
+    if (active && policy === 'recovery-snapshot') {
+      console.log(`[ChatHistory] skip active recovery snapshot: ${sessionId}`);
+      return true;
+    }
+    return false;
   }
 
   // =========================================================================
@@ -1408,7 +1516,7 @@ export class ChatHistoryService implements OnDestroy {
 
       const files = AilyHost.get().fs.readdirSync(chatDir);
       return Array.isArray(files)
-        ? files.filter((file: string) => typeof file === 'string' && file.endsWith('.json') && file !== this.INDEX_FILE).length
+        ? files.filter((file: string) => typeof file === 'string' && file.endsWith('.jsonl')).length
         : 0;
     } catch {
       return 0;
@@ -1627,13 +1735,13 @@ export class ChatHistoryService implements OnDestroy {
 
   private resolveHostRecordFilePath(sessionId: string, projectPath: string | null): string {
     const projectFilePath = projectPath
-      ? this.joinPath(projectPath, this.PROJECT_CHAT_DIR, `${sessionId}.json`)
+      ? this.joinPath(projectPath, this.PROJECT_CHAT_DIR, `${sessionId}.jsonl`)
       : null;
     if (projectFilePath && this.fileExists(projectFilePath)) {
       return projectFilePath;
     }
 
-    return this.joinPath(this.getGlobalChatDataDir(), `${sessionId}.json`);
+    return this.joinPath(this.getGlobalChatDataDir(), `${sessionId}.jsonl`);
   }
 
   private resolveLexSnapshotFilePath(sessionId: string, projectPath: string | null): string {

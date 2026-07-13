@@ -125,6 +125,7 @@ export interface IFileSystem {
   // ---- 异步方法（可选，优先使用以避免阻塞 UI） ----
   readFile?(path: string, encoding?: string): Promise<string>;
   writeFile?(path: string, data: string, encoding?: string): Promise<void>;
+  appendFile?(path: string, data: string, encoding?: string): Promise<void>;
   exists?(path: string): Promise<boolean>;
   stat?(path: string): Promise<IFileStat>;
   readdir?(path: string): Promise<string[]>;
@@ -159,7 +160,6 @@ export interface IPathUtils {
   getUserDocuments(): string;
   getUserHome(): string;
   getAilyBuilderPath?(): string;
-  getAilyBuilderBuildPath?(): string;
   getAilyChildPath?(): string;
   getElectronPath?(): string;
 

@@ -148,7 +148,7 @@ function createChildToolConfigFromDirectory(
   const entry = typeof packageJson?.main === 'string' && packageJson.main.trim()
     ? packageJson.main.trim()
     : 'index.js';
-  const uiIndex = pathApi.join('ui', 'index.html');
+  const uiIndex = resolveChildToolUiIndex(fsApi, pathApi, toolPath, dirName, packageJson);
   const scriptPath = pathApi.join(toolPath, entry);
   const uiPath = pathApi.join(toolPath, uiIndex);
 
@@ -202,6 +202,34 @@ function readChildToolI18nMeta(fsApi: any, pathApi: any, toolPath: string): Chil
     console.warn(`[child-tools] Failed to read i18n metadata from ${i18nPath}:`, error);
     return null;
   }
+}
+
+function resolveChildToolUiIndex(
+  fsApi: any,
+  pathApi: any,
+  toolPath: string,
+  dirName: string,
+  packageJson: any
+): string {
+  const configuredUiIndex = typeof packageJson?.aily?.uiIndex === 'string' && packageJson.aily.uiIndex.trim()
+    ? packageJson.aily.uiIndex.trim()
+    : typeof packageJson?.ailyBlockly?.uiIndex === 'string' && packageJson.ailyBlockly.uiIndex.trim()
+      ? packageJson.ailyBlockly.uiIndex.trim()
+      : '';
+
+  const candidates = [
+    configuredUiIndex,
+    pathApi.join('ui', 'index.html'),
+    pathApi.join('dist', dirName, 'ui', 'index.html'),
+  ].filter((candidate: string) => !!candidate);
+
+  for (const candidate of candidates) {
+    if (fsApi.existsSync(pathApi.join(toolPath, candidate))) {
+      return candidate;
+    }
+  }
+
+  return candidates[0] || pathApi.join('ui', 'index.html');
 }
 
 function createNamespaceFromDirName(dirName: string): string {

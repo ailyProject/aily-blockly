@@ -67,6 +67,8 @@ npm run test:e2e -- compile.spec.ts
 # 全流程：会先清空 %LOCALAPPDATA%\aily-project，再安装开发板包、使用默认项目名创建真实项目并调用真实编译工具链
 $env:AILY_E2E_FULLFLOW = '1'
 $env:AILY_E2E_BOARD_KEYWORD = 'uno r4' # 可选，默认 uno r4
+# 指定多个开发板时用逗号分隔；设置后优先于 AILY_E2E_BOARD_KEYWORD
+$env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 # 可选：新电脑首次下载依赖较慢时可调大，单位毫秒
 $env:AILY_E2E_SINGLE_BOARD_TIMEOUT_MS = '2700000' # 默认 45 分钟
 $env:AILY_E2E_INSTALL_TIMEOUT_MS = '1800000'      # 默认 30 分钟
@@ -82,6 +84,7 @@ macOS / Linux 下使用 `VAR=value` 前缀或 `export`：
 
 ```bash
 AILY_E2E_FULLFLOW=1 AILY_E2E_BOARD_KEYWORD='uno r4' npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_FULLFLOW=1 AILY_E2E_BOARD_KEYWORDS='uno r4,esp32' npm run test:e2e:fast -- full-flow.spec.ts
 AILY_E2E_ALL_BOARDS=1 npm run test:e2e:fast -- full-flow.spec.ts
 ```
 

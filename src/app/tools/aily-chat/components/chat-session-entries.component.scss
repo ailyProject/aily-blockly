@@ -491,23 +491,12 @@ $session-activity-slot-offset: $session-activity-slot-width + $session-activity-
   position: relative;
   display: inline-flex;
   align-items: center;
-
-  &::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 100%;
-    height: 6px;
-  }
 }
 
 .session-list-actions-overflow,
 .session-picker-actions-overflow {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 2px);
-  z-index: 3;
+  position: fixed;
+  z-index: 1000050;
   display: flex;
   flex-direction: column;
   align-items: center;

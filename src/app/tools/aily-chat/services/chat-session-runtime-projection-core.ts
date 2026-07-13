@@ -9,6 +9,7 @@ import type { ChatRuntimeHostModelSelectionSnapshot } from '../core/chat-runtime
 import type { PendingFollowupRequest } from '../helpers/chat-pending-request';
 import type { HostSessionProviderOptions } from '../helpers/host-session-input-state';
 import type { HostTurnResponseState } from '../helpers/host-turn-response-state';
+import { hasPendingTurnResponseInteraction } from '../core/turn-response-pending-interaction';
 import {
   DEFAULT_CHAT_SESSION_RUNTIME_CAPABILITIES,
   type ChatSessionRuntimeCapabilities,
@@ -156,13 +157,19 @@ export class ChatSessionRuntimeProjectionCore {
     handle: ChatSessionRuntimeHandle,
     callbacks: ChatSessionRuntimeProjectionCallbacks,
   ): ChatSessionRuntimeStatePatch {
+    const hasPendingToolResults = this.hasPendingToolResults(turnResponses);
+    const requestInProgress = handle.requestInProgress || hasPendingToolResults;
+    const supportsInterruption = requestInProgress
+      ? handle.supportsInterruption || hasPendingToolResults
+      : false;
     return {
       turnResponses,
       hostProjectionState,
-      requestInProgress: handle.requestInProgress,
-      supportsInterruption: handle.supportsInterruption,
+      requestInProgress,
+      status: hasPendingToolResults ? 'in_progress' : undefined,
+      supportsInterruption,
       activeResponseHandle: handle.activeResponseHandle,
-      stopSession: handle.supportsInterruption
+      stopSession: supportsInterruption
         ? callbacks.stopSession
         : null,
       disposeSession: callbacks.disposeSession,
@@ -217,6 +224,10 @@ export class ChatSessionRuntimeProjectionCore {
       || runtimeState?.status === 'in_progress'
       || typeof runtimeState?.stopSession === 'function'
       || (runtimeState?.activeResponseHandle !== undefined && runtimeState.activeResponseHandle !== null);
+  }
+
+  hasPendingToolResults(turnResponses: readonly TurnResponseTurn[] | null | undefined): boolean {
+    return hasPendingTurnResponseInteraction(turnResponses);
   }
 
   private resolveProjectionChangeReason(

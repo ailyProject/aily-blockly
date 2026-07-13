@@ -288,6 +288,7 @@ export class ChatSendCoordinator {
     text: string,
     pendingEditFeedback?: string | null,
     sessionId?: string | null,
+    options: { readonly runtimeMetadata?: boolean } = {},
   ): PreparedPendingFollowupRequest | null {
     const targetSessionId = typeof sessionId === 'string' && sessionId.trim().length > 0
       ? sessionId.trim()
@@ -328,7 +329,9 @@ export class ChatSendCoordinator {
           }),
         }
       : payload.requestMetadata;
-    const requestMetadataWithPromptContext = this.applyRuntimeRequestMetadata(requestMetadata, targetSessionId);
+    const requestMetadataWithPromptContext = options.runtimeMetadata === false
+      ? this.applyRuntimeRequestId(requestMetadata)
+      : this.applyRuntimeRequestMetadata(requestMetadata, targetSessionId);
 
     return {
       text,
@@ -412,6 +415,15 @@ export class ChatSendCoordinator {
     content: string,
     options: { readonly sessionId?: string | null } = {},
   ): PreparedUserSend | null {
+    return this.prepareSendEnvelope(sender, content, options, true);
+  }
+
+  private prepareSendEnvelope(
+    sender: string,
+    content: string,
+    options: { readonly sessionId?: string | null },
+    runtimeMetadata: boolean,
+  ): PreparedUserSend | null {
     if (this.ctx.isCancelled && sender === 'tool') {
       return null;
     }
@@ -443,7 +455,9 @@ export class ChatSendCoordinator {
       this.ctx.activeToolExecutions = 0;
     }
 
-    const prepared = this.buildPreparedUserSend(text, this.ctx.pendingEditFeedback, targetSessionId);
+    const prepared = this.buildPreparedUserSend(text, this.ctx.pendingEditFeedback, targetSessionId, {
+      runtimeMetadata,
+    });
     if (!prepared) {
       return null;
     }
@@ -451,6 +465,34 @@ export class ChatSendCoordinator {
     this.ctx.pendingEditFeedback = null;
     return {
       ...prepared,
+    };
+  }
+
+  /**
+   * Builds the stable request envelope used by the visible response model.
+   * Execution-only metadata is deliberately deferred until after the request
+   * row has painted, matching VS Code's request-model-before-host-invocation
+   * ordering.
+   */
+  prepareVisibleSend(
+    sender: string,
+    content: string,
+    options: { readonly sessionId?: string | null } = {},
+  ): PreparedUserSend | null {
+    return this.prepareSendEnvelope(sender, content, options, false);
+  }
+
+  finalizeVisibleSend(
+    prepared: PreparedPendingFollowupRequest,
+    sessionId?: string | null,
+  ): PreparedPendingFollowupRequest {
+    const targetSessionId = typeof sessionId === 'string' && sessionId.trim().length > 0
+      ? sessionId.trim()
+      : this.ctx.sessionId;
+    const requestMetadata = this.applyRuntimeRequestMetadata(prepared.requestMetadata, targetSessionId);
+    return {
+      ...prepared,
+      ...(requestMetadata ? { requestMetadata } : {}),
     };
   }
 
@@ -499,6 +541,13 @@ function resolveRequestedSkillNames(
 
   if (commandKind !== 'slash' || !commandName) {
     return [];
+  }
+
+  if (commandName.startsWith('chronicle:')) {
+    const chronicleSkill = SkillRegistry.getSkillContext('chronicle');
+    return chronicleSkill && chronicleSkill.userInvocable !== false
+      ? [chronicleSkill.name]
+      : [];
   }
 
   const skillContext = SkillRegistry.getSkillContext(commandName);

@@ -1,10 +1,10 @@
 import { Injectable, inject, ApplicationRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, Observable, Subject, throwError, from } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, throwError, from, firstValueFrom } from 'rxjs';
 import { catchError, map, switchMap } from 'rxjs/operators';
 import { API } from '../configs/api.config';
 import { ElectronService } from './electron.service';
-import { extractApiErrorDetails } from '../utils/api-error.utils';
+import { createApiError, extractApiErrorDetails } from '../utils/api-error.utils';
 import type {
   AuthQuotaInfoSnapshot,
   AuthQuotaInfoSnapshotItem,
@@ -20,6 +20,19 @@ export interface CommonResponse {
   errorArgs?: Record<string, unknown>;
   errorMessage?: string | null;
   data?: any;
+}
+
+export interface GitHubPermissionStatus {
+  provider: 'github';
+  bound: boolean;
+  provider_username?: string | null;
+  provider_email?: string | null;
+  scopes: string[];
+  repo: boolean;
+  public_repo: boolean;
+  pr_submission_enabled: boolean;
+  github_authorization_purpose?: string | null;
+  scope_checked_at?: string | null;
 }
 
 export interface LoginRequest {
@@ -47,6 +60,18 @@ export interface LoginResponse {
       groups?: string[];
     };
   };
+}
+
+interface RefreshTokenResponseData {
+  access_token: string;
+  refresh_token?: string;
+  token_type?: 'bearer';
+}
+
+export type GitHubOAuthPurpose = 'login' | 'bind' | 'library_pr_submit';
+
+interface AuthHandleErrorOptions {
+  log?: boolean;
 }
 
 export interface RegisterRequest {
@@ -90,6 +115,8 @@ export class AuthService {
   // 用户信息
   private userInfoSubject = new BehaviorSubject<AuthUserInfo | null>(null);
   public userInfo$ = this.userInfoSubject.asObservable();
+  private githubBindCompletedSubject = new Subject<any>();
+  public githubBindCompleted$ = this.githubBindCompletedSubject.asObservable();
 
   // 归一化 auth snapshot，避免 chat 等消费者依赖原始 userInfo 结构
   private authSnapshotSubject = new BehaviorSubject<AuthSnapshot | null>(null);
@@ -162,6 +189,9 @@ export class AuthService {
         if (response.status === 200 && response.data) {
           return from((async () => {
             await this.saveToken2(response.data.access_token);
+            if (response.data.refresh_token) {
+              await this.saveRefreshToken(response.data.refresh_token);
+            }
             await this.handleSuccessfulTokenAcquisition(
               response.data.access_token,
               response.data.user as AuthUserInfo | undefined,
@@ -174,7 +204,7 @@ export class AuthService {
 
         return from(Promise.resolve(response));
       }),
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -183,7 +213,7 @@ export class AuthService {
    */
   register(registerData: RegisterRequest): Observable<any> {
     return this.http.post(API.register, registerData).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -201,7 +231,7 @@ export class AuthService {
       });
     }
     return this.http.post<CommonResponse>(API.sendEmailCode, { email, altcha, device_id: 'pc' }).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -218,6 +248,9 @@ export class AuthService {
           }
           return from((async () => {
             await this.saveToken2(response.data!.access_token);
+            if (response.data!.refresh_token) {
+              await this.saveRefreshToken(response.data!.refresh_token);
+            }
             await this.handleSuccessfulTokenAcquisition(
               response.data!.access_token,
               response.data!.user as AuthUserInfo | undefined,
@@ -230,7 +263,7 @@ export class AuthService {
 
         return from(Promise.resolve(response));
       }),
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -280,22 +313,23 @@ export class AuthService {
       }).subscribe({
         next: async (response) => {
           if (response.status === 200 && response.data) {
+            const userData = this.mergeCurrentGithubInfo(response.data);
             try {
               const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
-              this.setCurrentUserInfo(response.data, quotaInfoSnapshot);
+              this.setCurrentUserInfo(userData, quotaInfoSnapshot);
             } catch (quotaError) {
               console.warn('获取独立配额快照失败，回退到 auth/me:', quotaError);
               const recoveredQuotaInfoSnapshot = await this.retryAuthQuotaInfoSnapshotImmediately(token);
               if (recoveredQuotaInfoSnapshot) {
-                this.setCurrentUserInfo(response.data, recoveredQuotaInfoSnapshot);
+                this.setCurrentUserInfo(userData, recoveredQuotaInfoSnapshot);
               } else {
-                this.setCurrentUserInfo(response.data, null);
+                this.setCurrentUserInfo(userData, null);
                 if (this.getAuthSnapshot()?.quotaInfoSnapshot?.source !== 'token') {
-                  this.scheduleAuthQuotaInfoSnapshotRetry(token, response.data, 1);
+                  this.scheduleAuthQuotaInfoSnapshotRetry(token, userData, 1);
                 }
               }
             }
-            resolve(response.data);
+            resolve(userData);
           } else {
             console.warn('获取用户信息失败:', response);
             reject(null);
@@ -306,13 +340,109 @@ export class AuthService {
     });
   }
 
-  async refreshMe() {
+  async refreshCurrentUser(): Promise<any | null> {
     // 先检查是否有 token，没有 token 就不发起请求
     const token = await this.getToken2();
     if (!token) {
-      return;
+      return null;
     }
     return this.getMe(token);
+  }
+
+  async refreshMe() {
+    await this.refreshCurrentUser();
+  }
+
+  hasGithubBinding(user: any = this.currentUser): boolean {
+    return user?.github?.bound === true;
+  }
+
+  hasGithubLibraryPrPermission(user: any = this.currentUser): boolean {
+    const github = user?.github;
+    if (!github || typeof github !== 'object' || Array.isArray(github)) {
+      return false;
+    }
+    if (github.pr_submission_enabled === true) {
+      return true;
+    }
+
+    const extraData = github.extra_data && typeof github.extra_data === 'object' && !Array.isArray(github.extra_data)
+      ? github.extra_data
+      : {};
+    const scopes = [
+      ...this.normalizeGithubScopes(github.scopes),
+      ...this.normalizeGithubScopes(github.scope),
+      ...this.normalizeGithubScopes(extraData['scopes']),
+      ...this.normalizeGithubScopes(extraData['scope']),
+    ];
+    return scopes.includes('repo');
+  }
+
+  private normalizeGithubScopes(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value.filter((scope): scope is string => typeof scope === 'string');
+    }
+    if (typeof value === 'string') {
+      return value.split(/[,\s]+/).map(scope => scope.trim()).filter(Boolean);
+    }
+    return [];
+  }
+
+  getGithubPermissions(): Observable<GitHubPermissionStatus> {
+    return this.http.get<CommonResponse & { data: GitHubPermissionStatus }>(API.githubPermissions).pipe(
+      map(response => {
+        if (response.status === 200 && response.data) {
+          this.mergeGithubPermissionStatus(response.data);
+          return response.data;
+        }
+        throw response;
+      }),
+      catchError(error => this.handleError(error))
+    );
+  }
+
+  hasGithubLibraryPrPermissionStatus(status: GitHubPermissionStatus | null | undefined): boolean {
+    if (!status?.bound) {
+      return false;
+    }
+    const scopes = this.normalizeGithubScopes(status.scopes);
+    return status.pr_submission_enabled === true || status.repo === true || scopes.includes('repo');
+  }
+
+  private mergeGithubPermissionStatus(status: GitHubPermissionStatus): void {
+    const currentUser: any = this.currentUser || {};
+    const currentGithub = currentUser?.github && typeof currentUser.github === 'object' && !Array.isArray(currentUser.github)
+      ? currentUser.github
+      : {};
+    this.setCurrentUserInfo({
+      ...currentUser,
+      github: {
+        ...currentGithub,
+        ...status,
+        bound: status.bound,
+        scopes: this.normalizeGithubScopes(status.scopes),
+      },
+    });
+  }
+
+  private mergeCurrentGithubInfo(user: any): any {
+    if (!user || typeof user !== 'object' || Array.isArray(user)) {
+      return user;
+    }
+    const currentUser: any = this.currentUser;
+    const currentGithub = currentUser?.github && typeof currentUser.github === 'object' && !Array.isArray(currentUser.github)
+      ? currentUser.github
+      : {};
+    const nextGithub = user.github && typeof user.github === 'object' && !Array.isArray(user.github)
+      ? user.github
+      : {};
+    return {
+      ...user,
+      github: {
+        ...currentGithub,
+        ...nextGithub,
+      },
+    };
   }
 
   /**
@@ -495,6 +625,56 @@ export class AuthService {
     }
   }
 
+  private async saveRefreshToken(refreshToken: string): Promise<void> {
+    try {
+      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
+        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
+        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
+
+        let authData: any = {};
+        if ((window as any).electronAPI.fs.existsSync(authFilePath)) {
+          try {
+            const content = (window as any).electronAPI.fs.readFileSync(authFilePath);
+            authData = JSON.parse(content);
+          } catch (error) {
+            console.warn('读取现有认证文件失败，将创建新文件:', error);
+            authData = {};
+          }
+        }
+
+        authData.refresh_token = refreshToken;
+        authData.updated_at = new Date().toISOString();
+        (window as any).electronAPI.fs.writeFileSync(authFilePath, JSON.stringify(authData, null, 2));
+      } else {
+        localStorage.setItem(this.REFRESH_TOKEN_KEY, refreshToken);
+      }
+    } catch (error) {
+      console.error('保存刷新 token 失败:', error);
+    }
+  }
+
+  private async getRefreshToken(): Promise<string | null> {
+    try {
+      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
+        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
+        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
+
+        if (!(window as any).electronAPI.fs.existsSync(authFilePath)) {
+          return null;
+        }
+
+        const content = (window as any).electronAPI.fs.readFileSync(authFilePath, 'utf8');
+        const authData = JSON.parse(content);
+        return authData.refresh_token || null;
+      }
+
+      return localStorage.getItem(this.REFRESH_TOKEN_KEY);
+    } catch (error) {
+      console.error('获取刷新 token 失败:', error);
+      return null;
+    }
+  }
+
   async getToken2(): Promise<string | null> {
     try {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
@@ -572,48 +752,6 @@ export class AuthService {
 
 
   /**
-   * 保存刷新 token
-   */
-  private async saveRefreshToken(refreshToken: string): Promise<void> {
-    try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.safeStorage) {
-        const encrypted = (window as any).electronAPI.safeStorage.encryptString(refreshToken);
-        localStorage.setItem(this.REFRESH_TOKEN_KEY, encrypted.toString('base64'));
-      } else {
-        localStorage.setItem(this.REFRESH_TOKEN_KEY, refreshToken);
-      }
-    } catch (error) {
-      console.error('保存刷新 token 失败:', error);
-    }
-  }
-
-  /**
-   * 获取刷新 token
-   */
-  private async getRefreshToken(): Promise<string | null> {
-    try {
-      const storedData = localStorage.getItem(this.REFRESH_TOKEN_KEY);
-      if (!storedData) return null;
-
-      if (this.electronService.isElectron && (window as any).electronAPI?.safeStorage) {
-        try {
-          const buffer = Buffer.from(storedData, 'base64');
-          return (window as any).electronAPI.safeStorage.decryptString(buffer);
-        } catch (error) {
-          console.error('刷新 token 解密失败:', error);
-          localStorage.removeItem(this.REFRESH_TOKEN_KEY);
-          return null;
-        }
-      } else {
-        return storedData;
-      }
-    } catch (error) {
-      console.error('获取刷新 token 失败:', error);
-      return null;
-    }
-  }
-
-  /**
    * 保存用户信息
    */
   private async saveUserInfo(userInfo: any): Promise<void> {
@@ -660,33 +798,6 @@ export class AuthService {
   }
 
   /**
-   * 刷新 token
-   */
-  async refreshAuthToken(): Promise<boolean> {
-    try {
-      const refreshToken = await this.getRefreshToken();
-      if (!refreshToken) return false;
-
-      const response = await this.http.post<CommonResponse>(
-        API.refreshToken,
-        { refreshToken }
-      ).toPromise();
-
-      if (response?.data?.token) {
-        await this.saveToken2(response.data.token);
-        if (response.data.refreshToken) {
-          await this.saveRefreshToken(response.data.refreshToken);
-        }
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error('刷新 token 失败:', error);
-      return false;
-    }
-  }
-
-  /**
    * 清除所有认证数据
    */
   private async clearAuthData(): Promise<void> {
@@ -720,6 +831,36 @@ export class AuthService {
 
   getAuthSnapshot(): AuthSnapshot | null {
     return this.authSnapshotSubject.value;
+  }
+
+  async refreshAuthToken(): Promise<boolean> {
+    const refreshToken = await this.getRefreshToken();
+    if (!refreshToken) {
+      return false;
+    }
+
+    try {
+      const response = await firstValueFrom(
+        this.http.post<CommonResponse & { data?: RefreshTokenResponseData }>(
+          API.refreshToken,
+          { refresh_token: refreshToken }
+        )
+      );
+
+      const accessToken = response.data?.access_token;
+      if (response.status !== 200 || !accessToken) {
+        return false;
+      }
+
+      await this.saveToken2(accessToken);
+      if (response.data?.refresh_token) {
+        await this.saveRefreshToken(response.data.refresh_token);
+      }
+      return true;
+    } catch (error) {
+      console.warn('刷新 token 失败:', error);
+      return false;
+    }
   }
 
   /**
@@ -1035,13 +1176,30 @@ export class AuthService {
    * 启动 GitHub OAuth 流程
    */
   startGitHubOAuth(inviteCode?: string): Observable<{ authorization_url: string; state: string }> {
+    return this.startGitHubOAuthForPurpose('login', inviteCode);
+  }
+
+  startGitHubBindOAuth(): Observable<{ authorization_url: string; state: string }> {
+    return this.startGitHubOAuthForPurpose('bind');
+  }
+
+  startGitHubLibraryPrSubmitOAuth(): Observable<{ authorization_url: string; state: string }> {
+    return this.startGitHubOAuthForPurpose('library_pr_submit', undefined, { logErrors: false });
+  }
+
+  private startGitHubOAuthForPurpose(
+    purpose: GitHubOAuthPurpose,
+    inviteCode?: string,
+    options: { logErrors?: boolean } = {},
+  ): Observable<{ authorization_url: string; state: string }> {
     // 生成并存储 state 参数
-    const state = this.generateOAuthState();
+    const state = this.generateOAuthState(purpose);
 
     const requestData: any = {
       redirect_uri: 'abis://auth/callback',
       state: state,
-      device_id: 'pc'
+      device_id: 'pc',
+      purpose,
     };
     if (inviteCode) {
       requestData.invite_code = inviteCode;
@@ -1064,27 +1222,27 @@ export class AuthService {
             state: state
           };
         }
-        throw new Error(response.message || '获取授权URL失败');
+        throw response;
       }),
-      catchError(this.handleError)
+      catchError(error => this.handleError(error, { log: options.logErrors !== false }))
     );
   }
 
   /**
    * GitHub OAuth 状态管理
    */
-  private oauthState: { state: string; timestamp: number } | null = null;
+  private oauthState: { state: string; timestamp: number; purpose: GitHubOAuthPurpose } | null = null;
   private readonly OAUTH_TIMEOUT = 5 * 60 * 1000; // 5分钟超时
 
   /**
    * 生成并存储 OAuth state
    */
-  generateOAuthState(): string {
+  generateOAuthState(purpose: GitHubOAuthPurpose = 'login'): string {
     const state = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    this.oauthState = { state, timestamp: Date.now() };
+    this.oauthState = { state, timestamp: Date.now(), purpose };
 
     // 同时保存到文件系统（用于跨实例共享）
-    this.saveOAuthStateToFile(state);
+    this.saveOAuthStateToFile(state, purpose);
 
     return state;
   }
@@ -1092,7 +1250,7 @@ export class AuthService {
   /**
    * 保存 OAuth state 到文件
    */
-  private async saveOAuthStateToFile(state: string): Promise<void> {
+  private async saveOAuthStateToFile(state: string, purpose: GitHubOAuthPurpose): Promise<void> {
     try {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         // 使用共享的AppData路径（不使用实例隔离的路径）
@@ -1101,7 +1259,8 @@ export class AuthService {
 
         const stateData = {
           state,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          purpose,
         };
 
         // 确保目录存在
@@ -1121,7 +1280,7 @@ export class AuthService {
   /**
    * 从文件读取 OAuth state
    */
-  private async loadOAuthStateFromFile(): Promise<{ state: string; timestamp: number } | null> {
+  private async loadOAuthStateFromFile(): Promise<{ state: string; timestamp: number; purpose?: GitHubOAuthPurpose } | null> {
     try {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
@@ -1139,6 +1298,19 @@ export class AuthService {
       console.error('从文件加载OAuth状态失败:', error);
       return null;
     }
+  }
+
+  private async getOAuthPurpose(state: string): Promise<GitHubOAuthPurpose> {
+    if (this.oauthState?.state === state) {
+      return this.oauthState.purpose || 'login';
+    }
+
+    const fileState = await this.loadOAuthStateFromFile();
+    if (fileState?.state === state && (fileState.purpose === 'bind' || fileState.purpose === 'login' || fileState.purpose === 'library_pr_submit')) {
+      return fileState.purpose;
+    }
+
+    return 'login';
   }
 
   /**
@@ -1242,9 +1414,27 @@ export class AuthService {
         if (response.status === 200 && response.data) {
           return response.data;
         }
-        throw new Error(response.message || '网络超时，请重试');
+        throw response;
       }),
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
+    );
+  }
+
+  bindGitHubAccount(code: string, state: string, purpose?: GitHubOAuthPurpose): Observable<any> {
+    return this.http.post<CommonResponse>(API.githubBind, {
+      code,
+      state,
+      device_id: 'pc',
+      client_type: 'electron',
+      purpose,
+    }).pipe(
+      map(response => {
+        if (response.status === 200) {
+          return response.data || {};
+        }
+        throw response;
+      }),
+      catchError(error => this.handleError(error, { log: purpose !== 'library_pr_submit' }))
     );
   }
 
@@ -1256,7 +1446,7 @@ export class AuthService {
     state?: string;
     error?: string;
     error_description?: string;
-  }): Promise<{ success: boolean; data?: any; error?: string; message?: string; errorCode?: string | null; errorArgs?: Record<string, unknown> }> {
+  }): Promise<{ success: boolean; data?: any; error?: string; message?: string; errorCode?: string | null; errorArgs?: Record<string, unknown>; purpose?: GitHubOAuthPurpose }> {
     try {
       // 检查是否有错误
       if (callbackData.error) {
@@ -1288,6 +1478,27 @@ export class AuthService {
         };
       }
 
+      const purpose = await this.getOAuthPurpose(callbackData.state);
+
+      if (purpose === 'bind' || purpose === 'library_pr_submit') {
+        const bindData = await this.bindGitHubAccount(callbackData.code, callbackData.state, purpose).toPromise();
+        this.clearOAuthState();
+        const user = this.markGithubBoundLocally(bindData, purpose);
+        this.githubBindCompletedSubject.next(user);
+        this.refreshCurrentUser().then(refreshedUser => {
+          if (refreshedUser && !this.hasGithubBinding(refreshedUser)) {
+            this.githubBindCompletedSubject.next(this.markGithubBoundLocally(refreshedUser));
+          }
+        }).catch(error => {
+          console.error('刷新 GitHub 绑定用户信息失败:', error);
+        });
+        return {
+          success: true,
+          data: bindData,
+          purpose,
+        };
+      }
+
       // 交换 token
       const tokenData = await this.exchangeGitHubToken(callbackData.code, callbackData.state).toPromise();
 
@@ -1312,7 +1523,8 @@ export class AuthService {
 
       return {
         success: true,
-        data: tokenData
+        data: tokenData,
+        purpose: 'login',
       };
 
     } catch (error) {
@@ -1328,12 +1540,50 @@ export class AuthService {
     }
   }
 
+  private markGithubBoundLocally(source?: any, purpose?: GitHubOAuthPurpose): any {
+    const sourceUser = source?.user && typeof source.user === 'object' && !Array.isArray(source.user)
+      ? source.user
+      : source;
+    const currentUser: any = this.currentUser || {};
+    const sourceGithub = sourceUser?.github && typeof sourceUser.github === 'object' && !Array.isArray(sourceUser.github)
+      ? sourceUser.github
+      : {};
+    const currentGithub = currentUser?.github && typeof currentUser.github === 'object' && !Array.isArray(currentUser.github)
+      ? currentUser.github
+      : {};
+    const prSubmissionGithub = purpose === 'library_pr_submit'
+      ? {
+        pr_submission_enabled: true,
+        scopes: Array.from(new Set([
+          ...this.normalizeGithubScopes(currentGithub.scopes),
+          ...this.normalizeGithubScopes(sourceGithub.scopes),
+          'repo',
+        ])),
+      }
+      : {};
+    const nextUser = {
+      ...currentUser,
+      ...(sourceUser && typeof sourceUser === 'object' && !Array.isArray(sourceUser) ? sourceUser : {}),
+      github: {
+        ...currentGithub,
+        ...sourceGithub,
+        ...prSubmissionGithub,
+        bound: true,
+      },
+    };
+    this.setCurrentUserInfo(nextUser);
+    return nextUser;
+  }
+
   /**
    * GitHub OAuth 登录成功处理
    */
-  async handleGitHubOAuthSuccess(data: { access_token: string; user?: any }): Promise<void> {
+  async handleGitHubOAuthSuccess(data: { access_token: string; refresh_token?: string; user?: any }): Promise<void> {
     try {
       await this.saveToken2(data.access_token);
+      if (data.refresh_token) {
+        await this.saveRefreshToken(data.refresh_token);
+      }
       await this.handleSuccessfulTokenAcquisition(data.access_token, data.user as AuthUserInfo | undefined);
     } catch (error) {
       console.error('处理 GitHub OAuth 成功数据失败:', error);
@@ -1380,7 +1630,7 @@ export class AuthService {
       params.invite_code = inviteCode;
     }
     return this.http.get<CommonResponse & { data: { ticket: string; qrcode_url: string; expires_in: number } }>(API.wechatQrcode, { params }).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -1425,7 +1675,7 @@ export class AuthService {
       API.wechatCheck,
       { params: { ticket } }
     ).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -1435,9 +1685,9 @@ export class AuthService {
   async handleWeChatOAuthSuccess(data: { access_token: string; refresh_token?: string; user?: any }): Promise<void> {
     try {
       await this.saveToken2(data.access_token);
-      // if (data.refresh_token) {
-      //   await this.saveRefreshToken(data.refresh_token);
-      // }
+      if (data.refresh_token) {
+        await this.saveRefreshToken(data.refresh_token);
+      }
       await this.handleSuccessfulTokenAcquisition(data.access_token, data.user as AuthUserInfo | undefined);
     } catch (error) {
       console.error('处理微信 OAuth 成功数据失败:', error);
@@ -1471,7 +1721,7 @@ export class AuthService {
       API.wechatLoginBindQrcode,
       { params: { pending_ticket: pendingTicket }, headers: { 'X-Supports-Merge-Confirm': 'true' } }
     ).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -1513,7 +1763,7 @@ export class AuthService {
       API.wechatLoginBindCheck,
       { params: { ticket }, headers: { 'X-Supports-Merge-Confirm': 'true' } }
     ).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -1576,7 +1826,7 @@ export class AuthService {
       body,
       { headers: { 'X-Supports-Merge-Confirm': 'true' } }
     ).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -1606,7 +1856,7 @@ export class AuthService {
       API.wechatConfirmMerge,
       { ticket, flow }
     ).pipe(
-      catchError(this.handleError)
+      catchError(error => this.handleError(error))
     );
   }
 
@@ -1640,7 +1890,7 @@ export class AuthService {
                 target_url: response.data.target_url
               };
             }
-            throw new Error(response.message || '生成 SSO Token 失败');
+            throw response;
           }),
           catchError((error) => {
             console.error('生成 SSO Token 失败:', error);
@@ -1661,9 +1911,13 @@ export class AuthService {
   /**
    * 错误处理
    */
-  private handleError(error: any): Observable<never> {
-    console.error('认证服务错误:', error);
-    return throwError(() => error);
+  private handleError(error: any, options: AuthHandleErrorOptions = {}): Observable<never> {
+    const apiError = createApiError(error, '认证服务错误');
+    if (options.log !== false) {
+      const codeSuffix = apiError.errorCode ? ` (${apiError.errorCode})` : '';
+      console.error(`认证服务错误: ${apiError.message}${codeSuffix}`, error);
+    }
+    return throwError(() => apiError);
   }
 }
 

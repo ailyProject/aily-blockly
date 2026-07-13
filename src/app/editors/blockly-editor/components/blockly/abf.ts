@@ -149,20 +149,21 @@ export function processToolboxI18n(toolbox, i18nData) {
         updatedToolbox.name = i18nData.toolbox_name;
     }
     
-    // 处理 toolbox contents 中的 labels
-    if (updatedToolbox.contents && i18nData.toolbox_labels) {
-        processToolboxContents(updatedToolbox.contents, i18nData.toolbox_labels);
+    // 处理 toolbox contents 中的 labels 和 category names
+    if (updatedToolbox.contents && (i18nData.toolbox_labels || i18nData.toolbox_categories)) {
+        processToolboxContents(updatedToolbox.contents, i18nData.toolbox_labels || {}, i18nData.toolbox_categories);
     }
     
     return updatedToolbox;
 }
 
 /**
- * 递归处理 toolbox contents 中的 label text
+ * 递归处理 toolbox contents 中的 label text 和 category name
  * @param {array} contents - toolbox contents 数组
- * @param {object} labels - 多语言 labels 映射 { "原文": "翻译" }
+ * @param {object} labels - label text 多语言映射 { "原文": "翻译" }
+ * @param {array} categories - 按深度优先顺序排列的 category name 翻译
  */
-function processToolboxContents(contents, labels) {
+function processToolboxContents(contents, labels = {}, categories, state = { categoryIndex: 0 }) {
     if (!Array.isArray(contents)) return;
     
     for (const item of contents) {
@@ -170,10 +171,20 @@ function processToolboxContents(contents, labels) {
         if (item.kind === 'label' && item.text && labels[item.text]) {
             item.text = labels[item.text];
         }
+
+        if (item.kind === 'category') {
+            const categoryTranslation = Array.isArray(categories) ? categories[state.categoryIndex] : undefined;
+
+            state.categoryIndex++;
+
+            if (typeof categoryTranslation === 'string' && categoryTranslation) {
+                item.name = categoryTranslation;
+            }
+        }
         
         // 递归处理嵌套的 contents（如 category 中的内容）
         if (item.contents) {
-            processToolboxContents(item.contents, labels);
+            processToolboxContents(item.contents, labels, categories, state);
         }
     }
 }

@@ -4,6 +4,7 @@ import {
   type TurnResponseCommand,
   type TurnResponseFollowup,
   type TurnResponsePart,
+  type TurnResponseToolCallPart,
   type TurnResponseTurn,
 } from 'aily-lex/browser';
 
@@ -15,7 +16,12 @@ import type {
   CanonicalRenderItemScope,
   CanonicalRenderLifecycleEvent,
 } from '../core/render-event-item-lifecycle';
-import { collectMainTurnResponseText, isSubagentScopedTurnResponsePart, turnResponsePartToChatParts } from '../core/turn-response-part-mapper';
+import {
+  collectMainTurnResponseText,
+  isSubagentScopedTurnResponsePart,
+  projectTurnResponseDisplayParts,
+  turnResponsePartsToDisplayChatParts,
+} from '../core/turn-response-part-mapper';
 import {
   buildDialogTurnContext,
   type DialogTurnContext,
@@ -32,6 +38,7 @@ import {
   cloneTurnResponseModelSidecar,
   normalizeTurnResponseSummaryPreview,
 } from './turn-response-response-model';
+import { isTerminalSessionToolName } from '../core/tool-name-normalizer';
 
 function applyHostStreamResponseProgressUpdate(
   baseTurn: TurnResponseTurn,
@@ -1601,9 +1608,9 @@ export class LiveHostRequestGraphCache implements IHostStreamListener {
 export function hasHostResponseConversationContent(
   model: Pick<HostResponseProjection, 'turnResponses' | 'chatList' | 'dialogItems'> | null | undefined,
 ): boolean {
-  return (model?.turnResponses.length ?? 0) > 0
-    || (model?.chatList.length ?? 0) > 0
-    || (model?.dialogItems.length ?? 0) > 0;
+  return (model?.turnResponses?.length ?? 0) > 0
+    || (model?.chatList?.length ?? 0) > 0
+    || (model?.dialogItems?.length ?? 0) > 0;
 }
 
 export function buildHostRequestModel(
@@ -1918,16 +1925,16 @@ function buildHostResponseViewParts(
   clearState?: HostTurnResponseClearRuntimeState,
 ): TurnResponsePart[] {
   if (!clearState) {
-    return [...parts];
+    return projectTurnResponseDisplayParts(parts);
   }
 
   const prefixPartCount = Math.max(0, Math.min(clearState.prefixPartCount, parts.length));
   const clearedPartCount = Math.max(prefixPartCount, Math.min(clearState.clearedPartCount, parts.length));
-  return [
+  return projectTurnResponseDisplayParts([
     ...parts.slice(0, prefixPartCount),
     ...(clearState.message ? [{ type: 'markdown', content: clearState.message } satisfies Extract<TurnResponsePart, { type: 'markdown' }>] : []),
     ...parts.slice(clearedPartCount),
-  ];
+  ]);
 }
 
 function deriveHostPendingConfirmationState(
@@ -2424,7 +2431,9 @@ function projectTurnResponseForHostEntry(entry: HostTurnResponseEntry): TurnResp
     ...(responseModel ? { responseModel } : {}),
     response: {
       ...response,
-      parts: [...(response.parts ?? [])],
+      parts: normalizePersistedTurnResponseParts(
+        assignFallbackPartIdsForImportedTurn(turn.turnId, response.parts ?? []),
+      ),
     },
   };
 }
@@ -2918,7 +2927,115 @@ function normalizePersistedTurnResponseParts(parts: readonly TurnResponsePart[])
     normalizedParts[existingIndex] = mergePersistedTurnResponsePart(normalizedParts[existingIndex], part);
   }
 
-  return normalizedParts;
+  return removePersistedTerminalOwnedToolCalls(normalizedParts);
+}
+
+function removePersistedTerminalOwnedToolCalls(parts: readonly TurnResponsePart[]): TurnResponsePart[] {
+  const owners = collectPersistedTerminalOwners(parts);
+  if (owners.toolCallIds.size === 0 && owners.sessionIds.size === 0) {
+    return [...parts];
+  }
+
+  const terminalOwnedToolCallIds = new Set(owners.toolCallIds);
+  for (const part of parts) {
+    if (isPersistedTerminalOwnedToolCall(part, owners)) {
+      terminalOwnedToolCallIds.add(part.toolCallId);
+    }
+  }
+
+  return parts.filter(part => {
+    if (part.type === 'tool_call') {
+      return !terminalOwnedToolCallIds.has(part.toolCallId);
+    }
+
+    if (part.type === 'confirmation') {
+      const metadata = asPersistedRecord(part.metadata);
+      const confirmationToolCallId = firstPersistedString(part.askId, metadata?.['toolCallId']);
+      return !confirmationToolCallId || !terminalOwnedToolCallIds.has(confirmationToolCallId);
+    }
+
+    return true;
+  });
+}
+
+function collectPersistedTerminalOwners(parts: readonly TurnResponsePart[]): { toolCallIds: Set<string>; sessionIds: Set<string> } {
+  const toolCallIds = new Set<string>();
+  const sessionIds = new Set<string>();
+
+  for (const part of parts) {
+    if (part.type !== 'terminal') {
+      continue;
+    }
+
+    const terminal = part as Extract<TurnResponsePart, { type: 'terminal' }>;
+    if (terminal.toolCallId) {
+      toolCallIds.add(terminal.toolCallId);
+    }
+    for (const sourceToolCallId of terminal.sourceToolCallIds ?? []) {
+      if (sourceToolCallId) {
+        toolCallIds.add(sourceToolCallId);
+      }
+    }
+    for (const sessionId of [terminal.processId, terminal.outputSessionId, terminal.terminalId]) {
+      if (sessionId) {
+        sessionIds.add(sessionId);
+      }
+    }
+  }
+
+  return { toolCallIds, sessionIds };
+}
+
+function isPersistedTerminalOwnedToolCall(
+  part: TurnResponsePart,
+  owners: { toolCallIds: ReadonlySet<string>; sessionIds: ReadonlySet<string> },
+): part is TurnResponseToolCallPart {
+  if (part.type !== 'tool_call' || !isTerminalSessionToolName(part.toolName)) {
+    return false;
+  }
+
+  if (owners.toolCallIds.has(part.toolCallId)) {
+    return true;
+  }
+
+  const args = asPersistedRecord(part.args);
+  const metadata = asPersistedRecord(part.metadata);
+  const sessionIds = [
+    firstPersistedString(args?.['processId']),
+    firstPersistedString(args?.['outputSessionId']),
+    firstPersistedString(args?.['terminalId']),
+    firstPersistedString(args?.['id']),
+    firstPersistedString(metadata?.['processId']),
+    firstPersistedString(metadata?.['outputSessionId']),
+    firstPersistedString(metadata?.['terminalId']),
+    firstPersistedString(metadata?.['id']),
+    ...extractPersistedTerminalSessionIdsFromText(firstPersistedString(part.text, metadata?.['resultText'])),
+  ].filter((value): value is string => !!value);
+
+  return sessionIds.some(sessionId => owners.sessionIds.has(sessionId));
+}
+
+function extractPersistedTerminalSessionIdsFromText(text: string | undefined): string[] {
+  if (!text) {
+    return [];
+  }
+
+  const ids: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line.trim());
+    if (!match) {
+      continue;
+    }
+    const key = match[1];
+    if (key !== 'processId' && key !== 'outputSessionId' && key !== 'terminalId' && key !== 'id') {
+      continue;
+    }
+    const value = firstPersistedString(match[2]);
+    if (value) {
+      ids.push(value);
+    }
+  }
+  return ids;
 }
 
 function getPersistedTurnDisplayContent(turn: TurnResponseTurn): string {
@@ -3044,7 +3161,9 @@ function normalizeHostTurnResponseForProjection(turn: PersistedHostTurnResponse)
     request,
     response: {
       ...response,
-      parts: [...(response.parts ?? [])],
+      parts: normalizePersistedTurnResponseParts(
+        assignFallbackPartIdsForImportedTurn(turnId, response.parts ?? []),
+      ),
     },
     rounds: turn.rounds ?? [],
     createdAt: turn.createdAt ?? response.createdAt ?? now,
@@ -3306,7 +3425,7 @@ function buildCanonicalResponseDialogItemForEntry(
     turnModelName: assistantProjection.modelName || '',
     turnModelBillingLabel: assistantProjection.modelBillingLabel,
     turnContext: assistantTurnContext,
-    parts: entry.turnResponse.response.parts.flatMap(part => turnResponsePartToChatParts(part)),
+    parts: turnResponsePartsToDisplayChatParts(buildHostResponseViewParts(entry.turnResponse.response.parts)),
     turnResponse: entry.turnResponse,
     revision: readDialogItemRevision(entry.turnResponse),
     responseVote: entry.runtimeState?.responseSidecar?.vote,

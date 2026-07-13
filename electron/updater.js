@@ -1,3 +1,4 @@
+// 管理应用更新检查、下载、取消和安装流程。
 const fs = require("fs");
 const path = require("path");
 const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron");
@@ -9,6 +10,8 @@ let cancellationToken = null;
 let checkedUpdateInfoAndProvider = null;
 let downloadMirrorFallbackInProgress = false;
 let activeDownloadAttempt = null;
+let forcedUpdateManifestSourceApplied = false;
+let cachedPackagedBuildFlavor;
 
 function logUpdater(message, data) {
   const text = data === undefined
@@ -59,7 +62,173 @@ function loadMergedConfig() {
   return config;
 }
 
-function getDownloadMirrorSources() {
+function normalizeBuildFlavor(flavor) {
+  return String(flavor || '').trim().toLowerCase() === 'global' ? 'global' : 'cn';
+}
+
+function getPackagedBuildFlavor() {
+  if (cachedPackagedBuildFlavor !== undefined) {
+    return cachedPackagedBuildFlavor;
+  }
+
+  const candidatePaths = [];
+  try {
+    candidatePaths.push(path.join(app.getAppPath(), 'package.json'));
+  } catch (error) {
+    // ignore before app is fully ready
+  }
+  candidatePaths.push(path.join(__dirname, '..', 'package.json'));
+
+  for (const packageJsonPath of candidatePaths) {
+    try {
+      if (!packageJsonPath || !fs.existsSync(packageJsonPath)) {
+        continue;
+      }
+
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      cachedPackagedBuildFlavor = packageJson.ailyBuildFlavor;
+      return cachedPackagedBuildFlavor;
+    } catch (error) {
+      console.warn('读取构建版型失败:', error.message || error);
+    }
+  }
+
+  cachedPackagedBuildFlavor = null;
+  return cachedPackagedBuildFlavor;
+}
+
+function getCurrentBuildFlavor(config) {
+  return normalizeBuildFlavor(process.env.AILY_BUILD_FLAVOR || getPackagedBuildFlavor() || config.build_flavor);
+}
+
+function isChinaTimezone() {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return (
+      timezone === 'Asia/Shanghai' ||
+      timezone === 'Asia/Chongqing' ||
+      timezone === 'Asia/Urumqi' ||
+      timezone === 'Asia/Harbin'
+    );
+  } catch {
+    return new Date().getTimezoneOffset() === -480;
+  }
+}
+
+function isSimplifiedChineseLanguage(config) {
+  const rawLanguage = String(
+    config.selectedLanguage ||
+    config.lang ||
+    app.getLocale() ||
+    ''
+  ).trim();
+  const normalizedLanguage = rawLanguage.replace('-', '_').toLowerCase();
+
+  return normalizedLanguage === 'zh_cn';
+}
+
+function getForcedUpdateManifestSource() {
+  const config = loadMergedConfig();
+
+  if (getCurrentBuildFlavor(config) === 'cn') {
+    return null;
+  }
+
+  if (!isChinaTimezone() || !isSimplifiedChineseLanguage(config)) {
+    return null;
+  }
+
+  const updaterUrl = config.regions && config.regions.cn && config.regions.cn.updater;
+  if (typeof updaterUrl !== 'string' || updaterUrl.trim() === '') {
+    return null;
+  }
+
+  return {
+    provider: 'generic',
+    url: updaterUrl.trim().replace(/\/+$/, ''),
+    reason: 'china-timezone-and-zh-cn-language',
+  };
+}
+
+async function applyUpdateManifestSourceBeforeCheck() {
+  const source = getForcedUpdateManifestSource();
+  if (source) {
+    autoUpdater.setFeedURL({
+      provider: source.provider,
+      url: source.url,
+    });
+    forcedUpdateManifestSourceApplied = true;
+    logUpdater('forced update manifest source', {
+      reason: source.reason,
+      url: joinUrl(source.url, getChannelFileName()),
+    });
+
+    return source;
+  }
+
+  if (forcedUpdateManifestSourceApplied) {
+    try {
+      const config = normalizePublishConfig(await autoUpdater.configOnDisk.value);
+      if (config && config.url) {
+        autoUpdater.setFeedURL(config);
+        logUpdater('restored packaged update manifest source', {
+          provider: config.provider || 'generic',
+          url: joinUrl(config.url, getChannelFileName()),
+        });
+      }
+    } catch (error) {
+      logUpdater('failed to restore packaged update manifest source', {
+        error: serializeError(error),
+      });
+    } finally {
+      forcedUpdateManifestSourceApplied = false;
+    }
+  }
+
+  return null;
+}
+
+function getTargetUpdateBuildFlavor(updateInfo) {
+  if (!updateInfo) {
+    return null;
+  }
+
+  const declaredFlavor = String(
+    updateInfo.ailyBuildFlavor || updateInfo.buildFlavor || updateInfo.build_flavor || ''
+  ).trim().toLowerCase();
+  if (declaredFlavor === 'cn' || declaredFlavor === 'global') {
+    return declaredFlavor;
+  }
+
+  const filePaths = [];
+  if (Array.isArray(updateInfo.files)) {
+    for (const file of updateInfo.files) {
+      const filePath = typeof file === 'string' ? file : file && (file.url || file.path);
+      if (filePath) {
+        filePaths.push(String(filePath));
+      }
+    }
+  }
+  if (updateInfo.path) {
+    filePaths.push(String(updateInfo.path));
+  }
+
+  const normalizedPaths = filePaths.join('\n').toLowerCase();
+  if (normalizedPaths.includes('aily-blockly-cn-')) {
+    return 'cn';
+  }
+  if (normalizedPaths.includes('aily-blockly-')) {
+    return 'global';
+  }
+
+  return null;
+}
+
+function getDownloadMirrorSources(updateInfo) {
+  if (getTargetUpdateBuildFlavor(updateInfo) !== 'cn') {
+    return [];
+  }
+
   const config = loadMergedConfig();
   const strategy = config.update_download_strategy || {};
 
@@ -103,6 +272,8 @@ function getDownloadGuardConfig() {
 
   const firstByteTimeoutMs = Number(strategy.first_byte_timeout_ms);
   const stallTimeoutMs = Number(strategy.stall_timeout_ms);
+  const lowSpeedWindowMs = Number(strategy.low_speed_window_ms);
+  const minAverageSpeedBytesPerSecond = Number(strategy.min_average_speed_bytes_per_second);
 
   return {
     firstByteTimeoutMs: Number.isFinite(firstByteTimeoutMs) && firstByteTimeoutMs > 0
@@ -110,6 +281,12 @@ function getDownloadGuardConfig() {
       : 0,
     stallTimeoutMs: Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0
       ? stallTimeoutMs
+      : 0,
+    lowSpeedWindowMs: Number.isFinite(lowSpeedWindowMs) && lowSpeedWindowMs > 0
+      ? lowSpeedWindowMs
+      : 0,
+    minAverageSpeedBytesPerSecond: Number.isFinite(minAverageSpeedBytesPerSecond) && minAverageSpeedBytesPerSecond > 0
+      ? minAverageSpeedBytesPerSecond
       : 0,
   };
 }
@@ -198,12 +375,15 @@ function getResolvedDownloadUrls(updateInfoAndProvider) {
 }
 
 function isCancellationError(error) {
+  if (isStrategyCancellationError(error)) {
+    return false;
+  }
+
   return Boolean(
     error &&
     (
       error.message === 'cancelled' ||
-      error.name === 'CancellationError' ||
-      String(error.message || error).toLowerCase().includes('cancelled')
+      error.name === 'CancellationError'
     )
   );
 }
@@ -241,13 +421,23 @@ function serializeError(error) {
   return error.stack || error.message || error.toString();
 }
 
-function createDownloadAttemptGuard(mainWindow, mirror, token) {
-  const { firstByteTimeoutMs, stallTimeoutMs } = getDownloadGuardConfig();
+function createDownloadAttemptGuard(mainWindow, mirror, token, options = {}) {
+  const {
+    firstByteTimeoutMs,
+    stallTimeoutMs,
+    lowSpeedWindowMs,
+    minAverageSpeedBytesPerSecond,
+  } = getDownloadGuardConfig();
   let firstByteReceived = false;
   let lastTransferred = 0;
+  let lowSpeedWindowStartedAt = 0;
+  let lowSpeedWindowStartTransferred = 0;
   let firstByteTimer = null;
   let stallTimer = null;
   let cancelReason = null;
+  const shouldCancelOnLowSpeed = options.allowLowSpeedCancel === true
+    && lowSpeedWindowMs > 0
+    && minAverageSpeedBytesPerSecond > 0;
 
   function clearFirstByteTimer() {
     if (firstByteTimer) {
@@ -317,6 +507,42 @@ function createDownloadAttemptGuard(mainWindow, mirror, token) {
     }, stallTimeoutMs);
   }
 
+  function resetLowSpeedWindow(transferred) {
+    lowSpeedWindowStartedAt = Date.now();
+    lowSpeedWindowStartTransferred = transferred;
+  }
+
+  function checkLowSpeed(transferred) {
+    if (!shouldCancelOnLowSpeed || !firstByteReceived) {
+      return;
+    }
+
+    if (!lowSpeedWindowStartedAt) {
+      resetLowSpeedWindow(transferred);
+      return;
+    }
+
+    const elapsedMs = Date.now() - lowSpeedWindowStartedAt;
+    if (elapsedMs < lowSpeedWindowMs) {
+      return;
+    }
+
+    const transferredInWindow = Math.max(0, transferred - lowSpeedWindowStartTransferred);
+    const averageBytesPerSecond = transferredInWindow / (elapsedMs / 1000);
+    if (averageBytesPerSecond < minAverageSpeedBytesPerSecond) {
+      triggerStrategyCancel({
+        type: 'low-speed',
+        windowMs: lowSpeedWindowMs,
+        averageBytesPerSecond: Math.round(averageBytesPerSecond),
+        thresholdBytesPerSecond: minAverageSpeedBytesPerSecond,
+        transferred,
+      });
+      return;
+    }
+
+    resetLowSpeedWindow(transferred);
+  }
+
   function onDownloadProgress(progressObj) {
     const transferred = Number(progressObj && progressObj.transferred);
     const safeTransferred = Number.isFinite(transferred) ? transferred : 0;
@@ -329,11 +555,13 @@ function createDownloadAttemptGuard(mainWindow, mirror, token) {
         baseUrl: mirror && mirror.url,
         transferred: safeTransferred,
       });
+      resetLowSpeedWindow(safeTransferred);
     }
 
     if (safeTransferred > lastTransferred) {
       lastTransferred = safeTransferred;
       scheduleStallTimer();
+      checkLowSpeed(safeTransferred);
     }
   }
 
@@ -352,14 +580,14 @@ function createDownloadAttemptGuard(mainWindow, mirror, token) {
   };
 }
 
-async function downloadWithCurrentProvider(mainWindow, mirror) {
+async function downloadWithCurrentProvider(mainWindow, mirror, options = {}) {
   cancellationToken = new CancellationToken();
   activeDownloadAttempt = {
     mirror,
     cancelReason: null,
     initiatedByUserCancel: false,
   };
-  const attemptGuard = createDownloadAttemptGuard(mainWindow, mirror, cancellationToken);
+  const attemptGuard = createDownloadAttemptGuard(mainWindow, mirror, cancellationToken, options);
   logUpdater('downloading installer', {
     region: mirror && mirror.region,
     baseUrl: mirror && mirror.url,
@@ -391,14 +619,18 @@ async function downloadWithMirrors(mainWindow) {
     throw new Error('Please check update first');
   }
 
-  const mirrors = getDownloadMirrorSources();
+  const checkedInfo = baseUpdateInfoAndProvider.info;
+  const targetBuildFlavor = getTargetUpdateBuildFlavor(checkedInfo);
+  const mirrors = getDownloadMirrorSources(checkedInfo);
   if (mirrors.length === 0) {
-    return await downloadWithCurrentProvider();
+    logUpdater('download mirror fallback disabled for target', {
+      targetBuildFlavor: targetBuildFlavor || 'unknown',
+    });
+    return await downloadWithCurrentProvider(mainWindow);
   }
 
   const fallbackEnabled = shouldFallbackOnDownloadError();
   const originalUpdateInfoAndProvider = autoUpdater.updateInfoAndProvider;
-  const checkedInfo = baseUpdateInfoAndProvider.info;
   let lastError = null;
   let nextMirrorReason = null;
 
@@ -428,10 +660,12 @@ async function downloadWithMirrors(mainWindow) {
       nextMirrorReason = null;
 
       try {
-        return await downloadWithCurrentProvider(mainWindow, mirror);
+        return await downloadWithCurrentProvider(mainWindow, mirror, {
+          allowLowSpeedCancel: index < mirrors.length - 1,
+        });
       } catch (error) {
         lastError = error;
-        if (isCancellationError(error)) {
+        if (!isStrategyCancellationError(error) && isCancellationError(error)) {
           throw error;
         }
 
@@ -479,6 +713,7 @@ function registerUpdaterHandlers(mainWindow) {
 
   // 添加IPC处理程序，允许从渲染进程手动检查更新
   ipcMain.handle('check-for-updates', async () => {
+    await applyUpdateManifestSourceBeforeCheck();
     await logDefaultUpdateCheckUrl();
     const result = await autoUpdater.checkForUpdates();
     // console.log('检查更新结果:', result);
@@ -599,4 +834,12 @@ function registerUpdaterHandlers(mainWindow) {
 
 module.exports = {
   registerUpdaterHandlers,
+  __testing: {
+    createStrategyCancellationError,
+    downloadWithMirrors,
+    getDownloadMirrorSources,
+    getTargetUpdateBuildFlavor,
+    isCancellationError,
+    isStrategyCancellationError,
+  },
 };

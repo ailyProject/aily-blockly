@@ -54,19 +54,15 @@ async function main() {
         code,
         appDataPath,
         za7Path,
-        ailyBuilderPath,
         devmode,
         partitionFilePath: customPartitionFilePath
     } = config;
 
     // 1. 路径准备
     const tempPath = path.join(currentProjectPath, '.temp');
+    const buildPath = path.join(currentProjectPath, '.build');
     const sketchPath = path.join(tempPath, 'sketch');
     const sketchFilePath = path.join(sketchPath, 'sketch.ino');
-    // Aily Code： Blockly 生成的入口落在 project.aci.entry（默认 src/main.cpp），与纯 Blockly 的 .temp/sketch 区分
-    const compileSourcePath = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath)
-        ? ailyCodeProject.resolveCompileSourcePath(currentProjectPath)
-        : sketchFilePath;
     const librariesPath = path.join(tempPath, 'libraries');
     
     const compilerPath = path.join(appDataPath, 'compiler');
@@ -98,12 +94,7 @@ async function main() {
         throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
     }
     const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
-    const platformRef = platformRuntime.readPlatformRefFromProjectAci(currentProjectPath);
-    const boardDependencies = platformRuntime.resolveEffectiveBoardDependencies(
-        boardPackageJson.boardDependencies,
-        appDataPath,
-        platformRef?.packageName,
-    );
+    const boardDependencies = boardPackageJson.boardDependencies || {};
 
     // 缓存文件路径
     const cacheFilePath = path.join(path.dirname(librariesPath), 'library-cache.json');
@@ -122,9 +113,9 @@ async function main() {
         mkdirp(sketchPath);
         mkdirp(librariesPath);
 
-        // 2. 生成源码：Aily Code 写入 entry 所指文件； Blockly 仍为 .temp/sketch/sketch.ino
-        mkdirp(path.dirname(compileSourcePath));
-        fs.writeFileSync(compileSourcePath, code);
+        // 2. 生成sketch文件
+        fs.writeFileSync(sketchFilePath, code);
+        copyProjectSrcToSketch(currentProjectPath, sketchPath);
 
         // 3. 处理库文件
         const libsPath = [];
@@ -285,15 +276,16 @@ async function main() {
         const preprocessCachePath = path.join(tempPath, 'preprocess.json');
         
         logger.log('开始预编译...');
+        const builderCommand = 'aily-builder';
         const pre_args = [
-            `"${path.join(ailyBuilderPath, 'index.js')}"`,
             'preprocess',
             // `...parseArgs(compilerParam)`,
-            `"${compileSourcePath}"`,
+            `"${sketchFilePath}"`,
             '--board', `"${boardType}"`,
             '--libraries-path', `"${librariesPath}"`,
             '--sdk-path', `"${fullSdkPath}"`,
             '--tools-path', `"${toolsPath}"`,
+            '--build-path', `"${buildPath}"`,
             '--tool-versions', `"${toolVersions.join(',')}"`,
             '--save-result', `"${preprocessCachePath}"`
         ];
@@ -320,11 +312,11 @@ async function main() {
             });
         }
 
-        logger.log(`执行预编译: node ${pre_args.join(' ')}`);
+        logger.log(`执行预编译: ${builderCommand} ${pre_args.join(' ')}`);
 
         // 使用同步执行预编译，确保完成后再继续
         await new Promise((resolve, reject) => {
-            const preChild = spawn('node', pre_args, {
+            const preChild = spawn(builderCommand, pre_args, {
                 cwd: currentProjectPath,
                 shell: true,
                 stdio: 'inherit'
@@ -378,6 +370,54 @@ function rm(pathToRemove) {
     }
 }
 
+function copyProjectSrcToSketch(currentProjectPath, sketchPath) {
+    const projectSrcPath = path.join(currentProjectPath, 'src');
+    if (!fs.existsSync(projectSrcPath)) {
+        return;
+    }
+
+    if (!fs.statSync(projectSrcPath).isDirectory()) {
+        logger.warn(`Project src path exists but is not a directory: ${projectSrcPath}`);
+        return;
+    }
+
+    copyDirectoryContents(projectSrcPath, sketchPath);
+}
+
+function copyDirectoryContents(sourceDir, targetDir) {
+    mkdirp(targetDir);
+
+    const items = fs.readdirSync(sourceDir);
+    for (const item of items) {
+        copyItemRecursive(path.join(sourceDir, item), path.join(targetDir, item));
+    }
+}
+
+function copyItemRecursive(sourcePath, targetPath) {
+    const stat = fs.statSync(sourcePath);
+
+    if (stat.isDirectory()) {
+        if (fs.existsSync(targetPath) && !fs.statSync(targetPath).isDirectory()) {
+            rm(targetPath);
+        }
+
+        mkdirp(targetPath);
+        copyDirectoryContents(sourcePath, targetPath);
+        return;
+    }
+
+    if (!stat.isFile()) {
+        return;
+    }
+
+    if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+        rm(targetPath);
+    }
+
+    mkdirp(path.dirname(targetPath));
+    fs.copyFileSync(sourcePath, targetPath);
+}
+
 async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
     const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache));
     const results = await Promise.all(tasks);
@@ -409,7 +449,7 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
             const sourceZipPath = path.join(currentProjectPath, 'node_modules', lib, 'src.7z');
             if (fs.existsSync(sourceZipPath)) {
                 try {
-                    execSync(`"${za7Path}" x "${sourceZipPath}" -o"${sourcePath}" -y`);
+                    execSync(`"${za7Path}" x "${sourceZipPath}" -o"${path.dirname(sourcePath)}" -y`);
                 } catch (error) {
                     return { targetNames: [], success: false, error: `解压失败: ${error.message}` };
                 }

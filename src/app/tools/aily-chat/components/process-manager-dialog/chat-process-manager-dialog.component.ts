@@ -26,11 +26,22 @@ import {
 import { openChatProcessWindow, readChatProcessOutputFile } from '../../helpers/chat-process-window';
 import { ChatHistoryService } from '../../services/chat-history.service';
 import { ChatRuntimeInteractionHostService } from '../../services/chat-runtime-interaction-host.service';
+import { resolveTerminalLifecycleState } from '../../core/terminal-status';
 import {
   DEFAULT_PROCESS_LOG_SUBAPP,
   normalizeProcessLogSubappName,
   resolveProcessLogSubappNameFromOutputFilePath,
 } from '../../../../utils/project-log.utils';
+import { getChildToolConfig } from '../../../../configs/tool.config';
+import { UiService } from '../../../../services/ui.service';
+import {
+  buildChildToolProcessSummaries,
+  collapseActiveChildToolServeProcesses,
+  isChildToolProcessSummary,
+  resolveChildToolIdFromProcess,
+  resolveChildToolProcessDisplayName,
+  type ChildToolSessionListItem,
+} from '../../helpers/child-tool-process-summary';
 
 type ProcessFilter = 'all' | 'running' | 'background' | 'completed' | 'failed' | 'removed';
 
@@ -55,6 +66,7 @@ export class ChatProcessManagerDialogComponent {
   private readonly runtimeInteractionHost = inject(ChatRuntimeInteractionHostService);
   private readonly chatHistoryService = inject(ChatHistoryService);
   private readonly translate = inject(TranslateService);
+  private readonly uiService = inject(UiService);
 
   readonly sessionId = typeof this.data.sessionId === 'string' ? this.data.sessionId.trim() : '';
   readonly projectPath = typeof this.data.projectPath === 'string' ? this.data.projectPath.trim() : '';
@@ -155,6 +167,14 @@ export class ChatProcessManagerDialogComponent {
   }
 
   openProcessWindow(process: ChatRuntimeHostSessionProcessSummary): void {
+    const toolId = resolveChildToolIdFromProcess(process);
+    if (toolId) {
+      const config = getChildToolConfig(toolId);
+      this.uiService.openToolWindow(toolId, {
+        title: this.resolveChildToolDisplayName(toolId, config),
+      });
+      return;
+    }
     openChatProcessWindow({
       sessionId: process.sessionId,
       processId: process.processId,
@@ -166,6 +186,14 @@ export class ChatProcessManagerDialogComponent {
 
   async stopProcess(process: ChatRuntimeHostSessionProcessSummary): Promise<void> {
     if (!process.running) {
+      return;
+    }
+    if (isChildToolProcessSummary(process)) {
+      const toolId = resolveChildToolIdFromProcess(process);
+      if (toolId) {
+        await window['childToolSession']?.stop?.(toolId);
+      }
+      this.refreshProcesses();
       return;
     }
     await this.runtimeInteractionHost.requestCommandSessionAction(process.sessionId || this.sessionId, {
@@ -218,9 +246,29 @@ export class ChatProcessManagerDialogComponent {
   }
 
   resolveSubappName(process: ChatRuntimeHostSessionProcessSummary): string {
+    const childToolId = resolveChildToolIdFromProcess(process);
+    if (childToolId) {
+      return childToolId;
+    }
     return normalizeProcessLogSubappName(
       process.subappName || resolveProcessLogSubappNameFromOutputFilePath(process.outputFilePath) || DEFAULT_PROCESS_LOG_SUBAPP,
     );
+  }
+
+  resolveProcessPrimaryLabel(process: ChatRuntimeHostSessionProcessSummary): string {
+    const toolId = resolveChildToolIdFromProcess(process);
+    if (toolId) {
+      return this.resolveChildToolDisplayName(toolId);
+    }
+
+    const displayName = resolveChildToolProcessDisplayName(process);
+    return displayName || process.command;
+  }
+
+  resolveOpenActionLabel(process: ChatRuntimeHostSessionProcessSummary): string {
+    return resolveChildToolIdFromProcess(process)
+      ? 'AILY_CHAT.PROCESS_ACTION_CONTROL_PANEL'
+      : 'AILY_CHAT.PROCESS_ACTION_OPEN_WINDOW';
   }
 
   formatStartedAt(process: ChatRuntimeHostSessionProcessSummary): string {
@@ -301,28 +349,33 @@ export class ChatProcessManagerDialogComponent {
   }
 
   resolveStatusTone(process: ChatRuntimeHostSessionProcessSummary): 'info' | 'success' | 'error' | 'neutral' {
-    if (process.running) {
+    const terminalState = resolveTerminalLifecycleState(process);
+    if (terminalState === 'running') {
       return process.background ? 'neutral' : 'info';
     }
-    if (typeof process.exitCode === 'number' && process.exitCode !== 0) {
+    if (terminalState === 'failed') {
       return 'error';
     }
-    if (process.status === 'completed') {
+    if (terminalState === 'completed') {
       return 'success';
     }
     return 'neutral';
   }
 
-  private refreshProcesses(): void {
+  private async refreshProcesses(): Promise<void> {
     const snapshot = this.sessionId
       ? this.runtimeInteractionHost.readSnapshot(this.sessionId)
       : null;
     const liveProcesses = Array.isArray(snapshot?.processes) ? snapshot.processes : [];
+    const childToolProcesses = await this.readChildToolProcesses();
     const projectPathHint = this.projectPath || this.chatHistoryService.findEntry(this.sessionId)?.projectPath || null;
     const persistedProcesses = this.sessionId
       ? listPersistedBlocklyCommandSessionSnapshots(this.sessionId, projectPathHint)
       : listPersistedBlocklyProjectCommandSessionSnapshots(projectPathHint);
-    const nextProcesses = this.mergeProcessSummaries(liveProcesses, persistedProcesses);
+    const nextProcesses = this.mergeProcessSummaries(
+      [...liveProcesses, ...childToolProcesses],
+      persistedProcesses,
+    );
     this.processes = nextProcesses;
     const nextFilteredProcesses = this.filteredProcesses;
     if (!this.selectedProcessId || !nextFilteredProcesses.some(process => process.processId === this.selectedProcessId)) {
@@ -342,8 +395,20 @@ export class ChatProcessManagerDialogComponent {
       return;
     }
 
+    if (isChildToolProcessSummary(process)) {
+      this.selectedProcessDetail = process;
+      this.selectedProcessOutput = await this.readChildToolProcessOutput(process);
+      this.selectedProcessStatusLabel = this.summarizeStatus(process);
+      this.cdr.markForCheck();
+      return;
+    }
+
     const snapshot = await getBlocklyCommandSessionStatus(process.processId);
-    const persistedFromOutputPath = this.readPersistedSummaryFromOutputFilePath(process.outputFilePath, process.processId);
+    const persistedFromOutputPath = this.readPersistedSummaryFromOutputFilePath(
+      process.outputFilePath,
+      process.processId,
+      snapshot,
+    );
     const detailProcess = this.mergeDetailProcess(process, persistedFromOutputPath, snapshot);
     this.selectedProcessDetail = detailProcess;
     this.selectedProcessOutput = readChatProcessOutputFile(detailProcess.outputFilePath || process.outputFilePath)
@@ -377,7 +442,9 @@ export class ChatProcessManagerDialogComponent {
           })
         : this.decorateProcessSummary(process));
     }
-    return [...merged.values()].sort((left, right) => right.startedAt - left.startedAt);
+    return collapseActiveChildToolServeProcesses(
+      [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
+    );
   }
 
   private decorateProcessSummary(process: ChatRuntimeHostSessionProcessSummary): ChatRuntimeHostSessionProcessSummary {
@@ -543,9 +610,116 @@ export class ChatProcessManagerDialogComponent {
     };
   }
 
+  private async readChildToolProcesses(): Promise<readonly ChatRuntimeHostSessionProcessSummary[]> {
+    try {
+      const sessions = await window['childToolSession']?.list?.();
+      return buildChildToolProcessSummaries(
+        Array.isArray(sessions) ? sessions as ChildToolSessionListItem[] : [],
+        {
+          sessionId: this.sessionId,
+          projectPath: this.projectPath || this.chatHistoryService.findEntry(this.sessionId)?.projectPath || '',
+        },
+      );
+    } catch (error) {
+      console.warn('[ChatProcessManager] Failed to read child tool sessions:', error);
+      return [];
+    }
+  }
+
+  private async readChildToolProcessOutput(process: ChatRuntimeHostSessionProcessSummary): Promise<string> {
+    const toolId = resolveChildToolIdFromProcess(process);
+    if (!toolId) {
+      return '';
+    }
+
+    try {
+      const sessions = await window['childToolSession']?.list?.();
+      const session = Array.isArray(sessions)
+        ? (sessions as ChildToolSessionListItem[]).find(candidate => candidate.toolId === toolId)
+        : null;
+      if (!session) {
+        return '';
+      }
+
+      const lines: string[] = [
+        `status: ${process.running ? 'running' : process.status || 'completed'}`,
+        `toolId: ${toolId}`,
+      ];
+
+      if (session.streamId) {
+        lines.push(`processId: ${session.streamId}`);
+      }
+      if (typeof session.pid === 'number') {
+        lines.push(`pid: ${session.pid}`);
+      }
+      if (session.cwd) {
+        lines.push(`cwd: ${session.cwd}`);
+      }
+      if (session.command) {
+        lines.push(`command: ${session.command}`);
+      }
+
+      lines.push('');
+      lines.push('stdout:');
+      lines.push(JSON.stringify({
+        event: 'ready',
+        data: this.sanitizeChildToolHostInfo(session.hostInfo),
+      }, null, 2));
+
+      return lines.join('\n');
+    } catch (error) {
+      console.warn('[ChatProcessManager] Failed to read child tool output preview:', error);
+      return '';
+    }
+  }
+
+  private resolveChildToolDisplayName(toolId: string, config = getChildToolConfig(toolId)): string {
+    if (!config) {
+      return toolId;
+    }
+
+    const globalName = this.translate.instant(config.namespace);
+    if (typeof globalName === 'string' && globalName && globalName !== config.namespace) {
+      return globalName;
+    }
+
+    const title = this.translate.instant(config.titleKey);
+    if (typeof title === 'string' && title && title !== config.titleKey) {
+      return title;
+    }
+
+    return toolId;
+  }
+
+  private sanitizeChildToolHostInfo(hostInfo: unknown): unknown {
+    if (!hostInfo || typeof hostInfo !== 'object') {
+      return hostInfo;
+    }
+
+    const normalized = { ...(hostInfo as Record<string, unknown>) };
+    for (const key of ['url', 'wsUrl', 'shutdownUrl'] as const) {
+      const value = normalized[key];
+      normalized[key] = typeof value === 'string' ? this.sanitizeUrl(value) : value;
+    }
+    return normalized;
+  }
+
+  private sanitizeUrl(url: string): string {
+    try {
+      const parsed = new URL(url);
+      if (parsed.searchParams.has('token')) {
+        parsed.searchParams.set('token', '<redacted>');
+      }
+      return parsed.toString();
+    } catch {
+      return url.replace(/([?&]token=)[^&]+/g, '$1<redacted>');
+    }
+  }
+
   private readPersistedSummaryFromOutputFilePath(
     outputFilePath: string | undefined,
     processId: string,
+    snapshot: Awaited<ReturnType<typeof getBlocklyCommandSessionStatus>>,
   ): ChatRuntimeHostSessionProcessSummary | null {
     const normalizedOutputFilePath = typeof outputFilePath === 'string' ? outputFilePath.trim() : '';
     if (!normalizedOutputFilePath) {
@@ -598,6 +772,10 @@ export class ChatProcessManagerDialogComponent {
       const bytesTotal = typeof parsed.bytesTotal === 'number' && Number.isFinite(parsed.bytesTotal)
         ? parsed.bytesTotal
         : 0;
+      const running = parsed.running === true && snapshot?.running === true;
+      const status = typeof parsed.status === 'string'
+        ? (parsed.status === 'running' && !running ? 'cancelled' : parsed.status)
+        : 'failed';
       const elapsedMs = Math.max(0, (completedAt ?? lastOutputAt ?? Date.now()) - startedAt);
 
       return {
@@ -608,8 +786,8 @@ export class ChatProcessManagerDialogComponent {
           : resolvedProcessId,
         command: typeof parsed.command === 'string' && parsed.command.trim() ? parsed.command.trim() : resolvedProcessId,
         cwd: typeof parsed.cwd === 'string' ? parsed.cwd : '',
-        status: typeof parsed.status === 'string' ? parsed.status as ChatRuntimeHostSessionProcessSummary['status'] : 'failed',
-        running: parsed.running === true,
+        status: status as ChatRuntimeHostSessionProcessSummary['status'],
+        running,
         startedAt,
         elapsedMs,
         bytesTotal,

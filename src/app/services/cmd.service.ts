@@ -24,6 +24,7 @@ export interface CmdOptions {
   env?: { [key: string]: string };
   streamId?: string;
   shellProfile?: boolean;
+  forwardStdout?: boolean;
 }
 
 interface QueuedTask {
@@ -52,7 +53,8 @@ export class CmdService {
    * @returns Observable<CmdOutput>
    */
   spawn(command: string, args?: string[], options?: Partial<CmdOptions>, silent: boolean = false): Observable<CmdOutput> {
-    const streamId = `cmd_${Date.now()}_${Math.random()}`;
+    const requestedStreamId = typeof options?.streamId === 'string' ? options.streamId.trim() : '';
+    const streamId = requestedStreamId || `cmd_${Date.now()}_${Math.random()}`;
     const subject = new Subject<CmdOutput>();
     this.subjects.set(streamId, subject);
     const cmdOptions: CmdOptions = {

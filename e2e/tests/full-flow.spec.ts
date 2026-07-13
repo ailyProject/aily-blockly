@@ -17,17 +17,21 @@ import path from 'node:path';
  *   $env:AILY_E2E_FULLFLOW = '1'
  *   # 可选：指定要选择的开发板搜索关键字（默认 "uno r4"，需本机已装该板的编译器/SDK）
  *   $env:AILY_E2E_BOARD_KEYWORD = 'uno r4'
+ *   # 可选：指定多个开发板搜索关键字，逗号分隔；设置后优先于 AILY_E2E_BOARD_KEYWORD
+ *   $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
  *   npm run test:e2e:fast -- full-flow.spec.ts
  *
- * 本机需具备：内置工具链（child/node、child/aily-builder）、该开发板可安装
+ * 本机需具备：内置 Node 工具链（child/node）和全局安装的 aily-builder 命令、该开发板可安装
  * （网络/缓存），以及对应编译器与 SDK 已安装于应用数据目录下的 aily-project/tools 与 sdk。
  */
 const ENABLED = process.env['AILY_E2E_FULLFLOW'] === '1';
 const ALL_BOARDS_ENABLED = process.env['AILY_E2E_ALL_BOARDS'] === '1';
 const BOARD_KEYWORD = process.env['AILY_E2E_BOARD_KEYWORD'] || 'uno r4';
+const BOARD_KEYWORDS = readBoardKeywords();
 const SINGLE_BOARD_TIMEOUT_MS = readTimeoutEnv('AILY_E2E_SINGLE_BOARD_TIMEOUT_MS', 45 * 60_000);
 const INSTALL_TIMEOUT_MS = readTimeoutEnv('AILY_E2E_INSTALL_TIMEOUT_MS', 30 * 60_000);
 const COMPILE_TIMEOUT_MS = readTimeoutEnv('AILY_E2E_COMPILE_TIMEOUT_MS', 10 * 60_000);
+const POLL_INTERVAL_MS = 250;
 
 type BoardCandidate = {
   name: string;
@@ -54,6 +58,25 @@ function readTimeoutEnv(name: string, fallbackMs: number): number {
   return value;
 }
 
+function readBoardKeywords(): string[] {
+  const raw = process.env['AILY_E2E_BOARD_KEYWORDS'];
+  if (!raw) {
+    return [BOARD_KEYWORD];
+  }
+
+  const keywords = raw
+    .split(',')
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+
+  if (keywords.length === 0) {
+    console.warn('[e2e] AILY_E2E_BOARD_KEYWORDS 未包含有效关键字，回退到 AILY_E2E_BOARD_KEYWORD。');
+    return [BOARD_KEYWORD];
+  }
+
+  return keywords;
+}
+
 test.describe('全流程：选板子 → 新建项目 → 编译', () => {
   const projectDirs: string[] = [];
   const singleBoardTest = ENABLED ? test : test.skip;
@@ -72,13 +95,41 @@ test.describe('全流程：选板子 → 新建项目 → 编译', () => {
     }
   });
 
-  singleBoardTest('应能从选板子一路走到编译完成', async ({ electronApp }) => {
-    test.setTimeout(SINGLE_BOARD_TIMEOUT_MS);
+  singleBoardTest('应能让指定开发板从选板子一路走到编译完成', async ({ electronApp }) => {
+    test.setTimeout(SINGLE_BOARD_TIMEOUT_MS * BOARD_KEYWORDS.length);
 
-    const win = await getMainWindow(electronApp);
-    const pageLog = attachDiagnostics(win);
+    if (BOARD_KEYWORDS.length === 1) {
+      const win = await getMainWindow(electronApp);
+      const pageLog = attachDiagnostics(win);
+      await createProjectAndCompile(win, BOARD_KEYWORDS[0], projectDirs, pageLog);
+      return;
+    }
 
-    await createProjectAndCompile(win, BOARD_KEYWORD, projectDirs, pageLog);
+    console.log(`[e2e] 将验证 ${BOARD_KEYWORDS.length} 个指定开发板：${BOARD_KEYWORDS.join(', ')}`);
+    await closeAilyElectronApp(electronApp).catch(() => {});
+
+    const failures: Array<{ keyword: string; message: string }> = [];
+    for (const keyword of BOARD_KEYWORDS) {
+      await test.step(`创建并编译 ${keyword}`, async () => {
+        const launched = await launchAilyElectron();
+        try {
+          const isolatedWin = await getMainWindow(launched.app);
+          const pageLog = attachDiagnostics(isolatedWin);
+          await createProjectAndCompile(isolatedWin, keyword, projectDirs, pageLog);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failures.push({ keyword, message });
+          console.log(`[e2e] ${keyword} 失败：${message}`);
+        } finally {
+          await launched.close();
+        }
+      });
+    }
+
+    expect(
+      failures.map((failure) => `${failure.keyword}: ${failure.message}`),
+      '以下指定开发板未完成新建项目并编译',
+    ).toEqual([]);
   });
 
   allBoardsTest('应能让所有可创建开发板完成新建项目并编译', async ({ electronApp }) => {
@@ -194,7 +245,6 @@ async function bootstrapAfterGlobalDataCleanup(): Promise<void> {
     await win.waitForLoadState('domcontentloaded').catch(() => {});
     await expect(win.locator('app-guide .menu-box .btn.link').first()).toBeVisible({ timeout: 60_000 });
     await dismissOnboardingIfVisible(win, 10_000);
-    await win.waitForTimeout(1_000);
   } finally {
     await launched.close();
   }
@@ -239,6 +289,23 @@ async function dismissOnboardingIfVisible(
   await expect(overlay).toHaveCount(0, { timeout: 10_000 });
 }
 
+async function clickAfterOnboarding(
+  win: Awaited<ReturnType<typeof getMainWindow>>,
+  locator: ReturnType<Awaited<ReturnType<typeof getMainWindow>>['locator']>,
+): Promise<void> {
+  await dismissOnboardingIfVisible(win, 5_000);
+  try {
+    await locator.click();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/onboarding-overlay|intercepts pointer events/.test(message)) {
+      throw error;
+    }
+    await dismissOnboardingIfVisible(win, 5_000);
+    await locator.click();
+  }
+}
+
 function attachDiagnostics(win: Awaited<ReturnType<typeof getMainWindow>>): PageLogBuffer {
   const pageLog: PageLogBuffer = { messages: [] };
   win.on('console', (msg) => {
@@ -260,7 +327,6 @@ async function openProjectNew(win: Awaited<ReturnType<typeof getMainWindow>>): P
   await dismissOnboardingIfVisible(win);
   await navigate(win, '/main/project-new');
   await expect(win.locator('app-project-new .project-new-box')).toBeVisible();
-  await win.waitForTimeout(750);
   await dismissOnboardingIfVisible(win, 5_000);
 }
 
@@ -274,14 +340,14 @@ async function waitForBoardCards(win: Awaited<ReturnType<typeof getMainWindow>>,
       await expect(boardCards.first()).toBeVisible({ timeout: 5_000 });
       return boardCards;
     }
-    await win.waitForTimeout(500);
+    await win.waitForTimeout(POLL_INTERVAL_MS);
   }
 
   // 清空全局缓存后的首次加载中，ProjectNewComponent 可能先用空 boardList 初始化；
   // ConfigService 随后才异步写入 boardList。重新进入一次页面可让组件读取已完成的配置。
   console.log('[e2e] 未发现开发板卡片，重新进入新建项目页以避开首次配置加载竞态。');
   await navigate(win, '/main/guide');
-  await win.waitForTimeout(500);
+  await win.waitForTimeout(POLL_INTERVAL_MS);
   await openProjectNew(win);
 
   while (Date.now() < deadline) {
@@ -289,7 +355,7 @@ async function waitForBoardCards(win: Awaited<ReturnType<typeof getMainWindow>>,
       await expect(boardCards.first()).toBeVisible({ timeout: 5_000 });
       return boardCards;
     }
-    await win.waitForTimeout(500);
+    await win.waitForTimeout(POLL_INTERVAL_MS);
   }
 
   const diagnostics = await win.evaluate(() => {
@@ -325,14 +391,13 @@ async function collectCreatableBoards(win: Awaited<ReturnType<typeof getMainWind
       continue;
     }
 
-    await dismissOnboardingIfVisible(win, 5_000);
-    await card.click();
+    await clickAfterOnboarding(win, card);
     const useThisBtn = win.locator('app-project-new .desc-box .next button').first();
     if (!(await useThisBtn.isVisible().catch(() => false))) {
       continue;
     }
 
-    await useThisBtn.click();
+    await clickAfterOnboarding(win, useThisBtn);
     const boardInput = win.locator('app-project-new input.board[disabled]').first();
     await expect(boardInput).toBeVisible({ timeout: 10_000 });
     const name = (await boardInput.inputValue()).trim();
@@ -341,7 +406,7 @@ async function collectCreatableBoards(win: Awaited<ReturnType<typeof getMainWind
     }
 
     const prevBtn = win.locator('app-project-new .step-btns button.ant-btn-default').first();
-    await prevBtn.click();
+    await clickAfterOnboarding(win, prevBtn);
     await expect(boardCards.first()).toBeVisible({ timeout: 10_000 });
   }
 
@@ -407,8 +472,8 @@ async function createProjectAndCompile(
     timeout: 30_000,
   });
 
-  // 6) 等待后台依赖安装与预编译完成后再点击编译。
-  await waitForDependenciesAndPrecompile(win, pageLog);
+  // 6) 等待依赖安装完成后再点击编译；预编译可由后台完成，也可由编译流程同步接管。
+  await waitForDependencyInstallDone(win, pageLog);
 
   // 7) 点击编译按钮（仅在编辑器路由、项目已加载时显示）。
   const compileBtn = win.locator('app-header app-act-btn[data-action="compile"]');
@@ -431,7 +496,7 @@ async function selectBoardForProject(
   if (typeof boardTarget === 'string') {
     await searchInput.fill(boardTarget);
     // ProjectNewComponent.search() 有 200ms debounce，等搜索结果稳定后再点。
-    await win.waitForTimeout(500);
+    await win.waitForTimeout(250);
     await expect(boardCards.first()).toBeVisible({ timeout: 15_000 });
     await dismissOnboardingIfVisible(win, 5_000);
     await boardCards.first().click();
@@ -439,7 +504,7 @@ async function selectBoardForProject(
   }
 
   await searchInput.fill('');
-  await win.waitForTimeout(500);
+  await win.waitForTimeout(250);
   await expect(boardCards.first()).toBeVisible({ timeout: 15_000 });
   await dismissOnboardingIfVisible(win, 5_000);
 
@@ -463,23 +528,37 @@ function normalizeBoardLabel(label: string): string {
   return label.replace(/\s+/g, ' ').trim();
 }
 
-async function waitForDependenciesAndPrecompile(
+async function waitForDependencyInstallDone(
   win: Awaited<ReturnType<typeof getMainWindow>>,
   pageLog: PageLogBuffer,
 ): Promise<void> {
-  console.log('[e2e] 等待依赖安装与后台预编译完成后再触发编译。');
+  console.log('[e2e] 等待依赖安装完成后触发编译；后台预编译若未启动则交给编译流程处理。');
 
   const deadline = Date.now() + INSTALL_TIMEOUT_MS;
+  let sawInstallDoneAt = 0;
   while (Date.now() < deadline) {
     const joined = pageLog.messages.join('\n');
-    const installDone =
-      /install board dependencies success|开发板依赖安装完成|依赖安装完成/.test(joined) &&
-      !/依赖安装中/.test(await getNoticeText(win));
-    const precompileDone =
-      /后台预处理完成|同步预处理完成|发现预编译缓存|预编译完成/.test(joined);
+    const noticeText = await getNoticeText(win);
+    const installDone = /install board dependencies success|开发板依赖安装完成|依赖安装完成/.test(joined);
+    const installNoticeSettled = !/依赖安装中|Installing|installing/i.test(noticeText);
+    const precompileStarted = /开始预编译|执行预编译|检测到依赖变化，准备重新预处理/.test(joined);
+    const precompileDone = /后台预处理完成|同步预处理完成|发现预编译缓存|预编译完成/.test(joined);
+
+    if (installDone && !sawInstallDoneAt) {
+      sawInstallDoneAt = Date.now();
+    }
 
     if (installDone && precompileDone) {
-      await win.waitForTimeout(500);
+      return;
+    }
+
+    // 安装已结束但后台预编译没有启动时，不继续空等。正式编译会检查缓存并同步预编译。
+    if (installDone && installNoticeSettled && !precompileStarted) {
+      return;
+    }
+
+    // 如果后台预编译已启动，给它一个很短的自然收尾窗口；之后仍由编译按钮接管。
+    if (installDone && installNoticeSettled && precompileStarted && Date.now() - sawInstallDoneAt > 2_000) {
       return;
     }
 
@@ -488,10 +567,10 @@ async function waitForDependenciesAndPrecompile(
       throw new Error('[e2e] 测试过早触发编译：应用仍处于 INSTALLING 状态。');
     }
 
-    await win.waitForTimeout(1000);
+    await win.waitForTimeout(POLL_INTERVAL_MS);
   }
 
-  throw new Error(`[e2e] 等待依赖安装和后台预编译完成超时（${INSTALL_TIMEOUT_MS}ms）。`);
+  throw new Error(`[e2e] 等待依赖安装完成超时（${INSTALL_TIMEOUT_MS}ms）。`);
 }
 
 async function getNoticeText(win: Awaited<ReturnType<typeof getMainWindow>>): Promise<string> {
@@ -513,13 +592,18 @@ async function waitForCompileDone(
   const compileDeadline = Date.now() + COMPILE_TIMEOUT_MS;
   let compileResult = '';
   let lastError = '';
+  let lastStatusLine = '';
   while (Date.now() < compileDeadline) {
     const title = (await noticeTitle.innerText().catch(() => '')) || '';
     const text = (await noticeText.innerText().catch(() => '')) || '';
     const doneBox = await win.locator('app-notification .box.done').count();
     const errBox = await win.locator('app-notification .box.error').count();
     const compileLogs = pageLog.messages.slice(compileLogStart).join('\n');
-    console.log(`[compile] title="${title.trim()}" text="${text.trim()}" done=${doneBox} err=${errBox}`);
+    const statusLine = `[compile] title="${title.trim()}" text="${text.trim()}" done=${doneBox} err=${errBox}`;
+    if (statusLine !== lastStatusLine) {
+      console.log(statusLine);
+      lastStatusLine = statusLine;
+    }
 
     const successByNotice = /编译完成/.test(title) || /Flash|RAM/.test(text);
     const successByLog =
@@ -535,8 +619,9 @@ async function waitForCompileDone(
     if (/编译失败|预编译失败/.test(title) || /buildCompleted=\s*false|isErrored=\s*true|lastBuildStatus:\s*error/.test(compileLogs)) {
       compileResult = 'error';
       lastError = `title="${title.trim()}" text="${text.trim()}"`;
+      break;
     }
-    await win.waitForTimeout(3000);
+    await win.waitForTimeout(500);
   }
   expect(
     compileResult,

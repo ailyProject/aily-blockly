@@ -44,7 +44,12 @@ type LexTurnStartupContext = Pick<
 export class LexTurnStartupBridge {
   constructor(
     private readonly ctx: LexTurnStartupContext,
-    private readonly startTurn: (userMessage: string, displayContent?: string, metadata?: TurnRequest['metadata']) => string | undefined,
+    private readonly startTurn: (
+      userMessage: string,
+      displayContent?: string,
+      metadata?: TurnRequest['metadata'],
+      options?: { readonly turnId?: string },
+    ) => string | undefined,
     private readonly seedPendingTurn: (turnId: string, userMessage: string, displayContent?: string, metadata?: TurnRequest['metadata']) => void,
     private readonly ensureResponseItem: (turnId?: string) => void,
     private readonly getConversationMessages: () => any[],
@@ -133,9 +138,10 @@ export class LexTurnStartupBridge {
     userMessage: string,
     displayContent?: string,
     requestMetadata?: TurnRequest['metadata'],
+    options?: { readonly turnId?: string },
   ): string | undefined {
     const nextRequestMetadata = this.buildFreshTurnMetadata(requestMetadata);
-    const turnId = this.startTurn(userMessage, displayContent, nextRequestMetadata);
+    const turnId = this.startTurn(userMessage, displayContent, nextRequestMetadata, options);
     const turnIndex = this.resolveCurrentTurnIndex();
     (nextRequestMetadata as Record<string, unknown>)['checkpointTurnIndex'] = turnIndex + 1;
     const activeRuntimeSessionId = typeof this.ctx.resolveActiveRuntimeSessionId === 'function'

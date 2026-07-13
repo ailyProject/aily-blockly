@@ -37,7 +37,6 @@ type DetachedRuntimeStore = RenderEventPartStoreAccess & Pick<
   | 'finalizeRunningPartsForHandle'
   | 'getPartsForHandle'
   | 'projectPartChangesFromHandle'
-  | 'materializeFinalMarkdownAsPlanForHandle'
 >;
 
 type DetachedRuntimeProjectionTargetStore = Pick<
@@ -86,8 +85,8 @@ export class DetachedChatPartRuntime {
     return this.adapter.process(event, this.detachedHandle);
   }
 
-  finalizeRunningParts(options: { readonly materializeFinalMarkdownAsPlan?: boolean; readonly status?: 'completed' | 'cancelled' | 'error' } = {}): void {
-    this.adapter.finalize(this.detachedHandle, options);
+  finalizeRunningParts(options: { readonly status?: 'completed' | 'cancelled' | 'error' } = {}): void {
+    this.adapter.finalize(this.detachedHandle);
     this.store.finalizeRunningPartsForHandle(this.detachedHandle, { status: options.status });
   }
 

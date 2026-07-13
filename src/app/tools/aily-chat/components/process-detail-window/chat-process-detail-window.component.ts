@@ -194,10 +194,8 @@ export class ChatProcessDetailWindowComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const [summary, liveStatus] = await Promise.all([
-      this.readSummaryFromHost(),
-      getBlocklyCommandSessionStatus(this.processId).catch(() => null),
-    ]);
+    const liveStatus = await getBlocklyCommandSessionStatus(this.processId).catch(() => null);
+    const summary = await this.readSummaryFromHost(liveStatus);
     const mergedSummary = this.mergeSummaryWithLiveStatus(summary, liveStatus);
     if (mergedSummary) {
       this.summary = mergedSummary;
@@ -211,8 +209,10 @@ export class ChatProcessDetailWindowComponent implements OnInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
-  private async readSummaryFromHost(): Promise<ProcessWindowProcessSummary | null> {
-    const persistedFromOutputPath = this.readPersistedSummaryFromOutputFilePath();
+  private async readSummaryFromHost(
+    liveStatus: Awaited<ReturnType<typeof getBlocklyCommandSessionStatus>>,
+  ): Promise<ProcessWindowProcessSummary | null> {
+    const persistedFromOutputPath = this.readPersistedSummaryFromOutputFilePath(liveStatus);
     if (persistedFromOutputPath) {
       return persistedFromOutputPath;
     }
@@ -239,7 +239,9 @@ export class ChatProcessDetailWindowComponent implements OnInit, OnDestroy {
     }
   }
 
-  private readPersistedSummaryFromOutputFilePath(): ProcessWindowProcessSummary | null {
+  private readPersistedSummaryFromOutputFilePath(
+    liveStatus: Awaited<ReturnType<typeof getBlocklyCommandSessionStatus>>,
+  ): ProcessWindowProcessSummary | null {
     const normalizedOutputFilePath = typeof this.outputFilePath === 'string' ? this.outputFilePath.trim() : '';
     if (!normalizedOutputFilePath) {
       return null;
@@ -284,6 +286,10 @@ export class ChatProcessDetailWindowComponent implements OnInit, OnDestroy {
       const completedAt = typeof parsed.completedAt === 'number' && Number.isFinite(parsed.completedAt)
         ? parsed.completedAt
         : undefined;
+      const running = parsed.running === true && liveStatus?.running === true;
+      const status = typeof parsed.status === 'string'
+        ? (parsed.status === 'running' && !running ? 'cancelled' : parsed.status)
+        : undefined;
       const elapsedMs = typeof startedAt === 'number'
         ? Math.max(0, (completedAt ?? lastOutputAt ?? Date.now()) - startedAt)
         : undefined;
@@ -297,8 +303,8 @@ export class ChatProcessDetailWindowComponent implements OnInit, OnDestroy {
           ? parsed.command.trim()
           : this.command,
         cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined,
-        status: typeof parsed.status === 'string' ? parsed.status : undefined,
-        running: parsed.running === true,
+        status,
+        running,
         exitCode: typeof parsed.exitCode === 'number' && Number.isFinite(parsed.exitCode) ? parsed.exitCode : undefined,
         pid: typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) ? parsed.pid : undefined,
         startedAt,

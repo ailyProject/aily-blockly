@@ -70,14 +70,26 @@ export async function launchAilyElectron(): Promise<LaunchedAilyElectron> {
         return;
       }
       closed = true;
-      await closeAilyElectronApp(app);
-      await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+      try {
+        await closeAilyElectronApp(app);
+      } finally {
+        await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+      }
     },
   };
 }
 
 export async function closeAilyElectronApp(app: ElectronApplication, timeoutMs = 10_000): Promise<void> {
-  const processRef = app.process();
+  let processRef: ReturnType<ElectronApplication['process']>;
+  try {
+    processRef = app.process();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/_object|closed|Target page, context or browser has been closed/i.test(message)) {
+      return;
+    }
+    throw error;
+  }
   let didExit = processRef.exitCode !== null || processRef.signalCode !== null;
   processRef.once('exit', () => {
     didExit = true;

@@ -31,6 +31,9 @@ type ConfirmPendingRequestsResult = 'keep' | 'remove' | false;
 const REQUEST_STATE_TRACE_PREFIX = '[AilyChat][RequestStateTrace]';
 
 export class ChatSubmitShellCoordinator {
+  private readonly inFlightSubmitSessionIds = new Set<string>();
+  private readonly locallyStoppingSessionIds = new Set<string>();
+
   constructor(
     private readonly deps: {
       scrollManager: ScrollManagerLike;
@@ -46,7 +49,7 @@ export class ChatSubmitShellCoordinator {
       confirmPendingRequestsBeforeSend?: (sessionId?: string | null) => Promise<ConfirmPendingRequestsResult>;
       clearPendingRequests?: (sessionId?: string | null) => void;
       queueSend?: QueueSendLike;
-      stop: (sessionId?: string | null) => void;
+      stop: (sessionId?: string | null) => unknown;
       send: (text: string, sessionId?: string | null) => Promise<unknown>;
     },
   ) {}
@@ -96,8 +99,16 @@ export class ChatSubmitShellCoordinator {
       return false;
     }
 
+    if (sessionId) {
+      this.locallyStoppingSessionIds.add(sessionId);
+    }
     this.traceRequestAction('stop', 'running', { sessionId: sessionId || null });
-    this.deps.stop(sessionId);
+    const stopResult = this.deps.stop(sessionId);
+    if (sessionId && stopResult && typeof (stopResult as Promise<unknown>).finally === 'function') {
+      void (stopResult as Promise<unknown>).finally(() => {
+        this.locallyStoppingSessionIds.delete(sessionId);
+      });
+    }
     return true;
   }
 
@@ -119,8 +130,12 @@ export class ChatSubmitShellCoordinator {
       }
     }
 
-    if (this.deps.isWaiting(targetSessionId)) {
+    if (this.isSessionWaitingOrStopping(targetSessionId)) {
       return this.queuePreparedInput(text, targetSessionId, options?.queueKind ?? 'queued', 'running');
+    }
+
+    if (this.inFlightSubmitSessionIds.has(targetSessionId)) {
+      return false;
     }
 
     if (this.deps.hasPendingRequests?.(targetSessionId)) {
@@ -139,11 +154,16 @@ export class ChatSubmitShellCoordinator {
       textLength: text.length,
       hasPendingRequests: this.deps.hasPendingRequests?.(targetSessionId) === true,
     });
-    await this.deps.send(text, targetSessionId);
-    this.deps.inputNotice.handleMessageSubmitted?.();
-    this.deps.resourceManager.mergePathsTo(this.deps.getSessionAllowedPaths());
-    this.deps.resourceManager.items = [];
-    return true;
+    this.inFlightSubmitSessionIds.add(targetSessionId);
+    try {
+      await this.deps.send(text, targetSessionId);
+      this.deps.inputNotice.handleMessageSubmitted?.();
+      this.deps.resourceManager.mergePathsTo(this.deps.getSessionAllowedPaths());
+      this.deps.resourceManager.items = [];
+      return true;
+    } finally {
+      this.inFlightSubmitSessionIds.delete(targetSessionId);
+    }
   }
 
   private async queuePreparedInput(
@@ -170,6 +190,12 @@ export class ChatSubmitShellCoordinator {
     this.deps.resourceManager.mergePathsTo(this.deps.getSessionAllowedPaths());
     this.deps.resourceManager.items = [];
     return true;
+  }
+
+  private isSessionWaitingOrStopping(sessionId?: string | null): boolean {
+    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    return (!!targetSessionId && this.locallyStoppingSessionIds.has(targetSessionId))
+      || this.deps.isWaiting(sessionId);
   }
 
   private prepareForSubmit(): void {

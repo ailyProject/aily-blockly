@@ -129,7 +129,7 @@
               role="button"
             >
               <div class="process-row-main">
-                <div class="process-row-command">{{ process.command }}</div>
+                <div class="process-row-command">{{ resolveProcessPrimaryLabel(process) }}</div>
                 <div class="process-row-meta">
                   <span class="process-status-badge" [attr.data-tone]="resolveStatusTone(process)">{{ summarizeStatus(process) }}</span>
                   <span class="process-subapp-badge">{{ resolveSubappName(process) }}</span>
@@ -147,7 +147,7 @@
                     [attr.aria-label]="'AILY_CHAT.PROCESS_ACTION_CANCEL' | translate"
                     (click)="stopProcess(process); $event.stopPropagation()"
                   >
-                    <i class="fa-light fa-ban"></i>
+                    <i class="fa-light fa-square"></i>
                   </button>
                 } @else {
                   @if (process.removed === true) {
@@ -189,9 +189,9 @@
           @if (selectedProcessDetail; as detailProcess) {
           <app-chat-process-detail-panel
             class="process-detail-panel-embedded"
-            [title]="detailProcess.command"
+            [title]="resolveProcessPrimaryLabel(detailProcess)"
             [actionVisible]="true"
-            actionLabel="AILY_CHAT.PROCESS_ACTION_OPEN_WINDOW"
+            [actionLabel]="resolveOpenActionLabel(process)"
             actionIconClass="fa-light fa-square-terminal"
             [statusText]="selectedProcessStatusLabel"
             [elapsedText]="formatElapsed(detailProcess)"
@@ -207,9 +207,9 @@
           } @else {
           <app-chat-process-detail-panel
             class="process-detail-panel-embedded"
-            [title]="process.command"
+            [title]="resolveProcessPrimaryLabel(process)"
             [actionVisible]="true"
-            actionLabel="AILY_CHAT.PROCESS_ACTION_OPEN_WINDOW"
+            [actionLabel]="resolveOpenActionLabel(process)"
             actionIconClass="fa-light fa-square-terminal"
             [statusText]="selectedProcessStatusLabel"
             [elapsedText]="formatElapsed(process)"

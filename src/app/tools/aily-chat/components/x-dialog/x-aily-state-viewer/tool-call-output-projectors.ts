@@ -13,6 +13,7 @@ type ToolCallOutputRowProjector = (input: RegisteredToolCallOutputRowsInput) => 
 const TOOL_CALL_OUTPUT_ROW_PROJECTORS: Record<string, ToolCallOutputRowProjector> = {
   get_board_parameters: ({ entry, index }) => buildBoardParametersOutputRows(entry, index),
   buildProject: ({ entry, index }) => buildProjectOutputRows(entry, index),
+  save_arch: ({ entry, index }) => buildSaveArchOutputRows(entry, index),
 };
 
 export function projectRegisteredToolCallOutputRows(input: RegisteredToolCallOutputRowsInput): StateDetailRow[] {
@@ -124,6 +125,50 @@ function buildProjectOutputRows(
   }];
 }
 
+function buildSaveArchOutputRows(
+  entry: Record<string, unknown>,
+  index: number,
+): StateDetailRow[] {
+  const artifact = findSaveArchArtifact(entry);
+  const args = asRecord(entry['args']);
+  const code = asString(artifact?.['code'])
+    || extractMermaidCode(getEntryResultText(entry))
+    || asString(args?.['code']);
+  if (!code?.trim()) {
+    return [];
+  }
+
+  const metadata = asRecord(entry['metadata']);
+  const resultMetadata = asRecord(entry['resultMetadata']);
+  const path = asString(artifact?.['path'])
+    || asString(metadata?.['path'])
+    || asString(metadata?.['filePath'])
+    || asString(resultMetadata?.['path'])
+    || asString(resultMetadata?.['filePath'])
+    || asString(args?.['path'])
+    || asString(args?.['filePath']);
+  const recordId = asString(entry['recordId']) || `tool-row-${index}`;
+  const phase = asString(entry['phase']);
+  const timestamp = asNumber(entry['timestamp']);
+
+  return [{
+    id: `${recordId}:save-arch-mermaid`,
+    title: 'Architecture diagram',
+    subtitle: [
+      path ? `Saved to ${path}` : undefined,
+      formatClock(timestamp),
+      recordId,
+    ].filter(Boolean).join(' - ') || undefined,
+    trailing: phase ? formatNarrativePhase(phase) : undefined,
+    tone: toneFromNarrativePhase(phase),
+    outputKind: 'mermaid',
+    outputCode: code,
+    outputLanguage: 'mermaid',
+    outputLabel: 'Mermaid',
+    outputMimeType: 'text/vnd.mermaid',
+  }];
+}
+
 function getEntryResultText(entry: Record<string, unknown>): string {
   const resultText = asString(entry['resultText']);
   if (resultText) {
@@ -134,6 +179,44 @@ function getEntryResultText(entry: Record<string, unknown>): string {
   return resultContent.length === 1
     ? getToolResultContentText(resultContent[0]) || ''
     : '';
+}
+
+function findSaveArchArtifact(entry: Record<string, unknown>): Record<string, unknown> | undefined {
+  const direct = asRecord(entry['artifact']);
+  if (direct?.['kind'] === 'mermaid') {
+    return direct;
+  }
+
+  const metadataArtifact = asRecord(asRecord(entry['metadata'])?.['artifact']);
+  if (metadataArtifact?.['kind'] === 'mermaid') {
+    return metadataArtifact;
+  }
+
+  const resultMetadataArtifact = asRecord(asRecord(entry['resultMetadata'])?.['artifact']);
+  if (resultMetadataArtifact?.['kind'] === 'mermaid') {
+    return resultMetadataArtifact;
+  }
+
+  const resultArtifact = asRecord(asRecord(asRecord(entry['result'])?.['metadata'])?.['artifact']);
+  if (resultArtifact?.['kind'] === 'mermaid') {
+    return resultArtifact;
+  }
+
+  return undefined;
+}
+
+function extractMermaidCode(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const fenced = /^```(?:mermaid)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed);
+  if (fenced?.[1]?.trim()) {
+    return fenced[1].trim();
+  }
+
+  return undefined;
 }
 
 function parseJsonRecord(text: string): Record<string, unknown> | null {

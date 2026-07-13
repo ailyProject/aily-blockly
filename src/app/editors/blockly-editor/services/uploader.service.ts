@@ -12,7 +12,10 @@ import { NpmService } from "../../../services/npm.service";
 import { SerialMonitorService } from "../../../tools/serial-monitor/serial-monitor.service";
 import { ActionState } from "../../../services/ui.service";
 import { ActionService } from "../../../services/action.service";
-import { arduinoGenerator } from "../components/blockly/generators/arduino/arduino";
+import {
+  arduinoGenerator,
+  normalizeArduinoGeneratedCode,
+} from "../components/blockly/generators/arduino/arduino";
 import { BlocklyService } from "./blockly.service";
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { BleOtaProgress, UploaderBleService } from '../../../services/uploader-ble.service';
@@ -29,6 +32,14 @@ interface NetworkOtaUploadTarget {
   uploadPath: string;
   ssl?: boolean;
   timeoutMs?: number;
+}
+
+interface Esp32UploadProgressState {
+  expectedFiles: number;
+  currentFileIndex: number;
+  completedFiles: number;
+  eraseRegionSizes: number[];
+  currentFileBytes: number;
 }
 
 function mapLogStateToLevel(state?: string): ProjectLogLevel {
@@ -157,6 +168,103 @@ export class _UploaderService {
     this.noticeService.update(config);
   }
 
+  // ESP32 upload progress helpers.
+  private clampProgress(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.floor(value)));
+  }
+
+  private parseEsp32FlashFileCount(line: string): number {
+    if (!/\bwrite[-_]?flash\b/i.test(line)) return 0;
+
+    const matches = line.match(/\b0x[0-9a-f]+\b\s+(?:"[^"]+\.(?:bin|hex|eep|img|uf2)"|\S+\.(?:bin|hex|eep|img|uf2))/gi);
+    return matches?.length || 0;
+  }
+
+  private parseEsp32EraseRegionSize(line: string): number | null {
+    const match = line.match(/Flash will be erased from 0x([0-9a-f]+) to 0x([0-9a-f]+)/i);
+    if (!match) return null;
+
+    const start = parseInt(match[1], 16);
+    const end = parseInt(match[2], 16);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+
+    return end - start + 1;
+  }
+
+  private parseEsp32CompressedSize(line: string): { originalBytes: number; compressedBytes: number } | null {
+    const match = line.match(/^Compressed\s+(\d+)\s+bytes\s+to\s+(\d+)\.\.\./i);
+    if (!match) return null;
+
+    return {
+      originalBytes: parseInt(match[1], 10),
+      compressedBytes: parseInt(match[2], 10),
+    };
+  }
+
+  private startEsp32FlashFile(state: Esp32UploadProgressState, currentFileBytes = 0): void {
+    if (state.currentFileIndex >= 0) {
+      state.completedFiles = Math.max(state.completedFiles, state.currentFileIndex + 1);
+    }
+
+    state.currentFileIndex += 1;
+    if (state.expectedFiles > 0) {
+      state.currentFileIndex = Math.min(state.currentFileIndex, state.expectedFiles - 1);
+      state.completedFiles = Math.min(state.completedFiles, state.expectedFiles);
+    }
+    state.currentFileBytes = Math.max(0, currentFileBytes);
+  }
+
+  private completeEsp32FlashFile(state: Esp32UploadProgressState): number | null {
+    if (state.expectedFiles <= 0 || state.currentFileIndex < 0) return null;
+
+    state.completedFiles = Math.min(
+      state.expectedFiles,
+      Math.max(state.completedFiles, state.currentFileIndex + 1)
+    );
+    if (state.eraseRegionSizes.length > 0) {
+      const totalBytes = state.eraseRegionSizes.reduce((sum, size) => sum + size, 0);
+      const completedBytes = state.eraseRegionSizes
+        .slice(0, Math.min(state.completedFiles, state.eraseRegionSizes.length))
+        .reduce((sum, size) => sum + size, 0);
+      state.currentFileBytes = 0;
+
+      if (totalBytes > 0) {
+        return this.clampProgress((completedBytes / totalBytes) * 100);
+      }
+    }
+
+    const weightedProgress = this.clampProgress((state.completedFiles / state.expectedFiles) * 100);
+    state.currentFileBytes = 0;
+    return weightedProgress;
+  }
+
+  private calculateEsp32FlashProgress(state: Esp32UploadProgressState, rawProgress: number): number {
+    const regionProgress = this.clampProgress(rawProgress);
+
+    if (state.expectedFiles <= 0 || state.currentFileIndex < 0) {
+      return regionProgress;
+    }
+
+    if (state.eraseRegionSizes.length > 0) {
+      const fallbackBytes = state.currentFileBytes || state.eraseRegionSizes[state.currentFileIndex] || 1;
+      const totalBytes = state.eraseRegionSizes.reduce((sum, size) => sum + size, 0);
+      const completedBytes = state.eraseRegionSizes
+        .slice(0, Math.min(state.completedFiles, state.eraseRegionSizes.length))
+        .reduce((sum, size) => sum + size, 0);
+      const currentRegionBytes = state.eraseRegionSizes[state.currentFileIndex] || fallbackBytes;
+
+      if (totalBytes > 0) {
+        const overallProgress = ((completedBytes + currentRegionBytes * (regionProgress / 100)) / totalBytes) * 100;
+        return this.clampProgress(Math.min(99, overallProgress));
+      }
+    }
+
+    const completedFiles = Math.min(state.completedFiles, state.expectedFiles);
+    const overallProgress = ((completedFiles + regionProgress / 100) / state.expectedFiles) * 100;
+    return this.clampProgress(Math.min(99, overallProgress));
+  }
+
   private appendUploadLog(message: string, level: ProjectLogLevel = 'INFO'): void {
     appendProjectLog(this.projectService.currentProjectPath, 'upload', level, message);
   }
@@ -192,11 +300,12 @@ export class _UploaderService {
       
       try {
         // 重置ESP32上传状态，防止进度累加
-        this['esp32UploadState'] = {
-          currentRegion: 0,
-          totalRegions: 0,
-          detectedRegions: false,
-          completedRegions: 0
+        const esp32UploadState: Esp32UploadProgressState = {
+          expectedFiles: 0,
+          currentFileIndex: -1,
+          completedFiles: 0,
+          eraseRegionSizes: [],
+          currentFileBytes: 0
         };
 
         // 先判断当前是否处于编译状态
@@ -251,7 +360,7 @@ export class _UploaderService {
         }
 
         // 第一步：检查是否需要编译
-        const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+        const code = normalizeArduinoGeneratedCode(arduinoGenerator.workspaceToCode(this.blocklyService.workspace));
         const buildPath = await this.projectService.getBuildPath();
         const needsBuild = !this._builderService.passed || 
                           code !== this._builderService.lastCode || 
@@ -579,35 +688,29 @@ export class _UploaderService {
                     const probeRsFinished = /(?:^\s*Finished\s+in\s+[\d.]+s|\[probe-rs:phase\]\s*Finished)/i.test(trimmedLine);
 
                     // ESP32特定进度跟踪
-                    let isESP32Format = /Writing\s+at\s+0x[0-9a-f]+\s+\[[^\]]*\]\s+\d+\.\d+%\s+\d+\/\d+\s+bytes\.\.\./i.test(trimmedLine);
+                    let isESP32Format = /Writing\s+at\s+0x[0-9a-f]+\s+\[[^\]]*\]\s+\d+(?:\.\d+)?%\s+\d+\/\d+\s+bytes\.\.\./i.test(trimmedLine);
                     
-                    // 使用静态变量跟踪ESP32上传状态
-                    if (!this['esp32UploadState']) {
-                      this['esp32UploadState'] = {
-                        currentRegion: 0,
-                        totalRegions: 0,
-                        detectedRegions: false,
-                        completedRegions: 0
-                      };
+                    const esp32FlashFileCount = this.parseEsp32FlashFileCount(trimmedLine);
+                    if (esp32FlashFileCount > 0) {
+                      esp32UploadState.expectedFiles = Math.max(esp32UploadState.expectedFiles, esp32FlashFileCount);
                     }
 
-                    // 检测擦除区域的数量来确定总区域
-                    if (!this['esp32UploadState'].detectedRegions &&
-                      trimmedLine.includes('Flash will be erased from')) {
-                      this['esp32UploadState'].totalRegions++;
+                    const esp32EraseRegionSize = this.parseEsp32EraseRegionSize(trimmedLine);
+                    if (esp32EraseRegionSize !== null) {
+                      esp32UploadState.eraseRegionSizes.push(esp32EraseRegionSize);
+                      esp32UploadState.expectedFiles = Math.max(esp32UploadState.expectedFiles, esp32UploadState.eraseRegionSizes.length);
                     }
 
-                    // 检测到"Compressed"字样表示开始新区域
-                    if (trimmedLine.includes('Compressed') &&
-                      trimmedLine.includes('bytes to')) {
-                      this['esp32UploadState'].detectedRegions = true;
-                      this['esp32UploadState'].currentRegion++;
+                    const esp32CompressedSize = this.parseEsp32CompressedSize(trimmedLine);
+                    if (esp32CompressedSize) {
+                      this.startEsp32FlashFile(esp32UploadState, esp32CompressedSize.originalBytes);
+                    } else if (/^Writing\s+['"].+?['"]\s+at\s+0x[0-9a-f]+/i.test(trimmedLine)) {
+                      this.startEsp32FlashFile(esp32UploadState);
                     }
 
-                    // 检测到"Hash of data verified"表示一个区域完成
-                    if (trimmedLine.includes('Hash of data verified')) {
-                      this['esp32UploadState'].completedRegions++;
-                    }
+                    const esp32FileComplete =
+                      trimmedLine.includes('Hash of data verified') ||
+                      /^['"].+?['"]\s+at\s+0x[0-9a-f]+\s+verified\.$/i.test(trimmedLine);
 
                     let progressValue = 0;
 
@@ -635,25 +738,10 @@ export class _UploaderService {
                       lastUploadText = this.uploadT('COMPLETE_TEXT');
                       this.uploadCompleted = true;
                     } else if (isESP32Format) {
-                      const numericMatch = trimmedLine.match(/(\d+\.\d+)%/);
+                      const numericMatch = trimmedLine.match(/(\d+(?:\.\d+)?)%/);
                       if (numericMatch) {
-                        const regionProgress = parseInt(numericMatch[1], 10);
-
-                        // 计算整体进度
-                        if (this['esp32UploadState'].totalRegions > 0) {
-                          // 已完成区域贡献100%，当前区域贡献按比例
-                          const completedPortion = this['esp32UploadState'].completedRegions /
-                            this['esp32UploadState'].totalRegions * 100;
-                          const currentPortion = regionProgress /
-                            this['esp32UploadState'].totalRegions;
-
-                          progressValue = Math.floor(completedPortion + currentPortion);
-
-                          // 进度强制显示，无论是否增加
-                          lastProgress = progressValue - 1; // 确保更新
-                        } else {
-                          progressValue = regionProgress;
-                        }
+                        const regionProgress = parseFloat(numericMatch[1]);
+                        progressValue = this.calculateEsp32FlashProgress(esp32UploadState, regionProgress);
                       }
                     } else {
                       for (const regex of this.progressRegexPatterns) {
@@ -674,6 +762,14 @@ export class _UploaderService {
                         }
                       }
                     }
+
+                    const completedFileProgress = esp32FileComplete
+                      ? this.completeEsp32FlashFile(esp32UploadState)
+                      : null;
+                    if (completedFileProgress !== null) {
+                      progressValue = Math.max(progressValue, completedFileProgress);
+                    }
+                    progressValue = this.clampProgress(progressValue);
 
                     if (progressValue && progressValue > lastProgress) {
                       lastProgress = progressValue;

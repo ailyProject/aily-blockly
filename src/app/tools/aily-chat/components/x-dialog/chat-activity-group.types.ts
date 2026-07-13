@@ -79,6 +79,8 @@ export interface ActivityGroupDisplayChild {
 
 export interface ActivityGroupDisplayItem {
   id: string;
+  /** Stable source-part revision used to preserve mounted list-item renderers. */
+  revision?: string;
   kind: 'thinking' | 'activity';
   headerKind?: 'default' | 'tool';
   toolHeader?: ActivityToolHeaderDisplayData;

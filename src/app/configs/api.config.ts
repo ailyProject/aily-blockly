@@ -86,6 +86,8 @@ export const API = {
   // github oauth
   get githubBrowserAuthorize() { return `${getServerUrl()}/api/v1/oauth/github/browser-authorize`; },
   get githubTokenExchange() { return `${getServerUrl()}/api/v1/oauth/github/token-exchange`; },
+  get githubBind() { return `${getServerUrl()}/api/v1/oauth/github/bind`; },
+  get githubPermissions() { return `${getServerUrl()}/api/v1/oauth/github/permissions`; },
   // wechat oauth
   get wechatQrcode() { return `${getServerUrl()}/api/v1/oauth/wechat/qrcode`; },
   get wechatCheck() { return `${getServerUrl()}/api/v1/oauth/wechat/check`; },
@@ -115,6 +117,8 @@ export const API = {
   get cloudSync() { return `${getServerUrl()}/api/v1/cloud/sync`; },
   get cloudProjects() { return `${getServerUrl()}/api/v1/cloud/projects`; },
   get cloudPublicProjects() { return `${getServerUrl()}/api/v1/cloud/projects/public`; },
+  // library submissions
+  get librarySubmissions() { return `${getServerUrl()}/api/v1/library-submissions`; },
   // feedback
   get feedback() { return `${getServerUrl()}/api/v1/feedback/submit`; },
   get feedbackImageUpload() { return `${getServerUrl()}/api/v1/feedback/upload-image`; },

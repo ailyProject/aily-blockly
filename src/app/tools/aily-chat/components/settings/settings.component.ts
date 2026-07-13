@@ -1,4 +1,4 @@
-import { Component, DestroyRef, EventEmitter, Output, OnInit, inject } from '@angular/core';
+import { ChangeDetectorRef, Component, DestroyRef, EventEmitter, Output, OnInit, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -58,6 +58,7 @@ interface CustomAgentVisibilityOption {
 })
 export class AilyChatSettingsComponent implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
+  private readonly changeDetectorRef = inject(ChangeDetectorRef, { optional: true });
 
   @Output() close = new EventEmitter<void>();
   @Output() saved = new EventEmitter<void>(); // 保存成功事件
@@ -218,6 +219,9 @@ export class AilyChatSettingsComponent implements OnInit {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(() => {
         this.loadModelList();
+        // Catalog updates are published outside Angular's root zone. Refresh
+        // only this view, matching VS Code's model-picker-local listener.
+        this.changeDetectorRef?.detectChanges();
       });
     this.chatService.runtimeModeCollection.onDidChange
       .pipe(takeUntilDestroyed(this.destroyRef))

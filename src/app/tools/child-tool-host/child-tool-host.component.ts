@@ -64,6 +64,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private penpalConnection: Connection | null = null;
   private remoteApi: any = null;
   private childReadyTimer: ReturnType<typeof setTimeout> | null = null;
+  private penpalRemoteWindow: Window | null = null;
+  private penpalState: 'idle' | 'connecting' | 'connected' | 'failed' = 'idle';
   private readonly hostContextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   private hostContextVersion = 0;
   private beforeCloseNotified = false;
@@ -177,13 +179,22 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const iframe = event.target as HTMLIFrameElement;
     this.log('iframe load', {
       url: this.sanitizeUrl(this.serverInfo?.url),
-      hasContentWindow: !!iframe.contentWindow
+      hasContentWindow: !!iframe.contentWindow,
+      penpalState: this.penpalState
     });
 
     if (!iframe.contentWindow) {
       this.hostStatus = 'error';
       this.errorMessage = `${this.resolvedToolId} iframe did not expose contentWindow`;
       this.logError('iframe missing contentWindow', this.errorMessage);
+      return;
+    }
+
+    if (this.shouldReusePenpalConnection(iframe.contentWindow)) {
+      this.log('iframe load ignored for existing Penpal session', {
+        penpalState: this.penpalState,
+        url: this.sanitizeUrl(this.serverInfo?.url)
+      });
       return;
     }
 
@@ -264,6 +275,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private startPenpalConnection(iframe: HTMLIFrameElement): void {
     this.destroyPenpalConnection();
+    this.penpalRemoteWindow = iframe.contentWindow;
+    this.penpalState = 'connecting';
 
     const allowedOrigin = this.serverInfo?.origin || this.resolveOrigin(this.serverInfo?.url);
     this.log('penpal connect', {
@@ -279,6 +292,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.childReadyTimer = setTimeout(() => {
       if (!this.frameLoaded) {
         this.ngZone.run(() => {
+          this.penpalState = 'failed';
           this.hostStatus = 'error';
           this.errorMessage = `${this.resolvedToolId} UI did not report ready`;
           this.logError('child ready timeout', this.errorMessage);
@@ -329,11 +343,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       .then(remote => {
         this.log('penpal connected');
         this.remoteApi = remote;
+        this.penpalState = 'connected';
         this.beforeCloseNotified = false;
         this.syncHostContext();
       })
       .catch(error => {
         this.ngZone.run(() => {
+          this.penpalState = 'failed';
           this.hostStatus = 'error';
           this.errorMessage = error instanceof Error ? error.message : String(error || 'Penpal connection failed');
           this.logError('penpal failed', this.errorMessage);
@@ -480,6 +496,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       this.penpalConnection.destroy();
       this.penpalConnection = null;
     }
+    this.penpalRemoteWindow = null;
+    this.penpalState = 'idle';
+  }
+
+  private shouldReusePenpalConnection(contentWindow: Window): boolean {
+    return !!this.penpalConnection
+      && this.penpalRemoteWindow === contentWindow
+      && (this.penpalState === 'connecting' || this.penpalState === 'connected');
   }
 
   private async notifyChildBeforeClose(reason: ChildLifecycleReason): Promise<boolean> {

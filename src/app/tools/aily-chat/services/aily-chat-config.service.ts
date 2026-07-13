@@ -1,5 +1,5 @@
 ﻿import { HttpClient, HttpErrorResponse, HttpResponse } from '@angular/common/http';
-import { Injectable, Optional } from '@angular/core';
+import { Injectable, NgZone, Optional } from '@angular/core';
 import { Subject, Observable, Subscription } from 'rxjs';
 import { distinctUntilChanged } from 'rxjs/operators';
 import type { PermissionPolicy, PermissionRuleInput } from 'aily-lex/agent/common/approvalProtocol';
@@ -431,6 +431,12 @@ const DEFAULT_CONFIG: AilyChatConfig = {
 })
 export class AilyChatConfigService {
     private config: AilyChatConfig = { ...DEFAULT_CONFIG };
+    private readonly sessionToolApprovalStates = new Map<string, {
+        toolNames: Set<string>;
+        terminalRules: Set<string>;
+        combinationKeys: Set<string>;
+        allowAllTerminalCommands: boolean;
+    }>();
     private configFileName = 'aily-chat-config.json';
     private readonly clientVersion = packageJson.version;
     private loaded = false;
@@ -480,6 +486,7 @@ export class AilyChatConfigService {
     constructor(
         private http: HttpClient,
         @Optional() private authService: AuthService | null = null,
+        @Optional() private ngZone: NgZone | null = null,
     ) {
         this.load();
         this.bindAuthReadyReload();
@@ -912,6 +919,72 @@ export class AilyChatConfigService {
         return normalizePermissionRuleInputs(this.config.workspacePermissionRules?.[normalizedProjectPath]);
     }
 
+    hasSessionToolApprovalRule(sessionResource: string | null | undefined, toolName: string): boolean {
+        const normalizedToolName = normalizeApprovalStateKey(toolName);
+        return !!normalizedToolName
+            && this.readSessionToolApprovalState(sessionResource)?.toolNames.has(normalizedToolName) === true;
+    }
+
+    addSessionToolApprovalRule(sessionResource: string | null | undefined, toolName: string): boolean {
+        const normalizedToolName = normalizeApprovalStateKey(toolName);
+        if (!normalizedToolName) {
+            return false;
+        }
+
+        const state = this.ensureSessionToolApprovalState(sessionResource);
+        const beforeSize = state.toolNames.size;
+        state.toolNames.add(normalizedToolName);
+        return state.toolNames.size !== beforeSize;
+    }
+
+    getSessionTerminalApprovalRules(sessionResource: string | null | undefined): string[] {
+        return [...(this.readSessionToolApprovalState(sessionResource)?.terminalRules ?? [])];
+    }
+
+    addSessionTerminalApprovalRule(sessionResource: string | null | undefined, rule: string): boolean {
+        const normalizedRule = normalizeApprovalStateKey(rule);
+        if (!normalizedRule) {
+            return false;
+        }
+
+        const state = this.ensureSessionToolApprovalState(sessionResource);
+        const beforeSize = state.terminalRules.size;
+        state.terminalRules.add(normalizedRule);
+        return state.terminalRules.size !== beforeSize;
+    }
+
+    hasSessionToolApprovalCombinationKey(
+        sessionResource: string | null | undefined,
+        combinationKey: string,
+    ): boolean {
+        const normalizedKey = normalizeApprovalStateKey(combinationKey);
+        return !!normalizedKey
+            && this.readSessionToolApprovalState(sessionResource)?.combinationKeys.has(normalizedKey) === true;
+    }
+
+    addSessionToolApprovalCombinationKey(
+        sessionResource: string | null | undefined,
+        combinationKey: string,
+    ): boolean {
+        const normalizedKey = normalizeApprovalStateKey(combinationKey);
+        if (!normalizedKey) {
+            return false;
+        }
+
+        const state = this.ensureSessionToolApprovalState(sessionResource);
+        const beforeSize = state.combinationKeys.size;
+        state.combinationKeys.add(normalizedKey);
+        return state.combinationKeys.size !== beforeSize;
+    }
+
+    isSessionTerminalAutoApprovalEnabled(sessionResource: string | null | undefined): boolean {
+        return this.readSessionToolApprovalState(sessionResource)?.allowAllTerminalCommands === true;
+    }
+
+    setSessionTerminalAutoApproval(sessionResource: string | null | undefined, enabled: boolean): void {
+        this.ensureSessionToolApprovalState(sessionResource).allowAllTerminalCommands = enabled === true;
+    }
+
     hasWorkspaceToolApprovalRule(projectPath: string | null | undefined, toolName: string): boolean {
         const normalizedToolName = normalizeGovernanceToolName(toolName);
         if (!normalizedToolName) {
@@ -973,6 +1046,44 @@ export class AilyChatConfigService {
             [normalizedProjectPath]: [...existing, normalizedKey],
         };
         return true;
+    }
+
+    private readSessionToolApprovalState(sessionResource: string | null | undefined): {
+        toolNames: Set<string>;
+        terminalRules: Set<string>;
+        combinationKeys: Set<string>;
+        allowAllTerminalCommands: boolean;
+    } | undefined {
+        const normalizedSessionResource = normalizeApprovalStateKey(sessionResource);
+        return normalizedSessionResource
+            ? this.sessionToolApprovalStates.get(normalizedSessionResource)
+            : undefined;
+    }
+
+    private ensureSessionToolApprovalState(sessionResource: string | null | undefined): {
+        toolNames: Set<string>;
+        terminalRules: Set<string>;
+        combinationKeys: Set<string>;
+        allowAllTerminalCommands: boolean;
+    } {
+        const normalizedSessionResource = normalizeApprovalStateKey(sessionResource);
+        if (!normalizedSessionResource) {
+            throw new Error('[AilyChat][Config] session approval requires a session resource.');
+        }
+
+        const existing = this.sessionToolApprovalStates.get(normalizedSessionResource);
+        if (existing) {
+            return existing;
+        }
+
+        const created = {
+            toolNames: new Set<string>(),
+            terminalRules: new Set<string>(),
+            combinationKeys: new Set<string>(),
+            allowAllTerminalCommands: false,
+        };
+        this.sessionToolApprovalStates.set(normalizedSessionResource, created);
+        return created;
     }
 
     getLexPermissionPolicy(projectPath: string | null | undefined): PermissionPolicy | undefined {
@@ -1832,7 +1943,10 @@ export class AilyChatConfigService {
             reason,
         });
 
-        this.http.get<RemoteModelCatalogResponse>(ChatAPI.modelCatalog, this.getRemoteModelCatalogRequestOptions()).subscribe({
+        this.runOutsideAngular(() => this.http.get<RemoteModelCatalogResponse>(
+            ChatAPI.modelCatalog,
+            this.getRemoteModelCatalogRequestOptions(),
+        ).subscribe({
             next: (response) => {
                 const responseBody = response.body;
                 const normalizedCatalog = this.normalizeRemoteModelCatalog(responseBody?.data);
@@ -1859,42 +1973,6 @@ export class AilyChatConfigService {
 
                 const modelIds = Object.keys(normalizedCatalog.catalog.models);
                 const presetIds = Object.keys(normalizedCatalog.catalog.modelPresets);
-                const modelMetadata = modelIds.reduce<Record<string, {
-                    displayName?: string;
-                    contextWindowTokens?: number;
-                    supportsReasoningEfforts?: readonly ReasoningEffortOption[];
-                    billingMultiplier?: number;
-                    billingLabelOverride?: string;
-                }>>((acc, modelId) => {
-                    const entry = normalizedCatalog.catalog.models[modelId];
-                    acc[modelId] = {
-                        displayName: entry.displayName,
-                        contextWindowTokens: entry.contextWindowTokens,
-                        supportsReasoningEfforts: entry.supportsReasoningEfforts,
-                        billingMultiplier: entry.billingMultiplier,
-                        billingLabelOverride: entry.billingLabelOverride,
-                    };
-                    return acc;
-                }, {});
-                const presetMetadata = presetIds.reduce<Record<string, {
-                    model?: string;
-                    displayName?: string;
-                    contextWindowTokens?: number;
-                    supportsReasoningEfforts?: readonly ReasoningEffortOption[];
-                    billingMultiplier?: number;
-                    billingLabelOverride?: string;
-                }>>((acc, presetId) => {
-                    const entry = normalizedCatalog.catalog.modelPresets[presetId];
-                    acc[presetId] = {
-                        model: entry.model,
-                        displayName: entry.displayName,
-                        contextWindowTokens: entry.contextWindowTokens,
-                        supportsReasoningEfforts: entry.supportsReasoningEfforts,
-                        billingMultiplier: entry.billingMultiplier,
-                        billingLabelOverride: entry.billingLabelOverride,
-                    };
-                    return acc;
-                }, {});
                 console.info('[AilyChatConfigService] 远端 model catalog 响应成功', {
                     url: ChatAPI.modelCatalog,
                     status: response.status,
@@ -1903,10 +1981,6 @@ export class AilyChatConfigService {
                     permissionsHash: normalizedCatalog.metadata.permissionsHash,
                     modelCount: modelIds.length,
                     presetCount: presetIds.length,
-                    modelIds,
-                    presetIds,
-                    modelMetadata,
-                    presetMetadata,
                 });
 
                 this.remoteModelCatalog = normalizedCatalog.catalog;
@@ -1965,7 +2039,11 @@ export class AilyChatConfigService {
                 });
                 this.modelCatalogChangedSubject.next();
             },
-        });
+        }));
+    }
+
+    private runOutsideAngular<T>(operation: () => T): T {
+        return this.ngZone ? this.ngZone.runOutsideAngular(operation) : operation();
     }
 
     private setRemoteModelCatalogStatus(
@@ -2663,6 +2741,10 @@ export class AilyChatConfigService {
         this.config.projectSkillFolders = normalizeSkillFolderPaths(this.config.projectSkillFolders);
         this.config.hiddenCustomAgentTargets = normalizeCustomAgentTargets(this.config.hiddenCustomAgentTargets);
     }
+}
+
+function normalizeApprovalStateKey(value: string | null | undefined): string {
+    return typeof value === 'string' ? value.trim() : '';
 }
 
 function normalizeConfiguredToolNames(value: readonly string[] | undefined): string[] {

@@ -1,3 +1,4 @@
+// 初始化应用日志系统，并接收渲染进程上报的日志。
 const path = require('path');
 const electronLog = require('electron-log');
 const fs = require('fs');

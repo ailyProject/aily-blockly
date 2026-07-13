@@ -21,6 +21,7 @@ export class UpdateService {
   dialogAction = new Subject();
 
   // private updateInfo: any = null;
+  private ailyBuilderUpdateDialogOpen = false;
 
   constructor(
     private electronService: ElectronService,
@@ -80,13 +81,17 @@ export class UpdateService {
     });
     // 应用启动时检查更新
     setTimeout(() => {
-      this.checkForUpdates();
+      this.checkForUpdates(false);
     }, 5000);
+    setTimeout(() => {
+      this.checkPackageUpdates(false);
+    }, 3000);
   }
 
-  checkForUpdates() {
+  checkForUpdates(manual: boolean = false) {
     if (this.electronService.isElectron) {
       window['updater'].checkForUpdates();
+      this.checkPackageUpdates(manual);
     }
   }
 
@@ -122,6 +127,43 @@ export class UpdateService {
   clearSkipVersions() {
     this.configService.data.skippedVersions = [];
     this.configService.save();
+  }
+
+  private async checkPackageUpdates(showOptional: boolean) {
+    if (!window['builder']?.status || !window['builder']?.update) {
+      return;
+    }
+
+    try {
+      const status = await window['builder'].status();
+      const needsInstall = status && !status.error && !status.installed;
+      if (!needsInstall || this.ailyBuilderUpdateDialogOpen) {
+        return;
+      }
+      if (!showOptional) {
+        return;
+      }
+
+      this.ailyBuilderUpdateDialogOpen = true;
+      const builderLabel = status.packageName || status.key || 'aily-builder';
+      const modalRef = this.modal.confirm({
+        nzTitle: `安装 ${builderLabel}`,
+        nzContent: `${builderLabel} 尚未安装，是否现在安装最新版本？`,
+        nzOkText: '安装',
+        nzCancelText: '稍后',
+        nzMaskClosable: false,
+        nzBodyStyle: { background: 'var(--aily-bg-primary)' },
+        nzOnOk: async () => {
+          await window['builder'].update();
+        }
+      });
+      modalRef.afterClose.subscribe(() => {
+        this.ailyBuilderUpdateDialogOpen = false;
+      });
+    } catch (error) {
+      console.error('检查 aily-builder 更新失败:', error);
+      this.ailyBuilderUpdateDialogOpen = false;
+    }
   }
 
   dialogActionSubscription;

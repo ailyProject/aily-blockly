@@ -57,6 +57,7 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
   const getElectronAPI = () => (window as any)['electronAPI'] ?? {};
   const getWindowBridge = (key: string) => getElectronAPI()[key] ?? (window as any)[key];
   const getFs = () => getWindowBridge('fs');
+  const getFsp = () => getElectronAPI().fsp ?? (window as any).fsp;
   const getPath = () => getWindowBridge('path');
   const getTerminal = () => getWindowBridge('terminal');
   const getCmd = () => getWindowBridge('cmd');
@@ -210,6 +211,7 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
     // ---- 异步方法（IPC 到主进程） ----
     readFile: (path, encoding?) => getFs().readFile(path, encoding ?? 'utf8'),
     writeFile: (path, data, encoding?) => getFs().writeFile(path, data, encoding),
+    appendFile: (path, data, encoding?) => getFsp().appendFile(path, data, encoding),
     exists: (path) => getFs().exists(path),
     stat: async (path) => {
       const raw = await getFs().stat(path);
@@ -260,7 +262,6 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
     getUserDocuments: () => getPath()?.getUserDocuments?.() ?? '',
     getUserHome: () => getPath()?.getUserHome?.() ?? '',
     getAilyBuilderPath: () => getPath()?.getAilyBuilderPath?.(),
-    getAilyBuilderBuildPath: () => getPath()?.getAilyBuilderBuildPath?.(),
     getAilyChildPath: () => getPath()?.getAilyChildPath?.(),
     getElectronPath: () => getPath()?.getElectronPath?.(),
     isExists: (p) => getPath()?.isExists?.(p) ?? false,

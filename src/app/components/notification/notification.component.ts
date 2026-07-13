@@ -87,6 +87,8 @@ export class NotificationComponent {
 
   // 开始进度动画
   startProgressAnimation(targetValue: number): void {
+    targetValue = this.clampProgress(targetValue);
+
     // 取消之前的动画帧
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
@@ -119,6 +121,11 @@ export class NotificationComponent {
   }
 
   // 缓动函数，使动画更自然
+  private clampProgress(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.floor(value)));
+  }
+
   easeOutQuad(t: number): number {
     return t * (2 - t);
   }

@@ -2,18 +2,21 @@
   Component,
   Input,
   OnChanges,
-  OnDestroy,
   SimpleChanges,
   ChangeDetectionStrategy,
   ChangeDetectorRef,
-  NgZone,
-  signal,
+  ViewChild,
   inject,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
 import { XMarkdownComponent } from 'ngx-x-markdown';
-import type { StreamingOption, ComponentMap } from 'ngx-x-markdown';
+import type {
+  StreamingOption,
+  ComponentMap,
+  XMarkdownIncrementalFallbackEvent,
+  XMarkdownIncrementalRenderEvent,
+} from 'ngx-x-markdown';
 import type { TurnRequest, TurnResponseTurn } from 'aily-lex/browser';
 
 import { ChatPart, MarkdownPart, ErrorPart, QuestionPart, PlanPart } from '../../core/chat-parts';
@@ -33,7 +36,6 @@ import { ChatService, type ModelConfig } from '../../services/chat.service';
 import {
   getMarkdownContent as readStoredMarkdownContent,
   getMarkdownContentLength as readStoredMarkdownContentLength,
-  getMarkdownContentWindow as readStoredMarkdownContentWindow,
 } from '../../core/markdown-content-store';
 import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
 
@@ -64,9 +66,6 @@ const PLAN_MARKDOWN_RENDER_CHAR_LIMIT = 6_000;
 const PLAN_CHUNK_SIZE = 2_000;
 const LARGE_MARKDOWN_RENDER_CHAR_LIMIT = 24_000;
 const LARGE_MARKDOWN_CHUNK_SIZE = 4_000;
-const LIVE_MARKDOWN_POLL_INTERVAL_MS = 180;
-const LIVE_MARKDOWN_RENDER_WINDOW_CHARS = 48 * 1024;
-const LIVE_MARKDOWN_OMITTED_MARKER = '[earlier streaming text omitted from live view]\n\n';
 
 interface PlanTextChunk {
   readonly id: string;
@@ -104,10 +103,16 @@ interface MarkdownTextChunk {
         } @else {
           <x-markdown
             [content]="getMarkdownDisplayContent()"
-            [streaming]="streamingConfig()"
+            [contentRef]="getMarkdownContentRef()"
+            [contentLength]="getMarkdownContentLengthInput()"
+            [contentResolver]="markdownContentResolver"
+            [streaming]="streamingConfig"
             [components]="componentMap"
             rootClassName="x-markdown-dark"
             ailyMarkdownExternalLinks
+            [heightChangeCallback]="markdownHeightChangeCallback"
+            [incrementalFallbackCallback]="markdownIncrementalFallbackCallback"
+            [incrementalRenderCallback]="markdownIncrementalRenderCallback"
           />
         }
       }
@@ -120,7 +125,7 @@ interface MarkdownTextChunk {
         @if (shouldUseStandaloneSubagentGroup()) {
           <aily-chat-activity-group [parts]="getStandaloneActivityParts()" [doing]="doing" [sessionId]="sessionId" />
         } @else if (isStandaloneToolCall()) {
-          <aily-chat-standalone-tool-call [part]="asToolCall()" />
+          <aily-chat-standalone-tool-call [part]="asToolCall()" [sessionId]="sessionId" />
         }
       }
       @case ('state') {
@@ -166,10 +171,11 @@ interface MarkdownTextChunk {
             } @else {
               <x-markdown
                 [content]="getPlanData().text"
-                [streaming]="streamingConfig()"
+                [streaming]="streamingConfig"
                 [components]="componentMap"
                 rootClassName="x-markdown-dark"
                 ailyMarkdownExternalLinks
+                [heightChangeCallback]="markdownHeightChangeCallback"
               />
             }
           </div>
@@ -386,14 +392,23 @@ interface MarkdownTextChunk {
     }
   `],
 })
-export class ChatMessagePartItemComponent implements OnChanges, OnDestroy {
+export class ChatMessagePartItemComponent implements OnChanges {
+  @Input() renderItemId = '';
   @Input() part: RenderableChatPart | null = null;
   @Input() doing = false;
   @Input() sessionId = '';
   @Input() turnResponse: TurnResponseTurn | null = null;
+  @Input() impliedWordLoadRate: number | undefined;
 
   readonly componentMap: ComponentMap = { code: AilyChatCodeComponent };
-  streamingConfig = signal<StreamingOption>({ hasNextChunk: false, enableAnimation: false });
+  readonly markdownHeightChangeCallback = () => this.onMarkdownHeightChange();
+  readonly markdownIncrementalFallbackCallback = (event: XMarkdownIncrementalFallbackEvent) => (
+    this.onMarkdownIncrementalFallback(event)
+  );
+  readonly markdownIncrementalRenderCallback = (event: XMarkdownIncrementalRenderEvent) => (
+    this.onMarkdownIncrementalRender(event)
+  );
+  streamingConfig: StreamingOption = { hasNextChunk: false, enableAnimation: false };
 
   private readonly questionDataCache = new WeakMap<RenderableChatPart, {
     questions: QuestionPart['questions'];
@@ -407,35 +422,96 @@ export class ChatMessagePartItemComponent implements OnChanges, OnDestroy {
   private readonly ailyChatConfigService = inject(AilyChatConfigService, { optional: true });
   private readonly runtimeInteractionHost = inject(ChatRuntimeInteractionHostService, { optional: true });
   private readonly cdr = inject(ChangeDetectorRef);
-  private readonly ngZone = inject(NgZone);
+  @ViewChild(XMarkdownComponent) private markdownComponent?: XMarkdownComponent;
   private planChunkCache: { readonly text: string; readonly chunks: readonly PlanTextChunk[] } | null = null;
   private markdownChunkCache: { readonly text: string; readonly chunks: readonly MarkdownTextChunk[] } | null = null;
-  private markdownPollTimer: ReturnType<typeof setInterval> | null = null;
   private activeMarkdownContentRef = '';
   private activeMarkdownContentLength = -1;
-  readonly markdownDisplayContent = signal('');
+  private activeMarkdownPartIdentity = '';
+  private liveMarkdownPartIdentity = '';
+  private markdownDisplayContent = '';
+  readonly markdownContentResolver = (contentRef: string): string => readStoredMarkdownContent(contentRef);
   planActionBusy = false;
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['doing']) {
-      this.streamingConfig.set({
-        hasNextChunk: this.doing,
-        enableAnimation: this.doing,
-      });
+    if (changes['doing'] || changes['impliedWordLoadRate']) {
+      this.updateStreamingConfig();
     }
 
     if (changes['part'] || changes['doing']) {
       this.syncMarkdownDisplayContent();
-      this.syncMarkdownPolling();
     }
   }
 
-  ngOnDestroy(): void {
-    this.stopMarkdownPolling();
+  /**
+   * Update an already-mounted content part in place. The transcript renderer
+   * calls this only when the render-item identity and kind are unchanged,
+   * matching VS Code's IChatContentPart.tryIncrementalUpdate boundary.
+   */
+  applyVisiblePartPatch(input: {
+    readonly part: RenderableChatPart;
+    readonly doing: boolean;
+    readonly sessionId: string;
+    readonly turnResponse: TurnResponseTurn | null;
+    readonly impliedWordLoadRate?: number;
+  }): boolean {
+    const previousPart = this.part;
+    if (!previousPart || previousPart.type !== input.part.type) {
+      return false;
+    }
+
+    const previousMarkdown = previousPart.type === 'markdown' ? previousPart as MarkdownPart : null;
+    const nextMarkdown = input.part.type === 'markdown' ? input.part as MarkdownPart : null;
+    if (previousMarkdown && nextMarkdown
+      && this.getMarkdownPartIdentity(previousMarkdown) !== this.getMarkdownPartIdentity(nextMarkdown)) {
+      return false;
+    }
+
+    this.part = input.part;
+    this.doing = input.doing;
+    this.sessionId = input.sessionId;
+    this.turnResponse = input.turnResponse;
+    this.impliedWordLoadRate = input.impliedWordLoadRate;
+    this.updateStreamingConfig();
+    this.syncMarkdownDisplayContent();
+
+    if (nextMarkdown && this.tryIncrementalMarkdownUpdate(previousMarkdown, nextMarkdown)) {
+      return true;
+    }
+
+    this.cdr.detectChanges();
+    return true;
   }
 
   getMarkdownDisplayContent(): string {
-    return this.markdownDisplayContent();
+    return this.markdownDisplayContent;
+  }
+
+  getMarkdownContentRef(): string | undefined {
+    const markdown = this.part?.type === 'markdown' ? this.part as MarkdownPart : null;
+    return markdown?.contentRef || undefined;
+  }
+
+  getMarkdownContentLengthInput(): number | undefined {
+    const markdown = this.part?.type === 'markdown' ? this.part as MarkdownPart : null;
+    if (!markdown) {
+      return undefined;
+    }
+
+    const contentRef = markdown.contentRef || '';
+    if (contentRef && this.activeMarkdownContentRef === contentRef && this.activeMarkdownContentLength >= 0) {
+      return this.activeMarkdownContentLength;
+    }
+
+    if (typeof markdown.contentLength === 'number') {
+      return markdown.contentLength;
+    }
+
+    if (contentRef) {
+      return readStoredMarkdownContentLength(contentRef);
+    }
+
+    return this.markdownDisplayContent.length;
   }
 
   shouldRenderMarkdownAsChunkedText(): boolean {
@@ -443,15 +519,26 @@ export class ChatMessagePartItemComponent implements OnChanges, OnDestroy {
     if (!markdown) {
       return false;
     }
+    if (this.doing) {
+      return false;
+    }
+
+    // VS Code keeps the same ChatMarkdownContentPart mounted through the
+    // completion diff. The chunked fallback is only for completed history
+    // first-loads; switching a live part here would discard its morpher and
+    // create a second completion render path.
+    if (this.liveMarkdownPartIdentity === this.getMarkdownPartIdentity(markdown)) {
+      return false;
+    }
 
     const contentLength = typeof markdown.contentLength === 'number'
       ? markdown.contentLength
-      : this.markdownDisplayContent().length;
+      : this.markdownDisplayContent.length;
     return contentLength > LARGE_MARKDOWN_RENDER_CHAR_LIMIT;
   }
 
   getMarkdownTextChunks(): readonly MarkdownTextChunk[] {
-    const text = this.markdownDisplayContent();
+    const text = this.markdownDisplayContent;
     if (this.markdownChunkCache?.text === text) {
       return this.markdownChunkCache.chunks;
     }
@@ -589,131 +676,185 @@ export class ChatMessagePartItemComponent implements OnChanges, OnDestroy {
   }
 
   private syncMarkdownDisplayContent(): void {
+    const surface = ChatPerformanceTracer.enterSurface(
+      'markdown_render',
+      `doing=${this.doing},part=${this.part?.type ?? 'unknown'}`,
+    );
     const startedAt = performance.now();
-    const markdown = this.part?.type === 'markdown' ? this.part as MarkdownPart : null;
-    const liveStreamingRef = !!markdown?.contentRef && this.doing;
-    let rawContent = '';
-    let nextLength = 0;
+    try {
+      const markdown = this.part?.type === 'markdown' ? this.part as MarkdownPart : null;
+      const liveStreamingRef = !!markdown?.contentRef && this.doing;
+      const markdownIdentity = this.getMarkdownPartIdentity(markdown);
+      if (markdown && this.doing) {
+        this.liveMarkdownPartIdentity = markdownIdentity;
+      } else if (this.activeMarkdownPartIdentity
+        && markdownIdentity !== this.activeMarkdownPartIdentity
+        && this.liveMarkdownPartIdentity !== markdownIdentity) {
+        this.liveMarkdownPartIdentity = '';
+      }
+      let rawContent = '';
+      let nextLength = 0;
 
-    if (markdown) {
-      if (markdown.contentRef) {
-        if (liveStreamingRef && this.activeMarkdownContentRef === markdown.contentRef && this.markdownDisplayContent().length > 0) {
-          this.activeMarkdownContentLength = typeof markdown.contentLength === 'number'
-            ? markdown.contentLength
-            : this.activeMarkdownContentLength;
-          return;
-        }
-
-        if (liveStreamingRef) {
-          rawContent = readStoredMarkdownContentWindow(
-            markdown.contentRef,
-            LIVE_MARKDOWN_RENDER_WINDOW_CHARS,
-            LIVE_MARKDOWN_OMITTED_MARKER,
-          );
+      if (markdown) {
+        if (markdown.contentRef) {
+          rawContent = liveStreamingRef ? '' : readStoredMarkdownContent(markdown.contentRef);
+          if (typeof markdown.contentLength === 'number') {
+            nextLength = markdown.contentLength;
+          } else {
+            nextLength = readStoredMarkdownContentLength(markdown.contentRef);
+          }
         } else {
-          rawContent = readStoredMarkdownContent(markdown.contentRef);
-        }
-        if (typeof markdown.contentLength === 'number') {
-          nextLength = markdown.contentLength;
-        } else {
-          nextLength = readStoredMarkdownContentLength(markdown.contentRef);
-        }
-      } else {
-        rawContent = markdown.content;
-        if (typeof markdown.contentLength === 'number') {
-          nextLength = markdown.contentLength;
-        } else {
-          nextLength = rawContent.length;
+          rawContent = markdown.content;
+          if (typeof markdown.contentLength === 'number') {
+            nextLength = markdown.contentLength;
+          } else {
+            nextLength = rawContent.length;
+          }
         }
       }
-    }
 
-    let nextContent = rawContent;
-    if (!markdown?.contentRef || !liveStreamingRef) {
-      nextContent = this.selectMarkdownDisplayContent(rawContent, false);
-    }
+      let nextContent = rawContent;
 
-    if (
-      this.markdownDisplayContent() === nextContent
-      && this.activeMarkdownContentRef === (markdown?.contentRef || '')
-      && this.activeMarkdownContentLength === nextLength
-    ) {
-      return;
-    }
+      if (
+        this.markdownDisplayContent === nextContent
+        && this.activeMarkdownContentRef === (markdown?.contentRef || '')
+        && this.activeMarkdownPartIdentity === markdownIdentity
+        && this.activeMarkdownContentLength === nextLength
+      ) {
+        return;
+      }
 
-    this.activeMarkdownContentRef = markdown?.contentRef || '';
-    this.activeMarkdownContentLength = nextLength;
-    this.markdownDisplayContent.set(nextContent);
-    this.markdownChunkCache = null;
-    ChatPerformanceTracer.recordDuration(
-      'markdown_display_sync',
-      performance.now() - startedAt,
-      `raw=${rawContent.length},visible=${nextContent.length},ref=${!!markdown?.contentRef},doing=${this.doing}`,
-      { slowThresholdMs: 8 },
+      if (!this.commitMarkdownDisplayContent({
+        content: nextContent,
+        rawLength: nextLength,
+        contentRef: markdown?.contentRef || '',
+        partIdentity: markdownIdentity,
+        live: this.doing,
+      })) {
+        return;
+      }
+      ChatPerformanceTracer.recordDuration(
+        'markdown_display_sync',
+        performance.now() - startedAt,
+        `raw=${rawContent.length},visible=${nextContent.length},ref=${!!markdown?.contentRef},doing=${this.doing}`,
+        { slowThresholdMs: 8 },
+      );
+    } finally {
+      surface.dispose();
+    }
+  }
+
+  onMarkdownHeightChange(): void {
+    this.chatEngine?.handleStreamingMarkdownHeightChange?.();
+  }
+
+  onMarkdownIncrementalFallback(event: XMarkdownIncrementalFallbackEvent): void {
+    const markdown = this.part?.type === 'markdown' ? this.part as MarkdownPart : null;
+    const partId = this.getMarkdownPartIdentity(markdown);
+    ChatPerformanceTracer.increment('markdown_incremental_fallback.count');
+    ChatPerformanceTracer.mark(
+      'markdown_incremental_fallback',
+      `session=${this.sessionId || 'unknown'},turn=${this.turnResponse?.turnId || this.turnResponse?.response?.id || 'unknown'},part=${partId || 'unknown'},ref=${markdown?.contentRef || 'inline'},previous=${event.previousLength},next=${event.nextLength},reason=${event.reason}`,
     );
   }
 
-  private syncMarkdownPolling(): void {
+  onMarkdownIncrementalRender(event: XMarkdownIncrementalRenderEvent): void {
     const markdown = this.part?.type === 'markdown' ? this.part as MarkdownPart : null;
-    if (!markdown?.contentRef || !this.doing) {
-      this.stopMarkdownPolling();
-      return;
+    const partId = this.getMarkdownPartIdentity(markdown);
+    const detail = `session=${this.sessionId || 'unknown'},turn=${this.turnResponse?.turnId || this.turnResponse?.response?.id || 'unknown'},part=${partId || 'unknown'},ref=${markdown?.contentRef || 'inline'},raw=${event.markdownLength},rendered=${event.renderedLength},buffering=${event.buffering},final=${event.isFinalChunk}`;
+    ChatPerformanceTracer.recordDuration(
+      'markdown_incremental_flush',
+      event.durationMs,
+      detail,
+      { slowThresholdMs: 16 },
+    );
+    if (event.durationMs >= 50) {
+      ChatPerformanceTracer.increment('markdown_incremental_flush.hard_regression');
+      ChatPerformanceTracer.mark('markdown_incremental_flush_hard_regression', `${event.durationMs.toFixed(1)}ms ${detail}`);
     }
-
-    if (this.markdownPollTimer) {
-      return;
+    if (event.isFinalChunk) {
+      console.info(
+        '[AilyChat][MarkdownFinalRenderScalar]',
+        `${detail},wallAt=${Date.now()}`,
+      );
     }
-
-    this.ngZone.runOutsideAngular(() => {
-      this.markdownPollTimer = setInterval(() => {
-        const contentRef = this.activeMarkdownContentRef;
-        if (!contentRef) {
-          return;
-        }
-
-        const rawLength = readStoredMarkdownContentLength(contentRef);
-        const nextContent = readStoredMarkdownContentWindow(
-          contentRef,
-          LIVE_MARKDOWN_RENDER_WINDOW_CHARS,
-          LIVE_MARKDOWN_OMITTED_MARKER,
-        );
-        if (nextContent === this.markdownDisplayContent() && rawLength === this.activeMarkdownContentLength) {
-          return;
-        }
-
-        this.ngZone.run(() => {
-          const updateStartedAt = performance.now();
-          this.activeMarkdownContentLength = rawLength;
-          this.markdownDisplayContent.set(nextContent);
-          this.markdownChunkCache = null;
-          this.cdr.markForCheck();
-          ChatPerformanceTracer.recordDuration(
-            'markdown_poll_update',
-            performance.now() - updateStartedAt,
-            `raw=${rawLength},visible=${nextContent.length}`,
-            { slowThresholdMs: 8 },
-          );
-        });
-      }, LIVE_MARKDOWN_POLL_INTERVAL_MS);
-    });
   }
 
-  private stopMarkdownPolling(): void {
-    if (!this.markdownPollTimer) {
-      return;
+  private commitMarkdownDisplayContent(input: {
+    content: string;
+    rawLength: number;
+    contentRef: string;
+    partIdentity: string;
+    live: boolean;
+  }): boolean {
+    const samePart = this.activeMarkdownPartIdentity === input.partIdentity;
+    const sameRef = this.activeMarkdownContentRef === input.contentRef;
+    const currentContent = this.markdownDisplayContent;
+
+    if (input.live && samePart && sameRef) {
+      if (input.rawLength >= 0 && this.activeMarkdownContentLength >= 0 && input.rawLength < this.activeMarkdownContentLength) {
+        return false;
+      }
+
+      if (currentContent && input.content.length < currentContent.length) {
+        return false;
+      }
     }
 
-    clearInterval(this.markdownPollTimer);
-    this.markdownPollTimer = null;
+    this.activeMarkdownContentRef = input.contentRef;
+    this.activeMarkdownPartIdentity = input.partIdentity;
+    this.activeMarkdownContentLength = input.rawLength;
+    this.markdownDisplayContent = input.content;
+    this.markdownChunkCache = null;
+    return true;
   }
 
-  private selectMarkdownDisplayContent(content: string, liveStreamingRef: boolean): string {
-    if (!liveStreamingRef || content.length <= LIVE_MARKDOWN_RENDER_WINDOW_CHARS) {
-      return content;
+  private getMarkdownPartIdentity(markdown: MarkdownPart | null): string {
+    if (!markdown) {
+      return '';
     }
 
-    const tailLength = Math.max(0, LIVE_MARKDOWN_RENDER_WINDOW_CHARS - LIVE_MARKDOWN_OMITTED_MARKER.length);
-    return `${LIVE_MARKDOWN_OMITTED_MARKER}${content.slice(-tailLength)}`;
+    return markdown.partId || markdown.contentRef || `${markdown.sourceAgentRole || 'main'}:${markdown.sequence ?? ''}:markdown`;
+  }
+
+  private updateStreamingConfig(): void {
+    if (this.streamingConfig.hasNextChunk === this.doing
+      && this.streamingConfig.enableAnimation === false
+      && this.streamingConfig.buffering === 'word'
+      && this.streamingConfig.impliedWordLoadRate === this.impliedWordLoadRate) {
+      return;
+    }
+    this.streamingConfig = {
+      hasNextChunk: this.doing,
+      enableAnimation: false,
+      buffering: 'word',
+      impliedWordLoadRate: this.impliedWordLoadRate,
+    };
+  }
+
+  private tryIncrementalMarkdownUpdate(
+    previous: MarkdownPart | null,
+    next: MarkdownPart,
+  ): boolean {
+    const markdownComponent = this.markdownComponent;
+    if (!previous || !markdownComponent) {
+      return false;
+    }
+
+    const nextLength = this.getMarkdownContentLengthInput() ?? next.content.length;
+    if (!this.doing
+      && nextLength > LARGE_MARKDOWN_RENDER_CHAR_LIMIT
+      && this.liveMarkdownPartIdentity !== this.getMarkdownPartIdentity(next)) {
+      return false;
+    }
+
+    markdownComponent.content = this.getMarkdownDisplayContent();
+    markdownComponent.contentRef = this.getMarkdownContentRef();
+    markdownComponent.contentLength = nextLength;
+    markdownComponent.contentResolver = this.markdownContentResolver;
+    markdownComponent.streaming = this.streamingConfig;
+    markdownComponent.refreshExternalContent(nextLength);
+    return true;
   }
 
   getStateData(): {

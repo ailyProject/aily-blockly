@@ -143,6 +143,21 @@ export class UiService {
     window['subWindow'].open(opt);
   }
 
+  openToolWindow(name: string, options?: { width?: number; height?: number; title?: string }) {
+    const toolWindowPath = this.getToolWindowPath(name);
+    if (!toolWindowPath) {
+      return false;
+    }
+
+    this.openWindow({
+      path: toolWindowPath.replace(/^\/+/, ''),
+      title: options?.title || name,
+      width: options?.width ?? 1200,
+      height: options?.height ?? 800,
+    });
+    return true;
+  }
+
   // 这个方法是给header用的
   turnTool(opt: ToolOpts) {
     if (this.topTool == opt.data) {
@@ -286,9 +301,21 @@ export class UiService {
     this.openTool('aily-chat');
     const deliver = () => {
       if (ChatService.isReady) {
+        console.info('[AilyChat][ExternalInputDelivery]', {
+          phase: 'deliver',
+          target: 'chat-service',
+          textLength: typeof text === 'string' ? text.length : 0,
+          autoSend: options?.['autoSend'] === true,
+        });
         ChatService.sendToChat(text, options);
         return;
       }
+      console.info('[AilyChat][ExternalInputDelivery]', {
+        phase: 'deliver',
+        target: 'ui-subject',
+        textLength: typeof text === 'string' ? text.length : 0,
+        autoSend: options?.['autoSend'] === true,
+      });
       this.chatMessageSubject.next({ text, options });
     };
     setTimeout(deliver, 0);

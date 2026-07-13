@@ -54,7 +54,17 @@ function normalizeResourceRequestKind(kind) {
     || kind === 'file-write'
     || kind === 'file-edit'
     || kind === 'workspace-mutation'
+    || kind === 'project-info'
+    || kind === 'project-build'
+    || kind === 'project-lint'
+    || kind === 'tool-approval'
+    || kind === 'blockly-workspace'
+    || kind === 'connection-graph'
+    || kind === 'board-search'
+    || kind === 'library-analysis'
+    || kind === 'diagnostics'
     || kind === 'edit-tracking'
+    || kind === 'session-title'
     || kind === 'save-current-session'
     || kind === 'history-persistence'
     ? kind
@@ -104,6 +114,86 @@ function clonePayload(value) {
     return structuredClone(value);
   }
   return JSON.parse(JSON.stringify(value));
+}
+
+function readTurnParts(turn) {
+  return Array.isArray(turn && turn.response && turn.response.parts)
+    ? turn.response.parts
+    : [];
+}
+
+function readTurnStatus(turn) {
+  return typeof (turn && turn.response && turn.response.status) === 'string'
+    ? turn.response.status
+    : undefined;
+}
+
+function getTurnPartStableKey(part) {
+  if (!part || typeof part !== 'object') {
+    return '';
+  }
+  if (typeof part.partId === 'string' && part.partId.trim().length > 0) {
+    return `${part.type || 'part'}:${part.partId.trim()}`;
+  }
+  switch (part.type) {
+    case 'tool_call':
+      return typeof part.toolCallId === 'string' && part.toolCallId.trim()
+        ? `tool:${part.toolCallId.trim()}`
+        : '';
+    case 'terminal': {
+      const terminalId = part.processId || part.outputSessionId || part.terminalId || part.toolCallId;
+      return typeof terminalId === 'string' && terminalId.trim()
+        ? `terminal:${terminalId.trim()}`
+        : '';
+    }
+    case 'state':
+      return typeof part.stateId === 'string' && part.stateId.trim()
+        ? `state:${part.stateId.trim()}`
+        : '';
+    case 'question':
+      return typeof part.requestId === 'string' && part.requestId.trim()
+        ? `question:${part.requestId.trim()}`
+        : '';
+    case 'confirmation': {
+      const askId = part.askId || part.requestId || part.toolCallId;
+      return typeof askId === 'string' && askId.trim()
+        ? `confirmation:${askId.trim()}`
+        : '';
+    }
+    default:
+      return '';
+  }
+}
+
+function stableStringifyPayload(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function collectChangedTurnParts(previousTurn, nextTurn) {
+  const previousParts = readTurnParts(previousTurn);
+  const nextParts = readTurnParts(nextTurn);
+  if (nextParts.length === 0) {
+    return [];
+  }
+  const previousByKey = new Map();
+  previousParts.forEach((part, index) => {
+    const key = getTurnPartStableKey(part) || `index:${index}`;
+    previousByKey.set(key, stableStringifyPayload(part));
+  });
+  const changed = [];
+  nextParts.forEach((part, index) => {
+    const key = getTurnPartStableKey(part) || `index:${index}`;
+    const previousSignature = previousByKey.get(key);
+    const nextSignature = stableStringifyPayload(part);
+    if (previousSignature !== nextSignature) {
+      changed.push(part);
+    }
+  });
+  return changed;
 }
 
 class ChatRuntimeHostSessionStore {
@@ -280,6 +370,57 @@ class ChatRuntimeHostSessionStore {
 
   buildTranscriptSnapshot(sessionId) {
     return this.transcriptBuilder.buildTranscriptSnapshot(sessionId);
+  }
+
+  buildLiveHostSessionRecord(sessionId, statePatch) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId) {
+      return null;
+    }
+    const transcript = this.transcriptBuilder.buildTranscriptSnapshot(normalizedSessionId);
+    const turnResponses = Array.isArray(transcript && transcript.turnResponses)
+      ? clonePayload(transcript.turnResponses)
+      : [];
+    if (turnResponses.length === 0) {
+      return null;
+    }
+    const state = {
+      ...(this.buildSessionState(normalizedSessionId) || {}),
+      ...(statePatch && typeof statePatch === 'object' ? statePatch : {}),
+    };
+    const metadata = this.sessionInventoryMetadata.get(normalizedSessionId) ?? {};
+    const now = Date.now();
+    const activeTurnId = this.normalizeActiveTurnId(state.activeTurnId);
+    return {
+      sessionId: normalizedSessionId,
+      metadata: {
+        sessionId: normalizedSessionId,
+        title: typeof metadata.title === 'string' ? metadata.title : '',
+        ...(typeof metadata.titleSource === 'string' ? { titleSource: metadata.titleSource } : {}),
+        ...(typeof metadata.sessionType === 'string' ? { sessionType: metadata.sessionType } : {}),
+        projectPath: Object.prototype.hasOwnProperty.call(metadata, 'projectPath') ? metadata.projectPath : null,
+        createdAt: typeof metadata.createdAt === 'number' && Number.isFinite(metadata.createdAt)
+          ? metadata.createdAt
+          : now,
+        updatedAt: now,
+        mode: typeof metadata.mode === 'string' && metadata.mode.trim()
+          ? metadata.mode.trim()
+          : typeof state.selectedMode === 'string' && state.selectedMode.trim()
+            ? state.selectedMode.trim()
+            : 'agent',
+        model: state.currentModel ?? null,
+        toolCallingIteration: 0,
+      },
+      turnResponses,
+      auxiliary: {
+        runtimeHost: {
+          transcriptRevision: Number(transcript && transcript.revision) || Number(state.transcriptRevision) || 0,
+          requestInProgress: state.requestInProgress === true,
+          activeTurnId: activeTurnId || null,
+          status: typeof state.status === 'string' ? state.status : null,
+        },
+      },
+    };
   }
 
   buildInteractionSnapshot(sessionId) {
@@ -619,6 +760,11 @@ class ChatRuntimeHostSessionStore {
     const renderEvent = payload && payload.renderEvent && typeof payload.renderEvent === 'object'
       ? payload.renderEvent
       : null;
+    const normalizedTurnId = this.normalizeActiveTurnId(payload && payload.turnId);
+    const beforeTranscript = this.transcriptBuilder.buildTranscriptSnapshot(sessionId);
+    const beforeTurn = Array.isArray(beforeTranscript && beforeTranscript.turnResponses)
+      ? beforeTranscript.turnResponses.find(candidate => this.normalizeActiveTurnId(candidate && candidate.turnId) === normalizedTurnId)
+      : null;
     const transcript = this.transcriptBuilder.acceptRenderEvent({
       sessionId,
       turnId: payload && payload.turnId,
@@ -626,11 +772,39 @@ class ChatRuntimeHostSessionStore {
       request: (payload && payload.request) || this.readActiveSubmittedRequest(sessionId),
       event: this.retargetRuntimeOwnerRenderEvent(renderEvent, payload && payload.turnId),
     });
-    const transcriptEvent = this.buildTurnTranscriptEvent(
-      transcript,
-      payload && payload.turnId,
-      payload && payload.revision,
-    );
+    const turns = Array.isArray(transcript && transcript.turnResponses)
+      ? transcript.turnResponses
+      : [];
+    const nextTurn = turns.find(candidate => this.normalizeActiveTurnId(candidate && candidate.turnId) === normalizedTurnId) || null;
+    const changedParts = collectChangedTurnParts(beforeTurn, nextTurn);
+    const sourceEventType = typeof renderEvent?.type === 'string' ? renderEvent.type : null;
+    const sourceEventTimestamp = Number.isFinite(Number(renderEvent?.timestamp))
+      ? Number(renderEvent.timestamp)
+      : null;
+    const hostPublishedAt = Date.now();
+    const transcriptEvent = changedParts.length > 0 && nextTurn
+      ? {
+          kind: 'part-transcript',
+          sessionId,
+          turnId: normalizedTurnId,
+          revision: Number(transcript && transcript.revision) || Number(payload && payload.revision) || 0,
+          parts: clonePayload(changedParts),
+          turn: clonePayload(nextTurn),
+          ...(readTurnStatus(nextTurn) ? { status: readTurnStatus(nextTurn) } : {}),
+          ...(sourceEventType ? { sourceEventType } : {}),
+          ...(sourceEventTimestamp !== null ? { sourceEventTimestamp } : {}),
+          hostPublishedAt,
+        }
+      : {
+          ...this.buildTurnTranscriptEvent(
+            transcript,
+            payload && payload.turnId,
+            payload && payload.revision,
+          ),
+          ...(sourceEventType ? { sourceEventType } : {}),
+          ...(sourceEventTimestamp !== null ? { sourceEventTimestamp } : {}),
+          hostPublishedAt,
+        };
     const interactionEvents = this.cacheInteractionFromRenderEvent({
       sessionId,
       revision: Number(payload && payload.revision) || Number(transcript && transcript.revision) || 0,
@@ -1165,6 +1339,8 @@ class ChatRuntimeHostSessionStore {
     switch (payload.kind) {
       case 'turnProgress':
         return this.cacheRuntimeOwnerTurnProgress(payload);
+      case 'runtimeProjectPathUpdated':
+        return payload;
       case 'turnInteractionRequested':
         return this.cacheRuntimeOwnerTurnInteractionRequested(payload);
       case 'turnError':
@@ -1191,6 +1367,30 @@ class ChatRuntimeHostSessionStore {
     if (!this.isCurrentRuntimeOwnerTurn(sessionId, payloadTurnId)
       && !this.isCurrentRuntimeOwnerTurn(sessionId, turnId)
       && !this.isCurrentRuntimeOwnerTurn(sessionId, visibleTurnId)) {
+      if (payload && payload.renderEvent && this.canApplySettledRuntimeOwnerResponseMetadata({
+        sessionId,
+        turnId: visibleTurnId || renderEventTurnId || turnId,
+        renderEvent: payload.renderEvent,
+      })) {
+        const settledMetadataEvent = this.cacheRuntimeOwnerRenderEvent({
+          ...payload,
+          sessionId,
+          turnId: visibleTurnId || renderEventTurnId || turnId,
+        });
+        const modelRouting = payload.renderEvent.modelRouting && typeof payload.renderEvent.modelRouting === 'object'
+          ? payload.renderEvent.modelRouting
+          : null;
+        console.info(
+          '[AilyChat][SettledResponseMetadataScalar]',
+          [
+            `sessionId=${sessionId}`,
+            `turnId=${visibleTurnId || renderEventTurnId || turnId}`,
+            `selectedPreset=${normalizeOptionalString(modelRouting && modelRouting.selectedPresetId) || '<none>'}`,
+            `billing=${normalizeOptionalString(payload.renderEvent.modelBillingLabel) || normalizeOptionalString(modelRouting && modelRouting.modelBillingLabel) || '<none>'}`,
+          ].join(' '),
+        );
+        return settledMetadataEvent;
+      }
       if (payload && payload.renderEvent && this.acceptRuntimeOwnerServiceOwnedResponseProgress({
         sessionId,
         turnId: visibleTurnId || renderEventTurnId || turnId,
@@ -1504,6 +1704,25 @@ class ChatRuntimeHostSessionStore {
         revision: Number(payload.interaction.revision) || Number(payload.revision) || 0,
         interaction: clonePayload(payload.interaction),
       });
+    }
+    const completionTurnId = visibleTurnId || turnSnapshotId || turnId || payloadTurnId;
+    const completedTranscript = completionTurnId
+      ? this.transcriptBuilder.completeTurn({
+        sessionId,
+        turnId: completionTurnId,
+        revision: payload && payload.revision,
+        timestamp: Date.now(),
+      })
+      : null;
+    const completedTranscriptEvent = completedTranscript
+      ? this.buildTurnTranscriptEvent(
+        completedTranscript,
+        completionTurnId,
+        payload && payload.revision,
+      )
+      : null;
+    if (completedTranscriptEvent) {
+      events.push(completedTranscriptEvent);
     }
     const previousState = this.buildSessionState(sessionId);
     const transcriptRevision = Math.max(
@@ -1984,14 +2203,6 @@ class ChatRuntimeHostSessionStore {
       : [];
     const existingTurn = turns.find(item =>
       this.normalizeActiveTurnId(item && item.turnId) === visibleTurnId);
-    const previousActiveTurnId = this.normalizeActiveTurnId(previousState && previousState.activeTurnId);
-    const isAlreadyCurrent = previousState
-      && previousState.requestInProgress === true
-      && previousActiveTurnId === visibleTurnId;
-    if (existingTurn && this.turnHasObservableProgress(existingTurn) && !isAlreadyCurrent) {
-      return false;
-    }
-
     const hasModelProgress = (renderEvent && typeof renderEvent === 'object')
       || this.turnHasObservableProgress(turn);
     if (!hasModelProgress) {
@@ -1999,6 +2210,21 @@ class ChatRuntimeHostSessionStore {
     }
 
     const effectiveRequest = request || this.readActiveSubmittedRequest(normalizedSessionId);
+    const previousActiveTurnId = this.normalizeActiveTurnId(previousState && previousState.activeTurnId);
+    const isAlreadyCurrent = previousState
+      && previousState.requestInProgress === true
+      && previousActiveTurnId === visibleTurnId;
+    if (existingTurn && this.turnHasObservableProgress(existingTurn) && !isAlreadyCurrent) {
+      const isSettledTurnSnapshotUpdate = this.isSettledRuntimeOwnerTurnSnapshotUpdate({
+        existingTurn,
+        incomingTurn: turn,
+        request: effectiveRequest,
+      });
+      if (!isSettledTurnSnapshotUpdate) {
+        return false;
+      }
+    }
+
     let nextTranscriptRevision = Math.max(
       Number(previousState && previousState.transcriptRevision) || 0,
       Number(transcript && transcript.revision) || 0,
@@ -2100,6 +2326,26 @@ class ChatRuntimeHostSessionStore {
       ? request.metadata
       : null;
     return this.normalizeActiveTurnId(metadata && metadata.requestId);
+  }
+
+  isSettledRuntimeOwnerTurnSnapshotUpdate({ existingTurn, incomingTurn, request }) {
+    if (!incomingTurn || typeof incomingTurn !== 'object') {
+      return false;
+    }
+
+    const existingTurnId = this.normalizeActiveTurnId(existingTurn && existingTurn.turnId);
+    const incomingTurnId = this.normalizeActiveTurnId(incomingTurn && incomingTurn.turnId);
+    if (!existingTurnId || existingTurnId !== incomingTurnId) {
+      return false;
+    }
+
+    const existingRequestId = this.readTurnRequestId(existingTurn);
+    const incomingRequestId = this.readSubmitRequestId(request) || this.readTurnRequestId(incomingTurn);
+    if (existingRequestId && incomingRequestId && existingRequestId !== incomingRequestId) {
+      return false;
+    }
+
+    return this.turnHasObservableProgress(incomingTurn);
   }
 
   readActiveSubmittedRequest(sessionId) {
@@ -2295,6 +2541,33 @@ class ChatRuntimeHostSessionStore {
       return true;
     }
     return false;
+  }
+
+  canApplySettledRuntimeOwnerResponseMetadata({ sessionId, turnId, renderEvent }) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    const normalizedTurnId = this.normalizeActiveTurnId(turnId);
+    if (!normalizedSessionId
+      || !normalizedTurnId
+      || !renderEvent
+      || renderEvent.type !== 'turn_end'
+      || !this.hasHostSession(normalizedSessionId)) {
+      return false;
+    }
+
+    const state = this.buildSessionState(normalizedSessionId);
+    if (!state
+      || state.requestInProgress === true
+      || this.isHostTerminalStatus(state.status)) {
+      return false;
+    }
+
+    const transcript = this.transcriptBuilder.buildTranscriptSnapshot(normalizedSessionId);
+    const turns = Array.isArray(transcript && transcript.turnResponses)
+      ? transcript.turnResponses
+      : [];
+    const existingTurn = turns.find(candidate =>
+      this.normalizeActiveTurnId(candidate && candidate.turnId) === normalizedTurnId);
+    return readTurnStatus(existingTurn) === 'completed';
   }
 
   isCurrentRuntimeOwnerTurn(sessionId, turnId) {

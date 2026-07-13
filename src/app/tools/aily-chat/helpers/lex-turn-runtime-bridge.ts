@@ -59,8 +59,8 @@ function isUnambiguousRenderEventLike(event: unknown): event is RenderEvent {
 }
 
 type AgentLifecycleAccess = {
-  getHandle?(): Pick<AgentHandle, 'chat'> | null;
-  getAgent(): { chat(userMessage: string, signal?: AbortSignal, options?: { readonly yieldRequested?: () => boolean }): AsyncIterable<any> } | null;
+  getHandle?(sessionId?: string | null): Pick<AgentHandle, 'chat'> | null;
+  getAgent(sessionId?: string | null): { chat(userMessage: string, signal?: AbortSignal, options?: { readonly yieldRequested?: () => boolean; readonly turnId?: string }): AsyncIterable<any> } | null;
   getLex(): { RenderEventEmitter?: new () => {
     process(event: any): readonly RenderEvent[];
     finalize(): readonly RenderEvent[];
@@ -68,12 +68,17 @@ type AgentLifecycleAccess = {
 };
 
 type TurnStartupAccess = {
-  beginMainAgentTurn(userMessage: string, displayContent?: string, requestMetadata?: TurnRequest['metadata']): string | undefined;
+  beginMainAgentTurn(
+    userMessage: string,
+    displayContent?: string,
+    requestMetadata?: TurnRequest['metadata'],
+    options?: { readonly turnId?: string },
+  ): string | undefined;
 };
 
 type TurnExecutionAccess = {
-  runTurn(agent: { chat(userMessage: string, signal?: AbortSignal, options?: { readonly yieldRequested?: () => boolean }): AsyncIterable<any> } | null, userMessage: string): Promise<void>;
-  runTurnWithRenderEvents(source: { chat(message: string, signal?: AbortSignal, options?: { readonly yieldRequested?: () => boolean }): AsyncIterable<RenderEvent> }, userMessage: string, displayContent?: string): Promise<void>;
+  runTurn(agent: { chat(userMessage: string, signal?: AbortSignal, options?: { readonly yieldRequested?: () => boolean; readonly turnId?: string }): AsyncIterable<any> } | null, userMessage: string, options?: { readonly turnId?: string; readonly sessionId?: string }): Promise<void>;
+  runTurnWithRenderEvents(source: { chat(message: string, signal?: AbortSignal, options?: { readonly yieldRequested?: () => boolean; readonly turnId?: string }): AsyncIterable<RenderEvent> }, userMessage: string, displayContent?: string, options?: { readonly turnId?: string; readonly sessionId?: string }): Promise<void>;
 };
 
 type TurnUiAccess = {
@@ -94,36 +99,58 @@ export class LexTurnRuntimeBridge {
     private readonly uiEventBridge: TurnUiAccess,
   ) {}
 
-  begin(userMessage: string, displayContent?: string, requestMetadata?: TurnRequest['metadata']): string | undefined {
+  begin(
+    userMessage: string,
+    displayContent?: string,
+    requestMetadata?: TurnRequest['metadata'],
+    options?: { readonly turnId?: string },
+  ): string | undefined {
     traceBackgroundSessionExecution('runtime-bridge-begin', {
       hasDisplayContent: typeof displayContent === 'string' && displayContent.length > 0,
       hasRequestMetadata: !!requestMetadata,
     });
-    return this.turnStartupBridge.beginMainAgentTurn(userMessage, displayContent, requestMetadata);
+    return this.turnStartupBridge.beginMainAgentTurn(userMessage, displayContent, requestMetadata, options);
   }
 
-  async run(userMessage: string, displayContent?: string): Promise<void> {
-    const handle = this.agentLifecycleBridge.getHandle?.() ?? null;
+  async run(userMessage: string, displayContent?: string, options: { readonly turnId?: string; readonly sessionId?: string } = {}): Promise<void> {
+    const handle = this.agentLifecycleBridge.getHandle?.(options.sessionId) ?? null;
     if (handle) {
+      console.info('[AilyChat][LexRuntimePath]', {
+        phase: 'turn-run',
+        path: 'handle-render-event',
+        sessionId: options.sessionId ?? null,
+        turnId: options.turnId ?? null,
+      });
       traceBackgroundSessionExecution('runtime-bridge-path', {
         path: 'handle-render-event',
       });
-      await this.turnExecutionBridge.runTurnWithRenderEvents(handle, userMessage, displayContent);
+      await this.turnExecutionBridge.runTurnWithRenderEvents(handle, userMessage, displayContent, options);
       return;
     }
 
-    const agent = this.agentLifecycleBridge.getAgent();
+    const agent = this.agentLifecycleBridge.getAgent(options.sessionId);
     if (!agent) {
+      console.warn('[AilyChat][LexRuntimePath]', {
+        phase: 'turn-run',
+        path: 'no-agent',
+        sessionId: options.sessionId ?? null,
+        turnId: options.turnId ?? null,
+      });
       traceBackgroundSessionExecution('runtime-bridge-path', {
         path: 'no-agent',
       });
-      await this.turnExecutionBridge.runTurn(null, userMessage);
-      return;
+      throw new Error(`[AilyChat][TurnOwner] No Lex agent is available for session ${options.sessionId ?? '<active>'}.`);
     }
 
     // Wrap raw AilyLexAgent into a RenderEventSource using RenderEventEmitter
     const lex = this.agentLifecycleBridge.getLex();
     if (lex?.RenderEventEmitter) {
+      console.info('[AilyChat][LexRuntimePath]', {
+        phase: 'turn-run',
+        path: 'emitter-render-event',
+        sessionId: options.sessionId ?? null,
+        turnId: options.turnId ?? null,
+      });
       traceBackgroundSessionExecution('runtime-bridge-path', {
         path: 'emitter-render-event',
       });
@@ -132,7 +159,7 @@ export class LexTurnRuntimeBridge {
         async *chat(
           message: string,
           signal?: AbortSignal,
-          options?: { readonly yieldRequested?: () => boolean },
+          options?: { readonly yieldRequested?: () => boolean; readonly turnId?: string },
         ): AsyncIterable<RenderEvent> {
           const emitter = new RenderEventEmitter();
           let eventMode: 'unknown' | 'render' | 'agent' = 'unknown';
@@ -166,13 +193,19 @@ export class LexTurnRuntimeBridge {
           }
         },
       };
-      await this.turnExecutionBridge.runTurnWithRenderEvents(source, userMessage, displayContent);
+      await this.turnExecutionBridge.runTurnWithRenderEvents(source, userMessage, displayContent, options);
     } else {
       // Fallback: legacy AgentEvent path
+      console.warn('[AilyChat][LexRuntimePath]', {
+        phase: 'turn-run',
+        path: 'legacy-agent-event',
+        sessionId: options.sessionId ?? null,
+        turnId: options.turnId ?? null,
+      });
       traceBackgroundSessionExecution('runtime-bridge-path', {
         path: 'legacy-agent-event',
       });
-      await this.turnExecutionBridge.runTurn(agent, userMessage);
+      await this.turnExecutionBridge.runTurn(agent, userMessage, options);
     }
   }
 

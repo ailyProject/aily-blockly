@@ -583,7 +583,7 @@ export class ChatSessionsControlService {
     const currentSessionId = typeof this.chatService.currentSessionId === 'string'
       ? this.chatService.currentSessionId.trim()
       : '';
-    if (currentSessionId.length > 0) {
+    if (currentSessionId.length > 0 && this.chatService.hasBlankSessionShell !== true) {
       targetSessionIds.add(currentSessionId);
     }
 

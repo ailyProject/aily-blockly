@@ -236,7 +236,11 @@ export class ChatSessionActionsService {
           return;
         }
 
-        const remaining = this.chatSessionItemsService.sessionListItems[0];
+        // The cached list is committed after paint and can still contain the
+        // deleted row here. Resolve the next target from canonical inventory
+        // instead of racing the list renderer's projection cache.
+        const remaining = this.chatSessionItemsService.readSessionViewItems()
+          .find(item => item.sessionId !== sessionId);
         if (remaining?.sessionId) {
           await this.switchToSession(
             remaining.sessionId,

@@ -210,6 +210,8 @@ export interface TerminalPart extends ChatPartScope {
   lastOutputAt?: string;
   /** 输出更新语义：delta 追加，snapshot 替换当前窗口。 */
   outputUpdateKind?: 'delta' | 'snapshot';
+  /** Lightweight invocation metadata, including approval state for terminal tools. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface TerminalPartOptions extends ChatPartScope {
@@ -223,6 +225,7 @@ export interface TerminalPartOptions extends ChatPartScope {
   lastOutputAt?: string;
   sourceToolCallIds?: string[];
   outputUpdateKind?: 'delta' | 'snapshot';
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -279,13 +282,32 @@ export interface SubagentToolCallSnapshot {
   _toolTimers?: Record<string, unknown>;
 }
 
+export function normalizeSubagentToolCallState(value: unknown): SubagentToolCallSnapshot['state'] {
+  if (value === 'done'
+    || value === 'completed'
+    || value === 'complete'
+    || value === 'success'
+    || value === 'succeeded') {
+    return 'done';
+  }
+  if (value === 'error'
+    || value === 'failed'
+    || value === 'failure'
+    || value === 'cancelled'
+    || value === 'canceled'
+    || value === 'stopped') {
+    return 'error';
+  }
+  return 'doing';
+}
+
 export interface PlanStep {
   id: string;
   text: string;
   status?: 'pending' | 'inProgress' | 'completed';
 }
 
-export interface PlanPart {
+export interface PlanPart extends ChatPartScope {
   type: 'plan';
   partId?: string;
   status: 'streaming' | 'completed' | 'failed';
@@ -361,6 +383,7 @@ export function isSubagentChildPart(part: ChatPart | null | undefined): boolean 
 
   const scope = chatPartScopeOf(part);
   return scope?.sourceAgentRole === 'subagent'
+    || typeof scope?.subAgentInvocationId === 'string'
     || typeof scope?.parentToolCallId === 'string';
 }
 
@@ -528,6 +551,7 @@ export function mkTerminal(
     ...(typeof options.bytesTotal === 'number' ? { bytesTotal: options.bytesTotal } : {}),
     ...(options.lastOutputAt ? { lastOutputAt: options.lastOutputAt } : {}),
     ...(options.outputUpdateKind ? { outputUpdateKind: options.outputUpdateKind } : {}),
+    ...(options.metadata ? { metadata: options.metadata } : {}),
     ...scope,
   };
 }
@@ -536,8 +560,11 @@ export function mkPlan(
   text: string,
   status: PlanPart['status'] = 'completed',
   partId = 'plan:proposed',
-  options: Partial<Pick<PlanPart, 'steps' | 'assumptions' | 'verification' | 'source'>> = {},
+  options: Partial<Pick<PlanPart, 'steps' | 'assumptions' | 'verification' | 'source'>> & {
+    readonly scope?: ChatPartScope;
+  } = {},
 ): PlanPart {
+  const scope = normalizeChatPartScope(options.scope);
   return {
     type: 'plan',
     partId,
@@ -547,6 +574,7 @@ export function mkPlan(
     ...(options.assumptions ? { assumptions: options.assumptions } : {}),
     ...(options.verification ? { verification: options.verification } : {}),
     ...(options.source ? { source: options.source } : {}),
+    ...(scope ? scope : {}),
   };
 }
 
@@ -660,11 +688,13 @@ function stripLegacySubagentToolSpecificData(record: Record<string, unknown>): R
 }
 
 function subagentStateToToolState(state: SubagentToolCallSnapshot['state']): ToolCallPart['state'] {
-  return state === 'error' ? 'error' : state === 'done' ? 'done' : 'doing';
+  const normalized = normalizeSubagentToolCallState(state);
+  return normalized === 'error' ? 'error' : normalized === 'done' ? 'done' : 'doing';
 }
 
 function subagentStateToNarrativePhase(state: SubagentToolCallSnapshot['state']): 'started' | 'completed' | 'failed' {
-  return state === 'error' ? 'failed' : state === 'done' ? 'completed' : 'started';
+  const normalized = normalizeSubagentToolCallState(state);
+  return normalized === 'error' ? 'failed' : normalized === 'done' ? 'completed' : 'started';
 }
 
 export function mkSubagentTimelineEntry(entry: {
@@ -740,7 +770,7 @@ export function toolCallPartToSubagentSnapshot(part: ToolCallPart): SubagentTool
       || asString(metadata['pastTenseMessage'])
       || part.toolName
       || 'Agent',
-    state: part.state === 'error' ? 'error' : part.state === 'doing' ? 'doing' : 'done',
+    state: normalizeSubagentToolCallState(part.state),
     resultText: asString(toolSpecificData['result']) || '',
     childItems,
     metadata,

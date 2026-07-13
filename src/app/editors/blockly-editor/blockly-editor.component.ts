@@ -1,4 +1,4 @@
-import { AfterViewInit, ChangeDetectorRef, Component, ElementRef, NgZone, OnDestroy, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
 import { UiService } from '../../services/ui.service';
@@ -27,7 +27,6 @@ import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { OnboardingService } from '../../services/onboarding.service';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { NoticeService } from '../../services/notice.service';
-import { FloatSiderComponent } from '../../components/float-sider/float-sider.component';
 import { LocalLibrarySyncService } from '../../services/local-library-sync.service';
 import { CodeViewerIpcService } from './services/code-viewer-ipc.service';
 import { CrossPlatformCmdService } from '../../services/cross-platform-cmd.service';
@@ -43,15 +42,13 @@ import { BlocklyLibraryPackageService } from '../../services/blockly-library-pac
     NotificationComponent,
     TranslateModule,
     DevToolComponent,
-    FloatSiderComponent,
   ],
   providers: [_BuilderService, _UploaderService, BitmapUploadService],
   templateUrl: './blockly-editor.component.html',
   styleUrl: './blockly-editor.component.scss',
 })
-export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy {
+export class BlocklyEditorComponent implements OnInit, OnDestroy {
   showLibraryManager = false;
-  showFloatSider = false;
 
   private readonly packageJsonWatchDebounceMs = 300;
   private readonly pendingLibraryLoadRetryMs = 1000;
@@ -59,8 +56,6 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
   private readonly pendingBoardReloadRetryMs = 1000;
   private readonly maxPendingBoardReloadAttempts = 120;
   private readonly projectLoadedCodeRefreshDelayMs = 1000;
-  private _onMouseMoveBound = this._onMouseMove.bind(this);
-  private _onMouseLeaveBound = this._onMouseLeave.bind(this);
   private packageJsonWatcherDispose: (() => void) | null = null;
   private packageJsonWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingLibraryLoadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -85,8 +80,9 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
 
   devmode;
 
-  get developerMode() {
-    return this.configService.data.devmode;
+  get developerMode(): boolean {
+    const devmode = (this.configService.data as any).devmode;
+    return typeof devmode === 'boolean' ? devmode : !!devmode?.enabled;
   }
 
   constructor(
@@ -108,7 +104,6 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
     private onboardingService: OnboardingService,
     private translate: TranslateService,
     private noticeService: NoticeService,
-    private el: ElementRef,
     private ngZone: NgZone,
     private localLibrarySyncService: LocalLibrarySyncService,
     private codeViewerIpcService: CodeViewerIpcService,
@@ -144,31 +139,6 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
     window.history.pushState(null, '', window.location.href);
   }
 
-  // 用于弹出侧边栏的鼠标事件监听，放在 Zone 外避免频繁触发变更检测
-  ngAfterViewInit(): void {
-    // 在 Zone 外注册鼠标监听，避免每次移动都触发变更检测
-    this.ngZone.runOutsideAngular(() => {
-      this.el.nativeElement.addEventListener('mousemove', this._onMouseMoveBound);
-      this.el.nativeElement.addEventListener('mouseleave', this._onMouseLeaveBound);
-    });
-  }
-
-  private _onMouseMove(event: MouseEvent): void {
-    const rect = this.el.nativeElement.getBoundingClientRect();
-    const shouldShow = (rect.right - event.clientX) <= 70;
-    if (shouldShow !== this.showFloatSider) {
-      this.showFloatSider = shouldShow;
-      this.ngZone.run(() => this.cd.markForCheck());
-    }
-  }
-
-  private _onMouseLeave(): void {
-    if (this.showFloatSider) {
-      this.showFloatSider = false;
-      this.ngZone.run(() => this.cd.markForCheck());
-    }
-  }
-
   ngOnDestroy(): void {
     this.boardConfigUpdatedSubscription?.unsubscribe();
     this.boardConfigUpdatedSubscription = null;
@@ -184,8 +154,6 @@ export class BlocklyEditorComponent implements OnInit, AfterViewInit, OnDestroy 
     this.codeViewerIpcService.clear();
     this.electronService.setTitle('aily blockly');
     this.blocklyService.reset();
-    this.el.nativeElement.removeEventListener('mousemove', this._onMouseMoveBound);
-    this.el.nativeElement.removeEventListener('mouseleave', this._onMouseLeaveBound);
   }
 
   async loadProject(projectPath) {

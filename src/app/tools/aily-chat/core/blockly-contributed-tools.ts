@@ -42,6 +42,7 @@ import {
   type InvokeHandler,
 } from './blockly-contributed-tool-runtime';
 import { createBlocklyPlaceholderHandlers } from './blockly-placeholder-host-tools';
+import { createPlanReviewHandler, makePlanReviewContribution } from './blockly-plan-review-tool';
 
 export const BLOCKLY_LEX_DEFERRED_GROUPS = [
   { id: 'blockly-library-discovery', label: '硬件/库工具', description: '开发板、库搜索与库定义分析' },
@@ -79,6 +80,7 @@ function createHandlers(runtimeMode: ChatAgentRuntimeMode, options?: BlocklyTool
   const handlers: Record<string, InvokeHandler> = {
     ...createBlocklyProjectDiscoveryHandlers(),
     ...createBlocklyPlaceholderHandlers(),
+    review_plan: createPlanReviewHandler(),
   };
 
   if (runtimeMode === 'unbound' && options?.onRuntimeModeSelected) {
@@ -121,6 +123,7 @@ function collectBlocklyContributions(hostAPI: IExternalHostAPI, runtimeMode: Cha
 
   appendProjectContributions(contributions, hostAPI);
   appendDiscoveryContributions(contributions, hostAPI);
+  contributions.push(makePlanReviewContribution());
 
   if (runtimeMode === 'blockly') {
     appendBlocklyWorkspaceContributions(contributions, hostAPI, createDeferred);

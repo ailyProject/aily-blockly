@@ -44,6 +44,10 @@ import { extractUserTurnResources, mergeUserTurnResources } from './chat-user-tu
 import type { ChatTaskActionDetail } from './chat-task-action-coordinator';
 import type { TurnSnapshot } from '../services/edit-checkpoint.service';
 import type { IWorkspaceCheckpointProvider } from '../services/edit-checkpoint.service';
+import type {
+  ChatSessionPreparedRedoTransaction,
+  ChatSessionRequestListTransactionResult,
+} from '../services/chat-session-model-store.service';
 import {
   type HostResponseProjection,
   type HostTurnResponseState,
@@ -54,9 +58,6 @@ import {
 } from './checkpoint-replay-coordinator';
 import {
   canRedoSessionCheckpointTimeline,
-  cloneSessionCheckpointTimelineState,
-  getSessionCheckpointVisibleTurnResponses,
-  redoSessionCheckpointTimeline,
   type SessionCheckpointTimelineState,
 } from './session-checkpoint-timeline-model';
 import { appendEditActionResult } from './edit-action-result-projection';
@@ -131,9 +132,29 @@ type EditActionsContext = ChatViewWriteBridgeContext
       options?: { readonly attachedView?: boolean },
     ): void;
     readSessionCheckpointTimelineState?(sessionId: string | null | undefined): SessionCheckpointTimelineState | null;
-    replaceSessionCheckpointTimelineState?(
+    commitCheckpointRestoreRequestListTransaction?(
       sessionId: string | null | undefined,
-      state: SessionCheckpointTimelineState | null,
+      checkpointId: string | null | undefined,
+    ): ChatSessionRequestListTransactionResult | null | undefined;
+    rollbackCheckpointRestoreRequestListTransaction?(
+      sessionId: string | null | undefined,
+      committed: ChatSessionRequestListTransactionResult | null | undefined,
+    ): ChatSessionRequestListTransactionResult | null | undefined;
+    prepareCheckpointRedoRequestListTransaction?(
+      sessionId: string | null | undefined,
+    ): ChatSessionPreparedRedoTransaction | null;
+    commitCheckpointRedoRequestListTransaction?(
+      sessionId: string | null | undefined,
+      prepared: ChatSessionPreparedRedoTransaction | null | undefined,
+    ): ChatSessionRequestListTransactionResult | null | undefined;
+    rollbackCheckpointRedoRequestListTransaction?(
+      sessionId: string | null | undefined,
+      prepared: ChatSessionPreparedRedoTransaction | null | undefined,
+    ): ChatSessionRequestListTransactionResult | null | undefined;
+    applyRequestListTransactionEffects?(
+      sessionId: string,
+      transaction: ChatSessionRequestListTransactionResult,
+      options?: { readonly persist?: boolean },
     ): void;
   };
 
@@ -730,14 +751,11 @@ export class EditActionsHelper {
 
     this.refreshWorkspaceCheckpointAccess();
 
-    const checkpointTimelineState = this.readCurrentSessionCheckpointTimelineState();
-    const checkpointRedoTimelineState = checkpointTimelineState && canRedoSessionCheckpointTimeline(checkpointTimelineState)
-      ? redoSessionCheckpointTimeline(checkpointTimelineState)
-      : null;
-    const checkpointRedoTurnResponses = checkpointRedoTimelineState
-      ? getSessionCheckpointVisibleTurnResponses(checkpointRedoTimelineState)
+    const checkpointRedoTransaction = this.prepareCurrentSessionCheckpointRedoTransaction();
+    const checkpointRedoTurnResponses = checkpointRedoTransaction
+      ? checkpointRedoTransaction.turnResponses
       : [];
-    const hasCheckpointRedoChat = checkpointRedoTimelineState !== null && checkpointRedoTurnResponses.length > 0;
+    const hasCheckpointRedoChat = checkpointRedoTransaction !== null && checkpointRedoTurnResponses.length > 0;
 
     if (!hasCheckpointRedoChat && !this.ctx.editCheckpointService.canRedo) {
       this.ctx.message.info('没有可重做的文件变更');
@@ -747,19 +765,14 @@ export class EditActionsHelper {
     const previousTurnResponses = [...this.readCurrentSessionTurnResponses()];
 
     if (hasCheckpointRedoChat) {
-      const previousCheckpointTimelineState = checkpointTimelineState
-        ? cloneSessionCheckpointTimelineState(checkpointTimelineState)
-        : null;
       const checkpointRedoResult = await this.checkpointReplayCoordinator.redoCheckpoint(
         checkpointRedoTurnResponses,
         previousTurnResponses,
         {
-          applyCheckpointTimelineCommit: () => {
-            this.replaceCurrentSessionCheckpointTimelineState(checkpointRedoTimelineState);
-          },
-          rollbackCheckpointTimelineCommit: () => {
-            this.replaceCurrentSessionCheckpointTimelineState(previousCheckpointTimelineState);
-          },
+          applyCheckpointTimelineCommit: () =>
+            this.commitCurrentSessionCheckpointRedoTransaction(checkpointRedoTransaction),
+          rollbackCheckpointTimelineCommit: () =>
+            this.rollbackCurrentSessionCheckpointRedoTransaction(checkpointRedoTransaction),
         },
       );
       if (checkpointRedoResult.ok === false) {
@@ -789,13 +802,65 @@ export class EditActionsHelper {
     return sessionId ? this.ctx.readSessionCheckpointTimelineState?.(sessionId) ?? null : null;
   }
 
-  private replaceCurrentSessionCheckpointTimelineState(state: SessionCheckpointTimelineState | null): void {
+  private prepareCurrentSessionCheckpointRedoTransaction(): ChatSessionPreparedRedoTransaction | null {
     const sessionId = this.resolveCurrentSessionResource();
     if (!sessionId) {
-      return;
+      return null;
     }
 
-    this.ctx.replaceSessionCheckpointTimelineState?.(sessionId, state);
+    return this.ctx.prepareCheckpointRedoRequestListTransaction?.(sessionId) ?? null;
+  }
+
+  private commitCurrentSessionCheckpointRedoTransaction(
+    prepared: ChatSessionPreparedRedoTransaction | null,
+  ): ChatSessionRequestListTransactionResult | null {
+    if (!prepared) {
+      return null;
+    }
+
+    const committed = this.ctx.commitCheckpointRedoRequestListTransaction?.(
+      prepared.sessionResource,
+      prepared,
+    );
+    if (committed?.turnResponses) {
+      console.info('[AilyChat][RequestListBranchTrace]', {
+        phase: 'checkpoint-redo-commit',
+        sessionId: prepared.sessionResource,
+        requestListRevision: committed.revision ?? null,
+        retainedTurnIds: committed.retainedTurnIds ?? summarizeTurnResponseIds(committed.turnResponses),
+        restoredTurnIds: committed.restoredTurnIds ?? prepared.restoredTurnIds ?? [],
+        canonicalTurnIds: summarizeTurnResponseIds(committed.turnResponses),
+      });
+      return committed;
+    }
+
+    return null;
+  }
+
+  private rollbackCurrentSessionCheckpointRedoTransaction(
+    prepared: ChatSessionPreparedRedoTransaction | null,
+  ): ChatSessionRequestListTransactionResult | null {
+    if (!prepared) {
+      return null;
+    }
+
+    const rolledBack = this.ctx.rollbackCheckpointRedoRequestListTransaction?.(
+      prepared.sessionResource,
+      prepared,
+    );
+    if (rolledBack?.turnResponses) {
+      console.info('[AilyChat][RequestListBranchTrace]', {
+        phase: 'checkpoint-redo-rollback',
+        sessionId: prepared.sessionResource,
+        requestListRevision: rolledBack.revision ?? null,
+        retainedTurnIds: rolledBack.retainedTurnIds ?? summarizeTurnResponseIds(rolledBack.turnResponses),
+        restoredTurnIds: rolledBack.restoredTurnIds ?? [],
+        canonicalTurnIds: summarizeTurnResponseIds(rolledBack.turnResponses),
+      });
+      return rolledBack;
+    }
+
+    return null;
   }
 
   /**
@@ -1117,4 +1182,10 @@ export class EditActionsHelper {
       ...(requestMetadata ? { requestMetadata } : {}),
     });
   }
+}
+
+function summarizeTurnResponseIds(turnResponses: readonly TurnResponseTurn[] | null | undefined): readonly string[] {
+  return (Array.isArray(turnResponses) ? turnResponses : [])
+    .map(turn => typeof turn?.turnId === 'string' ? turn.turnId.trim() : '')
+    .filter(Boolean);
 }

@@ -47,6 +47,8 @@ export interface ChatHistoryIndexLoadDiagnostics {
  * Keeps global/project index IO and project-index reconstruction out of ChatHistoryService.
  */
 export class ChatHistoryIndexStore {
+  private asyncWriteQueue: Promise<void> = Promise.resolve();
+
   private latestLoadDiagnostics: ChatHistoryIndexLoadDiagnostics = {
     projectIndexPatchedProjectPathCount: 0,
     rebuiltProjectEntryCount: 0,
@@ -103,6 +105,42 @@ export class ChatHistoryIndexStore {
     }
   }
 
+  async writeIndexesAsync(index: SessionIndexEntry[], projectPath?: string | null): Promise<boolean> {
+    const snapshot = index.map((entry) => this.normalizeIndexEntry(entry));
+    let globalWriteSucceeded = false;
+    const operation = async () => {
+      const globalDir = this.options.getGlobalAilyDir();
+      await this.ensureDirAsync(globalDir);
+      const globalIndexPath = this.options.joinPath(globalDir, this.options.indexFile);
+      await this.writeFileAsync(globalIndexPath, JSON.stringify(snapshot, null, 2));
+      globalWriteSucceeded = true;
+
+      const prjPath = projectPath ?? this.options.getCurrentProjectPath();
+      if (!prjPath) {
+        return;
+      }
+      const projectEntries = this.createProjectIndexEntries(snapshot, prjPath);
+      if (projectEntries.length === 0) {
+        return;
+      }
+      const projectDir = this.options.joinPath(prjPath, this.options.projectChatDir);
+      await this.ensureDirAsync(projectDir);
+      await this.writeFileAsync(
+        this.options.joinPath(projectDir, this.options.indexFile),
+        JSON.stringify(projectEntries, null, 2),
+      );
+    };
+    const next = this.asyncWriteQueue.catch(() => undefined).then(operation);
+    this.asyncWriteQueue = next;
+    try {
+      await next;
+      return globalWriteSucceeded;
+    } catch (error) {
+      console.warn('[ChatHistory] Failed to write session indexes asynchronously:', error);
+      return false;
+    }
+  }
+
   writeGlobalIndexOrThrow(index: SessionIndexEntry[]): void {
     if (!this.hasFs()) return;
 
@@ -118,23 +156,7 @@ export class ChatHistoryIndexStore {
     const prjPath = projectPath ?? this.options.getCurrentProjectPath();
     if (!prjPath) return;
 
-    const projectEntries: ProjectIndexEntry[] = index
-      .filter((entry) => this.options.isSamePath(entry.projectPath, prjPath))
-      .map(({ projectPath: _pp, projectName: _pn, ...rest }) => {
-        const selectedMode = resolveHostSessionSummaryModeFromMetadata(rest);
-        const modeDescriptor = resolveHostSessionModeDescriptorFromMetadata(rest, this.getModeResolveOptions());
-        const inputState = normalizeHostSessionInputStateFromMetadata(rest, this.getModeResolveOptions());
-        const requestRouting = normalizeHostSessionRequestRoutingSummary(rest.requestRouting, selectedMode);
-        const interactionActionSummary = normalizeHostSessionInteractionActionSummary(rest.interactionActionSummary);
-        return {
-          ...rest,
-          mode: selectedMode.modeId,
-          modeDescriptor,
-          inputState,
-          requestRouting,
-          ...(interactionActionSummary ? { interactionActionSummary } : {}),
-        };
-      });
+    const projectEntries = this.createProjectIndexEntries(index, prjPath);
 
     if (projectEntries.length === 0) return;
 
@@ -213,7 +235,7 @@ export class ChatHistoryIndexStore {
   ): SessionIndexEntry[] {
     try {
       const files: string[] = AilyHost.get().fs.readdirSync(chatDir);
-      const sessionFiles = files.filter((file) => file.endsWith('.json') && file !== this.options.indexFile);
+      const sessionFiles = files.filter((file) => file.endsWith('.jsonl'));
       if (sessionFiles.length === 0) return index;
 
       const projectName = this.options.extractProjectName(prjPath);
@@ -224,7 +246,7 @@ export class ChatHistoryIndexStore {
 
       let rebuilt = 0;
       for (const file of sessionFiles) {
-        const sessionId = file.replace(/\.json$/, '');
+        const sessionId = file.replace(/\.jsonl$/, '');
         const existing = indexMap.get(sessionId);
         if (existing && this.options.isSamePath(existing.projectPath, prjPath)) {
           continue;
@@ -295,6 +317,44 @@ export class ChatHistoryIndexStore {
 
   private writeFileSync(path: string, content: string): void {
     AilyHost.get().fs.writeFileSync(path, content, 'utf-8');
+  }
+
+  private async writeFileAsync(path: string, content: string): Promise<void> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.writeFile === 'function') {
+      await fs.writeFile(path, content, 'utf-8');
+      return;
+    }
+    this.writeFileSync(path, content);
+  }
+
+  private async ensureDirAsync(dirPath: string): Promise<void> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.mkdir === 'function') {
+      await fs.mkdir(dirPath, { recursive: true });
+      return;
+    }
+    this.ensureDir(dirPath);
+  }
+
+  private createProjectIndexEntries(index: SessionIndexEntry[], projectPath: string): ProjectIndexEntry[] {
+    return index
+      .filter((entry) => this.options.isSamePath(entry.projectPath, projectPath))
+      .map(({ projectPath: _pp, projectName: _pn, ...rest }) => {
+        const selectedMode = resolveHostSessionSummaryModeFromMetadata(rest);
+        const modeDescriptor = resolveHostSessionModeDescriptorFromMetadata(rest, this.getModeResolveOptions());
+        const inputState = normalizeHostSessionInputStateFromMetadata(rest, this.getModeResolveOptions());
+        const requestRouting = normalizeHostSessionRequestRoutingSummary(rest.requestRouting, selectedMode);
+        const interactionActionSummary = normalizeHostSessionInteractionActionSummary(rest.interactionActionSummary);
+        return {
+          ...rest,
+          mode: selectedMode.modeId,
+          modeDescriptor,
+          inputState,
+          requestRouting,
+          ...(interactionActionSummary ? { interactionActionSummary } : {}),
+        };
+      });
   }
 
   private normalizeIndexEntry(entry: SessionIndexEntry): SessionIndexEntry {

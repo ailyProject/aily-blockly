@@ -1,3 +1,4 @@
+// 作为上传命令的子进程包装器，负责启动任务并转发退出信号。
 const { spawn } = require('child_process');
 const path = require('path');
 

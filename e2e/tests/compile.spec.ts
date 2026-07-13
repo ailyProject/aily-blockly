@@ -4,7 +4,7 @@ import { test, expect, getMainWindow, openBlocklyProject } from '../fixtures/ele
  * Phase 6 —— 编译（compile）。
  *
  * 编译依赖完整工具链：已安装的编译器/SDK（AILY_COMPILERS_PATH 等）、项目的
- * board.json，以及 child/aily-builder。这些前置在干净环境中通常不具备，且首次
+ * board.json，以及全局安装的 aily-builder 命令。这些前置在干净环境中通常不具备，且首次
  * 编译耗时较长，因此本套件需要显式开启：
  *
  *   $env:AILY_E2E_PROJECT = 'D:\\path\\to\\blockly-project'   # 一个可编译的项目
@@ -47,7 +47,7 @@ test.describe('编译', () => {
         compileResult = 'error';
         break;
       }
-      await win.waitForTimeout(3000);
+      await win.waitForTimeout(500);
     }
     expect(compileResult, '编译未成功完成（请查看 Playwright 输出与 trace）').toBe('done');
 

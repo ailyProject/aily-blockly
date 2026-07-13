@@ -29,8 +29,12 @@ export function extractUserTurnRoutingMetadata(
     return undefined;
   }
 
-  const resolveCommand = (name: string, kind: TurnRequestCommandKind, agentId?: string) => {
+  const resolveKnownCommand = (name: string, kind: TurnRequestCommandKind, agentId?: string) => {
     const resolved = options?.resolveCommand?.({ agentId, name, kind });
+    return resolved || undefined;
+  };
+  const resolveCommand = (name: string, kind: TurnRequestCommandKind, agentId?: string) => {
+    const resolved = resolveKnownCommand(name, kind, agentId);
     return resolved
       ? createTurnResponseCommand(resolved.name, resolved)
       : createTurnResponseCommand(name);
@@ -95,7 +99,29 @@ export function extractUserTurnRoutingMetadata(
     return undefined;
   }
 
-  const command = resolveCommand(slashCommandMatch[1], 'slash');
+  const slashCommandName = slashCommandMatch[1];
+  const afterSlashCommand = trimmed.slice(slashCommandMatch[0].length);
+  const slashSubcommandMatch = /^[ \t]+([\p{L}\d_.-]+)/u.exec(afterSlashCommand);
+  if (slashSubcommandMatch) {
+    const candidateName = `${slashCommandName}:${slashSubcommandMatch[1]}`;
+    const resolvedCandidate = resolveKnownCommand(candidateName, 'slash');
+    if (resolvedCandidate) {
+      const command = createTurnResponseCommand(resolvedCandidate.name, resolvedCandidate);
+      const consumedText = `${slashCommandMatch[0]}${slashSubcommandMatch[0]}`;
+      return {
+        command,
+        commandKind: 'slash',
+        parsedParts: [{
+          kind: 'slash',
+          command,
+          text: consumedText,
+          promptText: `/${command.name}`,
+        }],
+      };
+    }
+  }
+
+  const command = resolveCommand(slashCommandName, 'slash');
   return command
     ? {
       command,

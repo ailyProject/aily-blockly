@@ -144,7 +144,8 @@ function collectPinmapIdHintsFromGenerateInput(input: {
 export async function generateConnectionGraphTool(
   connectionGraphService: ConnectionGraphService,
   projectService: ProjectService,
-  input: { pinmapIds?: ComponentInstanceInput[]; components?: string[]; requirements?: string }
+  input: { pinmapIds?: ComponentInstanceInput[]; components?: string[]; requirements?: string },
+  invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
     const boardPackagePath = await projectService.getBoardPackagePath();

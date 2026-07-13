@@ -126,6 +126,62 @@ textarea {
   }
 }
 
+.tool-item {
+  flex-wrap: nowrap;
+
+  &:first-child {
+    margin-bottom: 0 !important;
+  }
+}
+
+.tool-update-btn.disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.tool-setting-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.tool-version {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  min-width: 0;
+  flex-shrink: 0;
+
+  strong {
+    font-weight: 500;
+    color: var(--aily-text-primary);
+    word-break: break-all;
+  }
+
+  .version {
+    color: var(--aily-color-primary-alt);
+  }
+}
+
+.tool-status {
+  color: var(--aily-text-secondary);
+  white-space: nowrap;
+  margin-left: auto;
+  flex-shrink: 0;
+
+  &.warning {
+    color: var(--aily-text-primary);
+  }
+
+  &.error {
+    color: var(--aily-color-error);
+  }
+}
+
 .right {
   height: 100%; // 确保占满整个高度
 
@@ -175,9 +231,28 @@ ngx-simplebar {
 
   .search-box {
     position: relative;
+
     i {
       position: absolute;
       right: 5px;
+    }
+  }
+
+  .folder-open-btn {
+    .folder-icon-open {
+      display: none;
+      position: relative;
+      left: 2px;
+    }
+
+    &:hover {
+      .folder-icon-close {
+        display: none;
+      }
+
+      .folder-icon-open {
+        display: inline-block;
+      }
     }
   }
 }

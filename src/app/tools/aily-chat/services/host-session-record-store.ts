@@ -20,7 +20,6 @@ import {
   resolveHostSessionInteractionActionSummary,
 } from '../helpers/host-session-interaction-action';
 import type { PlanPart } from '../core/chat-parts';
-import { isLikelyPlanMarkdown } from '../core/chat-parts';
 import {
   type HostSessionSelectedModeResolveOptions,
   normalizeHostSessionInputStateFromMetadata,
@@ -36,9 +35,14 @@ import {
   stripLegacyRuntimeAuxiliaryFromMetadata,
 } from '../helpers/host-session-runtime-auxiliary';
 import {
+  normalizeHostSessionTurnRuntimeTruth,
+  readHostSessionTurnRuntimeTruthFromMetadata,
+} from '../helpers/host-session-runtime-truth';
+import {
   readChatAgentRuntimeModeFromMetadata,
   readChatAgentRuntimeModeSourceFromMetadata,
 } from '../core/chat-agent-runtime-mode';
+import { HostSessionOperationLog } from './host-session-operation-log';
 
 import type {
   HostSessionRecord,
@@ -238,6 +242,9 @@ export interface HostSessionRecordStoreOptions {
  * Keeps host record disk IO and compatibility normalization out of ChatHistoryService.
  */
 export class HostSessionRecordStore {
+  private readonly operationLogs = new Map<string, HostSessionOperationLog>();
+  private readonly asyncWriteQueues = new Map<string, Promise<void>>();
+
   constructor(private readonly options: HostSessionRecordStoreOptions) {}
 
   createFullMetadata(metadata: Partial<SessionMetadata> & { sessionId: string }): SessionMetadata {
@@ -367,15 +374,15 @@ export class HostSessionRecordStore {
     if (projectPath) {
       const dir = this.options.joinPath(projectPath, this.options.projectChatDir);
       this.ensureDir(dir);
-      const filePath = this.options.joinPath(dir, `${sessionId}.json`);
-      this.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      const filePath = this.options.joinPath(dir, `${sessionId}.jsonl`);
+      this.writeOperationLog(filePath, data);
       return;
     }
 
     const dir = this.options.getGlobalChatDataDir();
     this.ensureDir(dir);
-    const filePath = this.options.joinPath(dir, `${sessionId}.json`);
-    this.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    const filePath = this.options.joinPath(dir, `${sessionId}.jsonl`);
+    this.writeOperationLog(filePath, data);
   }
 
   read(sessionId: string, projectPath: string | null): HostSessionRecord | null {
@@ -383,9 +390,9 @@ export class HostSessionRecordStore {
 
     const paths: string[] = [];
     if (projectPath) {
-      paths.push(this.options.joinPath(projectPath, this.options.projectChatDir, `${sessionId}.json`));
+      paths.push(this.options.joinPath(projectPath, this.options.projectChatDir, `${sessionId}.jsonl`));
     }
-    paths.push(this.options.joinPath(this.options.getGlobalChatDataDir(), `${sessionId}.json`));
+    paths.push(this.options.joinPath(this.options.getGlobalChatDataDir(), `${sessionId}.jsonl`));
 
     for (const filePath of paths) {
       try {
@@ -394,7 +401,8 @@ export class HostSessionRecordStore {
         }
 
         const content = this.readFileSync(filePath);
-        const parsed = JSON.parse(content);
+        const log = this.getOperationLog(filePath);
+        const parsed = log.read(content);
 
         if (Array.isArray(parsed)) {
           console.warn(`[ChatHistory] 忽略旧版 chatList-only 宿主持久化记录 (${filePath})`);
@@ -472,6 +480,7 @@ export class HostSessionRecordStore {
       requestRouting: _turnRequestRouting,
       planPart: _planPart,
       handoffAction: _handoffAction,
+      runtimeTruth: _runtimeTruth,
       ...turnWithoutEnvelope
     } = turn;
     const {
@@ -499,10 +508,11 @@ export class HostSessionRecordStore {
       : undefined;
     const modeId = requestRouting?.requestModeId ?? requestRouting?.selectedModeId;
     const planPart = this.normalizePersistedTurnPlanPart(turn.planPart)
-      ?? this.findPersistedTurnPlanPart(turn.response.parts)
-      ?? this.synthesizePersistedTurnPlanPartFromMarkdown(turn.response.parts, modeId);
+      ?? this.findPersistedTurnPlanPart(turn.response.parts);
     const handoffAction = normalizeHostSessionInteractionActionSummary(turn.handoffAction)
       ?? this.resolveTurnInteractionActionSummary(turn);
+    const runtimeTruth = normalizeHostSessionTurnRuntimeTruth(turn.runtimeTruth)
+      ?? readHostSessionTurnRuntimeTruthFromMetadata(turn.request?.metadata);
     const responseParts = this.materializeEnvelopePlanPart(
       turn.response.parts.map(part => clonePersistedValue(part)),
       planPart,
@@ -515,6 +525,7 @@ export class HostSessionRecordStore {
       ...(requestRouting ? { requestRouting } : {}),
       ...(planPart ? { planPart } : {}),
       ...(handoffAction ? { handoffAction } : {}),
+      ...(runtimeTruth ? { runtimeTruth } : {}),
       request: {
         ...turn['request'],
         ...(turn.request?.metadata ? { metadata: clonePersistedValue(turn.request.metadata) } : {}),
@@ -586,6 +597,17 @@ export class HostSessionRecordStore {
     if (!part || part['type'] !== 'plan') {
       return undefined;
     }
+    const metadata = isRecord(part['metadata']) ? part['metadata'] : undefined;
+    if (
+      part['sourceAgentRole'] === 'subagent'
+      || typeof part['subAgentInvocationId'] === 'string'
+      || typeof part['parentToolCallId'] === 'string'
+      || metadata?.['sourceAgentRole'] === 'subagent'
+      || typeof metadata?.['subAgentInvocationId'] === 'string'
+      || typeof metadata?.['parentToolCallId'] === 'string'
+    ) {
+      return undefined;
+    }
 
     const status = part['status'] === 'streaming' || part['status'] === 'completed' || part['status'] === 'failed'
       ? part['status']
@@ -615,48 +637,6 @@ export class HostSessionRecordStore {
       if (planPart) {
         return planPart;
       }
-    }
-
-    return undefined;
-  }
-
-  private synthesizePersistedTurnPlanPartFromMarkdown(
-    parts: readonly TurnResponseTurn['response']['parts'][number][],
-    modeId: string | undefined,
-  ): PlanPart | undefined {
-    if (modeId !== 'plan') {
-      return undefined;
-    }
-
-    for (let index = parts.length - 1; index >= 0; index -= 1) {
-      const part = parts[index];
-      if (!isRecord(part) || part['type'] !== 'markdown') {
-        continue;
-      }
-      const metadata = isRecord(part['metadata']) ? part['metadata'] : undefined;
-      if (
-        part['sourceAgentRole'] === 'subagent'
-        || typeof part['subAgentInvocationId'] === 'string'
-        || typeof part['parentToolCallId'] === 'string'
-        || metadata?.['sourceAgentRole'] === 'subagent'
-        || typeof metadata?.['subAgentInvocationId'] === 'string'
-        || typeof metadata?.['parentToolCallId'] === 'string'
-      ) {
-        continue;
-      }
-
-      const text = typeof part['content'] === 'string' ? part['content'].trim() : '';
-      if (!isLikelyPlanMarkdown(text)) {
-        continue;
-      }
-
-      return {
-        type: 'plan',
-        partId: 'plan:fallback',
-        status: 'completed',
-        text,
-        source: 'summary',
-      };
     }
 
     return undefined;
@@ -769,6 +749,36 @@ export class HostSessionRecordStore {
       ...(normalizedCheckpointMarker ? { checkpointMarker: normalizedCheckpointMarker } : {}),
       ...(normalizedCheckpointTimeline ? { checkpointRedoBranch: normalizedCheckpointTimeline } : {}),
     };
+  }
+
+  async writeAsync(sessionId: string, data: HostSessionRecord): Promise<void> {
+    try {
+      await this.writeOrThrowAsync(sessionId, data);
+    } catch (error) {
+      console.warn(`[ChatHistory] Failed to write host persistence record (${sessionId}):`, error);
+    }
+  }
+
+  async writeOrThrowAsync(sessionId: string, data: HostSessionRecord): Promise<void> {
+    if (!this.hasFs()) return;
+
+    let projectPath = data.metadata.projectPath;
+    if (projectPath) {
+      const rootPath = this.options.getGlobalProjectRootPath();
+      if (rootPath && this.options.isSamePath(projectPath, rootPath)) {
+        projectPath = null;
+        data.metadata.projectPath = null;
+      }
+    }
+
+    const dir = projectPath
+      ? this.options.joinPath(projectPath, this.options.projectChatDir)
+      : this.options.getGlobalChatDataDir();
+    const filePath = this.options.joinPath(dir, `${sessionId}.jsonl`);
+    await this.enqueueAsyncWrite(filePath, async () => {
+      await this.ensureDirAsync(dir);
+      await this.writeOperationLogAsync(filePath, data);
+    });
   }
 
   private normalizeCheckpointTimelineEntries(value: unknown): HostSessionCheckpointTimelineEntrySidecar[] | undefined {
@@ -937,9 +947,133 @@ export class HostSessionRecordStore {
     AilyHost.get().fs.writeFileSync(path, content, 'utf-8');
   }
 
+  private appendFileSync(path: string, content: string): void {
+    AilyHost.get().fs.appendFileSync(path, content);
+  }
+
+  private async fileExistsAsync(path: string): Promise<boolean> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.exists === 'function') {
+      return fs.exists(path);
+    }
+    return this.fileExists(path);
+  }
+
+  private async readFileAsync(path: string): Promise<string> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.readFile === 'function') {
+      return fs.readFile(path, 'utf-8');
+    }
+    return this.readFileSync(path);
+  }
+
+  private async writeFileAsync(path: string, content: string): Promise<void> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.writeFile === 'function') {
+      await fs.writeFile(path, content, 'utf-8');
+      return;
+    }
+    this.writeFileSync(path, content);
+  }
+
+  private async appendFileAsync(path: string, content: string): Promise<void> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.appendFile === 'function') {
+      await fs.appendFile(path, content, 'utf-8');
+      return;
+    }
+    this.appendFileSync(path, content);
+  }
+
   private ensureDir(dirPath: string): void {
     if (!this.fileExists(dirPath)) {
       AilyHost.get().fs.mkdirSync(dirPath, { recursive: true });
+    }
+  }
+
+  private async ensureDirAsync(dirPath: string): Promise<void> {
+    const fs = AilyHost.get().fs;
+    if (typeof fs.mkdir === 'function') {
+      await fs.mkdir(dirPath, { recursive: true });
+      return;
+    }
+    this.ensureDir(dirPath);
+  }
+
+  private writeOperationLog(filePath: string, data: HostSessionRecord): void {
+    const log = this.getOperationLog(filePath);
+    if (!this.fileExists(filePath)) {
+      const content = log.createInitial(data);
+      this.writeFileSync(filePath, content);
+      return;
+    }
+
+    const result = log.write(data);
+    if (!result.data) {
+      return;
+    }
+
+    if (result.op === 'replace') {
+      this.writeFileSync(filePath, result.data);
+    } else {
+      this.appendFileSync(filePath, result.data);
+    }
+    log.confirmWrite();
+  }
+
+  private async writeOperationLogAsync(filePath: string, data: HostSessionRecord): Promise<void> {
+    const log = await this.getOperationLogAsync(filePath);
+    if (!(await this.fileExistsAsync(filePath))) {
+      await this.writeFileAsync(filePath, log.createInitial(data));
+      return;
+    }
+
+    const result = log.write(data);
+    if (!result.data) {
+      return;
+    }
+    if (result.op === 'replace') {
+      await this.writeFileAsync(filePath, result.data);
+    } else {
+      await this.appendFileAsync(filePath, result.data);
+    }
+    log.confirmWrite();
+  }
+
+  private getOperationLog(filePath: string): HostSessionOperationLog {
+    let log = this.operationLogs.get(filePath);
+    if (!log) {
+      log = new HostSessionOperationLog();
+      if (this.fileExists(filePath)) {
+        log.read(this.readFileSync(filePath));
+      }
+      this.operationLogs.set(filePath, log);
+    }
+    return log;
+  }
+
+  private async getOperationLogAsync(filePath: string): Promise<HostSessionOperationLog> {
+    let log = this.operationLogs.get(filePath);
+    if (!log) {
+      log = new HostSessionOperationLog();
+      if (await this.fileExistsAsync(filePath)) {
+        log.read(await this.readFileAsync(filePath));
+      }
+      this.operationLogs.set(filePath, log);
+    }
+    return log;
+  }
+
+  private async enqueueAsyncWrite(filePath: string, operation: () => Promise<void>): Promise<void> {
+    const previous = this.asyncWriteQueues.get(filePath) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(operation);
+    this.asyncWriteQueues.set(filePath, next);
+    try {
+      await next;
+    } finally {
+      if (this.asyncWriteQueues.get(filePath) === next) {
+        this.asyncWriteQueues.delete(filePath);
+      }
     }
   }
 }

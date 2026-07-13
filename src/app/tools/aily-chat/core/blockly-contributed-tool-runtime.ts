@@ -17,14 +17,26 @@ export type InvokeHandler = (
   invocationContext?: BlocklyToolInvocationContext,
 ) => Promise<ToolResultContent>;
 
-export function text(s: string): ToolResultContent {
-  return { content: [{ type: 'text', text: s }] };
+export function text(s: string, metadata?: Readonly<Record<string, unknown>>): ToolResultContent {
+  return {
+    content: [{ type: 'text', text: s }],
+    ...(metadata ? { metadata } : {}),
+  };
 }
 
-export function error(s: string): ToolResultContent {
-  return { content: [{ type: 'text', text: `Error: ${s}` }], isError: true };
+export function error(s: string, metadata?: Readonly<Record<string, unknown>>): ToolResultContent {
+  return {
+    content: [{ type: 'text', text: `Error: ${s}` }],
+    isError: true,
+    ...(metadata ? { metadata } : {}),
+  };
 }
 
-export function fromToolResult(result: { is_error: boolean; content: string }): ToolResultContent {
-  return result.is_error ? error(result.content) : text(result.content);
+export function fromToolResult(result: {
+  is_error: boolean;
+  content: string;
+  metadata?: Readonly<Record<string, unknown>> | null;
+}): ToolResultContent {
+  const metadata = result.metadata ?? undefined;
+  return result.is_error ? error(result.content, metadata) : text(result.content, metadata);
 }

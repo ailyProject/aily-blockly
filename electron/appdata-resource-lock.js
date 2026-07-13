@@ -1,3 +1,4 @@
+// 管理 AppData 资源的跨进程读写锁，避免多实例并发冲突。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

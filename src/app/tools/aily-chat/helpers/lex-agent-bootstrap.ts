@@ -12,7 +12,9 @@ import { setChatRuntimeWorkspaceEnvironmentOverride } from '../core/chat-runtime
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import {
   normalizeChatSessionPermissionMode,
+  normalizeChatSessionPermissionProfile,
   type ChatSessionPermissionMode,
+  type ChatSessionPermissionProfile,
 } from '../core/chat-mode';
 import type { ProviderContextManagementSupport } from '../services/aily-chat-config.service';
 import { MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE, normalizeAgentIdentifier } from '../core/agent-identifiers';
@@ -114,7 +116,9 @@ import {
   DEFAULT_PROCESS_LOG_SUBAPP,
   normalizeProcessLogSubappName,
   resolveProcessLogProjectDir,
+  resolveProcessLogSubappNameFromCwd,
   resolveProcessLogStoragePaths,
+  resolveProcessLogSubappNameFromCommand,
   resolveProcessLogSubappNameFromOutputFilePath,
 } from '../../../utils/project-log.utils';
 
@@ -202,15 +206,27 @@ function normalizeBlocklyCommandSessionStatus(
 ): ExternalTerminalSession['status'] {
   switch (status) {
     case 'running':
+      return running ? 'running' : 'cancelled';
     case 'completed':
     case 'failed':
     case 'timeout':
-    case 'killed':
     case 'cancelled':
       return status;
+    case 'killed':
+      return 'cancelled';
     default:
       return running ? 'running' : 'completed';
   }
+}
+
+function resolvePersistedBlocklyCommandSessionRunningState(
+  processId: string,
+  persistedRunning: boolean,
+): boolean {
+  if (!persistedRunning || !processId) {
+    return false;
+  }
+  return blocklyCommandSessions.get(processId)?.running === true;
 }
 
 function registerBlocklyCommandSessionController(terminal: BlocklyExternalTerminal | undefined): void {
@@ -361,6 +377,13 @@ export function setBlocklyCommandSessionBackground(
   }
 
   session.background = background;
+  if (background && session.timer) {
+    clearTimeout(session.timer);
+    session.timer = undefined;
+  }
+  if (background && session.running && session.status !== 'running') {
+    session.status = 'running';
+  }
   persistBlocklyCommandSessionRecord(session);
   notifyBlocklyCommandSessionUpdate(normalizedSessionId, normalizedProcessId);
 }
@@ -517,13 +540,14 @@ interface BootstrapLexAgentOptions {
 export type BootstrapLexAgentContext = Pick<IProjectContext, 'prjPath' | 'prjRootPath' | 'currentModel' | 'currentAgentRuntimeMode' | 'currentAgentRuntimeModeSource'>
   & Pick<ISessionAccess, 'sessionId'>
   & Pick<IChatServiceAccess, 'ailyChatConfigService' | 'mcpService' | 'runtimeInteractionHost'>
-  & Pick<IChatCoordination, 'handleToolApproval' | 'lexStream' | 'syncSessionCustomizationContentProvider' | 'syncSessionCustomizationProvider' | 'syncSessionCustomizationProviders' | 'syncSessionProviderOptionsSource' | 'syncSessionProviderOptionsSources'>
+  & Pick<IChatCoordination, 'handleToolApproval' | 'checkToolApprovalPreflight' | 'lexStream' | 'syncSessionCustomizationContentProvider' | 'syncSessionCustomizationProvider' | 'syncSessionCustomizationProviders' | 'syncSessionProviderOptionsSource' | 'syncSessionProviderOptionsSources'>
   & {
     readonly editTracking: {
       recordAdditionalRepositoryRootCandidates(paths: readonly string[] | undefined | null): void;
     };
     readonly currentSessionPath?: string | null;
     readonly currentSessionPermissionMode?: ChatSessionPermissionMode;
+    readonly currentSessionPermissionProfile?: ChatSessionPermissionProfile;
     readonly currentSessionApprovalsReviewer?: 'user' | 'auto_review';
     readonly currentSessionApprovalPolicy?: 'on_request' | 'never';
     readonly ownerScheduler?: Pick<ChatRuntimeOwnerScheduler, 'runOutsideOwner'>;
@@ -1431,6 +1455,7 @@ export function buildExternalHostAPI(
           ...(devmode ? { devmode } : {}),
         }, {
           activationReason: 'chat-tool-create',
+          sessionResource: options.sessionId || null,
         });
         if (result === false) {
           throw new Error('Project service returned false while creating project.');
@@ -2264,6 +2289,33 @@ export function bootstrapBlocklyLexAgent(
         })), askUserPresentationContext(opts));
       },
     },
+    planReview: {
+      present: async (review: {
+        readonly id: string;
+        readonly title: string;
+        readonly planUri?: string;
+        readonly content: string;
+        readonly actions: readonly {
+          readonly id: string;
+          readonly label: string;
+          readonly description?: string;
+          readonly default?: boolean;
+          readonly permissionLevel?: 'autopilot';
+        }[];
+        readonly canProvideFeedback: boolean;
+      }) => {
+        const targetSessionId = (
+          runtimeSessionId
+          || ctx.resolveActiveRuntimeSessionId?.()
+          || ctx.sessionId
+          || ''
+        ).trim();
+        if (!targetSessionId) {
+          throw new Error('review_plan requires a runtime session owner.');
+        }
+        return ctx.runtimeInteractionHost.presentPlanReview(targetSessionId, review);
+      },
+    },
     diagnostics: {
       getErrors: async (filePaths?: string[]) => collectDiagnostics(filePaths),
     },
@@ -2365,6 +2417,46 @@ export function bootstrapBlocklyLexAgent(
     ?? ctx.ailyChatConfigService.getLexApprovalsReviewer?.();
   const approvalPolicy = runtimeProviderOptions.approvalPolicy
     ?? ctx.ailyChatConfigService.getLexApprovalPolicy?.();
+  console.debug('[AilyChat][LexApprovalConfig]', {
+    sessionId: sessionId || ctx.sessionId,
+    permissionMode: normalizeChatSessionPermissionMode(runtimeProviderOptions.permissionMode),
+    permissionProfile: normalizeChatSessionPermissionProfile(runtimeProviderOptions.permissionProfile),
+    approvalsReviewer: approvalsReviewer ?? null,
+    approvalPolicy: approvalPolicy ?? null,
+    strictAutoReview: approvalsReviewer === 'auto_review',
+  });
+  const logApprovalBridge = (
+    phase: string,
+    request: {
+      approvalTraceId?: unknown;
+      toolCallId?: unknown;
+      toolName?: unknown;
+      input?: unknown;
+      actions?: unknown;
+      primaryScope?: unknown;
+      allowAutoConfirm?: unknown;
+    },
+    extra?: Record<string, unknown>,
+  ) => {
+    const input = request.input && typeof request.input === 'object'
+      ? request.input as Record<string, unknown>
+      : {};
+    const command = typeof input['command'] === 'string' ? input['command'] : undefined;
+    console.debug('[AilyChat][LexApprovalBridge]', {
+      phase,
+      sessionId: sessionId || ctx.sessionId,
+      approvalTraceId: request.approvalTraceId,
+      toolCallId: request.toolCallId,
+      toolName: request.toolName,
+      command,
+      actionCount: Array.isArray(request.actions) ? request.actions.length : 0,
+      primaryScope: request.primaryScope,
+      allowAutoConfirm: request.allowAutoConfirm,
+      approvalsReviewer: approvalsReviewer ?? null,
+      approvalPolicy: approvalPolicy ?? null,
+      ...extra,
+    });
+  };
   const agentFolderProjectRoot = cwd || ctx.prjRootPath || ctx.prjPath;
   ensureRuntimeOwnerSkillRegistryInitialized(agentFolderProjectRoot, ctx.ailyChatConfigService);
   const projectAgentFileProvider = createBlocklyAgentFileProvider({
@@ -2509,21 +2601,63 @@ export function bootstrapBlocklyLexAgent(
     skillProvider: new BlocklySkillProvider(),
     agentProvider: runtimeAgentProvider,
     slashCommandProvider: createBlocklySlashCommandProvider(sessionId),
-    approvalHandler: async request => ctx.handleToolApproval({
-      toolCallId: request.toolCallId,
-      toolName: request.toolName,
-      title: request.title || '',
-      subtitle: request.subtitle,
-      message: request.message || '',
-      source: request.source,
-      actions: request.actions,
-      primaryScope: request.primaryScope,
-      allowAutoConfirm: request.allowAutoConfirm,
-      approveCombination: request.approveCombination,
-      args: request.input,
-    }),
+    approvalHandler: async request => {
+      logApprovalBridge('handler-enter', request);
+      try {
+        const result = await ctx.handleToolApproval({
+          approvalTraceId: request.approvalTraceId,
+          toolCallId: request.toolCallId,
+          toolName: request.toolName,
+          title: request.title || '',
+          subtitle: request.subtitle,
+          message: request.message || '',
+          source: request.source,
+          actions: request.actions,
+          primaryScope: request.primaryScope,
+          allowAutoConfirm: request.allowAutoConfirm,
+          approveCombination: request.approveCombination,
+          args: request.input,
+        });
+        logApprovalBridge('handler-result', request, result);
+        return result;
+      } catch (error) {
+        logApprovalBridge('handler-error', request, {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        throw error;
+      }
+    },
+    approvalPreflightHandler: async request => {
+      logApprovalBridge('preflight-enter', request);
+      try {
+        const result = await ctx.checkToolApprovalPreflight({
+          approvalTraceId: request.approvalTraceId,
+          toolCallId: request.toolCallId,
+          toolName: request.toolName,
+          title: request.title || '',
+          subtitle: request.subtitle,
+          message: request.message || '',
+          source: request.source,
+          actions: request.actions,
+          primaryScope: request.primaryScope,
+          allowAutoConfirm: request.allowAutoConfirm,
+          approveCombination: request.approveCombination,
+          args: request.input,
+        });
+        logApprovalBridge('preflight-result', request, result);
+        return result;
+      } catch (error) {
+        logApprovalBridge('preflight-error', request, {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        throw error;
+      }
+    },
     permissionPolicy,
     permissionMode: normalizeChatSessionPermissionMode(runtimeProviderOptions.permissionMode),
+    permissionProfile: normalizeChatSessionPermissionProfile(runtimeProviderOptions.permissionProfile),
     terminalPolicy,
     approvalsReviewer,
     approvalPolicy,
@@ -2585,11 +2719,12 @@ function normalizeRuntimePath(value: unknown): string {
 }
 
 function resolveLexRuntimeProviderOptions(
-  ctx: Pick<BootstrapLexAgentContext, 'buildExecutionSaveTarget' | 'currentSessionPath' | 'currentSessionPermissionMode' | 'currentSessionApprovalsReviewer' | 'currentSessionApprovalPolicy' | 'prjPath' | 'prjRootPath'>,
+  ctx: Pick<BootstrapLexAgentContext, 'buildExecutionSaveTarget' | 'currentSessionPath' | 'currentSessionPermissionMode' | 'currentSessionPermissionProfile' | 'currentSessionApprovalsReviewer' | 'currentSessionApprovalPolicy' | 'prjPath' | 'prjRootPath'>,
   sessionId?: string | null,
 ): {
   readonly cwd: string;
   readonly permissionMode?: ChatSessionPermissionMode;
+  readonly permissionProfile?: ChatSessionPermissionProfile;
   readonly approvalsReviewer?: 'user' | 'auto_review';
   readonly approvalPolicy?: 'on_request' | 'never';
 } {
@@ -2600,6 +2735,7 @@ function resolveLexRuntimeProviderOptions(
   return {
     cwd,
     permissionMode: providerOptions?.permissionMode ?? ctx.currentSessionPermissionMode,
+    permissionProfile: providerOptions?.permissionProfile ?? ctx.currentSessionPermissionProfile,
     approvalsReviewer: providerOptions?.approvalsReviewer ?? ctx.currentSessionApprovalsReviewer,
     approvalPolicy: providerOptions?.approvalPolicy ?? ctx.currentSessionApprovalPolicy,
   };
@@ -2701,18 +2837,26 @@ function attachBlocklyPostCreateExtensions(
       const seen = new Set<string>();
       const roots: string[] = [];
 
+      const addRoot = (value: unknown): void => {
+        const root = typeof value === 'string' ? value.trim() : '';
+        if (!root || seen.has(root)) {
+          return;
+        }
+
+        seen.add(root);
+        roots.push(root);
+      };
+
+      addRoot(AilyHost.get().project?.currentProjectPath);
+      addRoot(AilyHost.get().project?.projectRootPath);
+
       for (const skill of BlocklySkillRegistry.getAll()) {
         if (skill.origin?.type === 'url') {
           continue;
         }
 
         const baseDir = typeof skill.baseDir === 'string' ? skill.baseDir.trim() : '';
-        if (!baseDir || seen.has(baseDir)) {
-          continue;
-        }
-
-        seen.add(baseDir);
-        roots.push(baseDir);
+        addRoot(baseDir);
       }
 
       return roots;
@@ -2822,10 +2966,14 @@ function buildForkSkillResult(
 }
 
 function createBlocklySearchExtension(): {
+  supportsIncludeIgnoredFiles?: boolean;
+  supportsFileSearchIncludeIgnoredFiles?: boolean;
+  supportsTextSearchIncludeIgnoredFiles?: boolean;
   searchFiles?(input: {
     pattern: string;
     cwd: string;
     maxResults: number;
+    includeIgnoredFiles?: boolean;
     signal?: AbortSignal;
   }): Promise<string[]>;
   searchText?(input: {
@@ -2833,21 +2981,29 @@ function createBlocklySearchExtension(): {
     isRegexp: boolean;
     includePattern?: string;
     maxResults: number;
+    includeIgnoredFiles?: boolean;
     cwd: string;
+    signal?: AbortSignal;
   }): Promise<Array<{ file: string; line: number; content: string }>>;
 } | null {
   const ripgrep = (window as any)?.electronAPI?.ripgrep;
+  const hasListFiles = typeof ripgrep?.listFiles === 'function';
+  const hasSearchText = typeof ripgrep?.searchText === 'function';
   const hasSearchContent = typeof ripgrep?.searchContent === 'function';
   const hasListAllContentFiles = typeof ripgrep?.listAllContentFiles === 'function';
-  if (!hasSearchContent && !hasListAllContentFiles) {
+  if (!hasListFiles && !hasSearchText && !hasSearchContent && !hasListAllContentFiles) {
     return null;
   }
 
   const searchExtension: {
+    supportsIncludeIgnoredFiles?: boolean;
+    supportsFileSearchIncludeIgnoredFiles?: boolean;
+    supportsTextSearchIncludeIgnoredFiles?: boolean;
     searchFiles?: (input: {
       pattern: string;
       cwd: string;
       maxResults: number;
+      includeIgnoredFiles?: boolean;
       signal?: AbortSignal;
     }) => Promise<string[]>;
     searchText?: (input: {
@@ -2855,11 +3011,39 @@ function createBlocklySearchExtension(): {
       isRegexp: boolean;
       includePattern?: string;
       maxResults: number;
+      includeIgnoredFiles?: boolean;
       cwd: string;
+      signal?: AbortSignal;
     }) => Promise<Array<{ file: string; line: number; content: string }>>;
-  } = {};
+  } = {
+    supportsIncludeIgnoredFiles: hasListFiles && hasSearchText,
+    supportsFileSearchIncludeIgnoredFiles: hasListFiles,
+    supportsTextSearchIncludeIgnoredFiles: hasSearchText,
+  };
 
-  if (hasListAllContentFiles) {
+  if (hasListFiles) {
+    searchExtension.searchFiles = async (input) => {
+      const result = await invokeCancelableBlocklyRipgrep(
+        ripgrep,
+        'listFiles',
+        {
+          pattern: input.pattern,
+          path: input.cwd,
+          maxResults: input.maxResults,
+          includeIgnoredFiles: input.includeIgnoredFiles ?? false,
+          includeHidden: true,
+        },
+        input.signal,
+      );
+      if (!result?.success) {
+        if (result?.cancelled || input.signal?.aborted) {
+          throw new DOMException('Search cancelled', 'AbortError');
+        }
+        throw new Error(result?.error || 'Blockly ripgrep file search failed');
+      }
+      return Array.isArray(result.files) ? result.files.map((file: unknown) => String(file)) : [];
+    };
+  } else if (hasListAllContentFiles) {
     searchExtension.searchFiles = async (input) => {
       const matchesEverything = input.pattern === '**/*' || input.pattern === '**' || input.pattern === '*';
       const regex = matchesEverything ? null : globToRegex(input.pattern);
@@ -2897,7 +3081,41 @@ function createBlocklySearchExtension(): {
     };
   }
 
-  if (hasSearchContent) {
+  if (hasSearchText) {
+    searchExtension.searchText = async (input) => {
+      const result = await invokeCancelableBlocklyRipgrep(
+        ripgrep,
+        'searchText',
+        {
+          pattern: input.query,
+          path: input.cwd,
+          include: input.includePattern,
+          isRegex: input.isRegexp,
+          maxResults: input.maxResults,
+          ignoreCase: true,
+          includeIgnoredFiles: input.includeIgnoredFiles ?? false,
+          includeHidden: true,
+          maxLineLength: 500,
+        },
+        input.signal,
+      );
+      if (!result?.success) {
+        if (result?.cancelled || input.signal?.aborted) {
+          throw new DOMException('Search cancelled', 'AbortError');
+        }
+        throw new Error(result?.error || 'Blockly ripgrep text search failed');
+      }
+      return Array.isArray(result.matches)
+        ? result.matches
+          .filter((match: any) => !!match?.file)
+          .map((match: any) => ({
+            file: String(match.file),
+            line: Number(match.line || 0),
+            content: String(match.content || ''),
+          }))
+        : [];
+    };
+  } else if (hasSearchContent) {
     searchExtension.searchText = async (input) => {
       const result = await ripgrep.searchContent({
         pattern: input.query,
@@ -2928,6 +3146,28 @@ function createBlocklySearchExtension(): {
   }
 
   return searchExtension;
+}
+
+let blocklyRipgrepRequestSequence = 0;
+
+async function invokeCancelableBlocklyRipgrep(
+  ripgrep: any,
+  method: 'listFiles' | 'searchText',
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<any> {
+  if (signal?.aborted) {
+    throw new DOMException('Search cancelled', 'AbortError');
+  }
+
+  const requestId = `blockly-search-${Date.now()}-${++blocklyRipgrepRequestSequence}`;
+  const onAbort = () => ripgrep.cancelSearch?.(requestId);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await ripgrep[method]({ ...params, requestId });
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 function appendSearchFileMatches(
@@ -3572,7 +3812,7 @@ function checkNpmUninstallSafety(command: string): string | null {
         }
       }
     } catch (e) {
-      console.warn('[LexStream] npm uninstall 安全检查失败:', libPackageName, e);
+      console.warn('[LexStream] npm uninstall 安全检查失败', libPackageName, e);
     }
   }
 
@@ -3584,7 +3824,7 @@ function checkNpmUninstallSafety(command: string): string | null {
     try {
       host.blockly.unloadLibrary(libPackageName, projectPath);
     } catch (e: any) {
-      console.warn('[LexStream] 库卸载失败:', libPackageName, e);
+      console.warn('[LexStream] 库卸载失败', libPackageName, e);
     }
   }
   return null;
@@ -3633,10 +3873,10 @@ async function loadNpmLibraries(command: string): Promise<void> {
     try {
       await host.blockly.loadLibrary(libPackageName, projectPath);
       if (isLexBootstrapTraceEnabled()) {
-        console.log('[LexStream] npm 库加载成功:', libPackageName);
+        console.log('[LexStream] npm 库加载成功', libPackageName);
       }
     } catch (e: any) {
-      console.warn('[LexStream] npm 库加载失败:', libPackageName, e);
+      console.warn('[LexStream] npm 库加载失败', libPackageName, e);
     }
   }
 }
@@ -3650,7 +3890,10 @@ function createBlocklyCommandSessionSummary(session: ExternalTerminalSession) {
     ? session.outputFilePath
     : undefined;
   const subappName = normalizeProcessLogSubappName(
-    session.subappName || resolveProcessLogSubappNameFromOutputFilePath(outputFilePath),
+    session.subappName
+      || resolveProcessLogSubappNameFromOutputFilePath(outputFilePath)
+      || resolveProcessLogSubappNameFromCwd(session.cwd)
+      || resolveProcessLogSubappNameFromCommand(session.command),
   );
   const lastTimestamp = completedAt ?? Date.now();
   return {
@@ -3730,19 +3973,25 @@ function collectProjectProcessMetadataFiles(
   projectPath: string,
   candidates: Set<string>,
 ): void {
-  const processRootDir = resolveProcessLogProjectDir(projectPath);
-  if (!processRootDir || !host.fs?.existsSync?.(processRootDir)) {
+  const logRootDir = host.path?.join?.(projectPath, '.log');
+  if (!logRootDir || !host.fs?.existsSync?.(logRootDir)) {
     return;
   }
 
-  for (const dayEntry of readBlocklyCommandSessionDirEntries(host, processRootDir)) {
-    if (!dayEntry.isDirectory()) {
+  for (const subappEntry of readBlocklyCommandSessionDirEntries(host, logRootDir)) {
+    if (!subappEntry.isDirectory()) {
       continue;
     }
-    const dayDirPath = host.path.join(processRootDir, dayEntry.name);
-    for (const fileEntry of readBlocklyCommandSessionDirEntries(host, dayDirPath)) {
-      if (fileEntry.isFile() && fileEntry.name.endsWith('.json')) {
-        candidates.add(host.path.join(dayDirPath, fileEntry.name));
+    const subappDirPath = host.path.join(logRootDir, subappEntry.name);
+    for (const dayEntry of readBlocklyCommandSessionDirEntries(host, subappDirPath)) {
+      if (!dayEntry.isDirectory()) {
+        continue;
+      }
+      const dayDirPath = host.path.join(subappDirPath, dayEntry.name);
+      for (const fileEntry of readBlocklyCommandSessionDirEntries(host, dayDirPath)) {
+        if (fileEntry.isFile() && fileEntry.name.endsWith('.json')) {
+          candidates.add(host.path.join(dayDirPath, fileEntry.name));
+        }
       }
     }
   }
@@ -3845,20 +4094,22 @@ function createBlocklyCommandSessionSummaryFromPersistedRecord(
   const subappName = normalizeProcessLogSubappName(
     typeof record.subappName === 'string' && record.subappName.trim()
       ? record.subappName.trim()
-      : resolveProcessLogSubappNameFromOutputFilePath(outputFilePath),
+      : resolveProcessLogSubappNameFromOutputFilePath(outputFilePath)
+        || resolveProcessLogSubappNameFromCwd(record.cwd)
+        || resolveProcessLogSubappNameFromCommand(record.command),
   );
   const removed = record.removed === true;
   const removedAt = typeof record.removedAt === 'number' && Number.isFinite(record.removedAt)
     ? record.removedAt
     : undefined;
-  const running = record.running === true;
+  const running = resolvePersistedBlocklyCommandSessionRunningState(processId, record.running === true);
   const normalizedStatus = normalizeBlocklyCommandSessionStatus(
     typeof record.status === 'string' ? record.status : undefined,
     running,
   );
   const lastTimestamp = running
     ? Date.now()
-    : completedAt ?? lastOutputAt ?? Date.now();
+    : completedAt ?? lastOutputAt ?? startedAt;
 
   return {
     processId,
@@ -3909,7 +4160,7 @@ function appendBlocklyCommandSessionFile(
 
 function resolveBlocklyCommandSessionStoragePaths(
   host: any,
-  cwd: string,
+  projectPathHint: string,
   sessionId: string,
   processId: string,
   subappName?: string,
@@ -3919,7 +4170,10 @@ function resolveBlocklyCommandSessionStoragePaths(
     return null;
   }
 
-  const projectPath = cwd || host.project?.currentProjectPath || host.project?.projectRootPath || '';
+  const projectPath = projectPathHint
+    || host.project?.currentProjectPath
+    || host.project?.projectRootPath
+    || '';
   if (!projectPath) {
     return null;
   }
@@ -3976,6 +4230,74 @@ function persistBlocklyCommandSessionOutput(
   appendBlocklyCommandSessionFile(host, session.outputFilePath, text);
 }
 
+function isManagedChildToolServeCommand(command: string, subappName: string): boolean {
+  const normalizedSubappName = normalizeProcessLogSubappName(subappName);
+  if (!normalizedSubappName || normalizedSubappName === DEFAULT_PROCESS_LOG_SUBAPP) {
+    return false;
+  }
+
+  const normalizedCommand = String(command || '').trim().toLowerCase();
+  if (!normalizedCommand) {
+    return false;
+  }
+
+  const targetsChildTool = normalizedCommand.includes('child/tools/')
+    || normalizedCommand.includes('child\\tools\\');
+  if (!targetsChildTool) {
+    return false;
+  }
+
+  return normalizedCommand.includes(' serve ')
+    || normalizedCommand.includes(' serve --')
+    || normalizedCommand.endsWith(' serve')
+    || normalizedCommand.includes('index.js serve');
+}
+
+function findReusableChildToolServeSession(
+  sessionId: string,
+  subappName: string,
+): ExternalTerminalSession | null {
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  const normalizedSubappName = normalizeProcessLogSubappName(subappName);
+  if (!normalizedSessionId || !normalizedSubappName || normalizedSubappName === DEFAULT_PROCESS_LOG_SUBAPP) {
+    return null;
+  }
+
+  for (const session of blocklyCommandSessions.values()) {
+    if (!session.running || session.sessionId !== normalizedSessionId) {
+      continue;
+    }
+    if (normalizeProcessLogSubappName(session.subappName) !== normalizedSubappName) {
+      continue;
+    }
+    if (!isManagedChildToolServeCommand(session.command, session.subappName)) {
+      continue;
+    }
+    return session;
+  }
+
+  return null;
+}
+
+function resolveExternalSessionWaitMs(
+  session: ExternalTerminalSession,
+  yieldTimeMs = 1_000,
+): number {
+  const normalizedYieldTimeMs = Math.max(0, Math.min(30_000, yieldTimeMs ?? 0));
+  if (!session.running) {
+    return normalizedYieldTimeMs;
+  }
+
+  if (isManagedChildToolServeCommand(session.command, session.subappName)) {
+    const hasAnyOutput = !!session.stdout || !!session.stderr;
+    if (!hasAnyOutput) {
+      return Math.max(normalizedYieldTimeMs, 2_500);
+    }
+  }
+
+  return normalizedYieldTimeMs;
+}
+
 function createExternalTerminal(host: any, prjPath: () => string, runtimeSessionId?: string): IExternalHostAPI['terminal'] {
   const hasRawTerminal = !!(host.terminal?.run && host.terminal?.onData);
   const hasCmdService = !!(host.cmd?.spawn && host.cmd?.kill && host.cmd?.sendInput);
@@ -4019,6 +4341,87 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
     }
     session.readyResolved = true;
     session.resolveReady();
+  };
+
+  const registerManagedChildToolServeSession = async (session: ExternalTerminalSession): Promise<void> => {
+    if (session.childToolSessionRegistered || !isManagedChildToolServeCommand(session.command, session.subappName)) {
+      return;
+    }
+
+    const hostInfo = readManagedChildToolReadyHostInfo(session.stdout);
+    if (!hostInfo?.url) {
+      return;
+    }
+
+    if (typeof hostInfo.pid === 'number' && Number.isFinite(hostInfo.pid)) {
+      session.pid = hostInfo.pid;
+    }
+
+    try {
+      const result = await (window as any)['childToolSession']?.register?.({
+        toolId: session.subappName,
+        hostInfo,
+        streamId: session.id,
+      });
+      if (result?.success) {
+        session.childToolSessionRegistered = true;
+        persistBlocklyCommandSessionRecord(session);
+      }
+    } catch (error) {
+      console.warn('[LexStream] Failed to register managed child tool session:', session.subappName, error);
+    }
+  };
+
+  const promoteExternalSessionToBackground = (session: ExternalTerminalSession): void => {
+    if (session.background || !session.running) {
+      return;
+    }
+    session.background = true;
+    if (session.timer) {
+      clearTimeout(session.timer);
+      session.timer = undefined;
+    }
+    if (session.status !== 'running') {
+      session.status = 'running';
+    }
+    persistBlocklyCommandSessionRecord(session);
+    if (session.sessionId) {
+      notifyBlocklyCommandSessionUpdate(session.sessionId, session.id);
+    }
+  };
+
+  const shouldAutoPromoteExternalSessionToBackground = (session: ExternalTerminalSession): boolean => {
+    if (session.background || !session.running) {
+      return false;
+    }
+
+    const normalizedCommand = session.command.toLowerCase();
+    const serviceLikeCommand = normalizedCommand.includes(' serve ')
+      || normalizedCommand.includes(' serve --')
+      || normalizedCommand.endsWith(' serve')
+      || normalizedCommand.includes(' --host ')
+      || normalizedCommand.includes(' --port ')
+      || normalizedCommand.includes('npm run dev')
+      || normalizedCommand.includes('npm run start')
+      || normalizedCommand.includes('vite')
+      || normalizedCommand.includes('http-server');
+
+    if (!serviceLikeCommand) {
+      return false;
+    }
+
+    const readinessText = `${session.stdout}\n${session.stderr}`.slice(-4096).toLowerCase();
+    return readinessText.includes('"event":"ready"')
+      || readinessText.includes('listening on')
+      || readinessText.includes('server running')
+      || /https?:\/\/127\.0\.0\.1:\d+/.test(readinessText)
+      || /ws:\/\/127\.0\.0\.1:\d+/.test(readinessText);
+  };
+
+  const maybeAutoPromoteExternalSessionToBackground = (session: ExternalTerminalSession): void => {
+    if (shouldAutoPromoteExternalSessionToBackground(session)) {
+      promoteExternalSessionToBackground(session);
+    }
   };
 
   const finalize = (session: ExternalTerminalSession, exitCode: number) => {
@@ -4067,6 +4470,8 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
             session.lastOutputAt = Date.now();
             persistBlocklyCommandSessionOutput(host, session, data.data ?? '');
             persistBlocklyCommandSessionRecord(session);
+            maybeAutoPromoteExternalSessionToBackground(session);
+            void registerManagedChildToolServeSession(session);
             emitExternalTerminalOutput(session, 'stdout', data.data ?? '');
             settleReady(session);
             break;
@@ -4075,6 +4480,7 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
             session.lastOutputAt = Date.now();
             persistBlocklyCommandSessionOutput(host, session, data.data ?? '');
             persistBlocklyCommandSessionRecord(session);
+            maybeAutoPromoteExternalSessionToBackground(session);
             emitExternalTerminalOutput(session, 'stderr', data.data ?? '');
             settleReady(session);
             break;
@@ -4115,6 +4521,7 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
           session.lastOutputAt = Date.now();
           persistBlocklyCommandSessionOutput(host, session, data.data ?? '');
           persistBlocklyCommandSessionRecord(session);
+          maybeAutoPromoteExternalSessionToBackground(session);
           emitExternalTerminalOutput(session, 'stdout', data.data ?? '');
           settleReady(session);
           break;
@@ -4123,6 +4530,7 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
           session.lastOutputAt = Date.now();
           persistBlocklyCommandSessionOutput(host, session, data.data ?? '');
           persistBlocklyCommandSessionRecord(session);
+          maybeAutoPromoteExternalSessionToBackground(session);
           emitExternalTerminalOutput(session, 'stderr', data.data ?? '');
           settleReady(session);
           break;
@@ -4150,6 +4558,8 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
       session.lastOutputAt = Date.now();
       persistBlocklyCommandSessionOutput(host, session, text);
       persistBlocklyCommandSessionRecord(session);
+      maybeAutoPromoteExternalSessionToBackground(session);
+      void registerManagedChildToolServeSession(session);
       emitExternalTerminalOutput(session, 'stdout', text);
       settleReady(session);
     });
@@ -4176,11 +4586,24 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
   }) => {
     const id = opts?.processId?.trim() || `terminal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const cwd = opts?.cwd ?? prjPath();
+    const projectPathHint = prjPath();
     const sessionId = typeof runtimeSessionId === 'string' ? runtimeSessionId.trim() : '';
     let resolveReady!: () => void;
     let resolveFinished!: () => void;
-    const subappName = normalizeProcessLogSubappName(opts?.subappName || DEFAULT_PROCESS_LOG_SUBAPP);
-    const storagePaths = resolveBlocklyCommandSessionStoragePaths(host, cwd, sessionId, id, subappName);
+    const inferredSubappName = resolveProcessLogSubappNameFromCommand(command);
+    const subappName = normalizeProcessLogSubappName(
+      opts?.subappName || inferredSubappName || resolveProcessLogSubappNameFromCwd(cwd) || DEFAULT_PROCESS_LOG_SUBAPP,
+    );
+    const managedChildToolServeCommand = isManagedChildToolServeCommand(command, subappName);
+    if (managedChildToolServeCommand) {
+      const reusableSession = findReusableChildToolServeSession(sessionId, subappName);
+      if (reusableSession) {
+        reusableSession.outputListener = opts?.onOutput;
+        promoteExternalSessionToBackground(reusableSession);
+        return createSnapshot(reusableSession);
+      }
+    }
+    const storagePaths = resolveBlocklyCommandSessionStoragePaths(host, projectPathHint, sessionId, id, subappName);
     const session: ExternalTerminalSession = {
       id,
       sessionId,
@@ -4206,7 +4629,7 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
       resolveFinished,
       outputListener: opts?.onOutput,
       executionKind: opts?.tty ? 'pty' : 'buffered',
-      background: false,
+      background: managedChildToolServeCommand,
     };
 
     if (opts?.tty) {
@@ -4219,20 +4642,22 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
       attachRawTerminalSession(session);
     }
 
-    const timeout = opts?.timeout ?? DEFAULT_EXTERNAL_COMMAND_TIMEOUT_MS;
-    session.timer = setTimeout(async () => {
-      if (!session.running) {
-        return;
-      }
-      session.stderr += `${session.stderr ? '\n' : ''}[Process killed: timeout exceeded]`;
-      session.lastOutputAt = Date.now();
-      session.status = 'timeout';
-      emitExternalTerminalOutput(session, 'stderr', '[Process killed: timeout exceeded]');
-      const stopped = await stopExternalSession(session, host);
-      if (stopped && session.running) {
-        finalize(session, session.exitCode ?? 124);
-      }
-    }, timeout);
+    if (!session.background) {
+      const timeout = opts?.timeout ?? DEFAULT_EXTERNAL_COMMAND_TIMEOUT_MS;
+      session.timer = setTimeout(async () => {
+        if (!session.running) {
+          return;
+        }
+        session.stderr += `${session.stderr ? '\n' : ''}[Process killed: timeout exceeded]`;
+        session.lastOutputAt = Date.now();
+        session.status = 'timeout';
+        emitExternalTerminalOutput(session, 'stderr', '[Process killed: timeout exceeded]');
+        const stopped = await stopExternalSession(session, host);
+        if (stopped && session.running) {
+          finalize(session, session.exitCode ?? 124);
+        }
+      }, timeout);
+    }
 
     attachBlocklyCommandSession(session);
     persistBlocklyCommandSessionRecord(session);
@@ -4389,11 +4814,11 @@ function createExternalTerminal(host: any, prjPath: () => string, runtimeSession
       if (!session) {
         return null;
       }
-      session.status = 'killed';
+      session.status = 'cancelled';
       session.stderr += `${session.stderr ? '\n' : ''}[Process stopped by user]`;
       session.lastOutputAt = Date.now();
       emitExternalTerminalOutput(session, 'stderr', '[Process stopped by user]', {
-        status: 'killed',
+        status: 'cancelled',
         running: false,
       });
       const stopped = await stopExternalSession(session, host);
@@ -4485,10 +4910,39 @@ interface ExternalTerminalSession {
   abortCleanup?: () => void;
   executionKind: 'buffered' | 'pty';
   background: boolean;
+  childToolSessionRegistered?: boolean;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function readManagedChildToolReadyHostInfo(output: string): {
+  url?: string;
+  origin?: string;
+  wsUrl?: string;
+  shutdownUrl?: string;
+  port?: number;
+  pid?: number;
+} | null {
+  const text = typeof output === 'string' ? output : '';
+  if (!text) {
+    return null;
+  }
+
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(lines[index]) as { event?: string; data?: any };
+      if (parsed?.event === 'ready' && parsed.data?.url) {
+        return parsed.data;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
 async function waitForExternalSession(
@@ -4501,6 +4955,7 @@ async function waitForExternalSession(
   }
 
   if (session.running && (yieldTimeMs ?? 0) > 0) {
+    const effectiveWaitMs = resolveExternalSessionWaitMs(session, yieldTimeMs);
     let removeAbortListener: (() => void) | undefined;
     const abortPromise = signal
       ? new Promise<void>((resolve) => {
@@ -4511,7 +4966,7 @@ async function waitForExternalSession(
       : undefined;
     await Promise.race([
       session.finished,
-      delay(Math.max(0, Math.min(30_000, yieldTimeMs))),
+      delay(effectiveWaitMs),
       ...(abortPromise ? [abortPromise] : []),
     ]);
     removeAbortListener?.();

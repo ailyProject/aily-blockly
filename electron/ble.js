@@ -1,3 +1,4 @@
+// 处理 BLE 设备发现、筛选和配对选择流程。
 const { ipcMain } = require("electron");
 
 const BLE_DEVICE_LIST_CHANNEL = 'ble-device-list';

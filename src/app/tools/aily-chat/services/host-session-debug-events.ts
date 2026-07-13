@@ -812,6 +812,7 @@ function formatProviderOptionsDetails(
   return [
     providerOptions.folderPath ? `folder=${providerOptions.folderPath}` : '',
     `permissionMode=${providerOptions.permissionMode}`,
+    providerOptions.permissionProfile === 'danger-full-access' ? `permissionProfile=${providerOptions.permissionProfile}` : '',
     providerOptions.permissionLevel ? `permissionLevel=${providerOptions.permissionLevel}` : '',
     providerOptions.approvalsReviewer ? `approvalsReviewer=${providerOptions.approvalsReviewer}` : '',
     providerOptions.approvalPolicy ? `approvalPolicy=${providerOptions.approvalPolicy}` : '',

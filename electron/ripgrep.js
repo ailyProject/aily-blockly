@@ -1,10 +1,21 @@
-/**
- * Ripgrep 工具包装器 - 用于高速文件内容搜索
- */
+// 封装 ripgrep 可执行文件，提供高速文件内容搜索能力。
 
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+
+const ALWAYS_IGNORED_DIRS = ['.git', '.svn', '.hg'];
+const DEFAULT_IGNORED_DIRS = [
+    ...ALWAYS_IGNORED_DIRS,
+    'node_modules',
+    '__pycache__',
+    '.aily',
+    '.aily_checkpoints',
+    '.cache'
+];
+const DEFAULT_SEARCH_TIMEOUT_MS = 15000;
+const MAX_FILE_RESULTS = 2000;
+const MAX_TEXT_RESULTS = 200;
 
 /**
  * 查找 ripgrep 可执行文件路径
@@ -140,6 +151,297 @@ async function ripgrep(args, searchPath, timeout = 10000) {
             }
         );
     });
+}
+
+function normalizeResultLimit(value, fallback, cap) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return fallback;
+    }
+    return Math.min(Math.floor(parsed), cap);
+}
+
+function createAbortError() {
+    const error = new Error('Search cancelled');
+    error.name = 'AbortError';
+    return error;
+}
+
+function appendSearchScopeArgs(args, options = {}) {
+    if (options.includeHidden !== false) {
+        args.push('--hidden');
+    }
+    if (options.includeIgnoredFiles) {
+        args.push('--no-ignore');
+    }
+
+    const ignoredDirs = options.includeIgnoredFiles
+        ? ALWAYS_IGNORED_DIRS
+        : DEFAULT_IGNORED_DIRS;
+    for (const directory of ignoredDirs) {
+        args.push('--glob', `!**/${directory}/**`);
+    }
+}
+
+/**
+ * Stream newline-delimited ripgrep output and stop the process as soon as the
+ * global result limit is reached. `mapLine` returns null for non-result lines.
+ */
+function streamRipgrep(args, searchPath, options) {
+    const {
+        maxResults,
+        mapLine,
+        signal,
+        timeout = DEFAULT_SEARCH_TIMEOUT_MS
+    } = options;
+
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(createAbortError());
+            return;
+        }
+
+        const startedAt = Date.now();
+        const rgPath = findRipgrepPath();
+        const child = spawn(rgPath, args, {
+            cwd: searchPath,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        const results = [];
+        let stdoutBuffer = '';
+        let stderr = '';
+        let limitHit = false;
+        let aborted = false;
+        let timedOut = false;
+        let settled = false;
+
+        const stopChild = () => {
+            if (!child.killed) {
+                child.kill();
+            }
+        };
+        const onAbort = () => {
+            aborted = true;
+            stopChild();
+        };
+        const timer = setTimeout(() => {
+            timedOut = true;
+            stopChild();
+        }, timeout);
+
+        signal?.addEventListener('abort', onAbort, { once: true });
+
+        const cleanup = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+        };
+
+        const acceptLine = (rawLine) => {
+            if (limitHit || results.length >= maxResults) {
+                return;
+            }
+            const line = rawLine.replace(/\r$/, '');
+            if (!line) {
+                return;
+            }
+            const mapped = mapLine(line);
+            if (mapped === null || mapped === undefined) {
+                return;
+            }
+            results.push(mapped);
+            if (results.length >= maxResults) {
+                limitHit = true;
+                stopChild();
+            }
+        };
+
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => {
+            stdoutBuffer += chunk;
+            let newlineIndex;
+            while ((newlineIndex = stdoutBuffer.indexOf('\n')) >= 0) {
+                acceptLine(stdoutBuffer.slice(0, newlineIndex));
+                stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+                if (limitHit) {
+                    stdoutBuffer = '';
+                    break;
+                }
+            }
+        });
+
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', (chunk) => {
+            if (stderr.length < 8192) {
+                stderr += chunk.slice(0, 8192 - stderr.length);
+            }
+        });
+
+        child.on('error', (error) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(error);
+        });
+
+        child.on('close', (code) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+
+            if (!limitHit && stdoutBuffer) {
+                acceptLine(stdoutBuffer);
+            }
+            if (aborted) {
+                reject(createAbortError());
+                return;
+            }
+            if (timedOut) {
+                reject(new Error(`Search timed out after ${timeout}ms`));
+                return;
+            }
+            if (!limitHit && code !== 0 && code !== 1) {
+                reject(new Error(stderr.trim() || `ripgrep exited with code ${code}`));
+                return;
+            }
+
+            resolve({
+                results,
+                limitHit,
+                durationMs: Date.now() - startedAt
+            });
+        });
+    });
+}
+
+/**
+ * List files by path glob without reading file contents.
+ */
+async function listFiles(params, options = {}) {
+    const {
+        pattern = '**/*',
+        path: searchPath,
+        includeIgnoredFiles = false,
+        includeHidden = true
+    } = params || {};
+    const maxResults = normalizeResultLimit(params?.maxResults, 200, MAX_FILE_RESULTS);
+
+    if (!searchPath) {
+        return { success: false, files: [], numFiles: 0, error: 'Search path is required' };
+    }
+
+    const args = ['--files', '--color=never', '--no-messages', '--glob', pattern];
+    appendSearchScopeArgs(args, { includeIgnoredFiles, includeHidden });
+
+    try {
+        const result = await streamRipgrep(args, searchPath, {
+            maxResults,
+            signal: options.signal,
+            timeout: options.timeout,
+            mapLine: line => line.replace(/\\/g, '/')
+        });
+        return {
+            success: true,
+            files: result.results,
+            numFiles: result.results.length,
+            limitHit: result.limitHit,
+            durationMs: result.durationMs
+        };
+    } catch (error) {
+        return {
+            success: false,
+            files: [],
+            numFiles: 0,
+            cancelled: error?.name === 'AbortError',
+            error: error?.message || String(error)
+        };
+    }
+}
+
+function parseRipgrepJsonMatch(line, maxLineLength) {
+    let message;
+    try {
+        message = JSON.parse(line);
+    } catch {
+        return null;
+    }
+    if (message?.type !== 'match' || !message.data) {
+        return null;
+    }
+
+    const file = message.data.path?.text;
+    const lineNumber = Number(message.data.line_number || 0);
+    const content = message.data.lines?.text;
+    if (!file || !lineNumber || typeof content !== 'string') {
+        return null;
+    }
+
+    return {
+        file: String(file).replace(/\\/g, '/'),
+        line: lineNumber,
+        content: content.replace(/\r?\n$/, '').slice(0, maxLineLength)
+    };
+}
+
+/**
+ * Search file contents and return globally bounded structured matches.
+ */
+async function searchText(params, options = {}) {
+    const {
+        pattern,
+        path: searchPath,
+        include,
+        isRegex = false,
+        ignoreCase = true,
+        includeIgnoredFiles = false,
+        includeHidden = true
+    } = params || {};
+    const maxResults = normalizeResultLimit(params?.maxResults, 100, MAX_TEXT_RESULTS);
+    const maxLineLength = normalizeResultLimit(params?.maxLineLength, 500, 2000);
+
+    if (!searchPath) {
+        return { success: false, matches: [], numMatches: 0, error: 'Search path is required' };
+    }
+    if (typeof pattern !== 'string' || pattern.length === 0) {
+        return { success: false, matches: [], numMatches: 0, error: 'Search pattern is required' };
+    }
+
+    const args = [
+        '--json',
+        '--line-number',
+        '--color=never',
+        '--no-messages',
+        '--max-filesize', '10M'
+    ];
+    if (ignoreCase) args.push('-i');
+    if (!isRegex) args.push('-F');
+    if (include) args.push('--glob', include);
+    appendSearchScopeArgs(args, { includeIgnoredFiles, includeHidden });
+    args.push('-e', pattern);
+
+    try {
+        const result = await streamRipgrep(args, searchPath, {
+            maxResults,
+            signal: options.signal,
+            timeout: options.timeout,
+            mapLine: line => parseRipgrepJsonMatch(line, maxLineLength)
+        });
+        return {
+            success: true,
+            matches: result.results,
+            numMatches: result.results.length,
+            limitHit: result.limitHit,
+            durationMs: result.durationMs
+        };
+    } catch (error) {
+        return {
+            success: false,
+            matches: [],
+            numMatches: 0,
+            cancelled: error?.name === 'AbortError',
+            error: error?.message || String(error)
+        };
+    }
 }
 
 /**
@@ -826,6 +1128,8 @@ function mergeOverlappingContexts(matchPositions, content, maxLength, file, line
 module.exports = {
     isRipgrepAvailable,
     ripgrep,
+    listFiles,
+    searchText,
     searchFiles,
     listAllContentFiles,
     searchContent,

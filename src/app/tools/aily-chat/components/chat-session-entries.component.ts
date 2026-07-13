@@ -2,6 +2,14 @@ import { CommonModule } from '@angular/common';
 import { ChangeDetectionStrategy, Component, EventEmitter, HostListener, Input, Output } from '@angular/core';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 
+import { createBuiltinChatResolvedMode, normalizeChatModeId } from '../core/chat-mode';
+import {
+  type ChatSessionInventoryGroup,
+  formatChatSessionStatusMeta,
+  getChatSessionStatusClass,
+  shouldShowChatSessionActivitySpinner,
+  shouldShowChatSessionUnreadDot,
+} from '../helpers/chat-session-presentation';
 import type { ChatSessionListAction, ChatSessionListItem } from '../services/menu-manager.service';
 
 const PRIMARY_SESSION_ACTIONS = new Set(['pin-session', 'unpin-session']);
@@ -11,14 +19,13 @@ const OVERFLOW_SESSION_ACTIONS = new Set([
   'rename-session',
   'delete-session',
 ]);
-import { createBuiltinChatResolvedMode, normalizeChatModeId } from '../core/chat-mode';
-import {
-  type ChatSessionInventoryGroup,
-  formatChatSessionStatusMeta,
-  getChatSessionStatusClass,
-  shouldShowChatSessionActivitySpinner,
-  shouldShowChatSessionUnreadDot,
-} from '../helpers/chat-session-presentation';
+const OVERFLOW_MENU_VIEWPORT_MARGIN = 8;
+const OVERFLOW_MENU_GAP = 2;
+
+interface SessionOverflowMenuPosition {
+  left: number;
+  top: number;
+}
 
 @Component({
   selector: 'aily-chat-session-entries',
@@ -31,6 +38,7 @@ import {
 export class ChatSessionEntriesComponent {
   archivedExpanded = false;
   openOverflowSessionId = '';
+  overflowMenuPosition: SessionOverflowMenuPosition | null = null;
 
   @Input() groups: ReadonlyArray<ChatSessionInventoryGroup> | null = null;
   @Input() items: readonly ChatSessionListItem[] = [];
@@ -43,6 +51,7 @@ export class ChatSessionEntriesComponent {
   @Output() selectSession = new EventEmitter<{ sessionId: string; item: ChatSessionListItem }>();
   @Output() preloadSession = new EventEmitter<{ sessionId: string; item: ChatSessionListItem }>();
   @Output() actionClick = new EventEmitter<{ action: string; data: ChatSessionListItem }>();
+  @Output() overflowOpenChange = new EventEmitter<boolean>();
 
   get isListVariant(): boolean {
     return this.variant === 'list';
@@ -82,13 +91,23 @@ export class ChatSessionEntriesComponent {
 
   triggerAction(event: MouseEvent, action: ChatSessionListAction, item: ChatSessionListItem): void {
     event.stopPropagation();
-    this.openOverflowSessionId = '';
+    this.closeOverflowMenu();
     this.actionClick.emit({ action: action.action, data: item });
   }
 
   toggleOverflow(event: MouseEvent, item: ChatSessionListItem): void {
     event.stopPropagation();
-    this.openOverflowSessionId = this.isOverflowOpen(item) ? '' : item.sessionId;
+    if (this.isOverflowOpen(item)) {
+      this.closeOverflowMenu();
+      return;
+    }
+
+    this.overflowMenuPosition = this.calculateOverflowMenuPosition(event.currentTarget, item);
+    const wasClosed = !this.openOverflowSessionId;
+    this.openOverflowSessionId = item.sessionId;
+    if (wasClosed) {
+      this.overflowOpenChange.emit(true);
+    }
   }
 
   isOverflowOpen(item: ChatSessionListItem): boolean {
@@ -97,12 +116,17 @@ export class ChatSessionEntriesComponent {
 
   @HostListener('document:click')
   closeOverflow(): void {
-    this.openOverflowSessionId = '';
+    this.closeOverflowMenu();
   }
 
   @HostListener('document:keydown.escape')
   closeOverflowOnEscape(): void {
-    this.openOverflowSessionId = '';
+    this.closeOverflowMenu();
+  }
+
+  @HostListener('window:resize')
+  closeOverflowOnResize(): void {
+    this.closeOverflowMenu();
   }
 
   formatStatusMeta(item: ChatSessionListItem): string {
@@ -158,6 +182,14 @@ export class ChatSessionEntriesComponent {
     return this.overflowActions(item).length > 0;
   }
 
+  getOverflowMenuLeft(item: ChatSessionListItem): number | null {
+    return this.isOverflowOpen(item) ? this.overflowMenuPosition?.left ?? null : null;
+  }
+
+  getOverflowMenuTop(item: ChatSessionListItem): number | null {
+    return this.isOverflowOpen(item) ? this.overflowMenuPosition?.top ?? null : null;
+  }
+
   isCollapsibleGroup(group: ChatSessionInventoryGroup): boolean {
     return group.id === 'archived';
   }
@@ -177,5 +209,53 @@ export class ChatSessionEntriesComponent {
 
   private readNonEmptyString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  }
+
+  private closeOverflowMenu(): void {
+    const wasOpen = !!this.openOverflowSessionId;
+    this.openOverflowSessionId = '';
+    this.overflowMenuPosition = null;
+    if (wasOpen) {
+      this.overflowOpenChange.emit(false);
+    }
+  }
+
+  private calculateOverflowMenuPosition(
+    trigger: EventTarget | null,
+    item: ChatSessionListItem
+  ): SessionOverflowMenuPosition {
+    const triggerElement = trigger instanceof HTMLElement ? trigger : null;
+    const triggerRect = triggerElement?.getBoundingClientRect();
+    const actionCount = Math.max(this.overflowActions(item).length, 1);
+    const actionSize = this.isPickerVariant ? 22 : 24;
+    const menuWidth = actionSize + 10;
+    const menuHeight = (actionCount * actionSize) + ((actionCount - 1) * 2) + 10;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+    if (!triggerRect) {
+      return {
+        left: Math.max(OVERFLOW_MENU_VIEWPORT_MARGIN, viewportWidth - menuWidth - OVERFLOW_MENU_VIEWPORT_MARGIN),
+        top: OVERFLOW_MENU_VIEWPORT_MARGIN,
+      };
+    }
+
+    const preferredLeft = triggerRect.right - menuWidth;
+    const left = this.clamp(
+      preferredLeft,
+      OVERFLOW_MENU_VIEWPORT_MARGIN,
+      Math.max(OVERFLOW_MENU_VIEWPORT_MARGIN, viewportWidth - menuWidth - OVERFLOW_MENU_VIEWPORT_MARGIN)
+    );
+    const bottomTop = triggerRect.bottom + OVERFLOW_MENU_GAP;
+    const topTop = triggerRect.top - menuHeight - OVERFLOW_MENU_GAP;
+    const top = bottomTop + menuHeight + OVERFLOW_MENU_VIEWPORT_MARGIN <= viewportHeight
+      ? bottomTop
+      : this.clamp(topTop, OVERFLOW_MENU_VIEWPORT_MARGIN, Math.max(OVERFLOW_MENU_VIEWPORT_MARGIN, viewportHeight - menuHeight - OVERFLOW_MENU_VIEWPORT_MARGIN));
+
+    return { left, top };
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
   }
 }

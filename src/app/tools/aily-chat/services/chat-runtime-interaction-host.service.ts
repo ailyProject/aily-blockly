@@ -4,6 +4,8 @@ import { TranslateService } from '@ngx-translate/core';
 import type { AskUserAnswer, AskUserFullResponse, AskUserQuestion, AskUserPresentationContext } from '../core/ask-user';
 import { AilyHost } from '../core/host';
 import type { IFileWatchHandle } from '../core/host-api';
+import { readToolApprovalCommand } from '../core/tool-approval-input';
+import { isTerminalCommandToolName, normalizeReadSideToolName } from '../core/tool-name-normalizer';
 import type { ToolApprovalAction, ToolApprovalRequest, ToolApprovalScope } from '../helpers/tool-approval-ui';
 import { resolveBlocklyArtifactReferenceTarget } from '../helpers/chat-artifact-reference';
 import {
@@ -16,8 +18,30 @@ import {
 import type {
   ChatRuntimeHostInteractionRequest,
   ChatRuntimeHostInteractionSnapshot,
+  ChatRuntimeHostSessionProcessSummary,
 } from '../core/chat-runtime-host-contract';
 import type { ChatRuntimeOwnerInteractionHostPort } from './chat-runtime-owner-ports';
+import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
+import { ChatRuntimeOwnerToolApprovalPolicyService } from './chat-runtime-owner-tool-approval-policy.service';
+
+function shouldTraceRuntimeInteraction(): boolean {
+  return isAilyCategoryDebugEnabled('aily.chat.traceRuntimeInteraction', [
+    '__AILY_CHAT_TRACE_RUNTIME_INTERACTION__',
+    'AILY_CHAT_TRACE_RUNTIME_INTERACTION',
+  ]);
+}
+
+function escapeRegExpCharacters(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeTerminalCommand(command: unknown): string {
+  return typeof command === 'string' ? command.trim() : '';
+}
+
+function buildExactTerminalRule(command: string): string {
+  return `/^${escapeRegExpCharacters(command)}$/`;
+}
 
 export interface RuntimeQuestionWidgetState {
   readonly sessionId: string;
@@ -40,6 +64,7 @@ export interface RuntimeConfirmationDecision {
 }
 
 export interface RuntimeConfirmationWidgetState {
+  readonly approvalTraceId?: string;
   readonly sessionId: string;
   readonly id: string;
   readonly kind: 'approval' | 'confirmation';
@@ -49,6 +74,7 @@ export interface RuntimeConfirmationWidgetState {
   readonly toolName?: string;
   readonly data: {
     kind: 'approval' | 'confirmation';
+    approvalTraceId?: string;
     partId: string;
     askId?: string;
     toolCallId?: string;
@@ -118,16 +144,33 @@ export interface RuntimeCommandSessionActionResult {
 
 type QuestionRuntimeEntry = RuntimeQuestionWidgetState & {
   readonly resolve: (result: AskUserFullResponse | undefined) => void;
+  readonly remote?: boolean;
 };
 
 type ConfirmationRuntimeEntry = RuntimeConfirmationWidgetState & {
   readonly resolve: (result: RuntimeConfirmationDecision) => void;
   readonly onAction?: (actionId: string) => void;
+  readonly promise: Promise<RuntimeConfirmationDecision>;
+  readonly remote?: boolean;
 };
 
 type PlanReviewRuntimeEntry = RuntimePlanReviewWidgetState & {
   readonly resolve: (result: RuntimePlanReviewDecision) => void;
+  readonly remote?: boolean;
 };
+
+interface RuntimeApprovalState {
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly approvalTraceId?: string;
+  readonly toolName?: string;
+  readonly request: ToolApprovalRequest;
+  readonly status: 'pending' | 'resolved';
+  readonly result?: RuntimeConfirmationDecision;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly resolvedAt?: number;
+}
 
 type RuntimeInteractionSnapshotListener = (snapshot: ChatRuntimeHostInteractionSnapshot) => void;
 type RuntimeInteractionDecisionRequest = Omit<
@@ -148,12 +191,18 @@ interface PlanReviewFileSyncState {
 export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerInteractionHostPort {
   private readonly destroyRef = inject(DestroyRef);
   private readonly translate = inject(TranslateService);
+  private readonly toolApprovalPolicy = inject(ChatRuntimeOwnerToolApprovalPolicyService);
   private readonly _questionEntries = signal<Record<string, QuestionRuntimeEntry | undefined>>({});
   private readonly _confirmationEntries = signal<Record<string, readonly ConfirmationRuntimeEntry[] | undefined>>({});
   private readonly _confirmationActiveIndices = signal<Record<string, number | undefined>>({});
   private readonly _planReviewEntries = signal<Record<string, PlanReviewRuntimeEntry | undefined>>({});
+  private readonly _approvalStates = new Map<string, RuntimeApprovalState>();
   private readonly _planReviewFileSyncs = new Map<string, PlanReviewFileSyncState>();
   private readonly _backgroundCommandSessions = new Set<string>();
+  private readonly _remoteProcessInventories = new Map<string, {
+    readonly processInventoryRevision: number;
+    readonly processes: readonly ChatRuntimeHostSessionProcessSummary[];
+  }>();
   private readonly snapshotListeners = new Set<RuntimeInteractionSnapshotListener>();
   private readonly remoteResolvers = new Map<string, RuntimeInteractionRemoteResolver>();
   private interactionRevision = 0;
@@ -196,17 +245,24 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
 
     const nextQuestions = { ...this._questionEntries() };
     if (question) {
-      nextQuestions[sessionId] = {
-        ...question,
-        resolve: (result) => {
-          void remoteResolver({
-            sessionId,
-            kind: 'question.complete',
-            id: question.partId,
-            payload: { result },
-          });
-        },
-      };
+      const existingQuestion = nextQuestions[sessionId];
+      nextQuestions[sessionId] = existingQuestion && !existingQuestion.remote && existingQuestion.partId === question.partId
+        ? {
+            ...question,
+            resolve: existingQuestion.resolve,
+          }
+        : {
+            ...question,
+            remote: true,
+            resolve: (result) => {
+              void remoteResolver({
+                sessionId,
+                kind: 'question.complete',
+                id: question.partId,
+                payload: { result },
+              });
+            },
+          };
     } else {
       delete nextQuestions[sessionId];
     }
@@ -214,16 +270,10 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
 
     const nextConfirmations = { ...this._confirmationEntries() };
     if (confirmations.length > 0) {
+      const existingConfirmations = nextConfirmations[sessionId] ?? [];
       nextConfirmations[sessionId] = confirmations.map((confirmation) => ({
         ...confirmation,
-        resolve: (result) => {
-          void remoteResolver({
-            sessionId,
-            kind: 'confirmation.resolve',
-            id: confirmation.id,
-            payload: { result },
-          });
-        },
+        ...this.resolveConfirmationEntryProjection(sessionId, confirmation, existingConfirmations, remoteResolver),
       }));
     } else {
       delete nextConfirmations[sessionId];
@@ -236,17 +286,24 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
 
     const nextPlanReviews = { ...this._planReviewEntries() };
     if (planReview) {
-      nextPlanReviews[sessionId] = {
-        ...planReview,
-        resolve: (result) => {
-          void remoteResolver({
-            sessionId,
-            kind: 'planReview.resolve',
-            id: planReview.id,
-            payload: { result },
-          });
-        },
-      };
+      const existingPlanReview = nextPlanReviews[sessionId];
+      nextPlanReviews[sessionId] = existingPlanReview && !existingPlanReview.remote && existingPlanReview.id === planReview.id
+        ? {
+            ...planReview,
+            resolve: existingPlanReview.resolve,
+          }
+        : {
+            ...planReview,
+            remote: true,
+            resolve: (result) => {
+              void remoteResolver({
+                sessionId,
+                kind: 'planReview.resolve',
+                id: planReview.id,
+                payload: { result },
+              });
+            },
+          };
     } else {
       delete nextPlanReviews[sessionId];
     }
@@ -262,6 +319,20 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
         this._backgroundCommandSessions.add(key);
       }
     }
+
+    if (Array.isArray(snapshot.processes)) {
+      this._remoteProcessInventories.set(sessionId, {
+        processInventoryRevision: typeof snapshot.processInventoryRevision === 'number'
+          ? snapshot.processInventoryRevision
+          : snapshot.revision,
+        processes: snapshot.processes.filter(this.isProcessSummary),
+      });
+    } else if (typeof snapshot.processInventoryRevision === 'number') {
+      this._remoteProcessInventories.set(sessionId, {
+        processInventoryRevision: snapshot.processInventoryRevision,
+        processes: [],
+      });
+    }
   }
 
   async requestCommandSessionAction(
@@ -270,15 +341,21 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
   ): Promise<RuntimeCommandSessionActionResult> {
     const remoteResolver = this.remoteResolvers.get(this.normalizeSessionId(sessionId));
     if (remoteResolver) {
-      const snapshot = await remoteResolver({
-        sessionId,
-        kind: 'commandSession.action',
-        payload: { request },
-      });
-      const result = (snapshot as unknown as { commandSessionActionResult?: RuntimeCommandSessionActionResult } | null)
-        ?.commandSessionActionResult;
-      if (result) {
-        return result;
+      try {
+        const snapshot = await remoteResolver({
+          sessionId,
+          kind: 'commandSession.action',
+          payload: { request },
+        });
+        const result = (snapshot as unknown as { commandSessionActionResult?: RuntimeCommandSessionActionResult } | null)
+          ?.commandSessionActionResult;
+        if (result) {
+          return result;
+        }
+      } catch (error) {
+        if (!this.isStaleCommandSessionActionError(error)) {
+          throw error;
+        }
       }
     }
 
@@ -470,12 +547,9 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
   }
 
   navigateConfirmation(sessionId: string, delta: number): void {
+    const active = this.getActiveConfirmation(sessionId);
     const remoteResolver = this.remoteResolvers.get(this.normalizeSessionId(sessionId));
-    if (remoteResolver) {
-      const active = this.getActiveConfirmation(sessionId);
-      if (!active) {
-        throw new Error('navigateConfirmation requires an active confirmation id.');
-      }
+    if (remoteResolver && (active as ConfirmationRuntimeEntry | null)?.remote) {
       void remoteResolver({ sessionId, kind: 'confirmation.navigate', id: active.id, delta });
     }
 
@@ -493,25 +567,43 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
   }
 
   presentToolApproval(sessionId: string, request: ToolApprovalRequest): Promise<RuntimeConfirmationDecision> {
+    const normalizedSessionId = this.normalizeSessionId(sessionId);
     const actions = Array.isArray(request.actions) ? request.actions : [];
     const primaryScope = request.primaryScope ?? 'once';
+    const approvalTraceId = this.normalizeApprovalTraceId(request);
+    const normalizedRequest = { ...request, approvalTraceId };
+    const approvalState = this.upsertApprovalState(normalizedSessionId, normalizedRequest);
+    if (shouldTraceRuntimeInteraction()) {
+      console.info('[AilyChat][RuntimeApprovalQueue]', {
+        phase: 'present-tool-approval',
+        sessionId: normalizedSessionId,
+        toolCallId: approvalState.toolCallId,
+        toolName: approvalState.toolName,
+        approvalTraceId: approvalState.approvalTraceId,
+        actionCount: actions.length,
+        primaryScope,
+        queueLength: this.getConfirmationQueue(normalizedSessionId).length,
+      });
+    }
 
-    return this.enqueueConfirmation(sessionId, {
-      sessionId,
-      id: request.toolCallId,
+    return this.enqueueConfirmation(normalizedSessionId, {
+      sessionId: normalizedSessionId,
+      approvalTraceId: approvalState.approvalTraceId,
+      id: approvalState.toolCallId,
       kind: 'approval',
-      partId: request.toolCallId,
-      toolCallId: request.toolCallId,
-      toolName: request.toolName,
+      partId: approvalState.toolCallId,
+      toolCallId: approvalState.toolCallId,
+      toolName: approvalState.toolName,
       data: {
         kind: 'approval',
-        partId: request.toolCallId,
-        toolCallId: request.toolCallId,
-        toolName: request.toolName,
-        title: request.title || this.translate.instant('AILY_CHAT.PROCESS_APPROVAL_DEFAULT_TITLE'),
-        subtitle: request.subtitle,
-        message: request.message,
-        args: request.args,
+        approvalTraceId: approvalState.approvalTraceId,
+        partId: approvalState.toolCallId,
+        toolCallId: approvalState.toolCallId,
+        toolName: approvalState.toolName,
+        title: normalizedRequest.title || this.translate.instant('AILY_CHAT.PROCESS_APPROVAL_DEFAULT_TITLE'),
+        subtitle: normalizedRequest.subtitle,
+        message: normalizedRequest.message,
+        args: normalizedRequest.args,
         actions,
         primaryScope,
       },
@@ -609,7 +701,7 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
 
     const target = queue.find(entry => entry.id === id);
     const remoteResolver = this.remoteResolvers.get(this.normalizeSessionId(sessionId));
-    if (remoteResolver) {
+    if (remoteResolver && target?.remote) {
       void remoteResolver({
         sessionId,
         kind: 'confirmation.action',
@@ -654,7 +746,8 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
   }
 
   resolveConfirmation(sessionId: string, id: string, result: RuntimeConfirmationDecision): void {
-    const queue = this._confirmationEntries()[sessionId];
+    const normalizedSessionId = this.normalizeSessionId(sessionId);
+    const queue = this._confirmationEntries()[normalizedSessionId];
     if (!queue || queue.length === 0) {
       return;
     }
@@ -665,49 +758,75 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
     }
 
     const target = queue[targetIndex];
+    if (target.kind === 'approval') {
+      const approvalState = this.resolveApprovalState(normalizedSessionId, target.toolCallId ?? target.id, result);
+      this.rememberResolvedApproval(
+        normalizedSessionId,
+        approvalState?.request ?? this.createApprovalRequestFromConfirmation(target),
+        result,
+      );
+    }
+    if (shouldTraceRuntimeInteraction()) {
+      console.info('[AilyChat][RuntimeApprovalQueue]', {
+        phase: 'resolve-confirmation',
+        sessionId: normalizedSessionId,
+        id,
+        kind: target.kind,
+        toolCallId: target.toolCallId,
+        approved: result.approved,
+        scope: result.scope,
+        actionId: result.actionId,
+        queueLengthBefore: queue.length,
+      });
+    }
     target.resolve(result);
 
     const nextQueue = queue.filter((entry) => entry.id !== id);
     const nextQueues = { ...this._confirmationEntries() };
     if (nextQueue.length === 0) {
-      delete nextQueues[sessionId];
+      delete nextQueues[normalizedSessionId];
     } else {
-      nextQueues[sessionId] = nextQueue;
+      nextQueues[normalizedSessionId] = nextQueue;
     }
     this._confirmationEntries.set(nextQueues);
 
     const nextIndices = { ...this._confirmationActiveIndices() };
     if (nextQueue.length === 0) {
-      delete nextIndices[sessionId];
+      delete nextIndices[normalizedSessionId];
     } else {
-      const currentIndex = this.getActiveConfirmationIndex(sessionId);
-      nextIndices[sessionId] = Math.max(0, Math.min(currentIndex, nextQueue.length - 1));
+      const currentIndex = this.getActiveConfirmationIndex(normalizedSessionId);
+      nextIndices[normalizedSessionId] = Math.max(0, Math.min(currentIndex, nextQueue.length - 1));
     }
     this._confirmationActiveIndices.set(nextIndices);
-    this.emitSnapshot(sessionId);
+    this.emitSnapshot(normalizedSessionId);
   }
 
   clearConfirmations(sessionId: string): void {
-    const queue = this._confirmationEntries()[sessionId];
+    const normalizedSessionId = this.normalizeSessionId(sessionId);
+    const queue = this._confirmationEntries()[normalizedSessionId];
     if (!queue || queue.length === 0) {
       return;
     }
 
+    const rejectedResult = {
+      approved: false,
+      reason: this.translate.instant('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON'),
+    };
     for (const entry of queue) {
-      entry.resolve({
-        approved: false,
-        reason: this.translate.instant('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON'),
-      });
+      if (entry.kind === 'approval') {
+        this.resolveApprovalState(normalizedSessionId, entry.toolCallId ?? entry.id, rejectedResult);
+      }
+      entry.resolve(rejectedResult);
     }
 
     const nextQueues = { ...this._confirmationEntries() };
-    delete nextQueues[sessionId];
+    delete nextQueues[normalizedSessionId];
     this._confirmationEntries.set(nextQueues);
 
     const nextIndices = { ...this._confirmationActiveIndices() };
-    delete nextIndices[sessionId];
+    delete nextIndices[normalizedSessionId];
     this._confirmationActiveIndices.set(nextIndices);
-    this.emitSnapshot(sessionId);
+    this.emitSnapshot(normalizedSessionId);
   }
 
   resolvePlanReview(sessionId: string, id: string, result: RuntimePlanReviewDecision): void {
@@ -730,29 +849,318 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
     this.deletePlanReviewEntry(sessionId);
   }
 
+  private normalizeApprovalTraceId(request: ToolApprovalRequest): string {
+    const explicitTraceId = typeof request.approvalTraceId === 'string' ? request.approvalTraceId.trim() : '';
+    if (explicitTraceId) {
+      return explicitTraceId;
+    }
+
+    const toolCallId = typeof request.toolCallId === 'string' ? request.toolCallId.trim() : '';
+    return toolCallId ? `approval-${toolCallId}` : `approval-${Date.now().toString(36)}`;
+  }
+
+  private getApprovalStateKey(sessionId: string, toolCallId: string): string {
+    return `${sessionId}\u0000${toolCallId}`;
+  }
+
+  private upsertApprovalState(sessionId: string, request: ToolApprovalRequest): RuntimeApprovalState {
+    const normalizedSessionId = this.normalizeSessionId(sessionId);
+    const toolCallId = request.toolCallId.trim();
+    const key = this.getApprovalStateKey(normalizedSessionId, toolCallId);
+    const existing = this._approvalStates.get(key);
+    const now = Date.now();
+    const state: RuntimeApprovalState = {
+      sessionId: normalizedSessionId,
+      toolCallId,
+      approvalTraceId: request.approvalTraceId,
+      toolName: request.toolName,
+      request,
+      status: 'pending',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this._approvalStates.set(key, state);
+    this.logApprovalState('pending', state);
+    return state;
+  }
+
+  private resolveApprovalState(
+    sessionId: string,
+    toolCallId: string,
+    result: RuntimeConfirmationDecision,
+  ): RuntimeApprovalState | undefined {
+    const normalizedSessionId = this.normalizeSessionId(sessionId);
+    const normalizedToolCallId = toolCallId.trim();
+    const key = this.getApprovalStateKey(normalizedSessionId, normalizedToolCallId);
+    const existing = this._approvalStates.get(key);
+    if (!existing) {
+      return undefined;
+    }
+
+    const resolved: RuntimeApprovalState = {
+      ...existing,
+      status: 'resolved',
+      result,
+      updatedAt: Date.now(),
+      resolvedAt: Date.now(),
+    };
+    this._approvalStates.set(key, resolved);
+    this.logApprovalState('resolved', resolved);
+    return resolved;
+  }
+
+  private createApprovalRequestFromConfirmation(entry: ConfirmationRuntimeEntry): ToolApprovalRequest | undefined {
+    if (entry.kind !== 'approval') {
+      return undefined;
+    }
+
+    const toolCallId = (entry.toolCallId || entry.id || '').trim();
+    const toolName = (entry.toolName || entry.data.toolName || '').trim();
+    if (!toolCallId || !toolName) {
+      return undefined;
+    }
+
+    return {
+      approvalTraceId: entry.approvalTraceId || entry.data.approvalTraceId,
+      toolCallId,
+      toolName,
+      title: entry.data.title,
+      subtitle: entry.data.subtitle,
+      message: entry.data.message,
+      actions: entry.data.actions,
+      primaryScope: entry.data.primaryScope,
+      args: entry.data.args,
+    };
+  }
+
+  private rememberResolvedApproval(
+    sessionId: string,
+    request: ToolApprovalRequest | undefined,
+    result: RuntimeConfirmationDecision,
+  ): void {
+    if (!request || result.approved !== true) {
+      return;
+    }
+
+    const normalizedScope = result.scope === 'session-safe' ? 'session-all-terminal' : result.scope ?? 'once';
+    if (normalizedScope === 'once') {
+      return;
+    }
+
+    const toolName = normalizeReadSideToolName(request.toolName);
+    const args = request.args && typeof request.args === 'object'
+      ? request.args as Record<string, unknown>
+      : {};
+    const combinationKey = typeof request.approveCombination?.key === 'string'
+      ? request.approveCombination.key.trim()
+      : '';
+    const isCombinationApproval = !!combinationKey && result.actionId?.startsWith('combination:');
+
+    if (isCombinationApproval) {
+      if (normalizedScope === 'session') {
+        this.toolApprovalPolicy.addSessionToolApprovalCombinationKey(sessionId, combinationKey);
+        return;
+      }
+
+      if (normalizedScope === 'workspace'
+        && this.toolApprovalPolicy.addWorkspaceToolApprovalCombinationKey(this.resolveCurrentProjectPath(), combinationKey)) {
+        this.toolApprovalPolicy.save();
+      }
+      return;
+    }
+
+    if (isTerminalCommandToolName(toolName)) {
+      if (normalizedScope === 'session-all-terminal') {
+        this.toolApprovalPolicy.setSessionTerminalAutoApproval(sessionId, true);
+        return;
+      }
+
+      const command = normalizeTerminalCommand(readToolApprovalCommand(toolName, args, request.message));
+      if (!command) {
+        return;
+      }
+
+      const exactRule = buildExactTerminalRule(command);
+      if (normalizedScope === 'session') {
+        this.toolApprovalPolicy.addSessionTerminalApprovalRule(sessionId, exactRule);
+        return;
+      }
+
+      if (normalizedScope === 'workspace') {
+        const currentAllowList = this.toolApprovalPolicy.terminalAllowList ?? [];
+        if (!currentAllowList.includes(exactRule)) {
+          this.toolApprovalPolicy.terminalAllowList = [...currentAllowList, exactRule];
+          this.toolApprovalPolicy.save();
+        }
+      }
+      return;
+    }
+
+    if (!toolName) {
+      return;
+    }
+
+    if (normalizedScope === 'session') {
+      this.toolApprovalPolicy.addSessionToolApprovalRule(sessionId, toolName);
+      return;
+    }
+
+    if (normalizedScope === 'workspace'
+      && this.toolApprovalPolicy.addWorkspaceToolApprovalRule(this.resolveCurrentProjectPath(), toolName)) {
+      this.toolApprovalPolicy.save();
+    }
+  }
+
+  private resolveCurrentProjectPath(): string {
+    const host = AilyHost.get();
+    return host.project.currentProjectPath
+      || host.project.projectRootPath
+      || '';
+  }
+
+  private createRemoteConfirmationResolver(
+    sessionId: string,
+    id: string,
+    remoteResolver: RuntimeInteractionRemoteResolver,
+  ): Pick<ConfirmationRuntimeEntry, 'resolve' | 'promise' | 'remote'> {
+    let resolveLocal!: (result: RuntimeConfirmationDecision) => void;
+    const promise = new Promise<RuntimeConfirmationDecision>((resolve) => {
+      resolveLocal = resolve;
+    });
+    return {
+      remote: true,
+      promise,
+      resolve: (result) => {
+        resolveLocal(result);
+        void remoteResolver({
+          sessionId,
+          kind: 'confirmation.resolve',
+          id,
+          payload: { result },
+        });
+      },
+    };
+  }
+
+  private resolveConfirmationEntryProjection(
+    sessionId: string,
+    confirmation: RuntimeConfirmationWidgetState,
+    existingConfirmations: readonly ConfirmationRuntimeEntry[],
+    remoteResolver: RuntimeInteractionRemoteResolver,
+  ): Pick<ConfirmationRuntimeEntry, 'resolve' | 'promise' | 'onAction' | 'remote'> {
+    const existing = existingConfirmations.find((entry) => entry.id === confirmation.id);
+    if (existing && !existing.remote) {
+      if (shouldTraceRuntimeInteraction()) {
+        console.info('[AilyChat][RuntimeApprovalQueue]', {
+          phase: 'apply-host-snapshot-preserve-local-confirmation',
+          sessionId,
+          id: confirmation.id,
+          kind: confirmation.kind,
+          toolCallId: confirmation.toolCallId,
+        });
+      }
+      return {
+        resolve: existing.resolve,
+        promise: existing.promise,
+        onAction: existing.onAction,
+      };
+    }
+
+    return this.createRemoteConfirmationResolver(sessionId, confirmation.id, remoteResolver);
+  }
+
+  private logApprovalState(phase: 'pending' | 'resolved', state: RuntimeApprovalState): void {
+    // Keep this log compact; it is the host-side equivalent of VS Code's single pending tool invocation state.
+    if (shouldTraceRuntimeInteraction()) {
+      console.info('[AilyChat][RuntimeApprovalState]', {
+        phase,
+        sessionId: state.sessionId,
+        toolCallId: state.toolCallId,
+        toolName: state.toolName,
+        approvalTraceId: state.approvalTraceId,
+        status: state.status,
+        approved: state.result?.approved,
+        scope: state.result?.scope,
+        actionId: state.result?.actionId,
+      });
+    }
+  }
+
   private enqueueConfirmation(
     sessionId: string,
     entry: RuntimeConfirmationWidgetState & { onAction?: (actionId: string) => void },
   ): Promise<RuntimeConfirmationDecision> {
-    return new Promise<RuntimeConfirmationDecision>((resolve) => {
-      const currentQueues = this._confirmationEntries();
-      const currentQueue = currentQueues[sessionId] ?? [];
-      const nextQueue = currentQueue.filter((item) => item.id !== entry.id).concat({
+    const normalizedSessionId = this.normalizeSessionId(sessionId);
+    const currentQueues = this._confirmationEntries();
+    const currentQueue = currentQueues[normalizedSessionId] ?? [];
+    const existingIndex = currentQueue.findIndex((item) => item.id === entry.id);
+    if (existingIndex >= 0) {
+      if (shouldTraceRuntimeInteraction()) {
+        console.info('[AilyChat][RuntimeApprovalQueue]', {
+          phase: 'enqueue-update-existing',
+          sessionId: normalizedSessionId,
+          id: entry.id,
+          kind: entry.kind,
+          toolCallId: entry.toolCallId,
+          queueLength: currentQueue.length,
+        });
+      }
+      const existing = currentQueue[existingIndex];
+      const nextEntry: ConfirmationRuntimeEntry = {
         ...entry,
-        resolve,
-      });
+        sessionId: normalizedSessionId,
+        resolve: existing.resolve,
+        promise: existing.promise,
+        onAction: entry.onAction ?? existing.onAction,
+      };
+      const nextQueue = currentQueue.map((item, index) => index === existingIndex ? nextEntry : item);
 
       this._confirmationEntries.set({
         ...currentQueues,
-        [sessionId]: nextQueue,
+        [normalizedSessionId]: nextQueue,
       });
 
       this._confirmationActiveIndices.set({
         ...this._confirmationActiveIndices(),
-        [sessionId]: nextQueue.length - 1,
+        [normalizedSessionId]: existingIndex,
       });
-      this.emitSnapshot(sessionId);
+      this.emitSnapshot(normalizedSessionId);
+      return existing.promise;
+    }
+
+    let resolveDecision!: (result: RuntimeConfirmationDecision) => void;
+    const promise = new Promise<RuntimeConfirmationDecision>((resolve) => {
+      resolveDecision = resolve;
     });
+    const nextQueue = currentQueue.concat({
+      ...entry,
+      sessionId: normalizedSessionId,
+      resolve: resolveDecision,
+      promise,
+    });
+    if (shouldTraceRuntimeInteraction()) {
+      console.info('[AilyChat][RuntimeApprovalQueue]', {
+        phase: 'enqueue-new',
+        sessionId: normalizedSessionId,
+        id: entry.id,
+        kind: entry.kind,
+        toolCallId: entry.toolCallId,
+        queueLengthBefore: currentQueue.length,
+        queueLengthAfter: nextQueue.length,
+      });
+    }
+
+    this._confirmationEntries.set({
+      ...currentQueues,
+      [normalizedSessionId]: nextQueue,
+    });
+
+    this._confirmationActiveIndices.set({
+      ...this._confirmationActiveIndices(),
+      [normalizedSessionId]: nextQueue.length - 1,
+    });
+    this.emitSnapshot(normalizedSessionId);
+    return promise;
   }
 
   private deleteQuestionEntry(sessionId: string): void {
@@ -890,6 +1298,11 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
     const question = (this.stripQuestionEntry(this._questionEntries()[sessionId]) as unknown) as Readonly<Record<string, unknown>> | null;
     const confirmationSnapshot = (confirmationQueue.map(entry => this.stripConfirmationEntry(entry)) as unknown) as ReadonlyArray<Readonly<Record<string, unknown>>>;
     const activePlanReview = (this.stripPlanReviewEntry(this._planReviewEntries()[sessionId]) as unknown) as Readonly<Record<string, unknown>> | null;
+    const remoteProcessInventory = this._remoteProcessInventories.get(sessionId);
+    const processes = this.mergeProcessSummaries(
+      listBlocklyCommandSessionSnapshots(sessionId),
+      remoteProcessInventory?.processes ?? [],
+    );
     return {
       sessionId,
       revision: this.interactionRevision,
@@ -902,9 +1315,45 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
       backgroundProcessIds: [...this._backgroundCommandSessions]
         .filter(key => key.startsWith(`${sessionId}::`))
         .map(key => key.slice(`${sessionId}::`.length)),
-      processInventoryRevision: this.interactionRevision,
-      processes: listBlocklyCommandSessionSnapshots(sessionId),
+      processInventoryRevision: remoteProcessInventory?.processInventoryRevision ?? this.interactionRevision,
+      processes,
     };
+  }
+
+  private mergeProcessSummaries(
+    localProcesses: readonly ChatRuntimeHostSessionProcessSummary[],
+    remoteProcesses: readonly ChatRuntimeHostSessionProcessSummary[],
+  ): readonly ChatRuntimeHostSessionProcessSummary[] {
+    const merged = new Map<string, ChatRuntimeHostSessionProcessSummary>();
+    for (const process of localProcesses) {
+      if (this.isProcessSummary(process)) {
+        merged.set(process.processId, process);
+      }
+    }
+    for (const process of remoteProcesses) {
+      if (!this.isProcessSummary(process)) {
+        continue;
+      }
+      const existing = merged.get(process.processId);
+      merged.set(process.processId, existing
+        ? {
+            ...existing,
+            ...process,
+            outputFilePath: process.outputFilePath ?? existing.outputFilePath,
+          }
+        : process);
+    }
+    return [...merged.values()].sort((left, right) => right.startedAt - left.startedAt);
+  }
+
+  private isProcessSummary(value: unknown): value is ChatRuntimeHostSessionProcessSummary {
+    const record = value as Partial<ChatRuntimeHostSessionProcessSummary> | null | undefined;
+    return !!record
+      && typeof record === 'object'
+      && typeof record.processId === 'string'
+      && record.processId.trim().length > 0
+      && typeof record.sessionId === 'string'
+      && record.sessionId.trim().length > 0;
   }
 
   private stripQuestionEntry(entry: QuestionRuntimeEntry | undefined): RuntimeQuestionWidgetState | null {
@@ -921,6 +1370,7 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
 
   private stripConfirmationEntry(entry: RuntimeConfirmationWidgetState): RuntimeConfirmationWidgetState {
     return {
+      approvalTraceId: entry.approvalTraceId,
       sessionId: entry.sessionId,
       id: entry.id,
       kind: entry.kind,
@@ -947,6 +1397,32 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
     const normalizedSessionId = this.normalizeSessionId(sessionId);
     this.interactionRevision += 1;
     const snapshot = this.buildSnapshot(normalizedSessionId);
+    const confirmationQueue = Array.isArray(snapshot.confirmationQueue)
+      ? snapshot.confirmationQueue
+      : [];
+    if (snapshot.question || confirmationQueue.length > 0 || snapshot.activePlanReview) {
+      const activeConfirmationIndex = Math.max(
+        0,
+        Math.min(Number(snapshot.activeConfirmationIndex) || 0, Math.max(confirmationQueue.length - 1, 0)),
+      );
+      const activeConfirmation = confirmationQueue[activeConfirmationIndex] as {
+        readonly id?: unknown;
+        readonly toolCallId?: unknown;
+        readonly toolName?: unknown;
+      } | undefined;
+      if (shouldTraceRuntimeInteraction()) {
+        console.info('[AilyChat][RuntimeInteractionSnapshot]', {
+          sessionId: normalizedSessionId,
+          revision: snapshot.revision,
+          hasQuestion: !!snapshot.question,
+          confirmationCount: confirmationQueue.length,
+          activeConfirmationId: typeof activeConfirmation?.id === 'string' ? activeConfirmation.id : undefined,
+          activeToolCallId: typeof activeConfirmation?.toolCallId === 'string' ? activeConfirmation.toolCallId : undefined,
+          activeToolName: typeof activeConfirmation?.toolName === 'string' ? activeConfirmation.toolName : undefined,
+          hasPlanReview: !!snapshot.activePlanReview,
+        });
+      }
+    }
     for (const listener of [...this.snapshotListeners]) {
       listener(snapshot);
     }
@@ -958,5 +1434,11 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
       throw new Error('[AilyChat][InteractionHost] Missing session id.');
     }
     return normalizedSessionId;
+  }
+
+  private isStaleCommandSessionActionError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return message.includes('Stale commandSession.action request')
+      || message.includes('no pending command session');
   }
 }

@@ -1,4 +1,4 @@
-// 导入 glob 同步方法
+// 提供工具文件检索、扩展名过滤和哈希计算等辅助能力。
 let globSync;
 try {
     const globModule = require('glob');

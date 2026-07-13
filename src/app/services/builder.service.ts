@@ -1,17 +1,11 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ProjectService } from './project.service';
-import { ActionState } from './ui.service';
-import { NzMessageService } from 'ng-zorro-antd/message';
-import { NoticeService } from '../services/notice.service';
-import { CmdOutput, CmdService } from './cmd.service';
+import { CmdService } from './cmd.service';
 import { CrossPlatformCmdService } from './cross-platform-cmd.service';
 import { ActionService } from './action.service';
 import { ElectronService } from './electron.service';
 import { AilyCodeProCompileService } from './aily-code-pro-compile.service';
-
-import { getDefaultBuildPath, findFile } from '../utils/builder.utils';
-
 
 export interface BuildFinishedEvent {
   success: boolean;
@@ -168,9 +162,8 @@ export class BuilderService {
     try {
       const tempPath = projectPath + '/.temp';
       const sketchPath = tempPath + '/sketch';
-      const sketchFilePath = await findFile(sketchPath, '*.ino');
+      const buildPath = this.electronService.pathJoin(projectPath, '.build');
       console.log('清除编译缓存:', sketchPath);
-      const buildPath = await getDefaultBuildPath(sketchFilePath);
       console.log('编译缓存路径:', buildPath);
       await this.crossPlatformCmdService.removeItem(buildPath, true, true);
 

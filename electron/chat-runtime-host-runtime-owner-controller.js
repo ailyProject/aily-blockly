@@ -8,6 +8,32 @@ function normalizeRuntimeOwnerId(runtimeOwnerId) {
     : 'aily-chat-host-runtime-owner';
 }
 
+function isRuntimeOwnerTraceEnabled() {
+  const value = process && process.env
+    ? (process.env.AILY_CHAT_TRACE_RUNTIME_OWNER_EVENTS || process.env.__AILY_CHAT_TRACE_RUNTIME_OWNER_EVENTS__)
+    : '';
+  if (value === true || value === 1) {
+    return true;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
+function createRuntimeOwnerSnapshot(runtimeOwner) {
+  if (!runtimeOwner) {
+    return null;
+  }
+  return {
+    runtimeOwnerId: runtimeOwner.runtimeOwnerId,
+    ownerKey: runtimeOwner.ownerKey,
+    kind: runtimeOwner.kind,
+    usable: typeof runtimeOwner.isUsable === 'function' ? !!runtimeOwner.isUsable() : true,
+  };
+}
+
 class ChatRuntimeHostRuntimeOwnerController {
   constructor(options = {}) {
     if (!options.BrowserWindow) {
@@ -30,7 +56,6 @@ class ChatRuntimeHostRuntimeOwnerController {
       : () => {};
 
     this.hostWindowRef = null;
-    this.runtimeOwnerWindowRef = null;
     this.runtimeOwner = null;
     this.commandSeed = 0;
     this.pendingCommands = new Map();
@@ -40,35 +65,31 @@ class ChatRuntimeHostRuntimeOwnerController {
     this.hostWindowRef = hostWindow || null;
   }
 
-  setRuntimeOwnerWindow(runtimeOwnerWindow) {
-    this.runtimeOwnerWindowRef = runtimeOwnerWindow || null;
-    if (!runtimeOwnerWindow && this.runtimeOwner) {
-      const error = new Error('[AilyChat][RuntimeHost] Runtime owner window was cleared.');
-      error.code = 'runtime_owner_lost';
-      error.retryable = true;
-      this.clearRuntimeOwnerIfMatches(this.runtimeOwner.webContentsId);
-      this.clearPendingCommands(error);
-    }
-  }
-
   handleRuntimeOwnerRegister(event, payload = {}) {
     this.assertHostRuntimeOwner(event);
     const runtimeOwnerId = normalizeRuntimeOwnerId(payload.runtimeOwnerId ?? payload.runtimeOwnerId);
-    if (this.runtimeOwner && this.runtimeOwner.webContentsId !== event.sender.id) {
-      throw new Error('[AilyChat][RuntimeHost] A different runtime owner is already registered.');
-    }
-
-    this.runtimeOwner = {
-      runtimeOwnerId: runtimeOwnerId,
-      webContentsId: event.sender.id,
-      webContents: event.sender,
-    };
-    console.log('[AilyChat][RuntimeOwnerRegistered]', JSON.stringify({
+    const webContents = event.sender;
+    const ownerKey = `renderer:${webContents.id}`;
+    const registration = this.registerRuntimeOwnerTransport({
       runtimeOwnerId,
-      webContentsId: event.sender.id,
-    }));
-    event.sender.once('destroyed', () => this.clearRuntimeOwnerIfMatches(event.sender.id));
-    return { ok: true, runtimeOwnerId };
+      ownerKey,
+      kind: 'renderer',
+      sendCommand: command => webContents.send(this.runtimeOwnerCommandChannel, command),
+      isUsable: () => isUsableWebContents(webContents),
+      matchesEvent: candidateEvent => !!candidateEvent
+        && !!candidateEvent.sender
+        && candidateEvent.sender.id === webContents.id,
+    });
+    if (isRuntimeOwnerTraceEnabled()) {
+      console.log('[AilyChat][RuntimeOwnerRegistered]', JSON.stringify({
+        runtimeOwnerId,
+        ownerKey,
+        kind: 'renderer',
+        webContentsId: webContents.id,
+      }));
+    }
+    webContents.once('destroyed', () => this.clearRuntimeOwnerIfMatches(ownerKey));
+    return registration;
   }
 
   handleRuntimeOwnerUnregister(event, payload = {}) {
@@ -80,17 +101,50 @@ class ChatRuntimeHostRuntimeOwnerController {
     if (this.runtimeOwner.runtimeOwnerId !== runtimeOwnerId) {
       throw new Error('[AilyChat][RuntimeHost] Runtime owner id mismatch during unregister.');
     }
-    this.clearRuntimeOwnerIfMatches(event.sender.id);
+    this.clearRuntimeOwnerIfMatches(this.runtimeOwner.ownerKey);
     return { ok: true };
   }
 
   hasUsableRuntimeOwner() {
-    return !!this.readRuntimeOwnerWebContents();
+    return !!this.readRuntimeOwnerTransport();
+  }
+
+  registerRuntimeOwnerTransport(transport = {}) {
+    const runtimeOwnerId = normalizeRuntimeOwnerId(transport.runtimeOwnerId);
+    const ownerKey = typeof transport.ownerKey === 'string' && transport.ownerKey.trim()
+      ? transport.ownerKey.trim()
+      : runtimeOwnerId;
+    if (typeof transport.sendCommand !== 'function') {
+      throw new Error('[AilyChat][RuntimeHost] Runtime owner transport requires sendCommand.');
+    }
+    if (this.runtimeOwner && this.runtimeOwner.ownerKey !== ownerKey) {
+      throw new Error('[AilyChat][RuntimeHost] A different runtime owner is already registered.');
+    }
+
+    this.runtimeOwner = {
+      runtimeOwnerId,
+      ownerKey,
+      kind: typeof transport.kind === 'string' && transport.kind.trim()
+        ? transport.kind.trim()
+        : 'execution-host',
+      sendCommand: transport.sendCommand,
+      isUsable: typeof transport.isUsable === 'function'
+        ? transport.isUsable
+        : () => true,
+      dispose: typeof transport.dispose === 'function'
+        ? transport.dispose
+        : null,
+      matchesEvent: typeof transport.matchesEvent === 'function'
+        ? transport.matchesEvent
+        : null,
+    };
+    console.warn('[AilyChat][RuntimeOwnerRegistered]', JSON.stringify(createRuntimeOwnerSnapshot(this.runtimeOwner)));
+    return { ok: true, runtimeOwnerId, ownerKey };
   }
 
   dispatchCommand(method, args) {
-    const runtimeOwnerWebContents = this.readRuntimeOwnerWebContents();
-    if (!runtimeOwnerWebContents) {
+    const runtimeOwnerTransport = this.readRuntimeOwnerTransport();
+    if (!runtimeOwnerTransport) {
       throw new Error('[AilyChat][RuntimeHost] No registered host runtime owner.');
     }
 
@@ -102,12 +156,16 @@ class ChatRuntimeHostRuntimeOwnerController {
       }, this.commandTimeoutMs);
 
       this.pendingCommands.set(requestId, { resolve, reject, timer, method, args });
-      runtimeOwnerWebContents.send(this.runtimeOwnerCommandChannel, { requestId, method, args });
+      runtimeOwnerTransport.sendCommand({ requestId, method, args });
     });
   }
 
   handleRuntimeOwnerResponse(event, payload = {}) {
     this.assertRegisteredRuntimeOwnerSender(event);
+    this.handleRuntimeOwnerTransportResponse(payload);
+  }
+
+  handleRuntimeOwnerTransportResponse(payload = {}) {
     const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
     const pending = this.pendingCommands.get(requestId);
     if (!pending) {
@@ -130,7 +188,7 @@ class ChatRuntimeHostRuntimeOwnerController {
   }
 
   assertRegisteredRuntimeOwnerSender(event) {
-    if (!this.runtimeOwner || !event || !event.sender || this.runtimeOwner.webContentsId !== event.sender.id) {
+    if (!this.runtimeOwner || !this.runtimeOwner.matchesEvent || !this.runtimeOwner.matchesEvent(event)) {
       throw new Error('[AilyChat][RuntimeHost] Runtime owner message came from a non-host renderer.');
     }
   }
@@ -143,15 +201,28 @@ class ChatRuntimeHostRuntimeOwnerController {
     }
   }
 
-  clearRuntimeOwnerIfMatches(webContentsId) {
-    if (!this.runtimeOwner || this.runtimeOwner.webContentsId !== webContentsId) {
+  clearRuntimeOwnerIfMatches(ownerKey) {
+    if (!this.runtimeOwner || this.runtimeOwner.ownerKey !== ownerKey) {
       return;
     }
+    const runtimeOwner = this.runtimeOwner;
     this.runtimeOwner = null;
+    if (typeof runtimeOwner.dispose === 'function') {
+      try {
+        runtimeOwner.dispose();
+      } catch (error) {
+        console.warn('[AilyChat][RuntimeHost] Runtime owner dispose failed:', error && error.message ? error.message : error);
+      }
+    }
     const error = new Error('[AilyChat][RuntimeHost] Registered runtime owner was destroyed.');
     error.code = 'runtime_owner_lost';
     error.retryable = true;
-    console.warn('[AilyChat][RuntimeOwnerLost]', JSON.stringify({ webContentsId }));
+    if (isRuntimeOwnerTraceEnabled()) {
+      console.warn('[AilyChat][RuntimeOwnerLost]', JSON.stringify({
+        ownerKey,
+        kind: runtimeOwner.kind,
+      }));
+    }
     this.clearPendingCommands(error);
     this.onRuntimeOwnerLost(error);
   }
@@ -162,19 +233,23 @@ class ChatRuntimeHostRuntimeOwnerController {
 
   assertHostRuntimeOwner(event) {
     const senderWindow = this.getSenderWindow(event);
-    if (!this.runtimeOwnerWindowRef || !senderWindow || senderWindow !== this.runtimeOwnerWindowRef) {
-      throw new Error('[AilyChat][RuntimeHost] Runtime owner must be registered by the designated execution host window.');
+    if (!this.hostWindowRef || !senderWindow || senderWindow !== this.hostWindowRef) {
+      throw new Error('[AilyChat][RuntimeHost] Runtime owner must be registered by the host main window.');
     }
   }
 
-  readRuntimeOwnerWebContents() {
-    if (!this.runtimeOwner || !isUsableWebContents(this.runtimeOwner.webContents)) {
+  readRuntimeOwnerTransport() {
+    if (!this.runtimeOwner || !this.runtimeOwner.isUsable()) {
       if (this.runtimeOwner) {
-        this.clearRuntimeOwnerIfMatches(this.runtimeOwner.webContentsId);
+        this.clearRuntimeOwnerIfMatches(this.runtimeOwner.ownerKey);
       }
       return null;
     }
-    return this.runtimeOwner.webContents;
+    return this.runtimeOwner;
+  }
+
+  snapshotRuntimeOwner() {
+    return createRuntimeOwnerSnapshot(this.readRuntimeOwnerTransport());
   }
 
   nextCommandId(method) {

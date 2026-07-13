@@ -7,11 +7,17 @@ interface TurnControlLike {
   getRequestContent(turnId: string): string | undefined;
   getLastRoundId(turnId: string): string | undefined;
   getCurrentRequestMetadata?(): TurnRequest['metadata'] | undefined;
-  startTurn(content: string, displayContent?: string, metadata?: TurnRequest['metadata']): string | undefined;
+  startTurn(
+    content: string,
+    displayContent?: string,
+    metadata?: TurnRequest['metadata'],
+    options?: { readonly turnId?: string },
+  ): string | undefined;
   completeTurn(response: string): void;
   failTurn(): void;
   removeIncomplete(): boolean;
   removeFromTurn(turnId: string): void;
+  removeFromIndex?(turnIndex: number): void;
   truncateToTurn(turnId: string): void;
   clearTurns(): void;
   toSnapshot(): SessionSnapshot | null;
@@ -44,8 +50,13 @@ export class LexTurnControlBridge {
     return this.turnControl.getCurrentRequestMetadata?.();
   }
 
-  start(content: string, displayContent?: string, metadata?: TurnRequest['metadata']): string | undefined {
-    return this.turnControl.startTurn(content, displayContent, metadata);
+  start(
+    content: string,
+    displayContent?: string,
+    metadata?: TurnRequest['metadata'],
+    options?: { readonly turnId?: string },
+  ): string | undefined {
+    return this.turnControl.startTurn(content, displayContent, metadata, options);
   }
 
   complete(response: string): void {
@@ -62,6 +73,10 @@ export class LexTurnControlBridge {
 
   removeFrom(turnId: string): void {
     this.turnControl.removeFromTurn(turnId);
+  }
+
+  removeFromIndex(turnIndex: number): void {
+    this.turnControl.removeFromIndex?.(turnIndex);
   }
 
   restartFrom(turnId: string): void {

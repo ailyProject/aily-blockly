@@ -23,6 +23,10 @@ function exitWithFatalError(error) {
     process.exit(1);
 }
 
+function isDevelopmentEnvironment() {
+    return process.env.DEV === 'true' || process.env.DEV === '1';
+}
+
 process.on('uncaughtException', (error) => {
     exitWithFatalError(error);
 });
@@ -49,8 +53,7 @@ async function main() {
     const {
         currentProjectPath,
         boardModule,
-        code,
-        ailyBuilderPath
+        code
     } = config;
 
     // 辅助函数：递归创建目录
@@ -63,6 +66,7 @@ async function main() {
     try {
         // 1. 路径准备（Aily Code 编译入口见 project.aci.entry，产物输出到 .aily/build/<framework>）
         const tempPath = path.join(currentProjectPath, '.temp');
+        const buildPath = path.join(currentProjectPath, '.build');
         const sketchPath = path.join(tempPath, 'sketch');
         const sketchFilePath = path.join(sketchPath, 'sketch.ino');
         const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
@@ -95,6 +99,7 @@ async function main() {
         if (!fs.existsSync(preprocessCachePath)) {
             throw new Error(`未找到预编译缓存: ${preprocessCachePath}，请先运行预处理脚本`);
         }
+        syncPreprocessBuildPath(preprocessCachePath, buildPath);
 
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -127,17 +132,19 @@ async function main() {
             throw new Error('未找到板子类型(boardType)');
         }
 
-        // 5. 执行编译；Aily Code 时将 AILY_BUILDER_BUILD_PATH 指到 `.aily/build/<framework>`，
-        // 与 Electron 全局行为一致（aily-builder 可能在其下再分子目录，upload 递归查找固件）。
+        // 5. 执行编译
+        const builderCommand = 'aily-builder';
         const args = [
-            `"${path.join(ailyBuilderPath, 'index.js')}"`,
             'compile',
             `"${compileSourcePath}"`,
             '--board', `"${boardType}"`,
+            '--build-path', `"${buildPath}"`,
             '--preprocess-result', `"${preprocessCachePath}"`,
         ];
 
-        logger.log(`执行编译: node ${args.join(' ')}`);
+        if (isDevelopmentEnvironment()) {
+            args.push('--generate-archive-cloud-cache');
+        }
 
         /** @type {{ cwd: string, shell: boolean, stdio: string[], env?: NodeJS.ProcessEnv }} */
         const spawnOpts = {
@@ -153,7 +160,9 @@ async function main() {
             };
         }
 
-        const child = spawn('node', args, spawnOpts);
+        logger.log(`执行编译: ${builderCommand} ${args.join(' ')}`);
+
+        const child = spawn(builderCommand, args, spawnOpts);
 
         child.on('close', (code, signal) => {
             if (signal) {
@@ -181,3 +190,16 @@ async function main() {
 main().catch(e => {
     exitWithFatalError(e);
 });
+
+function syncPreprocessBuildPath(preprocessCachePath, buildPath) {
+    try {
+        const preprocessResult = JSON.parse(fs.readFileSync(preprocessCachePath, 'utf8'));
+        preprocessResult.envVars = preprocessResult.envVars || {};
+        if (preprocessResult.envVars.BUILD_PATH !== buildPath) {
+            preprocessResult.envVars.BUILD_PATH = buildPath;
+            fs.writeFileSync(preprocessCachePath, JSON.stringify(preprocessResult, null, 2));
+        }
+    } catch (error) {
+        logger.warn(`Failed to update preprocess build path: ${error.message}`);
+    }
+}

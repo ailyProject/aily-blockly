@@ -1,10 +1,10 @@
 import type { TurnResponseTurn } from 'aily-lex/browser';
 
 import type { ChatPartStore } from './chat-part-store';
+import type { ChatPart } from './chat-parts';
 import type { ChatMessageHandle, OpaqueChatMessageHandle } from '../helpers/chat-message-handle';
 import {
-  hydrateQuestionAnswersFromAskUserToolMetadata,
-  turnResponsePartToChatParts,
+  turnResponsePartsToDisplayChatParts,
 } from './turn-response-part-mapper';
 import {
   getTurnResponseParticipant,
@@ -122,16 +122,18 @@ export class TurnResponseHostProjectionBuilder {
     this.partStore.clearMessageHandle(handle);
     const changed = this.syncMessageMeta(handle, turn);
 
-    const hydratedParts = hydrateQuestionAnswersFromAskUserToolMetadata(turn.response.parts);
-    for (let partIndex = 0; partIndex < hydratedParts.length; partIndex++) {
-      const part = hydratedParts[partIndex];
-      const chatParts = turnResponsePartToChatParts(
-        part,
-        options.preserveInteractiveState ? existingParts[partIndex] : undefined,
+    const chatParts = turnResponsePartsToDisplayChatParts(turn.response.parts);
+    const existingPartsByKey = options.preserveInteractiveState
+      ? new Map(existingParts.map(part => [getDisplayChatPartKey(part), part]).filter((entry): entry is [string, ChatPart] => !!entry[0]))
+      : null;
+    for (const chatPart of chatParts) {
+      const existingPart = existingPartsByKey?.get(getDisplayChatPartKey(chatPart));
+      this.partStore.addPartToHandle(
+        handle,
+        existingPart && existingPart.type === chatPart.type
+          ? mergeInteractiveDisplayState(chatPart, existingPart)
+          : chatPart,
       );
-      for (const chatPart of chatParts) {
-        this.partStore.addPartToHandle(handle, chatPart);
-      }
     }
 
     if (options.syncContent !== false) {
@@ -139,5 +141,52 @@ export class TurnResponseHostProjectionBuilder {
     }
 
     return changed;
+  }
+}
+
+function mergeInteractiveDisplayState(
+  nextPart: ChatPart,
+  existingPart: ChatPart,
+): ChatPart {
+  if (nextPart.type === 'question' && existingPart.type === 'question' && !nextPart.answers && existingPart.answers) {
+    return {
+      ...nextPart,
+      answers: { ...existingPart.answers },
+    };
+  }
+
+  if (nextPart.type === 'confirmation' && existingPart.type === 'confirmation') {
+    return {
+      ...nextPart,
+      resolved: nextPart.resolved || existingPart.resolved,
+      result: nextPart.result ?? existingPart.result,
+      scope: nextPart.scope ?? existingPart.scope,
+    };
+  }
+
+  return nextPart;
+}
+
+function getDisplayChatPartKey(part: ChatPart): string {
+  switch (part.type) {
+    case 'tool_call':
+      return `tool:${part.toolCallId}`;
+    case 'terminal':
+      return part.partId
+        || part.processId
+        || part.outputSessionId
+        || part.terminalId
+        || (part.toolCallId ? `terminal:${part.toolCallId}` : '');
+    case 'question':
+      return part.partId || `question:${part.questions.map(question => question.question).join('\u0000')}`;
+    case 'confirmation':
+      return part.partId || `confirmation:${part.askId}`;
+    case 'state':
+      return `state:${part.stateId}`;
+    case 'markdown':
+    case 'thinking':
+    case 'plan':
+    case 'error':
+      return part.partId || '';
   }
 }

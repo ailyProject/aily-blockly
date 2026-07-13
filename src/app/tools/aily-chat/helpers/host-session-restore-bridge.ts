@@ -1,7 +1,7 @@
 import type { TurnRequest, TurnResponseTurn, SessionSnapshot } from 'aily-lex/browser';
 import { DEFAULT_CHAT_SESSION_TYPE, normalizeChatSelectedMode, normalizeChatSessionType, normalizeChatSurfaceModeId } from '../core/chat-mode';
 import {
-  normalizeChatAgentRuntimeMode,
+  resolveChatAgentRuntimeModeForProject,
   readChatAgentRuntimeModeSourceFromMetadata,
   readChatAgentRuntimeModeFromMetadata,
   type ChatAgentRuntimeMode,
@@ -214,6 +214,7 @@ type HostSessionRestoreContext = Pick<IChatViewAccess, 'scrollManager' | 'invali
   & Pick<IChatServiceAccess, 'contextBudgetService' | 'ailyChatConfigService' | 'runtimeInteractionHost'>
   & Pick<IChatCoordination, 'lexStream'>
   & {
+    getDevelopmentModePreferenceRuntimeMode?(): ChatAgentRuntimeMode | undefined;
     readSessionRuntimeState?(sessionId?: string | null): Readonly<ChatSessionRuntimeState> | undefined;
     projectRestoredRuntimeAuxiliary?(
       sessionId: string,
@@ -279,6 +280,7 @@ export interface HostSessionRestoreFailureDetails {
 export interface HostSessionRestoreOptions {
   readonly isCurrent?: () => boolean;
   readonly sessionId?: string | null;
+  readonly preserveActiveResponseState?: boolean;
 }
 
 export interface HostSessionProjectionRestoreOptions {
@@ -316,13 +318,6 @@ function buildSessionCheckpointTimelineStateFromHostRecord(
   }
 
   const checkpointMetadataMaps = buildCheckpointMetadataMapsFromSidecar(sidecar.checkpoints, targetResource);
-  if (!checkpointMetadataMaps && !hasCompleteCheckpointMetadataForTimelineTurns(sidecar.turnResponses, targetResource)) {
-    console.warn('[HostSessionRestore] dropped checkpoint timeline sidecar with incomplete checkpoint metadata', {
-      sessionResource: targetResource,
-    });
-    return null;
-  }
-
   return createSessionCheckpointTimelineState({
     sessionResource: targetResource,
     turnResponses: sidecar.turnResponses as unknown as readonly TurnResponseTurn[],
@@ -392,51 +387,6 @@ function isCompleteCheckpointMetadata(
     && hasCompleteAdditionalCheckpointRefs(record);
 }
 
-function hasCompleteCheckpointMetadataForTimelineTurns(
-  turnResponses: readonly unknown[],
-  targetSessionResource: string,
-): boolean {
-  for (const turn of turnResponses) {
-    const metadata = readTurnRequestMetadata(turn);
-    const checkpointId = readStringProperty(metadata, 'checkpointId');
-    if (!checkpointId) {
-      continue;
-    }
-
-    const checkpointNamespace = readStringProperty(metadata, 'checkpointNamespace');
-    const checkpointRef = readStringProperty(metadata, 'checkpointRef');
-    if (!checkpointNamespace || !checkpointRef) {
-      return false;
-    }
-
-    if (checkpointNamespace !== `refs/sessions/${targetSessionResource}`) {
-      return false;
-    }
-
-    if (!hasCompleteAdditionalCheckpointRefs(metadata)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function readTurnRequestMetadata(turn: unknown): Record<string, unknown> | null {
-  if (!turn || typeof turn !== 'object') {
-    return null;
-  }
-
-  const request = (turn as { request?: unknown }).request;
-  if (!request || typeof request !== 'object') {
-    return null;
-  }
-
-  const metadata = (request as { metadata?: unknown }).metadata;
-  return metadata && typeof metadata === 'object'
-    ? metadata as Record<string, unknown>
-    : null;
-}
-
 function readStringProperty(record: Record<string, unknown> | null, key: string): string {
   const value = record?.[key];
   return typeof value === 'string' ? value.trim() : '';
@@ -496,8 +446,13 @@ export class HostSessionRestoreBridge {
   ): Promise<void> {
     const isCurrent = options.isCurrent ?? (() => true);
     const targetSessionId = this.resolveRestoreTargetSessionId(hostRecord, options.sessionId);
-    const sanitizedHostRecord = sanitizeHostRecordForRestore(hostRecord);
+    const sanitizedHostRecord = options.preserveActiveResponseState === true
+      ? hostRecord
+      : sanitizeHostRecordForRestore(hostRecord);
     this.assertHostRecordMatchesTargetSession(sanitizedHostRecord, targetSessionId);
+    if (sanitizedHostRecord !== hostRecord) {
+      this.persistRecoveredCancelledHostRecord(targetSessionId, sanitizedHostRecord);
+    }
 
     const restorePlan: ResolvedLexSessionRestorePlan = {
       snapshot: null,
@@ -691,7 +646,7 @@ export class HostSessionRestoreBridge {
     const sessionContent = this.hostSessionContentProvider.provideChatSessionContent(targetSessionId, projectPathHint, {
       metadataFallback: indexEntry,
     });
-    const hostRecord = this.buildRuntimeRestoreHostRecord({
+    const runtimeHostRecord = this.buildRuntimeRestoreHostRecord({
       target: {
         sessionId: targetSessionId,
         sessionType: sessionContent.sessionType,
@@ -707,7 +662,8 @@ export class HostSessionRestoreBridge {
       },
       sessionContent,
       hostRecord: sessionContent.hostRecord,
-    }) ?? sessionContent.hostRecord;
+    });
+    const hostRecord = runtimeHostRecord ?? sessionContent.hostRecord;
     if (!hostRecord) {
       return false;
     }
@@ -715,8 +671,34 @@ export class HostSessionRestoreBridge {
     await this.restore(hostRecord, {
       sessionId: targetSessionId,
       isCurrent: options.isCurrent,
+      preserveActiveResponseState: !!runtimeHostRecord,
     });
     return true;
+  }
+
+  private persistRecoveredCancelledHostRecord(
+    sessionId: string,
+    hostRecord: HostSessionRecord,
+  ): void {
+    try {
+      this.ctx.chatHistoryService.saveHostRecord?.({
+        sessionId,
+        metadata: hostRecord.metadata,
+        ...(hostRecord.turnResponses ? { turnResponses: hostRecord.turnResponses } : {}),
+        ...(hostRecord.sidecar ? { sidecar: hostRecord.sidecar } : {}),
+        ...(hostRecord.auxiliary ? { auxiliary: hostRecord.auxiliary } : {}),
+      });
+      console.info('[AilyChat][ActiveTurnDurability]', {
+        phase: 'recovered-cancelled',
+        sessionId,
+        turnCount: hostRecord.turnResponses?.length ?? 0,
+      });
+    } catch (error) {
+      console.warn('[AilyChat][ActiveTurnDurability] recovered-cancelled persistence failed', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private resolveRestoreTargetSessionId(hostRecord: HostSessionRecord, requestedSessionId?: string | null): string {
@@ -813,16 +795,19 @@ export class HostSessionRestoreBridge {
       providerOptions,
       inputState: sessionContent?.inputState ?? sessionMetadata?.inputState,
     });
-    this.ctx.chatService.setCurrentAgentRuntimeMode?.(
-      normalizeChatAgentRuntimeMode(
-        sessionMetadata.agentRuntimeMode ?? sessionMetadata.runtimeMode,
-        this.ctx.chatService.currentAgentRuntimeMode ?? 'unbound',
-      ),
-      sessionMetadata.agentRuntimeModeSource ?? sessionMetadata.runtimeModeSource ?? 'restored',
-    ) ?? (this.ctx.chatService.currentAgentRuntimeMode = normalizeChatAgentRuntimeMode(
-      sessionMetadata.agentRuntimeMode ?? sessionMetadata.runtimeMode,
-      this.ctx.chatService.currentAgentRuntimeMode ?? 'unbound',
-    ));
+    const runtimeResolution = resolveChatAgentRuntimeModeForProject({
+      projectPath: providerOptions.folderPath ?? sessionMetadata.projectPath ?? null,
+      metadata: sessionMetadata,
+      userPreferenceMode: this.ctx.getDevelopmentModePreferenceRuntimeMode?.(),
+      fallback: providerOptions.folderPath ? 'coder' : 'unbound',
+      requireExistingProjectPath: Boolean(providerOptions.folderPath),
+    });
+    if (typeof this.ctx.chatService.setCurrentAgentRuntimeMode === 'function') {
+      this.ctx.chatService.setCurrentAgentRuntimeMode(runtimeResolution.mode, runtimeResolution.source);
+    } else {
+      this.ctx.chatService.currentAgentRuntimeMode = runtimeResolution.mode;
+      this.ctx.chatService.currentAgentRuntimeModeSource = runtimeResolution.source;
+    }
 
     const resolveModeById = (modeId: string) => typeof this.ctx.chatService.findResolvedModeById === 'function'
       ? this.ctx.chatService.findResolvedModeById(modeId)
@@ -943,9 +928,13 @@ export class HostSessionRestoreBridge {
   }
 
   private restorePendingRuntimeInteraction(sessionId: string, turnResponses: readonly TurnResponseTurn[]): void {
-    const interactionContinuation = this.ctx.lexStream.session.snapshot(sessionId)?.requestContext?.interactionContinuation;
+    const interactionContinuation = this.ctx.lexStream.session.snapshot(sessionId)?.requestContext?.interactionContinuation
+      ?? findPendingInteractionContinuation(turnResponses);
     const pending = readInteractionPendingRecord(interactionContinuation);
     if (!pending || pending['kind'] === 'none') {
+      return;
+    }
+    if (!hasRestoredActiveInteractionResponse(turnResponses)) {
       return;
     }
 
@@ -1151,18 +1140,33 @@ function sanitizeHostRecordForRestore(hostRecord: HostSessionRecord): HostSessio
 function stableDurableTurnResponsesForRuntimeRestore(
   turnResponses: readonly TurnResponseTurn[],
 ): readonly TurnResponseTurn[] {
-  return turnResponses.filter(turn => !isTransientTurnResponseStatus(turn.response.status));
+  return turnResponses.filter(turn =>
+    !isTransientTurnResponseStatus(turn.response.status)
+    && !isPendingInteractionContinuation(turn.response.continuation)
+  );
 }
 
 function isTransientTurnResponseStatus(status: unknown): boolean {
-  return status === 'streaming'
-    || status === 'in_progress'
-    || status === 'pending';
+  switch (typeof status === 'string' ? status.trim().toLowerCase() : '') {
+    case 'streaming':
+    case 'in_progress':
+    case 'pending':
+    case 'needs_input':
+    case 'waiting_question':
+    case 'waiting_confirmation':
+    case 'waiting_tool_results':
+    case 'waiting_plan_review':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function sanitizeTurnResponseForRestore(turn: TurnResponseTurn): TurnResponseTurn {
   const clonedTurn = cloneJsonLikeValue(turn);
+  const timestamp = Date.now();
   const responseStatus = isTransientTurnResponseStatus(clonedTurn.response.status)
+    || isPendingInteractionContinuation(clonedTurn.response.continuation)
     ? 'cancelled'
     : clonedTurn.response.status;
   const continuation = sanitizeTerminalPlanReviewContinuation(
@@ -1170,16 +1174,137 @@ function sanitizeTurnResponseForRestore(turn: TurnResponseTurn): TurnResponseTur
     clonedTurn.response.parts,
     clonedTurn.response.continuation,
   );
+  const nextParts = clonedTurn.response.parts
+    .filter(part => !isTransientRuntimeStatePart(part))
+    .map(part => cancelOpenResponsePartForRestore(part, timestamp));
+  const updatedAt = Math.max(
+    typeof clonedTurn.updatedAt === 'number' ? clonedTurn.updatedAt : 0,
+    typeof clonedTurn.response.updatedAt === 'number' ? clonedTurn.response.updatedAt : 0,
+    timestamp,
+  );
 
   return {
     ...clonedTurn,
+    updatedAt,
     response: {
       ...clonedTurn.response,
       status: responseStatus,
-      ...(continuation ? { continuation } : { continuation: undefined }),
-      parts: clonedTurn.response.parts.filter(part => !isTransientRuntimeStatePart(part)),
+      updatedAt,
+      ...(responseStatus === 'cancelled' ? { modelState: { value: 2, completedAt: updatedAt } } : {}),
+      ...(continuation && responseStatus !== 'cancelled' ? { continuation } : { continuation: undefined }),
+      parts: nextParts,
     },
   };
+}
+
+function cancelOpenResponsePartForRestore(
+  part: TurnResponseTurn['response']['parts'][number],
+  timestamp: number,
+): TurnResponseTurn['response']['parts'][number] {
+  const record = part as unknown as Record<string, unknown>;
+  switch (part.type) {
+    case 'tool_call': {
+      if (!isOpenRuntimeState(record['state'] ?? record['status'])) {
+        return part;
+      }
+      return {
+        ...part,
+        state: 'error',
+        metadata: {
+          ...(record['metadata'] && typeof record['metadata'] === 'object'
+            ? record['metadata'] as Record<string, unknown>
+            : {}),
+          phase: 'cancelled',
+          cancelledAt: timestamp,
+        },
+      } as TurnResponseTurn['response']['parts'][number];
+    }
+    case 'terminal': {
+      if (record['isRunning'] !== true && !isOpenRuntimeState(record['status'])) {
+        return part;
+      }
+      return {
+        ...part,
+        isRunning: false,
+        status: 'cancelled',
+        metadata: {
+          ...(record['metadata'] && typeof record['metadata'] === 'object'
+            ? record['metadata'] as Record<string, unknown>
+            : {}),
+          cancelledAt: timestamp,
+        },
+      } as TurnResponseTurn['response']['parts'][number];
+    }
+    case 'confirmation': {
+      if (record['resolved'] === true) {
+        return part;
+      }
+      return {
+        ...part,
+        resolved: true,
+        result: 'rejected',
+        metadata: {
+          ...(record['metadata'] && typeof record['metadata'] === 'object'
+            ? record['metadata'] as Record<string, unknown>
+            : {}),
+          cancelledAt: timestamp,
+        },
+      } as TurnResponseTurn['response']['parts'][number];
+    }
+    case 'question': {
+      if (record['answers'] && typeof record['answers'] === 'object') {
+        return part;
+      }
+      return {
+        ...part,
+        metadata: {
+          ...(record['metadata'] && typeof record['metadata'] === 'object'
+            ? record['metadata'] as Record<string, unknown>
+            : {}),
+          cancelledAt: timestamp,
+        },
+      } as TurnResponseTurn['response']['parts'][number];
+    }
+    case 'thinking': {
+      if (record['isComplete'] === true) {
+        return part;
+      }
+      return {
+        ...part,
+        isComplete: true,
+      } as TurnResponseTurn['response']['parts'][number];
+    }
+    case 'plan': {
+      if (record['status'] !== 'streaming') {
+        return part;
+      }
+      return {
+        ...part,
+        status: 'failed',
+      } as TurnResponseTurn['response']['parts'][number];
+    }
+    default:
+      return part;
+  }
+}
+
+function isOpenRuntimeState(value: unknown): boolean {
+  switch (typeof value === 'string' ? value.trim().toLowerCase() : '') {
+    case '':
+    case 'pending':
+    case 'running':
+    case 'doing':
+    case 'reviewing':
+    case 'in_progress':
+    case 'waiting':
+    case 'waiting_confirmation':
+    case 'waiting_question':
+    case 'waiting_tool_results':
+    case 'waiting_plan_review':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function hasTerminalPlanReviewContinuation(turn: TurnResponseTurn): boolean {
@@ -1236,6 +1361,68 @@ function isPlanReviewContinuation(continuation: unknown): boolean {
     && typeof pendingState === 'object'
     && typeof (pendingState as Record<string, unknown>)['kind'] === 'string'
     && ((pendingState as Record<string, unknown>)['kind'] as string).trim().toLowerCase() === 'plan_review';
+}
+
+function isPendingInteractionContinuation(continuation: unknown): boolean {
+  if (!continuation || typeof continuation !== 'object') {
+    return false;
+  }
+
+  const record = continuation as Record<string, unknown>;
+  const status = typeof record['status'] === 'string' ? record['status'].trim().toLowerCase() : '';
+  if (
+    status === 'waiting_plan_review'
+    || status === 'plan_review'
+    || status === 'waiting_confirmation'
+    || status === 'waiting_question'
+    || status === 'waiting_tool_results'
+  ) {
+    return true;
+  }
+
+  const pendingState = record['pendingState'];
+  return !!pendingState && typeof pendingState === 'object';
+}
+
+function hasRestoredActiveInteractionResponse(turnResponses: readonly TurnResponseTurn[]): boolean {
+  return turnResponses.some(turn =>
+    isTransientTurnResponseStatus(turn.response.status)
+    || isPendingInteractionContinuation(turn.response.continuation)
+    || hasPendingInteractionPart(turn.response.parts)
+  );
+}
+
+function findPendingInteractionContinuation(turnResponses: readonly TurnResponseTurn[]): LexTurnContinuation | undefined {
+  for (let turnIndex = turnResponses.length - 1; turnIndex >= 0; turnIndex--) {
+    const continuation = turnResponses[turnIndex]?.response?.continuation;
+    if (isPendingInteractionContinuation(continuation)) {
+      return continuation;
+    }
+  }
+
+  return undefined;
+}
+
+function hasPendingInteractionPart(parts: readonly TurnResponseTurn['response']['parts'][number][] | null | undefined): boolean {
+  if (!Array.isArray(parts)) {
+    return false;
+  }
+
+  return parts.some(part => {
+    if (!part || typeof part !== 'object') {
+      return false;
+    }
+    if (part.type === 'question') {
+      return !('answers' in part) || part.answers == null;
+    }
+    if (part.type === 'confirmation') {
+      return part.resolved !== true;
+    }
+    if (part.type === 'plan_review') {
+      return part.resolved !== true;
+    }
+    return false;
+  });
 }
 
 function cloneJsonLikeValue<T>(value: T): T {

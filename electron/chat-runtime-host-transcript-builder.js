@@ -174,6 +174,133 @@ function cancelOpenResponsePart(part, timestamp) {
   }
 }
 
+function completeOpenResponsePart(part, timestamp) {
+  if (!part || typeof part !== 'object') {
+    return part;
+  }
+  switch (part.type) {
+    case 'thinking':
+      if (part.isComplete === true) {
+        return part;
+      }
+      return {
+        ...part,
+        isComplete: true,
+        updatedAt: timestamp,
+      };
+    case 'tool_call': {
+      if (!isOpenToolCallState(part.state || part.status)) {
+        return part;
+      }
+      const metadata = part.metadata && typeof part.metadata === 'object'
+        ? part.metadata
+        : {};
+      const toolSpecificData = metadata.toolSpecificData && typeof metadata.toolSpecificData === 'object'
+        ? metadata.toolSpecificData
+        : null;
+      const nextToolSpecificData = toolSpecificData && toolSpecificData.kind === 'subagent'
+        ? {
+            ...toolSpecificData,
+            ...(Array.isArray(toolSpecificData.childItems)
+              ? {
+                  childItems: toolSpecificData.childItems.map(child =>
+                    child && typeof child === 'object' && isOpenToolCallState(child.state || child.status)
+                      ? { ...child, state: 'done', status: child.status ? 'done' : child.status }
+                      : child),
+                }
+              : {}),
+          }
+        : toolSpecificData;
+      return {
+        ...part,
+        state: 'done',
+        status: part.status ? 'done' : part.status,
+        updatedAt: timestamp,
+        metadata: {
+          ...metadata,
+          phase: 'completed',
+          ...(nextToolSpecificData ? { toolSpecificData: nextToolSpecificData } : {}),
+        },
+      };
+    }
+    case 'state':
+      if (part.state !== 'doing') {
+        return part;
+      }
+      return {
+        ...part,
+        state: 'done',
+        updatedAt: timestamp,
+      };
+    case 'terminal':
+      if (part.isRunning !== true && !isTerminalRunningStatus(part.status)) {
+        return part;
+      }
+      return {
+        ...part,
+        status: 'completed',
+        isRunning: false,
+        updatedAt: timestamp,
+      };
+    case 'plan':
+      if (part.status !== 'streaming') {
+        return part;
+      }
+      return {
+        ...part,
+        status: 'completed',
+        text: typeof part.text === 'string' ? part.text.trim() : part.text,
+        updatedAt: timestamp,
+      };
+    case 'question':
+      if (part.answers) {
+        return part;
+      }
+      return {
+        ...part,
+        answers: buildSkippedQuestionAnswers(part),
+        isHistory: true,
+        updatedAt: timestamp,
+      };
+    case 'confirmation':
+      if (part.resolved === true) {
+        return part;
+      }
+      return {
+        ...part,
+        resolved: true,
+        result: 'rejected',
+        updatedAt: timestamp,
+      };
+    case 'subagent':
+    case 'subagent_tool_call':
+      if (!isOpenToolCallState(part.state || part.status)) {
+        return part;
+      }
+      return {
+        ...part,
+        state: 'done',
+        status: 'done',
+        updatedAt: timestamp,
+      };
+    default:
+      return part;
+  }
+}
+
+function buildSkippedQuestionAnswers(part) {
+  const questions = Array.isArray(part && part.questions) ? part.questions : [];
+  const answers = {};
+  for (const question of questions) {
+    const questionText = normalizeOptionalString(question && question.question);
+    if (!questionText || answers[questionText]) {
+      continue;
+    }
+    answers[questionText] = { selected: [], freeText: null, skipped: true };
+  }
+  return answers;
+}
+
 function renderEventStateKey(sessionId, turnId) {
   return `${sessionId}\u0000${turnId}`;
 }
@@ -1005,10 +1132,10 @@ function readSubagentStateEventPayload(event) {
 
   const resultText = normalizeOptionalString(event && event.resultText)
     || normalizeOptionalString(metadata.resultText)
-    || (event && event.state === 'done' ? normalizeOptionalString(event.text) : '');
+    || (event && normalizeSubagentState(event.state) === 'done' ? normalizeOptionalString(event.text) : '');
   const description = normalizeOptionalString(event && event.description)
     || normalizeOptionalString(metadata.description)
-    || (event && event.state !== 'done' ? normalizeOptionalString(event.text) : '');
+    || (event && normalizeSubagentState(event.state) !== 'done' ? normalizeOptionalString(event.text) : '');
   return {
     toolCallId,
     invocationId,
@@ -1017,6 +1144,20 @@ function readSubagentStateEventPayload(event) {
       || 'Agent',
     description: description || 'Subagent',
     resultText: resultText || '',
+    modelName: normalizeOptionalString(event && event.modelName)
+      || normalizeOptionalString(metadata.modelName),
+    modelBillingLabel: normalizeOptionalString(event && event.modelBillingLabel)
+      || normalizeOptionalString(metadata.modelBillingLabel),
+    modelRouting: event && event.modelRouting && typeof event.modelRouting === 'object'
+      ? clonePayload(event.modelRouting)
+      : metadata.modelRouting && typeof metadata.modelRouting === 'object'
+        ? clonePayload(metadata.modelRouting)
+        : undefined,
+    quotaSnapshot: event && event.quotaSnapshot && typeof event.quotaSnapshot === 'object'
+      ? clonePayload(event.quotaSnapshot)
+      : metadata.quotaSnapshot && typeof metadata.quotaSnapshot === 'object'
+        ? clonePayload(metadata.quotaSnapshot)
+        : undefined,
     durationMs: Number.isFinite(event && event.durationMs)
       ? event.durationMs
       : Number.isFinite(metadata.durationMs) ? metadata.durationMs : undefined,
@@ -1039,22 +1180,46 @@ function subagentEventPayload(event) {
     agentName: normalizeOptionalString(event && event.agentName) || 'Agent',
     description: normalizeOptionalString(event && event.description) || 'Subagent',
     resultText: normalizeOptionalString(event && event.resultText) || '',
+    modelName: normalizeOptionalString(event && event.modelName),
+    modelBillingLabel: normalizeOptionalString(event && event.modelBillingLabel),
+    modelRouting: event && event.modelRouting && typeof event.modelRouting === 'object'
+      ? clonePayload(event.modelRouting)
+      : undefined,
+    quotaSnapshot: event && event.quotaSnapshot && typeof event.quotaSnapshot === 'object'
+      ? clonePayload(event.quotaSnapshot)
+      : undefined,
     durationMs: Number.isFinite(event && event.durationMs) ? event.durationMs : undefined,
   };
 }
 
-function subagentStateForEvent(event, stateOverride) {
-  if (stateOverride) {
-    return stateOverride;
-  }
-  if (event && event.state === 'error') {
-    return 'error';
-  }
-  if (event && event.type === 'subagent_end') {
+function normalizeSubagentState(value) {
+  if (value === 'done'
+    || value === 'completed'
+    || value === 'complete'
+    || value === 'success'
+    || value === 'succeeded') {
     return 'done';
   }
-  if (event && event.type === 'state_update' && (event.state === 'done' || event.state === 'error')) {
-    return event.state;
+  if (value === 'error'
+    || value === 'failed'
+    || value === 'failure'
+    || value === 'cancelled'
+    || value === 'canceled'
+    || value === 'stopped') {
+    return 'error';
+  }
+  return 'doing';
+}
+
+function subagentStateForEvent(event, stateOverride) {
+  if (stateOverride) {
+    return normalizeSubagentState(stateOverride);
+  }
+  if (event && event.type === 'subagent_end') {
+    return normalizeSubagentState(event.state || 'done');
+  }
+  if (event && event.type === 'state_update') {
+    return normalizeSubagentState(event.state);
   }
   return 'doing';
 }
@@ -1102,6 +1267,26 @@ function buildSubagentToolMetadata(event, payload, state, existingMetadata) {
         },
       ];
   const existingResult = normalizeOptionalString(existingToolSpecificData.result);
+  const modelName = payload.modelName
+    || normalizeOptionalString(existing.modelName)
+    || normalizeOptionalString(existingToolSpecificData.modelName);
+  const modelBillingLabel = payload.modelBillingLabel
+    || normalizeOptionalString(existing.modelBillingLabel)
+    || normalizeOptionalString(existingToolSpecificData.modelBillingLabel);
+  const modelRouting = payload.modelRouting && typeof payload.modelRouting === 'object'
+    ? clonePayload(payload.modelRouting)
+    : existing.modelRouting && typeof existing.modelRouting === 'object'
+      ? clonePayload(existing.modelRouting)
+      : existingToolSpecificData.modelRouting && typeof existingToolSpecificData.modelRouting === 'object'
+        ? clonePayload(existingToolSpecificData.modelRouting)
+        : undefined;
+  const quotaSnapshot = payload.quotaSnapshot && typeof payload.quotaSnapshot === 'object'
+    ? clonePayload(payload.quotaSnapshot)
+    : existing.quotaSnapshot && typeof existing.quotaSnapshot === 'object'
+      ? clonePayload(existing.quotaSnapshot)
+      : existingToolSpecificData.quotaSnapshot && typeof existingToolSpecificData.quotaSnapshot === 'object'
+        ? clonePayload(existingToolSpecificData.quotaSnapshot)
+        : undefined;
   return {
     ...existing,
     toolName: 'agent',
@@ -1112,12 +1297,20 @@ function buildSubagentToolMetadata(event, payload, state, existingMetadata) {
     pastTenseMessage: payload.description ? `Completed Task: "${payload.description}"` : payload.agentName,
     timeline,
     ...(Number.isFinite(payload.durationMs) ? { durationMs: payload.durationMs } : {}),
+    ...(modelName ? { modelName } : {}),
+    ...(modelBillingLabel ? { modelBillingLabel } : {}),
+    ...(modelRouting ? { modelRouting } : {}),
+    ...(quotaSnapshot ? { quotaSnapshot } : {}),
     toolSpecificData: {
       ...existingToolSpecificData,
       kind: 'subagent',
       agentName: payload.agentName,
       description: payload.description,
       result: payload.resultText || existingResult || '',
+      ...(modelName ? { modelName } : {}),
+      ...(modelBillingLabel ? { modelBillingLabel } : {}),
+      ...(modelRouting ? { modelRouting } : {}),
+      ...(quotaSnapshot ? { quotaSnapshot } : {}),
     },
   };
 }
@@ -1265,7 +1458,14 @@ function readSubagentScopeFromEvent(event) {
 }
 
 function isSubagentScopeTerminalEvent(event) {
-  return !!event && (event.state === 'done' || event.state === 'error' || event.type === 'subagent_end');
+  if (!event) {
+    return false;
+  }
+  if (event.type === 'subagent_end') {
+    return true;
+  }
+  const state = normalizeSubagentState(event.state);
+  return state === 'done' || state === 'error';
 }
 
 function isEventScopedToSubagent(event, scope) {
@@ -1621,11 +1821,22 @@ function materializeRenderEventTurn(turn, state, event) {
     case 'subagent_end':
       parts = upsertSubagentToolCallPart(parts, event);
       return withResponsePatch(turn, timestamp, { parts, status: 'streaming' });
+    case 'response_complete':
+      parts = completeThinkingPart(parts, event);
+      {
+        const planResult = materializePlanTurnParts(parts, turn);
+        parts = planResult.parts.map(part => completeOpenResponsePart(part, timestamp));
+        return withResponsePatch(turn, timestamp, {
+          parts,
+          status: 'completed',
+          ...(planResult.resultText !== undefined ? { resultText: planResult.resultText } : {}),
+        });
+      }
     case 'turn_end':
       parts = completeThinkingPart(parts, event);
       {
         const planResult = materializePlanTurnParts(parts, turn);
-        parts = planResult.parts;
+        parts = planResult.parts.map(part => completeOpenResponsePart(part, timestamp));
         responsePatch = {
           parts,
           status: 'completed',
@@ -2099,6 +2310,61 @@ class ChatRuntimeHostTranscriptBuilder {
         ...existingResponse,
         status: 'cancelled',
         terminationReason: 'cancelled',
+        parts: nextParts,
+        updatedAt: nextTimestamp,
+      },
+      updatedAt: nextTimestamp,
+    };
+    turnResponses[existingIndex] = nextTurn;
+
+    const currentRevision = normalizeRevision(currentTranscript && currentTranscript.revision);
+    const incomingRevision = normalizeRevision(revision);
+    const nextRevision = Math.max(currentRevision + 1, incomingRevision);
+    const nextTranscript = {
+      sessionId: normalizedSessionId,
+      turnResponses,
+      revision: nextRevision,
+    };
+    this.transcripts.set(normalizedSessionId, clonePayload(nextTranscript));
+    return clonePayload(nextTranscript);
+  }
+
+  completeTurn({ sessionId, turnId, revision, timestamp }) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    const normalizedTurnId = normalizeTurnId(turnId);
+    if (!normalizedSessionId || !normalizedTurnId) {
+      return null;
+    }
+    const currentTranscript = this.buildTranscriptSnapshot(normalizedSessionId);
+    const turnResponses = Array.isArray(currentTranscript && currentTranscript.turnResponses)
+      ? clonePayload(currentTranscript.turnResponses)
+      : [];
+    const existingIndex = turnResponses.findIndex(existingTurn =>
+      normalizeTurnId(existingTurn && existingTurn.turnId) === normalizedTurnId);
+    if (existingIndex < 0) {
+      return null;
+    }
+    const nextTimestamp = normalizeTimestamp(timestamp);
+    const existingTurn = turnResponses[existingIndex];
+    const existingResponse = existingTurn.response && typeof existingTurn.response === 'object'
+      ? existingTurn.response
+      : {};
+    const existingParts = Array.isArray(existingResponse.parts)
+      ? existingResponse.parts
+      : [];
+    const nextParts = existingParts.map(part => completeOpenResponsePart(part, nextTimestamp));
+    const terminalStatus = typeof existingResponse.status === 'string'
+      ? existingResponse.status.trim().toLowerCase()
+      : '';
+    const preservesTerminalStatus = terminalStatus === 'error'
+      || terminalStatus === 'failed'
+      || terminalStatus === 'cancelled'
+      || terminalStatus === 'canceled';
+    const nextTurn = {
+      ...existingTurn,
+      response: {
+        ...existingResponse,
+        status: preservesTerminalStatus ? existingResponse.status : 'completed',
         parts: nextParts,
         updatedAt: nextTimestamp,
       },

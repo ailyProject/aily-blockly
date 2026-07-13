@@ -1,3 +1,4 @@
+// 调用 probe-rs 工具完成调试探针查询和固件烧录。
 const { ipcMain } = require("electron");
 const { execFile } = require("child_process");
 const path = require("path");

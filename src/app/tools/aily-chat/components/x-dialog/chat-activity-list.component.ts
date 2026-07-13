@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, Input, forwardRef } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  Component,
+  Input,
+  QueryList,
+  ViewChildren,
+  forwardRef,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 import { ChatActivityItemComponent } from './chat-activity-item.component';
@@ -15,9 +23,11 @@ import type { ActivityGroupDisplayItem } from './chat-activity-group.types';
         <aily-chat-activity-item
           [item]="item"
           [sessionId]="sessionId"
+          [impliedWordLoadRate]="impliedWordLoadRate"
           [first]="first"
           [last]="last"
-          [only]="count === 1" />
+          [only]="count === 1"
+          [contentDeltaHandler]="contentDeltaHandler" />
       }
     </div>
   `,
@@ -44,4 +54,57 @@ import type { ActivityGroupDisplayItem } from './chat-activity-group.types';
 export class ChatActivityListComponent {
   @Input() items: readonly ActivityGroupDisplayItem[] = [];
   @Input() sessionId = '';
+  @Input() impliedWordLoadRate: number | undefined;
+  @Input() contentDeltaHandler: (() => void) | undefined;
+
+  @ViewChildren(forwardRef(() => ChatActivityItemComponent))
+  private itemRenderers!: QueryList<ChatActivityItemComponent>;
+
+  constructor(private readonly cdr: ChangeDetectorRef) {}
+
+  /** Apply a response-part revision without checking the parent group subtree. */
+  applyItemsPatch(
+    items: readonly ActivityGroupDisplayItem[],
+    sessionId: string,
+    impliedWordLoadRate: number | undefined,
+  ): boolean {
+    const previousItems = this.items;
+    const previousSessionId = this.sessionId;
+    const previousImpliedWordLoadRate = this.impliedWordLoadRate;
+    const sameStructure = previousItems.length === items.length
+      && previousItems.every((item, index) => item.id === items[index]?.id);
+
+    this.items = items;
+    this.sessionId = sessionId;
+    this.impliedWordLoadRate = impliedWordLoadRate;
+
+    if (!sameStructure) {
+      this.cdr.detectChanges();
+      return true;
+    }
+
+    const renderers = this.itemRenderers?.toArray() ?? [];
+    if (renderers.length !== items.length) {
+      return false;
+    }
+
+    const sharedInputChanged = previousSessionId !== sessionId
+      || previousImpliedWordLoadRate !== impliedWordLoadRate;
+    for (let index = 0; index < items.length; index += 1) {
+      if (!sharedInputChanged && previousItems[index] === items[index]) {
+        continue;
+      }
+      if (!renderers[index]?.applyVisibleActivityItemPatch({
+        item: items[index],
+        sessionId,
+        impliedWordLoadRate,
+        first: index === 0,
+        last: index === items.length - 1,
+        only: items.length === 1,
+      })) {
+        return false;
+      }
+    }
+    return true;
+  }
 }

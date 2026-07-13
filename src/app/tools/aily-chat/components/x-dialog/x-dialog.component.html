@@ -6,7 +6,7 @@
     'request-disabled': isRequestDisabled,
     'chat-most-recent-response': isCurrentStreamingResponse,
     'has-turn-actions': canRenderCheckpointAnchor && !isEditing,
-    'has-hover-footer': hasHoverFooterFade,
+    'has-hover-footer': shouldRenderFooter,
     'footer-always-visible': canShowActions
   }"
 >
@@ -129,13 +129,7 @@
         @if (shouldRenderHeavyContent) {
           @if (hasStructuredAilyContent) {
             <!-- ★ Phase 2: aily 消息统一走 Part-based 渲染 -->
-            <aily-chat-message-parts
-              [parts]="effectiveParts"
-              [sessionId]="sessionId"
-              [doing]="effectiveDoing"
-              [turnResponse]="activityTurnResponse"
-              [detailProjectionEnabled]="isViewportVisible"
-            />
+            <aily-chat-message-parts />
           } @else if (streamContent()) {
             <x-markdown
               [content]="streamContent()"
@@ -152,43 +146,48 @@
       </div>
     }
 
-    @if (effectiveDoing && role !== 'user') {
-      <div class="loader"></div>
+    @if (role !== 'user') {
+      <div class="loader" [class.loader-active]="effectiveDoing" aria-hidden="true"></div>
     }
-    @if (shouldRenderFooter) {
+    @if (role === 'user' && shouldRenderFooter) {
       <div class="msg-footer">
-        @if (canShowActions) {
-          <div class="msg-actions">
-            <div class="msg-action-btn" [class.disabled]="regenerateActionDisabled" (click)="onRegenerate(); $event.stopPropagation()" [title]="regenerateActionTitle">
-              <i class="fa-light fa-rotate-right"></i>
-            </div>
-            <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
-              <i class="fa-light fa-copy"></i>
-            </div>
-            <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
-              <i class="fa-light fa-thumbs-up"></i>
-            </div>
-            <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
-              <i class="fa-light fa-thumbs-down"></i>
-            </div>
+        <div class="msg-actions user-msg-actions">
+          @if (messageTimeLabel) {
+            <span class="msg-time-label" [title]="messageTimeTitle">
+              <span>{{ messageTimeLabel }}</span>
+            </span>
+          }
+          <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
+            <i class="fa-light fa-copy"></i>
           </div>
-        } @else if (canShowLimitActions) {
-          <div class="msg-actions">
-            <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
-              <i class="fa-light fa-copy"></i>
-            </div>
-            <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
-              <i class="fa-light fa-thumbs-up"></i>
-            </div>
-            <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
-              <i class="fa-light fa-thumbs-down"></i>
-            </div>
+        </div>
+      </div>
+    } @else if (role === 'aily') {
+      <div class="msg-footer assistant-msg-footer" [class.lifecycle-visible]="shouldRenderFooter">
+        <div class="msg-actions">
+          <div class="msg-action-btn" [class.action-hidden]="!canShowActions" [class.disabled]="regenerateActionDisabled" (click)="onRegenerate(); $event.stopPropagation()" [title]="regenerateActionTitle">
+            <i class="fa-light fa-rotate-right"></i>
           </div>
-        }
-
-        @if (showAssistantModelBadge) {
-          <span class="msg-model-label" [title]="assistantModelBadgeTitle">{{ assistantModelBadgeLabel }}</span>
-        }
+          <div class="msg-action-btn" (click)="onCopyContent(); $event.stopPropagation()" title="复制">
+            <i class="fa-light fa-copy"></i>
+          </div>
+          <div class="msg-action-btn" [class.active]="feedbackState === 'helpful'" (click)="onFeedback('helpful'); $event.stopPropagation()" title="有帮助">
+            <i class="fa-light fa-thumbs-up"></i>
+          </div>
+          <div class="msg-action-btn" [class.active]="feedbackState === 'unhelpful'" (click)="onFeedback('unhelpful'); $event.stopPropagation()" title="没帮助">
+            <i class="fa-light fa-thumbs-down"></i>
+          </div>
+          @if (messageTimeLabel) {
+            <span class="msg-time-label" [title]="messageTimeTitle">
+              <span>{{ messageTimeLabel }}</span>
+            </span>
+          }
+        </div>
+        <div class="msg-footer-meta">
+          @if (showAssistantModelBadge) {
+            <span class="msg-model-label" [title]="assistantModelBadgeTitle">{{ assistantModelBadgeLabel }}</span>
+          }
+        </div>
       </div>
     }
 

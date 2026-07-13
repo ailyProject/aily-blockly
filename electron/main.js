@@ -1,3 +1,4 @@
+// Electron 主进程入口，负责应用生命周期、窗口和核心模块初始化。
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -9,6 +10,12 @@ const { app, BrowserWindow, ipcMain, dialog, screen, shell, Menu } = require("el
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 const projectLock = require("./project-lock");
+const builder = require("./builder");
+const linter = require("./linter");
+const {
+  markInstalledForAppVersion,
+  shouldInstallForAppVersion,
+} = require("./aily-tools-install-state");
 const ORIGINAL_PROCESS_PATH = process.env.PATH || process.env.Path || "";
 
 // 设置应用名称，用于 Windows 系统通知显示
@@ -917,11 +924,11 @@ function normalizeBuildFlavor(flavor) {
     : DEFAULT_BUILD_FLAVOR;
 }
 
-let cachedPackagedBuildFlavor;
+let cachedPackagedMetadata;
 
-function getPackagedBuildFlavor() {
-  if (cachedPackagedBuildFlavor !== undefined) {
-    return cachedPackagedBuildFlavor;
+function getPackagedMetadata() {
+  if (cachedPackagedMetadata !== undefined) {
+    return cachedPackagedMetadata;
   }
 
   const candidatePaths = [];
@@ -939,16 +946,43 @@ function getPackagedBuildFlavor() {
       }
 
       const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-      cachedPackagedBuildFlavor = packageJson.ailyBuildFlavor;
-      return cachedPackagedBuildFlavor;
+      cachedPackagedMetadata = packageJson;
+      return cachedPackagedMetadata;
     } catch (error) {
-      console.warn('读取构建版型失败:', error.message || error);
+      console.warn('读取打包元数据失败:', error.message || error);
     }
   }
 
-  cachedPackagedBuildFlavor = null;
-  return cachedPackagedBuildFlavor;
+  cachedPackagedMetadata = null;
+  return cachedPackagedMetadata;
 }
+
+function getPackagedBuildFlavor() {
+  return getPackagedMetadata()?.ailyBuildFlavor;
+}
+
+function configurePackagedChatExecutionHost() {
+  const packageMetadata = getPackagedMetadata();
+  const configuredMode = typeof packageMetadata?.ailyChatExecutionHost === 'string'
+    ? packageMetadata.ailyChatExecutionHost.trim()
+    : '';
+  const configuredRuntimeModule = typeof packageMetadata?.ailyChatExecutionHostRuntimeModule === 'string'
+    ? packageMetadata.ailyChatExecutionHostRuntimeModule.trim()
+    : '';
+
+  if (!configuredMode || !configuredRuntimeModule) {
+    return;
+  }
+
+  if (!process.env.AILY_CHAT_EXECUTION_HOST) {
+    process.env.AILY_CHAT_EXECUTION_HOST = configuredMode;
+  }
+  if (!process.env.AILY_CHAT_EXECUTION_HOST_RUNTIME_MODULE) {
+    process.env.AILY_CHAT_EXECUTION_HOST_RUNTIME_MODULE = path.resolve(app.getAppPath(), configuredRuntimeModule);
+  }
+}
+
+configurePackagedChatExecutionHost();
 
 function getBuildFlavor(conf) {
   return normalizeBuildFlavor(process.env.AILY_BUILD_FLAVOR || getPackagedBuildFlavor() || conf?.build_flavor);
@@ -1085,13 +1119,9 @@ function installChildEnv(childPath, options) {
   // 从文件名中提取版本号
   function extractVersion(filename, keyword) {
     // node 格式：node-v22.21.0-darwin-arm64.7z → 22.21.0
-    // aily-builder 格式：aily-builder-1.0.7.7z → 1.0.7
     // probe-rs 格式：probe-rs-0.31.0.7z → 0.31.0
     if (keyword === "node") {
       const match = filename.match(/node-v(\d+\.\d+\.\d+)/);
-      return match ? match[1] : null;
-    } else if (keyword === "aily-builder") {
-      const match = filename.match(/aily-builder-(\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
     } else if (keyword === "probe-rs") {
       const match = filename.match(/probe-rs-(\d+\.\d+\.\d+)/);
@@ -1309,26 +1339,15 @@ function installChildEnv(childPath, options) {
     }
   }
 
-  function isAilyBuilderInstallComplete(targetPath) {
-    const requiredFiles = [
-      path.join(targetPath, "index.js"),
-      path.join(targetPath, "node_modules/tree-sitter/build/Release/tree_sitter_runtime_binding.node"),
-      path.join(targetPath, "node_modules/tree-sitter-cpp/build/Release/tree_sitter_cpp_binding.node"),
-    ];
-    return requiredFiles.every((filePath) => fs.existsSync(filePath));
-  }
-
   const z7Path = ensure7z();
   const sourceDir = path.join(childPath, serve ? platformDir : "");
 
   const packages = [
     { name: "node", afterExtract: afterNodeInstall },
-    { name: "aily-builder" },
     { name: "probe-rs" },
   ];
   const validators = {
     node: isNodeInstallComplete,
-    "aily-builder": isAilyBuilderInstallComplete,
     "probe-rs": isProbeRsInstallComplete,
   };
 
@@ -1493,8 +1512,9 @@ function escapePath(path) {
   return path.replace(/(\s|[()&|;<>`$\\])/g, '\\$1');
 }
 
-function appendPathSegment(pathValue, segment) {
-  if (!segment || !fs.existsSync(segment)) {
+function appendPathSegment(pathValue, segment, options = {}) {
+  const { requireExists = true } = options;
+  if (!segment || (requireExists && !fs.existsSync(segment))) {
     return pathValue;
   }
   return `${pathValue}${path.delimiter}${segment}`;
@@ -1627,24 +1647,20 @@ function applyChildToolEnv(childPath) {
     customPath = appendPathSegment(customPath, '/bin');
   }
 
-  const ailyBuilderPath = path.join(childPath, "aily-builder");
-  const ninjaPath = path.join(ailyBuilderPath, "ninja");
   const probeRsDir = path.join(childPath, "probe-rs");
   const z7Path = path.join(childPath, isWin32 ? "7za.exe" : "7zz");
   const rgPath = path.join(childPath, isWin32 ? "rg.exe" : "rg");
   const probeRsPath = path.join(probeRsDir, `probe-rs${isWin32 ? ".exe" : ""}`);
 
-  customPath = appendPathSegment(customPath, ailyBuilderPath);
-  customPath = appendPathSegment(customPath, ninjaPath);
   customPath = appendPathSegment(customPath, probeRsDir);
   customPath = appendGitToolPaths(customPath);
 
   process.env.PATH = customPath;
+  builder.applyCommandEnv(childPath);
   process.env.AILY_CHILD_PATH = childPath;
   process.env.AILY_7ZA_PATH = fs.existsSync(z7Path) ? z7Path : path.join(childPath, isWin32 ? "7za.exe" : "7zz");
   process.env.AILY_RG_PATH = fs.existsSync(rgPath) ? rgPath : path.join(childPath, isWin32 ? "rg.exe" : "rg");
   process.env.AILY_PROBE_RS_PATH = probeRsPath;
-  process.env.AILY_BUILDER_PATH = ailyBuilderPath;
 }
 
 function runInstallEnv(childPath) {
@@ -1682,16 +1698,14 @@ function loadEnv() {
   if (isWin32) {
     // 设置Windows的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["win32"].replace('%HOMEPATH%', os.homedir());
-    process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), "AppData", "Local", "aily-builder", "project");
   } else if (isDarwin) {
     // 设置macOS的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"].replace('~', os.homedir());
-    process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), "Library", "aily-builder", "project");
   } else {
     // 设置Linux的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["linux"];
-    process.env.AILY_BUILDER_BUILD_PATH = path.join(os.homedir(), ".cache", "aily-builder", "project");
   }
+  builder.configureCacheEnvironment();
 
   // 确保应用数据目录存在
   if (!fs.existsSync(process.env.AILY_APPDATA_PATH)) {
@@ -1847,8 +1861,16 @@ function loadEnv() {
   } catch (e) {
     console.error('清理代理环境变量失败:', e);
   }
-  // 全局npm包路径
-  process.env.AILY_NPM_PREFIX = process.env.AILY_APPDATA_PATH;
+  // aily-builder / aily-linter 使用独立的 npm 全局 prefix。
+  // AppData 根目录本身是开发板、SDK 和工具包的普通 npm 项目；两者共用
+  // node_modules 时，开发板依赖的 npm install/uninstall 会清理掉全局工具。
+  process.env.AILY_NPM_PREFIX = path.join(process.env.AILY_APPDATA_PATH, "npm-global");
+  try {
+    fs.mkdirSync(process.env.AILY_NPM_PREFIX, { recursive: true });
+  } catch (error) {
+    console.error("创建应用 npm 全局目录失败:", error);
+  }
+  process.env.npm_config_prefix = process.env.AILY_NPM_PREFIX;
   // 默认全局编译器路径
   process.env.AILY_COMPILERS_PATH = path.join(process.env.AILY_APPDATA_PATH, "tools",);
   // 默认全局烧录器路径
@@ -1864,14 +1886,47 @@ function loadEnv() {
   process.env.AILY_TOOL_WEB = regionConfig.tool_web || '';
 
   process.env.AILY_PROJECT_PATH = conf["project_path"];
+  // child 目录只管理 Node、7z、probe-rs 等随应用分发的工具；
+  // aily-builder 与 aily-linter 由 npm 安装到应用专用的全局 prefix。
 
-  // macOS 生产/开发均走异步自解压，完成后再次覆盖 child 环境变量；Windows 生产包由 NSIS 预解压
-  if (isDarwin || serve) {
-    applyChildToolEnv(childPath);
-    setImmediate(() => runInstallEnv(childPath));
-  } else {
-    runInstallEnv(childPath);
+  // 必须先让 child Node 可用。首次启动和应用版本变化时安装 latest，
+  // 同一应用版本复用现有工具；两个 npm 全局安装串行执行。
+  runInstallEnv(childPath);
+  const appVersion = app.getVersion();
+  const installLatest = shouldInstallForAppVersion(userConf, appVersion);
+  if (installLatest) {
+    try {
+      markInstalledForAppVersion(userConfigPath, appVersion);
+      userConf.installed = appVersion;
+      console.log(`aily blockly ${appVersion} will refresh aily-builder and aily-linter to latest`);
+    } catch (error) {
+      console.error("Failed to save aily tools refresh marker:", error);
+    }
   }
+
+  const builderInitialization = builder.initialize(childPath, {
+    installLatest,
+  });
+  builderInitialization.then((result) => {
+    if (installLatest && !result.startupInstallSucceeded) {
+      console.error(`aily-builder@latest startup install failed: ${result.startupInstallError || result.error || "unknown error"}`);
+    }
+    if (!result.ok) {
+      console.error(`aily-builder 初始化失败: ${result.error || "未知错误"}`);
+    }
+  }).catch((error) => console.error("aily-builder 初始化失败:", error));
+  const linterInitialization = linter.initialize(childPath, builderInitialization, {
+    installLatest,
+  });
+  linterInitialization.then((result) => {
+    if (installLatest && !result.startupInstallSucceeded) {
+      console.error(`aily-linter@latest startup install failed: ${result.startupInstallError || result.error || "unknown error"}`);
+    }
+    if (!result.ok) {
+      console.error(`aily-linter 初始化失败: ${result.error || "未知错误"}`);
+    }
+  }).catch((error) => console.error("aily-linter 初始化失败:", error));
+
   // 当前系统语言
   process.env.AILY_SYSTEM_LANG = app.getLocale();
 
@@ -2146,6 +2201,8 @@ function createWindow() {
   registerNotificationHandlers(mainWindow);
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
+  builder.registerHandlers(() => mainWindow);
+  linter.registerHandlers(() => mainWindow);
 
   // 检查是否有待处理的OAuth回调
   // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
@@ -2989,6 +3046,30 @@ cleanupOldInstances();
 // Ripgrep 搜索功能
 // ============================================
 const ripgrep = require('./ripgrep');
+const activeRipgrepSearches = new Map();
+
+function createRipgrepSearchController(requestId) {
+  const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
+  const controller = new AbortController();
+  if (normalizedRequestId) {
+    activeRipgrepSearches.get(normalizedRequestId)?.abort();
+    activeRipgrepSearches.set(normalizedRequestId, controller);
+  }
+  return {
+    controller,
+    dispose() {
+      if (normalizedRequestId && activeRipgrepSearches.get(normalizedRequestId) === controller) {
+        activeRipgrepSearches.delete(normalizedRequestId);
+      }
+    }
+  };
+}
+
+ipcMain.on('ripgrep-cancel-search', (_event, requestId) => {
+  const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
+  if (!normalizedRequestId) return;
+  activeRipgrepSearches.get(normalizedRequestId)?.abort();
+});
 
 // 检查 ripgrep 是否可用
 ipcMain.handle("ripgrep-check-available", async (event) => {
@@ -3043,6 +3124,40 @@ ipcMain.handle("ripgrep-search-content", async (event, params) => {
       matches: [],
       error: error.message
     };
+  }
+});
+
+// v2 file search: path glob only, backed by `rg --files`.
+ipcMain.handle('ripgrep-list-files-v2', async (_event, params = {}) => {
+  const search = createRipgrepSearchController(params.requestId);
+  try {
+    return await ripgrep.listFiles(params, { signal: search.controller.signal });
+  } catch (error) {
+    return {
+      success: false,
+      files: [],
+      numFiles: 0,
+      error: error?.message || String(error)
+    };
+  } finally {
+    search.dispose();
+  }
+});
+
+// v2 content search: structured, globally bounded `rg --json` results.
+ipcMain.handle('ripgrep-search-text-v2', async (_event, params = {}) => {
+  const search = createRipgrepSearchController(params.requestId);
+  try {
+    return await ripgrep.searchText(params, { signal: search.controller.signal });
+  } catch (error) {
+    return {
+      success: false,
+      matches: [],
+      numMatches: 0,
+      error: error?.message || String(error)
+    };
+  } finally {
+    search.dispose();
   }
 });
 

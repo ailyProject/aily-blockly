@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewChild, ElementRef, AfterViewInit, OnDestroy } from '@angular/core';
+import { ChangeDetectorRef, Component, OnInit, ViewChild, ElementRef, AfterViewInit, OnDestroy } from '@angular/core';
 import { RouterModule } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -71,7 +71,8 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     private electronService: ElectronService,
     private platformService: PlatformService,
     private crossPlatformCmdService: CrossPlatformCmdService,
-    private messageService: NzMessageService
+    private messageService: NzMessageService,
+    private cd: ChangeDetectorRef
   ) {
   }
 
@@ -181,7 +182,9 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
           this.exampleList.push(prj);
         });
 
-        console.log('获取公开项目列表:', this.exampleList);
+        // console.log('获取公开项目列表:', this.exampleList);
+        this.cd.detectChanges();
+
         if (this.exampleList.length === 0 && this.pageIndex === 1) {
           this.messageService.warning("No examples found.");
           return;

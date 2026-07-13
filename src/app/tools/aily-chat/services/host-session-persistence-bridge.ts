@@ -28,6 +28,11 @@ export interface HostSessionFlushOptions {
   readonly shouldSkipSession?: (sessionId: string, policy: HostSessionDirtyPolicy) => boolean;
 }
 
+interface HostSessionDirtyState {
+  readonly policy: HostSessionDirtyPolicy;
+  readonly revision: number;
+}
+
 function resolveDurablePersistedTitleCandidate(
   title: unknown,
   source: unknown,
@@ -63,6 +68,7 @@ export interface HostSessionPersistenceBridgeOptions {
     options?: { readonly dataAvailable?: boolean },
   ) => void;
   writeIndex: () => void;
+  writeIndexAsync?: () => Promise<void>;
   markIndexDirty: () => void;
   hasDirtyIndex: () => boolean;
   isSamePath: (a: string | null | undefined, b: string | null | undefined) => boolean;
@@ -74,10 +80,12 @@ export interface HostSessionPersistenceBridgeOptions {
  * Keeps cache/dirty tracking/title persistence/flush behavior out of ChatHistoryService.
  */
 export class HostSessionPersistenceBridge {
-  private readonly dirtySessions = new Map<string, HostSessionDirtyPolicy>();
+  private readonly dirtySessions = new Map<string, HostSessionDirtyState>();
   private readonly sessionCache = new Map<string, HostSessionRecord>();
   private readonly pendingTitles = new Map<string, PendingTitleUpdate>();
   private liveSessionProvider: LiveSessionProvider | null = null;
+  private nextDirtyRevision = 1;
+  private storeQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly hostRecordStore: HostSessionRecordStore,
@@ -94,6 +102,33 @@ export class HostSessionPersistenceBridge {
     ChatPerformanceTracer.runWithSurface('history_save', () => {
       this.saveHostRecordCore(record);
     }, 'full');
+  }
+
+  async saveHostRecordAsync(record: LiveHostSessionRecord): Promise<void> {
+    await this.enqueueStore(async () => {
+      const { sessionId } = record;
+      if (!sessionId) {
+        return;
+      }
+      const dirtyRevision = this.dirtySessions.get(sessionId)?.revision;
+      this.options.ensureIndexLoaded();
+      if (this.shouldRejectRecordOwnerMismatch(record, 'saveHostRecordAsync')) {
+        return;
+      }
+
+      const hostRecord = this.materializeHostRecord(record);
+      const messageCount = countHostRecordMessages(hostRecord);
+      if (messageCount === 0) {
+        return;
+      }
+      this.sessionCache.set(sessionId, hostRecord);
+      const existingEntry = this.options.findIndexEntry(sessionId);
+      const messageCountChanged = !existingEntry || existingEntry.messageCount !== messageCount;
+      this.options.upsertIndexEntry(sessionId, hostRecord.metadata, messageCount, messageCountChanged);
+      await this.hostRecordStore.writeOrThrowAsync(sessionId, hostRecord);
+      await this.writeIndexAsync();
+      this.clearDirtyRevision(sessionId, dirtyRevision);
+    });
   }
 
   private saveHostRecordCore(
@@ -133,6 +168,24 @@ export class HostSessionPersistenceBridge {
     ChatPerformanceTracer.runWithSurface('history_save', () => {
       this.saveHostRecordMetadataOnlyCore(record);
     }, 'metadata-only');
+  }
+
+  async saveHostRecordMetadataOnlyAsync(record: LiveHostSessionRecord): Promise<void> {
+    await this.enqueueStore(async () => {
+      const { sessionId } = record;
+      if (!sessionId || record.sessionId !== sessionId) {
+        return;
+      }
+      this.options.ensureIndexLoaded();
+      const metadata = this.retainDurableTitle(
+        this.applyPendingTitle(this.hostRecordStore.createFullMetadata(record.metadata)),
+      );
+      const existingEntry = this.options.findIndexEntry(sessionId);
+      const messageCount = existingEntry?.messageCount ?? countHostRecordMessages(record);
+      const dataAvailable = existingEntry?.dataAvailable ?? messageCount > 0;
+      this.options.upsertIndexEntry(sessionId, metadata, messageCount, true, { dataAvailable });
+      await this.writeIndexAsync();
+    });
   }
 
   private saveHostRecordMetadataOnlyCore(
@@ -237,12 +290,76 @@ export class HostSessionPersistenceBridge {
       return;
     }
 
-    const previousPolicy = this.dirtySessions.get(normalizedSessionId);
+    const previousState = this.dirtySessions.get(normalizedSessionId);
     const nextPolicy = options?.policy ?? 'recovery-snapshot';
     this.dirtySessions.set(
       normalizedSessionId,
-      previousPolicy === 'authoritative' ? 'authoritative' : nextPolicy,
+      {
+        policy: previousState?.policy === 'authoritative' ? 'authoritative' : nextPolicy,
+        revision: this.nextDirtyRevision++,
+      },
     );
+  }
+
+  async updateTitleAsync(sessionId: string, title: string, options?: SessionTitleUpdateOptions): Promise<void> {
+    await this.enqueueStore(() => this.updateTitleAsyncCore(sessionId, title, options));
+  }
+
+  private async updateTitleAsyncCore(sessionId: string, title: string, options?: SessionTitleUpdateOptions): Promise<void> {
+    this.options.ensureIndexLoaded();
+    const now = Date.now();
+    const nextTitle = typeof title === 'string' ? title.trim() : '';
+    if (!nextTitle) {
+      return;
+    }
+    const nextSource = normalizePersistedChatSessionTitleSource(options?.source) ?? 'legacy-custom';
+    const entry = this.options.findIndexEntry(sessionId);
+    if (entry) {
+      entry.title = nextTitle;
+      entry.titleSource = nextSource;
+      entry.updatedAt = now;
+      this.options.markIndexDirty();
+
+      const cached = this.sessionCache.get(sessionId);
+      if (cached) {
+        cached.metadata.title = nextTitle;
+        cached.metadata.titleSource = nextSource;
+        cached.metadata.updatedAt = now;
+        await this.hostRecordStore.writeAsync(sessionId, cached);
+      } else {
+        this.pendingTitles.set(sessionId, { title: nextTitle, source: nextSource });
+      }
+      await this.writeIndexAsync();
+      return;
+    }
+
+    const fallbackRecord = this.tryLoadLiveHostRecord(sessionId) ?? null;
+    if (!fallbackRecord || countHostRecordMessages(fallbackRecord) === 0) {
+      this.pendingTitles.set(sessionId, { title: nextTitle, source: nextSource });
+      return;
+    }
+    const nextRecord: HostSessionRecord = {
+      ...fallbackRecord,
+      metadata: {
+        ...fallbackRecord.metadata,
+        title: nextTitle,
+        titleSource: nextSource,
+        updatedAt: now,
+      },
+    };
+    const messageCount = countHostRecordMessages(nextRecord);
+    this.sessionCache.set(sessionId, nextRecord);
+    this.options.upsertIndexEntry(sessionId, nextRecord.metadata, messageCount, true);
+    await this.hostRecordStore.writeAsync(sessionId, nextRecord);
+    await this.writeIndexAsync();
+  }
+
+  private async writeIndexAsync(): Promise<void> {
+    if (this.options.writeIndexAsync) {
+      await this.options.writeIndexAsync();
+      return;
+    }
+    this.options.writeIndex();
   }
 
   loadHostRecord(sessionId: string, projectPathHint?: string | null): HostSessionRecord | null {
@@ -299,11 +416,95 @@ export class HostSessionPersistenceBridge {
     }, 'flush-all');
   }
 
+  flushSession(sessionId: string, options?: HostSessionFlushOptions): void {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) {
+      return;
+    }
+
+    ChatPerformanceTracer.runWithSurface('history_save', () => {
+      this.flushSessionCore(normalizedSessionId, options);
+    }, 'flush-session');
+  }
+
+  async flushAllAsync(options?: HostSessionFlushOptions): Promise<void> {
+    await this.enqueueStore(async () => {
+      const capturedStates = [...this.dirtySessions.entries()];
+      const committed: Array<readonly [string, number]> = [];
+      const writes: Promise<void>[] = [];
+
+      for (const [sessionId, state] of capturedStates) {
+        if (options?.shouldSkipSession?.(sessionId, state.policy)) {
+          continue;
+        }
+        const hostRecord = this.resolveFlushHostRecord(sessionId, 'flushAllAsync');
+        if (hostRecord && this.shouldRejectRecordOwnerMismatch(hostRecord, 'flushAllAsync-cache')) {
+          continue;
+        }
+        if (hostRecord) {
+          const messageCount = countHostRecordMessages(hostRecord);
+          if (messageCount > 0) {
+            writes.push(this.hostRecordStore.writeOrThrowAsync(sessionId, hostRecord));
+            if (state.policy === 'authoritative') {
+              this.options.upsertIndexEntry(sessionId, hostRecord.metadata, messageCount);
+            }
+          }
+        }
+        committed.push([sessionId, state.revision]);
+      }
+
+      await Promise.all(writes);
+      if (this.options.hasDirtyIndex()) {
+        await this.writeIndexAsync();
+      }
+      for (const [sessionId, revision] of committed) {
+        this.clearDirtyRevision(sessionId, revision);
+      }
+    });
+  }
+
+  async flushSessionAsync(sessionId: string, options?: HostSessionFlushOptions): Promise<void> {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) {
+      return;
+    }
+
+    await this.enqueueStore(async () => {
+      const state = this.dirtySessions.get(normalizedSessionId);
+      if (!state) {
+        if (this.options.hasDirtyIndex()) {
+          await this.writeIndexAsync();
+        }
+        return;
+      }
+      if (options?.shouldSkipSession?.(normalizedSessionId, state.policy)) {
+        return;
+      }
+
+      const hostRecord = this.resolveFlushHostRecord(normalizedSessionId, 'flushSessionAsync');
+      if (hostRecord && this.shouldRejectRecordOwnerMismatch(hostRecord, 'flushSessionAsync-cache')) {
+        return;
+      }
+      if (hostRecord) {
+        const messageCount = countHostRecordMessages(hostRecord);
+        if (messageCount > 0) {
+          await this.hostRecordStore.writeOrThrowAsync(normalizedSessionId, hostRecord);
+          if (state.policy === 'authoritative') {
+            this.options.upsertIndexEntry(normalizedSessionId, hostRecord.metadata, messageCount);
+          }
+        }
+      }
+      if (this.options.hasDirtyIndex()) {
+        await this.writeIndexAsync();
+      }
+      this.clearDirtyRevision(normalizedSessionId, state.revision);
+    });
+  }
+
   private flushAllCore(options?: HostSessionFlushOptions): void {
-    const skippedSessions = new Map<string, HostSessionDirtyPolicy>();
-    for (const [sessionId, policy] of this.dirtySessions) {
-      if (options?.shouldSkipSession?.(sessionId, policy)) {
-        skippedSessions.set(sessionId, policy);
+    const committed: Array<readonly [string, number]> = [];
+    for (const [sessionId, state] of this.dirtySessions) {
+      if (options?.shouldSkipSession?.(sessionId, state.policy)) {
         continue;
       }
 
@@ -334,19 +535,103 @@ export class HostSessionPersistenceBridge {
           continue;
         }
         this.hostRecordStore.write(sessionId, hostRecord);
-        if (policy === 'authoritative') {
+        if (state.policy === 'authoritative') {
           this.options.upsertIndexEntry(sessionId, hostRecord.metadata, messageCount);
         }
       }
+      committed.push([sessionId, state.revision]);
     }
-    this.dirtySessions.clear();
-    for (const [sessionId, policy] of skippedSessions) {
-      this.dirtySessions.set(sessionId, policy);
+    for (const [sessionId, revision] of committed) {
+      this.clearDirtyRevision(sessionId, revision);
     }
 
     if (this.options.hasDirtyIndex()) {
       this.options.writeIndex();
     }
+  }
+
+  private flushSessionCore(sessionId: string, options?: HostSessionFlushOptions): void {
+    const state = this.dirtySessions.get(sessionId);
+    if (!state) {
+      if (this.options.hasDirtyIndex()) {
+        this.options.writeIndex();
+      }
+      return;
+    }
+
+    if (options?.shouldSkipSession?.(sessionId, state.policy)) {
+      return;
+    }
+
+    let hostRecord = this.sessionCache.get(sessionId);
+    let liveRecord: LiveHostSessionRecord | null = null;
+    if (this.liveSessionProvider) {
+      try {
+        liveRecord = this.liveSessionProvider(sessionId);
+      } catch (error) {
+        console.warn('[ChatHistory] Failed to read live session:', error);
+      }
+    }
+
+    if (liveRecord
+      && liveRecord.sessionId === sessionId
+      && countHostRecordMessages(liveRecord) > 0
+      && !this.shouldRejectRecordOwnerMismatch(liveRecord, 'flushSession-live')) {
+      hostRecord = this.materializeHostRecord(liveRecord);
+      this.sessionCache.set(sessionId, hostRecord);
+    }
+
+    if (hostRecord
+      && !this.shouldRejectRecordOwnerMismatch(hostRecord, 'flushSession-cache')) {
+      const messageCount = countHostRecordMessages(hostRecord);
+      if (messageCount > 0) {
+        this.hostRecordStore.write(sessionId, hostRecord);
+        if (state.policy === 'authoritative') {
+          this.options.upsertIndexEntry(sessionId, hostRecord.metadata, messageCount);
+        }
+      }
+    }
+
+    this.clearDirtyRevision(sessionId, state.revision);
+    if (this.options.hasDirtyIndex()) {
+      this.options.writeIndex();
+    }
+  }
+
+  private resolveFlushHostRecord(sessionId: string, phase: string): HostSessionRecord | null {
+    let hostRecord = this.sessionCache.get(sessionId) ?? null;
+    if (!this.liveSessionProvider) {
+      return hostRecord;
+    }
+
+    try {
+      const liveRecord = this.liveSessionProvider(sessionId);
+      if (liveRecord
+        && liveRecord.sessionId === sessionId
+        && countHostRecordMessages(liveRecord) > 0
+        && !this.shouldRejectRecordOwnerMismatch(liveRecord, `${phase}-live`)) {
+        hostRecord = this.materializeHostRecord(liveRecord);
+        this.sessionCache.set(sessionId, hostRecord);
+      }
+    } catch (error) {
+      console.warn(`[ChatHistory] Failed to read live session during ${phase}:`, error);
+    }
+    return hostRecord;
+  }
+
+  private clearDirtyRevision(sessionId: string, revision: number | undefined): void {
+    if (revision == null) {
+      return;
+    }
+    if (this.dirtySessions.get(sessionId)?.revision === revision) {
+      this.dirtySessions.delete(sessionId);
+    }
+  }
+
+  private enqueueStore<T>(operation: () => Promise<T>): Promise<T> {
+    const queued = this.storeQueue.then(operation, operation);
+    this.storeQueue = queued.then(() => undefined, () => undefined);
+    return queued;
   }
 
   hasDirtySessions(): boolean {

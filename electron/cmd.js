@@ -1,9 +1,11 @@
+// 管理系统命令进程，并提供 Shell、路径和终端环境检测能力。
 const { spawn, exec } = require('child_process');
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { isWin32, isDarwin, isLinux } = require('./platform');
+const { killRegisteredProcessTree } = require('./process-tree');
 
 function summarizeArgs(args = []) {
   return args.join(' ').slice(0, 1000);
@@ -252,54 +254,6 @@ function buildCommandEnv(extraEnv = {}) {
     env.ZDOTDIR = zdotdir;
   }
   return env;
-}
-
-function killRegisteredProcessTree(pid, label) {
-  if (!pid) {
-    return Promise.resolve(false);
-  }
-
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    if (isWin32) {
-      exec(`taskkill /PID ${pid} /T /F`, (error, stdout, stderr) => {
-        const success = !error;
-        console.info('[PROC_TRACE][PROCESS_TREE_KILL]', {
-          label,
-          pid,
-          method: 'taskkill',
-          success,
-          durationMs: Date.now() - startedAt,
-          error: error?.message || '',
-          stderr: stderr?.trim?.() || ''
-        });
-        resolve(success);
-      });
-      return;
-    }
-
-    try {
-      process.kill(pid, 'SIGTERM');
-      console.info('[PROC_TRACE][PROCESS_TREE_KILL]', {
-        label,
-        pid,
-        method: 'SIGTERM',
-        success: true,
-        durationMs: Date.now() - startedAt
-      });
-      resolve(true);
-    } catch (error) {
-      console.warn('[PROC_TRACE][PROCESS_TREE_KILL]', {
-        label,
-        pid,
-        method: 'SIGTERM',
-        success: false,
-        durationMs: Date.now() - startedAt,
-        error: error?.message || String(error)
-      });
-      resolve(false);
-    }
-  });
 }
 
 function sendRendererLog(targetWebContents, detail, state = 'doing', mergeKey) {
@@ -580,11 +534,13 @@ function registerCmdHandlers(mainWindow) {
         if (result.shouldLogOutput) {
           logCommandOutput(streamId, 'stdout', output, senderWindow);
         }
-        sendCmdData(senderWindow, `cmd-data-${streamId}`, {
-          type: 'stdout',
-          data: output,
-          streamId
-        });
+        if (options.forwardStdout !== false) {
+          sendCmdData(senderWindow, `cmd-data-${streamId}`, {
+            type: 'stdout',
+            data: output,
+            streamId
+          });
+        }
       });
 
       // 监听错误输出

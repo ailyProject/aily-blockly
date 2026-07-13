@@ -46,7 +46,6 @@ export class GitWorkspaceCheckpointProviderService implements IWorkspaceCheckpoi
   private workspaceRoot: string | null = null;
   private repositoryRootCache = new Map<string, string | null>();
   private availabilityDetailByWorkspaceRoot = new Map<string, WorkspaceCheckpointAvailabilityDetail>();
-  private presentationModeWarmups = new Set<string>();
   private queued = Promise.resolve();
   private fallbackProvider: IWorkspaceCheckpointProvider | null = null;
 
@@ -54,7 +53,6 @@ export class GitWorkspaceCheckpointProviderService implements IWorkspaceCheckpoi
     this.sessionId = sessionId;
     this.workspaceRoot = workspaceRoot;
     this.fallbackProvider?.setContext?.(sessionId, workspaceRoot);
-    this.warmPresentationModeCache(workspaceRoot);
   }
 
   setFallbackProvider(provider: IWorkspaceCheckpointProvider): void {
@@ -65,27 +63,6 @@ export class GitWorkspaceCheckpointProviderService implements IWorkspaceCheckpoi
   clear(): void {
     this.sessionId = null;
     this.workspaceRoot = null;
-  }
-
-  private warmPresentationModeCache(workspaceRoot: string | null): void {
-    if (!workspaceRoot || this.repositoryRootCache.has(workspaceRoot) || this.presentationModeWarmups.has(workspaceRoot)) {
-      return;
-    }
-
-    this.presentationModeWarmups.add(workspaceRoot);
-    void Promise.resolve()
-      .then(() => {
-        if (this.workspaceRoot !== workspaceRoot || this.repositoryRootCache.has(workspaceRoot)) {
-          return;
-        }
-        return this.ensurePresentationMode();
-      })
-      .catch(error => {
-        this.logCheckpointDiagnostic('error', `presentation mode warm-up failed: workspaceRoot=${workspaceRoot}`, error);
-      })
-      .finally(() => {
-        this.presentationModeWarmups.delete(workspaceRoot);
-      });
   }
 
   getPresentationMode(): WorkspaceCheckpointPresentationMode {
@@ -182,7 +159,7 @@ export class GitWorkspaceCheckpointProviderService implements IWorkspaceCheckpoi
 
   createCheckpoint(descriptor: WorkspaceCheckpointDescriptor): Promise<WorkspaceCheckpointRefMetadata | null | void> {
     return this.enqueue(async () => {
-      const context = await this.resolveRepositoryContext();
+      const context = this.readCachedRepositoryContext();
       if (!context) {
         return await Promise.resolve(this.fallbackProvider?.createCheckpoint(descriptor) ?? null);
       }
@@ -196,7 +173,7 @@ export class GitWorkspaceCheckpointProviderService implements IWorkspaceCheckpoi
 
   completeCheckpoint(descriptor: WorkspaceCheckpointDescriptor): Promise<WorkspaceCheckpointRefMetadata | null | void> {
     return this.enqueue(async () => {
-      const context = await this.resolveRepositoryContext();
+      const context = this.readCachedRepositoryContext();
       if (!context) {
         return await Promise.resolve(this.fallbackProvider?.completeCheckpoint?.(descriptor) ?? null);
       }
@@ -574,6 +551,17 @@ export class GitWorkspaceCheckpointProviderService implements IWorkspaceCheckpoi
   private async resolveRepositoryContext(): Promise<{ sessionId: string; workspaceRoot: string; repositoryRoot: string } | null> {
     const sessionId = this.sessionId;
     return sessionId ? this.resolveRepositoryContextForSession(sessionId) : null;
+  }
+
+  private readCachedRepositoryContext(): { sessionId: string; workspaceRoot: string; repositoryRoot: string } | null {
+    const sessionId = this.sessionId?.trim() ?? '';
+    const workspaceRoot = this.workspaceRoot ?? AilyHost.get().project.currentProjectPath ?? null;
+    if (!sessionId || !workspaceRoot || !this.repositoryRootCache.has(workspaceRoot)) {
+      return null;
+    }
+
+    const repositoryRoot = this.repositoryRootCache.get(workspaceRoot);
+    return repositoryRoot ? { sessionId, workspaceRoot, repositoryRoot } : null;
   }
 
   private async resolveRepositoryContextForSession(sessionId: string): Promise<{ sessionId: string; workspaceRoot: string; repositoryRoot: string } | null> {

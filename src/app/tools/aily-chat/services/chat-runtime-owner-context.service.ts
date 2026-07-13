@@ -126,6 +126,7 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
         get sessionTitle() { return service.ownerSessionContext.sessionTitle; },
         currentSessionPath: sessionId => service.ownerSessionContext.currentSessionPath(sessionId),
         currentSessionPermissionMode: sessionId => service.ownerSessionContext.currentSessionPermissionMode(sessionId),
+        currentSessionPermissionProfile: sessionId => service.ownerSessionContext.currentSessionPermissionProfile(sessionId),
         currentSessionApprovalsReviewer: sessionId => service.ownerSessionContext.currentSessionApprovalsReviewer(sessionId),
         currentSessionApprovalPolicy: sessionId => service.ownerSessionContext.currentSessionApprovalPolicy(sessionId),
         get ailyChatConfigService() { return service.ailyChatConfigService; },
@@ -135,6 +136,12 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
         runWithRuntimeSessionOwner: (sessionId, action) => service.ownerState.runWithRuntimeSessionOwner(sessionId, action),
         get runtimeInteractionHost() { return service.runtimeInteractionHost; },
         handleToolApproval: request => service.ownerToolApproval.handleToolApproval({
+          lexStream: adapter.lexStream,
+          sessionId: adapter.sessionId,
+          defaultSessionId: service.resolveDefaultRuntimeSessionId(adapter),
+          request: request as never,
+        }),
+        checkToolApprovalPreflight: request => service.ownerToolApproval.checkToolApprovalPreflight({
           lexStream: adapter.lexStream,
           sessionId: adapter.sessionId,
           defaultSessionId: service.resolveDefaultRuntimeSessionId(adapter),

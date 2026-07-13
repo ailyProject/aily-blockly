@@ -1,3 +1,4 @@
+// 封装各平台的任务栏闪烁和 Dock 弹跳等窗口注意提醒。
 const { app } = require('electron');
 
 /**

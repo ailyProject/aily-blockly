@@ -1,5 +1,11 @@
 import type { ChatPartStore, TextPayloadPartPatch } from './chat-part-store';
-import { mkTerminal, type ChatPartScope, type ConfirmationPart, type ToolCallPart } from './chat-parts';
+import {
+  mkTerminal,
+  normalizeSubagentToolCallState,
+  type ChatPartScope,
+  type ConfirmationPart,
+  type ToolCallPart,
+} from './chat-parts';
 import { normalizeChatErrorNotice } from './chat-error-notice-normalizer';
 import type { CanonicalRenderLifecycleEvent } from './render-event-item-lifecycle';
 
@@ -153,7 +159,7 @@ export class CanonicalRenderPayloadProjector {
           subAgentInvocationId: payload.subAgentInvocationId,
           agentName: payload.agentName,
           description: payload.description,
-          state: payload.state,
+          state: normalizeSubagentToolCallState(payload.state),
           resultText: payload.resultText || '',
           childItems: [],
           metadata: payload.metadata,

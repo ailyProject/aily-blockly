@@ -6,6 +6,7 @@ import {
 } from '../helpers/tool-approval-ui';
 
 export interface ToolCallApprovalMetadata {
+  approvalTraceId?: string;
   toolCallId?: string;
   toolName?: string;
   previousText?: string;
@@ -29,6 +30,7 @@ export interface ToolCallApprovalMetadata {
 }
 
 export interface ToolCallApprovalDisplayData {
+  approvalTraceId?: string;
   toolCallId: string;
   toolName?: string;
   title: string;
@@ -50,6 +52,7 @@ export interface ToolCallApprovalDisplayData {
 }
 
 export function buildPendingToolCallApprovalMetadata(input: {
+  approvalTraceId?: string;
   toolCallId: string;
   toolName?: string;
   message?: string;
@@ -68,6 +71,7 @@ export function buildPendingToolCallApprovalMetadata(input: {
   args?: any;
 }): ToolCallApprovalMetadata {
   return {
+    approvalTraceId: input.approvalTraceId,
     toolCallId: input.toolCallId,
     toolName: input.toolName,
     message: input.message,
@@ -89,6 +93,7 @@ export function buildPendingToolCallApprovalMetadata(input: {
 }
 
 export function buildResolvedToolCallApprovalMetadata(input: {
+  approvalTraceId?: string;
   toolCallId: string;
   result: 'approved' | 'rejected';
   scope?: ToolApprovalScope;
@@ -104,6 +109,7 @@ export function buildResolvedToolCallApprovalMetadata(input: {
   description?: string;
 }): ToolCallApprovalMetadata {
   return {
+    approvalTraceId: input.approvalTraceId,
     toolCallId: input.toolCallId,
     ...(input.reviewer ? { reviewer: input.reviewer } : {}),
     ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
@@ -151,6 +157,7 @@ export function projectToolCallApprovalDisplayData(
   });
 
   return {
+    approvalTraceId: approval?.approvalTraceId,
     toolCallId: part.toolCallId,
     toolName: part.toolName,
     title: normalized.title,

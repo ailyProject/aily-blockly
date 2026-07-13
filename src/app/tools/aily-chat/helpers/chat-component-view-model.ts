@@ -32,6 +32,7 @@ interface ChatEngineViewLike {
   readonly selectedMode: ChatSelectedMode;
   readonly currentAgentRuntimeMode: string;
   readonly currentSessionPermissionMode: string;
+  readonly currentSessionPermissionProfile: string;
   readonly currentSessionApprovalsReviewer: 'user' | 'auto_review' | undefined;
   readonly currentCustomAgentTarget: string | undefined;
   readonly currentModel: ModelConfig;
@@ -207,7 +208,7 @@ export class ChatComponentViewModel {
   }
 
   get currentPermissionLabel(): string {
-    if (this.deps.engine.currentSessionPermissionMode === 'bypassPermissions') {
+    if (this.deps.engine.currentSessionPermissionProfile === 'danger-full-access') {
       return '完全访问权限';
     }
 

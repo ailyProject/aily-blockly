@@ -1,88 +1,91 @@
-# aily blockly  
+# aily blockly
 
 [中文](README_ZH.md) | English
 
 ## About This Software
-Aily Project is a hardware development integrated environment that plans to integrate numerous AI capabilities to help hardware developers develop more smoothly.  
-Aily Blockly is a blockly IDE under the aily Project. In the early stage, it provides AI-assisted programming capabilities for non-professional users. The long-term goal is to break the boundary between professional development and non-professional development, and ultimately achieve natural language programming.  
+aily Blockly is the Blockly IDE under aily Project. In the early stage, it provides AI-assisted programming capabilities for non-professional users. Its long-term goal is to break the boundary between professional and non-professional development, and ultimately make natural-language programming possible.
+
+aily Blockly is not companion software for a single piece of hardware. It is a truly general-purpose hardware development environment. It currently supports 100+ development boards/chips, includes 400+ preset libraries, and continues to expand with more hardware, libraries, and AI development capabilities. We hope it helps ideas become runnable hardware projects faster, with less interruption from configuration, progress bars, and error messages.
 
 <img src="./img/home.webp" />
 
-> We aim to design and develop this project as industrial-grade software, but the project is currently in the alpha stage and is not recommended for mass production device firmware development. However, the current version is perfectly suitable for prototype verification and educational teaching.  
+> We aim to design and develop this project as industrial-grade software, but the project is currently in the alpha stage and is not recommended for mass-production device firmware development. The current version is fully suitable for prototyping and education.
 
-## Current Version Highlights  
-1. **Engineering Project Management**
-Uses npm for project management, achieving board and library management on a per-project basis. This solves many engineering deficiencies in traditional embedded development environments. For example, using Arduino IDE may result in board package, library, and current project mismatches, causing compilation failures and runtime errors. In this software, the board versions and library versions in each project are independent and do not affect each other.
+## Video Introduction
+[ailyblockly-2min.webm](https://github.com/user-attachments/assets/bc8da095-2e4d-4ba0-ad31-2a4824a21576)
 
-2. **Library Manager**
-More than 200 commonly used extension libraries are already available, covering most development needs, and the collection is still growing.
+## China Version Download
+[Download](https://yiyu.pro/download)
 
-3. **Powerful and Compact Serial Debug Tool**
-Attempts to create an all-purpose serial tool. Welcome everyone to test, provide feedback, and propose new ideas.
+## Project Highlights
+1. **Ready Out of the Box**
+After installation, you only need to select a development board/chip to start building. Board packages, toolchains, and common libraries are managed per project, reducing configuration work as much as possible.
 
-4. **AI Project Generation**
-According to user requirements, automatically analyzes projects, recommends development boards, modules, and libraries, generates project architecture diagrams and pin connection diagrams, and creates projects for users.
+2. **Hardware Agnostic**
+aily Blockly is a general-purpose hardware development environment, not tied to any specific board or kit. It already supports 100+ development boards/chips, with more being added continuously.
 
-5. **AI Code Generation**
-According to user requirements, automatically writes programs.
+3. **Lightning Compilation**
+Edge-cloud collaboration and caching help shorten compile waits, so long progress bars interrupt inspiration less often.
 
-6. **AI Library Conversion**
-Native C/C++ libraries can be easily converted to libraries used by this software. Based on large model configuration generation, during development, if you want to use an Arduino library but don't have the corresponding blockly library, just provide the Arduino library to AI, and AI will automatically analyze and generate the corresponding blockly library. With this feature, this software can become the blockly platform with the most libraries.
+4. **AI-Native Support**
+AI can participate throughout the development flow, from project analysis, solution recommendations, and wiring-diagram generation to code writing, compile-error analysis, and debugging advice.
 
-7. **AI Development Board Configuration Generation (Under improvement)**
-Based on large model configuration generation, when adding development boards, you no longer need to write new configurations purely by hand. Just provide the development board documentation (md format), and AI will automatically analyze it and help you generate development board configuration files. (Currently supports only development boards based on esp32, avr, renesas, rp2040, and stm32, because the compilers and core SDKs still need to be prepared in the repository in advance. For binary programs, this is how we ensure the source remains trustworthy.)
+5. **Project Square**
+Share and browse projects, get inspiration and feedback, connect with the developer community, and showcase your hardware ideas.
 
-8. **Lightning Compilation Tool** (Phase 1 online, Phase 2 coming soon!)
-Edge-cloud collaboration, lightning compilation. Reduces the original 1-hour compilation work to 1 minute!
+6. **Project Analysis**
+Whether your requirement is still vague or already well defined, AI can help clarify goals, recommend development boards/modules/libraries, and generate a project structure diagram.
 
-9. **Pin Diagram**
-Provides a beautiful development board pin diagram viewing solution.
+7. **Code Generation**
+AI plans tasks from your requirements, gradually understands project dependencies and library usage, and then generates practical project code.
 
-10. **Wiring Diagram (Simulator Phase 1)**
-AI can generate module wiring diagrams based on user programs and requirements for user reference.
+8. **Unlimited Extension**
+The software includes 400+ common extension libraries. If a Blockly library is missing, AI can analyze a native Arduino/C/C++ library and generate an adaptation.
 
-## Unofficial Version Notes  
-This alpha version for testing only guarantees the minimum usability, and many planned highlight features have not yet been designed and developed.
-The current version is not recommended for actual work use, as many adjustments we make later may cause incompatibility between versions.
+9. **Wiring Diagrams**
+When you are unsure how to wire modules, AI can generate a wiring diagram from your requirements and program. It can also help generate code from an existing wiring setup.
 
-## Planned Features
-· Hardware simulation  
-· microPython support (mode added, but no library support yet)  
+10. **Automatic Debugging**
+When compilation fails or debug logs are hard to understand, AI can read the error output, locate the issue, and provide repair suggestions.
+
+## Unofficial Version Notes
+This alpha test version only guarantees minimum usability, and many planned highlight features have not yet been designed or developed.
+The current version is not recommended for real work because later adjustments may introduce incompatibilities between versions.
 
 ## Documentation
-[User Documentation](https://aily.pro/doc)  
-[Library Adaptation Documentation](https://github.com/ailyProject/aily-blockly-libraries/blob/main/%E5%BA%93%E8%A7%84%E8%8C%83.md)  
-[Software Development Documentation](./develop.md)  
+- [User Documentation](https://yiyu.pro/doc)
+- [Library Adaptation Documentation](https://github.com/ailyProject/aily-blockly-libraries/blob/main/%E5%BA%93%E8%A7%84%E8%8C%83.md)
+- [Software Development Documentation](./develop.md)
 
 ## Related Repositories
-[Development Boards](https://github.com/ailyProject/aily-blockly-boards)  
-[Block Libraries](https://github.com/ailyProject/aily-blockly-libraries)  
-[Compilers](https://github.com/ailyProject/aily-blockly-compilers)  
-[Related Tools](https://github.com/ailyProject/aily-project-tools)  
+- [Development Boards](https://github.com/ailyProject/aily-blockly-boards)
+- [Block Libraries](https://github.com/ailyProject/aily-blockly-libraries)
+- [Compilers](https://github.com/ailyProject/aily-blockly-compilers)
+- [Related Tools](https://github.com/ailyProject/aily-project-tools)
 
 ## Main Open Source Projects Used in This Project
-[electron](https://github.com/electron/electron) This project uses electron to build desktop applications  
-[angular](https://github.com/angular/angular) This project uses angular as the rendering end to build main UI logic  
-[node](https://github.com/nodejs/node) This project uses npm and node for package management and executing necessary scripts  
-[7z](https://github.com/sparanoid/7z) This project uses 7z to reduce the size of some packages (such as the huge ESP32 compiler)  
-[probe-rs](https://github.com/probe-rs/probe-rs) This project uses probe-rs to interface with debuggers such as DAPLink  
-Other content can be found in [package.json](./package.json)  
+- [electron](https://github.com/electron/electron) This project uses Electron to build the desktop application.
+- [angular](https://github.com/angular/angular) This project uses Angular as the renderer-side framework for the main UI logic.
+- [node](https://github.com/nodejs/node) This project uses npm and Node.js for package management and required script execution.
+- [7z](https://github.com/sparanoid/7z) This project uses 7z to reduce the size of some packages, such as the large ESP32 compiler.
+- [probe-rs](https://github.com/probe-rs/probe-rs) This project uses probe-rs to communicate with DAPLink and other debuggers.
+Other content can be found in [package.json](./package.json).
 
-## The AI features of this project reference the following projects
-[Kode](https://github.com/shareAI-lab/Kode-cli)  
-[copilot](https://github.com/microsoft/vscode-copilot-chat)  
-[ESPConnect](https://github.com/thelastoutpostworkshop/ESPConnect)  
-[BLEOTA](https://github.com/gb88/BLEOTA)  
+## The AI Features of This Project Reference the Following Projects
+- [Kode](https://github.com/shareAI-lab/Kode-cli)
+- [copilot](https://github.com/microsoft/vscode-copilot-chat)
+- [ESPConnect](https://github.com/thelastoutpostworkshop/ESPConnect)
+- [BLEOTA](https://github.com/gb88/BLEOTA)
 
-## Additional Rights Statement  
-1. This software is free software under the GPL license. Without authorization, the sale of this software or derivative software based on this software is prohibited.
-2. Hardware works developed using this software are not restricted by the GPL, and users may decide on their own release and usage methods.
-3. For derivatives based on this software, information about relevant rights holders and sponsors of this project must not be removed, and such information must appear on the software startup page.
-4. Without authorization, the online service content and user agreement attached to this project must not be removed.
+## Additional Rights Statement
+1. This software is free software under the GPL license. Without authorization, this software and derivative software based on it may not be sold.
+2. Hardware works developed with this software are not restricted by the GPL, and users may decide how to publish and use them.
+3. Derivative products based on this software must not remove information about the relevant rights holders or sponsors of this project, and must ensure that such information appears on the software startup page.
+4. Without authorization, the online service content and user agreement included with this project must not be removed.
 
 ## Sponsors
 
-This project is sponsored by the following companies and individuals
+This project is sponsored by the following companies and individuals.
 
 ### Corporate Sponsors
 

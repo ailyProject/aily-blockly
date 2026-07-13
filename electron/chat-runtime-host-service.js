@@ -12,6 +12,7 @@ const RESOURCE_HANDLER_RESPONSE_CHANNEL = 'aily-chat-runtime-resource-handler-re
 const {
   ChatRuntimeHostSessionStore,
   HOST_SESSION_STORE_MISS,
+  clonePayload,
   isUsableWebContents,
   normalizeSessionId,
 } = require('./chat-runtime-host-session-store');
@@ -37,6 +38,7 @@ const channels = {
 const ALLOWED_METHODS = new Set([
   'attachView',
   'detachView',
+  'prewarmRuntime',
   'submitTurn',
   'readSubmitReadiness',
   'ensureSessionCanRerun',
@@ -52,6 +54,33 @@ const ALLOWED_METHODS = new Set([
   'recordResourceRequest',
   'requestResourceOperation',
 ]);
+
+const EXECUTION_HOST_ALLOWED_METHODS = new Set([
+  'readSubmitReadiness',
+  'ensureSessionCanRerun',
+  'readSessionState',
+  'readSessionInventory',
+  'readTranscript',
+  'awaitRequestCompletion',
+  'runWorkspaceFinalizeBoundaryProbe',
+  'readInteractionSnapshot',
+  'recordResourceRequest',
+  'requestResourceOperation',
+]);
+
+function isRuntimeOwnerTraceEnabled() {
+  const value = process && process.env
+    ? (process.env.AILY_CHAT_TRACE_RUNTIME_OWNER_EVENTS || process.env.__AILY_CHAT_TRACE_RUNTIME_OWNER_EVENTS__)
+    : '';
+  if (value === true || value === 1) {
+    return true;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
 
 function measureTextLength(value) {
   if (typeof value === 'string') {
@@ -151,6 +180,36 @@ function summarizeCanonicalHostEvent(event) {
   };
 }
 
+function summarizeInteraction(interaction) {
+  const confirmationQueue = Array.isArray(interaction?.confirmationQueue)
+    ? interaction.confirmationQueue
+    : [];
+  const activeConfirmation = confirmationQueue[
+    Math.max(0, Math.min(Number(interaction?.activeConfirmationIndex) || 0, confirmationQueue.length - 1))
+  ];
+  return {
+    sessionId: typeof interaction?.sessionId === 'string' ? interaction.sessionId : undefined,
+    revision: Number(interaction?.revision) || 0,
+    hasQuestion: !!interaction?.question,
+    confirmationCount: confirmationQueue.length,
+    activeConfirmationId: typeof activeConfirmation?.id === 'string' ? activeConfirmation.id : undefined,
+    activeToolCallId: typeof activeConfirmation?.toolCallId === 'string' ? activeConfirmation.toolCallId : undefined,
+    activeToolName: typeof activeConfirmation?.toolName === 'string' ? activeConfirmation.toolName : undefined,
+    hasPlanReview: !!interaction?.activePlanReview,
+  };
+}
+
+function traceActiveTurnDurability(phase, payload = {}) {
+  try {
+    console.info('[AilyChat][ActiveTurnDurability]', JSON.stringify({
+      phase,
+      ...payload,
+    }));
+  } catch {
+    console.info('[AilyChat][ActiveTurnDurability]', phase);
+  }
+}
+
 class ChatRuntimeHostProcessService {
   constructor(options = {}) {
     if (!options.BrowserWindow) {
@@ -184,16 +243,20 @@ class ChatRuntimeHostProcessService {
     this.runtimeOwnerController.setHostWindow(mainWindow);
   }
 
-  setRuntimeOwnerWindow(runtimeOwnerWindow) {
-    this.runtimeOwnerController.setRuntimeOwnerWindow(runtimeOwnerWindow);
-  }
-
   async handleRuntimeOwnerRegister(event, payload = {}) {
     return this.runtimeOwnerController.handleRuntimeOwnerRegister(event, payload);
   }
 
   async handleRuntimeOwnerUnregister(event, payload = {}) {
     return this.runtimeOwnerController.handleRuntimeOwnerUnregister(event, payload);
+  }
+
+  registerRuntimeOwnerTransport(transport = {}) {
+    return this.runtimeOwnerController.registerRuntimeOwnerTransport(transport);
+  }
+
+  clearRuntimeOwnerTransport(ownerKey) {
+    this.runtimeOwnerController.clearRuntimeOwnerIfMatches(ownerKey);
   }
 
   async handleResourceOperationHandlerRegister(event, payload = {}) {
@@ -243,6 +306,9 @@ class ChatRuntimeHostProcessService {
     if (method === 'detachView') {
       return this.handleDetachView(args);
     }
+    if (method === 'prewarmRuntime') {
+      return this.handlePrewarmRuntime(args);
+    }
     if (method === 'stopTurn') {
       return this.handleStopTurn(args);
     }
@@ -276,6 +342,41 @@ class ChatRuntimeHostProcessService {
     throw new Error(`[AilyChat][RuntimeHost] Host command is not implemented by the host service: ${method}.`);
   }
 
+  async handleExecutionHostCommand(payload = {}) {
+    const method = typeof payload.method === 'string' ? payload.method : '';
+    if (!EXECUTION_HOST_ALLOWED_METHODS.has(method)) {
+      throw new Error(`[AilyChat][RuntimeHost] Unsupported execution-host method: ${method || '<missing>'}`);
+    }
+
+    const args = Array.isArray(payload.args) ? payload.args : [];
+    if (method === 'recordResourceRequest') {
+      return this.handleRecordResourceRequest(args);
+    }
+    if (method === 'requestResourceOperation') {
+      return this.handleRequestResourceOperation(args);
+    }
+    if (method === 'runWorkspaceFinalizeBoundaryProbe') {
+      return Promise.resolve();
+    }
+
+    const hostResult = this.hostSessionStore.readHostCommandResult(method, args);
+    if (hostResult !== HOST_SESSION_STORE_MISS) {
+      return hostResult;
+    }
+    const runtimeOwnerUnavailableHostResult = this.hostSessionStore.readRuntimeOwnerUnavailableHostCommandResult(method, args);
+    if (runtimeOwnerUnavailableHostResult !== HOST_SESSION_STORE_MISS) {
+      return runtimeOwnerUnavailableHostResult;
+    }
+    throw new Error(`[AilyChat][RuntimeHost] Execution-host command is not implemented by the host service: ${method}.`);
+  }
+
+  async handleExecutionHostResourceOperation(payload = {}) {
+    const request = payload && payload.request && typeof payload.request === 'object'
+      ? payload.request
+      : payload;
+    return this.handleRequestResourceOperation([clonePayload(request)]);
+  }
+
   handleAttachView(event, args) {
     const state = this.hostSessionStore.attachView(args && args[0], args && args[1], event && event.sender, args && args[2]);
     // attachView is a request/response command for the attaching renderer. The
@@ -296,9 +397,70 @@ class ChatRuntimeHostProcessService {
     return undefined;
   }
 
+  async handlePrewarmRuntime(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request && request.sessionId);
+    if (!sessionId) {
+      throw new Error('[AilyChat][RuntimeHost] prewarmRuntime requires a session id.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      return { sessionId, ensured: false };
+    }
+    const result = await this.runtimeOwnerController.dispatchCommand('prewarmRuntime', [{
+      ...request,
+      sessionId,
+    }]);
+    return result && typeof result === 'object'
+      ? result
+      : { sessionId, ensured: !!result };
+  }
+
   async handleSubmitTurn(args) {
     const request = args && args[0];
     const runningState = this.hostSessionStore.beginSubmittedTurn(request);
+    const requestMetadata = request && request.requestMetadata && typeof request.requestMetadata === 'object'
+      ? request.requestMetadata
+      : request && request.metadata && typeof request.metadata === 'object'
+        ? request.metadata
+        : null;
+    const requestRouting = requestMetadata && requestMetadata.requestRouting && typeof requestMetadata.requestRouting === 'object'
+      ? requestMetadata.requestRouting
+      : null;
+    const explicitAgentInvocation = requestMetadata && requestMetadata.explicitAgentInvocation && typeof requestMetadata.explicitAgentInvocation === 'object'
+      ? requestMetadata.explicitAgentInvocation
+      : null;
+    console.warn('[AilyChat][RuntimeHostSubmitBoundary]', JSON.stringify({
+      phase: 'begin-submitted-turn',
+      sessionId: runningState.sessionId,
+      activeTurnId: runningState.activeTurnId,
+      hasRuntimeOwner: this.runtimeOwnerController.hasUsableRuntimeOwner(),
+      requestTextLength: measureTextLength(request && request.requestText),
+      customAgentTarget: requestRouting && typeof requestRouting.customAgentTarget === 'string'
+        ? requestRouting.customAgentTarget
+        : undefined,
+      explicitAgentTarget: explicitAgentInvocation && typeof explicitAgentInvocation.targetAgent === 'string'
+        ? explicitAgentInvocation.targetAgent
+        : undefined,
+      explicitAgentSource: explicitAgentInvocation && typeof explicitAgentInvocation.source === 'string'
+        ? explicitAgentInvocation.source
+        : undefined,
+      hasExplicitAgentPrompt: !!(explicitAgentInvocation && typeof explicitAgentInvocation.prompt === 'string' && explicitAgentInvocation.prompt.length > 0),
+      approvalPolicy: request && request.providerOptions ? request.providerOptions.approvalPolicy : undefined,
+      approvalsReviewer: request && request.providerOptions ? request.providerOptions.approvalsReviewer : undefined,
+      permissionMode: request && request.providerOptions ? request.providerOptions.permissionMode : undefined,
+      permissionProfile: request && request.providerOptions ? request.providerOptions.permissionProfile : undefined,
+    }));
+    try {
+      await this.persistHostSessionRecord(runningState.sessionId, 'submitted');
+      traceActiveTurnDurability('submitted', {
+        sessionId: runningState.sessionId,
+        activeTurnId: runningState.activeTurnId,
+        transcriptRevision: Number(runningState.transcriptRevision) || 0,
+      });
+    } catch (error) {
+      await this.failSubmittedTurnWithError(runningState.sessionId, error);
+      throw error;
+    }
     this.replayTranscriptForAttachedSession(runningState.sessionId);
     this.broadcastSessionState('runtime-status', runningState);
     const submittedRequest = this.hostSessionStore.readActiveSubmittedRequest(runningState.sessionId) || request;
@@ -327,17 +489,23 @@ class ChatRuntimeHostProcessService {
       const error = new Error('[AilyChat][RuntimeHost] No registered runtime owner.');
       error.code = 'runtime_owner_unavailable';
       error.retryable = true;
-      this.failSubmittedTurnWithError(runningState.sessionId, error);
+      await this.failSubmittedTurnWithError(runningState.sessionId, error);
     }
     return this.hostSessionStore.buildSessionState(runningState.sessionId);
   }
 
-  handleStopTurn(args) {
-    const sessionId = normalizeSessionId(args && args[0]);
+  async handleStopTurn(args) {
+    const rawCommand = args && args[0];
+    const stopCommand = rawCommand && typeof rawCommand === 'object'
+      ? rawCommand
+      : { sessionId: rawCommand };
+    const sessionId = normalizeSessionId(stopCommand && stopCommand.sessionId);
+    const requestedTurnId = normalizeSessionId(stopCommand && stopCommand.turnId);
     const previousState = this.hostSessionStore.buildSessionState(sessionId);
+    const targetTurnId = requestedTurnId || (previousState && previousState.activeTurnId) || null;
     const stoppedTranscript = this.hostSessionStore.cancelRunningTurn(
       sessionId,
-      previousState && previousState.activeTurnId,
+      targetTurnId,
       previousState && previousState.transcriptRevision,
     );
     if (stoppedTranscript) {
@@ -348,15 +516,57 @@ class ChatRuntimeHostProcessService {
         transcript: stoppedTranscript,
       });
     }
+    if (stoppedTranscript) {
+      await this.persistHostSessionRecord(sessionId, 'cancelled', {
+        requestInProgress: false,
+        activeTurnId: null,
+        status: 'stopped',
+      });
+      traceActiveTurnDurability('terminal', {
+        sessionId,
+        activeTurnId: targetTurnId,
+        status: 'stopped',
+        reason: 'explicit-stop',
+        transcriptRevision: Number(stoppedTranscript.revision) || 0,
+      });
+    }
+    await this.dispatchRuntimeOwnerCommandAndWaitIfAvailable('stopTurn', [{
+      sessionId,
+      turnId: targetTurnId,
+    }], sessionId);
     const stoppedState = this.hostSessionStore.stopSession(sessionId);
     if (stoppedState) {
       this.broadcastSessionState('runtime-status', stoppedState);
     }
-    this.dispatchRuntimeOwnerCommandIfAvailable('stopTurn', [{
-      sessionId,
-      turnId: previousState && previousState.activeTurnId,
-    }], sessionId);
     return undefined;
+  }
+
+  async persistHostSessionRecord(sessionId, reason, statePatch) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId) {
+      return false;
+    }
+    const record = this.hostSessionStore.buildLiveHostSessionRecord(normalizedSessionId, statePatch);
+    if (!record) {
+      return false;
+    }
+    const request = {
+      id: this.nextResourceOperationCommandId('save-current-session'),
+      sessionId: normalizedSessionId,
+      kind: 'save-current-session',
+      label: 'Persist chat session',
+      detail: typeof reason === 'string' && reason.trim() ? reason.trim() : undefined,
+      payload: {
+        adapter: 'chatHistory',
+        record,
+      },
+    };
+    if (this.resourceOperationHandler) {
+      await this.resourceOperationHandler(request);
+    } else {
+      await this.dispatchResourceOperationToRegisteredHandler(request);
+    }
+    return true;
   }
 
   handleDisposeSession(args) {
@@ -630,9 +840,34 @@ class ChatRuntimeHostProcessService {
 
   dispatchRuntimeOwnerCommandIfAvailable(method, args, sessionId, options = {}) {
     if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      console.info('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+        phase: 'missing-owner',
+        method,
+        sessionId,
+      }));
       return false;
     }
+    const owner = typeof this.runtimeOwnerController.snapshotRuntimeOwner === 'function'
+      ? this.runtimeOwnerController.snapshotRuntimeOwner()
+      : null;
+    console.warn('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+      phase: 'dispatch',
+      method,
+      sessionId,
+      activeTurnId: args && args[0] && args[0].turnId,
+      owner,
+    }));
     this.runtimeOwnerController.dispatchCommand(method, args)
+      .then(result => {
+        console.warn('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+          phase: 'result',
+          method,
+          sessionId,
+          owner,
+          resultStatus: result && result.status,
+          requestInProgress: result && result.requestInProgress,
+        }));
+      })
       .catch(error => {
         console.error('[AilyChat][RuntimeHost] Runtime owner command dispatch failed:', {
           method,
@@ -642,7 +877,7 @@ class ChatRuntimeHostProcessService {
           stack: error && error.stack ? error.stack : undefined,
         });
         if (options.failSubmittedTurnOnError) {
-          this.failSubmittedTurnWithError(sessionId, error);
+          void this.failSubmittedTurnWithError(sessionId, error);
           return;
         }
         this.broadcastRuntimeError(sessionId, error);
@@ -650,8 +885,63 @@ class ChatRuntimeHostProcessService {
     return true;
   }
 
-  failSubmittedTurnWithError(sessionId, error) {
+  async dispatchRuntimeOwnerCommandAndWaitIfAvailable(method, args, sessionId) {
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      console.warn('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+        phase: 'missing-owner',
+        method,
+        sessionId,
+      }));
+      return false;
+    }
+    const owner = typeof this.runtimeOwnerController.snapshotRuntimeOwner === 'function'
+      ? this.runtimeOwnerController.snapshotRuntimeOwner()
+      : null;
+    console.info('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+      phase: 'dispatch-wait',
+      method,
+      sessionId,
+      activeTurnId: args && args[0] && args[0].turnId,
+      owner,
+    }));
+    try {
+      const result = await this.runtimeOwnerController.dispatchCommand(method, args);
+      console.info('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+        phase: 'result-wait',
+        method,
+        sessionId,
+        owner,
+        resultStatus: result && result.status,
+        requestInProgress: result && result.requestInProgress,
+      }));
+    } catch (error) {
+      console.error('[AilyChat][RuntimeHost] Runtime owner command dispatch failed:', {
+        method,
+        sessionId,
+        message: error && error.message ? error.message : String(error || 'Unknown runtime owner error'),
+        code: error && typeof error.code === 'string' ? error.code : undefined,
+        stack: error && error.stack ? error.stack : undefined,
+      });
+    }
+    return true;
+  }
+
+  async failSubmittedTurnWithError(sessionId, error) {
     const transcript = this.hostSessionStore.markSubmittedTurnFailed(sessionId, error);
+    if (transcript) {
+      try {
+        await this.persistHostSessionRecord(sessionId, 'failed', {
+          requestInProgress: false,
+          activeTurnId: null,
+          status: 'failed',
+        });
+      } catch (persistError) {
+        console.warn('[AilyChat][RuntimeHost] Failed to persist failed turn before clearing active state:', {
+          sessionId,
+          message: persistError && persistError.message ? persistError.message : String(persistError || 'Unknown persistence error'),
+        });
+      }
+    }
     const failedState = this.hostSessionStore.failSubmittedTurn(sessionId);
     if (!failedState) {
       return;
@@ -671,6 +961,14 @@ class ChatRuntimeHostProcessService {
     }
   }
 
+  handleRuntimeOwnerTransportResponse(payload = {}) {
+    try {
+      this.runtimeOwnerController.handleRuntimeOwnerTransportResponse(payload);
+    } catch (error) {
+      console.warn('[AilyChat][RuntimeHost] Ignored runtime owner transport response:', error.message);
+    }
+  }
+
   handleRuntimeOwnerLost(error) {
     const failedStates = this.hostSessionStore.failRunningTurns();
     for (const failedState of failedStates) {
@@ -679,27 +977,101 @@ class ChatRuntimeHostProcessService {
     }
   }
 
-  handleRuntimeOwnerEvent(event, payload = {}) {
+  async handleRuntimeOwnerEvent(event, payload = {}) {
     try {
       this.runtimeOwnerController.assertRegisteredRuntimeOwnerSender(event);
-      console.log('[AilyChat][RuntimeOwnerEventIn]', JSON.stringify(summarizeRuntimeOwnerPayload(payload)));
+      await this.handleRuntimeOwnerTransportEvent(payload);
+    } catch (error) {
+      console.warn('[AilyChat][RuntimeHost] Ignored runtime owner event:', error.message);
+    }
+  }
+
+  async handleRuntimeOwnerTransportEvent(payload = {}) {
+    try {
+      const shouldTraceRuntimeOwnerEvents = isRuntimeOwnerTraceEnabled();
+      if (payload && (payload.kind === 'turnInteractionRequested' || payload.interaction)) {
+        console.warn('[AilyChat][RuntimeHostInteractionBoundary]', JSON.stringify({
+          phase: 'owner-event-in',
+          ownerKind: typeof payload.kind === 'string' ? payload.kind : undefined,
+          sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : undefined,
+          turnId: typeof payload.turnId === 'string' ? payload.turnId : undefined,
+          interaction: summarizeInteraction(payload.interaction),
+        }));
+      }
+      if (shouldTraceRuntimeOwnerEvents) {
+        console.log('[AilyChat][RuntimeOwnerEventIn]', JSON.stringify(summarizeRuntimeOwnerPayload(payload)));
+      }
       const canonicalEvents = this.hostSessionStore.cacheRuntimeOwnerEvent(payload);
       const eventList = Array.isArray(canonicalEvents) ? canonicalEvents : [canonicalEvents];
-      console.log('[AilyChat][RuntimeOwnerEventOut]', JSON.stringify({
-        sourceKind: typeof payload?.kind === 'string' ? payload.kind : undefined,
-        sessionId: typeof payload?.sessionId === 'string' ? payload.sessionId : undefined,
-        turnId: typeof payload?.turnId === 'string' ? payload.turnId : undefined,
-        canonicalEvents: eventList.filter(Boolean).map(item => summarizeCanonicalHostEvent(item)),
-        dropped: !eventList.some(Boolean),
-      }));
+      for (const canonicalEvent of eventList) {
+        if (canonicalEvent && canonicalEvent.kind === 'interaction') {
+          console.warn('[AilyChat][RuntimeHostInteractionBoundary]', JSON.stringify({
+            phase: 'canonical-interaction',
+            sessionId: canonicalEvent.sessionId,
+            revision: Number(canonicalEvent.revision) || 0,
+            interaction: summarizeInteraction(canonicalEvent.interaction),
+          }));
+        }
+      }
+      if (shouldTraceRuntimeOwnerEvents) {
+        console.log('[AilyChat][RuntimeOwnerEventOut]', JSON.stringify({
+          sourceKind: typeof payload?.kind === 'string' ? payload.kind : undefined,
+          sessionId: typeof payload?.sessionId === 'string' ? payload.sessionId : undefined,
+          turnId: typeof payload?.turnId === 'string' ? payload.turnId : undefined,
+          canonicalEvents: eventList.filter(Boolean).map(item => summarizeCanonicalHostEvent(item)),
+          dropped: !eventList.some(Boolean),
+        }));
+      }
       for (const canonicalEvent of eventList) {
         if (canonicalEvent) {
           this.broadcastHostEvent(canonicalEvent);
         }
       }
+      await this.persistTerminalHostRecordFromEvents(eventList);
     } catch (error) {
-      console.warn('[AilyChat][RuntimeHost] Ignored runtime owner event:', error.message);
+      console.warn('[AilyChat][RuntimeHost] Ignored runtime owner transport event:', error.message);
     }
+  }
+
+  async persistTerminalHostRecordFromEvents(events) {
+    const eventList = Array.isArray(events) ? events : [];
+    const persistOperations = [];
+    for (const event of eventList) {
+      const state = event && (event.kind === 'runtime-status' || event.kind === 'session-state')
+        && event.state && typeof event.state === 'object'
+        ? event.state
+        : null;
+      const sessionId = normalizeSessionId(state && state.sessionId);
+      if (!sessionId || state.requestInProgress === true) {
+        continue;
+      }
+      const status = typeof state.status === 'string' && state.status.trim()
+        ? state.status.trim()
+        : 'completed';
+      if (status !== 'completed' && status !== 'failed' && status !== 'stopped' && status !== 'disposed') {
+        continue;
+      }
+      persistOperations.push(this.persistHostSessionRecord(sessionId, 'terminal', {
+        requestInProgress: false,
+        activeTurnId: null,
+        status,
+      }).then(persisted => {
+        if (persisted) {
+          traceActiveTurnDurability('terminal', {
+            sessionId,
+            status,
+            reason: 'runtime-owner-event',
+          });
+        }
+      }, error => {
+        console.warn('[AilyChat][RuntimeHost] Failed to persist terminal turn state:', {
+          sessionId,
+          status,
+          message: error && error.message ? error.message : String(error || 'Unknown persistence error'),
+        });
+      }));
+    }
+    await Promise.all(persistOperations);
   }
 
   broadcastHostEvent(payload) {
@@ -755,7 +1127,16 @@ class ChatRuntimeHostProcessService {
     if (!sessionId) {
       return;
     }
-    for (const webContents of this.hostSessionStore.readAttachedViewWebContents(sessionId)) {
+    const attachedViews = this.hostSessionStore.readAttachedViewWebContents(sessionId);
+    if (payload && payload.kind === 'interaction') {
+      console.warn('[AilyChat][RuntimeHostInteractionBoundary]', JSON.stringify({
+        phase: 'broadcast-attached-views',
+        sessionId,
+        attachedViewCount: attachedViews.length,
+        interaction: summarizeInteraction(payload.interaction),
+      }));
+    }
+    for (const webContents of attachedViews) {
       try {
         webContents.send(HOST_EVENT_CHANNEL, payload);
       } catch (error) {
@@ -819,6 +1200,7 @@ class ChatRuntimeHostProcessService {
     switch (payload.kind) {
       case 'transcript':
       case 'turn-transcript':
+      case 'part-transcript':
       case 'interaction':
       case 'view-request':
       case 'resource-request':

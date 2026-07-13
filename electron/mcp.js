@@ -1,3 +1,4 @@
+// 管理 MCP 客户端连接，并通过 IPC 调用外部工具和资源。
 // import { app, BrowserWindow, ipcMain } from 'electron';
 // import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 // import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";

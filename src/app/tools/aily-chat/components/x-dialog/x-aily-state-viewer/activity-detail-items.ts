@@ -1,4 +1,5 @@
 import { parseTerminalPayload } from '../../../core/terminal-payload';
+import { isTerminalFailureState, resolveTerminalLifecycleState } from '../../../core/terminal-status';
 import type { ToolResultContentPart } from '../../../core/tool-result-content';
 import { isReadFileToolName } from '../../../core/tool-name-normalizer';
 import { buildToolInvocationDisplaySummary } from '../../../core/tool-invocation-formatter';
@@ -14,6 +15,7 @@ import {
 import type { MetricsSnapshot, TurnResponseTurn } from 'aily-lex/browser';
 import { projectRegisteredToolCallOutputRows } from './tool-call-output-projectors';
 import { chatI18n } from '../../../helpers/chat-i18n';
+import { formatCompactBillingLabel } from '../../../helpers/model-billing-label';
 
 export type StateTone = 'info' | 'success' | 'warn' | 'error' | 'neutral';
 
@@ -25,7 +27,7 @@ export interface StateDetailRow {
   reference?: string;
   trailing?: string;
   tone?: StateTone;
-  outputKind?: 'default' | 'terminal-command' | 'terminal-stream' | 'text' | 'resource' | 'image' | 'code' | 'changed-file';
+  outputKind?: 'default' | 'terminal-command' | 'terminal-stream' | 'text' | 'resource' | 'image' | 'code' | 'changed-file' | 'mermaid';
   outputChannel?: 'stdout' | 'stderr';
   outputUri?: string;
   outputMimeType?: string;
@@ -160,6 +162,7 @@ export function buildActivityItemsFromDetailSections(
 
 export function buildToolCallDetailSections(source: {
   id?: string;
+  toolName?: string;
   metadata?: Record<string, unknown> | null;
   args?: unknown;
   text?: string;
@@ -172,10 +175,10 @@ export function buildToolCallDetailSections(source: {
 
   const toolSpecificData = asRecord(metadata['toolSpecificData']);
   if (isSubagentMetadata(toolSpecificData)) {
-    return [];
+    return buildSubagentDetailSections(source);
   }
 
-  const toolName = asString(metadata['toolName']);
+  const toolName = source.toolName || asString(metadata['toolName']);
   const readFileMetadata = asRecord(metadata['readFile']);
   const argsSummary = asString(metadata['argsSummary']);
   const argsNote = argsSummary || formatToolCallArgs(source.args);
@@ -211,6 +214,7 @@ export function buildToolCallDetailSections(source: {
     timelineEntries,
     toolName,
     baseId,
+    args: source.args,
     text: source.text,
     state: source.state,
   });
@@ -241,15 +245,18 @@ function buildToolCallOutputRowsWithFallback(input: {
   timelineEntries: readonly Record<string, unknown>[];
   toolName?: string;
   baseId: string;
+  args?: unknown;
   text?: string;
   state?: 'doing' | 'done' | 'warn' | 'error' | 'pending_approval';
 }): StateDetailRow[] {
-  const timelineRows = input.timelineEntries.flatMap((entry, index) => buildToolCallOutputRows(entry, index, input.toolName));
+  const timelineRows = input.timelineEntries.flatMap((entry, index) =>
+    buildToolCallOutputRows(withToolCallArgs(entry, input.args), index, input.toolName),
+  );
   if (timelineRows.length > 0) {
     return timelineRows;
   }
 
-  const metadataRows = buildToolCallOutputRows(input.metadata, 0, input.toolName);
+  const metadataRows = buildToolCallOutputRows(withToolCallArgs(input.metadata, input.args), 0, input.toolName);
   if (metadataRows.length > 0) {
     return metadataRows;
   }
@@ -259,6 +266,7 @@ function buildToolCallOutputRowsWithFallback(input: {
     entry: {
       recordId: `${input.baseId}:output:text`,
       phase: asString(input.metadata['phase']) || toolCallStateToNarrativePhase(input.state),
+      args: input.args,
       resultText: input.text,
     },
     index: 0,
@@ -284,6 +292,14 @@ function buildToolCallOutputRowsWithFallback(input: {
   }
 
   return [];
+}
+
+function withToolCallArgs(entry: Record<string, unknown>, args: unknown): Record<string, unknown> {
+  if (args === undefined || entry['args'] !== undefined) {
+    return entry;
+  }
+
+  return { ...entry, args };
 }
 
 function buildFallbackToolCallOutputRow(
@@ -366,7 +382,7 @@ export function buildToolCallSummaryBadges(source: {
 
   const toolSpecificData = asRecord(metadata['toolSpecificData']);
   if (isSubagentMetadata(toolSpecificData)) {
-    return [];
+    return buildSubagentSummaryBadges(metadata, toolSpecificData);
   }
 
   const badges: ActivitySummaryBadge[] = [];
@@ -401,6 +417,57 @@ export function buildToolCallSummaryBadges(source: {
   }
 
   return badges;
+}
+
+function buildSubagentSummaryBadges(
+  metadata: Record<string, unknown>,
+  toolSpecificData: Record<string, unknown> | undefined,
+): ActivitySummaryBadge[] {
+  const badges: ActivitySummaryBadge[] = [];
+  const agentName = asString(toolSpecificData?.['agentName']);
+  const modelRouting = asRecord(metadata['modelRouting']) || asRecord(toolSpecificData?.['modelRouting']);
+  const selectedPresetId = asString(modelRouting?.['selectedPresetId']);
+  const requestedPresetId = asString(modelRouting?.['requestedPresetId']);
+  const modelName = selectedPresetId
+    || requestedPresetId
+    || asString(metadata['modelName'])
+    || asString(toolSpecificData?.['modelName']);
+  const modelBillingLabel = formatCompactBillingLabel(
+    asString(metadata['modelBillingLabel'])
+      || asString(toolSpecificData?.['modelBillingLabel'])
+      || asString(modelRouting?.['modelBillingLabel']),
+  );
+
+  if (agentName) {
+    badges.push({ label: 'Subagent', value: agentName, tone: 'info' });
+  }
+  if (modelName) {
+    badges.push({ label: 'Model', value: formatSubagentModelDisplayName(modelName), tone: 'neutral' });
+  }
+  if (modelBillingLabel) {
+    badges.push({ label: 'Cost', value: modelBillingLabel, tone: 'neutral' });
+  }
+
+  return badges;
+}
+
+function formatSubagentModelDisplayName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return trimmed
+    .split(/([_-]+)/)
+    .map((part) => {
+      if (/^[_-]+$/.test(part)) {
+        return part === '_' ? '-' : part;
+      }
+      if (!part) {
+        return part;
+      }
+      return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
+    })
+    .join('');
 }
 
 function buildReadFileSummaryBadges(readFileMetadata: Record<string, unknown>): ActivitySummaryBadge[] {
@@ -2313,6 +2380,8 @@ function buildTerminalOutputRowsFromContent(input: {
     if (part.type === 'terminal_command') {
       const exitCode = typeof part['exitCode'] === 'number' ? part['exitCode'] : undefined;
       const isRunning = part['isRunning'] === true;
+      const status = typeof part['status'] === 'string' ? part['status'] : undefined;
+      const terminalState = resolveTerminalLifecycleState({ exitCode, isRunning, status });
       const terminalId = firstDisplayString(part['processId'], part['outputSessionId'], part['terminalId']);
       const cwd = typeof part['cwd'] === 'string' ? part['cwd'] : undefined;
       return [{
@@ -2321,7 +2390,7 @@ function buildTerminalOutputRowsFromContent(input: {
         subtitle: [...baseSubtitle, terminalId ? `${chatI18n('AILY_CHAT.PROCESS_TERMINAL_ID_PREFIX')} ${terminalId}` : '', cwd || ''].filter(Boolean).join(' · ') || undefined,
         note: summary && summary !== text ? summary : undefined,
         trailing: isRunning ? chatI18n('AILY_CHAT.PROCESS_STATUS_RUNNING') : (typeof exitCode === 'number' ? `${chatI18n('AILY_CHAT.PROCESS_LABEL_EXIT_CODE')} ${exitCode}` : (phase ? formatNarrativePhase(phase) : undefined)),
-        tone: isRunning ? 'info' : (typeof exitCode === 'number' && exitCode !== 0 ? 'error' : toneFromNarrativePhase(phase)),
+        tone: terminalState === 'running' ? 'info' : (terminalState === 'failed' ? 'error' : (terminalState === 'cancelled' ? 'warn' : toneFromNarrativePhase(phase))),
         outputKind: 'terminal-command',
       }];
     }
@@ -2340,12 +2409,13 @@ function buildTerminalOutputRowsFromContent(input: {
 
     if (part.type === 'terminal_stderr') {
       const exitCode = typeof part['exitCode'] === 'number' ? part['exitCode'] : undefined;
+      const status = typeof part['status'] === 'string' ? part['status'] : undefined;
       return [{
         id: `${recordId}:output:stderr`,
         title: chatI18n('AILY_CHAT.PROCESS_OUTPUT_STDERR'),
         subtitle: baseSubtitle.join(' · ') || undefined,
         note: text,
-        tone: typeof exitCode === 'number' && exitCode !== 0 ? 'error' : 'warn',
+        tone: isTerminalFailureState({ exitCode, status }) ? 'error' : 'warn',
         outputKind: 'terminal-stream',
         outputChannel: 'stderr',
       }];
@@ -2386,13 +2456,14 @@ function buildTerminalOutputRows(input: {
     terminal.cwd || '',
   ].filter(Boolean).join(' · ');
   const stderr = normalizeTerminalStream(terminal.stderr);
-  const commandTone: StateTone = terminal.isRunning
+  const terminalState = resolveTerminalLifecycleState(terminal);
+  const commandTone: StateTone = terminalState === 'running'
     ? 'info'
-    : (typeof terminal.exitCode === 'number' && terminal.exitCode !== 0)
-        ? 'error'
-        : stderr
-            ? 'warn'
-            : toneFromNarrativePhase(phase);
+    : terminalState === 'failed'
+      ? 'error'
+      : stderr || terminalState === 'cancelled'
+        ? 'warn'
+        : toneFromNarrativePhase(phase);
 
   rows.push({
     id: `${recordId}:output:command`,
@@ -2424,7 +2495,7 @@ function buildTerminalOutputRows(input: {
       title: chatI18n('AILY_CHAT.PROCESS_OUTPUT_STDERR'),
       subtitle: baseSubtitle.join(' · ') || undefined,
       note: stderr,
-      tone: typeof terminal.exitCode === 'number' && terminal.exitCode !== 0 ? 'error' : 'warn',
+      tone: isTerminalFailureState(terminal) ? 'error' : 'warn',
       outputKind: 'terminal-stream',
       outputChannel: 'stderr',
     });
@@ -3536,6 +3607,7 @@ function outputGroupKindFromRow(row: StateDetailRow): StateDetailOutputGroup['ki
     case 'terminal-stream':
       return 'terminal';
     case 'code':
+    case 'mermaid':
       return 'code';
     case 'image':
     case 'resource':

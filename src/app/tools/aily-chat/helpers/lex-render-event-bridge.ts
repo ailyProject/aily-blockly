@@ -28,7 +28,7 @@ import {
   getTurnResponseParticipant,
   resolveInitialResponseSlashCommand,
 } from '../core/turn-response-stream-contract';
-import { isSubagentScopedTurnResponsePart, turnResponsePartToChatParts } from '../core/turn-response-part-mapper';
+import { isSubagentScopedTurnResponsePart, turnResponsePartsToDisplayChatParts } from '../core/turn-response-part-mapper';
 import {
   type HostResponseClearToPreviousToolInvocationReason,
   type IHostStreamListener,
@@ -50,6 +50,11 @@ type LexRenderEventBridgeContext =
   & Pick<IAgentLifecycle, 'toolCallingIteration' | 'isCancelled' | 'currentMessageSource'>
   & Pick<IChatServiceAccess, 'contextBudgetService'>
   & {
+    appendSessionModelTurnResponse?(
+      sessionId: string | null | undefined,
+      turnResponse: TurnResponseTurn,
+      ownerPolicy?: { readonly allowForkedTurns?: boolean; readonly source?: string },
+    ): readonly TurnResponseTurn[] | null;
     isRuntimeViewAttached?(sessionId: string | null | undefined): boolean;
     readRuntimeViewAttachmentGeneration?(sessionId: string | null | undefined): number | null | undefined;
     isRuntimeViewAttachmentCurrent?(
@@ -403,6 +408,16 @@ export class LexRenderEventBridge {
       if (turnBeginMode === 'continued') {
         this.invalidateVisibleProjection();
       }
+      return;
+    }
+
+    if (event.type === 'response_complete') {
+      this.syncCurrentTurn(event.timestamp, 'completed');
+      this.invalidateVisibleProjection();
+      this._projectionSync.projectCanonicalChanges(this._currentTurn, this._streamBuilder, lifecycleEvents, {
+        syncContent: true,
+        applyTurnCompletion: true,
+      });
       return;
     }
 
@@ -798,6 +813,26 @@ export class LexRenderEventBridge {
 
   private setRetainedTurnResponse(turn: TurnResponseTurn): void {
     this._turnStore.set(turn);
+    if (!shouldCommitRetainedTurnResponseToSessionModel(turn)) {
+      return;
+    }
+
+    const sessionId = normalizeSessionResource(this._projectionSessionResource);
+    if (!sessionId || typeof this.ctx.appendSessionModelTurnResponse !== 'function') {
+      return;
+    }
+
+    const committed = this.ctx.appendSessionModelTurnResponse(sessionId, turn, {
+      source: 'lex-render-event-bridge',
+    });
+    if (committed === null) {
+      console.warn('[AilyChat][LexRenderModelCommit] failed to commit retained turn response', {
+        sessionId,
+        turnId: turn.turnId,
+        status: turn.response?.status ?? null,
+        partCount: Array.isArray(turn.response?.parts) ? turn.response.parts.length : 0,
+      });
+    }
   }
 
   private replaceProjectedResponseParts(
@@ -1054,9 +1089,40 @@ function findQuestionAnswerTargetIndex(
 function turnResponsePartsToChatParts(
   parts: TurnResponseTurn['response']['parts'] | null | undefined,
 ) {
-  return Array.isArray(parts)
-    ? parts.flatMap(part => turnResponsePartToChatParts(part))
-    : [];
+  return turnResponsePartsToDisplayChatParts(parts);
+}
+
+function shouldCommitRetainedTurnResponseToSessionModel(turn: TurnResponseTurn): boolean {
+  if (turn.response?.status && turn.response.status !== 'streaming') {
+    return true;
+  }
+
+  const continuation = turn.response?.continuation as unknown as Record<string, unknown> | null | undefined;
+  if (continuation?.['stopReason'] === 'TOOL_CALLS'
+    || continuation?.['status'] === 'waiting_tool_results'
+    || continuation?.['status'] === 'waiting_confirmation'
+    || continuation?.['status'] === 'waiting_question') {
+    return true;
+  }
+
+  const parts = Array.isArray(turn.response?.parts) ? turn.response.parts : [];
+  return parts.some(part => {
+    const record = part as unknown as Record<string, unknown>;
+    const type = typeof record['type'] === 'string' ? record['type'] : '';
+    if (type === 'tool_call'
+      || type === 'confirmation'
+      || type === 'question'
+      || type === 'terminal'
+      || type === 'subagent'
+      || type === 'tool_group') {
+      return true;
+    }
+    const state = typeof record['state'] === 'string' ? record['state'] : '';
+    return state === 'doing'
+      || state === 'pending_approval'
+      || state === 'waiting'
+      || state === 'pending';
+  });
 }
 
 function questionAnswersMatchPart(
@@ -1101,6 +1167,7 @@ function shouldCommitLiveTurnSnapshotImmediately(event: RenderEvent): boolean {
     || event.type === 'thinking_complete'
     || event.type === 'tool_call_begin'
     || event.type === 'tool_call_end'
+    || isStructuralToolProgressEvent(event)
     || event.type === 'approval_auto_review_start'
     || event.type === 'approval_auto_review_complete'
     || event.type === 'state_update'
@@ -1111,6 +1178,23 @@ function shouldCommitLiveTurnSnapshotImmediately(event: RenderEvent): boolean {
     || event.type === 'background_task_update'
     || event.type === 'todo_update'
     || event.type === 'session_meta';
+}
+
+function isStructuralToolProgressEvent(event: RenderEvent): boolean {
+  if (event.type !== 'tool_call_progress') {
+    return false;
+  }
+
+  const data = event.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return false;
+  }
+
+  const kind = typeof (data as Record<string, unknown>)['kind'] === 'string'
+    ? (data as Record<string, unknown>)['kind']
+    : '';
+  return kind === 'command_output'
+    || kind === 'command_session_update';
 }
 
 function isStructuralSubagentActivityEvent(event: RenderEvent): boolean {

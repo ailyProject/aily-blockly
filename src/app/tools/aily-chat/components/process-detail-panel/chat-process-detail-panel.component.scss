@@ -17,7 +17,7 @@
 
 .process-detail-panel-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
@@ -112,5 +112,17 @@
     color: var(--aily-chat-viewer-code-fg, #d4d4d4);
     font-size: 12px;
     line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  code {
+    display: block;
+    white-space: inherit;
+    user-select: inherit;
+    -webkit-user-select: inherit;
   }
 }

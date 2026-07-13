@@ -229,7 +229,7 @@ type HostSessionRecordLike = {
 };
 
 type HostSessionItemControllerContext = {
-  readonly chatService: Pick<ChatService, 'currentSessionId' | 'currentSessionPath' | 'currentSessionType' | 'currentSessionPermissionMode' | 'currentSessionPermissionLevel' | 'currentSessionApprovalsReviewer' | 'currentSessionApprovalPolicy' | 'currentSessionTitle' | 'currentAgentRuntimeMode' | 'currentAgentRuntimeModeSource' | 'currentResolvedMode' | 'selectedMode' | 'findResolvedModeById' | 'findResolvedModeByName' | 'sessionInputStateChanged$' | 'sessionProviderOptionsChanged$' | 'buildCurrentSessionProviderOptionGroups' | 'buildNewSessionProviderOptionGroups'>
+  readonly chatService: Pick<ChatService, 'currentSessionId' | 'currentSessionPath' | 'currentSessionType' | 'currentSessionPermissionMode' | 'currentSessionPermissionProfile' | 'currentSessionPermissionLevel' | 'currentSessionApprovalsReviewer' | 'currentSessionApprovalPolicy' | 'currentSessionTitle' | 'currentAgentRuntimeMode' | 'currentAgentRuntimeModeSource' | 'currentResolvedMode' | 'selectedMode' | 'findResolvedModeById' | 'findResolvedModeByName' | 'sessionInputStateChanged$' | 'sessionProviderOptionsChanged$' | 'buildCurrentSessionProviderOptionGroups' | 'buildNewSessionProviderOptionGroups'>
     & Partial<Pick<ChatService, 'currentSessionTitleSource'>>
     & Partial<Pick<ChatService, 'sessionDisplayTitleChanged$' | 'sessionDurableTitleChanged$' | 'sessionTitleChanged$'>>;
   readonly chatHistoryService: Pick<ChatHistoryService, 'getHistoryList' | 'findEntry' | 'loadHostRecord' | 'updateTitle' | 'deleteSession'> & Partial<Pick<ChatHistoryService, 'hostSessionChanged$'>>;
@@ -305,7 +305,7 @@ export class HostSessionItemController {
     this.hostSessionContentProvider = new HostSessionContentProvider(contentProviderContext);
 
     this.ctx.chatService.sessionInputStateChanged$?.subscribe(() => {
-      this.refreshTrackedInputStates({ includePersistedReadonly: true });
+      this.refreshTrackedInputStates();
       this.notifyItemsChanged(this.ctx.chatService.currentSessionId);
     });
 
@@ -909,6 +909,7 @@ export class HostSessionItemController {
       return {
         folderPath: this.ctx.chatService.currentSessionPath || (projectPathHint ?? null),
         permissionMode: this.ctx.chatService.currentSessionPermissionMode,
+        permissionProfile: this.ctx.chatService.currentSessionPermissionProfile,
         ...(this.ctx.chatService.currentSessionPermissionLevel
           ? { permissionLevel: this.ctx.chatService.currentSessionPermissionLevel }
           : {}),
@@ -2449,7 +2450,7 @@ export class HostSessionItemController {
     target.groups = nextState.groups ?? [];
   }
 
-  private refreshTrackedInputStates(options?: { readonly includePersistedReadonly?: boolean }): void {
+  private refreshTrackedInputStates(): void {
     const blankState = this.trackedInputStates.get(BLANK_SESSION_INPUT_STATE_KEY);
     if (blankState) {
       this.replaceInputState(blankState, this.buildLiveCurrentInputState(this.getChatSessionProviderOptions(), 'new'));
@@ -2467,21 +2468,6 @@ export class HostSessionItemController {
 
     if (this.managedItems.has(currentSessionId)) {
       this.updateManagedItemState(currentSessionId, currentState ?? this.getChatSessionInputState(currentSessionId));
-    }
-
-    if (!options?.includePersistedReadonly) {
-      return;
-    }
-
-    for (const [sessionId, trackedState] of this.trackedInputStates.entries()) {
-      if (sessionId === BLANK_SESSION_INPUT_STATE_KEY || sessionId === currentSessionId || this.managedItems.has(sessionId)) {
-        continue;
-      }
-
-      const entry = this.ctx.chatHistoryService.findEntry(sessionId);
-      const projectPathHint = entry?.projectPath ?? null;
-      const nextState = this.buildPersistedInputState(this.resolvePersistedSessionContent(sessionId, projectPathHint, entry));
-      this.replaceInputState(trackedState, nextState);
     }
   }
 

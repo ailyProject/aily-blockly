@@ -1,0 +1,75 @@
+<app-base-dialog [title]="'LIBRARY_PUBLISH.TITLE' | translate" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
+  customClass="dialog-scrollable library-publish-dialog" (closeDialog)="onCloseDialog()"
+  (buttonClick)="onButtonClick($event)">
+  <div class="publish-form">
+    <div class="form-item">
+      <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_PACKAGE_NAME' | translate }} <span class="required">*</span></label>
+      <input class="form-control" #packageNameInput nz-input [(ngModel)]="packageName"
+        (ngModelChange)="onPackageNameInputChange()" (focusout)="validatePackageNameField()"
+        placeholder="@aily-project/lib-your-library">
+      @if (packageNameErrorMessage) {
+        <div class="field-error">{{ packageNameErrorMessage }}</div>
+      }
+      @if (!packageNameErrorMessage && isKnownPublicLibraryName) {
+        <div class="field-warning">{{ 'LIBRARY_PUBLISH.PACKAGE_NAME_PUBLIC_WARNING' | translate }}</div>
+      }
+    </div>
+
+    <div class="form-item">
+      <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_VERSION' | translate }} <span class="required">*</span></label>
+      <input class="form-control" #versionInput nz-input [(ngModel)]="version"
+        (ngModelChange)="onVersionInputChange()" (focusout)="validateVersionField()"
+        [placeholder]="'LIBRARY_PUBLISH.VERSION_PLACEHOLDER' | translate">
+      @if (versionErrorMessage) {
+        <div class="field-error">{{ versionErrorMessage }}</div>
+      }
+    </div>
+
+    <div class="form-item">
+      <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_DISPLAY_NAME' | translate }} <span class="required">*</span></label>
+      <input class="form-control" #nicknameInput nz-input [(ngModel)]="nickname"
+        [placeholder]="'LIBRARY_PUBLISH.DISPLAY_NAME_PLACEHOLDER' | translate">
+    </div>
+
+    <div class="form-item">
+      <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_DESCRIPTION' | translate }}</label>
+      <textarea class="form-control" nz-input [(ngModel)]="description" rows="4"
+        [placeholder]="'LIBRARY_PUBLISH.DESCRIPTION_PLACEHOLDER' | translate"></textarea>
+    </div>
+
+    <div class="form-item">
+      <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_PR_DESCRIPTION' | translate }}</label>
+      <textarea class="form-control" nz-input [(ngModel)]="prDescription" rows="4" maxlength="2000"
+        [placeholder]="'LIBRARY_PUBLISH.PR_DESCRIPTION_PLACEHOLDER' | translate"></textarea>
+    </div>
+
+    <div class="form-row">
+      <div class="form-item">
+        <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_AUTHOR' | translate }}</label>
+        <input class="form-control" nz-input [(ngModel)]="author">
+      </div>
+      <div class="form-item">
+        <label class="form-label">{{ 'LIBRARY_PUBLISH.FIELD_KEYWORDS' | translate }}</label>
+        <input class="form-control" nz-input [(ngModel)]="keywords"
+          [placeholder]="'LIBRARY_PUBLISH.KEYWORDS_PLACEHOLDER' | translate">
+      </div>
+    </div>
+
+    <label class="confirm-option" #hardwareConfirmOption tabindex="-1" nz-checkbox [(ngModel)]="hardwareTestConfirmed">
+      {{ 'LIBRARY_PUBLISH.HARDWARE_CONFIRMED' | translate }} <span class="required">*</span>
+    </label>
+
+    <label class="sync-option" nz-checkbox [(ngModel)]="saveToLocalPackageJson">
+      {{ 'LIBRARY_PUBLISH.SYNC_LOCAL_PACKAGE_JSON' | translate }}
+    </label>
+
+    <div class="tips">
+      <div>{{ 'LIBRARY_PUBLISH.TIP_0' | translate }}</div>
+      <div>{{ 'LIBRARY_PUBLISH.TIP_1_PREFIX' | translate }}
+        <a href="" (click)="openLibraryRepo($event)">aily-blockly-libraries</a>{{ 'LIBRARY_PUBLISH.TIP_1_SUFFIX' | translate }}
+      </div>
+      <div>{{ 'LIBRARY_PUBLISH.TIP_2' | translate }}</div>
+      <div>{{ 'LIBRARY_PUBLISH.TIP_3' | translate }}</div>
+    </div>
+  </div>
+</app-base-dialog>

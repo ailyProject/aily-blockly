@@ -1,8 +1,8 @@
 import type { TurnResponseTurn } from 'aily-lex/browser';
 
 import type { IAgentLifecycle, IChatCoordination, IChatServiceAccess } from '../core/chat-context';
+import { AilyHost } from '../core/host';
 import type {
-  RequestCheckpointMetadata,
   RollbackResult,
   WorkspaceCheckpointPresentationMode,
 } from '../services/edit-checkpoint.service';
@@ -30,12 +30,8 @@ import {
   restoreSessionBoundaryTransaction,
   type SessionModelBoundaryTransactionContext,
 } from './session-model-boundary-transaction';
-import {
-  cloneSessionCheckpointTimelineState,
-  createSessionCheckpointTimelineState,
-  restoreSessionCheckpointTimelineToCheckpoint,
-  type SessionCheckpointTimelineState,
-} from './session-checkpoint-timeline-model';
+import type { SessionCheckpointTimelineState } from './session-checkpoint-timeline-model';
+import type { ChatSessionRequestListTransactionResult } from '../services/chat-session-model-store.service';
 
 export type CheckpointRedoChatReplayResult =
   | { ok: true }
@@ -64,7 +60,6 @@ type CheckpointRestoreTarget = {
   sessionResource: string;
   requestId: string;
   turnId?: string;
-  metadata: RequestCheckpointMetadata;
 };
 
 type CheckpointWorkspaceApplyResult = NonNullable<
@@ -72,10 +67,19 @@ type CheckpointWorkspaceApplyResult = NonNullable<
 >;
 
 type CheckpointPreparedSyncAction = () => Promise<void> | void;
+type CheckpointRedoRequestListCommitAction = () =>
+  | ChatSessionRequestListTransactionResult
+  | null
+  | undefined
+  | Promise<ChatSessionRequestListTransactionResult | null | undefined>;
+type CheckpointRedoRequestListRollbackAction = () =>
+  | ChatSessionRequestListTransactionResult
+  | null
+  | undefined;
 
 type CheckpointRedoBoundaryCommitHooks = {
-  applyCheckpointTimelineCommit?: CheckpointPreparedSyncAction;
-  rollbackCheckpointTimelineCommit?: CheckpointPreparedSyncAction;
+  applyCheckpointTimelineCommit?: CheckpointRedoRequestListCommitAction;
+  rollbackCheckpointTimelineCommit?: CheckpointRedoRequestListRollbackAction;
 };
 
 type CheckpointPreparedTransition<TResult extends { ok: boolean }> =
@@ -330,9 +334,18 @@ type CheckpointReplayCoordinatorContext = ChatViewWriteBridgeContext
       options?: { readonly attachedView?: boolean },
     ): void;
     readSessionCheckpointTimelineState?(sessionId: string | null | undefined): SessionCheckpointTimelineState | null;
-    replaceSessionCheckpointTimelineState?(
+    commitCheckpointRestoreRequestListTransaction?(
       sessionId: string | null | undefined,
-      state: SessionCheckpointTimelineState | null,
+      checkpointId: string | null | undefined,
+    ): ChatSessionRequestListTransactionResult | null | undefined;
+    rollbackCheckpointRestoreRequestListTransaction?(
+      sessionId: string | null | undefined,
+      committed: ChatSessionRequestListTransactionResult | null | undefined,
+    ): ChatSessionRequestListTransactionResult | null | undefined;
+    applyRequestListTransactionEffects?(
+      sessionId: string,
+      transaction: ChatSessionRequestListTransactionResult,
+      options?: { readonly persist?: boolean },
     ): void;
   };
 
@@ -355,7 +368,8 @@ type CheckpointRedoReplayExecutionState = {
 
 interface CheckpointReplayArtifact {
   turnResponses: readonly TurnResponseTurn[];
-  applyPreparedCheckpointTimelineCommit: () => void;
+  applyPreparedCheckpointTimelineCommit: () => Promise<void> | void;
+  readCommittedRequestListTransaction?: () => ChatSessionRequestListTransactionResult | null;
   applyPreparedSessionSave: () => void;
   applyPreparedReplayRestore: () => Promise<boolean | void | undefined>;
   rollbackPreparedLocalStateOnFailure: (state: CheckpointRedoLocalRollbackState) => string[];
@@ -441,7 +455,7 @@ export class CheckpointReplayCoordinator {
 
   private async prepareCheckpointRedoCommit(
     turnResponses: readonly TurnResponseTurn[],
-    previousTurnResponses: readonly TurnResponseTurn[],
+    _previousTurnResponses: readonly TurnResponseTurn[],
     boundaryCommitHooks: CheckpointRedoBoundaryCommitHooks,
   ): Promise<CheckpointRedoPreparedCommitResult> {
     const applyPreparedFailureSync = this.createPreparedSyncWorkspaceAction();
@@ -473,22 +487,7 @@ export class CheckpointReplayCoordinator {
       ));
     }
 
-    let preparedRollbackReplayAction: CheckpointRedoPreparedReplayAction | null = null;
-    if (previousTurnResponses.length > 0) {
-      try {
-        const preparedRollbackReplayArtifact = await this.prepareCheckpointRedoReplayArtifact(previousTurnResponses, {
-          publishSummary: false,
-          saveSession: false,
-        });
-        preparedRollbackReplayAction = () => this.executePreparedCheckpointRedoReplayArtifact(
-          preparedRollbackReplayArtifact,
-        );
-      } catch (error) {
-        return this.createPreparedCheckpointFailureTransition(this.withoutPreparedFailureSync(
-          this.buildRedoRollbackPreparationFailure(error),
-        ));
-      }
-    }
+    const preparedRollbackReplayAction: CheckpointRedoPreparedReplayAction | null = null;
 
     const rollbackCheckpointId = this.getCheckpointIdFromTurnResponses(turnResponses);
 
@@ -572,6 +571,10 @@ export class CheckpointReplayCoordinator {
       presentationMode: workspaceCheckpointAccess.getPresentationMode?.(),
       buildRestorePlan: workspaceCheckpointAccess.buildRestorePlan?.bind(workspaceCheckpointAccess),
       applyRestorePlan: workspaceCheckpointAccess.applyRestorePlan?.bind(workspaceCheckpointAccess),
+      allowRequestListOnlyRestore: this.canRestoreCheckpointAsRequestListOnly(
+        restoreTarget.sessionResource,
+        restoreTarget.checkpointId,
+      ),
     });
     let preparedRestoreCommitExecution: CheckpointPreparedSequentialExecution<
       { artifact: CheckpointRestoreCommitArtifact; deferredCommitFailureResult?: CheckpointRestoreCommitTransitionResult; },
@@ -643,6 +646,7 @@ export class CheckpointReplayCoordinator {
   ): Promise<CheckpointRestoreCommitArtifact> {
     const checkpointId = restoreTarget.checkpointId;
     const saveCurrentSession = this.ctx.session.saveCurrentSession.bind(this.ctx.session);
+    const hasRequestListTransactionEffectRunner = typeof this.ctx.applyRequestListTransactionEffects === 'function';
     const sessionId = restoreTarget.sessionResource;
     const saveTarget = this.resolveCheckpointSaveTarget(sessionId);
     const liveTurnResponses = [...this.readSessionModelTurnResponses(sessionId)];
@@ -704,6 +708,7 @@ export class CheckpointReplayCoordinator {
       saveCurrentSession,
       saveTarget,
       hostProjectionState: persistedVisibleProjectionState,
+      shouldSave: !hasRequestListTransactionEffectRunner,
     });
     const applyPreparedLocalCommit = this.createPreparedRestoreLocalCommitAction({
       checkpointId,
@@ -755,18 +760,20 @@ export class CheckpointReplayCoordinator {
     rebuildState: ReturnType<CheckpointReplayCoordinatorContext['editCheckpointService']['captureRebuildState']>;
     previousPublishedSummary: ReturnType<CheckpointReplayCoordinatorContext['editCheckpointService']['capturePublishedSummary']>;
     applyPreparedRebuildState: () => void;
+    readCommittedRequestListTransaction?: () => ChatSessionRequestListTransactionResult | null;
+    readRolledBackRequestListTransaction?: () => ChatSessionRequestListTransactionResult | null;
   }): {
     applyPreparedLocalCommit: (state: CheckpointRedoLocalRollbackState) => Promise<void> | void;
     rollbackPreparedLocalStateOnFailure: (state: CheckpointRedoLocalRollbackState) => string[];
   } {
     const hydrateTurnResponses = this.ctx.lexStream.hydrateTurnResponses?.bind(this.ctx.lexStream);
+    const applyRequestListTransactionEffects = this.ctx.applyRequestListTransactionEffects?.bind(this.ctx);
     const replaceSharedHostProjectionState = this.ctx.replaceSharedHostProjectionState?.bind(this.ctx);
     const restoreSharedHostProjectionState = this.ctx.restoreSharedHostProjectionState?.bind(this.ctx);
     const restoreLegacyHistoryList = this.viewWriteBridge.restoreLegacyHistoryList.bind(this.viewWriteBridge);
     const restoreTurnNativeHistoryList = this.viewWriteBridge.restoreTurnNativeHistoryList.bind(this.viewWriteBridge);
     const restoreRebuildState = this.ctx.editCheckpointService.restoreRebuildState?.bind(this.ctx.editCheckpointService);
     const restorePublishedSummary = this.ctx.editCheckpointService.restorePublishedSummary?.bind(this.ctx.editCheckpointService);
-    const replaceSessionModelTurnResponses = this.ctx.replaceSessionModelTurnResponses?.bind(this.ctx);
 
     const historyRollbackStep: CheckpointRedoLocalRollbackStep = {
       failureMessage: '恢复先前 host projection 失败',
@@ -799,52 +806,61 @@ export class CheckpointReplayCoordinator {
       applyPreparedLocalCommit: async state => {
         state.appliedRollbackSteps = [];
 
-        const committedTurnResponses = replaceSessionModelTurnResponses?.(
-          params.sessionId,
-          params.turnResponses,
-          { source: 'checkpoint-redo-commit' },
-        );
-        if (committedTurnResponses === null) {
-          throw new Error(`Checkpoint redo rejected turn owner mismatch for ${params.sessionId}`);
+        const transaction = params.readCommittedRequestListTransaction?.() ?? null;
+        if (!transaction) {
+          throw new Error(`Checkpoint redo request-list transaction result is required for ${params.sessionId}`);
         }
-        const visibleTurnResponses = Array.isArray(committedTurnResponses)
-          ? committedTurnResponses
-          : params.turnResponses;
+        const visibleTurnResponses: readonly TurnResponseTurn[] = transaction.effects.hostProjection.turnResponses;
         const visibleProjectionState = visibleTurnResponses === params.visibleProjectionState.turnResponses
           ? params.visibleProjectionState
           : buildHostProjectionStateFromPersistedRecord({ turnResponses: visibleTurnResponses });
 
-        hydrateTurnResponses?.(params.sessionId, visibleTurnResponses, { visibility: 'visibleAttach' });
+        if (applyRequestListTransactionEffects) {
+          applyRequestListTransactionEffects(params.sessionId, transaction);
+        } else {
+          hydrateTurnResponses?.(params.sessionId, transaction.effects.executionHost.hydrateTurnResponses, { visibility: 'visibleAttach' });
+        }
         params.applyPreparedRebuildState();
 
         state.appliedRollbackSteps.push(historyRollbackStep);
-        if (visibleProjectionState.turnResponses.length === 0) {
-          restoreLegacyHistoryList(visibleProjectionState.chatList);
-        } else {
-          const turnIds = new Set(visibleProjectionState.turnResponses.map(turn => turn.turnId));
-          restoreTurnNativeHistoryList(
-            buildTurnNativeRestoreChatList(visibleProjectionState.chatList, turnIds),
-            turnIds,
-          );
-          projectTurnResponsesToHistory(this.ctx, visibleProjectionState.turnResponses);
+        if (!applyRequestListTransactionEffects) {
+          if (visibleProjectionState.turnResponses.length === 0) {
+            restoreLegacyHistoryList(visibleProjectionState.chatList);
+          } else {
+            const turnIds = new Set(visibleProjectionState.turnResponses.map(turn => turn.turnId));
+            restoreTurnNativeHistoryList(
+              buildTurnNativeRestoreChatList(visibleProjectionState.chatList, turnIds),
+              turnIds,
+            );
+            projectTurnResponsesToHistory(this.ctx, visibleProjectionState.turnResponses);
+          }
         }
 
         state.appliedRollbackSteps.push(projectionRollbackStep);
-        replaceSharedHostProjectionState?.(visibleProjectionState, {
-          sessionId: params.sessionId,
-          attachedView: true,
-        });
+        if (!applyRequestListTransactionEffects) {
+          replaceSharedHostProjectionState?.(visibleProjectionState, {
+            sessionId: params.sessionId,
+            attachedView: true,
+          });
+        }
       },
       rollbackPreparedLocalStateOnFailure: state => {
         const rollbackErrors: string[] = [];
 
         try {
-          replaceSessionModelTurnResponses?.(
-            params.sessionId,
-            params.previousHostResponseState.turnResponses,
-            { source: 'checkpoint-redo-rollback' },
-          );
-          hydrateTurnResponses?.(params.sessionId, params.previousHostResponseState.turnResponses, { visibility: 'visibleAttach' });
+          const rollbackTransaction = params.readRolledBackRequestListTransaction?.() ?? null;
+          if (!rollbackTransaction) {
+            throw new Error(`Checkpoint redo rollback request-list transaction result is required for ${params.sessionId}`);
+          }
+          if (applyRequestListTransactionEffects) {
+            applyRequestListTransactionEffects(params.sessionId, rollbackTransaction);
+          } else {
+            hydrateTurnResponses?.(
+              params.sessionId,
+              rollbackTransaction.effects.executionHost.hydrateTurnResponses,
+              { visibility: 'visibleAttach' },
+            );
+          }
         } catch (rollbackError: any) {
           rollbackErrors.push(
             rollbackError?.message
@@ -896,28 +912,23 @@ export class CheckpointReplayCoordinator {
     sessionId: string;
     turnResponses: readonly TurnResponseTurn[];
     previousSessionModelTurnResponses: TurnResponseTurn[];
+    readRolledBackRequestListTransaction?: () => ChatSessionRequestListTransactionResult | null;
   }): {
     applyPreparedReplayRestore: () => Promise<boolean | void | undefined>;
     applyPreparedReplayModelRollback: () => Promise<CheckpointRedoReplayLifecycleRollbackResult>;
   } {
     const hydrateTurnResponses = this.ctx.lexStream.hydrateTurnResponses?.bind(this.ctx.lexStream);
-    const replaceSessionModelTurnResponses = this.ctx.replaceSessionModelTurnResponses?.bind(this.ctx);
-
     return {
       applyPreparedReplayRestore: async () => true,
       applyPreparedReplayModelRollback: async () => {
         try {
-          const committedTurnResponses = replaceSessionModelTurnResponses?.(
-            params.sessionId,
-            params.previousSessionModelTurnResponses,
-            { source: 'checkpoint-redo-rollback' },
-          );
-          if (committedTurnResponses === null) {
-            throw new Error(`Checkpoint redo rollback rejected turn owner mismatch for ${params.sessionId}`);
+          const rollbackTransaction = params.readRolledBackRequestListTransaction?.() ?? null;
+          if (!rollbackTransaction) {
+            throw new Error(`Checkpoint redo rollback request-list transaction result is required for ${params.sessionId}`);
           }
           hydrateTurnResponses?.(
             params.sessionId,
-            Array.isArray(committedTurnResponses) ? committedTurnResponses : params.previousSessionModelTurnResponses,
+            rollbackTransaction.effects.executionHost.hydrateTurnResponses,
             { visibility: 'visibleAttach' },
           );
           return {
@@ -1018,6 +1029,11 @@ export class CheckpointReplayCoordinator {
     const restoreLegacyHistoryList = this.viewWriteBridge.restoreLegacyHistoryList.bind(this.viewWriteBridge);
     const restoreTurnNativeHistoryList = this.viewWriteBridge.restoreTurnNativeHistoryList.bind(this.viewWriteBridge);
     const hydrateTurnResponses = this.ctx.lexStream.hydrateTurnResponses?.bind(this.ctx.lexStream);
+    const applyRequestListTransactionEffects = this.ctx.applyRequestListTransactionEffects?.bind(this.ctx);
+    const commitCheckpointRestoreRequestListTransaction =
+      this.ctx.commitCheckpointRestoreRequestListTransaction?.bind(this.ctx);
+    const rollbackCheckpointRestoreRequestListTransaction =
+      this.ctx.rollbackCheckpointRestoreRequestListTransaction?.bind(this.ctx);
     const restoreTransactionContext: SessionModelBoundaryTransactionContext = {
       ...this.ctx,
       lexStream: {
@@ -1038,6 +1054,7 @@ export class CheckpointReplayCoordinator {
       const previousHostProjectionState = buildHostProjectionStateFromPersistedRecord({
         turnResponses: params.liveTurnResponses,
       });
+      let committedRestoreTransaction: ChatSessionRequestListTransactionResult | null = null;
       console.info('[AilyChat][CheckpointRestoreTrace]', {
         phase: 'apply-local-commit',
         sessionId: params.sessionId,
@@ -1052,37 +1069,70 @@ export class CheckpointReplayCoordinator {
       });
       try {
         truncateStateFromCheckpoint?.(params.checkpointId);
-        this.replaceSessionCheckpointTimelineStateFromRestore({
-          sessionId: params.sessionId,
-          checkpointId: params.checkpointId,
-          liveTurnResponses: params.liveTurnResponses,
-        });
-
-        if (params.turnId) {
-          if (typeof params.listIndex === 'number') {
-            truncateFrom(params.listIndex);
-          } else {
-            truncateFromTurnId(params.turnId);
-          }
-        } else if (typeof params.listIndex === 'number') {
-          truncateFrom(params.listIndex);
+        let committedVisibleTurnResponses: readonly TurnResponseTurn[] = params.persistedVisibleTurnResponses;
+        if (!commitCheckpointRestoreRequestListTransaction) {
+          throw new Error(`Checkpoint restore request-list transaction is required for ${params.sessionId}`);
         }
 
-        await restoreSessionBoundaryTransaction(restoreTransactionContext, {
+        committedRestoreTransaction = commitCheckpointRestoreRequestListTransaction(
+          params.sessionId,
+          params.checkpointId,
+        ) ?? null;
+        if (!committedRestoreTransaction) {
+          throw new Error(`Checkpoint restore request-list transaction failed for ${params.sessionId}`);
+        }
+        committedVisibleTurnResponses = committedRestoreTransaction.effects.hostProjection.turnResponses;
+        console.info('[AilyChat][CheckpointRestoreTrace]', {
+          phase: 'apply-local-commit-request-list',
           sessionId: params.sessionId,
-          turnResponses: params.persistedVisibleTurnResponses,
-          hostProjectionState: params.hostProjectionState,
-          hostRecord: params.persistedVisibleHostRecord as HostSessionRecord | null,
-          attachedView: true,
-          hydrateVisibleTurnResponses: params.truncateLiveTurnResponses && params.truncateIndex >= 0,
-          requireLexSnapshotRestore: false,
-          acceptRestorePlanTurnResponses: false,
+          checkpointId: params.checkpointId,
+          transactionRevision: committedRestoreTransaction.revision ?? null,
+          committedTurnIds: summarizeTurnResponseIds(committedVisibleTurnResponses),
         });
+
+        if (!applyRequestListTransactionEffects) {
+          if (params.turnId) {
+            if (typeof params.listIndex === 'number') {
+              truncateFrom(params.listIndex);
+            } else {
+              truncateFromTurnId(params.turnId);
+            }
+          } else if (typeof params.listIndex === 'number') {
+            truncateFrom(params.listIndex);
+          }
+        }
+
+        const committedHostProjectionState = committedVisibleTurnResponses === params.persistedVisibleTurnResponses
+          ? params.hostProjectionState
+          : buildHostProjectionStateFromPersistedRecord({ turnResponses: committedVisibleTurnResponses });
+        if (applyRequestListTransactionEffects) {
+          applyRequestListTransactionEffects(params.sessionId, committedRestoreTransaction);
+        } else {
+          const committedRestoreTransactionContext: SessionModelBoundaryTransactionContext = committedRestoreTransaction
+            ? {
+              ...restoreTransactionContext,
+              replaceSessionModelTurnResponses: () => committedVisibleTurnResponses,
+            }
+            : restoreTransactionContext;
+
+          await restoreSessionBoundaryTransaction(committedRestoreTransactionContext, {
+            sessionId: params.sessionId,
+            turnResponses: committedVisibleTurnResponses,
+            hostProjectionState: committedHostProjectionState,
+            hostRecord: params.persistedVisibleHostRecord as HostSessionRecord | null,
+            attachedView: true,
+            hydrateVisibleTurnResponses: params.truncateLiveTurnResponses && params.truncateIndex >= 0,
+            requireLexSnapshotRestore: false,
+            acceptRestorePlanTurnResponses: false,
+          });
+        }
 
         this.ctx.isCompleted = false;
         this.ctx.isCancelled = false;
         dismissSummary?.();
-        params.applyPreparedSessionSave?.();
+        if (!applyRequestListTransactionEffects) {
+          params.applyPreparedSessionSave?.();
+        }
       } catch (error) {
         const rollbackErrors: string[] = [];
 
@@ -1098,13 +1148,26 @@ export class CheckpointReplayCoordinator {
           );
         }
 
-        this.ctx.replaceSessionCheckpointTimelineState?.(
-          params.sessionId,
-          cloneSessionCheckpointTimelineState(previousCheckpointTimelineState),
-        );
-
         try {
-          hydrateTurnResponses?.(params.sessionId, params.liveTurnResponses, { visibility: 'visibleAttach' });
+          let rolledBackRestoreTransaction: ChatSessionRequestListTransactionResult | null = null;
+          if (committedRestoreTransaction) {
+            rolledBackRestoreTransaction = rollbackCheckpointRestoreRequestListTransaction?.(
+              params.sessionId,
+              committedRestoreTransaction,
+            ) ?? null;
+            if (!rolledBackRestoreTransaction) {
+              throw new Error(`Checkpoint restore rollback transaction failed for ${params.sessionId}`);
+            }
+          }
+          if (applyRequestListTransactionEffects && rolledBackRestoreTransaction) {
+            applyRequestListTransactionEffects(params.sessionId, rolledBackRestoreTransaction);
+          } else {
+            hydrateTurnResponses?.(
+              params.sessionId,
+              rolledBackRestoreTransaction?.effects.executionHost.hydrateTurnResponses ?? params.liveTurnResponses,
+              { visibility: 'visibleAttach' },
+            );
+          }
         } catch (rollbackError: any) {
           rollbackErrors.push(
             rollbackError?.message
@@ -1142,27 +1205,6 @@ export class CheckpointReplayCoordinator {
         throw error;
       }
     };
-  }
-
-  private replaceSessionCheckpointTimelineStateFromRestore(params: {
-    sessionId: string;
-    checkpointId: string;
-    liveTurnResponses: readonly TurnResponseTurn[];
-  }): void {
-    if (!this.ctx.replaceSessionCheckpointTimelineState) {
-      return;
-    }
-
-    const fullTimelineState = createSessionCheckpointTimelineState({
-      sessionResource: params.sessionId,
-      turnResponses: params.liveTurnResponses,
-    });
-    const restoredTimelineState = restoreSessionCheckpointTimelineToCheckpoint(
-      fullTimelineState,
-      params.checkpointId,
-    );
-
-    this.ctx.replaceSessionCheckpointTimelineState(params.sessionId, restoredTimelineState);
   }
 
   private projectRestoreOutcome(outcome: CheckpointProjectionOutcome): void {
@@ -1997,14 +2039,26 @@ export class CheckpointReplayCoordinator {
       presentationMode: WorkspaceCheckpointPresentationMode | undefined;
       buildRestorePlan: CheckpointWorkspaceAccess['buildRestorePlan'] | undefined;
       applyRestorePlan: CheckpointWorkspaceAccess['applyRestorePlan'] | undefined;
+      allowRequestListOnlyRestore?: boolean;
     },
   ): Promise<{
     presentationMode: ReturnType<CheckpointWorkspaceAccess['getPresentationMode']>;
     apply: () => Promise<CheckpointWorkspaceApplyResult>;
   }> {
-    const { presentationMode, buildRestorePlan, applyRestorePlan } = frozenWorkspaceAction;
+    const {
+      presentationMode,
+      buildRestorePlan,
+      applyRestorePlan,
+      allowRequestListOnlyRestore = false,
+    } = frozenWorkspaceAction;
 
     if (!buildRestorePlan || !applyRestorePlan) {
+      if (allowRequestListOnlyRestore) {
+        return {
+          presentationMode,
+          apply: async () => this.buildRequestListOnlyWorkspaceApplyResult(),
+        };
+      }
       return {
         presentationMode,
         apply: async () => ({ rolledBackFiles: 0, errors: ['checkpoint restore timeline plan 不可用'] }),
@@ -2024,6 +2078,12 @@ export class CheckpointReplayCoordinator {
     }
 
     if (!restorePlan) {
+      if (allowRequestListOnlyRestore) {
+        return {
+          presentationMode,
+          apply: async () => this.buildRequestListOnlyWorkspaceApplyResult(),
+        };
+      }
       return {
         presentationMode,
         apply: async () => ({ rolledBackFiles: 0, errors: [`未找到检查点 restore plan: ${checkpointId}`] }),
@@ -2083,6 +2143,38 @@ export class CheckpointReplayCoordinator {
     return presentationMode === 'unknown' || !plan;
   }
 
+  private buildRequestListOnlyWorkspaceApplyResult(): CheckpointWorkspaceApplyResult {
+    return { rolledBackFiles: 0, errors: [] };
+  }
+
+  private canRestoreCheckpointAsRequestListOnly(
+    sessionId: string | null | undefined,
+    checkpointId: string | null | undefined,
+  ): boolean {
+    if (this.hasOpenProjectWorkspace()) {
+      return false;
+    }
+
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    const normalizedCheckpointId = typeof checkpointId === 'string' ? checkpointId.trim() : '';
+    if (!normalizedSessionId || !normalizedCheckpointId) {
+      return false;
+    }
+
+    const timelineState = this.ctx.readSessionCheckpointTimelineState?.(normalizedSessionId) ?? null;
+    return timelineState?.sessionResource === normalizedSessionId
+      && timelineState.checkpoints.some(checkpoint => checkpoint.checkpointId === normalizedCheckpointId);
+  }
+
+  private hasOpenProjectWorkspace(): boolean {
+    try {
+      const currentProjectPath = AilyHost.get().project?.currentProjectPath;
+      return typeof currentProjectPath === 'string' && currentProjectPath.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
   private getWorkspaceCheckpointAccess(): CheckpointWorkspaceAccess {
     return this.ctx.workspaceCheckpointAccess ?? {};
   }
@@ -2095,6 +2187,7 @@ export class CheckpointReplayCoordinator {
     } & CheckpointRedoBoundaryCommitHooks,
   ): Promise<CheckpointReplayArtifact> {
     const saveCurrentSession = this.ctx.session.saveCurrentSession.bind(this.ctx.session);
+    const hasRequestListTransactionEffectRunner = typeof this.ctx.applyRequestListTransactionEffects === 'function';
     const sessionId = this.resolveCheckpointSessionId();
     const saveTarget = this.resolveCheckpointSaveTarget(sessionId);
     const hostResponseState = buildHostProjectionStateFromPersistedRecord({
@@ -2136,13 +2229,30 @@ export class CheckpointReplayCoordinator {
       saveCurrentSession,
       saveTarget,
       hostProjectionState: visibleProjectionState,
-      shouldSave: options.saveSession !== false,
+      shouldSave: options.saveSession !== false && !hasRequestListTransactionEffectRunner,
     });
     const applyPreparedRebuildState = this.createPreparedRebuildStateCommit({
       stagedRebuildState,
       stagedPublishedSummary,
       options,
     });
+
+    let checkpointTimelineCommitted = false;
+    let committedRequestListTransaction: ChatSessionRequestListTransactionResult | null = null;
+    let rolledBackRequestListTransaction: ChatSessionRequestListTransactionResult | null = null;
+    const applyPreparedCheckpointTimelineCommit = async () => {
+      if (typeof options.applyCheckpointTimelineCommit !== 'function') {
+        throw new Error('Checkpoint redo request-list commit hook is required');
+      }
+      const committedTransaction = await options.applyCheckpointTimelineCommit();
+      if (!committedTransaction?.effects) {
+        throw new Error('Checkpoint redo request-list commit hook did not return a transaction result');
+      }
+      committedRequestListTransaction = committedTransaction;
+      checkpointTimelineCommitted = true;
+    };
+    const readCommittedRequestListTransaction = () => committedRequestListTransaction;
+    const readRolledBackRequestListTransaction = () => rolledBackRequestListTransaction;
 
     const { applyPreparedLocalCommit, rollbackPreparedLocalStateOnFailure } = this.createPreparedCheckpointRedoLocalCommitActions({
       sessionId,
@@ -2152,26 +2262,30 @@ export class CheckpointReplayCoordinator {
       rebuildState,
       previousPublishedSummary,
       applyPreparedRebuildState,
+      readCommittedRequestListTransaction,
+      readRolledBackRequestListTransaction,
     });
 
     const { applyPreparedReplayRestore, applyPreparedReplayModelRollback } = this.createPreparedCheckpointRedoReplayActions({
       sessionId,
       turnResponses,
       previousSessionModelTurnResponses,
+      readRolledBackRequestListTransaction,
     });
-
-    let checkpointTimelineCommitted = false;
-    const applyPreparedCheckpointTimelineCommit = () => {
-      options.applyCheckpointTimelineCommit?.();
-      checkpointTimelineCommitted = true;
-    };
     const rollbackPreparedCheckpointTimelineCommit = (): string[] => {
       if (!checkpointTimelineCommitted) {
         return [];
       }
 
       try {
-        options.rollbackCheckpointTimelineCommit?.();
+        if (typeof options.rollbackCheckpointTimelineCommit !== 'function') {
+          throw new Error('Checkpoint redo request-list rollback hook is required');
+        }
+        const rolledBackTransaction = options.rollbackCheckpointTimelineCommit();
+        if (!rolledBackTransaction?.effects) {
+          throw new Error('Checkpoint redo request-list rollback hook did not return a transaction result');
+        }
+        rolledBackRequestListTransaction = rolledBackTransaction;
         checkpointTimelineCommitted = false;
         return [];
       } catch (rollbackError: any) {
@@ -2186,11 +2300,12 @@ export class CheckpointReplayCoordinator {
     const artifact = {
       turnResponses,
       applyPreparedCheckpointTimelineCommit,
+      readCommittedRequestListTransaction,
       applyPreparedSessionSave,
       applyPreparedReplayRestore,
       rollbackPreparedLocalStateOnFailure: state => {
-        const rollbackErrors = rollbackPreparedLocalStateOnFailure(state);
-        rollbackErrors.push(...rollbackPreparedCheckpointTimelineCommit());
+        const rollbackErrors = rollbackPreparedCheckpointTimelineCommit();
+        rollbackErrors.push(...rollbackPreparedLocalStateOnFailure(state));
         return rollbackErrors;
       },
       applyPreparedReplayModelRollback,
@@ -2611,31 +2726,32 @@ export class CheckpointReplayCoordinator {
     _requestedTurnId?: string,
   ): CheckpointRestoreTarget {
     const normalizedCheckpointId = typeof checkpointId === 'string' ? checkpointId.trim() : '';
+    const timelineSessionResource = this.resolveCheckpointSessionId();
+    const timelineState = timelineSessionResource
+      ? this.ctx.readSessionCheckpointTimelineState?.(timelineSessionResource) ?? null
+      : null;
+    const timelineCheckpoint = timelineState?.checkpoints.find(
+      candidate => candidate.checkpointId === normalizedCheckpointId,
+    );
+    if (normalizedCheckpointId && timelineSessionResource && timelineCheckpoint) {
+      return {
+        checkpointId: timelineCheckpoint.checkpointId,
+        sessionResource: timelineSessionResource,
+        requestId: timelineCheckpoint.requestId,
+        ...(timelineCheckpoint.turnId ? { turnId: timelineCheckpoint.turnId } : {}),
+      };
+    }
+
     if (!normalizedCheckpointId) {
-      throw new Error('检查点还原缺少 checkpointId');
+      throw new Error('checkpoint restore missing checkpointId');
     }
-
-    const metadata = this.ctx.editCheckpointService.getRequestCheckpointMetadataByCheckpointId?.(normalizedCheckpointId) ?? null;
-    if (!metadata) {
-      throw new Error(`检查点还原缺少 request checkpoint metadata: ${normalizedCheckpointId}`);
+    if (!timelineSessionResource) {
+      throw new Error(`checkpoint restore missing sessionResource: ${normalizedCheckpointId}`);
     }
-
-    const currentSessionResource = this.resolveCheckpointSessionId();
-    if (!currentSessionResource) {
-      throw new Error(`检查点还原缺少 sessionResource: ${normalizedCheckpointId}`);
+    if (normalizeString(timelineState?.sessionResource) !== timelineSessionResource) {
+      throw new Error(`checkpoint restore sessionResource mismatch: ${normalizedCheckpointId}`);
     }
-
-    if (metadata.sessionResource !== currentSessionResource) {
-      throw new Error(`检查点还原 sessionResource 不匹配: ${normalizedCheckpointId}`);
-    }
-
-    return {
-      checkpointId: metadata.checkpointId,
-      sessionResource: metadata.sessionResource,
-      requestId: metadata.requestId,
-      ...(metadata.turnId ? { turnId: metadata.turnId } : {}),
-      metadata,
-    };
+    throw new Error(`checkpoint restore missing timeline checkpoint: ${normalizedCheckpointId}`);
   }
 
   private resolveCheckpointRestoreTruncationBoundary(params: {
@@ -2889,8 +3005,8 @@ export class CheckpointReplayCoordinator {
       steps: [
         {
           label: 'checkpointTimelineCommit',
-          run: ({ artifact: currentArtifact }) => {
-            currentArtifact.applyPreparedCheckpointTimelineCommit();
+          run: async ({ artifact: currentArtifact }) => {
+            await currentArtifact.applyPreparedCheckpointTimelineCommit();
           },
         },
         {
@@ -2948,4 +3064,3 @@ export class CheckpointReplayCoordinator {
     };
   }
 }
-

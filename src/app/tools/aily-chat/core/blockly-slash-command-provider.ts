@@ -39,6 +39,45 @@ const BLOCKLY_SLASH_COMMANDS: readonly ISlashCommandContribution[] = [
   },
 ];
 
+const CHRONICLE_SLASH_COMMANDS: readonly ISlashCommandContribution[] = [
+  {
+    name: 'chronicle:search',
+    description: 'Search indexed chat sessions by keyword, file path, issue, commit, or other prior-context reference.',
+    sampleRequest: '/chronicle:search command_exec terminal test',
+    when: 'Use when the user asks to search prior chat sessions. Use the chronicle skill and call session_store_sql with subcommand="search".',
+  },
+  {
+    name: 'chronicle:standup',
+    description: 'Summarize recent indexed project chat sessions into a standup-style status report.',
+    sampleRequest: '/chronicle:standup summarize today',
+    when: 'Use when the user asks for a project/session standup or recent work summary. Use the chronicle skill and call session_store_sql with subcommand="standup".',
+  },
+  {
+    name: 'chronicle:tips',
+    description: 'Analyze indexed chat sessions for personalized workflow tips.',
+    sampleRequest: '/chronicle:tips',
+    when: 'Use when the user asks for workflow tips based on prior chat usage. Use the chronicle skill and call session_store_sql with subcommand="tips".',
+  },
+  {
+    name: 'chronicle:cost-tips',
+    description: 'Analyze indexed chat sessions for token or cost reduction tips when usage data is available.',
+    sampleRequest: '/chronicle:cost-tips',
+    when: 'Use when the user asks for cost, quota, token, or usage optimization based on prior chat sessions. Use the chronicle skill and call session_store_sql with subcommand="cost-tips".',
+  },
+  {
+    name: 'chronicle:improve',
+    description: 'Analyze indexed chat sessions for recurring friction and suggest instruction or workflow improvements.',
+    sampleRequest: '/chronicle:improve',
+    when: 'Use when the user asks how to improve the agent behavior or workflow from prior chat history. Use the chronicle skill and call session_store_sql with subcommand="improve".',
+  },
+  {
+    name: 'chronicle:reindex',
+    description: 'Rebuild the local Chronicle session index from persisted chat history.',
+    sampleRequest: '/chronicle:reindex force',
+    when: 'Use when the user asks to reindex or rebuild chat history search. Use the chronicle skill and call session_store_sql with action="reindex" and subcommand="reindex"; set force=true when requested.',
+  },
+];
+
 function normalizeSessionId(sessionId?: string | null): string | null {
   if (typeof sessionId !== 'string') {
     return null;
@@ -124,7 +163,7 @@ export function createBlocklySlashCommandProvider(sessionId?: string | null): IH
             : `Use to load the ${skill.metadata.displayName || skill.metadata.name} skill before handling the current task.`,
         }));
 
-      return [...BLOCKLY_SLASH_COMMANDS, ...skillCommands];
+      return [...BLOCKLY_SLASH_COMMANDS, ...CHRONICLE_SLASH_COMMANDS, ...skillCommands];
     },
     onSlashCommandsChanged(listener) {
       if (!providerSessionId) {

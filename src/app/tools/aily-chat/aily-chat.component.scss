@@ -39,6 +39,30 @@
   overflow: hidden;
 }
 
+.aily-chat-header-process-btn {
+  position: relative;
+}
+
+.aily-chat-header-process-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #d4380d;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--aily-bg-primary, #1f1f1f);
+  pointer-events: none;
+}
+
 :host-context([data-theme='light']) .btn.mode .mini-tag.warn {
   border-color: rgba(161, 98, 7, 0.32);
   background: rgba(245, 158, 11, 0.14);
@@ -99,6 +123,13 @@
 
     .dialogs {
       padding-top: 0;
+    }
+  }
+
+  &.session-overflow-menu-open {
+    .chat-session-sidebar,
+    .dialog-list {
+      z-index: 120;
     }
   }
 }
@@ -980,6 +1011,26 @@
         margin-left: auto;
       }
 
+      .composer-primary-action-slot {
+        position: relative;
+        flex: 0 0 28px;
+        width: 28px;
+        height: 28px;
+        contain: layout paint;
+      }
+
+      .composer-primary-action-slot > .btn {
+        position: absolute;
+        inset: 0;
+        transform: translateZ(0);
+        will-change: opacity, visibility;
+      }
+
+      .composer-primary-action-slot > .btn.action-hidden {
+        visibility: hidden;
+        pointer-events: none;
+      }
+
       .composer-model-chip {
         width: auto;
         height: 28px;
@@ -1061,6 +1112,8 @@
         border: 3px solid var(--aily-border-tertiary, #5a5a5a);
         border-radius: 50%;
         box-sizing: border-box;
+        contain: layout paint;
+        transform: translateZ(0);
       }
 
       .fa-stop {

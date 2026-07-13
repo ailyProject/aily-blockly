@@ -21,6 +21,7 @@ type RuntimeScopedToolContribution = IToolContribution & {
   readonly toolSet?: string;
   readonly runtimeModes?: readonly string[];
   readonly requiredCapabilities?: readonly string[];
+  isConcurrencySafe?(input: unknown): boolean;
 };
 
 function createLintCodeFingerprint(code: string): string {
@@ -219,6 +220,7 @@ function makeAnalyzeLibraryContribution(createDeferred: DeferredFactory): Runtim
       required: ['libraryId'],
     },
     annotations: { readOnly: true },
+    isConcurrencySafe: () => false,
     runtimeModes: ['blockly'],
     requiredCapabilities: ['runtime:blockly'],
     agentScope: ['main'],

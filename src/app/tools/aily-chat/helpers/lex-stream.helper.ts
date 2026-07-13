@@ -63,7 +63,7 @@ type LexOwnerUiAccess = Pick<LexUiEventBridge, 'presentQuestion' | 'updateQuesti
 type LexOwnerTurnAccess = Pick<LexTurnRuntimeBridge, 'begin' | 'run' | 'draft' | 'ensureMessage' | 'appendError'>;
 type LexOwnerTurnControlAccess = Pick<
   LexTurnControlBridge,
-  'currentId' | 'currentIndex' | 'turnIdByRound' | 'requestContent' | 'lastRoundId' | 'currentRequestMetadata' | 'complete' | 'fail' | 'discardIncomplete' | 'removeFrom' | 'restartFrom' | 'clear'
+  'currentId' | 'currentIndex' | 'turnIdByRound' | 'requestContent' | 'lastRoundId' | 'currentRequestMetadata' | 'complete' | 'fail' | 'discardIncomplete' | 'removeFrom' | 'removeFromIndex' | 'restartFrom' | 'clear'
 >;
 type LexOwnerRuntimeAccess = Pick<LexRuntimeConfigBridge, 'tools' | 'llmConfig'>;
 type LexOwnerSessionAccess = Pick<LexSessionFacade, 'save' | 'snapshot' | 'forkSnapshot' | 'resolveRestorePlan' | 'restoreResolvedSnapshot' | 'restore'>;
@@ -394,7 +394,7 @@ export class LexOwnerFacade {
     this._uiEventBridge = uiEventBridge;
     const turnStartupBridge = new LexTurnStartupBridge(
       this.ctx,
-      (userMessage, displayContent, metadata) => turnControlBridge.start(userMessage, displayContent, metadata),
+      (userMessage, displayContent, metadata, options) => turnControlBridge.start(userMessage, displayContent, metadata, options),
       (turnId, userMessage, displayContent, metadata) => renderEventBridge.seedPendingTurn(turnId, userMessage, displayContent, metadata),
       (turnId) => uiEventBridge.ensureResponseItem(turnId),
       () => turnBridge.messages(),
@@ -472,6 +472,8 @@ export class LexOwnerFacade {
             get isCancelled() { return ownerCtx.isCancelled; },
             get currentMessageSource() { return ownerCtx.currentMessageSource; },
             get contextBudgetService() { return ownerCtx.contextBudgetService; },
+            appendSessionModelTurnResponse: (targetSessionId, turnResponse, ownerPolicy) =>
+              ownerCtx.appendSessionModelTurnResponse?.(targetSessionId, turnResponse, ownerPolicy) ?? null,
           },
           hostSyncBridge,
           {

@@ -73,6 +73,13 @@ img {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
 }
 
+.library-publish-modal {
+  .ant-modal-content {
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+}
+
 .project-lock-conflict-modal {
   .ant-modal-content {
     background: var(--aily-bg-elevated) !important;

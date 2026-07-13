@@ -45,28 +45,80 @@ function extractPayload(source: unknown): Record<string, unknown> | null {
   return source;
 }
 
+function getNestedPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload) {
+    return null;
+  }
+
+  for (const key of ['detail', 'data', 'error']) {
+    if (isRecord(payload[key])) {
+      return payload[key];
+    }
+  }
+
+  return null;
+}
+
 export function extractApiErrorDetails(source: unknown, fallbackMessage = ''): ApiErrorDetails {
   const payload = extractPayload(source);
-  const errorCode = normalizeText(payload?.['errorCode'] ?? payload?.['error_code']) || null;
+  const nestedPayload = getNestedPayload(payload);
+  const errorCode = normalizeText(
+    payload?.['errorCode']
+      ?? payload?.['error_code']
+      ?? nestedPayload?.['errorCode']
+      ?? nestedPayload?.['error_code'],
+  ) || null;
   const errorArgs = isRecord(payload?.['errorArgs'])
     ? payload['errorArgs']
     : isRecord(payload?.['error_args'])
       ? payload['error_args']
-      : {};
+      : isRecord(nestedPayload?.['errorArgs'])
+        ? nestedPayload['errorArgs']
+        : isRecord(nestedPayload?.['error_args'])
+          ? nestedPayload['error_args']
+          : {};
 
-  const message = normalizeText(
+  const sourceMessage = normalizeText(isRecord(source) ? source['message'] : undefined);
+  const payloadMessage = normalizeText(
     payload?.['errorMessage']
       ?? payload?.['error_message']
       ?? payload?.['messages']
       ?? payload?.['message']
-      ?? payload?.['detail']
-      ?? (isRecord(source) ? source['message'] : undefined),
-  ) || fallbackMessage;
+      ?? payload?.['detail'],
+  );
+  const nestedMessage = normalizeText(
+    nestedPayload?.['errorMessage']
+      ?? nestedPayload?.['error_message']
+      ?? nestedPayload?.['messages']
+      ?? nestedPayload?.['message']
+      ?? nestedPayload?.['detail'],
+  );
+
+  const message = payloadMessage
+    || nestedMessage
+    || sourceMessage
+    || fallbackMessage;
 
   return {
     errorCode,
     errorArgs,
     message,
+  };
+}
+
+export function createApiError(source: unknown, fallbackMessage = ''): ApiErrorDetails & { raw: unknown; status?: number } {
+  const details = extractApiErrorDetails(source, fallbackMessage);
+  const payload = extractPayload(source);
+  const status = isRecord(source) && typeof source['status'] === 'number'
+    ? source['status']
+    : typeof payload?.['status'] === 'number'
+      ? payload['status']
+      : undefined;
+
+  return {
+    ...details,
+    raw: source,
+    status,
   };
 }
 

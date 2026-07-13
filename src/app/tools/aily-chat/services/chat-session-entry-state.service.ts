@@ -28,14 +28,16 @@ export interface PersistedChatSessionEntryTarget {
 }
 
 interface PersistedChatSessionEntryStateEnvelope {
-  readonly version: 1;
+  readonly version: 2;
   readonly target?: PersistedChatSessionEntryTarget | null;
+  readonly entryProviderOptions?: HostSessionProviderOptions | null;
 }
 
 interface LoadedChatSessionEntryStateScope {
   readonly scopeKey: string;
   readonly filePath: string;
   target: PersistedChatSessionEntryTarget | null;
+  entryProviderOptions: HostSessionProviderOptions | null;
 }
 
 @Injectable({
@@ -56,6 +58,13 @@ export class ChatSessionEntryStateService {
     return target;
   }
 
+  readEntryProviderOptions(projectPathHint?: string | null): HostSessionProviderOptions | null {
+    const scope = this.loadScope(projectPathHint ?? null);
+    return scope.entryProviderOptions
+      ? { ...normalizeHostSessionProviderOptions(scope.entryProviderOptions) }
+      : null;
+  }
+
   setSessionEntryTarget(
     target: PersistedChatSessionEntryTarget | null | undefined,
     projectPathHint?: string | null,
@@ -69,6 +78,23 @@ export class ChatSessionEntryStateService {
     }
 
     scope.target = normalized;
+    this.persistScope(scope);
+  }
+
+  setEntryProviderOptions(
+    providerOptions: HostSessionProviderOptions | null | undefined,
+    projectPathHint?: string | null,
+  ): void {
+    const scope = this.loadScope(projectPathHint ?? null);
+    const normalizedProjectPath = this.normalizePath(projectPathHint);
+    const normalized = this.normalizeProviderOptions(providerOptions ?? undefined, normalizedProjectPath);
+    const current = JSON.stringify(scope.entryProviderOptions ?? null);
+    const next = JSON.stringify(normalized ?? null);
+    if (current === next) {
+      return;
+    }
+
+    scope.entryProviderOptions = normalized ?? null;
     this.persistScope(scope);
   }
 
@@ -134,6 +160,7 @@ export class ChatSessionEntryStateService {
       scopeKey: scopeDescriptor.scopeKey,
       filePath: scopeDescriptor.filePath,
       target: null,
+      entryProviderOptions: null,
     };
 
     if (!scopeDescriptor.filePath || !this.fileExists(scopeDescriptor.filePath)) {
@@ -148,6 +175,10 @@ export class ChatSessionEntryStateService {
         scopeKey: scopeDescriptor.scopeKey,
         filePath: scopeDescriptor.filePath,
         target: this.normalizeTarget(parsed.target ?? null),
+        entryProviderOptions: this.normalizeProviderOptions(
+          parsed.entryProviderOptions ?? undefined,
+          scopeDescriptor.projectPath,
+        ) ?? null,
       };
       this.scopes.set(scopeDescriptor.scopeKey, loadedScope);
       return loadedScope;
@@ -166,8 +197,9 @@ export class ChatSessionEntryStateService {
     try {
       this.ensureDir(this.dirname(scope.filePath));
       const payload: PersistedChatSessionEntryStateEnvelope = {
-        version: 1,
+        version: 2,
         ...(scope.target ? { target: scope.target } : {}),
+        ...(scope.entryProviderOptions ? { entryProviderOptions: scope.entryProviderOptions } : {}),
       };
       this.writeFile(scope.filePath, JSON.stringify(payload, null, 2));
     } catch (error) {
@@ -273,12 +305,13 @@ export class ChatSessionEntryStateService {
     }
   }
 
-  private resolveScope(projectPath: string | null): { readonly scopeKey: string; readonly filePath: string } {
+  private resolveScope(projectPath: string | null): { readonly scopeKey: string; readonly filePath: string; readonly projectPath: string | null } {
     const normalizedProjectPath = this.normalizePath(projectPath);
     if (normalizedProjectPath) {
       return {
         scopeKey: `project:${normalizedProjectPath}`,
         filePath: this.joinPath(normalizedProjectPath, this.PROJECT_CHAT_DIR, this.STATE_FILE),
+        projectPath: normalizedProjectPath,
       };
     }
 
@@ -286,6 +319,7 @@ export class ChatSessionEntryStateService {
     return {
       scopeKey: 'global',
       filePath: globalDir ? this.joinPath(globalDir, this.STATE_FILE) : '',
+      projectPath: null,
     };
   }
 

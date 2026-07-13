@@ -46,6 +46,10 @@ export class ChatSwitchCoordinator {
     return sessionId || null;
   }
 
+  private shouldPersistModeSelectionGlobally(): boolean {
+    return !this.readCurrentSessionId();
+  }
+
   private assignPendingSwitch(model: ModelConfig | null, mode: ChatSurfaceModeId | null): void {
     this.ctx._pendingModelSwitch = model;
     this.ctx._pendingModeSwitch = mode;
@@ -238,9 +242,15 @@ export class ChatSwitchCoordinator {
       return;
     }
 
+    const persistSelection = this.shouldPersistModeSelectionGlobally();
     if (effectiveModeId) {
-      this.ctx.chatService.setChatMode(effectiveModeId, true);
-    } else if (typeof this.ctx.chatService.saveSelectedMode === 'function') {
+      this.ctx.chatService.setChatMode(effectiveModeId, persistSelection);
+    } else if (typeof this.ctx.chatService.setSelectedMode === 'function') {
+      this.ctx.chatService.setSelectedMode({
+        modeId: 'agent',
+        customAgentTarget: effectiveAgentTarget,
+      }, { persist: persistSelection });
+    } else if (persistSelection && typeof this.ctx.chatService.saveSelectedMode === 'function') {
       this.ctx.chatService.saveSelectedMode({
         modeId: 'agent',
         customAgentTarget: effectiveAgentTarget,
@@ -300,7 +310,7 @@ export class ChatSwitchCoordinator {
       return;
     }
 
-    this.ctx.chatService.saveChatMode(normalizedMode);
+    this.ctx.chatService.setChatMode(normalizedMode, this.shouldPersistModeSelectionGlobally());
     this.ctx.chatService.clearCurrentCustomAgentTarget();
     this.refreshLocalEstimateIfNeeded();
   }

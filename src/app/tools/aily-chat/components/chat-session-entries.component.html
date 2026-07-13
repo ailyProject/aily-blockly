@@ -124,7 +124,10 @@
         <div
           [class.session-list-actions-overflow]="isListVariant"
           [class.session-picker-actions-overflow]="isPickerVariant"
-          role="menu">
+          [style.left.px]="getOverflowMenuLeft(item)"
+          [style.top.px]="getOverflowMenuTop(item)"
+          role="menu"
+          (click)="$event.stopPropagation()">
           @for (action of overflowActions(item); track action.action) {
           <button
             type="button"

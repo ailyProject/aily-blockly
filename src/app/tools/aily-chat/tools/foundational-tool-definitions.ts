@@ -162,7 +162,8 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
 - 启动 CLI 形态的串口/蓝牙/网络调试工具
 - 执行耗时较长的编译/下载任务
 
-长输出不要直接要求全文，使用 command_tail、command_read 或 command_search。`,
+长输出不要直接要求全文，使用 command_tail、command_read 或 command_search。
+如果命令返回 outputFilePath，不要再用 read_file 读取该路径；继续使用 command_status / command_tail / command_read / command_search，或在项目 .log 查询中使用 log_tool。`,
         input_schema: {
             type: 'object',
             properties: {

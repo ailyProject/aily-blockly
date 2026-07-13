@@ -72,7 +72,7 @@
   nz-tooltip
   nzTooltipPlacement="bottom"
   [nzTooltipTrigger]="modeTooltipTrigger"
-  [nzTooltipTitle]="currentCustomAgentTarget && currentMode === 'agent' ? currentCustomAgentTarget : (modeTooltipTitle | translate)"
+  [nzTooltipTitle]="displayCustomAgentTarget ? displayCustomAgentTarget : (modeTooltipTitle | translate)"
   (click)="onModeClick($event)"
 >
   <i [class]="modeIconClass"></i>

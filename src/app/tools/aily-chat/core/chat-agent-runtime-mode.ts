@@ -24,6 +24,7 @@ export interface ChatAgentRuntimeModeResolution {
 export interface ChatAgentRuntimeModeMetadataLike {
   readonly agentRuntimeMode?: unknown;
   readonly runtimeMode?: unknown;
+  readonly runtimeTruth?: unknown;
   readonly agentRuntimeModeSource?: unknown;
   readonly runtimeModeSource?: unknown;
   readonly promptProfileId?: unknown;
@@ -71,7 +72,12 @@ export function readChatAgentRuntimeModeFromMetadata(
     return agentRuntimeMode;
   }
 
-  return normalizeOptionalChatAgentRuntimeMode(metadata.runtimeMode);
+  const runtimeMode = normalizeOptionalChatAgentRuntimeMode(metadata.runtimeMode);
+  if (runtimeMode) {
+    return runtimeMode;
+  }
+
+  return normalizeOptionalChatAgentRuntimeMode(readNestedRuntimeTruthValue(metadata.runtimeTruth, 'runtimeMode'));
 }
 
 export function normalizeChatAgentRuntimeModeSource(
@@ -100,7 +106,12 @@ export function readChatAgentRuntimeModeSourceFromMetadata(
     return source;
   }
 
-  return normalizeOptionalChatAgentRuntimeModeSource(metadata.runtimeModeSource);
+  const runtimeModeSource = normalizeOptionalChatAgentRuntimeModeSource(metadata.runtimeModeSource);
+  if (runtimeModeSource) {
+    return runtimeModeSource;
+  }
+
+  return normalizeOptionalChatAgentRuntimeModeSource(readNestedRuntimeTruthValue(metadata.runtimeTruth, 'runtimeSource'));
 }
 
 export function createChatAgentRuntimeModeConfigKey(mode: ChatAgentRuntimeMode): string {
@@ -182,6 +193,8 @@ export function resolveChatAgentRuntimeModeForProject(
   const preferredMode = normalizeOptionalChatAgentRuntimeMode(input.preferredMode);
   const userPreferenceMode = normalizeOptionalChatAgentRuntimeMode(input.userPreferenceMode);
   const projectPath = normalizeProjectPath(input.projectPath);
+  const restoredMode = readChatAgentRuntimeModeFromMetadata(input.metadata);
+  const restoredSource = readChatAgentRuntimeModeSourceFromMetadata(input.metadata) ?? 'restored';
   if (preferredMode) {
     return {
       mode: preferredMode,
@@ -192,6 +205,15 @@ export function resolveChatAgentRuntimeModeForProject(
   }
 
   if (projectPath && input.requireExistingProjectPath && !hostPathExists(projectPath)) {
+    if (userPreferenceMode && userPreferenceMode !== 'unbound') {
+      return {
+        mode: userPreferenceMode,
+        source: 'user_preference',
+        reason: `restored project path missing; user preference: ${userPreferenceMode}`,
+        projectPath,
+      };
+    }
+
     return {
       mode: 'unbound',
       source: 'fallback',
@@ -200,11 +222,10 @@ export function resolveChatAgentRuntimeModeForProject(
     };
   }
 
-  const restoredMode = readChatAgentRuntimeModeFromMetadata(input.metadata);
-  if (restoredMode) {
+  if (restoredMode && restoredMode !== 'unbound') {
     return {
       mode: restoredMode,
-      source: readChatAgentRuntimeModeSourceFromMetadata(input.metadata) ?? 'restored',
+      source: restoredSource,
       reason: `restored runtime mode: ${restoredMode}`,
       projectPath: projectPath ?? null,
     };
@@ -215,7 +236,9 @@ export function resolveChatAgentRuntimeModeForProject(
     const hasCoderEntry = hostPathExists(projectPath, 'src', 'main.cpp');
 
     if (hasAbsProject && hasCoderEntry) {
-      const metadataHintMode = readRuntimeModeHintFromMetadata(input.metadata);
+      const metadataHintMode = restoredMode && restoredMode !== 'unbound'
+        ? restoredMode
+        : readRuntimeModeHintFromMetadata(input.metadata);
       if (metadataHintMode && metadataHintMode !== 'unbound') {
         return {
           mode: metadataHintMode,
@@ -277,11 +300,21 @@ export function resolveChatAgentRuntimeModeForProject(
 
   const fallback = input.fallback ?? 'unbound';
   return {
-    mode: fallback,
-    source: 'fallback',
-    reason: projectPath ? 'no runtime marker detected' : 'no project selected',
+    mode: restoredMode ?? fallback,
+    source: restoredMode ? restoredSource : 'fallback',
+    reason: restoredMode
+      ? `restored runtime mode: ${restoredMode}`
+      : projectPath
+        ? 'no runtime marker detected'
+        : 'no project selected',
     projectPath: projectPath ?? null,
   };
+}
+
+function readNestedRuntimeTruthValue(value: unknown, key: 'runtimeMode' | 'runtimeSource'): unknown {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
 }
 
 function normalizeOptionalChatAgentRuntimeMode(value: unknown): ChatAgentRuntimeMode | undefined {

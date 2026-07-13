@@ -4,9 +4,7 @@ import { Observable, throwError, catchError, from, switchMap, shareReplay, final
 import { AuthService } from '../services/auth.service';
 import { API } from '../configs/api.config';
 
-// 用于跟踪401错误处理状态的变量
-let isHandling401 = false;
-let handle401Error$: Observable<HttpEvent<any>> | null = null;
+let refreshAuthToken$: Observable<boolean> | null = null;
 
 function shouldInterceptRequest(url: string): boolean {
   // 获取API配置中的所有URL
@@ -27,8 +25,8 @@ export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: 
   return from(addTokenHeader(req, authService)).pipe(
     switchMap(request => next(request)),
     catchError(error => {
-      if (error instanceof HttpErrorResponse && !req.url.includes('auth/login') && error.status === 401) {
-        return handle401Error(authService);
+      if (error instanceof HttpErrorResponse && shouldLogoutFor401(req, error)) {
+        return handle401Error(req, next, authService);
       }
       return throwError(() => error);
     })
@@ -52,36 +50,118 @@ async function addTokenHeader(request: HttpRequest<any>, authService: AuthServic
   return request;
 }
 
-function handle401Error(authService: AuthService): Observable<HttpEvent<any>> {
-  // 如果正在处理401错误，返回共享的Observable
-  if (isHandling401 && handle401Error$) {
-    return handle401Error$;
+const AUTH_401_ERROR_CODES = new Set([
+  'AUTH_TOKEN_MISSING',
+  'AUTH_TOKEN_INVALID',
+  'AUTH_TOKEN_EXPIRED',
+  'AUTH_USER_NOT_FOUND',
+]);
+
+const AUTH_401_MESSAGES = new Set([
+  'Missing authorization header',
+  'Invalid authorization header format',
+  'Invalid token format',
+  'Invalid token signature',
+  'Invalid token payload',
+  'Invalid token payload JSON',
+  'Token expired',
+  'Not authenticated',
+  'Invalid token',
+  'User not found',
+  'Could not validate credentials',
+  'User info not found',
+]);
+
+export function shouldLogoutFor401(req: HttpRequest<any>, error: HttpErrorResponse): boolean {
+  if (
+    error.status !== 401 ||
+    req.url.includes('auth/login') ||
+    req.url.includes('auth/logout') ||
+    req.url.includes('auth/refresh')
+  ) {
+    return false;
   }
 
-  // 标记开始处理401错误
-  isHandling401 = true;
+  const body = error.error;
+  if (collectAuthErrorCodes(body).some(errorCode => AUTH_401_ERROR_CODES.has(errorCode))) {
+    return true;
+  }
 
-  // 创建处理401错误的Observable，使用shareReplay确保多个订阅者共享同一个执行
-  handle401Error$ = from(authService.logout()).pipe(
-    switchMap(() => {
-      // 返回错误，让调用方处理登录逻辑
-      return throwError(() => new Error('Token已过期，请重新登录'));
+  return collectAuthMessages(body).some(message =>
+    (
+      AUTH_401_MESSAGES.has(message) ||
+      message.startsWith('Invalid user info:')
+    )
+  );
+}
+
+function collectAuthErrorCodes(value: unknown): string[] {
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(item => collectAuthErrorCodes(item));
+  }
+
+  const record = value as Record<string, unknown>;
+  const current = typeof record['errorCode'] === 'string' ? [record['errorCode']] : [];
+  return current.concat(collectAuthErrorCodes(record['detail']));
+}
+
+function collectAuthMessages(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return [value];
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(item => collectAuthMessages(item));
+  }
+
+  const record = value as Record<string, unknown>;
+  return [
+    record['message'],
+    record['messages'],
+    record['detail'],
+    record['errorMessage'],
+  ].flatMap(item => collectAuthMessages(item));
+}
+
+function getRefreshAuthToken$(authService: AuthService): Observable<boolean> {
+  if (refreshAuthToken$) {
+    return refreshAuthToken$;
+  }
+
+  refreshAuthToken$ = from(authService.refreshAuthToken()).pipe(
+    shareReplay({ bufferSize: 1, refCount: false }),
+    finalize(() => {
+      refreshAuthToken$ = null;
+    })
+  );
+
+  return refreshAuthToken$;
+}
+
+function handle401Error(req: HttpRequest<any>, next: HttpHandlerFn, authService: AuthService): Observable<HttpEvent<any>> {
+  return getRefreshAuthToken$(authService).pipe(
+    switchMap(refreshed => {
+      if (refreshed) {
+        return from(addTokenHeader(req, authService)).pipe(
+          switchMap(request => next(request))
+        );
+      }
+
+      return from(authService.logout()).pipe(
+        switchMap(() => throwError(() => new Error('Token已过期，请重新登录')))
+      );
     }),
     catchError((error) => {
       // 即使logout失败，也要返回错误
       return throwError(() => error);
-    }),
-    // 使用shareReplay确保多个订阅者共享同一个执行，并且缓存错误结果
-    shareReplay({ bufferSize: 1, refCount: false }),
-    // 使用finalize确保在处理完成后清理状态
-    finalize(() => {
-      // 延迟清理状态，确保所有订阅者都能收到错误
-      setTimeout(() => {
-        isHandling401 = false;
-        handle401Error$ = null;
-      }, 100);
     })
   );
-
-  return handle401Error$;
 }

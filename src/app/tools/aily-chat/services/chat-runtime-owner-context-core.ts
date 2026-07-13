@@ -42,12 +42,14 @@ export interface ChatRuntimeOwnerContextCoreServices {
   updateRuntimeProjectPath(projectPath: any, sessionId: string): any;
   currentSessionPath(sessionId: any): any;
   currentSessionPermissionMode(sessionId: any): any;
+  currentSessionPermissionProfile(sessionId: any): any;
   currentSessionApprovalsReviewer(sessionId: any): any;
   currentSessionApprovalPolicy(sessionId: any): any;
   buildExecutionSaveTarget(sessionId: any): any;
   resolveActiveRuntimeSessionId(defaultSessionId: string): any;
   runWithRuntimeSessionOwner<T>(sessionId: string, action: () => Promise<T>): Promise<T>;
   handleToolApproval(request: any): any;
+  checkToolApprovalPreflight(request: any): any;
   setList(value: any): void;
   invalidateHostRequestGraph(): void;
   triggerSyncDetectChanges(): void;
@@ -123,6 +125,7 @@ export function createChatRuntimeOwnerContext(
     get sessionTitle() { return services.sessionTitle; },
     get currentSessionPath() { return services.currentSessionPath(adapter.sessionId); },
     get currentSessionPermissionMode() { return services.currentSessionPermissionMode(adapter.sessionId); },
+    get currentSessionPermissionProfile() { return services.currentSessionPermissionProfile(adapter.sessionId); },
     get currentSessionApprovalsReviewer() { return services.currentSessionApprovalsReviewer(adapter.sessionId); },
     get currentSessionApprovalPolicy() { return services.currentSessionApprovalPolicy(adapter.sessionId); },
     get ailyChatConfigService() { return services.ailyChatConfigService; },
@@ -133,6 +136,7 @@ export function createChatRuntimeOwnerContext(
       services.runWithRuntimeSessionOwner(sessionId, action),
     get runtimeInteractionHost() { return services.runtimeInteractionHost; },
     handleToolApproval: request => services.handleToolApproval(request),
+    checkToolApprovalPreflight: request => services.checkToolApprovalPreflight(request),
     get lexStream() { return adapter.lexStream; },
     get editTracking() { return services.editTracking; },
     get ownerScheduler() { return services.ownerScheduler; },

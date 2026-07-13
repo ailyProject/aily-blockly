@@ -146,6 +146,11 @@ export type ChatSessionPermissionMode = (typeof CHAT_SESSION_PERMISSION_MODES)[n
 
 export const DEFAULT_CHAT_SESSION_PERMISSION_MODE: ChatSessionPermissionMode = 'default';
 
+export const CHAT_SESSION_PERMISSION_PROFILES = ['workspace-write', 'danger-full-access'] as const;
+export type ChatSessionPermissionProfile = (typeof CHAT_SESSION_PERMISSION_PROFILES)[number];
+
+export const DEFAULT_CHAT_SESSION_PERMISSION_PROFILE: ChatSessionPermissionProfile = 'workspace-write';
+
 export function normalizeChatSessionType(
   value: unknown,
   fallback: ChatSessionType = DEFAULT_CHAT_SESSION_TYPE,
@@ -215,6 +220,24 @@ export function normalizeChatSessionPermissionMode(
   const normalizedValue = value.trim();
   return (CHAT_SESSION_PERMISSION_MODES as readonly string[]).includes(normalizedValue)
     ? normalizedValue as ChatSessionPermissionMode
+    : fallback;
+}
+
+export function normalizeChatSessionPermissionProfile(
+  value: unknown,
+  fallback: ChatSessionPermissionProfile = DEFAULT_CHAT_SESSION_PERMISSION_PROFILE,
+): ChatSessionPermissionProfile {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const normalizedValue = value.trim();
+  if (normalizedValue === 'bypassPermissions' || normalizedValue === 'danger-full-access') {
+    return 'danger-full-access';
+  }
+
+  return (CHAT_SESSION_PERMISSION_PROFILES as readonly string[]).includes(normalizedValue)
+    ? normalizedValue as ChatSessionPermissionProfile
     : fallback;
 }
 

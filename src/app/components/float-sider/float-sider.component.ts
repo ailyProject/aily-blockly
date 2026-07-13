@@ -187,6 +187,9 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
     if (!this.electronService.exists(archPath)) {
       this.uiService.openTool('aily-chat');
       const prompt = this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT');
+//       const prompt = `${this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT')}
+
+// Generate a Mermaid project architecture diagram and save it to arch.md. If the architecture save tool is deferred, use tool_search for blockly-architecture or save_arch, then call save_arch with raw Mermaid DSL in code. Do not only print Mermaid source.`;
       setTimeout(() => {
         if (this.chatService.isWaiting) {
           this.message.warning(this.translate.instant('FLOAT_SIDER.ARCH_AI_BUSY'));

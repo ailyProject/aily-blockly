@@ -8,6 +8,7 @@
     "darwin": "~/Library/aily-project"
   },
   "project_path": "%HOMEPATH%\\Documents\\aily-project",
+  "installed": "",
   "build_flavor": "cn",
   "region": "cn",
   "resource_source": "auto",
@@ -28,7 +29,9 @@
     "mirror_region_order": ["eu", "cn"],
     "fallback_on_error": true,
     "first_byte_timeout_ms": 15000,
-    "stall_timeout_ms": 20000
+    "stall_timeout_ms": 20000,
+    "low_speed_window_ms": 60000,
+    "min_average_speed_bytes_per_second": 65536
   },
   "regions": {
     "cn": {

@@ -57,6 +57,14 @@
   </div>
 </ng-template>
 
+<ng-template #librarySubmissionSuccessTpl>
+  <span>
+    {{ lastSubmittedLibraryDisplayName }} 提交已受理，系统将自动创建 PR。你可以稍后在
+    <a href="" (click)="openLibrarySubmissionsInUserCenter($event)">用户中心</a>
+    查看提交状态。
+  </span>
+</ng-template>
+
 @if (showContextMenu) {
 <app-menu class="toolbox-context-menu" [position]="contextMenuPosition" [menuList]="contextMenuItems"
   (itemClickEvent)="onContextMenuItemClick($event)" (closeEvent)="closeContextMenu()"></app-menu>

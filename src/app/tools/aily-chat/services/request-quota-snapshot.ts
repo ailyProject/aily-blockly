@@ -194,12 +194,17 @@ function buildCodeOnlyDisplayQuotaFromTurnSidecar(
   quotaSnapshot: TurnResponseQuotaSnapshot,
 ): RequestQuotaDisplayQuota | null {
   const extended = quotaSnapshot as TurnResponseQuotaSnapshot & {
+    chatQuotaExceeded?: boolean;
+    rateLimited?: boolean;
     retryAfterMs?: number;
   };
   const retryAfterMs = typeof extended.retryAfterMs === 'number'
     ? extended.retryAfterMs
     : undefined;
   const normalizedErrorCode = normalizeRequestQuotaErrorCode(quotaSnapshot.errorCode);
+  if (!normalizedErrorCode && extended.chatQuotaExceeded !== true && extended.rateLimited !== true) {
+    return null;
+  }
 
   switch (quotaSnapshot.kind) {
     case 'premium_models':

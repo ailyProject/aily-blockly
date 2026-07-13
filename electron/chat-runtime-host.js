@@ -1,11 +1,39 @@
-const { ipcMain, BrowserWindow } = require('electron');
+const { ipcMain, BrowserWindow, utilityProcess } = require('electron');
 const {
   ChatRuntimeHostProcessService,
   channels,
 } = require('./chat-runtime-host-service');
+const {
+  ChatRuntimeHostExecutionHostController,
+  readConfiguredExecutionHostMode,
+  readConfiguredRuntimeOwnerModule,
+} = require('./chat-runtime-host-execution-host-controller');
+
+const RUNTIME_HOST_BOOTSTRAP_DIAGNOSTIC_VERSION = 'non-renderer-execution-host-2026-07-03';
 
 let registered = false;
 let runtimeHostService = null;
+let executionHostController = null;
+let bootstrapSourceLogged = false;
+
+function logRuntimeHostBootstrapSource() {
+  if (bootstrapSourceLogged) {
+    return;
+  }
+  bootstrapSourceLogged = true;
+
+  const runtimeModule = readConfiguredRuntimeOwnerModule();
+  console.warn('[AilyChat][RuntimeHostBootstrapSource]', JSON.stringify({
+    version: RUNTIME_HOST_BOOTSTRAP_DIAGNOSTIC_VERSION,
+    file: __filename,
+    pid: process.pid,
+    registered,
+    executionHostMode: readConfiguredExecutionHostMode(),
+    hasRuntimeModule: !!runtimeModule,
+    runtimeModule,
+    hasUtilityProcess: !!utilityProcess && typeof utilityProcess.fork === 'function',
+  }));
+}
 
 function readRuntimeHostService() {
   if (!runtimeHostService) {
@@ -14,9 +42,22 @@ function readRuntimeHostService() {
   return runtimeHostService;
 }
 
+function readExecutionHostController(service) {
+  if (!executionHostController) {
+    executionHostController = new ChatRuntimeHostExecutionHostController({
+      runtimeHostService: service,
+      utilityProcess,
+      mode: readConfiguredExecutionHostMode(),
+    });
+  }
+  return executionHostController;
+}
+
 function registerChatRuntimeHostIpc(mainWindow) {
+  logRuntimeHostBootstrapSource();
   const service = readRuntimeHostService();
   service.setMainWindow(mainWindow);
+  readExecutionHostController(service).start();
   if (registered) {
     return;
   }
@@ -41,19 +82,18 @@ function registerChatRuntimeHostIpc(mainWindow) {
     service.handleRuntimeOwnerResponse(event, payload);
   });
   ipcMain.on(channels.RUNTIME_OWNER_EVENT_CHANNEL, (event, payload = {}) => {
-    service.handleRuntimeOwnerEvent(event, payload);
+    void service.handleRuntimeOwnerEvent(event, payload).catch(error => {
+      console.warn('[AilyChat][RuntimeHost] Ignored runtime owner IPC event:', {
+        message: error && error.message ? error.message : String(error || 'Unknown runtime owner IPC event error'),
+      });
+    });
   });
   ipcMain.on(channels.RESOURCE_HANDLER_RESPONSE_CHANNEL, (event, payload = {}) => {
     service.handleResourceOperationHandlerResponse(event, payload);
   });
 }
 
-function setChatRuntimeOwnerWindow(runtimeOwnerWindow) {
-  readRuntimeHostService().setRuntimeOwnerWindow(runtimeOwnerWindow);
-}
-
 module.exports = {
   registerChatRuntimeHostIpc,
-  setChatRuntimeOwnerWindow,
   channels,
 };

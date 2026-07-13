@@ -71,6 +71,33 @@ export interface BlockCodeMapping {
   codeSnippet: string;         // 合并后的代码片段文本（便于 agent 直接使用）
 }
 
+export function normalizeArduinoGeneratedCode(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value instanceof String) {
+    return value.toString();
+  }
+
+  if (Array.isArray(value)) {
+    const firstText = value.find(item => typeof item === 'string' && item.length > 0);
+    return typeof firstText === 'string' ? firstText : '';
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key of ['code', 'generatedCode', 'content', 'text', 'source', 'value']) {
+      const normalized = normalizeArduinoGeneratedCode(record[key]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return '';
+}
+
 export class ArduinoGenerator extends Blockly.CodeGenerator {
   codeDict = {};
 

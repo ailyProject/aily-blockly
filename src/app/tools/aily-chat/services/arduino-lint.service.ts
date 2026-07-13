@@ -1,6 +1,7 @@
 ﻿import { Injectable } from '@angular/core';
 import { AilyHost } from '../core/host';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
+import { normalizeArduinoGeneratedCode } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
 
 // Arduino 代码检查器
 declare const arduinoGenerator: any;
@@ -18,7 +19,7 @@ function createLintCodeFingerprint(code: string): string {
 /**
  * Lint 检测模式
  */
-export type LintMode = 'fast' | 'accurate' | 'auto' | 'ast-grep';
+export type LintMode = 'fast' | 'accurate' | 'auto';
 
 /**
  * Lint 输出格式
@@ -42,9 +43,9 @@ function isArduinoLintTraceEnabled(): boolean {
  * Lint 检查选项
  */
 export interface LintOptions {
-  mode?: LintMode;           // 检测模式，默认 'auto'
+  mode?: LintMode;           // 检测模式，默认 'fast'
   format?: LintFormat;       // 输出格式，默认 'json'
-  timeout?: number;          // 超时时间，默认 10000ms
+  timeout?: number;          // 超时时间，默认 10000ms，兼容字段；不强制中断可能较慢的 accurate 检查
   projectContext?: {
     projectPath?: string;
     packageJson?: any;
@@ -60,6 +61,7 @@ export interface LintResult {
   success: boolean;          // 是否检查成功
   errors: LintError[];       // 错误列表
   warnings: LintError[];     // 警告列表
+  notes?: LintError[];       // 提示列表
   executionTime: number;     // 执行时间（毫秒）
   mode?: string;             // 实际使用的检测模式
 }
@@ -71,13 +73,20 @@ export interface LintError {
   file: string;              // 文件路径
   line: number;              // 行号
   column: number;            // 列号
+  endLine?: number;          // 结束行号
+  endColumn?: number;        // 结束列号
   message: string;           // 错误信息
-  severity: 'error' | 'warning'; // 严重程度
+  severity: 'error' | 'warning' | 'note'; // 严重程度
+  code?: string;             // 诊断代码
+  fix?: {
+    range: [number, number];
+    text: string;
+  };
 }
 
 /**
  * Arduino Lint 服务
- * 基于 aily-builder 的 lint 功能，提供简化的代码语法检查
+ * 基于独立的 aily-linter CLI，提供简化的代码语法检查
  */
 @Injectable({
   providedIn: 'root'
@@ -91,7 +100,7 @@ export class ArduinoLintService {
   // 当前项目路径 - 像 BuilderService 一样在方法开始时赋值，确保路径一致性
   private currentProjectPath = "";
   private currentProjectContext: NonNullable<LintOptions['projectContext']> | null = null;
-  
+
   // 库缓存机制 - 避免重复处理
   private libraryCache = new Map<string, {
     timestamp: number;
@@ -141,9 +150,8 @@ export class ArduinoLintService {
     
     // 设置默认选项
     const {
-      mode = 'ast-grep',
-      format = 'json',
-      timeout = 10000
+      mode = 'fast',
+      format = 'json'
     } = options;
 
     try {
@@ -182,7 +190,7 @@ export class ArduinoLintService {
       
       try {
         // 执行 lint 检查
-        const result = await this.executeLint(tempEnv, mode, format, timeout);
+        const result = await this.executeLint(tempEnv, mode, format);
         
         // 解析结果
         const parsedResult = this.parseResult(result, startTime, mode, format);
@@ -267,7 +275,7 @@ export class ArduinoLintService {
   async checkCurrentWorkspace(options: LintOptions = {}): Promise<LintResult> {
     try {
       // 从 Blockly 工作区生成代码
-      const code = arduinoGenerator.workspaceToCode(this.blocklyService.workspace);
+      const code = normalizeArduinoGeneratedCode(arduinoGenerator.workspaceToCode(this.blocklyService.workspace));
       
       if (!code || code.trim().length === 0) {
         return {
@@ -281,7 +289,7 @@ export class ArduinoLintService {
           }],
           warnings: [],
           executionTime: 0,
-          mode: options.mode || 'ast-grep'
+          mode: options.mode || 'fast'
         };
       }
 
@@ -355,51 +363,54 @@ export class ArduinoLintService {
   }
 
   /**
-   * 执行 aily-builder lint 检查
+   * 执行 aily-linter 检查
    */
   private async executeLint(
     env: { tempPath: string; sketchPath: string; sketchFilePath: string; librariesPath: string; },
     mode: LintMode,
-    format: LintFormat,
-    timeout: number
+    format: LintFormat
   ): Promise<string> {
     try {
-      // 构建 lint 命令
-      const lintCommand = await this.buildLintCommand(env, mode, format);
-
-      // console.log(`🚀 执行 lint 命令: ${lintCommand}`);
-
-      // 收集所有输出
-      let allOutput = '';
-      let hasError = false;
-      let errorMessage = '';
+      const { command, args } = await this.buildLintInvocation(env, mode, format);
 
       return new Promise((resolve, reject) => {
-        this.cmdService.run(lintCommand, undefined, true, true).subscribe({
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          if (error) {
+            reject(error);
+          } else {
+            resolve(stdout);
+          }
+        };
+
+        this.cmdService.spawn(command, args, { cwd: env.tempPath }, true).subscribe({
           next: (output) => {
-            // console.log('📋 cmdService 输出类型:', output.type);
-            // console.log('📋 cmdService 输出数据:', output.data);
-            
             if (output.type === 'stdout' && output.data) {
-              allOutput += output.data;
+              stdout += output.data;
             } else if (output.type === 'stderr' && output.data) {
-              // stderr 也可能包含有效的 JSON 输出
-              allOutput += output.data;
+              stderr += output.data;
             } else if (output.type === 'error') {
-              hasError = true;
-              errorMessage = output.error || '命令执行失败';
+              finish(new Error(output.error || 'aily-linter 启动失败'));
+            } else if (output.type === 'close') {
+              // aily-linter 发现代码问题时会返回退出码 1，但 stdout 中仍有完整 JSON。
+              if (stdout.trim()) {
+                finish();
+              } else {
+                finish(new Error(stderr.trim() || `aily-linter exited with ${output.code ?? 'unknown'}`));
+              }
             }
           },
           error: (error) => {
-            console.warn('📋 cmdService 执行错误:', error);
-            reject(new Error(`命令执行失败: ${error.message || error}`));
+            finish(new Error(`aily-linter 执行失败: ${error.message || error}`));
           },
           complete: () => {
-            // console.log('📋 cmdService 执行完成，总输出:', allOutput);
-            if (hasError && !allOutput.trim()) {
-              reject(new Error(errorMessage));
-            } else {
-              resolve(allOutput);
+            if (!settled) {
+              finish(new Error(stderr.trim() || 'aily-linter 未返回检查结果'));
             }
           }
         });
@@ -412,13 +423,13 @@ export class ArduinoLintService {
   }
 
   /**
-   * 构建 aily-builder lint 命令
+   * 构建 aily-linter CLI 调用。该 CLI 没有 lint 子命令。
    */
-  private async buildLintCommand(
+  private async buildLintInvocation(
     env: { sketchFilePath: string; librariesPath: string; },
     mode: LintMode,
     format: LintFormat
-  ): Promise<string> {
+  ): Promise<{ command: string; args: string[] }> {
     // 获取项目配置
     const packageJson = await this.getProjectPackageJson();
     const boardJson = await this.getProjectBoardJson();
@@ -427,83 +438,178 @@ export class ArduinoLintService {
       throw new Error('未找到板子信息(board.json)');
     }
 
-    // 获取编译参数并替换 compile 为 lint
-    let compilerParam = boardJson.compilerParam;
+    const compilerParam = boardJson.compilerParam;
     if (!compilerParam) {
       throw new Error('未找到编译命令(compilerParam)');
     }
 
-    // 将 compile 替换为 lint，并清理不支持的参数
-    let lintParam = compilerParam.replace(/\bcompile\b/g, 'lint');
-    
-    // 移除 lint 命令不支持的参数
-    lintParam = lintParam.replace(/\s+-v\b/g, ''); // 移除 -v
-    lintParam = lintParam.replace(/\s+--verbose\b/g, ''); // 移除已有的 --verbose
-    
-    // 添加 --verbose 以获取详细输出
-    // lintParam += ' --verbose';
+    const {
+      boardType,
+      buildProperties,
+      boardOptions: compilerBoardOptions
+    } = this.parseCompilerParams(compilerParam);
 
-    // 提取板子类型
-    let boardType = '';
-    const compilerParamList = lintParam.split(' ');
-    for (let i = 0; i < compilerParamList.length; i++) {
-      if (compilerParamList[i] === '-b' || compilerParamList[i] === '--board') {
-        if (i + 1 < compilerParamList.length) {
-          boardType = compilerParamList[i + 1];
-          break;
-        }
+    const boardOptions = [...compilerBoardOptions];
+    const projectConfig = packageJson?.projectConfig || {};
+    for (const [key, value] of Object.entries(projectConfig)) {
+      if (value !== null && value !== undefined && value !== '' && typeof value !== 'object') {
+        boardOptions.push(`${key}=${String(value)}`);
       }
+    }
+
+    const toolVersions: string[] = [];
+    let sdk = '';
+    let sdkPath = '';
+    let toolsPath = '';
+
+    if (mode !== 'fast') {
+      const boardDependencies = (await this.getProjectBoardPackageJson())?.boardDependencies || {};
+      Object.entries(boardDependencies).forEach(([key, version]) => {
+        if (key.startsWith('@aily-project/compiler-')) {
+          const compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
+          toolVersions.push(compiler);
+        } else if (key.startsWith('@aily-project/sdk-')) {
+          sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
+        } else if (key.startsWith('@aily-project/tool-')) {
+          let toolName = key.replace(/^@aily-project\/tool-/, '');
+          if (toolName.startsWith('idf_')) {
+            toolName = 'esp32-arduino-libs';
+          }
+          toolVersions.push(toolName + '@' + version);
+        }
+      });
+
+      if (!sdk) {
+        throw new Error('未找到 SDK 信息');
+      }
+
+      sdkPath = await window['env'].get('AILY_SDK_PATH') + `/${sdk}`;
+      toolsPath = await window['env'].get('AILY_TOOLS_PATH');
+    }
+
+    if (!window['linter']?.waitForReady) {
+      throw new Error('aily-linter 就绪服务不可用');
+    }
+    const linterState = await window['linter'].waitForReady();
+    if (!linterState?.entryPath) {
+      throw new Error('未找到 aily-linter CLI 入口');
+    }
+
+    const args = [
+      linterState.entryPath,
+      env.sketchFilePath,
+      '--board', boardType,
+      '--libraries-path', env.librariesPath
+    ];
+    for (const buildProperty of buildProperties) {
+      args.push('--build-property', buildProperty);
+    }
+    for (const boardOption of boardOptions) {
+      args.push('--board-options', boardOption);
+    }
+    if (mode !== 'fast') {
+      args.push(
+        '--sdk-path', sdkPath,
+        '--tools-path', toolsPath
+      );
+      if (toolVersions.length > 0) {
+        args.push('--tool-versions', toolVersions.join(','));
+      }
+    }
+    args.push('--mode', mode, '--format', format);
+
+    return { command: 'node', args };
+  }
+
+  private parseCompilerParams(compilerParam: string): {
+    boardType: string;
+    buildProperties: string[];
+    boardOptions: string[];
+  } {
+    const tokens = this.splitCommandLine(compilerParam);
+    if (tokens.shift() !== 'compile') {
+      throw new Error('compilerParam 必须以 compile 开头');
+    }
+
+    let boardType = '';
+    const buildProperties: string[] = [];
+    const boardOptions: string[] = [];
+
+    const readValue = (option: string, index: number): string => {
+      const value = tokens[index + 1];
+      if (!value) throw new Error(`${option} 缺少参数值`);
+      return value;
+    };
+
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '-v' || token === '--verbose') {
+        continue;
+      }
+      if (token === '-b' || token === '--board') {
+        boardType = readValue(token, i++);
+        continue;
+      }
+      if (token === '--build-property') {
+        buildProperties.push(readValue(token, i++));
+        continue;
+      }
+      if (token === '--board-options') {
+        boardOptions.push(readValue(token, i++));
+        continue;
+      }
+      if (token.startsWith('--board=')) {
+        boardType = token.slice('--board='.length);
+        continue;
+      }
+      if (token.startsWith('--build-property=')) {
+        buildProperties.push(token.slice('--build-property='.length));
+        continue;
+      }
+      if (token.startsWith('--board-options=')) {
+        boardOptions.push(token.slice('--board-options='.length));
+        continue;
+      }
+      throw new Error(`aily-linter 不支持 compilerParam 参数: ${token}`);
     }
 
     if (!boardType) {
       throw new Error('未找到板子类型');
     }
 
-    // 获取工具版本信息
-    const boardDependencies = (await this.getProjectBoardPackageJson())?.boardDependencies || {};
-    const toolVersions: string[] = [];
-    let sdk = '';
+    return { boardType, buildProperties, boardOptions };
+  }
 
-    Object.entries(boardDependencies).forEach(([key, version]) => {
-      if (key.startsWith('@aily-project/compiler-')) {
-        const compiler = key.replace(/^@aily-project\/compiler-/, '') + '@' + version;
-        toolVersions.push(compiler);
-      } else if (key.startsWith('@aily-project/sdk-')) {
-        sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
-      } else if (key.startsWith('@aily-project/tool-')) {
-        let toolName = key.replace(/^@aily-project\/tool-/, '');
-        if (toolName.startsWith('idf_')) {
-          toolName = 'esp32-arduino-libs';
+  private splitCommandLine(command: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let quote = '';
+
+    for (const char of command) {
+      if (quote) {
+        if (char === quote) {
+          quote = '';
+        } else {
+          current += char;
         }
-        const tool = toolName + '@' + version;
-        toolVersions.push(tool);
+      } else if (char === '"' || char === "'") {
+        quote = char;
+      } else if (/\s/.test(char)) {
+        if (current) {
+          result.push(current);
+          current = '';
+        }
+      } else {
+        current += char;
       }
-    });
-
-    if (!sdk) {
-      throw new Error('未找到 SDK 信息');
     }
 
-    // 构建路径
-    const sdkPath = await window["env"].get('AILY_SDK_PATH') + `/${sdk}`;
-    const toolsPath = await window["env"].get('AILY_TOOLS_PATH');
+    if (quote) {
+      throw new Error('compilerParam 包含未闭合的引号');
+    }
+    if (current) result.push(current);
 
-    // 构建完整的 lint 命令
-    const lintCommandParts = [
-      "node",
-      `"${AilyHost.get().path.getAilyBuilderPath()}/index.js"`,
-      lintParam,
-      `"${env.sketchFilePath}"`,
-      '--board', `"${boardType}"`,
-      '--libraries-path', `"${env.librariesPath}"`,
-      '--sdk-path', `"${sdkPath}"`,
-      '--tools-path', `"${toolsPath}"`,
-      '--tool-versions', `"${toolVersions.join(',')}"`,
-      '--mode', mode,
-      '--format', toAilyBuilderLintFormat(format)
-    ];
-
-    return lintCommandParts.join(' ');
+    return result;
   }
 
   /**
@@ -514,53 +620,18 @@ export class ArduinoLintService {
 
     try {
       if (format === 'json') {
-        // 提取 JSON 部分 - aily-builder 输出可能包含日志信息
-        // console.log('🔍 原始输出:', output);
-        
-        let jsonText = output;
-        
-        // 查找 JSON 对象的开始位置
-        const jsonStart = output.indexOf('{');
-        // console.log('📍 JSON 开始位置:', jsonStart);
-        
-        if (jsonStart !== -1) {
-          // 从第一个 { 开始提取
-          jsonText = output.substring(jsonStart);
-          
-          // 查找最后一个完整的 }
-          let braceCount = 0;
-          let jsonEnd = -1;
-          for (let i = 0; i < jsonText.length; i++) {
-            if (jsonText[i] === '{') braceCount++;
-            if (jsonText[i] === '}') {
-              braceCount--;
-              if (braceCount === 0) {
-                jsonEnd = i + 1;
-                break;
-              }
-            }
-          }
-          
-          if (jsonEnd !== -1) {
-            jsonText = jsonText.substring(0, jsonEnd);
-          }
-        } else {
-          // console.warn('⚠️ 未找到 JSON 开始标记，尝试直接解析整个输出');
+        // JSON 模式下 aily-linter 的结构化结果写入 stdout。
+        const jsonText = output.trim();
+        if (!jsonText) {
+          throw new Error('JSON 检查结果为空');
         }
-        
-        // console.log('🔍 提取的 JSON 文本:', jsonText);
-        // console.log('📏 JSON 文本长度:', jsonText.length);
-        
-        if (!jsonText.trim()) {
-          throw new Error('提取的 JSON 文本为空');
-        }
-        
-        // JSON 格式直接解析
+
         const jsonResult = JSON.parse(jsonText);
         return {
           success: jsonResult.success || false,
           errors: jsonResult.errors || [],
           warnings: jsonResult.warnings || [],
+          notes: jsonResult.notes || [],
           executionTime: jsonResult.executionTime || executionTime,
           mode: jsonResult.mode || mode
         };
@@ -583,6 +654,7 @@ export class ArduinoLintService {
           severity: 'error'
         }],
         warnings: [],
+        notes: [],
         executionTime,
         mode
       };
@@ -595,12 +667,14 @@ export class ArduinoLintService {
   private parseDiagnosticFormat(output: string, executionTime: number, mode: LintMode): LintResult {
     const errors: LintError[] = [];
     const warnings: LintError[] = [];
+    const notes: LintError[] = [];
 
     if (!output || output.trim().length === 0) {
       return {
         success: true,
         errors: [],
         warnings: [],
+        notes: [],
         executionTime,
         mode
       };
@@ -612,23 +686,28 @@ export class ArduinoLintService {
       const trimmedLine = line.trim();
       if (!trimmedLine) continue;
 
-      // 诊断定位格式: file(line,column): severity: message
-      const match = trimmedLine.match(/^(.+)\((\d+),(\d+)\):\s+(error|warning|info):\s+(.+)$/);
+      // VS Code 格式: file(line,column[,endLine,endColumn]): severity [code]: message
+      const match = trimmedLine.match(/^(.+)\((\d+),(\d+)(?:,(\d+),(\d+))?\):\s+(error|warning|note)(?:\s+([^:]+))?:\s+(.+)$/);
       if (match) {
-        const [, file, lineStr, colStr, severity, message] = match;
+        const [, file, lineStr, colStr, endLineStr, endColumnStr, severity, code, message] = match;
         
         const lintError: LintError = {
           file: file.trim(),
           line: parseInt(lineStr),
           column: parseInt(colStr),
+          endLine: endLineStr ? parseInt(endLineStr) : undefined,
+          endColumn: endColumnStr ? parseInt(endColumnStr) : undefined,
           message: message.trim(),
-          severity: severity.toLowerCase() === 'error' ? 'error' : 'warning'
+          severity: severity as LintError['severity'],
+          code: code?.trim() || undefined
         };
 
         if (lintError.severity === 'error') {
           errors.push(lintError);
-        } else {
+        } else if (lintError.severity === 'warning') {
           warnings.push(lintError);
+        } else {
+          notes.push(lintError);
         }
       }
     }
@@ -637,6 +716,7 @@ export class ArduinoLintService {
       success: errors.length === 0,
       errors,
       warnings,
+      notes,
       executionTime,
       mode
     };
@@ -648,57 +728,78 @@ export class ArduinoLintService {
   private parseHumanFormat(output: string, executionTime: number, mode: LintMode): LintResult {
     const errors: LintError[] = [];
     const warnings: LintError[] = [];
+    const notes: LintError[] = [];
 
     if (!output || output.trim().length === 0) {
       return {
         success: true,
         errors: [],
         warnings: [],
+        notes: [],
         executionTime,
         mode
       };
     }
 
-    // 检查是否包含成功标识
-    if (output.includes('✅ Syntax check passed!')) {
-      return {
-        success: true,
-        errors: [],
-        warnings: [],
-        executionTime,
-        mode
-      };
-    }
+    const sections: Record<string, { items: LintError[]; severity: LintError['severity'] }> = {
+      'Errors:': { items: errors, severity: 'error' },
+      'Warnings:': { items: warnings, severity: 'warning' },
+      'Notes:': { items: notes, severity: 'note' }
+    };
+    const lines = output.split(/\r?\n/);
+    let section: { items: LintError[]; severity: LintError['severity'] } | undefined;
 
-    // 检查是否包含失败标识
-    if (output.includes('❌ Syntax check failed!')) {
-      // 解析错误信息
-      const lines = output.split('\n');
-      
-      for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (!trimmedLine) continue;
-
-        // 尝试匹配错误格式: file:line:column
-        const match = trimmedLine.match(/^(.+):(\d+):(\d+)\s+(.+)$/);
-        if (match) {
-          const [, file, lineStr, colStr, message] = match;
-          
-          errors.push({
-            file: file.trim(),
-            line: parseInt(lineStr),
-            column: parseInt(colStr),
-            message: message.trim(),
-            severity: 'error'
-          });
-        }
+    for (let i = 0; i < lines.length; i++) {
+      const trimmedLine = lines[i].trim();
+      if (sections[trimmedLine]) {
+        section = sections[trimmedLine];
+        continue;
       }
+      if (!section) continue;
+
+      const location = trimmedLine.match(/^(.+):(\d+):(\d+)$/);
+      if (!location) continue;
+
+      const message = lines[i + 1]?.trim() || '未提供诊断信息';
+      const codeMatch = lines[i + 2]?.trim().match(/^\[([^\]]+)\]$/);
+      section.items.push({
+        file: location[1].trim(),
+        line: parseInt(location[2]),
+        column: parseInt(location[3]),
+        message,
+        severity: section.severity,
+        code: codeMatch?.[1]
+      });
+      i += codeMatch ? 2 : 1;
+    }
+
+    const passed = output.includes('Syntax check passed!');
+    const failed = output.includes('Syntax check failed!');
+    if (failed && errors.length === 0) {
+      errors.push({
+        file: 'sketch.ino',
+        line: 1,
+        column: 1,
+        message: 'Syntax check failed!',
+        severity: 'error'
+      });
+    }
+
+    if (!passed && !failed && errors.length === 0 && warnings.length === 0 && notes.length === 0) {
+      errors.push({
+        file: 'sketch.ino',
+        line: 1,
+        column: 1,
+        message: '无法识别 aily-linter 输出',
+        severity: 'error'
+      });
     }
 
     return {
-      success: errors.length === 0,
+      success: passed && errors.length === 0,
       errors,
       warnings,
+      notes,
       executionTime,
       mode
     };
@@ -763,40 +864,9 @@ export class ArduinoLintService {
    */
   isAvailable(): boolean {
     try {
-      // console.log('🔍 检查 aily-builder 可用性...');
-      
-      // 检查 AilyHost.get().path 是否存在
-      if (!AilyHost.get().path) {
-        // console.warn('❌ window.path 不存在');
-        return false;
-      }
-      
-      // 检查 getAilyBuilderPath 方法
-      if (typeof AilyHost.get().path.getAilyBuilderPath !== 'function') {
-        // console.warn('❌ window.path.getAilyBuilderPath 方法不存在');
-        return false;
-      }
-      
-      const ailyBuilderPath = AilyHost.get().path.getAilyBuilderPath();
-      // console.log('- aily-builder 路径:', ailyBuilderPath);
-      
-      if (!ailyBuilderPath) {
-        // console.warn('❌ aily-builder 路径为空');
-        return false;
-      }
-      
-      // 检查 isExists 方法
-      if (typeof AilyHost.get().path.isExists !== 'function') {
-        // console.warn('❌ window.path.isExists 方法不存在');
-        return false;
-      }
-      
-      const indexJsExists = AilyHost.get().path.isExists(ailyBuilderPath + '/index.js');
-      // console.log('- index.js 存在:', indexJsExists);
-      
-      return indexJsExists;
+      return !!AilyHost.get().path && !!window['linter']?.waitForReady;
     } catch (error) {
-      console.warn('检查 aily-builder 可用性失败:', error);
+      console.warn('检查 aily-linter 可用性失败:', error);
       return false;
     }
   }
@@ -814,7 +884,7 @@ export class ArduinoLintService {
     return {
       available: this.isAvailable(),
       inProgress: this.lintInProgress,
-      version: 'aily-builder-lint-optimized',
+      version: 'aily-linter',
       sessionCount: this.lintSessionCount,
       nextCleanupIn: this.CLEANUP_INTERVAL - (this.lintSessionCount % this.CLEANUP_INTERVAL)
     };

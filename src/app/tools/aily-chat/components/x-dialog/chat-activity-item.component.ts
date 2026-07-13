@@ -1,6 +1,6 @@
-import { ChangeDetectionStrategy, ChangeDetectorRef, Component, Input, OnChanges, SimpleChanges, forwardRef, inject } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, Input, OnChanges, SimpleChanges, ViewChild, forwardRef, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { XMarkdownComponent } from 'ngx-x-markdown';
 import type { ComponentMap } from 'ngx-x-markdown';
 
@@ -8,8 +8,9 @@ import { AilyHost } from '../../core/host';
 import { AilyChatCodeComponent } from './aily-chat-code.component';
 import { ChatTerminalPartComponent } from './chat-terminal-part/chat-terminal-part.component';
 import { XAilyThinkViewerComponent } from './x-aily-think-viewer/x-aily-think-viewer.component';
+import { XAilyMermaidViewerComponent } from './x-aily-mermaid-viewer/x-aily-mermaid-viewer.component';
 import { AilyMarkdownExternalLinksDirective } from '../../directives/aily-markdown-external-links.directive';
-import type { ActivityGroupDisplayItem, ActivityToolbarActionDisplayData } from './chat-activity-group.types';
+import type { ActivityGroupDisplayItem, ActivityToolbarActionDisplayData, ActivityToolHeaderDisplayData } from './chat-activity-group.types';
 import { XAilyConfirmationViewerComponent } from './x-aily-confirmation-viewer/x-aily-confirmation-viewer.component';
 import {
   getDiffDisplayLines,
@@ -29,17 +30,22 @@ import {
 } from './x-aily-state-viewer/activity-detail-items';
 import { getBlocklyArtifactReferenceLabel, resolveBlocklyArtifactReferenceTarget } from '../../helpers/chat-artifact-reference';
 import { openChatProcessWindow } from '../../helpers/chat-process-window';
+import { resolveChildToolIdFromProcess } from '../../helpers/child-tool-process-summary';
+import { getChildToolConfig } from '../../../../configs/tool.config';
+import { resolveTerminalLifecycleState } from '../../core/terminal-status';
+import { OPEN_MAX_REQUESTS_SETTINGS_ACTION_ID } from '../../core/chat-runtime-confirmation-actions';
 import {
   ChatRuntimeInteractionHostService,
   type RuntimeCommandSessionActionResult,
   type RuntimeConfirmationDecision,
 } from '../../services/chat-runtime-interaction-host.service';
+import { ChatViewService } from '../../services/chat-view.service';
 import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
 
 @Component({
   selector: 'aily-chat-activity-item',
   standalone: true,
-  imports: [CommonModule, TranslateModule, XMarkdownComponent, XAilyConfirmationViewerComponent, ChatTerminalPartComponent, XAilyThinkViewerComponent, AilyMarkdownExternalLinksDirective, forwardRef(() => ChatActivityItemComponent)],
+  imports: [CommonModule, TranslateModule, XMarkdownComponent, XAilyConfirmationViewerComponent, ChatTerminalPartComponent, XAilyThinkViewerComponent, XAilyMermaidViewerComponent, AilyMarkdownExternalLinksDirective, forwardRef(() => ChatActivityItemComponent)],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div
@@ -60,7 +66,11 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
       <div class="cag-item-body">
         @if (item.kind === 'thinking') {
           <div class="cag-item-thinking-content">
-            <x-aily-think-viewer [data]="getThinkingViewerData()" [embedded]="true" />
+            <x-aily-think-viewer
+              [data]="getThinkingViewerData()"
+              [embedded]="true"
+              [impliedWordLoadRate]="impliedWordLoadRate"
+              [contentDeltaHandler]="contentDeltaHandler" />
           </div>
         } @else {
           <div
@@ -79,9 +89,9 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
             @if (isToolHeader()) {
               <div class="cag-item-tool-title">
                 <div class="cag-item-tool-title-main">
-                  <span class="cag-item-tool-title-label">{{ (item.toolHeader?.title || item.label) | translate }}</span>
-                  @if (item.toolHeader?.subtitle) {
-                    <small class="cag-item-tool-title-subtitle">{{ item.toolHeader?.subtitle | translate }}</small>
+                  <span class="cag-item-tool-title-label">{{ (stableToolHeader?.title || item.label) | translate }}</span>
+                  @if (stableToolHeader?.subtitle) {
+                    <small class="cag-item-tool-title-subtitle">{{ stableToolHeader?.subtitle | translate }}</small>
                   }
                 </div>
                 <span class="cag-item-tool-title-side">
@@ -100,11 +110,11 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
                       }
                     </span>
                   }
-                  @if (item.toolHeader?.meta) {
-                    <span class="cag-item-head-meta">{{ item.toolHeader?.meta }}</span>
+                  @if (stableToolHeader?.meta) {
+                    <span class="cag-item-head-meta">{{ stableToolHeader?.meta }}</span>
                   }
-                  @if (item.toolHeader?.pill) {
-                    <span class="cag-item-pill" [attr.data-tone]="item.toolHeader?.pillTone">{{ item.toolHeader?.pill | translate }}</span>
+                  @if (stableToolHeader?.pill) {
+                    <span class="cag-item-pill" [attr.data-tone]="stableToolHeader?.pillTone">{{ stableToolHeader?.pill | translate }}</span>
                   }
                   @if (hasDetailContent()) {
                     <span class="cag-item-chevron-wrap" aria-hidden="true">
@@ -216,7 +226,8 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
                   [sessionId]="sessionId"
                   [first]="nestedFirst"
                   [last]="nestedLast"
-                  [only]="nestedCount === 1" />
+                  [only]="nestedCount === 1"
+                  [contentDeltaHandler]="contentDeltaHandler" />
               }
             </div>
           }
@@ -229,7 +240,8 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
                   [sessionId]="sessionId"
                   [first]="subagentFirst"
                   [last]="subagentLast"
-                  [only]="subagentCount === 1" />
+                  [only]="subagentCount === 1"
+                  [contentDeltaHandler]="contentDeltaHandler" />
               }
             </div>
           }
@@ -442,7 +454,8 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
                                   [hasOutput]="hasTerminalOutput(group)"
                                   [output]="getTerminalOutputText(group)"
                                   [actions]="getTerminalToolbarActions()"
-                                  (actionSelected)="handleTerminalToolbarAction($event)" />
+                                  (actionSelected)="handleTerminalToolbarAction($event)"
+                                  [contentDeltaHandler]="contentDeltaHandler" />
                               } @else {
                                 @for (row of group.rows; track row.id) {
                                 <div class="cag-item-invocation-output" [attr.data-tone]="row.tone || 'neutral'" [attr.data-output-kind]="row.outputKind || 'default'">
@@ -554,6 +567,32 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
                                             rootClassName="x-markdown-dark cag-item-markdown"
                                             ailyMarkdownExternalLinks
                                           />
+                                        </div>
+                                      }
+                                    </div>
+                                  } @else if (row.outputKind === 'mermaid') {
+                                    <div class="cag-item-invocation-output-subpart cag-item-invocation-output-mermaid">
+                                      <div class="cag-item-detail-row-head">
+                                        <span class="cag-item-detail-row-title">{{ row.title }}</span>
+                                        @if (row.trailing) {
+                                          <span class="cag-item-detail-row-pill" [attr.data-tone]="row.tone || 'neutral'">{{ row.trailing }}</span>
+                                        }
+                                      </div>
+                                      @if (row.subtitle) {
+                                        <div class="cag-item-detail-row-subtitle">{{ row.subtitle }}</div>
+                                      }
+                                      <x-aily-mermaid-viewer
+                                        [data]="{ code: row.outputCode || row.note || '' }"
+                                        [streamStatus]="'done'"
+                                        [mermaidInstance]="mermaidInstance"></x-aily-mermaid-viewer>
+                                      @if (row.outputLabel || row.outputMimeType) {
+                                        <div class="cag-item-invocation-output-resource-meta">
+                                          @if (row.outputLabel) {
+                                            <span class="cag-item-invocation-output-resource-label">{{ row.outputLabel }}</span>
+                                          }
+                                          @if (row.outputMimeType) {
+                                            <span class="cag-item-invocation-output-resource-mime">{{ row.outputMimeType }}</span>
+                                          }
                                         </div>
                                       }
                                     </div>
@@ -2254,17 +2293,30 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
   `],
 })
 export class ChatActivityItemComponent implements OnChanges {
+  private readonly translate = inject(TranslateService);
   @Input({ required: true }) item!: ActivityGroupDisplayItem;
   @Input() sessionId = '';
+  @Input() impliedWordLoadRate: number | undefined;
   @Input() first = false;
   @Input() last = false;
   @Input() only = false;
+  @Input() contentDeltaHandler: (() => void) | undefined;
+  @ViewChild(XAilyThinkViewerComponent) private thinkingViewer?: XAilyThinkViewerComponent;
 
   readonly componentMap: ComponentMap = { code: AilyChatCodeComponent };
   private readonly runtimeInteractionHost = inject(ChatRuntimeInteractionHostService, { optional: true });
+  private readonly chatViewState = inject(ChatViewService, { optional: true });
   private readonly cdr = inject(ChangeDetectorRef);
 
   detailExpanded = false;
+  stableToolHeader: ActivityToolHeaderDisplayData | null = null;
+  mermaidInstance: any = null;
+  private stableToolHeaderItemId = '';
+  private mermaidLoading = false;
+
+  emitContentDelta(): void {
+    this.contentDeltaHandler?.();
+  }
 
   shouldRenderInlineApproval(): boolean {
     return !!this.item?.approval && (this.item.approval.resolved === true || this.hasActiveInlineApproval());
@@ -2285,6 +2337,16 @@ export class ChatActivityItemComponent implements OnChanges {
 
     const activeConfirmation = this.runtimeInteractionHost?.getActiveConfirmation(this.sessionId);
     if (!activeConfirmation) {
+      return;
+    }
+
+    if (decision.sideEffectOnly && typeof decision.actionId === 'string' && decision.actionId.length > 0) {
+      if (decision.actionId === OPEN_MAX_REQUESTS_SETTINGS_ACTION_ID) {
+        this.chatViewState?.openSettings();
+        return;
+      }
+
+      this.runtimeInteractionHost?.triggerConfirmationAction(this.sessionId, activeConfirmation.id, decision.actionId);
       return;
     }
 
@@ -2324,37 +2386,83 @@ export class ChatActivityItemComponent implements OnChanges {
   selectedInstructionFilter: InstructionDiagnosticFilter = 'all';
   private readonly collapsedDiffHunks = new Set<string>();
   private lastAutoDetailExpanded = false;
+  private thinkingViewerDataCacheKey = '';
+  private thinkingViewerDataCache: {
+    content?: string;
+    ref?: string;
+    contentLength?: number;
+    isComplete?: boolean;
+  } | null = null;
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['item']) {
-      const syncStartedAt = performance.now();
       const previousItem = changes['item'].previousValue as ActivityGroupDisplayItem | undefined;
-      const isSameItem = previousItem?.id === this.item.id;
-      const nextAutoDetailExpanded = this.shouldAutoExpandDetails();
-
-      if (!isSameItem) {
-        this.detailExpanded = nextAutoDetailExpanded;
-      } else if (nextAutoDetailExpanded !== this.lastAutoDetailExpanded) {
-        this.detailExpanded = nextAutoDetailExpanded;
-      } else if (this.item.detailExpanded === true && !this.detailExpanded && !this.isCommandSessionContinuedInBackground()) {
-        this.detailExpanded = true;
-      }
-
-      if (this.detailExpanded) {
-        this.ensureLazyDetailLoaded();
-      }
-
-      this.lastAutoDetailExpanded = nextAutoDetailExpanded;
-      this.selectedInstructionFilter = 'all';
-      const markdownSurfaceCount = countActivityItemMarkdownSurfaces(this.item, this.detailExpanded);
-      ChatPerformanceTracer.increment('activity_item.markdown_instances', markdownSurfaceCount);
-      ChatPerformanceTracer.recordDuration(
-        'activity_item.input_sync',
-        performance.now() - syncStartedAt,
-        `id=${this.item.id},kind=${this.item.kind},detail=${this.detailExpanded},markdownSurfaces=${markdownSurfaceCount}`,
-        { slowThresholdMs: 4 },
-      );
+      this.syncInputFromItem(previousItem);
     }
+  }
+
+  applyVisibleActivityItemPatch(input: {
+    readonly item: ActivityGroupDisplayItem;
+    readonly sessionId: string;
+    readonly impliedWordLoadRate?: number;
+    readonly first: boolean;
+    readonly last: boolean;
+    readonly only: boolean;
+  }): boolean {
+    if (!input.item || input.item.id !== this.item?.id) {
+      return false;
+    }
+    const previousItem = this.item;
+    this.item = input.item;
+    this.sessionId = input.sessionId;
+    this.impliedWordLoadRate = input.impliedWordLoadRate;
+    this.first = input.first;
+    this.last = input.last;
+    this.only = input.only;
+    if (canPatchStreamingThinkingItemWithoutDetect(previousItem, input.item)) {
+      this.thinkingViewerDataCacheKey = '';
+      this.thinkingViewerDataCache = null;
+      if (this.thinkingViewer?.applyVisibleThinkingPatch(
+        this.getThinkingViewerData(),
+        input.impliedWordLoadRate,
+      )) {
+        return true;
+      }
+    }
+    this.syncInputFromItem(previousItem);
+    this.cdr.detectChanges();
+    return true;
+  }
+
+  private syncInputFromItem(previousItem: ActivityGroupDisplayItem | undefined): void {
+    const syncStartedAt = performance.now();
+    const isSameItem = previousItem?.id === this.item.id;
+    const nextAutoDetailExpanded = this.shouldAutoExpandDetails();
+
+    if (!isSameItem) {
+      this.detailExpanded = nextAutoDetailExpanded;
+    } else if (nextAutoDetailExpanded !== this.lastAutoDetailExpanded) {
+      this.detailExpanded = nextAutoDetailExpanded;
+    } else if (this.item.detailExpanded === true && !this.detailExpanded && !this.isCommandSessionContinuedInBackground()) {
+      this.detailExpanded = true;
+    }
+
+    if (this.detailExpanded) {
+      this.ensureLazyDetailLoaded();
+    }
+    void this.ensureMermaidInstance();
+
+    this.syncStableToolHeader(isSameItem);
+    this.lastAutoDetailExpanded = nextAutoDetailExpanded;
+    this.selectedInstructionFilter = 'all';
+    const markdownSurfaceCount = countActivityItemMarkdownSurfaces(this.item, this.detailExpanded);
+    ChatPerformanceTracer.increment('activity_item.markdown_instances', markdownSurfaceCount);
+    ChatPerformanceTracer.recordDuration(
+      'activity_item.input_sync',
+      performance.now() - syncStartedAt,
+      `id=${this.item.id},kind=${this.item.kind},detail=${this.detailExpanded},markdownSurfaces=${markdownSurfaceCount}`,
+      { slowThresholdMs: 4 },
+    );
   }
 
   hasDetailSections(): boolean {
@@ -2365,23 +2473,62 @@ export class ChatActivityItemComponent implements OnChanges {
     return !!this.item.toolHeader || this.item.headerKind === 'tool';
   }
 
+  private syncStableToolHeader(isSameItem: boolean): void {
+    const nextHeader = this.item.toolHeader;
+    if (!nextHeader) {
+      this.stableToolHeader = null;
+      this.stableToolHeaderItemId = '';
+      return;
+    }
+
+    if (!isSameItem || this.stableToolHeaderItemId !== this.item.id || !this.stableToolHeader) {
+      this.stableToolHeader = { ...nextHeader };
+      this.stableToolHeaderItemId = this.item.id;
+      return;
+    }
+
+    this.stableToolHeader = {
+      title: nextHeader.title || this.stableToolHeader.title,
+      subtitle: nextHeader.subtitle || this.stableToolHeader.subtitle,
+      meta: nextHeader.meta || this.stableToolHeader.meta,
+      pill: nextHeader.pill,
+      pillTone: nextHeader.pillTone,
+    };
+  }
+
   getThinkingViewerData(): {
     content?: string;
     ref?: string;
+    contentLength?: number;
     isComplete?: boolean;
   } {
     const thinking = this.item.thinking;
-    if (thinking?.ref) {
-      return {
-        ref: thinking.ref,
-        isComplete: thinking.isComplete,
-      };
+    const cacheKey = [
+      this.item.id,
+      thinking?.ref ?? '',
+      thinking?.content ?? this.item.note ?? '',
+      thinking?.contentLength ?? '',
+      thinking?.isComplete ?? !this.item.isSpinning,
+    ].join('\u0000');
+    if (this.thinkingViewerDataCacheKey === cacheKey && this.thinkingViewerDataCache) {
+      return this.thinkingViewerDataCache;
     }
 
-    return {
+    this.thinkingViewerDataCacheKey = cacheKey;
+    if (thinking?.ref) {
+      this.thinkingViewerDataCache = {
+        ref: thinking.ref,
+        ...(typeof thinking.contentLength === 'number' ? { contentLength: thinking.contentLength } : {}),
+        isComplete: thinking.isComplete,
+      };
+      return this.thinkingViewerDataCache;
+    }
+
+    this.thinkingViewerDataCache = {
       content: thinking?.content ?? this.item.note ?? '',
       isComplete: thinking?.isComplete ?? !this.item.isSpinning,
     };
+    return this.thinkingViewerDataCache;
   }
 
   shouldRenderHeaderToolbar(): boolean {
@@ -2534,20 +2681,39 @@ export class ChatActivityItemComponent implements OnChanges {
     const exitCode = typeof snapshot?.exitCode === 'number' ? snapshot.exitCode : 130;
     const status = snapshot?.status || 'killed';
     const stopped = !running;
+    const terminalState = resolveTerminalLifecycleState({ running, exitCode, status });
 
     this.item = {
       ...this.item,
       isSpinning: running,
-      iconClass: running
+      iconClass: terminalState === 'running'
         ? this.item.iconClass
-        : (exitCode && exitCode !== 0 ? 'fa-light fa-circle-xmark' : 'fa-light fa-circle-check'),
-      iconColor: running ? this.item.iconColor : (exitCode && exitCode !== 0 ? '#d4380d' : '#389e0d'),
+        : terminalState === 'failed'
+          ? 'fa-light fa-circle-xmark'
+          : terminalState === 'cancelled'
+            ? 'fa-light fa-circle-minus'
+            : 'fa-light fa-circle-check',
+      iconColor: running
+        ? this.item.iconColor
+        : terminalState === 'failed'
+          ? '#d4380d'
+          : terminalState === 'cancelled'
+            ? '#d89614'
+            : '#389e0d',
       toolHeader: this.item.toolHeader
         ? {
             ...this.item.toolHeader,
             meta: stopped && exitCode != null ? `退出码 ${exitCode}` : this.item.toolHeader.meta,
-            pill: stopped ? (status === 'killed' ? '已停止' : this.item.toolHeader.pill) : this.item.toolHeader.pill,
-            pillTone: stopped ? (status === 'killed' ? 'warn' : this.item.toolHeader.pillTone) : this.item.toolHeader.pillTone,
+            pill: stopped
+              ? (terminalState === 'cancelled'
+                  ? '已取消'
+                  : (status === 'killed' ? '已停止' : this.item.toolHeader.pill))
+              : this.item.toolHeader.pill,
+            pillTone: stopped
+              ? (terminalState === 'failed'
+                  ? 'error'
+                  : (terminalState === 'cancelled' || status === 'killed' ? 'warn' : this.item.toolHeader.pillTone))
+              : this.item.toolHeader.pillTone,
           }
         : this.item.toolHeader,
       toolbarActions: this.item.toolbarActions?.filter(toolbarAction =>
@@ -2580,6 +2746,21 @@ export class ChatActivityItemComponent implements OnChanges {
       return;
     }
 
+    const command = typeof action.data?.['command'] === 'string'
+      ? action.data['command']
+      : undefined;
+    const toolId = resolveChildToolIdFromProcess({
+      processId,
+      command,
+      cwd: typeof action.data?.['cwd'] === 'string' ? action.data['cwd'] : undefined,
+      outputFilePath: typeof action.data?.['outputFilePath'] === 'string' ? action.data['outputFilePath'] : undefined,
+      subappName: typeof action.data?.['subappName'] === 'string' ? action.data['subappName'] : undefined,
+    });
+    if (toolId) {
+      AilyHost.get().ui?.openToolWindow?.(toolId, { title: this.resolveChildToolDisplayName(toolId) });
+      return;
+    }
+
     openChatProcessWindow({
       sessionId: this.sessionId,
       processId,
@@ -2589,10 +2770,27 @@ export class ChatActivityItemComponent implements OnChanges {
       outputFilePath: typeof action.data?.['outputFilePath'] === 'string'
         ? action.data['outputFilePath']
         : undefined,
-      command: typeof action.data?.['command'] === 'string'
-        ? action.data['command']
-        : undefined,
+      command,
     });
+  }
+
+  private resolveChildToolDisplayName(toolId: string): string {
+    const config = getChildToolConfig(toolId);
+    if (!config) {
+      return toolId;
+    }
+
+    const globalName = this.translate.instant(config.namespace);
+    if (typeof globalName === 'string' && globalName && globalName !== config.namespace) {
+      return globalName;
+    }
+
+    const title = this.translate.instant(config.titleKey);
+    if (typeof title === 'string' && title && title !== config.titleKey) {
+      return title;
+    }
+
+    return toolId;
   }
 
   hasDetailContent(): boolean {
@@ -2643,6 +2841,7 @@ export class ChatActivityItemComponent implements OnChanges {
     const nextExpanded = !this.detailExpanded;
     if (nextExpanded) {
       this.ensureLazyDetailLoaded();
+      void this.ensureMermaidInstance();
     }
     this.detailExpanded = nextExpanded;
   }
@@ -2670,6 +2869,72 @@ export class ChatActivityItemComponent implements OnChanges {
       `id=${this.item.id},kind=${this.item.detailKind || 'unknown'},sections=${detail.detailSections?.length || 0}`,
       { slowThresholdMs: 8 },
     );
+  }
+
+  private async ensureMermaidInstance(): Promise<void> {
+    if (this.mermaidInstance || this.mermaidLoading || !this.hasMermaidRows()) {
+      return;
+    }
+
+    this.mermaidLoading = true;
+    try {
+      const module = await import('mermaid');
+      this.mermaidInstance = module.default ?? module;
+      this.cdr.markForCheck();
+    } finally {
+      this.mermaidLoading = false;
+    }
+  }
+
+  private hasMermaidRows(): boolean {
+    return this.collectMermaidRows(this.getDetailSectionsForMermaid()).length > 0;
+  }
+
+  private getDetailSectionsForMermaid(): readonly DetailSectionDescriptor[] {
+    if (!this.item) {
+      return [];
+    }
+    const sections: readonly DetailSectionDescriptor[] = [
+      ...(this.item.detailSections || []),
+      ...(this.item.invocationDetail?.progressSection ? [this.item.invocationDetail.progressSection] : []),
+      ...(this.item.invocationDetail?.argsSection ? [this.item.invocationDetail.argsSection] : []),
+      ...(this.item.invocationDetail?.outputSections || []),
+      ...(this.item.invocationDetail?.historySections || []),
+    ];
+
+    return sections;
+  }
+
+  private collectMermaidRows(sections: readonly DetailSectionDescriptor[]): readonly StateDetailRow[] {
+    const rows: StateDetailRow[] = [];
+    const seen = new Set<string>();
+    for (const section of sections) {
+      for (const row of section.rows || []) {
+        this.addMermaidRow(rows, seen, row);
+      }
+      for (const group of section.outputGroups || []) {
+        for (const row of group.rows || []) {
+          this.addMermaidRow(rows, seen, row);
+        }
+      }
+    }
+    return rows;
+  }
+
+  private addMermaidRow(rows: StateDetailRow[], seen: Set<string>, row: StateDetailRow): void {
+    if (row.outputKind !== 'mermaid') {
+      return;
+    }
+    const code = row.outputCode || row.note || '';
+    if (!code.trim()) {
+      return;
+    }
+    const key = row.id || `${row.title || 'mermaid'}:${code}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    rows.push(row);
   }
 
   getOutputImageSource(row: StateDetailRow): string | null {
@@ -2859,6 +3124,29 @@ export class ChatActivityItemComponent implements OnChanges {
     const host = AilyHost.get();
     return host.project.currentProjectPath || host.project.projectRootPath || '';
   }
+}
+
+function canPatchStreamingThinkingItemWithoutDetect(
+  previous: ActivityGroupDisplayItem,
+  next: ActivityGroupDisplayItem,
+): boolean {
+  return previous.id === next.id
+    && previous.kind === 'thinking'
+    && next.kind === 'thinking'
+    && previous.isSpinning
+    && next.isSpinning
+    && previous.thinking?.isComplete === false
+    && next.thinking?.isComplete === false
+    && !!previous.thinking.ref
+    && previous.thinking.ref === next.thinking.ref
+    && previous.iconClass === next.iconClass
+    && previous.iconColor === next.iconColor
+    && previous.kicker === next.kicker
+    && previous.label === next.label
+    && previous.subtitle === next.subtitle
+    && previous.headerMeta === next.headerMeta
+    && previous.pill === next.pill
+    && previous.pillTone === next.pillTone;
 }
 
 function countActivityItemMarkdownSurfaces(item: ActivityGroupDisplayItem, detailExpanded: boolean): number {

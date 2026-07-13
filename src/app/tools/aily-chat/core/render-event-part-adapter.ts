@@ -24,6 +24,7 @@ import {
   type StatePart,
   type SubagentToolCallSnapshot,
   mkSubagentTimelineEntry,
+  normalizeSubagentToolCallState,
   mkTerminal,
   mkToolCall,
   mkState,
@@ -63,8 +64,8 @@ export type RenderEventPartStoreAccess = Pick<
   | 'upsertSubagentForHandle'
   | 'updateConfirmationResultForHandle'
   | 'updateSubagentForHandle'
+  | 'finalizeSubagentScopedPartsForHandle'
   | 'upsertTerminalForHandle'
-  | 'materializeFinalMarkdownAsPlanForHandle'
 >;
 
 function hasUsableStoreHandle(
@@ -182,6 +183,7 @@ export class RenderEventPartAdapter {
   private _planStreamState: 'markdown' | 'plan' = 'markdown';
   private _planStreamBuffer = '';
   private readonly _toolOriginHandles = new Map<string, ChatPartStoreOpaqueHandle>();
+  private readonly _toolInputs = new Map<string, unknown>();
 
   constructor(store: RenderEventPartStoreAccess) {
     this._store = store;
@@ -220,7 +222,13 @@ export class RenderEventPartAdapter {
 
       // ---- Tool Call ----
       case 'tool_call_begin':
+        if (this._isTerminalSessionToolCoveredByTerminal(handle, event)) {
+          this._rememberToolOrigin(event.toolCallId, handle, eventScope(event));
+          this._rememberToolInput(event.toolCallId, event.input, eventScope(event));
+          return finish(false, 'terminal_tool_call_begin_covered');
+        }
         this._rememberToolOrigin(event.toolCallId, handle, eventScope(event));
+        this._rememberToolInput(event.toolCallId, event.input, eventScope(event));
         this._store.addPartToHandle(handle, mkToolCall(
           event.toolCallId,
           event.toolName,
@@ -237,6 +245,9 @@ export class RenderEventPartAdapter {
 
       case 'tool_call_end': {
         const scope = eventScope(event);
+        if (this._appendTerminalPart(handle, event)) {
+          return finish(true, 'terminal_tool_call_end');
+        }
         const toolHandle = this._findToolCallHandle(event.toolCallId, handle, scope);
         if (!this._hasExactToolCallHandle(event.toolCallId, handle, scope)) {
           recordScopedSubagentToolHandleMiss(event, 'tool_call_end');
@@ -258,7 +269,6 @@ export class RenderEventPartAdapter {
             }), scope),
           },
         );
-        this._appendTerminalPart(handle, event);
         return finish(true);
       }
 
@@ -318,6 +328,7 @@ export class RenderEventPartAdapter {
 
       case 'approval_request':
         if (isToolExecutionApprovalEvent(event)) {
+          this._rememberToolInput(event.toolCallId, event.input, eventScope(event));
           this._store.patchToolCallForHandle(
             this._findToolCallHandle(event.toolCallId, handle, eventScope(event)),
             event.toolCallId,
@@ -396,12 +407,24 @@ export class RenderEventPartAdapter {
         if (!this._hasExactToolCallHandle(event.toolCallId, handle)) {
           recordScopedSubagentToolHandleMiss(event, 'subagent_end');
         }
-        this._store.updateSubagentForHandle(toolHandle, event.toolCallId, event.state, event.resultText);
+        const state = normalizeSubagentToolCallState(event.state || 'done');
+        this._store.updateSubagentForHandle(
+          toolHandle,
+          event.toolCallId,
+          state,
+          event.resultText,
+        );
+        this._store.finalizeSubagentScopedPartsForHandle(toolHandle, {
+          subAgentInvocationId: event.subAgentInvocationId,
+          parentToolCallId: event.toolCallId,
+          toolCallId: event.toolCallId,
+        }, { status: state === 'error' ? 'error' : 'completed' });
         return finish(true);
       }
 
       // ---- Turn lifecycle (non-Part) ----
       case 'turn_begin':
+      case 'response_complete':
       case 'turn_end':
       case 'session_meta':
         // These are lifecycle signals, not rendered as Parts.
@@ -418,12 +441,10 @@ export class RenderEventPartAdapter {
     this._planStreamState = 'markdown';
     this._planStreamBuffer = '';
     this._toolOriginHandles.clear();
+    this._toolInputs.clear();
   }
 
-  finalize(
-    handle: ChatPartStoreOpaqueHandle | null,
-    options: { readonly materializeFinalMarkdownAsPlan?: boolean } = {},
-  ): void {
+  finalize(handle: ChatPartStoreOpaqueHandle | null): void {
     if (!hasUsableStoreHandle(handle)) {
       this.reset();
       return;
@@ -439,8 +460,6 @@ export class RenderEventPartAdapter {
 
     if (this._planStreamState === 'plan') {
       this._store.completePlanHandle(handle);
-    } else if (options.materializeFinalMarkdownAsPlan === true) {
-      this._store.materializeFinalMarkdownAsPlanForHandle(handle);
     }
 
     this.reset();
@@ -569,6 +588,34 @@ export class RenderEventPartAdapter {
   ): boolean {
     const scope = eventScope(event);
     const toolHandle = this._findToolCallHandle(event.toolCallId, fallbackHandle, scope);
+    const commandOutput = normalizeCommandOutputProgress(event.data);
+    if (commandOutput) {
+      const terminal = commandTerminalUpdateToPart(
+        this._withInheritedTerminalCommand(commandOutput, event.toolCallId, toolHandle, scope),
+        event.toolCallId,
+        true,
+      );
+      if (scope) {
+        Object.assign(terminal, scope);
+      }
+      this._store.upsertTerminalForHandle(toolHandle ?? fallbackHandle, terminal);
+      return true;
+    }
+
+    const commandSession = normalizeCommandSessionUpdate(event.data);
+    if (commandSession) {
+      const terminal = commandTerminalUpdateToPart(
+        this._withInheritedTerminalCommand(commandSession, event.toolCallId, toolHandle, scope),
+        event.toolCallId,
+        false,
+      );
+      if (scope) {
+        Object.assign(terminal, scope);
+      }
+      this._store.upsertTerminalForHandle(toolHandle ?? fallbackHandle, terminal);
+      return true;
+    }
+
     if (!this._hasExactToolCallHandle(event.toolCallId, fallbackHandle, scope)) {
       recordScopedSubagentToolHandleMiss(event, 'tool_call_progress');
     }
@@ -580,25 +627,6 @@ export class RenderEventPartAdapter {
     const progressUpdate = normalizeToolCallProgressUpdate(event.data, toolPart?.toolName);
     if (!progressUpdate) {
       return false;
-    }
-    const commandOutput = normalizeCommandOutputProgress(event.data);
-    if (commandOutput) {
-      const terminal = commandTerminalUpdateToPart(commandOutput, event.toolCallId, true);
-      const scope = eventScope(event);
-      if (scope) {
-        Object.assign(terminal, scope);
-      }
-      this._store.upsertTerminalForHandle(toolHandle, terminal);
-    }
-
-    const commandSession = normalizeCommandSessionUpdate(event.data);
-    if (commandSession) {
-      const terminal = commandTerminalUpdateToPart(commandSession, event.toolCallId, false);
-      const scope = eventScope(event);
-      if (scope) {
-        Object.assign(terminal, scope);
-      }
-      this._store.upsertTerminalForHandle(toolHandle, terminal);
     }
 
     const nextMetadata = withChatPartScopeMetadata(buildToolCallProgressMetadataPatch({
@@ -639,6 +667,21 @@ export class RenderEventPartAdapter {
     );
   }
 
+  private _hasToolInvocationPart(
+    handle: ChatPartStoreOpaqueHandle,
+    toolCallId: string,
+  ): boolean {
+    return this._store.getPartsForHandle(handle).some(part => {
+      if (part.type === 'tool_call') {
+        return part.toolCallId === toolCallId;
+      }
+      if (part.type === 'terminal') {
+        return part.toolCallId === toolCallId || part.sourceToolCallIds?.includes(toolCallId) === true;
+      }
+      return false;
+    });
+  }
+
   private _ensureSubagentParentForActivity(
     handle: ChatPartStoreOpaqueHandle,
     event: SubagentActivity,
@@ -660,7 +703,7 @@ export class RenderEventPartAdapter {
   ): ChatPartStoreOpaqueHandle | null {
     const originHandle = this._toolOriginHandles.get(this._toolOriginKey(toolCallId, scope))
       ?? this._toolOriginHandles.get(this._toolOriginKey(toolCallId));
-    if (originHandle && this._findToolCallPart(originHandle, toolCallId)) {
+    if (originHandle && this._hasToolInvocationPart(originHandle, toolCallId)) {
       return originHandle;
     }
 
@@ -668,7 +711,7 @@ export class RenderEventPartAdapter {
       return null;
     }
 
-    return this._findToolCallPart(fallbackHandle, toolCallId) ? fallbackHandle : null;
+    return this._hasToolInvocationPart(fallbackHandle, toolCallId) ? fallbackHandle : null;
   }
 
   private _hasExactToolCallHandle(toolCallId: string, handle: ChatPartStoreOpaqueHandle | null, scope?: ChatPartScope): boolean {
@@ -677,6 +720,38 @@ export class RenderEventPartAdapter {
 
   private _rememberToolOrigin(toolCallId: string, handle: ChatPartStoreOpaqueHandle, scope?: ChatPartScope): void {
     this._toolOriginHandles.set(this._toolOriginKey(toolCallId, scope), handle);
+  }
+
+  private _rememberToolInput(toolCallId: string, input: unknown, scope?: ChatPartScope): void {
+    this._toolInputs.set(this._toolOriginKey(toolCallId, scope), input);
+    this._toolInputs.set(this._toolOriginKey(toolCallId), input);
+  }
+
+  private _readToolInput(toolCallId: string, scope?: ChatPartScope): unknown {
+    return this._toolInputs.get(this._toolOriginKey(toolCallId, scope))
+      ?? this._toolInputs.get(this._toolOriginKey(toolCallId));
+  }
+
+  private _withInheritedTerminalCommand<T extends { command: string }>(
+    update: T,
+    toolCallId: string,
+    toolHandle: ChatPartStoreOpaqueHandle | null,
+    scope?: ChatPartScope,
+  ): T {
+    if (asTerminalCommand(update.command)) {
+      return update;
+    }
+
+    const storedInput = asRecord(this._readToolInput(toolCallId, scope));
+    const toolPartInput = toolHandle
+      ? asRecord(this._findToolCallPart(toolHandle, toolCallId)?.args)
+      : undefined;
+    const command = asTerminalCommand(storedInput?.['command'])
+      ?? asTerminalCommand(storedInput?.['cmd'])
+      ?? asTerminalCommand(toolPartInput?.['command'])
+      ?? asTerminalCommand(toolPartInput?.['cmd']);
+
+    return command ? { ...update, command } : update;
   }
 
   private _toolOriginKey(toolCallId: string, scope?: ChatPartScope): string {
@@ -720,14 +795,15 @@ export class RenderEventPartAdapter {
     }
   }
 
-  private _appendTerminalPart(handle: ChatPartStoreOpaqueHandle, event: Extract<RenderEvent, { type: 'tool_call_end' }>): void {
+  private _appendTerminalPart(handle: ChatPartStoreOpaqueHandle, event: Extract<RenderEvent, { type: 'tool_call_end' }>): boolean {
     if (!isTerminalSessionToolName(event.toolName)) {
-      return;
+      return false;
     }
 
-    const terminal = extractTerminalPart(event.toolCallId, event.result);
+    const terminal = extractTerminalPart(event.toolCallId, event.result)
+      ?? extractTerminalReadPart(event);
     if (!terminal) {
-      return;
+      return false;
     }
 
     const scope = eventScope(event);
@@ -736,7 +812,43 @@ export class RenderEventPartAdapter {
     }
 
     const toolHandle = this._findToolCallHandle(event.toolCallId, handle, eventScope(event));
+    Object.assign(terminal, this._withInheritedTerminalCommand(terminal, event.toolCallId, toolHandle, scope));
     this._store.upsertTerminalForHandle(toolHandle ?? handle, terminal);
+    return true;
+  }
+
+  private _isTerminalSessionToolCoveredByTerminal(
+    handle: ChatPartStoreOpaqueHandle,
+    event: Extract<RenderEvent, { type: 'tool_call_begin' }>,
+  ): boolean {
+    if (!isTerminalSessionToolName(event.toolName)) {
+      return false;
+    }
+
+    const input = asRecord(event.input);
+    const sessionIds = [
+      input?.['processId'],
+      input?.['outputSessionId'],
+      input?.['terminalId'],
+      input?.['id'],
+    ].map(value => asString(value)).filter((value): value is string => !!value);
+    if (sessionIds.length === 0) {
+      return false;
+    }
+
+    return this._store.getPartsForHandle(handle).some(part => {
+      if (part.type !== 'terminal') {
+        return false;
+      }
+      return [
+        part.processId,
+        part.outputSessionId,
+        part.terminalId,
+      ].some(value => {
+        const normalized = asString(value);
+        return !!normalized && sessionIds.includes(normalized);
+      });
+    });
   }
 
   private _processMarkdownDelta(handle: ChatPartStoreOpaqueHandle, text: string, scope?: ChatPartScope): void {
@@ -1038,6 +1150,21 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
+function isPlaceholderTerminalCommand(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'undefined'
+    || normalized === 'null'
+    || normalized === 'terminal command';
+}
+
+function asTerminalCommand(value: unknown): string | undefined {
+  const command = asString(value);
+  return command && !isPlaceholderTerminalCommand(command) ? command : undefined;
+}
+
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -1115,6 +1242,65 @@ function extractTerminalPart(toolCallId: string, result: Extract<RenderEvent, { 
   return terminal;
 }
 
+function extractTerminalReadPart(event: Extract<RenderEvent, { type: 'tool_call_end' }>) {
+  if (!isTerminalReadToolName(event.toolName)) {
+    return null;
+  }
+
+  const input = asRecord((event as { input?: unknown }).input);
+  const processId = asString(input?.['processId'])
+    || asString(input?.['outputSessionId'])
+    || asString(input?.['terminalId'])
+    || asString(input?.['id']);
+  if (!processId) {
+    return null;
+  }
+
+  const rawText = extractToolResultText(event.result);
+  const { headers, body } = splitTerminalReadResult(rawText);
+  const output = body.trimEnd();
+  if (!output) {
+    return null;
+  }
+
+  const terminal = mkTerminal('', event.toolCallId, undefined, {
+    processId,
+    outputSessionId: asString(input?.['outputSessionId']) || processId,
+    terminalId: asString(input?.['terminalId']),
+    status: headers.get('status'),
+    bytesTotal: asNumber(headers.get('bytesTotal')),
+    outputUpdateKind: 'snapshot',
+  });
+  terminal.output = output;
+  terminal.stderr = '';
+  terminal.isRunning = headers.get('status') === 'running';
+  return terminal;
+}
+
+function isTerminalReadToolName(toolName: string | undefined): boolean {
+  return toolName === 'command_read'
+    || toolName === 'command_tail'
+    || toolName === 'command_status'
+    || toolName === 'get_terminal_output';
+}
+
+function splitTerminalReadResult(text: string): { headers: Map<string, string>; body: string } {
+  const normalized = text.replace(/\r\n/g, '\n');
+  const separatorIndex = normalized.indexOf('\n\n');
+  const headerText = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : '';
+  const body = separatorIndex >= 0 ? normalized.slice(separatorIndex + 2) : normalized;
+  const headers = new Map<string, string>();
+
+  for (const line of headerText.split('\n')) {
+    const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line.trim());
+    if (match) {
+      headers.set(match[1], match[2]);
+    }
+  }
+
+  return { headers, body };
+}
+
 function extractToolResultText(result: Extract<RenderEvent, { type: 'tool_call_end' }>['result']): string {
   return collectToolResultText(result);
 }
@@ -1147,7 +1333,7 @@ function subagentStateUpdateToSnapshot(
     subAgentInvocationId: asString(metadata['subAgentInvocationId']) || toolCallId,
     agentName,
     description,
-    state: event.state === 'error' ? 'error' as const : event.state === 'done' ? 'done' as const : 'doing' as const,
+    state: normalizeSubagentToolCallState(event.state),
     resultText: asString(metadata['resultText']) || asString(metadata['result']) || '',
     childItems: [],
     metadata: {
@@ -1259,7 +1445,7 @@ function normalizeCommandOutputProgress(data: unknown): {
   }
 
   const stream = asString(record['stream']) === 'stderr' ? 'stderr' : 'stdout';
-  const command = asString(record['command']) || 'terminal command';
+  const command = asTerminalCommand(record['command']) ?? '';
   return {
     command,
     stdout: stream === 'stdout' ? text : '',
@@ -1295,7 +1481,7 @@ function normalizeCommandSessionUpdate(data: unknown): {
   }
 
   return {
-    command: asString(record['command']) || 'terminal command',
+    command: asTerminalCommand(record['command']) ?? '',
     stdout: typeof record['stdout'] === 'string' ? record['stdout'] : '',
     stderr: typeof record['stderr'] === 'string' ? record['stderr'] : '',
     processId: asString(record['processId']),
@@ -1591,6 +1777,7 @@ function approvalRequestToToolCallPatch(
     args: event.input,
     metadata: withChatPartScopeMetadata({
       approval: buildPendingToolCallApprovalMetadata({
+        approvalTraceId: event.approvalTraceId,
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         message: event.message,
@@ -1613,6 +1800,7 @@ function approvalResolveToToolCallPatch(
     state: event.result === 'approved' ? 'doing' : 'error',
     metadata: withChatPartScopeMetadata({
       approval: buildResolvedToolCallApprovalMetadata({
+        approvalTraceId: event.approvalTraceId,
         toolCallId: event.toolCallId,
         result: event.result,
         scope: event.scope,
@@ -1628,6 +1816,7 @@ function approvalAutoReviewStartToToolCallPatch(
     text: event.reason,
     metadata: {
       approval: buildPendingToolCallApprovalMetadata({
+        approvalTraceId: event.approvalTraceId,
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         title: '自动审查中',
@@ -1648,10 +1837,12 @@ function approvalAutoReviewCompleteToToolCallPatch(
   event: Extract<RenderEvent, { type: 'approval_auto_review_complete' }> & { toolCallId: string },
 ): ToolCallPartPatch {
   const approved = event.status === 'approved';
+  const decisionSource = (event as { readonly decisionSource?: string }).decisionSource ?? 'auto_review';
   return {
     ...(approved ? {} : { state: 'error' as const }),
     metadata: {
       approval: buildResolvedToolCallApprovalMetadata({
+        approvalTraceId: event.approvalTraceId,
         toolCallId: event.toolCallId,
         result: approved ? 'approved' : 'rejected',
         reviewer: 'auto_review',
@@ -1659,7 +1850,7 @@ function approvalAutoReviewCompleteToToolCallPatch(
         reviewRiskLevel: event.riskLevel,
         source: event.source,
         reviewCompletedAt: event.timestamp,
-        decisionSource: approved ? 'auto_review' : 'auto_review',
+        decisionSource,
         title: approved ? '自动审查已允许' : (event.status === 'timedOut' ? '自动审查超时' : '自动审查已拒绝'),
         message: event.rationale,
         description: `风险等级：${event.riskLevel}`,

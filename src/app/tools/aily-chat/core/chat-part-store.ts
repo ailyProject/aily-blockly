@@ -16,19 +16,24 @@ import { appendMarkdownContent, getMarkdownContentLength, getMarkdownContentWind
 import { appendThinkContent, getThinkContentLength, getThinkContentWindow, storeThinkContent } from './think-content-store';
 import {
   ChatPart, MarkdownPart, ThinkingPart, ToolCallPart, StatePart, TerminalPart,
-  SubagentToolCallSnapshot, isSubagentToolCallMetadata, mkMarkdown, mkThinking, mkToolCall, mkError, mkState, mkSubagentTimelineEntry, subagentSnapshotToToolCall, toolCallPartToSubagentSnapshot, mkPlan, mkQuestion, mkConfirmation, isLikelyPlanMarkdown, buildScopedTextPartId,
-  type ChatPartScope, isSameChatPartScope, normalizeChatPartScope, withChatPartScopeMetadata,
+  SubagentToolCallSnapshot, isSubagentToolCallMetadata, mkMarkdown, mkThinking, mkToolCall, mkError, mkState, mkSubagentTimelineEntry, subagentSnapshotToToolCall, toolCallPartToSubagentSnapshot, mkPlan, mkQuestion, mkConfirmation, buildScopedTextPartId,
+  getParentToolCallId, getSubAgentInvocationId, normalizeSubagentToolCallState, type ChatPartScope, isSameChatPartScope, normalizeChatPartScope, withChatPartScopeMetadata,
 } from './chat-parts';
 import type { SubagentChildItem } from './chat-parts';
 import type { ConfirmationPart, QuestionPart } from './chat-parts';
 import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
+import { isTerminalSessionToolName } from './tool-name-normalizer';
 
 type ChatPartStoreKey = object | symbol | number | string;
 const TERMINAL_LIVE_STREAM_MAX_CHARS = 32 * 1024;
 const TERMINAL_LIVE_OMITTED_MARKER = '[earlier terminal output omitted]\n';
 const SUBAGENT_CHILD_LIVE_STREAM_MAX_CHARS = 12 * 1024;
 const SUBAGENT_CHILD_LIVE_OMITTED_MARKER = '[earlier subagent output omitted]\n';
+const TEXT_PART_EXTERNALIZE_THRESHOLD_CHARS = 24 * 1024;
+const TEXT_PART_LIVE_STREAM_MAX_CHARS = 48 * 1024;
+const TEXT_PART_LIVE_OMITTED_MARKER = '[earlier streaming text omitted]\n\n';
 let subagentChildContentRefCounter = 0;
+let textPartContentRefCounter = 0;
 type RunningPartFinalizeStatus = 'completed' | 'cancelled' | 'error';
 
 // ==================== 变更事件 ====================
@@ -60,6 +65,12 @@ export interface StatePartPatch {
   progress?: number;
   kind?: StatePart['kind'];
   metadata?: Record<string, unknown>;
+}
+
+export interface TerminalPartPatch {
+  isRunning?: boolean;
+  status?: TerminalPart['status'];
+  exitCode?: TerminalPart['exitCode'];
 }
 
 export interface TextPayloadPartPatch {
@@ -163,6 +174,21 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
+function isPlaceholderTerminalCommand(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'undefined'
+    || normalized === 'null'
+    || normalized === 'terminal command';
+}
+
+function asTerminalCommand(value: unknown): string | undefined {
+  const command = asString(value);
+  return command && !isPlaceholderTerminalCommand(command) ? command : undefined;
+}
+
 function getChatPartStableStoreKey(part: ChatPart): string | undefined {
   switch (part.type) {
     case 'markdown':
@@ -192,8 +218,10 @@ function appendTerminalLiveStream(existing: string | undefined, delta: string | 
 }
 
 function normalizeTerminalLivePart(terminal: TerminalPart): TerminalPart {
+  const command = asTerminalCommand(terminal.command) ?? '';
   return {
     ...terminal,
+    command,
     output: appendTerminalLiveStream(undefined, terminal.output),
     stderr: appendTerminalLiveStream(undefined, terminal.stderr),
   };
@@ -239,6 +267,73 @@ function getSubagentChildContentWindow(kind: 'markdown' | 'thinking', key: strin
     : getMarkdownContentWindow(key, SUBAGENT_CHILD_LIVE_STREAM_MAX_CHARS, SUBAGENT_CHILD_LIVE_OMITTED_MARKER);
 }
 
+function createTextPartContentRef(kind: 'markdown' | 'thinking'): string {
+  const randomId = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${(++textPartContentRefCounter).toString(36)}`;
+  return `chat-part:${kind}:${randomId}`;
+}
+
+function storeTextPartContent(kind: 'markdown' | 'thinking', key: string, content: string): void {
+  if (kind === 'thinking') {
+    storeThinkContent(key, content);
+    return;
+  }
+  storeMarkdownContent(key, content);
+}
+
+function appendTextPartContent(kind: 'markdown' | 'thinking', key: string, delta: string): void {
+  if (kind === 'thinking') {
+    appendThinkContent(key, delta);
+    return;
+  }
+  appendMarkdownContent(key, delta);
+}
+
+function getTextPartContentLength(kind: 'markdown' | 'thinking', key: string): number {
+  return kind === 'thinking' ? getThinkContentLength(key) : getMarkdownContentLength(key);
+}
+
+function getTextPartContentWindow(kind: 'markdown' | 'thinking', key: string): string {
+  return kind === 'thinking'
+    ? getThinkContentWindow(key, TEXT_PART_LIVE_STREAM_MAX_CHARS, TEXT_PART_LIVE_OMITTED_MARKER)
+    : getMarkdownContentWindow(key, TEXT_PART_LIVE_STREAM_MAX_CHARS, TEXT_PART_LIVE_OMITTED_MARKER);
+}
+
+function appendLiveTextPartContent<TPart extends MarkdownPart | ThinkingPart>(
+  part: TPart,
+  kind: 'markdown' | 'thinking',
+  delta: string,
+): TPart {
+  if (!delta) {
+    return part;
+  }
+
+  let contentRef = asString(part.contentRef);
+  if (contentRef) {
+    appendTextPartContent(kind, contentRef, delta);
+    const contentLength = getTextPartContentLength(kind, contentRef);
+    part.content = getTextPartContentWindow(kind, contentRef);
+    part.contentRef = contentRef;
+    part.contentLength = contentLength;
+    return part;
+  }
+
+  const combined = `${part.content || ''}${delta}`;
+  if (combined.length <= TEXT_PART_EXTERNALIZE_THRESHOLD_CHARS) {
+    part.content = combined;
+    part.contentLength = combined.length;
+    return part;
+  }
+
+  contentRef = createTextPartContentRef(kind);
+  storeTextPartContent(kind, contentRef, combined);
+  part.contentRef = contentRef;
+  part.contentLength = combined.length;
+  part.content = getTextPartContentWindow(kind, contentRef);
+  return part;
+}
+
 function ensureSubagentChildContentRef(child: SubagentChildItem): SubagentChildItem {
   if (child.kind !== 'thinking' && child.kind !== 'text') {
     return child;
@@ -263,6 +358,13 @@ function getTerminalSessionKey(terminal: Pick<TerminalPart, 'processId' | 'outpu
   return asString(terminal.processId) || asString(terminal.outputSessionId) || asString(terminal.terminalId);
 }
 
+function collectTerminalToolCallIds(terminal: Pick<TerminalPart, 'toolCallId' | 'sourceToolCallIds'>): Set<string> {
+  return new Set([
+    terminal.toolCallId,
+    ...(terminal.sourceToolCallIds ?? []),
+  ].map(value => asString(value)).filter((value): value is string => !!value));
+}
+
 function mergeTerminalSourceToolCallIds(existing: TerminalPart, next: TerminalPart): string[] | undefined {
   const merged = Array.from(new Set([
     ...(existing.sourceToolCallIds ?? []),
@@ -271,6 +373,209 @@ function mergeTerminalSourceToolCallIds(existing: TerminalPart, next: TerminalPa
     ...(next.toolCallId ? [next.toolCallId] : []),
   ].map(value => asString(value)).filter((value): value is string => !!value)));
   return merged.length > 0 ? merged : undefined;
+}
+
+function isReplaceableTerminalToolCall(part: ChatPart, terminal: TerminalPart): part is ToolCallPart {
+  if (part.type !== 'tool_call' || !isTerminalSessionToolName(part.toolName)) {
+    return false;
+  }
+
+  const terminalToolCallIds = collectTerminalToolCallIds(terminal);
+  if (terminalToolCallIds.has(part.toolCallId)) {
+    return true;
+  }
+
+  const partArgs = asRecord(part.args);
+  const partMetadata = asRecord(part.metadata);
+  const terminalSessionIds = new Set([
+    terminal.processId,
+    terminal.outputSessionId,
+    terminal.terminalId,
+  ].map(value => asString(value)).filter((value): value is string => !!value));
+  if (terminalSessionIds.size === 0) {
+    return false;
+  }
+
+  return [
+    partArgs?.['processId'],
+    partArgs?.['outputSessionId'],
+    partArgs?.['terminalId'],
+    partMetadata?.['processId'],
+    partMetadata?.['outputSessionId'],
+    partMetadata?.['terminalId'],
+    ...extractTerminalSessionIdsFromToolCallText(part.text),
+  ].some(value => {
+    const normalized = asString(value);
+    return !!normalized && terminalSessionIds.has(normalized);
+  });
+}
+
+function extractTerminalSessionIdsFromToolCallText(text: unknown): string[] {
+  const raw = asString(text);
+  if (!raw) {
+    return [];
+  }
+
+  const ids: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line.trim());
+    if (!match) {
+      continue;
+    }
+    if (match[1] !== 'processId' && match[1] !== 'outputSessionId' && match[1] !== 'terminalId' && match[1] !== 'id') {
+      continue;
+    }
+    const value = asString(match[2]);
+    if (value) {
+      ids.push(value);
+    }
+  }
+  return ids;
+}
+
+function mergeTerminalMetadata(
+  existing: unknown,
+  next: unknown,
+): Record<string, unknown> | undefined {
+  const existingRecord = asRecord(existing);
+  const nextRecord = asRecord(next);
+  if (!existingRecord && !nextRecord) {
+    return undefined;
+  }
+
+  const merged: Record<string, unknown> = {
+    ...(existingRecord ?? {}),
+    ...(nextRecord ?? {}),
+  };
+  const existingApproval = asRecord(existingRecord?.['approval']);
+  const nextApproval = asRecord(nextRecord?.['approval']);
+  if (existingApproval || nextApproval) {
+    merged['approval'] = {
+      ...(existingApproval ?? {}),
+      ...(nextApproval ?? {}),
+    };
+  }
+  return merged;
+}
+
+function terminalWithInheritedMetadata(terminal: TerminalPart, sourcePart: ChatPart): TerminalPart {
+  if (sourcePart.type !== 'tool_call' && sourcePart.type !== 'terminal' && sourcePart.type !== 'confirmation') {
+    return terminal;
+  }
+
+  const metadata = mergeTerminalMetadata(
+    sourcePart.type === 'confirmation'
+      ? confirmationToTerminalMetadata(sourcePart, terminal)
+      : sourcePart.metadata,
+    terminal.metadata,
+  );
+  const command = asTerminalCommand(terminal.command)
+    ?? extractTerminalCommandFromSourcePart(sourcePart)
+    ?? '';
+  const inherited = command === terminal.command ? terminal : { ...terminal, command };
+  return metadata
+    ? { ...inherited, metadata }
+    : inherited;
+}
+
+function extractTerminalCommandFromSourcePart(sourcePart: ToolCallPart | TerminalPart | ConfirmationPart): string | undefined {
+  if (sourcePart.type === 'terminal') {
+    return asTerminalCommand(sourcePart.command)
+      ?? extractTerminalCommandFromMetadata(sourcePart.metadata);
+  }
+
+  if (sourcePart.type === 'confirmation') {
+    return asTerminalCommand(asRecord(sourcePart.args)?.['command'])
+      ?? asTerminalCommand(asRecord(sourcePart.args)?.['cmd'])
+      ?? extractTerminalCommandFromMetadata(sourcePart.metadata);
+  }
+
+  const args = asRecord(sourcePart.args);
+  return asTerminalCommand(args?.['command'])
+    ?? asTerminalCommand(args?.['cmd'])
+    ?? extractTerminalCommandFromMetadata(sourcePart.metadata);
+}
+
+function extractTerminalCommandFromMetadata(metadata: unknown): string | undefined {
+  const metadataRecord = asRecord(metadata);
+  if (!metadataRecord) {
+    return undefined;
+  }
+  const approval = asRecord(metadataRecord['approval']);
+  const approvalArgs = asRecord(approval?.['args']);
+  return asTerminalCommand(approvalArgs?.['command'])
+    ?? asTerminalCommand(approvalArgs?.['cmd'])
+    ?? asTerminalCommand(metadataRecord['command'])
+    ?? asTerminalCommand(metadataRecord['cmd']);
+}
+
+function confirmationToTerminalMetadata(
+  confirmation: ConfirmationPart,
+  terminal: TerminalPart,
+): Record<string, unknown> {
+  return {
+    ...(confirmation.metadata ?? {}),
+    approval: {
+      toolCallId: terminal.toolCallId || confirmation.askId,
+      toolName: confirmation.toolName || 'run_in_terminal',
+      title: confirmation.title,
+      subtitle: confirmation.subtitle,
+      message: confirmation.message,
+      description: confirmation.description,
+      source: confirmation.source,
+      actions: confirmation.actions?.map(action => ({ ...action })) ?? [],
+      primaryScope: confirmation.primaryScope,
+      args: confirmation.args,
+      resolved: confirmation.resolved,
+      result: confirmation.result,
+      scope: confirmation.scope,
+    },
+  };
+}
+
+function isReplaceableTerminalConfirmation(part: ChatPart, terminal: TerminalPart): part is ConfirmationPart {
+  if (part.type !== 'confirmation' || !isTerminalSessionToolName(part.toolName)) {
+    return false;
+  }
+
+  const terminalToolCallIds = collectTerminalToolCallIds(terminal);
+  if (terminalToolCallIds.has(part.askId) || (!!part.partId && terminalToolCallIds.has(part.partId.replace(/^confirmation:/, '')))) {
+    return true;
+  }
+
+  const args = asRecord(part.args);
+  const command = asTerminalCommand(args?.['command']) || asTerminalCommand(args?.['cmd']);
+  const terminalCommand = asTerminalCommand(terminal.command);
+  return !!command && !!terminalCommand && command === terminalCommand;
+}
+
+function warnTerminalInvocationDuplicates(parts: readonly ChatPart[], terminal: TerminalPart): void {
+  const duplicates = parts.filter(part => isReplaceableTerminalToolCall(part, terminal) || isReplaceableTerminalConfirmation(part, terminal));
+  if (duplicates.length === 0) {
+    return;
+  }
+
+  console.debug('[AilyChat][TerminalInvocationInvariant]', {
+    terminal: {
+      partId: terminal.partId,
+      toolCallId: terminal.toolCallId,
+      sourceToolCallIds: terminal.sourceToolCallIds,
+      processId: terminal.processId,
+      outputSessionId: terminal.outputSessionId,
+      terminalId: terminal.terminalId,
+      hasApproval: !!asRecord(terminal.metadata)?.['approval'],
+    },
+    duplicates: duplicates.map(part => ({
+      type: part.type,
+      partId: part.partId,
+      toolCallId: part.type === 'tool_call' ? part.toolCallId : undefined,
+      toolName: part.toolName,
+      state: part.type === 'tool_call' ? part.state : undefined,
+      hasApproval: !!asRecord(part.metadata)?.['approval'],
+      askId: part.type === 'confirmation' ? part.askId : undefined,
+      resolved: part.type === 'confirmation' ? part.resolved : undefined,
+    })),
+  });
 }
 
 function mergeToolCallMetadata(
@@ -420,6 +725,28 @@ function finalizeSubagentChildItems(
   });
 
   return changed ? nextItems : [...childItems];
+}
+
+function isPartInSubagentScope(part: ChatPart, targetIds: ReadonlySet<string>): boolean {
+  const subAgentInvocationId = getSubAgentInvocationId(part);
+  if (subAgentInvocationId && targetIds.has(subAgentInvocationId)) {
+    return true;
+  }
+
+  const parentToolCallId = getParentToolCallId(part);
+  if (parentToolCallId && targetIds.has(parentToolCallId)) {
+    return true;
+  }
+
+  if (part.type === 'tool_call' && part.toolCallId && targetIds.has(part.toolCallId)) {
+    return true;
+  }
+
+  if (part.type === 'terminal' && part.toolCallId && targetIds.has(part.toolCallId)) {
+    return true;
+  }
+
+  return false;
 }
 
 function finalizeQuestionAnswers(part: QuestionPart): QuestionPart['answers'] {
@@ -1006,8 +1333,20 @@ export class ChatPartStore {
         || (!!terminal.partId && part.partId === terminal.partId);
     });
 
+    const normalizedTerminal = normalizeTerminalLivePart(terminal);
     if (existingIndex < 0) {
-      return this.addPart(storeKey, normalizeTerminalLivePart(terminal));
+      const invocationIndex = parts.findIndex(part =>
+        isReplaceableTerminalToolCall(part, normalizedTerminal)
+        || isReplaceableTerminalConfirmation(part, normalizedTerminal));
+      if (invocationIndex >= 0) {
+        const replacement = terminalWithInheritedMetadata(normalizedTerminal, parts[invocationIndex]!);
+        this.updatePart(storeKey, invocationIndex, replacement);
+        warnTerminalInvocationDuplicates(this.getParts(storeKey), replacement);
+        return invocationIndex;
+      }
+      const addedIndex = this.addPart(storeKey, normalizedTerminal);
+      warnTerminalInvocationDuplicates(this.getParts(storeKey), normalizedTerminal);
+      return addedIndex;
     }
 
     const existing = parts[existingIndex] as TerminalPart;
@@ -1023,11 +1362,16 @@ export class ChatPartStore {
       ? appendTerminalLiveStream(existing.stderr, terminal.stderr)
       : existing.stderr;
     const sourceToolCallIds = mergeTerminalSourceToolCallIds(existing, terminal);
-    this.updatePart(storeKey, existingIndex, {
+    const nextTerminal: TerminalPart = {
       ...existing,
       ...terminal,
       partId: existing.partId || terminal.partId,
-      command: terminal.command || existing.command,
+      toolCallId: existing.toolCallId || terminal.toolCallId,
+      command: asTerminalCommand(terminal.command)
+        ?? asTerminalCommand(existing.command)
+        ?? extractTerminalCommandFromMetadata(terminal.metadata)
+        ?? extractTerminalCommandFromMetadata(existing.metadata)
+        ?? '',
       output,
       stderr,
       isRunning: terminal.isRunning,
@@ -1042,8 +1386,60 @@ export class ChatPartStore {
       bytesTotal: terminal.bytesTotal ?? existing.bytesTotal,
       lastOutputAt: terminal.lastOutputAt || existing.lastOutputAt,
       outputUpdateKind: terminal.outputUpdateKind || existing.outputUpdateKind,
-    });
+      metadata: mergeTerminalMetadata(existing.metadata, terminal.metadata),
+    };
+    this.updatePart(storeKey, existingIndex, nextTerminal);
+    warnTerminalInvocationDuplicates(this.getParts(storeKey), nextTerminal);
     return existingIndex;
+  }
+
+  patchTerminalForHandle(
+    handle: ChatPartStoreReadableHandle | null,
+    identity: {
+      readonly partId?: string;
+      readonly processId?: string;
+      readonly outputSessionId?: string;
+      readonly terminalId?: string;
+      readonly toolCallId?: string;
+    },
+    patch: TerminalPartPatch,
+  ): boolean {
+    const storeKey = this.resolveStoreKey(handle);
+    if (storeKey === null) {
+      return false;
+    }
+
+    const parts = this.getParts(storeKey);
+    const identitySessionKey = getTerminalSessionKey(identity);
+    const index = parts.findIndex(part => {
+      if (part.type !== 'terminal') {
+        return false;
+      }
+      if (identity.partId && part.partId === identity.partId) {
+        return true;
+      }
+      const partSessionKey = getTerminalSessionKey(part);
+      if (identitySessionKey && partSessionKey === identitySessionKey) {
+        return true;
+      }
+      if (identity.toolCallId && (part.toolCallId === identity.toolCallId || part.sourceToolCallIds?.includes(identity.toolCallId))) {
+        return true;
+      }
+      return false;
+    });
+
+    if (index < 0) {
+      return false;
+    }
+
+    const existing = parts[index] as TerminalPart;
+    this.updatePart(storeKey, index, {
+      ...existing,
+      ...(typeof patch.isRunning === 'boolean' ? { isRunning: patch.isRunning } : {}),
+      ...(patch.status ? { status: patch.status } : {}),
+      ...(typeof patch.exitCode === 'number' ? { exitCode: patch.exitCode } : {}),
+    });
+    return true;
   }
 
   /** 在指定位置插入 Part。超出范围时追加到末尾。 */
@@ -1097,14 +1493,16 @@ export class ChatPartStore {
     const last = parts.length > 0 ? parts[parts.length - 1] : undefined;
     if (last && last.type === 'markdown' && isSameChatPartScope(last, normalizedScope)) {
       const idx = parts.length - 1;
-      (last as MarkdownPart).content += text;
+      appendLiveTextPartContent(last as MarkdownPart, 'markdown', text);
       this.emitChange(storeKey, idx, 'append');
       return idx;
     }
 
     // 创建新 MarkdownPart
     const idx = parts.length;
-    parts.push(mkMarkdown(text, normalizedScope, buildScopedTextPartId('markdown', normalizedScope, idx)));
+    const part = mkMarkdown('', normalizedScope, buildScopedTextPartId('markdown', normalizedScope, idx));
+    appendLiveTextPartContent(part, 'markdown', text);
+    parts.push(part);
     this.emitChange(storeKey, idx, 'add');
     return idx;
   }
@@ -1239,36 +1637,6 @@ export class ChatPartStore {
     }
   }
 
-  materializeFinalMarkdownAsPlanForHandle(handle: ChatPartStoreReadableHandle | null): boolean {
-    const storeKey = this.resolveStoreKey(handle);
-    if (storeKey === null) {
-      return false;
-    }
-
-    const parts = this._store.get(storeKey);
-    if (!parts || parts.some(part => part.type === 'plan')) {
-      return false;
-    }
-
-    for (let partIndex = parts.length - 1; partIndex >= 0; partIndex -= 1) {
-      const part = parts[partIndex];
-      if (part.type !== 'markdown') {
-        continue;
-      }
-      if (part.sourceAgentRole === 'subagent' || part.subAgentInvocationId || part.parentToolCallId) {
-        continue;
-      }
-      const text = part.content.trim();
-      if (!isLikelyPlanMarkdown(text)) {
-        continue;
-      }
-      this.updatePart(storeKey, partIndex, mkPlan(text, 'completed', 'plan:fallback', { source: 'summary' }));
-      return true;
-    }
-
-    return false;
-  }
-
   /**
    * 追加文本到最后一个 ThinkingPart。
    * 如果最后一个 Part 不是 ThinkingPart，则创建新的。
@@ -1284,14 +1652,16 @@ export class ChatPartStore {
     const last = parts.length > 0 ? parts[parts.length - 1] : undefined;
     if (last && last.type === 'thinking' && !last.isComplete && isSameChatPartScope(last, normalizedScope)) {
       const idx = parts.length - 1;
-      (last as ThinkingPart).content += text;
+      appendLiveTextPartContent(last as ThinkingPart, 'thinking', text);
       this.emitChange(storeKey, idx, 'append');
       return idx;
     }
 
     // 创建新 ThinkingPart（streaming，未完成）
     const idx = parts.length;
-    parts.push(mkThinking(text, false, normalizedScope, buildScopedTextPartId('thinking', normalizedScope, idx)));
+    const part = mkThinking('', false, normalizedScope, buildScopedTextPartId('thinking', normalizedScope, idx));
+    appendLiveTextPartContent(part, 'thinking', text);
+    parts.push(part);
     this.emitChange(storeKey, idx, 'add');
     return idx;
   }
@@ -1724,6 +2094,104 @@ export class ChatPartStore {
     }
   }
 
+  finalizeSubagentScopedPartsForHandle(
+    handle: ChatPartStoreReadableHandle | null,
+    scope: { readonly subAgentInvocationId?: string; readonly parentToolCallId?: string; readonly toolCallId?: string },
+    options: { readonly status?: RunningPartFinalizeStatus } = {},
+  ): void {
+    const storeKey = this.resolveStoreKey(handle);
+    if (storeKey === null) {
+      return;
+    }
+
+    const parts = this._store.get(storeKey);
+    if (!parts) {
+      return;
+    }
+
+    const targetIds = new Set([
+      scope.subAgentInvocationId,
+      scope.parentToolCallId,
+      scope.toolCallId,
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0));
+    if (targetIds.size === 0) {
+      return;
+    }
+
+    const finalToolState: ToolCallPart['state'] = options.status === 'error' ? 'error' : 'done';
+    const finalState: StatePart['state'] = options.status === 'error' ? 'error' : 'done';
+
+    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+      const part = parts[partIndex];
+      if (!isPartInSubagentScope(part, targetIds)) {
+        continue;
+      }
+
+      if (part.type === 'thinking' && !part.isComplete) {
+        this.updatePart(storeKey, partIndex, {
+          ...part,
+          isComplete: true,
+        });
+        continue;
+      }
+
+      if (part.type === 'tool_call' && (part.state === 'doing' || part.state === 'pending_approval')) {
+        const compatSubagent = isSubagentToolCallMetadata(part.metadata)
+          ? toolCallPartToSubagentSnapshot(part)
+          : null;
+        this.updatePart(storeKey, partIndex, {
+          ...(compatSubagent
+            ? this.rebuildSubagentToolCallPart(part, {
+              ...compatSubagent,
+              state: finalToolState === 'error' ? 'error' : 'done',
+              childItems: finalizeSubagentChildItems(compatSubagent.childItems, options.status),
+            }, { appendTerminalEntry: true })
+            : part),
+          state: finalToolState,
+          ...(part.state === 'pending_approval'
+            ? { metadata: finalizePendingApprovalMetadata(part, options.status) ?? part.metadata }
+            : {}),
+        });
+        continue;
+      }
+
+      if (part.type === 'state' && part.state === 'doing') {
+        this.updatePart(storeKey, partIndex, {
+          ...part,
+          state: finalState,
+        });
+        continue;
+      }
+
+      if (part.type === 'terminal' && part.isRunning) {
+        this.updatePart(storeKey, partIndex, {
+          ...part,
+          isRunning: false,
+        });
+        continue;
+      }
+
+      if (part.type === 'confirmation' && !part.resolved) {
+        this.updatePart(storeKey, partIndex, {
+          ...part,
+          resolved: true,
+          result: 'rejected',
+          metadata: finalizeInteractionMetadata(part.metadata, options.status),
+        });
+        continue;
+      }
+
+      if (part.type === 'question' && !part.answers) {
+        this.updatePart(storeKey, partIndex, {
+          ...part,
+          answers: finalizeQuestionAnswers(part),
+          isHistory: true,
+          metadata: finalizeInteractionMetadata(part.metadata, options.status),
+        });
+      }
+    }
+  }
+
   private updatePartForHandle(handle: ChatPartStoreReadableHandle | null, partIndex: number, part: ChatPart): void {
     const storeKey = this.resolveStoreKey(handle);
     if (storeKey === null) {
@@ -1796,7 +2264,11 @@ export class ChatPartStore {
         this.updatePart(
           storeKey,
           i,
-          this.rebuildSubagentToolCallPart(p, { ...compat, state, resultText }, { appendTerminalEntry: true }),
+          this.rebuildSubagentToolCallPart(p, {
+            ...compat,
+            state: normalizeSubagentToolCallState(state),
+            resultText,
+          }, { appendTerminalEntry: true }),
         );
         return;
       }
@@ -2092,6 +2564,9 @@ export class ChatPartStore {
     for (const [storeKey, parts] of this._store) {
       for (const p of parts) {
         if (p.type === 'tool_call' && p.toolCallId === toolCallId) {
+          return storeKey;
+        }
+        if (p.type === 'terminal' && (p.toolCallId === toolCallId || p.sourceToolCallIds?.includes(toolCallId))) {
           return storeKey;
         }
       }

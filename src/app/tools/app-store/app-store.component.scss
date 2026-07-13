@@ -224,7 +224,14 @@
 .catalog-main {
   flex: 1;
   gap: 10px;
+  padding: 0;
   cursor: pointer;
+
+  &:hover {
+    .app-icon {
+      color: var(--aily-text-primary);
+    }
+  }
 }
 
 .app-icon {
@@ -239,17 +246,6 @@
   background: var(--aily-bg-primary);
   color: var(--aily-text-secondary);
   font-size: 18px;
-}
-
-.app-open-btn {
-  border: 0;
-  outline: none;
-  cursor: pointer;
-
-  &:hover {
-    color: var(--aily-text-primary);
-    // background: var(--aily-bg-tertiary);
-  }
 }
 
 .app-badge {

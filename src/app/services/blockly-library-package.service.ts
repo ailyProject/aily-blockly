@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { parse as parseJavaScript } from 'acorn';
 import { ElectronService } from './electron.service';
+import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from './local-library-sync.service';
 
 export const AILY_BLOCKLY_LIBRARY_PACKAGE_PREFIX = '@aily-project/lib-';
 export const AILY_BLOCKLY_LIBRARY_REQUIRED_FILES = ['package.json', 'block.json', 'toolbox.json', 'generator.js'] as const;
@@ -33,6 +34,12 @@ export interface BlocklyLibraryPackagePaths {
   blockJson: string;
   toolboxJson: string;
   generatorJs: string;
+  readme: string;
+  readmeAi: string;
+  srcDir: string;
+  srcArchive: string;
+  i18nDir: string;
+  pinmapsDir: string;
 }
 
 export interface BlocklyLibraryPackageSnapshot {
@@ -49,6 +56,37 @@ export interface BlocklyLibraryDiagnostics {
   valid: boolean;
   errors: string[];
   warnings: string[];
+}
+
+export interface BlocklyLibrarySubmissionPackage {
+  packageJson: any;
+  blockJson: any;
+  toolboxJson: any;
+  generatorJs: string;
+  readme: string;
+  readmeAi: string;
+  i18n: Record<string, any>;
+  pinmaps: Record<string, any>;
+}
+
+export interface BlocklyLibrarySubmissionBundle {
+  package: BlocklyLibrarySubmissionPackage;
+  srcArchivePath?: string;
+  srcArchiveOutputPath?: string;
+  srcDirectoryPath?: string;
+}
+
+export interface BlocklyLibraryMetadataUpdateResult {
+  renamed: boolean;
+  projectPackageJsonUpdated: boolean;
+  requiresProjectReload: boolean;
+  previousPackageName?: string;
+  nextPackageName?: string;
+}
+
+interface BlocklyLibraryMetadataTarget {
+  packagePath: string;
+  nextPackagePath: string;
 }
 
 @Injectable({
@@ -91,6 +129,12 @@ export class BlocklyLibraryPackageService {
       blockJson: this.electronService.pathJoin(packagePath, 'block.json'),
       toolboxJson: this.electronService.pathJoin(packagePath, 'toolbox.json'),
       generatorJs: this.electronService.pathJoin(packagePath, 'generator.js'),
+      readme: this.electronService.pathJoin(packagePath, 'readme.md'),
+      readmeAi: this.electronService.pathJoin(packagePath, 'readme_ai.md'),
+      srcDir: this.electronService.pathJoin(packagePath, 'src'),
+      srcArchive: this.electronService.pathJoin(packagePath, 'src.7z'),
+      i18nDir: this.electronService.pathJoin(packagePath, 'i18n'),
+      pinmapsDir: this.electronService.pathJoin(packagePath, 'pinmaps'),
     };
   }
 
@@ -99,6 +143,32 @@ export class BlocklyLibraryPackageService {
     return AILY_BLOCKLY_LIBRARY_REQUIRED_FILES.every((fileName) =>
       this.electronService.exists(this.electronService.pathJoin(packagePath, fileName)),
     );
+  }
+
+  updateLibraryPackageJsonMetadata(ref: BlocklyLibraryPackageRef, metadataPatch: Record<string, unknown>): BlocklyLibraryMetadataUpdateResult {
+    const safePatch = metadataPatch || {};
+    const nextPackageName = typeof safePatch['name'] === 'string' ? safePatch['name'].trim() : '';
+    if (nextPackageName && !this.isLibraryPackageName(nextPackageName)) {
+      throw new Error(`库名不合规: ${nextPackageName}`);
+    }
+    if (nextPackageName && nextPackageName !== ref.name) {
+      return this.renameLibraryPackageMetadata(ref, safePatch, nextPackageName);
+    }
+
+    const targetPaths = this.resolveMetadataTargetPackagePaths(ref);
+    if (targetPaths.length === 0) {
+      throw new Error(`未找到可写入的本地库 package.json (${ref.path})`);
+    }
+
+    for (const packagePath of targetPaths) {
+      this.writePackageJsonPatch(packagePath, safePatch);
+    }
+
+    return {
+      renamed: false,
+      projectPackageJsonUpdated: false,
+      requiresProjectReload: false,
+    };
   }
 
   async scanInstalledLibraries(projectPath: string): Promise<BlocklyInstalledLibraryPackage[]> {
@@ -187,6 +257,42 @@ export class BlocklyLibraryPackageService {
       valid: errors.length === 0,
       errors,
       warnings,
+    };
+  }
+
+  readLibrarySubmissionPackage(projectPath: string, packageName: string): BlocklyLibrarySubmissionBundle {
+    return this.readLibrarySubmissionPackageByRef(this.getPackageRef(projectPath, packageName));
+  }
+
+  readLibrarySubmissionPackageByRef(ref: BlocklyLibraryPackageRef): BlocklyLibrarySubmissionBundle {
+    const snapshot = this.readLibraryPackageByRef(ref);
+    const diagnostics = this.validateLibraryPackage(snapshot, ref.name);
+    if (!diagnostics.valid) {
+      throw new Error(diagnostics.errors.join('\n'));
+    }
+
+    const paths = snapshot.paths;
+    const readme = this.readOptionalTextFile(paths.readme);
+    const readmeAi = this.readOptionalTextFile(paths.readmeAi);
+    const generatorJs = this.readRequiredTextFile(paths.generatorJs, 'generator.js');
+    const i18n = this.readJsonDirectory(paths.i18nDir);
+    const pinmaps = this.readJsonDirectory(paths.pinmapsDir);
+    const srcArchivePath = this.pathExists(paths.srcArchive) ? paths.srcArchive : undefined;
+
+    return {
+      package: {
+        packageJson: snapshot.packageJson,
+        blockJson: snapshot.blockJson,
+        toolboxJson: snapshot.toolboxJson,
+        generatorJs,
+        readme,
+        readmeAi,
+        i18n,
+        pinmaps,
+      },
+      srcArchivePath,
+      srcArchiveOutputPath: paths.srcArchive,
+      srcDirectoryPath: paths.srcDir,
     };
   }
 
@@ -308,6 +414,440 @@ export class BlocklyLibraryPackageService {
     } catch (error) {
       throw new Error(`JSON 格式错误 (${filePath})，${this.formatError(error)}`);
     }
+  }
+
+  private assertPackageJsonPatchWritten(filePath: string, safePatch: Record<string, unknown>): void {
+    const writtenPackageJson = this.readJsonFile(filePath, 'package.json');
+    for (const [key, value] of Object.entries(safePatch)) {
+      if (JSON.stringify(writtenPackageJson?.[key]) !== JSON.stringify(value)) {
+        throw new Error(`写入校验失败 (${filePath})，字段 ${key} 未正确保存`);
+      }
+    }
+  }
+
+  private renameLibraryPackageMetadata(ref: BlocklyLibraryPackageRef, safePatch: Record<string, unknown>, nextPackageName: string): BlocklyLibraryMetadataUpdateResult {
+    const projectPath = this.resolveProjectPathFromPackageRef(ref);
+    const projectPackageJsonPath = projectPath ? this.electronService.pathJoin(projectPath, 'package.json') : '';
+    const projectPackageJson = this.readProjectPackageJson(projectPath);
+    const targets = this.resolveMetadataRenameTargets(ref, nextPackageName, projectPath, projectPackageJson);
+    if (targets.length === 0) {
+      throw new Error(`未找到可重命名的本地库 package.json (${ref.path})`);
+    }
+
+    this.assertRenameTargetsAvailable(targets);
+    for (const target of targets) {
+      this.writePackageJsonPatch(target.packagePath, safePatch);
+    }
+
+    for (const target of targets) {
+      this.movePackageDirectory(target.packagePath, target.nextPackagePath);
+    }
+
+    const projectPackageJsonUpdated = !!projectPackageJson && !!projectPackageJsonPath
+      ? this.updateProjectPackageJsonForLibraryRename(
+        projectPackageJsonPath,
+        projectPackageJson,
+        ref.name,
+        nextPackageName,
+        projectPath,
+        targets,
+      )
+      : false;
+
+    return {
+      renamed: true,
+      projectPackageJsonUpdated,
+      requiresProjectReload: true,
+      previousPackageName: ref.name,
+      nextPackageName,
+    };
+  }
+
+  private writePackageJsonPatch(packagePath: string, safePatch: Record<string, unknown>): void {
+    const paths = this.getPackagePaths(packagePath);
+    const packageJson = this.readJsonFile(paths.packageJson, 'package.json');
+    const nextPackageJson = {
+      ...packageJson,
+      ...safePatch,
+    };
+
+    this.electronService.writeFile(
+      paths.packageJson,
+      `${JSON.stringify(nextPackageJson, null, 2)}\n`,
+    );
+    this.assertPackageJsonPatchWritten(paths.packageJson, safePatch);
+  }
+
+  private resolveMetadataRenameTargets(
+    ref: BlocklyLibraryPackageRef,
+    nextPackageName: string,
+    projectPath: string,
+    projectPackageJson: any | null,
+  ): BlocklyLibraryMetadataTarget[] {
+    const targets: BlocklyLibraryMetadataTarget[] = [];
+    const seen = new Set<string>();
+    const addTarget = (packagePath: string, nextPackagePath: string) => {
+      if (!packagePath || !nextPackagePath) {
+        return;
+      }
+      if (!this.pathExists(this.getPackagePaths(packagePath).packageJson)) {
+        return;
+      }
+      const key = this.normalizePathKey(packagePath);
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      targets.push({ packagePath, nextPackagePath });
+    };
+
+    if (ref.path && projectPath && this.isPackagePathUnderProjectNodeModules(ref.path, projectPath)) {
+      addTarget(ref.path, this.getPackagePath(projectPath, nextPackageName));
+    } else {
+      addTarget(ref.path, this.replacePackageDirectoryName(ref.path, nextPackageName));
+    }
+
+    const realPath = this.getRealPackagePath(ref.path);
+    if (realPath && this.normalizePathKey(realPath) !== this.normalizePathKey(ref.path)) {
+      addTarget(realPath, this.replacePackageDirectoryName(realPath, nextPackageName));
+    }
+
+    const localSourcePath = this.resolveLocalLibrarySourcePath(ref.name, projectPackageJson);
+    addTarget(localSourcePath, this.replacePackageDirectoryName(localSourcePath, nextPackageName));
+
+    const fileDependencyPath = this.resolveFileDependencyPackagePath(ref.name, projectPath, projectPackageJson);
+    addTarget(fileDependencyPath, this.replacePackageDirectoryName(fileDependencyPath, nextPackageName));
+
+    return targets;
+  }
+
+  private assertRenameTargetsAvailable(targets: BlocklyLibraryMetadataTarget[]): void {
+    for (const target of targets) {
+      if (this.normalizePathKey(target.packagePath) === this.normalizePathKey(target.nextPackagePath)) {
+        continue;
+      }
+      if (this.pathExists(target.nextPackagePath)) {
+        throw new Error(`目标库目录已存在，无法重命名: ${target.nextPackagePath}`);
+      }
+    }
+  }
+
+  private movePackageDirectory(sourcePath: string, destinationPath: string): void {
+    if (this.normalizePathKey(sourcePath) === this.normalizePathKey(destinationPath)) {
+      return;
+    }
+
+    const parentPath = window['path']?.dirname?.(destinationPath);
+    if (parentPath && !this.pathExists(parentPath)) {
+      window['fs'].mkdirSync(parentPath, { recursive: true });
+    }
+
+    try {
+      window['fs'].renameSync(sourcePath, destinationPath);
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      if (error?.code !== 'EXDEV' && error?.code !== 'EPERM' && !message.includes('cross-device')) {
+        throw error;
+      }
+      window['fs'].copySync(sourcePath, destinationPath);
+      if (!this.pathExists(this.getPackagePaths(destinationPath).packageJson)) {
+        throw new Error(`目录复制失败: ${sourcePath} -> ${destinationPath}`);
+      }
+      window['fs'].rmdirSync(sourcePath, { recursive: true, force: true });
+    }
+  }
+
+  private updateProjectPackageJsonForLibraryRename(
+    projectPackageJsonPath: string,
+    projectPackageJson: any,
+    previousPackageName: string,
+    nextPackageName: string,
+    projectPath: string,
+    targets: BlocklyLibraryMetadataTarget[],
+  ): boolean {
+    let changed = false;
+    const dependencyPath = this.findProjectLocalDependencyPath(projectPath, targets);
+    for (const field of PACKAGE_SCAN_DEPENDENCY_FIELDS) {
+      const dependencies = projectPackageJson?.[field];
+      if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies) || dependencies[previousPackageName] === undefined) {
+        continue;
+      }
+
+      const previousSpec = dependencies[previousPackageName];
+      const previousDependencyPath = this.resolveFileDependencySpecPath(projectPath, previousSpec);
+      const renamedDependencyPath = this.findRenamedSourcePath(previousDependencyPath, targets);
+      delete dependencies[previousPackageName];
+      const nextDependencyPath = renamedDependencyPath || dependencyPath;
+      dependencies[nextPackageName] = nextDependencyPath
+        ? this.toFileDependencySpec(projectPath, nextDependencyPath)
+        : previousSpec;
+      changed = true;
+    }
+
+    const sources = projectPackageJson?.[AILY_LOCAL_LIBRARY_SOURCES_KEY];
+    if (sources && typeof sources === 'object' && !Array.isArray(sources) && sources[previousPackageName] !== undefined) {
+      const previousSourcePath = String(sources[previousPackageName] || '');
+      const sourcePath = this.findRenamedSourcePath(previousSourcePath, targets);
+      delete sources[previousPackageName];
+      sources[nextPackageName] = sourcePath || previousSourcePath;
+      changed = true;
+    }
+
+    const usedLibraries = projectPackageJson?.['ailyBlocklyUsedLibraries'];
+    if (usedLibraries && typeof usedLibraries === 'object' && !Array.isArray(usedLibraries) && usedLibraries[previousPackageName] !== undefined) {
+      usedLibraries[nextPackageName] = usedLibraries[previousPackageName];
+      delete usedLibraries[previousPackageName];
+      changed = true;
+    }
+
+    if (changed) {
+      this.writeProjectPackageJson(projectPackageJsonPath, projectPackageJson);
+    }
+    return changed;
+  }
+
+  private writeProjectPackageJson(projectPackageJsonPath: string, projectPackageJson: any): void {
+    const content = `${JSON.stringify(projectPackageJson, null, 2)}\n`;
+    this.electronService.writeFile(projectPackageJsonPath, content);
+
+    const pathApi = window['path'];
+    if (!pathApi?.dirname || !pathApi?.join) {
+      return;
+    }
+
+    const tempPackageJsonPath = pathApi.join(pathApi.dirname(projectPackageJsonPath), '.temp', 'package.json');
+    if (this.pathExists(tempPackageJsonPath)) {
+      this.electronService.writeFile(tempPackageJsonPath, content);
+    }
+  }
+
+  private findProjectLocalDependencyPath(projectPath: string, targets: BlocklyLibraryMetadataTarget[]): string {
+    const localLibrariesRoot = this.normalizePathKey(this.electronService.pathJoin(projectPath, 'local-libraries'));
+    const nodeModulesRoot = this.normalizePathKey(this.electronService.pathJoin(projectPath, 'node_modules'));
+    return targets.find(target => this.normalizePathKey(target.nextPackagePath).startsWith(`${localLibrariesRoot}/`))?.nextPackagePath
+      || targets.find(target => this.normalizePathKey(target.nextPackagePath).startsWith(`${nodeModulesRoot}/`))?.nextPackagePath
+      || '';
+  }
+
+  private findRenamedSourcePath(previousSourcePath: string, targets: BlocklyLibraryMetadataTarget[]): string {
+    if (!previousSourcePath) {
+      return '';
+    }
+
+    const sourceKey = this.normalizePathKey(previousSourcePath);
+    return targets.find(target => this.normalizePathKey(target.packagePath) === sourceKey)?.nextPackagePath || '';
+  }
+
+  private toFileDependencySpec(projectPath: string, packagePath: string): string {
+    const pathApi = window['path'];
+    if (!projectPath || !pathApi?.relative || !pathApi?.isAbsolute) {
+      return `file:${packagePath}`;
+    }
+
+    const relativePath = pathApi.relative(projectPath, packagePath);
+    if (!relativePath || relativePath.startsWith('..') || pathApi.isAbsolute(relativePath)) {
+      return `file:${packagePath}`;
+    }
+
+    return `file:${relativePath.replace(/[\\]+/g, '/')}`;
+  }
+
+  private resolveFileDependencySpecPath(projectPath: string, dependencySpec: unknown): string {
+    if (typeof dependencySpec !== 'string' || !dependencySpec.startsWith('file:')) {
+      return '';
+    }
+
+    const filePath = dependencySpec.slice(5);
+    if (!filePath) {
+      return '';
+    }
+
+    if (window['path']?.isAbsolute?.(filePath)) {
+      return filePath;
+    }
+
+    return projectPath ? this.electronService.pathJoin(projectPath, filePath) : '';
+  }
+
+  private isPackagePathUnderProjectNodeModules(packagePath: string, projectPath: string): boolean {
+    const packageKey = this.normalizePathKey(packagePath);
+    const nodeModulesKey = this.normalizePathKey(this.electronService.pathJoin(projectPath, 'node_modules'));
+    return packageKey.startsWith(`${nodeModulesKey}/`);
+  }
+
+  private replacePackageDirectoryName(packagePath: string, packageName: string): string {
+    if (!packagePath) {
+      return '';
+    }
+
+    const pathApi = window['path'];
+    if (!pathApi?.dirname || !pathApi?.join) {
+      return '';
+    }
+
+    const packageDirName = packageName.split('/').filter(Boolean).pop() || '';
+    return packageDirName ? pathApi.join(pathApi.dirname(packagePath), packageDirName) : '';
+  }
+
+  private resolveMetadataTargetPackagePaths(ref: BlocklyLibraryPackageRef): string[] {
+    const targetPaths: string[] = [];
+    const seen = new Set<string>();
+    const addTarget = (packagePath: string | undefined) => {
+      if (!packagePath) {
+        return;
+      }
+      const packageJsonPath = this.getPackagePaths(packagePath).packageJson;
+      if (!this.pathExists(packageJsonPath)) {
+        return;
+      }
+      const key = this.normalizePathKey(packagePath);
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      targetPaths.push(packagePath);
+    };
+
+    addTarget(ref.path);
+    addTarget(this.getRealPackagePath(ref.path));
+
+    const projectPath = this.resolveProjectPathFromPackageRef(ref);
+    const projectPackageJson = this.readProjectPackageJson(projectPath);
+    addTarget(this.resolveLocalLibrarySourcePath(ref.name, projectPackageJson));
+    addTarget(this.resolveFileDependencyPackagePath(ref.name, projectPath, projectPackageJson));
+
+    return targetPaths;
+  }
+
+  private getRealPackagePath(packagePath: string): string {
+    try {
+      const realPath = window['fs']?.realpathSync?.(packagePath);
+      return typeof realPath === 'string' ? realPath : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private resolveProjectPathFromPackageRef(ref: BlocklyLibraryPackageRef): string {
+    if (!ref.path || !ref.name) {
+      return '';
+    }
+
+    const pathApi = window['path'];
+    if (!pathApi?.dirname || !pathApi?.basename) {
+      return '';
+    }
+
+    let dir = ref.path;
+    for (const _ of ref.name.split('/').filter(Boolean)) {
+      dir = pathApi.dirname(dir);
+    }
+
+    if (pathApi.basename(dir) !== 'node_modules') {
+      return '';
+    }
+
+    return pathApi.dirname(dir);
+  }
+
+  private readProjectPackageJson(projectPath: string): any | null {
+    if (!projectPath) {
+      return null;
+    }
+
+    const packageJsonPath = this.electronService.pathJoin(projectPath, 'package.json');
+    if (!this.pathExists(packageJsonPath)) {
+      return null;
+    }
+
+    try {
+      return this.readJsonFile(packageJsonPath, 'package.json');
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveLocalLibrarySourcePath(packageName: string, packageJson: any | null): string {
+    const sources = packageJson?.[AILY_LOCAL_LIBRARY_SOURCES_KEY];
+    if (!sources || typeof sources !== 'object' || Array.isArray(sources)) {
+      return '';
+    }
+
+    const sourcePath = sources[packageName];
+    return typeof sourcePath === 'string' ? sourcePath : '';
+  }
+
+  private resolveFileDependencyPackagePath(packageName: string, projectPath: string, packageJson: any | null): string {
+    const dependencySpec = packageJson?.dependencies?.[packageName]
+      ?? packageJson?.devDependencies?.[packageName]
+      ?? packageJson?.optionalDependencies?.[packageName]
+      ?? '';
+    if (typeof dependencySpec !== 'string' || !dependencySpec.startsWith('file:')) {
+      return '';
+    }
+
+    const filePath = dependencySpec.slice(5);
+    if (!filePath) {
+      return '';
+    }
+
+    if (window['path']?.isAbsolute?.(filePath)) {
+      return filePath;
+    }
+
+    return projectPath ? this.electronService.pathJoin(projectPath, filePath) : '';
+  }
+
+  private normalizePathKey(packagePath: string): string {
+    return packagePath.replace(/[\\/]+/g, '/').toLowerCase();
+  }
+
+  private readRequiredTextFile(filePath: string, fileName: string): string {
+    if (!this.pathExists(filePath)) {
+      throw new Error(`${fileName} 不合规: 文件不存在 (${filePath})`);
+    }
+
+    try {
+      const content = this.electronService.readFile(filePath);
+      if (typeof content !== 'string' || !content.trim()) {
+        throw new Error('文件内容为空');
+      }
+      return content;
+    } catch (error) {
+      throw new Error(`${fileName} 不合规: 读取失败 (${filePath})，${this.formatError(error)}`);
+    }
+  }
+
+  private readOptionalTextFile(filePath: string): string {
+    if (!this.pathExists(filePath)) {
+      return '';
+    }
+
+    try {
+      return this.electronService.readFile(filePath) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  private readJsonDirectory(dirPath: string): Record<string, any> {
+    const result: Record<string, any> = {};
+    if (!this.pathExists(dirPath) || !this.isDirectory(dirPath)) {
+      return result;
+    }
+
+    for (const fileName of this.readDirectoryNames(dirPath)) {
+      if (!fileName.endsWith('.json')) {
+        continue;
+      }
+      const filePath = this.electronService.pathJoin(dirPath, fileName);
+      if (!this.pathExists(filePath) || this.isDirectory(filePath)) {
+        continue;
+      }
+      const key = fileName.slice(0, -'.json'.length);
+      result[key] = this.readJsonFile(filePath, fileName);
+    }
+    return result;
   }
 
   private validatePackageJson(packageJson: any, filePath: string, errors: string[], expectedPackageName?: string) {

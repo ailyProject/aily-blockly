@@ -13,7 +13,7 @@ import { buildToolActivityDisplayItem } from './chat-activity-group-projection';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (displayItem) {
-      <aily-chat-activity-item [item]="displayItem" [only]="true" />
+      <aily-chat-activity-item [item]="displayItem" [only]="true" [sessionId]="sessionId" />
     }
   `,
   styles: [`
@@ -26,6 +26,7 @@ import { buildToolActivityDisplayItem } from './chat-activity-group-projection';
 })
 export class ChatStandaloneToolCallComponent implements OnChanges {
   @Input({ required: true }) part!: ToolCallPart;
+  @Input() sessionId = '';
 
   displayItem: ActivityGroupDisplayItem | null = null;
 

@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
+import { ChangeDetectorRef, Component, Input, OnChanges, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
 import { AilyHost } from '../../../core/host';
@@ -14,6 +14,7 @@ import {
   type StateTone,
 } from './activity-detail-items';
 import { getBlocklyArtifactReferenceLabel, resolveBlocklyArtifactReferenceTarget } from '../../../helpers/chat-artifact-reference';
+import { XAilyMermaidViewerComponent } from '../x-aily-mermaid-viewer/x-aily-mermaid-viewer.component';
 
 interface StateBadge {
   label: string;
@@ -33,7 +34,7 @@ interface StateViewerData {
 @Component({
   selector: 'x-aily-state-viewer',
   standalone: true,
-  imports: [CommonModule, TranslateModule],
+  imports: [CommonModule, TranslateModule, XAilyMermaidViewerComponent],
   template: `
     <div
       class="ac-state"
@@ -148,6 +149,12 @@ interface StateViewerData {
                                 <pre class="ac-state-output-code-block"><code [attr.data-language]="row.outputLanguage || null" [textContent]="row.outputCode || ''"></code></pre>
                               </div>
                             }
+                            @if (row.outputKind === 'mermaid') {
+                              <x-aily-mermaid-viewer
+                                [data]="{ code: row.outputCode || row.note || '' }"
+                                [streamStatus]="'done'"
+                                [mermaidInstance]="mermaidInstance"></x-aily-mermaid-viewer>
+                            }
                             @if (row.outputKind === 'image' && getOutputImageSource(row); as imageSource) {
                               <div class="ac-state-output-image-shell">
                                 <img class="ac-state-output-image-preview" [src]="imageSource" [alt]="row.outputLabel || row.title" />
@@ -174,7 +181,7 @@ interface StateViewerData {
                             @if (getOutputResourceHref(row); as resourceHref) {
                               <a class="ac-state-list-link" [href]="resourceHref" target="_blank" rel="noopener noreferrer" (click)="openExternalLink(resourceHref, $event)">{{ resourceHref }}</a>
                             }
-                            @if (row.note) {
+                            @if (row.note && row.outputKind !== 'mermaid') {
                               <div class="ac-state-list-note">{{ row.note }}</div>
                             }
                           </div>
@@ -1003,12 +1010,17 @@ export class XAilyStateViewerComponent implements OnChanges {
   headerSubtitle = '';
   headerStatusLabel = '';
   headerStatusTone: StateTone = 'neutral';
+  mermaidInstance: any = null;
 
   private expansionIdentity = '';
+  private mermaidLoading = false;
+
+  constructor(private cdr: ChangeDetectorRef) {}
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['data'] || changes['preparedDetailSections']) {
       this.rebuildDetails();
+      void this.ensureMermaidInstance();
     }
   }
 
@@ -1275,7 +1287,10 @@ export class XAilyStateViewerComponent implements OnChanges {
   }
 
   private shouldDefaultExpand(): boolean {
-    return this.data?.state === 'doing' || this.data?.state === 'warn' || this.data?.state === 'error';
+    return this.data?.state === 'doing'
+      || this.data?.state === 'warn'
+      || this.data?.state === 'error'
+      || this.hasMermaidRows();
   }
 
   showSummaryBadges(): boolean {
@@ -1284,6 +1299,30 @@ export class XAilyStateViewerComponent implements OnChanges {
 
   private pushDetailSections(descriptors: readonly DetailSectionDescriptor[]): void {
     appendDetailSections(this.sections, [], descriptors, false);
+  }
+
+  private async ensureMermaidInstance(): Promise<void> {
+    if (this.mermaidInstance || this.mermaidLoading || !this.hasMermaidRows()) {
+      return;
+    }
+
+    this.mermaidLoading = true;
+    try {
+      const module = await import('mermaid');
+      this.mermaidInstance = module.default ?? module;
+      this.cdr.markForCheck();
+    } finally {
+      this.mermaidLoading = false;
+    }
+  }
+
+  private hasMermaidRows(): boolean {
+    return this.sections.some(section => {
+      if (section.rows.some(row => row.outputKind === 'mermaid')) {
+        return true;
+      }
+      return (section.outputGroups || []).some(group => group.rows.some(row => row.outputKind === 'mermaid'));
+    });
   }
 
   getOutputGroups(section: StateDetailSection): readonly StateDetailOutputGroup[] {

@@ -6,6 +6,7 @@ import {
   isTerminalCommandToolName,
   normalizeReadSideToolName,
 } from '../../../core/tool-name-normalizer';
+import { readToolApprovalCommand } from '../../../core/tool-approval-input';
 import { ChatCommandPreviewComponent } from '../chat-command-preview/chat-command-preview.component';
 import { ChatConfirmationActionsComponent, type ChatConfirmationActionOption } from '../chat-confirmation-actions/chat-confirmation-actions.component';
 import { ChatPartHeaderShellComponent } from '../chat-part-header-shell.component';
@@ -308,7 +309,7 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
       this.subtitle = this.data.subtitle || '';
       this.message = this.data.message || '';
       this.args = this.data.args;
-      this.commandPreview = this.getCommandPreview(this.toolName, this.args);
+      this.commandPreview = this.getCommandPreview(this.toolName, this.args, this.message);
       this.commandMeta = this.getCommandMeta(this.toolName, this.args);
       this.displayMessage = this.getDisplayMessage(this.toolName, this.message, this.commandPreview);
       this.resolved = !!this.data.resolved;
@@ -339,17 +340,15 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
     this.cdr.markForCheck();
   }
 
-  private getCommandPreview(toolName: string, args: any): string {
+  private getCommandPreview(toolName: string, args: any, message?: string): string {
     if (!args || typeof args !== 'object') {
-      return '';
+      return readToolApprovalCommand(toolName, args, message);
     }
 
-    if (typeof args.command === 'string' && args.command.trim()) {
-      return args.command.trim();
-    }
+    const command = readToolApprovalCommand(toolName, args, message);
 
-    if ((normalizeReadSideToolName(toolName) === 'send_to_terminal') && typeof args.command === 'string') {
-      return args.command;
+    if (command) {
+      return command;
     }
 
     return '';

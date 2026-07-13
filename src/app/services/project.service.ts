@@ -20,7 +20,7 @@ import { TranslateService } from '@ngx-translate/core';
 import { NoticeService } from './notice.service';
 import { NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { AppDataResourceLockService } from './appdata-resource-lock.service';
-import { ChatService } from '../tools/aily-chat/services/chat.service';
+import { ChatRuntimeHostInventoryService } from '../tools/aily-chat/services/chat-runtime-host-inventory.service';
 import {
   readPlatformRefFromProjectAci,
   resolveEffectiveBoardDependencies,
@@ -51,14 +51,17 @@ export interface ProjectActivationEvent {
   path: string;
   previousPath: string;
   reason: ProjectActivationReason;
+  sessionResource?: string | null;
 }
 
 interface ProjectOpenOptions {
   reason?: ProjectActivationReason;
+  sessionResource?: string | null;
 }
 
 interface ProjectCreationOptions {
   activationReason?: ProjectActivationReason;
+  sessionResource?: string | null;
 }
 
 interface ProjectCloseOptions {
@@ -191,13 +194,23 @@ export class ProjectService {
     private translate: TranslateService,
     private noticeService: NoticeService,
     private appDataResourceLock: AppDataResourceLockService,
-    private chatService: ChatService,
+    private chatRuntimeHostInventory: ChatRuntimeHostInventoryService,
     private injector: Injector,
   ) {
   }
 
   private hasBlockingChatRequest(): boolean {
-    return this.chatService?.isWaiting === true;
+    const projectPath = this.normalizeProjectPath(this.currentProjectPath);
+    return this.chatRuntimeHostInventory.readSnapshot().sessions.some(session => {
+      if (session.requestInProgress !== true) {
+        return false;
+      }
+
+      const sessionProjectPath = this.normalizeProjectPath(session.projectPath);
+      return projectPath
+        ? sessionProjectPath === projectPath
+        : sessionProjectPath.length === 0;
+    });
   }
 
   private shouldBlockForChatRequest(reason?: ProjectActivationReason): boolean {
@@ -235,7 +248,10 @@ export class ProjectService {
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         if (message.data.action == 'open-project') {
-          this.projectOpen(message.data.path, { reason: this.parseProjectActivationReason(message.data.reason) });
+          this.projectOpen(message.data.path, {
+            reason: this.parseProjectActivationReason(message.data.reason),
+            sessionResource: typeof message.data.sessionResource === 'string' ? message.data.sessionResource : null,
+          });
         } else {
           return;
         }
@@ -346,7 +362,12 @@ export class ProjectService {
     this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
     await window['iWindow'].send({
       to: 'main',
-      data: { action: 'open-project', path: projectPath, reason: options.activationReason || 'new' }
+      data: {
+        action: 'open-project',
+        path: projectPath,
+        reason: options.activationReason || 'new',
+        sessionResource: options.sessionResource ?? null,
+      }
     });
     return true;
   }
@@ -484,6 +505,7 @@ export class ProjectService {
       path: projectPath,
       previousPath: previousProjectPath,
       reason: activationReason,
+      sessionResource: options.sessionResource ?? null,
     });
 
     const abiIsExist = window['path'].isExists(projectPath + '/project.abi');
@@ -619,7 +641,6 @@ export class ProjectService {
       name: 'aily blockly',
     };
     this.stateSubject.next('default');
-    this.uiService.closeTerminal();
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
     this.router.navigate(['/main/guide'], { replaceUrl: true });
   }
@@ -2428,6 +2449,10 @@ export class ProjectService {
    * @returns 返回构建路径
    */
   async getBuildPath(): Promise<string> {
+    if (this.currentProjectPath) {
+        return window['path'].join(this.currentProjectPath, '.build');
+    }
+
     const root = this.currentProjectPath;
     const aciPath = window['path'].join(root, 'project.aci');
     // 与 child/scripts/aily-code-project.js 中分段规则保持一致
@@ -2454,7 +2479,7 @@ export class ProjectService {
 
     // 使用统一的构建路径获取方法
     return window['path'].join(
-      window['path'].getAilyBuilderBuildPath(),
+      window['path'].getAilyBuilderPath(),
       uniqueSketchName
     );
   }

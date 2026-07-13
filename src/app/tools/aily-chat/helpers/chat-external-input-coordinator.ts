@@ -29,6 +29,9 @@ interface ExternalInputCallbacks {
  * ChatEngineService shell.
  */
 export class ChatExternalInputCoordinator {
+  private pendingAutoSendText: string | undefined;
+  private pendingAutoSendOptions: ChatTextOptions | undefined;
+
   constructor(
     private readonly ctx: ChatExternalInputContext,
     private readonly callbacks: ExternalInputCallbacks,
@@ -59,12 +62,30 @@ export class ChatExternalInputCoordinator {
         return;
       }
 
+      this.pendingAutoSendText = this.ctx.inputValue;
+      this.pendingAutoSendOptions = options;
       void this.autoSendExternalInput();
     });
   }
 
   private async autoSendExternalInput(): Promise<void> {
-    let targetSessionId = this.ctx.sessionId;
+    // External UI affordances, such as project-side quick actions, can request
+    // a fresh chat before submitting. Keep that decision here so all external
+    // auto-send paths still converge on the same host-owned submit pipeline.
+    // The option is read from the staged input path instead of the call-site
+    // opening sessions directly.
+    const text = this.pendingAutoSendText ?? this.ctx.inputValue;
+    const options = this.pendingAutoSendOptions;
+    this.pendingAutoSendText = undefined;
+    this.pendingAutoSendOptions = undefined;
+    const shouldStartFreshSession = options?.newChatFirst === true;
+    if (options?.newChatFirst) {
+      await this.callbacks.newChat();
+      this.ctx.inputValue = text;
+      this.ctx.triggerSyncDetectChanges();
+    }
+
+    let targetSessionId = shouldStartFreshSession ? '' : this.ctx.sessionId;
     if (!targetSessionId) {
       targetSessionId = await this.callbacks.ensureSessionReadyForSubmit();
       if (!targetSessionId) {
@@ -74,7 +95,7 @@ export class ChatExternalInputCoordinator {
     }
 
     this.ctx.scrollManager.startNewExchange();
-    await this.callbacks.submitText(this.ctx.inputValue, true, targetSessionId);
+    await this.callbacks.submitText(text, true, targetSessionId);
     this.ctx.triggerSyncDetectChanges();
   }
 

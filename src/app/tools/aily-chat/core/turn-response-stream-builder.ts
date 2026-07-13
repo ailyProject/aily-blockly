@@ -1,4 +1,4 @@
-import type { RenderEvent, TurnRequest, TurnResponseCommand, TurnResponseFollowup, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
+import type { RenderEvent, TurnResponseCommand, TurnResponseFollowup, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
 
 import {
   type ChatPartStore,
@@ -48,7 +48,6 @@ interface TurnResponseIncrementalProjection {
   readonly resultText?: string;
   readonly createdAt: number;
 }
-
 export interface TurnResponseIncrementalBeginOptions {
   readonly turnId: string;
   readonly request: TurnResponseTurn['request'];
@@ -162,7 +161,6 @@ export class TurnResponseIncrementalBuilder {
     const request = options.snapshot?.request ?? this.currentProjection.request;
     if (options.status !== 'streaming') {
       this.runtime.finalizeRunningParts({
-        materializeFinalMarkdownAsPlan: isPlanTurnRequest(request),
         status: options.status === 'cancelled' ? 'cancelled' : options.status === 'error' ? 'error' : 'completed',
       });
     }
@@ -347,29 +345,4 @@ export class TurnResponseIncrementalBuilder {
         return false;
     }
   }
-}
-
-function isPlanTurnRequest(request: TurnRequest | null | undefined): boolean {
-  const metadata = request?.metadata as Record<string, unknown> | undefined;
-  if (!metadata) {
-    return false;
-  }
-
-  if (metadata['modeId'] === 'plan') {
-    return true;
-  }
-
-  const modeInfo = metadata['modeInfo'] && typeof metadata['modeInfo'] === 'object'
-    ? metadata['modeInfo'] as Record<string, unknown>
-    : undefined;
-  if (modeInfo?.['modeId'] === 'plan' || modeInfo?.['kind'] === 'plan') {
-    return true;
-  }
-
-  const requestRouting = metadata['requestRouting'] && typeof metadata['requestRouting'] === 'object'
-    ? metadata['requestRouting'] as Record<string, unknown>
-    : undefined;
-  return requestRouting?.['modeId'] === 'plan'
-    || requestRouting?.['requestModeId'] === 'plan'
-    || requestRouting?.['selectedModeId'] === 'plan';
 }

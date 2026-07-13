@@ -264,6 +264,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
     private playTestActive = false;
     private playTestFrameIndex = 0;
     private requestId = 0;
+    private sourceBlockRenderScheduled = false;
 
     constructor(
         value: U8g2AnimationValue | typeof Blockly.Field.SKIP_SETUP,
@@ -2245,8 +2246,29 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
 
     private rerenderSourceBlock() {
         const sourceBlock = this.getSourceBlock();
-        if (sourceBlock instanceof Blockly.BlockSvg && sourceBlock.rendered) {
-            sourceBlock.render();
+        if (!(sourceBlock instanceof Blockly.BlockSvg) || this.sourceBlockRenderScheduled) {
+            return;
+        }
+
+        const rootBlock = typeof sourceBlock.getRootBlock === 'function'
+            ? sourceBlock.getRootBlock()
+            : sourceBlock;
+        const blockToRender = rootBlock instanceof Blockly.BlockSvg ? rootBlock : sourceBlock;
+        if (!blockToRender.rendered) {
+            return;
+        }
+
+        this.sourceBlockRenderScheduled = true;
+        const renderBlock = () => {
+            this.sourceBlockRenderScheduled = false;
+            if (blockToRender.rendered) {
+                blockToRender.render();
+            }
+        };
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(renderBlock);
+        } else {
+            Promise.resolve().then(renderBlock);
         }
     }
 

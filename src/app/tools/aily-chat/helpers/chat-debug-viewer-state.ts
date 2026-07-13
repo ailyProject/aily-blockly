@@ -18,6 +18,11 @@ import { resolveHostSessionRequestContext } from './host-session-runtime-auxilia
 import { buildHostProjectionStateFromPersistedRecord } from './host-turn-response-state';
 import { resolveHostSessionRequestRoutingSummary } from './host-session-request-routing';
 import type { ImportedDebugSessionRecord } from '../services/chat-history.service';
+import type { HostSessionTurnRuntimeTruth } from './host-session-runtime-truth';
+import {
+  normalizeHostSessionTurnRuntimeTruth,
+  readHostSessionTurnRuntimeTruthFromMetadata,
+} from './host-session-runtime-truth';
 import type {
   HostSessionDebugDualPersistenceSummary,
   HostSessionDebugLiveRuntimeOverlaySummary,
@@ -37,9 +42,11 @@ export interface ImportedDebugSessionViewModel {
   readonly surfaceMode: ImportedDebugSurfaceModeSummary;
   readonly providerOptions: HostSessionProviderOptions;
   readonly requestRouting: HostSessionRequestRoutingSummary;
+  readonly runtimeTruth?: ImportedDebugRuntimeTruthSummary;
   readonly interactionActionSummary?: HostSessionInteractionActionSummary;
   readonly pendingPlanReview?: ImportedDebugPendingPlanReviewSummary;
   readonly planParts: readonly ImportedDebugPlanPartSummary[];
+  readonly deniedToolCalls: readonly ImportedDebugDeniedToolCallSummary[];
   readonly dualPersistence?: HostSessionDebugDualPersistenceSummary;
   readonly liveRuntimeOverlay?: HostSessionDebugLiveRuntimeOverlaySummary;
   readonly restoreDiagnostics?: HostSessionRestoreDiagnosticsSummary;
@@ -62,8 +69,27 @@ export interface ImportedDebugPlanPartSummary {
   readonly partId?: string;
   readonly status: string;
   readonly source?: string;
+  readonly owner: string;
+  readonly sourceAgentRole?: string;
+  readonly subAgentInvocationId?: string;
+  readonly parentToolCallId?: string;
   readonly charLength: number;
   readonly preview: string;
+}
+
+export interface ImportedDebugRuntimeTruthSummary extends HostSessionTurnRuntimeTruth {
+  readonly turnId: string;
+}
+
+export interface ImportedDebugDeniedToolCallSummary {
+  readonly turnId: string;
+  readonly toolCallId?: string;
+  readonly toolName: string;
+  readonly source: string;
+  readonly reason: string;
+  readonly chatMode?: string;
+  readonly runtimeMode?: string;
+  readonly agentRole?: string;
 }
 
 export function buildImportedDebugSessionViewModel(
@@ -76,9 +102,11 @@ export function buildImportedDebugSessionViewModel(
     surfaceMode: buildImportedDebugSurfaceModeSummary(record.hostRecord.metadata),
     providerOptions: resolveHostSessionProviderOptions(record.hostRecord),
     requestRouting: resolveHostSessionRequestRoutingSummary(record.hostRecord),
+    runtimeTruth: buildLatestRuntimeTruthSummary(record),
     interactionActionSummary: resolveHostSessionInteractionActionSummary(record.hostRecord),
     pendingPlanReview: buildPendingPlanReviewSummary(record),
     planParts: buildPlanPartSummaries(record),
+    deniedToolCalls: buildDeniedToolCallSummaries(record),
     ...(record.debugDualPersistence ? { dualPersistence: { ...record.debugDualPersistence } } : {}),
     ...(record.debugLiveRuntimeOverlay ? { liveRuntimeOverlay: { ...record.debugLiveRuntimeOverlay } } : {}),
     ...(record.debugRestoreDiagnostics ? { restoreDiagnostics: { ...record.debugRestoreDiagnostics } } : {}),
@@ -87,6 +115,24 @@ export function buildImportedDebugSessionViewModel(
     messageCount: projection.dialogItems.length,
     dialogItems: projection.dialogItems.map(disableDialogItemActions),
   };
+}
+
+function buildLatestRuntimeTruthSummary(
+  record: ImportedDebugSessionRecord,
+): ImportedDebugRuntimeTruthSummary | undefined {
+  const turns = record.hostRecord.turnResponses ?? [];
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    const runtimeTruth = normalizeHostSessionTurnRuntimeTruth(turn.runtimeTruth)
+      ?? readHostSessionTurnRuntimeTruthFromMetadata(turn.request?.metadata);
+    if (runtimeTruth) {
+      return {
+        turnId: typeof turn.turnId === 'string' ? turn.turnId : '',
+        ...runtimeTruth,
+      };
+    }
+  }
+  return undefined;
 }
 
 function buildPlanPartSummaries(
@@ -104,6 +150,8 @@ function buildPlanPartSummaries(
         ...(typeof part.partId === 'string' && part.partId.trim() ? { partId: part.partId.trim() } : {}),
         status: typeof part.status === 'string' && part.status.trim() ? part.status.trim() : 'unknown',
         ...(typeof part.source === 'string' && part.source.trim() ? { source: part.source.trim() } : {}),
+        owner: resolvePlanPartOwner(part),
+        ...readPlanPartScope(part),
         charLength: text.length,
         preview: previewPlanText(text),
       });
@@ -141,10 +189,111 @@ function isPlanResponsePart(part: unknown): part is {
   readonly status?: unknown;
   readonly source?: unknown;
   readonly text?: unknown;
+  readonly sourceAgentRole?: unknown;
+  readonly subAgentInvocationId?: unknown;
+  readonly parentToolCallId?: unknown;
+  readonly metadata?: unknown;
 } {
   return typeof part === 'object'
     && part !== null
     && (part as { readonly type?: unknown }).type === 'plan';
+}
+
+function buildDeniedToolCallSummaries(
+  record: ImportedDebugSessionRecord,
+): ImportedDebugDeniedToolCallSummary[] {
+  const summaries: ImportedDebugDeniedToolCallSummary[] = [];
+  for (const turn of record.hostRecord.turnResponses ?? []) {
+    const turnId = typeof turn.turnId === 'string' ? turn.turnId : '';
+    for (const part of turn.response?.parts ?? []) {
+      const summary = buildDeniedToolCallSummary(turnId, part);
+      if (summary) {
+        summaries.push(summary);
+      }
+    }
+  }
+  return summaries;
+}
+
+function buildDeniedToolCallSummary(
+  turnId: string,
+  part: unknown,
+): ImportedDebugDeniedToolCallSummary | undefined {
+  if (!isToolCallResponsePart(part)) {
+    return undefined;
+  }
+
+  const metadata = asRecord(part.metadata);
+  const governance = asRecord(metadata?.['governance']);
+  if (governance?.['status'] !== 'denied') {
+    return undefined;
+  }
+
+  const profile = asRecord(metadata?.['executionProfile']);
+  return {
+    turnId,
+    ...(typeof part.toolCallId === 'string' && part.toolCallId.trim() ? { toolCallId: part.toolCallId.trim() } : {}),
+    toolName: typeof part.toolName === 'string' && part.toolName.trim() ? part.toolName.trim() : '<unknown>',
+    source: asNonEmptyString(governance['source']) ?? 'unknown',
+    reason: asNonEmptyString(governance['reason']) ?? '<missing reason>',
+    ...(asNonEmptyString(profile?.['chatMode']) ? { chatMode: asNonEmptyString(profile?.['chatMode']) } : {}),
+    ...(asNonEmptyString(profile?.['runtimeMode']) ? { runtimeMode: asNonEmptyString(profile?.['runtimeMode']) } : {}),
+    ...(asNonEmptyString(profile?.['agentRole']) ? { agentRole: asNonEmptyString(profile?.['agentRole']) } : {}),
+  };
+}
+
+function isToolCallResponsePart(part: unknown): part is {
+  readonly type: 'tool_call';
+  readonly toolCallId?: unknown;
+  readonly toolName?: unknown;
+  readonly metadata?: unknown;
+} {
+  return typeof part === 'object'
+    && part !== null
+    && (part as { readonly type?: unknown }).type === 'tool_call';
+}
+
+function resolvePlanPartOwner(part: {
+  readonly sourceAgentRole?: unknown;
+  readonly subAgentInvocationId?: unknown;
+  readonly parentToolCallId?: unknown;
+  readonly metadata?: unknown;
+}): string {
+  const scope = readPlanPartScope(part);
+  if (scope.sourceAgentRole) {
+    return scope.sourceAgentRole;
+  }
+  return scope.subAgentInvocationId || scope.parentToolCallId ? 'subagent' : 'main';
+}
+
+function readPlanPartScope(part: {
+  readonly sourceAgentRole?: unknown;
+  readonly subAgentInvocationId?: unknown;
+  readonly parentToolCallId?: unknown;
+  readonly metadata?: unknown;
+}): Pick<ImportedDebugPlanPartSummary, 'sourceAgentRole' | 'subAgentInvocationId' | 'parentToolCallId'> {
+  const metadata = asRecord(part.metadata);
+  return {
+    ...(asNonEmptyString(part.sourceAgentRole) || asNonEmptyString(metadata?.['sourceAgentRole'])
+      ? { sourceAgentRole: asNonEmptyString(part.sourceAgentRole) ?? asNonEmptyString(metadata?.['sourceAgentRole']) }
+      : {}),
+    ...(asNonEmptyString(part.subAgentInvocationId) || asNonEmptyString(metadata?.['subAgentInvocationId'])
+      ? { subAgentInvocationId: asNonEmptyString(part.subAgentInvocationId) ?? asNonEmptyString(metadata?.['subAgentInvocationId']) }
+      : {}),
+    ...(asNonEmptyString(part.parentToolCallId) || asNonEmptyString(metadata?.['parentToolCallId'])
+      ? { parentToolCallId: asNonEmptyString(part.parentToolCallId) ?? asNonEmptyString(metadata?.['parentToolCallId']) }
+      : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function previewPlanText(text: string): string {

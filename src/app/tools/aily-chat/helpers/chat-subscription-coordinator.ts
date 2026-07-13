@@ -79,10 +79,7 @@ export class ChatSubscriptionCoordinator {
       return;
     }
 
-    const currentSessionId = typeof this.ctx.sessionId === 'string'
-      ? this.ctx.sessionId.trim()
-      : '';
-    if (currentSessionId.length > 0) {
+    if (this.hasConversationHistory()) {
       this.ctx.hasInitializedForThisLogin = true;
       return;
     }
@@ -167,12 +164,21 @@ export class ChatSubscriptionCoordinator {
     projectPath: string,
     _previousProjectPath: string | null | undefined,
     reason?: string,
+    sessionResource?: string | null,
   ): Promise<void> {
     const rootPath = AilyHost.get().project.projectRootPath;
     if (!this.isProjectPath(projectPath, rootPath)) {
       if (!this.ctx.prjPath) {
         return;
       }
+      this.logSessionScopeTransition({
+        event: 'project-to-global',
+        reason: reason ?? 'root-or-empty-project-path',
+        projectPath: null,
+        fromScope: this.describeScope(this.ctx.prjPath),
+        toScope: 'global',
+        adopted: false,
+      });
       await this.handleGlobalScopeActivated();
       return;
     }
@@ -186,8 +192,17 @@ export class ChatSubscriptionCoordinator {
     this.ctx.chatHistoryService.reloadProjectIndex(projectPath);
 
     const adopted = reason === 'chat-tool-create'
-      ? this.ctx.session.adoptActiveGlobalSessionToProject(projectPath, reason)
+      ? this.ctx.session.adoptActiveGlobalSessionToProject(projectPath, reason, sessionResource)
       : false;
+
+    this.logSessionScopeTransition({
+      event: 'enter-project',
+      reason: reason ?? 'open',
+      projectPath,
+      fromScope: this.describeScope(_previousProjectPath ?? ''),
+      toScope: this.describeScope(projectPath),
+      adopted,
+    });
 
     if (!adopted) {
       if (this.ctx.isLoggedIn) {
@@ -208,8 +223,18 @@ export class ChatSubscriptionCoordinator {
   }
 
   private async handleGlobalScopeActivated(): Promise<void> {
+    const previousProjectPath = this.ctx.prjPath || null;
     this.ctx.prjPath = '';
     this.ctx.prjRootPath = AilyHost.get().project.projectRootPath;
+
+    this.logSessionScopeTransition({
+      event: 'enter-global',
+      reason: 'project-close',
+      projectPath: null,
+      fromScope: this.describeScope(previousProjectPath),
+      toScope: 'global',
+      adopted: false,
+    });
 
     if (this.ctx.isLoggedIn) {
       await this.ctx.session.detachCurrentSessionSurface();
@@ -224,6 +249,49 @@ export class ChatSubscriptionCoordinator {
       priority: 'normal',
     });
     this.callbacks.refreshSessionProviderOptionsSources();
+  }
+
+  private logSessionScopeTransition(input: {
+    event: string;
+    reason: string;
+    projectPath: string | null;
+    fromScope: string;
+    toScope: string;
+    adopted: boolean;
+  }): void {
+    console.info('[AilyChat][SessionScopeTransition]', {
+      ...input,
+      sessionResource: this.readCurrentSessionResourceForTrace(),
+      currentViewResource: this.readCurrentSessionResourceForTrace(),
+      hasBlankSessionShell: this.ctx.chatService.hasBlankSessionShell === true,
+    });
+  }
+
+  private readCurrentSessionResourceForTrace(): string | null {
+    const readCurrentViewSessionResource = (this.ctx as unknown as {
+      readCurrentViewSessionResource?: () => string | null | undefined;
+    }).readCurrentViewSessionResource;
+    const currentViewResource = typeof readCurrentViewSessionResource === 'function'
+      ? readCurrentViewSessionResource.call(this.ctx)
+      : undefined;
+    const normalizedViewResource = typeof currentViewResource === 'string'
+      ? currentViewResource.trim()
+      : '';
+    if (normalizedViewResource) {
+      return normalizedViewResource;
+    }
+
+    const currentSessionId = typeof this.ctx.chatService.currentSessionId === 'string'
+      ? this.ctx.chatService.currentSessionId.trim()
+      : '';
+    return currentSessionId || null;
+  }
+
+  private describeScope(projectPath: string | null | undefined): string {
+    const rootPath = AilyHost.get().project.projectRootPath;
+    return this.isProjectPath(projectPath ?? '', rootPath)
+      ? `project:${projectPath}`
+      : 'global';
   }
 
   setup(): void {
@@ -295,7 +363,12 @@ export class ChatSubscriptionCoordinator {
     const projectActivation$ = AilyHost.get().project.projectActivation$;
     this.projectActivationSubscription = projectActivation$?.subscribe((event: any) => {
       this.projectActivationSequence += 1;
-      void this.handleProjectScopeActivated(event?.path || '', event?.previousPath || null, event?.reason);
+      void this.handleProjectScopeActivated(
+        event?.path || '',
+        event?.previousPath || null,
+        event?.reason,
+        typeof event?.sessionResource === 'string' ? event.sessionResource : null,
+      );
     }) ?? null;
 
     this.projectPathSubscription = AilyHost.get().project.currentProjectPath$.pipe(

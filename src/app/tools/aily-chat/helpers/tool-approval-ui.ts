@@ -14,8 +14,13 @@ import {
   isTerminalCommandToolName,
   normalizeReadSideToolName,
 } from '../core/tool-name-normalizer';
+import {
+  normalizeToolApprovalArgs,
+  readToolApprovalCommand,
+} from '../core/tool-approval-input';
 
 export interface ToolApprovalRequest {
+  approvalTraceId?: string;
   toolCallId: string;
   toolName: string;
   title: string;
@@ -244,7 +249,7 @@ export function generateApprovalMessage(
         title: getToolApprovalTitle(normalizedToolName),
         message: [
           t('AILY_CHAT.PROCESS_APPROVAL_MESSAGE_RUN_PREFIX', undefined, 'Run terminal command:'),
-          args?.command || t('AILY_CHAT.PROCESS_UNKNOWN_COMMAND', undefined, '(unknown command)'),
+          readToolApprovalCommand(normalizedToolName, args) || t('AILY_CHAT.PROCESS_UNKNOWN_COMMAND', undefined, '(unknown command)'),
           ...(args?.goal ? [`${t('AILY_CHAT.PROCESS_APPROVAL_GOAL_PREFIX', undefined, 'Goal:')} ${args.goal}`] : []),
         ].join('\n'),
       };
@@ -334,6 +339,10 @@ export function normalizeToolApprovalPresentation(input: {
 
 export function normalizeToolApprovalRequest(input: ToolApprovalRequest): ToolApprovalRequest {
   const normalizedToolName = normalizeReadSideToolName(input.toolName);
+  const normalizedArgs = normalizeToolApprovalArgs(normalizedToolName, input.args, input.message || input.title);
+  const approvalTraceId = typeof input.approvalTraceId === 'string' && input.approvalTraceId.trim()
+    ? input.approvalTraceId.trim()
+    : `approval-${input.toolCallId}`;
   const normalized = normalizeToolApprovalPresentation({
     toolName: normalizedToolName,
     source: input.source,
@@ -344,11 +353,12 @@ export function normalizeToolApprovalRequest(input: ToolApprovalRequest): ToolAp
     primaryScope: input.primaryScope,
     allowAutoConfirm: input.allowAutoConfirm,
     approveCombination: input.approveCombination,
-    args: input.args,
+    args: normalizedArgs,
   });
 
   return {
     ...input,
+    approvalTraceId,
     toolName: normalizedToolName,
     title: normalized.title,
     subtitle: normalized.subtitle,
@@ -357,6 +367,6 @@ export function normalizeToolApprovalRequest(input: ToolApprovalRequest): ToolAp
     primaryScope: normalized.primaryScope,
     allowAutoConfirm: normalized.allowAutoConfirm,
     approveCombination: normalized.approveCombination,
-    args: normalized.args,
+    args: normalizedArgs,
   };
 }

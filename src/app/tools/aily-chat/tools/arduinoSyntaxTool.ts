@@ -2,8 +2,7 @@ import type { ToolUseResult } from '../core/tool-types';
 import { ArduinoLintService, LintResult, LintError } from "../services/arduino-lint.service";
 
 /**
- * Arduino语法检查工具 - 基于 aily-builder lint 功能
- * 使用新的 aily-builder lint 功能进行代码语法检查
+ * Arduino语法检查工具 - 基于独立的 aily-linter CLI
  */
 export class ArduinoSyntaxTool {
 
@@ -48,7 +47,7 @@ export class ArduinoSyntaxTool {
     const { code, timeout = 5000 } = parameters;
 
     try {
-      // console.log('🔍 Arduino语法检查工具启动 (aily-builder lint)...');
+      // console.log('🔍 Arduino语法检查工具启动 (aily-linter)...');
       // console.log('- lintService 实例:', !!this.lintService);
       
       if (!code || code.trim().length === 0) {
@@ -72,12 +71,12 @@ export class ArduinoSyntaxTool {
       // console.log('- 服务可用性结果:', isServiceAvailable);
       
       if (!isServiceAvailable) {
-        // console.warn('❌ aily-builder 不可用');
+        // console.warn('❌ aily-linter 不可用');
         const status = this.lintService.getStatus();
         // console.log('- 服务状态:', status);
         return {
           is_error: true,
-          content: '❌ **aily-builder 不可用**\n\n可能原因：\n1. aily-builder 未正确安装\n2. 路径配置错误\n3. Electron 环境未准备就绪\n\n请检查：\n- window.path 对象是否存在\n- getAilyBuilderPath() 是否返回有效路径\n- aily-builder/index.js 文件是否存在'
+          content: '❌ **aily-linter 不可用**\n\n可能原因：\naily-linter 尚未安装完成\n请检查：\n- 等待安装完成后重试\n- 在终端运行 `aily-linter --version` 确认命令可用'
         };
       }
 
@@ -100,7 +99,7 @@ export class ArduinoSyntaxTool {
 
 请检查：
 1. 代码格式是否正确
-2. aily-builder 是否正确配置
+2. aily-linter 是否正确配置
 3. 项目依赖是否完整
 4. 重试操作`
       };
@@ -116,7 +115,7 @@ export class ArduinoSyntaxTool {
         is_error: false,
         content: `✅ **代码语法检查通过**
 <system-reminder>语法检查通过不代表代码逻辑正确，仅表示代码符合Arduino语法规范。请确保代码逻辑符合预期。</system-reminder>
-🔍 检查工具：aily-builder lint
+🔍 检查工具：aily-linter
 ⏱️ 检查耗时：${result.executionTime}ms
 📝 检查结果：无语法错误${result.warnings && result.warnings.length > 0 ? `，但有 ${result.warnings.length} 个警告` : ''}`
       };
@@ -156,7 +155,7 @@ export class ArduinoSyntaxTool {
       content += '\n';
     }
 
-    content += `🔍 检查工具：aily-builder lint\n`;
+    content += `🔍 检查工具：aily-linter\n`;
     content += `⏱️ 检查耗时：${result.executionTime}ms`;
 
     return {

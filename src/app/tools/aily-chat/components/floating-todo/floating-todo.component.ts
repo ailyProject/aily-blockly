@@ -23,7 +23,6 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
   @ViewChildren('todoItemButton') private todoItemButtonRefs?: QueryList<ElementRef<HTMLButtonElement>>;
   
   private updateSubscription?: Subscription;
-  private backupTimer?: any;
   private userManuallyExpanded = false;
   private todoUpdateService = inject(TodoUpdateService);
   private cdr = inject(ChangeDetectorRef);
@@ -44,7 +43,6 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     // console.log('[TODO Panel] 初始化组件, sessionId:', this.sessionId);
     this.initializeTodoService();
     this.loadInitialTodos();
-    this.setupBackupTimer();
   }
 
   ngOnChanges(changes: SimpleChanges) {
@@ -67,9 +65,14 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
     if (this.updateSubscription) {
       this.updateSubscription.unsubscribe();
     }
-    if (this.backupTimer) {
-      clearInterval(this.backupTimer);
+  }
+
+  applyRequestInProgress(requestInProgress: boolean): void {
+    if (this.requestInProgress === requestInProgress) {
+      return;
     }
+    this.requestInProgress = requestInProgress;
+    this.cdr.detectChanges();
   }
 
   private initializeTodoService() {
@@ -164,13 +167,6 @@ export class FloatingTodoComponent implements OnInit, OnDestroy, OnChanges {
       console.warn('[TODO Panel] 加载初始TODO失败:', error);
       this.todoList = [];
     }
-  }
-
-  private setupBackupTimer() {
-    // 每30秒执行一次备用刷新
-    this.backupTimer = setInterval(() => {
-      this.loadTodosFromService();
-    }, 30000);
   }
 
   // 模板绑定方法

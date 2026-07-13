@@ -1,7 +1,7 @@
 .devtool-box {
     position: absolute;
     bottom: 1px;
-    left: 185px;
+    left: 0;
     display: flex;
     gap: 5px;
     align-items: center;
@@ -15,6 +15,15 @@
     z-index: 999;
     cursor: default;
     user-select: none;
+    visibility: hidden;
+
+    &.position-ready {
+        visibility: visible;
+    }
+
+    &.viewport-adjusting {
+        transition: none;
+    }
 
     &.dragging {
         transition: none;

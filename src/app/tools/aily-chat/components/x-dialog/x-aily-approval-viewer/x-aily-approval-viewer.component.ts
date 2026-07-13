@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, SimpleChanges, ChangeDetectionStrategy, ChangeDetectorRef, inject } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges, ChangeDetectionStrategy, ChangeDetectorRef, Output, EventEmitter, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import type { ToolApprovalAction, ToolApprovalScope } from '../../../helpers/tool-approval-ui';
@@ -7,6 +7,7 @@ import {
   isTerminalCommandToolName,
   normalizeReadSideToolName,
 } from '../../../core/tool-name-normalizer';
+import { readToolApprovalCommand } from '../../../core/tool-approval-input';
 import { ChatCommandPreviewComponent } from '../chat-command-preview/chat-command-preview.component';
 import { ChatConfirmationActionsComponent, type ChatConfirmationActionOption } from '../chat-confirmation-actions/chat-confirmation-actions.component';
 import { ChatPartHeaderShellComponent } from '../chat-part-header-shell.component';
@@ -52,7 +53,7 @@ import { ChatPartHeaderShellComponent } from '../chat-part-header-shell.componen
         @if (showDisplayMessage) {
           <div class="aa-message">{{ displayMessage }}</div>
         }
-        @if (!resolved) {
+        @if (!resolved && interactive) {
           <div class="aa-actions">
             <aily-chat-confirmation-actions
               [primaryLabel]="primaryButtonLabel"
@@ -62,6 +63,7 @@ import { ChatPartHeaderShellComponent } from '../chat-part-header-shell.componen
               [moreActionsTooltip]="moreActionsTooltip"
               [options]="approvalActionOptions"
               (approve)="onApproveFromActions($event)"
+              (action)="onActionFromActions($event)"
               (reject)="onReject()"
             />
           </div>
@@ -146,6 +148,17 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
   private readonly translate = inject(TranslateService);
   @Input() data: any = null;
   @Input() embedded = false;
+  @Input() interactive = true;
+  @Output() decision = new EventEmitter<{
+    approved: boolean;
+    scope?: ToolApprovalScope;
+    reason?: string;
+    actionId?: string;
+    sideEffectOnly?: boolean;
+    askId?: string;
+    partId?: string;
+    toolCallId?: string;
+  }>();
 
   partId = '';
   kind: 'approval' | 'confirmation' = 'approval';
@@ -257,6 +270,7 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
       tooltip: action.tooltip || action.description || action.label,
       disabled: !!action.disabled,
       isSecondary: !!action.isSecondary,
+      resolveOnSelect: action.resolves !== false,
     }));
   }
 
@@ -285,7 +299,7 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
       this.subtitle = this.data.subtitle || '';
       this.message = this.data.message || '';
       this.args = this.data.args;
-      this.commandPreview = this.getCommandPreview(this.toolName, this.args);
+      this.commandPreview = this.getCommandPreview(this.toolName, this.args, this.message);
       this.commandMeta = this.getCommandMeta(this.toolName, this.args);
       this.displayMessage = this.getDisplayMessage(this.toolName, this.message, this.commandPreview);
       this.resolved = !!this.data.resolved;
@@ -308,20 +322,8 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
     this.cdr.markForCheck();
   }
 
-  private getCommandPreview(toolName: string, args: any): string {
-    if (!args || typeof args !== 'object') {
-      return '';
-    }
-
-    if (typeof args.command === 'string' && args.command.trim()) {
-      return args.command.trim();
-    }
-
-    if ((normalizeReadSideToolName(toolName) === 'send_to_terminal') && typeof args.command === 'string') {
-      return args.command;
-    }
-
-    return '';
+  private getCommandPreview(toolName: string, args: any, message?: string): string {
+    return readToolApprovalCommand(toolName, args, message);
   }
 
   private getCommandMeta(toolName: string, args: any): string {
@@ -447,16 +449,32 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
     this.onApprove((action?.scope || value) as ToolApprovalScope, action?.id);
   }
 
+  onActionFromActions(value: string): void {
+    const action = this.approvalActions.find(candidate => (candidate.id || candidate.scope) === value);
+    if (!action?.id) {
+      return;
+    }
+
+    this.decision.emit({
+      approved: false,
+      actionId: action.id,
+      sideEffectOnly: true,
+      askId: this.askId,
+      partId: this.partId,
+      toolCallId: this.toolCallId,
+    });
+  }
+
   onApprove(scope: ToolApprovalScope, actionId?: string): void {
     this.resolved = true;
     this.approved = true;
     this.resolvedText = this.formatResolvedText(true, scope);
     this.cdr.markForCheck();
-    document.dispatchEvent(new CustomEvent(AILY_CONFIRMATION_RESULT_EVENT, {
-      detail: this.toolCallId
-        ? { toolCallId: this.toolCallId, approved: true, scope, actionId }
-        : { askId: this.askId, partId: this.partId, approved: true, scope, actionId }
-    }));
+    const detail = this.toolCallId
+      ? { toolCallId: this.toolCallId, approved: true, scope, actionId }
+      : { askId: this.askId, partId: this.partId, approved: true, scope, actionId };
+    this.decision.emit(detail);
+    document.dispatchEvent(new CustomEvent(AILY_CONFIRMATION_RESULT_EVENT, { detail }));
   }
 
   private getPrimaryActionValue(scope: ToolApprovalScope): string {
@@ -472,10 +490,10 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
     this.approved = false;
     this.resolvedText = this.formatResolvedText(false, undefined);
     this.cdr.markForCheck();
-    document.dispatchEvent(new CustomEvent(AILY_CONFIRMATION_RESULT_EVENT, {
-      detail: this.toolCallId
-        ? { toolCallId: this.toolCallId, approved: false, reason: this.translate.instant('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON') }
-        : { askId: this.askId, partId: this.partId, approved: false, reason: this.translate.instant('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON') }
-    }));
+    const detail = this.toolCallId
+      ? { toolCallId: this.toolCallId, approved: false, reason: this.translate.instant('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON') }
+      : { askId: this.askId, partId: this.partId, approved: false, reason: this.translate.instant('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON') };
+    this.decision.emit(detail);
+    document.dispatchEvent(new CustomEvent(AILY_CONFIRMATION_RESULT_EVENT, { detail }));
   }
 }
