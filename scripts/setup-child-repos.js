@@ -83,7 +83,7 @@ function getGitAuthEnv() {
   };
 }
 
-function run(command, options = {}) {
+function run(command, cwd, options = {}) {
   console.log(`\n> (${path.relative(rootDir, cwd)}) ${command}\n`);
   execSync(command, {
     cwd,
