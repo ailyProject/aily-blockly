@@ -5498,9 +5498,20 @@ function createElectronBlocklyToolContributions(hostAPI) {
     contributions.push({
       name: 'lint',
       toolSet: 'blockly-workspace',
-      description: 'Lint/check the generated Blockly Arduino code',
-      prompt: 'Use this tool to check generated code for syntax or lint errors.',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'Lint/check the generated Blockly Arduino code using fast, accurate, or automatic mode selection',
+      prompt: 'Use this tool to check generated code for syntax or lint errors. Prefer fast for quick feedback, accurate for the strictest available check, or auto to let the linter choose.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mode: {
+            type: 'string',
+            enum: ['fast', 'accurate', 'auto'],
+            default: 'fast',
+            description: 'Lint mode: fast for quick checks, accurate for the strictest available check, or auto to let the linter choose.',
+          },
+        },
+        additionalProperties: false,
+      },
       annotations: { readOnly: true },
       runtimeModes: ['blockly'],
       requiredCapabilities: ['runtime:blockly'],
@@ -5577,7 +5588,7 @@ async function invokeElectronBlocklyTool(toolName, input, hostAPI, context = {})
     case 'analyzeLibrary':
       return invokeElectronAnalyzeLibraryTool(input, hostAPI);
     case 'lint':
-      return invokeElectronLintTool(hostAPI);
+      return invokeElectronLintTool(input, hostAPI);
     case 'save_arch':
       return invokeElectronSaveArchTool(input, hostAPI);
     case 'generate_schematic':
@@ -5750,7 +5761,10 @@ async function invokeElectronBoardSearchTool(input, hostAPI) {
   return toolError(`Unknown boardSearch action: ${action || '<missing>'}`);
 }
 
-async function invokeElectronLintTool(hostAPI) {
+async function invokeElectronLintTool(input, hostAPI) {
+  const requestedMode = normalizeString(input?.mode);
+  const mode = requestedMode === 'accurate' || requestedMode === 'auto' ? requestedMode : 'fast';
+
   const generatedCode = typeof hostAPI.blockly.getGeneratedCode === 'function'
     ? await hostAPI.blockly.getGeneratedCode()
     : await hostAPI.blockly.exportAbs();
@@ -5758,7 +5772,7 @@ async function invokeElectronLintTool(hostAPI) {
     return toolText('No generated code to lint (workspace is empty).');
   }
   const result = await hostAPI.blockly.lintGeneratedCode(generatedCode, {
-    mode: 'ast-grep',
+    mode,
     format: 'json',
   });
   return toolText(formatExternalResult(result));

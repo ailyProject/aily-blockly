@@ -96,16 +96,19 @@ export class ScrollManagerService {
   }
 
   captureAutoScrollState(): boolean {
-    const element = this.containerRef?.nativeElement as HTMLElement | undefined;
-    if (!element || !this.scrollLock) {
+    if (!this.containerRef?.nativeElement || !this.scrollLock) {
       return false;
     }
 
+    // Preserve the list-owned follow contract across the gap between a
+    // content-part DOM commit and the coalesced list-layout frame. VS Code
+    // captures this state before updateElementHeight; the lock is our
+    // equivalent and is cleared only by an actual user scroll.
     if (this._pendingExchangeTimeouts.size > 0) {
       return false;
     }
 
-    return this.isAtBottom(element);
+    return true;
   }
 
   scrollToBottomIfNeeded(shouldFollow: boolean, behavior: string = 'auto'): void {

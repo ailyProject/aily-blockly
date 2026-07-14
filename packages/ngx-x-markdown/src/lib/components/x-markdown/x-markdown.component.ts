@@ -455,12 +455,14 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
       return;
     }
 
-    const scrollSnapshot = this.captureAncestorScrollPositions(target.element);
     target.lastHtml = cleanHtml;
     target.revision++;
     this.updateDom(cleanHtml);
     this.injectDynamicComponents();
-    this.restoreAncestorScrollPositions(scrollSnapshot);
+    // The owning chat list persists bottom-follow around this height change.
+    // A markdown content part must not read and restore ancestor scrollTop:
+    // that races the list's item-height transaction and emits extra scroll
+    // events on every streaming commit.
     this.heightChangeCallback?.();
     this.heightChange.emit();
   }
@@ -607,11 +609,9 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
       return null;
     }
 
-    const newProps = this._tempPropsMap?.get(fingerprint);
-    if (newProps) {
-      this.updateComponentProps(entry.componentRef, newProps);
-      entry.componentRef.changeDetectorRef.detectChanges();
-    }
+    // Props are committed once in injectDynamicComponents after the DOM morph.
+    // Updating here as well checked every reused code-block component twice in
+    // the same frame and made fenced-code streaming block the loading animation.
     return entry;
   }
 
@@ -904,27 +904,8 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
   /**
    * 閬嶅巻绁栧厛閾撅紝璁板綍鎵€鏈夋湁婊氬姩鍋忕Щ鐨勫厓绱犵殑婊氬姩浣嶇疆
    */
-  private captureAncestorScrollPositions(startEl: Element): Array<[Element, number, number]> {
-    const positions: Array<[Element, number, number]> = [];
-    let el: Element | null = startEl;
-    while (el) {
-      if (el.scrollTop !== 0 || el.scrollLeft !== 0) {
-        positions.push([el, el.scrollTop, el.scrollLeft]);
-      }
-      el = el.parentElement;
-    }
-    return positions;
-  }
-
   /**
    * 鎭㈠涔嬪墠淇濆瓨鐨勬粴鍔ㄤ綅缃?   */
-  private restoreAncestorScrollPositions(snapshot: Array<[Element, number, number]>): void {
-    for (const [el, top, left] of snapshot) {
-      el.scrollTop = top;
-      el.scrollLeft = left;
-    }
-  }
-
   private attrToProp(attrName: string): string {
     // Convert kebab-case to camelCase
     return attrName.replace(/-([a-z])/g, (_, char: string) => char.toUpperCase());

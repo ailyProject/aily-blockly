@@ -102,7 +102,7 @@ Reading & editing the program:
 - The ABS source file is at \`{projectPath}/project.abs\` — use \`read_file\` to read it directly.
 - The generated C++ is at \`{projectPath}/.temp/sketch/sketch.ino\` — use \`read_file\` to inspect generated code.
 - To modify the program: use \`syncAbs action="export"\` to sync workspace → .abs file, then \`read_file\` / \`edit_file\` on project.abs, then \`syncAbs action="import"\` to apply changes back to the workspace.
-- Use \`lint\` to check the generated C++ for syntax errors (fast, ast-grep based — like a quick compile check).
+- Use \`lint\` to check the generated C++ for syntax errors. Use mode \`fast\` for quick feedback, \`accurate\` for the strictest available check, or \`auto\` to let the linter choose.
 - Use \`analyzeLibrary\` to inspect what blocks a library provides.
 
 Tool usage efficiency:

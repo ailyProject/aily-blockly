@@ -175,7 +175,8 @@
     "test:e2e:ui": "node ./scripts/run-e2e.mjs ui",
     "test:e2e:headed": "node ./scripts/run-e2e.mjs headed",
     "test:e2e:fast": "node ./scripts/run-e2e.mjs fast",
-    "test:e2e:report": "node ./scripts/run-e2e.mjs report"
+    "test:e2e:report": "node ./scripts/run-e2e.mjs report",
+    "setup:external-tools": "node scripts/install-external-tools.js"
   },
   "private": true,
   "dependencies": {

@@ -38,7 +38,14 @@ export const BLOCKLY_TOOL_DEFINITIONS = [
     description: '检查当前 Blockly 生成代码的语法错误、警告和提示。修改 ABS 并导入后，用它验证生成代码是否仍然可用。',
     input_schema: {
       type: 'object',
-      properties: {},
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['fast', 'accurate', 'auto'],
+          default: 'fast',
+          description: '检查模式：fast=快速静态检查（默认），accurate=编译器精确检查，auto=先快速检查并在需要时使用编译器检查',
+        },
+      },
       required: [],
     },
     agents: [MAIN_AGENT_TYPE],

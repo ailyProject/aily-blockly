@@ -189,11 +189,21 @@ function makeLintContribution(): RuntimeScopedToolContribution {
     toolSet: 'blockly-workspace',
     description: 'Run syntax check (lint) on the generated Arduino C++ code',
     prompt: `Use this tool to check the generated Arduino C++ code for syntax errors and warnings.
-Similar to a compile check, but faster — uses ast-grep based static analysis.
+Select mode="fast" for lightweight static checks (default), mode="accurate" for compiler-based validation, or mode="auto" to run fast checks first and use compiler validation when necessary.
 Returns errors, warnings, and notes found in the code.
 
 Use this after editing ABS blocks to verify the generated code is syntactically correct before building.`,
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['fast', 'accurate', 'auto'],
+          default: 'fast',
+          description: 'Lint mode: fast is lightweight and default; accurate invokes compiler validation; auto escalates from fast when necessary.',
+        },
+      },
+    },
     annotations: { readOnly: true },
     runtimeModes: ['blockly'],
     requiredCapabilities: ['runtime:blockly'],
@@ -282,7 +292,7 @@ export function createBlocklyWorkspaceHandlers(
       return fromToolResult(result);
     },
 
-    lint: async (_input, hostAPI, invocationContext) => {
+    lint: async (input, hostAPI, invocationContext) => {
       try {
         const lintGeneratedCode = (hostAPI.blockly as { lintGeneratedCode?: (code: string, options?: Record<string, unknown>) => Promise<any> } | undefined)
           ?.lintGeneratedCode;
@@ -325,8 +335,12 @@ export function createBlocklyWorkspaceHandlers(
 
             await reportProgress({ summary: 'Running lint', progress: 0.7 });
             const startTime = Date.now();
+            const requestedMode = input['mode'];
+            const mode = requestedMode === 'accurate' || requestedMode === 'auto'
+              ? requestedMode
+              : 'fast';
             const result = await lintGeneratedCode(generatedCode, {
-              mode: 'ast-grep',
+              mode,
               format: 'json',
             });
             const duration = Date.now() - startTime;
@@ -336,6 +350,7 @@ export function createBlocklyWorkspaceHandlers(
               errors: result.errors || [],
               warnings: result.warnings || [],
               notes: result.notes || [],
+              mode: result.mode || mode,
               duration,
               source,
               generatedCodeLength: generatedCode.length,
@@ -346,6 +361,7 @@ export function createBlocklyWorkspaceHandlers(
                 blocklyLint: {
                   source,
                   generatedCodeLength: generatedCode.length,
+                  mode: result.mode || mode,
                   duration,
                 },
               },
