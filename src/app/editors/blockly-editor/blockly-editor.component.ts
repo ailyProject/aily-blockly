@@ -111,15 +111,16 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   ) { }
 
   ngOnInit(): void {
-    this.activatedRoute.queryParams.subscribe((params) => {
+    this.activatedRoute.queryParams.subscribe(async (params) => {
       if (params['path']) {
         console.log('project path', params['path']);
         try {
           this._projectService.currentProjectPath = params['path'];
           this.projectService.currentProjectPath = params['path'];
-          this.loadProject(params['path']);
+          await this.loadProject(params['path']);
         } catch (error) {
           console.error('加载项目失败', error);
+          this.projectService.stateSubject.next('error');
           this.message.error('加载项目失败，请检查项目文件是否完整');
         }
       } else {
@@ -184,6 +185,68 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     if (!(await this.npmService.ensureProjectDependenciesInstalled(projectPath))) {
       return;
     }
+
+    const missingDeclaredLibraries: string[] = [];
+    let dependencyInstallError = '';
+    if (!(await this.npmService.installedOk(projectPath))) {
+      // 终端进入项目目录，安装项目依赖
+      // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
+      setTimeout(() => {
+        this.noticeService.update({
+          title: this.translate.instant('NPM.INSTALLING_TITLE'),
+          text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+          state: 'doing',
+          icon: 'fa-light fa-cubes',
+          showProgress: false,
+        });
+      }, 0);
+      try {
+        await this.cmdService.runAsyncChecked(`npm install`, projectPath);
+      } catch (error) {
+        dependencyInstallError = (error as Error)?.message || String(error);
+        console.warn('[ProjectLoad] npm install failed:', error);
+      }
+      if (!(await this.npmService.installedOk(projectPath))) {
+        packageJson = this.readProjectPackageJson(projectPath) || packageJson;
+        this.applyProjectPackageJson(packageJson);
+
+        const missingDependencies = this.getMissingDeclaredDependencies(projectPath, packageJson);
+        const missingLibraries = missingDependencies.filter((name) => this.isBlocklyLibraryPackageName(name));
+        const blockingDependencies = missingDependencies.filter((name) => !this.isBlocklyLibraryPackageName(name));
+
+        if (missingLibraries.length === 0 || blockingDependencies.length > 0) {
+          const missingDependencyDetail = missingDependencies.length > 0
+            ? `缺失依赖：${missingDependencies.join(', ')}`
+            : 'npm install 执行完成但依赖检查未通过';
+          setTimeout(() => {
+            this.noticeService.update({
+              title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+              text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+              detail: dependencyInstallError
+                ? `${missingDependencyDetail}\n${dependencyInstallError}`
+                : missingDependencyDetail,
+              state: 'error',
+              sendToLog: false,
+            });
+          }, 1000);
+          this.projectService.stateSubject.next('error');
+          return;
+        }
+
+        missingDeclaredLibraries.push(...missingLibraries);
+        console.error('[ProjectLoad] continuing with missing Blockly libraries:', missingLibraries);
+      } else {
+        setTimeout(() => {
+          this.noticeService.update({
+            title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+            text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+            state: 'done',
+            showProgress: false,
+            setTimeout: 3000,
+          });
+        }, 100);
+      }
+    }
     // 3. 加载开发板module中的board.json
     this.uiService.updateFooterState({
       state: 'doing',
@@ -222,7 +285,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BLOCKLY_PROGRAM'),
     });
-    const projectDocument = await this.loadProjectAbiDocument(projectPath);
+    const {
+      document: projectDocument,
+      usedBoardTemplate: usedBoardTemplateAbi,
+    } = await this.loadProjectAbiDocument(projectPath);
 
     const missingProjectLibraries = this.getMissingProjectLibraries(projectPath, packageJson, projectDocument);
     if (missingProjectLibraries.length > 0) {
@@ -239,7 +305,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     await this.waitForNextFrame();
     this.blocklyService.loadProjectDocument(projectDocument, false);
-    if (this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
+    if (!usedBoardTemplateAbi && this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
       this.applyProjectPackageJson(packageJson);
     }
@@ -251,6 +317,17 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     });
     this.projectService.stateSubject.next('loaded');
     this.scheduleProjectLoadedCodeRefresh();
+
+    if (missingDeclaredLibraries.length > 0) {
+      const libraryNames = missingDeclaredLibraries.join(', ');
+      this.noticeService.update({
+        title: '项目已加载，部分积木库缺失',
+        text: `缺失积木库：${libraryNames}`,
+        detail: dependencyInstallError || '请检查 package.json 中的库版本或本地 file: 路径。',
+        state: 'error',
+        sendToLog: false,
+      });
+    }
 
     this.startPackageJsonDependencyWatch(projectPath);
     this.localLibrarySyncService.start(projectPath);
@@ -273,12 +350,56 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       .catch(() => undefined);
   }
 
-  private async loadProjectAbiDocument(projectPath: string): Promise<BlocklyProjectDocument> {
+  private async loadProjectAbiDocument(projectPath: string): Promise<{
+    document: BlocklyProjectDocument;
+    usedBoardTemplate: boolean;
+  }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     let abiContent = await this.electronService.readFileAsync(abiPath);
-    const projectAbi = await this.parseProjectAbiContent(abiContent);
+    let projectAbi = await this.parseProjectAbiContent(abiContent);
     abiContent = '';
-    return this.blocklyService.normalizeProjectAbiForLoad(projectAbi);
+
+    let usedBoardTemplate = false;
+    if (this.hasEmptyLegacyWorkspace(projectAbi)) {
+      const boardTemplateAbi = await this.readCurrentBoardTemplateAbi(projectPath);
+      if (boardTemplateAbi && !this.hasEmptyLegacyWorkspace(boardTemplateAbi)) {
+        projectAbi = boardTemplateAbi;
+        usedBoardTemplate = true;
+        console.info('[ProjectAbi] project.abi is empty; using the current board template as temporary data.');
+      }
+    }
+
+    return {
+      document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
+      usedBoardTemplate,
+    };
+  }
+
+  private hasEmptyLegacyWorkspace(projectAbi: any): boolean {
+    return Array.isArray(projectAbi?.blocks?.blocks) && projectAbi.blocks.blocks.length === 0;
+  }
+
+  private async readCurrentBoardTemplateAbi(projectPath: string): Promise<any | null> {
+    try {
+      const boardModule = await this.projectService.getBoardModule();
+      if (!boardModule) {
+        console.warn('[ProjectAbi] cannot use board template: no board dependency was found.');
+        return null;
+      }
+
+      const boardPackagePath = this.getNodeModulePackagePath(projectPath, boardModule);
+      const templateAbiPath = this.electronService.pathJoin(boardPackagePath, 'template', 'project.abi');
+      if (!this.electronService.exists(templateAbiPath)) {
+        console.warn('[ProjectAbi] board template project.abi does not exist:', templateAbiPath);
+        return null;
+      }
+
+      const templateContent = await this.electronService.readFileAsync(templateAbiPath);
+      return await this.parseProjectAbiContent(templateContent);
+    } catch (error) {
+      console.warn('[ProjectAbi] failed to load board template project.abi:', error);
+      return null;
+    }
   }
 
   private async parseProjectAbiContent(content: string): Promise<any> {
@@ -852,6 +973,21 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   /** 生成 node_modules 下包路径，兼容 @scope/name 包名。 */
   private getNodeModulePackagePath(projectPath: string, packageName: string): string {
     return this.electronService.pathJoin(projectPath, 'node_modules', ...packageName.split('/'));
+  }
+
+  /** 返回 package.json 已声明但 node_modules 中尚未就绪的顶层依赖。 */
+  private getMissingDeclaredDependencies(projectPath: string, packageJson: any): string[] {
+    const dependencies = {
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+    };
+
+    return Object.keys(dependencies)
+      .filter((packageName) => {
+        const packagePath = this.getNodeModulePackagePath(projectPath, packageName);
+        return !this.electronService.exists(this.electronService.pathJoin(packagePath, 'package.json'));
+      })
+      .sort((a, b) => a.localeCompare(b));
   }
 
   private getMissingProjectLibraries(

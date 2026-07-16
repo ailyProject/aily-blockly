@@ -6,6 +6,7 @@ import {
   ElementRef,
   EventEmitter,
   Input,
+  NgZone,
   OnDestroy,
   Output,
   QueryList,
@@ -68,7 +69,7 @@ export interface ChatTranscriptPatchResult {
             (editModelToggle)="editModelToggle.emit($event)"
             (editAddFile)="editAddFile.emit($event)"
             (editAddFolder)="editAddFolder.emit($event)"
-            (taskAction)="taskAction.emit($event)"
+            (taskAction)="emitTaskAction($event)"
             [contentHeightChangeHandler]="rowContentHeightChangeHandler" />
         </div>
       }
@@ -116,12 +117,20 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
   private readonly pendingRowHeightChanges = new Map<string, ChatDialogItemHeightChange>();
   private readonly mountedDialogRenderers = new Map<string, XDialogComponent>();
   private readonly mountedUserDialogRenderersByTurnId = new Map<string, XDialogComponent>();
+  private readonly pendingRowPatches = new Map<string, ChatVisibleTranscriptDialogItemPatch>();
   private mountedDialogRenderersSubscription: Subscription | null = null;
   private rowsLayoutFrameId: number | null = null;
+  private rowPatchFrameId: number | null = null;
 
   @Input({ required: true })
   set items(value: readonly ChatVisibleTranscriptDialogItem[] | null | undefined) {
-    this._renderedItems = value ?? [];
+    const nextItems = value ?? [];
+    if (this._renderedItems === nextItems
+      || (this._renderedItems.length === nextItems.length
+        && this._renderedItems.every((item, index) => item === nextItems[index]))) {
+      return;
+    }
+    this._renderedItems = nextItems;
     this.pruneRowHeightCache();
     this.scheduleRowsLayout();
   }
@@ -171,7 +180,10 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
   @ViewChildren(XDialogComponent) private xDialogComponents!: QueryList<XDialogComponent>;
   @ViewChildren('dialogVirtualRow', { read: ElementRef }) private dialogVirtualRows!: QueryList<ElementRef<HTMLElement>>;
 
-  constructor(private readonly cdr: ChangeDetectorRef) {}
+  constructor(
+    private readonly cdr: ChangeDetectorRef,
+    private readonly ngZone?: NgZone,
+  ) {}
 
   readonly rowContentHeightChangeHandler = (change: ChatDialogItemHeightChange): void => {
     const itemId = typeof change?.itemId === 'string' ? change.itemId.trim() : '';
@@ -217,6 +229,8 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
     this.mountedDialogRenderers.clear();
     this.mountedUserDialogRenderersByTurnId.clear();
     this.pendingRowHeightChanges.clear();
+    this.pendingRowPatches.clear();
+    this.cancelRowPatchFrame();
     this.cancelRowsLayout();
   }
 
@@ -262,6 +276,8 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
 
     this._renderedItems = nextItems;
     if (requiresListDetect) {
+      this.pendingRowPatches.clear();
+      this.cancelRowPatchFrame();
       this.cdr.detectChanges();
       this.syncMountedDialogRenderers();
     }
@@ -271,14 +287,79 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
       if (!component) {
         return { applied: false, requiresRowMeasurement };
       }
-      const detectChanges = !canSkipRowDetect(component.item, patch.item);
+      const pendingPatch = this.pendingRowPatches.get(patch.itemId);
+      const effectivePatch = pendingPatch ? mergeDialogItemPatches(pendingPatch, patch) : patch;
+      const detectChanges = !canSkipRowDetect(component.item, effectivePatch.item);
       requiresRowMeasurement ||= detectChanges;
-      if (!component.applyVisibleTranscriptItemPatch(patch.item, { detectChanges })) {
+      if (!detectChanges) {
+        this.pendingRowPatches.set(patch.itemId, effectivePatch);
+        this.scheduleRowPatchFrame();
+        continue;
+      }
+      this.pendingRowPatches.delete(patch.itemId);
+      if (!component.applyVisibleTranscriptItemPatch(effectivePatch.item, {
+        detectChanges,
+        ...(effectivePatch.changedParts ? { changedParts: effectivePatch.changedParts } : {}),
+      })) {
         return { applied: false, requiresRowMeasurement };
       }
     }
 
     return { applied: true, requiresRowMeasurement };
+  }
+
+  private scheduleRowPatchFrame(): void {
+    if (this.rowPatchFrameId !== null) {
+      return;
+    }
+    const schedule = typeof globalThis.requestAnimationFrame === 'function'
+      ? globalThis.requestAnimationFrame.bind(globalThis)
+      : (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 16) as unknown as number;
+    const enqueue = () => {
+      this.rowPatchFrameId = schedule(() => {
+        this.rowPatchFrameId = null;
+        this.flushPendingRowPatches();
+      });
+    };
+    if (this.ngZone) {
+      this.ngZone.runOutsideAngular(enqueue);
+    } else {
+      enqueue();
+    }
+  }
+
+  private flushPendingRowPatches(): void {
+    if (this.pendingRowPatches.size === 0) {
+      return;
+    }
+    const patches = [...this.pendingRowPatches.values()];
+    this.pendingRowPatches.clear();
+    for (const patch of patches) {
+      const component = this.mountedDialogRenderers.get(patch.itemId);
+      if (!component) {
+        continue;
+      }
+      if (!component.applyVisibleTranscriptItemPatch(patch.item, {
+        detectChanges: false,
+        ...(patch.changedParts ? { changedParts: patch.changedParts } : {}),
+      })) {
+        this.cdr.detectChanges();
+        this.syncMountedDialogRenderers();
+        return;
+      }
+    }
+  }
+
+  private cancelRowPatchFrame(): void {
+    if (this.rowPatchFrameId === null) {
+      return;
+    }
+    if (typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(this.rowPatchFrameId);
+    } else {
+      clearTimeout(this.rowPatchFrameId as unknown as ReturnType<typeof setTimeout>);
+    }
+    this.rowPatchFrameId = null;
   }
 
   findDialogByTurnId(turnId: string): XDialogComponent | undefined {
@@ -397,6 +478,26 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
       }
     }
   }
+
+  emitTaskAction(detail: ChatTaskActionDetail): void {
+    this.taskAction.emit({
+      ...detail,
+      sessionResource: detail.sessionResource?.trim() || this.sessionId.trim(),
+    });
+  }
+}
+
+function mergeDialogItemPatches(
+  previous: ChatVisibleTranscriptDialogItemPatch,
+  next: ChatVisibleTranscriptDialogItemPatch,
+): ChatVisibleTranscriptDialogItemPatch {
+  const changedParts = previous.changedParts || next.changedParts
+    ? [...(previous.changedParts ?? []), ...(next.changedParts ?? [])]
+    : undefined;
+  return {
+    ...next,
+    ...(changedParts ? { changedParts } : {}),
+  };
 }
 
 function normalizeLayoutHeight(value: unknown): number {

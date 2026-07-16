@@ -28,8 +28,8 @@ export interface ChatSessionRowActionCallbacks {
   onSwitchSession: (sessionId: string, fallbackProjectPath?: string | null) => Promise<boolean>;
   onNewChat: () => void | Promise<void>;
   onEnterEntryState: (sessionId?: string | null) => void | Promise<void>;
-  onDeleteSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
-  onDeleteSessionRuntime?: (sessionId: string) => void | Promise<void>;
+  isSessionRequestInProgress: (sessionId: string) => boolean;
+  onDeleteSession: (sessionId: string) => Promise<boolean>;
   onDetectChanges: () => void;
   onUpdateTitle: (title: string) => void;
   onRefreshSessions: () => void;
@@ -206,6 +206,9 @@ export class ChatSessionActionsService {
     }
 
     const name = data?.title || data?.name || sessionId;
+    const requestInProgress = callbacks.isSessionRequestInProgress(sessionId)
+      || data?.status === 'in_progress'
+      || data?.status === 'needs_input';
     const modalRef = this.modal.create({
       nzTitle: null,
       nzFooter: null,
@@ -213,7 +216,7 @@ export class ChatSessionActionsService {
       nzBodyStyle: { padding: '0' },
       nzWidth: 340,
       nzContent: ChatDeleteDialogComponent,
-      nzData: { name },
+      nzData: { name, requestInProgress },
     });
     modalRef.afterClose.subscribe((result: { confirmed: boolean } | null) => {
       if (!result?.confirmed) {
@@ -221,12 +224,9 @@ export class ChatSessionActionsService {
       }
 
       void (async () => {
-        const handledBySessionOwner = callbacks.onDeleteSession
-          ? await callbacks.onDeleteSession(sessionId)
-          : false;
-        if (!handledBySessionOwner) {
-          await callbacks.onDeleteSessionRuntime?.(sessionId);
-          sessionItemController.deleteChatSessionItem(sessionId);
+        const deleted = await callbacks.onDeleteSession(sessionId);
+        if (!deleted) {
+          return;
         }
 
         const isDeletingCurrent = sessionId === currentSessionId;

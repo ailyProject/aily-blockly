@@ -88,6 +88,16 @@
         "CDC_ON_BOOT": "USB模拟串口",
         "PSRAM": "PSRAM"
     },
+    "WIO_TERMINAL": {
+        "ROLE": "角色",
+        "CACHE": "缓存",
+        "CPU_SPEED": "CPU 频率",
+        "OPTIMIZATION": "编译优化",
+        "MAX_QSPI": "QSPI 最高频率",
+        "USB_STACK": "USB 协议栈",
+        "DEBUG": "调试",
+        "TX_RX_LED": "TX/RX 指示灯"
+    },
     "STM32": {
         "BOARD": "开发板型号选择",
         "USB": "USB配置"
@@ -371,6 +381,13 @@
             "LIBRARY_LIST": "库列表",
             "INSTALL": "安装",
             "UNINSTALL": "卸载",
+            "DEPENDENCY_CLEANUP": "依赖清理",
+            "DEPENDENCY_REMOVE_ALL": "移除所有依赖",
+            "DEPENDENCY_REMOVE_UNUSED_30": "移除30天未使用的依赖",
+            "DEPENDENCY_REMOVE_UNUSED_90": "移除90天未使用的依赖",
+            "DEPENDENCY_NONE_REMOVED": "没有符合条件的依赖",
+            "DEPENDENCY_CONFIRM_TITLE": "确认移除依赖",
+            "DEPENDENCY_CONFIRM_DESC": "确定要移除所有全局依赖吗？此操作不可撤销。",
             "AILY_TOOL_UNKNOWN": "未知",
             "AILY_TOOL_NOT_INSTALLED": "未安装",
             "AILY_TOOLS_UP_TO_DATE": "所有 Aily 工具均已是最新版本",
@@ -591,7 +608,7 @@
         "SETTINGS": "AI设置",
         "HISTORY": "历史会话",
         "NEW_CHAT": "新建会话",
-        "SERVICE_TITLE": "ai assistant service",
+        "SERVICE_TITLE": "AI ASSISTANT",
         "DISCLAIMER": "AI的回复仅能作为参考，不一定正确，也不代表本软件开发者的意见，使用者需自行辨别",
         "USAGE_GUIDE": "了解AI用法",
         "SESSION_LOADING_TITLE": "正在打开会话",

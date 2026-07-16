@@ -247,11 +247,23 @@ export class ChatSendCoordinator {
     sessionId?: string | null,
   ): UserTurnPayload['requestMetadata'] {
     return this.applyRuntimePromptContext(
-      this.applyRuntimeModelRoutingMetadata(
-        this.applyRuntimeModeMetadata(
-          this.applyRuntimeRequestId(requestMetadata),
-          sessionId,
-        ),
+      this.applyRequestModelMetadata(requestMetadata, sessionId),
+    );
+  }
+
+  /**
+   * Captures the immutable request-model fields before host invocation.
+   * VS Code creates ChatRequestModel with mode/model/tool selection already
+   * attached; only execution prompt context is allowed to arrive after paint.
+   */
+  private applyRequestModelMetadata(
+    requestMetadata?: UserTurnPayload['requestMetadata'],
+    sessionId?: string | null,
+  ): UserTurnPayload['requestMetadata'] {
+    return this.applyRuntimeModelRoutingMetadata(
+      this.applyRuntimeModeMetadata(
+        this.applyRuntimeRequestId(requestMetadata),
+        sessionId,
       ),
     );
   }
@@ -330,7 +342,7 @@ export class ChatSendCoordinator {
         }
       : payload.requestMetadata;
     const requestMetadataWithPromptContext = options.runtimeMetadata === false
-      ? this.applyRuntimeRequestId(requestMetadata)
+      ? this.applyRequestModelMetadata(requestMetadata, targetSessionId)
       : this.applyRuntimeRequestMetadata(requestMetadata, targetSessionId);
 
     return {
@@ -484,12 +496,8 @@ export class ChatSendCoordinator {
 
   finalizeVisibleSend(
     prepared: PreparedPendingFollowupRequest,
-    sessionId?: string | null,
   ): PreparedPendingFollowupRequest {
-    const targetSessionId = typeof sessionId === 'string' && sessionId.trim().length > 0
-      ? sessionId.trim()
-      : this.ctx.sessionId;
-    const requestMetadata = this.applyRuntimeRequestMetadata(prepared.requestMetadata, targetSessionId);
+    const requestMetadata = this.applyRuntimePromptContext(prepared.requestMetadata);
     return {
       ...prepared,
       ...(requestMetadata ? { requestMetadata } : {}),

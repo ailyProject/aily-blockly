@@ -45,7 +45,6 @@ import type { ChatTaskActionDetail } from './chat-task-action-coordinator';
 import type { TurnSnapshot } from '../services/edit-checkpoint.service';
 import type { IWorkspaceCheckpointProvider } from '../services/edit-checkpoint.service';
 import type {
-  ChatSessionPreparedRedoTransaction,
   ChatSessionRequestListTransactionResult,
 } from '../services/chat-session-model-store.service';
 import {
@@ -135,22 +134,19 @@ type EditActionsContext = ChatViewWriteBridgeContext
     commitCheckpointRestoreRequestListTransaction?(
       sessionId: string | null | undefined,
       checkpointId: string | null | undefined,
-    ): ChatSessionRequestListTransactionResult | null | undefined;
+    ): Promise<ChatSessionRequestListTransactionResult | null | undefined> | ChatSessionRequestListTransactionResult | null | undefined;
+    commitCheckpointRestoreByIdentity?(
+      sessionId: string | null | undefined,
+      checkpointId: string,
+    ): Promise<unknown | null | undefined> | unknown | null | undefined;
     rollbackCheckpointRestoreRequestListTransaction?(
       sessionId: string | null | undefined,
       committed: ChatSessionRequestListTransactionResult | null | undefined,
     ): ChatSessionRequestListTransactionResult | null | undefined;
-    prepareCheckpointRedoRequestListTransaction?(
+    commitCheckpointRedoByIdentity?(
       sessionId: string | null | undefined,
-    ): ChatSessionPreparedRedoTransaction | null;
-    commitCheckpointRedoRequestListTransaction?(
-      sessionId: string | null | undefined,
-      prepared: ChatSessionPreparedRedoTransaction | null | undefined,
-    ): ChatSessionRequestListTransactionResult | null | undefined;
-    rollbackCheckpointRedoRequestListTransaction?(
-      sessionId: string | null | undefined,
-      prepared: ChatSessionPreparedRedoTransaction | null | undefined,
-    ): ChatSessionRequestListTransactionResult | null | undefined;
+      checkpointId: string,
+    ): Promise<unknown | null | undefined> | unknown | null | undefined;
     applyRequestListTransactionEffects?(
       sessionId: string,
       transaction: ChatSessionRequestListTransactionResult,
@@ -303,6 +299,7 @@ export class EditActionsHelper {
   private async restoreCheckpointSnapshot(
     snapshot: TurnSnapshot,
     options: {
+      sessionResource?: string;
       turnId?: string;
       listIndex?: number;
       emitResultMessage?: boolean;
@@ -313,17 +310,19 @@ export class EditActionsHelper {
     this.refreshWorkspaceCheckpointAccess();
 
     const {
+      sessionResource: explicitSessionResource,
       turnId,
       listIndex,
       emitResultMessage = true,
       captureRedoTurns = true,
       truncateLiveTurnResponses = true,
     } = options;
+    const sessionResource = this.resolveCurrentSessionResource(explicitSessionResource);
     const truncatedTurnId = turnId ?? snapshot.turnId;
-    const liveTurnResponses = this.readCurrentSessionTurnResponses();
+    const liveTurnResponses = this.readCurrentSessionTurnResponses(sessionResource);
     console.info('[AilyChat][CheckpointRestoreTrace]', {
       phase: 'ui-restore-submit',
-      sessionId: this.resolveCurrentSessionResource(),
+      sessionId: sessionResource,
       checkpointId: snapshot.checkpointId,
       snapshotTurnId: snapshot.turnId ?? null,
       optionTurnId: turnId ?? null,
@@ -334,12 +333,15 @@ export class EditActionsHelper {
       liveTurnIds: liveTurnResponses.map(turn => turn.turnId ?? null),
       liveCheckpointIds: liveTurnResponses.map(turn => turn.request?.metadata?.checkpointId ?? null),
     });
-    const restoreResult = await this.checkpointReplayCoordinator.restoreCheckpoint(snapshot.checkpointId, {
-      turnId: truncatedTurnId,
-      listIndex,
-      captureRedoTurns,
-      truncateLiveTurnResponses,
-    });
+    const restoreResult = await this.checkpointReplayCoordinator.restoreCheckpointByIdentity(
+      snapshot.checkpointId,
+      async () => {
+        const committed = await this.ctx.commitCheckpointRestoreByIdentity?.(sessionResource, snapshot.checkpointId);
+        if (!committed) {
+          throw new Error('Checkpoint restore host commit did not return a result');
+        }
+      },
+    );
 
     if (restoreResult.ok === false) {
       console.warn('[restoreToCheckpoint] 回滚文件部分失败:', restoreResult.detailErrors);
@@ -449,7 +451,11 @@ export class EditActionsHelper {
     };
   }
 
-  private resolveTurnTarget(target: EditActionTurnTarget | null | undefined): {
+  private resolveTurnTarget(
+    target: EditActionTurnTarget | null | undefined,
+    explicitSessionResource?: string,
+    explicitCheckpointId?: string,
+  ): {
     snapshot: TurnSnapshot | undefined;
     listIndex: number | undefined;
     turnId: string | undefined;
@@ -458,7 +464,7 @@ export class EditActionsHelper {
     lastRoundId: string | undefined;
   } {
     const normalized = target ?? {};
-    const liveTurnResponses = this.readCurrentSessionTurnResponses();
+    const liveTurnResponses = this.readCurrentSessionTurnResponses(explicitSessionResource);
     const isLiveTurnId = (turnId: string | undefined): turnId is string => !!turnId && (
       liveTurnResponses.some(turn => turn.turnId === turnId)
       || this.findTurnMessageIndex(turnId) !== undefined
@@ -475,14 +481,17 @@ export class EditActionsHelper {
       ? (roundSnapshot?.turnId ?? this.ctx.lexStream.turns.turnIdByRound(targetRoundId))
       : undefined;
 
-    const directSnapshot = directTurnId
-      ? this.ctx.editCheckpointService.getSnapshotByTurnId(directTurnId)
-      : undefined;
+    const directSnapshot = explicitCheckpointId
+      ? this.ctx.editCheckpointService.getSnapshotByCheckpointId(explicitCheckpointId)
+      : (directTurnId
+          ? this.ctx.editCheckpointService.getSnapshotByTurnId(directTurnId)
+          : undefined);
     const resolvedRoundSnapshot = directSnapshot ? undefined : (roundSnapshot ?? (roundTurnId
       ? this.ctx.editCheckpointService.getSnapshotByTurnId(roundTurnId)
       : undefined));
     const resolvedSnapshotCandidate = directSnapshot ?? resolvedRoundSnapshot;
-    const resolvedSnapshot = this.ctx.editCheckpointService.isSnapshotActive?.(resolvedSnapshotCandidate) === false
+    const resolvedSnapshot = !explicitCheckpointId
+      && this.ctx.editCheckpointService.isSnapshotActive?.(resolvedSnapshotCandidate) === false
       ? undefined
       : resolvedSnapshotCandidate;
     const resolvedSnapshotTurnId = isLiveTurnId(directTurnId)
@@ -498,14 +507,14 @@ export class EditActionsHelper {
     const requestContent = interactionContext?.requestContent
       ?? getInteractionRequestContent(normalized)
       ?? snapshotContext?.requestContent
-      ?? (resolvedTurnId ? this.getSessionTurnRequestContent(resolvedTurnId) : undefined);
+      ?? (resolvedTurnId ? this.getSessionTurnRequestContent(resolvedTurnId, explicitSessionResource) : undefined);
     const displayContent = interactionContext?.displayContent
       ?? getInteractionDisplayContent(normalized)
       ?? snapshotContext?.displayContent
-      ?? (resolvedTurnId ? this.getSessionTurnDisplayContent(resolvedTurnId) : undefined);
+      ?? (resolvedTurnId ? this.getSessionTurnDisplayContent(resolvedTurnId, explicitSessionResource) : undefined);
     const lastRoundId = targetRoundId
       ?? snapshotContext?.lastRoundId
-      ?? (resolvedTurnId ? this.getSessionTurnLastRoundId(resolvedTurnId) : undefined);
+      ?? (resolvedTurnId ? this.getSessionTurnLastRoundId(resolvedTurnId, explicitSessionResource) : undefined);
 
     return {
       snapshot: resolvedSnapshot,
@@ -519,6 +528,8 @@ export class EditActionsHelper {
 
   private async resolveTurnTargetWithCheckpointSync(
     target: EditActionTurnTarget | null | undefined,
+    explicitSessionResource?: string,
+    explicitCheckpointId?: string,
   ): Promise<{
     snapshot: TurnSnapshot | undefined;
     listIndex: number | undefined;
@@ -527,17 +538,17 @@ export class EditActionsHelper {
     displayContent: string | undefined;
     lastRoundId: string | undefined;
   }> {
-    let resolved = this.resolveTurnTarget(target);
+    let resolved = this.resolveTurnTarget(target, explicitSessionResource, explicitCheckpointId);
     if (resolved.snapshot || !this.ctx.editCheckpointService.rebuildFromTurnResponses) {
       return resolved;
     }
 
-    const liveTurnResponses = this.readCurrentSessionTurnResponses();
+    const liveTurnResponses = this.readCurrentSessionTurnResponses(explicitSessionResource);
     if (liveTurnResponses.length === 0) {
       return resolved;
     }
 
-    const sessionResource = this.resolveCurrentSessionResource();
+    const sessionResource = this.resolveCurrentSessionResource(explicitSessionResource);
     this.ctx.editCheckpointService.setTimelineContext?.(
       sessionResource || null,
       this.ctx.getCurrentProjectPath?.()
@@ -546,7 +557,7 @@ export class EditActionsHelper {
         || null,
     );
     await this.ctx.editCheckpointService.rebuildFromTurnResponses(liveTurnResponses);
-    resolved = this.resolveTurnTarget(target);
+    resolved = this.resolveTurnTarget(target, explicitSessionResource, explicitCheckpointId);
     return resolved;
   }
 
@@ -564,18 +575,21 @@ export class EditActionsHelper {
     return assistantIndex >= 0 ? assistantIndex : undefined;
   }
 
-  private readCurrentSessionTurnResponses(): readonly TurnResponseTurn[] {
-    const sessionId = this.resolveCurrentSessionResource();
+  private readCurrentSessionTurnResponses(explicitSessionResource?: string): readonly TurnResponseTurn[] {
+    const sessionId = this.resolveCurrentSessionResource(explicitSessionResource);
     return sessionId ? this.ctx.readSessionTurnResponses(sessionId) : [];
   }
 
-  private findSessionTurnResponse(turnId: string | null | undefined): TurnResponseTurn | undefined {
+  private findSessionTurnResponse(
+    turnId: string | null | undefined,
+    explicitSessionResource?: string,
+  ): TurnResponseTurn | undefined {
     const normalizedTurnId = typeof turnId === 'string' ? turnId.trim() : '';
     if (!normalizedTurnId) {
       return undefined;
     }
 
-    return this.readCurrentSessionTurnResponses().find(turn => turn.turnId === normalizedTurnId);
+    return this.readCurrentSessionTurnResponses(explicitSessionResource).find(turn => turn.turnId === normalizedTurnId);
   }
 
   private getLatestRegenerableTurnContext(): DialogTurnContext | null {
@@ -591,22 +605,31 @@ export class EditActionsHelper {
     return null;
   }
 
-  private getSessionTurnRequestContent(turnId: string | null | undefined): string | undefined {
-    const turn = this.findSessionTurnResponse(turnId);
+  private getSessionTurnRequestContent(
+    turnId: string | null | undefined,
+    explicitSessionResource?: string,
+  ): string | undefined {
+    const turn = this.findSessionTurnResponse(turnId, explicitSessionResource);
     return typeof turn?.request?.content === 'string'
       ? turn.request.content
       : undefined;
   }
 
-  private getSessionTurnDisplayContent(turnId: string | null | undefined): string | undefined {
-    const turn = this.findSessionTurnResponse(turnId);
+  private getSessionTurnDisplayContent(
+    turnId: string | null | undefined,
+    explicitSessionResource?: string,
+  ): string | undefined {
+    const turn = this.findSessionTurnResponse(turnId, explicitSessionResource);
     return typeof turn?.request?.displayContent === 'string'
       ? turn.request.displayContent
-      : this.getSessionTurnRequestContent(turnId);
+      : this.getSessionTurnRequestContent(turnId, explicitSessionResource);
   }
 
-  private getSessionTurnLastRoundId(turnId: string | null | undefined): string | undefined {
-    const turn = this.findSessionTurnResponse(turnId);
+  private getSessionTurnLastRoundId(
+    turnId: string | null | undefined,
+    explicitSessionResource?: string,
+  ): string | undefined {
+    const turn = this.findSessionTurnResponse(turnId, explicitSessionResource);
     return turn?.rounds?.at(-1)?.id;
   }
 
@@ -746,33 +769,31 @@ export class EditActionsHelper {
   /**
    * 重做文件变更（Redo，恢复被撤销的文件状态）
    */
-  async redoEdits(): Promise<void> {
+  async redoEdits(
+    checkpointId?: string,
+    options: { sessionResource?: string } = {},
+  ): Promise<void> {
     if (this.ctx.isWaiting) { this.ctx.message.warning('正在处理中，请稍候...'); return; }
 
     this.refreshWorkspaceCheckpointAccess();
 
-    const checkpointRedoTransaction = this.prepareCurrentSessionCheckpointRedoTransaction();
-    const checkpointRedoTurnResponses = checkpointRedoTransaction
-      ? checkpointRedoTransaction.turnResponses
-      : [];
-    const hasCheckpointRedoChat = checkpointRedoTransaction !== null && checkpointRedoTurnResponses.length > 0;
+    const normalizedCheckpointId = typeof checkpointId === 'string' ? checkpointId.trim() : '';
+    const hasCheckpointRedoChat = normalizedCheckpointId.length > 0;
 
     if (!hasCheckpointRedoChat && !this.ctx.editCheckpointService.canRedo) {
       this.ctx.message.info('没有可重做的文件变更');
       return;
     }
 
-    const previousTurnResponses = [...this.readCurrentSessionTurnResponses()];
-
     if (hasCheckpointRedoChat) {
-      const checkpointRedoResult = await this.checkpointReplayCoordinator.redoCheckpoint(
-        checkpointRedoTurnResponses,
-        previousTurnResponses,
-        {
-          applyCheckpointTimelineCommit: () =>
-            this.commitCurrentSessionCheckpointRedoTransaction(checkpointRedoTransaction),
-          rollbackCheckpointTimelineCommit: () =>
-            this.rollbackCurrentSessionCheckpointRedoTransaction(checkpointRedoTransaction),
+      const checkpointRedoResult = await this.checkpointReplayCoordinator.redoCheckpointByIdentity(
+        normalizedCheckpointId,
+        async () => {
+          const sessionId = this.resolveCurrentSessionResource(options.sessionResource);
+          const committed = await this.ctx.commitCheckpointRedoByIdentity?.(sessionId, normalizedCheckpointId);
+          if (!committed) {
+            throw new Error('Checkpoint redo host commit did not return a result');
+          }
         },
       );
       if (checkpointRedoResult.ok === false) {
@@ -802,66 +823,6 @@ export class EditActionsHelper {
     return sessionId ? this.ctx.readSessionCheckpointTimelineState?.(sessionId) ?? null : null;
   }
 
-  private prepareCurrentSessionCheckpointRedoTransaction(): ChatSessionPreparedRedoTransaction | null {
-    const sessionId = this.resolveCurrentSessionResource();
-    if (!sessionId) {
-      return null;
-    }
-
-    return this.ctx.prepareCheckpointRedoRequestListTransaction?.(sessionId) ?? null;
-  }
-
-  private commitCurrentSessionCheckpointRedoTransaction(
-    prepared: ChatSessionPreparedRedoTransaction | null,
-  ): ChatSessionRequestListTransactionResult | null {
-    if (!prepared) {
-      return null;
-    }
-
-    const committed = this.ctx.commitCheckpointRedoRequestListTransaction?.(
-      prepared.sessionResource,
-      prepared,
-    );
-    if (committed?.turnResponses) {
-      console.info('[AilyChat][RequestListBranchTrace]', {
-        phase: 'checkpoint-redo-commit',
-        sessionId: prepared.sessionResource,
-        requestListRevision: committed.revision ?? null,
-        retainedTurnIds: committed.retainedTurnIds ?? summarizeTurnResponseIds(committed.turnResponses),
-        restoredTurnIds: committed.restoredTurnIds ?? prepared.restoredTurnIds ?? [],
-        canonicalTurnIds: summarizeTurnResponseIds(committed.turnResponses),
-      });
-      return committed;
-    }
-
-    return null;
-  }
-
-  private rollbackCurrentSessionCheckpointRedoTransaction(
-    prepared: ChatSessionPreparedRedoTransaction | null,
-  ): ChatSessionRequestListTransactionResult | null {
-    if (!prepared) {
-      return null;
-    }
-
-    const rolledBack = this.ctx.rollbackCheckpointRedoRequestListTransaction?.(
-      prepared.sessionResource,
-      prepared,
-    );
-    if (rolledBack?.turnResponses) {
-      console.info('[AilyChat][RequestListBranchTrace]', {
-        phase: 'checkpoint-redo-rollback',
-        sessionId: prepared.sessionResource,
-        requestListRevision: rolledBack.revision ?? null,
-        retainedTurnIds: rolledBack.retainedTurnIds ?? summarizeTurnResponseIds(rolledBack.turnResponses),
-        restoredTurnIds: rolledBack.restoredTurnIds ?? [],
-        canonicalTurnIds: summarizeTurnResponseIds(rolledBack.turnResponses),
-      });
-      return rolledBack;
-    }
-
-    return null;
-  }
 
   /**
    * 接受单个文件�?AI 编辑
@@ -882,17 +843,20 @@ export class EditActionsHelper {
     await this.reloadAbsWorkspace();
   }
 
-  async restoreToCheckpoint(target: EditActionTurnTarget | null | undefined, options: { emitResultMessage?: boolean } = {}): Promise<boolean> {
+  async restoreToCheckpoint(
+    target: EditActionTurnTarget | null | undefined,
+    options: { emitResultMessage?: boolean; sessionResource?: string; checkpointId?: string } = {},
+  ): Promise<boolean> {
     if (this.ctx.isWaiting) { this.ctx.message.warning('正在处理中，请稍候...'); return false; }
-    const { emitResultMessage = true } = options;
+    const { emitResultMessage = true, sessionResource, checkpointId } = options;
 
-    const resolved = await this.resolveTurnTargetWithCheckpointSync(target);
-    if (!resolved.snapshot || (resolved.listIndex === undefined && !resolved.turnId)) {
+    const resolved = await this.resolveTurnTargetWithCheckpointSync(target, sessionResource, checkpointId);
+    if (!resolved.snapshot) {
       this.ctx.message.info('未找到该消息对应的检查点');
       return false;
     }
 
-    const confirmed = await this.confirmRestoreCheckpoint(resolved.snapshot, resolved.turnId);
+    const confirmed = await this.confirmRestoreCheckpoint(resolved.snapshot, resolved.turnId, sessionResource);
     if (!confirmed) {
       return false;
     }
@@ -900,17 +864,21 @@ export class EditActionsHelper {
     this.restoreCheckpointRequestToInput(resolved);
 
     return this.restoreCheckpointSnapshot(resolved.snapshot, {
+      sessionResource,
       turnId: resolved.turnId,
       listIndex: resolved.listIndex,
       emitResultMessage,
     });
   }
 
-  async forkSessionFromTurn(target: EditActionTurnTarget | null | undefined): Promise<boolean> {
+  async forkSessionFromTurn(
+    target: EditActionTurnTarget | null | undefined,
+    options: { sessionResource?: string } = {},
+  ): Promise<boolean> {
     if (this.ctx.isWaiting) { this.ctx.message.warning('正在处理中，请稍候...'); return false; }
 
     const normalized = target ?? {};
-    const resolved = this.resolveTurnTarget(target);
+    const resolved = this.resolveTurnTarget(target, options.sessionResource);
     if (!resolved.turnId) {
       this.ctx.message.info('未找到该消息对应的会话边界');
       return false;
@@ -927,6 +895,7 @@ export class EditActionsHelper {
 
     const requestResources = extractUserTurnResources(requestContent);
     return this.ctx.session.forkFromTurn({
+      sourceSessionId: this.resolveCurrentSessionResource(options.sessionResource),
       turnId: resolved.turnId,
       requestContent: requestContent ?? displayContent,
       displayContent,
@@ -934,7 +903,11 @@ export class EditActionsHelper {
     });
   }
 
-  private async confirmRestoreCheckpoint(snapshot: TurnSnapshot, turnId: string | undefined): Promise<boolean> {
+  private async confirmRestoreCheckpoint(
+    snapshot: TurnSnapshot,
+    turnId: string | undefined,
+    explicitSessionResource?: string,
+  ): Promise<boolean> {
     const confirmRestoreCheckpoint = this.ctx.confirmRestoreCheckpoint;
     if (!confirmRestoreCheckpoint) {
       return true;
@@ -943,14 +916,17 @@ export class EditActionsHelper {
     const fileSummary = await this.getRestoreCheckpointFileSummary(snapshot.checkpointId);
 
     return await confirmRestoreCheckpoint({
-      requestCount: this.getRestoreCheckpointRequestCount(turnId ?? snapshot.turnId),
+      requestCount: this.getRestoreCheckpointRequestCount(turnId ?? snapshot.turnId, explicitSessionResource),
       fileCount: fileSummary.fileCount,
       fileLabel: fileSummary.fileLabel,
     });
   }
 
-  private getRestoreCheckpointRequestCount(turnId: string | undefined): number {
-    const liveTurnResponses = this.readCurrentSessionTurnResponses();
+  private getRestoreCheckpointRequestCount(
+    turnId: string | undefined,
+    explicitSessionResource?: string,
+  ): number {
+    const liveTurnResponses = this.readCurrentSessionTurnResponses(explicitSessionResource);
 
     if (!turnId) {
       return 1;
@@ -993,7 +969,14 @@ export class EditActionsHelper {
     return { fileCount: 0 };
   }
 
-  private resolveCurrentSessionResource(): string {
+  private resolveCurrentSessionResource(explicitSessionResource?: string | null): string {
+    const normalizedExplicitResource = typeof explicitSessionResource === 'string'
+      ? explicitSessionResource.trim()
+      : '';
+    if (normalizedExplicitResource) {
+      return normalizedExplicitResource;
+    }
+
     const currentViewSessionResource = typeof this.ctx.readCurrentViewSessionResource === 'function'
       ? this.ctx.readCurrentViewSessionResource()
       : undefined;

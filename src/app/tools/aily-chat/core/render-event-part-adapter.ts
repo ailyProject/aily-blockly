@@ -313,7 +313,7 @@ export class RenderEventPartAdapter {
           this.getExistingStateMetadata(handle, `todo-${event.sessionId}`),
         );
         this._upsertState(handle, `todo-${event.sessionId}`, {
-          state: resolveTodoState(todoItems),
+          state: todoItems.length > 0 ? 'done' : 'info',
           text: event.summary,
           kind: 'todo',
           metadata: todoMetadata,
@@ -787,6 +787,7 @@ export class RenderEventPartAdapter {
       }
 
       this._store.patchToolCallForHandle(handle, part.toolCallId, {
+        state: 'done',
         metadata: {
           toolSpecificData: buildTodoToolSpecificData(todoMetadata),
         },
@@ -927,13 +928,13 @@ function buildTodoStateMetadata(
   const currentStep = totalCount > 0
     ? Math.min(totalCount, activeTodo ? completedCount + 1 : totalCount)
     : 0;
-  const state = resolveTodoState(items);
+  const listState = resolveTodoListState(items);
   const signature = buildTodoSignature(normalizedItems);
   const previousTimeline = asRecordArray(previousMetadata?.['timeline']);
   const previousSnapshot = previousTimeline.at(-1);
   const phase = classifyTodoPhase(previousSnapshot, normalizedItems, {
     summary,
-    state,
+    state: listState,
     totalCount,
     completedCount,
     currentStep,
@@ -945,7 +946,8 @@ function buildTodoStateMetadata(
       : `todo:${sessionId}:${previousTimeline.length + 1}`,
     signature,
     summary,
-    state,
+    state: listState,
+    listState,
     totalCount,
     completedCount,
     currentStep,
@@ -965,7 +967,8 @@ function buildTodoStateMetadata(
   return {
     items: normalizedItems,
     summary,
-    state,
+    state: listState,
+    listState,
     totalCount,
     completedCount,
     currentStep,
@@ -1179,7 +1182,7 @@ function normalizeTimestamp(value: unknown): string | undefined {
   return undefined;
 }
 
-function resolveTodoState(items: readonly { status: string }[]): StatePart['state'] {
+function resolveTodoListState(items: readonly { status: string }[]): StatePart['state'] {
   if (!items.length) {
     return 'info';
   }

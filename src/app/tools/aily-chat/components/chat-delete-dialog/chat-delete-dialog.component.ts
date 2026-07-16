@@ -13,19 +13,28 @@ import { BaseDialogComponent, DialogButton } from '../../../../components/base-d
       [buttons]="buttons"
       (closeDialog)="onClose()"
       (buttonClick)="onButtonClick($event)">
-      <div class="text">确定删除对话「{{ data?.name }}」？此操作不可恢复。</div>
+      @if (data.requestInProgress) {
+        <div class="text">对话「{{ data.name }}」仍在进行中。继续将停止当前请求并永久删除该对话。</div>
+      } @else {
+        <div class="text">确定删除对话「{{ data.name }}」？此操作不可恢复。</div>
+      }
     </app-base-dialog>
   `,
   styles: [`.text { min-height: 32px; line-height: 25px; }`],
 })
 export class ChatDeleteDialogComponent {
   readonly modalRef = inject(NzModalRef);
-  readonly data: { name: string } = inject(NZ_MODAL_DATA);
+  readonly data: { name: string; requestInProgress: boolean } = inject(NZ_MODAL_DATA);
 
   get buttons(): DialogButton[] {
     return [
       { text: '取消', type: 'default', action: 'cancel' },
-      { text: '删除', type: 'primary', danger: true, action: 'delete' },
+      {
+        text: this.data.requestInProgress ? '停止并删除' : '删除',
+        type: 'primary',
+        danger: true,
+        action: 'delete',
+      },
     ];
   }
 

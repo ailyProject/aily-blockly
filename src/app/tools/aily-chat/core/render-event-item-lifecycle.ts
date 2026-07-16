@@ -7,6 +7,7 @@ import { ProposedPlanParser, type ProposedPlanSegment } from './proposed-plan-pa
 import type { QuestionItem, ToolCallPart } from './chat-parts';
 import { normalizeSubagentToolCallState } from './chat-parts';
 import { normalizeChatErrorNotice } from './chat-error-notice-normalizer';
+import { isTodoToolName } from './tool-name-normalizer';
 
 export type CanonicalRenderItemKind =
   | 'markdown'
@@ -195,6 +196,7 @@ export class RenderEventItemLifecycleNormalizer {
   private readonly completedItems = new Set<string>();
   private readonly payloadRefs = new Map<string, string>();
   private readonly proposedPlanParsers = new Map<string, ProposedPlanParserState>();
+  private activeTodoToolItemId: string | null = null;
 
   process(event: RenderEvent): CanonicalRenderLifecycleEvent[] {
     const output: CanonicalRenderLifecycleEvent[] = [];
@@ -245,11 +247,16 @@ export class RenderEventItemLifecycleNormalizer {
         return output;
       }
 
-      case 'tool_call_begin':
+      case 'tool_call_begin': {
+        const itemId = toolItemId(event);
         output.push(...this.completeActiveTextItemsForScope(event, timestamp, event.type));
-        output.push(...this.ensureItem(toolItemId(event), 'tool', event, timestamp));
-        output.push(this.deltaFor(toolItemId(event), 'tool', timestamp, 'update', event.type, undefined, toolBeginPayload(event)));
+        output.push(...this.ensureItem(itemId, 'tool', event, timestamp));
+        output.push(this.deltaFor(itemId, 'tool', timestamp, 'update', event.type, undefined, toolBeginPayload(event)));
+        if (isTodoToolName(event.toolName)) {
+          this.activeTodoToolItemId = itemId;
+        }
         return output;
+      }
 
       case 'tool_call_progress':
         {
@@ -270,17 +277,22 @@ export class RenderEventItemLifecycleNormalizer {
         ));
         return output;
 
-      case 'tool_call_end':
+      case 'tool_call_end': {
         {
           const terminalEvents = this.terminalItemForToolResult(event, timestamp);
           if (terminalEvents.length > 0) {
             return terminalEvents;
           }
         }
-        output.push(...this.ensureItem(toolItemId(event), 'tool', event, timestamp));
-        output.push(this.deltaFor(toolItemId(event), 'tool', timestamp, 'update', event.type, event.resultText, toolEndPayload(event)));
-        output.push(this.completeItem(toolItemId(event), 'tool', timestamp, event.state === 'error' ? 'failed' : 'completed', event.type));
+        const itemId = toolItemId(event);
+        output.push(...this.ensureItem(itemId, 'tool', event, timestamp));
+        output.push(this.deltaFor(itemId, 'tool', timestamp, 'update', event.type, event.resultText, toolEndPayload(event)));
+        output.push(this.completeItem(itemId, 'tool', timestamp, event.state === 'error' ? 'failed' : 'completed', event.type));
+        if (this.activeTodoToolItemId === itemId) {
+          this.activeTodoToolItemId = null;
+        }
         return output;
+      }
 
       case 'state_update':
         if (isSubagentStateUpdateEvent(event)) {
@@ -313,7 +325,11 @@ export class RenderEventItemLifecycleNormalizer {
         return output;
 
       case 'todo_update':
-        output.push(...this.upsertStateItem(`todo:${event.sessionId}`, 'state', event, timestamp, undefined, event.summary, todoStatePayload(event)));
+        if (this.activeTodoToolItemId) {
+          output.push(this.completeItem(this.activeTodoToolItemId, 'tool', timestamp, 'completed', event.type));
+          this.activeTodoToolItemId = null;
+        }
+        output.push(...this.upsertStateItem(`todo:${event.sessionId}`, 'state', event, timestamp, 'completed', event.summary, todoStatePayload(event)));
         return output;
 
       case 'question_request':
@@ -461,6 +477,7 @@ export class RenderEventItemLifecycleNormalizer {
     this.completedItems.clear();
     this.payloadRefs.clear();
     this.proposedPlanParsers.clear();
+    this.activeTodoToolItemId = null;
   }
 
   finalizeActiveTurn(
@@ -652,7 +669,7 @@ export class RenderEventItemLifecycleNormalizer {
   ): CanonicalRenderLifecycleEvent[] {
     const output = this.ensureItem(itemId, itemKind, event, timestamp);
     output.push(this.deltaFor(itemId, itemKind, timestamp, 'update', event.type, text, structuredPayload));
-    if (completeAs) {
+    if (completeAs && !this.completedItems.has(itemId)) {
       output.push(this.completeItem(itemId, itemKind, timestamp, completeAs, event.type));
     }
     return output;
@@ -669,15 +686,18 @@ export class RenderEventItemLifecycleNormalizer {
       return [];
     }
 
-    const itemId = terminalItemId(event.toolCallId, terminal);
+    // VS Code keeps terminal state on the original IChatToolInvocation. A
+    // command result changes the invocation's tool-specific payload; it must
+    // not create a sibling response item with a second identity.
+    const itemId = toolItemId(event);
     const output: CanonicalRenderLifecycleEvent[] = [
-      ...this.ensureItem(itemId, 'terminal', event, timestamp),
-      this.deltaFor(itemId, 'terminal', timestamp, 'update', event.type, summarizeTerminalPayload(terminal), terminalPayload(event, terminal)),
+      ...this.ensureItem(itemId, 'tool', event, timestamp),
+      this.deltaFor(itemId, 'tool', timestamp, 'update', event.type, summarizeTerminalPayload(terminal), terminalPayload(event, terminal)),
     ];
     if (!terminal.isRunning) {
       output.push(this.completeItem(
         itemId,
-        'terminal',
+        'tool',
         timestamp,
         event.state === 'error' || (typeof terminal.exitCode === 'number' && terminal.exitCode !== 0) ? 'failed' : 'completed',
         event.type,
@@ -695,12 +715,12 @@ export class RenderEventItemLifecycleNormalizer {
       return [];
     }
 
-    const itemId = terminalItemId(event.toolCallId, payload.terminal);
+    const itemId = toolItemId(event);
     const output: CanonicalRenderLifecycleEvent[] = [
-      ...this.ensureItem(itemId, 'terminal', event, timestamp),
+      ...this.ensureItem(itemId, 'tool', event, timestamp),
       this.deltaFor(
         itemId,
-        'terminal',
+        'tool',
         timestamp,
         'update',
         event.type,
@@ -711,7 +731,7 @@ export class RenderEventItemLifecycleNormalizer {
     if (!payload.terminal.isRunning) {
       output.push(this.completeItem(
         itemId,
-        'terminal',
+        'tool',
         timestamp,
         terminalPayloadCompletionStatus(payload.terminal),
         event.type,
@@ -903,11 +923,6 @@ function toolScopedItemId(event: RenderEvent, toolCallId: string): string {
   return `${scopeKey(event)}:tool:${toolCallId}`;
 }
 
-function terminalItemId(toolCallId: string, terminal: ParsedTerminalPayload): string {
-  const identity = terminal.outputSessionId || terminal.processId || terminal.terminalId || toolCallId;
-  return `terminal:${identity || 'unknown'}`;
-}
-
 function approvalItemId(event: Extract<RenderEvent, { type: 'approval_request' | 'approval_resolve' }>): string {
   return `${scopeKey(event)}:approval:${event.toolCallId || event.requestId || 'unknown'}`;
 }
@@ -1068,7 +1083,7 @@ function todoStatePayload(event: Extract<RenderEvent, { type: 'todo_update' }>):
     type: 'state',
     stateId: `todo-${event.sessionId}`,
     text: event.summary,
-    state: 'info',
+    state: Array.isArray(event.items) && event.items.length > 0 ? 'done' : 'info',
     kind: 'todo',
     metadata: boundedRecord({
       sessionId: event.sessionId,

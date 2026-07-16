@@ -6,10 +6,18 @@ import type {
   ChatRuntimeOwnerExecutor,
   ChatRuntimeHostEvent,
   ChatRuntimeHostEventSubscription,
+  ChatRuntimeHostCheckpointMutationRequest,
+  ChatRuntimeHostCheckpointMutationResult,
+  ChatRuntimeHostCheckpointNavigationRequest,
+  ChatRuntimeHostCheckpointNavigationState,
+  ChatRuntimeHostForkSessionRequest,
+  ChatRuntimeHostForkSessionResult,
   ChatRuntimeHostInteractionRequest,
   ChatRuntimeHostInteractionSnapshot,
   ChatRuntimeHostPrewarmRequest,
   ChatRuntimeHostPrewarmResult,
+  ChatRuntimeHostRequestListMutationRequest,
+  ChatRuntimeHostRequestListMutationResult,
   ChatRuntimeHostResourceOperationRequest,
   ChatRuntimeHostResourceOperationResult,
   ChatRuntimeHostRerunReadiness,
@@ -22,6 +30,8 @@ import type {
   ChatRuntimeHostSubmitReadiness,
   ChatRuntimeHostSubmitRequest,
   ChatRuntimeHostTranscriptSnapshot,
+  ChatRuntimeHostTurnPage,
+  ChatRuntimeHostTurnPageRequest,
   ChatRuntimeHostViewId,
 } from './chat-runtime-host-contract';
 import {
@@ -46,6 +56,12 @@ type RuntimeHostMethod =
   | 'readSessionState'
   | 'readSessionInventory'
   | 'readTranscript'
+  | 'readSessionTurnPage'
+  | 'readCheckpointNavigationState'
+  | 'mutateSessionRequestList'
+  | 'restoreSessionCheckpoint'
+  | 'redoSessionCheckpoint'
+  | 'forkSession'
   | 'awaitRequestCompletion'
   | 'runWorkspaceFinalizeBoundaryProbe'
   | 'readInteractionSnapshot'
@@ -248,6 +264,18 @@ export function createElectronChatRuntimeHostTransport(): ChatRuntimeHost | null
       api.call('readSessionInventory', []) as Promise<ChatRuntimeHostSessionInventorySnapshot>,
     readTranscript: (sessionId: ChatRuntimeHostSessionId) =>
       api.call('readTranscript', [sessionId]) as Promise<ChatRuntimeHostTranscriptSnapshot | null>,
+    readSessionTurnPage: (request: ChatRuntimeHostTurnPageRequest) =>
+      api.call('readSessionTurnPage', [request]) as Promise<ChatRuntimeHostTurnPage | null>,
+    readCheckpointNavigationState: (request: ChatRuntimeHostCheckpointNavigationRequest) =>
+      api.call('readCheckpointNavigationState', [request]) as Promise<ChatRuntimeHostCheckpointNavigationState | null>,
+    mutateSessionRequestList: (request: ChatRuntimeHostRequestListMutationRequest) =>
+      api.call('mutateSessionRequestList', [request]) as Promise<ChatRuntimeHostRequestListMutationResult>,
+    restoreSessionCheckpoint: (request: ChatRuntimeHostCheckpointMutationRequest & { readonly checkpointId: string }) =>
+      api.call('restoreSessionCheckpoint', [request]) as Promise<ChatRuntimeHostCheckpointMutationResult>,
+    redoSessionCheckpoint: (request: ChatRuntimeHostCheckpointMutationRequest) =>
+      api.call('redoSessionCheckpoint', [request]) as Promise<ChatRuntimeHostCheckpointMutationResult>,
+    forkSession: (request: ChatRuntimeHostForkSessionRequest) =>
+      api.call('forkSession', [request]) as Promise<ChatRuntimeHostForkSessionResult>,
     awaitRequestCompletion: (sessionId: ChatRuntimeHostSessionId) =>
       api.call('awaitRequestCompletion', [sessionId]) as Promise<void>,
     runWorkspaceFinalizeBoundaryProbe: (sessionId: ChatRuntimeHostSessionId) =>

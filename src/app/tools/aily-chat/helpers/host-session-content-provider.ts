@@ -69,6 +69,7 @@ export interface HostSessionContentMetadataSource {
 
 export interface HostSessionContentRequest {
   readonly hostRecordOverride?: HostSessionRecord | null;
+  readonly loadHostRecord?: boolean;
   readonly metadataFallback?: HostSessionContentMetadataSource | null;
   readonly fallbackProviderOptions?: Partial<HostSessionProviderOptions> | null;
 }
@@ -98,7 +99,9 @@ export class HostSessionContentProvider {
     const normalizedProjectPathHint = normalizeProjectPathHint(projectPathHint);
     const hostRecord = request.hostRecordOverride !== undefined
       ? request.hostRecordOverride
-      : this.ctx.chatHistoryService.loadHostRecord(sessionId, normalizedProjectPathHint);
+      : request.loadHostRecord === false
+        ? null
+        : this.ctx.chatHistoryService.loadHostRecord(sessionId, normalizedProjectPathHint);
     const effectiveMetadata = mergeHostSessionContentMetadata(hostRecord?.metadata, request.metadataFallback);
     const providerOptionFallback = normalizeHostSessionProviderOptions(request.fallbackProviderOptions, {
       folderPath: request.hostRecordOverride === undefined

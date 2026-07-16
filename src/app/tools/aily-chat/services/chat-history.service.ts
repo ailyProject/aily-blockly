@@ -565,8 +565,11 @@ export class ChatHistoryService implements OnDestroy {
     }
   }
 
-  async saveHostRecordAsync(record: LiveHostSessionRecord): Promise<void> {
-    await this.hostSessionPersistenceBridge.saveHostRecordAsync(record);
+  async saveHostRecordAsync(
+    record: LiveHostSessionRecord,
+    options?: { readonly allowEmptyTranscript?: boolean },
+  ): Promise<void> {
+    await this.hostSessionPersistenceBridge.saveHostRecordAsync(record, options);
     if (record.sessionId) {
       this.emitHostSessionChanged({ sessionId: record.sessionId, scope: 'persisted', kind: 'updated' });
     }
@@ -1308,7 +1311,6 @@ export class ChatHistoryService implements OnDestroy {
           shouldSkipSession: (sessionId, policy) => {
             const active = this.autoSaveSessionActiveProvider?.(sessionId) === true;
             if (active && policy === 'recovery-snapshot') {
-              console.log(`[ChatHistory] 跳过运行中会话兜底保存: ${sessionId}`);
               return true;
             }
             return false;
@@ -1367,7 +1369,6 @@ export class ChatHistoryService implements OnDestroy {
   private shouldSkipActiveRecoverySnapshot(sessionId: string, policy: HostSessionDirtyPolicy): boolean {
     const active = this.autoSaveSessionActiveProvider?.(sessionId) === true;
     if (active && policy === 'recovery-snapshot') {
-      console.log(`[ChatHistory] skip active recovery snapshot: ${sessionId}`);
       return true;
     }
     return false;

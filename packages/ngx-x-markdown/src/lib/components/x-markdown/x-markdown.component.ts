@@ -23,11 +23,8 @@ import { CommonModule } from '@angular/common';
 import { MarkdownParser } from '../../core/parser';
 import { MarkdownRenderer } from '../../core/renderer';
 import {
-  StreamCache,
   WordBuffer,
   getParagraphBufferedMarkdown,
-  getInitialCache,
-  processStreamingContent,
 } from '../../services/streaming';
 import type {
   XMarkdownConfig,
@@ -160,7 +157,6 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
 
   private parser!: MarkdownParser;
   private renderer!: MarkdownRenderer;
-  private streamCache: StreamCache = getInitialCache();
   private displayContent: string = '';
 
   /**
@@ -220,7 +216,7 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
         components: this.components,
         dompurifyConfig: this.dompurifyConfig,
       });
-      this.resetIncrementalRenderer(false);
+      this.resetIncrementalRenderer();
     }
 
     // Update class
@@ -284,18 +280,11 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
   }
 
   private processContentNow(rawContent: string, isFinalChunk: boolean): void {
-
-    // Streaming processing
-    const result = processStreamingContent(rawContent, this.streamCache, {
-      streaming: this.streaming,
-      components: this.components,
-    });
     const shouldUseParagraphBuffer = this.streaming?.hasNextChunk === true
       && (this.streaming?.buffering ?? 'paragraph') === 'paragraph';
     this.displayContent = shouldUseParagraphBuffer
-      ? getParagraphBufferedMarkdown(result.output, isFinalChunk)
-      : result.output;
-    this.streamCache = result.cache;
+      ? getParagraphBufferedMarkdown(rawContent, isFinalChunk)
+      : rawContent;
 
     if (!this.displayContent) {
       this.commitRenderedHtml('');
@@ -318,7 +307,6 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
       this.incrementalActive = true;
       this.incrementalLastMarkdown = '';
       this.incrementalRenderedMarkdown = '';
-      this.streamCache = getInitialCache();
       this.wordBuffer.reset();
     }
 
@@ -438,15 +426,12 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
     this.incrementalPendingIsFinal = false;
   }
 
-  private resetIncrementalRenderer(resetCache = true): void {
+  private resetIncrementalRenderer(): void {
     this.cancelIncrementalRender();
     this.incrementalActive = false;
     this.incrementalLastMarkdown = '';
     this.incrementalRenderedMarkdown = '';
     this.wordBuffer.reset();
-    if (resetCache) {
-      this.streamCache = getInitialCache();
-    }
   }
 
   private commitRenderedHtml(cleanHtml: string): void {

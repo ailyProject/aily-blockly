@@ -156,7 +156,7 @@ export interface HostSessionSwitchTarget {
   readonly entry?: SessionIndexEntry;
 }
 
-export type HostSessionSwitchRestoreHostRecordSource = 'override' | 'history' | 'missing';
+export type HostSessionSwitchRestoreHostRecordSource = 'override' | 'history' | 'deferred' | 'missing';
 export type HostSessionRestoreRequestSource = 'session-switch' | 'entry-target';
 export type HostSessionRestoreMetadataSource = 'index-entry' | 'entry-target' | 'none';
 
@@ -178,10 +178,12 @@ export interface HostSessionSwitchRestoreRequest {
 export interface HostSessionSwitchRestoreRequestOptions {
   readonly fallbackProjectPath?: string | null;
   readonly hostRecordOverride?: HostSessionRecord | null;
+  readonly deferHostRecord?: boolean;
 }
 
 export interface HostSessionEntryRestoreRequestOptions {
   readonly fallbackProjectPath?: string | null;
+  readonly deferHostRecord?: boolean;
 }
 
 export interface HostSessionManagedItemSeed {
@@ -675,6 +677,7 @@ export class HostSessionItemController {
   resolveSessionSwitchTarget(
     sessionId: string,
     fallbackProjectPath?: string | null,
+    options: { readonly deferHostRecord?: boolean } = {},
   ): HostSessionSwitchTarget {
     const managedItem = this.managedItems.get(sessionId);
     const entry = this.ctx.chatHistoryService.findEntry(sessionId);
@@ -687,15 +690,20 @@ export class HostSessionItemController {
       },
       fallbackProjectPath,
     );
-    const sessionContent = sessionId === this.ctx.chatService.currentSessionId
+    const sessionContent = isCurrentSession
       ? undefined
-      : this.resolvePersistedSessionContent(sessionId, projectPathHint, entry);
+      : options.deferHostRecord === true && !managedItem
+        ? this.hostSessionContentProvider.provideChatSessionContent(sessionId, projectPathHint, {
+            loadHostRecord: false,
+            metadataFallback: entry ?? null,
+          })
+        : this.resolvePersistedSessionContent(sessionId, projectPathHint, entry);
     const providerOptions = sessionContent?.providerOptions ?? this.getChatSessionProviderOptions(sessionId, projectPathHint);
     const projectPath = managedItem?.projectPath ?? providerOptions.folderPath ?? projectPathHint;
-    const inputState = sessionId === this.ctx.chatService.currentSessionId
-      ? this.getChatSessionInputState(sessionId, projectPath)
+    const inputState = !isCurrentSession && options.deferHostRecord === true && !managedItem
+      ? sessionContent?.inputState ?? this.buildPersistedInputState(sessionContent!)
       : this.getChatSessionInputState(sessionId, projectPath);
-    const sessionType = sessionId === this.ctx.chatService.currentSessionId
+    const sessionType = isCurrentSession
       ? this.resolveCurrentSessionType()
       : normalizeChatSessionType(sessionContent?.sessionType ?? entry?.sessionType, DEFAULT_CHAT_SESSION_TYPE);
 
@@ -717,6 +725,7 @@ export class HostSessionItemController {
       sessionId,
       fallbackProjectPath: options.fallbackProjectPath,
       hostRecordOverride: options.hostRecordOverride,
+      deferHostRecord: options.deferHostRecord,
       requestSource: 'session-switch',
     });
   }
@@ -731,6 +740,7 @@ export class HostSessionItemController {
       fallbackProjectPath: options.fallbackProjectPath,
       metadataFallback: target,
       useMetadataFallbackAsRestoreCarrier: useTargetAsRestoreCarrier,
+      deferHostRecord: options.deferHostRecord,
       requestSource: 'entry-target',
     });
   }
@@ -741,6 +751,7 @@ export class HostSessionItemController {
     readonly hostRecordOverride?: HostSessionRecord | null;
     readonly metadataFallback?: PersistedChatSessionEntryTarget;
     readonly useMetadataFallbackAsRestoreCarrier?: boolean;
+    readonly deferHostRecord?: boolean;
     readonly requestSource: HostSessionRestoreRequestSource;
   }): HostSessionSwitchRestoreRequest {
     const metadataFallback = options.metadataFallback;
@@ -749,6 +760,7 @@ export class HostSessionItemController {
         sessionId: options.sessionId,
         fallbackProjectPath: options.fallbackProjectPath,
         metadataFallback,
+        deferHostRecord: options.deferHostRecord,
         requestSource: options.requestSource,
       });
     }
@@ -763,7 +775,9 @@ export class HostSessionItemController {
           null,
         )
       : metadataFallback?.projectPath ?? options.fallbackProjectPath ?? null;
-    const target = this.resolveSessionSwitchTarget(options.sessionId, switchTargetProjectHint);
+    const target = this.resolveSessionSwitchTarget(options.sessionId, switchTargetProjectHint, {
+      deferHostRecord: options.deferHostRecord,
+    });
     const sessionProjectPath = target.providerOptions.folderPath
       ?? target.projectPath
       ?? switchTargetProjectHint
@@ -773,6 +787,7 @@ export class HostSessionItemController {
       sessionProjectPath,
       {
         hostRecordOverride: options.hostRecordOverride,
+        loadHostRecord: options.deferHostRecord !== true,
         metadataFallback: target.entry ?? metadataFallback ?? null,
         fallbackProviderOptions: target.providerOptions,
       },
@@ -789,6 +804,8 @@ export class HostSessionItemController {
         requestSource: options.requestSource,
         hostRecordSource: options.hostRecordOverride !== undefined
           ? 'override'
+          : options.deferHostRecord === true
+            ? 'deferred'
           : hostRecord
             ? 'history'
             : 'missing',
@@ -812,6 +829,7 @@ export class HostSessionItemController {
     readonly sessionId: string;
     readonly fallbackProjectPath?: string | null;
     readonly metadataFallback: PersistedChatSessionEntryTarget;
+    readonly deferHostRecord?: boolean;
     readonly requestSource: HostSessionRestoreRequestSource;
   }): HostSessionSwitchRestoreRequest {
     const providerOptions = normalizeHostSessionProviderOptions(options.metadataFallback.providerOptions, {
@@ -837,6 +855,7 @@ export class HostSessionItemController {
       options.sessionId,
       sessionProjectPath,
       {
+        loadHostRecord: options.deferHostRecord !== true,
         metadataFallback: options.metadataFallback,
         fallbackProviderOptions: providerOptions,
       },
@@ -864,7 +883,11 @@ export class HostSessionItemController {
         sessionId: options.sessionId,
         projectPath: sessionProjectPath,
         requestSource: options.requestSource,
-        hostRecordSource: hostRecord ? 'history' : 'missing',
+        hostRecordSource: options.deferHostRecord === true
+          ? 'deferred'
+          : hostRecord
+            ? 'history'
+            : 'missing',
         metadataSource: 'entry-target',
       },
     };

@@ -1,9 +1,6 @@
 import type { TurnResponseTurn } from 'aily-lex/browser';
 
 import {
-  hydrateQuestionAnswersFromAskUserToolMetadata,
-} from './turn-response-part-mapper';
-import {
   cloneTurnResponseModelSidecar,
 } from '../helpers/turn-response-response-model';
 
@@ -112,7 +109,7 @@ export function cloneCanonicalTurnResponseTurn(turn: TurnResponseTurn): TurnResp
       })),
       codeCitations: (turn.response.codeCitations ?? []).map(citation => ({ ...citation })),
       progressMessages: (turn.response.progressMessages ?? []).map(message => ({ ...message })),
-      parts: hydrateQuestionAnswersFromAskUserToolMetadata(turn.response.parts).map(part => ({ ...part })),
+      parts: turn.response.parts.map(part => ({ ...part })),
     },
     ...(responseModel ? { responseModel } : {}),
   };

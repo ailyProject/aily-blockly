@@ -22,6 +22,7 @@ export interface ChatTaskActionDetail {
   action?: ChatTaskActionName | string;
   data?: unknown;
   target?: DialogTurnContext | null;
+  sessionResource?: string;
   vote?: 0 | 1;
   filePath?: string;
   fileCount?: number;
@@ -66,7 +67,7 @@ export class ChatTaskActionCoordinator {
         void this.editActions.undoLastEdits();
         return;
       case 'redoEdits':
-        void this.boundaryActions.redoEdits();
+        void this.boundaryActions.redoEdits(detail?.sessionResource);
         return;
       case 'redoFileEdits':
         void this.editActions.redoEdits();
@@ -87,12 +88,12 @@ export class ChatTaskActionCoordinator {
         return;
       case 'restoreCheckpoint':
         if (detail?.target) {
-          void this.boundaryActions.restoreCheckpoint(detail.target);
+          void this.boundaryActions.restoreCheckpoint(detail.target, detail.sessionResource);
         }
         return;
       case 'forkSession':
         if (detail?.target) {
-          void this.boundaryActions.forkSession(detail.target);
+          void this.boundaryActions.forkSession(detail.target, detail.sessionResource);
         }
         return;
       case 'newChat':

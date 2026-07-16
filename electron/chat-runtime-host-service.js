@@ -20,6 +20,7 @@ const {
   ChatRuntimeHostRuntimeOwnerController,
   DEFAULT_COMMAND_TIMEOUT_MS,
 } = require('./chat-runtime-host-runtime-owner-controller');
+const { showNotification } = require('./notification');
 
 const channels = {
   RUNTIME_OWNER_REGISTER_CHANNEL,
@@ -47,6 +48,12 @@ const ALLOWED_METHODS = new Set([
   'readSessionState',
   'readSessionInventory',
   'readTranscript',
+  'readSessionTurnPage',
+  'readCheckpointNavigationState',
+  'mutateSessionRequestList',
+  'restoreSessionCheckpoint',
+  'redoSessionCheckpoint',
+  'forkSession',
   'awaitRequestCompletion',
   'runWorkspaceFinalizeBoundaryProbe',
   'readInteractionSnapshot',
@@ -61,6 +68,12 @@ const EXECUTION_HOST_ALLOWED_METHODS = new Set([
   'readSessionState',
   'readSessionInventory',
   'readTranscript',
+  'readSessionTurnPage',
+  'readCheckpointNavigationState',
+  'mutateSessionRequestList',
+  'restoreSessionCheckpoint',
+  'redoSessionCheckpoint',
+  'forkSession',
   'awaitRequestCompletion',
   'runWorkspaceFinalizeBoundaryProbe',
   'readInteractionSnapshot',
@@ -210,6 +223,23 @@ function traceActiveTurnDurability(phase, payload = {}) {
   }
 }
 
+function isCheckpointOwnedTurn(turn) {
+  const metadata = turn && turn.request && turn.request.metadata;
+  return metadata && typeof metadata === 'object' && [
+    'checkpointId',
+    'checkpointNamespace',
+    'checkpointRef',
+    'checkpointRefs',
+    'startCheckpointRef',
+    'additionalCheckpointRefs',
+    'additionalStartCheckpointRefs',
+  ].some(key => metadata[key] !== undefined && metadata[key] !== null);
+}
+
+function hasCheckpointOwnedTurn(turns) {
+  return (Array.isArray(turns) ? turns : []).some(isCheckpointOwnedTurn);
+}
+
 class ChatRuntimeHostProcessService {
   constructor(options = {}) {
     if (!options.BrowserWindow) {
@@ -233,9 +263,13 @@ class ChatRuntimeHostProcessService {
     this.resourceOperationHandlerRenderer = null;
     this.resourceOperationCommandSeed = 0;
     this.pendingResourceOperationCommands = new Map();
-    this.resourceOperationCommandTimeoutMs = Number.isFinite(options.commandTimeoutMs)
-      ? options.commandTimeoutMs
-      : DEFAULT_COMMAND_TIMEOUT_MS;
+    this.pendingExecutionStarts = new Map();
+    this.pendingExecutionTurnIds = new Map();
+    this.showSystemNotification = typeof options.showSystemNotification === 'function'
+      ? options.showSystemNotification
+      : showNotification;
+    this.notificationNeedsInputKeys = new Map();
+    this.notificationRequestInProgress = new Map();
   }
 
   setMainWindow(mainWindow) {
@@ -318,6 +352,12 @@ class ChatRuntimeHostProcessService {
     if (method === 'submitTurn') {
       return this.handleSubmitTurn(args);
     }
+    if (method === 'readSubmitReadiness') {
+      return this.handleReadSubmitReadiness(args);
+    }
+    if (method === 'ensureSessionCanRerun') {
+      return this.handleEnsureSessionCanRerun(args);
+    }
     if (method === 'resolveInteraction') {
       return this.handleResolveInteraction(args);
     }
@@ -329,6 +369,15 @@ class ChatRuntimeHostProcessService {
     }
     if (method === 'runWorkspaceFinalizeBoundaryProbe') {
       return Promise.resolve();
+    }
+    if (method === 'mutateSessionRequestList') {
+      return this.handleMutateSessionRequestList(args);
+    }
+    if (method === 'restoreSessionCheckpoint' || method === 'redoSessionCheckpoint') {
+      return this.handleCheckpointMutation(method, args);
+    }
+    if (method === 'forkSession') {
+      return this.handleForkSession(args);
     }
     const hostResult = this.hostSessionStore.readHostCommandResult(method, args);
     if (hostResult !== HOST_SESSION_STORE_MISS) {
@@ -357,6 +406,15 @@ class ChatRuntimeHostProcessService {
     }
     if (method === 'runWorkspaceFinalizeBoundaryProbe') {
       return Promise.resolve();
+    }
+    if (method === 'mutateSessionRequestList') {
+      return this.handleMutateSessionRequestList(args);
+    }
+    if (method === 'restoreSessionCheckpoint' || method === 'redoSessionCheckpoint') {
+      return this.handleCheckpointMutation(method, args);
+    }
+    if (method === 'forkSession') {
+      return this.handleForkSession(args);
     }
 
     const hostResult = this.hostSessionStore.readHostCommandResult(method, args);
@@ -417,7 +475,13 @@ class ChatRuntimeHostProcessService {
 
   async handleSubmitTurn(args) {
     const request = args && args[0];
+    const submittedSessionId = normalizeSessionId(request && request.sessionId);
+    if (!submittedSessionId) {
+      throw new Error('[AilyChat][RuntimeHost] submitTurn requires a session id.');
+    }
+    await this.reconcileSessionExecutionState(submittedSessionId);
     const runningState = this.hostSessionStore.beginSubmittedTurn(request);
+    this.pendingExecutionTurnIds.set(runningState.sessionId, runningState.activeTurnId);
     const requestMetadata = request && request.requestMetadata && typeof request.requestMetadata === 'object'
       ? request.requestMetadata
       : request && request.metadata && typeof request.metadata === 'object'
@@ -458,8 +522,15 @@ class ChatRuntimeHostProcessService {
         transcriptRevision: Number(runningState.transcriptRevision) || 0,
       });
     } catch (error) {
+      this.clearPendingExecutionTransition(runningState.sessionId, runningState.activeTurnId);
       await this.failSubmittedTurnWithError(runningState.sessionId, error);
       throw error;
+    }
+    const currentState = this.hostSessionStore.buildSessionState(runningState.sessionId);
+    if (currentState?.requestInProgress !== true
+      || currentState.activeTurnId !== runningState.activeTurnId) {
+      this.clearPendingExecutionTransition(runningState.sessionId, runningState.activeTurnId);
+      return currentState;
     }
     this.replayTranscriptForAttachedSession(runningState.sessionId);
     this.broadcastSessionState('runtime-status', runningState);
@@ -482,16 +553,32 @@ class ChatRuntimeHostProcessService {
         protocolTruncation: submittedRequest && submittedRequest.protocolTruncation ? submittedRequest.protocolTruncation : null,
       },
     };
-    if (!this.dispatchRuntimeOwnerCommandIfAvailable('startTurn', [startTurnCommand], runningState.sessionId, {
-      failSubmittedTurnOnError: true,
-      unavailableMessage: '[AilyChat][RuntimeHost] No registered runtime owner.',
-    })) {
+    if (!this.dispatchSubmittedTurnStart(startTurnCommand, runningState.sessionId)) {
+      this.clearPendingExecutionTransition(runningState.sessionId, runningState.activeTurnId);
       const error = new Error('[AilyChat][RuntimeHost] No registered runtime owner.');
       error.code = 'runtime_owner_unavailable';
       error.retryable = true;
       await this.failSubmittedTurnWithError(runningState.sessionId, error);
     }
     return this.hostSessionStore.buildSessionState(runningState.sessionId);
+  }
+
+  async handleReadSubmitReadiness(args) {
+    const sessionId = normalizeSessionId(args && args[0]);
+    await this.reconcileSessionExecutionState(sessionId);
+    return this.hostSessionStore.readHostCommandResult('readSubmitReadiness', [sessionId]);
+  }
+
+  async handleEnsureSessionCanRerun(args) {
+    const sessionId = normalizeSessionId(args && args[0]);
+    const reconciliation = await this.reconcileSessionExecutionState(sessionId);
+    const result = this.hostSessionStore.readHostCommandResult('ensureSessionCanRerun', [sessionId]);
+    return result === HOST_SESSION_STORE_MISS
+      ? result
+      : {
+          ...result,
+          staleGateCleared: reconciliation.staleGateCleared,
+        };
   }
 
   async handleStopTurn(args) {
@@ -503,6 +590,7 @@ class ChatRuntimeHostProcessService {
     const requestedTurnId = normalizeSessionId(stopCommand && stopCommand.turnId);
     const previousState = this.hostSessionStore.buildSessionState(sessionId);
     const targetTurnId = requestedTurnId || (previousState && previousState.activeTurnId) || null;
+    this.clearPendingExecutionTransition(sessionId, targetTurnId);
     const stoppedTranscript = this.hostSessionStore.cancelRunningTurn(
       sessionId,
       targetTurnId,
@@ -541,12 +629,12 @@ class ChatRuntimeHostProcessService {
     return undefined;
   }
 
-  async persistHostSessionRecord(sessionId, reason, statePatch) {
+  async persistHostSessionRecord(sessionId, reason, statePatch, options) {
     const normalizedSessionId = normalizeSessionId(sessionId);
     if (!normalizedSessionId) {
       return false;
     }
-    const record = this.hostSessionStore.buildLiveHostSessionRecord(normalizedSessionId, statePatch);
+    const record = this.hostSessionStore.buildLiveHostSessionRecord(normalizedSessionId, statePatch, options);
     if (!record) {
       return false;
     }
@@ -559,6 +647,7 @@ class ChatRuntimeHostProcessService {
       payload: {
         adapter: 'chatHistory',
         record,
+        ...(options && options.allowEmptyTranscript === true ? { allowEmptyTranscript: true } : {}),
       },
     };
     if (this.resourceOperationHandler) {
@@ -569,13 +658,120 @@ class ChatRuntimeHostProcessService {
     return true;
   }
 
-  handleDisposeSession(args) {
+  async handleMutateSessionRequestList(args) {
+    const request = args && args[0];
+    const sessionId = normalizeSessionId(request && request.sessionId);
+    const previousTranscript = this.hostSessionStore.buildTranscriptSnapshot(sessionId);
+    const result = this.hostSessionStore.mutateSessionRequestList(request);
+    try {
+      await this.persistHostSessionRecord(result.sessionId, 'request-list-mutation', {
+        requestInProgress: false,
+        activeTurnId: null,
+      }, {
+        allowEmptyTranscript: true,
+      });
+      return result;
+    } catch (error) {
+      if (previousTranscript) {
+        this.hostSessionStore.rollbackSessionRequestListMutation(previousTranscript, result.revision);
+      }
+      throw error;
+    }
+  }
+
+  async handleCheckpointMutation(method, args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const mutation = method === 'restoreSessionCheckpoint'
+      ? this.hostSessionStore.restoreSessionCheckpoint(request)
+      : this.hostSessionStore.redoSessionCheckpoint(request);
+    try {
+      await this.persistHostSessionRecord(mutation.sessionId, method, {
+        requestInProgress: false,
+        activeTurnId: null,
+        status: 'completed',
+      }, {
+        allowEmptyTranscript: true,
+      });
+      const { previousTranscript: _previousTranscript, previousTimeline: _previousTimeline, ...result } = mutation;
+      return result;
+    } catch (error) {
+      this.hostSessionStore.rollbackCheckpointMutation(mutation);
+      throw error;
+    }
+  }
+
+  async handleForkSession(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const prepared = this.hostSessionStore.prepareForkSession(request);
+    try {
+      let forkedTurns = prepared.turnResponses;
+      if (hasCheckpointOwnedTurn(forkedTurns)) {
+        const checkpointTurns = prepared.turnResponses.filter(isCheckpointOwnedTurn);
+        const metadataResult = await this.handleRequestResourceOperation([{
+          sessionId: prepared.targetSessionId,
+          kind: 'edit-tracking',
+          label: 'Forking checkpoint metadata',
+          detail: 'Host-owned session fork is cloning request checkpoint metadata.',
+          payload: {
+            adapter: 'editTracking',
+            action: 'forkRequestCheckpointMetadata',
+            sourceSessionResource: prepared.sourceSessionId,
+            targetSessionResource: prepared.targetSessionId,
+            retainedTurnResponses: checkpointTurns,
+          },
+        }]);
+        const adjusted = metadataResult && metadataResult.result && metadataResult.result.forkedTurnResponses;
+        if (!Array.isArray(adjusted) || adjusted.length !== checkpointTurns.length) {
+          throw new Error('[AilyChat][RuntimeHost] Checkpoint metadata fork did not return the checkpoint request set.');
+        }
+        const adjustedByTurnId = new Map(adjusted.map(turn => [turn && turn.turnId, turn]));
+        if (checkpointTurns.some(turn => !adjustedByTurnId.has(turn && turn.turnId))) {
+          throw new Error('[AilyChat][RuntimeHost] Checkpoint metadata fork changed stable turn identity.');
+        }
+        forkedTurns = prepared.turnResponses.map(turn => adjustedByTurnId.get(turn && turn.turnId) || turn);
+      }
+      if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+        throw new Error('[AilyChat][RuntimeHost] No registered runtime owner for session fork.');
+      }
+      const runtimeResult = await this.runtimeOwnerController.dispatchCommand('forkSession', [{
+        sourceSessionId: prepared.sourceSessionId,
+        targetSessionId: prepared.targetSessionId,
+        beforeTurnId: prepared.beforeTurnId,
+        retainedTurnIds: prepared.retainedTurnIds,
+        providerOptions: request.providerOptions || null,
+        agentRuntimeMode: request.agentRuntimeMode || null,
+        currentModel: request.currentModel || null,
+      }]);
+      if (!runtimeResult || runtimeResult.ensured !== true) {
+        throw new Error('[AilyChat][RuntimeHost] Runtime snapshot fork was not created.');
+      }
+      const result = this.hostSessionStore.commitForkSession(request, prepared, forkedTurns);
+      await this.persistHostSessionRecord(result.targetSessionId, 'session-fork');
+      return result;
+    } catch (error) {
+      this.hostSessionStore.rollbackForkSession(prepared.targetSessionId);
+      if (this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+        try {
+          await this.runtimeOwnerController.dispatchCommand('disposeSessionResources', [{
+            sessionId: prepared.targetSessionId,
+          }]);
+        } catch {
+          // Preserve the original fork failure.
+        }
+      }
+      throw error;
+    }
+  }
+
+  async handleDisposeSession(args) {
     const sessionId = normalizeSessionId(args && args[0]);
+    if (this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      await this.runtimeOwnerController.dispatchCommand('disposeSessionResources', [{ sessionId }]);
+    }
     const disposedState = this.hostSessionStore.disposeSession(sessionId);
     if (disposedState) {
       this.broadcastSessionState('runtime-status', disposedState);
     }
-    this.dispatchRuntimeOwnerCommandIfAvailable('disposeSessionResources', [{ sessionId }], sessionId);
     return undefined;
   }
 
@@ -709,12 +905,7 @@ class ChatRuntimeHostProcessService {
 
     const requestId = this.nextResourceOperationCommandId(request.kind);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingResourceOperationCommands.delete(requestId);
-        reject(new Error(`[AilyChat][RuntimeHost] Runtime resource operation timed out: ${request.kind}`));
-      }, this.resourceOperationCommandTimeoutMs);
-
-      this.pendingResourceOperationCommands.set(requestId, { resolve, reject, timer, request });
+      this.pendingResourceOperationCommands.set(requestId, { resolve, reject, request });
       resourceHandlerWebContents.send(RESOURCE_HANDLER_COMMAND_CHANNEL, { requestId, request });
     });
   }
@@ -728,7 +919,6 @@ class ChatRuntimeHostProcessService {
         return;
       }
 
-      clearTimeout(pending.timer);
       this.pendingResourceOperationCommands.delete(requestId);
       if (payload.ok === false) {
         const error = new Error(payload.error?.message || '[AilyChat][RuntimeHost] Runtime resource operation failed.');
@@ -756,7 +946,6 @@ class ChatRuntimeHostProcessService {
     error.code = 'resource_handler_lost';
     error.retryable = true;
     for (const [requestId, pending] of this.pendingResourceOperationCommands) {
-      clearTimeout(pending.timer);
       pending.reject(error);
       this.pendingResourceOperationCommands.delete(requestId);
     }
@@ -883,6 +1072,103 @@ class ChatRuntimeHostProcessService {
         this.broadcastRuntimeError(sessionId, error);
       });
     return true;
+  }
+
+  dispatchSubmittedTurnStart(command, sessionId) {
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      return false;
+    }
+
+    const startPromise = this.runtimeOwnerController.dispatchCommand('startTurn', [command])
+      .catch(async error => {
+        await this.failSubmittedTurnWithError(sessionId, error);
+        throw error;
+      })
+      .finally(() => {
+        if (this.pendingExecutionStarts.get(sessionId) === startPromise) {
+          this.pendingExecutionStarts.delete(sessionId);
+        }
+        this.clearPendingExecutionTransition(sessionId, command.turnId);
+      });
+    this.pendingExecutionStarts.set(sessionId, startPromise);
+    void startPromise.catch(error => {
+      console.error('[AilyChat][RuntimeHost] Runtime owner startTurn failed:', {
+        sessionId,
+        message: error && error.message ? error.message : String(error || 'Unknown runtime owner error'),
+        code: error && typeof error.code === 'string' ? error.code : undefined,
+      });
+    });
+    return true;
+  }
+
+  async reconcileSessionExecutionState(sessionId) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId || !this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      return { staleGateCleared: false };
+    }
+
+    const pendingStart = this.pendingExecutionStarts.get(normalizedSessionId);
+    if (pendingStart) {
+      await pendingStart.catch(() => undefined);
+    }
+
+    const ownerState = await this.runtimeOwnerController.dispatchCommand('readSessionExecutionState', [{
+      sessionId: normalizedSessionId,
+    }]);
+    const hostState = this.hostSessionStore.buildSessionState(normalizedSessionId);
+    const hostRequestInProgress = hostState?.requestInProgress === true
+      || !!this.hostSessionStore.readActiveSubmittedRequest(normalizedSessionId);
+    const ownerRequestInProgress = ownerState?.requestInProgress === true;
+    const hostTurnId = typeof hostState?.activeTurnId === 'string' ? hostState.activeTurnId.trim() : '';
+    const ownerTurnId = typeof ownerState?.activeTurnId === 'string' ? ownerState.activeTurnId.trim() : '';
+    const pendingExecutionTurnId = this.pendingExecutionTurnIds.get(normalizedSessionId) || '';
+    const executionStartPending = hostRequestInProgress
+      && !ownerRequestInProgress
+      && !!hostTurnId
+      && pendingExecutionTurnId === hostTurnId;
+    const turnMismatch = hostRequestInProgress
+      && ownerRequestInProgress
+      && !!hostTurnId
+      && !!ownerTurnId
+      && hostTurnId !== ownerTurnId;
+
+    if (ownerRequestInProgress && (!hostRequestInProgress || turnMismatch)) {
+      await this.runtimeOwnerController.dispatchCommand('stopTurn', [{
+        sessionId: normalizedSessionId,
+        turnId: ownerTurnId || undefined,
+      }]);
+    }
+
+    if (hostRequestInProgress && (!ownerRequestInProgress || turnMismatch) && !executionStartPending) {
+      const error = new Error(turnMismatch
+        ? '[AilyChat][RuntimeHost] Execution owner turn identity diverged from the canonical response model.'
+        : '[AilyChat][RuntimeHost] Execution owner no longer has the canonical active turn.');
+      error.code = turnMismatch ? 'execution_turn_mismatch' : 'execution_turn_lost';
+      error.retryable = true;
+      await this.failSubmittedTurnWithError(normalizedSessionId, error);
+    }
+
+    const staleGateCleared = !executionStartPending
+      && (ownerRequestInProgress !== hostRequestInProgress || turnMismatch);
+    if (staleGateCleared) {
+      console.warn('[AilyChat][ExecutionStateReconciled]', JSON.stringify({
+        sessionId: normalizedSessionId,
+        hostRequestInProgress,
+        ownerRequestInProgress,
+        hostTurnId: hostTurnId || null,
+        ownerTurnId: ownerTurnId || null,
+        turnMismatch,
+      }));
+    }
+    return { staleGateCleared, executionStartPending };
+  }
+
+  clearPendingExecutionTransition(sessionId, turnId) {
+    const pendingTurnId = this.pendingExecutionTurnIds.get(sessionId);
+    if (!pendingTurnId || (turnId && pendingTurnId !== turnId)) {
+      return;
+    }
+    this.pendingExecutionTurnIds.delete(sessionId);
   }
 
   async dispatchRuntimeOwnerCommandAndWaitIfAvailable(method, args, sessionId) {
@@ -1025,6 +1311,7 @@ class ChatRuntimeHostProcessService {
       for (const canonicalEvent of eventList) {
         if (canonicalEvent) {
           this.broadcastHostEvent(canonicalEvent);
+          this.updateSystemNotifications(canonicalEvent);
         }
       }
       await this.persistTerminalHostRecordFromEvents(eventList);
@@ -1074,6 +1361,97 @@ class ChatRuntimeHostProcessService {
     await Promise.all(persistOperations);
   }
 
+  updateSystemNotifications(event) {
+    const sessionId = normalizeSessionId(event && (event.sessionId || event.state?.sessionId));
+    if (!sessionId) {
+      return;
+    }
+
+    if (event.kind === 'interaction') {
+      const input = this.readPendingInputNotification(event.interaction);
+      const previousKey = this.notificationNeedsInputKeys.get(sessionId) || '';
+      if (!input) {
+        this.notificationNeedsInputKeys.delete(sessionId);
+      } else if (input.key !== previousKey) {
+        this.notificationNeedsInputKeys.set(sessionId, input.key);
+        this.showChatSystemNotification(input.title, input.body);
+      }
+      return;
+    }
+
+    if (event.kind !== 'runtime-status' && event.kind !== 'session-state') {
+      return;
+    }
+    const state = event.state && typeof event.state === 'object' ? event.state : null;
+    if (!state) {
+      return;
+    }
+    const wasRunning = this.notificationRequestInProgress.get(sessionId) === true;
+    const isRunning = state.requestInProgress === true;
+    this.notificationRequestInProgress.set(sessionId, isRunning);
+    if (isRunning) {
+      return;
+    }
+
+    this.notificationNeedsInputKeys.delete(sessionId);
+    if (wasRunning && state.status === 'completed') {
+      this.showChatSystemNotification(
+        'Aily Chat 已完成',
+        typeof state.title === 'string' && state.title.trim() ? state.title.trim() : '会话执行已完成。',
+      );
+    }
+  }
+
+  readPendingInputNotification(interaction) {
+    if (!interaction || typeof interaction !== 'object') {
+      return null;
+    }
+    const question = interaction.question && typeof interaction.question === 'object'
+      ? interaction.question
+      : null;
+    if (question) {
+      const questionId = String(question.partId || question.askId || question.id || 'question');
+      const questions = Array.isArray(question.questions) ? question.questions : [];
+      const firstQuestion = questions.find(item => item && typeof item.question === 'string');
+      return {
+        key: `question:${questionId}`,
+        title: 'Aily Chat 需要你的回答',
+        body: firstQuestion?.question || question.message || '会话正在等待你的输入。',
+      };
+    }
+
+    const queue = Array.isArray(interaction.confirmationQueue) ? interaction.confirmationQueue : [];
+    if (queue.length === 0) {
+      return null;
+    }
+    const activeIndex = Math.max(0, Math.min(Number(interaction.activeConfirmationIndex) || 0, queue.length - 1));
+    const confirmation = queue[activeIndex];
+    if (!confirmation || typeof confirmation !== 'object') {
+      return null;
+    }
+    const confirmationId = String(confirmation.id || confirmation.partId || confirmation.toolCallId || activeIndex);
+    return {
+      key: `confirmation:${confirmationId}`,
+      title: 'Aily Chat 等待许可',
+      body: confirmation.message || confirmation.title || confirmation.description || '需要你的许可才能继续。',
+    };
+  }
+
+  showChatSystemNotification(title, body) {
+    const targetWindow = this.mainWindowRef;
+    if (targetWindow && !targetWindow.isDestroyed?.() && targetWindow.isFocused?.()) {
+      return;
+    }
+    void Promise.resolve(this.showSystemNotification({
+      title,
+      body: String(body || '').replace(/`/g, "'"),
+      timeoutType: 'default',
+    }, targetWindow)).catch(error => {
+      console.warn('[AilyChat][RuntimeHost] Failed to show chat system notification:',
+        error && error.message ? error.message : String(error || 'Unknown notification error'));
+    });
+  }
+
   broadcastHostEvent(payload) {
     if (!this.isSessionViewScopedEvent(payload)) {
       this.broadcastHostEventToAllWindows(payload);
@@ -1098,12 +1476,14 @@ class ChatRuntimeHostProcessService {
     if (!state || !state.sessionId) {
       return;
     }
-    this.broadcastHostEvent({
+    const event = {
       kind,
       sessionId: state.sessionId,
       revision: Number(state.transcriptRevision) || 0,
       state,
-    });
+    };
+    this.broadcastHostEvent(event);
+    this.updateSystemNotifications(event);
   }
 
   broadcastRuntimeError(sessionId, error, revision = 0) {

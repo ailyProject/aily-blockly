@@ -880,7 +880,7 @@ export class EditCheckpointService {
   }
 
   getLatestSnapshot(): TurnSnapshot | undefined {
-    return this.timeline.length > 0 ? this.timeline[this.timeline.length - 1] : undefined;
+    return this.timelineIndex >= 0 ? this.timeline[this.timelineIndex] : undefined;
   }
 
   isSnapshotActive(snapshot: TurnSnapshot | undefined | null): boolean {
@@ -888,7 +888,8 @@ export class EditCheckpointService {
       return false;
     }
 
-    return this.timeline.some(candidate => candidate.checkpointId === snapshot.checkpointId);
+    const snapshotIndex = this.timeline.findIndex(candidate => candidate.checkpointId === snapshot.checkpointId);
+    return snapshotIndex >= 0 && snapshotIndex <= this.timelineIndex;
   }
 
   getDisabledRequestBoundaries(): TurnSnapshot[] {
@@ -950,6 +951,37 @@ export class EditCheckpointService {
     this.pendingSnapshot = null;
     this.keptTimelineIndex = this.timeline.length - 1;
 
+    return true;
+  }
+
+  commitRestorePointerByCheckpointId(checkpointId: string): boolean {
+    const idx = this.timeline.findIndex(snapshot => snapshot.checkpointId === checkpointId);
+    if (idx < 0) {
+      return false;
+    }
+    this.truncatedRequestBoundaries = this.timeline.slice(idx).map(snapshot => ({
+      ...snapshot,
+      ...(snapshot.rounds ? { rounds: [...snapshot.rounds] } : {}),
+    }));
+    this.timelineIndex = idx - 1;
+    this.pendingSnapshot = null;
+    this.keptTimelineIndex = Math.min(this.keptTimelineIndex, this.timelineIndex);
+    this.updateTimelinePointerForCheckpoint(checkpointId, idx > 0 ? this.timeline[idx - 1] : null);
+    return true;
+  }
+
+  commitRedoPointerByCheckpointId(checkpointId: string): boolean {
+    const idx = this.timeline.findIndex(snapshot => snapshot.checkpointId === checkpointId);
+    if (idx < 0) {
+      return false;
+    }
+    this.timelineIndex = idx;
+    this.pendingSnapshot = null;
+    this.truncatedRequestBoundaries = this.timeline.slice(idx + 1).map(snapshot => ({
+      ...snapshot,
+      ...(snapshot.rounds ? { rounds: [...snapshot.rounds] } : {}),
+    }));
+    this.updateTimelinePointerForCheckpoint(checkpointId, this.timeline[idx]);
     return true;
   }
 

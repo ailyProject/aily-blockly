@@ -1247,7 +1247,7 @@ function buildCheckpointSidecars(
     currentTurnResponseCount,
   };
 
-  if (!checkpointCount || !turnResponseCount) {
+  if (!checkpointCount || !turnResponseCount || !canRedoSessionCheckpointTimeline(sidecarState)) {
     return {
       checkpointMarker,
     };

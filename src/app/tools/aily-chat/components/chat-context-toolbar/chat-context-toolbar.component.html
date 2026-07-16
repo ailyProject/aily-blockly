@@ -1,21 +1,36 @@
-<div
-  class="acc-clip ccenter"
-  nz-tooltip
-  nzTooltipPlacement="bottom"
-  [nzTooltipTitle]="'AILY_CHAT.ADD_CONTEXT' | translate"
-  (click)="toggleAddList.emit()"
->
-  <i class="fa-light fa-paperclip"></i>
-</div>
-@if (showAddList) {
+@if (appearance === 'composer') {
+  <div class="acc-menu-anchor">
+    <button
+      type="button"
+      class="acc-plus ccenter"
+      [class.active]="showAddList"
+      [attr.aria-expanded]="showAddList"
+      [attr.aria-label]="'AILY_CHAT.ADD_CONTEXT' | translate"
+      aria-haspopup="menu"
+      (click)="onToggleAddList($event)"
+    >
+      <i class="fa-light fa-plus"></i>
+    </button>
+  </div>
+} @else {
+  <div
+    class="acc-clip ccenter"
+    nz-tooltip
+    nzTooltipPlacement="bottom"
+    [nzTooltipTitle]="'AILY_CHAT.ADD_CONTEXT' | translate"
+    (click)="toggleAddList.emit($event)"
+  >
+    <i class="fa-light fa-paperclip"></i>
+  </div>
+}
+@if (appearance === 'edit' && showAddList) {
   <div class="acc-expand-backdrop" [style.width.px]="expandedBackdropWidth">
     <div
       class="acc-back ccenter"
-      [class.acc-back--composer]="appearance === 'composer'"
       nz-tooltip
       nzTooltipPlacement="bottom"
       [nzTooltipTitle]="'AILY_CHAT.ADD_CONTEXT' | translate"
-      (click)="toggleAddList.emit()"
+      (click)="toggleAddList.emit($event)"
     >
       <i class="fa-light fa-angle-left"></i>
     </div>
@@ -38,37 +53,11 @@
   >
     <i class="fa-light fa-folder-plus"></i>
   </div>
-  @if (showManageMemoryAction) {
-    <div
-      class="acc-sub ccenter"
-      nz-tooltip
-      nzTooltipPlacement="bottom"
-      [nzTooltipTitle]="'AILY_CHAT.MANAGE_MEMORY' | translate"
-      (click)="onManageMemory()"
-    >
-      <i class="fa-light fa-brain"></i>
-    </div>
-  }
-}
-@if (showProcessButton) {
-  <div
-    class="acc-process ccenter"
-    nz-tooltip
-    nzTooltipPlacement="bottom"
-    [nzTooltipTitle]="'AILY_CHAT.PROCESS_TOOLTIP_SESSION_PROCESSES' | translate"
-    (click)="onOpenProcessManager()"
-  >
-    <i class="fa-light fa-square-terminal"></i>
-    @if (runningProcessCount > 0) {
-      <span class="acc-process-badge">{{ runningProcessCount }}</span>
-    }
-  </div>
 }
 <div
   #modeChipTooltip="nzTooltip"
   class="acc-chip ccenter"
-  [class.acc-chip--after-expanded-context]="showAddList"
-  [class.acc-chip--after-process]="showAddList && showProcessButton"
+  [class.acc-chip--after-expanded-context]="appearance === 'edit' && showAddList"
   nz-tooltip
   nzTooltipPlacement="bottom"
   [nzTooltipTrigger]="modeTooltipTrigger"
@@ -88,7 +77,7 @@
   <div
     #modelChipTooltip="nzTooltip"
     class="acc-chip ccenter"
-    [class.acc-chip--after-expanded-context]="showAddList"
+    [class.acc-chip--after-expanded-context]="appearance === 'edit' && showAddList"
     nz-tooltip
     nzTooltipPlacement="bottom"
     [nzTooltipTrigger]="modelTooltipTrigger"

@@ -1,5 +1,5 @@
 <div
-  class="dialog-box animate__animated animate__fadeIn animate__faster"
+  class="dialog-box"
   [ngClass]="{
     user: role === 'user',
     editable: canEditUserMessage && !isEditing,
@@ -81,7 +81,7 @@
         </div>
       </div>
     } @else {
-      @if (canRenderCheckpointAnchor) {
+      @if (role === 'user' && turnContext) {
         <nav class="user-turn-actions" [attr.aria-label]="checkpointActionLabel">
           <button
             type="button"

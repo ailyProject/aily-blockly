@@ -107,4 +107,34 @@ export class ChatActivityListComponent {
     }
     return true;
   }
+
+  applyItemPatch(
+    item: ActivityGroupDisplayItem,
+    sessionId: string,
+    impliedWordLoadRate: number | undefined,
+  ): boolean {
+    const itemIndex = this.items.findIndex(candidate => candidate.id === item.id);
+    if (itemIndex < 0) {
+      return false;
+    }
+    const renderers = this.itemRenderers?.toArray() ?? [];
+    const renderer = renderers[itemIndex];
+    if (!renderer) {
+      return false;
+    }
+
+    const nextItems = [...this.items];
+    nextItems[itemIndex] = item;
+    this.items = nextItems;
+    this.sessionId = sessionId;
+    this.impliedWordLoadRate = impliedWordLoadRate;
+    return renderer.applyVisibleActivityItemPatch({
+      item,
+      sessionId,
+      impliedWordLoadRate,
+      first: itemIndex === 0,
+      last: itemIndex === nextItems.length - 1,
+      only: nextItems.length === 1,
+    });
+  }
 }

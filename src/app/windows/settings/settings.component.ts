@@ -21,8 +21,10 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
 import { CmdService } from '../../services/cmd.service';
 import { ElectronService } from '../../services/electron.service';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
+import { NpmService } from '../../services/npm.service';
 
 type CacheClearOption = 'all' | 'unused-7' | 'unused-30';
+type DependencyRemovalOption = 'all' | 'unused-30' | 'unused-90';
 
 interface CacheStats {
   totalFiles: number;
@@ -114,6 +116,7 @@ export class SettingsComponent implements OnDestroy {
   cacheStats: CacheStats = { totalFiles: 0, totalSizeFormatted: '0 B' };
   cacheSizeLoading = false;
   cacheClearing: CacheClearOption | null = null;
+  dependencyRemoving: DependencyRemovalOption | null = null;
   private _clearCacheSubscription: Subscription | null = null;
   private _clearCacheLoadingRef: string | null = null;
 
@@ -297,7 +300,8 @@ export class SettingsComponent implements OnDestroy {
     private themeService: ThemeService,
     private message: NzMessageService,
     private cmdService: CmdService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private npmService: NpmService
   ) {
   }
 
@@ -627,6 +631,52 @@ export class SettingsComponent implements OnDestroy {
     }
     else if (result === 'failed') {
       this.boardOperations[board.name] = { status: 'failed' };
+    }
+  }
+
+  removeGlobalDependencies(option: DependencyRemovalOption) {
+    if (option === 'all') {
+      this.modal.confirm({
+        nzTitle: this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_CONFIRM_TITLE'),
+        nzContent: this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_CONFIRM_DESC'),
+        nzOkText: this.translateService.instant('SETTINGS.FIELDS.UNINSTALL'),
+        nzCancelText: this.translateService.instant('SETTINGS.BUTTONS.CANCEL'),
+        nzBodyStyle: { background: 'var(--aily-bg-primary)' },
+        nzOnOk: () => this.doRemoveGlobalDependencies(option)
+      });
+      return;
+    }
+
+    void this.doRemoveGlobalDependencies(option);
+  }
+
+  private async doRemoveGlobalDependencies(option: DependencyRemovalOption): Promise<void> {
+    this.dependencyRemoving = option;
+    const loadingRef = this.message.loading(this.translateService.instant('NPM.UNINSTALLING_UNUSED_DEPS'), {
+      nzDuration: 0
+    });
+
+    try {
+      const unusedDays = option === 'all' ? null : option === 'unused-30' ? 30 : 90;
+      const removed = await this.npmService.removeGlobalDependencies(unusedDays);
+      if (removed.length === 0) {
+        this.message.info(this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_NONE_REMOVED'));
+        return;
+      }
+
+      const removedNames = new Set(removed);
+      for (const dependency of this.boardList) {
+        if (removedNames.has(dependency.name)) {
+          dependency.installed = false;
+        }
+      }
+      this.message.success(this.translateService.instant('NPM.DEPS_UNINSTALL_COMPLETE'));
+    } catch (error) {
+      console.error('Failed to remove global dependencies', error);
+      this.message.error(this.translateService.instant('NPM.DEPS_UNINSTALL_FAILED'));
+    } finally {
+      this.message.remove(loadingRef.messageId);
+      this.dependencyRemoving = null;
     }
   }
 

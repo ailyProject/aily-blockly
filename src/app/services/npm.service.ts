@@ -22,6 +22,13 @@ import {
 import { AppDataResourceLockService } from './appdata-resource-lock.service';
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 
+interface GlobalDependencyUsageFile {
+  version: 1;
+  dependencies: Record<string, number>;
+}
+
+const GLOBAL_DEPENDENCY_USAGE_FILE = 'dependency-usage.json';
+
 @Injectable({
   providedIn: 'root'
 })
@@ -412,6 +419,12 @@ export class NpmService {
 
       try {
         const boardPackageJson = await this.prjService.getBoardPackageJson() || {};
+        const projectPackageJson = await this.prjService.getPackageJson() || {};
+        try {
+          await this.recordGlobalDependencyUsage(projectPackageJson, boardPackageJson);
+        } catch (error) {
+          console.warn('Failed to record global dependency usage:', error);
+        }
         // console.log("boardPackageJson: ", boardPackageJson);
         await this.installBoardDependencies(boardPackageJson, false);
         if (installStateStarted && this.workflowService.currentState === ProcessState.INSTALLING) {
@@ -512,6 +525,135 @@ export class NpmService {
     await this.appDataResourceLock.runExclusive(`npm:install-platform:${packageName}`, () =>
       window['npm'].run({ cmd: npmCmd }),
     );
+  }
+
+  async removeGlobalDependencies(unusedDays: 30 | 90 | null): Promise<string[]> {
+    const appDataPath = window['path'].getAppDataPath();
+
+    return this.appDataResourceLock.runExclusive(`npm:remove-global-dependencies:${unusedDays ?? 'all'}`, async () => {
+      const now = Date.now();
+      const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
+      const usage = this.syncGlobalDependencyUsage(appDataPath, dependencyNames, now);
+      this.writeGlobalDependencyUsage(appDataPath, usage);
+
+      const cutoff = unusedDays === null ? Number.POSITIVE_INFINITY : now - unusedDays * 24 * 60 * 60 * 1000;
+      const packagesToRemove = dependencyNames.filter((name) => usage.dependencies[name] <= cutoff);
+      if (packagesToRemove.length === 0) {
+        return [];
+      }
+
+      const invalidPackageName = packagesToRemove.find((name) => !this.isValidNpmPackageName(name));
+      if (invalidPackageName) {
+        throw new Error(`Invalid npm package name: ${invalidPackageName}`);
+      }
+
+      const cmd = `npm uninstall ${packagesToRemove.join(' ')} --prefix "${appDataPath}"`;
+      await window['npm'].run({ cmd });
+
+      const remainingNames = new Set(this.getDeclaredGlobalDependencyNames(appDataPath));
+      for (const name of Object.keys(usage.dependencies)) {
+        if (!remainingNames.has(name)) {
+          delete usage.dependencies[name];
+        }
+      }
+      this.writeGlobalDependencyUsage(appDataPath, usage);
+
+      return packagesToRemove;
+    });
+  }
+
+  private async recordGlobalDependencyUsage(projectPackageJson: any, boardPackageJson: any): Promise<void> {
+    const appDataPath = window['path'].getAppDataPath();
+    const usedNames = new Set<string>([
+      ...this.getDependencyNames(projectPackageJson),
+      ...Object.keys(boardPackageJson?.boardDependencies || {})
+    ]);
+    if (typeof boardPackageJson?.name === 'string' && boardPackageJson.name) {
+      usedNames.add(boardPackageJson.name);
+    }
+
+    await this.appDataResourceLock.runExclusive('npm:record-global-dependency-usage', () => {
+      const now = Date.now();
+      const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
+      const declaredNames = new Set(dependencyNames);
+      const usage = this.syncGlobalDependencyUsage(appDataPath, dependencyNames, now);
+
+      for (const name of usedNames) {
+        if (declaredNames.has(name)) {
+          usage.dependencies[name] = now;
+        }
+      }
+
+      this.writeGlobalDependencyUsage(appDataPath, usage);
+    });
+  }
+
+  private getDeclaredGlobalDependencyNames(appDataPath: string): string[] {
+    const packageJsonPath = window['path'].join(appDataPath, 'package.json');
+    if (!window['fs'].existsSync(packageJsonPath)) {
+      return [];
+    }
+
+    const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+    return this.getDependencyNames(packageJson).sort((a, b) => a.localeCompare(b));
+  }
+
+  private getDependencyNames(packageJson: any): string[] {
+    const names = new Set<string>();
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+      const dependencies = packageJson?.[field];
+      if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+        continue;
+      }
+      Object.keys(dependencies).forEach((name) => names.add(name));
+    }
+    return Array.from(names);
+  }
+
+  private syncGlobalDependencyUsage(
+    appDataPath: string,
+    dependencyNames: string[],
+    now: number
+  ): GlobalDependencyUsageFile {
+    const current = this.readGlobalDependencyUsage(appDataPath);
+    const dependencies: Record<string, number> = {};
+
+    for (const name of dependencyNames) {
+      dependencies[name] = current.dependencies[name] || now;
+    }
+
+    return { version: 1, dependencies };
+  }
+
+  private readGlobalDependencyUsage(appDataPath: string): GlobalDependencyUsageFile {
+    const usagePath = window['path'].join(appDataPath, GLOBAL_DEPENDENCY_USAGE_FILE);
+    try {
+      if (!window['fs'].existsSync(usagePath)) {
+        return { version: 1, dependencies: {} };
+      }
+
+      const parsed = JSON.parse(window['fs'].readFileSync(usagePath, 'utf8'));
+      const dependencies: Record<string, number> = {};
+      for (const [name, timestamp] of Object.entries(parsed?.dependencies || {})) {
+        const value = Number(timestamp);
+        if (Number.isFinite(value) && value > 0) {
+          dependencies[name] = value;
+        }
+      }
+      return { version: 1, dependencies };
+    } catch (error) {
+      console.warn('Failed to read global dependency usage, resetting it:', error);
+      return { version: 1, dependencies: {} };
+    }
+  }
+
+  private writeGlobalDependencyUsage(appDataPath: string, usage: GlobalDependencyUsageFile): void {
+    const usagePath = window['path'].join(appDataPath, GLOBAL_DEPENDENCY_USAGE_FILE);
+    window['fs'].writeFileSync(usagePath, JSON.stringify(usage, null, 2), 'utf8');
+  }
+
+  private isValidNpmPackageName(name: string): boolean {
+    return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name);
   }
 
   boardDependenciesChanged = false;

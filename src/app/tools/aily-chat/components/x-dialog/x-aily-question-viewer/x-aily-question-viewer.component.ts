@@ -28,13 +28,6 @@ interface HistorySummaryItem {
   question: string;
   answer: string;
   skipped: boolean;
-  options: HistorySummaryOption[];
-}
-
-interface HistorySummaryOption {
-  label: string;
-  description?: string;
-  selected: boolean;
 }
 
 @Component({
@@ -45,8 +38,18 @@ interface HistorySummaryOption {
   template: `
     @if (questions.length > 0) {
       <div class="aq-container" [class.aq-all-done]="allDone">
-        <div class="aq-card" [class.aq-card-collapsed]="collapsed">
-          <aily-chat-part-header-shell
+        <div class="aq-card" [class.aq-card-collapsed]="collapsed" [class.aq-card-summary]="showHistorySummaryList">
+          @if (showHistorySummaryList) {
+            <div class="aq-history-summary">
+              @for (item of historySummaryItems; track item.key) {
+                <div class="aq-history-summary-item" [class.aq-history-summary-skipped]="item.skipped">
+                  <div class="aq-history-summary-question">{{ item.question }}</div>
+                  <div class="aq-history-summary-answer">{{ item.answer }}</div>
+                </div>
+              }
+            </div>
+          } @else {
+            <aily-chat-part-header-shell
             [title]="currentQ.question"
             [meta]="headerMeta"
             [pill]="headerPill"
@@ -116,31 +119,7 @@ interface HistorySummaryOption {
                   </div>
                 }
 
-                @if (showHistorySummaryList) {
-                  <div class="aq-history-summary">
-                    @for (item of historySummaryItems; track item.key) {
-                      <div class="aq-history-summary-item" [class.aq-history-summary-skipped]="item.skipped">
-                        <div class="aq-history-summary-question">{{ item.question }}</div>
-                        <div class="aq-history-summary-answer">{{ item.answer }}</div>
-                        @if (item.options.length > 0) {
-                          <div class="aq-history-options">
-                            @for (option of item.options; track option.label) {
-                              <span class="aq-history-option" [class.aq-history-option-selected]="option.selected">
-                                @if (option.selected) {
-                                  <i class="fa-solid fa-check aq-history-option-check"></i>
-                                }
-                                <span class="aq-history-option-label">{{ option.label }}</span>
-                                @if (option.description) {
-                                  <span class="aq-history-option-desc">{{ option.description }}</span>
-                                }
-                              </span>
-                            }
-                          </div>
-                        }
-                      </div>
-                    }
-                  </div>
-                } @else if (resultSummary) {
+                @if (resultSummary) {
                   <div class="aq-result-note">{{ resultSummary }}</div>
                 }
               </div>
@@ -179,6 +158,7 @@ interface HistorySummaryOption {
               }
             </div>
           }
+          }
         </div>
       </div>
     }
@@ -215,6 +195,10 @@ interface HistorySummaryOption {
       border-radius: 5px;
       background: rgba(255,255,255,0.02);
       overflow: hidden;
+    }
+
+    .aq-card-summary {
+      padding: 8px;
     }
 
     .aq-body {
@@ -452,15 +436,11 @@ interface HistorySummaryOption {
     .aq-history-summary {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
       min-width: 0;
     }
 
     .aq-history-summary-item {
-      padding: 6px 8px;
-      border: 1px solid var(--aq-border-soft);
-      border-radius: 5px;
-      background: rgba(255,255,255,0.025);
       min-width: 0;
     }
 
@@ -484,57 +464,6 @@ interface HistorySummaryOption {
     .aq-history-summary-skipped .aq-history-summary-answer {
       color: var(--aq-fg-muted);
     }
-
-    .aq-history-options {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      margin-top: 6px;
-      min-width: 0;
-    }
-
-    .aq-history-option {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      max-width: 100%;
-      min-width: 0;
-      padding: 2px 6px;
-      border: 1px solid var(--aq-border-soft);
-      border-radius: 5px;
-      color: var(--aq-fg-dim);
-      background: rgba(255,255,255,0.018);
-      font-size: 11px;
-      line-height: 1.35;
-    }
-
-    .aq-history-option-selected {
-      color: var(--aq-fg);
-      border-color: color-mix(in srgb, var(--aq-accent, #60a5fa) 55%, var(--aq-border));
-      background: color-mix(in srgb, var(--aq-accent, #60a5fa) 14%, transparent);
-    }
-
-    .aq-history-option-check {
-      flex: 0 0 auto;
-      font-size: 10px;
-      color: var(--aq-fg);
-    }
-
-    .aq-history-option-label {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .aq-history-option-desc {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: var(--aq-fg-muted);
-    }
-
 
   `],
 })
@@ -643,7 +572,6 @@ export class XAilyQuestionViewerComponent implements OnChanges {
         question: question.question,
         answer: answer || '已跳过',
         skipped: !answer,
-        options: this.formatHistoryOptions(question, answerRecord),
       };
     });
   }
@@ -703,14 +631,6 @@ export class XAilyQuestionViewerComponent implements OnChanges {
     const freeform = answer.freeform.trim();
     if (freeform) parts.push(freeform);
     return parts.join(', ');
-  }
-
-  private formatHistoryOptions(question: NormalizedQuestion, answer: AnswerRecord | undefined): HistorySummaryOption[] {
-    return question.options.map((option, index) => ({
-      label: option.label,
-      description: option.description,
-      selected: answer?.selected.has(index) ?? false,
-    }));
   }
 
   private getQuestionAnswerKey(question: NormalizedQuestion): string {

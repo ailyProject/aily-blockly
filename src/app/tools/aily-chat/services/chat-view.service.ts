@@ -212,7 +212,7 @@ export class ChatViewService {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((event) => {
         if (event.sessionResource === this.currentViewSessionResource) {
-          if (this.isLiveTranscriptOnlyModelChange(event)) {
+          if (this.isAttachedRendererOwnedModelChange(event)) {
             return;
           }
           this.scheduleSessionModelViewRefresh();
@@ -453,9 +453,11 @@ export class ChatViewService {
       paneSurface,
       showConversation: paneSurface === 'chat',
       guideSurface: this.buildGuideSurfaceModel(
-        paneSurface === 'entry' || paneSurface === 'welcome'
-          ? paneSurface
-          : null,
+        paneSurface === 'entry' || paneSurface === 'blank-session'
+          ? 'entry'
+          : paneSurface === 'welcome'
+            ? 'welcome'
+            : null,
       ),
       loadingSurface: paneSurface === 'session-loading' ? this.buildLoadingSurfaceModel() : null,
       showSidebarSessionList,
@@ -657,7 +659,7 @@ export class ChatViewService {
       variant: 'entry',
       groups: this.sessionListGroups,
       loadState: this.chatSessionItemsService.sessionListLoadState,
-      hostClasses: this.currentPaneSurface === 'entry'
+      hostClasses: this.currentPaneSurface === 'entry' || this.currentPaneSurface === 'blank-session'
         ? ['entry-session-control', 'entry-guide-stacked']
         : ['entry-session-control'],
     };
@@ -708,9 +710,12 @@ export class ChatViewService {
     this.sessionViewModelChangedSubject.next();
   }
 
-  private isLiveTranscriptOnlyModelChange(event: ChatSessionModelStoreChangedEvent): boolean {
+  private isAttachedRendererOwnedModelChange(event: ChatSessionModelStoreChangedEvent): boolean {
     return event.kind === 'updated'
-      && (event.reason === 'appendTransientTurn' || event.reason === 'turnDelta');
+      && (event.reason === 'appendTransientTurn'
+        || event.reason === 'turnDelta'
+        || event.reason === 'inputDraft'
+        || event.reason === 'projection');
   }
 
   private scheduleSessionModelViewRefresh(): void {

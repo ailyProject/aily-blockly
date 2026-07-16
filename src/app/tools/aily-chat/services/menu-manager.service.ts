@@ -56,6 +56,8 @@ const CHAT_MENU_ITEM_META_GAP = 10;
 const CHAT_MENU_ITEM_CURRENT_WIDTH = 18;
 const CHAT_MENU_ITEM_ACTION_WIDTH = 22;
 const CHAT_MENU_ITEM_ACTION_GAP = 2;
+const CHAT_COMPACT_MENU_MIN_WIDTH = 168;
+const CHAT_COMPACT_MENU_MAX_WIDTH = 220;
 
 /**
  * 管理聊天界面的所有菜单/下拉面板状态：
@@ -66,17 +68,20 @@ const CHAT_MENU_ITEM_ACTION_GAP = 2;
  */
 @Injectable()
 export class MenuManagerService implements OnDestroy {
+  showContextMenu = false;
   showMode = false;
   showPermissionMenu = false;
   showModelMenu = false;
   showReasoningMenu = false;
   showActionMenu = false;
+  contextMenuPosition: MenuPosition = { x: 0, y: 0 };
   modeListPosition: MenuPosition = { x: 0, y: 0 };
   permissionMenuPosition: MenuPosition = { x: 0, y: 0 };
   modelListPosition: MenuPosition = { x: 0, y: 0 };
   reasoningMenuPosition: MenuPosition = { x: 0, y: 0 };
   actionMenuPosition: MenuPosition = { x: 0, y: 0 };
-  permissionMenuWidth = 168;
+  contextMenuWidth = CHAT_COMPACT_MENU_MIN_WIDTH;
+  permissionMenuWidth = CHAT_COMPACT_MENU_MIN_WIDTH;
   modelMenuWidth = 260;
 
   ngOnDestroy(): void {
@@ -84,11 +89,57 @@ export class MenuManagerService implements OnDestroy {
   }
 
   closeAll(): void {
+    this.showContextMenu = false;
     this.showMode = false;
     this.showPermissionMenu = false;
     this.showModelMenu = false;
     this.showReasoningMenu = false;
     this.showActionMenu = false;
+  }
+
+  toggleContextMenu(event: MouseEvent, contextItems: IMenuItem[]): void {
+    const shouldOpen = !this.showContextMenu;
+    this.updateContextMenuGeometry(event.currentTarget as HTMLElement | null, contextItems);
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeAll();
+    this.showContextMenu = shouldOpen;
+  }
+
+  private updateContextMenuGeometry(target: HTMLElement | null, contextItems: IMenuItem[]): void {
+    const estimatedMenuWidth = this.estimateMenuWidth(contextItems, {
+      minWidth: CHAT_COMPACT_MENU_MIN_WIDTH,
+      maxWidth: CHAT_COMPACT_MENU_MAX_WIDTH,
+    });
+    this.contextMenuWidth = estimatedMenuWidth;
+    if (!target) {
+      this.contextMenuPosition = {
+        x: CHAT_MENU_VIEWPORT_PADDING,
+        y: Math.max(CHAT_MENU_VIEWPORT_PADDING, window.innerHeight - 120),
+      };
+      return;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const menuHeight = this.estimateMenuHeight(contextItems);
+    let x = rect.left;
+    let y = rect.top - menuHeight - CHAT_MENU_ANCHOR_GAP;
+    let anchorBottom: number | undefined = rect.top - CHAT_MENU_ANCHOR_GAP;
+
+    if (x + estimatedMenuWidth > window.innerWidth - CHAT_MENU_VIEWPORT_PADDING) {
+      x = Math.max(CHAT_MENU_VIEWPORT_PADDING, rect.right - estimatedMenuWidth);
+    }
+
+    if (y < CHAT_MENU_VIEWPORT_PADDING) {
+      y = rect.bottom + CHAT_MENU_ANCHOR_GAP;
+      anchorBottom = undefined;
+    }
+
+    this.contextMenuPosition = {
+      x: Math.max(CHAT_MENU_VIEWPORT_PADDING, x),
+      y: Math.max(CHAT_MENU_VIEWPORT_PADDING, y),
+      anchorBottom,
+    };
   }
 
   /** 切换模式菜单的显示/隐藏 */
@@ -117,6 +168,7 @@ export class MenuManagerService implements OnDestroy {
     }
     event.preventDefault();
     event.stopPropagation();
+    this.showContextMenu = false;
     this.showPermissionMenu = false;
     this.showReasoningMenu = false;
     this.showModelMenu = false;
@@ -125,8 +177,8 @@ export class MenuManagerService implements OnDestroy {
 
   togglePermissionMenu(event: MouseEvent, permissionItems: IMenuItem[]): void {
     const estimatedMenuWidth = this.estimateMenuWidth(permissionItems, {
-      minWidth: 168,
-      maxWidth: 220,
+      minWidth: CHAT_COMPACT_MENU_MIN_WIDTH,
+      maxWidth: CHAT_COMPACT_MENU_MAX_WIDTH,
     });
     this.permissionMenuWidth = estimatedMenuWidth;
     const target = event.currentTarget as HTMLElement;
@@ -152,6 +204,7 @@ export class MenuManagerService implements OnDestroy {
     }
     event.preventDefault();
     event.stopPropagation();
+    this.showContextMenu = false;
     this.showMode = false;
     this.showReasoningMenu = false;
     this.showModelMenu = false;
@@ -189,6 +242,7 @@ export class MenuManagerService implements OnDestroy {
     }
     event.preventDefault();
     event.stopPropagation();
+    this.showContextMenu = false;
     this.showMode = false;
     this.showPermissionMenu = false;
     this.showReasoningMenu = false;
@@ -282,6 +336,7 @@ export class MenuManagerService implements OnDestroy {
 
     event.preventDefault();
     event.stopPropagation();
+    this.showContextMenu = false;
     this.showMode = false;
     this.showPermissionMenu = false;
     this.showModelMenu = false;
@@ -313,6 +368,7 @@ export class MenuManagerService implements OnDestroy {
 
     event.preventDefault();
     event.stopPropagation();
+    this.showContextMenu = false;
     this.showMode = false;
     this.showPermissionMenu = false;
     this.showModelMenu = false;

@@ -1,6 +1,13 @@
+:host {
+    display: block;
+    height: 100%;
+    min-height: 0;
+}
+
 .subject-page {
     padding-left: 15px;
-    height: calc(100vh - 110px);
+    height: 100%;
+    min-height: 0;
 
     .title-box {
         width: 100%;

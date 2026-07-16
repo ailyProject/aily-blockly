@@ -105,6 +105,7 @@ export class NotificationComponent {
 
       // 计算当前值（使用缓动函数使动画更平滑）
       this.progressValue = Math.round(startValue + (endValue - startValue) * this.easeOutQuad(progress));
+      this.cd.detectChanges();
 
       // 如果动画未完成，则继续请求动画帧
       if (progress < 1) {

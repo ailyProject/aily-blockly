@@ -99,6 +99,10 @@ export class ChatSubmitShellCoordinator {
       return false;
     }
 
+    if (sessionId && this.locallyStoppingSessionIds.has(sessionId)) {
+      return false;
+    }
+
     if (sessionId) {
       this.locallyStoppingSessionIds.add(sessionId);
     }

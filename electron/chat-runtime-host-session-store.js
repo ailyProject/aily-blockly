@@ -173,6 +173,88 @@ function stableStringifyPayload(value) {
   }
 }
 
+function createCheckpointTimelineState(sessionId, turnResponses, options = {}) {
+  const turns = Array.isArray(turnResponses) ? clonePayload(turnResponses) : [];
+  const checkpoints = [];
+  turns.forEach((turn, turnIndex) => {
+    const metadata = turn && turn.request && turn.request.metadata && typeof turn.request.metadata === 'object'
+      ? turn.request.metadata
+      : null;
+    const checkpointId = normalizeOptionalString(metadata && metadata.checkpointId);
+    if (!checkpointId) {
+      return;
+    }
+    const turnId = normalizeOptionalString(turn && turn.turnId);
+    checkpoints.push({
+      checkpointId,
+      requestId: normalizeOptionalString(metadata && metadata.requestId) || turnId || checkpointId,
+      ...(turnId ? { turnId } : {}),
+      turnIndex,
+    });
+  });
+  const lastCheckpointIndex = checkpoints.length - 1;
+  const requestedCheckpointIndex = Number(options.currentCheckpointIndex);
+  const currentCheckpointIndex = Number.isFinite(requestedCheckpointIndex)
+    ? Math.max(-1, Math.min(lastCheckpointIndex, Math.floor(requestedCheckpointIndex)))
+    : lastCheckpointIndex;
+  const requestedTurnCount = Number(options.currentTurnResponseCount);
+  const checkpointTurnCount = currentCheckpointIndex >= 0
+    ? checkpoints[currentCheckpointIndex].turnIndex + 1
+    : 0;
+  const currentTurnResponseCount = Number.isFinite(requestedTurnCount)
+    ? Math.max(0, Math.min(turns.length, Math.floor(requestedTurnCount)))
+    : turns.length;
+  return {
+    sessionResource: sessionId,
+    currentCheckpointIndex,
+    currentTurnResponseCount: Math.max(currentCheckpointIndex >= 0 ? checkpointTurnCount : 0, currentTurnResponseCount),
+    checkpoints,
+    turnResponses: turns,
+  };
+}
+
+function normalizeSessionScopeKey(value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : '';
+}
+
+function createSessionScopeMismatchError(message) {
+  const error = new Error(message);
+  error.code = 'session_scope_mismatch';
+  error.retryable = false;
+  return error;
+}
+
+function createCheckpointRevisionMismatchError(expectedRevision, currentRevision) {
+  const expected = Number(expectedRevision) || 0;
+  const current = Number(currentRevision) || 0;
+  const error = new Error(`Checkpoint revision mismatch: expected ${expected}, current ${current}.`);
+  error.code = 'request_list_revision_mismatch';
+  error.expectedRevision = expected;
+  error.currentRevision = current;
+  return error;
+}
+
+function buildCheckpointSidecar(sessionId, turnResponses, checkpointTimeline) {
+  const timeline = checkpointTimeline && checkpointTimeline.sessionResource === sessionId
+    ? clonePayload(checkpointTimeline)
+    : createCheckpointTimelineState(sessionId, turnResponses);
+  const checkpointMarker = {
+    sessionResource: sessionId,
+    currentCheckpointIndex: timeline.currentCheckpointIndex,
+    currentTurnResponseCount: timeline.currentTurnResponseCount,
+  };
+  return timeline.checkpoints.length === 0 || timeline.turnResponses.length === 0
+    ? { checkpointMarker }
+    : {
+        checkpointMarker,
+        checkpointRedoBranch: {
+          ...clonePayload(timeline),
+        },
+      };
+}
+
 function collectChangedTurnParts(previousTurn, nextTurn) {
   const previousParts = readTurnParts(previousTurn);
   const nextParts = readTurnParts(nextTurn);
@@ -200,10 +282,12 @@ class ChatRuntimeHostSessionStore {
   constructor() {
     this.sessionStates = new Map();
     this.transcriptBuilder = new ChatRuntimeHostTranscriptBuilder();
+    this.checkpointTimelines = new Map();
     this.interactions = new Map();
     this.viewRequestEvents = new Map();
     this.resourceRequestEvents = new Map();
     this.sessionInventoryMetadata = new Map();
+    this.sessionScopeKeys = new Map();
     this.viewSessions = new Map();
     this.sessionViews = new Map();
     this.viewAttachmentGenerations = new Map();
@@ -221,10 +305,12 @@ class ChatRuntimeHostSessionStore {
     }
     this.sessionStates.delete(normalizedSessionId);
     this.transcriptBuilder.clearSession(normalizedSessionId);
+    this.checkpointTimelines.delete(normalizedSessionId);
     this.interactions.delete(normalizedSessionId);
     this.viewRequestEvents.delete(normalizedSessionId);
     this.resourceRequestEvents.delete(normalizedSessionId);
     this.sessionInventoryMetadata.delete(normalizedSessionId);
+    this.sessionScopeKeys.delete(normalizedSessionId);
     this.activeSubmittedRequests.delete(normalizedSessionId);
     this.resolveCompletionWaiters(normalizedSessionId);
     const viewIds = this.sessionViews.get(normalizedSessionId);
@@ -372,7 +458,442 @@ class ChatRuntimeHostSessionStore {
     return this.transcriptBuilder.buildTranscriptSnapshot(sessionId);
   }
 
-  buildLiveHostSessionRecord(sessionId, statePatch) {
+  buildSessionTurnPage(request, options = {}) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sessionId = normalizeSessionId(input.sessionId);
+    if (!sessionId) {
+      return null;
+    }
+    const requestedScopeKey = normalizeSessionScopeKey(input.sessionScopeKey);
+    const boundScopeKey = this.sessionScopeKeys.get(sessionId) ?? '';
+    if (options.requireBoundScope === true) {
+      if (!requestedScopeKey || !boundScopeKey || requestedScopeKey !== boundScopeKey) {
+        throw createSessionScopeMismatchError('Turn page request does not match the attached session resource scope.');
+      }
+    }
+    const sessionScopeKey = requestedScopeKey || boundScopeKey;
+    const transcript = this.buildTranscriptSnapshot(sessionId);
+    if (!transcript) {
+      return null;
+    }
+    const turns = Array.isArray(transcript.turnResponses) ? transcript.turnResponses : [];
+    const cursor = input.cursor ? decodeTurnPageCursor(input.cursor) : null;
+    if (cursor && cursor.sessionId !== sessionId) {
+      throw createInvalidTurnPageCursorError('Turn page cursor belongs to another session.');
+    }
+    if (cursor && cursor.sessionScopeKey !== sessionScopeKey) {
+      throw createInvalidTurnPageCursorError('Turn page cursor belongs to another session resource scope.');
+    }
+    const direction = input.sortDirection === 'ascending' ? 'ascending' : 'descending';
+    const anchorTurnId = cursor?.anchorTurnId ?? null;
+    const includeAnchor = cursor?.includeAnchor === true;
+    const itemsView = input.itemsView === 'notLoaded' || input.itemsView === 'full'
+      ? input.itemsView
+      : 'summary';
+    const limit = Math.max(1, Math.min(100, Number.isFinite(Number(input.limit)) ? Math.floor(Number(input.limit)) : 30));
+    let anchorIndex = direction === 'descending' ? turns.length - 1 : 0;
+    if (anchorTurnId) {
+      anchorIndex = turns.findIndex(turn => normalizeOptionalString(turn && turn.turnId) === anchorTurnId);
+      if (anchorIndex < 0) {
+        throw createInvalidTurnPageCursorError('Turn page anchor no longer exists in the session.');
+      }
+      if (!includeAnchor) {
+        anchorIndex += direction === 'descending' ? -1 : 1;
+      }
+    }
+
+    const pageTurns = [];
+    let index = anchorIndex;
+    while (index >= 0 && index < turns.length && pageTurns.length < limit) {
+      pageTurns.push(projectTurnPageItemsView(clonePayload(turns[index]), itemsView));
+      index += direction === 'descending' ? -1 : 1;
+    }
+
+    const firstTurnId = normalizeOptionalString(pageTurns[0] && pageTurns[0].turnId);
+    const lastTurnId = normalizeOptionalString(pageTurns[pageTurns.length - 1] && pageTurns[pageTurns.length - 1].turnId);
+    const hasNext = direction === 'descending' ? index >= 0 : index < turns.length;
+    return {
+      sessionId,
+      data: pageTurns,
+      nextCursor: hasNext && lastTurnId
+        ? encodeTurnPageCursor({ sessionId, sessionScopeKey, anchorTurnId: lastTurnId, includeAnchor: false })
+        : null,
+      backwardsCursor: firstTurnId
+        ? encodeTurnPageCursor({
+            sessionId,
+            sessionScopeKey,
+            anchorTurnId: firstTurnId,
+            includeAnchor: true,
+          })
+        : null,
+      revision: Number(transcript.revision) || 0,
+    };
+  }
+
+  mutateSessionRequestList(request) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sessionId = normalizeSessionId(input.sessionId);
+    const operation = input.operation && typeof input.operation === 'object' ? input.operation : {};
+    const turnId = normalizeOptionalString(operation.turnId);
+    if (!sessionId || operation.kind !== 'removeFromTurn' || !turnId) {
+      const error = new Error('Unsupported request-list mutation.');
+      error.code = 'invalid_request_list_mutation';
+      throw error;
+    }
+
+    const state = this.buildSessionState(sessionId);
+    if ((state && state.requestInProgress === true) || this.activeSubmittedRequests.has(sessionId)) {
+      const error = new Error('Cannot mutate the request list while a turn is running.');
+      error.code = 'request_in_progress';
+      error.retryable = true;
+      throw error;
+    }
+
+    const mutation = this.transcriptBuilder.removeFromTurn({
+      sessionId,
+      turnId,
+      expectedRevision: input.expectedRevision,
+    });
+    this.checkpointTimelines.delete(sessionId);
+    const revision = Number(mutation.transcript && mutation.transcript.revision) || 0;
+    const nextState = {
+      ...(state || {}),
+      sessionId,
+      transcriptRevision: revision,
+      attachedViewIds: this.readAttachedViewIds(sessionId),
+    };
+    this.sessionStates.set(sessionId, clonePayload(nextState));
+    const retainedTurnIds = clonePayload(mutation.retainedTurnIds);
+    const discardedTurnIds = clonePayload(mutation.discardedTurnIds);
+    const protocolTruncation = {
+      kind: 'removeFrom',
+      turnId,
+      retainedTurnIds,
+      discardedTurnIds,
+    };
+    return {
+      sessionId,
+      revision,
+      operation: { kind: 'removeFromTurn', turnId },
+      retainedTurnIds,
+      discardedTurnIds,
+      protocolTruncation,
+      page: this.buildSessionTurnPage({
+        sessionId,
+        limit: Math.max(1, Math.min(100, Number(input.pageLimit) || 30)),
+        sortDirection: 'descending',
+        itemsView: 'full',
+      }),
+    };
+  }
+
+  readCheckpointTimeline(sessionId) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId) {
+      return null;
+    }
+    const existing = this.checkpointTimelines.get(normalizedSessionId);
+    if (existing) {
+      return clonePayload(existing);
+    }
+    const transcript = this.buildTranscriptSnapshot(normalizedSessionId);
+    const turns = Array.isArray(transcript && transcript.turnResponses)
+      ? transcript.turnResponses
+      : [];
+    const timeline = createCheckpointTimelineState(normalizedSessionId, turns);
+    this.checkpointTimelines.set(normalizedSessionId, clonePayload(timeline));
+    return clonePayload(timeline);
+  }
+
+  readCheckpointNavigationState(request) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sessionId = normalizeSessionId(input.sessionId);
+    if (!sessionId || !this.hasHostSession(sessionId)) {
+      return null;
+    }
+    const transcript = this.buildTranscriptSnapshot(sessionId);
+    const timeline = this.readCheckpointTimeline(sessionId);
+    if (!transcript || !timeline) {
+      return null;
+    }
+    const checkpointId = normalizeOptionalString(input.checkpointId);
+    const turnId = normalizeOptionalString(input.turnId);
+    const cloneEntry = checkpoint => checkpoint ? clonePayload(checkpoint) : null;
+    const requestedCheckpoint = checkpointId
+      ? timeline.checkpoints.find(checkpoint => checkpoint.checkpointId === checkpointId)
+      : turnId
+        ? timeline.checkpoints.find(checkpoint => checkpoint.turnId === turnId || checkpoint.requestId === turnId)
+        : null;
+    return {
+      sessionId,
+      revision: Number(transcript.revision) || 0,
+      checkpointCount: timeline.checkpoints.length,
+      currentCheckpointIndex: timeline.currentCheckpointIndex,
+      currentTurnResponseCount: timeline.currentTurnResponseCount,
+      canRedo: timeline.currentCheckpointIndex + 1 < timeline.checkpoints.length,
+      currentCheckpoint: cloneEntry(timeline.checkpoints[timeline.currentCheckpointIndex]),
+      nextCheckpoint: cloneEntry(timeline.checkpoints[timeline.currentCheckpointIndex + 1]),
+      requestedCheckpoint: cloneEntry(requestedCheckpoint),
+    };
+  }
+
+  restoreSessionCheckpoint(request) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sessionId = normalizeSessionId(input.sessionId);
+    const checkpointId = normalizeOptionalString(input.checkpointId);
+    this.assertCheckpointMutationAllowed(sessionId);
+    const previousTranscript = this.buildTranscriptSnapshot(sessionId);
+    const currentRevision = Number(previousTranscript && previousTranscript.revision) || 0;
+    if (Number(input.expectedRevision) !== currentRevision) {
+      throw createCheckpointRevisionMismatchError(input.expectedRevision, currentRevision);
+    }
+    const previousTimeline = this.readCheckpointTimeline(sessionId);
+    const checkpointIndex = previousTimeline.checkpoints.findIndex(checkpoint => checkpoint.checkpointId === checkpointId);
+    if (checkpointIndex < 0) {
+      const error = new Error(`Checkpoint does not exist in the canonical response model: ${checkpointId}.`);
+      error.code = 'checkpoint_not_found';
+      throw error;
+    }
+    const checkpoint = previousTimeline.checkpoints[checkpointIndex];
+    const nextTimeline = createCheckpointTimelineState(sessionId, previousTimeline.turnResponses, {
+      currentCheckpointIndex: checkpointIndex - 1,
+      currentTurnResponseCount: checkpoint.turnIndex,
+    });
+    const transcript = this.transcriptBuilder.replaceTurnResponses({
+      sessionId,
+      turnResponses: nextTimeline.turnResponses.slice(0, nextTimeline.currentTurnResponseCount),
+      expectedRevision: currentRevision,
+    });
+    this.checkpointTimelines.set(sessionId, clonePayload(nextTimeline));
+    this.updateCheckpointMutationSessionState(sessionId, transcript.revision);
+    return this.buildCheckpointMutationResult({
+      request: input,
+      sessionId,
+      checkpointId,
+      direction: 'restore',
+      transcript,
+      timeline: nextTimeline,
+      previousTranscript,
+      previousTimeline,
+    });
+  }
+
+  redoSessionCheckpoint(request) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sessionId = normalizeSessionId(input.sessionId);
+    this.assertCheckpointMutationAllowed(sessionId);
+    const previousTranscript = this.buildTranscriptSnapshot(sessionId);
+    const currentRevision = Number(previousTranscript && previousTranscript.revision) || 0;
+    if (Number(input.expectedRevision) !== currentRevision) {
+      throw createCheckpointRevisionMismatchError(input.expectedRevision, currentRevision);
+    }
+    const previousTimeline = this.readCheckpointTimeline(sessionId);
+    const nextCheckpointIndex = previousTimeline.currentCheckpointIndex + 1;
+    const checkpoint = previousTimeline.checkpoints[nextCheckpointIndex];
+    if (!checkpoint) {
+      const error = new Error('No forward checkpoint is available to redo.');
+      error.code = 'checkpoint_redo_unavailable';
+      throw error;
+    }
+    const nextTimeline = createCheckpointTimelineState(sessionId, previousTimeline.turnResponses, {
+      currentCheckpointIndex: nextCheckpointIndex,
+      currentTurnResponseCount: checkpoint.turnIndex + 1,
+    });
+    const transcript = this.transcriptBuilder.replaceTurnResponses({
+      sessionId,
+      turnResponses: nextTimeline.turnResponses.slice(0, nextTimeline.currentTurnResponseCount),
+      expectedRevision: currentRevision,
+    });
+    this.checkpointTimelines.set(sessionId, clonePayload(nextTimeline));
+    this.updateCheckpointMutationSessionState(sessionId, transcript.revision);
+    return this.buildCheckpointMutationResult({
+      request: input,
+      sessionId,
+      checkpointId: checkpoint.checkpointId,
+      direction: 'redo',
+      transcript,
+      timeline: nextTimeline,
+      previousTranscript,
+      previousTimeline,
+    });
+  }
+
+  rollbackCheckpointMutation(mutation) {
+    if (!mutation || !mutation.previousTranscript || !mutation.previousTimeline) {
+      return null;
+    }
+    const restored = this.transcriptBuilder.restoreAfterFailedRequestListMutation({
+      transcript: mutation.previousTranscript,
+      expectedRevision: mutation.revision,
+    });
+    this.checkpointTimelines.set(restored.sessionId, clonePayload(mutation.previousTimeline));
+    this.updateCheckpointMutationSessionState(restored.sessionId, restored.revision);
+    return restored;
+  }
+
+  assertCheckpointMutationAllowed(sessionId) {
+    if (!sessionId) {
+      const error = new Error('Checkpoint mutation requires a session id.');
+      error.code = 'invalid_checkpoint_mutation';
+      throw error;
+    }
+    const state = this.buildSessionState(sessionId);
+    if ((state && state.requestInProgress === true) || this.activeSubmittedRequests.has(sessionId)) {
+      const error = new Error('Cannot navigate checkpoints while a turn is running.');
+      error.code = 'request_in_progress';
+      error.retryable = true;
+      throw error;
+    }
+  }
+
+  updateCheckpointMutationSessionState(sessionId, revision) {
+    const state = this.buildSessionState(sessionId) || {};
+    this.sessionStates.set(sessionId, clonePayload({
+      ...state,
+      sessionId,
+      status: 'completed',
+      requestInProgress: false,
+      activeTurnId: null,
+      transcriptRevision: Number(revision) || 0,
+      attachedViewIds: this.readAttachedViewIds(sessionId),
+    }));
+  }
+
+  buildCheckpointMutationResult({ request, sessionId, checkpointId, direction, transcript, timeline, previousTranscript, previousTimeline }) {
+    const previousIds = new Set((previousTranscript.turnResponses || [])
+      .map(turn => normalizeOptionalString(turn && turn.turnId))
+      .filter(Boolean));
+    const retainedTurnIds = (transcript.turnResponses || [])
+      .map(turn => normalizeOptionalString(turn && turn.turnId))
+      .filter(Boolean);
+    return {
+      sessionId,
+      checkpointId,
+      direction,
+      revision: Number(transcript.revision) || 0,
+      retainedTurnIds,
+      restoredTurnIds: retainedTurnIds.filter(turnId => !previousIds.has(turnId)),
+      canRedo: timeline.currentCheckpointIndex < timeline.checkpoints.length - 1,
+      page: this.buildSessionTurnPage({
+        sessionId,
+        limit: Math.max(1, Math.min(100, Number(request.pageLimit) || 30)),
+        sortDirection: 'descending',
+        itemsView: 'full',
+      }),
+      previousTranscript: clonePayload(previousTranscript),
+      previousTimeline: clonePayload(previousTimeline),
+    };
+  }
+
+  prepareForkSession(request) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sourceSessionId = normalizeSessionId(input.sourceSessionId);
+    const targetSessionId = normalizeSessionId(input.targetSessionId);
+    const sourceState = this.buildSessionState(sourceSessionId);
+    if ((sourceState && sourceState.requestInProgress === true) || this.activeSubmittedRequests.has(sourceSessionId)) {
+      const error = new Error('Cannot fork a session while a turn is running.');
+      error.code = 'request_in_progress';
+      error.retryable = true;
+      throw error;
+    }
+    if (this.readKnownSessionIds().includes(targetSessionId)) {
+      const error = new Error(`Session fork target already exists: ${targetSessionId}.`);
+      error.code = 'session_fork_target_exists';
+      throw error;
+    }
+    const prepared = this.transcriptBuilder.prepareForkPrefix({
+      sourceSessionId,
+      targetSessionId,
+      beforeTurnId: input.beforeTurnId,
+      expectedRevision: input.expectedRevision,
+    });
+    if (prepared.turnResponses.length === 0) {
+      const error = new Error('Cannot fork before the first request.');
+      error.code = 'empty_session_fork_prefix';
+      throw error;
+    }
+    return prepared;
+  }
+
+  commitForkSession(request, prepared, turnResponses) {
+    const input = request && typeof request === 'object' ? request : {};
+    const sourceState = this.buildSessionState(prepared.sourceSessionId);
+    if ((sourceState && sourceState.requestInProgress === true) || this.activeSubmittedRequests.has(prepared.sourceSessionId)) {
+      const error = new Error('Cannot commit a session fork while the source turn is running.');
+      error.code = 'request_in_progress';
+      throw error;
+    }
+    const transcript = this.transcriptBuilder.commitForkTranscript({
+      sourceSessionId: prepared.sourceSessionId,
+      targetSessionId: prepared.targetSessionId,
+      sourceRevision: prepared.sourceRevision,
+      turnResponses,
+    });
+    const metadata = input.metadata && typeof input.metadata === 'object' ? clonePayload(input.metadata) : {};
+    metadata.forkKind = 'protocol';
+    metadata.forkedFromSessionId = prepared.sourceSessionId;
+    metadata.forkedBeforeTurnId = prepared.beforeTurnId;
+    metadata.forkedRetainedTurnCount = prepared.retainedTurnIds.length;
+    this.sessionInventoryMetadata.set(prepared.targetSessionId, metadata);
+    const sourceScopeKey = this.sessionScopeKeys.get(prepared.sourceSessionId);
+    if (sourceScopeKey) {
+      this.sessionScopeKeys.set(prepared.targetSessionId, sourceScopeKey);
+    }
+    this.sessionStates.set(prepared.targetSessionId, clonePayload({
+      sessionId: prepared.targetSessionId,
+      status: 'completed',
+      requestInProgress: false,
+      activeTurnId: null,
+      attachedViewIds: this.readAttachedViewIds(prepared.targetSessionId),
+      transcriptRevision: Number(transcript.revision) || 0,
+      selectedMode: input.selectedMode || sourceState?.selectedMode || null,
+      providerOptions: input.providerOptions || sourceState?.providerOptions || null,
+      currentModel: input.currentModel || sourceState?.currentModel || null,
+    }));
+    this.checkpointTimelines.set(
+      prepared.targetSessionId,
+      createCheckpointTimelineState(prepared.targetSessionId, turnResponses),
+    );
+    return {
+      sourceSessionId: prepared.sourceSessionId,
+      targetSessionId: prepared.targetSessionId,
+      sourceRevision: prepared.sourceRevision,
+      targetRevision: Number(transcript.revision) || 0,
+      retainedTurnIds: clonePayload(prepared.retainedTurnIds),
+      forkKind: 'protocol',
+      page: this.buildSessionTurnPage({
+        sessionId: prepared.targetSessionId,
+        limit: Math.max(1, Math.min(100, Number(input.pageLimit) || 30)),
+        sortDirection: 'descending',
+        itemsView: 'full',
+      }),
+    };
+  }
+
+  rollbackForkSession(targetSessionId) {
+    this.clearSession(targetSessionId);
+  }
+
+  rollbackSessionRequestListMutation(previousTranscript, expectedRevision) {
+    const restored = this.transcriptBuilder.restoreAfterFailedRequestListMutation({
+      transcript: previousTranscript,
+      expectedRevision,
+    });
+    const sessionId = normalizeSessionId(restored && restored.sessionId);
+    if (!sessionId) {
+      return null;
+    }
+    const state = this.buildSessionState(sessionId);
+    this.sessionStates.set(sessionId, clonePayload({
+      ...(state || {}),
+      sessionId,
+      transcriptRevision: Number(restored.revision) || 0,
+      attachedViewIds: this.readAttachedViewIds(sessionId),
+    }));
+    return clonePayload(restored);
+  }
+
+  buildLiveHostSessionRecord(sessionId, statePatch, options = {}) {
     const normalizedSessionId = normalizeSessionId(sessionId);
     if (!normalizedSessionId) {
       return null;
@@ -381,7 +902,7 @@ class ChatRuntimeHostSessionStore {
     const turnResponses = Array.isArray(transcript && transcript.turnResponses)
       ? clonePayload(transcript.turnResponses)
       : [];
-    if (turnResponses.length === 0) {
+    if (turnResponses.length === 0 && options.allowEmptyTranscript !== true) {
       return null;
     }
     const state = {
@@ -394,6 +915,7 @@ class ChatRuntimeHostSessionStore {
     return {
       sessionId: normalizedSessionId,
       metadata: {
+        ...clonePayload(metadata),
         sessionId: normalizedSessionId,
         title: typeof metadata.title === 'string' ? metadata.title : '',
         ...(typeof metadata.titleSource === 'string' ? { titleSource: metadata.titleSource } : {}),
@@ -412,6 +934,11 @@ class ChatRuntimeHostSessionStore {
         toolCallingIteration: 0,
       },
       turnResponses,
+      sidecar: buildCheckpointSidecar(
+        normalizedSessionId,
+        turnResponses,
+        this.checkpointTimelines.get(normalizedSessionId),
+      ),
       auxiliary: {
         runtimeHost: {
           transcriptRevision: Number(transcript && transcript.revision) || Number(state.transcriptRevision) || 0,
@@ -495,6 +1022,19 @@ class ChatRuntimeHostSessionStore {
     if (visibleAttachmentGeneration === null) {
       throw new Error('[AilyChat][RuntimeHost] attachView requires a visible attachment generation.');
     }
+    const sessionScopeKey = normalizeSessionScopeKey(options && options.sessionScopeKey);
+    if (!sessionScopeKey) {
+      throw new Error('[AilyChat][RuntimeHost] attachView requires a session resource scope key.');
+    }
+
+    const boundScopeKey = this.sessionScopeKeys.get(normalizedSessionId);
+    const attachedViewIds = this.sessionViews.get(normalizedSessionId);
+    const hasOtherAttachedView = !!attachedViewIds
+      && [...attachedViewIds].some(attachedViewId => attachedViewId !== normalizedViewId);
+    if (boundScopeKey && boundScopeKey !== sessionScopeKey && hasOtherAttachedView) {
+      throw createSessionScopeMismatchError('Cannot rebind a session resource while another view is attached to its previous scope.');
+    }
+    this.sessionScopeKeys.set(normalizedSessionId, sessionScopeKey);
 
     const previousSessionId = this.viewSessions.get(normalizedViewId);
     if (previousSessionId && previousSessionId !== normalizedSessionId) {
@@ -1791,6 +2331,12 @@ class ChatRuntimeHostSessionStore {
     if (method === 'readSessionInventory') {
       return this.buildSessionInventorySnapshot();
     }
+    if (method === 'readSessionTurnPage') {
+      return this.buildSessionTurnPage(args && args[0], { requireBoundScope: true });
+    }
+    if (method === 'readCheckpointNavigationState') {
+      return this.readCheckpointNavigationState(args && args[0]);
+    }
     const sessionId = normalizeSessionId(args && args[0]);
     if (!sessionId) {
       return HOST_SESSION_STORE_MISS;
@@ -1849,6 +2395,13 @@ class ChatRuntimeHostSessionStore {
       this.detachView(args && args[0], args && args[1]);
       return undefined;
     }
+    if (method === 'readSessionTurnPage') {
+      const request = args && args[0];
+      const sessionId = normalizeSessionId(request && request.sessionId);
+      return sessionId && this.hasHostSession(sessionId)
+        ? this.buildSessionTurnPage(request, { requireBoundScope: true })
+        : HOST_SESSION_STORE_MISS;
+    }
 
     const sessionId = normalizeSessionId(args && args[0]);
     if (!sessionId || !this.hasHostSession(sessionId)) {
@@ -1897,9 +2450,29 @@ class ChatRuntimeHostSessionStore {
       error.sessionId = sessionId;
       throw error;
     }
+    const checkpointTimeline = this.checkpointTimelines.get(sessionId);
+    const checkpointProtocolTruncation = checkpointTimeline
+      ? this.buildCheckpointProtocolTruncation(
+          checkpointTimeline,
+          this.buildTranscriptSnapshot(sessionId),
+        )
+      : undefined;
+    if (checkpointTimeline) {
+      // VS Code splices the disabled forward checkpoint branch when a new
+      // request starts after restore. The visible canonical transcript already
+      // contains exactly the retained prefix, so dropping the sidecar branch is
+      // the atomic model-side commit before seeding the new request.
+      this.checkpointTimelines.delete(sessionId);
+    }
+    const effectiveRequest = checkpointTimeline
+      ? {
+          ...request,
+          protocolTruncation: checkpointProtocolTruncation,
+        }
+      : request;
     const activeTurnId = this.normalizeActiveTurnId(request && request.activeResponseHandle)
       || this.createSubmittedTurnId(sessionId);
-    const submittedRequest = this.buildSubmittedRequestWithStableId(request, activeTurnId);
+    const submittedRequest = this.buildSubmittedRequestWithStableId(effectiveRequest, activeTurnId);
     this.cacheSubmittedTurnInventoryMetadata(sessionId, submittedRequest);
     this.activeSubmittedRequests.set(sessionId, clonePayload(submittedRequest));
     const transcript = this.transcriptBuilder.seedSubmittedTurn({
@@ -1908,7 +2481,9 @@ class ChatRuntimeHostSessionStore {
       request: submittedRequest,
       revision: Number(previousState && previousState.transcriptRevision) || 0,
       timestamp: Date.now(),
-      protocolTruncation: request && request.protocolTruncation ? request.protocolTruncation : null,
+      protocolTruncation: submittedRequest && submittedRequest.protocolTruncation
+        ? submittedRequest.protocolTruncation
+        : null,
     });
     const nextState = {
       ...previousState,
@@ -1932,6 +2507,27 @@ class ChatRuntimeHostSessionStore {
     };
     this.sessionStates.set(sessionId, clonePayload(nextState));
     return clonePayload(nextState);
+  }
+
+  buildCheckpointProtocolTruncation(timeline, transcript) {
+    const retainedTurnIds = (transcript && Array.isArray(transcript.turnResponses)
+      ? transcript.turnResponses
+      : [])
+      .map(turn => normalizeOptionalString(turn && turn.turnId))
+      .filter(Boolean);
+    const discardedTurnIds = (timeline && Array.isArray(timeline.turnResponses)
+      ? timeline.turnResponses.slice(timeline.currentTurnResponseCount)
+      : [])
+      .map(turn => normalizeOptionalString(turn && turn.turnId))
+      .filter(Boolean);
+    return discardedTurnIds.length > 0
+      ? {
+          kind: 'removeFrom',
+          turnId: discardedTurnIds[0],
+          retainedTurnIds,
+          discardedTurnIds,
+        }
+      : null;
   }
 
   buildSubmittedRequestWithStableId(request, activeTurnId) {
@@ -2615,6 +3211,80 @@ class ChatRuntimeHostSessionStore {
       state,
     };
   }
+}
+
+const TURN_PAGE_CURSOR_PREFIX = 'aily-turn-page-v1:';
+
+function projectTurnPageItemsView(turn, itemsView) {
+  if (!turn || typeof turn !== 'object') {
+    return turn;
+  }
+  turn.itemsView = itemsView;
+  if (itemsView === 'full') {
+    return turn;
+  }
+
+  turn.rounds = [];
+  if (Array.isArray(turn.parts)) {
+    turn.parts = [];
+  }
+  const response = turn.response && typeof turn.response === 'object'
+    ? turn.response
+    : null;
+  if (!response) {
+    return turn;
+  }
+  const parts = Array.isArray(response.parts) ? response.parts : [];
+  if (itemsView === 'notLoaded') {
+    response.parts = [];
+    response.resultText = '';
+    return turn;
+  }
+
+  const finalAgentPart = [...parts].reverse().find(part =>
+    part && (part.type === 'markdown' || part.type === 'text'));
+  response.parts = finalAgentPart ? [clonePayload(finalAgentPart)] : [];
+  return turn;
+}
+
+function encodeTurnPageCursor(cursor) {
+  const payload = JSON.stringify({
+    v: 2,
+    s: cursor.sessionId,
+    k: cursor.sessionScopeKey,
+    a: cursor.anchorTurnId,
+    i: cursor.includeAnchor === true,
+  });
+  return `${TURN_PAGE_CURSOR_PREFIX}${Buffer.from(payload, 'utf8').toString('base64url')}`;
+}
+
+function decodeTurnPageCursor(value) {
+  if (typeof value !== 'string' || !value.startsWith(TURN_PAGE_CURSOR_PREFIX)) {
+    throw createInvalidTurnPageCursorError('Invalid turn page cursor.');
+  }
+  try {
+    const encoded = value.slice(TURN_PAGE_CURSOR_PREFIX.length);
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    const sessionId = normalizeSessionId(payload && payload.s);
+    const sessionScopeKey = normalizeSessionScopeKey(payload && payload.k);
+    const anchorTurnId = normalizeOptionalString(payload && payload.a);
+    if (payload?.v !== 2 || !sessionId || !sessionScopeKey || !anchorTurnId) {
+      throw new Error('Invalid cursor payload.');
+    }
+    return { sessionId, sessionScopeKey, anchorTurnId, includeAnchor: payload.i === true };
+  } catch (error) {
+    if (error && error.code === 'invalid_turn_cursor') {
+      throw error;
+    }
+    throw createInvalidTurnPageCursorError('Invalid turn page cursor.');
+  }
+}
+
+function createInvalidTurnPageCursorError(message) {
+  const error = new Error(message);
+  error.code = 'invalid_turn_cursor';
+  error.retryable = false;
+  return error;
 }
 
 module.exports = {

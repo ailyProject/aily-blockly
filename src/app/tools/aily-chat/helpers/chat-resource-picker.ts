@@ -3,6 +3,26 @@ import type { IDialog, IDialogResult } from '../core/host-api';
 
 type FileDialogLike = Pick<IDialog, 'selectFiles'>;
 
+export async function pickFileOrFolderResources(
+  dialog: FileDialogLike,
+  isDirectory: (path: string) => boolean,
+): Promise<ResourceItem[]> {
+  const result = await dialog.selectFiles({
+    title: '选择文件或文件夹',
+    properties: ['openFile', 'openDirectory', 'multiSelections'],
+  });
+
+  if (isEmptySelection(result)) {
+    return [];
+  }
+
+  return result.filePaths.map((path) => ({
+    type: isDirectory(path) ? 'folder' : 'file',
+    path,
+    name: getBaseName(path),
+  }));
+}
+
 export async function pickFileResources(dialog: FileDialogLike): Promise<ResourceItem[]> {
   const result = await dialog.selectFiles({
     title: '选择文件',

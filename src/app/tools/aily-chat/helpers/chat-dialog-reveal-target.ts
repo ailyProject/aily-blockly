@@ -5,15 +5,18 @@ export function resolveChatDialogRevealTargetItemId(
   items: readonly ChatVisibleTranscriptDialogItem[],
   target: ChatRevealTarget,
 ): string | null {
+  if (typeof target !== 'string') {
+    const turnId = target.turnId.trim();
+    return items.find(item => item.turnId === turnId && item.role === 'user')?.id
+      ?? items.find(item => item.turnId === turnId)?.id
+      ?? null;
+  }
   switch (target) {
     case 'current-response':
     case 'pending-confirmation':
     case 'pending-question':
     case 'pending-plan-review':
       return findLastDialogItemId(items, item => item.role === 'aily' && (item.isLastAily || item.doing));
-    case 'checkpoint-anchor':
-      return findLastDialogItemId(items, item => item.role === 'user' && item.showCheckpointRestore)
-        ?? findLastDialogItemId(items, item => item.role === 'user' && !!item.turnContext?.turnId);
     default:
       return null;
   }

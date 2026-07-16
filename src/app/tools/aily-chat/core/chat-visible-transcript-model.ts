@@ -71,6 +71,8 @@ export interface ChatVisibleTranscriptDialogItemPatch {
   readonly index: number;
   readonly item: ChatVisibleTranscriptDialogItem;
   readonly kind: ChatVisibleTranscriptChangeKind;
+  /** Response-model parts changed by the originating host delta. */
+  readonly changedParts?: readonly ChatPart[];
 }
 
 interface ChatVisibleTranscriptItemRecord {
@@ -97,8 +99,12 @@ export class ChatVisibleTranscriptModel {
   private readonly records = new Map<string, ChatVisibleTranscriptItemRecord>();
   private readonly dialogItemCache = new Map<string, ChatVisibleTranscriptDialogItemRecord>();
   private readonly streamStatsTrackers = new Map<string, ChatStreamStatsTracker>();
+  private readonly streamPartWordCounts = new Map<string, Map<string, number>>();
   private orderedIds: string[] = [];
+  private readonly orderedIndexById = new Map<string, number>();
   private readonly changes: ChatVisibleTranscriptChange[] = [];
+  private firstUserItemId: string | null = null;
+  private lastAilyItemId: string | null = null;
   private projectedFirstUserItemId: string | null = null;
   private projectedLastAilyItemId: string | null = null;
 
@@ -119,13 +125,19 @@ export class ChatVisibleTranscriptModel {
   replaceFromSessionModel(turnResponses: readonly TurnResponseTurn[] | null | undefined): readonly ChatVisibleTranscriptChange[] {
     const nextIds: string[] = [];
     const expectedIds = new Set<string>();
+    let firstUserItemId: string | null = null;
+    let lastAilyItemId: string | null = null;
 
     for (const turn of turnResponses ?? []) {
-      const request = this.upsertTurnRequestInternal(turn, { recordOrder: false });
+      const request = this.insertTurnRequestInternal(turn, { recordOrder: false });
       const response = this.upsertTurnResponseInternal(turn, { recordOrder: false });
       nextIds.push(request.id, response.id);
       expectedIds.add(request.id);
       expectedIds.add(response.id);
+      firstUserItemId ??= request.id;
+      if (response.turnContext?.turnResponse) {
+        lastAilyItemId = response.id;
+      }
     }
 
     for (const itemId of [...this.records.keys()]) {
@@ -135,12 +147,16 @@ export class ChatVisibleTranscriptModel {
         this.dialogItemCache.delete(itemId);
         if (removedTurnId && !expectedIds.has(chatVisibleResponseItemId(removedTurnId))) {
           this.streamStatsTrackers.delete(removedTurnId);
+          this.streamPartWordCounts.delete(removedTurnId);
         }
         this.pushChange('removed', itemId);
       }
     }
 
     this.orderedIds = nextIds;
+    this.rebuildOrderedIndex();
+    this.firstUserItemId = firstUserItemId;
+    this.lastAilyItemId = lastAilyItemId;
     return this.peekChanges();
   }
 
@@ -148,16 +164,25 @@ export class ChatVisibleTranscriptModel {
     return this.replaceFromSessionModel(runtimeState?.turnResponses ?? []);
   }
 
-  upsertTurnRequest(turn: TurnResponseTurn): ChatVisibleTranscriptItem {
-    return this.upsertTurnRequestInternal(turn, { recordOrder: true });
+  insertTurnRequest(turn: TurnResponseTurn): ChatVisibleTranscriptItem {
+    return this.insertTurnRequestInternal(turn, { recordOrder: true });
   }
 
-  private upsertTurnRequestInternal(
+  private insertTurnRequestInternal(
     turn: TurnResponseTurn,
     options: { recordOrder: boolean },
   ): ChatVisibleTranscriptItem {
+    const itemId = chatVisibleRequestItemId(turn.turnId);
+    const existing = this.records.get(itemId)?.item;
+    if (existing?.kind === 'request') {
+      if (options.recordOrder) {
+        this.ensureOrderedItem(existing);
+      }
+      return existing;
+    }
+
     const item = this.upsertItem({
-      id: chatVisibleRequestItemId(turn.turnId),
+      id: itemId,
       kind: 'request',
       role: 'user',
       turnId: turn.turnId,
@@ -169,7 +194,7 @@ export class ChatVisibleTranscriptModel {
       contentUpdateTimings: undefined,
     });
     if (options.recordOrder) {
-      this.ensureOrderedItem(item.id);
+      this.ensureOrderedItem(item);
     }
     return item;
   }
@@ -197,11 +222,11 @@ export class ChatVisibleTranscriptModel {
       contentUpdateTimings: this.updateStreamStats(
         turn.turnId,
         turn.response.status,
-        collectChatPartStreamingText(parts, contentPreview),
+        turn.response.parts,
       ),
     });
     if (options.recordOrder) {
-      this.ensureOrderedItem(item.id);
+      this.ensureOrderedItem(item);
     }
     return item;
   }
@@ -218,21 +243,23 @@ export class ChatVisibleTranscriptModel {
     }
 
     const nextParts = mergeChatParts(existing.parts, turnResponsePartsToChatParts(parts));
-    const contentPreview = collectChatPartAssistantPreview(nextParts, existing.contentPreview);
     return this.upsertItem({
       id: existing.id,
       kind: 'response',
       role: 'aily',
       turnId: existing.turnId,
       status: existing.status,
-      contentPreview,
+      // The response row is part-owned while streaming. Materializing the
+      // complete assistant text here would copy every growing markdown part
+      // before the mounted content-part renderer sees the delta.
+      contentPreview: existing.contentPreview,
       parts: nextParts,
       turnResponse: existing.turnResponse,
       turnContext: existing.turnContext,
       contentUpdateTimings: this.updateStreamStats(
         turnId,
         existing.status,
-        collectChatPartStreamingText(nextParts, contentPreview),
+        parts,
       ),
     });
   }
@@ -253,44 +280,26 @@ export class ChatVisibleTranscriptModel {
       return [];
     }
 
-    let firstUserIndex = -1;
-    let lastAilyIndex = -1;
-    const indexByItemId = new Map<string, number>();
-    for (let index = 0; index < this.orderedIds.length; index += 1) {
-      const itemId = this.orderedIds[index];
-      indexByItemId.set(itemId, index);
-      const item = this.records.get(itemId)?.item;
-      if (!item) {
-        continue;
-      }
-      if (firstUserIndex < 0 && item.role === 'user') {
-        firstUserIndex = index;
-      }
-      if (item.role === 'aily' && !!item.turnContext?.turnResponse) {
-        lastAilyIndex = index;
-      }
-    }
-
-    const firstUserItemId = firstUserIndex >= 0 ? this.orderedIds[firstUserIndex] : null;
-    const lastAilyItemId = lastAilyIndex >= 0 ? this.orderedIds[lastAilyIndex] : null;
+    const firstUserItemId = this.firstUserItemId;
+    const lastAilyItemId = this.lastAilyItemId;
 
     // List presentation state belongs to the stable row model as well. When a
     // new turn is appended, update only the row that previously owned the
     // first/last presentation flag instead of rescanning or rebuilding rows.
     if (this.projectedFirstUserItemId
       && this.projectedFirstUserItemId !== firstUserItemId
-      && indexByItemId.has(this.projectedFirstUserItemId)) {
+      && this.orderedIndexById.has(this.projectedFirstUserItemId)) {
       uniqueChanges.set(this.projectedFirstUserItemId, 'updated');
     }
     if (this.projectedLastAilyItemId
       && this.projectedLastAilyItemId !== lastAilyItemId
-      && indexByItemId.has(this.projectedLastAilyItemId)) {
+      && this.orderedIndexById.has(this.projectedLastAilyItemId)) {
       uniqueChanges.set(this.projectedLastAilyItemId, 'updated');
     }
 
     const patches: ChatVisibleTranscriptDialogItemPatch[] = [];
     for (const [itemId, kind] of uniqueChanges) {
-      const index = indexByItemId.get(itemId) ?? -1;
+      const index = this.orderedIndexById.get(itemId) ?? -1;
       const item = index >= 0 ? this.records.get(itemId)?.item : undefined;
       if (!item) {
         continue;
@@ -300,8 +309,8 @@ export class ChatVisibleTranscriptModel {
         index,
         kind,
         item: this.toDialogItem(item, {
-          isLastAily: index === lastAilyIndex,
-          isFirstUserTurn: index === firstUserIndex,
+          isLastAily: itemId === lastAilyItemId,
+          isFirstUserTurn: itemId === firstUserItemId,
         }),
       });
     }
@@ -323,7 +332,7 @@ export class ChatVisibleTranscriptModel {
       role: 'aily',
       turnId: existing.turnId,
       status,
-      contentPreview: existing.contentPreview,
+      contentPreview: collectChatPartAssistantPreview(existing.parts, existing.contentPreview),
       parts: existing.parts,
       turnResponse: existing.turnResponse
         ? {
@@ -345,27 +354,21 @@ export class ChatVisibleTranscriptModel {
             },
           })
         : existing.turnContext,
-      contentUpdateTimings: this.updateStreamStats(
-        turnId,
-        status,
-        collectChatPartStreamingText(existing.parts, existing.contentPreview),
-      ) ?? existing.contentUpdateTimings,
+      contentUpdateTimings: existing.contentUpdateTimings,
     });
+    this.streamPartWordCounts.delete(turnId);
     this.pushChange('completed', item.id);
     return item;
   }
 
   toDialogItems(): readonly ChatVisibleTranscriptDialogItem[] {
     const items = this.getItems();
-    const firstUserIndex = items.findIndex(item => item.role === 'user');
-    const lastAilyIndex = findLastIndex(items, item => item.role === 'aily' && !!item.turnContext?.turnResponse);
+    this.projectedFirstUserItemId = this.firstUserItemId;
+    this.projectedLastAilyItemId = this.lastAilyItemId;
 
-    this.projectedFirstUserItemId = firstUserIndex >= 0 ? items[firstUserIndex].id : null;
-    this.projectedLastAilyItemId = lastAilyIndex >= 0 ? items[lastAilyIndex].id : null;
-
-    return items.map((item, index) => this.toDialogItem(item, {
-      isLastAily: index === lastAilyIndex,
-      isFirstUserTurn: index === firstUserIndex,
+    return items.map(item => this.toDialogItem(item, {
+      isLastAily: item.id === this.lastAilyItemId,
+      isFirstUserTurn: item.id === this.firstUserItemId,
     }));
   }
 
@@ -489,7 +492,7 @@ export class ChatVisibleTranscriptModel {
   private updateStreamStats(
     turnId: string,
     status: TurnResponseStatus,
-    markdown: string,
+    parts: readonly TurnResponsePart[],
   ): ChatStreamStats | undefined {
     let tracker = this.streamStatsTrackers.get(turnId);
     if (!tracker && status === 'streaming') {
@@ -500,13 +503,45 @@ export class ChatVisibleTranscriptModel {
       return undefined;
     }
 
-    tracker.update(countChatMarkdownWords(markdown));
+    let partWordCounts = this.streamPartWordCounts.get(turnId);
+    if (!partWordCounts) {
+      partWordCounts = new Map<string, number>();
+      this.streamPartWordCounts.set(turnId, partWordCounts);
+    }
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index];
+      if (part.type !== 'markdown' && part.type !== 'thinking') {
+        continue;
+      }
+      const persistedPartId = (part as unknown as { readonly partId?: unknown }).partId;
+      const partId = typeof persistedPartId === 'string'
+        ? persistedPartId
+        : `${part.type}:legacy:${index}`;
+      partWordCounts.set(partId, countChatMarkdownWords(part.content));
+    }
+    const totalWordCount = Array.from(partWordCounts.values())
+      .reduce((total, count) => total + count, 0);
+    tracker.update(totalWordCount);
     return tracker.data;
   }
 
-  private ensureOrderedItem(itemId: string): void {
-    if (!this.orderedIds.includes(itemId)) {
-      this.orderedIds = [...this.orderedIds, itemId];
+  private ensureOrderedItem(item: ChatVisibleTranscriptItem): void {
+    if (this.orderedIndexById.has(item.id)) {
+      return;
+    }
+    this.orderedIndexById.set(item.id, this.orderedIds.length);
+    this.orderedIds = [...this.orderedIds, item.id];
+    if (item.role === 'user') {
+      this.firstUserItemId ??= item.id;
+    } else if (item.turnContext?.turnResponse) {
+      this.lastAilyItemId = item.id;
+    }
+  }
+
+  private rebuildOrderedIndex(): void {
+    this.orderedIndexById.clear();
+    for (let index = 0; index < this.orderedIds.length; index += 1) {
+      this.orderedIndexById.set(this.orderedIds[index], index);
     }
   }
 
@@ -561,16 +596,6 @@ function collectChatPartAssistantPreview(parts: readonly ChatPart[], fallback: s
   return content || fallback;
 }
 
-function collectChatPartStreamingText(parts: readonly ChatPart[], fallback: string): string {
-  const content = parts
-    .filter((part): part is Extract<ChatPart, { type: 'markdown' | 'thinking' }> => (
-      part.type === 'markdown' || part.type === 'thinking'
-    ))
-    .map(part => part.content)
-    .join('');
-  return content || fallback;
-}
-
 function turnResponsePartsToChatParts(parts: readonly TurnResponsePart[]): readonly ChatPart[] {
   return turnResponsePartsToDisplayChatParts(parts);
 }
@@ -594,6 +619,21 @@ function getChatPartStableKey(part: ChatPart): string | undefined {
 }
 
 function createItemSignature(item: Omit<ChatVisibleTranscriptItem, 'revision'>): string {
+  if (item.kind === 'request') {
+    return [
+      item.id,
+      item.kind,
+      item.role,
+      item.turnId,
+      item.contentPreview,
+      item.turnResponse?.request.content ?? '',
+      item.turnResponse?.request.displayContent ?? '',
+      item.turnResponse?.createdAt ?? '',
+      stableSmallJson(item.turnResponse?.request?.attachments ?? null),
+      stableSmallJson(selectRequestPresentationMetadata(item.turnResponse?.request?.metadata)),
+    ].join('\u001f');
+  }
+
   const responseModel = item.turnResponse?.responseModel;
   return [
     item.id,
@@ -601,7 +641,6 @@ function createItemSignature(item: Omit<ChatVisibleTranscriptItem, 'revision'>):
     item.role,
     item.turnId,
     item.status,
-    item.contentPreview,
     item.turnResponse?.response.status ?? '',
     item.turnResponse?.updatedAt ?? '',
     stableSmallJson(item.turnResponse?.request?.metadata ?? null),
@@ -612,6 +651,34 @@ function createItemSignature(item: Omit<ChatVisibleTranscriptItem, 'revision'>):
     item.contentUpdateTimings?.lastWordCount ?? '',
     item.parts.map(createPartRevisionSignature).join('\u001e'),
   ].join('\u001f');
+}
+
+function selectRequestPresentationMetadata(
+  metadata: TurnResponseTurn['request']['metadata'] | null | undefined,
+): Record<string, unknown> | null {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+
+  const presentationKeys = [
+    'agentId',
+    'command',
+    'commandKind',
+    'explicitAgentInvocation',
+    'modeId',
+    'modeInfo',
+    'modelRouting',
+    'parsedParts',
+    'requestRouting',
+    'userSelectedTools',
+  ] as const;
+  const selected: Record<string, unknown> = {};
+  for (const key of presentationKeys) {
+    if (metadata[key] !== undefined) {
+      selected[key] = metadata[key];
+    }
+  }
+  return Object.keys(selected).length > 0 ? selected : null;
 }
 
 function createPartRevisionSignature(part: ChatPart): string {

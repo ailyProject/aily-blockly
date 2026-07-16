@@ -305,7 +305,7 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
   streamingConfig: StreamingOption = {
     hasNextChunk: false,
     enableAnimation: false,
-    buffering: 'word',
+    buffering: 'paragraph',
     impliedWordLoadRate: undefined,
   };
   activeContentRef = '';
@@ -371,7 +371,7 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
     this.streamingConfig = {
       hasNextChunk: isStreaming,
       enableAnimation: false,
-      buffering: 'word',
+      buffering: 'paragraph',
       impliedWordLoadRate: this.impliedWordLoadRate,
     };
     if (!changes['data']) {
@@ -470,7 +470,7 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
     this.streamingConfig = {
       hasNextChunk: true,
       enableAnimation: false,
-      buffering: 'word',
+      buffering: 'paragraph',
       impliedWordLoadRate,
     };
     const rawLength = typeof data.contentLength === 'number'

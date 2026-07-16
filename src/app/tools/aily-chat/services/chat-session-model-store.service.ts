@@ -158,6 +158,8 @@ export type ChatSessionModelStoreChangeKind = 'created' | 'updated' | 'disposed'
 export type ChatSessionModelStoreChangeReason =
   | ChatSessionRequestListTransactionResult['kind']
   | 'metadata'
+  | 'inputDraft'
+  | 'projection'
   | 'turnDelta';
 
 export interface ChatSessionModelStoreChangedEvent {
@@ -1370,6 +1372,29 @@ export class ChatSessionModelStoreService {
     return true;
   }
 
+  updateInputDraft(
+    sessionResource: string | null | undefined,
+    draftText: string,
+  ): boolean {
+    const model = this.get(sessionResource);
+    if (!model) {
+      return false;
+    }
+
+    model.updateMetadata({
+      inputState: {
+        ...model.inputState,
+        draftText,
+      },
+    });
+    this.changedSubject.next({
+      sessionResource: model.sessionResource,
+      kind: 'updated',
+      reason: 'inputDraft',
+    });
+    return true;
+  }
+
   replaceTurnResponses(
     sessionResource: string | null | undefined,
     turnResponses: readonly TurnResponseTurn[] | null | undefined,
@@ -1721,7 +1746,11 @@ export class ChatSessionModelStoreService {
     }
 
     model.applyRuntimeState(state, options);
-    this.changedSubject.next({ sessionResource: model.sessionResource, kind: 'updated' });
+    this.changedSubject.next({
+      sessionResource: model.sessionResource,
+      kind: 'updated',
+      ...(options?.reason === 'projection' ? { reason: 'projection' as const } : {}),
+    });
     return true;
   }
 
@@ -1736,7 +1765,11 @@ export class ChatSessionModelStoreService {
     }
 
     model.applyProjection(state, options);
-    this.changedSubject.next({ sessionResource: model.sessionResource, kind: 'updated' });
+    this.changedSubject.next({
+      sessionResource: model.sessionResource,
+      kind: 'updated',
+      reason: 'projection',
+    });
     return true;
   }
 

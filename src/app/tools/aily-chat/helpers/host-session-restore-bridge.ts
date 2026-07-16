@@ -309,20 +309,28 @@ function buildSessionCheckpointTimelineStateFromHostRecord(
   targetSessionId: string,
 ): SessionCheckpointTimelineState | null {
   const sidecar = hostRecord.sidecar?.checkpointRedoBranch;
+  const marker = hostRecord.sidecar?.checkpointMarker;
   const targetResource = typeof targetSessionId === 'string' ? targetSessionId.trim() : '';
   const sidecarResource = typeof sidecar?.sessionResource === 'string'
     ? sidecar.sessionResource.trim()
     : '';
-  if (!targetResource || sidecarResource !== targetResource || !Array.isArray(sidecar?.turnResponses)) {
+  const markerResource = typeof marker?.sessionResource === 'string'
+    ? marker.sessionResource.trim()
+    : '';
+  const hasRedoBranch = sidecarResource === targetResource && Array.isArray(sidecar?.turnResponses);
+  const hasCanonicalMarker = markerResource === targetResource && Array.isArray(hostRecord.turnResponses);
+  if (!targetResource || (!hasRedoBranch && !hasCanonicalMarker)) {
     return null;
   }
 
-  const checkpointMetadataMaps = buildCheckpointMetadataMapsFromSidecar(sidecar.checkpoints, targetResource);
+  const checkpointMetadataMaps = hasRedoBranch
+    ? buildCheckpointMetadataMapsFromSidecar(sidecar?.checkpoints, targetResource)
+    : null;
   return createSessionCheckpointTimelineState({
     sessionResource: targetResource,
-    turnResponses: sidecar.turnResponses as unknown as readonly TurnResponseTurn[],
-    currentCheckpointIndex: sidecar.currentCheckpointIndex,
-    currentTurnResponseCount: sidecar.currentTurnResponseCount,
+    turnResponses: (hasRedoBranch ? sidecar?.turnResponses : hostRecord.turnResponses) as unknown as readonly TurnResponseTurn[],
+    currentCheckpointIndex: hasRedoBranch ? sidecar?.currentCheckpointIndex : marker?.currentCheckpointIndex,
+    currentTurnResponseCount: hasRedoBranch ? sidecar?.currentTurnResponseCount : marker?.currentTurnResponseCount,
     ...(checkpointMetadataMaps ? {
       metadataByCheckpointId: checkpointMetadataMaps.metadataByCheckpointId,
       metadataByRequestId: checkpointMetadataMaps.metadataByRequestId,

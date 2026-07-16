@@ -463,7 +463,6 @@ export function buildToolActivityDisplayItem(
   const subtitle = pendingApproval
     ? approval.subtitle
     : (toolInvocationSummary?.subtitle || approval?.subtitle);
-
   return {
     id: options?.id || buildChatPartIdentity(part, 0),
     kind: 'activity',
@@ -854,9 +853,6 @@ function buildTerminalToolbarActions(part: TerminalPart): readonly ActivityToolb
 function shouldExpandTerminalOutput(part: TerminalPart): boolean {
   if (part.isRunning) {
     return !!(part.output || part.stderr);
-  }
-  if (part.exitCode != null && part.exitCode !== 0) {
-    return true;
   }
   return false;
 }
@@ -1476,7 +1472,17 @@ function getToolLikeActivityState(part: ToolCallPart | ConfirmationPart | Termin
     return part.exitCode != null && part.exitCode !== 0 ? 'error' : 'done';
   }
 
-  return part.state;
+  const state = String(part.state || '').trim().toLowerCase();
+  if (state === 'running' || state === 'loading' || state === 'pending' || state === 'streaming') {
+    return 'doing';
+  }
+  if (state === 'completed' || state === 'complete' || state === 'success' || state === 'succeeded') {
+    return 'done';
+  }
+  if (state === 'failed' || state === 'failure') {
+    return 'error';
+  }
+  return state;
 }
 
 function buildTerminalDetailSections(part: TerminalPart): readonly DetailSectionDescriptor[] {

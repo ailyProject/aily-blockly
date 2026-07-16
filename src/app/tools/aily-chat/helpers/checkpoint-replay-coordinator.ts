@@ -337,7 +337,7 @@ type CheckpointReplayCoordinatorContext = ChatViewWriteBridgeContext
     commitCheckpointRestoreRequestListTransaction?(
       sessionId: string | null | undefined,
       checkpointId: string | null | undefined,
-    ): ChatSessionRequestListTransactionResult | null | undefined;
+    ): Promise<ChatSessionRequestListTransactionResult | null | undefined> | ChatSessionRequestListTransactionResult | null | undefined;
     rollbackCheckpointRestoreRequestListTransaction?(
       sessionId: string | null | undefined,
       committed: ChatSessionRequestListTransactionResult | null | undefined,
@@ -428,29 +428,77 @@ export class CheckpointReplayCoordinator {
     private readonly viewWriteBridge: CheckpointReplayViewWriteAccess,
   ) {}
 
-  async restoreCheckpointRedoChat(
-    turnResponses: readonly TurnResponseTurn[],
-    options: {
-      publishSummary?: boolean;
-      saveSession?: boolean;
-    } = {},
-  ): Promise<CheckpointRedoChatReplayResult> {
-    const preparedReplayArtifact = await this.prepareCheckpointRedoReplayArtifact(turnResponses, options);
-    return this.executePreparedCheckpointRedoReplayArtifact(preparedReplayArtifact);
-  }
-
-  async redoCheckpoint(
-    turnResponses: readonly TurnResponseTurn[],
-    previousTurnResponses: readonly TurnResponseTurn[],
-    boundaryCommitHooks: CheckpointRedoBoundaryCommitHooks = {},
+  async redoCheckpointByIdentity(
+    checkpointId: string,
+    commitCanonicalCheckpoint: () => Promise<unknown>,
   ): Promise<CheckpointRedoExecutionResult> {
-    const preparedTransition = await this.prepareCheckpointRedoCommit(
-      turnResponses,
-      previousTurnResponses,
-      boundaryCommitHooks,
+    const normalizedCheckpointId = checkpointId.trim();
+    const workspaceCheckpointAccess = this.getWorkspaceCheckpointAccess();
+    const preparedFilesAction = await this.createPreparedCheckpointRedoFilesAction(
+      normalizedCheckpointId,
+      {
+        presentationMode: workspaceCheckpointAccess.getPresentationMode?.(),
+        buildRedoPlan: workspaceCheckpointAccess.buildRedoPlan?.bind(workspaceCheckpointAccess),
+        applyRestorePlan: workspaceCheckpointAccess.applyRestorePlan?.bind(workspaceCheckpointAccess),
+      },
     );
+    const workspaceApplyResult = await preparedFilesAction.apply();
+    if (workspaceApplyResult.errors.length > 0 || (workspaceApplyResult as CheckpointRedoPreparedFileApplyResult).failureKind) {
+      const preparedResult = workspaceApplyResult as CheckpointRedoPreparedFileApplyResult;
+      if (preparedResult.failureKind) {
+        return this.buildRedoPreApplyHardFailureResult(preparedResult.failureKind, [...preparedResult.errors]);
+      }
+      const rollbackErrors = workspaceApplyResult.rollbackErrors ?? [];
+      const detailErrors = [
+        ...workspaceApplyResult.errors.map(error => `文件恢复失败: ${error}`),
+        ...rollbackErrors,
+      ];
+      return this.buildRedoFailureResult(
+        'file',
+        workspaceApplyResult.rolledBackOnError === true && rollbackErrors.length === 0 ? 'safe-rollback' : 'hard-fail',
+        detailErrors,
+        rollbackErrors.length,
+        this.buildRedoFailureOutcome(detailErrors, rollbackErrors.length),
+      );
+    }
 
-    return this.executeDeferredCheckpointTransition(preparedTransition) as Promise<CheckpointRedoExecutionResult>;
+    try {
+      await this.ctx.syncWorkspaceState?.();
+      await commitCanonicalCheckpoint();
+    } catch (error) {
+      const rollbackErrors: string[] = [];
+      if (typeof workspaceApplyResult.emergencyRollback === 'function') {
+        try {
+          const rollbackResult = await workspaceApplyResult.emergencyRollback();
+          rollbackErrors.push(
+            ...(rollbackResult?.errors ?? []),
+            ...(rollbackResult?.rollbackErrors ?? []),
+          );
+        } catch (rollbackError) {
+          rollbackErrors.push(this.buildOperationErrorMessage('文件回滚失败', rollbackError));
+        }
+      }
+      const detailErrors = [
+        this.buildOperationErrorMessage('检查点重做提交失败', error),
+        ...rollbackErrors,
+      ];
+      return this.buildRedoFailureResult(
+        'commit',
+        rollbackErrors.length === 0 ? 'safe-rollback' : 'hard-fail',
+        detailErrors,
+        rollbackErrors.length,
+        this.buildRedoFailureOutcome(detailErrors, rollbackErrors.length),
+      );
+    }
+
+    await this.projectCheckpointMetadataPointer(normalizedCheckpointId, 'redo');
+
+    return {
+      ok: true,
+      rolledBackFiles: workspaceApplyResult.rolledBackFiles,
+      chatTurnCount: 1,
+      outcome: this.buildRedoSuccessOutcome(workspaceApplyResult.rolledBackFiles, 1),
+    };
   }
 
   private async prepareCheckpointRedoCommit(
@@ -492,7 +540,7 @@ export class CheckpointReplayCoordinator {
     const rollbackCheckpointId = this.getCheckpointIdFromTurnResponses(turnResponses);
 
     const preparedRedoFilesAction = await this.createPreparedCheckpointRedoFilesAction(
-      turnResponses,
+      rollbackCheckpointId ?? '',
       {
         presentationMode: rollbackPresentationMode,
         buildRedoPlan: buildPreparedRedoPlan,
@@ -530,18 +578,101 @@ export class CheckpointReplayCoordinator {
     });
   }
 
-  async restoreCheckpoint(
+  async restoreCheckpointByIdentity(
     checkpointId: string,
-    options: {
-      turnId?: string;
-      listIndex?: number;
-      captureRedoTurns?: boolean;
-      truncateLiveTurnResponses?: boolean;
-    } = {},
+    commitCanonicalCheckpoint: () => Promise<unknown>,
   ): Promise<CheckpointRestoreExecutionResult> {
-    const preparedTransition = await this.prepareCheckpointRestoreCommit(checkpointId, options);
+    const normalizedCheckpointId = checkpointId.trim();
+    const workspaceCheckpointAccess = this.getWorkspaceCheckpointAccess();
+    const preparedFilesAction = await this.createPreparedCheckpointRestoreCommitFilesAction(
+      normalizedCheckpointId,
+      {
+        presentationMode: workspaceCheckpointAccess.getPresentationMode?.(),
+        buildRestorePlan: workspaceCheckpointAccess.buildRestorePlan?.bind(workspaceCheckpointAccess),
+        applyRestorePlan: workspaceCheckpointAccess.applyRestorePlan?.bind(workspaceCheckpointAccess),
+        allowRequestListOnlyRestore: !this.hasOpenProjectWorkspace(),
+      },
+    );
+    const workspaceApplyResult = await preparedFilesAction.apply();
+    if (workspaceApplyResult.errors.length > 0) {
+      const rollbackErrors = workspaceApplyResult.rollbackErrors ?? [];
+      const detailErrors = [
+        ...workspaceApplyResult.errors.map(error => `文件恢复失败: ${error}`),
+        ...rollbackErrors,
+      ];
+      return {
+        ok: false,
+        phase: 'file',
+        detailErrors,
+        rollbackErrorCount: rollbackErrors.length,
+        rolledBackOnError: workspaceApplyResult.rolledBackOnError === true,
+        outcome: this.buildRestoreFailureOutcome(
+          detailErrors,
+          rollbackErrors.length,
+          workspaceApplyResult.rolledBackOnError === true,
+        ),
+      };
+    }
 
-    return this.executeDeferredCheckpointTransition(preparedTransition);
+    try {
+      await this.ctx.syncWorkspaceState?.();
+      await commitCanonicalCheckpoint();
+    } catch (error) {
+      const rollbackErrors: string[] = [];
+      let rolledBackOnError = false;
+      if (typeof workspaceApplyResult.emergencyRollback === 'function') {
+        try {
+          const rollbackResult = await workspaceApplyResult.emergencyRollback();
+          rollbackErrors.push(
+            ...(rollbackResult?.errors ?? []),
+            ...(rollbackResult?.rollbackErrors ?? []),
+          );
+          rolledBackOnError = rollbackResult?.rolledBackOnError === true && rollbackErrors.length === 0;
+        } catch (rollbackError) {
+          rollbackErrors.push(this.buildOperationErrorMessage('文件回滚失败', rollbackError));
+        }
+      }
+      const detailErrors = [
+        this.buildOperationErrorMessage('检查点还原提交失败', error),
+        ...rollbackErrors,
+      ];
+      return {
+        ok: false,
+        phase: 'commit',
+        detailErrors,
+        rollbackErrorCount: rollbackErrors.length,
+        rolledBackOnError,
+        outcome: this.buildRestoreFailureOutcome(detailErrors, rollbackErrors.length, rolledBackOnError),
+      };
+    }
+
+    await this.projectCheckpointMetadataPointer(normalizedCheckpointId, 'restore');
+
+    return {
+      ok: true,
+      rolledBackFiles: workspaceApplyResult.rolledBackFiles,
+      outcome: this.buildRestoreSuccessOutcome(workspaceApplyResult.rolledBackFiles),
+    };
+  }
+
+  private async projectCheckpointMetadataPointer(
+    checkpointId: string,
+    direction: 'restore' | 'redo',
+  ): Promise<void> {
+    try {
+      if (direction === 'restore') {
+        this.ctx.editCheckpointService.commitRestorePointerByCheckpointId?.(checkpointId);
+      } else {
+        this.ctx.editCheckpointService.commitRedoPointerByCheckpointId?.(checkpointId);
+      }
+      await this.ctx.editCheckpointService.publishCurrentSummary?.();
+    } catch (error) {
+      console.warn('[AilyChat][CheckpointReplay] Failed to project committed checkpoint metadata', {
+        checkpointId,
+        direction,
+        error,
+      });
+    }
   }
 
   private async prepareCheckpointRestoreCommit(
@@ -1074,7 +1205,7 @@ export class CheckpointReplayCoordinator {
           throw new Error(`Checkpoint restore request-list transaction is required for ${params.sessionId}`);
         }
 
-        committedRestoreTransaction = commitCheckpointRestoreRequestListTransaction(
+        committedRestoreTransaction = await commitCheckpointRestoreRequestListTransaction(
           params.sessionId,
           params.checkpointId,
         ) ?? null;
@@ -1973,7 +2104,7 @@ export class CheckpointReplayCoordinator {
   }
 
   private async createPreparedCheckpointRedoFilesAction(
-    turnResponses: readonly TurnResponseTurn[],
+    checkpointId: string,
     frozenWorkspaceAction: {
       presentationMode: WorkspaceCheckpointPresentationMode | undefined;
       buildRedoPlan: CheckpointWorkspaceAccess['buildRedoPlan'] | undefined;
@@ -1984,9 +2115,9 @@ export class CheckpointReplayCoordinator {
     apply: () => Promise<CheckpointWorkspaceApplyResult>;
   }> {
     const { presentationMode, buildRedoPlan, applyRestorePlan } = frozenWorkspaceAction;
-    const checkpointId = this.getCheckpointIdFromTurnResponses(turnResponses);
+    const normalizedCheckpointId = checkpointId.trim();
 
-    if (!checkpointId || !buildRedoPlan || !applyRestorePlan) {
+    if (!normalizedCheckpointId || !buildRedoPlan || !applyRestorePlan) {
       return {
         presentationMode,
         apply: async () => ({
@@ -1997,13 +2128,13 @@ export class CheckpointReplayCoordinator {
       };
     }
 
-    const preparedRedoPlan = await buildRedoPlan(checkpointId);
+    const preparedRedoPlan = await buildRedoPlan(normalizedCheckpointId);
     if (!preparedRedoPlan) {
       return {
         presentationMode,
         apply: async () => ({
           rolledBackFiles: 0,
-          errors: [`未找到检查点 redo plan: ${checkpointId}`],
+          errors: [`未找到检查点 redo plan: ${normalizedCheckpointId}`],
           failureKind: 'plan-missing',
         }),
       };

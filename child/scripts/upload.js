@@ -416,9 +416,10 @@ async function main() {
             } else {
                 logger.warn(`[preprocess] ${preprocessResult.reason}，回退到现有 uploadParam`);
             }
-        } else {
-            logger.log(`[preprocess] 跳过（非 ESP32 板，core=${core}）`);
-        }
+        } 
+        // else {
+        //     logger.log(`[preprocess] 跳过（非 ESP32 板，core=${core}）`);
+        // }
 
         logger.log(`上传参数来源: ${uploadParamSource}`);
         logger.log('使用的上传参数:', uploadParam);

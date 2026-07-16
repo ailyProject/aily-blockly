@@ -52,6 +52,7 @@ type HostResourceOperationPayload = {
   readonly record?: unknown;
   readonly hostRecord?: unknown;
   readonly liveHostSessionRecord?: unknown;
+  readonly allowEmptyTranscript?: unknown;
   readonly projectPath?: unknown;
   readonly args?: unknown;
   readonly autoSaveEdits?: unknown;
@@ -1276,7 +1277,9 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
       };
     }
 
-    await this.chatHistoryService.saveHostRecordAsync(normalizedRecord);
+    await this.chatHistoryService.saveHostRecordAsync(normalizedRecord, {
+      allowEmptyTranscript: (request.payload as HostResourceOperationPayload | undefined)?.allowEmptyTranscript === true,
+    });
 
     return {
       saved: true,

@@ -168,6 +168,22 @@
               </div>
             </h2>
             <div class="right-inner">
+              <div class="item">
+                <div>{{ 'SETTINGS.FIELDS.DEPENDENCY_CLEANUP' | translate }}:</div>
+                <div class="region-buttons">
+                  <!-- <button nz-button nzSize="small" [disabled]="dependencyRemoving"
+                    [nzLoading]="dependencyRemoving === 'all'" (click)="removeGlobalDependencies('all')">{{
+                    'SETTINGS.FIELDS.DEPENDENCY_REMOVE_ALL' | translate }}</button> -->
+                  <button nz-button nzSize="small" [disabled]="dependencyRemoving"
+                    [nzLoading]="dependencyRemoving === 'unused-30'"
+                    (click)="removeGlobalDependencies('unused-30')">{{
+                    'SETTINGS.FIELDS.DEPENDENCY_REMOVE_UNUSED_30' | translate }}</button>
+                  <button nz-button nzSize="small" [disabled]="dependencyRemoving"
+                    [nzLoading]="dependencyRemoving === 'unused-90'"
+                    (click)="removeGlobalDependencies('unused-90')">{{
+                    'SETTINGS.FIELDS.DEPENDENCY_REMOVE_UNUSED_90' | translate }}</button>
+                </div>
+              </div>
               <div class="board-list sscroll bborder">
                 @if(filteredBoardList.length == 0 && boardSearchKeyword) {
                 <div class="board-item">{{ 'NO RESULTS'}}</div>

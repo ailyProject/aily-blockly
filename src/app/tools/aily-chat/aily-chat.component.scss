@@ -39,30 +39,6 @@
   overflow: hidden;
 }
 
-.aily-chat-header-process-btn {
-  position: relative;
-}
-
-.aily-chat-header-process-badge {
-  position: absolute;
-  top: -3px;
-  right: -4px;
-  min-width: 12px;
-  height: 12px;
-  padding: 0 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: #d4380d;
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: 0 0 0 2px var(--aily-bg-primary, #1f1f1f);
-  pointer-events: none;
-}
-
 :host-context([data-theme='light']) .btn.mode .mini-tag.warn {
   border-color: rgba(161, 98, 7, 0.32);
   background: rgba(245, 158, 11, 0.14);
@@ -254,6 +230,15 @@
     min-width: 0;
     max-width: 100%;
     box-sizing: border-box;
+
+    .history-page-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 24px;
+      color: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.9));
+      pointer-events: none;
+    }
 
     .dialog-virtual-row {
       min-width: 0;

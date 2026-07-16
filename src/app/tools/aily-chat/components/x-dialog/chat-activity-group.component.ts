@@ -412,6 +412,10 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   private detailViewportTimerId: ReturnType<typeof setTimeout> | null = null;
   private lastProjectionKey = '';
   private lastDetailProjectionKey = '';
+  private readonly projectedPartItems = new Map<string, {
+    readonly revision: string;
+    readonly items: ActivityGroupDisplayItem[];
+  }>();
   private userRequestedDetailProjection = false;
   showDetailViewportTopFade = false;
   showDetailViewportBottomFade = false;
@@ -451,6 +455,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   /** Keep the mounted group and spinner DOM while applying a new part revision. */
   applyVisibleGroupPatch(input: {
     readonly parts: readonly ChatPart[];
+    readonly changedParts?: readonly ChatPart[];
     readonly doing: boolean;
     readonly sessionId: string;
     readonly turnResponse: TurnResponseTurn | null;
@@ -466,6 +471,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
 
   private applyVisibleGroupPatchInternal(input: {
     readonly parts: readonly ChatPart[];
+    readonly changedParts?: readonly ChatPart[];
     readonly doing: boolean;
     readonly sessionId: string;
     readonly turnResponse: TurnResponseTurn | null;
@@ -539,6 +545,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
 
   private tryApplyStreamingThinkingRevision(input: {
     readonly parts: readonly ChatPart[];
+    readonly changedParts?: readonly ChatPart[];
     readonly doing: boolean;
     readonly sessionId: string;
     readonly turnResponse: TurnResponseTurn | null;
@@ -549,39 +556,34 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
       || !this.expanded
       || !this.activityListComponent
       || this.parts.length !== input.parts.length
+      || input.changedParts?.length !== 1
       || buildContinuationProjectionKey(this.turnResponse) !== buildContinuationProjectionKey(input.turnResponse)) {
       return false;
     }
 
-    let thinkingIndex = -1;
-    for (let index = 0; index < input.parts.length; index += 1) {
-      const previousPart = this.parts[index];
-      const nextPart = input.parts[index];
-      if (!previousPart || !nextPart) {
-        return false;
-      }
-      if (previousPart.type === 'thinking' && nextPart.type === 'thinking'
-        && previousPart.isComplete === false && nextPart.isComplete === false
-        && !!previousPart.contentRef && previousPart.contentRef === nextPart.contentRef
-        && buildChatPartIdentity(previousPart, index) === buildChatPartIdentity(nextPart, index)) {
-        const previousLength = previousPart.contentLength ?? previousPart.content.length;
-        const nextLength = nextPart.contentLength ?? nextPart.content.length;
-        if (nextLength < previousLength || thinkingIndex >= 0) {
-          return false;
-        }
-        thinkingIndex = index;
-        continue;
-      }
-      if (buildActivityPartDetailProjectionKey(previousPart, index, true)
-        !== buildActivityPartDetailProjectionKey(nextPart, index, true)) {
-        return false;
-      }
+    const changedThinking = input.changedParts[0];
+    if (changedThinking.type !== 'thinking') {
+      return false;
     }
-
+    const thinkingIndex = input.parts.indexOf(changedThinking);
     if (thinkingIndex < 0) {
       return false;
     }
-    const nextThinking = input.parts[thinkingIndex] as ThinkingPart;
+    const previousThinking = this.parts[thinkingIndex];
+    const nextThinking = input.parts[thinkingIndex];
+    if (previousThinking?.type !== 'thinking'
+      || nextThinking?.type !== 'thinking'
+      || previousThinking.isComplete !== false
+      || nextThinking.isComplete !== false
+      || buildChatPartIdentity(previousThinking, thinkingIndex)
+        !== buildChatPartIdentity(nextThinking, thinkingIndex)) {
+      return false;
+    }
+    const previousLength = previousThinking.contentLength ?? previousThinking.content.length;
+    const nextLength = nextThinking.contentLength ?? nextThinking.content.length;
+    if (nextLength < previousLength) {
+      return false;
+    }
     const displayItemId = buildChatPartIdentity(nextThinking, thinkingIndex);
     const displayItemIndex = this.displayItems.findIndex(item => item.id === displayItemId && item.kind === 'thinking');
     if (displayItemIndex < 0) {
@@ -600,8 +602,8 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     this.impliedWordLoadRate = input.impliedWordLoadRate;
     this.detailProjectionEnabled = input.detailProjectionEnabled;
     this.displayItems = nextDisplayItems;
-    return this.activityListComponent.applyItemsPatch(
-      nextDisplayItems,
+    return this.activityListComponent.applyItemPatch(
+      nextDisplayItems[displayItemIndex],
       input.sessionId,
       input.impliedWordLoadRate,
     );
@@ -639,7 +641,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   }
 
   get isGroupSpinning(): boolean {
-    return this.doing;
+    return this.groupState === 'doing';
   }
 
   get isFirstItemNotTool(): boolean {
@@ -648,7 +650,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   }
 
   get useFixedViewport(): boolean {
-    return this.doing;
+    return this.groupState === 'doing';
   }
 
   get groupIconClass(): string {
@@ -691,6 +693,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
       this.displayItems = [];
       this.lastProjectionKey = '';
       this.lastDetailProjectionKey = '';
+      this.projectedPartItems.clear();
       return;
     }
     const refreshStartedAt = performance.now();
@@ -728,8 +731,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     if (!headerCacheHit) {
       this.lastProjectionKey = projectionKey;
       const pres = buildActivityGroupPresentation(this.parts);
-      const settledState = pres.state === 'doing' ? 'done' : pres.state;
-      this.groupState = this.doing ? 'doing' : settledState;
+      this.groupState = pres.state;
       this.groupHeader = mergeStableGroupHeader(this.groupHeader, pres.header);
     }
 
@@ -763,7 +765,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
 
     this.lastDetailProjectionKey = detailProjectionKey;
     const projectedItems = this._attachTurnResponseContinuation(
-      this.parts.flatMap((part, index) => this._buildRevisionedItems(part, index, this.parts)),
+      this._projectRevisionedItems(),
     );
     this.displayItems = reuseStableDisplayItems(this.displayItems, projectedItems);
     this._syncExpandedState();
@@ -844,8 +846,41 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     }));
   }
 
+  private _projectRevisionedItems(): ActivityGroupDisplayItem[] {
+    const groupStructureRevision = buildActivityGroupStructureProjectionKey(this.parts);
+    const liveCacheKeys = new Set<string>();
+    const projectedItems: ActivityGroupDisplayItem[] = [];
+
+    for (let index = 0; index < this.parts.length; index += 1) {
+      const part = this.parts[index];
+      const cacheKey = `${buildChatPartIdentity(part, index)}:${index}`;
+      liveCacheKeys.add(cacheKey);
+      const revision = [
+        groupStructureRevision,
+        buildActivityPartDetailProjectionKey(part, index, this.doing),
+        buildActivityPartDependencyProjectionKey(part, this.parts, this.doing),
+      ].join('|');
+      const cached = this.projectedPartItems.get(cacheKey);
+      if (cached?.revision === revision) {
+        projectedItems.push(...cached.items);
+        continue;
+      }
+
+      const items = this._buildRevisionedItems(part, index, this.parts);
+      this.projectedPartItems.set(cacheKey, { revision, items });
+      projectedItems.push(...items);
+    }
+
+    for (const cacheKey of this.projectedPartItems.keys()) {
+      if (!liveCacheKeys.has(cacheKey)) {
+        this.projectedPartItems.delete(cacheKey);
+      }
+    }
+    return projectedItems;
+  }
+
   private _syncExpandedState(): void {
-    const shouldAutoExpand = this.doing || this.hasActivePendingInlineApproval();
+    const shouldAutoExpand = this.groupState === 'doing' || this.hasActivePendingInlineApproval();
     if (shouldAutoExpand === this.lastAutoExpanded) {
       return;
     }
@@ -1380,23 +1415,6 @@ function countLegacySubagentChildren(parts: readonly ChatPart[]): number {
   return count;
 }
 
-const objectIdentityKeys = new WeakMap<object, number>();
-let nextObjectIdentityKey = 1;
-
-function getObjectIdentityKey(value: unknown): string {
-  if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
-    return '';
-  }
-
-  const objectValue = value as object;
-  let key = objectIdentityKeys.get(objectValue);
-  if (key == null) {
-    key = nextObjectIdentityKey++;
-    objectIdentityKeys.set(objectValue, key);
-  }
-  return String(key);
-}
-
 function buildActivityGroupProjectionKey(
   parts: readonly ChatPart[],
   doing: boolean,
@@ -1449,6 +1467,69 @@ function buildActivityGroupDetailProjectionKey(
     buildActivityGroupProjectionKey(parts, doing, turnResponse),
     ...parts.map((part, index) => buildActivityPartDetailProjectionKey(part, index, doing)),
   ].join('|');
+}
+
+function buildActivityGroupStructureProjectionKey(parts: readonly ChatPart[]): string {
+  return parts.map((part, index) => {
+    const base = `${buildChatPartIdentity(part, index)}:${part.type}`;
+    if (part.type === 'tool_call') {
+      const args = readRecord(part.args);
+      const metadata = readRecord(part.metadata);
+      return [
+        base,
+        part.toolCallId,
+        part.toolName,
+        part.subAgentInvocationId ?? '',
+        part.parentToolCallId ?? '',
+        readTerminalCommandFromRecord(args, metadata) ?? '',
+        ...readTerminalSessionIdsFromRecord(args, metadata),
+      ].join(':');
+    }
+    if (part.type === 'confirmation') {
+      return [
+        base,
+        part.askId,
+        part.toolName,
+        readTerminalCommandFromRecord(readRecord(part.args), readRecord(part.metadata)) ?? '',
+      ].join(':');
+    }
+    if (part.type === 'terminal') {
+      return [
+        base,
+        part.toolCallId ?? '',
+        ...(part.sourceToolCallIds ?? []),
+        part.processId ?? '',
+        part.outputSessionId ?? '',
+        part.terminalId ?? '',
+        part.command,
+      ].join(':');
+    }
+    if (isSubagentChildPart(part)) {
+      return [base, getScopedSubagentChildId(part) ?? ''].join(':');
+    }
+    return base;
+  }).join('|');
+}
+
+function buildActivityPartDependencyProjectionKey(
+  part: ChatPart,
+  groupParts: readonly ChatPart[],
+  doing: boolean,
+): string {
+  if (part.type !== 'tool_call' || !isSubagentToolCall(part)) {
+    return '';
+  }
+
+  const dependencies: string[] = [];
+  for (let index = 0; index < groupParts.length; index += 1) {
+    const candidate = groupParts[index];
+    if (candidate !== part
+      && isSubagentChildPart(candidate)
+      && getScopedSubagentChildId(candidate) === part.toolCallId) {
+      dependencies.push(buildActivityPartDetailProjectionKey(candidate, index, doing));
+    }
+  }
+  return dependencies.join('|');
 }
 
 function buildContinuationProjectionKey(turnResponse: TurnResponseTurn | null): string {
@@ -1568,13 +1649,13 @@ function buildActivityPartDetailProjectionKey(part: ChatPart, index: number, doi
     case 'tool_call':
       return [
         base,
-        getObjectIdentityKey(part.args),
+        buildStructuredProjectionKey(part.args),
         buildMetadataProjectionKey(part.metadata),
       ].join(':');
     case 'confirmation':
       return [
         base,
-        getObjectIdentityKey(part.args),
+        buildStructuredProjectionKey(part.args),
         projectionValue(part.message),
         buildMetadataProjectionKey(part.metadata),
       ].join(':');
@@ -1714,4 +1795,23 @@ function projectionValue(value: unknown): string {
 
 function projectionLength(value: unknown): string {
   return typeof value === 'string' ? String(value.length) : '';
+}
+
+function buildStructuredProjectionKey(value: unknown): string {
+  if (value == null) {
+    return '';
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value) ?? '';
+  } catch {
+    serialized = String(value);
+  }
+
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${serialized.length}:${(hash >>> 0).toString(36)}`;
 }

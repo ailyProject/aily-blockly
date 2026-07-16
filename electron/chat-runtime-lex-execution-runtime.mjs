@@ -1,4 +1,5 @@
 import { exec as execCallback, execFile as execFileCallback } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -372,6 +373,62 @@ class LexExecutionRuntimeOwner {
     };
   }
 
+  async forkSession(command = {}) {
+    const sourceSessionId = normalizeSessionId(command.sourceSessionId);
+    const targetSessionId = normalizeSessionId(command.targetSessionId);
+    const beforeTurnId = normalizeTurnId(command.beforeTurnId);
+    if (!sourceSessionId || !targetSessionId || !beforeTurnId || sourceSessionId === targetSessionId) {
+      throw new Error('[AilyChat][ExecutionHost] forkSession requires distinct source/target sessions and a boundary turn.');
+    }
+    if (this.sessions.has(targetSessionId)) {
+      throw new Error(`[AilyChat][ExecutionHost] Fork target session already exists: ${targetSessionId}.`);
+    }
+    const source = this.sessions.get(sourceSessionId);
+    if (!source) {
+      throw new Error(`[AilyChat][ExecutionHost] Fork source runtime is unavailable: ${sourceSessionId}.`);
+    }
+    await source.handlePromise;
+    if (source.activeTurnPromise || source.activeAbortController) {
+      const error = new Error('[AilyChat][ExecutionHost] Cannot fork a running session.');
+      error.code = 'request_in_progress';
+      error.retryable = true;
+      throw error;
+    }
+    const readSnapshot = typeof source.handle?.getSessionSnapshot === 'function'
+      ? () => source.handle.getSessionSnapshot()
+      : () => source.handle?.saveSession?.();
+    const sourceSnapshot = readSnapshot();
+    if (!sourceSnapshot) {
+      throw new Error('[AilyChat][ExecutionHost] Fork source snapshot is unavailable.');
+    }
+    const retainedTurnIds = Array.isArray(command.retainedTurnIds)
+      ? command.retainedTurnIds.map(normalizeTurnId).filter(Boolean)
+      : [];
+    const forked = truncateSessionSnapshot(sourceSnapshot, {
+      kind: 'removeFrom',
+      turnId: beforeTurnId,
+      retainedTurnIds,
+      discardedTurnIds: [],
+    });
+    if (forked.afterTurnCount !== retainedTurnIds.length) {
+      throw new Error(
+        `[AilyChat][ExecutionHost] Fork snapshot boundary mismatch: expected ${retainedTurnIds.length}, got ${forked.afterTurnCount}.`,
+      );
+    }
+    const projectInfo = await this.readProjectInfo(sourceSessionId);
+    const target = await this.ensureSession(targetSessionId, {
+      sessionId: targetSessionId,
+      providerOptions: command.providerOptions || source.providerOptions || null,
+      currentModel: command.currentModel || source.currentModel || null,
+      initialSnapshot: forked.snapshot,
+    }, projectInfo);
+    return {
+      sessionId: targetSessionId,
+      ensured: Boolean(target?.handle),
+      executionHost: 'lex-headless',
+    };
+  }
+
   async startTurn(command = {}) {
     const sessionId = normalizeSessionId(command.sessionId || command.request?.sessionId);
     const turnId = normalizeTurnId(command.turnId || command.request?.activeResponseHandle);
@@ -432,6 +489,29 @@ class LexExecutionRuntimeOwner {
     return this.createSessionState(session, 'running', true, turnId);
   }
 
+  readSessionExecutionState(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return {
+        sessionId,
+        exists: false,
+        requestInProgress: false,
+        activeTurnId: null,
+      };
+    }
+
+    const requestInProgress = !!session.activeAbortController && !!session.activeTurnPromise;
+    return {
+      sessionId,
+      exists: true,
+      requestInProgress,
+      activeTurnId: requestInProgress ? session.activeTurnId || null : null,
+      responseCompleted: requestInProgress && session.responseCompletedTurnId === session.activeTurnId,
+      revision: Number(session.revision) || 0,
+    };
+  }
+
   applyProtocolTruncation(session, protocolTruncation) {
     const truncation = normalizeProtocolTruncation(protocolTruncation);
     if (!truncation || !session?.handle) {
@@ -447,7 +527,7 @@ class LexExecutionRuntimeOwner {
       return;
     }
 
-    session.pendingApprovals?.clear?.();
+    session.pendingConfirmations?.clear?.();
     session.handle.restoreSession(result.snapshot);
     session.revision += 1;
 
@@ -515,9 +595,9 @@ class LexExecutionRuntimeOwner {
       return null;
     }
     if (request.kind === 'confirmation.resolve' || request.kind === 'confirmation.action') {
-      const pending = session.pendingApprovals?.get(interactionId);
+      const pending = session.pendingConfirmations?.get(interactionId);
       if (pending) {
-        session.pendingApprovals.delete(interactionId);
+        session.pendingConfirmations.delete(interactionId);
         pending.resolve(normalizeApprovalDecision(request.payload));
         return this.createInteractionSnapshot(session);
       }
@@ -602,7 +682,7 @@ class LexExecutionRuntimeOwner {
       handlePromise: null,
       cwd: null,
       adapter: null,
-      pendingApprovals: new Map(),
+      pendingConfirmations: new Map(),
       pendingQuestions: new Map(),
       commandProcesses: new Map(),
       completionChain: Promise.resolve(),
@@ -611,7 +691,7 @@ class LexExecutionRuntimeOwner {
       titleGenerationStarted: false,
     };
     this.sessions.set(sessionId, session);
-    await this.createSessionRuntime(session, projectInfo);
+    await this.createSessionRuntime(session, projectInfo, command.initialSnapshot || null);
     return session;
   }
 
@@ -637,7 +717,7 @@ class LexExecutionRuntimeOwner {
     session.runtimeConfigKey = nextConfig.runtimeConfigKey;
     session.handle = null;
     session.adapter = null;
-    session.pendingApprovals?.clear?.();
+    session.pendingConfirmations?.clear?.();
     session.pendingQuestions?.clear?.();
     session.commandProcesses = session.commandProcesses instanceof Map ? session.commandProcesses : new Map();
     await this.createSessionRuntime(session, projectInfo, snapshot);
@@ -689,6 +769,9 @@ class LexExecutionRuntimeOwner {
       approvalPolicy: normalizeApprovalPolicy(providerOptions),
       approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
       strictAutoReview: normalizeApprovalsReviewer(providerOptions) === 'auto_review',
+      hooks: {
+        askHandler: request => this.requestConfirmation(session, request),
+      },
       approvalHandler: approvalRequest => this.requestApproval(session, approvalRequest),
       approvalPreflightHandler: approvalRequest => this.requestApprovalPreflight(session, approvalRequest),
       additionalDeferredGroups: ELECTRON_BLOCKLY_DEFERRED_GROUPS,
@@ -929,7 +1012,7 @@ class LexExecutionRuntimeOwner {
   requestApproval(session, approvalRequest) {
     const interaction = createApprovalInteraction(session, approvalRequest);
     const approvalPromise = new Promise(resolve => {
-      session.pendingApprovals.set(interaction.id, { resolve });
+      session.pendingConfirmations.set(interaction.id, { resolve });
     });
     const snapshot = this.createInteractionSnapshot(session, [interaction]);
     this.emit({
@@ -940,6 +1023,41 @@ class LexExecutionRuntimeOwner {
       interaction: snapshot,
     });
     return approvalPromise;
+  }
+
+  requestConfirmation(session, request) {
+    const interaction = createConfirmationInteraction(session, request);
+    const signal = session.activeAbortController?.signal;
+    if (signal?.aborted) {
+      return Promise.resolve(false);
+    }
+    const confirmationPromise = new Promise(resolve => {
+      let settled = false;
+      const cleanup = () => {
+        session.pendingConfirmations.delete(interaction.id);
+        signal?.removeEventListener?.('abort', onAbort);
+      };
+      const settle = decision => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(decision);
+      };
+      const onAbort = () => settle({ approved: false, reason: 'aborted' });
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      session.pendingConfirmations.set(interaction.id, { resolve: settle });
+    });
+    const snapshot = this.createInteractionSnapshot(session, [interaction]);
+    this.emit({
+      kind: 'turnInteractionRequested',
+      sessionId: session.sessionId,
+      turnId: session.activeTurnId || interaction.id,
+      revision: snapshot.revision,
+      interaction: snapshot,
+    });
+    return confirmationPromise.then(decision => decision.approved);
   }
 
   async requestApprovalPreflight(session, approvalRequest) {
@@ -3911,6 +4029,46 @@ function createApprovalInteraction(session, request) {
   };
 }
 
+function createConfirmationInteraction(session, request) {
+  const requestId = normalizeString(request?.toolCallId) || `confirmation-${Date.now()}`;
+  const toolName = normalizeString(request?.toolName) || undefined;
+  const input = readApprovalRecord(request?.toolInput) || normalizeApprovalInput(request);
+  const actions = Array.isArray(request?.actions)
+    ? request.actions.map(action => ({
+      ...(normalizeString(action?.id) ? { id: normalizeString(action.id) } : {}),
+      scope: normalizeString(action?.scope) || 'once',
+      label: normalizeString(action?.label) || 'Continue',
+      ...(normalizeString(action?.description) ? { description: normalizeString(action.description) } : {}),
+      ...(normalizeString(action?.tooltip) ? { tooltip: normalizeString(action.tooltip) } : {}),
+      ...(Boolean(action?.disabled) ? { disabled: true } : {}),
+      ...(Boolean(action?.isSecondary) ? { isSecondary: true } : {}),
+      ...(Object.prototype.hasOwnProperty.call(action || {}, 'resolves') ? { resolves: Boolean(action.resolves) } : {}),
+    }))
+    : [];
+  return {
+    sessionId: session.sessionId,
+    id: requestId,
+    kind: 'confirmation',
+    partId: requestId,
+    askId: requestId,
+    ...(toolName ? { toolName } : {}),
+    data: {
+      kind: 'confirmation',
+      partId: requestId,
+      askId: requestId,
+      ...(toolName ? { toolName } : {}),
+      title: normalizeString(request?.title) || 'Continue?',
+      subtitle: normalizeString(request?.subtitle) || '',
+      message: normalizeString(request?.description) || normalizeString(request?.message) || '',
+      args: input,
+      actions,
+      primaryScope: normalizeString(request?.primaryScope) || 'once',
+      primaryLabel: 'Continue',
+      rejectLabel: 'Cancel',
+    },
+  };
+}
+
 function normalizeApprovalDecision(payload) {
   const result = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
   const approved = result?.approved !== false;
@@ -4951,6 +5109,49 @@ function resolveElectronChildToolSkillDirectories() {
   } catch (error) {
     console.warn('[AilyChat][SkillRegistry] Failed to scan child tool skills:', error?.message || error);
     return [];
+  }
+}
+
+function createElectronChildToolInventorySignature() {
+  const childPath = resolveElectronAilyChildPath();
+  const toolsPath = childPath ? path.join(childPath, 'tools') : '';
+  if (!toolsPath || !fsSync.existsSync(toolsPath)) {
+    return '';
+  }
+
+  const fingerprints = [];
+  try {
+    const toolEntries = fsSync.readdirSync(toolsPath, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    for (const toolEntry of toolEntries) {
+      const toolPath = path.join(toolsPath, toolEntry.name);
+      fingerprints.push(`tool:${toolEntry.name}`);
+      fingerprints.push(readElectronChildToolLifecycleFile(path.join(toolPath, 'package.json')));
+
+      const skillRoot = path.join(toolPath, 'skill');
+      if (!fsSync.existsSync(skillRoot)) continue;
+
+      for (const skillEntry of fsSync.readdirSync(skillRoot, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .sort((left, right) => left.name.localeCompare(right.name))) {
+        fingerprints.push(`skill:${toolEntry.name}/${skillEntry.name}`);
+        fingerprints.push(readElectronChildToolLifecycleFile(path.join(skillRoot, skillEntry.name, 'SKILL.md')));
+      }
+    }
+  } catch (error) {
+    console.warn('[AilyChat][SkillRegistry] Failed to fingerprint child tool inventory:', error?.message || error);
+  }
+
+  return createHash('sha256').update(fingerprints.join('\0')).digest('hex');
+}
+
+function readElectronChildToolLifecycleFile(filePath) {
+  try {
+    return fsSync.readFileSync(filePath);
+  } catch {
+    return '';
   }
 }
 
@@ -6540,6 +6741,7 @@ function normalizeApprovalsReviewer(providerOptions) {
 function createSessionRuntimeConfigKey(providerOptions, currentModel, cwd) {
   return JSON.stringify({
     cwd: normalizeString(cwd),
+    childToolInventory: createElectronChildToolInventorySignature(),
     permissionMode: normalizePermissionMode(providerOptions),
     permissionProfile: normalizePermissionProfile(providerOptions) || null,
     approvalPolicy: normalizeApprovalPolicy(providerOptions),

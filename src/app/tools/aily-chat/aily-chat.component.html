@@ -5,11 +5,13 @@
   (goMainEvent)="returnStandaloneSurfaceToEntryInventory()"
   (closeEvent)="returnStandaloneSurfaceToMain()">
   <ng-container header-title-prefix>
-    <aily-chat-session-title-control
-      [surface]="sessionTitleSurfaceModel"
-      [surfaceClickEnabled]="viewState.isSessionTitleSurfaceClickEnabled"
-      (actionRequested)="handleSessionTitleActionRequested($event)"
-      (surfaceClicked)="focusChatInputFromTitleControl()"></aily-chat-session-title-control>
+    @if (sessionTitleSurfaceModel.shouldRender) {
+      <aily-chat-session-title-control
+        [surface]="sessionTitleSurfaceModel"
+        [surfaceClickEnabled]="viewState.isSessionTitleSurfaceClickEnabled"
+        (actionRequested)="handleSessionTitleActionRequested($event)"
+        (surfaceClicked)="focusChatInputFromTitleControl()"></aily-chat-session-title-control>
+    }
   </ng-container>
   <ng-container header-btns>
     <ng-container *ngTemplateOutlet="hostHeaderActionsTemplate"></ng-container>
@@ -19,11 +21,13 @@
 } @else {
 <app-tool-container [title]="currentPaneTitle ? '' : ('AILY_CHAT.SERVICE_TITLE' | translate)" (closeEvent)="surfaceShellCoordinator.close()">
   <ng-container header-title-prefix>
-    <aily-chat-session-title-control
-      [surface]="sessionTitleSurfaceModel"
-      [surfaceClickEnabled]="viewState.isSessionTitleSurfaceClickEnabled"
-      (actionRequested)="handleSessionTitleActionRequested($event)"
-      (surfaceClicked)="focusChatInputFromTitleControl()"></aily-chat-session-title-control>
+    @if (sessionTitleSurfaceModel.shouldRender) {
+      <aily-chat-session-title-control
+        [surface]="sessionTitleSurfaceModel"
+        [surfaceClickEnabled]="viewState.isSessionTitleSurfaceClickEnabled"
+        (actionRequested)="handleSessionTitleActionRequested($event)"
+        (surfaceClicked)="focusChatInputFromTitleControl()"></aily-chat-session-title-control>
+    }
   </ng-container>
   <ng-container header-btns>
     <ng-container *ngTemplateOutlet="hostHeaderActionsTemplate"></ng-container>
@@ -45,17 +49,6 @@
     (click)="handleHostHeaderActionRequested({ action, event: $event })">
     <i [class]="action.iconClass"></i>
   </div>
-  @if (action.id === 'toggle-settings' && shouldShowProcessEntryButton()) {
-  <div
-    class="btn ccenter aily-chat-header-process-btn"
-    [title]="'AILY_CHAT.PROCESS_TOOLTIP_SESSION_PROCESSES' | translate"
-    (click)="openProcessManagerDialog(); $event.stopPropagation()">
-    <i class="fa-light fa-square-terminal"></i>
-    @if (getProcessEntryBadgeCount() > 0) {
-      <span class="aily-chat-header-process-badge">{{ getProcessEntryBadgeCount() }}</span>
-    }
-  </div>
-  }
   }
 </ng-template>
 <ng-template #sessionListTemplate let-surface="surface">
@@ -179,6 +172,11 @@
       @if (paneStageSurface.showConversation) {
       <!-- <ngx-simplebar #simplebarRef [options]="options"> -->
       <div class="dialogs" #dialogsContent>
+        @if (isLoadingOlderVisibleTurns) {
+          <div class='history-page-loading' role='status' aria-live='polite'>
+            <i class='codicon codicon-loading codicon-modifier-spin'></i>
+          </div>
+        }
         <aily-chat-transcript-list-renderer
           [items]="renderedDialogItems"
           [topSpacerHeight]="dialogVirtualTopSpacerHeight"
@@ -215,7 +213,7 @@
               type="button"
               class="checkpoint-restore-action"
               [title]="checkpointRestoreSurface.actionTitle"
-              (click)="handleCheckpointRestoreSurfaceAction($event)">
+              (click)="handleCheckpointRestoreSurfaceAction($event, vm.sessionId)">
               {{ checkpointRestoreSurface.actionLabelKey | translate }}
             </button>
             <div class="checkpoint-line-right"></div>
@@ -465,12 +463,9 @@
               (keydown)="composerShellCoordinator.handleKeyDown($event)" (input)="composerShellCoordinator.updateSuggestions()">
             </textarea>
           </div>
-          <div class="btns" [class.has-expanded-context]="resourceManager.showAddList">
+          <div class="btns">
             <aily-chat-context-toolbar
-              [showAddList]="resourceManager.showAddList"
-              [showManageMemory]="true"
-              [showProcessButton]="false"
-              [runningProcessCount]="0"
+              [showAddList]="menuManager.showContextMenu"
               [showModeMenu]="menuManager.showMode"
               [showModelMenu]="menuManager.showModelMenu"
               [currentMode]="vm.currentMode"
@@ -480,11 +475,7 @@
               [showModeLabel]="true"
               [modelChipLabel]="vm.currentModelChipLabel"
               [modelBillingLabel]="vm.currentModelBillingLabel"
-              (toggleAddList)="resourceManager.toggleAddList()"
-              (addFile)="onComposerAddFileRequest()"
-              (addFolder)="onComposerAddFolderRequest()"
-              (manageMemory)="memoryShellCoordinator.requestManageMemories()"
-              (openProcessManager)="openProcessManagerDialog()"
+              (toggleAddList)="toggleComposerContextMenu($event)"
               (modeClick)="switchShellCoordinator.toggleModeMenu($event, vm.modeMenuItems)"
               (modelClick)="switchShellCoordinator.toggleModelMenu($event, vm.modelMenuItems)"
             />
@@ -754,6 +745,11 @@
 <app-menu class="permission-menu" [menuList]="permissionMenuItems" [position]="menuManager.permissionMenuPosition" [width]="menuManager.permissionMenuWidth"
   tooltipOverlayClassName="aily-chat-menu-left-tooltip" tooltipPlacement="leftTop" (closeEvent)="menuManager.closeAll()"
   (itemClickEvent)="handlePermissionMenuClick($event)"></app-menu>
+}
+
+@if(menuManager.showContextMenu){
+<app-menu class="context-menu" [menuList]="contextMenuItems" [position]="menuManager.contextMenuPosition" [width]="menuManager.contextMenuWidth"
+  (closeEvent)="menuManager.closeAll()" (itemClickEvent)="handleContextMenuClick($event)"></app-menu>
 }
 
 @if(menuManager.showModelMenu){

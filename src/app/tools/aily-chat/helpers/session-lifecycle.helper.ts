@@ -18,14 +18,11 @@ import type { LiveHostSessionRecord } from '../services/chat-history.service';
 import { countHostRecordMessages } from '../services/chat-history.service';
 import type {
   HostSessionRecord,
-  HostSessionSidecar,
   ImportedDebugSessionRecord,
-  PersistedHostTurnResponse,
 } from '../services/chat-history.service';
 import type {
   ChatSessionModelCreateProps,
   ChatSessionModelReference,
-  ChatSessionRequestListTransactionResult,
 } from '../services/chat-session-model-store.service';
 import type { ChatSessionViewModel } from '../services/chat-session-view-model-store.service';
 import type { ChatSessionRuntimeState } from '../services/chat-session-runtime-store.service';
@@ -93,10 +90,11 @@ import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
 import { createRequiredSessionResourceModel } from './required-session-resource-model';
 import type {
   ChatRuntimeHostEditTrackingPayload,
+  ChatRuntimeHostForkSessionRequest,
+  ChatRuntimeHostForkSessionResult,
   ChatRuntimeHostPrewarmRequest,
   ChatRuntimeHostPrewarmResult,
 } from '../core/chat-runtime-host-contract';
-import { createSessionCheckpointTimelineState } from './session-checkpoint-timeline-model';
 
 type LexInteractionAction = NonNullable<import('aily-lex/browser').TurnRequest['metadata']>['interactionAction'];
 
@@ -162,10 +160,9 @@ type SessionLifecycleContext = ChatViewWriteBridgeContext
     buildExecutionSaveTarget?(sessionId: string | null | undefined): HostSessionSaveTarget | null;
     getDevelopmentModePreferenceRuntimeMode?(): ChatAgentRuntimeMode | undefined;
     readSessionTurnResponses?(sessionId?: string | null): readonly TurnResponseTurn[];
-    prepareForkPrefixRequestListTransaction?(
-      sessionId: string | null | undefined,
-      turnId: string | null | undefined,
-    ): ChatSessionRequestListTransactionResult | null;
+    forkSessionThroughHost?(
+      request: Omit<ChatRuntimeHostForkSessionRequest, 'expectedRevision'>,
+    ): Promise<ChatRuntimeHostForkSessionResult>;
     readSessionRuntimeState?(sessionId?: string | null): Readonly<ChatSessionRuntimeState> | undefined;
     readSessionCheckpointTimelineState?(sessionId?: string | null): import('./session-checkpoint-timeline-model').SessionCheckpointTimelineState | null;
     hasSessionRuntimeHandle?(sessionId?: string | null): boolean;
@@ -214,11 +211,6 @@ function isSessionLifecycleTraceEnabled(): boolean {
     'AILY_CHAT_TRACE_REQUEST_STATE',
   ]);
 }
-
-type ProtocolForkResult =
-  | { readonly kind: 'unsupported' }
-  | { readonly kind: 'created'; readonly turnResponses: TurnResponseTurn[] }
-  | { readonly kind: 'failed'; readonly reason: 'source-snapshot' | 'checkpoint-metadata' | 'snapshot-fork' | 'agent' | 'restore'; readonly error?: unknown };
 
 export interface SessionLifecycleRestoreErrorDetails {
   readonly stage: SessionSwitchRestoreStage;
@@ -373,8 +365,7 @@ export class SessionLifecycleHelper {
     }
 
     const projectPathHint = target.projectPath ?? this.resolveCurrentProjectPath();
-    const persistedHostRecord = this.ctx.chatHistoryService.loadHostRecord?.(target.sessionId, projectPathHint);
-    if (!persistedHostRecord && !this.ctx.readSessionRuntimeState?.(target.sessionId)) {
+    if (!this.ctx.readSessionRuntimeState?.(target.sessionId)) {
       entryStateService.clearSessionEntryTarget(target.sessionId, projectPathHint);
       return false;
     }
@@ -396,6 +387,7 @@ export class SessionLifecycleHelper {
   }
 
   async forkFromTurn(options: {
+    sourceSessionId?: string;
     turnId: string;
     requestContent: string;
     displayContent: string;
@@ -406,80 +398,18 @@ export class SessionLifecycleHelper {
       return false;
     }
 
-    const sourceSessionId = this.resolveCurrentViewSessionResource();
+    const sourceSessionId = options.sourceSessionId?.trim() || this.resolveCurrentViewSessionResource();
     if (!sourceSessionId) {
       this.ctx.message.warning('当前没有可分叉的会话');
       return false;
     }
 
-    const forkPrefixTransaction = this.ctx.prepareForkPrefixRequestListTransaction?.(
-      sourceSessionId,
-      options.turnId,
-    ) ?? null;
-    if (!forkPrefixTransaction) {
-      this.ctx.message.info('Cannot fork because the request-list transaction is unavailable.');
-      return false;
-    }
-    const sourceRecord = this.resolveForkSourceRecord(sourceSessionId);
-    const sourceTurnResponses = sourceRecord?.turnResponses ?? [];
-    const sourceRetainedTurnResponses = [...forkPrefixTransaction.effects.hostProjection.turnResponses];
-    if (sourceRetainedTurnResponses.length === 0) {
-      this.ctx.message.info('无法在第一轮请求之前分叉会话');
-      return false;
-    }
-
-    if (forkPrefixTransaction) {
-      console.info('[AilyChat][RequestListBranchTrace]', {
-        phase: 'fork-prefix-prepare',
-        sourceSessionId,
-        requestListRevision: forkPrefixTransaction.revision ?? null,
-        forkBoundaryTurnId: forkPrefixTransaction.forkBoundaryTurnId ?? options.turnId,
-        retainedTurnIds: forkPrefixTransaction.retainedTurnIds ?? summarizeTurnResponseIds(sourceRetainedTurnResponses),
-        discardedTurnIds: forkPrefixTransaction.discardedTurnIds ?? [],
-        canonicalPrefixTurnIds: summarizeTurnResponseIds(sourceRetainedTurnResponses),
-      });
-    }
-
-    this.saveCurrentSession();
-
     const forkedSessionId = `lex-${Date.now()}-fork`;
-    const sourceSessionContent = sourceRecord
-      ? this._hostSessionContentProvider.provideChatSessionContent(
-          sourceSessionId,
-          this.resolveCurrentSessionProjectPath(),
-          {
-            hostRecordOverride: sourceRecord as HostSessionRecord,
-            metadataFallback: this.ctx.chatHistoryService.findEntry(sourceSessionId) ?? null,
-            fallbackProviderOptions: this.resolveCurrentSessionProviderOptions(),
-          },
-        )
-      : null;
-    const selectedMode = this.resolveForkSelectedMode(
-      sourceSessionContent?.metadata,
-      sourceTurnResponses,
-      sourceRetainedTurnResponses,
-    );
-    const forkedProviderOptions = sourceSessionContent?.providerOptions ?? this.resolveCurrentSessionProviderOptions();
-    const protocolFork = await this.tryCreateProtocolFork({
-      sourceSessionId,
-      forkedSessionId,
-      beforeTurnId: options.turnId,
-      sourceRetainedTurnResponses,
-      forkedProviderOptions,
+    const selectedMode = normalizeChatSelectedMode(this.ctx.chatService.selectedMode ?? {
+      modeId: this.ctx.currentMode,
+      customAgentTarget: this.ctx.chatService.currentCustomAgentTarget,
     });
-    if (protocolFork.kind === 'failed') {
-      console.warn('[SessionLifecycle][Fork] protocol fork failed; aborting fork instead of degrading to transcript fork', {
-        reason: protocolFork.reason,
-        error: protocolFork.error,
-      });
-      this.ctx.message.warning('Failed to fork the current session. Please try again.');
-      return false;
-    }
-
-    const retainedTurnResponses = protocolFork.kind === 'created'
-      ? protocolFork.turnResponses
-      : this.buildTranscriptForkTurnResponses(sourceRetainedTurnResponses);
-    const forkKind = protocolFork.kind === 'created' ? 'protocol' as const : 'transcript' as const;
+    const forkedProviderOptions = this.resolveCurrentSessionProviderOptions();
     const forkedInputState = buildHostSessionCurrentPickerInputState(selectedMode, forkedProviderOptions);
     const forkedRequestRouting = buildHostSessionCurrentPickerRoutingSummary(
       selectedMode,
@@ -488,10 +418,10 @@ export class SessionLifecycleHelper {
       forkedProviderOptions.approvalsReviewer,
       forkedProviderOptions.approvalPolicy,
     );
-    const forkedItem = this.hostSessionItemController.createForkedChatSessionItem({
+    const forkedItemSeed = {
       sessionId: forkedSessionId,
       title: this.buildForkedSessionTitle(
-        sourceSessionContent?.title
+        this.ctx.chatHistoryService.findEntry(sourceSessionId)?.title
         || this.ctx.chatService.currentSessionTitle
         || options.displayContent,
       ),
@@ -500,339 +430,59 @@ export class SessionLifecycleHelper {
       inputState: forkedInputState,
       mode: selectedMode.modeId,
       requestRouting: forkedRequestRouting,
-    });
+    };
     const forkedMetadata = {
       sessionId: forkedSessionId,
-      title: forkedItem.title,
-      projectPath: forkedItem.projectPath,
-      createdAt: forkedItem.createdAt,
-      updatedAt: forkedItem.createdAt,
-      mode: forkedItem.mode ?? selectedMode.modeId,
-      inputState: forkedItem.inputState ?? forkedInputState,
-      requestRouting: forkedItem.requestRouting ?? forkedRequestRouting,
+      title: forkedItemSeed.title,
+      projectPath: forkedItemSeed.projectPath,
+      createdAt: forkedItemSeed.createdAt,
+      updatedAt: forkedItemSeed.createdAt,
+      mode: forkedItemSeed.mode,
+      inputState: forkedItemSeed.inputState,
+      requestRouting: forkedItemSeed.requestRouting,
       model: this.resolveCurrentModelName(),
-      toolCallingIteration: retainedTurnResponses.length,
-      forkKind,
+      toolCallingIteration: 0,
+      forkKind: 'protocol' as const,
       forkedFromSessionId: sourceSessionId,
       forkedBeforeTurnId: options.turnId,
-      forkedRetainedTurnCount: retainedTurnResponses.length,
-    };
-    const forkedSidecar = this.buildForkCheckpointSidecar(forkedSessionId, retainedTurnResponses);
-    const forkedRecord: HostSessionRecord = {
-      metadata: forkedMetadata,
-      ...(retainedTurnResponses.length > 0 ? { turnResponses: retainedTurnResponses } : {}),
-      ...(forkedSidecar ? { sidecar: forkedSidecar } : {}),
-    };
-
-    const persistedForkedRecord: LiveHostSessionRecord = {
-      sessionId: forkedSessionId,
-      metadata: forkedMetadata,
-      turnResponses: retainedTurnResponses,
-      ...(forkedSidecar ? { sidecar: forkedSidecar } : {}),
+      forkedRetainedTurnCount: 0,
     };
     try {
-      await this.persistForkedSessionRecordThroughHost(persistedForkedRecord);
+      if (typeof this.ctx.forkSessionThroughHost !== 'function') {
+        throw new Error('[SessionLifecycle][Fork] host fork transaction is unavailable.');
+      }
+      const result = await this.ctx.forkSessionThroughHost({
+        sourceSessionId,
+        targetSessionId: forkedSessionId,
+        beforeTurnId: options.turnId,
+        metadata: forkedMetadata,
+        selectedMode,
+        providerOptions: forkedProviderOptions,
+        agentRuntimeMode: this.ctx.currentAgentRuntimeMode,
+        currentModel: this.ctx.currentModel ?? null,
+        pageLimit: 30,
+      });
+      forkedMetadata.forkedRetainedTurnCount = result.retainedTurnIds.length;
+      console.info('[AilyChat][RequestListBranchTrace]', {
+        phase: 'fork-host-commit',
+        sourceSessionId,
+        targetSessionId: forkedSessionId,
+        sourceRevision: result.sourceRevision,
+        targetRevision: result.targetRevision,
+        retainedTurnIds: result.retainedTurnIds,
+      });
     } catch (error) {
-      console.warn('[SessionLifecycle][Fork] host persistence failed; aborting fork without renderer-local history fallback', error);
+      console.warn('[SessionLifecycle][Fork] host fork transaction failed', error);
       this.ctx.message.warning('Failed to persist the forked session. Please try again.');
       return false;
     }
 
-    await this.switchToSession(forkedSessionId, forkedRecord);
+    this.hostSessionItemController.createForkedChatSessionItem(forkedItemSeed);
+    await this.switchToSession(forkedSessionId);
     this.ctx.scrollManager.setScrollLock(true);
     this.ctx.scrollManager.scrollToBottom();
 
     return true;
-  }
-
-  private buildForkCheckpointSidecar(
-    forkedSessionId: string,
-    retainedTurnResponses: readonly TurnResponseTurn[],
-  ): HostSessionSidecar | undefined {
-    const sessionResource = typeof forkedSessionId === 'string' ? forkedSessionId.trim() : '';
-    if (!sessionResource) {
-      return undefined;
-    }
-
-    const timeline = createSessionCheckpointTimelineState({
-      sessionResource,
-      turnResponses: retainedTurnResponses,
-    });
-    const checkpointMarker = {
-      sessionResource,
-      currentCheckpointIndex: timeline.currentCheckpointIndex,
-      currentTurnResponseCount: timeline.currentTurnResponseCount,
-    };
-    if (!timeline.checkpoints.length || !timeline.turnResponses.length) {
-      return { checkpointMarker };
-    }
-
-    return {
-      checkpointMarker,
-      checkpointRedoBranch: {
-        sessionResource,
-        currentCheckpointIndex: timeline.currentCheckpointIndex,
-        currentTurnResponseCount: timeline.currentTurnResponseCount,
-        checkpoints: timeline.checkpoints.map(checkpoint => ({
-          checkpointId: checkpoint.checkpointId,
-          requestId: checkpoint.requestId,
-          ...(checkpoint.turnId ? { turnId: checkpoint.turnId } : {}),
-          turnIndex: checkpoint.turnIndex,
-          ...(checkpoint.metadata ? { metadata: checkpoint.metadata } : {}),
-        })),
-        turnResponses: timeline.turnResponses as PersistedHostTurnResponse[],
-      },
-    };
-  }
-
-  private async persistForkedSessionRecordThroughHost(record: LiveHostSessionRecord): Promise<void> {
-    const sessionId = typeof record.sessionId === 'string' ? record.sessionId.trim() : '';
-    if (!sessionId) {
-      throw new Error('[SessionLifecycle][Fork] host persistence requires a forked session id.');
-    }
-    if (typeof this.ctx.requestHostResourceOperation !== 'function') {
-      throw new Error('[SessionLifecycle][Fork] host resource operation bridge is unavailable.');
-    }
-
-    await this.ctx.requestHostResourceOperation({
-      sessionId,
-      kind: 'save-current-session',
-      label: 'Saving forked chat session',
-      resource: {
-        targetSessionId: sessionId,
-        sessionType: record.metadata?.sessionType ?? DEFAULT_CHAT_SESSION_TYPE,
-        projectPath: record.metadata?.projectPath ?? null,
-      },
-      payload: {
-        adapter: 'chatHistory',
-        record,
-      },
-    });
-  }
-
-  private async tryCreateProtocolFork(input: {
-    sourceSessionId: string;
-    forkedSessionId: string;
-    beforeTurnId: string;
-    sourceRetainedTurnResponses: readonly TurnResponseTurn[];
-    forkedProviderOptions: HostSessionProviderOptions;
-  }): Promise<ProtocolForkResult> {
-    const sessionFacade = this.ctx.lexStream.session as typeof this.ctx.lexStream.session & {
-      forkSnapshot?: (
-        sourceSnapshot: import('aily-lex/browser').SessionSnapshot,
-        options: import('aily-lex/browser').ForkSessionSnapshotOptions,
-      ) => import('aily-lex/browser').SessionSnapshot;
-    };
-    if (typeof sessionFacade.forkSnapshot !== 'function') {
-      return { kind: 'unsupported' };
-    }
-
-    const sourceSnapshot = sessionFacade.snapshot?.(input.sourceSessionId)
-      ?? sessionFacade.save?.(input.sourceSessionId)
-      ?? null;
-    if (!sourceSnapshot) {
-      return { kind: 'failed', reason: 'source-snapshot' };
-    }
-
-    let forkedSnapshot: import('aily-lex/browser').SessionSnapshot;
-    try {
-      forkedSnapshot = sessionFacade.forkSnapshot(sourceSnapshot, {
-        targetSessionId: input.forkedSessionId,
-        boundary: { kind: 'beforeTurnId', turnId: input.beforeTurnId },
-      });
-    } catch (error) {
-      return { kind: 'failed', reason: 'snapshot-fork', error };
-    }
-
-    const retainedTurnResponses = await this.resolveProtocolForkTurnResponses(input);
-    if (!retainedTurnResponses) {
-      return { kind: 'failed', reason: 'checkpoint-metadata' };
-    }
-
-    let ready = false;
-    try {
-      if (typeof this.ctx.prewarmRuntimeExecutor !== 'function') {
-        return { kind: 'failed', reason: 'agent' };
-      }
-      const result = await this.ctx.prewarmRuntimeExecutor({
-        sessionId: input.forkedSessionId,
-        providerOptions: input.forkedProviderOptions,
-        agentRuntimeMode: this.ctx.currentAgentRuntimeMode,
-        currentModel: this.ctx.currentModel ?? null,
-      });
-      ready = result.ensured === true;
-    } catch (error) {
-      return { kind: 'failed', reason: 'agent', error };
-    }
-    if (!ready) {
-      return { kind: 'failed', reason: 'agent' };
-    }
-
-    let restored = false;
-    try {
-      restored = sessionFacade.restoreResolvedSnapshot?.(forkedSnapshot, input.forkedSessionId) === true;
-    } catch (error) {
-      this.ctx.lexStream.agent.dispose(input.forkedSessionId);
-      return { kind: 'failed', reason: 'restore', error };
-    }
-    if (!restored) {
-      this.ctx.lexStream.agent.dispose(input.forkedSessionId);
-      return { kind: 'failed', reason: 'restore' };
-    }
-
-    return {
-      kind: 'created',
-      turnResponses: this.buildProtocolForkTurnResponses(retainedTurnResponses),
-    };
-  }
-
-  private async resolveProtocolForkTurnResponses(input: {
-    sourceSessionId: string;
-    forkedSessionId: string;
-    sourceRetainedTurnResponses: readonly TurnResponseTurn[];
-  }): Promise<readonly TurnResponseTurn[] | null> {
-    if (!this.hasCheckpointOwnedTurn(input.sourceRetainedTurnResponses)) {
-      return input.sourceRetainedTurnResponses;
-    }
-
-    const forkedTurnResponses = await this.forkRequestCheckpointMetadata(input);
-    return forkedTurnResponses && forkedTurnResponses.length === input.sourceRetainedTurnResponses.length
-      ? forkedTurnResponses
-      : null;
-  }
-
-  private async forkRequestCheckpointMetadata(input: {
-    sourceSessionId: string;
-    forkedSessionId: string;
-    sourceRetainedTurnResponses: readonly TurnResponseTurn[];
-  }): Promise<readonly TurnResponseTurn[] | null> {
-    const result = await this.requestHostEditTrackingOperation({
-      sessionId: input.forkedSessionId,
-      label: 'Forking checkpoint metadata',
-      detail: 'Host edit tracking resource is forking request checkpoint metadata.',
-      payload: {
-        adapter: 'editTracking',
-        action: 'forkRequestCheckpointMetadata',
-        sourceSessionResource: input.sourceSessionId,
-        targetSessionResource: input.forkedSessionId,
-        retainedTurnResponses: input.sourceRetainedTurnResponses,
-      },
-    });
-    const forkedTurnResponses = (result.result as { forkedTurnResponses?: unknown } | null | undefined)
-      ?.forkedTurnResponses;
-    return Array.isArray(forkedTurnResponses)
-      ? forkedTurnResponses as TurnResponseTurn[]
-      : null;
-  }
-
-  private hasCheckpointOwnedTurn(turnResponses: readonly TurnResponseTurn[]): boolean {
-    return turnResponses.some(turn => this.hasCheckpointOwnedRequestMetadata(turn.request?.metadata));
-  }
-
-  private hasCheckpointOwnedRequestMetadata(
-    metadata: TurnResponseTurn['request']['metadata'] | undefined,
-  ): boolean {
-    if (!metadata || typeof metadata !== 'object') {
-      return false;
-    }
-
-    const record = metadata as Record<string, unknown>;
-    return [
-      'checkpointId',
-      'checkpointNamespace',
-      'checkpointRef',
-      'checkpointRefs',
-      'startCheckpointRef',
-      'additionalCheckpointRefs',
-      'additionalStartCheckpointRefs',
-    ].some(key => record[key] !== undefined && record[key] !== null);
-  }
-
-  private buildProtocolForkTurnResponses(turnResponses: readonly TurnResponseTurn[]): TurnResponseTurn[] {
-    return turnResponses.map(turn => this.sanitizeProtocolForkTurn(turn));
-  }
-
-  private sanitizeProtocolForkTurn(turn: TurnResponseTurn): TurnResponseTurn {
-    const requestMetadata = this.sanitizeProtocolForkRequestMetadata(turn.request?.metadata);
-    const { metadata: _metadata, ...requestWithoutMetadata } = turn.request;
-    return {
-      ...turn,
-      request: {
-        ...requestWithoutMetadata,
-        ...(requestMetadata ? { metadata: requestMetadata } : {}),
-      },
-    };
-  }
-
-  private sanitizeProtocolForkRequestMetadata(
-    metadata: TurnResponseTurn['request']['metadata'] | undefined,
-  ): TurnResponseTurn['request']['metadata'] | undefined {
-    if (!metadata || typeof metadata !== 'object') {
-      return metadata;
-    }
-
-    const nextMetadata = { ...metadata } as Record<string, unknown>;
-    delete nextMetadata['requestContextSnapshot'];
-    delete nextMetadata['requestContext'];
-    return Object.keys(nextMetadata).length > 0
-      ? nextMetadata as TurnResponseTurn['request']['metadata']
-      : undefined;
-  }
-
-  private buildTranscriptForkTurnResponses(turnResponses: readonly TurnResponseTurn[]): TurnResponseTurn[] {
-    return turnResponses.map(turn => this.sanitizeTranscriptForkTurn(turn));
-  }
-
-  private sanitizeTranscriptForkTurn(turn: TurnResponseTurn): TurnResponseTurn {
-    const requestMetadata = this.sanitizeTranscriptForkRequestMetadata(turn.request?.metadata);
-    const responseModel = this.sanitizeTranscriptForkResponseModel(turn.responseModel);
-    const { responseModel: _responseModel, ...turnWithoutResponseModel } = turn;
-    const { metadata: _metadata, ...requestWithoutMetadata } = turn.request;
-    return {
-      ...turnWithoutResponseModel,
-      request: {
-        ...requestWithoutMetadata,
-        ...(requestMetadata ? { metadata: requestMetadata } : {}),
-      },
-      ...(responseModel ? { responseModel } : {}),
-    };
-  }
-
-  private sanitizeTranscriptForkRequestMetadata(
-    metadata: TurnResponseTurn['request']['metadata'] | undefined,
-  ): TurnResponseTurn['request']['metadata'] | undefined {
-    if (!metadata || typeof metadata !== 'object') {
-      return metadata;
-    }
-
-    const nextMetadata = { ...metadata } as Record<string, unknown>;
-    delete nextMetadata['checkpointId'];
-    delete nextMetadata['checkpointRef'];
-    delete nextMetadata['additionalCheckpointRefs'];
-    delete nextMetadata['checkpointRefs'];
-    delete nextMetadata['requestContextSnapshot'];
-    delete nextMetadata['requestContext'];
-    return Object.keys(nextMetadata).length > 0
-      ? nextMetadata as TurnResponseTurn['request']['metadata']
-      : undefined;
-  }
-
-  private sanitizeTranscriptForkResponseModel(
-    responseModel: TurnResponseTurn['responseModel'] | undefined,
-  ): TurnResponseTurn['responseModel'] | undefined {
-    if (!responseModel) {
-      return undefined;
-    }
-
-    const {
-      summary: _summary,
-      summaries: _summaries,
-      summaryPreview: _summaryPreview,
-      ...nextResponseModel
-    } = responseModel;
-    return Object.keys(nextResponseModel).length > 0
-      ? nextResponseModel as TurnResponseTurn['responseModel']
-      : undefined;
   }
 
   // ==================== 会话持久化 ====================
@@ -1784,63 +1434,6 @@ export class SessionLifecycleHelper {
       : `Forked: ${normalized}`;
   }
 
-  private resolveForkSourceRecord(sessionId: string | null | undefined): HostSessionRecord | LiveHostSessionRecord | null {
-    const sourceSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!sourceSessionId) {
-      return null;
-    }
-
-    const modelTurnResponses = [...(this.ctx.readSessionTurnResponses?.(sourceSessionId) ?? [])];
-    const liveRecord = this.buildLiveHostSessionRecord({
-      ...(modelTurnResponses.length > 0 ? { turnResponsesOverride: modelTurnResponses } : {}),
-    });
-    if (liveRecord?.sessionId === sourceSessionId) {
-      return modelTurnResponses.length > 0
-        ? { ...liveRecord, turnResponses: modelTurnResponses }
-        : liveRecord;
-    }
-
-    const durableRecord = this._hostSessionContentProvider.provideChatSessionContent(
-      sourceSessionId,
-      this.resolveCurrentSessionProjectPath(),
-    )?.hostRecord ?? null;
-    if (modelTurnResponses.length > 0 && durableRecord?.metadata) {
-      return {
-        ...durableRecord,
-        turnResponses: modelTurnResponses,
-      };
-    }
-
-    return durableRecord;
-  }
-
-  private resolveForkSelectedMode(
-    sourceMetadata: HostSessionContentMetadataSource | null | undefined,
-    sourceTurnResponses: NonNullable<HostSessionRecord['turnResponses']>,
-    retainedTurnResponses: NonNullable<HostSessionRecord['turnResponses']>,
-  ): ChatSelectedMode {
-    if (sourceMetadata) {
-      return resolveHostSessionSelectedMode({
-        metadata: {
-          mode: sourceMetadata.mode ?? this.ctx.currentMode,
-          inputState: sourceMetadata.inputState,
-          requestRouting: sourceMetadata.requestRouting,
-        },
-        turnResponses: retainedTurnResponses.length > 0
-          ? retainedTurnResponses
-          : sourceTurnResponses,
-      } as HostSessionRecord, {
-        resolveModeById: (modeId) => this.ctx.chatService.findResolvedModeById?.(modeId),
-        resolveModeByName: (modeName) => this.ctx.chatService.findResolvedModeByName?.(modeName),
-      });
-    }
-
-    return normalizeChatSelectedMode(this.ctx.chatService.selectedMode ?? {
-      modeId: this.ctx.currentMode,
-      customAgentTarget: this.ctx.chatService.currentCustomAgentTarget,
-    });
-  }
-
   async switchToSession(
     sessionId: string,
     optionsOrHostRecordOverride?: SessionLifecycleSwitchOptions | HostSessionRecord | null,
@@ -1862,6 +1455,7 @@ export class SessionLifecycleHelper {
     const restoreRequest = this.hostSessionItemController.resolveSessionSwitchRestoreRequest(targetSessionId, {
       fallbackProjectPath: switchOptions.fallbackProjectPath ?? entryProjectPath ?? this.resolveCurrentProjectPath(),
       hostRecordOverride: switchOptions.hostRecordOverride,
+      deferHostRecord: switchOptions.hostRecordOverride === undefined,
     });
 
     await this.activateSessionFromRestoreRequest(restoreRequest, {
@@ -1907,6 +1501,7 @@ export class SessionLifecycleHelper {
     const entryProjectPath = this.ctx.chatHistoryService.findEntry(sessionId)?.projectPath ?? null;
     const restoreRequest = this.hostSessionItemController.resolveSessionSwitchRestoreRequest(sessionId, {
       fallbackProjectPath: options.fallbackProjectPath ?? entryProjectPath ?? this.resolveCurrentProjectPath(),
+      deferHostRecord: true,
     });
     const hostRecord = restoreRequest.hostRecord ?? restoreRequest.sessionContent.hostRecord ?? null;
 
@@ -1920,10 +1515,6 @@ export class SessionLifecycleHelper {
       existingReference.dispose();
     }
 
-    if (!hostRecord) {
-      return false;
-    }
-
     const runtimeTurnResponses = this.ctx.readSessionRuntimeState?.(sessionId)?.turnResponses;
     const restoredTitle = resolveRestoredSessionTitle(restoreRequest.sessionContent, runtimeTurnResponses);
     this.acquireSessionModel({
@@ -1934,10 +1525,13 @@ export class SessionLifecycleHelper {
             text: restoreRequest.sessionContent.title ?? '',
             source: restoreRequest.sessionContent.title ? 'restored-custom' : 'empty',
           },
-      projectPath: this.resolveSessionContentProjectPath(hostRecord),
+      projectPath: restoreRequest.sessionContent.projectPathHint
+        ?? restoreRequest.sessionContent.providerOptions.folderPath
+        ?? options.fallbackProjectPath
+        ?? null,
       sessionType: restoreRequest.sessionContent.sessionType,
       inputState: { providerOptions: restoreRequest.sessionContent.providerOptions },
-      turnResponses: hostRecord.turnResponses,
+      turnResponses: hostRecord?.turnResponses ?? [],
     });
     return true;
   }
@@ -2261,6 +1855,12 @@ export class SessionLifecycleHelper {
     const hasDurableTurnResponses = Array.isArray(durableTurnResponses) && durableTurnResponses.length > 0;
 
     if (!hasDurableTurnResponses) {
+      const hasExplicitDurableRecord = !!restoreRequest.hostRecord
+        || !!restoreRequest.sessionContent.hostRecord;
+      if (hasExplicitDurableRecord) {
+        return Array.isArray(model.turnResponses) && model.turnResponses.length === 0;
+      }
+
       const modelTurns = model.turnResponses;
       if (Array.isArray(modelTurns) && modelTurns.length > 0) {
         return true;
@@ -2271,7 +1871,7 @@ export class SessionLifecycleHelper {
         return true;
       }
 
-      return true;
+      return false;
     }
 
     if (this.turnResponsesExactlyMatchDurableSession(model.turnResponses, durableTurnResponses)) {
@@ -2873,6 +2473,7 @@ export class SessionLifecycleHelper {
     }
     const restoreRequest = this.hostSessionItemController.resolveSessionEntryRestoreRequest(target, {
       fallbackProjectPath: target.projectPath ?? this.resolveCurrentProjectPath(),
+      deferHostRecord: true,
     });
 
     await this.activateSessionFromRestoreRequest(restoreRequest, {

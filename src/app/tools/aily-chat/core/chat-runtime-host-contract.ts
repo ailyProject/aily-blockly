@@ -27,7 +27,8 @@ export type ChatRuntimeHostSessionStatus =
   | 'needs_input'
   | 'completed'
   | 'cancelled'
-  | 'failed';
+  | 'failed'
+  | 'disposed';
 
 export interface ChatRuntimeHostModelSelectionSnapshot {
   readonly model?: string;
@@ -72,6 +73,113 @@ export interface ChatRuntimeHostTranscriptSnapshot {
   readonly sessionId: ChatRuntimeHostSessionId;
   readonly turnResponses: readonly TurnResponseTurn[];
   readonly revision: number;
+}
+
+export interface ChatRuntimeHostTurnPageRequest {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly sessionScopeKey: string;
+  readonly cursor?: string | null;
+  readonly limit?: number;
+  readonly sortDirection?: 'ascending' | 'descending';
+  readonly itemsView?: 'notLoaded' | 'summary' | 'full';
+}
+
+export type ChatRuntimeHostPagedTurn = TurnResponseTurn & {
+  readonly itemsView: 'notLoaded' | 'summary' | 'full';
+};
+
+export interface ChatRuntimeHostTurnPage {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly data: readonly ChatRuntimeHostPagedTurn[];
+  readonly nextCursor: string | null;
+  readonly backwardsCursor: string | null;
+  readonly revision: number;
+}
+
+export interface ChatRuntimeHostRequestListMutationRequest {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly expectedRevision: number;
+  readonly operation: {
+    readonly kind: 'removeFromTurn';
+    readonly turnId: string;
+  };
+  readonly pageLimit?: number;
+}
+
+export interface ChatRuntimeHostRequestListMutationResult {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly revision: number;
+  readonly operation: ChatRuntimeHostRequestListMutationRequest['operation'];
+  readonly retainedTurnIds: readonly string[];
+  readonly discardedTurnIds: readonly string[];
+  readonly protocolTruncation: ChatRuntimeHostProtocolTruncation;
+  readonly page: ChatRuntimeHostTurnPage;
+}
+
+export interface ChatRuntimeHostCheckpointMutationRequest {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly expectedRevision: number;
+  readonly checkpointId?: string;
+  readonly pageLimit?: number;
+}
+
+export interface ChatRuntimeHostCheckpointNavigationRequest {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly checkpointId?: string;
+  readonly turnId?: string;
+}
+
+export interface ChatRuntimeHostCheckpointNavigationEntry {
+  readonly checkpointId: string;
+  readonly requestId: string;
+  readonly turnId?: string;
+  readonly turnIndex: number;
+}
+
+export interface ChatRuntimeHostCheckpointNavigationState {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly revision: number;
+  readonly checkpointCount: number;
+  readonly currentCheckpointIndex: number;
+  readonly currentTurnResponseCount: number;
+  readonly canRedo: boolean;
+  readonly currentCheckpoint: ChatRuntimeHostCheckpointNavigationEntry | null;
+  readonly nextCheckpoint: ChatRuntimeHostCheckpointNavigationEntry | null;
+  readonly requestedCheckpoint: ChatRuntimeHostCheckpointNavigationEntry | null;
+}
+
+export interface ChatRuntimeHostCheckpointMutationResult {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly checkpointId: string;
+  readonly direction: 'restore' | 'redo';
+  readonly revision: number;
+  readonly retainedTurnIds: readonly string[];
+  readonly restoredTurnIds: readonly string[];
+  readonly canRedo: boolean;
+  readonly page: ChatRuntimeHostTurnPage;
+}
+
+export interface ChatRuntimeHostForkSessionRequest {
+  readonly sourceSessionId: ChatRuntimeHostSessionId;
+  readonly targetSessionId: ChatRuntimeHostSessionId;
+  readonly beforeTurnId: string;
+  readonly expectedRevision: number;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly selectedMode?: ChatSelectedMode | null;
+  readonly providerOptions?: HostSessionProviderOptions | null;
+  readonly agentRuntimeMode?: ChatAgentRuntimeMode | null;
+  readonly currentModel?: ChatRuntimeHostModelSelectionSnapshot | null;
+  readonly pageLimit?: number;
+}
+
+export interface ChatRuntimeHostForkSessionResult {
+  readonly sourceSessionId: ChatRuntimeHostSessionId;
+  readonly targetSessionId: ChatRuntimeHostSessionId;
+  readonly sourceRevision: number;
+  readonly targetRevision: number;
+  readonly retainedTurnIds: readonly string[];
+  readonly forkKind: 'protocol';
+  readonly page: ChatRuntimeHostTurnPage;
 }
 
 export interface ChatRuntimeHostSessionState {
@@ -609,12 +717,23 @@ export interface ChatRuntimeHostEventSubscription {
 
 export type ChatRuntimeOwnerExecutorCommandMethod =
   | 'prewarmRuntime'
+  | 'forkSession'
   | 'startTurn'
   | 'stopTurn'
   | 'disposeSessionResources'
   | 'resolveInteraction';
 
 export interface ChatRuntimeOwnerExecutorPrewarmRuntimeCommand extends ChatRuntimeHostPrewarmRequest {}
+
+export interface ChatRuntimeOwnerExecutorForkSessionCommand {
+  readonly sourceSessionId: ChatRuntimeHostSessionId;
+  readonly targetSessionId: ChatRuntimeHostSessionId;
+  readonly beforeTurnId: string;
+  readonly retainedTurnIds: readonly string[];
+  readonly providerOptions?: HostSessionProviderOptions | null;
+  readonly agentRuntimeMode?: ChatAgentRuntimeMode | null;
+  readonly currentModel?: ChatRuntimeHostModelSelectionSnapshot | null;
+}
 
 export interface ChatRuntimeOwnerExecutorStartTurnExecutionContext {
   readonly selectedMode?: ChatSelectedMode | null;
@@ -657,6 +776,10 @@ export type ChatRuntimeOwnerExecutorCommand =
   | {
       readonly method: 'prewarmRuntime';
       readonly payload: ChatRuntimeOwnerExecutorPrewarmRuntimeCommand;
+    }
+  | {
+      readonly method: 'forkSession';
+      readonly payload: ChatRuntimeOwnerExecutorForkSessionCommand;
     }
   | {
       readonly method: 'startTurn';
@@ -736,6 +859,7 @@ export type ChatRuntimeOwnerExecutorEvent =
 
 export interface ChatRuntimeOwnerExecutor {
   prewarmRuntime(command: ChatRuntimeOwnerExecutorPrewarmRuntimeCommand): Promise<ChatRuntimeHostPrewarmResult>;
+  forkSession?(command: ChatRuntimeOwnerExecutorForkSessionCommand): Promise<ChatRuntimeHostPrewarmResult>;
   startTurn(command: ChatRuntimeOwnerExecutorStartTurnCommand): Promise<ChatRuntimeHostSessionState>;
   stopTurn(command: ChatRuntimeOwnerExecutorStopTurnCommand): Promise<void>;
   disposeSessionResources(command: ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand): Promise<void>;
@@ -745,6 +869,7 @@ export interface ChatRuntimeOwnerExecutor {
 
 export interface ChatRuntimeHostAttachViewOptions {
   readonly visibleAttachmentGeneration?: number | null;
+  readonly sessionScopeKey: string;
 }
 
 export interface ChatRuntimeHost {
@@ -763,6 +888,20 @@ export interface ChatRuntimeHost {
   readSessionState(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostSessionState | null>;
   readSessionInventory(): Promise<ChatRuntimeHostSessionInventorySnapshot>;
   readTranscript(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostTranscriptSnapshot | null>;
+  readSessionTurnPage(request: ChatRuntimeHostTurnPageRequest): Promise<ChatRuntimeHostTurnPage | null>;
+  readCheckpointNavigationState(
+    request: ChatRuntimeHostCheckpointNavigationRequest,
+  ): Promise<ChatRuntimeHostCheckpointNavigationState | null>;
+  mutateSessionRequestList(
+    request: ChatRuntimeHostRequestListMutationRequest,
+  ): Promise<ChatRuntimeHostRequestListMutationResult>;
+  restoreSessionCheckpoint(
+    request: ChatRuntimeHostCheckpointMutationRequest & { readonly checkpointId: string },
+  ): Promise<ChatRuntimeHostCheckpointMutationResult>;
+  redoSessionCheckpoint(
+    request: ChatRuntimeHostCheckpointMutationRequest,
+  ): Promise<ChatRuntimeHostCheckpointMutationResult>;
+  forkSession(request: ChatRuntimeHostForkSessionRequest): Promise<ChatRuntimeHostForkSessionResult>;
   awaitRequestCompletion(sessionId: ChatRuntimeHostSessionId): Promise<void>;
   runWorkspaceFinalizeBoundaryProbe(sessionId: ChatRuntimeHostSessionId): Promise<void>;
   readInteractionSnapshot(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostInteractionSnapshot | null>;

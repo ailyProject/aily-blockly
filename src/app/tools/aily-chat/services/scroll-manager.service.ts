@@ -7,7 +7,7 @@ export type ChatRevealTarget =
   | 'pending-confirmation'
   | 'pending-question'
   | 'pending-plan-review'
-  | 'checkpoint-anchor';
+  | { readonly kind: 'turn'; readonly turnId: string };
 
 export interface ChatRevealOptions {
   readonly behavior?: ScrollBehavior;
@@ -662,13 +662,16 @@ export class ScrollManagerService {
   }
 
   private findRevealTargetElement(container: HTMLElement, target: ChatRevealTarget): HTMLElement | null {
+    if (typeof target !== 'string') {
+      const turnId = target.turnId.trim();
+      return turnId
+        ? [...container.querySelectorAll<HTMLElement>('[data-turn-id]')]
+          .find(element => element.dataset['turnId'] === turnId) ?? null
+        : null;
+    }
     switch (target) {
       case 'current-response':
         return container.querySelector<HTMLElement>('.dialog-box.chat-most-recent-response');
-      case 'checkpoint-anchor':
-        return this.normalizeRevealElement(container.querySelector<HTMLElement>(
-          '.chat-checkpoint-restore-surface, .dialog-box.user.has-turn-actions, .user-turn-actions',
-        ));
       case 'pending-confirmation':
         return this.normalizeRevealElement(container.querySelector<HTMLElement>(
           '.cag-item-pending-approval, .cag-item-confirmation-widget, .chat-confirmation-widget2, x-aily-confirmation-viewer',

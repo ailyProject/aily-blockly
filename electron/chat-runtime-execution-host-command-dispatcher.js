@@ -2,6 +2,8 @@ const { pathToFileURL } = require('url');
 
 const VALID_RUNTIME_OWNER_METHODS = new Set([
   'prewarmRuntime',
+  'forkSession',
+  'readSessionExecutionState',
   'startTurn',
   'stopTurn',
   'disposeSessionResources',
@@ -180,6 +182,18 @@ function callRuntimeOwnerMethod(runtimeOwner, method, args) {
         agentRuntimeMode: command.agentRuntimeMode || null,
         currentModel: command.currentModel || null,
       });
+    }
+    case 'forkSession': {
+      if (typeof runtimeOwner.forkSession !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not support session fork.');
+      }
+      return runtimeOwner.forkSession(args[0] || {});
+    }
+    case 'readSessionExecutionState': {
+      if (typeof runtimeOwner.readSessionExecutionState !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose execution state.');
+      }
+      return runtimeOwner.readSessionExecutionState(args[0] || {});
     }
     case 'startTurn': {
       const command = args[0] || {};

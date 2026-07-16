@@ -209,7 +209,7 @@ class SkillRegistryImpl {
   /** 会话级：仅 restore / persisted keep-path 会写入的 session skills，不再作为 inline load_skill 默认主路径。 */
   private _activatedSkills = new Set<string>();
   private readonly _changeListeners = new Set<() => void>();
-  private _watchSubscriptions = new Map<string, { close?(): void; dispose?(): void; unsubscribe?(): void } | void>();
+  private _watchSubscriptions = new Map<string, (() => void) | { close?(): void; dispose?(): void; unsubscribe?(): void } | void>();
   private _watchTargetPaths = new Map<string, string>();
   private _watchTargetRoots = new Map<string, string[]>();
   private _watchedProjectRoot: string | undefined;
@@ -295,6 +295,12 @@ class SkillRegistryImpl {
       host,
     )) {
       this.scanDirectory(projectSkillDir, { type: 'project', projectRoot: projectRoot || projectSkillDir });
+    }
+
+    // Installation/uninstallation can remove a previously activated child-tool skill.
+    // Keep session state aligned with the currently discoverable inventory.
+    for (const name of Array.from(this._activatedSkills)) {
+      if (!this.skills.has(name)) this._activatedSkills.delete(name);
     }
 
     this.refreshDiscoveryWatchers(projectRoot, host);
@@ -395,10 +401,8 @@ class SkillRegistryImpl {
   /** Child tool skills live under child/tools/<tool-id>/skill/<skill-name>/SKILL.md. */
   private getChildToolSkillDirs(): string[] {
     const host = AilyHost.get();
-    const childPath = host.path?.getAilyChildPath?.();
-    if (!childPath) return [];
-
-    const toolsPath = host.path.join(childPath, 'tools');
+    const toolsPath = this.getChildToolsRootDir(host);
+    if (!toolsPath) return [];
     if (!host.fs.existsSync(toolsPath)) return [];
 
     try {
@@ -414,6 +418,35 @@ class SkillRegistryImpl {
       console.warn('[SkillRegistry] Failed to scan child tool skills:', error);
       return [];
     }
+  }
+
+  private getChildToolsRootDir(host: ReturnType<typeof AilyHost.get> = AilyHost.get()): string | null {
+    const childPath = host.path?.getAilyChildPath?.();
+    return childPath ? host.path.join(childPath, 'tools') : null;
+  }
+
+  /**
+   * Watch the inventory root, each installed tool's skill root, and each skill folder.
+   * This covers tool install/uninstall, skill add/remove, and SKILL.md updates.
+   */
+  private getChildToolSkillWatchRoots(host: ReturnType<typeof AilyHost.get>): string[] {
+    const toolsPath = this.getChildToolsRootDir(host);
+    if (!toolsPath) return [];
+
+    const roots = [toolsPath];
+    for (const skillRoot of this.getChildToolSkillDirs()) {
+      roots.push(skillRoot);
+      try {
+        roots.push(...host.fs.readdirSync(skillRoot)
+          .map((entry: string) => host.path.join(skillRoot, entry))
+          .filter((skillDir: string) => host.fs.isDirectory(skillDir))
+          .sort((left: string, right: string) => left.localeCompare(right)));
+      } catch (error) {
+        console.warn('[SkillRegistry] Failed to scan child tool skill watch roots:', error);
+      }
+    }
+
+    return roots;
   }
 
   /** Global skills directory: {appDataPath}/aily-skills/. */
@@ -1095,8 +1128,15 @@ class SkillRegistryImpl {
       }
 
       try {
-        const subscription = host.fs.watch(watchTarget.watchPath, (eventType?: string, filename?: string | null) => {
-          if (!this.shouldRefreshDiscoveryForWatchEvent(targetKey, eventType, filename, host)) {
+        const subscription = host.fs.watch(watchTarget.watchPath, (
+          eventOrPayload?: string | { eventType?: string; filename?: string | null },
+          filename?: string | null,
+        ) => {
+          const eventType = typeof eventOrPayload === 'string'
+            ? eventOrPayload
+            : eventOrPayload?.eventType;
+          const changedFilename = typeof eventOrPayload === 'object' ? eventOrPayload?.filename : filename;
+          if (!this.shouldRefreshDiscoveryForWatchEvent(targetKey, eventType, changedFilename, host)) {
             return;
           }
           this.scheduleDiscoveryRefresh();
@@ -1131,6 +1171,8 @@ class SkillRegistryImpl {
     for (const builtinDir of this.getBuiltinSkillsDirs()) {
       roots.push(builtinDir);
     }
+
+    roots.push(...this.getChildToolSkillWatchRoots(host));
 
     const globalDir = this.getGlobalSkillsDir();
     if (globalDir) {
@@ -1310,9 +1352,14 @@ class SkillRegistryImpl {
   }
 
   private disposeDiscoveryWatchSubscription(
-    subscription: { close?(): void; dispose?(): void; unsubscribe?(): void } | void,
+    subscription: (() => void) | { close?(): void; dispose?(): void; unsubscribe?(): void } | void,
   ): void {
     if (!subscription) {
+      return;
+    }
+
+    if (typeof subscription === 'function') {
+      subscription();
       return;
     }
 
@@ -1363,7 +1410,7 @@ function buildSkillsListingInstruction(input: {
   readonly hasReadFileTool: boolean;
 }): string {
   if (input.hasLoadSkillTool) {
-    return 'Review the listed skills first and directly call load_skill with action="load" and the exact skill name when one clearly matches the task. Use action="search" only as a fallback when no currently listed skill clearly fits or when you need to discover an additional skill. Searching does not load a skill; after search, you must call load_skill again with action="load" and an exact name before claiming a skill is loaded.';
+    return 'The listed skills are discovery metadata, not loaded instructions. When a listed skill clearly applies to the current task, call load_skill with action="load" and the exact skill name before relying on it. Do not load unrelated skills. Use action="search" only when no listed skill clearly fits or an additional skill must be discovered. Searching does not load a skill; after search, call load_skill again with action="load" and an exact name before claiming a skill is loaded.';
   }
 
   if (input.hasReadFileTool) {

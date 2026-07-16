@@ -60,6 +60,7 @@ import type {
   ChatVisibleTranscriptDialogItem,
   ChatVisibleTranscriptDialogItemPatch,
 } from './core/chat-visible-transcript-model';
+import { ChatTranscriptWindowModel } from './core/chat-transcript-window-model';
 import type { ChatPart } from './core/chat-parts';
 import { resolveChatDialogRevealTargetIndex } from './helpers/chat-dialog-reveal-target';
 import { exposeAilyChatE2eHarness, type AilyChatE2eRenderingDiagnostics } from './helpers/aily-chat-e2e-harness';
@@ -304,14 +305,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   private readonly rememberedFullAccessSessions = new Set<string>();
   private readonly inputHistoryNavigator = new ChatInputHistoryNavigator([], entries => this.persistInputHistoryEntries(entries));
   private inputHistoryStorageKey: string | null = null;
-  private readonly dialogVirtualizationMinItems = 80;
-  private readonly dialogVirtualOverscanPx = 1200;
-  private readonly dialogVirtualEstimatedHeight = 160;
-  private readonly dialogVirtualHeightByItemId = new Map<string, number>();
-  private dialogVirtualSourceItems: readonly ChatVisibleTranscriptDialogItem[] | null = null;
-  private dialogVirtualVisibleItems: readonly ChatVisibleTranscriptDialogItem[] = [];
-  private dialogVirtualStartIndex = 0;
-  private dialogVirtualEndIndex = Number.POSITIVE_INFINITY;
+  private readonly dialogWindowModel = new ChatTranscriptWindowModel();
   private dialogVirtualRefreshRaf: number | null = null;
   private dialogVirtualMeasureRaf: number | null = null;
   private dialogContentDeltaRaf: number | null = null;
@@ -332,9 +326,19 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   private visibleTurnCompletionFrameId: number | null = null;
   private visibleTurnObservedStreaming = false;
   private conversationScrollCleanup: (() => void) | null = null;
+  private olderTurnPageLoadPromise: Promise<void> | null = null;
   private lastSessionListLayoutKey = '';
-  public dialogVirtualTopSpacerHeight = 0;
-  public dialogVirtualBottomSpacerHeight = 0;
+  public get dialogVirtualTopSpacerHeight(): number {
+    return this.dialogWindowModel.snapshot.topSpacerHeight;
+  }
+
+  public get dialogVirtualBottomSpacerHeight(): number {
+    return this.dialogWindowModel.snapshot.bottomSpacerHeight;
+  }
+
+  public get isLoadingOlderVisibleTurns(): boolean {
+    return this.engine.isLoadingOlderVisibleTurns;
+  }
   private readonly debugBrowserChangeSubscription: Subscription;
   private readonly sessionViewModelChangeSubscription: Subscription;
   private readonly runtimeProcessSnapshotSubscription: { dispose(): void };
@@ -917,12 +921,52 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     return this.viewState.paneStageSurfaceModel;
   }
 
-  async onComposerAddFileRequest(): Promise<void> {
-    await this.resourceManager.addFileResources();
+  async onComposerAddFileOrFolderRequest(): Promise<void> {
+    await this.resourceManager.addFileOrFolderResources();
   }
 
-  async onComposerAddFolderRequest(): Promise<void> {
-    await this.resourceManager.addFolderResource();
+  get contextMenuItems(): IMenuItem[] {
+    const runningProcessCount = this.getRunningProcessCount();
+    return [
+      {
+        name: this.translate.instant('AILY_CHAT.ADD_FILE_OR_FOLDER'),
+        action: 'context-add-file-or-folder',
+        icon: 'fa-light fa-paperclip',
+      },
+      {
+        name: this.translate.instant('AILY_CHAT.PROCESS_TITLE'),
+        text: runningProcessCount > 0 ? String(runningProcessCount) : '',
+        action: 'context-open-process-manager',
+        icon: 'fa-light fa-square-terminal',
+      },
+      {
+        name: this.translate.instant('AILY_CHAT.MEMORY_TITLE'),
+        action: 'context-manage-memory',
+        icon: 'fa-light fa-brain',
+      },
+    ];
+  }
+
+  toggleComposerContextMenu(event: MouseEvent): void {
+    this.vm.closeSessionPicker();
+    this.menuManager.toggleContextMenu(event, this.contextMenuItems);
+  }
+
+  handleContextMenuClick(item: IMenuItem): void {
+    this.menuManager.closeAll();
+    switch (item.action) {
+      case 'context-add-file-or-folder':
+        void this.onComposerAddFileOrFolderRequest();
+        return;
+      case 'context-open-process-manager':
+        this.openProcessManagerDialog();
+        return;
+      case 'context-manage-memory':
+        this.memoryShellCoordinator.requestManageMemories();
+        return;
+      default:
+        return;
+    }
   }
 
   get sessionPickerSurfaceModel(): ChatPaneSessionPickerSurfaceModel | null {
@@ -1094,19 +1138,9 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     ChatPerformanceTracer.stopEventLoopLagSampler();
   }
 
-  shouldShowProcessEntryButton(): boolean {
-    return this.readVisibleProcessScopeProcesses().some(process => process.removed !== true);
-  }
-
   getRunningProcessCount(): number {
     return this.readVisibleProcessScopeProcesses()
       .filter(process => process.removed !== true && process.running === true)
-      .length;
-  }
-
-  getProcessEntryBadgeCount(): number {
-    return this.readVisibleProcessScopeProcesses()
-      .filter(process => process.removed !== true)
       .length;
   }
 
@@ -1912,19 +1946,18 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   get renderedDialogItems(): readonly ChatVisibleTranscriptDialogItem[] {
     const items = this.vm.dialogItems;
+    const sourceChanged = this.dialogWindowModel.setItems(items);
     if (!this.shouldUseDialogVirtualization(items)) {
       this.resetDialogVirtualWindow(items);
-      return items;
+      return this.dialogWindowModel.snapshot.items;
     }
 
-    if (this.dialogVirtualSourceItems !== items) {
-      this.dialogVirtualSourceItems = items;
-      this.reconcileDialogVirtualHeightCache(items);
+    if (sourceChanged) {
       this.computeDialogVirtualWindow(items);
       this.scheduleDialogWindowMeasurement();
     }
 
-    return this.dialogVirtualVisibleItems;
+    return this.dialogWindowModel.snapshot.items;
   }
 
   private readRenderingDiagnostics(): AilyChatE2eRenderingDiagnostics {
@@ -1935,7 +1968,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       ?? document.querySelector('app-aily-chat')) as HTMLElement | null;
     return {
       totalDialogItems: items.length,
-      renderedDialogItems: usesVirtualization ? this.dialogVirtualVisibleItems.length : items.length,
+      renderedDialogItems: usesVirtualization ? this.dialogWindowModel.snapshot.items.length : items.length,
       mountedDialogElements: queryRoot?.querySelectorAll('aily-x-dialog').length ?? 0,
       virtualRows: queryRoot?.querySelectorAll('.dialog-virtual-row').length ?? 0,
       topSpacerHeight: this.dialogVirtualTopSpacerHeight,
@@ -1944,9 +1977,9 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       scrollHeight: Math.round(container?.scrollHeight ?? 0),
       clientHeight: Math.round(container?.clientHeight ?? 0),
       scrollLock: this.scrollManager.scrollLock,
-      virtualWindowStartIndex: this.dialogVirtualStartIndex,
-      virtualWindowEndIndex: this.dialogVirtualEndIndex,
-      measuredRowCount: this.dialogVirtualHeightByItemId.size,
+      virtualWindowStartIndex: this.dialogWindowModel.snapshot.startIndex,
+      virtualWindowEndIndex: this.dialogWindowModel.snapshot.endIndex,
+      measuredRowCount: this.dialogWindowModel.measuredRowCount,
     };
   }
 
@@ -1954,9 +1987,42 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     const previousFollowButton = this.scrollManager.showFollowBottomButton;
     this.scrollManager.checkUserScroll();
     this.scheduleDialogWindowRefresh();
+    this.maybeLoadOlderVisibleTurns();
     if (previousFollowButton !== this.scrollManager.showFollowBottomButton) {
       this.cdr.detectChanges();
     }
+  }
+
+  private maybeLoadOlderVisibleTurns(): void {
+    const container = this.chatContainer?.nativeElement as HTMLElement | undefined;
+    if (!container || container.scrollTop > 480 || !this.engine.hasOlderVisibleTurns || this.olderTurnPageLoadPromise) {
+      return;
+    }
+    const beforeItems = this.vm.dialogItems;
+    this.dialogWindowModel.setItems(beforeItems);
+    const anchorIndex = Math.max(0, this.dialogWindowModel.snapshot.startIndex);
+    const anchorItemId = beforeItems[anchorIndex]?.id ?? null;
+    const anchorRelativeTop = anchorItemId
+      ? this.dialogWindowModel.offsetBefore(anchorIndex) - container.scrollTop
+      : 0;
+    this.olderTurnPageLoadPromise = this.engine.loadOlderVisibleTurns(this.vm.sessionId)
+      .then(result => {
+        if (!result || result.addedCount === 0 || !anchorItemId) return;
+        const items = this.vm.dialogItems;
+        this.dialogWindowModel.setItems(items);
+        const nextAnchorIndex = items.findIndex(item => item.id === anchorItemId);
+        if (nextAnchorIndex < 0) return;
+        const targetScrollTop = Math.max(0, this.dialogWindowModel.offsetBefore(nextAnchorIndex) - anchorRelativeTop);
+        this.dialogWindowModel.layout(targetScrollTop, Math.max(1, container.clientHeight || 640));
+        this.cdr.detectChanges();
+        requestAnimationFrame(() => {
+          container.scrollTop = targetScrollTop;
+          this.scheduleDialogWindowRefresh();
+          this.scheduleDialogWindowMeasurement();
+        });
+      })
+      .catch(error => console.warn('[AilyChat][VisibleTurnWindow] Failed to load older turns:', error))
+      .finally(() => { this.olderTurnPageLoadPromise = null; });
   }
 
   private bindConversationScrollListener(element: HTMLElement): void {
@@ -1981,10 +2047,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       return;
     }
     this.pendingDialogContentDeltaItemIds.add(itemId);
-    const previousHeight = this.dialogVirtualHeightByItemId.get(itemId);
-    if (previousHeight == null || Math.abs(previousHeight - height) > 1) {
-      this.dialogVirtualHeightByItemId.set(itemId, height);
-    }
+    this.dialogWindowModel.updateMeasuredHeight(itemId, height);
 
     if (this.dialogContentDeltaRaf !== null) {
       return;
@@ -2258,24 +2321,12 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   private shouldUseDialogVirtualization(items: readonly ChatVisibleTranscriptDialogItem[]): boolean {
-    return items.length > this.dialogVirtualizationMinItems;
+    return this.dialogWindowModel.shouldWindow(items);
   }
 
   private resetDialogVirtualWindow(items: readonly ChatVisibleTranscriptDialogItem[]): void {
-    if (this.dialogVirtualSourceItems === items
-      && this.dialogVirtualVisibleItems === items
-      && this.dialogVirtualTopSpacerHeight === 0
-      && this.dialogVirtualBottomSpacerHeight === 0) {
-      return;
-    }
-
-    this.dialogVirtualSourceItems = items;
-    this.dialogVirtualVisibleItems = items;
-    this.dialogVirtualStartIndex = 0;
-    this.dialogVirtualEndIndex = items.length;
-    this.dialogVirtualTopSpacerHeight = 0;
-    this.dialogVirtualBottomSpacerHeight = 0;
-    this.reconcileDialogVirtualHeightCache(items);
+    this.dialogWindowModel.setItems(items);
+    this.dialogWindowModel.showAll();
   }
 
   private scheduleDialogWindowRefresh(): void {
@@ -2325,74 +2376,23 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   private computeDialogVirtualWindow(items: readonly ChatVisibleTranscriptDialogItem[]): boolean {
-    this.dialogVirtualSourceItems = items;
-    this.reconcileDialogVirtualHeightCache(items);
-
-    if (items.length === 0) {
-      return this.applyDialogVirtualWindow(items, 0, 0, 0, 0);
-    }
-
+    this.dialogWindowModel.setItems(items);
     const viewport = this.chatContainer?.nativeElement as HTMLElement | undefined;
     const viewportHeight = Math.max(1, viewport?.clientHeight || 640);
-    const totalHeight = this.computeDialogVirtualTotalHeight(items);
+    const totalHeight = this.dialogWindowModel.totalHeight;
     const fallbackBottomTop = Math.max(0, totalHeight - viewportHeight);
     const viewportTop = Math.max(0, viewport?.scrollTop ?? fallbackBottomTop);
-    const windowTop = Math.max(0, viewportTop - this.dialogVirtualOverscanPx);
-    const windowBottom = viewportTop + viewportHeight + this.dialogVirtualOverscanPx;
-
-    return this.computeDialogVirtualWindowForRange(items, windowTop, windowBottom, totalHeight);
+    return this.dialogWindowModel.layout(viewportTop, viewportHeight);
   }
 
   private computeDialogVirtualWindowForRange(
     items: readonly ChatVisibleTranscriptDialogItem[],
     windowTop: number,
     windowBottom: number,
-    totalHeight = this.computeDialogVirtualTotalHeight(items),
+    _totalHeight?: number,
   ): boolean {
-    if (items.length === 0) {
-      return this.applyDialogVirtualWindow(items, 0, 0, 0, 0);
-    }
-
-    let offset = 0;
-    let start = 0;
-    let end = items.length;
-    let topSpacer = 0;
-    let bottomSpacer = 0;
-    let foundStart = false;
-
-    for (let index = 0; index < items.length; index++) {
-      const height = this.getDialogVirtualItemHeight(items[index]);
-      const itemTop = offset;
-      const itemBottom = itemTop + height;
-
-      if (!foundStart && itemBottom >= windowTop) {
-        start = index;
-        topSpacer = itemTop;
-        foundStart = true;
-      }
-
-      if (foundStart && itemTop > windowBottom) {
-        end = index;
-        bottomSpacer = Math.max(0, totalHeight - itemTop);
-        break;
-      }
-
-      offset = itemBottom;
-    }
-
-    if (!foundStart) {
-      start = Math.max(0, items.length - 1);
-      topSpacer = Math.max(0, totalHeight - this.getDialogVirtualItemHeight(items[start]));
-      end = items.length;
-      bottomSpacer = 0;
-    } else if (end === items.length) {
-      bottomSpacer = 0;
-    }
-
-    start = Math.max(0, Math.min(start, items.length));
-    end = Math.max(start, Math.min(end, items.length));
-
-    return this.applyDialogVirtualWindow(items, start, end, topSpacer, bottomSpacer);
+    this.dialogWindowModel.setItems(items);
+    return this.dialogWindowModel.layoutRange(windowTop, windowBottom);
   }
 
   private prepareDialogRevealTarget(target: ChatRevealTarget, options: ChatRevealOptions): boolean {
@@ -2403,14 +2403,20 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
     const targetIndex = resolveChatDialogRevealTargetIndex(items, target);
     if (targetIndex < 0) {
+      if (typeof target !== 'string') {
+        void this.engine.ensureVisibleTurnLoaded(target.turnId, this.vm.sessionId).then(loaded => {
+          if (loaded) {
+            this.scrollManager.revealTarget(target, options);
+          }
+        });
+        return true;
+      }
       return false;
     }
 
-    const targetTop = this.computeDialogVirtualOffsetBefore(items, targetIndex);
-    const targetHeight = this.getDialogVirtualItemHeight(items[targetIndex]);
-    const windowTop = Math.max(0, targetTop - this.dialogVirtualOverscanPx);
-    const windowBottom = targetTop + targetHeight + this.dialogVirtualOverscanPx;
-    const changed = this.computeDialogVirtualWindowForRange(items, windowTop, windowBottom);
+    this.dialogWindowModel.setItems(items);
+    const targetTop = this.dialogWindowModel.offsetBefore(targetIndex);
+    const changed = this.dialogWindowModel.layoutItem(targetIndex);
 
     const container = this.chatContainer?.nativeElement as HTMLElement | undefined;
     if (container) {
@@ -2438,11 +2444,11 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       return false;
     }
 
-    const totalHeight = this.computeDialogVirtualTotalHeight(items);
+    this.dialogWindowModel.setItems(items);
+    const totalHeight = this.dialogWindowModel.totalHeight;
     const viewportHeight = Math.max(1, container.clientHeight || 640);
     const viewportTop = Math.max(0, totalHeight - viewportHeight);
-    const windowTop = Math.max(0, viewportTop - this.dialogVirtualOverscanPx);
-    const changed = this.computeDialogVirtualWindowForRange(items, windowTop, totalHeight, totalHeight);
+    const changed = this.dialogWindowModel.layoutBottom(viewportHeight);
 
     container.scrollTo({
       top: Math.round(viewportTop),
@@ -2507,30 +2513,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.dialogBottomFollowRaf = null;
   }
 
-  private applyDialogVirtualWindow(
-    items: readonly ChatVisibleTranscriptDialogItem[],
-    start: number,
-    end: number,
-    topSpacer: number,
-    bottomSpacer: number,
-  ): boolean {
-    const visibleItems = items.slice(start, end);
-    const changed = this.dialogVirtualStartIndex !== start
-      || this.dialogVirtualEndIndex !== end
-      || Math.abs(this.dialogVirtualTopSpacerHeight - topSpacer) > 1
-      || Math.abs(this.dialogVirtualBottomSpacerHeight - bottomSpacer) > 1
-      || this.dialogVirtualVisibleItems.length !== visibleItems.length
-      || this.dialogVirtualVisibleItems[0]?.id !== visibleItems[0]?.id
-      || this.dialogVirtualVisibleItems[this.dialogVirtualVisibleItems.length - 1]?.id !== visibleItems[visibleItems.length - 1]?.id;
-
-    this.dialogVirtualStartIndex = start;
-    this.dialogVirtualEndIndex = end;
-    this.dialogVirtualTopSpacerHeight = Math.max(0, Math.round(topSpacer));
-    this.dialogVirtualBottomSpacerHeight = Math.max(0, Math.round(bottomSpacer));
-    this.dialogVirtualVisibleItems = visibleItems;
-    return changed;
-  }
-
   private measureRenderedDialogRows(): boolean {
     const rows = this.transcriptListRenderer?.readVirtualRows() ?? [];
     let changed = false;
@@ -2547,9 +2529,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
         continue;
       }
 
-      const previousHeight = this.dialogVirtualHeightByItemId.get(itemId);
-      if (previousHeight == null || Math.abs(previousHeight - measuredHeight) > 1) {
-        this.dialogVirtualHeightByItemId.set(itemId, measuredHeight);
+      if (this.dialogWindowModel.updateMeasuredHeight(itemId, measuredHeight)) {
         changed = true;
       }
     }
@@ -2557,41 +2537,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     return changed;
   }
 
-  private reconcileDialogVirtualHeightCache(items: readonly ChatVisibleTranscriptDialogItem[]): void {
-    if (this.dialogVirtualHeightByItemId.size === 0) {
-      return;
-    }
-
-    const liveItemIds = new Set(items.map(item => item.id));
-    for (const itemId of Array.from(this.dialogVirtualHeightByItemId.keys())) {
-      if (!liveItemIds.has(itemId)) {
-        this.dialogVirtualHeightByItemId.delete(itemId);
-      }
-    }
-  }
-
-  private computeDialogVirtualTotalHeight(items: readonly ChatVisibleTranscriptDialogItem[]): number {
-    return items.reduce((total, item) => total + this.getDialogVirtualItemHeight(item), 0);
-  }
-
-  private computeDialogVirtualOffsetBefore(items: readonly ChatVisibleTranscriptDialogItem[], targetIndex: number): number {
-    let offset = 0;
-    const boundedTargetIndex = Math.max(0, Math.min(targetIndex, items.length));
-    for (let index = 0; index < boundedTargetIndex; index++) {
-      offset += this.getDialogVirtualItemHeight(items[index]);
-    }
-    return offset;
-  }
-
-  private getDialogVirtualItemHeight(item: ChatVisibleTranscriptDialogItem): number {
-    return this.dialogVirtualHeightByItemId.get(item.id)
-      ?? (item.role === 'user' ? 92 : this.dialogVirtualEstimatedHeight);
-  }
-
-  handleCheckpointRestoreSurfaceAction(event?: Event): void {
+  handleCheckpointRestoreSurfaceAction(event?: Event, sessionResource?: string): void {
     event?.preventDefault();
     event?.stopPropagation();
-    this.handleDialogTaskAction({ action: 'redoEdits' });
+    this.handleDialogTaskAction({ action: 'redoEdits', sessionResource });
   }
 
   handleDialogTaskAction(detail?: ChatTaskActionDetail): void {
@@ -2682,13 +2631,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
         return this.runReturnAwareEntryState(this.chatService.currentSessionId);
       },
       onEnterEntryState: (sessionId?: string | null) => this.runReturnAwareEntryState(sessionId),
-      onDeleteSession: (sessionId: string) => {
+      isSessionRequestInProgress: (sessionId: string) => this.engine.isSessionRequestInProgress(sessionId),
+      onDeleteSession: async (sessionId: string) => {
         this.closeDebugBrowser();
-        return this.engine.deleteSessionAction(sessionId);
-      },
-      onDeleteSessionRuntime: (sessionId: string) => {
-        this.closeDebugBrowser();
-        this.engine.disposeSessionRuntime(sessionId);
+        return await this.engine.deleteSessionAction(sessionId);
       },
       onDetectChanges: () => this.cdr.markForCheck(),
       onUpdateTitle: (title: string) => {

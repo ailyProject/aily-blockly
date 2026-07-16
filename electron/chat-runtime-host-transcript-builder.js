@@ -2181,6 +2181,212 @@ class ChatRuntimeHostTranscriptBuilder {
     return clonePayload(nextTranscript);
   }
 
+  removeFromTurn({ sessionId, turnId, expectedRevision }) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    const normalizedTurnId = normalizeTurnId(turnId);
+    if (!normalizedSessionId || !normalizedTurnId) {
+      const error = new Error('Request-list mutation requires a session id and turn id.');
+      error.code = 'invalid_request_list_mutation';
+      throw error;
+    }
+
+    const currentTranscript = this.buildTranscriptSnapshot(normalizedSessionId);
+    const currentRevision = normalizeRevision(currentTranscript && currentTranscript.revision);
+    const normalizedExpectedRevision = normalizeRevision(expectedRevision);
+    if (normalizedExpectedRevision !== currentRevision) {
+      const error = new Error(
+        `Request-list revision mismatch: expected ${normalizedExpectedRevision}, current ${currentRevision}.`,
+      );
+      error.code = 'request_list_revision_mismatch';
+      error.expectedRevision = normalizedExpectedRevision;
+      error.currentRevision = currentRevision;
+      throw error;
+    }
+
+    const turnResponses = Array.isArray(currentTranscript && currentTranscript.turnResponses)
+      ? clonePayload(currentTranscript.turnResponses)
+      : [];
+    const removeFromIndex = turnResponses.findIndex(turn =>
+      normalizeTurnId(turn && turn.turnId) === normalizedTurnId);
+    if (removeFromIndex < 0) {
+      const error = new Error(`Request-list turn does not exist: ${normalizedTurnId}.`);
+      error.code = 'request_list_turn_not_found';
+      error.turnId = normalizedTurnId;
+      throw error;
+    }
+
+    const discardedTurnResponses = turnResponses.splice(removeFromIndex);
+    const retainedTurnIds = turnResponses
+      .map(turn => normalizeTurnId(turn && turn.turnId))
+      .filter(Boolean);
+    const discardedTurnIds = discardedTurnResponses
+      .map(turn => normalizeTurnId(turn && turn.turnId))
+      .filter(Boolean);
+    for (const discardedTurnId of discardedTurnIds) {
+      this.renderEventStates.delete(renderEventStateKey(normalizedSessionId, discardedTurnId));
+    }
+
+    const nextTranscript = {
+      sessionId: normalizedSessionId,
+      turnResponses,
+      revision: currentRevision + 1,
+    };
+    this.transcripts.set(normalizedSessionId, clonePayload(nextTranscript));
+    return {
+      transcript: clonePayload(nextTranscript),
+      retainedTurnIds,
+      discardedTurnIds,
+    };
+  }
+
+  replaceTurnResponses({ sessionId, turnResponses, expectedRevision }) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId || !Array.isArray(turnResponses)) {
+      const error = new Error('Request-list replacement requires a session id and turn array.');
+      error.code = 'invalid_request_list_mutation';
+      throw error;
+    }
+
+    const currentTranscript = this.buildTranscriptSnapshot(normalizedSessionId);
+    const currentRevision = normalizeRevision(currentTranscript && currentTranscript.revision);
+    const normalizedExpectedRevision = normalizeRevision(expectedRevision);
+    if (normalizedExpectedRevision !== currentRevision) {
+      const error = new Error(
+        `Request-list revision mismatch: expected ${normalizedExpectedRevision}, current ${currentRevision}.`,
+      );
+      error.code = 'request_list_revision_mismatch';
+      error.expectedRevision = normalizedExpectedRevision;
+      error.currentRevision = currentRevision;
+      throw error;
+    }
+
+    const nextTurnResponses = clonePayload(turnResponses);
+    const retainedTurnIds = new Set(nextTurnResponses
+      .map(turn => normalizeTurnId(turn && turn.turnId))
+      .filter(Boolean));
+    const previousTurns = Array.isArray(currentTranscript && currentTranscript.turnResponses)
+      ? currentTranscript.turnResponses
+      : [];
+    for (const previousTurn of previousTurns) {
+      const turnId = normalizeTurnId(previousTurn && previousTurn.turnId);
+      if (turnId && !retainedTurnIds.has(turnId)) {
+        this.renderEventStates.delete(renderEventStateKey(normalizedSessionId, turnId));
+      }
+    }
+
+    const nextTranscript = {
+      sessionId: normalizedSessionId,
+      turnResponses: nextTurnResponses,
+      revision: currentRevision + 1,
+    };
+    this.transcripts.set(normalizedSessionId, clonePayload(nextTranscript));
+    return clonePayload(nextTranscript);
+  }
+
+  prepareForkPrefix({ sourceSessionId, targetSessionId, beforeTurnId, expectedRevision }) {
+    const normalizedSourceSessionId = normalizeSessionId(sourceSessionId);
+    const normalizedTargetSessionId = normalizeSessionId(targetSessionId);
+    const normalizedBeforeTurnId = normalizeTurnId(beforeTurnId);
+    if (!normalizedSourceSessionId || !normalizedTargetSessionId || !normalizedBeforeTurnId
+      || normalizedSourceSessionId === normalizedTargetSessionId) {
+      const error = new Error('Session fork requires distinct source/target sessions and a boundary turn.');
+      error.code = 'invalid_session_fork';
+      throw error;
+    }
+    if (this.hasTranscript(normalizedTargetSessionId)) {
+      const error = new Error(`Session fork target already exists: ${normalizedTargetSessionId}.`);
+      error.code = 'session_fork_target_exists';
+      throw error;
+    }
+    const source = this.buildTranscriptSnapshot(normalizedSourceSessionId);
+    const sourceRevision = normalizeRevision(source && source.revision);
+    const normalizedExpectedRevision = normalizeRevision(expectedRevision);
+    if (sourceRevision !== normalizedExpectedRevision) {
+      const error = new Error(`Session fork revision mismatch: expected ${normalizedExpectedRevision}, current ${sourceRevision}.`);
+      error.code = 'request_list_revision_mismatch';
+      error.expectedRevision = normalizedExpectedRevision;
+      error.currentRevision = sourceRevision;
+      throw error;
+    }
+    const sourceTurns = Array.isArray(source && source.turnResponses) ? source.turnResponses : [];
+    const boundaryIndex = sourceTurns.findIndex(turn => normalizeTurnId(turn && turn.turnId) === normalizedBeforeTurnId);
+    if (boundaryIndex < 0) {
+      const error = new Error(`Session fork boundary does not exist: ${normalizedBeforeTurnId}.`);
+      error.code = 'request_list_turn_not_found';
+      throw error;
+    }
+    const turnResponses = clonePayload(sourceTurns.slice(0, boundaryIndex));
+    return {
+      sourceSessionId: normalizedSourceSessionId,
+      targetSessionId: normalizedTargetSessionId,
+      beforeTurnId: normalizedBeforeTurnId,
+      sourceRevision,
+      turnResponses,
+      retainedTurnIds: turnResponses.map(turn => normalizeTurnId(turn && turn.turnId)).filter(Boolean),
+    };
+  }
+
+  commitForkTranscript({ sourceSessionId, targetSessionId, sourceRevision, turnResponses }) {
+    const normalizedSourceSessionId = normalizeSessionId(sourceSessionId);
+    const normalizedTargetSessionId = normalizeSessionId(targetSessionId);
+    if (this.readTranscriptRevision(normalizedSourceSessionId) !== normalizeRevision(sourceRevision)) {
+      const error = new Error('Session fork source changed before commit.');
+      error.code = 'request_list_revision_mismatch';
+      throw error;
+    }
+    if (this.hasTranscript(normalizedTargetSessionId)) {
+      const error = new Error(`Session fork target already exists: ${normalizedTargetSessionId}.`);
+      error.code = 'session_fork_target_exists';
+      throw error;
+    }
+    const sanitizedTurns = (Array.isArray(turnResponses) ? turnResponses : []).map(turn => {
+      const cloned = clonePayload(turn);
+      const metadata = cloned?.request?.metadata && typeof cloned.request.metadata === 'object'
+        ? { ...cloned.request.metadata }
+        : null;
+      if (metadata) {
+        delete metadata.requestContext;
+        delete metadata.requestContextSnapshot;
+        cloned.request = { ...cloned.request, metadata };
+      }
+      return cloned;
+    });
+    const transcript = {
+      sessionId: normalizedTargetSessionId,
+      turnResponses: sanitizedTurns,
+      revision: 1,
+    };
+    this.transcripts.set(normalizedTargetSessionId, clonePayload(transcript));
+    return clonePayload(transcript);
+  }
+
+  restoreAfterFailedRequestListMutation({ transcript, expectedRevision }) {
+    const normalizedSessionId = normalizeSessionId(transcript && transcript.sessionId);
+    if (!normalizedSessionId || !transcript || typeof transcript !== 'object') {
+      const error = new Error('Request-list rollback requires the previous transcript snapshot.');
+      error.code = 'invalid_request_list_rollback';
+      throw error;
+    }
+    const currentRevision = this.readTranscriptRevision(normalizedSessionId);
+    const normalizedExpectedRevision = normalizeRevision(expectedRevision);
+    if (currentRevision !== normalizedExpectedRevision) {
+      const error = new Error(
+        `Request-list rollback revision mismatch: expected ${normalizedExpectedRevision}, current ${currentRevision}.`,
+      );
+      error.code = 'request_list_rollback_revision_mismatch';
+      throw error;
+    }
+
+    this.clearSession(normalizedSessionId);
+    const restoredTranscript = {
+      sessionId: normalizedSessionId,
+      turnResponses: Array.isArray(transcript.turnResponses) ? clonePayload(transcript.turnResponses) : [],
+      revision: currentRevision + 1,
+    };
+    this.transcripts.set(normalizedSessionId, clonePayload(restoredTranscript));
+    return clonePayload(restoredTranscript);
+  }
+
   seedSubmittedTurn({ sessionId, turnId, request, revision, timestamp, protocolTruncation }) {
     const normalizedSessionId = normalizeSessionId(sessionId);
     const normalizedTurnId = normalizeTurnId(turnId);

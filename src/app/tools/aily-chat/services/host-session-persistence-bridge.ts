@@ -104,7 +104,10 @@ export class HostSessionPersistenceBridge {
     }, 'full');
   }
 
-  async saveHostRecordAsync(record: LiveHostSessionRecord): Promise<void> {
+  async saveHostRecordAsync(
+    record: LiveHostSessionRecord,
+    options?: { readonly allowEmptyTranscript?: boolean },
+  ): Promise<void> {
     await this.enqueueStore(async () => {
       const { sessionId } = record;
       if (!sessionId) {
@@ -119,6 +122,11 @@ export class HostSessionPersistenceBridge {
       const hostRecord = this.materializeHostRecord(record);
       const messageCount = countHostRecordMessages(hostRecord);
       if (messageCount === 0) {
+        if (options?.allowEmptyTranscript === true) {
+          this.sessionCache.set(sessionId, hostRecord);
+          await this.hostRecordStore.writeOrThrowAsync(sessionId, hostRecord);
+          this.clearDirtyRevision(sessionId, dirtyRevision);
+        }
         return;
       }
       this.sessionCache.set(sessionId, hostRecord);

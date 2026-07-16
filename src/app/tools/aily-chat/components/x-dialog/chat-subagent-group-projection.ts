@@ -390,7 +390,6 @@ function shouldPinToolCallToThinking(part: RenderableChatPart): boolean {
   if (isSubagentToolCall(part as ChatPart)
     || isInternalDiscoveryToolName(toolPart.toolName)
     || isTerminalSessionToolName(toolPart.toolName)
-    || isAskQuestionsToolName(toolPart.toolName)
     || hasTerminalSpecificData(toolPart)) {
     return false;
   }
@@ -500,15 +499,6 @@ function toRuntimeToolCallPart(part: RenderableChatPart): {
     readonly state?: string;
     readonly metadata?: Record<string, unknown>;
   };
-}
-
-function isAskQuestionsToolName(toolName: string | undefined): boolean {
-  const normalized = normalizeReadSideToolName(toolName);
-  return normalized === 'ask_questions'
-    || normalized === 'ask_user'
-    || normalized === 'askQuestions'
-    || normalized === 'copilot_askQuestions'
-    || normalized === 'vscode_askQuestions';
 }
 
 function hasTerminalSpecificData(part: { readonly metadata?: Record<string, unknown> }): boolean {

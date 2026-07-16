@@ -1,5 +1,6 @@
 import { ChatPartStore } from './chat-part-store';
 import { RenderEventPartAdapter } from './render-event-part-adapter';
+import { RenderEventItemLifecycleNormalizer } from './render-event-item-lifecycle';
 import { turnResponsePartsToDisplayChatParts } from './turn-response-part-mapper';
 import { buildActivityGroupPresentation, buildToolActivityDisplayItem } from '../components/x-dialog/chat-activity-group-projection';
 import { buildChatRenderItems } from '../components/x-dialog/chat-subagent-group-projection';
@@ -1729,8 +1730,9 @@ describe('RenderEventPartAdapter', () => {
     const parts = store.getPartsForHandle(currentHandle);
     expect(parts[0].type).toBe('state');
     expect((parts[0] as any).kind).toBe('todo');
-    expect((parts[0] as any).state).toBe('doing');
+    expect((parts[0] as any).state).toBe('done');
     expect((parts[0] as any).text).toContain('Todo list updated');
+    expect((parts[0] as any).metadata.listState).toBe('doing');
     expect((parts[0] as any).metadata.timeline.length).toBe(1);
     expect((parts[0] as any).metadata.timeline[0].phaseLabel).toBe('开始 收口 input part band');
 
@@ -1750,6 +1752,63 @@ describe('RenderEventPartAdapter', () => {
     expect((nextParts[0] as any).metadata.timeline[1].activeTitle).toBe('对齐 todo transcript 标题');
     expect((nextParts[0] as any).metadata.timeline[1].phaseLabel).toBe('完成 收口 input part band');
     expect((nextParts[0] as any).metadata.timeline[1].phaseDetail).toBe('切换到 对齐 todo transcript 标题');
+  });
+
+  it('completes the canonical todo part without completing pending todo items', () => {
+    const normalizer = new RenderEventItemLifecycleNormalizer();
+    normalizer.process({ type: 'turn_begin', turnId: 'turn-todo', timestamp: 1 } as RenderEvent);
+
+    const events = normalizer.process({
+      type: 'todo_update',
+      sessionId: 'session-todo',
+      summary: 'Todo list updated',
+      items: [{ id: 1, title: 'Build project', status: 'in-progress' }],
+      timestamp: 2,
+    } as unknown as RenderEvent);
+
+    expect(events).toEqual([
+      jasmine.objectContaining({ type: 'itemStarted', itemId: 'todo:session-todo', itemKind: 'state' }),
+      jasmine.objectContaining({
+        type: 'itemDelta',
+        itemId: 'todo:session-todo',
+        structuredPayload: jasmine.objectContaining({
+          type: 'state',
+          kind: 'todo',
+          state: 'done',
+        }),
+      }),
+      jasmine.objectContaining({
+        type: 'itemCompleted',
+        itemId: 'todo:session-todo',
+        status: 'completed',
+      }),
+    ]);
+  });
+
+  it('completes the todo invocation when the separate todo state is published', () => {
+    processCurrent({
+      type: 'tool_call_begin',
+      toolCallId: 'todo-call-1',
+      toolName: 'manage_todo_list',
+      args: { todoList: [{ id: 1, title: 'Build project', status: 'in-progress' }] },
+      timestamp: 1,
+    } as any);
+
+    processCurrent({
+      type: 'todo_update',
+      sessionId: 'sess-1',
+      summary: 'Todo list updated',
+      items: [{ id: 1, title: 'Build project', status: 'in-progress' }],
+      timestamp: 2,
+    } as any);
+
+    const parts = store.getPartsForHandle(currentHandle);
+    const invocation = parts.find(part => part.type === 'tool_call') as any;
+    const todoState = parts.find(part => part.type === 'state') as any;
+    expect(invocation.state).toBe('done');
+    expect(invocation.metadata.toolSpecificData.kind).toBe('todoList');
+    expect(todoState.state).toBe('done');
+    expect(todoState.metadata.listState).toBe('doing');
   });
 
   it('projects todo updates with missing items as an empty canonical todo state', () => {

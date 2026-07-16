@@ -4,6 +4,7 @@ import type {
   ChatRuntimeOwnerExecutor,
   ChatRuntimeOwnerExecutorCommandMethod,
   ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand,
+  ChatRuntimeOwnerExecutorForkSessionCommand,
   ChatRuntimeOwnerExecutorEvent,
   ChatRuntimeOwnerExecutorPrewarmRuntimeCommand,
   ChatRuntimeOwnerExecutorRenderEventProgress,
@@ -28,6 +29,7 @@ export function normalizeRuntimeOwnerMethod(method: unknown): ChatRuntimeOwnerEx
   switch (method) {
     case 'startTurn':
     case 'prewarmRuntime':
+    case 'forkSession':
     case 'stopTurn':
     case 'disposeSessionResources':
     case 'resolveInteraction':
@@ -44,6 +46,8 @@ export function trackRuntimeOwnerCommand(
 ): void {
   switch (method) {
     case 'prewarmRuntime':
+      return;
+    case 'forkSession':
       return;
     case 'startTurn': {
       const command = args[0] as Partial<ChatRuntimeOwnerExecutorStartTurnCommand> | null | undefined;
@@ -189,6 +193,13 @@ export function callRuntimeOwnerMethod(
         agentRuntimeMode: command?.agentRuntimeMode ?? null,
         currentModel: command?.currentModel ?? null,
       });
+    }
+    case 'forkSession': {
+      const command = args[0] as ChatRuntimeOwnerExecutorForkSessionCommand;
+      if (typeof runtimeOwner.forkSession !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not support session fork.');
+      }
+      return runtimeOwner.forkSession(command);
     }
     case 'startTurn': {
       const command = args[0] as Partial<ChatRuntimeOwnerExecutorStartTurnCommand> | null | undefined;

@@ -6,6 +6,7 @@ import { test, expect, getMainWindow } from '../fixtures/electron-app';
  * 验证应用能够：
  *  - 启动 Electron 主进程并创建主窗口；
  *  - 主窗口渲染出主布局（app-main-window / app-header / app-footer）；
+ *  - E2E fixture 会自动关闭遮挡操作的新手引导；
  *  - 正确暴露 Electron/Node 版本（经 preload 的 window.electronAPI.versions）；
  *  - 渲染进程不崩溃。
  */
@@ -13,6 +14,10 @@ test.describe('冒烟测试', () => {
   test('应用应能启动并显示主窗口', async ({ electronApp }) => {
     const win = await getMainWindow(electronApp);
     await expect(win.locator('app-main-window')).toBeVisible();
+
+    // 引导原本会延迟 500ms 启动，等待后确认 fixture 已自动将其关闭。
+    await win.waitForTimeout(750);
+    await expect(win.locator('app-onboarding .onboarding-overlay')).toHaveCount(0);
   });
 
   test('应用标题应为 aily blockly', async ({ electronApp }) => {

@@ -21,6 +21,7 @@ import path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 let electronPreflightDone = false;
+const onboardingDismissalPages = new WeakSet<Page>();
 
 type AilyFixtures = {
   electronApp: ElectronApplication;
@@ -186,6 +187,7 @@ export async function getMainWindow(app: ElectronApplication, timeoutMs = 60_000
         if (!url || url.startsWith('about:blank')) continue;
         const count = await win.locator('app-main-window').count();
         if (count > 0) {
+          await installOnboardingAutoDismiss(win);
           return win;
         }
       } catch (e) {
@@ -198,6 +200,28 @@ export async function getMainWindow(app: ElectronApplication, timeoutMs = 60_000
   throw new Error(
     `[e2e] 在 ${timeoutMs}ms 内未找到主窗口（含 <app-main-window>）。最近错误：${String(lastErr)}`,
   );
+}
+
+async function installOnboardingAutoDismiss(win: Page): Promise<void> {
+  if (onboardingDismissalPages.has(win)) {
+    return;
+  }
+
+  await win.evaluate(() => {
+    const dismiss = () => {
+      const button = document.querySelector<HTMLButtonElement>('app-onboarding .btn-skip');
+      if (!button || button.dataset['e2eDismissed'] === 'true') {
+        return;
+      }
+      button.dataset['e2eDismissed'] = 'true';
+      button.click();
+    };
+
+    const observer = new MutationObserver(dismiss);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    dismiss();
+  });
+  onboardingDismissalPages.add(win);
 }
 
 /**

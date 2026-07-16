@@ -3,7 +3,11 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { AilyHost } from '../core/host';
 import type { ResourceItem } from '../core/chat-types';
 import { getResourcesText as _getResourcesText } from './ui-helpers.service';
-import { pickFileResources, pickFolderResource } from '../helpers/chat-resource-picker';
+import {
+  pickFileOrFolderResources,
+  pickFileResources,
+  pickFolderResource,
+} from '../helpers/chat-resource-picker';
 import { ProjectService } from '../../../services/project.service';
 import { ProjectRelatedFileStorage } from '../components/memory/project-related-file-storage';
 
@@ -13,15 +17,21 @@ import { ProjectRelatedFileStorage } from '../components/memory/project-related-
 @Injectable()
 export class ResourceManagerService {
   items: ResourceItem[] = [];
-  showAddList = false;
 
   constructor(
     private message: NzMessageService,
     private projectService: ProjectService,
   ) {}
 
-  toggleAddList(): void {
-    this.showAddList = !this.showAddList;
+  async addFileOrFolderResources(): Promise<ResourceItem[]> {
+    const host = AilyHost.get();
+    const resources = await pickFileOrFolderResources(
+      host.dialog,
+      (path) => host.fs.isDirectory(path),
+    );
+    const importedResources = this.importAssetResources(resources);
+    this.pushUniqueResources(importedResources);
+    return importedResources;
   }
 
   async addFile(): Promise<void> {

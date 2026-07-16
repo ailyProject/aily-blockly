@@ -12,6 +12,8 @@ import { ConfigService } from './config.service';
 import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
 import { STM32_CONFIG_MENU } from '../configs/stm32.config';
 import { NRF5_CONFIG_MENU } from '../configs/nrf5.config';
+import { WIO_TERMINAL_CONFIG_MENU } from '../configs/wio-terminal.config';
+import type { IMenuItem } from '../configs/menu.config';
 import { ActionService } from './action.service';
 import { PlatformService } from './platform.service';
 import type { NewProjectData } from '../types/project-new';
@@ -62,10 +64,6 @@ interface ProjectOpenOptions {
 interface ProjectCreationOptions {
   activationReason?: ProjectActivationReason;
   sessionResource?: string | null;
-}
-
-interface ProjectCloseOptions {
-  activationReason?: ProjectActivationReason;
 }
 
 @Injectable({
@@ -458,11 +456,6 @@ export class ProjectService {
       return false;
     }
 
-    const closeResult = await this.close({ activationReason });
-    if (closeResult === false) {
-      return false;
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
     // 判断路径是否存在
     if (!this.electronService.exists(projectPath)) {
       this.removeRecentlyProject({ path: projectPath })
@@ -493,6 +486,17 @@ export class ProjectService {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
         this.stateSubject.next('default');
         return;
+      }
+    }
+
+    if (this.electronService.isElectron
+      && previousProjectPath
+      && !this.isSameProjectPath(previousProjectPath, projectPath)
+      && window['projectLock']) {
+      try {
+        await window['projectLock'].release(previousProjectPath);
+      } catch (e) {
+        console.warn('project-lock release:', e);
       }
     }
 
@@ -622,8 +626,8 @@ export class ProjectService {
     this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
   }
 
-  async close(options: ProjectCloseOptions = {}) {
-    if (this.shouldBlockForChatRequest(options.activationReason)) {
+  async close() {
+    if (this.shouldBlockForChatRequest()) {
       this.warnBlockingChatRequest();
       return false;
     }
@@ -635,6 +639,7 @@ export class ProjectService {
         console.warn('project-lock release:', e);
       }
     }
+    this.uiService.closeTerminal();
     this.currentProjectPath = '';
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', '').catch(() => undefined);
     this.currentPackageData = {
@@ -643,6 +648,7 @@ export class ProjectService {
     this.stateSubject.next('default');
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
     this.router.navigate(['/main/guide'], { replaceUrl: true });
+    return true;
   }
 
   /** 项目已被其他实例占用时的操作：取消 / 前置其他进程 / 强制打开 */
@@ -1344,6 +1350,34 @@ export class ProjectService {
     }
   }
 
+  // 解析 boards.txt 并获取 Wio Terminal 配置信息
+  async getWioTerminalBoardConfig(boardName: string) {
+    if (boardName !== 'seeed_wio_terminal') {
+      return null;
+    }
+
+    try {
+      const boardConfig = await this.getRawBoardsTxtConfig(boardName);
+      if (!boardConfig) {
+        throw new Error(`Board configuration not found: ${boardName}`);
+      }
+
+      return {
+        role: this.extractMenuOptions(boardConfig, 'role'),
+        cache: this.extractMenuOptions(boardConfig, 'cache'),
+        speed: this.extractMenuOptions(boardConfig, 'speed'),
+        optimization: this.extractMenuOptions(boardConfig, 'opt'),
+        maxQspi: this.extractMenuOptions(boardConfig, 'maxqspi'),
+        usbStack: this.extractMenuOptions(boardConfig, 'usbstack'),
+        debug: this.extractMenuOptions(boardConfig, 'debug'),
+        txRxLed: this.extractMenuOptions(boardConfig, 'txrxled'),
+      };
+    } catch (error) {
+      console.error('Failed to load Wio Terminal board configuration:', error);
+      return null;
+    }
+  }
+
   // 解析boards.txt并获取STM32配置信息
   async getStm32BoardConfig(boardName: string) {
     try {
@@ -1698,6 +1732,56 @@ export class ProjectService {
       return ESP32_CONFIG_MENU_TEMP;
     } catch (error) {
       console.error('更新ESP32配置菜单失败:', error);
+      return null;
+    }
+  }
+
+  // 更新 Wio Terminal 配置菜单项
+  async updateWioTerminalConfigMenu(boardName: string) {
+    try {
+      const boardConfig = await this.getWioTerminalBoardConfig(boardName);
+      if (!boardConfig) {
+        return null;
+      }
+
+      let currentProjectConfig: Record<string, string> = {};
+      try {
+        const packageJson = await this.getPackageJson();
+        currentProjectConfig = packageJson.projectConfig || {};
+      } catch (error) {
+        console.warn('Failed to read current Wio Terminal project configuration:', error);
+      }
+
+      const menuBindings: Record<string, { options: any[]; projectKey: string }> = {
+        'WIO_TERMINAL.ROLE': { options: boardConfig.role, projectKey: 'role' },
+        'WIO_TERMINAL.CACHE': { options: boardConfig.cache, projectKey: 'cache' },
+        'WIO_TERMINAL.CPU_SPEED': { options: boardConfig.speed, projectKey: 'speed' },
+        'WIO_TERMINAL.OPTIMIZATION': { options: boardConfig.optimization, projectKey: 'opt' },
+        'WIO_TERMINAL.MAX_QSPI': { options: boardConfig.maxQspi, projectKey: 'maxqspi' },
+        'WIO_TERMINAL.USB_STACK': { options: boardConfig.usbStack, projectKey: 'usbstack' },
+        'WIO_TERMINAL.DEBUG': { options: boardConfig.debug, projectKey: 'debug' },
+        'WIO_TERMINAL.TX_RX_LED': { options: boardConfig.txRxLed, projectKey: 'txrxled' },
+      };
+
+      const menu = JSON.parse(JSON.stringify(WIO_TERMINAL_CONFIG_MENU)) as IMenuItem[];
+      menu.forEach(menuItem => {
+        const binding = menuItem.name ? menuBindings[menuItem.name] : null;
+        if (!binding || binding.options.length === 0) {
+          return;
+        }
+
+        menuItem.children = binding.options;
+        const currentValue = currentProjectConfig[binding.projectKey];
+        if (currentValue !== undefined) {
+          menuItem.children.forEach(child => {
+            child.check = this.compareConfigs(child.data, currentValue);
+          });
+        }
+      });
+
+      return menu;
+    } catch (error) {
+      console.error('Failed to update Wio Terminal configuration menu:', error);
       return null;
     }
   }

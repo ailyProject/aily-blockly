@@ -37,33 +37,63 @@ export class BlockSearcher {
    * @param blockTypes A list of block types to index.
    */
   indexBlocks(blockTypes: string[]) {
+    let blockCreationWorkspace = new Blockly.Workspace();
+
     try {
-      const blockCreationWorkspace = new Blockly.Workspace();
       blockTypes.forEach((blockType) => {
-        const textParts: string[] = [];
-        textParts.push(blockType.replaceAll('_', ' '));
+        const textParts = [blockType.replaceAll('_', ' ')];
 
-        const block = blockCreationWorkspace.newBlock(blockType);
-        block.inputList.forEach((input) => {
-          input.fieldRow.forEach((field) => {
-            this.collectDropdownText(field, textParts);
-            if (field.getText()) {
-              textParts.push(field.getText());
-            }
+        try {
+          const block = blockCreationWorkspace.newBlock(blockType);
+          block.inputList.forEach((input) => {
+            input.fieldRow.forEach((field) => {
+              this.collectDropdownText(field, textParts);
+              if (field.getText()) {
+                textParts.push(field.getText());
+              }
+            });
           });
-        });
+        } catch (error) {
+          console.warn(
+            `[ToolboxSearch] Failed to collect searchable text for block "${blockType}".`,
+            error,
+          );
+        }
 
-        // 合并所有文本为一条索引记录
-        const fullText = textParts.join(' ');
-        this.blockTextMap.set(blockType, new Set(textParts));
+        try {
+          // 即使积木初始化失败，也保留类型名作为降级索引。
+          const fullText = textParts.join(' ');
+          this.blockTextMap.set(blockType, new Set(textParts));
 
-        insert(this.db, {
-          blockType,
-          text: fullText,
-        });
+          insert(this.db, {
+            blockType,
+            text: fullText,
+          });
+        } catch (error) {
+          console.warn(
+            `[ToolboxSearch] Failed to index block "${blockType}".`,
+            error,
+          );
+        }
+
+        try {
+          // 失败的积木初始化可能会留下不完整积木，避免影响后续索引。
+          blockCreationWorkspace.clear();
+        } catch (error) {
+          console.warn(
+            `[ToolboxSearch] Failed to clear the indexing workspace after block "${blockType}".`,
+            error,
+          );
+          try {
+            blockCreationWorkspace.dispose();
+          } catch {
+            // The workspace is already unusable; replace it below.
+          }
+          blockCreationWorkspace = new Blockly.Workspace();
+        }
       });
-    } catch (e) {
-      console.error(e);
+    } finally {
+      blockCreationWorkspace.dispose();
     }
   }
 

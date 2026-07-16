@@ -114,6 +114,19 @@ export class ChatRuntimeHostInventoryService implements OnDestroy {
       return;
     }
 
+    if (state.status === 'disposed') {
+      this.sessionStates.delete(sessionId);
+      this.snapshot = {
+        revision: Math.max(this.snapshot.revision, Number(state.transcriptRevision) || 0),
+        sessions: [...this.sessionStates.values()],
+      };
+      this.changedSubject.next({
+        sessionIds: [sessionId],
+        reason,
+      });
+      return;
+    }
+
     const previous = this.sessionStates.get(sessionId);
     const next = { ...state, sessionId };
     if (previous && this.isSameSessionState(previous, next)) {
