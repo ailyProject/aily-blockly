@@ -452,15 +452,15 @@ export class MicroPythonGenerator extends Blockly.CodeGenerator {
     let code = '?';
     if (type == 'input_statement' || type == 'input_value') {
       try {
-        code = micropythonGenerator.statementToCode(block, name);
+        code = this.statementToCode(block, name);
         return code.replace(/(^\s*)/, '');
       } catch (error) {
-        code = micropythonGenerator.valueToCode(block, name, Order.ATOMIC);
+        code = this.valueToCode(block, name, Order.ATOMIC);
         return code;
       }
     }
     if (type == 'field_variable') {
-      code = micropythonGenerator.nameDB_.getName(
+      code = this.nameDB_.getName(
         block.getFieldValue(name),
         'VARIABLE',
       );
@@ -482,4 +482,9 @@ export class MicroPythonGenerator extends Blockly.CodeGenerator {
   }
 }
 
+export function createMicroPythonGenerator(): MicroPythonGenerator {
+  return new MicroPythonGenerator();
+}
+
+/** @deprecated Use BlocklyGeneratorRuntimeService for project code generation. */
 export const micropythonGenerator = new MicroPythonGenerator();

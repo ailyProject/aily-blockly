@@ -2588,6 +2588,7 @@ export function bootstrapBlocklyLexAgent(
           contextSnapshotService.invalidate(['libraryIndex', 'libraryReadmeRefs'], 'npm install');
         }
         if (npmCmd.isUninstall) {
+          await rebuildBlocklyRuntimeAfterNpmUninstall();
           contextSnapshotService.invalidate(['libraryIndex', 'libraryReadmeRefs'], 'npm uninstall');
         }
         return { action: 'continue' as const };
@@ -3820,14 +3821,16 @@ function checkNpmUninstallSafety(command: string): string | null {
     return `无法卸载以下库，因为项目代码正在使用它们：${libsInUse.join(', ')}。请先删除相关代码块后再尝试卸载。`;
   }
 
-  for (const libPackageName of uniqueLibs) {
-    try {
-      host.blockly.unloadLibrary(libPackageName, projectPath);
-    } catch (e: any) {
-      console.warn('[LexStream] 库卸载失败', libPackageName, e);
-    }
-  }
   return null;
+}
+
+async function rebuildBlocklyRuntimeAfterNpmUninstall(): Promise<void> {
+  const project = AilyHost.get().project as any;
+  const projectPath = project?.currentProjectPath || '';
+  if (!projectPath || typeof project?.rebuildBlocklyRuntimeAfterLibraryChange !== 'function') {
+    return;
+  }
+  await project.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
 }
 
 async function loadNpmLibraries(command: string): Promise<void> {

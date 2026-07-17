@@ -13,9 +13,9 @@ import { SerialMonitorService } from "../../../tools/serial-monitor/serial-monit
 import { ActionState } from "../../../services/ui.service";
 import { ActionService } from "../../../services/action.service";
 import {
-  arduinoGenerator,
   normalizeArduinoGeneratedCode,
 } from "../components/blockly/generators/arduino/arduino";
+import { generateCodeWithActiveProjectGenerator } from './blockly-generator-runtime.service';
 import { BlocklyService } from "./blockly.service";
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { BleOtaProgress, UploaderBleService } from '../../../services/uploader-ble.service';
@@ -360,7 +360,7 @@ export class _UploaderService {
         }
 
         // 第一步：检查是否需要编译
-        const code = normalizeArduinoGeneratedCode(arduinoGenerator.workspaceToCode(this.blocklyService.workspace));
+        const code = normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
         const buildPath = await this.projectService.getBuildPath();
         const needsBuild = !this._builderService.passed || 
                           code !== this._builderService.lastCode || 

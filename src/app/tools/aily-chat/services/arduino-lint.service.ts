@@ -2,9 +2,9 @@
 import { AilyHost } from '../core/host';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import { normalizeArduinoGeneratedCode } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
+import { generateCodeWithActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 
 // Arduino 代码检查器
-declare const arduinoGenerator: any;
 
 function createLintCodeFingerprint(code: string): string {
   let hash = 2166136261;
@@ -275,7 +275,7 @@ export class ArduinoLintService {
   async checkCurrentWorkspace(options: LintOptions = {}): Promise<LintResult> {
     try {
       // 从 Blockly 工作区生成代码
-      const code = normalizeArduinoGeneratedCode(arduinoGenerator.workspaceToCode(this.blocklyService.workspace));
+      const code = normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
       
       if (!code || code.trim().length === 0) {
         return {

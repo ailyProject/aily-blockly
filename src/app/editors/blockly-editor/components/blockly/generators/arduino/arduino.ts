@@ -945,15 +945,15 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     let code = '?';
     if (type == 'input_statement' || type == 'input_value') {
       try {
-        code = arduinoGenerator.statementToCode(block, name);
+        code = this.statementToCode(block, name);
         return code.replace(/(^\s*)/, '');
       } catch (error) {
-        code = arduinoGenerator.valueToCode(block, name, Order.ATOMIC);
+        code = this.valueToCode(block, name, Order.ATOMIC);
         return code;
       }
     }
     if (type == 'field_variable') {
-      code = arduinoGenerator.nameDB_.getName(
+      code = this.nameDB_.getName(
         block.getFieldValue(name),
         'VARIABLE',
       );
@@ -976,5 +976,9 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 }
 
+export function createArduinoGenerator(): ArduinoGenerator {
+  return new ArduinoGenerator();
+}
 
+/** @deprecated Use BlocklyGeneratorRuntimeService for project code generation. */
 export const arduinoGenerator = new ArduinoGenerator();

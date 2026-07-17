@@ -81,6 +81,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private readonly hostContextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   private hostContextVersion = 0;
   private beforeCloseNotified = false;
+  private beforeCloseTask: Promise<boolean> | null = null;
+  private restartTask: Promise<Record<string, unknown>> | null = null;
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectPathSubscription: Subscription | null = null;
@@ -165,7 +167,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   ngOnDestroy(): void {
-    void this.notifyChildBeforeClose('destroy');
     this.langSubscription?.unsubscribe();
     this.langSubscription = null;
     this.themeSubscription?.unsubscribe();
@@ -179,13 +180,17 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.projectContextListenerCleanup?.();
     this.projectContextListenerCleanup = null;
     this.projectContextListenerRegistered = false;
-    this.destroyPenpalConnection();
     this.unregisterHostController?.();
     this.unregisterHostController = null;
-    if (this.acquired && this.resolvedToolId) {
-      void this.processService.release(this.resolvedToolId);
-      this.acquired = false;
-    }
+    const releaseToolId = this.acquired ? this.resolvedToolId : '';
+    this.acquired = false;
+    const finishDestroy = () => {
+      this.destroyPenpalConnection();
+      if (releaseToolId) {
+        void this.processService.release(releaseToolId);
+      }
+    };
+    void this.notifyChildBeforeClose('destroy').then(finishDestroy, finishDestroy);
   }
 
   async close(): Promise<Record<string, unknown>> {
@@ -211,7 +216,23 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return { ok: true, toolId: this.resolvedToolId, action: 'close', mode: 'embedded' };
   }
 
-  async restart(): Promise<Record<string, unknown>> {
+  restart(): Promise<Record<string, unknown>> {
+    if (this.restartTask) {
+      return this.restartTask;
+    }
+
+    const task = this.performRestart();
+    this.restartTask = task;
+    const clearRestartTask = () => {
+      if (this.restartTask === task) {
+        this.restartTask = null;
+      }
+    };
+    void task.then(clearRestartTask, clearRestartTask);
+    return task;
+  }
+
+  private async performRestart(): Promise<Record<string, unknown>> {
     if (!this.config) return { ok: false, message: '子应用配置未就绪' };
     if (!await this.notifyChildBeforeClose('restart')) {
       return { ok: false, message: '子应用拒绝重启，可能存在未完成操作。' };
@@ -627,6 +648,22 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       return true;
     }
 
+    if (this.beforeCloseTask) {
+      return this.beforeCloseTask;
+    }
+
+    const task = this.runChildBeforeClose(reason);
+    this.beforeCloseTask = task;
+    const clearBeforeCloseTask = () => {
+      if (this.beforeCloseTask === task) {
+        this.beforeCloseTask = null;
+      }
+    };
+    void task.then(clearBeforeCloseTask, clearBeforeCloseTask);
+    return task;
+  }
+
+  private async runChildBeforeClose(reason: ChildLifecycleReason): Promise<boolean> {
     const beforeClose = this.remoteApi?.beforeClose;
     if (typeof beforeClose !== 'function') {
       this.beforeCloseNotified = true;
@@ -667,10 +704,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       return true;
     } catch (error) {
       this.beforeCloseNotified = true;
-      this.logError('beforeClose failed', {
-        reason,
-        error: error instanceof Error ? error.message : String(error || '')
-      });
+      const errorRecord = this.isRecord(error) ? error : {};
+      const errorMessage = this.stringifyHostMessageValue(errorRecord['message'] ?? error)
+        || 'Unknown child lifecycle error';
+      const errorCode = this.stringifyHostMessageValue(errorRecord['code'] ?? errorRecord['penpalCode']);
+      this.logError(
+        'beforeClose failed',
+        `reason=${reason}${errorCode ? ` code=${errorCode}` : ''} error=${errorMessage}`
+      );
       return true;
     }
   }

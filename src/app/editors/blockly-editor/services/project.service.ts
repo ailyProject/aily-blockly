@@ -2,9 +2,12 @@ import { Injectable } from '@angular/core';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyProjectDocument, BlocklyService } from './blockly.service';
 import { ActionService } from '../../../services/action.service';
 import {
-  arduinoGenerator,
   normalizeArduinoGeneratedCode,
 } from '../components/blockly/generators/arduino/arduino';
+import {
+  generateCodeWithActiveProjectGenerator,
+  getActiveProjectGenerator,
+} from './blockly-generator-runtime.service';
 import { ElectronService } from '../../../services/electron.service';
 
 
@@ -114,14 +117,14 @@ export class _ProjectService {
    */
   private async updateCodeHash(path: string) {
     try {
-      if (!arduinoGenerator || !this.blocklyService || !this.blocklyService.workspace) {
+      if (!getActiveProjectGenerator() || !this.blocklyService || !this.blocklyService.workspace) {
         console.warn('无法生成代码哈希，跳过更新');
         return;
       }
 
       // 复用最近一次成功生成的代码；如果工作区已变更但防抖生成尚未完成，再同步生成一次。
       const code = this.blocklyService.getReusableGeneratedCode()
-        ?? normalizeArduinoGeneratedCode(arduinoGenerator.workspaceToCode(this.blocklyService.workspace));
+        ?? normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
       this.blocklyService.publishGeneratedCode(code);
       
       // 计算哈希

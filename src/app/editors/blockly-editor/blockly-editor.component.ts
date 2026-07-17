@@ -33,6 +33,7 @@ import { CrossPlatformCmdService } from '../../services/cross-platform-cmd.servi
 import { MissingLibInfo, PasteInstallDialogComponent } from './components/paste-install-dialog/paste-install-dialog.component';
 import { Subscription } from 'rxjs';
 import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
+import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -77,6 +78,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private boardDependencyReloadInProgress = false;
   private boardConfigUpdatedSubscription: Subscription | null = null;
   private runtimeCdcEnabled: boolean | undefined;
+  private loadedProjectPath: string | null = null;
 
   devmode;
 
@@ -108,16 +110,27 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     private localLibrarySyncService: LocalLibrarySyncService,
     private codeViewerIpcService: CodeViewerIpcService,
     private blocklyLibraryPackageService: BlocklyLibraryPackageService,
+    private generatorRuntime: BlocklyGeneratorRuntimeService,
   ) { }
 
   ngOnInit(): void {
     this.activatedRoute.queryParams.subscribe(async (params) => {
       if (params['path']) {
-        console.log('project path', params['path']);
+        const requestedProjectPath = params['path'];
+        console.log('project path', requestedProjectPath);
         try {
-          this._projectService.currentProjectPath = params['path'];
-          this.projectService.currentProjectPath = params['path'];
-          await this.loadProject(params['path']);
+          if (
+            this.loadedProjectPath
+            && this.loadedProjectPath !== requestedProjectPath
+            && this.generatorRuntime.isActive()
+          ) {
+            await this.projectService.projectOpen(requestedProjectPath);
+            return;
+          }
+          this._projectService.currentProjectPath = requestedProjectPath;
+          this.projectService.currentProjectPath = requestedProjectPath;
+          await this.loadProject(requestedProjectPath);
+          this.loadedProjectPath = requestedProjectPath;
         } catch (error) {
           console.error('加载项目失败', error);
           this.projectService.stateSubject.next('error');
@@ -178,9 +191,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     });
     // 设置当前项目路径和package.json数据
     this.applyProjectPackageJson(packageJson);
-    // 暴露 ProjectService 到全局，供 generator.js 使用
-    window['projectService'] = this.projectService;
-
     // 与 Aily Code（code-editor-pro）共用：node_modules 不齐则 npm install
     if (!(await this.npmService.ensureProjectDependenciesInstalled(projectPath))) {
       return;
@@ -269,6 +279,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     ).map((item) => item.name);
 
     await this.blocklyService.waitForWorkspace();
+    this.generatorRuntime.updateContext({
+      projectPath,
+      boardConfig: boardJson,
+      packageJson,
+      projectService: this.projectService,
+    });
 
     for (let index = 0; index < libraryModuleList.length; index++) {
       const libPackageName = libraryModuleList[index];
@@ -316,6 +332,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       text: this.translate.instant('BLOCKLY_EDITOR.PROJECT_LOAD_SUCCESS'),
     });
     this.projectService.stateSubject.next('loaded');
+    this.generatorRuntime.markReady(projectPath);
     this.scheduleProjectLoadedCodeRefresh();
 
     if (missingDeclaredLibraries.length > 0) {
@@ -500,12 +517,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this.blocklyService.boardConfig = boardConfig;
     window['boardConfig'] = boardConfig;
+    if (this.generatorRuntime.isActive()) {
+      this.generatorRuntime.updateBoardConfig(boardConfig);
+    }
     this.blocklyService.refreshBoardDependentBlockDefinitions();
     this.blocklyService.syncSerialDynamicToolboxBlocks();
-    const updateSerialCustomPorts = (window as any).updateSerialCustomPorts;
-    if (typeof updateSerialCustomPorts === 'function') {
-      updateSerialCustomPorts();
-    }
+    this.generatorRuntime.invokeGlobal('updateSerialCustomPorts');
 
     if (serialFieldSnapshots && Array.isArray(boardConfig?.cdcSerialPort)) {
       this.blocklyService.applySerialPortFieldsAfterCdcDisabled(boardConfig.cdcSerialPort, serialFieldSnapshots);
@@ -687,6 +704,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private async handleRemovedLibraryDependencies(projectPath: string, removedLibraryNames: string[]): Promise<void> {
+    let shouldRebuildRuntime = false;
     for (const libPackageName of removedLibraryNames) {
       this.clearPendingLibrary(libPackageName);
 
@@ -703,7 +721,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         continue;
       }
 
-      await this.blocklyService.unloadLibrary(libPackageName, projectPath);
+      shouldRebuildRuntime = true;
+    }
+
+    if (shouldRebuildRuntime && this.watchedPackageJsonProjectPath === projectPath) {
+      await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
     }
   }
 

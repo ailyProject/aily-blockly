@@ -30,6 +30,7 @@ interface ChildToolSession {
   hostInfo: ChildToolHostInfo | null;
   refCount: number;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  expectedStopReason: 'release' | 'restart' | 'shutdown' | null;
 }
 
 @Injectable({
@@ -73,8 +74,9 @@ export class ChildToolProcessService implements OnDestroy {
     const config = this.requireConfig(toolId);
     const session = this.ensureSession(config.id);
     this.cancelReleaseTimer(session);
+    session.expectedStopReason = 'restart';
     await window['childToolSession']?.restart?.(config.id);
-    await this.stopSession(config, session);
+    await this.stopSession(config, session, 'restart');
     return await this.startSession(config, session);
   }
 
@@ -84,7 +86,7 @@ export class ChildToolProcessService implements OnDestroy {
       const config = getChildToolConfig(toolId);
       if (config) {
         this.cancelReleaseTimer(session);
-        await this.stopSession(config, session);
+        await this.stopSession(config, session, 'shutdown');
       }
       this.sessions.delete(toolId);
     }
@@ -116,7 +118,8 @@ export class ChildToolProcessService implements OnDestroy {
         running: false,
         hostInfo: null,
         refCount: 0,
-        releaseTimer: null
+        releaseTimer: null,
+        expectedStopReason: null
       };
       this.sessions.set(toolId, session);
     }
@@ -140,7 +143,7 @@ export class ChildToolProcessService implements OnDestroy {
         return;
       }
 
-      void this.stopSession(config, session).finally(() => {
+      void this.stopSession(config, session, 'release').finally(() => {
         if (session.refCount === 0) {
           this.sessions.delete(config.id);
         }
@@ -179,12 +182,17 @@ export class ChildToolProcessService implements OnDestroy {
     }
   }
 
-  private async stopSession(config: ChildToolConfig, session: ChildToolSession): Promise<void> {
+  private async stopSession(
+    config: ChildToolConfig,
+    session: ChildToolSession,
+    reason: 'release' | 'restart' | 'shutdown' = 'release'
+  ): Promise<void> {
     const streamId = session.streamId;
     if (!streamId && !session.running) {
       return;
     }
 
+    session.expectedStopReason = reason;
     try {
       if (streamId) {
         const result = await window['childToolSession']?.release?.({ toolId: config.id, streamId });
@@ -252,6 +260,7 @@ export class ChildToolProcessService implements OnDestroy {
     }
 
     session.streamId = `child_tool_${config.id.replace(/[^a-zA-Z0-9_-]/g, '_')}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    session.expectedStopReason = null;
     session.stdoutBuffer = '';
     session.stderrBuffer = '';
     this.log(config, 'spawn server', {
@@ -341,14 +350,19 @@ export class ChildToolProcessService implements OnDestroy {
 
     if (output.type === 'close') {
       const closedStreamId = session.streamId;
+      const expectedStopReason = session.expectedStopReason;
       const reason = `${config.id} server closed with code ${output.code ?? 'unknown'}${this.formatBufferedStderr(session)}`;
       const details = {
         code: output.code,
         signal: output.signal,
+        expectedStopReason,
         reason
       };
 
-      if (session.readyReject || (session.running && session.refCount > 0)) {
+      if (expectedStopReason) {
+        this.logExpectedStop(config, details);
+        this.rejectReady(session, reason);
+      } else if (session.readyReject || (session.running && session.refCount > 0)) {
         this.logError(config, 'process closed', details);
         this.rejectReady(session, reason);
       } else {
@@ -424,16 +438,24 @@ export class ChildToolProcessService implements OnDestroy {
     session.stdoutBuffer = '';
     session.stderrBuffer = '';
     session.hostInfo = null;
+    session.expectedStopReason = null;
   }
 
   private log(config: ChildToolConfig, stage: string, details?: any): void {
-    console.info(`[child-tool:${config.id}] ${stage}`, details ?? '');
-    this.appendChildToolLog(config.id, `${stage} ${this.stringifyLogDetails(details)}`, stage === 'stdout' ? 'DEBUG' : 'INFO');
+    const serializedDetails = this.stringifyLogDetails(details);
+    console.info(`[child-tool:${config.id}] ${stage}`, serializedDetails);
+    this.appendChildToolLog(config.id, `${stage} ${serializedDetails}`, stage === 'stdout' ? 'DEBUG' : 'INFO');
   }
 
   private logError(config: ChildToolConfig, stage: string, details?: any): void {
-    console.error(`[child-tool:${config.id}] ${stage}`, details ?? '');
-    this.appendChildToolLog(config.id, `${stage} ${this.stringifyLogDetails(details)}`, 'ERROR');
+    const serializedDetails = this.stringifyLogDetails(details);
+    console.error(`[child-tool:${config.id}] ${stage}`, serializedDetails);
+    this.appendChildToolLog(config.id, `${stage} ${serializedDetails}`, 'ERROR');
+  }
+
+  private logExpectedStop(config: ChildToolConfig, details: any): void {
+    const serializedDetails = this.stringifyLogDetails(details);
+    this.appendChildToolLog(config.id, `process stopped ${serializedDetails}`, 'DEBUG');
   }
 
   private sanitizeHostInfo(info: ChildToolHostInfo | any): any {

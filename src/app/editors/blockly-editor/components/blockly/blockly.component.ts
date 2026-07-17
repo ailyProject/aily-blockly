@@ -45,12 +45,11 @@ const BLOCKLY_LOCALES: { [key: string]: any } = {
 import './plugins/toolbox-search/src/index';
 import './plugins/block-plus-minus/src/index.js';
 import {
-  arduinoGenerator,
   normalizeArduinoGeneratedCode,
   type BlockCodeMapping,
 } from './generators/arduino/arduino';
-import { micropythonGenerator } from './generators/micropython/micropython';
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
+import { BlocklyGeneratorRuntimeService } from '../../services/blockly-generator-runtime.service';
 import { BitmapUploadResponse, GlobalServiceManager } from '../../services/bitmap-upload.service';
 
 import './renderer/aily-icon';
@@ -255,7 +254,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private isToolboxResizing = false;
 
   @Input() devmode;
-  generator;
+  get generator(): any {
+    return this.generatorRuntime.getActiveGenerator();
+  }
 
   // RxJS debounce optimization
   private codeGenerationSubject = new Subject<void>();
@@ -434,6 +435,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     private uiService: UiService,
     private authService: AuthService,
     private message: NzMessageService,
+    private generatorRuntime: BlocklyGeneratorRuntimeService,
   ) {
     // Initialize GlobalServiceManager with BitmapUploadService
     const globalServiceManager = GlobalServiceManager.getInstance();
@@ -1356,20 +1358,12 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
   initDevMode() {
     console.log('DEV MODE: ', this.devmode);
-
-    switch (this.devmode) {
-      case 'arduino':
-        window['Arduino'] = <any>arduinoGenerator;
-        this.generator = arduinoGenerator;
-        break;
-      case 'micropython':
-        window['MicropPython'] = <any>micropythonGenerator;
-        window['MPY'] = <any>micropythonGenerator;
-        this.generator = micropythonGenerator;
-        break;
-      default:
-        break;
-    }
+    const mode = this.devmode === 'micropython' ? 'micropython' : 'arduino';
+    this.generatorRuntime.activate({
+      mode,
+      boardConfig: this.blocklyService.boardConfig,
+      getWorkspace: () => this.blocklyService.workspace || null,
+    });
   }
 
   initPrompt() {

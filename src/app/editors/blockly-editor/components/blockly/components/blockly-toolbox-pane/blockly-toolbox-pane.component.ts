@@ -938,14 +938,11 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
 
     this.removingLibraryNames.add(libraryName);
     const workflowStarted = this.workflowService.startInstall();
-    let libraryRemoved = false;
 
     try {
       this.message.loading(`${this.getLibraryDisplayName(item)} ${this.translate.instant('LIB_MANAGER.UNINSTALLING')}...`);
-      this.blocklyService.removeLibrary(libraryPath);
-      libraryRemoved = true;
-
-      const { code, stderr } = await this.cmdService.runAsync(`npm uninstall ${libraryName}`, this.projectService.currentProjectPath);
+      const projectPath = this.projectService.currentProjectPath;
+      const { code, stderr } = await this.cmdService.runAsync(`npm uninstall ${libraryName}`, projectPath);
       if (code !== 0) {
         throw new Error(stderr || `退出码: ${code}`);
       }
@@ -954,11 +951,9 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
       if (workflowStarted) {
         this.workflowService.finishInstall(true);
       }
+      await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
     } catch (error) {
       const errorMessage = this.getErrorMessage(error, 'Uninstall failed');
-      if (libraryRemoved) {
-        await this.blocklyService.loadLibrary(libraryName, this.projectService.currentProjectPath);
-      }
       this.message.error(`${this.getLibraryDisplayName(item)} ${this.translate.instant('NPM.UNINSTALL_FAILED_TITLE')}: ${errorMessage}`);
       if (workflowStarted) {
         this.workflowService.finishInstall(false, errorMessage);

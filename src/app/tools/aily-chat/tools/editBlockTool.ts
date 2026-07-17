@@ -1,4 +1,4 @@
-﻿import { arduinoGenerator } from "../../../editors/blockly-editor/components/blockly/generators/arduino/arduino";
+﻿import { generateCodeWithActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import type { ToolUseResult } from '../core/tool-types';
 import { jsonrepair } from 'jsonrepair';
 import { ArduinoSyntaxTool } from "./arduinoSyntaxTool";
@@ -8800,7 +8800,7 @@ export async function generateCodeTool(): Promise<ToolUseResult> {
   
   try {
     const workspace = getActiveWorkspace();
-    const code = arduinoGenerator.workspaceToCode(workspace);
+    const code = generateCodeWithActiveProjectGenerator(workspace);
     
     const result = {
       is_error: false,

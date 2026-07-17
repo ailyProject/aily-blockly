@@ -84,6 +84,12 @@ export class ProjectService {
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
   private projectOpenTask: { path: string; promise: Promise<void> } | null = null;
+  private blocklyLibraryRuntimeRebuildTask: {
+    path: string;
+    packageSignature: string;
+    promise: Promise<boolean>;
+  } | null = null;
+  private blocklyLibraryRuntimePackageSignatures = new Map<string, string>();
 
   currentPackageData: ProjectPackageData = {
     name: 'aily blockly',
@@ -406,7 +412,10 @@ export class ProjectService {
   }
 
   private parseProjectActivationReason(reason: unknown): ProjectActivationReason | undefined {
-    return reason === 'new' || reason === 'open' || reason === 'reload' || reason === 'chat-tool-create'
+    return reason === 'new'
+      || reason === 'open'
+      || reason === 'reload'
+      || reason === 'chat-tool-create'
       ? reason
       : undefined;
   }
@@ -527,6 +536,84 @@ export class ProjectService {
     }
   }
 
+  async rebuildBlocklyRuntimeAfterLibraryChange(projectPath = this.currentProjectPath): Promise<void> {
+    if (!projectPath) {
+      return;
+    }
+    const packageSnapshotUpdated = await this.copyPackageJsonToTemp(projectPath);
+    if (!packageSnapshotUpdated) {
+      throw new Error(`无法同步项目依赖快照: ${projectPath}`);
+    }
+
+    const packageJsonPath = window['path'].join(projectPath, 'package.json');
+    const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+    const activeTask = this.blocklyLibraryRuntimeRebuildTask;
+    if (activeTask?.path === projectPath && activeTask.packageSignature === packageContent) {
+      await activeTask.promise;
+      return;
+    }
+
+    // This is deliberately an in-place library-layer rebuild. It must not call
+    // projectOpen(), Router navigation, location.reload(), or webContents.reload().
+    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent);
+    this.blocklyLibraryRuntimeRebuildTask = {
+      path: projectPath,
+      packageSignature: packageContent,
+      promise,
+    };
+    try {
+      if (await promise) {
+        this.blocklyLibraryRuntimePackageSignatures.set(projectPath, packageContent);
+      }
+    } finally {
+      if (this.blocklyLibraryRuntimeRebuildTask?.promise === promise) {
+        this.blocklyLibraryRuntimeRebuildTask = null;
+      }
+    }
+  }
+
+  private async rebuildActiveBlocklyLibraryRuntime(projectPath: string, packageContent: string): Promise<boolean> {
+    const { BlocklyGeneratorRuntimeService } = await import('../editors/blockly-editor/services/blockly-generator-runtime.service');
+    const generatorRuntime = this.injector.get(BlocklyGeneratorRuntimeService);
+    if (!generatorRuntime.isActive() || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
+      return false;
+    }
+
+    const [{ BlocklyService }, { _ProjectService }, { NpmService }] = await Promise.all([
+      import('../editors/blockly-editor/services/blockly.service'),
+      import('../editors/blockly-editor/services/project.service'),
+      import('./npm.service'),
+    ]);
+    const blocklyService = this.injector.get(BlocklyService);
+    const editorProjectService = this.injector.get(_ProjectService);
+    const npmService = this.injector.get(NpmService);
+    const packageJson = JSON.parse(packageContent);
+    const libraryNames = (await npmService.getAllInstalledLibraries(projectPath))
+      .map((item) => item.name);
+    const loadedLibraryNames = Array.from(blocklyService.loadedLibraryInfos.values())
+      .map((item) => item.packageName);
+    const normalizedLibraryNames = [...new Set(libraryNames)].sort((a, b) => a.localeCompare(b));
+    const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
+    if (
+      this.blocklyLibraryRuntimePackageSignatures.get(projectPath) === packageContent
+      && JSON.stringify(normalizedLoadedLibraryNames) === JSON.stringify(normalizedLibraryNames)
+    ) {
+      return false;
+    }
+
+    this.currentPackageData = packageJson;
+    editorProjectService.currentPackageData = packageJson;
+    window['packageJson'] = packageJson;
+    blocklyService.setToolboxSortOrder(packageJson?.blocklyToolboxOrder);
+    await blocklyService.rebuildLibraryRuntimeInPlace({
+      projectPath,
+      packageJson,
+      libraryNames: normalizedLibraryNames,
+      projectService: this,
+    });
+    return true;
+  }
+
   private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}): Promise<any> {
     const previousProjectPath = this.currentProjectPath;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
@@ -582,6 +669,15 @@ export class ProjectService {
 
     this.stateSubject.next('loading');
 
+    const abiIsExist = window['path'].isExists(projectPath + '/project.abi');
+    const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
+    if (blocklyRouteIsBeingReused) {
+      // Angular reuses the component when only query params change. Take an
+      // awaited SPA hop so ngOnDestroy can dispose the old workspace/runtime
+      // before currentProjectPath starts pointing at the next project.
+      await this.router.navigate(['/main/guide'], { replaceUrl: true });
+    }
+
     // 更新当前项目路径和包数据
     this.currentProjectPath = projectPath;
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
@@ -592,10 +688,17 @@ export class ProjectService {
       sessionResource: options.sessionResource ?? null,
     });
 
-    const abiIsExist = window['path'].isExists(projectPath + '/project.abi');
+    if (activationReason === 'reload') {
+      // Angular ignores navigation to the exact same route and query params. Move off the
+      // editor first so its services/workspace are destroyed and the project is really
+      // rebuilt from disk instead of remaining in the loading state until the timeout.
+      await this.router.navigate(['/main/guide'], { skipLocationChange: true });
+    }
+
+    let navigationCompleted: boolean;
     if (abiIsExist) {
       // 打开blockly编辑器
-      await this.router.navigate(['/main/blockly-editor'], {
+      navigationCompleted = await this.router.navigate(['/main/blockly-editor'], {
         queryParams: {
           path: projectPath
         },
@@ -603,12 +706,17 @@ export class ProjectService {
       });
     } else {
       // 打开代码编辑器
-      await this.router.navigate(['/main/code-editor-pro'], {
+      navigationCompleted = await this.router.navigate(['/main/code-editor-pro'], {
         queryParams: {
           path: projectPath
         },
         replaceUrl: true
       });
+    }
+
+    if (!navigationCompleted) {
+      this.stateSubject.next('error');
+      throw new Error(`Project editor navigation was not completed: ${projectPath}`);
     }
 
     await this.waitForProjectOpenCompletion(projectPath);
@@ -727,7 +835,7 @@ export class ProjectService {
     };
     this.stateSubject.next('default');
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
-    this.router.navigate(['/main/guide'], { replaceUrl: true });
+    await this.router.navigate(['/main/guide'], { replaceUrl: true });
     return true;
   }
 
@@ -860,12 +968,12 @@ export class ProjectService {
   /**
    * 项目保存时复制主项目 package.json 到 temp 下（Blockly / Aily Code 共用）
    */
-  async copyPackageJsonToTemp(projectPath: string): Promise<void> {
+  async copyPackageJsonToTemp(projectPath: string): Promise<boolean> {
     const mainPackagePath = window['path'].join(projectPath, 'package.json');
     const tempDir = window['path'].join(projectPath, '.temp');
     const tempPackagePath = window['path'].join(tempDir, 'package.json');
     if (!window['fs'].existsSync(mainPackagePath)) {
-      return;
+      return false;
     }
     try {
       if (!window['fs'].existsSync(tempDir)) {
@@ -873,8 +981,10 @@ export class ProjectService {
       }
       const mainContent = window['fs'].readFileSync(mainPackagePath, 'utf8');
       window['fs'].writeFileSync(tempPackagePath, mainContent);
+      return true;
     } catch (error) {
       console.warn('复制 package.json 到 temp 失败:', error);
+      return false;
     }
   }
 
