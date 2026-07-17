@@ -165,10 +165,7 @@ export class ProjectNewComponent {
   }
 
   async ngOnInit() {
-    if (this.electronService.isElectron) {
-      const pt = this.platformService.getPlatformSeparator();
-      this.newProjectData.path = window['path'].getUserDocuments() + `${pt}aily-project${pt}`;
-    }
+    this.newProjectData.path = await this.projectService.getDefaultProjectParentPath();
     // await this.configService.init();
     this._blocklyBoardList = this.configService.sortBoardsByUsage(
       this.process(this.configService.boardList)

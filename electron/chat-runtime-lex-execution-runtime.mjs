@@ -373,6 +373,90 @@ class LexExecutionRuntimeOwner {
     };
   }
 
+  async restoreRuntimeSession(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const snapshot = command.snapshot;
+    if (!sessionId || !snapshot || snapshot.sessionId !== sessionId || !Array.isArray(snapshot.turns)) {
+      throw new Error('[AilyChat][ExecutionHost] restoreRuntimeSession requires a matching session snapshot.');
+    }
+
+    const projectInfo = await this.readProjectInfo(sessionId);
+    const request = command.request || {};
+    const currentModel = command.currentModel || request.currentModel || null;
+    const providerOptions = command.providerOptions || request.providerOptions || null;
+    const runtimeConfigKey = createSessionRuntimeConfigKey(
+      providerOptions,
+      currentModel,
+      this.resolveCwd(projectInfo, providerOptions),
+    );
+    const existing = this.sessions.get(sessionId);
+    if (!existing) {
+      const restored = await this.ensureSession(sessionId, {
+        ...command,
+        sessionId,
+        providerOptions,
+        currentModel,
+        initialSnapshot: snapshot,
+      }, projectInfo);
+      return {
+        sessionId,
+        restored: Boolean(restored?.handle),
+        turnCount: snapshot.turns.length,
+      };
+    }
+
+    await existing.handlePromise;
+    if (existing.activeTurnPromise || existing.activeAbortController) {
+      const error = new Error('[AilyChat][ExecutionHost] Cannot restore a running session.');
+      error.code = 'request_in_progress';
+      error.retryable = true;
+      throw error;
+    }
+
+    const currentSnapshot = typeof existing.handle?.getSessionSnapshot === 'function'
+      ? existing.handle.getSessionSnapshot()
+      : existing.handle?.saveSession?.();
+    if (sessionSnapshotsHaveSameRequestList(currentSnapshot, snapshot)) {
+      existing.providerOptions = providerOptions || existing.providerOptions || null;
+      existing.currentModel = currentModel || existing.currentModel || null;
+      return {
+        sessionId,
+        restored: false,
+        turnCount: snapshot.turns.length,
+      };
+    }
+
+    if (existing.runtimeConfigKey !== runtimeConfigKey) {
+      await this.replaceSessionRuntimeWithSnapshot(existing, projectInfo, {
+        providerOptions,
+        currentModel,
+        runtimeConfigKey,
+      }, snapshot);
+    } else {
+      if (typeof existing.handle?.restoreSession !== 'function') {
+        throw new Error('[AilyChat][ExecutionHost] Runtime session does not support canonical restore.');
+      }
+      existing.handle.restoreSession(snapshot);
+      existing.providerOptions = providerOptions || existing.providerOptions || null;
+      existing.currentModel = currentModel || existing.currentModel || null;
+      existing.pendingConfirmations?.clear?.();
+      existing.pendingQuestions?.clear?.();
+      existing.revision += 1;
+    }
+
+    const restoredSnapshot = typeof existing.handle?.getSessionSnapshot === 'function'
+      ? existing.handle.getSessionSnapshot()
+      : existing.handle?.saveSession?.();
+    if (!sessionSnapshotsHaveSameRequestList(restoredSnapshot, snapshot)) {
+      throw new Error('[AilyChat][ExecutionHost] Canonical runtime session restore did not preserve the request list.');
+    }
+    return {
+      sessionId,
+      restored: true,
+      turnCount: snapshot.turns.length,
+    };
+  }
+
   async forkSession(command = {}) {
     const sourceSessionId = normalizeSessionId(command.sourceSessionId);
     const targetSessionId = normalizeSessionId(command.targetSessionId);
@@ -720,6 +804,24 @@ class LexExecutionRuntimeOwner {
     session.pendingConfirmations?.clear?.();
     session.pendingQuestions?.clear?.();
     session.commandProcesses = session.commandProcesses instanceof Map ? session.commandProcesses : new Map();
+    await this.createSessionRuntime(session, projectInfo, snapshot);
+  }
+
+  async replaceSessionRuntimeWithSnapshot(session, projectInfo, nextConfig, snapshot) {
+    try {
+      session.handle?.dispose?.();
+    } catch (error) {
+      console.warn('[AilyChat][LexExecutionHostDisposeBeforeRestoreFailed]', error?.message || error);
+    }
+    session.providerOptions = nextConfig.providerOptions;
+    session.currentModel = nextConfig.currentModel;
+    session.runtimeConfigKey = nextConfig.runtimeConfigKey;
+    session.handle = null;
+    session.adapter = null;
+    session.pendingConfirmations?.clear?.();
+    session.pendingQuestions?.clear?.();
+    session.commandProcesses = session.commandProcesses instanceof Map ? session.commandProcesses : new Map();
+    session.revision += 1;
     await this.createSessionRuntime(session, projectInfo, snapshot);
   }
 
@@ -6749,6 +6851,34 @@ function createSessionRuntimeConfigKey(providerOptions, currentModel, cwd) {
     model: normalizeString(currentModel?.model || currentModel?.modelId || currentModel?.id),
     baseUrl: normalizeString(currentModel?.baseUrl || currentModel?.llmConfig?.baseUrl),
   });
+}
+
+function sessionSnapshotsHaveSameRequestList(left, right) {
+  if (!left || !right || left.sessionId !== right.sessionId
+    || !Array.isArray(left.turns) || !Array.isArray(right.turns)
+    || left.turns.length !== right.turns.length) {
+    return false;
+  }
+  for (let index = 0; index < left.turns.length; index += 1) {
+    if (normalizeString(left.turns[index]?.id) !== normalizeString(right.turns[index]?.id)) {
+      return false;
+    }
+  }
+  try {
+    return JSON.stringify({
+      turns: left.turns,
+      requestContext: left.requestContext || null,
+      activeSkillNames: left.activeSkillNames || [],
+      todos: left.todos || [],
+    }) === JSON.stringify({
+      turns: right.turns,
+      requestContext: right.requestContext || null,
+      activeSkillNames: right.activeSkillNames || [],
+      todos: right.todos || [],
+    });
+  } catch {
+    return false;
+  }
 }
 
 function normalizeSessionId(value) {

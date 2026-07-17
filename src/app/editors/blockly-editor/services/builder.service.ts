@@ -30,6 +30,7 @@ const AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY = '__AILY_CHAT_LEX_COMPLETION_P
 const AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY = '__AILY_CHAT_AGENT_LOOP_PENDING_COUNT__';
 const PREPROCESS_IDLE_TIMEOUT_MS = 1800;
 const PREPROCESS_PENDING_CHAT_POLL_MS = 500;
+const PREPROCESS_PENDING_RETRY_MS = 2000;
 const PREPROCESS_PENDING_CHAT_MAX_WAIT_MS = 10_000;
 const PREPROCESS_POST_CHAT_QUIET_MS = 1500;
 const PREPROCESS_SLOW_PHASE_MS = 32;
@@ -75,6 +76,8 @@ export class _BuilderService {
   private preprocessFullError: string = ''; // 保存预编译完整错误日志
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
   private preprocessRunGeneration = 0;
+  private pendingPrecompileTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingPrecompileBlockedLogged = false;
   private aiWaitingSubscription: any = null; // 保存 AI 等待状态订阅引用
   private workflowStateSubscription: any = null; // 保存流程状态订阅引用
   private lastWorkflowState: ProcessState | null = null;
@@ -304,12 +307,16 @@ export class _BuilderService {
       return;
     }
 
-    console.log(logMessage);
-    this.pendingPrecompile = false;
-    setTimeout(() => {
+    if (this.pendingPrecompileTimer) {
+      return;
+    }
+
+    this.pendingPrecompileTimer = setTimeout(() => {
+      this.pendingPrecompileTimer = null;
       const pendingChatOperations = this.getPendingChatBlockingOperationCount();
       if (this.blocklyService.aiWaiting || pendingChatOperations > 0) {
-        if (pendingChatOperations > 0) {
+        if (!this.pendingPrecompileBlockedLogged) {
+          this.pendingPrecompileBlockedLogged = true;
           console.info('[Builder][PreprocessSchedule] agent loop still active, keep preprocess pending', {
             reason,
             pendingChatOperations,
@@ -317,10 +324,7 @@ export class _BuilderService {
             pendingCompletions: this.getPendingChatBackgroundOperationCount(),
           });
         }
-        this.pendingPrecompile = true;
-        setTimeout(() => {
-          this.triggerPendingPrecompile(reason, logMessage);
-        }, PREPROCESS_PENDING_CHAT_POLL_MS);
+        this.schedulePendingPrecompileRetry(reason, logMessage);
         return;
       }
 
@@ -330,8 +334,22 @@ export class _BuilderService {
         return;
       }
 
+      console.log(logMessage);
+      this.pendingPrecompileBlockedLogged = false;
+      this.pendingPrecompile = false;
       this.blocklyService.dependencySubject.next(reason);
     }, 800);
+  }
+
+  private schedulePendingPrecompileRetry(reason: string, logMessage: string): void {
+    this.pendingPrecompile = true;
+    if (this.pendingPrecompileTimer) {
+      return;
+    }
+    this.pendingPrecompileTimer = setTimeout(() => {
+      this.pendingPrecompileTimer = null;
+      this.triggerPendingPrecompile(reason, logMessage);
+    }, PREPROCESS_PENDING_RETRY_MS);
   }
 
   private async getMissingBoardDependencies(): Promise<string[]> {
@@ -721,7 +739,12 @@ export class _BuilderService {
     this.actionService.unlisten('builder-preprocess-stop');
     this.actionService.unlisten('builder-preprocess-trigger');
     this.clearProgressTimer(); // 清理定时器
-    
+    if (this.pendingPrecompileTimer) {
+      clearTimeout(this.pendingPrecompileTimer);
+      this.pendingPrecompileTimer = null;
+    }
+    this.pendingPrecompileBlockedLogged = false;
+
     // 终止正在运行的预处理进程
     if (this.preprocessProcess || this.preprocessStreamId) {
       try {

@@ -6,6 +6,7 @@ import {
   type ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort,
 } from './chat-runtime-owner-ports';
 import type { RequestCheckpointMetadata } from './edit-checkpoint.service';
+import type { ChatAgentRuntimeMode } from '../core/chat-agent-runtime-mode';
 
 @Injectable()
 export class ChatRuntimeOwnerTurnStartupEditLifecycleService implements ChatRuntimeOwnerTurnStartupEditLifecyclePort {
@@ -13,9 +14,18 @@ export class ChatRuntimeOwnerTurnStartupEditLifecycleService implements ChatRunt
     CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE,
   );
 
-  ensureAbsExport(sessionId: string | null | undefined): void {
+  async ensureAbsExport(
+    sessionId: string | null | undefined,
+    runtimeMode: ChatAgentRuntimeMode | null | undefined,
+  ): Promise<void> {
+    if (runtimeMode !== 'blockly') {
+      return;
+    }
     const projectPath = readChatRuntimeWorkspaceEnvironment().projectPath;
-    this.workspaceEditResource.ensureSessionStartAbsExport(sessionId, projectPath);
+    if (!projectPath) {
+      return;
+    }
+    await this.workspaceEditResource.ensureWorkspaceAbsExport(sessionId, projectPath);
   }
 
   saveCheckpointToDisk(sessionId: string | null | undefined): void {

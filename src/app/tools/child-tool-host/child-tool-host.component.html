@@ -22,6 +22,9 @@
 
 <ng-template #hostStatusTooltip>
   <div class="host-status-tooltip">
+    @if (childVersion) {
+    <div>{{ resolvedToolId }} v{{ childVersion }}</div>
+    }
     @if (serverInfo?.port) {
     <div class="mono">127.0.0.1:{{ serverInfo?.port }}</div>
     }
@@ -33,7 +36,7 @@
 
 <ng-template #hostStatusTpl>
   <span class="child-host-status ccenter" nz-tooltip nzTooltipPlacement="bottom"
-    [nzTooltipTitle]="(serverInfo?.port || serverInfo?.pid) ? hostStatusTooltip : null"
+    [nzTooltipTitle]="(childVersion || serverInfo?.port || serverInfo?.pid) ? hostStatusTooltip : null"
     [attr.aria-label]="hostStatus" role="status">
     <span class="host-status-dot" [class.ready]="hostStatus === 'ready'"
       [class.starting]="hostStatus === 'starting'" [class.error]="hostStatus === 'error'"

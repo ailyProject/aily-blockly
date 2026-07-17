@@ -1,5 +1,6 @@
 import { Injectable, OnDestroy } from '@angular/core';
 import { ChildToolConfig, getChildToolConfig } from '../configs/tool.config';
+import { ConfigService } from './config.service';
 import { ProjectService } from './project.service';
 import { appendProjectLog, type ProjectLogLevel } from '../utils/project-log.utils';
 
@@ -39,6 +40,7 @@ export class ChildToolProcessService implements OnDestroy {
   private readonly releaseGraceMs = 15000;
 
   constructor(
+    private configService: ConfigService,
     private projectService: ProjectService,
   ) {}
 
@@ -185,7 +187,7 @@ export class ChildToolProcessService implements OnDestroy {
 
     try {
       if (streamId) {
-        const result = await window['childToolSession']?.release?.(config.id);
+        const result = await window['childToolSession']?.release?.({ toolId: config.id, streamId });
         if (!result?.success) {
           await window['cmd']?.kill?.(streamId);
         }
@@ -227,6 +229,7 @@ export class ChildToolProcessService implements OnDestroy {
     const projectPath = pathApi.join(childPath, childDir);
     const scriptPath = pathApi.join(projectPath, config.entry || 'index.js');
     const uiPath = pathApi.join(projectPath, config.uiIndex || pathApi.join('ui', 'index.html'));
+    const hostApiServer = String(this.configService.getCurrentApiServer() || '').trim();
 
     this.log(config, 'resolve paths', {
       childPath,
@@ -289,7 +292,8 @@ export class ChildToolProcessService implements OnDestroy {
       env: {
         AILY_CHILD_TOOL: '1',
         AILY_CHILD_TOOL_ID: config.id,
-        ...(config.env || {})
+        ...(config.env || {}),
+        ...(hostApiServer ? { AILY_API_SERVER: hostApiServer } : {})
       }
     });
 

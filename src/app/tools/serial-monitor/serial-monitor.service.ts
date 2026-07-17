@@ -51,6 +51,12 @@ export class SerialMonitorService {
   private lastDataTime = 0;
   private firstDataTime = 0; // 当前记录首次接收数据的时间
   private isConnected = false;
+  private controlSignals = { dtr: false, rts: false };
+  private signalOperationQueue: Promise<void> = Promise.resolve();
+
+  private static readonly OPEN_RESET_PREPARE_MS = 20;
+  private static readonly OPEN_RESET_PULSE_MS = 100;
+  private static readonly OPEN_RESET_SETTLE_MS = 50;
 
   // 数据更新节流控制：高频数据流下最多 ~20次/秒 通知UI
   private static readonly UPDATE_THROTTLE_MS = 50;
@@ -108,14 +114,19 @@ export class SerialMonitorService {
         dataBits: options.dataBits || 8,
         stopBits: options.stopBits || 1,
         parity: options.parity || 'none',
-        flowControl: options.flowControl || 'none',
+        rtscts: options.flowControl === 'hardware',
+        xon: options.flowControl === 'software',
+        xoff: options.flowControl === 'software',
+        // 打开时先保持 DTR 释放，随后由 pulseOpenReset() 产生受控复位脉冲。
+        hupcl: false,
         autoOpen: false
       };
 
       this.serialPort = window.electronAPI.SerialPort.create(serialOptions);
+      this.controlSignals = { dtr: false, rts: false };
 
       return new Promise((resolve, reject) => {
-        this.serialPort.on('open', () => {
+        this.serialPort.on('open', async () => {
           this.isConnected = true;
           this.connectionStatus.next(true);
           this.setupDataListeners();
@@ -129,6 +140,10 @@ export class SerialMonitorService {
           });
           this.dataUpdated.next();
 
+          const resetCompleted = await this.pulseOpenReset();
+          if (!resetCompleted) {
+            this.message.warning('串口已打开，但自动复位信号发送失败');
+          }
           resolve(true);
         });
 
@@ -136,6 +151,7 @@ export class SerialMonitorService {
           console.error('串口错误:', err);
           this.message.error(`串口错误: ${err.message || err}`);
           this.isConnected = false;
+          this.controlSignals = { dtr: false, rts: false };
           this.connectionStatus.next(false);
           reject(err);
         });
@@ -145,6 +161,7 @@ export class SerialMonitorService {
             console.error('打开串口失败:', err);
             this.message.error(`打开串口失败: ${err.message || err}`);
             this.isConnected = false;
+            this.controlSignals = { dtr: false, rts: false };
             this.connectionStatus.next(false);
             reject(err);
           }
@@ -154,6 +171,7 @@ export class SerialMonitorService {
       console.error('连接串口失败:', error);
       this.message.error(`连接串口失败: ${error.message || error}`);
       this.isConnected = false;
+      this.controlSignals = { dtr: false, rts: false };
       this.connectionStatus.next(false);
       return false;
     }
@@ -171,6 +189,7 @@ export class SerialMonitorService {
 
     this.serialPort.on('close', () => {
       this.isConnected = false;
+      this.controlSignals = { dtr: false, rts: false };
       this.connectionStatus.next(false);
       console.log('串口已关闭');
     });
@@ -329,6 +348,52 @@ export class SerialMonitorService {
   }
 
   /**
+   * 在不关闭串口的情况下切换波特率
+   */
+  updateBaudRate(baudRate: number): Promise<boolean> {
+    if (!this.isConnected || !this.serialPort) {
+      this.message.warning('串口未连接，请先打开串口');
+      return Promise.resolve(false);
+    }
+
+    if (!Number.isFinite(baudRate) || baudRate <= 0) {
+      this.message.error('无效的串口波特率');
+      return Promise.resolve(false);
+    }
+
+    if (typeof this.serialPort.update !== 'function') {
+      this.message.error('当前串口不支持直接切换波特率');
+      return Promise.resolve(false);
+    }
+
+    return new Promise((resolve) => {
+      try {
+        this.serialPort.update({ baudRate }, (err: any) => {
+          if (err) {
+            console.error('切换串口波特率失败:', err);
+            this.message.error(`切换串口波特率失败: ${err.message || err}`);
+            resolve(false);
+            return;
+          }
+
+          this.dataList.push({
+            time: new Date().toLocaleTimeString(),
+            data: Buffer.from(`[波特率已切换: ${baudRate}]`),
+            dir: 'SYS',
+            isError: false
+          });
+          this.dataUpdated.next();
+          resolve(true);
+        });
+      } catch (error) {
+        console.error('切换串口波特率失败:', error);
+        this.message.error(`切换串口波特率失败: ${error.message || error}`);
+        resolve(false);
+      }
+    });
+  }
+
+  /**
    * 断开串口连接
    */
   disconnect(): Promise<boolean> {
@@ -349,6 +414,7 @@ export class SerialMonitorService {
           resolve(false);
         } else {
           this.isConnected = false;
+          this.controlSignals = { dtr: false, rts: false };
           this.connectionStatus.next(false);
           this.serialPort = null;
           resolve(true);
@@ -466,50 +532,106 @@ export class SerialMonitorService {
     this.message.success('数据已成功导出到' + folderPath);
   }
 
-  /**
-   * 发送控制信号(DTR/RTS)到串口
-   * @param signalType 信号类型: 'DTR' 或 'RTS'
-   * @param state 信号状态: true为设置，false为清除，不传则切换当前状态
-   * @returns 操作是否成功
-   */
-  sendSignal(signalType: 'DTR' | 'RTS', state?: boolean): Promise<boolean> {
-    if (!this.isConnected || !this.serialPort) {
-      this.message.warning('串口未连接，请先打开串口');
+  private enqueueSignalOperation(operation: () => Promise<boolean>): Promise<boolean> {
+    const result = this.signalOperationQueue.then(operation, operation);
+    this.signalOperationQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private writeControlSignals(dtr: boolean, rts: boolean): Promise<boolean> {
+    if (!this.isConnected || !this.serialPort || typeof this.serialPort.set !== 'function') {
       return Promise.resolve(false);
     }
 
     return new Promise((resolve) => {
       try {
-        const methodName = signalType.toLowerCase();
-        // 如果没提供状态，则获取当前状态并取反
-        if (state === undefined && typeof this.serialPort[methodName + 'Bool'] === 'function') {
-          state = !this.serialPort[methodName + 'Bool']();
-        }
-
-        // 调用串口对象的方法设置信号
-        this.serialPort.set({ [methodName]: state }, (err: any) => {
+        this.serialPort.set({ dtr, rts }, (err: any) => {
           if (err) {
-            console.error(`设置${signalType}信号失败:`, err);
-            this.message.error(`设置${signalType}信号失败`);
+            console.error('设置串口控制信号失败:', err);
             resolve(false);
-          } else {
-            // 记录信号发送到数据列表
-            this.dataList.push({
-              time: new Date().toLocaleTimeString(),
-              data: Buffer.from(`[设置${signalType}信号: ${state ? '开启' : '关闭'}]`),
-              dir: 'SYS',
-              isError: false
-            });
-            this.dataUpdated.next();
-            resolve(true);
+            return;
           }
+          this.controlSignals = { dtr, rts };
+          resolve(true);
         });
       } catch (error) {
-        console.error('发送信号时出错:', error);
-        this.message.error('发送信号失败');
+        console.error('设置串口控制信号失败:', error);
         resolve(false);
       }
     });
+  }
+
+  /**
+   * 复现 Arduino 串口监视器打开端口时 DTR 由释放到有效所产生的复位边沿。
+   * 这里使用短脉冲并恢复释放状态，避免持续占用 DTR 或与 RTS 同时有效。
+   */
+  private pulseOpenReset(): Promise<boolean> {
+    return this.enqueueSignalOperation(async () => {
+      const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+      if (!await this.writeControlSignals(false, false)) return false;
+      await sleep(SerialMonitorService.OPEN_RESET_PREPARE_MS);
+      if (!await this.writeControlSignals(true, false)) return false;
+      await sleep(SerialMonitorService.OPEN_RESET_PULSE_MS);
+      if (!await this.writeControlSignals(false, false)) return false;
+      await sleep(SerialMonitorService.OPEN_RESET_SETTLE_MS);
+
+      this.dataList.push({
+        time: new Date().toLocaleTimeString(),
+        data: Buffer.from('[已发送打开串口复位脉冲: DTR]'),
+        dir: 'SYS',
+        isError: false
+      });
+      this.dataUpdated.next();
+      return true;
+    });
+  }
+
+  /**
+   * 发送控制信号(DTR/RTS)到串口
+   * @param signalType 信号类型: 'DTR' 或 'RTS'
+   * @param state 信号状态: true为拉低，false为释放，不传则切换当前状态
+   * @returns 操作是否成功
+   */
+  sendSignal(signalType: 'DTR' | 'RTS', state?: boolean): Promise<boolean> {
+    return this.enqueueSignalOperation(async () => {
+      if (!this.isConnected || !this.serialPort) {
+        this.message.warning('串口未连接，请先打开串口');
+        return false;
+      }
+
+      const normalizedType = String(signalType ?? '').toUpperCase();
+      if (normalizedType !== 'DTR' && normalizedType !== 'RTS') {
+        this.message.error(`不支持的串口控制信号: ${signalType}`);
+        return false;
+      }
+
+      const key = normalizedType === 'DTR' ? 'dtr' : 'rts';
+      const nextState = state ?? !this.controlSignals[key];
+      const nextSignals = { ...this.controlSignals, [key]: nextState };
+      const updated = await this.writeControlSignals(nextSignals.dtr, nextSignals.rts);
+
+      if (!updated) {
+        this.message.error(`设置${normalizedType}信号失败`);
+        return false;
+      }
+
+      this.dataList.push({
+        time: new Date().toLocaleTimeString(),
+        data: Buffer.from(`[设置${normalizedType}信号: ${nextState ? '拉低' : '释放'}]`),
+        dir: 'SYS',
+        isError: false
+      });
+      this.dataUpdated.next();
+      return true;
+    });
+  }
+
+  isSignalActive(signalType: string): boolean {
+    const normalizedType = String(signalType ?? '').toUpperCase();
+    if (normalizedType === 'DTR') return this.controlSignals.dtr;
+    if (normalizedType === 'RTS') return this.controlSignals.rts;
+    return false;
   }
 
   saveQuickSendList() {

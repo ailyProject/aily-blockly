@@ -595,6 +595,11 @@ function patchToolEnd(parts, event) {
   }
   const index = parts.findIndex(part => part && part.type === 'tool_call' && part.toolCallId === toolCallId);
   const resultText = typeof event.resultText === 'string' ? event.resultText : '';
+  const existingMetadata = index >= 0
+    && parts[index].metadata
+    && typeof parts[index].metadata === 'object'
+    ? parts[index].metadata
+    : {};
   const nextPart = {
     ...(index >= 0 ? parts[index] : {}),
     type: 'tool_call',
@@ -604,12 +609,15 @@ function patchToolEnd(parts, event) {
     text: resultText,
     state: event.state === 'error' || event.isError === true ? 'error' : 'done',
     ...buildPartScopeFields(event),
-    metadata: buildPartMetadata(event, {
-      resultText,
-      result: clonePayload(event.result),
-      durationMs: Number.isFinite(event.durationMs) ? event.durationMs : undefined,
-      completedAt: event.timestamp,
-    }),
+    metadata: {
+      ...existingMetadata,
+      ...buildPartMetadata(event, {
+        resultText,
+        result: clonePayload(event.result),
+        durationMs: Number.isFinite(event.durationMs) ? event.durationMs : undefined,
+        completedAt: event.timestamp,
+      }),
+    },
   };
   const nextParts = [...parts];
   if (index >= 0) {
@@ -618,6 +626,100 @@ function patchToolEnd(parts, event) {
     nextParts.push(nextPart);
   }
   return nextParts;
+}
+
+const TODO_TOOL_NAMES = new Set([
+  'todo_manage',
+  'manage_todo_list',
+  'todo_write_tool',
+]);
+
+function isTodoToolName(toolName) {
+  return TODO_TOOL_NAMES.has(normalizeOptionalString(toolName)?.toLowerCase() || '');
+}
+
+function normalizeTodoItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const id = Number.isFinite(Number(item.id)) ? Number(item.id) : index + 1;
+      const title = normalizeOptionalString(item.title)
+        || normalizeOptionalString(item.content)
+        || `Todo ${id}`;
+      return {
+        id,
+        title,
+        status: normalizeOptionalString(item.status) || 'not-started',
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildTodoMetadata(event, items) {
+  const completedCount = items.filter(item => item.status === 'completed').length;
+  const totalCount = items.length;
+  const activeTodo = items.find(item => item.status === 'in-progress')
+    || items.find(item => item.status === 'not-started');
+  const currentStep = totalCount > 0
+    ? Math.min(totalCount, activeTodo ? completedCount + 1 : totalCount)
+    : 0;
+  return {
+    items: clonePayload(items),
+    summary: event.summary,
+    totalCount,
+    completedCount,
+    currentStep,
+    activeTitle: activeTodo && activeTodo.title,
+  };
+}
+
+function buildTodoToolSpecificData(todoMetadata) {
+  const items = Array.isArray(todoMetadata.items) ? todoMetadata.items : [];
+  return {
+    kind: 'todoList',
+    todoList: items.map(item => ({
+      id: String(item.id ?? ''),
+      title: normalizeOptionalString(item.title) || 'Todo',
+      status: normalizeOptionalString(item.status) || 'not-started',
+    })),
+    summary: normalizeOptionalString(todoMetadata.summary) || '',
+    currentTask: normalizeOptionalString(todoMetadata.activeTitle),
+    totalCount: Number.isFinite(todoMetadata.totalCount) ? todoMetadata.totalCount : items.length,
+    completedCount: Number.isFinite(todoMetadata.completedCount) ? todoMetadata.completedCount : 0,
+    currentStep: Number.isFinite(todoMetadata.currentStep) ? todoMetadata.currentStep : 0,
+    result: normalizeOptionalString(todoMetadata.summary) || '',
+  };
+}
+
+function completeLatestTodoToolCall(parts, event, todoMetadata) {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (!part || part.type !== 'tool_call' || !isTodoToolName(part.toolName)) {
+      continue;
+    }
+    if (part.state === 'error') {
+      return parts;
+    }
+    const metadata = part.metadata && typeof part.metadata === 'object' ? part.metadata : {};
+    const nextParts = [...parts];
+    nextParts[index] = {
+      ...part,
+      state: 'done',
+      updatedAt: normalizeTimestamp(event.timestamp),
+      metadata: {
+        ...metadata,
+        phase: 'completed',
+        toolSpecificData: buildTodoToolSpecificData(todoMetadata),
+      },
+    };
+    return nextParts;
+  }
+  return parts;
 }
 
 function terminalPartId(command, toolCallId, terminal) {
@@ -1703,23 +1805,10 @@ function materializeRenderEventTurn(turn, state, event) {
       });
       return withResponsePatch(turn, timestamp, { parts, status: 'streaming' });
     case 'todo_update': {
-      const items = Array.isArray(event.items) ? event.items : [];
-      const completed = items.filter(item => item && item.status === 'completed').length;
-      const progress = items.length > 0 ? completed / items.length : undefined;
-      const hasError = items.some(item => item && item.status === 'error');
-      parts = upsertStatePart(parts, event, {
-        stateId: `todo:${event.sessionId || turn.turnId}`,
-        kind: 'todo',
-        text: event.summary,
-        state: hasError ? 'error' : items.length > 0 && completed === items.length ? 'done' : 'doing',
-        progress,
-        metadata: {
-          sessionId: event.sessionId,
-          items: clonePayload(items),
-          completed,
-          total: items.length,
-        },
-      });
+      const items = normalizeTodoItems(event.items);
+      const todoMetadata = buildTodoMetadata(event, items);
+      parts = completeLatestTodoToolCall(parts, event, todoMetadata);
+      parts = parts.filter(part => !(part?.type === 'state' && part.kind === 'todo'));
       return withResponsePatch(turn, timestamp, { parts, status: 'streaming' });
     }
     case 'question_request':

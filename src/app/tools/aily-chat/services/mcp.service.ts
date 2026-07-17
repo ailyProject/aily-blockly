@@ -78,31 +78,34 @@ export class McpService {
       const appDataPath = configData.appdata_path[configData.platform].replace('%HOMEPATH%', AilyHost.get().path.getUserHome());
       const primaryConfigFilePath = `${appDataPath}/mcp/${this.mcpConfigName}`;
       const fallbackConfigFilePath = `./src/app/tools/aily-chat/mcp/${this.mcpConfigName}`;
-      
-      let configFilePath = primaryConfigFilePath;
-      
-      // 优先检查appDataPath下的配置文件
-      const primaryExists = await AilyHost.get().path.isExists(primaryConfigFilePath);
-      if (!primaryExists) {
-        // 如果主配置文件不存在，检查备用配置文件
-        const fallbackExists = await AilyHost.get().path.isExists(fallbackConfigFilePath);
-        if (fallbackExists) {
-          configFilePath = fallbackConfigFilePath;
-          // console.log(`使用备用MCP配置文件: ${fallbackConfigFilePath}`);
-        } else {
-          console.warn(`MCP配置文件 ${primaryConfigFilePath} 和 ${fallbackConfigFilePath} 都不存在，使用默认配置`);
-          return { mcpServers: {} };
+
+      const readConfig = async (configFilePath: string): Promise<McpConfig | null> => {
+        const exists = await AilyHost.get().path.isExists(configFilePath);
+        if (!exists) return null;
+        const configContent = await AilyHost.get().fs.readFileSync(configFilePath, 'utf-8');
+        const parsed: McpConfig = JSON.parse(configContent);
+        if (!parsed.mcpServers || typeof parsed.mcpServers !== 'object') {
+          throw new Error(`MCP配置文件格式不正确: ${configFilePath}`);
         }
-      } else {
-        // console.log(`使用主MCP配置文件: ${primaryConfigFilePath}`);
+        return parsed;
+      };
+
+      const fallbackConfig = await readConfig(fallbackConfigFilePath);
+      const primaryConfig = await readConfig(primaryConfigFilePath);
+
+      if (!fallbackConfig && !primaryConfig) {
+        console.warn(`MCP配置文件 ${primaryConfigFilePath} 和 ${fallbackConfigFilePath} 都不存在，使用默认配置`);
+        return { mcpServers: {} };
       }
-      
-      const configContent = await AilyHost.get().fs.readFileSync(configFilePath, 'utf-8');
-      // console.log("configContent: ", configContent);
-      
-      // 解析JSON内容
-      const config: McpConfig = JSON.parse(configContent);
-      // console.log("MCP Config: ", config);
+
+      // Built-in servers are defaults. User/appdata config can override the same
+      // server name (including enabled=false) and add custom servers.
+      const config: McpConfig = {
+        mcpServers: {
+          ...(fallbackConfig?.mcpServers || {}),
+          ...(primaryConfig?.mcpServers || {}),
+        },
+      };
 
       // 检查配置格式
       if (!config.mcpServers || typeof config.mcpServers !== 'object') {
@@ -118,9 +121,15 @@ export class McpService {
   }
 
   // 处理配置中的路径变量
-  private processPath(path: string): string {
-    // 这里可以根据实际情况替换${workspaceFolder}等变量
-    return path.replace('${workspaceFolder}', '.');
+  private processPath(value: string): string {
+    const projectPath = AilyHost.get().project?.currentProjectPath || '.';
+    // ${workspaceFolder} follows common MCP config convention. For the bundled
+    // fallback config it resolves to "." so Electron starts the server from the
+    // app/repo root; user appdata configs can still point it at a project path
+    // explicitly if they need that behavior.
+    return value
+      .replace(/\$\{workspaceFolder\}/g, '.')
+      .replace(/\$\{projectPath\}/g, projectPath);
   }
 
   async connectToServer() {
@@ -224,14 +233,20 @@ export class McpService {
       }
       */
 
-      if (result.success && result.isError !== true) {
+      const toolResult = result?.result;
+      const isError = result?.success !== true || toolResult?.isError === true;
+
+      if (!isError) {
         return {
-          "content": result.result.content.map((item: any) => item.text).join("\n"),
+          "content": (toolResult?.content || []).map((item: any) => item.text).join("\n"),
           "is_error": false
         }
       } else {
+        const content = Array.isArray(toolResult?.content)
+          ? toolResult.content.map((item: any) => item.text).filter(Boolean).join("\n")
+          : '';
         return {
-          "content": "Tool usage failed: " + result.error,
+          "content": content || ("Tool usage failed: " + (result?.error || 'unknown error')),
           "is_error": true
         }
       }

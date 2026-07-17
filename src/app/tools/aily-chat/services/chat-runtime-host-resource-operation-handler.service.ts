@@ -173,8 +173,8 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
 
   private handleResourceOperation(request: ChatRuntimeHostResourceOperationRequest): unknown {
     switch (request.kind) {
-      case 'abs-session-start-export':
-        return this.scheduleSessionStartAbsExport(request);
+      case 'abs-workspace-export':
+        return this.ensureWorkspaceAbsExport(request);
       case 'checkpoint-commit':
         return this.commitWorkspaceCheckpoint(request);
       case 'checkpoint-settle':
@@ -254,24 +254,31 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
     };
   }
 
-  private scheduleSessionStartAbsExport(request: ChatRuntimeHostResourceOperationRequest): {
-    readonly scheduled: true;
+  private async ensureWorkspaceAbsExport(request: ChatRuntimeHostResourceOperationRequest): Promise<{
+    readonly synchronized: true;
     readonly sessionId: string;
     readonly kind: ChatRuntimeHostResourceOperationRequest['kind'];
     readonly projectPath: string | null;
-  } {
-    const sessionId = this.requireSessionId(request, 'ABS session-start export');
-    this.requireAbsSessionStartExportPayload(request.payload);
+    readonly mirrorState: ReturnType<AbsAutoSyncService['getWorkspaceMirrorState']>;
+  }> {
+    const sessionId = this.requireSessionId(request, 'ABS workspace export');
+    this.requireAbsWorkspaceExportPayload(request.payload);
     const projectPath = this.readProjectPath(request.payload) || this.normalizeSessionId(request.resource?.['projectPath']);
-    if (projectPath) {
-      this.absAutoSyncService.initialize(projectPath);
+    if (!projectPath) {
+      throw new HostResourceOperationError(
+        '[AilyChat][RuntimeHost] ABS workspace export requires a project path.',
+        'resource_operation_payload_invalid',
+        false,
+      );
     }
-    this.absAutoSyncService.scheduleSessionStartExport();
+    this.absAutoSyncService.initialize(projectPath);
+    await this.absAutoSyncService.ensureWorkspaceExport();
     return {
-      scheduled: true,
+      synchronized: true,
       sessionId,
       kind: request.kind,
-      projectPath: projectPath || null,
+      projectPath,
+      mirrorState: this.absAutoSyncService.getWorkspaceMirrorState(),
     };
   }
 
@@ -1384,18 +1391,18 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
     return this.normalizeSessionId((payload as HostResourceOperationPayload).projectPath);
   }
 
-  private requireAbsSessionStartExportPayload(payload: ChatRuntimeHostResourceOperationPayload | undefined): void {
+  private requireAbsWorkspaceExportPayload(payload: ChatRuntimeHostResourceOperationPayload | undefined): void {
     if (!payload || typeof payload !== 'object') {
       throw new HostResourceOperationError(
-        '[AilyChat][RuntimeHost] ABS session-start export requires a typed payload.',
+        '[AilyChat][RuntimeHost] ABS workspace export requires a typed payload.',
         'resource_operation_payload_missing',
         false,
       );
     }
     const payloadObject = payload as HostResourceOperationPayload;
-    if (payloadObject.adapter !== 'absAutoSync' || payloadObject.action !== 'scheduleSessionStartExport') {
+    if (payloadObject.adapter !== 'absAutoSync' || payloadObject.action !== 'ensureWorkspaceExport') {
       throw new HostResourceOperationError(
-        '[AilyChat][RuntimeHost] ABS session-start export payload must use absAutoSync.scheduleSessionStartExport.',
+        '[AilyChat][RuntimeHost] ABS workspace export payload must use absAutoSync.ensureWorkspaceExport.',
         'resource_operation_payload_invalid',
         false,
       );

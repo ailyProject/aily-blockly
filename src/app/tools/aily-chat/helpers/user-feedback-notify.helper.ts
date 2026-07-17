@@ -69,7 +69,7 @@ export function isAilyChatAppForeground(): boolean {
  * 非前台时：先请求窗口级注意（任务栏/Dock），再发系统通知。
  * 即使气泡式通知被系统快速收起，用户仍能看到闪烁或角标。
  */
-export function notifyAwaitingUserFeedbackIfBackground(title: string, body: string): void {
+export function notifyAilyChatIfBackground(title: string, body: string): void {
   if (isAilyChatAppForeground()) {
     return;
   }
@@ -90,6 +90,10 @@ export function notifyAwaitingUserFeedbackIfBackground(title: string, body: stri
 
   const opts = buildDesktopNotifyOptions(host);
   void electron.notify(title, body, opts).catch((err: unknown) => {
-    console.warn('[notifyAwaitingUserFeedbackIfBackground]', err);
+    console.warn('[notifyAilyChatIfBackground]', err);
   });
+}
+
+export function notifyAwaitingUserFeedbackIfBackground(title: string, body: string): void {
+  notifyAilyChatIfBackground(title, body);
 }

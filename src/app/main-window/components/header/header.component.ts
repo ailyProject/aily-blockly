@@ -30,6 +30,12 @@ import { BleOtaDeviceItem, UploaderBleService } from '../../../services/uploader
 import { ToolI18nService } from '../../../services/tool-i18n.service';
 import { CmdOutput, CmdService } from '../../../services/cmd.service';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
+import {
+  UiAutomationRegistryService,
+  type UiAutomationCommandResult,
+  type UiAutomationMenuItem,
+  type UiAutomationMenuListOptions,
+} from '../../../services/ui-automation-registry.service';
 
 interface NetworkOtaTarget {
   id: string;
@@ -84,6 +90,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private unsaveDialogOpen = false; // 标记未保存对话框是否已打开
   private selectDebounceTimer: ReturnType<typeof setTimeout> | null = null; // 防抖计时器
   private lastSelectedSubItemKey: string | null = null; // 上次选择子菜单项的key（用于判断重复选择）
+  private unregisterHeaderMenuAutomation: (() => void) | null = null;
 
   get projectData() {
     return this.projectService.currentPackageData || { path: '', name: '' };
@@ -141,11 +148,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
     private appStoreService: AppStoreService,
     private toolI18n: ToolI18nService,
     private cmdService: CmdService,
-    private blocklyService: BlocklyService
+    private blocklyService: BlocklyService,
+    private uiAutomationRegistry: UiAutomationRegistryService,
   ) { }
 
   ngOnInit(): void {
     void this.toolI18n.load('serial-monitor');
+
+    this.unregisterHeaderMenuAutomation = this.uiAutomationRegistry.registerMenuProvider('header', {
+      list: (options) => this.createHeaderMenuAutomationSnapshot(options).items,
+      execute: (itemId, options) => this.executeHeaderMenuAutomationItem(itemId, options),
+    });
 
     this.refreshHeaderApps();
     this.appStoreSubscription = this.appStoreService.layout$.subscribe(() => {
@@ -290,6 +303,90 @@ export class HeaderComponent implements OnInit, OnDestroy {
               action: 'noop',
             },
           ];
+  }
+
+  private createHeaderMenuAutomationSnapshot(options: UiAutomationMenuListOptions = {}): {
+    items: UiAutomationMenuItem[];
+    sourceById: Map<string, IMenuItem>;
+  } {
+    this.refreshHeaderRecentProjectsMenu();
+    const sourceById = new Map<string, IMenuItem>();
+
+    const serialize = (items: readonly IMenuItem[], parentId: string): UiAutomationMenuItem[] => {
+      const output: UiAutomationMenuItem[] = [];
+      items.forEach((item, index) => {
+        if (item.sep) return;
+        const visible = !!item.children?.length || item.action === 'recent-projects-root' || this.showInRouter(item);
+        if (!visible && options.includeHidden !== true) return;
+
+        const identity = this.headerMenuAutomationIdentity(item, index);
+        const id = parentId ? `${parentId}/${identity}` : identity;
+        const children = item.children?.length ? serialize(item.children, id) : [];
+        const entry: UiAutomationMenuItem = {
+          id,
+          label: this.translate.instant(item.name || item.action || id),
+          ...(item.name ? { labelKey: item.name } : {}),
+          ...(item.action ? { action: item.action } : {}),
+          ...(item.text ? { shortcut: item.text } : {}),
+          ...(item.icon ? { icon: item.icon } : {}),
+          enabled: item.disabled !== true,
+          visible,
+          dangerous: item.action === 'app-exit',
+          mayPrompt: ['project-new', 'project-open', 'recent-project-open', 'project-close', 'app-exit']
+            .includes(item.action || ''),
+          ...(children.length ? { children } : {}),
+        };
+        sourceById.set(id, item);
+        output.push(entry);
+      });
+      return output;
+    };
+
+    return { items: serialize(this.headerMenu, 'header'), sourceById };
+  }
+
+  private async executeHeaderMenuAutomationItem(
+    itemId: string,
+    options: { confirm?: boolean } = {},
+  ): Promise<UiAutomationCommandResult> {
+    const snapshot = this.createHeaderMenuAutomationSnapshot({ includeHidden: true });
+    const item = snapshot.sourceById.get(String(itemId || '').trim());
+    if (!item) {
+      return { ok: false, message: `未找到菜单项: ${itemId}；请重新调用 main_menu_list 获取当前 ID。` };
+    }
+    if (!this.showInRouter(item) && !item.children?.length && item.action !== 'recent-projects-root') {
+      return { ok: false, message: `菜单项在当前界面不可用: ${itemId}` };
+    }
+    if (item.disabled) {
+      return { ok: false, message: `菜单项当前已禁用: ${itemId}` };
+    }
+    if (item.children?.length || item.action === 'recent-projects-root') {
+      return { ok: false, message: `菜单项 ${itemId} 是分组，请选择其 children 中的具体 itemId。` };
+    }
+    if (item.action === 'app-exit' && options.confirm !== true) {
+      return { ok: false, message: '退出主软件需要显式传 confirm=true。' };
+    }
+
+    if (item.action === 'recent-project-open') {
+      await this.onHeaderMenuSubItemClick(item);
+    } else {
+      await this.process(item);
+    }
+    return {
+      ok: true,
+      operation: 'main_menu_execute',
+      itemId,
+      action: item.action || null,
+      message: `已执行菜单项: ${this.translate.instant(item.name || item.action || itemId)}`,
+    };
+  }
+
+  private headerMenuAutomationIdentity(item: IMenuItem, index: number): string {
+    const action = String(item.action || item.key || item.name || `item-${index}`).trim();
+    const contextualValue = item.action === 'recent-project-open' && typeof item.data?.path === 'string'
+      ? `:${encodeURIComponent(item.data.path)}`
+      : '';
+    return `${encodeURIComponent(action)}${contextualValue}~${index}`;
   }
 
   /** 主菜单二级项：打开最近项目 */
@@ -918,6 +1015,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.unregisterHeaderMenuAutomation?.();
+    this.unregisterHeaderMenuAutomation = null;
     this.appStoreSubscription?.unsubscribe();
     if (this.bleDevicesSubscription) {
       this.bleDevicesSubscription.unsubscribe();

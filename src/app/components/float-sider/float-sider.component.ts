@@ -268,7 +268,7 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
     this.uiService.openWindow({
       title: this.translate.instant('FLOAT_SIDER.CIRCUIT'),
       path: `iframe?url=${encodeURIComponent(windowUrl)}`,
-      data: null,
+      data: this.connectionGraphService.buildPayload(this.boardPackagePath),
       width: 900,
       height: 700,
     });

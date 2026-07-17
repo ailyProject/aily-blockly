@@ -66,7 +66,6 @@ export class ChatSubscriptionCoordinator {
   private configChangedSubscription: Subscription | null = null;
   private hostConfigReloadSubscription: Subscription | null = null;
   private blockSelectionSubscription: Subscription | null = null;
-  private uiChatMessageSubscription: Subscription | null = null;
   private userInfoSubscription: Subscription | null = null;
   private taskActionHandler: ((event: Event) => void) | null = null;
   private active = false;
@@ -307,13 +306,6 @@ export class ChatSubscriptionCoordinator {
       this.ctx.chatService.clearBufferedTextMessage(message.timestamp);
     });
 
-    const uiChatMessage$ = AilyHost.get().ui?.chatMessage$;
-    if (uiChatMessage$) {
-      this.uiChatMessageSubscription = uiChatMessage$.subscribe((message: any) => {
-        this.callbacks.receiveTextFromExternal(message.text, message.options);
-      });
-    }
-
     const authProvider = AilyHost.get().auth;
     authProvider?.initializeAuth?.().then(() => {
       if (!this.active) {
@@ -487,7 +479,6 @@ export class ChatSubscriptionCoordinator {
     if (this.configChangedSubscription) { this.configChangedSubscription.unsubscribe(); this.configChangedSubscription = null; }
     if (this.hostConfigReloadSubscription) { this.hostConfigReloadSubscription.unsubscribe(); this.hostConfigReloadSubscription = null; }
     if (this.blockSelectionSubscription) { this.blockSelectionSubscription.unsubscribe(); this.blockSelectionSubscription = null; }
-    if (this.uiChatMessageSubscription) { this.uiChatMessageSubscription.unsubscribe(); this.uiChatMessageSubscription = null; }
     if (this.taskActionHandler) { document.removeEventListener('aily-task-action', this.taskActionHandler); this.taskActionHandler = null; }
     this.ctx.isSessionStarting = false;
     this.ctx.mcpInitialized = false;

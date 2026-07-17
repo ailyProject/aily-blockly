@@ -1,16 +1,16 @@
 ﻿/**
  * ABS 自动同步服务 (Aily Block Syntax)
  * 
- * 实现 Blockly 工作区与 ABS 文件的同步：
- * - 会话开始时自动导出
- * - AI 修改时同步到磁盘
+ * 实现 Blockly working copy 与 ABS 文件的 revision-safe 镜像：
+ * - 仅在 Blockly revision 变更时导出
+ * - 并发请求共享同一个写入，旧 revision 不会覆盖新 revision
+ * - agent 启动前由 runtime lifecycle 显式等待镜像 barrier
  * 
  * 注：版本历史功能已迁移到 EditCheckpointService，
  * 本服务不再维护独立的 .abi_history 目录。
  */
 
-import { Injectable, OnDestroy } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { Injectable } from '@angular/core';
 import { AilyHost } from '../core/host';
 import { convertAbsToAbi, convertAbiToAbsWithLineMap } from '../tools/abiAbsConverter';
 import { loadProjectBlockDefinitions } from '../tools/absParser';
@@ -44,13 +44,6 @@ export interface VersionManifest {
   maxVersions: number;
 }
 
-export interface AutoSyncConfig {
-  /** 是否启用自动同步 */
-  enabled: boolean;
-  /** 是否在会话开始时自动导出 */
-  exportOnSessionStart: boolean;
-}
-
 // =============================================================================
 // 服务实现
 // =============================================================================
@@ -58,36 +51,21 @@ export interface AutoSyncConfig {
 @Injectable({
   providedIn: 'root'
 })
-export class AbsAutoSyncService implements OnDestroy {
-  
-  /** 配置 */
-  private config: AutoSyncConfig = {
-    enabled: true,
-    exportOnSessionStart: true,
-  };
-  
-  /** 订阅管理 */
-  private subscriptions: Subscription[] = [];
-  
+export class AbsAutoSyncService {
   /** 是否正在同步（防止循环） */
   private isSyncing = false;
 
-  /** 会话开始自动导出的延迟任务，避免阻塞发送帧。 */
-  private scheduledExportHandle: ReturnType<typeof setTimeout> | null = null;
-  
   /** 当前项目路径 */
   private currentProjectPath = '';
 
+  /** Last Blockly workspace revision durably mirrored to project.abs. */
+  private exportedWorkspaceRevision = -1;
+
+  /** Serializes workspace snapshots so an older write cannot overtake a newer one. */
+  private exportInFlight: Promise<string | null> | null = null;
+
   /** 通过 AilyHost 透传访问 Blockly 服务 */
   private get blocklyService(): any { return AilyHost.get().blockly; }
-
-  constructor() {
-    // 简化：不再自动监听工作区变化，只在 AI 修改时保存版本
-  }
-
-  ngOnDestroy(): void {
-    this.cleanup();
-  }
 
   // ===========================================================================
   // 公共 API
@@ -97,29 +75,12 @@ export class AbsAutoSyncService implements OnDestroy {
    * 初始化服务（在项目打开时调用）
    */
   initialize(projectPath: string): void {
-    this.currentProjectPath = projectPath;
+    const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
+    if (normalizedProjectPath !== this.currentProjectPath) {
+      this.currentProjectPath = normalizedProjectPath;
+      this.exportedWorkspaceRevision = -1;
+    }
     this.trace('Initialized for project', { projectPath });
-  }
-
-  /**
-   * 会话开始时调用
-   * 自动导出当前工作区到 ABS 文件
-   */
-  async onSessionStart(): Promise<string | null> {
-    if (!this.config.exportOnSessionStart || !this.currentProjectPath) {
-      return null;
-    }
-    
-    try {
-      const dslContent = await this.exportToAbs();
-      if (dslContent) {
-        this.trace('Auto-exported ABS on session start');
-      }
-      return dslContent;
-    } catch (error) {
-      console.error('[AbsAutoSync] Failed to auto-export on session start:', error);
-      return null;
-    }
   }
 
   /**
@@ -146,18 +107,79 @@ export class AbsAutoSyncService implements OnDestroy {
    * 导出当前工作区到 ABS 文件
    */
   async exportToAbs(saveVersion = false): Promise<string | null> {
-    if (!this.currentProjectPath || this.isSyncing) {
+    void saveVersion;
+    return this.exportWorkspaceRevision(this.readWorkspaceRevision(), true);
+  }
+
+  /**
+   * Ensures project.abs represents the current Blockly working-copy revision.
+   * Clean revisions are a no-op; concurrent callers share the same write.
+   */
+  async ensureWorkspaceExport(): Promise<string | null> {
+    if (!this.currentProjectPath) {
       return null;
     }
-    
+
+    return this.exportWorkspaceRevision(this.readWorkspaceRevision(), false);
+  }
+
+  getWorkspaceMirrorState(): {
+    readonly workspaceRevision: number;
+    readonly exportedRevision: number;
+    readonly dirty: boolean;
+    readonly exporting: boolean;
+  } {
+    const workspaceRevision = this.readWorkspaceRevision();
+    return {
+      workspaceRevision,
+      exportedRevision: this.exportedWorkspaceRevision,
+      dirty: workspaceRevision !== this.exportedWorkspaceRevision,
+      exporting: this.exportInFlight !== null,
+    };
+  }
+
+  private async exportWorkspaceRevision(targetRevision: number, force: boolean): Promise<string | null> {
+    if (!this.currentProjectPath) {
+      return null;
+    }
+
+    if (this.exportInFlight) {
+      await this.exportInFlight;
+    }
+
+    const requiredRevision = Math.max(targetRevision, this.readWorkspaceRevision());
+    if (!force && this.exportedWorkspaceRevision >= requiredRevision) {
+      return null;
+    }
+
+    const projectPath = this.currentProjectPath;
+    const capturedRevision = this.readWorkspaceRevision();
+    const exportPromise = this.performExport(projectPath, capturedRevision);
+    this.exportInFlight = exportPromise;
+    try {
+      return await exportPromise;
+    } finally {
+      if (this.exportInFlight === exportPromise) {
+        this.exportInFlight = null;
+      }
+    }
+  }
+
+  private async performExport(projectPath: string, capturedRevision: number): Promise<string | null> {
+    if (!projectPath) {
+      throw new Error('[AbsAutoSync] Cannot export without an active project path.');
+    }
+    if (this.isSyncing) {
+      throw new Error('[AbsAutoSync] Cannot export while an ABS import is active.');
+    }
+
     this.isSyncing = true;
-    
+
     try {
       // 获取 ABI JSON
       const abiJson = this.getWorkspaceAbiJson();
       if (!abiJson) {
-        console.warn('[AbsAutoSync] No ABI JSON available');
-        return null;
+        throw new Error('[AbsAutoSync] Blockly workspace serialization is unavailable.');
       }
       
       // 转换为 ABS（并获取 blockLineMap）
@@ -166,40 +188,19 @@ export class AbsAutoSyncService implements OnDestroy {
       this.blocklyService.absBlockLineMap.next(blockLineMap);
       
       // 写入 ABS 文件
-      const absFilePath = this.getAbsFilePath();
+      const absFilePath = this.getAbsFilePath(projectPath);
       this.trace('Writing ABS file', { absFilePath, contentLength: absContent?.length || 0 });
       await asyncFs.writeFile(absFilePath, absContent);
       this.trace('Write completed', { absFilePath });
-      
-      // 版本历史已迁移到 EditCheckpointService，不再单独保存
-      
+
+      if (projectPath === this.currentProjectPath) {
+        this.exportedWorkspaceRevision = Math.max(this.exportedWorkspaceRevision, capturedRevision);
+      }
+
       return absContent;
-    } catch (error) {
-      console.error('[AbsAutoSync] Export failed:', error);
-      return null;
     } finally {
       this.isSyncing = false;
     }
-  }
-
-  /**
-   * Schedule a session-start export after the current UI frame.
-   *
-   * Tools that need a strict workspace -> ABS barrier still call exportToAbs()
-   * directly through syncAbs. This path is only a warm mirror so chat submit can
-   * paint immediately, matching VS Code's request/progress ownership model.
-   */
-  scheduleSessionStartExport(): void {
-    if (!this.config.exportOnSessionStart || !this.currentProjectPath || this.scheduledExportHandle) {
-      return;
-    }
-
-    this.scheduledExportHandle = setTimeout(() => {
-      this.scheduledExportHandle = null;
-      void this.exportToAbs().catch((error: any) => {
-        console.warn('[AbsAutoSync] Failed to auto-export on session start:', error);
-      });
-    }, 0);
   }
 
   /**
@@ -271,6 +272,7 @@ export class AbsAutoSyncService implements OnDestroy {
 
     // 应用到工作区
     await this.applyToWorkspace(result.abiJson);
+    this.exportedWorkspaceRevision = this.readWorkspaceRevision();
 
     return true;
   }
@@ -302,31 +304,6 @@ export class AbsAutoSyncService implements OnDestroy {
   /** @deprecated 版本历史功能已迁移到 EditCheckpointService */
   compareVersions(_versionId1: string, _versionId2: string): { content1: string | null; content2: string | null } {
     return { content1: null, content2: null };
-  }
-
-  // ===========================================================================
-  // 配置
-  // ===========================================================================
-
-  /**
-   * 更新配置
-   */
-  setConfig(config: Partial<AutoSyncConfig>): void {
-    this.config = { ...this.config, ...config };
-  }
-
-  /**
-   * 获取当前配置
-   */
-  getConfig(): AutoSyncConfig {
-    return { ...this.config };
-  }
-
-  /**
-   * 启用/禁用自动同步
-   */
-  setEnabled(enabled: boolean): void {
-    this.config.enabled = enabled;
   }
 
   // ===========================================================================
@@ -366,17 +343,10 @@ export class AbsAutoSyncService implements OnDestroy {
       
       const Blockly = (window as any).Blockly;
       if (Blockly?.serialization?.workspaces) {
-        // 暂时禁用自动同步，避免循环
-        const wasEnabled = this.config.enabled;
-        this.config.enabled = false;
-        
         // 清空并加载（中间让出事件循环，减轻 UI 冻结）
         workspace.clear();
         await new Promise<void>(resolve => setTimeout(resolve, 0));
         Blockly.serialization.workspaces.load(abiJson, workspace);
-        
-        // 恢复自动同步
-        this.config.enabled = wasEnabled;
       }
     } catch (error) {
       console.error('[AbsAutoSync] Failed to apply to workspace:', error);
@@ -387,20 +357,15 @@ export class AbsAutoSyncService implements OnDestroy {
   /**
    * 获取 ABS 文件路径
    */
-  private getAbsFilePath(): string {
-    return `${this.currentProjectPath}/project.abs`;
+  private readWorkspaceRevision(): number {
+    const revision = this.blocklyService?.getWorkspaceContentRevision?.();
+    return typeof revision === 'number' && Number.isFinite(revision) && revision >= 0
+      ? revision
+      : 0;
   }
 
-  /**
-   * 清理资源
-   */
-  private cleanup(): void {
-    if (this.scheduledExportHandle) {
-      clearTimeout(this.scheduledExportHandle);
-      this.scheduledExportHandle = null;
-    }
-    this.subscriptions.forEach(sub => sub.unsubscribe());
-    this.subscriptions = [];
+  private getAbsFilePath(projectPath = this.currentProjectPath): string {
+    return `${projectPath}/project.abs`;
   }
 
   private trace(message: string, details?: Record<string, unknown>): void {

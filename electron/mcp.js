@@ -1,113 +1,149 @@
-// 管理 MCP 客户端连接，并通过 IPC 调用外部工具和资源。
-// import { app, BrowserWindow, ipcMain } from 'electron';
-// import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-// import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+const { app, ipcMain } = require('electron');
+const fs = require('fs');
+const path = require('path');
 
-const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
-const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
-const { ipcMain } = require("electron");
+const SERVER_NAME_TO_CLIENT_MAP = new Map();
+const TOOL_TO_SERVER_NAME = new Map();
+let handlersRegistered = false;
 
-const ServerNameToClientMap = new Map();
-const toolToServerName = new Map();
+function resolveMcpArgs(args) {
+  if (!Array.isArray(args)) {
+    return [];
+  }
 
+  const rootCandidates = [
+    process.cwd(),
+    app.getAppPath && app.getAppPath(),
+    process.resourcesPath && path.join(process.resourcesPath, 'app'),
+    process.resourcesPath,
+  ].filter(Boolean);
 
-// 设置IPC处理器
-function registerMCPHandlers() {
-    ipcMain.handle('mcp:connect', async (event, name, command, args) => {
-        try {
-            // 检查是否已经连接
-            if (ServerNameToClientMap.has(name)) {
-                console.warn(`MCP client with name ${name} is already connected.`);
-                return { success: true };
-            }   
+  return args.map((arg) => {
+    if (typeof arg !== 'string' || !arg || path.isAbsolute(arg)) {
+      return arg;
+    }
 
-            const mcpClient = new Client({
-                name: `mcp-client_${name}`,
-                version: "1.0.0",
-            });
+    for (const root of rootCandidates) {
+      const candidate = path.resolve(root, arg);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
 
-            const mcpTransport = new StdioClientTransport({
-                command,
-                args,
-            });
-
-            // console.log("mcpTransport: ", mcpTransport);
-            await mcpClient.connect(mcpTransport);
-            ServerNameToClientMap.set(name, { client: mcpClient, transport: mcpTransport });
-
-            return { success: true };
-        } catch (e) {
-            console.error("Failed to connect to MCP server:", e);
-            return { success: false, error: e.message };
-        }
-    });
-
-    ipcMain.handle('mcp:get-tools', async (event, name) => {
-        try {
-            const mcpClientObj = ServerNameToClientMap.get(name);
-            if (!mcpClientObj) {
-                throw new Error("MCP client is not connected");
-            }
-
-            const mcpClient = mcpClientObj.client;
-
-            const toolsResult = await mcpClient.listTools();
-            // toolsResult存入 ServerNameToClientMap
-            mcpClientObj.tools = toolsResult.tools;
-            let tools = toolsResult.tools.map((tool) => {
-                toolToServerName.set(tool.name, name);
-                return {
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.inputSchema,
-                };
-            });
-
-            console.log("Connected to MCP server with tools:", tools.map(({ name }) => name));
-            return { success: true, tools };
-        } catch (e) {
-            console.error("Failed to get MCP tools:", e);
-            return { success: false, error: e.message };
-        }
-    });
-
-    ipcMain.handle('mcp:use-tool', async (event, toolName, args) => {
-        try {
-            const ServerName = toolToServerName.get(toolName);
-            const mcpClientObj = ServerNameToClientMap.get(ServerName);
-
-            if (!mcpClientObj) {
-                throw new Error("MCP client is not connected");
-            }
-            const mcpTransport = mcpClientObj.transport;
-            const mcpClient = mcpClientObj.client;
-
-            const tools = mcpClientObj.tools
-            // console.log("tools: ", tools);
-
-            if (!mcpTransport) {
-                throw new Error("MCP transport is not connected");
-            }
-
-            const tool = tools.find((t) => t.name === toolName);
-            if (!tool) {
-                throw new Error(`Tool ${toolName} not found`);
-            }
-
-            const result = await mcpClient.callTool({
-                name: toolName,
-                arguments: args,
-            });
-
-            return { success: true, result };
-        } catch (e) {
-            console.error("Failed to use MCP tool:", e);
-            return { success: false, error: e.message };
-        }
-    });
+    return arg;
+  });
 }
 
+function mapSdkToolToRendererShape(tool) {
+  return {
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema,
+  };
+}
+
+async function listServerTools(serverName) {
+  if (!serverName) {
+    return [];
+  }
+
+  const clientEntry = SERVER_NAME_TO_CLIENT_MAP.get(serverName);
+  if (!clientEntry) {
+    return [];
+  }
+
+  const toolsResult = await clientEntry.client.listTools();
+  clientEntry.tools = toolsResult.tools;
+  return toolsResult.tools.map((tool) => {
+    TOOL_TO_SERVER_NAME.set(tool.name, serverName);
+    return mapSdkToolToRendererShape(tool);
+  });
+}
+
+async function connectToServer(name, command, args) {
+  if (SERVER_NAME_TO_CLIENT_MAP.has(name)) {
+    return { success: true };
+  }
+
+  const mcpClient = new Client({
+    name: `mcp-client_${name}`,
+    version: '1.0.0',
+  });
+
+  const mcpTransport = new StdioClientTransport({
+    command,
+    args: resolveMcpArgs(args),
+  });
+
+  await mcpClient.connect(mcpTransport);
+  SERVER_NAME_TO_CLIENT_MAP.set(name, { client: mcpClient, transport: mcpTransport, tools: [] });
+  return { success: true };
+}
+
+async function listTools(serverName) {
+  return {
+    success: true,
+    tools: await listServerTools(serverName),
+  };
+}
+
+async function useTool(toolName, args) {
+  const serverName = TOOL_TO_SERVER_NAME.get(toolName);
+  const clientEntry = SERVER_NAME_TO_CLIENT_MAP.get(serverName);
+  if (!clientEntry) {
+    throw new Error(`Tool ${toolName} is not available.`);
+  }
+
+  const tool = Array.isArray(clientEntry.tools)
+    ? clientEntry.tools.find((item) => item.name === toolName)
+    : null;
+  if (!tool) {
+    throw new Error(`Tool ${toolName} not found.`);
+  }
+
+  const result = await clientEntry.client.callTool({
+    name: toolName,
+    arguments: args,
+  });
+  return { success: true, result };
+}
+
+function registerMCPHandlers(mainWindow) {
+  if (handlersRegistered) {
+    return;
+  }
+  handlersRegistered = true;
+
+  ipcMain.handle('mcp:connect', async (_event, name, command, args) => {
+    try {
+      return await connectToServer(name, command, args);
+    } catch (error) {
+      console.error('Failed to connect to MCP server:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('mcp:get-tools', async (_event, name) => {
+    try {
+      return await listTools(name);
+    } catch (error) {
+      console.error('Failed to get MCP tools:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('mcp:use-tool', async (_event, toolName, args) => {
+    try {
+      return await useTool(toolName, args);
+    } catch (error) {
+      console.error('Failed to use MCP tool:', error);
+      return { success: false, error: error.message };
+    }
+  });
+}
 
 module.exports = {
-    registerMCPHandlers,
-}
+  registerMCPHandlers,
+};

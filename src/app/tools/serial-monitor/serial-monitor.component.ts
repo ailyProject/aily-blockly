@@ -558,11 +558,26 @@ export class SerialMonitorComponent {
     this.cd.detectChanges();
   }
 
-  selectBaud(item) {
+  async selectBaud(item) {
     this.cancelUploadReconnect();
-    this.currentBaudRate = item.name;
     this.closeBaudList();
+
+    const nextBaudRate = String(item.name);
+    if (nextBaudRate === this.currentBaudRate) {
+      return;
+    }
+
+    if (this.serialMonitorService.isPortConnected()) {
+      const updated = await this.serialMonitorService.updateBaudRate(Number(item.value ?? item.name));
+      if (!updated) {
+        this.cd.detectChanges();
+        return;
+      }
+    }
+
+    this.currentBaudRate = nextBaudRate;
     this.saveSerialConfig();
+    this.cd.detectChanges();
   }
 
   async switchPort() {
@@ -590,10 +605,6 @@ export class SerialMonitorComponent {
       if (result) {
         this.connectedPort = this.currentPort;
         this.message.success(this.translate.instant('SERIAL.PORT_OPENED'));
-        // 发送DTR信号
-        setTimeout(() => {
-          this.serialMonitorService.sendSignal('DTR');
-        }, 50);
       } else {
         // 连接失败，关闭开关
         this.connectedPort = null;

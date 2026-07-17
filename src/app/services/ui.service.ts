@@ -42,13 +42,6 @@ export class UiService {
   theme = 'dark';
   isMainWindow = false;
 
-  /**
-   * 向 aily-chat 发送消息的 Subject。
-   * 外部组件通过 openAndSendToChat() 触发，
-   * aily-chat 模组内部订阅 chatMessage$ 消费。
-   */
-  private chatMessageSubject = new Subject<{ text: string; options?: Record<string, any> }>();
-  chatMessage$ = this.chatMessageSubject.asObservable();
   private modalService: NzModalService | null = null;
 
 
@@ -59,7 +52,8 @@ export class UiService {
     private authService: AuthService,
     private logService: LogService,
     private configService: ConfigService,
-    private injector: Injector
+    private injector: Injector,
+    private chatService: ChatService,
   ) { }
 
   private get modal(): NzModalService {
@@ -292,34 +286,21 @@ export class UiService {
   /**
    * 打开 aily-chat 面板并发送消息。
    * 标准接口：任何需要「代为向大模型发送消息」的场景，统一调用此方法。
-   * aily-chat 模组内部订阅 chatMessage$ 处理，外部无需导入 aily-chat 的任何服务。
+   * 输入通过 ChatService 的单一路径缓冲，聊天面板挂载后由
+   * ChatExternalInputCoordinator 进入统一提交管线。
    *
    * @param text 要发送的文本内容
    * @param options 发送选项，如 { autoSend: true, cover: true }
    */
   openAndSendToChat(text: string, options?: Record<string, any>): void {
     this.openTool('aily-chat');
-    const deliver = () => {
-      if (ChatService.isReady) {
-        console.info('[AilyChat][ExternalInputDelivery]', {
-          phase: 'deliver',
-          target: 'chat-service',
-          textLength: typeof text === 'string' ? text.length : 0,
-          autoSend: options?.['autoSend'] === true,
-        });
-        ChatService.sendToChat(text, options);
-        return;
-      }
-      console.info('[AilyChat][ExternalInputDelivery]', {
-        phase: 'deliver',
-        target: 'ui-subject',
-        textLength: typeof text === 'string' ? text.length : 0,
-        autoSend: options?.['autoSend'] === true,
-      });
-      this.chatMessageSubject.next({ text, options });
-    };
-    setTimeout(deliver, 0);
-    setTimeout(deliver, 150);
+    console.info('[AilyChat][ExternalInputDelivery]', {
+      phase: 'deliver',
+      target: 'chat-service',
+      textLength: typeof text === 'string' ? text.length : 0,
+      autoSend: options?.['autoSend'] === true,
+    });
+    this.chatService.sendTextToChat(text, options);
   }
 
   openCodeEditorFile(

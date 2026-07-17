@@ -11,6 +11,7 @@ import {
 } from '../../../services/connection-graph.service';
 import { API, getServerUrl } from '../../../configs/api.config';
 import { AilyHost } from '../core/host';
+import { readChatRuntimeWorkspaceEnvironment } from '../core/chat-runtime-workspace-environment';
 import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 
 /**
@@ -31,6 +32,111 @@ export interface ConnectionGraphInvocationContext {
   turnId?: string;
   toolCallId?: string;
   timelineWriter?: EditingTimelineWriter;
+}
+
+function normalizeProjectPath(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/\\/g, '/') : '';
+}
+
+function joinHostPath(...parts: string[]): string {
+  const host = AilyHost.get();
+  const pathApi = host?.path ?? (typeof window !== 'undefined' ? (window as any).path : undefined);
+  if (pathApi && typeof pathApi.join === 'function') {
+    return pathApi.join(...parts);
+  }
+  return parts.join('/').replace(/\/+/g, '/');
+}
+
+function resolveProjectPath(projectService: ProjectService): string | null {
+  const host = AilyHost.get();
+  const runtimeWorkspace = readChatRuntimeWorkspaceEnvironment();
+  const candidates = [
+    runtimeWorkspace.projectPath,
+    runtimeWorkspace.currentSessionPath,
+    runtimeWorkspace.currentProjectPath,
+    projectService.currentProjectPath,
+    projectService.projectRootPath,
+    host.project?.currentProjectPath,
+    host.project?.projectRootPath,
+  ]
+    .map(normalizeProjectPath)
+    .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index);
+
+  for (const candidate of candidates) {
+    try {
+      if (host.fs.existsSync(joinHostPath(candidate, 'package.json'))) {
+        return candidate;
+      }
+    } catch {
+      // Ignore and keep trying.
+    }
+  }
+
+  return null;
+}
+
+function resolvePackagesBasePath(projectService: ProjectService): string | null {
+  const projectPath = resolveProjectPath(projectService);
+  if (!projectPath) {
+    return null;
+  }
+  return joinHostPath(projectPath, 'node_modules');
+}
+
+async function resolveBoardPackagePath(projectService: ProjectService): Promise<string | null> {
+  const projectPath = resolveProjectPath(projectService);
+  if (!projectPath) {
+    return null;
+  }
+
+  const host = AilyHost.get();
+  const packageJsonPath = joinHostPath(projectPath, 'package.json');
+  let packageJson: any = null;
+  try {
+    if (host.fs.existsSync(packageJsonPath)) {
+      packageJson = JSON.parse(host.fs.readFileSync(packageJsonPath, 'utf8'));
+    }
+  } catch {
+    packageJson = null;
+  }
+
+  const dependencyBlocks = [
+    packageJson?.dependencies,
+    packageJson?.boardDependencies,
+  ];
+  for (const block of dependencyBlocks) {
+    if (!block || typeof block !== 'object') {
+      continue;
+    }
+    const boardModule = Object.keys(block).find(dep =>
+      dep.startsWith('@aily-project/board-') || dep.startsWith('@aily-project/coder-'),
+    );
+    if (boardModule) {
+      return joinHostPath(projectPath, 'node_modules', boardModule);
+    }
+  }
+
+  const aciPath = joinHostPath(projectPath, 'project.aci');
+  try {
+    if (host.fs.existsSync(aciPath)) {
+      const aci = JSON.parse(host.fs.readFileSync(aciPath, 'utf8'));
+      const boardPackage = String(aci?.target?.boardPackage ?? '').trim();
+      const board = String(aci?.target?.board ?? '').trim();
+      const boardModule = boardPackage || (board.startsWith('@aily-project/') ? board : '');
+      if (boardModule) {
+        return joinHostPath(projectPath, 'node_modules', boardModule);
+      }
+    }
+  } catch {
+    // Ignore and fall through.
+  }
+
+  try {
+    const legacyPath = await projectService.getBoardPackagePath();
+    return typeof legacyPath === 'string' && legacyPath.trim().length > 0 ? legacyPath.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveTimelineAwareConnectionGraphTextFile(
@@ -148,7 +254,7 @@ export async function generateConnectionGraphTool(
   invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
-    const boardPackagePath = await projectService.getBoardPackagePath();
+    const boardPackagePath = await resolveBoardPackagePath(projectService);
     if (!boardPackagePath) {
       return {
         is_error: true,
@@ -166,9 +272,7 @@ export async function generateConnectionGraphTool(
     }
 
     // 直接使用 currentProjectPath 构建 packagesBasePath（参考 getContextTool.ts）
-    const currentProjectPath = projectService.currentProjectPath;
-    // 使用字符串模板确保类型正确
-    const packagesBasePath = currentProjectPath ? `${currentProjectPath}/node_modules` : null;
+    const packagesBasePath = resolvePackagesBasePath(projectService);
 
     // 与 get_pinmap_summary 一致：加载外设前先尝试从云端同步 pinmap 到本地 pinmaps/
     let cloudPinmapSynced = 0;
@@ -968,7 +1072,8 @@ export async function getPinmapSummaryTool(
   input: { pinmapIds?: string[] }
 ): Promise<ToolUseResult> {
   try {
-    const boardPackagePath = await projectService.getBoardPackagePath();
+    const currentProjectPath = resolveProjectPath(projectService);
+    const boardPackagePath = await resolveBoardPackagePath(projectService);
     if (!boardPackagePath) {
       return {
         is_error: true,
@@ -976,10 +1081,7 @@ export async function getPinmapSummaryTool(
       };
     }
 
-    // 直接使用 currentProjectPath 构建 packagesBasePath（参考 getContextTool.ts）
-    const currentProjectPath = projectService.currentProjectPath;
-    // 使用字符串模板确保类型正确
-    const packagesBasePath = currentProjectPath ? `${currentProjectPath}/node_modules` : null;
+    const packagesBasePath = resolvePackagesBasePath(projectService);
     const pinSummaries: PinSummary[] = [];
     const loadedPinmapIds: string[] = [];
 
@@ -1019,7 +1121,9 @@ export async function getPinmapSummaryTool(
     }
 
     // 同时返回已有的连线数据（如果存在）
-    const existingConnections = connectionGraphService.getConnectionGraph();
+    const existingConnections = currentProjectPath
+      ? connectionGraphService.getConnectionGraph(currentProjectPath)
+      : connectionGraphService.getConnectionGraph();
 
     const result: any = {
       pinSummaries,
@@ -1091,10 +1195,21 @@ export async function getProjectContextTool(
       projectService,
       { includeNeedsGeneration: input.includeNeedsGeneration, includeBoards: true }
     );
+    if (catalogResult.is_error) {
+      return {
+        is_error: true,
+        content: `获取项目上下文失败: ${catalogResult.content}`,
+      };
+    }
     let catalogData: any = {};
     try {
       catalogData = JSON.parse(catalogResult.content);
-    } catch { /* ignore */ }
+    } catch {
+      return {
+        is_error: true,
+        content: '获取项目上下文失败: 组件目录返回了无法解析的内容。',
+      };
+    }
 
     // === 合并结果 ===
     const merged: any = {
@@ -1149,17 +1264,15 @@ export async function getSensorPinmapCatalogTool(
   input: { libraryFilter?: string; includeNeedsGeneration?: boolean; includeBoards?: boolean }
 ): Promise<ToolUseResult> {
   try {
-    // 直接使用 currentProjectPath 构建路径（参考 getContextTool.ts）
-    const currentProjectPath = projectService.currentProjectPath;
-    if (!currentProjectPath || currentProjectPath === projectService.projectRootPath) {
+    const currentProjectPath = resolveProjectPath(projectService);
+    if (!currentProjectPath) {
       return {
         is_error: true,
         content: '当前没有打开的项目。',
       };
     }
 
-    // node_modules 路径作为 packagesBasePath - 使用字符串拼接确保类型正确
-    const packagesBasePath = `${currentProjectPath}/node_modules`;
+    const packagesBasePath = joinHostPath(currentProjectPath, 'node_modules');
     if (!AilyHost.get().fs.existsSync(packagesBasePath)) {
       return {
         is_error: true,
@@ -1186,7 +1299,7 @@ export async function getSensorPinmapCatalogTool(
     // 如果 includeBoards 为 true，获取当前项目的开发板 catalog
     if (input.includeBoards) {
       try {
-        const boardPackagePath = await projectService.getBoardPackagePath();
+        const boardPackagePath = await resolveBoardPackagePath(projectService);
         if (boardPackagePath) {
           // 读取开发板的 pinmap_catalog.json
           const catalog = connectionGraphService.readPinmapCatalog(boardPackagePath);
@@ -1382,30 +1495,30 @@ export async function validateConnectionGraphTool(
   invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
-    const currentProjectPath = projectService.currentProjectPath;
+    const currentProjectPath = resolveProjectPath(projectService);
     if (!currentProjectPath) {
       return { is_error: true, content: '当前没有打开的项目，请先创建或打开一个项目。' };
     }
 
-    const boardPackagePath = await projectService.getBoardPackagePath();
+    const boardPackagePath = await resolveBoardPackagePath(projectService);
     if (!boardPackagePath) {
       return { is_error: true, content: '当前项目没有配置开发板，请先选择开发板。' };
     }
 
     const { parseAWS, hasErrors, formatErrors, AWS_SYNTAX_REFERENCE, CONNECTION_COLORS, resolvePin, inferDataFlow } = await import('../../../services/connection-aws');
 
-    const awsFilePath = connectionGraphService.getAWSFilePath();
-    const jsonFilePath = connectionGraphService.getJSONFilePath();
+    const awsFilePath = connectionGraphService.getAWSFilePath(currentProjectPath);
+    const jsonFilePath = connectionGraphService.getJSONFilePath(currentProjectPath);
 
     // 1. 获取 AWS 内容
     let awsContent: string;
     if (input.aws) {
       awsContent = input.aws;
-    } else if (connectionGraphService.hasAWSFile()) {
-      awsContent = connectionGraphService.readAWSFile();
+    } else if (connectionGraphService.hasAWSFile(currentProjectPath)) {
+      awsContent = connectionGraphService.readAWSFile(currentProjectPath);
     } else {
       // 没有 AWS 输入，尝试验证已保存的 JSON 数据
-      const existingData = connectionGraphService.getConnectionGraph();
+      const existingData = connectionGraphService.getConnectionGraph(currentProjectPath);
       if (!existingData) {
         return {
           is_error: true,
@@ -1454,7 +1567,7 @@ export async function validateConnectionGraphTool(
     }
 
     // 3. 加载组件配置
-    const packagesBasePath = `${currentProjectPath}/node_modules`;
+    const packagesBasePath = joinHostPath(currentProjectPath, 'node_modules');
     const configMap = new Map<string, ComponentConfig>();
     const loadErrors: Array<{ pinmapId: string; error: string; line: number }> = [];
 
@@ -1579,7 +1692,7 @@ export async function validateConnectionGraphTool(
       await saveTimelineAwareConnectionGraphTextFile(
         awsFilePath,
         awsContent,
-        () => connectionGraphService.saveAWSFile(awsContent),
+        () => connectionGraphService.saveAWSFile(awsContent, currentProjectPath),
         invocationContext,
       );
     }
@@ -1587,7 +1700,7 @@ export async function validateConnectionGraphTool(
     await saveTimelineAwareConnectionGraphTextFile(
       jsonFilePath,
       jsonContent,
-      () => connectionGraphService.saveJSONFile(jsonData),
+      () => connectionGraphService.saveJSONFile(jsonData, currentProjectPath),
       invocationContext,
     );
 
@@ -1699,8 +1812,7 @@ export async function generatePinmapTool(
       };
     }
 
-    const currentProjectPath = projectService.currentProjectPath;
-    const packagesBasePath = currentProjectPath ? `${currentProjectPath}/node_modules` : null;
+    const packagesBasePath = resolvePackagesBasePath(projectService);
 
     if (!packagesBasePath) {
       return {
@@ -1839,8 +1951,7 @@ export async function savePinmapTool(
       };
     }
 
-    const currentProjectPath = projectService.currentProjectPath;
-    const packagesBasePath = currentProjectPath ? `${currentProjectPath}/node_modules` : null;
+    const packagesBasePath = resolvePackagesBasePath(projectService);
 
     if (!packagesBasePath) {
       return {
@@ -1917,7 +2028,10 @@ export async function getCurrentSchematicTool(
   input: {}
 ): Promise<ToolUseResult> {
   try {
-    const data = connectionGraphService.getConnectionGraph();
+    const currentProjectPath = resolveProjectPath(projectService);
+    const data = currentProjectPath
+      ? connectionGraphService.getConnectionGraph(currentProjectPath)
+      : connectionGraphService.getConnectionGraph();
 
     if (!data) {
       return {
@@ -1982,7 +2096,7 @@ export async function applySchematicTool(
   invocationContext?: ConnectionGraphInvocationContext,
 ): Promise<ToolUseResult> {
   try {
-    const currentProjectPath = projectService.currentProjectPath;
+    const currentProjectPath = resolveProjectPath(projectService);
     if (!currentProjectPath) {
       return {
         is_error: true,
@@ -1990,7 +2104,7 @@ export async function applySchematicTool(
       };
     }
 
-    const boardPackagePath = await projectService.getBoardPackagePath();
+    const boardPackagePath = await resolveBoardPackagePath(projectService);
     if (!boardPackagePath) {
       return {
         is_error: true,
@@ -2002,8 +2116,8 @@ export async function applySchematicTool(
     const { parseAWS, hasErrors, formatErrors, AWS_SYNTAX_REFERENCE, CONNECTION_COLORS, generateAWS } = await import('../../../services/connection-aws');
 
     let awsContent: string;
-    const awsFilePath = connectionGraphService.getAWSFilePath();
-    const jsonFilePath = connectionGraphService.getJSONFilePath();
+    const awsFilePath = connectionGraphService.getAWSFilePath(currentProjectPath);
+    const jsonFilePath = connectionGraphService.getJSONFilePath(currentProjectPath);
 
     // 1. 获取 AWS 内容
     if (input.aws) {
@@ -2012,12 +2126,12 @@ export async function applySchematicTool(
       await saveTimelineAwareConnectionGraphTextFile(
         awsFilePath,
         awsContent,
-        () => connectionGraphService.saveAWSFile(awsContent),
+        () => connectionGraphService.saveAWSFile(awsContent, currentProjectPath),
         invocationContext,
       );
     } else {
       // 从文件读取
-      if (!connectionGraphService.hasAWSFile()) {
+      if (!connectionGraphService.hasAWSFile(currentProjectPath)) {
         return {
           is_error: true,
           content: JSON.stringify({
@@ -2026,7 +2140,7 @@ export async function applySchematicTool(
           }, null, 2),
         };
       }
-      awsContent = connectionGraphService.readAWSFile();
+      awsContent = connectionGraphService.readAWSFile(currentProjectPath);
     }
 
     // 2. 解析 AWS
@@ -2049,7 +2163,7 @@ export async function applySchematicTool(
     }
 
     // 4. 加载组件配置
-    const packagesBasePath = `${currentProjectPath}/node_modules`;
+    const packagesBasePath = joinHostPath(currentProjectPath, 'node_modules');
     const configMap = new Map<string, ComponentConfig>();
     const loadErrors: Array<{ pinmapId: string; error: string; line: number }> = [];
 
@@ -2253,7 +2367,7 @@ export async function applySchematicTool(
     await saveTimelineAwareConnectionGraphTextFile(
       jsonFilePath,
       jsonContent,
-      () => connectionGraphService.saveJSONFile(jsonData),
+      () => connectionGraphService.saveJSONFile(jsonData, currentProjectPath),
       invocationContext,
     );
 

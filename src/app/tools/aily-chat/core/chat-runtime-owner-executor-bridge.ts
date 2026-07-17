@@ -7,6 +7,7 @@ import type {
   ChatRuntimeOwnerExecutorForkSessionCommand,
   ChatRuntimeOwnerExecutorEvent,
   ChatRuntimeOwnerExecutorPrewarmRuntimeCommand,
+  ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand,
   ChatRuntimeOwnerExecutorRenderEventProgress,
   ChatRuntimeOwnerExecutorResolveInteractionCommand,
   ChatRuntimeOwnerExecutorStartTurnCommand,
@@ -29,6 +30,7 @@ export function normalizeRuntimeOwnerMethod(method: unknown): ChatRuntimeOwnerEx
   switch (method) {
     case 'startTurn':
     case 'prewarmRuntime':
+    case 'restoreRuntimeSession':
     case 'forkSession':
     case 'stopTurn':
     case 'disposeSessionResources':
@@ -46,6 +48,8 @@ export function trackRuntimeOwnerCommand(
 ): void {
   switch (method) {
     case 'prewarmRuntime':
+      return;
+    case 'restoreRuntimeSession':
       return;
     case 'forkSession':
       return;
@@ -193,6 +197,13 @@ export function callRuntimeOwnerMethod(
         agentRuntimeMode: command?.agentRuntimeMode ?? null,
         currentModel: command?.currentModel ?? null,
       });
+    }
+    case 'restoreRuntimeSession': {
+      const command = args[0] as ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand;
+      if (!command?.snapshot || typeof command.snapshot !== 'object') {
+        throw new Error('[AilyChat][RuntimeHost] restoreRuntimeSession requires a session snapshot.');
+      }
+      return runtimeOwner.restoreRuntimeSession(command);
     }
     case 'forkSession': {
       const command = args[0] as ChatRuntimeOwnerExecutorForkSessionCommand;

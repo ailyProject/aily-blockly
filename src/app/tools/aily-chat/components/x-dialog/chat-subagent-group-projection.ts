@@ -533,6 +533,7 @@ export function buildActivityPartRevision(part: ChatPart, index: number): string
         part.sourceAgentRole ?? '',
         part.subAgentInvocationId ?? '',
         part.parentToolCallId ?? '',
+        stableRevisionJson(part.metadata?.['toolSpecificData'] ?? null),
       ].join(':');
     case 'confirmation':
       return [

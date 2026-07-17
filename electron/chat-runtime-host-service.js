@@ -40,6 +40,8 @@ const ALLOWED_METHODS = new Set([
   'attachView',
   'detachView',
   'prewarmRuntime',
+  'restoreRuntimeSession',
+  'readSessionExecutionState',
   'submitTurn',
   'readSubmitReadiness',
   'ensureSessionCanRerun',
@@ -236,6 +238,10 @@ function isCheckpointOwnedTurn(turn) {
   ].some(key => metadata[key] !== undefined && metadata[key] !== null);
 }
 
+function normalizeTurnId(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
 function hasCheckpointOwnedTurn(turns) {
   return (Array.isArray(turns) ? turns : []).some(isCheckpointOwnedTurn);
 }
@@ -342,6 +348,12 @@ class ChatRuntimeHostProcessService {
     }
     if (method === 'prewarmRuntime') {
       return this.handlePrewarmRuntime(args);
+    }
+    if (method === 'restoreRuntimeSession') {
+      return this.handleRestoreRuntimeSession(args);
+    }
+    if (method === 'readSessionExecutionState') {
+      return this.handleReadSessionExecutionState(args);
     }
     if (method === 'stopTurn') {
       return this.handleStopTurn(args);
@@ -561,6 +573,64 @@ class ChatRuntimeHostProcessService {
       await this.failSubmittedTurnWithError(runningState.sessionId, error);
     }
     return this.hostSessionStore.buildSessionState(runningState.sessionId);
+  }
+
+  async handleRestoreRuntimeSession(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    if (!sessionId || !request.snapshot || request.snapshot.sessionId !== sessionId
+      || !Array.isArray(request.snapshot.turns)) {
+      throw new Error('[AilyChat][RuntimeHost] restoreRuntimeSession requires a matching session snapshot.');
+    }
+    if (!Array.isArray(request.turnResponses)) {
+      throw new Error('[AilyChat][RuntimeHost] restoreRuntimeSession requires the canonical turn response list.');
+    }
+    const snapshotTurnIds = request.snapshot.turns.map(turn => normalizeTurnId(turn && turn.id));
+    const responseTurnIds = request.turnResponses.map(turn => normalizeTurnId(turn && turn.turnId));
+    if (snapshotTurnIds.length !== responseTurnIds.length
+      || snapshotTurnIds.some((turnId, index) => !turnId || turnId !== responseTurnIds[index])) {
+      throw new Error('[AilyChat][RuntimeHost] Runtime snapshot and canonical turn response list do not match.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] No registered host runtime owner.');
+    }
+    const { turnResponses, ...runtimeRequest } = request;
+    const result = await this.runtimeOwnerController.dispatchCommand('restoreRuntimeSession', [{
+      ...runtimeRequest,
+      sessionId,
+    }]);
+    if (!result || result.sessionId !== sessionId || Number(result.turnCount) !== responseTurnIds.length) {
+      throw new Error('[AilyChat][RuntimeHost] Execution owner restored an invalid request list.');
+    }
+    const transcript = this.hostSessionStore.restoreCanonicalTranscript(sessionId, turnResponses);
+    return {
+      ...result,
+      transcriptRevision: Number(transcript && transcript.revision) || 0,
+    };
+  }
+
+  async handleReadSessionExecutionState(args) {
+    const sessionId = normalizeSessionId(args && args[0]);
+    if (!sessionId) {
+      throw new Error('[AilyChat][RuntimeHost] readSessionExecutionState requires a session id.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      return {
+        sessionId,
+        exists: false,
+        requestInProgress: false,
+        activeTurnId: null,
+      };
+    }
+    const state = await this.runtimeOwnerController.dispatchCommand('readSessionExecutionState', [{ sessionId }]);
+    return state && typeof state === 'object'
+      ? state
+      : {
+          sessionId,
+          exists: false,
+          requestInProgress: false,
+          activeTurnId: null,
+        };
   }
 
   async handleReadSubmitReadiness(args) {

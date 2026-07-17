@@ -19,6 +19,7 @@ import type {
   ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand,
   ChatRuntimeOwnerExecutorEvent,
   ChatRuntimeOwnerExecutorPrewarmRuntimeCommand,
+  ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand,
   ChatRuntimeOwnerExecutorResolveInteractionCommand,
   ChatRuntimeOwnerExecutorRenderEventProgress,
   ChatRuntimeOwnerExecutorStartTurnCommand,
@@ -27,6 +28,7 @@ import type {
   ChatRuntimeHostEventSubscription,
   ChatRuntimeHostInteractionSnapshot,
   ChatRuntimeHostPrewarmResult,
+  ChatRuntimeOwnerExecutorRestoreRuntimeSessionResult,
   ChatRuntimeHostSessionId,
   ChatRuntimeHostSessionState,
   ChatRuntimeHostSubmitRequest,
@@ -192,6 +194,25 @@ export class ChatRuntimeOwnerService implements ChatRuntimeOwnerExecutor, ChatRu
     );
     const ensured = await owner.agent.ensureAgent(sessionId, providerOptionsKey, { activate: false });
     return { sessionId, ensured: !!ensured };
+  }
+
+  async restoreRuntimeSession(
+    command: ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand,
+  ): Promise<ChatRuntimeOwnerExecutorRestoreRuntimeSessionResult> {
+    const sessionId = this.normalizeSessionId(command?.sessionId);
+    if (!sessionId || command?.snapshot?.sessionId !== sessionId) {
+      throw new Error('[AilyChat][RuntimeOwner] restoreRuntimeSession requires a matching session snapshot.');
+    }
+    await this.prewarmRuntime(command);
+    const owner = this.readOwner();
+    if (!owner.session.restoreResolvedSnapshot(command.snapshot, sessionId)) {
+      throw new Error(`[AilyChat][RuntimeOwner] Unable to restore runtime session ${sessionId}.`);
+    }
+    return {
+      sessionId,
+      restored: true,
+      turnCount: command.snapshot.turns.length,
+    };
   }
 
   async startTurn(command: ChatRuntimeOwnerExecutorStartTurnCommand): Promise<ChatRuntimeHostSessionState> {

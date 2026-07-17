@@ -6,7 +6,6 @@ import {
   type BlocklyContextSnapshot,
   type BlocklyContextSummaryOptions,
 } from './blockly-environment-context';
-import { getProjectContextTool } from '../tools/connectionGraphTool';
 
 interface BlocklyContextResolveOptions {
   scopes?: readonly string[];
@@ -29,19 +28,7 @@ export interface BlocklyContextSnapshotService {
 let contextSnapshotVersion = 1;
 let lastInvalidatedReason: string | undefined;
 
-function tryParseJson(content: string | undefined): any | undefined {
-  if (!content) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(content);
-  } catch {
-    return undefined;
-  }
-}
-
-function getVariantStatusCounts(contextData: any): { available: number; pending: number } {
+function getVariantStatusCounts(catalogLike: any): { available: number; pending: number } {
   let available = 0;
   let pending = 0;
 
@@ -65,74 +52,180 @@ function getVariantStatusCounts(contextData: any): { available: number; pending:
     }
   };
 
-  countVariants(contextData?.currentBoard);
-  if (Array.isArray(contextData?.catalogs)) {
-    for (const catalog of contextData.catalogs) {
-      countVariants(catalog);
-    }
-  }
+  countVariants(catalogLike);
 
   return { available, pending };
 }
 
-async function getSchematicOverlaySummaryLines(host: any): Promise<readonly string[]> {
+function normalizePath(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/\\/g, '/') : '';
+}
+
+function joinHostPath(host: any, ...parts: string[]): string {
+  const pathApi = host?.path ?? (typeof window !== 'undefined' ? (window as any).path : undefined);
+  if (pathApi && typeof pathApi.join === 'function') {
+    return pathApi.join(...parts);
+  }
+  return parts.join('/').replace(/\/+/g, '/');
+}
+
+function resolveSchematicProjectPath(host: any, snapshot: BlocklyContextSnapshot): string {
+  const fs = host?.fs;
+  const candidates = [
+    snapshot.projectInfo?.projectPath,
+    host?.project?.currentProjectPath,
+    host?.project?.projectRootPath,
+  ]
+    .map(normalizePath)
+    .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index);
+
+  if (!fs?.existsSync) {
+    return candidates[0] ?? '';
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(joinHostPath(host, candidate, 'package.json'))) {
+        return candidate;
+      }
+    } catch {
+      // Keep trying the next candidate.
+    }
+  }
+
+  return candidates[0] ?? '';
+}
+
+function formatCatalogVariantSuffix(catalog: any): string {
+  const counts = getVariantStatusCounts(catalog);
+  const total = counts.available + counts.pending;
+  return total > 0 ? `(${total} variants)` : '';
+}
+
+async function getSchematicOverlaySummaryLines(host: any, snapshot: BlocklyContextSnapshot): Promise<readonly string[]> {
   const lines: string[] = [];
   const connectionGraph = host.connectionGraph;
   const project = host.project;
+  const fs = host?.fs;
 
   if (!connectionGraph || !project) {
     return lines;
   }
 
   try {
-    const projectContext = await getProjectContextTool(connectionGraph, project, { includeNeedsGeneration: true });
-    if (!projectContext.is_error) {
-      const contextData = tryParseJson(projectContext.content);
-      const board = contextData?.currentBoard;
-      if (board) {
-        const boardLabel = board.displayName || board.packageSlug || project.currentBoard || 'current board';
-        const boardStatus = board.catalogStatus || 'unknown';
-        const boardPinmapId = board.pinmapId ? `, ${board.pinmapId}` : '';
-        lines.push(`Schematic board pinmap: ${boardLabel} (${boardStatus}${boardPinmapId})`);
+    const projectPath = resolveSchematicProjectPath(host, snapshot);
+    if (projectPath && fs?.existsSync?.(joinHostPath(host, projectPath, 'node_modules'))) {
+      const packagesBasePath = joinHostPath(host, projectPath, 'node_modules');
+      const allLibraries = typeof connectionGraph.scanAllLibraries === 'function'
+        ? connectionGraph.scanAllLibraries(packagesBasePath)
+        : [];
+
+      const hardwareCatalogLibraries: any[] = [];
+      const softwareCatalogLibraries: any[] = [];
+      const missingCatalogLibraries: any[] = [];
+      let availableVariants = 0;
+      let pendingVariants = 0;
+
+      try {
+        const boardPackagePath = typeof project.getBoardPackagePath === 'function'
+          ? await project.getBoardPackagePath()
+          : '';
+        const boardPackageSlug = normalizePath(boardPackagePath).split('/').pop() || normalizePath(project.currentBoard) || 'current board';
+        let boardLabel = normalizePath(project.currentBoard) || boardPackageSlug || 'current board';
+        let boardStatus = 'missing';
+
+        if (boardPackagePath) {
+          const boardCatalog = typeof connectionGraph.readPinmapCatalog === 'function'
+            ? connectionGraph.readPinmapCatalog(boardPackagePath)
+            : null;
+          if (boardCatalog) {
+            boardLabel = boardCatalog.displayName || boardPackageSlug || boardLabel;
+            boardStatus = 'available';
+            const counts = getVariantStatusCounts(boardCatalog);
+            availableVariants += counts.available;
+            pendingVariants += counts.pending;
+          } else {
+            const boardConfig = typeof connectionGraph.getBoardConfig === 'function'
+              ? connectionGraph.getBoardConfig(boardPackagePath)
+              : null;
+            if (boardConfig) {
+              boardLabel = boardConfig.name || boardPackageSlug || boardLabel;
+              boardStatus = 'legacy_pinmap';
+            }
+          }
+        }
+
+        lines.push(`Schematic board pinmap: ${boardLabel} (${boardStatus})`);
+      } catch {
+        // Best-effort overlay only.
       }
 
-      const hardwareCatalogCount = Array.isArray(contextData?.catalogs)
-        ? contextData.catalogs.length
-        : (typeof contextData?.catalogCount === 'number' ? contextData.catalogCount : 0);
-      const softwareLibraryCount = Array.isArray(contextData?.softwareLibraries)
-        ? contextData.softwareLibraries.length
-        : 0;
-      if (hardwareCatalogCount > 0 || softwareLibraryCount > 0) {
-        lines.push(`Schematic catalogs: ${hardwareCatalogCount} hardware catalog(s), ${softwareLibraryCount} software library card(s)`);
+      for (const library of allLibraries) {
+        if (library?.hasPinmapCatalog && library.catalog) {
+          if (library.catalog.type === 'software') {
+            softwareCatalogLibraries.push(library);
+            continue;
+          }
+
+          hardwareCatalogLibraries.push(library);
+          const counts = getVariantStatusCounts(library.catalog);
+          availableVariants += counts.available;
+          pendingVariants += counts.pending;
+          continue;
+        }
+
+        missingCatalogLibraries.push(library);
       }
 
-      const variantStatusCounts = getVariantStatusCounts(contextData);
-      if (variantStatusCounts.available > 0 || variantStatusCounts.pending > 0) {
+      if (hardwareCatalogLibraries.length > 0 || softwareCatalogLibraries.length > 0 || missingCatalogLibraries.length > 0) {
         lines.push(
-          `Schematic pinmap variants: ${variantStatusCounts.available} available, ${variantStatusCounts.pending} pending generation/config`,
+          `Pinmap catalog inventory: ${hardwareCatalogLibraries.length} hardware catalog(s), `
+          + `${softwareCatalogLibraries.length} software card(s), `
+          + `${missingCatalogLibraries.length} missing catalog(s)`,
         );
       }
 
-      const missingCatalogLibraries = Array.isArray(contextData?.librariesMissingCatalog)
-        ? contextData.librariesMissingCatalog
-            .map((entry: any) => entry?.packageSlug || entry?.displayName)
-            .filter((value: unknown): value is string => typeof value === 'string' && value.length > 0)
-        : [];
+      const catalogEntries = [
+        ...hardwareCatalogLibraries.map(library => `${library.packageSlug}=available${formatCatalogVariantSuffix(library.catalog)}`),
+        ...softwareCatalogLibraries.map(library => `${library.packageSlug}=software`),
+        ...missingCatalogLibraries.map(library => `${library.packageSlug}=missing_catalog`),
+      ];
+      if (catalogEntries.length > 0) {
+        const displayed = catalogEntries.slice(0, 10);
+        const remaining = catalogEntries.length - displayed.length;
+        lines.push(
+          `Library pinmap catalogs (${displayed.length}/${catalogEntries.length} shown): ${displayed.join('; ')}`
+          + (remaining > 0 ? ` ... (+${remaining} more)` : ''),
+        );
+      }
+
+      if (availableVariants > 0 || pendingVariants > 0) {
+        lines.push(`Schematic pinmap variants: ${availableVariants} available, ${pendingVariants} pending generation/config`);
+      }
+
       if (missingCatalogLibraries.length > 0) {
-        const displayed = missingCatalogLibraries.slice(0, 5);
+        const displayed = missingCatalogLibraries
+          .map(library => library.packageSlug || library.displayName)
+          .filter((value: unknown): value is string => typeof value === 'string' && value.length > 0)
+          .slice(0, 5);
         const remaining = missingCatalogLibraries.length - displayed.length;
         lines.push(
           `Schematic missing pinmap catalogs (${missingCatalogLibraries.length}): ${displayed.join(', ')}`
           + (remaining > 0 ? ` ... (+${remaining} more)` : ''),
         );
       }
-
-      if (typeof contextData?.cppCode === 'string' && contextData.cppCode.trim().length > 0) {
-        lines.push('Schematic generated C++ is available for hardware inference.');
-      }
     }
   } catch {
     // Best-effort overlay only; keep shared context available even if schematic extras fail.
+  }
+
+  try {
+    const generatedCode = host.editor?.getGeneratedCode?.();
+    if (typeof generatedCode === 'string' && generatedCode.trim().length > 0) {
+      lines.push('Schematic generated C++ is available for hardware inference.');
+    }
+  } catch {
+    // Best-effort overlay only.
   }
 
   try {
@@ -189,9 +282,17 @@ export function createBlocklyContextSnapshotService(
 
   async getSummary(options?: BlocklyContextSummaryRequest): Promise<readonly string[]> {
     const snapshot = await this.getSnapshot(options);
-    const lines = [...this.summarize(snapshot, options?.summaryOptions)];
-    if (isSchematicAgentIdentifier(options?.agentType)) {
-      lines.push(...await getSchematicOverlaySummaryLines(resolveHost()));
+    const shouldUseSchematicSummary = isSchematicAgentIdentifier(options?.agentType);
+    const summaryOptions = shouldUseSchematicSummary
+      ? {
+          ...options?.summaryOptions,
+          includeReadmeReferences: false,
+          includeLibrariesWithoutReadme: false,
+        }
+      : options?.summaryOptions;
+    const lines = [...this.summarize(snapshot, summaryOptions)];
+    if (shouldUseSchematicSummary) {
+      lines.push(...await getSchematicOverlaySummaryLines(resolveHost(), snapshot));
     }
     return lines;
   },

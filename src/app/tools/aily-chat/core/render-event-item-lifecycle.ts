@@ -167,6 +167,12 @@ interface ActiveTextItem {
   readonly itemKind: 'markdown' | 'thinking';
 }
 
+interface ActiveTodoToolItem {
+  readonly itemId: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+}
+
 interface ProposedPlanParserState {
   readonly parser: ProposedPlanParser;
   readonly scope?: CanonicalRenderItemScope;
@@ -196,7 +202,7 @@ export class RenderEventItemLifecycleNormalizer {
   private readonly completedItems = new Set<string>();
   private readonly payloadRefs = new Map<string, string>();
   private readonly proposedPlanParsers = new Map<string, ProposedPlanParserState>();
-  private activeTodoToolItemId: string | null = null;
+  private activeTodoToolItem: ActiveTodoToolItem | null = null;
 
   process(event: RenderEvent): CanonicalRenderLifecycleEvent[] {
     const output: CanonicalRenderLifecycleEvent[] = [];
@@ -253,7 +259,11 @@ export class RenderEventItemLifecycleNormalizer {
         output.push(...this.ensureItem(itemId, 'tool', event, timestamp));
         output.push(this.deltaFor(itemId, 'tool', timestamp, 'update', event.type, undefined, toolBeginPayload(event)));
         if (isTodoToolName(event.toolName)) {
-          this.activeTodoToolItemId = itemId;
+          this.activeTodoToolItem = {
+            itemId,
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+          };
         }
         return output;
       }
@@ -288,8 +298,8 @@ export class RenderEventItemLifecycleNormalizer {
         output.push(...this.ensureItem(itemId, 'tool', event, timestamp));
         output.push(this.deltaFor(itemId, 'tool', timestamp, 'update', event.type, event.resultText, toolEndPayload(event)));
         output.push(this.completeItem(itemId, 'tool', timestamp, event.state === 'error' ? 'failed' : 'completed', event.type));
-        if (this.activeTodoToolItemId === itemId) {
-          this.activeTodoToolItemId = null;
+        if (this.activeTodoToolItem?.itemId === itemId) {
+          this.activeTodoToolItem = null;
         }
         return output;
       }
@@ -325,11 +335,20 @@ export class RenderEventItemLifecycleNormalizer {
         return output;
 
       case 'todo_update':
-        if (this.activeTodoToolItemId) {
-          output.push(this.completeItem(this.activeTodoToolItemId, 'tool', timestamp, 'completed', event.type));
-          this.activeTodoToolItemId = null;
+        if (this.activeTodoToolItem) {
+          const activeTodoToolItem = this.activeTodoToolItem;
+          output.push(this.deltaFor(
+            activeTodoToolItem.itemId,
+            'tool',
+            timestamp,
+            'update',
+            event.type,
+            event.summary,
+            todoToolPayload(event, activeTodoToolItem),
+          ));
+          output.push(this.completeItem(activeTodoToolItem.itemId, 'tool', timestamp, 'completed', event.type));
+          this.activeTodoToolItem = null;
         }
-        output.push(...this.upsertStateItem(`todo:${event.sessionId}`, 'state', event, timestamp, 'completed', event.summary, todoStatePayload(event)));
         return output;
 
       case 'question_request':
@@ -477,7 +496,7 @@ export class RenderEventItemLifecycleNormalizer {
     this.completedItems.clear();
     this.payloadRefs.clear();
     this.proposedPlanParsers.clear();
-    this.activeTodoToolItemId = null;
+    this.activeTodoToolItem = null;
   }
 
   finalizeActiveTurn(
@@ -1078,17 +1097,37 @@ function backgroundStatePayload(event: Extract<RenderEvent, { type: 'background_
   };
 }
 
-function todoStatePayload(event: Extract<RenderEvent, { type: 'todo_update' }>): CanonicalRenderItemStructuredPayload {
+function todoToolPayload(
+  event: Extract<RenderEvent, { type: 'todo_update' }>,
+  activeTodoToolItem: ActiveTodoToolItem,
+): CanonicalRenderItemStructuredPayload {
+  const todoList = Array.isArray(event.items)
+    ? event.items.map((item, index) => {
+        const value = item as { readonly id?: unknown; readonly title?: unknown; readonly content?: unknown; readonly status?: unknown };
+        return {
+          id: String(value.id ?? index + 1),
+          title: typeof value.title === 'string' && value.title.trim().length > 0
+            ? value.title
+            : typeof value.content === 'string' && value.content.trim().length > 0
+              ? value.content
+              : `Todo ${index + 1}`,
+          status: typeof value.status === 'string' && value.status.trim().length > 0
+            ? value.status
+            : 'not-started',
+        };
+      })
+    : [];
   return {
-    type: 'state',
-    stateId: `todo-${event.sessionId}`,
+    type: 'tool',
+    toolCallId: activeTodoToolItem.toolCallId,
+    toolName: activeTodoToolItem.toolName,
     text: event.summary,
-    state: Array.isArray(event.items) && event.items.length > 0 ? 'done' : 'info',
-    kind: 'todo',
+    state: 'done',
     metadata: boundedRecord({
-      sessionId: event.sessionId,
-      summary: event.summary,
-      itemCount: Array.isArray(event.items) ? event.items.length : undefined,
+      toolSpecificData: {
+        kind: 'todoList',
+        todoList,
+      },
     }),
   };
 }

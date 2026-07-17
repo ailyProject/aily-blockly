@@ -265,7 +265,10 @@ export interface ChatRuntimeOwnerSessionModelPort {
 export type ChatRuntimeOwnerSchedulerPort = ChatRuntimeOwnerScheduler;
 
 export interface ChatRuntimeOwnerTurnStartupEditLifecyclePort {
-  ensureAbsExport(sessionId: string | null | undefined): void;
+  ensureAbsExport(
+    sessionId: string | null | undefined,
+    runtimeMode: ChatAgentRuntimeMode | null | undefined,
+  ): Promise<void>;
   saveCheckpointToDisk(sessionId: string | null | undefined): void;
   commitCurrentTurn(sessionId: string | null | undefined): Promise<void>;
   waitForCheckpointMetadataSettled(sessionId: string | null | undefined): Promise<void>;
@@ -276,7 +279,7 @@ export interface ChatRuntimeOwnerTurnStartupEditLifecyclePort {
 }
 
 export interface ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort {
-  ensureSessionStartAbsExport(sessionId: string | null | undefined, projectPath: string | null | undefined): void;
+  ensureWorkspaceAbsExport(sessionId: string | null | undefined, projectPath: string | null | undefined): Promise<void>;
   commitCurrentTurn(sessionId: string | null | undefined): Promise<void>;
   waitForCheckpointMetadataSettled(sessionId: string | null | undefined): Promise<void>;
   readFinalizedCheckpointMetadata(

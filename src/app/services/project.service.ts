@@ -307,6 +307,84 @@ export class ProjectService {
     this.projectRootPath = rawAilyProjectPath.replace('%HOMEPATH%\\Documents\\', window['path'].getUserDocuments() + this.platformService.getPlatformSeparator());
   }
 
+  async getDefaultProjectParentPath(): Promise<string> {
+    const separator = this.platformService.getPlatformSeparator();
+    await this.ensureProjectRootPath();
+    const configuredPath = String(this.projectRootPath || '').trim();
+    if (configuredPath) {
+      return configuredPath.endsWith(separator) ? configuredPath : configuredPath + separator;
+    }
+    if (this.electronService.isElectron && window['path']?.getUserDocuments) {
+      return window['path'].getUserDocuments() + `${separator}aily-project${separator}`;
+    }
+    return `.${separator}`;
+  }
+
+  async createDefaultNewProjectData(
+    board: NewProjectData['board'],
+    options: { name?: string; path?: string; prefix?: string; devmode?: string } = {}
+  ): Promise<NewProjectData> {
+    const path = String(options.path || '').trim() || await this.getDefaultProjectParentPath();
+    const prefix = options.prefix || 'project_';
+    const requestedName = String(options.name || '').trim();
+    return {
+      name: requestedName || this.generateUniqueProjectName(path, prefix),
+      path,
+      board,
+      devmode: options.devmode,
+    };
+  }
+
+  private normalizeAilyBoardPackageName(boardName: string): string {
+    const normalized = String(boardName || '').trim();
+    if (!normalized) {
+      return normalized;
+    }
+    if (normalized.startsWith('@aily-project/')) {
+      return normalized;
+    }
+    if (normalized.startsWith('board-')) {
+      return `@aily-project/${normalized}`;
+    }
+    return `@aily-project/board-${normalized}`;
+  }
+
+  private buildNpmPackageSpec(packageName: string, version?: string): string {
+    const normalizedName = String(packageName || '').trim();
+    const normalizedVersion = String(version || '').trim();
+    if (!normalizedVersion || /@[^/]+$/.test(normalizedName)) {
+      return normalizedName;
+    }
+    return `${normalizedName}@${normalizedVersion}`;
+  }
+
+  private async buildNpmInstallCommand(
+    packageSpec: string,
+    options: string | { prefixPath?: string; noSave?: boolean } = {}
+  ): Promise<string> {
+    const installOptions = typeof options === 'string' ? { prefixPath: options } : options;
+    const args = [`npm install ${packageSpec}`];
+    if (installOptions.prefixPath) {
+      args.push(`--prefix "${installOptions.prefixPath}"`);
+    }
+    if (installOptions.noSave) {
+      args.push('--no-save');
+    }
+    const userConfig = this.electronService.isElectron && window['env']?.get
+      ? String(await window['env'].get('NPM_CONFIG_USERCONFIG') || '').trim()
+      : '';
+    const registry = this.electronService.isElectron && window['env']?.get
+      ? String(await window['env'].get('AILY_NPM_REGISTRY') || '').trim()
+      : '';
+    if (userConfig) {
+      args.push(`--userconfig "${userConfig}"`);
+    }
+    if (registry) {
+      args.push(`--@aily-project:registry="${registry}"`);
+    }
+    return args.join(' ');
+  }
+
   // 检测字符串是否包含中文字符
   containsChineseCharacters(str: string): boolean {
     const chineseRegex = /[\u4e00-\u9fa5]/;
@@ -377,17 +455,19 @@ export class ProjectService {
       // console.log('newProjectData: ', newProjectData);
       const appDataPath = window['path'].getAppDataPath();
       const projectPath = this.buildProjectPath(newProjectData);
-      const boardPackage = newProjectData.board.name + '@' + newProjectData.board.version;
+      const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
+      const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
+      const installCommand = await this.buildNpmInstallCommand(boardPackage, appDataPath);
 
       this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
       const npmInstallResult = await this.appDataResourceLock.runExclusive(`project:new:install-board:${boardPackage}`, () =>
-        this.cmdService.runAsync(`npm install ${boardPackage} --prefix "${appDataPath}"`)
+        this.cmdService.runAsync(installCommand)
       );
       if (npmInstallResult.code !== 0) {
         throw new Error(npmInstallResult.stderr || npmInstallResult.stdout || `npm install failed with exit code ${npmInstallResult.code}`);
       }
       // const templatePath = `${appDataPath}${separator}node_modules${separator}${newProjectData.board.name}${separator}template`;
-      const templatePath = window['path'].join(appDataPath, 'node_modules', newProjectData.board.name, 'template');
+      const templatePath = window['path'].join(appDataPath, 'node_modules', boardPackageName, 'template');
       if (!window['fs'].existsSync(templatePath)) {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
       }
@@ -2267,20 +2347,28 @@ export class ProjectService {
       this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 5000 });
 
       // 记录开发板使用次数
-      this.configService.recordBoardUsage(boardInfo.name);
+      const normalizedBoardInfo = {
+        ...boardInfo,
+        name: this.normalizeAilyBoardPackageName(boardInfo.name),
+      };
+      this.configService.recordBoardUsage(normalizedBoardInfo.name);
       const currentBoardModule = await this.getBoardModule();
 
       // 1. npm install 安装boardInfo.name@boardInfo.version 到 appDataPath（与 projectNew 一致）
       const appDataPath = window['path'].getAppDataPath();
-      const newBoardPackage = `${boardInfo.name}@${boardInfo.version}`;
+      const newBoardPackage = this.buildNpmPackageSpec(normalizedBoardInfo.name, normalizedBoardInfo.version);
       console.log('安装新开发板模块:', newBoardPackage);
       this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.INSTALLING_NEW_BOARD') });
+      const appDataInstallCommand = await this.buildNpmInstallCommand(newBoardPackage, appDataPath);
       await this.appDataResourceLock.runExclusive(`project:switch-board:install-appdata:${newBoardPackage}`, () =>
-        this.cmdService.runAsyncChecked(`npm install ${newBoardPackage} --prefix "${appDataPath}"`)
+        this.cmdService.runAsyncChecked(appDataInstallCommand)
       );
 
       // 2. 预安装到当前项目的 node_modules，但不写 package.json；最终 package.json 变更交给 watcher 处理。
-      await this.cmdService.runAsyncChecked(`npm install ${newBoardPackage} --no-save`, this.currentProjectPath);
+      await this.cmdService.runAsyncChecked(
+        await this.buildNpmInstallCommand(newBoardPackage, { noSave: true }),
+        this.currentProjectPath,
+      );
 
       // 3. 获取新开发板的模板并更新package.json
       console.log('更新项目配置文件...');
@@ -2290,7 +2378,7 @@ export class ProjectService {
       const currentPackageJson = await this.getPackageJson();
 
       // 获取新开发板的模板package.json（从 appDataPath 读取）
-      const templatePath = `${appDataPath}${separator}node_modules${separator}${boardInfo.name}${separator}template`;
+      const templatePath = window['path'].join(appDataPath, 'node_modules', normalizedBoardInfo.name, 'template');
       const templatePackageJsonPath = `${templatePath}${separator}package.json`;
 
       if (window['fs'].existsSync(templatePackageJsonPath)) {
@@ -2314,7 +2402,7 @@ export class ProjectService {
 
         if (isAilyCode) {
           // 与新建 Coder 工程一致：不合并模板 dependencies 中的 lib-core-*，仅主板 + 用户自装库
-          this.applyAilyCodeBoardToPackageManifest(newPackageJson, boardInfo, currentPackageJson);
+          this.applyAilyCodeBoardToPackageManifest(newPackageJson, normalizedBoardInfo, currentPackageJson);
           if (selectedFramework) {
             newPackageJson['devmode'] = selectedFramework;
           }
@@ -2337,11 +2425,11 @@ export class ProjectService {
         console.log('package.json 更新完成');
 
         if (this.isAilyCodeProject()) {
-          this.syncAilyCodeProjectAciAfterBoardSwitch(newPackageJson, boardInfo);
+          this.syncAilyCodeProjectAciAfterBoardSwitch(newPackageJson, normalizedBoardInfo);
         }
 
         if (!shouldUsePackageJsonWatcher) {
-          await this.finishBoardSwitchWithoutPackageWatcher(currentBoardModule, boardInfo.name);
+          await this.finishBoardSwitchWithoutPackageWatcher(currentBoardModule, normalizedBoardInfo.name);
         }
       } else {
         throw new Error('未找到新开发板的模板package.json，无法更新项目配置');

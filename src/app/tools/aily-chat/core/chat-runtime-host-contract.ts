@@ -1,4 +1,4 @@
-import type { RenderEvent, TurnResponsePart, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
+import type { RenderEvent, SessionSnapshot, TurnResponsePart, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
 
 import type {
   ChatAgentRuntimeMode,
@@ -235,6 +235,35 @@ export interface ChatRuntimeHostPrewarmResult {
   readonly ensured: boolean;
 }
 
+export interface ChatRuntimeHostRestoreRuntimeSessionRequest extends ChatRuntimeHostPrewarmRequest {
+  readonly snapshot: SessionSnapshot;
+  /**
+   * The complete host-owned request list represented by `snapshot`.
+   *
+   * Restoring only the execution snapshot leaves the Electron response model
+   * empty, so the next submitted request would incorrectly become the whole
+   * transcript. Keep the host ChatModel analogue and the worker request list
+   * on the same atomic restore boundary.
+   */
+  readonly turnResponses: readonly TurnResponseTurn[];
+}
+
+export interface ChatRuntimeHostRestoreRuntimeSessionResult {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly restored: boolean;
+  readonly turnCount: number;
+  readonly transcriptRevision: number;
+}
+
+export interface ChatRuntimeHostSessionExecutionState {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly exists: boolean;
+  readonly requestInProgress: boolean;
+  readonly activeTurnId: string | null;
+  readonly responseCompleted?: boolean;
+  readonly revision?: number;
+}
+
 export interface ChatRuntimeHostInteractionSnapshot {
   readonly sessionId: ChatRuntimeHostSessionId;
   readonly revision: number;
@@ -374,7 +403,7 @@ export interface ChatRuntimeHostViewRequestEvent extends ChatRuntimeHostEventBas
 }
 
 export type ChatRuntimeHostResourceRequestKind =
-  | 'abs-session-start-export'
+  | 'abs-workspace-export'
   | 'checkpoint-commit'
   | 'checkpoint-settle'
   | 'file-read'
@@ -420,10 +449,10 @@ export interface ChatRuntimeHostResourceRequestEvent extends ChatRuntimeHostEven
   readonly request: ChatRuntimeHostResourceRequest;
 }
 
-export interface ChatRuntimeHostAbsSessionStartExportPayload {
+export interface ChatRuntimeHostAbsWorkspaceExportPayload {
   readonly adapter: 'absAutoSync';
-  readonly action: 'scheduleSessionStartExport';
-  readonly projectPath?: string;
+  readonly action: 'ensureWorkspaceExport';
+  readonly projectPath: string;
 }
 
 export interface ChatRuntimeHostEditCheckpointCommitPayload {
@@ -649,7 +678,7 @@ export interface ChatRuntimeHostToolApprovalPayload {
 }
 
 export type ChatRuntimeHostResourceOperationPayload =
-  | ChatRuntimeHostAbsSessionStartExportPayload
+  | ChatRuntimeHostAbsWorkspaceExportPayload
   | ChatRuntimeHostEditCheckpointCommitPayload
   | ChatRuntimeHostEditCheckpointSettlePayload
   | ChatRuntimeHostEditTrackingPayload
@@ -717,6 +746,7 @@ export interface ChatRuntimeHostEventSubscription {
 
 export type ChatRuntimeOwnerExecutorCommandMethod =
   | 'prewarmRuntime'
+  | 'restoreRuntimeSession'
   | 'forkSession'
   | 'startTurn'
   | 'stopTurn'
@@ -724,6 +754,16 @@ export type ChatRuntimeOwnerExecutorCommandMethod =
   | 'resolveInteraction';
 
 export interface ChatRuntimeOwnerExecutorPrewarmRuntimeCommand extends ChatRuntimeHostPrewarmRequest {}
+
+export interface ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand extends ChatRuntimeHostPrewarmRequest {
+  readonly snapshot: SessionSnapshot;
+}
+
+export interface ChatRuntimeOwnerExecutorRestoreRuntimeSessionResult {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly restored: boolean;
+  readonly turnCount: number;
+}
 
 export interface ChatRuntimeOwnerExecutorForkSessionCommand {
   readonly sourceSessionId: ChatRuntimeHostSessionId;
@@ -776,6 +816,10 @@ export type ChatRuntimeOwnerExecutorCommand =
   | {
       readonly method: 'prewarmRuntime';
       readonly payload: ChatRuntimeOwnerExecutorPrewarmRuntimeCommand;
+    }
+  | {
+      readonly method: 'restoreRuntimeSession';
+      readonly payload: ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand;
     }
   | {
       readonly method: 'forkSession';
@@ -859,6 +903,7 @@ export type ChatRuntimeOwnerExecutorEvent =
 
 export interface ChatRuntimeOwnerExecutor {
   prewarmRuntime(command: ChatRuntimeOwnerExecutorPrewarmRuntimeCommand): Promise<ChatRuntimeHostPrewarmResult>;
+  restoreRuntimeSession(command: ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand): Promise<ChatRuntimeOwnerExecutorRestoreRuntimeSessionResult>;
   forkSession?(command: ChatRuntimeOwnerExecutorForkSessionCommand): Promise<ChatRuntimeHostPrewarmResult>;
   startTurn(command: ChatRuntimeOwnerExecutorStartTurnCommand): Promise<ChatRuntimeHostSessionState>;
   stopTurn(command: ChatRuntimeOwnerExecutorStopTurnCommand): Promise<void>;
@@ -880,6 +925,8 @@ export interface ChatRuntimeHost {
   ): Promise<ChatRuntimeHostSessionState>;
   detachView(viewId: ChatRuntimeHostViewId): Promise<void>;
   prewarmRuntime(request: ChatRuntimeHostPrewarmRequest): Promise<ChatRuntimeHostPrewarmResult>;
+  restoreRuntimeSession(request: ChatRuntimeHostRestoreRuntimeSessionRequest): Promise<ChatRuntimeHostRestoreRuntimeSessionResult>;
+  readSessionExecutionState(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostSessionExecutionState>;
   submitTurn(request: ChatRuntimeHostSubmitRequest): Promise<ChatRuntimeHostSessionState>;
   readSubmitReadiness(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostSubmitReadiness>;
   ensureSessionCanRerun(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostRerunReadiness>;

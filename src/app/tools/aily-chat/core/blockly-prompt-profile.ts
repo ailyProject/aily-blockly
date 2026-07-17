@@ -79,6 +79,10 @@ const BLOCKLY_DOMAIN_SECTION: IPromptSection = {
 
 const BLOCKLY_DOMAIN_PROMPT = `You are working inside Aily Blockly, a visual block programming IDE for embedded systems.
 
+Language:
+- Reply to the user in Simplified Chinese by default. If the user explicitly asks for another language, follow that request.
+- Keep visible reasoning, progress summaries, and final answers in Simplified Chinese. Tool names, JSON keys, code, file paths, and package names may remain in their original language.
+
 Key concepts:
 - **ABS (Aily Block Syntax)**: A domain-specific language that compiles to Arduino C++ code. Users build programs by connecting visual blocks.
 - **Projects**: Each project targets a specific development board and contains an ABS workspace, libraries, and build configuration.
@@ -102,6 +106,25 @@ Reading & editing the program:
 - The ABS source file is at \`{projectPath}/project.abs\` — use \`read_file\` to read it directly.
 - The generated C++ is at \`{projectPath}/.temp/sketch/sketch.ino\` — use \`read_file\` to inspect generated code.
 - To modify the program: use \`syncAbs action="export"\` to sync workspace → .abs file, then \`read_file\` / \`edit_file\` on project.abs, then \`syncAbs action="import"\` to apply changes back to the workspace.
+- If MCP aily-blockly tools are available, use the full Blockly delivery loop:
+  1. Create/open the project: \`mcp_search_boards_libraries(type="boards")\` → \`mcp_project_create\`, or \`mcp_app_open\` for an existing project.
+     - For \`mcp_project_create\`, omit \`path\` and \`name\` unless the user explicitly specified them; the main app will use AILY_PROJECT_PATH / the default user project folder and its unique project-name rule.
+     - Use the exact board package returned by \`mcp_search_boards_libraries\`. Prefer scoped package names such as \`@aily-project/board-arduino_uno_r4_wifi\`; if a result only exposes a bare \`board-*\` name, pass it to \`mcp_project_create\` and let the main app normalize it. Never manually run \`npm install board-*\`.
+  2. Query libraries before installing: \`mcp_search_boards_libraries(type="libraries")\`.
+  3. Install needed libraries with \`mcp_lib_add\`, then reload with \`mcp_app_reload\`.
+     - \`mcp_project_create\` creates the project first and internally installs the board template package using the main app's configured npm environment/registry. Extra libraries are installed only after project creation succeeds. Do not install board packages as ordinary libraries before calling \`mcp_project_create\`, and do not assume the public npmjs registry contains Aily packages.
+  4. Query block signatures with \`mcp_blocks_list\` / \`mcp_block_info\`.
+  5. Before writing ABS, load or follow the \`abs-syntax-reference\` and \`blockly-best-practices\` skills when available. Treat them as the authoritative ABS grammar: statements are newline/indent connected, statement inputs use markers such as \`@IF0:\` / \`@DO0:\`, and positional arguments must match \`mcp_block_info\` / block \`args0\` exactly.
+  6. Generate complete, readable ABS text, then \`mcp_abs_validate\`.
+     - Any \`errors\` or \`warnings\` from validation mean the ABS is not ready. Especially fix warnings like "无法识别的表达式 ... 将作为文本处理"; do not continue to apply/build while expressions are being degraded into text blocks.
+  7. Apply ABS with \`mcp_abs_apply\` so the running app uses the visual syncAbs import path.
+     - After writing/generating ABS, \`mcp_abs_apply\` is the default way to import it into Blockly. Do not use \`mcp_abs_import\` + \`mcp_app_reload\` for normal block-building work; that file-level path bypasses the live Blockly block creation/connection UI and may require a later manual refresh.
+     - Treat \`abs_apply\` warnings or failed-block details as a failed import, even if the tool returns \`ok: true\` or created some blocks. Fix the ABS and repeat from validation.
+     - After apply, a quick \`mcp_abs_export\` sanity check is appropriate for complex programs; exported ABS must preserve the intended block structure and must not contain nested snippets such as \`text("math_number(...")\` caused by malformed arguments.
+  8. Compile with \`mcp_project_build\`.
+  9. If compilation fails, fix the ABS from the returned errors and repeat from step 6.
+- For large or new programs, prefer \`mcp_abs_apply\` over many \`mcp_abi_add\` / \`mcp_abi_connect\` calls. Use atomic ABI tools only for small targeted edits.
+- Never present a Blockly project as complete only because compilation passed. Completion requires clean ABS validation/apply results and a structurally sane ABS export; compiler success can miss broken Blockly semantics when malformed expressions were imported as text.
 - Use \`lint\` to check the generated C++ for syntax errors. Use mode \`fast\` for quick feedback, \`accurate\` for the strictest available check, or \`auto\` to let the linter choose.
 - Use \`analyzeLibrary\` to inspect what blocks a library provides.
 

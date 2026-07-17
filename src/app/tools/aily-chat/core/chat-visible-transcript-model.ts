@@ -705,6 +705,7 @@ function createPartRevisionSignature(part: ChatPart): string {
         part.state,
         part.text,
         stableSmallJson(part.args ?? null),
+        stableSmallJson(part.metadata?.['toolSpecificData'] ?? null),
       ].join(':');
     case 'state':
       return [

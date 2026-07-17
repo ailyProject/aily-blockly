@@ -13,6 +13,7 @@
         "NETWORK_DEBUGGER_DESC": "HTTP與WebSocket調試工具",
         "FFS_MANAGER_DESC": "ESP32 檔案系統分區管理工具",
         "AI_DESC": "AI 智能助手",
+        "AI_REACT_DESC": "AI 智能助手重構實驗性版本",
         "MODEL_STORE_DESC": "AI 模型商店",
         "CLOUD_SPACE_DESC": "雲端儲存空間",
         "USER_CENTER_DESC": "用戶中心與設定",

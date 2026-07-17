@@ -6,12 +6,18 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Connection, WindowMessenger, connect } from 'penpal';
-import { Subscription } from 'rxjs';
+import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { ChildToolConfig, getChildToolConfig } from '../../configs/tool.config';
 import { ChildToolHostInfo, ChildToolProcessService } from '../../services/child-tool-process.service';
+import { ChildAppHostRegistryService } from '../../services/child-app-host-registry.service';
+import { AuthService } from '../../services/auth.service';
+import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
+import { ElectronService } from '../../services/electron.service';
 import { LogService } from '../../services/log.service';
+import { MainUiAutomationService } from '../../services/main-ui-automation.service';
+import { ProjectService } from '../../services/project.service';
 import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
 import { UiService } from '../../services/ui.service';
@@ -19,6 +25,11 @@ import { UiService } from '../../services/ui.service';
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
 type ChildLifecycleReason = 'close' | 'restart' | 'destroy';
+
+interface HostProjectContext {
+  workspace?: string | null;
+  version?: number;
+}
 
 interface NormalizedHostMessage {
   title: string;
@@ -56,6 +67,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   frameLoaded = false;
   errorMessage = '';
   serverInfo: ChildToolHostInfo | null = null;
+  childVersion = '';
   closing = false;
 
   private config: ChildToolConfig | null = null;
@@ -71,7 +83,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private beforeCloseNotified = false;
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
+  private projectPathSubscription: Subscription | null = null;
+  private blockSelectionSubscription: Subscription | null = null;
   private toolSignalSubscription: Subscription | null = null;
+  private standaloneWorkspace: string | null | undefined;
+  private standaloneWorkspaceVersion = -1;
+  private projectContextListenerRegistered = false;
+  private projectContextListenerCleanup: (() => void) | null = null;
+  private unregisterHostController: (() => void) | null = null;
 
   constructor(
     private route: ActivatedRoute,
@@ -80,14 +99,33 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private toolI18n: ToolI18nService,
     private sanitizer: DomSanitizer,
     private processService: ChildToolProcessService,
+    private projectService: ProjectService,
     private ngZone: NgZone,
     private translate: TranslateService,
     private themeService: ThemeService,
     private message: NzMessageService,
-    private logService: LogService
+    private logService: LogService,
+    private childHostRegistry: ChildAppHostRegistryService,
+    private authService: AuthService,
+    private blocklyService: BlocklyService,
+    private electronService: ElectronService,
+    private mainUiAutomation: MainUiAutomationService,
   ) {
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
+    this.projectPathSubscription = this.projectService.currentProjectPath$.subscribe(() => {
+      if (this.initialized) {
+        this.syncHostContext(true);
+      }
+    });
+    this.blockSelectionSubscription = combineLatest([
+      this.blocklyService.selectedBlockIdsSubject,
+      this.blocklyService.blockCodeMapSubject,
+    ]).subscribe(() => {
+      if (this.initialized && this.isAilyChatTool()) {
+        this.syncHostContext();
+      }
+    });
   }
 
   get isStandalone(): boolean {
@@ -122,7 +160,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
 
     if (this.initialized && changes['active'] && this.active) {
-      this.syncHostContext();
+      this.syncHostContext(true);
     }
   }
 
@@ -132,28 +170,37 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.langSubscription = null;
     this.themeSubscription?.unsubscribe();
     this.themeSubscription = null;
+    this.projectPathSubscription?.unsubscribe();
+    this.projectPathSubscription = null;
+    this.blockSelectionSubscription?.unsubscribe();
+    this.blockSelectionSubscription = null;
     this.toolSignalSubscription?.unsubscribe();
     this.toolSignalSubscription = null;
+    this.projectContextListenerCleanup?.();
+    this.projectContextListenerCleanup = null;
+    this.projectContextListenerRegistered = false;
     this.destroyPenpalConnection();
+    this.unregisterHostController?.();
+    this.unregisterHostController = null;
     if (this.acquired && this.resolvedToolId) {
       void this.processService.release(this.resolvedToolId);
       this.acquired = false;
     }
   }
 
-  async close(): Promise<void> {
-    if (this.closing) return;
+  async close(): Promise<Record<string, unknown>> {
+    if (this.closing) return { ok: false, message: '子应用正在关闭' };
     this.closing = true;
 
     const canClose = await this.notifyChildBeforeClose('close');
     if (!canClose) {
       this.closing = false;
-      return;
+      return { ok: false, message: '子应用拒绝关闭，可能存在未完成操作。' };
     }
 
     if (this.isStandalone) {
       window['iWindow']?.close?.();
-      return;
+      return { ok: true, toolId: this.resolvedToolId, action: 'close', mode: 'window' };
     }
 
     if (this.resolvedToolId) {
@@ -161,11 +208,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     } else {
       this.closing = false;
     }
+    return { ok: true, toolId: this.resolvedToolId, action: 'close', mode: 'embedded' };
   }
 
-  async restart(): Promise<void> {
-    if (!this.config) return;
-    if (!await this.notifyChildBeforeClose('restart')) return;
+  async restart(): Promise<Record<string, unknown>> {
+    if (!this.config) return { ok: false, message: '子应用配置未就绪' };
+    if (!await this.notifyChildBeforeClose('restart')) {
+      return { ok: false, message: '子应用拒绝重启，可能存在未完成操作。' };
+    }
 
     this.destroyPenpalConnection();
     this.serverInfo = null;
@@ -173,6 +223,39 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.frameLoaded = false;
     this.hostStatus = 'closed';
     await this.startServer(true);
+    const restartedStatus = this.hostStatus as HostStatus;
+    return restartedStatus === 'ready'
+      ? { ok: true, toolId: this.resolvedToolId, action: 'restart', host: this.hostAutomationStatus() }
+      : { ok: false, toolId: this.resolvedToolId, action: 'restart', message: this.errorMessage || '子应用重启失败' };
+  }
+
+  async detach(): Promise<Record<string, unknown>> {
+    if (!this.config) return { ok: false, message: '子应用配置未就绪' };
+    if (this.isStandalone) {
+      return { ok: true, toolId: this.resolvedToolId, action: 'detach', message: '子应用已经处于独立窗口模式。' };
+    }
+    if (!await this.notifyChildBeforeClose('close')) {
+      return { ok: false, message: '子应用拒绝切换到独立窗口，可能存在未完成操作。' };
+    }
+
+    const opened = this.uiService.openToolWindow(this.resolvedToolId, { title: this.getToolDisplayName() });
+    if (!opened) {
+      return { ok: false, message: `无法为子应用创建独立窗口: ${this.resolvedToolId}` };
+    }
+    this.uiService.closeTool(this.resolvedToolId);
+    return { ok: true, toolId: this.resolvedToolId, action: 'detach', mode: 'window' };
+  }
+
+  async embed(): Promise<Record<string, unknown>> {
+    if (!this.isStandalone) {
+      return { ok: true, toolId: this.resolvedToolId, action: 'embed', message: '子应用已经处于内嵌模式。' };
+    }
+    if (!await this.notifyChildBeforeClose('close')) {
+      return { ok: false, message: '子应用拒绝放回内嵌，可能存在未完成操作。' };
+    }
+
+    window['iWindow']?.goMain?.(this.routePath);
+    return { ok: true, toolId: this.resolvedToolId, action: 'embed', mode: 'embedded' };
   }
 
   onFrameLoad(event: Event): void {
@@ -228,9 +311,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.config = config;
     this.resolvedToolId = config.id;
+    this.childVersion = config.version || '';
     this.titleKey = config.titleKey;
     this.routePath = config.routePath || `/child-tool/${config.id}`;
     this.currentUrl = this.router.url;
+    this.registerHostController();
+
+    await this.initializeStandaloneProjectContext();
 
     this.log('config loaded', {
       id: config.id,
@@ -242,6 +329,29 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     await this.toolI18n.load(config.id);
     this.log('i18n loaded');
     await this.startServer(false);
+  }
+
+  private registerHostController(): void {
+    this.unregisterHostController?.();
+    this.unregisterHostController = this.childHostRegistry.register(this.resolvedToolId, {
+      status: () => this.hostAutomationStatus(),
+      restart: () => this.restart(),
+      close: () => this.close(),
+      detach: () => this.detach(),
+      embed: () => this.embed(),
+    });
+  }
+
+  private hostAutomationStatus(): Record<string, unknown> {
+    return {
+      status: this.hostStatus,
+      frameLoaded: this.frameLoaded,
+      penpalState: this.penpalState,
+      closing: this.closing,
+      error: this.errorMessage || null,
+      pid: this.serverInfo?.pid ?? null,
+      port: this.serverInfo?.port ?? null,
+    };
   }
 
   private async startServer(restart: boolean): Promise<void> {
@@ -319,6 +429,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         childError: (error: any) => {
           this.ngZone.run(() => this.handleChildError(error));
         },
+        notifyUserInteraction: (payload: any) => this.notifyUserInteraction(payload),
         reportHostMessage: (payload: any) => this.ngZone.run(() => this.reportHostMessage(payload)),
         requestClose: () => {
           this.ngZone.run(() => {
@@ -333,6 +444,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         openExternal: (url: string) => {
           (window as any).electronAPI?.other?.openByBrowser?.(url);
         },
+        startGithubLogin: (payload: { inviteCode?: string } = {}) => this.startGithubLogin(payload),
+        selectChatResources: () => this.selectChatResources(),
+        listChildApps: (payload: { limit?: number } = {}) => this.listChatChildApps(payload),
+        openChildApp: (payload: { toolId?: string; mode?: 'embedded' | 'window' } = {}) => this.openChatChildApp(payload),
+        writeClipboardText: (payload: { text?: string } = {}) => this.writeClipboardText(payload),
         sendToolSignal: async (signal: string, payload: any = {}) => {
           return await this.sendToolSignalFromChild(signal, payload);
         }
@@ -587,7 +703,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
   }
 
-  private async pushHostContext(): Promise<void> {
+  private async pushHostContext(refreshSnapshot = false): Promise<void> {
     if (!this.remoteApi?.setHostContext) {
       return;
     }
@@ -595,14 +711,17 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const context = this.createHostContext();
     try {
       await Promise.resolve(this.remoteApi.setHostContext(context));
+      if (refreshSnapshot && typeof this.remoteApi.refreshHostSnapshot === 'function') {
+        await Promise.resolve(this.remoteApi.refreshHostSnapshot());
+      }
     } catch {
       // Keep iframe usable; a later sync or active switch will retry.
     }
   }
 
-  private syncHostContext(): void {
+  private syncHostContext(refreshSnapshot = false): void {
     if (this.remoteApi?.setHostContext) {
-      void this.pushHostContext();
+      void this.pushHostContext(refreshSnapshot);
     }
   }
 
@@ -662,26 +781,291 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     try {
       const nextUrl = new URL(url);
-      nextUrl.searchParams.set('lang', context['lang']);
+      nextUrl.searchParams.set('lang', String(context['lang'] || 'en'));
       return nextUrl.toString();
     } catch {
       const separator = url.includes('?') ? '&' : '?';
       const query = new URLSearchParams({
-        lang: context['lang']
+        lang: String(context['lang'] || 'en')
       });
       return `${url}${separator}${query.toString()}`;
     }
   }
 
-  private createHostContext(): Record<string, string> {
+  private createHostContext(): Record<string, unknown> {
+    const isAilyChat = this.isAilyChatTool();
     return {
       toolId: this.resolvedToolId,
       contextId: this.hostContextId,
       version: String(++this.hostContextVersion),
       lang: this.normalizeLang(this.translate.currentLang || this.translate.defaultLang || 'en'),
       theme: this.normalizeTheme(this.themeService.theme()),
-      platform: (window as any).electronAPI?.platform?.type || 'browser'
+      platform: (window as any).electronAPI?.platform?.type || 'browser',
+      embedded: !this.isStandalone,
+      workspace: this.resolveHostWorkspace(),
+      blockResources: isAilyChat ? this.createSelectedBlockResources() : [],
+      capabilities: {
+        snapshotRefresh: true,
+        userInteractionNotifications: true,
+        hostGithubLogin: isAilyChat,
+        resourcePicker: isAilyChat
+          && typeof (window as any).dialog?.selectFiles === 'function',
+        childAppMenu: isAilyChat,
+        clipboardWrite: isAilyChat,
+        blockSelectionContext: isAilyChat
+      }
     };
+  }
+
+  private createSelectedBlockResources(): Record<string, unknown>[] {
+    return this.blocklyService.getSelectedBlockContextLabels().map(item => ({
+      type: 'block',
+      name: item.label,
+      blockId: item.blockId,
+      blockContext: item.formatted,
+    }));
+  }
+
+  private isAilyChatTool(): boolean {
+    return this.resolvedToolId === 'aily-chat' || this.resolvedToolId === 'aily-chat-react';
+  }
+
+  private async writeClipboardText(payload: { text?: string }): Promise<Record<string, unknown>> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'Clipboard access is only available to Aily Chat' };
+    }
+    const text = typeof payload?.text === 'string' ? payload.text : '';
+    if (!text) {
+      return { ok: false, message: 'Clipboard text is empty' };
+    }
+    await this.electronService.clipboardWriteText(text);
+    return { ok: true };
+  }
+
+  private async selectChatResources(): Promise<Record<string, unknown>> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'Resource selection is only available to Aily Chat' };
+    }
+    const dialog = (window as any).dialog;
+    const fs = (window as any).fs;
+    if (!dialog?.selectFiles || !fs?.isDirectory) {
+      return { ok: false, message: 'Host file picker is unavailable' };
+    }
+    const result = await dialog.selectFiles({
+      title: '选择文件或文件夹',
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+    });
+    if (result?.canceled || !Array.isArray(result?.filePaths)) {
+      return { ok: true, resources: [] };
+    }
+    const resources = result.filePaths
+      .slice(0, 12)
+      .map((path: string) => this.createChatResource(path, fs));
+    return { ok: true, resources };
+  }
+
+  private createChatResource(path: string, fs: any): Record<string, unknown> {
+    const name = String(path).split(/[/\\]/).pop() || path;
+    if (!fs.isDirectory(path)) {
+      return this.createChatFileResource(path, name, fs);
+    }
+
+    return {
+      type: 'folder',
+      path,
+      name,
+      children: this.collectChatFolderFiles(path, fs),
+    };
+  }
+
+  private collectChatFolderFiles(rootPath: string, fs: any): Record<string, unknown>[] {
+    const resources: Record<string, unknown>[] = [];
+    const pending = [rootPath];
+    const ignoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build']);
+
+    while (pending.length && resources.length < 36) {
+      const directory = pending.shift()!;
+      let entries: Array<{ name: string; _isDirectory?: boolean; _isFile?: boolean }> = [];
+      try {
+        entries = fs.readDirSync(directory);
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (resources.length >= 36) break;
+        if (entry.name.startsWith('.') && entry.name !== '.env') continue;
+        const separator = String(directory).includes('\\') ? '\\' : '/';
+        const childPath = `${directory}${separator}${entry.name}`;
+        if (entry._isDirectory) {
+          if (!ignoredDirectories.has(entry.name)) pending.push(childPath);
+          continue;
+        }
+        if (entry._isFile !== false) {
+          resources.push(this.createChatFileResource(childPath, entry.name, fs));
+        }
+      }
+    }
+
+    return resources;
+  }
+
+  private createChatFileResource(path: string, name: string, fs: any): Record<string, unknown> {
+    const maxInlineBytes = 96 * 1024;
+    let size = 0;
+    try {
+      size = Number(fs.statSync(path)?.size) || 0;
+    } catch {
+      return { type: 'file', path, name, content: `[${name}: failed to inspect]` };
+    }
+
+    let content = `[${name}: binary, ${size} bytes]`;
+    if (size > maxInlineBytes) {
+      content = `[${name}: ${size} bytes, too large to inline]`;
+    } else if (this.isChatTextFile(name)) {
+      try {
+        content = String(fs.readFileSync(path, 'utf8'));
+      } catch {
+        content = `[${name}: failed to read]`;
+      }
+    }
+
+    return { type: 'file', path, name, size, content };
+  }
+
+  private isChatTextFile(name: string): boolean {
+    const extension = String(name).toLowerCase().split('.').pop() || '';
+    return new Set([
+      'c', 'cc', 'cpp', 'css', 'csv', 'env', 'h', 'hpp', 'html', 'ino', 'java', 'js',
+      'json', 'jsx', 'log', 'md', 'mjs', 'py', 'rs', 'scss', 'sh', 'svg', 'toml',
+      'ts', 'tsx', 'txt', 'vue', 'xml', 'yaml', 'yml',
+    ]).has(extension);
+  }
+
+  private async listChatChildApps(payload: { limit?: number } = {}): Promise<Record<string, unknown>> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'Child app listing is only available to Aily Chat' };
+    }
+    return this.mainUiAutomation.listChildApps({
+      limit: Math.max(1, Math.min(12, Number(payload?.limit) || 6)),
+    });
+  }
+
+  private async openChatChildApp(
+    payload: { toolId?: string; mode?: 'embedded' | 'window' } = {},
+  ): Promise<Record<string, unknown>> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'Opening child apps is only available to Aily Chat' };
+    }
+    return this.mainUiAutomation.openChildApp({
+      toolId: String(payload?.toolId || ''),
+      mode: payload?.mode === 'window' ? 'window' : 'embedded',
+    });
+  }
+
+  private async startGithubLogin(payload: { inviteCode?: string } = {}): Promise<Record<string, unknown>> {
+    if (!this.isAilyChatTool()) {
+      throw new Error('GitHub login is only available to Aily Chat');
+    }
+
+    const inviteCode = typeof payload?.inviteCode === 'string'
+      ? payload.inviteCode.trim().slice(0, 11)
+      : '';
+    const response = await firstValueFrom(this.authService.startGitHubOAuth(inviteCode || undefined));
+    if (!response?.authorization_url) {
+      throw new Error('GitHub authorization URL is unavailable');
+    }
+
+    this.electronService.openUrl(response.authorization_url);
+    return { ok: true, state: response.state };
+  }
+
+  private async notifyUserInteraction(payload: any): Promise<Record<string, unknown>> {
+    if (this.electronService.isWindowFocused() && !this.electronService.isWindowMinimized()) {
+      return { ok: true, notified: false, reason: 'foreground' };
+    }
+
+    const title = String(payload?.title || 'Aily').trim().slice(0, 120) || 'Aily';
+    const body = String(payload?.body || '').trim().slice(0, 500);
+    if (!body) {
+      return { ok: false, notified: false, reason: 'empty-body' };
+    }
+
+    await this.electronService.requestWindowAttention().catch(() => undefined);
+    const platform = (window as any).electronAPI?.platform?.type;
+    const result = await this.electronService.notify(title, body, {
+      silent: false,
+      timeoutType: 'never',
+      ...(platform === 'linux' ? { urgency: 'critical' as const } : {}),
+    });
+    return {
+      ok: result?.success !== false,
+      notified: result?.success !== false,
+      key: String(payload?.key || ''),
+    };
+  }
+
+  private async initializeStandaloneProjectContext(): Promise<void> {
+    if (!this.isStandalone) {
+      this.standaloneWorkspace = undefined;
+      this.standaloneWorkspaceVersion = -1;
+      this.projectContextListenerCleanup?.();
+      this.projectContextListenerCleanup = null;
+      this.projectContextListenerRegistered = false;
+      return;
+    }
+
+    const ipcRenderer = window['ipcRenderer'] || (window as any).electronAPI?.ipcRenderer;
+    if (!ipcRenderer?.invoke) {
+      return;
+    }
+
+    if (!this.projectContextListenerRegistered && ipcRenderer.on) {
+      const cleanup = ipcRenderer.on(
+        'host-project-context-changed',
+        (_event: unknown, context: HostProjectContext) => {
+          this.ngZone.run(() => this.applyStandaloneProjectContext(context, true));
+        }
+      );
+      if (typeof cleanup === 'function') {
+        this.projectContextListenerCleanup = cleanup;
+      }
+      this.projectContextListenerRegistered = true;
+    }
+
+    try {
+      const context = await ipcRenderer.invoke('host-project-context-get');
+      this.applyStandaloneProjectContext(context, false);
+    } catch {
+      // Older hosts do not expose project context; keep the local service fallback.
+    }
+  }
+
+  private applyStandaloneProjectContext(context: HostProjectContext, refreshSnapshot: boolean): void {
+    const version = Number(context?.version);
+    if (Number.isFinite(version) && version < this.standaloneWorkspaceVersion) {
+      return;
+    }
+
+    const rawWorkspace = typeof context?.workspace === 'string' ? context.workspace : '';
+    const workspace = rawWorkspace.trim() ? rawWorkspace : null;
+    const changed = this.standaloneWorkspace !== workspace;
+
+    this.standaloneWorkspace = workspace;
+    if (Number.isFinite(version)) {
+      this.standaloneWorkspaceVersion = version;
+    }
+
+    if (changed && refreshSnapshot) {
+      this.syncHostContext(true);
+    }
+  }
+
+  private resolveHostWorkspace(): string | null {
+    if (this.isStandalone && this.standaloneWorkspace !== undefined) {
+      return this.standaloneWorkspace;
+    }
+    return this.projectService.currentProjectPath || null;
   }
 
   private normalizeLang(lang: string): string {

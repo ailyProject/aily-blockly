@@ -1,6 +1,6 @@
 import type { IPromptSection, PromptContext } from 'aily-lex/types/prompt';
 import { PromptLayer } from 'aily-lex/types/prompt';
-import { MAIN_AGENT_TYPE } from './agent-identifiers';
+import { MAIN_AGENT_TYPE, normalizeAgentIdentifier } from './agent-identifiers';
 import { AilyHost } from './host';
 import { SkillRegistry } from './skill-registry';
 
@@ -28,7 +28,8 @@ export function createSkillsListingSection(id: string): IPromptSection {
     cacheable: false,
     getContent: (ctx) => {
       const toolAwareCtx = ctx as PromptContext & { availableToolNames?: ReadonlySet<string> };
-      const listing = SkillRegistry.getSkillsListing(MAIN_AGENT_TYPE, {
+      const agentType = normalizeAgentIdentifier(ctx.agentId) || MAIN_AGENT_TYPE;
+      const listing = SkillRegistry.getSkillsListing(agentType, {
         availableToolNames: toolAwareCtx.availableToolNames,
       });
       return listing || '';

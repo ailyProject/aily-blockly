@@ -27,7 +27,6 @@ type LexTurnStartupContext = Pick<
       ): void;
     };
     readonly turnStartupEditLifecycle: {
-      ensureAbsExport(sessionId: string | null | undefined): void;
       saveCheckpointToDisk(sessionId: string | null | undefined): void;
     };
     resolveActiveRuntimeSessionId?(): string | null | undefined;
@@ -181,7 +180,6 @@ export class LexTurnStartupBridge {
       this.ensureResponseItem(turnId);
     }
 
-    this.ctx.turnStartupEditLifecycle.ensureAbsExport(resourceSessionId);
     this.ctx.editTracking.autoSaveEdits = this.ctx.ailyChatConfigService.autoSaveEdits;
     this.ctx.turnStartupEditLifecycle.saveCheckpointToDisk(resourceSessionId);
 

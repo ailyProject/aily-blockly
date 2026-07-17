@@ -52,6 +52,8 @@ export interface BlocklyContextSummaryOptions {
   maxLibraries?: number;
   maxReadmeRefs?: number;
   maxLibrariesWithoutReadme?: number;
+  includeReadmeReferences?: boolean;
+  includeLibrariesWithoutReadme?: boolean;
 }
 
 const MAX_ENV_LIBRARY_NAMES = 24;
@@ -296,6 +298,8 @@ export function summarizeBlocklyContextSnapshot(
   const maxLibraries = options?.maxLibraries ?? MAX_ENV_LIBRARY_NAMES;
   const maxReadmeRefs = options?.maxReadmeRefs ?? MAX_ENV_README_REFS;
   const maxLibrariesWithoutReadme = options?.maxLibrariesWithoutReadme ?? MAX_ENV_LIBRARIES_WITHOUT_README;
+  const includeReadmeReferences = options?.includeReadmeReferences !== false;
+  const includeLibrariesWithoutReadme = options?.includeLibrariesWithoutReadme !== false;
 
   if (snapshot.projectInfo?.projectPath) {
     lines.push(`Project path: ${snapshot.projectInfo.projectPath}`);
@@ -324,7 +328,7 @@ export function summarizeBlocklyContextSnapshot(
       + (remainingLibraryNames > 0 ? ` ... (+${remainingLibraryNames} more)` : ''),
     );
 
-    if (librariesWithReadme.length > 0) {
+    if (includeReadmeReferences && librariesWithReadme.length > 0) {
       const displayedReadmes = librariesWithReadme.slice(0, maxReadmeRefs);
       const remainingReadmes = librariesWithReadme.length - displayedReadmes.length;
       lines.push(
@@ -335,7 +339,7 @@ export function summarizeBlocklyContextSnapshot(
       );
     }
 
-    if (librariesWithoutReadme.length > 0) {
+    if (includeLibrariesWithoutReadme && librariesWithoutReadme.length > 0) {
       const displayedWithoutReadme = librariesWithoutReadme.slice(0, maxLibrariesWithoutReadme);
       const remainingWithoutReadme = librariesWithoutReadme.length - displayedWithoutReadme.length;
       lines.push(

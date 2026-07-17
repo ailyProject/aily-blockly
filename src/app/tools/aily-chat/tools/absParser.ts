@@ -807,16 +807,9 @@ export class BlocklyAbsParser {
     const inlineInputs: Record<string, AbsNode> = {};
     
     // 提取 @extra:{json} 注解（通用 mutator 状态传递，支持任何带 extraState 的块）
-    let extraState: Record<string, any> | undefined;
-    const extraMatch = line.match(/ @extra:(\{.*\})\s*$/);
-    if (extraMatch) {
-      try {
-        extraState = JSON.parse(extraMatch[1]);
-      } catch (e) {
-        // JSON 解析失败，忽略注解
-      }
-      line = line.substring(0, line.lastIndexOf(' @extra:'));
-    }
+    const extracted = this.extractExtraStateAnnotation(line);
+    line = extracted.expression;
+    const extraState = extracted.extraState;
     
     // 匹配 block_type(args) 或 block_type 或 block_type()（空括号）
     const match = line.match(/^(\w+)(?:\((.*)\))?$/);
@@ -1098,6 +1091,19 @@ export class BlocklyAbsParser {
    * 解析字段值
    */
   private parseFieldValue(value: string): any {
+    value = value.trim();
+
+    // 结构化字段值（自定义位图、动画帧、资源配置等）使用紧凑 JSON 表示。
+    // 解析失败时继续按普通字符串处理，以兼容 AI 手写的不完整内容。
+    if ((value.startsWith('{') && value.endsWith('}')) ||
+        (value.startsWith('[') && value.endsWith(']'))) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        // fall through
+      }
+    }
+
     // 移除引号并处理转义序列
     if ((value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'"))) {
@@ -1153,6 +1159,9 @@ export class BlocklyAbsParser {
    */
   private parseInlineValue(value: string): AbsNode | null {
     value = value.trim();
+    const extracted = this.extractExtraStateAnnotation(value);
+    value = extracted.expression;
+    const extraState = extracted.extraState;
     
     // 变量引用 $varName 或 $"varName"（带引号，用于含特殊字符的名称）
     if (value.startsWith('$')) {
@@ -1219,7 +1228,8 @@ export class BlocklyAbsParser {
         children: [],
         indent: 0,
         lineNumber: this.currentLine + 1,
-        raw: value
+        raw: value,
+        ...(extraState ? { extraState } : {})
       };
     }
     
@@ -1506,6 +1516,33 @@ export class BlocklyAbsParser {
       'variables_get'
     ]);
     return shadowTypes.has(blockType);
+  }
+
+  /**
+   * 从完整块行或内联块表达式末尾提取通用 extraState 注解。
+   * 使用 lastIndexOf，避免结构化字段的 JSON 字符串内容干扰注解定位。
+   */
+  private extractExtraStateAnnotation(value: string): {
+    expression: string;
+    extraState?: Record<string, any>;
+  } {
+    const marker = ' @extra:';
+    const markerIndex = value.lastIndexOf(marker);
+    if (markerIndex < 0) return { expression: value };
+
+    const json = value.slice(markerIndex + marker.length).trim();
+    try {
+      const extraState = JSON.parse(json);
+      if (!extraState || typeof extraState !== 'object' || Array.isArray(extraState)) {
+        return { expression: value };
+      }
+      return {
+        expression: value.slice(0, markerIndex).trimEnd(),
+        extraState,
+      };
+    } catch {
+      return { expression: value };
+    }
   }
 }
 

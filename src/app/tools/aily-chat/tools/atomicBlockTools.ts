@@ -174,6 +174,7 @@ export function getBlockIdMappings(): Record<string, string> {
 
 export interface CreateSingleBlockArgs {
   type: string;
+  id?: string;
   fields?: Record<string, any>;
   position?: { x: number; y: number };
   // 新增：简单 inputs 支持（仅限一层 shadow 块）
@@ -1020,6 +1021,7 @@ export async function createSingleBlockTool(args: CreateSingleBlockArgs): Promis
   try {
     const workspace = getActiveWorkspace();
     const { type } = args;
+    const requestedId = typeof args.id === 'string' && args.id.trim() ? args.id.trim() : '';
     
     // 解析可能是字符串的参数
     const fields = parseJsonParam<Record<string, any>>(args.fields as any);
@@ -1049,7 +1051,10 @@ export async function createSingleBlockTool(args: CreateSingleBlockArgs): Promis
     }
     
     // 2. 创建块
-    const block = workspace.newBlock(type);
+    const block = requestedId ? workspace.newBlock(type, requestedId) : workspace.newBlock(type);
+    if (requestedId && block.id !== requestedId) {
+      registerBlockIdMapping(requestedId, block.id);
+    }
     block.initSvg();
     block.render();
     
@@ -1269,8 +1274,8 @@ export async function connectBlocksSimpleTool(args: ConnectBlocksSimpleArgs): Pr
     const { block: blockId, action, target: targetId, input, moveWithChain = true } = args;
     
     // 获取块
-    const sourceBlock = getBlockByIdSmart(workspace, blockId);
-    const targetBlock = getBlockByIdSmart(workspace, targetId);
+    const sourceBlock = resolveBlockId(workspace, blockId);
+    const targetBlock = resolveBlockId(workspace, targetId);
     
     if (!sourceBlock) {
       return injectTodoReminder({
@@ -2140,7 +2145,7 @@ export async function setBlockFieldTool(args: SetBlockFieldArgs): Promise<ToolUs
       }
     }
     
-    const block = getBlockByIdSmart(workspace, blockId);
+    const block = resolveBlockId(workspace, blockId);
     if (!block) {
       return injectTodoReminder({
         is_error: true,
@@ -2265,7 +2270,7 @@ export async function setBlockInputTool(args: SetBlockInputArgs): Promise<ToolUs
       }, 'setBlockInputTool');
     }
     
-    const targetBlock = getBlockByIdSmart(workspace, blockId);
+    const targetBlock = resolveBlockId(workspace, blockId);
     if (!targetBlock) {
       return injectTodoReminder({
         is_error: true,
@@ -2293,7 +2298,7 @@ export async function setBlockInputTool(args: SetBlockInputArgs): Promise<ToolUs
     
     if (sourceBlockId) {
       // 模式1：连接已存在的块
-      sourceBlock = getBlockByIdSmart(workspace, sourceBlockId);
+      sourceBlock = resolveBlockId(workspace, sourceBlockId);
       if (!sourceBlock) {
         return injectTodoReminder({
           is_error: true,

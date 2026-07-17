@@ -6,6 +6,11 @@ const { killRegisteredProcessTree } = require('./process-tree');
 const {
     registerChatRuntimeHostIpc,
 } = require('./chat-runtime-host');
+const {
+    CHILD_WINDOW_LAYOUTS,
+    calculateChildWindowLayout,
+    clampBoundsToWorkArea,
+} = require('./child-window-layout');
 const { exec, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -17,9 +22,9 @@ const CODE_VIEWER_STATE_GET_CHANNEL = 'blockly-code-viewer-state-get';
 /** 后台预缓冲子窗口数量�? 个待�?+ 1 个备�?*/
 const SUB_WINDOW_POOL_SIZE = 2;
 
-/** 子窗口最小尺寸（4:3，约为原 800×600 �?80%�?*/
-const SUB_WINDOW_MIN_WIDTH = 640;
-const SUB_WINDOW_MIN_HEIGHT = 480;
+/** 子窗口最小尺寸；兼顾内容可用性与多窗口平铺。 */
+const SUB_WINDOW_MIN_WIDTH = 400;
+const SUB_WINDOW_MIN_HEIGHT = 300;
 const CHILD_TOOL_RELEASE_GRACE_MS = 15000;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, refCount: number, releaseTimer: NodeJS.Timeout | null }>} */
@@ -85,6 +90,16 @@ function getSubWindowWebPreferences() {
 
 function sanitizeChildToolId(toolId) {
     return String(toolId || '').trim();
+}
+
+function resolveChildToolIdFromWindowUrl(windowUrl) {
+    const match = String(windowUrl || '').match(/^\/child-tool\/([^/?#]+)/);
+    if (!match) return '';
+    try {
+        return sanitizeChildToolId(decodeURIComponent(match[1]));
+    } catch (_) {
+        return sanitizeChildToolId(match[1]);
+    }
 }
 
 function isPidAlive(pid) {
@@ -187,11 +202,22 @@ function scheduleChildToolRelease(toolId, session) {
     }, CHILD_TOOL_RELEASE_GRACE_MS);
 }
 
-function releaseChildToolSession(toolId) {
-    const normalizedToolId = sanitizeChildToolId(toolId);
+function releaseChildToolSession(toolIdOrPayload) {
+    const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
+        ? toolIdOrPayload
+        : { toolId: toolIdOrPayload };
+    const normalizedToolId = sanitizeChildToolId(payload.toolId);
     const session = childToolSessions.get(normalizedToolId);
     if (!session) {
         return { success: false, reason: 'not-found' };
+    }
+    const expectedStreamId = String(payload.streamId || '').trim();
+    if (expectedStreamId && session.streamId !== expectedStreamId) {
+        return {
+            success: false,
+            reason: 'stale-session',
+            currentStreamId: session.streamId,
+        };
     }
 
     session.refCount = Math.max(0, session.refCount - 1);
@@ -202,7 +228,7 @@ function releaseChildToolSession(toolId) {
     return { success: true, session: cloneChildToolSession(session) };
 }
 
-function restartChildToolSession(toolId) {
+async function restartChildToolSession(toolId) {
     const normalizedToolId = sanitizeChildToolId(toolId);
     const session = childToolSessions.get(normalizedToolId);
     if (!session) {
@@ -210,7 +236,7 @@ function restartChildToolSession(toolId) {
     }
 
     cancelChildToolRelease(session);
-    void stopChildToolSessionProcess(session);
+    await stopChildToolSessionProcess(session);
     childToolSessions.delete(normalizedToolId);
     return { success: true };
 }
@@ -514,6 +540,329 @@ function registerWindowHandlers(mainWindow) {
         return false;
     };
 
+    const readSubWindowState = (windowUrl) => {
+        const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
+        const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            if (normalizedWindowUrl) {
+                openWindows.delete(normalizedWindowUrl);
+            }
+            return {
+                path: normalizedWindowUrl,
+                open: false,
+                visible: false,
+                focused: false,
+                minimized: false,
+                maximized: false,
+                fullScreen: false,
+                bounds: null,
+            };
+        }
+
+        const display = screen.getDisplayMatching(targetWindow.getBounds());
+        const primaryDisplay = screen.getPrimaryDisplay();
+        return {
+            path: normalizedWindowUrl,
+            open: true,
+            visible: targetWindow.isVisible(),
+            focused: targetWindow.isFocused(),
+            minimized: targetWindow.isMinimized(),
+            maximized: targetWindow.isMaximized(),
+            fullScreen: targetWindow.isFullScreen(),
+            bounds: targetWindow.getBounds(),
+            display: {
+                id: display.id,
+                label: display.label || '',
+                scaleFactor: display.scaleFactor,
+                rotation: display.rotation,
+                bounds: display.bounds,
+                workArea: display.workArea,
+                primary: display.id === primaryDisplay.id,
+            },
+        };
+    };
+
+    const listDisplaySnapshots = () => {
+        const primaryDisplay = screen.getPrimaryDisplay();
+        return screen.getAllDisplays()
+            .map((display) => ({
+                id: display.id,
+                label: display.label || '',
+                scaleFactor: display.scaleFactor,
+                rotation: display.rotation,
+                bounds: display.bounds,
+                workArea: display.workArea,
+                primary: display.id === primaryDisplay.id,
+            }))
+            .sort((left, right) => Number(right.primary) - Number(left.primary)
+                || left.bounds.x - right.bounds.x
+                || left.bounds.y - right.bounds.y);
+    };
+
+    const listSubWindowEnvironment = () => {
+        const windows = [];
+        for (const [windowUrl, targetWindow] of openWindows.entries()) {
+            if (!targetWindow || targetWindow.isDestroyed()) {
+                openWindows.delete(windowUrl);
+                continue;
+            }
+            windows.push(readSubWindowState(windowUrl));
+        }
+        return {
+            success: true,
+            displays: listDisplaySnapshots(),
+            windows,
+        };
+    };
+
+    const prepareWindowForBoundsChange = (targetWindow) => {
+        if (targetWindow.isFullScreen()) targetWindow.setFullScreen(false);
+        if (targetWindow.isMinimized()) targetWindow.restore();
+        if (targetWindow.isMaximized()) targetWindow.unmaximize();
+    };
+
+    const setSubWindowBoundsByUrl = async (windowUrl, options = {}) => {
+        const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
+        const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            return { success: false, error: 'window-not-found', path: normalizedWindowUrl };
+        }
+
+        const displays = screen.getAllDisplays();
+        const requestedDisplayId = options.displayId;
+        const currentBounds = targetWindow.getBounds();
+        const currentDisplay = screen.getDisplayMatching(currentBounds);
+        const targetDisplay = requestedDisplayId === undefined || requestedDisplayId === null
+            ? currentDisplay
+            : displays.find(display => String(display.id) === String(requestedDisplayId));
+        if (!targetDisplay) {
+            return {
+                success: false,
+                error: `display-not-found:${String(requestedDisplayId)}`,
+                availableDisplays: listDisplaySnapshots(),
+            };
+        }
+
+        const requestedBounds = options.bounds && typeof options.bounds === 'object' ? options.bounds : options;
+        const numberOr = (value, fallback) => Number.isFinite(Number(value)) ? Math.round(Number(value)) : fallback;
+        const relativeToDisplay = requestedDisplayId !== undefined
+            && requestedDisplayId !== null
+            && options.relativeToDisplay !== false;
+        const currentRelativeX = currentBounds.x - currentDisplay.workArea.x;
+        const currentRelativeY = currentBounds.y - currentDisplay.workArea.y;
+        const rawX = numberOr(requestedBounds.x, targetDisplay.workArea.x + currentRelativeX);
+        const rawY = numberOr(requestedBounds.y, targetDisplay.workArea.y + currentRelativeY);
+        const candidate = {
+            x: relativeToDisplay && Number.isFinite(Number(requestedBounds.x))
+                ? targetDisplay.workArea.x + rawX
+                : rawX,
+            y: relativeToDisplay && Number.isFinite(Number(requestedBounds.y))
+                ? targetDisplay.workArea.y + rawY
+                : rawY,
+            width: numberOr(requestedBounds.width, currentBounds.width),
+            height: numberOr(requestedBounds.height, currentBounds.height),
+        };
+        const minimum = { width: SUB_WINDOW_MIN_WIDTH, height: SUB_WINDOW_MIN_HEIGHT };
+        const sizeClamped = clampBoundsToWorkArea(candidate, targetDisplay.workArea, minimum);
+        const nextBounds = options.clampToWorkArea === false
+            ? { ...sizeClamped, x: candidate.x, y: candidate.y }
+            : sizeClamped;
+
+        prepareWindowForBoundsChange(targetWindow);
+        targetWindow.setBounds(nextBounds);
+        if (options.focus === true) focusSubWindow(targetWindow);
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return {
+            success: true,
+            requested: {
+                displayId: requestedDisplayId ?? null,
+                relativeToDisplay,
+                clampToWorkArea: options.clampToWorkArea !== false,
+                bounds: requestedBounds,
+            },
+            state: readSubWindowState(normalizedWindowUrl),
+        };
+    };
+
+    const resolveArrangementDisplays = (options = {}) => {
+        const allDisplays = screen.getAllDisplays();
+        const requestedIds = Array.isArray(options.displayIds) ? [...new Set(options.displayIds.map(String))] : [];
+        if (requestedIds.length > 0) {
+            const selected = requestedIds
+                .map(id => allDisplays.find(display => String(display.id) === id))
+                .filter(Boolean);
+            if (selected.length !== requestedIds.length) {
+                const foundIds = new Set(selected.map(display => String(display.id)));
+                return {
+                    error: `display-not-found:${requestedIds.filter(id => !foundIds.has(id)).join(',')}`,
+                    displays: [],
+                };
+            }
+            return { displays: selected };
+        }
+        if (options.displayMode === 'all') {
+            const current = screen.getDisplayMatching(mainWindow.getBounds());
+            return {
+                displays: [
+                    current,
+                    ...allDisplays.filter(display => display.id !== current.id)
+                        .sort((left, right) => left.bounds.x - right.bounds.x || left.bounds.y - right.bounds.y),
+                ],
+            };
+        }
+        if (options.displayMode === 'primary') {
+            return { displays: [screen.getPrimaryDisplay()] };
+        }
+        return { displays: [screen.getDisplayMatching(mainWindow.getBounds())] };
+    };
+
+    const arrangeSubWindows = async (options = {}) => {
+        const layout = CHILD_WINDOW_LAYOUTS.includes(options.layout) ? options.layout : 'auto';
+        const requestedPaths = Array.isArray(options.paths)
+            ? [...new Set(options.paths.map(normalizeSubWindowUrl).filter(Boolean))]
+            : [];
+        const entries = [];
+        const missingPaths = [];
+        const candidates = requestedPaths.length > 0 ? requestedPaths : [...openWindows.keys()];
+        for (const windowUrl of candidates) {
+            const targetWindow = openWindows.get(windowUrl);
+            if (!targetWindow || targetWindow.isDestroyed()) {
+                openWindows.delete(windowUrl);
+                missingPaths.push(windowUrl);
+                continue;
+            }
+            entries.push({ path: windowUrl, window: targetWindow });
+        }
+        if (requestedPaths.length > 0 && missingPaths.length > 0) {
+            return {
+                success: false,
+                error: 'window-not-found',
+                missingPaths,
+                message: '部分目标子窗口未打开；请先打开或 detach 后再排列。',
+            };
+        }
+        if (entries.length === 0) {
+            return { success: false, error: 'no-open-windows', message: '当前没有可排列的独立子窗口。' };
+        }
+
+        const displayResolution = resolveArrangementDisplays(options);
+        if (displayResolution.error) {
+            return {
+                success: false,
+                error: displayResolution.error,
+                availableDisplays: listDisplaySnapshots(),
+            };
+        }
+        const displays = displayResolution.displays.slice(0, entries.length);
+        const baseCount = Math.floor(entries.length / displays.length);
+        let remainder = entries.length % displays.length;
+        let cursor = 0;
+        const arranged = [];
+        const displayResults = [];
+        for (const display of displays) {
+            const groupSize = baseCount + (remainder > 0 ? 1 : 0);
+            remainder = Math.max(0, remainder - 1);
+            const group = entries.slice(cursor, cursor + groupSize);
+            cursor += groupSize;
+            const calculation = calculateChildWindowLayout(layout, group.length, display.workArea, options);
+            displayResults.push({
+                displayId: display.id,
+                requestedLayout: calculation.requestedLayout,
+                resolvedLayout: calculation.resolvedLayout,
+                windowCount: group.length,
+            });
+            group.forEach((entry, index) => {
+                prepareWindowForBoundsChange(entry.window);
+                const minimum = { width: SUB_WINDOW_MIN_WIDTH, height: SUB_WINDOW_MIN_HEIGHT };
+                const bounds = clampBoundsToWorkArea(calculation.bounds[index], display.workArea, minimum);
+                entry.window.setBounds(bounds);
+                entry.window.show();
+                arranged.push({ path: entry.path, bounds, displayId: display.id });
+            });
+        }
+        if (options.focus !== false && entries[0]) focusSubWindow(entries[0].window);
+        await new Promise(resolve => setTimeout(resolve, 160));
+        return {
+            success: true,
+            requestedLayout: layout,
+            displayMode: options.displayMode || 'current',
+            displays: displayResults,
+            windows: arranged.map(item => ({ ...item, state: readSubWindowState(item.path) })),
+        };
+    };
+
+    const controlSubWindowByUrl = async (windowUrl, action) => {
+        const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
+        const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            return { success: false, error: 'window-not-found', state: readSubWindowState(normalizedWindowUrl) };
+        }
+
+        switch (String(action || '')) {
+            case 'focus':
+                focusSubWindow(targetWindow);
+                break;
+            case 'restore':
+                if (targetWindow.isMinimized()) targetWindow.restore();
+                targetWindow.show();
+                targetWindow.focus();
+                break;
+            case 'minimize':
+                targetWindow.minimize();
+                break;
+            case 'maximize':
+                if (targetWindow.isMinimized()) targetWindow.restore();
+                if (!targetWindow.isMaximized()) targetWindow.maximize();
+                targetWindow.show();
+                break;
+            case 'unmaximize':
+                if (targetWindow.isMaximized()) targetWindow.unmaximize();
+                break;
+            case 'close':
+                targetWindow.close();
+                break;
+            default:
+                return {
+                    success: false,
+                    error: `unsupported-window-action:${String(action || '')}`,
+                    state: readSubWindowState(normalizedWindowUrl),
+                };
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        return { success: true, state: readSubWindowState(normalizedWindowUrl) };
+    };
+
+    const requestChildAppHostCommand = (windowUrl, command, timeoutMs = 120000) => {
+        const normalizedWindowUrl = normalizeSubWindowUrl(windowUrl);
+        const targetWindow = normalizedWindowUrl ? openWindows.get(normalizedWindowUrl) : null;
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            return Promise.resolve({ ok: false, message: `独立子应用窗口未打开: ${normalizedWindowUrl}` });
+        }
+
+        return new Promise((resolve) => {
+            const requestId = `child-app-host-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const responseChannel = 'child-app-host-command-response';
+            const timer = setTimeout(() => {
+                ipcMain.removeListener(responseChannel, listener);
+                resolve({ ok: false, message: `子应用宿主命令超时: ${command?.action || 'unknown'}` });
+            }, timeoutMs);
+            const listener = (event, payload = {}) => {
+                if (event.sender !== targetWindow.webContents || payload.requestId !== requestId) {
+                    return;
+                }
+                clearTimeout(timer);
+                ipcMain.removeListener(responseChannel, listener);
+                resolve(payload.result && typeof payload.result === 'object'
+                    ? payload.result
+                    : { ok: false, message: '子应用宿主返回了无效结果' });
+            };
+
+            ipcMain.on(responseChannel, listener);
+            targetWindow.webContents.send('child-app-host-command', { requestId, command });
+        });
+    };
+
     const loadSubWindowBasePage = (webContents) => {
         /** 池中仅占位，不加�?SPA 根页，避免出�?index / 首页再切目标页的闪屏；正式打开时再 load 路由 */
         webContents.loadURL('about:blank');
@@ -567,6 +916,11 @@ function registerWindowHandlers(mainWindow) {
         subWindow.on('closed', () => {
             openWindows.delete(windowUrl);
             notifySubWindowState(windowUrl, false);
+            const childToolId = resolveChildToolIdFromWindowUrl(windowUrl);
+            if (childToolId) {
+                const releaseResult = releaseChildToolSession(childToolId);
+                if (releaseResult.success) notifyChildToolSessionStateChanged();
+            }
         });
     };
 
@@ -772,6 +1126,30 @@ function registerWindowHandlers(mainWindow) {
         return focusSubWindowByUrl(windowUrl);
     });
 
+    ipcMain.handle("window-state-by-url", (_event, windowUrl) => {
+        return readSubWindowState(windowUrl);
+    });
+
+    ipcMain.handle("window-list", () => {
+        return listSubWindowEnvironment();
+    });
+
+    ipcMain.handle("window-set-bounds-by-url", async (_event, payload = {}) => {
+        return await setSubWindowBoundsByUrl(payload.path, payload);
+    });
+
+    ipcMain.handle("window-arrange", async (_event, payload = {}) => {
+        return await arrangeSubWindows(payload);
+    });
+
+    ipcMain.handle("window-control-by-url", async (_event, payload = {}) => {
+        return await controlSubWindowByUrl(payload.path, payload.action);
+    });
+
+    ipcMain.handle("child-app-host-command-by-url", (_event, payload = {}) => {
+        return requestChildAppHostCommand(payload.path, payload.command);
+    });
+
     ipcMain.handle("child-tool-session-acquire", (_event, toolId) => {
         const normalizedToolId = sanitizeChildToolId(toolId);
         const session = childToolSessions.get(normalizedToolId);
@@ -813,14 +1191,14 @@ function registerWindowHandlers(mainWindow) {
         return { success: true, session: cloneChildToolSession(childToolSessions.get(toolId)) };
     });
 
-    ipcMain.handle("child-tool-session-release", (_event, toolId) => {
-        const result = releaseChildToolSession(toolId);
+    ipcMain.handle("child-tool-session-release", (_event, payload) => {
+        const result = releaseChildToolSession(payload);
         notifyChildToolSessionStateChanged();
         return result;
     });
 
-    ipcMain.handle("child-tool-session-restart", (_event, toolId) => {
-        const result = restartChildToolSession(toolId);
+    ipcMain.handle("child-tool-session-restart", async (_event, toolId) => {
+        const result = await restartChildToolSession(toolId);
         notifyChildToolSessionStateChanged();
         return result;
     });

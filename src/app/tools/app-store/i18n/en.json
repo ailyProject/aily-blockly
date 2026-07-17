@@ -13,6 +13,7 @@
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
         "FFS_MANAGER_DESC": "ESP32 filesystem partition manager",
         "AI_DESC": "AI Assistant",
+        "AI_REACT_DESC": "AI assistant experimental version",
         "MODEL_STORE_DESC": "AI Model Store",
         "CLOUD_SPACE_DESC": "Cloud storage space",
         "USER_CENTER_DESC": "User center and settings",

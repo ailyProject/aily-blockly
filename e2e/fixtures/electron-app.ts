@@ -98,7 +98,9 @@ export async function closeAilyElectronApp(app: ElectronApplication, timeoutMs =
 
   await app
     .evaluate(({ app }) => {
-      app.exit(0);
+      // app.exit() 会绕过 before-quit / will-quit，导致编译、终端等子进程
+      // 来不及执行主进程里注册的清理逻辑。
+      app.quit();
     })
     .catch(() => {});
 
@@ -114,7 +116,36 @@ export async function closeAilyElectronApp(app: ElectronApplication, timeoutMs =
     return;
   }
 
-  throw new Error(`[e2e] Electron ${processRef.pid ?? ''} 关闭超时。`);
+  console.warn(`[e2e] Electron ${processRef.pid ?? ''} 优雅关闭超时，强制清理本次测试进程树。`);
+  forceKillElectronProcessTree(processRef);
+  await waitForElectronExit(processRef, timeoutMs);
+
+  if (didExit || processRef.exitCode !== null || processRef.signalCode !== null) {
+    return;
+  }
+
+  throw new Error(`[e2e] Electron ${processRef.pid ?? ''} 强制关闭后仍未退出。`);
+}
+
+function forceKillElectronProcessTree(processRef: ReturnType<ElectronApplication['process']>): void {
+  const pid = processRef.pid;
+  if (!pid) {
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    return;
+  }
+
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    processRef.kill('SIGKILL');
+  }
 }
 
 async function waitForElectronExit(processRef: ReturnType<ElectronApplication['process']>, timeoutMs: number): Promise<void> {
@@ -248,9 +279,11 @@ export const test = base.extend<AilyFixtures>({
   electronApp: async ({}, use, testInfo) => {
     const launched = await launchAilyElectron();
 
-    await use(launched.app);
-
-    await launched.close();
+    try {
+      await use(launched.app);
+    } finally {
+      await launched.close();
+    }
   },
 
   mainWindow: async ({ electronApp }, use) => {

@@ -7,6 +7,7 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ActionService } from '../../../../services/action.service';
 import { AuthService } from '../../../../services/auth.service';
 import { BuilderService } from '../../../../services/builder.service';
+import { ConnectionGraphService } from '../../../../services/connection-graph.service';
 import { ConfigService } from '../../../../services/config.service';
 import { ElectronService } from '../../../../services/electron.service';
 import { ProjectService } from '../../../../services/project.service';
@@ -69,6 +70,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     private electronService: ElectronService,
     private messageService: NzMessageService,
     private configService: ConfigService,
+    private connectionGraphService: ConnectionGraphService,
     private builderService: BuilderService,
     private actionService: ActionService,
     private workflowService: WorkflowService,
@@ -479,7 +481,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     this.uiService.openWindow({
       title: this.translate.instant('FLOAT_SIDER.CIRCUIT'),
       path: `iframe?url=${encodeURIComponent(windowUrl)}`,
-      data: null,
+      data: this.connectionGraphService.buildPayload(boardPackagePath),
       width: 900,
       height: 700,
     });

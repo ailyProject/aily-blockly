@@ -155,6 +155,10 @@ export interface ConnectionGraphPayload {
   connections: ConnectionDef[];
   /** 主题 */
   theme?: 'light' | 'dark';
+  /** 是否启用子页面自动布线（仅用于传输，不持久化） */
+  autoRoutingMode?: boolean;
+  /** 是否启用子页面自动保存（仅用于传输，不持久化） */
+  autoSave?: boolean;
 }
 
 /** 引脚摘要（精简版，供 LLM 使用） */

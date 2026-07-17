@@ -306,18 +306,7 @@ export class RenderEventPartAdapter {
 
       case 'todo_update':
         const todoItems = normalizeTodoItems(event.items);
-        const todoMetadata = buildTodoStateMetadata(
-          event.sessionId,
-          event.summary,
-          todoItems,
-          this.getExistingStateMetadata(handle, `todo-${event.sessionId}`),
-        );
-        this._upsertState(handle, `todo-${event.sessionId}`, {
-          state: todoItems.length > 0 ? 'done' : 'info',
-          text: event.summary,
-          kind: 'todo',
-          metadata: todoMetadata,
-        });
+        const todoMetadata = buildTodoMetadata(event.summary, todoItems);
         this.patchLatestTodoToolCall(handle, todoMetadata);
         return true;
 
@@ -764,17 +753,6 @@ export class RenderEventPartAdapter {
     ].join('\u001f');
   }
 
-  private getExistingStateMetadata(
-    handle: ChatPartStoreOpaqueHandle,
-    stateId: string,
-  ): Record<string, unknown> | undefined {
-    const part = this._store.getPartsForHandle(handle).find(
-      (candidate): candidate is StatePart => candidate.type === 'state' && candidate.stateId === stateId,
-    );
-
-    return asRecord(part?.metadata);
-  }
-
   private patchLatestTodoToolCall(
     handle: ChatPartStoreOpaqueHandle,
     todoMetadata: Record<string, unknown>,
@@ -910,11 +888,9 @@ export class RenderEventPartAdapter {
   }
 }
 
-function buildTodoStateMetadata(
-  sessionId: string,
+function buildTodoMetadata(
   summary: string,
   items: readonly { id: number; title: string; status: string }[],
-  previousMetadata?: Record<string, unknown>,
 ): Record<string, unknown> {
   const normalizedItems = items.map(item => ({
     id: item.id,
@@ -928,53 +904,13 @@ function buildTodoStateMetadata(
   const currentStep = totalCount > 0
     ? Math.min(totalCount, activeTodo ? completedCount + 1 : totalCount)
     : 0;
-  const listState = resolveTodoListState(items);
-  const signature = buildTodoSignature(normalizedItems);
-  const previousTimeline = asRecordArray(previousMetadata?.['timeline']);
-  const previousSnapshot = previousTimeline.at(-1);
-  const phase = classifyTodoPhase(previousSnapshot, normalizedItems, {
-    summary,
-    state: listState,
-    totalCount,
-    completedCount,
-    currentStep,
-    activeTitle: activeTodo?.title,
-  });
-  const snapshot: Record<string, unknown> = {
-    recordId: asString(previousSnapshot?.['recordId']) && asString(previousSnapshot?.['signature']) === signature
-      ? asString(previousSnapshot?.['recordId'])
-      : `todo:${sessionId}:${previousTimeline.length + 1}`,
-    signature,
-    summary,
-    state: listState,
-    listState,
-    totalCount,
-    completedCount,
-    currentStep,
-    activeTitle: activeTodo?.title,
-    phaseKind: phase.kind,
-    phaseLabel: phase.label,
-    phaseDetail: phase.detail,
-    items: normalizedItems,
-  };
-
-  const timeline = previousTimeline.length === 0
-    ? [snapshot]
-    : asString(previousSnapshot?.['signature']) === signature
-      ? [...previousTimeline.slice(0, -1), snapshot]
-      : [...previousTimeline, snapshot].slice(-8);
-
   return {
     items: normalizedItems,
     summary,
-    state: listState,
-    listState,
     totalCount,
     completedCount,
     currentStep,
     activeTitle: activeTodo?.title,
-    signature,
-    timeline,
   };
 }
 
@@ -996,104 +932,6 @@ function normalizeTodoItems(value: unknown): Array<{ id: number; title: string; 
     .filter((entry): entry is { id: number; title: string; status: string } => !!entry);
 }
 
-function classifyTodoPhase(
-  previousSnapshot: Record<string, unknown> | undefined,
-  items: readonly { id: number; title: string; status: string }[],
-  next: {
-    summary: string;
-    state: StatePart['state'];
-    totalCount: number;
-    completedCount: number;
-    currentStep: number;
-    activeTitle?: string;
-  },
-): { kind: string; label: string; detail?: string } {
-  const previousItems = asRecordArray(previousSnapshot?.['items']).map(item => ({
-    id: Number(item['id']),
-    title: asString(item['title']) || '',
-    status: asString(item['status']) || 'not-started',
-  }));
-  const previousActiveTitle = asString(previousSnapshot?.['activeTitle']);
-  const previousCompletedCount = asNumber(previousSnapshot?.['completedCount']) ?? 0;
-  const previousTotalCount = asNumber(previousSnapshot?.['totalCount']) ?? 0;
-
-  if (!previousSnapshot) {
-    if (next.totalCount === 0) {
-      return { kind: 'empty', label: 'Todo 列表为空' };
-    }
-
-    if (next.activeTitle) {
-      return { kind: 'start', label: `开始 ${next.activeTitle}`, detail: formatTodoProgress(next.currentStep, next.totalCount) };
-    }
-
-    return { kind: 'snapshot', label: '建立 Todo 计划', detail: formatTodoProgress(next.currentStep, next.totalCount) };
-  }
-
-  if (next.totalCount === 0 && previousTotalCount > 0) {
-    return { kind: 'cleared', label: '清空 Todo 列表' };
-  }
-
-  if (next.totalCount > 0 && next.completedCount === next.totalCount) {
-    if (previousActiveTitle) {
-      return { kind: 'complete-all', label: `完成 ${previousActiveTitle}`, detail: '全部完成' };
-    }
-
-    return { kind: 'complete-all', label: '完成全部任务', detail: formatTodoProgress(next.totalCount, next.totalCount) };
-  }
-
-  if (next.completedCount > previousCompletedCount && previousActiveTitle) {
-    return next.activeTitle && next.activeTitle !== previousActiveTitle
-      ? {
-          kind: 'advance',
-          label: `完成 ${previousActiveTitle}`,
-          detail: `切换到 ${next.activeTitle}`,
-        }
-      : {
-          kind: 'complete',
-          label: `完成 ${previousActiveTitle}`,
-          detail: formatTodoProgress(next.currentStep, next.totalCount),
-        };
-  }
-
-  if (next.activeTitle && next.activeTitle !== previousActiveTitle) {
-    return {
-      kind: 'switch',
-      label: `切换到 ${next.activeTitle}`,
-      detail: formatTodoProgress(next.currentStep, next.totalCount),
-    };
-  }
-
-  if (next.totalCount !== previousTotalCount) {
-    return {
-      kind: 'reshape',
-      label: next.totalCount > previousTotalCount ? '扩展 Todo 计划' : '收缩 Todo 计划',
-      detail: formatTodoProgress(next.currentStep, next.totalCount),
-    };
-  }
-
-  const changedTitles = items.filter(item => {
-    const previous = previousItems.find(candidate => candidate.id === item.id);
-    return !!previous && previous.title !== item.title;
-  });
-  if (changedTitles.length > 0) {
-    return {
-      kind: 'rename',
-      label: `更新 ${changedTitles[0].title}`,
-      detail: formatTodoProgress(next.currentStep, next.totalCount),
-    };
-  }
-
-  return {
-    kind: 'sync',
-    label: next.activeTitle ? `同步 ${next.activeTitle}` : '同步 Todo 列表',
-    detail: formatTodoProgress(next.currentStep, next.totalCount),
-  };
-}
-
-function formatTodoProgress(currentStep: number, totalCount: number): string | undefined {
-  return totalCount > 0 ? `${Math.max(0, currentStep)}/${totalCount}` : undefined;
-}
-
 function buildTodoToolSpecificData(todoMetadata: Record<string, unknown>): Record<string, unknown> {
   const items = asRecordArray(todoMetadata['items']);
   return {
@@ -1110,12 +948,6 @@ function buildTodoToolSpecificData(todoMetadata: Record<string, unknown>): Recor
     currentStep: asNumber(todoMetadata['currentStep']) ?? 0,
     result: asString(todoMetadata['summary']) || '',
   };
-}
-
-function buildTodoSignature(items: readonly { id: number; title: string; status: string }[]): string {
-  return items
-    .map(item => `${item.id}:${item.status}:${item.title}`)
-    .join('|');
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1180,19 +1012,6 @@ function normalizeTimestamp(value: unknown): string | undefined {
     return new Date(value).toISOString();
   }
   return undefined;
-}
-
-function resolveTodoListState(items: readonly { status: string }[]): StatePart['state'] {
-  if (!items.length) {
-    return 'info';
-  }
-
-  const hasInFlightItem = items.some(item => item.status === 'in-progress' || item.status === 'not-started');
-  if (hasInFlightItem) {
-    return 'doing';
-  }
-
-  return items.every(item => item.status === 'completed') ? 'done' : 'info';
 }
 
 // ---------------------------------------------------------------------------

@@ -52,6 +52,10 @@ export class QuickSendListComponent {
     }
   }
 
+  isSignalActive(signalType: string): boolean {
+    return this.serialMonitorService.isSignalActive(signalType);
+  }
+
   @Output() openMore = new EventEmitter();
   showMore = false;
   edit() {

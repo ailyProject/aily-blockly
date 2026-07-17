@@ -3,7 +3,8 @@
         <div class="btns">
             <div class="title">快捷发送</div>
             @for(item of quickSendList; track $index) {
-            <div class="item-btn ccenter" [ngClass]="item.type" (click)="send(item)">
+            <div class="item-btn ccenter" [ngClass]="[item.type, isSignalActive(item.data) ? 'active' : '']"
+                (click)="send(item)">
                 {{item.name}}
             </div>
             }

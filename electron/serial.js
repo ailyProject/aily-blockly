@@ -70,6 +70,32 @@ function makeCloseWithUnregister(port, doClose) {
 }
 
 /**
+ * serialport.set() 会把未传入的 DTR/RTS 补成 true。
+ * 在包装层保存两路输出状态，确保只修改一路时不会意外覆盖另一路。
+ */
+function createControlSignalState(port) {
+  let state = { dtr: false, rts: false };
+
+  return {
+    set: (options = {}, callback) => {
+      const nextState = {
+        dtr: options.dtr ?? state.dtr,
+        rts: options.rts ?? state.rts,
+      };
+      port.set({ ...options, ...nextState }, (err) => {
+        if (!err) state = nextState;
+        if (callback) callback(err);
+      });
+    },
+    reset: () => {
+      state = { dtr: false, rts: false };
+    },
+    dtrBool: () => state.dtr,
+    rtsBool: () => state.rts,
+  };
+}
+
+/**
  * 创建带节流功能的串口包装器
  * @param {Object} options - 串口配置选项
  * @param {number} [flushInterval=100] - 节流间隔，单位毫秒
@@ -77,6 +103,7 @@ function makeCloseWithUnregister(port, doClose) {
  */
 function createThrottledSerialPort(options, flushInterval = DEFAULT_FLUSH_INTERVAL) {
   const port = new SerialPort({ autoOpen: false, ...options });
+  const controlSignals = createControlSignalState(port);
   
   // IPC 节流相关变量
   let dataBuffer = [];          // 数据缓冲区
@@ -91,6 +118,7 @@ function createThrottledSerialPort(options, flushInterval = DEFAULT_FLUSH_INTERV
       resolve();
     });
   });
+  const openWithEviction = makeOpenWithEviction(port, evictSelf);
   
   /**
    * 刷新缓冲区，将累积的数据一次性发送
@@ -134,7 +162,10 @@ function createThrottledSerialPort(options, flushInterval = DEFAULT_FLUSH_INTERV
     /**
      * 打开串口
      */
-    open: makeOpenWithEviction(port, evictSelf),
+    open: (callback) => {
+      controlSignals.reset();
+      openWithEviction(callback);
+    },
     
     /**
      * 关闭串口
@@ -184,27 +215,22 @@ function createThrottledSerialPort(options, flushInterval = DEFAULT_FLUSH_INTERV
     /**
      * 设置串口信号 (DTR/RTS 等)
      */
-    set: (options, callback) => port.set(options, callback),
+    set: controlSignals.set,
+
+    /**
+     * 在保持串口打开的情况下更新波特率
+     */
+    update: (options, callback) => port.update(options, callback),
     
     /**
      * 获取 DTR 信号状态
      */
-    dtrBool: () => {
-      if (typeof port.dtrBool === 'function') {
-        return port.dtrBool();
-      }
-      return false;
-    },
+    dtrBool: controlSignals.dtrBool,
     
     /**
      * 获取 RTS 信号状态
      */
-    rtsBool: () => {
-      if (typeof port.rtsBool === 'function') {
-        return port.rtsBool();
-      }
-      return false;
-    },
+    rtsBool: controlSignals.rtsBool,
     
     /**
      * 获取串口路径

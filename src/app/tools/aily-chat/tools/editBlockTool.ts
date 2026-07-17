@@ -1288,7 +1288,7 @@ function getDropdownOptions(block: any, fieldName: string): string[] {
 function smartSetFieldValue(
   block: any,
   fieldName: string,
-  actualValue: string
+  actualValue: any
 ): { success: boolean; error?: string; suggestion?: string } {
   const field = block.getField(fieldName);
   if (!field) {
@@ -1383,6 +1383,20 @@ function smartSetFieldValue(
       return { success: false, error: e?.message || String(e), suggestion: `字段 "${fieldName}" 设置失败: ${e?.message || e}` };
     }
   }
+}
+
+/**
+ * 保留自定义字段的结构化值；只有 Blockly 变量字段才从对象中提取 ID/名称。
+ */
+function normalizeBlocklyFieldValue(block: any, fieldName: string, value: any): any {
+  if (typeof value === 'object' && value !== null) {
+    const field = block.getField?.(fieldName);
+    if (field?.getVariable && typeof field.getVariable === 'function') {
+      return value.id ?? value.name ?? value;
+    }
+    return value;
+  }
+  return String(value);
 }
 
 function configureBlockFields(block: any, fields: FieldConfig): {
@@ -1775,14 +1789,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
                           for (const { fieldName: fn, value: v } of normalFieldsImmediate) {
                             const fld = block.getField(fn);
                             if (fld) {
-                              let val: string;
-                              if (typeof v === 'object' && v !== null) {
-                                if ((v as any).id) val = (v as any).id;
-                                else if ((v as any).name) val = (v as any).name;
-                                else val = JSON.stringify(v);
-                              } else {
-                                val = String(v);
-                              }
+                              const val = normalizeBlocklyFieldValue(block, fn, v);
                               
                               try {
                                 block.setFieldValue(val, fn);
@@ -1841,7 +1848,9 @@ function configureBlockFields(block: any, fields: FieldConfig): {
             // 📋 常规字段：直接设置值
             // console.log(`📋 常规字段处理: ${fieldName} = ${actualValue} (类型: ${fieldTypeInfo.fieldType || '未知'})`);
             try {
-              block.setFieldValue(actualValue, fieldName);
+              // 自定义 Blockly 字段可以使用对象/数组作为值（例如动画帧）。
+              // 此处必须传入原始值；JSON 字符串会被字段校验器拒绝并导致数据清空。
+              block.setFieldValue(normalizeBlocklyFieldValue(block, fieldName, value), fieldName);
               // console.log(`✅ 字段设置成功: ${fieldName} = ${actualValue}`);
               configSuccess = true;
             } catch (setFieldError: any) {
@@ -1963,18 +1972,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
           }
           
           // 字段现在存在，使用智能设置（支持下拉菜单匹配+验证）
-          let actualValue: string;
-          if (typeof value === 'object' && value !== null) {
-            if ((value as any).id) {
-              actualValue = (value as any).id;
-            } else if ((value as any).name) {
-              actualValue = (value as any).name;
-            } else {
-              actualValue = JSON.stringify(value);
-            }
-          } else {
-            actualValue = String(value);
-          }
+          const actualValue = normalizeBlocklyFieldValue(block, fieldName, value);
           
           const setResult = smartSetFieldValue(block, fieldName, actualValue);
           if (setResult.success) {
@@ -2058,14 +2056,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
       for (const { fieldName, value } of mappedRetryFields) {
         const existingField = block.getField(fieldName);
         if (existingField) {
-          let actualValue: string;
-          if (typeof value === 'object' && value !== null) {
-            if ((value as any).id) actualValue = (value as any).id;
-            else if ((value as any).name) actualValue = (value as any).name;
-            else actualValue = JSON.stringify(value);
-          } else {
-            actualValue = String(value);
-          }
+          const actualValue = normalizeBlocklyFieldValue(block, fieldName, value);
           const setResult = smartSetFieldValue(block, fieldName, actualValue);
           if (setResult.success) {
             // console.log(`✅ 字段设置成功: ${fieldName} = ${actualValue}`);
@@ -2102,14 +2093,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
           // 尝试将值映射到第一个未配置的字段
           if (unconfiguredFields.length > 0) {
             const targetField = unconfiguredFields[0];
-            let actualValue: string;
-            if (typeof value === 'object' && value !== null) {
-              if ((value as any).id) actualValue = (value as any).id;
-              else if ((value as any).name) actualValue = (value as any).name;
-              else actualValue = JSON.stringify(value);
-            } else {
-              actualValue = String(value);
-            }
+            const actualValue = normalizeBlocklyFieldValue(block, targetField, value);
             const setResult = smartSetFieldValue(block, targetField, actualValue);
             if (setResult.success) {
               // console.log(`🔄 字段映射: ${fieldName} → ${targetField} = ${actualValue}`);

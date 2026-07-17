@@ -1715,77 +1715,60 @@ describe('RenderEventPartAdapter', () => {
     expect((parts[0] as any).progress).toBe(50);
   });
 
-  it('projects todo updates as dedicated todo activity state', () => {
+  it('does not project todo state without its tool invocation', () => {
     processCurrent({
       type: 'todo_update',
       sessionId: 'sess-1',
-      summary: 'Todo list updated: 2 items (0 completed, 2 remaining). Current: "收口 input part band"',
-      items: [
-        { id: 1, title: '收口 input part band', status: 'in-progress' },
-        { id: 2, title: '对齐 todo transcript 标题', status: 'not-started' },
-      ],
+      summary: 'Todo list updated',
+      items: [{ id: 1, title: 'Build project', status: 'in-progress' }],
       timestamp: 1,
     } as any);
 
-    const parts = store.getPartsForHandle(currentHandle);
-    expect(parts[0].type).toBe('state');
-    expect((parts[0] as any).kind).toBe('todo');
-    expect((parts[0] as any).state).toBe('done');
-    expect((parts[0] as any).text).toContain('Todo list updated');
-    expect((parts[0] as any).metadata.listState).toBe('doing');
-    expect((parts[0] as any).metadata.timeline.length).toBe(1);
-    expect((parts[0] as any).metadata.timeline[0].phaseLabel).toBe('开始 收口 input part band');
-
-    processCurrent({
-      type: 'todo_update',
-      sessionId: 'sess-1',
-      summary: 'Todo list updated: 2 items (1 completed, 1 remaining). Current: "对齐 todo transcript 标题"',
-      items: [
-        { id: 1, title: '收口 input part band', status: 'completed' },
-        { id: 2, title: '对齐 todo transcript 标题', status: 'in-progress' },
-      ],
-      timestamp: 2,
-    } as any);
-
-    const nextParts = store.getPartsForHandle(currentHandle);
-    expect((nextParts[0] as any).metadata.timeline.length).toBe(2);
-    expect((nextParts[0] as any).metadata.timeline[1].activeTitle).toBe('对齐 todo transcript 标题');
-    expect((nextParts[0] as any).metadata.timeline[1].phaseLabel).toBe('完成 收口 input part band');
-    expect((nextParts[0] as any).metadata.timeline[1].phaseDetail).toBe('切换到 对齐 todo transcript 标题');
+    expect(store.getPartsForHandle(currentHandle)).toEqual([]);
   });
 
-  it('completes the canonical todo part without completing pending todo items', () => {
+  it('completes the canonical todo tool item with todoList-specific data', () => {
     const normalizer = new RenderEventItemLifecycleNormalizer();
     normalizer.process({ type: 'turn_begin', turnId: 'turn-todo', timestamp: 1 } as RenderEvent);
+    normalizer.process({
+      type: 'tool_call_begin',
+      toolCallId: 'todo-call-1',
+      toolName: 'manage_todo_list',
+      input: {},
+      timestamp: 2,
+    } as RenderEvent);
 
     const events = normalizer.process({
       type: 'todo_update',
       sessionId: 'session-todo',
       summary: 'Todo list updated',
       items: [{ id: 1, title: 'Build project', status: 'in-progress' }],
-      timestamp: 2,
+      timestamp: 3,
     } as unknown as RenderEvent);
 
     expect(events).toEqual([
-      jasmine.objectContaining({ type: 'itemStarted', itemId: 'todo:session-todo', itemKind: 'state' }),
       jasmine.objectContaining({
         type: 'itemDelta',
-        itemId: 'todo:session-todo',
+        itemId: 'main:root:root:tool:todo-call-1',
+        itemKind: 'tool',
         structuredPayload: jasmine.objectContaining({
-          type: 'state',
-          kind: 'todo',
+          type: 'tool',
           state: 'done',
+          metadata: jasmine.objectContaining({
+            toolSpecificData: jasmine.objectContaining({ kind: 'todoList' }),
+          }),
         }),
       }),
       jasmine.objectContaining({
         type: 'itemCompleted',
-        itemId: 'todo:session-todo',
+        itemId: 'main:root:root:tool:todo-call-1',
+        itemKind: 'tool',
         status: 'completed',
       }),
     ]);
   });
 
-  it('completes the todo invocation when the separate todo state is published', () => {
+  it('completes one todo invocation without publishing a separate state part', () => {
     processCurrent({
       type: 'tool_call_begin',
       toolCallId: 'todo-call-1',
@@ -1804,14 +1787,13 @@ describe('RenderEventPartAdapter', () => {
 
     const parts = store.getPartsForHandle(currentHandle);
     const invocation = parts.find(part => part.type === 'tool_call') as any;
-    const todoState = parts.find(part => part.type === 'state') as any;
     expect(invocation.state).toBe('done');
     expect(invocation.metadata.toolSpecificData.kind).toBe('todoList');
-    expect(todoState.state).toBe('done');
-    expect(todoState.metadata.listState).toBe('doing');
+    expect(parts.length).toBe(1);
+    expect(parts.some(part => part.type === 'state')).toBeFalse();
   });
 
-  it('projects todo updates with missing items as an empty canonical todo state', () => {
+  it('accepts todo updates with missing items without publishing transcript state', () => {
     expect(() => processCurrent({
       type: 'todo_update',
       sessionId: 'sess-empty',
@@ -1819,19 +1801,7 @@ describe('RenderEventPartAdapter', () => {
       timestamp: 1,
     } as any)).not.toThrow();
 
-    const parts = store.getPartsForHandle(currentHandle);
-    expect(parts[0]).toEqual(jasmine.objectContaining({
-      type: 'state',
-      kind: 'todo',
-      state: 'info',
-      text: 'Todo list updated',
-    }));
-    expect((parts[0] as any).metadata).toEqual(jasmine.objectContaining({
-      totalCount: 0,
-      completedCount: 0,
-      currentStep: 0,
-      items: [],
-    }));
+    expect(store.getPartsForHandle(currentHandle)).toEqual([]);
   });
 
   it('patches the latest todo tool call with todoList-style toolSpecificData on todo updates', () => {

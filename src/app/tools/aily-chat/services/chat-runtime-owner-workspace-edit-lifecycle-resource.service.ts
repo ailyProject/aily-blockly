@@ -10,24 +10,22 @@ import type { RequestCheckpointMetadata } from './edit-checkpoint.service';
 @Injectable()
 export class ChatRuntimeOwnerWorkspaceEditLifecycleResourceService
   implements ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort {
-  ensureSessionStartAbsExport(sessionId: string | null | undefined, projectPath: string | null | undefined): void {
-    const targetSessionId = this.requireSessionId(sessionId, 'ABS session-start export');
+  async ensureWorkspaceAbsExport(sessionId: string | null | undefined, projectPath: string | null | undefined): Promise<void> {
+    const targetSessionId = this.requireSessionId(sessionId, 'ABS workspace export');
     const normalizedProjectPath = this.normalizeString(projectPath);
-    void this.requestHostResourceOperation({
+    await this.requestHostResourceOperation({
       sessionId: targetSessionId,
-      kind: 'abs-session-start-export',
-      label: 'Scheduling ABS session-start export',
-      detail: 'Workspace adapter is preparing the session-start ABS export.',
+      kind: 'abs-workspace-export',
+      label: 'Synchronizing Blockly workspace to ABS',
+      detail: 'Workspace adapter is ensuring project.abs matches the current Blockly revision.',
       resource: {
         projectPath: normalizedProjectPath,
       },
       payload: {
         adapter: 'absAutoSync',
-        action: 'scheduleSessionStartExport',
+        action: 'ensureWorkspaceExport',
         projectPath: normalizedProjectPath,
       },
-    }).catch((error: unknown) => {
-      console.warn('[AilyChat][RuntimeOwnerResource] ABS session-start export request failed:', error);
     });
   }
 

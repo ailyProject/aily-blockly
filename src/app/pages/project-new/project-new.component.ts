@@ -185,10 +185,7 @@ export class ProjectNewComponent implements OnDestroy {
   }
 
   async ngOnInit() {
-    if (this.electronService.isElectron) {
-      const pt = this.platformService.getPlatformSeparator();
-      this.newProjectData.path = window['path'].getUserDocuments() + `${pt}aily-project${pt}`;
-    }
+    this.newProjectData.path = await this.projectService.getDefaultProjectParentPath();
 
     // 切换标题
     // this.electronService.setTitle('PROJECT_NEW.TITLE');

@@ -75,6 +75,13 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
     }
 
     const startedAt = Date.now();
+    const absExportOutcomePromise = this.turnStartupEditLifecycle.ensureAbsExport(
+      targetSessionId,
+      request.agentRuntimeMode,
+    ).then(
+      () => ({ ok: true as const }),
+      error => ({ ok: false as const, error }),
+    );
     const ensureAgentStartedAt = Date.now();
     if (shouldTraceApprovalRuntimeBoundary()) {
       console.info('[AilyChat][ApprovalRuntimeBoundary]', {
@@ -106,6 +113,19 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
       hydrateMs,
       `session=${targetSessionId},turns=${hydratedTurnCount}`,
       { slowThresholdMs: 24, counterPrefix: 'submitted_turn.hydrate_history' },
+    );
+
+    const absExportStartedAt = Date.now();
+    const absExportOutcome = await absExportOutcomePromise;
+    if (absExportOutcome.ok === false) {
+      throw absExportOutcome.error;
+    }
+    const absExportWaitMs = Date.now() - absExportStartedAt;
+    ChatPerformanceTracer.recordDuration(
+      'submitted_turn_abs_workspace_export_wait',
+      absExportWaitMs,
+      `session=${targetSessionId},runtimeMode=${request.agentRuntimeMode ?? 'unbound'}`,
+      { slowThresholdMs: 16, counterPrefix: 'submitted_turn.abs_workspace_export_wait' },
     );
 
     const elapsedMs = Date.now() - startedAt;

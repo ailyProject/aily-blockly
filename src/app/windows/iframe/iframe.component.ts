@@ -119,14 +119,6 @@ export class IframeComponent implements OnInit, OnDestroy {
   async ngOnInit() {
     await this.toolI18n.load('aily-chat');
 
-    // 延迟显示无数据状态（如果加载失败）
-    setTimeout(() => {
-      if (this.isLoading) {
-        this.isLoading = false;
-        this.showEmptyState = true;
-      }
-    }, 10000); // 10秒超时
-
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     if (this.embedded) {
@@ -166,6 +158,7 @@ export class IframeComponent implements OnInit, OnDestroy {
     }
     if (url.includes('connection-graph')) {
       this.isConnectionGraphWindow = true;
+      this.startConnectionGraphIpcListener();
     }
     if (url.includes('component-viewer')) {
       this.isComponentViewerWindow = true;
@@ -286,6 +279,20 @@ export class IframeComponent implements OnInit, OnDestroy {
                 // 获取当前 payload 数据（包含 componentConfigs, components, connections）
                 const currentPayload = this.iframeData as any;
                 if (currentPayload && currentPayload.components) {
+                  if (currentPayload.autoSave === false) {
+                    this.iframeData = {
+                      ...currentPayload,
+                      connections,
+                    };
+                    return;
+                  }
+                  if (
+                    JSON.stringify(currentPayload.connections ?? []) ===
+                    JSON.stringify(connections)
+                  ) {
+                    console.log('[IframeComponent] 跳过未变化的连线回写');
+                    return;
+                  }
                   // 通过 IPC 让主窗口保存数据（子窗口无法直接访问 projectPath）
                   const updatedData = {
                     version: '1.0.0',
@@ -338,9 +345,8 @@ export class IframeComponent implements OnInit, OnDestroy {
       this.isLoading = false;
       this.showEmptyState = false;
 
-      // 开始监听 connection-graph IPC（统一按 type 分发）
-      if (this.isConnectionGraphWindow) {
-        this.startConnectionGraphIpcListener();
+      if (this.isConnectionGraphWindow && this.iframeData !== undefined) {
+        await this.pushDataToRemote();
       }
 
       // TODO:如果是 component-viewer 窗口，立即推送数据给子页面，新版本为web主动调用，这里临时多推送一次，待web更新后可删除
@@ -426,7 +432,11 @@ export class IframeComponent implements OnInit, OnDestroy {
    * 开始监听 connection-graph IPC（统一按 type 分发，规范：docs/iframe-ipc-spec.md）
    */
   private startConnectionGraphIpcListener(): void {
-    if (!this.electronService.isElectron || !window['ipcRenderer']) return;
+    if (
+      this.connectionGraphIpcCleanup
+      || !this.electronService.isElectron
+      || !window['ipcRenderer']
+    ) return;
 
     const handler = (_event: unknown, payload: IframeIpcPayload) => {
       const { type, data } = payload ?? {};
@@ -458,10 +468,10 @@ export class IframeComponent implements OnInit, OnDestroy {
 
     window['ipcRenderer'].on(IFRAME_CHANNEL_CONNECTION_GRAPH, handler);
     this.connectionGraphIpcCleanup = () => {
-      // window['ipcRenderer'].removeListener(
-      //   IFRAME_CHANNEL_CONNECTION_GRAPH,
-      //   handler,
-      // );
+      window['ipcRenderer']?.removeListener?.(
+        IFRAME_CHANNEL_CONNECTION_GRAPH,
+        handler,
+      );
     };
   }
 
@@ -505,6 +515,12 @@ export class IframeComponent implements OnInit, OnDestroy {
         components: data.components || [],
         connections: data.connections || [],
         theme: data.theme || currentPayload?.theme || 'dark',
+        ...(typeof data.autoRoutingMode === 'boolean'
+          ? { autoRoutingMode: data.autoRoutingMode }
+          : {}),
+        ...(typeof data.autoSave === 'boolean'
+          ? { autoSave: data.autoSave }
+          : {}),
       };
       this.iframeData = newPayload;
       await this.pushDataToRemote();

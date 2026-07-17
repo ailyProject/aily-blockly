@@ -107,7 +107,7 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
             },
             required: ['action']
         },
-        agents: ["mainAgent"]
+        agents: ["mainAgent", "schematicAgent"]
     },
     {
         name: 'register_agent',

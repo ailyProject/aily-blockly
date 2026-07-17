@@ -2,6 +2,7 @@ const { pathToFileURL } = require('url');
 
 const VALID_RUNTIME_OWNER_METHODS = new Set([
   'prewarmRuntime',
+  'restoreRuntimeSession',
   'forkSession',
   'readSessionExecutionState',
   'startTurn',
@@ -182,6 +183,13 @@ function callRuntimeOwnerMethod(runtimeOwner, method, args) {
         agentRuntimeMode: command.agentRuntimeMode || null,
         currentModel: command.currentModel || null,
       });
+    }
+    case 'restoreRuntimeSession': {
+      const command = args[0] || {};
+      if (!command.snapshot || typeof command.snapshot !== 'object') {
+        throw new Error('[AilyChat][RuntimeHost] restoreRuntimeSession requires a session snapshot.');
+      }
+      return runtimeOwner.restoreRuntimeSession(command);
     }
     case 'forkSession': {
       if (typeof runtimeOwner.forkSession !== 'function') {

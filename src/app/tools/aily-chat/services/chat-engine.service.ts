@@ -1521,15 +1521,32 @@ export class ChatEngineService implements IChatContext {
       return this.lexStream.conversation.messages();
   }
 
-  get dialogItems(): ChatVisibleTranscriptDialogItem[] {
+  get dialogItems(): readonly ChatVisibleTranscriptDialogItem[] {
+    return this.readDialogItems(false);
+  }
+
+  /** Bypass cached dialog items — used by child-protocol snapshots during streaming. */
+  readLiveDialogItemsForSnapshot(): readonly ChatVisibleTranscriptDialogItem[] {
+    return this.readDialogItems(true);
+  }
+
+  private readDialogItems(invalidateCache: boolean): readonly ChatVisibleTranscriptDialogItem[] {
     const model = this.getCurrentViewSessionModel();
     if (!model) {
       this.dialogItemsCache = null;
       return [];
     }
 
-    const windowTurns = this.visibleTurnWindowModel.readTurns(model.sessionResource);
-    const turnResponses = windowTurns ?? model.peekTurnResponsesForProjection();
+    const modelTurns = model.peekTurnResponsesForProjection();
+    const hydratedWindowTurns = this.visibleTurnWindowModel.readTurns(model.sessionResource);
+    // A newly attached presentation window is allowed to be empty while the
+    // execution host is loading its first page. It must not erase an already
+    // restored canonical request list during that interval.
+    const windowTurns = hydratedWindowTurns
+      && (hydratedWindowTurns.length > 0 || modelTurns.length === 0)
+      ? hydratedWindowTurns
+      : null;
+    const turnResponses = windowTurns ?? modelTurns;
     const projectionSource = windowTurns ? 'runtime' : 'model';
     const lastTurn = turnResponses[turnResponses.length - 1];
     const lastTurnId = lastTurn?.turnId ?? '';
@@ -1537,7 +1554,8 @@ export class ChatEngineService implements IChatContext {
     const modelRevision = windowTurns
       ? this.visibleTurnWindowModel.snapshot.revision
       : model.requestListRevision;
-    if (this.dialogItemsCache
+    if (!invalidateCache
+        && this.dialogItemsCache
       && this.dialogItemsCache.sessionResource === model.sessionResource
       && this.dialogItemsCache.projectionSource === projectionSource
       && this.dialogItemsCache.turnResponses === turnResponses
@@ -3007,6 +3025,8 @@ export class ChatEngineService implements IChatContext {
       buildExecutionSaveTarget: (sessionId) => thisEngine.buildExecutionSaveTarget(sessionId),
       hasSessionRuntimeHandle: (sessionId) => !!thisEngine.lexStream.agent.getHandle?.(sessionId),
       prewarmRuntimeExecutor: (request) => thisEngine.runtimeHostForView().prewarmRuntime(request),
+      restoreRuntimeSessionExecutor: (request) => thisEngine.runtimeHostForView().restoreRuntimeSession(request),
+      readExecutionRuntimeSessionState: (sessionId) => thisEngine.runtimeHostForView().readSessionExecutionState(sessionId),
       projectRestoredRuntimeAuxiliary: (sessionId, auxiliary) => thisEngine.projectRestoredRuntimeAuxiliary(sessionId, auxiliary),
       detachSessionRuntimeView: (sessionId) => thisEngine.detachSessionRuntimeView(sessionId),
       attachSessionView: (sessionId) => thisEngine.attachSessionView(sessionId),
@@ -7265,6 +7285,9 @@ export class ChatEngineService implements IChatContext {
     const configurationStateChanged = createRuntimeHostConfigurationStateKey(previousState)
       !== createRuntimeHostConfigurationStateKey(state);
     this.rememberRuntimeHostSessionState(state);
+    if (requestStateChanged) {
+      this.syncRequestActivityFromRuntimeHost(sessionId, state);
+    }
     const attachedView = Array.isArray(state.attachedViewIds)
       ? state.attachedViewIds.includes(this.runtimeViewId)
       : false;
@@ -7320,6 +7343,35 @@ export class ChatEngineService implements IChatContext {
     }
     if (visibleCurrentSession && configurationStateChanged) {
       this.triggerSyncDetectChanges();
+    }
+  }
+
+  /**
+   * Runtime-host session state is the canonical request lifecycle. Keep the
+   * visible response model scoped to its session, while editor operations use
+   * the VS Code-style aggregate of all loaded session models.
+   */
+  private syncRequestActivityFromRuntimeHost(
+    sessionId: string,
+    state: ChatRuntimeHostSessionState,
+  ): void {
+    const visibleSessionId = this.resolveCurrentViewSessionResource();
+    if (visibleSessionId === sessionId) {
+      this._isWaiting = state.requestInProgress;
+      this._waitingSessionId = state.requestInProgress ? sessionId : null;
+      this.chatService.isWaiting = state.requestInProgress;
+    }
+
+    const executionActive = Array.from(this.runtimeHostSessionStates.values())
+      .some(runtimeState => runtimeState.requestInProgress === true);
+    AilyHost.get().blockly.aiWaiting = executionActive;
+    if (!executionActive) {
+      this.aiWriting = false;
+      AilyHost.get().blockly.aiWaitWriting = false;
+    }
+
+    if (visibleSessionId === sessionId && !state.requestInProgress) {
+      void this.refreshRequestQuotaState();
     }
   }
 

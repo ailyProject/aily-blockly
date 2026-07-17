@@ -466,13 +466,7 @@ export class ChatService {
    * 消息被 ChatEngineService 消费后会立即清空，避免重新打开面板时重复自动发送。
    */
   private textSubject = new ReplaySubject<ChatTextMessage | null>(1);
-  private static instance: ChatService;
   private static readonly maxRecentModelPresetIds = 5;
-
-  /** ChatService 是否已挂载（供 UiService 等外部模块判断能否直连发送） */
-  static get isReady(): boolean {
-    return !!ChatService.instance;
-  }
 
 
   constructor(
@@ -482,7 +476,6 @@ export class ChatService {
     private languageModelsService: AilyChatLanguageModelsService,
     runtimeModeService?: ChatRuntimeModeService,
   ) {
-    ChatService.instance = this;
     this.runtimeModeService = runtimeModeService ?? new ChatRuntimeModeService(this.ailyChatConfigService);
     this.runtimeModeService.setCurrentSessionType(this._currentSessionType);
     this.runtimeModeService.runtimeModeCollection.onDidChange.subscribe(() => {
@@ -2335,19 +2328,6 @@ export class ChatService {
     }
 
     this.textSubject.next(null);
-  }
-
-  /**
-   * 静态方法，提供全局访问
-   * @param text 要发送的文本内容
-   * @param options 发送选项，包含 sender、type、cover 等参数
-   */
-  static sendToChat(text: string, options?: ChatTextOptions): void {
-    if (ChatService.instance) {
-      ChatService.instance.sendTextToChat(text, options);
-    } else {
-      console.warn('ChatService尚未初始化');
-    }
   }
 
   startSession(

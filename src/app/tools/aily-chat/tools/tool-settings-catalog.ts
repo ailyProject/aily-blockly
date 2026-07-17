@@ -7,7 +7,7 @@ export type ToolSettingsCatalogEntry = Pick<Tool, 'name' | 'description' | 'agen
 const CORE_TOOL_SETTINGS: ToolSettingsCatalogEntry[] = [
   { name: 'ask_user', description: '向用户提问并等待回答；当前 lex 路径由 lex core 内建实现。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'search_available_tools', description: '旧 blockly 聊天链路中搜索并加载按需延迟注册工具的入口。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
-  { name: 'load_skill', description: '加载或卸载领域技能；当前 lex 路径由 lex core + blockly skill provider 协同实现。', agents: [MAIN_AGENT_TYPE] },
+  { name: 'load_skill', description: '加载或卸载领域技能；当前 lex 路径由 lex core + blockly skill provider 协同实现。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'register_agent', description: '兼容入口：动态注册新的子代理定义，当前 lex 主链路默认不暴露。', agents: [MAIN_AGENT_TYPE] },
 ];
 

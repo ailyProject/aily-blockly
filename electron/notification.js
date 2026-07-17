@@ -1,5 +1,5 @@
 // 提供系统通知和窗口注意提醒功能。
-const { Notification, ipcMain, BrowserWindow } = require('electron');
+const { Notification, ipcMain, BrowserWindow, app } = require('electron');
 const { requestWindowAttention } = require('./window-attention');
 
 /** @type {import('electron').BrowserWindow | null} */
@@ -53,7 +53,9 @@ function showNotification(options, browserWindow) {
           }
           browserWindow.show();
           browserWindow.focus();
+          browserWindow.flashFrame(false);
         }
+        if (app.dock) app.dock.setBadge('');
         resolve({ event: 'click' });
       });
 

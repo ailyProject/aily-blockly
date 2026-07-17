@@ -111,21 +111,6 @@ export class BlocklyService {
   private readonly projectDocumentSchemaVersion = 3;
   private readonly sharedProcedureBlockPrefixes = ['procedures_'];
   private readonly toolboxSearchKey = BLOCKLY_TOOLBOX_SEARCH_KEY;
-  private readonly deferredWorkspaceRenderBlockTypes = new Set([
-    'u8g2_draw_bitmap',
-    'u8g2_bitmap',
-    'u8g2_icon_16x16',
-    'u8g2_icon_32x32',
-    'u8g2_icon_64x64',
-    'u8g2_play_animation',
-    'u8g2_draw_animation_frame',
-    'u8g2_animation',
-    'u8g2_animation_frame_count',
-    'tftespi_play_animation',
-    'tftespi_draw_animation_frame',
-    'tftespi_animation',
-    'tftespi_animation_frame_count',
-  ]);
 
   private _workspace: Blockly.WorkspaceSvg | null = null;
   private workspaceReadySubject = new BehaviorSubject<Blockly.WorkspaceSvg | null>(null);
@@ -234,6 +219,10 @@ export class BlocklyService {
 
   markWorkspaceCodeDirty(): void {
     this.workspaceCodeRevision++;
+  }
+
+  getWorkspaceContentRevision(): number {
+    return this.workspaceCodeRevision;
   }
 
   publishGeneratedCode(code: unknown): void {
@@ -965,11 +954,8 @@ export class BlocklyService {
       }
     });
 
-    const shouldRenderAfterLoad = this.shouldRenderWorkspaceAfterLoad(workspaceJson);
     Blockly.serialization.workspaces.load(workspaceJson, this.workspace);
-    if (shouldRenderAfterLoad) {
-      this.scheduleWorkspaceRenderAfterLoad();
-    }
+    this.scheduleWorkspaceRenderAfterLoad();
   }
 
   private scheduleWorkspaceRenderAfterLoad(): void {
@@ -1000,24 +986,6 @@ export class BlocklyService {
     } else {
       this.workspaceRenderAfterLoadTimeout = setTimeout(renderWorkspace, 0);
     }
-  }
-
-  private shouldRenderWorkspaceAfterLoad(workspaceJson: any): boolean {
-    const blocks = Array.isArray(workspaceJson?.blocks?.blocks)
-      ? workspaceJson.blocks.blocks
-      : [];
-    const blockTypes = new Set<string>();
-
-    for (const block of blocks) {
-      this.collectBlockTypesFromBlock(block, blockTypes);
-      for (const blockType of this.deferredWorkspaceRenderBlockTypes) {
-        if (blockTypes.has(blockType)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   }
 
   // 通过node_modules加载库

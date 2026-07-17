@@ -17,6 +17,7 @@ export interface ChildToolConfig {
   id: string;
   titleKey: string;
   namespace: string;
+  version?: string;
   app?: ChildToolAppConfig;
   childDir?: string;
   entry?: string;
@@ -32,6 +33,7 @@ interface ChildToolI18nMeta {
 }
 
 const CHILD_TOOL_ICON_BY_DIR: Record<string, string> = {
+  'aily-chat': 'fa-light fa-sparkles',
   'ble-debugger': 'fa-light fa-bluetooth',
   'ffs-manager': 'fa-light fa-database',
   'industrial-bus-debugger': 'fa-light fa-microchip',
@@ -41,10 +43,21 @@ const CHILD_TOOL_ICON_BY_DIR: Record<string, string> = {
 };
 
 const CHILD_TOOL_ID_BY_DIR: Record<string, string> = {
+  'aily-chat': 'aily-chat-react',
   'ffs-manager': 'ffs-manager-child'
 };
 
+const CHILD_TOOL_APP_OVERRIDES_BY_DIR: Record<string, Partial<ChildToolAppConfig>> = {
+  'aily-chat': {
+    defaultToolbar: true,
+    name: 'MENU.AI_NEW',
+    description: 'APP_STORE.AI_REACT_DESC',
+    more: 'v2'
+  }
+};
+
 const CHILD_TOOL_STARTUP_TIMEOUT_MS_BY_DIR: Record<string, number> = {
+  'aily-chat': 30000,
   'ffs-manager': 10000
 };
 
@@ -162,16 +175,19 @@ function createChildToolConfigFromDirectory(
   const descriptionKey = createChildToolDescriptionKey(namespace, i18nMeta);
   const id = CHILD_TOOL_ID_BY_DIR[dirName] || dirName;
   const startupTimeoutMs = CHILD_TOOL_STARTUP_TIMEOUT_MS_BY_DIR[dirName];
+  const appOverrides = CHILD_TOOL_APP_OVERRIDES_BY_DIR[dirName] || {};
 
   return {
     id,
     titleKey,
     namespace,
+    version: typeof packageJson?.version === 'string' ? packageJson.version : '',
     app: {
       name: titleKey,
       description: descriptionKey,
       icon: CHILD_TOOL_ICON_BY_DIR[dirName] || 'fa-light fa-puzzle-piece',
-      enabled: true
+      enabled: true,
+      ...appOverrides
     },
     childDir: pathApi.join('tools', dirName),
     entry,

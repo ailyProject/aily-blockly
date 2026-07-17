@@ -8,6 +8,7 @@ import { readToolApprovalCommand } from '../core/tool-approval-input';
 import { isTerminalCommandToolName, normalizeReadSideToolName } from '../core/tool-name-normalizer';
 import type { ToolApprovalAction, ToolApprovalRequest, ToolApprovalScope } from '../helpers/tool-approval-ui';
 import { resolveBlocklyArtifactReferenceTarget } from '../helpers/chat-artifact-reference';
+import { notifyAwaitingUserFeedbackIfBackground } from '../helpers/user-feedback-notify.helper';
 import {
   listBlocklyCommandSessionSnapshots,
   setBlocklyCommandSessionBackground,
@@ -455,6 +456,7 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
         },
       });
       this.emitSnapshot(sessionId);
+      notifyAwaitingUserFeedbackIfBackground('Aily', '有问题需要你回答');
     });
   }
 
@@ -690,6 +692,7 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
 
       this.installPlanReviewFileSync(sessionId, review.id, review.planUri);
       this.emitSnapshot(sessionId);
+      notifyAwaitingUserFeedbackIfBackground('Aily', '计划已生成，等待你的审核');
     });
   }
 
@@ -1160,6 +1163,10 @@ export class ChatRuntimeInteractionHostService implements ChatRuntimeOwnerIntera
       [normalizedSessionId]: nextQueue.length - 1,
     });
     this.emitSnapshot(normalizedSessionId);
+    notifyAwaitingUserFeedbackIfBackground(
+      'Aily',
+      entry.kind === 'approval' ? '有操作需要你确认' : '需要你完成一项确认',
+    );
     return promise;
   }
 

@@ -24,7 +24,7 @@ export const SCHEMATIC_AGENT_MAX_TURNS = 25;
 export const SCHEMATIC_AGENT_MESSAGE_INHERITANCE = 'none' as const;
 export const SCHEMATIC_AGENT_MODEL = 'inherit';
 export const SCHEMATIC_AGENT_REQUIRED_CONTEXT = {
-  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'libraryReadmeRefs', 'workspaceArtifacts'],
+  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
   strict: true,
   hydrateBeforeFirstModelCall: true,
 } as const;
@@ -78,6 +78,7 @@ const SCHEMATIC_SHARED_TOOLS = [
   'get_current_schematic',
   'fetch_webpage',
   'tool_search',
+  'load_skill',
   // File editing (for pinmap generation)
   'edit_file',
   'multi_edit_file',
@@ -135,19 +136,23 @@ You help users generate visual diagrams of development boards and electronic mod
 When the user asks to generate, update, or fix a schematic (e.g. "connect DHT20 to ESP32S3"):
 
 1. Start from the runtime project context already present in the environment.
-  - Project path, board, installed libraries, available readme_ai.md references, and generated workspace artifact paths are already injected by runtime.
+  - Project path, board, installed libraries, pinmap catalog availability, and generated workspace artifact paths are already injected by runtime.
   - Do not call \`get_project_context()\` just to re-fetch those base facts.
-  - Call \`get_project_context()\` only when you need Blockly-specific detail that is not already in the runtime summary, especially component catalog entries, board/component pinmap availability, or generated C++ content.
+  - Call \`get_project_context()\` only when you need structured Blockly-specific detail that is not already in the runtime summary, especially full component catalog JSON or generated C++ content.
    - Identify the current board pinmap status and target hardware components.
    - Prefer catalog entries with usable \`pinmapId\`.
 
-2. Infer required hardware from code and usage intent
+2. Load required skills when the task needs additional wiring or pinmap-specific guidance
+   - If the runtime skill list includes a relevant skill for pinmap generation, hardware inference, or schematic conventions, you may call \`load_skill\` directly.
+   - Prefer using a matching skill instead of guessing missing pinmap structure or hardware-specific workflow details.
+
+3. Infer required hardware from code and usage intent
    - If project code or user description references hardware peripheral usage (e.g. I2S mic/speaker, sensors on I2C/SPI, UART modules), treat these as required physical components for wiring.
    - If code directly drives GPIO/PWM (e.g. LED blink, buzzer tone, relay control), infer the corresponding physical component and include it in required hardware.
    - This inference step is mandatory even when installed libraries do not explicitly list those peripherals.
    - Build a complete required-component list from both catalog hits and code-level peripheral clues.
 
-3. Check pinmap availability before wiring
+4. Check pinmap availability before wiring
    - If the board or a required component already has an available pinmap, collect its \`pinmapId\`.
    - IMPORTANT: If a requested module is misclassified as a software/framework entry but still requires real electrical connections (such as VCC/GND/I2S/I2C/SPI/UART/GPIO), you MUST still prepare a component pinmap for it.
    - IMPORTANT: If a needed component appears as \`missing_catalog\` (or has no usable pinmap in catalog), you MUST generate/save a pinmap for that component and MUST NOT skip it from the schematic.
@@ -158,23 +163,23 @@ When the user asks to generate, update, or fix a schematic (e.g. "connect DHT20 
      c. Call \`save_pinmap(pinmapId: ..., pinmapConfig: {...})\`.
    - Do not proceed to wiring until all required hardware components have usable pinmaps.
 
-Pre-Generate Checklist (mandatory before Step 4):
+Pre-Generate Checklist (mandatory before Step 5):
 - Confirm every inferred physical component has a resolved \`pinmapId\`.
 - Confirm no component was dropped only because it came from direct GPIO code usage.
-- If any component lacks a pinmap, return to Step 3 and generate/save it first.
+- If any component lacks a pinmap, return to Step 4 and generate/save it first.
 
-4. Call \`generate_schematic(pinmapIds: [...])\`
+5. Call \`generate_schematic(pinmapIds: [...])\`
    - Pass the board plus all required component pinmapIds.
-   - The \`pinmapIds\` list MUST include all inferred hardware peripherals from Step 2.
+   - The \`pinmapIds\` list MUST include all inferred hardware peripherals from Step 3.
    - Use the returned \`awsPinmapSummary\` as the authoritative basis for wiring.
 
-5. Write the schematic in AWS
+6. Write the schematic in AWS
    - Output AWS only.
    - Use explicit \`USE ... AS ...\` declarations for external components.
    - Use \`board\` as the board reference (no USE declaration needed).
    - Use only pin names/functions that actually appear in \`awsPinmapSummary\`.
 
-6. Validate + Save the AWS
+7. Validate + Save the AWS
    - Call \`validate_schematic(aws: "...")\`.
    - This is the **final step** — it validates, saves the AWS and JSON files, and refreshes the diagram.
    - If validation reports syntax, pin, voltage, or conflict issues, fix the AWS and call validate_schematic again.

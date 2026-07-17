@@ -3402,7 +3402,7 @@ function normalizeMcpTool(tool: any): any {
   };
 }
 
-function buildTurnResponseLexSessionSnapshot(
+export function buildTurnResponseLexSessionSnapshot(
   turnResponses: readonly import('aily-lex/browser').TurnResponseTurn[] | undefined,
   sessionId: string,
   hostRecord?: HostSessionRecord | null,

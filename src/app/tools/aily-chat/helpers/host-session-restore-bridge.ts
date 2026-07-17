@@ -106,6 +106,13 @@ function readInteractionPendingRecord(
   return pending && typeof pending === 'object' ? pending : undefined;
 }
 
+function isRuntimeHostOwnedRestorePlanError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.includes('[AilyChat][RuntimeHost]')
+    && message.includes('session.resolveRestorePlan')
+    && message.includes('Renderer views must use ChatRuntimeHost');
+}
+
 function resolveRestoredSessionTitle(sessionContent?: HostSessionContent | null): { text: string; source: ChatSessionTitleSource } {
   const persistedTitle = typeof sessionContent?.title === 'string'
     ? sessionContent.title.trim()
@@ -268,6 +275,7 @@ export interface RuntimeRestoreHostRecordRequest {
 
 export type HostSessionRestoreFailureKind =
   | 'host-record-session-mismatch'
+  | 'restore-plan-resolution-failed'
   | 'restore-plan-apply-failed';
 
 export interface HostSessionRestoreFailureDetails {
@@ -462,14 +470,50 @@ export class HostSessionRestoreBridge {
       this.persistRecoveredCancelledHostRecord(targetSessionId, sanitizedHostRecord);
     }
 
-    const restorePlan: ResolvedLexSessionRestorePlan = {
-      snapshot: null,
-      turnResponses: [...(sanitizedHostRecord.turnResponses ?? [])],
-      diagnostics: {
-        sessionId: targetSessionId,
-        storedSnapshotState: 'missing',
-      },
-    };
+    let restorePlan: ResolvedLexSessionRestorePlan | null = null;
+    try {
+      restorePlan = await this.ctx.lexStream.session.resolveRestorePlan(
+        targetSessionId,
+        sanitizedHostRecord.turnResponses,
+        sanitizedHostRecord,
+      );
+    } catch (error) {
+      if (isRuntimeHostOwnedRestorePlanError(error)) {
+        restorePlan = {
+          snapshot: null,
+          turnResponses: [...(sanitizedHostRecord.turnResponses ?? [])],
+          diagnostics: {
+            sessionId: targetSessionId,
+            storedSnapshotState: 'missing',
+            storedSnapshotError: error instanceof Error ? error.message : String(error ?? ''),
+          },
+        };
+      } else {
+        if (!isCurrent()) {
+          return;
+        }
+        throw this.createRestoreFailure(
+          'restore-plan-resolution-failed',
+          targetSessionId,
+          null,
+          error,
+        );
+      }
+    }
+
+    if (!restorePlan) {
+      if (!isCurrent()) {
+        return;
+      }
+      restorePlan = {
+        snapshot: null,
+        turnResponses: [...(sanitizedHostRecord.turnResponses ?? [])],
+        diagnostics: {
+          sessionId: targetSessionId,
+          storedSnapshotState: 'missing',
+        },
+      };
+    }
 
     try {
       const persistedTurnResponses = [...(restorePlan.turnResponses ?? sanitizedHostRecord.turnResponses ?? [])];
@@ -1116,7 +1160,7 @@ function toHostSessionRestoreErrorMessage(error: unknown): string {
       : 'unknown error';
 }
 
-function sanitizeHostRecordForRestore(hostRecord: HostSessionRecord): HostSessionRecord {
+export function sanitizeHostRecordForRestore(hostRecord: HostSessionRecord): HostSessionRecord {
   if (!hostRecord.turnResponses?.length) {
     return hostRecord;
   }

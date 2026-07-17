@@ -2,6 +2,8 @@ import { Routes } from '@angular/router';
 import {
     AILY_CHAT_VIEW_PROVIDERS,
 } from './tools/aily-chat/aily-chat.providers';
+import { inject, provideEnvironmentInitializer } from '@angular/core';
+import { AilyChatChildProtocolService } from './tools/aily-chat/services/aily-chat-child-protocol.service';
 
 export const routes: Routes = [
     {
@@ -100,6 +102,17 @@ export const routes: Routes = [
         path: "industrial-bus-debugger",
         redirectTo: "child-tool/industrial-bus-debugger",
         pathMatch: "full"
+    },
+    {
+        path: "child-tool/aily-chat-react",
+        providers: [
+            ...AILY_CHAT_VIEW_PROVIDERS,
+            provideEnvironmentInitializer(() => {
+                inject(AilyChatChildProtocolService);
+            })
+        ],
+        data: { childToolId: 'aily-chat-react' },
+        loadComponent: () => import('./tools/child-tool-host/child-tool-host.component').then(m => m.ChildToolHostComponent)
     },
     {
         path: "child-tool/:toolId",

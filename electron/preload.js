@@ -188,7 +188,10 @@ function extractLeadingTimestampMs(line) {
 contextBridge.exposeInMainWorld("electronAPI", {
   ipcRenderer: {
     send: (channel, data) => ipcRenderer.send(channel, data),
-    on: (channel, callback) => ipcRenderer.on(channel, callback),
+    on: (channel, callback) => {
+      ipcRenderer.on(channel, callback);
+      return () => ipcRenderer.removeListener(channel, callback);
+    },
     invoke: (channel, data) => ipcRenderer.invoke(channel, data),
   },
   path: pathApi,
@@ -410,6 +413,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return {
       open: (options) => ipcRenderer.send("window-open", options),
       focus: (path) => ipcRenderer.invoke("window-focus-by-url", path),
+      getState: (path) => ipcRenderer.invoke("window-state-by-url", path),
+      list: () => ipcRenderer.invoke("window-list"),
+      control: (path, action) => ipcRenderer.invoke("window-control-by-url", { path, action }),
+      setBounds: (path, options) => ipcRenderer.invoke("window-set-bounds-by-url", { path, ...options }),
+      arrange: (options) => ipcRenderer.invoke("window-arrange", options),
+      command: (path, command) => ipcRenderer.invoke("child-app-host-command-by-url", { path, command }),
       close: () => ipcRenderer.send("window-close"),
       onInitData: (callback) => {
         _initDataCallback = callback;
@@ -421,10 +430,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
       },
     };
   })(),
+  childAppHost: {
+    onCommand: (callback) => {
+      const listener = (_event, payload = {}) => {
+        callback(payload.command, payload.requestId);
+      };
+      ipcRenderer.on('child-app-host-command', listener);
+      return () => ipcRenderer.removeListener('child-app-host-command', listener);
+    },
+    respond: (requestId, result) => ipcRenderer.send('child-app-host-command-response', { requestId, result }),
+  },
   childToolSession: {
     acquire: (toolId) => ipcRenderer.invoke("child-tool-session-acquire", toolId),
     register: (payload) => ipcRenderer.invoke("child-tool-session-register", payload),
-    release: (toolId) => ipcRenderer.invoke("child-tool-session-release", toolId),
+    release: (toolIdOrPayload) => ipcRenderer.invoke("child-tool-session-release", toolIdOrPayload),
     restart: (toolId) => ipcRenderer.invoke("child-tool-session-restart", toolId),
     unregister: (payload) => ipcRenderer.invoke("child-tool-session-unregister", payload),
     list: () => ipcRenderer.invoke("child-tool-session-list"),

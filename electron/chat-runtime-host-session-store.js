@@ -47,7 +47,7 @@ function normalizeResourceRequestId(requestId) {
 }
 
 function normalizeResourceRequestKind(kind) {
-  return kind === 'abs-session-start-export'
+  return kind === 'abs-workspace-export'
     || kind === 'checkpoint-commit'
     || kind === 'checkpoint-settle'
     || kind === 'file-read'
@@ -1256,6 +1256,42 @@ class ChatRuntimeHostSessionStore {
 
   cacheTranscript(transcript) {
     return this.transcriptBuilder.acceptTranscriptSnapshot(transcript);
+  }
+
+  restoreCanonicalTranscript(sessionId, turnResponses) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId || !Array.isArray(turnResponses)) {
+      const error = new Error('[AilyChat][RuntimeHost] Canonical transcript restore requires a session id and turn array.');
+      error.code = 'invalid_session_restore';
+      throw error;
+    }
+    const state = this.buildSessionState(normalizedSessionId);
+    if ((state && state.requestInProgress === true) || this.activeSubmittedRequests.has(normalizedSessionId)) {
+      const error = new Error('[AilyChat][RuntimeHost] Cannot restore the canonical transcript while a turn is running.');
+      error.code = 'request_in_progress';
+      error.retryable = true;
+      throw error;
+    }
+
+    const currentRevision = this.transcriptBuilder.readTranscriptRevision(normalizedSessionId);
+    const transcript = this.transcriptBuilder.replaceTurnResponses({
+      sessionId: normalizedSessionId,
+      turnResponses,
+      expectedRevision: currentRevision,
+    });
+    // A restored request list is the checkpoint source of truth. Rebuild the
+    // timeline lazily from this list instead of retaining a timeline belonging
+    // to a previous in-process model instance.
+    this.checkpointTimelines.delete(normalizedSessionId);
+    this.sessionStates.set(normalizedSessionId, clonePayload({
+      ...(state || {}),
+      sessionId: normalizedSessionId,
+      requestInProgress: false,
+      activeTurnId: null,
+      transcriptRevision: Number(transcript.revision) || 0,
+      attachedViewIds: this.readAttachedViewIds(normalizedSessionId),
+    }));
+    return clonePayload(transcript);
   }
 
   buildTurnTranscriptEvent(transcript, turnId, revisionFallback = 0) {

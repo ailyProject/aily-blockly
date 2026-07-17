@@ -32,6 +32,45 @@ function error(s: string): ToolResultContent {
   return { content: [{ type: 'text', text: `Error: ${s}` }], isError: true };
 }
 
+function readMcpBridge() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  return (window as any)['mcp'] ?? (window as any)['electronAPI']?.mcp ?? null;
+}
+
+async function invokeLegacyToolViaMcp(
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<ToolResultContent | null> {
+  const mcp = readMcpBridge();
+  if (!mcp?.useTool) {
+    return null;
+  }
+
+  try {
+    const response = await mcp.useTool(toolName, input);
+    const toolResult = response?.result;
+    const content = Array.isArray(toolResult?.content)
+      ? toolResult.content
+        .map((item: any) => typeof item?.text === 'string' ? item.text : '')
+        .filter(Boolean)
+        .join('\n')
+      : '';
+
+    if (response?.success === true) {
+      return toolResult?.isError
+        ? error(content || `${toolName} failed`)
+        : text(content);
+    }
+
+    return error(response?.error || `${toolName} failed`);
+  } catch (err) {
+    console.warn(`[blockly-legacy-host-tools] MCP forward failed for ${toolName}:`, err);
+    return null;
+  }
+}
+
 function makeLegacyContribution(name: string): RuntimeScopedToolContribution | null {
   const legacy = LEGACY_HOST_EXTERNAL_TOOLS.find(tool => tool.name === name);
   if (!legacy) return null;
@@ -94,6 +133,11 @@ export async function invokeLegacyHostExternalTool(
       toolCallId: invocationContext?.toolCallId,
       timelineWriter: editingTimeline,
     });
+  }
+
+  const forwardedResult = await invokeLegacyToolViaMcp(toolName, input);
+  if (forwardedResult) {
+    return forwardedResult;
   }
 
   if (!host.connectionGraph) return error('连线图服务不可用');

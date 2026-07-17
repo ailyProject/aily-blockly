@@ -839,7 +839,11 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     index: number,
     groupParts: readonly ChatPart[],
   ): ActivityGroupDisplayItem[] {
-    const sourceRevision = buildActivityPartDetailProjectionKey(part, index, this.doing);
+    const partRevision = buildActivityPartDetailProjectionKey(part, index, this.doing);
+    const dependencyRevision = buildActivityPartDependencyProjectionKey(part, groupParts, this.doing);
+    const sourceRevision = dependencyRevision
+      ? `${partRevision}:dependencies:${dependencyRevision}`
+      : partRevision;
     return this._buildItems(part, index, groupParts).map((item, itemIndex) => ({
       ...item,
       revision: `${sourceRevision}:display:${itemIndex}`,
@@ -1466,6 +1470,7 @@ function buildActivityGroupDetailProjectionKey(
   return [
     buildActivityGroupProjectionKey(parts, doing, turnResponse),
     ...parts.map((part, index) => buildActivityPartDetailProjectionKey(part, index, doing)),
+    ...parts.map((part) => buildActivityPartDependencyProjectionKey(part, parts, doing)),
   ].join('|');
 }
 
@@ -1526,7 +1531,11 @@ function buildActivityPartDependencyProjectionKey(
     if (candidate !== part
       && isSubagentChildPart(candidate)
       && getScopedSubagentChildId(candidate) === part.toolCallId) {
-      dependencies.push(buildActivityPartDetailProjectionKey(candidate, index, doing));
+      const childRevision = buildActivityPartDetailProjectionKey(candidate, index, doing);
+      const liveContentRevision = doing && (candidate.type === 'markdown' || candidate.type === 'thinking')
+        ? contentProgressKey(candidate)
+        : '';
+      dependencies.push(liveContentRevision ? `${childRevision}:content:${liveContentRevision}` : childRevision);
     }
   }
   return dependencies.join('|');

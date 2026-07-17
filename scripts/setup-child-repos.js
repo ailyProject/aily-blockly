@@ -28,6 +28,16 @@ const SUBAPP_REPO = {
   skipDirNames: new Set(['node_modules', 'scripts', 'dist', 'templates']),
 };
 
+const AILY_CHAT_REPO = {
+  name: 'aily-lex-pro',
+  url: 'https://github.com/ailyProject/aily-lex-pro.git',
+  branch: 'main',
+  setupCommand: 'node scripts/ensure-build-env.mjs',
+  buildScript: 'build:subapp',
+  toolName: 'aily-chat',
+  outputDir: path.join('packages', 'aily-chat', 'dist', 'aily-chat'),
+};
+
 const NATIVE_RUNTIME_PACKAGES = new Set([
   '@abandonware/noble',
   'serialport',
@@ -350,6 +360,32 @@ function setupSubapp(options = {}) {
   console.log(`\n[subapp] copied ${builtToolNames.length} tool(s) to ${path.relative(rootDir, toolsDir)}`);
 }
 
+function setupAilyChat() {
+  console.log('\n[aily-chat] preparing aily-lex-pro child tool...');
+  const { repoDir } = ensureRepoDir(
+    AILY_CHAT_REPO.name,
+    AILY_CHAT_REPO.url,
+    AILY_CHAT_REPO.branch,
+  );
+
+  run(AILY_CHAT_REPO.setupCommand, repoDir);
+  run(`npm run ${AILY_CHAT_REPO.buildScript}`, repoDir);
+
+  const sourceDir = path.join(repoDir, AILY_CHAT_REPO.outputDir);
+  const toolsDir = path.join(childDir, 'tools');
+  const targetDir = path.join(toolsDir, AILY_CHAT_REPO.toolName);
+
+  if (!fs.existsSync(path.join(sourceDir, 'index.js'))) {
+    throw new Error(`Built Aily Chat child-tool output was not found: ${sourceDir}`);
+  }
+
+  fs.mkdirSync(toolsDir, { recursive: true });
+  fs.rmSync(targetDir, { recursive: true, force: true });
+  fs.cpSync(sourceDir, targetDir, { recursive: true });
+  console.log(`[copy] ${path.relative(rootDir, sourceDir)} -> ${path.relative(rootDir, targetDir)}`);
+  console.log(`\n[aily-chat] copied child tool to ${path.relative(rootDir, targetDir)}`);
+}
+
 function installRootLocalDependency(relativePath) {
   const dependencyDir = path.join(rootDir, relativePath);
   if (!fs.existsSync(path.join(dependencyDir, 'package.json'))) {
@@ -388,6 +424,7 @@ function main() {
 
   installRootLocalDependency('child/aily-lex');
   setupSubapp();
+  setupAilyChat();
   console.log('\n[done] child repos ready.');
 }
 

@@ -2,13 +2,14 @@ import type { IAgentLifecycle, IChatCoordination, IChatServiceAccess, IChatViewA
 import type { ChatPart } from '../core/chat-parts';
 import type { ChatRuntimeOwnerScheduler } from '../core/chat-runtime-owner-scheduler';
 import type { TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
-import { AilyHost } from '../core/host';
 import type { HostSessionSaveTarget } from './host-session-save-bridge';
 import type { ChatPartStoreResponseHandle } from '../core/chat-part-store';
 import { yieldToBrowserFrame, yieldToBrowserIdle, yieldToBrowserTask } from '../tools/browserTaskScheduler';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
 import { createElectronChatRuntimeHostTransport } from '../core/electron-chat-runtime-host-transport';
+import { notifyAilyChatIfBackground } from './user-feedback-notify.helper';
+
 
 function isFinalizeTraceEnabled(): boolean {
   return isAilyCategoryDebugEnabled('aily.chat.traceFinalize', [
@@ -269,14 +270,7 @@ export class LexMessageLifecycleBridge {
       this.ctx.session.saveCurrentSession(deferredSaveTarget ? { target: deferredSaveTarget } : undefined);
       logDeferredStage('save_session_dispatch');
 
-      try {
-        const electronHost = AilyHost.get().electron;
-        if (terminalStatus === 'completed' && !electronHost?.isWindowFocused()) {
-          electronHost?.notify('Aily', '对话已完成');
-        }
-      } catch (error) {
-        console.warn('[LexStream] completion notification failed:', error);
-      }
+      notifyAilyChatIfBackground('Aily', '对话已完成');
       logDeferredStage('notify_if_needed');
 
       await this.ctx.applyPendingSwitch(deferredSaveTarget?.sessionId);

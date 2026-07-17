@@ -820,7 +820,12 @@ async function importFromAbs(
     await backupAbiFileIfPresent(abiFilePath, electronService, projectService, invocationContext);
     await reportSyncAbsImportProgress(invocationContext, 'Backed up current Blockly artifacts', 0.45);
     throwIfSyncAbsCancelled(invocationContext);
-    await reportSyncAbsImportProgress(invocationContext, 'Applying Blockly workspace changes', 0.5);
+    await reportSyncAbsImportProgress(
+      invocationContext,
+      '正在把 ABS 导入为 Blockly 块',
+      0.5,
+      '准备实时创建和连接 Blockly 块',
+    );
     
     // 收集所有变量：从 @var 声明 + 从 $varName 引用自动推断
     const allVariables = new Map<string, string>(); // name → type
@@ -1041,6 +1046,12 @@ async function importFromAbs(
           // 使用 rebuildBlockChildren 重建子块
           preprocessVariableReferences(blockConfig, variableNameToId);
           try {
+            await reportSyncAbsImportProgress(
+              invocationContext,
+              '正在重建受保护入口块',
+              Math.min(0.74, 0.5 + (blockCreateCount / Math.max(1, parseResult.rootBlocks.length)) * 0.24),
+              `重建 ${blockConfig.type} 的子块连接`,
+            );
             const rebuildResult = await rebuildBlockChildren(
               workspace, protectedInfo.block, blockConfig,
               variableNameToId, preprocessVariableReferences,
@@ -1074,6 +1085,12 @@ async function importFromAbs(
         preprocessVariableReferences(configWithPosition, variableNameToId);
         
         try {
+          await reportSyncAbsImportProgress(
+            invocationContext,
+            '正在创建 Blockly 块',
+            Math.min(0.74, 0.5 + (blockCreateCount / Math.max(1, parseResult.rootBlocks.length)) * 0.24),
+            `创建/连接 ${blockConfig.type} (${blockCreateCount + 1}/${parseResult.rootBlocks.length})`,
+          );
           const result = await createBlockFromConfig(workspace, configWithPosition, undefined, invocationContext);
           if (result.block) {
             totalBlocks += result.totalBlocks;
@@ -1096,9 +1113,9 @@ async function importFromAbs(
         if (blockCreateCount % 10 === 0) {
           await reportSyncAbsImportProgress(
             invocationContext,
-            'Rebuilding Blockly blocks',
+            '正在重建 Blockly 块',
             Math.min(0.74, 0.5 + (blockCreateCount / Math.max(1, parseResult.rootBlocks.length)) * 0.24),
-            `${blockCreateCount}/${parseResult.rootBlocks.length} root blocks`,
+            `${blockCreateCount}/${parseResult.rootBlocks.length} 个根块`,
           );
         }
       }

@@ -75,6 +75,7 @@ import { GitWorkspaceCheckpointProviderService } from './services/git-workspace-
 import { MenuManagerService } from './services/menu-manager.service';
 import { ResourceManagerService } from './services/resource-manager.service';
 import { ScrollManagerService } from './services/scroll-manager.service';
+import { AilyChatChildProtocolService } from './services/aily-chat-child-protocol.service';
 
 function createRuntimeOwnerContextBudgetPort(
   service: ContextBudgetService,
@@ -120,6 +121,7 @@ export const AILY_CHAT_SHARED_PROVIDERS: Provider[] = [
 // Visible Chat is a view/controller adapter and is route-scoped, not a root runtime owner.
 export const AILY_CHAT_VIEW_PROVIDERS: Provider[] = [
   ChatEngineService,
+  AilyChatChildProtocolService,
 ];
 
 // Runtime owner providers are execution-host scoped. They must not be installed

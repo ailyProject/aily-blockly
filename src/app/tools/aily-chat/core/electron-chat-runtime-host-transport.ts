@@ -16,6 +16,8 @@ import type {
   ChatRuntimeHostInteractionSnapshot,
   ChatRuntimeHostPrewarmRequest,
   ChatRuntimeHostPrewarmResult,
+  ChatRuntimeHostRestoreRuntimeSessionRequest,
+  ChatRuntimeHostRestoreRuntimeSessionResult,
   ChatRuntimeHostRequestListMutationRequest,
   ChatRuntimeHostRequestListMutationResult,
   ChatRuntimeHostResourceOperationRequest,
@@ -24,6 +26,7 @@ import type {
   ChatRuntimeHostResourceRequest,
   ChatRuntimeHostResourceRequestEvent,
   ChatRuntimeHostSessionId,
+  ChatRuntimeHostSessionExecutionState,
   ChatRuntimeHostSessionInventorySnapshot,
   ChatRuntimeHostSessionState,
   ChatRuntimeHostStopTurnRequest,
@@ -48,6 +51,8 @@ type RuntimeHostMethod =
   | 'attachView'
   | 'detachView'
   | 'prewarmRuntime'
+  | 'restoreRuntimeSession'
+  | 'readSessionExecutionState'
   | 'submitTurn'
   | 'readSubmitReadiness'
   | 'ensureSessionCanRerun'
@@ -248,6 +253,10 @@ export function createElectronChatRuntimeHostTransport(): ChatRuntimeHost | null
       api.call('detachView', [viewId]) as Promise<void>,
     prewarmRuntime: (request: ChatRuntimeHostPrewarmRequest) =>
       api.call('prewarmRuntime', [request]) as Promise<ChatRuntimeHostPrewarmResult>,
+    restoreRuntimeSession: (request: ChatRuntimeHostRestoreRuntimeSessionRequest) =>
+      api.call('restoreRuntimeSession', [request]) as Promise<ChatRuntimeHostRestoreRuntimeSessionResult>,
+    readSessionExecutionState: (sessionId: ChatRuntimeHostSessionId) =>
+      api.call('readSessionExecutionState', [sessionId]) as Promise<ChatRuntimeHostSessionExecutionState>,
     submitTurn: (request: ChatRuntimeHostSubmitRequest) =>
       api.call('submitTurn', [request]) as Promise<ChatRuntimeHostSessionState>,
     readSubmitReadiness: (sessionId: ChatRuntimeHostSessionId) =>

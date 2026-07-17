@@ -254,9 +254,10 @@ function convertBlockToAbs(block: any, indentLevel: number, context: ConversionC
   
   // 构建主块行
   const blockCall = buildBlockCall(block, context);
-  // extraState 由解析器从结构推断（字段、输入、mutator），不需要注解
+  // 动态块并非都能仅从输入结构推断出完整状态，因此显式携带可移植的 extraState。
+  const extraStateAnnotation = formatExtraStateAnnotation(block.extraState);
   const idComment = context.includeBlockIds ? `  # id: ${block.id}` : '';
-  lines.push(`${indent}${blockCall}${idComment}`);
+  lines.push(`${indent}${blockCall}${extraStateAnnotation}${idComment}`);
   const mainLineNum = context.lineOffset + 1;  // 当前行的 1-based 行号
   context.lineOffset++;
   
@@ -313,7 +314,8 @@ function convertControlsIfToAbs(block: any, indentLevel: number, context: Conver
   
   // 主块行
   const idComment = context.includeBlockIds ? `  # id: ${block.id}` : '';
-  lines.push(`${indent}controls_if()${idComment}`);
+  const extraStateAnnotation = formatExtraStateAnnotation(block.extraState);
+  lines.push(`${indent}controls_if()${extraStateAnnotation}${idComment}`);
   context.lineOffset++;
   
   if (block.inputs) {
@@ -391,7 +393,8 @@ function convertControlsSwitchToAbs(block: any, indentLevel: number, context: Co
   
   // 主块行
   const idComment = context.includeBlockIds ? `  # id: ${block.id}` : '';
-  lines.push(`${indent}controls_switch()${idComment}`);
+  const extraStateAnnotation = formatExtraStateAnnotation(block.extraState);
+  lines.push(`${indent}controls_switch()${extraStateAnnotation}${idComment}`);
   context.lineOffset++;
   
   if (block.inputs) {
@@ -612,14 +615,22 @@ function formatFieldValue(blockType: string, fieldName: string, value: any, cont
   
   // 变量字段
   if (typeof value === 'object') {
-    if (value.name) {
+    if (isVariableField(blockType, fieldName) && value.name) {
       return safeVarRef(value.name);
     }
-    if (value.id) {
+    if (isVariableField(blockType, fieldName) && value.id) {
       const varName = context.getVariableName(value.id);
       return safeVarRef(varName);
     }
-    return null;
+
+    // 自定义字段可以把完整状态保存为对象/数组（例如 u8g2/tft 动画帧）。
+    // 使用紧凑 JSON 作为 ABS 字面量，parseArguments 已能正确跳过 JSON 内部的逗号。
+    try {
+      const json = JSON.stringify(value);
+      return json === undefined ? null : json;
+    } catch {
+      return null;
+    }
   }
   
   // 字符串
@@ -666,7 +677,7 @@ function formatInputValue(input: any, context: ConversionContext): string | null
 function formatBlockAsValue(block: any, context: ConversionContext): string {
   // 如果使用显式块类型模式，不使用语法糖
   if (context.explicitBlockTypes) {
-    return buildBlockCall(block, context);
+    return `${buildBlockCall(block, context)}${formatExtraStateAnnotation(block.extraState)}`;
   }
   
   switch (block.type) {
@@ -702,7 +713,7 @@ function formatBlockAsValue(block: any, context: ConversionContext): string {
     
     default:
       // 复杂块，生成内联调用
-      return buildBlockCall(block, context);
+      return `${buildBlockCall(block, context)}${formatExtraStateAnnotation(block.extraState)}`;
   }
 }
 
@@ -991,6 +1002,28 @@ function makePortableExtraState(extraState: any): any | null {
     result[key] = value;
   }
   return Object.keys(result).length > 0 ? result : null;
+}
+
+/** 将动态块状态编码为 ABS 行尾注解。 */
+function formatExtraStateAnnotation(extraState: any): string {
+  const portableExtraState = makePortableExtraState(extraState);
+  if (!portableExtraState) return '';
+
+  try {
+    return ` @extra:${JSON.stringify(portableExtraState)}`;
+  } catch {
+    return '';
+  }
+}
+
+/** 判断字段是否由 Blockly 变量模型管理。 */
+function isVariableField(blockType: string, fieldName: string): boolean {
+  const fieldType = getGlobalBlockMetas()?.get(blockType)?.fieldTypes?.get(fieldName);
+  if (fieldType === 'field_variable') return true;
+  if (runtimeFieldVarTypeCache.get(blockType)?.has(fieldName)) return true;
+
+  // 无元数据时仅接受 Blockly 标准变量字段名，避免把普通对象误判为变量。
+  return fieldName === 'VAR' || fieldName === 'VARIABLE';
 }
 
 /**

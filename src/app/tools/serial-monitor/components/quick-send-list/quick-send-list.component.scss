@@ -35,6 +35,11 @@
         &:hover {
             background-color: rgba(221, 77, 0, 0.8);
         }
+
+        &.active {
+            background-color: rgba(221, 77, 0, 0.95);
+            box-shadow: 0 0 0 1px rgba(255, 160, 100, 0.7) inset;
+        }
     }
 
     &.text {
