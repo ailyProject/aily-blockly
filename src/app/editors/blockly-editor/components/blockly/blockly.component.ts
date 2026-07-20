@@ -894,6 +894,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
             this.codeViewerIpcService.publishSelection(this.blocklyService.selectedBlockSubject.value);
+            if (this.blocklyService.selectedBlockIdsSubject.value.length > 0) {
+              this.uiService.focusActiveAilyChatInput();
+            }
           });
         }
       });
@@ -1449,6 +1452,12 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       sender: 'BlocklyComponent',
       type: 'block-explain',
       autoSend: true,
+      resources: this.blocklyService.getSelectedBlockContextLabels().map(item => ({
+        type: 'block',
+        name: item.label,
+        blockId: item.blockId,
+        blockContext: item.formatted,
+      })),
     });
   }
 

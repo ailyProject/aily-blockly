@@ -267,6 +267,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
+    await this.projectService.loadBoardMenuConfig();
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({

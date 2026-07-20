@@ -342,6 +342,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   private readonly debugBrowserChangeSubscription: Subscription;
   private readonly sessionViewModelChangeSubscription: Subscription;
   private readonly runtimeProcessSnapshotSubscription: { dispose(): void };
+  private toolSignalSubscription: Subscription | null = null;
   private childToolSessionStateCleanup: (() => void) | null = null;
   private childToolSessions: readonly ChildToolSessionListItem[] = [];
   private runtimeInteractionRevealEffect: { destroy(): void } | null = null;
@@ -809,6 +810,15 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       this.cdr.markForCheck();
     });
     this.lifecycleCoordinator.initialize();
+    this.toolSignalSubscription = this.uiService.actionSubject.subscribe((action: any) => {
+      if (
+        action?.action === 'signal'
+        && action?.type === 'tool'
+        && action?.data === 'aily-chat:focus-input'
+      ) {
+        this.scheduleChatInputFocusAfterSessionChange();
+      }
+    });
     this.ailyChatConfigService.reloadRemoteModelCatalog('chat_view_open');
     this.syncSessionListDisplayState();
   }
@@ -1095,6 +1105,8 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   ngOnDestroy() {
+    this.toolSignalSubscription?.unsubscribe();
+    this.toolSignalSubscription = null;
     this.chatTextareaSubmitCleanup?.();
     this.chatTextareaSubmitCleanup = null;
     this.composerSendActionCleanup?.();

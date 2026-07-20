@@ -3,6 +3,7 @@ import {
   ChangeDetectorRef,
   Component,
   ElementRef,
+  HostListener,
   OnDestroy,
   OnInit,
   ViewChild,
@@ -12,6 +13,9 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { TranslateModule } from '@ngx-translate/core';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
+import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzModalService } from 'ng-zorro-antd/modal';
+import { TranslateService } from '@ngx-translate/core';
 import Sortable from 'sortablejs';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
@@ -26,6 +30,8 @@ import {
 import { AppStoreService } from './app-store.service';
 import { Subscription } from 'rxjs';
 import { ToolI18nService } from '../../services/tool-i18n.service';
+import { SubappManagerService } from '../../services/subapp-manager.service';
+import { ChildToolProcessService } from '../../services/child-tool-process.service';
 
 @Component({
   selector: 'app-app-store',
@@ -46,10 +52,20 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   headerZoneApps: AppItem[] = [];
   catalogApps: AppItem[] = [];
+  catalogLoading = true;
+  catalogError = '';
+  catalogWarning = '';
+  installRoot = '';
+  pendingCatalogId = '';
+  checkingCatalogId = '';
+  confirmUninstallCatalogId = '';
+  openMoreCatalogId = '';
 
   private visibleCatalogIds: string[] = [];
   private sortables: Sortable[] = [];
   private layoutSubscription?: Subscription;
+  private catalogSubscription?: Subscription;
+  private confirmUninstallTimer?: ReturnType<typeof setTimeout>;
   private isDraggingToolbarApp = false;
 
   @ViewChild('headerZone') headerZone?: ElementRef<HTMLElement>;
@@ -60,7 +76,12 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     private appStoreService: AppStoreService,
     private projectService: ProjectService,
     private cdr: ChangeDetectorRef,
-    private toolI18n: ToolI18nService
+    private toolI18n: ToolI18nService,
+    private subappManager: SubappManagerService,
+    private childToolProcess: ChildToolProcessService,
+    private message: NzMessageService,
+    private modal: NzModalService,
+    private translate: TranslateService,
   ) { }
 
   ngOnInit(): void {
@@ -75,6 +96,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.refreshApps();
       this.cdr.markForCheck();
     });
+    this.catalogSubscription = this.subappManager.state$.subscribe((state) => {
+      this.catalogLoading = state.loading;
+      this.catalogError = state.error || '';
+      this.catalogWarning = state.warning || '';
+      this.installRoot = state.installRoot;
+      this.cdr.markForCheck();
+    });
   }
 
   ngAfterViewInit(): void {
@@ -83,8 +111,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.layoutSubscription?.unsubscribe();
+    this.catalogSubscription?.unsubscribe();
     this.sortables.forEach(sortable => sortable.destroy());
     this.sortables = [];
+    this.closeSubappMore();
   }
 
   getZoneApps(zone: AppPlacementZone): AppItem[] {
@@ -130,6 +160,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   openApp(app: AppItem): void {
+    if (app.subapp && !app.subapp.installed) {
+      this.installSubapp(app);
+      return;
+    }
     const toolName = app.data?.data;
     if (toolName) {
       this.uiService.openTool(toolName);
@@ -146,6 +180,90 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   resetToDefault(): void {
     this.appStoreService.resetToDefault();
+  }
+
+  refreshCatalog(): void {
+    if (this.catalogLoading || this.pendingCatalogId || this.checkingCatalogId) return;
+    void this.subappManager.refresh(true);
+  }
+
+  private installSubapp(app: AppItem): void {
+    if (this.isSubappPending(app)) return;
+    this.clearUninstallConfirmation();
+    void this.runSubappAction('install', app);
+  }
+
+  checkSubappUpdate(app: AppItem): void {
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId || !app.subapp?.installed || this.pendingCatalogId || this.checkingCatalogId) return;
+    this.closeSubappMore();
+    void this.checkSubappUpdateFromCatalog(catalogId);
+  }
+
+  toggleSubappMore(app: AppItem, event: Event): void {
+    event.stopPropagation();
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId || !app.subapp?.installed || this.pendingCatalogId) return;
+    if (this.openMoreCatalogId === catalogId) {
+      this.closeSubappMore();
+      return;
+    }
+    this.clearUninstallConfirmation();
+    this.openMoreCatalogId = catalogId;
+    this.cdr.markForCheck();
+  }
+
+  isSubappMoreOpen(app: AppItem): boolean {
+    return !!app.subapp && this.openMoreCatalogId === app.subapp.catalogId;
+  }
+
+  uninstallSubapp(app: AppItem): void {
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId || this.pendingCatalogId) return;
+    if (this.confirmUninstallCatalogId !== catalogId) {
+      this.clearUninstallConfirmation();
+      this.confirmUninstallCatalogId = catalogId;
+      this.confirmUninstallTimer = setTimeout(() => {
+        this.confirmUninstallCatalogId = '';
+        this.confirmUninstallTimer = undefined;
+        this.cdr.markForCheck();
+      }, 5000);
+      this.cdr.markForCheck();
+      return;
+    }
+
+    this.clearUninstallConfirmation();
+    this.openMoreCatalogId = '';
+    void this.runSubappAction('uninstall', app);
+  }
+
+  isSubappPending(app: AppItem): boolean {
+    return !!app.subapp && this.pendingCatalogId === app.subapp.catalogId;
+  }
+
+  isCheckingSubapp(app: AppItem): boolean {
+    return !!app.subapp && this.checkingCatalogId === app.subapp.catalogId;
+  }
+
+  isUninstallConfirming(app: AppItem): boolean {
+    return !!app.subapp && this.confirmUninstallCatalogId === app.subapp.catalogId;
+  }
+
+  resetUninstallConfirmation(): void {
+    this.clearUninstallConfirmation();
+  }
+
+  @HostListener('document:click')
+  closeSubappMoreOnOutsideClick(): void {
+    if (this.openMoreCatalogId) {
+      this.closeSubappMore();
+      this.cdr.markForCheck();
+    }
+  }
+
+  @HostListener('document:keydown.escape')
+  closeSubappMoreOnEscape(): void {
+    this.closeSubappMoreOnOutsideClick();
   }
 
   close(): void {
@@ -201,6 +319,82 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.catalogApps = this.appStoreService.getEnabledApps().filter(canShow);
     this.visibleCatalogIds = this.catalogApps.map(app => app.id);
     this.headerZoneApps = this.appStoreService.getAppsForZone('header').filter(canShow);
+  }
+
+  private async runSubappAction(action: 'install' | 'update' | 'uninstall', app: AppItem): Promise<void> {
+    const subapp = app.subapp;
+    if (!subapp || this.pendingCatalogId) return;
+    this.pendingCatalogId = subapp.catalogId;
+    try {
+      if (action !== 'install') {
+        await this.childToolProcess.stop(app.id);
+      }
+      if (action === 'uninstall') {
+        this.uiService.closeTool(app.id);
+      }
+      await this.subappManager[action](subapp.catalogId);
+      this.message.success(this.translate.instant(`APP_STORE.${action.toUpperCase()}_SUCCESS`, { name: app.name }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    } finally {
+      this.pendingCatalogId = '';
+      this.cdr.markForCheck();
+    }
+  }
+
+  private async checkSubappUpdateFromCatalog(catalogId: string): Promise<void> {
+    this.clearUninstallConfirmation();
+    this.checkingCatalogId = catalogId;
+    this.cdr.markForCheck();
+
+    try {
+      await this.subappManager.refresh(true);
+      if (this.subappManager.state.error) {
+        throw new Error(this.subappManager.state.error);
+      }
+
+      const refreshedApp = this.subappManager.getCatalogApps()
+        .find((item) => item.subapp?.catalogId === catalogId);
+      if (!refreshedApp?.subapp?.installed) {
+        throw new Error(`Installed subapp was not found after refreshing the catalog: ${catalogId}`);
+      }
+
+      if (!refreshedApp.subapp.updateAvailable) {
+        this.message.info(this.translate.instant('APP_STORE.LATEST_VERSION', { name: refreshedApp.name }));
+        return;
+      }
+
+      this.modal.confirm({
+        nzTitle: this.translate.instant('APP_STORE.UPDATE_CONFIRM', { name: refreshedApp.name }),
+        nzContent: this.translate.instant('APP_STORE.UPDATE_HINT', {
+          current: refreshedApp.subapp.installedVersion || '-',
+          available: refreshedApp.subapp.availableVersion,
+        }),
+        nzOkText: this.translate.instant('APP_STORE.UPDATE'),
+        nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+        nzOnOk: () => this.runSubappAction('update', refreshedApp),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.CHECK_UPDATE_FAILED', { message }));
+    } finally {
+      this.checkingCatalogId = '';
+      this.cdr.markForCheck();
+    }
+  }
+
+  private clearUninstallConfirmation(): void {
+    if (this.confirmUninstallTimer) {
+      clearTimeout(this.confirmUninstallTimer);
+      this.confirmUninstallTimer = undefined;
+    }
+    this.confirmUninstallCatalogId = '';
+  }
+
+  private closeSubappMore(): void {
+    this.openMoreCatalogId = '';
+    this.clearUninstallConfirmation();
   }
 
   private createVisibilityContext() {

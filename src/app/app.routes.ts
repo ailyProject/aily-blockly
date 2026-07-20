@@ -148,10 +148,6 @@ export const routes: Routes = [
         loadComponent: () => import('./editors/blockly-editor/tools/code-viewer/code-viewer.component').then(m => m.CodeViewerComponent)
     },
     {
-        path: "simulator",
-        loadComponent: () => import('./tools/simulator/simulator.component').then(m => m.SimulatorComponent)
-    },
-    {
         path: "iframe",
         loadComponent: () => import('./windows/iframe/iframe.component').then(m => m.IframeComponent)
     },

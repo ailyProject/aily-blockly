@@ -43,6 +43,13 @@ declare global {
         emitRuntimeOwnerEvent: (payload: unknown) => void;
         onEvent: (callback: (payload: any) => void) => () => void;
       };
+      subapps?: {
+        list: (options?: { refresh?: boolean; locale?: string }) => Promise<any>;
+        install: (options: { id: string; locale?: string }) => Promise<any>;
+        update: (options: { id: string; locale?: string }) => Promise<any>;
+        uninstall: (options: { id: string; locale?: string }) => Promise<any>;
+        onChanged: (callback: (payload: any) => void) => () => void;
+      };
       webviewBridge?: {
         fetchPage: (data: any) => Promise<any>;
         searchWeb: (data: any) => Promise<any>;

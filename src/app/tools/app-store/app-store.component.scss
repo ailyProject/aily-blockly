@@ -103,6 +103,24 @@
   }
 }
 
+.section-spacer {
+  flex: 1;
+}
+
+.catalog-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--aily-text-tertiary);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.refresh-btn {
+  width: 26px;
+  height: 26px;
+}
+
 .placement-list {
   display: flex;
   flex-wrap: wrap;
@@ -133,6 +151,124 @@
     border-color: var(--aily-primary);
     background: var(--aily-bg-tertiary);
   }
+}
+
+.catalog-card.not-installed {
+  border-style: dashed;
+
+  .app-icon {
+    opacity: 0.62;
+  }
+}
+
+.catalog-card.installing {
+  isolation: isolate;
+  overflow: hidden;
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--aily-color-primary) 64%, var(--aily-border-subtle));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--aily-color-primary) 12%, transparent),
+    0 0 18px color-mix(in srgb, var(--aily-color-primary) 12%, transparent);
+
+  &::before {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    content: '';
+    transform: scaleX(0.025);
+    transform-origin: left center;
+    background:
+      linear-gradient(90deg,
+        color-mix(in srgb, var(--aily-color-primary) 10%, transparent),
+        color-mix(in srgb, var(--aily-color-primary) 26%, transparent) 72%,
+        color-mix(in srgb, var(--aily-color-primary) 44%, transparent)),
+      repeating-linear-gradient(125deg,
+        transparent 0 10px,
+        color-mix(in srgb, #fff 12%, transparent) 10px 17px,
+        transparent 17px 28px);
+    background-size: 100% 100%, 56px 100%;
+    box-shadow: 14px 0 28px color-mix(in srgb, var(--aily-color-primary) 34%, transparent);
+    animation:
+      subapp-install-progress 5.8s cubic-bezier(0.16, 0.78, 0.2, 1) forwards,
+      subapp-install-flow 0.9s linear infinite;
+  }
+
+  &::after {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    bottom: 0;
+    left: -38%;
+    width: 34%;
+    content: '';
+    transform: skewX(-18deg);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 28%, transparent), transparent);
+    filter: blur(1px);
+    animation: subapp-install-shine 1.8s ease-in-out infinite;
+  }
+
+  > * {
+    position: relative;
+    z-index: 2;
+  }
+
+  .app-icon {
+    opacity: 1;
+    color: var(--aily-color-primary);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--aily-color-primary) 18%, transparent);
+  }
+}
+
+@keyframes subapp-install-progress {
+  0% {
+    transform: scaleX(0.025);
+  }
+
+  24% {
+    transform: scaleX(0.32);
+  }
+
+  64% {
+    transform: scaleX(0.72);
+  }
+
+  100% {
+    transform: scaleX(0.9);
+  }
+}
+
+@keyframes subapp-install-flow {
+  from {
+    background-position: 0 0, 0 0;
+  }
+
+  to {
+    background-position: 0 0, 56px 0;
+  }
+}
+
+@keyframes subapp-install-shine {
+  0% {
+    left: -38%;
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 0.9;
+  }
+
+  82% {
+    opacity: 0.55;
+  }
+
+  100% {
+    left: 112%;
+    opacity: 0;
+  }
+}
+
+.catalog-card.has-update {
+  border-color: color-mix(in srgb, var(--aily-color-primary) 45%, var(--aily-border-subtle));
 }
 
 .placement-card {
@@ -227,10 +363,37 @@
   padding: 0;
   cursor: pointer;
 
+  &.installing {
+    cursor: progress;
+  }
+
   &:hover {
     .app-icon {
       color: var(--aily-text-primary);
     }
+  }
+}
+
+.app-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--aily-text-hint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  &.has-update {
+    background: color-mix(in srgb, var(--aily-color-primary) 8%, transparent);
+    color: var(--aily-color-primary);
+  }
+
+  .update-dot {
+    font-size: 5px;
   }
 }
 
@@ -265,6 +428,8 @@
 
 .app-name {
   display: block;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: var(--aily-text-primary);
   font-size: 12px;
@@ -273,8 +438,16 @@
   white-space: nowrap;
 }
 
+.app-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .app-copy {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
@@ -305,9 +478,141 @@
   gap: 4px;
 }
 
+.action-progress {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  color: var(--aily-color-primary);
+}
+
+.catalog-state {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 150px;
+  color: var(--aily-text-tertiary);
+  text-align: center;
+
+  > i {
+    font-size: 28px;
+  }
+
+  strong {
+    color: var(--aily-text-secondary);
+    font-size: 12px;
+  }
+
+  span {
+    max-width: 520px;
+    font-size: 11px;
+  }
+
+  button {
+    height: 28px;
+    padding: 0 12px;
+    border: 1px solid var(--aily-border-input);
+    border-radius: 6px;
+    background: var(--aily-bg-primary);
+    color: var(--aily-text-primary);
+    cursor: pointer;
+  }
+}
+
+.error-state > i {
+  color: var(--aily-color-error, #e34d59);
+}
+
 .pin-btn.active {
   color: var(--aily-color-primary);
   background: transparent;
+
+  i.fa-thumbtack {
+    transform: rotate(45deg);
+  }
+}
+
+.pin-btn i {
+  transition: transform 0.18s ease;
+}
+
+.subapp-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.more-btn {
+  width: 26px;
+  height: 26px;
+}
+
+.subapp-more-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 3px);
+  right: 0;
+  display: none;
+  width: max-content;
+  min-width: 118px;
+  padding: 4px;
+  border: 1px solid var(--aily-border-secondary);
+  border-radius: 8px;
+  background: var(--aily-bg-primary);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+}
+
+.subapp-more.open .subapp-more-menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.subapp-more-action {
+  display: flex;
+  width: 100%;
+  height: 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--aily-menu-text, var(--aily-text-primary));
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+
+  > i {
+    display: inline-flex;
+    width: 12px;
+    justify-content: center;
+    color: var(--aily-text-muted);
+  }
+
+  &:hover:not(:disabled) {
+    background: var(--aily-highlight-bg, var(--aily-bg-tertiary));
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+
+  &.danger {
+    color: var(--aily-color-danger, var(--aily-color-error, #e34d59));
+  }
+
+  &.danger.confirm {
+    background: color-mix(in srgb, var(--aily-color-danger, #e34d59) 12%, transparent);
+  }
+
+  &.danger > i {
+    color: inherit;
+  }
 }
 
 .empty-slot {
@@ -338,5 +643,18 @@
 @media (max-width: 720px) {
   .catalog-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catalog-card.installing {
+    &::before {
+      transform: scaleX(0.58);
+      animation: none;
+    }
+
+    &::after {
+      display: none;
+    }
   }
 }

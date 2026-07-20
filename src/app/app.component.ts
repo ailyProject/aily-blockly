@@ -5,6 +5,7 @@ import { ElectronService } from './services/electron.service';
 import { ConfigService } from './services/config.service';
 import { TranslationService } from './services/translation.service';
 import { ThemeService } from './services/theme.service';
+import { SubappManagerService } from './services/subapp-manager.service';
 
 @Component({
   selector: 'app-root',
@@ -20,12 +21,14 @@ export class AppComponent implements OnInit, AfterViewInit {
   private configService = inject(ConfigService);
   private translationService = inject(TranslationService);
   private themeService = inject(ThemeService);
+  private subappManager = inject(SubappManagerService);
 
   async ngOnInit() {
     await this.electronService.init();
     await this.configService.init();
     this.themeService.init();
     await this.translationService.init();
+    await this.subappManager.initialize();
   }
 
   ngAfterViewInit() {

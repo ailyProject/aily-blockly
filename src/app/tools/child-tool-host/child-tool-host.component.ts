@@ -11,6 +11,7 @@ import { SubWindowComponent } from '../../components/sub-window/sub-window.compo
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { ChildToolConfig, getChildToolConfig } from '../../configs/tool.config';
 import { ChildToolHostInfo, ChildToolProcessService } from '../../services/child-tool-process.service';
+import { SubappManagerService } from '../../services/subapp-manager.service';
 import { ChildAppHostRegistryService } from '../../services/child-app-host-registry.service';
 import { AuthService } from '../../services/auth.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
@@ -112,6 +113,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private blocklyService: BlocklyService,
     private electronService: ElectronService,
     private mainUiAutomation: MainUiAutomationService,
+    private subappManager: SubappManagerService,
   ) {
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
@@ -306,6 +308,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private async initTool(): Promise<void> {
+    await this.subappManager.initialize();
     const nextToolId = this.resolveToolId();
     if (!nextToolId) {
       this.showConfigError('Child tool id is missing');
@@ -988,7 +991,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       return { ok: false, message: 'Child app listing is only available to Aily Chat' };
     }
     return this.mainUiAutomation.listChildApps({
-      limit: Math.max(1, Math.min(12, Number(payload?.limit) || 6)),
+      limit: Math.max(1, Math.min(100, Number(payload?.limit) || 100)),
     });
   }
 

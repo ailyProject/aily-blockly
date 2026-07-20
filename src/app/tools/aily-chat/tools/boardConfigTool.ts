@@ -22,7 +22,7 @@ interface BoardConfigInvocationContext {
 /**
  * 获取当前开发板的编译/烧录配置选项
  *
- * 根据当前开发板类型（ESP32/STM32/nRF5），返回可配置项及其可选值和当前选中值
+ * 根据当前开发板包的 menu.json，返回可配置项及其可选值和当前选中值
  */
 export async function getBoardConfigTool(
     projectService: any,
@@ -50,29 +50,13 @@ export async function getBoardConfigTool(
     }
 
     const core: string = boardConfig['core'] || '';
-    const boardType: string = boardConfig['type'] || '';
     const boardDescription: string = boardConfig['description'] || '';
 
-    // 从 type 中提取 board 标识（如 esp32:esp32:esp32s3 → esp32s3）
-    const typeParts = boardType.split(':');
-    const boardIdent = typeParts[typeParts.length - 1];
-
     try {
-        let configMenu: any[] | null = null;
-        let configType = '';
+        const configMenu: any[] = await projectService.getBoardConfigMenu();
+        const configType = String(boardConfig['type'] || '');
 
-        if (core.indexOf('esp32') > -1) {
-            configType = 'ESP32';
-            configMenu = await projectService.updateEsp32ConfigMenu(boardIdent);
-        } else if (core.indexOf('stm32') > -1 && boardDescription.indexOf('Series') > -1) {
-            configType = 'STM32';
-            configMenu = await projectService.updateStm32ConfigMenu(boardIdent);
-        } else if (core.indexOf('nRF5') > -1) {
-            configType = 'nRF5';
-            configMenu = await projectService.updateNrf5ConfigMenu(boardIdent);
-        }
-
-        if (!configMenu) {
+        if (configMenu.length === 0) {
             return {
                 is_error: false,
                 content: JSON.stringify({
@@ -102,7 +86,7 @@ export async function getBoardConfigTool(
             };
 
             if (menuItem.children && menuItem.children.length > 0) {
-                // 从 menuItem.name 中提取 key（如 ESP32.UPLOAD_SPEED → UploadSpeed）
+                // 使用 menu.json 声明并传递到选项上的配置键。
                 const configKey = menuItem.children[0]?.key || '';
                 item.config_key = configKey;
                 item.current_value = currentProjectConfig[configKey] || null;
@@ -186,6 +170,19 @@ export async function setBoardConfigTool(
 
         await projectService.setPackageJson(packageJson);
 
+        // 执行 menu.json 为该选项声明的附加行为。
+        try {
+            const configMenu: any[] = await projectService.getBoardConfigMenu();
+            const matchedItem = configMenu
+                .flatMap((item: any) => item.children || [])
+                .find((item: any) => item.key === config_key && item.data === config_value);
+            if (matchedItem?.extra?.syncPinConfig) {
+                await projectService.syncBoardPinConfig(matchedItem);
+            }
+        } catch (error) {
+            console.warn('Board configuration side effect failed:', error);
+        }
+
         if (invocationContext?.timelineWriter?.recordFileWrite && invocationContext.turnId && fileSystem.existsSync(packageJsonPath)) {
             const afterContent = fileSystem.readFileSync(packageJsonPath, 'utf8');
             if (!existedBefore || beforeContent !== afterContent) {
@@ -200,29 +197,6 @@ export async function setBoardConfigTool(
             }
         }
 
-        // 如果是 STM32 的 pnum 配置变更，处理引脚配置同步
-        const boardConfig = projectService.currentBoardConfig;
-        if (boardConfig && boardConfig['core']?.indexOf('stm32') > -1 &&
-            boardConfig['description']?.indexOf('Series') > -1 &&
-            config_key === 'pnum') {
-            // 构造 subItem 兼容对象用于比较引脚配置
-            try {
-                const boardType = boardConfig['type'] || '';
-                const typeParts = boardType.split(':');
-                const boardIdent = typeParts[typeParts.length - 1];
-                const stm32Config = await projectService.getStm32BoardConfig(boardIdent);
-                if (stm32Config?.board) {
-                    const matchedItem = stm32Config.board.find((item: any) => item.data === config_value);
-                    if (matchedItem) {
-                        projectService.compareStm32PinConfig(matchedItem);
-                    }
-                }
-            } catch (e) {
-                console.warn('STM32 引脚配置同步失败:', e);
-            }
-        }
-
-        // 触发预编译操作：配置变更后自动触发预编译
         if (builderService?.triggerPreprocess) {
             builderService.triggerPreprocess('config-changed');
         }

@@ -167,7 +167,7 @@ function renderArduinoPatternTemplate(pattern, resolver, maxDepth = 8) {
         result = result.replace(/\{([^{}]+)\}/g, (match, rawKey) => {
             const key = String(rawKey || '').trim();
             const replacement = resolver(key);
-            if (replacement === undefined || replacement === null || replacement === '') {
+            if (replacement === undefined || replacement === null) {
                 return match;
             }
             changed = true;
@@ -267,6 +267,49 @@ function buildUploadParamFromPreprocess(currentProjectPath, platform) {
     };
 }
 
+function selectUploadParam(currentProjectPath, platform, core, fallbackUploadParam) {
+    const normalizedFallback = normalizeUploadParam(fallbackUploadParam);
+    const preferPreprocess = String(core || '').toLowerCase().includes('esp32');
+
+    // ESP32 保持原有行为：优先使用 SDK 解析结果。其他开发板仅在 board.json
+    // 未提供 uploadParam 时才使用解析结果，避免改变现有板卡的上传行为。
+    if (preferPreprocess || !normalizedFallback) {
+        const preprocessResult = buildUploadParamFromPreprocess(currentProjectPath, platform);
+        if (preprocessResult.success) {
+            return {
+                success: true,
+                uploadParam: preprocessResult.uploadParam,
+                source: 'preprocess',
+                toolName: preprocessResult.toolName,
+                fallbackUploadParam: normalizedFallback
+            };
+        }
+
+        if (!normalizedFallback) {
+            return {
+                success: false,
+                reason: preprocessResult.reason,
+                fallbackUploadParam: ''
+            };
+        }
+
+        return {
+            success: true,
+            uploadParam: normalizedFallback,
+            source: 'fallback',
+            preprocessFailureReason: preprocessResult.reason,
+            fallbackUploadParam: normalizedFallback
+        };
+    }
+
+    return {
+        success: true,
+        uploadParam: normalizedFallback,
+        source: 'fallback',
+        fallbackUploadParam: normalizedFallback
+    };
+}
+
 function validateCommandResult(command, args) {
     const commandText = String(command || '').replace(/^"|"$/g, '').trim();
     const hasArgs = Array.isArray(args) ? args.some((item) => String(item || '').trim().length > 0) : false;
@@ -350,11 +393,9 @@ async function main() {
             platformRef?.packageName,
         );
 
-        // 4. 获取上传参数：优先尝试 preprocess.json，失败则回退到当前逻辑
+        // 4. 获取上传参数：ESP32 优先使用 preprocess.json；其他板卡仅在
+        // board.json 未提供 uploadParam 时使用 preprocess.json。
         const fallbackUploadParam = normalizeUploadParam(configUploadParam || boardJson.uploadParam);
-        if (!fallbackUploadParam) {
-            throw new Error('未找到上传参数(uploadParam)');
-        }
 
         // core
         const coreItem = boardJson?.core || 'arduino';
@@ -369,7 +410,7 @@ async function main() {
         }
 
         console.log('使用的核心:', core);
-        console.log('默认波特率:', defaultBaudRate);
+        // console.log('默认波特率:', defaultBaudRate);
 
         // 6. 获取波特率
         const baudRate = projectConfig?.UploadSpeed || defaultBaudRate;
@@ -404,22 +445,23 @@ async function main() {
 
         const platform = os.platform() === 'win32' ? 'win32' : (os.platform() === 'darwin' ? 'darwin' : 'linux');
 
-        let uploadParamSource = 'fallback';
-        let uploadParam = fallbackUploadParam;
-        const isEsp32Board = core.toLowerCase().includes('esp32');
-        if (isEsp32Board) {
-            const preprocessResult = buildUploadParamFromPreprocess(currentProjectPath, platform);
-            if (preprocessResult.success) {
-                uploadParamSource = 'preprocess';
-                uploadParam = preprocessResult.uploadParam;
-                logger.log(`[preprocess] 命中 upload.pattern，tool=${preprocessResult.toolName}`);
-            } else {
-                logger.warn(`[preprocess] ${preprocessResult.reason}，回退到现有 uploadParam`);
-            }
-        } 
-        // else {
-        //     logger.log(`[preprocess] 跳过（非 ESP32 板，core=${core}）`);
-        // }
+        const uploadSelection = selectUploadParam(
+            currentProjectPath,
+            platform,
+            core,
+            fallbackUploadParam
+        );
+        if (!uploadSelection.success) {
+            throw new Error(`未找到可用的上传参数：${uploadSelection.reason || 'SDK 上传命令解析失败'}`);
+        }
+
+        let uploadParamSource = uploadSelection.source;
+        let uploadParam = uploadSelection.uploadParam;
+        if (uploadParamSource === 'preprocess') {
+            logger.log(`[preprocess] 命中 upload.pattern，tool=${uploadSelection.toolName}`);
+        } else if (uploadSelection.preprocessFailureReason) {
+            logger.warn(`[preprocess] ${uploadSelection.preprocessFailureReason}，回退到现有 uploadParam`);
+        }
 
         logger.log(`上传参数来源: ${uploadParamSource}`);
         logger.log('使用的上传参数:', uploadParam);
@@ -507,7 +549,7 @@ async function main() {
             try {
                 await runDebuggerUpload(uploadParam, uploadParamSource);
             } catch (error) {
-                if (uploadParamSource === 'preprocess') {
+                if (uploadParamSource === 'preprocess' && fallbackUploadParam) {
                     logger.warn(`[preprocess] 调试探针命令不可用(${error.message})，回退到现有 uploadParam`);
                     uploadParamSource = 'fallback';
                     uploadParam = fallbackUploadParam;
@@ -551,7 +593,7 @@ async function main() {
         try {
             ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
         } catch (error) {
-            if (uploadParamSource === 'preprocess') {
+            if (uploadParamSource === 'preprocess' && fallbackUploadParam) {
                 logger.warn(`[preprocess] 串口命令不可用(${error.message})，回退到现有 uploadParam`);
                 uploadParamSource = 'fallback';
                 uploadParam = fallbackUploadParam;

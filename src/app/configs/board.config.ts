@@ -68,6 +68,13 @@ export const BRAND_LIST = [
         imgLight: 'brands\\sparkfun-light.webp',
     },
     {
+        name: 'realtek',
+        value: 'realtek',
+        img: 'brands\\realtek.webp',
+        imgLight: 'brands\\realtek.webp',
+        selected: "brands\\realtek-selected.webp"
+    },
+    {
         name: 'micro:bit',
         value: 'microbit',
         img: 'brands\\microbit.webp',

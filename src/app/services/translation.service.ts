@@ -88,7 +88,7 @@ export class TranslationService {
     }
 
     // 使用该语言
-    this.translate.use(lang);
+    await lastValueFrom(this.translate.use(lang));
     this.configService.data['selectedLanguage'] = lang;
     this.configService.save();
     return lang;

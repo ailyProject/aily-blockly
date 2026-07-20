@@ -901,6 +901,7 @@ const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
 const { registerProbeRsHandlers } = require("./probe-rs");
 const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
+const { registerSubappManagerHandlers } = require("./subapp-manager");
 
 let mainWindow;
 let userConf;
@@ -2413,6 +2414,7 @@ function createWindow() {
   registerNotificationHandlers(mainWindow);
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
+  registerSubappManagerHandlers(() => mainWindow);
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);
 

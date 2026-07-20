@@ -201,6 +201,15 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.projectService.currentPackageData = packageJson;
     this.projectService.currentProjectPath = projectPath;
 
+    try {
+      const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+      this.projectService.currentBoardConfig = boardJson;
+      window['boardConfig'] = boardJson;
+    } catch (error) {
+      console.warn('[CodeEditor] failed to load board config:', error);
+    }
+    await this.projectService.loadBoardMenuConfig();
+
     this.projectService.stateSubject.next('loaded');
     // 7. 后台安装开发板依赖
     // this.npmService.installBoardDeps()

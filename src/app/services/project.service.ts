@@ -9,10 +9,6 @@ import { CmdService } from './cmd.service';
 import { CrossPlatformCmdService } from './cross-platform-cmd.service';
 import { generateDateString } from '../func/func';
 import { ConfigService } from './config.service';
-import { ESP32_CONFIG_MENU } from '../configs/esp32.config';
-import { STM32_CONFIG_MENU } from '../configs/stm32.config';
-import { NRF5_CONFIG_MENU } from '../configs/nrf5.config';
-import { WIO_TERMINAL_CONFIG_MENU } from '../configs/wio-terminal.config';
 import type { IMenuItem } from '../configs/menu.config';
 import { ActionService } from './action.service';
 import { PlatformService } from './platform.service';
@@ -173,6 +169,8 @@ export class ProjectService {
   }
 
   currentBoardConfig: any;
+  private currentBoardMenuConfig: IMenuItem[] = [];
+  private currentBoardMenuI18nDir = '';
   isBoardSwitchInProgress = false;
   isPackageJsonBoardWatcherActive = false;
   private boardSwitchReloadWaiter: {
@@ -183,8 +181,8 @@ export class ProjectService {
   private messageService: NzMessageService | null = null;
   private modalService: NzModalService | null = null;
   private routerService: Router | null = null;
-  // STM32选择开发板时定义引脚使用
-  currentStm32Config: { board: any, variant: any, variant_h: any } = { board: null, variant: null, variant_h: null };
+  // 当前由 menu.json 声明需要同步的引脚配置。
+  currentBoardPinConfig: { board: any, variant: any, variant_h: any } = { board: null, variant: null, variant_h: null };
 
   constructor(
     private uiService: UiService,
@@ -201,6 +199,9 @@ export class ProjectService {
     private chatRuntimeHostInventory: ChatRuntimeHostInventoryService,
     private injector: Injector,
   ) {
+    this.translate.onLangChange.subscribe((event) => {
+      void this.loadCurrentBoardMenuTranslations(event.lang);
+    });
   }
 
   private hasBlockingChatRequest(): boolean {
@@ -1451,6 +1452,66 @@ export class ProjectService {
     return boardPackagePath;
   }
 
+  /** Load the optional menu and translations shipped by the current board package. */
+  async loadBoardMenuConfig(): Promise<IMenuItem[]> {
+    this.currentBoardMenuConfig = [];
+    this.currentBoardMenuI18nDir = '';
+
+    try {
+      const boardPackagePath = await this.getBoardPackagePath();
+      const menuPath = this.electronService.pathJoin(boardPackagePath, 'menu.json');
+      if (!this.electronService.exists(menuPath)) {
+        return [];
+      }
+
+      const menuConfig = JSON.parse(this.electronService.readFile(menuPath));
+      if (!Array.isArray(menuConfig)) {
+        throw new Error('menu.json must contain an array');
+      }
+
+      this.currentBoardMenuConfig = menuConfig as IMenuItem[];
+      this.currentBoardMenuI18nDir = this.electronService.pathJoin(boardPackagePath, 'i18n');
+      await this.loadCurrentBoardMenuTranslations();
+      return this.cloneCurrentBoardMenuConfig();
+    } catch (error) {
+      console.warn('[ProjectService] failed to load board menu config:', error);
+      this.currentBoardMenuConfig = [];
+      this.currentBoardMenuI18nDir = '';
+      return [];
+    }
+  }
+
+  private cloneCurrentBoardMenuConfig(): IMenuItem[] {
+    return JSON.parse(JSON.stringify(this.currentBoardMenuConfig)) as IMenuItem[];
+  }
+
+  private async loadCurrentBoardMenuTranslations(
+    requestedLang = this.translate.currentLang || this.translate.defaultLang || 'en',
+  ): Promise<void> {
+    if (!this.currentBoardMenuI18nDir || !requestedLang) {
+      return;
+    }
+
+    const candidates = requestedLang === 'en' ? ['en'] : [requestedLang, 'en'];
+    for (const lang of candidates) {
+      const i18nPath = this.electronService.pathJoin(this.currentBoardMenuI18nDir, `${lang}.json`);
+      if (!this.electronService.exists(i18nPath)) {
+        continue;
+      }
+
+      try {
+        const translations = JSON.parse(this.electronService.readFile(i18nPath));
+        if (!translations || typeof translations !== 'object' || Array.isArray(translations)) {
+          throw new Error(`i18n/${lang}.json must contain an object`);
+        }
+        this.translate.setTranslation(requestedLang, translations, true);
+        return;
+      } catch (error) {
+        console.warn(`[ProjectService] failed to load board menu translations (${lang}):`, error);
+      }
+    }
+  }
+
   // 获取开发板 SDK 路径
   async getSdkPath() {
     try {
@@ -1496,122 +1557,7 @@ export class ProjectService {
     }
   }
 
-  // // 解析boards.txt并获取配置信息
-  // async getBoardConfig(boardName: string, boardType: string) {
 
-  // 解析boards.txt并获取ESP32配置信息
-  async getEsp32BoardConfig(boardName: string) {
-    try {
-      const sdkPath = await this.getSdkPath();
-      if (!sdkPath) {
-        throw new Error('未找到 SDK 路径');
-      }
-
-      const boardsFilePath = `${sdkPath}/boards.txt`;
-      if (!window['fs'].existsSync(boardsFilePath)) {
-        throw new Error('boards.txt 文件不存在: ' + boardsFilePath);
-      }
-
-      const boardsContent = window['fs'].readFileSync(boardsFilePath, 'utf8');
-      const lines = boardsContent.split('\n');
-
-      // 查找指定开发板的配置
-      const boardConfig = this.parseBoardsConfig(lines, boardName);
-
-      if (!boardConfig) {
-        throw new Error(`未找到开发板 "${boardName}" 的配置`);
-      }
-
-      // 提取需要的配置项
-      const esp32Config = {
-        uploadSpeed: this.extractMenuOptions(boardConfig, 'UploadSpeed'),
-        uploadMode: this.extractMenuOptions(boardConfig, 'UploadMode'),
-        flashMode: this.extractMenuOptions(boardConfig, 'FlashMode'),
-        flashSize: this.extractMenuOptions(boardConfig, 'FlashSize'),
-        partitionScheme: this.extractMenuOptions(boardConfig, 'PartitionScheme'),
-        cdcOnBoot: this.extractMenuOptions(boardConfig, 'CDCOnBoot'),
-        psram: this.extractMenuOptions(boardConfig, 'PSRAM')
-      };
-
-      return esp32Config;
-    } catch (error) {
-      console.error('获取ESP32开发板配置失败:', error);
-      return null;
-    }
-  }
-
-  // 解析 boards.txt 并获取 Wio Terminal 配置信息
-  async getWioTerminalBoardConfig(boardName: string) {
-    if (boardName !== 'seeed_wio_terminal') {
-      return null;
-    }
-
-    try {
-      const boardConfig = await this.getRawBoardsTxtConfig(boardName);
-      if (!boardConfig) {
-        throw new Error(`Board configuration not found: ${boardName}`);
-      }
-
-      return {
-        role: this.extractMenuOptions(boardConfig, 'role'),
-        cache: this.extractMenuOptions(boardConfig, 'cache'),
-        speed: this.extractMenuOptions(boardConfig, 'speed'),
-        optimization: this.extractMenuOptions(boardConfig, 'opt'),
-        maxQspi: this.extractMenuOptions(boardConfig, 'maxqspi'),
-        usbStack: this.extractMenuOptions(boardConfig, 'usbstack'),
-        debug: this.extractMenuOptions(boardConfig, 'debug'),
-        txRxLed: this.extractMenuOptions(boardConfig, 'txrxled'),
-      };
-    } catch (error) {
-      console.error('Failed to load Wio Terminal board configuration:', error);
-      return null;
-    }
-  }
-
-  // 解析boards.txt并获取STM32配置信息
-  async getStm32BoardConfig(boardName: string) {
-    try {
-      const sdkPath = await this.getSdkPath();
-      if (!sdkPath) {
-        throw new Error('未找到 SDK 路径');
-      }
-
-      const boardsFilePath = `${sdkPath}/boards.txt`;
-      if (!window['fs'].existsSync(boardsFilePath)) {
-        throw new Error('boards.txt 文件不存在: ' + boardsFilePath);
-      }
-
-      const boardsContent = window['fs'].readFileSync(boardsFilePath, 'utf8');
-      const lines = boardsContent.split('\n');
-
-      // 查找指定开发板的配置
-      const boardConfig = this.parseBoardsConfig(lines, boardName);
-
-      // console.log('====boardConfig:', boardConfig);
-
-      if (!boardConfig) {
-        throw new Error(`未找到开发板 "${boardName}" 的配置`);
-      }
-
-      const stm32Config = {
-        board: this.extractMenuOptions(boardConfig, 'pnum'),
-        usb: this.extractMenuOptions(boardConfig, 'usb'),
-        // upload_method: this.extractMenuOptions(boardConfig, 'upload_method'),
-      };
-
-      // 只保留 name 字段中包含 "Generic" 的选项，其它全部去掉
-      if (stm32Config.board && Array.isArray(stm32Config.board)) {
-        stm32Config.board = stm32Config.board.filter(item => item.name && item.name.includes('Generic'));
-      }
-
-      return stm32Config;
-    } catch (error) {
-      console.error('获取STM32开发板配置失败:', error);
-      return null;
-    }
-  }
-
-  // 解析boards.txt文件内容，提取指定开发板的配置
   private parseBoardsConfig(lines: string[], boardName: string): { [key: string]: string } | null {
     const config: { [key: string]: string } = {};
     let foundBoard = false;
@@ -1661,56 +1607,9 @@ export class ProjectService {
     return Object.keys(config).length > 0 ? config : null;
   }
 
-  // 比较FlashMode配置是否完全匹配
-  private compareFlashModeConfig(childBuild: any, currentBuild: any): boolean {
-    // FlashMode相关的配置项
-    const flashModeKeys = ['flash_mode', 'boot', 'boot_freq', 'flash_freq'];
-
-    for (const key of flashModeKeys) {
-      // 如果子配置中有这个键，那么必须与当前配置匹配
-      if (childBuild.hasOwnProperty(key)) {
-        if (childBuild[key] !== currentBuild[key]) {
-          return false;
-        }
-      }
-    }
-
-    return true;
-  }
-
-  // 通用的配置比较方法
+  // 通用配置值比较。
   private compareConfigs(childData: any, currentData: any): boolean {
-    if (!childData || !currentData) {
-      return false;
-    }
-
-    if (childData && currentData) {
-      if (childData !== currentData) {
-        return false;
-      }
-    }
-    // // 检查build配置
-    // if (childData.build && currentData.build) {
-    //   for (const key of configKeys) {
-    //     if (childData.build.hasOwnProperty(key)) {
-    //       if (childData.build[key] !== currentData.build[key]) {
-    //         return false;
-    //       }
-    //     }
-    //   }
-    // }
-
-    // // 检查upload配置
-    // if (childData.upload && currentData.upload) {
-    //   const uploadKeys = Object.keys(childData.upload);
-    //   for (const key of uploadKeys) {
-    //     if (childData.upload[key] !== currentData.upload[key]) {
-    //       return false;
-    //     }
-    //   }
-    // }
-
-    return true;
+    return childData === currentData;
   }
 
   // 提取菜单选项
@@ -1753,11 +1652,6 @@ export class ProjectService {
 
       // console.log(`==========>>>${menuPrefix}${optionData}:`, boardConfig[`${menuPrefix}${optionData}.build.variant`] || '');
       // console.log('option:', option);
-
-      // 清理空的配置对象
-      if (Object.keys(option.data).length === 0) {
-        delete option.data;
-      }
 
       options.push(option);
     });
@@ -1812,333 +1706,89 @@ export class ProjectService {
     return options;
   }
 
-  // 更新ESP32配置菜单项
-  async updateEsp32ConfigMenu(boardName: string) {
-    try {
-      const boardConfig = await this.getEsp32BoardConfig(boardName);
-      // console.log('获取到的ESP32开发板配置:', boardConfig);
-
-      if (!boardConfig) {
-        console.warn(`无法获取开发板 "${boardName}" 的配置`);
-        return null;
-      }
-
-      // 读取当前项目的package.json配置
-      let currentProjectConfig: any = {};
-      try {
-        const packageJson = await this.getPackageJson();
-        currentProjectConfig = packageJson.projectConfig || {};
-      } catch (error) {
-        console.warn('无法读取项目配置:', error);
-      }
-
-      // 导入ESP32_CONFIG_MENU，需要动态导入以避免循环依赖
-      // const { ESP32_CONFIG_MENU } = await import('../configs/esp32.config');
-      let ESP32_CONFIG_MENU_TEMP = JSON.parse(JSON.stringify(ESP32_CONFIG_MENU));
-
-      // 更新菜单项
-      ESP32_CONFIG_MENU_TEMP.forEach(menuItem => {
-        if (menuItem.name === 'ESP32.UPLOAD_SPEED' && boardConfig.uploadSpeed) {
-          menuItem.children = boardConfig.uploadSpeed;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.UploadSpeed) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false; // 先清空所有选中状态
-              // 使用通用比较方法检查当前配置是否匹配
-              if (this.compareConfigs(child.data, currentProjectConfig.UploadSpeed)) {
-                child.check = true;
-              }
-            });
-          }
-        } else if (menuItem.name === 'ESP32.UPLOAD_MODE' && boardConfig.uploadMode) {
-          menuItem.children = boardConfig.uploadMode;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.UploadMode) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.UploadMode)) {
-                child.check = true;
-              }
-            });
-          }
-        } else if (menuItem.name === 'ESP32.FLASH_MODE' && boardConfig.flashMode) {
-          // console.log('boardConfig.flashMode:', boardConfig.flashMode);
-          menuItem.children = boardConfig.flashMode;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.FlashMode) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.FlashMode)) {
-                child.check = true;
-              }
-            });
-          }
-        } else if (menuItem.name === 'ESP32.FLASH_SIZE' && boardConfig.flashSize) {
-          menuItem.children = boardConfig.flashSize;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.FlashSize) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.FlashSize)) {
-                child.check = true;
-              }
-            });
-          }
-        } else if (menuItem.name === 'ESP32.PARTITION_SCHEME' && boardConfig.partitionScheme) {
-          menuItem.children = boardConfig.partitionScheme;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.PartitionScheme) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.PartitionScheme)) {
-                child.check = true;
-              }
-            });
-          }
-        } else if (menuItem.name === 'ESP32.CDC_ON_BOOT' && boardConfig.cdcOnBoot) {
-          menuItem.children = boardConfig.cdcOnBoot;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.CDCOnBoot) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.CDCOnBoot)) {
-                child.check = true;
-              }
-            });
-          }
-        } else if (menuItem.name === 'ESP32.PSRAM' && boardConfig.psram) {
-          menuItem.children = boardConfig.psram;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.PSRAM) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.PSRAM)) {
-                child.check = true;
-              }
-            });
-          }
-        }
-      });
-      return ESP32_CONFIG_MENU_TEMP;
-    } catch (error) {
-      console.error('更新ESP32配置菜单失败:', error);
-      return null;
+  /** Build the current board's configuration menu from its root menu.json. */
+  async getBoardConfigMenu(): Promise<IMenuItem[]> {
+    const menu = this.cloneCurrentBoardMenuConfig();
+    if (menu.length === 0) {
+      return [];
     }
-  }
 
-  // 更新 Wio Terminal 配置菜单项
-  async updateWioTerminalConfigMenu(boardName: string) {
+    let packageJson: any = {};
+    let currentProjectConfig: Record<string, any> = {};
     try {
-      const boardConfig = await this.getWioTerminalBoardConfig(boardName);
-      if (!boardConfig) {
-        return null;
-      }
-
-      let currentProjectConfig: Record<string, string> = {};
-      try {
-        const packageJson = await this.getPackageJson();
-        currentProjectConfig = packageJson.projectConfig || {};
-      } catch (error) {
-        console.warn('Failed to read current Wio Terminal project configuration:', error);
-      }
-
-      const menuBindings: Record<string, { options: any[]; projectKey: string }> = {
-        'WIO_TERMINAL.ROLE': { options: boardConfig.role, projectKey: 'role' },
-        'WIO_TERMINAL.CACHE': { options: boardConfig.cache, projectKey: 'cache' },
-        'WIO_TERMINAL.CPU_SPEED': { options: boardConfig.speed, projectKey: 'speed' },
-        'WIO_TERMINAL.OPTIMIZATION': { options: boardConfig.optimization, projectKey: 'opt' },
-        'WIO_TERMINAL.MAX_QSPI': { options: boardConfig.maxQspi, projectKey: 'maxqspi' },
-        'WIO_TERMINAL.USB_STACK': { options: boardConfig.usbStack, projectKey: 'usbstack' },
-        'WIO_TERMINAL.DEBUG': { options: boardConfig.debug, projectKey: 'debug' },
-        'WIO_TERMINAL.TX_RX_LED': { options: boardConfig.txRxLed, projectKey: 'txrxled' },
-      };
-
-      const menu = JSON.parse(JSON.stringify(WIO_TERMINAL_CONFIG_MENU)) as IMenuItem[];
-      menu.forEach(menuItem => {
-        const binding = menuItem.name ? menuBindings[menuItem.name] : null;
-        if (!binding || binding.options.length === 0) {
-          return;
-        }
-
-        menuItem.children = binding.options;
-        const currentValue = currentProjectConfig[binding.projectKey];
-        if (currentValue !== undefined) {
-          menuItem.children.forEach(child => {
-            child.check = this.compareConfigs(child.data, currentValue);
-          });
-        }
-      });
-
-      return menu;
+      packageJson = await this.getPackageJson();
+      currentProjectConfig = packageJson?.projectConfig || {};
     } catch (error) {
-      console.error('Failed to update Wio Terminal configuration menu:', error);
-      return null;
+      console.warn('[ProjectService] failed to read current project config:', error);
     }
-  }
 
-  // 更新STM32配置菜单项
-  async updateStm32ConfigMenu(boardName: string) {
-    try {
-      console.log("updateStm32ConfigMenu: " + boardName);
-      const boardConfig = await this.getStm32BoardConfig(boardName);
-      console.log(boardConfig);
+    const boardName = this.getBoardNameFromBoardJson(this.currentBoardConfig);
+    const boardConfig = boardName ? await this.getRawBoardsTxtConfig(boardName) : null;
+    const pinConfigDefaults: IMenuItem[] = [];
+    let packageJsonChanged = false;
 
-      if (!boardConfig) {
-        console.warn(`无法获取开发板 "${boardName}" 的配置`);
-        return null;
+    for (const menuItem of menu) {
+      if (!menuItem.key) {
+        continue;
       }
 
-      // 读取当前项目的package.json配置
-      let currentProjectConfig: any = {};
-      let packageJson: any = {};
-      try {
-        packageJson = await this.getPackageJson();
-        currentProjectConfig = packageJson.projectConfig || {};
-      } catch (error) {
-        console.warn('无法读取项目配置:', error);
-      }
-
-      let STM32_CONFIG_MENU_TEMP = JSON.parse(JSON.stringify(STM32_CONFIG_MENU));
-
-      // 更新菜单项
-      STM32_CONFIG_MENU_TEMP.forEach(menuItem => {
-        if (menuItem.name === 'STM32.BOARD' && boardConfig.board) {
-          menuItem.children = boardConfig.board;
-          // 根据当前项目配置设置check状态
-          // console.log('menuItem.children:', menuItem.children);
-          if (currentProjectConfig.pnum) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false; // 先清空所有选中状态
-              if (this.compareConfigs(child.data, currentProjectConfig.pnum)) {
-                child.check = true;
-                // console.log('=============================================');
-                // console.log('child:', child);
-                this.currentStm32Config.board = child.data;
-                this.currentStm32Config.variant = child.extra?.build.variant || null;
-                this.currentStm32Config.variant_h = child.extra?.build.variant_h || null;
-                // console.log('Selected STM32 pin config:', this.currentStm32Config);
-                // console.log('=============================================');
-              }
-            });
-          } else {
-            // 如果项目配置中没有pnum，则默认选中第一个
-            if (menuItem.children.length > 0) {
-              menuItem.children[0].check = true;
-              packageJson['projectConfig'] = packageJson['projectConfig'] || {};
-              packageJson['projectConfig']['pnum'] = menuItem.children[0].data;
-              // 更新项目配置
-              this.setPackageJson(packageJson);
-              this.compareStm32PinConfig(menuItem.children[0]);
-            }
-          }
-        } else if (menuItem.name === 'STM32.USB' && boardConfig.usb) {
-          menuItem.children = boardConfig.usb;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.usb) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.usb)) {
-                child.check = true;
-              }
-            });
-          }
-          // } else if (menuItem.name === 'STM32.UPLOAD_METHOD' && boardConfig.upload_method) {
-          //   menuItem.children = boardConfig.upload_method;
-          //   // 根据当前项目配置设置check状态
-          //   if (currentProjectConfig.upload_method) {
-          //     menuItem.children.forEach((child: any) => {
-          //       child.check = false;
-          //       if (this.compareConfigs(child.data, currentProjectConfig.upload_method)) {
-          //         child.check = true;
-          //       }
-          //     });
-          //   }
+      let children = Array.isArray(menuItem.children) ? menuItem.children : [];
+      if (boardConfig) {
+        const extractedOptions = this.extractMenuOptions(boardConfig, menuItem.key);
+        if (extractedOptions.length > 0) {
+          children = extractedOptions;
         }
-      });
-      return STM32_CONFIG_MENU_TEMP;
-    } catch (error) {
-      console.error('更新STM32配置菜单失败:', error);
-      return null;
-    }
-  }
-
-  // 解析boards.txt并获取nRF5配置信息
-  async getNrf5BoardConfig(boardName: string) {
-    try {
-      const sdkPath = await this.getSdkPath();
-      if (!sdkPath) {
-        throw new Error('未找到 SDK 路径');
       }
 
-      const boardsFilePath = `${sdkPath}/boards.txt`;
-      if (!window['fs'].existsSync(boardsFilePath)) {
-        throw new Error('boards.txt 文件不存在: ' + boardsFilePath);
+      const optionNameIncludes = menuItem.extra?.optionNameIncludes;
+      if (optionNameIncludes) {
+        children = children.filter(child => String(child.name || '').includes(optionNameIncludes));
       }
 
-      const boardsContent = window['fs'].readFileSync(boardsFilePath, 'utf8');
-      const lines = boardsContent.split('\n');
+      const currentValue = currentProjectConfig[menuItem.key];
+      for (const child of children) {
+        child.key = child.key || menuItem.key;
+        child.extra = {
+          ...(menuItem.extra || {}),
+          ...(child.extra || {}),
+        };
+        child.check = currentValue !== undefined && this.compareConfigs(child.data, currentValue);
 
-      // 查找指定开发板的配置
-      const boardConfig = this.parseBoardsConfig(lines, boardName);
-
-      if (!boardConfig) {
-        throw new Error(`未找到开发板 "${boardName}" 的配置`);
-      }
-
-      // 提取nRF5需要的配置项
-      const nrf5Config = {
-        softdevice: this.extractMenuOptions(boardConfig, 'softdevice'),
-      };
-
-      return nrf5Config;
-    } catch (error) {
-      console.error('获取nRF5开发板配置失败:', error);
-      return null;
-    }
-  }
-
-  // 更新nRF5配置菜单项
-  async updateNrf5ConfigMenu(boardName: string) {
-    try {
-      const boardConfig = await this.getNrf5BoardConfig(boardName);
-
-      if (!boardConfig) {
-        console.warn(`无法获取开发板 "${boardName}" 的配置`);
-        return null;
-      }
-
-      // 读取当前项目的package.json配置
-      let currentProjectConfig: any = {};
-      try {
-        const packageJson = await this.getPackageJson();
-        currentProjectConfig = packageJson.projectConfig || {};
-      } catch (error) {
-        console.warn('无法读取项目配置:', error);
-      }
-
-      let NRF5_CONFIG_MENU_TEMP = JSON.parse(JSON.stringify(NRF5_CONFIG_MENU));
-
-      // 更新菜单项
-      NRF5_CONFIG_MENU_TEMP.forEach(menuItem => {
-        if (menuItem.name === 'NRF5.SOFTDEVICE' && boardConfig.softdevice) {
-          menuItem.children = boardConfig.softdevice;
-          // 根据当前项目配置设置check状态
-          if (currentProjectConfig.softdevice) {
-            menuItem.children.forEach((child: any) => {
-              child.check = false;
-              if (this.compareConfigs(child.data, currentProjectConfig.softdevice)) {
-                child.check = true;
-              }
-            });
-          }
+        if (child.check && child.extra?.syncPinConfig) {
+          this.currentBoardPinConfig.board = child.data;
+          this.currentBoardPinConfig.variant = child.extra?.build?.variant || null;
+          this.currentBoardPinConfig.variant_h = child.extra?.build?.variant_h || null;
         }
-      });
+      }
 
-      return NRF5_CONFIG_MENU_TEMP;
-    } catch (error) {
-      console.error('更新nRF5配置菜单失败:', error);
-      return null;
+      if (
+        currentValue === undefined &&
+        menuItem.extra?.selectFirstByDefault &&
+        children.length > 0 &&
+        packageJson
+      ) {
+        const firstChild = children[0];
+        firstChild.check = true;
+        packageJson.projectConfig = packageJson.projectConfig || {};
+        packageJson.projectConfig[menuItem.key] = firstChild.data;
+        currentProjectConfig[menuItem.key] = firstChild.data;
+        packageJsonChanged = true;
+        if (firstChild.extra?.syncPinConfig) {
+          pinConfigDefaults.push(firstChild);
+        }
+      }
+
+      menuItem.children = children;
     }
+
+    if (packageJsonChanged) {
+      await this.setPackageJson(packageJson);
+      for (const pinConfig of pinConfigDefaults) {
+        await this.syncBoardPinConfig(pinConfig);
+      }
+    }
+
+    return menu;
   }
 
   /**
@@ -2194,14 +1844,14 @@ export class ProjectService {
     }
   }
 
-  // 比较stm32引脚配置
-  async compareStm32PinConfig(pinConfig: any): Promise<boolean> {
+  // 同步 menu.json 选项声明的开发板引脚配置。
+  async syncBoardPinConfig(pinConfig: any): Promise<boolean> {
     // console.log('=============================================');
-    // console.log('Comparing STM32 pin config:', pinConfig, "||", this.currentStm32Config);
-    if (pinConfig.data == this.currentStm32Config.board) {
+    // console.log('Comparing board pin config:', pinConfig, "||", this.currentBoardPinConfig);
+    if (pinConfig.data == this.currentBoardPinConfig.board) {
       return true;
-    } else if (pinConfig.extra?.build.variant == this.currentStm32Config.variant) {
-      this.currentStm32Config.board = pinConfig.data;
+    } else if (pinConfig.extra?.build.variant == this.currentBoardPinConfig.variant) {
+      this.currentBoardPinConfig.board = pinConfig.data;
       return true;
     } else {
       let newPinConfig = pinConfig;
@@ -2233,9 +1883,9 @@ export class ProjectService {
       if (isChanged) {
         await this.setBoardJson(currentBoardJson);
       }
-      this.currentStm32Config.board = pinConfig.data;
-      this.currentStm32Config.variant = variant;
-      this.currentStm32Config.variant_h = variant_h;
+      this.currentBoardPinConfig.board = pinConfig.data;
+      this.currentBoardPinConfig.variant = variant;
+      this.currentBoardPinConfig.variant_h = variant_h;
 
       // // // 获取到的config格式为“STM32F1xx/F100C(4-6)T”
       // // // 我们需要转换为“F1XXC”

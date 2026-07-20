@@ -63,15 +63,6 @@
         "to": "child/scripts"
       },
       {
-        "from": "child/tools",
-        "to": "child/tools",
-        "filter": [
-          "**/*",
-          "!node_modules/aily-blockly/**",
-          "!node_modules/.aily-blockly-*/**"
-        ]
-      },
-      {
         "from": "public/icon.ico",
         "to": "icon.ico"
       },
@@ -219,7 +210,6 @@
     "js-base64": "^3.7.8",
     "js-tiktoken": "^1.0.21",
     "jsonrepair": "^3.13.0",
-    "konva": "^9.3.22",
     "lightweight-charts": "^5.1.0",
     "loaders.css": "^0.1.2",
     "marked": "^15.0.12",

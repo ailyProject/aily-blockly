@@ -150,7 +150,6 @@ export class AilyCodeProjectService {
       join(root, '.aily', 'build'),
       join(root, '.aily', 'build', 'debug'),
       join(root, '.aily', 'build', 'release'),
-      join(root, '.aily', 'build', 'simulator'),
       join(root, '.aily', 'cache'),
       join(root, '.aily', 'cache', 'index'),
       join(root, '.aily', 'cache', 'downloads'),
@@ -285,7 +284,7 @@ export class AilyCodeProjectService {
       target: targetBlock,
       entry: 'src/main.cpp',
       sourceRoots: ['src', 'components', 'include'],
-      buildProfiles: ['debug', 'release', 'simulator'],
+      buildProfiles: ['debug', 'release'],
       upload: {},
       monitor: { baudRate: 115200 }
     };

@@ -466,14 +466,16 @@ export class _UploaderService {
 
         const boardModule = await this.projectService.getBoardModule();
 
-        // 根据烧录方式选择上传参数：调试探针使用 linkUploadParam，串口使用 uploadParam
+        // 根据烧录方式选择上传参数：调试探针使用 linkUploadParam，串口优先使用 uploadParam。
+        // 串口上传允许 uploadParam 为空，此时 upload.js 会使用 preprocess.json 中由 SDK
+        // boards.txt / platform.txt 解析出的上传命令。
         const isDebuggerUpload = capturedPortInfo?.type === 'debugger';
         const uploadParam = isDebuggerUpload
           ? (boardJson.linkUploadParam || boardJson.uploadParam)
           : boardJson.uploadParam;
-        if (!uploadParam) {
+        if (isDebuggerUpload && !uploadParam) {
           this.uploadInProgress = false; // 重置上传状态
-          const errMsg = isDebuggerUpload ? this.uploadT('MISSING_DEBUGGER_UPLOAD_PARAM') : this.uploadT('MISSING_UPLOAD_PARAM');
+          const errMsg = this.uploadT('MISSING_DEBUGGER_UPLOAD_PARAM');
           this.handleUploadError(errMsg);
           this.workflowService.finishUpload(false, 'Missing upload parameters');
           reject({ state: 'error', text: errMsg });
@@ -500,7 +502,7 @@ export class _UploaderService {
         }
 
         // 获取当前选中的 STM32.BOARD (pnum) 选项，用于 probe-rs download 参数
-        const pnum = this.projectService.currentStm32Config?.board || null;
+        const pnum = this.projectService.currentBoardPinConfig?.board || null;
 
         const uploadConfig = {
           currentProjectPath,

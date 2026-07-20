@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { NzModalService } from 'ng-zorro-antd/modal';
 
 import { ConnectionGraphService } from './connection-graph.service';
 import { ElectronService } from './electron.service';
@@ -28,12 +29,17 @@ export class SchematicMcpRuntimeService {
     private readonly uiService: UiService,
     private readonly themeService: ThemeService,
     private readonly translate: TranslateService,
+    private readonly modal: NzModalService,
   ) {}
 
   async invoke(method: string, args: Record<string, unknown>): Promise<unknown> {
     switch ((method || '').trim()) {
       case 'get_generated_cpp_code':
         return this.getGeneratedCppCode();
+      case 'show_arch':
+        return this.showArch(args);
+      case 'show_schematic':
+        return this.showSchematic(args);
       case 'preview_schematic_components':
         return this.previewSchematicComponents(args);
       case 'notify_schematic_saved':
@@ -66,6 +72,106 @@ export class SchematicMcpRuntimeService {
     try {
       const cppCode = AilyHost.get().editor?.getGeneratedCode?.() || '';
       return { ok: true, cppCode };
+    } catch (error: any) {
+      return { ok: false, error: error?.message || String(error) };
+    }
+  }
+
+  private async showArch(args: Record<string, unknown>): Promise<{ ok: boolean; opened?: boolean; error?: string }> {
+    const projectValidation = this.validateTargetProject(args['targetProjectPath']);
+    if (projectValidation) {
+      return projectValidation;
+    }
+    if (!this.electronService.isElectron) {
+      return { ok: false, error: '架构图仅支持在 Aily Blockly 桌面端查看' };
+    }
+
+    const archPath = this.electronService.pathJoin(this.projectService.currentProjectPath, 'arch.md');
+    if (!this.electronService.exists(archPath)) {
+      return { ok: false, error: '当前项目没有架构图' };
+    }
+
+    try {
+      const content = this.electronService.readFile(archPath).trim();
+      const blockMatch = content.match(/```mermaid\s*([\s\S]*?)```/);
+      const code = (blockMatch?.[1] || content).trim();
+      if (!code) {
+        return { ok: false, error: '当前项目的架构图为空' };
+      }
+
+      const [{ default: mermaid }, { MermaidComponent }] = await Promise.all([
+        import('mermaid'),
+        import('../tools/aily-chat/components/aily-mermaid-viewer/mermaid/mermaid.component')
+      ]);
+      mermaid.initialize({ theme: this.themeService.getMermaidTheme() as any, startOnLoad: false });
+      const diagramId = `mermaid-arch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const result = await mermaid.render(diagramId, code);
+      const svg = typeof result === 'object' && result?.svg ? result.svg : typeof result === 'string' ? result : '';
+      document.getElementById(diagramId)?.remove();
+      if (!svg.trim()) {
+        return { ok: false, error: '架构图渲染失败' };
+      }
+
+      const forcedStyle = 'width: 60vw !important; height: 80vh !important; max-width: 100% !important; display: block !important;';
+      const enhancedSvg = svg
+        .replace('<svg', `<svg id="${diagramId}" data-mermaid-svg="true"`)
+        .replace(/width="[^"]*"/, 'width="60vw"')
+        .replace(/height="[^"]*"/, 'height="80vh"')
+        .replace(/<svg([^>]*)>/, (_match: string, attributes: string) => {
+          const merged = /style=/.test(attributes)
+            ? attributes.replace(/style="[^"]*"/, `style="${forcedStyle}"`)
+            : `${attributes} style="${forcedStyle}"`;
+          return `<svg${merged}>`;
+        });
+
+      this.modal.create({
+        nzTitle: null,
+        nzFooter: null,
+        nzClosable: false,
+        nzBodyStyle: { padding: '0' },
+        nzContent: MermaidComponent,
+        nzData: { svg: enhancedSvg },
+        nzWidth: 'fit-content',
+      });
+      return { ok: true, opened: true };
+    } catch (error: any) {
+      return { ok: false, error: error?.message || String(error) };
+    }
+  }
+
+  private async showSchematic(args: Record<string, unknown>): Promise<{ ok: boolean; opened?: boolean; error?: string }> {
+    const projectValidation = this.validateTargetProject(args['targetProjectPath']);
+    if (projectValidation) {
+      return projectValidation;
+    }
+    if (!this.electronService.isElectron) {
+      return { ok: false, error: '电路连接仅支持在 Aily Blockly 桌面端查看' };
+    }
+
+    try {
+      const boardPackagePath = await this.projectService.getBoardPackagePath();
+      if (!boardPackagePath) {
+        return { ok: false, error: '当前项目没有可用的开发板引脚配置' };
+      }
+      const payload = this.connectionGraphService.buildPayload(
+        boardPackagePath,
+        this.projectService.currentProjectPath,
+      );
+      if (!payload?.connections?.length) {
+        return { ok: false, error: '当前项目没有已保存的电路连接' };
+      }
+
+      await this.ensureCircuitWindowOpen(payload);
+      if (this.connectionGraphService.hasActiveIframe) {
+        await this.connectionGraphService.iframeApi.receiveData(payload);
+      }
+      if (window['ipcRenderer']) {
+        window['ipcRenderer'].send('iframe-message-connection-graph', {
+          type: 'generate-graph-updated',
+          data: payload,
+        });
+      }
+      return { ok: true, opened: true };
     } catch (error: any) {
       return { ok: false, error: error?.message || String(error) };
     }

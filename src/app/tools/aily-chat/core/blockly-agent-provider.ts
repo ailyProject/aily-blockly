@@ -297,7 +297,6 @@ function buildBlocklyAgentContributions(
       ...SCHEMATIC_AGENT_CONTRIBUTION,
       tools: getConfiguredAgentTools(configSource, SCHEMATIC_AGENT_TYPE, SCHEMATIC_AGENT_TOOLS),
     },
-    // Future: SimulatorAgent, HardwareAgent, etc.
   ];
 }
 

@@ -15,6 +15,8 @@ import { getChildToolConfig } from '../configs/tool.config';
 import { ConfigService } from './config.service';
 import { BoardSelectorDialogComponent } from '../main-window/components/board-selector-dialog/board-selector-dialog.component';
 
+const AILY_CHAT_TOOL_IDS = new Set(['aily-chat', 'aily-chat-react']);
+
 @Injectable({
   providedIn: 'root',
 })
@@ -215,7 +217,6 @@ export class UiService {
       case 'code-viewer':
       case 'serial-monitor':
       case 'ffs-manager':
-      case 'simulator':
       case 'model-store':
         return `/${name}`;
       default:
@@ -293,14 +294,51 @@ export class UiService {
    * @param options 发送选项，如 { autoSend: true, cover: true }
    */
   openAndSendToChat(text: string, options?: Record<string, any>): void {
-    this.openTool('aily-chat');
+    const targetToolId = this.resolveMostRecentlyUsedAilyChatTool() || 'aily-chat';
+    this.openTool(targetToolId);
     console.info('[AilyChat][ExternalInputDelivery]', {
       phase: 'deliver',
-      target: 'chat-service',
+      target: targetToolId,
       textLength: typeof text === 'string' ? text.length : 0,
       autoSend: options?.['autoSend'] === true,
     });
-    this.chatService.sendTextToChat(text, options);
+    if (targetToolId === 'aily-chat') {
+      this.chatService.sendTextToChat(text, options);
+      return;
+    }
+
+    this.sendToolSignal(`${targetToolId}:external-input`, {
+      targetToolId,
+      text,
+      options: options || {},
+    });
+  }
+
+  /**
+   * Focus the composer only when an Aily Chat surface is currently on top.
+   * Blockly selection must not move focus into a chat panel hidden under
+   * another right-side tool.
+   */
+  focusActiveAilyChatInput(): boolean {
+    const targetToolId = this.topTool;
+    if (!targetToolId || !AILY_CHAT_TOOL_IDS.has(targetToolId)) {
+      return false;
+    }
+    this.sendToolSignal(`${targetToolId}:focus-input`, { targetToolId });
+    return true;
+  }
+
+  private resolveMostRecentlyUsedAilyChatTool(): string | null {
+    if (this.topTool && AILY_CHAT_TOOL_IDS.has(this.topTool)) {
+      return this.topTool;
+    }
+    for (let index = this.openToolList.length - 1; index >= 0; index -= 1) {
+      const toolId = this.openToolList[index];
+      if (AILY_CHAT_TOOL_IDS.has(toolId)) {
+        return toolId;
+      }
+    }
+    return null;
   }
 
   openCodeEditorFile(

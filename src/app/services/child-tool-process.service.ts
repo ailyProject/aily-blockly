@@ -80,6 +80,18 @@ export class ChildToolProcessService implements OnDestroy {
     return await this.startSession(config, session);
   }
 
+  async stop(toolId: string): Promise<void> {
+    const config = getChildToolConfig(toolId);
+    const session = this.sessions.get(toolId);
+    if (config && session) {
+      this.cancelReleaseTimer(session);
+      await this.stopSession(config, session, 'shutdown');
+      this.sessions.delete(toolId);
+      return;
+    }
+    await window['childToolSession']?.stop?.(config?.id || toolId);
+  }
+
   async stopAll(): Promise<void> {
     const entries = Array.from(this.sessions.entries());
     for (const [toolId, session] of entries) {
@@ -234,7 +246,7 @@ export class ChildToolProcessService implements OnDestroy {
 
     const childPath = pathApi.getAilyChildPath();
     const childDir = config.childDir || pathApi.join('tools', config.id);
-    const projectPath = pathApi.join(childPath, childDir);
+    const projectPath = config.packagePath || pathApi.join(childPath, childDir);
     const scriptPath = pathApi.join(projectPath, config.entry || 'index.js');
     const uiPath = pathApi.join(projectPath, config.uiIndex || pathApi.join('ui', 'index.html'));
     const hostApiServer = String(this.configService.getCurrentApiServer() || '').trim();

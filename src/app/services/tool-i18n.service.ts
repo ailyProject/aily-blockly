@@ -108,12 +108,12 @@ export class ToolI18nService {
       return null;
     }
 
-    const toolDir = config.childDir || pathApi.join('tools', config.id);
+    const toolDir = config.packagePath || pathApi.join(childPath, config.childDir || pathApi.join('tools', config.id));
     const candidates = lang === 'en' ? [lang] : [lang, 'en'];
 
     for (const candidate of candidates) {
       try {
-        const filePath = pathApi.join(childPath, toolDir, 'i18n', `${candidate}.json`);
+        const filePath = pathApi.join(toolDir, 'i18n', `${candidate}.json`);
         if (!fsApi.existsSync(filePath)) {
           continue;
         }

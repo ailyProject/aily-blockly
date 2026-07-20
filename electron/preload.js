@@ -454,6 +454,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
       return () => ipcRenderer.removeListener("child-tool-session-state-changed", listener);
     },
   },
+  subapps: {
+    list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
+    install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
+    update: (options) => ipcRenderer.invoke("subapp-manager-update", options),
+    uninstall: (options) => ipcRenderer.invoke("subapp-manager-uninstall", options),
+    onChanged: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("subapp-manager-changed", listener);
+      return () => ipcRenderer.removeListener("subapp-manager-changed", listener);
+    },
+  },
   codeViewer: {
     publishState: (state) => ipcRenderer.send("blockly-code-viewer-state-update", state),
     getState: () => ipcRenderer.invoke("blockly-code-viewer-state-get"),

@@ -2,40 +2,6 @@ import type { IToolContribution } from 'aily-lex/browser';
 
 import { error, type InvokeHandler } from './blockly-contributed-tool-runtime';
 
-function makeSimulatorContribution(): IToolContribution {
-  return {
-    name: 'simulator',
-    description: 'Control the circuit simulator. Run simulations, get circuit data, and manage components.',
-    prompt: `Use this tool to interact with the circuit simulator. Actions:
-
-- **get_circuit**: Get the current circuit configuration.
-- **run_simulation**: Run a simulation with specified parameters.
-- **get_components**: List available components.
-- **add_component**: Add a component to the circuit.
-- **remove_component**: Remove a component.
-- **connect_components**: Connect two component pins.
-
-This tool requires the simulator to be active.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['get_circuit', 'run_simulation', 'get_components', 'add_component', 'remove_component', 'connect_components'],
-          description: 'The action to perform.',
-        },
-        config: { type: 'object', description: 'Simulation configuration for run_simulation.' },
-        componentType: { type: 'string', description: 'Component type for add_component.' },
-        componentId: { type: 'string', description: 'Component ID for remove_component.' },
-        sourcePin: { type: 'string', description: 'Source pin for connect_components.' },
-        targetPin: { type: 'string', description: 'Target pin for connect_components.' },
-      },
-      required: ['action'],
-    },
-    annotations: { readOnly: false },
-  };
-}
-
 function makeHardwareContribution(): IToolContribution {
   return {
     name: 'hardware',
@@ -99,7 +65,6 @@ This tool requires a supported IDE code editor to be active.`,
 
 export function getBlocklyPlaceholderContributions(): IToolContribution[] {
   return [
-    makeSimulatorContribution(),
     makeHardwareContribution(),
     makeCodeEditorContribution(),
   ];
@@ -107,9 +72,6 @@ export function getBlocklyPlaceholderContributions(): IToolContribution[] {
 
 export function createBlocklyPlaceholderHandlers(): Record<string, InvokeHandler> {
   return {
-    simulator: async (input, _hostAPI) => {
-      return error(`Simulator action "${input['action']}" requires direct external tool integration.`);
-    },
     hardware: async (input, _hostAPI) => {
       return error(`Hardware action "${input['action']}" requires direct external tool integration.`);
     },

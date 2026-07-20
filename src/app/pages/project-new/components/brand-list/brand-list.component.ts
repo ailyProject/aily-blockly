@@ -24,6 +24,9 @@ export class BrandListComponent {
 
 
   getBrandImg(brand: any): string {
+    if (this.selectedBrand?.value === brand.value && brand.selected) {
+      return brand.selected;
+    }
     if (this.themeService.theme() === 'light' && brand.imgLight) {
       return brand.imgLight;
     }

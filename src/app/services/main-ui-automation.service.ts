@@ -92,6 +92,7 @@ export class MainUiAutomationService {
     const sessions = await this.readChildToolSessions();
 
     const allItems = (await Promise.all(configs.map(config => this.describeChildApp(config, sessions))))
+      .filter(item => item['enabled'] !== false)
       .filter(item => includeUnavailable || item['available'] !== false)
       .filter(item => {
         if (!query) return true;

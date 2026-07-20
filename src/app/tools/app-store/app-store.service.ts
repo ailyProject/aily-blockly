@@ -13,11 +13,10 @@ import {
   TOOLBAR_APP_IDS_CONFIG_KEY
 } from './app-store.config';
 import {
-  getChildToolAppItems,
-  getChildToolAvailableAppIds,
   getChildToolDefaultToolbarAppIds
 } from '../../configs/tool.config';
 import { ConfigService } from '../../services/config.service';
+import { SubappManagerService } from '../../services/subapp-manager.service';
 
 export interface AppVisibilityContext {
   routeUrl?: string;
@@ -41,13 +40,25 @@ export class AppStoreService {
   readonly layout$ = this.layoutSubject.asObservable();
   readonly HEADER_APP_LIMIT = HEADER_APP_LIMIT;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private subappManager: SubappManagerService,
+  ) {
     this.refreshAppRegistry();
     this.layoutSubject.next(this.loadLayout());
 
     this.configService.configReloaded$.subscribe(() => {
       this.refreshAppRegistry();
       this.layoutSubject.next(this.loadLayout());
+    });
+
+    this.subappManager.state$.subscribe((state) => {
+      this.refreshAppRegistry();
+      this.layoutSubject.next(
+        state.loading
+          ? this.normalizeLayout(this.layoutSubject.value, true)
+          : this.loadLayout()
+      );
     });
   }
 
@@ -71,7 +82,7 @@ export class AppStoreService {
   getAppsForZone(zone: AppPlacementZone): AppItem[] {
     return this.layoutSubject.value.zones[zone]
       .map(appId => this.appMap.get(appId))
-      .filter((app): app is AppItem => !!app && app.enabled !== false)
+      .filter((app): app is AppItem => !!app && this.canRegisterApp(app.id))
       .map(app => ({ ...app }));
   }
 
@@ -170,7 +181,10 @@ export class AppStoreService {
 
   private loadLayout(): AppStoreLayout {
     const storedLayout = this.readStoredLayout();
-    return this.normalizeLayout(storedLayout || this.createDefaultLayout());
+    return this.normalizeLayout(
+      storedLayout || this.createDefaultLayout(),
+      this.subappManager.state.loading
+    );
   }
 
   private refreshAppRegistry(): void {
@@ -178,10 +192,10 @@ export class AppStoreService {
 
     const availableAppIds = new Set([
       ...AVAILABLE_APP_IDS,
-      ...getChildToolAvailableAppIds()
+      ...this.subappManager.getCatalogApps().map(app => app.id)
     ]);
 
-    for (const app of [...APP_LIST, ...getChildToolAppItems()]) {
+    for (const app of [...APP_LIST, ...this.subappManager.getCatalogApps()]) {
       if (availableAppIds.has(app.id)) {
         this.appMap.set(app.id, { ...app });
       }
@@ -270,16 +284,20 @@ export class AppStoreService {
     }
   }
 
-  private normalizeLayout(layout: AppStoreLayout): AppStoreLayout {
+  private normalizeLayout(layout: AppStoreLayout, preserveUnknownApps = false): AppStoreLayout {
     return {
       version: 2,
       zones: {
-        header: this.sanitizeZoneIds('header', layout.zones.header || [])
+        header: this.sanitizeZoneIds('header', layout.zones.header || [], preserveUnknownApps)
       }
     };
   }
 
-  private sanitizeZoneIds(zone: AppPlacementZone, appIds: string[]): string[] {
+  private sanitizeZoneIds(
+    zone: AppPlacementZone,
+    appIds: string[],
+    preserveUnknownApps = false
+  ): string[] {
     const limit = this.getZoneLimit(zone);
     const lockedIds = this.getLockedZoneIds();
     const lockedIdSet = new Set(lockedIds);
@@ -293,7 +311,8 @@ export class AppStoreService {
         break;
       }
 
-      if (seen.has(appId) || !this.canRegisterApp(appId)) {
+      const canPreserveUnknownApp = preserveUnknownApps && !this.appMap.has(appId);
+      if (seen.has(appId) || (!this.canRegisterApp(appId) && !canPreserveUnknownApp)) {
         continue;
       }
 
@@ -320,7 +339,7 @@ export class AppStoreService {
 
   private canRegisterApp(appId: string): boolean {
     const app = this.appMap.get(appId);
-    return !!app && app.enabled !== false;
+    return !!app && app.enabled !== false && (app.subapp?.installed !== false);
   }
 
   private cloneLayout(layout: AppStoreLayout): AppStoreLayout {
