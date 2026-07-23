@@ -12,6 +12,10 @@ import { convertBlockTreeToAbs, convertAbiToAbsWithLineMap } from '../../../tool
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import { dragSelectionWeakMap } from '../components/blockly/plugins/workspace-multiselect/index.js';
 import { exportWorkspaceToSvg } from './workspace-svg-exporter';
+import {
+  migrateLegacyRgb565SerializedBlocks,
+  migrateLegacyRgb565WorkspaceSerialization,
+} from './legacy-rgb565-workspace-migration';
 
 export interface BlockContextLabel {
   label: string;
@@ -919,7 +923,7 @@ export class BlocklyService {
       return;
     }
 
-    const workspaceJson = (clone ? this.cloneJson(jsonData) : jsonData) || this.createEmptyWorkspaceContent();
+    const workspaceJson = this.normalizeWorkspaceJson(jsonData, clone);
     workspaceJson.blocks?.blocks?.forEach((block) => {
       const ailyIcons = this.iconsMap.get(block.type);
       if (ailyIcons) {
@@ -2263,17 +2267,18 @@ export class BlocklyService {
       nextJson.blocks.blocks = [];
     }
 
-    return nextJson;
+    return migrateLegacyRgb565WorkspaceSerialization(nextJson);
   }
 
   private normalizeSharedModel(sharedModel: any, clone = true): BlocklySharedModel {
+    const procedureBlocks = Array.isArray(sharedModel?.procedureBlocks)
+      ? clone ? sharedModel.procedureBlocks.map((block) => this.cloneJson(block)) : sharedModel.procedureBlocks
+      : [];
     return {
       variables: sharedModel?.variables
         ? clone ? this.cloneJson(sharedModel.variables) : sharedModel.variables
         : undefined,
-      procedureBlocks: Array.isArray(sharedModel?.procedureBlocks)
-        ? clone ? sharedModel.procedureBlocks.map((block) => this.cloneJson(block)) : sharedModel.procedureBlocks
-        : [],
+      procedureBlocks: migrateLegacyRgb565SerializedBlocks(procedureBlocks),
     };
   }
 

@@ -187,9 +187,16 @@
             "LIB_MANAGER_DESC": "點擊這裡打開庫管理器，可以安裝、移除各種功能擴展庫，為你的項目添加更多積木。"
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "支援格式：MP4、GIF",
-            "LABEL_COLOR_MODE": "色彩",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "僅支援 MP4 或 GIF 檔案"
+            "UPLOAD_TOOLTIP": "支援格式：AANI v2（.aani）、MP4、GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} 幀 | {{width}}x{{height}} | {{duration}} | {{dataSize}} | 壓縮比 {{ratio}}",
+            "ERROR_AANI_EXTENSION": "AANI 檔案必須使用 .aani 副檔名",
+            "ERROR_AANI_INVALID": "無效的 AANI v2 檔案：{{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "僅支援 .aani、MP4 或 GIF 檔案"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
+            "LABEL_COLOR_MODE": "Color",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "上傳",

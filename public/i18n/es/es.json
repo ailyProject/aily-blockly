@@ -186,9 +186,16 @@
             "LIB_MANAGER_DESC": "Haz clic aquí para abrir el gestor de bibliotecas. Puedes instalar y desinstalar bibliotecas de extensión para agregar más bloques a tu proyecto."
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "Formatos compatibles: MP4, GIF",
+            "UPLOAD_TOOLTIP": "Formatos compatibles: AANI v2 (.aani), MP4, GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} fotogramas | {{width}}x{{height}} | {{duration}} | {{dataSize}} | {{ratio}}",
+            "ERROR_AANI_EXTENSION": "Los archivos AANI deben usar la extensión .aani",
+            "ERROR_AANI_INVALID": "Archivo AANI v2 no válido: {{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten archivos .aani, MP4 y GIF"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
             "LABEL_COLOR_MODE": "Color",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten archivos MP4 y GIF"
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Subir",

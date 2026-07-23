@@ -1,6 +1,7 @@
 import { createFile, DataStream } from 'mp4box';
-import { buildAilyAnimFile, packRgbaToRgb565 } from './aani-v2';
-import { TftEsPiAnimationValue, createTftEsPiAnimationValue } from './tftespi-animation-value';
+
+type AnimationFormat = 'rgb565' | 'rgb332';
+type AnimationEncoding = 'rgb565-be-base64' | 'rgb332-base64';
 
 interface DecodeRequest {
     type: 'decode';
@@ -12,6 +13,7 @@ interface DecodeRequest {
     height: number;
     fps: number;
     maxFrames: number;
+    format?: AnimationFormat;
 }
 
 interface DecodeOptions {
@@ -19,9 +21,16 @@ interface DecodeOptions {
     height: number;
     fps: number;
     maxFrames: number;
+    format: AnimationFormat;
+    encoding: AnimationEncoding;
 }
 
-type DecodeResult = TftEsPiAnimationValue;
+interface DecodeResult extends DecodeOptions {
+    version: 1;
+    frames: string[];
+    sourceName: string;
+    sourceType: string;
+}
 
 type WorkerMessageParams = Record<string, string | number>;
 
@@ -30,10 +39,12 @@ const DEFAULT_MAX_FRAMES = 10;
 const DEFAULT_WIDTH = 160;
 const DEFAULT_HEIGHT = 120;
 const DEFAULT_FPS = 10;
-const MAX_DIMENSION = 480;
+const DEFAULT_FORMAT: AnimationFormat = 'rgb565';
+const MAX_DIMENSION = 16_384;
 const MAX_FPS = 30;
 const MAX_FRAMES = 300;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const BASE64_CHUNK_BYTES = 32 * 1024;
 
 class LocalizedWorkerError extends Error {
     constructor(
@@ -80,37 +91,109 @@ function normalizeDurationUs(value: unknown, fallback: number) {
     return Number.isFinite(duration) && duration > 0 ? duration : fallback;
 }
 
-function getFrameByteLength(width: number, height: number) {
+function getUtf8ByteLength(value: unknown) {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function normalizeAnimationFormat(value: unknown): AnimationFormat {
+    return value === 'rgb332' ? 'rgb332' : DEFAULT_FORMAT;
+}
+
+function getAnimationEncoding(format: AnimationFormat): AnimationEncoding {
+    return format === 'rgb332' ? 'rgb332-base64' : 'rgb565-be-base64';
+}
+
+function getFrameByteLength(width: number, height: number, format: AnimationFormat) {
     const pixelCount = width * height;
-    const frameByteLength = pixelCount * 2;
+    const frameByteLength = pixelCount * (format === 'rgb332' ? 1 : 2);
     if (!Number.isSafeInteger(pixelCount) || !Number.isSafeInteger(frameByteLength)) {
         throw createWorkerError(
             'WORKER_ERROR_FRAME_TOO_LARGE',
-            { width, height, mode: 'RGB565', size: frameByteLength, maxSize: MAX_OUTPUT_BYTES },
-            'The requested RGB565 frame is too large.',
+            { width, height, mode: format.toUpperCase(), size: frameByteLength, maxSize: MAX_OUTPUT_BYTES },
+            `The requested ${format.toUpperCase()} frame is too large.`,
         );
     }
     return frameByteLength;
 }
 
-function normalizeDecodeOptions(request: DecodeRequest): DecodeOptions {
+function getBase64Length(byteLength: number) {
+    return Math.ceil(byteLength / 3) * 4;
+}
+
+function getMaxFramesForOutputBudget(
+    request: DecodeRequest,
+    width: number,
+    height: number,
+    fps: number,
+    sourceType: string,
+    format: AnimationFormat,
+) {
+    const encoding = getAnimationEncoding(format);
+    const encodedFrameLength = getBase64Length(getFrameByteLength(width, height, format));
+    const emptyEnvelope = {
+        type: 'done',
+        requestId: request.requestId,
+        result: {
+            version: 1,
+            format,
+            encoding,
+            width,
+            height,
+            fps,
+            maxFrames: MAX_FRAMES,
+            frames: [],
+            sourceName: request.fileName || '',
+            sourceType,
+        },
+    };
+    const envelopeBytesWithoutFrames = getUtf8ByteLength(emptyEnvelope);
+
+    // JSON adds two quotes around every frame and one comma between adjacent frames.
+    const oneFrameOutputBytes = envelopeBytesWithoutFrames + encodedFrameLength + 2;
+    if (oneFrameOutputBytes > MAX_OUTPUT_BYTES) {
+        throw createWorkerError(
+            'WORKER_ERROR_FRAME_TOO_LARGE',
+            { width, height, mode: format.toUpperCase(), size: oneFrameOutputBytes, maxSize: MAX_OUTPUT_BYTES },
+            `A single ${format.toUpperCase()} frame exceeds the 8 MiB output limit.`,
+        );
+    }
+
+    return Math.max(
+        1,
+        Math.floor((MAX_OUTPUT_BYTES - envelopeBytesWithoutFrames + 1) / (encodedFrameLength + 3)),
+    );
+}
+
+function normalizeDecodeOptions(request: DecodeRequest, sourceType: string): DecodeOptions {
     const width = normalizeInteger(request.width, DEFAULT_WIDTH, 1, MAX_DIMENSION);
     const height = normalizeInteger(request.height, DEFAULT_HEIGHT, 1, MAX_DIMENSION);
     const fps = normalizeInteger(request.fps, DEFAULT_FPS, 1, MAX_FPS);
+    const format = normalizeAnimationFormat(request.format);
     const requestedMaxFrames = normalizeInteger(
         request.maxFrames,
         DEFAULT_MAX_FRAMES,
         1,
         MAX_FRAMES,
     );
-    getFrameByteLength(width, height);
+    const outputBudgetFrames = getMaxFramesForOutputBudget(request, width, height, fps, sourceType, format);
 
     return {
         width,
         height,
         fps,
-        maxFrames: requestedMaxFrames,
+        maxFrames: Math.min(requestedMaxFrames, outputBudgetFrames),
+        format,
+        encoding: getAnimationEncoding(format),
     };
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_BYTES) {
+        const end = Math.min(offset + BASE64_CHUNK_BYTES, bytes.length);
+        binary += String.fromCharCode(...bytes.subarray(offset, end));
+    }
+    return btoa(binary);
 }
 
 class PackedRgbFrameRenderer {
@@ -120,6 +203,7 @@ class PackedRgbFrameRenderer {
     constructor(
         private readonly width: number,
         private readonly height: number,
+        private readonly format: AnimationFormat,
     ) {
         this.canvas = new OffscreenCanvas(width, height);
         const context = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -129,14 +213,31 @@ class PackedRgbFrameRenderer {
         this.context = context;
     }
 
-    render(frame: VideoFrame): Uint16Array {
+    render(frame: VideoFrame): string {
         this.context.globalCompositeOperation = 'source-over';
         this.context.fillStyle = '#000000';
         this.context.fillRect(0, 0, this.width, this.height);
         this.context.drawImage(frame, 0, 0, this.width, this.height);
 
         const rgba = this.context.getImageData(0, 0, this.width, this.height).data;
-        return packRgbaToRgb565(rgba, this.width, this.height);
+        const packed = new Uint8Array(getFrameByteLength(this.width, this.height, this.format));
+
+        for (let sourceIndex = 0, pixelIndex = 0; sourceIndex < rgba.length; sourceIndex += 4, pixelIndex++) {
+            const alpha = rgba[sourceIndex + 3];
+            const red = alpha === 255 ? rgba[sourceIndex] : Math.round(rgba[sourceIndex] * alpha / 255);
+            const green = alpha === 255 ? rgba[sourceIndex + 1] : Math.round(rgba[sourceIndex + 1] * alpha / 255);
+            const blue = alpha === 255 ? rgba[sourceIndex + 2] : Math.round(rgba[sourceIndex + 2] * alpha / 255);
+            if (this.format === 'rgb332') {
+                packed[pixelIndex] = (red & 0xe0) | ((green & 0xe0) >> 3) | (blue >> 6);
+            } else {
+                const pixel = ((red & 0xf8) << 8) | ((green & 0xfc) << 3) | (blue >> 3);
+                const targetIndex = pixelIndex * 2;
+                packed[targetIndex] = pixel >> 8;
+                packed[targetIndex + 1] = pixel & 0xff;
+            }
+        }
+
+        return bytesToBase64(packed);
     }
 }
 
@@ -239,32 +340,17 @@ async function getMp4VideoSamples(buffer: ArrayBuffer): Promise<{ track: any; sa
 
 function createDecodeResult(
     options: DecodeOptions,
-    frames: Uint16Array[],
+    frames: string[],
     sourceName: string,
+    sourceType: string,
 ): DecodeResult {
-    const built = buildAilyAnimFile(frames, {
-        width: options.width,
-        height: options.height,
-        fpsNumerator: options.fps,
-        fpsDenominator: 1,
-        loop: true,
-        keyIntervalFrames: 30,
-        deltaToKeyThreshold: 0.85,
-    });
-    if (built.file.byteLength > MAX_OUTPUT_BYTES) {
-        throw createWorkerError(
-            'WORKER_ERROR_FRAME_TOO_LARGE',
-            {
-                width: options.width,
-                height: options.height,
-                mode: 'AANI',
-                size: built.file.byteLength,
-                maxSize: MAX_OUTPUT_BYTES,
-            },
-            'The encoded AANI file exceeds the 8 MiB output limit.',
-        );
-    }
-    return createTftEsPiAnimationValue(built.file, { sourceName }).value;
+    return {
+        version: 1,
+        ...options,
+        frames,
+        sourceName,
+        sourceType,
+    };
 }
 
 async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
@@ -274,7 +360,8 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
         throw createWorkerError('WORKER_ERROR_WEB_CODECS_UNSUPPORTED');
     }
 
-    const options = normalizeDecodeOptions(request);
+    const sourceType = request.mimeType || 'video/mp4';
+    const options = normalizeDecodeOptions(request, sourceType);
     postProgress(request.requestId, 'WORKER_STATUS_PARSE_MP4', {}, 0.08);
     const { track, samples } = await getMp4VideoSamples(request.buffer);
     const firstSample = samples[0];
@@ -296,12 +383,12 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
         }
     }
 
-    const renderer = new PackedRgbFrameRenderer(options.width, options.height);
-    const frames: Uint16Array[] = [];
+    const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format);
+    const frames: string[] = [];
     const intervalUs = MICROSECONDS_PER_SECOND / options.fps;
     const sampleDurations = new Map<number, number>();
     let outputTimelineOrigin: number | null = null;
-    let lastEncodedFrame: Uint16Array | null = null;
+    let lastEncodedFrame: string | null = null;
     let outputError: unknown;
     let decoderError: unknown;
 
@@ -396,7 +483,7 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
         throw createWorkerError('WORKER_ERROR_MP4_NO_VALID_FRAMES');
     }
 
-    return createDecodeResult(options, frames, request.fileName || '');
+    return createDecodeResult(options, frames, request.fileName || '', sourceType);
 }
 
 async function decodeGif(request: DecodeRequest): Promise<DecodeResult> {
@@ -405,13 +492,14 @@ async function decodeGif(request: DecodeRequest): Promise<DecodeResult> {
         throw createWorkerError('WORKER_ERROR_IMAGE_DECODER_UNSUPPORTED');
     }
 
-    const options = normalizeDecodeOptions(request);
-    const renderer = new PackedRgbFrameRenderer(options.width, options.height);
+    const sourceType = request.mimeType || 'image/gif';
+    const options = normalizeDecodeOptions(request, sourceType);
+    const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format);
     const decoder = new ImageDecoderCtor({
         data: new Uint8Array(request.buffer),
         type: 'image/gif',
     });
-    const frames: Uint16Array[] = [];
+    const frames: string[] = [];
 
     try {
         postProgress(request.requestId, 'WORKER_STATUS_PARSE_IMAGE', { format: 'GIF' }, 0.08);
@@ -466,7 +554,7 @@ async function decodeGif(request: DecodeRequest): Promise<DecodeResult> {
         throw createWorkerError('WORKER_ERROR_IMAGE_NO_VALID_FRAMES', { format: 'GIF' });
     }
 
-    return createDecodeResult(options, frames, request.fileName || '');
+    return createDecodeResult(options, frames, request.fileName || '', sourceType);
 }
 
 self.addEventListener('message', async (event: MessageEvent<DecodeRequest>) => {

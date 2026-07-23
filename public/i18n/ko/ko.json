@@ -186,9 +186,16 @@
             "LIB_MANAGER_DESC": "여기를 클릭해 라이브러리 관리자를 엽니다. 확장 라이브러리를 설치하거나 제거해 프로젝트에 더 많은 블록을 추가할 수 있습니다."
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "지원 형식: MP4, GIF",
-            "LABEL_COLOR_MODE": "색상",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "MP4 또는 GIF 파일만 지원합니다"
+            "UPLOAD_TOOLTIP": "지원 형식: AANI v2 (.aani), MP4, GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} 프레임 | {{width}}x{{height}} | {{duration}} | {{dataSize}} | {{ratio}}",
+            "ERROR_AANI_EXTENSION": "AANI 파일은 .aani 확장자를 사용해야 합니다",
+            "ERROR_AANI_INVALID": "잘못된 AANI v2 파일: {{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": ".aani, MP4 또는 GIF 파일만 지원합니다"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
+            "LABEL_COLOR_MODE": "Color",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "업로드",

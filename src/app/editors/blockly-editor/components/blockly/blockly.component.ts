@@ -57,6 +57,7 @@ import './custom-field/field-bitmap';
 import './custom-field/field-bitmap-u8g2';
 import { setU8g2AnimationFieldTranslator } from './custom-field/field-u8g2-animation';
 import { setTftEsPiAnimationFieldTranslator } from './custom-field/field-tftespi-animation';
+import { setTftEsPiRgb565AnimationFieldTranslator } from './custom-field/field-tftespi-rgb565-animation';
 import './custom-field/field-image';
 import './custom-field/field-image-preview';
 import './custom-field/field-led-matrix';
@@ -1474,6 +1475,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     Blockly.Msg["CONTROLS_SWITCH_DEFAULT"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DEFAULT') || (lang.startsWith('zh') ? "默认执行" : "default");
     setU8g2AnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiAnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
+    setTftEsPiRgb565AnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
 
     // 如果工作区已存在，刷新工具箱以应用新语言
     if (this.workspace) {

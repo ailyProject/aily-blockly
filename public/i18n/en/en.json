@@ -223,7 +223,14 @@
             "LIB_MANAGER_DESC": "Manage external libraries here. You can add, remove, or update libraries for your project."
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF",
+            "UPLOAD_TOOLTIP": "Supported formats: AANI v2 (.aani), MP4, GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} frames | {{width}}x{{height}} | {{duration}} | {{dataSize}} | compression {{ratio}}",
+            "ERROR_AANI_EXTENSION": "AANI files must use the .aani extension",
+            "ERROR_AANI_INVALID": "Invalid AANI v2 file: {{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only .aani, MP4, and GIF files are supported"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
             "LABEL_COLOR_MODE": "Color",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },

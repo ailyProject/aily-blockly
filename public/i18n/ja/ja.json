@@ -186,9 +186,16 @@
             "LIB_MANAGER_DESC": "ここをクリックしてライブラリマネージャーを開きます。拡張ライブラリのインストールや削除を行い、プロジェクトにさらに多くのブロックを追加できます。"
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "対応形式：MP4、GIF",
-            "LABEL_COLOR_MODE": "色",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "MP4 または GIF ファイルのみ対応しています"
+            "UPLOAD_TOOLTIP": "対応形式：AANI v2（.aani）、MP4、GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} フレーム | {{width}}x{{height}} | {{duration}} | {{dataSize}} | {{ratio}}",
+            "ERROR_AANI_EXTENSION": "AANI ファイルの拡張子は .aani である必要があります",
+            "ERROR_AANI_INVALID": "無効な AANI v2 ファイル：{{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": ".aani、MP4、GIF ファイルのみ対応しています"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
+            "LABEL_COLOR_MODE": "Color",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "アップロード",

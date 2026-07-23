@@ -15,6 +15,7 @@ import { AilyHost } from '../core/host';
 import { convertAbsToAbi, convertAbiToAbsWithLineMap } from '../tools/abiAbsConverter';
 import { loadProjectBlockDefinitions } from '../tools/absParser';
 import * as asyncFs from '../core/async-fs';
+import { migrateLegacyRgb565WorkspaceSerialization } from '../../../editors/blockly-editor/services/legacy-rgb565-workspace-migration';
 
 // =============================================================================
 // 类型定义
@@ -351,7 +352,8 @@ export class AbsAutoSyncService implements OnDestroy {
         // 清空并加载（中间让出事件循环，减轻 UI 冻结）
         workspace.clear();
         await new Promise<void>(resolve => setTimeout(resolve, 0));
-        Blockly.serialization.workspaces.load(abiJson, workspace);
+        const workspaceJson = migrateLegacyRgb565WorkspaceSerialization(abiJson);
+        Blockly.serialization.workspaces.load(workspaceJson, workspace);
         
         // 恢复自动同步
         this.config.enabled = wasEnabled;

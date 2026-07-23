@@ -186,9 +186,16 @@
             "LIB_MANAGER_DESC": "Klicken Sie hier, um den Bibliotheksmanager zu öffnen. Dort können Sie Erweiterungsbibliotheken installieren und entfernen, um Ihrem Projekt weitere Blöcke hinzuzufügen."
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "Unterstützte Formate: MP4, GIF",
-            "LABEL_COLOR_MODE": "Farbe",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Nur MP4- und GIF-Dateien werden unterstützt"
+            "UPLOAD_TOOLTIP": "Unterstützte Formate: AANI v2 (.aani), MP4, GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} Frames | {{width}}x{{height}} | {{duration}} | {{dataSize}} | {{ratio}}",
+            "ERROR_AANI_EXTENSION": "AANI-Dateien müssen die Erweiterung .aani verwenden",
+            "ERROR_AANI_INVALID": "Ungültige AANI-v2-Datei: {{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Nur .aani-, MP4- und GIF-Dateien werden unterstützt"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
+            "LABEL_COLOR_MODE": "Color",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Hochladen",

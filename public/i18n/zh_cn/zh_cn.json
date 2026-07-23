@@ -218,9 +218,16 @@
             "LIB_MANAGER_DESC": "点击这里打开库管理器，可以安装、卸载各种功能扩展库，为您的项目添加更多积木块。"
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "支持格式：MP4、GIF",
-            "LABEL_COLOR_MODE": "色彩",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "只支持 MP4 或 GIF 文件"
+            "UPLOAD_TOOLTIP": "支持格式：AANI v2（.aani）、MP4、GIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} 帧 | {{width}}x{{height}} | {{duration}} | {{dataSize}} | 压缩比 {{ratio}}",
+            "ERROR_AANI_EXTENSION": "AANI 文件必须使用 .aani 扩展名",
+            "ERROR_AANI_INVALID": "无效的 AANI v2 文件：{{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "只支持 .aani、MP4 或 GIF 文件"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
+            "LABEL_COLOR_MODE": "Color",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "上传",

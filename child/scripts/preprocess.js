@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, exec, execSync } = require('child_process');
 const os = require('os');
 
@@ -22,14 +23,6 @@ function exitWithFatalError(error) {
     logger.error(`[ERROR] ${formatFatalError(error)}`);
     process.exit(1);
 }
-
-process.on('uncaughtException', (error) => {
-    exitWithFatalError(error);
-});
-
-process.on('unhandledRejection', (reason) => {
-    exitWithFatalError(reason);
-});
 
 async function main() {
     const configPath = process.argv[2];
@@ -434,17 +427,12 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
 async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
     try {
         const sourcePathBase = path.join(currentProjectPath, 'node_modules', lib, 'src');
-        
-        // Check cache
-        const cached = libraryCache[lib];
-        if (cached && isLibraryCacheValid(cached, sourcePathBase)) {
-                return { targetNames: cached.targetNames, success: true };
-        }
+        const packageJsonPath = path.join(currentProjectPath, 'node_modules', lib, 'package.json');
+        const sourceZipPath = path.join(currentProjectPath, 'node_modules', lib, 'src.7z');
 
         // Prepare source
         let sourcePath = sourcePathBase;
         if (!fs.existsSync(sourcePath)) {
-            const sourceZipPath = path.join(currentProjectPath, 'node_modules', lib, 'src.7z');
             if (fs.existsSync(sourceZipPath)) {
                 try {
                     execSync(`"${za7Path}" x "${sourceZipPath}" -o"${path.dirname(sourcePath)}" -y`);
@@ -458,17 +446,41 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
 
         sourcePath = resolveNestedSrcPath(sourcePath);
 
+        // Source directory mtimes do not change when an existing nested file is
+        // edited. Use a deterministic recursive metadata fingerprint instead,
+        // and also verify that the cached output folders still exist. Expanded
+        // src is authoritative; never overwrite local source with src.7z. A
+        // package-manager update replaces the package directory, while a local
+        // file/junction dependency may intentionally have src newer than its
+        // archive. Re-extracting here would destroy those local source edits.
+        const sourceFingerprint = computeLibraryFingerprint(
+            sourcePath,
+            packageJsonPath,
+            sourceZipPath
+        );
+        const cached = libraryCache[lib];
+        const cacheValid = isLibraryCacheValid(
+            cached,
+            sourceFingerprint,
+            librariesPath
+        );
+        if (!devmode && cacheValid) {
+            return { targetNames: cached.targetNames, success: true };
+        }
+        const replaceExisting = Boolean(devmode) || !cacheValid;
+
         const hasHeaders = checkForHeaderFiles(sourcePath);
         let result;
         if (hasHeaders) {
-            result = await processLibraryWithHeaders(lib, sourcePath, librariesPath, devmode);
+            result = await processLibraryWithHeaders(lib, sourcePath, librariesPath, replaceExisting);
         } else {
-            result = await processLibraryDirectories(lib, sourcePath, librariesPath, devmode);
+            result = await processLibraryDirectories(lib, sourcePath, librariesPath, replaceExisting);
         }
 
         if (result.success) {
             libraryCache[lib] = {
                 timestamp: Date.now(),
+                sourceFingerprint,
                 hasHeaderFiles: hasHeaders,
                 targetNames: result.targetNames
             };
@@ -480,11 +492,93 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
     }
 }
 
-function isLibraryCacheValid(cached, sourcePath) {
-    if (!fs.existsSync(sourcePath)) return false;
+function computeLibraryFingerprint(sourcePath, packageJsonPath, sourceZipPath) {
+    const hash = crypto.createHash('sha256');
+    hash.update('aily-library-cache-v3\0');
+
+    updatePathFingerprint(hash, sourcePath, 'src', new Set(), false);
+    if (packageJsonPath && fs.existsSync(packageJsonPath)) {
+        // package.json is small; hashing its contents guarantees that a version
+        // change invalidates the cache even if metadata was preserved by a copy.
+        updatePathFingerprint(hash, packageJsonPath, 'package.json', new Set(), true);
+    } else {
+        hash.update('missing-package-json\0');
+    }
+    if (sourceZipPath && fs.existsSync(sourceZipPath)) {
+        // src.7z can be large. Its size and mtime are sufficient here because
+        // expanded src is the actual copy input and package version is included.
+        updatePathFingerprint(hash, sourceZipPath, 'src.7z', new Set(), false);
+    } else {
+        hash.update('missing-source-archive\0');
+    }
+
+    return `sha256:${hash.digest('hex')}`;
+}
+
+function updatePathFingerprint(
+    hash,
+    absolutePath,
+    relativePath,
+    activeDirectories,
+    includeFileContent
+) {
+    const lstat = fs.lstatSync(absolutePath);
+    const normalizedRelativePath = relativePath.split(path.sep).join('/');
+
+    if (lstat.isSymbolicLink()) {
+        hash.update(`L\0${normalizedRelativePath}\0${fs.readlinkSync(absolutePath)}\0`);
+    }
+
+    const stat = fs.statSync(absolutePath);
+    if (stat.isDirectory()) {
+        const realPath = fs.realpathSync(absolutePath);
+        if (activeDirectories.has(realPath)) {
+            hash.update(`CYCLE\0${normalizedRelativePath}\0`);
+            return;
+        }
+
+        hash.update(`D\0${normalizedRelativePath}\0`);
+        activeDirectories.add(realPath);
+        try {
+            const entries = fs.readdirSync(absolutePath).sort();
+            for (const entry of entries) {
+                updatePathFingerprint(
+                    hash,
+                    path.join(absolutePath, entry),
+                    path.join(relativePath, entry),
+                    activeDirectories,
+                    includeFileContent
+                );
+            }
+        } finally {
+            activeDirectories.delete(realPath);
+        }
+        return;
+    }
+
+    if (stat.isFile()) {
+        hash.update(
+            `F\0${normalizedRelativePath}\0${stat.size}\0${stat.mtimeMs}\0`
+        );
+        if (includeFileContent) {
+            hash.update(fs.readFileSync(absolutePath));
+            hash.update('\0');
+        }
+        return;
+    }
+
+    hash.update(`O\0${normalizedRelativePath}\0`);
+}
+
+function isLibraryCacheValid(cached, sourceFingerprint, librariesPath) {
+    if (!cached || cached.sourceFingerprint !== sourceFingerprint) return false;
+    if (!Array.isArray(cached.targetNames)) return false;
+
     try {
-        const stat = fs.statSync(sourcePath);
-        return stat.mtime.getTime() <= cached.timestamp;
+        return cached.targetNames.every(targetName => {
+            const targetPath = path.join(librariesPath, targetName);
+            return fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
+        });
     } catch {
         return false;
     }
@@ -514,7 +608,7 @@ function checkForHeaderFiles(sourcePath) {
     }
 }
 
-async function processLibraryWithHeaders(lib, sourcePath, librariesPath, devmode) {
+async function processLibraryWithHeaders(lib, sourcePath, librariesPath, replaceExisting) {
     const targetName = lib.split('@aily-project/')[1];
     const targetPath = path.join(librariesPath, targetName);
     
@@ -532,7 +626,7 @@ async function processLibraryWithHeaders(lib, sourcePath, librariesPath, devmode
     } catch (e) {}
 
     if (exists) {
-        if (devmode || isBroken) {
+        if (replaceExisting || isBroken) {
             rm(targetPath);
         } else {
             return { targetNames: [targetName], success: true };
@@ -547,7 +641,7 @@ async function processLibraryWithHeaders(lib, sourcePath, librariesPath, devmode
     }
 }
 
-async function processLibraryDirectories(lib, sourcePath, librariesPath, devmode) {
+async function processLibraryDirectories(lib, sourcePath, librariesPath, replaceExisting) {
     const targetNames = [];
     if (!fs.existsSync(sourcePath)) return { targetNames: [], success: true };
 
@@ -571,7 +665,7 @@ async function processLibraryDirectories(lib, sourcePath, librariesPath, devmode
             } catch (e) {}
 
             if (exists) {
-                if (devmode || isBroken) {
+                if (replaceExisting || isBroken) {
                     rm(targetPath);
                 } else {
                     targetNames.push(item);
@@ -629,6 +723,22 @@ async function syncCompilerToolsToToolsPath(compilerPath, toolsPath) {
     }
 }
 
-main().catch(e => {
-    exitWithFatalError(e);
-});
+if (require.main === module) {
+    process.on('uncaughtException', (error) => {
+        exitWithFatalError(error);
+    });
+
+    process.on('unhandledRejection', (reason) => {
+        exitWithFatalError(reason);
+    });
+
+    main().catch(e => {
+        exitWithFatalError(e);
+    });
+}
+
+module.exports = {
+    computeLibraryFingerprint,
+    isLibraryCacheValid,
+    processLibrary
+};

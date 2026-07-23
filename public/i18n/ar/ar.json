@@ -186,9 +186,16 @@
             "LIB_MANAGER_DESC": "انقر هنا لفتح مدير المكتبات، حيث يمكنك تثبيت مكتبات التوسعة المختلفة وإزالتها لإضافة المزيد من الكتل إلى مشروعك."
         },
         "TFTESPI_ANIMATION": {
-            "UPLOAD_TOOLTIP": "التنسيقات المدعومة: MP4 وGIF",
-            "LABEL_COLOR_MODE": "اللون",
-            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "يتم دعم ملفات MP4 وGIF فقط"
+            "UPLOAD_TOOLTIP": "التنسيقات المدعومة: AANI v2 (.aani) وMP4 وGIF",
+            "STATUS_INFO": "{{sourcePrefix}}{{frames}} إطار | {{width}}x{{height}} | {{duration}} | {{dataSize}} | {{ratio}}",
+            "ERROR_AANI_EXTENSION": "يجب أن تستخدم ملفات AANI الامتداد .aani",
+            "ERROR_AANI_INVALID": "ملف AANI v2 غير صالح: {{reason}}",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "يتم دعم ملفات .aani وMP4 وGIF فقط"
+        },
+        "TFTESPI_RGB565_ANIMATION": {
+            "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF (raw RGB565/RGB332)",
+            "LABEL_COLOR_MODE": "Color",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "تحميل",
