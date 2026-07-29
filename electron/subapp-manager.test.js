@@ -53,6 +53,66 @@ test('rejects package targets that are not safe npm package names', () => {
   assert.throws(() => validateIndex(index), /Invalid subapp package/);
 });
 
+test('omits disabled catalog entries from the subapp list', async (t) => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-disabled-'));
+  const installRoot = path.join(fixtureRoot, 'npm-global', 'app');
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  const index = {
+    ...fixtureIndex(),
+    'ble-debugger': {
+      id: 'ble-debugger',
+      titleKey: 'BLE_DEBUGGER.TITLE',
+      namespace: 'BLE_DEBUGGER',
+      app: {
+        name: 'BLE_DEBUGGER.TITLE',
+        description: 'BLE_DEBUGGER.DESCRIPTION',
+        icon: 'fa-light fa-bluetooth',
+        enabled: false,
+      },
+      package: '@aily-project/subapp-ble-debugger',
+      version: '0.1.0',
+      i18n: {
+        defaultLocale: 'en',
+        locales: {
+          en: { TITLE: 'BLE Debugger', DESCRIPTION: 'BLE tools' },
+        },
+      },
+    },
+    'hidden-enable': {
+      id: 'hidden-enable',
+      titleKey: 'HIDDEN.TITLE',
+      namespace: 'HIDDEN',
+      app: {
+        name: 'HIDDEN.TITLE',
+        description: 'HIDDEN.DESCRIPTION',
+        enable: false,
+      },
+      package: '@aily-project/subapp-hidden-enable',
+      version: '0.1.0',
+      i18n: {
+        defaultLocale: 'en',
+        locales: {
+          en: { TITLE: 'Hidden', DESCRIPTION: 'Hidden by enable flag' },
+        },
+      },
+    },
+  };
+
+  assert.equal(validateIndex(index)['ble-debugger'].app.enabled, false);
+  assert.equal(validateIndex(index)['hidden-enable'].app.enabled, false);
+
+  const manager = createSubappManager({
+    rootDir: installRoot,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(index),
+    }),
+  });
+  const state = await manager.list({ locale: 'en', refresh: true });
+  assert.deepEqual(state.apps.map((app) => app.id), ['aily-chat']);
+});
+
 test('treats an npm-linked source package as an installed subapp', async (t) => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-link-'));
   const installRoot = path.join(fixtureRoot, 'npm-global', 'app');

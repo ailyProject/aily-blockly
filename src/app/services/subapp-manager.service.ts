@@ -100,25 +100,27 @@ export class SubappManagerService implements OnDestroy {
   }
 
   getCatalogApps(): AppItem[] {
-    return this.state.apps.map((item) => ({
-      id: item.toolId,
-      name: item.name,
-      description: item.description,
-      action: 'tool-open',
-      data: { type: 'tool', data: item.toolId },
-      icon: item.icon || 'fa-light fa-puzzle-piece',
-      enabled: item.enabled,
-      ...(item.toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
-      subapp: {
-        catalogId: item.id,
-        packageName: item.packageName,
-        availableVersion: item.availableVersion,
-        installedVersion: item.installedVersion,
-        installed: item.installed,
-        updateAvailable: item.updateAvailable,
-        installPath: item.installPath,
-      },
-    }));
+    return this.state.apps
+      .filter((item) => item.enabled !== false)
+      .map((item) => ({
+        id: item.toolId,
+        name: item.name,
+        description: item.description,
+        action: 'tool-open',
+        data: { type: 'tool', data: item.toolId },
+        icon: item.icon || 'fa-light fa-puzzle-piece',
+        enabled: true,
+        ...(item.toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
+        subapp: {
+          catalogId: item.id,
+          packageName: item.packageName,
+          availableVersion: item.availableVersion,
+          installedVersion: item.installedVersion,
+          installed: item.installed,
+          updateAvailable: item.updateAvailable,
+          installPath: item.installPath,
+        },
+      }));
   }
 
   ngOnDestroy(): void {

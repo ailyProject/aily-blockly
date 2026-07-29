@@ -54,6 +54,13 @@ function normalizeLocale(value) {
   return String(value || 'en').trim().toLowerCase().replace(/-/g, '_');
 }
 
+function resolveEnabledFlag(...candidates) {
+  for (const value of candidates) {
+    if (typeof value === 'boolean') return value;
+  }
+  return true;
+}
+
 function validateId(value) {
   const id = requireText(value, 'subapp id');
   if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(id)) {
@@ -109,7 +116,12 @@ function validateIndex(rawIndex) {
         icon: typeof app.icon === 'string' && app.icon.trim()
           ? app.icon.trim()
           : 'fa-light fa-puzzle-piece',
-        enabled: app.enabled !== false,
+        enabled: resolveEnabledFlag(
+          app.enabled,
+          app.enable,
+          rawEntry.enabled,
+          rawEntry.enable,
+        ),
       },
       i18n: {
         defaultLocale,
@@ -581,40 +593,42 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
     fetchedAt: meta.fetchedAt || new Date().toISOString(),
     warning: meta.warning || null,
     installRoot: rootDir,
-    apps: Object.values(index).map((entry) => {
-      const installedState = readInstalledState(rootDir, entry);
-      const copy = resolveLocalizedCopy(entry, locale);
-      const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
-      const localizedConfig = installedState.config
-        ? {
-            ...installedState.config,
-            app: {
-              ...installedState.config.app,
-              name: copy.name,
-              description: copy.description,
-            },
-          }
-        : null;
-      return {
-        id: entry.id,
-        toolId,
-        packageName: entry.package,
-        availableVersion: entry.version,
-        installedVersion: installedState.installedVersion,
-        installed: installedState.installed,
-        updateAvailable: installedState.installed
-          && hasUpdate(installedState.installedVersion, entry.version),
-        installPath: installedState.packagePath,
-        titleKey: entry.titleKey,
-        namespace: entry.namespace,
-        name: copy.name,
-        description: copy.description,
-        icon: entry.app.icon,
-        enabled: entry.app.enabled,
-        config: localizedConfig,
-        ...(installedState.installError ? { installError: installedState.installError } : {}),
-      };
-    }),
+    apps: Object.values(index)
+      .filter((entry) => entry.app.enabled !== false)
+      .map((entry) => {
+        const installedState = readInstalledState(rootDir, entry);
+        const copy = resolveLocalizedCopy(entry, locale);
+        const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
+        const localizedConfig = installedState.config
+          ? {
+              ...installedState.config,
+              app: {
+                ...installedState.config.app,
+                name: copy.name,
+                description: copy.description,
+              },
+            }
+          : null;
+        return {
+          id: entry.id,
+          toolId,
+          packageName: entry.package,
+          availableVersion: entry.version,
+          installedVersion: installedState.installedVersion,
+          installed: installedState.installed,
+          updateAvailable: installedState.installed
+            && hasUpdate(installedState.installedVersion, entry.version),
+          installPath: installedState.packagePath,
+          titleKey: entry.titleKey,
+          namespace: entry.namespace,
+          name: copy.name,
+          description: copy.description,
+          icon: entry.app.icon,
+          enabled: true,
+          config: localizedConfig,
+          ...(installedState.installError ? { installError: installedState.installError } : {}),
+        };
+      }),
   };
 }
 
@@ -807,6 +821,9 @@ function createSubappManager(options = {}) {
       const id = validateId(payload.id);
       const entry = index[id];
       if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);
+      if (entry.app.enabled === false && action !== 'uninstall') {
+        throw new Error(`Subapp is disabled in the remote index: ${id}`);
+      }
       ensureInstallProject(rootDir);
 
       if (action === 'uninstall') {

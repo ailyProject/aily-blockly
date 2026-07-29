@@ -269,27 +269,16 @@ export const APP_LIST: AppItem[] = [
     icon: 'fa-light fa-user',
     enabled: true,
     lock: true
-  },
-  {
-    id: 'simulator',
-    name: 'MENU.SIMULATOR',
-    description: 'APP_STORE.SIMULATOR_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'simulator' },
-    icon: 'fa-light fa-atom',
-    router: ['/main/blockly-editor'],
-    dev: true,
-    enabled: true
   }
 ];
 
 // 所有可用的 App id。App Store 和 toolbar 只会使用这里列出的 App。
+// 子应用（含 aily-simulator）由 SubappManagerService 从远端 subapp-index.json 注入，不在此硬编码。
 export const AVAILABLE_APP_IDS: string[] = [
   'code-viewer',
   'serial-monitor',
   'ffs-manager',
   'aily-chat',
-  'simulator',
   'model-store',
   'cloud-space',
   'user-center',
@@ -300,7 +289,6 @@ export const DEFAULT_TOOLBAR_APP_IDS: string[] = [
   'code-viewer',
   'serial-monitor',
   'aily-chat',
-  'simulator',
   'cloud-space',
   'user-center'
 ];
