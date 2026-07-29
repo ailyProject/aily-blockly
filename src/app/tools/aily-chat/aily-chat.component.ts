@@ -145,12 +145,6 @@ import type { IMenuItem } from '../../configs/menu.config';
 export type { Tool, ResourceItem, ChatMessage, ToolCallInfo };
 export { ToolCallState };
 
-interface PendingFollowupSection {
-  readonly kind: ChatPendingRequestKind;
-  readonly title: string;
-  readonly requests: readonly PendingFollowupRequest[];
-}
-
 function readUnpatchedAilyChatTimer<T extends (...args: any[]) => any>(name: 'setTimeout' | 'clearTimeout'): T | null {
   const runtime = globalThis as any;
   const zoneSymbol = typeof runtime.Zone?.__symbol__ === 'function'
@@ -1651,23 +1645,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   getCurrentSessionPendingFollowupRequests(): readonly PendingFollowupRequest[] {
     return this.requestController.getPending(this.vm.sessionId);
-  }
-
-  getCurrentSessionPendingFollowupSections(): readonly PendingFollowupSection[] {
-    const pendingRequests = this.getCurrentSessionPendingFollowupRequests();
-    const steering = pendingRequests.filter(request => request.kind === 'steering');
-    const queued = pendingRequests.filter(request => request.kind === 'queued');
-    const sections: PendingFollowupSection[] = [];
-
-    if (steering.length > 0) {
-      sections.push({ kind: 'steering', title: 'Steering', requests: steering });
-    }
-
-    if (queued.length > 0) {
-      sections.push({ kind: 'queued', title: 'Queued', requests: queued });
-    }
-
-    return sections;
   }
 
   getPendingFollowupDisplayText(request: PendingFollowupRequest): string {

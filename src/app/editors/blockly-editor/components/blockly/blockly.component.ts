@@ -965,9 +965,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
             this.codeViewerIpcService.publishSelection(this.blocklyService.selectedBlockSubject.value);
-            if (this.blocklyService.selectedBlockIdsSubject.value.length > 0) {
-              this.uiService.focusActiveAilyChatInput();
-            }
           });
         }
       });

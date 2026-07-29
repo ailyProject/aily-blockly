@@ -352,16 +352,16 @@ interface HistorySummaryItem {
       min-height: 22px;
       padding: 0 10px;
       border-radius: 5px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,255,255,0.02);
-      color: var(--chat-fg, #cccccc);
+      border: 1px solid var(--aq-border-soft);
+      background: var(--aq-bg);
+      color: var(--aq-fg);
       font-size: 12px;
       outline: none;
       transition: border-color 0.2s;
     }
-    .aq-freeform-input:focus { border-color: #74b3ff; }
+    .aq-freeform-input:focus { border-color: var(--aq-info); }
     .aq-freeform-input:disabled { opacity: 0.5; cursor: not-allowed; }
-    .aq-freeform-input::placeholder { color: var(--chat-fg-muted, #6a6a6a); }
+    .aq-freeform-input::placeholder { color: var(--aq-fg-dim); }
 
     /* Bottom nav (Copilot style) */
     .aq-nav {

@@ -370,56 +370,55 @@
             <div class="chat-pending-followup-widget-header">
               <div class="chat-pending-followup-widget-title">
                 <i class="fa-light fa-list-check"></i>
-                <span>已排队 {{ pendingRequests.length }} 条</span>
+                <span>{{ pendingRequests.length }}</span>
               </div>
               <button
                 type="button"
                 class="chat-pending-followup-clear-all"
+                nz-tooltip
+                nzTooltipTitle="清空"
+                nzTooltipPlacement="top"
+                aria-label="清空"
                 (click)="clearCurrentSessionPendingFollowupRequests()">
-                清空
+                <i class="fa-light fa-trash"></i>
               </button>
             </div>
-            <div class="chat-pending-followup-sections">
-              @for(section of getCurrentSessionPendingFollowupSections(); track section.kind) {
-              <div class="chat-pending-followup-section" [attr.data-kind]="section.kind">
-                <div class="chat-pending-followup-section-header">
-                  <span class="chat-pending-followup-section-title">{{ section.title }}</span>
-                  <span class="chat-pending-followup-section-count">{{ section.requests.length }}</span>
-                </div>
-                <div class="chat-pending-followup-list">
-                  @for(request of section.requests; track request.id; let index = $index) {
-                  <div class="chat-pending-followup-item" [attr.data-kind]="request.kind">
-                    <div class="chat-pending-followup-item-main">
-                      <div class="chat-pending-followup-item-meta">
-                        <span class="chat-pending-followup-order">{{ index + 1 }}</span>
-                        <span class="chat-pending-followup-kind" [attr.data-kind]="request.kind">
-                          {{ request.kind === 'steering' ? 'Steering' : 'Queued' }}
-                        </span>
-                      </div>
-                      <div class="chat-pending-followup-text">{{ getPendingFollowupDisplayText(request) }}</div>
-                    </div>
-                    <div class="chat-pending-followup-actions">
-                      <button
-                        type="button"
-                        class="chat-pending-followup-edit"
-                        (click)="editPendingFollowup(request)">
-                        编辑
-                      </button>
-                      <button
-                        type="button"
-                        class="chat-pending-followup-run-next"
-                        (click)="runPendingFollowupNext(request.id)">
-                        立即发送
-                      </button>
-                      <button
-                        type="button"
-                        class="chat-pending-followup-remove"
-                        (click)="removePendingFollowup(request.id)">
-                        移除
-                      </button>
-                    </div>
-                  </div>
-                  }
+            <div class="chat-pending-followup-list">
+              @for(request of pendingRequests; track request.id; let index = $index) {
+              <div class="chat-pending-followup-item" [attr.data-kind]="request.kind">
+                <span class="chat-pending-followup-order">{{ index + 1 }}</span>
+                <div class="chat-pending-followup-text">{{ getPendingFollowupDisplayText(request) }}</div>
+                <div class="chat-pending-followup-actions">
+                  <button
+                    type="button"
+                    class="chat-pending-followup-edit"
+                    nz-tooltip
+                    nzTooltipTitle="编辑"
+                    nzTooltipPlacement="top"
+                    aria-label="编辑"
+                    (click)="editPendingFollowup(request)">
+                    <i class="fa-light fa-pen"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="chat-pending-followup-run-next"
+                    nz-tooltip
+                    nzTooltipTitle="立即发送"
+                    nzTooltipPlacement="top"
+                    aria-label="立即发送"
+                    (click)="runPendingFollowupNext(request.id)">
+                    <i class="fa-light fa-paper-plane"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="chat-pending-followup-remove"
+                    nz-tooltip
+                    nzTooltipTitle="移除"
+                    nzTooltipPlacement="top"
+                    aria-label="移除"
+                    (click)="removePendingFollowup(request.id)">
+                    <i class="fa-light fa-xmark"></i>
+                  </button>
                 </div>
               </div>
               }

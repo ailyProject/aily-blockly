@@ -330,20 +330,6 @@ export class UiService {
     });
   }
 
-  /**
-   * Focus the composer only when an Aily Chat surface is currently on top.
-   * Blockly selection must not move focus into a chat panel hidden under
-   * another right-side tool.
-   */
-  focusActiveAilyChatInput(): boolean {
-    const targetToolId = this.topTool;
-    if (!targetToolId || !AILY_CHAT_TOOL_IDS.has(targetToolId)) {
-      return false;
-    }
-    this.sendToolSignal(`${targetToolId}:focus-input`, { targetToolId });
-    return true;
-  }
-
   private resolveMostRecentlyUsedAilyChatTool(): string | null {
     if (this.topTool && AILY_CHAT_TOOL_IDS.has(this.topTool)) {
       return this.topTool;

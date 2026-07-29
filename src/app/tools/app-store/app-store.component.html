@@ -76,7 +76,7 @@
                     </button>
                 </div>
 
-                <div class="catalog-grid sscroll">
+                <div class="catalog-grid sscroll" (scroll)="closeSubappMoreOnScroll()">
                     @if (catalogError) {
                     <div class="catalog-state error-state">
                         <i class="fa-light fa-cloud-exclamation"></i>
@@ -88,8 +88,9 @@
                     @for (app of catalogApps; track app.id) {
                     <div class="catalog-card" [class.dev]="app.dev" [class.locked]="app.lock"
                         [class.not-installed]="app.subapp && !app.subapp.installed"
-                        [class.installing]="isSubappPending(app) && !app.subapp?.installed"
+                        [class.installing]="isSubappPending(app)"
                         [class.has-update]="app.subapp?.updateAvailable"
+                        [style.--install-progress]="getInstallProgressRatio(app)"
                         [attr.aria-busy]="isSubappPending(app) ? 'true' : null">
                         <div class="catalog-main" [class.installing]="isSubappPending(app)"
                             role="button" tabindex="0"
@@ -108,7 +109,7 @@
                                     @if (app.subapp) {
                                     <span class="app-version" [class.has-update]="app.subapp.updateAvailable">
                                         @if (isCheckingSubapp(app)) {
-                                        <i class="fa-light fa-spinner-third fa-spin"></i>
+                                        <i class="fa-light fa-spinner-third app-store-spin" aria-hidden="true"></i>
                                         } @else if (app.subapp.installedVersion) {
                                         v{{ app.subapp.installedVersion }}
                                         } @else {
@@ -127,7 +128,10 @@
                             @if (app.subapp) {
                             @if (isSubappPending(app)) {
                             <span class="action-progress" aria-live="polite">
-                                <i class="fa-light fa-spinner-third fa-spin"></i>
+                                <span class="action-progress-ring" aria-hidden="true">
+                                    <i class="fa-light fa-spinner-third app-store-spin"></i>
+                                    <span class="action-progress-value">{{ getInstallProgressPercent(app) }}%</span>
+                                </span>
                             </span>
                             }
                             }
@@ -149,7 +153,9 @@
                                     [nzTooltipTitle]="'APP_STORE.MORE' | translate">
                                     <i class="fa-light fa-ellipsis"></i>
                                 </button>
-                                <div class="subapp-more-menu" role="menu">
+                                <div class="subapp-more-menu" role="menu"
+                                    [style.left.px]="getSubappMoreMenuLeft(app)"
+                                    [style.top.px]="getSubappMoreMenuTop(app)">
                                     <button class="subapp-more-action" type="button" role="menuitem"
                                         [disabled]="isCheckingSubapp(app)" (click)="runSubappMenuAction(app)">
                                         @if (app.subapp?.updateAvailable) {
