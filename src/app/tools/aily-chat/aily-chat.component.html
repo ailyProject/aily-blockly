@@ -604,6 +604,7 @@
               </span>
             </div>
             }
+            <!-- 临时隐藏：输入框 Execution 预算指示器，先保留原块便于后续回滚；continue 通知与底层预算逻辑仍正常。
             @if(vm.interactionBudgetSnapshot) {
             <div class="btn mode interaction-budget-indicator ccenter"
               [class.warn]="vm.interactionBudgetSnapshot.severity === 'warning'"
@@ -638,6 +639,7 @@
               }
             </div>
             }
+            -->
             <!-- 临时隐藏：shared auth quota 已迁移到用户中心中展示，先保留原块便于后续回滚。
             @if(vm.authQuotaSnapshot$ | async; as authQuotaSnapshot) {
             <div class="btn mode auth-quota-indicator ccenter"
@@ -706,14 +708,14 @@
                 [nzTooltipTitle]="getSendPrimaryActionTooltip()">
                 <i [class]="getSendPrimaryActionIconClass()"></i>
               </div>
-              <div class="btn ccenter lloading composer-stop-action" nzTooltipPlacement="bottom" nz-tooltip
+              <div class="btn ccenter composer-stop-action" nzTooltipPlacement="bottom" nz-tooltip
                 [class.action-hidden]="!shouldShowStopPrimaryAction()"
                 [nzTooltipTitle]="'AILY_CHAT.STOP' | translate"
                 (click)="submitShellCoordinator.stopActiveRequest()">
                 <div class="stop-box ccenter">
                   <i class="fa-light fa-stop"></i>
                 </div>
-                <div class="spinner-box ccenter">
+                <div class="spinner-box ccenter" aria-hidden="true">
                   <i class="fa-light fa-spinner-third"></i>
                 </div>
               </div>

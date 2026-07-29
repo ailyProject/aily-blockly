@@ -7,6 +7,8 @@ const test = require('node:test');
 const {
   TOOL_ID_ALIASES,
   createSubappManager,
+  prepareNpmSpawn,
+  quoteWindowsShellPath,
   resolveSubappRoot,
   validateIndex,
 } = require('./subapp-manager');
@@ -41,6 +43,66 @@ test('resolves the required user npm-global/app installation root', () => {
     resolveSubappRoot({ platform: 'darwin', home: '/Users/test', env: {} }),
     '/Users/test/Library/aily-project/npm-global/app',
   );
+});
+
+test('quotes Windows npm paths that contain spaces for shell:true', (t) => {
+  assert.equal(
+    quoteWindowsShellPath('D:\\Program Files\\Aily\\node\\npm.cmd'),
+    '"D:\\Program Files\\Aily\\node\\npm.cmd"',
+  );
+
+  const spawnSpec = prepareNpmSpawn(
+    ['install', '--prefix', 'D:\\Program Files\\aily-project\\npm-global\\app', 'pkg@1.0.0'],
+    {
+      platform: 'win32',
+      env: { AILY_CHILD_PATH: '' },
+    },
+  );
+
+  assert.equal(spawnSpec.shell, true);
+  assert.equal(spawnSpec.command, '"npm.cmd"');
+  assert.deepEqual(spawnSpec.args, [
+    'install',
+    '--prefix',
+    '"D:\\Program Files\\aily-project\\npm-global\\app"',
+    'pkg@1.0.0',
+  ]);
+
+  const childRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily Program Files-'));
+  const bundledNpm = path.join(childRoot, 'node', 'npm.cmd');
+  t.after(() => fs.rmSync(childRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.dirname(bundledNpm), { recursive: true });
+  fs.writeFileSync(bundledNpm, '@echo off\r\n');
+
+  const bundledSpawn = prepareNpmSpawn(
+    ['install', '--prefix', path.join(childRoot, 'npm-global', 'app'), 'pkg@1.0.0'],
+    {
+      platform: 'win32',
+      env: { AILY_CHILD_PATH: childRoot },
+    },
+  );
+
+  assert.equal(bundledSpawn.command, quoteWindowsShellPath(bundledNpm));
+  assert.match(bundledSpawn.command, /^".*Program Files.*npm\.cmd"$/);
+});
+
+test('does not quote npm spawn args on non-Windows platforms', () => {
+  const spawnSpec = prepareNpmSpawn(
+    ['install', '--prefix', '/Users/test/Library/aily-project/npm-global/app', 'pkg@1.0.0'],
+    {
+      platform: 'darwin',
+      env: { AILY_CHILD_PATH: '' },
+    },
+  );
+
+  assert.equal(spawnSpec.shell, false);
+  assert.equal(spawnSpec.command, 'npm');
+  assert.deepEqual(spawnSpec.args, [
+    'install',
+    '--prefix',
+    '/Users/test/Library/aily-project/npm-global/app',
+    'pkg@1.0.0',
+  ]);
 });
 
 test('routes the installed Simulator package through its dedicated host', () => {

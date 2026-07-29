@@ -1027,14 +1027,11 @@
         flex: 0 0 28px;
         width: 28px;
         height: 28px;
-        contain: layout paint;
       }
 
       .composer-primary-action-slot > .btn {
         position: absolute;
         inset: 0;
-        transform: translateZ(0);
-        will-change: opacity, visibility;
       }
 
       .composer-primary-action-slot > .btn.action-hidden {
@@ -1109,12 +1106,27 @@
       }
     }
 
-    // 发送按钮
-    .btn {
-      .stop-box {
+    // 发送按钮 / 流式中的 stop+转圈（恢复旧版白色散转图标尺寸）
+    .composer-stop-action {
+      // 覆盖 .btns .btn 的 padding-top，避免 stop/spinner 不同心
+      padding: 0;
+      color: var(--aily-text-primary, #eee);
+
+      .stop-box,
+      .spinner-box {
         position: absolute;
-        width: 100%;
-        height: 100%;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: auto;
+      }
+
+      .stop-box {
+        z-index: 1;
       }
 
       .spinner-box {
@@ -1123,18 +1135,34 @@
         border: 3px solid var(--aily-border-tertiary, #5a5a5a);
         border-radius: 50%;
         box-sizing: border-box;
-        contain: layout paint;
-        transform: translateZ(0);
+        color: #fff;
+
+        .fa-spinner-third {
+          font-size: 22px;
+          line-height: 1;
+          animation: aily-chat-stop-spin 2s steps(60, end) infinite;
+        }
       }
 
       .fa-stop {
         font-size: 13px;
-      }
-
-      .fa-spinner-third {
-        font-size: 22px;
+        line-height: 1;
       }
     }
+
+    .composer-send-action {
+      padding: 0;
+    }
+  }
+}
+
+@keyframes aily-chat-stop-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
   }
 }
 

@@ -654,13 +654,37 @@ function npmExecutable(env = process.env, platform = process.platform) {
   return childPath && fs.existsSync(bundled) ? bundled : (platform === 'win32' ? 'npm.cmd' : 'npm');
 }
 
+// Windows + shell:true 时，带空格路径（如 D:\Program Files\...）必须加引号，
+// 否则 cmd 会在空格处截断，表现为 'D:\Program' 不是内部或外部命令。
+function quoteWindowsShellPath(filePath) {
+  return `"${String(filePath).replace(/"/g, '""')}"`;
+}
+
+function prepareNpmSpawn(args, options = {}) {
+  const platform = options.platform || process.platform;
+  const command = npmExecutable(options.env, platform);
+  if (platform !== 'win32') {
+    return { command, args, shell: false };
+  }
+  return {
+    command: quoteWindowsShellPath(command),
+    args: args.map((arg) => {
+      const value = String(arg);
+      if (value.includes(' ') && !value.startsWith('"') && !value.startsWith("'")) {
+        return quoteWindowsShellPath(value);
+      }
+      return value;
+    }),
+    shell: true,
+  };
+}
+
 function runNpm(args, options = {}) {
   return new Promise((resolve, reject) => {
-    const platform = options.platform || process.platform;
-    const command = npmExecutable(options.env, platform);
-    const child = spawn(command, args, {
+    const { command, args: spawnArgs, shell } = prepareNpmSpawn(args, options);
+    const child = spawn(command, spawnArgs, {
       env: { ...process.env, ...(options.env || {}) },
-      shell: platform === 'win32',
+      shell,
       windowsHide: true,
     });
     let stdout = '';
@@ -879,6 +903,8 @@ module.exports = {
   createCatalogState,
   createSubappManager,
   packagePathFor,
+  prepareNpmSpawn,
+  quoteWindowsShellPath,
   registerSubappManagerHandlers,
   resolveSubappRoot,
   validateIndex,
