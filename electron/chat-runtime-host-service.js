@@ -42,6 +42,13 @@ const ALLOWED_METHODS = new Set([
   'prewarmRuntime',
   'restoreRuntimeSession',
   'readSessionExecutionState',
+  'readEditingSessionState',
+  'readEditingSessionContent',
+  'operateEditingSessionEntry',
+  'acceptEditingSession',
+  'undoEditingSessionInteraction',
+  'redoEditingSessionInteraction',
+  'buildEditingSessionNavigationPlan',
   'submitTurn',
   'readSubmitReadiness',
   'ensureSessionCanRerun',
@@ -65,6 +72,9 @@ const ALLOWED_METHODS = new Set([
 ]);
 
 const EXECUTION_HOST_ALLOWED_METHODS = new Set([
+  'operateEditingSessionEntry',
+  'acceptEditingSession',
+  'buildEditingSessionNavigationPlan',
   'readSubmitReadiness',
   'ensureSessionCanRerun',
   'readSessionState',
@@ -95,6 +105,12 @@ function isRuntimeOwnerTraceEnabled() {
   }
   const normalized = value.trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
+function readErrorMessage(error) {
+  return error && typeof error.message === 'string' && error.message.trim()
+    ? error.message.trim()
+    : String(error || 'Unknown error');
 }
 
 function measureTextLength(value) {
@@ -225,25 +241,8 @@ function traceActiveTurnDurability(phase, payload = {}) {
   }
 }
 
-function isCheckpointOwnedTurn(turn) {
-  const metadata = turn && turn.request && turn.request.metadata;
-  return metadata && typeof metadata === 'object' && [
-    'checkpointId',
-    'checkpointNamespace',
-    'checkpointRef',
-    'checkpointRefs',
-    'startCheckpointRef',
-    'additionalCheckpointRefs',
-    'additionalStartCheckpointRefs',
-  ].some(key => metadata[key] !== undefined && metadata[key] !== null);
-}
-
 function normalizeTurnId(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
-}
-
-function hasCheckpointOwnedTurn(turns) {
-  return (Array.isArray(turns) ? turns : []).some(isCheckpointOwnedTurn);
 }
 
 class ChatRuntimeHostProcessService {
@@ -276,6 +275,7 @@ class ChatRuntimeHostProcessService {
       : showNotification;
     this.notificationNeedsInputKeys = new Map();
     this.notificationRequestInProgress = new Map();
+    this.checkpointMutationQueues = new Map();
   }
 
   setMainWindow(mainWindow) {
@@ -354,6 +354,24 @@ class ChatRuntimeHostProcessService {
     }
     if (method === 'readSessionExecutionState') {
       return this.handleReadSessionExecutionState(args);
+    }
+    if (method === 'readEditingSessionState') {
+      return this.handleReadEditingSessionState(args);
+    }
+    if (method === 'readEditingSessionContent') {
+      return this.handleReadEditingSessionContent(args);
+    }
+    if (method === 'operateEditingSessionEntry') {
+      return this.handleOperateEditingSessionEntry(args);
+    }
+    if (method === 'acceptEditingSession') {
+      return this.handleAcceptEditingSession(args);
+    }
+    if (method === 'undoEditingSessionInteraction' || method === 'redoEditingSessionInteraction') {
+      return this.handleEditingSessionInteraction(method, args);
+    }
+    if (method === 'buildEditingSessionNavigationPlan') {
+      return this.handleBuildEditingSessionNavigationPlan(args);
     }
     if (method === 'stopTurn') {
       return this.handleStopTurn(args);
@@ -561,6 +579,9 @@ class ChatRuntimeHostProcessService {
           ? submittedRequest.agentRuntimeModeSource ?? null
           : null,
         currentModel: runningState.currentModel ?? null,
+        summarizerModel: submittedRequest && submittedRequest.summarizerModel
+          ? submittedRequest.summarizerModel
+          : null,
         transcriptRevision: Number(runningState.transcriptRevision) || 0,
         protocolTruncation: submittedRequest && submittedRequest.protocolTruncation ? submittedRequest.protocolTruncation : null,
       },
@@ -594,7 +615,7 @@ class ChatRuntimeHostProcessService {
     if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
       throw new Error('[AilyChat][RuntimeHost] No registered host runtime owner.');
     }
-    const { turnResponses, ...runtimeRequest } = request;
+    const { turnResponses, checkpointTimeline, ...runtimeRequest } = request;
     const result = await this.runtimeOwnerController.dispatchCommand('restoreRuntimeSession', [{
       ...runtimeRequest,
       sessionId,
@@ -602,7 +623,11 @@ class ChatRuntimeHostProcessService {
     if (!result || result.sessionId !== sessionId || Number(result.turnCount) !== responseTurnIds.length) {
       throw new Error('[AilyChat][RuntimeHost] Execution owner restored an invalid request list.');
     }
-    const transcript = this.hostSessionStore.restoreCanonicalTranscript(sessionId, turnResponses);
+    const transcript = this.hostSessionStore.restoreCanonicalTranscript(
+      sessionId,
+      turnResponses,
+      checkpointTimeline,
+    );
     return {
       ...result,
       transcriptRevision: Number(transcript && transcript.revision) || 0,
@@ -631,6 +656,159 @@ class ChatRuntimeHostProcessService {
           requestInProgress: false,
           activeTurnId: null,
         };
+  }
+
+  async handleReadEditingSessionState(args) {
+    const sessionId = normalizeSessionId(args && args[0]);
+    if (!sessionId) {
+      throw new Error('[AilyChat][RuntimeHost] readEditingSessionState requires a session id.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Editing-session state requires the execution host.');
+    }
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    return this.runtimeOwnerController.dispatchCommand('readEditingSessionState', [{
+      sessionId,
+      projectPath: typeof inventory?.projectPath === 'string' ? inventory.projectPath : null,
+    }]);
+  }
+
+  async handleReadEditingSessionContent(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    if (!sessionId || !request.contentRef || typeof request.contentRef !== 'object') {
+      throw new Error('[AilyChat][RuntimeHost] readEditingSessionContent requires a session id and content reference.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Editing-session content requires the execution host.');
+    }
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    return this.runtimeOwnerController.dispatchCommand('readEditingSessionContent', [{
+      sessionId,
+      contentRef: request.contentRef,
+      projectPath: typeof inventory?.projectPath === 'string' ? inventory.projectPath : null,
+    }]);
+  }
+
+  async handleOperateEditingSessionEntry(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    const uri = typeof request.uri === 'string' ? request.uri.trim() : '';
+    const action = request.action === 'accept' || request.action === 'reject' ? request.action : '';
+    if (!sessionId || !uri || !action) {
+      throw new Error('[AilyChat][RuntimeHost] operateEditingSessionEntry requires session, URI, and action.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Editing-session entry operation requires the execution host.');
+    }
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    return this.runtimeOwnerController.dispatchCommand('operateEditingSessionEntry', [{
+      sessionId,
+      uri,
+      action,
+      projectPath: typeof inventory?.projectPath === 'string' ? inventory.projectPath : null,
+    }]);
+  }
+
+  async handleAcceptEditingSession(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    if (!sessionId) {
+      throw new Error('[AilyChat][RuntimeHost] acceptEditingSession requires a session id.');
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Editing-session acceptance requires the execution host.');
+    }
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    return this.runtimeOwnerController.dispatchCommand('acceptEditingSession', [{
+      sessionId,
+      projectPath: typeof inventory?.projectPath === 'string' ? inventory.projectPath : null,
+    }]);
+  }
+
+  async handleEditingSessionInteraction(method, args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    if (!sessionId) {
+      throw new Error(`[AilyChat][RuntimeHost] ${method} requires a session id.`);
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Editing-session navigation requires the execution host.');
+    }
+
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    const projectPath = typeof inventory?.projectPath === 'string' ? inventory.projectPath : null;
+    const state = await this.runtimeOwnerController.dispatchCommand('readEditingSessionState', [{
+      sessionId,
+      projectPath,
+    }]);
+    const direction = method === 'undoEditingSessionInteraction' ? 'restore' : 'redo';
+    const target = resolveEditingSessionInteractionTarget(state, direction);
+    if (!target) {
+      return state;
+    }
+
+    const preparedNavigation = await this.runtimeOwnerController.dispatchCommand(
+      'applyEditingSessionNavigation',
+      [{
+        sessionId,
+        checkpointId: target.checkpointId,
+        direction,
+        projectPath,
+      }],
+    );
+    try {
+      await this.runtimeOwnerController.dispatchCommand(
+        'commitEditingSessionNavigation',
+        [{ transactionId: preparedNavigation.transactionId }],
+      );
+      const nextState = await this.runtimeOwnerController.dispatchCommand('readEditingSessionState', [{
+        sessionId,
+        projectPath,
+      }]);
+      const event = this.hostSessionStore.cacheRuntimeOwnerEditingSessionChanged({
+        sessionId,
+        revision: nextState?.revision,
+      });
+      if (event) {
+        this.broadcastHostEvent(event);
+      }
+      return nextState;
+    } catch (error) {
+      const rollback = await this.runtimeOwnerController.dispatchCommand(
+        'rollbackEditingSessionNavigation',
+        [{ transactionId: preparedNavigation.transactionId }],
+      );
+      if (error && typeof error === 'object') {
+        error.rollbackErrors = Array.isArray(rollback?.errors) ? rollback.errors : [];
+        error.rolledBackOnError = rollback?.rolledBackOnError === true;
+      }
+      throw error;
+    }
+  }
+
+  async handleBuildEditingSessionNavigationPlan(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    const checkpointId = typeof request.checkpointId === 'string' ? request.checkpointId.trim() : '';
+    const direction = request.direction === 'restore' || request.direction === 'redo'
+      ? request.direction
+      : '';
+    if (!sessionId || !checkpointId || !direction) {
+      throw new Error(
+        '[AilyChat][RuntimeHost] buildEditingSessionNavigationPlan requires session, checkpoint, and direction.',
+      );
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Editing-session navigation requires the execution host.');
+    }
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    return this.runtimeOwnerController.dispatchCommand('buildEditingSessionNavigationPlan', [{
+      sessionId,
+      checkpointId,
+      direction,
+      projectPath: typeof inventory?.projectPath === 'string' ? inventory.projectPath : null,
+    }]);
   }
 
   async handleReadSubmitReadiness(args) {
@@ -751,10 +929,75 @@ class ChatRuntimeHostProcessService {
 
   async handleCheckpointMutation(method, args) {
     const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
-    const mutation = method === 'restoreSessionCheckpoint'
-      ? this.hostSessionStore.restoreSessionCheckpoint(request)
-      : this.hostSessionStore.redoSessionCheckpoint(request);
+    const sessionId = normalizeSessionId(request.sessionId);
+    if (!sessionId) {
+      throw new Error('[AilyChat][RuntimeHost] Checkpoint navigation requires a session identity.');
+    }
+    return this.enqueueCheckpointMutation(sessionId, () => (
+      this.executeCheckpointMutation(method, request, sessionId)
+    ));
+  }
+
+  enqueueCheckpointMutation(sessionId, operation) {
+    const previous = this.checkpointMutationQueues.get(sessionId) || Promise.resolve();
+    let queued;
+    queued = previous
+      .catch(() => undefined)
+      .then(operation)
+      .finally(() => {
+        if (this.checkpointMutationQueues.get(sessionId) === queued) {
+          this.checkpointMutationQueues.delete(sessionId);
+        }
+      });
+    this.checkpointMutationQueues.set(sessionId, queued);
+    return queued;
+  }
+
+  async executeCheckpointMutation(method, request, sessionId) {
+    const direction = method === 'restoreSessionCheckpoint' ? 'restore' : 'redo';
+    const requestedCheckpointId = typeof request.checkpointId === 'string' ? request.checkpointId.trim() : '';
+    const navigation = this.hostSessionStore.readCheckpointNavigationState({ sessionId });
+    const checkpointId = direction === 'restore'
+      ? requestedCheckpointId
+      : navigation?.nextCheckpoint?.checkpointId || '';
+    if (!checkpointId) {
+      const error = new Error(direction === 'restore'
+        ? '[AilyChat][RuntimeHost] Checkpoint restore requires a checkpoint identity.'
+        : '[AilyChat][RuntimeHost] No forward checkpoint is available to redo.');
+      error.code = direction === 'restore' ? 'checkpoint_not_found' : 'checkpoint_redo_unavailable';
+      throw error;
+    }
+    if (direction === 'redo' && requestedCheckpointId && requestedCheckpointId !== checkpointId) {
+      const error = new Error(`Requested redo checkpoint is not the canonical next checkpoint: ${requestedCheckpointId}.`);
+      error.code = 'checkpoint_redo_identity_mismatch';
+      throw error;
+    }
+    const mutationRequest = {
+      ...request,
+      sessionId,
+      checkpointId,
+      expectedRevision: Number.isFinite(Number(request.expectedRevision))
+        ? Number(request.expectedRevision)
+        : Number(navigation?.revision) || 0,
+    };
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Checkpoint navigation requires the execution host.');
+    }
+    const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
+    const preparedNavigation = await this.runtimeOwnerController.dispatchCommand(
+      'applyEditingSessionNavigation',
+      [{
+        sessionId,
+        checkpointId,
+        direction,
+        projectPath: typeof inventory?.projectPath === 'string' ? inventory.projectPath : null,
+      }],
+    );
+    let mutation = null;
     try {
+      mutation = method === 'restoreSessionCheckpoint'
+        ? this.hostSessionStore.restoreSessionCheckpoint(mutationRequest)
+        : this.hostSessionStore.redoSessionCheckpoint(mutationRequest);
       await this.persistHostSessionRecord(mutation.sessionId, method, {
         requestInProgress: false,
         activeTurnId: null,
@@ -762,10 +1005,48 @@ class ChatRuntimeHostProcessService {
       }, {
         allowEmptyTranscript: true,
       });
+      const committedNavigation = await this.runtimeOwnerController.dispatchCommand(
+        'commitEditingSessionNavigation',
+        [{ transactionId: preparedNavigation.transactionId }],
+      );
       const { previousTranscript: _previousTranscript, previousTimeline: _previousTimeline, ...result } = mutation;
-      return result;
+      return {
+        ...result,
+        appliedFiles: Number(committedNavigation?.appliedFiles) || 0,
+      };
     } catch (error) {
-      this.hostSessionStore.rollbackCheckpointMutation(mutation);
+      const rollbackErrors = [];
+      if (mutation) {
+        try {
+          this.hostSessionStore.rollbackCheckpointMutation(mutation);
+          await this.persistHostSessionRecord(mutation.sessionId, `${method}-rollback`, {
+            requestInProgress: false,
+            activeTurnId: null,
+            status: 'completed',
+          }, {
+            allowEmptyTranscript: true,
+          });
+        } catch (rollbackError) {
+          rollbackErrors.push(
+            `[AilyChat][RuntimeHost] Failed to persist checkpoint response rollback: ${readErrorMessage(rollbackError)}`,
+          );
+        }
+      }
+      try {
+        const workspaceRollback = await this.runtimeOwnerController.dispatchCommand(
+          'rollbackEditingSessionNavigation',
+          [{ transactionId: preparedNavigation.transactionId }],
+        );
+        rollbackErrors.push(...(Array.isArray(workspaceRollback?.errors) ? workspaceRollback.errors : []));
+      } catch (rollbackError) {
+        rollbackErrors.push(
+          `[AilyChat][RuntimeHost] Failed to roll back checkpoint workspace: ${readErrorMessage(rollbackError)}`,
+        );
+      }
+      if (error && typeof error === 'object') {
+        error.rollbackErrors = rollbackErrors;
+        error.rolledBackOnError = rollbackErrors.length === 0;
+      }
       throw error;
     }
   }
@@ -774,32 +1055,6 @@ class ChatRuntimeHostProcessService {
     const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
     const prepared = this.hostSessionStore.prepareForkSession(request);
     try {
-      let forkedTurns = prepared.turnResponses;
-      if (hasCheckpointOwnedTurn(forkedTurns)) {
-        const checkpointTurns = prepared.turnResponses.filter(isCheckpointOwnedTurn);
-        const metadataResult = await this.handleRequestResourceOperation([{
-          sessionId: prepared.targetSessionId,
-          kind: 'edit-tracking',
-          label: 'Forking checkpoint metadata',
-          detail: 'Host-owned session fork is cloning request checkpoint metadata.',
-          payload: {
-            adapter: 'editTracking',
-            action: 'forkRequestCheckpointMetadata',
-            sourceSessionResource: prepared.sourceSessionId,
-            targetSessionResource: prepared.targetSessionId,
-            retainedTurnResponses: checkpointTurns,
-          },
-        }]);
-        const adjusted = metadataResult && metadataResult.result && metadataResult.result.forkedTurnResponses;
-        if (!Array.isArray(adjusted) || adjusted.length !== checkpointTurns.length) {
-          throw new Error('[AilyChat][RuntimeHost] Checkpoint metadata fork did not return the checkpoint request set.');
-        }
-        const adjustedByTurnId = new Map(adjusted.map(turn => [turn && turn.turnId, turn]));
-        if (checkpointTurns.some(turn => !adjustedByTurnId.has(turn && turn.turnId))) {
-          throw new Error('[AilyChat][RuntimeHost] Checkpoint metadata fork changed stable turn identity.');
-        }
-        forkedTurns = prepared.turnResponses.map(turn => adjustedByTurnId.get(turn && turn.turnId) || turn);
-      }
       if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
         throw new Error('[AilyChat][RuntimeHost] No registered runtime owner for session fork.');
       }
@@ -811,11 +1066,16 @@ class ChatRuntimeHostProcessService {
         providerOptions: request.providerOptions || null,
         agentRuntimeMode: request.agentRuntimeMode || null,
         currentModel: request.currentModel || null,
+        summarizerModel: request.summarizerModel || null,
       }]);
       if (!runtimeResult || runtimeResult.ensured !== true) {
         throw new Error('[AilyChat][RuntimeHost] Runtime snapshot fork was not created.');
       }
-      const result = this.hostSessionStore.commitForkSession(request, prepared, forkedTurns);
+      const result = this.hostSessionStore.commitForkSession(
+        request,
+        prepared,
+        prepared.turnResponses,
+      );
       await this.persistHostSessionRecord(result.targetSessionId, 'session-fork');
       return result;
     } catch (error) {
@@ -824,6 +1084,8 @@ class ChatRuntimeHostProcessService {
         try {
           await this.runtimeOwnerController.dispatchCommand('disposeSessionResources', [{
             sessionId: prepared.targetSessionId,
+            deleteStorage: true,
+            projectPath: this.hostSessionStore.buildSessionInventoryItem(prepared.targetSessionId)?.projectPath ?? null,
           }]);
         } catch {
           // Preserve the original fork failure.
@@ -835,8 +1097,13 @@ class ChatRuntimeHostProcessService {
 
   async handleDisposeSession(args) {
     const sessionId = normalizeSessionId(args && args[0]);
+    const projectPath = this.hostSessionStore.buildSessionInventoryItem(sessionId)?.projectPath ?? null;
     if (this.runtimeOwnerController.hasUsableRuntimeOwner()) {
-      await this.runtimeOwnerController.dispatchCommand('disposeSessionResources', [{ sessionId }]);
+      await this.runtimeOwnerController.dispatchCommand('disposeSessionResources', [{
+        sessionId,
+        deleteStorage: true,
+        projectPath,
+      }]);
     }
     const disposedState = this.hostSessionStore.disposeSession(sessionId);
     if (disposedState) {
@@ -1662,9 +1929,56 @@ class ChatRuntimeHostProcessService {
   }
 }
 
+function resolveEditingSessionInteractionTarget(state, direction) {
+  const pointerEpoch = Number(state?.currentPointer?.epoch);
+  const checkpoints = Array.isArray(state?.checkpoints) ? state.checkpoints : [];
+  const requestScopes = Array.isArray(state?.requestScopes) ? state.requestScopes : [];
+  if (!Number.isFinite(pointerEpoch) || checkpoints.length === 0 || requestScopes.length === 0) {
+    return null;
+  }
+
+  const checkpointsById = new Map(
+    checkpoints
+      .filter(checkpoint => typeof checkpoint?.checkpointId === 'string' && checkpoint.checkpointId.trim())
+      .map(checkpoint => [checkpoint.checkpointId, checkpoint]),
+  );
+  const candidates = [];
+  for (const scope of requestScopes) {
+    const lastEpoch = Number(scope?.lastEpoch);
+    if (!Number.isFinite(lastEpoch)) {
+      continue;
+    }
+    for (const checkpointId of Array.isArray(scope?.checkpointIds) ? scope.checkpointIds : []) {
+      const checkpoint = checkpointsById.get(checkpointId);
+      const checkpointEpoch = Number(checkpoint?.epoch);
+      if (!checkpoint || !Number.isFinite(checkpointEpoch) || lastEpoch <= checkpointEpoch) {
+        continue;
+      }
+      candidates.push({
+        checkpointId: checkpoint.checkpointId,
+        checkpointEpoch,
+        lastEpoch,
+      });
+    }
+  }
+
+  if (direction === 'restore') {
+    return candidates
+      .filter(candidate => candidate.lastEpoch <= pointerEpoch)
+      .sort((left, right) =>
+        right.lastEpoch - left.lastEpoch || right.checkpointEpoch - left.checkpointEpoch)[0] ?? null;
+  }
+
+  return candidates
+    .filter(candidate => candidate.checkpointEpoch >= pointerEpoch && candidate.lastEpoch > pointerEpoch)
+    .sort((left, right) =>
+      left.checkpointEpoch - right.checkpointEpoch || left.lastEpoch - right.lastEpoch)[0] ?? null;
+}
+
 module.exports = {
   ChatRuntimeHostProcessService,
   channels,
+  resolveEditingSessionInteractionTarget,
 };
 
 

@@ -7,6 +7,7 @@
         "PLAN_LABEL": "Forfait {{plan}}",
         "AI_CALLS": "Utilisations IA",
         "AUTO_MODE": "mode auto",
+        "AI_CALLS_RESET_SHORT": "{{date}} réinit.",
         "ADD_AI_CALLS": "Ajouter des utilisations",
         "CLOUD_STORAGE": "Stockage cloud",
         "ADD_STORAGE": "Ajouter du stockage",

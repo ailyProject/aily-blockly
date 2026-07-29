@@ -1,4 +1,4 @@
-import type { IAgentLifecycle, IChatCoordination, IChatServiceAccess, IChatViewAccess } from '../core/chat-context';
+import type { IAgentLifecycle, IChatCoordination, IChatViewAccess } from '../core/chat-context';
 import type { ChatPart } from '../core/chat-parts';
 import type { ChatRuntimeOwnerScheduler } from '../core/chat-runtime-owner-scheduler';
 import type { TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
@@ -7,7 +7,6 @@ import type { ChatPartStoreResponseHandle } from '../core/chat-part-store';
 import { yieldToBrowserFrame, yieldToBrowserIdle, yieldToBrowserTask } from '../tools/browserTaskScheduler';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
-import { createElectronChatRuntimeHostTransport } from '../core/electron-chat-runtime-host-transport';
 import { notifyAilyChatIfBackground } from './user-feedback-notify.helper';
 
 
@@ -22,7 +21,6 @@ const FINALIZE_SLOW_STAGE_LOG_MS = 32;
 
 type LexMessageLifecycleContext = Pick<IChatViewAccess, 'partStore' | 'viewAdapter'>
   & Pick<IAgentLifecycle, 'isWaiting' | 'isCompleted' | 'isCancelled'>
-  & Pick<IChatServiceAccess, 'ailyChatConfigService'>
   & Pick<IChatCoordination, 'session' | 'applyPendingSwitch'>
   & {
     readonly sessionId: string;
@@ -35,21 +33,6 @@ export interface LexTurnDraft {
   assistantText: string;
   toolCallCount: number;
   partCount: number;
-}
-
-interface FinalizedCheckpointMetadata {
-  readonly checkpointId: string;
-  readonly sessionResource?: string;
-  readonly requestId?: string;
-  readonly turnId?: string;
-  readonly checkpointNamespace?: string;
-  readonly turnIndex?: number;
-  readonly startCheckpointRef?: string;
-  readonly checkpointRef?: string;
-  readonly additionalStartCheckpointRefs?: Record<string, string>;
-  readonly additionalCheckpointRefs?: Record<string, string>;
-  readonly createdAt?: number;
-  readonly completedAt?: number;
 }
 
 /**
@@ -189,13 +172,6 @@ export class LexMessageLifecycleBridge {
       logFinalizeStage(visibleResponseHandle ? 'skip_detached_visible_finalize' : 'skip_missing_visible_response_owner');
     }
 
-    const checkpointMetadata = await this.finalizeCurrentTurnEditTracking(
-      resolvedSaveTarget?.sessionId ?? this.ctx.sessionId,
-      resolvedSaveTarget,
-    );
-    resolvedSaveTarget = this.applyFinalizedCheckpointMetadata(resolvedSaveTarget, checkpointMetadata);
-    logFinalizeStage('edit_checkpoint_finalize');
-
     if (shouldFinalizeVisibleOwner) {
       try {
         await this.runFinalizeCompaction?.();
@@ -280,36 +256,6 @@ export class LexMessageLifecycleBridge {
     }
   }
 
-  private async finalizeCurrentTurnEditTracking(
-    sessionId: string | null | undefined,
-    saveTarget: HostSessionSaveTarget | null,
-  ): Promise<FinalizedCheckpointMetadata | null> {
-    const targetSessionId = normalizeSessionId(sessionId);
-    if (!targetSessionId) {
-      throw new Error('[AilyChat][RuntimeHost] edit tracking finalize requires a host session id.');
-    }
-    const runtimeHost = createElectronChatRuntimeHostTransport();
-    if (!runtimeHost) {
-      throw new Error('[AilyChat][RuntimeHost] edit tracking finalize requires the host transport.');
-    }
-    const checkpointContext = this.readCurrentTurnCheckpointContext(saveTarget);
-    const result = await runtimeHost.requestResourceOperation({
-      sessionId: targetSessionId,
-      kind: 'edit-tracking',
-      label: 'Finalizing edit tracking turn',
-      detail: 'Host edit tracking resource is committing and publishing the current turn summary.',
-      payload: {
-        adapter: 'editTracking',
-        action: 'finalizeCurrentTurn',
-        ...(checkpointContext.checkpointId ? { checkpointId: checkpointContext.checkpointId } : {}),
-        ...(checkpointContext.requestId ? { requestId: checkpointContext.requestId } : {}),
-        autoSaveEdits: this.ctx.ailyChatConfigService.autoSaveEdits === true,
-        requestDiffPreview: true,
-      },
-    });
-    return this.readFinalizedCheckpointMetadata(result);
-  }
-
   private commitTerminalTurnResponseState(
     saveTarget: HostSessionSaveTarget | null,
     terminalStatus: Exclude<TurnResponseStatus, 'streaming'>,
@@ -337,159 +283,6 @@ export class LexMessageLifecycleBridge {
 
     this.ctx.syncExecutionRuntimeState?.(committedSaveTarget);
     return committedSaveTarget;
-  }
-
-  private applyFinalizedCheckpointMetadata(
-    saveTarget: HostSessionSaveTarget | null,
-    checkpointMetadata: FinalizedCheckpointMetadata | null,
-  ): HostSessionSaveTarget | null {
-    if (!saveTarget || !checkpointMetadata) {
-      return saveTarget;
-    }
-
-    const turnResponses = Array.isArray(saveTarget.turnResponses)
-      ? saveTarget.turnResponses
-      : this.readCurrentTurnResponses?.();
-    if (!Array.isArray(turnResponses) || turnResponses.length === 0) {
-      return saveTarget;
-    }
-
-    const updatedTurnResponses = this.applyCheckpointMetadataToTurnResponses(turnResponses, checkpointMetadata);
-    if (updatedTurnResponses === turnResponses) {
-      return saveTarget;
-    }
-
-    return {
-      ...saveTarget,
-      turnResponses: updatedTurnResponses,
-    };
-  }
-
-  private applyCheckpointMetadataToTurnResponses(
-    turnResponses: readonly TurnResponseTurn[],
-    checkpointMetadata: FinalizedCheckpointMetadata,
-  ): TurnResponseTurn[] | readonly TurnResponseTurn[] {
-    let didUpdate = false;
-    const updated = turnResponses.map((turn) => {
-      const requestMetadata = this.readRecord(turn?.request?.metadata);
-      if (!this.doesTurnMatchCheckpointMetadata(turn, requestMetadata, checkpointMetadata)) {
-        return turn;
-      }
-
-      didUpdate = true;
-      return {
-        ...turn,
-        request: {
-          ...turn.request,
-          metadata: this.writeCheckpointMetadata(requestMetadata, checkpointMetadata),
-        },
-      };
-    });
-
-    return didUpdate ? updated : turnResponses;
-  }
-
-  private doesTurnMatchCheckpointMetadata(
-    turn: TurnResponseTurn,
-    requestMetadata: Record<string, unknown>,
-    checkpointMetadata: FinalizedCheckpointMetadata,
-  ): boolean {
-    const checkpointId = normalizeSessionId(requestMetadata['checkpointId']);
-    if (checkpointId && checkpointId === checkpointMetadata.checkpointId) {
-      return true;
-    }
-
-    const requestId = normalizeSessionId(requestMetadata['requestId']);
-    if (requestId && checkpointMetadata.requestId && requestId === checkpointMetadata.requestId) {
-      return true;
-    }
-
-    const turnId = normalizeTurnId(turn?.turnId);
-    return !!turnId && !!checkpointMetadata.turnId && turnId === checkpointMetadata.turnId;
-  }
-
-  private writeCheckpointMetadata(
-    requestMetadata: Record<string, unknown>,
-    checkpointMetadata: FinalizedCheckpointMetadata,
-  ): Record<string, unknown> {
-    return {
-      ...requestMetadata,
-      checkpointId: checkpointMetadata.checkpointId,
-      ...(checkpointMetadata.checkpointNamespace ? { checkpointNamespace: checkpointMetadata.checkpointNamespace } : {}),
-      ...(typeof checkpointMetadata.turnIndex === 'number' && Number.isFinite(checkpointMetadata.turnIndex)
-        ? { checkpointTurnIndex: checkpointMetadata.turnIndex }
-        : {}),
-      ...(checkpointMetadata.startCheckpointRef ? { startCheckpointRef: checkpointMetadata.startCheckpointRef } : {}),
-      ...(checkpointMetadata.checkpointRef ? { checkpointRef: checkpointMetadata.checkpointRef } : {}),
-      ...(checkpointMetadata.additionalStartCheckpointRefs
-        ? { additionalStartCheckpointRefs: { ...checkpointMetadata.additionalStartCheckpointRefs } }
-        : {}),
-      ...(checkpointMetadata.additionalCheckpointRefs
-        ? { additionalCheckpointRefs: { ...checkpointMetadata.additionalCheckpointRefs } }
-        : {}),
-    };
-  }
-
-  private readCurrentTurnCheckpointContext(saveTarget: HostSessionSaveTarget | null): {
-    readonly checkpointId: string;
-    readonly requestId: string;
-  } {
-    const turnResponses = Array.isArray(saveTarget?.turnResponses)
-      ? saveTarget.turnResponses
-      : this.readCurrentTurnResponses?.();
-    if (!Array.isArray(turnResponses) || turnResponses.length === 0) {
-      return { checkpointId: '', requestId: '' };
-    }
-
-    const currentTurnId = normalizeTurnId(this._currentTurnId);
-    const currentTurn = currentTurnId
-      ? turnResponses.find(turn => normalizeTurnId(turn?.turnId) === currentTurnId)
-      : null;
-    const turn = currentTurn ?? turnResponses[turnResponses.length - 1];
-    const requestMetadata = this.readRecord(turn?.request?.metadata);
-    return {
-      checkpointId: normalizeSessionId(requestMetadata['checkpointId']),
-      requestId: normalizeSessionId(requestMetadata['requestId']) || normalizeTurnId(turn?.turnId),
-    };
-  }
-
-  private readFinalizedCheckpointMetadata(result: unknown): FinalizedCheckpointMetadata | null {
-    const operationResult = this.readRecord(result);
-    const handlerResult = this.readRecord(operationResult['result']);
-    const metadata = this.readRecord(handlerResult['checkpointMetadata']);
-    const checkpointId = normalizeSessionId(metadata['checkpointId']);
-    if (!checkpointId) {
-      return null;
-    }
-
-    const additionalStartCheckpointRefs = this.normalizeStringRecord(metadata['additionalStartCheckpointRefs']);
-    const additionalCheckpointRefs = this.normalizeStringRecord(metadata['additionalCheckpointRefs']);
-    return {
-      checkpointId,
-      ...(normalizeSessionId(metadata['sessionResource']) ? { sessionResource: normalizeSessionId(metadata['sessionResource']) } : {}),
-      ...(normalizeSessionId(metadata['requestId']) ? { requestId: normalizeSessionId(metadata['requestId']) } : {}),
-      ...(normalizeTurnId(metadata['turnId']) ? { turnId: normalizeTurnId(metadata['turnId']) } : {}),
-      ...(normalizeSessionId(metadata['checkpointNamespace']) ? { checkpointNamespace: normalizeSessionId(metadata['checkpointNamespace']) } : {}),
-      ...(typeof metadata['turnIndex'] === 'number' && Number.isFinite(metadata['turnIndex'])
-        ? { turnIndex: metadata['turnIndex'] }
-        : {}),
-      ...(normalizeSessionId(metadata['startCheckpointRef']) ? { startCheckpointRef: normalizeSessionId(metadata['startCheckpointRef']) } : {}),
-      ...(normalizeSessionId(metadata['checkpointRef']) ? { checkpointRef: normalizeSessionId(metadata['checkpointRef']) } : {}),
-      ...(additionalStartCheckpointRefs ? { additionalStartCheckpointRefs } : {}),
-      ...(additionalCheckpointRefs ? { additionalCheckpointRefs } : {}),
-      ...(typeof metadata['createdAt'] === 'number' && Number.isFinite(metadata['createdAt']) ? { createdAt: metadata['createdAt'] } : {}),
-      ...(typeof metadata['completedAt'] === 'number' && Number.isFinite(metadata['completedAt']) ? { completedAt: metadata['completedAt'] } : {}),
-    };
-  }
-
-  private normalizeStringRecord(value: unknown): Record<string, string> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-    const entries = Object.entries(value as Record<string, unknown>)
-      .map(([key, entryValue]) => [normalizeSessionId(key), normalizeSessionId(entryValue)] as const)
-      .filter(([key, entryValue]) => !!key && !!entryValue);
-    return entries.length > 0 ? Object.fromEntries(entries) : null;
   }
 
   private readRecord(value: unknown): Record<string, unknown> {
@@ -579,6 +372,3 @@ function normalizeTurnId(turnId: unknown): string {
   return typeof turnId === 'string' ? turnId.trim() : '';
 }
 
-function normalizeSessionId(sessionId: unknown): string {
-  return typeof sessionId === 'string' ? sessionId.trim() : '';
-}

@@ -10,7 +10,6 @@ import {
   type EditorOperationEventSink,
 } from '../tools/editorOperationEvents';
 import { getSharedBlocklyEditorOperationQueue } from '../tools/blocklyEditorOperationQueue';
-import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 import { error, fromToolResult, text, type InvokeHandler } from './blockly-contributed-tool-runtime';
 
 type DeferredFactory = (group: string, reason: string) => { group: string; reason: string };
@@ -263,7 +262,6 @@ export function createBlocklyWorkspaceHandlers(
       const host = AilyHost.get();
       if (!host.absSync && !host.editor) return error('ABS editor is not available in this environment.');
       if (!hostAPI.project) return error('Project context is not available for ABS sync.');
-      const editingTimeline = invocationContext?.host?.getExtension<EditingTimelineWriter>('editingTimeline');
       const forwardedEditorOperationEvents = invocationContext?.host?.getExtension<EditorOperationEventSink>('editorOperationEvents');
       const hostExecutionBoundary = invocationContext?.host?.getExtension<HostExecutionBoundary>('hostExecutionBoundary');
       const editorOperationProgress = createToolCallProgressEditorOperationSink({
@@ -284,7 +282,6 @@ export function createBlocklyWorkspaceHandlers(
           turnId: invocationContext?.trace?.turnId,
           toolCallId: invocationContext?.toolCallId,
           signal: invocationContext?.signal,
-          timelineWriter: editingTimeline,
           progressSink: editorOperationProgress,
           runOutsideAngular: hostExecutionBoundary?.runOutsideAngular,
         },

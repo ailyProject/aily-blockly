@@ -6,13 +6,19 @@ const http = require("http");
 const { spawn, exec } = require("child_process");
 const url = require("url");
 const WinState = require('electron-win-state').default;
-const { app, BrowserWindow, ipcMain, dialog, screen, shell, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, Menu, powerMonitor } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
 const projectLock = require("./project-lock");
 const { startCliBridge } = require("./cli-bridge");
 const builder = require("./builder");
 const linter = require("./linter");
+const simulatorGateway = require("./simulator-gateway");
+const simulatorSubappHost = require("./simulator-subapp-host");
+const {
+  createSimulatorProjectRebuildCoordinator,
+} = require("./simulator-project-rebuild-coordinator");
+const { createPackagedRendererServer } = require("./packaged-renderer-server");
 const {
   markInstalledForAppVersion,
   shouldInstallForAppVersion,
@@ -306,6 +312,35 @@ app.removeAsDefaultProtocolClient(PROTOCOL);
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
 process.env.DEV = serve;
+const packagedRendererServer = createPackagedRendererServer();
+
+async function ensurePackagedRendererServerStarted() {
+  if (serve) return null;
+  return packagedRendererServer.start({
+    rootDirectory: path.join(__dirname, "..", "renderer"),
+  });
+}
+
+function resolveAppRendererUrl(hash = "") {
+  if (!serve) {
+    return packagedRendererServer.rendererUrl(hash);
+  }
+  if (hash === undefined || hash === null || hash === "") {
+    return "http://localhost:4200";
+  }
+  if (
+    typeof hash !== "string"
+    || hash.length > 16 * 1024
+    || /[\u0000-\u001f\u007f]/.test(hash)
+  ) {
+    throw new TypeError("Renderer hash is invalid.");
+  }
+  return `http://localhost:4200/${hash.startsWith("#") ? hash : `#${hash}`}`;
+}
+
+function loadAppRenderer(targetWindow, hash = "") {
+  return targetWindow.loadURL(resolveAppRendererUrl(hash));
+}
 
 // Angular dev server 会把依赖预构建到 .angular/cache 下；重启后路径可能变化。
 // 开发态若继续复用 Electron 的 HTTP cache，容易命中已失效的旧 chunk URL
@@ -861,7 +896,7 @@ function handleProtocol(url) {
         version: version || ''
       };
 
-      if (mainWindow && mainWindow.webContents && isRendererReady) {
+      if (isCurrentRendererGenerationReady()) {
         mainWindow.webContents.send('open-example-list', data);
         if (mainWindow.isMinimized()) {
           mainWindow.restore();
@@ -920,11 +955,7 @@ function navigateMainWindowHash(targetHash) {
   if (!mainWindow || !mainWindow.webContents || mainWindow.isDestroyed()) {
     return false;
   }
-  if (serve) {
-    mainWindow.loadURL(`http://localhost:4200/${targetHash}`);
-  } else {
-    mainWindow.loadFile(`renderer/index.html`, { hash: targetHash });
-  }
+  void loadAppRenderer(mainWindow, targetHash);
   try {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
@@ -952,19 +983,25 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000)
       resolve({ ok: false, message: '主窗口不可用' });
       return;
     }
-    if (!isRendererReady) {
+    if (!isCurrentRendererGenerationReady()) {
       resolve({ ok: false, message: '渲染进程尚未就绪' });
       return;
     }
 
+    const requestGeneration = rendererGeneration;
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const timer = setTimeout(() => {
       ipcMain.removeListener(responseChannel, listener);
       resolve({ ok: false, message: '等待渲染进程响应超时' });
     }, timeoutMs);
 
-    const listener = (_event, message) => {
-      if (!message || message.requestId !== requestId) {
+    const listener = (event, message) => {
+      if (!isCurrentMainRenderer(event.sender)
+        || rendererGeneration !== requestGeneration
+        || readyRendererGeneration !== requestGeneration
+        || !message
+        || message.requestId !== requestId
+        || Number(message.rendererGeneration) !== requestGeneration) {
         return;
       }
       clearTimeout(timer);
@@ -973,8 +1010,45 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000)
     };
 
     ipcMain.on(responseChannel, listener);
-    mainWindow.webContents.send(channel, { ...payload, requestId });
+    mainWindow.webContents.send(channel, {
+      ...payload,
+      requestId,
+      rendererGeneration: requestGeneration,
+    });
   });
+}
+
+let simulatorProjectRebuildCoordinator = null;
+
+function getSimulatorProjectRebuildCoordinator() {
+  if (simulatorProjectRebuildCoordinator) {
+    return simulatorProjectRebuildCoordinator;
+  }
+  simulatorProjectRebuildCoordinator =
+    createSimulatorProjectRebuildCoordinator({
+      async requestProjectRebuild(request) {
+        const response = await requestMainWindow(
+          'simulator-project-rebuild-request',
+          'simulator-project-rebuild-response',
+          { request },
+          30 * 60 * 1000,
+        );
+        return response?.result;
+      },
+      onStateChanged(artifactRebuild) {
+        if (!isCurrentRendererGenerationReady()) return;
+        mainWindow.webContents.send('simulator-subapp-state-changed', {
+          state: 'artifact-rebuild-state-changed',
+          artifactRebuild,
+        });
+      },
+      async onCandidateReady(candidateEvent) {
+        await simulatorSubappHost.defaultHost.stageRebuildCandidate(
+          candidateEvent,
+        );
+      },
+    });
+  return simulatorProjectRebuildCoordinator;
 }
 
 /** 处理来自 CLI 的命令（open/close/reload/refresh） */
@@ -1032,6 +1106,7 @@ async function handleCliBridgeCommand(action, payload) {
         'child_app_window_list',
         'child_app_window_set_bounds',
         'child_app_window_arrange',
+        'subapp_agent_call',
       ]);
       if (!dir && !projectOptionalOperations.has(operation)) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       const liveOperationTimeoutMs = operation === 'project_build'
@@ -1040,12 +1115,14 @@ async function handleCliBridgeCommand(action, payload) {
           ? 300000
           : operation === 'abs_apply'
             ? 120000
-            : operation === 'child_app_control'
+            : operation === 'subapp_agent_call'
+              ? 620000
+              : operation === 'child_app_control'
               || operation === 'child_app_open'
               || operation === 'child_app_window_set_bounds'
               || operation === 'child_app_window_arrange'
-              ? 120000
-            : 12000;
+                ? 120000
+                : 12000;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
@@ -1295,12 +1372,63 @@ function getZipUrlState(conf = {}) {
 function buildZipUrls(conf = {}) {
   return JSON.stringify(getZipUrlState(conf).urls);
 }
-let isRendererReady = false;
+let rendererGeneration = 0;
+let readyRendererGeneration = 0;
+let powerMonitorListenersRegistered = false;
+
+function isCurrentMainRenderer(sender) {
+  return !!mainWindow
+    && !mainWindow.isDestroyed()
+    && !!mainWindow.webContents
+    && !mainWindow.webContents.isDestroyed()
+    && sender?.id === mainWindow.webContents.id;
+}
+
+function isCurrentRendererGenerationReady() {
+  return rendererGeneration > 0
+    && readyRendererGeneration === rendererGeneration
+    && isCurrentMainRenderer(mainWindow?.webContents);
+}
+
+function invalidateRendererGeneration(reason) {
+  readyRendererGeneration = 0;
+  console.info('[RendererLifecycle] unavailable', {
+    generation: rendererGeneration,
+    reason,
+  });
+}
+
+function beginRendererGeneration(reason) {
+  rendererGeneration += 1;
+  invalidateRendererGeneration(reason);
+  console.info('[RendererLifecycle] loading', {
+    generation: rendererGeneration,
+    reason,
+  });
+  return rendererGeneration;
+}
+
+ipcMain.handle('get-renderer-generation', (event) => {
+  return isCurrentMainRenderer(event.sender) ? rendererGeneration : 0;
+});
 
 // 监听渲染进程就绪事件
-ipcMain.on('renderer-ready', () => {
-  console.log('渲染进程已就绪');
-  isRendererReady = true;
+ipcMain.on('renderer-ready', (event, payload = {}) => {
+  const requestedGeneration = Number(payload?.generation);
+  if (!isCurrentMainRenderer(event.sender)
+    || !Number.isInteger(requestedGeneration)
+    || requestedGeneration !== rendererGeneration) {
+    console.warn('[RendererLifecycle] ignored stale renderer-ready', {
+      requestedGeneration,
+      currentGeneration: rendererGeneration,
+      senderId: event.sender?.id,
+    });
+    return;
+  }
+
+  console.log('渲染进程已就绪', { generation: requestedGeneration });
+  readyRendererGeneration = requestedGeneration;
+  event.sender.send('renderer-ready-ack', { generation: requestedGeneration });
 
   // 检查是否有待处理的OAuth回调
   if (global.pendingOAuthCallback) {
@@ -1316,6 +1444,29 @@ ipcMain.on('renderer-ready', () => {
     global.pendingExampleListOpen = null;
   }
 });
+
+function registerPowerMonitorLifecycle() {
+  if (powerMonitorListenersRegistered) {
+    return;
+  }
+  powerMonitorListenersRegistered = true;
+  powerMonitor.on('suspend', () => {
+    if (isCurrentRendererGenerationReady()) {
+      mainWindow.webContents.send('renderer-lifecycle', {
+        kind: 'suspend',
+        generation: rendererGeneration,
+      });
+    }
+  });
+  powerMonitor.on('resume', () => {
+    if (isCurrentRendererGenerationReady()) {
+      mainWindow.webContents.send('renderer-lifecycle', {
+        kind: 'resume',
+        generation: rendererGeneration,
+      });
+    }
+  });
+}
 
 // 检查并解压 child 目录下的平台组件包
 function installChildEnv(childPath, options) {
@@ -2106,7 +2257,15 @@ function loadEnv() {
   // 同一应用版本复用现有工具；两个 npm 全局安装串行执行。
   runInstallEnv(childPath);
   const appVersion = app.getVersion();
-  const installLatest = shouldInstallForAppVersion(userConf, appVersion);
+  const isE2E = process.env.AILY_E2E === "1";
+  const allowE2ERefresh = process.env.AILY_E2E_ALLOW_TOOL_REFRESH === "1";
+  const installLatest = shouldInstallForAppVersion(userConf, appVersion, {
+    isE2E,
+    allowE2ERefresh,
+  });
+  if (isE2E && !allowE2ERefresh) {
+    console.log("E2E mode: skipping automatic aily-builder and aily-linter latest refresh");
+  }
   if (installLatest) {
     try {
       markInstalledForAppVersion(userConfigPath, appVersion);
@@ -2188,11 +2347,7 @@ async function updateMainWindowWithPendingData() {
 
   // 如果有目标URL，导航到该页面
   if (targetUrl) {
-    if (serve) {
-      mainWindow.loadURL(`http://localhost:4200/${targetUrl}`);
-    } else {
-      mainWindow.loadFile(`renderer/index.html`, { hash: targetUrl });
-    }
+    await loadAppRenderer(mainWindow, targetUrl);
   }
 }
 
@@ -2283,6 +2438,9 @@ function createWindow() {
   });
 
   registerWebBluetoothChooser(mainWindow);
+  mainWindow.webContents.on('did-start-loading', () => {
+    beginRendererGeneration('did-start-loading');
+  });
 
   mainWindow.setBounds(winState.state);
 
@@ -2339,21 +2497,16 @@ function createWindow() {
 
   // 加载页面
   if (targetUrl) {
-    if (serve) {
-      mainWindow.loadURL(`http://localhost:4200/${targetUrl}`);
-    } else {
-      mainWindow.loadFile(`renderer/index.html`, { hash: targetUrl });
-    }
+    void loadAppRenderer(mainWindow, targetUrl);
   } else {
-    if (serve) {
-      mainWindow.loadURL("http://localhost:4200");
-    } else {
-      mainWindow.loadFile(`renderer/index.html`);
-    }
+    void loadAppRenderer(mainWindow);
   }
 
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error('Renderer process gone:', details.reason, 'exitCode:', details.exitCode);
+    invalidateRendererGeneration(`render-process-gone:${details.reason}`);
+    void simulatorGateway.stop();
+    void simulatorSubappHost.defaultHost.stop();
     if (!serve) return;
 
     setTimeout(() => {
@@ -2396,15 +2549,17 @@ function createWindow() {
 
   // 当主窗口被关闭时，进行相应的处理
   mainWindow.on("closed", () => {
+    invalidateRendererGeneration('window-closed');
     mainWindow = null;
-    isRendererReady = false;
     app.quit();
   });
 
   // 注册ipc handlers
   registerUpdaterHandlers(mainWindow);
   registerTerminalHandlers(mainWindow);
-  registerWindowHandlers(mainWindow);
+  registerWindowHandlers(mainWindow, {
+    resolveRendererUrl: resolveAppRendererUrl,
+  });
   registerNpmHandlers(mainWindow);
   registerCmdHandlers(mainWindow);
   registerAilyServicesStreamHandlers(mainWindow);
@@ -2417,30 +2572,19 @@ function createWindow() {
   registerSubappManagerHandlers(() => mainWindow);
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);
-
-  // 检查是否有待处理的OAuth回调
-  // 注意：这里不再使用 setTimeout 自动发送，而是等待 renderer-ready 事件
-  // 但为了兼容性（如果 renderer-ready 没触发），保留一个较长时间的超时检查
-  if (global.pendingOAuthCallback) {
-    setTimeout(() => {
-      if (global.pendingOAuthCallback && mainWindow && mainWindow.webContents) {
-        console.log('超时检查：发送待处理的OAuth回调');
-        mainWindow.webContents.send('oauth-callback', global.pendingOAuthCallback);
-        global.pendingOAuthCallback = null;
-      }
-    }, 5000);
-  }
-
-  // 检查是否有待处理的示例列表打开请求
-  if (global.pendingExampleListOpen) {
-    setTimeout(() => {
-      if (global.pendingExampleListOpen && mainWindow && mainWindow.webContents) {
-        console.log('超时检查：发送待处理的示例列表请求');
-        mainWindow.webContents.send('open-example-list', global.pendingExampleListOpen);
-        global.pendingExampleListOpen = null;
-      }
-    }, 5000);
-  }
+  simulatorGateway.registerHandlers({
+    ipcMain,
+    app,
+    mainWindow: () => mainWindow,
+  });
+  simulatorSubappHost.registerHandlers({
+    ipcMain,
+    app,
+    mainWindow: () => mainWindow,
+  });
+  simulatorSubappHost.defaultHost.setRebuildCoordinator(
+    getSimulatorProjectRebuildCoordinator(),
+  );
 
   // 在多实例模式下，监听OAuth回调文件的变化
   if (shouldUseMultiInstance()) {
@@ -2733,7 +2877,20 @@ app.on("ready", async () => {
   }
 
   // 创建主窗口
+  try {
+    await ensurePackagedRendererServerStarted();
+  } catch (error) {
+    console.error("Failed to start packaged renderer server:", error);
+    dialog.showErrorBox(
+      "Unable to start aily blockly",
+      `The application interface could not be loaded: ${error.message}`,
+    );
+    app.quit();
+    return;
+  }
+
   createWindow();
+  registerPowerMonitorLifecycle();
 
   // 启动 CLI bridge（供外部 CLI 驱动打开/关闭/重载项目）
   startCliBridgeIfPossible();
@@ -2841,7 +2998,10 @@ function cleanupRegisteredChildProcesses() {
     killAllCmdProcesses(),
     killAllNpmProcesses(),
     killAllTerminals(),
-    cancelAllAilyServicesStreams()
+    cancelAllAilyServicesStreams(),
+    simulatorGateway.stop(),
+    simulatorSubappHost.defaultHost.stop(),
+    packagedRendererServer.close(),
   ]).then((results) => {
     // console.info('[PROC_TRACE][APP_CLEANUP_DONE]', { results });
   });
@@ -2912,7 +3072,7 @@ app.on("will-quit", () => {
 });
 
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
-app.on("activate", () => {
+app.on("activate", async () => {
   if (mainWindow === null) {
     // 先加载环境变量
     try {
@@ -2921,7 +3081,16 @@ app.on("activate", () => {
       console.error("loadEnv error: ", error);
     }
     // 创建主窗口
-    createWindow();
+    try {
+      await ensurePackagedRendererServerStarted();
+      createWindow();
+    } catch (error) {
+      console.error("Failed to restart packaged renderer server:", error);
+      dialog.showErrorBox(
+        "Unable to start aily blockly",
+        `The application interface could not be loaded: ${error.message}`,
+      );
+    }
   }
 });
 // 用于嵌入的iframe打开外部链接
@@ -2949,11 +3118,7 @@ app.on('open-file', (event, filePath) => {
         const routePath = `main/blockly-editor?path=${encodeURIComponent(projectDir)}`;
         console.log('Navigating to route:', routePath);
 
-        if (serve) {
-          mainWindow.loadURL(`http://localhost:4200/#/${routePath}`);
-        } else {
-          mainWindow.loadFile(`renderer/index.html`, { hash: `#/${routePath}` });
-        }
+        await loadAppRenderer(mainWindow, `#/${routePath}`);
       })();
     } else {
       pendingFileToOpen = projectDir;
@@ -3443,6 +3608,18 @@ ipcMain.handle("fs-stat", async (_event, filePath) => {
     birthtime: s.birthtime.toISOString(),
     _isDirectory: s.isDirectory(),
     _isFile: s.isFile(),
+  };
+});
+
+ipcMain.handle("fs-lstat", async (_event, filePath) => {
+  const s = await fsPromises.lstat(filePath);
+  return {
+    size: s.size,
+    mtime: s.mtime.toISOString(),
+    birthtime: s.birthtime.toISOString(),
+    _isDirectory: s.isDirectory(),
+    _isFile: s.isFile(),
+    _isSymbolicLink: s.isSymbolicLink(),
   };
 });
 

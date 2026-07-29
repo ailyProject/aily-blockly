@@ -64,6 +64,7 @@ import { storeThinkContent } from '../../core/think-content-store';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div
+      #groupRoot
       class="cag"
       [attr.data-state]="groupState"
       [class.cag-expanded]="expanded"
@@ -72,79 +73,39 @@ import { storeThinkContent } from '../../core/think-content-store';
       [class.cag-fade-top]="showDetailViewportTopFade"
       [class.cag-fade-bottom]="showDetailViewportBottomFade">
       <button
+        #headerButton
         type="button"
         class="cag-header"
         [attr.aria-expanded]="expanded"
         (click)="toggle()">
-        <div class="cag-icon-shell ccenter" [class.loading-icon]="isGroupSpinning" [class.lloading]="isGroupSpinning">
-          <i [class]="groupIconClass" class="cag-icon"></i>
+        <div #iconShell class="cag-icon-shell ccenter" [class.loading-icon]="isGroupSpinning" [class.lloading]="isGroupSpinning">
+          <i #groupIcon [class]="groupIconClass" class="cag-icon"></i>
         </div>
-        @switch (groupHeader.kind) {
-          @case ('subagent') {
-            <span class="cag-title cag-subagent-prefix">{{ groupHeader.title }}:</span>
-            @if (groupHeader.detail) {
-              <span class="cag-subagent-detail cag-subtitle" [class.cag-shimmer]="isGroupSpinning && !expanded">{{ groupHeader.detail }}</span>
-            }
-          }
-          @case ('thinking') {
-            <span class="cag-group-thinking-header">
-              <span class="cag-title cag-thinking-title">{{ groupHeader.title }}</span>
-              @if (groupHeader.titleDetail) {
-                <span class="cag-thinking-title-detail" [class.cag-shimmer]="isGroupSpinning && !expanded">{{ groupHeader.titleDetail }}</span>
-              }
-            </span>
-          }
-          @case ('tool') {
-            <span class="cag-group-tool-header">
-              <span class="cag-title cag-tool-group-title">{{ groupHeader.title }}</span>
-              @if (groupHeader.detail) {
-                <span class="cag-tool-group-detail cag-subtitle" [class.cag-shimmer]="isGroupSpinning && !expanded">{{ groupHeader.detail }}</span>
-              }
-            </span>
-          }
-          @case ('state') {
-            <span class="cag-group-state-header">
-              <span class="cag-title cag-state-title">{{ groupHeader.title }}</span>
-              @if (groupHeader.detail) {
-                <span class="cag-state-detail cag-subtitle" [class.cag-shimmer]="isGroupSpinning && !expanded">{{ groupHeader.detail }}</span>
-              }
-            </span>
-          }
-          @case ('collaboration') {
-            <span class="cag-group-collaboration-header">
-              <span class="cag-title cag-collaboration-title">{{ groupHeader.title }}</span>
-              @if (groupHeader.detail) {
-                <span class="cag-collaboration-detail cag-subtitle" [class.cag-shimmer]="isGroupSpinning && !expanded">{{ groupHeader.detail }}</span>
-              }
-            </span>
-          }
-          @default {
-            <span class="cag-group-default-header">
-              <span class="cag-title cag-default-title">{{ groupHeader.title }}</span>
-              @if (groupHeader.detail) {
-                <span class="cag-default-detail cag-subtitle" [class.cag-shimmer]="isGroupSpinning && !expanded">{{ groupHeader.detail }}</span>
-              }
-            </span>
-          }
-        }
+        <span #headerContent class="cag-group-header" [attr.data-kind]="groupHeader.kind">
+          <span #headerTitle class="cag-title">{{ groupHeader.title }}</span>
+          <span
+            #headerDetail
+            class="cag-header-detail"
+            [hidden]="!resolvedHeaderDetail"
+            [class.cag-shimmer]="isGroupSpinning && !expanded">{{ resolvedHeaderDetail }}</span>
+        </span>
         <span class="cag-chevron-wrap" aria-hidden="true">
           <i class="fa-light fa-chevron-down cag-chevron"></i>
         </span>
       </button>
 
-      @if (expanded) {
+      @if (detailContentInitialized) {
         <div
           #detailViewport
           class="cag-detail-viewport"
+          [hidden]="!expanded"
           [class.cag-detail-viewport-fixed]="useFixedViewport"
           (scroll)="onDetailViewportScroll()">
-          @if (displayItems.length) {
-            <aily-chat-activity-list
-              [items]="displayItems"
-              [sessionId]="sessionId"
-              [impliedWordLoadRate]="impliedWordLoadRate"
-              [contentDeltaHandler]="contentDeltaHandler" />
-          }
+          <aily-chat-activity-list
+            [items]="displayItems"
+            [sessionId]="sessionId"
+            [impliedWordLoadRate]="impliedWordLoadRate"
+            [contentDeltaHandler]="contentDeltaHandler" />
         </div>
       }
     </div>
@@ -237,11 +198,7 @@ import { storeThinkContent } from '../../core/think-content-store';
       font-weight: 500;
     }
 
-    .cag-group-thinking-header,
-    .cag-group-tool-header,
-    .cag-group-state-header,
-    .cag-group-collaboration-header,
-    .cag-group-default-header {
+    .cag-group-header {
       flex: 1;
       display: flex;
       flex-wrap: wrap;
@@ -250,7 +207,11 @@ import { storeThinkContent } from '../../core/think-content-store';
       gap: 1px 4px;
     }
 
-    .cag-thinking-title-detail {
+    .cag-group-header[data-kind='subagent'] > .cag-title::after {
+      content: ':';
+    }
+
+    .cag-group-header[data-kind='thinking'] > .cag-header-detail {
       min-width: 0;
       font-size: 13px;
       line-height: 1.4;
@@ -261,31 +222,11 @@ import { storeThinkContent } from '../../core/think-content-store';
       opacity: 0.7;
     }
 
-    .cag-tool-group-title {
+    .cag-group-header > .cag-title {
       font-weight: 500;
     }
 
-    .cag-tool-group-detail {
-      opacity: 0.7;
-    }
-
-    .cag-subagent-detail {
-      align-self: flex-end;
-    }
-
-    .cag-state-title,
-    .cag-collaboration-title,
-    .cag-default-title {
-      font-weight: 500;
-    }
-
-    .cag-state-detail,
-    .cag-collaboration-detail,
-    .cag-default-detail {
-      opacity: 0.7;
-    }
-
-    .cag-subtitle {
+    .cag-header-detail {
       flex: 1 1 auto;
       min-width: 0;
       font-size: 11px;
@@ -295,6 +236,10 @@ import { storeThinkContent } from '../../core/think-content-store';
       word-break: break-word;
       overflow-wrap: anywhere;
       opacity: 0.7;
+    }
+
+    .cag-group-header[data-kind='subagent'] > .cag-header-detail {
+      align-self: flex-end;
     }
 
     @keyframes cag-shimmer {
@@ -335,7 +280,7 @@ import { storeThinkContent } from '../../core/think-content-store';
       transition: opacity 0.15s ease;
     }
 
-    .cag-subtitle.cag-shimmer {
+    .cag-header-detail.cag-shimmer {
       opacity: 1;
     }
 
@@ -352,6 +297,10 @@ import { storeThinkContent } from '../../core/think-content-store';
     .cag-detail-viewport {
       position: relative;
       min-width: 0;
+    }
+
+    .cag-detail-viewport[hidden] {
+      display: none;
     }
 
     .cag-detail-viewport-fixed {
@@ -393,10 +342,18 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   @Input() impliedWordLoadRate: number | undefined;
   @Input() detailProjectionEnabled = true;
   @Input() contentDeltaHandler: (() => void) | undefined;
+  @ViewChild('groupRoot') private groupRootRef?: ElementRef<HTMLElement>;
+  @ViewChild('headerButton') private headerButtonRef?: ElementRef<HTMLButtonElement>;
+  @ViewChild('iconShell') private iconShellRef?: ElementRef<HTMLElement>;
+  @ViewChild('groupIcon') private groupIconRef?: ElementRef<HTMLElement>;
+  @ViewChild('headerContent') private headerContentRef?: ElementRef<HTMLElement>;
+  @ViewChild('headerTitle') private headerTitleRef?: ElementRef<HTMLElement>;
+  @ViewChild('headerDetail') private headerDetailRef?: ElementRef<HTMLElement>;
   @ViewChild('detailViewport') private detailViewportRef?: ElementRef<HTMLElement>;
   @ViewChild(ChatActivityListComponent) private activityListComponent?: ChatActivityListComponent;
 
   expanded = false;
+  detailContentInitialized = false;
   groupState: 'doing' | 'done' | 'error' = 'doing';
   groupHeader: ActivityGroupHeaderDisplayData = { kind: 'default', title: '' };
   displayItems: ActivityGroupDisplayItem[] = [];
@@ -429,7 +386,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   }
 
   ngAfterViewChecked(): void {
-    if (!this.shouldProjectDetails() || !this.useFixedViewport) {
+    if (!this.expanded || !this.shouldProjectDetails() || !this.useFixedViewport) {
       if (this.showDetailViewportTopFade || this.showDetailViewportBottomFade) {
         this.showDetailViewportTopFade = false;
         this.showDetailViewportBottomFade = false;
@@ -485,7 +442,7 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     if (this.tryApplyStreamingThinkingRevision(input)) {
       return true;
     }
-    const previousShellSignature = this.readShellSignature();
+    const detailContentWasInitialized = this.detailContentInitialized;
     this.parts = input.parts;
     this.doing = input.doing;
     this.sessionId = input.sessionId;
@@ -493,20 +450,18 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     this.impliedWordLoadRate = input.impliedWordLoadRate;
     this.detailProjectionEnabled = input.detailProjectionEnabled;
     this._refresh();
-    const shellChanged = previousShellSignature !== this.readShellSignature();
-    if (!shellChanged) {
-      if (!this.expanded || this.displayItems.length === 0) {
-        this.reportFinalGroupRevision(wasDoing, input, incompleteThinkingBefore);
-        return true;
-      }
-      if (this.activityListComponent?.applyItemsPatch(
-        this.displayItems,
-        this.sessionId,
-        this.impliedWordLoadRate,
-      )) {
-        this.reportFinalGroupRevision(wasDoing, input, incompleteThinkingBefore);
-        return true;
-      }
+    if (detailContentWasInitialized !== this.detailContentInitialized) {
+      this.cdr?.detectChanges();
+    } else {
+      this.syncMountedShell();
+    }
+    if ((!this.detailContentInitialized || this.activityListComponent?.applyItemsPatch(
+      this.displayItems,
+      this.sessionId,
+      this.impliedWordLoadRate,
+    ))) {
+      this.reportFinalGroupRevision(wasDoing, input, incompleteThinkingBefore);
+      return true;
     }
     this.cdr?.detectChanges();
     this.reportFinalGroupRevision(wasDoing, input, incompleteThinkingBefore);
@@ -609,21 +564,6 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
     );
   }
 
-  private readShellSignature(): string {
-    const header = this.groupHeader;
-    return [
-      this.expanded ? '1' : '0',
-      this.groupState,
-      header.kind,
-      header.title,
-      header.detail ?? '',
-      header.titleDetail ?? '',
-      this.useFixedViewport ? '1' : '0',
-      this.showDetailViewportTopFade ? '1' : '0',
-      this.showDetailViewportBottomFade ? '1' : '0',
-    ].join('\u0000');
-  }
-
   toggle(): void {
     this.expanded = !this.expanded;
     this.userRequestedDetailProjection = this.expanded;
@@ -632,12 +572,10 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
       this.lastViewportScrollHeight = 0;
     }
     this.lastDetailProjectionKey = '';
-    if (!this.expanded) {
-      this.displayItems = [];
-      return;
+    if (this.expanded) {
+      this.detailContentInitialized = true;
+      this._refresh({ forceDetailProjection: this.shouldProjectDetails() });
     }
-
-    this._refresh({ forceDetailProjection: this.shouldProjectDetails() });
   }
 
   get isGroupSpinning(): boolean {
@@ -658,6 +596,55 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
       case 'done':  return 'fa-light fa-circle-check';
       case 'error': return 'fa-light fa-circle-exclamation';
       default:      return 'fa-light fa-spinner-third';
+    }
+  }
+
+  get resolvedHeaderDetail(): string {
+    return this.groupHeader.kind === 'thinking'
+      ? this.groupHeader.titleDetail ?? ''
+      : this.groupHeader.detail ?? '';
+  }
+
+  private syncMountedShell(): void {
+    const root = this.groupRootRef?.nativeElement;
+    if (root) {
+      root.dataset['state'] = this.groupState;
+      root.classList.toggle('cag-expanded', this.expanded);
+      root.classList.toggle('cag-first-item-not-tool', this.isFirstItemNotTool);
+      root.classList.toggle('cag-fixed-streaming', this.useFixedViewport);
+      root.classList.toggle('cag-fade-top', this.showDetailViewportTopFade);
+      root.classList.toggle('cag-fade-bottom', this.showDetailViewportBottomFade);
+    }
+
+    this.headerButtonRef?.nativeElement.setAttribute('aria-expanded', String(this.expanded));
+    this.iconShellRef?.nativeElement.classList.toggle('loading-icon', this.isGroupSpinning);
+    this.iconShellRef?.nativeElement.classList.toggle('lloading', this.isGroupSpinning);
+
+    const icon = this.groupIconRef?.nativeElement;
+    if (icon) {
+      icon.className = `${this.groupIconClass} cag-icon`;
+    }
+
+    const headerContent = this.headerContentRef?.nativeElement;
+    if (headerContent) {
+      headerContent.dataset['kind'] = this.groupHeader.kind;
+    }
+    if (this.headerTitleRef?.nativeElement) {
+      this.headerTitleRef.nativeElement.textContent = this.groupHeader.title;
+    }
+
+    const detail = this.headerDetailRef?.nativeElement;
+    if (detail) {
+      const detailText = this.resolvedHeaderDetail;
+      detail.textContent = detailText;
+      detail.hidden = !detailText;
+      detail.classList.toggle('cag-shimmer', this.isGroupSpinning && !this.expanded);
+    }
+
+    const viewport = this.detailViewportRef?.nativeElement;
+    if (viewport) {
+      viewport.hidden = !this.expanded;
+      viewport.classList.toggle('cag-detail-viewport-fixed', this.useFixedViewport);
     }
   }
 
@@ -886,10 +873,16 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   private _syncExpandedState(): void {
     const shouldAutoExpand = this.groupState === 'doing' || this.hasActivePendingInlineApproval();
     if (shouldAutoExpand === this.lastAutoExpanded) {
+      if (shouldAutoExpand && (this.detailProjectionEnabled || this.hasActivePendingInlineApproval())) {
+        this.detailContentInitialized = true;
+      }
       return;
     }
 
     this.expanded = shouldAutoExpand;
+    if (shouldAutoExpand && (this.detailProjectionEnabled || this.hasActivePendingInlineApproval())) {
+      this.detailContentInitialized = true;
+    }
     if (!shouldAutoExpand) {
       this.userRequestedDetailProjection = false;
     }
@@ -914,8 +907,9 @@ export class ChatActivityGroupComponent implements OnChanges, AfterViewChecked, 
   }
 
   private shouldProjectDetails(): boolean {
-    return this.expanded && (
-      this.userRequestedDetailProjection
+    return this.detailContentInitialized && (
+      !this.expanded
+      || this.userRequestedDetailProjection
       || this.detailProjectionEnabled
       || this.hasActivePendingInlineApproval()
     );

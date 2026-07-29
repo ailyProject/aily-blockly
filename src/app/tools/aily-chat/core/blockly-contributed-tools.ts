@@ -43,6 +43,15 @@ import {
 } from './blockly-contributed-tool-runtime';
 import { createBlocklyPlaceholderHandlers } from './blockly-placeholder-host-tools';
 import { createPlanReviewHandler, makePlanReviewContribution } from './blockly-plan-review-tool';
+import {
+  appendSubappAgentContributions,
+  collectSubappAgentToolBindings,
+  createSubappAgentHandlers,
+} from './blockly-subapp-agent-tools';
+import {
+  appendProjectSceneRegenerationContributions,
+  createProjectSceneRegenerationHandlers,
+} from './blockly-project-scene-tools';
 
 export const BLOCKLY_LEX_DEFERRED_GROUPS = [
   { id: 'blockly-library-discovery', label: '硬件/库工具', description: '开发板、库搜索与库定义分析' },
@@ -104,7 +113,11 @@ function createHandlers(runtimeMode: ChatAgentRuntimeMode, options?: BlocklyTool
   }
 
   if (runtimeMode === 'blockly') {
-    Object.assign(handlers, createBlocklyWorkspaceHandlers(options));
+    Object.assign(
+      handlers,
+      createBlocklyWorkspaceHandlers(options),
+      createProjectSceneRegenerationHandlers(),
+    );
   }
 
   return handlers;
@@ -127,6 +140,7 @@ function collectBlocklyContributions(hostAPI: IExternalHostAPI, runtimeMode: Cha
 
   if (runtimeMode === 'blockly') {
     appendBlocklyWorkspaceContributions(contributions, hostAPI, createDeferred);
+    appendProjectSceneRegenerationContributions(contributions);
     appendLegacyHostContributions(contributions, hostAPI);
   }
 
@@ -187,8 +201,13 @@ Set confirmed=true when the user made the choice in response to your runtime sel
 export function createBlocklyToolProvider(hostAPI: IExternalHostAPI, options?: BlocklyToolProviderOptions): IHostToolProvider {
   const runtimeMode = normalizeChatAgentRuntimeMode(options?.runtimeMode, 'blockly');
   const contributions = collectBlocklyContributions(hostAPI, runtimeMode);
+  const subappAgentBindings = collectSubappAgentToolBindings();
+  appendSubappAgentContributions(contributions, subappAgentBindings);
   appendRuntimeModeContribution(contributions, runtimeMode, options);
-  const handlers = createHandlers(runtimeMode, options);
+  const handlers = {
+    ...createHandlers(runtimeMode, options),
+    ...createSubappAgentHandlers(subappAgentBindings),
+  };
 
   return {
     contributeTools(): IToolContribution[] {
@@ -206,7 +225,7 @@ export function createBlocklyToolProvider(hostAPI: IExternalHostAPI, options?: B
     }): Promise<ToolResultContent> {
       // External tools call handlers directly; no blockly-side runtime registry remains here.
       if (runtimeMode === 'blockly' && isLegacyHostExternalToolName(toolName)) {
-        return invokeLegacyHostExternalTool(toolName, input as Record<string, unknown>, invocationContext);
+        return invokeLegacyHostExternalTool(toolName, input as Record<string, unknown>, hostAPI, invocationContext);
       }
 
       const handler = handlers[toolName];

@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "프로젝트 공개에 실패했습니다",
+        "WORKSPACE_PROJECT_NOT_FOUND": "프로젝트를 찾을 수 없습니다",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "이 프로젝트를 공개할 권한이 없습니다",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "로컬 종속성 경로가 공개 요구 사항을 충족하지 않습니다",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "먼저 프로젝트를 빌드하고 동기화하세요"
+    },
     "MENU": {
         "MENU": "메뉴",
         "PROJECT_NEW": "새 프로젝트",
@@ -189,6 +196,16 @@
             "LABEL_COLOR_MODE": "색상",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "MP4 또는 GIF 파일만 지원합니다"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "PNG, JPEG, WebP 또는 GIF 이미지를 RGB565/RGB332 픽셀 데이터로 변환합니다",
+            "UPLOAD_TOOLTIP": "지원 형식: PNG, JPEG, WebP, GIF",
+            "EMPTY": "업로드된 이미지가 없습니다",
+            "STATUS_DECODING": "이미지를 변환하는 중...",
+            "STATUS_REDECODING": "{{name}} 다시 변환 중...",
+            "ERROR_DECODE_FAILED": "이미지 변환에 실패했습니다",
+            "ERROR_REDECODE_FAILED": "이미지 재변환에 실패했습니다",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "PNG, JPEG, WebP, GIF 파일만 지원합니다"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "업로드",
             "UPLOAD_TOOLTIP": "지원 형식: MP4, GIF, PNG",
@@ -247,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "업로드",
+            "UPLOAD_TOOLTIP": "지원 형식: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "지우기",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "색상",
+            "EMPTY": "업로드된 이미지가 없습니다",
+            "STATUS_READING_FILE": "{{name}} 읽는 중...",
+            "STATUS_DECODING": "이미지 변환 중...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "원본 파일은 {{maxSize}} 이하여야 합니다(현재: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "이미지 변환에 실패했습니다",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "PNG, JPEG, WebP, BMP 이미지만 지원합니다"
         }
     },
     "MAIN_WINDOW": {
@@ -270,7 +302,7 @@
             "COMPILATION": "컴파일 설정",
             "REPOSITORY": "저장소 설정",
             "DEPENDENCIES": "글로벌 종속성",
-            "AILY_TOOLS": "Aily 도구",
+            "TOOLS_AND_SUBAPP": "도구 및 앱",
             "MCP": "MCP",
             "DEVMODE": "개발자 모드",
             "CACHE": "캐시 관리"
@@ -417,6 +449,7 @@
         "TEXT_DOWNLOADED": "버전 {{version}} 다운로드가 완료되었습니다. 지금 설치하시겠습니까?",
         "TEXT_AVAILABLE": "현재 버전 {{currentVersion}}, 새 버전 {{version}}<br>이 업데이트를 다운로드하고 설치하시겠습니까?",
         "DOWNLOAD_FAILED": "다운로드 실패",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "대체 다운로드 소스 사용 중 ({{current}}/{{total}})",
         "REMIND_LATER": "나중에 알림",
         "SKIP_VERSION": "이 버전 건너뛰기",
         "UPDATE_NOW": "지금 업데이트",
@@ -785,6 +818,14 @@
             "COMPLETE_WITH_TIME": "빌드 완료 (소요 시간: {{seconds}}s)",
             "FIRST_BUILD_HINT": "첫 빌드는 시간이 더 오래 걸릴 수 있습니다",
             "FAST_BUILD_HINT": "빠른 빌드 시스템이 실행 중입니다",
+            "PROGRESS_PREPARING": "빌드 준비 중",
+            "PROGRESS_SKETCH": "스케치 컴파일 중",
+            "PROGRESS_LIBRARIES": "라이브러리 컴파일 중",
+            "PROGRESS_CORE": "코어 컴파일 중",
+            "PROGRESS_LINKING": "펌웨어 링크 중",
+            "PROGRESS_OBJCOPY": "펌웨어 생성 중",
+            "PROGRESS_FINALIZING": "빌드 마무리 중",
+            "PROGRESS_COMPLETE": "빌드 완료",
             "PROCESS_SIGNAL_TERMINATED": "빌드 프로세스가 신호로 종료되었습니다: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "빌드 프로세스가 예기치 않게 종료되었습니다. 종료 코드: {{code}}",
             "PROCESS_START_FAILED": "빌드 프로세스를 시작하지 못했습니다",

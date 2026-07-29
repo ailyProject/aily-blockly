@@ -120,7 +120,6 @@ export function deserializeContentToParts(content: string): ChatPart[] {
             || data.kind === 'background_task'
             || data.kind === 'instructions'
             || data.kind === 'todo'
-            || data.kind === 'compaction'
           ) {
             parts.push(mkState(
               data.id || `hist_state_${parts.length}`,

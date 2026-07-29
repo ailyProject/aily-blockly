@@ -215,6 +215,10 @@
   font-size: 16px;
 }
 
+.toolbox-item__icon--error {
+  color: var(--aily-color-error-bright);
+}
+
 .toolbox-item__label {
   min-width: 0;
   // flex-shrink: 0;
@@ -222,6 +226,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.toolbox-item__label--error {
+  color: var(--aily-color-error-bright);
 }
 
 .toolbox-item__local-badge {
@@ -234,4 +242,8 @@
   background: var(--aily-color-link);
   position: absolute;
   left: 5.5px;
+}
+
+.toolbox-item__load-error-badge {
+  background: var(--aily-color-error-bright);
 }

@@ -1,0 +1,35 @@
+@if (activities(); as items) {
+  @if (items.length > 0) {
+    <div class="subapp-activity-bar" role="toolbar" aria-label="Subapp activity">
+      <span class="subapp-activity-label">Subapps</span>
+      <div class="subapp-activity-items">
+        @for (activity of items; track activity.toolId) {
+          <button
+            type="button"
+            class="subapp-activity-button"
+            [class.is-expanded]="activity.surfaceState === 'expanded'"
+            [class.is-invoking]="activity.invocationState === 'running'"
+            [class.is-ready]="activity.runtimeState === 'ready'"
+            [class.is-starting]="activity.runtimeState === 'starting'"
+            [class.is-error]="activity.runtimeState === 'error' || activity.invocationState === 'failed'"
+            [attr.aria-pressed]="activity.surfaceState === 'expanded'"
+            [attr.aria-label]="(activity.title | translate) + ': ' + statusLabel(activity)"
+            [title]="(activity.title | translate) + ' · ' + statusLabel(activity)"
+            (click)="toggle(activity)">
+            <span class="subapp-activity-icon-shell">
+              <i [class]="activity.icon" aria-hidden="true"></i>
+              <span class="subapp-runtime-dot" aria-hidden="true"></span>
+            </span>
+            <span class="subapp-activity-title">{{ activity.title | translate }}</span>
+            @if (activity.summary?.label) {
+              <span class="subapp-activity-summary">{{ activity.summary?.label }}</span>
+            }
+            @if (activity.invocationCount > 1) {
+              <span class="subapp-activity-count">{{ activity.invocationCount }}</span>
+            }
+          </button>
+        }
+      </div>
+    </div>
+  }
+}

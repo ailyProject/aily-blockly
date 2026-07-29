@@ -187,12 +187,14 @@ Remove-Item e2e\.artifacts\full-flow-checkpoints\specified-boards.json* -Force -
 $env:AILY_E2E_FULLFLOW = '1'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_CLEAR_APPDATA = '1'
+$env:AILY_E2E_ALLOW_TOOL_REFRESH = '1'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
 Remove-Item Env:AILY_E2E_CLEAR_APPDATA -ErrorAction SilentlyContinue
+Remove-Item Env:AILY_E2E_ALLOW_TOOL_REFRESH -ErrorAction SilentlyContinue
 ```
 
-应用数据被清空后，测试会先启动一次应用完成初始化；应用从当前配置的 npm registry 安装 `@aily-project/aily-builder@latest`。必须从日志或设置页记录实际安装版本。
+E2E 默认不自动刷新 `aily-builder` 和 `aily-linter`。本场景显式设置 `AILY_E2E_ALLOW_TOOL_REFRESH=1`；应用数据被清空后，测试会先启动一次应用完成初始化，并从当前配置的 npm registry 安装 `@aily-project/aily-builder@latest`。必须从日志或设置页记录实际安装版本。
 
 重要限制：当前 E2E 没有“指定 aily-builder 版本”的环境变量，也没有自动断言期望版本。测试候选版本时，必须先明确候选版本如何进入测试 registry/安装目录，并记录实际版本；否则只能声称“当前已安装版本”或“registry latest”通过，不能声称某个指定版本通过。
 

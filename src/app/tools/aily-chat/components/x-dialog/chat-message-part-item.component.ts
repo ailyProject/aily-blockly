@@ -218,7 +218,11 @@ interface MarkdownTextChunk {
       @case ('progress') {
         <div class="chat-working-progress" [attr.data-progress-kind]="getProgressData()?.progressKind || 'working'">
           <span class="chat-working-progress-icon ccenter">
-            <i class="fa-light fa-spinner-third ac-spin"></i>
+            @if (getProgressData()?.settled) {
+              <i class="fa-light fa-circle-check"></i>
+            } @else {
+              <i class="fa-light fa-spinner-third ac-spin"></i>
+            }
           </span>
           <span class="chat-working-progress-text">{{ getProgressData()?.content }}</span>
         </div>

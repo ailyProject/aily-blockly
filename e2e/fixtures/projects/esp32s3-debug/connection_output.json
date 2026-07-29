@@ -1,0 +1,125 @@
+{
+  "version": "1.0",
+  "description": "XIAO ESP32-S3 simulator/debug E2E with an explicit 220 ohm LED resistor and a pull-up Button",
+  "components": [
+    {
+      "refId": "xiao_esp32s3",
+      "componentId": "component_1771340537742",
+      "componentName": "XIAO ESP32S3",
+      "configFile": "xiao_esp32s3_config.json",
+      "componentType": "hardware"
+    },
+    {
+      "refId": "led_1",
+      "componentId": "component_core_io_led",
+      "componentName": "Aily Virtual LED",
+      "pinmapId": "lib-core-io:led:generic",
+      "componentType": "hardware",
+      "x": 430,
+      "y": 100
+    },
+    {
+      "refId": "resistor_1",
+      "componentId": "component_core_io_resistor",
+      "componentName": "Aily 220Ω Resistor",
+      "pinmapId": "lib-core-io:resistor:generic",
+      "componentType": "hardware",
+      "simulationProperties": {
+        "resistanceOhms": 220
+      },
+      "x": 270,
+      "y": 115
+    },
+    {
+      "refId": "button_1",
+      "componentId": "component_core_io_button",
+      "componentName": "Aily Virtual Button",
+      "pinmapId": "lib-core-io:button:generic",
+      "componentType": "hardware",
+      "x": 330,
+      "y": 280
+    }
+  ],
+  "connections": [
+    {
+      "id": "e2e_led_d2_to_resistor",
+      "from": {
+        "ref": "xiao_esp32s3",
+        "pinId": "pin_3",
+        "function": "D2"
+      },
+      "to": {
+        "ref": "resistor_1",
+        "pinId": "terminal_a",
+        "function": "A(IO)"
+      },
+      "type": "digital",
+      "label": "D2 → R 220Ω",
+      "color": "#3B82F6"
+    },
+    {
+      "id": "e2e_resistor_to_led",
+      "from": {
+        "ref": "resistor_1",
+        "pinId": "terminal_b",
+        "function": "B(IO)"
+      },
+      "to": {
+        "ref": "led_1",
+        "pinId": "anode",
+        "function": "A(IO)"
+      },
+      "type": "digital",
+      "label": "R 220Ω → LED A",
+      "color": "#3B82F6"
+    },
+    {
+      "id": "e2e_led_ground",
+      "from": {
+        "ref": "led_1",
+        "pinId": "cathode",
+        "function": "C(GND)"
+      },
+      "to": {
+        "ref": "xiao_esp32s3",
+        "pinId": "pin_9",
+        "function": "GND"
+      },
+      "type": "gnd",
+      "label": "LED C → GND",
+      "color": "#111827"
+    },
+    {
+      "id": "e2e_button_d3",
+      "from": {
+        "ref": "button_1",
+        "pinId": "terminal_a",
+        "function": "A(IO)"
+      },
+      "to": {
+        "ref": "xiao_esp32s3",
+        "pinId": "pin_4",
+        "function": "D3"
+      },
+      "type": "digital",
+      "label": "Button → D3",
+      "color": "#3B82F6"
+    },
+    {
+      "id": "e2e_button_ground",
+      "from": {
+        "ref": "button_1",
+        "pinId": "terminal_b",
+        "function": "B(GND)"
+      },
+      "to": {
+        "ref": "xiao_esp32s3",
+        "pinId": "pin_9",
+        "function": "GND"
+      },
+      "type": "gnd",
+      "label": "Button B → GND",
+      "color": "#111827"
+    }
+  ]
+}

@@ -547,6 +547,13 @@ export class NpmService {
         throw new Error(`Invalid npm package name: ${invalidPackageName}`);
       }
 
+      // Resource packages (SDKs, compilers and tools) extract files outside
+      // node_modules during installation. Run their declared cleanup scripts
+      // before npm removes the package directory that contains those scripts.
+      for (const packageName of packagesToRemove) {
+        await this.runDeclaredUninstallScript(appDataPath, packageName);
+      }
+
       const cmd = `npm uninstall ${packagesToRemove.join(' ')} --prefix "${appDataPath}"`;
       await window['npm'].run({ cmd });
 
@@ -654,6 +661,21 @@ export class NpmService {
 
   private isValidNpmPackageName(name: string): boolean {
     return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name);
+  }
+
+  private async runDeclaredUninstallScript(appDataPath: string, packageName: string): Promise<void> {
+    const packagePath = window['path'].join(appDataPath, 'node_modules', packageName);
+    const packageJsonPath = window['path'].join(packagePath, 'package.json');
+    if (!window['fs'].existsSync(packageJsonPath)) {
+      return;
+    }
+
+    const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+    if (typeof packageJson?.scripts?.uninstall !== 'string' || !packageJson.scripts.uninstall.trim()) {
+      return;
+    }
+
+    await this.cmdService.runAsyncChecked('npm run uninstall', packagePath);
   }
 
   boardDependenciesChanged = false;
@@ -1202,12 +1224,14 @@ export class NpmService {
       setTimeout: 300000
     });
 
-    let cmd = `npm run uninstall`
     console.log("PackageNodeModulesPath: ", packageNodeModulesPath);
-    await this.appDataResourceLock.runExclusive(`npm:run-uninstall-script:${packageInfo.name}`, () => this.cmdService.runAsyncChecked(cmd, packageNodeModulesPath));
+    await this.appDataResourceLock.runExclusive(
+      `npm:run-uninstall-script:${packageInfo.name}`,
+      () => this.runDeclaredUninstallScript(appDataPath, packageInfo.name)
+    );
 
     // 卸载包
-    cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
+    const cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
     // await window['npm'].run({ cmd: cmd });
     await this.appDataResourceLock.runExclusive(`npm:uninstall-package:${packageInfo.name}`, () => this.cmdService.runAsyncChecked(cmd, appDataPath));
     // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.UNINSTALL_COMPLETE', { name: packageInfo.name }) });
@@ -1257,44 +1281,44 @@ export class NpmService {
   }
 
   /**
-   * 检查 npm 依赖是否安装完整（仅检查第一层）
-   * 通过读取 package.json 的依赖声明，再扫描 node_modules 下对应包的 package.json 做对比
+   * 检查顶层依赖，并递归检查积木库声明的其他积木库依赖。
    */
-  async installedOk(path) {
+  async installedOk(path: string): Promise<boolean> {
     const startTime = performance.now();
     console.log('[installedOk] 开始检查依赖状态...');
     try {
       const packageJsonPath = window['path'].join(path, 'package.json');
       const nodeModulesPath = window['path'].join(path, 'node_modules');
-
       if (!window['path'].isExists(packageJsonPath)) {
-        const elapsed = (performance.now() - startTime).toFixed(1);
-        console.log(`[installedOk] package.json 不存在，耗时: ${elapsed}ms`);
         return false;
       }
 
       const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
-      const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
-      const depNames = Object.keys(deps);
+      const dependencies = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
+      const pending = Object.keys(dependencies);
+      const checked = new Set<string>();
 
-      if (depNames.length === 0) {
-        const elapsed = (performance.now() - startTime).toFixed(1);
-        console.log(`[installedOk] 无依赖声明，检查通过，耗时: ${elapsed}ms`);
-        return true;
-      }
+      while (pending.length > 0) {
+        const name = pending.shift()!;
+        if (checked.has(name)) {
+          continue;
+        }
+        checked.add(name);
 
-      if (!window['path'].isExists(nodeModulesPath)) {
-        const elapsed = (performance.now() - startTime).toFixed(1);
-        console.log(`[installedOk] node_modules 不存在，依赖未安装，耗时: ${elapsed}ms`);
-        return false;
-      }
-
-      for (const name of depNames) {
-        const depPackageJsonPath = window['path'].join(nodeModulesPath, name, 'package.json');
-        if (!window['path'].isExists(depPackageJsonPath)) {
+        const dependencyPackageJsonPath = window['path'].join(nodeModulesPath, name, 'package.json');
+        if (!window['path'].isExists(dependencyPackageJsonPath)) {
           const elapsed = (performance.now() - startTime).toFixed(1);
           console.log(`[installedOk] 缺少依赖: ${name}，耗时: ${elapsed}ms`);
           return false;
+        }
+
+        if (name.startsWith('@aily-project/lib-')) {
+          const dependencyPackageJson = JSON.parse(window['fs'].readFileSync(dependencyPackageJsonPath, 'utf8'));
+          for (const childName of Object.keys(dependencyPackageJson.dependencies || {})) {
+            if (childName.startsWith('@aily-project/lib-')) {
+              pending.push(childName);
+            }
+          }
         }
       }
 

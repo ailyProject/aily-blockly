@@ -16,8 +16,6 @@ import {
 import {
   CHAT_RUNTIME_OWNER_CONTEXT_BUDGET,
   type ChatRuntimeOwnerContextBudgetPort,
-  CHAT_RUNTIME_OWNER_EDIT_TRACKING,
-  type ChatRuntimeOwnerEditTrackingPort,
   CHAT_RUNTIME_OWNER_INTERACTION_HOST,
   type ChatRuntimeOwnerInteractionHostPort,
   CHAT_RUNTIME_OWNER_RUNTIME_CONTROLLER,
@@ -53,9 +51,6 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
   private readonly mcpService = inject(McpService);
   private readonly runtimeInteractionHost = inject<ChatRuntimeOwnerInteractionHostPort>(
     CHAT_RUNTIME_OWNER_INTERACTION_HOST,
-  );
-  private readonly editTracking = inject<ChatRuntimeOwnerEditTrackingPort>(
-    CHAT_RUNTIME_OWNER_EDIT_TRACKING,
   );
   private readonly ownerScheduler = inject<ChatRuntimeOwnerSchedulerPort>(CHAT_RUNTIME_OWNER_SCHEDULER);
   private readonly contextBudgetService = inject<ChatRuntimeOwnerContextBudgetPort>(
@@ -147,7 +142,6 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
           defaultSessionId: service.resolveDefaultRuntimeSessionId(adapter),
           request: request as never,
         }),
-        get editTracking() { return service.editTracking; },
         get ownerScheduler() { return service.ownerScheduler; },
         get viewRequests() { return service.viewRequests; },
         get list() { return service.headlessList; },
@@ -176,8 +170,6 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
         releaseRuntimeHandle: sessionId => service.releaseRuntimeHandle(sessionId),
         setRuntimeAbortController: (sessionId, controller) =>
           service.setRuntimeAbortController(sessionId, controller),
-        getOrCreateLexPostTurnResources: (sessionId, cwd) =>
-          service.getOrCreateLexPostTurnResources(sessionId, cwd),
         scheduleLexRequestCompleted: input => service.runtimeController.scheduleLexRequestCompleted(input as never),
         isRuntimeViewAttached: () => false,
         readRuntimeViewAttachmentGeneration: () => null,
@@ -265,16 +257,6 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
     return targetSessionId
       ? this.runtimeController.setRuntimeAbortController(targetSessionId, controller)
       : false;
-  }
-
-  private getOrCreateLexPostTurnResources(sessionId: unknown, cwd: unknown) {
-    const targetSessionId = this.normalizeSessionId(sessionId);
-    return targetSessionId
-      ? this.runtimeController.getOrCreateLexPostTurnResources(
-        targetSessionId,
-        typeof cwd === 'string' ? cwd : null,
-      )
-      : undefined;
   }
 
 }

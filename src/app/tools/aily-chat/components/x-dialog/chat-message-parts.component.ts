@@ -549,6 +549,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
         mounted.ref.destroy();
       }
       this.mountedRenderers.delete(id);
+      ChatPerformanceTracer.increment('message_parts_renderer_diff.disposed');
     }
 
     for (let index = 0; index < items.length; index += 1) {
@@ -562,21 +563,26 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
           mounted.ref.destroy();
         }
         this.mountedRenderers.delete(item.id);
+        ChatPerformanceTracer.increment('message_parts_renderer_diff.disposed');
         mounted = undefined;
       }
 
       if (!mounted) {
         mounted = this.createMountedRenderer(item, index);
         this.mountedRenderers.set(item.id, mounted);
+        ChatPerformanceTracer.increment('message_parts_renderer_diff.inserted');
         continue;
       }
 
+      ChatPerformanceTracer.increment('message_parts_renderer_diff.retained');
       const currentIndex = host.indexOf(mounted.ref.hostView);
       if (currentIndex !== index) {
         host.move(mounted.ref.hostView, index);
+        ChatPerformanceTracer.increment('message_parts_renderer_diff.moved');
       }
       if (patchExisting) {
         this.patchMountedRenderer(mounted, item);
+        ChatPerformanceTracer.increment('message_parts_renderer_diff.updated');
       }
     }
   }

@@ -2,17 +2,45 @@ import { Injectable } from '@angular/core';
 
 export type ChildAppHostAction = 'status' | 'restart' | 'close' | 'detach' | 'embed';
 
+export interface ChildAppWindowPlacement {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  displayId?: string | number;
+  relativeToDisplay?: boolean;
+  clampToWorkArea?: boolean;
+  applyInitialBounds?: boolean;
+}
+
+export interface ChildAppHostRegistrationOptions {
+  instanceId?: string;
+  surface?: string;
+  primary?: boolean;
+}
+
+export interface ChildAppHostControlOptions extends ChildAppWindowPlacement {
+  instanceId?: string;
+}
+
 export interface ChildAppHostController {
   status(): Record<string, unknown>;
   restart(): Promise<Record<string, unknown>>;
   close(): Promise<Record<string, unknown>>;
-  detach(): Promise<Record<string, unknown>>;
+  detach(options?: ChildAppWindowPlacement): Promise<Record<string, unknown>>;
   embed(): Promise<Record<string, unknown>>;
+}
+
+interface ChildAppHostRegistration {
+  instanceId: string;
+  surface: string;
+  primary: boolean;
+  controller: ChildAppHostController;
 }
 
 @Injectable({ providedIn: 'root' })
 export class ChildAppHostRegistryService {
-  private readonly controllers = new Map<string, ChildAppHostController>();
+  private readonly controllers = new Map<string, Map<string, ChildAppHostRegistration>>();
   private removeCommandListener: (() => void) | null = null;
 
   constructor() {
@@ -39,44 +67,99 @@ export class ChildAppHostRegistryService {
     });
   }
 
-  register(toolId: string, controller: ChildAppHostController): () => void {
+  register(
+    toolId: string,
+    controller: ChildAppHostController,
+    options: ChildAppHostRegistrationOptions = {},
+  ): () => void {
     const id = this.normalizeToolId(toolId);
     if (!id) {
       throw new Error('Child app tool id is required');
     }
 
-    this.controllers.set(id, controller);
+    const instanceId = this.normalizeInstanceId(options.instanceId);
+    const registrations = this.controllers.get(id) || new Map<string, ChildAppHostRegistration>();
+    const registration: ChildAppHostRegistration = {
+      instanceId,
+      surface: String(options.surface || 'default').trim() || 'default',
+      primary: options.primary ?? instanceId === 'default',
+      controller,
+    };
+    registrations.set(instanceId, registration);
+    this.controllers.set(id, registrations);
+
     return () => {
-      if (this.controllers.get(id) === controller) {
-        this.controllers.delete(id);
+      const currentRegistrations = this.controllers.get(id);
+      if (currentRegistrations?.get(instanceId) === registration) {
+        currentRegistrations.delete(instanceId);
+        if (currentRegistrations.size === 0) {
+          this.controllers.delete(id);
+        }
       }
     };
   }
 
-  has(toolId: string): boolean {
-    return this.controllers.has(this.normalizeToolId(toolId));
+  has(toolId: string, instanceId?: string): boolean {
+    const registrations = this.controllers.get(this.normalizeToolId(toolId));
+    if (!registrations) return false;
+    return instanceId === undefined
+      ? registrations.size > 0
+      : registrations.has(this.normalizeInstanceId(instanceId));
   }
 
-  getStatus(toolId: string): Record<string, unknown> | null {
-    return this.controllers.get(this.normalizeToolId(toolId))?.status() || null;
+  getStatus(toolId: string, instanceId?: string): Record<string, unknown> | null {
+    const registration = this.resolveRegistration(toolId, instanceId);
+    return registration
+      ? {
+          instanceId: registration.instanceId,
+          surface: registration.surface,
+          ...registration.controller.status(),
+        }
+      : null;
   }
 
-  async control(toolId: string, action: ChildAppHostAction): Promise<Record<string, unknown>> {
+  list(toolId?: string): Array<{ toolId: string; instanceId: string; surface: string; primary: boolean }> {
+    const normalizedToolId = toolId === undefined ? '' : this.normalizeToolId(toolId);
+    const entries = normalizedToolId
+      ? [[normalizedToolId, this.controllers.get(normalizedToolId)] as const]
+      : Array.from(this.controllers.entries());
+
+    return entries.flatMap(([id, registrations]) =>
+      Array.from(registrations?.values() || []).map(registration => ({
+        toolId: id,
+        instanceId: registration.instanceId,
+        surface: registration.surface,
+        primary: registration.primary,
+      })));
+  }
+
+  async control(
+    toolId: string,
+    action: ChildAppHostAction,
+    options: ChildAppHostControlOptions = {},
+  ): Promise<Record<string, unknown>> {
     const id = this.normalizeToolId(toolId);
-    const controller = this.controllers.get(id);
-    if (!controller) {
+    const registration = this.resolveRegistration(id, options.instanceId);
+    if (!registration) {
       return { ok: false, message: `子应用宿主未打开或尚未就绪: ${id || toolId}` };
     }
+    const controller = registration.controller;
 
     switch (action) {
       case 'status':
-        return { ok: true, toolId: id, ...controller.status() };
+        return {
+          ok: true,
+          toolId: id,
+          instanceId: registration.instanceId,
+          surface: registration.surface,
+          ...controller.status(),
+        };
       case 'restart':
         return controller.restart();
       case 'close':
         return controller.close();
       case 'detach':
-        return controller.detach();
+        return controller.detach(options);
       case 'embed':
         return controller.embed();
       default:
@@ -88,7 +171,7 @@ export class ChildAppHostRegistryService {
     const payload = this.asRecord(command);
     const toolId = typeof payload['toolId'] === 'string' ? payload['toolId'] : '';
     const action = typeof payload['action'] === 'string' ? payload['action'] as ChildAppHostAction : 'status';
-    return this.control(toolId, action);
+    return this.control(toolId, action, payload as ChildAppHostControlOptions);
   }
 
   private asRecord(value: unknown): Record<string, unknown> {
@@ -99,5 +182,22 @@ export class ChildAppHostRegistryService {
 
   private normalizeToolId(value: string): string {
     return String(value || '').trim();
+  }
+
+  private normalizeInstanceId(value?: string): string {
+    return String(value || 'default').trim() || 'default';
+  }
+
+  private resolveRegistration(toolId: string, instanceId?: string): ChildAppHostRegistration | null {
+    const registrations = this.controllers.get(this.normalizeToolId(toolId));
+    if (!registrations?.size) return null;
+
+    if (instanceId !== undefined) {
+      return registrations.get(this.normalizeInstanceId(instanceId)) || null;
+    }
+
+    return Array.from(registrations.values()).find(registration => registration.primary)
+      || registrations.values().next().value
+      || null;
   }
 }

@@ -21,10 +21,6 @@ import type {
 } from '../core/chat-context';
 import { AilyHost } from '../core/host';
 import { ChatViewWriteBridge, type ChatViewWriteBridgeContext } from './chat-view-write-bridge';
-import {
-  syncAbsFileHandler,
-  type SyncAbsInvocationContext,
-} from '../tools/syncAbsFileTool';
 import type { TurnRequest, TurnResponseTurn } from 'aily-lex/browser';
 import type { ResourceItem } from '../core/chat-types';
 import type { HostSessionSaveTarget } from './host-session-save-bridge';
@@ -59,13 +55,6 @@ import {
   canRedoSessionCheckpointTimeline,
   type SessionCheckpointTimelineState,
 } from './session-checkpoint-timeline-model';
-import { appendEditActionResult } from './edit-action-result-projection';
-import {
-  buildUndoActionResult,
-  type EditActionName,
-  type EditActionResultDescriptor,
-  type EditActionResultState,
-} from './edit-action-result-projection';
 
 export interface EditActionTurnTarget extends Partial<LegacyTurnInteractionMetadata>, Partial<DialogTurnContext> {}
 
@@ -85,7 +74,7 @@ type EditActionsContext = ChatViewWriteBridgeContext
   & Pick<IAgentLifecycle, 'isWaiting' | 'isCompleted' | 'isCancelled' | 'pendingEditFeedback'>
   & Pick<ISessionAccess, 'sessionAllowedPaths' | 'conversationMessages'>
   & Pick<IProjectContext, 'getCurrentProjectPath'>
-  & Pick<IChatServiceAccess, 'absAutoSyncService' | 'editCheckpointService' | 'workspaceCheckpointProvider' | 'resourceManager' | 'message'>
+  & Pick<IChatServiceAccess, 'absAutoSyncService' | 'editCheckpointService' | 'resourceManager' | 'message'>
   & Pick<IChatCoordination, 'lexStream' | 'send' | 'session'>
   & {
     workspaceCheckpointAccess?: WorkspaceCheckpointAccess;
@@ -143,10 +132,18 @@ type EditActionsContext = ChatViewWriteBridgeContext
       sessionId: string | null | undefined,
       committed: ChatSessionRequestListTransactionResult | null | undefined,
     ): ChatSessionRequestListTransactionResult | null | undefined;
-    commitCheckpointRedoByIdentity?(
+    commitCheckpointRedo?(
       sessionId: string | null | undefined,
-      checkpointId: string,
+      checkpointId?: string | null,
     ): Promise<unknown | null | undefined> | unknown | null | undefined;
+    operateEditingSessionEntry?(
+      sessionId: string,
+      uri: string,
+      action: 'accept' | 'reject',
+    ): Promise<void>;
+    acceptEditingSession?(sessionId: string): Promise<void>;
+    undoEditingSessionInteraction?(sessionId: string): Promise<void>;
+    redoEditingSessionInteraction?(sessionId: string): Promise<void>;
     applyRequestListTransactionEffects?(
       sessionId: string,
       transaction: ChatSessionRequestListTransactionResult,
@@ -214,44 +211,6 @@ export class EditActionsHelper {
     return canRedoSessionCheckpointTimeline(this.readCurrentSessionCheckpointTimelineState());
   }
 
-  private getWorkspaceCheckpointAccess(): WorkspaceCheckpointAccess {
-    if (this.ctx.workspaceCheckpointAccess) {
-      return this.normalizeWorkspaceCheckpointAccess(this.ctx.workspaceCheckpointAccess);
-    }
-
-    return this.buildWorkspaceCheckpointAccessFromProvider(this.ctx.workspaceCheckpointProvider);
-  }
-
-  private buildWorkspaceCheckpointAccessFromProvider(
-    provider: IWorkspaceCheckpointProvider | null | undefined,
-  ): WorkspaceCheckpointAccess {
-    if (!provider) {
-      return {};
-    }
-
-    return this.normalizeWorkspaceCheckpointAccess(provider);
-  }
-
-  private normalizeWorkspaceCheckpointAccess(
-    access: WorkspaceCheckpointAccess,
-  ): WorkspaceCheckpointAccess {
-    const getPresentationMode = access.getPresentationMode?.bind(access);
-    const buildRestorePlan = access.buildRestorePlan?.bind(access);
-    const buildRedoPlan = access.buildRedoPlan?.bind(access);
-    const applyRestorePlan = access.applyRestorePlan?.bind(access);
-
-    return {
-      getPresentationMode,
-      buildRestorePlan,
-      buildRedoPlan,
-      applyRestorePlan,
-    };
-  }
-
-  private refreshWorkspaceCheckpointAccess(): void {
-    this.ctx.workspaceCheckpointAccess = this.getWorkspaceCheckpointAccess();
-  }
-
   // ==================== 内部辅助 ====================
 
   /**
@@ -265,35 +224,15 @@ export class EditActionsHelper {
       this.ctx.absAutoSyncService.initialize(projectPath);
     }
     try {
-      const fsCompat = {
-        exists: (p: string) => AilyHost.get().fs.existsSync(p),
-        readFile: (p: string) => AilyHost.get().fs.readFileSync(p, 'utf-8'),
-        writeFile: (p: string, data: string) => AilyHost.get().fs.writeFileSync(p, data),
-      };
-      const result = await syncAbsFileHandler(
-        { operation: 'import' },
-        AilyHost.get().project,
-        fsCompat,
-        this.ctx.absAutoSyncService,
-        this.createReloadAbsWorkspaceInvocationContext(projectPath),
+      const imported = await this.ctx.ngZone.runOutsideAngular(
+        () => this.ctx.absAutoSyncService.forceImportFromAbs(),
       );
-      if (result.is_error) {
-        console.warn('[reloadAbsWorkspace] ABS 导入失败:', result.content);
+      if (!imported) {
+        console.warn('[reloadAbsWorkspace] ABS workspace presentation was not reloaded.');
       }
-    } catch (err) {
-      console.warn('[reloadAbsWorkspace] ABS 导入异常:', err);
+    } catch (error) {
+      console.warn('[reloadAbsWorkspace] ABS workspace presentation reload failed:', error);
     }
-  }
-
-  private createReloadAbsWorkspaceInvocationContext(_projectPath: string): SyncAbsInvocationContext {
-    const sessionId = this.resolveCurrentSessionResource();
-    if (!sessionId) {
-      throw new Error('[AilyChat][EditActions] reloadAbsWorkspace requires a host session resource.');
-    }
-    return {
-      sessionId,
-      runOutsideAngular: operation => this.ctx.ngZone.runOutsideAngular(operation),
-    };
   }
 
   private async restoreCheckpointSnapshot(
@@ -307,8 +246,6 @@ export class EditActionsHelper {
       truncateLiveTurnResponses?: boolean;
     } = {},
   ): Promise<boolean> {
-    this.refreshWorkspaceCheckpointAccess();
-
     const {
       sessionResource: explicitSessionResource,
       turnId,
@@ -340,6 +277,7 @@ export class EditActionsHelper {
         if (!committed) {
           throw new Error('Checkpoint restore host commit did not return a result');
         }
+        return committed;
       },
     );
 
@@ -738,84 +676,66 @@ export class EditActionsHelper {
   /**
    * 用户保留文件变更 �?将当前状态设为新基线，保存反馈状�?
    */
-  onKeepEdits(detail?: ChatTaskActionDetail): void {
+  async onKeepEdits(detail?: ChatTaskActionDetail): Promise<void> {
     const { fileCount, totalAdded, totalRemoved } = detail || {};
     const displayContent = this.buildUserVisibleRequestPreview(getInteractionDisplayContent(detail?.target));
     const requestHint = displayContent ? `与“${displayContent}”关联的` : '上一轮的';
     this.ctx.pendingEditFeedback = `[用户已确认保留${requestHint}文件变更：${fileCount || 0} 个文件，+${totalAdded || 0} / -${totalRemoved || 0} 行]`;
-    this.ctx.editCheckpointService.acceptAllAsBaseline();
+    const sessionId = this.resolveCurrentSessionResource();
+    if (!sessionId || !this.ctx.acceptEditingSession) {
+      throw new Error('Editing-session owner is unavailable.');
+    }
+    await this.ctx.acceptEditingSession(sessionId);
   }
 
-  /**
-   * 撤销最近一轮的文件变更（Undo，不截断对话历史，支�?Redo�?
-   */
-  async undoLastEdits(): Promise<void> {
-    if (this.ctx.isWaiting) { this.ctx.message.warning('正在处理中，请稍候...'); return; }
-
-    if (!this.ctx.editCheckpointService.canUndo) {
-      this.ctx.message.info('没有可撤销的文件变更');
+  async undoLastEdit(options: { sessionResource?: string } = {}): Promise<void> {
+    if (this.ctx.isWaiting) {
+      this.ctx.message.warning('正在处理中，请稍候...');
       return;
     }
+    const sessionId = this.resolveCurrentSessionResource(options.sessionResource);
+    if (!sessionId || !this.ctx.undoEditingSessionInteraction) {
+      throw new Error('Editing-session undo requires the execution host.');
+    }
+    await this.ctx.undoEditingSessionInteraction(sessionId);
+    await this.reloadAbsWorkspace();
+  }
 
-    const { rolledBackFiles, errors } = await this.ctx.editCheckpointService.undo();
-
-    this.ctx.pendingEditFeedback = `[用户撤销了上一轮的 ${rolledBackFiles} 个文件变更，文件已恢复到变更前的状态。后续操作请基于当前文件内容进行。]`;
-
-    appendEditActionResult(this.viewWriteBridge, 'undo', buildUndoActionResult(rolledBackFiles, errors));
-
+  async redoLastEdit(options: { sessionResource?: string } = {}): Promise<void> {
+    if (this.ctx.isWaiting) {
+      this.ctx.message.warning('正在处理中，请稍候...');
+      return;
+    }
+    const sessionId = this.resolveCurrentSessionResource(options.sessionResource);
+    if (!sessionId || !this.ctx.redoEditingSessionInteraction) {
+      throw new Error('Editing-session redo requires the execution host.');
+    }
+    await this.ctx.redoEditingSessionInteraction(sessionId);
     await this.reloadAbsWorkspace();
   }
 
   /**
    * 重做文件变更（Redo，恢复被撤销的文件状态）
    */
-  async redoEdits(
-    checkpointId?: string,
-    options: { sessionResource?: string } = {},
-  ): Promise<void> {
+  async redoEdits(options: { sessionResource?: string } = {}): Promise<void> {
     if (this.ctx.isWaiting) { this.ctx.message.warning('正在处理中，请稍候...'); return; }
 
-    this.refreshWorkspaceCheckpointAccess();
-
-    const normalizedCheckpointId = typeof checkpointId === 'string' ? checkpointId.trim() : '';
-    const hasCheckpointRedoChat = normalizedCheckpointId.length > 0;
-
-    if (!hasCheckpointRedoChat && !this.ctx.editCheckpointService.canRedo) {
-      this.ctx.message.info('没有可重做的文件变更');
-      return;
-    }
-
-    if (hasCheckpointRedoChat) {
-      const checkpointRedoResult = await this.checkpointReplayCoordinator.redoCheckpointByIdentity(
-        normalizedCheckpointId,
-        async () => {
-          const sessionId = this.resolveCurrentSessionResource(options.sessionResource);
-          const committed = await this.ctx.commitCheckpointRedoByIdentity?.(sessionId, normalizedCheckpointId);
-          if (!committed) {
-            throw new Error('Checkpoint redo host commit did not return a result');
-          }
-        },
-      );
-      if (checkpointRedoResult.ok === false) {
-        this.checkpointReplayCoordinator.projectRedoExecutionResult(checkpointRedoResult);
-        return;
-      }
-
+    const checkpointRedoResult = await this.checkpointReplayCoordinator.redoCheckpoint(
+      async () => {
+        const sessionId = this.resolveCurrentSessionResource(options.sessionResource);
+        const committed = await this.ctx.commitCheckpointRedo?.(sessionId);
+        if (!committed) {
+          throw new Error('Checkpoint redo host commit did not return a result');
+        }
+        return committed;
+      },
+    );
+    if (checkpointRedoResult.ok === false) {
       this.checkpointReplayCoordinator.projectRedoExecutionResult(checkpointRedoResult);
       return;
     }
 
-    const fileRedoResult = await this.ctx.editCheckpointService.redo();
-    const errors = [...fileRedoResult.errors];
-    const rolledBackFiles = fileRedoResult.rolledBackFiles;
-
-    this.checkpointReplayCoordinator.projectRedoFileApplyResult({
-      rolledBackFiles,
-      errors,
-    });
-
-    this.ctx.editCheckpointService.publishCurrentSummary();
-    await this.reloadAbsWorkspace();
+    this.checkpointReplayCoordinator.projectRedoExecutionResult(checkpointRedoResult);
   }
 
   private readCurrentSessionCheckpointTimelineState(): SessionCheckpointTimelineState | null {
@@ -827,10 +747,13 @@ export class EditActionsHelper {
   /**
    * 接受单个文件�?AI 编辑
    */
-  onAcceptFile(filePath: string): void {
+  async onAcceptFile(filePath: string): Promise<void> {
     if (!filePath) return;
-    this.ctx.editCheckpointService.acceptFile(filePath);
-    this.ctx.editCheckpointService.publishCurrentSummary();
+    const sessionId = this.resolveCurrentSessionResource();
+    if (!sessionId || !this.ctx.operateEditingSessionEntry) {
+      throw new Error('Editing-session entry owner is unavailable.');
+    }
+    await this.ctx.operateEditingSessionEntry(sessionId, filePath, 'accept');
   }
 
   /**
@@ -838,8 +761,11 @@ export class EditActionsHelper {
    */
   async onRejectFile(filePath: string): Promise<void> {
     if (!filePath) return;
-    await this.ctx.editCheckpointService.rejectFile(filePath);
-    this.ctx.editCheckpointService.publishCurrentSummary();
+    const sessionId = this.resolveCurrentSessionResource();
+    if (!sessionId || !this.ctx.operateEditingSessionEntry) {
+      throw new Error('Editing-session entry owner is unavailable.');
+    }
+    await this.ctx.operateEditingSessionEntry(sessionId, filePath, 'reject');
     await this.reloadAbsWorkspace();
   }
 
@@ -941,8 +867,6 @@ export class EditActionsHelper {
   }
 
   private async getRestoreCheckpointFileSummary(checkpointId: string): Promise<{ fileCount: number; fileLabel?: string; }> {
-    this.refreshWorkspaceCheckpointAccess();
-
     try {
       const restorePlan = await this.ctx.workspaceCheckpointAccess?.buildRestorePlan?.(checkpointId);
       if (Array.isArray(restorePlan?.files)) {

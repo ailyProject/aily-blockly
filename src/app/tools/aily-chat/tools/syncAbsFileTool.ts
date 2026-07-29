@@ -7,8 +7,16 @@
 import { convertAbiToAbs, convertAbsToAbi, inferFieldVariableType } from './abiAbsConverter';
 import { getActiveWorkspace, createBlockFromConfig } from './editBlockTool';
 import { AbsAutoSyncService } from '../services/abs-auto-sync.service';
-import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 import { loadProjectBlockDefinitions, parseAbs, BlocklyAbsParser } from './absParser';
+import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
+import {
+  AilyDataRef,
+  areAilyDataRefsEquivalent,
+  createProjectDataMarker,
+  hasAilyProjectDataAbsHeader,
+} from '../../../services/project-data/project-data.types';
+import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
+import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
 import {
   normalizeArduinoGeneratedCode,
 } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
@@ -26,6 +34,7 @@ import {
 import type { EditorOperationEventSink } from './editorOperationEvents';
 import type {
   ChatRuntimeHostResourceRequestKind,
+  ChatRuntimeHostWorkspaceMutationReceiptInput,
 } from '../core/chat-runtime-host-contract';
 import { createElectronChatRuntimeHostTransport } from '../core/electron-chat-runtime-host-transport';
 
@@ -95,6 +104,8 @@ async function writeGeneratedSketchIno(
 
   await yieldToBrowserIdle(300);
   throwIfSyncAbsCancelled(invocationContext);
+  await prepareBlocklyProjectDataForCodeGeneration(workspace);
+  throwIfSyncAbsCancelled(invocationContext);
   const codegenStartedAt = performance.now();
   const generatedCode = await ChatPerformanceTracer.runWithSurface(
     'builder_preprocess',
@@ -108,12 +119,22 @@ async function writeGeneratedSketchIno(
     { slowThresholdMs: 16 },
   );
   throwIfSyncAbsCancelled(invocationContext);
-  await writeTimelineAwareTextFile(sketchFilePath, generatedCode, electronService, invocationContext);
+  await writeTrackedTextFile(sketchFilePath, generatedCode, electronService, invocationContext);
 
   return {
     filePath: sketchFilePath,
     generated: generatedCode.length > 0
   };
+}
+
+function restoreWorkspaceSnapshot(workspace: any, snapshot: unknown): void {
+  Blockly.Events.disable();
+  try {
+    workspace.clear();
+    Blockly.serialization.workspaces.load(snapshot, workspace);
+  } finally {
+    Blockly.Events.enable();
+  }
 }
 
 // =============================================================================
@@ -147,7 +168,7 @@ export interface SyncAbsInvocationContext {
   toolCallId?: string;
   signal?: AbortSignal;
   isStale?: () => boolean;
-  timelineWriter?: EditingTimelineWriter;
+  recordMutationReceipt?: (receipt: ChatRuntimeHostWorkspaceMutationReceiptInput) => void;
   editorOperationQueue?: BlocklyEditorOperationQueue;
   progressSink?: EditorOperationEventSink;
   reportOperationProgress?: BlocklyEditorOperationProgressReporter;
@@ -256,7 +277,7 @@ export async function refreshBlocklyWorkspaceRenderInBatches(
   }
 }
 
-export async function writeTimelineAwareTextFile(
+async function writeTrackedTextFile(
   filePath: string,
   content: string,
   electronService: {
@@ -266,34 +287,24 @@ export async function writeTimelineAwareTextFile(
   },
   invocationContext?: SyncAbsInvocationContext,
 ): Promise<void> {
-  const timelineWriter = invocationContext?.timelineWriter;
-  const turnId = invocationContext?.turnId;
+  const recordMutationReceipt = invocationContext?.recordMutationReceipt;
   let existedBefore = false;
   let beforeContent: string | null = null;
 
-  if (timelineWriter?.recordFileWrite && turnId) {
+  if (recordMutationReceipt) {
     existedBefore = await Promise.resolve(electronService.exists(filePath));
     beforeContent = existedBefore ? await Promise.resolve(electronService.readFile(filePath)) : null;
   }
 
   await Promise.resolve(electronService.writeFile(filePath, content));
 
-  if (!timelineWriter?.recordFileWrite || !turnId) {
-    return;
-  }
-
-  try {
-    await timelineWriter.recordFileWrite({
-      turnId,
-      toolCallId: invocationContext?.toolCallId,
+  recordMutationReceipt?.({
       filePath,
       existedBefore,
+      contentKind: 'text',
       beforeContent,
       afterContent: content,
-    });
-  } catch (error) {
-    console.warn('[syncAbsFile] editing timeline recording failed:', error);
-  }
+  });
 }
 
 export async function backupAbiFileIfPresent(
@@ -315,7 +326,7 @@ export async function backupAbiFileIfPresent(
 
   const backupPath = `${abiFilePath}.backup`;
   const currentAbi = await Promise.resolve(electronService.readFile(abiFilePath));
-  await writeTimelineAwareTextFile(backupPath, currentAbi, electronService, invocationContext);
+  await writeTrackedTextFile(backupPath, currentAbi, electronService, invocationContext);
   projectService?.copyPackageJsonToTemp?.(projectService?.currentProjectPath);
   return backupPath;
 }
@@ -445,7 +456,7 @@ export async function syncAbsFileHandler(
     };
   }
 
-  const hostOperation = buildSyncAbsHostResourceOperation(args, projectService, sessionId);
+  const hostOperation = buildSyncAbsHostResourceOperation(args, projectService, sessionId, invocationContext);
   try {
     const result = await runtimeHost.requestResourceOperation(hostOperation);
     return normalizeSyncAbsHostOperationResult(result.result);
@@ -488,7 +499,7 @@ export async function runSyncAbsFileConcreteHandler(
     abiFilePath,
     toolName: 'syncAbs',
   };
-  
+
   switch (operation) {
     case 'export': {
       const editorOperationQueue = invocationContext?.editorOperationQueue ?? getSharedBlocklyEditorOperationQueue();
@@ -547,6 +558,7 @@ function buildSyncAbsHostResourceOperation(
   args: SyncAbsArgs,
   projectService: any,
   sessionId: string,
+  invocationContext?: SyncAbsInvocationContext,
 ) {
   const projectPath = projectService?.currentProjectPath || projectService?.projectRootPath || '';
   const absFilePath = projectPath ? `${projectPath}/project.abs` : '';
@@ -562,6 +574,8 @@ function buildSyncAbsHostResourceOperation(
 
   return {
     sessionId,
+    ...(invocationContext?.turnId ? { turnId: invocationContext.turnId } : {}),
+    ...(invocationContext?.toolCallId ? { toolCallId: invocationContext.toolCallId } : {}),
     kind,
     label: labels.startedLabel,
     detail: labels.detail,
@@ -644,7 +658,10 @@ async function exportToAbs(
     
     if (workspace) {
       // 直接从工作区序列化
-      abiJson = Blockly.serialization.workspaces.save(workspace);
+      abiJson = {
+        ...Blockly.serialization.workspaces.save(workspace),
+        $ailyProjectData: createProjectDataMarker(),
+      };
     } else if (await electronService.exists(abiFilePath)) {
       // 方法2：从 ABI 文件读取
       const abiContent = await electronService.readFile(abiFilePath);
@@ -657,14 +674,14 @@ async function exportToAbs(
     }
     throwIfSyncAbsCancelled(invocationContext);
     await reportSyncAbsImportProgress(invocationContext, 'Converting Blockly workspace to ABS', 0.5);
-    
+
     // 转换为 ABS 格式
     const absContent = convertAbiToAbs(abiJson, { includeHeader });
     throwIfSyncAbsCancelled(invocationContext);
     await reportSyncAbsImportProgress(invocationContext, 'Writing ABS file', 0.75, absFilePath);
-    
+
     // 写入 ABS 文件
-    await writeTimelineAwareTextFile(absFilePath, absContent, electronService, invocationContext);
+    await writeTrackedTextFile(absFilePath, absContent, electronService, invocationContext);
 
     // 写盘后立即回读，确保返回给模型的是磁盘上可观察到的实际内容
     const readBackContent = await electronService.readFile(absFilePath);
@@ -737,12 +754,16 @@ async function importFromAbs(
   invocationContext?: SyncAbsInvocationContext,
   pendingAbsContent?: string,
 ): Promise<SyncAbsResult> {
+  let rollbackWorkspace: any = null;
+  let rollbackSnapshot: unknown = null;
+  let workspaceMutationStarted = false;
+  let candidateRefs: AilyDataRef[] = [];
   try {
     throwIfSyncAbsCancelled(invocationContext);
     if (typeof pendingAbsContent === 'string' && pendingAbsContent.trim().length > 0) {
       await reportSyncAbsImportProgress(invocationContext, 'Writing pending ABS content', 0.05, absFilePath);
       throwIfSyncAbsCancelled(invocationContext);
-      await writeTimelineAwareTextFile(absFilePath, pendingAbsContent, electronService, invocationContext);
+      await writeTrackedTextFile(absFilePath, pendingAbsContent, electronService, invocationContext);
       throwIfSyncAbsCancelled(invocationContext);
     }
 
@@ -776,6 +797,13 @@ async function importFromAbs(
 
     // 读取 ABS 文件
     const absContent = await electronService.readFile(absFilePath);
+    if (!hasAilyProjectDataAbsHeader(absContent)) {
+      return {
+        is_error: true,
+        content: 'ABS 格式错误：缺少 # Project Data Schema: 1 (external-only) 文件头。',
+      };
+    }
+
     await reportSyncAbsImportProgress(invocationContext, 'Parsing ABS blocks', 0.2);
     throwIfSyncAbsCancelled(invocationContext);
 
@@ -799,6 +827,26 @@ async function importFromAbs(
         content: `ABS 解析失败:\n${errorMessages}\n\n请检查 ABS 文件语法，读取对应库 reademe_ai.md 或使用 \`get_block_info_tool\` 查询正确的块定义和参数格式。`
       };
     }
+
+    // ABS 导入必须在修改工作区前完成资源和内联大值预检。
+    const candidate = { blocks: { languageVersion: 0, blocks: parseResult.rootBlocks } };
+    try {
+      assertNoOversizedInlineValues(candidate);
+      candidateRefs = projectDataRuntime.getStore().collectReferences(candidate);
+      const candidateValidation = await projectDataRuntime.getStore().validateReferences(candidateRefs);
+      if (!candidateValidation.valid) {
+        return {
+          is_error: true,
+          content: `ABS 引用的项目数据无效，未修改工作区: ${candidateValidation.issues.map((issue) => issue.error).join('; ')}`,
+        };
+      }
+    } catch (error) {
+      return {
+        is_error: true,
+        content: `ABS 项目数据预检失败，未修改工作区: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
     await reportSyncAbsImportProgress(
       invocationContext,
       'Preparing Blockly workspace update',
@@ -815,7 +863,9 @@ async function importFromAbs(
         content: '无法获取 Blockly 工作区'
       };
     }
-    
+    rollbackWorkspace = workspace;
+    rollbackSnapshot = Blockly.serialization.workspaces.save(workspace);
+
     // 备份当前 ABI 文件
     await backupAbiFileIfPresent(abiFilePath, electronService, projectService, invocationContext);
     await reportSyncAbsImportProgress(invocationContext, 'Backed up current Blockly artifacts', 0.45);
@@ -860,6 +910,7 @@ async function importFromAbs(
     // 使用 VariableMap 直接操作，避免 workspace.deleteVariableById 弹出确认对话框
     const variableMap = workspace.getVariableMap();
     const existingVars = workspace.getAllVariables();
+    workspaceMutationStarted = true;
     if (variableMap && existingVars.length > 0) {
       let deletedVariableCount = 0;
       for (const oldVar of existingVars) {
@@ -876,7 +927,7 @@ async function importFromAbs(
       }
     }
     await checkpointSyncAbsFrameBudget(invocationContext, 'variables.deleted');
-    
+
     // 同步 ABS 中声明的变量到工作区（只创建不存在的，保留已有的）
     // 注意：当推断出变量类型时，必须精确匹配（名称+类型），
     // 否则已存在的空类型变量会导致 FieldVariable "type doesn't match" 错误
@@ -1179,15 +1230,19 @@ async function importFromAbs(
       console.warn('[syncAbsFile] 触发 FINISHED_LOADING 事件失败:', e);
     }
     await checkpointSyncAbsFrameBudget(invocationContext, 'finished-loading.after');
-    
-    // 保存工作区到 ABI 文件
+
+    // 保存工作区到 ABI 文件：保留编辑器性能/取消边界，同时执行
+    // Project Data 引用完整性校验，并通过 tracked write 进入 AI 时间线。
     await reportSyncAbsImportProgress(invocationContext, 'Saving Blockly workspace snapshot', 0.8, abiFilePath);
     throwIfSyncAbsCancelled(invocationContext);
     await checkpointSyncAbsFrameBudget(invocationContext, 'workspace-save.before');
     const workspaceSaveStartedAt = performance.now();
     const abiJson = await ChatPerformanceTracer.runWithSurface(
       'editor_operation',
-      () => Blockly.serialization.workspaces.save(workspace),
+      () => ({
+        ...Blockly.serialization.workspaces.save(workspace),
+        $ailyProjectData: createProjectDataMarker(),
+      }),
       'syncAbs.import:workspace.save',
     );
     ChatPerformanceTracer.recordDuration(
@@ -1197,7 +1252,25 @@ async function importFromAbs(
       { slowThresholdMs: 16 },
     );
     await checkpointSyncAbsFrameBudget(invocationContext, 'workspace-save.after');
-    await writeTimelineAwareTextFile(abiFilePath, JSON.stringify(abiJson), electronService, invocationContext);
+    await projectDataRuntime.flushPending();
+    const savedRefs = projectDataRuntime.getStore().collectReferences(abiJson);
+    const savedRefsById = new Map(savedRefs.map((ref) => [ref.$ailyData.id, ref]));
+    const droppedRefs = candidateRefs.filter((ref) => {
+      const saved = savedRefsById.get(ref.$ailyData.id);
+      return !saved || !areAilyDataRefsEquivalent(saved, ref);
+    });
+    if (droppedRefs.length > 0) {
+      throw new Error(
+        `ABS import dropped ${droppedRefs.length} project data reference(s): ${droppedRefs.map((ref) => ref.$ailyData.id).join(', ')}`,
+      );
+    }
+    const validation = await projectDataRuntime.getStore().validateReferences(savedRefs);
+    if (!validation.valid) {
+      throw new Error(`Project data validation failed: ${validation.issues.map((issue) => issue.error).join('; ')}`);
+    }
+    throwIfSyncAbsCancelled(invocationContext);
+    await writeTrackedTextFile(abiFilePath, JSON.stringify(abiJson), electronService, invocationContext);
+    workspaceMutationStarted = false;
     await reportSyncAbsImportProgress(invocationContext, 'Saving generated project files', 0.85);
     throwIfSyncAbsCancelled(invocationContext);
 
@@ -1208,7 +1281,12 @@ async function importFromAbs(
     try {
       await reportSyncAbsImportProgress(invocationContext, 'Refreshing generated sketch', 0.9);
       throwIfSyncAbsCancelled(invocationContext);
-      sketchSyncInfo = await writeGeneratedSketchIno(projectService?.currentProjectPath || projectService?.projectRootPath, electronService, workspace, invocationContext);
+      sketchSyncInfo = await writeGeneratedSketchIno(
+        projectService?.currentProjectPath || projectService?.projectRootPath,
+        electronService,
+        workspace,
+        invocationContext,
+      );
     } catch (error) {
       if (isSyncAbsCancellationError(error)) {
         throw error;
@@ -1277,12 +1355,20 @@ ${sketchSyncInfo ? `**代码同步:** 已刷新 \`${sketchSyncInfo.filePath}\`${
       }
     };
   } catch (error) {
+    let rollbackError = '';
+    if (workspaceMutationStarted && rollbackWorkspace && rollbackSnapshot) {
+      try {
+        restoreWorkspaceSnapshot(rollbackWorkspace, rollbackSnapshot);
+      } catch (restoreError) {
+        rollbackError = `; workspace rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
+      }
+    }
     if (isSyncAbsCancellationError(error)) {
       throw error;
     }
     return {
       is_error: true,
-      content: `导入失败: ${error instanceof Error ? error.message : String(error)}`
+      content: `导入失败: ${error instanceof Error ? error.message : String(error)}${rollbackError}`
     };
   }
 }

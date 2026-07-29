@@ -56,7 +56,8 @@ export interface PreparedUserSend extends UserTurnPayload {
 
 type ChatSendCoordinatorContext = Pick<
   IAgentLifecycle,
-  'isCancelled' | 'isCompleted' | 'isWaiting' | 'pendingUserInput' | 'activeToolExecutions' | 'pendingEditFeedback'
+  'isCancelled' | 'isCompleted' | 'isWaiting' | 'pendingUserInput' | 'activeToolExecutions'
+  | 'pendingEditFeedback' | 'readPendingEditFeedback' | 'writePendingEditFeedback'
 > & Pick<ISessionAccess, 'sessionId'>
   & Pick<IProjectContext, 'currentMode' | 'currentModel'>
   & {
@@ -96,6 +97,23 @@ export class ChatSendCoordinator {
     } = () => ({}),
     private readonly createRequestId: () => string = () => globalThis.crypto.randomUUID(),
   ) {}
+
+  private readPendingEditFeedback(sessionId?: string | null): string | null {
+    if (this.ctx.readPendingEditFeedback) {
+      return this.ctx.readPendingEditFeedback(sessionId);
+    }
+
+    return this.ctx.pendingEditFeedback;
+  }
+
+  private clearPendingEditFeedback(sessionId?: string | null): void {
+    if (this.ctx.writePendingEditFeedback) {
+      this.ctx.writePendingEditFeedback(sessionId, null);
+      return;
+    }
+
+    this.ctx.pendingEditFeedback = null;
+  }
 
   private resolveRequestId(
     requestMetadata?: UserTurnPayload['requestMetadata'],
@@ -418,7 +436,7 @@ export class ChatSendCoordinator {
 
   capturePendingSend(content: string, sessionId?: string | null): PreparedPendingFollowupRequest | null {
     const text = content.trim();
-    const prepared = this.buildPreparedUserSend(text, this.ctx.pendingEditFeedback, sessionId);
+    const prepared = this.buildPreparedUserSend(text, this.readPendingEditFeedback(sessionId), sessionId);
     return prepared ? this.capturePendingSnapshot(prepared, sessionId) : null;
   }
 
@@ -467,14 +485,14 @@ export class ChatSendCoordinator {
       this.ctx.activeToolExecutions = 0;
     }
 
-    const prepared = this.buildPreparedUserSend(text, this.ctx.pendingEditFeedback, targetSessionId, {
+    const prepared = this.buildPreparedUserSend(text, this.readPendingEditFeedback(targetSessionId), targetSessionId, {
       runtimeMetadata,
     });
     if (!prepared) {
       return null;
     }
 
-    this.ctx.pendingEditFeedback = null;
+    this.clearPendingEditFeedback(targetSessionId);
     return {
       ...prepared,
     };

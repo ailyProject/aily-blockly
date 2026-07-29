@@ -263,6 +263,7 @@
     .chat-checkpoint-restore-surface {
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
       width: 100%;
       min-height: 24px;
@@ -275,20 +276,21 @@
       box-sizing: border-box;
     }
 
-    .checkpoint-line-left,
-    .checkpoint-line-right {
+    .checkpoint-line {
+      flex: 1 1 0;
       height: 1px;
       min-width: 24px;
       background: var(--aily-chat-xdialog-msg-divider, rgba(255, 255, 255, 0.12));
       opacity: 0.75;
     }
 
-    .checkpoint-line-left {
-      flex: 0 1 52px;
-    }
-
-    .checkpoint-line-right {
-      flex: 1 1 auto;
+    .checkpoint-restore-content {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      flex: 0 0 auto;
+      min-width: 0;
     }
 
     .checkpoint-label-text {
@@ -306,23 +308,42 @@
     }
 
     .checkpoint-restore-action {
-      padding: 0;
-      border: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid transparent;
+      border-radius: 5px;
       background: transparent;
       appearance: none;
       outline: none;
       color: var(--aily-chat-xdialog-msg-btn, rgba(204, 204, 204, 0.78));
-      font: inherit;
-      line-height: inherit;
+      font-family: inherit;
+      font-size: 10px;
+      line-height: 1;
       cursor: pointer;
       white-space: nowrap;
-      text-decoration: none;
+      box-sizing: border-box;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+
+      i {
+        flex: 0 0 auto;
+        font-size: 11px;
+        opacity: 0.9;
+      }
 
       &:hover,
       &:focus-visible {
+        background: var(--aily-chat-xdialog-msg-btn-hover-bg, var(--chat-bg-hover));
+        border-color: var(--chat-border-dim);
         color: var(--aily-chat-xdialog-msg-btn-hover-fg, #e3e3e3);
-        text-decoration: underline;
-        text-underline-offset: 2px;
+      }
+
+      &:focus-visible {
+        outline: 1px solid var(--aily-color-accent, #007fd4);
+        outline-offset: -1px;
       }
     }
 
@@ -384,6 +405,7 @@
 
   .interactive-input-part > .chat-input-notification-container,
   .interactive-input-part > .chat-pending-followup-widget-container,
+  .interactive-input-part > .chat-subapp-activity-widget,
   .interactive-input-part > .chat-question-carousel-widget-container,
   .interactive-input-part > .chat-tool-confirmation-carousel-container,
   .interactive-input-part > .chat-todo-list-widget-container,
@@ -396,6 +418,10 @@
     padding: 0 10px;
     box-sizing: border-box;
     position: relative;
+  }
+
+  .interactive-input-part > .chat-subapp-activity-widget.has-activity {
+    margin-bottom: 5px;
   }
 
   .interactive-input-part:has(> .chat-input-notification-container.has-notification) .input-box,

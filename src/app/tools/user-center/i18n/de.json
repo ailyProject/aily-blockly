@@ -7,6 +7,7 @@
         "PLAN_LABEL": "{{plan}} Plan",
         "AI_CALLS": "KI-Aufrufe",
         "AUTO_MODE": "Automodus",
+        "AI_CALLS_RESET_SHORT": "{{date}} Reset",
         "ADD_AI_CALLS": "Nutzung hinzufügen",
         "CLOUD_STORAGE": "Cloud-Speicher",
         "ADD_STORAGE": "Speicher hinzufügen",

@@ -139,11 +139,14 @@ const collectBlockTypes = function(blockState, types) {
  * Used by paste callback to determine which libraries need to be installed.
  */
 export let clipboardLibraries = {};
+let clipboardProjectData = null;
+let clipboardExportPromise = Promise.resolve();
 
 /**
  * Store copy information for blocks in localStorage and system clipboard.
  */
 export const dataCopyToStorage = function() {
+  const operation = (async () => {
   const storage = [];
   copyData.forEach((data) => {
     delete data['source'];
@@ -173,19 +176,28 @@ export const dataCopyToStorage = function() {
           if (info) libraries[type] = { name: info.name, version: info.version, localPath: info.localPath || '' };
         });
       }
+      const projectData = window.__ailyProjectDataClipboard ?
+        await window.__ailyProjectDataClipboard.export(
+            storage.map((data) => typeof data === 'string' ? JSON.parse(data) : data),
+        ) : null;
+      clipboardProjectData = projectData;
       const enriched = {
         format: 'aily-blockly-clipboard',
-        version: 1,
+        version: 2,
         blocks: storage,
         connections: connectionDBList.slice(),
         libraries,
+        projectData,
         timestamp,
       };
-      ailyClipboard.writeText(JSON.stringify(enriched));
+      await Promise.resolve(ailyClipboard.writeText(JSON.stringify(enriched)));
     }
   } catch (e) {
     console.warn('[multiselect] Failed to write to system clipboard:', e);
   }
+  })();
+  clipboardExportPromise = operation;
+  return operation;
 };
 
 /**
@@ -210,6 +222,7 @@ export const dataCopyFromStorage = function() {
             connectionDBList.push(data);
           });
           clipboardLibraries = parsed.libraries || {};
+          clipboardProjectData = parsed.projectData || null;
           try {
             const main = Blockly.getMainWorkspace && Blockly.getMainWorkspace();
             if (main) resetConsecutivePasteStagger(main);
@@ -237,11 +250,23 @@ export const dataCopyFromStorage = function() {
       connectionDBList.push(data);
     });
     clipboardLibraries = {};
+    clipboardProjectData = null;
     try {
       const main = Blockly.getMainWorkspace && Blockly.getMainWorkspace();
       if (main) resetConsecutivePasteStagger(main);
     } catch (e2) {}
   }
+};
+
+/** Import resource containers required by the current cross-project paste. */
+export const importClipboardProjectData = async function() {
+  await clipboardExportPromise;
+  if (!clipboardProjectData || !window.__ailyProjectDataClipboard) return;
+  const values = [];
+  copyData.forEach((data) => {
+    values.push(typeof data === 'string' ? JSON.parse(data) : data);
+  });
+  await window.__ailyProjectDataClipboard.import(clipboardProjectData, values);
 };
 
 /**

@@ -9,6 +9,8 @@
                 <i class="fa-light fa-circle-question help-icon" (click)="openHelpUrl('tools')"></i>
             </div>
             <div class="items-list">
+                <!-- TEMP: 暂时隐藏「内置模型预设」展示，功能与数据逻辑保持不变 -->
+                @if (false) {
                 <div class="setting-block setting-block--section-gap">
                     <div class="setting-label">内置模型预设</div>
                     <div class="setting-hint">当前阶段用户侧只展示稳定预设。Auto 是软件内置默认 LLM；如需接入自定义模型，可在下方单独管理。</div>
@@ -57,6 +59,7 @@
                         }
                     </div>
                 </div>
+                }
 
                 <div class="items-header">
                     <label nz-checkbox [(ngModel)]="allModelsChecked" [nzIndeterminate]="modelsIndeterminate"
@@ -235,6 +238,8 @@
                 <span>其他设置</span>
             </div>
             <div class="items-list">
+                <!-- TEMP: 暂时隐藏「其他设置」中从 Instruction/Agent/Terminal 到「默认自动保存变更」之前的项，功能与保存逻辑保持不变 -->
+                @if (false) {
                 <div class="setting-block">
                     <div class="setting-label">用户级 Instruction Folders</div>
                     <div class="setting-hint">每行一个绝对路径，lex 会递归扫描其中的 *.instructions.md。</div>
@@ -313,6 +318,8 @@
                     <label nz-checkbox [(ngModel)]="terminalInheritDefaultAllowList">继承 lex 内建 terminal allow list</label>
                     <span class="setting-hint">关闭后，只有上面的自动放行规则会跳过审批。</span>
                 </div>
+                }
+
                 <div class="setting-row">
                     <label nz-checkbox [(ngModel)]="autoSaveEdits">默认自动保存变更</label>
                     <span class="setting-hint">AI编辑完成后自动保留变更，不弹出变更面板</span>

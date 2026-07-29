@@ -76,11 +76,6 @@ import { analyzeLibraryBlocksTool } from '../tools/editBlockTool';
 import { TOOL_SETTINGS_CATALOG } from '../tools/tool-settings-catalog';
 import type { HostSessionRecord, PersistedHostResponseData } from '../services/chat-history.service';
 import { AilyAgentSessionProviderOptionsSourceService } from '../services/chat-session-provider-options-source.service';
-import { EditingTextDiffService } from '../services/editing-text-diff.service';
-import type { EditingTimelineFileWriteEvent } from '../services/editing-timeline-recording-bridge';
-import type { ChatSessionLexPostTurnResources } from '../services/chat-session-lex-post-turn-resource-factory.service';
-import type { EditingTextLineChange } from '../services/editing-text-diff.types';
-import type { NormalizedTextEdit } from '../services/editing-timeline.types';
 import { LEGACY_HOST_EXTERNAL_TOOLS } from '../tools/legacy-host-tool-definitions';
 import {
   BlocklyHostAdapter,
@@ -542,9 +537,6 @@ export type BootstrapLexAgentContext = Pick<IProjectContext, 'prjPath' | 'prjRoo
   & Pick<IChatServiceAccess, 'ailyChatConfigService' | 'mcpService' | 'runtimeInteractionHost'>
   & Pick<IChatCoordination, 'handleToolApproval' | 'checkToolApprovalPreflight' | 'lexStream' | 'syncSessionCustomizationContentProvider' | 'syncSessionCustomizationProvider' | 'syncSessionCustomizationProviders' | 'syncSessionProviderOptionsSource' | 'syncSessionProviderOptionsSources'>
   & {
-    readonly editTracking: {
-      recordAdditionalRepositoryRootCandidates(paths: readonly string[] | undefined | null): void;
-    };
     readonly currentSessionPath?: string | null;
     readonly currentSessionPermissionMode?: ChatSessionPermissionMode;
     readonly currentSessionPermissionProfile?: ChatSessionPermissionProfile;
@@ -552,10 +544,6 @@ export type BootstrapLexAgentContext = Pick<IProjectContext, 'prjPath' | 'prjRoo
     readonly currentSessionApprovalPolicy?: 'on_request' | 'never';
     readonly ownerScheduler?: Pick<ChatRuntimeOwnerScheduler, 'runOutsideOwner'>;
     buildExecutionSaveTarget?(sessionId: string | null | undefined): HostSessionSaveTarget | null;
-    getOrCreateLexPostTurnResources?(
-      sessionId: string | null | undefined,
-      cwd: string | null | undefined,
-    ): ChatSessionLexPostTurnResources | undefined;
     scheduleLexRequestCompleted?(input: {
       sessionId: string;
       turnId: string;
@@ -676,7 +664,7 @@ function resolveDeferredGroupsForRuntime(runtimeMode: ChatAgentRuntimeMode) {
 // - blockly-specific capabilities must enter through toolProvider / agentProvider / skillProvider
 // - if a tool is portable across hosts, it should move into aily-lex core instead of growing this host list
 const LEX_CORE_SAFE_TOOLS = new Set([
-  'read_file', 'write_file', 'edit_file', 'multi_edit_file',
+  'read_file', 'create_file', 'write_file', 'edit_file', 'multi_edit_file',
   'delete_file', 'list_dir', 'create_directory',
   'grep_search', 'glob_search', 'assets_tool',
   'command_exec', 'command_write_stdin', 'command_status', 'command_resize', 'command_stop',
@@ -1093,86 +1081,6 @@ function toDirectoryNames(entries: unknown): string[] {
   return entries.map(entry => typeof entry === 'string' ? entry : String((entry as { name?: unknown })?.name ?? ''));
 }
 
-const EDITING_TIMELINE_DIFF_OPTIONS = {
-  ignoreTrimWhitespace: false,
-  maxComputationTimeMs: 5_000,
-  computeMoves: false,
-  extendToSubwords: true,
-} as const;
-
-async function computeNormalizedTextEdits(beforeContent: string, afterContent: string): Promise<NormalizedTextEdit[] | undefined> {
-  if (beforeContent === afterContent) {
-    return undefined;
-  }
-
-  const diffService = new EditingTextDiffService({ preferWorker: false });
-  const diff = await diffService.computeDiff(beforeContent, afterContent, EDITING_TIMELINE_DIFF_OPTIONS);
-  const edits = diff.changes.flatMap(change => toNormalizedTextEdits(change, afterContent));
-  return edits.length > 0 ? edits : undefined;
-}
-
-function toNormalizedTextEdits(change: EditingTextLineChange, modifiedContent: string): NormalizedTextEdit[] {
-  if (Array.isArray(change.charChanges) && change.charChanges.length > 0) {
-    return change.charChanges.map(charChange => ({
-      startLine: charChange.originalStartLineNumber,
-      startColumn: charChange.originalStartColumn,
-      endLine: charChange.originalEndLineNumber,
-      endColumn: charChange.originalEndColumn,
-      newText: sliceTextByPosition(
-        modifiedContent,
-        charChange.modifiedStartLineNumber,
-        charChange.modifiedStartColumn,
-        charChange.modifiedEndLineNumber,
-        charChange.modifiedEndColumn,
-      ),
-    }));
-  }
-
-  return [{
-    startLine: change.originalStartLineNumber,
-    startColumn: 1,
-    endLine: change.originalEndLineNumberExclusive,
-    endColumn: 1,
-    newText: sliceTextByPosition(
-      modifiedContent,
-      change.modifiedStartLineNumber,
-      1,
-      change.modifiedEndLineNumberExclusive,
-      1,
-    ),
-  }];
-}
-
-function sliceTextByPosition(
-  content: string,
-  startLine: number,
-  startColumn: number,
-  endLine: number,
-  endColumn: number,
-): string {
-  const lineStarts = computeLineStarts(content);
-  const startOffset = positionToOffset(lineStarts, content.length, startLine, startColumn);
-  const endOffset = positionToOffset(lineStarts, content.length, endLine, endColumn);
-  return content.slice(startOffset, endOffset);
-}
-
-function computeLineStarts(content: string): number[] {
-  const starts = [0];
-  for (let index = 0; index < content.length; index++) {
-    if (content.charCodeAt(index) === 10) {
-      starts.push(index + 1);
-    }
-  }
-  return starts;
-}
-
-function positionToOffset(lineStarts: readonly number[], contentLength: number, line: number, column: number): number {
-  const safeLine = Math.max(1, line);
-  const lineIndex = Math.min(safeLine - 1, lineStarts.length - 1);
-  const lineStart = lineStarts[lineIndex] ?? contentLength;
-  return Math.min(contentLength, lineStart + Math.max(0, column - 1));
-}
-
 interface BlocklyExternalHostApiOptions {
   readonly cwd?: string;
   readonly onProjectCreated?: (projectPath: string, result: unknown) => void | Promise<void>;
@@ -1346,135 +1254,8 @@ export function buildExternalHostAPI(
       : host.path?.getUserHome?.() ?? '';
     return home ? joinProjectPath(home, 'aily-project') : '';
   };
-  const readBoardCandidates = (board: string) => {
-    const normalizedBoard = board.trim();
-    const candidates = new Set<string>();
-    if (normalizedBoard) {
-      candidates.add(normalizedBoard);
-      if (!normalizedBoard.startsWith('@aily-project/')) {
-        candidates.add(`@aily-project/${normalizedBoard}`);
-        candidates.add(`@aily-project/board-${normalizedBoard.replace(/^board-/, '')}`);
-      }
-    }
-    return [...candidates];
-  };
-  const resolveBoardForProjectCreate = (board: string) => {
-    let parsedBoard: Record<string, unknown> | undefined;
-    try {
-      const parsed = JSON.parse(board);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        parsedBoard = parsed as Record<string, unknown>;
-      }
-    } catch {
-      parsedBoard = undefined;
-    }
-
-    if (parsedBoard) {
-      const parsedName = typeof parsedBoard['name'] === 'string' ? parsedBoard['name'].trim() : '';
-      if (parsedName) {
-        return {
-          ...parsedBoard,
-          name: parsedName,
-          nickname: typeof parsedBoard['nickname'] === 'string' ? parsedBoard['nickname'] : parsedName,
-          version: typeof parsedBoard['version'] === 'string' ? parsedBoard['version'] : 'latest',
-        };
-      }
-    }
-
-    const config = host.config as unknown as Record<string, unknown> | undefined;
-    const validateBoard = config && typeof config['validateBoard'] === 'function'
-      ? config['validateBoard'] as (boardName: string) => { exists?: boolean; board?: unknown }
-      : undefined;
-    for (const candidate of readBoardCandidates(board)) {
-      const validation = validateBoard?.call(config, candidate);
-      if (validation?.exists && validation.board && typeof validation.board === 'object') {
-        return validation.board as Record<string, unknown>;
-      }
-    }
-
-    const boardDict = config?.['boardDict'] && typeof config['boardDict'] === 'object'
-      ? config['boardDict'] as Record<string, unknown>
-      : undefined;
-    for (const candidate of readBoardCandidates(board)) {
-      const dictBoard = boardDict?.[candidate];
-      if (dictBoard && typeof dictBoard === 'object') {
-        return dictBoard as Record<string, unknown>;
-      }
-    }
-
-    const boardList = Array.isArray(config?.['boardList'])
-      ? config?.['boardList'] as Record<string, unknown>[]
-      : typeof config?.['getBoardsList'] === 'function'
-        ? (config['getBoardsList'] as () => unknown[]).call(config).filter(item => item && typeof item === 'object') as Record<string, unknown>[]
-        : [];
-    const normalizedCandidates = readBoardCandidates(board).map(candidate => candidate.toLowerCase());
-    const listBoard = boardList.find(item => {
-      const names = [
-        typeof item['name'] === 'string' ? item['name'] : '',
-        typeof item['nickname'] === 'string' ? item['nickname'] : '',
-        typeof item['displayName'] === 'string' ? item['displayName'] : '',
-      ].map(value => value.trim().toLowerCase()).filter(Boolean);
-      return names.some(name => normalizedCandidates.includes(name));
-    });
-    if (listBoard) {
-      return listBoard;
-    }
-
-    throw new Error(`Board not found for project creation: ${board}`);
-  };
-  const createProjectFromLegacyProjectService = typeof (host.project as any)?.projectNew === 'function'
-    ? async (name: string, board: string, path?: string) => {
-        const basePath = normalizeProjectCreateBasePath(path);
-        if (!basePath) {
-          throw new Error('Project creation requires a target project root path.');
-        }
-        const boardInfo = resolveBoardForProjectCreate(board);
-        const boardName = typeof boardInfo['name'] === 'string' ? boardInfo['name'] : board;
-        const boardNickname = typeof boardInfo['nickname'] === 'string'
-          ? boardInfo['nickname']
-          : typeof boardInfo['displayName'] === 'string'
-            ? boardInfo['displayName']
-            : boardName;
-        const boardVersion = typeof boardInfo['version'] === 'string' && boardInfo['version'].trim()
-          ? boardInfo['version'].trim()
-          : 'latest';
-        const devmode = Array.isArray(boardInfo['mode']) && typeof boardInfo['mode'][0] === 'string'
-          ? boardInfo['mode'][0]
-          : typeof boardInfo['mode'] === 'string'
-            ? boardInfo['mode']
-            : undefined;
-        const result = await (host.project as any).projectNew({
-          name,
-          path: basePath,
-          board: {
-            ...boardInfo,
-            name: boardName,
-            nickname: boardNickname,
-            version: boardVersion,
-          },
-          ...(devmode ? { devmode } : {}),
-        }, {
-          activationReason: 'chat-tool-create',
-          sessionResource: options.sessionId || null,
-        });
-        if (result === false) {
-          throw new Error('Project service returned false while creating project.');
-        }
-        (host.config as any)?.recordBoardUsage?.(boardName);
-        const projectPath = joinProjectPath(basePath, name.replace(/\s/g, '_'));
-        return {
-          projectOpened: true,
-          projectPath,
-          projectName: name,
-          board: {
-            name: boardName,
-            nickname: boardNickname,
-            version: boardVersion,
-          },
-        };
-      }
-    : undefined;
   const hasBuilder = typeof host.builder?.build === 'function';
+  const hasUploader = typeof host.builder?.upload === 'function';
   const hasBoardSearch = !!(
     host.config?.getHardwareCategories
     || host.config?.getBoardsList
@@ -1554,12 +1335,17 @@ export function buildExternalHostAPI(
     },
     getProjectPath: () => prjPath(),
     getBoard: () => host.project.currentBoard,
-    createProject: host.project.createProject || createProjectFromLegacyProjectService
-      ? async (name: string, board: string, path?: string) => {
-          const createProject = host.project.createProject ?? createProjectFromLegacyProjectService!;
+    createProject: typeof host.project.createProject === 'function'
+      ? async (name: string, board: string, path?: string, invocationContext?: unknown) => {
+          const createProject = host.project.createProject!;
           const basePath = normalizeProjectCreateBasePath(path ?? prjPath());
           const projectName = resolveUniqueProjectCreateName(basePath, name);
-          const result = await createProject(projectName, board, basePath);
+          const result = await (createProject as unknown as (
+            projectName: string,
+            board: string,
+            basePath: string,
+            context?: unknown,
+          ) => Promise<unknown>)(projectName, board, basePath, invocationContext);
           const resultRecord = result && typeof result === 'object'
             ? result as Record<string, unknown>
             : null;
@@ -1573,7 +1359,7 @@ export function buildExternalHostAPI(
               : basePath
                 ? joinProjectPath(basePath, normalizeProjectCreateDirectoryName(projectName))
                 : '';
-          const response = resultRecord
+          const response: Record<string, unknown> & { path: string } = resultRecord
             ? {
                 ...resultRecord,
                 path: typeof resultRecord['path'] === 'string' && resultRecord['path'].trim()
@@ -1585,7 +1371,13 @@ export function buildExternalHostAPI(
                   : projectName,
                 ...(projectName !== String(name || '').trim() ? { requestedProjectName: String(name || '').trim() } : {}),
               }
-            : result;
+            : {
+                path: projectPath,
+                projectPath,
+                projectName,
+                result,
+                ...(projectName !== String(name || '').trim() ? { requestedProjectName: String(name || '').trim() } : {}),
+              };
           if (projectPath) {
             createdProjectPath = projectPath;
             await options.onProjectCreated?.(projectPath, response);
@@ -1709,6 +1501,21 @@ export function buildExternalHostAPI(
             errors: result?.success ? [] : [result?.output ?? 'Build failed'],
           };
         },
+        ...(hasUploader ? {
+          listSerialPorts: async () => await host.builder.listSerialPorts?.() ?? [],
+          upload: async (options?: { port?: string }) => {
+            const port = String(options?.port || '').trim();
+            if (!port) {
+              return { success: false, output: 'An explicit serial port is required.', errors: ['An explicit serial port is required.'] };
+            }
+            const result = await host.builder.upload!(prjPath(), port);
+            return {
+              success: !!result?.success,
+              output: result?.output ?? '',
+              errors: result?.success ? [] : [result?.output ?? 'Upload failed'],
+            };
+          },
+        } : {}),
       } : undefined,
       boardSearch: hasBoardSearch ? {
         search: async (query: string, type?: string) => {
@@ -1823,6 +1630,7 @@ export function buildExternalHostAPI(
       },
     } as any) : undefined,
     connectionGraph: host.connectionGraph,
+    subappAgent: host.subappAgent,
     config: host.config,
       auth: host.auth ? {
         getToken: async () => host.auth.getToken?.() ?? host.auth.token,
@@ -2060,11 +1868,13 @@ export function buildLexEndpoint(
 ): any {
   const llmConfig = getLLMConfig(currentModel, apiConfig);
 
-  if (llmConfig?.apiKey && llmConfig?.baseUrl) {
-    return new lex.OpenAIEndpoint({
-      baseUrl: llmConfig.baseUrl,
-      apiKey: llmConfig.apiKey,
-      modelFamily: 'openai',
+  if (isLexBootstrapTraceEnabled()) {
+    console.info('[LatencyDebug][Routing] endpoint selected', {
+      endpointKind: 'AilyServicesEndpoint',
+      modelId: currentModel?.model || null,
+      hasResolvedApiKey: Boolean(llmConfig?.apiKey),
+      hasResolvedBaseUrl: Boolean(llmConfig?.baseUrl),
+      useCustomApiKey: apiConfig?.useCustomApiKey === true,
     });
   }
 
@@ -2114,13 +1924,16 @@ function normalizeSoftRoundLimit(value: number | undefined): number {
 export function buildLexModelConfig(
   currentModel?: LexRuntimeModelConfig | null,
   maxOutputTokens = 8192,
+  apiConfig?: LexRuntimeApiConfig | null,
 ): any {
+  const llmConfig = getLLMConfig(currentModel, apiConfig);
   return {
     modelId: currentModel?.model || 'default',
     presetId: currentModel?.presetId,
     contextWindowTokens: currentModel?.contextWindowTokens,
     reasoningEffort: currentModel?.reasoningEffort,
     maxOutputTokens,
+    ...(llmConfig ? { llmConfig } : {}),
   };
 }
 
@@ -2332,78 +2145,18 @@ export function bootstrapBlocklyLexAgent(
       },
     };
   }
-  if (cwd && (sessionId || ctx.sessionId)) {
-    const lexPostTurnResources = ctx.getOrCreateLexPostTurnResources?.(
-      sessionId || ctx.sessionId,
-      cwd,
-    );
-    if (lexPostTurnResources) {
-      const editingTimelineRecorder = lexPostTurnResources.editingTimelineRecorder;
-      runtimeExtensions['editingTimeline'] = {
-        recordFileWrite: async (event: EditingTimelineFileWriteEvent) => {
-          const edits = event.contentKind !== 'binary'
-            && event.beforeContent !== null
-            && event.beforeContent !== undefined
-            && event.afterContent !== null
-            && event.afterContent !== undefined
-            ? await computeNormalizedTextEdits(event.beforeContent, event.afterContent)
-            : undefined;
-          editingTimelineRecorder.recordFileWrite({
-            ...event,
-            ...(edits ? { edits } : {}),
-          });
-        },
-        reconcileWorktreeChanges: async (input: {
-          turnId: string;
-          filePaths: readonly string[];
-          repositoryRoots?: readonly string[];
-          changes?: readonly ({
-            filePath: string;
-            kind: 'create' | 'modify' | 'delete';
-            contentKind: 'text' | 'binary' | 'notebook';
-          } | {
-            filePath: string;
-            previousFilePath: string;
-            kind: 'rename';
-            contentKind: 'text' | 'binary' | 'notebook';
-          })[];
-        }) => {
-          ctx.editTracking.recordAdditionalRepositoryRootCandidates(input.repositoryRoots);
-          await editingTimelineRecorder.reconcileWorktreeChanges({
-            ...input,
-            readCurrentText: async (filePath: string) => {
-              try {
-                return AilyHost.get().fs.readFileSync(filePath, 'utf-8');
-              } catch {
-                return null;
-              }
-            },
-            readCurrentBytes: async (filePath: string) => {
-              try {
-                return normalizeHostBytes((AilyHost.get().fs.readFileSync as any)(filePath));
-              } catch {
-                return null;
-              }
-            },
-            computeEdits: computeNormalizedTextEdits,
-          });
-        },
-      };
-      runtimeExtensions['workspaceChangeCollector'] = lexPostTurnResources.workspaceChangeCollector;
-    }
-    if (ctx.scheduleLexRequestCompleted) {
-      runtimeExtensions['sessionCompletionCoordinator'] = {
-        scheduleRequestCompleted: (input: {
-          sessionId: string;
-          turnId: string;
-          reason: string;
-          runWorkspaceFinalize: () => Promise<void>;
-          runSessionEndHooks: () => Promise<void>;
-        }) => {
-          ctx.scheduleLexRequestCompleted?.(input);
-        },
-      };
-    }
+  if (cwd && (sessionId || ctx.sessionId) && ctx.scheduleLexRequestCompleted) {
+    runtimeExtensions['sessionCompletionCoordinator'] = {
+      scheduleRequestCompleted: (input: {
+        sessionId: string;
+        turnId: string;
+        reason: string;
+        runWorkspaceFinalize: () => Promise<void>;
+        runSessionEndHooks: () => Promise<void>;
+      }) => {
+        ctx.scheduleLexRequestCompleted?.(input);
+      },
+    };
   }
 
   let pendingNpmCommand: { command: string; isInstall: boolean; isUninstall: boolean } | null = null;
@@ -2546,7 +2299,7 @@ export function bootstrapBlocklyLexAgent(
   agent = lex.createAgent({
     host: adapter,
     endpoint: buildLexEndpoint(lex, ctx.currentModel, ctx.ailyChatConfigService),
-    model: buildLexModelConfig(ctx.currentModel),
+    model: buildLexModelConfig(ctx.currentModel, 8192, ctx.ailyChatConfigService),
     summarizerModel: buildLexSummarizerModelConfig(ctx.currentModel, ctx.ailyChatConfigService),
     contextCompactionArchitecture: 'provider',
     inlineSummarization: true,
@@ -3444,9 +3197,6 @@ export function buildTurnResponseLexSessionSnapshot(
         error: toolCall?.error,
       })),
       timestamp: round?.timestamp,
-      ...(normalizeTurnResponseSummaryPreview(round?.summary)
-        ? { summary: normalizeTurnResponseSummaryPreview(round?.summary) }
-        : {}),
     })),
     response: createConversationTurnResponse({
       participant: turn.response?.participant || 'assistant',
@@ -3477,7 +3227,6 @@ export function buildTurnResponseLexSessionSnapshot(
     });
   });
 
-  const normalizedLexTurns = applyPersistedRoundSummariesOnTurns(lexTurns, turnResponses);
   const latestContinuation = turnResponses[turnResponses.length - 1]?.response?.continuation;
   const latestRequestSnapshot = findLatestTurnRequestPromptContextSnapshot(turnResponses);
 
@@ -3500,7 +3249,7 @@ export function buildTurnResponseLexSessionSnapshot(
 
   return {
     sessionId,
-    turns: normalizedLexTurns,
+    turns: lexTurns,
     ...(normalizedRequestContext ? { requestContext: normalizedRequestContext } : {}),
     ...(activeSkillNames.length > 0 ? { activeSkillNames } : {}),
     revision: 0,
@@ -3532,148 +3281,6 @@ function normalizeActiveSkillNames(value: readonly string[] | undefined): string
       .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
       .map(entry => entry.trim()),
   )).sort((left, right) => left.localeCompare(right));
-}
-
-interface PersistedRoundSummaryCarrier {
-  readonly anchorRoundId: string;
-  readonly summary: string;
-  readonly anchorTurnId?: string;
-  readonly turnIndex?: number;
-  readonly roundIndex?: number;
-}
-
-function getLatestStructuredRoundSummaryForTurn(
-  turn: import('aily-lex/browser').TurnResponseTurn,
-): PersistedRoundSummaryCarrier | undefined {
-  const turnSummary = turn.responseModel?.summaries?.at(-1) ?? turn.responseModel?.summary;
-  const rawSummary = (turnSummary ?? {}) as Record<string, unknown>;
-  const toolCallRoundId = typeof turnSummary?.toolCallRoundId === 'string' && turnSummary.toolCallRoundId.trim()
-    ? turnSummary.toolCallRoundId.trim()
-    : undefined;
-  const anchorRoundId = typeof rawSummary['anchorRoundId'] === 'string' && rawSummary['anchorRoundId'].trim()
-    ? rawSummary['anchorRoundId'].trim()
-    : toolCallRoundId;
-  const anchorTurnId = typeof rawSummary['anchorTurnId'] === 'string' && rawSummary['anchorTurnId'].trim()
-    ? rawSummary['anchorTurnId'].trim()
-    : undefined;
-  const turnIndex = typeof rawSummary['turnIndex'] === 'number' && Number.isInteger(rawSummary['turnIndex']) && rawSummary['turnIndex'] >= 0
-    ? rawSummary['turnIndex']
-    : undefined;
-  const roundIndex = typeof rawSummary['roundIndex'] === 'number' && Number.isInteger(rawSummary['roundIndex']) && rawSummary['roundIndex'] >= -1
-    ? rawSummary['roundIndex']
-    : undefined;
-  const summary = normalizeTurnResponseSummaryPreview(turnSummary?.text);
-
-  if (!anchorRoundId || !summary) {
-    return undefined;
-  }
-
-  return {
-    anchorRoundId,
-    summary,
-    ...(anchorTurnId ? { anchorTurnId } : {}),
-    ...(turnIndex !== undefined ? { turnIndex } : {}),
-    ...(roundIndex !== undefined ? { roundIndex } : {}),
-  };
-}
-
-function collectDirectSummaryRoundIds(
-  turns: readonly import('aily-lex/browser').ConversationTurn[],
-): Set<string> {
-  const directSummaryRoundIds = new Set<string>();
-
-  for (const turn of turns) {
-    for (const round of turn.rounds) {
-      if (normalizeTurnResponseSummaryPreview(round.summary)) {
-        directSummaryRoundIds.add(round.id);
-      }
-    }
-  }
-
-  return directSummaryRoundIds;
-}
-
-function findPersistedRoundSummaryTarget(
-  turns: readonly import('aily-lex/browser').ConversationTurn[],
-  sourceTurnIndex: number,
-  carrier: PersistedRoundSummaryCarrier,
-): { turnIndex: number; roundIndex: number } | undefined {
-  const maxTurnIndex = Math.min(sourceTurnIndex, turns.length - 1);
-  if (maxTurnIndex < 0) {
-    return undefined;
-  }
-
-  for (let turnIndex = maxTurnIndex; turnIndex >= 0; turnIndex -= 1) {
-    const roundIndex = turns[turnIndex].rounds.findIndex(round => round.id === carrier.anchorRoundId);
-    if (roundIndex >= 0) {
-      return { turnIndex, roundIndex };
-    }
-  }
-
-  if (carrier.anchorTurnId && carrier.roundIndex !== undefined && carrier.roundIndex >= 0) {
-    for (let turnIndex = maxTurnIndex; turnIndex >= 0; turnIndex -= 1) {
-      const turn = turns[turnIndex];
-      if (turn.id !== carrier.anchorTurnId) {
-        continue;
-      }
-
-      return carrier.roundIndex < turn.rounds.length
-        ? { turnIndex, roundIndex: carrier.roundIndex }
-        : undefined;
-    }
-  }
-
-  if (carrier.turnIndex !== undefined && carrier.roundIndex !== undefined && carrier.roundIndex >= 0) {
-    const turn = turns[carrier.turnIndex];
-    return carrier.turnIndex <= maxTurnIndex && turn && carrier.roundIndex < turn.rounds.length
-      ? { turnIndex: carrier.turnIndex, roundIndex: carrier.roundIndex }
-      : undefined;
-  }
-
-  return undefined;
-}
-
-function applyPersistedRoundSummariesOnTurns(
-  turns: readonly import('aily-lex/browser').ConversationTurn[],
-  turnResponses: readonly import('aily-lex/browser').TurnResponseTurn[],
-): import('aily-lex/browser').ConversationTurn[] {
-  if (!turns.length || !turnResponses.length) {
-    return [...turns];
-  }
-
-  const turnsWithNormalizedSummaries = [...turns];
-  const directSummaryRoundIds = collectDirectSummaryRoundIds(turns);
-
-  for (let sourceTurnIndex = 0; sourceTurnIndex < turnResponses.length; sourceTurnIndex += 1) {
-    const carrier = getLatestStructuredRoundSummaryForTurn(turnResponses[sourceTurnIndex]);
-    if (!carrier) {
-      continue;
-    }
-
-    const target = findPersistedRoundSummaryTarget(turnsWithNormalizedSummaries, sourceTurnIndex, carrier);
-    if (!target) {
-      continue;
-    }
-
-    const targetTurn = turnsWithNormalizedSummaries[target.turnIndex];
-    const targetRound = targetTurn.rounds[target.roundIndex];
-    if (directSummaryRoundIds.has(targetRound.id)) {
-      continue;
-    }
-
-    const updatedRounds = [...targetTurn.rounds];
-    updatedRounds[target.roundIndex] = {
-      ...targetRound,
-      summary: carrier.summary,
-    };
-
-    turnsWithNormalizedSummaries[target.turnIndex] = {
-      ...targetTurn,
-      rounds: updatedRounds,
-    };
-  }
-
-  return turnsWithNormalizedSummaries;
 }
 
 function clonePersistableInteractionContinuation(
@@ -5187,19 +4794,4 @@ function parseShellCommand(command: string): string[] {
   }
 
   return result;
-}
-
-function normalizeHostBytes(content: unknown): Uint8Array {
-  if (content instanceof Uint8Array) {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return new Uint8Array(content);
-  }
-  if (content && typeof content === 'object' && 'buffer' in (content as any)) {
-    const view = content as { buffer: ArrayBufferLike; byteOffset?: number; byteLength?: number };
-    const byteLength = view.byteLength ?? ((view.buffer as ArrayBufferLike).byteLength - (view.byteOffset ?? 0));
-    return new Uint8Array(view.buffer, view.byteOffset ?? 0, byteLength);
-  }
-  return new Uint8Array();
 }

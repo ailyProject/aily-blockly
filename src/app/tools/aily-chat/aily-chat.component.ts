@@ -42,7 +42,6 @@ import {
 import { ChatViewService } from './services/chat-view.service';
 import { ChatEngineService } from './services/chat-engine.service';
 import { EditCheckpointService } from './services/edit-checkpoint.service';
-import { GitWorkspaceCheckpointProviderService } from './services/git-workspace-checkpoint-provider.service';
 import { ChatPerformanceTracer } from './services/chat-perf-tracer';
 import { ChatSwitchShellCoordinator } from './helpers/chat-switch-shell-coordinator';
 import { ChatEditResourceShellCoordinator } from './helpers/chat-edit-resource-shell-coordinator';
@@ -109,6 +108,8 @@ import { ChatSessionListComponent } from './components/chat-session-list.compone
 import { ChatSessionPickerComponent } from './components/chat-session-picker.component';
 import { ChatSessionTitleControlComponent } from './components/chat-session-title-control.component';
 import { ChatContextToolbarComponent } from './components/chat-context-toolbar/chat-context-toolbar.component';
+import { ChatSubappActivityBarComponent } from './components/subapp-activity/chat-subapp-activity-bar.component';
+import { ChatSubappDockComponent } from './components/subapp-activity/chat-subapp-dock.component';
 import {
   ChatPermissionConfirmDialogComponent,
   type ChatPermissionConfirmDialogResult,
@@ -123,6 +124,8 @@ import { RepetitionDetectionService } from './services/repetition-detection.serv
 import { ChatHistoryService } from './services/chat-history.service';
 import { ChatDebugBrowserService, ChatDebugBrowserViewState } from './services/chat-debug-browser.service';
 import { ChatRuntimeInteractionHostService } from './services/chat-runtime-interaction-host.service';
+import { ChatRuntimeOwnerToolApprovalService } from './services/chat-runtime-owner-tool-approval.service';
+import { ChatRemoteCapabilityService } from './services/chat-remote-capability.service';
 import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
 import type {
@@ -200,6 +203,8 @@ function clearTimeoutOutsideAngular(handle: ReturnType<typeof setTimeout>): void
     ChatSessionPickerComponent,
     ChatSessionTitleControlComponent,
     ChatContextToolbarComponent,
+    ChatSubappActivityBarComponent,
+    ChatSubappDockComponent,
     NzNoAnimationDirective,
   ],
   templateUrl: './aily-chat.component.html',
@@ -341,6 +346,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
   private readonly debugBrowserChangeSubscription: Subscription;
   private readonly sessionViewModelChangeSubscription: Subscription;
+  private readonly remoteCapabilitySubscription: Subscription;
   private readonly runtimeProcessSnapshotSubscription: { dispose(): void };
   private toolSignalSubscription: Subscription | null = null;
   private childToolSessionStateCleanup: (() => void) | null = null;
@@ -387,7 +393,9 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     private themeService: ThemeService,
     private toolI18n: ToolI18nService,
     private hostInitializer: AilyChatHostInitializerService,
+    private runtimeOwnerToolApproval: ChatRuntimeOwnerToolApprovalService,
     public runtimeInteractionHost: ChatRuntimeInteractionHostService,
+    public remoteCapability: ChatRemoteCapabilityService,
     public engine: ChatEngineService,
     public scrollManager: ScrollManagerService,
     public resourceManager: ResourceManagerService,
@@ -412,6 +420,14 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     exposeAilyChatE2eHarness({
       engine: this.engine,
       viewState: this.viewState,
+      openEmbeddedTool: (toolId) => this.uiService.openToolEmbedded(toolId),
+      closeTool: (toolId) => this.uiService.closeTool(toolId),
+      requestToolApproval: (sessionId, request) => this.runtimeOwnerToolApproval.handleToolApproval({
+        lexStream: this.engine.lexStream,
+        sessionId,
+        defaultSessionId: sessionId,
+        request,
+      }),
       readRenderingDiagnostics: () => this.readRenderingDiagnostics(),
       readPerformanceDiagnostics: () => ({
         ...ChatPerformanceTracer.snapshotPerformanceState(),
@@ -434,6 +450,9 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     });
     this.sessionViewModelChangeSubscription = this.viewState.sessionViewModelChanged$.subscribe(() => {
       this.syncSessionListDisplayState();
+    });
+    this.remoteCapabilitySubscription = this.remoteCapability.snapshot$.subscribe(() => {
+      this.cdr.markForCheck();
     });
     // 注册 OnPush CD 回调 — viewAdapter 每次 flush/appendImmediate 后调用 markForCheck
     this.engine.setCdCallback(() => {
@@ -639,6 +658,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   isSendPrimaryActionDisabled(): boolean {
+    if (this.isBuiltInRemoteModelUnavailable()) {
+      return true;
+    }
+
     if (this.vm.authQuotaExhausted) {
       return true;
     }
@@ -652,6 +675,20 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   getSendPrimaryActionTooltip(): string {
+    if (this.isBuiltInRemoteModelUnavailable()) {
+      switch (this.remoteCapability.snapshot.state) {
+        case 'signed_out':
+          return 'Sign in to use built-in models';
+        case 'offline_cached':
+          return 'Reconnect to use built-in models';
+        case 'unavailable':
+          return 'The model service is currently unavailable';
+        case 'unknown':
+        default:
+          return 'Checking model service availability';
+      }
+    }
+
     if (this.vm.authQuotaExhausted) {
       return 'Auth quota exhausted';
     }
@@ -1021,6 +1058,11 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.viewState.setSessionSidebarWidth(width, { persist: true });
   }
 
+  handleSubappDockExpandedChange(expanded: boolean): void {
+    this.viewState.setSubappDockExpanded(expanded);
+    this.cdr.markForCheck();
+  }
+
   openImportedDebugSession(sessionId: string): void {
     if (!this.debugBrowser.openImportedSession(sessionId)) {
       return;
@@ -1115,6 +1157,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.conversationScrollCleanup = null;
     this.debugBrowserChangeSubscription.unsubscribe();
     this.sessionViewModelChangeSubscription.unsubscribe();
+    this.remoteCapabilitySubscription.unsubscribe();
     this.runtimeProcessSnapshotSubscription.dispose();
     this.childToolSessionStateCleanup?.();
     this.childToolSessionStateCleanup = null;
@@ -1134,6 +1177,11 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.engine.setSubmittedRequestPaintObservedCallback(null);
     this.engine.setRuntimeRequestStatePatchCallback(null);
     this.lifecycleCoordinator.detachView();
+  }
+
+  private isBuiltInRemoteModelUnavailable(): boolean {
+    return this.chatService.currentModel?.isCustom !== true
+      && !this.remoteCapability.canSendRemoteRequests;
   }
 
   private stopRendererStreamingPerformanceSampler(): void {
@@ -2575,7 +2623,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     void this.sessionActions.requestSwitchToSession(
       event.sessionId,
       this.chatService.currentSessionId,
-      this.engine.editCheckpointService,
       this.createSessionSwitchCallbacks(),
       event.item,
     );
@@ -2610,7 +2657,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   requestReturnToEntryInventory(options?: { saveCurrentSession?: boolean }): void {
     void this.sessionActions.requestReturnToEntryInventory(
-      this.engine.editCheckpointService,
       this.createSessionEntryCommandCallbacks(),
       this.chatService.currentSessionId,
       {
@@ -2620,7 +2666,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   requestImportDebugSnapshot(): void {
-    void this.sessionActions.requestImportDebugSnapshot(this.engine.editCheckpointService, this.createSessionCommandCallbacks());
+    void this.sessionActions.requestImportDebugSnapshot(this.createSessionCommandCallbacks());
   }
 
   private createSessionSwitchCallbacks() {

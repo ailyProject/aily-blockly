@@ -38,7 +38,6 @@ import {
 } from './host-turn-response-state';
 import {
   cloneTurnResponseModelSidecar,
-  normalizeTurnResponseSummaryPreview,
 } from './turn-response-response-model';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import {
@@ -180,10 +179,10 @@ export class HostSessionSaveBridge {
           previousHostProjection?.chatList ?? [],
           currentHostProjection?.chatList ?? [],
         );
-    const canonicalTurnResponses = applyRuntimeStateSummariesToTurnResponses(applyVisibleRequestDisplayContentToTurnResponses(
+    const canonicalTurnResponses = applyVisibleRequestDisplayContentToTurnResponses(
       visibleChatList,
       turnResponses,
-    ));
+    );
     const persistedTurnResponses = persistResponseDataOnTurnResponses(
       canonicalTurnResponses,
       currentHostProjection,
@@ -771,7 +770,8 @@ function readRequestTextCandidate(candidate: unknown): string {
   const text = typeof candidate === 'string'
     ? candidate
     : candidate && typeof candidate === 'object'
-      ? ((candidate as { messageText?: unknown }).messageText
+      ? ((candidate as { displayContent?: unknown }).displayContent
+        ?? (candidate as { messageText?: unknown }).messageText
         ?? (candidate as { prompt?: unknown }).prompt
         ?? (candidate as { text?: unknown }).text
         ?? (candidate as { content?: unknown }).content)
@@ -929,15 +929,9 @@ function applySessionSnapshotRoundsToTurnResponses(
       return turn;
     }
     if (Array.isArray(turn.rounds) && turn.rounds.length > 0) {
-      const snapshotRoundsById = new Map(snapshotRounds.map(round => [round.id, round] as const));
       const mergedRounds = turn.rounds.map((round) => {
-        const currentSummary = normalizeTurnResponseSummaryPreview(round.summary);
-        if (currentSummary) {
-          return round;
-        }
-
-        const snapshotSummary = normalizeTurnResponseSummaryPreview(snapshotRoundsById.get(round.id)?.summary);
-        return snapshotSummary ? { ...round, summary: snapshotSummary } : round;
+        const { summary: _runtimeSummary, ...roundWithoutRuntimeSummary } = round;
+        return roundWithoutRuntimeSummary;
       });
       return {
         ...turn,
@@ -952,94 +946,15 @@ function applySessionSnapshotRoundsToTurnResponses(
   });
 }
 
-function applyRuntimeStateSummariesToTurnResponses(
-  turnResponses: readonly TurnResponseTurn[],
-): TurnResponseTurn[] {
-  return turnResponses.map((turn) => {
-    if (!Array.isArray(turn.rounds) || turn.rounds.length === 0) {
-      return turn;
-    }
-
-    const summaries = collectRuntimeStateRoundSummaries(turn);
-    if (summaries.byId.size === 0 && summaries.byIndex.size === 0) {
-      return turn;
-    }
-
-    let changed = false;
-    const rounds = turn.rounds.map((round, index) => {
-      if (normalizeTurnResponseSummaryPreview(round.summary)) {
-        return round;
-      }
-
-      const summary = normalizeTurnResponseSummaryPreview(summaries.byId.get(round.id))
-        ?? normalizeTurnResponseSummaryPreview(summaries.byIndex.get(index));
-      if (!summary) {
-        return round;
-      }
-
-      changed = true;
-      return {
-        ...round,
-        summary,
-      };
-    });
-
-    return changed ? { ...turn, rounds } : turn;
-  });
-}
-
-function collectRuntimeStateRoundSummaries(
-  turn: TurnResponseTurn,
-): { readonly byId: Map<string, string>; readonly byIndex: Map<number, string> } {
-  const byId = new Map<string, string>();
-  const byIndex = new Map<number, string>();
-  for (const part of turn.response.parts ?? []) {
-    if (!isTransientRuntimeStatePart(part)) {
-      continue;
-    }
-
-    const metadata = readRecordLike((part as { readonly metadata?: unknown }).metadata);
-    const boundary = readRecordLike(metadata?.['boundary']);
-    const metadataSummary = metadata?.['summary'];
-    const summary = normalizeTurnResponseSummaryPreview(typeof metadataSummary === 'string' ? metadataSummary : undefined)
-      ?? normalizeTurnResponseSummaryPreview((part as { readonly text?: unknown }).text as string | undefined);
-    if (!summary) {
-      continue;
-    }
-
-    const anchorRoundId = typeof boundary?.['anchorRoundId'] === 'string'
-      ? boundary['anchorRoundId'].trim()
-      : '';
-    if (anchorRoundId) {
-      byId.set(anchorRoundId, summary);
-    }
-
-    const roundIndex = boundary?.['roundIndex'];
-    if (typeof roundIndex === 'number' && Number.isInteger(roundIndex) && roundIndex >= 0) {
-      byIndex.set(roundIndex, summary);
-    }
-  }
-
-  return { byId, byIndex };
-}
-
-function readRecordLike(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
 function cloneSessionSnapshotRounds(
   rounds: readonly NonNullable<SessionSnapshot['turns']>[number]['rounds'][number][],
 ): TurnResponseTurn['rounds'] {
   return rounds.map((round) => {
-    const { summary: _summary, ...roundWithoutSummary } = round;
-    const summary = normalizeTurnResponseSummaryPreview(round.summary);
+    const { summary: _runtimeSummary, ...roundWithoutSummary } = round;
 
     return {
       ...roundWithoutSummary,
       toolCalls: (round.toolCalls ?? []).map(toolCall => ({ ...toolCall })),
-      ...(summary ? { summary } : {}),
     };
   });
 }
@@ -1476,7 +1391,7 @@ function isTransientRuntimeStatePart(
   part: TurnResponseTurn['response']['parts'][number],
 ): boolean {
   return part.type === 'state'
-    && (part.kind === 'compaction' || part.kind === 'provider_context_management');
+    && part.kind === 'provider_context_management';
 }
 
 function persistResponseDataOnTurnResponses(

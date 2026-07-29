@@ -9,6 +9,7 @@ import {
 } from './detached-chat-part-runtime';
 import { cloneTurnResponseModelRouting } from '../helpers/turn-response-response-model';
 import { buildTurnResponseTurn } from './turn-response-stream-contract';
+import { upsertTurnResponseProgress } from './turn-response-progress';
 
 type IncrementalTurnResponseProjectionTargetStore = Pick<
   ChatPartStore,
@@ -317,7 +318,10 @@ export class TurnResponseIncrementalBuilder {
       case 'response_progress_message':
         this.currentProjection = {
           ...this.currentProjection,
-          progressMessages: [...(this.currentProjection.progressMessages ?? []), event.value],
+          progressMessages: upsertTurnResponseProgress(
+            this.currentProjection.progressMessages,
+            event.value,
+          ),
         };
         return true;
       case 'response_followups':

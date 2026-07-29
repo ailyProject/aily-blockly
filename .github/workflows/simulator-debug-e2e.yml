@@ -1,0 +1,278 @@
+name: ESP32-S3 Simulator Debug E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      builder_ref:
+        description: aily-builder branch, tag, or commit
+        required: true
+        default: i3w
+        type: string
+      simulator_ref:
+        description: aily-simulator branch, tag, or commit
+        required: true
+        default: i3w
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/simulator-debug-e2e.yml"
+      - "child/scripts/compile.js"
+      - "e2e/fixtures/projects/esp32s3-debug/**"
+      - "e2e/tests/simulator-debug.spec.ts"
+      - "electron/simulator-gateway.js"
+      - "electron/simulator-gateway.test.js"
+      - "scripts/prepare-simulator-debug-e2e.mjs"
+      - "scripts/run-simulator-debug-e2e.mjs"
+      - "src/app/services/project-debug-configuration.service.ts"
+      - "src/app/tools/simulator/**"
+  push:
+    branches:
+      - i3w-new-checkpoint
+    paths:
+      - ".github/workflows/simulator-debug-e2e.yml"
+      - "child/scripts/compile.js"
+      - "e2e/fixtures/projects/esp32s3-debug/**"
+      - "e2e/tests/simulator-debug.spec.ts"
+      - "electron/simulator-gateway.js"
+      - "scripts/prepare-simulator-debug-e2e.mjs"
+      - "scripts/run-simulator-debug-e2e.mjs"
+      - "src/app/services/project-debug-configuration.service.ts"
+      - "src/app/tools/simulator/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: simulator-debug-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patched-qemu:
+    name: Build patched QEMU (Windows x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out Simulator
+        uses: actions/checkout@v4
+        with:
+          repository: ailyProject/aily-simulator
+          ref: ${{ inputs.simulator_ref || 'i3w' }}
+          path: aily-simulator
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Restore patched QEMU build
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: aily-simulator/.runtime/build/aily-qemu/windows-x64
+          key: >-
+            patched-qemu-win32-x64-${{
+              hashFiles(
+                'aily-simulator/native/aily-qemu/upstream.json',
+                'aily-simulator/native/aily-qemu/patches/*.patch',
+                'aily-simulator/native/aily-qemu/docker/**',
+                'aily-simulator/native/aily-qemu/runtime/win32-x64.json'
+              )
+            }}
+
+      - name: Build patched QEMU
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        working-directory: aily-simulator
+        run: node native/aily-qemu/scripts/build-windows.mjs
+
+      - name: Verify patched QEMU hash
+        working-directory: aily-simulator
+        run: |
+          node --input-type=module -e "
+            import { createHash } from 'node:crypto';
+            import { readFile } from 'node:fs/promises';
+            const descriptor = JSON.parse(await readFile(
+              'native/aily-qemu/runtime/win32-x64.json',
+              'utf8',
+            ));
+            const executable = await readFile(
+              '.runtime/build/aily-qemu/windows-x64/install/qemu/bin/qemu-system-xtensa.exe',
+            );
+            const actual = createHash('sha256').update(executable).digest('hex');
+            if (actual !== descriptor.expectedExecutableSha256) {
+              throw new Error(
+                'Patched QEMU SHA-256 mismatch: ' + actual
+                + ' != ' + descriptor.expectedExecutableSha256,
+              );
+            }
+            console.log(actual);
+          "
+
+      - name: Upload patched QEMU
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-qemu-win32-x64
+          path: aily-simulator/.runtime/build/aily-qemu/windows-x64
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 3
+
+  desktop-e2e:
+    name: Blockly -> Builder -> QEMU/GDB
+    needs: patched-qemu
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out Blockly
+        uses: actions/checkout@v4
+        with:
+          path: aily-blockly
+          persist-credentials: false
+
+      - name: Check out Builder
+        uses: actions/checkout@v4
+        with:
+          repository: ailyProject/aily-builder
+          ref: ${{ inputs.builder_ref || 'i3w' }}
+          path: aily-builder
+          persist-credentials: false
+
+      - name: Check out Simulator
+        uses: actions/checkout@v4
+        with:
+          repository: ailyProject/aily-simulator
+          ref: ${{ inputs.simulator_ref || 'i3w' }}
+          path: aily-simulator
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            aily-blockly/package-lock.json
+            aily-builder/package-lock.json
+            aily-simulator/package-lock.json
+
+      - name: Download patched QEMU
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-qemu-win32-x64
+          path: aily-simulator/.runtime/build/aily-qemu/windows-x64
+
+      - name: Install repository dependencies
+        shell: pwsh
+        run: |
+          npm ci --prefix aily-builder
+          npm ci --prefix aily-simulator
+          npm ci --prefix aily-blockly
+
+      - name: Test Simulator debugger panel
+        working-directory: aily-simulator
+        shell: pwsh
+        run: npm run test:debug-panel
+
+      - name: Test Simulator host
+        working-directory: aily-simulator
+        shell: pwsh
+        run: npm run host:test
+
+      - name: Run ESP32-S3 desktop debug closure
+        working-directory: aily-blockly
+        shell: pwsh
+        run: npm run test:e2e:simulator-debug -- --refresh-runtime
+        env:
+          CI: "true"
+          NODE_OPTIONS: --max-old-space-size=6144
+
+      - name: Validate iframe/GDB report contract
+        working-directory: aily-blockly
+        shell: pwsh
+        run: npm run validate:e2e:simulator-debug
+
+      - name: Write job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $reportPath = 'aily-blockly/e2e/.artifacts/simulator-debug-report.json'
+          if (Test-Path -LiteralPath $reportPath) {
+            $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+            "## ESP32-S3 simulator debug E2E" >> $env:GITHUB_STEP_SUMMARY
+            "- status: ``$($report.status)``" >> $env:GITHUB_STEP_SUMMARY
+            if ($report.builder.artifactId) {
+              "- Artifact: ``$($report.builder.artifactId)``" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.builder.sourceSha256) {
+              "- debug source snapshot: ``$($report.builder.sourceSnapshotPath)`` / role=``$($report.builder.sourceSnapshotRole)`` / SHA-256=``$($report.builder.sourceSha256)``" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.compiles.rebuilt.archiveCloudCache) {
+              $cache = $report.compiles.rebuilt.archiveCloudCache
+              "- archive cloud cache: local=$($cache.localHits), remote=$($cache.remoteHits), misses=$($cache.misses), stored=$($cache.storedArchives)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.gdb.blockId) {
+              "- GDB block hit: ``$($report.gdb.blockId)``" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugWatch) {
+              $watch = $report.iframeUart.debugWatch
+              "- iframe watch: ``$($watch.expression) = $($watch.value)`` (``$($watch.type)``)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugVariableExpansion) {
+              $variable = $report.iframeUart.debugVariableExpansion
+              "- variable expansion: ``$($variable.name)`` -> ``$($variable.firstChildName)`` -> ``$($variable.deepestChildName)`` (depth=$($variable.recursiveDepth))" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugConfigurationLifecycle) {
+              $lifecycle = $report.iframeUart.debugConfigurationLifecycle
+              "- debugger configuration lifecycle: function breakpoint ``$($lifecycle.functionBreakpoint)`` add/remove=$($lifecycle.breakpointAdded)/$($lifecycle.breakpointRemoved), watch remove/re-add=$($lifecycle.watchRemoved)/$($lifecycle.watchReadded), active=$($lifecycle.activeConfigurationCountAfterCleanup)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugFrameSelection) {
+              $frame = $report.iframeUart.debugFrameSelection
+              "- selected stack frame: ``#$($frame.frameLevel) $($frame.functionName)`` / ``$($frame.variableName) = $($frame.variableValue)``" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugSourceContext) {
+              $source = $report.iframeUart.debugSourceContext
+              "- source context: ``$($source.file):$($source.initialLine)`` / block=``$($source.initialBlockId)`` / lines=$($source.visibleLineCount); step-over=``$($source.stepOverLine)`` / block=``$($source.stepOverBlockId)``; external=``$($source.externalFile):$($source.externalLine)`` / source-withheld=$($source.externalSourceWithheld)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugSourceGutter) {
+              $gutter = $report.iframeUart.debugSourceGutter
+              "- source breakpoint gutter: ``$($gutter.file):$($gutter.line)`` / revision=``$($gutter.revision)`` / add-remove=$($gutter.breakpointAdded)/$($gutter.breakpointRemoved) / block-collision-protected=$($gutter.blockCollisionProtected)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugMemory) {
+              $memory = $report.iframeUart.debugMemory
+              "- iframe memory: ``$($memory.regionId)`` at ``$($memory.address)`` ($($memory.length) bytes)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugStepOver) {
+              $step = $report.iframeUart.debugStepOver
+              "- step-over: ``$($step.functionName)`` / ``$($step.location)`` / ``$($step.blockId)`` ($($step.attempts) MI stops)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugBlockControls) {
+              $blocks = $report.iframeUart.debugBlockControls
+              "- Blockly controls: selected=``$($blocks.selectedTargetBlockId)``, run-to=``$($blocks.runToLocation)``, next-block=``$($blocks.stepBlockLocation)``, temp-cleaned=$($blocks.temporaryBreakpointCleaned), config-preserved=$($blocks.configurationCountPreserved)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugStepInto) {
+              $step = $report.iframeUart.debugStepInto
+              "- step-into: ``$($step.functionName)`` / ``$($step.location)`` ($($step.attempts) MI stops)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            if ($report.iframeUart.debugRecovery) {
+              $recovery = $report.iframeUart.debugRecovery
+              "- crash recovery: PID ``$($recovery.firstProcessId)`` -> ``$($recovery.recoveredProcessId)``, explicit restore passes=$($recovery.restorePasses), watch=``$($recovery.restoredWatchValue)``" >> $env:GITHUB_STEP_SUMMARY
+            }
+          } else {
+            "ESP32-S3 result report was not produced." >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload E2E reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-simulator-debug-e2e-reports
+          path: |
+            aily-blockly/e2e/.artifacts/*.json
+            aily-blockly/test-results/**
+            aily-blockly/playwright-report/**
+            aily-simulator/.runtime/distribution/aily-simulator-runtime-win32-x64/aily-simulator-runtime.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 14

@@ -1,15 +1,23 @@
 import type {
   ChatRuntimeHostEvent,
+  ChatRuntimeHostEditingSessionAcceptRequest,
+  ChatRuntimeHostEditingSessionEntryOperationRequest,
   ChatRuntimeHostSessionId,
   ChatRuntimeOwnerExecutor,
+  ChatRuntimeOwnerExecutorApplyEditingSessionNavigationCommand,
+  ChatRuntimeOwnerExecutorBuildEditingSessionNavigationPlanCommand,
+  ChatRuntimeOwnerExecutorCommitEditingSessionNavigationCommand,
   ChatRuntimeOwnerExecutorCommandMethod,
   ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand,
   ChatRuntimeOwnerExecutorForkSessionCommand,
   ChatRuntimeOwnerExecutorEvent,
   ChatRuntimeOwnerExecutorPrewarmRuntimeCommand,
+  ChatRuntimeOwnerExecutorReadEditingSessionContentCommand,
+  ChatRuntimeOwnerExecutorReadEditingSessionStateCommand,
   ChatRuntimeOwnerExecutorRestoreRuntimeSessionCommand,
   ChatRuntimeOwnerExecutorRenderEventProgress,
   ChatRuntimeOwnerExecutorResolveInteractionCommand,
+  ChatRuntimeOwnerExecutorRollbackEditingSessionNavigationCommand,
   ChatRuntimeOwnerExecutorStartTurnCommand,
   ChatRuntimeOwnerExecutorStopTurnCommand,
 } from './chat-runtime-host-contract';
@@ -32,6 +40,14 @@ export function normalizeRuntimeOwnerMethod(method: unknown): ChatRuntimeOwnerEx
     case 'prewarmRuntime':
     case 'restoreRuntimeSession':
     case 'forkSession':
+    case 'readEditingSessionState':
+    case 'readEditingSessionContent':
+    case 'operateEditingSessionEntry':
+    case 'acceptEditingSession':
+    case 'buildEditingSessionNavigationPlan':
+    case 'applyEditingSessionNavigation':
+    case 'commitEditingSessionNavigation':
+    case 'rollbackEditingSessionNavigation':
     case 'stopTurn':
     case 'disposeSessionResources':
     case 'resolveInteraction':
@@ -196,6 +212,7 @@ export function callRuntimeOwnerMethod(
         providerOptions: command?.providerOptions ?? null,
         agentRuntimeMode: command?.agentRuntimeMode ?? null,
         currentModel: command?.currentModel ?? null,
+        summarizerModel: command?.summarizerModel ?? null,
       });
     }
     case 'restoreRuntimeSession': {
@@ -211,6 +228,70 @@ export function callRuntimeOwnerMethod(
         throw new Error('[AilyChat][RuntimeHost] Runtime owner does not support session fork.');
       }
       return runtimeOwner.forkSession(command);
+    }
+    case 'readEditingSessionState': {
+      if (typeof runtimeOwner.readEditingSessionState !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose editing-session state.');
+      }
+      return runtimeOwner.readEditingSessionState(
+        (args[0] || {}) as ChatRuntimeOwnerExecutorReadEditingSessionStateCommand,
+      );
+    }
+    case 'readEditingSessionContent': {
+      if (typeof runtimeOwner.readEditingSessionContent !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose editing-session content.');
+      }
+      return runtimeOwner.readEditingSessionContent(
+        (args[0] || {}) as ChatRuntimeOwnerExecutorReadEditingSessionContentCommand,
+      );
+    }
+    case 'operateEditingSessionEntry': {
+      if (typeof runtimeOwner.operateEditingSessionEntry !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot operate editing-session entries.');
+      }
+      return runtimeOwner.operateEditingSessionEntry(
+        (args[0] || {}) as ChatRuntimeHostEditingSessionEntryOperationRequest,
+      );
+    }
+    case 'acceptEditingSession': {
+      if (typeof runtimeOwner.acceptEditingSession !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot accept the editing session.');
+      }
+      return runtimeOwner.acceptEditingSession(
+        (args[0] || {}) as ChatRuntimeHostEditingSessionAcceptRequest,
+      );
+    }
+    case 'buildEditingSessionNavigationPlan': {
+      if (typeof runtimeOwner.buildEditingSessionNavigationPlan !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose editing-session navigation plans.');
+      }
+      return runtimeOwner.buildEditingSessionNavigationPlan(
+        (args[0] || {}) as ChatRuntimeOwnerExecutorBuildEditingSessionNavigationPlanCommand,
+      );
+    }
+    case 'applyEditingSessionNavigation': {
+      if (typeof runtimeOwner.applyEditingSessionNavigation !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot apply editing-session navigation.');
+      }
+      return runtimeOwner.applyEditingSessionNavigation(
+        (args[0] || {}) as ChatRuntimeOwnerExecutorApplyEditingSessionNavigationCommand,
+      );
+    }
+    case 'commitEditingSessionNavigation': {
+      if (typeof runtimeOwner.commitEditingSessionNavigation !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot commit editing-session navigation.');
+      }
+      return runtimeOwner.commitEditingSessionNavigation(
+        (args[0] || {}) as ChatRuntimeOwnerExecutorCommitEditingSessionNavigationCommand,
+      );
+    }
+    case 'rollbackEditingSessionNavigation': {
+      if (typeof runtimeOwner.rollbackEditingSessionNavigation !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot roll back editing-session navigation.');
+      }
+      return runtimeOwner.rollbackEditingSessionNavigation(
+        (args[0] || {}) as ChatRuntimeOwnerExecutorRollbackEditingSessionNavigationCommand,
+      );
     }
     case 'startTurn': {
       const command = args[0] as Partial<ChatRuntimeOwnerExecutorStartTurnCommand> | null | undefined;
@@ -240,6 +321,8 @@ export function callRuntimeOwnerMethod(
       const command = args[0] as Partial<ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand> | null | undefined;
       return runtimeOwner.disposeSessionResources({
         sessionId: command?.sessionId as ChatRuntimeHostSessionId,
+        deleteStorage: command?.deleteStorage === true,
+        projectPath: command?.projectPath ?? null,
       });
     }
     case 'resolveInteraction':
@@ -292,6 +375,7 @@ function isRuntimeOwnerEvent(event: unknown): event is ChatRuntimeOwnerExecutorE
   }
   const kind = (event as { readonly kind?: unknown }).kind;
   return kind === 'turnProgress'
+    || kind === 'editingSessionChanged'
     || kind === 'runtimeProjectPathUpdated'
     || kind === 'turnInteractionRequested'
     || kind === 'turnError'
@@ -303,6 +387,16 @@ function normalizeExplicitRuntimeOwnerEvent(
   sessionId: string,
   registrationState: RuntimeOwnerRegistrationState,
 ): ChatRuntimeOwnerExecutorEvent | null {
+  if (event.kind === 'editingSessionChanged') {
+    const revision = Number(event.revision);
+    return Number.isFinite(revision) && revision >= 0
+      ? {
+          kind: 'editingSessionChanged',
+          sessionId,
+          revision,
+        }
+      : null;
+  }
   const trackedTurnId = registrationState.activeTurnIds.get(sessionId) || '';
   const turnId = normalizeNonEmptyString((event as { readonly turn?: { readonly turnId?: unknown } }).turn?.turnId)
     || normalizeNonEmptyString(event.turnId)

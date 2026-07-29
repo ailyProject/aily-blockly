@@ -7,10 +7,11 @@ import { filter, Subject } from 'rxjs';
 import { IMenuItem } from '../../../configs/menu.config';
 import { normalizeAgentIdentifier, normalizeAgentIdentifiers } from '../core/agent-identifiers';
 import {
-  CHAT_CONFIGURE_CUSTOM_AGENTS_ACTION_LABEL,
   CHAT_CUSTOM_AGENT_EDIT_ACTION_ID,
   CHAT_CUSTOM_AGENT_VIEW_ACTION_ID,
-  CHAT_PICKER_CONFIGURE_CUSTOM_AGENTS_ACTION_ID,
+  // TEMP: mode picker 暂时不展示 Configure Custom Agents，保留常量定义与动作注册
+  // CHAT_CONFIGURE_CUSTOM_AGENTS_ACTION_LABEL,
+  // CHAT_PICKER_CONFIGURE_CUSTOM_AGENTS_ACTION_ID,
 } from '../helpers/chat-configure-custom-agents-action';
 import {
   insertComposerLineBreak,
@@ -1309,14 +1310,15 @@ export class ChatViewService {
       items.push({ sep: true }, ...customAgentItems);
     }
 
-    items.push(
-      { sep: true },
-      {
-        name: CHAT_CONFIGURE_CUSTOM_AGENTS_ACTION_LABEL,
-        action: CHAT_PICKER_CONFIGURE_CUSTOM_AGENTS_ACTION_ID,
-        icon: 'fa-light fa-gear',
-      },
-    );
+    // TEMP: 暂时隐藏 mode picker 中的「Configure Custom Agents...」入口，动作与设置页能力保持可用
+    // items.push(
+    //   { sep: true },
+    //   {
+    //     name: 'Configure Custom Agents...',
+    //     action: 'workbench.action.chat.picker.customagents',
+    //     icon: 'fa-light fa-gear',
+    //   },
+    // );
 
     return items;
   }
@@ -1384,6 +1386,10 @@ export class ChatViewService {
 
   setSessionSidebarWidth(width: number, options?: { persist?: boolean }): void {
     this.chatSessionsControlService.setSessionSidebarWidth(width, options);
+  }
+
+  setSubappDockExpanded(expanded: boolean): void {
+    this.chatSessionsControlService.setSubappDockExpanded(expanded);
   }
 
   resolveSessionListDisplayMode(input: {

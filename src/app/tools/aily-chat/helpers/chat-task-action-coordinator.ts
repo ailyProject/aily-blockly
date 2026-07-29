@@ -64,22 +64,22 @@ export class ChatTaskActionCoordinator {
         void this.boundaryActions.regenerateTurn(detail?.target);
         return;
       case 'undoEdits':
-        void this.editActions.undoLastEdits();
+        void this.boundaryActions.undoEdits(detail?.sessionResource);
         return;
       case 'redoEdits':
         void this.boundaryActions.redoEdits(detail?.sessionResource);
         return;
       case 'redoFileEdits':
-        void this.editActions.redoEdits();
+        void this.boundaryActions.redoFileEdits(detail?.sessionResource);
         return;
       case 'keepEdits':
-        this.editActions.onKeepEdits(detail);
+        void this.editActions.onKeepEdits(detail);
         return;
       case 'acceptFile':
-        this.editActions.onAcceptFile(detail?.filePath);
+        void this.editActions.onAcceptFile(detail?.filePath);
         return;
       case 'rejectFile':
-        this.editActions.onRejectFile(detail?.filePath);
+        void this.editActions.onRejectFile(detail?.filePath);
         return;
       case 'voteResponse':
         if (detail?.target && (detail.vote === 0 || detail.vote === 1)) {

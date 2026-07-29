@@ -11,6 +11,7 @@ import { CommonModule } from '@angular/common';
 
 import { ChatActivityItemComponent } from './chat-activity-item.component';
 import type { ActivityGroupDisplayItem } from './chat-activity-group.types';
+import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
 
 @Component({
   selector: 'aily-chat-activity-list',
@@ -79,6 +80,20 @@ export class ChatActivityListComponent {
     this.impliedWordLoadRate = impliedWordLoadRate;
 
     if (!sameStructure) {
+      const previousIds = new Set(previousItems.map(item => item.id));
+      const nextIds = new Set(items.map(item => item.id));
+      ChatPerformanceTracer.increment(
+        'activity_item_renderer_diff.inserted',
+        items.filter(item => !previousIds.has(item.id)).length,
+      );
+      ChatPerformanceTracer.increment(
+        'activity_item_renderer_diff.disposed',
+        previousItems.filter(item => !nextIds.has(item.id)).length,
+      );
+      ChatPerformanceTracer.increment(
+        'activity_item_renderer_diff.retained',
+        items.filter(item => previousIds.has(item.id)).length,
+      );
       this.cdr.detectChanges();
       return true;
     }
@@ -90,10 +105,14 @@ export class ChatActivityListComponent {
 
     const sharedInputChanged = previousSessionId !== sessionId
       || previousImpliedWordLoadRate !== impliedWordLoadRate;
+    let retainedCount = 0;
+    let updatedCount = 0;
     for (let index = 0; index < items.length; index += 1) {
       if (!sharedInputChanged && previousItems[index] === items[index]) {
+        retainedCount += 1;
         continue;
       }
+      updatedCount += 1;
       if (!renderers[index]?.applyVisibleActivityItemPatch({
         item: items[index],
         sessionId,
@@ -105,6 +124,8 @@ export class ChatActivityListComponent {
         return false;
       }
     }
+    ChatPerformanceTracer.increment('activity_item_renderer_diff.retained', retainedCount);
+    ChatPerformanceTracer.increment('activity_item_renderer_diff.updated', updatedCount);
     return true;
   }
 

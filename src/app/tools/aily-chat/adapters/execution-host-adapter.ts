@@ -94,6 +94,18 @@ export function createExecutionHostAdapter(deps: ExecutionHostAdapterDeps): IAil
       action: 'build',
       projectPath,
     })),
+    listSerialPorts: async () => {
+      const result = await requestResource('project-build', {
+        adapter: 'builder',
+        action: 'listSerialPorts',
+      });
+      return Array.isArray(result) ? result as Array<{
+        port: string;
+        label: string;
+        type: string;
+        selected: boolean;
+      }> : [];
+    },
     upload: async (projectPath: string, port: string) => normalizeBuildResult(await requestResource('project-build', {
       adapter: 'builder',
       action: 'upload',

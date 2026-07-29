@@ -109,6 +109,7 @@ export class SubjectItemComponent {
       const targetPath = `${this.projectService.projectRootPath}${separator}${targetPathName}`;
       console.log('目标路径: ', targetPath);
       await this.crossPlatformCmdService.copyItem(examplePath, targetPath, true, true);
+      await this.projectService.initializeProjectDataSchema(targetPath);
       this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_SUCCESS') });
       this.projectService.projectOpen(targetPath);
     } catch (error) {

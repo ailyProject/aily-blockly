@@ -33,6 +33,7 @@ import { CrossPlatformCmdService } from '../../services/cross-platform-cmd.servi
 import { MissingLibInfo, PasteInstallDialogComponent } from './components/paste-install-dialog/paste-install-dialog.component';
 import { Subscription } from 'rxjs';
 import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
+import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
 
 @Component({
@@ -129,6 +130,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           }
           this._projectService.currentProjectPath = requestedProjectPath;
           this.projectService.currentProjectPath = requestedProjectPath;
+          projectDataRuntime.configure(params['path']);
           await this.loadProject(requestedProjectPath);
           this.loadedProjectPath = requestedProjectPath;
         } catch (error) {
@@ -168,6 +170,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.codeViewerIpcService.clear();
     this.electronService.setTitle('aily blockly');
     this.blocklyService.reset();
+    projectDataRuntime.reset();
   }
 
   async loadProject(projectPath) {
@@ -375,13 +378,21 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     let abiContent = await this.electronService.readFileAsync(abiPath);
     let projectAbi = await this.parseProjectAbiContent(abiContent);
+    projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
+      projectPath,
+      projectAbi,
+      abiContent,
+    );
     abiContent = '';
 
     let usedBoardTemplate = false;
     if (this.hasEmptyLegacyWorkspace(projectAbi)) {
       const boardTemplateAbi = await this.readCurrentBoardTemplateAbi(projectPath);
       if (boardTemplateAbi && !this.hasEmptyLegacyWorkspace(boardTemplateAbi)) {
-        projectAbi = boardTemplateAbi;
+        projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
+          projectPath,
+          boardTemplateAbi,
+        );
         usedBoardTemplate = true;
         console.info('[ProjectAbi] project.abi is empty; using the current board template as temporary data.');
       }
@@ -1039,7 +1050,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       }
 
       const declaredVersion = declaredLibraryDependencies.get(packageName) || '';
-      if (declaredVersion && this.isBlocklyLibraryPackageReady(projectPath, packageName)) {
+      if (this.isBlocklyLibraryPackageReady(projectPath, packageName)) {
         continue;
       }
 

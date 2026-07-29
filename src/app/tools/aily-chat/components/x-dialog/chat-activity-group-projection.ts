@@ -117,11 +117,11 @@ export function buildChatPartIdentity(part: ChatPart, index: number): string {
     return part.partId || part.askId;
   }
   if (part.type === 'terminal') {
-    return part.partId
+    return part.toolCallId
+      || part.partId
       || part.processId
       || part.outputSessionId
       || part.terminalId
-      || part.toolCallId
       || `terminal-${index}`;
   }
   if (part.type === 'question') {
@@ -223,8 +223,7 @@ export function getPreparedDetailSections(part: ChatPart): readonly DetailSectio
 
   if (part.kind === 'task_graph'
     || part.kind === 'task_scheduler'
-    || part.kind === 'task_autonomy'
-    || part.kind === 'compaction') {
+    || part.kind === 'task_autonomy') {
     const projection = buildStandardStateViewerProjection({
       kind: part.kind,
       id: part.stateId,
@@ -1815,8 +1814,6 @@ function getStandaloneStateGroupTitle(part: StatePart): string | undefined {
       return '调度';
     case 'task_autonomy':
       return '自治';
-    case 'compaction':
-      return '上下文';
     default:
       return undefined;
   }

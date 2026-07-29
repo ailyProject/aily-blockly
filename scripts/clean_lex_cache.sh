@@ -3,12 +3,11 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LEX_DIR="$ROOT_DIR/child/aily-lex"
-SEEN_PATHS=""
 
 echo "[clean_lex_cache] remove Angular cache"
 rm -rf "$ROOT_DIR/.angular/cache"
 
+# aily-lex 已改为 npm 包依赖；仅清理本地残留目录与已安装包缓存
 for CANDIDATE in \
   "$ROOT_DIR/child/aily-lex" \
   "$ROOT_DIR/../aily-lex" \
@@ -19,19 +18,16 @@ do
     continue
   fi
 
-  REAL_PATH="$(cd "$CANDIDATE" && pwd -P)"
-  case " $SEEN_PATHS " in
-    *" $REAL_PATH "*) 
-      echo "[clean_lex_cache] skip duplicate: $CANDIDATE -> $REAL_PATH"
-      continue
-      ;;
-  esac
+  if [ "$CANDIDATE" = "$ROOT_DIR/node_modules/aily-lex" ]; then
+    echo "[clean_lex_cache] remove installed package: $CANDIDATE"
+    rm -rf "$CANDIDATE"
+    continue
+  fi
 
-  SEEN_PATHS="$SEEN_PATHS $REAL_PATH"
-  echo "[clean_lex_cache] remove lex build cache: $REAL_PATH"
-  rm -rf "$REAL_PATH/dist" "$REAL_PATH/tsconfig.tsbuildinfo"
+  echo "[clean_lex_cache] remove leftover local lex dir: $CANDIDATE"
+  rm -rf "$CANDIDATE"
 done
 
-echo "[clean_lex_cache] rebuild aily-lex"
-cd "$LEX_DIR"
-npm run build
+echo "[clean_lex_cache] reinstall aily-lex from npm"
+cd "$ROOT_DIR"
+npm install aily-lex --no-audit --no-fund

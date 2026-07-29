@@ -66,7 +66,15 @@ export class ChatRuntimeHostInventoryService implements OnDestroy {
     }
 
     const generation = ++this.refreshGeneration;
-    const snapshot = await this.host.readSessionInventory();
+    let snapshot: ChatRuntimeHostSessionInventorySnapshot;
+    try {
+      snapshot = await this.host.readSessionInventory();
+    } catch (error) {
+      if (generation === this.refreshGeneration) {
+        console.warn('[AilyChat][RuntimeHostInventory] Failed to refresh live session overlay; preserving cached state.', error);
+      }
+      return;
+    }
     if (generation !== this.refreshGeneration) {
       return;
     }

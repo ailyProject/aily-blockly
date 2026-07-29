@@ -28,7 +28,6 @@ export interface RequiredSessionResourceModelInput {
   readonly runtimeModeSource?: unknown;
   readonly providerOptions?: Partial<HostSessionProviderOptions> | null;
   readonly requiredContextSnapshot?: unknown;
-  readonly checkpointNamespace?: string | null;
 }
 
 export interface RequiredSessionResourceModel {
@@ -41,7 +40,6 @@ export interface RequiredSessionResourceModel {
   readonly runtimeModeSource: ChatAgentRuntimeModeSource;
   readonly providerOptions: HostSessionProviderOptions;
   readonly requiredContextSnapshot?: unknown;
-  readonly checkpointNamespace: string;
 }
 
 export function createRequiredSessionResourceModel(
@@ -75,11 +73,5 @@ export function createRequiredSessionResourceModel(
     ...(input.requiredContextSnapshot !== undefined
       ? { requiredContextSnapshot: input.requiredContextSnapshot }
       : {}),
-    checkpointNamespace: normalizeCheckpointNamespace(input.checkpointNamespace, sessionResource),
   };
-}
-
-function normalizeCheckpointNamespace(value: string | null | undefined, sessionResource: string): string {
-  const normalized = typeof value === 'string' ? value.trim() : '';
-  return normalized || `refs/sessions/${sessionResource}`;
 }

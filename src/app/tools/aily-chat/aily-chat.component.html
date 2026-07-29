@@ -162,6 +162,9 @@
       </div>
       }
       }
+      <aily-chat-subapp-dock
+        [sessionId]="vm.sessionId"
+        (expandedChange)="handleSubappDockExpandedChange($event)"></aily-chat-subapp-dock>
       <div class="chat-stage">
         <!-- 对话内容 -->
         <div
@@ -206,17 +209,20 @@
             class="chat-checkpoint-restore-surface"
             role="group"
             [attr.aria-label]="checkpointRestoreSurface.statusLabelKey | translate">
-            <div class="checkpoint-line-left"></div>
-            <span class="checkpoint-label-text">{{ checkpointRestoreSurface.statusLabelKey | translate }}</span>
-            <span class="checkpoint-dot-separator"></span>
-            <button
-              type="button"
-              class="checkpoint-restore-action"
-              [title]="checkpointRestoreSurface.actionTitle"
-              (click)="handleCheckpointRestoreSurfaceAction($event, vm.sessionId)">
-              {{ checkpointRestoreSurface.actionLabelKey | translate }}
-            </button>
-            <div class="checkpoint-line-right"></div>
+            <div class="checkpoint-line"></div>
+            <div class="checkpoint-restore-content">
+              <span class="checkpoint-label-text">{{ checkpointRestoreSurface.statusLabelKey | translate }}</span>
+              <span class="checkpoint-dot-separator"></span>
+              <button
+                type="button"
+                class="checkpoint-restore-action"
+                [title]="checkpointRestoreSurface.actionTitle"
+                (click)="handleCheckpointRestoreSurfaceAction($event, vm.sessionId)">
+                <i class="fa-light fa-arrow-rotate-right" aria-hidden="true"></i>
+                <span>{{ checkpointRestoreSurface.actionLabelKey | translate }}</span>
+              </button>
+            </div>
+            <div class="checkpoint-line"></div>
           </div>
         }
       </div>
@@ -341,6 +347,11 @@
           </div>
         </div>
         }
+        <aily-chat-subapp-activity-bar
+          inputPartWidget
+          class="chat-subapp-activity-widget"
+          [sessionId]="vm.sessionId">
+        </aily-chat-subapp-activity-bar>
         <aily-chat-runtime-question-carousel inputPartWidget class="chat-question-carousel-widget-container" [sessionId]="vm.sessionId"></aily-chat-runtime-question-carousel>
         <aily-chat-runtime-confirmation-carousel inputPartWidget class="chat-tool-confirmation-carousel-container" [sessionId]="vm.sessionId"></aily-chat-runtime-confirmation-carousel>
         <aily-chat-runtime-plan-review inputPartWidget class="chat-plan-review-widget-container" [sessionId]="vm.sessionId"></aily-chat-runtime-plan-review>
@@ -350,7 +361,7 @@
         </div>
         }
         <div inputPartWidget class="chat-editing-session">
-          <app-aily-edits-viewer></app-aily-edits-viewer>
+          <app-aily-edits-viewer [sessionId]="vm.sessionId"></app-aily-edits-viewer>
         </div>
         @if(getCurrentSessionPendingFollowupRequests(); as pendingRequests) {
         @if(pendingRequests.length > 0) {

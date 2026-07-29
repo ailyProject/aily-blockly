@@ -88,7 +88,7 @@ export interface StatePart {
   /** 可选进度百分比 */
   progress?: number;
   /** 事件类型 */
-  kind?: 'task_graph' | 'task_scheduler' | 'task_autonomy' | 'agent_team' | 'mcp' | 'background_task' | 'instructions' | 'compaction' | 'provider_context_management' | 'handoff' | 'todo';
+  kind?: 'task_graph' | 'task_scheduler' | 'task_autonomy' | 'agent_team' | 'mcp' | 'background_task' | 'instructions' | 'provider_context_management' | 'handoff' | 'todo';
   /** 轻量元数据，供持久化/恢复使用 */
   metadata?: Record<string, unknown>;
 }

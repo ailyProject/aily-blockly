@@ -39,10 +39,8 @@ import type {
   HostRequestModel,
   HostResponseProjection,
 } from '../helpers/host-turn-response-state';
-import type { RequestCheckpointMetadata } from './edit-checkpoint.service';
 import type { LexOwnerContext, LexOwnerFacade } from '../helpers/lex-stream.helper';
 import type { UserInteractionToolApprovalPolicy } from '../helpers/user-interaction.helper';
-import type { ChatSessionLexPostTurnResources } from './chat-session-lex-post-turn-resource-factory.service';
 import type { ChatSessionLexRequestCompletedInput } from './chat-session-runtime-completion-queue-core';
 import type { ChatListItem, LiveHostSessionRecord } from './chat-history.service';
 import type { ChatSessionRuntimeHandlePatch } from './chat-session-runtime-registry-core';
@@ -55,13 +53,11 @@ import type {
 import type { ChatRuntimeOwnerContextAdapter } from './chat-runtime-owner-context.service';
 import type {
   ChatRuntimeOwnerContextBudgetPort,
-  ChatRuntimeOwnerEditTrackingPort,
 } from './chat-runtime-owner-context-capabilities';
 import type { ChatSessionTurnOwnerPolicyOptions } from './chat-session-model-store.service';
 
 export type {
   ChatRuntimeOwnerContextBudgetPort,
-  ChatRuntimeOwnerEditTrackingPort,
 } from './chat-runtime-owner-context-capabilities';
 
 export interface ChatRuntimeOwnerContextMaterializerPort {
@@ -162,7 +158,6 @@ export type ChatRuntimeOwnerToolApprovalPolicyPort = UserInteractionToolApproval
 export interface ChatRuntimeOwnerSubmittedTurnLifecyclePort {
   bindOwner(owner: LexOwnerFacade): void;
   prepareSubmittedTurn(request: ChatRuntimeHostSubmitRequest, owner: LexOwnerFacade): Promise<void>;
-  settleSubmittedTurnStartupResources(sessionId?: string | null): Promise<void>;
   completeSubmittedTurn(sessionId?: string | null): Promise<void>;
 }
 
@@ -269,23 +264,10 @@ export interface ChatRuntimeOwnerTurnStartupEditLifecyclePort {
     sessionId: string | null | undefined,
     runtimeMode: ChatAgentRuntimeMode | null | undefined,
   ): Promise<void>;
-  saveCheckpointToDisk(sessionId: string | null | undefined): void;
-  commitCurrentTurn(sessionId: string | null | undefined): Promise<void>;
-  waitForCheckpointMetadataSettled(sessionId: string | null | undefined): Promise<void>;
-  readFinalizedCheckpointMetadata(
-    sessionId: string | null | undefined,
-    input: { readonly checkpointId?: string; readonly requestId?: string },
-  ): Promise<RequestCheckpointMetadata | null>;
 }
 
 export interface ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort {
   ensureWorkspaceAbsExport(sessionId: string | null | undefined, projectPath: string | null | undefined): Promise<void>;
-  commitCurrentTurn(sessionId: string | null | undefined): Promise<void>;
-  waitForCheckpointMetadataSettled(sessionId: string | null | undefined): Promise<void>;
-  readFinalizedCheckpointMetadata(
-    sessionId: string | null | undefined,
-    input: { readonly checkpointId?: string; readonly requestId?: string },
-  ): Promise<RequestCheckpointMetadata | null>;
 }
 
 export interface ChatRuntimeOwnerRerunGateState {
@@ -328,10 +310,6 @@ export interface ChatRuntimeOwnerRuntimeControllerPort {
     sessionId: ChatRuntimeHostSessionId,
     controller: AbortController | null,
   ): boolean;
-  getOrCreateLexPostTurnResources(
-    sessionId: ChatRuntimeHostSessionId,
-    cwd: string | null | undefined,
-  ): ChatSessionLexPostTurnResources | undefined;
   scheduleLexRequestCompleted(input: ChatSessionLexRequestCompletedInput): void;
   beginSubmittedRequestState(input: ChatRuntimeOwnerBeginRequestInput): void;
   completeSubmittedRequestState(sessionId: ChatRuntimeHostSessionId, activeResponseHandle: unknown): void;
@@ -437,10 +415,6 @@ export const CHAT_RUNTIME_OWNER_SESSION_MODEL = new InjectionToken<ChatRuntimeOw
 
 export const CHAT_RUNTIME_OWNER_SCHEDULER = new InjectionToken<ChatRuntimeOwnerSchedulerPort>(
   'AILY_CHAT_RUNTIME_OWNER_SCHEDULER',
-);
-
-export const CHAT_RUNTIME_OWNER_EDIT_TRACKING = new InjectionToken<ChatRuntimeOwnerEditTrackingPort>(
-  'AILY_CHAT_RUNTIME_OWNER_EDIT_TRACKING',
 );
 
 export const CHAT_RUNTIME_OWNER_CONTEXT_BUDGET = new InjectionToken<ChatRuntimeOwnerContextBudgetPort>(

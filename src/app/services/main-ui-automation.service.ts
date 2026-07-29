@@ -54,6 +54,7 @@ interface ChildAppWindowState {
 
 interface ChildAppWindowEnvironment {
   success?: boolean;
+  mainWindow?: ChildAppWindowState | null;
   displays?: Array<Record<string, unknown>>;
   windows?: Array<ChildAppWindowState & { path?: string }>;
 }
@@ -141,20 +142,55 @@ export class MainUiAutomationService {
       return { ok: false, message: `不支持的打开模式: ${mode}；可用 embedded 或 window。` };
     }
 
+    const hasPlacement = ['x', 'y', 'width', 'height', 'displayId'].some(key => params[key] !== undefined);
+    const placement = {
+      ...(this.optionalNumber(params, 'x') !== undefined ? { x: this.optionalNumber(params, 'x') } : {}),
+      ...(this.optionalNumber(params, 'y') !== undefined ? { y: this.optionalNumber(params, 'y') } : {}),
+      ...(this.optionalNumber(params, 'width') !== undefined ? { width: this.optionalNumber(params, 'width') } : {}),
+      ...(this.optionalNumber(params, 'height') !== undefined ? { height: this.optionalNumber(params, 'height') } : {}),
+      ...(params['displayId'] !== undefined ? { displayId: params['displayId'] as string | number } : {}),
+      relativeToDisplay: params['relativeToDisplay'] !== false,
+      clampToWorkArea: params['clampToWorkArea'] !== false,
+      applyInitialBounds: hasPlacement,
+    };
+    if (mode === 'embedded' && hasPlacement) {
+      return { ok: false, message: '位置和尺寸参数只适用于 mode="window" 的独立子应用窗口。' };
+    }
+    if (mode === 'window' && params['displayId'] !== undefined) {
+      const environment = await this.readWindowEnvironment();
+      const displayExists = (environment.displays || [])
+        .some(display => String(display['id']) === String(params['displayId']));
+      if (!displayExists) {
+        return {
+          ok: false,
+          message: `未找到显示器: ${String(params['displayId'])}；请先调用 child_app_window_list 获取实时显示器 ID。`,
+          displays: environment.displays || [],
+        };
+      }
+    }
+
     const routePath = this.routePath(config);
     const windowState = await this.readWindowState(routePath);
     if (mode === 'embedded') {
       if (windowState.open) {
         const moved = await this.sendHostCommand(routePath, toolId, 'embed');
         if (moved['ok'] !== true) return moved;
-      } else if (!this.uiService.openToolList.includes(toolId)) {
-        this.uiService.openTool(toolId);
+      }
+      const visible = this.uiService.openToolEmbedded(toolId);
+      if (!visible) {
+        return {
+          ok: false,
+          operation: 'child_app_open',
+          toolId,
+          requestedMode: mode,
+          message: `子应用未进入内嵌可见状态: ${toolId}`,
+        };
       }
     } else if (this.uiService.openToolList.includes(toolId)) {
-      const detached = await this.childHostRegistry.control(toolId, 'detach');
+      const detached = await this.childHostRegistry.control(toolId, 'detach', placement);
       if (detached['ok'] !== true) return detached;
     } else {
-      this.uiService.openToolWindow(toolId, { title: this.titleOf(config) });
+      this.uiService.openToolWindow(toolId, { title: this.titleOf(config), ...placement });
     }
 
     return {
@@ -162,6 +198,9 @@ export class MainUiAutomationService {
       operation: 'child_app_open',
       toolId,
       requestedMode: mode,
+      visible: mode === 'embedded' ? this.uiService.topTool === toolId : true,
+      ...(mode === 'embedded' ? { topTool: this.uiService.topTool } : {}),
+      ...(mode === 'window' ? { initialPlacement: placement } : {}),
       message: mode === 'embedded' ? `已打开内嵌子应用: ${toolId}` : `已打开独立子应用窗口: ${toolId}`,
     };
   }
@@ -237,6 +276,7 @@ export class MainUiAutomationService {
       ok: environment.success !== false,
       displayCount: environment.displays?.length || 0,
       windowCount: windows.length,
+      mainWindow: environment.mainWindow || null,
       displays: environment.displays || [],
       windows,
       layouts: ['auto', 'cascade', 'grid', 'horizontal', 'vertical', 'rows', 'columns', 'main_stack'],
@@ -362,7 +402,11 @@ export class MainUiAutomationService {
     const windowState = await this.readWindowState(routePath);
     const embedded = this.uiService.openToolList.includes(config.id);
     const session = sessions.find(candidate => candidate.toolId === config.id);
-    const hostStatus = embedded ? this.childHostRegistry.getStatus(config.id) : null;
+    let hostStatus = embedded ? this.childHostRegistry.getStatus(config.id) : null;
+    if (!hostStatus && windowState.open) {
+      const statusResult = await this.sendHostCommand(routePath, config.id, 'status');
+      hostStatus = statusResult['ok'] === true ? statusResult : null;
+    }
     const mode = embedded && windowState.open
       ? 'embedded_and_window'
       : embedded

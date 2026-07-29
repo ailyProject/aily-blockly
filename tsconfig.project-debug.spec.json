@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/project-debug-spec",
+    "types": [
+      "jasmine",
+      "node"
+    ]
+  },
+  "files": [
+    "src/test.ts"
+  ],
+  "include": [
+    "src/test.ts",
+    "src/app/services/project-debug-configuration.service.spec.ts",
+    "src/**/*.d.ts"
+  ],
+  "exclude": [
+    "archive/**/*",
+    "child",
+    "electron",
+    "dist",
+    "node_modules",
+    "temp/**/*"
+  ]
+}

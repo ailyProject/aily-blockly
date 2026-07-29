@@ -35,6 +35,7 @@ export class ChatSessionsControlService {
   private _hasCurrentSession = false;
   private _isAuthenticated = true;
   private _isSessionViewerSuppressed = false;
+  private _isSubappDockExpanded = false;
   private _sessionViewerOrientation = 'sideBySide' as ChatSessionViewerOrientationSetting;
   private _requestedSessionSidebarWidth = this.readPersistedSessionSidebarWidth();
   private _sessionSidebarWidth = this.sessionSidebarDefaultWidth;
@@ -257,7 +258,10 @@ export class ChatSessionsControlService {
   }
 
   get showLoginSurface(): boolean {
-    return !this._isAuthenticated;
+    return !this._isAuthenticated
+      && this.sessionListItems.length === 0
+      && !this._hasConversationContent
+      && !this._hasCurrentSession;
   }
 
   get showWelcomeSurface(): boolean {
@@ -270,6 +274,10 @@ export class ChatSessionsControlService {
 
   get isSessionViewerSuppressed(): boolean {
     return this._isSessionViewerSuppressed;
+  }
+
+  get isSubappDockExpanded(): boolean {
+    return this._isSubappDockExpanded;
   }
 
   get showSessionSidebar(): boolean {
@@ -355,16 +363,28 @@ export class ChatSessionsControlService {
     }
   }
 
+  setSubappDockExpanded(expanded: boolean): void {
+    const nextExpanded = expanded === true;
+    if (nextExpanded === this._isSubappDockExpanded) {
+      return;
+    }
+
+    this._isSubappDockExpanded = nextExpanded;
+    if (!this.updateLayoutProjection()) {
+      this.controlChangedSubject.next();
+    }
+  }
+
   resolveSessionListDisplayMode(input: {
     hasSessions: boolean;
     hasConversationContent: boolean;
     hasCurrentSession: boolean;
   }): 'hidden' | 'stacked' | 'sidebar' {
-    if (!this._isAuthenticated) {
+    if (this._isSessionViewerSuppressed) {
       return 'hidden';
     }
 
-    if (this._isSessionViewerSuppressed) {
+    if (this._isSubappDockExpanded) {
       return 'hidden';
     }
 

@@ -1,8 +1,16 @@
 ﻿import { Injectable } from '@angular/core';
 import { AilyHost } from '../core/host';
+import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
+import {
+  syncArduinoProjectSourceToSketch,
+  writeArduinoGeneratedArtifacts,
+} from '../../../editors/blockly-editor/services/generated-code-artifacts';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import { normalizeArduinoGeneratedCode } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
-import { generateCodeWithActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
+import {
+  generateCodeWithActiveProjectGenerator,
+  getActiveProjectGenerator,
+} from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 
 // Arduino 代码检查器
 
@@ -275,7 +283,12 @@ export class ArduinoLintService {
   async checkCurrentWorkspace(options: LintOptions = {}): Promise<LintResult> {
     try {
       // 从 Blockly 工作区生成代码
+      await prepareBlocklyProjectDataForCodeGeneration(
+        this.blocklyService.workspace,
+        this.blocklyService.getProjectDocument(),
+      );
       const code = normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
+      await writeArduinoGeneratedArtifacts(this.currentProjectPath, getActiveProjectGenerator());
       
       if (!code || code.trim().length === 0) {
         return {
@@ -339,6 +352,7 @@ export class ArduinoLintService {
 
       // 高效写入代码到 sketch.ino 文件（覆盖模式，无需预先删除）
       await AilyHost.get().fs.writeFileSync(sketchFilePath, code);
+      syncArduinoProjectSourceToSketch(this.currentProjectPath, sketchPath);
       if (isArduinoLintTraceEnabled()) {
         console.info('[ArduinoLintService] lint sketch prepared', {
           sketchFilePath,

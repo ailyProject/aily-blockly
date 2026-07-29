@@ -14,6 +14,11 @@ const workspaceRoot = path.resolve(__dirname, '..');
 const appConfig = require(path.join(workspaceRoot, 'electron', 'config', 'config.json'));
 const updateBaseUrl = appConfig?.regions?.[officialRegionKey]?.updater;
 const workerRuntimeBuildScript = path.join(workspaceRoot, 'scripts', 'build-electron-worker.js');
+const simulatorRuntimePrepareScript = path.join(
+  workspaceRoot,
+  'scripts',
+  'prepare-simulator-runtime.js',
+);
 const packagedWorkerRuntimeModule = 'electron/chat-runtime-lex-execution-runtime.bundle.mjs';
 
 if (!updateBaseUrl) {
@@ -60,5 +65,6 @@ function run(commandArgs, extraEnv = {}) {
 }
 
 run([workerRuntimeBuildScript]);
+run([simulatorRuntimePrepareScript, '--require-release']);
 run([ngCliPath, 'build', '--base-href', './']);
 run([electronBuilderCliPath, ...builderArgs]);

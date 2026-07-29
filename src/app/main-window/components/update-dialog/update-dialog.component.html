@@ -10,6 +10,11 @@
   <div class="progress-container">
     <nz-progress [nzPercent]="progress" [nzShowInfo]="true" [nzStatus]="progress==100?'success':'active'"></nz-progress>
   </div>
+  @if(mode === 'downloading' && downloadSourceStatus?.current > 1){
+  <div class="download-source-status" role="status" aria-live="polite">
+    <span>{{ 'UPDATE_DIALOG.USING_FALLBACK_DOWNLOAD_SOURCE' | translate:downloadSourceStatus }}</span>
+  </div>
+  }
   }
 
   @if (mode === 'error') {

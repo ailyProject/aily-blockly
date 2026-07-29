@@ -31,12 +31,18 @@ export function buildToolInvocationDisplaySummary(input: {
     case 'semantic_search':
       return buildSemanticSearchSummary(args);
     case 'create_file':
-      return buildPathSummary('Created', args);
+      return buildPathLifecycleSummary(args, input.state, {
+        active: 'Creating', completed: 'Created', failed: 'Failed to create',
+      });
     case 'write_file':
-      return buildPathSummary('Updated', args);
+      return buildPathLifecycleSummary(args, input.state, {
+        active: 'Updating', completed: 'Updated', failed: 'Failed to update',
+      });
     case 'create_folder':
     case 'create_directory':
-      return buildPathSummary('Created', args, 'folder');
+      return buildPathLifecycleSummary(args, input.state, {
+        active: 'Creating', completed: 'Created', failed: 'Failed to create',
+      }, 'folder');
     case 'edit_file':
       return buildPathSummary('Edited', args);
     case 'replace_string_in_file':
@@ -111,7 +117,7 @@ export function buildToolInvocationDisplaySummary(input: {
     case 'memory':
       return buildMemorySummary(args);
     case 'syncAbs':
-      return buildSyncAbsSummary(args);
+      return buildSyncAbsSummary(args, input.metadata, input.state);
     case 'lint':
       return {
         label: 'Checked generated code',
@@ -285,6 +291,20 @@ function buildPathSummary(verb: string, args: any, fallbackKind: 'file' | 'folde
   };
 }
 
+function buildPathLifecycleSummary(
+  args: any,
+  state: 'doing' | 'done' | 'warn' | 'error' | 'pending_approval' | undefined,
+  verbs: { readonly active: string; readonly completed: string; readonly failed: string },
+  fallbackKind: 'file' | 'folder' | 'path' = 'file',
+): ToolInvocationDisplaySummary {
+  const verb = state === 'error'
+    ? verbs.failed
+    : state === 'doing' || state === 'pending_approval'
+      ? verbs.active
+      : verbs.completed;
+  return buildPathSummary(verb, args, fallbackKind);
+}
+
 function buildCommandSummary(verb: string, args: any): ToolInvocationDisplaySummary {
   const command = readToolApprovalCommand('command_exec', args);
   return {
@@ -405,16 +425,22 @@ function buildLoadSkillSummary(
   }
 }
 
-function buildSyncAbsSummary(args: any): ToolInvocationDisplaySummary {
-  switch (asString(args?.action)?.toLowerCase()) {
+function buildSyncAbsSummary(
+  args: any,
+  metadata?: Record<string, unknown> | null,
+  state?: 'doing' | 'done' | 'warn' | 'error' | 'pending_approval',
+): ToolInvocationDisplaySummary {
+  const action = asString(args?.action).toLowerCase()
+    || asString(metadata?.['operation']).toLowerCase();
+  switch (action) {
     case 'import':
-      return { label: 'Loaded Blockly from ABS' };
+      return { label: state === 'error' ? 'Failed to load Blockly from ABS' : state === 'doing' || state === 'pending_approval' ? 'Loading Blockly from ABS' : 'Loaded Blockly from ABS' };
     case 'export':
-      return { label: 'Exported Blockly to ABS' };
+      return { label: state === 'error' ? 'Failed to export Blockly to ABS' : state === 'doing' || state === 'pending_approval' ? 'Exporting Blockly to ABS' : 'Exported Blockly to ABS' };
     case 'status':
       return { label: 'Checked ABS sync status' };
     default:
-      return { label: 'Synced ABS' };
+      return { label: state === 'error' ? 'Failed to synchronize Blockly and ABS' : 'Synchronized Blockly and ABS' };
   }
 }
 

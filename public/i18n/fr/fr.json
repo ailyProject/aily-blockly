@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "Échec de la publication du projet",
+        "WORKSPACE_PROJECT_NOT_FOUND": "Projet introuvable",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "Vous ne pouvez pas publier ce projet",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "Les chemins des dépendances locales ne respectent pas les exigences de publication",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "Compilez et synchronisez d'abord le projet"
+    },
     "MENU": {
         "MENU": "Menu",
         "PROJECT_NEW": "Nouveau Projet",
@@ -189,6 +196,16 @@
             "LABEL_COLOR_MODE": "Couleur",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Seuls les fichiers MP4 et GIF sont pris en charge"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "Convertir une image PNG, JPEG, WebP ou GIF en données de pixels RGB565/RGB332",
+            "UPLOAD_TOOLTIP": "Formats pris en charge : PNG, JPEG, WebP, GIF",
+            "EMPTY": "Aucune image importée",
+            "STATUS_DECODING": "Conversion de l’image...",
+            "STATUS_REDECODING": "Reconversion de {{name}}...",
+            "ERROR_DECODE_FAILED": "Échec de la conversion de l’image",
+            "ERROR_REDECODE_FAILED": "Échec de la reconversion de l’image",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Seuls les fichiers PNG, JPEG, WebP et GIF sont pris en charge"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Importer",
             "UPLOAD_TOOLTIP": "Formats pris en charge : MP4, GIF, PNG",
@@ -247,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "Téléverser",
+            "UPLOAD_TOOLTIP": "Formats pris en charge : PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "Effacer",
+            "LABEL_WIDTH": "L",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "Couleur",
+            "EMPTY": "Aucune image téléversée",
+            "STATUS_READING_FILE": "Lecture de {{name}}...",
+            "STATUS_DECODING": "Conversion de l’image...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "Le fichier source ne doit pas dépasser {{maxSize}} (actuel : {{currentSize}})",
+            "ERROR_DECODE_FAILED": "Échec de la conversion de l’image",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "Seules les images PNG, JPEG, WebP et BMP sont prises en charge"
         }
     },
     "MAIN_WINDOW": {
@@ -270,7 +302,7 @@
             "COMPILATION": "Paramètres de Compilation",
             "REPOSITORY": "Paramètres de Dépôt",
             "DEPENDENCIES": "Dépendances Globales",
-            "AILY_TOOLS": "Outils Aily",
+            "TOOLS_AND_SUBAPP": "Outils et applications",
             "MCP": "MCP",
             "DEVMODE": "Mode Développeur",
             "CACHE": "Gestion du cache"
@@ -429,6 +461,7 @@
         "TEXT_DOWNLOADED": "La version {{version}} a été téléchargée. Installer maintenant ?",
         "TEXT_AVAILABLE": "Version actuelle {{currentVersion}}, nouvelle version {{version}}<br>Voulez-vous télécharger et installer cette mise à jour ?",
         "DOWNLOAD_FAILED": "Échec du téléchargement",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "Utilisation de la source de secours ({{current}}/{{total}})",
         "REMIND_LATER": "Rappeler plus tard",
         "SKIP_VERSION": "Ignorer cette version",
         "UPDATE_NOW": "Mettre à jour maintenant",
@@ -797,6 +830,14 @@
             "COMPLETE_WITH_TIME": "Compilation terminée (durée: {{seconds}}s)",
             "FIRST_BUILD_HINT": "La première compilation peut prendre plus de temps",
             "FAST_BUILD_HINT": "Le système de build rapide est en cours d’exécution",
+            "PROGRESS_PREPARING": "Préparation de la compilation",
+            "PROGRESS_SKETCH": "Compilation du programme",
+            "PROGRESS_LIBRARIES": "Compilation des bibliothèques",
+            "PROGRESS_CORE": "Compilation du cœur",
+            "PROGRESS_LINKING": "Édition des liens du micrologiciel",
+            "PROGRESS_OBJCOPY": "Génération du micrologiciel",
+            "PROGRESS_FINALIZING": "Finalisation de la compilation",
+            "PROGRESS_COMPLETE": "Compilation terminée",
             "PROCESS_SIGNAL_TERMINATED": "Le processus de compilation a été arrêté par le signal: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "Le processus de compilation s’est terminé de façon inattendue, code de sortie: {{code}}",
             "PROCESS_START_FAILED": "Impossible de démarrer le processus de compilation",

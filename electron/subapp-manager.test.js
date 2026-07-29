@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  TOOL_ID_ALIASES,
   createSubappManager,
   resolveSubappRoot,
   validateIndex,
@@ -42,6 +43,10 @@ test('resolves the required user npm-global/app installation root', () => {
   );
 });
 
+test('routes the installed Simulator package through its dedicated host', () => {
+  assert.equal(TOOL_ID_ALIASES['aily-simulator'], 'simulator');
+});
+
 test('rejects package targets that are not safe npm package names', () => {
   const index = fixtureIndex();
   index['aily-chat'].package = 'file:../../tmp/app';
@@ -56,13 +61,86 @@ test('treats an npm-linked source package as an installed subapp', async (t) => 
   t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
 
   fs.mkdirSync(path.join(sourceDir, 'ui'), { recursive: true });
+  fs.mkdirSync(path.join(sourceDir, 'agent'), { recursive: true });
+  fs.mkdirSync(path.join(sourceDir, 'skill', 'fixture-skill'), { recursive: true });
   fs.mkdirSync(path.dirname(linkedDir), { recursive: true });
   fs.writeFileSync(path.join(sourceDir, 'index.js'), '');
   fs.writeFileSync(path.join(sourceDir, 'ui', 'index.html'), '<!doctype html>');
+  fs.writeFileSync(path.join(sourceDir, 'agent', 'tools.json'), JSON.stringify({
+    protocolVersion: 1,
+    transport: 'aily-child-rpc',
+    lifecycle: {
+      sessionRelease: {
+        method: 'fixture.session.close',
+        params: { reason: 'host-session-release' },
+        timeoutMs: 2500,
+      },
+    },
+    tools: [{
+      name: 'fixture_echo',
+      description: 'Echo through the fixture subapp Runtime.',
+      rpc: { method: 'fixture.echo' },
+      permission: 'read',
+      timeoutMs: 5000,
+      maxOutputBytes: 49152,
+      presentation: {
+        mode: 'dock',
+        surface: 'compact',
+        autoOpen: 'first-active',
+        when: {
+          param: 'action',
+          values: ['open'],
+        },
+      },
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        additionalProperties: false,
+      },
+    }],
+  }));
+  fs.writeFileSync(path.join(sourceDir, 'skill', 'fixture-skill', 'SKILL.md'), [
+    '---',
+    'name: fixture-skill',
+    'description: Fixture skill.',
+    '---',
+    '',
+    '# Fixture',
+  ].join('\n'));
   fs.writeFileSync(path.join(sourceDir, 'package.json'), JSON.stringify({
     name: '@aily-project/subapp-aily-chat',
     version: '0.1.1',
     main: 'index.js',
+    ailySubapp: {
+      ui: {
+        surfaces: {
+          compact: {
+            entry: 'ui/index.html',
+            minWidth: 280,
+            minHeight: 180,
+            preferredHeight: 260,
+            interactive: true,
+          },
+        },
+      },
+      runtime: {
+        startupTimeoutMs: 20000,
+        resourceLifecycle: {
+          resources: ['serial'],
+          suspendMethod: 'runtime.resource.suspend',
+          resumeMethod: 'runtime.resource.resume',
+          timeoutMs: 150000,
+        },
+      },
+      agent: {
+        protocolVersion: 1,
+        skills: ['skill/fixture-skill/SKILL.md'],
+        tools: {
+          transport: 'aily-child-rpc',
+          manifest: 'agent/tools.json',
+        },
+      },
+    },
   }));
   fs.symlinkSync(sourceDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
 
@@ -77,6 +155,90 @@ test('treats an npm-linked source package as an installed subapp', async (t) => 
   assert.equal(state.apps[0].installed, true);
   assert.equal(state.apps[0].installedVersion, '0.1.1');
   assert.equal(state.apps[0].config.packagePath, linkedDir);
+  assert.equal(state.apps[0].config.startupTimeoutMs, 20000);
+  assert.deepEqual(state.apps[0].config.runtime, {
+    resourceLifecycle: {
+      resources: ['serial'],
+      suspendMethod: 'runtime.resource.suspend',
+      resumeMethod: 'runtime.resource.resume',
+      timeoutMs: 150000,
+    },
+  });
+  assert.deepEqual(state.apps[0].config.ui, {
+    surfaces: {
+      default: {
+        entry: 'ui/index.html',
+      },
+      compact: {
+        entry: 'ui/index.html',
+        minWidth: 280,
+        minHeight: 180,
+        preferredHeight: 260,
+        interactive: true,
+      },
+    },
+  });
+  assert.equal(state.apps[0].config.agent.transport, 'aily-child-rpc');
+  assert.deepEqual(state.apps[0].config.agent.lifecycle, {
+    sessionRelease: {
+      method: 'fixture.session.close',
+      params: { reason: 'host-session-release' },
+      timeoutMs: 2500,
+    },
+  });
+  assert.deepEqual(state.apps[0].config.agent.skills, ['skill/fixture-skill/SKILL.md']);
+  assert.equal(state.apps[0].config.agent.tools[0].name, 'fixture_echo');
+  assert.equal(state.apps[0].config.agent.tools[0].rpc.method, 'fixture.echo');
+  assert.deepEqual(state.apps[0].config.agent.tools[0].presentation, {
+    mode: 'dock',
+    surface: 'compact',
+    autoOpen: 'first-active',
+    when: {
+      param: 'action',
+      values: ['open'],
+    },
+  });
+});
+
+test('rejects an unsafe compact UI surface entry without exposing a runnable config', async (t) => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-surface-'));
+  const installRoot = path.join(fixtureRoot, 'install');
+  const sourceDir = path.join(fixtureRoot, 'source');
+  const linkedDir = path.join(installRoot, 'node_modules', '@aily-project', 'subapp-aily-chat');
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(sourceDir, 'ui'), { recursive: true });
+  fs.mkdirSync(path.dirname(linkedDir), { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, 'index.js'), '');
+  fs.writeFileSync(path.join(sourceDir, 'ui', 'index.html'), '<!doctype html>');
+  fs.writeFileSync(path.join(sourceDir, 'package.json'), JSON.stringify({
+    name: '@aily-project/subapp-aily-chat',
+    version: '0.1.1',
+    main: 'index.js',
+    ailySubapp: {
+      ui: {
+        surfaces: {
+          compact: {
+            entry: '../outside.html',
+          },
+        },
+      },
+    },
+  }));
+  fs.symlinkSync(sourceDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+  const manager = createSubappManager({
+    rootDir: installRoot,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(fixtureIndex()),
+    }),
+  });
+  const state = await manager.list({ locale: 'en', refresh: true });
+
+  assert.equal(state.apps[0].installed, false);
+  assert.equal(state.apps[0].config, null);
+  assert.match(state.apps[0].installError, /Unsafe ailySubapp\.ui\.surfaces\.compact\.entry/);
 });
 
 test('installs indexed package into the user app project and exposes its absolute runtime path', async (t) => {
@@ -139,4 +301,78 @@ test('installs indexed package into the user app project and exposes its absolut
   const removed = await manager.uninstall({ id: 'aily-chat', locale: 'zh-CN' });
   assert.deepEqual(npmCalls[2].slice(0, 3), ['uninstall', '--prefix', rootDir]);
   assert.equal(removed.apps[0].installed, false);
+});
+
+test('update replaces stale package files even when npm metadata already claims the target version', async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-stale-update-'));
+  const packageDir = path.join(rootDir, 'node_modules', '@aily-project', 'subapp-aily-chat');
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
+  fs.writeFileSync(path.join(packageDir, 'index.js'), '');
+  fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: '@aily-project/subapp-aily-chat',
+    version: '0.1.0',
+    main: 'index.js',
+  }));
+
+  const npmCalls = [];
+  const manager = createSubappManager({
+    rootDir,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(fixtureIndex('0.1.1')),
+    }),
+    runNpm: async (args) => {
+      npmCalls.push(args);
+      assert.equal(fs.existsSync(packageDir), false, 'stale package must be moved aside before npm runs');
+      fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
+      fs.writeFileSync(path.join(packageDir, 'index.js'), '');
+      fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
+      fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+        name: '@aily-project/subapp-aily-chat',
+        version: '0.1.1',
+        main: 'index.js',
+      }));
+      return { code: 0, stdout: 'changed 1 package', stderr: '' };
+    },
+  });
+
+  const updated = await manager.update({ id: 'aily-chat', locale: 'en' });
+  assert.equal(npmCalls.length, 1);
+  assert.equal(updated.apps[0].installedVersion, '0.1.1');
+  assert.equal(updated.apps[0].updateAvailable, false);
+  assert.equal(fs.readdirSync(rootDir).some((name) => name.startsWith('.subapp-update-')), false);
+});
+
+test('update restores the previous package when the replacement cannot be verified', async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-update-rollback-'));
+  const packageDir = path.join(rootDir, 'node_modules', '@aily-project', 'subapp-aily-chat');
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
+  fs.writeFileSync(path.join(packageDir, 'index.js'), 'old runtime');
+  fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: '@aily-project/subapp-aily-chat',
+    version: '0.1.0',
+    main: 'index.js',
+  }));
+
+  const manager = createSubappManager({
+    rootDir,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(fixtureIndex('0.1.1')),
+    }),
+    runNpm: async () => ({ code: 0, stdout: 'up to date', stderr: '' }),
+  });
+
+  await assert.rejects(
+    manager.update({ id: 'aily-chat', locale: 'en' }),
+    /update verification failed/,
+  );
+  assert.equal(JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')).version, '0.1.0');
+  assert.equal(fs.readFileSync(path.join(packageDir, 'index.js'), 'utf8'), 'old runtime');
 });

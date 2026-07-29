@@ -1,7 +1,7 @@
 import { Injectable, inject, ApplicationRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, Observable, Subject, throwError, from, firstValueFrom } from 'rxjs';
-import { catchError, map, switchMap } from 'rxjs/operators';
+import { catchError, map, switchMap, timeout } from 'rxjs/operators';
 import { API } from '../configs/api.config';
 import { ElectronService } from './electron.service';
 import { createApiError, extractApiErrorDetails } from '../utils/api-error.utils';
@@ -86,6 +86,13 @@ export interface SSOTokenResponse {
   target_url: string | null;
 }
 
+export type AuthInitializationState =
+  | 'idle'
+  | 'checking'
+  | 'authenticated'
+  | 'signed_out'
+  | 'unavailable';
+
 @Injectable({
   providedIn: 'root'
 })
@@ -128,6 +135,11 @@ export class AuthService {
   private authHydrationRetryHandle: ReturnType<typeof setTimeout> | null = null;
   private readonly authQuotaInfoRefreshRetryDelaysMs = [0, 1000, 5000] as const;
   private readonly authHydrationRetryDelaysMs = [1000, 5000] as const;
+  private readonly authRequestTimeoutMs = 12000;
+  private readonly authQuotaRequestTimeoutMs = 8000;
+  private authInitializationPromise: Promise<void> | null = null;
+  private readonly authInitializationStateSubject = new BehaviorSubject<AuthInitializationState>('idle');
+  readonly authInitializationState$ = this.authInitializationStateSubject.asObservable();
 
   // 登录弹窗显示状态
   showUser = new BehaviorSubject<any>(null);
@@ -142,40 +154,50 @@ export class AuthService {
   /**
    * 初始化认证状态 - 需要在ElectronService初始化后调用
    */
-  async initializeAuth(): Promise<void> {
+  initializeAuth(): Promise<void> {
+    if (this.authInitializationPromise) {
+      return this.authInitializationPromise;
+    }
+
+    const operation = this.performAuthInitialization();
+    this.authInitializationPromise = operation;
+    const clearOperation = () => {
+      if (this.authInitializationPromise === operation) {
+        this.authInitializationPromise = null;
+      }
+    };
+    void operation.then(clearOperation, clearOperation);
+    return operation;
+  }
+
+  getAuthInitializationState(): AuthInitializationState {
+    return this.authInitializationStateSubject.value;
+  }
+
+  private async performAuthInitialization(): Promise<void> {
+    this.authInitializationStateSubject.next('checking');
     try {
       const token = await this.getToken2();
-      // const userInfo = await this.getUserInfo();
-
-      // console.log('初始化认证状态:', { token });
-
-      if (token) {
-        // 延迟执行避免循环依赖
-        setTimeout(() => {
-          this.getMe(token).then(userInfo => {
-            // console.log('获取用户信息:', userInfo);
-            if (userInfo) {
-              this.isLoggedInSubject.next(true);
-            } else {
-              this.isLoggedInSubject.next(false);
-            }
-
-            // console.log('认证状态:', this.isLoggedInSubject.value);
-          }).catch(error => {
-            this.isLoggedInSubject.next(false);
-          });
-        }, 0);
-        // 验证 token 是否有效
-        // const isValid = await this.verifyToken(token);
-        // if (isValid) {
-        //   this.isLoggedInSubject.next(true);
-        //   this.userInfoSubject.next(userInfo);
-        // } else {
-        //   await this.clearAuthData();
-        // }
+      if (!token) {
+        this.isLoggedInSubject.next(false);
+        this.authInitializationStateSubject.next('signed_out');
+        return;
       }
+
+      const userInfo = await this.getMe(token);
+      const authenticated = !!userInfo;
+      this.isLoggedInSubject.next(authenticated);
+      this.authInitializationStateSubject.next(authenticated ? 'authenticated' : 'signed_out');
     } catch (error) {
-      await this.clearAuthData();
+      if (isAuthCredentialError(error)) {
+        this.isLoggedInSubject.next(false);
+        this.authInitializationStateSubject.next('signed_out');
+        return;
+      }
+
+      // Network and timeout failures do not invalidate locally stored
+      // credentials. Remote capability owns the unavailable/offline surface.
+      this.authInitializationStateSubject.next('unavailable');
     }
   }
 
@@ -310,7 +332,9 @@ export class AuthService {
     return new Promise((resolve, reject) => {
       this.http.get<CommonResponse>(API.me, {
         headers: { Authorization: `Bearer ${token}` }
-      }).subscribe({
+      }).pipe(
+        timeout(this.authRequestTimeoutMs),
+      ).subscribe({
         next: async (response) => {
           if (response.status === 200 && response.data) {
             const userData = this.mergeCurrentGithubInfo(response.data);
@@ -809,6 +833,7 @@ export class AuthService {
     this.clearAuthDataFile();
     this.isLoggedInSubject.next(false);
     this.setCurrentUserInfo(null);
+    this.authInitializationStateSubject.next('signed_out');
   }
 
   /**
@@ -878,7 +903,9 @@ export class AuthService {
     return new Promise((resolve, reject) => {
       this.http.get<CommonResponse>(API.authQuotaInfo, {
         headers: { Authorization: `Bearer ${token}` }
-      }).subscribe({
+      }).pipe(
+        timeout(this.authQuotaRequestTimeoutMs),
+      ).subscribe({
         next: (response) => {
           if (response.status !== 200 || !response.data) {
             resolve(null);
@@ -1049,6 +1076,7 @@ export class AuthService {
       .then((user) => {
         const isLoggedIn = !!user;
         this.isLoggedInSubject.next(isLoggedIn);
+        this.authInitializationStateSubject.next(isLoggedIn ? 'authenticated' : 'unavailable');
         return isLoggedIn;
       });
   }
@@ -2131,4 +2159,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function isAuthCredentialError(error: unknown): boolean {
+  const status = isRecord(error) ? readNumber(error['status']) : undefined;
+  return status === 401 || status === 403;
 }

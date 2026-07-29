@@ -11,20 +11,32 @@ import { ActionState } from '../../../services/ui.service';
 import { ActionService } from '../../../services/action.service';
 import {
   normalizeArduinoGeneratedCode,
+  type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
-import { generateCodeWithActiveProjectGenerator } from './blockly-generator-runtime.service';
+import {
+  generateCodeWithActiveProjectGenerator,
+  getActiveProjectGenerator,
+} from './blockly-generator-runtime.service';
 
 import { BlocklyService as BlocklyService } from './blockly.service';
 
 import { PlatformService } from "../../../services/platform.service";
 import { ElectronService } from '../../../services/electron.service';
+import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
+import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { CompileValidationService } from '../../../services/compile-validation.service';
 import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
 import { NpmService } from '../../../services/npm.service';
 import { debounceTime } from 'rxjs/operators';
+import {
+  AilyBuilderProgressEvent,
+  isAilyBuilderProgressLine,
+  parseAilyBuilderProgressLine
+} from '../../../utils/aily-builder-progress.utils';
 import { ChatPerformanceTracer } from '../../../tools/aily-chat/services/chat-perf-tracer';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
+import { ProjectDebugConfigurationService } from '../../../services/project-debug-configuration.service';
 
 const AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY = '__AILY_CHAT_LEX_COMPLETION_PENDING_COUNT__';
 const AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY = '__AILY_CHAT_AGENT_LOOP_PENDING_COUNT__';
@@ -57,6 +69,8 @@ export class _BuilderService {
     private compileValidationService: CompileValidationService,
     private appDataResourceLock: AppDataResourceLockService,
     private ngZone: NgZone,
+    private projectDebugConfigurationService:
+      ProjectDebugConfigurationService,
   ) { }
 
   // buildInProgress = false;
@@ -97,6 +111,12 @@ export class _BuilderService {
 
   private buildNoticeTitle(boardName: string): string {
     return this.t('RUNNING_TITLE', { board: boardName });
+  }
+
+  private buildProgressText(progress: AilyBuilderProgressEvent): string {
+    const translationKey = `BLOCKLY_EDITOR.BUILD.PROGRESS_${progress.stage.toUpperCase()}`;
+    const translated = this.translate.instant(translationKey);
+    return translated === translationKey ? progress.message : translated;
   }
 
   private appendCompileLog(message: string, level: ProjectLogLevel = 'INFO'): void {
@@ -192,11 +212,85 @@ export class _BuilderService {
     detail?: string,
   ): Promise<string> {
     await this.waitForOneIdleBoundary();
-    return this.runBuilderPreprocessPhase(
+    await prepareBlocklyProjectDataForCodeGeneration(
+      workspace as any,
+      this.blocklyService.getProjectDocument(),
+    );
+    const generated = await this.runBuilderPreprocessPhase(
       'workspace_to_code',
-      () => normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(workspace as any)),
+      () => {
+        const generator = getActiveProjectGenerator();
+        return {
+          code: normalizeArduinoGeneratedCode(
+            generateCodeWithActiveProjectGenerator(workspace as any),
+          ),
+          generator,
+        };
+      },
       detail,
     );
+    await writeArduinoGeneratedArtifacts(
+      this.projectService.currentProjectPath,
+      generated.generator,
+    );
+    return generated.code;
+  }
+
+  /**
+   * Capture code and its serialized Blockly source map inside the same
+   * synchronous workspaceToCode() phase. The active project generator's
+   * blockCodeMap is mutable runtime state, so reading it after an await could
+   * pair a newer map with older sketch bytes.
+   */
+  private async generateWorkspaceBuildSnapshotForPreprocess(
+    workspace: unknown,
+    detail?: string,
+  ): Promise<{
+    code: string;
+    blockSourceMappings: Array<{
+      blockId: string;
+      executionRole: 'statement' | 'value';
+      ranges: Array<{ startLine: number; endLine: number }>;
+      executableRanges: Array<{ startLine: number; endLine: number }>;
+      supportRanges: Array<{ startLine: number; endLine: number }>;
+    }>;
+  }> {
+    await this.waitForOneIdleBoundary();
+    await prepareBlocklyProjectDataForCodeGeneration(
+      workspace as any,
+      this.blocklyService.getProjectDocument(),
+    );
+    const generated = await this.runBuilderPreprocessPhase(
+      'workspace_to_code',
+      () => {
+        const code = normalizeArduinoGeneratedCode(
+          generateCodeWithActiveProjectGenerator(workspace as any),
+        );
+        const generator = getActiveProjectGenerator();
+        const activeGenerator = generator as {
+          blockCodeMap?: Map<string, BlockCodeMapping>;
+        } | null;
+        const blockCodeMap = activeGenerator?.blockCodeMap
+          ?? new Map<string, BlockCodeMapping>();
+        return {
+          code,
+          blockSourceMappings: this.createBlockSourceMappings(
+            blockCodeMap,
+            workspace,
+          ),
+          generator,
+        };
+      },
+      detail,
+    );
+    await writeArduinoGeneratedArtifacts(
+      this.projectService.currentProjectPath,
+      generated.generator,
+    );
+    return {
+      code: generated.code,
+      blockSourceMappings: generated.blockSourceMappings,
+    };
   }
 
   private appendPreprocessErrorOutput(value: unknown): void {
@@ -370,7 +464,9 @@ export class _BuilderService {
     this.initialized = true;
     this.actionService.listen('compile-begin', async (action) => {
       try {
-        const result = await this.build();
+        const graphSemanticRevision =
+          action.payload?.graphSemanticRevision as string | undefined;
+        const result = await this.build(graphSemanticRevision);
         return { success: true, result };
       } catch (msg) {
         return { success: false, result: msg };
@@ -1120,7 +1216,16 @@ export class _BuilderService {
   }
 
 
-  async build(): Promise<ActionState> {
+  async build(graphSemanticRevision?: string): Promise<ActionState> {
+    if (
+      graphSemanticRevision !== undefined
+      && !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
+    ) {
+      return Promise.reject({
+        state: 'error',
+        text: 'Simulator graph semantic revision is invalid.',
+      });
+    }
     if (!this.workflowService.startBuild()) {
       const state = this.workflowService.currentState;
       let msg = this.t('BUSY_SYSTEM');
@@ -1351,12 +1456,18 @@ export class _BuilderService {
         let completeTitle: string = this.t('COMPLETE_TITLE');
 
         try {
-          // 获取最新代码
-          const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'compile_config');
+          // 获取最新代码，并在同一次同步 generator 调用内冻结其块映射。
+          const {
+            code,
+            blockSourceMappings,
+          } = await this.generateWorkspaceBuildSnapshotForPreprocess(
+            this.blocklyService.workspace,
+            'compile_config',
+          );
           this.lastCode = code;
           
-          const boardModule = await this.projectService.getBoardModule();
-          const boardName = boardModule.replace('@aily-project/board-', '');
+          const boardJson = await this.projectService.getBoardJson();
+          const boardName = boardJson.name;
           const configFilePath = this.electronService.pathJoin(tempPath, 'build-config.json');
           await this.waitForAilyBuilderReady();
 
@@ -1366,6 +1477,12 @@ export class _BuilderService {
             buildConfig = JSON.parse(window['fs'].readFileSync(configFilePath, 'utf8'));
           }
           buildConfig.code = code;
+          buildConfig.blockSourceMappings = blockSourceMappings;
+          if (graphSemanticRevision) {
+            buildConfig.graphSemanticRevision = graphSemanticRevision;
+          } else {
+            delete buildConfig.graphSemanticRevision;
+          }
           delete buildConfig.ailyBuilderPath;
           delete buildConfig.ailyBuilderCommand;
           await this.writeTextFile(configFilePath, JSON.stringify(buildConfig, null, 2));
@@ -1385,6 +1502,7 @@ export class _BuilderService {
           let lastLogLines: string[] = [];
           let processExitCode: number | null = null;
           let processSignal: string | null = null;
+          let hasStructuredBuilderProgress = false;
 
           this.buildStartTime = Date.now();
 
@@ -1454,12 +1572,43 @@ export class _BuilderService {
                     let trimmedLine = line.trim();
                     if (!trimmedLine) return;
 
+                    // aily-builder >= 1.2.11 emits a dedicated JSON progress event.
+                    // Consume it here so protocol data never enters the log component.
+                    if (isAilyBuilderProgressLine(trimmedLine)) {
+                      hasStructuredBuilderProgress = true;
+                      const builderProgress = parseAilyBuilderProgressLine(trimmedLine);
+                      if (builderProgress) {
+                        lastProgress = Math.max(lastProgress, builderProgress.percent);
+                        this.currentProgress = Math.max(this.currentProgress, builderProgress.percent);
+                        this.hasReceivedRealProgress = true;
+                        lastBuildText = this.buildProgressText(builderProgress);
+                        this.safeUpdateNotice({
+                          title: this.buildNoticeTitle(boardName),
+                          text: lastBuildText,
+                          state: 'doing',
+                          progress: this.currentProgress,
+                          setTimeout: 0,
+                          stop: () => {
+                            this.cancel();
+                          }
+                        });
+
+                        if (builderProgress.status === 'complete' && builderProgress.percent === 100) {
+                          this.buildCompleted = true;
+                        }
+                      }
+                      return;
+                    }
+
                     if (trimmedLine.startsWith('BuildText:')) {
                       const lineContent = trimmedLine.replace('BuildText:', '').trim();
                       const buildText = lineContent.split(/[\n\r]/)[0];
                       lastBuildText = buildText;
                     }
 
+                    // Legacy parser retained for aily-builder <= 1.2.10.
+                    // Newer builders also emit raw Ninja counters, but those counters are
+                    // local to a stage and must not be treated as global progress.
                     const progressInfo = trimmedLine.trim();
                     let progressValue = 0;
                     const barProgressMatch = progressInfo.match(/\[.*?\]\s*(\d+)%/);
@@ -1481,7 +1630,7 @@ export class _BuilderService {
                       }
                     }
 
-                    if (progressValue > lastProgress) {
+                    if (!hasStructuredBuilderProgress && progressValue > lastProgress) {
                       lastProgress = progressValue;
                       this.hasReceivedRealProgress = true;
                       
@@ -1503,7 +1652,7 @@ export class _BuilderService {
                       }
                     }
 
-                    if (lastProgress === 100) {
+                    if (!hasStructuredBuilderProgress && lastProgress === 100) {
                       this.buildCompleted = true;
                     }
 
@@ -1604,7 +1753,20 @@ export class _BuilderService {
                 this.safeUpdateNotice({ title: completeTitle, text: displayTextWithTime, state: 'done', setTimeout: 600000 });
                 
                 this.passed = true;
-                
+
+                void this.projectDebugConfigurationService
+                  .updateWorkspaceGeneratedCode(
+                    this.currentProjectPath,
+                    this.lastCode,
+                    { refreshArtifact: true },
+                  )
+                  .catch((error) => {
+                    console.warn(
+                      '编译成功后核对 Blockly Artifact 失败:',
+                      error,
+                    );
+                  });
+
                 // 保存编译元数据（不阻塞）
                 this.electronService.calculateHash(this.lastCode).then(codeHash => {
                   this.saveBuildInfo('success', buildDuration, codeHash);
@@ -1686,7 +1848,68 @@ export class _BuilderService {
       }
       });
     });
-  }
+    }
+
+    /**
+     * Keep the build hand-off independent from Blockly generator internals.
+     * compile.js combines these ranges with a hash of the exact sketch bytes.
+     */
+    private createBlockSourceMappings(
+      generatedCodeMap: ReadonlyMap<string, BlockCodeMapping>,
+      generatedWorkspace: unknown = this.blocklyService.workspace,
+    ): Array<{
+      blockId: string;
+      executionRole: 'statement' | 'value';
+      ranges: Array<{ startLine: number; endLine: number }>;
+      executableRanges: Array<{ startLine: number; endLine: number }>;
+      supportRanges: Array<{ startLine: number; endLine: number }>;
+    }> {
+      return [...generatedCodeMap.values()]
+        .map((mapping) => {
+          const block = (generatedWorkspace as {
+            getBlockById?: (blockId: string) => {
+              outputConnection?: unknown;
+            } | null;
+          } | null | undefined)?.getBlockById?.(
+            mapping.blockId,
+          );
+          return {
+            blockId: mapping.blockId,
+            executionRole: block?.outputConnection
+              ? 'value' as const
+              : 'statement' as const,
+            ranges: this.normalizeBlockSourceRanges(mapping.lineRanges),
+            executableRanges: this.normalizeBlockSourceRanges(
+              mapping.executableLineRanges ?? mapping.lineRanges,
+            ),
+            supportRanges: this.normalizeBlockSourceRanges(
+              mapping.supportLineRanges ?? [],
+            ),
+          };
+        })
+        .filter((mapping) => mapping.blockId.length > 0 && mapping.ranges.length > 0)
+        .sort((left, right) => left.blockId.localeCompare(right.blockId));
+    }
+
+    private normalizeBlockSourceRanges(
+      ranges: ReadonlyArray<{ startLine: number; endLine: number }>,
+    ): Array<{ startLine: number; endLine: number }> {
+      return ranges
+        .filter((range) => (
+          Number.isSafeInteger(range.startLine)
+          && Number.isSafeInteger(range.endLine)
+          && range.startLine >= 1
+          && range.endLine >= range.startLine
+        ))
+        .map((range) => ({
+          startLine: range.startLine,
+          endLine: range.endLine,
+        }))
+        .sort((left, right) => (
+          left.startLine - right.startLine
+          || left.endLine - right.endLine
+        ));
+    }
 
   /**
    * 保存编译元数据到 package.json

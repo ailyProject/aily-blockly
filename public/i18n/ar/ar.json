@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "تعذر نشر المشروع",
+        "WORKSPACE_PROJECT_NOT_FOUND": "المشروع غير موجود",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "ليس لديك صلاحية لنشر هذا المشروع",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "مسارات التبعيات المحلية لا تستوفي متطلبات النشر",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "قم ببناء المشروع ومزامنته أولاً"
+    },
     "MENU": {
         "MENU": "قائمة الطعام",
         "PROJECT_NEW": "مشروع جديد",
@@ -189,6 +196,16 @@
             "LABEL_COLOR_MODE": "اللون",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "يتم دعم ملفات MP4 وGIF فقط"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "تحويل صورة PNG أو JPEG أو WebP أو GIF إلى بيانات بكسل RGB565/RGB332",
+            "UPLOAD_TOOLTIP": "التنسيقات المدعومة: PNG وJPEG وWebP وGIF",
+            "EMPTY": "لم يتم تحميل صورة",
+            "STATUS_DECODING": "جارٍ تحويل الصورة...",
+            "STATUS_REDECODING": "جارٍ إعادة تحويل {{name}}...",
+            "ERROR_DECODE_FAILED": "فشل تحويل الصورة",
+            "ERROR_REDECODE_FAILED": "فشلت إعادة تحويل الصورة",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "يتم دعم ملفات PNG وJPEG وWebP وGIF فقط"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "تحميل",
             "UPLOAD_TOOLTIP": "الصيغ المدعومة: MP4، GIF، PNG",
@@ -247,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "رفع",
+            "UPLOAD_TOOLTIP": "الصيغ المدعومة: PNG وJPEG وWebP وBMP",
+            "BUTTON_CLEAR": "مسح",
+            "LABEL_WIDTH": "ع",
+            "LABEL_HEIGHT": "ا",
+            "LABEL_COLOR_MODE": "اللون",
+            "EMPTY": "لم يتم رفع صورة",
+            "STATUS_READING_FILE": "جارٍ قراءة {{name}}...",
+            "STATUS_DECODING": "جارٍ تحويل الصورة...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "يجب ألا يتجاوز الملف المصدر {{maxSize}} (الحالي: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "فشل تحويل الصورة",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "تُدعم صور PNG وJPEG وWebP وBMP فقط"
         }
     },
     "MAIN_WINDOW": {
@@ -270,7 +302,7 @@
             "COMPILATION": "إعدادات التجميع",
             "REPOSITORY": "إعدادات المستودع",
             "DEPENDENCIES": "التبعيات العامة",
-            "AILY_TOOLS": "أدوات Aily",
+            "TOOLS_AND_SUBAPP": "الأدوات والتطبيقات",
             "MCP": "MCP",
             "DEVMODE": "وضع المطور",
             "CACHE": "إدارة ذاكرة التخزين المؤقتة"
@@ -429,6 +461,7 @@
         "TEXT_DOWNLOADED": "تم تنزيل الإصدار {{version}}. هل تريد التثبيت الآن؟",
         "TEXT_AVAILABLE": "الإصدار الحالي {{currentVersion}}، الإصدار الجديد {{version}}<br>هل تريد تنزيل هذا التحديث وتثبيته؟",
         "DOWNLOAD_FAILED": "فشل التنزيل",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "يتم استخدام مصدر التنزيل الاحتياطي ({{current}}/{{total}})",
         "REMIND_LATER": "تذكير لاحقًا",
         "SKIP_VERSION": "تخطي هذا الإصدار",
         "UPDATE_NOW": "التحديث الآن",
@@ -797,6 +830,14 @@
             "COMPLETE_WITH_TIME": "اكتمل البناء (الوقت: {{seconds}}s)",
             "FIRST_BUILD_HINT": "قد يستغرق البناء الأول وقتًا أطول",
             "FAST_BUILD_HINT": "نظام البناء السريع قيد التشغيل",
+            "PROGRESS_PREPARING": "جارٍ تحضير البناء",
+            "PROGRESS_SKETCH": "جارٍ تجميع البرنامج",
+            "PROGRESS_LIBRARIES": "جارٍ تجميع المكتبات",
+            "PROGRESS_CORE": "جارٍ تجميع النواة",
+            "PROGRESS_LINKING": "جارٍ ربط البرنامج الثابت",
+            "PROGRESS_OBJCOPY": "جارٍ إنشاء البرنامج الثابت",
+            "PROGRESS_FINALIZING": "جارٍ إنهاء البناء",
+            "PROGRESS_COMPLETE": "اكتمل البناء",
             "PROCESS_SIGNAL_TERMINATED": "تم إنهاء عملية البناء بإشارة: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "خرجت عملية البناء بشكل غير متوقع، رمز الخروج: {{code}}",
             "PROCESS_START_FAILED": "فشل بدء عملية البناء",

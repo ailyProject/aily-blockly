@@ -20,7 +20,6 @@ import {
 } from '../helpers/session-checkpoint-timeline-model';
 import { ChatSessionModelStoreService } from './chat-session-model-store.service';
 import { ChatPerformanceTracer } from './chat-perf-tracer';
-import type { RequestCheckpointMetadata } from './edit-checkpoint.service';
 import {
   CHAT_RUNTIME_OWNER_RUNTIME_CONTROLLER,
   CHAT_RUNTIME_OWNER_SESSION_MODEL,
@@ -144,15 +143,6 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
     });
   }
 
-  async settleSubmittedTurnStartupResources(sessionId?: string | null): Promise<void> {
-    const targetSessionId = this.normalizeSessionId(sessionId);
-    if (!targetSessionId) {
-      throw new Error('settleSubmittedTurnStartupResources requires a sessionResource owner.');
-    }
-
-    await this.turnStartupEditLifecycle.waitForCheckpointMetadataSettled(targetSessionId);
-  }
-
   async completeSubmittedTurn(sessionId?: string | null): Promise<void> {
     const targetSessionId = this.normalizeSessionId(sessionId);
     if (!targetSessionId) {
@@ -160,8 +150,6 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
     }
 
     await this.runtimeController.awaitRequestCompletion(targetSessionId);
-    await this.turnStartupEditLifecycle.commitCurrentTurn(targetSessionId);
-    await this.turnStartupEditLifecycle.waitForCheckpointMetadataSettled(targetSessionId);
     await this.rebuildCheckpointTimelineFromServiceModel(targetSessionId);
   }
 
@@ -173,27 +161,9 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
     }
 
     const hydratedTurnResponses = this.cloneTurnResponses(turnResponses);
-    const metadataByCheckpointId = new Map<string, RequestCheckpointMetadata>();
-    const metadataByRequestId = new Map<string, RequestCheckpointMetadata>();
-    const metadataByTurnId = new Map<string, RequestCheckpointMetadata>();
-    await Promise.all(hydratedTurnResponses.map(async turn => {
-      const lookup = this.buildCheckpointMetadataLookup(turn);
-      if (!lookup.checkpointId && !lookup.requestId) {
-        return;
-      }
-      const metadata = await this.turnStartupEditLifecycle.readFinalizedCheckpointMetadata(sessionId, lookup);
-      if (!metadata) {
-        return;
-      }
-      this.writeCheckpointMetadataToTurnResponse(turn, metadata);
-      this.indexCheckpointMetadata(metadata, metadataByCheckpointId, metadataByRequestId, metadataByTurnId);
-    }));
     const checkpointTimelineState = createSessionCheckpointTimelineState({
       sessionResource: sessionId,
       turnResponses: hydratedTurnResponses,
-      metadataByCheckpointId,
-      metadataByRequestId,
-      metadataByTurnId,
     });
     const transaction = this.chatSessionModelStore.settleCheckpointMetadataTransaction(
       sessionId,
@@ -205,94 +175,11 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
     }
   }
 
-  private buildCheckpointMetadataLookup(turn: unknown): {
-    readonly checkpointId?: string;
-    readonly requestId?: string;
-  } {
-    const turnRecord = this.readRecord(turn);
-    const request = this.readRecord(turnRecord?.['request']);
-    const metadata = this.readRecord(request?.['metadata']);
-    const checkpointId = this.normalizeSessionId(metadata?.['checkpointId']);
-    const requestId = this.normalizeSessionId(metadata?.['requestId'])
-      || this.normalizeSessionId(turnRecord?.['turnId']);
-    return {
-      ...(checkpointId ? { checkpointId } : {}),
-      ...(requestId ? { requestId } : {}),
-    };
-  }
-
-  private indexCheckpointMetadata(
-    metadata: RequestCheckpointMetadata,
-    metadataByCheckpointId: Map<string, RequestCheckpointMetadata>,
-    metadataByRequestId: Map<string, RequestCheckpointMetadata>,
-    metadataByTurnId: Map<string, RequestCheckpointMetadata>,
-  ): void {
-    const checkpointId = this.normalizeSessionId(metadata.checkpointId);
-    if (checkpointId) {
-      metadataByCheckpointId.set(checkpointId, metadata);
-    }
-    const requestId = this.normalizeSessionId(metadata.requestId);
-    if (requestId) {
-      metadataByRequestId.set(requestId, metadata);
-    }
-    const turnId = this.normalizeSessionId(metadata.turnId);
-    if (turnId) {
-      metadataByTurnId.set(turnId, metadata);
-    }
-  }
-
-  private readRecord(value: unknown): Record<string, unknown> | null {
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : null;
-  }
-
   private cloneTurnResponses(turnResponses: readonly TurnResponseTurn[]): TurnResponseTurn[] {
     if (typeof globalThis.structuredClone === 'function') {
       return globalThis.structuredClone(turnResponses) as TurnResponseTurn[];
     }
     return JSON.parse(JSON.stringify(turnResponses)) as TurnResponseTurn[];
-  }
-
-  private writeCheckpointMetadataToTurnResponse(turn: TurnResponseTurn, metadata: RequestCheckpointMetadata): void {
-    const turnRecord = turn as unknown as Record<string, unknown>;
-    const request = this.readRecord(turnRecord['request']) ?? {};
-    const requestMetadata = this.readRecord(request['metadata']) ?? {};
-    const nextMetadata: Record<string, unknown> = {
-      ...requestMetadata,
-      checkpointId: metadata.checkpointId,
-      checkpointNamespace: metadata.checkpointNamespace,
-      checkpointTurnIndex: metadata.turnIndex,
-      requestId: this.normalizeSessionId(metadata.requestId)
-        || this.normalizeSessionId(requestMetadata['requestId'])
-        || this.normalizeSessionId(turn.turnId),
-    };
-    if (metadata.turnId) {
-      nextMetadata['checkpointTurnId'] = metadata.turnId;
-    }
-    if (metadata.startCheckpointRef) {
-      nextMetadata['startCheckpointRef'] = metadata.startCheckpointRef;
-    }
-    if (metadata.checkpointRef) {
-      nextMetadata['checkpointRef'] = metadata.checkpointRef;
-    }
-    if (metadata.additionalStartCheckpointRefs) {
-      nextMetadata['additionalStartCheckpointRefs'] = this.cloneJson(metadata.additionalStartCheckpointRefs);
-    }
-    if (metadata.additionalCheckpointRefs) {
-      nextMetadata['additionalCheckpointRefs'] = this.cloneJson(metadata.additionalCheckpointRefs);
-    }
-    turnRecord['request'] = {
-      ...request,
-      metadata: nextMetadata,
-    };
-  }
-
-  private cloneJson<T>(value: T): T {
-    if (typeof globalThis.structuredClone === 'function') {
-      return globalThis.structuredClone(value) as T;
-    }
-    return JSON.parse(JSON.stringify(value)) as T;
   }
 
   private async ensureRuntimeAgentForSession(

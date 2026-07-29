@@ -2,27 +2,11 @@ import { Injectable } from '@angular/core';
 import { NzModalService } from 'ng-zorro-antd/modal';
 
 import { AilyHost } from '../core/host';
-import type { DialogTurnContext } from '../core/user-turn-action-target';
 import { ChatDeleteDialogComponent } from '../components/chat-delete-dialog/chat-delete-dialog.component';
 import { ChatRenameDialogComponent } from '../components/chat-rename-dialog/chat-rename-dialog.component';
-import { UnsavedEditsDialogComponent } from '../components/unsaved-edits-dialog/unsaved-edits-dialog.component';
 import type { ChatSessionListItem } from './menu-manager.service';
 import { ChatSessionItemsService } from './chat-session-items.service';
 import { ChatSessionSelectionService } from './chat-session-selection.service';
-
-interface EditSummaryLike {
-  fileCount: number;
-  turnContext?: DialogTurnContext | null;
-}
-
-interface EditCheckpointServiceLike {
-  hasUnsavedEdits(): boolean;
-  getEditsSummary(): Promise<EditSummaryLike | null>;
-  acceptAllAsBaseline(): void;
-  dismissSummary(): void;
-  readonly canUndo: boolean;
-  undo(): Promise<unknown>;
-}
 
 export interface ChatSessionRowActionCallbacks {
   onSwitchSession: (sessionId: string, fallbackProjectPath?: string | null) => Promise<boolean>;
@@ -79,7 +63,6 @@ export class ChatSessionActionsService {
   async requestSwitchToSession(
     sessionId: string,
     currentSessionId: string,
-    editCheckpointService: EditCheckpointServiceLike,
     callbacks: ChatSessionSwitchRequestCallbacks,
     selectionItem?: ChatSessionSelectionItem,
   ): Promise<void> {
@@ -88,59 +71,30 @@ export class ChatSessionActionsService {
       await this.switchToSession(sessionId, currentSessionId, callbacks, selectionItem);
     };
 
-    if (editCheckpointService.hasUnsavedEdits()) {
-      await this.confirmUnsavedEditsBeforeSwitch(editCheckpointService, callbacks.onSaveCurrentSession, onSwitch);
-      return;
-    }
-
     await onSwitch();
   }
 
   async requestNewChat(
-    editCheckpointService: EditCheckpointServiceLike,
     callbacks: ChatSessionCommandRequestCallbacks,
   ): Promise<void> {
-    const onConfirm = () => this.newChat(callbacks);
-
-    if (editCheckpointService.hasUnsavedEdits()) {
-      await this.confirmUnsavedEditsBeforeSwitch(editCheckpointService, callbacks.onSaveCurrentSession, onConfirm);
-      return;
-    }
-
-    await onConfirm();
+    await this.newChat(callbacks);
   }
 
   async requestImportDebugSnapshot(
-    editCheckpointService: EditCheckpointServiceLike,
     callbacks: ChatSessionCommandRequestCallbacks,
   ): Promise<void> {
-    const onConfirm = () => this.importDebugSnapshot(callbacks);
-
-    if (editCheckpointService.hasUnsavedEdits()) {
-      await this.confirmUnsavedEditsBeforeSwitch(editCheckpointService, callbacks.onSaveCurrentSession, onConfirm);
-      return;
-    }
-
-    await onConfirm();
+    await this.importDebugSnapshot(callbacks);
   }
 
   async requestReturnToEntryInventory(
-    editCheckpointService: EditCheckpointServiceLike,
     callbacks: ChatSessionEntryCommandRequestCallbacks,
     sessionId?: string | null,
     options?: { readonly saveCurrentSession?: boolean },
   ): Promise<void> {
-    const onConfirm = () => this.enterEntryInventory(callbacks, sessionId);
-
-    if (editCheckpointService.hasUnsavedEdits()) {
-      await this.confirmUnsavedEditsBeforeSwitch(editCheckpointService, callbacks.onSaveCurrentSession, onConfirm);
-      return;
-    }
-
     if (options?.saveCurrentSession !== false) {
       callbacks.onSaveCurrentSession();
     }
-    await onConfirm();
+    await this.enterEntryInventory(callbacks, sessionId);
   }
 
   sessionActionClick(
@@ -337,46 +291,4 @@ export class ChatSessionActionsService {
     return this.resolveCurrentProjectPath();
   }
 
-  private async confirmUnsavedEditsBeforeSwitch(
-    editCheckpointService: EditCheckpointServiceLike,
-    onSaveCurrentSession: () => void,
-    onConfirm: () => void | Promise<void>,
-  ): Promise<void> {
-    const summary = await editCheckpointService.getEditsSummary();
-    if (!summary || summary.fileCount === 0) {
-      editCheckpointService.acceptAllAsBaseline();
-      editCheckpointService.dismissSummary();
-      await onConfirm();
-      return;
-    }
-
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: { padding: '0' },
-      nzWidth: 340,
-      nzContent: UnsavedEditsDialogComponent,
-      nzData: { fileCount: summary.fileCount, turnContext: summary.turnContext },
-    });
-
-    modalRef.afterClose.subscribe(async (action: string | null) => {
-      if (action === 'keep') {
-        editCheckpointService.acceptAllAsBaseline();
-        editCheckpointService.dismissSummary();
-        onSaveCurrentSession();
-        await onConfirm();
-        return;
-      }
-
-      if (action === 'discard') {
-        while (editCheckpointService.canUndo) {
-          await editCheckpointService.undo();
-        }
-        editCheckpointService.dismissSummary();
-        onSaveCurrentSession();
-        await onConfirm();
-      }
-    });
-  }
 }

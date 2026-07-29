@@ -8,17 +8,13 @@ const childDir = path.join(rootDir, 'child');
 
 // 子应用不再由本脚本拉取和编译。它们由主软件读取远端
 // subapp-index.json，并安装到用户级 npm-global/app 目录。
+// aily-lex 已改为 npm 包依赖（package.json → aily-lex），不再走本地 child 仓库。
 const REPOS = [
   {
     name: 'aily-coder',
     url: 'https://github.com/ailyProject/aily-coder.git',
     branch: 'downey',
     buildScript: 'build:netlify',
-  },
-  {
-    name: 'aily-lex',
-    url: 'https://github.com/ailyProject/aily-lex.git',
-    buildCommand: 'npx tsc -b --force',
   },
 ];
 
@@ -86,15 +82,6 @@ function ensureRepoDir(name, url, branch) {
   return { repoDir, existed: false };
 }
 
-function installRootLocalDependency(relativePath) {
-  const dependencyDir = path.join(rootDir, relativePath);
-  if (!fs.existsSync(path.join(dependencyDir, 'package.json'))) {
-    console.warn(`[skip] local dependency not found: ${relativePath}`);
-    return;
-  }
-  run(`npm install --no-audit --no-fund ${JSON.stringify(`file:${relativePath.replace(/\\/g, '/')}`)}`, rootDir);
-}
-
 function main() {
   for (const repo of REPOS) {
     const { repoDir, existed } = ensureRepoDir(repo.name, repo.url, repo.branch);
@@ -103,8 +90,8 @@ function main() {
     else if (repo.buildScript) run(`npm run ${repo.buildScript}`, repoDir);
   }
 
-  installRootLocalDependency('child/aily-lex');
   console.log('\n[done] core child repos ready. Subapps are installed at runtime from the remote catalog.');
+  console.log('[note] aily-lex is provided by the npm package dependency, not a local child repo.');
 }
 
 main();

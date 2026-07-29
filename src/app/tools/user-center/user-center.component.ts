@@ -367,6 +367,22 @@ export class UserCenterComponent {
     });
   }
 
+  get displayAiCallsResetDate(): string {
+    if (this.benefits?.ai_calls?.unlimited) {
+      return '';
+    }
+    const resetDate = this.benefits?.ai_calls?.resetDate;
+    if (!resetDate) {
+      return '';
+    }
+    const parsed = new Date(resetDate);
+    if (Number.isNaN(parsed.getTime())) {
+      return String(resetDate);
+    }
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${pad(parsed.getMonth() + 1)}/${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+  }
+
   get isProPlanSubscriber(): boolean {
     const subscriptionPlan = this.currentUser?.subscription_plan;
     const planName = `${subscriptionPlan?.name || ''} ${subscriptionPlan?.display_name || ''}`.trim().toLowerCase();

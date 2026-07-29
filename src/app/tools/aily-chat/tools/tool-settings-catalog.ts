@@ -50,7 +50,6 @@ const FILE_TOOL_SETTINGS: ToolSettingsCatalogEntry[] = [
   { name: 'replace_string_in_file', description: '精确替换文件中的字符串。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'multi_replace_string_in_file', description: '批量精确替换多个文件内容。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'delete_file', description: '删除文件。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
-  { name: 'delete_folder', description: '删除文件夹。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'grep_tool', description: '按内容搜索文件。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'glob_tool', description: '按文件名模式搜索文件。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },
   { name: 'assets_tool', description: '按项目 .assets 目录渐进式列目录或读取资产文件；查询关联内容时优先从根目录开始，检查链接时读取 RELATED_URLS.txt，不要扩展到 memory 或普通项目文件。', agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] },

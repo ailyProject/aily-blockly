@@ -28,6 +28,13 @@ import {
   resolveDefaultCoderFramework,
 } from '../utils/coder-board.mapper';
 import { applyCdcSerialPortOverrides } from '../editors/blockly-editor/components/blockly/abf';
+import { projectDataRuntime } from './project-data/project-data-runtime';
+import { assertNoOversizedInlineValues } from './project-data/project-data-policy';
+import { ProjectDataStore } from './project-data/project-data-store';
+import {
+  ensureExternalProjectDataDocument,
+  ExternalProjectDataImportResult,
+} from './project-data/project-data-legacy-import';
 
 interface ProjectPackageData {
   name: string;
@@ -60,6 +67,7 @@ interface ProjectOpenOptions {
 interface ProjectCreationOptions {
   activationReason?: ProjectActivationReason;
   sessionResource?: string | null;
+  deferActivation?: boolean;
 }
 
 @Injectable({
@@ -486,7 +494,12 @@ export class ProjectService {
       // 复制模板文件到项目目录
       await this.crossPlatformCmdService.copyItem(`${templatePath}${separator}*`, projectPath, true, true);
 
+      await this.initializeProjectDataSchema(projectPath);
       this.updateNewProjectPackageJson(projectPath, newProjectData);
+      if (options.deferActivation) {
+        this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
+        return true;
+      }
       return await this.finishProjectCreation(projectPath, options);
 
       // if (closeWindow) {
@@ -508,6 +521,7 @@ export class ProjectService {
       await this.crossPlatformCmdService.createDirectory(projectPath, true);
       await this.crossPlatformCmdService.copyItem(`${templatePath}${separator}*`, projectPath, true, true);
 
+      await this.initializeProjectDataSchema(projectPath);
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
       return await this.finishProjectCreation(projectPath, options);
     } catch (error) {
@@ -515,6 +529,86 @@ export class ProjectService {
       this.uiService.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
       return false;
     }
+  }
+
+  /**
+   * Board, example, and cloud templates are source material for a new local
+   * project. Known legacy inline payloads are migrated once at this copy
+   * boundary.
+   */
+  async initializeProjectDataSchema(projectPath: string): Promise<void> {
+    const abiPath = window['path'].join(projectPath, 'project.abi');
+    if (!window['fs'].existsSync(abiPath)) return;
+    const originalContent = window['fs'].readFileSync(abiPath, 'utf8');
+    const abi = JSON.parse(originalContent);
+
+    const store = new ProjectDataStore();
+    store.configure(projectPath);
+    const result = await ensureExternalProjectDataDocument(abi, store);
+    if (result.upgradedLegacyDocument) {
+      this.writeProjectAbiAtomically(abiPath, result.document);
+      this.logProjectDataMigration(projectPath, result);
+    }
+  }
+
+  /**
+   * Upgrades a markerless pre-Project-Data ABI on first open. Existing marked
+   * documents remain strict: their marker and every referenced resource are
+   * validated, never repaired or silently downgraded.
+   */
+  async ensureProjectDataSchemaForLoad(
+    projectPath: string,
+    document: unknown,
+    originalContent?: string,
+  ): Promise<Record<string, unknown>> {
+    const store = projectDataRuntime.isConfigured()
+      && projectDataRuntime.getStore().getProjectPath() === projectPath
+      ? projectDataRuntime.getStore()
+      : this.createProjectDataStore(projectPath);
+    const result = await ensureExternalProjectDataDocument(document, store);
+    if (!result.upgradedLegacyDocument || originalContent === undefined) {
+      return result.document;
+    }
+
+    const abiPath = window['path'].join(projectPath, 'project.abi');
+    const backupPath = `${abiPath}.pre-project-data.bak`;
+    if (!window['fs'].existsSync(backupPath)) {
+      window['fs'].writeFileSync(backupPath, originalContent);
+    }
+    this.writeProjectAbiAtomically(abiPath, result.document);
+    this.logProjectDataMigration(projectPath, result);
+    return result.document;
+  }
+
+  private createProjectDataStore(projectPath: string): ProjectDataStore {
+    const store = new ProjectDataStore();
+    store.configure(projectPath);
+    return store;
+  }
+
+  private writeProjectAbiAtomically(
+    abiPath: string,
+    document: Record<string, unknown>,
+  ): void {
+    const tempPath = `${abiPath}.tmp`;
+    try {
+      window['fs'].writeFileSync(tempPath, JSON.stringify(document));
+      window['fs'].renameSync(tempPath, abiPath);
+    } finally {
+      if (window['fs'].existsSync(tempPath) && typeof window['fs'].unlinkSync === 'function') {
+        window['fs'].unlinkSync(tempPath);
+      }
+    }
+  }
+
+  private logProjectDataMigration(
+    projectPath: string,
+    result: ExternalProjectDataImportResult,
+  ): void {
+    console.info(
+      `[ProjectData] Upgraded legacy project.abi for ${projectPath}; `
+      + `migrated ${result.migration.migrated.length} inline field payload(s).`,
+    );
   }
 
   // 打开项目
@@ -593,7 +687,12 @@ export class ProjectService {
       .map((item) => item.name);
     const loadedLibraryNames = Array.from(blocklyService.loadedLibraryInfos.values())
       .map((item) => item.packageName);
-    const normalizedLibraryNames = [...new Set(libraryNames)].sort((a, b) => a.localeCompare(b));
+    // getAllInstalledLibraries() already returns the toolbox's canonical order
+    // (core libraries first). Keep that order for the runtime rebuild; sorting
+    // here made the remaining libraries jump to plain alphabetical order after
+    // an uninstall.
+    const orderedLibraryNames = [...new Set(libraryNames)];
+    const normalizedLibraryNames = [...orderedLibraryNames].sort((a, b) => a.localeCompare(b));
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
       this.blocklyLibraryRuntimePackageSignatures.get(projectPath) === packageContent
@@ -609,7 +708,7 @@ export class ProjectService {
     await blocklyService.rebuildLibraryRuntimeInPlace({
       projectPath,
       packageJson,
-      libraryNames: normalizedLibraryNames,
+      libraryNames: orderedLibraryNames,
       projectService: this,
     });
     return true;
@@ -782,14 +881,26 @@ export class ProjectService {
   }
 
 
-  saveAs(path) {
+  async saveAs(path: string): Promise<void> {
+    const sourceProjectPath = this.currentProjectPath;
+    const saveResult = await this.save(sourceProjectPath);
+    if (!saveResult.success) {
+      throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
+    }
+    await projectDataRuntime.flushPending();
+    const sourceAbi = JSON.parse(window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8'));
+    assertNoOversizedInlineValues(sourceAbi);
+    const validation = await projectDataRuntime.getStore().validateReferences(
+      projectDataRuntime.getStore().collectReferences(sourceAbi),
+    );
+    if (!validation.valid) {
+      throw new Error(`项目数据资源不完整，无法另存为: ${validation.issues.map((issue) => issue.error).join('; ')}`);
+    }
     //在当前路径下创建一个新的目录
     path = path.replace(/\s/g, '_');
     window['fs'].mkdirSync(path);
     // 复制项目目录到新路径
-    window['fs'].copySync(this.currentProjectPath, path);
-    // 修改package.json文件
-    this.save(path);
+    window['fs'].copySync(sourceProjectPath, path);
     // 修改package.json文件
     const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
     // 另存为时去掉cloudId
@@ -811,6 +922,7 @@ export class ProjectService {
     window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
     // 修改当前项目路径
     this.currentProjectPath = path;
+    projectDataRuntime.configure(path);
     this.currentPackageData = packageJson;
     this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
   }
@@ -838,6 +950,13 @@ export class ProjectService {
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
     await this.router.navigate(['/main/guide'], { replaceUrl: true });
     return true;
+  }
+
+  async activateCreatedProject(projectPath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
+    if (!projectPath || !window['fs'].existsSync(projectPath)) {
+      return false;
+    }
+    return this.finishProjectCreation(projectPath, options);
   }
 
   /** 项目已被其他实例占用时的操作：取消 / 前置其他进程 / 强制打开 */
@@ -944,6 +1063,7 @@ export class ProjectService {
    * 同步 package.json 与 temp 文件夹：
    * - 若 temp/package.json 存在，则用它覆盖主项目的 package.json
    * - 若不存在，则将主项目的 package.json 复制到 temp 文件夹
+   * node_modules 由 npm 维护；这里不能按顶层声明清理，否则会误删提升到根目录的间接依赖。
    */
   async syncPackageJsonWithTemp(projectPath: string): Promise<void> {
     const mainPackagePath = window['path'].join(projectPath, 'package.json');
@@ -958,8 +1078,6 @@ export class ProjectService {
       // temp 下有 package.json，覆盖主项目
       const tempContent = window['fs'].readFileSync(tempPackagePath, 'utf8');
       window['fs'].writeFileSync(mainPackagePath, tempContent);
-      // 覆盖后扫描 node_modules 删除未声明的依赖包（避免 npm prune 冷启动慢）
-      this.pruneUndeclaredDeps(projectPath);
     } else {
       // temp 下无 package.json，从主项目复制到 temp
       await this.copyPackageJsonToTemp(projectPath);
@@ -986,69 +1104,6 @@ export class ProjectService {
     } catch (error) {
       console.warn('复制 package.json 到 temp 失败:', error);
       return false;
-    }
-  }
-
-  /**
-   * 扫描 node_modules 删除未在 package.json 中声明的依赖包（仅第一层）
-   * 参考 NpmService.installedOk 实现，避免 npm prune 冷启动慢
-   */
-  private pruneUndeclaredDeps(projectPath: string): void {
-    try {
-      const packageJsonPath = window['path'].join(projectPath, 'package.json');
-      const nodeModulesPath = window['path'].join(projectPath, 'node_modules');
-
-      if (!window['path'].isExists(packageJsonPath) || !window['path'].isExists(nodeModulesPath)) {
-        return;
-      }
-
-      const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
-      const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
-      const declaredNames = new Set(Object.keys(deps));
-
-      const dirs = window['fs'].readDirSync(nodeModulesPath);
-      const toRemove: string[] = [];
-
-      for (const dir of dirs) {
-        const dirName = dir.name ?? dir;
-        if (typeof dirName !== 'string' || dirName.startsWith('.')) {
-          continue;
-        }
-
-        const dirPath = window['path'].join(nodeModulesPath, dirName);
-        if (!window['fs'].isDirectory(dirPath)) {
-          continue;
-        }
-
-        if (dirName.startsWith('@')) {
-          const scopeDirs = window['fs'].readDirSync(dirPath);
-          for (const scopeDir of scopeDirs) {
-            const scopeDirName = scopeDir.name ?? scopeDir;
-            if (typeof scopeDirName !== 'string' || scopeDirName.startsWith('.')) {
-              continue;
-            }
-            const packageName = `${dirName}/${scopeDirName}`;
-            if (!declaredNames.has(packageName)) {
-              toRemove.push(window['path'].join(dirPath, scopeDirName));
-            }
-          }
-        } else {
-          if (!declaredNames.has(dirName)) {
-            toRemove.push(dirPath);
-          }
-        }
-      }
-
-      for (const removePath of toRemove) {
-        try {
-          window['fs'].rmSync(removePath, { recursive: true, force: true });
-          console.log('[pruneUndeclaredDeps] 已删除未声明依赖:', window['path'].basename(removePath));
-        } catch (err) {
-          console.warn('[pruneUndeclaredDeps] 删除失败:', removePath, err);
-        }
-      }
-    } catch (err) {
-      console.warn('[pruneUndeclaredDeps] 执行异常:', err);
     }
   }
 

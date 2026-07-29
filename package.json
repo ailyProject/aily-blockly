@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.72",
+  "version": "0.9.73",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -58,6 +58,10 @@
       }
     ],
     "extraResources": [
+      {
+        "from": "build/simulator-runtime",
+        "to": "simulator"
+      },
       {
         "from": "child/scripts",
         "to": "child/scripts"
@@ -152,22 +156,33 @@
     "guard:aily-chat-mainline": "node scripts/guard-aily-chat-mainline.js",
     "smoke:chat-runtime-host-owner": "node scripts/smoke-chat-runtime-host-process-owner.js",
     "smoke:chat-memory-asset-chronicle": "node scripts/smoke-chat-memory-asset-chronicle.mjs",
+    "smoke:simulator-gateway": "node scripts/smoke-simulator-gateway-bridge.mjs",
+    "smoke:simulator-gateway-crash": "node scripts/smoke-simulator-gateway-crash.mjs",
+    "test:simulator-gateway": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test electron/simulator-gateway.test.js electron/simulator-subapp-host.test.js electron/simulator-source-breakpoint.test.mjs",
+    "test:simulator-subapp-host": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test electron/packaged-renderer-server.test.js electron/simulator-subapp-host.test.js electron/simulator-subapp-frame-adapter.test.mjs electron/simulator-subapp-host-process.test.mjs",
     "test:aily-chat-mainline": "ng test --watch=false --browsers=ChromeHeadless --include src/app/tools/aily-chat/aily-chat.component.spec.ts --include src/app/tools/aily-chat/helpers/chat-component-view-model.spec.ts --include src/app/tools/aily-chat/helpers/lex-stream.helper.spec.ts --include src/app/tools/aily-chat/services/chat-engine.service.spec.ts --include src/app/tools/aily-chat/services/interaction-budget-snapshot.spec.ts --include src/app/tools/aily-chat/helpers/host-turn-response-state.spec.ts --include src/app/tools/aily-chat/helpers/host-session-restore-bridge.spec.ts --include src/app/tools/aily-chat/helpers/session-lifecycle.helper.spec.ts",
     "setup:child-repos": "node scripts/setup-child-repos.js",
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && node ./scripts/run-electron-dev.js --serve\"",
     "electron:worker": "powershell -ExecutionPolicy Bypass -File ./scripts/run-electron-lex-execution-host.ps1 -Mode worker",
     "electron:worker:mac": "node ./scripts/run-electron-lex-execution-host.js --mode worker",
-    "build": "ng build --base-href ./ && electron-builder build",
+    "prepare:simulator-runtime": "node scripts/prepare-simulator-runtime.js",
+    "prepare:simulator-runtime:release": "node scripts/prepare-simulator-runtime.js --require-release",
+    "build": "npm run prepare:simulator-runtime:release && ng build --base-href ./ && electron-builder build",
     "build:cn": "node ./scripts/build-electron.js --flavor cn",
     "build:global": "node ./scripts/build-electron.js --flavor global",
-    "build:mac": "ng build --base-href ./ && electron-builder --mac --arm64 --x64",
-    "build:mac:universal": "ng build --base-href ./ && electron-builder --mac --universal",
+    "build:mac": "npm run prepare:simulator-runtime:release && ng build --base-href ./ && electron-builder --mac --arm64 --x64",
+    "build:mac:universal": "npm run prepare:simulator-runtime:release && ng build --base-href ./ && electron-builder --mac --universal",
     "test:e2e": "node ./scripts/run-e2e.mjs test",
     "test:e2e:ui": "node ./scripts/run-e2e.mjs ui",
     "test:e2e:headed": "node ./scripts/run-e2e.mjs headed",
     "test:e2e:fast": "node ./scripts/run-e2e.mjs fast",
     "test:e2e:report": "node ./scripts/run-e2e.mjs report",
-    "setup:external-tools": "node scripts/install-external-tools.js"
+    "prepare:e2e:simulator-debug": "node ./scripts/prepare-simulator-debug-e2e.mjs",
+    "test:e2e:simulator-debug": "node ./scripts/run-simulator-debug-e2e.mjs",
+    "test:e2e:simulator-subapp-mainline": "node ./scripts/run-simulator-subapp-mainline-e2e.mjs",
+    "validate:e2e:simulator-debug": "node ./scripts/validate-simulator-debug-e2e-report.mjs",
+    "setup:external-tools": "node scripts/install-external-tools.js",
+    "setup:local-builder": "node scripts/use-local-builder.mjs"
   },
   "private": true,
   "dependencies": {
@@ -195,11 +210,11 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "acorn": "^8.16.0",
-    "aily-lex": "file:child/aily-lex",
+    "aily-lex": "^1.0.0",
     "altcha": "^2.3.0",
+    "blockly": "npm:aily-project-blockly@^1.0.2",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
-    "blockly": "^11.2.2",
     "buffer": "^6.0.3",
     "cropperjs": "^1.6.2",
     "dragselect": "^2.7.4",
@@ -257,5 +272,8 @@
   },
   "optionalDependencies": {
     "dmg-license": "^1.0.11"
+  },
+  "overrides": {
+    "blockly": "npm:aily-project-blockly@^1.0.2"
   }
 }

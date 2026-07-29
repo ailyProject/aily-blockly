@@ -39,7 +39,7 @@ import {
   type ChatSessionScope,
 } from '../core/chat-session-scope';
 import { SkillRegistry as BlocklySkillRegistry } from '../core/skill-registry';
-import { EditCheckpointService, type RequestCheckpointMetadata } from './edit-checkpoint.service';
+import type { RequestCheckpointMetadata } from './edit-checkpoint.service';
 import { ChatHistoryIndexStore, type ChatHistoryIndexLoadDiagnostics } from './chat-history-index-store';
 import { buildHostSessionDebugEvents, createHostSessionDebugEventId, type HostSessionDebugEvent } from './host-session-debug-events';
 import {
@@ -510,6 +510,23 @@ export class ChatHistoryService implements OnDestroy {
     return [...result];
   }
 
+  getSessionInventoryBootstrapDiagnostics(projectPath?: string | null): {
+    readonly globalIndexCount: number;
+    readonly projectIndexCount: number;
+    readonly rebuiltRecordCount: number;
+  } {
+    this.ensureIndexLoaded();
+    const normalizedProjectPath = normalizeChatSessionScopePath(projectPath);
+    const listableEntries = this.index.filter(entry => this.isListableHistoryEntry(entry));
+    return {
+      globalIndexCount: listableEntries.filter(entry => entry.projectPath === null).length,
+      projectIndexCount: normalizedProjectPath
+        ? listableEntries.filter(entry => this.isSamePath(entry.projectPath, normalizedProjectPath)).length
+        : 0,
+      rebuiltRecordCount: this.latestIndexLoadDiagnostics.rebuiltProjectEntryCount,
+    };
+  }
+
   private isListableHistoryEntry(entry: SessionIndexEntry): boolean {
     if ((entry.messageCount ?? 0) > 0) {
       return true;
@@ -903,6 +920,7 @@ export class ChatHistoryService implements OnDestroy {
    * @param projectPath 新项目的绝对路径
    */
   reloadProjectIndex(projectPath: string): void {
+    this.ensureIndexLoaded();
     this.index = this.indexStore.mergeProjectIndex(this.index, projectPath);
     this.bumpIndexRevision();
   }
@@ -917,10 +935,6 @@ export class ChatHistoryService implements OnDestroy {
   deleteSession(sessionId: string): void {
     this.ensureIndexLoaded();
     const entry = this.index.find(e => e.sessionId === sessionId);
-
-    if (entry?.projectPath) {
-      EditCheckpointService.cleanSessionCheckpoints(entry.projectPath, sessionId);
-    }
 
     if (entry) {
       this.deleteSessionFile(sessionId, entry.projectPath);

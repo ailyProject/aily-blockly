@@ -73,6 +73,25 @@ img {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
 }
 
+.subapp-service-confirm-modal {
+  .ant-modal-content {
+    overflow: hidden;
+    border: 1px solid var(--aily-border-input);
+    background: var(--aily-bg-elevated) !important;
+    box-shadow: var(--aily-shadow-lg, 0 12px 36px rgba(0, 0, 0, 0.38)) !important;
+  }
+
+  .ant-modal-confirm-title,
+  .ant-modal-confirm-content {
+    color: var(--aily-text-primary);
+  }
+
+  .ant-modal-confirm-content {
+    color: var(--aily-text-secondary);
+    line-height: 1.65;
+  }
+}
+
 .library-publish-modal {
   .ant-modal-content {
     background: transparent !important;

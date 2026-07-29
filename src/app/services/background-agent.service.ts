@@ -124,6 +124,35 @@ export class BackgroundAgentService implements OnDestroy {
     return this.status === 'running';
   }
 
+  /**
+   * Starts the user-visible reconciliation step for a Simulator-owned Scene.
+   * Completion is deliberately not implied here: the project host will only
+   * accept a later Builder result that carries the exact graph revision.
+   */
+  requestSimulatorSceneCodeReconciliation(request: {
+    sceneId: string;
+    expectedGraphSemanticRevision: string;
+    sceneDocument: unknown;
+  }): boolean {
+    if (typeof window.openAndSendToAilyChat !== 'function') return false;
+    const sceneSnapshot = JSON.stringify(request.sceneDocument, null, 2);
+    const prompt = `请根据 Simulator Scene 的最新硬件语义，协调当前 Blockly 代码。
+
+## 约束
+1. Scene ID: ${request.sceneId}
+2. graphSemanticRevision: ${request.expectedGraphSemanticRevision}
+3. 只修改当前项目的 Blockly/生成代码所需内容，不启动或控制 QEMU/GDB。
+4. 完成修改后告知用户返回 Simulator 再次点击 “Sync code & rebuild”；
+   Artifact 编译和替换由独立 project host 继续协调。
+
+## SceneEditorDocument
+\`\`\`json
+${sceneSnapshot}
+\`\`\``;
+    window.openAndSendToAilyChat(prompt, { autoSend: true });
+    return true;
+  }
+
   /** 进度事件流 */
   onProgress(): Observable<ProgressEvent> {
     return this.progress$.asObservable();
@@ -158,7 +187,7 @@ export class BackgroundAgentService implements OnDestroy {
       const agent = lex.createAgent({
         host: adapter,
         endpoint: buildLexEndpoint(lex, this.chatService.currentModel, this.ailyChatConfigService),
-        model: buildLexModelConfig(this.chatService.currentModel),
+        model: buildLexModelConfig(this.chatService.currentModel, 8192, this.ailyChatConfigService),
         cwd: cwd || undefined,
         maxToolCallIterations: this.ailyChatConfigService.maxRequests,
         extensions: {

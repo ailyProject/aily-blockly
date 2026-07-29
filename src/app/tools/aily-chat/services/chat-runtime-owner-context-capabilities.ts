@@ -20,21 +20,3 @@ export interface ChatRuntimeOwnerContextBudgetPort {
   reset(): void;
 }
 
-export interface ChatRuntimeOwnerEditTrackingPort {
-  autoSaveEdits: boolean;
-
-  setTimelineContext(sessionId: string | null | undefined, workspaceRoot: string | null | undefined): void;
-  startTurn(
-    turnIndex: number,
-    turnStartListIndex: number | null,
-    responseStartListIndex: number | null,
-    turnId?: string,
-    requestContent?: string,
-    displayContent?: string,
-    checkpointId?: string,
-    requestMetadata?: unknown,
-  ): void;
-  recordAdditionalRepositoryRootCandidates(paths: readonly string[] | undefined | null): void;
-  recordEdit(filePath: string, type: 'create' | 'modify' | 'delete'): void;
-  publishCurrentSummary(): Promise<void>;
-}

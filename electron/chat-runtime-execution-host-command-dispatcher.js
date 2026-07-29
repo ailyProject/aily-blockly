@@ -5,6 +5,14 @@ const VALID_RUNTIME_OWNER_METHODS = new Set([
   'restoreRuntimeSession',
   'forkSession',
   'readSessionExecutionState',
+  'readEditingSessionState',
+  'readEditingSessionContent',
+  'operateEditingSessionEntry',
+  'acceptEditingSession',
+  'buildEditingSessionNavigationPlan',
+  'applyEditingSessionNavigation',
+  'commitEditingSessionNavigation',
+  'rollbackEditingSessionNavigation',
   'startTurn',
   'stopTurn',
   'disposeSessionResources',
@@ -182,6 +190,7 @@ function callRuntimeOwnerMethod(runtimeOwner, method, args) {
         providerOptions: command.providerOptions || null,
         agentRuntimeMode: command.agentRuntimeMode || null,
         currentModel: command.currentModel || null,
+        summarizerModel: command.summarizerModel || null,
       });
     }
     case 'restoreRuntimeSession': {
@@ -202,6 +211,54 @@ function callRuntimeOwnerMethod(runtimeOwner, method, args) {
         throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose execution state.');
       }
       return runtimeOwner.readSessionExecutionState(args[0] || {});
+    }
+    case 'readEditingSessionState': {
+      if (typeof runtimeOwner.readEditingSessionState !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose editing-session state.');
+      }
+      return runtimeOwner.readEditingSessionState(args[0] || {});
+    }
+    case 'readEditingSessionContent': {
+      if (typeof runtimeOwner.readEditingSessionContent !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose editing-session content.');
+      }
+      return runtimeOwner.readEditingSessionContent(args[0] || {});
+    }
+    case 'operateEditingSessionEntry': {
+      if (typeof runtimeOwner.operateEditingSessionEntry !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot operate editing-session entries.');
+      }
+      return runtimeOwner.operateEditingSessionEntry(args[0] || {});
+    }
+    case 'acceptEditingSession': {
+      if (typeof runtimeOwner.acceptEditingSession !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot accept the editing session.');
+      }
+      return runtimeOwner.acceptEditingSession(args[0] || {});
+    }
+    case 'buildEditingSessionNavigationPlan': {
+      if (typeof runtimeOwner.buildEditingSessionNavigationPlan !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not expose editing-session navigation plans.');
+      }
+      return runtimeOwner.buildEditingSessionNavigationPlan(args[0] || {});
+    }
+    case 'applyEditingSessionNavigation': {
+      if (typeof runtimeOwner.applyEditingSessionNavigation !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot apply editing-session navigation.');
+      }
+      return runtimeOwner.applyEditingSessionNavigation(args[0] || {});
+    }
+    case 'commitEditingSessionNavigation': {
+      if (typeof runtimeOwner.commitEditingSessionNavigation !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot commit editing-session navigation.');
+      }
+      return runtimeOwner.commitEditingSessionNavigation(args[0] || {});
+    }
+    case 'rollbackEditingSessionNavigation': {
+      if (typeof runtimeOwner.rollbackEditingSessionNavigation !== 'function') {
+        throw new Error('[AilyChat][RuntimeHost] Runtime owner cannot roll back editing-session navigation.');
+      }
+      return runtimeOwner.rollbackEditingSessionNavigation(args[0] || {});
     }
     case 'startTurn': {
       const command = args[0] || {};
@@ -231,6 +288,8 @@ function callRuntimeOwnerMethod(runtimeOwner, method, args) {
       const command = args[0] || {};
       return runtimeOwner.disposeSessionResources({
         sessionId: command.sessionId,
+        deleteStorage: command.deleteStorage === true,
+        projectPath: command.projectPath ?? null,
       });
     }
     case 'resolveInteraction':
@@ -333,6 +392,8 @@ function createRuntimeOwnerEvent(event, registrationState) {
 function isRuntimeOwnerEvent(event) {
   const kind = event && event.kind;
   return kind === 'turnProgress'
+    || kind === 'editingSessionChanged'
+    || kind === 'turnDiffUpdated'
     || kind === 'runtimeProjectPathUpdated'
     || kind === 'turnInteractionRequested'
     || kind === 'turnError'
@@ -340,6 +401,29 @@ function isRuntimeOwnerEvent(event) {
 }
 
 function normalizeExplicitRuntimeOwnerEvent(event, sessionId, registrationState) {
+  if (event.kind === 'editingSessionChanged') {
+    const revision = Number(event.revision);
+    return Number.isFinite(revision) && revision >= 0
+      ? {
+          kind: 'editingSessionChanged',
+          sessionId,
+          revision,
+        }
+      : null;
+  }
+  if (event.kind === 'turnDiffUpdated') {
+    const turnId = normalizeNonEmptyString(event.turnId);
+    const revision = Number(event.revision);
+    return turnId && Number.isFinite(revision) && revision >= 0 && typeof event.diff === 'string'
+      ? {
+          kind: 'turnDiffUpdated',
+          sessionId,
+          turnId,
+          revision,
+          diff: event.diff,
+        }
+      : null;
+  }
   const trackedTurnId = registrationState.activeTurnIds.get(sessionId) || '';
   const turnId = normalizeNonEmptyString(event.turn && event.turn.turnId)
     || normalizeNonEmptyString(event.turnId)

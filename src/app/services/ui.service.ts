@@ -139,7 +139,7 @@ export class UiService {
     window['subWindow'].open(opt);
   }
 
-  openToolWindow(name: string, options?: { width?: number; height?: number; title?: string }) {
+  openToolWindow(name: string, options?: Omit<WindowOpts, 'path'>) {
     const toolWindowPath = this.getToolWindowPath(name);
     if (!toolWindowPath) {
       return false;
@@ -150,6 +150,12 @@ export class UiService {
       title: options?.title || name,
       width: options?.width ?? 1200,
       height: options?.height ?? 800,
+      ...(options?.x !== undefined ? { x: options.x } : {}),
+      ...(options?.y !== undefined ? { y: options.y } : {}),
+      ...(options?.displayId !== undefined ? { displayId: options.displayId } : {}),
+      relativeToDisplay: options?.relativeToDisplay !== false,
+      clampToWorkArea: options?.clampToWorkArea !== false,
+      applyInitialBounds: options?.applyInitialBounds === true,
     });
     return true;
   }
@@ -182,6 +188,16 @@ export class UiService {
     }
 
     this.openToolInMainWindow(name);
+  }
+
+  /**
+   * Open a tool in the main-window embedded stack without first attempting
+   * to focus a detached child window. Host automation has already resolved
+   * the requested presentation mode before calling this method.
+   */
+  openToolEmbedded(name: string): boolean {
+    this.openToolInMainWindow(name);
+    return this.topTool === name;
   }
 
   private openToolInMainWindow(name: string) {
@@ -546,6 +562,13 @@ export interface WindowOpts {
   alwaysOnTop?: boolean;
   width?: number;
   height?: number;
+  x?: number;
+  y?: number;
+  displayId?: string | number;
+  relativeToDisplay?: boolean;
+  clampToWorkArea?: boolean;
+  /** 复用现有窗口时，是否应用本次携带的位置与尺寸。 */
+  applyInitialBounds?: boolean;
 }
 
 export interface ToolOpts {

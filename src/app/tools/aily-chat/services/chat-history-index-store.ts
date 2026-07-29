@@ -79,10 +79,10 @@ export class ChatHistoryIndexStore {
     const projectIndexPath = this.options.joinPath(chatDir, this.options.indexFile);
 
     if (this.fileExists(projectIndexPath)) {
-      return this.mergeProjectIndexFromFile(index, prjPath, projectIndexPath);
+      return this.mergeProjectIndexFromFile(index, prjPath, chatDir, projectIndexPath);
     }
     if (this.fileExists(chatDir)) {
-      return this.rebuildProjectIndexFromDataFiles(index, prjPath, chatDir);
+      return this.rebuildProjectIndexFromDataFiles(index, prjPath, chatDir, true);
     }
     return index;
   }
@@ -120,9 +120,6 @@ export class ChatHistoryIndexStore {
         return;
       }
       const projectEntries = this.createProjectIndexEntries(snapshot, prjPath);
-      if (projectEntries.length === 0) {
-        return;
-      }
       const projectDir = this.options.joinPath(prjPath, this.options.projectChatDir);
       await this.ensureDirAsync(projectDir);
       await this.writeFileAsync(
@@ -158,8 +155,6 @@ export class ChatHistoryIndexStore {
 
     const projectEntries = this.createProjectIndexEntries(index, prjPath);
 
-    if (projectEntries.length === 0) return;
-
     const dir = this.options.joinPath(prjPath, this.options.projectChatDir);
     this.ensureDir(dir);
     const projectIndexPath = this.options.joinPath(dir, this.options.indexFile);
@@ -191,12 +186,16 @@ export class ChatHistoryIndexStore {
   private mergeProjectIndexFromFile(
     index: SessionIndexEntry[],
     prjPath: string,
+    chatDir: string,
     projectIndexPath: string,
   ): SessionIndexEntry[] {
     try {
       const content = this.readFileSync(projectIndexPath);
       const parsed = JSON.parse(content);
-      if (!Array.isArray(parsed)) return index;
+      if (!Array.isArray(parsed)) {
+        console.warn('[ChatHistory] 项目索引格式无效，正在从会话记录重建。');
+        return this.rebuildProjectIndexFromDataFiles(index, prjPath, chatDir, true);
+      }
 
       const projectEntries: ProjectIndexEntry[] = parsed;
       const projectName = this.options.extractProjectName(prjPath);
@@ -223,8 +222,8 @@ export class ChatHistoryIndexStore {
       console.log(`[ChatHistory] 已合并项目索引 (${projectEntries.length} 条), 总计 ${merged.length} 条`);
       return merged;
     } catch (error) {
-      console.warn('[ChatHistory] 加载项目索引失败:', error);
-      return index;
+      console.warn('[ChatHistory] 加载项目索引失败，正在从会话记录重建:', error);
+      return this.rebuildProjectIndexFromDataFiles(index, prjPath, chatDir, true);
     }
   }
 
@@ -232,23 +231,34 @@ export class ChatHistoryIndexStore {
     index: SessionIndexEntry[],
     prjPath: string,
     chatDir: string,
+    forceRebuild = false,
   ): SessionIndexEntry[] {
     try {
       const files: string[] = AilyHost.get().fs.readdirSync(chatDir);
       const sessionFiles = files.filter((file) => file.endsWith('.jsonl'));
-      if (sessionFiles.length === 0) return index;
 
       const projectName = this.options.extractProjectName(prjPath);
       const indexMap = new Map<string, SessionIndexEntry>();
       for (const entry of index) {
+        if (forceRebuild && this.options.isSamePath(entry.projectPath, prjPath)) {
+          continue;
+        }
         indexMap.set(entry.sessionId, entry);
+      }
+
+      if (sessionFiles.length === 0) {
+        const rebuiltIndex = Array.from(indexMap.values());
+        if (forceRebuild) {
+          this.writeProjectIndex(rebuiltIndex, prjPath);
+        }
+        return rebuiltIndex;
       }
 
       let rebuilt = 0;
       for (const file of sessionFiles) {
         const sessionId = file.replace(/\.jsonl$/, '');
         const existing = indexMap.get(sessionId);
-        if (existing && this.options.isSamePath(existing.projectPath, prjPath)) {
+        if (!forceRebuild && existing && this.options.isSamePath(existing.projectPath, prjPath)) {
           continue;
         }
 
@@ -284,7 +294,7 @@ export class ChatHistoryIndexStore {
       }
 
       const rebuiltIndex = Array.from(indexMap.values());
-      if (rebuilt > 0) {
+      if (rebuilt > 0 || forceRebuild) {
         this.latestLoadDiagnostics = {
           ...this.latestLoadDiagnostics,
           rebuiltProjectEntryCount: this.latestLoadDiagnostics.rebuiltProjectEntryCount + rebuilt,

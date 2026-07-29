@@ -44,9 +44,16 @@
                     <span class="meta">{{ aiAvailableMeta }}</span>
                     }
                 </div>
-                @if (!isProPlanSubscriber) {
-                <div class="action btn link" (click)="OpenUrl('/user/subscription')">
+                @if (!isProPlanSubscriber || displayAiCallsResetDate) {
+                <div class="action-stack">
+                    @if (!isProPlanSubscriber) {
+                    <div class="btn link" (click)="OpenUrl('/user/subscription')">
                     {{ 'USER_CENTER.ADD_AI_CALLS' | translate }}
+                    </div>
+                    }
+                    @if (displayAiCallsResetDate) {
+                    <div class="reset-date">{{ 'USER_CENTER.AI_CALLS_RESET_SHORT' | translate: { date: displayAiCallsResetDate } }}</div>
+                    }
                 </div>
                 }
             </div>

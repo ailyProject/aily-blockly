@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "Failed to publish project",
+        "WORKSPACE_PROJECT_NOT_FOUND": "Project not found",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "You cannot publish this project",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "Local dependency paths do not meet publishing requirements",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "Build and sync the project first"
+    },
     "MENU": {
         "MENU": "Menu",
         "PROJECT_NEW": "New Project",
@@ -228,6 +235,16 @@
             "LABEL_COLOR_MODE": "Color",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4 and GIF files are supported"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "Upload a PNG, JPEG, WebP, or GIF image and convert it to RGB565/RGB332 pixel data",
+            "UPLOAD_TOOLTIP": "Supported formats: PNG, JPEG, WebP, GIF",
+            "EMPTY": "No image uploaded",
+            "STATUS_DECODING": "Converting image...",
+            "STATUS_REDECODING": "Re-converting {{name}}...",
+            "ERROR_DECODE_FAILED": "Image conversion failed",
+            "ERROR_REDECODE_FAILED": "Image re-conversion failed",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only PNG, JPEG, WebP, and GIF files are supported"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Upload",
             "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF, PNG",
@@ -286,6 +303,33 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "Upload",
+            "UPLOAD_TOOLTIP": "Supported formats: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "Clear",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "Color",
+            "EMPTY": "No image uploaded",
+            "STATUS_READING_FILE": "Reading {{name}}...",
+            "STATUS_SAVING_FILE": "Saving {{name}}...",
+            "STATUS_DECODING": "Converting image...",
+            "STATUS_REDECODING": "Re-converting {{name}} from the original image...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "Source file must not exceed {{maxSize}} (current: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "Image conversion failed",
+            "ERROR_REDECODE_FAILED": "Image re-conversion failed",
+            "ERROR_PROJECT_PATH_MISSING": "The current project path is unavailable, so the original image cannot be saved",
+            "ERROR_FS_CREATE_ASSETS_UNAVAILABLE": "The image assets directory cannot be created",
+            "ERROR_FS_SAVE_UNAVAILABLE": "The original image cannot be saved",
+            "ERROR_FS_READ_UNAVAILABLE": "The original image cannot be read",
+            "ERROR_SOURCE_READ_INVALID": "The original image returned invalid data",
+            "ERROR_SOURCE_MISSING_REDECODE": "The original image is unavailable; upload it again before changing dimensions",
+            "ERROR_SOURCE_NOT_FOUND": "Original image not found: {{path}}",
+            "ERROR_MD5_UNAVAILABLE": "The file hashing API is unavailable; restart the application and try again",
+            "ERROR_MD5_FAILED": "Failed to hash the original image",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "Only PNG, JPEG, WebP, and BMP images are supported"
         }
     },
     "MAIN_WINDOW": {
@@ -309,7 +353,7 @@
             "COMPILATION": "Compilation",
             "REPOSITORY": "Service Region",
             "DEPENDENCIES": "Dependencies",
-            "AILY_TOOLS": "Aily Tools",
+            "TOOLS_AND_SUBAPP": "Tools and Apps",
             "MCP": "MCP",
             "DEVMODE": "Developer Mode",
             "CACHE": "Cache Management"
@@ -495,6 +539,7 @@
         "TEXT_DOWNLOADED": "Version {{version}} has been downloaded. Install now?",
         "TEXT_AVAILABLE": "Current version {{currentVersion}}, new version {{version}}<br>Would you like to download and install this update?",
         "DOWNLOAD_FAILED": "Download Failed",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "Using fallback download source ({{current}}/{{total}})",
         "REMIND_LATER": "Remind Later",
         "SKIP_VERSION": "Skip This Version",
         "UPDATE_NOW": "Update Now",
@@ -943,6 +988,14 @@
             "COMPLETE_WITH_TIME": "Build complete (time: {{seconds}}s)",
             "FIRST_BUILD_HINT": "The first build may take longer",
             "FAST_BUILD_HINT": "The fast build system is running",
+            "PROGRESS_PREPARING": "Preparing build",
+            "PROGRESS_SKETCH": "Compiling sketch",
+            "PROGRESS_LIBRARIES": "Compiling libraries",
+            "PROGRESS_CORE": "Compiling core",
+            "PROGRESS_LINKING": "Linking firmware",
+            "PROGRESS_OBJCOPY": "Generating firmware",
+            "PROGRESS_FINALIZING": "Finalizing build",
+            "PROGRESS_COMPLETE": "Build complete",
             "PROCESS_SIGNAL_TERMINATED": "Build process was terminated by signal: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "Build process exited unexpectedly, exit code: {{code}}",
             "PROCESS_START_FAILED": "Failed to start build process",

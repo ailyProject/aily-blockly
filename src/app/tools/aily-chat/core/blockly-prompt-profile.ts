@@ -169,10 +169,11 @@ const BLOCKLY_ABS_EDITING_WORKFLOW_SECTION: IPromptSection = {
   getContent: () => BLOCKLY_ABS_EDITING_WORKFLOW_PROMPT,
 };
 
-const BLOCKLY_ABS_EDITING_WORKFLOW_PROMPT = `Blockly code-editing skill routing:
+const BLOCKLY_ABS_EDITING_WORKFLOW_PROMPT = `Blockly skill and capability routing:
 - Before implementing or modifying Blockly/ABS program code, call load_skill with action="load" and name="blockly-best-practices", then follow the loaded instructions before changing project artifacts.
 - If no project is open, follow the project planning and creation workflow first.
 - When the task involves non-trivial ABS syntax, block argument order, statement inputs, or library block usage, also load abs-syntax-reference before editing instead of guessing.
+- Before hardware discovery, deployment, or debugging, inspect the listed skills and use tool_search to discover relevant host-contributed capabilities. Load every applicable skill before acting, prefer the discovered host capability, and use ad-hoc scripts or terminal commands only when no suitable capability exists or the loaded instructions explicitly require them.
 - Keep detailed editing, synchronization, and validation steps in the loaded skills rather than reconstructing the workflow from this routing section.`;
 
 const BLOCKLY_HARDWARE_SAFETY_PROMPT = `When working with hardware:

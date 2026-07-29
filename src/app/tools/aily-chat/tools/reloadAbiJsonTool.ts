@@ -3,6 +3,9 @@ import { ProjectService } from '../../../services/project.service';
 import type { ToolUseResult } from '../core/tool-types';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { AilyHost } from '../core/host';
+import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
+import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
+import { isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
 
 export interface ReloadAbiJsonArgs {
   projectPath?: string;
@@ -101,6 +104,20 @@ export class ReloadAbiJsonToolService {
         return {
           content: '无效的 JSON 数据格式',
           is_error: true
+        };
+      }
+
+      if (!isAilyProjectDataMarker(jsonData.$ailyProjectData)) {
+        return { content: 'ABI 缺少有效的 $ailyProjectData external-only 标记', is_error: true };
+      }
+      assertNoOversizedInlineValues(jsonData);
+      const validation = await projectDataRuntime.getStore().validateReferences(
+        projectDataRuntime.getStore().collectReferences(jsonData),
+      );
+      if (!validation.valid) {
+        return {
+          content: `ABI 项目数据引用无效，未修改工作区: ${validation.issues.map((issue) => issue.error).join('; ')}`,
+          is_error: true,
         };
       }
 
@@ -244,6 +261,20 @@ export async function reloadAbiJsonToolSimple(
       return {
         content: '无效的 JSON 数据格式',
         is_error: true
+      };
+    }
+
+    if (!isAilyProjectDataMarker(jsonData.$ailyProjectData)) {
+      return { content: 'ABI 缺少有效的 $ailyProjectData external-only 标记', is_error: true };
+    }
+    assertNoOversizedInlineValues(jsonData);
+    const validation = await projectDataRuntime.getStore().validateReferences(
+      projectDataRuntime.getStore().collectReferences(jsonData),
+    );
+    if (!validation.valid) {
+      return {
+        content: `ABI 项目数据引用无效，未修改工作区: ${validation.issues.map((issue) => issue.error).join('; ')}`,
+        is_error: true,
       };
     }
 

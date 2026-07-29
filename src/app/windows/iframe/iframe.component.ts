@@ -21,6 +21,9 @@ import { UiService } from '../../services/ui.service';
 import { TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
 import { ToolI18nService } from '../../services/tool-i18n.service';
+import {
+  SimulatorIframeBridgeService,
+} from '../../services/simulator-iframe-bridge.service';
 
 /** iframe IPC 统一载荷（规范：docs/iframe-ipc-spec.md） */
 export interface IframeIpcPayload<T = unknown> {
@@ -59,6 +62,7 @@ export interface IframeModalData {
 export class IframeComponent implements OnInit, OnDestroy {
   @Input() url?: string;
   @Input() embedded?: boolean;
+  @Input() simulationBridgeEnabled = false;
 
   iframeSrc: SafeResourceUrl = '';
   private iframeData: unknown;
@@ -102,6 +106,7 @@ export class IframeComponent implements OnInit, OnDestroy {
     private uiService: UiService,
     private translate: TranslateService,
     private toolI18n: ToolI18nService,
+    private simulatorIframeBridge: SimulatorIframeBridgeService,
   ) {
     if (this.data) {
       if (this.data.url) {
@@ -326,7 +331,13 @@ export class IframeComponent implements OnInit, OnDestroy {
           },
           noticeUpdate: (notification: any) => {
             this.noticeService.update(notification);
-          }
+          },
+          invokeSimulationOperation: (request: unknown) => {
+            if (!this.simulationBridgeEnabled) {
+              throw new Error('当前 iframe 未获得本地仿真操作能力。');
+            }
+            return this.simulatorIframeBridge.invoke(request);
+          },
         },
       });
 

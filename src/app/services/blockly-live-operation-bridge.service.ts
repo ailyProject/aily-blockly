@@ -10,6 +10,7 @@ import { ProjectService } from './project.service';
 import { BuilderService } from './builder.service';
 import { ThemeService } from './theme.service';
 import { MainUiAutomationService } from './main-ui-automation.service';
+import { SubappAgentBridgeService } from './subapp-agent-bridge.service';
 import { AbsAutoSyncService } from '../tools/aily-chat/services/abs-auto-sync.service';
 import {
   connectBlocksSimpleTool,
@@ -32,6 +33,7 @@ type LivePlacement =
 
 type BlocklyLiveOperationPayload = {
   requestId?: string;
+  rendererGeneration?: number;
   path?: string;
   operation?: string;
   params?: Record<string, any>;
@@ -51,6 +53,7 @@ export class BlocklyLiveOperationBridgeService {
     private readonly themeService: ThemeService,
     private readonly absAutoSyncService: AbsAutoSyncService,
     private readonly mainUiAutomationService: MainUiAutomationService,
+    private readonly subappAgentBridgeService: SubappAgentBridgeService,
     private readonly ngZone: NgZone,
   ) {}
 
@@ -75,8 +78,9 @@ export class BlocklyLiveOperationBridgeService {
     const requestId = payload?.requestId;
     const respond = (result: Record<string, any>) => {
       ipcRenderer.send('cli-bridge:blockly-live-operation:response', {
-        requestId,
         ...result,
+        requestId,
+        rendererGeneration: payload?.rendererGeneration,
       });
     };
 
@@ -132,6 +136,9 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (payload.operation === 'child_app_window_arrange') {
       return this.mainUiAutomationService.arrangeChildAppWindows(payload.params || {});
+    }
+    if (payload.operation === 'subapp_agent_call') {
+      return this.subappAgentBridgeService.execute(payload.params || {});
     }
 
     const requestedProject = this.normalizePath(payload.path);

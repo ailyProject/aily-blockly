@@ -5,6 +5,7 @@ import { SchematicMcpRuntimeService } from './schematic-mcp-runtime.service';
 
 type McpBridgePayload = {
   requestId?: string;
+  rendererGeneration?: number;
   namespace?: string;
   method?: string;
   args?: Record<string, unknown>;
@@ -42,8 +43,9 @@ export class McpBridgeService {
     const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
     const respond = (result: Record<string, unknown>) => {
       ipcRenderer.send('mcp:response', {
-        requestId,
         ...result,
+        requestId,
+        rendererGeneration: payload?.rendererGeneration,
       });
     };
 

@@ -103,6 +103,7 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
   private destroy$ = new Subject<void>();
   private removingLibraryNames = new Set<string>();
   private uploadingLibraryNames = new Set<string>();
+  private retryingLibraryNames = new Set<string>();
   private sortableInstances = new Map<HTMLElement, Sortable>();
   private sortableSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private hoverSuppressPointerMoveHandler: ((event: PointerEvent) => void) | null = null;
@@ -199,8 +200,23 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
     this.blocklyService.clearToolboxSearch();
   }
 
-  onCategoryClick(item: BlocklyToolboxFacadeItem) {
+  async onCategoryClick(item: BlocklyToolboxFacadeItem) {
     if (this.shouldIgnoreCategoryClick()) {
+      return;
+    }
+
+    if (item.libraryLoadFailed) {
+      const libraryName = item.libraryName;
+      if (!libraryName || this.retryingLibraryNames.has(libraryName)) {
+        return;
+      }
+
+      this.retryingLibraryNames.add(libraryName);
+      try {
+        await this.blocklyService.retryLibrary(libraryName, this.projectService.currentProjectPath);
+      } finally {
+        this.retryingLibraryNames.delete(libraryName);
+      }
       return;
     }
 

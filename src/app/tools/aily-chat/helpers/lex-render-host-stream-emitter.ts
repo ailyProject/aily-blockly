@@ -26,6 +26,7 @@ import {
   type IHostStreamListener,
 } from './host-turn-response-state';
 import type { CanonicalRenderLifecycleEvent } from '../core/render-event-item-lifecycle';
+import { isTurnResponseProgressTask } from '../core/turn-response-progress';
 
 export type HostStreamPartChange = {
   partIndex: number;
@@ -844,13 +845,37 @@ export class LexRenderHostStreamEmitter {
       createHostStreamResponseCodeCitationItem,
     );
 
-    this.emitResponseProgressListUpdates(
+    this.emitResponseProgressMessageUpdates(
       turnId,
       nextResponse.progressMessages ?? [],
       previousResponse?.progressMessages ?? [],
       updatedAt,
-      createHostStreamResponseProgressMessageItem,
     );
+  }
+
+  private emitResponseProgressMessageUpdates(
+    turnId: string,
+    nextItems: NonNullable<TurnResponseTurn['response']['progressMessages']>,
+    previousItems: NonNullable<TurnResponseTurn['response']['progressMessages']>,
+    updatedAt: number,
+  ): void {
+    if (this.isMetadataListPrefix(previousItems, nextItems)) {
+      for (const item of nextItems.slice(previousItems.length)) {
+        this.emitResponseItem(turnId, createHostStreamResponseProgressMessageItem(item, updatedAt));
+      }
+      return;
+    }
+
+    for (const item of nextItems) {
+      if (!isTurnResponseProgressTask(item)) {
+        continue;
+      }
+      const previous = previousItems.find(candidate =>
+        isTurnResponseProgressTask(candidate) && candidate.id === item.id);
+      if (!previous || JSON.stringify(previous) !== JSON.stringify(item)) {
+        this.emitResponseItem(turnId, createHostStreamResponseProgressMessageItem(item, updatedAt));
+      }
+    }
   }
 
   private shouldEmitUsedContextUpdate(

@@ -32,7 +32,15 @@ export function createSkillsListingSection(id: string): IPromptSection {
       const listing = SkillRegistry.getSkillsListing(agentType, {
         availableToolNames: toolAwareCtx.availableToolNames,
       });
-      return listing || '';
+      if (!listing) {
+        return '';
+      }
+      return [
+        listing,
+        '<additional_skills_reminder>',
+        'Always check whether any listed skill applies to the user request. When one applies, call load_skill with action="load" and its exact name before taking domain-specific action. Multiple skills may apply to one request; their tested instructions are required context, not optional suggestions.',
+        '</additional_skills_reminder>',
+      ].join('\n');
     },
   };
 }

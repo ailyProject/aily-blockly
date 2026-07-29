@@ -10,7 +10,7 @@
     border-radius: 5px;
     box-shadow: var(--aily-shadow-sm);
     height: 40px;
-    transition: all 0.3s ease;
+    // transition: all 0.3s ease;
     overflow: hidden;
     z-index: 999;
     cursor: default;
@@ -22,11 +22,11 @@
     }
 
     &.viewport-adjusting {
-        transition: none;
+        // transition: none;
     }
 
     &.dragging {
-        transition: none;
+        // transition: none;
         opacity: 0.8;
         box-shadow: var(--aily-shadow-lg);
     }

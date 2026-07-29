@@ -1,18 +1,10 @@
 import type { ToolUseResult } from '../core/tool-types';
-import { AilyHost } from '../core/host';
-import type { EditingTimelineWriter } from '../services/editing-timeline-recording-bridge';
 
 interface SwitchBoardInput {
     /** 开发板包名称，如 "@aily-project/board-esp32_devkitc" */
     board_name: string;
     /** 开发板包版本（可选，不指定使用最新版） */
     board_version?: string;
-}
-
-interface SwitchBoardInvocationContext {
-    turnId?: string;
-    toolCallId?: string;
-    timelineWriter?: EditingTimelineWriter;
 }
 
 /**
@@ -23,7 +15,6 @@ interface SwitchBoardInvocationContext {
 export async function switchBoardTool(
     projectService: any,
     input: SwitchBoardInput,
-    invocationContext?: SwitchBoardInvocationContext,
 ): Promise<ToolUseResult> {
     const { board_name, board_version } = input;
 
@@ -48,11 +39,6 @@ export async function switchBoardTool(
     }
 
     try {
-        const packageJsonPath = `${projectService.currentProjectPath}/package.json`;
-        const fileSystem = AilyHost.get().fs;
-        const existedBefore = fileSystem.existsSync(packageJsonPath);
-        const beforeContent = existedBefore ? fileSystem.readFileSync(packageJsonPath, 'utf8') : null;
-
         // 获取当前开发板信息（用于对比）
         let currentBoard = '';
         try {
@@ -74,20 +60,6 @@ export async function switchBoardTool(
             name: board_name,
             version: board_version || 'latest'
         });
-
-        if (invocationContext?.timelineWriter?.recordFileWrite && invocationContext.turnId && fileSystem.existsSync(packageJsonPath)) {
-            const afterContent = fileSystem.readFileSync(packageJsonPath, 'utf8');
-            if (!existedBefore || beforeContent !== afterContent) {
-                await invocationContext.timelineWriter.recordFileWrite({
-                    turnId: invocationContext.turnId,
-                    toolCallId: invocationContext.toolCallId,
-                    filePath: packageJsonPath,
-                    existedBefore,
-                    beforeContent,
-                    afterContent,
-                });
-            }
-        }
 
         return {
             is_error: false,

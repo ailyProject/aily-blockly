@@ -1,0 +1,81 @@
+{
+  "name": "esp32s3-simulator-debug-e2e",
+  "version": "1.0.0",
+  "description": "Deterministic ESP32-S3 Blockly simulator/debug fixture",
+  "board": "XIAO ESP32S3",
+  "projectConfig": {
+    "CDCOnBoot": "cdc"
+  },
+  "dependencies": {
+    "@aily-project/board-xiao_esp32s3": "3.3.1",
+    "@aily-project/lib-core-io": "1.0.0",
+    "@aily-project/lib-core-logic": "0.0.1",
+    "@aily-project/lib-core-loop": "0.0.1",
+    "@aily-project/lib-core-math": "0.0.1",
+    "@aily-project/lib-core-serial": "0.0.1",
+    "@aily-project/lib-core-text": "1.0.0",
+    "@aily-project/lib-core-time": "0.0.1",
+    "@aily-project/lib-core-variables": "1.0.1"
+  },
+  "nickname": "ESP32-S3 Simulator Debug E2E",
+  "devmode": "arduino",
+  "ailyBlocklyUsedLibraries": {
+    "@aily-project/lib-core-io": {
+      "version": "1.0.0",
+      "blockTypes": [
+        "io_digitalread",
+        "io_digitalwrite",
+        "io_mode",
+        "io_pinmode",
+        "io_state"
+      ],
+      "updatedAt": 0
+    },
+    "@aily-project/lib-core-logic": {
+      "version": "0.0.1",
+      "blockTypes": [
+        "controls_ifelse",
+        "logic_negate"
+      ],
+      "updatedAt": 0
+    },
+    "@aily-project/lib-core-loop": {
+      "version": "0.0.1",
+      "blockTypes": [
+        "arduino_global",
+        "arduino_loop",
+        "arduino_setup"
+      ],
+      "updatedAt": 0
+    },
+    "@aily-project/lib-core-math": {
+      "version": "0.0.1",
+      "blockTypes": [
+        "math_number"
+      ],
+      "updatedAt": 0
+    },
+    "@aily-project/lib-core-time": {
+      "version": "0.0.1",
+      "blockTypes": [
+        "time_delay"
+      ],
+      "updatedAt": 0
+    },
+    "@aily-project/lib-core-text": {
+      "version": "1.0.0",
+      "blockTypes": [
+        "text"
+      ],
+      "updatedAt": 0
+    },
+    "@aily-project/lib-core-variables": {
+      "version": "1.0.1",
+      "blockTypes": [
+        "variable_define_advanced_scoped",
+        "variables_get"
+      ],
+      "updatedAt": 0
+    }
+  }
+}

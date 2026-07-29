@@ -127,7 +127,6 @@ import { AbsAutoSyncService } from './abs-auto-sync.service';
 import type { EditsSummary, RequestCheckpointMetadata } from './edit-checkpoint.service';
 import { EditCheckpointService } from './edit-checkpoint.service';
 import { AiCoderDiffBridgeService } from '../../../services/ai-coder-diff-bridge.service';
-import { GitWorkspaceCheckpointProviderService } from './git-workspace-checkpoint-provider.service';
 import { ScrollManagerService } from './scroll-manager.service';
 import { ResourceManagerService } from './resource-manager.service';
 import { ChatSessionItemsService } from './chat-session-items.service';
@@ -1288,39 +1287,11 @@ export class ChatEngineService implements IChatContext {
     readCurrentSessionResource: () => this.resolveCurrentViewSessionResource(),
     readCheckpointNavigationState: (request) =>
       this.runtimeHostForView().readCheckpointNavigationState(request),
-    getWorkspaceCheckpointPresentationMode: () => this.workspaceCheckpointPresentationMode,
-    ensureWorkspaceCheckpointPresentationMode: () => (
-      this.workspaceCheckpointProvider.ensurePresentationMode?.() ?? this.workspaceCheckpointPresentationMode
-    ),
-    getWorkspaceCheckpointAvailabilityDetail: () => (
-      this.workspaceCheckpointProvider.getAvailabilityDetail?.() ?? { mode: this.workspaceCheckpointPresentationMode }
-    ),
     logBoundaryDiagnostic: (message) => {
-      AilyHost.get().log?.warn?.(`[AilyChat][GitCheckpoint] boundary ${message}`);
+      AilyHost.get().log?.warn?.(`[AilyChat][CheckpointTimeline] boundary ${message}`);
     },
     warnBoundaryActionUnavailable: (reason) => {
       switch (reason.reason) {
-        case 'workspace-checkpoint-unavailable': {
-          const detail = reason.workspaceCheckpointDetail;
-          if (detail?.reason === 'git-not-found') {
-            this.message.warning('当前 Blockly 环境未找到 Git。请安装 Git，并确保 git 命令位于 Blockly 可见路径中。');
-            return;
-          }
-          if (detail?.reason === 'not-git-repository') {
-            this.promptGitRepositoryInitialization();
-            return;
-          }
-          if (detail?.reason === 'git-safe-directory') {
-            this.message.warning('Git 拒绝访问当前仓库，原因是 safe.directory / 仓库所有权检查未通过。请在系统 Git 中信任该项目目录后重试。');
-            return;
-          }
-          if (detail?.reason === 'git-probe-failed') {
-            this.message.warning(`Git checkpoint 探测失败，不能安全执行该历史边界操作: ${detail.message ?? '未知错误'}`);
-            return;
-          }
-          this.message.warning('当前工作区 checkpoint 尚未就绪，不能安全执行该历史边界操作');
-          return;
-        }
         case 'checkpoint-session-mismatch':
           this.message.warning('该检查点不属于当前会话，已阻止历史边界操作');
           return;
@@ -1335,29 +1306,6 @@ export class ChatEngineService implements IChatContext {
   });
   readonly interaction = new UserInteractionHelper(this.userInteractionContext);
 
-  private promptGitRepositoryInitialization(): void {
-    const workspaceRoot = AilyHost.get().project?.currentProjectPath
-      ?? AilyHost.get().project?.projectRootPath
-      ?? '';
-    this.modal.confirm({
-      nzTitle: '初始化 Git 仓库以启用检查点？',
-      nzContent: workspaceRoot
-        ? `当前项目不是 Git 仓库，无法安全执行检查点还原、重做或分叉。是否在当前项目目录初始化 Git 仓库？\n\n${workspaceRoot}`
-        : '当前项目不是 Git 仓库，无法安全执行检查点还原、重做或分叉。是否初始化 Git 仓库？',
-      nzOkText: '初始化 Git 仓库',
-      nzCancelText: '取消',
-      nzOnOk: async () => {
-        const mode = await this.workspaceCheckpointProvider.initializeRepository();
-        if (mode === 'git') {
-          this.message.success('已初始化 Git 仓库，git-backed checkpoint 已启用。');
-          this._syncDetectChanges?.();
-          return;
-        }
-        const detail = this.workspaceCheckpointProvider.getAvailabilityDetail?.();
-        this.message.warning(`Git 仓库初始化后仍未启用 checkpoint: ${detail?.message ?? '未知原因'}`);
-      },
-    });
-  }
   private readonly sendCoordinator = new ChatSendCoordinator(
     this,
     () => this.resourceManager.getResourcesText(),
@@ -1422,7 +1370,7 @@ export class ChatEngineService implements IChatContext {
   private readonly externalInputCoordinator = new ChatExternalInputCoordinator(this.externalInputCoordinatorContext, {
     retryLastAction: () => this.retryLastAction(),
     regenerateTurn: () => this.sessionBoundary.regenerateTurn(),
-    undoLastEdits: () => this.editActions.undoLastEdits(),
+    undoLastEdits: () => this.sessionBoundary.undoEdits(),
     newChat: () => this.requestNewChatFromPane(),
     ensureSessionReadyForSubmit: () => this.ensureSessionReadyForSubmit(),
       submitText: (text, clearInput, sessionId) => this.submitUserText(text, { clearInput, sessionId }),
@@ -1607,18 +1555,12 @@ export class ChatEngineService implements IChatContext {
   }
 
   get workspaceCheckpointPresentationMode() {
-    const mode = this.workspaceCheckpointProvider.getPresentationMode?.() ?? 'unknown';
-    return mode === 'unknown' && this.currentViewHasSessionCheckpointTimeline()
+    return this.currentViewHasSessionCheckpointTimeline()
       ? 'timeline'
-      : mode;
+      : 'unknown';
   }
 
   private currentViewHasSessionCheckpointTimeline(): boolean {
-    const currentProjectPath = AilyHost.get().project?.currentProjectPath;
-    if (typeof currentProjectPath === 'string' && currentProjectPath.trim().length > 0) {
-      return false;
-    }
-
     const sessionResource = this.resolveCurrentViewSessionResource();
     if (!sessionResource) {
       return false;
@@ -2266,7 +2208,49 @@ export class ChatEngineService implements IChatContext {
   currentStatelessMode = false;
 
   /** 缓存的编辑反馈（用户保留/撤销变更后，在下次发送时注入上下文） */
-  pendingEditFeedback: string | null = null;
+  private readonly pendingEditFeedbackBySession = new Map<string, string>();
+
+  get pendingEditFeedback(): string | null {
+    return this.readPendingEditFeedback();
+  }
+
+  set pendingEditFeedback(value: string | null) {
+    this.writePendingEditFeedback(undefined, value);
+  }
+
+  readPendingEditFeedback(sessionId?: string | null): string | null {
+    const ownerSessionId = this.resolvePendingEditFeedbackSessionId(sessionId);
+    return ownerSessionId
+      ? this.pendingEditFeedbackBySession.get(ownerSessionId) ?? null
+      : null;
+  }
+
+  writePendingEditFeedback(
+    sessionId: string | null | undefined,
+    value: string | null,
+  ): void {
+    const ownerSessionId = this.resolvePendingEditFeedbackSessionId(sessionId);
+    if (!ownerSessionId) {
+      return;
+    }
+
+    const normalizedValue = typeof value === 'string' ? value.trim() : '';
+    if (normalizedValue) {
+      this.pendingEditFeedbackBySession.set(ownerSessionId, normalizedValue);
+      return;
+    }
+
+    this.pendingEditFeedbackBySession.delete(ownerSessionId);
+  }
+
+  private resolvePendingEditFeedbackSessionId(sessionId?: string | null): string | null {
+    const candidate = typeof sessionId === 'string' && sessionId.trim().length > 0
+      ? sessionId
+      : this.resolveCurrentViewSessionResource() || this.sessionId;
+    return typeof candidate === 'string' && candidate.trim().length > 0
+      ? candidate.trim()
+      : null;
+  }
 
   pendingUserInput = false;
   private _isWaiting = false;
@@ -2756,7 +2740,6 @@ export class ChatEngineService implements IChatContext {
       getCurrentProjectPath: () => this.getCurrentProjectPath(),
       get absAutoSyncService() { return thisEngine.absAutoSyncService; },
       get editCheckpointService() { return thisEngine.editCheckpointService; },
-      get workspaceCheckpointProvider() { return thisEngine.workspaceCheckpointProvider; },
       get resourceManager() { return thisEngine.resourceManager; },
       get message() { return thisEngine.message; },
       get lexStream() { return thisEngine.lexStream; },
@@ -2822,8 +2805,32 @@ export class ChatEngineService implements IChatContext {
         thisEngine.commitCheckpointRestoreByIdentity(sessionId, checkpointId),
       rollbackCheckpointRestoreRequestListTransaction: (sessionId, committed) =>
         thisEngine.chatSessionModelStore.rollbackCheckpointRestoreTransaction(sessionId, committed as any),
-      commitCheckpointRedoByIdentity: (sessionId, checkpointId) =>
-        thisEngine.commitCheckpointRedoByIdentity(sessionId, checkpointId),
+      commitCheckpointRedo: (sessionId, checkpointId) =>
+        thisEngine.commitCheckpointRedo(sessionId, checkpointId),
+      operateEditingSessionEntry: async (sessionId, uri, action) => {
+        if (!thisEngine.electronRuntimeHost) {
+          throw new Error('Editing-session entry operation requires the execution host.');
+        }
+        await thisEngine.electronRuntimeHost.operateEditingSessionEntry({ sessionId, uri, action });
+      },
+      acceptEditingSession: async (sessionId) => {
+        if (!thisEngine.electronRuntimeHost) {
+          throw new Error('Editing-session acceptance requires the execution host.');
+        }
+        await thisEngine.electronRuntimeHost.acceptEditingSession({ sessionId });
+      },
+      undoEditingSessionInteraction: async (sessionId) => {
+        if (!thisEngine.electronRuntimeHost) {
+          throw new Error('Editing-session undo requires the execution host.');
+        }
+        await thisEngine.electronRuntimeHost.undoEditingSessionInteraction({ sessionId });
+      },
+      redoEditingSessionInteraction: async (sessionId) => {
+        if (!thisEngine.electronRuntimeHost) {
+          throw new Error('Editing-session redo requires the execution host.');
+        }
+        await thisEngine.electronRuntimeHost.redoEditingSessionInteraction({ sessionId });
+      },
       applyRequestListTransactionEffects: (sessionId, transaction) =>
         thisEngine.applyRequestListTransactionEffects(sessionId, transaction as ChatSessionRequestListTransactionResult),
       send: (sender, content, clear, sessionId) => thisEngine.sendFromCoordinationContext(sender, content, clear, sessionId),
@@ -3018,12 +3025,12 @@ export class ChatEngineService implements IChatContext {
       readCurrentViewSessionResource: () => thisEngine.chatSessionViewModelStore.currentSessionResource,
       get hostResponseProjection() { return thisEngine.hostResponseProjection; },
       createSessionSaveBridge: (ctx) => createSessionLifecycleHostSessionSaveBridge(ctx),
-      requestHostResourceOperation: (request) => thisEngine.runtimeHostForView().requestResourceOperation(request),
       clearEntryInputState: () => {
         thisEngine.legacyInputValue = '';
       },
       buildExecutionSaveTarget: (sessionId) => thisEngine.buildExecutionSaveTarget(sessionId),
       hasSessionRuntimeHandle: (sessionId) => !!thisEngine.lexStream.agent.getHandle?.(sessionId),
+      resolveSummarizerModelSnapshot: () => thisEngine.resolveSummarizerModelSnapshot(),
       prewarmRuntimeExecutor: (request) => thisEngine.runtimeHostForView().prewarmRuntime(request),
       restoreRuntimeSessionExecutor: (request) => thisEngine.runtimeHostForView().restoreRuntimeSession(request),
       readExecutionRuntimeSessionState: (sessionId) => thisEngine.runtimeHostForView().readSessionExecutionState(sessionId),
@@ -3122,7 +3129,6 @@ export class ChatEngineService implements IChatContext {
       get ailyChatConfigService() { return thisEngine.ailyChatConfigService; },
       get runtimeInteractionHost() { return thisEngine.runtimeInteractionHost; },
       get lexStream() { return thisEngine.lexStream; },
-      requestHostResourceOperation: (request) => thisEngine.runtimeHostForView().requestResourceOperation(request),
       projectRestoredHostProjection: (sessionId, turnResponses, hostProjectionState, options) => {
         thisEngine.projectRestoredHostProjection(sessionId, turnResponses, hostProjectionState, options);
       },
@@ -3773,7 +3779,6 @@ export class ChatEngineService implements IChatContext {
     public absAutoSyncService: AbsAutoSyncService,
     public editCheckpointService: EditCheckpointService,
     private aiCoderDiffBridge: AiCoderDiffBridgeService,
-    public workspaceCheckpointProvider: GitWorkspaceCheckpointProviderService,
     public translate: TranslateService,
     public message: NzMessageService,
     public scrollManager: ScrollManagerService,
@@ -3782,8 +3787,6 @@ export class ChatEngineService implements IChatContext {
     public runtimeInteractionHost: ChatRuntimeInteractionHostService,
     public requestQuotaStateService: RequestQuotaStateService,
   ) {
-    this.editCheckpointService.setWorkspaceCheckpointProvider(this.workspaceCheckpointProvider);
-
     // 初始化 viewAdapter（需要 ngZone 已注入）
     (this as any).viewAdapter = new ChatViewAdapter(
       () => this.list,
@@ -4013,15 +4016,6 @@ export class ChatEngineService implements IChatContext {
     this.scrollManager.setScrollLock(true);
     this.isCompleted = false;
     this.isCancelled = true;
-
-    if (options.clearEditSummary === true) {
-      const clearSessionId = typeof this.sessionId === 'string' ? this.sessionId.trim() : '';
-      if (clearSessionId) {
-        void this.requestHostEditTrackingClearSessionState(clearSessionId).catch((error: unknown) => {
-          console.warn('[AilyChat][RuntimeHost] clear edit tracking session state failed:', error);
-        });
-      }
-    }
 
     if (this.messageSubscription) {
       this.messageSubscription.unsubscribe();
@@ -4278,6 +4272,14 @@ export class ChatEngineService implements IChatContext {
     }
 
     return null;
+  }
+
+  private resolveSummarizerModelSnapshot(): ChatRuntimeHostModelSelectionSnapshot | null {
+    const summarizerModel = this.ailyChatConfigService.resolvePresetModel('auto-fast')
+      ?? this.chatService.currentModel;
+    return summarizerModel
+      ? { ...(summarizerModel as unknown as Record<string, unknown>) } as ChatRuntimeHostModelSelectionSnapshot
+      : null;
   }
 
   private resolveVisibleResolvedModeSnapshot(sessionId?: string | null): ChatResolvedMode {
@@ -4976,7 +4978,7 @@ export class ChatEngineService implements IChatContext {
       });
     }
     this.syncPendingFollowupRuntimeState(targetSessionId);
-    this.pendingEditFeedback = null;
+    this.writePendingEditFeedback(targetSessionId, null);
 
     const currentViewSessionId = resolveOptionalUiSessionOwner(this, null);
     if (currentViewSessionId === targetSessionId) {
@@ -5491,46 +5493,52 @@ export class ChatEngineService implements IChatContext {
       expectedRevision: navigation.revision,
       pageLimit: 30,
     });
-    this.projectCheckpointMutationPage(targetSessionId, hostMutation.page, 'runtime-host-checkpoint-restore');
+    this.projectCheckpointMutationPage(
+      targetSessionId,
+      hostMutation.page,
+      hostMutation.checkpointTimeline as unknown as SessionCheckpointTimelineState,
+      'runtime-host-checkpoint-restore',
+    );
     return hostMutation;
   }
 
-  private async commitCheckpointRedoByIdentity(
+  private async commitCheckpointRedo(
     sessionId: string | null | undefined,
-    checkpointId: string | null | undefined,
+    checkpointId?: string | null,
   ): Promise<unknown | null> {
     const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
     const targetCheckpointId = typeof checkpointId === 'string' ? checkpointId.trim() : '';
-    if (!targetSessionId || !targetCheckpointId) {
+    if (!targetSessionId) {
       return null;
-    }
-    const navigation = await this.runtimeHostForView().readCheckpointNavigationState({
-      sessionId: targetSessionId,
-    });
-    if (!navigation?.nextCheckpoint || navigation.nextCheckpoint.checkpointId !== targetCheckpointId) {
-      throw new Error(`Checkpoint redo identity changed before commit for ${targetSessionId}`);
     }
     const hostMutation = await this.runtimeHostForView().redoSessionCheckpoint({
       sessionId: targetSessionId,
-      expectedRevision: navigation.revision,
+      ...(targetCheckpointId ? { checkpointId: targetCheckpointId } : {}),
       pageLimit: 30,
     });
-    if (hostMutation.checkpointId !== targetCheckpointId) {
+    if (targetCheckpointId && hostMutation.checkpointId !== targetCheckpointId) {
       throw new Error(`Checkpoint redo host committed an unexpected identity for ${targetSessionId}`);
     }
 
-    this.projectCheckpointMutationPage(targetSessionId, hostMutation.page, 'runtime-host-checkpoint-redo');
+    this.projectCheckpointMutationPage(
+      targetSessionId,
+      hostMutation.page,
+      hostMutation.checkpointTimeline as unknown as SessionCheckpointTimelineState,
+      'runtime-host-checkpoint-redo',
+    );
     return hostMutation;
   }
 
   private projectCheckpointMutationPage(
     sessionId: string,
     page: any,
+    checkpointTimeline: SessionCheckpointTimelineState,
     source: string,
   ): void {
     const pageTurns = Array.isArray(page?.data) ? page.data as TurnResponseTurn[] : [];
     this.visibleTurnWindowModel.attach(sessionId, page);
     this.replaceSessionModelTurnResponses(sessionId, pageTurns, { source });
+    this.chatSessionModelStore.get(sessionId)?.replaceCheckpointTimelineState(checkpointTimeline);
     const hostProjectionState = buildRuntimeHostProjectionState(pageTurns);
     if (hostProjectionState) {
       const attachedView = this.resolveCurrentViewSessionResource() === sessionId;
@@ -5728,47 +5736,6 @@ export class ChatEngineService implements IChatContext {
     }
 
     throw new Error('[AilyChat][RuntimeHost] Visible chat views require Electron runtime host transport.');
-  }
-
-  private async requestHostEditTrackingRestore(
-    sessionId: string,
-    turnResponses: readonly TurnResponseTurn[],
-  ): Promise<void> {
-    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId) {
-      throw new Error('[AilyChat][RuntimeHost] edit tracking restore requires a host session id.');
-    }
-    await this.runtimeHostForView().requestResourceOperation({
-      sessionId: targetSessionId,
-      kind: 'edit-tracking',
-      label: 'Restoring edit tracking from checkpoint branch',
-      detail: 'Host edit tracking resource is rebuilding checkpoint state from committed turn responses.',
-      payload: {
-        adapter: 'editTracking',
-        action: 'restoreFromTurnResponses',
-        workspaceRoot: this.getCurrentProjectPath(),
-        turnResponses,
-        autoSaveEdits: this.ailyChatConfigService.autoSaveEdits === true,
-      },
-    });
-  }
-
-  private async requestHostEditTrackingClearSessionState(sessionId: string | null | undefined): Promise<void> {
-    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId) {
-      throw new Error('[AilyChat][RuntimeHost] clear edit tracking state requires a host session id.');
-    }
-    await this.runtimeHostForView().requestResourceOperation({
-      sessionId: targetSessionId,
-      kind: 'edit-tracking',
-      label: 'Clearing edit tracking session state',
-      detail: 'Host edit tracking resource is clearing stale visible session edit state.',
-      payload: {
-        adapter: 'editTracking',
-        action: 'clearSessionState',
-        dismissSummary: true,
-      },
-    });
   }
 
   private setupRuntimeHostEventSubscription(): void {
@@ -7179,14 +7146,8 @@ export class ChatEngineService implements IChatContext {
     const requestId = this.normalizeRuntimeTranscriptMetadataString(record['requestId'])
       || this.normalizeRuntimeTranscriptMetadataString(turn.turnId)
       || checkpointId;
-    const checkpointNamespace = this.normalizeRuntimeTranscriptMetadataString(record['checkpointNamespace'])
-      || `refs/sessions/${sessionId}`;
     const checkpointTurnIndex = this.normalizeRuntimeTranscriptMetadataIndex(record['checkpointTurnIndex'])
       ?? turnIndex + 1;
-    const checkpointRef = this.normalizeRuntimeTranscriptMetadataString(record['checkpointRef']);
-    const startCheckpointRef = this.normalizeRuntimeTranscriptMetadataString(record['startCheckpointRef']);
-    const additionalCheckpointRefs = this.readRuntimeTranscriptMetadataStringRecord(record['checkpointRefs']);
-    const additionalStartCheckpointRefs = this.readRuntimeTranscriptMetadataStringRecord(record['startCheckpointRefs']);
 
     return {
       source: 'request-metadata',
@@ -7194,12 +7155,7 @@ export class ChatEngineService implements IChatContext {
       sessionResource: sessionId,
       requestId,
       ...(turn.turnId ? { turnId: turn.turnId } : {}),
-      checkpointNamespace,
       turnIndex: checkpointTurnIndex,
-      ...(startCheckpointRef ? { startCheckpointRef } : {}),
-      ...(checkpointRef ? { checkpointRef } : {}),
-      ...(additionalStartCheckpointRefs ? { additionalStartCheckpointRefs } : {}),
-      ...(additionalCheckpointRefs ? { additionalCheckpointRefs } : {}),
     };
   }
 
@@ -7211,16 +7167,6 @@ export class ChatEngineService implements IChatContext {
     return typeof value === 'number' && Number.isFinite(value)
       ? Math.max(0, Math.trunc(value))
       : null;
-  }
-
-  private readRuntimeTranscriptMetadataStringRecord(value: unknown): Record<string, string> | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return undefined;
-    }
-    const entries = Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => [key, this.normalizeRuntimeTranscriptMetadataString(item)] as const)
-      .filter((entry): entry is readonly [string, string] => entry[1].length > 0);
-    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
   }
 
   private isRuntimeTranscriptStaleCheckpointReplay(
@@ -8961,6 +8907,7 @@ Do not create non-existent boards and libraries.
         });
       }
       const currentModelSnapshot = this.resolveVisibleCurrentModelSnapshot(targetSessionId);
+      const summarizerModelSnapshot = this.resolveSummarizerModelSnapshot();
       const currentServiceSessionId = typeof this.chatService?.currentSessionId === 'string'
         ? this.chatService.currentSessionId.trim()
         : '';
@@ -8988,6 +8935,7 @@ Do not create non-existent boards and libraries.
           agentRuntimeMode: runtimeResolution.mode,
           agentRuntimeModeSource: runtimeResolution.source,
           currentModel: currentModelSnapshot,
+          summarizerModel: summarizerModelSnapshot,
           metadata: this.withHostRuntimeSessionInventoryMetadata(
             targetSessionId,
             requestMetadata ?? null,
@@ -9316,6 +9264,7 @@ Do not create non-existent boards and libraries.
     try {
       const runtimeHost = this.runtimeHostForView();
       const currentModelSnapshot = this.resolveVisibleCurrentModelSnapshot(runtimeSessionId);
+      const summarizerModelSnapshot = this.resolveSummarizerModelSnapshot();
       const currentServiceSessionId = typeof this.chatService?.currentSessionId === 'string'
         ? this.chatService.currentSessionId.trim()
         : '';
@@ -9340,6 +9289,7 @@ Do not create non-existent boards and libraries.
         agentRuntimeMode: runtimeResolution.mode,
         agentRuntimeModeSource: runtimeResolution.source,
         currentModel: currentModelSnapshot,
+        summarizerModel: summarizerModelSnapshot,
         metadata: this.withHostRuntimeSessionInventoryMetadata(
           runtimeSessionId,
           requestMetadata,
@@ -10164,7 +10114,8 @@ function readRequestTextContent(candidate: unknown): string | undefined {
   const text = typeof candidate === 'string'
     ? candidate
     : candidate && typeof candidate === 'object'
-      ? ((candidate as { messageText?: unknown }).messageText
+      ? ((candidate as { displayContent?: unknown }).displayContent
+        ?? (candidate as { messageText?: unknown }).messageText
         ?? (candidate as { prompt?: unknown }).prompt
         ?? (candidate as { text?: unknown }).text
         ?? (candidate as { content?: unknown }).content)

@@ -1,0 +1,378 @@
+{
+  "blocks": {
+    "languageVersion": 0,
+    "blocks": [
+      {
+        "type": "arduino_global",
+        "id": "debug-global",
+        "x": 30,
+        "y": 60,
+        "deletable": false
+      },
+      {
+        "type": "arduino_setup",
+        "id": "debug-setup",
+        "x": 30,
+        "y": 180,
+        "deletable": false,
+        "inputs": {
+          "ARDUINO_SETUP": {
+            "block": {
+              "type": "io_pinmode",
+              "id": "debug-pin-mode",
+              "inputs": {
+                "PIN": {
+                  "block": {
+                    "type": "math_number",
+                    "id": "debug-pin-mode-number",
+                    "fields": {
+                      "NUM": 3
+                    }
+                  }
+                },
+                "MODE": {
+                  "block": {
+                    "type": "io_mode",
+                    "id": "debug-output-mode",
+                    "fields": {
+                      "MODE": "OUTPUT"
+                    }
+                  }
+                }
+              },
+              "next": {
+                "block": {
+                  "type": "io_pinmode",
+                  "id": "debug-button-pin-mode",
+                  "inputs": {
+                    "PIN": {
+                      "block": {
+                        "type": "math_number",
+                        "id": "debug-button-pin-number",
+                        "fields": {
+                          "NUM": 4
+                        }
+                      }
+                    },
+                    "MODE": {
+                      "block": {
+                        "type": "io_mode",
+                        "id": "debug-button-input-mode",
+                        "fields": {
+                          "MODE": "INPUT_PULLUP"
+                        }
+                      }
+                    }
+                  },
+                  "next": {
+                    "block": {
+                      "type": "serial_begin",
+                      "id": "debug-uart-begin",
+                      "fields": {
+                        "SERIAL": "Serial",
+                        "SPEED": "115200"
+                      },
+                      "next": {
+                        "block": {
+                          "type": "serial_println",
+                          "id": "debug-uart-ready",
+                          "fields": {
+                            "SERIAL": "Serial"
+                          },
+                          "inputs": {
+                            "VAR": {
+                              "block": {
+                                "type": "text",
+                                "id": "debug-uart-ready-text",
+                                "fields": {
+                                  "TEXT": "blockly-sim-ready"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "arduino_loop",
+        "id": "debug-loop",
+        "x": 30,
+        "y": 340,
+        "deletable": false,
+        "inputs": {
+          "ARDUINO_LOOP": {
+            "block": {
+              "type": "variable_define_advanced_scoped",
+              "id": "debug-label-local",
+              "fields": {
+                "SCOPE": "local",
+                "STORAGE": "",
+                "QUALIFIER": "",
+                "VAR": "debugLabel",
+                "TYPE": "String"
+              },
+              "inputs": {
+                "VALUE": {
+                  "block": {
+                    "type": "text",
+                    "id": "debug-label-value",
+                    "fields": {
+                      "TEXT": "ready"
+                    }
+                  }
+                }
+              },
+              "next": {
+                "block": {
+                  "type": "variable_define_advanced_scoped",
+                  "id": "debug-counter-local",
+                  "fields": {
+                    "SCOPE": "local",
+                    "STORAGE": "",
+                    "QUALIFIER": "volatile",
+                    "VAR": "debugCounter",
+                    "TYPE": "uint32_t"
+                  },
+                  "inputs": {
+                    "VALUE": {
+                      "block": {
+                        "type": "math_number",
+                        "id": "debug-counter-value",
+                        "fields": {
+                          "NUM": 3
+                        }
+                      }
+                    }
+                  },
+                  "next": {
+                    "block": {
+                      "type": "controls_ifelse",
+                      "id": "debug-button-controls-led",
+                      "inputs": {
+                        "IF0": {
+                          "block": {
+                            "type": "logic_negate",
+                            "id": "debug-button-active-low",
+                            "inputs": {
+                              "BOOL": {
+                                "block": {
+                                  "type": "io_digitalread",
+                                  "id": "debug-button-read",
+                                  "inputs": {
+                                    "PIN": {
+                                      "block": {
+                                        "type": "math_number",
+                                        "id": "debug-button-read-pin",
+                                        "fields": {
+                                          "NUM": 4
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "DO0": {
+                          "block": {
+                            "type": "io_digitalwrite",
+                            "id": "debug-button-led-high",
+                            "inputs": {
+                              "PIN": {
+                                "block": {
+                                  "type": "math_number",
+                                  "id": "debug-button-led-pin",
+                                  "fields": {
+                                    "NUM": 3
+                                  }
+                                }
+                              },
+                              "STATE": {
+                                "block": {
+                                  "type": "io_state",
+                                  "id": "debug-button-high-state",
+                                  "fields": {
+                                    "STATE": "HIGH"
+                                  }
+                                }
+                              }
+                            },
+                            "next": {
+                              "block": {
+                                "type": "time_delay",
+                                "id": "debug-button-hold-delay",
+                                "inputs": {
+                                  "DELAY_TIME": {
+                                    "block": {
+                                      "type": "math_number",
+                                      "id": "debug-button-hold-delay-ms",
+                                      "fields": {
+                                        "NUM": 20
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "ELSE": {
+                          "block": {
+                            "type": "io_digitalwrite",
+                            "id": "debug-loop-break",
+                            "inputs": {
+                              "PIN": {
+                                "block": {
+                                  "type": "variables_get",
+                                  "id": "debug-counter-read",
+                                  "fields": {
+                                    "VAR": {
+                                      "id": "debug-counter-variable",
+                                      "name": "debugCounter",
+                                      "type": "uint32_t"
+                                    }
+                                  }
+                                }
+                              },
+                              "STATE": {
+                                "block": {
+                                  "type": "io_state",
+                                  "id": "debug-high-state",
+                                  "fields": {
+                                    "STATE": "HIGH"
+                                  }
+                                }
+                              }
+                            },
+                            "next": {
+                              "block": {
+                                "type": "time_delay",
+                                "id": "debug-delay-block",
+                                "inputs": {
+                                  "DELAY_TIME": {
+                                    "block": {
+                                      "type": "math_number",
+                                      "id": "debug-delay-ms",
+                                      "fields": {
+                                        "NUM": 1000
+                                      }
+                                    }
+                                  }
+                                },
+                                "next": {
+                                  "block": {
+                                    "type": "io_digitalwrite",
+                                    "id": "debug-loop-low",
+                                    "inputs": {
+                                      "PIN": {
+                                        "block": {
+                                          "type": "math_number",
+                                          "id": "debug-low-pin",
+                                          "fields": {
+                                            "NUM": 3
+                                          }
+                                        }
+                                      },
+                                      "STATE": {
+                                        "block": {
+                                          "type": "io_state",
+                                          "id": "debug-low-state",
+                                          "fields": {
+                                            "STATE": "LOW"
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "next": {
+                                      "block": {
+                                        "type": "time_delay",
+                                        "id": "debug-low-delay",
+                                        "inputs": {
+                                          "DELAY_TIME": {
+                                            "block": {
+                                              "type": "math_number",
+                                              "id": "debug-low-delay-ms",
+                                              "fields": {
+                                                "NUM": 1000
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "controls_ifelse",
+                          "id": "debug-uart-echo-if",
+                          "inputs": {
+                            "IF0": {
+                              "block": {
+                                "type": "serial_available",
+                                "id": "debug-uart-available",
+                                "fields": {
+                                  "SERIAL": "Serial"
+                                }
+                              }
+                            },
+                            "DO0": {
+                              "block": {
+                                "type": "serial_println",
+                                "id": "debug-uart-echo",
+                                "fields": {
+                                    "SERIAL": "Serial"
+                                },
+                                "inputs": {
+                                  "VAR": {
+                                    "block": {
+                                      "type": "serial_read",
+                                      "id": "debug-uart-read-line",
+                                      "fields": {
+                                        "SERIAL": "Serial",
+                                        "TYPE": "readStringUntil('\\n')"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "variables": [
+    {
+      "name": "debugLabel",
+      "id": "debug-label-variable",
+      "type": "String"
+    },
+    {
+      "name": "debugCounter",
+      "id": "debug-counter-variable",
+      "type": "uint32_t"
+    }
+  ]
+}

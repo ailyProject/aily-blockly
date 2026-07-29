@@ -17,11 +17,6 @@ export interface DeferredToolGroup {
 
 export const LEGACY_DEFERRED_TOOL_GROUPS: DeferredToolGroup[] = [
   {
-    name: '文件工具',
-    brief: '文件夹删除',
-    tools: ['delete_folder'],
-  },
-  {
     name: '硬件/库搜索',
     brief: '搜索开发板和库、获取硬件分类、查询开发板参数',
     tools: ['search_boards_libraries', 'get_hardware_categories', 'get_board_parameters'],

@@ -15,12 +15,21 @@ import { ActionService } from "../../../services/action.service";
 import {
   normalizeArduinoGeneratedCode,
 } from "../components/blockly/generators/arduino/arduino";
-import { generateCodeWithActiveProjectGenerator } from './blockly-generator-runtime.service';
+import {
+  generateCodeWithActiveProjectGenerator,
+  getActiveProjectGenerator,
+} from './blockly-generator-runtime.service';
 import { BlocklyService } from "./blockly.service";
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { BleOtaProgress, UploaderBleService } from '../../../services/uploader-ble.service';
 import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
+import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
+import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
+import {
+  resolveUploadRecoveryPolicy,
+  type UploadRecoveryPolicy,
+} from '../../../services/upload-recovery-policy';
 
 interface NetworkOtaUploadTarget {
   id?: string;
@@ -40,6 +49,10 @@ interface Esp32UploadProgressState {
   completedFiles: number;
   eraseRegionSizes: number[];
   currentFileBytes: number;
+}
+
+interface UploadActionState extends ActionState {
+  resourceRecovery?: UploadRecoveryPolicy;
 }
 
 function mapLogStateToLevel(state?: string): ProjectLogLevel {
@@ -239,6 +252,10 @@ export class _UploaderService {
     return weightedProgress;
   }
 
+  private isUploadErrorLine(line: string): boolean {
+    return /error\s*:|\bfailed\b|\bfatal\b[^\r\n]*\berror\b|\berror\b[^\r\n]*\bfatal\b|can't open device|could not open port/i.test(line);
+  }
+
   private calculateEsp32FlashProgress(state: Esp32UploadProgressState, rawProgress: number): number {
     const regionProgress = this.clampProgress(rawProgress);
 
@@ -287,14 +304,15 @@ export class _UploaderService {
     this._builderService.isUploading = false;
   }
 
-  async upload(): Promise<ActionState> {
+  async upload(): Promise<UploadActionState> {
     this.isErrored = false;
     this.cancelled = false;
     this.uploadCompleted = false;
     this.processExitCode = null; // 重置进程退出码
     this.uploadInProgress = true; // 立即设置为true，使取消功能生效
-  
-    return new Promise<ActionState>(async (resolve, reject) => {
+    let resourceRecovery: UploadRecoveryPolicy | undefined;
+
+    return new Promise<UploadActionState>(async (resolve, reject) => {
       // 保存 reject 函数，以便 cancel() 方法可以立即中断
       this.uploadPromiseReject = reject;
       
@@ -360,7 +378,15 @@ export class _UploaderService {
         }
 
         // 第一步：检查是否需要编译
+        await prepareBlocklyProjectDataForCodeGeneration(
+          this.blocklyService.workspace,
+          this.blocklyService.getProjectDocument(),
+        );
         const code = normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
+        await writeArduinoGeneratedArtifacts(
+          this.projectService.currentProjectPath,
+          getActiveProjectGenerator(),
+        );
         const buildPath = await this.projectService.getBuildPath();
         const needsBuild = !this._builderService.passed || 
                           code !== this._builderService.lastCode || 
@@ -488,6 +514,16 @@ export class _UploaderService {
         const wait_for_upload = isDebuggerUpload
           ? false
           : !!(flags['wait_for_upload_port'] || flags['wait_for_upload']);
+        const cdcOnBoot = !isDebuggerUpload
+          && await this.projectService.isCdcOnBootEnabledForProject(boardJson);
+        resourceRecovery = resolveUploadRecoveryPolicy({
+          boardJson,
+          boardModule,
+          uploadParam: cleanParam,
+          use1200bpsTouch: use_1200bps_touch,
+          waitForUploadPort: wait_for_upload,
+          cdcOnBoot,
+        });
 
         console.log('提取的上传标志:', flags);
         console.log('清理后的上传参数:', cleanParam);
@@ -610,6 +646,20 @@ export class _UploaderService {
             this.streamId = output.streamId;
 
             if (output.type === 'close') {
+              const trailingLine = bufferData.trim();
+              if (trailingLine) {
+                errorText = trailingLine;
+                if (this.isUploadErrorLine(trailingLine)) {
+                  fullErrorText += trailingLine + '\n';
+                  this.handleUploadError(trailingLine, this.uploadT('FAILED_TITLE'), fullErrorText);
+                }
+                this.logService.update({
+                  detail: trailingLine,
+                  state: this.isErrored ? 'error' : undefined
+                });
+                bufferData = '';
+              }
+
               this.processExitCode = output.code ?? (output.signal ? 1 : 0);
 
               if (!this.cancelled && this.processExitCode !== 0) {
@@ -666,10 +716,7 @@ export class _UploaderService {
                     errorText = trimmedLine;
 
                     // 检查是否有错误信息
-                    if (trimmedLine.toLowerCase().includes('error:') ||
-                      trimmedLine.toLowerCase().includes('failed') ||
-                      trimmedLine.toLowerCase().includes('a fatal error occurred') ||
-                      trimmedLine.toLowerCase().includes("can't open device")) {
+                    if (this.isUploadErrorLine(trimmedLine)) {
                       fullErrorText += trimmedLine + '\n';
                       this.handleUploadError(trimmedLine, this.uploadT('FAILED_TITLE'), fullErrorText);
                     }
@@ -851,7 +898,11 @@ export class _UploaderService {
             this.handleUploadError(error.message || this.uploadT('PROCESS_ERROR'), this.uploadT('FAILED_TITLE'), fullErrorMessage);
             this.workflowService.finishUpload(false, error.message || 'Upload error');
             this.uploadPromiseReject = null;
-            reject({ state: 'error', text: error.message || this.uploadT('FAILED_TITLE') });
+            reject({
+              state: 'error',
+              text: error.message || this.uploadT('FAILED_TITLE'),
+              ...(resourceRecovery ? { resourceRecovery } : {}),
+            });
           },
           complete: () => {
             if (syntheticProgressTimer) { clearInterval(syntheticProgressTimer); syntheticProgressTimer = null; }
@@ -894,7 +945,11 @@ export class _UploaderService {
               this._builderService.isUploading = false;
               this.workflowService.finishUpload(false, 'Cancelled');
               this.uploadPromiseReject = null;
-              reject({ state: 'warn', text: this.uploadT('CANCELLED') });
+              reject({
+                state: 'warn',
+                text: this.uploadT('CANCELLED'),
+                ...(resourceRecovery ? { resourceRecovery } : {}),
+              });
             } else if (this.isErrored) {
               console.log("上传命令完成 - 发生错误");
               console.log("[Uploader][DIAG] errorText =", errorText);
@@ -903,7 +958,11 @@ export class _UploaderService {
               this.handleUploadError(this.uploadT('PROCESS_ERROR'), this.uploadT('FAILED_TITLE'), fullErrorText || errorText || this.uploadT('PROCESS_ERROR'));
               this.workflowService.finishUpload(false, errorText);
               this.uploadPromiseReject = null;
-              reject({ state: 'error', text: errorText || this.uploadT('PROCESS_ERROR') });
+              reject({
+                state: 'error',
+                text: errorText || this.uploadT('PROCESS_ERROR'),
+                ...(resourceRecovery ? { resourceRecovery } : {}),
+              });
             } else if (this.uploadCompleted) {
               console.log("上传完成");
               // 安全更新UI
@@ -918,7 +977,11 @@ export class _UploaderService {
               this._builderService.isUploading = false;
               this.workflowService.finishUpload(true);
               this.uploadPromiseReject = null;
-              resolve({ state: 'done', text: this.uploadT('COMPLETE_TEXT') });
+              resolve({
+                state: 'done',
+                text: this.uploadT('COMPLETE_TEXT'),
+                ...(resourceRecovery ? { resourceRecovery } : {}),
+              });
             } else {
               // 这个分支理论上不应该被触发，因为上面已经处理了正常结束的情况
               // 但作为兜底逻辑保留
@@ -934,7 +997,11 @@ export class _UploaderService {
               this._builderService.isUploading = false;
               this.workflowService.finishUpload(false, 'Upload incomplete');
               this.uploadPromiseReject = null;
-              reject({ state: 'error', text: this.uploadT('INCOMPLETE_CHECK_LOG') });
+              reject({
+                state: 'error',
+                text: this.uploadT('INCOMPLETE_CHECK_LOG'),
+                ...(resourceRecovery ? { resourceRecovery } : {}),
+              });
             }
           }
         });
@@ -945,7 +1012,11 @@ export class _UploaderService {
         this.handleUploadError(error.message || this.uploadT('FAILED_TITLE'), this.uploadT('FAILED_TITLE'), fullErrorMessage);
         this.workflowService.finishUpload(false, error.message || 'Upload failed');
         this.uploadPromiseReject = null;
-        reject({ state: 'error', text: error.message || this.uploadT('FAILED_TITLE') });
+        reject({
+          state: 'error',
+          text: error.message || this.uploadT('FAILED_TITLE'),
+          ...(resourceRecovery ? { resourceRecovery } : {}),
+        });
       }
     });
   }

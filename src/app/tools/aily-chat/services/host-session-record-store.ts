@@ -216,17 +216,13 @@ function normalizePersistedSessionTitleMetadata(
 }
 
 function cloneTurnRound(round: TurnResponseTurn['rounds'][number]): TurnResponseTurn['rounds'][number] {
-  const summary = normalizeRoundSummary(round.summary);
-
+  const { summary: _runtimeSummary, ...roundWithoutSummary } = round;
   return {
-    id: round.id,
-    assistantText: round.assistantText,
+    ...roundWithoutSummary,
     toolCalls: round.toolCalls.map(toolCall => ({
       ...toolCall,
       input: { ...toolCall.input },
     })),
-    timestamp: round.timestamp,
-    ...(summary ? { summary } : {}),
   };
 }
 

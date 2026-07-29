@@ -31,7 +31,7 @@
     "first_byte_timeout_ms": 15000,
     "stall_timeout_ms": 20000,
     "low_speed_window_ms": 60000,
-    "min_average_speed_bytes_per_second": 65536
+    "min_average_speed_bytes_per_second": 262144
   },
   "regions": {
     "cn": {

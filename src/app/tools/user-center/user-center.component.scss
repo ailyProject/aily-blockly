@@ -115,6 +115,23 @@
                     color: var(--aily-text-secondary);
                 }
             }
+
+            .action-stack {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-end;
+                justify-content: center;
+                gap: 6px;
+                flex-shrink: 0;
+                text-align: right;
+
+                .reset-date {
+                    font-size: 12px;
+                    font-weight: 400;
+                    color: var(--aily-text-secondary);
+                    white-space: nowrap;
+                }
+            }
         }
     }
 

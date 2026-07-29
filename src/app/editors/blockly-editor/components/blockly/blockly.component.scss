@@ -140,6 +140,81 @@
     animation: aily-workspace-search-pulse 0.9s ease-out;
 }
 
+:host ::ng-deep .aily-debug-execution-block > .blocklyPath {
+    stroke: #13c2c2 !important;
+    stroke-width: 4px;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 0 6px rgb(19 194 194 / 72%));
+    animation: aily-debug-execution-pulse 1.4s ease-in-out infinite;
+}
+
+:host ::ng-deep .aily-project-breakpoint-marker {
+    pointer-events: none;
+
+    circle {
+        fill: #f5222d;
+        stroke: #fff;
+        stroke-width: 2;
+        vector-effect: non-scaling-stroke;
+        filter: drop-shadow(0 1px 2px rgb(0 0 0 / 45%));
+    }
+
+    &[data-state='disabled'] circle,
+    &[data-state='revision-unknown-disabled'] circle,
+    &[data-state='workspace-unknown-disabled'] circle {
+        fill: var(--aily-blockly-background, #fff);
+        stroke: #8c8c8c;
+    }
+
+    &[data-state='stale-enabled'] circle {
+        fill: #faad14;
+    }
+
+    &[data-state='stale-disabled'] circle {
+        fill: var(--aily-blockly-background, #fff);
+        stroke: #faad14;
+        stroke-dasharray: 2 2;
+    }
+
+    &[data-state='revision-unknown-enabled'] circle {
+        fill: #8c8c8c;
+    }
+
+    &[data-state='workspace-dirty-enabled'] circle {
+        fill: #722ed1;
+    }
+
+    &[data-state='workspace-dirty-disabled'] circle {
+        fill: var(--aily-blockly-background, #fff);
+        stroke: #722ed1;
+        stroke-dasharray: 2 2;
+    }
+
+    &[data-state='workspace-unknown-enabled'] circle {
+        fill: #8c8c8c;
+        stroke-dasharray: 2 2;
+    }
+}
+
+@keyframes aily-debug-execution-pulse {
+    0%,
+    100% {
+        stroke-opacity: 0.72;
+        filter: drop-shadow(0 0 3px rgb(19 194 194 / 52%));
+    }
+
+    50% {
+        stroke-opacity: 1;
+        filter: drop-shadow(0 0 8px rgb(19 194 194 / 88%));
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :host ::ng-deep .aily-debug-execution-block > .blocklyPath {
+        animation: none;
+    }
+}
+
 @keyframes aily-workspace-search-pulse {
     0% {
         stroke-width: 2px;

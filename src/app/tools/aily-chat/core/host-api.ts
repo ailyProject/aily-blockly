@@ -52,6 +52,8 @@ export interface IAilyHostAPI {
   readonly editor?: IEditorProvider;
   /** MCP 进程管理（可选 — 需要 Electron 环境） */
   readonly mcp?: IMcpProvider;
+  /** Manifest-driven Agent tools exposed by installed subapps. */
+  readonly subappAgent?: ISubappAgentProvider;
 
   // ---- 宿主特有服务（直接透传，用于复杂 handler 调用） ----
   /** Blockly 编辑器服务（可选 — 完整 BlocklyService 透传） */
@@ -387,7 +389,20 @@ export interface IConfigProvider {
 
 export interface IBuildProvider {
   build(projectPath: string): Promise<{ success: boolean; output: string }>;
+  listSerialPorts?(): Promise<Array<{
+    port: string;
+    label: string;
+    type: string;
+    selected: boolean;
+  }>>;
   upload?(projectPath: string, port: string): Promise<{ success: boolean; output: string }>;
+}
+
+export interface ISubappAgentProvider {
+  execute(
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>>;
 }
 
 // ============================================================

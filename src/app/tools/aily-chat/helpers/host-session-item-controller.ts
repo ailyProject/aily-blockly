@@ -1,6 +1,5 @@
 ﻿import type { TurnResponseTurn } from 'aily-lex/browser';
 import { Subject, type Observable } from 'rxjs';
-import type { EditCheckpointService } from '../services/edit-checkpoint.service';
 import type { ChatSessionStateScopeSnapshot, ChatSessionStateService, PersistedChatSessionState, ResolvedChatSessionState } from '../services/chat-session-state.service';
 import type { PersistedChatSessionEntryTarget } from '../services/chat-session-entry-state.service';
 import {
@@ -235,7 +234,10 @@ type HostSessionItemControllerContext = {
     & Partial<Pick<ChatService, 'currentSessionTitleSource'>>
     & Partial<Pick<ChatService, 'sessionDisplayTitleChanged$' | 'sessionDurableTitleChanged$' | 'sessionTitleChanged$'>>;
   readonly chatHistoryService: Pick<ChatHistoryService, 'getHistoryList' | 'findEntry' | 'loadHostRecord' | 'updateTitle' | 'deleteSession'> & Partial<Pick<ChatHistoryService, 'hostSessionChanged$'>>;
-  readonly editCheckpointService?: Pick<EditCheckpointService, 'getRequestEditsSummarySync'>;
+  readonly readEditingSessionRequestChanges?: (
+    sessionId: string,
+    requestOrTurnId: string,
+  ) => HostSessionListItemChanges | null | undefined;
   readonly chatSessionStateService?: Pick<ChatSessionStateService, 'sessionStateChanged$' | 'resolveSessionState' | 'readScopeSnapshot' | 'setArchived' | 'setPinned' | 'setRead' | 'clearSessionState'>;
   readonly readLiveSessionTurnResponses?: (sessionId: string) => readonly TurnResponseTurn[] | null | undefined;
   readonly readLiveSessionRuntimeState?: (sessionId: string) => ChatSessionRuntimeState | null | undefined;
@@ -1332,7 +1334,7 @@ export class HostSessionItemController {
     const liveRuntimeState = this.readLiveRuntimeState(item.sessionId);
     const timing = this.resolveListItemTiming(item, effectiveHostRecord, updatedAt);
     const status = this.resolveListItemStatus(effectiveHostRecord, liveRuntimeState);
-    const changes = this.resolveListItemChanges(effectiveHostRecord);
+    const changes = this.resolveListItemChanges(item.sessionId, effectiveHostRecord);
 
     const nextItem: HostSessionListItem = {
       ...item,
@@ -1622,23 +1624,20 @@ export class HostSessionItemController {
   }
 
   private resolveListItemChanges(
+    sessionId: string,
     record: HostSessionRecordLike | null | undefined,
   ): HostSessionListItemChanges | undefined {
     const turnId = this.readNonEmptyString(this.getLatestTurnResponse(record)?.turnId);
-    if (!turnId || !this.ctx.editCheckpointService) {
+    if (!turnId || !this.ctx.readEditingSessionRequestChanges) {
       return undefined;
     }
 
-    const summary = this.ctx.editCheckpointService.getRequestEditsSummarySync(turnId);
-    if (!summary || summary.fileCount <= 0) {
+    const changes = this.ctx.readEditingSessionRequestChanges(sessionId, turnId);
+    if (!changes || changes.fileCount <= 0) {
       return undefined;
     }
 
-    return {
-      fileCount: summary.fileCount,
-      insertions: summary.totalAdded,
-      deletions: summary.totalRemoved,
-    };
+    return changes;
   }
 
   private buildListItemDescription(

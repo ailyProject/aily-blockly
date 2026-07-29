@@ -1,7 +1,7 @@
 ﻿import { HttpClient, HttpErrorResponse, HttpResponse } from '@angular/common/http';
-import { Injectable, NgZone, Optional } from '@angular/core';
+import { Injectable, NgZone, OnDestroy, Optional } from '@angular/core';
 import { Subject, Observable, Subscription } from 'rxjs';
-import { distinctUntilChanged } from 'rxjs/operators';
+import { distinctUntilChanged, timeout } from 'rxjs/operators';
 import type { PermissionPolicy, PermissionRuleInput } from 'aily-lex/agent/common/approvalProtocol';
 import packageJson from '../../../../../package.json';
 import { AilyHost } from '../core/host';
@@ -429,7 +429,7 @@ const DEFAULT_CONFIG: AilyChatConfig = {
 @Injectable({
     providedIn: 'root'
 })
-export class AilyChatConfigService {
+export class AilyChatConfigService implements OnDestroy {
     private config: AilyChatConfig = { ...DEFAULT_CONFIG };
     private readonly sessionToolApprovalStates = new Map<string, {
         toolNames: Set<string>;
@@ -450,6 +450,10 @@ export class AilyChatConfigService {
     private remoteModelCatalogStatus: 'loading' | 'ready' | 'unavailable' = 'loading';
     private remoteModelCatalogStatusHint = '正在加载远端 model catalog...';
     private authReadySubscription?: Subscription;
+    private authInitializationStateSubscription?: Subscription;
+    private remoteModelCatalogRequestSubscription?: Subscription;
+    private remoteModelCatalogRequestRevision = 0;
+    private readonly remoteModelCatalogRequestTimeoutMs = 12000;
 
     /** 配置变更通知 Subject */
     private configChangedSubject = new Subject<AilyChatConfig>();
@@ -502,11 +506,44 @@ export class AilyChatConfigService {
         this.loadRemoteModelCatalog(reason);
     }
 
+    ngOnDestroy(): void {
+        this.authReadySubscription?.unsubscribe();
+        this.authReadySubscription = undefined;
+        this.authInitializationStateSubscription?.unsubscribe();
+        this.authInitializationStateSubscription = undefined;
+        this.cancelRemoteModelCatalogRequest('service-destroyed');
+    }
+
     private bindAuthReadyReload(): void {
+        if (this.authService?.authInitializationState$) {
+            this.authInitializationStateSubscription = this.authService.authInitializationState$
+                .pipe(distinctUntilChanged())
+                .subscribe((state) => {
+                    if (state === 'authenticated' && AilyHost.isInitialized()) {
+                        this.loadRemoteModelCatalog('auth_initialized');
+                        return;
+                    }
+                    if (state === 'signed_out' || state === 'unavailable') {
+                        this.cancelRemoteModelCatalogRequest(`auth-${state}`);
+                        this.setRemoteModelCatalogStatus(
+                            'unavailable',
+                            state === 'signed_out'
+                                ? '登录后可刷新远端模型目录；本地模型配置仍然可用。'
+                                : '暂时无法刷新远端模型目录；继续使用上一次可用目录或本地模型配置。',
+                        );
+                    }
+                });
+        }
+
         if (this.authService?.authChanged$) {
             this.authReadySubscription = this.authService.authChanged$
                 .subscribe(() => {
                     if (!AilyHost.isInitialized() || !this.isAuthReadyForRemoteModelCatalog()) {
+                        this.cancelRemoteModelCatalogRequest('auth-unavailable');
+                        this.setRemoteModelCatalogStatus(
+                            'unavailable',
+                            '登录后可刷新远端模型目录；本地模型配置仍然可用。',
+                        );
                         return;
                     }
 
@@ -520,6 +557,11 @@ export class AilyChatConfigService {
             this.authReadySubscription = this.authService.authSnapshot$
                 .subscribe((authSnapshot) => {
                     if (!authSnapshot || !AilyHost.isInitialized()) {
+                        this.cancelRemoteModelCatalogRequest('auth-unavailable');
+                        this.setRemoteModelCatalogStatus(
+                            'unavailable',
+                            '登录后可刷新远端模型目录；本地模型配置仍然可用。',
+                        );
                         return;
                     }
 
@@ -536,7 +578,15 @@ export class AilyChatConfigService {
         this.authReadySubscription = this.authService.isLoggedIn$
             .pipe(distinctUntilChanged())
             .subscribe((isLoggedIn) => {
-                if (!isLoggedIn || !AilyHost.isInitialized() || this.hasUsableRemoteModelCatalog()) {
+                if (!isLoggedIn || !AilyHost.isInitialized()) {
+                    this.cancelRemoteModelCatalogRequest('auth-unavailable');
+                    this.setRemoteModelCatalogStatus(
+                        'unavailable',
+                        '登录后可刷新远端模型目录；本地模型配置仍然可用。',
+                    );
+                    return;
+                }
+                if (this.hasUsableRemoteModelCatalog()) {
                     return;
                 }
 
@@ -1928,7 +1978,8 @@ export class AilyChatConfigService {
 
     private loadRemoteModelCatalog(reason = 'unspecified'): void {
         if (!this.isAuthReadyForRemoteModelCatalog()) {
-            this.setRemoteModelCatalogStatus('loading', '等待认证完成后自动加载模型目录...');
+            this.cancelRemoteModelCatalogRequest('auth-unavailable');
+            this.setRemoteModelCatalogStatus('unavailable', '登录后可刷新远端模型目录；本地模型配置仍然可用。');
             console.info('[AilyChatConfigService] 登录态尚未就绪，延迟加载远端 model catalog', {
                 url: ChatAPI.modelCatalog,
                 reason,
@@ -1936,6 +1987,15 @@ export class AilyChatConfigService {
             return;
         }
 
+        if (this.remoteModelCatalogRequestSubscription && !this.remoteModelCatalogRequestSubscription.closed) {
+            console.info('[AilyChatConfigService] 复用正在进行的远端 model catalog 刷新', {
+                reason,
+            });
+            return;
+        }
+
+        const requestRevision = ++this.remoteModelCatalogRequestRevision;
+        this.setRemoteModelCatalogStatus('loading', '正在刷新远端模型目录；本地模型配置仍然可用。');
         console.info('[AilyChatConfigService] 请求远端 model catalog', {
             url: ChatAPI.modelCatalog,
             apiEndpoint: AilyHost.get().config.apiEndpoint,
@@ -1943,26 +2003,24 @@ export class AilyChatConfigService {
             reason,
         });
 
-        this.runOutsideAngular(() => this.http.get<RemoteModelCatalogResponse>(
+        const requestSubscription = this.runOutsideAngular(() => this.http.get<RemoteModelCatalogResponse>(
             ChatAPI.modelCatalog,
             this.getRemoteModelCatalogRequestOptions(),
+        ).pipe(
+            timeout(this.remoteModelCatalogRequestTimeoutMs),
         ).subscribe({
             next: (response) => {
+                if (requestRevision !== this.remoteModelCatalogRequestRevision) {
+                    return;
+                }
                 const responseBody = response.body;
                 const normalizedCatalog = this.normalizeRemoteModelCatalog(responseBody?.data);
                 if (!normalizedCatalog) {
-                    this.remoteModelCatalog = {
-                        models: {},
-                        modelPresets: {},
-                        userVisibleModelPresets: {},
-                        pickerControlModelPresets: {},
-                    };
-                    this.remoteModelCatalogMetadata = {};
                     this.setRemoteModelCatalogStatus(
                         'unavailable',
-                        `远端 model catalog 响应格式无效，暂时仅显示本地内置模型预设。请检查 ${ChatAPI.modelCatalog}`,
+                        `远端 model catalog 响应格式无效，继续使用上一次可用目录或本地内置模型预设。请检查 ${ChatAPI.modelCatalog}`,
                     );
-                    console.warn('[AilyChatConfigService] 远端 model catalog 响应格式无效，暂时仅显示本地内置模型预设', {
+                    console.warn('[AilyChatConfigService] 远端 model catalog 响应格式无效，保留当前可用模型目录', {
                         url: ChatAPI.modelCatalog,
                         status: response.status,
                         body: responseBody,
@@ -2001,23 +2059,20 @@ export class AilyChatConfigService {
                 this.modelCatalogChangedSubject.next();
             },
             error: (error) => {
-                this.remoteModelCatalog = {
-                    models: {},
-                    modelPresets: {},
-                    userVisibleModelPresets: {},
-                    pickerControlModelPresets: {},
-                };
-                this.remoteModelCatalogMetadata = {};
+                if (requestRevision !== this.remoteModelCatalogRequestRevision) {
+                    return;
+                }
+                this.remoteModelCatalogRequestSubscription = undefined;
                 const isUnauthorized = error instanceof HttpErrorResponse
                     ? error.status === 401
                     : error?.status === 401;
 
                 if (isUnauthorized) {
                     this.setRemoteModelCatalogStatus(
-                        'loading',
-                        '远端 model catalog 认证尚未就绪，登录完成后会自动加载模型目录。',
+                        'unavailable',
+                        '当前登录状态不能访问远端模型目录；本地模型配置仍然可用。',
                     );
-                    console.info('[AilyChatConfigService] 远端 model catalog 返回 401，等待认证完成后自动加载模型目录', {
+                    console.info('[AilyChatConfigService] 远端 model catalog 返回 401，刷新已进入终态', {
                         url: ChatAPI.modelCatalog,
                         status: error?.status,
                         message: error?.message,
@@ -2029,9 +2084,9 @@ export class AilyChatConfigService {
 
                 this.setRemoteModelCatalogStatus(
                     'unavailable',
-                    `暂时无法加载远端 model catalog，将继续显示本地内置模型预设。请检查 ${ChatAPI.modelCatalog}。`,
+                    `暂时无法刷新远端 model catalog，将继续使用上一次可用目录或本地内置模型预设。请检查 ${ChatAPI.modelCatalog}。`,
                 );
-                console.warn('[AilyChatConfigService] 加载远端 model catalog 失败，暂时仅显示本地内置模型预设', {
+                console.warn('[AilyChatConfigService] 加载远端 model catalog 失败，保留当前可用模型目录', {
                     url: ChatAPI.modelCatalog,
                     status: error?.status,
                     message: error?.message,
@@ -2039,7 +2094,28 @@ export class AilyChatConfigService {
                 });
                 this.modelCatalogChangedSubject.next();
             },
+            complete: () => {
+                if (requestRevision === this.remoteModelCatalogRequestRevision) {
+                    this.remoteModelCatalogRequestSubscription = undefined;
+                }
+            },
         }));
+        this.remoteModelCatalogRequestSubscription = requestSubscription.closed
+            ? undefined
+            : requestSubscription;
+    }
+
+    private cancelRemoteModelCatalogRequest(reason: string): void {
+        const requestSubscription = this.remoteModelCatalogRequestSubscription;
+        if (!requestSubscription || requestSubscription.closed) {
+            this.remoteModelCatalogRequestSubscription = undefined;
+            return;
+        }
+
+        this.remoteModelCatalogRequestRevision += 1;
+        this.remoteModelCatalogRequestSubscription = undefined;
+        requestSubscription.unsubscribe();
+        console.info('[AilyChatConfigService] 已取消远端 model catalog 请求', { reason });
     }
 
     private runOutsideAngular<T>(operation: () => T): T {

@@ -41,13 +41,6 @@ export interface ToolContext {
   /** 当前会话 ID */
   sessionId?: string;
 
-  /** 编辑 checkpoint 记录器（可选），工具写文件前调用以支持回滚 */
-  editCheckpoint?: {
-    recordEdit(filePath: string, type: 'create' | 'modify' | 'delete'): void;
-    /** 重新计算并推送当前摘要到面板（工具写盘后调用） */
-    publishCurrentSummary(): void | Promise<void>;
-  };
-
   /** 中止信号，工具在长时间操作中应定期检查 signal.aborted */
   abortSignal?: AbortSignal;
 

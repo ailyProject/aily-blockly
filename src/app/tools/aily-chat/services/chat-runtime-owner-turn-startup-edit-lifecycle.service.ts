@@ -5,7 +5,6 @@ import {
   type ChatRuntimeOwnerTurnStartupEditLifecyclePort,
   type ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort,
 } from './chat-runtime-owner-ports';
-import type { RequestCheckpointMetadata } from './edit-checkpoint.service';
 import type { ChatAgentRuntimeMode } from '../core/chat-agent-runtime-mode';
 
 @Injectable()
@@ -26,26 +25,5 @@ export class ChatRuntimeOwnerTurnStartupEditLifecycleService implements ChatRunt
       return;
     }
     await this.workspaceEditResource.ensureWorkspaceAbsExport(sessionId, projectPath);
-  }
-
-  saveCheckpointToDisk(sessionId: string | null | undefined): void {
-    void this.workspaceEditResource.commitCurrentTurn(sessionId).catch((error: unknown) => {
-      console.warn('[AilyChat][RuntimeOwner] checkpoint commit before turn failed:', error);
-    });
-  }
-
-  commitCurrentTurn(sessionId: string | null | undefined): Promise<void> {
-    return this.workspaceEditResource.commitCurrentTurn(sessionId);
-  }
-
-  waitForCheckpointMetadataSettled(sessionId: string | null | undefined): Promise<void> {
-    return this.workspaceEditResource.waitForCheckpointMetadataSettled(sessionId);
-  }
-
-  readFinalizedCheckpointMetadata(
-    sessionId: string | null | undefined,
-    input: { readonly checkpointId?: string; readonly requestId?: string },
-  ): Promise<RequestCheckpointMetadata | null> {
-    return this.workspaceEditResource.readFinalizedCheckpointMetadata(sessionId, input);
   }
 }

@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, ElementRef, Renderer2 } from '@angular/core';
+import { ChangeDetectorRef, Component, ElementRef } from '@angular/core';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { CommonModule } from '@angular/common';
 import { NoticeOptions, NoticeService } from '../../services/notice.service';
@@ -33,7 +33,6 @@ export class NotificationComponent {
     private noticeService: NoticeService,
     private cd: ChangeDetectorRef,
     private elementRef: ElementRef,
-    private renderer: Renderer2,
     private uiService: UiService
   ) { }
 
@@ -62,7 +61,10 @@ export class NotificationComponent {
           this.close();
         }, this.data.setTimeout);
       }
-      this.tempWidth = 112 + this.getTextWidth();
+      // 先按最小宽度渲染，再根据最长的单行内容扩展，最大不超过 450px。
+      this.tempWidth = 250;
+      this.cd.detectChanges();
+      this.tempWidth = this.getAdaptiveWidth();
       this.cd.detectChanges();
     });
   }
@@ -131,22 +133,34 @@ export class NotificationComponent {
     return t * (2 - t);
   }
 
-  // 计算.text的宽度
-  getTextWidth() {
-    const text = this.data?.text;
-    if (!text) {
-      return 0;
-    }
-    const span = this.renderer.createElement('span');
-    this.renderer.setStyle(span, 'position', 'absolute');
-    this.renderer.setStyle(span, 'white-space', 'nowrap');
-    this.renderer.setStyle(span, 'font-size', '12px');
-    this.renderer.setStyle(span, 'opacity', '0');
-    this.renderer.setStyle(span, 'z-index', '-1');
-    this.renderer.appendChild(span, this.renderer.createText(text));
-    this.renderer.appendChild(this.elementRef.nativeElement, span);
-    const width = span.offsetWidth;
-    this.renderer.removeChild(this.elementRef.nativeElement, span);
+  // 根据标题、正文和按钮的单行内容宽度计算通知框宽度。
+  private getAdaptiveWidth(): number {
+    const notificationBox = this.elementRef.nativeElement.querySelector('.notification-box') as HTMLElement | null;
+    const textBox = this.elementRef.nativeElement.querySelector('.text-box') as HTMLElement | null;
+    if (!notificationBox || !textBox) return 250;
+
+    const contentElements = Array.from(textBox.querySelectorAll<HTMLElement>('.title, .text, .btns'));
+    const contentWidth = contentElements.reduce(
+      (width, element) => Math.max(width, this.getIntrinsicWidth(element)),
+      0
+    );
+    const boxWidth = parseFloat(getComputedStyle(notificationBox).width);
+    const fixedWidth = boxWidth - textBox.getBoundingClientRect().width;
+
+    // 额外预留 2px，避免字体小数像素取整导致在最大宽度前提前出现省略号。
+    return Math.min(450, Math.max(250, Math.ceil(fixedWidth + contentWidth + 2)));
+  }
+
+  private getIntrinsicWidth(element: HTMLElement): number {
+    const previousWidth = element.style.width;
+    const previousMaxWidth = element.style.maxWidth;
+
+    element.style.width = 'max-content';
+    element.style.maxWidth = 'none';
+    const width = element.getBoundingClientRect().width;
+
+    element.style.width = previousWidth;
+    element.style.maxWidth = previousMaxWidth;
     return width;
   }
 

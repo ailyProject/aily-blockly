@@ -51,15 +51,19 @@ import {
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
 import { BlocklyGeneratorRuntimeService } from '../../services/blockly-generator-runtime.service';
 import { BitmapUploadResponse, GlobalServiceManager } from '../../services/bitmap-upload.service';
+import { projectDataRuntime } from '../../../../services/project-data/project-data-runtime';
+import { prepareBlocklyProjectDataForCodeGeneration } from '../../../../services/project-data/blockly-project-data-adapter';
 
 import './renderer/aily-icon';
 import './renderer/aily-thrasos/thrasos';
 import './renderer/aily-zelos/zelos';
 import './custom-category';
 import './custom-field/field-bitmap';
-import './custom-field/field-bitmap-u8g2';
+import './custom-field/field-u8g2-bitmap';
 import { setU8g2AnimationFieldTranslator } from './custom-field/field-u8g2-animation';
 import { setTftEsPiAnimationFieldTranslator } from './custom-field/field-tftespi-animation';
+import { setTftEsPiImageFieldTranslator } from './custom-field/field-tftespi-image';
+import { registerMediaFieldEditorStyles } from './custom-field/field-media-editor-style';
 import './custom-field/field-image';
 import './custom-field/field-image-preview';
 import './custom-field/field-led-matrix';
@@ -102,11 +106,56 @@ import { applyWindowsBlocklyScrollbarThickness } from '../../utils/apply-windows
 import { BlocklyToolboxPaneComponent } from './components/blockly-toolbox-pane/blockly-toolbox-pane.component';
 import { BlocklyWorkspacePagesComponent } from './components/blockly-workspace-pages/blockly-workspace-pages.component';
 import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
+import { writeArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
+import {
+  createEmptyProjectDebugConfigurationState,
+  getProjectBreakpointMarkerState,
+  ProjectBlockBreakpointIntent,
+  ProjectDebugConfigurationService,
+  ProjectDebugConfigurationState,
+} from '../../../../services/project-debug-configuration.service';
 
 type BlocklyWorkspaceEvent = { type?: string } | null | undefined;
 
+const PROJECT_BREAKPOINT_CONTEXT_MENU_IDS = [
+  'ailyProjectBreakpointAddOrRebind',
+  'ailyProjectBreakpointToggle',
+  'ailyProjectBreakpointRemove',
+] as const;
+const PROJECT_DEBUG_CONFIGURATION_MUTATION_EVENT =
+  'aily_project_debug_configuration_mutation';
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+
+class ProjectDebugConfigurationMutationEvent
+  extends Blockly.Events.Abstract {
+  override isBlank = false;
+  override type = PROJECT_DEBUG_CONFIGURATION_MUTATION_EVENT;
+
+  constructor(
+    workspaceId: string,
+    private readonly applyMutation: () => void,
+    private readonly revertMutation: () => void,
+  ) {
+    super();
+    this.workspaceId = workspaceId;
+    this.recordUndo = true;
+  }
+
+  override run(forward: boolean): void {
+    try {
+      (forward ? this.applyMutation : this.revertMutation)();
+    } catch (error) {
+      console.warn(
+        '[Blockly] Failed to replay project breakpoint mutation:',
+        error,
+      );
+    }
+  }
+}
+
 // 全局关闭 Blockly 文本输入字段的拼写检查，避免 block 内 input 出现红色波浪线
 (Blockly.FieldTextInput.prototype as unknown as { spellcheck_: boolean }).spellcheck_ = false;
+registerMediaFieldEditorStyles();
 
 /** Flyout 图钉右侧额外留白：Blockly 垂直条在 injectionDiv；vScroll 不可见时 DOM 仍可能有宽度，需一并判断 */
 function flyoutPinRightExtraX(
@@ -297,6 +346,14 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly onWorkspacePointerDownBound = (event: PointerEvent) => this.onWorkspacePointerDown(event);
   private readonly onDocumentKeyDownBound = (event: KeyboardEvent) => this.onDocumentKeyDown(event);
   private workspaceSearchHighlightedPaths = new Set<SVGElement>();
+  private projectDebugState: ProjectDebugConfigurationState =
+    createEmptyProjectDebugConfigurationState();
+  private projectBreakpointMarkerSyncQueued = false;
+  private readonly projectBreakpointMarkers =
+    new Map<string, SVGGElement>();
+  private debugExecutionMarkerSyncQueued = false;
+  private debugExecutionMarkerRoot: SVGElement | null = null;
+  private lastCenteredDebugExecutionBlockId = '';
   // Track previous #include and #define for dependency change detection
   private previousDependencies = '';
   // Control bitmap upload handler visibility
@@ -376,12 +433,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       kind: 'categoryToolbox',
       contents: [],
     },
-    // plugins: {
-    //   toolbox: ContinuousToolbox,
-    //   flyoutsVerticalToolbox: ContinuousFlyout,
-    //   metricsManager: ContinuousMetrics,
-    // },
-    // theme: Blockly.Theme.defineTheme('zelos', DEV_THEME),
     theme: DarkTheme,
     renderer: 'thrasos',
     trashcan: true,
@@ -436,6 +487,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     private authService: AuthService,
     private message: NzMessageService,
     private generatorRuntime: BlocklyGeneratorRuntimeService,
+    private projectDebugConfigurationService:
+      ProjectDebugConfigurationService,
   ) {
     // Initialize GlobalServiceManager with BitmapUploadService
     const globalServiceManager = GlobalServiceManager.getInstance();
@@ -473,6 +526,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     this.initMinimapSyncDebounce();
     this.initCodeViewerRefreshRequests();
     this.initWorkspaceBlockSearchSubscription();
+    this.initProjectDebugConfigurationSubscription();
     this.bitmapUploadService.uploadRequestSubject.subscribe((request) => {
       const modalRef = this.modal.create({
         nzTitle: null,
@@ -510,6 +564,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     this.closeWorkspaceBlockSearch();
     this.removeFlyoutPinControl();
     this.unregisterExternalToolboxDeleteArea();
+    this.unregisterProjectBreakpointContextMenus();
+    this.clearProjectBreakpointMarkers();
+    this.clearDebugExecutionMarker();
     this.cancelToolboxResizeAnimationFrame();
     this.cancelWorkspaceResizeAnimationFrame();
     this.workspacePaneComponent?.blocklyHostElement?.removeEventListener('pointerdown', this.onWorkspacePointerDownBound, true);
@@ -782,9 +839,16 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       const multiselectPlugin = new Multiselect(this.workspace);
       multiselectPlugin.init(this.options);
       this.registerBlockExplainContextMenu();
+      this.registerProjectBreakpointContextMenus();
 
       // 初始化跨实例复制粘贴的全局桥接
       (window as any).__ailyClipboard = window['clipboard'] || null;
+      (window as any).__ailyProjectDataClipboard = {
+        export: (value: unknown) => projectDataRuntime.exportClipboardBundle(value),
+        import: (bundle: unknown, requiredValue: unknown) => (
+          projectDataRuntime.importClipboardBundle(bundle, requiredValue)
+        ),
+      };
       // 注册跨实例粘贴时缺失库的安装回调
       (window as any).__ailyBlockPasteNeedsInstall = (missingLibs: MissingLibInfo[]) => {
         // Filter to only installable libs (those with a name)
@@ -878,6 +942,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       // 设置全局工作区引用，供 editBlockTool 使用
       (window as any)['blocklyWorkspace'] = this.workspace;
       this.workspace.addChangeListener((event: any) => {
+        this.handleProjectBreakpointWorkspaceEvent(event);
         this.requestCodeGeneration(event);
         // 工作区变更时同步 Minimap（含 AI 批量修改 blocks 的场景）
         this.requestMinimapSync(event);
@@ -890,6 +955,12 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         // 监听 block 选中事件，更新 selectedBlockSubject / selectedBlockIdsSubject
         if (event.type === Blockly.Events.SELECTED) {
           const selectedBlockId = event.newElementId || null;
+          if (selectedBlockId) {
+            this.projectDebugConfigurationService.rememberSelectedDebugTarget(
+              this.projectService.currentProjectPath,
+              selectedBlockId,
+            );
+          }
           this.blocklyService.selectedBlockSubject.next(selectedBlockId);
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
@@ -903,6 +974,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       if (this.configData.blockly.minimap && this.minimap) {
         queueMicrotask(() => this.requestMinimapSync());
       }
+      this.queueProjectBreakpointMarkerSync();
+      this.queueDebugExecutionMarkerSync();
       this.initLanguage();
     }, 100);
   }
@@ -917,6 +990,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     setTimeout(() => {
       Blockly.svgResize(this.workspace);
       this.workspace.render();
+      this.queueProjectBreakpointMarkerSync();
+      this.queueDebugExecutionMarkerSync();
       this.blocklyService.syncToolboxFacadeWithWorkspace();
       this.requestMinimapSync();
       this.requestCodeGeneration();
@@ -1429,6 +1504,535 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     });
   }
 
+  private registerProjectBreakpointContextMenus(): void {
+    this.unregisterProjectBreakpointContextMenus();
+
+    Blockly.ContextMenuRegistry.registry.register({
+      displayText: (scope) => {
+        const blockId = scope.block?.id || '';
+        const label = this.getProjectBreakpoint(blockId)
+          ? this.projectBreakpointText(
+              '重新绑定仿真断点到最近构建',
+              'Rebind simulation breakpoint to latest build',
+            )
+          : this.projectBreakpointText(
+              '添加仿真断点',
+              'Add simulation breakpoint',
+            );
+        return `${label}${this.projectBreakpointBuildBindingSuffix()}`;
+      },
+      preconditionFn: (scope) => {
+        if (!this.isProjectBreakpointScopeAvailable(scope.block)) {
+          return 'hidden';
+        }
+        const breakpoint = this.getProjectBreakpoint(scope.block!.id);
+        const revision = this.projectDebugState.sourceMapRevision;
+        if (
+          breakpoint
+          && revision
+          && breakpoint.sourceMapRevision === revision
+          && this.projectDebugState.buildConsistency === 'current'
+        ) {
+          return 'hidden';
+        }
+        return (
+          revision
+          && this.projectDebugState.buildConsistency === 'current'
+        )
+          ? 'enabled'
+          : 'disabled';
+      },
+      callback: (scope) => {
+        if (scope.block) this.addOrRebindProjectBreakpoint(scope.block);
+      },
+      scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK,
+      id: PROJECT_BREAKPOINT_CONTEXT_MENU_IDS[0],
+      weight: -8,
+    });
+
+    Blockly.ContextMenuRegistry.registry.register({
+      displayText: (scope) => {
+        const breakpoint = this.getProjectBreakpoint(scope.block?.id || '');
+        return breakpoint?.enabled
+          ? this.projectBreakpointText(
+              '禁用仿真断点',
+              'Disable simulation breakpoint',
+            )
+          : this.projectBreakpointText(
+              '启用仿真断点',
+              'Enable simulation breakpoint',
+            );
+      },
+      preconditionFn: (scope) => (
+        this.isProjectBreakpointScopeAvailable(scope.block)
+        && !!this.getProjectBreakpoint(scope.block!.id)
+          ? 'enabled'
+          : 'hidden'
+      ),
+      callback: (scope) => {
+        if (scope.block) this.toggleProjectBreakpoint(scope.block);
+      },
+      scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK,
+      id: PROJECT_BREAKPOINT_CONTEXT_MENU_IDS[1],
+      weight: -7,
+    });
+
+    Blockly.ContextMenuRegistry.registry.register({
+      displayText: () => this.projectBreakpointText(
+        '删除仿真断点',
+        'Remove simulation breakpoint',
+      ),
+      preconditionFn: (scope) => (
+        this.isProjectBreakpointScopeAvailable(scope.block)
+        && !!this.getProjectBreakpoint(scope.block!.id)
+          ? 'enabled'
+          : 'hidden'
+      ),
+      callback: (scope) => {
+        if (scope.block) this.removeProjectBreakpoint(scope.block);
+      },
+      scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK,
+      id: PROJECT_BREAKPOINT_CONTEXT_MENU_IDS[2],
+      weight: -6,
+    });
+  }
+
+  private unregisterProjectBreakpointContextMenus(): void {
+    for (const id of PROJECT_BREAKPOINT_CONTEXT_MENU_IDS) {
+      if (Blockly.ContextMenuRegistry.registry.getItem(id)) {
+        Blockly.ContextMenuRegistry.registry.unregister(id);
+      }
+    }
+  }
+
+  private initProjectDebugConfigurationSubscription(): void {
+    this.projectDebugConfigurationService.state$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((state) => {
+        if (state.projectPath !== this.projectService.currentProjectPath) {
+          return;
+        }
+        this.projectDebugState = state;
+        this.queueProjectBreakpointMarkerSync();
+      });
+
+    this.blocklyService.debugExecutionMarkerSubject
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => this.queueDebugExecutionMarkerSync());
+
+    this.projectService.currentProjectPath$
+      .pipe(distinctUntilChanged(), takeUntil(this.destroy$))
+      .subscribe((projectPath) => {
+        this.projectDebugState =
+          this.projectDebugConfigurationService.refresh(projectPath);
+        this.queueProjectBreakpointMarkerSync();
+        this.queueDebugExecutionMarkerSync();
+      });
+  }
+
+  private isProjectBreakpointScopeAvailable(
+    block: Blockly.BlockSvg | undefined,
+  ): boolean {
+    return !!block
+      && !block.isInFlyout
+      && !block.isInsertionMarker()
+      && !!this.projectService.currentProjectPath;
+  }
+
+  private getProjectBreakpoint(
+    blockId: string,
+  ): ProjectBlockBreakpointIntent | undefined {
+    if (
+      !blockId
+      || this.projectDebugState.projectPath
+        !== this.projectService.currentProjectPath
+    ) {
+      return undefined;
+    }
+    return this.projectDebugState.configuration.breakpoints.find(
+      (breakpoint) => breakpoint.blockId === blockId,
+    );
+  }
+
+  private addOrRebindProjectBreakpoint(block: Blockly.Block): void {
+    try {
+      const projectPath = this.requireProjectDebugPath();
+      const sourceMapRevision =
+        this.projectDebugConfigurationService
+          .requireBindableSourceMapRevision(projectPath);
+      const previous = this.getProjectBreakpoint(block.id);
+      const next: ProjectBlockBreakpointIntent = {
+        blockId: block.id,
+        sourceMapRevision,
+        enabled: previous?.enabled ?? true,
+      };
+      this.projectDebugConfigurationService.upsertBreakpoint(
+        projectPath,
+        next,
+      );
+      this.fireProjectDebugConfigurationMutation(
+        () => this.projectDebugConfigurationService.upsertBreakpoint(
+          projectPath,
+          next,
+        ),
+        () => {
+          if (previous) {
+            this.projectDebugConfigurationService.upsertBreakpoint(
+              projectPath,
+              previous,
+            );
+          } else {
+            this.projectDebugConfigurationService.removeBreakpoint(
+              projectPath,
+              block.id,
+            );
+          }
+        },
+      );
+    } catch (error) {
+      this.message.warning(normalizeBlocklyProjectDebugError(error));
+    }
+  }
+
+  private toggleProjectBreakpoint(block: Blockly.Block): void {
+    const breakpoint = this.getProjectBreakpoint(block.id);
+    if (!breakpoint) return;
+    try {
+      const projectPath = this.requireProjectDebugPath();
+      const enabled = !breakpoint.enabled;
+      this.projectDebugConfigurationService.setBreakpointEnabled(
+        projectPath,
+        block.id,
+        enabled,
+      );
+      this.fireProjectDebugConfigurationMutation(
+        () => this.projectDebugConfigurationService.setBreakpointEnabled(
+          projectPath,
+          block.id,
+          enabled,
+        ),
+        () => this.projectDebugConfigurationService.setBreakpointEnabled(
+          projectPath,
+          block.id,
+          breakpoint.enabled,
+        ),
+      );
+    } catch (error) {
+      this.message.warning(normalizeBlocklyProjectDebugError(error));
+    }
+  }
+
+  private removeProjectBreakpoint(block: Blockly.Block): void {
+    const breakpoint = this.getProjectBreakpoint(block.id);
+    if (!breakpoint) return;
+    try {
+      const projectPath = this.requireProjectDebugPath();
+      this.projectDebugConfigurationService.removeBreakpoint(
+        projectPath,
+        block.id,
+      );
+      this.fireProjectDebugConfigurationMutation(
+        () => this.projectDebugConfigurationService.removeBreakpoint(
+          projectPath,
+          block.id,
+        ),
+        () => this.projectDebugConfigurationService.upsertBreakpoint(
+          projectPath,
+          breakpoint,
+        ),
+      );
+    } catch (error) {
+      this.message.warning(normalizeBlocklyProjectDebugError(error));
+    }
+  }
+
+  private handleProjectBreakpointWorkspaceEvent(event: any): void {
+    if (event?.type === Blockly.Events.BLOCK_DELETE) {
+      this.removeDeletedBlockBreakpoints(event);
+    }
+    if (
+      event?.type === Blockly.Events.BLOCK_CREATE
+      || event?.type === Blockly.Events.BLOCK_DELETE
+      || event?.type === Blockly.Events.FINISHED_LOADING
+      || event?.type === Blockly.Events.BLOCK_CHANGE
+      || event?.type === Blockly.Events.BLOCK_MOVE
+    ) {
+      this.queueProjectBreakpointMarkerSync();
+      this.queueDebugExecutionMarkerSync();
+    }
+  }
+
+  private removeDeletedBlockBreakpoints(
+    event: Blockly.Events.BlockDelete,
+  ): void {
+    const deletedIds = new Set(event.ids || []);
+    if (!deletedIds.size) return;
+    const removed = this.projectDebugState.configuration.breakpoints.filter(
+      (breakpoint) => deletedIds.has(breakpoint.blockId),
+    );
+    if (!removed.length) return;
+
+    try {
+      const projectPath = this.requireProjectDebugPath();
+      this.projectDebugConfigurationService.removeBreakpoints(
+        projectPath,
+        deletedIds,
+      );
+      if (event.recordUndo !== false) {
+        if (!event.group) {
+          event.group = Blockly.utils.idGenerator.genUid();
+        }
+        this.fireProjectDebugConfigurationMutation(
+          () => this.projectDebugConfigurationService.removeBreakpoints(
+            projectPath,
+            deletedIds,
+          ),
+          () => this.projectDebugConfigurationService.upsertBreakpoints(
+            projectPath,
+            removed,
+          ),
+          event.group,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        '[Blockly] Failed to remove breakpoints for deleted blocks:',
+        error,
+      );
+    }
+  }
+
+  private fireProjectDebugConfigurationMutation(
+    applyMutation: () => void,
+    revertMutation: () => void,
+    group = Blockly.Events.getGroup(),
+  ): void {
+    if (!this.workspace || !Blockly.Events.isEnabled()) return;
+    const event = new ProjectDebugConfigurationMutationEvent(
+      this.workspace.id,
+      applyMutation,
+      revertMutation,
+    );
+    event.group = group;
+    Blockly.Events.fire(event);
+  }
+
+  private requireProjectDebugPath(): string {
+    const projectPath = this.projectService.currentProjectPath;
+    if (!projectPath) throw new Error('请先打开一个 Blockly 项目。');
+    return projectPath;
+  }
+
+  private projectBreakpointBuildBindingSuffix(): string {
+    switch (this.projectDebugState.buildConsistency) {
+      case 'current':
+        return '';
+      case 'dirty':
+        return this.projectBreakpointText(
+          '（工作区未编译）',
+          ' (workspace not built)',
+        );
+      case 'checking':
+      case 'workspace-unknown':
+        return this.projectBreakpointText(
+          '（正在核对构建）',
+          ' (checking build)',
+        );
+      default:
+        return this.projectBreakpointText(
+          '（请先编译）',
+          ' (build required)',
+        );
+    }
+  }
+
+  private queueProjectBreakpointMarkerSync(): void {
+    if (this.projectBreakpointMarkerSyncQueued) return;
+    this.projectBreakpointMarkerSyncQueued = true;
+    queueMicrotask(() => {
+      this.projectBreakpointMarkerSyncQueued = false;
+      this.syncProjectBreakpointMarkers();
+    });
+  }
+
+  private syncProjectBreakpointMarkers(): void {
+    if (!this.workspace) {
+      this.clearProjectBreakpointMarkers();
+      return;
+    }
+    const breakpoints = new Map(
+      this.projectDebugState.projectPath
+        === this.projectService.currentProjectPath
+        ? this.projectDebugState.configuration.breakpoints.map(
+            (breakpoint) => [breakpoint.blockId, breakpoint],
+          )
+        : [],
+    );
+    const visibleBlockIds = new Set(
+      this.workspace.getAllBlocks(false).map((block) => block.id),
+    );
+
+    for (const [blockId, marker] of this.projectBreakpointMarkers) {
+      if (!breakpoints.has(blockId) || !visibleBlockIds.has(blockId)) {
+        marker.remove();
+        this.projectBreakpointMarkers.delete(blockId);
+      }
+    }
+
+    for (const [blockId, breakpoint] of breakpoints) {
+      const block = this.workspace.getBlockById(blockId);
+      const root = block?.getSvgRoot();
+      if (!block || !root || block.isInFlyout) continue;
+
+      let marker = this.projectBreakpointMarkers.get(blockId);
+      if (!marker || !root.contains(marker)) {
+        marker?.remove();
+        marker = document.createElementNS(
+          SVG_NAMESPACE,
+          'g',
+        ) as SVGGElement;
+        marker.classList.add('aily-project-breakpoint-marker');
+        marker.setAttribute('transform', 'translate(8 8)');
+        marker.setAttribute('aria-hidden', 'true');
+        const circle = document.createElementNS(SVG_NAMESPACE, 'circle');
+        circle.setAttribute('r', '5');
+        const title = document.createElementNS(SVG_NAMESPACE, 'title');
+        marker.append(circle, title);
+        root.appendChild(marker);
+        this.projectBreakpointMarkers.set(blockId, marker);
+      }
+
+      const markerState = getProjectBreakpointMarkerState(
+        breakpoint,
+        this.projectDebugState.sourceMapRevision,
+        this.projectDebugState.buildConsistency,
+      );
+      marker.setAttribute('data-state', markerState);
+      const title = marker.querySelector('title');
+      if (title) {
+        title.textContent = this.projectBreakpointMarkerTitle(
+          breakpoint,
+          markerState,
+        );
+      }
+    }
+  }
+
+  private clearProjectBreakpointMarkers(): void {
+    for (const marker of this.projectBreakpointMarkers.values()) {
+      marker.remove();
+    }
+    this.projectBreakpointMarkers.clear();
+  }
+
+  private queueDebugExecutionMarkerSync(): void {
+    if (this.debugExecutionMarkerSyncQueued) return;
+    this.debugExecutionMarkerSyncQueued = true;
+    queueMicrotask(() => {
+      this.debugExecutionMarkerSyncQueued = false;
+      this.syncDebugExecutionMarker();
+    });
+  }
+
+  private syncDebugExecutionMarker(): void {
+    this.clearDebugExecutionMarker(false);
+    if (!this.workspace) {
+      this.lastCenteredDebugExecutionBlockId = '';
+      return;
+    }
+    const marker = this.blocklyService.debugExecutionMarkerSubject.value;
+    if (
+      !marker
+      || marker.projectPath !== this.projectService.currentProjectPath
+    ) {
+      this.lastCenteredDebugExecutionBlockId = '';
+      return;
+    }
+    const block = this.workspace.getBlockById(marker.blockId);
+    const root = block?.getSvgRoot();
+    if (!block || !root || block.isInFlyout || block.isInsertionMarker()) {
+      this.lastCenteredDebugExecutionBlockId = '';
+      return;
+    }
+    root.classList.add('aily-debug-execution-block');
+    root.setAttribute('data-debug-execution-marker', 'true');
+    this.debugExecutionMarkerRoot = root;
+    if (this.lastCenteredDebugExecutionBlockId !== marker.blockId) {
+      this.lastCenteredDebugExecutionBlockId = marker.blockId;
+      queueMicrotask(() => {
+        const current = this.blocklyService.debugExecutionMarkerSubject.value;
+        if (
+          current?.projectPath === this.projectService.currentProjectPath
+          && current.blockId === marker.blockId
+          && this.workspace?.getBlockById(marker.blockId)
+        ) {
+          this.workspace.centerOnBlock(marker.blockId, true);
+        }
+      });
+    }
+  }
+
+  private clearDebugExecutionMarker(resetCentered = true): void {
+    this.debugExecutionMarkerRoot?.classList.remove(
+      'aily-debug-execution-block',
+    );
+    this.debugExecutionMarkerRoot?.removeAttribute(
+      'data-debug-execution-marker',
+    );
+    this.debugExecutionMarkerRoot = null;
+    if (resetCentered) this.lastCenteredDebugExecutionBlockId = '';
+  }
+
+  private projectBreakpointMarkerTitle(
+    breakpoint: ProjectBlockBreakpointIntent,
+    state: ReturnType<typeof getProjectBreakpointMarkerState>,
+  ): string {
+    const revision = breakpoint.sourceMapRevision.slice(0, 12);
+    switch (state) {
+      case 'enabled':
+        return this.projectBreakpointText(
+          `仿真断点已启用 · ${revision}`,
+          `Simulation breakpoint enabled · ${revision}`,
+        );
+      case 'disabled':
+        return this.projectBreakpointText(
+          `仿真断点已禁用 · ${revision}`,
+          `Simulation breakpoint disabled · ${revision}`,
+        );
+      case 'stale-enabled':
+      case 'stale-disabled':
+        return this.projectBreakpointText(
+          `仿真断点绑定的构建已过期 · ${revision}`,
+          `Simulation breakpoint build is stale · ${revision}`,
+        );
+      case 'workspace-dirty-enabled':
+      case 'workspace-dirty-disabled':
+        return this.projectBreakpointText(
+          `工作区已有未编译修改 · ${revision}`,
+          `Workspace has unbuilt changes · ${revision}`,
+        );
+      case 'workspace-unknown-enabled':
+      case 'workspace-unknown-disabled':
+        return this.projectBreakpointText(
+          `正在核对工作区与构建 · ${revision}`,
+          `Checking workspace against build · ${revision}`,
+        );
+      default:
+        return this.projectBreakpointText(
+          `仿真断点 · 当前构建未知 · ${revision}`,
+          `Simulation breakpoint · current build unknown · ${revision}`,
+        );
+    }
+  }
+
+  private projectBreakpointText(
+    chinese: string,
+    english: string,
+  ): string {
+    const language = this.translateService.currentLang || 'zh_cn';
+    return language.startsWith('zh') ? chinese : english;
+  }
+
   private explainBlockWithAi(block: Blockly.Block): void {
     if (!block) {
       return;
@@ -1481,6 +2085,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     Blockly.Msg["CONTROLS_SWITCH_DEFAULT"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DEFAULT') || (lang.startsWith('zh') ? "默认执行" : "default");
     setU8g2AnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiAnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
+    setTftEsPiImageFieldTranslator((key, params) => this.translateService.instant(key, params));
+    this.queueProjectBreakpointMarkerSync();
 
     // 如果工作区已存在，刷新工具箱以应用新语言
     if (this.workspace) {
@@ -1566,6 +2172,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private requestCodeGeneration(event?: BlocklyWorkspaceEvent): void {
     if (this.shouldGenerateCodeForEvent(event)) {
       this.blocklyService.markWorkspaceCodeDirty();
+      this.projectDebugConfigurationService.markWorkspaceDirty(
+        this.projectService.currentProjectPath,
+      );
       this.codeGenerationSubject.next();
     }
   }
@@ -1662,10 +2271,16 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     this.codeGenerationSubject.pipe(
       debounceTime(500),
       takeUntil(this.destroy$)
-    ).subscribe(() => {
+    ).subscribe(async () => {
       try {
+        await prepareBlocklyProjectDataForCodeGeneration(this.workspace);
         const code = normalizeArduinoGeneratedCode(this.generator.workspaceToCode(this.workspace));
+        await writeArduinoGeneratedArtifacts(this.projectService.currentProjectPath, this.generator);
         this.blocklyService.publishGeneratedCode(code);
+        void this.projectDebugConfigurationService.updateWorkspaceGeneratedCode(
+          this.projectService.currentProjectPath,
+          code,
+        );
         let blockCodeMap = new Map<string, BlockCodeMapping>();
 
         // 发布 block-to-code 映射
@@ -1722,4 +2337,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     return dependencies.join('\n');
   }
 
+}
+
+function normalizeBlocklyProjectDebugError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

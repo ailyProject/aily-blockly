@@ -9,6 +9,10 @@ import {
   type RequestQuotaSnapshot,
 } from './request-quota-snapshot';
 import { type ChatInputNotice, isSameChatInputNotice } from './chat-input-notice';
+import {
+  ChatRemoteCapabilityService,
+  type ChatRemoteCapabilitySnapshot,
+} from './chat-remote-capability.service';
 
 const INPUT_NOTICE_THRESHOLDS = [50, 75, 90, 95];
 
@@ -30,6 +34,7 @@ export class ChatInputNoticeStateService implements OnDestroy {
   constructor(
     private readonly authQuotaStateService: AuthQuotaStateService,
     private readonly requestQuotaStateService: RequestQuotaStateService,
+    private readonly remoteCapabilityService: ChatRemoteCapabilityService,
   ) {
     this.subscription.add(
       this.authQuotaStateService.authQuotaInputNotice$.subscribe((notice) => {
@@ -46,6 +51,11 @@ export class ChatInputNoticeStateService implements OnDestroy {
       this.requestQuotaStateService.snapshot$.subscribe((requestState) => {
         this.latestRequestState = requestState;
         this.syncSourceNotification('request-quota', this.computeRequestNotice());
+      }),
+    );
+    this.subscription.add(
+      this.remoteCapabilityService.snapshot$.subscribe((snapshot) => {
+        this.syncSourceNotification('remote-capability', createRemoteCapabilityNotice(snapshot));
       }),
     );
   }
@@ -287,6 +297,10 @@ function getNoticeSeverityRank(notice: ChatInputNotice): number {
 }
 
 function getNoticeSourcePriority(notice: ChatInputNotice): number {
+  if (notice.source === 'remote-capability') {
+    return 3;
+  }
+
   if (notice.source === 'auth-quota') {
     return 2;
   }
@@ -296,4 +310,45 @@ function getNoticeSourcePriority(notice: ChatInputNotice): number {
   }
 
   return 0;
+}
+
+function createRemoteCapabilityNotice(
+  snapshot: ChatRemoteCapabilitySnapshot,
+): ChatInputNotice | null {
+  switch (snapshot.state) {
+    case 'offline_cached':
+      return {
+        id: 'remote-capability:offline-cached',
+        source: 'remote-capability',
+        kind: 'offline',
+        title: 'You are offline.',
+        subtitle: 'Local conversations remain available. Reconnect to send with a built-in model.',
+        tone: 'warning',
+        iconClass: 'fa-light fa-cloud-slash',
+      };
+    case 'signed_out':
+      return {
+        id: 'remote-capability:signed-out',
+        source: 'remote-capability',
+        kind: 'signed-out',
+        title: 'Sign in to use built-in models.',
+        subtitle: 'Local conversations and configured custom models remain available.',
+        tone: 'muted',
+        iconClass: 'fa-light fa-user',
+      };
+    case 'unavailable':
+      return {
+        id: 'remote-capability:unavailable',
+        source: 'remote-capability',
+        kind: 'unavailable',
+        title: 'The model service is currently unavailable.',
+        subtitle: 'Local conversations remain available. The connection will be checked again in the background.',
+        tone: 'warning',
+        iconClass: 'fa-light fa-triangle-exclamation',
+      };
+    case 'unknown':
+    case 'authenticated':
+    default:
+      return null;
+  }
 }

@@ -15,6 +15,7 @@ import {
 } from './chat-runtime-owner-ports';
 import { normalizeRuntimeOwnerSessionId } from './chat-runtime-owner-context-core';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
+import { COMMIT_PROJECT_SCENE_REGENERATION_TOOL } from '../core/blockly-project-scene-tools';
 
 function shouldTraceApprovalRuntimeBoundary(): boolean {
   return isAilyCategoryDebugEnabled('aily.chat.traceApprovalRuntime', [
@@ -39,6 +40,7 @@ export class ChatRuntimeOwnerToolApprovalService implements ChatRuntimeOwnerTool
   handleToolApproval(
     input: ChatRuntimeOwnerToolApprovalInput,
   ): Promise<{ approved: true } | { approved: false; reason?: string }> {
+    const approvalInput = this.enforcePerCallProjectSceneApproval(input);
     if (shouldTraceApprovalRuntimeBoundary()) {
       console.debug('[AilyChat][RuntimeOwnerApprovalBridge]', {
         phase: 'handle-enter',
@@ -49,7 +51,7 @@ export class ChatRuntimeOwnerToolApprovalService implements ChatRuntimeOwnerTool
         approvalTraceId: input.request?.approvalTraceId,
       });
     }
-    return this.createInteractionHelper(input).handleToolApproval(input.request).then((result) => {
+    return this.createInteractionHelper(approvalInput).handleToolApproval(approvalInput.request).then((result) => {
       if (shouldTraceApprovalRuntimeBoundary()) {
         console.debug('[AilyChat][RuntimeOwnerApprovalBridge]', {
           phase: 'handle-result',
@@ -81,6 +83,12 @@ export class ChatRuntimeOwnerToolApprovalService implements ChatRuntimeOwnerTool
   checkToolApprovalPreflight(
     input: ChatRuntimeOwnerToolApprovalInput,
   ): Promise<{ approved: true } | { approved: false; reason?: string }> {
+    if (input.request?.toolName === COMMIT_PROJECT_SCENE_REGENERATION_TOOL) {
+      return Promise.resolve({
+        approved: false,
+        reason: 'project-scene-regeneration-requires-per-call-confirmation',
+      });
+    }
     if (shouldTraceApprovalRuntimeBoundary()) {
       console.debug('[AilyChat][RuntimeOwnerApprovalBridge]', {
         phase: 'preflight-enter',
@@ -133,5 +141,24 @@ export class ChatRuntimeOwnerToolApprovalService implements ChatRuntimeOwnerTool
       get runtimeInteractionHost() { return service.runtimeInteractionHost; },
       get toolApprovalPolicy() { return service.toolApprovalPolicy; },
     });
+  }
+
+  private enforcePerCallProjectSceneApproval(
+    input: ChatRuntimeOwnerToolApprovalInput,
+  ): ChatRuntimeOwnerToolApprovalInput {
+    if (input.request?.toolName !== COMMIT_PROJECT_SCENE_REGENERATION_TOOL) {
+      return input;
+    }
+    return {
+      ...input,
+      request: {
+        ...input.request,
+        title: '确认生成新的 v2 连线图',
+        message: 'Agent 将按下列 Component Package 与连线提案原子生成新的 v2 Project Scene。此操作不会修改旧 connection_output.json。',
+        primaryScope: 'once',
+        allowAutoConfirm: false,
+        approveCombination: undefined,
+      },
+    };
   }
 }

@@ -68,6 +68,13 @@ export const BRAND_LIST = [
         imgLight: 'brands\\sparkfun-light.webp',
     },
     {
+        name: 'M5Stack',
+        value: 'm5stack',
+        img: 'brands\\m5stack.webp',
+        imgLight: 'brands\\m5stack-light.webp',
+        selected: "brands\\m5stack-selected.webp"
+    },
+    {
         name: 'realtek',
         value: 'realtek',
         img: 'brands\\realtek.webp',

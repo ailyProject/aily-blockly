@@ -37,7 +37,6 @@ import type { IMetricsService, MetricsSnapshot, RenderEvent, TurnRequest, TurnRe
 import type { IHostStreamListener } from './host-turn-response-state';
 import type { HostSessionSaveTarget } from './host-session-save-bridge';
 import type { HostItemLifecycleTextDeltaPolicy } from './lex-render-host-stream-emitter';
-import type { ChatSessionLexPostTurnResources } from '../services/chat-session-lex-post-turn-resource-factory.service';
 import {
   terminalTranscriptProjection,
   type ChatRuntimeTurnResponseSyncOptions,
@@ -114,10 +113,6 @@ export type LexOwnerContext = BootstrapLexAgentContext
       sessionId: string | null | undefined,
       controller: AbortController | null,
     ): boolean;
-    getOrCreateLexPostTurnResources?(
-      sessionId: string | null | undefined,
-      cwd: string | null | undefined,
-    ): ChatSessionLexPostTurnResources | undefined;
     scheduleLexRequestCompleted?(input: {
       sessionId: string;
       turnId: string;
@@ -322,11 +317,6 @@ export class LexOwnerFacade {
             registeredAgentModes.map(definition => definition.agentType),
           );
         }
-
-        this.ctx.editTracking.setTimelineContext(
-          this.ctx.resolveActiveRuntimeSessionId?.() ?? this.ctx.sessionId ?? null,
-          this.ctx.prjPath || this.ctx.prjRootPath || null,
-        );
 
         currentTodoUnsubscribe?.();
         return null;

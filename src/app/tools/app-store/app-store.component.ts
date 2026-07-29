@@ -32,6 +32,8 @@ import { Subscription } from 'rxjs';
 import { ToolI18nService } from '../../services/tool-i18n.service';
 import { SubappManagerService } from '../../services/subapp-manager.service';
 import { ChildToolProcessService } from '../../services/child-tool-process.service';
+import { MainUiAutomationService } from '../../services/main-ui-automation.service';
+import { ChildAppHostRegistryService } from '../../services/child-app-host-registry.service';
 
 @Component({
   selector: 'app-app-store',
@@ -67,6 +69,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   private catalogSubscription?: Subscription;
   private confirmUninstallTimer?: ReturnType<typeof setTimeout>;
   private isDraggingToolbarApp = false;
+  private activeSubappVersions = new Map<string, string>();
 
   @ViewChild('headerZone') headerZone?: ElementRef<HTMLElement>;
 
@@ -79,6 +82,8 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     private toolI18n: ToolI18nService,
     private subappManager: SubappManagerService,
     private childToolProcess: ChildToolProcessService,
+    private mainUiAutomation: MainUiAutomationService,
+    private childHostRegistry: ChildAppHostRegistryService,
     private message: NzMessageService,
     private modal: NzModalService,
     private translate: TranslateService,
@@ -193,11 +198,37 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     void this.runSubappAction('install', app);
   }
 
-  checkSubappUpdate(app: AppItem): void {
+  runSubappMenuAction(app: AppItem): void {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId || !app.subapp?.installed || this.pendingCatalogId || this.checkingCatalogId) return;
+
+    if (app.subapp.updateAvailable) {
+      this.closeSubappMore();
+      this.startSubappUpdate(app);
+      return;
+    }
+
+    if (this.isSubappRestartRequired(app)) {
+      this.closeSubappMore();
+      this.confirmSubappRestart(app);
+      return;
+    }
+
     this.closeSubappMore();
     void this.checkSubappUpdateFromCatalog(catalogId);
+  }
+
+  isSubappActive(app: AppItem): boolean {
+    return !!app.subapp?.installed && this.uiService.isToolOpen(app.id);
+  }
+
+  isSubappRestartRequired(app: AppItem): boolean {
+    const installedVersion = String(app.subapp?.installedVersion || '').trim();
+    const activeVersion = this.getSubappActiveVersion(app);
+    return this.isSubappActive(app)
+      && !!installedVersion
+      && !!activeVersion
+      && activeVersion !== installedVersion;
   }
 
   toggleSubappMore(app: AppItem, event: Event): void {
@@ -210,6 +241,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.clearUninstallConfirmation();
     this.openMoreCatalogId = catalogId;
+    void this.refreshSubappActiveVersion(app);
     this.cdr.markForCheck();
   }
 
@@ -321,7 +353,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.headerZoneApps = this.appStoreService.getAppsForZone('header').filter(canShow);
   }
 
-  private async runSubappAction(action: 'install' | 'update' | 'uninstall', app: AppItem): Promise<void> {
+  private async runSubappAction(action: 'install' | 'uninstall', app: AppItem): Promise<void> {
     const subapp = app.subapp;
     if (!subapp || this.pendingCatalogId) return;
     this.pendingCatalogId = subapp.catalogId;
@@ -337,6 +369,83 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || 'Unknown error');
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    } finally {
+      this.pendingCatalogId = '';
+      this.cdr.markForCheck();
+    }
+  }
+
+  private startSubappUpdate(app: AppItem): void {
+    if (!app.subapp?.updateAvailable) return;
+    void this.updateSubapp(app);
+  }
+
+  private confirmSubappRestart(app: AppItem): void {
+    this.modal.confirm({
+      nzClassName: 'subapp-service-confirm-modal',
+      nzTitle: this.translate.instant('APP_STORE.RESTART_CONFIRM', { name: app.name }),
+      nzContent: this.translate.instant('APP_STORE.RESTART_HINT', { name: app.name }),
+      nzOkText: this.translate.instant('APP_STORE.CONFIRM_RESTART'),
+      nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+      nzMaskClosable: false,
+      nzOnOk: () => this.restartSubapp(app),
+    });
+  }
+
+  private async updateSubapp(app: AppItem): Promise<void> {
+    const subapp = app.subapp;
+    if (!subapp?.updateAvailable || this.pendingCatalogId) return;
+
+    const wasActive = this.isSubappActive(app);
+    const previousInstalledVersion = String(subapp.installedVersion || '').trim();
+    let restartTarget: AppItem | null = null;
+    this.pendingCatalogId = subapp.catalogId;
+    this.cdr.markForCheck();
+    try {
+      await this.subappManager.update(subapp.catalogId);
+      const updatedApp = this.subappManager.getCatalogApps()
+        .find((item) => item.subapp?.catalogId === subapp.catalogId);
+      const updatedInstalledVersion = String(updatedApp?.subapp?.installedVersion || '').trim();
+      if (wasActive
+        && updatedApp?.subapp?.installed
+        && !!updatedInstalledVersion
+        && updatedInstalledVersion !== previousInstalledVersion) {
+        restartTarget = updatedApp;
+      }
+      this.message.success(this.translate.instant('APP_STORE.UPDATE_SUCCESS', { name: app.name }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    } finally {
+      this.pendingCatalogId = '';
+      this.cdr.markForCheck();
+    }
+
+    if (restartTarget) {
+      this.confirmSubappRestart(restartTarget);
+    }
+  }
+
+  private async restartSubapp(app: AppItem): Promise<void> {
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId || this.pendingCatalogId) return;
+
+    this.pendingCatalogId = catalogId;
+    this.cdr.markForCheck();
+    try {
+      const result = await this.mainUiAutomation.controlChildApp({
+        toolId: app.id,
+        action: 'restart',
+      });
+      if (result['ok'] !== true) {
+        throw new Error(String(result['message'] || this.translate.instant('APP_STORE.RESTART_FAILED')));
+      }
+      await this.refreshSubappActiveVersion(app);
+      this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', { name: app.name }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+      throw error;
     } finally {
       this.pendingCatalogId = '';
       this.cdr.markForCheck();
@@ -365,16 +474,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         return;
       }
 
-      this.modal.confirm({
-        nzTitle: this.translate.instant('APP_STORE.UPDATE_CONFIRM', { name: refreshedApp.name }),
-        nzContent: this.translate.instant('APP_STORE.UPDATE_HINT', {
-          current: refreshedApp.subapp.installedVersion || '-',
-          available: refreshedApp.subapp.availableVersion,
-        }),
-        nzOkText: this.translate.instant('APP_STORE.UPDATE'),
-        nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
-        nzOnOk: () => this.runSubappAction('update', refreshedApp),
-      });
+      this.startSubappUpdate(refreshedApp);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || 'Unknown error');
       this.message.error(this.translate.instant('APP_STORE.CHECK_UPDATE_FAILED', { message }));
@@ -390,6 +490,29 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.confirmUninstallTimer = undefined;
     }
     this.confirmUninstallCatalogId = '';
+  }
+
+  private getSubappActiveVersion(app: AppItem): string {
+    const localVersion = this.childHostRegistry.getStatus(app.id)?.['version'];
+    if (typeof localVersion === 'string' && localVersion.trim()) {
+      return localVersion.trim();
+    }
+    return this.activeSubappVersions.get(app.id) || '';
+  }
+
+  private async refreshSubappActiveVersion(app: AppItem): Promise<void> {
+    if (!this.isSubappActive(app)) {
+      this.activeSubappVersions.delete(app.id);
+      return;
+    }
+
+    const result = await this.mainUiAutomation.getChildApp({ toolId: app.id });
+    const describedApp = result['app'] as Record<string, any> | undefined;
+    const version = describedApp?.['ui']?.['host']?.['version'];
+    if (typeof version === 'string' && version.trim()) {
+      this.activeSubappVersions.set(app.id, version.trim());
+      this.cdr.markForCheck();
+    }
   }
 
   private closeSubappMore(): void {

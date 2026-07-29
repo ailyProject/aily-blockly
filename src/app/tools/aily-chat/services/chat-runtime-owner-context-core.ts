@@ -1,7 +1,6 @@
 import type { LexOwnerContext } from '../helpers/lex-stream.helper';
 import type {
   ChatRuntimeOwnerContextBudgetPort,
-  ChatRuntimeOwnerEditTrackingPort,
 } from './chat-runtime-owner-context-capabilities';
 
 export interface ChatRuntimeOwnerContextAdapter {
@@ -21,7 +20,6 @@ export interface ChatRuntimeOwnerContextCoreServices {
   readonly ailyChatConfigService: any;
   readonly mcpService: any;
   readonly runtimeInteractionHost: any;
-  readonly editTracking: ChatRuntimeOwnerEditTrackingPort;
   readonly ownerScheduler: any;
   readonly viewRequests: any;
   readonly list: any;
@@ -64,7 +62,6 @@ export interface ChatRuntimeOwnerContextCoreServices {
   syncRuntimeAgentEntryReady(sessionId: any, disposeSession: () => void): void;
   releaseRuntimeHandle(sessionId: any): boolean;
   setRuntimeAbortController(sessionId: any, controller: AbortController | null): boolean;
-  getOrCreateLexPostTurnResources(sessionId: any, cwd: any): any;
   scheduleLexRequestCompleted(input: any): void;
   isRuntimeViewAttached(sessionId: any): boolean;
   readRuntimeViewAttachmentGeneration(sessionId: any): any;
@@ -138,7 +135,6 @@ export function createChatRuntimeOwnerContext(
     handleToolApproval: request => services.handleToolApproval(request),
     checkToolApprovalPreflight: request => services.checkToolApprovalPreflight(request),
     get lexStream() { return adapter.lexStream; },
-    get editTracking() { return services.editTracking; },
     get ownerScheduler() { return services.ownerScheduler; },
     get viewRequests() { return services.viewRequests; },
     get list() { return services.list; },
@@ -168,8 +164,6 @@ export function createChatRuntimeOwnerContext(
     releaseRuntimeHandle: sessionId => services.releaseRuntimeHandle(sessionId),
     setRuntimeAbortController: (sessionId, controller) =>
       services.setRuntimeAbortController(sessionId, controller),
-    getOrCreateLexPostTurnResources: (sessionId, cwd) =>
-      services.getOrCreateLexPostTurnResources(sessionId, cwd),
     scheduleLexRequestCompleted: input => services.scheduleLexRequestCompleted(input),
     isRuntimeViewAttached: sessionId => services.isRuntimeViewAttached(sessionId),
     readRuntimeViewAttachmentGeneration: sessionId => services.readRuntimeViewAttachmentGeneration(sessionId),

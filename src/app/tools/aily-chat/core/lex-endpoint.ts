@@ -1,7 +1,9 @@
 /**
  * Lightweight stateless LLM call utility using lex endpoints.
  *
- * Bypasses Python server — calls LLM API directly via AilyServicesEndpoint / OpenAIEndpoint.
+ * Calls the model proxy through AilyServicesEndpoint. Custom credentials are
+ * forwarded in model config so provider
+ * protocol adaptation stays consistent with conversation requests.
  * Used by: ChatEngineService.generateTitle() and legacy stateless helper flows.
  */
 
@@ -27,16 +29,7 @@ async function getLexModule(): Promise<AilyLexModule | null> {
 
 function buildEndpoint(
   lex: AilyLexModule,
-  llmConfig?: { apiKey: string; baseUrl: string } | null,
 ) {
-  if (llmConfig?.apiKey && llmConfig?.baseUrl) {
-    return new lex.OpenAIEndpoint({
-      baseUrl: llmConfig.baseUrl,
-      apiKey: llmConfig.apiKey,
-      modelFamily: 'openai',
-    });
-  }
-
   const apiEndpoint = AilyHost.get().config?.apiEndpoint || '';
   const hostTransport = createElectronAilyServicesTransport();
   return new lex.AilyServicesEndpoint({
@@ -94,10 +87,11 @@ export function lexStatelessStream(
           return;
         }
 
-        const endpoint = buildEndpoint(lex, options?.llmConfig);
+        const endpoint = buildEndpoint(lex);
         const config = {
           modelId: options?.modelId || 'default',
           maxOutputTokens: 4096,
+          ...(options?.llmConfig ? { llmConfig: options.llmConfig } : {}),
         };
         const requestContext = options?.requestContext && (
           options.requestContext.requestKind

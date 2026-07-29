@@ -4,7 +4,6 @@ import { ChatEngineService } from './services/chat-engine.service';
 import { ChatRuntimeHostBootstrapService } from './services/chat-runtime-host-bootstrap.service';
 import { ChatRuntimeOwnerContextService } from './services/chat-runtime-owner-context.service';
 import { ChatRuntimeOwnerEndpointService } from './services/chat-runtime-owner-endpoint.service';
-import { ChatRuntimeOwnerEditTrackingResourceService } from './services/chat-runtime-owner-edit-tracking-resource.service';
 import { ChatRuntimeOwnerHostAdapterService } from './services/chat-runtime-owner-host-adapter.service';
 import { ChatRuntimeOwnerRuntimeControllerService } from './services/chat-runtime-owner-runtime-controller.service';
 import { ChatRuntimeOwnerSaveBridgeService } from './services/chat-runtime-owner-save-bridge.service';
@@ -25,7 +24,6 @@ import {
   CHAT_RUNTIME_OWNER_CONTEXT_BUDGET,
   type ChatRuntimeOwnerContextBudgetPort,
   CHAT_RUNTIME_OWNER_CONTEXT_MATERIALIZER,
-  CHAT_RUNTIME_OWNER_EDIT_TRACKING,
   CHAT_RUNTIME_OWNER_ENDPOINT,
   CHAT_RUNTIME_OWNER_HOST,
   CHAT_RUNTIME_OWNER_HOST_ADAPTER,
@@ -54,10 +52,6 @@ import { ChatRuntimeHostResourceOperationHandlerService } from './services/chat-
 import { ChatPendingFollowupQueueService } from './services/chat-pending-followup-queue.service';
 import { ChatSessionActionsService } from './services/chat-session-actions.service';
 import { ChatSessionItemsService } from './services/chat-session-items.service';
-import {
-  CHAT_SESSION_LEX_POST_TURN_RESOURCE_FACTORY,
-  ChatSessionLexPostTurnResourceFactoryService,
-} from './services/chat-session-lex-post-turn-resource-factory.service';
 import { ChatSessionModelStoreService } from './services/chat-session-model-store.service';
 import { ChatSessionRuntimeRegistryService } from './services/chat-session-runtime-registry.service';
 import {
@@ -71,7 +65,6 @@ import { ChatSetupSuggestionService } from './services/chat-setup-suggestion.ser
 import { ChatViewService } from './services/chat-view.service';
 import { ContextBudgetService } from './services/context-budget.service';
 import { EditCheckpointService } from './services/edit-checkpoint.service';
-import { GitWorkspaceCheckpointProviderService } from './services/git-workspace-checkpoint-provider.service';
 import { MenuManagerService } from './services/menu-manager.service';
 import { ResourceManagerService } from './services/resource-manager.service';
 import { ScrollManagerService } from './services/scroll-manager.service';
@@ -114,7 +107,6 @@ export const AILY_CHAT_SHARED_PROVIDERS: Provider[] = [
   ChatSetupSuggestionService,
   ChatViewService,
   EditCheckpointService,
-  GitWorkspaceCheckpointProviderService,
   ChatRuntimeInteractionHostService,
 ];
 
@@ -138,15 +130,10 @@ export const AILY_CHAT_RUNTIME_OWNER_PROVIDERS: Provider[] = [
   ChatRuntimeOwnerHostAdapterService,
   ChatRuntimeOwnerContextService,
   ChatRuntimeOwnerEndpointService,
-  ChatRuntimeOwnerEditTrackingResourceService,
   {
     provide: CHAT_RUNTIME_OWNER_CONTEXT_BUDGET,
     deps: [ContextBudgetService],
     useFactory: createRuntimeOwnerContextBudgetPort,
-  },
-  {
-    provide: CHAT_RUNTIME_OWNER_EDIT_TRACKING,
-    useExisting: ChatRuntimeOwnerEditTrackingResourceService,
   },
   { provide: CHAT_RUNTIME_OWNER_CONTEXT_BINDER, useExisting: ChatRuntimeOwnerService },
   { provide: CHAT_RUNTIME_OWNER_CONTEXT_MATERIALIZER, useExisting: ChatRuntimeOwnerContextService },
@@ -176,8 +163,6 @@ export const AILY_CHAT_RUNTIME_OWNER_PROVIDERS: Provider[] = [
   { provide: CHAT_RUNTIME_OWNER_TOOL_APPROVAL, useExisting: ChatRuntimeOwnerToolApprovalService },
   ChatRuntimeOwnerTurnStartupEditLifecycleService,
   { provide: CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE, useExisting: ChatRuntimeOwnerTurnStartupEditLifecycleService },
-  ChatSessionLexPostTurnResourceFactoryService,
-  { provide: CHAT_SESSION_LEX_POST_TURN_RESOURCE_FACTORY, useExisting: ChatSessionLexPostTurnResourceFactoryService },
   ChatSessionRuntimeRegistryService,
   { provide: CHAT_RUNTIME_OWNER_RUNTIME_REGISTRY, useExisting: ChatSessionRuntimeRegistryService },
   ChatRuntimeHostBootstrapService,

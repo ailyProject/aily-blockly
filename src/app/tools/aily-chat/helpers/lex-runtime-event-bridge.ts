@@ -16,7 +16,7 @@ export type LexRuntimePartProcessor = Pick<
 
 export type LexRuntimeHostSyncAccess = Pick<
   LexHostSyncBridge,
-  'recordFileToolEdit' | 'applyTodoStateEvent'
+  'applyTodoStateEvent'
 >;
 
 /** Narrow context: toolCallingIteration + contextBudgetService */
@@ -52,7 +52,6 @@ export class LexRuntimeEventBridge {
       case 'tool_call_start': {
         this.messageLifecycleBridge.closeNativeThinking();
         this.partProcessor.processToolCallStart(event.toolCallId, event.toolName, event.input);
-        this.hostSyncBridge.recordFileToolEdit(event.toolName, event.input);
         return true;
       }
 

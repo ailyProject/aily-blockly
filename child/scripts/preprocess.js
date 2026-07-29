@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec, execSync } = require('child_process');
+const { spawn, exec, execFileSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const platformRuntime = require('./platform-runtime');
@@ -118,12 +118,7 @@ async function main() {
         copyProjectSrcToSketch(currentProjectPath, sketchPath);
 
         // 3. 处理库文件
-        const libsPath = [];
-        Object.entries(dependencies || {}).forEach(([key, version]) => {
-            if (key.startsWith('@aily-project/lib-') && !key.startsWith('@aily-project/lib-core')) {
-                libsPath.push(key);
-            }
-        });
+        const libsPath = collectLibraryPackages(dependencies, currentProjectPath);
 
         logger.log(`开始处理 ${libsPath.length} 个库文件`);
         const copiedLibraries = await processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache);
@@ -418,6 +413,48 @@ function copyItemRecursive(sourcePath, targetPath) {
     fs.copyFileSync(sourcePath, targetPath);
 }
 
+function isCompilableLibraryPackage(packageName) {
+    return typeof packageName === 'string'
+        && packageName.startsWith('@aily-project/lib-')
+        && !packageName.startsWith('@aily-project/lib-core');
+}
+
+function collectLibraryPackages(projectDependencies, currentProjectPath) {
+    const libraries = [];
+    const visited = new Set();
+    const pending = Object.keys(projectDependencies || {});
+
+    for (let index = 0; index < pending.length; index++) {
+        const packageName = pending[index];
+        if (!isCompilableLibraryPackage(packageName) || visited.has(packageName)) {
+            continue;
+        }
+        visited.add(packageName);
+        libraries.push(packageName);
+
+        const packagePath = path.join(currentProjectPath, 'node_modules', packageName);
+        const packageJsonPath = path.join(packagePath, 'package.json');
+        if (!fs.existsSync(packageJsonPath)) {
+            logger.warn(`Library package is not installed: ${packageName}`);
+            continue;
+        }
+
+        let packageJson;
+        try {
+            packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        } catch (error) {
+            logger.warn(`Failed to read library package.json: ${packageJsonPath}: ${error.message}`);
+            continue;
+        }
+
+        Object.keys(packageJson.dependencies || {}).forEach(dependencyName => {
+            pending.push(dependencyName);
+        });
+    }
+
+    return libraries;
+}
+
 async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
     const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache));
     const results = await Promise.all(tasks);
@@ -449,7 +486,7 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
             const sourceZipPath = path.join(currentProjectPath, 'node_modules', lib, 'src.7z');
             if (fs.existsSync(sourceZipPath)) {
                 try {
-                    execSync(`"${za7Path}" x "${sourceZipPath}" -o"${path.dirname(sourcePath)}" -y`);
+                    extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
                 } catch (error) {
                     return { targetNames: [], success: false, error: `解压失败: ${error.message}` };
                 }
@@ -480,6 +517,32 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
     } catch (error) {
         return { targetNames: [], success: false, error: error.message };
     }
+}
+
+function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
+    const extractPath = path.join(path.dirname(sourcePath), `.src-extract-${process.pid}-${Date.now()}`);
+
+    try {
+        mkdirp(extractPath);
+        execFileSync(za7Path, ['x', sourceZipPath, `-o${extractPath}`, '-y']);
+        normalizeExtractedSourceDirectory(extractPath, sourcePath);
+    } finally {
+        rm(extractPath);
+    }
+}
+
+function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
+    const extractedItems = fs.readdirSync(extractPath);
+    const nestedSourcePath = path.join(extractPath, 'src');
+    const extractedSourcePath = extractedItems.length === 1 && extractedItems[0] === 'src' && fs.statSync(nestedSourcePath).isDirectory()
+        ? nestedSourcePath
+        : extractPath;
+
+    if (fs.existsSync(sourcePath)) {
+        rm(sourcePath);
+    }
+
+    fs.renameSync(extractedSourcePath, sourcePath);
 }
 
 function isLibraryCacheValid(cached, sourcePath) {
@@ -631,6 +694,15 @@ async function syncCompilerToolsToToolsPath(compilerPath, toolsPath) {
     }
 }
 
-main().catch(e => {
-    exitWithFatalError(e);
-});
+if (require.main === module) {
+    main().catch(e => {
+        exitWithFatalError(e);
+    });
+}
+
+module.exports = {
+    collectLibraryPackages,
+    isCompilableLibraryPackage,
+    normalizeExtractedSourceDirectory,
+    processLibrariesParallel,
+};

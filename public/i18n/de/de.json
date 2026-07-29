@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "Projekt konnte nicht veröffentlicht werden",
+        "WORKSPACE_PROJECT_NOT_FOUND": "Projekt nicht gefunden",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "Sie dürfen dieses Projekt nicht veröffentlichen",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "Lokale Abhängigkeitspfade erfüllen die Veröffentlichungsanforderungen nicht",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "Erstellen und synchronisieren Sie zuerst das Projekt"
+    },
     "MENU": {
         "MENU": "Menü",
         "PROJECT_NEW": "Neues Projekt",
@@ -189,6 +196,16 @@
             "LABEL_COLOR_MODE": "Farbe",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Nur MP4- und GIF-Dateien werden unterstützt"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "PNG-, JPEG-, WebP- oder GIF-Bild in RGB565/RGB332-Pixeldaten umwandeln",
+            "UPLOAD_TOOLTIP": "Unterstützte Formate: PNG, JPEG, WebP, GIF",
+            "EMPTY": "Kein Bild hochgeladen",
+            "STATUS_DECODING": "Bild wird konvertiert...",
+            "STATUS_REDECODING": "{{name}} wird erneut konvertiert...",
+            "ERROR_DECODE_FAILED": "Bildkonvertierung fehlgeschlagen",
+            "ERROR_REDECODE_FAILED": "Erneute Bildkonvertierung fehlgeschlagen",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Es werden nur PNG-, JPEG-, WebP- und GIF-Dateien unterstützt"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Hochladen",
             "UPLOAD_TOOLTIP": "Unterstützte Formate: MP4, GIF, PNG",
@@ -247,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "Hochladen",
+            "UPLOAD_TOOLTIP": "Unterstützte Formate: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "Leeren",
+            "LABEL_WIDTH": "B",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "Farbe",
+            "EMPTY": "Kein Bild hochgeladen",
+            "STATUS_READING_FILE": "{{name}} wird gelesen...",
+            "STATUS_DECODING": "Bild wird konvertiert...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "Die Quelldatei darf höchstens {{maxSize}} groß sein (aktuell: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "Bildkonvertierung fehlgeschlagen",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "Nur PNG-, JPEG-, WebP- und BMP-Bilder werden unterstützt"
         }
     },
     "MAIN_WINDOW": {
@@ -270,7 +302,7 @@
             "COMPILATION": "Kompilierungseinstellungen",
             "REPOSITORY": "Repository-Einstellungen",
             "DEPENDENCIES": "Globale Abhängigkeiten",
-            "AILY_TOOLS": "Aily-Tools",
+            "TOOLS_AND_SUBAPP": "Tools und Apps",
             "MCP": "MCP",
             "DEVMODE": "Entwicklermodus",
             "CACHE": "Cache-Verwaltung"
@@ -429,6 +461,7 @@
         "TEXT_DOWNLOADED": "Version {{version}} wurde heruntergeladen. Jetzt installieren?",
         "TEXT_AVAILABLE": "Aktuelle Version {{currentVersion}}, neue Version {{version}}<br>Möchten Sie dieses Update herunterladen und installieren?",
         "DOWNLOAD_FAILED": "Download fehlgeschlagen",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "Alternative Downloadquelle wird verwendet ({{current}}/{{total}})",
         "REMIND_LATER": "Später erinnern",
         "SKIP_VERSION": "Diese Version überspringen",
         "UPDATE_NOW": "Jetzt aktualisieren",
@@ -797,6 +830,14 @@
             "COMPLETE_WITH_TIME": "Kompilierung abgeschlossen (Dauer: {{seconds}}s)",
             "FIRST_BUILD_HINT": "Die erste Kompilierung kann länger dauern",
             "FAST_BUILD_HINT": "Das schnelle Build-System läuft",
+            "PROGRESS_PREPARING": "Kompilierung wird vorbereitet",
+            "PROGRESS_SKETCH": "Programm wird kompiliert",
+            "PROGRESS_LIBRARIES": "Bibliotheken werden kompiliert",
+            "PROGRESS_CORE": "Kern wird kompiliert",
+            "PROGRESS_LINKING": "Firmware wird verknüpft",
+            "PROGRESS_OBJCOPY": "Firmware wird erstellt",
+            "PROGRESS_FINALIZING": "Kompilierung wird abgeschlossen",
+            "PROGRESS_COMPLETE": "Kompilierung abgeschlossen",
             "PROCESS_SIGNAL_TERMINATED": "Build-Prozess wurde durch Signal beendet: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "Build-Prozess wurde unerwartet beendet, Exit-Code: {{code}}",
             "PROCESS_START_FAILED": "Build-Prozess konnte nicht gestartet werden",

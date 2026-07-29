@@ -1,4 +1,6 @@
 import * as Blockly from 'blockly/core';
+import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
+import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
 
 /**
  * 自定义图片选择器字段类
@@ -11,12 +13,16 @@ export class FieldImageSelector extends Blockly.FieldImage {
 
   // 存储图片数据
   private imageData: string;
+  private renderedImageData = FieldImageSelector.DEFAULT_IMAGE;
+  private renderedRefId = '';
+  private loadingImage: Promise<void> | null = null;
 
   /**
    * 构造函数
    */
   constructor(value?: string, validator?: Blockly.FieldValidator<string>) {
-    const src = value || FieldImageSelector.DEFAULT_IMAGE;
+    const state = parseImageSelectorState(value);
+    const src = FieldImageSelector.DEFAULT_IMAGE;
 
     super(
       src,
@@ -29,7 +35,7 @@ export class FieldImageSelector extends Blockly.FieldImage {
       }
     );
 
-    this.imageData = src;
+    this.imageData = JSON.stringify(state);
 
     // 添加验证器
     if (validator) {
@@ -41,7 +47,7 @@ export class FieldImageSelector extends Blockly.FieldImage {
    * 从JSON创建字段实例
    */
   static override fromJson(options: any): FieldImageSelector {
-    return new FieldImageSelector(options['src']);
+    return new FieldImageSelector(options['value']);
   }
 
   /**
@@ -49,6 +55,7 @@ export class FieldImageSelector extends Blockly.FieldImage {
    */
   public override initView() {
     super.initView();
+    void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
     if (this.getClickTarget_()) {
       (this.getClickTarget_() as HTMLElement).style.cursor = 'pointer';
     }
@@ -264,8 +271,7 @@ export class FieldImageSelector extends Blockly.FieldImage {
       // 更新字段值
       try {
         const dataUrl = canvas.toDataURL('image/png');
-        console.log("dataUrl", dataUrl);
-        this.setValue(dataUrl);
+        this.persistSelectedImage(dataUrl, 'canvas.png');
       } catch (error) {
         console.error('图片导出失败:', error);
       }
@@ -298,14 +304,7 @@ export class FieldImageSelector extends Blockly.FieldImage {
     reader.onload = (event) => {
       const imageData = event.target?.result as string;
       this.resizeImage(imageData).then(resizedImage => {
-        this.setValue(resizedImage);
-        this.imageData = resizedImage;
-
-        // 触发变更事件
-        if (this.sourceBlock_ && this.sourceBlock_.workspace) {
-          Blockly.Events.fire(new Blockly.Events.BlockChange(
-            this.sourceBlock_, 'field', this.name, this.value_, this.imageData));
-        }
+        this.persistSelectedImage(resizedImage, file.name);
       });
     };
     reader.readAsDataURL(file);
@@ -357,24 +356,33 @@ export class FieldImageSelector extends Blockly.FieldImage {
       return;
     }
 
+    const nextState = parseImageSelectorState(newValue);
+    const normalizedValue = JSON.stringify(nextState);
     const oldValue = this.imageData;
-    this.imageData = newValue;
+    this.imageData = normalizedValue;
+    const nextRefId = nextState.image?.$ailyData.id || '';
+    if (nextRefId !== this.renderedRefId) {
+      this.renderedRefId = '';
+      this.renderedImageData = FieldImageSelector.DEFAULT_IMAGE;
+      this.loadingImage = null;
+    }
 
     if (this.imageElement) {
       // this.imageElement.setAttribute('src', newValue);
       const img = new Image();
       img.onload = () => {
-        this.imageElement.setAttribute('src', newValue);
+        this.updateImageElement();
       };
-      img.src = newValue;
+      img.src = this.renderedImageData;
       // TODO base64 图片不显示 @downey @coloz
     }
 
     // 触发变更事件
     if (this.sourceBlock_ && Blockly.Events.isEnabled()) {
       Blockly.Events.fire(new Blockly.Events.BlockChange(
-        this.sourceBlock_, 'field', this.name, oldValue, newValue));
+        this.sourceBlock_, 'field', this.name, oldValue, normalizedValue));
     }
+    if (nextRefId) void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
   }
 
   /**
@@ -394,6 +402,97 @@ export class FieldImageSelector extends Blockly.FieldImage {
       this.setValue(src);
     }
   }
+
+  private persistSelectedImage(dataUrl: string, sourceName: string): void {
+    const parsed = parseImageDataUrl(dataUrl);
+    this.renderedImageData = dataUrl;
+    const mutation = projectDataRuntime.put({
+      codec: 'image-original-v1',
+      storage: 'raw-v1',
+      value: parsed.bytes,
+    }).then((image) => {
+      this.renderedRefId = image.$ailyData.id;
+      this.setValue(JSON.stringify({
+        schemaVersion: 1,
+        mediaType: parsed.mediaType,
+        width: FieldImageSelector.DEFAULT_WIDTH,
+        height: FieldImageSelector.DEFAULT_HEIGHT,
+        sourceName,
+        image,
+      } satisfies ImageSelectorState));
+      this.updateImageElement(dataUrl);
+    });
+    projectDataRuntime.trackMutation(mutation);
+    void mutation.catch((error) => console.error('图片资源保存失败:', error));
+  }
+
+  private async ensureImageLoaded(): Promise<void> {
+    const state = parseImageSelectorState(this.imageData);
+    const ref = state.image;
+    if (!ref) return;
+    const refId = ref.$ailyData.id;
+    if (this.renderedRefId === refId) {
+      this.updateImageElement();
+      return;
+    }
+    if (this.loadingImage) return this.loadingImage;
+    const loading = projectDataRuntime.resolve<Uint8Array>(ref).then((bytes) => {
+      if (parseImageSelectorState(this.imageData).image?.$ailyData.id !== refId) return;
+      this.renderedImageData = `data:${state.mediaType};base64,${bytesToBase64(bytes)}`;
+      this.renderedRefId = refId;
+      this.updateImageElement();
+    }).finally(() => {
+      if (this.loadingImage === loading) this.loadingImage = null;
+    });
+    this.loadingImage = loading;
+    return loading;
+  }
+
+  private updateImageElement(source = this.renderedImageData): void {
+    if (!this.imageElement) return;
+    this.imageElement.setAttribute('href', source);
+    this.imageElement.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', source);
+  }
+}
+
+interface ImageSelectorState {
+  readonly schemaVersion: 1;
+  readonly mediaType: string;
+  readonly width: number;
+  readonly height: number;
+  readonly sourceName?: string;
+  readonly image: AilyDataRef | null;
+}
+
+function parseImageSelectorState(value: unknown): ImageSelectorState {
+  let candidate = value;
+  if (typeof candidate === 'string' && candidate.trim().startsWith('{')) {
+    try { candidate = JSON.parse(candidate); } catch { candidate = null; }
+  }
+  const state = candidate && typeof candidate === 'object' ? candidate as Partial<ImageSelectorState> : {};
+  return {
+    schemaVersion: 1,
+    mediaType: typeof state.mediaType === 'string' && state.mediaType ? state.mediaType : 'image/png',
+    width: 64,
+    height: 64,
+    ...(typeof state.sourceName === 'string' ? { sourceName: state.sourceName } : {}),
+    image: isAilyDataRef(state.image) ? state.image : null,
+  };
+}
+
+function parseImageDataUrl(value: string): { mediaType: string; bytes: Uint8Array } {
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(value);
+  if (!match) throw new Error('只支持 Base64 Data URL 图片');
+  const binary = atob(match[2]);
+  return { mediaType: match[1].toLowerCase(), bytes: Uint8Array.from(binary, (char) => char.charCodeAt(0)) };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
 }
 
 // 注册自定义字段

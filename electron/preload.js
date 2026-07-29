@@ -480,6 +480,89 @@ contextBridge.exposeInMainWorld("electronAPI", {
     update: () => ipcRenderer.invoke("aily-builder-update"),
     waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
   },
+  simulatorGateway: {
+    iframeUrlOverride:
+      process.env.AILY_E2E === "1"
+        ? process.env.AILY_E2E_SIMULATOR_IFRAME_URL || ""
+        : "",
+    start: (projectPath, ownerId) => ipcRenderer.invoke(
+      "simulator-gateway-start",
+      projectPath,
+      ownerId,
+    ),
+    status: () => ipcRenderer.invoke("simulator-gateway-status"),
+    stop: (expectedProjectPath, expectedOwnerId) => ipcRenderer.invoke(
+      "simulator-gateway-stop",
+      expectedProjectPath,
+      expectedOwnerId,
+    ),
+    onStateChanged: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("simulator-gateway-state-changed", listener);
+      return () => ipcRenderer.removeListener(
+        "simulator-gateway-state-changed",
+        listener,
+      );
+    },
+  },
+  simulatorSubapp: {
+    open: (options) => ipcRenderer.invoke("simulator-subapp-open", options),
+    openProjectScene: (options) => ipcRenderer.invoke(
+      "simulator-subapp-open-project-scene",
+      options,
+    ),
+    resolveProjectSceneRegeneration: (options) => ipcRenderer.invoke(
+      "simulator-subapp-resolve-project-scene-regeneration",
+      options,
+    ),
+    applyProjectSceneAgentProposal: (options) => ipcRenderer.invoke(
+      "simulator-subapp-apply-project-scene-agent-proposal",
+      options,
+    ),
+    attachProjectSceneSession: (ownerId) => ipcRenderer.invoke(
+      "simulator-subapp-attach-project-scene-session",
+      { ownerId },
+    ),
+    detachProjectSceneSession: (ownerId) => ipcRenderer.invoke(
+      "simulator-subapp-detach-project-scene-session",
+      { ownerId },
+    ),
+    status: () => ipcRenderer.invoke("simulator-subapp-status"),
+    close: (ownerId) => ipcRenderer.invoke(
+      "simulator-subapp-close",
+      { ownerId },
+    ),
+    onStateChanged: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("simulator-subapp-state-changed", listener);
+      return () => ipcRenderer.removeListener(
+        "simulator-subapp-state-changed",
+        listener,
+      );
+    },
+    onProjectRebuildRequested: (callback) => {
+      const listener = (_event, payload) => callback(
+        payload?.request,
+        {
+          requestId: payload?.requestId,
+          rendererGeneration: payload?.rendererGeneration,
+        },
+      );
+      ipcRenderer.on("simulator-project-rebuild-request", listener);
+      return () => ipcRenderer.removeListener(
+        "simulator-project-rebuild-request",
+        listener,
+      );
+    },
+    respondProjectRebuild: (transport, result) => ipcRenderer.send(
+      "simulator-project-rebuild-response",
+      {
+        requestId: transport?.requestId,
+        rendererGeneration: transport?.rendererGeneration,
+        result,
+      },
+    ),
+  },
   linter: {
     status: () => ipcRenderer.invoke("aily-linter-status"),
     checkForUpdate: () => ipcRenderer.invoke("aily-linter-check-update"),
@@ -491,6 +574,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   fs: {
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
+    readFileBufferAsync: async (path) => {
+      const buffer = await require("fs").promises.readFile(path);
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    },
     readFileBuffer: (path) => {
       const buffer = require("fs").readFileSync(path);
       return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
@@ -508,6 +595,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     writeFileBuffer: (path, data) => {
       require("fs").writeFileSync(path, Buffer.from(data));
     },
+    writeFileBufferAsync: async (path, data) => {
+      await require("fs").promises.writeFile(path, Buffer.from(data));
+    },
     md5Buffer: (data) => {
       return createHash("md5").update(Buffer.from(data)).digest("hex");
     },
@@ -522,11 +612,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
       const s = require("fs").statSync(path);
       return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
     },
+    lstatSync: (path) => {
+      const s = require("fs").lstatSync(path);
+      return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile(), _isSymbolicLink: s.isSymbolicLink() };
+    },
     isDirectory: (path) => require("fs").statSync(path).isDirectory(),
     unlinkSync: (path, cb) => require("fs").unlinkSync(path, cb),
     rmdirSync: (path) => require("fs").rmdirSync(path, { recursive: true, force: true }),
     rmSync: (path, options) => require("fs").rmSync(path, options),
     renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
+    rename: (oldPath, newPath) => require("fs").promises.rename(oldPath, newPath),
     linkSync: (existingPath, newPath) => require("fs").linkSync(existingPath, newPath),
     chmodSync: (path, mode) => require("fs").chmodSync(path, mode),
     appendFileSync: (path, data) => require("fs").appendFileSync(path, data),
@@ -559,6 +654,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     writeFile: (path, data, encoding) => ipcRenderer.invoke("fs-writeFile", path, data, encoding),
     exists: (path) => ipcRenderer.invoke("fs-exists", path),
     stat: (path) => ipcRenderer.invoke("fs-stat", path),
+    lstat: (path) => ipcRenderer.invoke("fs-lstat", path),
     readdir: (path) => ipcRenderer.invoke("fs-readdir", path),
     readDir: (path) => ipcRenderer.invoke("fs-readDir", path),
     mkdir: (path, options) => ipcRenderer.invoke("fs-mkdir", path, options),

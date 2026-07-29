@@ -362,7 +362,6 @@ export class ChatRuntimeOwnerService implements ChatRuntimeOwnerExecutor, ChatRu
         );
         this.emitServiceOwnedTurnProgress(options.request.sessionId, seededTurn);
         this.emitSessionState(options.request.sessionId, 'runtime-status');
-        this.scheduleSubmittedTurnStartupResourceSettle(options.request.sessionId);
         this.throwIfSubmittedTurnCancelled(options.request.sessionId, activeTurnId);
         await options.owner.turn.run(options.request.requestText, options.displayText, {
           turnId: this.normalizeSubmittedTurnId(options.activeResponseHandle) || undefined,
@@ -446,14 +445,6 @@ export class ChatRuntimeOwnerService implements ChatRuntimeOwnerExecutor, ChatRu
       this.emitSessionState(normalizedRequest.sessionId, 'runtime-status');
       throw error;
     }
-  }
-
-  private scheduleSubmittedTurnStartupResourceSettle(sessionId: ChatRuntimeHostSessionId): void {
-    void this.submittedTurnLifecycle.settleSubmittedTurnStartupResources(sessionId)
-      .catch(error => {
-        this.emitRuntimeError(sessionId, error);
-        this.emitSessionState(sessionId, 'runtime-status');
-      });
   }
 
   private applySubmittedTurnProtocolTruncation(

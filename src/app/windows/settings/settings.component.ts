@@ -95,7 +95,7 @@ export class SettingsComponent implements OnDestroy {
       icon: 'fa-light fa-layer-group'
     },
     {
-      name: 'SETTINGS.SECTIONS.AILY_TOOLS',
+      name: 'SETTINGS.SECTIONS.TOOLS_AND_SUBAPP',
       icon: 'fa-light fa-hammer'
     },
     // {

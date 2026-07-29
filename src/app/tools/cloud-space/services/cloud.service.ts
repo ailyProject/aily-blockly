@@ -1,6 +1,6 @@
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders, HttpErrorResponse } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpErrorResponse, HttpParams } from '@angular/common/http';
 import { Observable, throwError, from, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
@@ -38,7 +38,18 @@ export class CloudService {
    * 获取公开列表
    */
   getPublicProjects(page, perPage, keyword, id='', board=''): Observable<any> {
-    return this.http.get<any>(`${API.cloudPublicProjects}?page=${page}&perPage=${perPage}&keywords=${keyword}&id=${id}&board=${board}`)
+    let params = new HttpParams()
+      .set('page', String(page))
+      .set('perPage', String(perPage));
+
+    const keywords = String(keyword ?? '').trim();
+    const projectId = String(id ?? '').trim();
+    const boardName = String(board ?? '').trim();
+    if (keywords) params = params.set('keywords', keywords);
+    if (projectId) params = params.set('id', projectId);
+    if (boardName) params = params.set('board', boardName);
+
+    return this.http.get<any>(API.cloudPublicProjects, { params })
       .pipe(
         catchError(this.handleError)
       );

@@ -24,6 +24,7 @@ import {
 import { normalizeAgentIdentifiers } from './agent-identifiers';
 import { AilyHost } from './host';
 import { isAilyCategoryDebugEnabled } from './chat-debug-flags';
+import { getChildToolConfigs, onChildToolConfigsChanged } from '../../../configs/tool.config';
 
 const MAX_SKILL_RELATED_FILES = 50;
 const MAX_SKILL_RELATED_DEPTH = 5;
@@ -217,6 +218,14 @@ class SkillRegistryImpl {
   private _refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private _initializationSequence = 0;
 
+  constructor() {
+    onChildToolConfigsChanged(() => {
+      if (this._initialized) {
+        this.scheduleDiscoveryRefresh();
+      }
+    });
+  }
+
   // ========== 初始化 ==========
 
   /**
@@ -257,8 +266,8 @@ class SkillRegistryImpl {
       this.scanDirectory(builtinDir, { type: 'builtin' });
     }
 
-    for (const childToolSkillDir of this.getChildToolSkillDirs()) {
-      this.scanDirectory(childToolSkillDir, { type: 'builtin' });
+    for (const childToolSkillFile of this.getChildToolSkillFiles()) {
+      this.scanSkillFile(childToolSkillFile, { type: 'builtin' });
     }
 
     // 1. 加载全局 skills（用户在 AppData 下自定义的）
@@ -334,35 +343,41 @@ class SkillRegistryImpl {
           continue;
         }
 
-        const skillMdPath = host.path.join(skillDir, 'SKILL.md');
-        if (!host.fs.existsSync(skillMdPath)) continue;
-
-        try {
-          const raw = host.fs.readFileSync(skillMdPath, 'utf-8');
-          const { metadata, body } = parseSkillMd(raw);
-          const parsedName = metadata.name;
-          metadata.displayName = parsedName && parsedName !== 'unknown' && parsedName !== entry
-            ? parsedName
-            : undefined;
-          metadata.name = entry;
-
-          const skill: IAilySkill = {
-            metadata,
-            folderPath: skillDir,
-            baseDir: skillDir,
-            skillMdPath,
-            origin,
-            // auto-activate skills 立即加载 body
-            content: metadata.autoActivate ? body : undefined,
-          };
-
-          this.skills.set(metadata.name, skill);
-        } catch (e) {
-          console.warn(`[SkillRegistry] 解析 skill 失败: ${skillMdPath}`, e);
-        }
+        this.scanSkillFile(host.path.join(skillDir, 'SKILL.md'), origin);
       }
     } catch (e) {
       console.warn(`[SkillRegistry] 扫描目录失败: ${dir}`, e);
+    }
+  }
+
+  private scanSkillFile(skillMdPath: string, origin: SkillOrigin): void {
+    const host = AilyHost.get();
+    if (!host.fs.existsSync(skillMdPath)) return;
+    const skillDir = host.path.dirname(skillMdPath);
+    const entry = host.path.basename(skillDir);
+
+    try {
+      const raw = host.fs.readFileSync(skillMdPath, 'utf-8');
+      const { metadata, body } = parseSkillMd(raw);
+      const parsedName = metadata.name;
+      metadata.displayName = parsedName && parsedName !== 'unknown' && parsedName !== entry
+        ? parsedName
+        : undefined;
+      metadata.name = entry;
+
+      const skill: IAilySkill = {
+        metadata,
+        folderPath: skillDir,
+        baseDir: skillDir,
+        skillMdPath,
+        origin,
+        // auto-activate skills 立即加载 body
+        content: metadata.autoActivate ? body : undefined,
+      };
+
+      this.skills.set(metadata.name, skill);
+    } catch (e) {
+      console.warn(`[SkillRegistry] 解析 skill 失败: ${skillMdPath}`, e);
     }
   }
 
@@ -398,55 +413,29 @@ class SkillRegistryImpl {
     return directories;
   }
 
-  /** Child tool skills live under child/tools/<tool-id>/skill/<skill-name>/SKILL.md. */
-  private getChildToolSkillDirs(): string[] {
+  /** Installed subapps declare package-relative skill files in package.json. */
+  private getChildToolSkillFiles(): string[] {
     const host = AilyHost.get();
-    const toolsPath = this.getChildToolsRootDir(host);
-    if (!toolsPath) return [];
-    if (!host.fs.existsSync(toolsPath)) return [];
-
-    try {
-      return host.fs.readdirSync(toolsPath)
-        .filter((entry: string) => {
-          const toolPath = host.path.join(toolsPath, entry);
-          return host.fs.isDirectory(toolPath);
-        })
-        .sort((left: string, right: string) => left.localeCompare(right))
-        .map((entry: string) => host.path.join(toolsPath, entry, 'skill'))
-        .filter((dir: string): dir is string => !!dir && host.fs.existsSync(dir));
-    } catch (error) {
-      console.warn('[SkillRegistry] Failed to scan child tool skills:', error);
-      return [];
+    const files = new Set<string>();
+    for (const config of Object.values(getChildToolConfigs())) {
+      if (!config.packagePath || !config.agent?.skills?.length) continue;
+      for (const declaredSkill of config.agent.skills) {
+        const skillFile = host.path.join(config.packagePath, declaredSkill);
+        if (host.fs.existsSync(skillFile)) files.add(skillFile);
+      }
     }
-  }
-
-  private getChildToolsRootDir(host: ReturnType<typeof AilyHost.get> = AilyHost.get()): string | null {
-    const childPath = host.path?.getAilyChildPath?.();
-    return childPath ? host.path.join(childPath, 'tools') : null;
+    return Array.from(files).sort((left, right) => left.localeCompare(right));
   }
 
   /**
-   * Watch the inventory root, each installed tool's skill root, and each skill folder.
-   * This covers tool install/uninstall, skill add/remove, and SKILL.md updates.
+   * Watch each manifest-declared skill directory.
    */
   private getChildToolSkillWatchRoots(host: ReturnType<typeof AilyHost.get>): string[] {
-    const toolsPath = this.getChildToolsRootDir(host);
-    if (!toolsPath) return [];
-
-    const roots = [toolsPath];
-    for (const skillRoot of this.getChildToolSkillDirs()) {
-      roots.push(skillRoot);
-      try {
-        roots.push(...host.fs.readdirSync(skillRoot)
-          .map((entry: string) => host.path.join(skillRoot, entry))
-          .filter((skillDir: string) => host.fs.isDirectory(skillDir))
-          .sort((left: string, right: string) => left.localeCompare(right)));
-      } catch (error) {
-        console.warn('[SkillRegistry] Failed to scan child tool skill watch roots:', error);
-      }
+    const roots = new Set<string>();
+    for (const skillFile of this.getChildToolSkillFiles()) {
+      roots.add(host.path.dirname(skillFile));
     }
-
-    return roots;
+    return Array.from(roots);
   }
 
   /** Global skills directory: {appDataPath}/aily-skills/. */

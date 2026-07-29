@@ -37,6 +37,7 @@ import { resolveTranslatedApiErrorMessage } from '../utils/api-error.utils';
 import { ToolI18nService } from '../services/tool-i18n.service';
 import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
 import { ModeWelcomeComponent } from '../components/mode-welcome/mode-welcome.component';
+import { SimulatorSubappHostComponent } from '../tools/simulator/simulator-subapp-host.component';
 import type { DevelopmentModePreference } from '../services/config.service';
 import { ChatRuntimeHostResourceOperationHandlerService } from '../tools/aily-chat/services/chat-runtime-host-resource-operation-handler.service';
 import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-chat-child-protocol.service';
@@ -70,6 +71,7 @@ import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-c
     TranslateModule,
     LibManagerToolComponent,
     ModeWelcomeComponent,
+    SimulatorSubappHostComponent,
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
@@ -92,7 +94,9 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   isChildTool(toolId: string): boolean {
-    return isChildTool(toolId);
+    // Simulator is installed as a Subapp package, but its UI is owned by the
+    // dedicated exact-origin host instead of the generic Penpal child host.
+    return toolId !== 'simulator' && isChildTool(toolId);
   }
 
   options = {
@@ -150,10 +154,12 @@ export class MainWindowComponent implements OnDestroy {
     });
     this.updateService.init();
     this.npmService.init();
-    await this.authService.initializeAuth();
     this.setupGlobalOAuthListener();
     this.setupExampleListListener();
-    this.electronService.sendRendererReady();
+    void this.electronService.sendRendererReady();
+    void this.authService.initializeAuth().catch(error => {
+      console.warn('[Auth] Background authentication initialization failed:', error);
+    });
     // 重置 footer 状态
     this.uiService.updateFooterState({ text: '', timeout: 0 });
 

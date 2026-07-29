@@ -6,12 +6,11 @@
     align-items: center;
     background: var(--aily-bg-card);
     border: 1px solid var(--aily-border-secondary);
-    padding: 10px 0 10px 10px;
+    padding: 10px;
     border-radius: 10px;
     box-shadow: var(--aily-shadow-md);
     min-width: 250px;
-    max-width: 400px;
-    width: 250px;
+    max-width: 450px;
     height: 90px;
     transition: all 0.3s ease;
     overflow: hidden;
@@ -74,14 +73,21 @@
     .text-box {
         margin-left: 10px;
         flex: 1;
-        width: calc(100% - 115px);
+        min-width: 0;
         color: var(--aily-text-primary);
 
-        > div:first-child {
+        .title,
+        .text {
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .title {
             color: var(--aily-text-primary);
         }
 
-        > div:nth-child(2) {
+        .text {
             margin-top: 2px;
             color: var(--aily-text-secondary);
             font-size: 12px;

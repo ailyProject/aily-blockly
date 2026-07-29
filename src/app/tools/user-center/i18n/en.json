@@ -7,6 +7,7 @@
         "PLAN_LABEL": "{{plan}} Plan",
         "AI_CALLS": "AI calls",
         "AUTO_MODE": "auto mode",
+        "AI_CALLS_RESET_SHORT": "{{date}} reset",
         "ADD_AI_CALLS": "Add usage",
         "CLOUD_STORAGE": "Cloud storage",
         "ADD_STORAGE": "Add storage",

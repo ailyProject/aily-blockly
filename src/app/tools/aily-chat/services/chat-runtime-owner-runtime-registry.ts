@@ -17,9 +17,6 @@ import type {
 import type {
   ChatSessionRuntimeProjectionPatch,
 } from './chat-session-runtime-projection-core';
-import type {
-  ChatSessionLexPostTurnResources,
-} from './chat-session-lex-post-turn-resource-factory.service';
 
 export interface ChatRuntimeOwnerRuntimeRegistryPort {
   attachView(sessionId: string | null | undefined): boolean;
@@ -30,10 +27,6 @@ export interface ChatRuntimeOwnerRuntimeRegistryPort {
   syncHandleState(sessionId: string | null | undefined, patch: ChatSessionRuntimeHandlePatch): void;
   releaseHandle(sessionId: string | null | undefined): boolean;
   setAbortController(sessionId: string | null | undefined, controller: AbortController | null): boolean;
-  getOrCreateLexPostTurnResources(
-    sessionId: string | null | undefined,
-    cwd: string | null | undefined,
-  ): ChatSessionLexPostTurnResources | undefined;
   scheduleLexRequestCompleted(input: ChatSessionLexRequestCompletedInput): void;
   beginRequest(
     sessionId: string | null | undefined,

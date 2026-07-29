@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, inject, HostBinding } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject, HostBinding, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Subscription } from 'rxjs';
 import { EditCheckpointService, EditsSummary, EditFileSummary } from '../../services/edit-checkpoint.service';
@@ -6,6 +6,10 @@ import type { ChatTaskActionDetail } from '../../helpers/chat-task-action-coordi
 import { getInteractionDisplayContent } from '../../core/user-turn-action-target';
 import { AiCoderDiffBridgeService } from '../../../../services/ai-coder-diff-bridge.service';
 import type { AiEditDiffResultPayload } from '../../../../services/ai-coder-diff-channels';
+import {
+  ChatEditingSessionProjectionService,
+  type ChatEditingSessionProjection,
+} from '../../services/chat-editing-session-projection.service';
 
 @Component({
   selector: 'app-aily-edits-viewer',
@@ -30,15 +34,23 @@ export class AilyEditsViewerComponent implements OnInit, OnDestroy {
   private sub?: Subscription;
   private diffResultSub?: Subscription;
   private checkpointService = inject(EditCheckpointService);
+  private projectionService = inject(ChatEditingSessionProjectionService);
   private diffBridge = inject(AiCoderDiffBridgeService);
+  private activeSessionId = '';
+  private projection: ChatEditingSessionProjection | null = null;
+
+  @Input()
+  set sessionId(value: string | null | undefined) {
+    const sessionId = typeof value === 'string' ? value.trim() : '';
+    if (sessionId === this.activeSessionId) {
+      return;
+    }
+    this.activeSessionId = sessionId;
+    this.bindProjection();
+  }
 
   ngOnInit(): void {
-    this.sub = this.checkpointService.summaryChanged$.subscribe(s => {
-      this.summary = s;
-      if (s) {
-        this.isAccepted = false;
-      }
-    });
+    this.bindProjection();
     this.diffResultSub = this.diffBridge.result$.subscribe(result => {
       this.handleDiffEditorResult(result);
     });
@@ -54,11 +66,11 @@ export class AilyEditsViewerComponent implements OnInit, OnDestroy {
   }
 
   get canUndo(): boolean {
-    return this.checkpointService.canUndo;
+    return this.projection?.canUndo === true;
   }
 
   get canRedo(): boolean {
-    return this.checkpointService.canRedo;
+    return this.projection?.canRedo === true;
   }
 
   get requestPreview(): string | null {
@@ -173,7 +185,7 @@ export class AilyEditsViewerComponent implements OnInit, OnDestroy {
     this.diffBridge.openSingleFile(
       this.summary,
       file,
-      (filePath) => this.checkpointService.getInitialContent(filePath),
+      (filePath) => this.projectionService.getOriginalText(this.activeSessionId, filePath),
     );
   }
 
@@ -188,7 +200,7 @@ export class AilyEditsViewerComponent implements OnInit, OnDestroy {
   private openDiffPreview(summary: EditsSummary): void {
     this.diffBridge.openFromSummary(
       summary,
-      (filePath) => this.checkpointService.getInitialContent(filePath),
+      (filePath) => this.projectionService.getOriginalText(this.activeSessionId, filePath),
     );
   }
 
@@ -253,5 +265,22 @@ export class AilyEditsViewerComponent implements OnInit, OnDestroy {
       return 'Notebook';
     }
     return null;
+  }
+
+  private bindProjection(): void {
+    this.sub?.unsubscribe();
+    this.sub = undefined;
+    this.projection = null;
+    this.summary = null;
+    if (!this.activeSessionId) {
+      return;
+    }
+    this.sub = this.projectionService.observe(this.activeSessionId).subscribe(projection => {
+      this.projection = projection;
+      this.summary = projection?.summary ?? null;
+      if (projection?.summary) {
+        this.isAccepted = false;
+      }
+    });
   }
 }

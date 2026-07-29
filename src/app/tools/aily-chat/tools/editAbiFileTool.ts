@@ -1,7 +1,10 @@
 ﻿import path from "path";
-import type { ToolUseResult } from '../core/tool-types';
+import { ToolUseResult } from "./tools";
 import { normalizePath } from "../services/security.service";
 import { AilyHost } from '../core/host';
+import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
+import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
+import { isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
 
 /**
  * ABI文件编辑工具
@@ -348,17 +351,39 @@ export async function editAbiFileTool(
 
         // 验证最终内容是否为有效的JSON格式，并压缩结构空白以减小 project.abi 体积
         let minifiedContent: string;
+        let parsedAbi: any;
         try {
-            minifiedContent = JSON.stringify(JSON.parse(finalContent));
+            parsedAbi = JSON.parse(finalContent);
+            if (!isAilyProjectDataMarker(parsedAbi?.$ailyProjectData)) {
+                throw new Error('缺少 $ailyProjectData: { schemaVersion: 1, mode: "external-only" }');
+            }
+            assertNoOversizedInlineValues(parsedAbi);
+            const refs = projectDataRuntime.getStore().collectReferences(parsedAbi);
+            const validation = await projectDataRuntime.getStore().validateReferences(refs);
+            if (!validation.valid) {
+                throw new Error(`项目数据引用无效: ${validation.issues.map((issue) => issue.error).join('; ')}`);
+            }
+            minifiedContent = JSON.stringify(parsedAbi);
         } catch (jsonError) {
             return {
                 is_error: true,
-                content: `最终ABI内容不是有效的JSON格式: ${jsonError.message}`
+                content: `最终 ABI 内容未通过格式或项目数据校验: ${jsonError.message}`
             };
         }
 
-        // 写入文件
-        await AilyHost.get().fs.writeFileSync(filePath, minifiedContent, encoding);
+        // 原子替换，避免 Agent 编辑中断后留下半个 ABI 文件。
+        const fs = AilyHost.get().fs;
+        if (typeof fs.renameSync !== 'function') {
+            return { is_error: true, content: '当前文件系统不支持 ABI 原子替换' };
+        }
+        const temporaryPath = `${filePath}.tmp`;
+        await fs.writeFileSync(temporaryPath, minifiedContent, encoding);
+        try {
+            fs.renameSync(temporaryPath, filePath);
+        } catch (error) {
+            if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+            throw error;
+        }
         
         return { 
             is_error: false, 

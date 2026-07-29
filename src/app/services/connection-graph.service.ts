@@ -10,11 +10,46 @@ import { NoticeOptions } from './notice.service';
 
 /** 组件图片 */
 export interface ComponentImage {
+  id?: string;
   url: string;
   x: number;
   y: number;
   width: number;
   height: number;
+  version?: 'v1' | string;
+  rotation?: number;
+  appearanceLayer?: 'background' | 'foreground';
+}
+
+export interface VersionedComponentIdentity {
+  id: string;
+  version: string;
+}
+
+export interface PinmapAppearanceSlot {
+  id: string;
+  role: string;
+  layer: 'dynamic' | 'interaction';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  shape?: 'rect' | 'circle';
+  clip?: boolean;
+}
+
+export interface PinmapComponentAppearance
+  extends VersionedComponentIdentity {
+  schemaVersion: 1;
+  source: 'pinmap';
+  overflow: 'visible' | 'hidden';
+  slots: PinmapAppearanceSlot[];
+}
+
+export interface ComponentSimulationBinding {
+  schemaVersion: 1;
+  model: VersionedComponentIdentity;
+  viewAdapter: VersionedComponentIdentity;
 }
 
 /** 引脚功能 */
@@ -68,6 +103,8 @@ export interface ComponentConfig {
   images: ComponentImage[];
   pins: ConfigPin[];
   functionTypes: FunctionTypeDef[];
+  appearance?: VersionedComponentIdentity | PinmapComponentAppearance;
+  simulation?: ComponentSimulationBinding;
   /** 同库下的类似组件列表（来自 pinmap_catalog.json，仅 pinmapId 加载时有） */
   similarComponents?: SimilarComponent[];
 }
@@ -189,7 +226,7 @@ export interface ConnectionGraphTextFileWriteEvent {
 /** savePinmapConfig / updateCatalogStatus 的可选写入回调与 catalog 版本 */
 export type SavePinmapConfigOptions = {
   catalogVersion?: string | number;
-  onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void | Promise<void>;
+  onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void;
 };
 
 function normalizeSavePinmapConfigOptions(
@@ -1908,19 +1945,16 @@ export class ConnectionGraphService {
     packageSlug: string,
     resolvedPackagePath: string,
     config: ComponentConfig,
+    onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void,
   ): void {
     if (!packageSlug.startsWith('board-')) {
       return;
     }
-    try {
-      const rootPath = this.electronService.pathJoin(resolvedPackagePath, 'pinmap.json');
-      if (!this.electronService.exists(rootPath)) {
-        return;
-      }
-      this.electronService.writeFile(rootPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-      console.warn('[overwriteBoardRootPinmapIfPresent] 写入根目录 pinmap.json 失败:', e);
+    const rootPath = this.electronService.pathJoin(resolvedPackagePath, 'pinmap.json');
+    if (!this.electronService.exists(rootPath)) {
+      return;
     }
+    this.writeTextFileWithObserver(rootPath, JSON.stringify(config, null, 2), onFileWrite);
   }
 
   savePinmapConfig(
@@ -2187,40 +2221,18 @@ export class ConnectionGraphService {
   private writeTextFileWithObserver(
     filePath: string,
     content: string,
-    onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void | Promise<void>,
+    onFileWrite?: (event: ConnectionGraphTextFileWriteEvent) => void,
   ): void {
-    let existedBefore = false;
-    let beforeContent: string | null = null;
-
-    try {
-      existedBefore = this.electronService.exists(filePath);
-      beforeContent = existedBefore ? this.electronService.readFile(filePath) : null;
-    } catch {
-      existedBefore = false;
-      beforeContent = null;
-    }
+    const existedBefore = this.electronService.exists(filePath);
+    const beforeContent = existedBefore ? this.electronService.readFile(filePath) : null;
 
     this.electronService.writeFile(filePath, content);
-
-    if (!onFileWrite) {
-      return;
-    }
-
-    try {
-      const result = onFileWrite({
-        filePath,
-        existedBefore,
-        beforeContent,
-        afterContent: content,
-      });
-      if (result && typeof (result as Promise<void>).then === 'function') {
-        void (result as Promise<void>).catch(error => {
-          console.warn('[ConnectionGraphService] file write observer failed:', error);
-        });
-      }
-    } catch (error) {
-      console.warn('[ConnectionGraphService] file write observer failed:', error);
-    }
+    onFileWrite?.({
+      filePath,
+      existedBefore,
+      beforeContent,
+      afterContent: content,
+    });
   }
 
   /**

@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "プロジェクトの公開に失敗しました",
+        "WORKSPACE_PROJECT_NOT_FOUND": "プロジェクトが見つかりません",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "このプロジェクトを公開する権限がありません",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "ローカル依存関係のパスは公開要件を満たしていません",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "先にプロジェクトをビルドして同期してください"
+    },
     "MENU": {
         "MENU": "メニュー",
         "PROJECT_NEW": "新規プロジェクト",
@@ -189,6 +196,16 @@
             "LABEL_COLOR_MODE": "色",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "MP4 または GIF ファイルのみ対応しています"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "PNG、JPEG、WebP、GIF 画像を RGB565/RGB332 ピクセルデータに変換します",
+            "UPLOAD_TOOLTIP": "対応形式: PNG、JPEG、WebP、GIF",
+            "EMPTY": "画像がアップロードされていません",
+            "STATUS_DECODING": "画像を変換しています...",
+            "STATUS_REDECODING": "{{name}} を再変換しています...",
+            "ERROR_DECODE_FAILED": "画像の変換に失敗しました",
+            "ERROR_REDECODE_FAILED": "画像の再変換に失敗しました",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "PNG、JPEG、WebP、GIF ファイルのみ対応しています"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "アップロード",
             "UPLOAD_TOOLTIP": "対応形式: MP4、GIF、PNG",
@@ -247,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "アップロード",
+            "UPLOAD_TOOLTIP": "対応形式：PNG、JPEG、WebP、BMP",
+            "BUTTON_CLEAR": "クリア",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "色",
+            "EMPTY": "画像がアップロードされていません",
+            "STATUS_READING_FILE": "{{name}} を読み込み中...",
+            "STATUS_DECODING": "画像を変換中...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "元ファイルは {{maxSize}} 以下にしてください（現在：{{currentSize}}）",
+            "ERROR_DECODE_FAILED": "画像の変換に失敗しました",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "PNG、JPEG、WebP、BMP 画像のみ対応しています"
         }
     },
     "MAIN_WINDOW": {
@@ -270,7 +302,7 @@
             "COMPILATION": "コンパイル設定",
             "REPOSITORY": "リポジトリ設定",
             "DEPENDENCIES": "グローバル依存関係",
-            "AILY_TOOLS": "Aily ツール",
+            "TOOLS_AND_SUBAPP": "ツールとアプリ",
             "MCP": "MCP",
             "DEVMODE": "開発者モード",
             "CACHE": "キャッシュ管理"
@@ -429,6 +461,7 @@
         "TEXT_DOWNLOADED": "バージョン {{version}} のダウンロードが完了しました。今すぐインストールしますか？",
         "TEXT_AVAILABLE": "現在のバージョン {{currentVersion}}、新しいバージョン {{version}}<br>このアップデートをダウンロードしてインストールしますか？",
         "DOWNLOAD_FAILED": "ダウンロード失敗",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "予備のダウンロード元を使用中（{{current}}/{{total}}）",
         "REMIND_LATER": "後で通知",
         "SKIP_VERSION": "このバージョンをスキップ",
         "UPDATE_NOW": "今すぐ更新",
@@ -797,6 +830,14 @@
             "COMPLETE_WITH_TIME": "ビルド完了 (所要時間: {{seconds}}s)",
             "FIRST_BUILD_HINT": "初回ビルドには時間がかかる場合があります",
             "FAST_BUILD_HINT": "高速ビルドシステムを実行中",
+            "PROGRESS_PREPARING": "ビルドを準備中",
+            "PROGRESS_SKETCH": "スケッチをコンパイル中",
+            "PROGRESS_LIBRARIES": "ライブラリをコンパイル中",
+            "PROGRESS_CORE": "コアをコンパイル中",
+            "PROGRESS_LINKING": "ファームウェアをリンク中",
+            "PROGRESS_OBJCOPY": "ファームウェアを生成中",
+            "PROGRESS_FINALIZING": "ビルドを仕上げています",
+            "PROGRESS_COMPLETE": "ビルド完了",
             "PROCESS_SIGNAL_TERMINATED": "ビルドプロセスはシグナルで終了しました: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "ビルドプロセスが予期せず終了しました。終了コード: {{code}}",
             "PROCESS_START_FAILED": "ビルドプロセスを開始できませんでした",

@@ -318,29 +318,4 @@ editFileTool({
         },
         agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
     },
-    {
-        name: 'delete_folder',
-        description: '删除指定文件夹及其内容。可选择是否在删除前创建备份。',
-        input_schema: {
-            type: 'object',
-            properties: {
-                path: {
-                    type: 'string',
-                    description: '要删除的文件夹路径'
-                },
-                createBackup: {
-                    type: 'boolean',
-                    description: '删除前是否创建备份',
-                    default: true
-                },
-                recursive: {
-                    type: 'boolean',
-                    description: '是否递归删除',
-                    default: true
-                }
-            },
-            required: ['path']
-        },
-        agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
-    },
 ];

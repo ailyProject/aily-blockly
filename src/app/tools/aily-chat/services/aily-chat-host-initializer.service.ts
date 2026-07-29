@@ -12,7 +12,10 @@ import { NoticeService } from '../../../services/notice.service';
 import { OnboardingService } from '../../../services/onboarding.service';
 import { PlatformService } from '../../../services/platform.service';
 import { ProjectService } from '../../../services/project.service';
+import { SerialService } from '../../../services/serial.service';
+import { SubappAgentBridgeService } from '../../../services/subapp-agent-bridge.service';
 import { UiService } from '../../../services/ui.service';
+import { UploaderService } from '../../../services/uploader.service';
 import { createElectronHostAdapter } from '../adapters/electron-host-adapter';
 import { AilyHost } from '../core/host';
 import { AbsAutoSyncService } from './abs-auto-sync.service';
@@ -33,6 +36,8 @@ export class AilyChatHostInitializerService {
       get configService() { return injector.get(ConfigService); },
       get authService() { return injector.get(AuthService); },
       get builderService() { return injector.get(BuilderService); },
+      get uploaderService() { return injector.get(UploaderService); },
+      get serialService() { return injector.get(SerialService); },
       get platformService() { return injector.get(PlatformService); },
       get noticeService() { return injector.get(NoticeService); },
       get blocklyService() { return injector.get(BlocklyService); },
@@ -44,6 +49,7 @@ export class AilyChatHostInitializerService {
       get electronService() { return injector.get(ElectronService); },
       get uiService() { return injector.get(UiService); },
       get onboardingService() { return injector.get(OnboardingService); },
+      get subappAgentBridgeService() { return injector.get(SubappAgentBridgeService); },
     }));
   }
 }

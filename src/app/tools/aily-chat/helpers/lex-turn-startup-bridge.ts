@@ -9,26 +9,9 @@ type LexTurnStartupContext = Pick<
   'isCompleted' | 'isCancelled' | 'isWaiting' | 'currentMessageSource' | 'toolCallingIteration'
 > & Pick<IChatViewAccess, 'list' | 'scrollManager'>
   & Pick<ISessionAccess, 'sessionId'>
-  & Pick<IProjectContext, 'currentModel' | 'prjPath' | 'prjRootPath'>
+  & Pick<IProjectContext, 'currentModel'>
   & Pick<IChatServiceAccess, 'repetitionDetectionService' | 'ailyChatConfigService' | 'contextBudgetService'>
   & {
-    readonly editTracking: {
-      autoSaveEdits: boolean;
-      setTimelineContext(sessionId: string | null | undefined, workspaceRoot: string | null | undefined): void;
-      startTurn(
-        turnIndex: number,
-        turnStartListIndex: number | null,
-        responseStartListIndex: number | null,
-        turnId?: string,
-        requestContent?: string,
-        displayContent?: string,
-        checkpointId?: string,
-        requestMetadata?: unknown,
-      ): void;
-    };
-    readonly turnStartupEditLifecycle: {
-      saveCheckpointToDisk(sessionId: string | null | undefined): void;
-    };
     resolveActiveRuntimeSessionId?(): string | null | undefined;
     readCurrentViewSessionResource?(): string | null;
     suppressVisibleTurnStartupProjection?: boolean;
@@ -154,7 +137,6 @@ export class LexTurnStartupBridge {
       : typeof this.ctx.sessionId === 'string'
         ? this.ctx.sessionId.trim()
         : '';
-    const resourceSessionId = activeRuntimeSessionId || visibleSessionId;
     const isDetachedRuntimeOwner = !!activeRuntimeSessionId
       && !!visibleSessionId
       && activeRuntimeSessionId !== visibleSessionId;
@@ -180,34 +162,7 @@ export class LexTurnStartupBridge {
       this.ensureResponseItem(turnId);
     }
 
-    this.ctx.editTracking.autoSaveEdits = this.ctx.ailyChatConfigService.autoSaveEdits;
-    this.ctx.turnStartupEditLifecycle.saveCheckpointToDisk(resourceSessionId);
-
     const conversationMessages = this.getConversationMessages();
-    const workspaceRoot = this.ctx.prjPath || this.ctx.prjRootPath || null;
-    this.ctx.editTracking.setTimelineContext(
-      resourceSessionId || null,
-      workspaceRoot,
-    );
-
-    const responseStartListIndex = shouldProjectVisibleStartup
-      ? this.ctx.list.length - 1
-      : null;
-    const turnStartListIndex = responseStartListIndex !== null
-      ? responseStartListIndex > 0
-        ? responseStartListIndex - 1
-        : responseStartListIndex
-      : null;
-    this.ctx.editTracking.startTurn(
-      turnIndex,
-      turnStartListIndex,
-      responseStartListIndex,
-      turnId,
-      userMessage,
-      displayContent,
-      nextRequestMetadata.checkpointId,
-      nextRequestMetadata,
-    );
     if (this.shouldRefreshLocalEstimate()) {
       if (this.shouldKeepEmptyBudgetSnapshot(conversationMessages)) {
         this.ctx.contextBudgetService.reset();

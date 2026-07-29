@@ -86,6 +86,32 @@ export class SerialService {
       return [{ port: port, name: '' }];
     }
   }
+
+  async selectSerialPort(portName: string): Promise<PortItem> {
+    const normalizedPortName = String(portName || '').trim();
+    if (!normalizedPortName) {
+      throw new Error('A serial port is required.');
+    }
+
+    const ports = await this.getSerialPorts();
+    const selectedPort = ports.find(port => String(port.name || '').trim() === normalizedPortName);
+    if (!selectedPort) {
+      const availablePorts = ports
+        .map(port => String(port.name || '').trim())
+        .filter(Boolean)
+        .join(', ');
+      throw new Error(availablePorts
+        ? `Serial port "${normalizedPortName}" is no longer available. Available ports: ${availablePorts}.`
+        : `Serial port "${normalizedPortName}" is no longer available. No serial ports are connected.`);
+    }
+
+    this.currentPort = selectedPort.name;
+    this.currentPortInfo = {
+      ...selectedPort,
+      type: selectedPort.type || 'serial',
+    };
+    return this.currentPortInfo;
+  }
 }
 
 

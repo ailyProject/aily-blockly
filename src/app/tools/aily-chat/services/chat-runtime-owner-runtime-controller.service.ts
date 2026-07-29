@@ -93,13 +93,6 @@ export class ChatRuntimeOwnerRuntimeControllerService implements ChatRuntimeOwne
     return this.runtimeRegistry.setAbortController(sessionId, controller);
   }
 
-  getOrCreateLexPostTurnResources(
-    sessionId: ChatRuntimeHostSessionId,
-    cwd: string | null | undefined,
-  ) {
-    return this.runtimeRegistry.getOrCreateLexPostTurnResources(sessionId, cwd);
-  }
-
   scheduleLexRequestCompleted(input: Parameters<ChatRuntimeOwnerRuntimeControllerPort['scheduleLexRequestCompleted']>[0]): void {
     this.runtimeRegistry.scheduleLexRequestCompleted(input);
   }

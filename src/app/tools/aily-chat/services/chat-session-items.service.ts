@@ -14,13 +14,18 @@ import { ChatRuntimeHostInventoryService } from './chat-runtime-host-inventory.s
 import type { ChatRuntimeHostSessionInventoryItem } from '../core/chat-runtime-host-contract';
 import { ChatPerformanceTracer } from './chat-perf-tracer';
 import {
+  chatSessionScopeCacheKey,
   chatSessionScopeProjectPath,
   isSameChatSessionScopePath,
   normalizeChatSessionScopePath,
   resolveChatSessionScopeFromProject,
 } from '../core/chat-session-scope';
 import { resolveChatSurfaceModeId } from '../core/chat-mode';
-import { normalizeChatSessionTitleSource } from '../core/chat-session-title';
+import {
+  getChatSessionTitleSourcePriority,
+  isCustomSessionTitleSource,
+  normalizeChatSessionTitleSource,
+} from '../core/chat-session-title';
 import type { ChatSessionListAction, ChatSessionListItem } from './menu-manager.service';
 import type {
   HostSessionHistoryItem,
@@ -30,7 +35,8 @@ import type {
   HostSessionListItemTiming,
   SessionInventorySummary,
 } from '../helpers/host-session-item-controller';
-import { EditCheckpointService } from './edit-checkpoint.service';
+import { ChatEditingSessionProjectionService } from './chat-editing-session-projection.service';
+import { ElectronService } from '../../../services/electron.service';
 import { buildHostSessionCurrentPickerInputState } from '../helpers/host-session-input-state';
 import { buildHostSessionCurrentPickerRoutingSummary } from '../helpers/host-session-request-routing';
 import { isChatSessionUnread } from '../helpers/chat-session-presentation';
@@ -72,6 +78,14 @@ export interface SessionListRefreshRequest {
   readonly projectRootPath?: string | null;
 }
 
+export interface SessionInventoryScopeInitialization {
+  readonly reason: SessionListRefreshRequest['reason'];
+  readonly projectPath?: string | null;
+  readonly projectRootPath?: string | null;
+  readonly rendererGeneration?: number;
+  readonly force?: boolean;
+}
+
 export type ChatSessionListLoadStateKind = 'idle' | 'loading-summary' | 'hydrating-visible-details' | 'ready' | 'error';
 
 export interface ChatSessionListLoadState {
@@ -100,6 +114,11 @@ export class ChatSessionItemsService implements OnDestroy {
   private refreshRequestGeneration = 0;
   private activeRefreshRequestGeneration = 0;
   private refreshRequestInFlight = false;
+  private initializedInventoryScopeIdentity = '';
+  private inventoryScopeRevision = 0;
+  private inventoryBootstrapStartedAt = 0;
+  private hostInventoryAttachedAt = 0;
+  private lastCompletedRefreshRequest: SessionListRefreshRequest | null = null;
   private _sessionListLoadState: ChatSessionListLoadState = {
     kind: 'idle',
     canRetry: false,
@@ -116,18 +135,36 @@ export class ChatSessionItemsService implements OnDestroy {
     private readonly chatService: ChatService,
     private readonly chatHistoryService: ChatHistoryService,
     private readonly chatSessionRuntimeStore: ChatSessionRuntimeStoreService,
-    @Optional() private readonly editCheckpointService: EditCheckpointService | null = null,
+    @Optional() private readonly editingSessionProjection: ChatEditingSessionProjectionService | null = null,
     @Optional() private readonly chatSessionStateService: ChatSessionStateService | null = null,
     @Optional() private readonly chatSessionModelStore: ChatSessionModelStoreService | null = null,
     @Optional() private readonly chatSessionViewModelStore: ChatSessionViewModelStoreService | null = null,
     @Optional() private readonly chatRuntimeHostInventory: ChatRuntimeHostInventoryService | null = null,
+    @Optional() private readonly electronService: ElectronService | null = null,
   ) {
     ChatPerformanceTracer.increment('session_list.service_created');
     ChatPerformanceTracer.mark('session_list.service_created');
     this.hostSessionItemController = new HostSessionItemController({
       chatService: this.chatService,
       chatHistoryService: this.chatHistoryService,
-      ...(this.editCheckpointService ? { editCheckpointService: this.editCheckpointService } : {}),
+      ...(this.editingSessionProjection
+        ? {
+            readEditingSessionRequestChanges: (sessionId: string, requestOrTurnId: string) => {
+              const summary = this.editingSessionProjection?.getRequestSummary(sessionId, requestOrTurnId);
+              if (summary === undefined) {
+                this.editingSessionProjection?.ensureLoaded(sessionId);
+                return undefined;
+              }
+              return summary
+                ? {
+                    fileCount: summary.fileCount,
+                    insertions: summary.totalAdded,
+                    deletions: summary.totalRemoved,
+                  }
+                : null;
+            },
+          }
+        : {}),
       ...(this.chatSessionStateService ? { chatSessionStateService: this.chatSessionStateService } : {}),
       readLiveSessionTurnResponses: (sessionId) => this.chatSessionRuntimeStore.readTurnResponses(sessionId),
       readLiveSessionRuntimeState: (sessionId) => this.readLiveSessionRuntimeState(sessionId),
@@ -144,6 +181,11 @@ export class ChatSessionItemsService implements OnDestroy {
     this.controllerSubscription.add(this.chatSessionRuntimeStore.runtimeChanged$.subscribe((event) => {
       this.handleRuntimeChanged(event);
     }));
+    if (this.editingSessionProjection) {
+      this.controllerSubscription.add(this.editingSessionProjection.changed$.subscribe(event => {
+        this.scheduleSessionItemRefresh(event.sessionId, 'editing-session-revision');
+      }));
+    }
     if (this.chatSessionModelStore) {
       this.controllerSubscription.add(this.chatSessionModelStore.changed$.subscribe((event) => {
         this.bumpSessionInventoryRevision();
@@ -163,6 +205,10 @@ export class ChatSessionItemsService implements OnDestroy {
     }
     if (this.chatRuntimeHostInventory) {
       this.controllerSubscription.add(this.chatRuntimeHostInventory.changed$.subscribe((event) => {
+        if (this.hostInventoryAttachedAt === 0) {
+          this.hostInventoryAttachedAt = Date.now();
+          this.logSessionInventoryBootstrap('host-attached', event.reason);
+        }
         this.bumpSessionInventoryRevision();
         if (event.sessionIds.length === 0) {
           this.scheduleFullRefresh(`host-inventory-${event.reason}`);
@@ -173,10 +219,39 @@ export class ChatSessionItemsService implements OnDestroy {
         }
       }));
     }
-    this.scheduleInitialSummaryLoad('service-created');
+    this.ensureCurrentScopeInitialized({
+      reason: 'service-created',
+      rendererGeneration: this.electronService?.currentRendererGeneration ?? 0,
+    });
+    if (this.electronService) {
+      this.controllerSubscription.add(this.electronService.rendererGeneration$.subscribe((rendererGeneration) => {
+        if (rendererGeneration <= 0) {
+          return;
+        }
+        this.ensureCurrentScopeInitialized({
+          reason: 'service-created',
+          rendererGeneration,
+        });
+      }));
+      this.controllerSubscription.add(this.electronService.rendererLifecycle$.subscribe((event) => {
+        if (event.kind !== 'resume') {
+          return;
+        }
+        this.ensureCurrentScopeInitialized({
+          reason: 'reopen',
+          rendererGeneration: event.generation,
+          force: true,
+        });
+        void this.chatRuntimeHostInventory?.refreshFromHost('host-snapshot');
+      }));
+    }
   }
 
   ngOnDestroy(): void {
+    if (this.pendingRefreshTimer !== null) {
+      clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
     this.controllerSubscription.unsubscribe();
   }
 
@@ -1243,12 +1318,36 @@ export class ChatSessionItemsService implements OnDestroy {
     // timing belongs to durable inventory; a host-only running row can render
     // without a relative timestamp until that inventory exists.
     const timing = existing?.timing;
+    const hostTitle = typeof state.title === 'string' ? state.title.trim() : '';
+    const existingTitle = typeof existing?.title === 'string' ? existing.title.trim() : '';
+    const normalizedHostSource = normalizeChatSessionTitleSource(state.titleSource);
+    const normalizedExistingSource = normalizeChatSessionTitleSource(existing?.titleSource);
+    const hostSource = normalizedHostSource !== 'empty'
+      ? normalizedHostSource
+      : (state.titleDurable === true && hostTitle ? 'legacy-custom' : 'empty');
+    const existingSource = normalizedExistingSource !== 'empty'
+      ? normalizedExistingSource
+      : (existing?.titleDurable === true && existingTitle ? 'legacy-custom' : 'empty');
+    // The renderer session model is the canonical title owner, matching VS
+    // Code's ChatModel.setCustomTitle semantics. A stale host inventory
+    // default must not replace a generated/user title that has already been
+    // applied to that model. A higher-priority host title (for example a user
+    // rename restored from persistence) may still win.
+    const useHostTitle = Boolean(hostTitle) && (
+      !existingTitle
+      || getChatSessionTitleSourcePriority(hostSource) > getChatSessionTitleSourcePriority(existingSource)
+    );
+    const title = useHostTitle ? hostTitle : existingTitle;
+    const titleSource = useHostTitle ? hostSource : existingSource;
+    const titleDurable = useHostTitle
+      ? state.titleDurable === true || isCustomSessionTitleSource(hostSource)
+      : existing?.titleDurable === true || isCustomSessionTitleSource(existingSource);
 
     return this.toSessionListItem({
       sessionId,
-      title: state.title ?? existing?.title,
-      titleSource: this.normalizeHostInventoryTitleSource(state.titleSource, existing?.titleSource),
-      titleDurable: state.titleDurable ?? existing?.titleDurable,
+      title,
+      titleSource,
+      titleDurable,
       description: existing?.description,
       sessionType: state.sessionType ?? existing?.sessionType,
       projectPath: state.projectPath !== undefined ? state.projectPath : existing?.projectPath,
@@ -1290,17 +1389,6 @@ export class ChatSessionItemsService implements OnDestroy {
       || state.status === 'needs_input';
   }
 
-  private normalizeHostInventoryTitleSource(
-    value: string | undefined,
-    fallback: SessionListSourceLike['titleSource'] | undefined,
-  ): SessionListSourceLike['titleSource'] | undefined {
-    const normalized = normalizeChatSessionTitleSource(value);
-    if (normalized !== 'empty') {
-      return normalized;
-    }
-    return fallback;
-  }
-
   private normalizeHostInventoryMode(
     value: string | undefined,
     fallback: unknown,
@@ -1334,21 +1422,74 @@ export class ChatSessionItemsService implements OnDestroy {
     this.pendingRefreshRequest = this.mergeRefreshRequests(this.pendingRefreshRequest, request);
     this.refreshRequestGeneration += 1;
     this.markRequestedSessionListLoadState(this.pendingRefreshRequest);
-    this.scheduleRefreshRequestFlush(this.pendingRefreshRequest.priority, this.refreshRequestGeneration);
+    this.scheduleRefreshRequestFlush(this.pendingRefreshRequest.priority);
+  }
+
+  ensureCurrentScopeInitialized(input: SessionInventoryScopeInitialization): boolean {
+    const project = AilyHost.get().project;
+    const projectRootPath = normalizeChatSessionScopePath(
+      input.projectRootPath !== undefined ? input.projectRootPath : project.projectRootPath,
+    );
+    const scope = resolveChatSessionScopeFromProject({
+      currentProjectPath: input.projectPath !== undefined ? input.projectPath : project.currentProjectPath,
+      projectRootPath,
+    });
+    const projectPath = chatSessionScopeProjectPath(scope);
+    const rendererGeneration = Number.isFinite(input.rendererGeneration)
+      ? Math.max(0, Math.trunc(input.rendererGeneration as number))
+      : 0;
+    const scopeKey = chatSessionScopeCacheKey(scope);
+    const identity = `${rendererGeneration}:${scopeKey}`;
+
+    if (input.force !== true && identity === this.initializedInventoryScopeIdentity) {
+      return false;
+    }
+    if (input.force !== true
+      && rendererGeneration > 0
+      && this.initializedInventoryScopeIdentity === `0:${scopeKey}`) {
+      this.initializedInventoryScopeIdentity = identity;
+      console.info('[AilyChat][SessionInventoryBootstrap]', {
+        rendererGeneration,
+        scopeKey,
+        scopeRevision: this.inventoryScopeRevision,
+        reason: input.reason,
+        terminalState: 'generation-adopted',
+      });
+      return false;
+    }
+
+    this.initializedInventoryScopeIdentity = identity;
+    this.inventoryScopeRevision += 1;
+    this.inventoryBootstrapStartedAt = Date.now();
+    this.hostInventoryAttachedAt = 0;
+    this.lastCompletedRefreshRequest = null;
+    if (projectPath) {
+      this.chatHistoryService.reloadProjectIndex(projectPath);
+    }
+
+    console.info('[AilyChat][SessionInventoryBootstrap]', {
+      rendererGeneration,
+      scopeKey,
+      scopeRevision: this.inventoryScopeRevision,
+      reason: input.reason,
+    });
+    this.requestSessionListRefresh({
+      reason: input.reason,
+      scope: input.force === true ? 'full' : 'summary',
+      priority: input.force === true ? 'normal' : 'after-paint',
+      limit: input.force === true ? undefined : ChatSessionItemsService.INITIAL_SUMMARY_LIMIT,
+      projectPath,
+      projectRootPath,
+    });
+    return true;
   }
 
   scheduleInitialSummaryLoad(reason: SessionListRefreshRequest['reason'] = 'service-created'): void {
-    this.requestSessionListRefresh({
-      reason,
-      scope: 'summary',
-      priority: 'after-paint',
-      limit: ChatSessionItemsService.INITIAL_SUMMARY_LIMIT,
-    });
+    this.ensureCurrentScopeInitialized({ reason });
   }
 
   private scheduleRefreshRequestFlush(
     priority: SessionListRefreshRequest['priority'],
-    generation: number,
   ): void {
     if (this.refreshRequestInFlight) {
       return;
@@ -1364,7 +1505,7 @@ export class ChatSessionItemsService implements OnDestroy {
     }
     this.pendingRefreshTimer = setTimeout(() => {
       this.pendingRefreshTimer = null;
-      void this.flushPendingRefreshRequest(generation);
+      void this.drainPendingRefreshRequests();
     }, delay);
   }
 
@@ -1409,67 +1550,72 @@ export class ChatSessionItemsService implements OnDestroy {
         ? { filter: incoming.filter ?? existing.filter ?? 'current-project' }
         : {}),
       ...(incoming.projectPath !== undefined || existing.projectPath !== undefined
-        ? { projectPath: incoming.projectPath ?? existing.projectPath ?? null }
+        ? { projectPath: incoming.projectPath !== undefined ? incoming.projectPath : existing.projectPath }
         : {}),
       ...(incoming.projectRootPath !== undefined || existing.projectRootPath !== undefined
-        ? { projectRootPath: incoming.projectRootPath ?? existing.projectRootPath ?? null }
+        ? { projectRootPath: incoming.projectRootPath !== undefined ? incoming.projectRootPath : existing.projectRootPath }
         : {}),
     };
   }
 
-  private async flushPendingRefreshRequest(expectedGeneration?: number): Promise<void> {
+  private async drainPendingRefreshRequests(): Promise<void> {
     if (this.refreshRequestInFlight) {
       return;
     }
 
-    if (expectedGeneration !== undefined && expectedGeneration !== this.refreshRequestGeneration) {
-      return;
-    }
-
-    const request = this.pendingRefreshRequest;
-    const generation = this.refreshRequestGeneration;
-    this.pendingRefreshRequest = null;
-    if (!request) {
-      return;
-    }
-
     this.refreshRequestInFlight = true;
-    this.activeRefreshRequestGeneration = generation;
-    this.markRequestedSessionListLoadState(request);
-
-    let requestCompleted = false;
+    let completedCurrentRequest = false;
 
     try {
-      const apply = await this.prepareRefreshRequestApplication(request);
-      if (!apply) {
-        requestCompleted = true;
-        return;
-      }
+      while (this.pendingRefreshRequest) {
+        const request = this.pendingRefreshRequest;
+        const generation = this.refreshRequestGeneration;
+        this.pendingRefreshRequest = null;
+        this.activeRefreshRequestGeneration = generation;
+        this.markRequestedSessionListLoadState(request);
+        completedCurrentRequest = false;
 
-      if (generation !== this.refreshRequestGeneration) {
-        return;
-      }
+        try {
+          const apply = await this.prepareRefreshRequestApplication(request);
+          if (generation !== this.refreshRequestGeneration) {
+            ChatPerformanceTracer.increment('session_list.refresh_stale_discard');
+            console.info('[AilyChat][SessionInventoryBootstrap] stale collection discarded', {
+              generation,
+              currentGeneration: this.refreshRequestGeneration,
+              reason: request.reason,
+              scope: request.scope,
+            });
+            continue;
+          }
 
-      apply();
-      requestCompleted = true;
-    } catch (error) {
-      if (generation !== this.refreshRequestGeneration && this.pendingRefreshRequest) {
-        return;
-      }
+          apply?.();
+          this.lastCompletedRefreshRequest = request;
+          completedCurrentRequest = true;
+        } catch (error) {
+          if (generation !== this.refreshRequestGeneration) {
+            ChatPerformanceTracer.increment('session_list.refresh_stale_error_discard');
+            console.info('[AilyChat][SessionInventoryBootstrap] stale collection failure discarded', {
+              generation,
+              currentGeneration: this.refreshRequestGeneration,
+              reason: request.reason,
+              scope: request.scope,
+            });
+            continue;
+          }
 
-      this.markSessionListLoadError(request, error);
-      return;
+          this.markSessionListLoadError(request, error);
+          return;
+        }
+      }
     } finally {
-      if (this.activeRefreshRequestGeneration === generation) {
-        this.activeRefreshRequestGeneration = 0;
-      }
+      this.activeRefreshRequestGeneration = 0;
       this.refreshRequestInFlight = false;
 
       if (this.pendingRefreshRequest) {
         this.markRequestedSessionListLoadState(this.pendingRefreshRequest);
-        this.scheduleRefreshRequestFlush(this.pendingRefreshRequest.priority, this.refreshRequestGeneration);
-      } else if (requestCompleted) {
-        this.markSessionListReady();
+        this.scheduleRefreshRequestFlush(this.pendingRefreshRequest.priority);
+      } else if (completedCurrentRequest) {
+        this.markSessionListReady(this.lastCompletedRefreshRequest);
       }
     }
   }
@@ -1639,12 +1785,13 @@ export class ChatSessionItemsService implements OnDestroy {
     }
   }
 
-  private markSessionListReady(): void {
+  private markSessionListReady(request: SessionListRefreshRequest | null = null): void {
     this.lastFailedRefreshRequest = null;
     this.setSessionListLoadState({
       kind: 'ready',
       canRetry: false,
     });
+    this.logSessionInventoryBootstrap('ready', request?.reason ?? 'local-ready');
   }
 
   private markSessionListLoadError(request: SessionListRefreshRequest, error: unknown): void {
@@ -1659,6 +1806,7 @@ export class ChatSessionItemsService implements OnDestroy {
       kind: 'error',
       canRetry: true,
     });
+    this.logSessionInventoryBootstrap('error', request.reason);
     console.error('[AilyChat][SessionList] refresh failed', error);
   }
 
@@ -1667,7 +1815,74 @@ export class ChatSessionItemsService implements OnDestroy {
       return;
     }
 
+    if ((nextState.kind === 'loading-summary' || nextState.kind === 'hydrating-visible-details')
+      && !this.pendingRefreshRequest
+      && !this.refreshRequestInFlight
+      && this.pendingRefreshTimer === null) {
+      throw new Error(`[AilyChat][SessionInventoryBootstrap] Loading state "${nextState.kind}" has no queue owner.`);
+    }
+
+    const previousState = this._sessionListLoadState;
     this._sessionListLoadState = nextState;
     this.sessionListLoadStateChangedSubject.next();
+    console.info('[AilyChat][SessionInventoryState]', {
+      previous: previousState.kind,
+      state: nextState.kind,
+      canRetry: nextState.canRetry,
+      pending: !!this.pendingRefreshRequest,
+      scheduled: this.pendingRefreshTimer !== null,
+      inFlight: this.refreshRequestInFlight,
+      revision: this.inventoryScopeRevision,
+    });
+  }
+
+  private logSessionInventoryBootstrap(terminalState: string, reason: string): void {
+    const project = AilyHost.get().project;
+    const projectRootPath = normalizeChatSessionScopePath(project.projectRootPath);
+    const scope = resolveChatSessionScopeFromProject({
+      currentProjectPath: project.currentProjectPath,
+      projectRootPath,
+    });
+    const projectPath = chatSessionScopeProjectPath(scope);
+    const readDiagnostics = this.chatHistoryService.getSessionInventoryBootstrapDiagnostics;
+    const indexDiagnostics = typeof readDiagnostics === 'function'
+      ? readDiagnostics.call(this.chatHistoryService, projectPath)
+      : {
+          globalIndexCount: 0,
+          projectIndexCount: 0,
+          rebuiltRecordCount: 0,
+        };
+    const hostInventoryCount = this.chatRuntimeHostInventory?.readSnapshot().sessions.length ?? 0;
+    const now = Date.now();
+    let authState = 'unknown';
+    try {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        authState = 'offline';
+      } else if (AilyHost.get().auth.getSnapshot?.()) {
+        authState = 'authenticated';
+      }
+    } catch {
+      authState = 'unknown';
+    }
+
+    console.info('[AilyChat][SessionInventoryBootstrap]', {
+      rendererGeneration: this.electronService?.currentRendererGeneration ?? 0,
+      reason,
+      scopeKey: chatSessionScopeCacheKey(scope),
+      revision: this.inventoryScopeRevision,
+      globalIndexCount: indexDiagnostics.globalIndexCount,
+      projectIndexCount: indexDiagnostics.projectIndexCount,
+      rebuiltRecordCount: indexDiagnostics.rebuiltRecordCount,
+      localCommitCount: this._sessionListItems.length,
+      hostInventoryCount,
+      authState,
+      localReadyMs: this.inventoryBootstrapStartedAt > 0
+        ? Math.max(0, now - this.inventoryBootstrapStartedAt)
+        : null,
+      hostAttachMs: this.hostInventoryAttachedAt > 0 && this.inventoryBootstrapStartedAt > 0
+        ? Math.max(0, this.hostInventoryAttachedAt - this.inventoryBootstrapStartedAt)
+        : null,
+      terminalState,
+    });
   }
 }

@@ -62,6 +62,8 @@ export interface IAgentLifecycle {
   activeToolExecutions: number;
   currentStatelessMode: boolean;
   pendingEditFeedback: string | null;
+  readPendingEditFeedback?(sessionId?: string | null): string | null;
+  writePendingEditFeedback?(sessionId: string | null | undefined, value: string | null): void;
   pendingUserInput: boolean;
   mcpInitialized: boolean;
   lastStopReason: string;

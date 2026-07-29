@@ -7,6 +7,7 @@
         "PLAN_LABEL": "План {{plan}}",
         "AI_CALLS": "Использования ИИ",
         "AUTO_MODE": "авто режим",
+        "AI_CALLS_RESET_SHORT": "{{date}} сброс",
         "ADD_AI_CALLS": "Добавить использования",
         "CLOUD_STORAGE": "Облачное хранилище",
         "ADD_STORAGE": "Добавить хранилище",

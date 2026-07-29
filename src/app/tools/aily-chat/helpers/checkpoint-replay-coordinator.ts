@@ -10,7 +10,6 @@ import type { RestorePlan } from '../services/editing-timeline.types';
 import type { HostSessionRecord, PersistedHostResponseData } from '../services/chat-history.service';
 import {
   appendEditActionResult,
-  buildRedoApplyActionResult,
   type EditActionResultDescriptor,
 } from './edit-action-result-projection';
 import {
@@ -44,9 +43,7 @@ export type CheckpointRedoChatReplayResult =
 
 export type CheckpointRedoChatReplayFailure = Extract<CheckpointRedoChatReplayResult, { ok: false }>;
 
-export type CheckpointProjectionOutcome = EditActionResultDescriptor & {
-  pendingEditFeedback?: string | null;
-};
+export type CheckpointProjectionOutcome = EditActionResultDescriptor;
 
 type CheckpointWorkspaceAccess = {
   buildRestorePlan?(checkpointId: string): Promise<RestorePlan | null> | RestorePlan | null;
@@ -229,6 +226,37 @@ function normalizeString(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function readCheckpointCommitAppliedFiles(value: unknown): number {
+  if (!value || typeof value !== 'object') {
+    return 0;
+  }
+  const appliedFiles = Number((value as { appliedFiles?: unknown }).appliedFiles);
+  return Number.isFinite(appliedFiles) && appliedFiles > 0 ? Math.floor(appliedFiles) : 0;
+}
+
+function readCheckpointCommitIdentity(value: unknown): string {
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  return normalizeString((value as { checkpointId?: unknown }).checkpointId as string | undefined);
+}
+
+function readCheckpointCommitRollbackErrors(error: unknown): string[] {
+  if (!error || typeof error !== 'object') {
+    return [];
+  }
+  const rollbackErrors = (error as { rollbackErrors?: unknown }).rollbackErrors;
+  return Array.isArray(rollbackErrors)
+    ? rollbackErrors.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    : [];
+}
+
+function wasCheckpointCommitRolledBack(error: unknown): boolean {
+  return !!error
+    && typeof error === 'object'
+    && (error as { rolledBackOnError?: unknown }).rolledBackOnError === true;
+}
+
 function summarizeTurnResponseIds(turnResponses: readonly TurnResponseTurn[] | null | undefined): string[] {
   return (turnResponses ?? []).map(turn => normalizeString(turn.turnId) || '<missing-turn-id>');
 }
@@ -305,7 +333,7 @@ type CheckpointFileApplyExecutionState<TResult extends { ok: boolean }> = {
 
 type CheckpointReplayCoordinatorContext = ChatViewWriteBridgeContext
   & Pick<IChatServiceAccess, 'editCheckpointService'>
-  & Pick<IAgentLifecycle, 'isCompleted' | 'isCancelled' | 'pendingEditFeedback'>
+  & Pick<IAgentLifecycle, 'isCompleted' | 'isCancelled'>
   & Pick<IChatCoordination, 'lexStream' | 'session'>
   & {
     workspaceCheckpointAccess?: CheckpointWorkspaceAccess;
@@ -428,77 +456,37 @@ export class CheckpointReplayCoordinator {
     private readonly viewWriteBridge: CheckpointReplayViewWriteAccess,
   ) {}
 
-  async redoCheckpointByIdentity(
-    checkpointId: string,
+  async redoCheckpoint(
     commitCanonicalCheckpoint: () => Promise<unknown>,
   ): Promise<CheckpointRedoExecutionResult> {
-    const normalizedCheckpointId = checkpointId.trim();
-    const workspaceCheckpointAccess = this.getWorkspaceCheckpointAccess();
-    const preparedFilesAction = await this.createPreparedCheckpointRedoFilesAction(
-      normalizedCheckpointId,
-      {
-        presentationMode: workspaceCheckpointAccess.getPresentationMode?.(),
-        buildRedoPlan: workspaceCheckpointAccess.buildRedoPlan?.bind(workspaceCheckpointAccess),
-        applyRestorePlan: workspaceCheckpointAccess.applyRestorePlan?.bind(workspaceCheckpointAccess),
-      },
-    );
-    const workspaceApplyResult = await preparedFilesAction.apply();
-    if (workspaceApplyResult.errors.length > 0 || (workspaceApplyResult as CheckpointRedoPreparedFileApplyResult).failureKind) {
-      const preparedResult = workspaceApplyResult as CheckpointRedoPreparedFileApplyResult;
-      if (preparedResult.failureKind) {
-        return this.buildRedoPreApplyHardFailureResult(preparedResult.failureKind, [...preparedResult.errors]);
-      }
-      const rollbackErrors = workspaceApplyResult.rollbackErrors ?? [];
-      const detailErrors = [
-        ...workspaceApplyResult.errors.map(error => `文件恢复失败: ${error}`),
-        ...rollbackErrors,
-      ];
-      return this.buildRedoFailureResult(
-        'file',
-        workspaceApplyResult.rolledBackOnError === true && rollbackErrors.length === 0 ? 'safe-rollback' : 'hard-fail',
-        detailErrors,
-        rollbackErrors.length,
-        this.buildRedoFailureOutcome(detailErrors, rollbackErrors.length),
-      );
-    }
-
     try {
-      await this.ctx.syncWorkspaceState?.();
-      await commitCanonicalCheckpoint();
-    } catch (error) {
-      const rollbackErrors: string[] = [];
-      if (typeof workspaceApplyResult.emergencyRollback === 'function') {
-        try {
-          const rollbackResult = await workspaceApplyResult.emergencyRollback();
-          rollbackErrors.push(
-            ...(rollbackResult?.errors ?? []),
-            ...(rollbackResult?.rollbackErrors ?? []),
-          );
-        } catch (rollbackError) {
-          rollbackErrors.push(this.buildOperationErrorMessage('文件回滚失败', rollbackError));
-        }
+      const committed = await commitCanonicalCheckpoint();
+      const normalizedCheckpointId = readCheckpointCommitIdentity(committed);
+      if (!normalizedCheckpointId) {
+        throw new Error('Checkpoint redo commit did not return the canonical checkpoint identity');
       }
+      await this.syncCommittedWorkspacePresentation(normalizedCheckpointId, 'redo');
+      const appliedFiles = readCheckpointCommitAppliedFiles(committed);
+      return {
+        ok: true,
+        rolledBackFiles: appliedFiles,
+        chatTurnCount: 1,
+        outcome: this.buildRedoSuccessOutcome(appliedFiles, 1),
+      };
+    } catch (error) {
+      const rollbackErrors = readCheckpointCommitRollbackErrors(error);
       const detailErrors = [
-        this.buildOperationErrorMessage('检查点重做提交失败', error),
+        this.buildOperationErrorMessage('Checkpoint redo commit failed', error),
         ...rollbackErrors,
       ];
       return this.buildRedoFailureResult(
         'commit',
-        rollbackErrors.length === 0 ? 'safe-rollback' : 'hard-fail',
+        wasCheckpointCommitRolledBack(error) && rollbackErrors.length === 0 ? 'safe-rollback' : 'hard-fail',
         detailErrors,
         rollbackErrors.length,
         this.buildRedoFailureOutcome(detailErrors, rollbackErrors.length),
       );
     }
-
-    await this.projectCheckpointMetadataPointer(normalizedCheckpointId, 'redo');
-
-    return {
-      ok: true,
-      rolledBackFiles: workspaceApplyResult.rolledBackFiles,
-      chatTurnCount: 1,
-      outcome: this.buildRedoSuccessOutcome(workspaceApplyResult.rolledBackFiles, 1),
-    };
   }
 
   private async prepareCheckpointRedoCommit(
@@ -583,57 +571,20 @@ export class CheckpointReplayCoordinator {
     commitCanonicalCheckpoint: () => Promise<unknown>,
   ): Promise<CheckpointRestoreExecutionResult> {
     const normalizedCheckpointId = checkpointId.trim();
-    const workspaceCheckpointAccess = this.getWorkspaceCheckpointAccess();
-    const preparedFilesAction = await this.createPreparedCheckpointRestoreCommitFilesAction(
-      normalizedCheckpointId,
-      {
-        presentationMode: workspaceCheckpointAccess.getPresentationMode?.(),
-        buildRestorePlan: workspaceCheckpointAccess.buildRestorePlan?.bind(workspaceCheckpointAccess),
-        applyRestorePlan: workspaceCheckpointAccess.applyRestorePlan?.bind(workspaceCheckpointAccess),
-        allowRequestListOnlyRestore: !this.hasOpenProjectWorkspace(),
-      },
-    );
-    const workspaceApplyResult = await preparedFilesAction.apply();
-    if (workspaceApplyResult.errors.length > 0) {
-      const rollbackErrors = workspaceApplyResult.rollbackErrors ?? [];
-      const detailErrors = [
-        ...workspaceApplyResult.errors.map(error => `文件恢复失败: ${error}`),
-        ...rollbackErrors,
-      ];
-      return {
-        ok: false,
-        phase: 'file',
-        detailErrors,
-        rollbackErrorCount: rollbackErrors.length,
-        rolledBackOnError: workspaceApplyResult.rolledBackOnError === true,
-        outcome: this.buildRestoreFailureOutcome(
-          detailErrors,
-          rollbackErrors.length,
-          workspaceApplyResult.rolledBackOnError === true,
-        ),
-      };
-    }
-
     try {
-      await this.ctx.syncWorkspaceState?.();
-      await commitCanonicalCheckpoint();
+      const committed = await commitCanonicalCheckpoint();
+      await this.syncCommittedWorkspacePresentation(normalizedCheckpointId, 'restore');
+      const appliedFiles = readCheckpointCommitAppliedFiles(committed);
+      return {
+        ok: true,
+        rolledBackFiles: appliedFiles,
+        outcome: this.buildRestoreSuccessOutcome(appliedFiles),
+      };
     } catch (error) {
-      const rollbackErrors: string[] = [];
-      let rolledBackOnError = false;
-      if (typeof workspaceApplyResult.emergencyRollback === 'function') {
-        try {
-          const rollbackResult = await workspaceApplyResult.emergencyRollback();
-          rollbackErrors.push(
-            ...(rollbackResult?.errors ?? []),
-            ...(rollbackResult?.rollbackErrors ?? []),
-          );
-          rolledBackOnError = rollbackResult?.rolledBackOnError === true && rollbackErrors.length === 0;
-        } catch (rollbackError) {
-          rollbackErrors.push(this.buildOperationErrorMessage('文件回滚失败', rollbackError));
-        }
-      }
+      const rollbackErrors = readCheckpointCommitRollbackErrors(error);
+      const rolledBackOnError = wasCheckpointCommitRolledBack(error) && rollbackErrors.length === 0;
       const detailErrors = [
-        this.buildOperationErrorMessage('检查点还原提交失败', error),
+        this.buildOperationErrorMessage('Checkpoint restore commit failed', error),
         ...rollbackErrors,
       ];
       return {
@@ -645,14 +596,21 @@ export class CheckpointReplayCoordinator {
         outcome: this.buildRestoreFailureOutcome(detailErrors, rollbackErrors.length, rolledBackOnError),
       };
     }
+  }
 
-    await this.projectCheckpointMetadataPointer(normalizedCheckpointId, 'restore');
-
-    return {
-      ok: true,
-      rolledBackFiles: workspaceApplyResult.rolledBackFiles,
-      outcome: this.buildRestoreSuccessOutcome(workspaceApplyResult.rolledBackFiles),
-    };
+  private async syncCommittedWorkspacePresentation(
+    checkpointId: string,
+    direction: 'restore' | 'redo',
+  ): Promise<void> {
+    try {
+      await this.ctx.syncWorkspaceState?.();
+    } catch (error) {
+      console.warn('[AilyChat][CheckpointReplay] Failed to refresh committed workspace presentation', {
+        checkpointId,
+        direction,
+        error,
+      });
+    }
   }
 
   private async projectCheckpointMetadataPointer(
@@ -1339,18 +1297,10 @@ export class CheckpointReplayCoordinator {
   }
 
   private projectRestoreOutcome(outcome: CheckpointProjectionOutcome): void {
-    if (typeof outcome.pendingEditFeedback !== 'undefined') {
-      this.ctx.pendingEditFeedback = outcome.pendingEditFeedback;
-    }
-
     appendEditActionResult(this.viewWriteBridge, 'restore', outcome);
   }
 
   private projectRedoOutcome(outcome: CheckpointProjectionOutcome): void {
-    if (typeof outcome.pendingEditFeedback !== 'undefined') {
-      this.ctx.pendingEditFeedback = outcome.pendingEditFeedback;
-    }
-
     appendEditActionResult(this.viewWriteBridge, 'redo', outcome);
   }
 
@@ -1362,16 +1312,6 @@ export class CheckpointReplayCoordinator {
     this.projectRedoOutcome(result.outcome);
   }
 
-  projectRedoFileApplyResult(result: {
-    rolledBackFiles: number;
-    errors: readonly string[];
-  }): void {
-    this.projectRedoOutcome({
-      ...buildRedoApplyActionResult(result.rolledBackFiles, 0, result.errors),
-      pendingEditFeedback: `[用户重新应用了 ${result.rolledBackFiles} 个文件变更。]`,
-    });
-  }
-
   private buildProjectionOutcome(
     summaryText: string,
     state: 'done' | 'warn' | 'error' | 'info',
@@ -1379,7 +1319,6 @@ export class CheckpointReplayCoordinator {
       fileCount?: number;
       errorCount?: number;
       detailMessage?: string;
-      pendingEditFeedback?: string | null;
     } = {},
   ): CheckpointProjectionOutcome {
     return {
@@ -1388,7 +1327,6 @@ export class CheckpointReplayCoordinator {
       fileCount: options.fileCount,
       errorCount: options.errorCount,
       detailMessage: options.detailMessage,
-      pendingEditFeedback: options.pendingEditFeedback,
     };
   }
 
@@ -1999,7 +1937,6 @@ export class CheckpointReplayCoordinator {
       'done',
       {
         fileCount,
-        pendingEditFeedback: `[用户重新应用了 ${fileCount} 个文件变更，并恢复了 ${chatTurnCount} 轮聊天。]`,
       },
     );
   }
@@ -3014,12 +2951,10 @@ export class CheckpointReplayCoordinator {
       ...turn,
       request: { ...turn.request },
       rounds: turn.rounds.map((round) => {
-        const summary = normalizeTurnResponseSummaryPreview(round.summary);
-
+        const { summary: _runtimeSummary, ...roundWithoutSummary } = round;
         return {
-          ...round,
+          ...roundWithoutSummary,
           toolCalls: (round.toolCalls ?? []).map(toolCall => ({ ...toolCall })),
-          ...(summary ? { summary } : {}),
         };
       }),
       ...(turn.usage ? { usage: { ...turn.usage } } : {}),

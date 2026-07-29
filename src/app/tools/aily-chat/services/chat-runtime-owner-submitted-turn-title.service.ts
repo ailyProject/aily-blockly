@@ -25,8 +25,7 @@ export class ChatRuntimeOwnerSubmittedTurnTitleService implements ChatRuntimeOwn
       text: generatedTitle,
       source: input.source,
     });
-    this.chatSessionModelStore.updateMetadata(normalizedSessionId, { title });
-    return true;
+    return this.chatSessionModelStore.updateMetadata(normalizedSessionId, { title });
   }
 
   private hasResolvedModelTitle(sessionId: string): boolean {

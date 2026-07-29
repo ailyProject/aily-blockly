@@ -3,16 +3,28 @@ import type { TurnResponseTurn } from 'aily-lex/browser';
 import type { ChatEngineService } from '../services/chat-engine.service';
 import type { ChatViewService } from '../services/chat-view.service';
 import type { RuntimePlanReviewAction, RuntimePlanReviewDecision } from '../services/chat-runtime-interaction-host.service';
+import type { ToolApprovalRequest, ToolApprovalResult } from './tool-approval-ui';
 import {
   terminalTranscriptProjection,
   type ChatRuntimeTurnResponseSyncOptions,
 } from '../core/chat-runtime-projection-policy';
 import { getSharedBlocklyEditorOperationQueue } from '../tools/blocklyEditorOperationQueue';
 import { createToolCallProgressEditorOperationSink } from '../tools/editorOperationEvents';
+import {
+  COMMIT_PROJECT_SCENE_REGENERATION_TOOL,
+  createProjectSceneRegenerationHandlers,
+  GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL,
+} from '../core/blockly-project-scene-tools';
 
 interface AilyChatE2eHarnessOptions {
   readonly engine: ChatEngineService;
   readonly viewState: ChatViewService;
+  readonly openEmbeddedTool?: (toolId: string) => boolean;
+  readonly closeTool?: (toolId: string) => void;
+  readonly requestToolApproval?: (
+    sessionId: string,
+    request: ToolApprovalRequest,
+  ) => Promise<ToolApprovalResult>;
   readonly readRenderingDiagnostics?: () => AilyChatE2eRenderingDiagnostics;
   readonly readPerformanceDiagnostics?: () => unknown;
   readonly runWorkspaceFinalizeBoundaryProbe?: () => Promise<void>;
@@ -79,7 +91,22 @@ interface AilyChatE2eHarnessApi {
   awaitCancellableSubagentTurnSettled(): Promise<AilyChatE2eSnapshot>;
   startCancellableEditorOperationTurn(): Promise<AilyChatE2eSnapshot>;
   awaitCancellableEditorOperationTurnSettled(): Promise<AilyChatE2eSnapshot>;
+  startProjectSceneRegenerationCommit(
+    options?: { readonly forceExpired?: boolean },
+  ): Promise<AilyChatE2eProjectSceneRegenerationProbe>;
+  awaitProjectSceneRegenerationCommitSettled(): Promise<AilyChatE2eProjectSceneRegenerationProbe>;
+  openEmbeddedTool(toolId: string): boolean;
+  closeTool(toolId: string): void;
   snapshot(): AilyChatE2eSnapshot;
+}
+
+interface AilyChatE2eProjectSceneRegenerationProbe {
+  readonly state: 'idle' | 'awaiting-approval' | 'approved' | 'rejected' | 'settled';
+  readonly toolCallId?: string;
+  readonly regenerationId?: string;
+  readonly approved?: boolean;
+  readonly result?: unknown;
+  readonly error?: string;
 }
 
 declare global {
@@ -444,6 +471,75 @@ function cancelLatestTurn(engine: EnginePrivateAccess, sessionId: string): void 
   engine.triggerSyncDetectChanges?.();
 }
 
+function readE2eToolResultJson(value: unknown): Record<string, unknown> {
+  const result = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as { readonly content?: readonly { readonly type?: unknown; readonly text?: unknown }[] }
+    : null;
+  const textPart = result?.content?.find((part) => part?.type === 'text');
+  if (typeof textPart?.text !== 'string') {
+    throw new Error('Project Scene E2E tool did not return a text result.');
+  }
+  const parsed = JSON.parse(textPart.text) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Project Scene E2E tool returned an invalid JSON object.');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function createE2eProjectSceneCommitInput(regenerationId: string): Record<string, unknown> {
+  return {
+    regenerationId,
+    summary: 'Generate a native v2 Scene for the Blockly LED and button fixture.',
+    components: [
+      {
+        instanceId: 'xiao_esp32s3_1',
+        package: { id: 'aily.component-package.xiao-esp32s3', version: '1.0.0' },
+        placement: { x: 140, y: 120 },
+      },
+      {
+        instanceId: 'led_1',
+        package: { id: 'aily.component-package.gpio-led', version: '1.0.0' },
+        placement: { x: 520, y: 100 },
+      },
+      {
+        instanceId: 'button_1',
+        package: { id: 'aily.component-package.gpio-button', version: '1.0.0' },
+        placement: { x: 520, y: 260 },
+      },
+    ],
+    connections: [
+      {
+        segmentId: 'wire_board_d0_led_anode',
+        from: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_1', function: 'GPIO1' },
+        to: { instanceId: 'led_1', pinId: 'anode', function: 'A(IO)' },
+        signalKind: 'gpio',
+        label: 'LED GPIO1',
+      },
+      {
+        segmentId: 'wire_led_cathode_ground',
+        from: { instanceId: 'led_1', pinId: 'cathode', function: 'C(GND)' },
+        to: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_9', function: 'GND' },
+        signalKind: 'ground',
+        label: 'LED GND',
+      },
+      {
+        segmentId: 'wire_board_d1_button_a',
+        from: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_2', function: 'GPIO2' },
+        to: { instanceId: 'button_1', pinId: 'terminal_a', function: 'A(IO)' },
+        signalKind: 'gpio',
+        label: 'BUTTON GPIO2',
+      },
+      {
+        segmentId: 'wire_button_b_ground',
+        from: { instanceId: 'button_1', pinId: 'terminal_b', function: 'B(GND)' },
+        to: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_9', function: 'GND' },
+        signalKind: 'ground',
+        label: 'BUTTON GND',
+      },
+    ],
+  };
+}
+
 function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessApi {
   const engine = options.engine as unknown as EnginePrivateAccess;
   let installed = false;
@@ -460,6 +556,10 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
   let cancellableEditorOperationReady: Promise<void> | null = null;
   let resolveCancellableEditorOperationReady: (() => void) | null = null;
   let abortCancellableEditorOperation: (() => void) | null = null;
+  let projectSceneRegenerationProbe: AilyChatE2eProjectSceneRegenerationProbe = {
+    state: 'idle',
+  };
+  let pendingProjectSceneRegenerationCommit: Promise<void> | null = null;
 
   const countActiveLoadingIndicators = (): number => {
     const root = document.querySelector('app-aily-chat');
@@ -1371,6 +1471,130 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
       abortCancellableEditorOperation = null;
       engine.triggerSyncDetectChanges?.();
       return snapshot();
+    },
+    async startProjectSceneRegenerationCommit(probeOptions) {
+      await installDeterministicRuntime();
+      if (pendingProjectSceneRegenerationCommit) {
+        throw new Error('A Project Scene regeneration E2E probe is already running.');
+      }
+      const sessionId = await engine.ensureSessionReadyForSubmit() ?? getCurrentSessionId(engine);
+      const toolHandlers = createProjectSceneRegenerationHandlers();
+      const contextTool = toolHandlers[GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL];
+      const commitTool = toolHandlers[COMMIT_PROJECT_SCENE_REGENERATION_TOOL];
+      if (
+        typeof options.requestToolApproval !== 'function'
+        || typeof contextTool !== 'function'
+        || typeof commitTool !== 'function'
+      ) {
+        throw new Error(
+          'The Host Runtime owner does not expose the Project Scene approval/tool boundary '
+          + `(approval=${typeof options.requestToolApproval}, context=${typeof contextTool}, commit=${typeof commitTool}).`,
+        );
+      }
+
+      const abortController = new AbortController();
+      const toolCallId = `e2e-project-scene-regeneration-${Date.now()}`;
+      const turnId = `e2e-project-scene-turn-${Date.now()}`;
+      const toolContext = {
+        sessionId,
+        toolCallId,
+        trace: { turnId },
+        signal: abortController.signal,
+        cwd: '',
+        host: { getExtension: () => undefined },
+        emitEvent: () => undefined,
+      };
+      const contextResult = await contextTool({}, {} as never, toolContext);
+      const context = readE2eToolResultJson(contextResult);
+      const requirement = context['requirement'];
+      if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
+        throw new Error('Project Scene regeneration context omitted the pending requirement.');
+      }
+      const regenerationId = (requirement as Record<string, unknown>)['regenerationId'];
+      const expiresAtUnixMs = (requirement as Record<string, unknown>)['expiresAtUnixMs'];
+      if (
+        typeof regenerationId !== 'string'
+        || typeof expiresAtUnixMs !== 'number'
+        || !Number.isSafeInteger(expiresAtUnixMs)
+      ) {
+        throw new Error('Project Scene regeneration context returned an invalid requirement.');
+      }
+      const input = createE2eProjectSceneCommitInput(regenerationId);
+      projectSceneRegenerationProbe = {
+        state: 'awaiting-approval',
+        toolCallId,
+        regenerationId,
+      };
+      engine.triggerSyncDetectChanges?.();
+
+      pendingProjectSceneRegenerationCommit = (async () => {
+        try {
+          const approval = await options.requestToolApproval!(sessionId, {
+            approvalTraceId: `approval:${toolCallId}`,
+            toolCallId,
+            toolName: COMMIT_PROJECT_SCENE_REGENERATION_TOOL,
+            args: input,
+            title: 'E2E Project Scene regeneration',
+            message: 'The deterministic Agent proposes a native v2 Project Scene.',
+            primaryScope: 'workspace',
+            allowAutoConfirm: true,
+          });
+          if (!approval.approved) {
+            projectSceneRegenerationProbe = {
+              state: 'rejected',
+              toolCallId,
+              regenerationId,
+              approved: false,
+              ...(approval.reason ? { error: approval.reason } : {}),
+            };
+            return;
+          }
+
+          projectSceneRegenerationProbe = {
+            state: 'approved',
+            toolCallId,
+            regenerationId,
+            approved: true,
+          };
+          const originalDateNow = Date.now;
+          try {
+            if (probeOptions?.forceExpired === true) {
+              Date.now = () => Number(expiresAtUnixMs) + 1;
+            }
+            const toolResult = await commitTool(input, {} as never, toolContext);
+            projectSceneRegenerationProbe = {
+              state: 'settled',
+              toolCallId,
+              regenerationId,
+              approved: true,
+              result: toolResult,
+            };
+          } finally {
+            Date.now = originalDateNow;
+          }
+        } catch (error) {
+          projectSceneRegenerationProbe = {
+            state: 'settled',
+            toolCallId,
+            regenerationId,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      })();
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      return { ...projectSceneRegenerationProbe };
+    },
+    async awaitProjectSceneRegenerationCommitSettled() {
+      await pendingProjectSceneRegenerationCommit;
+      pendingProjectSceneRegenerationCommit = null;
+      engine.triggerSyncDetectChanges?.();
+      return { ...projectSceneRegenerationProbe };
+    },
+    openEmbeddedTool(toolId: string) {
+      return options.openEmbeddedTool?.(toolId) === true;
+    },
+    closeTool(toolId: string) {
+      options.closeTool?.(toolId);
     },
     snapshot,
   };

@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "專案公開失敗",
+        "WORKSPACE_PROJECT_NOT_FOUND": "專案不存在",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "無權公開此專案",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "本機依賴路徑不符合公開要求",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "請先編譯並同步專案"
+    },
     "MENU": {
         "MENU": "選單",
         "PROJECT_NEW": "新建專案",
@@ -191,6 +198,16 @@
             "LABEL_COLOR_MODE": "色彩",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "僅支援 MP4 或 GIF 檔案"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "上傳 PNG、JPEG、WebP 或 GIF 圖片並轉換為 RGB565/RGB332 像素資料",
+            "UPLOAD_TOOLTIP": "支援格式：PNG、JPEG、WebP、GIF",
+            "EMPTY": "未上傳圖片",
+            "STATUS_DECODING": "正在轉換圖片...",
+            "STATUS_REDECODING": "正在重新轉換 {{name}}...",
+            "ERROR_DECODE_FAILED": "圖片轉換失敗",
+            "ERROR_REDECODE_FAILED": "圖片重新轉換失敗",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "僅支援 PNG、JPEG、WebP 或 GIF 檔案"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "上傳",
             "UPLOAD_TOOLTIP": "支援格式：MP4、GIF、PNG",
@@ -249,6 +266,33 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "上傳",
+            "UPLOAD_TOOLTIP": "支援格式：PNG、JPEG、WebP、BMP",
+            "BUTTON_CLEAR": "清空",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "色彩",
+            "EMPTY": "未上傳圖片",
+            "STATUS_READING_FILE": "正在讀取 {{name}}...",
+            "STATUS_SAVING_FILE": "正在儲存 {{name}}...",
+            "STATUS_DECODING": "正在轉換圖片...",
+            "STATUS_REDECODING": "正在根據原圖重新轉換 {{name}}...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | 資料 {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "檔案大小不能超過 {{maxSize}}，目前檔案 {{currentSize}}",
+            "ERROR_DECODE_FAILED": "圖片轉換失敗",
+            "ERROR_REDECODE_FAILED": "圖片重新轉換失敗",
+            "ERROR_PROJECT_PATH_MISSING": "找不到目前專案目錄，無法儲存圖片原始檔",
+            "ERROR_FS_CREATE_ASSETS_UNAVAILABLE": "檔案系統介面不可用，無法建立圖片資源目錄",
+            "ERROR_FS_SAVE_UNAVAILABLE": "檔案系統介面不可用，無法儲存圖片原始檔",
+            "ERROR_FS_READ_UNAVAILABLE": "檔案系統介面不可用，無法讀取圖片原始檔",
+            "ERROR_SOURCE_READ_INVALID": "圖片原始檔讀取結果無效",
+            "ERROR_SOURCE_MISSING_REDECODE": "找不到圖片原始檔，請重新上傳後再修改尺寸",
+            "ERROR_SOURCE_NOT_FOUND": "圖片原始檔不存在：{{path}}",
+            "ERROR_MD5_UNAVAILABLE": "檔案 MD5 介面不可用，請完全重新啟動軟體後再上傳",
+            "ERROR_MD5_FAILED": "圖片原始檔 MD5 計算失敗",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "僅支援 PNG、JPEG、WebP 或 BMP 圖片"
         }
     },
     "MAIN_WINDOW": {
@@ -272,7 +316,7 @@
             "COMPILATION": "編譯設定",
             "REPOSITORY": "倉庫設定",
             "DEPENDENCIES": "全域依賴",
-            "AILY_TOOLS": "Aily 工具",
+            "TOOLS_AND_SUBAPP": "工具和應用",
             "MCP": "MCP",
             "DEVMODE": "開發者模式",
             "CACHE": "緩存管理"
@@ -443,6 +487,7 @@
         "TEXT_DOWNLOADED": "新版本 {{version}} 已下載完成，是否立即安裝？",
         "TEXT_AVAILABLE": "當前版本 {{currentVersion}}，新版本 {{version}}<br>是否要下載並安裝此更新？",
         "DOWNLOAD_FAILED": "下載失敗",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "目前使用備用下載來源（{{current}}/{{total}}）",
         "REMIND_LATER": "稍後提醒",
         "SKIP_VERSION": "跳過此版本",
         "UPDATE_NOW": "立即更新",
@@ -603,7 +648,7 @@
         "TURN_ACTION_RESTORE_ROUNDS": "還原 · {{count}} 輪",
         "TURN_ACTION_FORK": "分叉新會話",
         "TURN_RESTORE_STATUS": "已還原檢查點",
-        "TURN_RESTORE_REAPPLY": "恢復",
+        "TURN_RESTORE_REAPPLY": "撤銷還原",
         "USER_FEEDBACK_NOTIFY_TITLE": "AI 助手需要你操作",
         "USER_FEEDBACK_NOTIFY_BODY": "AI 助手有待您處理的項目，請開啟對話並完成確認、作答或畫面指示的後續步驟。",
         "ONBOARDING": {
@@ -862,6 +907,14 @@
             "COMPLETE_WITH_TIME": "編譯完成 (耗時: {{seconds}}s)",
             "FIRST_BUILD_HINT": "首次編譯可能需要較長時間",
             "FAST_BUILD_HINT": "閃電構建系統正在執行",
+            "PROGRESS_PREPARING": "正在準備編譯",
+            "PROGRESS_SKETCH": "正在編譯程式",
+            "PROGRESS_LIBRARIES": "正在編譯依賴庫",
+            "PROGRESS_CORE": "正在編譯核心",
+            "PROGRESS_LINKING": "正在連結韌體",
+            "PROGRESS_OBJCOPY": "正在產生韌體",
+            "PROGRESS_FINALIZING": "正在完成編譯",
+            "PROGRESS_COMPLETE": "編譯完成",
             "PROCESS_SIGNAL_TERMINATED": "編譯進程被訊號終止: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "編譯進程異常退出，退出碼: {{code}}",
             "PROCESS_START_FAILED": "編譯進程啟動失敗",

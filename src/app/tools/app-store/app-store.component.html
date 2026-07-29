@@ -151,9 +151,17 @@
                                 </button>
                                 <div class="subapp-more-menu" role="menu">
                                     <button class="subapp-more-action" type="button" role="menuitem"
-                                        [disabled]="isCheckingSubapp(app)" (click)="checkSubappUpdate(app)">
+                                        [disabled]="isCheckingSubapp(app)" (click)="runSubappMenuAction(app)">
+                                        @if (app.subapp?.updateAvailable) {
+                                        <i class="fa-light fa-cloud-arrow-down"></i>
+                                        <span>{{ 'APP_STORE.UPDATE' | translate }}</span>
+                                        } @else if (isSubappRestartRequired(app)) {
+                                        <i class="fa-light fa-arrow-rotate-right"></i>
+                                        <span>{{ 'APP_STORE.RESTART_SERVICE' | translate }}</span>
+                                        } @else {
                                         <i class="fa-light fa-rotate"></i>
                                         <span>{{ 'APP_STORE.CHECK_UPDATE' | translate }}</span>
+                                        }
                                     </button>
                                     <button class="subapp-more-action danger" type="button" role="menuitem"
                                         [class.confirm]="isUninstallConfirming(app)" (click)="uninstallSubapp(app)"

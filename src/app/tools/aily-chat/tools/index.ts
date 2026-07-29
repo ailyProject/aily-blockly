@@ -1,10 +1,6 @@
 // Blockly 领域工具索引
-export { editAbiFileTool } from './editAbiFileTool';
-export { deleteFolderTool } from './deleteFolderTool';
-export { newProjectTool } from './createProjectTool';
 export { getProjectInfoTool } from './getProjectInfoTool';
 export { syncAbsFileHandler } from './syncAbsFileTool';
-export { absVersionControlHandler } from './absVersionControlTool';
 export { getAbsSyntaxTool } from './getAbsSyntaxTool';
 
 // 仍有 UI 消费者的工具（保留运行时函数/类型/服务）

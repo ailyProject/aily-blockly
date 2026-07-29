@@ -6,6 +6,7 @@
 /out-tsc
 /bazel-out
 /out
+/build/simulator-runtime
 /electron/chat-runtime-lex-execution-runtime.bundle.mjs
 
 # Node
@@ -78,9 +79,12 @@ child/aily-builder*
 /e2e/.artifacts
 
 **/*.spec.ts
+!src/app/services/project-debug-configuration.service.spec.ts
+!src/app/services/project-data/project-data-legacy-import.spec.ts
 !src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts
 !src/app/tools/aily-chat/tools/blocklyEditorOperationQueue.spec.ts
 !src/app/tools/aily-chat/components/x-dialog/x-markdown-target-morph.spec.ts
+!src/app/tools/aily-chat/core/blockly-subapp-agent-tools.spec.ts
 !/e2e/tests/**/*.spec.ts
 **/__tests__/**/*
 .tmp

@@ -37,6 +37,8 @@ export interface ElectronAdapterDeps {
   configService: any;
   authService: any;
   builderService: any;
+  uploaderService?: any;
+  serialService?: any;
   platformService: any;
   noticeService?: any;
   blocklyService?: any;
@@ -48,6 +50,7 @@ export interface ElectronAdapterDeps {
   electronService?: any;
   uiService?: any;
   onboardingService?: any;
+  subappAgentBridgeService?: any;
 }
 
 /**
@@ -484,15 +487,35 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
         };
       }
     },
-    upload: async (projectPath: string, port: string) => {
-      const builderService = getDep('builderService');
-      const upload = builderService?.upload;
+    listSerialPorts: async () => {
+      const serialService = getDep('serialService');
+      if (!serialService || typeof serialService.getSerialPorts !== 'function') {
+        return [];
+      }
+      const ports = await serialService.getSerialPorts();
+      return (Array.isArray(ports) ? ports : [])
+        .map((item: any) => ({
+          port: String(item?.name || '').trim(),
+          label: String(item?.text || item?.name || '').trim(),
+          type: String(item?.type || 'serial'),
+          selected: String(serialService.currentPort || '') === String(item?.name || ''),
+        }))
+        .filter((item: { port: string }) => !!item.port);
+    },
+    upload: async (_projectPath: string, port: string) => {
+      const serialService = getDep('serialService');
+      const uploaderService = getDep('uploaderService');
+      const upload = uploaderService?.upload;
       if (typeof upload !== 'function') {
         return { success: false, output: 'Upload system is not available.' };
       }
 
       try {
-        const result = await upload.call(builderService, projectPath, port);
+        if (!serialService || typeof serialService.selectSerialPort !== 'function') {
+          return { success: false, output: 'Serial port selection is not available.' };
+        }
+        await serialService.selectSerialPort(port);
+        const result = await upload.call(uploaderService);
         return {
           success: result?.state !== 'error' && result?.state !== 'warn',
           output: result?.text ?? result?.output ?? JSON.stringify(result ?? null),
@@ -627,6 +650,7 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
     get arduinoLint() { return getDep('arduinoLintService'); },
     get ui() { return getDep('uiService'); },
     get onboarding() { return getDep('onboardingService'); },
+    get subappAgent() { return getDep('subappAgentBridgeService'); },
   };
 }
 

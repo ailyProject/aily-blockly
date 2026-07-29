@@ -30,13 +30,32 @@ function exitWithFatalError(error) {
     process.exit(1);
 }
 
-process.on('uncaughtException', (error) => {
-    exitWithFatalError(error);
-});
+const UPLOAD_OUTPUT_TAIL_LIMIT = 64 * 1024;
 
-process.on('unhandledRejection', (reason) => {
-    exitWithFatalError(reason);
-});
+function hasFatalUploadOutput(output) {
+    const text = String(output || '');
+    return /\bfatal\b[^\r\n]*\berror\b|\berror\b[^\r\n]*\bfatal\b/i.test(text);
+}
+
+function normalizeUploadExitCode(code, signal, output) {
+    if (typeof code === 'number' && code !== 0) {
+        return code;
+    }
+    if (signal || code !== 0 || hasFatalUploadOutput(output)) {
+        return 1;
+    }
+    return 0;
+}
+
+if (require.main === module) {
+    process.on('uncaughtException', (error) => {
+        exitWithFatalError(error);
+    });
+
+    process.on('unhandledRejection', (reason) => {
+        exitWithFatalError(reason);
+    });
+}
 
 function loadSerialPort() {
     if (SerialPort) return SerialPort;
@@ -228,6 +247,7 @@ function buildUploadParamFromPreprocess(currentProjectPath, platform) {
         'upload.params.quiet': platformConfig[`${toolPrefix}upload.params.quiet`] || '',
         'upload.verbose': platformConfig[`${toolPrefix}upload.params.verbose`] || '',
         'upload.quiet': platformConfig[`${toolPrefix}upload.params.quiet`] || '',
+        'upload.verify': platformConfig[`${toolPrefix}upload.params.verify`] || '',
         'serial.port': '${serial}',
         'serial.port.file': '${serial}',
         'serial.port.label': '${serial}',
@@ -646,20 +666,51 @@ async function main() {
 
         logger.log(`Executing: ${shellCommand} ${args.join(' ')}`);
 
-        // 12. 执行上传命令
-        const child = spawn(shellCommand, args, {
-            cwd: buildPath,
-            shell: true,
-            stdio: 'inherit'
+        // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
+        // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
+        const result = await new Promise((resolve, reject) => {
+            const child = spawn(shellCommand, args, {
+                cwd: buildPath,
+                shell: true,
+                stdio: ['inherit', 'pipe', 'pipe']
+            });
+            let outputTail = '';
+            const streamState = {
+                stdout: { used: false, endsWithLineBreak: true },
+                stderr: { used: false, endsWithLineBreak: true }
+            };
+
+            const forwardOutput = (streamName, data) => {
+                const text = data.toString();
+                outputTail = (outputTail + text).slice(-UPLOAD_OUTPUT_TAIL_LIMIT);
+                streamState[streamName].used = true;
+                streamState[streamName].endsWithLineBreak = /[\r\n]$/.test(text);
+                process[streamName].write(data);
+            };
+
+            child.stdout?.on('data', (data) => forwardOutput('stdout', data));
+            child.stderr?.on('data', (data) => forwardOutput('stderr', data));
+            child.on('error', reject);
+            child.on('close', (code, signal) => {
+                // 确保无结尾换行的工具错误也能被上层逐行解析器及时消费。
+                for (const streamName of ['stdout', 'stderr']) {
+                    if (streamState[streamName].used && !streamState[streamName].endsWithLineBreak) {
+                        process[streamName].write('\n');
+                    }
+                }
+                resolve({
+                    code,
+                    signal,
+                    outputTail,
+                    exitCode: normalizeUploadExitCode(code, signal, outputTail)
+                });
+            });
         });
 
-        child.on('close', (code) => {
-            if (code !== 0) {
-                process.exit(code);
-            } else {
-                process.exit(0);
-            }
-        });
+        if (result.exitCode !== result.code && hasFatalUploadOutput(result.outputTail)) {
+            logger.error('[ERROR] 上传工具报告了致命错误，但返回了退出码 0，已按上传失败处理。');
+        }
+        process.exitCode = result.exitCode;
 
     } catch (error) {
         logger.error(`[ERROR] ${error.message}`);
@@ -855,7 +906,14 @@ async function findFilesRecursive(dir) {
     return results;
 }
 
-main().catch(e => {
-    logger.error(e);
-    process.exit(1);
-});
+if (require.main === module) {
+    main().catch(e => {
+        logger.error(e);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    hasFatalUploadOutput,
+    normalizeUploadExitCode,
+};

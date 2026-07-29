@@ -1,5 +1,7 @@
 // --- Interfaces for Type Safety ---
 
+import { assertNoOversizedInlineValues } from '../services/project-data/project-data-policy';
+
 export interface BlocklyField {
     [key: string]: string | number | boolean;
 }
@@ -101,6 +103,7 @@ export function updateBlockInFile(
 
         // 3. Write File (only if updated)
         if (updated) {
+            assertNoOversizedInlineValues(projectData);
             window['fs'].writeFileSync(filePath, JSON.stringify(projectData, null, 2), 'utf8');
             console.log(`Successfully updated block ${blockId} in ${filePath}`);
         } else {
@@ -162,6 +165,7 @@ export function updateBlocksInFile(
 
         // 3. Write File (only if updated)
         if (hasChanges) {
+            assertNoOversizedInlineValues(projectData);
             window['fs'].writeFileSync(filePath, JSON.stringify(projectData, null, 2), 'utf8');
             // console.log(`Successfully updated blocks in ${filePath}`);
         }

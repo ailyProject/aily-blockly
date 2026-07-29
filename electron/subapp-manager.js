@@ -11,6 +11,7 @@ const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 const TOOL_ID_ALIASES = Object.freeze({
   'aily-chat': 'aily-chat-react',
   'ffs-manager': 'ffs-manager-child',
+  'aily-simulator': 'simulator',
 });
 const STARTUP_TIMEOUTS = Object.freeze({
   'aily-chat-react': 30000,
@@ -21,14 +22,17 @@ const mutationQueues = new Map();
 
 function resolveAppDataPath(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.AILY_APPDATA_PATH) return path.resolve(env.AILY_APPDATA_PATH);
-  if (platform === 'win32') return path.join(home, 'AppData', 'Local', 'aily-project');
-  if (platform === 'darwin') return path.join(home, 'Library', 'aily-project');
-  return path.join(home, '.config', 'aily-project');
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  if (platform === 'win32') return platformPath.join(home, 'AppData', 'Local', 'aily-project');
+  if (platform === 'darwin') return platformPath.join(home, 'Library', 'aily-project');
+  return platformPath.join(home, '.config', 'aily-project');
 }
 
 function resolveSubappRoot(options = {}) {
   if (options.rootDir) return path.resolve(options.rootDir);
-  return path.join(
+  const platform = options.platform || process.platform;
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  return platformPath.join(
     resolveAppDataPath(options.env, options.platform, options.home),
     'npm-global',
     'app',
@@ -147,6 +151,330 @@ function resolveUiIndex(packagePath, catalogId, packageJson) {
     || path.join('ui', 'index.html');
 }
 
+function resolvePackageRelativePath(packagePath, relativePath, label) {
+  const value = requireText(relativePath, label);
+  if (path.isAbsolute(value)) {
+    throw new Error(`${label} must be package-relative`);
+  }
+  const resolved = path.resolve(packagePath, value);
+  const relative = path.relative(packagePath, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Unsafe ${label}: ${value}`);
+  }
+  return { relative: value.replace(/\\/g, '/'), resolved };
+}
+
+function positiveInteger(value, fallback, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  return Math.min(max, Math.floor(number));
+}
+
+function optionalBoundedInteger(value, label, min, max) {
+  if (value === undefined) return undefined;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new Error(`${label} must be an integer between ${min} and ${max}`);
+  }
+  return number;
+}
+
+function readRuntimeResourceLifecycleConfig(declaredRuntime) {
+  const declared = declaredRuntime?.resourceLifecycle;
+  if (declared === undefined) return null;
+  if (!isObject(declared)) {
+    throw new Error('ailySubapp.runtime.resourceLifecycle must be an object');
+  }
+  if (!Array.isArray(declared.resources) || declared.resources.length === 0) {
+    throw new Error('ailySubapp.runtime.resourceLifecycle.resources must be a non-empty array');
+  }
+  const resources = [...new Set(declared.resources.map((value, index) => {
+    const resource = requireText(value, `ailySubapp.runtime.resourceLifecycle.resources[${index}]`);
+    if (!/^[a-z][a-z0-9._-]{0,63}$/.test(resource)) {
+      throw new Error(`Invalid Subapp Runtime resource kind: ${resource}`);
+    }
+    return resource;
+  }))];
+  const suspendMethod = requireText(
+    declared.suspendMethod,
+    'ailySubapp.runtime.resourceLifecycle.suspendMethod',
+  );
+  const resumeMethod = requireText(
+    declared.resumeMethod,
+    'ailySubapp.runtime.resourceLifecycle.resumeMethod',
+  );
+  const timeoutMs = optionalBoundedInteger(
+    declared.timeoutMs,
+    'ailySubapp.runtime.resourceLifecycle.timeoutMs',
+    100,
+    10 * 60 * 1000,
+  );
+  return {
+    resources,
+    suspendMethod,
+    resumeMethod,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
+
+function validateUiSurfaceName(value, label) {
+  const name = requireText(value, label);
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(name)) {
+    throw new Error(`Invalid ${label}: ${name}`);
+  }
+  return name;
+}
+
+function readSubappUiConfig(packagePath, packageJson, uiIndex) {
+  const declared = packageJson?.ailySubapp?.ui;
+  if (declared === undefined) return null;
+  if (!isObject(declared)) {
+    throw new Error('ailySubapp.ui must be an object');
+  }
+  if (!isObject(declared.surfaces) || !Object.keys(declared.surfaces).length) {
+    throw new Error('ailySubapp.ui.surfaces must be a non-empty object');
+  }
+
+  const surfaces = {
+    default: {
+      entry: String(uiIndex || path.join('ui', 'index.html')).replace(/\\/g, '/'),
+    },
+  };
+  for (const [rawName, rawSurface] of Object.entries(declared.surfaces)) {
+    const name = validateUiSurfaceName(rawName, 'UI surface name');
+    if (!isObject(rawSurface)) {
+      throw new Error(`UI surface ${name} must be an object`);
+    }
+    const entry = resolvePackageRelativePath(
+      packagePath,
+      typeof rawSurface.entry === 'string' && rawSurface.entry.trim()
+        ? rawSurface.entry
+        : uiIndex,
+      `ailySubapp.ui.surfaces.${name}.entry`,
+    );
+    if (!fs.existsSync(entry.resolved)) {
+      throw new Error(`Subapp UI surface entry not found: ${entry.relative}`);
+    }
+
+    const minWidth = optionalBoundedInteger(
+      rawSurface.minWidth,
+      `ailySubapp.ui.surfaces.${name}.minWidth`,
+      160,
+      4096,
+    );
+    const minHeight = optionalBoundedInteger(
+      rawSurface.minHeight,
+      `ailySubapp.ui.surfaces.${name}.minHeight`,
+      120,
+      4096,
+    );
+    const preferredHeight = optionalBoundedInteger(
+      rawSurface.preferredHeight,
+      `ailySubapp.ui.surfaces.${name}.preferredHeight`,
+      120,
+      8192,
+    );
+    if (minHeight !== undefined && preferredHeight !== undefined && preferredHeight < minHeight) {
+      throw new Error(`UI surface ${name} preferredHeight must be greater than or equal to minHeight`);
+    }
+    if (rawSurface.interactive !== undefined && typeof rawSurface.interactive !== 'boolean') {
+      throw new Error(`ailySubapp.ui.surfaces.${name}.interactive must be a boolean`);
+    }
+
+    surfaces[name] = {
+      entry: entry.relative,
+      ...(minWidth !== undefined ? { minWidth } : {}),
+      ...(minHeight !== undefined ? { minHeight } : {}),
+      ...(preferredHeight !== undefined ? { preferredHeight } : {}),
+      ...(rawSurface.interactive !== undefined ? { interactive: rawSurface.interactive } : {}),
+    };
+  }
+  return { surfaces };
+}
+
+function validateAgentToolPresentation(rawPresentation, toolName) {
+  if (rawPresentation === undefined) return null;
+  if (!isObject(rawPresentation)) {
+    throw new Error(`Agent tool ${toolName} presentation must be an object`);
+  }
+  const mode = rawPresentation.mode;
+  if (mode !== 'embedded' && mode !== 'window' && mode !== 'dock') {
+    throw new Error(`Agent tool ${toolName} presentation.mode must be embedded, window, or dock`);
+  }
+
+  let surface;
+  if (rawPresentation.surface !== undefined) {
+    surface = validateUiSurfaceName(
+      rawPresentation.surface,
+      `agent tool ${toolName} presentation.surface`,
+    );
+  }
+
+  const supportedAutoOpen = new Set(['never', 'first-active', 'always', 'on-error']);
+  let autoOpen;
+  if (rawPresentation.autoOpen !== undefined) {
+    autoOpen = requireText(
+      rawPresentation.autoOpen,
+      `agent tool ${toolName} presentation.autoOpen`,
+    );
+    if (!supportedAutoOpen.has(autoOpen)) {
+      throw new Error(
+        `Agent tool ${toolName} presentation.autoOpen must be never, first-active, always, or on-error`,
+      );
+    }
+  }
+
+  let when;
+  if (rawPresentation.when !== undefined) {
+    if (!isObject(rawPresentation.when)) {
+      throw new Error(`Agent tool ${toolName} presentation.when must be an object`);
+    }
+    const param = requireText(
+      rawPresentation.when.param,
+      `agent tool ${toolName} presentation.when.param`,
+    );
+    const values = rawPresentation.when.values;
+    if (!Array.isArray(values) || !values.length || values.some(value =>
+      typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean'
+    )) {
+      throw new Error(
+        `Agent tool ${toolName} presentation.when.values must contain JSON scalar values`,
+      );
+    }
+    when = { param, values: [...values] };
+  }
+
+  return {
+    mode,
+    ...(surface ? { surface } : {}),
+    ...(autoOpen ? { autoOpen } : {}),
+    ...(when ? { when } : {}),
+  };
+}
+
+function validateAgentLifecycle(rawLifecycle) {
+  if (rawLifecycle === undefined) return null;
+  if (!isObject(rawLifecycle)) {
+    throw new Error('Subapp Agent lifecycle must be an object');
+  }
+  if (rawLifecycle.sessionRelease === undefined) return {};
+  if (!isObject(rawLifecycle.sessionRelease)) {
+    throw new Error('Subapp Agent lifecycle.sessionRelease must be an object');
+  }
+  const method = requireText(
+    rawLifecycle.sessionRelease.method,
+    'Subapp Agent lifecycle.sessionRelease.method',
+  );
+  const params = rawLifecycle.sessionRelease.params;
+  if (params !== undefined && !isObject(params)) {
+    throw new Error('Subapp Agent lifecycle.sessionRelease.params must be an object');
+  }
+  return {
+    sessionRelease: {
+      method,
+      ...(params ? { params } : {}),
+      timeoutMs: positiveInteger(rawLifecycle.sessionRelease.timeoutMs, 5000, 30000),
+    },
+  };
+}
+
+function validateAgentTool(rawTool, index) {
+  if (!isObject(rawTool)) throw new Error(`Agent tool ${index + 1} must be an object`);
+  const name = requireText(rawTool.name, `agent tool ${index + 1} name`);
+  if (!/^[a-z][a-z0-9_]{0,99}$/.test(name)) {
+    throw new Error(`Invalid agent tool name: ${name}`);
+  }
+  const rpc = isObject(rawTool.rpc) ? rawTool.rpc : {};
+  const method = typeof rpc.method === 'string' && rpc.method.trim() ? rpc.method.trim() : '';
+  const actionParam = typeof rpc.actionParam === 'string' && rpc.actionParam.trim()
+    ? rpc.actionParam.trim()
+    : '';
+  const methods = isObject(rpc.methods)
+    ? Object.fromEntries(Object.entries(rpc.methods)
+      .filter(([action, mappedMethod]) => action && typeof mappedMethod === 'string' && mappedMethod.trim())
+      .map(([action, mappedMethod]) => [action, mappedMethod.trim()]))
+    : {};
+  if (!method && (!actionParam || !Object.keys(methods).length)) {
+    throw new Error(`Agent tool ${name} must declare rpc.method or rpc.actionParam + rpc.methods`);
+  }
+  if (!isObject(rawTool.inputSchema)) {
+    throw new Error(`Agent tool ${name} inputSchema must be an object`);
+  }
+  const presentation = validateAgentToolPresentation(rawTool.presentation, name);
+  return {
+    name,
+    description: typeof rawTool.description === 'string' ? rawTool.description.trim() : name,
+    rpc: {
+      ...(method ? { method } : {}),
+      ...(actionParam ? { actionParam, methods } : {}),
+    },
+    ...(presentation ? { presentation } : {}),
+    permission: rawTool.permission === 'change' ? 'change' : 'read',
+    requiresSession: rawTool.requiresSession === true,
+    supportsCancellation: rawTool.supportsCancellation === true,
+    timeoutMs: positiveInteger(rawTool.timeoutMs, 15000, 10 * 60 * 1000),
+    maxTimeoutMs: positiveInteger(rawTool.maxTimeoutMs, 60000, 10 * 60 * 1000),
+    maxInputBytes: positiveInteger(rawTool.maxInputBytes, 1024 * 1024, 16 * 1024 * 1024),
+    maxOutputBytes: positiveInteger(rawTool.maxOutputBytes, 48 * 1024, 1024 * 1024),
+    inputSchema: rawTool.inputSchema,
+  };
+}
+
+function readSubappAgentConfig(packagePath, packageJson) {
+  const declared = packageJson?.ailySubapp?.agent;
+  if (!isObject(declared)) return null;
+  const toolsDeclaration = isObject(declared.tools) ? declared.tools : {};
+  const manifest = resolvePackageRelativePath(
+    packagePath,
+    toolsDeclaration.manifest,
+    'ailySubapp.agent.tools.manifest',
+  );
+  if (!fs.existsSync(manifest.resolved)) {
+    throw new Error(`Subapp Agent manifest not found: ${manifest.relative}`);
+  }
+  const rawManifest = readJson(manifest.resolved);
+  if (!isObject(rawManifest) || !Array.isArray(rawManifest.tools)) {
+    throw new Error('Subapp Agent manifest must contain a tools array');
+  }
+  const tools = rawManifest.tools.map(validateAgentTool);
+  const lifecycle = validateAgentLifecycle(rawManifest.lifecycle);
+  const names = new Set();
+  for (const tool of tools) {
+    if (names.has(tool.name)) throw new Error(`Duplicate subapp Agent tool: ${tool.name}`);
+    names.add(tool.name);
+  }
+  const skills = Array.isArray(declared.skills)
+    ? declared.skills.map((skill, index) => resolvePackageRelativePath(
+      packagePath,
+      skill,
+      `ailySubapp.agent.skills[${index}]`,
+    ).relative)
+    : [];
+  const protocolVersion = positiveInteger(
+    rawManifest.protocolVersion ?? declared.protocolVersion,
+    1,
+    100,
+  );
+  const transport = requireText(
+    rawManifest.transport || toolsDeclaration.transport || declared.transport,
+    'ailySubapp.agent transport',
+  );
+  if (protocolVersion !== 1) {
+    throw new Error(`Unsupported ailySubapp.agent protocolVersion: ${protocolVersion}`);
+  }
+  if (transport !== 'aily-child-rpc') {
+    throw new Error(`Unsupported ailySubapp.agent transport: ${transport}`);
+  }
+  return {
+    protocolVersion,
+    transport,
+    skills,
+    manifestPath: manifest.relative,
+    ...(lifecycle && Object.keys(lifecycle).length ? { lifecycle } : {}),
+    tools,
+  };
+}
+
 function readInstalledState(rootDir, entry) {
   const packagePath = packagePathFor(rootDir, entry.package);
   const packageJsonPath = path.join(packagePath, 'package.json');
@@ -164,7 +492,23 @@ function readInstalledState(rootDir, entry) {
     const complete = fs.existsSync(path.join(packagePath, mainEntry))
       && fs.existsSync(path.join(packagePath, uiIndex));
     const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
-    const startupTimeoutMs = STARTUP_TIMEOUTS[toolId];
+    const ui = readSubappUiConfig(packagePath, packageJson, uiIndex);
+    const declaredRuntime = isObject(packageJson?.ailySubapp?.runtime)
+      ? packageJson.ailySubapp.runtime
+      : {};
+    const startupTimeoutMs = positiveInteger(
+      declaredRuntime.startupTimeoutMs,
+      STARTUP_TIMEOUTS[toolId] || 0,
+      2 * 60 * 1000,
+    );
+    const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
+    let agent = null;
+    let agentError = '';
+    try {
+      agent = readSubappAgentConfig(packagePath, packageJson);
+    } catch (error) {
+      agentError = error.message;
+    }
 
     return {
       installed: complete,
@@ -182,6 +526,9 @@ function readInstalledState(rootDir, entry) {
         uiIndex,
         routePath: `/child-tool/${toolId}`,
         ...(startupTimeoutMs ? { startupTimeoutMs } : {}),
+        ...(resourceLifecycle ? { runtime: { resourceLifecycle } } : {}),
+        ...(ui ? { ui } : {}),
+        ...(agent ? { agent } : {}),
         app: {
           ...entry.app,
           id: toolId,
@@ -189,6 +536,7 @@ function readInstalledState(rootDir, entry) {
           ...(toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
         },
       } : null,
+      ...(agentError ? { installError: agentError } : {}),
     };
   } catch (error) {
     return {
@@ -349,6 +697,67 @@ function readIndexCache(rootDir) {
   return fs.existsSync(cachePath) ? validateIndex(readJson(cachePath)) : null;
 }
 
+function snapshotFile(filePath) {
+  return fs.existsSync(filePath)
+    ? { exists: true, contents: fs.readFileSync(filePath) }
+    : { exists: false, contents: null };
+}
+
+function restoreFile(filePath, snapshot) {
+  if (snapshot.exists) {
+    fs.writeFileSync(filePath, snapshot.contents);
+  } else if (fs.existsSync(filePath)) {
+    fs.rmSync(filePath, { force: true });
+  }
+}
+
+function packageInstallArgs(rootDir, entry) {
+  return [
+    'install', '--prefix', rootDir, '--save-exact', '--omit=dev', '--no-audit', '--no-fund',
+    '--foreground-scripts', `${entry.package}@${entry.version}`,
+  ];
+}
+
+async function replaceInstalledPackage(rootDir, entry, npmRunner, options) {
+  const packagePath = packagePathFor(rootDir, entry.package);
+  const backupRoot = fs.mkdtempSync(path.join(rootDir, '.subapp-update-'));
+  const backupPath = path.join(backupRoot, 'package');
+  const packageJsonPath = path.join(rootDir, 'package.json');
+  const packageLockPath = path.join(rootDir, 'package-lock.json');
+  const packageJsonSnapshot = snapshotFile(packageJsonPath);
+  const packageLockSnapshot = snapshotFile(packageLockPath);
+  let backedUp = false;
+
+  try {
+    if (fs.existsSync(packagePath)) {
+      fs.renameSync(packagePath, backupPath);
+      backedUp = true;
+    }
+
+    await npmRunner(packageInstallArgs(rootDir, entry), options);
+    const installedState = readInstalledState(rootDir, entry);
+    if (!installedState.installed || installedState.installedVersion !== entry.version) {
+      throw new Error(
+        `Subapp update verification failed: expected ${entry.version}, got ${installedState.installedVersion || 'missing'}`,
+      );
+    }
+
+    fs.rmSync(backupRoot, { recursive: true, force: true });
+  } catch (error) {
+    if (fs.existsSync(packagePath)) {
+      fs.rmSync(packagePath, { recursive: true, force: true });
+    }
+    if (backedUp && fs.existsSync(backupPath)) {
+      fs.mkdirSync(path.dirname(packagePath), { recursive: true });
+      fs.renameSync(backupPath, packagePath);
+    }
+    restoreFile(packageJsonPath, packageJsonSnapshot);
+    restoreFile(packageLockPath, packageLockSnapshot);
+    fs.rmSync(backupRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
   const indexUrl = options.indexUrl || process.env.AILY_SUBAPP_INDEX_URL || DEFAULT_INDEX_URL;
@@ -385,7 +794,7 @@ function createSubappManager(options = {}) {
   function enqueueMutation(operation) {
     const previous = mutationQueues.get(rootDir) || Promise.resolve();
     const next = previous.catch(() => undefined).then(operation);
-    const queued = next.finally(() => {
+    const queued = next.then(() => undefined, () => undefined).finally(() => {
       if (mutationQueues.get(rootDir) === queued) mutationQueues.delete(rootDir);
     });
     mutationQueues.set(rootDir, queued);
@@ -404,11 +813,10 @@ function createSubappManager(options = {}) {
         await (options.runNpm || runNpm)([
           'uninstall', '--prefix', rootDir, '--no-audit', '--no-fund', entry.package,
         ], options);
+      } else if (action === 'update') {
+        await replaceInstalledPackage(rootDir, entry, options.runNpm || runNpm, options);
       } else {
-        await (options.runNpm || runNpm)([
-          'install', '--prefix', rootDir, '--save-exact', '--omit=dev', '--no-audit', '--no-fund',
-          '--foreground-scripts', `${entry.package}@${entry.version}`,
-        ], options);
+        await (options.runNpm || runNpm)(packageInstallArgs(rootDir, entry), options);
       }
       return list({ locale: payload.locale || 'en' });
     });

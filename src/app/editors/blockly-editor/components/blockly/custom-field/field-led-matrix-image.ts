@@ -1,4 +1,6 @@
 import * as Blockly from 'blockly/core';
+import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
+import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
 
 Blockly.Msg['LED_MATRIX_IMAGE_BUTTON_CLEAR'] = 'Clear';
 Blockly.Msg['LED_MATRIX_IMAGE_BUTTON_FILL'] = 'Fill';
@@ -28,8 +30,18 @@ const DEFAULT_BUTTONS: LedMatrixImageButtons = {
 
 export type LedMatrixImageMode = 'mono' | 'rgb';
 export type LedMatrixImagePixel = 0 | 1 | string | null;
+export type LedMatrixImageEncoding = 'mono-bitpack-v1' | 'rgba8888-v1';
 
 export interface LedMatrixImageValue {
+    readonly schemaVersion: 1;
+    mode: LedMatrixImageMode;
+    encoding: LedMatrixImageEncoding;
+    width: number;
+    height: number;
+    pixels: AilyDataRef | null;
+}
+
+export interface ResolvedLedMatrixImageValue {
     mode: LedMatrixImageMode;
     width: number;
     height: number;
@@ -40,7 +52,6 @@ export interface LedMatrixImageValue {
  * Field for editing monochrome and RGB LED matrix images.
  */
 export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
-    private initialValue: LedMatrixImageValue | null = null;
     private imgHeight = DEFAULT_HEIGHT;
     private imgWidth = DEFAULT_WIDTH;
     private defaultMode: LedMatrixImageMode = 'mono';
@@ -67,6 +78,15 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     private lastPaintedCol = -1;
     private dragPixelValue: LedMatrixImagePixel | undefined;
     private selectedColour = DEFAULT_SELECTED_COLOUR;
+    private resolvedValue: ResolvedLedMatrixImageValue = createEmptyResolvedValue(
+        DEFAULT_WIDTH,
+        DEFAULT_HEIGHT,
+        'mono',
+    );
+    private resolvedValueRefId = '';
+    private loadingValue: Promise<ResolvedLedMatrixImageValue> | null = null;
+    private mutationVersion = 0;
+    private sourceBlockRenderScheduled = false;
 
     buttonOptions: LedMatrixImageButtons;
     pixelColours: LedMatrixImageColours;
@@ -103,11 +123,15 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.buttonOptions = { ...DEFAULT_BUTTONS, ...config?.buttons };
         this.pixelColours = { ...DEFAULT_PIXEL_COLOURS, ...config?.colours };
 
-        if (!this.getValue()) {
-            this.setValue(FieldLedMatrixImage.createDefaultValue(config));
-        }
-
-        this.syncDimensionsFromValue(this.getValue());
+        const currentValue = FieldLedMatrixImage.normalizeValue(this.getValue(), config)
+            ?? FieldLedMatrixImage.createDefaultValue(config);
+        this.value_ = currentValue;
+        this.resolvedValue = createEmptyResolvedValue(
+            currentValue.width,
+            currentValue.height,
+            currentValue.mode,
+        );
+        this.syncDimensionsFromValue(currentValue);
     }
 
     static override fromJson(options: FieldLedMatrixImageConfig) {
@@ -149,8 +173,20 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     protected override doValueUpdate_(newValue: LedMatrixImageValue) {
         const dimensionsChanged =
             this.imgWidth !== newValue.width || this.imgHeight !== newValue.height;
+        const modeChanged = this.resolvedValue.mode !== newValue.mode;
+        const nextRefId = newValue.pixels?.$ailyData.id || '';
 
-        this.value_ = newValue;
+        if (dimensionsChanged || modeChanged || nextRefId !== this.resolvedValueRefId) {
+            this.resolvedValue = createEmptyResolvedValue(
+                newValue.width,
+                newValue.height,
+                newValue.mode,
+            );
+            this.resolvedValueRefId = '';
+            this.loadingValue = null;
+        }
+
+        this.value_ = { ...newValue };
         this.syncDimensionsFromValue(newValue);
 
         if (dimensionsChanged) {
@@ -162,23 +198,31 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.updateBlockDisplayImage();
         this.renderCanvasEditor();
         this.updateControlsFromValue();
+        if (nextRefId) {
+            void this.ensureValueLoaded().catch((error) => {
+                console.error('LED matrix resource load failed:', error);
+            });
+        }
+    }
+
+    override saveState(_doFullSerialization?: boolean): LedMatrixImageValue {
+        return { ...this.getValue() };
     }
 
     protected override showEditor_(e?: Event) {
-        const editor = this.dropdownCreate();
-        Blockly.DropDownDiv.getContentDiv().appendChild(editor);
-        Blockly.DropDownDiv.showPositionedByField(
-            this,
-            this.dropdownDispose.bind(this),
-        );
+        void this.ensureValueLoaded().then(() => {
+            if (!this.getSourceBlock() || this.getSourceBlock()?.isDisposed()) return;
+            const editor = this.dropdownCreate();
+            Blockly.DropDownDiv.getContentDiv().appendChild(editor);
+            Blockly.DropDownDiv.showPositionedByField(
+                this,
+                this.dropdownDispose.bind(this),
+            );
+        }).catch((error) => console.error('LED matrix resource load failed:', error));
     }
 
     protected override render_() {
         super.render_();
-
-        if (!this.getValue()) {
-            return;
-        }
 
         this.updateBlockDisplayImage();
         this.renderCanvasEditor();
@@ -199,6 +243,9 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         ) as SVGImageElement;
 
         this.updateBlockDisplayImage();
+        void this.ensureValueLoaded().catch((error) => {
+            console.error('LED matrix resource load failed:', error);
+        });
     }
 
     override updateEditable() {
@@ -290,8 +337,6 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.resizeEditorCanvas();
         this.renderCanvasEditor();
         this.updateControlsFromValue();
-        this.initialValue = this.cloneValue(this.getCurrentValue());
-
         return dropdownEditor;
     }
 
@@ -477,6 +522,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.dragPixelValue = undefined;
         this.lastPaintedRow = -1;
         this.lastPaintedCol = -1;
+        this.commitResolvedValue();
     }
 
     private getCellFromPointer(e: PointerEvent) {
@@ -614,8 +660,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     }
 
     private updateControlsFromValue() {
-        const currentValue = this.getValue();
-        if (!currentValue) return;
+        const currentValue = this.getCurrentValue();
 
         if (this.widthInput) {
             this.widthInput.value = String(currentValue.width);
@@ -631,8 +676,8 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         }
     }
 
-    private applyValue(value: LedMatrixImageValue) {
-        const normalizedValue = FieldLedMatrixImage.normalizeValue(value, {
+    private applyValue(value: ResolvedLedMatrixImageValue) {
+        const normalizedValue = FieldLedMatrixImage.normalizeResolvedValue(value, {
             mode: this.defaultMode,
             minWidth: this.minWidth,
             maxWidth: this.maxWidth,
@@ -641,36 +686,52 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         });
         if (!normalizedValue) return;
 
-        this.setValue(normalizedValue, false);
+        const dimensionsChanged = this.imgWidth !== normalizedValue.width
+            || this.imgHeight !== normalizedValue.height;
+        this.resolvedValue = normalizedValue;
+        this.imgWidth = normalizedValue.width;
+        this.imgHeight = normalizedValue.height;
+        if (dimensionsChanged) {
+            this.resizeEditorCanvas();
+            this.rerenderSourceBlock();
+        }
         this.updateSize_();
         this.updateBlockDisplayImage();
         this.renderCanvasEditor();
         this.updateControlsFromValue();
+        if (!this.pointerIsDown) {
+            this.commitResolvedValue();
+        }
     }
 
     private rerenderSourceBlock() {
         const sourceBlock = this.getSourceBlock();
-        if (sourceBlock instanceof Blockly.BlockSvg && sourceBlock.rendered) {
-            sourceBlock.render();
+        if (!(sourceBlock instanceof Blockly.BlockSvg) || this.sourceBlockRenderScheduled) return;
+
+        const rootBlock = typeof sourceBlock.getRootBlock === 'function'
+            ? sourceBlock.getRootBlock()
+            : sourceBlock;
+        const blockToRender = rootBlock instanceof Blockly.BlockSvg ? rootBlock : sourceBlock;
+        if (!blockToRender.rendered) return;
+
+        this.sourceBlockRenderScheduled = true;
+        const renderBlock = () => {
+            this.sourceBlockRenderScheduled = false;
+            if (!blockToRender.rendered) return;
+            blockToRender.render();
+            if (Blockly.DropDownDiv.getOwner() === this) {
+                Blockly.DropDownDiv.repositionForWindowResize();
+            }
+        };
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(renderBlock);
+        } else {
+            Promise.resolve().then(renderBlock);
         }
     }
 
     private dropdownDispose() {
-        if (
-            this.getSourceBlock() &&
-            this.initialValue !== null &&
-            !this.valuesEqual(this.initialValue, this.getValue())
-        ) {
-            Blockly.Events.fire(
-                new (Blockly.Events.get(Blockly.Events.BLOCK_CHANGE))(
-                    this.sourceBlock_,
-                    'field',
-                    this.name || null,
-                    this.initialValue,
-                    this.getValue(),
-                ),
-            );
-        }
+        this.commitResolvedValue();
 
         this.unbindEditorEvents();
         this.editorCanvas = null;
@@ -679,8 +740,6 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.heightInput = null;
         this.colourInput = null;
         this.colourControl = null;
-        this.initialValue = null;
-
         Blockly.DropDownDiv.getContentDiv().classList.remove(
             'contains-ledMatrixImage-editor',
         );
@@ -689,8 +748,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     private updateBlockDisplayImage() {
         if (!this.blockDisplayImage) return;
 
-        const currentValue = this.getValue();
-        if (!currentValue) return;
+        const currentValue = this.getCurrentValue();
 
         const canvas = this.renderValueToCanvas(currentValue, 1, false);
         const dataUrl = canvas.toDataURL();
@@ -701,8 +759,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     private renderCanvasEditor() {
         if (!this.editorContext || !this.editorCanvas) return;
 
-        const currentValue = this.getValue();
-        if (!currentValue) return;
+        const currentValue = this.getCurrentValue();
 
         this.editorContext.clearRect(0, 0, this.editorCanvas.width, this.editorCanvas.height);
 
@@ -723,7 +780,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     }
 
     private renderValueToCanvas(
-        value: LedMatrixImageValue,
+        value: ResolvedLedMatrixImageValue,
         scale: number,
         showGrid: boolean,
     ) {
@@ -763,7 +820,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.editorCanvas.height = this.imgHeight * this.editorPixelSize;
     }
 
-    private syncDimensionsFromValue(value: LedMatrixImageValue | null) {
+    private syncDimensionsFromValue(value: Pick<LedMatrixImageValue, 'width' | 'height'> | null) {
         if (!value) return;
 
         this.imgWidth = value.width;
@@ -815,7 +872,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         width: number,
         height: number,
         mode: LedMatrixImageMode,
-    ): LedMatrixImageValue {
+    ): ResolvedLedMatrixImageValue {
         const offValue = this.getOffPixelValue(mode);
         const pixels: LedMatrixImagePixel[][] = [];
 
@@ -830,10 +887,10 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
     }
 
     private getCurrentValue() {
-        return this.getValue() ?? FieldLedMatrixImage.createDefaultValue({ mode: this.defaultMode });
+        return this.resolvedValue;
     }
 
-    private cloneValue(value: LedMatrixImageValue): LedMatrixImageValue {
+    private cloneValue(value: ResolvedLedMatrixImageValue): ResolvedLedMatrixImageValue {
         return {
             mode: value.mode,
             width: value.width,
@@ -842,11 +899,75 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         };
     }
 
-    private valuesEqual(
-        left: LedMatrixImageValue | null,
-        right: LedMatrixImageValue | null,
-    ) {
-        return JSON.stringify(left) === JSON.stringify(right);
+    private commitResolvedValue() {
+        const snapshot = this.cloneValue(this.resolvedValue);
+        const hasPixels = hasEnabledLedMatrixPixel(snapshot);
+        const bytes = packLedMatrixValue(snapshot);
+        const codec = snapshot.mode === 'rgb'
+            ? 'led-matrix-rgba8888-v1'
+            : 'led-matrix-mono-v1';
+        const encoding: LedMatrixImageEncoding = snapshot.mode === 'rgb'
+            ? 'rgba8888-v1'
+            : 'mono-bitpack-v1';
+        const mutationVersion = ++this.mutationVersion;
+        const operation = (hasPixels
+            ? projectDataRuntime.put({ codec, storage: 'raw-v1', value: bytes })
+            : Promise.resolve(null)
+        ).then((pixels) => {
+            if (mutationVersion !== this.mutationVersion) return;
+            const nextValue: LedMatrixImageValue = {
+                schemaVersion: 1,
+                mode: snapshot.mode,
+                encoding,
+                width: snapshot.width,
+                height: snapshot.height,
+                pixels,
+            };
+            this.resolvedValueRefId = pixels?.$ailyData.id || '';
+            this.resolvedValue = snapshot;
+            this.setValue(nextValue);
+        });
+        projectDataRuntime.trackMutation(operation);
+        void operation.catch((error) => console.error('LED matrix resource save failed:', error));
+    }
+
+    private async ensureValueLoaded(): Promise<ResolvedLedMatrixImageValue> {
+        const value = this.getValue();
+        const ref = value.pixels;
+        if (!ref) {
+            this.resolvedValue = createEmptyResolvedValue(value.width, value.height, value.mode);
+            this.resolvedValueRefId = '';
+            return this.resolvedValue;
+        }
+        const refId = ref.$ailyData.id;
+        if (this.resolvedValueRefId === refId) return this.resolvedValue;
+        if (this.loadingValue) return this.loadingValue;
+        const loading = projectDataRuntime.resolve<Uint8Array>(ref).then((bytes) => {
+            const current = this.getValue();
+            if (current.pixels?.$ailyData.id !== refId) return this.resolvedValue;
+            const expectedLength = current.mode === 'rgb'
+                ? current.width * current.height * 4
+                : Math.ceil(current.width / 8) * current.height;
+            if (!(bytes instanceof Uint8Array) || bytes.byteLength !== expectedLength) {
+                throw new Error(
+                    `LED matrix resource length mismatch: expected ${expectedLength}, got ${bytes.byteLength}`,
+                );
+            }
+            this.resolvedValue = unpackLedMatrixValue(
+                bytes,
+                current.width,
+                current.height,
+                current.mode,
+            );
+            this.resolvedValueRefId = refId;
+            this.updateBlockDisplayImage();
+            this.renderCanvasEditor();
+            return this.resolvedValue;
+        }).finally(() => {
+            if (this.loadingValue === loading) this.loadingValue = null;
+        });
+        this.loadingValue = loading;
+        return loading;
     }
 
     private pixelValuesEqual(
@@ -896,17 +1017,14 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
             config?.minHeight ?? DEFAULT_MIN_SIZE,
             config?.maxHeight ?? DEFAULT_MAX_SIZE,
         );
-        const offValue: LedMatrixImagePixel = mode === 'rgb' ? null : 0;
-        const pixels: LedMatrixImagePixel[][] = [];
-
-        for (let row = 0; row < height; row++) {
-            pixels.push([]);
-            for (let col = 0; col < width; col++) {
-                pixels[row].push(offValue);
-            }
-        }
-
-        return { mode, width, height, pixels };
+        return {
+            schemaVersion: 1,
+            mode,
+            encoding: mode === 'rgb' ? 'rgba8888-v1' : 'mono-bitpack-v1',
+            width,
+            height,
+            pixels: null,
+        };
     }
 
     private static normalizeValue(
@@ -917,6 +1035,44 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
             return null;
         }
 
+        if (value.schemaVersion !== 1 || (value.pixels !== null && !isAilyDataRef(value.pixels))) {
+            return null;
+        }
+        const mode = FieldLedMatrixImage.normalizeMode(config?.mode ?? value.mode);
+        const width = FieldLedMatrixImage.clampDimension(
+            value.width ?? config?.width ?? DEFAULT_WIDTH,
+            config?.minWidth ?? DEFAULT_MIN_SIZE,
+            config?.maxWidth ?? DEFAULT_MAX_SIZE,
+        );
+        const height = FieldLedMatrixImage.clampDimension(
+            value.height ?? config?.height ?? DEFAULT_HEIGHT,
+            config?.minHeight ?? DEFAULT_MIN_SIZE,
+            config?.maxHeight ?? DEFAULT_MAX_SIZE,
+        );
+        const encoding: LedMatrixImageEncoding = mode === 'rgb'
+            ? 'rgba8888-v1'
+            : 'mono-bitpack-v1';
+        const expectedCodec = mode === 'rgb'
+            ? 'led-matrix-rgba8888-v1'
+            : 'led-matrix-mono-v1';
+        if (value.encoding !== encoding) return null;
+        if (value.pixels && value.pixels.$ailyData.codec !== expectedCodec) return null;
+
+        return {
+            schemaVersion: 1,
+            mode,
+            encoding,
+            width,
+            height,
+            pixels: value.pixels,
+        };
+    }
+
+    private static normalizeResolvedValue(
+        value: ResolvedLedMatrixImageValue,
+        config?: FieldLedMatrixImageConfig,
+    ): ResolvedLedMatrixImageValue | null {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
         const sourcePixels = Array.isArray(value.pixels) ? value.pixels : [];
         const inferredHeight = sourcePixels.length || config?.height || DEFAULT_HEIGHT;
         const inferredWidth = Array.isArray(sourcePixels[0])
@@ -934,7 +1090,6 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
             config?.maxHeight ?? DEFAULT_MAX_SIZE,
         );
         const pixels = FieldLedMatrixImage.normalizePixels(sourcePixels, width, height, mode);
-
         return { mode, width, height, pixels };
     }
 
@@ -1004,6 +1159,84 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
             ? value.toLowerCase()
             : DEFAULT_SELECTED_COLOUR;
     }
+}
+
+export function createEmptyResolvedValue(
+    width: number,
+    height: number,
+    mode: LedMatrixImageMode,
+): ResolvedLedMatrixImageValue {
+    const offValue: LedMatrixImagePixel = mode === 'rgb' ? null : 0;
+    return {
+        mode,
+        width,
+        height,
+        pixels: Array.from({ length: height }, () => Array(width).fill(offValue)),
+    };
+}
+
+export function hasEnabledLedMatrixPixel(value: ResolvedLedMatrixImageValue): boolean {
+    return value.pixels.some((row) => row.some((pixel) => (
+        value.mode === 'rgb' ? typeof pixel === 'string' : pixel === 1
+    )));
+}
+
+export function packLedMatrixValue(value: ResolvedLedMatrixImageValue): Uint8Array {
+    if (value.mode === 'mono') {
+        const rowBytes = Math.ceil(value.width / 8);
+        const bytes = new Uint8Array(rowBytes * value.height);
+        for (let row = 0; row < value.height; row++) {
+            for (let col = 0; col < value.width; col++) {
+                if (value.pixels[row]?.[col] === 1) {
+                    bytes[row * rowBytes + (col >> 3)] |= 1 << (col & 7);
+                }
+            }
+        }
+        return bytes;
+    }
+
+    const bytes = new Uint8Array(value.width * value.height * 4);
+    for (let row = 0; row < value.height; row++) {
+        for (let col = 0; col < value.width; col++) {
+            const pixel = value.pixels[row]?.[col];
+            if (typeof pixel !== 'string' || !/^#[0-9a-f]{6}$/i.test(pixel)) continue;
+            const offset = (row * value.width + col) * 4;
+            bytes[offset] = parseInt(pixel.slice(1, 3), 16);
+            bytes[offset + 1] = parseInt(pixel.slice(3, 5), 16);
+            bytes[offset + 2] = parseInt(pixel.slice(5, 7), 16);
+            bytes[offset + 3] = 255;
+        }
+    }
+    return bytes;
+}
+
+export function unpackLedMatrixValue(
+    bytes: Uint8Array,
+    width: number,
+    height: number,
+    mode: LedMatrixImageMode,
+): ResolvedLedMatrixImageValue {
+    const value = createEmptyResolvedValue(width, height, mode);
+    if (mode === 'mono') {
+        const rowBytes = Math.ceil(width / 8);
+        for (let row = 0; row < height; row++) {
+            for (let col = 0; col < width; col++) {
+                value.pixels[row][col] = ((bytes[row * rowBytes + (col >> 3)] >> (col & 7)) & 1)
+                    ? 1
+                    : 0;
+            }
+        }
+        return value;
+    }
+
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            const offset = (row * width + col) * 4;
+            if (bytes[offset + 3] === 0) continue;
+            value.pixels[row][col] = `#${bytes[offset].toString(16).padStart(2, '0')}${bytes[offset + 1].toString(16).padStart(2, '0')}${bytes[offset + 2].toString(16).padStart(2, '0')}`;
+        }
+    }
+    return value;
 }
 
 interface LedMatrixImageButtons {

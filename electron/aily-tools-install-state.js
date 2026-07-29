@@ -4,7 +4,10 @@ function isRecord(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function shouldInstallForAppVersion(config, appVersion) {
+function shouldInstallForAppVersion(config, appVersion, options = {}) {
+  if (options.isE2E && !options.allowE2ERefresh) {
+    return false;
+  }
   return config?.installed !== String(appVersion || "").trim();
 }
 

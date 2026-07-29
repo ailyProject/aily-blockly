@@ -1,5 +1,6 @@
 export interface EditingSessionTimelineState {
-  version: 1;
+  version: 1 | 2;
+  revision?: number;
   sessionId: string;
   workspaceRoot: string;
   checkpoints: TimelineCheckpoint[];
@@ -26,6 +27,7 @@ export interface TimelineRequestScope {
   startedAt: number;
   completedAt?: number;
   status: 'open' | 'completed' | 'restored' | 'discarded';
+  outcome?: 'completed' | 'cancelled' | 'error' | 'disposed';
   firstEpoch?: number;
   lastEpoch?: number;
   checkpointIds: string[];
@@ -75,7 +77,8 @@ export type TimelineFileOperation =
   | TimelineDeleteFileOperation
   | TimelineRenameFileOperation
   | TimelineReplaceFileOperation
-  | TimelineTextEditFileOperation;
+  | TimelineTextEditFileOperation
+  | TimelineNotebookEditFileOperation;
 
 export interface TimelineBaseFileOperation {
   operationId: string;
@@ -114,6 +117,12 @@ export interface TimelineTextEditFileOperation extends TimelineBaseFileOperation
   beforeRef: ContentRef;
   afterRef: ContentRef;
   edits: NormalizedTextEdit[];
+}
+
+export interface TimelineNotebookEditFileOperation extends TimelineBaseFileOperation {
+  type: 'notebook-edit';
+  beforeRef: ContentRef;
+  afterRef: ContentRef;
 }
 
 export interface NormalizedTextEdit {

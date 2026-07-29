@@ -8,10 +8,12 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { createWorkerExternalEditService } from './chat-runtime-external-edit-capture.mjs';
+
 import {
   AilyServicesEndpoint,
-  OpenAIEndpoint,
   PromptLayer,
+  EditingTimelineOwner,
   createAgentHandleAsync,
   createBlocklyHostBridge,
 } from 'aily-lex';
@@ -19,14 +21,14 @@ import {
 const DEFAULT_MODEL_ID = 'auto';
 const DEFAULT_API_ENDPOINT = 'https://api.aily.pro';
 const TITLE_GENERATION_MAX_INPUT_LENGTH = 500;
-const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 4096;
-const TITLE_GENERATION_PROMPT = `You are an expert in crafting ultra-compact titles for chatbot conversations.
-You are presented with a chat request and must reply with only a brief title.
+const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 256;
+const TITLE_GENERATION_PROMPT = `You are an expert in crafting pithy titles for chatbot conversations.
+You are presented with a chat request and must reply with a brief title that captures its main topic.
 
 Rules:
 1. Return title text only, no JSON, no markdown, no code fences
 2. Use sentence case, preserve product names and code symbols
-3. Aim for 3-6 words and keep it concise
+3. Keep the title about 8 words or fewer
 4. Do not include quotes, prefixes, or trailing punctuation`;
 const DEFAULT_INTERACTION_SOFT_ROUND_LIMIT = 200;
 const DEFAULT_PROCESS_LOG_SUBAPP = 'default';
@@ -58,6 +60,7 @@ const CHRONICLE_MAX_USER_MESSAGE_LENGTH = 1000;
 const CHRONICLE_MAX_ASSISTANT_RESPONSE_LENGTH = 5000;
 const CHRONICLE_MAX_SUMMARY_LENGTH = 1000;
 const CHRONICLE_TRACKER_FLUSH_INTERVAL_MS = 3000;
+const GLOBAL_CHAT_WORKSPACE_IDENTITY = 'global-chat';
 const SQLITE_AUTHORIZE_OK = 0;
 const SQLITE_AUTHORIZE_DENY = 1;
 const SQLITE_AUTHORIZE_PRAGMA = 19;
@@ -147,7 +150,24 @@ const SCHEMATIC_TOOL_DEFINITIONS = [
       properties: {
         pinmapIds: {
           oneOf: [
-            { type: 'array', items: { oneOf: [{ type: 'string' }, { type: 'object' }] } },
+            {
+              type: 'array',
+              items: {
+                oneOf: [
+                  { type: 'string' },
+                  {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string' },
+                      alias: { type: 'string' },
+                      label: { type: 'string' },
+                    },
+                    required: ['id'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
             { type: 'string' },
           ],
         },
@@ -341,6 +361,78 @@ class LexExecutionRuntimeOwner {
     this.requestResourceOperation = requestResourceOperation
       ? async request => {
         const result = await requestResourceOperation(request);
+        const operationResult = result?.result ?? result;
+        const mutationBatch = operationResult?.mutationBatch;
+        const preparedTransactionId = mutationBatch?.status === 'prepared'
+          ? normalizeString(mutationBatch.transactionId)
+          : '';
+        try {
+          await this.commitResourceMutationBatch(request, result);
+        } catch (error) {
+          if (preparedTransactionId) {
+            const rollbackErrors = [];
+            try {
+              const rollbackResult = await requestResourceOperation({
+                sessionId: request.sessionId,
+                turnId: request.turnId,
+                toolCallId: request.toolCallId,
+                kind: 'workspace-mutation',
+                payload: {
+                  adapter: 'workspaceMutation',
+                  action: 'rollback',
+                  transactionId: preparedTransactionId,
+                },
+              });
+              const rollbackStatus = (rollbackResult?.result ?? rollbackResult)?.status;
+              if (rollbackStatus !== 'rolled-back') {
+                rollbackErrors.push(
+                  `[AilyChat][ExecutionHost] Prepared workspace mutation rollback was not applied: ${preparedTransactionId}.`,
+                );
+              }
+            } catch (rollbackError) {
+              rollbackErrors.push(
+                `[AilyChat][ExecutionHost] Prepared workspace mutation rollback failed: ${rollbackError?.message || String(rollbackError)}`,
+              );
+            }
+            if (error && typeof error === 'object') {
+              error.rollbackErrors = rollbackErrors;
+              error.rolledBackOnError = rollbackErrors.length === 0;
+            }
+          }
+          if (error && typeof error === 'object') {
+            error.resourceOperationResult = result;
+          }
+          throw error;
+        }
+        if (preparedTransactionId) {
+          try {
+            const commitResult = await requestResourceOperation({
+              sessionId: request.sessionId,
+              turnId: request.turnId,
+              toolCallId: request.toolCallId,
+              kind: 'workspace-mutation',
+              payload: {
+                adapter: 'workspaceMutation',
+                action: 'commit',
+                transactionId: preparedTransactionId,
+              },
+            });
+            const commitStatus = (commitResult?.result ?? commitResult)?.status;
+            if (commitStatus !== 'committed') {
+              console.warn(
+                '[AilyChat][WorkspaceMutationFinalizeMissing]',
+                preparedTransactionId,
+                commitStatus || 'unknown',
+              );
+            }
+          } catch (error) {
+            console.warn(
+              '[AilyChat][WorkspaceMutationFinalizeFailed]',
+              preparedTransactionId,
+              error?.message || error,
+            );
+          }
+        }
         this.indexResourceOperation(request).catch(error => {
           console.warn('[AilyChat][ChronicleIndexFailed]', error?.message || error);
         });
@@ -349,6 +441,33 @@ class LexExecutionRuntimeOwner {
       : null;
     this.listeners = new Set();
     this.sessions = new Map();
+    this.editingNavigationTransactions = new Map();
+  }
+
+  async commitResourceMutationBatch(request, result) {
+    const operationResult = result?.result ?? result;
+    const batch = operationResult?.mutationBatch;
+    if (!batch) {
+      return;
+    }
+    const sessionId = normalizeString(request?.sessionId);
+    const turnId = normalizeString(request?.turnId);
+    const toolCallId = normalizeString(request?.toolCallId);
+    const session = this.sessions.get(sessionId);
+    if (!session?.editingTimeline) {
+      throw new Error('[AilyChat][ExecutionHost] Workspace mutation has no canonical editing timeline owner.');
+    }
+    if (!turnId || session.activeTurnId !== turnId) {
+      throw new Error('[AilyChat][ExecutionHost] Workspace mutation is outside the canonical active turn.');
+    }
+    if (!toolCallId) {
+      throw new Error('[AilyChat][ExecutionHost] Workspace mutation has no canonical tool call identity.');
+    }
+    await session.editingTimeline.recordMutationBatch(
+      batch.status === 'prepared'
+        ? { ...batch, status: 'committed' }
+        : batch,
+    );
   }
 
   onEvent(listener) {
@@ -383,10 +502,12 @@ class LexExecutionRuntimeOwner {
     const projectInfo = await this.readProjectInfo(sessionId);
     const request = command.request || {};
     const currentModel = command.currentModel || request.currentModel || null;
+    const summarizerModel = command.summarizerModel || request.summarizerModel || null;
     const providerOptions = command.providerOptions || request.providerOptions || null;
     const runtimeConfigKey = createSessionRuntimeConfigKey(
       providerOptions,
       currentModel,
+      summarizerModel,
       this.resolveCwd(projectInfo, providerOptions),
     );
     const existing = this.sessions.get(sessionId);
@@ -396,6 +517,7 @@ class LexExecutionRuntimeOwner {
         sessionId,
         providerOptions,
         currentModel,
+        summarizerModel,
         initialSnapshot: snapshot,
       }, projectInfo);
       return {
@@ -417,8 +539,22 @@ class LexExecutionRuntimeOwner {
       ? existing.handle.getSessionSnapshot()
       : existing.handle?.saveSession?.();
     if (sessionSnapshotsHaveSameRequestList(currentSnapshot, snapshot)) {
+      if (existing.runtimeConfigKey !== runtimeConfigKey) {
+        await this.replaceSessionRuntimeWithSnapshot(existing, projectInfo, {
+          providerOptions,
+          currentModel,
+          summarizerModel,
+          runtimeConfigKey,
+        }, snapshot);
+        return {
+          sessionId,
+          restored: true,
+          turnCount: snapshot.turns.length,
+        };
+      }
       existing.providerOptions = providerOptions || existing.providerOptions || null;
       existing.currentModel = currentModel || existing.currentModel || null;
+      existing.summarizerModel = summarizerModel || existing.summarizerModel || null;
       return {
         sessionId,
         restored: false,
@@ -430,6 +566,7 @@ class LexExecutionRuntimeOwner {
       await this.replaceSessionRuntimeWithSnapshot(existing, projectInfo, {
         providerOptions,
         currentModel,
+        summarizerModel,
         runtimeConfigKey,
       }, snapshot);
     } else {
@@ -439,6 +576,7 @@ class LexExecutionRuntimeOwner {
       existing.handle.restoreSession(snapshot);
       existing.providerOptions = providerOptions || existing.providerOptions || null;
       existing.currentModel = currentModel || existing.currentModel || null;
+      existing.summarizerModel = summarizerModel || existing.summarizerModel || null;
       existing.pendingConfirmations?.clear?.();
       existing.pendingQuestions?.clear?.();
       existing.revision += 1;
@@ -500,17 +638,41 @@ class LexExecutionRuntimeOwner {
       );
     }
     const projectInfo = await this.readProjectInfo(sourceSessionId);
-    const target = await this.ensureSession(targetSessionId, {
-      sessionId: targetSessionId,
-      providerOptions: command.providerOptions || source.providerOptions || null,
-      currentModel: command.currentModel || source.currentModel || null,
-      initialSnapshot: forked.snapshot,
-    }, projectInfo);
-    return {
-      sessionId: targetSessionId,
-      ensured: Boolean(target?.handle),
-      executionHost: 'lex-headless',
-    };
+    const targetTimelineWorkspace = source.timelineWorkspace
+      || resolveEditingTimelineWorkspaceBinding(
+        projectInfo,
+        command.providerOptions || source.providerOptions || null,
+        this.env,
+      );
+    const targetEditingTimeline = createElectronEditingTimelineOwner(
+      targetSessionId,
+      targetTimelineWorkspace,
+    );
+    try {
+      if (!source.editingTimeline?.forkTo) {
+        throw new Error('[AilyChat][ExecutionHost] Fork source editing timeline is unavailable.');
+      }
+      const forkedTimeline = await source.editingTimeline.forkTo(
+        targetEditingTimeline,
+        retainedTurnIds,
+      );
+      const target = await this.ensureSession(targetSessionId, {
+        sessionId: targetSessionId,
+        providerOptions: command.providerOptions || source.providerOptions || null,
+        currentModel: command.currentModel || source.currentModel || null,
+        summarizerModel: command.summarizerModel || source.summarizerModel || null,
+        initialSnapshot: forked.snapshot,
+      }, projectInfo);
+      return {
+        sessionId: targetSessionId,
+        ensured: Boolean(target?.handle),
+        executionHost: 'lex-headless',
+        editingTimelineRevision: forkedTimeline.revision,
+      };
+    } catch (error) {
+      await targetEditingTimeline.clearState().catch(() => undefined);
+      throw error;
+    }
   }
 
   async startTurn(command = {}) {
@@ -537,15 +699,33 @@ class LexExecutionRuntimeOwner {
     session.activeTurnId = turnId;
     session.responseCompletedTurnId = null;
     session.revision += 1;
+    await session.editingTimeline?.beginRequest?.({
+      requestId: turnId,
+      turnId,
+      checkpointId: normalizeString(request?.metadata?.checkpointId) || `checkpoint:${turnId}`,
+      label: `Request ${turnId}`,
+    });
     this.emitRuntimeStatus(session, 'running', true);
 
     const text = typeof request.requestText === 'string'
       ? request.requestText
       : String(request.displayText || '');
-    this.prepareSubmittedTurnTitle(session, request, text);
 
-    const turnPromise = this.runTurn(session, turnId, request, text, abortController)
+    let releaseTitleGeneration;
+    const firstModelOutput = new Promise(resolve => {
+      releaseTitleGeneration = resolve;
+    });
+    let editingTimelineOutcome = 'completed';
+    const turnPromise = this.runTurn(
+      session,
+      turnId,
+      request,
+      text,
+      abortController,
+      releaseTitleGeneration,
+    )
       .catch(error => {
+        editingTimelineOutcome = abortController.signal.aborted ? 'cancelled' : 'error';
         if (!abortController.signal.aborted && session.responseCompletedTurnId !== turnId) {
           this.emit({
             kind: 'turnError',
@@ -556,7 +736,18 @@ class LexExecutionRuntimeOwner {
           });
         }
       })
-      .finally(() => {
+      .finally(async () => {
+        // An empty, cancelled, or failed turn must not leave title generation
+        // waiting forever for an event that will never arrive.
+        releaseTitleGeneration();
+        try {
+          if (abortController.signal.aborted) {
+            editingTimelineOutcome = 'cancelled';
+          }
+          await session.editingTimeline?.finishRequest?.(turnId, editingTimelineOutcome);
+        } catch (error) {
+          console.warn('[AilyChat][EditingTimelineCompleteRequestFailed]', error?.message || error);
+        }
         if (session.activeTurnPromise === turnPromise) {
           const responseAlreadyCompleted = session.responseCompletedTurnId === turnId;
           session.activeAbortController = null;
@@ -569,6 +760,16 @@ class LexExecutionRuntimeOwner {
         }
       });
     session.activeTurnPromise = turnPromise;
+    const customTitleEndpoint = Boolean(
+      normalizeString(session.currentModel?.baseUrl || session.currentModel?.llmConfig?.baseUrl)
+      && normalizeString(session.currentModel?.apiKey || session.currentModel?.llmConfig?.apiKey),
+    );
+    this.prepareSubmittedTurnTitle(
+      session,
+      request,
+      text,
+      customTitleEndpoint ? firstModelOutput : null,
+    );
 
     return this.createSessionState(session, 'running', true, turnId);
   }
@@ -594,6 +795,249 @@ class LexExecutionRuntimeOwner {
       responseCompleted: requestInProgress && session.responseCompletedTurnId === session.activeTurnId,
       revision: Number(session.revision) || 0,
     };
+  }
+
+  async readEditingSessionState(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const timeline = this.resolveEditingSessionOwner(sessionId, command.projectPath);
+    return buildEditingSessionProjection(await timeline.getState());
+  }
+
+  async readEditingSessionContent(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const timeline = this.resolveEditingSessionOwner(sessionId, command.projectPath);
+    const state = await timeline.getState();
+    const contentRef = findEditingSessionContentRef(state, command.contentRef);
+    if (!contentRef) {
+      throw new Error('Editing timeline content reference does not belong to this session.');
+    }
+    const content = await timeline.readContent(contentRef);
+    return {
+      sessionId,
+      workspaceIdentity: state.workspaceIdentity,
+      revision: state.revision,
+      contentRef,
+      dataBase64: Buffer.from(content).toString('base64'),
+    };
+  }
+
+  async operateEditingSessionEntry(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const uri = normalizeString(command.uri);
+    const action = command.action === 'accept' || command.action === 'reject'
+      ? command.action
+      : '';
+    if (!uri || !action) {
+      throw new Error('Editing session entry operation requires a URI and action.');
+    }
+    const residentSession = this.sessions.get(sessionId);
+    if (residentSession?.activeAbortController || residentSession?.activeTurnPromise) {
+      throw new Error('Cannot operate an editing session entry while a turn is running.');
+    }
+
+    const timeline = this.resolveEditingSessionOwner(sessionId, command.projectPath);
+    const plan = await timeline.buildEntryDecisionPlan(uri, action);
+    let snapshot = null;
+    try {
+      if (plan.target) {
+        assertEditingNavigationFilePath(plan.uri, plan.workspaceRoot);
+        snapshot = await captureEditingNavigationFileSnapshot(plan.uri);
+        const targetContent = plan.target.exists && plan.target.contentRef
+          ? await timeline.readContent(plan.target.contentRef)
+          : new Uint8Array();
+        await applyEditingNavigationFile({
+          uri: plan.uri,
+          exists: plan.target.exists,
+          contentKind: plan.target.contentKind,
+          contentRef: plan.target.contentRef,
+          sourceEpoch: 0,
+        }, targetContent, snapshot);
+      }
+      await timeline.commitEntryDecision(plan);
+    } catch (error) {
+      if (snapshot) {
+        const rollbackErrors = await rollbackEditingNavigationSnapshots([snapshot]);
+        if (rollbackErrors.length > 0 && error && typeof error === 'object') {
+          error.rollbackErrors = rollbackErrors;
+        }
+      }
+      throw error;
+    }
+    return buildEditingSessionProjection(await timeline.getState());
+  }
+
+  async acceptEditingSession(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const residentSession = this.sessions.get(sessionId);
+    if (residentSession?.activeAbortController || residentSession?.activeTurnPromise) {
+      throw new Error('Cannot accept an editing session while a turn is running.');
+    }
+    const timeline = this.resolveEditingSessionOwner(sessionId, command.projectPath);
+    await timeline.acceptAllEntries();
+    return buildEditingSessionProjection(await timeline.getState());
+  }
+
+  async buildEditingSessionNavigationPlan(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const checkpointId = normalizeString(command.checkpointId);
+    const direction = command.direction === 'restore' || command.direction === 'redo'
+      ? command.direction
+      : '';
+    if (!checkpointId || !direction) {
+      throw new Error('Editing timeline navigation requires a checkpoint and direction.');
+    }
+    const timeline = this.resolveEditingSessionOwner(sessionId, command.projectPath);
+    return direction === 'restore'
+      ? timeline.buildRestorePlan(checkpointId)
+      : timeline.buildRedoPlan(checkpointId);
+  }
+
+  async applyEditingSessionNavigation(command = {}) {
+    const sessionId = normalizeSessionId(command.sessionId);
+    const checkpointId = normalizeString(command.checkpointId);
+    const direction = command.direction === 'restore' || command.direction === 'redo'
+      ? command.direction
+      : '';
+    if (!checkpointId || !direction) {
+      throw new Error('Editing timeline navigation requires a checkpoint and direction.');
+    }
+    if ([...this.editingNavigationTransactions.values()].some(transaction => transaction.sessionId === sessionId)) {
+      throw new Error(`Editing timeline navigation is already prepared for session: ${sessionId}`);
+    }
+    const residentSession = this.sessions.get(sessionId);
+    if (residentSession?.activeAbortController || residentSession?.activeTurnPromise) {
+      throw new Error('Cannot navigate the editing timeline while a turn is running.');
+    }
+
+    const timeline = this.resolveEditingSessionOwner(sessionId, command.projectPath);
+    const plan = direction === 'restore'
+      ? await timeline.buildRestorePlan(checkpointId)
+      : await timeline.buildRedoPlan(checkpointId);
+    const snapshots = [];
+    let appliedFiles = 0;
+    try {
+      for (const file of plan.files) {
+        assertEditingNavigationFilePath(file.uri, plan.workspaceRoot);
+        const snapshot = await captureEditingNavigationFileSnapshot(file.uri);
+        const targetContent = file.exists && file.contentRef
+          ? await timeline.readContent(file.contentRef)
+          : new Uint8Array();
+        const changed = await applyEditingNavigationFile(file, targetContent, snapshot);
+        snapshots.push(snapshot);
+        if (changed) {
+          appliedFiles += 1;
+        }
+      }
+    } catch (error) {
+      const rollbackErrors = await rollbackEditingNavigationSnapshots(snapshots);
+      if (rollbackErrors.length > 0 && error && typeof error === 'object') {
+        error.rollbackErrors = rollbackErrors;
+      }
+      throw error;
+    }
+
+    const transactionId = [
+      'editing-navigation',
+      sessionId,
+      checkpointId,
+      direction,
+      plan.expectedRevision,
+      Date.now(),
+      Math.random().toString(36).slice(2),
+    ].join(':');
+    this.editingNavigationTransactions.set(transactionId, {
+      transactionId,
+      sessionId,
+      timeline,
+      plan,
+      snapshots,
+      appliedFiles,
+    });
+    return {
+      transactionId,
+      sessionId,
+      checkpointId,
+      direction,
+      expectedRevision: plan.expectedRevision,
+      appliedFiles,
+    };
+  }
+
+  async commitEditingSessionNavigation(command = {}) {
+    const transactionId = normalizeString(command.transactionId);
+    const transaction = this.editingNavigationTransactions.get(transactionId);
+    if (!transaction) {
+      throw new Error(`Editing timeline navigation transaction not found: ${transactionId || '<empty>'}`);
+    }
+    try {
+      await transaction.timeline.commitNavigation(transaction.plan);
+      this.editingNavigationTransactions.delete(transactionId);
+      return {
+        transactionId,
+        sessionId: transaction.sessionId,
+        checkpointId: transaction.plan.checkpointId,
+        direction: transaction.plan.direction,
+        revision: transaction.plan.expectedRevision + 1,
+        appliedFiles: transaction.appliedFiles,
+      };
+    } catch (error) {
+      const rollbackErrors = await rollbackEditingNavigationSnapshots(transaction.snapshots);
+      this.editingNavigationTransactions.delete(transactionId);
+      if (error && typeof error === 'object') {
+        error.rollbackErrors = rollbackErrors;
+        error.rolledBackOnError = rollbackErrors.length === 0;
+      }
+      throw error;
+    }
+  }
+
+  async rollbackEditingSessionNavigation(command = {}) {
+    const transactionId = normalizeString(command.transactionId);
+    const transaction = this.editingNavigationTransactions.get(transactionId);
+    if (!transaction) {
+      return {
+        transactionId,
+        rolledBackFiles: 0,
+        errors: [],
+        rolledBackOnError: true,
+      };
+    }
+    const errors = await rollbackEditingNavigationSnapshots(transaction.snapshots);
+    this.editingNavigationTransactions.delete(transactionId);
+    return {
+      transactionId,
+      rolledBackFiles: errors.length === 0 ? transaction.appliedFiles : 0,
+      errors,
+      rolledBackOnError: errors.length === 0,
+    };
+  }
+
+  async rollbackEditingNavigationTransactionsForSession(sessionId) {
+    const transactions = [...this.editingNavigationTransactions.values()]
+      .filter(transaction => transaction.sessionId === sessionId);
+    const errors = [];
+    for (const transaction of transactions) {
+      const rollback = await this.rollbackEditingSessionNavigation({
+        transactionId: transaction.transactionId,
+      });
+      errors.push(...rollback.errors);
+    }
+    if (errors.length > 0) {
+      throw new Error(errors.join('\n'));
+    }
+  }
+
+  resolveEditingSessionOwner(sessionId, projectPath = null) {
+    const resident = this.sessions.get(sessionId)?.editingTimeline;
+    if (resident) {
+      return resident;
+    }
+    const workspaceBinding = resolveEditingTimelineWorkspaceBinding(
+      normalizeString(projectPath) ? { path: projectPath } : null,
+      null,
+      this.env,
+    );
+    return createElectronEditingTimelineOwner(sessionId, workspaceBinding);
   }
 
   applyProtocolTruncation(session, protocolTruncation) {
@@ -644,12 +1088,35 @@ class LexExecutionRuntimeOwner {
   async disposeSessionResources(command = {}) {
     const sessionId = normalizeSessionId(command.sessionId);
     const session = this.sessions.get(sessionId);
+    const activeTurnPromise = session?.activeTurnPromise;
     if (session?.activeAbortController) {
       session.activeAbortController.abort(createAbortError('[AilyChat][ExecutionHost] Session disposed.'));
     }
     try {
+      await this.rollbackEditingNavigationTransactionsForSession(sessionId);
+      if (activeTurnPromise && typeof activeTurnPromise.then === 'function') {
+        await activeTurnPromise.catch(() => undefined);
+      }
+      if (session?.activeTurnId) {
+        await session.editingTimeline?.finishRequest?.(session.activeTurnId, 'disposed');
+      }
       session?.handle?.dispose?.();
+      if (command.deleteStorage === true) {
+        if (session?.editingTimeline) {
+          await session.editingTimeline.clearState();
+        } else {
+          const workspaceBinding = resolveEditingTimelineWorkspaceBinding(
+            command.projectPath
+              ? { path: command.projectPath }
+              : null,
+            null,
+            this.env,
+          );
+          await createElectronEditingTimelineOwner(sessionId, workspaceBinding).clearState();
+        }
+      }
     } finally {
+      await this.releaseSubappAgentSession(sessionId, session);
       this.sessions.delete(sessionId);
     }
   }
@@ -657,17 +1124,52 @@ class LexExecutionRuntimeOwner {
   async dispose() {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
+    const navigationTransactions = [...this.editingNavigationTransactions.values()];
+    for (const transaction of navigationTransactions) {
+      await this.rollbackEditingSessionNavigation({ transactionId: transaction.transactionId });
+    }
     for (const session of sessions) {
+      const activeTurnPromise = session?.activeTurnPromise;
       if (session?.activeAbortController) {
         session.activeAbortController.abort(createAbortError('[AilyChat][ExecutionHost] Runtime owner disposed.'));
       }
       try {
+        if (activeTurnPromise && typeof activeTurnPromise.then === 'function') {
+          await activeTurnPromise.catch(() => undefined);
+        }
+        if (session?.activeTurnId) {
+          await session.editingTimeline?.finishRequest?.(session.activeTurnId, 'disposed');
+        }
         session?.handle?.dispose?.();
+        await this.releaseSubappAgentSession(session.sessionId, session);
       } catch {
         // Best-effort cleanup while the worker process is shutting down.
       }
     }
     await this.chronicleTracker?.dispose();
+    await this.sessionIndex?.dispose?.();
+  }
+
+  async releaseSubappAgentSession(sessionId, session = null) {
+    try {
+      if (typeof this.requestResourceOperation === 'function') {
+        await this.requestResourceOperation({
+          sessionId,
+          kind: 'subapp-agent',
+          payload: {
+            adapter: 'subappAgent',
+            action: 'releaseSession',
+          },
+        });
+      }
+    } catch (error) {
+      console.warn('[AilyChat][SubappAgent] Failed to release session resources', {
+        sessionId,
+        error: error?.message || String(error),
+      });
+    } finally {
+      releaseExternalAgentSessionLease(sessionId, session, this.env);
+    }
   }
 
   async resolveInteraction(command = {}) {
@@ -707,11 +1209,16 @@ class LexExecutionRuntimeOwner {
     return this.createInteractionSnapshot(session);
   }
 
-  async runTurn(session, turnId, request, text, abortController) {
+  async runTurn(session, turnId, request, text, abortController, onFirstModelOutput = null) {
     const requestMetadata = normalizeRequestMetadata(request);
+    let firstModelOutputObserved = false;
     for await (const renderEvent of session.handle.chat(text, abortController.signal, { turnId, requestMetadata })) {
       if (abortController.signal.aborted) {
         continue;
+      }
+      if (!firstModelOutputObserved && isModelOutputRenderEvent(renderEvent)) {
+        firstModelOutputObserved = true;
+        onFirstModelOutput?.();
       }
       this.emit({
         kind: 'render-event',
@@ -734,8 +1241,17 @@ class LexExecutionRuntimeOwner {
       ? command.executionContext
       : null;
     const currentModel = command.currentModel || executionContext?.currentModel || request.currentModel || null;
+    const summarizerModel = command.summarizerModel
+      || executionContext?.summarizerModel
+      || request.summarizerModel
+      || null;
     const providerOptions = command.providerOptions || executionContext?.providerOptions || request.providerOptions || null;
-    const runtimeConfigKey = createSessionRuntimeConfigKey(providerOptions, currentModel, this.resolveCwd(projectInfo, providerOptions));
+    const runtimeConfigKey = createSessionRuntimeConfigKey(
+      providerOptions,
+      currentModel,
+      summarizerModel,
+      this.resolveCwd(projectInfo, providerOptions),
+    );
     const existing = this.sessions.get(sessionId);
     if (existing) {
       await existing.handlePromise;
@@ -743,11 +1259,13 @@ class LexExecutionRuntimeOwner {
         await this.recreateSessionRuntime(existing, projectInfo, {
           providerOptions,
           currentModel,
+          summarizerModel,
           runtimeConfigKey,
         });
       } else {
         existing.providerOptions = providerOptions || existing.providerOptions || null;
         existing.currentModel = currentModel || existing.currentModel || null;
+        existing.summarizerModel = summarizerModel || existing.summarizerModel || null;
       }
       return existing;
     }
@@ -756,6 +1274,7 @@ class LexExecutionRuntimeOwner {
       sessionId,
       providerOptions,
       currentModel,
+      summarizerModel,
       runtimeConfigKey,
       revision: 0,
       activeTurnId: null,
@@ -798,6 +1317,7 @@ class LexExecutionRuntimeOwner {
     }
     session.providerOptions = nextConfig.providerOptions;
     session.currentModel = nextConfig.currentModel;
+    session.summarizerModel = nextConfig.summarizerModel;
     session.runtimeConfigKey = nextConfig.runtimeConfigKey;
     session.handle = null;
     session.adapter = null;
@@ -815,6 +1335,7 @@ class LexExecutionRuntimeOwner {
     }
     session.providerOptions = nextConfig.providerOptions;
     session.currentModel = nextConfig.currentModel;
+    session.summarizerModel = nextConfig.summarizerModel;
     session.runtimeConfigKey = nextConfig.runtimeConfigKey;
     session.handle = null;
     session.adapter = null;
@@ -826,9 +1347,18 @@ class LexExecutionRuntimeOwner {
   }
 
   async createSessionRuntime(session, projectInfo, snapshot = null) {
-    const { sessionId, providerOptions, currentModel } = session;
+    const { sessionId, providerOptions, currentModel, summarizerModel } = session;
     const runtimeConfig = readRuntimeConfig(projectInfo);
     const endpoint = this.createEndpoint(currentModel, runtimeConfig);
+    console.info('[AilyChat][LexExecutionHostCompaction]', JSON.stringify({
+      sessionId,
+      architecture: 'provider',
+      inlineSummarization: false,
+      summarizerModel: normalizeString(
+        summarizerModel?.model || summarizerModel?.modelId || currentModel?.model || currentModel?.modelId,
+      ) || DEFAULT_MODEL_ID,
+      providerContextManagementKind: normalizeString(currentModel?.providerContextManagementSupport?.kind) || null,
+    }));
     session.runtimeConfig = runtimeConfig;
     session.endpoint = endpoint;
     const resolvedCwd = this.resolveCwd(projectInfo, providerOptions);
@@ -838,6 +1368,34 @@ class LexExecutionRuntimeOwner {
     const searchExtension = createElectronSearchExtension();
     const webFetchBridgeExtension = createElectronWebFetchBridgeExtension();
     const webSearchBridgeExtension = createElectronWebSearchBridgeExtension();
+    const timelineWorkspace = resolveEditingTimelineWorkspaceBinding(
+      projectInfo,
+      providerOptions,
+      this.env,
+    );
+    const editingTimeline = createElectronEditingTimelineOwner(
+      sessionId,
+      timelineWorkspace,
+      diagnostic => {
+        this.emit({
+          kind: 'editingSessionChanged',
+          sessionId,
+          revision: diagnostic.revision,
+        });
+      },
+      event => {
+        this.emit({
+          kind: 'turnDiffUpdated',
+          sessionId,
+          turnId: event.turnId,
+          revision: event.revision,
+          diff: event.diff,
+        });
+      },
+    );
+    await editingTimeline.recoverInterruptedRequests();
+    session.timelineWorkspace = timelineWorkspace;
+    session.editingTimeline = editingTimeline;
     const bridge = createBlocklyHostBridge({
       hostAPI,
       endpoint,
@@ -857,6 +1415,7 @@ class LexExecutionRuntimeOwner {
         },
         memoryStorage: createMemoryStorageExtension(resolvedCwd, this.env),
         memoryFeatureConfig: createMemoryFeatureConfigExtension(runtimeConfig),
+        editingTimeline,
         diagnostics: createDiagnosticsExtension(sessionId, this.requestResourceOperation),
         skillManager: createElectronSkillManager(skillRegistry, session),
         workspaceReadAccess: createElectronWorkspaceReadAccess(skillRegistry),
@@ -883,6 +1442,14 @@ class LexExecutionRuntimeOwner {
       skillRegistry,
       historySearchAvailable: Boolean(this.sessionIndex),
     });
+    const externalEdits = createWorkerExternalEditService({
+      sessionId,
+      timeline: editingTimeline,
+      getActiveTurnId: () => session.activeTurnId,
+      getWorkspaceRoot: () => session.cwd || resolvedCwd,
+    });
+    session.externalEdits = externalEdits;
+    agentBridge.hostAccess.registerExtension?.('externalEdits', externalEdits);
     session.adapter = agentBridge.hostAccess;
 
     const sessionStoreSqlTool = this.sessionIndex
@@ -909,6 +1476,9 @@ class LexExecutionRuntimeOwner {
       approvalPolicy: normalizeApprovalPolicy(providerOptions),
       approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
       strictAutoReview: normalizeApprovalsReviewer(providerOptions) === 'auto_review',
+      contextCompactionArchitecture: 'provider',
+      summarizerModel: this.createModelConfig(summarizerModel || currentModel),
+      inlineSummarization: false,
       ...(additionalChronicleTools.length > 0 ? { additionalTools: additionalChronicleTools } : {}),
       ...(chronicleToolOptions ? { additionalToolOptions: chronicleToolOptions } : {}),
       ...(snapshot ? { snapshot } : {}),
@@ -930,7 +1500,7 @@ class LexExecutionRuntimeOwner {
     registerExtension('agentExecutor', handle.agent.getAgentExecutor());
   }
 
-  prepareSubmittedTurnTitle(session, request, text) {
+  prepareSubmittedTurnTitle(session, request, text, waitFor = null) {
     if (!this.requestResourceOperation || !session || session.titleGenerationStarted) {
       return;
     }
@@ -955,7 +1525,40 @@ class LexExecutionRuntimeOwner {
     }
 
     session.titleGenerationStarted = true;
-    void this.generateSubmittedTurnTitle(session, requestText)
+    const runGeneration = () => {
+      const startedAt = Date.now();
+      const modelId = normalizeString(
+        session.currentModel?.model || session.currentModel?.modelId || session.currentModel?.id,
+      ) || DEFAULT_MODEL_ID;
+      const customEndpoint = Boolean(
+        normalizeString(session.currentModel?.baseUrl || session.currentModel?.llmConfig?.baseUrl)
+        && normalizeString(session.currentModel?.apiKey || session.currentModel?.llmConfig?.apiKey),
+      );
+      console.info('[AilyChat][LexExecutionHostTitle]', JSON.stringify({
+        phase: 'start',
+        sessionId: session.sessionId,
+        kind: customEndpoint ? 'aily-services-custom' : 'aily-services',
+        model: modelId,
+      }));
+      return this.generateSubmittedTurnTitle(session, requestText).then(title => {
+        console.info('[AilyChat][LexExecutionHostTitle]', JSON.stringify({
+          phase: 'complete',
+          sessionId: session.sessionId,
+          kind: customEndpoint ? 'aily-services-custom' : 'aily-services',
+          model: modelId,
+          elapsedMs: Date.now() - startedAt,
+          hasTitle: Boolean(title),
+          titleLength: title?.length || 0,
+        }));
+        return title;
+      });
+    };
+    const generation = waitFor
+      ? Promise.resolve(waitFor)
+        .catch(() => undefined)
+        .then(runGeneration)
+      : runGeneration();
+    void generation
       .then(title => {
         if (!title) {
           return undefined;
@@ -988,7 +1591,14 @@ class LexExecutionRuntimeOwner {
       && normalizeString(session.currentModel?.apiKey || session.currentModel?.llmConfig?.apiKey),
     );
     if (hasCustomEndpoint) {
-      return this.generateTitleWithLexEndpoint(session.endpoint, titleContent);
+      const customModelId = normalizeString(
+        session.currentModel?.model || session.currentModel?.modelId || session.currentModel?.id,
+      );
+      return this.generateTitleWithLexEndpoint(
+        session.endpoint,
+        titleContent,
+        this.createModelConfig({ ...session.currentModel, model: customModelId }),
+      );
     }
 
     try {
@@ -1008,7 +1618,11 @@ class LexExecutionRuntimeOwner {
       const payload = await response.json();
       return sanitizeGeneratedTitle(payload?.data);
     } catch (error) {
-      const fallbackTitle = await this.generateTitleWithLexEndpoint(session.endpoint, titleContent);
+      const fallbackTitle = await this.generateTitleWithLexEndpoint(
+        session.endpoint,
+        titleContent,
+        this.createModelConfig(session.currentModel),
+      );
       if (fallbackTitle) {
         return fallbackTitle;
       }
@@ -1016,7 +1630,7 @@ class LexExecutionRuntimeOwner {
     }
   }
 
-  async generateTitleWithLexEndpoint(endpoint, content) {
+  async generateTitleWithLexEndpoint(endpoint, content, modelConfig = null) {
     if (!endpoint || typeof endpoint.stream !== 'function') {
       return '';
     }
@@ -1028,7 +1642,11 @@ class LexExecutionRuntimeOwner {
     for await (const chunk of endpoint.stream(
       messages,
       [],
-      { modelId: DEFAULT_MODEL_ID, maxOutputTokens: TITLE_GENERATION_MAX_OUTPUT_TOKENS },
+      {
+        ...(modelConfig && typeof modelConfig === 'object' ? modelConfig : {}),
+        modelId: normalizeString(modelConfig?.modelId) || DEFAULT_MODEL_ID,
+        maxOutputTokens: TITLE_GENERATION_MAX_OUTPUT_TOKENS,
+      },
       undefined,
       {
         requestKind: 'utility',
@@ -1240,10 +1858,11 @@ class LexExecutionRuntimeOwner {
         projectInfo,
         result => this.applyProjectCreatedScope(session, result),
       ),
-      builder: createExternalBuilder(sessionId, this.requestResourceOperation, projectInfo, readCwd),
+      builder: createExternalBuilder(sessionId, this.requestResourceOperation, projectInfo, readCwd, session),
       blockly: createExternalBlockly(sessionId, this.requestResourceOperation),
       connectionGraph: createExternalConnectionGraph(sessionId, this.requestResourceOperation),
       boardSearch: createExternalBoardSearch(sessionId, this.requestResourceOperation),
+      subappAgent: createExternalSubappAgent(sessionId, this.requestResourceOperation, this.env),
       chronicle: {
         indexWorkspaceArtifact: async input => this.sessionIndex?.indexWorkspaceArtifact?.({
           ...(input && typeof input === 'object' ? input : {}),
@@ -1264,7 +1883,7 @@ class LexExecutionRuntimeOwner {
     };
   }
 
-  applyProjectCreatedScope(session, result) {
+  async applyProjectCreatedScope(session, result) {
     const projectInfo = normalizeProjectInfo(result);
     const projectPath = normalizeString(projectInfo.projectPath)
       || normalizeString(projectInfo.path)
@@ -1272,11 +1891,22 @@ class LexExecutionRuntimeOwner {
     if (!session || !projectPath) {
       return;
     }
-    session.cwd = projectPath;
-    session.providerOptions = {
+    const providerOptions = {
       ...(session.providerOptions && typeof session.providerOptions === 'object' ? session.providerOptions : {}),
       folderPath: projectPath,
     };
+    const timelineWorkspace = resolveEditingTimelineWorkspaceBinding(
+      {
+        ...projectInfo,
+        path: projectPath,
+      },
+      providerOptions,
+      this.env,
+    );
+    await session.editingTimeline?.rebindWorkspace?.(timelineWorkspace);
+    session.timelineWorkspace = timelineWorkspace;
+    session.cwd = projectPath;
+    session.providerOptions = providerOptions;
     this.emit({
       kind: 'runtimeProjectPathUpdated',
       sessionId: session.sessionId,
@@ -1291,20 +1921,6 @@ class LexExecutionRuntimeOwner {
   createEndpoint(currentModel, runtimeConfig = null) {
     const customBaseUrl = normalizeString(currentModel?.baseUrl || currentModel?.llmConfig?.baseUrl);
     const customApiKey = normalizeString(currentModel?.apiKey || currentModel?.llmConfig?.apiKey);
-    if (customBaseUrl && customApiKey) {
-      console.info('[AilyChat][LexExecutionHostEndpoint]', JSON.stringify({
-        kind: 'openai-compatible',
-        baseUrl: customBaseUrl,
-        model: normalizeString(currentModel?.model || currentModel?.modelId) || DEFAULT_MODEL_ID,
-        hasApiKey: true,
-      }));
-      return new OpenAIEndpoint({
-        baseUrl: customBaseUrl,
-        apiKey: customApiKey,
-        modelFamily: normalizeString(currentModel?.family) || 'openai',
-      });
-    }
-
     const baseUrl = this.resolveAilyServicesBaseUrl(currentModel, runtimeConfig);
     const authToken = this.resolveAuthToken(currentModel, runtimeConfig);
     console.info('[AilyChat][LexExecutionHostEndpoint]', JSON.stringify({
@@ -1313,6 +1929,7 @@ class LexExecutionRuntimeOwner {
       model: normalizeString(currentModel?.model || currentModel?.modelId) || DEFAULT_MODEL_ID,
       presetId: normalizeString(currentModel?.presetId) || '',
       hasAuthToken: Boolean(authToken),
+      usesCustomApiKey: Boolean(customBaseUrl && customApiKey),
       isLoggedIn: Boolean(runtimeConfig?.isLoggedIn || authToken),
       maxRequests: normalizeSoftRoundLimit(runtimeConfig?.maxRequests),
     }));
@@ -1342,6 +1959,8 @@ class LexExecutionRuntimeOwner {
   }
 
   createModelConfig(currentModel) {
+    const customBaseUrl = normalizeString(currentModel?.baseUrl || currentModel?.llmConfig?.baseUrl);
+    const customApiKey = normalizeString(currentModel?.apiKey || currentModel?.llmConfig?.apiKey);
     return {
       modelId: normalizeString(currentModel?.model || currentModel?.modelId) || DEFAULT_MODEL_ID,
       ...(normalizeString(currentModel?.presetId) ? { presetId: normalizeString(currentModel.presetId) } : {}),
@@ -1349,6 +1968,9 @@ class LexExecutionRuntimeOwner {
       ...(normalizeString(currentModel?.reasoningEffort) ? { reasoningEffort: normalizeString(currentModel.reasoningEffort) } : {}),
       ...(currentModel?.providerContextManagementSupport
         ? { providerContextManagementSupport: currentModel.providerContextManagementSupport }
+        : {}),
+      ...(customBaseUrl && customApiKey
+        ? { llmConfig: { apiKey: customApiKey, baseUrl: customBaseUrl } }
         : {}),
     };
   }
@@ -1370,10 +1992,7 @@ class LexExecutionRuntimeOwner {
   }
 
   resolveCwd(projectInfo, providerOptions) {
-    return normalizeString(projectInfo?.rootPath)
-      || normalizeString(projectInfo?.path)
-      || normalizeString(providerOptions?.folderPath)
-      || process.cwd();
+    return resolveEditingTimelineWorkspaceBinding(projectInfo, providerOptions, this.env).workspaceRoot;
   }
 
   emitRuntimeStatus(session, status, requestInProgress) {
@@ -1436,7 +2055,9 @@ class LexExecutionRuntimeOwner {
 function createExternalFileSystem() {
   return {
     readFile: (filePath, encoding = 'utf-8') => fs.readFile(filePath, encoding),
+    readFileBytes: async filePath => new Uint8Array(await fs.readFile(filePath)),
     writeFile: (filePath, content, encoding = 'utf-8') => fs.writeFile(filePath, content, encoding),
+    writeFileBytes: (filePath, content) => fs.writeFile(filePath, content),
     exists: async filePath => {
       try {
         await fs.access(filePath);
@@ -1706,9 +2327,18 @@ function createExternalTerminal(cwd, options = {}) {
     persistWorkerCommandProcessRecord(processRecord);
     notifyProcessChanged();
     try {
+      const sessionLeaseFile = ensureExternalAgentSessionLease(session, process.env);
       const { stdout, stderr } = await runWorkerTerminalCommand(terminalCommand, {
         cwd: terminalCwd,
-        env: { ...process.env, ...(options.env && typeof options.env === 'object' ? options.env : {}) },
+        env: {
+          ...process.env,
+          ...(sessionLeaseFile ? {
+            AILY_AGENT_SESSION_ID: session.sessionId,
+            AILY_AGENT_SESSION_LEASE_FILE: sessionLeaseFile,
+            AILY_AGENT_SESSION_OWNER_PID: String(process.pid),
+          } : {}),
+          ...(options.env && typeof options.env === 'object' ? options.env : {}),
+        },
         timeout: Number.isFinite(options.timeoutMs)
           ? options.timeoutMs
           : Number.isFinite(options.timeout)
@@ -1795,6 +2425,590 @@ function createSyncFsExtension() {
   return {
     readFileAsBase64: filePath => fsSync.readFileSync(String(filePath || '')).toString('base64'),
   };
+}
+
+export function externalAgentSessionLeasePath(sessionId, env = process.env) {
+  const appDataPath = resolveAppDataPath(env);
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (!appDataPath || !normalizedSessionId) return '';
+  const safeSessionId = normalizedSessionId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 160);
+  return path.join(appDataPath, 'runtime-host', 'session-leases', `${safeSessionId}.json`);
+}
+
+export function ensureExternalAgentSessionLease(session, env = process.env) {
+  const sessionId = normalizeSessionId(session?.sessionId);
+  if (!sessionId) return '';
+  const leaseFile = session.agentSessionLeaseFile
+    || externalAgentSessionLeasePath(sessionId, env);
+  if (!leaseFile) return '';
+  fsSync.mkdirSync(path.dirname(leaseFile), { recursive: true });
+  fsSync.writeFileSync(leaseFile, `${JSON.stringify({
+    protocolVersion: 1,
+    sessionId,
+    ownerPid: process.pid,
+    updatedAt: Date.now(),
+  })}\n`, { encoding: 'utf8', mode: 0o600 });
+  session.agentSessionLeaseFile = leaseFile;
+  return leaseFile;
+}
+
+export function releaseExternalAgentSessionLease(sessionId, session = null, env = process.env) {
+  const leaseFile = session?.agentSessionLeaseFile
+    || externalAgentSessionLeasePath(sessionId, env);
+  if (!leaseFile) return;
+  try {
+    fsSync.unlinkSync(leaseFile);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('[AilyChat][SubappAgent] Failed to remove session lease', {
+        sessionId,
+        error: error?.message || String(error),
+      });
+    }
+  }
+  if (session) session.agentSessionLeaseFile = '';
+}
+
+function assertEditingNavigationFilePath(filePath, workspaceRoot) {
+  const resolvedRoot = path.resolve(normalizeString(workspaceRoot));
+  const resolvedFile = path.resolve(normalizeString(filePath));
+  const relative = path.relative(resolvedRoot, resolvedFile);
+  if (!resolvedRoot
+    || !resolvedFile
+    || relative === ''
+    || relative.startsWith('..')
+    || path.isAbsolute(relative)) {
+    throw new Error(`Editing timeline navigation path is outside the workspace: ${filePath}`);
+  }
+  if (fsSync.existsSync(resolvedFile) && fsSync.lstatSync(resolvedFile).isSymbolicLink()) {
+    throw new Error(`Editing timeline navigation refuses a symbolic link: ${filePath}`);
+  }
+}
+
+async function captureEditingNavigationFileSnapshot(filePath) {
+  try {
+    const stat = await fs.lstat(filePath);
+    if (!stat.isFile()) {
+      throw new Error(`Editing timeline navigation target is not a regular file: ${filePath}`);
+    }
+    return {
+      uri: filePath,
+      existed: true,
+      content: new Uint8Array(await fs.readFile(filePath)),
+    };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+    return {
+      uri: filePath,
+      existed: false,
+      content: null,
+    };
+  }
+}
+
+async function applyEditingNavigationFile(file, targetContent, snapshot) {
+  if (!file.exists) {
+    if (!snapshot.existed) {
+      return false;
+    }
+    await fs.rm(file.uri, { force: true });
+    return true;
+  }
+  if (snapshot.existed && sameBytes(snapshot.content, targetContent)) {
+    return false;
+  }
+  await writeEditingNavigationFile(file.uri, targetContent);
+  return true;
+}
+
+async function rollbackEditingNavigationSnapshots(snapshots) {
+  const errors = [];
+  for (const snapshot of [...snapshots].reverse()) {
+    try {
+      if (!snapshot.existed) {
+        await fs.rm(snapshot.uri, { force: true });
+        continue;
+      }
+      await writeEditingNavigationFile(snapshot.uri, snapshot.content ?? new Uint8Array());
+    } catch (error) {
+      errors.push(`Editing timeline rollback failed for ${snapshot.uri}: ${error?.message || String(error)}`);
+    }
+  }
+  return errors;
+}
+
+async function writeEditingNavigationFile(filePath, content) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.aily-navigation-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
+  await fs.writeFile(temporary, Buffer.from(content));
+  try {
+    await fs.rename(temporary, filePath);
+  } catch (error) {
+    if (error?.code !== 'EEXIST' && error?.code !== 'EPERM') {
+      await fs.rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    await fs.rm(filePath, { force: true });
+    await fs.rename(temporary, filePath);
+  }
+}
+
+function sameBytes(left, right) {
+  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array) || left.byteLength !== right.byteLength) {
+    return false;
+  }
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function createElectronEditingTimelineOwner(
+  sessionId,
+  workspaceBinding,
+  onChanged = null,
+  onTurnDiffUpdated = null,
+) {
+  return new EditingTimelineOwner({
+    sessionId,
+    workspaceIdentity: workspaceBinding.workspaceIdentity,
+    workspaceRoot: workspaceBinding.workspaceRoot,
+    workspaceStorageRoot: workspaceBinding.workspaceStorageRoot,
+    storage: {
+      join: (...parts) => path.join(...parts),
+      exists: async filePath => {
+        try {
+          await fs.access(filePath);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      readFile: async filePath => new Uint8Array(await fs.readFile(filePath)),
+      writeFile: async (filePath, content) => {
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.writeFile(filePath, Buffer.from(content));
+      },
+      mkdir: dirPath => fs.mkdir(dirPath, { recursive: true }).then(() => undefined),
+      replaceFile: async (sourcePath, targetPath) => {
+        try {
+          await fs.rename(sourcePath, targetPath);
+        } catch (error) {
+          if (error?.code !== 'EEXIST' && error?.code !== 'EPERM') {
+            throw error;
+          }
+          await fs.rm(targetPath, { force: true });
+          await fs.rename(sourcePath, targetPath);
+        }
+      },
+      deleteFile: filePath => fs.rm(filePath, { force: true }),
+      deleteDirectory: dirPath => fs.rm(dirPath, { recursive: true, force: true }),
+      hash: content => createHash('sha256').update(content).digest('hex'),
+      gitBlobOid: content => createHash('sha1')
+        .update(`blob ${content.byteLength}\0`)
+        .update(content)
+        .digest('hex'),
+    },
+    onDiagnostic: diagnostic => {
+      console.info('[AilyChat][EditingTimelineRevision]', JSON.stringify(diagnostic));
+      onChanged?.(diagnostic);
+    },
+    onTurnDiffUpdated,
+  });
+}
+
+export function resolveEditingTimelineWorkspaceBinding(projectInfo, providerOptions, env = process.env) {
+  const projectPath = normalizeString(projectInfo?.projectPath)
+    || normalizeString(projectInfo?.path)
+    || normalizeString(providerOptions?.folderPath);
+  const projectRootPath = normalizeString(projectInfo?.projectRootPath)
+    || normalizeString(projectInfo?.rootPath);
+  const isProjectWorkspace = Boolean(projectPath)
+    && (!projectRootPath || !sameWorkspacePath(projectPath, projectRootPath));
+  const workspaceRoot = isProjectWorkspace
+    ? projectPath
+    : projectRootPath || projectPath || process.cwd();
+  const workspaceIdentity = isProjectWorkspace
+    ? `project:${createHash('sha256').update(normalizeWorkspacePath(projectPath)).digest('hex')}`
+    : GLOBAL_CHAT_WORKSPACE_IDENTITY;
+  const workspaceStorageKey = workspaceIdentity === GLOBAL_CHAT_WORKSPACE_IDENTITY
+    ? GLOBAL_CHAT_WORKSPACE_IDENTITY
+    : workspaceIdentity.slice('project:'.length);
+  return {
+    workspaceIdentity,
+    workspaceRoot,
+    workspaceStorageRoot: path.join(
+      resolveAppDataPath(env),
+      'workspaceStorage',
+      workspaceStorageKey,
+    ),
+  };
+}
+
+export function buildEditingSessionProjection(state) {
+  const operations = [...(Array.isArray(state?.operations) ? state.operations : [])]
+    .map(operation => ({
+      ...operation,
+      beforeRef: normalizeEditingTimelineContentRef(operation?.beforeRef),
+      afterRef: normalizeEditingTimelineContentRef(operation?.afterRef),
+    }))
+    .sort((left, right) => Number(left?.epoch) - Number(right?.epoch));
+  const baselines = (Array.isArray(state?.baselines) ? state.baselines : [])
+    .map(baseline => ({
+      ...baseline,
+      contentRef: normalizeEditingTimelineContentRef(baseline?.contentRef),
+    }));
+  const pointerEpoch = Math.max(0, Number(state?.currentPointer?.epoch) || 0);
+  const visibleOperations = operations.filter(operation =>
+    Math.max(0, Number(operation?.epoch) || 0) <= pointerEpoch);
+  const visibleBaselines = baselines.filter(baseline =>
+    Math.max(0, Number(baseline?.epoch) || 0) <= pointerEpoch);
+  const entries = new Map();
+  const ensureEntry = (uri, contentKind = 'text', fallbackRef = null, existedAtBaseline = false, epoch = 0) => {
+    const key = normalizeString(uri);
+    if (!key) {
+      return null;
+    }
+    let entry = entries.get(key);
+    if (!entry) {
+      entry = {
+        uri: key,
+        contentKind,
+        originalRef: fallbackRef ?? null,
+        currentRef: fallbackRef ?? null,
+        existedAtBaseline,
+        deleted: !existedAtBaseline,
+        firstEpoch: Math.max(0, Number(epoch) || 0),
+        lastEpoch: Math.max(0, Number(epoch) || 0),
+        requestIds: new Set(),
+      };
+      entries.set(key, entry);
+    }
+    return entry;
+  };
+
+  for (const baseline of visibleBaselines) {
+    const entry = ensureEntry(
+      baseline?.uri,
+      baseline?.contentKind,
+      baseline?.contentRef ?? null,
+      baseline?.existed === true,
+      baseline?.epoch,
+    );
+    if (entry && normalizeString(baseline?.requestId)) {
+      entry.requestIds.add(baseline.requestId);
+    }
+  }
+
+  for (const operation of visibleOperations) {
+    const requestId = normalizeString(operation?.requestId);
+    const epoch = Math.max(0, Number(operation?.epoch) || 0);
+    if (operation?.type === 'rename') {
+      const fromUri = normalizeString(operation.fromUri || operation.uri);
+      const toUri = normalizeString(operation.toUri || operation.uri);
+      const source = entries.get(fromUri);
+      const existingTarget = entries.get(toUri);
+      const sourceRef = source?.currentRef ?? operation.beforeRef ?? null;
+      if (fromUri && toUri) {
+        entries.delete(fromUri);
+        entries.delete(toUri);
+        entries.set(toUri, {
+          uri: toUri,
+          contentKind: operation.contentKind,
+          originalRef: source?.originalRef ?? operation.beforeRef ?? null,
+          currentRef: operation.afterRef ?? sourceRef,
+          existedAtBaseline: source?.existedAtBaseline ?? true,
+          deleted: false,
+          firstEpoch: source?.firstEpoch ?? epoch,
+          lastEpoch: epoch,
+          requestIds: new Set([
+            ...(source?.requestIds ?? []),
+            ...(existingTarget?.requestIds ?? []),
+            ...(requestId ? [requestId] : []),
+          ]),
+        });
+      }
+      continue;
+    }
+
+    const entry = ensureEntry(
+      operation?.uri,
+      operation?.contentKind,
+      operation?.beforeRef ?? null,
+      operation?.type !== 'create' && operation?.beforeRef != null,
+      epoch,
+    );
+    if (!entry) {
+      continue;
+    }
+    entry.lastEpoch = epoch;
+    if (requestId) {
+      entry.requestIds.add(requestId);
+    }
+    if (operation.type === 'delete') {
+      entry.deleted = true;
+      entry.currentRef = null;
+    } else {
+      entry.deleted = false;
+      entry.currentRef = operation.afterRef ?? entry.currentRef;
+    }
+  }
+
+  const derivedEntries = [...entries.values()]
+    .map(entry => ({
+      ...entry,
+      state: 'modified',
+      requestIds: [...entry.requestIds],
+    }))
+    .sort((left, right) => left.uri.localeCompare(right.uri));
+  const entryStates = new Map(
+    (Array.isArray(state?.entries) ? state.entries : [])
+      .map(entry => [entry.uri, entry.state]),
+  );
+  const projectedEntries = derivedEntries.map(entry => ({
+    ...entry,
+    state: entryStates.get(entry.uri) === 'accepted' || entryStates.get(entry.uri) === 'rejected'
+      ? entryStates.get(entry.uri)
+      : 'modified',
+  }));
+  const operationCounts = new Map();
+  for (const operation of operations) {
+    const requestId = normalizeString(operation?.requestId);
+    if (requestId) {
+      operationCounts.set(requestId, (operationCounts.get(requestId) || 0) + 1);
+    }
+  }
+  const requestScopes = Array.isArray(state?.requestScopes) ? state.requestScopes : [];
+  const requestEntries = buildEditingSessionRequestEntries(
+    baselines,
+    operations,
+    requestScopes,
+  );
+  const requestSummaries = requestScopes.map(scope => ({
+    requestId: scope.requestId,
+    ...(scope.turnId ? { turnId: scope.turnId } : {}),
+    status: scope.status,
+    ...(scope.outcome ? { outcome: scope.outcome } : {}),
+    ...(Number.isFinite(scope.firstEpoch) ? { firstEpoch: scope.firstEpoch } : {}),
+    ...(Number.isFinite(scope.lastEpoch) ? { lastEpoch: scope.lastEpoch } : {}),
+    operationCount: operationCounts.get(scope.requestId) || 0,
+    checkpointIds: [...(Array.isArray(scope.checkpointIds) ? scope.checkpointIds : [])],
+    touchedUris: [...(Array.isArray(scope.touchedUris) ? scope.touchedUris : [])],
+    entries: requestEntries.get(scope.requestId) || [],
+  }));
+  const modifiedEntryCount = projectedEntries.filter(entry =>
+    entry.state === 'modified'
+    && (
+      entry.deleted !== !entry.existedAtBaseline
+      || !sameEditingTimelineContentRef(entry.originalRef, entry.currentRef)
+    )
+  ).length;
+
+  return {
+    ...structuredClone(state),
+    baselines,
+    operations,
+    entries: projectedEntries,
+    requestSummaries,
+    summary: {
+      checkpointCount: Array.isArray(state?.checkpoints) ? state.checkpoints.length : 0,
+      requestCount: requestScopes.length,
+      entryCount: projectedEntries.length,
+      operationCount: operations.length,
+      modifiedEntryCount,
+    },
+  };
+}
+
+function normalizeEditingTimelineContentRef(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const hash = normalizeString(value.hash);
+  const encoding = value.encoding === 'utf8' || value.encoding === 'base64'
+    ? value.encoding
+    : '';
+  const byteLength = Number(value.byteLength);
+  if (!hash || !encoding || !Number.isInteger(byteLength) || byteLength < 0) {
+    return null;
+  }
+  return { hash, encoding, byteLength };
+}
+
+function buildEditingSessionRequestEntries(baselines, operations, requestScopes) {
+  const baselinesByRequest = new Map();
+  for (const baseline of baselines) {
+    const requestId = normalizeString(baseline?.requestId);
+    const uri = normalizeString(baseline?.uri);
+    if (!requestId || !uri) {
+      continue;
+    }
+    let values = baselinesByRequest.get(requestId);
+    if (!values) {
+      values = new Map();
+      baselinesByRequest.set(requestId, values);
+    }
+    const previous = values.get(uri);
+    if (!previous || Number(baseline?.epoch) < Number(previous?.epoch)) {
+      values.set(uri, baseline);
+    }
+  }
+
+  const operationsByRequest = new Map();
+  for (const operation of operations) {
+    const requestId = normalizeString(operation?.requestId);
+    if (!requestId) {
+      continue;
+    }
+    let values = operationsByRequest.get(requestId);
+    if (!values) {
+      values = [];
+      operationsByRequest.set(requestId, values);
+    }
+    values.push(operation);
+  }
+
+  const result = new Map();
+  for (const scope of requestScopes) {
+    const requestId = normalizeString(scope?.requestId);
+    if (!requestId) {
+      continue;
+    }
+    const entries = new Map();
+    const ensureEntry = (
+      uri,
+      contentKind,
+      originalRef,
+      existedAtStart,
+      epoch,
+    ) => {
+      const key = normalizeString(uri);
+      if (!key) {
+        return null;
+      }
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = {
+          uri: key,
+          contentKind: contentKind || 'text',
+          originalRef: originalRef ?? null,
+          currentRef: originalRef ?? null,
+          existedAtStart: existedAtStart === true,
+          deleted: existedAtStart !== true,
+          firstEpoch: Math.max(0, Number(epoch) || 0),
+          lastEpoch: Math.max(0, Number(epoch) || 0),
+        };
+        entries.set(key, entry);
+      }
+      return entry;
+    };
+
+    for (const baseline of baselinesByRequest.get(requestId)?.values() || []) {
+      ensureEntry(
+        baseline.uri,
+        baseline.contentKind,
+        baseline.contentRef ?? null,
+        baseline.existed === true,
+        baseline.epoch,
+      );
+    }
+
+    for (const operation of operationsByRequest.get(requestId) || []) {
+      const epoch = Math.max(0, Number(operation?.epoch) || 0);
+      if (operation?.type === 'rename') {
+        const fromUri = normalizeString(operation.fromUri || operation.uri);
+        const toUri = normalizeString(operation.toUri || operation.uri);
+        const source = entries.get(fromUri);
+        const sourceRef = source?.currentRef ?? operation.beforeRef ?? null;
+        if (fromUri && toUri) {
+          entries.delete(fromUri);
+          entries.delete(toUri);
+          entries.set(toUri, {
+            uri: toUri,
+            contentKind: operation.contentKind,
+            originalRef: source?.originalRef ?? operation.beforeRef ?? null,
+            currentRef: operation.afterRef ?? sourceRef,
+            existedAtStart: source?.existedAtStart ?? true,
+            deleted: false,
+            firstEpoch: source?.firstEpoch ?? epoch,
+            lastEpoch: epoch,
+          });
+        }
+        continue;
+      }
+
+      const baseline = baselinesByRequest.get(requestId)?.get(operation?.uri);
+      const entry = ensureEntry(
+        operation?.uri,
+        operation?.contentKind,
+        baseline?.contentRef ?? operation?.beforeRef ?? null,
+        baseline ? baseline.existed === true : operation?.type !== 'create' && operation?.beforeRef != null,
+        baseline?.epoch ?? epoch,
+      );
+      if (!entry) {
+        continue;
+      }
+      entry.lastEpoch = epoch;
+      if (operation.type === 'delete') {
+        entry.currentRef = null;
+        entry.deleted = true;
+      } else {
+        entry.currentRef = operation.afterRef ?? entry.currentRef;
+        entry.deleted = false;
+      }
+    }
+
+    result.set(
+      requestId,
+      [...entries.values()]
+        .filter(entry =>
+          entry.deleted !== !entry.existedAtStart
+          || !sameEditingTimelineContentRef(entry.originalRef, entry.currentRef)
+        )
+        .sort((left, right) => left.uri.localeCompare(right.uri)),
+    );
+  }
+  return result;
+}
+
+function sameEditingTimelineContentRef(left, right) {
+  if (left == null || right == null) {
+    return left == null && right == null;
+  }
+  return left.hash === right.hash
+    && left.encoding === right.encoding
+    && Number(left.byteLength) === Number(right.byteLength);
+}
+
+function findEditingSessionContentRef(state, requested) {
+  if (!requested || typeof requested !== 'object') {
+    return null;
+  }
+  const refs = [
+    ...(Array.isArray(state?.baselines) ? state.baselines.map(value => value?.contentRef) : []),
+    ...(Array.isArray(state?.operations)
+      ? state.operations.flatMap(value => [value?.beforeRef, value?.afterRef])
+      : []),
+  ];
+  return refs.find(ref => ref
+    && ref.hash === requested.hash
+    && ref.encoding === requested.encoding
+    && Number(ref.byteLength) === Number(requested.byteLength)) ?? null;
+}
+
+function sameWorkspacePath(left, right) {
+  return normalizeWorkspacePath(left) === normalizeWorkspacePath(right);
+}
+
+function normalizeWorkspacePath(value) {
+  const normalized = path.resolve(normalizeString(value))
+    .replace(/[\\/]+$/, '')
+    .replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function createBinaryWriteExtension() {
@@ -1991,6 +3205,13 @@ class ChronicleSessionIndex {
     this.dbOpenPromise = null;
     this.sqliteUnavailable = false;
     this.reindexedFileSignatures = new Map();
+  }
+
+  async dispose() {
+    await this.dbOpenPromise?.catch(() => undefined);
+    this.db?.close?.();
+    this.db = null;
+    this.dbOpenPromise = null;
   }
 
   async ensureDb() {
@@ -4342,7 +5563,7 @@ function createPathExtension() {
   };
 }
 
-function createElectronSkillRegistry(cwd, projectInfo, runtimeConfig = {}) {
+export function createElectronSkillRegistry(cwd, projectInfo, runtimeConfig = {}, env = process.env) {
   runtimeConfig = runtimeConfig && typeof runtimeConfig === 'object' ? runtimeConfig : {};
   const skills = new Map();
   const activeSkillNames = new Set();
@@ -4350,10 +5571,14 @@ function createElectronSkillRegistry(cwd, projectInfo, runtimeConfig = {}) {
     || normalizeString(projectInfo?.rootPath)
     || normalizeString(projectInfo?.path)
     || normalizeString(projectInfo?.projectPath);
-  const directories = resolveElectronSkillDirectories(projectRoot, runtimeConfig);
+  const sources = resolveElectronSkillSources(projectRoot, runtimeConfig, env);
 
-  for (const entry of directories) {
-    scanElectronSkillDirectory(skills, entry.dir, entry.origin);
+  for (const source of sources) {
+    if (source.skillMdPath) {
+      scanElectronSkillFile(skills, source.skillMdPath, source.origin);
+    } else {
+      scanElectronSkillDirectory(skills, source.dir, source.origin);
+    }
   }
 
   const registry = {
@@ -5141,35 +6366,42 @@ function buildElectronSkillsListingInstruction(input) {
   return 'When a listed skill applies to the request, treat it as a blocking requirement and defer the task until the required skill instructions become readable in the current tool set.';
 }
 
-function resolveElectronSkillDirectories(projectRoot, runtimeConfig = {}) {
+function resolveElectronSkillSources(projectRoot, runtimeConfig = {}, env = process.env) {
   const entries = [];
-  const push = (dir, origin) => {
+  const pushDirectory = (dir, origin) => {
     const normalized = normalizeString(dir);
-    if (!normalized || entries.some(entry => samePath(entry.dir, normalized))) {
+    if (!normalized || entries.some(entry => entry.dir && samePath(entry.dir, normalized))) {
       return;
     }
     entries.push({ dir: normalized, origin });
   };
+  const pushSkillFile = (skillMdPath, origin) => {
+    const normalized = normalizeString(skillMdPath);
+    if (!normalized || entries.some(entry => entry.skillMdPath && samePath(entry.skillMdPath, normalized))) {
+      return;
+    }
+    entries.push({ skillMdPath: normalized, origin });
+  };
 
-  push(path.resolve(MODULE_DIR, '..', 'renderer', 'skills'), { type: 'builtin' });
-  push(path.resolve(MODULE_DIR, '..', 'dist', 'aily-blockly', 'browser', 'skills'), { type: 'builtin' });
-  push(path.resolve(MODULE_DIR, '..', 'public', 'skills'), { type: 'builtin' });
-  for (const dir of resolveElectronChildToolSkillDirectories()) {
-    push(dir, { type: 'builtin' });
+  pushDirectory(path.resolve(MODULE_DIR, '..', 'renderer', 'skills'), { type: 'builtin', source: 'bundled' });
+  pushDirectory(path.resolve(MODULE_DIR, '..', 'dist', 'aily-blockly', 'browser', 'skills'), { type: 'builtin', source: 'bundled' });
+  pushDirectory(path.resolve(MODULE_DIR, '..', 'public', 'skills'), { type: 'builtin', source: 'bundled' });
+  for (const skillMdPath of resolveElectronInstalledSubappSkillFiles(env)) {
+    pushSkillFile(skillMdPath, { type: 'builtin', source: 'subapp' });
   }
-  push(path.join(resolveAppDataPath(process.env), 'aily-skills'), { type: 'user' });
+  pushDirectory(path.join(resolveAppDataPath(env), 'aily-skills'), { type: 'user' });
 
   for (const dir of normalizeStringArray(runtimeConfig.userSkillFolders)) {
-    push(dir, { type: 'user' });
+    pushDirectory(dir, { type: 'user' });
   }
 
   if (projectRoot) {
-    push(path.join(projectRoot, '.aily', 'skills'), { type: 'project' });
-    push(path.join(projectRoot, '.agents', 'skills'), { type: 'project' });
+    pushDirectory(path.join(projectRoot, '.aily', 'skills'), { type: 'project' });
+    pushDirectory(path.join(projectRoot, '.agents', 'skills'), { type: 'project' });
   }
 
   for (const dir of normalizeStringArray(runtimeConfig.projectSkillFolders)) {
-    push(dir, { type: 'project' });
+    pushDirectory(dir, { type: 'project' });
   }
 
   return entries;
@@ -5191,61 +6423,171 @@ function resolveElectronAilyChildPath() {
   return candidates[0] || '';
 }
 
-function resolveElectronChildToolSkillDirectories() {
-  const childPath = resolveElectronAilyChildPath();
-  if (!childPath) {
-    return [];
-  }
-
-  const toolsPath = path.join(childPath, 'tools');
-  if (!fsSync.existsSync(toolsPath)) {
-    return [];
-  }
-
-  try {
-    return fsSync.readdirSync(toolsPath, { withFileTypes: true })
-      .filter(entry => entry.isDirectory())
-      .map(entry => path.join(toolsPath, entry.name, 'skill'))
-      .filter(dir => fsSync.existsSync(dir))
-      .sort((left, right) => left.localeCompare(right));
-  } catch (error) {
-    console.warn('[AilyChat][SkillRegistry] Failed to scan child tool skills:', error?.message || error);
-    return [];
-  }
+function resolveElectronInstalledSubappRoot(env = process.env) {
+  return path.join(resolveAppDataPath(env), 'npm-global', 'app');
 }
 
-function createElectronChildToolInventorySignature() {
-  const childPath = resolveElectronAilyChildPath();
-  const toolsPath = childPath ? path.join(childPath, 'tools') : '';
-  if (!toolsPath || !fsSync.existsSync(toolsPath)) {
-    return '';
-  }
+function isValidNpmPackageName(value) {
+  return /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(normalizeString(value));
+}
 
-  const fingerprints = [];
-  try {
-    const toolEntries = fsSync.readdirSync(toolsPath, { withFileTypes: true })
-      .filter(entry => entry.isDirectory())
-      .sort((left, right) => left.name.localeCompare(right.name));
+function isPackageRelativePath(packagePath, candidatePath) {
+  const relative = path.relative(path.resolve(packagePath), path.resolve(candidatePath));
+  return relative !== ''
+    && !relative.startsWith('..')
+    && !path.isAbsolute(relative);
+}
 
-    for (const toolEntry of toolEntries) {
-      const toolPath = path.join(toolsPath, toolEntry.name);
-      fingerprints.push(`tool:${toolEntry.name}`);
-      fingerprints.push(readElectronChildToolLifecycleFile(path.join(toolPath, 'package.json')));
+function resolveElectronInstalledSubappSkillEntries(env = process.env) {
+  const rootDir = resolveElectronInstalledSubappRoot(env);
+  const installProject = readJsonFile(path.join(rootDir, 'package.json'));
+  const dependencies = installProject?.dependencies && typeof installProject.dependencies === 'object'
+    ? installProject.dependencies
+    : {};
+  const entries = [];
 
-      const skillRoot = path.join(toolPath, 'skill');
-      if (!fsSync.existsSync(skillRoot)) continue;
+  for (const packageName of Object.keys(dependencies).filter(isValidNpmPackageName).sort()) {
+    const packagePath = path.join(rootDir, 'node_modules', ...packageName.split('/'));
+    const packageJsonPath = path.join(packagePath, 'package.json');
+    const packageJson = readJsonFile(packageJsonPath);
+    const declaredSkills = normalizeStringArray(packageJson?.ailySubapp?.agent?.skills);
 
-      for (const skillEntry of fsSync.readdirSync(skillRoot, { withFileTypes: true })
-        .filter(entry => entry.isDirectory())
-        .sort((left, right) => left.name.localeCompare(right.name))) {
-        fingerprints.push(`skill:${toolEntry.name}/${skillEntry.name}`);
-        fingerprints.push(readElectronChildToolLifecycleFile(path.join(skillRoot, skillEntry.name, 'SKILL.md')));
+    for (const declaredSkill of declaredSkills) {
+      if (path.isAbsolute(declaredSkill)) {
+        console.warn('[AilyChat][SkillRegistry] Ignoring absolute subapp skill path', {
+          packageName,
+          declaredSkill,
+        });
+        continue;
       }
+      const skillMdPath = path.resolve(packagePath, declaredSkill);
+      if (!isPackageRelativePath(packagePath, skillMdPath)) {
+        console.warn('[AilyChat][SkillRegistry] Ignoring subapp skill path outside its package', {
+          packageName,
+          declaredSkill,
+        });
+        continue;
+      }
+      if (!fsSync.existsSync(skillMdPath)) {
+        console.warn('[AilyChat][SkillRegistry] Manifest-declared subapp skill is missing', {
+          packageName,
+          declaredSkill,
+        });
+        continue;
+      }
+      entries.push({
+        packageName,
+        packagePath,
+        packageJsonPath,
+        declaredSkill,
+        skillMdPath,
+      });
     }
-  } catch (error) {
-    console.warn('[AilyChat][SkillRegistry] Failed to fingerprint child tool inventory:', error?.message || error);
   }
 
+  return entries.sort((left, right) =>
+    left.packageName.localeCompare(right.packageName)
+      || left.declaredSkill.localeCompare(right.declaredSkill));
+}
+
+export function resolveElectronInstalledSubappSkillFiles(env = process.env) {
+  return resolveElectronInstalledSubappSkillEntries(env).map(entry => entry.skillMdPath);
+}
+
+export function resolveElectronInstalledSubappAgentToolBindings(env = process.env) {
+  const rootDir = resolveElectronInstalledSubappRoot(env);
+  const installProject = readJsonFile(path.join(rootDir, 'package.json'));
+  const dependencies = installProject?.dependencies && typeof installProject.dependencies === 'object'
+    ? installProject.dependencies
+    : {};
+  const candidates = [];
+
+  for (const packageName of Object.keys(dependencies).filter(isValidNpmPackageName).sort()) {
+    const packagePath = path.join(rootDir, 'node_modules', ...packageName.split('/'));
+    const packageJson = readJsonFile(path.join(packagePath, 'package.json'));
+    const agent = packageJson?.ailySubapp?.agent;
+    const declaredTools = agent?.tools;
+    const declaredManifest = normalizeString(declaredTools?.manifest);
+    if (!declaredManifest || path.isAbsolute(declaredManifest)) {
+      continue;
+    }
+
+    const manifestPath = path.resolve(packagePath, declaredManifest);
+    if (!isPackageRelativePath(packagePath, manifestPath)) {
+      console.warn('[AilyChat][SubappAgent] Ignoring tool manifest outside its package', {
+        packageName,
+        declaredManifest,
+      });
+      continue;
+    }
+    const manifest = readJsonFile(manifestPath);
+    if (!manifest) {
+      console.warn('[AilyChat][SubappAgent] Manifest-declared tool file is missing or invalid', {
+        packageName,
+        declaredManifest,
+      });
+      continue;
+    }
+    const protocolVersion = Number(manifest.protocolVersion ?? agent?.protocolVersion);
+    const transport = normalizeString(manifest.transport || declaredTools?.transport);
+    if (protocolVersion !== 1 || transport !== 'aily-child-rpc') {
+      console.warn('[AilyChat][SubappAgent] Ignoring unsupported subapp Agent manifest', {
+        packageName,
+        protocolVersion,
+        transport,
+      });
+      continue;
+    }
+
+    for (const definition of Array.isArray(manifest.tools) ? manifest.tools : []) {
+      const name = normalizeString(definition?.name);
+      if (!name || !/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name)) {
+        continue;
+      }
+      candidates.push({
+        packageName,
+        manifestPath,
+        definition: {
+          ...definition,
+          name,
+          description: normalizeString(definition.description) || name,
+          inputSchema: definition.inputSchema && typeof definition.inputSchema === 'object'
+            ? definition.inputSchema
+            : { type: 'object', properties: {} },
+        },
+      });
+    }
+  }
+
+  const counts = new Map();
+  for (const candidate of candidates) {
+    counts.set(candidate.definition.name, (counts.get(candidate.definition.name) || 0) + 1);
+  }
+  const ambiguousNames = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name);
+  if (ambiguousNames.length > 0) {
+    console.warn('[AilyChat][SubappAgent] Ignoring ambiguous installed tool names', ambiguousNames);
+  }
+  return candidates.filter(candidate => counts.get(candidate.definition.name) === 1);
+}
+
+export function createElectronInstalledSubappInventorySignature(env = process.env) {
+  const rootDir = resolveElectronInstalledSubappRoot(env);
+  const fingerprints = [
+    readElectronChildToolLifecycleFile(path.join(rootDir, 'package.json')),
+  ];
+  for (const entry of resolveElectronInstalledSubappSkillEntries(env)) {
+    fingerprints.push(`package:${entry.packageName}`);
+    fingerprints.push(readElectronChildToolLifecycleFile(entry.packageJsonPath));
+    fingerprints.push(`skill:${entry.declaredSkill}`);
+    fingerprints.push(readElectronChildToolLifecycleFile(entry.skillMdPath));
+  }
+  for (const binding of resolveElectronInstalledSubappAgentToolBindings(env)) {
+    fingerprints.push(`agent-package:${binding.packageName}`);
+    fingerprints.push(`agent-manifest:${binding.manifestPath}`);
+    fingerprints.push(readElectronChildToolLifecycleFile(binding.manifestPath));
+  }
   return createHash('sha256').update(fingerprints.join('\0')).digest('hex');
 }
 
@@ -5278,29 +6620,48 @@ function scanElectronSkillDirectory(skills, dir, origin) {
     if (!fsSync.existsSync(skillMdPath)) {
       continue;
     }
-    try {
-      const raw = fsSync.readFileSync(skillMdPath, 'utf8');
-      const parsed = parseElectronSkillMarkdown(raw);
-      const metadata = {
-        ...parsed.metadata,
-        name: entry.name,
-        displayName: parsed.metadata.name && parsed.metadata.name !== 'unknown' && parsed.metadata.name !== entry.name
-          ? parsed.metadata.name
-          : undefined,
-      };
-      skills.set(entry.name, {
-        name: entry.name,
-        displayName: metadata.displayName,
-        description: metadata.description || '',
-        metadata,
-        body: metadata.autoActivate ? parsed.body : undefined,
-        baseDir: skillDir,
-        skillMdPath,
-        origin,
+    scanElectronSkillFile(skills, skillMdPath, origin);
+  }
+}
+
+function scanElectronSkillFile(skills, skillMdPath, origin) {
+  const skillDir = path.dirname(skillMdPath);
+  const skillName = path.basename(skillDir);
+  try {
+    const raw = fsSync.readFileSync(skillMdPath, 'utf8');
+    const parsed = parseElectronSkillMarkdown(raw);
+    const metadata = {
+      ...parsed.metadata,
+      name: skillName,
+      displayName: parsed.metadata.name && parsed.metadata.name !== 'unknown' && parsed.metadata.name !== skillName
+        ? parsed.metadata.name
+        : undefined,
+    };
+    const existing = skills.get(skillName);
+    const shouldReportConflict = existing
+      && !samePath(existing.skillMdPath, skillMdPath)
+      && (existing.origin?.source === 'subapp'
+        || origin?.source === 'subapp'
+        || existing.origin?.type !== origin?.type);
+    if (shouldReportConflict) {
+      console.warn('[AilyChat][SkillRegistry] Duplicate skill name; later source wins', {
+        name: skillName,
+        previousPath: existing.skillMdPath,
+        selectedPath: skillMdPath,
       });
-    } catch (error) {
-      console.warn('[AilyChat][SkillRegistry] Failed to parse skill', skillMdPath, error?.message || error);
     }
+    skills.set(skillName, {
+      name: skillName,
+      displayName: metadata.displayName,
+      description: metadata.description || '',
+      metadata,
+      body: metadata.autoActivate ? parsed.body : undefined,
+      baseDir: skillDir,
+      skillMdPath,
+      origin,
+    });
+  } catch (error) {
+    console.warn('[AilyChat][SkillRegistry] Failed to parse skill', skillMdPath, error?.message || error);
   }
 }
 
@@ -5634,7 +6995,7 @@ function createElectronBlocklyToolProvider(hostAPI) {
   };
 }
 
-function createElectronBlocklyToolContributions(hostAPI) {
+export function createElectronBlocklyToolContributions(hostAPI) {
   const contributions = [];
   if (hostAPI.project) {
     contributions.push({
@@ -5698,6 +7059,45 @@ function createElectronBlocklyToolContributions(hostAPI) {
       runtimeModes: ['unbound', 'coder', 'blockly'],
       agentScope: ['main'],
       deferred: { group: 'blockly-project-management', reason: 'Build is used on demand.' },
+    });
+  }
+  if (hostAPI.builder?.upload) {
+    if (hostAPI.builder?.listSerialPorts) {
+      contributions.push({
+        name: 'listSerialPorts',
+        toolSet: 'blockly-project',
+        description: 'List serial ports currently available for firmware upload',
+        prompt: 'Use this read-only tool immediately before uploadProject. Select only an exact port value returned by this tool; do not invent or reuse a stale port.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        },
+        annotations: { readOnly: true },
+        runtimeModes: ['unbound', 'coder', 'blockly'],
+        agentScope: ['main'],
+        deferred: { group: 'blockly-project-management', reason: 'Serial port discovery is exposed with firmware upload.' },
+      });
+    }
+    contributions.push({
+      name: 'uploadProject',
+      toolSet: 'blockly-project',
+      description: 'Upload/flash the current project to an explicit serial port',
+      prompt: 'Use this tool only when the user asks to upload, flash, or download firmware to hardware. Call listSerialPorts first and pass one of the returned exact port values. If multiple ports are ambiguous, ask the user which device to use. The upload approval identifies the selected port.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          port: {
+            type: 'string',
+            description: 'Exact serial port value returned by listSerialPorts.',
+          },
+        },
+        required: ['port'],
+      },
+      annotations: { readOnly: false, destructive: true },
+      runtimeModes: ['unbound', 'coder', 'blockly'],
+      agentScope: ['main'],
+      deferred: { group: 'blockly-project-management', reason: 'Firmware upload is exposed only when requested.' },
     });
   }
   if (hostAPI.boardSearch?.search) {
@@ -5847,7 +7247,35 @@ Prefer flowchart TD or flowchart LR. After this tool succeeds, do not repeat the
   if (hostAPI.connectionGraph) {
     appendElectronSchematicToolContributions(contributions);
   }
+  appendElectronSubappAgentToolContributions(contributions, hostAPI.subappAgent?.bindings);
   return contributions;
+}
+
+function appendElectronSubappAgentToolContributions(contributions, bindings) {
+  const existingNames = new Set(contributions.map(contribution => contribution.name));
+  for (const binding of Array.isArray(bindings) ? bindings : []) {
+    const definition = binding?.definition;
+    if (!definition?.name || existingNames.has(definition.name)) {
+      if (definition?.name) {
+        console.warn('[AilyChat][SubappAgent] Ignoring tool name that conflicts with a host tool', {
+          packageName: binding.packageName,
+          tool: definition.name,
+        });
+      }
+      continue;
+    }
+    existingNames.add(definition.name);
+    contributions.push({
+      name: definition.name,
+      toolSet: `subapp:${binding.packageName}`,
+      description: definition.description || definition.name,
+      prompt: '',
+      inputSchema: definition.inputSchema || { type: 'object', properties: {} },
+      annotations: { readOnly: definition.permission !== 'change' },
+      runtimeModes: ['blockly', 'coder'],
+      agentScope: ['main'],
+    });
+  }
 }
 
 function appendElectronSchematicToolContributions(contributions) {
@@ -5866,12 +7294,35 @@ function appendElectronSchematicToolContributions(contributions) {
   }
 }
 
-async function invokeElectronBlocklyTool(toolName, input, hostAPI, context = {}) {
+export async function invokeElectronBlocklyTool(toolName, input, hostAPI, context = {}) {
+  const subappBinding = hostAPI.subappAgent?.bindings?.find(
+    binding => binding?.definition?.name === toolName,
+  );
+  if (subappBinding) {
+    const response = await hostAPI.subappAgent.execute({
+      tool: toolName,
+      params: input,
+    }, context);
+    const serialized = formatExternalResult(response);
+    return response?.ok === true
+      ? toolText(serialized, {
+          toolId: response.toolId,
+          subappPackage: subappBinding.packageName,
+          subappAgentTool: toolName,
+          presentation: response.presentation,
+        })
+      : toolError(serialized);
+  }
+
   switch (toolName) {
     case 'project':
       return invokeElectronProjectTool(input, hostAPI, context);
     case 'buildProject':
-      return invokeElectronBuildProjectTool(hostAPI);
+      return invokeElectronBuildProjectTool(hostAPI, context);
+    case 'listSerialPorts':
+      return toolText(formatExternalResult(await hostAPI.builder.listSerialPorts()));
+    case 'uploadProject':
+      return invokeElectronUploadProjectTool(input, hostAPI, context);
     case 'boardSearch':
       return invokeElectronBoardSearchTool(input, hostAPI);
     case 'search_boards_libraries':
@@ -5887,13 +7338,13 @@ async function invokeElectronBlocklyTool(toolName, input, hostAPI, context = {})
     case 'get_board_parameters':
       return toolText(formatExternalResult(await readBoardParameters(hostAPI.project, input.parameters)));
     case 'syncAbs':
-      return invokeElectronSyncAbsTool(input, hostAPI);
+      return invokeElectronSyncAbsTool(input, hostAPI, context);
     case 'analyzeLibrary':
       return invokeElectronAnalyzeLibraryTool(input, hostAPI);
     case 'lint':
-      return invokeElectronLintTool(input, hostAPI);
+      return invokeElectronLintTool(input, hostAPI, context);
     case 'save_arch':
-      return invokeElectronSaveArchTool(input, hostAPI);
+      return invokeElectronSaveArchTool(input, hostAPI, context);
     case 'generate_schematic':
     case 'get_pinmap_summary':
     case 'get_component_catalog':
@@ -5973,7 +7424,7 @@ async function invokeElectronProjectTool(input, hostAPI, context = {}) {
       name: normalizeString(input.name),
       board,
       path: normalizeString(input.path),
-    })));
+    }, context)));
   }
   if (action === 'reload') {
     return toolText(formatExternalResult(await hostAPI.project.reloadProject()));
@@ -5983,7 +7434,7 @@ async function invokeElectronProjectTool(input, hostAPI, context = {}) {
     if (!board) {
       return toolError('project switch_board requires board.');
     }
-    return toolText(formatExternalResult(await hostAPI.project.switchBoard(board)));
+    return toolText(formatExternalResult(await hostAPI.project.switchBoard(board, context)));
   }
   if (action === 'get_board_config') {
     return toolText(formatExternalResult(await readBoardParameters(hostAPI.project, input.parameters)));
@@ -5993,7 +7444,7 @@ async function invokeElectronProjectTool(input, hostAPI, context = {}) {
     if (!config) {
       return toolError('project set_board_config requires config_key/config_value or a single-entry config object.');
     }
-    return toolText(formatExternalResult(await hostAPI.project.setBoardConfig(config)));
+    return toolText(formatExternalResult(await hostAPI.project.setBoardConfig(config, context)));
   }
   return toolError(`Project action "${action || '<missing>'}" is not migrated to the Electron execution host yet.`);
 }
@@ -6036,12 +7487,24 @@ function readProjectConfigInput(input) {
   return normalizedKey ? { [normalizedKey]: String(entryValue ?? '') } : null;
 }
 
-async function invokeElectronBuildProjectTool(hostAPI) {
+async function invokeElectronBuildProjectTool(hostAPI, context = {}) {
   const projectPath = hostAPI.project?.getProjectPath?.();
   if (!projectPath) {
     return toolError('No active project is available for build.');
   }
-  return toolText(formatExternalResult(await hostAPI.builder.build({ projectPath })));
+  return toolText(formatExternalResult(await hostAPI.builder.build({ projectPath }, context)));
+}
+
+async function invokeElectronUploadProjectTool(input, hostAPI, context = {}) {
+  const projectPath = hostAPI.project?.getProjectPath?.();
+  if (!projectPath) {
+    return toolError('No active project is available for upload.');
+  }
+  const port = normalizeString(input?.port);
+  if (!port) {
+    return toolError('uploadProject requires an explicit port from listSerialPorts.');
+  }
+  return toolText(formatExternalResult(await hostAPI.builder.upload({ projectPath, port }, context)));
 }
 
 async function invokeElectronBoardSearchTool(input, hostAPI) {
@@ -6064,13 +7527,13 @@ async function invokeElectronBoardSearchTool(input, hostAPI) {
   return toolError(`Unknown boardSearch action: ${action || '<missing>'}`);
 }
 
-async function invokeElectronLintTool(input, hostAPI) {
+async function invokeElectronLintTool(input, hostAPI, context = {}) {
   const requestedMode = normalizeString(input?.mode);
   const mode = requestedMode === 'accurate' || requestedMode === 'auto' ? requestedMode : 'fast';
 
   const generatedCode = typeof hostAPI.blockly.getGeneratedCode === 'function'
     ? await hostAPI.blockly.getGeneratedCode()
-    : await hostAPI.blockly.exportAbs();
+    : await hostAPI.blockly.exportAbs(context);
   if (!normalizeString(generatedCode)) {
     return toolText('No generated code to lint (workspace is empty).');
   }
@@ -6081,7 +7544,7 @@ async function invokeElectronLintTool(input, hostAPI) {
   return toolText(formatExternalResult(result));
 }
 
-async function invokeElectronSyncAbsTool(input, hostAPI) {
+async function invokeElectronSyncAbsTool(input, hostAPI, context = {}) {
   if (typeof hostAPI.blockly?.syncAbs !== 'function') {
     return toolError('ABS sync is not available in this environment.');
   }
@@ -6093,14 +7556,14 @@ async function invokeElectronSyncAbsTool(input, hostAPI) {
     operation,
     ...(typeof input.includeHeader === 'boolean' ? { includeHeader: input.includeHeader } : {}),
     ...(typeof input.content === 'string' ? { pendingAbsContent: input.content } : {}),
-  });
+  }, context);
   if (result?.is_error) {
     return toolError(result.content || 'syncAbs failed.');
   }
   return toolText(result?.content || formatExternalResult(result), result?.metadata);
 }
 
-async function invokeElectronSaveArchTool(input, hostAPI) {
+export async function invokeElectronSaveArchTool(input, hostAPI, context = {}) {
   const code = normalizeString(input?.code);
   if (!code) {
     return toolError('save_arch requires code.');
@@ -6130,14 +7593,55 @@ async function invokeElectronSaveArchTool(input, hostAPI) {
 
   const archPath = path.join(targetDir, 'arch.md');
   const content = `\`\`\`mermaid\n${code}\n\`\`\`\n`;
+  const turnId = normalizeString(context?.trace?.turnId || context?.turnId);
+  const toolCallId = normalizeString(context?.toolCallId || context?.trace?.toolCallId);
+  const editingTimeline = context?.host?.getExtension?.('editingTimeline');
+  if (!turnId || !toolCallId || typeof editingTimeline?.recordFileWrite !== 'function') {
+    return toolError('save_arch requires the canonical editing timeline turn context.');
+  }
+
+  let existedBefore = false;
+  let beforeContent = null;
+  try {
+    beforeContent = await fs.readFile(archPath, 'utf8');
+    existedBefore = true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
   await fs.mkdir(path.dirname(archPath), { recursive: true });
   await hostAPI.fs.writeFile(archPath, content, 'utf-8');
-  await hostAPI.chronicle?.indexWorkspaceArtifact?.({
-    filePath: archPath,
-    content,
-    title: 'Architecture diagram',
-    artifactKind: 'mermaid',
-  });
+  try {
+    await editingTimeline.recordFileWrite({
+      turnId,
+      toolCallId,
+      mutationId: `save-arch:${turnId}:${toolCallId}`,
+      filePath: archPath,
+      existedBefore,
+      beforeContent,
+      afterContent: content,
+    });
+  } catch (error) {
+    if (existedBefore) {
+      await fs.writeFile(archPath, beforeContent ?? '', 'utf8');
+    } else {
+      await fs.rm(archPath, { force: true });
+    }
+    throw error;
+  }
+
+  try {
+    await hostAPI.chronicle?.indexWorkspaceArtifact?.({
+      filePath: archPath,
+      content,
+      title: 'Architecture diagram',
+      artifactKind: 'mermaid',
+    });
+  } catch (error) {
+    console.warn('[AilyChat][ChronicleArtifactIndexFailed]', error?.message || error);
+  }
   return toolText(`Saved architecture diagram to ${archPath}.`, {
     path: archPath,
     filePath: archPath,
@@ -6286,7 +7790,7 @@ function toolError(text) {
   };
 }
 
-function createExternalProject(sessionId, requestResourceOperation, initialProjectInfo, onProjectCreated) {
+export function createExternalProject(sessionId, requestResourceOperation, initialProjectInfo, onProjectCreated) {
   let projectInfo = normalizeProjectInfo(initialProjectInfo);
   return {
     getProjectInfo: async () => {
@@ -6300,7 +7804,7 @@ function createExternalProject(sessionId, requestResourceOperation, initialProje
     getBoardJson: async () => requestProjectInfo(sessionId, requestResourceOperation, 'getBoardJson'),
     getBoardModule: async () => requestProjectInfo(sessionId, requestResourceOperation, 'getBoardModule'),
     getBoardPackageJson: async () => requestProjectInfo(sessionId, requestResourceOperation, 'getBoardPackageJson'),
-    createProject: async options => {
+    createProject: async (options, context = {}) => {
       if (!requestResourceOperation) {
         throw new Error('Project creation requires a host resource operation bridge.');
       }
@@ -6310,28 +7814,76 @@ function createExternalProject(sessionId, requestResourceOperation, initialProje
       if (!board) {
         throw new Error('createProject requires board.');
       }
-      const result = await requestResourceOperation({
-        sessionId,
-        kind: 'project-info',
-        payload: {
-          adapter: 'project',
-          action: 'createProject',
-          ...(name ? { name } : {}),
-          board,
-          ...(targetPath ? { path: targetPath } : {}),
-        },
-      });
+      const turnId = normalizeString(context?.trace?.turnId || context?.turnId);
+      const toolCallId = normalizeString(context?.toolCallId || context?.trace?.toolCallId);
+      let result;
+      try {
+        result = await requestResourceOperation({
+          sessionId,
+          turnId,
+          toolCallId,
+          kind: 'project-info',
+          payload: {
+            adapter: 'project',
+            action: 'createProject',
+            ...(name ? { name } : {}),
+            board,
+            ...(targetPath ? { path: targetPath } : {}),
+          },
+        });
+      } catch (error) {
+        const failedResult = error?.resourceOperationResult?.result ?? error?.resourceOperationResult;
+        const failedTransactionId = normalizeString(failedResult?.mutationBatch?.transactionId);
+        if (failedTransactionId) {
+          try {
+            await requestResourceOperation({
+              sessionId,
+              turnId,
+              toolCallId,
+              kind: 'project-info',
+              payload: {
+                adapter: 'project',
+                action: 'discardCreatedProject',
+                transactionId: failedTransactionId,
+              },
+            });
+          } catch {
+            // Preserve the canonical timeline commit error.
+          }
+        }
+        throw error;
+      }
       const projectResult = result?.result ?? result;
+      let finalProjectResult = projectResult;
       if (projectResult && typeof projectResult === 'object') {
-        projectInfo = normalizeProjectInfo(projectResult);
+        const transactionId = normalizeString(projectResult?.mutationBatch?.transactionId);
+        if (!transactionId) {
+          throw new Error('Created project has no canonical workspace mutation transaction.');
+        }
+        const activation = await requestResourceOperation({
+          sessionId,
+          turnId,
+          toolCallId,
+          kind: 'project-info',
+          payload: {
+            adapter: 'project',
+            action: 'activateCreatedProject',
+            transactionId,
+          },
+        });
+        const activationResult = activation?.result ?? activation;
+        finalProjectResult = { ...projectResult, ...activationResult };
+        projectInfo = normalizeProjectInfo(finalProjectResult);
         await onProjectCreated?.(projectInfo);
       }
-      return projectResult;
+      return finalProjectResult;
     },
     reloadProject: async () => requestProjectInfo(sessionId, requestResourceOperation, 'reloadProject'),
-    switchBoard: async board => {
+    switchBoard: async (board, context = {}) => {
       const result = await requestResourceOperation({
         sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
         kind: 'project-info',
         payload: {
           adapter: 'project',
@@ -6341,9 +7893,11 @@ function createExternalProject(sessionId, requestResourceOperation, initialProje
       });
       return result?.result ?? result;
     },
-    setBoardConfig: async config => {
+    setBoardConfig: async (config, context = {}) => {
       const result = await requestResourceOperation({
         sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
         kind: 'project-info',
         payload: {
           adapter: 'project',
@@ -6356,20 +7910,74 @@ function createExternalProject(sessionId, requestResourceOperation, initialProje
   };
 }
 
-function createExternalBuilder(sessionId, requestResourceOperation, initialProjectInfo, readCwd) {
+function createExternalBuilder(sessionId, requestResourceOperation, initialProjectInfo, readCwd, session) {
   return {
-    build: async options => {
+    build: async (options, context = {}) => {
       const projectInfo = normalizeProjectInfo(initialProjectInfo);
       const projectPath = normalizeString(options?.projectPath)
         || normalizeString(projectInfo.projectPath || projectInfo.path || projectInfo.rootPath)
         || normalizeString(typeof readCwd === 'function' ? readCwd() : '');
+      const externalEditOperation = await startWorkerExternalEdits(session, context, {
+        roots: [projectPath],
+        source: 'build',
+        command: 'build project',
+      });
+      let externalEditsStopped = false;
+      try {
+        const result = await requestResourceOperation({
+          sessionId,
+          kind: 'project-build',
+          payload: {
+            adapter: 'builder',
+            action: 'build',
+            projectPath,
+          },
+        });
+        const captureResult = await session.externalEdits.stopExternalEdits({
+          operationId: externalEditOperation.operationId,
+        });
+        externalEditsStopped = true;
+        const normalized = normalizeBuildResult(result?.result ?? result);
+        const warnings = formatWorkerExternalEditWarnings(externalEditOperation, captureResult);
+        return warnings
+          ? { ...normalized, output: `${normalized.output || ''}${warnings}` }
+          : normalized;
+      } finally {
+        if (!externalEditsStopped) {
+          await session.externalEdits.stopExternalEdits({ operationId: externalEditOperation.operationId });
+        }
+      }
+    },
+    listSerialPorts: async () => {
       const result = await requestResourceOperation({
         sessionId,
         kind: 'project-build',
         payload: {
           adapter: 'builder',
-          action: 'build',
+          action: 'listSerialPorts',
+        },
+      });
+      return Array.isArray(result?.result ?? result) ? (result?.result ?? result) : [];
+    },
+    upload: async (options = {}, context = {}) => {
+      const projectInfo = normalizeProjectInfo(initialProjectInfo);
+      const projectPath = normalizeString(options?.projectPath)
+        || normalizeString(projectInfo.projectPath || projectInfo.path || projectInfo.rootPath)
+        || normalizeString(typeof readCwd === 'function' ? readCwd() : '');
+      const port = normalizeString(options?.port);
+      if (!port) {
+        throw new Error('Project upload requires an explicit serial port.');
+      }
+      const result = await requestResourceOperation({
+        sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
+        kind: 'project-build',
+        payload: {
+          adapter: 'builder',
+          action: 'upload',
           projectPath,
+          port,
         },
       });
       return normalizeBuildResult(result?.result ?? result);
@@ -6377,15 +7985,44 @@ function createExternalBuilder(sessionId, requestResourceOperation, initialProje
   };
 }
 
+async function startWorkerExternalEdits(session, context, input) {
+  if (!session?.externalEdits) {
+    throw new Error('The worker external-edit owner is unavailable.');
+  }
+  const requestId = normalizeString(context?.turnId || context?.trace?.turnId);
+  const toolCallId = normalizeString(context?.toolCallId || context?.trace?.toolCallId);
+  if (!requestId || !toolCallId) {
+    throw new Error('External edit capture requires canonical turn/tool identity.');
+  }
+  return session.externalEdits.startExternalEdits({
+    requestId,
+    toolCallId,
+    operationId: `external:${requestId}:${toolCallId}:${input.source}`,
+    roots: input.roots,
+    source: input.source,
+    command: input.command,
+  });
+}
+
+function formatWorkerExternalEditWarnings(start, result) {
+  const warnings = [...(start?.warnings || []), ...(result?.warnings || [])]
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  return warnings.length > 0
+    ? `\n\nExternal workspace capture warnings:\n${warnings.map(value => `- ${value}`).join('\n')}`
+    : '';
+}
+
 function createExternalBlockly(sessionId, requestResourceOperation) {
   return {
-    syncAbs: async args => {
+    syncAbs: async (args, context = {}) => {
       const operation = normalizeString(args?.operation);
       if (operation !== 'export' && operation !== 'import' && operation !== 'status') {
         throw new Error('syncAbs requires operation to be "export", "import", or "status".');
       }
       const result = await requestResourceOperation({
         sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
         kind: operation === 'import'
           ? 'workspace-mutation'
           : operation === 'export'
@@ -6402,9 +8039,11 @@ function createExternalBlockly(sessionId, requestResourceOperation) {
       });
       return result?.result ?? result;
     },
-    exportAbs: async () => {
+    exportAbs: async (context = {}) => {
       const result = await requestResourceOperation({
         sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
         kind: 'file-write',
         payload: {
           adapter: 'syncAbs',
@@ -6716,13 +8355,13 @@ function createExternalConnectionGraph(sessionId, requestResourceOperation) {
   const call = async (action, args = {}, context = {}) => {
     const result = await requestResourceOperation({
       sessionId,
+      turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+      toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
       kind: 'connection-graph',
       payload: {
         adapter: 'connectionGraph',
         action,
         args,
-        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
-        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
       },
     });
     return result?.result ?? result;
@@ -6840,15 +8479,16 @@ function normalizeApprovalsReviewer(providerOptions) {
   return reviewer === 'auto_review' ? 'auto_review' : 'user';
 }
 
-function createSessionRuntimeConfigKey(providerOptions, currentModel, cwd) {
+function createSessionRuntimeConfigKey(providerOptions, currentModel, summarizerModel, cwd) {
   return JSON.stringify({
     cwd: normalizeString(cwd),
-    childToolInventory: createElectronChildToolInventorySignature(),
+    installedSubappInventory: createElectronInstalledSubappInventorySignature(),
     permissionMode: normalizePermissionMode(providerOptions),
     permissionProfile: normalizePermissionProfile(providerOptions) || null,
     approvalPolicy: normalizeApprovalPolicy(providerOptions),
     approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
     model: normalizeString(currentModel?.model || currentModel?.modelId || currentModel?.id),
+    summarizerModel: normalizeString(summarizerModel?.model || summarizerModel?.modelId || summarizerModel?.id),
     baseUrl: normalizeString(currentModel?.baseUrl || currentModel?.llmConfig?.baseUrl),
   });
 }
@@ -6917,31 +8557,113 @@ function hasResolvedHostSessionTitle(inventory) {
 }
 
 function sanitizeGeneratedTitle(raw) {
-  let value = normalizeString(raw);
+  let value = readGeneratedTitleValue(raw);
   if (!value) {
     return '';
   }
   value = value.replace(/\s*<think>[\s\S]*?<\/think>\s*/gi, ' ').trim();
-  try {
-    const parsed = JSON.parse(value);
-    if (parsed && typeof parsed.title === 'string') {
-      value = parsed.title;
+  value = value
+    .replace(/^\s*```(?:json|text|markdown)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    const jsonValue = parseGeneratedTitleJson(value);
+    if (jsonValue === null) {
+      if (/^\s*[\[{]/.test(value) || /[\]}]\s*$/.test(value)) {
+        // Never use malformed structured output as the visible session title.
+        return '';
+      }
+      break;
     }
-  } catch {
-    // Plain text is the canonical title response.
+    const extracted = readGeneratedTitleValue(jsonValue);
+    if (!extracted) {
+      return '';
+    }
+    if (extracted === value) {
+      break;
+    }
+    value = extracted
+      .replace(/^\s*```(?:json|text|markdown)?\s*/i, '')
+      .replace(/\s*```\s*$/i, '')
+      .trim();
   }
   value = value
-    .replace(/^```(?:json|text)?\s*/i, '')
-    .replace(/```$/i, '')
-    .replace(/^\s*title\s*[:：]\s*/i, '')
-    .replace(/^\s*["'“”‘’]|["'“”‘’]\s*$/g, '')
+    .replace(/^\s*(?:title|标题)\s*[:：]\s*/i, '')
+    .replace(/^\s*(?:#{1,6}|[-*])\s+/, '')
+    .replace(/^\s*["'“”‘’]+|["'“”‘’]+\s*$/g, '')
     .replace(/[\r\n]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
-  if (!value || value.length > 40 || /\b(当然|下面|我来|以下|可以|sorry|here is|let me|i can)\b/i.test(value)) {
+  if (!value || value.length > 40 || /(?:当然|下面|我来|以下|可以|sorry|here is|let me|i can)/i.test(value)) {
     return '';
   }
-  return value.replace(/[\s.?!。！？;；:：]+$/g, '').trim();
+  return value.replace(/[\s.?!。！？，,：:;；]+$/g, '').trim();
+}
+
+export function createExternalSubappAgent(sessionId, requestResourceOperation, env = process.env) {
+  const bindings = resolveElectronInstalledSubappAgentToolBindings(env);
+  return {
+    bindings,
+    execute: async (input = {}, context = {}) => {
+      if (typeof requestResourceOperation !== 'function') {
+        throw new Error('Subapp Agent host resource bridge is unavailable.');
+      }
+      const result = await requestResourceOperation({
+        sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
+        kind: 'subapp-agent',
+        payload: {
+          adapter: 'subappAgent',
+          action: 'execute',
+          input,
+        },
+      });
+      return result?.result ?? result;
+    },
+  };
+}
+
+function readGeneratedTitleValue(raw) {
+  if (typeof raw === 'string') {
+    return raw.trim();
+  }
+  if (Array.isArray(raw)) {
+    return raw.length === 1 ? readGeneratedTitleValue(raw[0]) : '';
+  }
+  if (!raw || typeof raw !== 'object') {
+    return '';
+  }
+
+  for (const key of ['title', 'name', 'subject', 'text', 'content', 'summary', 'data']) {
+    const value = readGeneratedTitleValue(raw[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  const stringValues = Object.values(raw)
+    .filter(value => typeof value === 'string' && value.trim())
+    .map(value => value.trim());
+  return stringValues.length === 1 ? stringValues[0] : '';
+}
+
+function parseGeneratedTitleJson(value) {
+  const candidates = [value];
+  const objectStart = value.indexOf('{');
+  const objectEnd = value.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(value.slice(objectStart, objectEnd + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Continue with the next structured-output candidate.
+    }
+  }
+  return null;
 }
 
 function normalizeApprovalInput(request) {
@@ -7052,4 +8774,14 @@ function isTerminalResponseRenderEvent(event) {
     || status === 'done'
     || stopReason === 'COMPLETED'
     || stopReason === 'END_TURN';
+}
+
+function isModelOutputRenderEvent(event) {
+  if (!event || typeof event !== 'object') {
+    return false;
+  }
+  if (event.type === 'markdown_delta' || event.type === 'thinking_delta') {
+    return Boolean(normalizeString(event.text));
+  }
+  return event.type === 'tool_call_begin';
 }

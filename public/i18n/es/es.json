@@ -1,4 +1,11 @@
 {
+    "CLOUD_SPACE_ERRORS": {
+        "PUBLISH_FAILED": "No se pudo publicar el proyecto",
+        "WORKSPACE_PROJECT_NOT_FOUND": "Proyecto no encontrado",
+        "WORKSPACE_PROJECT_PUBLISH_FORBIDDEN": "No puedes publicar este proyecto",
+        "WORKSPACE_PROJECT_LOCAL_DEPENDENCY_PATH_INVALID": "Las rutas de dependencias locales no cumplen los requisitos de publicación",
+        "WORKSPACE_PROJECT_BUILD_REQUIRED": "Compila y sincroniza primero el proyecto"
+    },
     "MENU": {
         "MENU": "Menú",
         "PROJECT_NEW": "Nuevo Proyecto",
@@ -189,6 +196,16 @@
             "LABEL_COLOR_MODE": "Color",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten archivos MP4 y GIF"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "Convertir una imagen PNG, JPEG, WebP o GIF en datos de píxeles RGB565/RGB332",
+            "UPLOAD_TOOLTIP": "Formatos compatibles: PNG, JPEG, WebP, GIF",
+            "EMPTY": "No se ha cargado ninguna imagen",
+            "STATUS_DECODING": "Convirtiendo imagen...",
+            "STATUS_REDECODING": "Reconvirtiendo {{name}}...",
+            "ERROR_DECODE_FAILED": "Error al convertir la imagen",
+            "ERROR_REDECODE_FAILED": "Error al reconvertir la imagen",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten archivos PNG, JPEG, WebP y GIF"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Subir",
             "UPLOAD_TOOLTIP": "Formatos compatibles: MP4, GIF, PNG",
@@ -247,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "Cargar",
+            "UPLOAD_TOOLTIP": "Formatos compatibles: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "Borrar",
+            "LABEL_WIDTH": "An",
+            "LABEL_HEIGHT": "Al",
+            "LABEL_COLOR_MODE": "Color",
+            "EMPTY": "No hay ninguna imagen cargada",
+            "STATUS_READING_FILE": "Leyendo {{name}}...",
+            "STATUS_DECODING": "Convirtiendo imagen...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "El archivo de origen no debe superar {{maxSize}} (actual: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "Error al convertir la imagen",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten imágenes PNG, JPEG, WebP y BMP"
         }
     },
     "MAIN_WINDOW": {
@@ -270,7 +302,7 @@
             "COMPILATION": "Configuración de Compilación",
             "REPOSITORY": "Configuración de Repositorio",
             "DEPENDENCIES": "Dependencias Globales",
-            "AILY_TOOLS": "Herramientas de Aily",
+            "TOOLS_AND_SUBAPP": "Herramientas y aplicaciones",
             "MCP": "MCP",
             "DEVMODE": "Modo Desarrollador",
             "CACHE": "Gestión de caché"
@@ -429,6 +461,7 @@
         "TEXT_DOWNLOADED": "La versión {{version}} se ha descargado. ¿Instalar ahora?",
         "TEXT_AVAILABLE": "Versión actual {{currentVersion}}, nueva versión {{version}}<br>¿Desea descargar e instalar esta actualización?",
         "DOWNLOAD_FAILED": "Descarga fallida",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "Usando la fuente de descarga alternativa ({{current}}/{{total}})",
         "REMIND_LATER": "Recordar más tarde",
         "SKIP_VERSION": "Omitir esta versión",
         "UPDATE_NOW": "Actualizar ahora",
@@ -797,6 +830,14 @@
             "COMPLETE_WITH_TIME": "Compilación completada (tiempo: {{seconds}}s)",
             "FIRST_BUILD_HINT": "La primera compilación puede tardar más",
             "FAST_BUILD_HINT": "El sistema de compilación rápida está en ejecución",
+            "PROGRESS_PREPARING": "Preparando la compilación",
+            "PROGRESS_SKETCH": "Compilando el programa",
+            "PROGRESS_LIBRARIES": "Compilando las bibliotecas",
+            "PROGRESS_CORE": "Compilando el núcleo",
+            "PROGRESS_LINKING": "Enlazando el firmware",
+            "PROGRESS_OBJCOPY": "Generando el firmware",
+            "PROGRESS_FINALIZING": "Finalizando la compilación",
+            "PROGRESS_COMPLETE": "Compilación completada",
             "PROCESS_SIGNAL_TERMINATED": "El proceso de compilación fue terminado por la señal: {{signal}}",
             "PROCESS_EXITED_WITH_CODE": "El proceso de compilación terminó inesperadamente, código de salida: {{code}}",
             "PROCESS_START_FAILED": "No se pudo iniciar el proceso de compilación",

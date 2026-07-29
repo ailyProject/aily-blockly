@@ -131,13 +131,20 @@ test.describe('Blockly 编辑器', () => {
           : '',
       };
     });
+    const readToolboxOrder = () => win.locator(
+      'app-blockly-toolbox-pane .toolbox-list > .toolbox-node',
+    ).evaluateAll((nodes) => nodes
+      .map((node) => node.getAttribute('data-toolbox-sort-key') || '')
+      .filter((key) => key.startsWith('@aily-project/lib-')));
 
     try {
       await openBlocklyProject(win, projectPath);
       await expect.poll(async () => (await readRuntime()).ready, { timeout: 60_000 }).toBe(true);
       await expect.poll(async () => (await readRuntime()).projectPath, { timeout: 60_000 }).toBe(projectPath);
       const firstRuntime = await readRuntime();
+      const toolboxOrderBeforeRemoval = await readToolboxOrder();
       expect(firstRuntime.hasRemovedLibraryGenerator).toBe(true);
+      expect(toolboxOrderBeforeRemoval).toContain(REMOVAL_LIBRARY);
       await win.evaluate((marker) => {
         (window as any).__ailyLibraryRemovalRendererRealmMarker = marker;
         (window as any).__ailyLibraryRemovalEditorElement = document.querySelector('app-blockly-editor');
@@ -161,6 +168,9 @@ test.describe('Blockly 编辑器', () => {
       expect(rebuiltRuntime.generatedCode.length).toBeGreaterThan(0);
       expect(existsSync(path.join(projectPath, 'node_modules', ...REMOVAL_LIBRARY.split('/')))).toBe(false);
       expect(rendererAfterRemoval).toEqual(rendererBeforeRemoval);
+      expect(await readToolboxOrder()).toEqual(
+        toolboxOrderBeforeRemoval.filter((libraryName) => libraryName !== REMOVAL_LIBRARY),
+      );
       expect(runtimeErrors).toEqual([]);
     } finally {
       await win.evaluate(() => { window.location.hash = '#/main/guide'; }).catch(() => undefined);

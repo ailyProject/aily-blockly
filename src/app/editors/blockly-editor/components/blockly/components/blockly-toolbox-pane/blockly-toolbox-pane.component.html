@@ -32,11 +32,16 @@
       [class.toolbox-row--sortable-handle]="item.level === 0" (contextmenu)="onToolboxItemContextMenu(item, $event)">
       <button type="button" class="toolbox-item" [style.padding-left.px]="5 + item.level * 16"
         (click)="onCategoryClick(item)">
-        <span class="toolbox-item__icon">
+        <span class="toolbox-item__icon" [class.toolbox-item__icon--error]="item.libraryLoadFailed">
           <i [class]="item.iconClass"></i>
         </span>
-        <span class="toolbox-item__label">{{ item.name }}</span>
-        @if (item.isLocalLibrary && item.level === 0) {
+        <span class="toolbox-item__label" [class.toolbox-item__label--error]="item.libraryLoadFailed">
+          {{ item.name }}
+        </span>
+        @if (item.libraryLoadFailed && item.level === 0) {
+          <span class="toolbox-item__local-badge toolbox-item__load-error-badge" title="库加载失败"
+            aria-label="库加载失败"></span>
+        } @else if (item.isLocalLibrary && item.level === 0) {
           <span class="toolbox-item__local-badge" aria-hidden="true"></span>
         }
       </button>

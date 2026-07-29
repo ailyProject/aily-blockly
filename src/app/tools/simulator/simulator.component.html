@@ -1,0 +1,12 @@
+@if (currentUrl == "/simulator") {
+<app-sub-window [title]="'仿真器'" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-sub-window>
+} @else {
+<app-tool-container [title]="'仿真器'" [path]="'/simulator'" (closeEvent)="close()">
+    <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
+</app-tool-container>
+}
+<ng-template #windowBoxTemplate>
+    <app-simulator-editor></app-simulator-editor>
+</ng-template>

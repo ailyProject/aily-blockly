@@ -26,16 +26,10 @@ import {
   ChatSessionRuntimeProjectionCore,
   type ChatSessionRuntimeProjectionPatch,
 } from './chat-session-runtime-projection-core';
-import { ChatSessionRuntimePostTurnResourcesCore } from './chat-session-runtime-post-turn-resources-core';
 import {
   CHAT_SESSION_RUNTIME_MIRROR_WRITER,
   type ChatSessionRuntimeMirrorWriterPort,
 } from './chat-session-runtime-mirror-writer';
-import {
-  CHAT_SESSION_LEX_POST_TURN_RESOURCE_FACTORY,
-  type ChatSessionLexPostTurnResourceFactory,
-  type ChatSessionLexPostTurnResources,
-} from './chat-session-lex-post-turn-resource-factory.service';
 import {
   CHAT_RUNTIME_OWNER_SCHEDULER,
   type ChatRuntimeOwnerSchedulerPort,
@@ -50,7 +44,6 @@ export type {
 
 export type { ChatSessionLexRequestCompletedInput } from './chat-session-runtime-completion-queue-core';
 export type { ChatSessionRuntimeProjectionPatch } from './chat-session-runtime-projection-core';
-export type { ChatSessionLexPostTurnResources } from './chat-session-lex-post-turn-resource-factory.service';
 
 const LEX_COMPLETION_IDLE_TIMEOUT_MS = 500;
 const LEX_COMPLETION_SLOW_PHASE_MS = 64;
@@ -80,14 +73,11 @@ export class ChatSessionRuntimeRegistryService implements ChatRuntimeOwnerRuntim
     runPhase: (sessionId, turnId, phase, runPhase) =>
       this.runLexCompletionPhase(sessionId, turnId, phase, runPhase),
   });
-  private readonly postTurnResourcesCore = new ChatSessionRuntimePostTurnResourcesCore<ChatSessionLexPostTurnResources>();
   constructor(
     @Inject(CHAT_SESSION_RUNTIME_MIRROR_WRITER)
     private readonly runtimeMirror: ChatSessionRuntimeMirrorWriterPort,
     @Inject(CHAT_RUNTIME_OWNER_SCHEDULER)
     private readonly ownerScheduler: ChatRuntimeOwnerSchedulerPort,
-    @Inject(CHAT_SESSION_LEX_POST_TURN_RESOURCE_FACTORY)
-    private readonly lexPostTurnResourceFactory: ChatSessionLexPostTurnResourceFactory,
   ) {}
 
   readHandle(sessionId: string | null | undefined): ChatSessionRuntimeHandle | undefined {
@@ -109,21 +99,8 @@ export class ChatSessionRuntimeRegistryService implements ChatRuntimeOwnerRuntim
     return [...new Set([
       ...this.runtimeMirror.getSessionIds(),
       ...this.registryCore.getSessionIds(),
-      ...this.postTurnResourcesCore.getSessionIds(),
       ...this.completionQueueCore.getSessionIds(),
     ])];
-  }
-
-  getOrCreateLexPostTurnResources(
-    sessionId: string | null | undefined,
-    cwd: string | null | undefined,
-  ): ChatSessionLexPostTurnResources | undefined {
-    return this.postTurnResourcesCore.getOrCreate(
-      sessionId,
-      cwd,
-      (normalizedSessionId, normalizedCwd) =>
-        this.createLexPostTurnResources(normalizedSessionId, normalizedCwd, this.lexPostTurnResourceFactory),
-    );
   }
 
   scheduleLexRequestCompleted(input: ChatSessionLexRequestCompletedInput): void {
@@ -498,7 +475,6 @@ export class ChatSessionRuntimeRegistryService implements ChatRuntimeOwnerRuntim
       reason: 'handle',
     });
     this.registryCore.deleteHandle(normalizedSessionId);
-    this.postTurnResourcesCore.clearSession(normalizedSessionId);
     this.completionQueueCore.clearSession(normalizedSessionId);
     this.runtimeMirror.clearSession(normalizedSessionId);
     return true;
@@ -511,24 +487,14 @@ export class ChatSessionRuntimeRegistryService implements ChatRuntimeOwnerRuntim
     }
 
     this.registryCore.deleteHandle(normalizedSessionId);
-    this.postTurnResourcesCore.clearSession(normalizedSessionId);
     this.completionQueueCore.clearSession(normalizedSessionId);
     this.runtimeMirror.clearSession(normalizedSessionId);
   }
 
   clearAll(): void {
     this.registryCore.clear();
-    this.postTurnResourcesCore.clearAll();
     this.completionQueueCore.clearAll();
     this.runtimeMirror.clearAll();
-  }
-
-  private createLexPostTurnResources(
-    sessionId: string,
-    cwd: string,
-    factory: ChatSessionLexPostTurnResourceFactory,
-  ): ChatSessionLexPostTurnResources {
-    return factory.create(sessionId, cwd);
   }
 
   private markRequestComplete(

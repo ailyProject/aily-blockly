@@ -91,9 +91,10 @@ import { ChatSessionEntryCoordinator } from './chat-session-entry-coordinator';
 import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
 import { createRequiredSessionResourceModel } from './required-session-resource-model';
 import type {
-  ChatRuntimeHostEditTrackingPayload,
+  ChatRuntimeHostCheckpointTimelineState,
   ChatRuntimeHostForkSessionRequest,
   ChatRuntimeHostForkSessionResult,
+  ChatRuntimeHostModelSelectionSnapshot,
   ChatRuntimeHostPrewarmRequest,
   ChatRuntimeHostPrewarmResult,
   ChatRuntimeHostRestoreRuntimeSessionRequest,
@@ -147,7 +148,15 @@ type SessionLifecycleContext = ChatViewWriteBridgeContext
   >
   & Pick<IChatCoordination, 'interaction' | 'lexStream' | 'send' | 'session'>
   & {
-    readonly chatSessionItemsService?: Pick<ChatSessionItemsService, 'sessionItemController' | 'refreshHistoryList' | 'requestSessionListRefresh' | 'loadInitialSummaries' | 'sessionListItems'>;
+    readonly chatSessionItemsService?: Pick<
+      ChatSessionItemsService,
+      'sessionItemController'
+      | 'refreshHistoryList'
+      | 'requestSessionListRefresh'
+      | 'ensureCurrentScopeInitialized'
+      | 'loadInitialSummaries'
+      | 'sessionListItems'
+    >;
     readonly chatSessionEntryStateService?: Pick<
       ChatSessionEntryStateService,
       'readSessionEntryTarget' | 'setSessionEntryTarget' | 'clearSessionEntryTarget' | 'readEntryProviderOptions' | 'setEntryProviderOptions'
@@ -159,7 +168,6 @@ type SessionLifecycleContext = ChatViewWriteBridgeContext
     attachSessionViewModel?(sessionId?: string | null): ChatSessionViewModel | null;
     detachSessionViewModel?(sessionId?: string | null): void;
     readCurrentViewSessionResource?(): string | null;
-    requestHostResourceOperation?: HostSessionSaveContext['requestHostResourceOperation'];
     createSessionSaveBridge(ctx: HostSessionSaveContext): SessionLifecycleSaveBridgePort;
     clearEntryInputState?(): void;
     buildExecutionSaveTarget?(sessionId: string | null | undefined): HostSessionSaveTarget | null;
@@ -171,6 +179,7 @@ type SessionLifecycleContext = ChatViewWriteBridgeContext
     readSessionRuntimeState?(sessionId?: string | null): Readonly<ChatSessionRuntimeState> | undefined;
     readSessionCheckpointTimelineState?(sessionId?: string | null): import('./session-checkpoint-timeline-model').SessionCheckpointTimelineState | null;
     hasSessionRuntimeHandle?(sessionId?: string | null): boolean;
+    resolveSummarizerModelSnapshot?(): ChatRuntimeHostModelSelectionSnapshot | null;
     prewarmRuntimeExecutor?(request: ChatRuntimeHostPrewarmRequest): Promise<ChatRuntimeHostPrewarmResult>;
     restoreRuntimeSessionExecutor?(
       request: ChatRuntimeHostRestoreRuntimeSessionRequest,
@@ -281,9 +290,6 @@ export class SessionLifecycleHelper {
     this._sessionSaveBridge = this.ctx.createSessionSaveBridge(this.ctx);
     this._hostSessionContentProvider = new HostSessionContentProvider(this.ctx);
     this._entryCoordinator = new ChatSessionEntryCoordinator({
-      get isLoggedIn() {
-        return ctx.isLoggedIn;
-      },
       get hasCurrentSession() {
         const currentViewSessionResource = typeof ctx.readCurrentViewSessionResource === 'function'
           ? ctx.readCurrentViewSessionResource()
@@ -309,9 +315,9 @@ export class SessionLifecycleHelper {
       },
       enterEntryState: (options) => this.enterEntryState(options),
       enterBlankSessionShell: (options) => this.enterBlankSessionShell(options),
-      startSession: (options) => this.startSession(options),
+      startSession: () => this.startSession(),
       restorePersistedSessionTarget: () => this.restorePersistedSessionTarget(),
-      requestSessionListRefresh: (input) => this.requestSessionListRefresh(input),
+      ensureLocalSessionInventoryScope: (input) => this.ensureLocalSessionInventoryScope(input),
     });
   }
 
@@ -471,6 +477,7 @@ export class SessionLifecycleHelper {
         providerOptions: forkedProviderOptions,
         agentRuntimeMode: this.ctx.currentAgentRuntimeMode,
         currentModel: this.ctx.currentModel ?? null,
+        summarizerModel: this.ctx.resolveSummarizerModelSnapshot?.() ?? this.ctx.currentModel ?? null,
         pageLimit: 30,
       });
       forkedMetadata.forkedRetainedTurnCount = result.retainedTurnIds.length;
@@ -580,6 +587,26 @@ export class SessionLifecycleHelper {
     }
 
     throw new Error('[SessionLifecycleHelper] ChatSessionItemsService session list refresh API is required for shared session read-side');
+  }
+
+  ensureLocalSessionInventoryScope(input: {
+    reason: 'open' | 'entry' | 'reopen' | 'project' | 'service-created';
+    projectPath?: string | null;
+    projectRootPath?: string | null;
+    rendererGeneration?: number;
+    force?: boolean;
+  }): boolean {
+    const project = AilyHost.get().project;
+    const sessionItemsService = this.ctx.chatSessionItemsService;
+    if (typeof sessionItemsService?.ensureCurrentScopeInitialized !== 'function') {
+      throw new Error('[SessionLifecycleHelper] ChatSessionItemsService.ensureCurrentScopeInitialized is required for local session bootstrap');
+    }
+
+    return sessionItemsService.ensureCurrentScopeInitialized({
+      ...input,
+      projectPath: input.projectPath !== undefined ? input.projectPath : project.currentProjectPath,
+      projectRootPath: input.projectRootPath !== undefined ? input.projectRootPath : project.projectRootPath,
+    });
   }
 
   private isSamePath(leftPath: string | null | undefined, rightPath: string | null | undefined): boolean {
@@ -864,13 +891,15 @@ export class SessionLifecycleHelper {
 
   // ==================== 会话启动 ====================
 
-  async startSession(options: { readonly deferShellFinalization?: boolean } = {}): Promise<string | null> {
+  async startSession(): Promise<string | null> {
     if (this.ctx.isSessionStarting) {
       return Promise.resolve(this.resolveCurrentViewSessionResource() || null);
     }
     const bootstrapStartedAt = performance.now();
     this.ctx.isSessionStarting = true;
     this.ctx.isCancelled = false;
+
+    this.discardPendingFreshSessionShells();
 
     this.ctx.interaction.resetApprovalState();
     this.ctx.chatService.clearResolvedActiveModel?.();
@@ -928,15 +957,10 @@ export class SessionLifecycleHelper {
         priority: 'after-paint',
       });
     };
-    if (options.deferShellFinalization) {
-      this.pendingFreshSessionShellFinalizers.set(pendingSessionId, finalizeShell);
-      // A provisionally bound model is the blank composer owner, not a history
-      // session. Keep that boundary explicit until the first request mutation
-      // finalizes the shell and makes it listable.
-      this.ctx.chatService.hasBlankSessionShell = true;
-    } else {
-      finalizeShell();
-    }
+    this.pendingFreshSessionShellFinalizers.set(pendingSessionId, finalizeShell);
+    // Match VS Code's untitled chat resource: the blank composer may own an
+    // in-memory model, but it is not a history session until the first request.
+    this.ctx.chatService.hasBlankSessionShell = true;
     const shellScheduledAt = performance.now();
 
     this.ctx.isSessionStarting = false;
@@ -960,7 +984,7 @@ export class SessionLifecycleHelper {
         `modelMs=${(modelCreatedAt - resetCompletedAt).toFixed(1)}`,
         `viewMs=${(viewAttachedAt - modelCreatedAt).toFixed(1)}`,
         `shellScheduleMs=${(shellScheduledAt - viewAttachedAt).toFixed(1)}`,
-        `deferred=${String(options.deferShellFinalization === true)}`,
+        'deferred=true',
         `totalMs=${(performance.now() - bootstrapStartedAt).toFixed(1)}`,
       ].join(' '),
     );
@@ -984,6 +1008,15 @@ export class SessionLifecycleHelper {
       '[AilyChat][SessionBootstrapScalar]',
       `sessionId=${targetSessionId} shellFinalizationMs=${(performance.now() - startedAt).toFixed(1)} phase=after-request-paint`,
     );
+  }
+
+  private discardPendingFreshSessionShells(): void {
+    for (const sessionId of this.pendingFreshSessionShellFinalizers.keys()) {
+      this.pendingFreshSessionShellFinalizers.delete(sessionId);
+      this.hostSessionItemController.discardChatSessionItem(sessionId);
+      this.clearPersistedSessionEntryTarget(sessionId);
+      this.releaseSessionModelReference(sessionId);
+    }
   }
 
   private scheduleRuntimeBackgroundActivation(
@@ -1026,6 +1059,7 @@ export class SessionLifecycleHelper {
         providerOptions,
         agentRuntimeMode,
         currentModel: this.ctx.currentModel ?? null,
+        summarizerModel: this.ctx.resolveSummarizerModelSnapshot?.() ?? this.ctx.currentModel ?? null,
       })
         .then(result => {
           const ensured = result?.ensured === true;
@@ -1093,6 +1127,7 @@ export class SessionLifecycleHelper {
 
   /** 清理当前会话的本地 agent 资源 */
   dispose(): void {
+    this.pendingFreshSessionShellFinalizers.clear();
     for (const reference of this.sessionModelReferences.values()) {
       reference.dispose();
     }
@@ -1287,7 +1322,7 @@ export class SessionLifecycleHelper {
       if (!this.ctx.isLoggedIn || this.ctx.isSessionStarting || this.resolveCurrentViewSessionResource()) {
         return;
       }
-      void this.startSession({ deferShellFinalization: true });
+      void this.startSession();
     };
     const scheduleAfterPaint = () => {
       this.provisionalSessionBootstrapHandle = setTimeout(bootstrap, 0) as unknown as number;
@@ -1332,65 +1367,8 @@ export class SessionLifecycleHelper {
         console.warn('[SessionLifecycle] session history restore failed:', error);
         this.ctx.message.warning('会话历史加载失败，已继续打开当前会话');
       }
-    } else {
-      await this.clearHostEditTrackingSessionState(sessionId);
     }
     this.ctx.chatHistoryService.clearRecordedRestoreFailure?.(sessionId);
-  }
-
-  private async clearHostEditTrackingSessionState(sessionId: string | null | undefined): Promise<void> {
-    await this.requestHostEditTrackingOperation({
-      sessionId,
-      label: 'Clearing edit tracking session state',
-      detail: 'Host edit tracking resource is clearing stale session edit state.',
-      payload: {
-        adapter: 'editTracking',
-        action: 'clearSessionState',
-        dismissSummary: true,
-      },
-    });
-  }
-
-  private async restoreHostEditTrackingSessionState(
-    sessionId: string | null | undefined,
-    workspaceRoot: string | null | undefined,
-    turnResponses: readonly TurnResponseTurn[] | null | undefined,
-  ): Promise<void> {
-    const canonicalTurnResponses = Array.isArray(turnResponses) ? turnResponses : [];
-    await this.requestHostEditTrackingOperation({
-      sessionId,
-      label: 'Restoring edit tracking timeline',
-      detail: 'Host edit tracking resource is restoring session edit state from the response model.',
-      payload: {
-        adapter: 'editTracking',
-        action: 'restoreFromTurnResponses',
-        workspaceRoot: workspaceRoot ?? null,
-        turnResponses: canonicalTurnResponses,
-        autoSaveEdits: this.ctx.ailyChatConfigService.autoSaveEdits === true,
-      },
-    });
-  }
-
-  private async requestHostEditTrackingOperation(input: {
-    readonly sessionId: string | null | undefined;
-    readonly label: string;
-    readonly detail: string;
-    readonly payload: ChatRuntimeHostEditTrackingPayload;
-  }): Promise<Awaited<ReturnType<NonNullable<SessionLifecycleContext['requestHostResourceOperation']>>>> {
-    const targetSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
-    if (!targetSessionId) {
-      throw new Error('[AilyChat][RuntimeHost] edit tracking session operation requires a host session id.');
-    }
-    if (typeof this.ctx.requestHostResourceOperation !== 'function') {
-      throw new Error('[AilyChat][RuntimeHost] edit tracking session operation requires the host resource operation bridge.');
-    }
-    return this.ctx.requestHostResourceOperation({
-      sessionId: targetSessionId,
-      kind: 'edit-tracking',
-      label: input.label,
-      detail: input.detail,
-      payload: input.payload,
-    });
   }
 
   private createSessionId(): string {
@@ -1825,17 +1803,6 @@ export class SessionLifecycleHelper {
       ?? restoreRequest.sessionContent.providerOptions;
 
     this.persistSessionEntryTarget(this.buildSessionEntryTarget(sessionId, restoreRequest.sessionContent));
-    await this.restoreHostEditTrackingSessionState(
-      sessionId,
-      providerOptions.folderPath
-        ?? restoreRequest.sessionContent.projectPathHint
-        ?? restoreRequest.target.projectPath
-        ?? null,
-      restoreRequest.hostRecord?.turnResponses
-        ?? restoreRequest.sessionContent.hostRecord?.turnResponses
-        ?? model.turnResponses,
-    );
-
     const durableHostRecord = restoreRequest.hostRecord
       ?? restoreRequest.sessionContent.hostRecord
       ?? null;
@@ -1897,13 +1864,19 @@ export class SessionLifecycleHelper {
       throw new Error(`[SessionLifecycle] Unable to build the canonical runtime snapshot for ${sessionId}.`);
     }
     const agentRuntimeMode = this.resolveAgentRuntimeMode(providerOptions, metadata).mode;
+    const checkpointTimeline = hostRecord.sidecar?.checkpointRedoBranch;
+    const restoredCheckpointTimeline = checkpointTimeline?.sessionResource === sessionId
+      ? checkpointTimeline as unknown as ChatRuntimeHostCheckpointTimelineState
+      : undefined;
     const result = await restoreRuntimeSession({
       sessionId,
       snapshot,
       turnResponses,
+      ...(restoredCheckpointTimeline ? { checkpointTimeline: restoredCheckpointTimeline } : {}),
       providerOptions,
       agentRuntimeMode,
       currentModel: this.ctx.currentModel ?? null,
+      summarizerModel: this.ctx.resolveSummarizerModelSnapshot?.() ?? this.ctx.currentModel ?? null,
     });
     if (result.sessionId !== sessionId || result.turnCount !== turnResponses.length) {
       throw new Error(
@@ -2179,14 +2152,11 @@ export class SessionLifecycleHelper {
     }
 
     return turnResponses.reduce((total, turn) => {
-      const roundCount = Array.isArray(turn?.rounds)
-        ? turn.rounds.filter(round => typeof round?.summary === 'string' && round.summary.trim().length > 0).length
-        : 0;
       const responseModel = turn?.responseModel;
       const sidecarCount = Array.isArray(responseModel?.summaries)
         ? responseModel.summaries.filter(summary => typeof summary?.text === 'string' && summary.text.trim().length > 0).length
         : (typeof responseModel?.summary?.text === 'string' && responseModel.summary.text.trim().length > 0 ? 1 : 0);
-      return total + roundCount + sidecarCount;
+      return total + sidecarCount;
     }, 0);
   }
 
@@ -2202,9 +2172,6 @@ export class SessionLifecycleHelper {
       }
       return total + (
         typeof metadata['checkpointId'] === 'string'
-        || typeof metadata['checkpointRef'] === 'string'
-        || metadata['additionalCheckpointRefs'] !== undefined
-        || metadata['checkpointRefs'] !== undefined
           ? 1
           : 0
       );

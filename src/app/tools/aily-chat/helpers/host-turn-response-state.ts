@@ -10,6 +10,7 @@ import {
 
 import type { ChatPartStore, ChatPartStoreReadableHandle } from '../core/chat-part-store';
 import type { ChatPart } from '../core/chat-parts';
+import { upsertTurnResponseProgress } from '../core/turn-response-progress';
 import type {
   CanonicalRenderItemKind,
   CanonicalRenderItemStatus,
@@ -71,10 +72,10 @@ function applyHostStreamResponseProgressUpdate(
       ];
       break;
     case 'response_progress_message':
-      nextResponse.progressMessages = [
-        ...(nextResponse.progressMessages ?? []),
+      nextResponse.progressMessages = upsertTurnResponseProgress(
+        nextResponse.progressMessages,
         cloneHostStreamProgressMessage(event.value),
-      ];
+      );
       break;
   }
 
@@ -2442,12 +2443,10 @@ function cloneProjectedTurnRounds(
   rounds: TurnResponseTurn['rounds'],
 ): TurnResponseTurn['rounds'] {
   return (rounds ?? []).map((round) => {
-    const summary = normalizeTurnResponseSummaryPreview(round.summary);
-
+    const { summary: _runtimeSummary, ...roundWithoutSummary } = round;
     return {
-      ...round,
+      ...roundWithoutSummary,
       toolCalls: (round.toolCalls ?? []).map(toolCall => ({ ...toolCall })),
-      ...(summary ? { summary } : {}),
     };
   });
 }
@@ -3678,23 +3677,8 @@ function getRequestMetadataSignature(metadata: TurnResponseTurn['request']['meta
   return [
     normalizeMetadataSignatureValue(record['checkpointId']),
     normalizeMetadataSignatureValue(record['requestId']),
-    normalizeMetadataSignatureValue(record['checkpointRef']),
-    normalizeMetadataSignatureValue(record['startCheckpointRef']),
-    normalizeMetadataSignatureValue(record['checkpointNamespace']),
     normalizeMetadataSignatureValue(record['checkpointTurnIndex']),
-    getMetadataRecordSignature(record['checkpointRefs']),
-    getMetadataRecordSignature(record['startCheckpointRefs']),
   ].join('\u001f');
-}
-
-function getMetadataRecordSignature(value: unknown): string {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return '';
-  }
-  return Object.entries(value as Record<string, unknown>)
-    .map(([key, item]) => `${key}:${normalizeMetadataSignatureValue(item)}`)
-    .sort()
-    .join('\u001e');
 }
 
 function normalizeMetadataSignatureValue(value: unknown): string {

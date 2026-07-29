@@ -1,19 +1,19 @@
 import { ChatPerformanceTracer } from '../services/chat-perf-tracer';
 
 interface ChatSessionEntryCoordinatorContext {
-  readonly isLoggedIn: boolean;
   readonly hasCurrentSession: boolean;
   enterEntryState(options?: { resetInitialization?: boolean; sessionId?: string | null; projectPath?: string | null }): void;
   enterBlankSessionShell(options?: { resetInitialization?: boolean; sessionId?: string | null; projectPath?: string | null }): void;
-  startSession(options?: { readonly deferShellFinalization?: boolean }): Promise<string | null>;
+  startSession(): Promise<string | null>;
   restorePersistedSessionTarget(): Promise<boolean>;
-  requestSessionListRefresh(input: { reason: 'entry' | 'reopen'; scope: 'summary' | 'full'; priority: 'after-paint' | 'normal' }): void;
+  ensureLocalSessionInventoryScope(input: { reason: 'entry' | 'reopen'; force?: boolean }): boolean;
 }
 
 export class ChatSessionEntryCoordinator {
   constructor(private readonly ctx: ChatSessionEntryCoordinatorContext) {}
 
   async initializeEntryInventory(options?: { readonly restorePersistedTarget?: boolean }): Promise<boolean> {
+    this.ctx.ensureLocalSessionInventoryScope({ reason: 'entry' });
     const shouldRestorePersistedTarget = options?.restorePersistedTarget !== false;
     if (this.ctx.hasCurrentSession) {
       if (shouldRestorePersistedTarget) {
@@ -39,10 +39,6 @@ export class ChatSessionEntryCoordinator {
         })
       : false;
 
-    if (!restored) {
-      this.ctx.requestSessionListRefresh({ reason: 'entry', scope: 'summary', priority: 'after-paint' });
-    }
-
     return restored;
   }
 
@@ -50,16 +46,13 @@ export class ChatSessionEntryCoordinator {
     this.ctx.enterEntryState(options);
     ChatPerformanceTracer.increment('entry_open.entry_shell_visible');
     ChatPerformanceTracer.mark('entry_open.entry_shell_visible', 'return-to-entry');
-
-    if (this.ctx.isLoggedIn) {
-      this.ctx.requestSessionListRefresh({ reason: 'entry', scope: 'summary', priority: 'after-paint' });
-    }
+    this.ctx.ensureLocalSessionInventoryScope({ reason: 'entry', force: true });
   }
 
   async bootstrapNewSession(options: { resetInitialization?: boolean } = {}): Promise<string | null> {
     this.ctx.enterBlankSessionShell(options);
     ChatPerformanceTracer.increment('entry_open.blank_shell_visible');
     ChatPerformanceTracer.mark('entry_open.blank_shell_visible');
-    return this.ctx.startSession({ deferShellFinalization: true });
+    return this.ctx.startSession();
   }
 }

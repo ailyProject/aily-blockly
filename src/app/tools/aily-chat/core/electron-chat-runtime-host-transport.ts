@@ -6,6 +6,14 @@ import type {
   ChatRuntimeOwnerExecutor,
   ChatRuntimeHostEvent,
   ChatRuntimeHostEventSubscription,
+  ChatRuntimeHostEditingSessionContent,
+  ChatRuntimeHostEditingSessionContentRequest,
+  ChatRuntimeHostEditingSessionAcceptRequest,
+  ChatRuntimeHostEditingSessionEntryOperationRequest,
+  ChatRuntimeHostEditingSessionInteractionRequest,
+  ChatRuntimeHostEditingSessionNavigationPlan,
+  ChatRuntimeHostEditingSessionNavigationRequest,
+  ChatRuntimeHostEditingSessionState,
   ChatRuntimeHostCheckpointMutationRequest,
   ChatRuntimeHostCheckpointMutationResult,
   ChatRuntimeHostCheckpointNavigationRequest,
@@ -53,6 +61,13 @@ type RuntimeHostMethod =
   | 'prewarmRuntime'
   | 'restoreRuntimeSession'
   | 'readSessionExecutionState'
+  | 'readEditingSessionState'
+  | 'readEditingSessionContent'
+  | 'operateEditingSessionEntry'
+  | 'acceptEditingSession'
+  | 'undoEditingSessionInteraction'
+  | 'redoEditingSessionInteraction'
+  | 'buildEditingSessionNavigationPlan'
   | 'submitTurn'
   | 'readSubmitReadiness'
   | 'ensureSessionCanRerun'
@@ -257,6 +272,20 @@ export function createElectronChatRuntimeHostTransport(): ChatRuntimeHost | null
       api.call('restoreRuntimeSession', [request]) as Promise<ChatRuntimeHostRestoreRuntimeSessionResult>,
     readSessionExecutionState: (sessionId: ChatRuntimeHostSessionId) =>
       api.call('readSessionExecutionState', [sessionId]) as Promise<ChatRuntimeHostSessionExecutionState>,
+    readEditingSessionState: (sessionId: ChatRuntimeHostSessionId) =>
+      api.call('readEditingSessionState', [sessionId]) as Promise<ChatRuntimeHostEditingSessionState>,
+    readEditingSessionContent: (request: ChatRuntimeHostEditingSessionContentRequest) =>
+      api.call('readEditingSessionContent', [request]) as Promise<ChatRuntimeHostEditingSessionContent>,
+    operateEditingSessionEntry: (request: ChatRuntimeHostEditingSessionEntryOperationRequest) =>
+      api.call('operateEditingSessionEntry', [request]) as Promise<ChatRuntimeHostEditingSessionState>,
+    acceptEditingSession: (request: ChatRuntimeHostEditingSessionAcceptRequest) =>
+      api.call('acceptEditingSession', [request]) as Promise<ChatRuntimeHostEditingSessionState>,
+    undoEditingSessionInteraction: (request: ChatRuntimeHostEditingSessionInteractionRequest) =>
+      api.call('undoEditingSessionInteraction', [request]) as Promise<ChatRuntimeHostEditingSessionState>,
+    redoEditingSessionInteraction: (request: ChatRuntimeHostEditingSessionInteractionRequest) =>
+      api.call('redoEditingSessionInteraction', [request]) as Promise<ChatRuntimeHostEditingSessionState>,
+    buildEditingSessionNavigationPlan: (request: ChatRuntimeHostEditingSessionNavigationRequest) =>
+      api.call('buildEditingSessionNavigationPlan', [request]) as Promise<ChatRuntimeHostEditingSessionNavigationPlan>,
     submitTurn: (request: ChatRuntimeHostSubmitRequest) =>
       api.call('submitTurn', [request]) as Promise<ChatRuntimeHostSessionState>,
     readSubmitReadiness: (sessionId: ChatRuntimeHostSessionId) =>

@@ -167,7 +167,9 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
         
         res.data.list.forEach(prj => {
           // 图片url
-          if (prj.image_url) {
+          if (prj.image_cdn_url) {
+            prj.image_url = prj.image_cdn_url;
+          } else if (prj.image_url) {
             prj.image_url = this.cloudService.baseUrl + prj.image_url;
           } else {
             prj.image_url = 'imgs/subject.webp';
@@ -200,9 +202,9 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngAfterViewInit() {
     // 初始计算可显示的数量
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       this.calculatePageSize();
-    }, 100);
+    });
 
     // 监听 content-box 元素的大小变化
     if (this.contentBox) {
@@ -369,9 +371,10 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
             packageJson.description = item.description || ''
             packageJson.doc_url = item.doc_url || ''
             packageJson.keywords = item?.tags ? JSON.parse(item.tags) : ""
-            delete packageJson.cloudId;
+            packageJson.cloudId = item.id;
 
             this.electronService.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+            await this.projectService.initializeProjectDataSchema(actualProjectPath);
 
             if (this.params && Object.keys(this.params).length > 0) {
               const abiFilePath = `${actualProjectPath}${this.platformService.getPlatformSeparator()}project.abi`;

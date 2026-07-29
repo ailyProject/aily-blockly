@@ -4,8 +4,10 @@ import type { ChatPart } from '../../core/chat-parts';
 
 export interface ProgressMessageDisplayPart {
   type: 'progress';
+  id: string;
   content: string;
   progressKind: 'working' | 'confirmation_pending';
+  settled: boolean;
 }
 
 export type RenderableChatPart = ChatPart | ProgressMessageDisplayPart;
@@ -17,11 +19,17 @@ export function isProgressMessageDisplayPart(part: RenderableChatPart | null | u
 export function mkProgressMessageDisplayPart(
   content: string,
   progressKind: ProgressMessageDisplayPart['progressKind'] = 'working',
+  options?: {
+    readonly id?: string;
+    readonly settled?: boolean;
+  },
 ): ProgressMessageDisplayPart {
   return {
     type: 'progress',
+    id: options?.id ?? `progress:${progressKind}:${content}`,
     content,
     progressKind,
+    settled: options?.settled === true,
   };
 }
 
@@ -31,23 +39,41 @@ export function buildRenderableProgressParts(
   doing: boolean,
   showConfirmationPendingProgress = false,
 ): readonly ProgressMessageDisplayPart[] {
-  if (!response || !doing) {
+  if (!response) {
     return [];
   }
 
   const progressParts: ProgressMessageDisplayPart[] = [];
-  const existingContents = new Set<string>();
+  const existingKeys = new Set<string>();
   for (const message of response.progressMessages ?? []) {
-    if (message?.kind !== 'progressMessage' || typeof message.content !== 'string' || !message.content.trim()) {
+    if (!message || typeof message.content !== 'string' || !message.content.trim()) {
       continue;
     }
 
     const content = message.content.trim();
-    if (existingContents.has(content)) {
+    if (message.kind === 'progressTask') {
+      const id = message.id.trim();
+      if (!id || existingKeys.has(id)) {
+        continue;
+      }
+      existingKeys.add(id);
+      progressParts.push(mkProgressMessageDisplayPart(content, 'working', {
+        id,
+        settled: message.state === 'settled',
+      }));
       continue;
     }
 
-    existingContents.add(content);
+    if (!doing || message.kind !== 'progressMessage') {
+      continue;
+    }
+
+    const id = `message:${content}`;
+    if (existingKeys.has(id)) {
+      continue;
+    }
+
+    existingKeys.add(id);
     progressParts.push(mkProgressMessageDisplayPart(content, 'working'));
   }
 
@@ -60,7 +86,8 @@ export function buildRenderableProgressParts(
     && !hasActiveSubagentPart(baseParts);
   if (pendingConfirmationCount > 0 || shouldShowFallbackConfirmationProgress) {
     const content = getConfirmationPendingLabel(pendingConfirmationCount || 1);
-    if (!existingContents.has(content)) {
+    const id = `confirmation:${content}`;
+    if (!existingKeys.has(id)) {
       progressParts.push(mkProgressMessageDisplayPart(content, 'confirmation_pending'));
     }
   }

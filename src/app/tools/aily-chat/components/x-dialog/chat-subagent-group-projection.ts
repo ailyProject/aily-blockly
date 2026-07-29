@@ -178,7 +178,7 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
 
     if (isProgressMessageDisplayPart(part)) {
       flushBuffer();
-      items.push({ kind: 'part', id: `progress:${part.progressKind}:${index}:${part.content}`, part });
+      items.push({ kind: 'part', id: `progress:${part.id}`, part });
       continue;
     }
 
@@ -212,6 +212,18 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
     }
 
     if (isThinkingPart(part)) {
+      if (buffer.length === 0) {
+        bufferStartIndex = index;
+      }
+      buffer.push(part as ChatPart);
+      continue;
+    }
+
+    // VS Code's default collapsed-tools policy keeps a terminal invocation in
+    // the active thinking container after confirmation. The terminal part is
+    // the canonical owner once execution starts, so keep it in the same group
+    // instead of projecting a second top-level command row.
+    if (part.type === 'terminal') {
       if (buffer.length === 0) {
         bufferStartIndex = index;
       }
@@ -388,9 +400,7 @@ function shouldPinToolCallToThinking(part: RenderableChatPart): boolean {
   }
 
   if (isSubagentToolCall(part as ChatPart)
-    || isInternalDiscoveryToolName(toolPart.toolName)
-    || isTerminalSessionToolName(toolPart.toolName)
-    || hasTerminalSpecificData(toolPart)) {
+    || isInternalDiscoveryToolName(toolPart.toolName)) {
     return false;
   }
 
@@ -499,13 +509,6 @@ function toRuntimeToolCallPart(part: RenderableChatPart): {
     readonly state?: string;
     readonly metadata?: Record<string, unknown>;
   };
-}
-
-function hasTerminalSpecificData(part: { readonly metadata?: Record<string, unknown> }): boolean {
-  const toolSpecificData = part.metadata?.['toolSpecificData'];
-  return !!toolSpecificData
-    && typeof toolSpecificData === 'object'
-    && (toolSpecificData as Record<string, unknown>)['kind'] === 'terminal';
 }
 
 export function buildActivityGroupRevision(parts: readonly ChatPart[]): string {
