@@ -291,6 +291,9 @@
             "DEVELOPMENT_MODE_AUTO": "自動判斷",
             "DEVELOPMENT_MODE_PROMPT_TITLE": "選擇預設開發模式",
             "DEVELOPMENT_MODE_PROMPT_DESC": "此選擇會用於下次新建專案，並在未開啟專案時決定 AI 助手預設進入 Blockly 或 Coder 模式。你也可以稍後在設定中修改。",
+            "CODER_EXTENSION_HINT": "Coder 需要額外安裝程式碼編輯器擴充；選擇 Coder 後會自動下載並安裝。",
+            "CODER_EXTENSION_INSTALLED": "Coder 擴充安裝完成",
+            "CODER_EXTENSION_INSTALL_FAILED": "Coder 擴充安裝失敗",
             "UI_THEME": "介面主題",
             "BLOCKLY_THEME": "Blockly主題",
             "BLOCKLY_MINIMAP": "Blockly縮略圖",
@@ -1047,5 +1050,27 @@
         "ERR_PATH_EXISTS": "同名目錄已存在，請更換專案名",
         "ERR_PATH_INVALID": "儲存路徑包含非法字元",
         "ERR_CREATE_FAILED": "建立失敗，請稍後重試"
+    },
+    "MODE_WELCOME": {
+        "TITLE": "歡迎使用 Aily Blockly",
+        "SUBTITLE": "選擇最適合你的開發方式，開始第一段創作旅程",
+        "BLOCKLY_TITLE": "Blockly 圖形化",
+        "BLOCKLY_TAGLINE": "拖放積木即可編程，零基礎也能快速上手",
+        "BLOCKLY_FEATURE_1": "視覺化拖放，所見即所得",
+        "BLOCKLY_FEATURE_2": "適合入門學習與快速原型",
+        "BLOCKLY_FEATURE_3": "積木自動產生可靠程式碼",
+        "CODER_TITLE": "Coder 程式碼",
+        "CODER_TAGLINE": "專業的程式碼編輯體驗，自由掌控每一行邏輯",
+        "CODER_FEATURE_1": "完整程式碼編輯器與智能補全",
+        "CODER_FEATURE_2": "適合進階開發與精細控制",
+        "CODER_FEATURE_3": "貼近真實嵌入式開發流程",
+        "CHOOSE": "進入此模式",
+        "CODER_INSTALL_REQUIRED": "即將安裝 Coder 程式碼編輯器擴充",
+        "CODER_INSTALLING": "正在下載並安裝 Coder 程式碼編輯器擴充…",
+        "CODER_INSTALLING_SHORT": "正在安裝…",
+        "CODER_INSTALLED": "Coder 程式碼編輯器擴充已安裝",
+        "CODER_INSTALL_RETRY": "安裝失敗，點擊重試",
+        "RESET_HINT": "可隨時在「設定 → 基本設定 → 預設開發模式」中重新切換",
+        "SKIP": "稍後再說"
     }
 }

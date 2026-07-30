@@ -178,6 +178,11 @@
   transform: translateY(-8px) scale(1.03);
 }
 
+.mw-panel.is-selected {
+  outline: 2px solid color-mix(in srgb, var(--aily-text-primary, #fff) 22%, transparent);
+  outline-offset: 3px;
+}
+
 .mw-panel--blockly.is-active {
   box-shadow: 0 22px 50px -18px rgba(47, 182, 115, 0.55);
 }
@@ -299,6 +304,13 @@
   transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease;
 }
 
+.mw-choose-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
 .mw-panel--blockly .mw-choose-btn {
   background: linear-gradient(135deg, var(--mw-blockly-accent), var(--mw-blockly-accent-2));
 }
@@ -318,6 +330,67 @@
 
 .mw-panel.is-active .mw-choose-btn i {
   transform: translateX(4px);
+}
+
+.mw-coder-install {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  width: min(100%, 300px);
+  min-height: 34px;
+}
+
+.mw-install-copy,
+.mw-install-retry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 22px;
+  color: var(--aily-text-muted, #a5a5a5);
+  font-size: 12px;
+}
+
+.mw-install-copy i {
+  color: var(--mw-coder-accent);
+}
+
+.mw-install-copy.is-success {
+  color: var(--mw-blockly-accent);
+}
+
+.mw-install-copy.is-success i {
+  color: inherit;
+}
+
+.mw-install-progress {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mw-coder-accent) 14%, transparent);
+}
+
+.mw-install-progress span {
+  position: absolute;
+  inset: 0;
+  width: 46%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--mw-coder-accent-2), var(--mw-coder-accent), #a99dff);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--mw-coder-accent) 65%, transparent);
+  animation: mw-install-progress 1.35s ease-in-out infinite;
+}
+
+.mw-install-retry {
+  border: 0;
+  background: transparent;
+  color: var(--aily-color-error, #ff6b6b);
+  cursor: pointer;
+}
+
+.mw-install-retry:hover {
+  text-decoration: underline;
 }
 
 /* ───────────────── 中间分隔 / VS ───────────────── */
@@ -485,6 +558,15 @@
   }
   50% {
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 8px rgba(255, 255, 255, 0);
+  }
+}
+
+@keyframes mw-install-progress {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(235%);
   }
 }
 

@@ -8,6 +8,39 @@ const semver = require('semver');
 const DEFAULT_INDEX_URL = 'https://rs1.aily.pro/subapp-index.json';
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
+const BUILTIN_DEPENDENCY_ENTRIES = Object.freeze({
+  'aily-coder': {
+    id: 'aily-coder',
+    role: 'dependency',
+    titleKey: 'AILY_CODER.TITLE',
+    namespace: 'AILY_CODER',
+    app: {
+      name: 'AILY_CODER.TITLE',
+      description: 'AILY_CODER.DESCRIPTION',
+      icon: 'fa-light fa-code',
+      enabled: true,
+    },
+    package: '@aily-project/subapp-aily-coder',
+    version: '0.1.0',
+    i18n: {
+      defaultLocale: 'en',
+      locales: {
+        en: {
+          TITLE: 'Aily Coder',
+          DESCRIPTION: 'Code editor extension for Coder mode',
+        },
+        zh_cn: {
+          TITLE: 'Aily Coder',
+          DESCRIPTION: 'Coder 模式所需的代码编辑器扩展',
+        },
+        zh_hk: {
+          TITLE: 'Aily Coder',
+          DESCRIPTION: 'Coder 模式所需的程式碼編輯器擴充',
+        },
+      },
+    },
+  },
+});
 const TOOL_ID_ALIASES = Object.freeze({
   'aily-chat': 'aily-chat-react',
   'ffs-manager': 'ffs-manager-child',
@@ -97,6 +130,7 @@ function validateIndex(rawIndex) {
 
     index[id] = {
       id,
+      role: rawEntry.role === 'dependency' ? 'dependency' : 'app',
       titleKey,
       namespace,
       package: validatePackageName(rawEntry.package),
@@ -119,6 +153,16 @@ function validateIndex(rawIndex) {
     };
   }
   return index;
+}
+
+function withBuiltinDependencies(index) {
+  const merged = { ...index };
+  for (const [id, entry] of Object.entries(BUILTIN_DEPENDENCY_ENTRIES)) {
+    if (!merged[id]) {
+      merged[id] = validateIndex({ [id]: entry })[id];
+    }
+  }
+  return merged;
 }
 
 function packagePathFor(rootDir, packageName) {
@@ -557,6 +601,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
         : null;
       return {
         id: entry.id,
+        role: entry.role,
         toolId,
         packageName: entry.package,
         availableVersion: entry.version,
@@ -727,22 +772,22 @@ function createSubappManager(options = {}) {
   async function loadIndex(forceRefresh = false) {
     if (currentIndex && !forceRefresh) return { index: currentIndex, meta: currentMeta };
     try {
-      const index = await fetchRemoteIndex(indexUrl, options.fetchImpl);
-      writeIndexCache(rootDir, index);
+      const remoteIndex = await fetchRemoteIndex(indexUrl, options.fetchImpl);
+      writeIndexCache(rootDir, remoteIndex);
+      const index = withBuiltinDependencies(remoteIndex);
       currentIndex = index;
       currentMeta = { indexUrl, source: 'network', fetchedAt: new Date().toISOString(), warning: null };
       return { index, meta: currentMeta };
     } catch (error) {
       const cached = readIndexCache(rootDir);
-      if (!cached) throw error;
-      currentIndex = cached;
+      currentIndex = withBuiltinDependencies(cached || {});
       currentMeta = {
         indexUrl,
-        source: 'cache',
+        source: cached ? 'cache' : 'builtin',
         fetchedAt: new Date().toISOString(),
         warning: error.message,
       };
-      return { index: cached, meta: currentMeta };
+      return { index: currentIndex, meta: currentMeta };
     }
   }
 
@@ -818,6 +863,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null) {
 
 module.exports = {
   DEFAULT_INDEX_URL,
+  BUILTIN_DEPENDENCY_ENTRIES,
   TOOL_ID_ALIASES,
   createCatalogState,
   createSubappManager,

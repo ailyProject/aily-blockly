@@ -9,6 +9,7 @@ import {
 
 export interface SubappCatalogItem {
   id: string;
+  role: 'app' | 'dependency';
   toolId: string;
   packageName: string;
   availableVersion: string;
@@ -28,7 +29,7 @@ export interface SubappCatalogItem {
 
 export interface SubappCatalogState {
   loading: boolean;
-  source: 'network' | 'cache' | 'none';
+  source: 'network' | 'cache' | 'builtin' | 'none';
   indexUrl: string;
   fetchedAt?: string;
   warning?: string | null;
@@ -100,7 +101,9 @@ export class SubappManagerService implements OnDestroy {
   }
 
   getCatalogApps(): AppItem[] {
-    return this.state.apps.map((item) => ({
+    return this.state.apps
+      .filter((item) => item.role !== 'dependency')
+      .map((item) => ({
       id: item.toolId,
       name: item.name,
       description: item.description,
@@ -118,7 +121,7 @@ export class SubappManagerService implements OnDestroy {
         updateAvailable: item.updateAvailable,
         installPath: item.installPath,
       },
-    }));
+      }));
   }
 
   ngOnDestroy(): void {
@@ -165,7 +168,11 @@ export class SubappManagerService implements OnDestroy {
     );
     this.stateSubject.next({
       loading: false,
-      source: result?.source === 'cache' ? 'cache' : 'network',
+      source: result?.source === 'cache'
+        ? 'cache'
+        : result?.source === 'builtin'
+          ? 'builtin'
+          : 'network',
       indexUrl: String(result?.indexUrl || EMPTY_STATE.indexUrl),
       fetchedAt: typeof result?.fetchedAt === 'string' ? result.fetchedAt : undefined,
       warning: typeof result?.warning === 'string' ? result.warning : null,

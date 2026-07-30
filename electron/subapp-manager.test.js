@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  BUILTIN_DEPENDENCY_ENTRIES,
   TOOL_ID_ALIASES,
   createSubappManager,
   resolveSubappRoot,
@@ -45,6 +46,60 @@ test('resolves the required user npm-global/app installation root', () => {
 
 test('routes the installed Simulator package through its dedicated host', () => {
   assert.equal(TOOL_ID_ALIASES['aily-simulator'], 'simulator');
+});
+
+test('declares Coder as a dynamically installed dependency package', () => {
+  assert.deepEqual(BUILTIN_DEPENDENCY_ENTRIES['aily-coder'], {
+    id: 'aily-coder',
+    role: 'dependency',
+    titleKey: 'AILY_CODER.TITLE',
+    namespace: 'AILY_CODER',
+    app: {
+      name: 'AILY_CODER.TITLE',
+      description: 'AILY_CODER.DESCRIPTION',
+      icon: 'fa-light fa-code',
+      enabled: true,
+    },
+    package: '@aily-project/subapp-aily-coder',
+    version: '0.1.0',
+    i18n: {
+      defaultLocale: 'en',
+      locales: {
+        en: {
+          TITLE: 'Aily Coder',
+          DESCRIPTION: 'Code editor extension for Coder mode',
+        },
+        zh_cn: {
+          TITLE: 'Aily Coder',
+          DESCRIPTION: 'Coder 模式所需的代码编辑器扩展',
+        },
+        zh_hk: {
+          TITLE: 'Aily Coder',
+          DESCRIPTION: 'Coder 模式所需的程式碼編輯器擴充',
+        },
+      },
+    },
+  });
+});
+
+test('keeps the built-in Coder dependency available when the remote index is offline', async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-coder-offline-index-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const manager = createSubappManager({
+    rootDir,
+    fetchImpl: async () => {
+      throw new Error('offline fixture');
+    },
+  });
+
+  const state = await manager.list({ refresh: true, locale: 'zh-CN' });
+
+  assert.equal(state.source, 'builtin');
+  assert.match(state.warning, /offline fixture/);
+  assert.equal(state.apps.length, 1);
+  assert.equal(state.apps[0].id, 'aily-coder');
+  assert.equal(state.apps[0].role, 'dependency');
+  assert.equal(state.apps[0].installed, false);
 });
 
 test('rejects package targets that are not safe npm package names', () => {

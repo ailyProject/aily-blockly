@@ -395,9 +395,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
     focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
   },
-  coderEmbed: {
-    getBaseUrl: () => ipcRenderer.invoke("coder-embed-get-base-url"),
-  },
   subWindow: (() => {
     // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失
     let _cachedInitData = null;

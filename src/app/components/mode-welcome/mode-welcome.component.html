@@ -25,12 +25,14 @@
     <section
       class="mw-panel mw-panel--blockly"
       [class.is-active]="hoveredSide === 'blockly'"
+      [class.is-selected]="selectedSide === 'blockly'"
       [class.is-dimmed]="hoveredSide === 'coder'"
       [class.is-chosen]="chosenSide === 'blockly'"
       [class.is-discarded]="chosenSide === 'coder'"
       (mouseenter)="onHover('blockly')"
       (mouseleave)="onHover(null)"
-      (click)="choose('blockly')"
+      [attr.aria-selected]="selectedSide === 'blockly'"
+      (click)="selectSide('blockly')"
     >
       <div class="mw-panel-inner">
         <div class="mw-icon">
@@ -46,7 +48,10 @@
           </li>
           }
         </ul>
-        <button type="button" class="mw-choose-btn">
+        <button
+          type="button"
+          class="mw-choose-btn"
+          (click)="choose($event, 'blockly')">
           <span>{{ 'MODE_WELCOME.CHOOSE' | translate }}</span>
           <i class="fa-light fa-arrow-right"></i>
         </button>
@@ -64,12 +69,14 @@
     <section
       class="mw-panel mw-panel--coder"
       [class.is-active]="hoveredSide === 'coder'"
+      [class.is-selected]="selectedSide === 'coder'"
       [class.is-dimmed]="hoveredSide === 'blockly'"
       [class.is-chosen]="chosenSide === 'coder'"
       [class.is-discarded]="chosenSide === 'blockly'"
       (mouseenter)="onHover('coder')"
       (mouseleave)="onHover(null)"
-      (click)="choose('coder')"
+      [attr.aria-selected]="selectedSide === 'coder'"
+      (click)="selectSide('coder')"
     >
       <div class="mw-panel-inner">
         <div class="mw-icon">
@@ -85,9 +92,50 @@
           </li>
           }
         </ul>
-        <button type="button" class="mw-choose-btn">
-          <span>{{ 'MODE_WELCOME.CHOOSE' | translate }}</span>
-          <i class="fa-light fa-arrow-right"></i>
+        <div class="mw-coder-install" aria-live="polite">
+          @if (selectedSide === 'coder' && coderDependencyState.status === 'installing') {
+          <div class="mw-install-copy">
+            <i class="fa-light fa-cloud-arrow-down"></i>
+            <span>{{ 'MODE_WELCOME.CODER_INSTALLING' | translate }}</span>
+          </div>
+          <div
+            class="mw-install-progress"
+            role="progressbar"
+            [attr.aria-valuetext]="'MODE_WELCOME.CODER_INSTALLING' | translate">
+            <span></span>
+          </div>
+          } @else if (selectedSide === 'coder' && coderDependencyState.status === 'installed') {
+          <div class="mw-install-copy is-success">
+            <i class="fa-light fa-circle-check"></i>
+            <span>{{ 'MODE_WELCOME.CODER_INSTALLED' | translate }}</span>
+          </div>
+          } @else if (selectedSide === 'coder' && (coderDependencyState.status === 'error' || coderDependencyState.status === 'unavailable')) {
+          <button type="button" class="mw-install-retry" (click)="retryCoderInstall($event)">
+            <i class="fa-light fa-circle-exclamation"></i>
+            <span>{{ 'MODE_WELCOME.CODER_INSTALL_RETRY' | translate }}</span>
+          </button>
+          } @else if (selectedSide === 'coder') {
+          <div class="mw-install-copy">
+            <i class="fa-light fa-puzzle-piece"></i>
+            <span>{{ 'MODE_WELCOME.CODER_INSTALL_REQUIRED' | translate }}</span>
+          </div>
+          }
+        </div>
+        <button
+          type="button"
+          class="mw-choose-btn"
+          [disabled]="selectedSide === 'coder' && !canChoose('coder')"
+          (click)="choose($event, 'coder')">
+          <span>
+            {{ (coderDependencyState.installing
+              ? 'MODE_WELCOME.CODER_INSTALLING_SHORT'
+              : 'MODE_WELCOME.CHOOSE') | translate }}
+          </span>
+          <i
+            class="fa-light"
+            [class.fa-spinner-third]="coderDependencyState.installing"
+            [class.fa-spin]="coderDependencyState.installing"
+            [class.fa-arrow-right]="!coderDependencyState.installing"></i>
         </button>
       </div>
     </section>

@@ -56,9 +56,6 @@ declare global {
       };
       iWindow: any;
       subWindow: any;
-      coderEmbed: {
-        getBaseUrl: () => Promise<string>;
-      };
       codeViewer: any;
       builder: any;
       simulatorGateway?: {

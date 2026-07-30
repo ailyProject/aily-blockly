@@ -18,8 +18,13 @@ import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/bui
 import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-packages.utils';
 import { UiService } from '../../services/ui.service';
 import { AiCoderDiffBridgeService } from '../../services/ai-coder-diff-bridge.service';
+import {
+  ChildToolHostInfo,
+  ChildToolProcessService,
+} from '../../services/child-tool-process.service';
+import { CoderDependencyService } from '../../services/coder-dependency.service';
 
-/** 与 child/aily-coder/src/hostEmbedContext.ts 中 channel 常量一致 */
+/** 与独立 Coder 子应用包 src/hostEmbedContext.ts 中 channel 常量一致 */
 const AILY_CODER_HOST_CONTEXT_CHANNEL = 'aily-coder-host-context';
 /** 内嵌 Coder 请求在系统文件管理器中显示绝对路径 */
 const AILY_CODER_REVEAL_IN_OS_CHANNEL = 'aily-coder-reveal-in-os';
@@ -34,7 +39,7 @@ const AILY_EMBED_OS_REVEAL_CHANNEL = 'aily-embed-os-reveal';
 const AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-embed-open-library-manager';
 const AILY_EMBED_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-embed-open-board-selector';
 const AILY_EMBED_CLIPBOARD_WRITE_CHANNEL = 'aily-embed-clipboard-write';
-/** 与 child/aily-coder/src/embedLayoutSync.ts 一致 */
+/** 与独立 Coder 子应用包 src/embedLayoutSync.ts 一致 */
 const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-host-layout-refresh';
 /** 宿主 → iframe：磁盘 watch 事件（与 parentBackedNativeFs.ts 一致） */
 const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-native-fs-watch-event';
@@ -62,6 +67,9 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   private coderEmbedRevealTimer?: ReturnType<typeof setTimeout>;
 
   private readonly coderDevEmbedBase = 'http://127.0.0.1:5174/';
+  private coderRuntimeHostInfo: ChildToolHostInfo | null = null;
+  private coderRuntimeAcquirePromise: Promise<ChildToolHostInfo> | null = null;
+  private destroyed = false;
 
   private readonly coderNativeFsBridgeListener = (ev: MessageEvent) => this.onCoderNativeFsMessage(ev);
 
@@ -97,6 +105,8 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     private npmService: NpmService,
     private uiService: UiService,
     private aiCoderDiffBridge: AiCoderDiffBridgeService,
+    private readonly childToolProcess: ChildToolProcessService,
+    private readonly coderDependency: CoderDependencyService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -228,6 +238,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     this.clearCoderEmbedRevealTimer();
     this.embedHostResizeObserver?.disconnect();
     this.embedHostResizeObserver = undefined;
@@ -248,6 +259,10 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.aiCoderDiffBridge.registerEmbed(null);
     this.aiCoderDiffBridge.setWorkspaceRoot(null);
     this.coderEmbedWorkspaceRoot = null;
+    if (this.coderRuntimeHostInfo) {
+      this.coderRuntimeHostInfo = null;
+      void this.childToolProcess.release(CoderDependencyService.CATALOG_ID);
+    }
     this.proProject.destroy();
     this.builderService.cancel();
     this.uploadService.cancel();
@@ -327,9 +342,9 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       this.beginCoderEmbedLoading();
       await this.writeCoderEmbedHints(projectPath);
       let base: string;
-      const api = (window as any).electronAPI;
-      if (this.electronService.isElectron && api?.coderEmbed) {
-        base = await api.coderEmbed.getBaseUrl();
+      if (this.electronService.isElectron) {
+        await this.coderDependency.ensureInstalled();
+        base = (await this.acquireCoderRuntime()).url;
       } else {
         base = this.coderDevEmbedBase;
       }
@@ -352,6 +367,30 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       this.coderEmbedError = e?.message || String(e);
       this.message.error('无法启动内嵌代码编辑器：' + this.coderEmbedError);
     }
+  }
+
+  private async acquireCoderRuntime(): Promise<ChildToolHostInfo> {
+    if (this.coderRuntimeHostInfo) {
+      return this.coderRuntimeHostInfo;
+    }
+    if (!this.coderRuntimeAcquirePromise) {
+      const pending = this.childToolProcess.acquire(CoderDependencyService.CATALOG_ID)
+        .then((hostInfo) => {
+          if (this.destroyed) {
+            void this.childToolProcess.release(CoderDependencyService.CATALOG_ID);
+            throw new Error('Coder editor was closed before its dependency finished starting');
+          }
+          this.coderRuntimeHostInfo = hostInfo;
+          return hostInfo;
+        })
+        .finally(() => {
+          if (this.coderRuntimeAcquirePromise === pending) {
+            this.coderRuntimeAcquirePromise = null;
+          }
+        });
+      this.coderRuntimeAcquirePromise = pending;
+    }
+    return this.coderRuntimeAcquirePromise;
   }
 
   /**

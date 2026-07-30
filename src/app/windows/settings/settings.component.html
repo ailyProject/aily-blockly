@@ -44,13 +44,29 @@
                     {{ 'PROJECT_NEW.BOARD.MODE_BLOCKLY' | translate }}
                   </button>
                   @if (coderEnabled) {
-                  <button
-                    nz-button
-                    nzSize="small"
-                    [nzType]="developmentModePreference === 'coder' ? 'primary' : 'default'"
-                    (click)="onDevelopmentModePreferenceChange('coder')">
-                    {{ 'PROJECT_NEW.BOARD.MODE_CODER' | translate }}
-                  </button>
+                  <span
+                    class="coder-mode-option"
+                    nz-tooltip
+                    [nzTooltipTitle]="coderDependencyState.installed
+                      ? null
+                      : ('SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate)">
+                    <button
+                      nz-button
+                      nzSize="small"
+                      [disabled]="coderDependencyState.installing"
+                      [nzType]="developmentModePreference === 'coder' ? 'primary' : 'default'"
+                      (click)="onDevelopmentModePreferenceChange('coder')">
+                      @if (coderDependencyState.installing) {
+                      <i class="fa-light fa-spinner-third fa-spin"></i>
+                      }
+                      {{ 'PROJECT_NEW.BOARD.MODE_CODER' | translate }}
+                    </button>
+                    @if (!coderDependencyState.installed) {
+                    <span
+                      class="coder-install-dot"
+                      [attr.aria-label]="'SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate"></span>
+                    }
+                  </span>
                   }
                 </div>
               </div>

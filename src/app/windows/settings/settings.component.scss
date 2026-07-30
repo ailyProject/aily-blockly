@@ -21,6 +21,30 @@
   min-height: 40px;
 }
 
+.development-mode-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.coder-mode-option {
+  position: relative;
+  display: inline-flex;
+}
+
+.coder-install-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--aily-bg-card, #292929);
+  border-radius: 50%;
+  background: var(--aily-color-error, #ff4d4f);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--aily-color-error, #ff4d4f) 18%, transparent);
+  pointer-events: none;
+}
+
 .langs {
   display: flex;
   flex-wrap: wrap;
