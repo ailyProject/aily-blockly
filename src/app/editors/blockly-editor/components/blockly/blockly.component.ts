@@ -49,10 +49,12 @@ import {
   type BlockCodeMapping,
 } from './generators/arduino/arduino';
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
-import { BlocklyGeneratorRuntimeService } from '../../services/blockly-generator-runtime.service';
+import {
+  BlocklyGeneratorRuntimeService,
+  runWithPreparedActiveProjectGenerator,
+} from '../../services/blockly-generator-runtime.service';
 import { BitmapUploadResponse, GlobalServiceManager } from '../../services/bitmap-upload.service';
 import { projectDataRuntime } from '../../../../services/project-data/project-data-runtime';
-import { prepareBlocklyProjectDataForCodeGeneration } from '../../../../services/project-data/blockly-project-data-adapter';
 
 import './renderer/aily-icon';
 import './renderer/aily-thrasos/thrasos';
@@ -2270,19 +2272,32 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       takeUntil(this.destroy$)
     ).subscribe(async () => {
       try {
-        await prepareBlocklyProjectDataForCodeGeneration(this.workspace);
-        const code = normalizeArduinoGeneratedCode(this.generator.workspaceToCode(this.workspace));
-        await writeArduinoGeneratedArtifacts(this.projectService.currentProjectPath, this.generator);
+        const projectPath = this.projectService.currentProjectPath;
+        const projectDocument = this.blocklyService.getProjectDocument();
+        const generated = await runWithPreparedActiveProjectGenerator(
+          this.workspace,
+          (generator) => {
+            const activeBlockCodeMap = (
+              generator as { blockCodeMap?: Map<string, BlockCodeMapping> }
+            ).blockCodeMap;
+            return {
+              code: normalizeArduinoGeneratedCode(generator.workspaceToCode(this.workspace)),
+              generator,
+              blockCodeMap: activeBlockCodeMap ? new Map(activeBlockCodeMap) : null,
+            };
+          },
+          projectDocument,
+        );
+        const { code, generator } = generated;
+        const blockCodeMap = generated.blockCodeMap ?? new Map<string, BlockCodeMapping>();
+        await writeArduinoGeneratedArtifacts(projectPath, generator);
         this.blocklyService.publishGeneratedCode(code);
         void this.projectDebugConfigurationService.updateWorkspaceGeneratedCode(
-          this.projectService.currentProjectPath,
+          projectPath,
           code,
         );
-        let blockCodeMap = new Map<string, BlockCodeMapping>();
-
         // 发布 block-to-code 映射
-        if (this.generator.blockCodeMap) {
-          blockCodeMap = new Map(this.generator.blockCodeMap);
+        if (generated.blockCodeMap) {
           this.blocklyService.blockCodeMapSubject.next(blockCodeMap);
           this.blocklyService.absBlockLineMap.next(new Map());
         }

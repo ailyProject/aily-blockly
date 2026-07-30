@@ -16,14 +16,12 @@ import {
   normalizeArduinoGeneratedCode,
 } from "../components/blockly/generators/arduino/arduino";
 import {
-  generateCodeWithActiveProjectGenerator,
-  getActiveProjectGenerator,
+  runWithPreparedActiveProjectGenerator,
 } from './blockly-generator-runtime.service';
 import { BlocklyService } from "./blockly.service";
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { BleOtaProgress, UploaderBleService } from '../../../services/uploader-ble.service';
 import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
-import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
 import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import {
@@ -378,14 +376,22 @@ export class _UploaderService {
         }
 
         // 第一步：检查是否需要编译
-        await prepareBlocklyProjectDataForCodeGeneration(
+        const projectPath = this.projectService.currentProjectPath;
+        const projectDocument = this.blocklyService.getProjectDocument();
+        const generated = await runWithPreparedActiveProjectGenerator(
           this.blocklyService.workspace,
-          this.blocklyService.getProjectDocument(),
+          (generator) => ({
+            code: normalizeArduinoGeneratedCode(
+              generator.workspaceToCode(this.blocklyService.workspace),
+            ),
+            generator,
+          }),
+          projectDocument,
         );
-        const code = normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
+        const { code, generator } = generated;
         await writeArduinoGeneratedArtifacts(
-          this.projectService.currentProjectPath,
-          getActiveProjectGenerator(),
+          projectPath,
+          generator,
         );
         const buildPath = await this.projectService.getBuildPath();
         const needsBuild = !this._builderService.passed || 

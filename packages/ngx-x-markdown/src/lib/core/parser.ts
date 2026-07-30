@@ -332,7 +332,7 @@ export class MarkdownParser {
           ` data-block="true" data-state="${streamStatus}"` +
           (infoString ? ` data-lang="${escapeHtml(infoString)}"` : '');
 
-        return `<pre><code${dataAttrs}${classAttr}>${escapedCode}</code></pre>\n`;
+        return `<pre class="sscroll"><code${dataAttrs}${classAttr}>${escapedCode}</code></pre>\n`;
       },
     };
     this.markdownInstance.use({ renderer });

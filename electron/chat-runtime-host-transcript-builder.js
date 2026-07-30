@@ -320,7 +320,7 @@ function normalizeTimestamp(value) {
 
 function cloneParts(turn) {
   return Array.isArray(turn && turn.response && turn.response.parts)
-    ? clonePayload(turn.response.parts)
+    ? [...turn.response.parts]
     : [];
 }
 
@@ -2084,6 +2084,19 @@ class ChatRuntimeHostTranscriptBuilder {
     };
   }
 
+  readTurn(sessionId, turnId) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    const normalizedTurnId = normalizeTurnId(turnId);
+    if (!normalizedSessionId || !normalizedTurnId) {
+      return null;
+    }
+    const transcript = this.transcripts.get(normalizedSessionId);
+    const turns = Array.isArray(transcript && transcript.turnResponses)
+      ? transcript.turnResponses
+      : [];
+    return turns.find(turn => normalizeTurnId(turn && turn.turnId) === normalizedTurnId) || null;
+  }
+
   acceptTranscriptSnapshot(transcript) {
     const sessionId = normalizeSessionId(transcript && transcript.sessionId);
     if (!sessionId) {
@@ -2155,12 +2168,16 @@ class ChatRuntimeHostTranscriptBuilder {
       return null;
     }
 
-    const currentTranscript = this.buildTranscriptSnapshot(normalizedSessionId);
+    const currentTranscript = this.transcripts.get(normalizedSessionId) || {
+      sessionId: normalizedSessionId,
+      turnResponses: [],
+      revision: 0,
+    };
     const currentRevision = normalizeRevision(currentTranscript && currentTranscript.revision);
     const incomingRevision = normalizeRevision(revision);
 
     const turnResponses = Array.isArray(currentTranscript && currentTranscript.turnResponses)
-      ? clonePayload(currentTranscript.turnResponses)
+      ? [...currentTranscript.turnResponses]
       : [];
     let turnIndex = turnResponses.findIndex(existingTurn =>
       normalizeTurnId(existingTurn && existingTurn.turnId) === normalizedTurnId);
@@ -2191,9 +2208,9 @@ class ChatRuntimeHostTranscriptBuilder {
       turnResponses,
       revision: nextRevision,
     };
-    this.transcripts.set(normalizedSessionId, clonePayload(nextTranscript));
+    this.transcripts.set(normalizedSessionId, nextTranscript);
     this.renderEventStates.set(renderEventStateKey(normalizedSessionId, normalizedTurnId), state);
-    return clonePayload(nextTranscript);
+    return nextTranscript;
   }
 
   readRenderEventState(sessionId, turnId, turn) {

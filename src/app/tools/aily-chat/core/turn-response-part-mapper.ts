@@ -51,12 +51,38 @@ export function projectTurnResponseDisplayParts(parts: readonly TurnResponsePart
 export function turnResponsePartsToDisplayChatParts(
   parts: readonly TurnResponsePart[] | null | undefined,
 ): readonly ChatPart[] {
+  return turnResponsePartsToDisplayChatPartEntries(parts).map(entry => entry.part);
+}
+
+export interface TurnResponseDisplayChatPartEntry {
+  readonly sourcePartIndex: number;
+  readonly sourcePartOffset: number;
+  readonly part: ChatPart;
+}
+
+/**
+ * Projects response parts while retaining VS Code's canonical content index.
+ * A response part may expand into several legacy child display parts, but every
+ * display part remains owned by its original response index.
+ */
+export function turnResponsePartsToDisplayChatPartEntries(
+  parts: readonly TurnResponsePart[] | null | undefined,
+): readonly TurnResponseDisplayChatPartEntry[] {
   if (!Array.isArray(parts)) {
     return [];
   }
 
-  return projectTurnResponseDisplayParts(parts)
-    .flatMap(part => turnResponsePartToChatParts(part));
+  const visibleParts = new Set(projectTurnResponseDisplayParts(parts));
+  return parts.flatMap((part, sourcePartIndex) => {
+    if (!visibleParts.has(part)) {
+      return [];
+    }
+    return turnResponsePartToChatParts(part).map((displayPart, sourcePartOffset) => ({
+      sourcePartIndex,
+      sourcePartOffset,
+      part: displayPart,
+    }));
+  });
 }
 
 export function isSubagentScopedTurnResponsePart(part: TurnResponsePart): boolean {

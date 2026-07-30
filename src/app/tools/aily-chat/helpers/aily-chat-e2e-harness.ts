@@ -11,10 +11,11 @@ import {
 import { getSharedBlocklyEditorOperationQueue } from '../tools/blocklyEditorOperationQueue';
 import { createToolCallProgressEditorOperationSink } from '../tools/editorOperationEvents';
 import {
-  COMMIT_PROJECT_SCENE_REGENERATION_TOOL,
-  createProjectSceneRegenerationHandlers,
-  GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL,
+  createProjectSceneGenerationHandlers,
+  GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
+  SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
 } from '../core/blockly-project-scene-tools';
+import { beginProjectSceneProposalInvocation } from '../core/project-scene-proposal-invocation';
 
 interface AilyChatE2eHarnessOptions {
   readonly engine: ChatEngineService;
@@ -91,20 +92,19 @@ interface AilyChatE2eHarnessApi {
   awaitCancellableSubagentTurnSettled(): Promise<AilyChatE2eSnapshot>;
   startCancellableEditorOperationTurn(): Promise<AilyChatE2eSnapshot>;
   awaitCancellableEditorOperationTurnSettled(): Promise<AilyChatE2eSnapshot>;
-  startProjectSceneRegenerationCommit(
+  startProjectSceneProposalSubmission(
     options?: { readonly forceExpired?: boolean },
-  ): Promise<AilyChatE2eProjectSceneRegenerationProbe>;
-  awaitProjectSceneRegenerationCommitSettled(): Promise<AilyChatE2eProjectSceneRegenerationProbe>;
+  ): Promise<AilyChatE2eProjectSceneProposalProbe>;
+  awaitProjectSceneProposalSubmissionSettled(): Promise<AilyChatE2eProjectSceneProposalProbe>;
   openEmbeddedTool(toolId: string): boolean;
   closeTool(toolId: string): void;
   snapshot(): AilyChatE2eSnapshot;
 }
 
-interface AilyChatE2eProjectSceneRegenerationProbe {
-  readonly state: 'idle' | 'awaiting-approval' | 'approved' | 'rejected' | 'settled';
+interface AilyChatE2eProjectSceneProposalProbe {
+  readonly state: 'idle' | 'submitting' | 'settled';
   readonly toolCallId?: string;
-  readonly regenerationId?: string;
-  readonly approved?: boolean;
+  readonly requestId?: string;
   readonly result?: unknown;
   readonly error?: string;
 }
@@ -486,9 +486,9 @@ function readE2eToolResultJson(value: unknown): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function createE2eProjectSceneCommitInput(regenerationId: string): Record<string, unknown> {
+function createE2eProjectSceneProposalInput(requestId: string): Record<string, unknown> {
   return {
-    regenerationId,
+    requestId,
     summary: 'Generate a native v2 Scene for the Blockly LED and button fixture.',
     components: [
       {
@@ -556,10 +556,10 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
   let cancellableEditorOperationReady: Promise<void> | null = null;
   let resolveCancellableEditorOperationReady: (() => void) | null = null;
   let abortCancellableEditorOperation: (() => void) | null = null;
-  let projectSceneRegenerationProbe: AilyChatE2eProjectSceneRegenerationProbe = {
+  let projectSceneProposalProbe: AilyChatE2eProjectSceneProposalProbe = {
     state: 'idle',
   };
-  let pendingProjectSceneRegenerationCommit: Promise<void> | null = null;
+  let pendingProjectSceneProposalSubmission: Promise<void> | null = null;
 
   const countActiveLoadingIndicators = (): number => {
     const root = document.querySelector('app-aily-chat');
@@ -1472,123 +1472,115 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
       engine.triggerSyncDetectChanges?.();
       return snapshot();
     },
-    async startProjectSceneRegenerationCommit(probeOptions) {
+    async startProjectSceneProposalSubmission(probeOptions) {
       await installDeterministicRuntime();
-      if (pendingProjectSceneRegenerationCommit) {
-        throw new Error('A Project Scene regeneration E2E probe is already running.');
+      if (pendingProjectSceneProposalSubmission) {
+        throw new Error('A Project Scene proposal E2E probe is already running.');
       }
       const sessionId = await engine.ensureSessionReadyForSubmit() ?? getCurrentSessionId(engine);
-      const toolHandlers = createProjectSceneRegenerationHandlers();
-      const contextTool = toolHandlers[GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL];
-      const commitTool = toolHandlers[COMMIT_PROJECT_SCENE_REGENERATION_TOOL];
-      if (
-        typeof options.requestToolApproval !== 'function'
-        || typeof contextTool !== 'function'
-        || typeof commitTool !== 'function'
-      ) {
-        throw new Error(
-          'The Host Runtime owner does not expose the Project Scene approval/tool boundary '
-          + `(approval=${typeof options.requestToolApproval}, context=${typeof contextTool}, commit=${typeof commitTool}).`,
-        );
+      const toolHandlers = createProjectSceneGenerationHandlers();
+      const contextTool = toolHandlers[GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL];
+      const submitTool = toolHandlers[SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL];
+      if (typeof contextTool !== 'function' || typeof submitTool !== 'function') {
+        throw new Error('The Host Runtime owner does not expose the Project Scene proposal tools.');
       }
 
-      const abortController = new AbortController();
-      const toolCallId = `e2e-project-scene-regeneration-${Date.now()}`;
-      const turnId = `e2e-project-scene-turn-${Date.now()}`;
+      const now = Date.now();
+      const requestId = `scene-generation-v1-${'1'.repeat(64)}`;
+      const expiresAtUnixMs = now + 60_000;
+      const invocation = beginProjectSceneProposalInvocation({
+        request: {
+          schemaVersion: 1,
+          kind: 'aily-project-scene-generation-request',
+          requestId,
+          projectIdentity: 'e2e-project',
+          sceneId: 'main',
+          reason: 'user-regenerate',
+          base: {
+            visualRevision: '2'.repeat(64),
+            graphSemanticRevision: '3'.repeat(64),
+            catalogRevision: '4'.repeat(64),
+          },
+          legacySource: null,
+          expiresAtUnixMs,
+        },
+        hardwareIntent: {
+          schemaVersion: 1,
+          kind: 'aily-project-hardware-intent-snapshot',
+          requestId,
+          projectIdentity: 'e2e-project',
+          board: {
+            fqbn: 'esp32:esp32:XIAO_ESP32S3',
+            boardId: 'XIAO_ESP32S3',
+            architecture: 'esp32',
+            mcu: 'esp32s3',
+          },
+          source: {
+            language: 'arduino-cpp',
+            revision: '5'.repeat(64),
+            text: 'void setup(){ pinMode(1, OUTPUT); }',
+          },
+          libraries: [],
+          hardwareHints: [],
+          userIntent: null,
+        },
+      });
+      const toolCallId = `e2e-project-scene-proposal-${now}`;
       const toolContext = {
         sessionId,
         toolCallId,
-        trace: { turnId },
-        signal: abortController.signal,
+        trace: { turnId: `e2e-project-scene-turn-${now}` },
+        signal: new AbortController().signal,
         cwd: '',
         host: { getExtension: () => undefined },
         emitEvent: () => undefined,
       };
-      const contextResult = await contextTool({}, {} as never, toolContext);
-      const context = readE2eToolResultJson(contextResult);
-      const requirement = context['requirement'];
-      if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
-        throw new Error('Project Scene regeneration context omitted the pending requirement.');
-      }
-      const regenerationId = (requirement as Record<string, unknown>)['regenerationId'];
-      const expiresAtUnixMs = (requirement as Record<string, unknown>)['expiresAtUnixMs'];
-      if (
-        typeof regenerationId !== 'string'
-        || typeof expiresAtUnixMs !== 'number'
-        || !Number.isSafeInteger(expiresAtUnixMs)
-      ) {
-        throw new Error('Project Scene regeneration context returned an invalid requirement.');
-      }
-      const input = createE2eProjectSceneCommitInput(regenerationId);
-      projectSceneRegenerationProbe = {
-        state: 'awaiting-approval',
-        toolCallId,
-        regenerationId,
-      };
+      projectSceneProposalProbe = { state: 'submitting', toolCallId, requestId };
       engine.triggerSyncDetectChanges?.();
 
-      pendingProjectSceneRegenerationCommit = (async () => {
+      pendingProjectSceneProposalSubmission = (async () => {
+        const originalDateNow = Date.now;
         try {
-          const approval = await options.requestToolApproval!(sessionId, {
-            approvalTraceId: `approval:${toolCallId}`,
-            toolCallId,
-            toolName: COMMIT_PROJECT_SCENE_REGENERATION_TOOL,
-            args: input,
-            title: 'E2E Project Scene regeneration',
-            message: 'The deterministic Agent proposes a native v2 Project Scene.',
-            primaryScope: 'workspace',
-            allowAutoConfirm: true,
-          });
-          if (!approval.approved) {
-            projectSceneRegenerationProbe = {
-              state: 'rejected',
-              toolCallId,
-              regenerationId,
-              approved: false,
-              ...(approval.reason ? { error: approval.reason } : {}),
-            };
-            return;
+          const contextResult = await contextTool({ requestId }, {} as never, toolContext);
+          readE2eToolResultJson(contextResult);
+          if (probeOptions?.forceExpired === true) {
+            Date.now = () => expiresAtUnixMs + 1;
           }
-
-          projectSceneRegenerationProbe = {
-            state: 'approved',
-            toolCallId,
-            regenerationId,
-            approved: true,
-          };
-          const originalDateNow = Date.now;
-          try {
-            if (probeOptions?.forceExpired === true) {
-              Date.now = () => Number(expiresAtUnixMs) + 1;
-            }
-            const toolResult = await commitTool(input, {} as never, toolContext);
-            projectSceneRegenerationProbe = {
-              state: 'settled',
-              toolCallId,
-              regenerationId,
-              approved: true,
-              result: toolResult,
-            };
-          } finally {
-            Date.now = originalDateNow;
-          }
-        } catch (error) {
-          projectSceneRegenerationProbe = {
+          const toolResult = await submitTool(
+            createE2eProjectSceneProposalInput(requestId),
+            {} as never,
+            toolContext,
+          );
+          const parsedToolResult = readE2eToolResultJson(toolResult);
+          const proposal = parsedToolResult['state'] === 'submitted'
+            ? await invocation.proposal
+            : null;
+          projectSceneProposalProbe = {
             state: 'settled',
             toolCallId,
-            regenerationId,
+            requestId,
+            result: { toolResult, proposal },
+          };
+        } catch (error) {
+          projectSceneProposalProbe = {
+            state: 'settled',
+            toolCallId,
+            requestId,
             error: error instanceof Error ? error.message : String(error),
           };
+        } finally {
+          Date.now = originalDateNow;
+          invocation.dispose();
         }
       })();
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      return { ...projectSceneRegenerationProbe };
+      return { ...projectSceneProposalProbe };
     },
-    async awaitProjectSceneRegenerationCommitSettled() {
-      await pendingProjectSceneRegenerationCommit;
-      pendingProjectSceneRegenerationCommit = null;
+    async awaitProjectSceneProposalSubmissionSettled() {
+      await pendingProjectSceneProposalSubmission;
+      pendingProjectSceneProposalSubmission = null;
       engine.triggerSyncDetectChanges?.();
-      return { ...projectSceneRegenerationProbe };
+      return { ...projectSceneProposalProbe };
     },
     openEmbeddedTool(toolId: string) {
       return options.openEmbeddedTool?.(toolId) === true;

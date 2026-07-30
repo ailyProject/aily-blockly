@@ -60,6 +60,7 @@ type MountedPartLocation = {
 type VisiblePartsPatchInput = {
   readonly parts: readonly RenderableChatPart[];
   readonly changedParts?: readonly RenderableChatPart[];
+  readonly changedPartIndices?: readonly number[];
   readonly doing: boolean;
   readonly sessionId: string;
   readonly turnResponse: TurnResponseTurn | null;
@@ -103,7 +104,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
   private readonly mountedRenderers = new Map<string, MountedChatRenderItem>();
   private readonly mountedPartLocations = new Map<string, MountedPartLocation>();
   private pendingStreamingPatch: VisiblePartsPatchInput | null = null;
-  private readonly pendingStreamingPartIds = new Set<string>();
+  private readonly pendingStreamingSourcePartIndices = new Set<number>();
   private streamingPatchFrame: number | null = null;
 
   constructor(
@@ -113,7 +114,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['parts'] || changes['doing']) {
-      this._refresh();
+      this._refresh(changes);
     }
   }
 
@@ -122,7 +123,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
   }
 
   ngAfterViewInit(): void {
-    this.reconcileMountedRenderers(this.renderItems, true);
+    this.reconcileMountedRenderers(this.renderItems);
   }
 
   ngOnDestroy(): void {
@@ -141,7 +142,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     const hadPendingStreamingPatch = this.pendingStreamingPatch !== null;
     this.cancelPendingStreamingPatch();
     const effectiveInput = hadPendingStreamingPatch
-      ? { ...input, changedParts: undefined }
+      ? { ...input, changedParts: undefined, changedPartIndices: undefined }
       : input;
     return ChatPerformanceTracer.runWithSurface(
       'chat_projection',
@@ -163,7 +164,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
   }
 
   private canCoalesceStreamingPatch(input: VisiblePartsPatchInput): boolean {
-    return input.doing
+    if (!(input.doing
       && !!input.changedParts?.length
       && input.changedParts.every(part => part.type === 'markdown' || part.type === 'thinking')
       && !!this.parts
@@ -171,14 +172,21 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
       && this.doing === input.doing
       && this.sessionId === input.sessionId
       && this.detailProjectionEnabled === input.detailProjectionEnabled
-      && this.mountedPartLocations.size > 0;
+      && this.mountedPartLocations.size > 0)) {
+      return false;
+    }
+
+    const sourcePartIndices = this.readChangedPartIndices(input);
+    return !!sourcePartIndices?.length && sourcePartIndices.every(sourcePartIndex => {
+      const part = input.parts[sourcePartIndex];
+      return !!part && this.mountedPartLocations.has(buildChatPartIdentity(part as any, sourcePartIndex));
+    });
   }
 
   private scheduleStreamingPatch(input: VisiblePartsPatchInput): void {
     this.pendingStreamingPatch = input;
-    for (const changedPart of input.changedParts ?? []) {
-      const sourceIndex = input.parts.indexOf(changedPart);
-      this.pendingStreamingPartIds.add(buildChatPartIdentity(changedPart as any, Math.max(0, sourceIndex)));
+    for (const sourcePartIndex of this.readChangedPartIndices(input) ?? []) {
+      this.pendingStreamingSourcePartIndices.add(sourcePartIndex);
     }
     if (this.streamingPatchFrame !== null) {
       return;
@@ -205,13 +213,32 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     if (!pending) {
       return;
     }
-    const changedParts = pending.parts.filter((part, index) =>
-      this.pendingStreamingPartIds.has(buildChatPartIdentity(part as any, index)));
+    const changedPartIndices = [...this.pendingStreamingSourcePartIndices]
+      .sort((left, right) => left - right);
+    const changedParts = changedPartIndices
+      .map(sourcePartIndex => pending.parts[sourcePartIndex])
+      .filter((part): part is RenderableChatPart => !!part);
     this.pendingStreamingPatch = null;
-    this.pendingStreamingPartIds.clear();
+    this.pendingStreamingSourcePartIndices.clear();
     ChatPerformanceTracer.runWithSurface(
       'chat_projection',
-      () => this.applyVisiblePartsPatchInternal({ ...pending, changedParts }),
+      () => {
+        const startedAt = performance.now();
+        try {
+          this.applyVisiblePartsPatchInternal({
+            ...pending,
+            changedParts,
+            changedPartIndices,
+          });
+        } finally {
+          ChatPerformanceTracer.recordDuration(
+            'message_parts_streaming_frame_actual',
+            performance.now() - startedAt,
+            `parts=${pending.parts.length},changed=${changedParts.length}`,
+            { slowThresholdMs: 8 },
+          );
+        }
+      },
       'message_parts_streaming_frame',
     );
   }
@@ -226,7 +253,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     }
     this.streamingPatchFrame = null;
     this.pendingStreamingPatch = null;
-    this.pendingStreamingPartIds.clear();
+    this.pendingStreamingSourcePartIndices.clear();
   }
 
   private applyVisiblePartsPatchInternal(input: VisiblePartsPatchInput): boolean {
@@ -241,7 +268,6 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
 
     const previousDoing = this.doing;
     const previousSessionId = this.sessionId;
-    const previousRate = this.impliedWordLoadRate;
     const previousDetailProjectionEnabled = this.detailProjectionEnabled;
     const previousContinuation = buildContinuationRevision(this.turnResponse);
     const nextContinuation = buildContinuationRevision(input.turnResponse);
@@ -257,7 +283,6 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
       }
       if (next.kind === 'group') {
         if (previousSessionId !== input.sessionId
-          || previousRate !== input.impliedWordLoadRate
           || previousDetailProjectionEnabled !== input.detailProjectionEnabled
           || previousContinuation !== nextContinuation) {
           changedItemIds.add(next.id);
@@ -265,8 +290,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
         continue;
       }
       if (previousDoing !== input.doing
-        || previousSessionId !== input.sessionId
-        || (next.part.type === 'markdown' && previousRate !== input.impliedWordLoadRate)) {
+        || previousSessionId !== input.sessionId) {
         changedItemIds.add(next.id);
       }
     }
@@ -324,6 +348,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     input: {
       readonly parts: readonly RenderableChatPart[];
       readonly changedParts?: readonly RenderableChatPart[];
+      readonly changedPartIndices?: readonly number[];
       readonly doing: boolean;
       readonly sessionId: string;
       readonly turnResponse: TurnResponseTurn | null;
@@ -332,6 +357,18 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     },
     nextItems: readonly ChatRenderItem[],
   ): true {
+    const changedItemIds = collectChangedRenderItemIds({
+      previousItems: this.renderItems,
+      nextItems,
+      previousDoing: this.doing,
+      nextDoing: input.doing,
+      previousSessionId: this.sessionId,
+      nextSessionId: input.sessionId,
+      previousTurnResponse: this.turnResponse,
+      nextTurnResponse: input.turnResponse,
+      previousDetailProjectionEnabled: this.detailProjectionEnabled,
+      nextDetailProjectionEnabled: input.detailProjectionEnabled,
+    });
     this.parts = input.parts;
     this.doing = input.doing;
     this.sessionId = input.sessionId;
@@ -342,7 +379,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     this.rebuildMountedPartLocations(input.parts, this.renderItems);
     ChatPerformanceTracer.increment('message_parts_incremental_patch.structure_local');
     if (this.renderHost) {
-      this.reconcileMountedRenderers(this.renderItems, true);
+      this.reconcileMountedRenderers(this.renderItems, changedItemIds);
     } else {
       this.cdr?.detectChanges();
     }
@@ -352,6 +389,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
   private tryApplyChangedPartDelta(input: {
     readonly parts: readonly RenderableChatPart[];
     readonly changedParts?: readonly RenderableChatPart[];
+    readonly changedPartIndices?: readonly number[];
     readonly doing: boolean;
     readonly sessionId: string;
     readonly turnResponse: TurnResponseTurn | null;
@@ -369,17 +407,24 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
       return null;
     }
 
-    const changedIdentities = new Set(input.changedParts.map((part, index) =>
-      buildChatPartIdentity(part as any, index)));
+    const changedSourcePartIndices = this.readChangedPartIndices(input);
+    if (!changedSourcePartIndices?.length) {
+      return null;
+    }
     const pendingItems = new Map<number, ChatRenderItem>();
     const changedGroupParts = new Map<number, ChatPart[]>();
-    for (const identity of changedIdentities) {
+    const changedGroupPartIndices = new Map<number, number[]>();
+    for (const sourcePartIndex of changedSourcePartIndices) {
+      const nextPart = input.parts[sourcePartIndex];
+      if (!nextPart) {
+        return null;
+      }
+      const identity = buildChatPartIdentity(nextPart as any, sourcePartIndex);
       const location = this.mountedPartLocations.get(identity);
       if (!location) {
         return null;
       }
-      const nextPart = input.parts[location.sourcePartIndex];
-      if (!nextPart || buildChatPartIdentity(nextPart as any, location.sourcePartIndex) !== identity) {
+      if (location.sourcePartIndex !== sourcePartIndex) {
         return null;
       }
       const currentItem = pendingItems.get(location.itemIndex) ?? this.renderItems[location.itemIndex];
@@ -399,10 +444,13 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
       const changedParts = changedGroupParts.get(location.itemIndex) ?? [];
       changedParts.push(normalizedPart as ChatPart);
       changedGroupParts.set(location.itemIndex, changedParts);
+      const changedPartIndices = changedGroupPartIndices.get(location.itemIndex) ?? [];
+      changedPartIndices.push(location.groupPartIndex);
+      changedGroupPartIndices.set(location.itemIndex, changedPartIndices);
       pendingItems.set(location.itemIndex, {
         ...currentItem,
         parts: groupParts,
-        revision: buildActivityGroupRevision(groupParts),
+        revision: buildActivityGroupRevision(groupParts, currentItem.sourcePartIndices),
       });
     }
 
@@ -422,14 +470,15 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
           });
       } else if (item.kind === 'group' && mounted.kind === 'group') {
         applied = mounted.ref.instance.applyVisibleGroupPatch({
-            parts: item.parts,
-            changedParts: changedGroupParts.get(itemIndex),
-            doing: item.live,
-            sessionId: input.sessionId,
-            turnResponse: input.turnResponse,
-            impliedWordLoadRate: input.impliedWordLoadRate,
-            detailProjectionEnabled: input.detailProjectionEnabled,
-          });
+          parts: item.parts,
+          changedParts: changedGroupParts.get(itemIndex),
+          changedPartIndices: changedGroupPartIndices.get(itemIndex),
+          doing: item.live,
+          sessionId: input.sessionId,
+          turnResponse: input.turnResponse,
+          impliedWordLoadRate: input.impliedWordLoadRate,
+          detailProjectionEnabled: input.detailProjectionEnabled,
+        });
       } else {
         return null;
       }
@@ -454,36 +503,68 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     items: readonly ChatRenderItem[],
   ): void {
     this.mountedPartLocations.clear();
-    const sourceIndexByIdentity = new Map<string, number>();
-    parts.forEach((part, index) => {
-      sourceIndexByIdentity.set(buildChatPartIdentity(part as any, index), index);
-    });
     items.forEach((item, itemIndex) => {
       if (item.kind === 'part') {
-        const identity = buildChatPartIdentity(item.part as any, 0);
-        const sourcePartIndex = sourceIndexByIdentity.get(identity);
-        if (sourcePartIndex !== undefined) {
+        const sourcePartIndex = item.sourcePartIndex;
+        const sourcePart = sourcePartIndex === undefined ? undefined : parts[sourcePartIndex];
+        if (sourcePart && sourcePartIndex !== undefined) {
+          const identity = buildChatPartIdentity(sourcePart as any, sourcePartIndex);
           this.mountedPartLocations.set(identity, { itemIndex, sourcePartIndex });
         }
         return;
       }
       item.parts.forEach((part, groupPartIndex) => {
-        const identity = buildChatPartIdentity(part, 0);
-        const sourcePartIndex = sourceIndexByIdentity.get(identity);
-        if (sourcePartIndex !== undefined) {
+        const sourcePartIndex = item.sourcePartIndices[groupPartIndex];
+        const sourcePart = sourcePartIndex === undefined ? undefined : parts[sourcePartIndex];
+        if (sourcePart && sourcePartIndex !== undefined) {
+          const identity = buildChatPartIdentity(sourcePart as any, sourcePartIndex);
           this.mountedPartLocations.set(identity, { itemIndex, sourcePartIndex, groupPartIndex });
         }
       });
     });
   }
 
-  private _refresh(): void {
+  private readChangedPartIndices(
+    input: Pick<VisiblePartsPatchInput, 'parts' | 'changedParts' | 'changedPartIndices'>,
+  ): number[] | null {
+    if (!input.changedParts?.length
+      || !input.changedPartIndices?.length
+      || input.changedParts.length !== input.changedPartIndices.length) {
+      return null;
+    }
+
+    const resolved = new Set<number>();
+    for (const sourcePartIndex of input.changedPartIndices) {
+      if (!Number.isInteger(sourcePartIndex)
+        || sourcePartIndex < 0
+        || sourcePartIndex >= input.parts.length) {
+        return null;
+      }
+      resolved.add(sourcePartIndex);
+    }
+    return [...resolved];
+  }
+
+  private _refresh(changes?: SimpleChanges): void {
     ChatPerformanceTracer.runWithSurface('chat_projection', () => {
       const parts = this.parts || [];
       const startedAt = performance.now();
-      this.renderItems = reuseStableRenderItems(this.renderItems, buildChatRenderItems(parts, this.doing));
+      const nextItems = buildChatRenderItems(parts, this.doing);
+      const changedItemIds = collectChangedRenderItemIds({
+        previousItems: this.renderItems,
+        nextItems,
+        previousDoing: changes?.['doing']?.previousValue ?? this.doing,
+        nextDoing: this.doing,
+        previousSessionId: this.sessionId,
+        nextSessionId: this.sessionId,
+        previousTurnResponse: this.turnResponse,
+        nextTurnResponse: this.turnResponse,
+        previousDetailProjectionEnabled: this.detailProjectionEnabled,
+        nextDetailProjectionEnabled: this.detailProjectionEnabled,
+      });
+      this.renderItems = reuseStableRenderItems(this.renderItems, nextItems);
       this.rebuildMountedPartLocations(parts, this.renderItems);
-      this.reconcileMountedRenderers(this.renderItems, true);
+      this.reconcileMountedRenderers(this.renderItems, changedItemIds);
       ChatPerformanceTracer.recordDuration(
         'message_parts_component_refresh',
         performance.now() - startedAt,
@@ -530,7 +611,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
 
   private reconcileMountedRenderers(
     items: readonly ChatRenderItem[],
-    patchExisting = false,
+    changedItemIds?: ReadonlySet<string>,
   ): void {
     const host = this.renderHost;
     if (!host) {
@@ -580,7 +661,7 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
         host.move(mounted.ref.hostView, index);
         ChatPerformanceTracer.increment('message_parts_renderer_diff.moved');
       }
-      if (patchExisting) {
+      if (changedItemIds?.has(item.id)) {
         this.patchMountedRenderer(mounted, item);
         ChatPerformanceTracer.increment('message_parts_renderer_diff.updated');
       }
@@ -654,6 +735,58 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
   }
 }
 
+type RenderItemDiffInput = {
+  readonly previousItems: readonly ChatRenderItem[];
+  readonly nextItems: readonly ChatRenderItem[];
+  readonly previousDoing: boolean;
+  readonly nextDoing: boolean;
+  readonly previousSessionId: string;
+  readonly nextSessionId: string;
+  readonly previousTurnResponse: TurnResponseTurn | null;
+  readonly nextTurnResponse: TurnResponseTurn | null;
+  readonly previousDetailProjectionEnabled: boolean;
+  readonly nextDetailProjectionEnabled: boolean;
+};
+
+/**
+ * Mirrors VS Code's content-part diff contract: retained content is represented
+ * by no update, while only changed indices consume an in-place renderer patch.
+ * Structural insert/move/remove work is owned by the container itself.
+ */
+function collectChangedRenderItemIds(input: RenderItemDiffInput): Set<string> {
+  const changedItemIds = new Set<string>();
+  const previousById = new Map(input.previousItems.map(item => [item.id, item]));
+  const continuationChanged = buildContinuationRevision(input.previousTurnResponse)
+    !== buildContinuationRevision(input.nextTurnResponse);
+
+  for (const next of input.nextItems) {
+    const previous = previousById.get(next.id);
+    if (!previous || previous.kind !== next.kind) {
+      continue;
+    }
+    if (hasRenderItemRevisionChanged(previous, next)) {
+      changedItemIds.add(next.id);
+      continue;
+    }
+
+    if (next.kind === 'group') {
+      if (input.previousSessionId !== input.nextSessionId
+        || input.previousDetailProjectionEnabled !== input.nextDetailProjectionEnabled
+        || continuationChanged) {
+        changedItemIds.add(next.id);
+      }
+      continue;
+    }
+
+    if (input.previousDoing !== input.nextDoing
+      || input.previousSessionId !== input.nextSessionId) {
+      changedItemIds.add(next.id);
+    }
+  }
+
+  return changedItemIds;
+}
+
 function canPatchRenderItemsInPlace(
   previousItems: readonly ChatRenderItem[],
   nextItems: readonly ChatRenderItem[],
@@ -693,6 +826,7 @@ function reuseStableRenderItems(
         return nextItem;
       }
       previousItem.part = nextItem.part;
+      previousItem.sourcePartIndex = nextItem.sourcePartIndex;
       return previousItem;
     }
 
@@ -701,6 +835,7 @@ function reuseStableRenderItems(
     }
 
     previousItem.parts = nextItem.parts;
+    previousItem.sourcePartIndices = nextItem.sourcePartIndices;
     previousItem.revision = nextItem.revision;
     previousItem.live = nextItem.live;
     return previousItem;

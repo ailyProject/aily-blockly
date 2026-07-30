@@ -1896,10 +1896,26 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
                 this.rendererStreamingCounterBaseline,
                 [
                   'message_parts_incremental_patch_actual',
+                  'message_parts_streaming_frame_actual',
                   'activity_group_refresh',
                   'dialog_content_delta_flush',
                   'scroll_height_update',
                   'activity_group_scroll_sync',
+                  'activity_group_incremental_patch_actual',
+                  'thinking_markdown_incremental_flush',
+                ],
+              )}`,
+              `renderDiff=${summarizeCounterDeltas(
+                rendererStreamingCounters,
+                this.rendererStreamingCounterBaseline,
+                [
+                  'message_parts_renderer_diff.inserted',
+                  'message_parts_renderer_diff.retained',
+                  'message_parts_renderer_diff.updated',
+                  'message_parts_renderer_diff.moved',
+                  'message_parts_renderer_diff.disposed',
+                  'message_parts_incremental_patch.structure_local',
+                  'message_parts_incremental_patch.host_part_delta',
                 ],
               )}`,
               `violations=${rendererStreamingBudget.violations.join('|')}`,
@@ -3043,6 +3059,21 @@ function summarizeDurationCounterDeltas(
     const totalMs = Math.max(0, (counters[`${prefix}.totalMs`] ?? 0) - (baseline[`${prefix}.totalMs`] ?? 0));
     if (count > 0 || totalMs > 0) {
       values.push(`${tag}:${count}/${totalMs.toFixed(0)}`);
+    }
+  }
+  return values.join(',') || '<none>';
+}
+
+function summarizeCounterDeltas(
+  counters: Readonly<Record<string, number>>,
+  baseline: Readonly<Record<string, number>>,
+  tags: readonly string[],
+): string {
+  const values: string[] = [];
+  for (const tag of tags) {
+    const value = Math.max(0, (counters[tag] ?? 0) - (baseline[tag] ?? 0));
+    if (value > 0) {
+      values.push(`${tag}:${value}`);
     }
   }
   return values.join(',') || '<none>';

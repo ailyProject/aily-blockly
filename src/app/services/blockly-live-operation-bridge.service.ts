@@ -11,6 +11,7 @@ import { BuilderService } from './builder.service';
 import { ThemeService } from './theme.service';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { SubappAgentBridgeService } from './subapp-agent-bridge.service';
+import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
 import { AbsAutoSyncService } from '../tools/aily-chat/services/abs-auto-sync.service';
 import {
   connectBlocksSimpleTool,
@@ -54,6 +55,7 @@ export class BlocklyLiveOperationBridgeService {
     private readonly absAutoSyncService: AbsAutoSyncService,
     private readonly mainUiAutomationService: MainUiAutomationService,
     private readonly subappAgentBridgeService: SubappAgentBridgeService,
+    private readonly projectHardwareIntentProvider: ProjectHardwareIntentProviderService,
     private readonly ngZone: NgZone,
   ) {}
 
@@ -139,6 +141,23 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (payload.operation === 'subapp_agent_call') {
       return this.subappAgentBridgeService.execute(payload.params || {});
+    }
+    if (payload.operation === 'project_hardware_intent_snapshot') {
+      const request = payload.params?.['request'];
+      if (!request || typeof request !== 'object' || Array.isArray(request)) {
+        return { ok: false, message: 'Project Scene generation request is invalid.' };
+      }
+      const snapshot = await this.projectHardwareIntentProvider.resolve({
+        requestId: String((request as Record<string, unknown>)['requestId'] || ''),
+        projectIdentity: String((request as Record<string, unknown>)['projectIdentity'] || ''),
+      });
+      return { ok: true, snapshot };
+    }
+    if (payload.operation === 'project_scene_proposal_request') {
+      return {
+        ok: false,
+        message: 'Project Scene proposal provider is not connected yet.',
+      };
     }
 
     const requestedProject = this.normalizePath(payload.path);

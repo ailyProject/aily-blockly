@@ -16,6 +16,9 @@ const linter = require("./linter");
 const simulatorGateway = require("./simulator-gateway");
 const simulatorSubappHost = require("./simulator-subapp-host");
 const {
+  createProjectSceneGenerationBroker,
+} = require("./project-scene-generation-broker");
+const {
   createSimulatorProjectRebuildCoordinator,
 } = require("./simulator-project-rebuild-coordinator");
 const { createPackagedRendererServer } = require("./packaged-renderer-server");
@@ -977,7 +980,7 @@ function getOpenedProjectPathFromWindow() {
   }
 }
 
-function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000) {
+function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000, signal) {
   return new Promise((resolve) => {
     if (!mainWindow || !mainWindow.webContents || mainWindow.isDestroyed()) {
       resolve({ ok: false, message: '主窗口不可用' });
@@ -991,6 +994,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000)
     const requestGeneration = rendererGeneration;
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
       ipcMain.removeListener(responseChannel, listener);
       resolve({ ok: false, message: '等待渲染进程响应超时' });
     }, timeoutMs);
@@ -1004,18 +1008,86 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000)
         || Number(message.rendererGeneration) !== requestGeneration) {
         return;
       }
+      signal?.removeEventListener('abort', onAbort);
       clearTimeout(timer);
       ipcMain.removeListener(responseChannel, listener);
       resolve(message);
     };
 
+    const onAbort = () => {
+      clearTimeout(timer);
+      ipcMain.removeListener(responseChannel, listener);
+      resolve({
+        ok: false,
+        errorCode: 'RENDERER_REQUEST_CANCELLED',
+        message: 'Renderer request was cancelled.',
+      });
+    };
+
     ipcMain.on(responseChannel, listener);
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
     mainWindow.webContents.send(channel, {
       ...payload,
       requestId,
       rendererGeneration: requestGeneration,
     });
   });
+}
+
+let projectSceneGenerationBroker = null;
+
+function getProjectSceneGenerationBroker() {
+  if (projectSceneGenerationBroker) return projectSceneGenerationBroker;
+  projectSceneGenerationBroker = createProjectSceneGenerationBroker({
+    async resolveHardwareIntent(request, { signal }) {
+      const response = await requestMainWindow(
+        'cli-bridge:blockly-live-operation',
+        'cli-bridge:blockly-live-operation:response',
+        {
+          path: '',
+          operation: 'project_hardware_intent_snapshot',
+          params: { request },
+        },
+        120000,
+        signal,
+      );
+      if (response?.ok !== true || !response.snapshot) {
+        throw new Error(
+          response?.message || 'Project hardware intent provider is unavailable.',
+        );
+      }
+      return response.snapshot;
+    },
+    async requestProposal(input, { signal }) {
+      const response = await requestMainWindow(
+        'cli-bridge:blockly-live-operation',
+        'cli-bridge:blockly-live-operation:response',
+        {
+          path: '',
+          operation: 'project_scene_proposal_request',
+          params: input,
+        },
+        10 * 60 * 1000,
+        signal,
+      );
+      if (response?.ok !== true || !response.proposal) {
+        throw new Error(
+          response?.message || 'Project Scene proposal provider is unavailable.',
+        );
+      }
+      return response.proposal;
+    },
+    async onProposalReady(candidate) {
+      await simulatorSubappHost.defaultHost.stageSceneGenerationCandidate(
+        candidate,
+      );
+    },
+  });
+  return projectSceneGenerationBroker;
 }
 
 let simulatorProjectRebuildCoordinator = null;
@@ -2584,6 +2656,9 @@ function createWindow() {
   });
   simulatorSubappHost.defaultHost.setRebuildCoordinator(
     getSimulatorProjectRebuildCoordinator(),
+  );
+  simulatorSubappHost.defaultHost.setSceneGenerationBroker(
+    getProjectSceneGenerationBroker(),
   );
 
   // 在多实例模式下，监听OAuth回调文件的变化

@@ -17,7 +17,12 @@ import {
   type ChatSessionPermissionProfile,
 } from '../core/chat-mode';
 import type { ProviderContextManagementSupport } from '../services/aily-chat-config.service';
-import { MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE, normalizeAgentIdentifier } from '../core/agent-identifiers';
+import {
+  MAIN_AGENT_TYPE,
+  PROJECT_SCENE_AGENT_TYPE,
+  SCHEMATIC_AGENT_TYPE,
+  normalizeAgentIdentifier,
+} from '../core/agent-identifiers';
 import {
   BLOCKLY_MAIN_AGENT_REQUIRED_CONTEXT,
   BLOCKLY_PROMPT_PROFILE,
@@ -712,7 +717,11 @@ function toAskUserBridgeResponse(
   };
 }
 
-const TOOL_CONFIG_AGENTS = [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE] as const;
+const TOOL_CONFIG_AGENTS = [
+  MAIN_AGENT_TYPE,
+  SCHEMATIC_AGENT_TYPE,
+  PROJECT_SCENE_AGENT_TYPE,
+] as const;
 
 type ToolConfigAgent = typeof TOOL_CONFIG_AGENTS[number];
 

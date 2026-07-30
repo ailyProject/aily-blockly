@@ -21,6 +21,11 @@ interface PreparedValueEntry {
   readonly size: number;
 }
 
+interface ProjectDataRuntimeSessionSnapshot {
+  readonly id: string;
+  readonly store: ProjectDataStore;
+}
+
 class ProjectDataRuntime {
   private store: ProjectDataStore | null = null;
   private sessionId = '';
@@ -65,9 +70,36 @@ class ProjectDataRuntime {
     return this.store;
   }
 
+  private captureSession(operation: string): ProjectDataRuntimeSessionSnapshot {
+    if (!this.store || !this.sessionId) {
+      throw new ProjectDataError(
+        'not-configured',
+        `ProjectDataRuntime is not configured for ${operation}.`,
+      );
+    }
+    return { id: this.sessionId, store: this.store };
+  }
+
+  private assertCurrentSession(
+    session: ProjectDataRuntimeSessionSnapshot,
+    operation: string,
+  ): void {
+    if (this.sessionId !== session.id || this.store !== session.store) {
+      throw new ProjectDataError(
+        'cancelled',
+        `Project Data ${operation} was cancelled because the active project changed.`,
+        { operation },
+      );
+    }
+  }
+
   async put<TValue>(request: PutProjectDataRequest<TValue>): Promise<AilyDataRef> {
-    const ref = await this.getStore().put(request);
-    this.setPrepared(ref, await this.getStore().resolve<TValue>(ref));
+    const session = this.captureSession('put');
+    const ref = await session.store.put(request);
+    this.assertCurrentSession(session, 'put');
+    const value = await session.store.resolve<TValue>(ref);
+    this.assertCurrentSession(session, 'put');
+    this.setPrepared(ref, value);
     return ref;
   }
 
@@ -82,21 +114,39 @@ class ProjectDataRuntime {
   }
 
   async flushPending(): Promise<void> {
+    const session = this.captureSession('flush');
     while (this.pendingMutations.size > 0) {
       await Promise.all([...this.pendingMutations]);
+      this.assertCurrentSession(session, 'flush');
     }
-    await this.getStore().flushPending();
+    await session.store.flushPending();
+    this.assertCurrentSession(session, 'flush');
   }
 
   async resolve<TValue>(ref: AilyDataRef): Promise<TValue> {
     const cached = this.takePrepared<TValue>(ref);
     if (cached !== undefined) return cached;
-    const value = await this.getStore().resolve<TValue>(ref);
+    const session = this.captureSession('resolve');
+    const value = await session.store.resolve<TValue>(ref);
+    this.assertCurrentSession(session, 'resolve');
     this.setPrepared(ref, value);
     return value;
   }
 
   async prepare(refs: readonly AilyDataRef[]): Promise<void> {
+    const session = this.captureSession('prepare');
+    await this.prepareForSession(refs, session);
+  }
+
+  async prepareValue(value: unknown): Promise<void> {
+    const session = this.captureSession('prepare');
+    await this.prepareForSession(session.store.collectReferences(value), session);
+  }
+
+  private async prepareForSession(
+    refs: readonly AilyDataRef[],
+    session: ProjectDataRuntimeSessionSnapshot,
+  ): Promise<void> {
     const unique = new Map<string, AilyDataRef>();
     for (const ref of refs) {
       const existing = unique.get(ref.$ailyData.id);
@@ -115,29 +165,37 @@ class ProjectDataRuntime {
     for (const ref of unique.values()) {
       this.takePrepared(ref);
     }
-    await Promise.all([...unique.values()].map(async (ref) => {
+    const resolved = await Promise.all([...unique.values()].map(async (ref) => {
       if (!this.preparedValues.has(ref.$ailyData.id)) {
-        await this.resolve(ref);
+        return {
+          ref,
+          value: await session.store.resolve(ref),
+        };
       }
+      return null;
     }));
-  }
-
-  async prepareValue(value: unknown): Promise<void> {
-    await this.prepare(this.getStore().collectReferences(value));
+    this.assertCurrentSession(session, 'prepare');
+    for (const entry of resolved) {
+      if (entry) this.setPrepared(entry.ref, entry.value);
+    }
   }
 
   async exportClipboardBundle(value: unknown): Promise<ProjectDataClipboardBundle> {
+    const session = this.captureSession('clipboard-export');
     await this.flushPending();
-    const refs = this.getStore().collectReferences(value);
-    this.clipboardRefs = refs;
+    this.assertCurrentSession(session, 'clipboard-export');
+    const refs = session.store.collectReferences(value);
     const resources = await Promise.all(refs.map(async (ref) => ({
       ref,
-      containerBase64: bytesToBase64(await this.getStore().exportContainer(ref)),
+      containerBase64: bytesToBase64(await session.store.exportContainer(ref)),
     })));
+    this.assertCurrentSession(session, 'clipboard-export');
+    this.clipboardRefs = refs;
     return { schemaVersion: 1, resources };
   }
 
   async importClipboardBundle(bundle: unknown, requiredValue?: unknown): Promise<void> {
+    const session = this.captureSession('clipboard-import');
     if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
       throw new ProjectDataError('invalid-ref', 'Clipboard project data bundle is invalid.');
     }
@@ -150,7 +208,7 @@ class ProjectDataRuntime {
     }
     const requiredRefs = requiredValue === undefined
       ? []
-      : this.getStore().collectReferences(requiredValue);
+      : session.store.collectReferences(requiredValue);
     const requiredIds = new Set(requiredRefs.map((ref) => ref.$ailyData.id));
     const requiredRefsById = new Map(requiredRefs.map((ref) => [ref.$ailyData.id, ref]));
     const suppliedIds = new Set<string>();
@@ -180,13 +238,15 @@ class ProjectDataRuntime {
         throw new ProjectDataError('too-large', 'Clipboard project data bundle exceeds the import limit.');
       }
       suppliedIds.add(resource.ref.$ailyData.id);
-      await this.getStore().importContainer(resource.ref, base64ToBytes(resource.containerBase64));
+      await session.store.importContainer(resource.ref, base64ToBytes(resource.containerBase64));
+      this.assertCurrentSession(session, 'clipboard-import');
     }
     const missingBundleIds = [...requiredIds].filter((id) => !suppliedIds.has(id));
     if (missingBundleIds.length > 0) {
-      const locallyAvailable = await this.getStore().validateReferences(
+      const locallyAvailable = await session.store.validateReferences(
         requiredRefs.filter((ref) => missingBundleIds.includes(ref.$ailyData.id)),
       );
+      this.assertCurrentSession(session, 'clipboard-import');
       if (!locallyAvailable.valid) {
         throw new ProjectDataError(
           'missing',
@@ -198,16 +258,23 @@ class ProjectDataRuntime {
   }
 
   async getStatistics(rootValues: readonly unknown[]): Promise<ProjectDataStatistics> {
+    const session = this.captureSession('statistics');
     const refs = this.collectRootReferences(rootValues);
-    return this.getStore().getStatistics(refs);
+    const statistics = await session.store.getStatistics(refs);
+    this.assertCurrentSession(session, 'statistics');
+    return statistics;
   }
 
   async garbageCollect(
     rootValues: readonly unknown[],
     options?: { readonly gracePeriodMs?: number; readonly dryRun?: boolean; readonly nowMs?: number },
   ): Promise<ProjectDataGcResult> {
+    const session = this.captureSession('garbage-collect');
     await this.flushPending();
-    return this.getStore().garbageCollect(this.collectRootReferences(rootValues), options);
+    this.assertCurrentSession(session, 'garbage-collect');
+    const result = await session.store.garbageCollect(this.collectRootReferences(rootValues), options);
+    this.assertCurrentSession(session, 'garbage-collect');
+    return result;
   }
 
   getPrepared<TValue>(ref: AilyDataRef): TValue {

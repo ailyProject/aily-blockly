@@ -14,10 +14,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IAgentCommandContribution, IAgentContribution, IHostAgentProvider } from 'aily-lex/browser';
-import { SCHEMATIC_AGENT_TYPE } from './agent-identifiers';
+import {
+  PROJECT_SCENE_AGENT_TYPE,
+  SCHEMATIC_AGENT_TYPE,
+} from './agent-identifiers';
 import { normalizeGovernanceToolName } from './tool-name-normalizer';
 
-export { SCHEMATIC_AGENT_TYPE };
+export { PROJECT_SCENE_AGENT_TYPE, SCHEMATIC_AGENT_TYPE };
 export const BLOCKLY_HOST_AGENT_URI_SCHEME = 'aily-chat-agent';
 export const SCHEMATIC_AGENT_NAME = SCHEMATIC_AGENT_TYPE;
 export const SCHEMATIC_AGENT_MAX_TURNS = 25;
@@ -60,8 +63,6 @@ export const SCHEMATIC_AGENT_DISALLOWED_PROMPT_PATTERNS = [
 
 // Schematic-domain tools (only visible to SchematicAgent, not mainAgent)
 const SCHEMATIC_EXCLUSIVE_TOOLS = [
-  'get_project_scene_regeneration_context',
-  'commit_project_scene_regeneration',
   'generate_schematic',
   'validate_schematic',
   'generate_pinmap',
@@ -90,6 +91,20 @@ const SCHEMATIC_SHARED_TOOLS = [
 
 export const SCHEMATIC_AGENT_TOOLS = [...SCHEMATIC_EXCLUSIVE_TOOLS, ...SCHEMATIC_SHARED_TOOLS] as const;
 
+export const PROJECT_SCENE_AGENT_NAME = PROJECT_SCENE_AGENT_TYPE;
+export const PROJECT_SCENE_AGENT_MAX_TURNS = 12;
+export const PROJECT_SCENE_AGENT_MESSAGE_INHERITANCE = 'none' as const;
+export const PROJECT_SCENE_AGENT_MODEL = 'inherit';
+export const PROJECT_SCENE_AGENT_REQUIRED_CONTEXT = {
+  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
+  strict: true,
+  hydrateBeforeFirstModelCall: true,
+} as const;
+export const PROJECT_SCENE_AGENT_TOOLS = [
+  'get_project_scene_generation_context',
+  'submit_project_scene_generation_proposal',
+] as const;
+
 type AgentConfigChangeSubscription = { unsubscribe(): void };
 
 export interface BlocklyAgentProviderConfigSource {
@@ -115,6 +130,15 @@ const SCHEMATIC_AGENT_COMMANDS: readonly IAgentCommandContribution[] = [
     when: 'Use after editing or generating AWS wiring content that needs validation and persistence.',
   },
 ];
+
+const PROJECT_SCENE_AGENT_COMMANDS: readonly IAgentCommandContribution[] = [
+  {
+    name: 'generate',
+    description: 'Generate a bounded native v2 Project Scene proposal for the active simulator request.',
+    sampleRequest: '@ProjectSceneAgent /generate generate the native Project Scene from the current project',
+    when: 'Use only when the independent Simulator has an active Project Scene generation request.',
+  },
+];
 // ---------------------------------------------------------------------------
 // Static prompt body (domain knowledge, workflow, safety rules)
 // ---------------------------------------------------------------------------
@@ -126,26 +150,13 @@ You help users generate visual diagrams of development boards and electronic mod
 
 - Only handle tasks that explicitly require circuit schematics, wiring, pin assignment, or connection diagrams.
 - If the user is asking for programming help, ABS block/library analysis, code generation, project setup, or debugging without an explicit wiring goal, do not continue as SchematicAgent.
-- When the simulator reports \`legacy-scene-regeneration-required\`, the v2 Project Scene flow below is authoritative. Do not use AWS, \`generate_schematic\`, \`validate_schematic\`, \`connection.aws\`, or \`connection_output.json\` in that flow.
-- AWS remains a temporary compatibility format only for the separately opened stable Angular connection-diagram feature when no v2 Project Scene regeneration is pending.
+- This Agent serves only the legacy Angular connection-diagram entry. Never handle native v2 Project Scene generation or Simulator requests.
 - If any required board/component pinmap is missing, generate and save the pinmap first, then continue wiring.
 - If a requested item is cataloged as a software/framework library but the user intent requires physical wiring (e.g. I2S microphone, I2S speaker, or other modules with real signal/power/ground pins), treat it as a hardware component and generate/save a pinmap before wiring.
 - IMPORTANT: Even when no external peripheral library is installed in the project, if user code clearly uses hardware peripherals (such as I2S/I2C/SPI/UART/ADC/PWM/GPIO), you MUST infer the required physical modules and proactively generate/save pinmaps for them before schematic generation.
 - IMPORTANT: GPIO direct-control hardware (e.g. LED, buzzer, relay, transistor switch) is still physical hardware. If code uses \`pinMode(...)\`, \`digitalWrite(...)\`, \`analogWrite(...)\`, PWM setup, or similar APIs, you MUST include those devices in the schematic flow and ensure they have pinmaps.
 
-# v2 Project Scene Regeneration (authoritative simulator flow)
-
-When the request comes from the independent simulator and says that a legacy Scene must be regenerated:
-
-1. Call \`get_project_scene_regeneration_context()\` and use only its bounded requirement and Component Package/pin guide.
-2. Inspect current Blockly/project context and generated code to infer the board, physical components, pins, power topology, explicit resistors, and signal kinds. Never read or translate the legacy \`connection_output.json\` body.
-3. Build a fresh proposal from exact Component Package instances and point-to-point connections. LED/button are two-terminal devices; account for active-high/active-low wiring and explicit pull/current-limiting resistors when the circuit requires them.
-4. Call \`commit_project_scene_regeneration(...)\`. This destructive tool must pause for the user's per-call confirmation. The Electron Main Project Scene authority fills target/revisions/IDs and atomically commits the v2 Scene.
-5. If the requirement is stale, expired, or replaced, read the context again and rebuild the proposal. Never fall back to writing old AWS/JSON files.
-
 # Legacy Angular Connection Diagram Workflow
-
-Use the following AWS workflow only for the old standalone Angular connection-diagram entry when there is no pending v2 simulator regeneration requirement.
 
 When the user asks to generate, update, or fix a schematic (e.g. "connect DHT20 to ESP32S3"):
 
@@ -254,6 +265,36 @@ When the user wants to modify an existing schematic:
 
 export const SCHEMATIC_AGENT_WHEN_TO_USE = 'Generate and validate circuit schematics / connection diagrams (连线图). Use only when the task explicitly involves wiring, pin assignment, or component connections. Do not use for programming help, ABS block/library analysis, code generation, or general project setup.';
 
+export const PROJECT_SCENE_AGENT_WHEN_TO_USE = 'Generate a bounded native v2 Project Scene proposal only for an active request from the independent Simulator. Do not use for the legacy Angular/AWS connection diagram, ordinary programming, build, simulation runtime control, or debugging.';
+export const PROJECT_SCENE_AGENT_WHEN_NOT_TO_USE = 'Do not use without an active Project Scene generation request. Never read or translate connection_output.json, generate AWS, edit files, control QEMU/GDB, or handle non-Scene tasks.';
+export const PROJECT_SCENE_AGENT_ARGUMENT_HINT = 'Generate the requested native Project Scene proposal';
+
+export const PROJECT_SCENE_PROMPT_BODY = `You are ProjectSceneAgent, a narrowly scoped proposal provider for the independent Aily Simulator.
+
+# Authority boundary
+
+- You never own, open, persist, or directly edit a Scene document.
+- You never control the Simulator iframe, QEMU, GDB, UART, instruments, sessions, or runtime processes.
+- You never use AWS, connection.aws, generate_schematic, validate_schematic, pinmap generation tools, or the body of connection_output.json.
+- You never use generic file editing, deletion, shell, network, or arbitrary tool discovery.
+- The Simulator Project Scene authority validates revisions, Component Packages, terminals, functions, electrical topology, and persistence.
+
+# Workflow
+
+1. Call get_project_scene_generation_context exactly once with the requestId from the provider prompt.
+2. Use only the bounded request, authoritative Component Package guide, and injected current-project context. If the project evidence is insufficient, stop and explain what semantic input is missing; never fall back to legacy tools.
+3. Infer the physical board, components, exact GPIO/bus functions, power topology, internal pull configuration, and required explicit resistors.
+4. Submit only exact package instances and point-to-point terminal connections through submit_project_scene_generation_proposal. This returns a candidate to the provider; it never saves or edits the Scene.
+5. If the request is expired, replaced, or revision-conflicted, stop. Do not retry by writing any file.
+
+# Electrical rules
+
+- LED and button are two-terminal components.
+- Model LED source/sink polarity correctly and include an explicit current-limiting resistor when required.
+- Distinguish internal INPUT_PULLUP/INPUT_PULLDOWN from an external resistor.
+- Never short power to ground or connect multiple push-pull outputs together.
+- Use only package IDs, versions, terminal IDs, terminal functions, and signal kinds advertised by the generation context.`;
+
 export function createBlocklyHostAgentUri(agentType: string): string {
   const normalizedAgentType = typeof agentType === 'string' ? agentType.trim() : '';
   const encodedAgentType = encodeURIComponent(normalizedAgentType || 'unknown');
@@ -287,6 +328,30 @@ const SCHEMATIC_AGENT_CONTRIBUTION: IAgentContribution = {
   agents: [],
 };
 
+const PROJECT_SCENE_AGENT_CONTRIBUTION: IAgentContribution = {
+  agentType: PROJECT_SCENE_AGENT_TYPE,
+  name: 'Project Scene Agent',
+  description: PROJECT_SCENE_AGENT_WHEN_TO_USE,
+  argumentHint: PROJECT_SCENE_AGENT_ARGUMENT_HINT,
+  target: 'aily',
+  whenToUse: PROJECT_SCENE_AGENT_WHEN_TO_USE,
+  whenNotToUse: PROJECT_SCENE_AGENT_WHEN_NOT_TO_USE,
+  uri: createBlocklyHostAgentUri(PROJECT_SCENE_AGENT_TYPE),
+  modeInstructions: {
+    content: PROJECT_SCENE_PROMPT_BODY,
+    toolReferences: [],
+  },
+  requiredContext: PROJECT_SCENE_AGENT_REQUIRED_CONTEXT,
+  systemPrompt: PROJECT_SCENE_PROMPT_BODY,
+  tools: [...PROJECT_SCENE_AGENT_TOOLS],
+  commands: PROJECT_SCENE_AGENT_COMMANDS,
+  excludeTools: [],
+  maxTurns: PROJECT_SCENE_AGENT_MAX_TURNS,
+  model: PROJECT_SCENE_AGENT_MODEL,
+  messageInheritance: PROJECT_SCENE_AGENT_MESSAGE_INHERITANCE,
+  agents: [],
+};
+
 function getConfiguredAgentTools(
   configSource: BlocklyAgentProviderConfigSource | undefined,
   agentName: string,
@@ -310,6 +375,14 @@ function buildBlocklyAgentContributions(
     {
       ...SCHEMATIC_AGENT_CONTRIBUTION,
       tools: getConfiguredAgentTools(configSource, SCHEMATIC_AGENT_TYPE, SCHEMATIC_AGENT_TOOLS),
+    },
+    {
+      ...PROJECT_SCENE_AGENT_CONTRIBUTION,
+      tools: getConfiguredAgentTools(
+        configSource,
+        PROJECT_SCENE_AGENT_TYPE,
+        PROJECT_SCENE_AGENT_TOOLS,
+      ),
     },
   ];
 }

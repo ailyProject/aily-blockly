@@ -491,6 +491,60 @@ export class ChatSessionModel {
     return changed;
   }
 
+  patchTurnResponsePartSlots(
+    turnId: string | null | undefined,
+    parts: TurnResponseTurn['response']['parts'] | null | undefined,
+    partIndices: readonly number[] | null | undefined,
+    options?: {
+      readonly status?: TurnResponseTurn['response']['status'];
+      readonly updatedAt?: number;
+    },
+  ): TurnResponseTurn | null {
+    const normalizedTurnId = normalizeChatSessionResource(turnId);
+    if (!normalizedTurnId
+      || !Array.isArray(parts)
+      || parts.length === 0
+      || !Array.isArray(partIndices)
+      || parts.length !== partIndices.length) {
+      return null;
+    }
+
+    const turnIndex = this.turnResponsesValue.findIndex(turn => turn.turnId === normalizedTurnId);
+    if (turnIndex < 0) {
+      return null;
+    }
+    const previousTurn = this.turnResponsesValue[turnIndex];
+    const nextParts = [...(previousTurn.response?.parts ?? [])];
+    for (let index = 0; index < parts.length; index += 1) {
+      const partIndex = partIndices[index];
+      if (!Number.isInteger(partIndex) || partIndex < 0) {
+        return null;
+      }
+      if (partIndex >= nextParts.length) {
+        return null;
+      }
+      nextParts[partIndex] = cloneTurnResponsePart(parts[index]);
+    }
+
+    const requestedUpdatedAt = Number(options?.updatedAt);
+    const updatedAt = Number.isFinite(requestedUpdatedAt) && requestedUpdatedAt > 0
+      ? requestedUpdatedAt
+      : previousTurn.response.updatedAt;
+    const nextTurn: TurnResponseTurn = {
+      ...previousTurn,
+      response: {
+        ...previousTurn.response,
+        parts: nextParts,
+        status: options?.status ?? previousTurn.response.status,
+        updatedAt,
+      },
+      updatedAt,
+    };
+    this.turnResponsesValue[turnIndex] = nextTurn;
+    this.upsertTurnResponseParts(normalizedTurnId, parts);
+    return nextTurn;
+  }
+
   removeTurnResponsesAfter(turnId: string | null | undefined): readonly TurnResponseTurn[] {
     const normalizedTurnId = typeof turnId === 'string' ? turnId.trim() : '';
     if (!normalizedTurnId) {
@@ -1048,6 +1102,15 @@ function cloneTurnResponse(turnResponse: TurnResponseTurn): TurnResponseTurn {
   return JSON.parse(JSON.stringify(turnResponse)) as TurnResponseTurn;
 }
 
+function cloneTurnResponsePart(
+  part: TurnResponseTurn['response']['parts'][number],
+): TurnResponseTurn['response']['parts'][number] {
+  if (typeof globalThis.structuredClone === 'function') {
+    return globalThis.structuredClone(part) as TurnResponseTurn['response']['parts'][number];
+  }
+  return JSON.parse(JSON.stringify(part)) as TurnResponseTurn['response']['parts'][number];
+}
+
 function turnResponsePartsToChatParts(
   parts: TurnResponseTurn['response']['parts'] | null | undefined,
 ) {
@@ -1594,6 +1657,26 @@ export class ChatSessionModelStoreService {
     model.upsertTurnResponseParts(turnResponse.turnId, parts);
     this.changedSubject.next({ sessionResource: model.sessionResource, kind: 'updated', reason: 'turnDelta' });
     return nextTurnResponses;
+  }
+
+  applyTurnResponsePartDelta(
+    sessionResource: string | null | undefined,
+    turnId: string | null | undefined,
+    parts: TurnResponseTurn['response']['parts'] | null | undefined,
+    partIndices: readonly number[] | null | undefined,
+    options?: {
+      readonly status?: TurnResponseTurn['response']['status'];
+      readonly updatedAt?: number;
+    },
+  ): readonly TurnResponseTurn[] | null {
+    const model = this.get(sessionResource);
+    if (!model || !model.patchTurnResponsePartSlots(turnId, parts, partIndices, options)) {
+      return null;
+    }
+
+    // Response progress changes the existing response model; it does not
+    // mutate the request list or publish a session-list change event.
+    return model.peekTurnResponsesForProjection();
   }
 
   commitRestoredCheckpointForwardBranch(

@@ -33,8 +33,6 @@ import {
   type ChatRuntimeOwnerStatePort,
   CHAT_RUNTIME_OWNER_TOOL_APPROVAL,
   type ChatRuntimeOwnerToolApprovalPort,
-  CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE,
-  type ChatRuntimeOwnerTurnStartupEditLifecyclePort,
 } from './chat-runtime-owner-ports';
 import {
   buildRuntimeOwnerHostProjectionState,
@@ -63,9 +61,6 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
   private readonly ownerSaveTarget = inject<ChatRuntimeOwnerSaveTargetPort>(CHAT_RUNTIME_OWNER_SAVE_TARGET);
   private readonly ownerSessionContext = inject<ChatRuntimeOwnerSessionContextPort>(CHAT_RUNTIME_OWNER_SESSION_CONTEXT);
   private readonly ownerToolApproval = inject<ChatRuntimeOwnerToolApprovalPort>(CHAT_RUNTIME_OWNER_TOOL_APPROVAL);
-  private readonly turnStartupEditLifecycle = inject<ChatRuntimeOwnerTurnStartupEditLifecyclePort>(
-    CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE,
-  );
   private readonly viewRequests = createUnboundViewRequestDispatcher();
   private readonly contextCore = new ChatRuntimeOwnerContextCore();
   private readonly headlessPartStore = new ChatPartStore();
@@ -188,7 +183,6 @@ export class ChatRuntimeOwnerContextService implements ChatRuntimeOwnerContextMa
           });
         },
         get repetitionDetectionService() { return service.repetitionDetectionService; },
-        get turnStartupEditLifecycle() { return service.turnStartupEditLifecycle; },
         get isCancelled() { return service.ownerState.isCancelled; },
         setIsCancelled: value => { service.ownerState.isCancelled = value as never; },
         get activeToolExecutions() { return service.ownerState.activeToolExecutions; },

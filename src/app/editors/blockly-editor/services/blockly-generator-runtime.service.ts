@@ -8,6 +8,10 @@ import {
   MicroPythonGenerator,
   createMicroPythonGenerator,
 } from '../components/blockly/generators/micropython/micropython';
+import {
+  prepareBlocklyProjectDataForCodeGeneration,
+  wrapProjectDataGeneratorFunctions,
+} from '../../../services/project-data/blockly-project-data-adapter';
 
 export type BlocklyGeneratorMode = 'arduino' | 'micropython';
 export type ProjectGenerator = ArduinoGenerator | MicroPythonGenerator;
@@ -68,11 +72,34 @@ export function getActiveProjectGenerator(): ProjectGenerator | null {
   return activeProjectGenerator;
 }
 
-export function generateCodeWithActiveProjectGenerator(workspace: Blockly.Workspace): string {
-  if (!activeProjectGenerator) {
+/**
+ * Cross the asynchronous Project Data barrier while retaining the identity of
+ * the project-scoped generator that requested it. A project switch/rebuild can
+ * replace the active iframe during any await, so callers must not prepare data
+ * first and then look up the global active generator a second time.
+ */
+export async function runWithPreparedActiveProjectGenerator<T>(
+  workspace: Blockly.Workspace,
+  operation: (generator: ProjectGenerator) => T,
+  projectValue?: unknown,
+): Promise<T> {
+  const generator = activeProjectGenerator;
+  if (!generator) {
     throw new Error('Blockly generator runtime is not active');
   }
-  return activeProjectGenerator.workspaceToCode(workspace);
+
+  await prepareBlocklyProjectDataForCodeGeneration(workspace, projectValue);
+  if (activeProjectGenerator !== generator) {
+    throw new Error('Blockly generator runtime changed while Project Data was being prepared');
+  }
+
+  // Keep workspaceToCode(), generated artifacts, and mutable source maps in one
+  // synchronous runtime-owned phase. The callback must not return a Promise.
+  const result = operation(generator);
+  if (result && typeof (result as any)?.then === 'function') {
+    throw new Error('Active Blockly generator operation must remain synchronous');
+  }
+  return result;
 }
 
 function cloneRuntimeValue<T>(value: T): T {
@@ -228,7 +255,16 @@ export class BlocklyGeneratorRuntimeService {
     const globalNames = Reflect.ownKeys(session.realmWindow)
       .map(String)
       .filter((name) => !globalsBefore.has(name));
-    return this.describeLoadedGenerator(session, filePath, globalNames);
+    const result = this.describeLoadedGenerator(session, filePath, globalNames);
+
+    // Generator scripts now live in the project iframe, so Project Data's
+    // legacy-field projection must be installed at this runtime boundary. This
+    // keeps read-only libraries working even when callers/loaders evolve.
+    wrapProjectDataGeneratorFunctions(session.generator, [
+      ...result.arduinoBlockTypes,
+      ...result.micropythonBlockTypes,
+    ]);
+    return result;
   }
 
   invokeGlobal<T = unknown>(name: string, ...args: unknown[]): T | undefined {

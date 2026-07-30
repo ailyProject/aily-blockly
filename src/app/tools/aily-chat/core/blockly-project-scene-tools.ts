@@ -1,11 +1,17 @@
 import type { IToolContribution, ToolResultContent } from 'aily-lex/browser';
 
 import type { InvokeHandler } from './blockly-contributed-tool-runtime';
+import { PROJECT_SCENE_AGENT_TYPE } from './agent-identifiers';
+import {
+  readProjectSceneProposalInvocation,
+  submitProjectSceneProposalInvocation,
+  type ProjectSceneProposalInvocationInput,
+} from './project-scene-proposal-invocation';
 
-export const GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL =
-  'get_project_scene_regeneration_context';
-export const COMMIT_PROJECT_SCENE_REGENERATION_TOOL =
-  'commit_project_scene_regeneration';
+export const GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL =
+  'get_project_scene_generation_context';
+export const SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL =
+  'submit_project_scene_generation_proposal';
 
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const PORTABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
@@ -24,36 +30,12 @@ const SIGNAL_KINDS = new Set([
 const MAX_COMMANDS = 64;
 const MAX_SUMMARY_LENGTH = 512;
 
-export interface ProjectSceneRegenerationRequirement {
-  readonly schemaVersion: 1;
-  readonly kind: 'aily-project-scene-legacy-regeneration-required';
-  readonly regenerationId: string;
-  readonly projectIdentity: string;
-  readonly sceneId: string;
-  readonly legacySourceKind: 'connection-output-v1';
-  readonly legacySourceRevision: string;
-  readonly legacySourceBytes: number;
-  readonly catalogRevision: string;
-  readonly draftVisualRevision: string;
-  readonly draftGraphSemanticRevision: string;
-  readonly expiresAtUnixMs: number;
-}
-
-export interface ProjectSceneRegenerationBridge {
-  status(): Promise<unknown>;
-  resolveProjectSceneRegeneration(options: {
-    readonly regenerationId: string;
-    readonly resolution: 'commit';
-    readonly proposal: Record<string, unknown>;
-  }): Promise<unknown>;
-}
-
 interface ProjectSceneToolInvocationContext {
   readonly toolCallId?: string;
   readonly trace?: { readonly turnId?: string };
 }
 
-interface RegenerationComponentInput {
+interface ProposalComponentInput {
   readonly instanceId: string;
   readonly package: {
     readonly id: string;
@@ -65,26 +47,26 @@ interface RegenerationComponentInput {
   };
 }
 
-interface RegenerationEndpointInput {
+interface ProposalEndpointInput {
   readonly instanceId: string;
   readonly pinId: string;
   readonly function: string;
 }
 
-interface RegenerationConnectionInput {
+interface ProposalConnectionInput {
   readonly segmentId: string;
-  readonly from: RegenerationEndpointInput;
-  readonly to: RegenerationEndpointInput;
+  readonly from: ProposalEndpointInput;
+  readonly to: ProposalEndpointInput;
   readonly signalKind: string;
   readonly label?: string;
   readonly color?: string;
 }
 
-interface CommitProjectSceneRegenerationInput {
-  readonly regenerationId: string;
+interface SubmitProjectSceneGenerationProposalInput {
+  readonly requestId: string;
   readonly summary: string;
-  readonly components: readonly RegenerationComponentInput[];
-  readonly connections: readonly RegenerationConnectionInput[];
+  readonly components: readonly ProposalComponentInput[];
+  readonly connections: readonly ProposalConnectionInput[];
 }
 
 const COMPONENT_PACKAGE_GUIDE = Object.freeze([
@@ -149,50 +131,47 @@ function error(message: string): ToolResultContent {
   };
 }
 
-function readProjectSceneBridge(): ProjectSceneRegenerationBridge | null {
-  if (typeof window === 'undefined') return null;
-  const api = (window as any).electronAPI?.simulatorSubapp;
-  return typeof api?.status === 'function'
-    && typeof api?.resolveProjectSceneRegeneration === 'function'
-    ? api as ProjectSceneRegenerationBridge
-    : null;
-}
-
-export function appendProjectSceneRegenerationContributions(
+export function appendProjectSceneGenerationContributions(
   contributions: IToolContribution[],
 ): void {
   contributions.push(
     {
-      name: GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL,
+      name: GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
       toolSet: 'blockly-project-scene',
-      description: 'Read the bounded pending v2 Project Scene regeneration requirement and Component Package guide.',
-      prompt: `Use this read-only tool only when the simulator reports that a legacy connection_output.json must be regenerated as a v2 Project Scene.
-It returns the pending requirement, exact revision baseline, and a bounded Component Package/pin guide. It never returns a host path, legacy JSON body, Scene body, capability token, iframe URL, or runtime process handle.
-After inspecting current Blockly/project context, call ${COMMIT_PROJECT_SCENE_REGENERATION_TOOL} with only the components and point-to-point connections needed for a fresh Scene.`,
+      description: 'Read the bounded hardware intent and revision baseline for one active Project Scene generation request.',
+      prompt: `Use this read-only tool exactly once for the requestId supplied in the provider prompt.
+It returns only the provider-neutral generation request, bounded project hardware intent, and a temporary Component Package guide. It never returns a host path, Blockly workspace, legacy JSON body, Scene body, capability token, iframe URL, or runtime process handle.
+After inferring the circuit, call ${SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL}.`,
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          requestId: {
+            type: 'string',
+            description: 'Exact requestId supplied in the provider prompt.',
+          },
+        },
+        required: ['requestId'],
         additionalProperties: false,
       },
       annotations: { readOnly: true, idempotent: true },
       runtimeModes: ['blockly'],
       requiredCapabilities: ['runtime:blockly'],
-      agentScope: ['main', 'SchematicAgent'],
+      agentScope: [PROJECT_SCENE_AGENT_TYPE],
     },
     {
-      name: COMMIT_PROJECT_SCENE_REGENERATION_TOOL,
+      name: SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
       toolSet: 'blockly-project-scene',
-      description: 'Submit a bounded Component Package proposal and atomically commit a fresh v2 Project Scene after user approval.',
-      prompt: `Use this only after ${GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL} returns a live pending requirement and you have inferred the circuit from current Blockly/project context.
-This is a destructive, user-confirmed operation. The host—not the model—fills projectIdentity, sceneId, revision baseline, reason, proposalId, and agentRunId. The tool cannot replace a Scene document or write connection_output.json.
+      description: 'Submit a bounded Project Scene candidate proposal without saving or editing a Scene document.',
+      prompt: `Use this only after ${GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL} returns the matching active request and you have inferred the circuit.
+This operation only returns a candidate to the provider. It cannot save, replace or edit a Scene document and cannot write connection_output.json. The host fills projectIdentity, sceneId, revision baseline, reason, proposalId, and agentRunId.
 components declares exact Component Package instances in the new empty Scene. connections creates point-to-point segments between declared component pins. The endpoint function must be one function advertised for that pin (for example GPIO1, A(IO), C(GND), 3V3, or GND). signalKind must be ground, power, gpio, analog, pwm, i2c, spi, or uart.
 Use stable unique portable IDs that follow each Component Package instanceIdPrefix. Include the XIAO board and every required physical component. LED and button each have two electrical terminals; model pull-up/pull-down or LED current limiting with explicit resistor components when required.`,
       inputSchema: {
         type: 'object',
         properties: {
-          regenerationId: {
+          requestId: {
             type: 'string',
-            description: `The exact regenerationId returned by ${GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL}.`,
+            description: `The exact requestId returned by ${GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL}.`,
           },
           summary: {
             type: 'string',
@@ -264,34 +243,31 @@ Use stable unique portable IDs that follow each Component Package instanceIdPref
             required: ['instanceId', 'pinId', 'function'],
           },
         },
-        required: ['regenerationId', 'summary', 'components', 'connections'],
+        required: ['requestId', 'summary', 'components', 'connections'],
         additionalProperties: false,
       },
       annotations: {
         readOnly: false,
-        destructive: true,
+        destructive: false,
         idempotent: true,
       },
       runtimeModes: ['blockly'],
       requiredCapabilities: ['runtime:blockly'],
-      agentScope: ['main', 'SchematicAgent'],
+      agentScope: [PROJECT_SCENE_AGENT_TYPE],
     },
   );
 }
 
-export function createProjectSceneRegenerationHandlers(
-  bridgeFactory: () => ProjectSceneRegenerationBridge | null = readProjectSceneBridge,
-): Record<string, InvokeHandler> {
+export function createProjectSceneGenerationHandlers(): Record<string, InvokeHandler> {
   return {
-    [GET_PROJECT_SCENE_REGENERATION_CONTEXT_TOOL]: async () => {
-      const bridge = bridgeFactory();
-      if (!bridge) return error('独立仿真服务的 Project Scene 接口不可用。');
-      const requirement = await readPendingRequirement(bridge);
+    [GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL]: async (input) => {
+      const requestId = requireRequestIdInput(input);
+      const context = readProjectSceneProposalInvocation(requestId);
       return result({
         schemaVersion: 1,
-        kind: 'aily-project-scene-agent-regeneration-context',
-        state: 'legacy-scene-regeneration-required',
-        requirement,
+        kind: 'aily-project-scene-agent-generation-context',
+        request: context.request,
+        hardwareIntent: context.hardwareIntent,
         componentPackages: COMPONENT_PACKAGE_GUIDE,
         constraints: {
           sceneStartsEmpty: true,
@@ -307,75 +283,70 @@ export function createProjectSceneRegenerationHandlers(
         },
       });
     },
-    [COMMIT_PROJECT_SCENE_REGENERATION_TOOL]: async (
+    [SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL]: async (
       input,
       _hostAPI,
       invocationContext,
     ) => {
-      const bridge = bridgeFactory();
-      if (!bridge) return error('独立仿真服务的 Project Scene 接口不可用。');
-      const requirement = await readPendingRequirement(bridge);
-      const normalized = validateCommitInput(input);
-      if (normalized.regenerationId !== requirement.regenerationId) {
-        return error('regenerationId 与当前 pending requirement 不一致，请重新读取上下文。');
+      const normalized = validateSubmitInput(input);
+      const context = readProjectSceneProposalInvocation(normalized.requestId);
+      const request = requireGenerationRequest(context);
+      if (Number(request['expiresAtUnixMs']) <= Date.now()) {
+        return error('Project Scene generation request has expired.');
       }
-      if (requirement.expiresAtUnixMs <= Date.now()) {
-        return error('Project Scene regeneration requirement 已过期，请重新打开仿真器。');
-      }
-      const proposal = buildRegenerationProposal(
-        requirement,
+      const proposal = buildGenerationProposal(
+        context,
         normalized,
         invocationContext,
       );
-      const response = await bridge.resolveProjectSceneRegeneration({
-        regenerationId: requirement.regenerationId,
-        resolution: 'commit',
-        proposal,
-      });
-      const receipt = validateCommitResponse(response);
+      submitProjectSceneProposalInvocation(normalized.requestId, proposal);
       return result({
         schemaVersion: 1,
-        kind: 'aily-project-scene-agent-regeneration-commit-result',
-        state: 'committed',
-        regenerationId: requirement.regenerationId,
+        kind: 'aily-project-scene-agent-proposal-submission-result',
+        state: 'submitted',
+        requestId: normalized.requestId,
         proposalId: proposal['proposalId'],
-        initialization: receipt.initialization,
-        tool: receipt.tool,
       });
     },
   };
 }
 
-export function buildRegenerationProposal(
-  requirement: ProjectSceneRegenerationRequirement,
-  input: CommitProjectSceneRegenerationInput,
+export function buildGenerationProposal(
+  context: ProjectSceneProposalInvocationInput,
+  input: SubmitProjectSceneGenerationProposalInput,
   invocationContext?: ProjectSceneToolInvocationContext,
 ): Record<string, unknown> {
+  const request = requireGenerationRequest(context);
+  const requestId = String(request['requestId']);
   const proposalId = createPortableRuntimeId(
     'scene-proposal',
     invocationContext?.toolCallId,
-    requirement.regenerationId,
+    requestId,
   );
   const agentRunId = createPortableRuntimeId(
     'scene-agent-run',
     invocationContext?.trace?.turnId,
-    invocationContext?.toolCallId ?? requirement.regenerationId,
+    invocationContext?.toolCallId ?? requestId,
   );
   return {
     schemaVersion: 1,
     kind: 'aily-agent-scene-change-proposal',
     proposalId,
     agentRunId,
-    reason: 'legacy-regeneration',
+    reason: request['reason'] === 'legacy-detected'
+      ? 'legacy-regeneration'
+      : 'user-requested-change',
     summary: input.summary,
     target: {
-      projectIdentity: requirement.projectIdentity,
-      sceneId: requirement.sceneId,
+      projectIdentity: request['projectIdentity'],
+      sceneId: request['sceneId'],
     },
     base: {
-      visualRevision: requirement.draftVisualRevision,
-      graphSemanticRevision: requirement.draftGraphSemanticRevision,
-      catalogRevision: requirement.catalogRevision,
+      ...(requireRecord(request['base'], 'request.base') as {
+        visualRevision: string;
+        graphSemanticRevision: string;
+        catalogRevision: string;
+      }),
     },
     componentMutations: input.components.map((component) => ({
       type: 'instantiate-component',
@@ -413,66 +384,15 @@ export function buildRegenerationProposal(
   };
 }
 
-async function readPendingRequirement(
-  bridge: ProjectSceneRegenerationBridge,
-): Promise<ProjectSceneRegenerationRequirement> {
-  const status = requireRecord(await bridge.status(), 'simulator status');
-  if (status['state'] !== 'legacy-scene-regeneration-required') {
-    throw new Error('当前没有待处理的 legacy Project Scene regeneration requirement。');
-  }
-  return validateRequirement(status['requirement']);
-}
-
-function validateRequirement(value: unknown): ProjectSceneRegenerationRequirement {
-  const requirement = requireRecord(value, 'regeneration requirement');
-  requireExactKeys(requirement, [
-    'schemaVersion',
-    'kind',
-    'regenerationId',
-    'projectIdentity',
-    'sceneId',
-    'legacySourceKind',
-    'legacySourceRevision',
-    'legacySourceBytes',
-    'catalogRevision',
-    'draftVisualRevision',
-    'draftGraphSemanticRevision',
-    'expiresAtUnixMs',
-  ], 'regeneration requirement');
-  if (
-    requirement['schemaVersion'] !== 1
-    || requirement['kind'] !== 'aily-project-scene-legacy-regeneration-required'
-    || requirement['legacySourceKind'] !== 'connection-output-v1'
-  ) {
-    throw new Error('Project Scene regeneration requirement schema 不受支持。');
-  }
-  requirePortableId(requirement['regenerationId'], 'regenerationId');
-  requireText(requirement['projectIdentity'], 512, 'projectIdentity');
-  requirePortableId(requirement['sceneId'], 'sceneId');
-  for (const key of [
-    'legacySourceRevision',
-    'catalogRevision',
-    'draftVisualRevision',
-    'draftGraphSemanticRevision',
-  ]) requireSha256(requirement[key], key);
-  if (!Number.isSafeInteger(requirement['legacySourceBytes']) || Number(requirement['legacySourceBytes']) < 0) {
-    throw new Error('legacySourceBytes 无效。');
-  }
-  if (!Number.isSafeInteger(requirement['expiresAtUnixMs']) || Number(requirement['expiresAtUnixMs']) <= 0) {
-    throw new Error('expiresAtUnixMs 无效。');
-  }
-  return requirement as unknown as ProjectSceneRegenerationRequirement;
-}
-
-function validateCommitInput(value: unknown): CommitProjectSceneRegenerationInput {
-  const input = requireRecord(value, 'commit input');
+function validateSubmitInput(value: unknown): SubmitProjectSceneGenerationProposalInput {
+  const input = requireRecord(value, 'proposal input');
   requireExactKeys(input, [
-    'regenerationId',
+    'requestId',
     'summary',
     'components',
     'connections',
-  ], 'commit input');
-  const regenerationId = requirePortableId(input['regenerationId'], 'regenerationId');
+  ], 'proposal input');
+  const requestId = requirePortableId(input['requestId'], 'requestId');
   const summary = requireText(input['summary'], MAX_SUMMARY_LENGTH, 'summary');
   if (!Array.isArray(input['components']) || !Array.isArray(input['connections'])) {
     throw new Error('components 与 connections 必须是数组。');
@@ -551,14 +471,14 @@ function validateCommitInput(value: unknown): CommitProjectSceneRegenerationInpu
     };
   });
 
-  return { regenerationId, summary, components, connections };
+  return { requestId, summary, components, connections };
 }
 
 function validateEndpoint(
   value: unknown,
   field: string,
   instanceIds: ReadonlySet<string>,
-): RegenerationEndpointInput {
+): ProposalEndpointInput {
   const endpoint = requireRecord(value, field);
   requireExactKeys(endpoint, ['instanceId', 'pinId', 'function'], field);
   const instanceId = requirePortableId(endpoint['instanceId'], `${field}.instanceId`);
@@ -572,22 +492,73 @@ function validateEndpoint(
   };
 }
 
-function validateCommitResponse(value: unknown): {
-  readonly tool: 'scene';
-  readonly initialization: 'regenerated-v2';
-} {
-  const response = requireRecord(value, 'commit response');
+function requireRequestIdInput(value: unknown): string {
+  const input = requireRecord(value, 'generation context input');
+  requireExactKeys(input, ['requestId'], 'generation context input');
+  return requirePortableId(input['requestId'], 'requestId');
+}
+
+function requireGenerationRequest(
+  context: ProjectSceneProposalInvocationInput,
+): Record<string, unknown> {
+  const request = requireRecord(context.request, 'generation request');
+  requireExactKeys(request, [
+    'schemaVersion',
+    'kind',
+    'requestId',
+    'projectIdentity',
+    'sceneId',
+    'reason',
+    'base',
+    'legacySource',
+    'expiresAtUnixMs',
+  ], 'generation request');
   if (
-    response['schemaVersion'] !== 1
-    || response['kind'] !== 'aily-simulator-subapp-surface'
-    || response['state'] !== 'ready'
-    || response['tool'] !== 'scene'
-    || response['initialization'] !== 'regenerated-v2'
-  ) throw new Error('Project Scene authority 未返回 regenerated-v2 surface。');
-  return response as unknown as {
-    readonly tool: 'scene';
-    readonly initialization: 'regenerated-v2';
-  };
+    request['schemaVersion'] !== 1
+    || request['kind'] !== 'aily-project-scene-generation-request'
+  ) throw new Error('Project Scene generation request is invalid.');
+  requirePortableId(request['requestId'], 'generation request.requestId');
+  requirePortableId(request['projectIdentity'], 'generation request.projectIdentity');
+  requirePortableId(request['sceneId'], 'generation request.sceneId');
+  if (!['missing-scene', 'legacy-detected', 'user-regenerate'].includes(String(request['reason']))) {
+    throw new Error('Project Scene generation reason is invalid.');
+  }
+  const base = requireRecord(request['base'], 'generation request.base');
+  requireExactKeys(base, [
+    'visualRevision',
+    'graphSemanticRevision',
+    'catalogRevision',
+  ], 'generation request.base');
+  requireSha256(base['visualRevision'], 'generation request.base.visualRevision');
+  requireSha256(
+    base['graphSemanticRevision'],
+    'generation request.base.graphSemanticRevision',
+  );
+  requireSha256(base['catalogRevision'], 'generation request.base.catalogRevision');
+  if (request['reason'] === 'legacy-detected') {
+    const legacySource = requireRecord(
+      request['legacySource'],
+      'generation request.legacySource',
+    );
+    requireExactKeys(
+      legacySource,
+      ['kind', 'revision', 'bytes'],
+      'generation request.legacySource',
+    );
+    if (
+      legacySource['kind'] !== 'connection-output-v1'
+      || !Number.isSafeInteger(legacySource['bytes'])
+      || Number(legacySource['bytes']) < 1
+    ) throw new Error('Project Scene generation legacy source metadata is invalid.');
+    requireSha256(legacySource['revision'], 'generation request.legacySource.revision');
+  } else if (request['legacySource'] !== null) {
+    throw new Error('Only legacy-detected generation may include legacy source metadata.');
+  }
+  if (
+    !Number.isSafeInteger(request['expiresAtUnixMs'])
+    || Number(request['expiresAtUnixMs']) <= 0
+  ) throw new Error('Project Scene generation expiry is invalid.');
+  return request;
 }
 
 function createPortableRuntimeId(

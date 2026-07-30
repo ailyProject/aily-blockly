@@ -1247,6 +1247,7 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
     options?: {
       readonly detectChanges?: boolean;
       readonly changedParts?: readonly ChatPart[];
+      readonly changedPartIndices?: readonly number[];
     },
   ): boolean {
     if (!nextItem || nextItem.id !== this.item?.id) {
@@ -1257,7 +1258,11 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
     if (options?.detectChanges === false) {
       if (this.hasStructuredAilyContent) {
         return this.messagePartsComponent
-          ? this.patchMountedMessageParts(this.messagePartsComponent, options?.changedParts)
+          ? this.patchMountedMessageParts(
+              this.messagePartsComponent,
+              options?.changedParts,
+              options?.changedPartIndices,
+            )
           : true;
       }
       return true;
@@ -1275,7 +1280,11 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
     if (this.hasStructuredAilyContent) {
       this.syncStreamingConfig(this.effectiveDoing);
       if (this.messagePartsComponent) {
-        this.patchMountedMessageParts(this.messagePartsComponent, options?.changedParts);
+        this.patchMountedMessageParts(
+          this.messagePartsComponent,
+          options?.changedParts,
+          options?.changedPartIndices,
+        );
       }
       // The part renderer owns only the mounted part subtree. Row chrome such
       // as footer model/billing metadata, completion time, feedback, and
@@ -1299,10 +1308,12 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
   private patchMountedMessageParts(
     component: ChatMessagePartsComponent,
     changedParts?: readonly ChatPart[],
+    changedPartIndices?: readonly number[],
   ): boolean {
     return component.applyVisiblePartsPatch({
       parts: this.effectiveParts,
       changedParts,
+      changedPartIndices,
       doing: this.effectiveDoing,
       sessionId: this.sessionId,
       turnResponse: this.activityTurnResponse,

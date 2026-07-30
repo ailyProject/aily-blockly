@@ -6,18 +6,18 @@
  * receive a growing multi-hundred-KB string on every delta.
  */
 
-interface StoredContent {
-  chunks: string[];
-  length: number;
-}
+import {
+  appendToContentBuffer,
+  createAppendOnlyContentBuffer,
+  materializeContentBuffer,
+  readContentBufferWindow,
+  type AppendOnlyContentBuffer,
+} from './append-only-content-buffer';
 
-const store = new Map<string, StoredContent>();
+const store = new Map<string, AppendOnlyContentBuffer>();
 
 export function storeMarkdownContent(key: string, content: string): void {
-  store.set(key, {
-    chunks: content ? [content] : [],
-    length: content.length,
-  });
+  store.set(key, createAppendOnlyContentBuffer(content));
 }
 
 export function appendMarkdownContent(key: string, delta: string): void {
@@ -31,13 +31,12 @@ export function appendMarkdownContent(key: string, delta: string): void {
     return;
   }
 
-  existing.chunks.push(delta);
-  existing.length += delta.length;
+  appendToContentBuffer(existing, delta);
 }
 
 export function getMarkdownContent(key: string): string {
   const existing = store.get(key);
-  return existing ? existing.chunks.join('') : '';
+  return existing ? materializeContentBuffer(existing) : '';
 }
 
 export function getMarkdownContentLength(key: string): number {
@@ -50,30 +49,7 @@ export function getMarkdownContentWindow(key: string, maxChars: number, omittedM
     return '';
   }
 
-  if (!Number.isFinite(maxChars) || maxChars <= 0 || existing.length <= maxChars) {
-    return existing.chunks.join('');
-  }
-
-  const tailLength = Math.max(0, Math.floor(maxChars) - omittedMarker.length);
-  if (tailLength <= 0) {
-    return omittedMarker;
-  }
-
-  const segments: string[] = [];
-  let remaining = tailLength;
-  for (let index = existing.chunks.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const chunk = existing.chunks[index] || '';
-    if (chunk.length <= remaining) {
-      segments.push(chunk);
-      remaining -= chunk.length;
-    } else {
-      segments.push(chunk.slice(chunk.length - remaining));
-      remaining = 0;
-    }
-  }
-
-  segments.reverse();
-  return `${omittedMarker}${segments.join('')}`;
+  return readContentBufferWindow(existing, maxChars, omittedMarker);
 }
 
 export function deleteMarkdownContent(key: string): void {

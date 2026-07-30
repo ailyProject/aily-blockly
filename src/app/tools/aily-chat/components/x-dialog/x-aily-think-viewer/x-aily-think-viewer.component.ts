@@ -14,13 +14,12 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { XMarkdownComponent } from 'ngx-x-markdown';
-import type { ComponentMap, StreamingOption } from 'ngx-x-markdown';
+import type { StreamingOption, XMarkdownIncrementalRenderEvent } from 'ngx-x-markdown';
 import {
   getThinkContent,
   getThinkContentLength,
 } from '../../../core/think-content-store';
 import { ChatPerformanceTracer } from '../../../services/chat-perf-tracer';
-import { AilyChatCodeComponent } from '../aily-chat-code.component';
 import { AilyMarkdownExternalLinksDirective } from '../../../directives/aily-markdown-external-links.directive';
 
 @Component({
@@ -52,10 +51,10 @@ import { AilyMarkdownExternalLinksDirective } from '../../../directives/aily-mar
               [contentLength]="activeContentLength"
               [contentResolver]="markdownContentResolver"
               [streaming]="streamingConfig"
-              [components]="componentMap"
-              rootClassName="x-markdown-dark"
+              rootClassName="x-markdown-dark ac-thinking-markdown"
               ailyMarkdownExternalLinks
               [heightChangeCallback]="markdownHeightChangeCallback"
+              [incrementalRenderCallback]="markdownIncrementalRenderCallback"
             />
           }
         </div>
@@ -80,6 +79,7 @@ import { AilyMarkdownExternalLinksDirective } from '../../../directives/aily-mar
         position: relative;
         margin: 2px 0;
         color: var(--chat-fg, #ccc);
+        contain: layout style;
       }
       .ac-think.embedded {
         margin: 0;
@@ -174,13 +174,6 @@ import { AilyMarkdownExternalLinksDirective } from '../../../directives/aily-mar
         padding-top: 0;
         margin-top: 0;
       }
-      .ac-think.embedded.streaming .ac-think-body {
-        max-height: 160px;
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable;
-      }
-
       .ac-think.embedded .ac-think-body::before {
         content: none;
       }
@@ -265,8 +258,28 @@ import { AilyMarkdownExternalLinksDirective } from '../../../directives/aily-mar
         padding: 0 3px;
       }
       :host ::ng-deep .ac-think-body .x-markdown-dark pre {
+        box-sizing: border-box;
+        margin: 4px 0;
+        padding: 6px 8px;
         max-width: 100%;
         overflow-x: auto;
+        background-color: var(--aily-chat-viewer-code-bg, var(--chat-bg-subtle, rgba(255,255,255,0.04)));
+        border: 1px solid var(--aily-chat-viewer-code-border, var(--chat-border-dim, rgba(255,255,255,0.08)));
+        border-radius: 4px;
+      }
+      :host ::ng-deep .ac-think-body .ac-thinking-markdown pre > code[data-block='true'] {
+        display: block;
+        margin: 0;
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        border-radius: 0;
+        font-family: Consolas, 'Courier New', monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: normal;
+        word-break: normal;
       }
       :host ::ng-deep .ac-think-body .x-markdown-dark table {
         max-width: 100%;
@@ -299,7 +312,6 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
 
   thinkContent = '';
   thinkExpanded = false;
-  readonly componentMap: ComponentMap = { code: AilyChatCodeComponent };
   readonly markdownHeightChangeCallback = () => this.onMarkdownHeightChange();
   markdownContent = '';
   streamingConfig: StreamingOption = {
@@ -311,6 +323,14 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
   activeContentRef = '';
   activeContentLength = 0;
   readonly markdownContentResolver = (contentRef: string): string => getThinkContent(contentRef);
+  readonly markdownIncrementalRenderCallback = (event: XMarkdownIncrementalRenderEvent): void => {
+    ChatPerformanceTracer.recordDuration(
+      'thinking_markdown_incremental_flush',
+      event.durationMs,
+      `raw=${event.markdownLength},rendered=${event.renderedLength},buffering=${event.buffering},final=${event.isFinalChunk}`,
+      { slowThresholdMs: 16 },
+    );
+  };
   private shouldScrollThink = false;
   /** 用户未主动上滚时跟随流式到底部 */
   private thinkStickToBottom = true;
@@ -572,6 +592,13 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
   }
 
   onMarkdownHeightChange(): void {
+    // The activity group owns the single fixed-scrolling viewport, matching
+    // VS Code's ChatThinkingContentPart. An embedded thinking item must not
+    // force a second scrollHeight read/write transaction for every chunk.
+    if (this.embedded) {
+      this.contentDeltaHandler?.();
+      return;
+    }
     const el = this.thinkBodyRef?.nativeElement;
     if (el && this.thinkStickToBottom) {
       el.scrollTop = el.scrollHeight;
@@ -580,7 +607,7 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
   }
 
   ngAfterViewChecked(): void {
-    if (this.shouldScrollThink && this.thinkBodyRef?.nativeElement) {
+    if (!this.embedded && this.shouldScrollThink && this.thinkBodyRef?.nativeElement) {
       const el = this.thinkBodyRef.nativeElement;
       if (this.thinkStickToBottom) {
         el.scrollTop = el.scrollHeight;
@@ -590,7 +617,7 @@ export class XAilyThinkViewerComponent implements AfterViewChecked, OnChanges, O
   }
 
   private shouldAutoScrollThinkBody(): boolean {
-    return !this.embedded || this.data?.isComplete === false;
+    return !this.embedded;
   }
 
   ngOnDestroy(): void {

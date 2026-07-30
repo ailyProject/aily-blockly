@@ -300,6 +300,7 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
       if (!component.applyVisibleTranscriptItemPatch(effectivePatch.item, {
         detectChanges,
         ...(effectivePatch.changedParts ? { changedParts: effectivePatch.changedParts } : {}),
+        ...(effectivePatch.changedPartIndices ? { changedPartIndices: effectivePatch.changedPartIndices } : {}),
       })) {
         return { applied: false, requiresRowMeasurement };
       }
@@ -342,6 +343,7 @@ export class ChatTranscriptListRendererComponent implements AfterViewInit, OnDes
       if (!component.applyVisibleTranscriptItemPatch(patch.item, {
         detectChanges: false,
         ...(patch.changedParts ? { changedParts: patch.changedParts } : {}),
+        ...(patch.changedPartIndices ? { changedPartIndices: patch.changedPartIndices } : {}),
       })) {
         this.cdr.detectChanges();
         this.syncMountedDialogRenderers();
@@ -494,9 +496,13 @@ function mergeDialogItemPatches(
   const changedParts = previous.changedParts || next.changedParts
     ? [...(previous.changedParts ?? []), ...(next.changedParts ?? [])]
     : undefined;
+  const changedPartIndices = previous.changedPartIndices || next.changedPartIndices
+    ? [...(previous.changedPartIndices ?? []), ...(next.changedPartIndices ?? [])]
+    : undefined;
   return {
     ...next,
     ...(changedParts ? { changedParts } : {}),
+    ...(changedPartIndices ? { changedPartIndices } : {}),
   };
 }
 

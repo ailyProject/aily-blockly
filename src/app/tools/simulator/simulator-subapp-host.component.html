@@ -22,7 +22,10 @@
           旧文件指纹：{{ regenerationRequirement.legacySourceRevision.slice(0, 12) }}…
         </small>
         <div class="simulator-subapp-status__actions">
-          <button type="button" (click)="regenerateLegacySceneWithAgent()">
+          <button
+            type="button"
+            [disabled]="generationRequestPending"
+            (click)="requestProjectSceneGeneration()">
             交给 Agent 生成并确认
           </button>
           <button
@@ -32,6 +35,9 @@
             取消并关闭仿真器
           </button>
         </div>
+        @if (errorMessage) {
+          <small>{{ errorMessage }}</small>
+        }
       </div>
     } @else if (state !== 'ready') {
       <div class="simulator-subapp-status" role="status">

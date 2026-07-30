@@ -783,6 +783,7 @@ export class ChatRuntimeOwnerService implements ChatRuntimeOwnerExecutor, ChatRu
     }
 
     const changedParts: TurnResponsePart[] = [];
+    const partIndices: number[] = [];
     for (let index = 0; index < nextParts.length; index += 1) {
       const previousPart = previousParts[index];
       const nextPart = nextParts[index];
@@ -790,6 +791,7 @@ export class ChatRuntimeOwnerService implements ChatRuntimeOwnerExecutor, ChatRu
         || readServiceOwnedPartIdentity(previousPart, index) !== readServiceOwnedPartIdentity(nextPart, index)
         || readServiceOwnedPartRevision(previousPart) !== readServiceOwnedPartRevision(nextPart)) {
         changedParts.push(nextPart);
+        partIndices.push(index);
       }
     }
 
@@ -803,7 +805,11 @@ export class ChatRuntimeOwnerService implements ChatRuntimeOwnerExecutor, ChatRu
       turnId: nextTurn.turnId,
       revision: this.readTranscriptRevision(sessionId),
       parts: changedParts,
-      turn: nextTurn,
+      partIndices,
+      ...(previousParts.length !== nextParts.length
+        || previousTurn.response.status !== nextTurn.response.status
+        ? { turn: nextTurn }
+        : {}),
       status: nextTurn.response.status,
     };
   }

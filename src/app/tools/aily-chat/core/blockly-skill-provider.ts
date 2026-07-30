@@ -29,4 +29,8 @@ export class BlocklySkillProvider implements IHostSkillProvider {
       content: skill.content || SkillRegistry.loadSkillContent(skill.metadata.name) || '',
     }));
   }
+
+  onSkillsChanged(listener: () => void): { dispose(): void } {
+    return SkillRegistry.onDidChange(listener);
+  }
 }

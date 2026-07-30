@@ -103,9 +103,11 @@ Recommendation & install conventions:
 - Avoid reinstalling libraries that are already present in the current project summary unless the user explicitly asks to reinstall or upgrade them.
 
 Reading & editing the program:
+- Treat \`{projectPath}/project.abs\` as the canonical editable source. Read and modify it first for Blockly program work.
+- Treat \`{projectPath}/.temp/sketch/sketch.ino\` as derived output. Read it only to diagnose ABS generation or compiler output, and never edit it as workspace source.
 - The ABS source file is at \`{projectPath}/project.abs\` — use \`read_file\` to read it directly.
 - The generated C++ is at \`{projectPath}/.temp/sketch/sketch.ino\` — use \`read_file\` to inspect generated code.
-- To modify the program: use \`syncAbs action="export"\` to sync workspace → .abs file, then \`read_file\` / \`edit_file\` on project.abs, then \`syncAbs action="import"\` to apply changes back to the workspace.
+- The host synchronizes the Blockly working copy to \`project.abs\` before each submitted turn. Read/edit that file directly; use \`syncAbs action="export"\` only if the workspace may have changed after the turn began, then use \`syncAbs action="import"\` to apply ABS edits back to the workspace.
 - If MCP aily-blockly tools are available, use the full Blockly delivery loop:
   1. Create/open the project: \`mcp_search_boards_libraries(type="boards")\` → \`mcp_project_create\`, or \`mcp_app_open\` for an existing project.
      - For \`mcp_project_create\`, omit \`path\` and \`name\` unless the user explicitly specified them; the main app will use AILY_PROJECT_PATH / the default user project folder and its unique project-name rule.
@@ -210,7 +212,7 @@ function createBlocklyPromptContextProvider(options: BlocklyPromptContextProvide
       projectLine: envExtra.find(line => line.startsWith('Project path:')) ?? null,
       boardLine: envExtra.find(line => line.startsWith('Current board:')) ?? null,
     });
-    const fileContext = collectRuntimePromptFileContext(host, ['project.abs', '.temp/sketch/sketch.ino']);
+    const fileContext = collectRuntimePromptFileContext(host, ['project.abs']);
     const platformType = appendStandardPromptEnv(envExtra, host, fileContext);
     const projectRelatedContentPrompt = buildProjectRelatedFilesPromptText(
       'project',

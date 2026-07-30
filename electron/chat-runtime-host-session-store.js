@@ -126,51 +126,6 @@ function readTurnStatus(turn) {
     : undefined;
 }
 
-function getTurnPartStableKey(part) {
-  if (!part || typeof part !== 'object') {
-    return '';
-  }
-  if (typeof part.partId === 'string' && part.partId.trim().length > 0) {
-    return `${part.type || 'part'}:${part.partId.trim()}`;
-  }
-  switch (part.type) {
-    case 'tool_call':
-      return typeof part.toolCallId === 'string' && part.toolCallId.trim()
-        ? `tool:${part.toolCallId.trim()}`
-        : '';
-    case 'terminal': {
-      const terminalId = part.processId || part.outputSessionId || part.terminalId || part.toolCallId;
-      return typeof terminalId === 'string' && terminalId.trim()
-        ? `terminal:${terminalId.trim()}`
-        : '';
-    }
-    case 'state':
-      return typeof part.stateId === 'string' && part.stateId.trim()
-        ? `state:${part.stateId.trim()}`
-        : '';
-    case 'question':
-      return typeof part.requestId === 'string' && part.requestId.trim()
-        ? `question:${part.requestId.trim()}`
-        : '';
-    case 'confirmation': {
-      const askId = part.askId || part.requestId || part.toolCallId;
-      return typeof askId === 'string' && askId.trim()
-        ? `confirmation:${askId.trim()}`
-        : '';
-    }
-    default:
-      return '';
-  }
-}
-
-function stableStringifyPayload(value) {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
 function createCheckpointTimelineState(sessionId, turnResponses, options = {}) {
   const turns = Array.isArray(turnResponses) ? clonePayload(turnResponses) : [];
   const checkpoints = [];
@@ -257,23 +212,17 @@ function collectChangedTurnParts(previousTurn, nextTurn) {
   const previousParts = readTurnParts(previousTurn);
   const nextParts = readTurnParts(nextTurn);
   if (nextParts.length === 0) {
-    return [];
+    return { parts: [], partIndices: [] };
   }
-  const previousByKey = new Map();
-  previousParts.forEach((part, index) => {
-    const key = getTurnPartStableKey(part) || `index:${index}`;
-    previousByKey.set(key, stableStringifyPayload(part));
-  });
   const changed = [];
+  const partIndices = [];
   nextParts.forEach((part, index) => {
-    const key = getTurnPartStableKey(part) || `index:${index}`;
-    const previousSignature = previousByKey.get(key);
-    const nextSignature = stableStringifyPayload(part);
-    if (previousSignature !== nextSignature) {
+    if (previousParts[index] !== part) {
       changed.push(part);
+      partIndices.push(index);
     }
   });
-  return changed;
+  return { parts: changed, partIndices };
 }
 
 class ChatRuntimeHostSessionStore {
@@ -1380,10 +1329,7 @@ class ChatRuntimeHostSessionStore {
       ? payload.renderEvent
       : null;
     const normalizedTurnId = this.normalizeActiveTurnId(payload && payload.turnId);
-    const beforeTranscript = this.transcriptBuilder.buildTranscriptSnapshot(sessionId);
-    const beforeTurn = Array.isArray(beforeTranscript && beforeTranscript.turnResponses)
-      ? beforeTranscript.turnResponses.find(candidate => this.normalizeActiveTurnId(candidate && candidate.turnId) === normalizedTurnId)
-      : null;
+    const beforeTurn = this.transcriptBuilder.readTurn(sessionId, normalizedTurnId);
     const transcript = this.transcriptBuilder.acceptRenderEvent({
       sessionId,
       turnId: payload && payload.turnId,
@@ -1395,20 +1341,26 @@ class ChatRuntimeHostSessionStore {
       ? transcript.turnResponses
       : [];
     const nextTurn = turns.find(candidate => this.normalizeActiveTurnId(candidate && candidate.turnId) === normalizedTurnId) || null;
-    const changedParts = collectChangedTurnParts(beforeTurn, nextTurn);
+    const changed = collectChangedTurnParts(beforeTurn, nextTurn);
     const sourceEventType = typeof renderEvent?.type === 'string' ? renderEvent.type : null;
     const sourceEventTimestamp = Number.isFinite(Number(renderEvent?.timestamp))
       ? Number(renderEvent.timestamp)
       : null;
     const hostPublishedAt = Date.now();
-    const transcriptEvent = changedParts.length > 0 && nextTurn
+    const beforeStatus = readTurnStatus(beforeTurn);
+    const nextStatus = readTurnStatus(nextTurn);
+    const requiresAuthoritativeTurn = !beforeTurn
+      || readTurnParts(beforeTurn).length !== readTurnParts(nextTurn).length
+      || beforeStatus !== nextStatus;
+    const transcriptEvent = changed.parts.length > 0 && nextTurn
       ? {
           kind: 'part-transcript',
           sessionId,
           turnId: normalizedTurnId,
           revision: Number(transcript && transcript.revision) || Number(payload && payload.revision) || 0,
-          parts: clonePayload(changedParts),
-          turn: clonePayload(nextTurn),
+          parts: clonePayload(changed.parts),
+          partIndices: [...changed.partIndices],
+          ...(requiresAuthoritativeTurn ? { turn: clonePayload(nextTurn) } : {}),
           ...(readTurnStatus(nextTurn) ? { status: readTurnStatus(nextTurn) } : {}),
           ...(sourceEventType ? { sourceEventType } : {}),
           ...(sourceEventTimestamp !== null ? { sourceEventTimestamp } : {}),

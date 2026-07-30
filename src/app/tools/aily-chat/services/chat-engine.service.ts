@@ -53,6 +53,10 @@ import {
 } from './chat-session-model-turn-responses';
 import { ChatRuntimeViewMirrorProjectionService } from './chat-runtime-view-mirror-projection.service';
 import { ChatPendingFollowupQueueService } from './chat-pending-followup-queue.service';
+import {
+  CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE,
+  type ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort,
+} from './chat-runtime-owner-ports';
 import type {
   ChatRuntimeHost,
   ChatRuntimeHostEvent,
@@ -408,11 +412,11 @@ import { buildHostSessionCurrentPickerRoutingSummary } from '../helpers/host-ses
 import { buildHostSessionTurnRuntimeTruth } from '../helpers/host-session-runtime-truth';
 import { ChatViewAdapter } from './chat-view-adapter';
 import { ChatPartStore } from '../core/chat-part-store';
+import type { ChatPart } from '../core/chat-parts';
 import {
   ChatVisibleTranscriptModel,
   type ChatVisibleTranscriptChange,
 } from '../core/chat-visible-transcript-model';
-import { turnResponsePartsToDisplayChatParts } from '../core/turn-response-part-mapper';
 import type { IChatContext } from '../core/chat-context';
 import type { DialogTurnContext } from '../core/user-turn-action-target';
 import { EditActionsHelper, type RestoreCheckpointConfirmation } from '../helpers/edit-actions.helper';
@@ -1226,6 +1230,9 @@ export class ChatEngineService implements IChatContext {
   private readonly chatSessionRuntimeStore = inject(ChatSessionRuntimeStoreService);
   private readonly chatRuntimeViewMirrorProjection = inject(ChatRuntimeViewMirrorProjectionService);
   private readonly pendingFollowupQueue = inject(ChatPendingFollowupQueueService);
+  private readonly workspaceEditLifecycleResource = inject<ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort>(
+    CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE,
+  );
   private readonly chatSessionViewModelStore = inject(ChatSessionViewModelStoreService);
   private readonly uiService = inject(UiService);
   private readonly electronRuntimeHost = createElectronChatRuntimeHostTransport();
@@ -1238,7 +1245,7 @@ export class ChatEngineService implements IChatContext {
   readonly partStore: ChatPartStore = this.createSessionRoutedPartStore();
   private readonly liveHostRequestGraphCache = new LiveHostRequestGraphCache();
   private readonly pendingProtocolTruncations = new Map<string, ChatRuntimeHostProtocolTruncation>();
-  private readonly pendingFollowupFlushAfterSettleSessionIds = new Set<string>();
+  private readonly pendingFollowupRunNextSessionIds = new Set<string>();
   private readonly stoppingRuntimeSessionIds = new Set<string>();
   private readonly hostItemLifecyclePerfSnapshotHandle = ChatPerformanceTracer.registerExternalSnapshotProvider(
     'hostItemLifecycle',
@@ -4855,20 +4862,10 @@ export class ChatEngineService implements IChatContext {
     }
 
     if (requestInProgress) {
-      const schedulePendingFollowupFlushAfterSettle = (
-        (this as unknown as { schedulePendingFollowupFlushAfterSettle?: ChatEngineService['schedulePendingFollowupFlushAfterSettle'] })
-          .schedulePendingFollowupFlushAfterSettle
-        ?? ChatEngineService.prototype['schedulePendingFollowupFlushAfterSettle']
-      );
-      const clearPendingFollowupFlushAfterSettle = (
-        (this as unknown as { clearPendingFollowupFlushAfterSettle?: ChatEngineService['clearPendingFollowupFlushAfterSettle'] })
-          .clearPendingFollowupFlushAfterSettle
-        ?? ChatEngineService.prototype['clearPendingFollowupFlushAfterSettle']
-      );
-      schedulePendingFollowupFlushAfterSettle.call(this, targetSessionId);
+      this.pendingFollowupRunNextSessionIds.add(targetSessionId);
       const stopped = this.requestStopRuntimeTurn(targetSessionId);
       if (!stopped) {
-        clearPendingFollowupFlushAfterSettle.call(this, targetSessionId);
+        this.pendingFollowupRunNextSessionIds.delete(targetSessionId);
       }
       return stopped;
     }
@@ -4876,44 +4873,17 @@ export class ChatEngineService implements IChatContext {
     return this.processPendingFollowupRequests(targetSessionId);
   }
 
-  private schedulePendingFollowupFlushAfterSettle(sessionId: string | null | undefined): void {
-    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId) {
-      return;
-    }
-
-    const flushAfterSettleSessionIds = (this as unknown as {
-      pendingFollowupFlushAfterSettleSessionIds?: Set<string>;
-    }).pendingFollowupFlushAfterSettleSessionIds;
-    if (flushAfterSettleSessionIds) {
-      flushAfterSettleSessionIds.add(targetSessionId);
-    }
-  }
-
-  private clearPendingFollowupFlushAfterSettle(sessionId: string | null | undefined): void {
-    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId) {
-      return;
-    }
-
-    (this as unknown as {
-      pendingFollowupFlushAfterSettleSessionIds?: Set<string>;
-    }).pendingFollowupFlushAfterSettleSessionIds?.delete(targetSessionId);
-  }
-
-  private maybeFlushPendingFollowupAfterSettle(
+  private processNextPendingFollowupAfterRequest(
     sessionId: string,
     state: ChatRuntimeHostSessionState,
   ): void {
     const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId || state.requestInProgress === true) {
+    if (!targetSessionId || state.requestInProgress === true || state.status === 'needs_input') {
       return;
     }
 
-    const flushAfterSettleSessionIds = (this as unknown as {
-      pendingFollowupFlushAfterSettleSessionIds?: Set<string>;
-    }).pendingFollowupFlushAfterSettleSessionIds;
-    if (!flushAfterSettleSessionIds?.delete(targetSessionId)) {
+    const runNextRequested = this.pendingFollowupRunNextSessionIds.delete(targetSessionId);
+    if (state.status !== 'completed' && !runNextRequested) {
       return;
     }
 
@@ -4923,16 +4893,15 @@ export class ChatEngineService implements IChatContext {
 
     if (isRequestStateTraceEnabled()) {
       console.info('[AilyChat][RequestStateTrace]', {
-        phase: 'runNext',
-        action: 'flush-after-settle',
+        phase: 'processingQueued',
+        action: 'dequeue-after-request',
         sessionId: targetSessionId,
         state: state.status ?? 'idle',
+        runNextRequested,
       });
     }
 
-    queueMicrotask(() => {
-      void this.processPendingFollowupRequests(targetSessionId);
-    });
+    void this.processPendingFollowupRequests(targetSessionId);
   }
 
   queueFollowupMessage(
@@ -6332,7 +6301,12 @@ export class ChatEngineService implements IChatContext {
   ): void {
     const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
     const turnId = typeof event.turnId === 'string' ? event.turnId.trim() : '';
-    if (!targetSessionId || !turnId || !Array.isArray(event.parts) || event.parts.length === 0) {
+    if (!targetSessionId
+      || !turnId
+      || !Array.isArray(event.parts)
+      || event.parts.length === 0
+      || !Array.isArray(event.partIndices)
+      || event.parts.length !== event.partIndices.length) {
       return;
     }
 
@@ -6349,9 +6323,17 @@ export class ChatEngineService implements IChatContext {
         this.markRuntimeHostRecoverySnapshotDirty(targetSessionId, { flush: 'scheduled' });
       }
     } else {
-      const model = this.chatSessionModelStore.get(targetSessionId);
-      if (model?.upsertTurnResponseParts(turnId, event.parts)) {
-        committedTurnResponses = model.turnResponses;
+      committedTurnResponses = this.chatSessionModelStore.applyTurnResponsePartDelta(
+        targetSessionId,
+        turnId,
+        event.parts,
+        event.partIndices,
+        {
+          status: event.status,
+          updatedAt: event.sourceEventTimestamp,
+        },
+      );
+      if (committedTurnResponses) {
         this.markRuntimeHostRecoverySnapshotDirty(targetSessionId, { flush: 'scheduled' });
       }
     }
@@ -6701,62 +6683,21 @@ export class ChatEngineService implements IChatContext {
     previous: ChatRuntimeHostPartTranscriptEvent,
     event: ChatRuntimeHostPartTranscriptEvent,
   ): ChatRuntimeHostPartTranscriptEvent {
-    const mergedParts: TurnResponsePart[] = [];
-    const indexByStableKey = new Map<string, number>();
-
-    const appendOrReplace = (part: TurnResponsePart, index: number): void => {
-      const key = this.buildRuntimeHostStablePartKey(part, index);
-      const existingIndex = key ? indexByStableKey.get(key) : undefined;
-      if (typeof existingIndex === 'number') {
-        mergedParts[existingIndex] = part;
-        return;
-      }
-      if (key) {
-        indexByStableKey.set(key, mergedParts.length);
-      }
-      mergedParts.push(part);
-    };
-
-    previous.parts.forEach(appendOrReplace);
-    event.parts.forEach(appendOrReplace);
+    if (previous.parts.length !== previous.partIndices.length
+      || event.parts.length !== event.partIndices.length) {
+      throw new Error('[AilyChat][ChatEngine] Part transcript delta lost its canonical content index.');
+    }
+    const partsByIndex = new Map<number, TurnResponsePart>();
+    previous.parts.forEach((part, index) => partsByIndex.set(previous.partIndices[index], part));
+    event.parts.forEach((part, index) => partsByIndex.set(event.partIndices[index], part));
+    const mergedEntries = [...partsByIndex.entries()].sort(([left], [right]) => left - right);
 
     return {
       ...event,
-      parts: mergedParts,
-      turn: event.turn ?? previous.turn,
+      parts: mergedEntries.map(([, part]) => part),
+      partIndices: mergedEntries.map(([partIndex]) => partIndex),
       status: event.status ?? previous.status,
     };
-  }
-
-  private buildRuntimeHostStablePartKey(part: TurnResponsePart, index: number): string {
-    const record = part as TurnResponsePart & Record<string, unknown>;
-    const type = typeof record['type'] === 'string' ? record['type'] : 'unknown';
-    const stableValueKeys = [
-      'partId',
-      'toolCallId',
-      'askId',
-      'contentRef',
-      'processId',
-      'outputSessionId',
-      'terminalId',
-    ];
-    for (const key of stableValueKeys) {
-      const value = record[key];
-      if (typeof value === 'string' && value.trim()) {
-        return `${type}:${key}:${value.trim()}`;
-      }
-    }
-
-    const sourceAgentRole = typeof record['sourceAgentRole'] === 'string' ? record['sourceAgentRole'] : '';
-    const subAgentInvocationId = typeof record['subAgentInvocationId'] === 'string' ? record['subAgentInvocationId'] : '';
-    const sequence = typeof record['sequence'] === 'number' && Number.isFinite(record['sequence'])
-      ? record['sequence']
-      : null;
-    if (sourceAgentRole || subAgentInvocationId || sequence !== null) {
-      return `${type}:scope:${sourceAgentRole}:${subAgentInvocationId}:${sequence ?? index}`;
-    }
-
-    return `${type}:index:${index}`;
   }
 
   private scheduleRuntimeHostVisibleTranscriptProjection(
@@ -6874,19 +6815,43 @@ export class ChatEngineService implements IChatContext {
     const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now();
-    const changedPartsByTurnId = new Map<string, ReturnType<typeof turnResponsePartsToDisplayChatParts>>();
+    const changedPartsByTurnId = new Map<string, {
+      readonly parts: readonly ChatPart[];
+      readonly indices: readonly number[];
+    }>();
     for (const event of events) {
       const turnId = typeof event.turnId === 'string' ? event.turnId.trim() : '';
       if (!turnId) {
         continue;
       }
-      changedPartsByTurnId.set(turnId, turnResponsePartsToDisplayChatParts(event.parts));
-      if (event.turn && !this.visibleTranscriptModel.getResponseItem(turnId)) {
-        this.visibleTranscriptModel.insertTurnRequest(event.turn);
-        this.visibleTranscriptModel.upsertTurnResponse(event.turn);
-        continue;
+      let responseItem;
+      if (!this.visibleTranscriptModel.getResponseItem(turnId)) {
+        const bootstrapTurn = event.turn
+          ?? this.chatSessionModelStore.get(targetSessionId)?.peekTurnResponsesForProjection()
+            .find(turn => turn.turnId === turnId);
+        if (!bootstrapTurn) {
+          continue;
+        }
+        this.visibleTranscriptModel.insertTurnRequest(bootstrapTurn);
+        responseItem = this.visibleTranscriptModel.upsertTurnResponse(bootstrapTurn);
+      } else {
+        responseItem = this.visibleTranscriptModel.upsertResponseParts(
+          turnId,
+          event.parts,
+          event.partIndices,
+          event.turn,
+        );
       }
-      this.visibleTranscriptModel.upsertResponseParts(turnId, event.parts);
+      const changedDisplayIndices = this.visibleTranscriptModel.getResponseDisplayPartIndices(
+        turnId,
+        event.partIndices,
+      );
+      changedPartsByTurnId.set(turnId, {
+        parts: changedDisplayIndices
+          .map(index => responseItem.parts[index])
+          .filter((part): part is ChatPart => !!part),
+        indices: changedDisplayIndices,
+      });
     }
 
     const changes = this.visibleTranscriptModel.drainChanges();
@@ -6894,10 +6859,16 @@ export class ChatEngineService implements IChatContext {
       return;
     }
     const patches = this.visibleTranscriptModel.toDialogItemPatches(changes).map(patch => {
-      const changedParts = patch.item.role === 'aily'
+      const changed = patch.item.role === 'aily'
         ? changedPartsByTurnId.get(patch.item.turnId ?? '')
         : undefined;
-      return changedParts?.length ? { ...patch, changedParts } : patch;
+      return changed?.parts.length
+        ? {
+            ...patch,
+            changedParts: changed.parts,
+            changedPartIndices: changed.indices,
+          }
+        : patch;
     });
     const previousItems = this.dialogItemsCache?.sessionResource === targetSessionId
       ? this.dialogItemsCache.items
@@ -7272,12 +7243,9 @@ export class ChatEngineService implements IChatContext {
     });
 
     this.traceRuntimeHostStateProjection(sessionId, state, visibleCurrentSession);
-    const maybeFlushPendingFollowupAfterSettle = (
-      (this as unknown as { maybeFlushPendingFollowupAfterSettle?: ChatEngineService['maybeFlushPendingFollowupAfterSettle'] })
-        .maybeFlushPendingFollowupAfterSettle
-      ?? ChatEngineService.prototype['maybeFlushPendingFollowupAfterSettle']
-    );
-    maybeFlushPendingFollowupAfterSettle.call(this, sessionId, state);
+    if (terminalRequestEdge) {
+      this.processNextPendingFollowupAfterRequest(sessionId, state);
+    }
 
     if (visibleCurrentSession && requestStateChanged) {
       this._runtimeRequestStatePatch?.({
@@ -8924,6 +8892,11 @@ Do not create non-existent boards and libraries.
         options?.executionSnapshot ?? null,
       );
       const runtimeResolution = this.resolveSubmitRuntimeMode(targetSessionId, providerOptionsSnapshot, requestMetadata ?? null);
+      await this.prepareSubmittedBlocklyWorkspace(
+        targetSessionId,
+        runtimeResolution.mode,
+        providerOptionsSnapshot.folderPath,
+      );
       let submittedState: ChatRuntimeHostSessionState;
       try {
         submittedState = await this.runtimeHostForView().submitTurn({
@@ -8964,6 +8937,25 @@ Do not create non-existent boards and libraries.
     } finally {
       updateAilyChatAgentLoopPendingCount(-1);
     }
+  }
+
+  private async prepareSubmittedBlocklyWorkspace(
+    sessionId: string,
+    runtimeMode: ChatAgentRuntimeMode,
+    projectPath: string | null | undefined,
+  ): Promise<void> {
+    const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
+    if (runtimeMode !== 'blockly' || !normalizedProjectPath) {
+      return;
+    }
+
+    const startedAt = performance.now();
+    await this.workspaceEditLifecycleResource.ensureWorkspaceAbsExport(sessionId, normalizedProjectPath);
+    const elapsedMs = performance.now() - startedAt;
+    console.info(
+      '[AilyChat][SubmittedWorkspaceBarrierScalar]',
+      `sessionId=${sessionId} runtimeMode=${runtimeMode} elapsedMs=${elapsedMs.toFixed(1)}`,
+    );
   }
 
   async send(

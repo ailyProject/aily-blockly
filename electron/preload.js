@@ -516,6 +516,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
       "simulator-subapp-open-project-scene",
       options,
     ),
+    requestProjectSceneGeneration: (options) => ipcRenderer.invoke(
+      "simulator-subapp-request-project-scene-generation",
+      options,
+    ),
     resolveProjectSceneRegeneration: (options) => ipcRenderer.invoke(
       "simulator-subapp-resolve-project-scene-regeneration",
       options,

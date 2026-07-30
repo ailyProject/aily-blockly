@@ -59,6 +59,7 @@ function createSimulatorSubappHost(options = {}) {
     ? options.onStateChanged
     : () => {};
   let rebuildCoordinator = options.rebuildCoordinator || null;
+  let sceneGenerationBroker = options.sceneGenerationBroker || null;
 
   let child = null;
   let ready = null;
@@ -196,6 +197,7 @@ function createSimulatorSubappHost(options = {}) {
               rebuildRequest: null,
               rebuildCandidate: null,
               regenerationRequirement: requirement,
+              sceneGeneration: null,
             };
             const result = publicRegenerationRequired();
             emitState(result);
@@ -222,6 +224,7 @@ function createSimulatorSubappHost(options = {}) {
             rebuildRequest: null,
             rebuildCandidate: null,
             regenerationRequirement: null,
+            sceneGeneration: null,
           };
           emitState({ state: 'ready', surface: publicSurface() });
           return publicSurface();
@@ -276,6 +279,7 @@ function createSimulatorSubappHost(options = {}) {
           rebuildRequest: null,
           rebuildCandidate: null,
           regenerationRequirement: null,
+          sceneGeneration: null,
         };
         emitState({
           state: 'ready',
@@ -321,6 +325,111 @@ function createSimulatorSubappHost(options = {}) {
       ...options_,
       mode: 'project-scene',
       tool: 'scene',
+    });
+  }
+
+  function requestProjectSceneGeneration(options_ = {}) {
+    const input = validateProjectSceneGenerationStartInput(options_);
+    if (!sceneGenerationBroker) {
+      throw new Error('Project Scene generation broker is unavailable.');
+    }
+    if (
+      !child
+      || !active
+      || hasChildExited(child)
+      || active.mode !== 'project-scene'
+      || active.launchId !== null
+      || !active.regenerationRequirement
+      || active.regenerationRequirement.regenerationId !== input.regenerationId
+      || (input.ownerId !== null && input.ownerId !== active.ownerId)
+    ) {
+      throw new Error('No matching Project Scene generation request is pending.');
+    }
+    if (active.sceneGeneration) {
+      return publicSceneGenerationAccepted(
+        active.sceneGeneration.request,
+        input.regenerationId,
+      );
+    }
+
+    const request = createSceneGenerationRequest(active.regenerationRequirement);
+    active.sceneGeneration = {
+      state: 'requested',
+      request,
+      proposal: null,
+      failure: null,
+    };
+    emitState({
+      state: 'scene-generation-requested',
+      requestId: request.requestId,
+      reason: request.reason,
+    });
+    void sceneGenerationBroker.request(request).catch((error) => {
+      void serialize(async () => {
+        if (
+          !active?.sceneGeneration
+          || active.sceneGeneration.request.requestId !== request.requestId
+        ) {
+          return;
+        }
+        const failure = publicSceneGenerationFailure(error, request.requestId);
+        active.sceneGeneration.state = 'failed';
+        active.sceneGeneration.failure = failure;
+        emitState({ state: 'scene-generation-failed', failure });
+      });
+    });
+    return publicSceneGenerationAccepted(request, input.regenerationId);
+  }
+
+  function stageSceneGenerationCandidate(value) {
+    return serialize(async () => {
+      if (!isRecord(value) || !isRecord(value.request)) {
+        throw new Error('Project Scene generation candidate is invalid.');
+      }
+      const requestId = requirePortableIdentifier(
+        value.request.requestId,
+        'requestId',
+        128,
+      );
+      if (
+        !child
+        || !active
+        || hasChildExited(child)
+        || active.mode !== 'project-scene'
+        || active.launchId !== null
+        || !active.regenerationRequirement
+        || !active.sceneGeneration
+        || active.sceneGeneration.request.requestId !== requestId
+        || JSON.stringify(active.sceneGeneration.request)
+          !== JSON.stringify(value.request)
+      ) {
+        throw new Error('Project Scene generation candidate is stale.');
+      }
+      const proposal = validateAgentSceneChangeProposalForHost(
+        value.proposal,
+        active.projectIdentity,
+        active.sceneId,
+      );
+      active.sceneGeneration = {
+        ...active.sceneGeneration,
+        state: 'candidate-ready',
+        proposal,
+        failure: null,
+      };
+      const result = {
+        schemaVersion: 1,
+        kind: 'aily-simulator-subapp-project-scene-generation-candidate-result',
+        state: 'candidate-ready',
+        requestId,
+        projectIdentity: active.projectIdentity,
+        sceneId: active.sceneId,
+        proposalId: proposal.proposalId,
+      };
+      emitState({
+        state: 'scene-generation-candidate-ready',
+        candidate: result,
+      });
+      return result;
     });
   }
 
@@ -1367,6 +1476,16 @@ function createSimulatorSubappHost(options = {}) {
   }
 
   function clearChildState() {
+    if (active?.sceneGeneration?.request?.requestId) {
+      try {
+        sceneGenerationBroker?.cancel?.(
+          active.sceneGeneration.request.requestId,
+          'Project Scene host was closed.',
+        );
+      } catch {
+        // Scene generation cleanup must not interfere with process ownership.
+      }
+    }
     try {
       rebuildCoordinator?.reset?.();
     } catch {
@@ -1400,9 +1519,25 @@ function createSimulatorSubappHost(options = {}) {
     rebuildCoordinator = coordinator;
   }
 
+  function setSceneGenerationBroker(broker) {
+    if (
+      broker !== null
+      && (
+        typeof broker !== 'object'
+        || typeof broker.request !== 'function'
+        || typeof broker.cancel !== 'function'
+      )
+    ) {
+      throw new Error('Project Scene generation broker is invalid.');
+    }
+    sceneGenerationBroker = broker;
+  }
+
   return Object.freeze({
     open,
     openProjectScene,
+    requestProjectSceneGeneration,
+    stageSceneGenerationCandidate,
     resolveProjectSceneRegeneration,
     applyProjectSceneAgentProposal,
     attachProjectSceneSession,
@@ -1411,6 +1546,7 @@ function createSimulatorSubappHost(options = {}) {
     stop: close,
     status,
     setRebuildCoordinator,
+    setSceneGenerationBroker,
     stageRebuildCandidate,
   });
 }
@@ -1747,6 +1883,80 @@ function validateLegacySceneRegenerationRequirement(
     throw new Error('Simulator Subapp returned an invalid regeneration requirement.');
   }
   return structuredClone(value);
+}
+
+function validateProjectSceneGenerationStartInput(value) {
+  if (
+    !isRecord(value)
+    || Object.keys(value).some((key) => ![
+      'ownerId', 'regenerationId',
+    ].includes(key))
+    || !Object.hasOwn(value, 'regenerationId')
+    || typeof value.regenerationId !== 'string'
+    || !/^regeneration-v1-[a-f0-9]{64}$/.test(value.regenerationId)
+  ) {
+    throw new Error('Project Scene generation start request is invalid.');
+  }
+  return {
+    ownerId: normalizeOwnerId(value.ownerId),
+    regenerationId: value.regenerationId,
+  };
+}
+
+function createSceneGenerationRequest(requirement) {
+  if (requirement.legacySourceBytes < 1) {
+    throw new Error('Empty legacy connection metadata cannot start Scene generation.');
+  }
+  const requestDigest = crypto.createHash('sha256')
+    .update(JSON.stringify({
+      regenerationId: requirement.regenerationId,
+      projectIdentity: requirement.projectIdentity,
+      sceneId: requirement.sceneId,
+      legacySourceRevision: requirement.legacySourceRevision,
+      catalogRevision: requirement.catalogRevision,
+      draftVisualRevision: requirement.draftVisualRevision,
+      draftGraphSemanticRevision: requirement.draftGraphSemanticRevision,
+    }))
+    .digest('hex');
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'aily-project-scene-generation-request',
+    requestId: `scene-generation-v1-${requestDigest}`,
+    projectIdentity: requirement.projectIdentity,
+    sceneId: requirement.sceneId,
+    reason: 'legacy-detected',
+    base: {
+      visualRevision: requirement.draftVisualRevision,
+      graphSemanticRevision: requirement.draftGraphSemanticRevision,
+      catalogRevision: requirement.catalogRevision,
+    },
+    legacySource: {
+      kind: 'connection-output-v1',
+      revision: requirement.legacySourceRevision,
+      bytes: requirement.legacySourceBytes,
+    },
+    expiresAtUnixMs: requirement.expiresAtUnixMs,
+  });
+}
+
+function publicSceneGenerationAccepted(request, regenerationId) {
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'aily-simulator-subapp-project-scene-generation-request-result',
+    state: 'accepted',
+    regenerationId,
+    requestId: request.requestId,
+  });
+}
+
+function publicSceneGenerationFailure(error, requestId) {
+  return Object.freeze({
+    requestId,
+    code: typeof error?.code === 'string'
+      ? error.code
+      : 'SCENE_GENERATION_FAILED',
+    message: error instanceof Error ? error.message : String(error),
+  });
 }
 
 function validateProjectSceneRegenerationResolutionInput(value) {
@@ -2552,6 +2762,10 @@ function registerHandlers({ ipcMain, app, mainWindow, host = defaultHost }) {
       app,
       rendererOrigin: originFromSenderUrl(event.senderFrame?.url),
     });
+  });
+  ipcMain.handle('simulator-subapp-request-project-scene-generation', async (event, payload) => {
+    requireTrustedSender(event, mainWindow);
+    return host.requestProjectSceneGeneration(payload);
   });
   ipcMain.handle('simulator-subapp-resolve-project-scene-regeneration', async (event, payload) => {
     requireTrustedSender(event, mainWindow);

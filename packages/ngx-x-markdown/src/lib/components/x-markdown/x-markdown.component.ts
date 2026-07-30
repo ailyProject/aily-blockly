@@ -279,12 +279,8 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
     return this.content || '';
   }
 
-  private processContentNow(rawContent: string, isFinalChunk: boolean): void {
-    const shouldUseParagraphBuffer = this.streaming?.hasNextChunk === true
-      && (this.streaming?.buffering ?? 'paragraph') === 'paragraph';
-    this.displayContent = shouldUseParagraphBuffer
-      ? getParagraphBufferedMarkdown(rawContent, isFinalChunk)
-      : rawContent;
+  private processContentNow(rawContent: string, _isFinalChunk: boolean): void {
+    this.displayContent = rawContent;
 
     if (!this.displayContent) {
       this.commitRenderedHtml('');
@@ -322,7 +318,21 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
     }
 
     this.incrementalLastMarkdown = rawContent;
-    this.incrementalPendingMarkdown = rawContent;
+    if (this.streaming?.buffering === 'word') {
+      this.incrementalPendingMarkdown = rawContent;
+      this.incrementalPendingIsFinal = this.incrementalPendingIsFinal || isFinalChunk;
+      this.scheduleIncrementalFlush();
+      return;
+    }
+
+    // Match VS Code's IncrementalDOMMorpher: paragraph buffering decides
+    // whether there is visible work before scheduling a renderer frame.
+    // Tokens inside the unfinished tail must not re-parse all prior markdown.
+    const renderableMarkdown = getParagraphBufferedMarkdown(rawContent, isFinalChunk);
+    if (renderableMarkdown === this.incrementalRenderedMarkdown) {
+      return;
+    }
+    this.incrementalPendingMarkdown = renderableMarkdown;
     this.incrementalPendingIsFinal = this.incrementalPendingIsFinal || isFinalChunk;
     this.scheduleIncrementalFlush();
   }
@@ -722,8 +732,7 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
     if (tempPropsMap) {
       for (const entry of this.injectedEntries) {
         const newProps = tempPropsMap.get(entry.fingerprint);
-        if (newProps) {
-          this.updateComponentProps(entry.componentRef, newProps);
+        if (newProps && this.updateComponentProps(entry.componentRef, newProps)) {
           entry.componentRef.changeDetectorRef.detectChanges();
         }
       }
@@ -771,8 +780,9 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
           reusedFingerprints.add(reusable);
 
           // 閫氳繃 setInput 鏇存柊 props锛岀‘淇?ngOnChanges 姝ｇ‘瑙﹀彂
-          this.updateComponentProps(reusable.componentRef, props);
-          reusable.componentRef.changeDetectorRef.detectChanges();
+          if (this.updateComponentProps(reusable.componentRef, props)) {
+            reusable.componentRef.changeDetectorRef.detectChanges();
+          }
 
           element.parentNode?.replaceChild(reusable.hostElement, element);
           newEntries.push(reusable);
@@ -824,19 +834,23 @@ export class XMarkdownComponent implements OnChanges, OnDestroy {
 
   /**
    * 閫氳繃 ComponentRef.setInput() 鏇存柊缁勪欢灞炴€с€?   * 鍏堟瘮杈冨€兼槸鍚﹀彉鍖栵紝閬垮厤涓嶅繀瑕佺殑 setInput 璋冪敤瑙﹀彂 ngOnChanges銆?   * 瀵逛簬闈?@Input 灞炴€э紝鍥為€€鍒扮洿鎺ヨ祴鍊笺€?   */
-  private updateComponentProps(componentRef: ComponentRef<any>, props: Record<string, any>): void {
+  private updateComponentProps(componentRef: ComponentRef<any>, props: Record<string, any>): boolean {
     const instance = componentRef.instance;
+    let changed = false;
     for (const [key, value] of Object.entries(props)) {
       try {
         // 鍊兼湭鍙樺垯璺宠繃锛岄伩鍏嶄笉蹇呰鍦拌Е鍙?ngOnChanges
         if (Object.is(instance[key], value)) continue;
         componentRef.setInput(key, value);
+        changed = true;
       } catch {
         if (key in instance && !Object.is(instance[key], value)) {
           instance[key] = value;
+          changed = true;
         }
       }
     }
+    return changed;
   }
 
   private destroyInjectedComponents(): void {

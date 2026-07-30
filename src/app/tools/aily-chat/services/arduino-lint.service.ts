@@ -1,16 +1,12 @@
 ﻿import { Injectable } from '@angular/core';
 import { AilyHost } from '../core/host';
-import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
 import {
   syncArduinoProjectSourceToSketch,
   writeArduinoGeneratedArtifacts,
 } from '../../../editors/blockly-editor/services/generated-code-artifacts';
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import { normalizeArduinoGeneratedCode } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
-import {
-  generateCodeWithActiveProjectGenerator,
-  getActiveProjectGenerator,
-} from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
+import { runWithPreparedActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 
 // Arduino 代码检查器
 
@@ -283,12 +279,20 @@ export class ArduinoLintService {
   async checkCurrentWorkspace(options: LintOptions = {}): Promise<LintResult> {
     try {
       // 从 Blockly 工作区生成代码
-      await prepareBlocklyProjectDataForCodeGeneration(
+      const projectPath = this.currentProjectPath;
+      const projectDocument = this.blocklyService.getProjectDocument();
+      const generated = await runWithPreparedActiveProjectGenerator(
         this.blocklyService.workspace,
-        this.blocklyService.getProjectDocument(),
+        (generator) => ({
+          code: normalizeArduinoGeneratedCode(
+            generator.workspaceToCode(this.blocklyService.workspace),
+          ),
+          generator,
+        }),
+        projectDocument,
       );
-      const code = normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
-      await writeArduinoGeneratedArtifacts(this.currentProjectPath, getActiveProjectGenerator());
+      const { code, generator } = generated;
+      await writeArduinoGeneratedArtifacts(projectPath, generator);
       
       if (!code || code.trim().length === 0) {
         return {

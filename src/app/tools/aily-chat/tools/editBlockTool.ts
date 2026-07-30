@@ -1,6 +1,5 @@
 ﻿import {
-  generateCodeWithActiveProjectGenerator,
-  getActiveProjectGenerator,
+  runWithPreparedActiveProjectGenerator,
 } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import type { ToolUseResult } from '../core/tool-types';
 import { jsonrepair } from 'jsonrepair';
@@ -8,7 +7,6 @@ import { ArduinoSyntaxTool } from "./arduinoSyntaxTool";
 import { fixBlockConfig } from './blockConfigFixer';
 import { normalizeInputNameForAbs } from './abiAbsConverter';
 import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
-import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
 import { writeArduinoGeneratedArtifacts } from '../../../editors/blockly-editor/services/generated-code-artifacts';
 import { prepareBlockFieldValue } from './blockFieldValue';
 import { getProjectInfoTool } from './getProjectInfoTool';
@@ -7662,17 +7660,6 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
 
       // 生成单个块的代码（如果需要）
       let blockCode = '';
-      if (includeCode) {
-        try {
-          // 尝试生成代码 - 简化处理
-          if ((window as any).Arduino && (window as any).Arduino.blockToCode) {
-            const code = (window as any).Arduino.blockToCode(block);
-            blockCode = Array.isArray(code) ? code[0] || '' : code || '';
-          }
-        } catch (error) {
-          blockCode = `// ${block.type} - 代码生成错误: ${error}`;
-        }
-      }
 
       const blockInfo = {
         id: block.id,
@@ -7717,25 +7704,29 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
     let lintResult = null;
     if (includeCode) {
       try {
-        await prepareBlocklyProjectDataForCodeGeneration(workspace);
-        if ((window as any).Arduino && (window as any).Arduino.workspaceToCode) {
-          generatedCode = (window as any).Arduino.workspaceToCode(workspace) || '// 无代码生成';
-          await writeArduinoGeneratedArtifacts(
-            projectDataRuntime.getStore().getProjectPath(),
-            (window as any).Arduino,
-          );
-        } else {
-          // 备用方法：拼接顶层块的代码
-          const codeLines: string[] = [];
-          for (const rootBlock of rootBlocks) {
-            const blockFromWorkspace = workspace.getBlockById(rootBlock.id);
-            if (blockFromWorkspace && rootBlock.generatedCode && 
-                !rootBlock.generatedCode.includes('代码生成错误')) {
-              codeLines.push(rootBlock.generatedCode);
-            }
-          }
-          generatedCode = codeLines.length > 0 ? codeLines.join('\n\n') : '// 无可用代码内容';
-        }
+        const projectPath = projectDataRuntime.getStore().getProjectPath();
+        const generated = await runWithPreparedActiveProjectGenerator(
+          workspace,
+          (generator) => {
+            allBlocks.forEach((block: any, index: number) => {
+              try {
+                const code = generator.blockToCode(block);
+                allBlocksInfo[index].generatedCode = Array.isArray(code) ? code[0] || '' : code || '';
+              } catch (error) {
+                allBlocksInfo[index].generatedCode = `// ${block.type} - 代码生成错误: ${error}`;
+              }
+            });
+            return {
+              code: generator.workspaceToCode(workspace) || '// 无代码生成',
+              generator,
+            };
+          },
+        );
+        generatedCode = generated.code;
+        await writeArduinoGeneratedArtifacts(
+          projectPath,
+          generated.generator,
+        );
 
         // 如果代码生成成功且不是错误信息，进行代码检测
         if (generatedCode && 
@@ -8790,11 +8781,15 @@ export async function generateCodeTool(): Promise<ToolUseResult> {
   
   try {
     const workspace = getActiveWorkspace();
-    await prepareBlocklyProjectDataForCodeGeneration(workspace);
-    const code = generateCodeWithActiveProjectGenerator(workspace);
+    const projectPath = projectDataRuntime.getStore().getProjectPath();
+    const generated = await runWithPreparedActiveProjectGenerator(
+      workspace,
+      (generator) => ({ code: generator.workspaceToCode(workspace), generator }),
+    );
+    const { code, generator } = generated;
     await writeArduinoGeneratedArtifacts(
-      projectDataRuntime.getStore().getProjectPath(),
-      getActiveProjectGenerator(),
+      projectPath,
+      generator,
     );
     
     const result = {
@@ -9355,6 +9350,21 @@ export async function findBlockTool(args: any): Promise<ToolUseResult> {
       // console.log(`⚠️ 结果超过限制，截取前 ${maxResults} 个`);
       foundBlocks = foundBlocks.slice(0, maxResults);
     }
+
+    const generatedCodeByBlockId = includeCode
+      ? await runWithPreparedActiveProjectGenerator(workspace, (generator) => {
+          const generated = new Map<string, string>();
+          foundBlocks.forEach((block: any) => {
+            try {
+              const code = generator.blockToCode(block);
+              generated.set(block.id, Array.isArray(code) ? code[0] || '' : code || '');
+            } catch (error) {
+              generated.set(block.id, `// ${block.type} - 代码生成失败: ${error}`);
+            }
+          });
+          return generated;
+        })
+      : new Map<string, string>();
     
     // 生成详细的块信息
     const results = foundBlocks.map((block: any) => {
@@ -9456,16 +9466,8 @@ export async function findBlockTool(args: any): Promise<ToolUseResult> {
       
       // 包含代码生成
       if (includeCode) {
-        try {
-          let generatedCode = '';
-          if ((window as any).Arduino && (window as any).Arduino.blockToCode) {
-            const code = (window as any).Arduino.blockToCode(block);
-            generatedCode = Array.isArray(code) ? code[0] || '' : code || '';
-          }
-          blockInfo.generatedCode = generatedCode || `// ${block.type} - 无代码生成`;
-        } catch (error) {
-          blockInfo.generatedCode = `// ${block.type} - 代码生成失败: ${error}`;
-        }
+        blockInfo.generatedCode = generatedCodeByBlockId.get(block.id)
+          || `// ${block.type} - 无代码生成`;
       }
       
       return blockInfo;

@@ -16,11 +16,14 @@ import {
   hasAilyProjectDataAbsHeader,
 } from '../../../services/project-data/project-data.types';
 import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
-import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
 import {
   normalizeArduinoGeneratedCode,
 } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
-import { generateCodeWithActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
+import { runWithPreparedActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
+import {
+  syncArduinoProjectSourceToSketch,
+  writeArduinoGeneratedArtifacts,
+} from '../../../editors/blockly-editor/services/generated-code-artifacts';
 import {
   yieldToBrowserIdle,
   type BrowserFrameBudgetController,
@@ -104,14 +107,24 @@ async function writeGeneratedSketchIno(
 
   await yieldToBrowserIdle(300);
   throwIfSyncAbsCancelled(invocationContext);
-  await prepareBlocklyProjectDataForCodeGeneration(workspace);
-  throwIfSyncAbsCancelled(invocationContext);
   const codegenStartedAt = performance.now();
-  const generatedCode = await ChatPerformanceTracer.runWithSurface(
+  const generated = await ChatPerformanceTracer.runWithSurface(
     'builder_preprocess',
-    () => normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(workspace)),
+    () => runWithPreparedActiveProjectGenerator(
+      workspace,
+      (generator) => {
+        throwIfSyncAbsCancelled(invocationContext);
+        return {
+          code: normalizeArduinoGeneratedCode(generator.workspaceToCode(workspace)),
+          generator,
+        };
+      },
+    ),
     'syncAbs.import:sketch.ino',
   );
+  const generatedCode = generated.code;
+  await writeArduinoGeneratedArtifacts(projectPath, generated.generator);
+  syncArduinoProjectSourceToSketch(projectPath, sketchPath);
   ChatPerformanceTracer.recordDuration(
     'syncAbs_sketch_codegen',
     performance.now() - codegenStartedAt,

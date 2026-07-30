@@ -189,6 +189,16 @@ declare global {
           runtimePackId?: string;
           runtimeMode?: string;
         })>;
+        requestProjectSceneGeneration: (options: {
+          ownerId?: string;
+          regenerationId: string;
+        }) => Promise<{
+          schemaVersion: 1;
+          kind: 'aily-simulator-subapp-project-scene-generation-request-result';
+          state: 'accepted';
+          regenerationId: string;
+          requestId: string;
+        }>;
         resolveProjectSceneRegeneration: (options: {
           ownerId?: string;
           regenerationId: string;
@@ -241,7 +251,10 @@ declare global {
             state: 'starting' | 'ready' | 'stopping' | 'stopped' | 'failed'
               | 'rebuild-requested' | 'artifact-rebuild-state-changed'
               | 'artifact-rebuild-candidate-ready'
-              | 'legacy-scene-regeneration-required';
+              | 'legacy-scene-regeneration-required'
+              | 'scene-generation-requested'
+              | 'scene-generation-candidate-ready'
+              | 'scene-generation-failed';
             unexpected?: boolean;
             surface?: {
               schemaVersion: 1;
@@ -256,11 +269,11 @@ declare global {
               runtimeMode?: string;
             };
             failure?: {
-              phase: string;
+              phase?: string;
               message: string;
-              code: number | null;
-              signal: string | null;
-              occurredAt: string;
+              code?: number | string | null;
+              signal?: string | null;
+              occurredAt?: string;
             };
             requirement?: Record<string, unknown>;
           }) => void,

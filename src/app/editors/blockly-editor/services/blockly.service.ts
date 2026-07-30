@@ -20,7 +20,6 @@ import { createProjectDataMarker, isAilyProjectDataMarker } from '../../../servi
 import {
   decorateLibraryBlockDefinitionForProjectData,
   unregisterProjectDataFieldSlots,
-  wrapProjectDataGeneratorFunctions,
 } from '../../../services/project-data/blockly-project-data-adapter';
 import { BlocklyGeneratorRuntimeService } from './blockly-generator-runtime.service';
 
@@ -1627,10 +1626,6 @@ export class BlocklyService {
       const registered = result.arduinoBlockTypes.length > 0
         ? result.arduinoBlockTypes
         : result.micropythonBlockTypes;
-      wrapProjectDataGeneratorFunctions(
-        this.generatorRuntime.getActiveGenerator(),
-        registered,
-      );
       this.loadedGenerators.set(filePath, new Set(registered));
       return Promise.resolve(true);
     } catch (error) {

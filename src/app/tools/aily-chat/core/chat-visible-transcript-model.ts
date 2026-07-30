@@ -2,7 +2,8 @@ import type { TurnResponsePart, TurnResponseStatus, TurnResponseTurn } from 'ail
 
 import type { ChatPart } from './chat-parts';
 import {
-  turnResponsePartsToDisplayChatParts,
+  turnResponsePartToChatParts,
+  turnResponsePartsToDisplayChatPartEntries,
 } from './turn-response-part-mapper';
 import {
   buildTurnResponseAssistantMessageProjection,
@@ -73,6 +74,8 @@ export interface ChatVisibleTranscriptDialogItemPatch {
   readonly kind: ChatVisibleTranscriptChangeKind;
   /** Response-model parts changed by the originating host delta. */
   readonly changedParts?: readonly ChatPart[];
+  /** Canonical indices in the visible response-part projection. */
+  readonly changedPartIndices?: readonly number[];
 }
 
 interface ChatVisibleTranscriptItemRecord {
@@ -100,6 +103,7 @@ export class ChatVisibleTranscriptModel {
   private readonly dialogItemCache = new Map<string, ChatVisibleTranscriptDialogItemRecord>();
   private readonly streamStatsTrackers = new Map<string, ChatStreamStatsTracker>();
   private readonly streamPartWordCounts = new Map<string, Map<string, number>>();
+  private readonly responsePartSlots = new Map<string, readonly (readonly ChatPart[])[]>();
   private orderedIds: string[] = [];
   private readonly orderedIndexById = new Map<string, number>();
   private readonly changes: ChatVisibleTranscriptChange[] = [];
@@ -120,6 +124,28 @@ export class ChatVisibleTranscriptModel {
 
   getResponseItem(turnId: string): ChatVisibleTranscriptItem | undefined {
     return this.getItem(chatVisibleResponseItemId(turnId));
+  }
+
+  getResponseDisplayPartIndices(
+    turnId: string,
+    sourcePartIndices: readonly number[],
+  ): readonly number[] {
+    const slots = this.responsePartSlots.get(turnId);
+    if (!slots || sourcePartIndices.length === 0) {
+      return [];
+    }
+    const sourceIndexSet = new Set(sourcePartIndices);
+    const displayIndices: number[] = [];
+    let displayIndex = 0;
+    slots.forEach((slot, sourcePartIndex) => {
+      for (let offset = 0; offset < slot.length; offset += 1) {
+        if (sourceIndexSet.has(sourcePartIndex)) {
+          displayIndices.push(displayIndex);
+        }
+        displayIndex += 1;
+      }
+    });
+    return displayIndices;
   }
 
   replaceFromSessionModel(turnResponses: readonly TurnResponseTurn[] | null | undefined): readonly ChatVisibleTranscriptChange[] {
@@ -148,6 +174,7 @@ export class ChatVisibleTranscriptModel {
         if (removedTurnId && !expectedIds.has(chatVisibleResponseItemId(removedTurnId))) {
           this.streamStatsTrackers.delete(removedTurnId);
           this.streamPartWordCounts.delete(removedTurnId);
+          this.responsePartSlots.delete(removedTurnId);
         }
         this.pushChange('removed', itemId);
       }
@@ -207,7 +234,7 @@ export class ChatVisibleTranscriptModel {
     turn: TurnResponseTurn,
     options: { recordOrder: boolean },
   ): ChatVisibleTranscriptItem {
-    const parts = turnResponsePartsToChatParts(turn.response.parts);
+    const parts = this.replaceResponsePartSlots(turn.turnId, turn.response.parts);
     const contentPreview = getTurnResponseAssistantText(turn);
     const item = this.upsertItem({
       id: chatVisibleResponseItemId(turn.turnId),
@@ -231,37 +258,93 @@ export class ChatVisibleTranscriptModel {
     return item;
   }
 
-  upsertResponsePart(turnId: string, part: TurnResponsePart): ChatVisibleTranscriptItem {
-    return this.upsertResponseParts(turnId, [part]);
+  upsertResponsePart(
+    turnId: string,
+    sourcePartIndex: number,
+    part: TurnResponsePart,
+  ): ChatVisibleTranscriptItem {
+    return this.upsertResponseParts(turnId, [part], [sourcePartIndex]);
   }
 
-  upsertResponseParts(turnId: string, parts: readonly TurnResponsePart[]): ChatVisibleTranscriptItem {
+  upsertResponseParts(
+    turnId: string,
+    parts: readonly TurnResponsePart[],
+    sourcePartIndices: readonly number[],
+    authoritativeTurn?: TurnResponseTurn,
+  ): ChatVisibleTranscriptItem {
     const responseId = chatVisibleResponseItemId(turnId);
     const existing = this.records.get(responseId)?.item;
     if (!existing) {
       throw new Error(`Cannot upsert response part before response item exists: ${turnId}`);
     }
+    if (parts.length !== sourcePartIndices.length) {
+      throw new Error(`Response part delta index mismatch: ${turnId}`);
+    }
 
-    const nextParts = mergeChatParts(existing.parts, turnResponsePartsToChatParts(parts));
+    const nextParts = authoritativeTurn
+      ? this.replaceResponsePartSlots(turnId, authoritativeTurn.response.parts)
+      : this.patchResponsePartSlots(turnId, parts, sourcePartIndices);
     return this.upsertItem({
       id: existing.id,
       kind: 'response',
       role: 'aily',
       turnId: existing.turnId,
-      status: existing.status,
+      status: authoritativeTurn?.response.status ?? existing.status,
       // The response row is part-owned while streaming. Materializing the
       // complete assistant text here would copy every growing markdown part
       // before the mounted content-part renderer sees the delta.
       contentPreview: existing.contentPreview,
       parts: nextParts,
-      turnResponse: existing.turnResponse,
-      turnContext: existing.turnContext,
+      turnResponse: authoritativeTurn ?? existing.turnResponse,
+      turnContext: authoritativeTurn
+        ? buildDialogTurnContext({ turnResponse: authoritativeTurn })
+        : existing.turnContext,
       contentUpdateTimings: this.updateStreamStats(
         turnId,
         existing.status,
         parts,
       ),
     });
+  }
+
+  private replaceResponsePartSlots(
+    turnId: string,
+    responseParts: readonly TurnResponsePart[],
+  ): readonly ChatPart[] {
+    const slots: ChatPart[][] = Array.from({ length: responseParts.length }, () => []);
+    for (const entry of turnResponsePartsToDisplayChatPartEntries(responseParts)) {
+      slots[entry.sourcePartIndex].push(entry.part);
+    }
+    this.responsePartSlots.set(turnId, slots);
+    return slots.flat();
+  }
+
+  private patchResponsePartSlots(
+    turnId: string,
+    parts: readonly TurnResponsePart[],
+    sourcePartIndices: readonly number[],
+  ): readonly ChatPart[] {
+    const previousSlots = this.responsePartSlots.get(turnId);
+    if (!previousSlots) {
+      throw new Error(`Cannot patch response part slots before response projection exists: ${turnId}`);
+    }
+
+    const nextSlots = previousSlots.map(slot => [...slot]);
+    for (let index = 0; index < parts.length; index += 1) {
+      const sourcePartIndex = sourcePartIndices[index];
+      if (!Number.isInteger(sourcePartIndex) || sourcePartIndex < 0) {
+        throw new Error(`Invalid canonical response part index: ${turnId}`);
+      }
+      while (nextSlots.length <= sourcePartIndex) {
+        nextSlots.push([]);
+      }
+      nextSlots[sourcePartIndex] = turnResponsePartToChatParts(
+        parts[index],
+        nextSlots[sourcePartIndex][0],
+      );
+    }
+    this.responsePartSlots.set(turnId, nextSlots);
+    return nextSlots.flat();
   }
 
   /**
@@ -550,72 +633,12 @@ export class ChatVisibleTranscriptModel {
   }
 }
 
-function mergeChatParts(existing: readonly ChatPart[], incoming: readonly ChatPart[]): readonly ChatPart[] {
-  let merged = [...existing];
-  for (const part of incoming) {
-    if (part.type === 'terminal') {
-      merged = removeTerminalOwnedInvocationParts(merged, part);
-    }
-    const key = getChatPartStableKey(part);
-    const existingIndex = key
-      ? merged.findIndex(candidate => getChatPartStableKey(candidate) === key)
-      : -1;
-    if (existingIndex >= 0) {
-      merged[existingIndex] = cloneChatPart(part);
-    } else {
-      merged.push(cloneChatPart(part));
-    }
-  }
-  return merged;
-}
-
-function removeTerminalOwnedInvocationParts(parts: readonly ChatPart[], terminal: Extract<ChatPart, { type: 'terminal' }>): ChatPart[] {
-  const toolCallIds = new Set<string>([
-    terminal.toolCallId,
-    ...(Array.isArray(terminal.sourceToolCallIds) ? terminal.sourceToolCallIds : []),
-  ].filter((value): value is string => !!value));
-  if (toolCallIds.size === 0) {
-    return [...parts];
-  }
-  return parts.filter(part => {
-    if (part.type === 'tool_call' && toolCallIds.has(part.toolCallId)) {
-      return false;
-    }
-    if (part.type === 'confirmation' && (toolCallIds.has(part.askId) || (part.partId && toolCallIds.has(part.partId.replace(/^confirmation:/, ''))))) {
-      return false;
-    }
-    return true;
-  });
-}
-
 function collectChatPartAssistantPreview(parts: readonly ChatPart[], fallback: string): string {
   const content = parts
     .filter((part): part is Extract<ChatPart, { type: 'markdown' }> => part.type === 'markdown' && part.sourceAgentRole !== 'subagent')
     .map(part => part.content)
     .join('');
   return content || fallback;
-}
-
-function turnResponsePartsToChatParts(parts: readonly TurnResponsePart[]): readonly ChatPart[] {
-  return turnResponsePartsToDisplayChatParts(parts);
-}
-
-function getChatPartStableKey(part: ChatPart): string | undefined {
-  switch (part.type) {
-    case 'markdown':
-    case 'thinking':
-    case 'question':
-    case 'confirmation':
-    case 'terminal':
-    case 'plan':
-      return part.partId;
-    case 'tool_call':
-      return part.partId ?? `tool:${part.toolCallId}`;
-    case 'state':
-      return `state:${part.stateId}`;
-    case 'error':
-      return part.partId;
-  }
 }
 
 function createItemSignature(item: Omit<ChatVisibleTranscriptItem, 'revision'>): string {
@@ -826,10 +849,6 @@ function stableSmallJson(value: unknown): string {
 
 function freezeChatParts(parts: readonly ChatPart[]): readonly ChatPart[] {
   return Object.freeze([...parts]);
-}
-
-function cloneChatPart(part: ChatPart): ChatPart {
-  return { ...part } as ChatPart;
 }
 
 function freezeItem(item: ChatVisibleTranscriptItem): ChatVisibleTranscriptItem {

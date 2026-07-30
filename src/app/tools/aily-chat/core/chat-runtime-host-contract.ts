@@ -601,6 +601,9 @@ export interface ChatRuntimeHostPartTranscriptEvent extends ChatRuntimeHostEvent
   readonly kind: 'part-transcript';
   readonly turnId: string;
   readonly parts: readonly TurnResponsePart[];
+  /** Canonical response content indices aligned one-to-one with `parts`. */
+  readonly partIndices: readonly number[];
+  /** Present only when the response structure/status needs authoritative replacement. */
   readonly turn?: TurnResponseTurn;
   readonly status?: TurnResponseStatus;
   readonly sourceEventType?: string;

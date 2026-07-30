@@ -18,12 +18,16 @@ export interface PartRenderItem {
   kind: 'part';
   id: string;
   part: RenderableChatPart;
+  /** Canonical index in the response part list. Synthetic display parts omit it. */
+  sourcePartIndex?: number;
 }
 
 export interface ActivityGroupRenderItem {
   kind: 'group';
   id: string;
   parts: readonly ChatPart[];
+  /** Canonical response indices aligned one-to-one with `parts`. */
+  sourcePartIndices: readonly number[];
   revision: string;
   live: boolean;
 }
@@ -114,11 +118,13 @@ function recordSubagentProjectionInvariant(items: readonly ChatRenderItem[]): vo
 function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderItem[] {
   const items: ChatRenderItem[] = [];
   let buffer: ChatPart[] = [];
+  let bufferSourcePartIndices: number[] = [];
   let bufferStartIndex = -1;
   const terminalOwnedToolCallIds = collectTerminalOwnedToolCallIds(parts);
   const subagentGroups = new Map<string, {
     item: ActivityGroupRenderItem;
     parts: ChatPart[];
+    sourcePartIndices: number[];
     startIndex: number;
   }>();
 
@@ -128,11 +134,13 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
         kind: 'group',
         id: buildActivityGroupIdentity(buffer, Math.max(0, bufferStartIndex)),
         parts: buffer,
-        revision: buildActivityGroupRevision(buffer),
+        sourcePartIndices: bufferSourcePartIndices,
+        revision: buildActivityGroupRevision(buffer, bufferSourcePartIndices),
         live: false,
       });
     }
     buffer = [];
+    bufferSourcePartIndices = [];
     bufferStartIndex = -1;
   };
 
@@ -147,14 +155,16 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
     let group = subagentGroups.get(subagentId);
     if (!group) {
       const groupParts = [chatPart];
+      const sourcePartIndices = [index];
       const item: ActivityGroupRenderItem = {
         kind: 'group',
         id: buildSubagentActivityGroupIdentity(subagentId),
         parts: groupParts,
-        revision: buildActivityGroupRevision(groupParts),
+        sourcePartIndices,
+        revision: buildActivityGroupRevision(groupParts, sourcePartIndices),
         live: false,
       };
-      group = { item, parts: groupParts, startIndex: index };
+      group = { item, parts: groupParts, sourcePartIndices, startIndex: index };
       subagentGroups.set(subagentId, group);
       items.push(item);
       return true;
@@ -162,11 +172,13 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
 
     if (isSubagentParentToolPart(chatPart) && !group.parts.some(isSubagentParentToolPart)) {
       group.parts.unshift(chatPart);
+      group.sourcePartIndices.unshift(index);
     } else if (!group.parts.includes(chatPart)) {
       group.parts.push(chatPart);
+      group.sourcePartIndices.push(index);
     }
 
-    group.item.revision = buildActivityGroupRevision(group.parts);
+    group.item.revision = buildActivityGroupRevision(group.parts, group.sourcePartIndices);
     return true;
   };
 
@@ -178,7 +190,7 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
 
     if (isProgressMessageDisplayPart(part)) {
       flushBuffer();
-      items.push({ kind: 'part', id: `progress:${part.id}`, part });
+      items.push({ kind: 'part', id: `progress:${part.id}`, part, sourcePartIndex: index });
       continue;
     }
 
@@ -195,6 +207,7 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
           bufferStartIndex = index;
         }
         buffer.push(part as ChatPart);
+        bufferSourcePartIndices.push(index);
         const mermaidPart = buildSaveArchMermaidDisplayPart(part);
         if (mermaidPart) {
           flushBuffer();
@@ -203,7 +216,7 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
         continue;
       }
       flushBuffer();
-      items.push({ kind: 'part', id: buildChatPartIdentity(part, index), part });
+      items.push({ kind: 'part', id: buildChatPartIdentity(part, index), part, sourcePartIndex: index });
       const mermaidPart = buildSaveArchMermaidDisplayPart(part);
       if (mermaidPart) {
         items.push({ kind: 'part', id: buildChatPartIdentity(mermaidPart, index), part: mermaidPart });
@@ -216,6 +229,7 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
         bufferStartIndex = index;
       }
       buffer.push(part as ChatPart);
+      bufferSourcePartIndices.push(index);
       continue;
     }
 
@@ -228,11 +242,12 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
         bufferStartIndex = index;
       }
       buffer.push(part as ChatPart);
+      bufferSourcePartIndices.push(index);
       continue;
     }
 
     flushBuffer();
-    items.push({ kind: 'part', id: buildChatPartIdentity(part, index), part });
+    items.push({ kind: 'part', id: buildChatPartIdentity(part, index), part, sourcePartIndex: index });
   }
 
   flushBuffer();
@@ -511,8 +526,12 @@ function toRuntimeToolCallPart(part: RenderableChatPart): {
   };
 }
 
-export function buildActivityGroupRevision(parts: readonly ChatPart[]): string {
-  return parts.map((part, index) => buildActivityPartRevision(part, index)).join('|');
+export function buildActivityGroupRevision(
+  parts: readonly ChatPart[],
+  sourcePartIndices?: readonly number[],
+): string {
+  return parts.map((part, index) =>
+    buildActivityPartRevision(part, sourcePartIndices?.[index] ?? index)).join('|');
 }
 
 export function buildActivityPartRevision(part: ChatPart, index: number): string {

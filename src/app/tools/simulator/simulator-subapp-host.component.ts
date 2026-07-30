@@ -19,7 +19,6 @@ import {
   type SimulatorSubappFrameState,
 } from './simulator-subapp-frame-adapter';
 import { SimulatorProjectRebuildBridgeService } from '../../services/simulator-project-rebuild-bridge.service';
-import { UiService } from '../../services/ui.service';
 
 interface SimulatorSubappElectronApi {
   openProjectScene(options: {
@@ -42,6 +41,15 @@ interface SimulatorSubappElectronApi {
     ownerId: string;
     proposal: Record<string, unknown>;
   }): Promise<Record<string, unknown>>;
+  requestProjectSceneGeneration?(options: {
+    ownerId: string;
+    regenerationId: string;
+  }): Promise<{
+    schemaVersion: 1;
+    kind: 'aily-simulator-subapp-project-scene-generation-request-result';
+    state: 'accepted';
+    regenerationId: string;
+  }>;
   attachProjectSceneSession(ownerId?: string): Promise<unknown>;
   close(ownerId?: string): Promise<unknown>;
   onStateChanged?(callback: (event: {
@@ -97,6 +105,7 @@ implements AfterViewInit, OnDestroy {
   errorMessage = '';
   runtimeSource = '';
   regenerationRequirement: ProjectSceneRegenerationRequirement | null = null;
+  generationRequestPending = false;
 
   private readonly ownerId = createOwnerId();
   private adapter: SimulatorSubappFrameAdapter | null = null;
@@ -109,7 +118,6 @@ implements AfterViewInit, OnDestroy {
     private readonly projectService: ProjectService,
     private readonly blocklyService: BlocklyService,
     private readonly ngZone: NgZone,
-    private readonly uiService: UiService,
     rebuildBridge: SimulatorProjectRebuildBridgeService,
   ) {
     rebuildBridge.start();
@@ -125,6 +133,14 @@ implements AfterViewInit, OnDestroy {
         surface?: SimulatorSubappSurface;
         failure?: { message?: string };
       }) => {
+        if (event.state === 'scene-generation-failed' && !this.destroyed) {
+          this.ngZone.run(() => {
+            this.errorMessage = event.failure?.message
+              || 'Project Scene generation failed.';
+            this.generationRequestPending = false;
+          });
+          return;
+        }
         if (
           event.state === 'ready'
           && event.surface?.kind === 'aily-simulator-subapp-surface'
@@ -197,17 +213,30 @@ implements AfterViewInit, OnDestroy {
     });
   }
 
-  regenerateLegacySceneWithAgent(): void {
+  requestProjectSceneGeneration(): void {
     const requirement = this.regenerationRequirement;
-    if (!requirement) return;
-    this.uiService.openAndSendToChat(
-      `@SchematicAgent 请为独立仿真器生成新的 v2 Project Scene。`+
-      `当前 regenerationId=${requirement.regenerationId}。`+
-      `请先调用 get_project_scene_regeneration_context，结合当前 Blockly 项目和生成代码推导组件、引脚、电源与连线；`+
-      `然后调用 commit_project_scene_regeneration 提交结构化 proposal，并等待我确认。`+
-      `不要读取、转换或回写旧 connection_output.json，也不要使用 generate_schematic/validate_schematic。`,
-      { autoSend: true, cover: true },
-    );
+    const request = this.simulatorApi()?.requestProjectSceneGeneration;
+    if (!requirement || this.generationRequestPending) return;
+    if (typeof request !== 'function') {
+      this.errorMessage = 'Scene Generation Broker 尚未连接；已阻止旧连线图生成通道。';
+      return;
+    }
+    this.errorMessage = '';
+    this.generationRequestPending = true;
+    void request({
+      ownerId: this.ownerId,
+      regenerationId: requirement.regenerationId,
+    }).catch((error) => {
+      if (this.destroyed) return;
+      this.ngZone.run(() => {
+        this.errorMessage = error instanceof Error ? error.message : String(error);
+      });
+    }).finally(() => {
+      if (this.destroyed) return;
+      this.ngZone.run(() => {
+        this.generationRequestPending = false;
+      });
+    });
   }
 
   private async restart(): Promise<void> {

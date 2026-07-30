@@ -5,12 +5,11 @@ import {
   normalizeArduinoGeneratedCode,
 } from '../components/blockly/generators/arduino/arduino';
 import {
-  generateCodeWithActiveProjectGenerator,
   getActiveProjectGenerator,
+  runWithPreparedActiveProjectGenerator,
 } from './blockly-generator-runtime.service';
 import { ElectronService } from '../../../services/electron.service';
 import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
-import { prepareBlocklyProjectDataForCodeGeneration } from '../../../services/project-data/blockly-project-data-adapter';
 import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
 import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 
@@ -131,20 +130,23 @@ export class _ProjectService {
    */
   private async updateCodeHash(path: string, projectDocument?: BlocklyProjectDocument) {
     try {
-      const activeGenerator = getActiveProjectGenerator();
-      if (!activeGenerator || !this.blocklyService || !this.blocklyService.workspace) {
+      if (!getActiveProjectGenerator() || !this.blocklyService || !this.blocklyService.workspace) {
         console.warn('无法生成代码哈希，跳过更新');
         return;
       }
 
       // 复用最近一次成功生成的代码；如果工作区已变更但防抖生成尚未完成，再同步生成一次。
-      await prepareBlocklyProjectDataForCodeGeneration(
+      const generated = await runWithPreparedActiveProjectGenerator(
         this.blocklyService.workspace,
+        (generator) => ({
+          code: this.blocklyService.getReusableGeneratedCode()
+            ?? normalizeArduinoGeneratedCode(generator.workspaceToCode(this.blocklyService.workspace)),
+          generator,
+        }),
         projectDocument ?? this.blocklyService.getProjectDocument(),
       );
-      const code = this.blocklyService.getReusableGeneratedCode()
-        ?? normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(this.blocklyService.workspace));
-      await writeArduinoGeneratedArtifacts(path, activeGenerator);
+      const { code, generator } = generated;
+      await writeArduinoGeneratedArtifacts(path, generator);
       this.blocklyService.publishGeneratedCode(code);
       
       // 计算哈希
