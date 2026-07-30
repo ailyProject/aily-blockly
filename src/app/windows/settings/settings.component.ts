@@ -297,9 +297,11 @@ export class SettingsComponent implements OnDestroy {
       return;
     }
     try {
-      await this.coderDependency.ensureInstalled();
+      const installedNow = await this.coderDependency.ensureInstalled();
       await this.configService.setDevelopmentModePreference('coder', 'settings');
-      this.message.success(this.translateService.instant('SETTINGS.FIELDS.CODER_EXTENSION_INSTALLED'));
+      if (installedNow) {
+        this.message.success(this.translateService.instant('SETTINGS.FIELDS.CODER_EXTENSION_INSTALLED'));
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error || '');
       this.message.error(

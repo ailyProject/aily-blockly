@@ -35,7 +35,7 @@
               </div>
               <div class="item development-mode-item">
                 <div>{{ 'SETTINGS.FIELDS.DEVELOPMENT_MODE_PREFERENCE' | translate }}:</div>
-                <div class="development-mode-buttons">
+                <div class="development-mode-buttons" [class.has-coder]="coderEnabled">
                   <button
                     nz-button
                     nzSize="small"

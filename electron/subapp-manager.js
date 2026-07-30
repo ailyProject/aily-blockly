@@ -22,6 +22,7 @@ const BUILTIN_DEPENDENCY_ENTRIES = Object.freeze({
       description: 'AILY_CODER.DESCRIPTION',
       icon: 'fa-light fa-code',
       enabled: true,
+      extension: true,
     },
     package: '@aily-project/subapp-aily-coder',
     version: '0.1.0',
@@ -159,6 +160,7 @@ function validateIndex(rawIndex) {
           rawEntry.enabled,
           rawEntry.enable,
         ),
+        extension: app.extension === true,
       },
       i18n: {
         defaultLocale,
@@ -543,6 +545,9 @@ function readInstalledState(rootDir, entry) {
 
   try {
     const packageJson = readJson(packageJsonPath);
+    const packageApp = isObject(packageJson?.ailySubapp?.app)
+      ? packageJson.ailySubapp.app
+      : {};
     const installedVersion = typeof packageJson.version === 'string' ? packageJson.version : null;
     const mainEntry = typeof packageJson.main === 'string' && packageJson.main.trim()
       ? packageJson.main.trim()
@@ -591,6 +596,7 @@ function readInstalledState(rootDir, entry) {
         app: {
           ...entry.app,
           id: toolId,
+          extension: entry.app.extension === true || packageApp.extension === true,
           ...(DEFAULT_TOOLBAR_IDS.has(toolId) ? { defaultToolbar: true } : {}),
           ...(toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
         },
@@ -673,6 +679,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           description: copy.description,
           icon: entry.app.icon,
           enabled: entry.app.enabled,
+          extension: localizedConfig?.app?.extension === true || entry.app.extension === true,
           config: localizedConfig,
           ...(installedState.installError ? { installError: installedState.installError } : {}),
         };

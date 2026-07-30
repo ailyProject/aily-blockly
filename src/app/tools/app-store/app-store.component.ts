@@ -82,6 +82,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   private layoutSubscription?: Subscription;
   private catalogSubscription?: Subscription;
   private progressSubscription?: Subscription;
+  private runtimeSubscription?: Subscription;
   private confirmUninstallTimer?: ReturnType<typeof setTimeout>;
   private isDraggingToolbarApp = false;
   private activeSubappVersions = new Map<string, string>();
@@ -134,6 +135,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.pendingProgress = Math.max(this.pendingProgress, Math.round(progress.percent || 0));
       this.cdr.markForCheck();
     });
+    this.runtimeSubscription = this.childToolProcess.runtimeStates$.subscribe(() => {
+      this.cdr.markForCheck();
+    });
   }
 
   ngAfterViewInit(): void {
@@ -144,6 +148,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.layoutSubscription?.unsubscribe();
     this.catalogSubscription?.unsubscribe();
     this.progressSubscription?.unsubscribe();
+    this.runtimeSubscription?.unsubscribe();
     this.sortables.forEach(sortable => sortable.destroy());
     this.sortables = [];
     this.closeSubappMore();
@@ -171,7 +176,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   toggleZone(app: AppItem, zone: AppPlacementZone): void {
-    if (app.lock) {
+    if (app.lock || app.extension) {
       return;
     }
 
@@ -194,6 +199,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   openApp(app: AppItem): void {
     if (app.subapp && !app.subapp.installed) {
       this.installSubapp(app);
+      return;
+    }
+    if (app.extension) {
       return;
     }
     const toolName = app.data?.data;
@@ -246,7 +254,34 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   isSubappActive(app: AppItem): boolean {
-    return !!app.subapp?.installed && this.uiService.isToolOpen(app.id);
+    if (!app.subapp?.installed) {
+      return false;
+    }
+    return app.extension
+      ? this.isExtensionProcessRunning(app)
+      : this.uiService.isToolOpen(app.id);
+  }
+
+  isExtensionOpenDisabled(app: AppItem): boolean {
+    return app.extension === true && app.subapp?.installed !== false;
+  }
+
+  isExtensionProcessRunning(app: AppItem): boolean {
+    return app.extension === true
+      && this.childToolProcess.getRuntimeSnapshot(app.id).running;
+  }
+
+  getExtensionProcessInfo(app: AppItem): { port?: number; pid?: number } | null {
+    return app.extension === true
+      ? this.childToolProcess.getRuntimeSnapshot(app.id).hostInfo
+      : null;
+  }
+
+  getExtensionProcessVersion(app: AppItem): string {
+    const runtime = this.childToolProcess.getRuntimeSnapshot(app.id);
+    return runtime.running && runtime.version
+      ? runtime.version
+      : String(app.subapp?.installedVersion || '');
   }
 
   isSubappRestartRequired(app: AppItem): boolean {
@@ -438,6 +473,17 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private confirmSubappRestart(app: AppItem): void {
+    if (app.extension) {
+      this.modal.info({
+        nzClassName: 'subapp-service-confirm-modal',
+        nzTitle: this.translate.instant('APP_STORE.RESTART_CLIENT_TITLE'),
+        nzContent: this.translate.instant('APP_STORE.RESTART_CLIENT_HINT', { name: app.name }),
+        nzOkText: this.translate.instant('APP_STORE.GOT_IT'),
+        nzMaskClosable: false,
+      });
+      return;
+    }
+
     this.modal.confirm({
       nzClassName: 'subapp-service-confirm-modal',
       nzTitle: this.translate.instant('APP_STORE.RESTART_CONFIRM', { name: app.name }),
@@ -553,6 +599,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private getSubappActiveVersion(app: AppItem): string {
+    const runtime = this.childToolProcess.getRuntimeSnapshot(app.id);
+    if (app.extension && runtime.running && runtime.version) {
+      return runtime.version;
+    }
     const localVersion = this.childHostRegistry.getStatus(app.id)?.['version'];
     if (typeof localVersion === 'string' && localVersion.trim()) {
       return localVersion.trim();

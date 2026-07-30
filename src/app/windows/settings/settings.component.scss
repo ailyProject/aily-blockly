@@ -24,12 +24,36 @@
 .development-mode-buttons {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
+
+  &.has-coder > button {
+    position: relative;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  &.has-coder > button:hover,
+  &.has-coder > button:focus,
+  &.has-coder > button.ant-btn-primary {
+    z-index: 1;
+  }
 }
 
 .coder-mode-option {
   position: relative;
   display: inline-flex;
+  margin-left: -1px;
+
+  > button {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+
+  > button:hover,
+  > button:focus,
+  > button.ant-btn-primary {
+    z-index: 1;
+  }
 }
 
 .coder-install-dot {

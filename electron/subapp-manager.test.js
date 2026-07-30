@@ -126,6 +126,7 @@ test('declares Coder as a dynamically installed dependency package', () => {
       description: 'AILY_CODER.DESCRIPTION',
       icon: 'fa-light fa-code',
       enabled: true,
+      extension: true,
     },
     package: '@aily-project/subapp-aily-coder',
     version: '0.1.0',
@@ -173,6 +174,13 @@ test('rejects package targets that are not safe npm package names', () => {
   const index = fixtureIndex();
   index['aily-chat'].package = 'file:../../tmp/app';
   assert.throws(() => validateIndex(index), /Invalid subapp package/);
+});
+
+test('preserves app.extension from the catalog index', () => {
+  const index = fixtureIndex();
+  index['aily-chat'].app.extension = true;
+
+  assert.equal(validateIndex(index)['aily-chat'].app.extension, true);
 });
 
 test('omits disabled catalog entries from the subapp list', async (t) => {
@@ -232,7 +240,40 @@ test('omits disabled catalog entries from the subapp list', async (t) => {
     }),
   });
   const state = await manager.list({ locale: 'en', refresh: true });
-  assert.deepEqual(state.apps.map((app) => app.id), ['aily-chat']);
+  assert.deepEqual(state.apps.map((app) => app.id), ['aily-chat', 'aily-coder']);
+});
+
+test('projects app.extension from the installed package into the catalog and tool config', async (t) => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-extension-'));
+  const installRoot = path.join(fixtureRoot, 'npm-global', 'app');
+  const packageDir = path.join(installRoot, 'node_modules', '@aily-project', 'subapp-aily-chat');
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
+  fs.writeFileSync(path.join(packageDir, 'index.js'), '');
+  fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: '@aily-project/subapp-aily-chat',
+    version: '0.1.0',
+    main: 'index.js',
+    ailySubapp: {
+      app: {
+        extension: true,
+      },
+    },
+  }));
+
+  const manager = createSubappManager({
+    rootDir: installRoot,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(fixtureIndex()),
+    }),
+  });
+  const state = await manager.list({ locale: 'en', refresh: true });
+
+  assert.equal(state.apps[0].extension, true);
+  assert.equal(state.apps[0].config.app.extension, true);
 });
 
 test('treats an npm-linked source package as an installed subapp', async (t) => {

@@ -354,6 +354,14 @@
       color: var(--aily-text-primary);
     }
   }
+
+  &.extension {
+    cursor: default;
+
+    &:hover .app-icon {
+      color: var(--aily-text-secondary);
+    }
+  }
 }
 
 .app-version {
@@ -564,6 +572,33 @@
 
 .pin-btn i {
   transition: transform 0.18s ease;
+}
+
+.extension-process-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+}
+
+.extension-process-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--aily-text-hint);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--aily-text-hint) 16%, transparent);
+  transition: background 0.18s, box-shadow 0.18s;
+}
+
+.extension-process-indicator.running .extension-process-dot {
+  background: var(--aily-color-success, #52c41a);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--aily-color-success, #52c41a) 18%, transparent);
+}
+
+.extension-process-tooltip .mono {
+  font-family: Consolas, Monaco, 'Courier New', monospace;
 }
 
 .subapp-more {

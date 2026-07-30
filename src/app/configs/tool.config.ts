@@ -4,6 +4,7 @@ export interface AppItem extends IMenuItem {
   id: string;
   description?: string;
   enabled?: boolean;
+  extension?: boolean;
   core?: string[];
   lock?: boolean;
   subapp?: {

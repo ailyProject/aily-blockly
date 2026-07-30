@@ -23,6 +23,7 @@ export interface SubappCatalogItem {
   description: string;
   icon: string;
   enabled: boolean;
+  extension?: boolean;
   config?: ChildToolConfig | null;
   installError?: string;
 }
@@ -134,6 +135,7 @@ export class SubappManagerService implements OnDestroy {
         data: { type: 'tool', data: item.toolId },
         icon: item.icon || 'fa-light fa-puzzle-piece',
         enabled: item.enabled,
+        extension: item.extension === true,
         ...(item.toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
         subapp: {
           catalogId: item.id,

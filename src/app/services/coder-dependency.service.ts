@@ -34,7 +34,7 @@ export class CoderDependencyService implements OnDestroy {
 
   private readonly stateSubject = new BehaviorSubject<CoderDependencyState>(INITIAL_STATE);
   private readonly catalogSubscription: Subscription;
-  private installPromise: Promise<void> | null = null;
+  private installPromise: Promise<boolean> | null = null;
 
   readonly state$ = this.stateSubject.asObservable();
 
@@ -55,10 +55,10 @@ export class CoderDependencyService implements OnDestroy {
     this.syncFromCatalog();
   }
 
-  async ensureInstalled(): Promise<void> {
+  async ensureInstalled(): Promise<boolean> {
     await this.initialize();
     if (this.state.installed) {
-      return;
+      return false;
     }
     if (this.installPromise) {
       return this.installPromise;
@@ -91,6 +91,7 @@ export class CoderDependencyService implements OnDestroy {
           throw new Error('Coder dependency installation completed without a runnable package');
         }
         this.syncFromCatalog();
+        return true;
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error || 'Coder dependency installation failed');
