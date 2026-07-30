@@ -213,8 +213,12 @@ function makeAnalyzeLibraryContribution(createDeferred: DeferredFactory): Runtim
   return {
     name: 'analyzeLibrary',
     toolSet: 'blockly-library',
-    description: 'Analyze library block definitions and generate ABS format documentation',
-    prompt: 'Use this tool to inspect an installed library. mode="auto" prefers readme_ai.md references when available and falls back to block analysis only for libraries without readme_ai.md. mode="readme_ref" returns only readme_ai.md references. mode="analysis" always returns block analysis. The metadata also reports whether the library has readme_ai.md and, when available, the readme path.',
+    description: 'Locate an installed library readme_ai.md reference or inspect its Blockly block definitions when deeper evidence is needed',
+    prompt: `Use this tool for progressive inspection of one installed library relevant to the current task.
+- Start with mode="auto". When readme_ai.md exists, the tool returns its reference rather than the file contents; read the referenced file before relying on the library API or ABS examples.
+- readme_ai.md is preferred but not an absolute stopping point. If it is missing, incomplete, contradictory, or does not answer the current question, inspect only the narrow additional evidence required: use mode="analysis" for block definitions, read the relevant block.json for fields and args0 order, then generator.js for generation semantics, and only then minimal native source when behavior remains unresolved.
+- mode="readme_ref" returns only readme_ai.md references. mode="analysis" forces block analysis.
+- Do not inspect unrelated libraries or continue into implementation files once the current question is answered.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -223,7 +227,7 @@ function makeAnalyzeLibraryContribution(createDeferred: DeferredFactory): Runtim
           type: 'string',
           enum: ['auto', 'readme_ref', 'analysis'],
           default: 'auto',
-          description: 'auto prefers readme references, readme_ref returns only readme paths, analysis forces block analysis',
+          description: 'auto returns a readme_ai.md reference when available and otherwise analyzes blocks; readme_ref returns only readme references; analysis forces block analysis',
         },
       },
       required: ['libraryId'],

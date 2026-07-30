@@ -1,8 +1,8 @@
 ---
 name: blockly-best-practices
-description: "Blockly 积木编程最佳实践：块结构设计、事件处理、传感器集成、ABS 代码编写流程。触发词：块编程、积木、Blockly 工作流、代码编辑"
+description: "Aily Blockly implementation workflow for scoped library evidence, ABS editing, workspace synchronization, and focused validation. Use for creating or modifying Blockly/ABS programs."
 metadata:
-  version: "1.0.0"
+  version: "2.0.0"
   author: aily-team
   scope: global
   agents: mainAgent
@@ -10,40 +10,53 @@ metadata:
   tags: blockly,coding-standards,abs,workflow
 ---
 
-# Blockly 代码编辑流程
+# Blockly Implementation Workflow
 
-## 【需求分析】
-仔细分析用户需求，理解要实现的功能和目标。对于不明确的需求，提出澄清问题。
+Use this skill only for implementing or modifying a Blockly/ABS program. Project selection and creation belong to the `blockly-project-planning` skill.
 
-## 【设计方案】
-使用工具了解当前工作区信息，仔细查询可使用的开发板和库，设计实现方案。方案设计要考虑功能实现的可行性、效率和可维护性。
-- 严禁假设应该使用的库或工具，必须通过工具查询确认。
-- 方案设计完成后输出完整方案设计及实现步骤。
-- 项目创建或者库安装必须询问用户确认。
+## 1. Start from runtime facts
 
-## 【准备工作】
-1. 使用分析当前工作区及当前项目状态，了解现有资源，确保项目已创建、库已安装。
-2. 安装所需库，确保所有依赖库已正确安装。
-3. 如果当前工具集中提供任务管理工具，及时更新任务清单，明确每一步要实现的功能和使用的工具。
-4. 列出需要使用的库，必须包含`lib-core-*`等核心库（如lib-core-logic、lib-core-variables等）。如果需要新库，使用 `boardSearch` 查询，再在得到用户确认后执行安装。
-5. 逐一阅读库的readme_ai.md，了解块定义和ABS语法。没有readme的库需要直接分析库文件获取信息。
-6. 必要时使用load_skill加载`abs-syntax-reference` skill，确认ABS语法规范后再修改代码。
+- Treat the injected project path, current board, installed library list, `readme_ai.md` references, and `project.abs` path as current runtime facts.
+- Do not call tools merely to rediscover those facts.
+- Treat `project.abs` as the canonical editable Blockly source. Generated `.ino`/C++ is derived output used for diagnostics, not the normal edit target.
 
-## 【实现阶段】
-1. 完整规划代码逻辑，构思ABS结构。
-2. 使用 `syncAbs` 的 `action="export"` 获取当前 ABS。
-3. 编辑ABS代码：添加新块、修改参数、调整结构。遵守ABS编写规范，确保字段直接写值，输入连接值块，语句输入用缩进，多输入块用标记，空括号不可省略。
-4. 使用 `syncAbs` 的 `action="import"` 将修改后的 ABS 导回工作区。
-5. 仔细分析错误信息，定位并修复ABS代码问题。遵循修复原则：诊断优先、最小改动、错误处理。
-6. 如果库功能不完善，安装lib-core-custom自定义库(需要用户确认)，重复步骤2-5直至完成。
-7. 当业务逻辑超过 30 行且自包含（如游戏、通信协议、算法）时，应优先创建独立 Blockly 库，而非使用 custom_code 注入。
+## 2. Gather only task-relevant evidence
 
-## 【修复原则】
-- 诊断优先：分析报错，定位问题，语法错误还是逻辑错误。
-- 最小改动：只修改需要变更的ABS行，保持其他结构不变。
-- 错误处理：读取库文件了解块定义和ABS语法，确保修复正确。
+- Identify the smallest set of libraries needed for the current feature. Do not inspect every installed library or add `lib-core-*` packages speculatively.
+- For each relevant installed library, call `analyzeLibrary` with `mode="auto"` first.
+- When it returns a `readme_ai.md` reference, read that file. The README is usually sufficient, but it is not an absolute stopping point.
+- If the README is missing, incomplete, contradictory, or does not answer the current question, escalate narrowly:
+  1. inspect the relevant `block.json` for block types, fields, inputs, and `args0` order;
+  2. inspect `generator.js` only when generated-code semantics remain unclear;
+  3. inspect the minimum native source needed only when underlying library behavior remains unresolved.
+- Stop reading once the evidence answers the current implementation question.
 
-## 【执行要求】
-- 安装操作必须询问用户确认，确保用户了解安装的库和功能。
-- 深入分析嵌入式代码逻辑和硬件特性，确保逻辑正确。
-- ABS代码保持清晰的缩进和换行，便于阅读和调试。
+## 3. Resolve board facts through the board capability source
+
+- Use `get_board_parameters` for GPIO, ADC, PWM, UART, I2C, SPI, builtin LEDs, and other board defaults. Its `board.json` result is authoritative.
+- Pinmap data describes schematic terminals and connection geometry. Do not use it as the source of MCU capability or default-pin facts.
+- Use schematic/pinmap capabilities only when the request actually requires wiring or a connection diagram.
+
+## 4. Edit the canonical ABS source
+
+1. Read `project.abs` directly. The host synchronizes the visible Blockly workspace to this file before a submitted turn.
+2. Use `syncAbs action="export"` only if the workspace may have changed after the turn began or a status check shows drift.
+3. Make the smallest coherent ABS edit. Preserve unrelated blocks and structure.
+4. Use `syncAbs action="import"` to apply the updated ABS to the visible workspace.
+5. Treat parse warnings, failed blocks, degraded text expressions, or partial imports as failed validation and repair them before continuing.
+
+Load `abs-syntax-reference` when block argument order, statement inputs, nested value blocks, or other non-trivial ABS grammar is involved. Do not guess positional arguments; verify them from the selected library evidence.
+
+## 5. Validate immediately
+
+- Check the imported workspace/ABS structure after a non-trivial change.
+- Run `lint` for generated-code syntax validation when appropriate.
+- Run `buildProject` when the task requires a compile result.
+- If validation fails, use the nearest error and the smallest relevant source as the next evidence anchor. Do not restart broad project exploration.
+
+## Completion criteria
+
+- The visible workspace reflects the intended ABS structure.
+- No ABS import warning or failed block remains.
+- Requested focused validation passes, or the remaining blocker is reported precisely.
+- Do not claim completion from compiler success alone when the Blockly import was partial or structurally degraded.

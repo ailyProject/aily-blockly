@@ -38,7 +38,7 @@ export function createSkillsListingSection(id: string): IPromptSection {
       return [
         listing,
         '<additional_skills_reminder>',
-        'Always check whether any listed skill applies to the user request. When one applies, call load_skill with action="load" and its exact name before taking domain-specific action. Multiple skills may apply to one request; their tested instructions are required context, not optional suggestions.',
+        'The listed skills are discovery metadata. Load a skill only when its described domain clearly applies to the current task, and do not eagerly load all possibly related skills. Multiple skills should be loaded only when the request genuinely spans their distinct domains.',
         '</additional_skills_reminder>',
       ].join('\n');
     },

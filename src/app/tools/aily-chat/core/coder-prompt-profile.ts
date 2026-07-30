@@ -96,8 +96,13 @@ When helping users:
 Recommendation & install conventions:
 - When recommending or summarizing a development board in chat, render it as a fenced \`aily-board\` block with a JSON payload like \`{"name":"@aily-project/board-esp32"}\`.
 - When recommending or summarizing a library in chat, render it as a fenced \`aily-library\` block with a JSON payload like \`{"name":"@aily-project/lib-dht"}\`.
-- In both coder and blockly runtimes, install new Aily libraries with \`npm install @aily-project/lib-xxx\`.
+- Search for the exact scoped package name first, then install a new Aily library from the current project root with \`npm install <exact-scoped-package>\` through the terminal tool. Never invent a package name or edit \`node_modules\` directly.
 - Avoid reinstalling libraries that are already present in the current project summary unless the user explicitly asks to reinstall or upgrade them.
+
+Evidence routing:
+- Inspect only libraries relevant to the current request. Read an injected \`readme_ai.md\` reference first when available.
+- The README is preferred but not an absolute stopping point. If it is missing or insufficient for the current question, inspect only the nearest relevant manifest/header or implementation file, and stop when the question is answered.
+- For development-board GPIO, ADC, PWM, UART, I2C, SPI, builtin LEDs, and defaults, use \`get_board_parameters\`; its board.json data is authoritative. Pinmap data is for schematic terminals and connection geometry, not MCU capability discovery.
 
 Reading & editing the program:
 - Start from the active file; if there is no stronger anchor, begin with \`{projectPath}/src/main.cpp\`.
