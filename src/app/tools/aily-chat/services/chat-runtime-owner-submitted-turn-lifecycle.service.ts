@@ -24,12 +24,10 @@ import {
   CHAT_RUNTIME_OWNER_RUNTIME_CONTROLLER,
   CHAT_RUNTIME_OWNER_SESSION_MODEL,
   CHAT_RUNTIME_OWNER_SESSION_CONTEXT,
-  CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE,
   type ChatRuntimeOwnerSubmittedTurnLifecyclePort,
   type ChatRuntimeOwnerRuntimeControllerPort,
   type ChatRuntimeOwnerSessionContextPort,
   type ChatRuntimeOwnerSessionModelPort,
-  type ChatRuntimeOwnerTurnStartupEditLifecyclePort,
 } from './chat-runtime-owner-ports';
 import { projectRuntimeStateToRuntimeController } from '../helpers/chat-runtime-owner-projection';
 
@@ -53,9 +51,6 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
   private readonly chatSessionModelStore = inject(ChatSessionModelStoreService);
   private readonly ownerSessionContext = inject<ChatRuntimeOwnerSessionContextPort>(CHAT_RUNTIME_OWNER_SESSION_CONTEXT);
   private readonly ownerSessionModel = inject<ChatRuntimeOwnerSessionModelPort>(CHAT_RUNTIME_OWNER_SESSION_MODEL);
-  private readonly turnStartupEditLifecycle = inject<ChatRuntimeOwnerTurnStartupEditLifecyclePort>(
-    CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE,
-  );
 
   private ownerFacade: LexOwnerFacade | null = null;
 
@@ -74,13 +69,6 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
     }
 
     const startedAt = Date.now();
-    const absExportOutcomePromise = this.turnStartupEditLifecycle.ensureAbsExport(
-      targetSessionId,
-      request.agentRuntimeMode,
-    ).then(
-      () => ({ ok: true as const }),
-      error => ({ ok: false as const, error }),
-    );
     const ensureAgentStartedAt = Date.now();
     if (shouldTraceApprovalRuntimeBoundary()) {
       console.info('[AilyChat][ApprovalRuntimeBoundary]', {
@@ -112,19 +100,6 @@ export class ChatRuntimeOwnerSubmittedTurnLifecycleService implements ChatRuntim
       hydrateMs,
       `session=${targetSessionId},turns=${hydratedTurnCount}`,
       { slowThresholdMs: 24, counterPrefix: 'submitted_turn.hydrate_history' },
-    );
-
-    const absExportStartedAt = Date.now();
-    const absExportOutcome = await absExportOutcomePromise;
-    if (absExportOutcome.ok === false) {
-      throw absExportOutcome.error;
-    }
-    const absExportWaitMs = Date.now() - absExportStartedAt;
-    ChatPerformanceTracer.recordDuration(
-      'submitted_turn_abs_workspace_export_wait',
-      absExportWaitMs,
-      `session=${targetSessionId},runtimeMode=${request.agentRuntimeMode ?? 'unbound'}`,
-      { slowThresholdMs: 16, counterPrefix: 'submitted_turn.abs_workspace_export_wait' },
     );
 
     const elapsedMs = Date.now() - startedAt;

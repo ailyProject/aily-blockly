@@ -1107,7 +1107,19 @@ export class BlocklyAbsParser {
     // 移除引号并处理转义序列
     if ((value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'"))) {
-      return unescapeString(value.slice(1, -1));
+      const decoded = unescapeString(value.slice(1, -1));
+      if (decoded.startsWith('@json:')) {
+        try {
+          return JSON.parse(decoded.slice('@json:'.length));
+        } catch (error) {
+          this.errors.push({
+            line: this.currentLine + 1,
+            message: `Invalid @json field value: ${error instanceof Error ? error.message : String(error)}`,
+          });
+          return null;
+        }
+      }
+      return decoded;
     }
     
     // 变量字段 $varName 或 $varName:TYPE（类型变量）

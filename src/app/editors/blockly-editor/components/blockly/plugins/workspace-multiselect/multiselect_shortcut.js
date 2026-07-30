@@ -12,6 +12,7 @@ import * as Blockly from 'blockly/core';
 import {
   dragSelectionWeakMap, hasSelectedParent, copyData, connectionDBList,
   dataCopyToStorage, dataCopyFromStorage, registeredShortcut,
+  importClipboardProjectData,
   multiDraggableWeakMap, inPasteShortcut, getByID, shortcutNames,
   incrementFieldInputValues, checkMissingBlockTypes, centerBlocksInViewport,
   resetConsecutivePasteStagger, applyConsecutivePasteStagger,
@@ -349,7 +350,8 @@ const registerPaste = function(useCopyPasteCrossTab) {
    * Execute the actual paste operation on a workspace (shortcut version).
    * @param {Blockly.WorkspaceSvg} workspace The target workspace.
    */
-  const executePasteShortcut = function(workspace) {
+  const executePasteShortcut = async function(workspace) {
+    await importClipboardProjectData();
     const dragSelection = dragSelectionWeakMap.get(workspace);
     const multiDraggable = multiDraggableWeakMap.get(workspace);
 
@@ -430,7 +432,7 @@ const registerPaste = function(useCopyPasteCrossTab) {
     preconditionFn: function(workspace) {
       return !workspace.options.readOnly && !Blockly.Gesture.inProgress();
     },
-    callback: function(workspace) {
+    callback: async function(workspace) {
       if (useCopyPasteCrossTab) {
         dataCopyFromStorage();
       }
@@ -439,8 +441,8 @@ const registerPaste = function(useCopyPasteCrossTab) {
       if (missingLibs.length > 0) {
         if (window.__ailyBlockPasteNeedsInstall) {
           // Trigger async install dialog, paste after completion
-          window.__ailyBlockPasteNeedsInstall(missingLibs).then(() => {
-            executePasteShortcut(workspace);
+          window.__ailyBlockPasteNeedsInstall(missingLibs).then(async () => {
+            await executePasteShortcut(workspace);
           }).catch(() => {
             // User cancelled
           });
@@ -448,7 +450,7 @@ const registerPaste = function(useCopyPasteCrossTab) {
         // Block paste when missing libs detected
         return true;
       }
-      executePasteShortcut(workspace);
+      await executePasteShortcut(workspace);
       return true;
     },
   };

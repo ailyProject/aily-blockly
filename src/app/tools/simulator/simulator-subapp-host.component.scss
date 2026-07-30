@@ -24,6 +24,10 @@
   background: #08131d;
 }
 
+.simulator-subapp-frame--hidden {
+  visibility: hidden;
+}
+
 .simulator-subapp-status {
   position: absolute;
   inset: 0;
@@ -63,6 +67,23 @@
 
 .simulator-subapp-status button:hover {
   background: #19445f;
+}
+
+.simulator-subapp-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.simulator-subapp-status button.simulator-subapp-status__secondary {
+  border-color: #3a4e5a;
+  color: #a9bdca;
+  background: transparent;
+}
+
+.simulator-subapp-status button.simulator-subapp-status__secondary:hover {
+  background: #102531;
 }
 
 .simulator-subapp-spinner {

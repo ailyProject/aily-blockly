@@ -547,6 +547,13 @@ export class NpmService {
         throw new Error(`Invalid npm package name: ${invalidPackageName}`);
       }
 
+      // Resource packages (SDKs, compilers and tools) extract files outside
+      // node_modules during installation. Run their declared cleanup scripts
+      // before npm removes the package directory that contains those scripts.
+      for (const packageName of packagesToRemove) {
+        await this.runDeclaredUninstallScript(appDataPath, packageName);
+      }
+
       const cmd = `npm uninstall ${packagesToRemove.join(' ')} --prefix "${appDataPath}"`;
       await window['npm'].run({ cmd });
 
@@ -654,6 +661,21 @@ export class NpmService {
 
   private isValidNpmPackageName(name: string): boolean {
     return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name);
+  }
+
+  private async runDeclaredUninstallScript(appDataPath: string, packageName: string): Promise<void> {
+    const packagePath = window['path'].join(appDataPath, 'node_modules', packageName);
+    const packageJsonPath = window['path'].join(packagePath, 'package.json');
+    if (!window['fs'].existsSync(packageJsonPath)) {
+      return;
+    }
+
+    const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+    if (typeof packageJson?.scripts?.uninstall !== 'string' || !packageJson.scripts.uninstall.trim()) {
+      return;
+    }
+
+    await this.cmdService.runAsyncChecked('npm run uninstall', packagePath);
   }
 
   boardDependenciesChanged = false;
@@ -1202,12 +1224,14 @@ export class NpmService {
       setTimeout: 300000
     });
 
-    let cmd = `npm run uninstall`
     console.log("PackageNodeModulesPath: ", packageNodeModulesPath);
-    await this.appDataResourceLock.runExclusive(`npm:run-uninstall-script:${packageInfo.name}`, () => this.cmdService.runAsyncChecked(cmd, packageNodeModulesPath));
+    await this.appDataResourceLock.runExclusive(
+      `npm:run-uninstall-script:${packageInfo.name}`,
+      () => this.runDeclaredUninstallScript(appDataPath, packageInfo.name)
+    );
 
     // 卸载包
-    cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
+    const cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
     // await window['npm'].run({ cmd: cmd });
     await this.appDataResourceLock.runExclusive(`npm:uninstall-package:${packageInfo.name}`, () => this.cmdService.runAsyncChecked(cmd, appDataPath));
     // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.UNINSTALL_COMPLETE', { name: packageInfo.name }) });

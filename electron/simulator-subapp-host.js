@@ -31,6 +31,7 @@ const DIAGNOSTIC_TAIL_BYTES = 32 * 1024;
 const CONNECTION_GRAPH_MAX_BYTES = 4 * 1024 * 1024;
 const CONNECTION_GRAPH_MAX_DEPTH = 128;
 const CONNECTION_GRAPH_MAX_NODES = 200_000;
+const AGENT_SCENE_PROPOSAL_MAX_BYTES = 256 * 1024;
 const LEGACY_CONNECTION_GRAPH_FILE = 'connection_output.json';
 const PROJECT_DEBUG_CONFIGURATION_MAX_BYTES = 1024 * 1024;
 const PROJECT_DEBUG_CONFIGURATION_FILE = 'aily-debug.json';
@@ -58,6 +59,7 @@ function createSimulatorSubappHost(options = {}) {
     ? options.onStateChanged
     : () => {};
   let rebuildCoordinator = options.rebuildCoordinator || null;
+  let sceneGenerationBroker = options.sceneGenerationBroker || null;
 
   let child = null;
   let ready = null;
@@ -90,7 +92,7 @@ function createSimulatorSubappHost(options = {}) {
       const rendererOrigin = requireHttpOrigin(input.rendererOrigin);
       const projectIdentity = createProjectIdentity(projectRoot);
       const projectSceneBootstrap = projectSceneOnly
-        ? resolveProjectSceneBootstrap(projectRoot, input.sceneId)
+        ? resolveProjectSceneBootstrap(projectRoot)
         : null;
       const projectDebugConfiguration = projectSceneOnly
         ? null
@@ -109,7 +111,7 @@ function createSimulatorSubappHost(options = {}) {
         && active.launchRevision === launchRevision
       ) {
         active.ownerId = input.ownerId;
-        return publicSurface();
+        return publicOpenResult();
       }
 
       if (child) {
@@ -164,14 +166,46 @@ function createSimulatorSubappHost(options = {}) {
             projectIdentity,
             sceneId: input.sceneId,
             projectSceneFilePath: projectSceneBootstrap.sceneFilePath,
-            ...(projectSceneBootstrap.initialConnectionGraphV1
+            ...(projectSceneBootstrap.legacyConnectionGraphFilePath
               ? {
-                  initialConnectionGraphV1:
-                    projectSceneBootstrap.initialConnectionGraphV1,
+                  legacyConnectionGraphFilePath:
+                    projectSceneBootstrap.legacyConnectionGraphFilePath,
                 }
               : {}),
           });
           requireSuccess(launched, 'open-project-scene');
+          if (launched.state === 'legacy-scene-regeneration-required') {
+            const requirement = validateLegacySceneRegenerationRequirement(
+              launched.requirement,
+              projectIdentity,
+              input.sceneId,
+            );
+            active = {
+              mode: 'project-scene',
+              projectRoot,
+              projectIdentity,
+              ownerId: input.ownerId,
+              tool: 'scene',
+              sceneId: input.sceneId,
+              initialization: 'legacy-detected',
+              launchRevision,
+              sessionId: null,
+              artifactHandle: null,
+              launchId: null,
+              session: null,
+              runtime: publicRuntime(runtime),
+              rebuildRequest: null,
+              rebuildCandidate: null,
+              regenerationRequirement: requirement,
+              sceneGeneration: null,
+            };
+            const result = publicRegenerationRequired();
+            emitState(result);
+            return result;
+          }
+          if (launched.state !== 'opening') {
+            throw new Error('Simulator Subapp returned an invalid Project Scene state.');
+          }
           const launchId = requireLaunchId(launched.launchId);
           active = {
             mode: 'project-scene',
@@ -189,6 +223,8 @@ function createSimulatorSubappHost(options = {}) {
             runtime: publicRuntime(runtime),
             rebuildRequest: null,
             rebuildCandidate: null,
+            regenerationRequirement: null,
+            sceneGeneration: null,
           };
           emitState({ state: 'ready', surface: publicSurface() });
           return publicSurface();
@@ -242,6 +278,8 @@ function createSimulatorSubappHost(options = {}) {
           runtime: publicRuntime(runtime),
           rebuildRequest: null,
           rebuildCandidate: null,
+          regenerationRequirement: null,
+          sceneGeneration: null,
         };
         emitState({
           state: 'ready',
@@ -290,42 +328,215 @@ function createSimulatorSubappHost(options = {}) {
     });
   }
 
-  function exportProjectSceneV1(options_ = {}) {
+  function requestProjectSceneGeneration(options_ = {}) {
+    const input = validateProjectSceneGenerationStartInput(options_);
+    if (!sceneGenerationBroker) {
+      throw new Error('Project Scene generation broker is unavailable.');
+    }
+    if (
+      !child
+      || !active
+      || hasChildExited(child)
+      || active.mode !== 'project-scene'
+      || active.launchId !== null
+      || !active.regenerationRequirement
+      || active.regenerationRequirement.regenerationId !== input.regenerationId
+      || (input.ownerId !== null && input.ownerId !== active.ownerId)
+    ) {
+      throw new Error('No matching Project Scene generation request is pending.');
+    }
+    if (active.sceneGeneration) {
+      return publicSceneGenerationAccepted(
+        active.sceneGeneration.request,
+        input.regenerationId,
+      );
+    }
+
+    const request = createSceneGenerationRequest(active.regenerationRequirement);
+    active.sceneGeneration = {
+      state: 'requested',
+      request,
+      proposal: null,
+      failure: null,
+    };
+    emitState({
+      state: 'scene-generation-requested',
+      requestId: request.requestId,
+      reason: request.reason,
+    });
+    void sceneGenerationBroker.request(request).catch((error) => {
+      void serialize(async () => {
+        if (
+          !active?.sceneGeneration
+          || active.sceneGeneration.request.requestId !== request.requestId
+        ) {
+          return;
+        }
+        const failure = publicSceneGenerationFailure(error, request.requestId);
+        active.sceneGeneration.state = 'failed';
+        active.sceneGeneration.failure = failure;
+        emitState({ state: 'scene-generation-failed', failure });
+      });
+    });
+    return publicSceneGenerationAccepted(request, input.regenerationId);
+  }
+
+  function stageSceneGenerationCandidate(value) {
     return serialize(async () => {
+      if (!isRecord(value) || !isRecord(value.request)) {
+        throw new Error('Project Scene generation candidate is invalid.');
+      }
+      const requestId = requirePortableIdentifier(
+        value.request.requestId,
+        'requestId',
+        128,
+      );
+      if (
+        !child
+        || !active
+        || hasChildExited(child)
+        || active.mode !== 'project-scene'
+        || active.launchId !== null
+        || !active.regenerationRequirement
+        || !active.sceneGeneration
+        || active.sceneGeneration.request.requestId !== requestId
+        || JSON.stringify(active.sceneGeneration.request)
+          !== JSON.stringify(value.request)
+      ) {
+        throw new Error('Project Scene generation candidate is stale.');
+      }
+      const proposal = validateAgentSceneChangeProposalForHost(
+        value.proposal,
+        active.projectIdentity,
+        active.sceneId,
+      );
+      active.sceneGeneration = {
+        ...active.sceneGeneration,
+        state: 'candidate-ready',
+        proposal,
+        failure: null,
+      };
+      const result = {
+        schemaVersion: 1,
+        kind: 'aily-simulator-subapp-project-scene-generation-candidate-result',
+        state: 'candidate-ready',
+        requestId,
+        projectIdentity: active.projectIdentity,
+        sceneId: active.sceneId,
+        proposalId: proposal.proposalId,
+      };
+      emitState({
+        state: 'scene-generation-candidate-ready',
+        candidate: result,
+      });
+      return result;
+    });
+  }
+
+  function resolveProjectSceneRegeneration(options_ = {}) {
+    return serialize(async () => {
+      const input = validateProjectSceneRegenerationResolutionInput(options_);
+      if (
+        !child
+        || !active
+        || hasChildExited(child)
+        || active.mode !== 'project-scene'
+        || active.launchId !== null
+        || !active.regenerationRequirement
+        || active.regenerationRequirement.regenerationId !== input.regenerationId
+        || (input.ownerId !== null && input.ownerId !== active.ownerId)
+      ) {
+        throw new Error('No matching Project Scene regeneration is pending.');
+      }
+      const proposal = input.proposal === undefined
+        ? undefined
+        : validateAgentSceneChangeProposalForHost(
+            input.proposal,
+            active.projectIdentity,
+            active.sceneId,
+          );
+      const resolved = await sendControl(child, {
+        operation: 'resolve-project-scene-regeneration',
+        projectIdentity: active.projectIdentity,
+        regenerationId: input.regenerationId,
+        resolution: input.resolution,
+        ...(proposal ? { proposal } : {}),
+      });
+      requireSuccess(resolved, 'resolve-project-scene-regeneration');
+      if (
+        resolved.regenerationId !== input.regenerationId
+        || (resolved.state !== 'cancelled' && resolved.state !== 'opening')
+      ) {
+        throw new Error(
+          'Simulator Subapp returned an invalid regeneration result.',
+        );
+      }
+      if (input.resolution === 'cancel') {
+        if (resolved.state !== 'cancelled' || resolved.launchId !== undefined) {
+          throw new Error('Simulator Subapp returned an invalid cancellation result.');
+        }
+        const result = {
+          schemaVersion: 1,
+          kind: 'aily-simulator-subapp-project-scene-regeneration-result',
+          state: 'cancelled',
+          regenerationId: input.regenerationId,
+        };
+        await closeInternal();
+        return result;
+      }
+      if (resolved.state !== 'opening') {
+        throw new Error('Simulator Subapp did not open the regenerated Scene.');
+      }
+      active.launchId = requireLaunchId(resolved.launchId);
+      active.initialization = 'regenerated-v2';
+      active.regenerationRequirement = null;
+      emitState({ state: 'ready', surface: publicSurface() });
+      return publicSurface();
+    });
+  }
+
+  function applyProjectSceneAgentProposal(options_ = {}) {
+    return serialize(async () => {
+      if (
+        !isRecord(options_)
+        || Object.keys(options_).some((key) => key !== 'ownerId' && key !== 'proposal')
+        || !Object.hasOwn(options_, 'proposal')
+      ) {
+        throw new Error('Project Scene Agent proposal request is invalid.');
+      }
       const ownerId = normalizeOwnerId(options_?.ownerId);
       if (
         !child
         || !active
         || hasChildExited(child)
         || active.mode !== 'project-scene'
+        || !active.launchId
+        || active.regenerationRequirement
         || (ownerId !== null && ownerId !== active.ownerId)
       ) {
         throw new Error('No matching Project Scene is open.');
       }
-      const exported = await sendControl(child, {
-        operation: 'export-project-scene-v1',
+      const proposal = validateAgentSceneChangeProposalForHost(
+        options_?.proposal,
+        active.projectIdentity,
+        active.sceneId,
+      );
+      const applied = await sendControl(child, {
+        operation: 'apply-project-scene-agent-proposal',
         projectIdentity: active.projectIdentity,
         launchId: active.launchId,
+        proposal,
       });
-      requireSuccess(exported, 'export-project-scene-v1');
-      if (
-        exported.launchId !== active.launchId
-        || exported.state !== 'exported'
-      ) {
-        throw new Error(
-          'Simulator Subapp returned an invalid export-project-scene-v1 scope.',
-        );
+      requireSuccess(applied, 'apply-project-scene-agent-proposal');
+      if (applied.launchId !== active.launchId || applied.state !== 'applied') {
+        throw new Error('Simulator Subapp returned an invalid Agent proposal result.');
       }
-      const connectionGraph = validateConnectionGraph(exported.connectionGraph);
-      atomicWriteJson(
-        path.join(active.projectRoot, LEGACY_CONNECTION_GRAPH_FILE),
-        connectionGraph,
+      return validateAgentSceneChangeReceiptForHost(
+        applied.receipt,
+        proposal,
+        active.projectIdentity,
+        active.sceneId,
       );
-      return {
-        schemaVersion: 1,
-        kind: 'aily-project-scene-v1-export-result',
-        state: 'exported',
-      };
     });
   }
 
@@ -337,6 +548,8 @@ function createSimulatorSubappHost(options = {}) {
         || !active
         || hasChildExited(child)
         || active.mode !== 'project-scene'
+        || !active.launchId
+        || active.regenerationRequirement
         || (ownerId !== null && ownerId !== active.ownerId)
       ) {
         throw new Error('No matching Project Scene is open.');
@@ -413,6 +626,8 @@ function createSimulatorSubappHost(options = {}) {
         || !active
         || hasChildExited(child)
         || active.mode !== 'project-scene'
+        || !active.launchId
+        || active.regenerationRequirement
         || (ownerId !== null && ownerId !== active.ownerId)
       ) {
         throw new Error('No matching Project Scene is open.');
@@ -471,6 +686,7 @@ function createSimulatorSubappHost(options = {}) {
       if (!hasChildExited(closingChild) && closingActive) {
       if (
         closingActive.mode === 'project-scene'
+        && closingActive.launchId
         && closingActive.sessionId
       ) {
         await bestEffortControl(closingChild, {
@@ -479,14 +695,16 @@ function createSimulatorSubappHost(options = {}) {
           launchId: closingActive.launchId,
         });
       }
-      const closeOperation = closingActive.tool === 'debugger'
-        ? 'close-debugger'
-        : 'close-scene';
-      await bestEffortControl(closingChild, {
-        operation: closeOperation,
-        projectIdentity: closingActive.projectIdentity,
-        launchId: closingActive.launchId,
-      });
+      if (closingActive.launchId) {
+        const closeOperation = closingActive.tool === 'debugger'
+          ? 'close-debugger'
+          : 'close-scene';
+        await bestEffortControl(closingChild, {
+          operation: closeOperation,
+          projectIdentity: closingActive.projectIdentity,
+          launchId: closingActive.launchId,
+        });
+      }
         if (closingActive.sessionId && closingActive.mode !== 'project-scene') {
           await bestEffortControl(closingChild, {
             operation: 'close-session',
@@ -548,6 +766,9 @@ function createSimulatorSubappHost(options = {}) {
 
   function status() {
     if (child && active && !hasChildExited(child)) {
+      if (active.regenerationRequirement) {
+        return publicRegenerationRequired();
+      }
       return {
         state: 'ready',
         tool: active.tool,
@@ -591,7 +812,7 @@ function createSimulatorSubappHost(options = {}) {
   }
 
   function publicSurface() {
-    if (!ready || !active) {
+    if (!ready || !active || !active.launchId || active.regenerationRequirement) {
       throw new Error('Simulator Subapp surface is not ready.');
     }
     return {
@@ -613,6 +834,33 @@ function createSimulatorSubappHost(options = {}) {
         ? { runtimeMode: active.runtime.runtimeMode }
         : {}),
     };
+  }
+
+  function publicRegenerationRequired() {
+    if (!ready || !active?.regenerationRequirement) {
+      throw new Error('Project Scene regeneration is not pending.');
+    }
+    return {
+      schemaVersion: 1,
+      kind: 'aily-simulator-subapp-project-scene-regeneration-required',
+      state: 'legacy-scene-regeneration-required',
+      tool: 'scene',
+      initialization: active.initialization,
+      requirement: structuredClone(active.regenerationRequirement),
+      runtimeSource: active.runtime.runtimeSource,
+      ...(active.runtime.runtimePackId
+        ? { runtimePackId: active.runtime.runtimePackId }
+        : {}),
+      ...(active.runtime.runtimeMode
+        ? { runtimeMode: active.runtime.runtimeMode }
+        : {}),
+    };
+  }
+
+  function publicOpenResult() {
+    return active?.regenerationRequirement
+      ? publicRegenerationRequired()
+      : publicSurface();
   }
 
   function attachChild(target) {
@@ -1228,6 +1476,16 @@ function createSimulatorSubappHost(options = {}) {
   }
 
   function clearChildState() {
+    if (active?.sceneGeneration?.request?.requestId) {
+      try {
+        sceneGenerationBroker?.cancel?.(
+          active.sceneGeneration.request.requestId,
+          'Project Scene host was closed.',
+        );
+      } catch {
+        // Scene generation cleanup must not interfere with process ownership.
+      }
+    }
     try {
       rebuildCoordinator?.reset?.();
     } catch {
@@ -1261,16 +1519,34 @@ function createSimulatorSubappHost(options = {}) {
     rebuildCoordinator = coordinator;
   }
 
+  function setSceneGenerationBroker(broker) {
+    if (
+      broker !== null
+      && (
+        typeof broker !== 'object'
+        || typeof broker.request !== 'function'
+        || typeof broker.cancel !== 'function'
+      )
+    ) {
+      throw new Error('Project Scene generation broker is invalid.');
+    }
+    sceneGenerationBroker = broker;
+  }
+
   return Object.freeze({
     open,
     openProjectScene,
-    exportProjectSceneV1,
+    requestProjectSceneGeneration,
+    stageSceneGenerationCandidate,
+    resolveProjectSceneRegeneration,
+    applyProjectSceneAgentProposal,
     attachProjectSceneSession,
     detachProjectSceneSession,
     close,
     stop: close,
     status,
     setRebuildCoordinator,
+    setSceneGenerationBroker,
     stageRebuildCandidate,
   });
 }
@@ -1541,74 +1817,303 @@ function validateOpenInput(value) {
   };
 }
 
-function resolveProjectSceneBootstrap(projectRoot, sceneId) {
+function resolveProjectSceneBootstrap(projectRoot) {
   const sceneFilePath = path.join(projectRoot, '.aily', 'scene.json');
   if (fs.existsSync(sceneFilePath)) {
-    if (!fs.statSync(sceneFilePath).isFile()) {
+    if (!fs.lstatSync(sceneFilePath).isFile()) {
       throw new Error('Project Scene path is not a file.');
     }
     return {
       sceneFilePath,
       initialization: 'existing',
-      initialConnectionGraphV1: null,
+      legacyConnectionGraphFilePath: null,
     };
   }
   const legacyFilePath = path.join(projectRoot, LEGACY_CONNECTION_GRAPH_FILE);
-  if (!fs.existsSync(legacyFilePath)) {
-    return {
-      sceneFilePath,
-      initialization: 'created-empty',
-      initialConnectionGraphV1: {
-        version: 1,
-        sceneId,
-        componentConfigs: {},
-        components: [],
-        connections: [],
-      },
-    };
-  }
-  if (!fs.statSync(legacyFilePath).isFile()) {
+  const legacyExists = fs.existsSync(legacyFilePath);
+  if (legacyExists && !fs.lstatSync(legacyFilePath).isFile()) {
     throw new Error('Legacy connection graph path is not a file.');
-  }
-  const bytes = fs.readFileSync(legacyFilePath);
-  if (bytes.byteLength > CONNECTION_GRAPH_MAX_BYTES) {
-    throw new Error('Legacy connection graph exceeds the 4 MiB limit.');
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'));
-  } catch {
-    throw new Error('Legacy connection graph is not valid JSON.');
   }
   return {
     sceneFilePath,
-    initialization: 'imported-v1',
-    initialConnectionGraphV1: structuredClone(validateConnectionGraph(parsed)),
+    initialization: legacyExists ? 'legacy-detected' : 'created-empty',
+    // The Simulator owns fingerprinting and regeneration. Blockly binds only
+    // the path and never parses or imports the legacy document.
+    legacyConnectionGraphFilePath: legacyFilePath,
   };
 }
 
-function atomicWriteJson(filePath, value) {
-  const directory = path.dirname(filePath);
-  fs.mkdirSync(directory, { recursive: true });
-  const temporaryPath = path.join(
-    directory,
-    `.${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(12).toString('hex')}.tmp`,
-  );
-  let descriptor = null;
-  try {
-    descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
-    fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-    fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = null;
-    fs.renameSync(temporaryPath, filePath);
-  } catch (error) {
-    if (descriptor !== null) {
-      try { fs.closeSync(descriptor); } catch { /* best effort */ }
-    }
-    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
-    throw error;
+function validateLegacySceneRegenerationRequirement(
+  value,
+  projectIdentity,
+  sceneId,
+) {
+  const keys = [
+    'catalogRevision',
+    'draftGraphSemanticRevision',
+    'draftVisualRevision',
+    'expiresAtUnixMs',
+    'kind',
+    'legacySourceBytes',
+    'legacySourceKind',
+    'legacySourceRevision',
+    'projectIdentity',
+    'regenerationId',
+    'sceneId',
+    'schemaVersion',
+  ];
+  if (
+    !hasExactKeys(value, keys)
+    || value.schemaVersion !== 1
+    || value.kind !== 'aily-project-scene-legacy-regeneration-required'
+    || !/^regeneration-v1-[a-f0-9]{64}$/.test(value.regenerationId)
+    || value.projectIdentity !== projectIdentity
+    || value.sceneId !== sceneId
+    || value.legacySourceKind !== 'connection-output-v1'
+    || !isSha256(value.legacySourceRevision)
+    || !Number.isSafeInteger(value.legacySourceBytes)
+    || value.legacySourceBytes < 0
+    || value.legacySourceBytes > CONNECTION_GRAPH_MAX_BYTES
+    || !isSha256(value.catalogRevision)
+    || !isSha256(value.draftVisualRevision)
+    || !isSha256(value.draftGraphSemanticRevision)
+    || !Number.isSafeInteger(value.expiresAtUnixMs)
+    || value.expiresAtUnixMs <= 0
+  ) {
+    throw new Error('Simulator Subapp returned an invalid regeneration requirement.');
   }
+  return structuredClone(value);
+}
+
+function validateProjectSceneGenerationStartInput(value) {
+  if (
+    !isRecord(value)
+    || Object.keys(value).some((key) => ![
+      'ownerId', 'regenerationId',
+    ].includes(key))
+    || !Object.hasOwn(value, 'regenerationId')
+    || typeof value.regenerationId !== 'string'
+    || !/^regeneration-v1-[a-f0-9]{64}$/.test(value.regenerationId)
+  ) {
+    throw new Error('Project Scene generation start request is invalid.');
+  }
+  return {
+    ownerId: normalizeOwnerId(value.ownerId),
+    regenerationId: value.regenerationId,
+  };
+}
+
+function createSceneGenerationRequest(requirement) {
+  if (requirement.legacySourceBytes < 1) {
+    throw new Error('Empty legacy connection metadata cannot start Scene generation.');
+  }
+  const requestDigest = crypto.createHash('sha256')
+    .update(JSON.stringify({
+      regenerationId: requirement.regenerationId,
+      projectIdentity: requirement.projectIdentity,
+      sceneId: requirement.sceneId,
+      legacySourceRevision: requirement.legacySourceRevision,
+      catalogRevision: requirement.catalogRevision,
+      draftVisualRevision: requirement.draftVisualRevision,
+      draftGraphSemanticRevision: requirement.draftGraphSemanticRevision,
+    }))
+    .digest('hex');
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'aily-project-scene-generation-request',
+    requestId: `scene-generation-v1-${requestDigest}`,
+    projectIdentity: requirement.projectIdentity,
+    sceneId: requirement.sceneId,
+    reason: 'legacy-detected',
+    base: {
+      visualRevision: requirement.draftVisualRevision,
+      graphSemanticRevision: requirement.draftGraphSemanticRevision,
+      catalogRevision: requirement.catalogRevision,
+    },
+    legacySource: {
+      kind: 'connection-output-v1',
+      revision: requirement.legacySourceRevision,
+      bytes: requirement.legacySourceBytes,
+    },
+    expiresAtUnixMs: requirement.expiresAtUnixMs,
+  });
+}
+
+function publicSceneGenerationAccepted(request, regenerationId) {
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'aily-simulator-subapp-project-scene-generation-request-result',
+    state: 'accepted',
+    regenerationId,
+    requestId: request.requestId,
+  });
+}
+
+function publicSceneGenerationFailure(error, requestId) {
+  return Object.freeze({
+    requestId,
+    code: typeof error?.code === 'string'
+      ? error.code
+      : 'SCENE_GENERATION_FAILED',
+    message: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function validateProjectSceneRegenerationResolutionInput(value) {
+  if (
+    !isRecord(value)
+    || Object.keys(value).some((key) => ![
+      'ownerId', 'proposal', 'regenerationId', 'resolution',
+    ].includes(key))
+    || !Object.hasOwn(value, 'regenerationId')
+    || !Object.hasOwn(value, 'resolution')
+  ) {
+    throw new Error('Project Scene regeneration resolution is invalid.');
+  }
+  const ownerId = normalizeOwnerId(value.ownerId);
+  if (
+    typeof value.regenerationId !== 'string'
+    || !/^regeneration-v1-[a-f0-9]{64}$/.test(value.regenerationId)
+    || (value.resolution !== 'cancel' && value.resolution !== 'commit')
+    || (value.resolution === 'cancel' && value.proposal !== undefined)
+    || (value.resolution === 'commit' && value.proposal === undefined)
+  ) {
+    throw new Error('Project Scene regeneration resolution is invalid.');
+  }
+  return {
+    ownerId,
+    regenerationId: value.regenerationId,
+    resolution: value.resolution,
+    ...(value.proposal === undefined
+      ? {}
+      : { proposal: value.proposal }),
+  };
+}
+
+function validateAgentSceneChangeProposalForHost(
+  value,
+  projectIdentity,
+  sceneId,
+) {
+  const keys = [
+    'agentRunId',
+    'base',
+    'batch',
+    'componentMutations',
+    'kind',
+    'proposalId',
+    'reason',
+    'schemaVersion',
+    'summary',
+    'target',
+  ];
+  if (
+    !hasExactKeys(value, keys)
+    || value.schemaVersion !== 1
+    || value.kind !== 'aily-agent-scene-change-proposal'
+    || !['user-requested-change', 'artifact-rebuild', 'legacy-regeneration']
+      .includes(value.reason)
+    || typeof value.summary !== 'string'
+    || value.summary.length < 1
+    || value.summary.length > 1024
+    || /[\u0000-\u001f\u007f]/.test(value.summary)
+    || !hasExactKeys(value.target, ['projectIdentity', 'sceneId'])
+    || value.target.projectIdentity !== projectIdentity
+    || value.target.sceneId !== sceneId
+    || !hasExactKeys(value.base, [
+      'catalogRevision',
+      'graphSemanticRevision',
+      'visualRevision',
+    ])
+    || !isSha256(value.base.catalogRevision)
+    || !isSha256(value.base.graphSemanticRevision)
+    || !isSha256(value.base.visualRevision)
+    || !Array.isArray(value.componentMutations)
+    || value.componentMutations.length > 64
+    || (value.batch !== null && !isRecord(value.batch))
+  ) {
+    throw new Error('Project Scene Agent proposal is invalid.');
+  }
+  requirePortableIdentifier(value.proposalId, 'proposalId', 128);
+  requirePortableIdentifier(value.agentRunId, 'agentRunId', 128);
+  validateJsonNode(
+    value,
+    0,
+    { count: CONNECTION_GRAPH_MAX_NODES },
+    'Project Scene Agent proposal',
+  );
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized, 'utf8') > AGENT_SCENE_PROPOSAL_MAX_BYTES) {
+    throw new Error('Project Scene Agent proposal exceeds the 256 KiB limit.');
+  }
+  return JSON.parse(serialized);
+}
+
+function validateAgentSceneChangeReceiptForHost(
+  value,
+  proposal,
+  projectIdentity,
+  sceneId,
+) {
+  const keys = [
+    'agentRunId',
+    'catalogRevision',
+    'changedRevisions',
+    'commandCount',
+    'graphSemanticRevision',
+    'kind',
+    'policy',
+    'proposalId',
+    'schemaVersion',
+    'status',
+    'storageRevision',
+    'target',
+    'visualRevision',
+  ];
+  const changed = value?.changedRevisions;
+  if (
+    !hasExactKeys(value, keys)
+    || value.schemaVersion !== 1
+    || value.kind !== 'aily-agent-scene-change-receipt'
+    || value.status !== 'applied'
+    || value.proposalId !== proposal.proposalId
+    || value.agentRunId !== proposal.agentRunId
+    || !hasExactKeys(value.target, ['projectIdentity', 'sceneId'])
+    || value.target.projectIdentity !== projectIdentity
+    || value.target.sceneId !== sceneId
+    || !isSha256(value.catalogRevision)
+    || !isSha256(value.visualRevision)
+    || !isSha256(value.graphSemanticRevision)
+    || typeof value.storageRevision !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value.storageRevision)
+    || !hasExactKeys(value.policy, [
+      'impact',
+      'invalidatesArtifact',
+      'mayKeepRunning',
+      'requiresSessionRestart',
+    ])
+    || !['visual', 'semantic', 'runtime'].includes(value.policy.impact)
+    || typeof value.policy.invalidatesArtifact !== 'boolean'
+    || typeof value.policy.mayKeepRunning !== 'boolean'
+    || typeof value.policy.requiresSessionRestart !== 'boolean'
+    || !Array.isArray(changed)
+    || changed.length > 2
+    || new Set(changed).size !== changed.length
+    || changed.some((entry) => (
+      entry !== 'visualRevision' && entry !== 'graphSemanticRevision'
+    ))
+    || !Number.isSafeInteger(value.commandCount)
+    || value.commandCount < 1
+    || value.commandCount > 64
+  ) {
+    throw new Error('Simulator Subapp returned an invalid Agent proposal receipt.');
+  }
+  return structuredClone(value);
+}
+
+function hasExactKeys(value, expectedKeys) {
+  return isRecord(value)
+    && Object.keys(value).sort().join('\0') === [...expectedKeys].sort().join('\0');
 }
 
 function validateConnectionGraph(value) {
@@ -1680,13 +2185,18 @@ function readProjectDebugConfiguration(projectRoot) {
   return value;
 }
 
-function validateJsonNode(value, depth, remaining) {
+function validateJsonNode(
+  value,
+  depth,
+  remaining,
+  label = 'Simulator connectionGraph',
+) {
   if (depth > CONNECTION_GRAPH_MAX_DEPTH) {
-    throw new Error('Simulator connectionGraph exceeds the nesting limit.');
+    throw new Error(`${label} exceeds the nesting limit.`);
   }
   remaining.count -= 1;
   if (remaining.count < 0) {
-    throw new Error('Simulator connectionGraph contains too many values.');
+    throw new Error(`${label} contains too many values.`);
   }
   if (
     value === null
@@ -1697,19 +2207,19 @@ function validateJsonNode(value, depth, remaining) {
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) validateJsonNode(item, depth + 1, remaining);
+    for (const item of value) validateJsonNode(item, depth + 1, remaining, label);
     return;
   }
   if (isRecord(value)) {
     for (const [key, item] of Object.entries(value)) {
       if (Buffer.byteLength(key, 'utf8') > 8 * 1024) {
-        throw new Error('Simulator connectionGraph contains an oversized key.');
+        throw new Error(`${label} contains an oversized key.`);
       }
-      validateJsonNode(item, depth + 1, remaining);
+      validateJsonNode(item, depth + 1, remaining, label);
     }
     return;
   }
-  throw new Error('Simulator connectionGraph contains a non-JSON value.');
+  throw new Error(`${label} contains a non-JSON value.`);
 }
 
 function requireProjectRoot(projectPath) {
@@ -2253,9 +2763,17 @@ function registerHandlers({ ipcMain, app, mainWindow, host = defaultHost }) {
       rendererOrigin: originFromSenderUrl(event.senderFrame?.url),
     });
   });
-  ipcMain.handle('simulator-subapp-export-project-scene-v1', async (event, payload) => {
+  ipcMain.handle('simulator-subapp-request-project-scene-generation', async (event, payload) => {
     requireTrustedSender(event, mainWindow);
-    return host.exportProjectSceneV1(payload);
+    return host.requestProjectSceneGeneration(payload);
+  });
+  ipcMain.handle('simulator-subapp-resolve-project-scene-regeneration', async (event, payload) => {
+    requireTrustedSender(event, mainWindow);
+    return host.resolveProjectSceneRegeneration(payload);
+  });
+  ipcMain.handle('simulator-subapp-apply-project-scene-agent-proposal', async (event, payload) => {
+    requireTrustedSender(event, mainWindow);
+    return host.applyProjectSceneAgentProposal(payload);
   });
   ipcMain.handle('simulator-subapp-attach-project-scene-session', async (event, payload) => {
     requireTrustedSender(event, mainWindow);

@@ -1,9 +1,14 @@
-﻿import { generateCodeWithActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
+﻿import {
+  runWithPreparedActiveProjectGenerator,
+} from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import type { ToolUseResult } from '../core/tool-types';
 import { jsonrepair } from 'jsonrepair';
 import { ArduinoSyntaxTool } from "./arduinoSyntaxTool";
 import { fixBlockConfig } from './blockConfigFixer';
 import { normalizeInputNameForAbs } from './abiAbsConverter';
+import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
+import { writeArduinoGeneratedArtifacts } from '../../../editors/blockly-editor/services/generated-code-artifacts';
+import { prepareBlockFieldValue } from './blockFieldValue';
 import { getProjectInfoTool } from './getProjectInfoTool';
 import {
   createBrowserFrameBudget,
@@ -1386,17 +1391,12 @@ function smartSetFieldValue(
 }
 
 /**
- * 保留自定义字段的结构化值；只有 Blockly 变量字段才从对象中提取 ID/名称。
+ * ABS @json fields are structured Blockly field state. Keep those values as
+ * objects so custom serializable fields can validate them. Only Blockly's
+ * variable-field descriptor is reduced to the workspace variable id/name.
  */
-function normalizeBlocklyFieldValue(block: any, fieldName: string, value: any): any {
-  if (typeof value === 'object' && value !== null) {
-    const field = block.getField?.(fieldName);
-    if (field?.getVariable && typeof field.getVariable === 'function') {
-      return value.id ?? value.name ?? value;
-    }
-    return value;
-  }
-  return String(value);
+function getConfiguredFieldValue(block: any, fieldName: string, value: any): any {
+  return prepareBlockFieldValue(block?.getField?.(fieldName), value);
 }
 
 function configureBlockFields(block: any, fields: FieldConfig): {
@@ -1430,33 +1430,16 @@ function configureBlockFields(block: any, fields: FieldConfig): {
       if (value !== undefined && value !== null) {
         try {
           // 处理对象格式的字段值
-          let actualValue: string;
+          let actualValue: any;
           // 🔑 保存原始的 name 属性，用于变量字段的名称查找
           let variableNameFromConfig: string | undefined = undefined;
           
-          if (typeof value === 'object' && value !== null) {
-            // 如果是对象格式 {id: "xxx", name: "xxx"} 或 {name: "xxx"}
-            // 🔧 对于变量字段，优先保存 name 属性供后续使用
-            if ((value as any).name) {
-              variableNameFromConfig = (value as any).name;
-            }
-            
-            if ((value as any).id) {
-              // 传入了 {id: "xxx"} 格式，提取值（会在后续验证是否为真实变量ID）
-              actualValue = (value as any).id;
-              // console.log(`🔄 对象字段值转换(id字段): ${fieldName} = ${JSON.stringify(value)} -> ${actualValue}`);
-            } else if ((value as any).name) {
-              actualValue = (value as any).name;
-              // console.log(`🔄 对象字段值转换(名称): ${fieldName} = ${JSON.stringify(value)} -> ${actualValue}`);
-            } else {
-              actualValue = JSON.stringify(value);
-              // console.log(`🔄 对象字段值转换(JSON): ${fieldName} = ${JSON.stringify(value)} -> ${actualValue}`);
-            }
-          } else {
-            actualValue = value.toString();
+          if (typeof value === 'object' && value !== null && typeof (value as any).name === 'string') {
+            variableNameFromConfig = (value as any).name;
           }
-          
-          // � 检测 EXTRA_N 模式的字段：这些需要延迟到 updateShape_() 后再映射
+          actualValue = getConfiguredFieldValue(block, fieldName, value);
+
+          // 🔑 EXTRA_N 字段需要延迟到 updateShape_() 创建动态字段后再映射
           const isExtraField = /^EXTRA_\d+$/.test(fieldName);
           if (isExtraField) {
             // console.log(`⏳ EXTRA 字段 "${fieldName}" 延迟处理，等待动态字段创建`);
@@ -1789,7 +1772,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
                           for (const { fieldName: fn, value: v } of normalFieldsImmediate) {
                             const fld = block.getField(fn);
                             if (fld) {
-                              const val = normalizeBlocklyFieldValue(block, fn, v);
+                              const val = getConfiguredFieldValue(block, fn, v);
                               
                               try {
                                 block.setFieldValue(val, fn);
@@ -1850,7 +1833,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
             try {
               // 自定义 Blockly 字段可以使用对象/数组作为值（例如动画帧）。
               // 此处必须传入原始值；JSON 字符串会被字段校验器拒绝并导致数据清空。
-              block.setFieldValue(normalizeBlocklyFieldValue(block, fieldName, value), fieldName);
+              block.setFieldValue(getConfiguredFieldValue(block, fieldName, value), fieldName);
               // console.log(`✅ 字段设置成功: ${fieldName} = ${actualValue}`);
               configSuccess = true;
             } catch (setFieldError: any) {
@@ -1972,7 +1955,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
           }
           
           // 字段现在存在，使用智能设置（支持下拉菜单匹配+验证）
-          const actualValue = normalizeBlocklyFieldValue(block, fieldName, value);
+          const actualValue = getConfiguredFieldValue(block, fieldName, value);
           
           const setResult = smartSetFieldValue(block, fieldName, actualValue);
           if (setResult.success) {
@@ -2056,7 +2039,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
       for (const { fieldName, value } of mappedRetryFields) {
         const existingField = block.getField(fieldName);
         if (existingField) {
-          const actualValue = normalizeBlocklyFieldValue(block, fieldName, value);
+          const actualValue = getConfiguredFieldValue(block, fieldName, value);
           const setResult = smartSetFieldValue(block, fieldName, actualValue);
           if (setResult.success) {
             // console.log(`✅ 字段设置成功: ${fieldName} = ${actualValue}`);
@@ -2093,7 +2076,7 @@ function configureBlockFields(block: any, fields: FieldConfig): {
           // 尝试将值映射到第一个未配置的字段
           if (unconfiguredFields.length > 0) {
             const targetField = unconfiguredFields[0];
-            const actualValue = normalizeBlocklyFieldValue(block, targetField, value);
+            const actualValue = getConfiguredFieldValue(block, targetField, value);
             const setResult = smartSetFieldValue(block, targetField, actualValue);
             if (setResult.success) {
               // console.log(`🔄 字段映射: ${fieldName} → ${targetField} = ${actualValue}`);
@@ -5588,7 +5571,7 @@ export async function createBlockFromConfig(
   const operationFrameBudgetContext = frameBudgetContext ?? {
     editorFrameBudget: createEditBlockFrameBudget('editBlock.createBlockFromConfig'),
   };
-  
+
   try {
     // 如果是字符串，创建一个文本块
     if (typeof config === 'string') {
@@ -5666,7 +5649,7 @@ export async function createBlockFromConfig(
     // 检查并应用动态扩展
     await applyDynamicExtensions(block, config);
     await checkpointEditBlockFrameBudget(operationFrameBudgetContext, `createBlock.${config.type}.dynamicExtensions`);
-    
+
     // 🆕 动态字段映射：将 EXTRA_N 字段映射到块上实际存在的未配置字段
     // 这对于动态扩展添加的字段（如 dht_init 的 PIN）特别重要
     if (config.fields) {
@@ -7677,17 +7660,6 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
 
       // 生成单个块的代码（如果需要）
       let blockCode = '';
-      if (includeCode) {
-        try {
-          // 尝试生成代码 - 简化处理
-          if ((window as any).Arduino && (window as any).Arduino.blockToCode) {
-            const code = (window as any).Arduino.blockToCode(block);
-            blockCode = Array.isArray(code) ? code[0] || '' : code || '';
-          }
-        } catch (error) {
-          blockCode = `// ${block.type} - 代码生成错误: ${error}`;
-        }
-      }
 
       const blockInfo = {
         id: block.id,
@@ -7732,20 +7704,29 @@ export async function getWorkspaceOverviewTool(args?: any): Promise<ToolUseResul
     let lintResult = null;
     if (includeCode) {
       try {
-        if ((window as any).Arduino && (window as any).Arduino.workspaceToCode) {
-          generatedCode = (window as any).Arduino.workspaceToCode(workspace) || '// 无代码生成';
-        } else {
-          // 备用方法：拼接顶层块的代码
-          const codeLines: string[] = [];
-          for (const rootBlock of rootBlocks) {
-            const blockFromWorkspace = workspace.getBlockById(rootBlock.id);
-            if (blockFromWorkspace && rootBlock.generatedCode && 
-                !rootBlock.generatedCode.includes('代码生成错误')) {
-              codeLines.push(rootBlock.generatedCode);
-            }
-          }
-          generatedCode = codeLines.length > 0 ? codeLines.join('\n\n') : '// 无可用代码内容';
-        }
+        const projectPath = projectDataRuntime.getStore().getProjectPath();
+        const generated = await runWithPreparedActiveProjectGenerator(
+          workspace,
+          (generator) => {
+            allBlocks.forEach((block: any, index: number) => {
+              try {
+                const code = generator.blockToCode(block);
+                allBlocksInfo[index].generatedCode = Array.isArray(code) ? code[0] || '' : code || '';
+              } catch (error) {
+                allBlocksInfo[index].generatedCode = `// ${block.type} - 代码生成错误: ${error}`;
+              }
+            });
+            return {
+              code: generator.workspaceToCode(workspace) || '// 无代码生成',
+              generator,
+            };
+          },
+        );
+        generatedCode = generated.code;
+        await writeArduinoGeneratedArtifacts(
+          projectPath,
+          generated.generator,
+        );
 
         // 如果代码生成成功且不是错误信息，进行代码检测
         if (generatedCode && 
@@ -8800,7 +8781,16 @@ export async function generateCodeTool(): Promise<ToolUseResult> {
   
   try {
     const workspace = getActiveWorkspace();
-    const code = generateCodeWithActiveProjectGenerator(workspace);
+    const projectPath = projectDataRuntime.getStore().getProjectPath();
+    const generated = await runWithPreparedActiveProjectGenerator(
+      workspace,
+      (generator) => ({ code: generator.workspaceToCode(workspace), generator }),
+    );
+    const { code, generator } = generated;
+    await writeArduinoGeneratedArtifacts(
+      projectPath,
+      generator,
+    );
     
     const result = {
       is_error: false,
@@ -9360,6 +9350,21 @@ export async function findBlockTool(args: any): Promise<ToolUseResult> {
       // console.log(`⚠️ 结果超过限制，截取前 ${maxResults} 个`);
       foundBlocks = foundBlocks.slice(0, maxResults);
     }
+
+    const generatedCodeByBlockId = includeCode
+      ? await runWithPreparedActiveProjectGenerator(workspace, (generator) => {
+          const generated = new Map<string, string>();
+          foundBlocks.forEach((block: any) => {
+            try {
+              const code = generator.blockToCode(block);
+              generated.set(block.id, Array.isArray(code) ? code[0] || '' : code || '');
+            } catch (error) {
+              generated.set(block.id, `// ${block.type} - 代码生成失败: ${error}`);
+            }
+          });
+          return generated;
+        })
+      : new Map<string, string>();
     
     // 生成详细的块信息
     const results = foundBlocks.map((block: any) => {
@@ -9461,16 +9466,8 @@ export async function findBlockTool(args: any): Promise<ToolUseResult> {
       
       // 包含代码生成
       if (includeCode) {
-        try {
-          let generatedCode = '';
-          if ((window as any).Arduino && (window as any).Arduino.blockToCode) {
-            const code = (window as any).Arduino.blockToCode(block);
-            generatedCode = Array.isArray(code) ? code[0] || '' : code || '';
-          }
-          blockInfo.generatedCode = generatedCode || `// ${block.type} - 无代码生成`;
-        } catch (error) {
-          blockInfo.generatedCode = `// ${block.type} - 代码生成失败: ${error}`;
-        }
+        blockInfo.generatedCode = generatedCodeByBlockId.get(block.id)
+          || `// ${block.type} - 无代码生成`;
       }
       
       return blockInfo;
@@ -10670,7 +10667,7 @@ async function createDynamicStructure(
   const frameBudgetContext: EditorOperationFrameBudgetContext = {
     editorFrameBudget: createEditBlockFrameBudget('editBlock.codeStructure'),
   };
-  
+
   // 1. 创建根块
   // console.log('📦 创建根块:', rootConfig.type);
   // console.log('🔍 根块配置:', JSON.stringify(rootConfig, null, 2));
@@ -12096,7 +12093,7 @@ export async function analyzeLibraryBlocksTool(
     let { 
       libraryNames, 
       mode = 'auto',
-      includeUsagePatterns = true, 
+      includeUsagePatterns = true,
       refreshCache = false,
       analyzeConnections = true,
       analyzeGenerator = true
@@ -12210,7 +12207,7 @@ export async function analyzeLibraryBlocksTool(
         metadata,
       };
     }
-    
+
     // 生成简化的块定义报告（类似 readme.md 格式）
     const reportBuilder = new BoundedAnalyzeLibraryReportBuilder(ANALYZE_LIBRARY_REPORT_MAX_CHARS);
     reportBuilder.appendLine('# Library Block Definitions');

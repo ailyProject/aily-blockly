@@ -196,6 +196,16 @@
             "LABEL_COLOR_MODE": "Color",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten archivos MP4 y GIF"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "Convertir una imagen PNG, JPEG, WebP o GIF en datos de píxeles RGB565/RGB332",
+            "UPLOAD_TOOLTIP": "Formatos compatibles: PNG, JPEG, WebP, GIF",
+            "EMPTY": "No se ha cargado ninguna imagen",
+            "STATUS_DECODING": "Convirtiendo imagen...",
+            "STATUS_REDECODING": "Reconvirtiendo {{name}}...",
+            "ERROR_DECODE_FAILED": "Error al convertir la imagen",
+            "ERROR_REDECODE_FAILED": "Error al reconvertir la imagen",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten archivos PNG, JPEG, WebP y GIF"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Subir",
             "UPLOAD_TOOLTIP": "Formatos compatibles: MP4, GIF, PNG",
@@ -254,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "Cargar",
+            "UPLOAD_TOOLTIP": "Formatos compatibles: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "Borrar",
+            "LABEL_WIDTH": "An",
+            "LABEL_HEIGHT": "Al",
+            "LABEL_COLOR_MODE": "Color",
+            "EMPTY": "No hay ninguna imagen cargada",
+            "STATUS_READING_FILE": "Leyendo {{name}}...",
+            "STATUS_DECODING": "Convirtiendo imagen...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "El archivo de origen no debe superar {{maxSize}} (actual: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "Error al convertir la imagen",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "Solo se admiten imágenes PNG, JPEG, WebP y BMP"
         }
     },
     "MAIN_WINDOW": {
@@ -436,6 +461,7 @@
         "TEXT_DOWNLOADED": "La versión {{version}} se ha descargado. ¿Instalar ahora?",
         "TEXT_AVAILABLE": "Versión actual {{currentVersion}}, nueva versión {{version}}<br>¿Desea descargar e instalar esta actualización?",
         "DOWNLOAD_FAILED": "Descarga fallida",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "Usando la fuente de descarga alternativa ({{current}}/{{total}})",
         "REMIND_LATER": "Recordar más tarde",
         "SKIP_VERSION": "Omitir esta versión",
         "UPDATE_NOW": "Actualizar ahora",

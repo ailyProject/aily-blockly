@@ -15,6 +15,7 @@ import { AilyHost } from '../core/host';
 import { convertAbsToAbi, convertAbiToAbsWithLineMap } from '../tools/abiAbsConverter';
 import { loadProjectBlockDefinitions } from '../tools/absParser';
 import * as asyncFs from '../core/async-fs';
+import { createProjectDataMarker } from '../../../services/project-data/project-data.types';
 
 // =============================================================================
 // 类型定义
@@ -263,7 +264,7 @@ export class AbsAutoSyncService {
     const absContent = await asyncFs.readFile(absFilePath, 'utf-8');
 
     // 转换为 ABI JSON
-    const result = convertAbsToAbi(absContent);
+    const result = convertAbsToAbi(absContent, { requireProjectDataHeader: true });
 
     if (!result.success) {
       console.error('[AbsAutoSync] ABS parse failed:', result.errors);
@@ -321,7 +322,10 @@ export class AbsAutoSyncService {
       // 使用 Blockly 序列化
       const Blockly = (window as any).Blockly;
       if (Blockly?.serialization?.workspaces) {
-        return Blockly.serialization.workspaces.save(workspace);
+        return {
+          ...Blockly.serialization.workspaces.save(workspace),
+          $ailyProjectData: createProjectDataMarker(),
+        };
       }
       
       return null;

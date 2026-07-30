@@ -32,7 +32,6 @@ export interface ChatRuntimeOwnerContextCoreServices {
   readonly isWaiting: any;
   readonly isCompleted: any;
   readonly repetitionDetectionService: any;
-  readonly turnStartupEditLifecycle: any;
   readonly isCancelled: any;
   readonly activeToolExecutions: any;
   readonly currentStatelessMode: any;
@@ -174,7 +173,6 @@ export function createChatRuntimeOwnerContext(
       services.syncExecutionRuntimeTurnResponses(sessionId, turnResponses, options),
     applyPendingSwitch: sessionId => adapter.applyPendingSwitch(sessionId),
     get repetitionDetectionService() { return services.repetitionDetectionService; },
-    get turnStartupEditLifecycle() { return services.turnStartupEditLifecycle; },
     get isCancelled() { return services.isCancelled; },
     set isCancelled(value) { services.setIsCancelled(value); },
     get activeToolExecutions() { return services.activeToolExecutions; },

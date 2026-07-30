@@ -7,6 +7,7 @@
         "PLAN_LABEL": "{{plan}} プラン",
         "AI_CALLS": "AI利用回数",
         "AUTO_MODE": "autoモード",
+        "AI_CALLS_RESET_SHORT": "{{date}} リセット",
         "ADD_AI_CALLS": "利用回数を追加",
         "CLOUD_STORAGE": "クラウドストレージ",
         "ADD_STORAGE": "ストレージを追加",

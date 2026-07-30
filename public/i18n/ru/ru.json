@@ -196,6 +196,16 @@
             "LABEL_COLOR_MODE": "Цвет",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Поддерживаются только файлы MP4 и GIF"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "Преобразовать PNG, JPEG, WebP или GIF в пиксельные данные RGB565/RGB332",
+            "UPLOAD_TOOLTIP": "Поддерживаемые форматы: PNG, JPEG, WebP, GIF",
+            "EMPTY": "Изображение не загружено",
+            "STATUS_DECODING": "Преобразование изображения...",
+            "STATUS_REDECODING": "Повторное преобразование {{name}}...",
+            "ERROR_DECODE_FAILED": "Не удалось преобразовать изображение",
+            "ERROR_REDECODE_FAILED": "Не удалось повторно преобразовать изображение",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Поддерживаются только файлы PNG, JPEG, WebP и GIF"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "Загрузить",
             "UPLOAD_TOOLTIP": "Поддерживаемые форматы: MP4, GIF, PNG",
@@ -254,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "Загрузить",
+            "UPLOAD_TOOLTIP": "Поддерживаемые форматы: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "Очистить",
+            "LABEL_WIDTH": "Ш",
+            "LABEL_HEIGHT": "В",
+            "LABEL_COLOR_MODE": "Цвет",
+            "EMPTY": "Изображение не загружено",
+            "STATUS_READING_FILE": "Чтение {{name}}...",
+            "STATUS_DECODING": "Преобразование изображения...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "Размер исходного файла не должен превышать {{maxSize}} (сейчас: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "Не удалось преобразовать изображение",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "Поддерживаются только изображения PNG, JPEG, WebP и BMP"
         }
     },
     "MAIN_WINDOW": {
@@ -436,6 +461,7 @@
         "TEXT_DOWNLOADED": "Версия {{version}} загружена. Установить сейчас?",
         "TEXT_AVAILABLE": "Текущая версия {{currentVersion}}, новая версия {{version}}<br>Хотите загрузить и установить это обновление?",
         "DOWNLOAD_FAILED": "Ошибка загрузки",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "Используется резервный источник загрузки ({{current}}/{{total}})",
         "REMIND_LATER": "Напомнить позже",
         "SKIP_VERSION": "Пропустить эту версию",
         "UPDATE_NOW": "Обновить сейчас",

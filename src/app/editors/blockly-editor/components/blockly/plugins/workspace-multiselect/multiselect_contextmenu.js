@@ -15,6 +15,7 @@ import {
   blockNumGetFromStorage, registeredContextMenu, multiDraggableWeakMap, getByID,
   incrementFieldInputValues, checkMissingBlockTypes, moveBlocksToMousePosition,
   resetConsecutivePasteStagger, applyConsecutivePasteStagger,
+  importClipboardProjectData,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
 
@@ -81,7 +82,7 @@ const registerCopy = function(useCopyPasteCrossTab) {
       return block && block.isDeletable() && block.isMovable() &&
              !hasSelectedParent(block);
     },
-    callback: function(scope) {
+    callback: async function(scope) {
       const workspace = scope.block.workspace;
       copyData.clear();
       workspace.hideChaff();
@@ -119,7 +120,7 @@ const registerCopy = function(useCopyPasteCrossTab) {
         }
       });
       if (useCopyPasteCrossTab) {
-        dataCopyToStorage();
+        await dataCopyToStorage();
       }
       resetConsecutivePasteStagger(workspace);
       Blockly.Events.setGroup(false);
@@ -698,7 +699,8 @@ const registerDelete = function() {
  * Extracted so it can be called after async library installation.
  * @param {Blockly.WorkspaceSvg} workspace The target workspace.
  */
-const executePaste = function(workspace) {
+const executePaste = async function(workspace) {
+  await importClipboardProjectData();
   const dragSelection = dragSelectionWeakMap.get(workspace);
   const multiDraggable = multiDraggableWeakMap.get(workspace);
 
@@ -796,7 +798,7 @@ const registerPaste = function(useCopyPasteCrossTab) {
         'hidden': (blockNumGetFromStorage(useCopyPasteCrossTab) < 1?
           'disabled': 'enabled');
     },
-    callback: function(scope) {
+    callback: async function(scope) {
       const workspace = scope.workspace;
       if (useCopyPasteCrossTab) {
         dataCopyFromStorage();
@@ -806,8 +808,8 @@ const registerPaste = function(useCopyPasteCrossTab) {
       if (missingLibs.length > 0) {
         if (window.__ailyBlockPasteNeedsInstall) {
           // Trigger async install dialog, paste after completion
-          window.__ailyBlockPasteNeedsInstall(missingLibs).then(() => {
-            executePaste(workspace);
+          window.__ailyBlockPasteNeedsInstall(missingLibs).then(async () => {
+            await executePaste(workspace);
           }).catch(() => {
             // User cancelled - do nothing
           });
@@ -815,7 +817,7 @@ const registerPaste = function(useCopyPasteCrossTab) {
         // Block paste when missing libs detected
         return true;
       }
-      executePaste(workspace);
+      await executePaste(workspace);
       return true;
     },
     scopeType: Blockly.ContextMenuRegistry.ScopeType.WORKSPACE,

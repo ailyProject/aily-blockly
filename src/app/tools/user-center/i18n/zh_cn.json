@@ -7,6 +7,7 @@
         "PLAN_LABEL": "{{plan}} 计划",
         "AI_CALLS": "AI可用次数",
         "AUTO_MODE": "auto模式",
+        "AI_CALLS_RESET_SHORT": "{{date}} 重置",
         "ADD_AI_CALLS": "增加使用次数",
         "CLOUD_STORAGE": "云存储",
         "ADD_STORAGE": "增加存储空间",

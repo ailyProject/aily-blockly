@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const {
     collectLibraryPackages,
+    normalizeExtractedSourceDirectory,
     processLibrariesParallel,
 } = require('../scripts/preprocess');
 
@@ -87,4 +88,41 @@ test('copies recursively collected libraries into the compiler libraries directo
     assert.deepEqual(copiedLibraries.sort(), ['MiaoUI', 'u8g2']);
     assert.equal(fs.existsSync(path.join(librariesPath, 'MiaoUI', 'MiaoUI.h')), true);
     assert.equal(fs.existsSync(path.join(librariesPath, 'u8g2', 'U8g2lib.h')), true);
+});
+
+test('normalizes extracted library archives into src directory', t => {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-preprocess-test-'));
+    t.after(() => fs.rmSync(projectPath, { recursive: true, force: true }));
+
+    const packagePath = path.join(projectPath, 'node_modules', '@aily-project', 'lib-miaoui');
+    const sourcePath = path.join(packagePath, 'src');
+    const flatExtractPath = path.join(packagePath, '.flat-extract');
+    fs.mkdirSync(flatExtractPath, { recursive: true });
+    fs.writeFileSync(path.join(flatExtractPath, 'MiaoUI.h'), '#pragma once\n');
+
+    normalizeExtractedSourceDirectory(flatExtractPath, sourcePath);
+
+    assert.equal(fs.existsSync(path.join(sourcePath, 'MiaoUI.h')), true);
+    assert.equal(fs.existsSync(flatExtractPath), false);
+
+    const nestedExtractPath = path.join(packagePath, '.nested-extract');
+    fs.mkdirSync(path.join(nestedExtractPath, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(nestedExtractPath, 'src', 'MiaoUI.cpp'), 'void setup() {}\n');
+
+    normalizeExtractedSourceDirectory(nestedExtractPath, sourcePath);
+
+    assert.equal(fs.existsSync(path.join(sourcePath, 'MiaoUI.cpp')), true);
+    assert.equal(fs.existsSync(path.join(sourcePath, 'MiaoUI.h')), false);
+    assert.equal(fs.existsSync(path.join(nestedExtractPath, 'src')), false);
+
+    const mixedExtractPath = path.join(packagePath, '.mixed-extract');
+    fs.mkdirSync(path.join(mixedExtractPath, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(mixedExtractPath, 'src', 'Nested.h'), '#pragma once\n');
+    fs.writeFileSync(path.join(mixedExtractPath, 'README.md'), 'library notes\n');
+
+    normalizeExtractedSourceDirectory(mixedExtractPath, sourcePath);
+
+    assert.equal(fs.existsSync(path.join(sourcePath, 'src', 'Nested.h')), true);
+    assert.equal(fs.existsSync(path.join(sourcePath, 'README.md')), true);
+    assert.equal(fs.existsSync(mixedExtractPath), false);
 });

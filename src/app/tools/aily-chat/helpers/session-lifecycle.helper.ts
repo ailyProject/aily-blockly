@@ -315,7 +315,7 @@ export class SessionLifecycleHelper {
       },
       enterEntryState: (options) => this.enterEntryState(options),
       enterBlankSessionShell: (options) => this.enterBlankSessionShell(options),
-      startSession: (options) => this.startSession(options),
+      startSession: () => this.startSession(),
       restorePersistedSessionTarget: () => this.restorePersistedSessionTarget(),
       ensureLocalSessionInventoryScope: (input) => this.ensureLocalSessionInventoryScope(input),
     });
@@ -891,13 +891,15 @@ export class SessionLifecycleHelper {
 
   // ==================== 会话启动 ====================
 
-  async startSession(options: { readonly deferShellFinalization?: boolean } = {}): Promise<string | null> {
+  async startSession(): Promise<string | null> {
     if (this.ctx.isSessionStarting) {
       return Promise.resolve(this.resolveCurrentViewSessionResource() || null);
     }
     const bootstrapStartedAt = performance.now();
     this.ctx.isSessionStarting = true;
     this.ctx.isCancelled = false;
+
+    this.discardPendingFreshSessionShells();
 
     this.ctx.interaction.resetApprovalState();
     this.ctx.chatService.clearResolvedActiveModel?.();
@@ -955,15 +957,10 @@ export class SessionLifecycleHelper {
         priority: 'after-paint',
       });
     };
-    if (options.deferShellFinalization) {
-      this.pendingFreshSessionShellFinalizers.set(pendingSessionId, finalizeShell);
-      // A provisionally bound model is the blank composer owner, not a history
-      // session. Keep that boundary explicit until the first request mutation
-      // finalizes the shell and makes it listable.
-      this.ctx.chatService.hasBlankSessionShell = true;
-    } else {
-      finalizeShell();
-    }
+    this.pendingFreshSessionShellFinalizers.set(pendingSessionId, finalizeShell);
+    // Match VS Code's untitled chat resource: the blank composer may own an
+    // in-memory model, but it is not a history session until the first request.
+    this.ctx.chatService.hasBlankSessionShell = true;
     const shellScheduledAt = performance.now();
 
     this.ctx.isSessionStarting = false;
@@ -987,7 +984,7 @@ export class SessionLifecycleHelper {
         `modelMs=${(modelCreatedAt - resetCompletedAt).toFixed(1)}`,
         `viewMs=${(viewAttachedAt - modelCreatedAt).toFixed(1)}`,
         `shellScheduleMs=${(shellScheduledAt - viewAttachedAt).toFixed(1)}`,
-        `deferred=${String(options.deferShellFinalization === true)}`,
+        'deferred=true',
         `totalMs=${(performance.now() - bootstrapStartedAt).toFixed(1)}`,
       ].join(' '),
     );
@@ -1011,6 +1008,15 @@ export class SessionLifecycleHelper {
       '[AilyChat][SessionBootstrapScalar]',
       `sessionId=${targetSessionId} shellFinalizationMs=${(performance.now() - startedAt).toFixed(1)} phase=after-request-paint`,
     );
+  }
+
+  private discardPendingFreshSessionShells(): void {
+    for (const sessionId of this.pendingFreshSessionShellFinalizers.keys()) {
+      this.pendingFreshSessionShellFinalizers.delete(sessionId);
+      this.hostSessionItemController.discardChatSessionItem(sessionId);
+      this.clearPersistedSessionEntryTarget(sessionId);
+      this.releaseSessionModelReference(sessionId);
+    }
   }
 
   private scheduleRuntimeBackgroundActivation(
@@ -1121,6 +1127,7 @@ export class SessionLifecycleHelper {
 
   /** 清理当前会话的本地 agent 资源 */
   dispose(): void {
+    this.pendingFreshSessionShellFinalizers.clear();
     for (const reference of this.sessionModelReferences.values()) {
       reference.dispose();
     }
@@ -1315,7 +1322,7 @@ export class SessionLifecycleHelper {
       if (!this.ctx.isLoggedIn || this.ctx.isSessionStarting || this.resolveCurrentViewSessionResource()) {
         return;
       }
-      void this.startSession({ deferShellFinalization: true });
+      void this.startSession();
     };
     const scheduleAfterPaint = () => {
       this.provisionalSessionBootstrapHandle = setTimeout(bootstrap, 0) as unknown as number;

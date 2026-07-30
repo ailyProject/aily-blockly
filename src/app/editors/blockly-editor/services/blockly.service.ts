@@ -16,6 +16,11 @@ import { convertBlockTreeToAbs, convertAbiToAbsWithLineMap } from '../../../tool
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import { dragSelectionWeakMap } from '../components/blockly/plugins/workspace-multiselect/index.js';
 import { exportWorkspaceToSvg } from './workspace-svg-exporter';
+import { createProjectDataMarker, isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
+import {
+  decorateLibraryBlockDefinitionForProjectData,
+  unregisterProjectDataFieldSlots,
+} from '../../../services/project-data/blockly-project-data-adapter';
 import { BlocklyGeneratorRuntimeService } from './blockly-generator-runtime.service';
 
 export interface BlockContextLabel {
@@ -778,7 +783,7 @@ export class BlocklyService {
   }
 
   loadAbiJson(jsonData) {
-    const document = this.normalizeProjectDocument(jsonData);
+    const document = this.normalizeProjectAbiForLoad(jsonData);
     this.loadProjectDocument(document, false);
   }
 
@@ -796,6 +801,9 @@ export class BlocklyService {
   }
 
   normalizeProjectAbiForLoad(jsonData: any): BlocklyProjectDocument {
+    if (!isAilyProjectDataMarker(jsonData?.$ailyProjectData)) {
+      throw new Error('Unsupported project.abi: missing $ailyProjectData external-only schema marker.');
+    }
     return this.normalizeProjectDocument(jsonData, false);
   }
 
@@ -920,11 +928,13 @@ export class BlocklyService {
   }
 
   getProjectAbiForSave(document = this.getProjectDocument()): any {
-    if (document.pages.length === 1) {
-      return this.composeWorkspacePayload(document.pages[0].content, document.sharedModel);
-    }
-
-    return document;
+    const payload = document.pages.length === 1
+      ? this.composeWorkspacePayload(document.pages[0].content, document.sharedModel)
+      : document;
+    return {
+      ...payload,
+      $ailyProjectData: createProjectDataMarker(),
+    };
   }
 
   getProjectUsedLibraryManifest(packageJson?: any, document = this.getProjectDocument()): BlocklyUsedLibraryManifest {
@@ -1333,6 +1343,11 @@ export class BlocklyService {
       if (libStaticPath) {
         block = processStaticFilePath(block, libStaticPath);
       }
+      block = decorateLibraryBlockDefinitionForProjectData(
+        block,
+        libPackageName,
+        (key) => this.translateService.instant(key),
+      );
       Blockly.defineBlocksWithJsonArray([block]);
     }
   }
@@ -1407,6 +1422,7 @@ export class BlocklyService {
   }
 
   private clearLoadedLibraryStateForRuntimeRebuild(): void {
+    unregisterProjectDataFieldSlots(Array.from(this.blockTypeToLibMap.keys()));
     this.iconsMap.clear();
     this.blockDefinitionsMap.clear();
     this.loadedGenerators.clear();
@@ -1648,6 +1664,7 @@ export class BlocklyService {
     }
     this.generatorRuntime.destroy();
 
+    unregisterProjectDataFieldSlots(Array.from(this.blockTypeToLibMap.keys()));
     this.iconsMap.clear();
     this.blockDefinitionsMap.clear();
     this.loadedGenerators.clear();

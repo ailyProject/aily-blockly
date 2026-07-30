@@ -6,6 +6,8 @@
 
 import * as Blockly from 'blockly/core';
 import { GlobalServiceManager } from '../../../services/bitmap-upload.service';
+import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
+import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
 
 Blockly.Msg['BUTTON_LABEL_BROWSE'] = '打开';
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = '清除';
@@ -33,6 +35,9 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
     private screenHeightInput: HTMLInputElement | null = null;
     private rotationSelect: HTMLSelectElement | null = null;
     private blockDisplayImage: SVGImageElement | null = null;
+    private resolvedImageData: string | null = null;
+    private resolvedImageRefId = '';
+    private loadingImage: Promise<string | null> | null = null;
 
     // 事件绑定数组
     private boundEvents: Blockly.browserEvents.Data[] = [];
@@ -63,10 +68,13 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         const currentValue = this.getValue();
         if (!currentValue) {
             this.setValue({
+                schemaVersion: 1,
                 filePath: '',
                 width: config?.defaultWidth ?? DEFAULT_WIDTH,
                 height: config?.defaultHeight ?? DEFAULT_HEIGHT,
-                imageData: null
+                mediaType: '',
+                byteLength: 0,
+                image: null,
             });
         }
     }
@@ -92,13 +100,44 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
             return null;
         }
 
-        // 确保必要的属性存在
+        const image = isAilyDataRef(newValue.image) ? newValue.image : null;
         return {
+            schemaVersion: 1,
             filePath: newValue.filePath || '',
             width: Math.max(1, Math.min(1000, newValue.width || DEFAULT_WIDTH)),
             height: Math.max(1, Math.min(1000, newValue.height || DEFAULT_HEIGHT)),
-            imageData: newValue.imageData || null
+            x: finiteInteger(newValue.x, 0),
+            y: finiteInteger(newValue.y, 0),
+            screenWidth: Math.max(1, Math.min(1000, finiteInteger(newValue.screenWidth, 320))),
+            screenHeight: Math.max(1, Math.min(1000, finiteInteger(newValue.screenHeight, 240))),
+            rotation: normalizeRotation(newValue.rotation),
+            mediaType: typeof newValue.mediaType === 'string' ? newValue.mediaType : '',
+            byteLength: image ? image.$ailyData.rawLength : 0,
+            image,
         };
+    }
+
+    protected override doValueUpdate_(newValue: ImagePreviewValue) {
+        const nextRefId = newValue.image?.$ailyData.id || '';
+        if (nextRefId !== this.resolvedImageRefId) {
+            this.resolvedImageData = null;
+            this.resolvedImageRefId = '';
+            this.loadingImage = null;
+        }
+        this.value_ = { ...newValue };
+        this.updateBlockDisplay();
+        if (nextRefId && (this.previewImage || this.blockDisplayImage)) {
+            void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
+        }
+    }
+
+    override saveState(_doFullSerialization?: boolean): ImagePreviewValue {
+        return { ...this.getValue() };
+    }
+
+    /** Ensures legacy read-only generators can consume their derived image cache. */
+    async prepareForCodeGeneration(): Promise<void> {
+        await this.ensureImageLoaded();
     }
 
     /**
@@ -111,6 +150,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
             this,
             this.disposeEditor.bind(this),
         );
+        void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
     }
 
     /**
@@ -580,10 +620,8 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         reader.onload = (e) => {
             const imageData = e.target?.result as string;
             this.updatePreview(imageData);
-            // 处理图片并缓存到全局存储
-            this.processAndCacheImage(file, imageData);
             // 直接更新值，包含新的图片数据
-            this.updateValueWithImageData(imageData);
+            this.updateValueWithImageData(imageData, file.name);
         };
         reader.readAsDataURL(file);
     }
@@ -591,14 +629,20 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
     /**
      * 处理图片并缓存到全局存储
      */
-    private processAndCacheImage(file: File, imageData: string) {
-        console.log(`🔍 [图片处理] 开始处理文件: ${file.name}`);
+    private processAndCacheImage(fileName: string, imageData: string, resourceId = ''): Promise<void> {
+        console.log(`🔍 [图片处理] 开始处理文件: ${fileName}`);
 
         // 初始化全局图片缓存
         if (!(window as any).tftImageCache) {
             (window as any).tftImageCache = {};
         }
 
+        let resolveLoading!: () => void;
+        let rejectLoading!: (reason?: unknown) => void;
+        const loading = new Promise<void>((resolve, reject) => {
+            resolveLoading = resolve;
+            rejectLoading = reject;
+        });
         const img = new Image();
         img.onload = () => {
             console.log(`🖼️ 图片加载完成: ${img.width}x${img.height}`);
@@ -667,10 +711,16 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
                 });
 
                 // 存储到全局缓存（使用多个key确保能找到）
-                const cacheKeys = [file.name, file.name.toLowerCase(), file.name.replace(/\s+/g, '_')];
+                const cacheKeys = [
+                    resourceId,
+                    fileName,
+                    fileName.toLowerCase(),
+                    fileName.replace(/\s+/g, '_'),
+                ].filter(Boolean);
                 cacheKeys.forEach(key => {
                     (window as any).tftImageCache[key] = {
-                        fileName: file.name,
+                        fileName,
+                        resourceId,
                         originalWidth: img.width,
                         originalHeight: img.height,
                         processedSizes: processedSizes,
@@ -680,18 +730,23 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
                     };
                 });
 
-                console.log(`🎉 图片 ${file.name} 处理完成，已缓存 ${processedCount} 个尺寸`);
+                console.log(`🎉 图片 ${fileName} 处理完成，已缓存 ${processedCount} 个尺寸`);
+                resolveLoading();
 
             } catch (error) {
                 console.error('处理图片时出错:', error);
+                rejectLoading(error);
             }
         };
 
         img.onerror = () => {
-            console.error('图片加载失败:', file.name);
+            const error = new Error(`图片加载失败: ${fileName}`);
+            console.error(error.message);
+            rejectLoading(error);
         };
 
         img.src = imageData;
+        return loading;
     }
 
     /**
@@ -772,8 +827,10 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
      */
     private loadPreviewImage() {
         const value = this.getValue();
-        if (value?.imageData) {
-            this.updatePreview(value.imageData);
+        if (this.resolvedImageData) {
+            this.updatePreview(this.resolvedImageData);
+        } else if (value?.image) {
+            void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
         } else if (value?.filePath) {
             // 尝试加载文件路径的图片
             if (this.previewImage) {
@@ -796,15 +853,20 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         if (this.previewImage) {
             this.previewImage.src = '';
         }
-        this.updateValue();
+        this.resolvedImageData = null;
+        this.resolvedImageRefId = '';
+        this.loadingImage = null;
+        this.updateValue({ clearImage: true });
     }
 
     /**
      * 更新字段值
      */
-    private updateValue() {
+    private updateValue(options: { clearImage?: boolean } = {}) {
         const currentValue = this.getValue();
+        const image = options.clearImage ? null : currentValue?.image || null;
         const newValue: ImagePreviewValue = {
+            schemaVersion: 1,
             filePath: this.filePathInput?.value || '',
             width: parseInt(this.widthInput?.value || DEFAULT_WIDTH.toString(), 10),
             height: parseInt(this.heightInput?.value || DEFAULT_HEIGHT.toString(), 10),
@@ -813,8 +875,9 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
             screenWidth: parseInt(this.screenWidthInput?.value || '320', 10),
             screenHeight: parseInt(this.screenHeightInput?.value || '240', 10),
             rotation: parseInt(this.rotationSelect?.value || '0', 10),
-            // 保持现有的imageData，除非有新的图片数据
-            imageData: this.previewImage?.src || currentValue?.imageData || null
+            mediaType: options.clearImage ? '' : currentValue?.mediaType || '',
+            byteLength: image?.$ailyData.rawLength || 0,
+            image,
         };
 
         this.setValue(newValue);
@@ -823,20 +886,63 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
     /**
      * 更新字段值（包含新的图片数据）
      */
-    private updateValueWithImageData(imageData: string) {
-        const newValue: ImagePreviewValue = {
-            filePath: this.filePathInput?.value || '',
-            width: parseInt(this.widthInput?.value || DEFAULT_WIDTH.toString(), 10),
-            height: parseInt(this.heightInput?.value || DEFAULT_HEIGHT.toString(), 10),
-            x: parseInt(this.xInput?.value || '0', 10),
-            y: parseInt(this.yInput?.value || '0', 10),
-            screenWidth: parseInt(this.screenWidthInput?.value || '320', 10),
-            screenHeight: parseInt(this.screenHeightInput?.value || '240', 10),
-            rotation: parseInt(this.rotationSelect?.value || '0', 10),
-            imageData: imageData
-        };
+    private updateValueWithImageData(imageData: string, fileName: string) {
+        const parsed = parseImageDataUrl(imageData);
+        this.resolvedImageData = imageData;
+        const mutation = projectDataRuntime.put({
+            codec: 'image-original-v1',
+            storage: 'raw-v1',
+            value: parsed.bytes,
+        }).then(async (image) => {
+            this.resolvedImageRefId = image.$ailyData.id;
+            const newValue: ImagePreviewValue = {
+                schemaVersion: 1,
+                filePath: this.filePathInput?.value || '',
+                width: parseInt(this.widthInput?.value || DEFAULT_WIDTH.toString(), 10),
+                height: parseInt(this.heightInput?.value || DEFAULT_HEIGHT.toString(), 10),
+                x: parseInt(this.xInput?.value || '0', 10),
+                y: parseInt(this.yInput?.value || '0', 10),
+                screenWidth: parseInt(this.screenWidthInput?.value || '320', 10),
+                screenHeight: parseInt(this.screenHeightInput?.value || '240', 10),
+                rotation: parseInt(this.rotationSelect?.value || '0', 10),
+                mediaType: parsed.mediaType,
+                byteLength: parsed.bytes.byteLength,
+                image,
+            };
+            this.setValue(newValue);
+            await this.processAndCacheImage(fileName, imageData, image.$ailyData.id);
+        });
+        projectDataRuntime.trackMutation(mutation);
+        void mutation.catch((error) => console.error('图片资源保存失败:', error));
+    }
 
-        this.setValue(newValue);
+    private async ensureImageLoaded(): Promise<string | null> {
+        const value = this.getValue();
+        const ref = value?.image;
+        if (!ref) return null;
+        const refId = ref.$ailyData.id;
+        if (this.resolvedImageRefId === refId && this.resolvedImageData) {
+            return this.resolvedImageData;
+        }
+        if (this.loadingImage) return this.loadingImage;
+        const loading = projectDataRuntime.resolve<Uint8Array>(ref).then(async (bytes) => {
+            const current = this.getValue();
+            if (current.image?.$ailyData.id !== refId) return null;
+            if (!(bytes instanceof Uint8Array) || bytes.byteLength !== ref.$ailyData.rawLength) {
+                throw new Error(`图片资源长度不匹配: ${refId}`);
+            }
+            const dataUrl = `data:${current.mediaType || 'application/octet-stream'};base64,${bytesToBase64(bytes)}`;
+            await this.processAndCacheImage(current.filePath || refId, dataUrl, refId);
+            this.resolvedImageData = dataUrl;
+            this.resolvedImageRefId = refId;
+            this.updatePreview(dataUrl);
+            this.updateBlockDisplay();
+            return dataUrl;
+        }).finally(() => {
+            if (this.loadingImage === loading) this.loadingImage = null;
+        });
+        this.loadingImage = loading;
+        return projectDataRuntime.trackMutation(loading);
     }
 
     /**
@@ -883,6 +989,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
 
         // 初始渲染
         this.updateBlockDisplay();
+        void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
     }
 
     /**
@@ -892,9 +999,9 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         if (!this.blockDisplayImage) return;
 
         const value = this.getValue();
-        if (value?.imageData) {
+        if (this.resolvedImageData) {
             // 显示实际的图片
-            this.blockDisplayImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', value.imageData);
+            this.blockDisplayImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', this.resolvedImageData);
         } else {
             // 显示简单的图片图标
             this.blockDisplayImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href',
@@ -951,6 +1058,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
  * 图片预览值接口
  */
 export interface ImagePreviewValue {
+    schemaVersion: 1;
     filePath: string;
     width: number;
     height: number;
@@ -959,7 +1067,9 @@ export interface ImagePreviewValue {
     screenWidth?: number;
     screenHeight?: number;
     rotation?: number; // 0, 90, 180, 270
-    imageData: string | null;
+    mediaType: string;
+    byteLength: number;
+    image: AilyDataRef | null;
 }
 
 /**
@@ -970,6 +1080,35 @@ export interface FieldImagePreviewConfig extends Blockly.FieldConfig {
     defaultWidth?: number;
     defaultHeight?: number;
     previewSize?: number;
+}
+
+function finiteInteger(value: unknown, fallback: number): number {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.trunc(number) : fallback;
+}
+
+function normalizeRotation(value: unknown): number {
+    const rotation = finiteInteger(value, 0);
+    return rotation === 90 || rotation === 180 || rotation === 270 ? rotation : 0;
+}
+
+function parseImageDataUrl(value: string): { mediaType: string; bytes: Uint8Array } {
+    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(value);
+    if (!match) throw new Error('只支持 Base64 Data URL 图片');
+    const binary = atob(match[2]);
+    return {
+        mediaType: match[1].toLowerCase(),
+        bytes: Uint8Array.from(binary, (character) => character.charCodeAt(0)),
+    };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
 }
 
 // 注册字段类型

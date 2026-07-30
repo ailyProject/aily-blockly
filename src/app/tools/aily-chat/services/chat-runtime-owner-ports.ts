@@ -259,13 +259,6 @@ export interface ChatRuntimeOwnerSessionModelPort {
 
 export type ChatRuntimeOwnerSchedulerPort = ChatRuntimeOwnerScheduler;
 
-export interface ChatRuntimeOwnerTurnStartupEditLifecyclePort {
-  ensureAbsExport(
-    sessionId: string | null | undefined,
-    runtimeMode: ChatAgentRuntimeMode | null | undefined,
-  ): Promise<void>;
-}
-
 export interface ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort {
   ensureWorkspaceAbsExport(sessionId: string | null | undefined, projectPath: string | null | undefined): Promise<void>;
 }
@@ -419,10 +412,6 @@ export const CHAT_RUNTIME_OWNER_SCHEDULER = new InjectionToken<ChatRuntimeOwnerS
 
 export const CHAT_RUNTIME_OWNER_CONTEXT_BUDGET = new InjectionToken<ChatRuntimeOwnerContextBudgetPort>(
   'AILY_CHAT_RUNTIME_OWNER_CONTEXT_BUDGET',
-);
-
-export const CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE = new InjectionToken<ChatRuntimeOwnerTurnStartupEditLifecyclePort>(
-  'AILY_CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE',
 );
 
 export const CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE = new InjectionToken<ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort>(

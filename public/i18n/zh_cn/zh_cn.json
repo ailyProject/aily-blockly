@@ -231,6 +231,16 @@
             "LABEL_COLOR_MODE": "色彩",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "只支持 MP4 或 GIF 文件"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "上传 PNG、JPEG、WebP 或 GIF 图片并转换为 RGB565/RGB332 像素数据",
+            "UPLOAD_TOOLTIP": "支持格式：PNG、JPEG、WebP、GIF",
+            "EMPTY": "未上传图片",
+            "STATUS_DECODING": "正在转换图片...",
+            "STATUS_REDECODING": "正在重新转换 {{name}}...",
+            "ERROR_DECODE_FAILED": "图片转换失败",
+            "ERROR_REDECODE_FAILED": "图片重新转换失败",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "仅支持 PNG、JPEG、WebP 或 GIF 文件"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "上传",
             "UPLOAD_TOOLTIP": "支持格式：MP4、GIF、PNG",
@@ -289,6 +299,33 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "正在取模 {{format}} 帧 {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} 解码成功，但没有取到有效帧",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "只支持 MP4、GIF 或 PNG 文件"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "上传",
+            "UPLOAD_TOOLTIP": "支持格式：PNG、JPEG、WebP、BMP",
+            "BUTTON_CLEAR": "清空",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "色彩",
+            "EMPTY": "未上传图片",
+            "STATUS_READING_FILE": "正在读取 {{name}}...",
+            "STATUS_SAVING_FILE": "正在保存 {{name}}...",
+            "STATUS_DECODING": "正在取模图片...",
+            "STATUS_REDECODING": "正在基于原图重新取模 {{name}}...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | 数据 {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "文件大小不能超过 {{maxSize}}，当前文件 {{currentSize}}",
+            "ERROR_DECODE_FAILED": "图片取模失败",
+            "ERROR_REDECODE_FAILED": "图片重新取模失败",
+            "ERROR_PROJECT_PATH_MISSING": "未找到当前项目目录，无法保存图片原文件",
+            "ERROR_FS_CREATE_ASSETS_UNAVAILABLE": "文件系统接口不可用，无法创建图片资源目录",
+            "ERROR_FS_SAVE_UNAVAILABLE": "文件系统接口不可用，无法保存图片原文件",
+            "ERROR_FS_READ_UNAVAILABLE": "文件系统接口不可用，无法读取图片原文件",
+            "ERROR_SOURCE_READ_INVALID": "图片原文件读取结果无效",
+            "ERROR_SOURCE_MISSING_REDECODE": "未找到图片原文件，请重新上传后再修改尺寸",
+            "ERROR_SOURCE_NOT_FOUND": "图片原文件不存在：{{path}}",
+            "ERROR_MD5_UNAVAILABLE": "文件 MD5 接口不可用，请完全重启软件后再上传",
+            "ERROR_MD5_FAILED": "图片原文件 MD5 计算失败",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "只支持 PNG、JPEG、WebP 或 BMP 图片"
         }
     },
     "MAIN_WINDOW": {
@@ -501,6 +538,7 @@
         "TEXT_DOWNLOADED": "新版本 {{version}} 已下载完成，是否立即安装？",
         "TEXT_AVAILABLE": "当前版本 {{currentVersion}}，新版本 {{version}}<br>是否要下载并安装此更新？",
         "DOWNLOAD_FAILED": "下载失败",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "当前使用备用下载源（{{current}}/{{total}}）",
         "REMIND_LATER": "稍后提醒",
         "SKIP_VERSION": "跳过此版本",
         "UPDATE_NOW": "立即更新",

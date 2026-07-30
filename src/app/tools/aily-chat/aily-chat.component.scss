@@ -470,7 +470,7 @@
   // }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-widget {
-    padding: 10px 16px 14px 16px;
+    padding: 6px 10px 18px;
     box-sizing: border-box;
     border: 1px solid var(--aily-chat-input-notice-border, rgba(255, 255, 255, 0.08));
     border-bottom: none;
@@ -478,7 +478,7 @@
     border-top-right-radius: var(--aily-chat-input-notice-radius, 5px);
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 4px;
     overflow: hidden;
     background: var(--aily-chat-viewer-panel-raised, rgba(255, 255, 255, 0.03));
   }
@@ -487,17 +487,19 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
+    min-height: 20px;
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-widget-title {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    color: var(--aily-chat-input-notice-title-fg, #cccccc);
+    line-height: 16px;
+    color: var(--aily-chat-code-fg-muted, #9aa0a6);
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-clear-all,
@@ -507,10 +509,23 @@
     appearance: none;
     border: none;
     background: transparent;
-    padding: 0;
+    padding: 2px;
+    margin: 0;
     cursor: pointer;
-    font-size: 11px;
-    line-height: 16px;
+    font-size: 12px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    opacity: 0.75;
+
+    &:hover {
+      opacity: 1;
+      background: rgba(255, 255, 255, 0.06);
+    }
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-clear-all,
@@ -526,98 +541,39 @@
     color: var(--aily-chat-viewer-state-warn, #e5c07b);
   }
 
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-sections {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-section-title {
-    font-size: 11px;
-    line-height: 16px;
-    font-weight: 600;
-    color: var(--aily-chat-input-notice-title-fg, #cccccc);
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-section-count {
-    font-size: 11px;
-    line-height: 16px;
-    color: var(--aily-chat-code-fg-muted, #6a6a6a);
-  }
-
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 2px;
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     min-width: 0;
-    padding: 8px 10px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.03);
+    min-height: 24px;
+    padding: 2px 4px;
+    border-radius: 4px;
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-item[data-kind='steering'] {
-    background: rgba(108, 182, 255, 0.08);
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-item-main {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-item-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
+    background: rgba(108, 182, 255, 0.06);
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-order {
+    flex: none;
+    width: 14px;
+    text-align: right;
     color: var(--aily-chat-code-fg-muted, #6a6a6a);
     font-size: 11px;
     line-height: 16px;
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-kind {
-    display: inline-flex;
-    align-items: center;
-    padding: 1px 6px;
-    border-radius: 999px;
-    font-size: 10px;
-    line-height: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    color: var(--aily-chat-code-fg-muted, #9aa0a6);
-  }
-
-  .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-kind[data-kind='steering'] {
-    border-color: rgba(108, 182, 255, 0.22);
-    color: var(--aily-chat-viewer-state-info, #6cb6ff);
+    font-variant-numeric: tabular-nums;
   }
 
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-text {
     min-width: 0;
+    flex: 1;
     color: var(--aily-chat-input-notice-title-fg, #cccccc);
     font-size: 12px;
     line-height: 18px;
@@ -629,7 +585,7 @@
   .interactive-input-part > .chat-pending-followup-widget-container .chat-pending-followup-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 2px;
     flex-shrink: 0;
   }
 
@@ -1027,14 +983,11 @@
         flex: 0 0 28px;
         width: 28px;
         height: 28px;
-        contain: layout paint;
       }
 
       .composer-primary-action-slot > .btn {
         position: absolute;
         inset: 0;
-        transform: translateZ(0);
-        will-change: opacity, visibility;
       }
 
       .composer-primary-action-slot > .btn.action-hidden {
@@ -1109,12 +1062,27 @@
       }
     }
 
-    // 发送按钮
-    .btn {
-      .stop-box {
+    // 发送按钮 / 流式中的 stop+转圈（恢复旧版白色散转图标尺寸）
+    .composer-stop-action {
+      // 覆盖 .btns .btn 的 padding-top，避免 stop/spinner 不同心
+      padding: 0;
+      color: var(--aily-text-primary, #eee);
+
+      .stop-box,
+      .spinner-box {
         position: absolute;
-        width: 100%;
-        height: 100%;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: auto;
+      }
+
+      .stop-box {
+        z-index: 1;
       }
 
       .spinner-box {
@@ -1123,18 +1091,34 @@
         border: 3px solid var(--aily-border-tertiary, #5a5a5a);
         border-radius: 50%;
         box-sizing: border-box;
-        contain: layout paint;
-        transform: translateZ(0);
+        color: #fff;
+
+        .fa-spinner-third {
+          font-size: 22px;
+          line-height: 1;
+          animation: aily-chat-stop-spin 2s steps(60, end) infinite;
+        }
       }
 
       .fa-stop {
         font-size: 13px;
-      }
-
-      .fa-spinner-third {
-        font-size: 22px;
+        line-height: 1;
       }
     }
+
+    .composer-send-action {
+      padding: 0;
+    }
+  }
+}
+
+@keyframes aily-chat-stop-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
   }
 }
 

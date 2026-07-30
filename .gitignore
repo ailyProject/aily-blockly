@@ -80,6 +80,7 @@ child/aily-builder*
 
 **/*.spec.ts
 !src/app/services/project-debug-configuration.service.spec.ts
+!src/app/services/project-data/project-data-legacy-import.spec.ts
 !src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts
 !src/app/tools/aily-chat/tools/blocklyEditorOperationQueue.spec.ts
 !src/app/tools/aily-chat/components/x-dialog/x-markdown-target-morph.spec.ts

@@ -196,6 +196,16 @@
             "LABEL_COLOR_MODE": "색상",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "MP4 또는 GIF 파일만 지원합니다"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "PNG, JPEG, WebP 또는 GIF 이미지를 RGB565/RGB332 픽셀 데이터로 변환합니다",
+            "UPLOAD_TOOLTIP": "지원 형식: PNG, JPEG, WebP, GIF",
+            "EMPTY": "업로드된 이미지가 없습니다",
+            "STATUS_DECODING": "이미지를 변환하는 중...",
+            "STATUS_REDECODING": "{{name}} 다시 변환 중...",
+            "ERROR_DECODE_FAILED": "이미지 변환에 실패했습니다",
+            "ERROR_REDECODE_FAILED": "이미지 재변환에 실패했습니다",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "PNG, JPEG, WebP, GIF 파일만 지원합니다"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "업로드",
             "UPLOAD_TOOLTIP": "지원 형식: MP4, GIF, PNG",
@@ -254,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "업로드",
+            "UPLOAD_TOOLTIP": "지원 형식: PNG, JPEG, WebP, BMP",
+            "BUTTON_CLEAR": "지우기",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "색상",
+            "EMPTY": "업로드된 이미지가 없습니다",
+            "STATUS_READING_FILE": "{{name}} 읽는 중...",
+            "STATUS_DECODING": "이미지 변환 중...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "원본 파일은 {{maxSize}} 이하여야 합니다(현재: {{currentSize}})",
+            "ERROR_DECODE_FAILED": "이미지 변환에 실패했습니다",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "PNG, JPEG, WebP, BMP 이미지만 지원합니다"
         }
     },
     "MAIN_WINDOW": {
@@ -424,6 +449,7 @@
         "TEXT_DOWNLOADED": "버전 {{version}} 다운로드가 완료되었습니다. 지금 설치하시겠습니까?",
         "TEXT_AVAILABLE": "현재 버전 {{currentVersion}}, 새 버전 {{version}}<br>이 업데이트를 다운로드하고 설치하시겠습니까?",
         "DOWNLOAD_FAILED": "다운로드 실패",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "대체 다운로드 소스 사용 중 ({{current}}/{{total}})",
         "REMIND_LATER": "나중에 알림",
         "SKIP_VERSION": "이 버전 건너뛰기",
         "UPDATE_NOW": "지금 업데이트",

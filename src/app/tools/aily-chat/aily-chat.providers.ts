@@ -17,7 +17,6 @@ import { ChatRuntimeOwnerSubmittedTurnLifecycleService } from './services/chat-r
 import { ChatRuntimeOwnerSubmittedTurnTitleService } from './services/chat-runtime-owner-submitted-turn-title.service';
 import { ChatRuntimeOwnerToolApprovalPolicyService } from './services/chat-runtime-owner-tool-approval-policy.service';
 import { ChatRuntimeOwnerToolApprovalService } from './services/chat-runtime-owner-tool-approval.service';
-import { ChatRuntimeOwnerTurnStartupEditLifecycleService } from './services/chat-runtime-owner-turn-startup-edit-lifecycle.service';
 import { ChatRuntimeOwnerWorkspaceEditLifecycleResourceService } from './services/chat-runtime-owner-workspace-edit-lifecycle-resource.service';
 import {
   CHAT_RUNTIME_OWNER_CONTEXT_BINDER,
@@ -39,7 +38,6 @@ import {
   CHAT_RUNTIME_OWNER_SUBMITTED_TURN_TITLE,
   CHAT_RUNTIME_OWNER_TOOL_APPROVAL,
   CHAT_RUNTIME_OWNER_TOOL_APPROVAL_POLICY,
-  CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE,
   CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE,
 } from './services/chat-runtime-owner-ports';
 import {
@@ -161,8 +159,6 @@ export const AILY_CHAT_RUNTIME_OWNER_PROVIDERS: Provider[] = [
   { provide: CHAT_RUNTIME_OWNER_TOOL_APPROVAL_POLICY, useExisting: ChatRuntimeOwnerToolApprovalPolicyService },
   ChatRuntimeOwnerToolApprovalService,
   { provide: CHAT_RUNTIME_OWNER_TOOL_APPROVAL, useExisting: ChatRuntimeOwnerToolApprovalService },
-  ChatRuntimeOwnerTurnStartupEditLifecycleService,
-  { provide: CHAT_RUNTIME_OWNER_TURN_STARTUP_EDIT_LIFECYCLE, useExisting: ChatRuntimeOwnerTurnStartupEditLifecycleService },
   ChatSessionRuntimeRegistryService,
   { provide: CHAT_RUNTIME_OWNER_RUNTIME_REGISTRY, useExisting: ChatSessionRuntimeRegistryService },
   ChatRuntimeHostBootstrapService,

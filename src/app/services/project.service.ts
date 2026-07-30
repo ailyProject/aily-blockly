@@ -28,6 +28,13 @@ import {
   resolveDefaultCoderFramework,
 } from '../utils/coder-board.mapper';
 import { applyCdcSerialPortOverrides } from '../editors/blockly-editor/components/blockly/abf';
+import { projectDataRuntime } from './project-data/project-data-runtime';
+import { assertNoOversizedInlineValues } from './project-data/project-data-policy';
+import { ProjectDataStore } from './project-data/project-data-store';
+import {
+  ensureExternalProjectDataDocument,
+  ExternalProjectDataImportResult,
+} from './project-data/project-data-legacy-import';
 
 interface ProjectPackageData {
   name: string;
@@ -487,6 +494,7 @@ export class ProjectService {
       // 复制模板文件到项目目录
       await this.crossPlatformCmdService.copyItem(`${templatePath}${separator}*`, projectPath, true, true);
 
+      await this.initializeProjectDataSchema(projectPath);
       this.updateNewProjectPackageJson(projectPath, newProjectData);
       if (options.deferActivation) {
         this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
@@ -513,6 +521,7 @@ export class ProjectService {
       await this.crossPlatformCmdService.createDirectory(projectPath, true);
       await this.crossPlatformCmdService.copyItem(`${templatePath}${separator}*`, projectPath, true, true);
 
+      await this.initializeProjectDataSchema(projectPath);
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
       return await this.finishProjectCreation(projectPath, options);
     } catch (error) {
@@ -520,6 +529,86 @@ export class ProjectService {
       this.uiService.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
       return false;
     }
+  }
+
+  /**
+   * Board, example, and cloud templates are source material for a new local
+   * project. Known legacy inline payloads are migrated once at this copy
+   * boundary.
+   */
+  async initializeProjectDataSchema(projectPath: string): Promise<void> {
+    const abiPath = window['path'].join(projectPath, 'project.abi');
+    if (!window['fs'].existsSync(abiPath)) return;
+    const originalContent = window['fs'].readFileSync(abiPath, 'utf8');
+    const abi = JSON.parse(originalContent);
+
+    const store = new ProjectDataStore();
+    store.configure(projectPath);
+    const result = await ensureExternalProjectDataDocument(abi, store);
+    if (result.upgradedLegacyDocument) {
+      this.writeProjectAbiAtomically(abiPath, result.document);
+      this.logProjectDataMigration(projectPath, result);
+    }
+  }
+
+  /**
+   * Upgrades a markerless pre-Project-Data ABI on first open. Existing marked
+   * documents remain strict: their marker and every referenced resource are
+   * validated, never repaired or silently downgraded.
+   */
+  async ensureProjectDataSchemaForLoad(
+    projectPath: string,
+    document: unknown,
+    originalContent?: string,
+  ): Promise<Record<string, unknown>> {
+    const store = projectDataRuntime.isConfigured()
+      && projectDataRuntime.getStore().getProjectPath() === projectPath
+      ? projectDataRuntime.getStore()
+      : this.createProjectDataStore(projectPath);
+    const result = await ensureExternalProjectDataDocument(document, store);
+    if (!result.upgradedLegacyDocument || originalContent === undefined) {
+      return result.document;
+    }
+
+    const abiPath = window['path'].join(projectPath, 'project.abi');
+    const backupPath = `${abiPath}.pre-project-data.bak`;
+    if (!window['fs'].existsSync(backupPath)) {
+      window['fs'].writeFileSync(backupPath, originalContent);
+    }
+    this.writeProjectAbiAtomically(abiPath, result.document);
+    this.logProjectDataMigration(projectPath, result);
+    return result.document;
+  }
+
+  private createProjectDataStore(projectPath: string): ProjectDataStore {
+    const store = new ProjectDataStore();
+    store.configure(projectPath);
+    return store;
+  }
+
+  private writeProjectAbiAtomically(
+    abiPath: string,
+    document: Record<string, unknown>,
+  ): void {
+    const tempPath = `${abiPath}.tmp`;
+    try {
+      window['fs'].writeFileSync(tempPath, JSON.stringify(document));
+      window['fs'].renameSync(tempPath, abiPath);
+    } finally {
+      if (window['fs'].existsSync(tempPath) && typeof window['fs'].unlinkSync === 'function') {
+        window['fs'].unlinkSync(tempPath);
+      }
+    }
+  }
+
+  private logProjectDataMigration(
+    projectPath: string,
+    result: ExternalProjectDataImportResult,
+  ): void {
+    console.info(
+      `[ProjectData] Upgraded legacy project.abi for ${projectPath}; `
+      + `migrated ${result.migration.migrated.length} inline field payload(s).`,
+    );
   }
 
   // 打开项目
@@ -598,7 +687,12 @@ export class ProjectService {
       .map((item) => item.name);
     const loadedLibraryNames = Array.from(blocklyService.loadedLibraryInfos.values())
       .map((item) => item.packageName);
-    const normalizedLibraryNames = [...new Set(libraryNames)].sort((a, b) => a.localeCompare(b));
+    // getAllInstalledLibraries() already returns the toolbox's canonical order
+    // (core libraries first). Keep that order for the runtime rebuild; sorting
+    // here made the remaining libraries jump to plain alphabetical order after
+    // an uninstall.
+    const orderedLibraryNames = [...new Set(libraryNames)];
+    const normalizedLibraryNames = [...orderedLibraryNames].sort((a, b) => a.localeCompare(b));
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
       this.blocklyLibraryRuntimePackageSignatures.get(projectPath) === packageContent
@@ -614,7 +708,7 @@ export class ProjectService {
     await blocklyService.rebuildLibraryRuntimeInPlace({
       projectPath,
       packageJson,
-      libraryNames: normalizedLibraryNames,
+      libraryNames: orderedLibraryNames,
       projectService: this,
     });
     return true;
@@ -787,14 +881,26 @@ export class ProjectService {
   }
 
 
-  saveAs(path) {
+  async saveAs(path: string): Promise<void> {
+    const sourceProjectPath = this.currentProjectPath;
+    const saveResult = await this.save(sourceProjectPath);
+    if (!saveResult.success) {
+      throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
+    }
+    await projectDataRuntime.flushPending();
+    const sourceAbi = JSON.parse(window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8'));
+    assertNoOversizedInlineValues(sourceAbi);
+    const validation = await projectDataRuntime.getStore().validateReferences(
+      projectDataRuntime.getStore().collectReferences(sourceAbi),
+    );
+    if (!validation.valid) {
+      throw new Error(`项目数据资源不完整，无法另存为: ${validation.issues.map((issue) => issue.error).join('; ')}`);
+    }
     //在当前路径下创建一个新的目录
     path = path.replace(/\s/g, '_');
     window['fs'].mkdirSync(path);
     // 复制项目目录到新路径
-    window['fs'].copySync(this.currentProjectPath, path);
-    // 修改package.json文件
-    this.save(path);
+    window['fs'].copySync(sourceProjectPath, path);
     // 修改package.json文件
     const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
     // 另存为时去掉cloudId
@@ -816,6 +922,7 @@ export class ProjectService {
     window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
     // 修改当前项目路径
     this.currentProjectPath = path;
+    projectDataRuntime.configure(path);
     this.currentPackageData = packageJson;
     this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
   }

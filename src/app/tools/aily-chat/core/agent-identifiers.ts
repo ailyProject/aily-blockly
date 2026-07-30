@@ -2,10 +2,12 @@ export const MAIN_AGENT_TYPE = 'main';
 export const MAIN_AGENT_LEGACY_ALIAS = 'mainAgent';
 export const SCHEMATIC_AGENT_TYPE = 'SchematicAgent';
 export const SCHEMATIC_AGENT_LEGACY_ALIAS = 'schematicAgent';
+export const PROJECT_SCENE_AGENT_TYPE = 'ProjectSceneAgent';
 
 export type CanonicalAgentIdentifier =
   | typeof MAIN_AGENT_TYPE
-  | typeof SCHEMATIC_AGENT_TYPE;
+  | typeof SCHEMATIC_AGENT_TYPE
+  | typeof PROJECT_SCENE_AGENT_TYPE;
 
 export function normalizeAgentIdentifier(agentName: string | null | undefined): string {
   const normalized = typeof agentName === 'string' ? agentName.trim() : '';
@@ -39,4 +41,8 @@ export function isMainAgentIdentifier(agentName: string | null | undefined): boo
 
 export function isSchematicAgentIdentifier(agentName: string | null | undefined): boolean {
   return normalizeAgentIdentifier(agentName) === SCHEMATIC_AGENT_TYPE;
+}
+
+export function isProjectSceneAgentIdentifier(agentName: string | null | undefined): boolean {
+  return normalizeAgentIdentifier(agentName) === PROJECT_SCENE_AGENT_TYPE;
 }

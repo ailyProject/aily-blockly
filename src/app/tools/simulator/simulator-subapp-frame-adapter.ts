@@ -8,6 +8,7 @@ export interface SimulatorSubappSurface {
   url: string;
   origin: string;
   launchId: string;
+  initialization?: 'existing' | 'created-empty' | 'regenerated-v2';
   runtimeSource: string;
   runtimePackId?: string;
   runtimeMode?: string;
@@ -379,6 +380,7 @@ function validateSurface(value: unknown): SimulatorSubappSurface {
     'url',
     'origin',
     'launchId',
+    'initialization',
     'runtimeSource',
     'runtimePackId',
     'runtimeMode',
@@ -406,6 +408,14 @@ function validateSurface(value: unknown): SimulatorSubappSurface {
     throw new TypeError('Simulator Subapp surface URL is outside its origin.');
   }
   requireLaunchId(record['launchId']);
+  if (
+    record['initialization'] !== undefined
+    && record['initialization'] !== 'existing'
+    && record['initialization'] !== 'created-empty'
+    && record['initialization'] !== 'regenerated-v2'
+  ) {
+    throw new TypeError('Simulator Subapp surface initialization is invalid.');
+  }
   requireBoundedString(record['runtimeSource'], 'runtimeSource', 4_096);
   if (record['runtimePackId'] !== undefined) {
     requireBoundedString(record['runtimePackId'], 'runtimePackId', 256);

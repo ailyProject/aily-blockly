@@ -53,6 +53,10 @@ import {
 } from './chat-session-model-turn-responses';
 import { ChatRuntimeViewMirrorProjectionService } from './chat-runtime-view-mirror-projection.service';
 import { ChatPendingFollowupQueueService } from './chat-pending-followup-queue.service';
+import {
+  CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE,
+  type ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort,
+} from './chat-runtime-owner-ports';
 import type {
   ChatRuntimeHost,
   ChatRuntimeHostEvent,
@@ -1226,6 +1230,9 @@ export class ChatEngineService implements IChatContext {
   private readonly chatSessionRuntimeStore = inject(ChatSessionRuntimeStoreService);
   private readonly chatRuntimeViewMirrorProjection = inject(ChatRuntimeViewMirrorProjectionService);
   private readonly pendingFollowupQueue = inject(ChatPendingFollowupQueueService);
+  private readonly workspaceEditLifecycleResource = inject<ChatRuntimeOwnerWorkspaceEditLifecycleResourcePort>(
+    CHAT_RUNTIME_OWNER_WORKSPACE_EDIT_LIFECYCLE_RESOURCE,
+  );
   private readonly chatSessionViewModelStore = inject(ChatSessionViewModelStoreService);
   private readonly uiService = inject(UiService);
   private readonly electronRuntimeHost = createElectronChatRuntimeHostTransport();
@@ -1238,7 +1245,7 @@ export class ChatEngineService implements IChatContext {
   readonly partStore: ChatPartStore = this.createSessionRoutedPartStore();
   private readonly liveHostRequestGraphCache = new LiveHostRequestGraphCache();
   private readonly pendingProtocolTruncations = new Map<string, ChatRuntimeHostProtocolTruncation>();
-  private readonly pendingFollowupFlushAfterSettleSessionIds = new Set<string>();
+  private readonly pendingFollowupRunNextSessionIds = new Set<string>();
   private readonly stoppingRuntimeSessionIds = new Set<string>();
   private readonly hostItemLifecyclePerfSnapshotHandle = ChatPerformanceTracer.registerExternalSnapshotProvider(
     'hostItemLifecycle',
@@ -4855,20 +4862,10 @@ export class ChatEngineService implements IChatContext {
     }
 
     if (requestInProgress) {
-      const schedulePendingFollowupFlushAfterSettle = (
-        (this as unknown as { schedulePendingFollowupFlushAfterSettle?: ChatEngineService['schedulePendingFollowupFlushAfterSettle'] })
-          .schedulePendingFollowupFlushAfterSettle
-        ?? ChatEngineService.prototype['schedulePendingFollowupFlushAfterSettle']
-      );
-      const clearPendingFollowupFlushAfterSettle = (
-        (this as unknown as { clearPendingFollowupFlushAfterSettle?: ChatEngineService['clearPendingFollowupFlushAfterSettle'] })
-          .clearPendingFollowupFlushAfterSettle
-        ?? ChatEngineService.prototype['clearPendingFollowupFlushAfterSettle']
-      );
-      schedulePendingFollowupFlushAfterSettle.call(this, targetSessionId);
+      this.pendingFollowupRunNextSessionIds.add(targetSessionId);
       const stopped = this.requestStopRuntimeTurn(targetSessionId);
       if (!stopped) {
-        clearPendingFollowupFlushAfterSettle.call(this, targetSessionId);
+        this.pendingFollowupRunNextSessionIds.delete(targetSessionId);
       }
       return stopped;
     }
@@ -4876,44 +4873,17 @@ export class ChatEngineService implements IChatContext {
     return this.processPendingFollowupRequests(targetSessionId);
   }
 
-  private schedulePendingFollowupFlushAfterSettle(sessionId: string | null | undefined): void {
-    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId) {
-      return;
-    }
-
-    const flushAfterSettleSessionIds = (this as unknown as {
-      pendingFollowupFlushAfterSettleSessionIds?: Set<string>;
-    }).pendingFollowupFlushAfterSettleSessionIds;
-    if (flushAfterSettleSessionIds) {
-      flushAfterSettleSessionIds.add(targetSessionId);
-    }
-  }
-
-  private clearPendingFollowupFlushAfterSettle(sessionId: string | null | undefined): void {
-    const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId) {
-      return;
-    }
-
-    (this as unknown as {
-      pendingFollowupFlushAfterSettleSessionIds?: Set<string>;
-    }).pendingFollowupFlushAfterSettleSessionIds?.delete(targetSessionId);
-  }
-
-  private maybeFlushPendingFollowupAfterSettle(
+  private processNextPendingFollowupAfterRequest(
     sessionId: string,
     state: ChatRuntimeHostSessionState,
   ): void {
     const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!targetSessionId || state.requestInProgress === true) {
+    if (!targetSessionId || state.requestInProgress === true || state.status === 'needs_input') {
       return;
     }
 
-    const flushAfterSettleSessionIds = (this as unknown as {
-      pendingFollowupFlushAfterSettleSessionIds?: Set<string>;
-    }).pendingFollowupFlushAfterSettleSessionIds;
-    if (!flushAfterSettleSessionIds?.delete(targetSessionId)) {
+    const runNextRequested = this.pendingFollowupRunNextSessionIds.delete(targetSessionId);
+    if (state.status !== 'completed' && !runNextRequested) {
       return;
     }
 
@@ -4923,16 +4893,15 @@ export class ChatEngineService implements IChatContext {
 
     if (isRequestStateTraceEnabled()) {
       console.info('[AilyChat][RequestStateTrace]', {
-        phase: 'runNext',
-        action: 'flush-after-settle',
+        phase: 'processingQueued',
+        action: 'dequeue-after-request',
         sessionId: targetSessionId,
         state: state.status ?? 'idle',
+        runNextRequested,
       });
     }
 
-    queueMicrotask(() => {
-      void this.processPendingFollowupRequests(targetSessionId);
-    });
+    void this.processPendingFollowupRequests(targetSessionId);
   }
 
   queueFollowupMessage(
@@ -7272,12 +7241,9 @@ export class ChatEngineService implements IChatContext {
     });
 
     this.traceRuntimeHostStateProjection(sessionId, state, visibleCurrentSession);
-    const maybeFlushPendingFollowupAfterSettle = (
-      (this as unknown as { maybeFlushPendingFollowupAfterSettle?: ChatEngineService['maybeFlushPendingFollowupAfterSettle'] })
-        .maybeFlushPendingFollowupAfterSettle
-      ?? ChatEngineService.prototype['maybeFlushPendingFollowupAfterSettle']
-    );
-    maybeFlushPendingFollowupAfterSettle.call(this, sessionId, state);
+    if (terminalRequestEdge) {
+      this.processNextPendingFollowupAfterRequest(sessionId, state);
+    }
 
     if (visibleCurrentSession && requestStateChanged) {
       this._runtimeRequestStatePatch?.({
@@ -8924,6 +8890,11 @@ Do not create non-existent boards and libraries.
         options?.executionSnapshot ?? null,
       );
       const runtimeResolution = this.resolveSubmitRuntimeMode(targetSessionId, providerOptionsSnapshot, requestMetadata ?? null);
+      await this.prepareSubmittedBlocklyWorkspace(
+        targetSessionId,
+        runtimeResolution.mode,
+        providerOptionsSnapshot.folderPath,
+      );
       let submittedState: ChatRuntimeHostSessionState;
       try {
         submittedState = await this.runtimeHostForView().submitTurn({
@@ -8964,6 +8935,25 @@ Do not create non-existent boards and libraries.
     } finally {
       updateAilyChatAgentLoopPendingCount(-1);
     }
+  }
+
+  private async prepareSubmittedBlocklyWorkspace(
+    sessionId: string,
+    runtimeMode: ChatAgentRuntimeMode,
+    projectPath: string | null | undefined,
+  ): Promise<void> {
+    const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
+    if (runtimeMode !== 'blockly' || !normalizedProjectPath) {
+      return;
+    }
+
+    const startedAt = performance.now();
+    await this.workspaceEditLifecycleResource.ensureWorkspaceAbsExport(sessionId, normalizedProjectPath);
+    const elapsedMs = performance.now() - startedAt;
+    console.info(
+      '[AilyChat][SubmittedWorkspaceBarrierScalar]',
+      `sessionId=${sessionId} runtimeMode=${runtimeMode} elapsedMs=${elapsedMs.toFixed(1)}`,
+    );
   }
 
   async send(

@@ -75,6 +75,14 @@ export interface BlockCodeMapping {
   codeSnippet: string;         // 合并后的代码片段文本（便于 agent 直接使用）
 }
 
+export interface ArduinoGeneratedArtifact {
+  readonly fileName: string;
+  readonly content: string;
+  readonly sourceTag: string;
+}
+
+const GENERATED_HEADER_THRESHOLD_BYTES = 32 * 1024;
+
 const EXECUTABLE_FRAGMENT_SECTIONS = new Set([
   'setups_begin',
   'setups',
@@ -113,6 +121,7 @@ export function normalizeArduinoGeneratedCode(value: unknown): string {
 
 export class ArduinoGenerator extends Blockly.CodeGenerator {
   codeDict = {};
+  private generatedArtifacts = new Map<string, ArduinoGeneratedArtifact>();
 
   // ==================== Block-to-Code 追踪系统 ====================
   /** 当前正在生成代码的 block id 栈（支持嵌套） */
@@ -239,6 +248,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     this._blockParent.clear();
     this._valueBlockCode.clear();
     this.blockCodeMap.clear();
+    this.generatedArtifacts.clear();
 
     this.isInitialized = true;
   }
@@ -276,9 +286,11 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     for (const key in this.codeDict['variables']) {
       variables.push({tag: 'variables:' + key, code: this.codeDict['variables'][key]});
     }
+    variables = variables.map((item) => this.externalizeLargeDeclaration(item, 'variables'));
     for (const key in this.codeDict['objects']) {
       objects.push({tag: 'objects:' + key, code: this.codeDict['objects'][key]});
     }
+    objects = objects.map((item) => this.externalizeLargeDeclaration(item, 'objects'));
     for (const key in this.codeDict['functions']) {
       functions.push({tag: 'functions:' + key, code: this.codeDict['functions'][key]});
     }
@@ -334,6 +346,42 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     }
 
     return newcode;
+  }
+
+  getGeneratedArtifacts(): readonly ArduinoGeneratedArtifact[] {
+    return [...this.generatedArtifacts.values()];
+  }
+
+  private externalizeLargeDeclaration(
+    item: {tag: string; code: string},
+    section: 'variables' | 'objects',
+  ) {
+    if (new TextEncoder().encode(item.code).byteLength <= GENERATED_HEADER_THRESHOLD_BYTES) {
+      return item;
+    }
+    const sourceTag = item.tag.replace(new RegExp(`^${section}:`), '');
+    const safeTag = `${section}_${sourceTag}`.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64)
+      || 'project_data';
+    const fileName = `${safeTag}-${stableTextHash(item.code)}.h`;
+    this.generatedArtifacts.set(fileName, {
+      fileName,
+      sourceTag,
+      content: `#pragma once\n\n${item.code.replace(/\s+$/, '')}\n`,
+    });
+    // Project source files are materialized under <project>/src and copied to
+    // the sketch root by the build/lint boundary.
+    const includeCode = `#include "${fileName}"`;
+    for (const fragments of this.blockCodeFragments.values()) {
+      for (const fragment of fragments) {
+        if (fragment.section === section && fragment.tag === sourceTag) {
+          fragment.code = includeCode;
+        }
+      }
+    }
+    return {
+      tag: item.tag,
+      code: includeCode,
+    };
   }
 
   /**
@@ -1048,3 +1096,12 @@ export function createArduinoGenerator(): ArduinoGenerator {
 
 /** @deprecated Use BlocklyGeneratorRuntimeService for project code generation. */
 export const arduinoGenerator = new ArduinoGenerator();
+
+function stableTextHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}

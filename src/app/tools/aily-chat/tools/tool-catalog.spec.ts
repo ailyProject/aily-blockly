@@ -1,11 +1,51 @@
 import { TOOL_CATALOG, getDeferredToolsListing, searchDeferredTools } from './tool-catalog';
 import { convertAbiToAbs, convertAbsToAbi } from './abiAbsConverter';
 import { generateConnectionGraphTool } from './connectionGraphTool';
+import { prepareBlockFieldValue } from './blockFieldValue';
 import {
   getGlobalBlockMetas,
   setGlobalBlockMetas,
   type BlockMeta,
 } from '../services/block-definition.service';
+
+describe('prepareBlockFieldValue', () => {
+  it('keeps structured custom-field state intact', () => {
+    const value = {
+      $ailyData: { id: 'image-1', codec: 'rgb565' },
+      width: 16,
+      height: 16,
+    };
+
+    expect(prepareBlockFieldValue({}, value)).toBe(value);
+  });
+
+  it('maps variable descriptors to id first and then name', () => {
+    const variableField = { getVariable: () => ({}) };
+
+    expect(prepareBlockFieldValue(variableField, { id: 'variable-id', name: 'counter' }))
+      .toBe('variable-id');
+    expect(prepareBlockFieldValue(variableField, { name: 'counter' }))
+      .toBe('counter');
+  });
+
+  it('normalizes scalar Blockly field values to strings', () => {
+    expect(prepareBlockFieldValue({}, 42)).toBe('42');
+    expect(prepareBlockFieldValue({}, true)).toBe('true');
+  });
+});
+
+describe('ABS Project Data header boundary', () => {
+  it('keeps generic conversion headerless while file import can require the header', () => {
+    const headerlessAbs = 'dynamic_value()';
+
+    expect(convertAbsToAbi(headerlessAbs).success).toBeTrue();
+    const strictResult = convertAbsToAbi(headerlessAbs, {
+      requireProjectDataHeader: true,
+    });
+    expect(strictResult.success).toBeFalse();
+    expect(strictResult.errors?.[0].message).toContain('Missing Project Data Schema');
+  });
+});
 
 describe('tool-catalog', () => {
   it('filters deferred listing by excluded tools', () => {

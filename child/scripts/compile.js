@@ -93,6 +93,7 @@ async function main() {
         mkdirp(sketchPath);
         mkdirp(path.dirname(compileSourcePath));
         fs.writeFileSync(compileSourcePath, code);
+        copyProjectSrcToSketch(currentProjectPath, sketchPath);
 
         // 纯 Blockly 仍会写 sketch.ino，便于与其它工具对齐；Aily Code 仅以 entry 为准
         if (!isAilyCode) {
@@ -503,4 +504,16 @@ function syncPreprocessBuildPath(preprocessCachePath, buildPath) {
     } catch (error) {
         logger.warn(`Failed to update preprocess build path: ${error.message}`);
     }
+}
+
+function copyProjectSrcToSketch(currentProjectPath, sketchPath) {
+    const projectSrcPath = path.join(currentProjectPath, 'src');
+    if (!fs.existsSync(projectSrcPath)) {
+        return;
+    }
+    if (!fs.statSync(projectSrcPath).isDirectory()) {
+        logger.warn(`Project src path exists but is not a directory: ${projectSrcPath}`);
+        return;
+    }
+    fs.cpSync(projectSrcPath, sketchPath, { recursive: true });
 }

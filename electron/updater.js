@@ -12,6 +12,9 @@ let downloadMirrorFallbackInProgress = false;
 let activeDownloadAttempt = null;
 let forcedUpdateManifestSourceApplied = false;
 let cachedPackagedBuildFlavor;
+const LEGACY_MIN_AVERAGE_SPEED_BYTES_PER_SECOND = 65536;
+const DEFAULT_MIN_AVERAGE_SPEED_BYTES_PER_SECOND = 262144;
+const UPDATE_REQUEST_TRACKER_INSTALLED = Symbol('updateRequestTrackerInstalled');
 
 function logUpdater(message, data) {
   const text = data === undefined
@@ -273,7 +276,11 @@ function getDownloadGuardConfig() {
   const firstByteTimeoutMs = Number(strategy.first_byte_timeout_ms);
   const stallTimeoutMs = Number(strategy.stall_timeout_ms);
   const lowSpeedWindowMs = Number(strategy.low_speed_window_ms);
-  const minAverageSpeedBytesPerSecond = Number(strategy.min_average_speed_bytes_per_second);
+  const configuredMinAverageSpeedBytesPerSecond = Number(strategy.min_average_speed_bytes_per_second);
+  // User config files persist defaults, so migrate only the exact legacy value.
+  const minAverageSpeedBytesPerSecond = configuredMinAverageSpeedBytesPerSecond === LEGACY_MIN_AVERAGE_SPEED_BYTES_PER_SECOND
+    ? DEFAULT_MIN_AVERAGE_SPEED_BYTES_PER_SECOND
+    : configuredMinAverageSpeedBytesPerSecond;
 
   return {
     firstByteTimeoutMs: Number.isFinite(firstByteTimeoutMs) && firstByteTimeoutMs > 0
@@ -403,6 +410,12 @@ function createStrategyCancellationError(reason, mirror) {
   return error;
 }
 
+function createUserCancellationError() {
+  const error = new Error('cancelled');
+  error.name = 'CancellationError';
+  return error;
+}
+
 function getFallbackReason(error) {
   if (isStrategyCancellationError(error)) {
     return error.reason || null;
@@ -421,7 +434,54 @@ function serializeError(error) {
   return error.stack || error.message || error.toString();
 }
 
-function createDownloadAttemptGuard(mainWindow, mirror, token, options = {}) {
+function installUpdaterRequestTracking() {
+  const executor = autoUpdater.httpExecutor;
+  if (!executor || typeof executor.createRequest !== 'function') {
+    throw new Error('electron-updater HTTP executor does not support request tracking');
+  }
+  if (executor[UPDATE_REQUEST_TRACKER_INSTALLED]) {
+    return;
+  }
+
+  const originalCreateRequest = executor.createRequest;
+  executor.createRequest = function(...args) {
+    const request = originalCreateRequest.apply(this, args);
+    const attempt = activeDownloadAttempt;
+    if (attempt && request && typeof request.once === 'function') {
+      attempt.requests.add(request);
+      const abortRequest = () => request.abort();
+      request.once('close', () => {
+        attempt.cancellationToken.removeListener('cancel', abortRequest);
+        attempt.requests.delete(request);
+        if (attempt.requests.size === 0) {
+          for (const resolve of attempt.requestCloseWaiters) {
+            resolve();
+          }
+          attempt.requestCloseWaiters.clear();
+        }
+      });
+      attempt.cancellationToken.onCancel(abortRequest);
+    }
+    return request;
+  };
+  executor[UPDATE_REQUEST_TRACKER_INSTALLED] = true;
+}
+
+function waitForTrackedDownloadRequests(attempt) {
+  if (!attempt || attempt.requests.size === 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    attempt.requestCloseWaiters.add(resolve);
+    if (attempt.requests.size === 0) {
+      attempt.requestCloseWaiters.delete(resolve);
+      resolve();
+    }
+  });
+}
+
+function createDownloadAttemptGuard(mirror, token, options = {}) {
   const {
     firstByteTimeoutMs,
     stallTimeoutMs,
@@ -468,12 +528,6 @@ function createDownloadAttemptGuard(mainWindow, mirror, token, options = {}) {
       baseUrl: mirror && mirror.url,
       reason,
       transferred: lastTransferred,
-    });
-
-    mainWindow?.webContents.send('update-status', {
-      status: 'mirror-switching',
-      source: mirror,
-      reason,
     });
 
     token.cancel();
@@ -580,14 +634,16 @@ function createDownloadAttemptGuard(mainWindow, mirror, token, options = {}) {
   };
 }
 
-async function downloadWithCurrentProvider(mainWindow, mirror, options = {}) {
+async function downloadWithCurrentProvider(mirror, options = {}) {
   cancellationToken = new CancellationToken();
   activeDownloadAttempt = {
     mirror,
     cancelReason: null,
-    initiatedByUserCancel: false,
+    cancellationToken,
+    requests: new Set(),
+    requestCloseWaiters: new Set(),
   };
-  const attemptGuard = createDownloadAttemptGuard(mainWindow, mirror, cancellationToken, options);
+  const attemptGuard = createDownloadAttemptGuard(mirror, cancellationToken, options);
   logUpdater('downloading installer', {
     region: mirror && mirror.region,
     baseUrl: mirror && mirror.url,
@@ -596,18 +652,20 @@ async function downloadWithCurrentProvider(mainWindow, mirror, options = {}) {
   try {
     return await autoUpdater.downloadUpdate(cancellationToken);
   } catch (error) {
-    if (isCancellationError(error)) {
-      const reason = activeDownloadAttempt && activeDownloadAttempt.cancelReason
-        ? activeDownloadAttempt.cancelReason
-        : attemptGuard.getCancelReason();
-      if (reason && reason.type !== 'user-cancelled') {
-        throw createStrategyCancellationError(reason, mirror);
-      }
+    const reason = activeDownloadAttempt && activeDownloadAttempt.cancelReason
+      ? activeDownloadAttempt.cancelReason
+      : attemptGuard.getCancelReason();
+    if (reason && reason.type !== 'user-cancelled') {
+      throw createStrategyCancellationError(reason, mirror);
+    }
+    if (reason && !isCancellationError(error)) {
+      throw createUserCancellationError();
     }
 
     throw error;
   } finally {
     attemptGuard.dispose();
+    await waitForTrackedDownloadRequests(activeDownloadAttempt);
     activeDownloadAttempt = null;
     cancellationToken = null;
   }
@@ -618,6 +676,7 @@ async function downloadWithMirrors(mainWindow) {
   if (!baseUpdateInfoAndProvider || !baseUpdateInfoAndProvider.info) {
     throw new Error('Please check update first');
   }
+  installUpdaterRequestTracking();
 
   const checkedInfo = baseUpdateInfoAndProvider.info;
   const targetBuildFlavor = getTargetUpdateBuildFlavor(checkedInfo);
@@ -626,13 +685,12 @@ async function downloadWithMirrors(mainWindow) {
     logUpdater('download mirror fallback disabled for target', {
       targetBuildFlavor: targetBuildFlavor || 'unknown',
     });
-    return await downloadWithCurrentProvider(mainWindow);
+    return await downloadWithCurrentProvider();
   }
 
   const fallbackEnabled = shouldFallbackOnDownloadError();
   const originalUpdateInfoAndProvider = autoUpdater.updateInfoAndProvider;
   let lastError = null;
-  let nextMirrorReason = null;
 
   downloadMirrorFallbackInProgress = true;
   try {
@@ -650,17 +708,17 @@ async function downloadWithMirrors(mainWindow) {
         urls: getResolvedDownloadUrls(autoUpdater.updateInfoAndProvider),
       });
 
-      mainWindow?.webContents.send('update-status', {
-        status: 'mirror-switching',
-        source: mirror,
-        index,
-        total: mirrors.length,
-        reason: nextMirrorReason,
-      });
-      nextMirrorReason = null;
+      if (index > 0) {
+        mainWindow?.webContents.send('update-status', {
+          status: 'mirror-switching',
+          source: mirror,
+          index,
+          total: mirrors.length,
+        });
+      }
 
       try {
-        return await downloadWithCurrentProvider(mainWindow, mirror, {
+        return await downloadWithCurrentProvider(mirror, {
           allowLowSpeedCancel: index < mirrors.length - 1,
         });
       } catch (error) {
@@ -681,8 +739,6 @@ async function downloadWithMirrors(mainWindow) {
         if (!fallbackEnabled || !hasNextMirror) {
           throw error;
         }
-
-        nextMirrorReason = fallbackReason;
       }
     }
   } finally {
@@ -693,6 +749,18 @@ async function downloadWithMirrors(mainWindow) {
   }
 
   throw lastError || new Error('No updater mirror was available');
+}
+
+function cancelActiveDownload() {
+  if (!cancellationToken) {
+    return;
+  }
+  if (activeDownloadAttempt) {
+    activeDownloadAttempt.cancelReason = {
+      type: 'user-cancelled',
+    };
+  }
+  cancellationToken.cancel();
 }
 
 // 添加自动更新处理函数
@@ -751,15 +819,7 @@ function registerUpdaterHandlers(mainWindow) {
 
   // 添加IPC处理程序，取消下载更新
   ipcMain.handle('cancel-download', () => {
-    if (cancellationToken) {
-      if (activeDownloadAttempt) {
-        activeDownloadAttempt.initiatedByUserCancel = true;
-        activeDownloadAttempt.cancelReason = {
-          type: 'user-cancelled',
-        };
-      }
-      cancellationToken.cancel();
-    }
+    cancelActiveDownload();
   });
 
   // 日志设置
@@ -807,7 +867,7 @@ function registerUpdaterHandlers(mainWindow) {
         });
     }
     // 确保 token 在任何错误后都被重置
-    if (!downloadMirrorFallbackInProgress) {
+    if (!downloadMirrorFallbackInProgress && !activeDownloadAttempt) {
       cancellationToken = null;
     }
   });
@@ -820,7 +880,6 @@ function registerUpdaterHandlers(mainWindow) {
   });
 
   autoUpdater.on('update-downloaded', (info) => {
-    cancellationToken = null; // 确保下载成功后也重置 token
     mainWindow.webContents.send('update-status', {
       status: 'downloaded',
       info: info
@@ -835,8 +894,10 @@ function registerUpdaterHandlers(mainWindow) {
 module.exports = {
   registerUpdaterHandlers,
   __testing: {
+    cancelActiveDownload,
     createStrategyCancellationError,
     downloadWithMirrors,
+    getDownloadGuardConfig,
     getDownloadMirrorSources,
     getTargetUpdateBuildFlavor,
     isCancellationError,

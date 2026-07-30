@@ -6,6 +6,9 @@
 
 import * as Blockly from 'blockly/core';
 import { BitmapUploadRequest, GlobalServiceManager } from '../../../services/bitmap-upload.service';
+import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
+import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
+import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = 'Clear';
 Blockly.Msg['BUTTON_LABEL_UPLOAD'] = 'Upload';
@@ -14,9 +17,10 @@ Blockly.Msg['BITMAP_U8G2_HINT_MOUSE'] = '鼠标左键绘制，右键擦除';
 export const DEFAULT_HEIGHT = 128;
 export const DEFAULT_WIDTH = 64;
 const DEFAULT_PIXEL_SIZE = 2;
+const BLOCK_FIELD_HEIGHT = 50;
 const DEFAULT_PIXEL_COLOURS: PixelColours = {
     empty: '#151515',
-    filled: '#363d80',
+    filled: '#f4f4f4',
 };
 const DEFAULT_BUTTONS: Buttons = {
     upload: true,
@@ -24,7 +28,7 @@ const DEFAULT_BUTTONS: Buttons = {
 };
 const ERASER_RADIUS = 1;
 const PAINT_CURSOR = createSvgCursor(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M18 2.5 21.5 6 10.8 16.7l-4.5 1 1-4.5L18 2.5Z" fill="#f5f5f5" stroke="#1a1a1a" stroke-width="1.5" stroke-linejoin="round"/><path d="m5.6 18.1 5.2-1.4L7.5 22H3l2.6-3.9Z" fill="#363d80" stroke="#1a1a1a" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M18 2.5 21.5 6 10.8 16.7l-4.5 1 1-4.5L18 2.5Z" fill="#f5f5f5" stroke="#1a1a1a" stroke-width="1.5" stroke-linejoin="round"/><path d="m5.6 18.1 5.2-1.4L7.5 22H3l2.6-3.9Z" fill="#4db6ac" stroke="#1a1a1a" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
     5,
     21,
     'crosshair',
@@ -43,7 +47,15 @@ function createSvgCursor(svg: string, hotX: number, hotY: number, fallback: stri
  * Field for inputting a small bitmap image.
  * Includes a grid of clickable pixels that's exported as a bitmap.
  */
-export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
+export interface U8g2BitmapValue {
+    readonly schemaVersion: 1;
+    readonly encoding: 'xbm-lsb-row-v1';
+    readonly width: number;
+    readonly height: number;
+    readonly bitmap: AilyDataRef | null;
+}
+
+export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
     private initialValue: number[][] | null = null;
     private imgHeight: number;
     private imgWidth: number;
@@ -74,6 +86,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     private lastPaintedCol: number = -1;
     private pendingUpdates: Set<string> = new Set();
     private updateTimer: number | null = null;
+    private dimensionInputTimerId: ReturnType<typeof setTimeout> | null = null;
     private skipNextEditorRender = false;
     private sourceBlockRenderScheduled = false;
     buttonOptions: Buttons;
@@ -82,6 +95,10 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     private emptyColour: RgbColour;
     private filledColour: RgbColour;
     fieldHeight?: number;
+    private resolvedBitmap: number[][] = [];
+    private resolvedBitmapRefId = '';
+    private loadingBitmap: Promise<number[][]> | null = null;
+    private bitmapMutationVersion = 0;
 
     /**
      * Constructor for the bitmap field.
@@ -90,8 +107,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      * @param validator A function that is called to validate.
      * @param config Config A map of options used to configure the field.
      */    constructor(
-        value: number[][] | typeof Blockly.Field.SKIP_SETUP,
-        validator?: Blockly.FieldValidator<number[][]>,
+        value: U8g2BitmapValue | typeof Blockly.Field.SKIP_SETUP,
+        validator?: Blockly.FieldValidator<U8g2BitmapValue>,
         config?: FieldBitmapFromJsonConfig,
     ) {
         super(value, validator, config); this.SERIALIZABLE = true;
@@ -112,16 +129,14 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         }, 0);
 
         // Configure value, height, and width
-        const currentValue = this.getValue();
-        if (currentValue !== null) {
-            this.imgHeight = currentValue.length;
-            this.imgWidth = currentValue[0].length || 0;
-        } else {
-            this.imgHeight = config?.height ?? DEFAULT_HEIGHT;
-            this.imgWidth = config?.width ?? DEFAULT_WIDTH;
-            // Set a default empty value
-            this.setValue(this.getEmptyArray());
-        }
+        const normalized = normalizeU8g2BitmapValue(
+            value === Blockly.Field.SKIP_SETUP ? config?.value : value,
+            config,
+        );
+        this.imgHeight = normalized.height;
+        this.imgWidth = normalized.width;
+        this.resolvedBitmap = this.getEmptyArray();
+        if (value === Blockly.Field.SKIP_SETUP && !config?.value) this.setValue(normalized);
         this.fieldHeight = config?.fieldHeight;
         if (this.fieldHeight) {
             this.pixelSize = this.fieldHeight / this.imgHeight;
@@ -171,50 +186,20 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      */
     // eslint-disable-next-line @typescript-eslint/naming-convention
     protected override doClassValidation_(
-        newValue: number[][],
-    ): number[][] | null | undefined;
+        newValue: U8g2BitmapValue,
+    ): U8g2BitmapValue | null | undefined;
     // eslint-disable-next-line @typescript-eslint/naming-convention
     protected override doClassValidation_(
-        newValue?: number[][],
-    ): number[][] | null;
+        newValue?: U8g2BitmapValue,
+    ): U8g2BitmapValue | null;
     // eslint-disable-next-line @typescript-eslint/naming-convention
     protected override doClassValidation_(
-        newValue?: number[][],
-    ): number[][] | null | undefined {
-        if (!newValue) {
+        newValue?: U8g2BitmapValue,
+    ): U8g2BitmapValue | null | undefined {
+        if (!newValue || typeof newValue !== 'object' || Array.isArray(newValue)) {
             return null;
         }
-        // Check if the new value is an array
-        if (!Array.isArray(newValue)) {
-            return null;
-        }
-        const newHeight = newValue.length;
-        // The empty list is not an acceptable bitmap
-        if (newHeight == 0) {
-            return null;
-        }
-
-        // Check that the width matches the existing width of the image if it
-        // already has a value.
-        const newWidth = newValue[0].length;
-        for (const row of newValue) {
-            if (!Array.isArray(row)) {
-                return null;
-            }
-            if (row.length !== newWidth) {
-                return null;
-            }
-        }
-
-        // Check if all contents of the arrays are either 0 or 1
-        for (const row of newValue) {
-            for (const cell of row) {
-                if (cell !== 0 && cell !== 1) {
-                    return null;
-                }
-            }
-        }
-        return newValue;
+        return normalizeU8g2BitmapValue(newValue);
     }
 
     /**
@@ -223,12 +208,17 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      * @param newValue The value that's about to be set.
      */
     // eslint-disable-next-line
-    protected override doValueUpdate_(newValue: number[][]) {
-        const newHeight = newValue.length;
-        const newWidth = newValue[0] ? newValue[0].length : 0;
+    protected override doValueUpdate_(newValue: U8g2BitmapValue) {
+        const newHeight = newValue.height;
+        const newWidth = newValue.width;
         const dimensionsChanged = this.imgHeight !== newHeight || this.imgWidth !== newWidth;
-
-        this.value_ = newValue;
+        const nextRefId = newValue.bitmap?.$ailyData.id || '';
+        if (dimensionsChanged || nextRefId !== this.resolvedBitmapRefId) {
+            this.resolvedBitmap = createEmptyBitmap(newWidth, newHeight);
+            this.resolvedBitmapRefId = '';
+            this.loadingBitmap = null;
+        }
+        this.value_ = { ...newValue };
         this.imgHeight = newHeight;
         this.imgWidth = newWidth;
         this.refreshPixelSize();
@@ -246,6 +236,13 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         }
         this.updateBlockDisplayImage();
         this.updateControlsFromValue();
+        if (nextRefId) {
+            void this.ensureBitmapLoaded().catch((error) => console.error('位图资源加载失败:', error));
+        }
+    }
+
+    override saveState(_doFullSerialization?: boolean): U8g2BitmapValue {
+        return { ...this.getValue() };
     }
 
     /**
@@ -256,12 +253,17 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      */
     // eslint-disable-next-line
     protected override showEditor_(e?: Event) {
-        const editor = this.dropdownCreate();
-        Blockly.DropDownDiv.getContentDiv().appendChild(editor);
-        Blockly.DropDownDiv.showPositionedByField(
-            this,
-            this.dropdownDispose.bind(this),
-        );
+        void this.ensureBitmapLoaded().then(() => {
+            if (!this.getSourceBlock() || this.getSourceBlock()?.isDisposed()) return;
+            const editor = this.dropdownCreate();
+            const dropdownContent = Blockly.DropDownDiv.getContentDiv();
+            dropdownContent.appendChild(editor);
+            dropdownContent.classList.add('ailyMediaFieldDropdown');
+            Blockly.DropDownDiv.showPositionedByField(
+                this,
+                this.dropdownDispose.bind(this),
+            );
+        }).catch((error) => console.error('位图资源加载失败:', error));
     }
 
     /**
@@ -330,7 +332,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     private dropdownCreate() {
         const dropdownEditor = this.createElementWithClassname(
             'div',
-            'dropdownEditor-u8g2',
+            'dropdownEditor-u8g2 ailyMediaFieldEditor',
         );
         this.bindEditorContainerEvents(dropdownEditor);
 
@@ -339,7 +341,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
 
         const canvasContainer = this.createElementWithClassname(
             'div',
-            'canvasContainer-u8g2',
+            'canvasContainer-u8g2 ailyMediaFieldSurface',
         );
         this.editorCanvas = document.createElement('canvas');
         this.editorCanvas.className = 'bitmapCanvas-u8g2';
@@ -347,7 +349,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         canvasContainer.appendChild(this.editorCanvas);
         dropdownEditor.appendChild(canvasContainer);
 
-        const mouseHint = this.createElementWithClassname('div', 'hint-u8g2');
+        const mouseHint = this.createElementWithClassname('div', 'hint-u8g2 ailyMediaFieldHint');
         mouseHint.textContent = Blockly.Msg['BITMAP_U8G2_HINT_MOUSE'];
         dropdownEditor.appendChild(mouseHint);
 
@@ -365,7 +367,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         this.updateControlsFromValue();
 
         // Store the initial value at the start of the edit.
-        this.initialValue = this.cloneBitmap(this.getValue());
+        this.initialValue = this.cloneBitmap(this.resolvedBitmap);
 
         return dropdownEditor;
     }
@@ -374,14 +376,15 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      * Initializes the on-block display.
      */
     override initView() {
+        const blockPixelSize = this.getBlockPixelSize();
         // 创建SVG图片元素来显示bitmap
         this.blockDisplayImage = Blockly.utils.dom.createSvgElement(
             'image',
             {
                 x: 0,
                 y: 0,
-                width: this.pixelSize * this.imgWidth,
-                height: this.pixelSize * this.imgHeight,
+                width: blockPixelSize * this.imgWidth,
+                height: BLOCK_FIELD_HEIGHT,
                 style: 'image-rendering: pixelated; cursor: pointer;',
             },
             this.getSvgRoot(),
@@ -389,6 +392,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
 
         // 初始渲染
         this.updateBlockDisplayImage();
+        void this.ensureBitmapLoaded().catch((error) => console.error('位图资源加载失败:', error));
     }
 
     /**
@@ -397,8 +401,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     // eslint-disable-next-line
     protected override updateSize_() {
         {
-            const newWidth = this.pixelSize * this.imgWidth;
-            const newHeight = this.pixelSize * this.imgHeight;
+            const newWidth = this.getBlockPixelSize() * this.imgWidth;
+            const newHeight = BLOCK_FIELD_HEIGHT;
             if (this.borderRect_) {
                 this.borderRect_.setAttribute('width', String(newWidth));
                 this.borderRect_.setAttribute('height', String(newHeight));
@@ -413,6 +417,10 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
             this.size_.width = newWidth;
             this.size_.height = newHeight;
         }
+    }
+
+    private getBlockPixelSize() {
+        return BLOCK_FIELD_HEIGHT / Math.max(1, this.imgHeight);
     }
 
     private refreshPixelSize() {
@@ -452,9 +460,9 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     }
 
     private createToolbar() {
-        const toolbar = this.createElementWithClassname('div', 'toolbar-u8g2');
+        const toolbar = this.createElementWithClassname('div', 'toolbar-u8g2 ailyMediaFieldToolbar');
 
-        const dimensionGroup = this.createElementWithClassname('div', 'dimensionGroup-u8g2');
+        const dimensionGroup = this.createElementWithClassname('div', 'dimensionGroup-u8g2 ailyMediaFieldSettings');
         this.widthInput = this.createDimensionInput('W', this.imgWidth, 1, 256);
         this.heightInput = this.createDimensionInput('H', this.imgHeight, 1, 128);
         this.bindDimensionInputEvents(this.widthInput);
@@ -464,7 +472,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         toolbar.appendChild(dimensionGroup);
 
         const rightControls = this.createElementWithClassname('div', 'rightControls-u8g2');
-        const actionGroup = this.createElementWithClassname('div', 'buttonGroup-u8g2');
+        const actionGroup = this.createElementWithClassname('div', 'buttonGroup-u8g2 ailyMediaFieldActions');
         if (this.buttonOptions.upload) {
             this.addControlButton(
                 actionGroup,
@@ -500,7 +508,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     ) {
         const input = document.createElement('input');
         input.type = 'number';
-        input.className = 'dimensionInput-u8g2';
+        input.className = 'dimensionInput-u8g2 ailyMediaFieldInput';
         input.min = String(min);
         input.max = String(max);
         input.value = String(value);
@@ -509,7 +517,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     }
 
     private createDimensionControl(labelText: string, input: HTMLInputElement) {
-        const control = this.createElementWithClassname('label', 'dimensionControl-u8g2');
+        const control = this.createElementWithClassname('label', 'dimensionControl-u8g2 ailyMediaFieldControl');
         control.appendChild(this.createLabel(labelText));
         control.appendChild(input);
         return control;
@@ -527,7 +535,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         buttonText: string,
         onClick: (e?: Event) => void,
     ) {
-        const button = this.createElementWithClassname('button', 'controlButton-u8g2');
+        const button = this.createElementWithClassname('button', 'controlButton-u8g2 ailyMediaFieldButton');
+        (button as HTMLButtonElement).type = 'button';
         button.innerText = buttonText;
         parent.appendChild(button);
         this.bindEvent(button, 'click', onClick);
@@ -535,8 +544,31 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     }
 
     private bindDimensionInputEvents(input: HTMLInputElement) {
-        this.bindEvent(input, 'input', this.onDimensionInputChange.bind(this));
-        this.bindEvent(input, 'change', this.onDimensionInputChange.bind(this));
+        this.bindEvent(input, 'input', this.scheduleDimensionInputChange.bind(this));
+        this.bindEvent(input, 'change', this.scheduleDimensionInputChange.bind(this));
+        this.bindEvent(input, 'blur', this.scheduleDimensionInputChange.bind(this));
+    }
+
+    private scheduleDimensionInputChange() {
+        this.clearDimensionInputTimer();
+        if (!this.widthInput || !this.heightInput) return;
+        if (this.widthInput.value === '' || this.heightInput.value === '') return;
+        this.dimensionInputTimerId = setTimeout(() => {
+            this.dimensionInputTimerId = null;
+            this.onDimensionInputChange();
+        }, MEDIA_FIELD_PARAMETER_DEBOUNCE_MS);
+    }
+
+    private commitDimensionInputChange() {
+        this.clearDimensionInputTimer();
+        this.onDimensionInputChange();
+    }
+
+    private clearDimensionInputTimer() {
+        if (this.dimensionInputTimerId !== null) {
+            clearTimeout(this.dimensionInputTimerId);
+            this.dimensionInputTimerId = null;
+        }
     }
 
     private onDimensionInputChange() {
@@ -585,7 +617,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      * @param newHeight New height in pixels.
      */
     private resizeBitmap(newWidth: number, newHeight: number) {
-        const currentValue = this.getValue();
+        const currentValue = this.resolvedBitmap;
         if (!currentValue) return;
 
         // Create new bitmap with new dimensions
@@ -602,7 +634,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
             }
         }
 
-        this.setValue(newBitmap, false);
+        this.commitBitmap(newBitmap);
     }
 
     private rerenderSourceBlock() {
@@ -649,6 +681,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      */
     private dropdownDispose() {
         console.log('Disposing dropdown for field', this.fieldId);
+        this.commitDimensionInputChange();
         
         // 清理定时器
         if (this.updateTimer !== null) {
@@ -659,20 +692,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         // 确保所有待更新的内容都被应用
         this.flushPendingUpdates(true);
 
-        if (
-            this.getSourceBlock() &&
-            this.initialValue !== null &&
-            !this.bitmapsEqual(this.initialValue, this.getValue())
-        ) {
-            Blockly.Events.fire(
-                new (Blockly.Events.get(Blockly.Events.BLOCK_CHANGE))(
-                    this.sourceBlock_,
-                    'field',
-                    this.name || null,
-                    this.initialValue,
-                    this.getValue(),
-                ),
-            );
+        if (this.initialValue !== null && !this.bitmapsEqual(this.initialValue, this.resolvedBitmap)) {
             this.rerenderSourceBlock();
         }
 
@@ -695,12 +715,14 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
 
         Blockly.DropDownDiv.getContentDiv().classList.remove(
             'contains-bitmap-editor-u8g2',
+            'ailyMediaFieldDropdown',
         );
     }/**
      * Dispose of this field and clean up subscriptions
      */
     override dispose() {
         console.log('Disposing field', this.fieldId);
+        this.clearDimensionInputTimer();
         
         // 清理上传响应订阅
         if (this.uploadResponseSubscription) {
@@ -794,7 +816,6 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         this.lastPaintedRow = row;
         this.lastPaintedCol = col;
         this.drawLine(row, col, row, col);
-        this.flushPendingUpdates(true);
     }
 
     /**
@@ -852,12 +873,14 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      * Sets all the pixels to 0.
      */
     private clearPixels() {
+        this.commitDimensionInputChange();
         const cleared = this.getEmptyArray();
-        this.setValue(cleared, false);
+        this.commitBitmap(cleared);
     }    /**
      * Upload current bitmap to Angular main program for processing.
-     */    private uploadBitmap() {
-        const currentBitmap = this.getValue();
+    */    private uploadBitmap() {
+        this.commitDimensionInputChange();
+        const currentBitmap = this.resolvedBitmap;
         if (!currentBitmap) {
             console.error('No bitmap data to upload for field', this.fieldId);
             return;
@@ -917,7 +940,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
                     if (data.bitmapArray) {
                         // 确保当前字段仍然存在且可编辑
                         if (this.getSourceBlock() && !this.getSourceBlock()?.isDisposed()) {
-                            this.setValue(this.cloneBitmap(data.bitmapArray), false);
+                            this.commitBitmap(this.cloneBitmap(data.bitmapArray) || this.getEmptyArray());
                             if (
                                 hasDimensions &&
                                 (responseWidth !== this.imgWidth || responseHeight !== this.imgHeight)
@@ -946,7 +969,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     }
 
     private getPixel(row: number, column: number): number {
-        const value = this.getValue();
+        const value = this.resolvedBitmap;
         if (!value) {
             throw new Error(
                 'Attempted to retrieve a pixel value when no value is set',
@@ -1009,7 +1032,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     private updateBlockDisplayImageFast() {
         if (!this.blockDisplayImage || this.imgWidth <= 0 || this.imgHeight <= 0) return;
 
-        const bitmap = this.getValue();
+        const bitmap = this.resolvedBitmap;
         if (!bitmap) return;
 
         const ctx = this.getBlockPreviewContext();
@@ -1065,7 +1088,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      */
     private renderCanvasEditor() {
         if (!this.editorContext || !this.editorCanvas) return;
-        const bitmap = this.getValue();
+        const bitmap = this.resolvedBitmap;
         if (!bitmap) return;
         // 清除canvas
         this.editorContext.clearRect(0, 0, this.editorCanvas.width, this.editorCanvas.height);
@@ -1197,7 +1220,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
     }
 
     private setPixelBatch(r: number, c: number, newValue: number) {
-        const currentValue = this.getValue();
+        const currentValue = this.resolvedBitmap;
         if (!currentValue) return;
 
         // 如果值没有改变，跳过
@@ -1217,6 +1240,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
      */
     private flushPendingUpdates(immediate = false) {
         if (this.pendingUpdates.size === 0) return;
+        if (!immediate) return;
 
         // 清除之前的定时器
         if (this.updateTimer !== null) {
@@ -1225,10 +1249,10 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
         }
 
         const applyUpdates = () => {
-            const currentValue = this.getValue();
+            const currentValue = this.resolvedBitmap;
             if (currentValue) {
                 this.skipNextEditorRender = true;
-                this.setValue(this.cloneBitmap(currentValue), false);
+                this.commitBitmap(this.cloneBitmap(currentValue) || this.getEmptyArray());
             }
 
             this.pendingUpdates.clear();
@@ -1242,6 +1266,67 @@ export class FieldBitmapU8g2 extends Blockly.Field<number[][]> {
 
         // 设置新的定时器，延迟更新以提高性能
         this.updateTimer = window.setTimeout(applyUpdates, 16); // 约60fps的更新频率
+    }
+
+    private commitBitmap(bitmap: number[][]): void {
+        const nextBitmap = normalizeBitmap(bitmap, bitmap[0]?.length || this.imgWidth, bitmap.length || this.imgHeight);
+        this.resolvedBitmap = nextBitmap;
+        this.imgHeight = nextBitmap.length;
+        this.imgWidth = nextBitmap[0]?.length || 1;
+        this.refreshPixelSize();
+        this.updateBlockDisplayImage();
+        this.renderCanvasEditor();
+        this.updateControlsFromValue();
+        const mutationVersion = ++this.bitmapMutationVersion;
+        const packed = packBitmap(nextBitmap, this.imgWidth, this.imgHeight);
+        const operation = (hasSetPixel(nextBitmap)
+            ? projectDataRuntime.put({ codec: 'u8g2-xbm-v1', storage: 'raw-v1', value: packed })
+            : Promise.resolve(null)
+        ).then((bitmapRef) => {
+            if (mutationVersion !== this.bitmapMutationVersion) return;
+            const nextValue: U8g2BitmapValue = {
+                schemaVersion: 1,
+                encoding: 'xbm-lsb-row-v1',
+                width: this.imgWidth,
+                height: this.imgHeight,
+                bitmap: bitmapRef,
+            };
+            this.resolvedBitmapRefId = bitmapRef?.$ailyData.id || '';
+            this.setValue(nextValue, Blockly.DropDownDiv.getOwner() !== this);
+            this.resolvedBitmap = nextBitmap;
+        });
+        projectDataRuntime.trackMutation(operation);
+        void operation.catch((error) => console.error('位图资源保存失败:', error));
+    }
+
+    async ensureBitmapLoaded(): Promise<number[][]> {
+        const value = this.getValue();
+        const ref = value.bitmap;
+        if (!ref) {
+            this.resolvedBitmap = createEmptyBitmap(value.width, value.height);
+            this.resolvedBitmapRefId = '';
+            return this.resolvedBitmap;
+        }
+        const refId = ref.$ailyData.id;
+        if (this.resolvedBitmapRefId === refId) return this.resolvedBitmap;
+        if (this.loadingBitmap) return this.loadingBitmap;
+        const loading = projectDataRuntime.resolve<Uint8Array>(ref).then((bytes) => {
+            const current = this.getValue();
+            if (current.bitmap?.$ailyData.id !== refId) return this.resolvedBitmap;
+            const expectedLength = Math.ceil(current.width / 8) * current.height;
+            if (!(bytes instanceof Uint8Array) || bytes.byteLength !== expectedLength) {
+                throw new Error(`位图资源长度不匹配: 期望 ${expectedLength}，实际 ${bytes.byteLength}`);
+            }
+            this.resolvedBitmap = unpackBitmap(bytes, current.width, current.height);
+            this.resolvedBitmapRefId = refId;
+            this.updateBlockDisplayImage();
+            this.renderCanvasEditor();
+            return this.resolvedBitmap;
+        }).finally(() => {
+            if (this.loadingBitmap === loading) this.loadingBitmap = null;
+        });
+        this.loadingBitmap = loading;
+        return loading;
     }
 }
 
@@ -1260,12 +1345,66 @@ interface RgbColour {
 }
 
 export interface FieldBitmapFromJsonConfig extends Blockly.FieldConfig {
-    value?: number[][];
+    value?: U8g2BitmapValue;
     width?: number;
     height?: number;
     buttons?: Buttons;
     fieldHeight?: number;
     colours?: PixelColours;
+}
+
+function normalizeU8g2BitmapValue(
+    value: U8g2BitmapValue | undefined,
+    config?: FieldBitmapFromJsonConfig,
+): U8g2BitmapValue {
+    const width = clampBitmapDimension(value?.width ?? config?.width ?? DEFAULT_WIDTH, 1, 256);
+    const height = clampBitmapDimension(value?.height ?? config?.height ?? DEFAULT_HEIGHT, 1, 128);
+    return {
+        schemaVersion: 1,
+        encoding: 'xbm-lsb-row-v1',
+        width,
+        height,
+        bitmap: isAilyDataRef(value?.bitmap) ? value!.bitmap : null,
+    };
+}
+
+function clampBitmapDimension(value: unknown, min: number, max: number): number {
+    const numeric = Number(value);
+    return Math.min(max, Math.max(min, Number.isFinite(numeric) ? Math.floor(numeric) : min));
+}
+
+function createEmptyBitmap(width: number, height: number): number[][] {
+    return Array.from({ length: height }, () => Array<number>(width).fill(0));
+}
+
+function normalizeBitmap(bitmap: number[][], width: number, height: number): number[][] {
+    return Array.from({ length: height }, (_, row) => (
+        Array.from({ length: width }, (_, col) => bitmap[row]?.[col] === 1 ? 1 : 0)
+    ));
+}
+
+function hasSetPixel(bitmap: number[][]): boolean {
+    return bitmap.some((row) => row.some((pixel) => pixel === 1));
+}
+
+function packBitmap(bitmap: number[][], width: number, height: number): Uint8Array {
+    const bytesPerRow = Math.ceil(width / 8);
+    const packed = new Uint8Array(bytesPerRow * height);
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            if (bitmap[row]?.[col] === 1) packed[row * bytesPerRow + (col >> 3)] |= 1 << (col & 7);
+        }
+    }
+    return packed;
+}
+
+function unpackBitmap(bytes: Uint8Array, width: number, height: number): number[][] {
+    const bytesPerRow = Math.ceil(width / 8);
+    return Array.from({ length: height }, (_, row) => (
+        Array.from({ length: width }, (_, col) => (
+            (bytes[row * bytesPerRow + (col >> 3)] >> (col & 7)) & 1
+        ))
+    ));
 }
 
 Blockly.fieldRegistry.register('field_bitmap_u8g2', FieldBitmapU8g2);
@@ -1275,107 +1414,125 @@ Blockly.fieldRegistry.register('field_bitmap_u8g2', FieldBitmapU8g2);
  */
 Blockly.Css.register(`
 .dropdownEditor-u8g2 {
-    align-items: stretch;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    justify-content: center;
-    max-width: 520px;
-    padding: 10px;
+  align-items: stretch;
+  background: #2a2a2a;
+  box-sizing: border-box;
+  color: #f4f4f4;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(94vw, 880px);
+  padding: 5px 10px;
+  width: max-content;
 }
 .toolbar-u8g2 {
-    align-items: flex-start;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    justify-content: space-between;
+  align-items: center;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  justify-content: space-between;
+  max-width: 100%;
+  width: max-content;
 }
 .dimensionControl-u8g2 {
-    align-items: center;
-    display: inline-flex;
-    gap: 5px;
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
 }
 .dimensionGroup-u8g2,
 .buttonGroup-u8g2 {
-    align-items: center;
-    display: inline-flex;
-    gap: 6px;
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 6px;
 }
 .rightControls-u8g2 {
-    align-items: center;
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-left: auto;
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 .label-u8g2 {
-    color: #e8e8e8;
-    font-size: 12px;
-    line-height: 1;
-    white-space: nowrap;
+  color: #e8e8e8;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
 }
 .hint-u8g2 {
-    color: #cfcfcf;
-    font-size: 12px;
-    line-height: 1;
-    text-align: center;
-    white-space: nowrap;
-    width: 100%;
+  color: #cfcfcf;
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  width: 100%;
 }
 .canvasContainer-u8g2 {
-    align-self: center;
-    background: #1b1b1b;
-    border: 2px solid #666;
-    border-radius: 4px;
+  align-self: center;
+  background: #1b1b1b;
+  border: 1px solid #666;
+  border-radius: 4px;
+  box-sizing: border-box;
   display: inline-block;
-    line-height: 0;
-    max-height: 420px;
-    max-width: 480px;
-    overflow: auto;
+  line-height: 0;
+  max-height: 420px;
+  max-width: min(86vw, 560px);
+  overflow: auto;
+  scrollbar-color: var(--aily-border-tertiary, #666) transparent;
+  scrollbar-width: thin;
+}
+.canvasContainer-u8g2::-webkit-scrollbar {
+  height: 4px;
+  width: 4px;
+}
+.canvasContainer-u8g2::-webkit-scrollbar-track {
+  background: transparent;
+}
+.canvasContainer-u8g2::-webkit-scrollbar-thumb {
+  background: var(--aily-border-tertiary, #666);
+  border-radius: 2px;
+}
+.canvasContainer-u8g2::-webkit-scrollbar-thumb:hover {
+  background: var(--aily-scrollbar-thumb-hover, #888);
 }
 .bitmapCanvas-u8g2 {
-    background: #151515;
+  background: #151515;
   display: block;
   cursor: ${PAINT_CURSOR};
-    image-rendering: pixelated;
-    touch-action: none;
+  image-rendering: pixelated;
+  touch-action: none;
 }
 .dimensionInput-u8g2 {
-    background: #ffffff;
-    border: 1px solid #777;
-    border-radius: 4px;
-    color: #222;
+  background: #fff;
+  border: 1px solid #777;
+  border-radius: 4px;
+  color: #222;
   font-size: 12px;
-    height: 26px;
-    padding: 0 4px;
+  height: 26px;
+  padding: 0 4px;
   text-align: center;
-    width: 48px;
-}
-.dimensionInput-u8g2:focus {
-  outline: none;
-  border-color: #007acc;
-  box-shadow: 0 0 0 1px rgba(0, 122, 204, 0.3);
+  width: 48px;
 }
 .controlButton-u8g2 {
-    background: #333;
-    border: 1px solid #666;
+  background: #333;
+  border: 1px solid #666;
   border-radius: 4px;
-    color: #fff;
+  color: #fff;
   cursor: pointer;
   font-size: 12px;
-    height: 26px;
-    margin: 0;
-    padding: 0 10px;
+  height: 26px;
+  margin: 0;
+  padding: 0 10px;
 }
 .controlButton-u8g2:hover {
-    background: #444;
-    border-color: #888;
+  background: #444;
+  border-color: #888;
 }
 .blocklyDropDownContent.contains-bitmap-editor-u8g2 {
-    background: #2a2a2a;
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  background: #2a2a2a;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   max-height: none;
 }
 `);

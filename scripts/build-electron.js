@@ -62,6 +62,6 @@ function run(commandArgs, extraEnv = {}) {
 }
 
 run([workerRuntimeBuildScript]);
-run([simulatorRuntimePrepareScript, '--require-release']);
+run([simulatorRuntimePrepareScript]);
 run([ngCliPath, 'build', '--base-href', './']);
 run([electronBuilderCliPath, ...builderArgs]);

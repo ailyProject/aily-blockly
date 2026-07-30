@@ -18,6 +18,8 @@ export class UpdateService {
 
   updateStatus = new BehaviorSubject<string>('');
 
+  downloadSourceStatus = new BehaviorSubject<any>(null);
+
   dialogAction = new Subject();
 
   // private updateInfo: any = null;
@@ -69,6 +71,15 @@ export class UpdateService {
           console.error('更新错误:', status.error);
           break;
 
+        case 'mirror-switching':
+          this.updateProgress.next(0);
+          this.downloadSourceStatus.next({
+            current: status.index + 1,
+            total: status.total,
+          });
+          this.updateStatus.next('downloading');
+          break;
+
         case 'progress':
           this.updateProgress.next(status.progress.percent || 0);
           this.updateStatus.next('downloading');
@@ -96,6 +107,8 @@ export class UpdateService {
   }
 
   downloadUpdate() {
+    this.updateProgress.next(0);
+    this.downloadSourceStatus.next(null);
     window['updater'].downloadUpdate();
   }
 

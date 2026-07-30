@@ -38,6 +38,16 @@ export interface SubappCatalogState {
   apps: SubappCatalogItem[];
 }
 
+export interface SubappInstallProgress {
+  id: string;
+  action: 'install' | 'update' | 'uninstall' | string;
+  phase: 'start' | 'download' | 'extract' | 'complete' | 'error' | string;
+  percent: number;
+  downloadProgress?: number;
+  extractProgress?: number;
+  error?: string;
+}
+
 const EMPTY_STATE: SubappCatalogState = {
   loading: true,
   source: 'none',
@@ -49,12 +59,15 @@ const EMPTY_STATE: SubappCatalogState = {
 @Injectable({ providedIn: 'root' })
 export class SubappManagerService implements OnDestroy {
   private readonly stateSubject = new BehaviorSubject<SubappCatalogState>(EMPTY_STATE);
+  private readonly progressSubject = new BehaviorSubject<SubappInstallProgress | null>(null);
   private initializePromise: Promise<void> | null = null;
   private initialized = false;
   private removeChangedListener: (() => void) | null = null;
+  private removeProgressListener: (() => void) | null = null;
   private languageSubscription?: Subscription;
 
   readonly state$ = this.stateSubject.asObservable();
+  readonly progress$ = this.progressSubject.asObservable();
 
   constructor(private translate: TranslateService) {
     this.languageSubscription = this.translate.onLangChange.subscribe((event) => {
@@ -68,6 +81,10 @@ export class SubappManagerService implements OnDestroy {
     return this.stateSubject.value;
   }
 
+  get progress(): SubappInstallProgress | null {
+    return this.progressSubject.value;
+  }
+
   initialize(): Promise<void> {
     if (this.initializePromise) return this.initializePromise;
     this.initializePromise = this.waitForInitialLocale()
@@ -79,6 +96,11 @@ export class SubappManagerService implements OnDestroy {
         const api = (window as any).electronAPI?.subapps;
         if (!this.removeChangedListener && api?.onChanged) {
           this.removeChangedListener = api.onChanged(() => void this.refresh(false));
+        }
+        if (!this.removeProgressListener && api?.onProgress) {
+          this.removeProgressListener = api.onProgress((payload: SubappInstallProgress) => {
+            this.applyProgress(payload);
+          });
         }
       });
     return this.initializePromise;
@@ -103,29 +125,31 @@ export class SubappManagerService implements OnDestroy {
   getCatalogApps(): AppItem[] {
     return this.state.apps
       .filter((item) => item.role !== 'dependency')
+      .filter((item) => item.enabled !== false)
       .map((item) => ({
-      id: item.toolId,
-      name: item.name,
-      description: item.description,
-      action: 'tool-open',
-      data: { type: 'tool', data: item.toolId },
-      icon: item.icon || 'fa-light fa-puzzle-piece',
-      enabled: item.enabled,
-      ...(item.toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
-      subapp: {
-        catalogId: item.id,
-        packageName: item.packageName,
-        availableVersion: item.availableVersion,
-        installedVersion: item.installedVersion,
-        installed: item.installed,
-        updateAvailable: item.updateAvailable,
-        installPath: item.installPath,
-      },
+        id: item.toolId,
+        name: item.name,
+        description: item.description,
+        action: 'tool-open',
+        data: { type: 'tool', data: item.toolId },
+        icon: item.icon || 'fa-light fa-puzzle-piece',
+        enabled: item.enabled,
+        ...(item.toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
+        subapp: {
+          catalogId: item.id,
+          packageName: item.packageName,
+          availableVersion: item.availableVersion,
+          installedVersion: item.installedVersion,
+          installed: item.installed,
+          updateAvailable: item.updateAvailable,
+          installPath: item.installPath,
+        },
       }));
   }
 
   ngOnDestroy(): void {
     this.removeChangedListener?.();
+    this.removeProgressListener?.();
     this.languageSubscription?.unsubscribe();
   }
 
@@ -155,8 +179,55 @@ export class SubappManagerService implements OnDestroy {
     const api = (window as any).electronAPI?.subapps;
     const operation = api?.[action];
     if (!operation) throw new Error('Subapp manager is unavailable outside the desktop app');
-    const result = await operation({ id, locale: this.currentLocale() });
-    this.applyResult(result);
+    this.progressSubject.next({
+      id,
+      action,
+      phase: 'start',
+      percent: 1,
+      downloadProgress: 0,
+      extractProgress: 0,
+    });
+    try {
+      const result = await operation({ id, locale: this.currentLocale() });
+      this.applyResult(result);
+      this.progressSubject.next({
+        id,
+        action,
+        phase: 'complete',
+        percent: 100,
+        downloadProgress: 100,
+        extractProgress: 100,
+      });
+    } catch (error) {
+      this.progressSubject.next({
+        id,
+        action,
+        phase: 'error',
+        percent: this.progressSubject.value?.id === id ? (this.progressSubject.value.percent || 0) : 0,
+        error: this.errorMessage(error),
+      });
+      throw error;
+    } finally {
+      // 稍延迟清空，避免 UI 在成功瞬间闪回 0%
+      setTimeout(() => {
+        if (this.progressSubject.value?.id === id) {
+          this.progressSubject.next(null);
+        }
+      }, 400);
+    }
+  }
+
+  private applyProgress(payload: SubappInstallProgress): void {
+    if (!payload || typeof payload.id !== 'string') return;
+    const percent = Math.max(0, Math.min(100, Math.round(Number(payload.percent) || 0)));
+    const previous = this.progressSubject.value;
+    const nextPercent = previous?.id === payload.id
+      ? Math.max(previous.percent || 0, percent)
+      : percent;
+    this.progressSubject.next({
+      ...payload,
+      percent: payload.phase === 'error' ? percent : nextPercent,
+    });
   }
 
   private applyResult(result: any): void {

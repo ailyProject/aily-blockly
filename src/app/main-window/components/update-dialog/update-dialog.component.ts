@@ -24,6 +24,7 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
   progress: number = 0;
   version: string;
   currentVersion: string;
+  downloadSourceStatus: any = null;
 
   @ViewChild('markdown', { static: false }) markdownEl: ElementRef<HTMLDivElement>;
 
@@ -55,6 +56,7 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
 
   updateStatusSubscription: Subscription;
   updateProgressSubscription: Subscription;
+  downloadSourceStatusSubscription: Subscription;
 
   ngOnInit() {
     this.loadChangelog();
@@ -72,11 +74,16 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
       this.progress = Math.floor(progress);
       this.cd.detectChanges();
     })
+    this.downloadSourceStatusSubscription = this.updateService.downloadSourceStatus.subscribe((status) => {
+      this.downloadSourceStatus = status;
+      this.cd.detectChanges();
+    });
   }
 
   ngOnDestroy() {
     this.updateStatusSubscription?.unsubscribe();
     this.updateProgressSubscription?.unsubscribe();
+    this.downloadSourceStatusSubscription?.unsubscribe();
   }
 
   get buttons(): DialogButton[] {

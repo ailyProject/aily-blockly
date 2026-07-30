@@ -15,13 +15,15 @@ interface DecodeRequest {
 }
 
 interface DecodeResult {
+    schemaVersion: 1;
+    encoding: 'xbm-lsb-row-v1';
     width: number;
     height: number;
     fps: number;
     maxFrames: number;
     dither: boolean;
     threshold: number;
-    frames: number[][][];
+    frames: Uint8Array[];
     sourceName: string;
     sourceType: string;
 }
@@ -96,10 +98,24 @@ function normalizeDecodeOptions(request: DecodeRequest) {
     };
 }
 
-function imageDataToBitmap(imageData: ImageData, width: number, height: number, dither: boolean, threshold: number): number[][] {
-    return dither
+function imageDataToXbm(imageData: ImageData, width: number, height: number, dither: boolean, threshold: number): Uint8Array {
+    const bitmap = dither
         ? imageDataToDitheredBitmap(imageData, width, height)
         : imageDataToThresholdBitmap(imageData, width, height, threshold);
+    return bitmapToXbm(bitmap, width, height);
+}
+
+function bitmapToXbm(bitmap: number[][], width: number, height: number): Uint8Array {
+    const bytesPerRow = Math.ceil(width / 8);
+    const bytes = new Uint8Array(bytesPerRow * height);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            if (bitmap[y]?.[x] === 1) {
+                bytes[y * bytesPerRow + Math.floor(x / 8)] |= 1 << (x % 8);
+            }
+        }
+    }
+    return bytes;
 }
 
 function getWeightedGray(red: number, green: number, blue: number): number {
@@ -188,7 +204,7 @@ function imageDataToDitheredBitmap(imageData: ImageData, width: number, height: 
     return bitmap;
 }
 
-function frameToBitmap(frame: VideoFrame, width: number, height: number, dither: boolean, threshold: number): number[][] {
+function frameToXbm(frame: VideoFrame, width: number, height: number, dither: boolean, threshold: number): Uint8Array {
     const canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) {
@@ -199,7 +215,7 @@ function frameToBitmap(frame: VideoFrame, width: number, height: number, dither:
     context.drawImage(frame, 0, 0, width, height);
 
     const imageData = context.getImageData(0, 0, width, height);
-    return imageDataToBitmap(imageData, width, height, dither, threshold);
+    return imageDataToXbm(imageData, width, height, dither, threshold);
 }
 
 function getBoxDescription(box: any): Uint8Array | undefined {
@@ -303,7 +319,7 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
         }
     }
 
-    const frames: number[][][] = [];
+    const frames: Uint8Array[] = [];
     const intervalUs = MICROSECONDS_PER_SECOND / options.fps;
     let firstTimestamp: number | null = null;
     let nextCaptureAt = 0;
@@ -318,7 +334,7 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
                 }
 
                 if (frames.length < options.maxFrames && timestamp + 1 >= nextCaptureAt) {
-                    frames.push(frameToBitmap(frame, options.width, options.height, options.dither, options.threshold));
+                    frames.push(frameToXbm(frame, options.width, options.height, options.dither, options.threshold));
                     nextCaptureAt += intervalUs;
                     postProgress(
                         request.requestId,
@@ -359,6 +375,8 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
     }
 
     return {
+        schemaVersion: 1,
+        encoding: 'xbm-lsb-row-v1',
         ...options,
         frames,
         sourceName: request.fileName,
@@ -405,7 +423,7 @@ async function decodeImageAnimation(request: DecodeRequest): Promise<DecodeResul
         ? trackFrameCount
         : options.maxFrames;
     const intervalUs = MICROSECONDS_PER_SECOND / options.fps;
-    const frames: number[][][] = [];
+    const frames: Uint8Array[] = [];
     let nextCaptureAt = 0;
     let currentTimestamp = 0;
 
@@ -423,7 +441,7 @@ async function decodeImageAnimation(request: DecodeRequest): Promise<DecodeResul
         const image = result.image as VideoFrame;
 
         if (frames.length === 0 || currentTimestamp + 1 >= nextCaptureAt) {
-            frames.push(frameToBitmap(image, options.width, options.height, options.dither, options.threshold));
+            frames.push(frameToXbm(image, options.width, options.height, options.dither, options.threshold));
             nextCaptureAt += intervalUs;
             postProgress(
                 request.requestId,
@@ -444,6 +462,8 @@ async function decodeImageAnimation(request: DecodeRequest): Promise<DecodeResul
     }
 
     return {
+        schemaVersion: 1,
+        encoding: 'xbm-lsb-row-v1',
         ...options,
         frames,
         sourceName: request.fileName,

@@ -14,14 +14,14 @@ import {
   type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
 import {
-  generateCodeWithActiveProjectGenerator,
-  getActiveProjectGenerator,
+  runWithPreparedActiveProjectGenerator,
 } from './blockly-generator-runtime.service';
 
 import { BlocklyService as BlocklyService } from './blockly.service';
 
 import { PlatformService } from "../../../services/platform.service";
 import { ElectronService } from '../../../services/electron.service';
+import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { WorkflowService, ProcessState } from '../../../services/workflow.service';
 import { CompileValidationService } from '../../../services/compile-validation.service';
 import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
@@ -210,11 +210,25 @@ export class _BuilderService {
     detail?: string,
   ): Promise<string> {
     await this.waitForOneIdleBoundary();
-    return this.runBuilderPreprocessPhase(
+    const projectPath = this.projectService.currentProjectPath;
+    const projectDocument = this.blocklyService.getProjectDocument();
+    const generated = await this.runBuilderPreprocessPhase(
       'workspace_to_code',
-      () => normalizeArduinoGeneratedCode(generateCodeWithActiveProjectGenerator(workspace as any)),
+      () => runWithPreparedActiveProjectGenerator(
+        workspace as any,
+        (generator) => ({
+          code: normalizeArduinoGeneratedCode(generator.workspaceToCode(workspace as any)),
+          generator,
+        }),
+        projectDocument,
+      ),
       detail,
     );
+    await writeArduinoGeneratedArtifacts(
+      projectPath,
+      generated.generator,
+    );
+    return generated.code;
   }
 
   /**
@@ -237,27 +251,40 @@ export class _BuilderService {
     }>;
   }> {
     await this.waitForOneIdleBoundary();
-    return this.runBuilderPreprocessPhase(
+    const projectPath = this.projectService.currentProjectPath;
+    const projectDocument = this.blocklyService.getProjectDocument();
+    const generated = await this.runBuilderPreprocessPhase(
       'workspace_to_code',
-      () => {
-        const code = normalizeArduinoGeneratedCode(
-          generateCodeWithActiveProjectGenerator(workspace as any),
-        );
-        const activeGenerator = getActiveProjectGenerator() as {
-          blockCodeMap?: Map<string, BlockCodeMapping>;
-        } | null;
-        const blockCodeMap = activeGenerator?.blockCodeMap
-          ?? new Map<string, BlockCodeMapping>();
-        return {
-          code,
-          blockSourceMappings: this.createBlockSourceMappings(
-            blockCodeMap,
-            workspace,
-          ),
-        };
-      },
+      () => runWithPreparedActiveProjectGenerator(
+        workspace as any,
+        (generator) => {
+          const code = normalizeArduinoGeneratedCode(generator.workspaceToCode(workspace as any));
+          const activeGenerator = generator as {
+            blockCodeMap?: Map<string, BlockCodeMapping>;
+          };
+          const blockCodeMap = activeGenerator.blockCodeMap
+            ?? new Map<string, BlockCodeMapping>();
+          return {
+            code,
+            blockSourceMappings: this.createBlockSourceMappings(
+              blockCodeMap,
+              workspace,
+            ),
+            generator,
+          };
+        },
+        projectDocument,
+      ),
       detail,
     );
+    await writeArduinoGeneratedArtifacts(
+      projectPath,
+      generated.generator,
+    );
+    return {
+      code: generated.code,
+      blockSourceMappings: generated.blockSourceMappings,
+    };
   }
 
   private appendPreprocessErrorOutput(value: unknown): void {

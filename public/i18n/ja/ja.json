@@ -196,6 +196,16 @@
             "LABEL_COLOR_MODE": "色",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "MP4 または GIF ファイルのみ対応しています"
         },
+        "TFTESPI_IMAGE": {
+            "BLOCK_TOOLTIP": "PNG、JPEG、WebP、GIF 画像を RGB565/RGB332 ピクセルデータに変換します",
+            "UPLOAD_TOOLTIP": "対応形式: PNG、JPEG、WebP、GIF",
+            "EMPTY": "画像がアップロードされていません",
+            "STATUS_DECODING": "画像を変換しています...",
+            "STATUS_REDECODING": "{{name}} を再変換しています...",
+            "ERROR_DECODE_FAILED": "画像の変換に失敗しました",
+            "ERROR_REDECODE_FAILED": "画像の再変換に失敗しました",
+            "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "PNG、JPEG、WebP、GIF ファイルのみ対応しています"
+        },
         "U8G2_ANIMATION": {
             "BUTTON_UPLOAD": "アップロード",
             "UPLOAD_TOOLTIP": "対応形式: MP4、GIF、PNG",
@@ -254,6 +264,21 @@
             "WORKER_STATUS_DECODE_IMAGE_FRAME": "Converting {{format}} frame {{current}}/{{total}}",
             "WORKER_ERROR_IMAGE_NO_VALID_FRAMES": "{{format}} decoded successfully, but no valid frames were captured",
             "WORKER_ERROR_UNSUPPORTED_FILE_TYPE": "Only MP4, GIF, or PNG files are supported"
+        },
+        "TFTESPI_IMAGE": {
+            "BUTTON_UPLOAD": "アップロード",
+            "UPLOAD_TOOLTIP": "対応形式：PNG、JPEG、WebP、BMP",
+            "BUTTON_CLEAR": "クリア",
+            "LABEL_WIDTH": "W",
+            "LABEL_HEIGHT": "H",
+            "LABEL_COLOR_MODE": "色",
+            "EMPTY": "画像がアップロードされていません",
+            "STATUS_READING_FILE": "{{name}} を読み込み中...",
+            "STATUS_DECODING": "画像を変換中...",
+            "STATUS_INFO": "{{sourcePrefix}}{{width}}x{{height}} | {{mode}} | {{dataSize}}",
+            "ERROR_FILE_SIZE_EXCEEDED": "元ファイルは {{maxSize}} 以下にしてください（現在：{{currentSize}}）",
+            "ERROR_DECODE_FAILED": "画像の変換に失敗しました",
+            "ERROR_UNSUPPORTED_FILE_TYPE": "PNG、JPEG、WebP、BMP 画像のみ対応しています"
         }
     },
     "MAIN_WINDOW": {
@@ -436,6 +461,7 @@
         "TEXT_DOWNLOADED": "バージョン {{version}} のダウンロードが完了しました。今すぐインストールしますか？",
         "TEXT_AVAILABLE": "現在のバージョン {{currentVersion}}、新しいバージョン {{version}}<br>このアップデートをダウンロードしてインストールしますか？",
         "DOWNLOAD_FAILED": "ダウンロード失敗",
+        "USING_FALLBACK_DOWNLOAD_SOURCE": "予備のダウンロード元を使用中（{{current}}/{{total}}）",
         "REMIND_LATER": "後で通知",
         "SKIP_VERSION": "このバージョンをスキップ",
         "UPDATE_NOW": "今すぐ更新",

@@ -25,14 +25,66 @@ interface SimulatorSubappElectronApi {
     projectPath: string;
     ownerId: string;
     sceneId: string;
-  }): Promise<SimulatorSubappSurface>;
+  }): Promise<SimulatorSubappSurface | ProjectSceneRegenerationRequired>;
+  resolveProjectSceneRegeneration(options: {
+    ownerId: string;
+    regenerationId: string;
+    resolution: 'cancel' | 'commit';
+    proposal?: Record<string, unknown>;
+  }): Promise<SimulatorSubappSurface | {
+    schemaVersion: 1;
+    kind: 'aily-simulator-subapp-project-scene-regeneration-result';
+    state: 'cancelled';
+    regenerationId: string;
+  }>;
+  applyProjectSceneAgentProposal(options: {
+    ownerId: string;
+    proposal: Record<string, unknown>;
+  }): Promise<Record<string, unknown>>;
+  requestProjectSceneGeneration?(options: {
+    ownerId: string;
+    regenerationId: string;
+  }): Promise<{
+    schemaVersion: 1;
+    kind: 'aily-simulator-subapp-project-scene-generation-request-result';
+    state: 'accepted';
+    regenerationId: string;
+  }>;
   attachProjectSceneSession(ownerId?: string): Promise<unknown>;
   close(ownerId?: string): Promise<unknown>;
   onStateChanged?(callback: (event: {
     state: string;
     unexpected?: boolean;
+    surface?: SimulatorSubappSurface;
     failure?: { message?: string };
   }) => void): () => void;
+}
+
+interface ProjectSceneRegenerationRequirement {
+  schemaVersion: 1;
+  kind: 'aily-project-scene-legacy-regeneration-required';
+  regenerationId: string;
+  projectIdentity: string;
+  sceneId: string;
+  legacySourceKind: 'connection-output-v1';
+  legacySourceRevision: string;
+  legacySourceBytes: number;
+  catalogRevision: string;
+  draftVisualRevision: string;
+  draftGraphSemanticRevision: string;
+  expiresAtUnixMs: number;
+}
+
+interface ProjectSceneRegenerationRequired {
+  schemaVersion: 1;
+  kind: 'aily-simulator-subapp-project-scene-regeneration-required';
+  state: 'legacy-scene-regeneration-required';
+  tool: 'scene';
+  initialization: 'legacy-detected';
+  requirement: ProjectSceneRegenerationRequirement;
+  runtimeSource: string;
+  runtimePackId?: string;
+  runtimeMode?: string;
 }
 
 @Component({
@@ -52,6 +104,8 @@ implements AfterViewInit, OnDestroy {
   state: SimulatorSubappFrameState = 'idle';
   errorMessage = '';
   runtimeSource = '';
+  regenerationRequirement: ProjectSceneRegenerationRequirement | null = null;
+  generationRequestPending = false;
 
   private readonly ownerId = createOwnerId();
   private adapter: SimulatorSubappFrameAdapter | null = null;
@@ -76,8 +130,29 @@ implements AfterViewInit, OnDestroy {
       (window as any).electronAPI.simulatorSubapp?.onStateChanged((event: {
         state: string;
         unexpected?: boolean;
+        surface?: SimulatorSubappSurface;
         failure?: { message?: string };
       }) => {
+        if (event.state === 'scene-generation-failed' && !this.destroyed) {
+          this.ngZone.run(() => {
+            this.errorMessage = event.failure?.message
+              || 'Project Scene generation failed.';
+            this.generationRequestPending = false;
+          });
+          return;
+        }
+        if (
+          event.state === 'ready'
+          && event.surface?.kind === 'aily-simulator-subapp-surface'
+          && this.regenerationRequirement
+          && !this.destroyed
+        ) {
+          this.ngZone.run(() => {
+            this.regenerationRequirement = null;
+            void this.presentResolvedRegenerationSurface(event.surface!);
+          });
+          return;
+        }
         if (
           !event.unexpected
           || (event.state !== 'failed' && event.state !== 'stopped')
@@ -107,37 +182,92 @@ implements AfterViewInit, OnDestroy {
     const adapter = this.adapter;
     this.adapter = null;
     this.blocklyService.clearDebugExecutionMarker();
-    void adapter?.close();
+    if (adapter) {
+      void adapter.close();
+    } else {
+      void this.simulatorApi()?.close(this.ownerId);
+    }
   }
 
   retry(): void {
     void this.restart();
   }
 
+  cancelLegacyRegeneration(): void {
+    const requirement = this.regenerationRequirement;
+    const api = this.simulatorApi();
+    if (!requirement || !api) return;
+    this.state = 'closing';
+    void api.resolveProjectSceneRegeneration({
+      ownerId: this.ownerId,
+      regenerationId: requirement.regenerationId,
+      resolution: 'cancel',
+    }).then(() => {
+      if (this.destroyed) return;
+      this.ngZone.run(() => {
+        this.regenerationRequirement = null;
+        this.state = 'closed';
+      });
+    }).catch((error) => {
+      this.applyLaunchError(error, this.launchGeneration);
+    });
+  }
+
+  requestProjectSceneGeneration(): void {
+    const requirement = this.regenerationRequirement;
+    const request = this.simulatorApi()?.requestProjectSceneGeneration;
+    if (!requirement || this.generationRequestPending) return;
+    if (typeof request !== 'function') {
+      this.errorMessage = 'Scene Generation Broker 尚未连接；已阻止旧连线图生成通道。';
+      return;
+    }
+    this.errorMessage = '';
+    this.generationRequestPending = true;
+    void request({
+      ownerId: this.ownerId,
+      regenerationId: requirement.regenerationId,
+    }).catch((error) => {
+      if (this.destroyed) return;
+      this.ngZone.run(() => {
+        this.errorMessage = error instanceof Error ? error.message : String(error);
+      });
+    }).finally(() => {
+      if (this.destroyed) return;
+      this.ngZone.run(() => {
+        this.generationRequestPending = false;
+      });
+    });
+  }
+
   private async restart(): Promise<void> {
     const generation = ++this.launchGeneration;
     const previous = this.adapter;
     this.adapter = null;
+    this.regenerationRequirement = null;
     this.blocklyService.clearDebugExecutionMarker();
-    await previous?.close();
+    if (previous) {
+      await previous.close();
+    } else {
+      await this.simulatorApi()?.close(this.ownerId);
+    }
     if (this.destroyed || generation !== this.launchGeneration) return;
     await this.launch(generation);
   }
 
   private async launch(generation = ++this.launchGeneration): Promise<void> {
     const frame = this.frame?.nativeElement;
-    const api = (window as any).electronAPI?.simulatorSubapp as
-      | SimulatorSubappElectronApi
-      | undefined;
+    const api = this.simulatorApi();
     if (!frame || !api || this.destroyed) return;
 
     this.errorMessage = '';
     this.runtimeSource = '';
+    this.regenerationRequirement = null;
+    this.state = 'acquiring';
     let projectPath: string;
     try {
       projectPath = this.projectService.currentProjectPath;
       if (!projectPath) {
-        throw new Error('请先打开并编译一个项目，再启动仿真。');
+        throw new Error('请先打开一个项目，再启动仿真。');
       }
     } catch (error) {
       this.applyLaunchError(error, generation);
@@ -151,15 +281,88 @@ implements AfterViewInit, OnDestroy {
       return;
     }
 
+    let initialSurface: SimulatorSubappSurface | null;
+    try {
+      const openResult = await api.openProjectScene({
+        projectPath,
+        ownerId: this.ownerId,
+        sceneId: 'main',
+      });
+      if (
+        this.destroyed
+        || generation !== this.launchGeneration
+        || projectPath !== this.projectService.currentProjectPath
+      ) {
+        await api.close(this.ownerId);
+        return;
+      }
+      this.runtimeSource = openResult.runtimePackId
+        ? `${openResult.runtimePackId} (${openResult.runtimeMode || 'unknown'})`
+        : openResult.runtimeSource;
+      if (isProjectSceneRegenerationRequired(openResult)) {
+        this.ngZone.run(() => {
+          this.regenerationRequirement = openResult.requirement;
+          this.state = 'idle';
+        });
+        return;
+      }
+      initialSurface = openResult;
+    } catch (error) {
+      this.applyLaunchError(error, generation);
+      return;
+    }
+
+    await this.startSurfaceAdapter(api, projectPath, initialSurface, generation);
+  }
+
+  private async presentResolvedRegenerationSurface(
+    surface: SimulatorSubappSurface,
+  ): Promise<void> {
+    const api = this.simulatorApi();
+    const projectPath = this.projectService.currentProjectPath;
+    const generation = this.launchGeneration;
+    if (
+      !api
+      || !projectPath
+      || this.destroyed
+      || this.adapter
+    ) {
+      return;
+    }
+    this.runtimeSource = surface.runtimePackId
+      ? `${surface.runtimePackId} (${surface.runtimeMode || 'unknown'})`
+      : surface.runtimeSource;
+    await this.startSurfaceAdapter(api, projectPath, surface, generation);
+  }
+
+  private async startSurfaceAdapter(
+    api: SimulatorSubappElectronApi,
+    projectPath: string,
+    surface: SimulatorSubappSurface,
+    generation: number,
+  ): Promise<void> {
+    const frame = this.frame?.nativeElement;
+    if (
+      !frame
+      || this.destroyed
+      || generation !== this.launchGeneration
+      || projectPath !== this.projectService.currentProjectPath
+    ) {
+      return;
+    }
+    let initialSurface: SimulatorSubappSurface | null = surface;
     const adapter = new SimulatorSubappFrameAdapter({
       window,
       frame,
       acquireSurface: async () => {
-        const surface = await api.openProjectScene({
-          projectPath,
-          ownerId: this.ownerId,
-          sceneId: 'main',
+        const result = initialSurface ?? await api.openProjectScene({
+          projectPath, ownerId: this.ownerId, sceneId: 'main',
         });
+        initialSurface = null;
+        if (isProjectSceneRegenerationRequired(result)) {
+          throw new Error('Project Scene requires Agent regeneration before opening.');
+        }
+        const surface = result;
         try {
           await api.attachProjectSceneSession(this.ownerId);
         } catch {
@@ -225,6 +428,18 @@ implements AfterViewInit, OnDestroy {
       this.errorMessage = publicErrorMessage(error);
     });
   }
+
+  private simulatorApi(): SimulatorSubappElectronApi | undefined {
+    return (window as any).electronAPI?.simulatorSubapp as
+      | SimulatorSubappElectronApi
+      | undefined;
+  }
+}
+
+function isProjectSceneRegenerationRequired(
+  value: SimulatorSubappSurface | ProjectSceneRegenerationRequired,
+): value is ProjectSceneRegenerationRequired {
+  return value.kind === 'aily-simulator-subapp-project-scene-regeneration-required';
 }
 
 function createOwnerId(): string {

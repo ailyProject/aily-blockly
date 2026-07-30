@@ -309,6 +309,9 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
             return { ok: true };
           },
           reportActivity: (payload: unknown) => this.ngZone.run(() => this.reportActivity(payload)),
+          openFull: (mode: unknown = 'embedded') => this.ngZone.run(() => this.openFull(
+            mode === 'window' ? 'window' : 'embedded',
+          )),
           openExternal: (url: string) => this.openExternal(url),
         },
       });

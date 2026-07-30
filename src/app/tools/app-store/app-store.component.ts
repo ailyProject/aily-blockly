@@ -35,6 +35,18 @@ import { ChildToolProcessService } from '../../services/child-tool-process.servi
 import { MainUiAutomationService } from '../../services/main-ui-automation.service';
 import { ChildAppHostRegistryService } from '../../services/child-app-host-registry.service';
 
+const SUBAPP_MORE_MENU_VIEWPORT_MARGIN = 8;
+const SUBAPP_MORE_MENU_GAP = 3;
+const SUBAPP_MORE_MENU_ESTIMATED_WIDTH = 148;
+const SUBAPP_MORE_ACTION_HEIGHT = 28;
+const SUBAPP_MORE_MENU_PADDING = 8;
+const SUBAPP_MORE_ACTION_COUNT = 2;
+
+interface SubappMoreMenuPosition {
+  left: number;
+  top: number;
+}
+
 @Component({
   selector: 'app-app-store',
   imports: [
@@ -59,14 +71,17 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   catalogWarning = '';
   installRoot = '';
   pendingCatalogId = '';
+  pendingProgress = 0;
   checkingCatalogId = '';
   confirmUninstallCatalogId = '';
   openMoreCatalogId = '';
+  subappMoreMenuPosition: SubappMoreMenuPosition | null = null;
 
   private visibleCatalogIds: string[] = [];
   private sortables: Sortable[] = [];
   private layoutSubscription?: Subscription;
   private catalogSubscription?: Subscription;
+  private progressSubscription?: Subscription;
   private confirmUninstallTimer?: ReturnType<typeof setTimeout>;
   private isDraggingToolbarApp = false;
   private activeSubappVersions = new Map<string, string>();
@@ -108,6 +123,17 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.installRoot = state.installRoot;
       this.cdr.markForCheck();
     });
+    this.progressSubscription = this.subappManager.progress$.subscribe((progress) => {
+      if (!progress || progress.id !== this.pendingCatalogId) {
+        if (!this.pendingCatalogId) {
+          this.pendingProgress = 0;
+        }
+        this.cdr.markForCheck();
+        return;
+      }
+      this.pendingProgress = Math.max(this.pendingProgress, Math.round(progress.percent || 0));
+      this.cdr.markForCheck();
+    });
   }
 
   ngAfterViewInit(): void {
@@ -117,6 +143,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   ngOnDestroy(): void {
     this.layoutSubscription?.unsubscribe();
     this.catalogSubscription?.unsubscribe();
+    this.progressSubscription?.unsubscribe();
     this.sortables.forEach(sortable => sortable.destroy());
     this.sortables = [];
     this.closeSubappMore();
@@ -240,6 +267,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
     this.clearUninstallConfirmation();
+    this.subappMoreMenuPosition = this.calculateSubappMoreMenuPosition(event.currentTarget);
     this.openMoreCatalogId = catalogId;
     void this.refreshSubappActiveVersion(app);
     this.cdr.markForCheck();
@@ -247,6 +275,14 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   isSubappMoreOpen(app: AppItem): boolean {
     return !!app.subapp && this.openMoreCatalogId === app.subapp.catalogId;
+  }
+
+  getSubappMoreMenuLeft(app: AppItem): number | null {
+    return this.isSubappMoreOpen(app) ? this.subappMoreMenuPosition?.left ?? null : null;
+  }
+
+  getSubappMoreMenuTop(app: AppItem): number | null {
+    return this.isSubappMoreOpen(app) ? this.subappMoreMenuPosition?.top ?? null : null;
   }
 
   uninstallSubapp(app: AppItem): void {
@@ -264,13 +300,21 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    this.clearUninstallConfirmation();
-    this.openMoreCatalogId = '';
+    this.closeSubappMore();
     void this.runSubappAction('uninstall', app);
   }
 
   isSubappPending(app: AppItem): boolean {
     return !!app.subapp && this.pendingCatalogId === app.subapp.catalogId;
+  }
+
+  getInstallProgressPercent(app: AppItem): number {
+    if (!this.isSubappPending(app)) return 0;
+    return Math.max(1, Math.min(100, this.pendingProgress || 1));
+  }
+
+  getInstallProgressRatio(app: AppItem): string {
+    return String(Math.max(0.02, this.getInstallProgressPercent(app) / 100));
   }
 
   isCheckingSubapp(app: AppItem): boolean {
@@ -295,6 +339,15 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   @HostListener('document:keydown.escape')
   closeSubappMoreOnEscape(): void {
+    this.closeSubappMoreOnOutsideClick();
+  }
+
+  @HostListener('window:resize')
+  closeSubappMoreOnResize(): void {
+    this.closeSubappMoreOnOutsideClick();
+  }
+
+  closeSubappMoreOnScroll(): void {
     this.closeSubappMoreOnOutsideClick();
   }
 
@@ -357,6 +410,8 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const subapp = app.subapp;
     if (!subapp || this.pendingCatalogId) return;
     this.pendingCatalogId = subapp.catalogId;
+    this.pendingProgress = 1;
+    this.cdr.markForCheck();
     try {
       if (action !== 'install') {
         await this.childToolProcess.stop(app.id);
@@ -365,12 +420,14 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         this.uiService.closeTool(app.id);
       }
       await this.subappManager[action](subapp.catalogId);
+      this.pendingProgress = 100;
       this.message.success(this.translate.instant(`APP_STORE.${action.toUpperCase()}_SUCCESS`, { name: app.name }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || 'Unknown error');
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
     } finally {
       this.pendingCatalogId = '';
+      this.pendingProgress = 0;
       this.cdr.markForCheck();
     }
   }
@@ -400,9 +457,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
     let restartTarget: AppItem | null = null;
     this.pendingCatalogId = subapp.catalogId;
+    this.pendingProgress = 1;
     this.cdr.markForCheck();
     try {
       await this.subappManager.update(subapp.catalogId);
+      this.pendingProgress = 100;
       const updatedApp = this.subappManager.getCatalogApps()
         .find((item) => item.subapp?.catalogId === subapp.catalogId);
       const updatedInstalledVersion = String(updatedApp?.subapp?.installedVersion || '').trim();
@@ -418,6 +477,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
     } finally {
       this.pendingCatalogId = '';
+      this.pendingProgress = 0;
       this.cdr.markForCheck();
     }
 
@@ -517,7 +577,59 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private closeSubappMore(): void {
     this.openMoreCatalogId = '';
+    this.subappMoreMenuPosition = null;
     this.clearUninstallConfirmation();
+  }
+
+  private calculateSubappMoreMenuPosition(
+    trigger: EventTarget | null
+  ): SubappMoreMenuPosition {
+    const triggerElement = trigger instanceof HTMLElement ? trigger : null;
+    const triggerRect = triggerElement?.getBoundingClientRect();
+    const menuWidth = SUBAPP_MORE_MENU_ESTIMATED_WIDTH;
+    const menuHeight =
+      SUBAPP_MORE_ACTION_COUNT * SUBAPP_MORE_ACTION_HEIGHT + SUBAPP_MORE_MENU_PADDING;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+    if (!triggerRect) {
+      return {
+        left: Math.max(
+          SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
+          viewportWidth - menuWidth - SUBAPP_MORE_MENU_VIEWPORT_MARGIN
+        ),
+        top: SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
+      };
+    }
+
+    const preferredLeft = triggerRect.right - menuWidth;
+    const left = this.clamp(
+      preferredLeft,
+      SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
+      Math.max(
+        SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
+        viewportWidth - menuWidth - SUBAPP_MORE_MENU_VIEWPORT_MARGIN
+      )
+    );
+    const bottomTop = triggerRect.bottom + SUBAPP_MORE_MENU_GAP;
+    const topTop = triggerRect.top - menuHeight - SUBAPP_MORE_MENU_GAP;
+    const top =
+      bottomTop + menuHeight + SUBAPP_MORE_MENU_VIEWPORT_MARGIN <= viewportHeight
+        ? bottomTop
+        : this.clamp(
+          topTop,
+          SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
+          Math.max(
+            SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
+            viewportHeight - menuHeight - SUBAPP_MORE_MENU_VIEWPORT_MARGIN
+          )
+        );
+
+    return { left, top };
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
   }
 
   private createVisibilityContext() {

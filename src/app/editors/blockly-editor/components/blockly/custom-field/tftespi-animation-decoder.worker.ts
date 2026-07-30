@@ -1,7 +1,7 @@
 import { createFile, DataStream } from 'mp4box';
 
 type AnimationFormat = 'rgb565' | 'rgb332';
-type AnimationEncoding = 'rgb565-be-base64' | 'rgb332-base64';
+type AnimationEncoding = 'rgb565-be' | 'rgb332';
 
 interface DecodeRequest {
     type: 'decode';
@@ -26,8 +26,8 @@ interface DecodeOptions {
 }
 
 interface DecodeResult extends DecodeOptions {
-    version: 1;
-    frames: string[];
+    schemaVersion: 1;
+    frames: Uint8Array[];
     sourceName: string;
     sourceType: string;
 }
@@ -44,7 +44,6 @@ const MAX_DIMENSION = 16_384;
 const MAX_FPS = 30;
 const MAX_FRAMES = 300;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-const BASE64_CHUNK_BYTES = 32 * 1024;
 
 class LocalizedWorkerError extends Error {
     constructor(
@@ -91,16 +90,12 @@ function normalizeDurationUs(value: unknown, fallback: number) {
     return Number.isFinite(duration) && duration > 0 ? duration : fallback;
 }
 
-function getUtf8ByteLength(value: unknown) {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
-}
-
 function normalizeAnimationFormat(value: unknown): AnimationFormat {
     return value === 'rgb332' ? 'rgb332' : DEFAULT_FORMAT;
 }
 
 function getAnimationEncoding(format: AnimationFormat): AnimationEncoding {
-    return format === 'rgb332' ? 'rgb332-base64' : 'rgb565-be-base64';
+    return format === 'rgb332' ? 'rgb332' : 'rgb565-be';
 }
 
 function getFrameByteLength(width: number, height: number, format: AnimationFormat) {
@@ -116,55 +111,24 @@ function getFrameByteLength(width: number, height: number, format: AnimationForm
     return frameByteLength;
 }
 
-function getBase64Length(byteLength: number) {
-    return Math.ceil(byteLength / 3) * 4;
-}
-
 function getMaxFramesForOutputBudget(
-    request: DecodeRequest,
     width: number,
     height: number,
-    fps: number,
-    sourceType: string,
     format: AnimationFormat,
 ) {
-    const encoding = getAnimationEncoding(format);
-    const encodedFrameLength = getBase64Length(getFrameByteLength(width, height, format));
-    const emptyEnvelope = {
-        type: 'done',
-        requestId: request.requestId,
-        result: {
-            version: 1,
-            format,
-            encoding,
-            width,
-            height,
-            fps,
-            maxFrames: MAX_FRAMES,
-            frames: [],
-            sourceName: request.fileName || '',
-            sourceType,
-        },
-    };
-    const envelopeBytesWithoutFrames = getUtf8ByteLength(emptyEnvelope);
-
-    // JSON adds two quotes around every frame and one comma between adjacent frames.
-    const oneFrameOutputBytes = envelopeBytesWithoutFrames + encodedFrameLength + 2;
-    if (oneFrameOutputBytes > MAX_OUTPUT_BYTES) {
+    const frameByteLength = getFrameByteLength(width, height, format);
+    if (frameByteLength > MAX_OUTPUT_BYTES) {
         throw createWorkerError(
             'WORKER_ERROR_FRAME_TOO_LARGE',
-            { width, height, mode: format.toUpperCase(), size: oneFrameOutputBytes, maxSize: MAX_OUTPUT_BYTES },
+            { width, height, mode: format.toUpperCase(), size: frameByteLength, maxSize: MAX_OUTPUT_BYTES },
             `A single ${format.toUpperCase()} frame exceeds the 8 MiB output limit.`,
         );
     }
 
-    return Math.max(
-        1,
-        Math.floor((MAX_OUTPUT_BYTES - envelopeBytesWithoutFrames + 1) / (encodedFrameLength + 3)),
-    );
+    return Math.max(1, Math.floor(MAX_OUTPUT_BYTES / frameByteLength));
 }
 
-function normalizeDecodeOptions(request: DecodeRequest, sourceType: string): DecodeOptions {
+function normalizeDecodeOptions(request: DecodeRequest): DecodeOptions {
     const width = normalizeInteger(request.width, DEFAULT_WIDTH, 1, MAX_DIMENSION);
     const height = normalizeInteger(request.height, DEFAULT_HEIGHT, 1, MAX_DIMENSION);
     const fps = normalizeInteger(request.fps, DEFAULT_FPS, 1, MAX_FPS);
@@ -175,7 +139,7 @@ function normalizeDecodeOptions(request: DecodeRequest, sourceType: string): Dec
         1,
         MAX_FRAMES,
     );
-    const outputBudgetFrames = getMaxFramesForOutputBudget(request, width, height, fps, sourceType, format);
+    const outputBudgetFrames = getMaxFramesForOutputBudget(width, height, format);
 
     return {
         width,
@@ -185,15 +149,6 @@ function normalizeDecodeOptions(request: DecodeRequest, sourceType: string): Dec
         format,
         encoding: getAnimationEncoding(format),
     };
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-    let binary = '';
-    for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_BYTES) {
-        const end = Math.min(offset + BASE64_CHUNK_BYTES, bytes.length);
-        binary += String.fromCharCode(...bytes.subarray(offset, end));
-    }
-    return btoa(binary);
 }
 
 class PackedRgbFrameRenderer {
@@ -213,7 +168,7 @@ class PackedRgbFrameRenderer {
         this.context = context;
     }
 
-    render(frame: VideoFrame): string {
+    render(frame: VideoFrame): Uint8Array {
         this.context.globalCompositeOperation = 'source-over';
         this.context.fillStyle = '#000000';
         this.context.fillRect(0, 0, this.width, this.height);
@@ -237,7 +192,7 @@ class PackedRgbFrameRenderer {
             }
         }
 
-        return bytesToBase64(packed);
+        return packed;
     }
 }
 
@@ -340,12 +295,12 @@ async function getMp4VideoSamples(buffer: ArrayBuffer): Promise<{ track: any; sa
 
 function createDecodeResult(
     options: DecodeOptions,
-    frames: string[],
+    frames: Uint8Array[],
     sourceName: string,
     sourceType: string,
 ): DecodeResult {
     return {
-        version: 1,
+        schemaVersion: 1,
         ...options,
         frames,
         sourceName,
@@ -361,7 +316,7 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
     }
 
     const sourceType = request.mimeType || 'video/mp4';
-    const options = normalizeDecodeOptions(request, sourceType);
+    const options = normalizeDecodeOptions(request);
     postProgress(request.requestId, 'WORKER_STATUS_PARSE_MP4', {}, 0.08);
     const { track, samples } = await getMp4VideoSamples(request.buffer);
     const firstSample = samples[0];
@@ -384,11 +339,11 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
     }
 
     const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format);
-    const frames: string[] = [];
+    const frames: Uint8Array[] = [];
     const intervalUs = MICROSECONDS_PER_SECOND / options.fps;
     const sampleDurations = new Map<number, number>();
     let outputTimelineOrigin: number | null = null;
-    let lastEncodedFrame: string | null = null;
+    let lastEncodedFrame: Uint8Array | null = null;
     let outputError: unknown;
     let decoderError: unknown;
 
@@ -486,23 +441,26 @@ async function decodeMp4(request: DecodeRequest): Promise<DecodeResult> {
     return createDecodeResult(options, frames, request.fileName || '', sourceType);
 }
 
-async function decodeGif(request: DecodeRequest): Promise<DecodeResult> {
+async function decodeImage(
+    request: DecodeRequest,
+    sourceType: string,
+    formatLabel: string,
+): Promise<DecodeResult> {
     const ImageDecoderCtor = (self as any).ImageDecoder;
     if (!ImageDecoderCtor) {
         throw createWorkerError('WORKER_ERROR_IMAGE_DECODER_UNSUPPORTED');
     }
 
-    const sourceType = request.mimeType || 'image/gif';
-    const options = normalizeDecodeOptions(request, sourceType);
+    const options = normalizeDecodeOptions(request);
     const renderer = new PackedRgbFrameRenderer(options.width, options.height, options.format);
     const decoder = new ImageDecoderCtor({
         data: new Uint8Array(request.buffer),
-        type: 'image/gif',
+        type: sourceType,
     });
-    const frames: string[] = [];
+    const frames: Uint8Array[] = [];
 
     try {
-        postProgress(request.requestId, 'WORKER_STATUS_PARSE_IMAGE', { format: 'GIF' }, 0.08);
+        postProgress(request.requestId, 'WORKER_STATUS_PARSE_IMAGE', { format: formatLabel }, 0.08);
         await decoder.tracks.ready;
 
         const trackFrameCount = Number(decoder.tracks.selectedTrack?.frameCount || 0);
@@ -536,7 +494,7 @@ async function decodeGif(request: DecodeRequest): Promise<DecodeResult> {
                     postProgress(
                         request.requestId,
                         'WORKER_STATUS_DECODE_IMAGE_FRAME',
-                        { format: 'GIF', current: frames.length, total: options.maxFrames },
+                        { format: formatLabel, current: frames.length, total: options.maxFrames },
                         Math.min(0.95, 0.08 + 0.87 * frames.length / options.maxFrames),
                     );
                 }
@@ -551,10 +509,27 @@ async function decodeGif(request: DecodeRequest): Promise<DecodeResult> {
     }
 
     if (frames.length === 0) {
-        throw createWorkerError('WORKER_ERROR_IMAGE_NO_VALID_FRAMES', { format: 'GIF' });
+        throw createWorkerError('WORKER_ERROR_IMAGE_NO_VALID_FRAMES', { format: formatLabel });
     }
 
     return createDecodeResult(options, frames, request.fileName || '', sourceType);
+}
+
+function resolveImageSource(fileName: string, mimeType: string) {
+    if (mimeType.includes('gif') || fileName.endsWith('.gif')) {
+        return { sourceType: 'image/gif', formatLabel: 'GIF' };
+    }
+    if (mimeType.includes('png') || fileName.endsWith('.png')) {
+        return { sourceType: 'image/png', formatLabel: 'PNG' };
+    }
+    if (mimeType.includes('jpeg') || mimeType.includes('jpg')
+        || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) {
+        return { sourceType: 'image/jpeg', formatLabel: 'JPEG' };
+    }
+    if (mimeType.includes('webp') || fileName.endsWith('.webp')) {
+        return { sourceType: 'image/webp', formatLabel: 'WebP' };
+    }
+    return null;
 }
 
 self.addEventListener('message', async (event: MessageEvent<DecodeRequest>) => {
@@ -564,14 +539,16 @@ self.addEventListener('message', async (event: MessageEvent<DecodeRequest>) => {
     try {
         const fileName = (request.fileName || '').toLowerCase();
         const mimeType = (request.mimeType || '').toLowerCase();
-        const isGif = mimeType.includes('gif') || fileName.endsWith('.gif');
         const isMp4 = mimeType.includes('mp4') || fileName.endsWith('.mp4');
+        const imageSource = resolveImageSource(fileName, mimeType);
 
-        if (!isGif && !isMp4) {
+        if (!imageSource && !isMp4) {
             throw createWorkerError('WORKER_ERROR_UNSUPPORTED_FILE_TYPE');
         }
 
-        const result = isMp4 ? await decodeMp4(request) : await decodeGif(request);
+        const result = isMp4
+            ? await decodeMp4(request)
+            : await decodeImage(request, imageSource!.sourceType, imageSource!.formatLabel);
         self.postMessage({
             type: 'done',
             requestId: request.requestId,

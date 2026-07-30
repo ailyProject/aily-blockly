@@ -124,6 +124,7 @@ import { RepetitionDetectionService } from './services/repetition-detection.serv
 import { ChatHistoryService } from './services/chat-history.service';
 import { ChatDebugBrowserService, ChatDebugBrowserViewState } from './services/chat-debug-browser.service';
 import { ChatRuntimeInteractionHostService } from './services/chat-runtime-interaction-host.service';
+import { ChatRuntimeOwnerToolApprovalService } from './services/chat-runtime-owner-tool-approval.service';
 import { ChatRemoteCapabilityService } from './services/chat-remote-capability.service';
 import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
@@ -143,12 +144,6 @@ import type { ChatSessionTitleActionRequest, ChatSessionTitleSurfaceModel } from
 import type { IMenuItem } from '../../configs/menu.config';
 export type { Tool, ResourceItem, ChatMessage, ToolCallInfo };
 export { ToolCallState };
-
-interface PendingFollowupSection {
-  readonly kind: ChatPendingRequestKind;
-  readonly title: string;
-  readonly requests: readonly PendingFollowupRequest[];
-}
 
 function readUnpatchedAilyChatTimer<T extends (...args: any[]) => any>(name: 'setTimeout' | 'clearTimeout'): T | null {
   const runtime = globalThis as any;
@@ -392,6 +387,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     private themeService: ThemeService,
     private toolI18n: ToolI18nService,
     private hostInitializer: AilyChatHostInitializerService,
+    private runtimeOwnerToolApproval: ChatRuntimeOwnerToolApprovalService,
     public runtimeInteractionHost: ChatRuntimeInteractionHostService,
     public remoteCapability: ChatRemoteCapabilityService,
     public engine: ChatEngineService,
@@ -418,6 +414,14 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     exposeAilyChatE2eHarness({
       engine: this.engine,
       viewState: this.viewState,
+      openEmbeddedTool: (toolId) => this.uiService.openToolEmbedded(toolId),
+      closeTool: (toolId) => this.uiService.closeTool(toolId),
+      requestToolApproval: (sessionId, request) => this.runtimeOwnerToolApproval.handleToolApproval({
+        lexStream: this.engine.lexStream,
+        sessionId,
+        defaultSessionId: sessionId,
+        request,
+      }),
       readRenderingDiagnostics: () => this.readRenderingDiagnostics(),
       readPerformanceDiagnostics: () => ({
         ...ChatPerformanceTracer.snapshotPerformanceState(),
@@ -1641,23 +1645,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   getCurrentSessionPendingFollowupRequests(): readonly PendingFollowupRequest[] {
     return this.requestController.getPending(this.vm.sessionId);
-  }
-
-  getCurrentSessionPendingFollowupSections(): readonly PendingFollowupSection[] {
-    const pendingRequests = this.getCurrentSessionPendingFollowupRequests();
-    const steering = pendingRequests.filter(request => request.kind === 'steering');
-    const queued = pendingRequests.filter(request => request.kind === 'queued');
-    const sections: PendingFollowupSection[] = [];
-
-    if (steering.length > 0) {
-      sections.push({ kind: 'steering', title: 'Steering', requests: steering });
-    }
-
-    if (queued.length > 0) {
-      sections.push({ kind: 'queued', title: 'Queued', requests: queued });
-    }
-
-    return sections;
   }
 
   getPendingFollowupDisplayText(request: PendingFollowupRequest): string {

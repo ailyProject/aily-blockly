@@ -4,6 +4,12 @@ const { requestWindowAttention } = require('./window-attention');
 const { killCmdProcess, getActiveCmdProcesses } = require('./cmd');
 const { killRegisteredProcessTree } = require('./process-tree');
 const {
+    acquireOwner: acquireChildToolOwner,
+    ownerCount: childToolOwnerCount,
+    releaseOwner: releaseChildToolOwner,
+    releaseOwnerFromSessions: releaseChildToolOwnerFromSessions,
+} = require('./child-tool-session-leases');
+const {
     registerChatRuntimeHostIpc,
 } = require('./chat-runtime-host');
 const {
@@ -27,8 +33,9 @@ const SUB_WINDOW_MIN_WIDTH = 400;
 const SUB_WINDOW_MIN_HEIGHT = 300;
 const CHILD_TOOL_RELEASE_GRACE_MS = 15000;
 
-/** @type {Map<string, { hostInfo: any, streamId: string, refCount: number, releaseTimer: NodeJS.Timeout | null }>} */
+/** @type {Map<string, { hostInfo: any, streamId: string, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+const childToolOwnerCleanupRegistrations = new Set();
 const SUB_WINDOW_DARK_BACKGROUND_COLOR = '#2b2d30';
 const SUB_WINDOW_LIGHT_BACKGROUND_COLOR = '#e8e8e8';
 
@@ -92,16 +99,6 @@ function sanitizeChildToolId(toolId) {
     return String(toolId || '').trim();
 }
 
-function resolveChildToolIdFromWindowUrl(windowUrl) {
-    const match = String(windowUrl || '').match(/^\/child-tool\/([^/?#]+)/);
-    if (!match) return '';
-    try {
-        return sanitizeChildToolId(decodeURIComponent(match[1]));
-    } catch (_) {
-        return sanitizeChildToolId(match[1]);
-    }
-}
-
 function isPidAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) {
         return false;
@@ -119,7 +116,7 @@ function cloneChildToolSession(session) {
         ? {
             hostInfo: session.hostInfo,
             streamId: session.streamId,
-            refCount: session.refCount,
+            refCount: childToolOwnerCount(session),
         }
         : null;
 }
@@ -190,11 +187,25 @@ function scheduleChildToolRelease(toolId, session) {
         return;
     }
 
+    console.info('[ChildToolSession] Runtime release scheduled', {
+        toolId,
+        streamId: session.streamId,
+        graceMs: CHILD_TOOL_RELEASE_GRACE_MS,
+    });
     session.releaseTimer = setTimeout(() => {
         session.releaseTimer = null;
-        if (session.refCount > 0) {
+        if (childToolOwnerCount(session) > 0) {
+            console.info('[ChildToolSession] Runtime release cancelled by active lease', {
+                toolId,
+                streamId: session.streamId,
+                refCount: childToolOwnerCount(session),
+            });
             return;
         }
+        console.info('[ChildToolSession] Runtime stopping after final lease release', {
+            toolId,
+            streamId: session.streamId,
+        });
         void stopChildToolSessionProcess(session).finally(() => {
             childToolSessions.delete(toolId);
             broadcastChildToolSessionStateChanged();
@@ -202,7 +213,7 @@ function scheduleChildToolRelease(toolId, session) {
     }, CHILD_TOOL_RELEASE_GRACE_MS);
 }
 
-function releaseChildToolSession(toolIdOrPayload) {
+function releaseChildToolSession(toolIdOrPayload, ownerId) {
     const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
         ? toolIdOrPayload
         : { toolId: toolIdOrPayload };
@@ -220,12 +231,57 @@ function releaseChildToolSession(toolIdOrPayload) {
         };
     }
 
-    session.refCount = Math.max(0, session.refCount - 1);
-    if (session.refCount === 0) {
+    const releaseResult = releaseChildToolOwner(session, ownerId, payload.leaseId);
+    if (!releaseResult.success) {
+        return {
+            success: false,
+            reason: releaseResult.reason,
+            session: cloneChildToolSession(session),
+        };
+    }
+    if (childToolOwnerCount(session) === 0) {
         scheduleChildToolRelease(normalizedToolId, session);
     }
+    console.info('[ChildToolSession] lease released', {
+        toolId: normalizedToolId,
+        streamId: session.streamId,
+        ownerId,
+        leaseId: String(payload.leaseId || ''),
+        refCount: childToolOwnerCount(session),
+    });
 
     return { success: true, session: cloneChildToolSession(session) };
+}
+
+function releaseChildToolSessionsForOwner(ownerId) {
+    const released = releaseChildToolOwnerFromSessions(childToolSessions, ownerId);
+    for (const { toolId, session } of released) {
+        console.info('[ChildToolSession] renderer owner released', {
+            toolId,
+            streamId: session.streamId,
+            ownerId,
+            refCount: childToolOwnerCount(session),
+        });
+        if (childToolOwnerCount(session) === 0) {
+            scheduleChildToolRelease(toolId, session);
+        }
+    }
+    if (released.length > 0) {
+        broadcastChildToolSessionStateChanged();
+    }
+}
+
+function trackChildToolSessionOwner(webContents) {
+    const ownerId = Number(webContents?.id);
+    if (!Number.isInteger(ownerId) || ownerId <= 0 || childToolOwnerCleanupRegistrations.has(ownerId)) {
+        return ownerId;
+    }
+    childToolOwnerCleanupRegistrations.add(ownerId);
+    webContents.once('destroyed', () => {
+        childToolOwnerCleanupRegistrations.delete(ownerId);
+        releaseChildToolSessionsForOwner(ownerId);
+    });
+    return ownerId;
 }
 
 async function restartChildToolSession(toolId) {
@@ -262,7 +318,7 @@ function listChildToolSessions() {
             toolId,
             streamId: session?.streamId || '',
             hostInfo: session?.hostInfo || null,
-            refCount: session?.refCount || 0,
+            refCount: childToolOwnerCount(session),
             running,
             pid: processInfo?.pid ?? session?.hostInfo?.pid,
             command: processInfo?.command || '',
@@ -980,11 +1036,6 @@ function registerWindowHandlers(mainWindow, options = {}) {
         subWindow.on('closed', () => {
             openWindows.delete(windowUrl);
             notifySubWindowState(windowUrl, false);
-            const childToolId = resolveChildToolIdFromWindowUrl(windowUrl);
-            if (childToolId) {
-                const releaseResult = releaseChildToolSession(childToolId);
-                if (releaseResult.success) notifyChildToolSessionStateChanged();
-            }
         });
     };
 
@@ -1227,8 +1278,11 @@ function registerWindowHandlers(mainWindow, options = {}) {
         return requestChildAppHostCommand(payload.path, payload.command);
     });
 
-    ipcMain.handle("child-tool-session-acquire", (_event, toolId) => {
-        const normalizedToolId = sanitizeChildToolId(toolId);
+    ipcMain.handle("child-tool-session-acquire", (event, toolIdOrPayload) => {
+        const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
+            ? toolIdOrPayload
+            : { toolId: toolIdOrPayload, leaseId: 'legacy-renderer' };
+        const normalizedToolId = sanitizeChildToolId(payload.toolId);
         const session = childToolSessions.get(normalizedToolId);
         if (!session?.hostInfo) {
             return null;
@@ -1241,35 +1295,67 @@ function registerWindowHandlers(mainWindow, options = {}) {
         }
 
         cancelChildToolRelease(session);
-        session.refCount += 1;
+        const ownerId = trackChildToolSessionOwner(event.sender);
+        const acquired = acquireChildToolOwner(session, ownerId, payload.leaseId || 'legacy-renderer');
+        if (!acquired.success) {
+            return null;
+        }
+        console.info('[ChildToolSession] shared lease acquired', {
+            toolId: normalizedToolId,
+            streamId: session.streamId,
+            ownerId,
+            leaseId: String(payload.leaseId || 'legacy-renderer'),
+            refCount: childToolOwnerCount(session),
+        });
         return cloneChildToolSession(session);
     });
 
-    ipcMain.handle("child-tool-session-register", async (_event, payload = {}) => {
+    ipcMain.handle("child-tool-session-register", async (event, payload = {}) => {
         const toolId = sanitizeChildToolId(payload.toolId);
         if (!toolId || !payload.hostInfo || !payload.streamId) {
             return { success: false, reason: 'invalid-payload' };
         }
 
         const existing = childToolSessions.get(toolId);
+        const ownerId = trackChildToolSessionOwner(event.sender);
+        const leaseId = String(payload.leaseId || 'legacy-renderer');
+        if (existing && existing.streamId === payload.streamId) {
+            cancelChildToolRelease(existing);
+            const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
+            return acquired.success
+                ? { success: true, session: cloneChildToolSession(existing) }
+                : { success: false, reason: acquired.reason };
+        }
         if (existing && existing.streamId && existing.streamId !== payload.streamId) {
             cancelChildToolRelease(existing);
             await stopChildToolSessionProcess(existing);
         }
 
-        childToolSessions.set(toolId, {
+        const session = {
             hostInfo: payload.hostInfo,
             streamId: payload.streamId,
-            refCount: 1,
+            owners: new Map(),
             releaseTimer: null,
+        };
+        const acquired = acquireChildToolOwner(session, ownerId, leaseId);
+        if (!acquired.success) {
+            return { success: false, reason: acquired.reason };
+        }
+        childToolSessions.set(toolId, session);
+        console.info('[ChildToolSession] Runtime registered', {
+            toolId,
+            streamId: payload.streamId,
+            ownerId,
+            leaseId,
+            refCount: childToolOwnerCount(session),
         });
 
         notifyChildToolSessionStateChanged();
         return { success: true, session: cloneChildToolSession(childToolSessions.get(toolId)) };
     });
 
-    ipcMain.handle("child-tool-session-release", (_event, payload) => {
-        const result = releaseChildToolSession(payload);
+    ipcMain.handle("child-tool-session-release", (event, payload) => {
+        const result = releaseChildToolSession(payload, event.sender?.id);
         notifyChildToolSessionStateChanged();
         return result;
     });

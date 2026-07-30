@@ -7,6 +7,7 @@
         "PLAN_LABEL": "خطة {{plan}}",
         "AI_CALLS": "مرات استخدام الذكاء الاصطناعي",
         "AUTO_MODE": "الوضع التلقائي",
+        "AI_CALLS_RESET_SHORT": "{{date}} إعادة ضبط",
         "ADD_AI_CALLS": "زيادة مرات الاستخدام",
         "CLOUD_STORAGE": "التخزين السحابي",
         "ADD_STORAGE": "زيادة مساحة التخزين",

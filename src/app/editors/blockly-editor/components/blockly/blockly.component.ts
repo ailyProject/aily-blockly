@@ -49,17 +49,23 @@ import {
   type BlockCodeMapping,
 } from './generators/arduino/arduino';
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
-import { BlocklyGeneratorRuntimeService } from '../../services/blockly-generator-runtime.service';
+import {
+  BlocklyGeneratorRuntimeService,
+  runWithPreparedActiveProjectGenerator,
+} from '../../services/blockly-generator-runtime.service';
 import { BitmapUploadResponse, GlobalServiceManager } from '../../services/bitmap-upload.service';
+import { projectDataRuntime } from '../../../../services/project-data/project-data-runtime';
 
 import './renderer/aily-icon';
 import './renderer/aily-thrasos/thrasos';
 import './renderer/aily-zelos/zelos';
 import './custom-category';
 import './custom-field/field-bitmap';
-import './custom-field/field-bitmap-u8g2';
+import './custom-field/field-u8g2-bitmap';
 import { setU8g2AnimationFieldTranslator } from './custom-field/field-u8g2-animation';
 import { setTftEsPiAnimationFieldTranslator } from './custom-field/field-tftespi-animation';
+import { setTftEsPiImageFieldTranslator } from './custom-field/field-tftespi-image';
+import { registerMediaFieldEditorStyles } from './custom-field/field-media-editor-style';
 import './custom-field/field-image';
 import './custom-field/field-image-preview';
 import './custom-field/field-led-matrix';
@@ -102,6 +108,7 @@ import { applyWindowsBlocklyScrollbarThickness } from '../../utils/apply-windows
 import { BlocklyToolboxPaneComponent } from './components/blockly-toolbox-pane/blockly-toolbox-pane.component';
 import { BlocklyWorkspacePagesComponent } from './components/blockly-workspace-pages/blockly-workspace-pages.component';
 import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
+import { writeArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
 import {
   createEmptyProjectDebugConfigurationState,
   getProjectBreakpointMarkerState,
@@ -150,6 +157,7 @@ class ProjectDebugConfigurationMutationEvent
 
 // 全局关闭 Blockly 文本输入字段的拼写检查，避免 block 内 input 出现红色波浪线
 (Blockly.FieldTextInput.prototype as unknown as { spellcheck_: boolean }).spellcheck_ = false;
+registerMediaFieldEditorStyles();
 
 /** Flyout 图钉右侧额外留白：Blockly 垂直条在 injectionDiv；vScroll 不可见时 DOM 仍可能有宽度，需一并判断 */
 function flyoutPinRightExtraX(
@@ -427,12 +435,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       kind: 'categoryToolbox',
       contents: [],
     },
-    // plugins: {
-    //   toolbox: ContinuousToolbox,
-    //   flyoutsVerticalToolbox: ContinuousFlyout,
-    //   metricsManager: ContinuousMetrics,
-    // },
-    // theme: Blockly.Theme.defineTheme('zelos', DEV_THEME),
     theme: DarkTheme,
     renderer: 'thrasos',
     trashcan: true,
@@ -843,6 +845,12 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
       // 初始化跨实例复制粘贴的全局桥接
       (window as any).__ailyClipboard = window['clipboard'] || null;
+      (window as any).__ailyProjectDataClipboard = {
+        export: (value: unknown) => projectDataRuntime.exportClipboardBundle(value),
+        import: (bundle: unknown, requiredValue: unknown) => (
+          projectDataRuntime.importClipboardBundle(bundle, requiredValue)
+        ),
+      };
       // 注册跨实例粘贴时缺失库的安装回调
       (window as any).__ailyBlockPasteNeedsInstall = (missingLibs: MissingLibInfo[]) => {
         // Filter to only installable libs (those with a name)
@@ -959,9 +967,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
             this.codeViewerIpcService.publishSelection(this.blocklyService.selectedBlockSubject.value);
-            if (this.blocklyService.selectedBlockIdsSubject.value.length > 0) {
-              this.uiService.focusActiveAilyChatInput();
-            }
           });
         }
       });
@@ -2079,6 +2084,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     Blockly.Msg["CONTROLS_SWITCH_DEFAULT"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DEFAULT') || (lang.startsWith('zh') ? "默认执行" : "default");
     setU8g2AnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiAnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
+    setTftEsPiImageFieldTranslator((key, params) => this.translateService.instant(key, params));
     this.queueProjectBreakpointMarkerSync();
 
     // 如果工作区已存在，刷新工具箱以应用新语言
@@ -2264,19 +2270,34 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     this.codeGenerationSubject.pipe(
       debounceTime(500),
       takeUntil(this.destroy$)
-    ).subscribe(() => {
+    ).subscribe(async () => {
       try {
-        const code = normalizeArduinoGeneratedCode(this.generator.workspaceToCode(this.workspace));
+        const projectPath = this.projectService.currentProjectPath;
+        const projectDocument = this.blocklyService.getProjectDocument();
+        const generated = await runWithPreparedActiveProjectGenerator(
+          this.workspace,
+          (generator) => {
+            const activeBlockCodeMap = (
+              generator as { blockCodeMap?: Map<string, BlockCodeMapping> }
+            ).blockCodeMap;
+            return {
+              code: normalizeArduinoGeneratedCode(generator.workspaceToCode(this.workspace)),
+              generator,
+              blockCodeMap: activeBlockCodeMap ? new Map(activeBlockCodeMap) : null,
+            };
+          },
+          projectDocument,
+        );
+        const { code, generator } = generated;
+        const blockCodeMap = generated.blockCodeMap ?? new Map<string, BlockCodeMapping>();
+        await writeArduinoGeneratedArtifacts(projectPath, generator);
         this.blocklyService.publishGeneratedCode(code);
         void this.projectDebugConfigurationService.updateWorkspaceGeneratedCode(
-          this.projectService.currentProjectPath,
+          projectPath,
           code,
         );
-        let blockCodeMap = new Map<string, BlockCodeMapping>();
-
         // 发布 block-to-code 映射
-        if (this.generator.blockCodeMap) {
-          blockCodeMap = new Map(this.generator.blockCodeMap);
+        if (generated.blockCodeMap) {
           this.blocklyService.blockCodeMapSubject.next(blockCodeMap);
           this.blocklyService.absBlockLineMap.next(new Map());
         }

@@ -25,6 +25,7 @@ import { ProjectService } from '../../services/project.service';
 import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
 import { UiService } from '../../services/ui.service';
+import { toHostResourceLifecycleRequest } from '../../services/subapp-resource-lifecycle-adapter';
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
@@ -791,19 +792,26 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private forwardToolSignal(action: any): void {
-    if (!this.remoteApi?.handleToolSignal) return;
     if (action?.action !== 'signal' || action?.type !== 'tool') return;
     if (action?.payload?.source === this.childSignalSource()) return;
 
+    const payload = this.cloneSignalPayload(action.payload);
+    const resourceRequest = toHostResourceLifecycleRequest(String(action.data || ''), payload);
+    // Resource handoff is delivered directly to every compatible running
+    // Runtime by SubappResourceLifecycleService. Keeping it out of the iframe
+    // path makes the handoff independent of full/compact UI lifecycle.
+    if (resourceRequest || typeof this.remoteApi?.handleToolSignal !== 'function') return;
     const task = Promise.resolve(this.remoteApi.handleToolSignal({
       action: action.action,
       type: action.type,
       data: action.data,
-      payload: this.cloneSignalPayload(action.payload)
+      payload
     })).then(() => undefined).catch(() => undefined);
 
     if (Array.isArray(action?.payload?.waitFor)) {
       action.payload.waitFor.push(task);
+    } else {
+      void task.catch(() => undefined);
     }
   }
 

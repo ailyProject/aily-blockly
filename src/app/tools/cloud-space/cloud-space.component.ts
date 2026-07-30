@@ -20,6 +20,9 @@ import { LoginComponent } from '../../components/login/login.component';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '../../services/local-library-sync.service';
 import { TranslateService } from '@ngx-translate/core';
+import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
+import { assertNoOversizedInlineValues } from '../../services/project-data/project-data-policy';
+import { extractStructuredAbsValues } from '../../services/project-data/project-data-abs';
 
 @Component({
   selector: 'app-cloud-space',
@@ -168,7 +171,9 @@ export class CloudSpaceComponent {
         res.data.list.forEach(prj => {
           // 图片url
           let imageUrl = '';
-          if (prj.image_url) {
+          if (prj.image_cdn_url) {
+            imageUrl = prj.image_cdn_url;
+          } else if (prj.image_url) {
             const timestamp = new Date().getTime();
             const separator = prj.image_url.includes('?') ? '&' : '?';
             imageUrl = this.cloudService.baseUrl + prj.image_url + separator + 't=' + timestamp;
@@ -240,6 +245,28 @@ export class CloudSpaceComponent {
     if (!await window['fs'].existsSync(packageJsonPath)) {
       this.message.error('package.json 文件不存在，无法打包');
       console.warn('package.json 不存在:', packageJsonPath);
+      return;
+    }
+
+    const abiPath = window['path'].join(prjPath, 'project.abi');
+    try {
+      const abi = JSON.parse(window['fs'].readFileSync(abiPath, 'utf8'));
+      assertNoOversizedInlineValues(abi);
+      await projectDataRuntime.flushPending();
+      const roots: unknown[] = [abi];
+      const absPath = window['path'].join(prjPath, 'project.abs');
+      if (window['fs'].existsSync(absPath)) {
+        roots.push(...extractStructuredAbsValues(window['fs'].readFileSync(absPath, 'utf8'), { strict: true }));
+      }
+      const validation = await projectDataRuntime.getStore().validateReferences(
+        roots.flatMap((root) => projectDataRuntime.getStore().collectReferences(root)),
+      );
+      if (!validation.valid) {
+        throw new Error(validation.issues.map((issue) => issue.error).join('; '));
+      }
+    } catch (error) {
+      this.message.error('项目数据资源不完整，无法打包');
+      console.error('项目数据资源预检失败:', error);
       return;
     }
 

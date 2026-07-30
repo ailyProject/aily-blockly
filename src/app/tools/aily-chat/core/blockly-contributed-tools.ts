@@ -19,6 +19,7 @@
 
 import type { IToolContribution, IHostToolProvider, ToolResultContent } from 'aily-lex/browser';
 import type { IExternalHostAPI } from 'aily-lex/host/blockly';
+import { onChildToolConfigsChanged } from '../../../configs/tool.config';
 import {
   normalizeChatAgentRuntimeMode,
   type ChatAgentRuntimeMode,
@@ -48,6 +49,10 @@ import {
   collectSubappAgentToolBindings,
   createSubappAgentHandlers,
 } from './blockly-subapp-agent-tools';
+import {
+  appendProjectSceneGenerationContributions,
+  createProjectSceneGenerationHandlers,
+} from './blockly-project-scene-tools';
 
 export const BLOCKLY_LEX_DEFERRED_GROUPS = [
   { id: 'blockly-library-discovery', label: '硬件/库工具', description: '开发板、库搜索与库定义分析' },
@@ -109,7 +114,11 @@ function createHandlers(runtimeMode: ChatAgentRuntimeMode, options?: BlocklyTool
   }
 
   if (runtimeMode === 'blockly') {
-    Object.assign(handlers, createBlocklyWorkspaceHandlers(options));
+    Object.assign(
+      handlers,
+      createBlocklyWorkspaceHandlers(options),
+      createProjectSceneGenerationHandlers(),
+    );
   }
 
   return handlers;
@@ -132,6 +141,7 @@ function collectBlocklyContributions(hostAPI: IExternalHostAPI, runtimeMode: Cha
 
   if (runtimeMode === 'blockly') {
     appendBlocklyWorkspaceContributions(contributions, hostAPI, createDeferred);
+    appendProjectSceneGenerationContributions(contributions);
     appendLegacyHostContributions(contributions, hostAPI);
   }
 
@@ -191,18 +201,29 @@ Set confirmed=true when the user made the choice in response to your runtime sel
  */
 export function createBlocklyToolProvider(hostAPI: IExternalHostAPI, options?: BlocklyToolProviderOptions): IHostToolProvider {
   const runtimeMode = normalizeChatAgentRuntimeMode(options?.runtimeMode, 'blockly');
-  const contributions = collectBlocklyContributions(hostAPI, runtimeMode);
-  const subappAgentBindings = collectSubappAgentToolBindings();
-  appendSubappAgentContributions(contributions, subappAgentBindings);
-  appendRuntimeModeContribution(contributions, runtimeMode, options);
-  const handlers = {
-    ...createHandlers(runtimeMode, options),
-    ...createSubappAgentHandlers(subappAgentBindings),
+  const baseContributions = collectBlocklyContributions(hostAPI, runtimeMode);
+  const runtimeModeContributions: IToolContribution[] = [];
+  appendRuntimeModeContribution(runtimeModeContributions, runtimeMode, options);
+  const baseHandlers = createHandlers(runtimeMode, options);
+
+  const collectCurrentContributions = (): IToolContribution[] => {
+    const contributions = [...baseContributions];
+    appendSubappAgentContributions(contributions, collectSubappAgentToolBindings());
+    contributions.push(...runtimeModeContributions);
+    return contributions;
   };
 
   return {
     contributeTools(): IToolContribution[] {
-      return contributions;
+      // Subapps can be linked, installed, upgraded, or removed after the Agent
+      // runtime was created. Always derive this part of the tool surface from
+      // the current catalog rather than retaining the factory-time snapshot.
+      return collectCurrentContributions();
+    },
+
+    onToolsChanged(listener: () => void) {
+      const unsubscribe = onChildToolConfigsChanged(listener);
+      return { dispose: unsubscribe };
     },
 
     async invoke(toolName: string, input: unknown, signal?: AbortSignal, invocationContext?: {
@@ -219,7 +240,11 @@ export function createBlocklyToolProvider(hostAPI: IExternalHostAPI, options?: B
         return invokeLegacyHostExternalTool(toolName, input as Record<string, unknown>, hostAPI, invocationContext);
       }
 
-      const handler = handlers[toolName];
+      // Keep stable Blockly handlers cached, while resolving manifest-driven
+      // Subapp handlers from the live catalog. This keeps invocation routing in
+      // sync with the contribution snapshot Lex most recently registered.
+      const handler = baseHandlers[toolName]
+        ?? createSubappAgentHandlers(collectSubappAgentToolBindings())[toolName];
       if (!handler) {
         return error(`Unknown contributed tool: ${toolName}`);
       }

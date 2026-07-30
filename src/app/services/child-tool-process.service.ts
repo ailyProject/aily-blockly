@@ -32,6 +32,7 @@ interface ChildToolBackendMessage {
 }
 
 interface ChildToolSession {
+  leaseId: string;
   streamId: string;
   stdoutBuffer: string;
   stderrBuffer: string;
@@ -185,6 +186,7 @@ export class ChildToolProcessService implements OnDestroy {
     let session = this.sessions.get(toolId);
     if (!session) {
       session = {
+        leaseId: this.createLeaseId(toolId),
         streamId: '',
         stdoutBuffer: '',
         stderrBuffer: '',
@@ -283,8 +285,12 @@ export class ChildToolProcessService implements OnDestroy {
     try {
       this.rejectReady(session, new Error(`${config.id} startup stopped: ${reason}`));
       if (streamId) {
-        const result = await window['childToolSession']?.release?.({ toolId: config.id, streamId });
-        if (!result?.success) {
+        const result = await window['childToolSession']?.release?.({
+          toolId: config.id,
+          streamId,
+          leaseId: session.leaseId,
+        });
+        if (!result?.success && result?.reason !== 'lease-not-found') {
           await window['cmd']?.kill?.(streamId);
         }
       }
@@ -295,7 +301,10 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   private async acquireSharedSession(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo | null> {
-    const sharedSession = await window['childToolSession']?.acquire?.(config.id);
+    const sharedSession = await window['childToolSession']?.acquire?.({
+      toolId: config.id,
+      leaseId: session.leaseId,
+    });
     const hostInfo = sharedSession?.hostInfo as ChildToolHostInfo | undefined;
     if (!hostInfo?.url) {
       return null;
@@ -414,7 +423,8 @@ export class ChildToolProcessService implements OnDestroy {
       const registered = await window['childToolSession']?.register?.({
         toolId: config.id,
         hostInfo,
-        streamId
+        streamId,
+        leaseId: session.leaseId,
       });
       if (registered && registered.success !== true) {
         throw new Error(`${config.id} Runtime registration failed: ${registered.reason || 'unknown error'}`);
@@ -590,6 +600,11 @@ export class ChildToolProcessService implements OnDestroy {
     session.stderrBuffer = '';
     session.hostInfo = null;
     session.expectedStopReason = null;
+  }
+
+  private createLeaseId(toolId: string): string {
+    const normalizedToolId = String(toolId || 'child-tool').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `${normalizedToolId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   private publishRuntimeState(

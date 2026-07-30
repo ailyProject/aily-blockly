@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec, execSync } = require('child_process');
+const { spawn, exec, execFileSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const platformRuntime = require('./platform-runtime');
@@ -486,7 +486,7 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
             const sourceZipPath = path.join(currentProjectPath, 'node_modules', lib, 'src.7z');
             if (fs.existsSync(sourceZipPath)) {
                 try {
-                    execSync(`"${za7Path}" x "${sourceZipPath}" -o"${path.dirname(sourcePath)}" -y`);
+                    extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
                 } catch (error) {
                     return { targetNames: [], success: false, error: `解压失败: ${error.message}` };
                 }
@@ -517,6 +517,32 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
     } catch (error) {
         return { targetNames: [], success: false, error: error.message };
     }
+}
+
+function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
+    const extractPath = path.join(path.dirname(sourcePath), `.src-extract-${process.pid}-${Date.now()}`);
+
+    try {
+        mkdirp(extractPath);
+        execFileSync(za7Path, ['x', sourceZipPath, `-o${extractPath}`, '-y']);
+        normalizeExtractedSourceDirectory(extractPath, sourcePath);
+    } finally {
+        rm(extractPath);
+    }
+}
+
+function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
+    const extractedItems = fs.readdirSync(extractPath);
+    const nestedSourcePath = path.join(extractPath, 'src');
+    const extractedSourcePath = extractedItems.length === 1 && extractedItems[0] === 'src' && fs.statSync(nestedSourcePath).isDirectory()
+        ? nestedSourcePath
+        : extractPath;
+
+    if (fs.existsSync(sourcePath)) {
+        rm(sourcePath);
+    }
+
+    fs.renameSync(extractedSourcePath, sourcePath);
 }
 
 function isLibraryCacheValid(cached, sourcePath) {
@@ -677,5 +703,6 @@ if (require.main === module) {
 module.exports = {
     collectLibraryPackages,
     isCompilableLibraryPackage,
+    normalizeExtractedSourceDirectory,
     processLibrariesParallel,
 };

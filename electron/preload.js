@@ -461,6 +461,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.on("subapp-manager-changed", listener);
       return () => ipcRenderer.removeListener("subapp-manager-changed", listener);
     },
+    onProgress: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("subapp-manager-progress", listener);
+      return () => ipcRenderer.removeListener("subapp-manager-progress", listener);
+    },
   },
   codeViewer: {
     publishState: (state) => ipcRenderer.send("blockly-code-viewer-state-update", state),
@@ -508,9 +513,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
       "simulator-subapp-open-project-scene",
       options,
     ),
-    exportProjectSceneV1: (ownerId) => ipcRenderer.invoke(
-      "simulator-subapp-export-project-scene-v1",
-      { ownerId },
+    requestProjectSceneGeneration: (options) => ipcRenderer.invoke(
+      "simulator-subapp-request-project-scene-generation",
+      options,
+    ),
+    resolveProjectSceneRegeneration: (options) => ipcRenderer.invoke(
+      "simulator-subapp-resolve-project-scene-regeneration",
+      options,
+    ),
+    applyProjectSceneAgentProposal: (options) => ipcRenderer.invoke(
+      "simulator-subapp-apply-project-scene-agent-proposal",
+      options,
     ),
     attachProjectSceneSession: (ownerId) => ipcRenderer.invoke(
       "simulator-subapp-attach-project-scene-session",
@@ -567,6 +580,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   fs: {
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
+    readFileBufferAsync: async (path) => {
+      const buffer = await require("fs").promises.readFile(path);
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    },
     readFileBuffer: (path) => {
       const buffer = require("fs").readFileSync(path);
       return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
@@ -584,6 +601,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     writeFileBuffer: (path, data) => {
       require("fs").writeFileSync(path, Buffer.from(data));
     },
+    writeFileBufferAsync: async (path, data) => {
+      await require("fs").promises.writeFile(path, Buffer.from(data));
+    },
     md5Buffer: (data) => {
       return createHash("md5").update(Buffer.from(data)).digest("hex");
     },
@@ -598,11 +618,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
       const s = require("fs").statSync(path);
       return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
     },
+    lstatSync: (path) => {
+      const s = require("fs").lstatSync(path);
+      return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile(), _isSymbolicLink: s.isSymbolicLink() };
+    },
     isDirectory: (path) => require("fs").statSync(path).isDirectory(),
     unlinkSync: (path, cb) => require("fs").unlinkSync(path, cb),
     rmdirSync: (path) => require("fs").rmdirSync(path, { recursive: true, force: true }),
     rmSync: (path, options) => require("fs").rmSync(path, options),
     renameSync: (oldPath, newPath) => require("fs").renameSync(oldPath, newPath),
+    rename: (oldPath, newPath) => require("fs").promises.rename(oldPath, newPath),
     linkSync: (existingPath, newPath) => require("fs").linkSync(existingPath, newPath),
     chmodSync: (path, mode) => require("fs").chmodSync(path, mode),
     appendFileSync: (path, data) => require("fs").appendFileSync(path, data),
@@ -635,6 +660,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     writeFile: (path, data, encoding) => ipcRenderer.invoke("fs-writeFile", path, data, encoding),
     exists: (path) => ipcRenderer.invoke("fs-exists", path),
     stat: (path) => ipcRenderer.invoke("fs-stat", path),
+    lstat: (path) => ipcRenderer.invoke("fs-lstat", path),
     readdir: (path) => ipcRenderer.invoke("fs-readdir", path),
     readDir: (path) => ipcRenderer.invoke("fs-readDir", path),
     mkdir: (path, options) => ipcRenderer.invoke("fs-mkdir", path, options),
