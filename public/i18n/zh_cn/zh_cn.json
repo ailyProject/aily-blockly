@@ -932,6 +932,15 @@
         "RESET_HINT": "随时可在「设置 → 基础设置 → 默认开发模式」中重新切换",
         "SKIP": "稍后再说"
     },
+    "AILY_CODE_LOADING": {
+        "PROJECT": "正在读取项目配置",
+        "DEPENDENCY": "正在检查 Coder 扩展",
+        "RUNTIME": "正在启动编辑器服务",
+        "WORKBENCH": "正在打开代码工作区",
+        "READY": "代码工作区已就绪",
+        "TIMEOUT": "代码工作区启动超时，请重试",
+        "RETRY": "重新尝试"
+    },
     "NPM": {
         "INSTALLING": "正在安装{{name}}...",
         "INSTALLING_DEPENDENCY": "正在安装{{name}}依赖...",

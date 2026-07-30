@@ -1110,5 +1110,14 @@
         "CODER_INSTALL_RETRY": "安裝失敗，點擊重試",
         "RESET_HINT": "可隨時在「設定 → 基本設定 → 預設開發模式」中重新切換",
         "SKIP": "稍後再說"
+    },
+    "AILY_CODE_LOADING": {
+        "PROJECT": "正在讀取專案配置",
+        "DEPENDENCY": "正在檢查 Coder 擴充",
+        "RUNTIME": "正在啟動編輯器服務",
+        "WORKBENCH": "正在開啟程式碼工作區",
+        "READY": "程式碼工作區已就緒",
+        "TIMEOUT": "程式碼工作區啟動逾時，請重試",
+        "RETRY": "重新嘗試"
     }
 }

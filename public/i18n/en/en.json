@@ -936,6 +936,15 @@
         "RESET_HINT": "You can switch anytime in Settings → Basic → Default Development Mode",
         "SKIP": "Decide later"
     },
+    "AILY_CODE_LOADING": {
+        "PROJECT": "Reading project configuration",
+        "DEPENDENCY": "Checking the Coder extension",
+        "RUNTIME": "Starting the editor service",
+        "WORKBENCH": "Opening the code workspace",
+        "READY": "Code workspace ready",
+        "TIMEOUT": "The code workspace took too long to start. Please try again.",
+        "RETRY": "Try again"
+    },
     "NPM": {
         "INSTALLING": "Installing {{name}}...",
         "INSTALLING_DEPENDENCY": "Installing {{name}} dependency...",

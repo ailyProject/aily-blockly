@@ -6,27 +6,109 @@
     <div class="coder-embed-fallback">
         <p>无法加载内嵌编辑器：{{ coderEmbedError }}</p>
         <p class="hint">桌面端请在模式选择或设置页重新安装 Coder 扩展；浏览器开发时可在 aily-coder 仓库执行 <code>npm run start</code>（默认 127.0.0.1:5174）。</p>
+        <button type="button" class="coder-embed-retry" (click)="retryCoderEmbed()">
+            {{ 'AILY_CODE_LOADING.RETRY' | translate }}
+        </button>
     </div>
     }
 
-    @if (!coderEmbedError && coderEmbedLoading) {
-    <div class="coder-projector-loader" [class.is-revealing]="coderEmbedRevealing" role="status" aria-live="polite"
+    @if (!coderEmbedError && coderEmbedLoading && coderEmbedLoaderVisible) {
+    <div
+        class="coder-workspace-loader"
+        [class.is-revealing]="coderEmbedRevealing"
+        [attr.data-stage]="coderLoadingStage"
+        role="status"
+        aria-live="polite"
         aria-busy="true">
-        <div class="projector-stage" aria-hidden="true">
-            <div class="projector">
-                <span class="projector-reel reel-left"></span>
-                <span class="projector-reel reel-right"></span>
-                <span class="projector-body"></span>
-                <span class="projector-lens"></span>
-                <span class="projector-spark spark-a"></span>
-                <span class="projector-spark spark-b"></span>
-                <span class="projector-spark spark-c"></span>
+        <div class="coder-loader-ambient" aria-hidden="true">
+            <span class="ambient-line ambient-line--top"></span>
+            <span class="ambient-line ambient-line--bottom"></span>
+            <span class="ambient-node ambient-node--left"></span>
+            <span class="ambient-node ambient-node--right"></span>
+        </div>
+
+        <div class="coder-boot-sequence">
+            <div class="coder-boot-signature" aria-hidden="true">
+                <span class="signature-mark">&lt;/&gt;</span>
+                <span class="signature-name">AILY CODE</span>
             </div>
-            <div class="projector-beam"></div>
-            <div class="projection-screen">
-                <span class="screen-line line-a"></span>
-                <span class="screen-line line-b"></span>
-                <span class="screen-line line-c"></span>
+
+            <div class="coder-boot-window" aria-hidden="true">
+                <div class="boot-window-chrome">
+                    <div class="boot-window-controls">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <span class="boot-window-file">main.cpp</span>
+                    <span class="boot-window-state"></span>
+                </div>
+
+                <div class="boot-window-body">
+                    <div class="boot-activity-rail">
+                        <span class="activity-node is-active"></span>
+                        <span class="activity-node"></span>
+                        <span class="activity-node"></span>
+                        <span class="activity-node activity-node--small"></span>
+                    </div>
+
+                    <div class="boot-file-tree">
+                        <span class="tree-heading"></span>
+                        <span class="tree-entry tree-entry--wide"></span>
+                        <span class="tree-entry tree-entry--nested"></span>
+                        <span class="tree-entry tree-entry--nested tree-entry--short"></span>
+                        <span class="tree-entry"></span>
+                    </div>
+
+                    <div class="boot-code-pane">
+                        <span class="boot-code-scan"></span>
+                        <div class="boot-code-line code-line--one">
+                            <span class="line-number">01</span>
+                            <span class="code-token token-keyword"></span>
+                            <span class="code-token token-name"></span>
+                            <span class="code-token token-symbol"></span>
+                        </div>
+                        <div class="boot-code-line code-line--two">
+                            <span class="line-number">02</span>
+                            <span class="code-token token-indent"></span>
+                            <span class="code-token token-call"></span>
+                            <span class="code-token token-value"></span>
+                        </div>
+                        <div class="boot-code-line code-line--three">
+                            <span class="line-number">03</span>
+                            <span class="code-token token-indent"></span>
+                            <span class="code-token token-comment"></span>
+                        </div>
+                        <div class="boot-code-line code-line--four">
+                            <span class="line-number">04</span>
+                            <span class="code-token token-indent"></span>
+                            <span class="code-token token-call token-call--short"></span>
+                            <span class="code-token token-value token-value--long"></span>
+                        </div>
+                        <div class="boot-code-line code-line--five">
+                            <span class="line-number">05</span>
+                            <span class="code-token token-symbol token-symbol--end"></span>
+                            <span class="code-caret"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="boot-window-statusbar">
+                    <span class="statusbar-branch"></span>
+                    <span class="statusbar-pulse"></span>
+                    <span class="statusbar-coordinates"></span>
+                </div>
+            </div>
+
+            <div class="coder-boot-status">
+                <span class="boot-status-index">{{ coderLoadingStageNumber }}</span>
+                <span class="boot-status-divider" aria-hidden="true"></span>
+                <span class="boot-status-copy">{{ coderLoadingStageKey | translate }}</span>
+                <span class="boot-status-caret" aria-hidden="true"></span>
+            </div>
+
+            <div class="coder-boot-track" aria-hidden="true">
+                <span></span>
             </div>
         </div>
     </div>
