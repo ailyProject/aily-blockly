@@ -16,6 +16,11 @@ export class SerialService {
     private electronService: ElectronService
   ) { }
 
+  private normalizeUsbId(value: unknown): string | undefined {
+    const normalized = String(value || '').trim().replace(/^0x/i, '').toLowerCase();
+    return normalized || undefined;
+  }
+
   // 此处还未考虑linux、macos适配
   async getSerialPorts(): Promise<PortItem[]> {
     if (this.electronService.isElectron) {
@@ -46,11 +51,13 @@ export class SerialService {
           return {
             name: item.path,
             text: friendlyName,
-            // boardName: boardName,
             type: 'serial',
             icon: icon,
-            // vendorId,
-            // productId,
+            vendorId: this.normalizeUsbId(item.vendorId),
+            productId: this.normalizeUsbId(item.productId),
+            serialNumber: item.serialNumber,
+            manufacturer: item.manufacturer,
+            pnpId: item.pnpId,
           }
         });
       } else if (window['platform'].isMacOS) {
@@ -69,11 +76,13 @@ export class SerialService {
           return {
             name: devicePath, // 使用转换后的 cu 路径
             text: friendlyName,
-            // boardName: boardName,
             type: 'serial',
             icon: icon,
-            // vendorId,
-            // productId,
+            vendorId: this.normalizeUsbId(item.vendorId),
+            productId: this.normalizeUsbId(item.productId),
+            serialNumber: item.serialNumber,
+            manufacturer: item.manufacturer,
+            pnpId: item.pnpId,
           }
         });
       } else if (window['platform'].isLinux) {
@@ -125,9 +134,13 @@ export interface PortItem {
   disabled?: boolean,
   probeSerial?: string,
   probeVidPid?: string,
+  vendorId?: string,
+  productId?: string,
+  serialNumber?: string,
+  manufacturer?: string,
+  pnpId?: string,
   action?: string,
   sep?: boolean,
   extra?: any,
   current?: boolean,
 }
-

@@ -12,6 +12,9 @@ import { ThemeService } from './theme.service';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { SubappAgentBridgeService } from './subapp-agent-bridge.service';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
+import { SerialService, type PortItem } from './serial.service';
+import { UploaderService } from './uploader.service';
+import { selectSerialPort } from './serial-port-selection';
 import { AbsAutoSyncService } from '../tools/aily-chat/services/abs-auto-sync.service';
 import {
   connectBlocksSimpleTool,
@@ -56,6 +59,8 @@ export class BlocklyLiveOperationBridgeService {
     private readonly mainUiAutomationService: MainUiAutomationService,
     private readonly subappAgentBridgeService: SubappAgentBridgeService,
     private readonly projectHardwareIntentProvider: ProjectHardwareIntentProviderService,
+    private readonly serialService: SerialService,
+    private readonly uploaderService: UploaderService,
     private readonly ngZone: NgZone,
   ) {}
 
@@ -191,6 +196,10 @@ export class BlocklyLiveOperationBridgeService {
         return this.executeAbsApply(payload.params || {});
       case 'project_build':
         return this.executeProjectBuild(payload.params || {});
+      case 'serial_ports_list':
+        return this.executeSerialPortsList(payload.params || {});
+      case 'project_upload':
+        return this.executeProjectUpload(payload.params || {});
       case 'blocks_tidy':
         return this.executeBlocksTidy();
       case 'project_save':
@@ -478,6 +487,114 @@ export class BlocklyLiveOperationBridgeService {
       metadata: toolResult.metadata,
       toolResult,
     };
+  }
+
+  private serializeSerialPort(port: PortItem, currentPort = this.serialService.currentPort): Record<string, any> {
+    return {
+      name: String(port.name || ''),
+      text: String(port.text || ''),
+      type: port.type || 'serial',
+      current: String(port.name || '') === String(currentPort || ''),
+      ...(port.vendorId ? { vendorId: port.vendorId } : {}),
+      ...(port.productId ? { productId: port.productId } : {}),
+      ...(port.serialNumber ? { serialNumber: port.serialNumber } : {}),
+      ...(port.manufacturer ? { manufacturer: port.manufacturer } : {}),
+      ...(port.pnpId ? { pnpId: port.pnpId } : {}),
+    };
+  }
+
+  private async getSerialPortSelection(requestedPort?: string) {
+    const ports = await this.serialService.getSerialPorts();
+    const selection = selectSerialPort(ports, {
+      requestedPort,
+      currentPort: this.serialService.currentPort,
+      boardConfig: this.projectService.currentBoardConfig,
+    });
+    return { ports, selection };
+  }
+
+  private async executeSerialPortsList(params: Record<string, any>): Promise<Record<string, any>> {
+    const requestedPort = typeof params['port'] === 'string' ? params['port'].trim() : undefined;
+    try {
+      const { ports, selection } = await this.getSerialPortSelection(requestedPort);
+      return {
+        ok: true,
+        operation: 'serial_ports_list',
+        project: this.projectService.currentProjectPath,
+        board: {
+          name: this.projectService.currentBoardConfig?.['name'] || '',
+          core: this.projectService.currentBoardConfig?.['core'] || '',
+        },
+        currentPort: this.serialService.currentPort || null,
+        ports: ports.map(port => this.serializeSerialPort(port)),
+        recommendation: {
+          port: selection.selected?.name || null,
+          reason: selection.reason,
+          confidence: selection.confidence,
+          message: selection.message,
+        },
+        candidates: selection.candidates.map(candidate => ({
+          port: candidate.port.name,
+          score: candidate.score,
+          reasons: candidate.reasons,
+        })),
+        message: ports.length > 0 ? `检测到 ${ports.length} 个串口。${selection.message}` : selection.message,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        operation: 'serial_ports_list',
+        project: this.projectService.currentProjectPath,
+        message: `获取串口列表失败: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  private async executeProjectUpload(params: Record<string, any>): Promise<Record<string, any>> {
+    const requestedPort = typeof params['port'] === 'string' ? params['port'].trim() : undefined;
+    try {
+      const { ports, selection } = await this.getSerialPortSelection(requestedPort);
+      if (!selection.selected?.name) {
+        return {
+          ok: false,
+          operation: 'project_upload',
+          project: this.projectService.currentProjectPath,
+          code: selection.reason === 'ambiguous' ? 'serial_port_ambiguous' : 'serial_port_not_found',
+          message: selection.message,
+          ports: ports.map(port => this.serializeSerialPort(port)),
+          candidates: selection.candidates.map(candidate => ({
+            port: candidate.port.name,
+            score: candidate.score,
+            reasons: candidate.reasons,
+          })),
+        };
+      }
+
+      const selectedPort = await this.serialService.selectSerialPort(selection.selected.name);
+      const uploadResult = await this.uploaderService.upload();
+      return {
+        ok: true,
+        operation: 'project_upload',
+        project: this.projectService.currentProjectPath,
+        selectedPort: this.serializeSerialPort(selectedPort),
+        selection: {
+          reason: selection.reason,
+          confidence: selection.confidence,
+          message: selection.message,
+        },
+        message: uploadResult?.text || `固件已烧录到 ${selectedPort.name}`,
+        uploadResult,
+      };
+    } catch (error: any) {
+      return {
+        ok: false,
+        operation: 'project_upload',
+        project: this.projectService.currentProjectPath,
+        selectedPort: this.serialService.currentPort || null,
+        message: error?.text || error?.message || String(error),
+        uploadResult: error?.result,
+      };
+    }
   }
 
   private async executeBlocksTidy(): Promise<Record<string, any>> {

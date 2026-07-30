@@ -940,6 +940,7 @@ const { registerNotificationHandlers } = require("./notification");
 const { registerProbeRsHandlers } = require("./probe-rs");
 const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
 const { registerSubappManagerHandlers } = require("./subapp-manager");
+const { shouldBeginRendererGeneration } = require("./renderer-lifecycle");
 
 let mainWindow;
 let userConf;
@@ -1183,6 +1184,8 @@ async function handleCliBridgeCommand(action, payload) {
       if (!dir && !projectOptionalOperations.has(operation)) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       const liveOperationTimeoutMs = operation === 'project_build'
         ? 620000
+        : operation === 'project_upload'
+          ? 920000
         : operation === 'project_create'
           ? 300000
           : operation === 'abs_apply'
@@ -2510,8 +2513,11 @@ function createWindow() {
   });
 
   registerWebBluetoothChooser(mainWindow);
-  mainWindow.webContents.on('did-start-loading', () => {
-    beginRendererGeneration('did-start-loading');
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (!shouldBeginRendererGeneration(details)) {
+      return;
+    }
+    beginRendererGeneration('did-start-navigation');
   });
 
   mainWindow.setBounds(winState.state);
