@@ -714,11 +714,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private initAiWritingSubscription(): void {
+    // 与旧版 Angular 一致：遮罩只在 aiWriting（积木工具执行）或短暂 aiWaitWriting 时显示，
+    // 不随整轮 request/aiWaiting 常亮。
     combineLatest([
       this.blocklyService.aiWriting$,
-      this.blocklyService.aiWaiting$
+      this.blocklyService.aiWaitWriting$
     ]).pipe(
-      map(([writing, waiting]) => writing || waiting),
+      map(([writing, waitWriting]) => writing || waitWriting),
       distinctUntilChanged(),
       startWith(false),
       pairwise(),

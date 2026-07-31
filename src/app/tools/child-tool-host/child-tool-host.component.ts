@@ -21,6 +21,7 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
 import { ElectronService } from '../../services/electron.service';
 import { LogService } from '../../services/log.service';
 import { MainUiAutomationService } from '../../services/main-ui-automation.service';
+import { NoticeService } from '../../services/notice.service';
 import { ProjectService } from '../../services/project.service';
 import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
@@ -98,6 +99,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private projectContextListenerRegistered = false;
   private projectContextListenerCleanup: (() => void) | null = null;
   private unregisterHostController: (() => void) | null = null;
+  private ailyChatOperationActive = false;
 
   constructor(
     private route: ActivatedRoute,
@@ -118,6 +120,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private electronService: ElectronService,
     private mainUiAutomation: MainUiAutomationService,
     private subappManager: SubappManagerService,
+    private noticeService: NoticeService,
   ) {
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
@@ -495,6 +498,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         openChildApp: (payload: { toolId?: string; mode?: 'embedded' | 'window' } = {}) => this.openChatChildApp(payload),
         focusChildFrame: () => this.focusChildFrame(),
         writeClipboardText: (payload: { text?: string } = {}) => this.writeClipboardText(payload),
+        reportAiOperationState: (payload: { active?: boolean } = {}) => {
+          return this.ngZone.run(() => this.reportAiOperationState(payload));
+        },
         sendToolSignal: async (signal: string, payload: any = {}) => {
           return await this.sendToolSignalFromChild(signal, payload);
         }
@@ -653,6 +659,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private destroyPenpalConnection(): void {
     this.clearChildReadyTimer();
+    this.setAilyChatOperationActive(false);
     this.remoteApi = null;
     if (this.penpalConnection) {
       this.penpalConnection.destroy();
@@ -886,9 +893,58 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         childAppMenu: isAilyChat,
         clipboardWrite: isAilyChat,
         blockSelectionContext: isAilyChat,
-        childFrameFocus: isAilyChat
+        childFrameFocus: isAilyChat,
+        aiOperationState: isAilyChat
       }
     };
+  }
+
+  private reportAiOperationState(payload: { active?: boolean } = {}): Record<string, unknown> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'AI operation state is only available to Aily Chat' };
+    }
+
+    this.setAilyChatOperationActive(payload.active === true);
+    return { ok: true, active: this.ailyChatOperationActive };
+  }
+
+  private setAilyChatOperationActive(active: boolean): void {
+    if (this.ailyChatOperationActive === active) {
+      if (active) {
+        // 已 active 时仍刷新通知，防止被其它 notice 覆盖后只剩 Blockly 遮罩。
+        this.showAiOperationNotice();
+      }
+      return;
+    }
+
+    this.ailyChatOperationActive = active;
+    // 与旧版 Angular 一致：积木写入态走 aiWriting（驱动遮罩 + 通知订阅）。
+    this.blocklyService.setAiWritingActive(`child-tool:${this.hostContextId}`, active);
+    this.blocklyService.setAiExecutionActive(`child-tool:${this.hostContextId}`, active);
+
+    if (active) {
+      this.showAiOperationNotice();
+      return;
+    }
+
+    if (!this.blocklyService.aiWriting && !this.blocklyService.aiWaitWriting) {
+      this.noticeService.clear();
+    }
+  }
+
+  private showAiOperationNotice(): void {
+    this.noticeService.update({
+      title: 'AI正在操作',
+      state: 'doing',
+      showProgress: false,
+      setTimeout: 0,
+      sendToLog: false,
+      stop: () => {
+        void Promise.resolve(this.remoteApi?.stopActiveTurn?.()).catch(error => {
+          this.logError('stop active Aily Chat turn failed', error);
+        });
+      },
+    });
   }
 
   private createSelectedBlockResources(): Record<string, unknown>[] {

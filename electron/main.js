@@ -929,7 +929,11 @@ const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = requ
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
 const { registerAilyServicesStreamHandlers, cancelAllAilyServicesStreams, getActiveAilyServicesStreams } = require("./aily-services-stream");
-const { registerWebviewBridgeHandlers } = require("./webview-bridge");
+const {
+  executeWebviewFetch,
+  executeWebviewSearch,
+  registerWebviewBridgeHandlers,
+} = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
 const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks } = require("./appdata-resource-lock");
 // debug模块
@@ -1124,7 +1128,7 @@ function getSimulatorProjectRebuildCoordinator() {
   return simulatorProjectRebuildCoordinator;
 }
 
-/** 处理来自 CLI 的命令（open/close/reload/refresh） */
+/** 处理来自 CLI 的命令 */
 async function handleCliBridgeCommand(action, payload) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
   switch (action) {
@@ -1245,6 +1249,54 @@ async function handleCliBridgeCommand(action, payload) {
         return result.result;
       }
       return result;
+    }
+    case 'webview-bridge-fetch': {
+      const sessionId = typeof payload?.sessionId === 'string'
+        ? payload.sessionId.trim()
+        : '';
+      if (!sessionId) {
+        return { ok: false, error: '缺少 sessionId 参数' };
+      }
+
+      const result = await executeWebviewFetch({
+        sessionId,
+        url: payload?.url,
+        timeoutMs: payload?.timeoutMs,
+        waitAfterLoadMs: payload?.waitAfterLoadMs,
+        captureFullContent: true,
+      });
+      if (!result?.ok) {
+        return result && typeof result === 'object'
+          ? result
+          : { ok: false, error: 'WebView fetch 返回了无效结果' };
+      }
+
+      return {
+        ok: true,
+        text: String(result.html || result.text || ''),
+        status: Number.isFinite(result.status) ? Number(result.status) : 200,
+        contentType: typeof result.contentType === 'string'
+          ? result.contentType
+          : 'text/html; charset=utf-8',
+      };
+    }
+    case 'webview-bridge-search': {
+      const sessionId = typeof payload?.sessionId === 'string'
+        ? payload.sessionId.trim()
+        : '';
+      if (!sessionId) {
+        return { ok: false, error: '缺少 sessionId 参数' };
+      }
+
+      const result = await executeWebviewSearch({
+        sessionId,
+        url: payload?.url,
+        timeoutMs: payload?.timeoutMs,
+        captureFullContent: true,
+      });
+      return result && typeof result === 'object'
+        ? result
+        : { ok: false, error: 'WebView search 返回了无效结果' };
     }
     default:
       return { ok: false, message: `未知命令: ${action}` };

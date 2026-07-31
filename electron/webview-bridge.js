@@ -404,6 +404,7 @@ async function withBridgeWindow(task, operationLabel = "bridge") {
 async function fetchViaWebview(payload = {}) {
   const timeoutMs = normalizeTimeout(payload.timeoutMs);
   const waitAfterLoadMs = normalizeTimeout(payload.waitAfterLoadMs, DEFAULT_WAIT_AFTER_LOAD_MS);
+  const captureFullContent = payload.captureFullContent === true;
   const targetUrl = String(payload.url || "");
   return await withBridgeWindow(async (win, tab) => {
     await loadUrlWithTimeout(tab, targetUrl, timeoutMs, `fetch:${targetUrl}`);
@@ -420,8 +421,8 @@ async function fetchViaWebview(payload = {}) {
           return {
             url: location.href,
             title: document.title || "",
-            html: html.slice(0, ${MAX_HTML_CHARS}),
-            text: text.slice(0, ${MAX_TEXT_CHARS}),
+            html: ${captureFullContent ? "html" : `html.slice(0, ${MAX_HTML_CHARS})`},
+            text: ${captureFullContent ? "text" : `text.slice(0, ${MAX_TEXT_CHARS})`},
           };
         })()`,
         true,
@@ -445,7 +446,7 @@ async function fetchViaWebview(payload = {}) {
   }, `fetch:${targetUrl}`);
 }
 
-async function loadSearchPageViaWebview(searchUrl, timeoutMs) {
+async function loadSearchPageViaWebview(searchUrl, timeoutMs, captureFullContent) {
   return await withBridgeWindow(async (win, tab) => {
     await loadUrlWithTimeout(tab, searchUrl, timeoutMs, `search:${searchUrl}`);
     await delay(SEARCH_WAIT_AFTER_LOAD_MS);
@@ -455,7 +456,9 @@ async function loadSearchPageViaWebview(searchUrl, timeoutMs) {
         `(() => ({
           url: location.href,
           title: document.title || "",
-          html: (document.documentElement?.outerHTML || "").slice(0, ${MAX_HTML_CHARS}),
+          html: ${captureFullContent
+            ? '(document.documentElement?.outerHTML || "")'
+            : `(document.documentElement?.outerHTML || "").slice(0, ${MAX_HTML_CHARS})`},
         }))()`,
         true,
       );
@@ -474,6 +477,7 @@ async function loadSearchPageViaWebview(searchUrl, timeoutMs) {
 async function searchViaWebview(payload = {}) {
   const searchUrl = String(payload.url || "").trim();
   const timeoutMs = normalizeTimeout(payload.timeoutMs);
+  const captureFullContent = payload.captureFullContent === true;
 
   if (!searchUrl) {
     return {
@@ -484,7 +488,7 @@ async function searchViaWebview(payload = {}) {
 
   try {
     logBridgeInfo("starting bridge search attempt", { url: searchUrl });
-    const page = await loadSearchPageViaWebview(searchUrl, timeoutMs);
+    const page = await loadSearchPageViaWebview(searchUrl, timeoutMs, captureFullContent);
     if (!page?.html) {
       return {
         ok: false,
@@ -509,41 +513,84 @@ async function searchViaWebview(payload = {}) {
   }
 }
 
+function normalizeHttpUrl(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function executeWebviewFetch(payload = {}) {
+  const url = normalizeHttpUrl(payload.url);
+  if (!url) {
+    return {
+      ok: false,
+      error: "WebView fetch requires a valid http/https url",
+    };
+  }
+
+  try {
+    return await fetchViaWebview({
+      ...payload,
+      url,
+    });
+  } catch (error) {
+    logBridgeError("fetch request failed", {
+      url,
+      error: describeError(error),
+    });
+    return {
+      ok: false,
+      error: describeError(error),
+    };
+  }
+}
+
+async function executeWebviewSearch(payload = {}) {
+  const url = normalizeHttpUrl(payload.url);
+  if (!url) {
+    return {
+      ok: false,
+      error: "WebView search requires a valid http/https url",
+    };
+  }
+
+  try {
+    return await searchViaWebview({
+      ...payload,
+      url,
+    });
+  } catch (error) {
+    logBridgeError("search request failed", {
+      url,
+      error: describeError(error),
+    });
+    return {
+      ok: false,
+      error: describeError(error),
+    };
+  }
+}
+
 function registerWebviewBridgeHandlers() {
   ipcMain.removeHandler(FETCH_CHANNEL);
   ipcMain.removeHandler(SEARCH_CHANNEL);
 
-  ipcMain.handle(FETCH_CHANNEL, async (_event, payload = {}) => {
-    try {
-      return await fetchViaWebview(payload);
-    } catch (error) {
-      logBridgeError("fetch handler failed", {
-        payload,
-        error: describeError(error),
-      });
-      return {
-        ok: false,
-        error: describeError(error),
-      };
-    }
-  });
-
-  ipcMain.handle(SEARCH_CHANNEL, async (_event, payload = {}) => {
-    try {
-      return await searchViaWebview(payload);
-    } catch (error) {
-      logBridgeError("search handler failed", {
-        payload,
-        error: describeError(error),
-      });
-      return {
-        ok: false,
-        error: describeError(error),
-      };
-    }
-  });
+  ipcMain.handle(FETCH_CHANNEL, async (_event, payload = {}) => executeWebviewFetch(payload));
+  ipcMain.handle(SEARCH_CHANNEL, async (_event, payload = {}) => executeWebviewSearch(payload));
 }
 
 module.exports = {
+  executeWebviewFetch,
+  executeWebviewSearch,
   registerWebviewBridgeHandlers,
 };

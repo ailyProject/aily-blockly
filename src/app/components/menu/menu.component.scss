@@ -287,6 +287,7 @@
 .submenu-box {
   min-width: 168px;
   padding: 4px 0;
+  box-sizing: border-box;
   overflow: hidden;
   border-radius: 6px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
@@ -400,14 +401,24 @@
   }
 
   .menu-item.submenu-simple-item {
+    &.checked .check {
+      display: flex;
+    }
+
     .text-wrapper {
       flex: 1;
       min-width: 0;
-      padding-right: 18px;
+      margin-right: 28px;
+      padding-right: 0;
     }
 
     .name {
       padding-right: 0;
+      flex: 0 0 auto;
+      min-width: 0;
+      overflow: visible;
+      text-overflow: clip;
+      white-space: nowrap;
     }
 
     .check {
@@ -439,9 +450,16 @@
   .submenu-option-inline-copy {
     display: flex;
     align-items: center;
-    gap: 6px;
     flex: 1;
     min-width: 0;
+  }
+
+  .submenu-option-scroll-content {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: max-content;
+    min-width: max-content;
 
     .name {
       padding-right: 0;
@@ -463,9 +481,30 @@
     line-height: 1.3;
     color: var(--aily-text-secondary, var(--aily-menu-text-secondary));
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex-shrink: 0;
     white-space: nowrap;
+  }
+
+  .submenu-hover-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .submenu-hover-scroll-content {
+    --submenu-hover-scroll-distance: 0px;
+    --submenu-hover-scroll-duration: 1.2s;
+    transform: translateX(0);
+    will-change: transform;
+  }
+
+  .menu-item:hover .submenu-hover-scroll-content {
+    animation: submenu-hover-scroll-to-end var(--submenu-hover-scroll-duration) linear 0.35s forwards;
   }
 
   .check {
@@ -481,6 +520,16 @@
   scrollbar-width: none;
 }
 
+@keyframes submenu-hover-scroll-to-end {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(calc(-1 * var(--submenu-hover-scroll-distance)));
+  }
+}
+
 :host(.model-menu) {
   position: relative;
   z-index: 1000020;
@@ -491,6 +540,45 @@
 
   .submenu-box {
     z-index: 1000030 !important;
+  }
+}
+
+// 左上角主菜单和串口选择菜单沿用 main 分支的字号与行高。
+:host(.main-menu-parity) {
+  .menu-box {
+    padding: 3px 0;
+
+    .menu-item {
+      height: 30px;
+      min-height: 30px;
+      margin: 0 3px;
+
+      .icon,
+      &.current .icon {
+        color: inherit;
+      }
+
+      &.highlight .icon {
+        color: var(--aily-color-warning);
+      }
+
+      .text-wrapper {
+        .name {
+          font-size: 14px;
+          font-weight: 400;
+        }
+
+        .text {
+          font-size: 14px;
+          letter-spacing: normal;
+        }
+      }
+    }
+  }
+
+  .submenu-box .menu-item.submenu-option {
+    height: auto;
+    min-height: 0;
   }
 }
 

@@ -6,6 +6,7 @@ import { _ProjectService } from '../editors/blockly-editor/services/project.serv
 import { BlocklyService } from '../editors/blockly-editor/services/blockly.service';
 import { ConfigService } from './config.service';
 import { ElectronService } from './electron.service';
+import { NoticeService } from './notice.service';
 import { ProjectService } from './project.service';
 import { BuilderService } from './builder.service';
 import { ThemeService } from './theme.service';
@@ -46,6 +47,7 @@ type BlocklyLiveOperationPayload = {
 @Injectable({ providedIn: 'root' })
 export class BlocklyLiveOperationBridgeService {
   private initialized = false;
+  private aiWritingDepth = 0;
 
   constructor(
     private readonly configService: ConfigService,
@@ -61,6 +63,7 @@ export class BlocklyLiveOperationBridgeService {
     private readonly projectHardwareIntentProvider: ProjectHardwareIntentProviderService,
     private readonly serialService: SerialService,
     private readonly uploaderService: UploaderService,
+    private readonly noticeService: NoticeService,
     private readonly ngZone: NgZone,
   ) {}
 
@@ -181,19 +184,19 @@ export class BlocklyLiveOperationBridgeService {
     let toolResult: ToolUseResult;
     switch (payload.operation) {
       case 'abi_add':
-        toolResult = await this.executeAbiAdd(payload.params || {});
+        toolResult = await this.runBlockWritingOperation(() => this.executeAbiAdd(payload.params || {}));
         break;
       case 'abi_delete':
-        toolResult = await this.executeAbiDelete(payload.params || {});
+        toolResult = await this.runBlockWritingOperation(() => this.executeAbiDelete(payload.params || {}));
         break;
       case 'abi_connect':
-        toolResult = await this.executeAbiConnect(payload.params || {});
+        toolResult = await this.runBlockWritingOperation(() => this.executeAbiConnect(payload.params || {}));
         break;
       case 'abi_set_field':
-        toolResult = await this.executeAbiSetField(payload.params || {});
+        toolResult = await this.runBlockWritingOperation(() => this.executeAbiSetField(payload.params || {}));
         break;
       case 'abs_apply':
-        return this.executeAbsApply(payload.params || {});
+        return this.runBlockWritingOperation(() => this.executeAbsApply(payload.params || {}));
       case 'project_build':
         return this.executeProjectBuild(payload.params || {});
       case 'serial_ports_list':
@@ -201,11 +204,11 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_upload':
         return this.executeProjectUpload(payload.params || {});
       case 'blocks_tidy':
-        return this.executeBlocksTidy();
+        return this.runBlockWritingOperation(() => this.executeBlocksTidy());
       case 'project_save':
-        return this.executeProjectSave();
+        return this.runBlockWritingOperation(() => this.executeProjectSave());
       case 'project_reload':
-        return this.executeProjectReload();
+        return this.runBlockWritingOperation(() => this.executeProjectReload());
       default:
         return { ok: false, message: `不支持的 live Blockly 操作: ${payload.operation || ''}` };
     }
@@ -227,6 +230,45 @@ export class BlocklyLiveOperationBridgeService {
       metadata: toolResult.metadata,
       toolResult,
     };
+  }
+
+  /**
+   * 与旧版 Angular `aiWriting = true`（BLOCK_TOOLS 执行中）对齐：
+   * 仅在实际改积木的 live 操作期间点亮遮罩与「AI正在操作」通知。
+   */
+  private async runBlockWritingOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.beginBlockWriting();
+    try {
+      return await operation();
+    } finally {
+      this.endBlockWriting();
+    }
+  }
+
+  private beginBlockWriting(): void {
+    this.aiWritingDepth += 1;
+    if (this.aiWritingDepth !== 1) {
+      return;
+    }
+    this.blocklyService.setAiWritingActive('live-blockly-operation', true);
+    this.noticeService.update({
+      title: 'AI正在操作',
+      state: 'doing',
+      showProgress: false,
+      setTimeout: 0,
+      sendToLog: false,
+    });
+  }
+
+  private endBlockWriting(): void {
+    this.aiWritingDepth = Math.max(0, this.aiWritingDepth - 1);
+    if (this.aiWritingDepth > 0) {
+      return;
+    }
+    this.blocklyService.setAiWritingActive('live-blockly-operation', false);
+    if (!this.blocklyService.aiWriting && !this.blocklyService.aiWaitWriting) {
+      this.noticeService.clear();
+    }
   }
 
   private async executeAppInfo(): Promise<Record<string, any>> {

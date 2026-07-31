@@ -1,47 +1,32 @@
 <div class="project-new-box">
   <div class="header">
-    <div class="header-left-zone">
-      <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
-        <i class="fa-regular fa-chevron-left"></i>
-      </div>
-      @if (currentStep == 0) {
-      <div class="search-field">
-        <nz-input-group [nzPrefix]="prefixIconSearch" [nzSize]="'small'">
-          <input #boardSearchInput type="text" nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate"
-            [(ngModel)]="keyword" (ngModelChange)="search()" />
-        </nz-input-group>
-        <span class="search-shortcut">{{ searchShortcutHint }}</span>
-        <ng-template #prefixIconSearch>
-          <i class="fa-light fa-search"></i>
-        </ng-template>
-      </div>
+    <div class="btn ccenter" (click)="back()" nz-tooltip [nzTooltipTitle]="'LIB_MANAGER.BACK' | translate">
+      <i class="fa-regular fa-chevron-left"></i>
+    </div>
+    <nz-input-group [nzSuffix]="suffixIconSearch" [nzSize]="'small'">
+      <input type="text" nz-input [placeholder]="'PROJECT_NEW.BOARD.SEARCH' | translate" [(ngModel)]="keyword"
+        (ngModelChange)="search()" />
+    </nz-input-group>
+    <ng-template #suffixIconSearch>
+      @if(keyword.length > 0){
+      <i class="fa-light fa-xmark" (click)="keyword='';search()"></i>
+      } @else {
+      <i class="fa-light fa-search"></i>
       }
-    </div>
-    @if (currentStep == 0) {
-    <div class="header-board-toolbar">
-      <div class="btns">
-        <button nz-button nzType="primary" nzGhost nzSize="small" (click)="help()">
-          <i class="fa-light fa-plus"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
-        </button>
-      </div>
-    </div>
-    <div class="header-view-mode">
-      <div class="segmented-control view-mode-control">
-        <button type="button" class="segment-btn" [class.active]="listMode === 'brand'"
-          (click)="changeViewMode('brand')">
-          {{ 'PROJECT_NEW.BOARD.BY_BRAND' | translate }}
-        </button>
-        <button type="button" class="segment-btn" [class.active]="listMode === 'core'"
-          (click)="changeViewMode('core')">
-          {{ 'PROJECT_NEW.BOARD.BY_CORE' | translate }}
-        </button>
-      </div>
-    </div>
-    } @else {
-    <div class="header-step-title">
-      {{ 'PROJECT_NEW.STEPS.BASIC_SETTINGS' | translate }}
+    </ng-template>
+    @if(currentStep == 0){
+    <div class="tag-list">
+      <nz-tag (click)="changeViewMode('brand')" [nzColor]="listMode === 'brand' ? '#108ee9' : null">{{
+        'PROJECT_NEW.BOARD.BY_BRAND' | translate }}</nz-tag>
+      <nz-tag (click)="changeViewMode('core')" [nzColor]="listMode === 'core' ? '#108ee9' : null">{{
+        'PROJECT_NEW.BOARD.BY_CORE' | translate }}</nz-tag>
     </div>
     }
+    <div class="btns">
+      <button nz-button nzType="primary" nzGhost nzSize="small" style="margin-right: 10px;" (click)="help()">
+        <i class="fa-light fa-question"></i>{{ 'PROJECT_NEW.BOARD.ADD_BOARD' | translate }}
+      </button>
+    </div>
   </div>
   <div class="content">
     <div class="left">

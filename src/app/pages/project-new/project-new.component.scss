@@ -1,7 +1,4 @@
 .project-new-box {
-  --project-new-header-height: 48px;
-  --project-new-left-width: 210px;
-
   position: relative;
   background: var(--aily-bg-elevated);
   height: 100%;
@@ -11,7 +8,7 @@
 }
 
 .header {
-  height: var(--project-new-header-height);
+  height: 40px;
   display: flex;
   align-items: center;
   border-bottom: 1px solid var(--aily-border-secondary);
@@ -19,140 +16,39 @@
   top: 0;
   z-index: 99;
   background: var(--aily-bg-primary);
-  padding-right: 10px;
-  // 供「按品牌 / 按核心」绝对居中定位
-  isolation: isolate;
 
-  .header-view-mode {
+  .btns {
     position: absolute;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 1;
-    pointer-events: none;
+    right: 10px;
 
-    .view-mode-control {
-      pointer-events: auto;
-    }
-  }
-
-  .header-left-zone {
-    width: var(--project-new-left-width);
-    height: 100%;
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-    border-right: 1px solid var(--aily-border-secondary);
-    padding-right: 10px;
-    box-sizing: border-box;
-
-    .search-field {
-      position: relative;
-      flex: 1;
-      min-width: 0;
-
-      nz-input-group {
-        width: 100%;
-        margin: 0;
-      }
-
-      .search-shortcut {
-        position: absolute;
-        right: 8px;
-        top: 50%;
-        transform: translateY(-50%);
-        font-size: 11px;
-        color: var(--aily-text-hint);
-        pointer-events: none;
-        line-height: 1;
-      }
-
-      ::ng-deep .ant-input {
-        padding-right: 38px;
-      }
-    }
-  }
-
-  .header-board-toolbar {
-    display: flex;
-    align-items: center;
-    flex: 1;
-    min-width: 0;
-    margin-left: 12px;
-
-    .btns {
-      position: static;
-      margin-left: auto;
-      flex-shrink: 0;
-
-      i {
-        margin-right: 5px;
-      }
-    }
-  }
-
-  .header-step-title {
-    margin-left: 12px;
-    font-size: 14px;
-    color: var(--aily-text-secondary);
-  }
-
-  .segmented-control {
-    display: inline-flex;
-    align-items: center;
-    background: var(--aily-bg-input);
-    border-radius: 6px;
-    padding: 2px;
-    border: 1px solid var(--aily-border-secondary);
-    flex-shrink: 0;
-
-    .segment-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 5px;
-      padding: 0 10px;
-      height: 26px;
-      border: none;
-      background: transparent;
-      color: var(--aily-text-tertiary);
-      font-size: 12px;
-      border-radius: 4px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s, color 0.15s;
-
-      i {
-        font-size: 12px;
-      }
-
-      &:not(.active):hover {
-        color: var(--aily-text-primary);
-      }
-    }
-
-    &.view-mode-control .segment-btn.active {
-      color: var(--aily-color-primary);
+    i {
+      margin-right: 5px;
     }
   }
 
   .btn {
-    height: var(--project-new-header-height);
+    height: 40px;
     width: 40px;
     font-size: 19px;
     flex-shrink: 0;
+  }
+
+  nz-input-group {
+    width: 160px;
+    flex-shrink: 0;
+    margin: 0 15px 0 10px;
   }
 }
 
 
 .content {
   // flex-grow: 0;
-  height: calc(100% - var(--project-new-header-height));
+  height: calc(100% - 40px);
   display: flex;
   position: relative;
 
   .left {
-    width: var(--project-new-left-width);
+    width: 210px;
     height: 100%;
     padding: 15px;
     flex-shrink: 0;

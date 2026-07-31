@@ -239,28 +239,80 @@ export class BlocklyService {
 
   private _aiWriting = new BehaviorSubject<boolean>(false);
   aiWriting$ = this._aiWriting.asObservable();
+  private readonly aiWritingSources = new Set<string>();
   private _aiExecutionActive = new BehaviorSubject<boolean>(false);
+  /** AI 回合 / 子应用操作进行中。与 `aiWaiting` getter/setter 同源。 */
   aiExecutionActive$ = this._aiExecutionActive.asObservable();
-  private _aiWaiting = new BehaviorSubject<boolean>(false);
-  aiWaiting$ = this._aiWaiting.asObservable();
+  private readonly aiExecutionActiveSources = new Set<string>();
+  private _aiWaitWriting = new BehaviorSubject<boolean>(false);
+  /** 短暂的“等待写入”提示态，不等于 AI 执行中。 */
+  aiWaitWriting$ = this._aiWaitWriting.asObservable();
+  /**
+   * 兼容旧订阅：必须与 `aiWaiting` getter 一致，指向 `_aiExecutionActive`。
+   * 历史上误绑到 `_aiWaitWriting`，会导致遮罩亮起但「AI正在操作」通知不出现。
+   */
+  aiWaiting$ = this._aiExecutionActive.asObservable();
 
   get aiWaiting() {
     return this._aiExecutionActive.value;
   }
 
   set aiWaiting(value: boolean) {
-    if (this._aiExecutionActive.value !== value) {
-      this._aiExecutionActive.next(value);
+    this.setAiExecutionActive('legacy-aily-chat', value);
+  }
+
+  setAiExecutionActive(source: string, value: boolean): void {
+    const normalizedSource = String(source || '').trim();
+    if (!normalizedSource) {
+      return;
+    }
+
+    if (value) {
+      this.aiExecutionActiveSources.add(normalizedSource);
+    } else {
+      this.aiExecutionActiveSources.delete(normalizedSource);
+    }
+
+    const active = this.aiExecutionActiveSources.size > 0;
+    if (this._aiExecutionActive.value !== active) {
+      this._aiExecutionActive.next(active);
     }
   }
 
   get aiWaitWriting() {
-    return this._aiWaiting.value;
+    return this._aiWaitWriting.value;
   }
 
   set aiWaitWriting(value: boolean) {
-    if (this._aiWaiting.value !== value) {
-      this._aiWaiting.next(value);
+    if (this._aiWaitWriting.value !== value) {
+      this._aiWaitWriting.next(value);
+    }
+  }
+
+  get aiWriting(): boolean {
+    return this._aiWriting.value;
+  }
+
+  set aiWriting(value: boolean) {
+    this.setAiWritingActive('legacy-aily-chat', value);
+  }
+
+  /** 积木写入态多源合并，供遮罩 / 「AI正在操作」通知使用。 */
+  setAiWritingActive(source: string, value: boolean): void {
+    const normalizedSource = String(source || '').trim();
+    if (!normalizedSource) {
+      return;
+    }
+
+    if (value) {
+      this.aiWritingSources.add(normalizedSource);
+    } else {
+      this.aiWritingSources.delete(normalizedSource);
+    }
+
+    const active = this.aiWritingSources.size > 0;
+    if (this._aiWriting.value !== active) {
+      this._aiWriting.next(active);
     }
   }
 
@@ -293,14 +345,6 @@ export class BlocklyService {
 
   requestCodeViewerRefresh(forceGenerate = false): void {
     this.codeViewerRefreshRequestSubject.next(forceGenerate);
-  }
-
-  get aiWriting(): boolean {
-    return this._aiWriting.value;
-  }
-
-  set aiWriting(value: boolean) {
-    this._aiWriting.next(value);
   }
 
   private overlayChaffObserver: MutationObserver | null = null;
@@ -1588,8 +1632,17 @@ export class BlocklyService {
 
     try {
       const blocksData = JSON.parse(this.electronService.readFile(libBlockPath));
-      const abiJson = JSON.stringify(this.getProjectDocument());
-      return blocksData.some((block: any) => block?.type && abiJson.includes(block.type));
+      const libraryBlockTypes = Array.isArray(blocksData)
+        ? blocksData
+          .map((block: any) => block?.type)
+          .filter((blockType): blockType is string => typeof blockType === 'string' && blockType.length > 0)
+        : [];
+      if (libraryBlockTypes.length === 0) {
+        return false;
+      }
+
+      const usedBlockTypes = new Set(this.collectBlockTypesFromProjectDocument(this.getProjectDocument()));
+      return libraryBlockTypes.some((blockType) => usedBlockTypes.has(blockType));
     } catch (error) {
       console.error('检查库使用情况失败:', libPackagePath, error);
       return false;
@@ -1610,8 +1663,8 @@ export class BlocklyService {
       return false;
     }
 
-    const abiJson = JSON.stringify(this.getProjectDocument());
-    return blockTypes.some((blockType) => abiJson.includes(blockType));
+    const usedBlockTypes = new Set(this.collectBlockTypesFromProjectDocument(this.getProjectDocument()));
+    return blockTypes.some((blockType) => usedBlockTypes.has(blockType));
   }
 
   loadLibGenerator(filePath): Promise<boolean> {

@@ -68,6 +68,7 @@
       'left': submenuPosition.left, 
       'top': submenuPosition.top,
       'width': submenuWidth,
+      'max-width': submenuMaxWidth,
       'max-height': submenuMaxHeight,
       'overflow-y': submenuOverflow
     }" (mouseenter)="keepSubMenuOpen()" (mouseleave)="hideSubMenu($event, 0)">
@@ -103,12 +104,14 @@
       [ngClass]="{ disabled: subItem.disabled, checked: subItem.check }">
       <div class="submenu-option-copy">
         <div class="submenu-option-title-row">
-          <div class="submenu-option-inline-copy">
-            <div class="name">{{ subItem.name }}</div>
-            @if(getSubmenuItemDetail(subItem)) {
-            <div class="submenu-option-separator" aria-hidden="true">-</div>
-            <div class="submenu-option-detail ellipsis">{{ getSubmenuItemDetail(subItem) }}</div>
-            }
+          <div class="submenu-option-inline-copy submenu-hover-scroll">
+            <div class="submenu-option-scroll-content submenu-hover-scroll-content">
+              <div class="name">{{ subItem.name }}</div>
+              @if(getSubmenuItemDetail(subItem)) {
+              <div class="submenu-option-separator" aria-hidden="true">-</div>
+              <div class="submenu-option-detail">{{ getSubmenuItemDetail(subItem) }}</div>
+              }
+            </div>
           </div>
           @if(subItem.check){
           <div class="check"><i class="fa-light fa-circle-check"></i></div>
@@ -119,9 +122,9 @@
     } @else {
     <div class="menu-item ccenter submenu-simple-item" (click)="subItemClick($event,subItem)"
       [title]="getSubmenuSimpleItemTitle(subItem)"
-      [ngClass]="{ disabled: subItem.disabled }">
-      <div class="text-wrapper">
-        <div class="name">{{ subItem.name }}</div>
+      [ngClass]="{ disabled: subItem.disabled, checked: subItem.check }">
+      <div class="text-wrapper submenu-hover-scroll">
+        <div class="name submenu-hover-scroll-content">{{ subItem.name }}</div>
       </div>
       @if(subItem.check){
       <div class="check"><i class="fa-light fa-circle-check"></i></div>

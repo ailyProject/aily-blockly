@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, ElementRef, HostListener, ViewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, ViewChild } from '@angular/core';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -15,7 +15,8 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { UiService } from '../../services/ui.service';
 import { PlatformService } from '../../services/platform.service';
 import { CloudService } from '../../tools/cloud-space/services/cloud.service';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import type { NewProjectData } from '../../types/project-new';
 import { AilyCodeProjectService } from '../../services/aily-code-project.service';
@@ -61,8 +62,10 @@ export function resolveInitialProjectCategory(
   templateUrl: './project-new.component.html',
   styleUrl: './project-new.component.scss',
 })
-export class ProjectNewComponent {
+export class ProjectNewComponent implements OnDestroy {
   @ViewChild('boardSearchInput') boardSearchInput?: ElementRef<HTMLInputElement>;
+
+  private destroy$ = new Subject<void>();
 
   currentStep = 0;
 
@@ -150,7 +153,17 @@ export class ProjectNewComponent {
     private message: NzMessageService,
     private ailyCodeProject: AilyCodeProjectService,
     private translate: TranslateService
-  ) { }
+  ) {
+    // 语言切换后重新应用开发板 nickname/description 本地化字段
+    this.translate.onLangChange.pipe(takeUntil(this.destroy$)).subscribe(() => {
+      this.refreshBoardListForCurrentFilters();
+    });
+  }
+
+  ngOnDestroy() {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
 
   get selectedTemplate(): CloudProjectTemplate | null {
     return this.myTemplateList.find(template => template.name === this.selectedTemplateName) || null;
@@ -244,13 +257,25 @@ export class ProjectNewComponent {
       return;
     }
 
-    this.boardList = this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)));
+    this.boardList = this.applyLocalization(
+      this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)))
+    );
     if (this.boardList.length > 0) {
       this.selectBoard(this.boardList[0]);
     } else {
       this.currentBoard = null;
     }
     this.cd.detectChanges();
+  }
+
+  /** 按当前语言填充 `_nickname` / `_description`（boards.json 的 nickname_zh_cn 等字段） */
+  private applyLocalization(list: any[]) {
+    const lang = this.translate.currentLang || this.translate.defaultLang;
+    for (const board of list) {
+      board._nickname = (lang && board[`nickname_${lang}`]) || board.nickname || '';
+      board._description = (lang && board[`description_${lang}`]) || board.description || '';
+    }
+    return list;
   }
 
   /** 在首个逗号处拆成两行展示项目类型描述（换行时不保留逗号） */
@@ -286,11 +311,15 @@ export class ProjectNewComponent {
   search(keyword = this.keyword) {
     if (keyword) {
       keyword = keyword.replace(/\s/g, '').toLowerCase();
-      this.boardList = this.filterBoardsForCategory(
-        this._boardList.filter(item => item.fulltext.includes(keyword))
+      this.boardList = this.applyLocalization(
+        this.filterBoardsForCategory(
+          this._boardList.filter(item => item.fulltext.includes(keyword))
+        )
       );
     } else {
-      this.boardList = this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)));
+      this.boardList = this.applyLocalization(
+        this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)))
+      );
     }
     if (this.boardList.length > 0) {
       this.selectBoard(this.boardList[0]);
@@ -303,7 +332,7 @@ export class ProjectNewComponent {
     // if (boardInfo.disabled) return;
     this.currentBoard = boardInfo;
     this.newProjectData.board.name = boardInfo.name;
-    this.newProjectData.board.nickname = boardInfo.nickname;
+    this.newProjectData.board.nickname = boardInfo._nickname || boardInfo.nickname;
     this.newProjectData.board.version = boardInfo.version;
     if (this.selectedProjectCategory === 'coder') {
       this.syncCoderPlatformSelection(boardInfo);
@@ -560,9 +589,11 @@ export class ProjectNewComponent {
 export interface BoardInfo {
   "name": string, // 开发板在仓库中的名称开发板名称
   "nickname": string, // 显示的开发板名称
+  "_nickname"?: string, // 按当前语言本地化后的显示名
   "version": string,
   "img": string,
   "description": string,
+  "_description"?: string, // 按当前语言本地化后的介绍
   "url": string,
   "brand": string,
   "disabled": boolean, // 是否禁用
