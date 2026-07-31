@@ -13,8 +13,8 @@
 
 - `test:e2e:fast` 会优先复用已有 `renderer/`，其次复用 `dist`；两者都不存在时仍会构建。修改前端代码后，先运行一次完整的 `npm run test:e2e`。
 - 运行中需要停止时只按一次 `Ctrl+C`，等待测试关闭 Electron、编译/终端子进程并生成 HTML 报告；再次按下会强制终止，此时报告可能不完整。
-- PowerShell 环境变量会保留在当前终端。切换场景前建议打开新终端，或执行 `Get-ChildItem Env:AILY_E2E_* | Remove-Item` 清除旧的 E2E 配置。
-- 三种全流程模式（指定开发板、所有开发板、项目广场）建议一次只开启一种；代码不会阻止多个开关同时生效。
+- PowerShell 环境变量会保留在当前终端。全流程场景统一使用 `AILY_E2E_MODE` 选择，切换场景时直接覆盖该变量即可。
+- 旧版的 `AILY_E2E_FULLFLOW`、`AILY_E2E_ALL_BOARDS`、`AILY_E2E_PROJECT_PLAZA` 仍兼容单独使用；若同时启用多个，测试会立即报错，不再串到其他场景。
 - `AILY_E2E_CLEAR_APPDATA=1` 会删除已安装的开发板包、编译器和 SDK 缓存，仅在确实需要全新环境时使用；它不会删除测试断点，如需从第一项重跑还要执行下方的断点清理命令。
 
 ### 常用运行入口
@@ -36,7 +36,7 @@
 npm run test:e2e -- smoke.spec.ts guide.spec.ts project-new.spec.ts tools.spec.ts aily-chat.spec.ts
 
 # 只运行编译诊断、错误决策与断点逻辑回归
-npm run test:e2e:fast -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
+npm run test:e2e:fast -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
 ```
 
 ### PowerShell：按场景运行
@@ -61,7 +61,7 @@ npm run test:e2e -- compile.spec.ts
 指定一个开发板，完成“选板 → 新建项目 → 连续编译两次”：
 
 ```powershell
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORD = 'uno r4' # 可省略，默认 uno r4
 npm run test:e2e:fast -- full-flow.spec.ts
 ```
@@ -69,7 +69,7 @@ npm run test:e2e:fast -- full-flow.spec.ts
 指定多个开发板逐个执行相同全流程：
 
 ```powershell
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 npm run test:e2e:fast -- full-flow.spec.ts
 ```
@@ -77,14 +77,14 @@ npm run test:e2e:fast -- full-flow.spec.ts
 验证所有可创建开发板，每块板连续编译两次：
 
 ```powershell
-$env:AILY_E2E_ALL_BOARDS = '1'
+$env:AILY_E2E_MODE = 'all-boards'
 npm run test:e2e:fast -- full-flow.spec.ts
 ```
 
 下载、打开并编译项目广场全部公开项目：
 
 ```powershell
-$env:AILY_E2E_PROJECT_PLAZA = '1'
+$env:AILY_E2E_MODE = 'project-plaza'
 npm run test:e2e:fast -- full-flow.spec.ts
 ```
 
@@ -92,7 +92,7 @@ npm run test:e2e:fast -- full-flow.spec.ts
 
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\project-plaza.json* -Force -ErrorAction SilentlyContinue
-$env:AILY_E2E_PROJECT_PLAZA = '1'
+$env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE = '0.5'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED = [guid]::NewGuid().ToString('N')
 $env:AILY_E2E_STOP_ON_ERROR = '0'
@@ -148,24 +148,25 @@ AILY_E2E_PROJECT='/path/to/blockly-project' npm run test:e2e -- blockly-editor.s
 AILY_E2E_PROJECT='/path/to/blockly-project' AILY_E2E_COMPILE=1 npm run test:e2e -- compile.spec.ts
 
 # 指定单板、多板、所有开发板、项目广场
-AILY_E2E_FULLFLOW=1 AILY_E2E_BOARD_KEYWORD='uno r4' npm run test:e2e:fast -- full-flow.spec.ts
-AILY_E2E_FULLFLOW=1 AILY_E2E_BOARD_KEYWORDS='uno r4,esp32' npm run test:e2e:fast -- full-flow.spec.ts
-AILY_E2E_ALL_BOARDS=1 npm run test:e2e:fast -- full-flow.spec.ts
-AILY_E2E_PROJECT_PLAZA=1 npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=specified-boards AILY_E2E_BOARD_KEYWORD='uno r4' npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=specified-boards AILY_E2E_BOARD_KEYWORDS='uno r4,esp32' npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=all-boards npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=project-plaza npm run test:e2e:fast -- full-flow.spec.ts
 
 # 项目广场无人值守执行；其他全流程模式同样可添加 STOP_ON_ERROR=0
-AILY_E2E_PROJECT_PLAZA=1 AILY_E2E_STOP_ON_ERROR=0 npm run test:e2e:fast -- full-flow.spec.ts
+AILY_E2E_MODE=project-plaza AILY_E2E_STOP_ON_ERROR=0 npm run test:e2e:fast -- full-flow.spec.ts
 
 # 放弃全部全流程断点并从头运行
 rm -rf e2e/.artifacts/full-flow-checkpoints
 ```
 
-需要长期保留变量时也可先执行 `export NAME=value`。切换全流程模式时建议使用新终端；至少应先执行 `unset AILY_E2E_FULLFLOW AILY_E2E_BOARD_KEYWORD AILY_E2E_BOARD_KEYWORDS AILY_E2E_ALL_BOARDS AILY_E2E_PROJECT_PLAZA AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS AILY_E2E_CLEAR_APPDATA AILY_E2E_STOP_ON_ERROR` 清除可能影响下一次运行的配置。
+需要长期保留变量时也可先执行 `export NAME=value`。切换全流程场景时覆盖 `AILY_E2E_MODE` 即可；其他场景专用配置仍需按需清理。
 
 ### 全流程可选配置
 
 | 环境变量 | 默认值 | 作用 |
 |----------|--------|------|
+| `AILY_E2E_MODE` | 未设置 | 全流程场景：`specified-boards`、`all-boards` 或 `project-plaza` |
 | `AILY_E2E_BOARD_KEYWORD` | `uno r4` | 指定单个开发板搜索关键字 |
 | `AILY_E2E_BOARD_KEYWORDS` | 未设置 | 逗号分隔的多个关键字；设置后优先于单板关键字 |
 | `AILY_E2E_CLEAR_APPDATA` | `0` | 设为 `1` 才会在启动前清空并重建应用数据 |
@@ -306,6 +307,7 @@ e2e/.artifacts/simulator-debug-report.json
 | [tests/compile-diagnostic.spec.ts](tests/compile-diagnostic.spec.ts) | 编译器根因诊断提取 | ✅ |
 | [tests/electron-app-cleanup.spec.ts](tests/electron-app-cleanup.spec.ts) | Electron 退出清理生命周期 | ✅ |
 | [tests/error-decision.spec.ts](tests/error-decision.spec.ts) | 失败后继续/中止决策逻辑 | ✅ |
+| [tests/full-flow-mode.spec.ts](tests/full-flow-mode.spec.ts) | 全流程场景互斥选择与旧开关兼容 | ✅ |
 | [tests/full-flow-checkpoint.spec.ts](tests/full-flow-checkpoint.spec.ts) | 全流程断点保存、恢复与清理 | ✅ |
 | [tests/project-plaza-selection.spec.ts](tests/project-plaza-selection.spec.ts) | 项目广场可复现抽样与项目跳过配置 | ✅ |
 | [tests/blockly-editor.spec.ts](tests/blockly-editor.spec.ts) | 打开项目、Blockly 工作区/工具箱 | ⏭️ 需环境变量 |

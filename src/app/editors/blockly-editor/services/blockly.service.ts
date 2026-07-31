@@ -1725,6 +1725,8 @@ export class BlocklyService {
     };
 
     // 重置其他可能的状态
+    this.generatedCodeRevision = -1;
+    this.latestGeneratedCode = '';
     this.codeSubject.next('');
     this.selectedBlockSubject.next(null);
     this.selectedBlockIdsSubject.next([]);

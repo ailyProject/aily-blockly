@@ -6,6 +6,19 @@ export interface RendererLifecycleEvent {
   readonly generation: number;
 }
 
+export interface UserInteractionNotificationPayload {
+  readonly key?: string;
+  readonly title?: string;
+  readonly body?: string;
+}
+
+export interface UserInteractionNotificationResult extends Record<string, unknown> {
+  readonly ok: boolean;
+  readonly notified: boolean;
+  readonly reason?: 'foreground' | 'empty-body';
+  readonly key?: string;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -270,6 +283,33 @@ export class ElectronService {
       console.warn('requestWindowAttention error:', error);
       return { success: false, error: error?.message };
     }
+  }
+
+  async notifyUserInteraction(
+    payload: UserInteractionNotificationPayload,
+  ): Promise<UserInteractionNotificationResult> {
+    if (this.isWindowFocused() && !this.isWindowMinimized()) {
+      return { ok: true, notified: false, reason: 'foreground' };
+    }
+
+    const title = String(payload?.title || 'Aily').trim().slice(0, 120) || 'Aily';
+    const body = String(payload?.body || '').trim().slice(0, 500);
+    if (!body) {
+      return { ok: false, notified: false, reason: 'empty-body' };
+    }
+
+    await this.requestWindowAttention().catch(() => undefined);
+    const platform = (window as any).electronAPI?.platform?.type;
+    const result = await this.notify(title, body, {
+      silent: false,
+      timeoutType: 'never',
+      ...(platform === 'linux' ? { urgency: 'critical' as const } : {}),
+    });
+    return {
+      ok: result?.success !== false,
+      notified: result?.success !== false,
+      key: String(payload?.key || ''),
+    };
   }
 
   /**

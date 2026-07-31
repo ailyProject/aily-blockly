@@ -1,61 +1,57 @@
-@if (useLegacySimulator) {
-  <app-simulator-editor></app-simulator-editor>
-} @else {
-  <section class="simulator-subapp-host" [attr.data-state]="state">
-    <iframe
-      #subappFrame
-      class="simulator-subapp-frame"
-      [class.simulator-subapp-frame--hidden]="regenerationRequirement"
-      title="Aily Simulator"
-      sandbox="allow-scripts allow-same-origin"
-      referrerpolicy="no-referrer">
-    </iframe>
+<section class="simulator-subapp-host" [attr.data-state]="state">
+  <iframe
+    #subappFrame
+    class="simulator-subapp-frame"
+    [class.simulator-subapp-frame--hidden]="regenerationRequirement"
+    title="Aily Simulator"
+    sandbox="allow-scripts allow-same-origin"
+    referrerpolicy="no-referrer">
+  </iframe>
 
-    @if (regenerationRequirement) {
-      <div class="simulator-subapp-status" role="status">
-        <strong>旧连线图需要重新生成</strong>
-        <p>
-          检测到旧版 connection_output.json。新仿真器不会直接导入或回写该文件，
-          需要由 Blockly Agent 基于当前项目生成并确认新的 v2 Scene。
-        </p>
-        <small>
-          旧文件指纹：{{ regenerationRequirement.legacySourceRevision.slice(0, 12) }}…
-        </small>
-        <div class="simulator-subapp-status__actions">
-          <button
-            type="button"
-            [disabled]="generationRequestPending"
-            (click)="requestProjectSceneGeneration()">
-            交给 Agent 生成并确认
-          </button>
-          <button
-            type="button"
-            class="simulator-subapp-status__secondary"
-            (click)="cancelLegacyRegeneration()">
-            取消并关闭仿真器
-          </button>
-        </div>
-        @if (errorMessage) {
-          <small>{{ errorMessage }}</small>
-        }
+  @if (regenerationRequirement) {
+    <div class="simulator-subapp-status" role="status">
+      <strong>旧连线图需要重新生成</strong>
+      <p>
+        检测到旧版 connection_output.json。新仿真器不会直接导入或回写该文件，
+        需要由 Blockly Agent 基于当前项目生成并确认新的 v2 Scene。
+      </p>
+      <small>
+        旧文件指纹：{{ regenerationRequirement.legacySourceRevision.slice(0, 12) }}…
+      </small>
+      <div class="simulator-subapp-status__actions">
+        <button
+          type="button"
+          [disabled]="generationRequestPending"
+          (click)="requestProjectSceneGeneration()">
+          交给 Agent 生成并确认
+        </button>
+        <button
+          type="button"
+          class="simulator-subapp-status__secondary"
+          (click)="cancelLegacyRegeneration()">
+          取消并关闭仿真器
+        </button>
       </div>
-    } @else if (state !== 'ready') {
-      <div class="simulator-subapp-status" role="status">
-        @if (state === 'failed') {
-          <strong>仿真器启动失败</strong>
-          <p>{{ errorMessage }}</p>
-          <button type="button" (click)="retry()">重新启动</button>
-        } @else if (state === 'closed') {
-          <strong>仿真器已关闭</strong>
-          <button type="button" (click)="retry()">重新启动</button>
-        } @else {
-          <span class="simulator-subapp-spinner" aria-hidden="true"></span>
-          <strong>正在启动独立仿真服务</strong>
-          @if (runtimeSource) {
-            <small>{{ runtimeSource }}</small>
-          }
+      @if (errorMessage) {
+        <small>{{ errorMessage }}</small>
+      }
+    </div>
+  } @else if (state !== 'ready') {
+    <div class="simulator-subapp-status" role="status">
+      @if (state === 'failed') {
+        <strong>仿真器启动失败</strong>
+        <p>{{ errorMessage }}</p>
+        <button type="button" (click)="retry()">重新启动</button>
+      } @else if (state === 'closed') {
+        <strong>仿真器已关闭</strong>
+        <button type="button" (click)="retry()">重新启动</button>
+      } @else {
+        <span class="simulator-subapp-spinner" aria-hidden="true"></span>
+        <strong>正在启动独立仿真服务</strong>
+        @if (runtimeSource) {
+          <small>{{ runtimeSource }}</small>
         }
-      </div>
-    }
-  </section>
-}
+      }
+    </div>
+  }
+</section>

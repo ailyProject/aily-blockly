@@ -28,6 +28,7 @@ import {
   type ChildToolHostInfo,
   type ChildToolRuntimeSnapshot,
 } from '../../services/child-tool-process.service';
+import { ElectronService } from '../../services/electron.service';
 import { MainUiAutomationService } from '../../services/main-ui-automation.service';
 import { ProjectService } from '../../services/project.service';
 import { ThemeService } from '../../services/theme.service';
@@ -78,6 +79,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
   constructor(
     private readonly sanitizer: DomSanitizer,
     private readonly processService: ChildToolProcessService,
+    private readonly electronService: ElectronService,
     private readonly hostRegistry: ChildAppHostRegistryService,
     private readonly mainUiAutomation: MainUiAutomationService,
     private readonly projectService: ProjectService,
@@ -296,6 +298,11 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
           childError: (error: unknown) => {
             this.ngZone.run(() => this.setError(this.errorText(error) || 'Compact surface failed'));
           },
+          notifyUserInteraction: (payload: unknown) => this.electronService.notifyUserInteraction(
+            payload && typeof payload === 'object'
+              ? payload as Record<string, unknown>
+              : {},
+          ),
           requestClose: () => {
             this.ngZone.run(() => this.closeRequested.emit());
             return { ok: true };
@@ -347,6 +354,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       interactive: surfaceConfig?.interactive !== false,
       capabilities: {
         snapshotRefresh: true,
+        userInteractionNotifications: true,
         compactSurface: true,
         runtimeControl: false,
       },

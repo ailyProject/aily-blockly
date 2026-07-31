@@ -114,7 +114,7 @@ npm run test:e2e
 运行：
 
 ```powershell
-npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
+npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
 npm run test:e2e:fast
 ```
 
@@ -168,7 +168,7 @@ npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts erro
 常规兼容性检查，保留已安装依赖：
 
 ```powershell
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
@@ -184,7 +184,7 @@ npm run test:e2e -- full-flow.spec.ts
 
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\specified-boards.json* -Force -ErrorAction SilentlyContinue
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_CLEAR_APPDATA = '1'
 $env:AILY_E2E_ALLOW_TOOL_REFRESH = '1'
@@ -207,7 +207,7 @@ E2E 默认不自动刷新 `aily-builder` 和 `aily-linter`。本场景显式设�
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\project-plaza.json* -Force -ErrorAction SilentlyContinue
 Get-ChildItem Env:AILY_E2E_* -ErrorAction SilentlyContinue | Remove-Item
-$env:AILY_E2E_PROJECT_PLAZA = '1'
+$env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE = '0.5'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED = [guid]::NewGuid().ToString('N')
 $env:AILY_E2E_STOP_ON_ERROR = '0'
@@ -257,7 +257,7 @@ npm run test:e2e:fast -- full-flow.spec.ts
 ## 8. `OP-BOARD-PACKAGE`：测试某个开发板包
 
 ```powershell
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORD = '<board search keyword>'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
@@ -276,7 +276,7 @@ Remove-Item e2e\.artifacts\full-flow-checkpoints\project-plaza.json* -Force -Err
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE -ErrorAction SilentlyContinue
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED -ErrorAction SilentlyContinue
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS -ErrorAction SilentlyContinue
-$env:AILY_E2E_PROJECT_PLAZA = '1'
+$env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
 ```
@@ -297,7 +297,7 @@ npm run test:e2e -- full-flow.spec.ts
 4. 删除 `specified-boards` checkpoint，在允许清空应用数据的测试机上，以 `AILY_E2E_CLEAR_APPDATA=1` 对 `uno r4,esp32` 或发布负责人指定的代表板运行 builder 全流程。
 5. 按第 7.5 节从项目广场随机抽取 50%，完成 builder 兼容性验证；项目自身问题可按规则跳过，builder/环境/未知问题不可跳过。
 6. 清除全流程模式变量、抽样变量、项目跳过变量和 `AILY_E2E_CLEAR_APPDATA`。
-7. 删除 `all-boards` checkpoint，设置 `AILY_E2E_ALL_BOARDS=1`、`AILY_E2E_STOP_ON_ERROR=0`，运行 `full-flow.spec.ts`。
+7. 删除 `all-boards` checkpoint，设置 `AILY_E2E_MODE=all-boards`、`AILY_E2E_STOP_ON_ERROR=0`，运行 `full-flow.spec.ts`。
 8. 清除全流程模式变量。
 9. 作为项目广场功能的独立发布验收，删除 `project-plaza` checkpoint、清除抽样/跳过变量，再以 100% 全量运行；此阶段任何项目失败都阻止发布。
 10. 在每个目标 OS/flavor 构建最终安装包，并完成第 10.2 节验收。
@@ -315,7 +315,7 @@ npm run test:e2e -- full-flow.spec.ts
 
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\all-boards.json* -Force -ErrorAction SilentlyContinue
-$env:AILY_E2E_ALL_BOARDS = '1'
+$env:AILY_E2E_MODE = 'all-boards'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e:fast -- full-flow.spec.ts
 ```

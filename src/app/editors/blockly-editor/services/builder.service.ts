@@ -28,6 +28,7 @@ import { AppDataResourceLockService } from '../../../services/appdata-resource-l
 import { NpmService } from '../../../services/npm.service';
 import { debounceTime } from 'rxjs/operators';
 import {
+  AilyBuilderOutputLineBuffer,
   AilyBuilderProgressEvent,
   isAilyBuilderProgressLine,
   parseAilyBuilderProgressLine
@@ -209,6 +210,14 @@ export class _BuilderService {
     workspace: unknown,
     detail?: string,
   ): Promise<string> {
+    // Code-generation events publish the exact workspace revision before they
+    // trigger preprocessing. Reuse it to avoid generating the same workspace
+    // synchronously again on the renderer thread.
+    const reusableCode = this.blocklyService.getReusableGeneratedCode();
+    if (reusableCode !== null) {
+      return reusableCode;
+    }
+
     await this.waitForOneIdleBoundary();
     const projectPath = this.projectService.currentProjectPath;
     const projectDocument = this.blocklyService.getProjectDocument();
@@ -228,6 +237,9 @@ export class _BuilderService {
       projectPath,
       generated.generator,
     );
+    // The workspace can become dirty while the dependency debounce is pending.
+    // Cache this fallback generation for the remaining preprocess/build flow.
+    this.blocklyService.publishGeneratedCode(generated.code);
     return generated.code;
   }
 
@@ -921,7 +933,6 @@ export class _BuilderService {
     }
   }
 
-
     /**
      * 从当前工作区生成并写入 sketch.ino 文件（不触发完整预编译）
      * 在项目打开时调用，确保 sketch.ino 文件可供 AI 工具和代码预览读取
@@ -1489,7 +1500,7 @@ export class _BuilderService {
 
           let lastProgress = 0;
           let lastBuildText = '';
-          let bufferData = '';
+          const outputLineBuffer = new AilyBuilderOutputLineBuffer();
           let lastStdErr = '';
           let fullStdErr = '';
           let outputComplete = false;
@@ -1529,6 +1540,8 @@ export class _BuilderService {
                 console.log('捕获到 streamId:', this.streamId);
               }
 
+              let outputLines: Array<{ line: string; type: 'stdout' | 'stderr' }> = [];
+
               if (output.type === 'close') {
                 processExitCode = output.code ?? (output.signal ? 1 : 0);
                 processSignal = output.signal || null;
@@ -1543,7 +1556,9 @@ export class _BuilderService {
                     fullStdErr = processErrorMessage;
                   }
                 }
-                return;
+
+                // A process may exit without a final newline.
+                outputLines = outputLineBuffer.flush();
               }
 
               if (output.type === 'error') {
@@ -1556,22 +1571,20 @@ export class _BuilderService {
                 return;
               }
               
-              if (output.data) {
-                const data = output.data;
-                if (data.includes('\r\n') || data.includes('\n') || data.includes('\r')) {
-                  const lines = (bufferData + data).split(/\r\n|\n|\r/);
-                  bufferData = lines.pop() || '';
+              if ((output.type === 'stdout' || output.type === 'stderr') && output.data) {
+                outputLines = outputLineBuffer.append(output.type, output.data);
+              }
 
-                  lines.forEach((line: string) => {
+              outputLines.forEach(({ line, type: outputType }) => {
                     let trimmedLine = line.trim();
                     if (!trimmedLine) return;
 
                     // aily-builder >= 1.2.11 emits a dedicated JSON progress event.
                     // Consume it here so protocol data never enters the log component.
                     if (isAilyBuilderProgressLine(trimmedLine)) {
-                      hasStructuredBuilderProgress = true;
                       const builderProgress = parseAilyBuilderProgressLine(trimmedLine);
                       if (builderProgress) {
+                        hasStructuredBuilderProgress = true;
                         lastProgress = Math.max(lastProgress, builderProgress.percent);
                         this.currentProgress = Math.max(this.currentProgress, builderProgress.percent);
                         this.hasReceivedRealProgress = true;
@@ -1675,7 +1688,7 @@ export class _BuilderService {
                       this.appendCompileLog(trimmedLine, 'INFO');
                     } else {
                       if (!outputComplete) {
-                        if (output.type == 'stderr') {
+                        if (outputType === 'stderr') {
                           if (trimmedLine.includes('[ERROR]') || trimmedLine.toLowerCase().includes("[error]")) {
                             lastStdErr = trimmedLine;
                             fullStdErr += trimmedLine + '\n';
@@ -1694,13 +1707,7 @@ export class _BuilderService {
                     if (lastLogLines.length > 30) {
                       lastLogLines.shift();
                     }
-                  });
-                } else {
-                  bufferData += data;
-                }
-              } else {
-                bufferData += '';
-              }
+              });
             },
             error: (error: any) => {
               this.isErrored = true;

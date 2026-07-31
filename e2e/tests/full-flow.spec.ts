@@ -6,6 +6,7 @@ import {
 } from '../error-decision';
 import { extractCompileDiagnostic } from '../compile-diagnostic';
 import { FullFlowCheckpoint, shouldStopOnError } from '../full-flow-checkpoint';
+import { readFullFlowMode } from '../full-flow-mode';
 import {
   readProjectPlazaSampleRate,
   readProjectPlazaSkipProjectIds,
@@ -26,7 +27,7 @@ import path from 'node:path';
  *
  * 因此默认跳过，需显式开启：
  *
- *   $env:AILY_E2E_FULLFLOW = '1'
+ *   $env:AILY_E2E_MODE = 'specified-boards'
  *   # 可选：指定要选择的开发板搜索关键字（默认 "uno r4"，需本机已装该板的编译器/SDK）
  *   $env:AILY_E2E_BOARD_KEYWORD = 'uno r4'
  *   # 可选：指定多个开发板搜索关键字，逗号分隔；设置后优先于 AILY_E2E_BOARD_KEYWORD
@@ -34,15 +35,16 @@ import path from 'node:path';
  *   npm run test:e2e:fast -- full-flow.spec.ts
  *
  *   # 项目广场全量编译（交互终端遇错时询问继续/中止；设置 AILY_E2E_STOP_ON_ERROR=0 可自动继续）
- *   $env:AILY_E2E_PROJECT_PLAZA = '1'
+ *   $env:AILY_E2E_MODE = 'project-plaza'
  *   npm run test:e2e:fast -- full-flow.spec.ts
  *
  * 本机需具备：内置 Node 工具链（child/node）和全局安装的 aily-builder 命令、该开发板可安装
  * （网络/缓存），以及对应编译器与 SDK 已安装于应用数据目录下的 aily-project/tools 与 sdk。
  */
-const ENABLED = process.env['AILY_E2E_FULLFLOW'] === '1';
-const ALL_BOARDS_ENABLED = process.env['AILY_E2E_ALL_BOARDS'] === '1';
-const PROJECT_PLAZA_ENABLED = process.env['AILY_E2E_PROJECT_PLAZA'] === '1';
+const FULL_FLOW_MODE = readFullFlowMode();
+const ENABLED = FULL_FLOW_MODE === 'specified-boards';
+const ALL_BOARDS_ENABLED = FULL_FLOW_MODE === 'all-boards';
+const PROJECT_PLAZA_ENABLED = FULL_FLOW_MODE === 'project-plaza';
 const CLEAR_APPDATA = process.env['AILY_E2E_CLEAR_APPDATA'] === '1';
 const STOP_ON_ERROR = shouldStopOnError(process.env['AILY_E2E_STOP_ON_ERROR']);
 const INTERACTIVE_ERROR_DECISIONS = STOP_ON_ERROR && canRequestErrorDecision();
@@ -57,13 +59,13 @@ const PROJECT_PLAZA_INSTALL_TIMEOUT_MS = readTimeoutEnv(
   5 * 60_000,
 );
 const PROJECT_PLAZA_CONCURRENCY = readPositiveIntegerEnv('AILY_E2E_PROJECT_PLAZA_CONCURRENCY', 2);
-const PROJECT_PLAZA_SAMPLE_RATE = readProjectPlazaSampleRate(
-  process.env['AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE'],
-);
+const PROJECT_PLAZA_SAMPLE_RATE = PROJECT_PLAZA_ENABLED
+  ? readProjectPlazaSampleRate(process.env['AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE'])
+  : 1;
 const PROJECT_PLAZA_SAMPLE_SEED = process.env['AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED'];
-const PROJECT_PLAZA_SKIP_PROJECT_IDS = readProjectPlazaSkipProjectIds(
-  process.env['AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS'],
-);
+const PROJECT_PLAZA_SKIP_PROJECT_IDS = PROJECT_PLAZA_ENABLED
+  ? readProjectPlazaSkipProjectIds(process.env['AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS'])
+  : new Set<string>();
 const POLL_INTERVAL_MS = 250;
 const BOARD_COMPILE_ATTEMPTS = 2;
 const PROJECT_PLAZA_PAGE_SIZE = 100;

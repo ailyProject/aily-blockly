@@ -478,13 +478,22 @@ async function waitForReady() {
     }
   }
 
+  // Initialization and every managed install/update already perform a full
+  // readiness probe and store the result. The preprocess hot path calls this
+  // method frequently, so avoid blocking Electron's main thread with another
+  // `npm root -g` and `aily-builder --version` spawnSync pair. Keep a cheap
+  // command-path check so an external add/remove still invalidates the cache.
+  const lastKnownResult = startupResult || initializedResult;
+  if (lastKnownResult && getAilyBuilderCommandPath() === lastKnownResult.path) {
+    return lastKnownResult;
+  }
+
   const commandState = getAilyBuilderReadyState(childPath);
   if (commandState.ok) {
     startupPromise = Promise.resolve(rememberReadyResult(commandState));
     return commandState;
   }
 
-  const lastKnownResult = startupResult || initializedResult;
   const failureResult = rememberReadyResult({
     ...commandState,
     error: lastKnownResult && !lastKnownResult.ok && lastKnownResult.error

@@ -11,7 +11,6 @@ import { Subscription } from 'rxjs';
 
 import { ProjectService } from '../../services/project.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
-import { SimulatorEditorComponent } from './simulator-editor/simulator-editor.component';
 import {
   SimulatorSubappFrameAdapter,
   type SimulatorSubappDebugLocationHint,
@@ -89,17 +88,13 @@ interface ProjectSceneRegenerationRequired {
 
 @Component({
   selector: 'app-simulator-subapp-host',
-  imports: [CommonModule, SimulatorEditorComponent],
+  imports: [CommonModule],
   templateUrl: './simulator-subapp-host.component.html',
   styleUrl: './simulator-subapp-host.component.scss',
 })
 export class SimulatorSubappHostComponent
 implements AfterViewInit, OnDestroy {
   @ViewChild('subappFrame') private frame?: ElementRef<HTMLIFrameElement>;
-
-  readonly useLegacySimulator =
-    typeof (window as any).electronAPI?.simulatorSubapp?.openProjectScene
-      !== 'function';
 
   state: SimulatorSubappFrameState = 'idle';
   errorMessage = '';
@@ -121,13 +116,12 @@ implements AfterViewInit, OnDestroy {
     rebuildBridge: SimulatorProjectRebuildBridgeService,
   ) {
     rebuildBridge.start();
-    if (this.useLegacySimulator) return;
     this.projectActivationSubscription =
       this.projectService.projectActivation$.subscribe(() => {
         if (!this.destroyed) void this.restart();
       });
     this.removeHostStateListener =
-      (window as any).electronAPI.simulatorSubapp?.onStateChanged((event: {
+      (window as any).electronAPI?.simulatorSubapp?.onStateChanged((event: {
         state: string;
         unexpected?: boolean;
         surface?: SimulatorSubappSurface;
@@ -169,7 +163,7 @@ implements AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit(): void {
-    if (!this.useLegacySimulator) void this.launch();
+    void this.launch();
   }
 
   ngOnDestroy(): void {
@@ -257,7 +251,14 @@ implements AfterViewInit, OnDestroy {
   private async launch(generation = ++this.launchGeneration): Promise<void> {
     const frame = this.frame?.nativeElement;
     const api = this.simulatorApi();
-    if (!frame || !api || this.destroyed) return;
+    if (!frame || this.destroyed) return;
+    if (!api) {
+      this.applyLaunchError(
+        new Error('独立仿真服务接口不可用，请重启主程序后重试。'),
+        generation,
+      );
+      return;
+    }
 
     this.errorMessage = '';
     this.runtimeSource = '';
