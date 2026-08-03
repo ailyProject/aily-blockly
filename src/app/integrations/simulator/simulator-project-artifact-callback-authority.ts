@@ -229,8 +229,14 @@ export class SimulatorProjectArtifactCallbackAuthority {
     }
     this.requireActive(signal);
     const [, artifact] = await Promise.all([
-      this.readStoredScene(signal, true),
-      this.readManifest(signal, true),
+      this.readStoredScene(signal, true).catch((error: unknown) => {
+        logProjectArtifactReadFailure('context-scene', error);
+        throw error;
+      }),
+      this.readManifest(signal, true).catch((error: unknown) => {
+        logProjectArtifactReadFailure('context-manifest', error);
+        throw error;
+      }),
     ]);
     this.requireActive(signal);
     return {
@@ -784,6 +790,22 @@ function isMissingFileError(error: unknown): boolean {
     && typeof error === 'object'
     && 'code' in error
     && (error as { code?: unknown }).code === 'ENOENT';
+}
+
+function logProjectArtifactReadFailure(stage: string, error: unknown): void {
+  const record = error !== null && typeof error === 'object'
+    ? error as { name?: unknown; code?: unknown }
+    : null;
+  console.error('[SimulatorHost][ProjectArtifactReadFailed]', JSON.stringify({
+    stage,
+    errorName: typeof record?.name === 'string'
+      ? record.name.slice(0, 80)
+      : null,
+    errorCode: typeof record?.code === 'string'
+      ? record.code.slice(0, 80)
+      : null,
+    rendererRealmError: error instanceof Error,
+  }));
 }
 
 async function digestJson(value: unknown): Promise<string> {

@@ -10,6 +10,7 @@ export interface SimulatorElectronProjectArtifactBridge {
     relative(from: string, to: string): string;
   };
   fs: {
+    existsSync(filePath: string): boolean;
     readFileBufferAsync(filePath: string): Promise<ArrayBuffer>;
     writeFileBufferAtomicAsync(
       filePath: string,
@@ -59,6 +60,9 @@ export function createSimulatorElectronProjectArtifactFilePort(
       signal: AbortSignal,
     ): Promise<SimulatorProjectArtifactFileStat> {
       requireNotAborted(signal);
+      if (!bridge.fs.existsSync(filePath)) {
+        throw createMissingFileError();
+      }
       const stat = bridge.fs.lstatSync(filePath);
       requireNotAborted(signal);
       return {
@@ -84,6 +88,7 @@ function requireBridge(
     || typeof bridge.path?.join !== 'function'
     || typeof bridge.path?.resolve !== 'function'
     || typeof bridge.path?.relative !== 'function'
+    || typeof bridge.fs?.existsSync !== 'function'
     || typeof bridge.fs?.readFileBufferAsync !== 'function'
     || typeof bridge.fs?.writeFileBufferAtomicAsync !== 'function'
     || typeof bridge.fs?.lstatSync !== 'function'
@@ -91,6 +96,14 @@ function requireBridge(
   ) {
     throw new TypeError('Electron Project Artifact bridge is invalid.');
   }
+}
+
+function createMissingFileError(): Error & { code: 'ENOENT' } {
+  const error = new Error('Project Artifact file is not available.') as Error & {
+    code: 'ENOENT';
+  };
+  error.code = 'ENOENT';
+  return error;
 }
 
 function requireNotAborted(signal: AbortSignal): void {
