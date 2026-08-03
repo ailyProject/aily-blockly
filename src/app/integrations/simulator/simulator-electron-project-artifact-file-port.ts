@@ -26,8 +26,8 @@ export interface SimulatorElectronProjectArtifactBridge {
 
 /**
  * Concrete Blockly/Electron filesystem adapter. It consumes only generic
- * preload file/path primitives; no Simulator-specific preload API or old
- * simulator-subapp-host entrypoint is involved.
+ * preload file/path primitives; no Simulator-specific preload API or
+ * product-specific Runtime entrypoint is involved.
  */
 export function createSimulatorElectronProjectArtifactFilePort(
   bridge: SimulatorElectronProjectArtifactBridge,

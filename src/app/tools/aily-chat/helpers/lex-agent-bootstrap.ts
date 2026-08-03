@@ -20,7 +20,6 @@ import type { ProviderContextManagementSupport } from '../services/aily-chat-con
 import {
   MAIN_AGENT_TYPE,
   PROJECT_SCENE_AGENT_TYPE,
-  SCHEMATIC_AGENT_TYPE,
   normalizeAgentIdentifier,
 } from '../core/agent-identifiers';
 import {
@@ -81,7 +80,6 @@ import { analyzeLibraryBlocksTool } from '../tools/editBlockTool';
 import { TOOL_SETTINGS_CATALOG } from '../tools/tool-settings-catalog';
 import type { HostSessionRecord, PersistedHostResponseData } from '../services/chat-history.service';
 import { AilyAgentSessionProviderOptionsSourceService } from '../services/chat-session-provider-options-source.service';
-import { LEGACY_HOST_EXTERNAL_TOOLS } from '../tools/legacy-host-tool-definitions';
 import {
   BlocklyHostAdapter,
   createBlocklyHostBinding,
@@ -609,8 +607,6 @@ function createRuntimePromptHost(hostAPI: IExternalHostAPI): ReturnType<typeof A
     // request-scoped hostAPI so prompt context and tool execution agree.
     project: hostAPI.project ?? host.project,
     blockly: hostAPI.blockly ?? (host as any).blockly,
-    connectionGraph: hostAPI.connectionGraph ?? host.connectionGraph,
-    schematic: (hostAPI as any).schematic ?? (host as any).schematic,
     boardSearch: hostAPI.boardSearch ?? (host as any).boardSearch,
     terminal: hostAPI.terminal ?? host.terminal,
     auth: hostAPI.auth ?? host.auth,
@@ -719,7 +715,6 @@ function toAskUserBridgeResponse(
 
 const TOOL_CONFIG_AGENTS = [
   MAIN_AGENT_TYPE,
-  SCHEMATIC_AGENT_TYPE,
   PROJECT_SCENE_AGENT_TYPE,
 ] as const;
 
@@ -1638,7 +1633,6 @@ export function buildExternalHostAPI(
         return result.content;
       },
     } as any) : undefined,
-    connectionGraph: host.connectionGraph,
     subappAgent: host.subappAgent,
     config: host.config,
       auth: host.auth ? {

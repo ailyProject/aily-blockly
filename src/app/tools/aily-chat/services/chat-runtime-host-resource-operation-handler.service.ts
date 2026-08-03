@@ -16,7 +16,6 @@ import { BuilderService } from '../../../services/builder.service';
 import { UploaderService } from '../../../services/uploader.service';
 import { SerialService } from '../../../services/serial.service';
 import { ConfigService } from '../../../services/config.service';
-import { ConnectionGraphService } from '../../../services/connection-graph.service';
 import { SubappAgentBridgeService } from '../../../services/subapp-agent-bridge.service';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import {
@@ -37,17 +36,6 @@ import { AilyChatConfigService } from './aily-chat-config.service';
 import { ChatRuntimeOwnerSubmittedTurnTitleService } from './chat-runtime-owner-submitted-turn-title.service';
 import { ChatRuntimeOwnerToolApprovalService } from './chat-runtime-owner-tool-approval.service';
 import { normalizeToolApprovalArgs } from '../core/tool-approval-input';
-import {
-  applySchematicTool,
-  generateConnectionGraphTool,
-  generatePinmapTool,
-  getCurrentSchematicTool,
-  getPinmapSummaryTool,
-  getProjectContextTool,
-  getSensorPinmapCatalogTool,
-  savePinmapTool,
-  validateConnectionGraphTool,
-} from '../tools/connectionGraphTool';
 import {
   createProjectSceneGenerationHandlers,
   GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
@@ -160,7 +148,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
     private readonly serialService: SerialService,
     private readonly arduinoLintService: ArduinoLintService,
     private readonly blocklyService: BlocklyService,
-    private readonly connectionGraphService: ConnectionGraphService,
     private readonly configService: ConfigService,
     private readonly chatConfigService: AilyChatConfigService,
     private readonly submittedTurnTitleService: ChatRuntimeOwnerSubmittedTurnTitleService,
@@ -227,8 +214,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
         return this.runToolApprovalOperation(request);
       case 'blockly-workspace':
         return this.runBlocklyWorkspaceOperation(request);
-      case 'connection-graph':
-        return this.runConnectionGraphOperation(request);
       case 'subapp-agent':
         return this.runSubappAgentOperation(request);
       case 'project-scene-proposal':
@@ -1304,100 +1289,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
           false,
         );
     }
-  }
-
-  private async runConnectionGraphOperation(request: ChatRuntimeHostResourceOperationRequest): Promise<unknown> {
-    const sessionId = this.requireSessionId(request, 'connection graph');
-    const payload = this.requirePayloadAdapter(request.payload, 'connectionGraph', 'connection graph');
-    const action = typeof payload.action === 'string' ? payload.action : '';
-    const args = payload.args && typeof payload.args === 'object' && !Array.isArray(payload.args)
-      ? payload.args as Record<string, unknown>
-      : {};
-    const usesWorkspaceMutation = action === 'generateConnectionGraph'
-      || action === 'getPinmapSummary'
-      || action === 'validateConnectionGraph'
-      || action === 'savePinmap'
-      || action === 'applySchematic';
-    const turnId = this.normalizeSessionId(request.turnId);
-    const toolCallId = this.normalizeSessionId(request.toolCallId);
-    if (usesWorkspaceMutation && (!turnId || !toolCallId)) {
-      throw new HostResourceOperationError(
-        '[AilyChat][RuntimeHost] Mutating connection graph operations require canonical turn and tool identities.',
-        'resource_operation_mutation_identity_missing',
-        false,
-      );
-    }
-    const transactionId = `connection-graph:${turnId}:${toolCallId}:${action}`;
-    if (usesWorkspaceMutation) {
-      this.assertWorkspaceMutationNotPrepared(transactionId);
-    }
-    const mutationTransaction = usesWorkspaceMutation
-      ? new ChatRuntimeHostWorkspaceMutationTransaction({
-          sessionId,
-          turnId,
-          toolCallId,
-          transactionId,
-        }, this.electronService)
-      : null;
-    const invocationContext = {
-      turnId,
-      toolCallId,
-      recordMutationReceipt: mutationTransaction?.record,
-    };
-
-    let result: unknown;
-    try {
-      switch (action) {
-        case 'generateConnectionGraph':
-          result = await generateConnectionGraphTool(this.connectionGraphService, this.projectService, args as never, invocationContext);
-          break;
-        case 'getPinmapSummary':
-          result = await getPinmapSummaryTool(this.connectionGraphService, this.projectService, args as never, invocationContext);
-          break;
-        case 'getProjectContext':
-          result = await getProjectContextTool(this.connectionGraphService, this.projectService, args as never);
-          break;
-        case 'getSensorPinmapCatalog':
-          result = await getSensorPinmapCatalogTool(this.connectionGraphService, this.projectService, args as never);
-          break;
-        case 'validateConnectionGraph':
-          result = await validateConnectionGraphTool(this.connectionGraphService, this.projectService, args as never, invocationContext);
-          break;
-        case 'generatePinmap':
-          result = await generatePinmapTool(this.connectionGraphService, this.projectService, args as never);
-          break;
-        case 'savePinmap':
-          result = await savePinmapTool(this.connectionGraphService, this.projectService, args as never, invocationContext);
-          break;
-        case 'getCurrentSchematic':
-          result = await getCurrentSchematicTool(this.connectionGraphService, this.projectService, args);
-          break;
-        case 'applySchematic':
-          result = await applySchematicTool(this.connectionGraphService, this.projectService, args as never, invocationContext);
-          break;
-        default:
-          throw new HostResourceOperationError(
-            `[AilyChat][RuntimeHost] Unsupported connection graph action: ${String(payload.action || '<missing>')}.`,
-            'resource_operation_payload_invalid',
-            false,
-          );
-      }
-    } catch (error) {
-      await mutationTransaction?.rollback();
-      throw error;
-    }
-
-    if (this.isToolUseError(result)) {
-      await mutationTransaction?.rollback();
-      return result;
-    }
-    if (!mutationTransaction?.hasMutations) {
-      return result;
-    }
-    return {
-      ...(result && typeof result === 'object' ? result : { content: result }),
-      mutationBatch: this.prepareWorkspaceMutation(mutationTransaction),
-    };
   }
 
   private async runSubappAgentOperation(

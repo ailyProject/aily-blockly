@@ -120,6 +120,7 @@ export interface WorkspaceBlockSearchState {
 export interface BlocklyDebugExecutionMarkerState {
   projectPath: string;
   blockId: string;
+  focus: boolean;
 }
 
 @Injectable({
@@ -201,19 +202,25 @@ export class BlocklyService {
   toolboxSearchQuerySubject = new BehaviorSubject<string>('');
   workspaceBlockSearchSubject = new BehaviorSubject<WorkspaceBlockSearchState>(this.createWorkspaceBlockSearchState());
 
-  setDebugExecutionMarker(projectPath: string, blockId: string): void {
+  setDebugExecutionMarker(
+    projectPath: string,
+    blockId: string,
+    options: { focus?: boolean } = {},
+  ): void {
     const normalizedProjectPath = String(projectPath || '').trim();
     const normalizedBlockId = String(blockId || '').trim();
     const next = normalizedProjectPath && normalizedBlockId
       ? {
           projectPath: normalizedProjectPath,
           blockId: normalizedBlockId.slice(0, 256),
+          focus: options.focus !== false,
         }
       : null;
     const current = this.debugExecutionMarkerSubject.value;
     if (
       current?.projectPath === next?.projectPath
       && current?.blockId === next?.blockId
+      && current?.focus === next?.focus
     ) {
       return;
     }
@@ -224,6 +231,11 @@ export class BlocklyService {
     const current = this.debugExecutionMarkerSubject.value;
     if (!current || (projectPath && current.projectPath !== projectPath)) return;
     this.debugExecutionMarkerSubject.next(null);
+  }
+
+  hasWorkspaceBlock(blockId: string): boolean {
+    const normalizedBlockId = String(blockId || '').trim();
+    return !!normalizedBlockId && !!this._workspace?.getBlockById(normalizedBlockId);
   }
 
   boardConfig;

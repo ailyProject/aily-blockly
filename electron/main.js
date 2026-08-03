@@ -13,14 +13,6 @@ const projectLock = require("./project-lock");
 const { startCliBridge } = require("./cli-bridge");
 const builder = require("./builder");
 const linter = require("./linter");
-const simulatorGateway = require("./simulator-gateway");
-const simulatorSubappHost = require("./simulator-subapp-host");
-const {
-  createProjectSceneGenerationBroker,
-} = require("./project-scene-generation-broker");
-const {
-  createSimulatorProjectRebuildCoordinator,
-} = require("./simulator-project-rebuild-coordinator");
 const { createPackagedRendererServer } = require("./packaged-renderer-server");
 const {
   markInstalledForAppVersion,
@@ -940,6 +932,7 @@ const { registerNotificationHandlers } = require("./notification");
 const { registerProbeRsHandlers } = require("./probe-rs");
 const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
 const { registerSubappManagerHandlers } = require("./subapp-manager");
+const { resolveAilyAppDataPath } = require("./appdata-path");
 
 let mainWindow;
 let userConf;
@@ -1038,113 +1031,6 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
   });
 }
 
-let projectSceneGenerationBroker = null;
-
-function getProjectSceneGenerationBroker() {
-  if (projectSceneGenerationBroker) return projectSceneGenerationBroker;
-  projectSceneGenerationBroker = createProjectSceneGenerationBroker({
-    async resolveHardwareIntent(request, { signal }) {
-      const response = await requestMainWindow(
-        'cli-bridge:blockly-live-operation',
-        'cli-bridge:blockly-live-operation:response',
-        {
-          path: '',
-          operation: 'project_hardware_intent_snapshot',
-          params: { request },
-        },
-        120000,
-        signal,
-      );
-      if (response?.ok !== true || !response.snapshot) {
-        throw new Error(
-          response?.message || 'Project hardware intent provider is unavailable.',
-        );
-      }
-      return response.snapshot;
-    },
-    async requestProposal(input, { signal }) {
-      const requestId = typeof input?.request?.requestId === 'string'
-        ? input.request.requestId
-        : '';
-      const cancelProviderRequest = () => {
-        if (!requestId) return;
-        void requestMainWindow(
-          'cli-bridge:blockly-live-operation',
-          'cli-bridge:blockly-live-operation:response',
-          {
-            path: '',
-            operation: 'project_scene_proposal_cancel',
-            params: { requestId },
-          },
-          15000,
-        ).catch(() => undefined);
-      };
-      signal?.addEventListener('abort', cancelProviderRequest, { once: true });
-      if (signal?.aborted) cancelProviderRequest();
-      try {
-        const response = await requestMainWindow(
-          'cli-bridge:blockly-live-operation',
-          'cli-bridge:blockly-live-operation:response',
-          {
-            path: '',
-            operation: 'project_scene_proposal_request',
-            params: input,
-          },
-          10 * 60 * 1000,
-          signal,
-        );
-        if (response?.ok !== true || !response.proposal) {
-          throw new Error(
-            response?.message || 'Project Scene proposal provider is unavailable.',
-          );
-        }
-        return response.proposal;
-      } finally {
-        signal?.removeEventListener('abort', cancelProviderRequest);
-      }
-    },
-    async onProposalReady(candidate) {
-      await simulatorSubappHost.defaultHost.stageSceneGenerationCandidate(
-        candidate,
-      );
-    },
-  });
-  return projectSceneGenerationBroker;
-}
-
-let simulatorProjectRebuildCoordinator = null;
-
-function getSimulatorProjectRebuildCoordinator() {
-  if (simulatorProjectRebuildCoordinator) {
-    return simulatorProjectRebuildCoordinator;
-  }
-  simulatorProjectRebuildCoordinator =
-    createSimulatorProjectRebuildCoordinator({
-      async requestProjectRebuild(request) {
-        const response = await requestMainWindow(
-          'simulator-project-rebuild-request',
-          'simulator-project-rebuild-response',
-          { request },
-          30 * 60 * 1000,
-        );
-        return response?.result;
-      },
-      onStateChanged(artifactRebuild) {
-        if (!isCurrentRendererGenerationReady()) return;
-        mainWindow.webContents.send('simulator-subapp-state-changed', {
-          state: 'artifact-rebuild-state-changed',
-          artifactRebuild,
-        });
-      },
-      async onCandidateReady(candidateEvent) {
-        await simulatorSubappHost.defaultHost.stageRebuildCandidate(
-          candidateEvent,
-        );
-      },
-    });
-  return simulatorProjectRebuildCoordinator;
-}
-
 /** 处理来自 CLI 的命令（open/close/reload/refresh） */
 async function handleCliBridgeCommand(action, payload) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
@@ -1228,42 +1114,6 @@ async function handleCliBridgeCommand(action, payload) {
         liveOperationTimeoutMs,
       );
       return result && typeof result === 'object' ? result : { ok: false, message: '渲染进程返回了无效结果' };
-    }
-    case 'mcp-runtime': {
-      const dir = requestedPath ? path.resolve(requestedPath) : getOpenedProjectPathFromWindow();
-      const namespace = payload && payload.namespace;
-      const method = payload && payload.method;
-      const requestedTimeoutMs = Number(payload && payload.timeoutMs);
-      const runtimeTimeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
-        ? Math.max(1000, Math.min(requestedTimeoutMs, 620000))
-        : method === 'notify_schematic_saved'
-          ? 20000
-          : 15000;
-      if (!dir) {
-        return { ok: false, message: '当前没有打开的项目,且未提供 path' };
-      }
-      if (!fs.existsSync(dir)) {
-        return { ok: false, message: `项目目录不存在: ${dir}` };
-      }
-      const result = await requestMainWindow(
-        'mcp:request',
-        'mcp:response',
-        {
-          namespace,
-          method,
-          args: payload && payload.args,
-          targetProjectPath: dir,
-          timeoutMs: runtimeTimeoutMs,
-        },
-        runtimeTimeoutMs,
-      );
-      if (!result || typeof result !== 'object') {
-        return { ok: false, message: '渲染进程返回了无效结果' };
-      }
-      if (result.ok === true && result.result && typeof result.result === 'object') {
-        return result.result;
-      }
-      return result;
     }
     default:
       return { ok: false, message: `未知命令: ${action}` };
@@ -2152,17 +2002,14 @@ function loadEnv() {
   const configPath = path.join(__dirname, 'config', "config.json");
   const conf = JSON.parse(fs.readFileSync(configPath));
 
-  // 设置系统默认的应用数据目录
-  if (isWin32) {
-    // 设置Windows的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["win32"].replace('%HOMEPATH%', os.homedir());
-  } else if (isDarwin) {
-    // 设置macOS的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"].replace('~', os.homedir());
-  } else {
-    // 设置Linux的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["linux"];
-  }
+  // 显式 AILY_APPDATA_PATH 用于受控开发、E2E 和便携部署；仅在未提供时
+  // 才使用平台默认配置。不能在启动中途覆盖调用方已选定的数据根目录。
+  process.env.AILY_APPDATA_PATH = resolveAilyAppDataPath({
+    env: process.env,
+    platform: process.platform,
+    home: os.homedir(),
+    config: conf,
+  });
   builder.configureCacheEnvironment();
 
   // 确保应用数据目录存在
@@ -2599,8 +2446,6 @@ function createWindow() {
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error('Renderer process gone:', details.reason, 'exitCode:', details.exitCode);
     invalidateRendererGeneration(`render-process-gone:${details.reason}`);
-    void simulatorGateway.stop();
-    void simulatorSubappHost.defaultHost.stop();
     if (!serve) return;
 
     setTimeout(() => {
@@ -2666,22 +2511,6 @@ function createWindow() {
   registerSubappManagerHandlers(() => mainWindow);
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);
-  simulatorGateway.registerHandlers({
-    ipcMain,
-    app,
-    mainWindow: () => mainWindow,
-  });
-  simulatorSubappHost.registerHandlers({
-    ipcMain,
-    app,
-    mainWindow: () => mainWindow,
-  });
-  simulatorSubappHost.defaultHost.setRebuildCoordinator(
-    getSimulatorProjectRebuildCoordinator(),
-  );
-  simulatorSubappHost.defaultHost.setSceneGenerationBroker(
-    getProjectSceneGenerationBroker(),
-  );
 
   // 在多实例模式下，监听OAuth回调文件的变化
   if (shouldUseMultiInstance()) {
@@ -3096,8 +2925,6 @@ function cleanupRegisteredChildProcesses() {
     killAllNpmProcesses(),
     killAllTerminals(),
     cancelAllAilyServicesStreams(),
-    simulatorGateway.stop(),
-    simulatorSubappHost.defaultHost.stop(),
     packagedRendererServer.close(),
   ]).then((results) => {
     // console.info('[PROC_TRACE][APP_CLEANUP_DONE]', { results });

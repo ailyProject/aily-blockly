@@ -26,6 +26,7 @@ export interface ProjectDebugConfigurationState {
   projectPath: string;
   configuration: ProjectDebugConfiguration;
   sourceMapRevision: string;
+  artifactSourcePath: string;
   artifactSourceSha256: string;
   workspaceSourceSha256: string;
   buildConsistency: ProjectBuildConsistency;
@@ -149,6 +150,7 @@ export class ProjectDebugConfigurationService {
       projectPath,
       configuration,
       sourceMapRevision: artifact.revision,
+      artifactSourcePath: artifact.sourcePath,
       artifactSourceSha256: artifact.sourceSha256,
       workspaceSourceSha256,
       buildConsistency,
@@ -451,6 +453,7 @@ export class ProjectDebugConfigurationService {
       projectPath,
       configuration: cloneProjectDebugConfiguration(normalized),
       sourceMapRevision: artifact.revision,
+      artifactSourcePath: artifact.sourcePath,
       artifactSourceSha256: artifact.sourceSha256,
       workspaceSourceSha256,
       buildConsistency,
@@ -465,6 +468,7 @@ export class ProjectDebugConfigurationService {
     projectPath: string,
   ): {
     revision: string;
+    sourcePath: string;
     sourceSha256: string;
     error: string;
     consistencyError: string;
@@ -472,6 +476,7 @@ export class ProjectDebugConfigurationService {
     if (!this.hasLocalProjectFileSystem()) {
       return {
         revision: '',
+        sourcePath: '',
         sourceSha256: '',
         error: '',
         consistencyError: '',
@@ -484,6 +489,7 @@ export class ProjectDebugConfigurationService {
     if (!window['fs'].existsSync(manifestPath)) {
       return {
         revision: '',
+        sourcePath: '',
         sourceSha256: '',
         error: '',
         consistencyError: '',
@@ -501,6 +507,7 @@ export class ProjectDebugConfigurationService {
       }
       const build = isRecord(artifact['build']) ? artifact['build'] : null;
       const source = isRecord(build?.['source']) ? build['source'] : null;
+      const sourcePath = normalizePortableArtifactPath(source?.['path']);
       const rawSourceSha256 = source?.['sha256'];
       let sourceSha256 = '';
       let consistencyError = '';
@@ -530,6 +537,7 @@ export class ProjectDebugConfigurationService {
       if (!isRecord(descriptor) || typeof descriptor['sha256'] !== 'string') {
         return {
           revision: '',
+          sourcePath,
           sourceSha256,
           error: '',
           consistencyError,
@@ -541,6 +549,7 @@ export class ProjectDebugConfigurationService {
       }
       return {
         revision,
+        sourcePath,
         sourceSha256,
         error: '',
         consistencyError,
@@ -548,6 +557,7 @@ export class ProjectDebugConfigurationService {
     } catch (error) {
       return {
         revision: '',
+        sourcePath: '',
         sourceSha256: '',
         error: `${PROJECT_ARTIFACT_MANIFEST_PATH} 无效：${normalizeError(error)}`,
         consistencyError: '',
@@ -585,6 +595,7 @@ export function createEmptyProjectDebugConfigurationState():
     projectPath: '',
     configuration: createEmptyProjectDebugConfiguration(),
     sourceMapRevision: '',
+    artifactSourcePath: '',
     artifactSourceSha256: '',
     workspaceSourceSha256: '',
     buildConsistency: 'artifact-unavailable',
@@ -728,6 +739,22 @@ function cloneProjectDebugConfigurationState(
 
 function normalizeArtifactPath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
+}
+
+function normalizePortableArtifactPath(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = normalizeArtifactPath(value.trim()).replace(/^\.\//u, '');
+  if (
+    !normalized
+    || normalized.length > 512
+    || normalized.startsWith('/')
+    || /^[A-Za-z]:\//u.test(normalized)
+    || /[\u0000-\u001f\u007f]/u.test(normalized)
+    || normalized.split('/').some((segment) => segment === '..')
+  ) {
+    return '';
+  }
+  return normalized;
 }
 
 function normalizeError(error: unknown): string {

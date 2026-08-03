@@ -18,7 +18,6 @@ import { AilyChatConfigService, type ModelConfigOption, type WorkspaceSecurityOp
 import { McpService } from './mcp.service';
 import { CmdService } from '../../../services/cmd.service';
 import { ConfigService } from '../../../services/config.service';
-import { ConnectionGraphService } from '../../../services/connection-graph.service';
 import { createElectronHostAdapter } from '../adapters/electron-host-adapter';
 import { DEFAULT_AILY_USAGE_GUIDE_URL } from '../helpers/chat-surface-shell-coordinator';
 import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
@@ -30,7 +29,7 @@ import { ProjectService } from '../../../services/project.service';
 import { ThemeService } from '../../../services/theme.service';
 import { TodoUpdateService } from './todoUpdate.service';
 import { UiService } from '../../../services/ui.service';
-import { MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE } from '../core/agent-identifiers';
+import { MAIN_AGENT_TYPE } from '../core/agent-identifiers';
 import { getRuntimeToolSettingsCatalog } from '../helpers/lex-agent-bootstrap';
 import { getMarkdownContent } from '../core/markdown-content-store';
 import { getThinkContent } from '../core/think-content-store';
@@ -71,7 +70,6 @@ export class AilyChatChildProtocolService {
   private readonly platformService = inject(PlatformService);
   private readonly noticeService = inject(NoticeService);
   private readonly blocklyService = inject(BlocklyService);
-  private readonly connectionGraphService = inject(ConnectionGraphService);
   private readonly cmdService = inject(CmdService);
   private readonly crossPlatformCmdService = inject(CrossPlatformCmdService);
   private readonly absAutoSyncService = inject(AbsAutoSyncService);
@@ -152,7 +150,6 @@ export class AilyChatChildProtocolService {
         platformService: this.platformService,
         noticeService: this.noticeService,
         blocklyService: this.blocklyService,
-        connectionGraphService: this.connectionGraphService,
         cmdService: this.cmdService,
         crossPlatformCmdService: this.crossPlatformCmdService,
         absAutoSyncService: this.absAutoSyncService,
@@ -830,7 +827,6 @@ export class AilyChatChildProtocolService {
   private buildSettingsSnapshot(): Record<string, unknown> {
     const agents = [
       { id: MAIN_AGENT_TYPE, label: '主 Agent', description: '处理用户请求的主要 Agent' },
-      { id: SCHEMATIC_AGENT_TYPE, label: '连线 Agent', description: '处理电路连线图相关任务的子 Agent' },
     ];
     const catalog = getRuntimeToolSettingsCatalog({
       ailyChatConfigService: this.chatConfig,
@@ -844,7 +840,7 @@ export class AilyChatChildProtocolService {
       return {
         ...agent,
         tools: catalog
-          .filter(tool => tool.agents.includes(agent.id as typeof MAIN_AGENT_TYPE | typeof SCHEMATIC_AGENT_TYPE))
+          .filter(tool => tool.agents.includes(agent.id as typeof MAIN_AGENT_TYPE))
           .map(tool => ({
             name: tool.name,
             displayName: tool.name

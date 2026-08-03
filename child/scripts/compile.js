@@ -200,6 +200,37 @@ async function main() {
                     '--graph-semantic-revision',
                     config.graphSemanticRevision
                 );
+                if (config.sourceDocumentSchemaVersion !== undefined) {
+                    if (
+                        config.sourceDocumentSchemaVersion !== 1
+                        && config.sourceDocumentSchemaVersion !== 2
+                    ) {
+                        throw new Error(
+                            'sourceDocumentSchemaVersion 必须是 1 或 2。'
+                        );
+                    }
+                    args.push(
+                        '--scene-document-schema-version',
+                        String(config.sourceDocumentSchemaVersion)
+                    );
+                }
+                for (const [configKey, option] of [
+                    ['sceneGpioDirectionsPath', '--scene-gpio-directions'],
+                    ['sceneGpioPullsPath', '--scene-gpio-pulls']
+                ]) {
+                    const metadataPath = config[configKey];
+                    if (metadataPath === undefined) {
+                        continue;
+                    }
+                    if (
+                        typeof metadataPath !== 'string'
+                        || metadataPath.trim().length === 0
+                        || !path.isAbsolute(metadataPath)
+                    ) {
+                        throw new Error(`${configKey} must be an absolute path.`);
+                    }
+                    args.push(option, `"${metadataPath}"`);
+                }
             }
         } else {
             logger.warn(

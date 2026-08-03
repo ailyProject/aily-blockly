@@ -50,6 +50,7 @@ describe('ProjectDebugConfigurationService', () => {
     files.set(artifactPath, JSON.stringify({
       build: {
         source: {
+          path: 'sketch.ino',
           sha256: artifactSourceSha256,
         },
       },
@@ -76,6 +77,7 @@ describe('ProjectDebugConfigurationService', () => {
     expect(state.configuration.breakpoints.length).toBe(1);
     expect(state.configuration.breakpoints[0].blockId).toBe('block-1');
     expect(state.sourceMapRevision).toBe(revision);
+    expect(state.artifactSourcePath).toBe('sketch.ino');
     expect(state.artifactSourceSha256).toBe(artifactSourceSha256);
     expect(state.buildConsistency).toBe('workspace-unknown');
     expect(state.configurationError).toBe('');

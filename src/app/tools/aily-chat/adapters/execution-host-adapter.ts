@@ -1,7 +1,6 @@
 import type {
   IAilyHostAPI,
   IBuildProvider,
-  IConnectionGraphProvider,
   IEditorProvider,
   IProjectProvider,
 } from '../core/host-api';
@@ -114,30 +113,6 @@ export function createExecutionHostAdapter(deps: ExecutionHostAdapterDeps): IAil
     })),
   };
 
-  const connectionGraph: IConnectionGraphProvider = {
-    generateConnectionGraph: async args => await requestConnectionGraph('generateConnectionGraph', args),
-    getPinmapSummary: async args => await requestConnectionGraph('getPinmapSummary', args),
-    validateConnectionGraph: async args => await requestConnectionGraph('validateConnectionGraph', args),
-    getSensorPinmapCatalog: async args => await requestConnectionGraph('getSensorPinmapCatalog', args),
-    generatePinmap: async args => await requestConnectionGraph('generatePinmap', args),
-    savePinmap: async args => await requestConnectionGraph('savePinmap', args),
-    getCurrentSchematic: async args => await requestConnectionGraph('getCurrentSchematic', args),
-    applySchematic: async args => await requestConnectionGraph('applySchematic', args),
-  };
-
-  async function requestConnectionGraph(
-    action: NonNullable<ChatRuntimeHostResourceOperationPayload extends infer P
-      ? P extends { adapter: 'connectionGraph'; action: infer A } ? A : never
-      : never>,
-    args: unknown,
-  ): Promise<unknown> {
-    return await requestResource('connection-graph', {
-      adapter: 'connectionGraph',
-      action,
-      args,
-    });
-  }
-
   const editor: IEditorProvider = {
     getWorkspaceXml: () => requestBlocklyWorkspace('getWorkspaceXml') as unknown as string,
     loadWorkspace: (xml: string) => {
@@ -148,7 +123,6 @@ export function createExecutionHostAdapter(deps: ExecutionHostAdapterDeps): IAil
       void requestBlocklyWorkspace('reloadAbiJson');
     },
     getBlockDefinitions: () => requestBlocklyWorkspace('getBlockDefinitions') as unknown as any[],
-    connectionGraph,
   };
 
   const arduinoLint = {
@@ -165,7 +139,6 @@ export function createExecutionHostAdapter(deps: ExecutionHostAdapterDeps): IAil
     project,
     builder,
     editor,
-    connectionGraph,
     arduinoLint,
     blockly: undefined,
     absSync: undefined,

@@ -5,7 +5,6 @@ import { AuthService } from '../../../services/auth.service';
 import { BuilderService } from '../../../services/builder.service';
 import { CmdService } from '../../../services/cmd.service';
 import { ConfigService } from '../../../services/config.service';
-import { ConnectionGraphService } from '../../../services/connection-graph.service';
 import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
 import { ElectronService } from '../../../services/electron.service';
 import { NoticeService } from '../../../services/notice.service';
@@ -41,7 +40,6 @@ export class AilyChatHostInitializerService {
       get platformService() { return injector.get(PlatformService); },
       get noticeService() { return injector.get(NoticeService); },
       get blocklyService() { return injector.get(BlocklyService); },
-      get connectionGraphService() { return injector.get(ConnectionGraphService); },
       get cmdService() { return injector.get(CmdService); },
       get crossPlatformCmdService() { return injector.get(CrossPlatformCmdService); },
       get absAutoSyncService() { return injector.get(AbsAutoSyncService); },

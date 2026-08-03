@@ -105,61 +105,6 @@ const SESSION_STORE_SQL_BLOCKED_PATTERNS = [
   /\bLOAD_EXTENSION\b/i,
   /\b(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i,
 ];
-const SCHEMATIC_AGENT_TYPE = 'SchematicAgent';
-const SCHEMATIC_AGENT_TOOLS = [
-  'generate_schematic',
-  'validate_schematic',
-  'generate_pinmap',
-  'save_pinmap',
-  'get_pinmap_summary',
-  'get_component_catalog',
-  'get_project_context',
-  'read_file',
-  'grep_search',
-  'glob_search',
-  'get_current_schematic',
-  'fetch_webpage',
-  'tool_search',
-  'edit_file',
-  'multi_edit_file',
-  'delete_file',
-  'get_errors',
-];
-const SCHEMATIC_AGENT_REQUIRED_CONTEXT = {
-  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'libraryReadmeRefs', 'workspaceArtifacts'],
-  strict: true,
-  hydrateBeforeFirstModelCall: true,
-};
-const SCHEMATIC_AGENT_WHEN_TO_USE = 'Generate and validate circuit schematics / connection diagrams. Use only when the task explicitly involves wiring, pin assignment, or component connections. Do not use for programming help, ABS block/library analysis, code generation, or general project setup.';
-const SCHEMATIC_AGENT_WHEN_NOT_TO_USE = 'Do not use for library analysis, ABS block/library questions, generic project setup, or other programming-first tasks unless the request explicitly asks for wiring or a connection diagram.';
-const SCHEMATIC_AGENT_PROMPT = `You are an interactive AI assistant specializing in circuit schematic wiring. Your name is Aily.
-Only handle tasks that explicitly require circuit schematics, wiring, pin assignment, or connection diagrams.
-
-Core rules:
-- If the user is asking for programming help, ABS block/library analysis, code generation, project setup, or debugging without an explicit wiring goal, do not continue as SchematicAgent.
-- Your working output format is AWS (Aily Wiring Syntax), not connection JSON.
-- validate_schematic(aws: ...) is the final step that validates, saves, and refreshes the diagram.
-- If a required board/component pinmap is missing, generate and save the pinmap first, then continue wiring.
-- Treat physical peripherals referenced by user intent or code usage as hardware even when they are surfaced through software libraries.
-- Even when no external peripheral library is installed, infer physical modules from generated code and hardware APIs such as I2S, I2C, SPI, UART, ADC, PWM, pinMode, digitalWrite, analogWrite, and GPIO usage.
-- Do not drop GPIO-driven hardware such as LEDs, buzzers, relays, or transistor switches merely because they do not have an installed library.
-
-Workflow:
-1. Start from the runtime project context already present in the environment. Call get_project_context() only when you need Blockly-specific detail not already in the runtime summary.
-2. Infer required hardware from the user request, installed libraries, generated code, and GPIO/peripheral usage.
-3. Resolve board and component pinmaps. If any required item lacks a usable pinmap, call generate_pinmap(...) and save_pinmap(...) before wiring.
-4. Call generate_schematic(pinmapIds: [...]) with the board plus every required component.
-5. Write AWS using USE declarations for external components and board as the predefined board alias.
-6. Call validate_schematic(aws: "..."). If validation reports issues, fix the AWS and validate again.
-
-AWS syntax:
-USE <pinmapId> AS <alias> "<displayName>"
-CONNECT <fromAlias>.<pinName> -> <toAlias>.<pinName> @<type>
-ASSIGN <alias>.<pinName> AS <role> @<type>:<busNumber>
-
-Safety:
-- Refuse wiring that could cause harm, intentional shorts, or dangerous voltage configurations.
-- Verify power, ground, protocol, and pin conflict assumptions before saving.`;
 const PROJECT_SCENE_AGENT_TYPE = 'ProjectSceneAgent';
 const GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL = 'get_project_scene_generation_context';
 const SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL = 'submit_project_scene_generation_proposal';
@@ -337,122 +282,6 @@ const SCENE_CODE_RECONCILIATION_TOOL_DEFINITIONS = [
       },
       required: ['requestId', 'outcome', 'summary', 'absContent'],
       additionalProperties: false,
-    },
-    readOnly: false,
-  },
-];
-const SCHEMATIC_TOOL_DEFINITIONS = [
-  {
-    name: 'generate_schematic',
-    description: 'Prepare board and component pin summaries for an AWS wiring schematic. Pass the board and every required component pinmapId.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        pinmapIds: {
-          oneOf: [
-            {
-              type: 'array',
-              items: {
-                oneOf: [
-                  { type: 'string' },
-                  {
-                    type: 'object',
-                    properties: {
-                      id: { type: 'string' },
-                      alias: { type: 'string' },
-                      label: { type: 'string' },
-                    },
-                    required: ['id'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-            },
-            { type: 'string' },
-          ],
-        },
-        components: { type: 'array', items: { type: 'string' } },
-        requirements: { type: 'string' },
-      },
-    },
-    readOnly: true,
-  },
-  {
-    name: 'get_pinmap_summary',
-    description: 'Read available board/component pin summaries for the current project.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        pinmapIds: { type: 'array', items: { type: 'string' } },
-      },
-    },
-    readOnly: true,
-  },
-  {
-    name: 'get_component_catalog',
-    description: 'Read the current project component catalog, including board, libraries, software libraries, and pinmap availability.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        libraryFilter: { type: 'string' },
-        includeNeedsGeneration: { type: 'boolean' },
-        includeBoards: { type: 'boolean' },
-      },
-    },
-    readOnly: true,
-  },
-  {
-    name: 'get_project_context',
-    description: 'Read dynamic schematic context: generated code, component catalog, and pinmap availability. Runtime already injects base project facts.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        includeNeedsGeneration: { type: 'boolean' },
-      },
-    },
-    readOnly: true,
-  },
-  {
-    name: 'validate_schematic',
-    description: 'Validate AWS wiring, save the schematic, and refresh the diagram. This is the final schematic step.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        aws: { type: 'string' },
-      },
-    },
-    readOnly: false,
-  },
-  {
-    name: 'get_current_schematic',
-    description: 'Read the current saved schematic JSON and summary.',
-    inputSchema: { type: 'object', properties: {} },
-    readOnly: true,
-    agentScope: ['main', SCHEMATIC_AGENT_TYPE],
-  },
-  {
-    name: 'generate_pinmap',
-    description: 'Prepare README/example/template material for a missing component pinmap.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        pinmapId: { type: 'string' },
-        referenceSource: { type: 'string', enum: ['readme', 'example', 'auto'] },
-      },
-      required: ['pinmapId'],
-    },
-    readOnly: true,
-  },
-  {
-    name: 'save_pinmap',
-    description: 'Save a generated pinmap JSON into the component package and mark it available in the catalog.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        pinmapId: { type: 'string' },
-        pinmapConfig: { type: 'object' },
-      },
-      required: ['pinmapId', 'pinmapConfig'],
     },
     readOnly: false,
   },
@@ -1364,11 +1193,20 @@ class LexExecutionRuntimeOwner {
       permissionMode: 'default',
     };
     const promise = (async () => {
+      const startedAt = Date.now();
+      let phase = 'project-info';
+      console.info('[AilyChat][LexExecutionHostScopedAgent]', JSON.stringify({
+        phase: 'start',
+        invocationId,
+        agentType,
+        sessionId,
+      }));
       try {
         const projectInfo = await this.readProjectInfo(sessionId);
         if (abortController.signal.aborted) {
           throw abortController.signal.reason || createAbortError('[AilyChat][ExecutionHost] Scoped Agent cancelled.');
         }
+        phase = 'session';
         const session = await this.ensureSession(sessionId, {
           sessionId,
           providerOptions,
@@ -1380,6 +1218,7 @@ class LexExecutionRuntimeOwner {
         if (!executor || typeof executor.runSync !== 'function') {
           throw new Error('[AilyChat][ExecutionHost] Scoped Agent executor is unavailable.');
         }
+        phase = 'execute';
         const result = await executor.runSync({
           prompt,
           description: scopedAgentConfig.description,
@@ -1387,6 +1226,7 @@ class LexExecutionRuntimeOwner {
           signal: abortController.signal,
           inheritMessages: 'none',
           inheritDiscoveredTools: false,
+          toolCallLimitPolicy: 'stop',
         });
         const resultReason = normalizeString(result?.reason) || 'unknown';
         // aily-lex currently reports a normal run as "unknown" and may use
@@ -1396,6 +1236,13 @@ class LexExecutionRuntimeOwner {
           throw new Error(normalizeString(result?.error?.message || result?.message || result?.text)
             || `[AilyChat][ExecutionHost] ${agentType} failed (${resultReason}).`);
         }
+        console.info('[AilyChat][LexExecutionHostScopedAgent]', JSON.stringify({
+          phase: 'complete',
+          invocationId,
+          agentType,
+          resultReason,
+          elapsedMs: Date.now() - startedAt,
+        }));
         return {
           schemaVersion: 1,
           kind: 'aily-chat-runtime-scoped-agent-result',
@@ -1403,6 +1250,17 @@ class LexExecutionRuntimeOwner {
           agentType,
           reason: resultReason,
         };
+      } catch (error) {
+        console.error('[AilyChat][LexExecutionHostScopedAgent]', JSON.stringify({
+          phase: 'failed',
+          invocationId,
+          agentType,
+          failedAt: phase,
+          errorName: normalizeString(error?.name).slice(0, 80) || null,
+          errorCode: normalizeString(error?.code).slice(0, 120) || null,
+          elapsedMs: Date.now() - startedAt,
+        }));
+        throw error;
       } finally {
         try {
           await this.disposeSessionResources({ sessionId, deleteStorage: false });
@@ -2228,7 +2086,6 @@ class LexExecutionRuntimeOwner {
       ),
       builder: createExternalBuilder(sessionId, this.requestResourceOperation, projectInfo, readCwd, session),
       blockly: createExternalBlockly(sessionId, this.requestResourceOperation),
-      connectionGraph: createExternalConnectionGraph(sessionId, this.requestResourceOperation),
       projectSceneProposal: createExternalProjectSceneProposal(sessionId, this.requestResourceOperation),
       sceneCodeReconciliation: createExternalSceneCodeReconciliation(sessionId, this.requestResourceOperation),
       boardSearch: createExternalBoardSearch(sessionId, this.requestResourceOperation),
@@ -2360,7 +2217,8 @@ class LexExecutionRuntimeOwner {
   }
 
   resolveAilyServicesBaseUrl(currentModel, runtimeConfig = null) {
-    return normalizeString(currentModel?.apiEndpoint)
+    return normalizeString(this.env.AILY_EXECUTION_HOST_API_ENDPOINT)
+      || normalizeString(currentModel?.apiEndpoint)
       || normalizeString(runtimeConfig?.apiEndpoint)
       || normalizeString(this.env.AILY_SERVICES_API_ENDPOINT)
       || normalizeString(this.env.AILY_API_ENDPOINT)
@@ -2368,7 +2226,8 @@ class LexExecutionRuntimeOwner {
   }
 
   resolveAuthToken(currentModel, runtimeConfig = null) {
-    return normalizeString(currentModel?.authToken)
+    return normalizeString(this.env.AILY_EXECUTION_HOST_AUTH_TOKEN)
+      || normalizeString(currentModel?.authToken)
       || normalizeString(runtimeConfig?.authToken)
       || normalizeString(this.env.AILY_AUTH_TOKEN)
       || normalizeString(this.env.AILY_SERVICES_AUTH_TOKEN)
@@ -6094,50 +5953,6 @@ export function createElectronBlocklyAgentProvider() {
     contributeAgents() {
       return [
         {
-          agentType: SCHEMATIC_AGENT_TYPE,
-          name: 'Schematic Agent',
-          description: SCHEMATIC_AGENT_WHEN_TO_USE,
-          argumentHint: 'Describe the circuit wiring or schematic task to complete',
-          target: 'aily',
-          whenToUse: SCHEMATIC_AGENT_WHEN_TO_USE,
-          whenNotToUse: SCHEMATIC_AGENT_WHEN_NOT_TO_USE,
-          uri: `aily-chat-agent:/agents/${SCHEMATIC_AGENT_TYPE}.agent.md`,
-          modeInstructions: {
-            content: SCHEMATIC_AGENT_PROMPT,
-            toolReferences: [],
-          },
-          requiredContext: SCHEMATIC_AGENT_REQUIRED_CONTEXT,
-          systemPrompt: SCHEMATIC_AGENT_PROMPT,
-          tools: [...SCHEMATIC_AGENT_TOOLS],
-          commands: [
-            {
-              name: 'connect',
-              description: 'Generate or update a circuit wiring schematic for the selected board and hardware modules.',
-              sampleRequest: '@SchematicAgent /connect connect a DHT20 to XIAO ESP32S3',
-              when: 'Use when the user explicitly asks for a wiring diagram, pin assignment, or hardware connection plan.',
-            },
-            {
-              name: 'validate',
-              description: 'Validate the current AWS wiring plan, save it, and report any connection issues.',
-              sampleRequest: '@SchematicAgent /validate validate the current schematic and save it',
-              when: 'Use after editing or generating AWS wiring content that needs validation and persistence.',
-            },
-          ],
-          excludeTools: [],
-          maxTurns: 25,
-          model: 'inherit',
-          messageInheritance: 'none',
-          disallowedPromptPatterns: [
-            'analyzelibrary',
-            'analyze library',
-            'library analysis',
-            'abs block',
-            'abs library',
-            'project setup',
-          ],
-          agents: [],
-        },
-        {
           agentType: PROJECT_SCENE_AGENT_TYPE,
           name: 'Project Scene Agent',
           description: 'Generate one bounded native v2 Project Scene candidate for an active execution-host invocation.',
@@ -6178,7 +5993,7 @@ export function createElectronBlocklyAgentProvider() {
           tools: [...SCENE_CODE_RECONCILIATION_AGENT_TOOLS],
           commands: [],
           excludeTools: [],
-          maxTurns: 8,
+          maxTurns: 16,
           model: 'inherit',
           messageInheritance: 'none',
           agents: [],
@@ -7470,7 +7285,7 @@ export function createElectronBlocklyToolContributions(hostAPI) {
       },
       annotations: { readOnly: true },
       runtimeModes: ['unbound', 'coder', 'blockly'],
-      agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+      agentScope: ['main', 'Plan', 'Explore'],
     });
   }
   if (hostAPI.builder?.build) {
@@ -7549,7 +7364,7 @@ export function createElectronBlocklyToolContributions(hostAPI) {
       },
       annotations: { readOnly: true },
       runtimeModes: ['unbound', 'coder', 'blockly'],
-      agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+      agentScope: ['main', 'Plan', 'Explore'],
       deferred: { group: 'blockly-library-discovery', reason: 'Board/library discovery is used on demand.' },
     });
     contributions.push({
@@ -7566,7 +7381,7 @@ export function createElectronBlocklyToolContributions(hostAPI) {
       },
       annotations: { readOnly: true },
       runtimeModes: ['unbound', 'coder', 'blockly'],
-      agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+      agentScope: ['main', 'Plan', 'Explore'],
     });
     contributions.push({
       name: 'get_hardware_categories',
@@ -7583,7 +7398,7 @@ export function createElectronBlocklyToolContributions(hostAPI) {
       },
       annotations: { readOnly: true },
       runtimeModes: ['unbound', 'coder', 'blockly'],
-      agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+      agentScope: ['main', 'Plan', 'Explore'],
     });
   }
   if (hostAPI.blockly?.lintGeneratedCode) {
@@ -7674,9 +7489,6 @@ Prefer flowchart TD or flowchart LR. After this tool succeeds, do not repeat the
     agentScope: ['main'],
     deferred: { group: 'blockly-architecture', reason: 'Architecture diagram persistence is used on demand.' },
   });
-  if (hostAPI.connectionGraph) {
-    appendElectronSchematicToolContributions(contributions);
-  }
   if (hostAPI.projectSceneProposal) {
     appendElectronProjectSceneToolContributions(contributions);
   }
@@ -7710,22 +7522,6 @@ function appendElectronSubappAgentToolContributions(contributions, bindings) {
       annotations: { readOnly: definition.permission !== 'change' },
       runtimeModes: ['blockly', 'coder'],
       agentScope: ['main'],
-    });
-  }
-}
-
-function appendElectronSchematicToolContributions(contributions) {
-  for (const definition of SCHEMATIC_TOOL_DEFINITIONS) {
-    contributions.push({
-      name: definition.name,
-      toolSet: 'blockly-schematic',
-      description: definition.description,
-      prompt: definition.description,
-      inputSchema: definition.inputSchema || { type: 'object', properties: {} },
-      annotations: { readOnly: definition.readOnly !== false },
-      runtimeModes: ['blockly'],
-      requiredCapabilities: ['runtime:blockly'],
-      agentScope: definition.agentScope || [SCHEMATIC_AGENT_TYPE],
     });
   }
 }
@@ -7817,15 +7613,6 @@ export async function invokeElectronBlocklyTool(toolName, input, hostAPI, contex
       return invokeElectronLintTool(input, hostAPI, context);
     case 'save_arch':
       return invokeElectronSaveArchTool(input, hostAPI, context);
-    case 'generate_schematic':
-    case 'get_pinmap_summary':
-    case 'get_component_catalog':
-    case 'get_project_context':
-    case 'validate_schematic':
-    case 'get_current_schematic':
-    case 'generate_pinmap':
-    case 'save_pinmap':
-      return invokeElectronSchematicTool(toolName, input, hostAPI, context);
     case GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL:
     case SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL:
       return invokeElectronProjectSceneTool(toolName, input, hostAPI, context);
@@ -7855,42 +7642,6 @@ async function invokeElectronSceneCodeReconciliationTool(toolName, input, hostAP
     await hostAPI.sceneCodeReconciliation.invoke(toolName, input, context),
     { env: hostAPI.env },
   );
-}
-
-async function invokeElectronSchematicTool(toolName, input, hostAPI, context = {}) {
-  if (!hostAPI.connectionGraph) {
-    return toolError('Connection graph service is not available in this environment.');
-  }
-  let result;
-  switch (toolName) {
-    case 'generate_schematic':
-      result = await hostAPI.connectionGraph.generateSchematic(input, context);
-      break;
-    case 'get_pinmap_summary':
-      result = await hostAPI.connectionGraph.getPinmapSummary(input, context);
-      break;
-    case 'get_component_catalog':
-      result = await hostAPI.connectionGraph.getComponentCatalog(input, context);
-      break;
-    case 'get_project_context':
-      result = await hostAPI.connectionGraph.getProjectContext(input, context);
-      break;
-    case 'validate_schematic':
-      result = await hostAPI.connectionGraph.validateSchematic(input, context);
-      break;
-    case 'get_current_schematic':
-      result = await hostAPI.connectionGraph.getCurrentSchematic(input, context);
-      break;
-    case 'generate_pinmap':
-      result = await hostAPI.connectionGraph.generatePinmap(input, context);
-      break;
-    case 'save_pinmap':
-      result = await hostAPI.connectionGraph.savePinmap(input, context);
-      break;
-    default:
-      return toolError(`Unknown schematic tool: ${toolName}`);
-  }
-  return normalizeHostToolUseResult(result, { env: hostAPI.env });
 }
 
 export async function normalizeHostToolUseResult(result, options = {}) {
@@ -8920,33 +8671,6 @@ function createExternalBoardSearch(sessionId, requestResourceOperation) {
       categoryType,
       dimension,
     }),
-  };
-}
-
-function createExternalConnectionGraph(sessionId, requestResourceOperation) {
-  const call = async (action, args = {}, context = {}) => {
-    const result = await requestResourceOperation({
-      sessionId,
-      turnId: normalizeString(context?.trace?.turnId || context?.turnId),
-      toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
-      kind: 'connection-graph',
-      payload: {
-        adapter: 'connectionGraph',
-        action,
-        args,
-      },
-    });
-    return result?.result ?? result;
-  };
-  return {
-    generateSchematic: (input = {}, context = {}) => call('generateConnectionGraph', input, context),
-    getCurrentSchematic: (input = {}, context = {}) => call('getCurrentSchematic', input, context),
-    getProjectContext: (input = {}, context = {}) => call('getProjectContext', input, context),
-    getPinmapSummary: (input = {}, context = {}) => call('getPinmapSummary', input, context),
-    getComponentCatalog: (input = {}, context = {}) => call('getSensorPinmapCatalog', input, context),
-    generatePinmap: (input = {}, context = {}) => call('generatePinmap', input, context),
-    savePinmap: (input = {}, context = {}) => call('savePinmap', input, context),
-    validateSchematic: (input = {}, context = {}) => call('validateConnectionGraph', input, context),
   };
 }
 

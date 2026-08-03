@@ -16,7 +16,11 @@ export class ProjectHardwareIntentProviderService {
     private readonly blocklyService: BlocklyService,
   ) {}
 
-  async resolve(request: SceneGenerationIdentity): Promise<Record<string, unknown>> {
+  async resolve(
+    request: SceneGenerationIdentity,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    throwIfAborted(signal);
     if (!this.projectService.currentProjectPath) {
       throw new Error('Project hardware intent requires an open project.');
     }
@@ -28,7 +32,9 @@ export class ProjectHardwareIntentProviderService {
     }
     const boardConfig = this.projectService.currentBoardConfig
       ?? await this.projectService.getBoardJson();
+    throwIfAborted(signal);
     const packageJson = await this.projectService.getPackageJson();
+    throwIfAborted(signal);
     return buildProjectHardwareIntentSnapshot({
       request: {
         requestId: request.requestId,
@@ -40,6 +46,13 @@ export class ProjectHardwareIntentProviderService {
       userIntent: null,
     });
   }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Project hardware intent request was cancelled.');
 }
 
 function resolveBoard(value: unknown): {

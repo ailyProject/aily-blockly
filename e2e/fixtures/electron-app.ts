@@ -40,6 +40,8 @@ export async function launchAilyElectron(options: {
   executionHostMode?: 'off' | 'worker';
   executionHostRuntimeModule?: string;
   environment?: Readonly<Record<string, string>>;
+  appDataPath?: string;
+  logConsole?: boolean;
 } = {}): Promise<LaunchedAilyElectron> {
   assertElectronCanLaunch();
 
@@ -61,7 +63,7 @@ export async function launchAilyElectron(options: {
         ...(options.executionHostRuntimeModule
           ? { AILY_CHAT_EXECUTION_HOST_RUNTIME_MODULE: options.executionHostRuntimeModule }
           : {}),
-        AILY_APPDATA_PATH: userDataDir,
+        AILY_APPDATA_PATH: options.appDataPath || userDataDir,
       },
     });
   } catch (error) {
@@ -69,9 +71,11 @@ export async function launchAilyElectron(options: {
     throw error;
   }
 
-  app.on('console', (msg) => {
-    console.log(`[electron:${msg.type()}] ${msg.text()}`);
-  });
+  if (options.logConsole !== false) {
+    app.on('console', (msg) => {
+      console.log(`[electron:${msg.type()}] ${msg.text()}`);
+    });
+  }
   app.on('close', () => {});
 
   let closed = false;
@@ -295,6 +299,7 @@ export const test = base.extend<AilyFixtures>({
     const launched = await launchAilyElectron({
       executionHostMode,
       executionHostRuntimeModule,
+      appDataPath: process.env['AILY_E2E_APPDATA_PATH'] || undefined,
     });
 
     try {

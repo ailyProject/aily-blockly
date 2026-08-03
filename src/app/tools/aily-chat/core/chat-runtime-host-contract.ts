@@ -661,7 +661,6 @@ export type ChatRuntimeHostResourceRequestKind =
   | 'library-analysis'
   | 'diagnostics'
   | 'blockly-workspace'
-  | 'connection-graph'
   | 'subapp-agent'
   | 'project-scene-proposal'
   | 'scene-code-reconciliation'
@@ -777,20 +776,6 @@ export interface ChatRuntimeHostBlocklyWorkspacePayload {
   readonly xml?: string;
 }
 
-export interface ChatRuntimeHostConnectionGraphPayload {
-  readonly adapter: 'connectionGraph';
-  readonly action:
-    | 'generateConnectionGraph'
-    | 'getPinmapSummary'
-    | 'validateConnectionGraph'
-    | 'getSensorPinmapCatalog'
-    | 'generatePinmap'
-    | 'savePinmap'
-    | 'getCurrentSchematic'
-    | 'applySchematic';
-  readonly args?: unknown;
-}
-
 export interface ChatRuntimeHostBoardSearchPayload {
   readonly adapter: 'boardSearch';
   readonly action: 'search' | 'getCategories';
@@ -860,7 +845,6 @@ export type ChatRuntimeHostResourceOperationPayload =
   | ChatRuntimeHostProjectBuildPayload
   | ChatRuntimeHostProjectLintPayload
   | ChatRuntimeHostBlocklyWorkspacePayload
-  | ChatRuntimeHostConnectionGraphPayload
   | ChatRuntimeHostBoardSearchPayload
   | ChatRuntimeHostLibraryAnalysisPayload
   | ChatRuntimeHostDiagnosticsPayload

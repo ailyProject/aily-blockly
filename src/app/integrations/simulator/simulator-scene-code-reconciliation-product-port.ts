@@ -30,6 +30,7 @@ export interface SimulatorSceneCodeApprovalPort {
 
 export interface SimulatorBlocklyProgramMutationPort {
   readCurrentAbs(): string;
+  readCurrentContentFingerprint(): string;
   applyAbs(
     content: string,
     request: SimulatorSceneCodeReconciliationRequest,
@@ -64,6 +65,9 @@ export function createSimulatorSceneCodeReconciliationProductPort(
       : { maxPendingRequests: options.maxPendingRequests }),
     present: async (request, signal) => {
       const currentAbs = requireAbs(options.program.readCurrentAbs());
+      const currentContentFingerprint = requireContentFingerprint(
+        options.program.readCurrentContentFingerprint(),
+      );
       const candidate = await options.candidates.request({
         request: structuredClone(
           request as unknown as Record<string, unknown>,
@@ -72,9 +76,9 @@ export function createSimulatorSceneCodeReconciliationProductPort(
       }, signal);
       throwIfAborted(signal);
       requireCandidateScope(candidate, request);
-      requireUnchangedProgram(
-        options.program.readCurrentAbs(),
-        currentAbs,
+      requireUnchangedProgramContent(
+        options.program.readCurrentContentFingerprint(),
+        currentContentFingerprint,
       );
 
       const approval = await options.approvals.requestApproval(
@@ -103,9 +107,9 @@ export function createSimulatorSceneCodeReconciliationProductPort(
         return;
       }
 
-      requireUnchangedProgram(
-        options.program.readCurrentAbs(),
-        currentAbs,
+      requireUnchangedProgramContent(
+        options.program.readCurrentContentFingerprint(),
+        currentContentFingerprint,
       );
       if (candidate.outcome === 'applied') {
         const candidateAbs = requireAbs(candidate.candidateAbs);
@@ -153,6 +157,7 @@ function validateOptions(
     || typeof options.approvals.requestApproval !== 'function'
     || !options.program
     || typeof options.program.readCurrentAbs !== 'function'
+    || typeof options.program.readCurrentContentFingerprint !== 'function'
     || typeof options.program.applyAbs !== 'function'
   ) {
     throw new TypeError(
@@ -192,12 +197,97 @@ function requireCandidateScope(
   }
 }
 
-function requireUnchangedProgram(actual: string, expected: string): void {
-  if (normalizeAbs(requireAbs(actual)) !== normalizeAbs(expected)) {
+function requireUnchangedProgramContent(
+  actual: unknown,
+  expected: string,
+): void {
+  const actualFingerprint = requireContentFingerprint(actual);
+  if (actualFingerprint !== expected) {
     throw new Error(
-      'Blockly working copy changed during Scene code reconciliation.',
+      'Blockly working copy changed during Scene code reconciliation. '
+      + describeFingerprintDifference(expected, actualFingerprint),
     );
   }
+}
+
+function describeFingerprintDifference(
+  expected: string,
+  actual: string,
+): string {
+  try {
+    const paths: string[] = [];
+    collectDifferentPaths(
+      JSON.parse(expected),
+      JSON.parse(actual),
+      '$',
+      paths,
+    );
+    return `Changed paths: ${paths.join(', ') || '$'}.`;
+  } catch {
+    return `Fingerprint lengths: ${expected.length} -> ${actual.length}.`;
+  }
+}
+
+function collectDifferentPaths(
+  expected: unknown,
+  actual: unknown,
+  path: string,
+  paths: string[],
+): void {
+  if (paths.length >= 12 || Object.is(expected, actual)) return;
+  if (
+    expected === null
+    || actual === null
+    || typeof expected !== 'object'
+    || typeof actual !== 'object'
+    || Array.isArray(expected) !== Array.isArray(actual)
+  ) {
+    paths.push(path);
+    return;
+  }
+  if (Array.isArray(expected) && Array.isArray(actual)) {
+    if (expected.length !== actual.length) {
+      paths.push(`${path}.length(${expected.length}->${actual.length})`);
+    }
+    const length = Math.min(expected.length, actual.length);
+    for (let index = 0; index < length && paths.length < 12; index += 1) {
+      collectDifferentPaths(
+        expected[index],
+        actual[index],
+        `${path}[${index}]`,
+        paths,
+      );
+    }
+    return;
+  }
+  const expectedRecord = expected as Record<string, unknown>;
+  const actualRecord = actual as Record<string, unknown>;
+  const keys = new Set([
+    ...Object.keys(expectedRecord),
+    ...Object.keys(actualRecord),
+  ]);
+  for (const key of [...keys].sort()) {
+    if (paths.length >= 12) break;
+    if (!(key in expectedRecord) || !(key in actualRecord)) {
+      paths.push(`${path}.${key}`);
+      continue;
+    }
+    collectDifferentPaths(
+      expectedRecord[key],
+      actualRecord[key],
+      `${path}.${key}`,
+      paths,
+    );
+  }
+}
+
+function requireContentFingerprint(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 1) {
+    throw new Error(
+      'Current Blockly working-copy fingerprint is unavailable.',
+    );
+  }
+  return value;
 }
 
 function requireAbs(value: unknown): string {

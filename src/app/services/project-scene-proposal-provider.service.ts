@@ -16,16 +16,27 @@ export class ProjectSceneProposalProviderService {
 
   async request(
     input: ProjectSceneProposalInvocationInput,
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
     const requestId = portableRequestId(input?.request?.['requestId']);
     if (this.activeRequests.has(requestId)) {
       throw new Error(`Project Scene proposal request is already active: ${requestId}`);
     }
     const abortController = new AbortController();
+    const onAbort = () => {
+      if (!abortController.signal.aborted) {
+        abortController.abort(signal?.reason ?? new Error(
+          'Project Scene proposal request was cancelled by its Host caller.',
+        ));
+      }
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
     this.activeRequests.set(requestId, abortController);
     try {
       return await this.provider(input, { signal: abortController.signal });
     } finally {
+      signal?.removeEventListener('abort', onAbort);
       if (this.activeRequests.get(requestId) === abortController) {
         this.activeRequests.delete(requestId);
       }

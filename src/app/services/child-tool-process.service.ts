@@ -53,6 +53,8 @@ interface ChildToolSession {
   expectedStopReason: 'release' | 'restart' | 'shutdown' | null;
 }
 
+const MAX_PENDING_PROCESS_MESSAGES_PER_TOOL = 32;
+
 @Injectable({
   providedIn: 'root'
 })
@@ -64,6 +66,10 @@ export class ChildToolProcessService implements OnDestroy {
   private readonly processMessageListeners = new Map<
     string,
     Set<(message: Record<string, unknown>) => void>
+  >();
+  private readonly pendingProcessMessages = new Map<
+    string,
+    Record<string, unknown>[]
   >();
   private removeProcessMessageListener: (() => void) | null = null;
   readonly runtimeStates$ = this.runtimeStatesSubject.asObservable();
@@ -208,6 +214,16 @@ export class ChildToolProcessService implements OnDestroy {
       this.processMessageListeners.set(config.id, listeners);
     }
     listeners.add(listener);
+    const pending = this.pendingProcessMessages.get(config.id) || [];
+    this.pendingProcessMessages.delete(config.id);
+    if (pending.length) {
+      queueMicrotask(() => {
+        if (!this.processMessageListeners.get(config.id)?.has(listener)) return;
+        for (const message of pending) {
+          this.deliverProcessMessage(config.id, listener, message);
+        }
+      });
+    }
     return () => {
       listeners?.delete(listener);
       if (listeners?.size === 0) this.processMessageListeners.delete(config.id);
@@ -240,6 +256,7 @@ export class ChildToolProcessService implements OnDestroy {
     this.removeProcessMessageListener?.();
     this.removeProcessMessageListener = null;
     this.processMessageListeners.clear();
+    this.pendingProcessMessages.clear();
     void this.stopAll();
   }
 
@@ -416,6 +433,7 @@ export class ChildToolProcessService implements OnDestroy {
     const scriptPath = pathApi.join(projectPath, config.entry || 'index.js');
     const uiPath = pathApi.join(projectPath, config.uiIndex || pathApi.join('ui', 'index.html'));
     const hostApiServer = String(this.configService.getCurrentApiServer() || '').trim();
+    const parentOrigin = this.resolveParentOrigin();
 
     this.log(config, 'resolve paths', {
       childPath,
@@ -437,6 +455,7 @@ export class ChildToolProcessService implements OnDestroy {
       throw new Error(message);
     }
 
+    this.pendingProcessMessages.delete(config.id);
     const streamId = `child_tool_${config.id.replace(/[^a-zA-Z0-9_-]/g, '_')}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     session.streamId = streamId;
     session.expectedStopReason = null;
@@ -485,6 +504,9 @@ export class ChildToolProcessService implements OnDestroy {
         env: {
           AILY_CHILD_TOOL: '1',
           AILY_CHILD_TOOL_ID: config.id,
+          ...(parentOrigin
+            ? { AILY_CHILD_TOOL_PARENT_ORIGIN: parentOrigin }
+            : {}),
           ...(config.env || {}),
           ...(hostApiServer ? { AILY_API_SERVER: hostApiServer } : {})
         }
@@ -685,6 +707,18 @@ export class ChildToolProcessService implements OnDestroy {
     session.expectedStopReason = null;
   }
 
+  private resolveParentOrigin(): string {
+    try {
+      const origin = window.location.origin;
+      const parsed = new URL(origin);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+        ? parsed.origin
+        : '';
+    } catch {
+      return '';
+    }
+  }
+
   private ensureProcessMessageListener(): void {
     if (this.removeProcessMessageListener) return;
     const onMessage = window['childToolSession']?.onMessage;
@@ -705,18 +739,46 @@ export class ChildToolProcessService implements OnDestroy {
         ) {
           return;
         }
-        for (const listener of this.processMessageListeners.get(toolId) || []) {
-          try {
-            listener(event.message);
-          } catch (error) {
-            const config = getChildToolConfig(toolId);
-            if (config) {
-              this.logError(config, 'process message listener failed', error);
-            }
-          }
+        const listeners = this.processMessageListeners.get(toolId);
+        if (!listeners?.size) {
+          this.bufferProcessMessage(toolId, event.message);
+          return;
+        }
+        for (const listener of listeners) {
+          this.deliverProcessMessage(toolId, listener, event.message);
         }
       },
     );
+  }
+
+  private bufferProcessMessage(
+    toolId: string,
+    message: Record<string, unknown>,
+  ): void {
+    let pending = this.pendingProcessMessages.get(toolId);
+    if (!pending) {
+      pending = [];
+      this.pendingProcessMessages.set(toolId, pending);
+    }
+    pending.push(message);
+    while (pending.length > MAX_PENDING_PROCESS_MESSAGES_PER_TOOL) {
+      pending.shift();
+    }
+  }
+
+  private deliverProcessMessage(
+    toolId: string,
+    listener: (message: Record<string, unknown>) => void,
+    message: Record<string, unknown>,
+  ): void {
+    try {
+      listener(message);
+    } catch (error) {
+      const config = getChildToolConfig(toolId);
+      if (config) {
+        this.logError(config, 'process message listener failed', error);
+      }
+    }
   }
 
   private createLeaseId(toolId: string): string {

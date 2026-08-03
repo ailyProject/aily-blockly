@@ -29,17 +29,6 @@ export function buildExplicitAgentInvocationPrompt(input: BuildExplicitAgentInvo
     ? input.editFeedback.trim()
     : '';
 
-  if (/^schematicagent$/i.test(input.targetAgent)) {
-    return [
-      'Generate the project wiring schematic for the current workspace.',
-      'Use the current project, board, code, and library context available in this session.',
-      'Check existing pinmap and wiring constraints before generating the schematic.',
-      ...(resourcesText ? ['Referenced resources:', resourcesText] : []),
-      ...(editFeedback ? ['Recent edit context:', editFeedback] : []),
-      `User request: ${task || input.originalText}`,
-    ].join('\n');
-  }
-
   return [
     `Handle the following task as ${input.targetAgent}.`,
     ...(resourcesText ? ['Referenced resources:', resourcesText] : []),

@@ -4,7 +4,7 @@ import { WORKSPACE_TOOL_DEFINITIONS } from './workspace-tool-definitions';
 import { DISCOVERY_TOOL_DEFINITIONS } from './discovery-tool-definitions';
 import { BLOCKLY_TOOL_DEFINITIONS } from './blockly-tool-definitions';
 import { PROJECT_RUNTIME_TOOL_DEFINITIONS } from './project-runtime-tool-definitions';
-import { LEGACY_HOST_SAVE_ARCH_TOOL, LEGACY_HOST_SCHEMATIC_TOOLS } from './legacy-host-tool-definitions';
+import { SAVE_ARCH_TOOL } from './architecture-tool-definition';
 
 export const toolParamNames = [
     "command"
@@ -17,9 +17,8 @@ export const TOOL_CATALOG = [
     ...WORKSPACE_TOOL_DEFINITIONS,
     ...DISCOVERY_TOOL_DEFINITIONS,
     ...BLOCKLY_TOOL_DEFINITIONS,
-    ...LEGACY_HOST_SCHEMATIC_TOOLS,
     ...PROJECT_RUNTIME_TOOL_DEFINITIONS,
-    LEGACY_HOST_SAVE_ARCH_TOOL,
+    SAVE_ARCH_TOOL,
 ];
 
 const TOOL_CATALOG_BY_NAME = new Map(

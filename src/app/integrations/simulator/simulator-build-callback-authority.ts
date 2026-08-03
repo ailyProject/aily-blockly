@@ -301,11 +301,20 @@ export class SimulatorBuildCallbackAuthority {
         this.publishTerminal(job, 'cancelled', 0, 'cancelled');
         return;
       }
+      const errorCode = mapBuildFailure(error);
+      console.error('[SimulatorBuild] Artifact rebuild failed.', JSON.stringify({
+        requestId: job.request.requestId,
+        projectIdentity: job.request.projectIdentity,
+        sceneId: job.request.sceneId,
+        sceneRevision: job.request.sceneRevision,
+        errorCode,
+        message: error instanceof Error ? error.message : String(error),
+      }));
       this.publishTerminal(
         job,
         'failed',
         Math.min(currentProgress(job), 999),
-        mapBuildFailure(error),
+        errorCode,
       );
     } finally {
       if (this.activeRequestId === job.request.requestId) {

@@ -7,7 +7,6 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ActionService } from '../../../../services/action.service';
 import { AuthService } from '../../../../services/auth.service';
 import { BuilderService } from '../../../../services/builder.service';
-import { ConnectionGraphService } from '../../../../services/connection-graph.service';
 import { ConfigService } from '../../../../services/config.service';
 import { ElectronService } from '../../../../services/electron.service';
 import { ProjectService } from '../../../../services/project.service';
@@ -15,7 +14,7 @@ import { ThemeService } from '../../../../services/theme.service';
 import { UiService } from '../../../../services/ui.service';
 import { WorkflowService, ProcessState } from '../../../../services/workflow.service';
 import { ImageViewerComponent } from '../../../../components/image-viewer/image-viewer.component';
-import { BackgroundAgentService } from '../../../../services/background-agent.service';
+import { InstalledChildToolLauncherService } from '../../../../services/installed-child-tool-launcher.service';
 
 @Component({
   selector: 'app-dev-tool',
@@ -70,7 +69,6 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     private electronService: ElectronService,
     private messageService: NzMessageService,
     private configService: ConfigService,
-    private connectionGraphService: ConnectionGraphService,
     private builderService: BuilderService,
     private actionService: ActionService,
     private workflowService: WorkflowService,
@@ -79,13 +77,12 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     private translate: TranslateService,
     private authService: AuthService,
     private themeService: ThemeService,
-    private backgroundAgent: BackgroundAgentService,
     private injector: Injector,
-    private ngZone: NgZone
+    private ngZone: NgZone,
+    private installedChildTools: InstalledChildToolLauncherService,
   ) { }
 
   ngOnInit() {
-    void this.backgroundAgent;
     const devmode = this.ensureDevModeConfig();
     this._autoSave = devmode.autoSave ?? true;
     this.loadBoardInfo();
@@ -467,24 +464,16 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   async showCircuit() {
-    if (!this.requireLogin()) return;
-    if (!this.requireFeaturePreviewAccess()) return;
-
-    const boardPackagePath = await this.resolveBoardPackagePath();
-    if (!this.electronService.isElectron || !boardPackagePath) {
-      this.messageService.warning(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
-      return;
-    }
-
-    const windowUrl = 'https://tool.aily.pro/connection-graph?type=json&theme=' + this.themeService.theme() + '&lang=' + this.translate.currentLang;
-
-    this.uiService.openWindow({
-      title: this.translate.instant('FLOAT_SIDER.CIRCUIT'),
-      path: `iframe?url=${encodeURIComponent(windowUrl)}`,
-      data: this.connectionGraphService.buildPayload(boardPackagePath),
-      width: 900,
-      height: 700,
+    const result = await this.installedChildTools.launch('simulator', {
+      mode: 'window',
     });
+    if (result.status === 'not-installed') {
+      this.messageService.warning('Simulator 子应用尚未安装，已打开应用商店。');
+    } else if (result.status === 'unavailable') {
+      this.messageService.warning('Simulator 子应用当前不可用，已打开应用商店，请检查安装状态。');
+    } else if (result.status === 'failed') {
+      this.messageService.error(result.message || '无法打开 Simulator 子应用。');
+    }
   }
 
   private ensureDevModeConfig(): { enabled: boolean; autoSave: boolean } {
@@ -508,10 +497,6 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       this.uiService.openTool('aily-chat');
       return false;
     }
-    return true;
-  }
-
-  private requireFeaturePreviewAccess(): boolean {
     return true;
   }
 

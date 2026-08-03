@@ -644,7 +644,7 @@ export class SubappHostProviderDispatcher {
         result,
       });
       this.finishArtifactTransfer(active, false);
-    } catch {
+    } catch (error) {
       if (!this.isActiveArtifactTransfer(active)) return;
       const code = controller.signal.aborted ? 'cancelled' : 'operation-failed';
       this.finishArtifactTransfer(active);

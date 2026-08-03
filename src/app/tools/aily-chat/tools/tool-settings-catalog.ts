@@ -1,6 +1,6 @@
 import type { Tool } from '../core/chat-types';
 import { MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE } from '../core/agent-identifiers';
-import { LEGACY_HOST_EXTERNAL_TOOLS } from './legacy-host-tool-definitions';
+import { HOST_EXTERNAL_TOOLS } from './architecture-tool-definition';
 
 export type ToolSettingsCatalogEntry = Pick<Tool, 'name' | 'description' | 'agents'>;
 
@@ -66,5 +66,5 @@ export const TOOL_SETTINGS_CATALOG: ToolSettingsCatalogEntry[] = [
   ...PROJECT_TOOL_SETTINGS,
   ...FILE_TOOL_SETTINGS,
   ...BLOCKLY_TOOL_SETTINGS,
-  ...LEGACY_HOST_EXTERNAL_TOOLS,
+  ...HOST_EXTERNAL_TOOLS,
 ];

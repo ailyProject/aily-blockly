@@ -243,11 +243,10 @@ function mappedError(
     return buildError('cancelled', abortReason(signal).message);
   }
   if (
-    error
-    && typeof error === 'object'
+    error instanceof Error
     && 'simulatorBuildErrorCode' in error
   ) {
-    return error as Error;
+    return error;
   }
   return buildError(
     fallback,

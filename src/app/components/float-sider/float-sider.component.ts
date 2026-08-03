@@ -10,14 +10,13 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UiService } from '../../services/ui.service';
 import { ChatService } from '../../tools/aily-chat/public-api';
-import { ConnectionGraphService } from '../../services/connection-graph.service';
-import { BackgroundAgentService } from '../../services/background-agent.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { AuthService } from '../../services/auth.service';
 import { ImageViewerComponent } from '../image-viewer/image-viewer.component';
 import { MermaidComponent } from '../../tools/aily-chat/components/aily-mermaid-viewer/mermaid/mermaid.component';
 import mermaid from 'mermaid';
 import { ThemeService } from '../../services/theme.service';
+import { InstalledChildToolLauncherService } from '../../services/installed-child-tool-launcher.service';
 @Component({
   selector: 'app-float-sider',
   imports: [
@@ -44,11 +43,10 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
     private modal: NzModalService,
     private uiService: UiService,
     private chatService: ChatService,
-    private connectionGraphService: ConnectionGraphService,
-    private backgroundAgent: BackgroundAgentService,
     private translate: TranslateService,
     private authService: AuthService,
-    private themeService: ThemeService
+    private themeService: ThemeService,
+    private installedChildTools: InstalledChildToolLauncherService,
   ) { }
 
   private requireLogin(): boolean {
@@ -57,14 +55,6 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
       this.uiService.openTool('aily-chat');
       return false;
     }
-    return true;
-  }
-
-  private requireFeaturePreviewAccess(): boolean {
-    // if (!this.authService.hasFeaturePreviewAccess()) {
-    //   this.message.warning('Coming Soon');
-    //   return false;
-    // }
     return true;
   }
 
@@ -252,25 +242,15 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   }
 
   async showCircuit() {
-    // this.message.warning('Coming Soon');
-    // return;
-    if (!this.requireLogin()) return;
-    if (!this.requireFeaturePreviewAccess()) return;
-
-    if (!this.electronService.isElectron || !this.boardPackagePath) {
-      this.message.warning(this.translate.instant('FLOAT_SIDER.NO_PINMAP'));
-      return;
-    }
-
-    let windowUrl = 'https://tool.aily.pro/connection-graph?type=json&theme=' + this.themeService.theme() + '&lang=' + this.translate.currentLang;
-    // let windowUrl = 'http://localhost:4201/connection-graph?type=json&theme=' + this.themeService.theme() + '&lang=' + this.translate.currentLang;
-
-    this.uiService.openWindow({
-      title: this.translate.instant('FLOAT_SIDER.CIRCUIT'),
-      path: `iframe?url=${encodeURIComponent(windowUrl)}`,
-      data: this.connectionGraphService.buildPayload(this.boardPackagePath),
-      width: 900,
-      height: 700,
+    const result = await this.installedChildTools.launch('simulator', {
+      mode: 'window',
     });
+    if (result.status === 'not-installed') {
+      this.message.warning('Simulator 子应用尚未安装，已打开应用商店。');
+    } else if (result.status === 'unavailable') {
+      this.message.warning('Simulator 子应用当前不可用，已打开应用商店，请检查安装状态。');
+    } else if (result.status === 'failed') {
+      this.message.error(result.message || '无法打开 Simulator 子应用。');
+    }
   }
 }

@@ -163,11 +163,10 @@ import {
 } from '../core/chat-image-attachment';
 import { AilyHost } from '../core/host';
 import { mkdir as mkdirAsync, writeFile as writeFileAsync } from '../core/async-fs';
-import type { MetricsSnapshot, RenderEvent, TurnRequest, TurnResponsePart, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
+import type { MetricsSnapshot, TurnRequest, TurnResponsePart, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
 
 import { MessageDisplayHelper } from '../helpers/message-display.helper';
 import { SessionLifecycleHelper } from '../helpers/session-lifecycle.helper';
-import { SchematicIframeProgressProjector } from '../helpers/schematic-iframe-progress-projector';
 import { createSessionLifecycleHostSessionSaveBridge } from '../helpers/session-lifecycle-save-bridge';
 import { getUserSelectedToolsForRequest } from '../helpers/lex-agent-bootstrap';
 import type {
@@ -1264,7 +1263,6 @@ export class ChatEngineService implements IChatContext {
   private readonly uiService = inject(UiService);
   private readonly electronRuntimeHost = createElectronChatRuntimeHostTransport();
   private readonly runtimeViewId = createRuntimeViewId('aily-chat-visible-transcript');
-  private schematicIframeProgressProjector: SchematicIframeProgressProjector | null = null;
 
   private readonly entryPartStore = new ChatPartStore();
   // ==================== Part-based 消息模型（Phase 1） ====================
@@ -3881,34 +3879,6 @@ export class ChatEngineService implements IChatContext {
     this.viewAdapter.setCdCallback(cb);
   }
 
-  /** Project schematic subagent progress into the connection-graph iframe notice channel. */
-  setSchematicIframeProgressTarget(target: { emitNotice?: (opts: {
-    title?: string;
-    text?: string;
-    state?: string;
-    showProgress?: boolean;
-    setTimeout?: number;
-    sendToLog?: boolean;
-  }) => void } | null | undefined): void {
-    this.schematicIframeProgressProjector = target
-      ? new SchematicIframeProgressProjector(target)
-      : null;
-  }
-
-  projectExecutionRenderEvent(
-    sessionId: string | null | undefined,
-    event: RenderEvent,
-    request?: {
-      readonly sessionId: string;
-      readonly requestText: string;
-      readonly displayText?: string;
-      readonly metadata?: TurnRequest['metadata'] | null;
-      readonly activeResponseHandle?: unknown;
-    } | null,
-  ): void {
-    this.schematicIframeProgressProjector?.process(sessionId, event, request);
-  }
-
   /** AI 编辑完成后在内嵌 Coder 打开 DiffEditor 预览（与 autoSaveEdits / 摘要 UI 解耦） */
   triggerAiEditDiffPreview(summary: EditsSummary | null): void {
     const workspaceRoot = this.prjPath || this.prjRootPath;
@@ -5834,17 +5804,6 @@ export class ChatEngineService implements IChatContext {
         this.applyRuntimeProjectPathUpdatedEvent(targetSessionId, event);
         return;
       case 'turnProgress':
-        if (event.renderEvent) {
-          this.projectExecutionRenderEvent(targetSessionId, event.renderEvent, event.request
-            ? {
-                sessionId: event.request.sessionId,
-                requestText: event.request.requestText,
-                displayText: event.request.displayText,
-                metadata: event.request.metadata ?? null,
-                activeResponseHandle: event.request.activeResponseHandle,
-              }
-            : null);
-        }
         if (event.turn) {
           this.applyRuntimeHostTurnTranscriptEvent(targetSessionId, event.turn, {
             visibleProjection: this.shouldProjectRuntimeHostTranscriptEvent(targetSessionId),

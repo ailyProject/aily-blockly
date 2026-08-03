@@ -326,13 +326,14 @@ function releaseChildToolSession(toolIdOrPayload, ownerId) {
     return { success: true, session: cloneChildToolSession(session) };
 }
 
-function releaseChildToolSessionsForOwner(ownerId) {
+function releaseChildToolSessionsForOwner(ownerId, reason = 'destroyed') {
     const released = releaseChildToolOwnerFromSessions(childToolSessions, ownerId);
     for (const { toolId, session } of released) {
         console.info('[ChildToolSession] renderer owner released', {
             toolId,
             streamId: session.streamId,
             ownerId,
+            reason,
             refCount: childToolOwnerCount(session),
         });
         if (childToolOwnerCount(session) === 0) {
@@ -350,9 +351,18 @@ function trackChildToolSessionOwner(webContents) {
         return ownerId;
     }
     childToolOwnerCleanupRegistrations.add(ownerId);
+    webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+        // Hash-router transitions are in-place and keep the same renderer.
+        // A real main-frame navigation/reload replaces renderer JavaScript while
+        // retaining the Electron webContents id, so its old leases must be
+        // released before the replacement renderer acquires fresh leases.
+        if (isMainFrame && !isInPlace) {
+            releaseChildToolSessionsForOwner(ownerId, 'main-frame-navigation');
+        }
+    });
     webContents.once('destroyed', () => {
         childToolOwnerCleanupRegistrations.delete(ownerId);
-        releaseChildToolSessionsForOwner(ownerId);
+        releaseChildToolSessionsForOwner(ownerId, 'destroyed');
     });
     return ownerId;
 }
@@ -1663,39 +1673,6 @@ function registerWindowHandlers(mainWindow, options = {}) {
     ipcMain.on('state-update', (event, data) => {
         console.log('state-update: ', data);
         mainWindow.webContents.send('state-update', data);
-    });
-
-    // =====================================================
-    // iframe 模块 IPC 通讯（规范：iframe-message-{模块名}，参�?{type, data}�?
-    // =====================================================
-
-    const IFRAME_CHANNEL_CONNECTION_GRAPH = 'iframe-message-connection-graph';
-
-    ipcMain.on(IFRAME_CHANNEL_CONNECTION_GRAPH, (event, payload) => {
-        const senderWindow = BrowserWindow.fromWebContents(event.sender);
-        const isFromMain = senderWindow && senderWindow.id === mainWindow.id;
-        if (isFromMain) {
-            // 主窗�?�?子窗口：广播给所有子窗口，由各模块按 type 自行处理（含 get-graph-data�?
-            openWindows.forEach((subWindow) => {
-                try {
-                    if (subWindow && !subWindow.isDestroyed() && subWindow.webContents && !subWindow.webContents.isDestroyed()) {
-                        subWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
-                    }
-                } catch (error) {
-                    console.error('[IPC] 转发 iframe-message-connection-graph 失败:', error.message);
-                }
-            });
-            // 嵌入模式：主窗口内的 connection-graph（如 blockly-editor �?graph-editor tab）也会发�?get-graph-data�?
-            // 主窗口的 ConnectionGraphService 需要收到请求并响应，故主窗口发出的消息也需回传主窗�?
-            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-                mainWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
-            }
-        } else {
-            // 子窗�?�?主窗口：转发给主窗口（含 get-graph-data�?
-            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-                mainWindow.webContents.send(IFRAME_CHANNEL_CONNECTION_GRAPH, payload);
-            }
-        }
     });
 
     scheduleReplenishSubWindowPool(loadSubWindowBasePage);

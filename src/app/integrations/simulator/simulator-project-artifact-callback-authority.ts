@@ -1,6 +1,7 @@
 import {
   SimulatorHostArtifactChunkError,
   SimulatorHostProviderOperationError,
+  SIMULATOR_SUBAPP_CONTROL_MAX_CONNECTION_GRAPH_BYTES,
   createPortableRandomId,
   validateProjectSceneNetworkDescriptorV2,
   validateSimulationArtifact,
@@ -13,12 +14,15 @@ import {
   type SimulatorSubappHostProjectArtifactReadV1,
   type SimulatorSubappHostProjectContextReadV1,
   type SimulatorSubappHostProjectContextSnapshotV1,
+  type SimulatorSubappHostProjectLegacySceneInspectV1,
+  type SimulatorSubappHostProjectLegacySceneSnapshotV1,
   type SimulatorSubappHostProjectSceneReadV1,
+  type SimulatorSubappHostProjectSceneReadResultV1,
   type SimulatorSubappHostProjectSceneWriteV1,
 } from '@aily-project/simulator-host-sdk';
 
 const EMPTY_STORAGE_REVISION = '0'.repeat(64);
-const DEFAULT_ARTIFACT_REFERENCE_TTL_MS = 60_000;
+const DEFAULT_ARTIFACT_REFERENCE_TTL_MS = 5 * 60_000;
 const DEFAULT_MAX_ARTIFACT_REFERENCES = 16;
 const MAX_SCENE_BYTES = 32 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
@@ -78,10 +82,13 @@ interface ArtifactReference {
   artifact: SimulationArtifact;
   expiresAtUnixMs: number;
   buildRootRealPath: string;
-  files: ReadonlyMap<string, Readonly<{
-    filePath: string;
-    sizeBytes: number;
-  }>>;
+  files: ReadonlyMap<string, ArtifactReferenceFile>;
+}
+
+interface ArtifactReferenceFile {
+  readonly filePath: string;
+  readonly sizeBytes: number;
+  bytesPromise: Promise<Uint8Array> | null;
 }
 
 /**
@@ -98,12 +105,14 @@ export class SimulatorProjectArtifactCallbackAuthority {
     | 'readContext'
     | 'readScene'
     | 'writeScene'
+    | 'inspectLegacyScene'
     | 'readArtifact'
     | 'readArtifactChunk'
   >;
 
   private readonly projectRoot: string;
   private readonly sceneFilePath: string;
+  private readonly legacyConnectionGraphFilePath: string;
   private readonly buildRoot: string;
   private readonly manifestFilePath: string;
   private readonly files: SimulatorProjectArtifactFilePort;
@@ -135,6 +144,10 @@ export class SimulatorProjectArtifactCallbackAuthority {
       '.aily',
       'simulator',
       'scene-network-v2.json',
+    );
+    this.legacyConnectionGraphFilePath = this.files.join(
+      this.projectRoot,
+      'connection_output.json',
     );
     this.buildRoot = this.files.join(this.projectRoot, '.build');
     this.manifestFilePath = this.files.join(
@@ -171,6 +184,10 @@ export class SimulatorProjectArtifactCallbackAuthority {
         request: SimulatorSubappHostProjectSceneWriteV1,
         signal: AbortSignal,
       ) => this.writeScene(request, signal),
+      inspectLegacyScene: (
+        request: SimulatorSubappHostProjectLegacySceneInspectV1,
+        signal: AbortSignal,
+      ) => this.inspectLegacyScene(request, signal),
       readArtifact: (
         request: SimulatorSubappHostProjectArtifactReadV1,
         signal: AbortSignal,
@@ -207,9 +224,11 @@ export class SimulatorProjectArtifactCallbackAuthority {
     request: SimulatorSubappHostProjectContextReadV1,
     signal: AbortSignal,
   ): Promise<SimulatorSubappHostProjectContextSnapshotV1> {
-    this.requireProject(request.projectIdentity);
+    if (request.projectIdentity !== null) {
+      this.requireProject(request.projectIdentity);
+    }
     this.requireActive(signal);
-    const [scene, artifact] = await Promise.all([
+    const [, artifact] = await Promise.all([
       this.readStoredScene(signal, true),
       this.readManifest(signal, true),
     ]);
@@ -219,7 +238,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
       kind: 'aily-simulator-host-project-context-snapshot',
       projectIdentity: this.projectIdentity,
       workspaceIdentity: this.workspaceIdentity,
-      activeSceneId: scene ? this.sceneId : null,
+      activeSceneId: this.sceneId,
       activeArtifactRevision: artifact?.artifactId ?? null,
     };
   }
@@ -227,17 +246,45 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async readScene(
     request: SimulatorSubappHostProjectSceneReadV1,
     signal: AbortSignal,
-  ): Promise<ProjectSceneNetworkDescriptorV2> {
+  ): Promise<SimulatorSubappHostProjectSceneReadResultV1> {
     this.requireSceneScope(request.projectIdentity, request.sceneId);
     this.requireActive(signal);
-    const scene = await this.readStoredScene(signal, false);
+    const scene = await this.readStoredScene(signal, true);
     if (!scene) {
-      throw new SimulatorHostProviderOperationError(
-        'operation-failed',
-        'Project Scene is not available.',
-      );
+      return {
+        schemaVersion: 1,
+        kind: 'aily-simulator-host-project-scene-missing',
+        projectIdentity: this.projectIdentity,
+        sceneId: this.sceneId,
+      };
     }
     return structuredClone(scene.descriptor);
+  }
+
+  private async inspectLegacyScene(
+    request: SimulatorSubappHostProjectLegacySceneInspectV1,
+    signal: AbortSignal,
+  ): Promise<SimulatorSubappHostProjectLegacySceneSnapshotV1> {
+    this.requireSceneScope(request.projectIdentity, request.sceneId);
+    const bytes = await this.readRegularFile(
+      this.legacyConnectionGraphFilePath,
+      SIMULATOR_SUBAPP_CONTROL_MAX_CONNECTION_GRAPH_BYTES,
+      signal,
+      true,
+    );
+    return {
+      schemaVersion: 1,
+      kind: 'aily-simulator-host-project-legacy-scene-snapshot',
+      projectIdentity: this.projectIdentity,
+      sceneId: this.sceneId,
+      legacySource: bytes
+        ? {
+            kind: 'connection-output-v1',
+            revision: await digestBytes(bytes),
+            bytes: bytes.byteLength,
+          }
+        : null,
+    };
   }
 
   private writeScene(
@@ -351,9 +398,19 @@ export class SimulatorProjectArtifactCallbackAuthority {
     if (request.offsetBytes < 0 || request.offsetBytes >= file.sizeBytes) {
       throw new SimulatorHostArtifactChunkError('range-invalid');
     }
-    const bytes = await this.files.readFile(file.filePath, signal);
+    const bytesPromise = file.bytesPromise
+      ?? this.files.readFile(file.filePath, signal);
+    file.bytesPromise = bytesPromise;
+    let bytes: Uint8Array;
+    try {
+      bytes = await bytesPromise;
+    } catch (error) {
+      if (file.bytesPromise === bytesPromise) file.bytesPromise = null;
+      throw error;
+    }
     this.requireActive(signal);
     if (bytes.byteLength !== file.sizeBytes) {
+      if (file.bytesPromise === bytesPromise) file.bytesPromise = null;
       throw new SimulatorHostArtifactChunkError('transfer-failed');
     }
     const end = Math.min(
@@ -363,6 +420,9 @@ export class SimulatorProjectArtifactCallbackAuthority {
     const data = bytes.slice(request.offsetBytes, end);
     if (data.byteLength < 1) {
       throw new SimulatorHostArtifactChunkError('range-invalid');
+    }
+    if (end === file.sizeBytes && file.bytesPromise === bytesPromise) {
+      file.bytesPromise = null;
     }
     return {
       data,
@@ -457,10 +517,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
     signal: AbortSignal,
   ): Promise<ArtifactReference> {
     const buildRootRealPath = await this.files.realpath(this.buildRoot, signal);
-    const fileEntries = new Map<string, Readonly<{
-      filePath: string;
-      sizeBytes: number;
-    }>>();
+    const fileEntries = new Map<string, ArtifactReferenceFile>();
     for (const file of artifact.files) {
       const relativePath = requirePortableArtifactPath(file.path);
       const filePath = this.files.resolve(
@@ -479,10 +536,11 @@ export class SimulatorProjectArtifactCallbackAuthority {
       ) {
         throw new SimulatorHostProviderOperationError('operation-failed');
       }
-      fileEntries.set(relativePath, Object.freeze({
+      fileEntries.set(relativePath, {
         filePath: fileRealPath,
         sizeBytes: file.sizeBytes,
-      }));
+        bytesPromise: null,
+      });
     }
     const now = this.requireNow();
     const artifactReference = requireArtifactReference(
@@ -718,13 +776,22 @@ function exactKeys(value: Record<string, unknown>): string {
 }
 
 function isMissingFileError(error: unknown): boolean {
-  return error instanceof Error
+  // Errors crossing Electron's preload/renderer boundary are not guaranteed to
+  // preserve the renderer realm's Error prototype. Treat the stable Node error
+  // code as the authority so a legitimately missing first Scene/Artifact file
+  // remains distinguishable from an actual filesystem failure.
+  return error !== null
+    && typeof error === 'object'
     && 'code' in error
-    && (error as Error & { code?: string }).code === 'ENOENT';
+    && (error as { code?: unknown }).code === 'ENOENT';
 }
 
 async function digestJson(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(stableJson(value));
+  return digestBytes(bytes);
+}
+
+async function digestBytes(bytes: Uint8Array): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))

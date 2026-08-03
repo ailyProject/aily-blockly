@@ -105,6 +105,23 @@ export class AbsAutoSyncService {
   }
 
   /**
+   * Returns a deterministic snapshot of the actual Blockly working copy.
+   * Unlike the code-generation revision, this changes only when serialized
+   * workspace content changes and is therefore safe for optimistic guards.
+   */
+  getWorkspaceContentFingerprint(): string | null {
+    try {
+      const abiJson = this.getWorkspaceAbiJson();
+      return abiJson
+        ? stableJson(normalizeWorkspaceForFingerprint(abiJson))
+        : null;
+    } catch (error) {
+      console.error('[AbsAutoSync] workspace fingerprint failed:', error);
+      return null;
+    }
+  }
+
+  /**
    * 导出当前工作区到 ABS 文件
    */
   async exportToAbs(saveVersion = false): Promise<string | null> {
@@ -384,4 +401,28 @@ export class AbsAutoSyncService {
       // Debug tracing must never affect the chat submit hot path.
     }
   }
+}
+
+function normalizeWorkspaceForFingerprint(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  // Blockly lazily creates and removes entries in its top-level variable
+  // index during generation. Declarations and all code-relevant references
+  // are serialized inside `blocks`, so the auxiliary index is not part of
+  // the optimistic concurrency fingerprint.
+  const { variables: _variables, ...semanticWorkspace } = value;
+  return semanticWorkspace;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => (
+    `${JSON.stringify(key)}:${stableJson(record[key])}`
+  )).join(',')}}`;
 }

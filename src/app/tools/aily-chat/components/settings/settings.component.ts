@@ -9,7 +9,7 @@ import { NzCheckboxModule } from 'ng-zorro-antd/checkbox';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
 import { NzSelectModule } from 'ng-zorro-antd/select';
-import { MAIN_AGENT_TYPE, normalizeAgentIdentifiers, SCHEMATIC_AGENT_TYPE } from '../../core/agent-identifiers';
+import { MAIN_AGENT_TYPE, normalizeAgentIdentifiers } from '../../core/agent-identifiers';
 import { ElectronService } from '../../../../services/electron.service';
 import { AilyChatConfigService, WorkspaceSecurityOption, ModelConfigOption, AgentToolsConfig, ModelPresetOption, type ChatSessionViewerOrientationSetting } from '../../services/aily-chat-config.service';
 import { ChatService } from '../../services/chat.service';
@@ -17,7 +17,7 @@ import { McpService } from '../../services/mcp.service';
 import { getRuntimeToolSettingsCatalog, type RuntimeToolCatalogEntry } from '../../helpers/lex-agent-bootstrap';
 
 /** Agent 类型定义 */
-type AgentType = typeof MAIN_AGENT_TYPE | typeof SCHEMATIC_AGENT_TYPE;
+type AgentType = typeof MAIN_AGENT_TYPE;
 
 /** Agent 配置信息 */
 interface AgentConfig {
@@ -88,8 +88,7 @@ export class AilyChatSettingsComponent implements OnInit {
 
   // Agent 列表配置
   readonly agentConfigs: AgentConfig[] = [
-    { name: MAIN_AGENT_TYPE, displayName: '主 Agent', description: '处理用户请求的主要 Agent' },
-    { name: SCHEMATIC_AGENT_TYPE, displayName: '连线 Agent', description: '处理电路连线图相关任务的子 Agent' }
+    { name: MAIN_AGENT_TYPE, displayName: '主 Agent', description: '处理用户请求的主要 Agent' }
   ];
   
   // 当前选中的 Agent

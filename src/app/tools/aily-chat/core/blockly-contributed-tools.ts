@@ -27,7 +27,6 @@ import {
 } from './chat-agent-runtime-mode';
 
 // ---- 复用已有工具实现 ----
-import { appendLegacyHostContributions, invokeLegacyHostExternalTool, isLegacyHostExternalToolName } from './blockly-legacy-host-tools';
 import {
   appendBlocklyWorkspaceContributions,
   createBlocklyWorkspaceHandlers,
@@ -148,7 +147,6 @@ function collectBlocklyContributions(hostAPI: IExternalHostAPI, runtimeMode: Cha
     appendBlocklyWorkspaceContributions(contributions, hostAPI, createDeferred);
     appendProjectSceneGenerationContributions(contributions);
     appendSceneCodeReconciliationContributions(contributions);
-    appendLegacyHostContributions(contributions, hostAPI);
   }
 
   return contributions;
@@ -242,10 +240,6 @@ export function createBlocklyToolProvider(hostAPI: IExternalHostAPI, options?: B
       emitEvent?: (event: unknown) => void;
     }): Promise<ToolResultContent> {
       // External tools call handlers directly; no blockly-side runtime registry remains here.
-      if (runtimeMode === 'blockly' && isLegacyHostExternalToolName(toolName)) {
-        return invokeLegacyHostExternalTool(toolName, input as Record<string, unknown>, hostAPI, invocationContext);
-      }
-
       // Keep stable Blockly handlers cached, while resolving manifest-driven
       // Subapp handlers from the live catalog. This keeps invocation routing in
       // sync with the contribution snapshot Lex most recently registered.

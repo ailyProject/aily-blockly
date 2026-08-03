@@ -39,7 +39,7 @@ type HardwareUsageKind =
   | 'spi-controller'
   | 'uart-controller';
 
-interface HardwareHint {
+export interface HardwareHint {
   hintId: string;
   kind: HardwareUsageKind;
   pins: string[];

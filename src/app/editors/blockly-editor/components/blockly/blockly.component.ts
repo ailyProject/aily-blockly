@@ -1959,7 +1959,10 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     root.classList.add('aily-debug-execution-block');
     root.setAttribute('data-debug-execution-marker', 'true');
     this.debugExecutionMarkerRoot = root;
-    if (this.lastCenteredDebugExecutionBlockId !== marker.blockId) {
+    if (
+      marker.focus
+      && this.lastCenteredDebugExecutionBlockId !== marker.blockId
+    ) {
       this.lastCenteredDebugExecutionBlockId = marker.blockId;
       queueMicrotask(() => {
         const current = this.blocklyService.debugExecutionMarkerSubject.value;
@@ -1971,6 +1974,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           this.workspace.centerOnBlock(marker.blockId, true);
         }
       });
+    } else if (!marker.focus) {
+      this.lastCenteredDebugExecutionBlockId = '';
     }
   }
 

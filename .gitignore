@@ -89,6 +89,7 @@ child/aily-builder*
 !/e2e/tests/**/*.spec.ts
 **/__tests__/**/*
 .tmp
+.temp
 src/app/tools/aily-chat/logs
 src/app/components/float-sider/new_idea
 src/app/tools/aily-chat/docs

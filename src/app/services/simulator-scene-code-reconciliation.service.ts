@@ -44,6 +44,8 @@ implements SimulatorSceneCodeReconciliationPort {
       },
       program: {
         readCurrentAbs: () => this.readCurrentAbs(),
+        readCurrentContentFingerprint: () =>
+          this.readCurrentContentFingerprint(),
         applyAbs: (content, request, approvalId, signal) =>
           this.applyAbs(content, request, approvalId, signal),
       },
@@ -63,6 +65,16 @@ implements SimulatorSceneCodeReconciliationPort {
       throw new Error('Current Blockly ABS program is unavailable.');
     }
     return content;
+  }
+
+  private readCurrentContentFingerprint(): string {
+    const fingerprint = this.absSync.getWorkspaceContentFingerprint();
+    if (typeof fingerprint !== 'string' || fingerprint.length < 1) {
+      throw new Error(
+        'Current Blockly working-copy fingerprint is unavailable.',
+      );
+    }
+    return fingerprint;
   }
 
   private async applyAbs(

@@ -58,8 +58,6 @@ export interface IAilyHostAPI {
   // ---- 宿主特有服务（直接透传，用于复杂 handler 调用） ----
   /** Blockly 编辑器服务（可选 — 完整 BlocklyService 透传） */
   readonly blockly?: any;
-  /** 连线图服务（可选 — 完整 ConnectionGraphService 透传） */
-  readonly connectionGraph?: any;
   /** 命令执行服务（可选 — 完整 CmdService 透传） */
   readonly cmd?: any;
   /** ABS 自动同步服务（可选） */
@@ -488,19 +486,6 @@ export interface IEditorProvider {
   getCurrentFileContent?(): string;
   getCurrentFilePath?(): string;
 
-  // 连线图/原理图（Blockly 专属扩展）
-  connectionGraph?: IConnectionGraphProvider;
-}
-
-export interface IConnectionGraphProvider {
-  generateConnectionGraph?(args: any): Promise<any>;
-  getPinmapSummary?(args: any): Promise<any>;
-  validateConnectionGraph?(args: any): Promise<any>;
-  getSensorPinmapCatalog?(args: any): Promise<any>;
-  generatePinmap?(args: any): Promise<any>;
-  savePinmap?(args: any): Promise<any>;
-  getCurrentSchematic?(args: any): Promise<any>;
-  applySchematic?(args: any): Promise<any>;
 }
 
 // ============================================================

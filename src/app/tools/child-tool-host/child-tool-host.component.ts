@@ -26,6 +26,11 @@ import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
 import { UiService } from '../../services/ui.service';
 import { toHostResourceLifecycleRequest } from '../../services/subapp-resource-lifecycle-adapter';
+import { createSubappHostProviderChildToolTransport } from '../../services/subapp-host-provider-child-tool-transport';
+import {
+  SubappHostProviderProductRegistryService,
+  type SubappHostProviderProductSession,
+} from '../../services/subapp-host-provider-product-registry.service';
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
@@ -98,6 +103,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private projectContextListenerRegistered = false;
   private projectContextListenerCleanup: (() => void) | null = null;
   private unregisterHostController: (() => void) | null = null;
+  private providerProductSession: SubappHostProviderProductSession | null = null;
 
   constructor(
     private route: ActivatedRoute,
@@ -118,6 +124,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private electronService: ElectronService,
     private mainUiAutomation: MainUiAutomationService,
     private subappManager: SubappManagerService,
+    private providerProducts: SubappHostProviderProductRegistryService,
   ) {
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
@@ -190,10 +197,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController = null;
     const releaseToolId = this.acquired ? this.resolvedToolId : '';
     this.acquired = false;
-    const finishDestroy = () => {
+    const finishDestroy = async () => {
+      await this.closeProviderProduct();
       this.destroyPenpalConnection();
       if (releaseToolId) {
-        void this.processService.release(releaseToolId);
+        await this.processService.release(releaseToolId);
       }
     };
     void this.notifyChildBeforeClose('destroy').then(finishDestroy, finishDestroy);
@@ -254,6 +262,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.routePath = updatedConfig.routePath || `/child-tool/${updatedConfig.id}`;
 
     this.destroyPenpalConnection();
+    await this.closeProviderProduct();
     this.serverInfo = null;
     this.iframeSrc = null;
     this.frameLoaded = false;
@@ -339,6 +348,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     });
 
     if (this.acquired && this.resolvedToolId && this.resolvedToolId !== nextToolId) {
+      await this.closeProviderProduct();
       await this.processService.release(this.resolvedToolId);
       this.acquired = false;
     }
@@ -416,6 +426,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         ? await this.processService.restart(this.config.id)
         : await this.processService.acquire(this.config.id);
       this.acquired = true;
+      try {
+        await this.openProviderProduct(this.config.id);
+      } catch (error) {
+        await this.processService.release(this.config.id);
+        this.acquired = false;
+        throw error;
+      }
       const childToolUrl = this.buildChildToolUrl(this.serverInfo.url);
       this.log('server acquired', this.sanitizeHostInfo(this.serverInfo));
       this.log('iframe url prepared', this.sanitizeUrl(childToolUrl));
@@ -813,6 +830,24 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     } else {
       void task.catch(() => undefined);
     }
+  }
+
+  private async openProviderProduct(toolId: string): Promise<void> {
+    await this.closeProviderProduct();
+    this.providerProductSession = await this.providerProducts.open({
+      toolId,
+      hostInstanceId: this.hostContextId,
+      transport: createSubappHostProviderChildToolTransport(
+        toolId,
+        this.processService,
+      ),
+    });
+  }
+
+  private async closeProviderProduct(): Promise<void> {
+    const session = this.providerProductSession;
+    this.providerProductSession = null;
+    if (session) await session.close();
   }
 
   private async sendToolSignalFromChild(signal: string, payload: any = {}): Promise<{ ok: boolean; waitFor: number }> {

@@ -1,6 +1,5 @@
 import { TOOL_CATALOG, getDeferredToolsListing, searchDeferredTools } from './tool-catalog';
 import { convertAbiToAbs, convertAbsToAbi } from './abiAbsConverter';
-import { generateConnectionGraphTool } from './connectionGraphTool';
 import { prepareBlockFieldValue } from './blockFieldValue';
 import {
   getGlobalBlockMetas,
@@ -87,30 +86,6 @@ describe('tool-catalog', () => {
     expect(names.has('get_workspace_overview_tool')).toBeFalse();
     expect(names.has('analyze_library_blocks')).toBeFalse();
     expect(names.has('delete_folder')).toBeFalse();
-  });
-});
-
-describe('generate_schematic input contract', () => {
-  it('rejects non-canonical object inputs before pinmap parsing', async () => {
-    const connectionGraphService = {
-      parsePinmapId: jasmine.createSpy('parsePinmapId'),
-    };
-
-    const result = await generateConnectionGraphTool(
-      connectionGraphService as any,
-      {} as any,
-      {
-        pinmapIds: JSON.stringify([
-          'board-demo:default:default',
-          { pinmapId: 'lib-demo:default:default', pinmapConfig: {} },
-        ]),
-      },
-    );
-
-    expect(result.is_error).toBeTrue();
-    expect(result.content).toContain('pinmapIds[1]');
-    expect(result.content).toContain('{ id, alias?, label? }');
-    expect(connectionGraphService.parsePinmapId).not.toHaveBeenCalled();
   });
 });
 

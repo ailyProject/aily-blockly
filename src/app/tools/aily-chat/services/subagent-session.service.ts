@@ -5,15 +5,12 @@
  * 前端需要直连对应的 subagent 执行任务，并将结果回传主会话。
  *
  * 核心职责：
- * 1. 为每个 subagent 创建/复用独立会话（与 BackgroundAgentService 的直连会话隔离）
+ * 1. 为每个 subagent 创建/复用独立会话
  * 2. 通过 chatRequest 直连 subagent 执行任务，流式接收回复
  * 3. 支持同一轮中多个 subagent 并行执行
  * 4. 生命周期管理：主会话重置时清理所有 subagent 会话
  *
- * 与 BackgroundAgentService 的关系：
- * - BackgroundAgentService 用于「用户主动触发的后台任务」（如点击生成连线图按钮）
- * - SubagentSessionService 用于「mainAgent 作为工具调用的 subagent」
- * - 两者使用完全独立的 sessionId，互不干扰，可同时运行
+ * 本服务只处理 mainAgent 作为工具调用显式委派的 subagent。
  */
 
 import { Injectable, OnDestroy } from '@angular/core';
@@ -529,7 +526,7 @@ export class SubagentSessionService implements OnDestroy {
    *
    * 与之前的区别：
    * - 之前只发一轮 chatRequest，subagent 内部工具调用无法被本地执行，导致结果不完整
-   * - 现在实现了与 BackgroundAgentService.runToolCallingLoop() 同等的多轮循环
+   * - 现在使用独立的多轮工具调用循环
    */
   private async chatWithSubagent(
     session: SubagentSession,
@@ -788,7 +785,7 @@ export class SubagentSessionService implements OnDestroy {
   }
 
   // =========================================================================
-  // 本地工具执行（与 BackgroundAgentService.handleToolCallRequest 同逻辑）
+  // 本地工具执行
   // =========================================================================
 
   /**

@@ -23,7 +23,6 @@ import { PlatformService } from '../../services/platform.service';
 import { ElectronService } from '../../services/electron.service';
 import { BuilderService } from '../../services/builder.service';
 
-import { ConnectionGraphService } from '../../services/connection-graph.service';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { ConfigService } from '../../services/config.service';
 import { AilyChatConfigService } from './services/aily-chat-config.service';
@@ -383,7 +382,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     private electronService: ElectronService,
     private onboardingService: OnboardingService,
     private absAutoSyncService: AbsAutoSyncService,
-    private connectionGraphService: ConnectionGraphService,
     private repetitionDetectionService: RepetitionDetectionService,
     private chatHistoryService: ChatHistoryService,
     public debugBrowser: ChatDebugBrowserService,
@@ -439,7 +437,6 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     this.engine.setPaneSessionCommandHandlers({
       requestNewChat: () => this.requestNewChat(),
     });
-    this.engine.setSchematicIframeProgressTarget(this.connectionGraphService);
     this.debugBrowserChangeSubscription = this.debugBrowser.onDidChange.subscribe(() => {
       this.cdr.markForCheck();
     });

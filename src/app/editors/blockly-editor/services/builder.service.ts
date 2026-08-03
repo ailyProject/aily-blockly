@@ -35,6 +35,7 @@ import {
 import { ChatPerformanceTracer } from '../../../tools/aily-chat/services/chat-perf-tracer';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import { ProjectDebugConfigurationService } from '../../../services/project-debug-configuration.service';
+import { createSimulatorSceneGpioBuildMetadata } from '../../../integrations/simulator/simulator-scene-gpio-build-metadata';
 
 const AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY = '__AILY_CHAT_LEX_COMPLETION_PENDING_COUNT__';
 const AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY = '__AILY_CHAT_AGENT_LOOP_PENDING_COUNT__';
@@ -351,6 +352,66 @@ export class _BuilderService {
     fsApi.writeFileSync?.(filePath, content);
   }
 
+  private async writeSimulatorSceneGpioBuildMetadata(
+    currentProjectPath: string,
+    tempPath: string,
+    sourceText: string,
+    graphSemanticRevision: string,
+  ): Promise<{
+    sceneGpioDirectionsPath: string;
+    sceneGpioPullsPath: string;
+  }> {
+    const sceneHeadPath = this.electronService.pathJoin(
+      currentProjectPath,
+      '.aily',
+      'simulator',
+      'scene-network-v2.json',
+    );
+    if (!window['path'].isExists(sceneHeadPath)) {
+      throw new Error(
+        'Active Simulator Scene is missing; refusing to build a revision-aligned Artifact.',
+      );
+    }
+    const sceneHead = JSON.parse(window['fs'].readFileSync(sceneHeadPath, 'utf8'));
+    const metadata = createSimulatorSceneGpioBuildMetadata(
+      sceneHead,
+      sourceText,
+      graphSemanticRevision,
+    );
+    const sceneGpioDirectionsPath = this.electronService.pathJoin(
+      tempPath,
+      'aily-scene-gpio-directions.json',
+    );
+    const sceneGpioPullsPath = this.electronService.pathJoin(
+      tempPath,
+      'aily-scene-gpio-pulls.json',
+    );
+    await Promise.all([
+      this.writeTextFile(
+        sceneGpioDirectionsPath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          kind: 'aily-scene-gpio-directions',
+          graphSemanticRevision,
+          directions: metadata.directions,
+        }, null, 2)}\n`,
+      ),
+      this.writeTextFile(
+        sceneGpioPullsPath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          kind: 'aily-scene-gpio-pulls',
+          graphSemanticRevision,
+          pulls: metadata.pulls,
+        }, null, 2)}\n`,
+      ),
+    ]);
+    return {
+      sceneGpioDirectionsPath,
+      sceneGpioPullsPath,
+    };
+  }
+
   private async waitForBackgroundPreprocessIdle(reason: string): Promise<void> {
     const startedAt = Date.now();
     let pendingChatOperations = this.getPendingChatBlockingOperationCount();
@@ -461,8 +522,14 @@ export class _BuilderService {
       try {
         const graphSemanticRevision =
           action.payload?.graphSemanticRevision as string | undefined;
+        const sourceDocumentSchemaVersion =
+          action.payload?.sourceDocumentSchemaVersion as 1 | 2 | undefined;
         const requestId = action.payload?.requestId as string | undefined;
-        const result = await this.build(graphSemanticRevision, requestId);
+        const result = await this.build(
+          graphSemanticRevision,
+          requestId,
+          sourceDocumentSchemaVersion,
+        );
         return { success: true, result };
       } catch (msg) {
         return { success: false, result: msg };
@@ -1216,6 +1283,7 @@ export class _BuilderService {
   async build(
     graphSemanticRevision?: string,
     requestId?: string,
+    sourceDocumentSchemaVersion?: 1 | 2,
   ): Promise<ActionState> {
     if (
       graphSemanticRevision !== undefined
@@ -1224,6 +1292,25 @@ export class _BuilderService {
       return Promise.reject({
         state: 'error',
         text: 'Simulator graph semantic revision is invalid.',
+      });
+    }
+    if (
+      sourceDocumentSchemaVersion !== undefined
+      && sourceDocumentSchemaVersion !== 1
+      && sourceDocumentSchemaVersion !== 2
+    ) {
+      return Promise.reject({
+        state: 'error',
+        text: 'Simulator Scene document schema version is invalid.',
+      });
+    }
+    if (
+      sourceDocumentSchemaVersion !== undefined
+      && graphSemanticRevision === undefined
+    ) {
+      return Promise.reject({
+        state: 'error',
+        text: 'Simulator Scene document schema version requires a graph revision.',
       });
     }
     if (
@@ -1490,8 +1577,28 @@ export class _BuilderService {
           buildConfig.blockSourceMappings = blockSourceMappings;
           if (graphSemanticRevision) {
             buildConfig.graphSemanticRevision = graphSemanticRevision;
+            const sceneGpioMetadata =
+              await this.writeSimulatorSceneGpioBuildMetadata(
+                this.currentProjectPath,
+                tempPath,
+                code,
+                graphSemanticRevision,
+              );
+            buildConfig.sceneGpioDirectionsPath =
+              sceneGpioMetadata.sceneGpioDirectionsPath;
+            buildConfig.sceneGpioPullsPath =
+              sceneGpioMetadata.sceneGpioPullsPath;
+            if (sourceDocumentSchemaVersion !== undefined) {
+              buildConfig.sourceDocumentSchemaVersion =
+                sourceDocumentSchemaVersion;
+            } else {
+              delete buildConfig.sourceDocumentSchemaVersion;
+            }
           } else {
             delete buildConfig.graphSemanticRevision;
+            delete buildConfig.sourceDocumentSchemaVersion;
+            delete buildConfig.sceneGpioDirectionsPath;
+            delete buildConfig.sceneGpioPullsPath;
           }
           delete buildConfig.ailyBuilderPath;
           delete buildConfig.ailyBuilderCommand;

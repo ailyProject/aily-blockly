@@ -98,6 +98,7 @@ export class BuilderService {
     }
     return this.buildCurrentBlocklyProject({
       graphSemanticRevision,
+      sourceDocumentSchemaVersion: 2,
       requestId,
     });
   }
@@ -105,6 +106,7 @@ export class BuilderService {
   private async buildCurrentBlocklyProject(
     payload: {
       graphSemanticRevision?: string;
+      sourceDocumentSchemaVersion?: 1 | 2;
       requestId?: string;
     },
   ) {

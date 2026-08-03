@@ -119,6 +119,11 @@ export const routes: Routes = [
         loadComponent: () => import('./tools/child-tool-host/child-tool-host.component').then(m => m.ChildToolHostComponent)
     },
     {
+        path: "simulator",
+        redirectTo: "child-tool/simulator",
+        pathMatch: "full"
+    },
+    {
         path: "ble-debugger",
         redirectTo: "child-tool/ble-debugger",
         pathMatch: "full"
@@ -150,10 +155,6 @@ export const routes: Routes = [
     {
         path: "iframe",
         loadComponent: () => import('./windows/iframe/iframe.component').then(m => m.IframeComponent)
-    },
-    {
-        path: "graph-editor",
-        loadComponent: () => import('./editors/graph-editor/graph-editor.component').then(m => m.GraphEditorComponent)
     },
     {
         path: "model-store",

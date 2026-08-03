@@ -24,7 +24,6 @@ import {
   IEnvProvider,
   IShellUtils,
   IEditorProvider,
-  IConnectionGraphProvider,
   IMcpProvider,
 } from '../core/host-api';
 
@@ -42,7 +41,6 @@ export interface ElectronAdapterDeps {
   platformService: any;
   noticeService?: any;
   blocklyService?: any;
-  connectionGraphService?: any;
   cmdService?: any;
   crossPlatformCmdService?: any;
   absAutoSyncService?: any;
@@ -559,17 +557,6 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
   };
 
   // ----- editor (optional, lazy) -----
-  const connectionGraph: IConnectionGraphProvider = {
-    generateConnectionGraph: (args) => getDep('connectionGraphService')?.generateConnectionGraph?.(args),
-    getPinmapSummary: (args) => getDep('connectionGraphService')?.getPinmapSummary?.(args),
-    validateConnectionGraph: (args) => getDep('connectionGraphService')?.validateConnectionGraph?.(args),
-    getSensorPinmapCatalog: (args) => getDep('connectionGraphService')?.getSensorPinmapCatalog?.(args),
-    generatePinmap: (args) => getDep('connectionGraphService')?.generatePinmap?.(args),
-    savePinmap: (args) => getDep('connectionGraphService')?.savePinmap?.(args),
-    getCurrentSchematic: (args) => getDep('connectionGraphService')?.getCurrentSchematic?.(args),
-    applySchematic: (args) => getDep('connectionGraphService')?.applySchematic?.(args),
-  };
-
   const editor: IEditorProvider = {
     registerTextDocumentContentProvider: (scheme, provider) => {
       const normalizedScheme = normalizeTextDocumentProviderScheme(scheme);
@@ -620,9 +607,6 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
     getGeneratedCode: () => getDep('blocklyService')?.getGeneratedCode?.(),
     reloadAbiJson: () => getDep('blocklyService')?.reloadAbiJson?.(),
     getBlockDefinitions: () => getDep('blocklyService')?.getBlockDefinitions?.(),
-    get connectionGraph() {
-      return getDep('connectionGraphService') ? connectionGraph : undefined;
-    },
   };
 
   // ----- mcp (可选) -----
@@ -643,7 +627,6 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
     log, editor, mcp,
     // 宿主特有服务透传
     get blockly() { return getDep('blocklyService'); },
-    get connectionGraph() { return getDep('connectionGraphService'); },
     get cmd() { return getDep('cmdService'); },
     get crossPlatformCmd() { return getDep('crossPlatformCmdService'); },
     get notice() { return getDep('noticeService'); },
