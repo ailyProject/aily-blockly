@@ -28,6 +28,7 @@ function fixtureIndex(version = '0.1.0') {
         name: 'AILY_CHAT.TITLE',
         description: 'AILY_CHAT.DESCRIPTION',
         icon: 'fa-light fa-puzzle-piece',
+        ai: true,
         enabled: true,
       },
       package: '@aily-project/subapp-aily-chat',
@@ -120,6 +121,17 @@ test('rejects package targets that are not safe npm package names', () => {
   assert.throws(() => validateIndex(index), /Invalid subapp package/);
 });
 
+test('preserves extensible catalog and app metadata', () => {
+  const index = fixtureIndex();
+  index['aily-chat'].futureCatalogField = { channel: 'preview' };
+  index['aily-chat'].app.futureAppField = 'future-value';
+
+  const validated = validateIndex(index)['aily-chat'];
+  assert.equal(validated.app.ai, true);
+  assert.equal(validated.app.futureAppField, 'future-value');
+  assert.deepEqual(validated.futureCatalogField, { channel: 'preview' });
+});
+
 test('omits disabled catalog entries from the subapp list', async (t) => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-disabled-'));
   const installRoot = path.join(fixtureRoot, 'npm-global', 'app');
@@ -178,6 +190,8 @@ test('omits disabled catalog entries from the subapp list', async (t) => {
   });
   const state = await manager.list({ locale: 'en', refresh: true });
   assert.deepEqual(state.apps.map((app) => app.id), ['aily-chat']);
+  assert.equal(state.apps[0].ai, true);
+  assert.equal(state.apps[0].app.ai, true);
 });
 
 test('treats an npm-linked source package as an installed subapp', async (t) => {
@@ -252,6 +266,10 @@ test('treats an npm-linked source package as an installed subapp', async (t) => 
       },
       runtime: {
         startupTimeoutMs: 20000,
+        processMessagePort: {
+          transport: 'node-ipc-v1',
+          maxMessageBytes: 1048576,
+        },
         resourceLifecycle: {
           resources: ['serial'],
           suspendMethod: 'runtime.resource.suspend',
@@ -284,6 +302,10 @@ test('treats an npm-linked source package as an installed subapp', async (t) => 
   assert.equal(state.apps[0].config.packagePath, linkedDir);
   assert.equal(state.apps[0].config.startupTimeoutMs, 20000);
   assert.deepEqual(state.apps[0].config.runtime, {
+    processMessagePort: {
+      transport: 'node-ipc-v1',
+      maxMessageBytes: 1048576,
+    },
     resourceLifecycle: {
       resources: ['serial'],
       suspendMethod: 'runtime.resource.suspend',

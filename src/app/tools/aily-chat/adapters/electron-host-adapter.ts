@@ -182,6 +182,8 @@ export function createElectronHostAdapter(deps: ElectronAdapterDeps): IAilyHostA
     readFileSync: (path, encoding?) => getFs().readFileSync(path, encoding ?? 'utf8'),
     readFileAsBase64: (path) => getFs().readFileAsBase64?.(path),
     writeFileSync: (path, data) => getFs().writeFileSync(path, data),
+    writeFileBuffer: (path, data) => getFs().writeFileBuffer?.(path, data),
+    writeFileBufferAsync: (path, data) => getFs().writeFileBufferAsync?.(path, data),
     appendFileSync: (path, data) => getFs().appendFileSync?.(path, data),
     existsSync: (path) => getFs()?.existsSync?.(path) ?? false,
     mkdirSync: (path, options?) => getFs().mkdirSync(path, options),

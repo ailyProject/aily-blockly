@@ -23,6 +23,10 @@ import { AilyHost } from '../core/host';
 import { ChatViewWriteBridge, type ChatViewWriteBridgeContext } from './chat-view-write-bridge';
 import type { TurnRequest, TurnResponseTurn } from 'aily-lex/browser';
 import type { ResourceItem } from '../core/chat-types';
+import {
+  restoreTurnRequestImageAttachmentDrafts,
+  type ChatImageAttachmentDraft,
+} from '../core/chat-image-attachment';
 import type { HostSessionSaveTarget } from './host-session-save-bridge';
 import {
   buildDialogTurnContext,
@@ -36,7 +40,11 @@ import {
   type DialogTurnContext,
   type LegacyTurnInteractionMetadata,
 } from '../core/user-turn-action-target';
-import { extractUserTurnResources, mergeUserTurnResources } from './chat-user-turn-context';
+import {
+  extractTurnRequestImageResources,
+  extractUserTurnResources,
+  mergeUserTurnResources,
+} from './chat-user-turn-context';
 import type { ChatTaskActionDetail } from './chat-task-action-coordinator';
 import type { TurnSnapshot } from '../services/edit-checkpoint.service';
 import type { IWorkspaceCheckpointProvider } from '../services/edit-checkpoint.service';
@@ -94,6 +102,7 @@ type EditActionsContext = ChatViewWriteBridgeContext
         readonly requestText: string;
         readonly displayText?: string;
         readonly requestMetadata?: TurnRequest['metadata'];
+        readonly imageAttachments?: readonly ChatImageAttachmentDraft[];
       },
     ): Promise<void> | void;
     prepareProtocolTruncationForResend?(
@@ -820,12 +829,17 @@ export class EditActionsHelper {
     }
 
     const requestResources = extractUserTurnResources(requestContent);
+    const imageResources = extractTurnRequestImageResources(
+      normalized.request?.attachments
+        ?? normalized.turnResponse?.request.attachments
+        ?? this.findSessionTurnResponse(resolved.turnId)?.request.attachments,
+    );
     return this.ctx.session.forkFromTurn({
       sourceSessionId: this.resolveCurrentSessionResource(options.sessionResource),
       turnId: resolved.turnId,
       requestContent: requestContent ?? displayContent,
       displayContent,
-      resources: mergeUserTurnResources([], requestResources),
+      resources: mergeUserTurnResources(requestResources, imageResources),
     });
   }
 
@@ -1018,10 +1032,16 @@ export class EditActionsHelper {
         this.ctx.message.warning('Unable to retry the previous request because the session history boundary could not be prepared.');
         return;
       }
+      const resendImageAttachments = restoreTurnRequestImageAttachmentDrafts(
+        resendTarget.request?.attachments,
+      );
       await this.ctx.submitRegeneratedUserTurn?.(sessionResource, {
         requestText: requestContent,
         ...(resendTarget.displayContent ? { displayText: resendTarget.displayContent } : {}),
         ...(resendTarget.request?.metadata ? { requestMetadata: resendTarget.request.metadata } : {}),
+        ...(resendImageAttachments.length > 0
+          ? { imageAttachments: resendImageAttachments }
+          : {}),
       });
       return;
     }
@@ -1041,6 +1061,15 @@ export class EditActionsHelper {
       ?? snapshotContext?.request?.metadata
       ?? normalizedTarget?.request?.metadata
       ?? normalizedTarget?.turnResponse?.request?.metadata;
+    const requestImageAttachments = restoreTurnRequestImageAttachmentDrafts(
+      canonicalTarget?.request?.attachments
+        ?? snapshotContext?.request?.attachments
+        ?? normalizedTarget?.request?.attachments
+        ?? normalizedTarget?.turnResponse?.request?.attachments
+        ?? (snapshotTurnId
+          ? this.findSessionTurnResponse(snapshotTurnId)?.request.attachments
+          : undefined),
+    );
     const lastRoundId = resolvedTarget?.lastRoundId
       ?? canonicalTarget?.lastRoundId
       ?? snapshotContext?.lastRoundId
@@ -1087,6 +1116,7 @@ export class EditActionsHelper {
       requestText: nextRequest,
       ...(displayContent ? { displayText: displayContent } : {}),
       ...(requestMetadata ? { requestMetadata } : {}),
+      ...(requestImageAttachments.length > 0 ? { imageAttachments: requestImageAttachments } : {}),
     });
   }
 }

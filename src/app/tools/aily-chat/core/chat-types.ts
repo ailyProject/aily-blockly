@@ -12,11 +12,16 @@ export interface Tool {
   agents?: string[];
 }
 
+import type { ChatImageAttachmentDraft, ChatImageMimeType } from './chat-image-attachment';
+
 export interface ResourceItem {
-  type: 'file' | 'folder' | 'url' | 'block';
+  type: 'file' | 'folder' | 'url' | 'block' | 'image';
   path?: string;
   url?: string;
   name: string;
+  /** First-class model image. It is never projected into the textual <attachments> block. */
+  imageAttachment?: ChatImageAttachmentDraft;
+  mimeType?: ChatImageMimeType;
   /** block 类型时存储 formatted 上下文信息（LLM 友好文本） */
   blockContext?: string;
   /** block 类型时存储关联的 blockId */

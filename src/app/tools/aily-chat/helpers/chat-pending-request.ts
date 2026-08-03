@@ -1,6 +1,7 @@
 import type { TurnRequest } from 'aily-lex/browser';
 
 import type { ResourceItem } from '../core/chat-types';
+import type { ChatImageAttachmentDraft } from '../core/chat-image-attachment';
 
 export type ChatPendingRequestKind = 'queued' | 'steering';
 
@@ -12,6 +13,7 @@ export interface PreparedPendingFollowupRequest {
 	readonly displayText: string;
 	readonly requestMetadata?: TurnRequest['metadata'];
 	readonly resourceItems?: readonly ResourceItem[];
+	readonly imageAttachments?: readonly ChatImageAttachmentDraft[];
 	readonly sessionAllowedPaths?: readonly string[];
 	readonly runtimeOwnerSessionId?: string;
 	readonly providerOptionsKey?: string;

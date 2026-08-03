@@ -32,6 +32,7 @@ const CONNECTION_GRAPH_MAX_BYTES = 4 * 1024 * 1024;
 const CONNECTION_GRAPH_MAX_DEPTH = 128;
 const CONNECTION_GRAPH_MAX_NODES = 200_000;
 const AGENT_SCENE_PROPOSAL_MAX_BYTES = 256 * 1024;
+const SCENE_GENERATION_REQUEST_TTL_MS = 5 * 60 * 1000;
 const LEGACY_CONNECTION_GRAPH_FILE = 'connection_output.json';
 const PROJECT_DEBUG_CONFIGURATION_MAX_BYTES = 1024 * 1024;
 const PROJECT_DEBUG_CONFIGURATION_FILE = 'aily-debug.json';
@@ -338,21 +339,37 @@ function createSimulatorSubappHost(options = {}) {
       || !active
       || hasChildExited(child)
       || active.mode !== 'project-scene'
-      || active.launchId !== null
-      || !active.regenerationRequirement
-      || active.regenerationRequirement.regenerationId !== input.regenerationId
       || (input.ownerId !== null && input.ownerId !== active.ownerId)
     ) {
       throw new Error('No matching Project Scene generation request is pending.');
     }
-    if (active.sceneGeneration) {
-      return publicSceneGenerationAccepted(
-        active.sceneGeneration.request,
-        input.regenerationId,
-      );
+    const legacyRequest = input.regenerationId !== null;
+    if (
+      legacyRequest
+        ? (
+            active.launchId !== null
+            || !active.regenerationRequirement
+            || active.regenerationRequirement.regenerationId
+              !== input.regenerationId
+          )
+        : (
+            active.launchId !== input.launchId
+            || active.regenerationRequirement !== null
+          )
+    ) {
+      throw new Error('No matching Project Scene generation request is pending.');
     }
 
-    const request = createSceneGenerationRequest(active.regenerationRequirement);
+    const request = legacyRequest
+      ? createLegacySceneGenerationRequest(active.regenerationRequirement)
+      : createOpenSceneGenerationRequest(active, input.base, now);
+    if (
+      active.sceneGeneration
+      && active.sceneGeneration.request.requestId === request.requestId
+      && active.sceneGeneration.state !== 'failed'
+    ) {
+      return publicSceneGenerationAccepted(active.sceneGeneration.request);
+    }
     active.sceneGeneration = {
       state: 'requested',
       request,
@@ -378,7 +395,7 @@ function createSimulatorSubappHost(options = {}) {
         emitState({ state: 'scene-generation-failed', failure });
       });
     });
-    return publicSceneGenerationAccepted(request, input.regenerationId);
+    return publicSceneGenerationAccepted(request);
   }
 
   function stageSceneGenerationCandidate(value) {
@@ -396,12 +413,22 @@ function createSimulatorSubappHost(options = {}) {
         || !active
         || hasChildExited(child)
         || active.mode !== 'project-scene'
-        || active.launchId !== null
-        || !active.regenerationRequirement
         || !active.sceneGeneration
         || active.sceneGeneration.request.requestId !== requestId
         || JSON.stringify(active.sceneGeneration.request)
           !== JSON.stringify(value.request)
+        || active.sceneGeneration.request.expiresAtUnixMs <= now().getTime()
+        || (
+          active.sceneGeneration.request.reason === 'legacy-detected'
+            ? (
+                active.launchId !== null
+                || !active.regenerationRequirement
+              )
+            : (
+                active.launchId === null
+                || active.regenerationRequirement !== null
+              )
+        )
       ) {
         throw new Error('Project Scene generation candidate is stale.');
       }
@@ -410,6 +437,12 @@ function createSimulatorSubappHost(options = {}) {
         active.projectIdentity,
         active.sceneId,
       );
+      if (!sameSceneGenerationBase(
+        proposal.base,
+        active.sceneGeneration.request.base,
+      )) {
+        throw new Error('Project Scene generation candidate base is stale.');
+      }
       active.sceneGeneration = {
         ...active.sceneGeneration,
         state: 'candidate-ready',
@@ -1886,24 +1919,48 @@ function validateLegacySceneRegenerationRequirement(
 }
 
 function validateProjectSceneGenerationStartInput(value) {
+  const hasRegenerationId = isRecord(value)
+    && Object.hasOwn(value, 'regenerationId');
+  const hasLaunchId = isRecord(value) && Object.hasOwn(value, 'launchId');
+  const hasBase = isRecord(value) && Object.hasOwn(value, 'base');
   if (
     !isRecord(value)
     || Object.keys(value).some((key) => ![
-      'ownerId', 'regenerationId',
+      'base', 'launchId', 'ownerId', 'regenerationId',
     ].includes(key))
-    || !Object.hasOwn(value, 'regenerationId')
-    || typeof value.regenerationId !== 'string'
-    || !/^regeneration-v1-[a-f0-9]{64}$/.test(value.regenerationId)
+    || (hasRegenerationId === hasLaunchId)
+    || (hasRegenerationId === hasBase)
+    || (
+      hasRegenerationId
+        ? (
+            typeof value.regenerationId !== 'string'
+            || !/^regeneration-v1-[a-f0-9]{64}$/.test(value.regenerationId)
+          )
+        : (
+            typeof value.launchId !== 'string'
+            || !/^launch-v1-[a-f0-9]{64}$/.test(value.launchId)
+            || !hasExactKeys(value.base, [
+              'catalogRevision',
+              'graphSemanticRevision',
+              'visualRevision',
+            ])
+            || !isSha256(value.base.visualRevision)
+            || !isSha256(value.base.graphSemanticRevision)
+            || !isSha256(value.base.catalogRevision)
+          )
+    )
   ) {
     throw new Error('Project Scene generation start request is invalid.');
   }
   return {
     ownerId: normalizeOwnerId(value.ownerId),
-    regenerationId: value.regenerationId,
+    regenerationId: hasRegenerationId ? value.regenerationId : null,
+    launchId: hasLaunchId ? value.launchId : null,
+    base: hasBase ? structuredClone(value.base) : null,
   };
 }
 
-function createSceneGenerationRequest(requirement) {
+function createLegacySceneGenerationRequest(requirement) {
   if (requirement.legacySourceBytes < 1) {
     throw new Error('Empty legacy connection metadata cannot start Scene generation.');
   }
@@ -1939,13 +1996,39 @@ function createSceneGenerationRequest(requirement) {
   });
 }
 
-function publicSceneGenerationAccepted(request, regenerationId) {
+function createOpenSceneGenerationRequest(active, base, now) {
+  const reason = active.initialization === 'created-empty'
+    ? 'missing-scene'
+    : 'user-regenerate';
+  const requestDigest = crypto.createHash('sha256')
+    .update(JSON.stringify({
+      launchId: active.launchId,
+      projectIdentity: active.projectIdentity,
+      sceneId: active.sceneId,
+      reason,
+      base,
+    }))
+    .digest('hex');
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'aily-project-scene-generation-request',
+    requestId: `scene-generation-v1-${requestDigest}`,
+    projectIdentity: active.projectIdentity,
+    sceneId: active.sceneId,
+    reason,
+    base: structuredClone(base),
+    legacySource: null,
+    expiresAtUnixMs: now().getTime() + SCENE_GENERATION_REQUEST_TTL_MS,
+  });
+}
+
+function publicSceneGenerationAccepted(request) {
   return Object.freeze({
     schemaVersion: 1,
     kind: 'aily-simulator-subapp-project-scene-generation-request-result',
     state: 'accepted',
-    regenerationId,
     requestId: request.requestId,
+    reason: request.reason,
   });
 }
 
@@ -1957,6 +2040,12 @@ function publicSceneGenerationFailure(error, requestId) {
       : 'SCENE_GENERATION_FAILED',
     message: error instanceof Error ? error.message : String(error),
   });
+}
+
+function sameSceneGenerationBase(left, right) {
+  return left.visualRevision === right.visualRevision
+    && left.graphSemanticRevision === right.graphSemanticRevision
+    && left.catalogRevision === right.catalogRevision;
 }
 
 function validateProjectSceneRegenerationResolutionInput(value) {

@@ -43,6 +43,7 @@ export class ChatSubmitShellCoordinator {
       getSessionAllowedPaths: () => string[];
       getSessionId: () => string;
       getInputValue: () => string;
+      hasImageAttachments?: () => boolean;
       isWaiting: (sessionId?: string | null) => boolean;
       ensureSession?: () => Promise<string | null>;
       hasPendingRequests?: (sessionId?: string | null) => boolean;
@@ -122,7 +123,8 @@ export class ChatSubmitShellCoordinator {
 
   private async submitPreparedInput(options?: SubmitInputOptionsLike): Promise<boolean> {
     const text = this.deps.getInputValue().trim();
-    if (!text || this.deps.authQuota.quotaExhausted) {
+    const hasImageAttachments = this.deps.hasImageAttachments?.() === true;
+    if ((!text && !hasImageAttachments) || this.deps.authQuota.quotaExhausted) {
       return false;
     }
 

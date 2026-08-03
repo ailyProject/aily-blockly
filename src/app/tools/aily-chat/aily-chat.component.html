@@ -442,6 +442,13 @@
             <div class="resource-item" [class.block-item]="item.type === 'block'">
               @if(item.type == 'file') {
               <i class="fa-light fa-file"></i>
+              }@else if(item.type == 'image') {
+                @if(resourceManager.getImagePreviewUrl(item); as imagePreviewUrl) {
+                <img class="resource-image-preview" [src]="imagePreviewUrl" [alt]="item.name"
+                  (error)="resourceManager.clearImagePreview(item)" />
+                }@else {
+                <i class="fa-light fa-image"></i>
+                }
               }@else if(item.type == 'folder') {
               <i class="fa-light fa-folder"></i>
               }@else if(item.type == 'url') {
@@ -470,7 +477,7 @@
             }
             <textarea #chatTextarea class="sscroll" [ngModel]="vm.inputValue" [attr.maxlength]="chatInputMaxChars" (ngModelChange)="composerShellCoordinator.updateInputValue($event)"
               (focus)="setComposerFocusState(true)" (blur)="setComposerFocusState(false)"
-              (keydown)="composerShellCoordinator.handleKeyDown($event)" (input)="composerShellCoordinator.updateSuggestions()">
+              (keydown)="composerShellCoordinator.handleKeyDown($event)" (paste)="handleComposerPaste($event)" (input)="composerShellCoordinator.updateSuggestions()">
             </textarea>
           </div>
           <div class="btns">

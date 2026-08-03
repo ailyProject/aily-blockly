@@ -42,6 +42,10 @@ export interface ChildToolRuntimeResourceLifecycleConfig {
 }
 
 export interface ChildToolRuntimeConfig {
+  processMessagePort?: {
+    transport: 'node-ipc-v1';
+    maxMessageBytes?: number;
+  };
   resourceLifecycle?: ChildToolRuntimeResourceLifecycleConfig;
 }
 

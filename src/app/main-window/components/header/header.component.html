@@ -36,7 +36,9 @@
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ app.name | translate}}" (click)="onClick(app,$event)"
         [ngStyle]="{ color: app.color ? app.color : '' }" [ngClass]="{ selected: isOpenTool(app) }">
         <i class="{{ app.icon }}"></i>
-        @if (app.more) {
+        @if (app.ai) {
+        <div class="more ccenter">AI</div>
+        } @else if (app.more) {
         <div class="more ccenter">{{ app.more }}</div>
         }
       </div>

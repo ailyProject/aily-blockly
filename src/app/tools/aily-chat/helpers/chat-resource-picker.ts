@@ -1,27 +1,8 @@
 import type { ResourceItem } from '../core/chat-types';
+import { getSupportedImageMimeTypeFromPath } from '../core/chat-image-attachment';
 import type { IDialog, IDialogResult } from '../core/host-api';
 
 type FileDialogLike = Pick<IDialog, 'selectFiles'>;
-
-export async function pickFileOrFolderResources(
-  dialog: FileDialogLike,
-  isDirectory: (path: string) => boolean,
-): Promise<ResourceItem[]> {
-  const result = await dialog.selectFiles({
-    title: '选择文件或文件夹',
-    properties: ['openFile', 'openDirectory', 'multiSelections'],
-  });
-
-  if (isEmptySelection(result)) {
-    return [];
-  }
-
-  return result.filePaths.map((path) => ({
-    type: isDirectory(path) ? 'folder' : 'file',
-    path,
-    name: getBaseName(path),
-  }));
-}
 
 export async function pickFileResources(dialog: FileDialogLike): Promise<ResourceItem[]> {
   const result = await dialog.selectFiles({
@@ -35,11 +16,7 @@ export async function pickFileResources(dialog: FileDialogLike): Promise<Resourc
     return [];
   }
 
-  return result.filePaths.map((path) => ({
-    type: 'file',
-    path,
-    name: getBaseName(path),
-  }));
+  return result.filePaths.map(createFileResource);
 }
 
 export async function pickFolderResource(dialog: FileDialogLike): Promise<ResourceItem | null> {
@@ -66,4 +43,28 @@ function isEmptySelection(result: IDialogResult | null | undefined): boolean {
 
 function getBaseName(path: string): string {
   return path.split(/[/\\]/).pop() || path;
+}
+
+function createFileResource(filePath: string): ResourceItem {
+  const mimeType = getSupportedImageMimeTypeFromPath(filePath);
+  if (!mimeType) {
+    return { type: 'file', path: filePath, name: getBaseName(filePath) };
+  }
+  const id = globalThis.crypto?.randomUUID?.()
+    ?? `image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return {
+    type: 'image',
+    path: filePath,
+    name: getBaseName(filePath),
+    mimeType,
+    imageAttachment: {
+      id,
+      type: 'image',
+      name: getBaseName(filePath),
+      origin: 'file',
+      source: { kind: 'local-file', uri: filePath },
+      mimeType,
+      detail: 'auto',
+    },
+  };
 }

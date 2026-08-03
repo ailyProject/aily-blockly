@@ -9,14 +9,33 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { createWorkerExternalEditService } from './chat-runtime-external-edit-capture.mjs';
+import {
+  ChatImageError,
+  resolveChatImageAttachments,
+  toChatImageDiagnostic,
+  toManagedChatImageAttachment,
+} from './chat-image-media-store.mjs';
 
 import {
   AilyServicesEndpoint,
+  CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION,
   PromptLayer,
   EditingTimelineOwner,
   createAgentHandleAsync,
   createBlocklyHostBridge,
 } from 'aily-lex';
+
+const EXPECTED_CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION = 'aily.chat.image-wire.v1';
+if (CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION !== EXPECTED_CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION) {
+  throw new Error(
+    '[AilyChat][ExecutionHost] Incompatible aily-lex multimodal contract: '
+    + `expected ${EXPECTED_CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION}, `
+    + `received ${String(CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION || 'missing')}.`,
+  );
+}
+console.info('[AilyChat][LexRuntimeContract]', JSON.stringify({
+  multimodalContractVersion: CHAT_IMAGE_MULTIMODAL_CONTRACT_VERSION,
+}));
 
 const DEFAULT_MODEL_ID = 'auto';
 const DEFAULT_API_ENDPOINT = 'https://api.aily.pro';
@@ -141,6 +160,187 @@ ASSIGN <alias>.<pinName> AS <role> @<type>:<busNumber>
 Safety:
 - Refuse wiring that could cause harm, intentional shorts, or dangerous voltage configurations.
 - Verify power, ground, protocol, and pin conflict assumptions before saving.`;
+const PROJECT_SCENE_AGENT_TYPE = 'ProjectSceneAgent';
+const GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL = 'get_project_scene_generation_context';
+const SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL = 'submit_project_scene_generation_proposal';
+const PROJECT_SCENE_AGENT_TOOLS = [
+  GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
+  SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+];
+const PROJECT_SCENE_AGENT_REQUIRED_CONTEXT = {
+  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
+  strict: true,
+  hydrateBeforeFirstModelCall: true,
+};
+const PROJECT_SCENE_AGENT_PROMPT = `You are the bounded native v2 Project Scene proposal Agent.
+
+You operate only inside an Electron execution-host scoped invocation. The provider prompt contains one requestId and no project data.
+
+Required workflow:
+1. Call get_project_scene_generation_context exactly once with that requestId.
+2. Infer the physical components and electrical connections only from the returned bounded context and Component Package guide.
+3. Call submit_project_scene_generation_proposal exactly once with the same requestId.
+
+Authority boundaries:
+- Submit a candidate proposal only. Never save, replace, patch, or approve a Scene document.
+- Never call legacy SchematicAgent/AWS/connection_output tools.
+- Never read or write workspace files and never control Simulator, QEMU, GDB, build, upload, or Blockly.
+- Do not invent package IDs, versions, pin IDs, or pin functions outside the returned guide.
+- LED and button components have two electrical terminals. Add explicit resistor components when current limiting or external pull-up/pull-down is required.
+- If the bounded context is insufficient, fail without using another tool or data source.`;
+const PROJECT_SCENE_TOOL_DEFINITIONS = [
+  {
+    name: GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
+    description: 'Read the bounded hardware intent and revision baseline for one active native v2 Project Scene generation request.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: 'Exact requestId supplied in the provider prompt.' },
+      },
+      required: ['requestId'],
+      additionalProperties: false,
+    },
+    readOnly: true,
+  },
+  {
+    name: SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+    description: 'Submit a bounded native v2 Project Scene candidate without saving or editing a Scene document.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string' },
+        summary: { type: 'string', minLength: 1, maxLength: 512 },
+        components: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 64,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              instanceId: { type: 'string' },
+              package: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string' },
+                  version: { type: 'string' },
+                },
+                required: ['id', 'version'],
+              },
+              placement: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  x: { type: 'number' },
+                  y: { type: 'number' },
+                },
+                required: ['x', 'y'],
+              },
+            },
+            required: ['instanceId', 'package', 'placement'],
+          },
+        },
+        connections: {
+          type: 'array',
+          maxItems: 64,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              segmentId: { type: 'string' },
+              from: { $ref: '#/$defs/endpoint' },
+              to: { $ref: '#/$defs/endpoint' },
+              signalKind: { type: 'string', enum: ['ground', 'power', 'gpio', 'analog', 'pwm', 'i2c', 'spi', 'uart'] },
+              label: { type: 'string', maxLength: 128 },
+              color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+            },
+            required: ['segmentId', 'from', 'to', 'signalKind'],
+          },
+        },
+      },
+      $defs: {
+        endpoint: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            instanceId: { type: 'string' },
+            pinId: { type: 'string' },
+            function: { type: 'string' },
+          },
+          required: ['instanceId', 'pinId', 'function'],
+        },
+      },
+      required: ['requestId', 'summary', 'components', 'connections'],
+      additionalProperties: false,
+    },
+    readOnly: false,
+  },
+];
+const SCENE_CODE_RECONCILIATION_AGENT_TYPE = 'SceneCodeReconciliationAgent';
+const GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL = 'get_scene_code_reconciliation_context';
+const SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL = 'submit_scene_code_reconciliation_candidate';
+const SCENE_CODE_RECONCILIATION_AGENT_TOOLS = [
+  GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL,
+  SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL,
+];
+const SCENE_CODE_RECONCILIATION_AGENT_REQUIRED_CONTEXT = {
+  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
+  strict: true,
+  hydrateBeforeFirstModelCall: true,
+};
+const SCENE_CODE_RECONCILIATION_AGENT_PROMPT = `You are the bounded Scene-to-Blockly ABS candidate Agent.
+
+You operate only inside an Electron execution-host scoped invocation. The provider prompt contains one requestId and no project data.
+
+Required workflow:
+1. Call get_scene_code_reconciliation_context exactly once with that requestId.
+2. Reconcile only the returned native Scene revision and complete current ABS program.
+3. Call submit_scene_code_reconciliation_candidate exactly once with either a complete changed ABS program or already-aligned.
+
+Authority boundaries:
+- Submit a candidate only. Never edit Blockly, project.abs, files, Scenes, Artifacts, or runtime state.
+- Never request or imply approval. The Host asks the user after receiving the complete candidate.
+- Never call legacy SchematicAgent/AWS/connection_output tools, generic file tools, shell, network, or arbitrary tool discovery.
+- Never build/upload firmware or control Simulator, QEMU, GDB, UART, instruments, sessions, or processes.
+- Preserve unrelated program behavior and never submit an ABS patch, fragment, or Markdown fence.
+- If the bounded context is insufficient, fail without using another tool or data source.`;
+const SCENE_CODE_RECONCILIATION_TOOL_DEFINITIONS = [
+  {
+    name: GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL,
+    description: 'Read one bounded native Scene revision and the current complete Blockly ABS program.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: 'Exact requestId supplied in the provider prompt.' },
+      },
+      required: ['requestId'],
+      additionalProperties: false,
+    },
+    readOnly: true,
+  },
+  {
+    name: SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL,
+    description: 'Submit a complete ABS candidate for Host review without editing Blockly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string' },
+        outcome: { type: 'string', enum: ['applied', 'already-aligned'] },
+        summary: { type: 'string', minLength: 1, maxLength: 512 },
+        absContent: {
+          oneOf: [
+            { type: 'string', minLength: 1, maxLength: 1000000 },
+            { type: 'null' },
+          ],
+        },
+      },
+      required: ['requestId', 'outcome', 'summary', 'absContent'],
+      additionalProperties: false,
+    },
+    readOnly: false,
+  },
+];
 const SCHEMATIC_TOOL_DEFINITIONS = [
   {
     name: 'generate_schematic',
@@ -442,6 +642,7 @@ class LexExecutionRuntimeOwner {
     this.listeners = new Set();
     this.sessions = new Map();
     this.editingNavigationTransactions = new Map();
+    this.scopedAgentRuns = new Map();
   }
 
   async commitResourceMutationBatch(request, result) {
@@ -480,6 +681,20 @@ class LexExecutionRuntimeOwner {
     };
   }
 
+  async preflightTurnImages(command = {}) {
+    const request = command.request && typeof command.request === 'object' ? command.request : {};
+    const resolvedImages = await resolveChatImageAttachments(request.imageAttachments, { env: this.env });
+    assertModelImageCount(
+      command.currentModel || command.executionContext?.currentModel || request.currentModel,
+      resolvedImages,
+    );
+    return {
+      schemaVersion: 1,
+      kind: 'aily-chat-image-preflight-result',
+      imageAttachments: resolvedImages.map(toManagedChatImageAttachment),
+    };
+  }
+
   async prewarmRuntime(command = {}) {
     const sessionId = normalizeSessionId(command.sessionId);
     const projectInfo = await this.readProjectInfo(sessionId);
@@ -494,7 +709,7 @@ class LexExecutionRuntimeOwner {
 
   async restoreRuntimeSession(command = {}) {
     const sessionId = normalizeSessionId(command.sessionId);
-    const snapshot = command.snapshot;
+    const snapshot = await hydrateChatImageSnapshot(command.snapshot, this.env);
     if (!sessionId || !snapshot || snapshot.sessionId !== sessionId || !Array.isArray(snapshot.turns)) {
       throw new Error('[AilyChat][ExecutionHost] restoreRuntimeSession requires a matching session snapshot.');
     }
@@ -681,6 +896,24 @@ class LexExecutionRuntimeOwner {
     const request = command.request || {};
     const session = await this.ensureSession(sessionId, command, await this.readProjectInfo(sessionId));
 
+    const imageResolveStartedAt = Date.now();
+    const resolvedImages = await resolveChatImageAttachments(request.imageAttachments, { env: this.env });
+    assertModelImageCount(
+      command.currentModel || command.executionContext?.currentModel || request.currentModel || session.currentModel,
+      resolvedImages,
+    );
+    if (resolvedImages.length > 0) {
+      console.info('[ImagePipelineDebug]', JSON.stringify({
+        phase: 'image.preprocess.done',
+        sessionId,
+        turnId,
+        imageCount: resolvedImages.length,
+        totalBytes: resolvedImages.reduce((total, image) => total + image.byteLength, 0),
+        durationMs: Date.now() - imageResolveStartedAt,
+        images: resolvedImages.map(toChatImageDiagnostic),
+      }));
+    }
+
     if (session.activeAbortController) {
       if (session.responseCompletedTurnId === session.activeTurnId && session.activeTurnPromise) {
         await session.activeTurnPromise.catch(() => undefined);
@@ -692,7 +925,7 @@ class LexExecutionRuntimeOwner {
       throw new Error('[AilyChat][ExecutionHost] Previous turn cleanup did not settle.');
     }
 
-    this.applyProtocolTruncation(session, request.protocolTruncation);
+    await this.applyProtocolTruncation(session, request.protocolTruncation);
 
     const abortController = new AbortController();
     session.activeAbortController = abortController;
@@ -721,6 +954,7 @@ class LexExecutionRuntimeOwner {
       turnId,
       request,
       text,
+      resolvedImages,
       abortController,
       releaseTitleGeneration,
     )
@@ -1040,7 +1274,7 @@ class LexExecutionRuntimeOwner {
     return createElectronEditingTimelineOwner(sessionId, workspaceBinding);
   }
 
-  applyProtocolTruncation(session, protocolTruncation) {
+  async applyProtocolTruncation(session, protocolTruncation) {
     const truncation = normalizeProtocolTruncation(protocolTruncation);
     if (!truncation || !session?.handle) {
       return;
@@ -1058,7 +1292,6 @@ class LexExecutionRuntimeOwner {
     session.pendingConfirmations?.clear?.();
     session.handle.restoreSession(result.snapshot);
     session.revision += 1;
-
     console.info('[AilyChat][LexExecutionHostProtocolTruncation]', JSON.stringify({
       sessionId: session.sessionId,
       kind: truncation.kind,
@@ -1083,6 +1316,120 @@ class LexExecutionRuntimeOwner {
       await activeTurnPromise.catch(() => undefined);
     }
     return this.createSessionState(session, 'cancelled', false, null);
+  }
+
+  async runScopedAgent(command = {}) {
+    const invocationId = normalizePortableScopedAgentId(command.invocationId, 'invocationId');
+    const agentType = normalizeString(command.agentType);
+    const prompt = normalizeString(command.prompt);
+    const scopedAgentConfig = agentType === PROJECT_SCENE_AGENT_TYPE
+      ? {
+          sessionPrefix: 'scoped-project-scene',
+          description: 'Generate a bounded native v2 Project Scene proposal',
+        }
+      : agentType === SCENE_CODE_RECONCILIATION_AGENT_TYPE
+        ? {
+            sessionPrefix: 'scoped-scene-code-reconciliation',
+            description: 'Generate a bounded Scene-to-Blockly ABS candidate',
+          }
+        : null;
+    if (!scopedAgentConfig) {
+      throw new Error(`[AilyChat][ExecutionHost] Unsupported scoped Agent type: ${agentType || '<missing>'}.`);
+    }
+    if (command.runtimeMode !== 'blockly') {
+      throw new Error(`[AilyChat][ExecutionHost] ${agentType} requires Blockly runtime mode.`);
+    }
+    if (!prompt || prompt.length > 4096) {
+      throw new Error('[AilyChat][ExecutionHost] Scoped Agent prompt must contain 1-4096 characters.');
+    }
+    const existing = this.scopedAgentRuns.get(invocationId);
+    if (existing) {
+      return existing.promise;
+    }
+
+    const abortController = new AbortController();
+    const derivedSessionId = `${scopedAgentConfig.sessionPrefix}:${createHash('sha256').update(invocationId).digest('hex').slice(0, 24)}`;
+    const sessionId = normalizeString(command.executionSessionId) || derivedSessionId;
+    if (sessionId !== derivedSessionId) {
+      throw new Error('[AilyChat][ExecutionHost] Scoped Agent execution session identity is invalid.');
+    }
+    const providerOptions = {
+      ...(command.providerOptions && typeof command.providerOptions === 'object'
+        ? command.providerOptions
+        : {}),
+      // Scoped Agents can only submit inert candidates through their two
+      // allowlisted tools. The renderer Host asks for explicit user approval
+      // after the candidate returns and before any Scene/Blockly mutation.
+      approvalPolicy: 'never',
+      permissionMode: 'default',
+    };
+    const promise = (async () => {
+      try {
+        const projectInfo = await this.readProjectInfo(sessionId);
+        if (abortController.signal.aborted) {
+          throw abortController.signal.reason || createAbortError('[AilyChat][ExecutionHost] Scoped Agent cancelled.');
+        }
+        const session = await this.ensureSession(sessionId, {
+          sessionId,
+          providerOptions,
+          currentModel: command.currentModel && typeof command.currentModel === 'object'
+            ? command.currentModel
+            : null,
+        }, projectInfo);
+        const executor = session?.handle?.agent?.getAgentExecutor?.();
+        if (!executor || typeof executor.runSync !== 'function') {
+          throw new Error('[AilyChat][ExecutionHost] Scoped Agent executor is unavailable.');
+        }
+        const result = await executor.runSync({
+          prompt,
+          description: scopedAgentConfig.description,
+          agentType,
+          signal: abortController.signal,
+          inheritMessages: 'none',
+          inheritDiscoveredTools: false,
+        });
+        const resultReason = normalizeString(result?.reason) || 'unknown';
+        // aily-lex currently reports a normal run as "unknown" and may use
+        // "completed" in host adapters. Every other terminal reason represents
+        // cancellation, policy denial, nesting rejection, or execution failure.
+        if (!['unknown', 'completed'].includes(resultReason)) {
+          throw new Error(normalizeString(result?.error?.message || result?.message || result?.text)
+            || `[AilyChat][ExecutionHost] ${agentType} failed (${resultReason}).`);
+        }
+        return {
+          schemaVersion: 1,
+          kind: 'aily-chat-runtime-scoped-agent-result',
+          invocationId,
+          agentType,
+          reason: resultReason,
+        };
+      } finally {
+        try {
+          await this.disposeSessionResources({ sessionId, deleteStorage: false });
+        } finally {
+          const active = this.scopedAgentRuns.get(invocationId);
+          if (active?.abortController === abortController) {
+            this.scopedAgentRuns.delete(invocationId);
+          }
+        }
+      }
+    })();
+    this.scopedAgentRuns.set(invocationId, { abortController, sessionId, promise });
+    return promise;
+  }
+
+  async cancelScopedAgent(command = {}) {
+    const invocationId = normalizePortableScopedAgentId(command.invocationId, 'invocationId');
+    const active = this.scopedAgentRuns.get(invocationId);
+    if (active && !active.abortController.signal.aborted) {
+      active.abortController.abort(createAbortError('[AilyChat][ExecutionHost] Scoped Agent cancelled by host.'));
+    }
+    return {
+      schemaVersion: 1,
+      kind: 'aily-chat-runtime-scoped-agent-cancel-result',
+      invocationId,
+      cancelled: Boolean(active),
+    };
   }
 
   async disposeSessionResources(command = {}) {
@@ -1122,6 +1469,12 @@ class LexExecutionRuntimeOwner {
   }
 
   async dispose() {
+    for (const scoped of this.scopedAgentRuns.values()) {
+      if (!scoped.abortController.signal.aborted) {
+        scoped.abortController.abort(createAbortError('[AilyChat][ExecutionHost] Runtime owner disposed.'));
+      }
+    }
+    this.scopedAgentRuns.clear();
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     const navigationTransactions = [...this.editingNavigationTransactions.values()];
@@ -1209,10 +1562,23 @@ class LexExecutionRuntimeOwner {
     return this.createInteractionSnapshot(session);
   }
 
-  async runTurn(session, turnId, request, text, abortController, onFirstModelOutput = null) {
+  async runTurn(session, turnId, request, text, resolvedImages, abortController, onFirstModelOutput = null) {
     const requestMetadata = normalizeRequestMetadata(request);
+    const attachments = resolvedImages.map(image => ({
+      id: image.id,
+      type: 'image',
+      name: image.name,
+      uri: image.mediaRef,
+      mimeType: image.mimeType,
+      content: image.content,
+      detail: image.detail,
+    }));
     let firstModelOutputObserved = false;
-    for await (const renderEvent of session.handle.chat(text, abortController.signal, { turnId, requestMetadata })) {
+    for await (const renderEvent of session.handle.chat(text, abortController.signal, {
+      turnId,
+      requestMetadata,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    })) {
       if (abortController.signal.aborted) {
         continue;
       }
@@ -1469,6 +1835,7 @@ class LexExecutionRuntimeOwner {
         }],
       ])
       : undefined;
+    const hydratedSnapshot = await hydrateChatImageSnapshot(snapshot, this.env);
     session.handlePromise = createAgentHandleAsync(agentBridge, {
       sessionId,
       permissionMode: normalizePermissionMode(providerOptions),
@@ -1481,7 +1848,7 @@ class LexExecutionRuntimeOwner {
       inlineSummarization: false,
       ...(additionalChronicleTools.length > 0 ? { additionalTools: additionalChronicleTools } : {}),
       ...(chronicleToolOptions ? { additionalToolOptions: chronicleToolOptions } : {}),
-      ...(snapshot ? { snapshot } : {}),
+      ...(hydratedSnapshot ? { snapshot: hydratedSnapshot } : {}),
     }).then(handle => {
       session.handle = handle;
       this.registerPostCreateExtensions(session, handle);
@@ -1836,6 +2203,7 @@ class LexExecutionRuntimeOwner {
   createExternalHostAPI(sessionId, projectInfo, currentModel, session) {
     const readCwd = () => session?.cwd || this.resolveCwd(projectInfo, session?.providerOptions || null);
     return {
+      env: this.env,
       fs: createExternalFileSystem(),
       terminal: createExternalTerminal(readCwd, {
         session,
@@ -1861,6 +2229,8 @@ class LexExecutionRuntimeOwner {
       builder: createExternalBuilder(sessionId, this.requestResourceOperation, projectInfo, readCwd, session),
       blockly: createExternalBlockly(sessionId, this.requestResourceOperation),
       connectionGraph: createExternalConnectionGraph(sessionId, this.requestResourceOperation),
+      projectSceneProposal: createExternalProjectSceneProposal(sessionId, this.requestResourceOperation),
+      sceneCodeReconciliation: createExternalSceneCodeReconciliation(sessionId, this.requestResourceOperation),
       boardSearch: createExternalBoardSearch(sessionId, this.requestResourceOperation),
       subappAgent: createExternalSubappAgent(sessionId, this.requestResourceOperation, this.env),
       chronicle: {
@@ -1965,6 +2335,20 @@ class LexExecutionRuntimeOwner {
       modelId: normalizeString(currentModel?.model || currentModel?.modelId) || DEFAULT_MODEL_ID,
       ...(normalizeString(currentModel?.presetId) ? { presetId: normalizeString(currentModel.presetId) } : {}),
       ...(Number.isFinite(currentModel?.contextWindowTokens) ? { contextWindowTokens: currentModel.contextWindowTokens } : {}),
+      ...(Array.isArray(currentModel?.inputModalities)
+        ? {
+            inputModalities: currentModel.inputModalities
+              .map(value => normalizeString(value).toLowerCase())
+              .filter(Boolean),
+          }
+        : {}),
+      ...(typeof currentModel?.isCustom === 'boolean' ? { isCustom: currentModel.isCustom } : {}),
+      ...(Number.isFinite(currentModel?.maxInputImages) && currentModel.maxInputImages >= 0
+        ? { maxInputImages: Math.max(0, Math.floor(currentModel.maxInputImages)) }
+        : {}),
+      ...(Number.isFinite(currentModel?.maxInputImageBytes) && currentModel.maxInputImageBytes > 0
+        ? { maxInputImageBytes: Math.floor(currentModel.maxInputImageBytes) }
+        : {}),
       ...(normalizeString(currentModel?.reasoningEffort) ? { reasoningEffort: normalizeString(currentModel.reasoningEffort) } : {}),
       ...(currentModel?.providerContextManagementSupport
         ? { providerContextManagementSupport: currentModel.providerContextManagementSupport }
@@ -5181,8 +5565,9 @@ function resolveConfiguredAppDataPath(env = process.env) {
   try {
     const configPath = path.join(MODULE_DIR, 'config', 'config.json');
     const config = JSON.parse(fsSync.readFileSync(configPath, 'utf-8'));
-    const platform = normalizeString(config.platform) || process.platform;
-    const configured = normalizeString(config.appdata_path?.[platform] || config.appdata_path?.[process.platform]);
+    // Prefer the real process platform. config.platform is a build/product flag and
+    // can be "win32" on macOS/Linux machines, which must not select Windows appdata paths.
+    const configured = normalizeString(config.appdata_path?.[process.platform]);
     if (!configured) {
       return '';
     }
@@ -5705,7 +6090,7 @@ function createElectronWorkspaceReadAccess(registry) {
   };
 }
 
-function createElectronBlocklyAgentProvider() {
+export function createElectronBlocklyAgentProvider() {
   return {
     contributeAgents() {
       return [
@@ -5751,6 +6136,52 @@ function createElectronBlocklyAgentProvider() {
             'abs library',
             'project setup',
           ],
+          agents: [],
+        },
+        {
+          agentType: PROJECT_SCENE_AGENT_TYPE,
+          name: 'Project Scene Agent',
+          description: 'Generate one bounded native v2 Project Scene candidate for an active execution-host invocation.',
+          argumentHint: 'Use the requestId in the scoped provider prompt',
+          target: 'aily',
+          whenToUse: 'Use only when the independent Project Scene proposal provider starts this Agent with an active requestId.',
+          whenNotToUse: 'Do not invoke from normal Chat, legacy schematic workflows, Scene editing, build, simulation, or debugging tasks.',
+          uri: `aily-chat-agent:/agents/${PROJECT_SCENE_AGENT_TYPE}.agent.md`,
+          modeInstructions: {
+            content: PROJECT_SCENE_AGENT_PROMPT,
+            toolReferences: [],
+          },
+          requiredContext: PROJECT_SCENE_AGENT_REQUIRED_CONTEXT,
+          systemPrompt: PROJECT_SCENE_AGENT_PROMPT,
+          tools: [...PROJECT_SCENE_AGENT_TOOLS],
+          commands: [],
+          excludeTools: [],
+          maxTurns: 12,
+          model: 'inherit',
+          messageInheritance: 'none',
+          agents: [],
+        },
+        {
+          agentType: SCENE_CODE_RECONCILIATION_AGENT_TYPE,
+          name: 'Scene Code Reconciliation Agent',
+          description: 'Produce one bounded Scene-to-Blockly ABS candidate for an active Host reconciliation request.',
+          argumentHint: 'Use the requestId in the scoped provider prompt',
+          target: 'aily',
+          whenToUse: 'Use only when the Host Scene code reconciliation provider starts this Agent with an active requestId.',
+          whenNotToUse: 'Do not invoke from normal Chat, Scene generation, legacy schematic workflows, build, simulation, debugging, or without an active reconciliation request.',
+          uri: `aily-chat-agent:/agents/${SCENE_CODE_RECONCILIATION_AGENT_TYPE}.agent.md`,
+          modeInstructions: {
+            content: SCENE_CODE_RECONCILIATION_AGENT_PROMPT,
+            toolReferences: [],
+          },
+          requiredContext: SCENE_CODE_RECONCILIATION_AGENT_REQUIRED_CONTEXT,
+          systemPrompt: SCENE_CODE_RECONCILIATION_AGENT_PROMPT,
+          tools: [...SCENE_CODE_RECONCILIATION_AGENT_TOOLS],
+          commands: [],
+          excludeTools: [],
+          maxTurns: 8,
+          model: 'inherit',
+          messageInheritance: 'none',
           agents: [],
         },
       ];
@@ -7247,6 +7678,12 @@ Prefer flowchart TD or flowchart LR. After this tool succeeds, do not repeat the
   if (hostAPI.connectionGraph) {
     appendElectronSchematicToolContributions(contributions);
   }
+  if (hostAPI.projectSceneProposal) {
+    appendElectronProjectSceneToolContributions(contributions);
+  }
+  if (hostAPI.sceneCodeReconciliation) {
+    appendElectronSceneCodeReconciliationToolContributions(contributions);
+  }
   appendElectronSubappAgentToolContributions(contributions, hostAPI.subappAgent?.bindings);
   return contributions;
 }
@@ -7290,6 +7727,42 @@ function appendElectronSchematicToolContributions(contributions) {
       runtimeModes: ['blockly'],
       requiredCapabilities: ['runtime:blockly'],
       agentScope: definition.agentScope || [SCHEMATIC_AGENT_TYPE],
+    });
+  }
+}
+
+function appendElectronProjectSceneToolContributions(contributions) {
+  for (const definition of PROJECT_SCENE_TOOL_DEFINITIONS) {
+    contributions.push({
+      name: definition.name,
+      toolSet: 'blockly-project-scene',
+      description: definition.description,
+      prompt: definition.description,
+      inputSchema: definition.inputSchema,
+      annotations: definition.readOnly
+        ? { readOnly: true, idempotent: true }
+        : { readOnly: false, destructive: false, idempotent: true },
+      runtimeModes: ['blockly'],
+      requiredCapabilities: ['runtime:blockly'],
+      agentScope: [PROJECT_SCENE_AGENT_TYPE],
+    });
+  }
+}
+
+function appendElectronSceneCodeReconciliationToolContributions(contributions) {
+  for (const definition of SCENE_CODE_RECONCILIATION_TOOL_DEFINITIONS) {
+    contributions.push({
+      name: definition.name,
+      toolSet: 'blockly-scene-code-reconciliation',
+      description: definition.description,
+      prompt: definition.description,
+      inputSchema: definition.inputSchema,
+      annotations: definition.readOnly
+        ? { readOnly: true, idempotent: true }
+        : { readOnly: false, destructive: false, idempotent: true },
+      runtimeModes: ['blockly'],
+      requiredCapabilities: ['runtime:blockly'],
+      agentScope: [SCENE_CODE_RECONCILIATION_AGENT_TYPE],
     });
   }
 }
@@ -7354,9 +7827,35 @@ export async function invokeElectronBlocklyTool(toolName, input, hostAPI, contex
     case 'generate_pinmap':
     case 'save_pinmap':
       return invokeElectronSchematicTool(toolName, input, hostAPI, context);
+    case GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL:
+    case SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL:
+      return invokeElectronProjectSceneTool(toolName, input, hostAPI, context);
+    case GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL:
+    case SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL:
+      return invokeElectronSceneCodeReconciliationTool(toolName, input, hostAPI, context);
     default:
       return toolError(`Unknown contributed tool: ${toolName}`);
   }
+}
+
+async function invokeElectronProjectSceneTool(toolName, input, hostAPI, context = {}) {
+  if (!hostAPI.projectSceneProposal) {
+    return toolError('Project Scene proposal service is not available in this environment.');
+  }
+  return normalizeHostToolUseResult(
+    await hostAPI.projectSceneProposal.invoke(toolName, input, context),
+    { env: hostAPI.env },
+  );
+}
+
+async function invokeElectronSceneCodeReconciliationTool(toolName, input, hostAPI, context = {}) {
+  if (!hostAPI.sceneCodeReconciliation) {
+    return toolError('Scene code reconciliation service is not available in this environment.');
+  }
+  return normalizeHostToolUseResult(
+    await hostAPI.sceneCodeReconciliation.invoke(toolName, input, context),
+    { env: hostAPI.env },
+  );
 }
 
 async function invokeElectronSchematicTool(toolName, input, hostAPI, context = {}) {
@@ -7392,21 +7891,95 @@ async function invokeElectronSchematicTool(toolName, input, hostAPI, context = {
     default:
       return toolError(`Unknown schematic tool: ${toolName}`);
   }
-  return normalizeHostToolUseResult(result);
+  return normalizeHostToolUseResult(result, { env: hostAPI.env });
 }
 
-function normalizeHostToolUseResult(result) {
+export async function normalizeHostToolUseResult(result, options = {}) {
   if (result && typeof result === 'object') {
     const content = Object.prototype.hasOwnProperty.call(result, 'content')
       ? result.content
       : result;
-    const text = typeof content === 'string' ? content : formatExternalResult(content);
     if (result.is_error || result.isError) {
-      return toolError(text);
+      return toolError(formatToolResultTextWithoutImageBytes(content));
     }
+    if (Array.isArray(content) && content.some(part => part?.type === 'image')) {
+      try {
+        const imageParts = content.filter(part => part?.type === 'image');
+        const resolvedImages = await resolveChatImageAttachments(
+          imageParts.map((part, index) => {
+            const mediaRef = normalizeString(part?.mediaRef || part?.source?.mediaRef);
+            const data = typeof part?.data === 'string'
+              ? part.data
+              : (part?.source?.type === 'base64' && typeof part.source.data === 'string'
+                  ? part.source.data
+                  : '');
+            return {
+              id: `tool-image:${index}`,
+              type: 'image',
+              name: normalizeString(part?.name) || `tool-image-${index + 1}`,
+              origin: 'tool',
+              source: mediaRef && !data
+                ? { kind: 'managed-ref', mediaRef }
+                : { kind: 'inline-base64', data },
+              mimeType: normalizeString(part?.mimeType || part?.source?.mediaType) || undefined,
+              detail: part?.detail,
+            };
+          }),
+          { env: options.env ?? process.env },
+        );
+        let imageIndex = 0;
+        const normalizedContent = content.flatMap((part) => {
+          if (part?.type === 'image') {
+            const resolved = resolvedImages[imageIndex];
+            imageIndex += 1;
+            return [{
+              type: 'image',
+              data: resolved.content,
+              mimeType: resolved.mimeType,
+              mediaRef: resolved.mediaRef,
+              width: resolved.width,
+              height: resolved.height,
+              byteLength: resolved.byteLength,
+            }];
+          }
+          if (part?.type === 'text' && typeof part.text === 'string') {
+            return [{ type: 'text', text: part.text }];
+          }
+          if (part?.type === 'resource' && typeof part.uri === 'string') {
+            return [{
+              type: 'resource',
+              uri: part.uri,
+              ...(typeof part.mimeType === 'string' ? { mimeType: part.mimeType } : {}),
+              ...(typeof part.text === 'string' ? { text: part.text } : {}),
+            }];
+          }
+          return [{ type: 'text', text: formatExternalResult(part) }];
+        });
+        return {
+          content: normalizedContent,
+          ...(result.metadata ? { metadata: result.metadata } : {}),
+        };
+      } catch (error) {
+        if (error instanceof ChatImageError) {
+          return toolError(`Tool image rejected (${error.code}): ${error.message}`);
+        }
+        throw error;
+      }
+    }
+    const text = typeof content === 'string' ? content : formatExternalResult(content);
     return toolText(text, result.metadata);
   }
   return toolText(formatExternalResult(result));
+}
+
+function formatToolResultTextWithoutImageBytes(content) {
+  if (!Array.isArray(content)) {
+    return typeof content === 'string' ? content : formatExternalResult(content);
+  }
+  const textParts = content
+    .filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text);
+  return textParts.join('\n') || 'Tool returned an error with an image result that was omitted.';
 }
 
 async function invokeElectronProjectTool(input, hostAPI, context = {}) {
@@ -8378,6 +8951,66 @@ function createExternalConnectionGraph(sessionId, requestResourceOperation) {
   };
 }
 
+export function createExternalProjectSceneProposal(sessionId, requestResourceOperation) {
+  return {
+    invoke: async (toolName, input = {}, context = {}) => {
+      if (typeof requestResourceOperation !== 'function') {
+        throw new Error('Project Scene proposal resource bridge is unavailable.');
+      }
+      const action = toolName === GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL
+        ? 'readContext'
+        : toolName === SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL
+          ? 'submitProposal'
+          : '';
+      if (!action) {
+        throw new Error(`Unsupported Project Scene proposal tool: ${String(toolName || '<missing>')}`);
+      }
+      const result = await requestResourceOperation({
+        sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
+        kind: 'project-scene-proposal',
+        payload: {
+          adapter: 'projectSceneProposal',
+          action,
+          input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
+        },
+      });
+      return result?.result ?? result;
+    },
+  };
+}
+
+export function createExternalSceneCodeReconciliation(sessionId, requestResourceOperation) {
+  return {
+    invoke: async (toolName, input = {}, context = {}) => {
+      if (typeof requestResourceOperation !== 'function') {
+        throw new Error('Scene code reconciliation resource bridge is unavailable.');
+      }
+      const action = toolName === GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL
+        ? 'readContext'
+        : toolName === SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL
+          ? 'submitCandidate'
+          : '';
+      if (!action) {
+        throw new Error(`Unsupported Scene code reconciliation tool: ${String(toolName || '<missing>')}`);
+      }
+      const result = await requestResourceOperation({
+        sessionId,
+        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
+        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
+        kind: 'scene-code-reconciliation',
+        payload: {
+          adapter: 'sceneCodeReconciliation',
+          action,
+          input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
+        },
+      });
+      return result?.result ?? result;
+    },
+  };
+}
+
 async function requestProjectInfo(sessionId, requestResourceOperation, action) {
   if (!requestResourceOperation) {
     return {};
@@ -8527,6 +9160,180 @@ function normalizeSessionId(value) {
     throw new Error('[AilyChat][ExecutionHost] sessionId is required.');
   }
   return sessionId;
+}
+
+function assertModelImageCount(currentModel, resolvedImages) {
+  if (!Array.isArray(resolvedImages) || resolvedImages.length === 0) {
+    return;
+  }
+  const model = currentModel && typeof currentModel === 'object' ? currentModel : {};
+  const inputModalities = Array.isArray(model.inputModalities)
+    ? model.inputModalities.map(value => normalizeString(value).toLowerCase()).filter(Boolean)
+    : null;
+  const maxInputImages = Number.isFinite(model.maxInputImages)
+    ? Math.max(0, Math.floor(model.maxInputImages))
+    : null;
+  const explicitlySupportsImages = inputModalities?.includes('image') === true;
+  if (explicitlySupportsImages && maxInputImages !== null && resolvedImages.length > maxInputImages) {
+    throw new ChatImageError(
+      'IMAGE_TOO_MANY',
+      `The selected model accepts at most ${maxInputImages} images per request.`,
+    );
+  }
+}
+
+export async function hydrateChatImageSnapshot(snapshot, env = process.env) {
+  if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.turns)) {
+    return snapshot;
+  }
+
+  const cloned = typeof structuredClone === 'function'
+    ? structuredClone(snapshot)
+    : JSON.parse(JSON.stringify(snapshot));
+  for (const turn of cloned.turns) {
+    const attachments = Array.isArray(turn?.request?.attachments) ? turn.request.attachments : [];
+    for (let index = 0; index < attachments.length; index += 1) {
+      const attachment = attachments[index];
+      if (!attachment || attachment.type !== 'image' || normalizeString(attachment.content)) {
+        continue;
+      }
+      const mediaRef = normalizeString(attachment.uri);
+      if (!/^aily-media:v1:[a-f0-9]{64}$/iu.test(mediaRef)) {
+        continue;
+      }
+      try {
+        const [resolved] = await resolveChatImageAttachments([{
+          id: normalizeString(attachment.id) || `${normalizeString(turn?.id) || 'turn'}:${index}`,
+          type: 'image',
+          name: normalizeString(attachment.name) || 'image',
+          origin: 'tool',
+          source: { kind: 'managed-ref', mediaRef },
+          mimeType: normalizeString(attachment.mimeType) || undefined,
+          detail: attachment.detail,
+        }], { env });
+        attachments[index] = {
+          ...attachment,
+          id: resolved.id,
+          uri: resolved.mediaRef,
+          mimeType: resolved.mimeType,
+          content: resolved.content,
+          detail: resolved.detail,
+        };
+        delete attachments[index].unavailable;
+        delete attachments[index].errorCode;
+      } catch (error) {
+        if (!(error instanceof ChatImageError) || error.code !== 'IMAGE_MEDIA_MISSING') {
+          throw error;
+        }
+        attachments[index] = {
+          ...attachment,
+          unavailable: true,
+          errorCode: error.code,
+        };
+        delete attachments[index].content;
+        logMissingHistoricalImage({
+          turnId: turn?.id,
+          attachmentId: error.attachmentId,
+          mediaRef,
+          origin: 'request',
+        });
+      }
+    }
+
+    const rounds = Array.isArray(turn?.rounds) ? turn.rounds : [];
+    for (const round of rounds) {
+      const toolCalls = Array.isArray(round?.toolCalls) ? round.toolCalls : [];
+      for (const toolCall of toolCalls) {
+        if (!Array.isArray(toolCall?.output)) {
+          continue;
+        }
+        for (let index = 0; index < toolCall.output.length; index += 1) {
+          const block = toolCall.output[index];
+          if (!block || block.type !== 'image') {
+            continue;
+          }
+          const existingData = typeof block.data === 'string'
+            ? block.data
+            : (block.source?.type === 'base64' && typeof block.source.data === 'string'
+                ? block.source.data
+                : '');
+          if (existingData) {
+            continue;
+          }
+          const mediaRef = normalizeString(block.mediaRef || block.source?.mediaRef);
+          if (!/^aily-media:v1:[a-f0-9]{64}$/iu.test(mediaRef)) {
+            continue;
+          }
+          try {
+            const [resolved] = await resolveChatImageAttachments([{
+              id: `${normalizeString(toolCall.id) || 'tool'}:${index}`,
+              type: 'image',
+              name: normalizeString(block.name) || 'tool-image',
+              origin: 'tool',
+              source: { kind: 'managed-ref', mediaRef },
+              mimeType: normalizeString(block.mimeType || block.source?.mediaType) || undefined,
+              detail: block.detail,
+            }], { env });
+            toolCall.output[index] = {
+              ...block,
+              type: 'image',
+              source: {
+                type: 'base64',
+                mediaType: resolved.mimeType,
+                data: resolved.content,
+              },
+              mediaRef: resolved.mediaRef,
+              detail: resolved.detail,
+              width: resolved.width,
+              height: resolved.height,
+              byteLength: resolved.byteLength,
+            };
+            delete toolCall.output[index].data;
+            delete toolCall.output[index].dataOmitted;
+          } catch (error) {
+            if (!(error instanceof ChatImageError) || error.code !== 'IMAGE_MEDIA_MISSING') {
+              throw error;
+            }
+            const name = normalizeString(block.name) || 'tool-image';
+            toolCall.output[index] = {
+              type: 'text',
+              text: `[Historical tool image unavailable: ${name.replace(/\s+/gu, ' ').slice(0, 120)} (IMAGE_MEDIA_MISSING)]`,
+              mediaRef,
+              unavailable: true,
+              errorCode: error.code,
+            };
+            logMissingHistoricalImage({
+              turnId: turn?.id,
+              attachmentId: error.attachmentId,
+              mediaRef,
+              origin: 'tool',
+            });
+          }
+        }
+      }
+    }
+  }
+  return cloned;
+}
+
+function logMissingHistoricalImage({ turnId, attachmentId, mediaRef, origin }) {
+  const mediaHash = /^aily-media:v1:([a-f0-9]{64})$/iu.exec(normalizeString(mediaRef))?.[1] || '';
+  console.warn('[ImagePipelineDebug]', JSON.stringify({
+    phase: 'image.restore.missing',
+    turnId: normalizeString(turnId),
+    attachmentId: normalizeString(attachmentId),
+    origin,
+    stableErrorCode: 'IMAGE_MEDIA_MISSING',
+    mediaHashPrefix: mediaHash.slice(0, 12),
+  }));
+}
+
+function normalizePortableScopedAgentId(value, label) {
+  const id = normalizeString(value);
+  if (!id || id.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id)) {
+    throw new Error(`[AilyChat][ExecutionHost] ${label} must be a portable identifier.`);
+  }
+  return id;
 }
 
 function normalizeTurnId(value) {

@@ -32,6 +32,8 @@
               <div class="resource-item" [class.block-item]="item.type === 'block'">
                 @if (item.type === 'file') {
                   <i class="fa-light fa-file"></i>
+                } @else if (item.type === 'image') {
+                  <i class="fa-light fa-image"></i>
                 } @else if (item.type === 'folder') {
                   <i class="fa-light fa-folder"></i>
                 } @else if (item.type === 'url') {
@@ -112,6 +114,15 @@
             <i class="fa-light fa-code-branch"></i>
           </button>
         </nav>
+      }
+
+      @if (role === 'user' && shouldRenderHeavyContent && userImageAttachments.length > 0) {
+        <aily-chat-user-image-attachments
+          [sessionId]="sessionId"
+          [attachments]="userImageAttachments"
+          [omittedByModel]="userImageAttachmentsOmittedByModel"
+          [contentReferences]="userImageContentReferences"
+        />
       }
 
       <div

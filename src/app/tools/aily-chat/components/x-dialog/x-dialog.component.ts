@@ -32,12 +32,17 @@ import {
 } from '../../core/user-turn-action-target';
 import type { ChatVisibleTranscriptDialogItem } from '../../core/chat-visible-transcript-model';
 import type { ChatSelectedMode } from '../../core/chat-mode';
-import { extractUserTurnResources, mergeUserTurnResources, parseUserTurnTextAndResources } from '../../helpers/chat-user-turn-context';
+import {
+  extractTurnRequestImageResources,
+  extractUserTurnResources,
+  mergeUserTurnResources,
+  parseUserTurnTextAndResources,
+} from '../../helpers/chat-user-turn-context';
 import type { ChatTaskActionDetail } from '../../helpers/chat-task-action-coordinator';
 import { ChatMessagePartsComponent } from './chat-message-parts.component';
 import { ChatContextToolbarComponent } from '../chat-context-toolbar/chat-context-toolbar.component';
 import { AilyMarkdownExternalLinksDirective } from '../../directives/aily-markdown-external-links.directive';
-import type { TurnResponseTurn } from 'aily-lex/browser';
+import type { Attachment, TurnResponseTurn } from 'aily-lex/browser';
 import { collectTurnResponseText } from 'aily-lex/browser';
 import {
   extractHistoricalDialogCopyText,
@@ -53,6 +58,7 @@ import type { HostResponseVoteDirection } from '../../helpers/host-turn-response
 import { ChatRuntimeInteractionHostService } from '../../services/chat-runtime-interaction-host.service';
 import type { WorkspaceCheckpointPresentationMode } from '../../services/edit-checkpoint.service';
 import { ChatEngineService } from '../../services/chat-engine.service';
+import { ChatUserImageAttachmentsComponent } from './chat-user-image-attachments.component';
 import {
   appendMarkdownContent,
   getMarkdownContentLength,
@@ -60,7 +66,9 @@ import {
 } from '../../core/markdown-content-store';
 
 const EMPTY_PROGRESS_MESSAGES: readonly NonNullable<TurnResponseTurn['response']['progressMessages']>[number][] = [];
+const EMPTY_CONTENT_REFERENCES: readonly NonNullable<TurnResponseTurn['response']['contentReferences']>[number][] = [];
 const EMPTY_CHAT_PARTS: readonly ChatPart[] = [];
+const EMPTY_ATTACHMENTS: readonly Attachment[] = [];
 const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
   minute: '2-digit',
@@ -88,6 +96,7 @@ const MESSAGE_TIME_TITLE_FORMATTER = new Intl.DateTimeFormat(undefined, {
     XMarkdownComponent,
     ChatMessagePartsComponent,
     ChatContextToolbarComponent,
+    ChatUserImageAttachmentsComponent,
     AilyMarkdownExternalLinksDirective,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -236,6 +245,30 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
 
   get turnResponse(): TurnResponseTurn | null {
     return this.item.turnResponse;
+  }
+
+  get userImageAttachments(): readonly Attachment[] {
+    if (this.role !== 'user') {
+      return EMPTY_ATTACHMENTS;
+    }
+    const attachments = this.effectiveTurnContext?.request?.attachments ?? EMPTY_ATTACHMENTS;
+    return attachments.some(attachment => attachment.type === 'image')
+      ? attachments
+      : EMPTY_ATTACHMENTS;
+  }
+
+  get userImageAttachmentsOmittedByModel(): boolean {
+    if (this.role !== 'user' || this.userImageAttachments.length === 0) {
+      return false;
+    }
+    const modelId = this.effectiveTurnContext?.request?.modelId;
+    return this.chatEngine?.resolveImageAttachmentCapabilitiesForModelId(modelId).status === 'unsupported';
+  }
+
+  get userImageContentReferences(): readonly NonNullable<TurnResponseTurn['response']['contentReferences']>[number][] {
+    return this.role === 'user'
+      ? this.effectiveTurnContext?.response?.contentReferences ?? EMPTY_CONTENT_REFERENCES
+      : EMPTY_CONTENT_REFERENCES;
   }
 
   get isLastAily(): boolean {
@@ -872,8 +905,14 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
     if (!this.canEditUserMessage || this.isEditing) return;
     const { text, resources } = parseUserTurnTextAndResources(this.renderableUserContent);
     const requestResources = extractUserTurnResources(this.requestContent);
+    const imageResources = extractTurnRequestImageResources(
+      this.effectiveTurnContext?.request?.attachments,
+    );
     this.editText = text;
-    this.editResources = mergeUserTurnResources(resources, requestResources);
+    this.editResources = mergeUserTurnResources(
+      mergeUserTurnResources(resources, requestResources),
+      imageResources,
+    );
     this.showEditAddList = false;
     this.isEditing = true;
     this.scheduleAttachEditOutsideClickListener();

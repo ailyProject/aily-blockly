@@ -9,6 +9,10 @@ import {
   type ChatSelectedMode,
 } from '../core/chat-mode';
 import type { ResourceItem } from '../core/chat-types';
+import {
+  cloneChatImageAttachmentDraft,
+  type ChatImageAttachmentDraft,
+} from '../core/chat-image-attachment';
 import type { IAgentLifecycle, IChatCoordination, IProjectContext, ISessionAccess } from '../core/chat-context';
 import { SkillRegistry } from '../core/skill-registry';
 import { buildUserTurnPayload, type UserTurnPayload } from './chat-user-turn-payload';
@@ -25,7 +29,21 @@ function clonePendingResourceItems(resourceItems?: readonly ResourceItem[]): Res
     return undefined;
   }
 
-  return resourceItems.map((item) => ({ ...item }));
+  return resourceItems.map((item) => ({
+    ...item,
+    ...(item.imageAttachment
+      ? { imageAttachment: cloneChatImageAttachmentDraft(item.imageAttachment) }
+      : {}),
+  }));
+}
+
+function collectPendingImageAttachments(resourceItems?: readonly ResourceItem[]): ChatImageAttachmentDraft[] | undefined {
+  const images = (resourceItems ?? [])
+    .filter((item): item is ResourceItem & { imageAttachment: ChatImageAttachmentDraft } => (
+      item.type === 'image' && !!item.imageAttachment
+    ))
+    .map(item => cloneChatImageAttachmentDraft(item.imageAttachment));
+  return images.length > 0 ? images : undefined;
 }
 
 function clonePendingAllowedPaths(paths?: readonly string[]): string[] | undefined {
@@ -50,9 +68,7 @@ function clonePendingUserSelectedTools(
     : undefined;
 }
 
-export interface PreparedUserSend extends UserTurnPayload {
-  text: string;
-}
+export interface PreparedUserSend extends PreparedPendingFollowupRequest {}
 
 type ChatSendCoordinatorContext = Pick<
   IAgentLifecycle,
@@ -97,6 +113,10 @@ export class ChatSendCoordinator {
     } = () => ({}),
     private readonly createRequestId: () => string = () => globalThis.crypto.randomUUID(),
   ) {}
+
+  private hasImageAttachments(): boolean {
+    return this.getResourceItems().some(item => item.type === 'image' && !!item.imageAttachment);
+  }
 
   private readPendingEditFeedback(sessionId?: string | null): string | null {
     if (this.ctx.readPendingEditFeedback) {
@@ -323,7 +343,7 @@ export class ChatSendCoordinator {
     const targetSessionId = typeof sessionId === 'string' && sessionId.trim().length > 0
       ? sessionId.trim()
       : this.ctx.sessionId;
-    if (!targetSessionId || !text) {
+    if (!targetSessionId || (!text && !this.hasImageAttachments())) {
       return null;
     }
 
@@ -406,6 +426,7 @@ export class ChatSendCoordinator {
       ? requestRouting['customAgentTarget'].trim()
       : undefined;
     const resourceItems = clonePendingResourceItems(this.getResourceItems());
+    const imageAttachments = collectPendingImageAttachments(resourceItems);
     const sessionAllowedPaths = clonePendingAllowedPaths(this.getSessionAllowedPaths());
     const pendingRuntimeSnapshot = this.getPendingRuntimeSnapshot(sessionId);
     const runtimeOwnerSessionId = typeof pendingRuntimeSnapshot.runtimeOwnerSessionId === 'string'
@@ -420,6 +441,7 @@ export class ChatSendCoordinator {
     return {
       ...prepared,
       ...(resourceItems ? { resourceItems } : {}),
+      ...(imageAttachments ? { imageAttachments } : {}),
       ...(sessionAllowedPaths ? { sessionAllowedPaths } : {}),
       ...(runtimeOwnerSessionId ? { runtimeOwnerSessionId } : {}),
       ...(providerOptionsKey ? { providerOptionsKey } : {}),
@@ -467,7 +489,7 @@ export class ChatSendCoordinator {
     const targetSessionId = typeof options.sessionId === 'string' && options.sessionId.trim().length > 0
       ? options.sessionId.trim()
       : this.ctx.sessionId;
-    if (!targetSessionId || !text) {
+    if (!targetSessionId || (!text && !this.hasImageAttachments())) {
       return null;
     }
 
@@ -493,9 +515,7 @@ export class ChatSendCoordinator {
     }
 
     this.clearPendingEditFeedback(targetSessionId);
-    return {
-      ...prepared,
-    };
+    return this.capturePendingSnapshot(prepared, targetSessionId);
   }
 
   /**

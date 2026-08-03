@@ -1,4 +1,6 @@
 import type { ResourceItem } from '../core/chat-types';
+import type { Attachment } from 'aily-lex/browser';
+import { restoreTurnRequestImageAttachmentDrafts } from '../core/chat-image-attachment';
 
 export function parseUserTurnTextAndResources(content: string | undefined | null): { text: string; resources: ResourceItem[] } {
   const source = content ?? '';
@@ -92,13 +94,36 @@ function dedupeResources(resources: readonly ResourceItem[]): ResourceItem[] {
   const merged: ResourceItem[] = [];
 
   for (const item of resources) {
-    const exists = merged.some(resource =>
-      resource.type === item.type && (resource.path === item.path || resource.url === item.url)
-    );
+    const key = resourceIdentity(item);
+    const exists = merged.some(resource => resourceIdentity(resource) === key);
     if (!exists) {
       merged.push(item);
     }
   }
 
   return merged;
+}
+
+function resourceIdentity(item: ResourceItem): string {
+  if (item.type === 'image') {
+    return `image:${item.imageAttachment?.id ?? item.imageAttachment?.source.kind ?? item.name}`;
+  }
+  return [
+    item.type,
+    item.path ?? '',
+    item.url ?? '',
+    item.blockId ?? '',
+    item.name,
+  ].join('\u001f');
+}
+
+export function extractTurnRequestImageResources(
+  attachments: readonly Attachment[] | null | undefined,
+): ResourceItem[] {
+  return restoreTurnRequestImageAttachmentDrafts(attachments).map(imageAttachment => ({
+    type: 'image',
+    name: imageAttachment.name,
+    imageAttachment,
+    mimeType: imageAttachment.mimeType,
+  }));
 }

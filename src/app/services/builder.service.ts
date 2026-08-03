@@ -13,6 +13,12 @@ export interface BuildFinishedEvent {
   error?: any;
 }
 
+export interface ActiveBlocklyProjectBuildInput {
+  projectPath: string;
+  graphSemanticRevision: string;
+  requestId: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -58,6 +64,50 @@ export class BuilderService {
       return this.buildFromProjectPath(projectPath);
     }
 
+    return this.buildCurrentBlocklyProject({});
+  }
+
+  /**
+   * Build one exact active Blockly Project for a provider-owned request.
+   * The request id is forwarded so cancellation cannot terminate an unrelated
+   * manual build.
+   */
+  async buildActiveBlocklyProject(input: ActiveBlocklyProjectBuildInput) {
+    const projectPath = String(input?.projectPath || '').trim();
+    const graphSemanticRevision = String(
+      input?.graphSemanticRevision || '',
+    );
+    const requestId = String(input?.requestId || '');
+    if (
+      !projectPath
+      || !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+    ) {
+      throw new Error('Active Blockly Project Build input is invalid.');
+    }
+    if (
+      this.projectService.isProjectOpening
+      || !this.isSameProjectPath(
+        projectPath,
+        this.projectService.currentProjectPath,
+      )
+      || this.projectService.isAilyCodeProject(projectPath)
+      || !this.actionService.hasListener('builder-compile-begin')
+    ) {
+      throw new Error('The requested Blockly Project is not active.');
+    }
+    return this.buildCurrentBlocklyProject({
+      graphSemanticRevision,
+      requestId,
+    });
+  }
+
+  private async buildCurrentBlocklyProject(
+    payload: {
+      graphSemanticRevision?: string;
+      requestId?: string;
+    },
+  ) {
     try {
       // Pro / code-editor-pro 路由下 Blockly 未挂载，compile-begin 无监听者会一直等反馈；
       // 含 project.aci 时改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
@@ -69,7 +119,11 @@ export class BuilderService {
           data: { success: r.success, result: r.result },
         };
       } else {
-        feedback = await this.actionService.dispatchWithFeedback('compile-begin', {}, 600000).toPromise();
+        feedback = await this.actionService.dispatchWithFeedback(
+          'compile-begin',
+          payload,
+          600000,
+        ).toPromise();
       }
 
       // listener handler 内部 catch 了编译错误，所以 feedback.success 总是 true
@@ -110,6 +164,14 @@ export class BuilderService {
     }
   }
 
+  private isSameProjectPath(left: string, right: string): boolean {
+    const normalize = (value: string) => String(value || '')
+      .replace(/\\/g, '/')
+      .replace(/\/+$/u, '')
+      .toLowerCase();
+    return normalize(left) === normalize(right);
+  }
+
   private async buildFromProjectPath(projectPath: string) {
     const compileResult = await this.ailyCodeProCompile.runCompileFromDisk({ projectPath });
     const buildResult = compileResult.result;
@@ -135,6 +197,17 @@ export class BuilderService {
     this.actionService.dispatch('compile-cancel', {}, result => {
       if (result.success) {
       } else {
+      }
+    });
+  }
+
+  cancelActiveBlocklyProjectBuild(requestId: string): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) {
+      return;
+    }
+    this.actionService.dispatch('compile-cancel', { requestId }, result => {
+      if (!result.success) {
+        console.warn('Scoped Blockly Build cancellation was rejected.', result);
       }
     });
   }

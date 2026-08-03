@@ -891,6 +891,8 @@ export class AilyChatChildProtocolService {
           isCustom: true,
           baseUrl: model.baseUrl || '',
           hasApiKey: !!model.apiKey,
+          supportsImageInput: model.inputModalities?.includes('image') === true,
+          maxInputImages: model.maxInputImages ?? 0,
         })),
       modelCatalogStatusHint: this.chatConfig.modelCatalogStatusHint || '',
       workspaceOptions: this.chatConfig.getWorkspaceSecurityOptions(),
@@ -972,6 +974,10 @@ export class AilyChatChildProtocolService {
           isCustom: true,
           baseUrl,
           apiKey: newApiKey || previous?.apiKey || '',
+          inputModalities: (raw as any)?.supportsImageInput === true ? ['text', 'image'] : ['text'],
+          maxInputImages: (raw as any)?.supportsImageInput === true
+            ? Math.max(1, Number((raw as any)?.maxInputImages) || previous?.maxInputImages || 10)
+            : 0,
         } as ModelConfigOption;
       })
       .filter(Boolean) as ModelConfigOption[];

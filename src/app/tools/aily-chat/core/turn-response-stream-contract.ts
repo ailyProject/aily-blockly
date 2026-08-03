@@ -145,11 +145,16 @@ export function getTurnResponseParticipant(participant?: string): string {
 export function getTurnResponseDisplayContent(
   request: TurnResponseTurn['request'],
 ): string {
-  if (typeof request.displayContent === 'string') {
-    return request.displayContent;
-  }
-
-  return typeof request.content === 'string' ? request.content : '';
+  const content = typeof request.displayContent === 'string'
+    ? request.displayContent
+    : (typeof request.content === 'string' ? request.content : '');
+  const missingImages = (request.attachments ?? [])
+    .filter(attachment => attachment.unavailable && attachment.errorCode === 'IMAGE_MEDIA_MISSING')
+    .map((attachment) => {
+      const name = attachment.name.replace(/\s+/g, ' ').trim().slice(0, 120) || 'image';
+      return `[历史图片不可用：${name}（IMAGE_MEDIA_MISSING）]`;
+    });
+  return [content, ...missingImages].filter(Boolean).join('\n\n');
 }
 
 export function buildTurnResponseRequest(

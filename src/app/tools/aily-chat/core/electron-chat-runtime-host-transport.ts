@@ -22,6 +22,8 @@ import type {
   ChatRuntimeHostForkSessionResult,
   ChatRuntimeHostInteractionRequest,
   ChatRuntimeHostInteractionSnapshot,
+  ChatRuntimeHostImageMedia,
+  ChatRuntimeHostImageMediaRequest,
   ChatRuntimeHostPrewarmRequest,
   ChatRuntimeHostPrewarmResult,
   ChatRuntimeHostRestoreRuntimeSessionRequest,
@@ -37,6 +39,10 @@ import type {
   ChatRuntimeHostSessionExecutionState,
   ChatRuntimeHostSessionInventorySnapshot,
   ChatRuntimeHostSessionState,
+  ChatRuntimeHostScopedAgentCancelRequest,
+  ChatRuntimeHostScopedAgentCancelResult,
+  ChatRuntimeHostScopedAgentRunRequest,
+  ChatRuntimeHostScopedAgentRunResult,
   ChatRuntimeHostStopTurnRequest,
   ChatRuntimeHostSubmitReadiness,
   ChatRuntimeHostSubmitRequest,
@@ -76,6 +82,7 @@ type RuntimeHostMethod =
   | 'readSessionState'
   | 'readSessionInventory'
   | 'readTranscript'
+  | 'readChatImageMedia'
   | 'readSessionTurnPage'
   | 'readCheckpointNavigationState'
   | 'mutateSessionRequestList'
@@ -84,6 +91,8 @@ type RuntimeHostMethod =
   | 'forkSession'
   | 'awaitRequestCompletion'
   | 'runWorkspaceFinalizeBoundaryProbe'
+  | 'runScopedAgent'
+  | 'cancelScopedAgent'
   | 'readInteractionSnapshot'
   | 'resolveInteraction'
   | 'recordResourceRequest'
@@ -302,6 +311,8 @@ export function createElectronChatRuntimeHostTransport(): ChatRuntimeHost | null
       api.call('readSessionInventory', []) as Promise<ChatRuntimeHostSessionInventorySnapshot>,
     readTranscript: (sessionId: ChatRuntimeHostSessionId) =>
       api.call('readTranscript', [sessionId]) as Promise<ChatRuntimeHostTranscriptSnapshot | null>,
+    readChatImageMedia: (request: ChatRuntimeHostImageMediaRequest) =>
+      api.call('readChatImageMedia', [request]) as Promise<ChatRuntimeHostImageMedia>,
     readSessionTurnPage: (request: ChatRuntimeHostTurnPageRequest) =>
       api.call('readSessionTurnPage', [request]) as Promise<ChatRuntimeHostTurnPage | null>,
     readCheckpointNavigationState: (request: ChatRuntimeHostCheckpointNavigationRequest) =>
@@ -318,6 +329,10 @@ export function createElectronChatRuntimeHostTransport(): ChatRuntimeHost | null
       api.call('awaitRequestCompletion', [sessionId]) as Promise<void>,
     runWorkspaceFinalizeBoundaryProbe: (sessionId: ChatRuntimeHostSessionId) =>
       api.call('runWorkspaceFinalizeBoundaryProbe', [sessionId]) as Promise<void>,
+    runScopedAgent: (request: ChatRuntimeHostScopedAgentRunRequest) =>
+      api.call('runScopedAgent', [request]) as Promise<ChatRuntimeHostScopedAgentRunResult>,
+    cancelScopedAgent: (request: ChatRuntimeHostScopedAgentCancelRequest) =>
+      api.call('cancelScopedAgent', [request]) as Promise<ChatRuntimeHostScopedAgentCancelResult>,
     readInteractionSnapshot: (sessionId: ChatRuntimeHostSessionId) =>
       api.call('readInteractionSnapshot', [sessionId]) as Promise<ChatRuntimeHostInteractionSnapshot | null>,
     resolveInteraction: (request: ChatRuntimeHostInteractionRequest) =>

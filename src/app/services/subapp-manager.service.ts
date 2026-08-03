@@ -3,6 +3,7 @@ import { TranslateService } from '@ngx-translate/core';
 import { BehaviorSubject, Subscription } from 'rxjs';
 import {
   AppItem,
+  ChildToolAppConfig,
   ChildToolConfig,
   replaceChildToolConfigs,
 } from '../configs/tool.config';
@@ -21,7 +22,9 @@ export interface SubappCatalogItem {
   name: string;
   description: string;
   icon: string;
+  ai?: boolean;
   enabled: boolean;
+  app?: ChildToolAppConfig;
   config?: ChildToolConfig | null;
   installError?: string;
 }
@@ -125,12 +128,14 @@ export class SubappManagerService implements OnDestroy {
     return this.state.apps
       .filter((item) => item.enabled !== false)
       .map((item) => ({
+        ...(item.app || {}),
         id: item.toolId,
         name: item.name,
         description: item.description,
         action: 'tool-open',
         data: { type: 'tool', data: item.toolId },
         icon: item.icon || 'fa-light fa-puzzle-piece',
+        ai: item.ai === true || item.app?.ai === true,
         enabled: true,
         ...(item.toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
         subapp: {

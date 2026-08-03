@@ -1,4 +1,5 @@
 const RUNTIME_OWNER_REGISTER_CHANNEL = 'aily-chat-runtime-owner-register';
+const { createHash } = require('node:crypto');
 const RUNTIME_OWNER_UNREGISTER_CHANNEL = 'aily-chat-runtime-owner-unregister';
 const HOST_COMMAND_CHANNEL = 'aily-chat-runtime-host-command';
 const RUNTIME_OWNER_COMMAND_CHANNEL = 'aily-chat-runtime-owner-command';
@@ -9,6 +10,8 @@ const RESOURCE_HANDLER_REGISTER_CHANNEL = 'aily-chat-runtime-resource-handler-re
 const RESOURCE_HANDLER_UNREGISTER_CHANNEL = 'aily-chat-runtime-resource-handler-unregister';
 const RESOURCE_HANDLER_COMMAND_CHANNEL = 'aily-chat-runtime-resource-handler-command';
 const RESOURCE_HANDLER_RESPONSE_CHANNEL = 'aily-chat-runtime-resource-handler-response';
+const SCOPED_AGENT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+let chatImageMediaStorePromise;
 const {
   ChatRuntimeHostSessionStore,
   HOST_SESSION_STORE_MISS,
@@ -36,6 +39,11 @@ const channels = {
   RESOURCE_HANDLER_RESPONSE_CHANNEL,
 };
 
+function loadChatImageMediaStore() {
+  chatImageMediaStorePromise ??= import('./chat-image-media-store.mjs');
+  return chatImageMediaStorePromise;
+}
+
 const ALLOWED_METHODS = new Set([
   'attachView',
   'detachView',
@@ -57,6 +65,7 @@ const ALLOWED_METHODS = new Set([
   'readSessionState',
   'readSessionInventory',
   'readTranscript',
+  'readChatImageMedia',
   'readSessionTurnPage',
   'readCheckpointNavigationState',
   'mutateSessionRequestList',
@@ -69,6 +78,8 @@ const ALLOWED_METHODS = new Set([
   'resolveInteraction',
   'recordResourceRequest',
   'requestResourceOperation',
+  'runScopedAgent',
+  'cancelScopedAgent',
 ]);
 
 const EXECUTION_HOST_ALLOWED_METHODS = new Set([
@@ -264,6 +275,9 @@ class ChatRuntimeHostProcessService {
     this.resourceOperationHandler = typeof options.resourceOperationHandler === 'function'
       ? options.resourceOperationHandler
       : null;
+    this.loadChatImageMediaStore = typeof options.loadChatImageMediaStore === 'function'
+      ? options.loadChatImageMediaStore
+      : loadChatImageMediaStore;
     this.resourceOperationSeed = 0;
     this.resourceOperationHandlerRenderer = null;
     this.resourceOperationCommandSeed = 0;
@@ -361,6 +375,9 @@ class ChatRuntimeHostProcessService {
     if (method === 'readEditingSessionContent') {
       return this.handleReadEditingSessionContent(args);
     }
+    if (method === 'readChatImageMedia') {
+      return this.handleReadChatImageMedia(args);
+    }
     if (method === 'operateEditingSessionEntry') {
       return this.handleOperateEditingSessionEntry(args);
     }
@@ -396,6 +413,9 @@ class ChatRuntimeHostProcessService {
     }
     if (method === 'requestResourceOperation') {
       return this.handleRequestResourceOperation(args);
+    }
+    if (method === 'runScopedAgent' || method === 'cancelScopedAgent') {
+      return this.handleScopedAgentCommand(method, args);
     }
     if (method === 'runWorkspaceFinalizeBoundaryProbe') {
       return Promise.resolve();
@@ -504,10 +524,17 @@ class ChatRuntimeHostProcessService {
   }
 
   async handleSubmitTurn(args) {
-    const request = args && args[0];
+    let request = args && args[0];
     const submittedSessionId = normalizeSessionId(request && request.sessionId);
     if (!submittedSessionId) {
       throw new Error('[AilyChat][RuntimeHost] submitTurn requires a session id.');
+    }
+    if (Array.isArray(request.imageAttachments) && request.imageAttachments.length > 0) {
+      const preflight = await this.dispatchRuntimeOwnerCommandAndWait('preflightTurnImages', [{ request }], submittedSessionId);
+      request = {
+        ...request,
+        imageAttachments: Array.isArray(preflight?.imageAttachments) ? preflight.imageAttachments : [],
+      };
     }
     await this.reconcileSessionExecutionState(submittedSessionId);
     const runningState = this.hostSessionStore.beginSubmittedTurn(request);
@@ -529,6 +556,9 @@ class ChatRuntimeHostProcessService {
       activeTurnId: runningState.activeTurnId,
       hasRuntimeOwner: this.runtimeOwnerController.hasUsableRuntimeOwner(),
       requestTextLength: measureTextLength(request && request.requestText),
+      imageAttachmentCount: Array.isArray(request && request.imageAttachments)
+        ? request.imageAttachments.length
+        : 0,
       customAgentTarget: requestRouting && typeof requestRouting.customAgentTarget === 'string'
         ? requestRouting.customAgentTarget
         : undefined,
@@ -628,6 +658,10 @@ class ChatRuntimeHostProcessService {
       turnResponses,
       checkpointTimeline,
     );
+    await this.syncChatImageSessionReferences(
+      sessionId,
+      this.hostSessionStore.buildLiveHostSessionRecord(sessionId),
+    );
     return {
       ...result,
       transcriptRevision: Number(transcript && transcript.revision) || 0,
@@ -664,7 +698,7 @@ class ChatRuntimeHostProcessService {
       throw new Error('[AilyChat][RuntimeHost] readEditingSessionState requires a session id.');
     }
     if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
-      throw new Error('[AilyChat][RuntimeHost] Editing-session state requires the execution host.');
+      return createEmptyEditingSessionState(sessionId);
     }
     const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
     return this.runtimeOwnerController.dispatchCommand('readEditingSessionState', [{
@@ -903,7 +937,31 @@ class ChatRuntimeHostProcessService {
     } else {
       await this.dispatchResourceOperationToRegisteredHandler(request);
     }
+    await this.syncChatImageSessionReferences(normalizedSessionId, record);
     return true;
+  }
+
+  async syncChatImageSessionReferences(sessionId, record) {
+    try {
+      const mediaStore = await this.loadChatImageMediaStore();
+      return await mediaStore.updateChatImageSessionReferences(
+        sessionId,
+        mediaStore.collectChatImageMediaRefs(record),
+      );
+    } catch (error) {
+      console.warn('[AilyChat][ImageMediaReferenceSyncFailed]', readErrorMessage(error));
+      return null;
+    }
+  }
+
+  async releaseChatImageSessionReferences(sessionId) {
+    try {
+      const mediaStore = await this.loadChatImageMediaStore();
+      return await mediaStore.releaseChatImageSessionReferences(sessionId);
+    } catch (error) {
+      console.warn('[AilyChat][ImageMediaReferenceReleaseFailed]', readErrorMessage(error));
+      return null;
+    }
   }
 
   async handleMutateSessionRequestList(args) {
@@ -1091,6 +1149,7 @@ class ChatRuntimeHostProcessService {
           // Preserve the original fork failure.
         }
       }
+      await this.releaseChatImageSessionReferences(prepared.targetSessionId);
       throw error;
     }
   }
@@ -1106,6 +1165,7 @@ class ChatRuntimeHostProcessService {
       }]);
     }
     const disposedState = this.hostSessionStore.disposeSession(sessionId);
+    await this.releaseChatImageSessionReferences(sessionId);
     if (disposedState) {
       this.broadcastSessionState('runtime-status', disposedState);
     }
@@ -1228,6 +1288,72 @@ class ChatRuntimeHostProcessService {
         error: this.toResourceOperationError(error),
       });
       throw error;
+    }
+  }
+
+  async handleReadChatImageMedia(args) {
+    const request = args && args[0] && typeof args[0] === 'object' ? args[0] : {};
+    const sessionId = normalizeSessionId(request.sessionId);
+    const mediaRef = typeof request.mediaRef === 'string' ? request.mediaRef.trim() : '';
+    if (!sessionId || !/^aily-media:v1:[a-f0-9]{64}$/iu.test(mediaRef)) {
+      throw new Error('[AilyChat][RuntimeHost] readChatImageMedia requires a session id and managed media reference.');
+    }
+
+    const transcript = this.hostSessionStore.buildTranscriptSnapshot(sessionId);
+    const mediaStore = await this.loadChatImageMediaStore();
+    if (!mediaStore.collectChatImageMediaRefs(transcript).includes(mediaRef)) {
+      const error = new Error('[AilyChat][RuntimeHost] Image media is not referenced by this session.');
+      error.code = 'IMAGE_MEDIA_NOT_REFERENCED';
+      throw error;
+    }
+
+    return mediaStore.readManagedChatImageMedia(mediaRef, {
+      attachmentId: typeof request.attachmentId === 'string' ? request.attachmentId.trim() : '',
+      mimeType: typeof request.mimeType === 'string' ? request.mimeType.trim() : '',
+    });
+  }
+
+  async handleScopedAgentCommand(method, args) {
+    const request = args && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])
+      ? args[0]
+      : null;
+    if (!request) {
+      throw new Error(`[AilyChat][RuntimeHost] ${method} requires a request object.`);
+    }
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      throw new Error('[AilyChat][RuntimeHost] Independent execution host is unavailable.');
+    }
+    if (method === 'cancelScopedAgent') {
+      return this.runtimeOwnerController.dispatchCommand(method, [clonePayload(request)]);
+    }
+    const invocationId = typeof request.invocationId === 'string'
+      ? request.invocationId.trim()
+      : '';
+    if (!invocationId) {
+      throw new Error('[AilyChat][RuntimeHost] runScopedAgent requires invocationId.');
+    }
+    const agentType = typeof request.agentType === 'string'
+      ? request.agentType.trim()
+      : '';
+    const scopedSessionPrefix = agentType === 'SceneCodeReconciliationAgent'
+      ? 'scoped-scene-code-reconciliation'
+      : 'scoped-project-scene';
+    const executionSessionId = `${scopedSessionPrefix}:${createHash('sha256')
+      .update(invocationId)
+      .digest('hex')
+      .slice(0, 24)}`;
+    try {
+      return await this.runtimeOwnerController.dispatchCommand(method, [{
+        ...clonePayload(request),
+        executionSessionId,
+      }], { timeoutMs: SCOPED_AGENT_COMMAND_TIMEOUT_MS });
+    } catch (error) {
+      await this.runtimeOwnerController.dispatchCommand('cancelScopedAgent', [{
+        invocationId,
+      }]).catch(() => undefined);
+      throw error;
+    } finally {
+      this.hostSessionStore.clearSession(executionSessionId);
     }
   }
 
@@ -1506,6 +1632,46 @@ class ChatRuntimeHostProcessService {
       return;
     }
     this.pendingExecutionTurnIds.delete(sessionId);
+  }
+
+  async dispatchRuntimeOwnerCommandAndWait(method, args, sessionId) {
+    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
+      const error = new Error('[AilyChat][RuntimeHost] No registered runtime owner.');
+      error.code = 'runtime_owner_unavailable';
+      error.retryable = true;
+      throw error;
+    }
+    const owner = typeof this.runtimeOwnerController.snapshotRuntimeOwner === 'function'
+      ? this.runtimeOwnerController.snapshotRuntimeOwner()
+      : null;
+    console.info('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+      phase: 'dispatch-wait',
+      method,
+      sessionId,
+      activeTurnId: args && args[0] && args[0].turnId,
+      owner,
+    }));
+    try {
+      const result = await this.runtimeOwnerController.dispatchCommand(method, args);
+      console.info('[AilyChat][RuntimeHostOwnerDispatch]', JSON.stringify({
+        phase: 'result-wait',
+        method,
+        sessionId,
+        owner,
+        resultStatus: result && result.status,
+        requestInProgress: result && result.requestInProgress,
+      }));
+      return result;
+    } catch (error) {
+      console.error('[AilyChat][RuntimeHost] Runtime owner command dispatch failed:', {
+        method,
+        sessionId,
+        message: error && error.message ? error.message : String(error || 'Unknown runtime owner error'),
+        code: error && typeof error.code === 'string' ? error.code : undefined,
+        stack: error && error.stack ? error.stack : undefined,
+      });
+      throw error;
+    }
   }
 
   async dispatchRuntimeOwnerCommandAndWaitIfAvailable(method, args, sessionId) {
@@ -1927,6 +2093,36 @@ class ChatRuntimeHostProcessService {
         return false;
     }
   }
+}
+
+function createEmptyEditingSessionState(sessionId) {
+  const now = Date.now();
+  return {
+    version: 4,
+    sessionId,
+    workspaceIdentity: '',
+    workspaceRoot: '',
+    revision: 0,
+    checkpoints: [],
+    baselines: [],
+    operations: [],
+    requestScopes: [],
+    currentPointer: {
+      epoch: 0,
+    },
+    epochCounter: 0,
+    createdAt: now,
+    updatedAt: now,
+    entries: [],
+    requestSummaries: [],
+    summary: {
+      checkpointCount: 0,
+      requestCount: 0,
+      entryCount: 0,
+      operationCount: 0,
+      modifiedEntryCount: 0,
+    },
+  };
 }
 
 function resolveEditingSessionInteractionTarget(state, direction) {

@@ -154,6 +154,13 @@ import { ChatSessionViewModelStoreService } from './chat-session-view-model-stor
 import { MenuManagerService } from './menu-manager.service';
 
 import { ChatMessage, ToolCallState, ResourceItem } from '../core/chat-types';
+import {
+  buildTurnRequestImageAttachment,
+  cloneChatImageAttachmentDraft,
+  resolveChatImageAttachmentCapabilities,
+  type ChatImageAttachmentCapabilities,
+  type ChatImageAttachmentDraft,
+} from '../core/chat-image-attachment';
 import { AilyHost } from '../core/host';
 import { mkdir as mkdirAsync, writeFile as writeFileAsync } from '../core/async-fs';
 import type { MetricsSnapshot, RenderEvent, TurnRequest, TurnResponsePart, TurnResponseStatus, TurnResponseTurn } from 'aily-lex/browser';
@@ -292,6 +299,9 @@ function clonePreparedPendingFollowupRequest(
   const sessionAllowedPaths = Array.isArray(prepared.sessionAllowedPaths) && prepared.sessionAllowedPaths.length > 0
     ? [...prepared.sessionAllowedPaths]
     : undefined;
+  const imageAttachments = Array.isArray(prepared.imageAttachments) && prepared.imageAttachments.length > 0
+    ? prepared.imageAttachments.map(cloneChatImageAttachmentDraft)
+    : undefined;
   const userSelectedTools = prepared.userSelectedTools
     ? { ...prepared.userSelectedTools }
     : undefined;
@@ -303,6 +313,7 @@ function clonePreparedPendingFollowupRequest(
       : {}),
     ...(resourceItems ? { resourceItems } : {}),
     ...(sessionAllowedPaths ? { sessionAllowedPaths } : {}),
+    ...(imageAttachments ? { imageAttachments } : {}),
     ...(userSelectedTools ? { userSelectedTools } : {}),
   };
 }
@@ -327,6 +338,7 @@ function mergePreparedPendingFollowupRequests(
     : undefined;
   const resourceItems = dedupePendingResourceItems(requests.flatMap((request) => request.prepared.resourceItems ?? []));
   const sessionAllowedPaths = dedupePendingAllowedPaths(requests.flatMap((request) => request.prepared.sessionAllowedPaths ?? []));
+  const imageAttachments = dedupePendingImageAttachments(requests.flatMap((request) => request.prepared.imageAttachments ?? []));
   const userSelectedTools = mergePendingUserSelectedTools(requests.map((request) => request.prepared.userSelectedTools));
 
   return {
@@ -336,6 +348,7 @@ function mergePreparedPendingFollowupRequests(
     displayText: requests.map((request) => request.prepared.displayText).join('\n\n'),
     ...(resourceItems ? { resourceItems } : {}),
     ...(sessionAllowedPaths ? { sessionAllowedPaths } : {}),
+    ...(imageAttachments ? { imageAttachments } : {}),
     ...(userSelectedTools ? { userSelectedTools } : {}),
   };
 }
@@ -372,6 +385,20 @@ function dedupePendingAllowedPaths(paths: readonly string[]): string[] | undefin
   }
 
   const deduped = Array.from(new Set(paths.filter((path): path is string => typeof path === 'string' && path.length > 0)));
+  return deduped.length > 0 ? deduped : undefined;
+}
+
+function dedupePendingImageAttachments(
+  attachments: readonly ChatImageAttachmentDraft[],
+): ChatImageAttachmentDraft[] | undefined {
+  const seen = new Set<string>();
+  const deduped: ChatImageAttachmentDraft[] = [];
+  for (const attachment of attachments) {
+    const key = attachment.id || `${attachment.origin}:${attachment.name}:${JSON.stringify(attachment.source)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(cloneChatImageAttachmentDraft(attachment));
+  }
   return deduped.length > 0 ? deduped : undefined;
 }
 
@@ -2459,6 +2486,18 @@ export class ChatEngineService implements IChatContext {
 
   get currentModelName() { return this.getSelectedDisplayModel()?.name; }
 
+  resolveImageAttachmentCapabilitiesForModelId(
+    modelId: string | null | undefined,
+  ): ChatImageAttachmentCapabilities {
+    const normalizedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+    if (!normalizedModelId) {
+      return resolveChatImageAttachmentCapabilities(undefined);
+    }
+    const model = this.ailyChatConfigService.resolvePresetDisplayModel(normalizedModelId)
+      ?? this.ailyChatConfigService.getModelById(normalizedModelId);
+    return resolveChatImageAttachmentCapabilities(model);
+  }
+
   get currentReasoningEffort() { return this.chatService.currentModel?.reasoningEffort; }
 
   get currentReasoningEffortLabel(): string {
@@ -2783,6 +2822,11 @@ export class ChatEngineService implements IChatContext {
           displayText: request.displayText ?? requestText,
           ...(request.requestMetadata
             ? { requestMetadata: clonePendingFollowupRequestMetadata(request.requestMetadata) }
+            : {}),
+          ...(request.imageAttachments?.length
+            ? {
+              imageAttachments: request.imageAttachments.map(cloneChatImageAttachmentDraft),
+            }
             : {}),
         };
         await thisEngine.executePreparedUserSend(sessionId, prepared, {
@@ -4910,10 +4954,6 @@ export class ChatEngineService implements IChatContext {
     options?: { kind?: ChatPendingRequestKind },
   ): boolean {
     const normalizedContent = typeof content === 'string' ? content.trim() : '';
-    if (!normalizedContent) {
-      return false;
-    }
-
     const targetSessionId = resolveOptionalUiSessionOwner(this, sessionId);
     if (!targetSessionId) {
       return false;
@@ -8643,6 +8683,9 @@ Do not create non-existent boards and libraries.
     const timestamp = Date.now();
     const requestContent = prepared.llmText.trim();
     const displayContent = prepared.displayText.trim();
+    const currentModelSnapshot = this.resolveVisibleCurrentModelSnapshot(sessionId);
+    const requestModelId = this.getModelConfigurationId(currentModelSnapshot);
+    const attachments = (prepared.imageAttachments ?? []).map(buildTurnRequestImageAttachment);
     const turn: TurnResponseTurn = {
       turnId,
       request: {
@@ -8653,6 +8696,8 @@ Do not create non-existent boards and libraries.
         ...(prepared.requestMetadata
           ? { metadata: clonePendingFollowupRequestMetadata(prepared.requestMetadata) }
           : {}),
+        ...(requestModelId ? { modelId: requestModelId } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
       },
       rounds: [],
       response: {
@@ -8903,6 +8948,9 @@ Do not create non-existent boards and libraries.
           sessionId: targetSessionId,
           requestText: runtimePrepared.llmText,
           displayText: runtimePrepared.displayText,
+          ...(runtimePrepared.imageAttachments?.length
+            ? { imageAttachments: runtimePrepared.imageAttachments.map(cloneChatImageAttachmentDraft) }
+            : {}),
           selectedMode: selectedModeSnapshot,
           providerOptions: providerOptionsSnapshot,
           agentRuntimeMode: runtimeResolution.mode,

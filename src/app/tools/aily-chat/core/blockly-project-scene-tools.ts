@@ -3,6 +3,7 @@ import type { IToolContribution, ToolResultContent } from 'aily-lex/browser';
 import type { InvokeHandler } from './blockly-contributed-tool-runtime';
 import { PROJECT_SCENE_AGENT_TYPE } from './agent-identifiers';
 import {
+  consumeProjectSceneProposalInvocationContext,
   readProjectSceneProposalInvocation,
   submitProjectSceneProposalInvocation,
   type ProjectSceneProposalInvocationInput,
@@ -262,7 +263,7 @@ export function createProjectSceneGenerationHandlers(): Record<string, InvokeHan
   return {
     [GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL]: async (input) => {
       const requestId = requireRequestIdInput(input);
-      const context = readProjectSceneProposalInvocation(requestId);
+      const context = consumeProjectSceneProposalInvocationContext(requestId);
       return result({
         schemaVersion: 1,
         kind: 'aily-project-scene-agent-generation-context',

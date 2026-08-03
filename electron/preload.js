@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, clipboard } = 
 const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
-const { createHash } = require("crypto");
+const { createHash, randomUUID } = require("crypto");
 const { existsSync, statSync, createReadStream } = require("fs");
 const { createInterface } = require("readline");
 const { isAbsolute } = require("path");
@@ -65,6 +65,28 @@ const fspApi = {
   unlink: (...args) => nodeFsp.unlink(...args),
   open: (...args) => nodeFsp.open(...args),
 };
+
+async function writeFileBufferAtomic(filePath, data) {
+  const directory = require("path").dirname(filePath);
+  const baseName = require("path").basename(filePath);
+  await nodeFsp.mkdir(directory, { recursive: true });
+  const temporaryPath = require("path").join(
+    directory,
+    `.${baseName}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle = null;
+  try {
+    handle = await nodeFsp.open(temporaryPath, "wx", 0o600);
+    await handle.writeFile(Buffer.from(data));
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await nodeFsp.rename(temporaryPath, filePath);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await nodeFsp.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
 
 async function readLinesWithMode(filePath, options = {}) {
   const mode = options?.mode === 'head' || options?.mode === 'sed' ? options.mode : 'tail';
@@ -448,6 +470,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     unregister: (payload) => ipcRenderer.invoke("child-tool-session-unregister", payload),
     list: () => ipcRenderer.invoke("child-tool-session-list"),
     stop: (toolId) => ipcRenderer.invoke("child-tool-session-stop", toolId),
+    sendMessage: (payload) => ipcRenderer.invoke("child-tool-session-message-send", payload),
+    onMessage: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("child-tool-session-message", listener);
+      return () => ipcRenderer.removeListener("child-tool-session-message", listener);
+    },
     onStateChanged: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("child-tool-session-state-changed", listener);
@@ -607,6 +635,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     writeFileBufferAsync: async (path, data) => {
       await require("fs").promises.writeFile(path, Buffer.from(data));
     },
+    writeFileBufferAtomicAsync: async (path, data) => {
+      await writeFileBufferAtomic(path, data);
+    },
+    realpathAsync: (path) => require("fs").promises.realpath(path),
     md5Buffer: (data) => {
       return createHash("md5").update(Buffer.from(data)).digest("hex");
     },

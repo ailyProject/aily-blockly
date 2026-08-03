@@ -11,7 +11,7 @@
 
 运行前注意：
 
-- `test:e2e:fast` 会优先复用已有 `renderer/`，其次复用 `dist`；两者都不存在时仍会构建。修改前端代码后，先运行一次完整的 `npm run test:e2e`。
+- 所有 E2E 测试入口都会先重新执行 Angular 构建并暂存 `renderer/`，不会复用上一次运行留下的渲染产物。`test:e2e:fast` 仅作为历史兼容命令保留。
 - 运行中需要停止时只按一次 `Ctrl+C`，等待测试关闭 Electron、编译/终端子进程并生成 HTML 报告；再次按下会强制终止，此时报告可能不完整。
 - PowerShell 环境变量会保留在当前终端。全流程场景统一使用 `AILY_E2E_MODE` 选择，切换场景时直接覆盖该变量即可。
 - 旧版的 `AILY_E2E_FULLFLOW`、`AILY_E2E_ALL_BOARDS`、`AILY_E2E_PROJECT_PLAZA` 仍兼容单独使用；若同时启用多个，测试会立即报错，不再串到其他场景。
@@ -22,12 +22,12 @@
 | 运行目标 | 命令 | 说明 |
 |----------|------|------|
 | 完整回归 | `npm run test:e2e` | 重新构建并暂存生产渲染层后运行测试 |
-| 快速回归 | `npm run test:e2e:fast` | 尽量复用已有构建产物 |
+| 兼容入口 | `npm run test:e2e:fast` | 与完整回归一样重新构建，不再复用旧产物 |
 | Playwright UI | `npm run test:e2e:ui` | 以 `--ui` 模式运行 |
 | 有界面调试 | `npm run test:e2e:headed` | 以 `--headed` 模式运行 |
 | 查看上次报告 | `npm run test:e2e:report` | 打开 Playwright HTML 报告，不运行测试 |
 | 只跑某个文件 | `npm run test:e2e -- smoke.spec.ts` | 文件名也可换成下方测试套件中的任意 spec |
-| 快速跑某个文件 | `npm run test:e2e:fast -- full-flow.spec.ts` | 适合全流程或本地迭代 |
+| 兼容入口跑某个文件 | `npm run test:e2e:fast -- full-flow.spec.ts` | 同样先重新构建，再运行指定 spec |
 
 常用定向组合：
 
@@ -182,12 +182,12 @@ rm -rf e2e/.artifacts/full-flow-checkpoints
 | `AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED` | 未设置 | 抽样比例小于 `1` 时必填；相同 seed 稳定选择同一批项目 |
 | `AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS` | 未设置 | 逗号分隔的项目 ID；仅填写 AI 已确认属于项目自身问题的失败项 |
 
-`E2E_SKIP_BUILD` 和 `AILY_E2E_INTERACTIVE_DECISIONS` 由 [run-e2e.mjs](../scripts/run-e2e.mjs) 自动管理，不需要手动设置。
+`AILY_E2E_INTERACTIVE_DECISIONS` 由 [run-e2e.mjs](../scripts/run-e2e.mjs) 自动管理，不需要手动设置。`E2E_SKIP_BUILD` 已停用，即使外部环境残留该变量也不会跳过构建。
 
 ## 工作原理
 
-1. 普通模式下，`global-setup`（[global-setup.ts](global-setup.ts)）先执行 `ng build --base-href ./`，
-   再把构建产物 `dist/aily-blockly/browser` 暂存为项目根目录下的 `renderer/`；`fast` 模式按顶部说明优先复用已有产物。
+1. 所有测试模式下，`global-setup`（[global-setup.ts](global-setup.ts)）都会先执行 `ng build --base-href ./`，
+   再删除并重建项目根目录下的 `renderer/`，其内容来自 `dist/aily-blockly/browser`。历史 `fast` 入口也执行同一流程。
    这正是 `electron-builder` 打包时的映射关系（`browser` → `renderer`）。
 2. 启动夹具（[fixtures/electron-app.ts](fixtures/electron-app.ts)）用 `_electron.launch`
    以项目根为 `cwd`、`args: ['.']` 启动 Electron。主进程走「非 `--serve`」分支，

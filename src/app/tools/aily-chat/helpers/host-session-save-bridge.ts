@@ -954,9 +954,62 @@ function cloneSessionSnapshotRounds(
 
     return {
       ...roundWithoutSummary,
-      toolCalls: (round.toolCalls ?? []).map(toolCall => ({ ...toolCall })),
+      toolCalls: (round.toolCalls ?? []).map(toolCall => ({
+        ...toolCall,
+        output: toPersistedToolCallOutput(toolCall.output),
+      })),
     };
   });
+}
+
+function toPersistedToolCallOutput(value: unknown): unknown {
+  if (value == null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => toPersistedToolCallOutput(item));
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record['type'] === 'image') {
+    const source = record['source'] && typeof record['source'] === 'object'
+      ? record['source'] as Record<string, unknown>
+      : null;
+    const mediaRef = typeof record['mediaRef'] === 'string'
+      ? record['mediaRef']
+      : (typeof source?.['mediaRef'] === 'string' ? source['mediaRef'] : '');
+    const mediaType = typeof record['mimeType'] === 'string'
+      ? record['mimeType']
+      : (typeof source?.['mediaType'] === 'string' ? source['mediaType'] : '');
+    const {
+      data: _data,
+      base64: _base64,
+      imageData: _imageData,
+      source: _source,
+      ...metadata
+    } = record;
+    return {
+      ...Object.fromEntries(
+        Object.entries(metadata).map(([key, entry]) => [key, toPersistedToolCallOutput(entry)]),
+      ),
+      ...(mediaRef ? { mediaRef } : {}),
+      source: mediaRef
+        ? {
+          type: 'managed-ref',
+          mediaRef,
+          ...(mediaType ? { mediaType } : {}),
+        }
+        : {
+          type: 'omitted',
+          ...(mediaType ? { mediaType } : {}),
+        },
+      dataOmitted: true,
+    };
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, toPersistedToolCallOutput(entry)]),
+  );
 }
 
 function mergeStableTurnResponsesForSave(

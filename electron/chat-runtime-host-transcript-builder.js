@@ -51,6 +51,31 @@ function normalizeProtocolTruncation(value) {
 function buildSubmittedTurnSeed({ turnId, request, timestamp }) {
   const requestContent = normalizeOptionalString(request && request.requestText);
   const displayContent = normalizeOptionalString(request && request.displayText);
+  const requestModelId = normalizeOptionalString(
+    request && request.currentModel && (
+      request.currentModel.presetId
+      || request.currentModel.model
+      || request.currentModel.id
+    ),
+  );
+  const attachments = (Array.isArray(request && request.imageAttachments) ? request.imageAttachments : [])
+    .map(image => {
+      const mediaRef = normalizeOptionalString(image && image.source && image.source.kind === 'managed-ref'
+        ? image.source.mediaRef
+        : '');
+      if (!mediaRef) {
+        return null;
+      }
+      return {
+        ...(normalizeOptionalString(image && image.id) ? { id: image.id } : {}),
+        type: 'image',
+        name: normalizeOptionalString(image && image.name) || 'image',
+        uri: mediaRef,
+        ...(normalizeOptionalString(image && image.mimeType) ? { mimeType: image.mimeType } : {}),
+        ...(image && (image.detail === 'low' || image.detail === 'high') ? { detail: image.detail } : {}),
+      };
+    })
+    .filter(Boolean);
   const metadata = request && request.metadata && typeof request.metadata === 'object'
     ? clonePayload(request.metadata)
     : undefined;
@@ -59,7 +84,9 @@ function buildSubmittedTurnSeed({ turnId, request, timestamp }) {
     request: {
       content: requestContent,
       ...(displayContent && displayContent !== requestContent ? { displayContent } : {}),
+      ...(requestModelId ? { modelId: requestModelId } : {}),
       ...(metadata ? { metadata } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     },
     rounds: [],
     response: {
@@ -322,6 +349,53 @@ function cloneParts(turn) {
   return Array.isArray(turn && turn.response && turn.response.parts)
     ? [...turn.response.parts]
     : [];
+}
+
+function sanitizeToolResultForPersistence(value) {
+  if (value == null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeToolResultForPersistence(item));
+  }
+
+  if (value.type === 'image') {
+    const {
+      data: _data,
+      base64: _base64,
+      imageData: _imageData,
+      source: rawSource,
+      ...metadata
+    } = value;
+    const source = rawSource && typeof rawSource === 'object' && !Array.isArray(rawSource)
+      ? rawSource
+      : null;
+    const mediaRef = normalizeOptionalString(value.mediaRef)
+      || normalizeOptionalString(source?.mediaRef);
+    const mediaType = normalizeOptionalString(value.mimeType)
+      || normalizeOptionalString(source?.mediaType);
+    return {
+      ...Object.fromEntries(
+        Object.entries(metadata).map(([key, entry]) => [key, sanitizeToolResultForPersistence(entry)]),
+      ),
+      ...(mediaRef ? { mediaRef } : {}),
+      source: mediaRef
+        ? {
+          type: 'managed-ref',
+          mediaRef,
+          ...(mediaType ? { mediaType } : {}),
+        }
+        : {
+          type: 'omitted',
+          ...(mediaType ? { mediaType } : {}),
+        },
+      dataOmitted: true,
+    };
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, sanitizeToolResultForPersistence(entry)]),
+  );
 }
 
 function collectMarkdownResultText(parts) {
@@ -613,7 +687,7 @@ function patchToolEnd(parts, event) {
       ...existingMetadata,
       ...buildPartMetadata(event, {
         resultText,
-        result: clonePayload(event.result),
+        result: sanitizeToolResultForPersistence(event.result),
         durationMs: Number.isFinite(event.durationMs) ? event.durationMs : undefined,
         completedAt: event.timestamp,
       }),

@@ -18,8 +18,8 @@ primary_entry: npm run test:e2e
 
 1. 先从第 3 节选择一个操作类型，不得用“跑过一些 E2E”代替明确的测试范围。
 2. 所有命令默认在仓库根目录执行。
-3. 当前代码第一次测试必须使用 `npm run test:e2e` 或带 spec 参数的同类命令重新构建。只有已经确认 `renderer/` 来自当前代码时，后续重跑才能使用 `test:e2e:fast`。
-4. 正式发布验收不得只使用 `test:e2e:fast`。
+3. 所有 E2E 入口都会先重新构建并暂存生产渲染层；不得通过环境变量或手工保留产物绕过构建。
+4. `test:e2e:fast` 仅为历史兼容入口，执行行为与 `test:e2e` 相同，不再复用旧产物。
 5. 必须记录退出码、失败、跳过项和未覆盖项。环境变量未开启而被跳过的测试不算通过。
 6. AI 或 CI 无人值守执行批量全流程时，设置 `AILY_E2E_STOP_ON_ERROR=0`，跑完后统一汇总。
 7. `AILY_E2E_CLEAR_APPDATA=1` 会删除 aily-project 应用数据中的开发板包、编译器、SDK 和工具安装。仅在任务明确要求“全新环境/冷启动/发布完整验收”时使用。
@@ -52,7 +52,6 @@ npm --prefix electron ci --include=dev --force
 
 ```powershell
 Get-ChildItem Env:AILY_E2E_* -ErrorAction SilentlyContinue | Remove-Item
-Remove-Item Env:E2E_SKIP_BUILD -ErrorAction SilentlyContinue
 ```
 
 不要顺带清除用户显式配置的 `AILY_APPDATA_PATH` 或其他非 E2E 环境变量；如存在，必须在结果中记录，因为它会改变测试使用的数据目录。
@@ -62,7 +61,7 @@ Remove-Item Env:E2E_SKIP_BUILD -ErrorAction SilentlyContinue
 | 目的 | 命令 | 使用限制 |
 |---|---|---|
 | 当前代码完整 E2E | `npm run test:e2e` | 会重新构建生产渲染层；正式结论优先使用 |
-| 复用当前构建 | `npm run test:e2e:fast` | 仅用于同一份代码的后续迭代 |
+| 历史兼容入口 | `npm run test:e2e:fast` | 与 `test:e2e` 一样重新构建，不复用旧产物 |
 | 指定 spec | `npm run test:e2e -- smoke.spec.ts` | `--` 后参数透传给 Playwright |
 | 有界面调试 | `npm run test:e2e:headed -- smoke.spec.ts` | 用于定位，不代替无交互验收 |
 | Playwright UI | `npm run test:e2e:ui` | 用于开发测试，不作为最终发布证据 |

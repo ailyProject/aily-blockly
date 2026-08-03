@@ -110,6 +110,8 @@ export interface IFileSystem {
   readFileSync(path: string, encoding?: string): string;
   readFileAsBase64?(path: string): string;
   writeFileSync(path: string, data: string, encoding?: string): void;
+  writeFileBuffer?(path: string, data: ArrayBuffer | Uint8Array): void;
+  writeFileBufferAsync?(path: string, data: ArrayBuffer | Uint8Array): Promise<void>;
   appendFileSync?(path: string, data: string): void;
   existsSync(path: string): boolean;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;

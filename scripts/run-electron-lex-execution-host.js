@@ -16,6 +16,12 @@ if (!fs.existsSync(runtimeModule)) {
   process.exit(1);
 }
 
+const sharpPackageJson = path.join(repoRoot, 'electron', 'node_modules', 'sharp', 'package.json');
+if (!fs.existsSync(sharpPackageJson)) {
+  console.error('Missing electron dependency "sharp". Run: npm install --prefix electron');
+  process.exit(1);
+}
+
 if (!noCacheClean) {
   fs.rmSync(path.join(repoRoot, '.angular', 'cache'), { recursive: true, force: true });
 }

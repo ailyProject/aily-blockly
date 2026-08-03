@@ -12,6 +12,7 @@ export interface ChildToolHostInfo {
   shutdownUrl?: string;
   port?: number;
   pid?: number;
+  apiServer?: string;
 }
 
 export type ChildToolRuntimeState = 'unknown' | 'starting' | 'ready' | 'stopped' | 'error';
@@ -24,6 +25,12 @@ export interface ChildToolRuntimeSnapshot {
   hostInfo: ChildToolHostInfo | null;
   error?: string;
   updatedAt: number;
+}
+
+export interface ChildToolProcessMessageEvent {
+  toolId: string;
+  streamId: string;
+  message: Record<string, unknown>;
 }
 
 interface ChildToolBackendMessage {
@@ -55,6 +62,11 @@ export class ChildToolProcessService implements OnDestroy {
   private readonly releaseGraceMs = 15000;
   private readonly runtimeSnapshots = new Map<string, ChildToolRuntimeSnapshot>();
   private readonly runtimeStatesSubject = new BehaviorSubject<readonly ChildToolRuntimeSnapshot[]>([]);
+  private readonly processMessageListeners = new Map<
+    string,
+    Set<(message: Record<string, unknown>) => void>
+  >();
+  private removeProcessMessageListener: (() => void) | null = null;
   readonly runtimeStates$ = this.runtimeStatesSubject.asObservable();
 
   constructor(
@@ -64,6 +76,15 @@ export class ChildToolProcessService implements OnDestroy {
 
   async acquire(toolId: string): Promise<ChildToolHostInfo> {
     const config = this.requireConfig(toolId);
+    if (config.runtime?.processMessagePort) {
+      if (
+        !window['childToolSession']?.sendMessage
+        || !window['childToolSession']?.onMessage
+      ) {
+        throw new Error('Electron child tool process message bridge is not available');
+      }
+      this.ensureProcessMessageListener();
+    }
     const session = this.ensureSession(config.id);
     this.cancelReleaseTimer(session);
     session.refCount += 1;
@@ -170,7 +191,56 @@ export class ChildToolProcessService implements OnDestroy {
     };
   }
 
+  onMessage(
+    toolId: string,
+    listener: (message: Record<string, unknown>) => void,
+  ): () => void {
+    const config = this.requireConfig(toolId);
+    if (!config.runtime?.processMessagePort) {
+      throw new Error(`Child tool does not declare a process message port: ${toolId}`);
+    }
+    if (typeof listener !== 'function') {
+      throw new TypeError('Child tool process message listener must be a function');
+    }
+    this.ensureProcessMessageListener();
+    let listeners = this.processMessageListeners.get(config.id);
+    if (!listeners) {
+      listeners = new Set();
+      this.processMessageListeners.set(config.id, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+      if (listeners?.size === 0) this.processMessageListeners.delete(config.id);
+    };
+  }
+
+  async sendMessage(toolId: string, message: Record<string, unknown>): Promise<void> {
+    const config = this.requireConfig(toolId);
+    if (!config.runtime?.processMessagePort) {
+      throw new Error(`Child tool does not declare a process message port: ${toolId}`);
+    }
+    const session = this.sessions.get(config.id);
+    if (!session?.running || !session.streamId) {
+      throw new Error(`Child tool process message port is not ready: ${toolId}`);
+    }
+    const result = await window['childToolSession']?.sendMessage?.({
+      toolId: config.id,
+      streamId: session.streamId,
+      leaseId: session.leaseId,
+      message,
+    });
+    if (!result?.success) {
+      throw new Error(
+        `Child tool process message failed: ${result?.reason || 'message-port-unavailable'}`,
+      );
+    }
+  }
+
   ngOnDestroy(): void {
+    this.removeProcessMessageListener?.();
+    this.removeProcessMessageListener = null;
+    this.processMessageListeners.clear();
     void this.stopAll();
   }
 
@@ -310,6 +380,18 @@ export class ChildToolProcessService implements OnDestroy {
       return null;
     }
 
+    const selectedApiServer = this.selectedApiServerFor(config);
+    const sharedApiServer = this.normalizeApiServer(hostInfo.apiServer);
+    if (selectedApiServer && sharedApiServer !== selectedApiServer) {
+      this.log(config, 'discard shared session with stale service region', {
+        selectedApiServer,
+        sharedApiServer: sharedApiServer || null,
+        streamId: String(sharedSession.streamId || ''),
+      });
+      await window['childToolSession']?.restart?.(config.id);
+      return null;
+    }
+
     session.streamId = String(sharedSession.streamId || '');
     session.hostInfo = hostInfo;
     session.running = true;
@@ -326,6 +408,16 @@ export class ChildToolProcessService implements OnDestroy {
     if (!cmd?.run || !cmd?.onData) {
       throw new Error('Electron command bridge is not available');
     }
+    if (
+      config.runtime?.processMessagePort
+      && (
+        !window['childToolSession']?.sendMessage
+        || !window['childToolSession']?.onMessage
+      )
+    ) {
+      throw new Error('Electron child tool process message bridge is not available');
+    }
+    this.ensureProcessMessageListener();
 
     if (!pathApi?.getAilyChildPath || !pathApi?.join) {
       throw new Error('Aily child path API is not available');
@@ -336,7 +428,10 @@ export class ChildToolProcessService implements OnDestroy {
     const projectPath = config.packagePath || pathApi.join(childPath, childDir);
     const scriptPath = pathApi.join(projectPath, config.entry || 'index.js');
     const uiPath = pathApi.join(projectPath, config.uiIndex || pathApi.join('ui', 'index.html'));
-    const hostApiServer = String(this.configService.getCurrentApiServer() || '').trim();
+    const hostApiServer = this.normalizeApiServer(this.configService.getCurrentApiServer());
+    if (this.requiresSelectedApiServer(config) && !hostApiServer) {
+      throw new Error(`${config.id} requires the API server selected by the host service-region dialog`);
+    }
 
     this.log(config, 'resolve paths', {
       childPath,
@@ -399,6 +494,10 @@ export class ChildToolProcessService implements OnDestroy {
         args: [scriptPath, 'serve', '--host', '127.0.0.1', '--port', '0'],
         cwd: projectPath,
         streamId,
+        shellProfile: false,
+        ...(config.runtime?.processMessagePort
+          ? { messagePort: config.runtime.processMessagePort }
+          : {}),
         env: {
           AILY_CHILD_TOOL: '1',
           AILY_CHILD_TOOL_ID: config.id,
@@ -420,17 +519,21 @@ export class ChildToolProcessService implements OnDestroy {
       if (session.streamId !== streamId) {
         throw new Error(`${config.id} startup was superseded before registration`);
       }
+      const registeredHostInfo: ChildToolHostInfo = hostApiServer
+        ? { ...hostInfo, apiServer: hostApiServer }
+        : hostInfo;
+      session.hostInfo = registeredHostInfo;
       const registered = await window['childToolSession']?.register?.({
         toolId: config.id,
-        hostInfo,
+        hostInfo: registeredHostInfo,
         streamId,
         leaseId: session.leaseId,
       });
       if (registered && registered.success !== true) {
         throw new Error(`${config.id} Runtime registration failed: ${registered.reason || 'unknown error'}`);
       }
-      this.log(config, 'server ready promise resolved', this.sanitizeHostInfo(hostInfo));
-      return hostInfo;
+      this.log(config, 'server ready promise resolved', this.sanitizeHostInfo(registeredHostInfo));
+      return registeredHostInfo;
     } catch (error) {
       this.rejectReady(session, error);
       await readyPromise.catch(() => undefined);
@@ -602,6 +705,40 @@ export class ChildToolProcessService implements OnDestroy {
     session.expectedStopReason = null;
   }
 
+  private ensureProcessMessageListener(): void {
+    if (this.removeProcessMessageListener) return;
+    const onMessage = window['childToolSession']?.onMessage;
+    if (typeof onMessage !== 'function') return;
+    this.removeProcessMessageListener = onMessage(
+      (event: ChildToolProcessMessageEvent) => {
+        const toolId = String(event?.toolId || '').trim();
+        const streamId = String(event?.streamId || '').trim();
+        const session = this.sessions.get(toolId);
+        if (
+          !toolId
+          || !streamId
+          || !session?.running
+          || session.streamId !== streamId
+          || !event.message
+          || typeof event.message !== 'object'
+          || Array.isArray(event.message)
+        ) {
+          return;
+        }
+        for (const listener of this.processMessageListeners.get(toolId) || []) {
+          try {
+            listener(event.message);
+          } catch (error) {
+            const config = getChildToolConfig(toolId);
+            if (config) {
+              this.logError(config, 'process message listener failed', error);
+            }
+          }
+        }
+      },
+    );
+  }
+
   private createLeaseId(toolId: string): string {
     const normalizedToolId = String(toolId || 'child-tool').replace(/[^a-zA-Z0-9_-]/g, '_');
     return `${normalizedToolId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -683,6 +820,20 @@ export class ChildToolProcessService implements OnDestroy {
   private tailText(value: string, maxLength = 4000): string {
     const text = String(value || '');
     return text.length > maxLength ? `...${text.slice(-maxLength)}` : text;
+  }
+
+  private selectedApiServerFor(config: ChildToolConfig): string {
+    return this.requiresSelectedApiServer(config)
+      ? this.normalizeApiServer(this.configService.getCurrentApiServer())
+      : '';
+  }
+
+  private requiresSelectedApiServer(config: ChildToolConfig): boolean {
+    return config.id === 'aily-chat' || config.id === 'aily-chat-react';
+  }
+
+  private normalizeApiServer(value: unknown): string {
+    return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
   }
 
   private appendChildToolLog(source: string, message: string, level: ProjectLogLevel): void {

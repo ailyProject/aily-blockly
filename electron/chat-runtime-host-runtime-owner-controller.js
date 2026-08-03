@@ -142,18 +142,21 @@ class ChatRuntimeHostRuntimeOwnerController {
     return { ok: true, runtimeOwnerId, ownerKey };
   }
 
-  dispatchCommand(method, args) {
+  dispatchCommand(method, args, options = {}) {
     const runtimeOwnerTransport = this.readRuntimeOwnerTransport();
     if (!runtimeOwnerTransport) {
       throw new Error('[AilyChat][RuntimeHost] No registered host runtime owner.');
     }
 
     const requestId = this.nextCommandId(method);
+    const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : this.commandTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingCommands.delete(requestId);
         reject(new Error(`[AilyChat][RuntimeHost] Runtime host command timed out: ${method}`));
-      }, this.commandTimeoutMs);
+      }, timeoutMs);
 
       this.pendingCommands.set(requestId, { resolve, reject, timer, method, args });
       runtimeOwnerTransport.sendCommand({ requestId, method, args });

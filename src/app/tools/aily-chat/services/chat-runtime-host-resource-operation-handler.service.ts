@@ -48,6 +48,16 @@ import {
   savePinmapTool,
   validateConnectionGraphTool,
 } from '../tools/connectionGraphTool';
+import {
+  createProjectSceneGenerationHandlers,
+  GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
+  SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+} from '../core/blockly-project-scene-tools';
+import {
+  createSceneCodeReconciliationHandlers,
+  GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL,
+  SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL,
+} from '../core/blockly-scene-code-reconciliation-tools';
 
 type HostResourceOperationPayload = {
   readonly adapter?: unknown;
@@ -221,6 +231,10 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
         return this.runConnectionGraphOperation(request);
       case 'subapp-agent':
         return this.runSubappAgentOperation(request);
+      case 'project-scene-proposal':
+        return this.runProjectSceneProposalOperation(request);
+      case 'scene-code-reconciliation':
+        return this.runSceneCodeReconciliationOperation(request);
       case 'board-search':
         return this.runBoardSearchOperation(request);
       case 'library-analysis':
@@ -238,6 +252,136 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
           'resource_operation_unsupported',
           false,
         );
+    }
+  }
+
+  private async runProjectSceneProposalOperation(
+    request: ChatRuntimeHostResourceOperationRequest,
+  ): Promise<Record<string, unknown>> {
+    this.requireSessionId(request, 'Project Scene proposal');
+    const payload = this.requirePayloadAdapter(
+      request.payload,
+      'projectSceneProposal',
+      'Project Scene proposal',
+    );
+    const toolName = payload.action === 'readContext'
+      ? GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL
+      : payload.action === 'submitProposal'
+        ? SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL
+        : '';
+    if (!toolName) {
+      throw new HostResourceOperationError(
+        `[AilyChat][RuntimeHost] Unsupported Project Scene proposal action: ${String(payload.action || '<missing>')}.`,
+        'resource_operation_payload_invalid',
+        false,
+      );
+    }
+    const input = payload.input;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new HostResourceOperationError(
+        '[AilyChat][RuntimeHost] Project Scene proposal tool requires an input object.',
+        'resource_operation_payload_invalid',
+        false,
+      );
+    }
+    const handler = createProjectSceneGenerationHandlers()[toolName];
+    const result = await handler(
+      input as Record<string, unknown>,
+      {} as never,
+      {
+        toolCallId: this.normalizeSessionId(request.toolCallId),
+        trace: { turnId: this.normalizeSessionId(request.turnId) },
+      },
+    );
+    const text = result.content
+      .filter(item => item.type === 'text')
+      .map(item => item.type === 'text' ? item.text : '')
+      .join('\n')
+      .trim();
+    if (result.isError) {
+      throw new HostResourceOperationError(
+        text || 'Project Scene proposal tool failed.',
+        'project_scene_proposal_tool_failed',
+        false,
+      );
+    }
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('result is not an object');
+      }
+      return parsed as Record<string, unknown>;
+    } catch (error) {
+      throw new HostResourceOperationError(
+        `[AilyChat][RuntimeHost] Project Scene proposal tool returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        'project_scene_proposal_tool_result_invalid',
+        false,
+      );
+    }
+  }
+
+  private async runSceneCodeReconciliationOperation(
+    request: ChatRuntimeHostResourceOperationRequest,
+  ): Promise<Record<string, unknown>> {
+    this.requireSessionId(request, 'Scene code reconciliation');
+    const payload = this.requirePayloadAdapter(
+      request.payload,
+      'sceneCodeReconciliation',
+      'Scene code reconciliation',
+    );
+    const toolName = payload.action === 'readContext'
+      ? GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL
+      : payload.action === 'submitCandidate'
+        ? SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL
+        : '';
+    if (!toolName) {
+      throw new HostResourceOperationError(
+        `[AilyChat][RuntimeHost] Unsupported Scene code reconciliation action: ${String(payload.action || '<missing>')}.`,
+        'resource_operation_payload_invalid',
+        false,
+      );
+    }
+    const input = payload.input;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new HostResourceOperationError(
+        '[AilyChat][RuntimeHost] Scene code reconciliation tool requires an input object.',
+        'resource_operation_payload_invalid',
+        false,
+      );
+    }
+    const handler = createSceneCodeReconciliationHandlers()[toolName];
+    const result = await handler(
+      input as Record<string, unknown>,
+      {} as never,
+      {
+        toolCallId: this.normalizeSessionId(request.toolCallId),
+        trace: { turnId: this.normalizeSessionId(request.turnId) },
+      },
+    );
+    const text = result.content
+      .filter(item => item.type === 'text')
+      .map(item => item.type === 'text' ? item.text : '')
+      .join('\n')
+      .trim();
+    if (result.isError) {
+      throw new HostResourceOperationError(
+        text || 'Scene code reconciliation tool failed.',
+        'scene_code_reconciliation_tool_failed',
+        false,
+      );
+    }
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('result is not an object');
+      }
+      return parsed as Record<string, unknown>;
+    } catch (error) {
+      throw new HostResourceOperationError(
+        `[AilyChat][RuntimeHost] Scene code reconciliation tool returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        'scene_code_reconciliation_tool_result_invalid',
+        false,
+      );
     }
   }
 

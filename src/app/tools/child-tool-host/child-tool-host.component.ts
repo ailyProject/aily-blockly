@@ -17,6 +17,7 @@ import {
   type ChildAppWindowPlacement,
 } from '../../services/child-app-host-registry.service';
 import { AuthService } from '../../services/auth.service';
+import { ConfigService } from '../../services/config.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { ElectronService } from '../../services/electron.service';
 import { LogService } from '../../services/log.service';
@@ -27,6 +28,11 @@ import { ThemeService } from '../../services/theme.service';
 import { ToolI18nService } from '../../services/tool-i18n.service';
 import { UiService } from '../../services/ui.service';
 import { toHostResourceLifecycleRequest } from '../../services/subapp-resource-lifecycle-adapter';
+import {
+  SubappActivityService,
+  type SubappActivity,
+} from '../../services/subapp-activity.service';
+import { ChatSubappDockComponent } from '../aily-chat/components/subapp-activity/chat-subapp-dock.component';
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
@@ -55,7 +61,8 @@ interface NormalizedHostMessage {
     TranslateModule,
     NzToolTipModule,
     SubWindowComponent,
-    ToolContainerComponent
+    ToolContainerComponent,
+    ChatSubappDockComponent,
   ],
   templateUrl: './child-tool-host.component.html',
   styleUrl: './child-tool-host.component.scss'
@@ -94,12 +101,16 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private projectPathSubscription: Subscription | null = null;
   private blockSelectionSubscription: Subscription | null = null;
   private toolSignalSubscription: Subscription | null = null;
+  private subappActivitySubscription: Subscription | null = null;
+  private configReloadSubscription: Subscription | null = null;
+  private lastKnownApiServer = '';
   private standaloneWorkspace: string | null | undefined;
   private standaloneWorkspaceVersion = -1;
   private projectContextListenerRegistered = false;
   private projectContextListenerCleanup: (() => void) | null = null;
   private unregisterHostController: (() => void) | null = null;
   private ailyChatOperationActive = false;
+  ailyChatSessionId = '';
 
   constructor(
     private route: ActivatedRoute,
@@ -116,11 +127,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private logService: LogService,
     private childHostRegistry: ChildAppHostRegistryService,
     private authService: AuthService,
+    private configService: ConfigService,
     private blocklyService: BlocklyService,
     private electronService: ElectronService,
     private mainUiAutomation: MainUiAutomationService,
     private subappManager: SubappManagerService,
     private noticeService: NoticeService,
+    private subappActivityService: SubappActivityService,
   ) {
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
@@ -136,6 +149,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       if (this.initialized && this.isAilyChatTool()) {
         this.syncHostContext();
       }
+    });
+    this.lastKnownApiServer = this.normalizeApiServer(this.configService.getCurrentApiServer());
+    this.configReloadSubscription = this.configService.configReloaded$.subscribe(() => {
+      this.handleApiServerChange();
     });
   }
 
@@ -159,9 +176,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return this.hostStatus === 'starting' || (this.hostStatus === 'ready' && !this.frameLoaded);
   }
 
+  get isAilyChat(): boolean {
+    return this.isAilyChatTool();
+  }
+
   ngOnInit(): void {
     this.initialized = true;
     this.toolSignalSubscription = this.uiService.actionSubject.subscribe((action: any) => this.forwardToolSignal(action));
+    this.subappActivitySubscription = this.subappActivityService.activities$.subscribe(() => {
+      if (this.initialized && this.isAilyChatTool()) {
+        this.pushChatSubappActivities();
+      }
+    });
     void this.initTool();
   }
 
@@ -186,6 +212,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.blockSelectionSubscription = null;
     this.toolSignalSubscription?.unsubscribe();
     this.toolSignalSubscription = null;
+    this.subappActivitySubscription?.unsubscribe();
+    this.subappActivitySubscription = null;
+    this.configReloadSubscription?.unsubscribe();
+    this.configReloadSubscription = null;
     this.projectContextListenerCleanup?.();
     this.projectContextListenerCleanup = null;
     this.projectContextListenerRegistered = false;
@@ -241,9 +271,47 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return task;
   }
 
-  private async performRestart(): Promise<Record<string, unknown>> {
+  private handleApiServerChange(): void {
+    const nextApiServer = this.normalizeApiServer(this.configService.getCurrentApiServer());
+    if (!nextApiServer || nextApiServer === this.lastKnownApiServer) {
+      return;
+    }
+
+    const previousApiServer = this.lastKnownApiServer;
+    this.lastKnownApiServer = nextApiServer;
+    if (!this.initialized || !this.acquired || !this.isAilyChatTool()) {
+      return;
+    }
+
+    this.log('service region changed', {
+      previousApiServer,
+      nextApiServer,
+    });
+    void this.restartForApiServerChange();
+  }
+
+  private restartForApiServerChange(): Promise<Record<string, unknown>> {
+    if (this.restartTask) {
+      return this.restartTask;
+    }
+
+    // A region change invalidates the old authentication endpoint. It is a
+    // host-owned runtime transition, so it must not remain on the old endpoint
+    // when a child beforeClose hook declines a normal user restart.
+    const task = this.performRestart(true);
+    this.restartTask = task;
+    const clearRestartTask = () => {
+      if (this.restartTask === task) {
+        this.restartTask = null;
+      }
+    };
+    void task.then(clearRestartTask, clearRestartTask);
+    return task;
+  }
+
+  private async performRestart(force = false): Promise<Record<string, unknown>> {
     if (!this.config) return { ok: false, message: '子应用配置未就绪' };
-    if (!await this.notifyChildBeforeClose('restart')) {
+    if (!force && !await this.notifyChildBeforeClose('restart')) {
       return { ok: false, message: '子应用拒绝重启，可能存在未完成操作。' };
     }
 
@@ -332,6 +400,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     if (!nextToolId) {
       this.showConfigError('Child tool id is missing');
       return;
+    }
+
+    if (this.resolvedToolId !== nextToolId) {
+      this.ailyChatSessionId = '';
     }
 
     this.log('init', {
@@ -501,6 +573,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         reportAiOperationState: (payload: { active?: boolean } = {}) => {
           return this.ngZone.run(() => this.reportAiOperationState(payload));
         },
+        reportActiveChatSession: (payload: { sessionId?: string | null } = {}) => {
+          return this.ngZone.run(() => this.reportActiveChatSession(payload));
+        },
+        setSubappSurfaceState: (payload: {
+          sessionId?: string;
+          toolId?: string;
+          surfaceState?: 'collapsed' | 'expanded';
+        } = {}) => this.ngZone.run(() => this.setSubappSurfaceState(payload)),
         sendToolSignal: async (signal: string, payload: any = {}) => {
           return await this.sendToolSignalFromChild(signal, payload);
         }
@@ -514,6 +594,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         this.penpalState = 'connected';
         this.beforeCloseNotified = false;
         this.syncHostContext();
+        this.pushChatSubappActivities();
       })
       .catch(error => {
         this.ngZone.run(() => {
@@ -651,6 +732,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     } catch {
       return String(value);
     }
+  }
+
+  private normalizeApiServer(value: unknown): string {
+    return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
   }
 
   private isRecord(value: any): value is Record<string, any> {
@@ -894,8 +979,83 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         clipboardWrite: isAilyChat,
         blockSelectionContext: isAilyChat,
         childFrameFocus: isAilyChat,
-        aiOperationState: isAilyChat
+        aiOperationState: isAilyChat,
+        subappDock: isAilyChat
       }
+    };
+  }
+
+  private reportActiveChatSession(
+    payload: { sessionId?: string | null } = {},
+  ): Record<string, unknown> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'Active chat session reporting is only available to Aily Chat' };
+    }
+
+    const sessionId = typeof payload.sessionId === 'string'
+      ? payload.sessionId.trim().slice(0, 512)
+      : '';
+    if (sessionId === this.ailyChatSessionId) {
+      this.pushChatSubappActivities();
+      return { ok: true, sessionId: sessionId || null };
+    }
+
+    this.ailyChatSessionId = sessionId;
+    this.pushChatSubappActivities();
+    return { ok: true, sessionId: sessionId || null };
+  }
+
+  private setSubappSurfaceState(payload: {
+    sessionId?: string;
+    toolId?: string;
+    surfaceState?: 'collapsed' | 'expanded';
+  } = {}): Record<string, unknown> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'Subapp Dock controls are only available to Aily Chat' };
+    }
+
+    const sessionId = String(payload.sessionId || '').trim();
+    const toolId = String(payload.toolId || '').trim();
+    const surfaceState = payload.surfaceState;
+    if (!sessionId || sessionId !== this.ailyChatSessionId || !toolId) {
+      return { ok: false, message: 'Subapp Dock target does not match the active chat session' };
+    }
+    if (surfaceState !== 'collapsed' && surfaceState !== 'expanded') {
+      return { ok: false, message: 'Subapp Dock surface state is invalid' };
+    }
+
+    const activity = this.subappActivityService.setSurfaceState(sessionId, toolId, surfaceState);
+    return activity
+      ? { ok: true, sessionId, toolId, surfaceState }
+      : { ok: false, message: 'Subapp activity is unavailable for the active chat session' };
+  }
+
+  private pushChatSubappActivities(): void {
+    if (!this.isAilyChatTool() || typeof this.remoteApi?.setSubappActivities !== 'function') {
+      return;
+    }
+
+    const sessionId = this.ailyChatSessionId;
+    const items = sessionId
+      ? this.subappActivityService.getSessionActivities(sessionId).map(activity => this.projectSubappActivity(activity))
+      : [];
+    void Promise.resolve(this.remoteApi.setSubappActivities({ sessionId, items })).catch(() => undefined);
+  }
+
+  private projectSubappActivity(activity: SubappActivity): Record<string, unknown> {
+    return {
+      sessionId: activity.sessionId,
+      toolId: activity.toolId,
+      title: activity.title,
+      icon: activity.icon,
+      toolName: activity.toolName,
+      invocationState: activity.invocationState,
+      runtimeState: activity.runtimeState,
+      surfaceState: activity.surfaceState,
+      invocationCount: activity.invocationCount,
+      activeInvocationCount: activity.activeInvocationCount,
+      lastUsedAt: activity.lastUsedAt,
+      ...(activity.summary ? { summary: { ...activity.summary } } : {}),
     };
   }
 

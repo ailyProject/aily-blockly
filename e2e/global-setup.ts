@@ -10,9 +10,7 @@ import path from 'node:path';
  * 2. Stage that browser output into `<root>/renderer`, matching the production
  *    electron-builder mapping used by `electron/main.js`.
  *
- * Fast mode may skip the Angular build, but only when the staged renderer or
- * dist output is newer than the renderer inputs. This keeps the Playwright test
- * bundle and the Electron renderer bundle on the same version.
+ * 每次运行都重新构建并暂存 renderer，确保测试使用当前源码。
  */
 const ROOT = path.resolve(__dirname, '..');
 const NG_CLI = path.join(ROOT, 'node_modules', '@angular', 'cli', 'bin', 'ng.js');
@@ -94,23 +92,6 @@ function isFreshAgainstBuildInputs(targetPath: string): boolean {
 }
 
 export default function globalSetup(): void {
-  const skipBuild = process.env['E2E_SKIP_BUILD'] === '1';
-
-  if (skipBuild && isFreshAgainstBuildInputs(RENDERER_DIR)) {
-    console.log('[e2e] E2E_SKIP_BUILD=1 and renderer/ is fresh; skipping build.');
-    return;
-  }
-
-  if (skipBuild && existsSync(RENDERER_DIR)) {
-    console.log('[e2e] E2E_SKIP_BUILD=1 but renderer/ is stale.');
-  }
-
-  if (skipBuild && isFreshAgainstBuildInputs(BUILD_OUTPUT)) {
-    console.log('[e2e] E2E_SKIP_BUILD=1 and dist output is fresh; staging renderer.');
-    stageRenderer();
-    return;
-  }
-
   runAngularBuild();
   stageRenderer();
 }

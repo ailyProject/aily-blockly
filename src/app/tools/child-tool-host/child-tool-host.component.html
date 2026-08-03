@@ -61,6 +61,9 @@
 
 <ng-template #contentTpl>
   <div class="child-tool-host">
+    @if (isAilyChat) {
+    <aily-chat-subapp-dock [sessionId]="ailyChatSessionId"></aily-chat-subapp-dock>
+    }
     <div class="iframe-shell">
       @if (iframeSrc) {
       <iframe [src]="iframeSrc" (load)="onFrameLoad($event)"></iframe>

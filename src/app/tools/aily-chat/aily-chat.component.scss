@@ -1428,6 +1428,15 @@
       color: var(--aily-text-primary, #fff);
     }
 
+    .resource-image-preview {
+      width: 30px;
+      height: 30px;
+      flex: 0 0 30px;
+      border-radius: 3px;
+      object-fit: cover;
+      background: var(--aily-bg-secondary, #2d2d2d);
+    }
+
     .btn {
       cursor: pointer;
       font-size: 12px;

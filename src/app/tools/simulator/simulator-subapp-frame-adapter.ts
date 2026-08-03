@@ -55,6 +55,17 @@ export interface SimulatorSubappDebugBlockMapping {
   truncated: boolean;
 }
 
+export interface SimulatorSubappProjectSceneGenerationIntent {
+  schemaVersion: 1;
+  kind: 'aily-simulator-subapp-project-scene-generation-intent';
+  launchId: string;
+  base: {
+    visualRevision: string;
+    graphSemanticRevision: string;
+    catalogRevision: string;
+  };
+}
+
 export interface SimulatorSubappFrameAdapterOptions {
   window: Pick<Window, 'addEventListener' | 'removeEventListener'>;
   frame: Pick<HTMLIFrameElement, 'contentWindow' | 'src'>;
@@ -62,6 +73,9 @@ export interface SimulatorSubappFrameAdapterOptions {
   releaseSurface(): Promise<unknown>;
   onStateChange?(state: SimulatorSubappFrameState, error: Error | null): void;
   onDebugLocationHint?(event: SimulatorSubappDebugLocationHint): void;
+  onProjectSceneGenerationIntent?(
+    event: SimulatorSubappProjectSceneGenerationIntent,
+  ): void;
   requestId?(): string;
   handshakeTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -100,6 +114,8 @@ export class SimulatorSubappFrameAdapter {
   private readonly releaseSurface: SimulatorSubappFrameAdapterOptions['releaseSurface'];
   private readonly onStateChange?: SimulatorSubappFrameAdapterOptions['onStateChange'];
   private readonly onDebugLocationHint?: SimulatorSubappFrameAdapterOptions['onDebugLocationHint'];
+  private readonly onProjectSceneGenerationIntent?:
+    SimulatorSubappFrameAdapterOptions['onProjectSceneGenerationIntent'];
   private readonly createRequestId: () => string;
   private readonly handshakeTimeoutMs: number;
   private readonly requestTimeoutMs: number;
@@ -131,6 +147,7 @@ export class SimulatorSubappFrameAdapter {
     this.releaseSurface = options.releaseSurface;
     this.onStateChange = options.onStateChange;
     this.onDebugLocationHint = options.onDebugLocationHint;
+    this.onProjectSceneGenerationIntent = options.onProjectSceneGenerationIntent;
     this.createRequestId = options.requestId ?? defaultRequestId;
     this.handshakeTimeoutMs = requireTimeout(
       options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
@@ -280,7 +297,17 @@ export class SimulatorSubappFrameAdapter {
     }
 
     const hint = validateDebugLocationHint(event.data, surface.launchId);
-    if (hint) this.onDebugLocationHint?.(hint);
+    if (hint) {
+      this.onDebugLocationHint?.(hint);
+      return;
+    }
+    const generationIntent = validateProjectSceneGenerationIntent(
+      event.data,
+      surface.launchId,
+    );
+    if (generationIntent) {
+      this.onProjectSceneGenerationIntent?.(generationIntent);
+    }
   };
 
   private async recoverAfterReload(): Promise<void> {
@@ -569,6 +596,29 @@ function validateDebugLocationHint(
     return null;
   }
   return value as unknown as SimulatorSubappDebugLocationHint;
+}
+
+function validateProjectSceneGenerationIntent(
+  value: unknown,
+  launchId: string,
+): SimulatorSubappProjectSceneGenerationIntent | null {
+  if (!isRecord(value)) return null;
+  if (
+    !exactKeys(value, ['schemaVersion', 'kind', 'launchId', 'base'])
+    || value['schemaVersion'] !== 1
+    || value['kind'] !== 'aily-simulator-subapp-project-scene-generation-intent'
+    || value['launchId'] !== launchId
+    || !isRecord(value['base'])
+    || !exactKeys(value['base'], [
+      'visualRevision', 'graphSemanticRevision', 'catalogRevision',
+    ])
+    || !isSha256(value['base']['visualRevision'])
+    || !isSha256(value['base']['graphSemanticRevision'])
+    || !isSha256(value['base']['catalogRevision'])
+  ) {
+    return null;
+  }
+  return value as unknown as SimulatorSubappProjectSceneGenerationIntent;
 }
 
 function validateDebugMappings(value: unknown[]): Set<string> | null {

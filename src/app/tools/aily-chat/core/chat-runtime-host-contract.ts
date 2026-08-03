@@ -6,6 +6,7 @@ import type {
 } from './chat-agent-runtime-mode';
 import type { ChatModeId, ChatSelectedMode } from './chat-mode';
 import type { HostSessionProviderOptions } from '../helpers/host-session-input-state';
+import type { ChatImageAttachmentDraft } from './chat-image-attachment';
 
 export type ChatRuntimeHostViewId = string;
 export type ChatRuntimeHostSessionId = string;
@@ -41,13 +42,17 @@ export interface ChatRuntimeHostModelSelectionSnapshot {
   readonly reasoningEffort?: string;
   readonly baseUrl?: string;
   readonly apiKey?: string;
+  readonly isCustom?: boolean;
   readonly providerContextManagementSupport?: unknown;
+  readonly inputModalities?: readonly ('text' | 'image')[];
+  readonly maxInputImages?: number;
 }
 
 export interface ChatRuntimeHostSubmitRequest {
   readonly sessionId: ChatRuntimeHostSessionId;
   readonly requestText: string;
   readonly displayText?: string;
+  readonly imageAttachments?: readonly ChatImageAttachmentDraft[];
   readonly selectedMode?: ChatSelectedMode | null;
   readonly providerOptions?: HostSessionProviderOptions | null;
   readonly agentRuntimeMode?: ChatAgentRuntimeMode | null;
@@ -57,6 +62,22 @@ export interface ChatRuntimeHostSubmitRequest {
   readonly metadata?: Readonly<Record<string, unknown>> | null;
   readonly activeResponseHandle?: unknown | null;
   readonly protocolTruncation?: ChatRuntimeHostProtocolTruncation | null;
+}
+
+export interface ChatRuntimeHostImageMediaRequest {
+  readonly sessionId: ChatRuntimeHostSessionId;
+  readonly attachmentId?: string;
+  readonly mediaRef: string;
+  readonly mimeType?: string;
+}
+
+export interface ChatRuntimeHostImageMedia {
+  readonly mediaRef: string;
+  readonly mimeType: string;
+  readonly width: number;
+  readonly height: number;
+  readonly byteLength: number;
+  readonly content: string;
 }
 
 export type ChatRuntimeHostProtocolTruncation =
@@ -642,6 +663,8 @@ export type ChatRuntimeHostResourceRequestKind =
   | 'blockly-workspace'
   | 'connection-graph'
   | 'subapp-agent'
+  | 'project-scene-proposal'
+  | 'scene-code-reconciliation'
   | 'session-title'
   | 'save-current-session'
   | 'history-persistence';
@@ -816,6 +839,18 @@ export interface ChatRuntimeHostSubappAgentPayload {
   readonly input?: Readonly<Record<string, unknown>>;
 }
 
+export interface ChatRuntimeHostScopedAgentToolPayload {
+  readonly adapter: 'projectSceneProposal';
+  readonly action: 'readContext' | 'submitProposal';
+  readonly input: Readonly<Record<string, unknown>>;
+}
+
+export interface ChatRuntimeHostSceneCodeReconciliationToolPayload {
+  readonly adapter: 'sceneCodeReconciliation';
+  readonly action: 'readContext' | 'submitCandidate';
+  readonly input: Readonly<Record<string, unknown>>;
+}
+
 export type ChatRuntimeHostResourceOperationPayload =
   | ChatRuntimeHostAbsWorkspaceExportPayload
   | ChatRuntimeHostSyncAbsPayload
@@ -830,7 +865,9 @@ export type ChatRuntimeHostResourceOperationPayload =
   | ChatRuntimeHostLibraryAnalysisPayload
   | ChatRuntimeHostDiagnosticsPayload
   | ChatRuntimeHostToolApprovalPayload
-  | ChatRuntimeHostSubappAgentPayload;
+  | ChatRuntimeHostSubappAgentPayload
+  | ChatRuntimeHostScopedAgentToolPayload
+  | ChatRuntimeHostSceneCodeReconciliationToolPayload;
 
 export interface ChatRuntimeHostResourceOperationRequest {
   readonly id?: string;
@@ -960,7 +997,37 @@ export type ChatRuntimeOwnerExecutorCommandMethod =
   | 'startTurn'
   | 'stopTurn'
   | 'disposeSessionResources'
+  | 'runScopedAgent'
+  | 'cancelScopedAgent'
   | 'resolveInteraction';
+
+export interface ChatRuntimeHostScopedAgentRunRequest {
+  readonly invocationId: string;
+  readonly agentType: string;
+  readonly prompt: string;
+  readonly runtimeMode: 'blockly' | 'coder';
+  readonly providerOptions?: Readonly<Record<string, unknown>> | null;
+  readonly currentModel?: Readonly<Record<string, unknown>> | null;
+}
+
+export interface ChatRuntimeHostScopedAgentRunResult {
+  readonly schemaVersion: 1;
+  readonly kind: 'aily-chat-runtime-scoped-agent-result';
+  readonly invocationId: string;
+  readonly agentType: string;
+  readonly reason: string;
+}
+
+export interface ChatRuntimeHostScopedAgentCancelRequest {
+  readonly invocationId: string;
+}
+
+export interface ChatRuntimeHostScopedAgentCancelResult {
+  readonly schemaVersion: 1;
+  readonly kind: 'aily-chat-runtime-scoped-agent-cancel-result';
+  readonly invocationId: string;
+  readonly cancelled: boolean;
+}
 
 export interface ChatRuntimeOwnerExecutorPrewarmRuntimeCommand extends ChatRuntimeHostPrewarmRequest {}
 
@@ -1134,6 +1201,14 @@ export type ChatRuntimeOwnerExecutorCommand =
       readonly payload: ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand;
     }
   | {
+      readonly method: 'runScopedAgent';
+      readonly payload: ChatRuntimeHostScopedAgentRunRequest;
+    }
+  | {
+      readonly method: 'cancelScopedAgent';
+      readonly payload: ChatRuntimeHostScopedAgentCancelRequest;
+    }
+  | {
       readonly method: 'resolveInteraction';
       readonly payload: ChatRuntimeOwnerExecutorResolveInteractionCommand;
     };
@@ -1246,6 +1321,12 @@ export interface ChatRuntimeOwnerExecutor {
   startTurn(command: ChatRuntimeOwnerExecutorStartTurnCommand): Promise<ChatRuntimeHostSessionState>;
   stopTurn(command: ChatRuntimeOwnerExecutorStopTurnCommand): Promise<void>;
   disposeSessionResources(command: ChatRuntimeOwnerExecutorDisposeSessionResourcesCommand): Promise<void>;
+  runScopedAgent?(
+    command: ChatRuntimeHostScopedAgentRunRequest,
+  ): Promise<ChatRuntimeHostScopedAgentRunResult>;
+  cancelScopedAgent?(
+    command: ChatRuntimeHostScopedAgentCancelRequest,
+  ): Promise<ChatRuntimeHostScopedAgentCancelResult>;
   resolveInteraction(command: ChatRuntimeOwnerExecutorResolveInteractionCommand): Promise<ChatRuntimeHostInteractionSnapshot | null>;
   onEvent(listener: (event: ChatRuntimeHostEvent | ChatRuntimeOwnerExecutorRenderEventProgress | ChatRuntimeOwnerExecutorEvent) => void): ChatRuntimeHostEventSubscription;
 }
@@ -1292,6 +1373,7 @@ export interface ChatRuntimeHost {
   readSessionState(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostSessionState | null>;
   readSessionInventory(): Promise<ChatRuntimeHostSessionInventorySnapshot>;
   readTranscript(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostTranscriptSnapshot | null>;
+  readChatImageMedia(request: ChatRuntimeHostImageMediaRequest): Promise<ChatRuntimeHostImageMedia>;
   readSessionTurnPage(request: ChatRuntimeHostTurnPageRequest): Promise<ChatRuntimeHostTurnPage | null>;
   readCheckpointNavigationState(
     request: ChatRuntimeHostCheckpointNavigationRequest,
@@ -1311,6 +1393,12 @@ export interface ChatRuntimeHost {
   forkSession(request: ChatRuntimeHostForkSessionRequest): Promise<ChatRuntimeHostForkSessionResult>;
   awaitRequestCompletion(sessionId: ChatRuntimeHostSessionId): Promise<void>;
   runWorkspaceFinalizeBoundaryProbe(sessionId: ChatRuntimeHostSessionId): Promise<void>;
+  runScopedAgent(
+    request: ChatRuntimeHostScopedAgentRunRequest,
+  ): Promise<ChatRuntimeHostScopedAgentRunResult>;
+  cancelScopedAgent(
+    request: ChatRuntimeHostScopedAgentCancelRequest,
+  ): Promise<ChatRuntimeHostScopedAgentCancelResult>;
   readInteractionSnapshot(sessionId: ChatRuntimeHostSessionId): Promise<ChatRuntimeHostInteractionSnapshot | null>;
   resolveInteraction(request: ChatRuntimeHostInteractionRequest): Promise<ChatRuntimeHostInteractionSnapshot | null>;
   recordResourceRequest(request: ChatRuntimeHostResourceRequest): Promise<ChatRuntimeHostResourceRequestEvent | null>;

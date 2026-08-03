@@ -41,9 +41,6 @@ if (!cliPath) {
 const env = { ...process.env };
 env.AILY_E2E_INTERACTIVE_DECISIONS =
   !process.env.CI && process.stdin.isTTY && process.stdout.isTTY ? '1' : '0';
-if (mode === 'fast') {
-  env.E2E_SKIP_BUILD = '1';
-}
 
 const child = spawn(process.execPath, [cliPath, ...modes[mode], ...args], {
   cwd: fileURLToPath(new URL('..', import.meta.url)),

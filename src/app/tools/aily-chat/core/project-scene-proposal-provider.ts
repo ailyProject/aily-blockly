@@ -5,6 +5,7 @@ import {
 } from './project-scene-proposal-invocation';
 
 export interface ProjectSceneAgentRunInput {
+  readonly requestId: string;
   readonly agentType: typeof PROJECT_SCENE_AGENT_TYPE;
   readonly prompt: string;
   readonly signal?: AbortSignal;
@@ -41,6 +42,7 @@ export function createProjectSceneProposalProvider(
     try {
       await waitForAgent(
         Promise.resolve().then(() => runAgent({
+          requestId: invocation.requestId,
           agentType: PROJECT_SCENE_AGENT_TYPE,
           prompt,
           ...(options.signal ? { signal: options.signal } : {}),

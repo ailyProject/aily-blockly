@@ -76,6 +76,7 @@ export class _BuilderService {
   private streamId: string | null = null;
   private buildSubscription: any = null; // 保存订阅引用
   private buildPromiseReject: any = null; // 保存 Promise 的 reject 函数
+  private activeBuildRequestId: string | null = null;
   private buildCompleted = false;
   private isErrored = false; // 标识是否为错误状态
   private buildStartTime: number = 0; // 编译开始时间
@@ -472,14 +473,16 @@ export class _BuilderService {
       try {
         const graphSemanticRevision =
           action.payload?.graphSemanticRevision as string | undefined;
-        const result = await this.build(graphSemanticRevision);
+        const requestId = action.payload?.requestId as string | undefined;
+        const result = await this.build(graphSemanticRevision, requestId);
         return { success: true, result };
       } catch (msg) {
         return { success: false, result: msg };
       }
     }, 'builder-compile-begin');
     this.actionService.listen('compile-cancel', (action) => {
-      this.cancel();
+      const requestId = action.payload?.requestId as string | undefined;
+      this.cancel(requestId);
     }, 'builder-compile-cancel');
     this.actionService.listen('compile-reset', async (action) => {
       this.passed = false;
@@ -1221,7 +1224,10 @@ export class _BuilderService {
   }
 
 
-  async build(graphSemanticRevision?: string): Promise<ActionState> {
+  async build(
+    graphSemanticRevision?: string,
+    requestId?: string,
+  ): Promise<ActionState> {
     if (
       graphSemanticRevision !== undefined
       && !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
@@ -1229,6 +1235,15 @@ export class _BuilderService {
       return Promise.reject({
         state: 'error',
         text: 'Simulator graph semantic revision is invalid.',
+      });
+    }
+    if (
+      requestId !== undefined
+      && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+    ) {
+      return Promise.reject({
+        state: 'error',
+        text: 'Provider Build request id is invalid.',
       });
     }
     if (!this.workflowService.startBuild()) {
@@ -1242,6 +1257,7 @@ export class _BuilderService {
       return Promise.reject({ state: 'warn', text: this.t('BUSY_WAIT', { message: msg }) });
     }
 
+    this.activeBuildRequestId = requestId ?? null;
     this.buildCompleted = false;
     this.isErrored = false;
     this.cancelled = false;
@@ -1251,7 +1267,7 @@ export class _BuilderService {
     this.currentProgress = 0; // 重置进度
     this.hasReceivedRealProgress = false; // 重置进度标记
 
-    return this.appDataResourceLock.runShared('build:preprocess-and-compile', () => {
+    const completion = this.appDataResourceLock.runShared('build:preprocess-and-compile', () => {
       if (this.cancelled) {
         return Promise.reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
       }
@@ -1849,6 +1865,11 @@ export class _BuilderService {
       }
       });
     });
+    return completion.finally(() => {
+      if (this.activeBuildRequestId === (requestId ?? null)) {
+        this.activeBuildRequestId = null;
+      }
+    });
     }
 
     /**
@@ -2101,7 +2122,17 @@ export class _BuilderService {
   /**
    * 取消当前编译过程
    */
-  cancel() {
+  cancel(requestId?: string) {
+    if (
+      requestId !== undefined
+      && requestId !== this.activeBuildRequestId
+    ) {
+      console.warn('Ignoring cancellation for a non-active Build request.', {
+        requestId,
+        activeBuildRequestId: this.activeBuildRequestId,
+      });
+      return;
+    }
     if (this.cancelled) {
       console.log('已经处于取消状态，跳过');
       return; // 避免重复取消

@@ -10,11 +10,9 @@ import { ChildToolHostInfo, ChildToolProcessService } from './child-tool-process
 import { MainUiAutomationService } from './main-ui-automation.service';
 import {
   SubappActivityService,
-  type SubappActivityPresentation,
   type SubappRuntimeState,
 } from './subapp-activity.service';
-
-type SubappUiMode = 'none' | 'embedded' | 'window';
+import { resolveSubappAgentPresentation } from './subapp-agent-presentation';
 
 interface SubappRpcResponse {
   id?: string | number;
@@ -90,6 +88,8 @@ export class SubappAgentBridgeService implements OnDestroy {
 
     try {
       resolved = this.resolveAgentTool(requestedToolId, tool);
+      const params = this.record(input['params']);
+      const presentationPolicy = resolveSubappAgentPresentation(params, resolved.definition);
       this.subappActivityService.recordInvocationStarted({
         sessionId: ownerSessionId,
         toolId: resolved.config.id,
@@ -97,20 +97,18 @@ export class SubappAgentBridgeService implements OnDestroy {
         title: String(resolved.config.app?.name || resolved.config.titleKey || resolved.config.id),
         icon: String(resolved.config.app?.icon || 'fa-light fa-puzzle-piece'),
         toolCallId: String(context.toolCallId || '').trim(),
-        presentation: this.activityPresentation(resolved.definition),
+        presentation: presentationPolicy.activityPresentation,
       });
-      const params = this.record(input['params']);
       this.enforceInputBudget(params, resolved.definition);
-      const uiMode = this.resolveUiMode(params, resolved.definition);
       const rpcParams = { ...params };
       delete rpcParams['presentUi'];
       const mapped = this.mapRpc(resolved.definition, rpcParams);
       let presentation: Record<string, unknown> | undefined;
 
-      if (uiMode !== 'none') {
+      if (presentationPolicy.uiMode === 'window') {
         presentation = await this.mainUiAutomationService.openChildApp({
           toolId: resolved.config.id,
-          mode: uiMode,
+          mode: 'window',
         });
         if (presentation['ok'] !== true) {
           this.subappActivityService.recordInvocationCompleted({
@@ -718,45 +716,6 @@ export class SubappAgentBridgeService implements OnDestroy {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? value as Record<string, unknown>
       : {};
-  }
-
-  private resolveUiMode(
-    params: Record<string, unknown>,
-    definition: ChildToolAgentDefinition,
-  ): SubappUiMode {
-    if (Object.prototype.hasOwnProperty.call(params, 'presentUi')) {
-      const explicitMode = params['presentUi'];
-      return explicitMode === 'embedded' || explicitMode === 'window'
-        ? explicitMode
-        : 'none';
-    }
-
-    const presentation = definition.presentation;
-    if (!presentation) return 'none';
-    const condition = presentation.when;
-    if (condition && !condition.values.some(value => value === params[condition.param])) {
-      return 'none';
-    }
-    return presentation.mode === 'dock' ? 'none' : presentation.mode;
-  }
-
-  private activityPresentation(
-    definition: ChildToolAgentDefinition,
-  ): SubappActivityPresentation | undefined {
-    const presentation = definition.presentation;
-    if (!presentation) return undefined;
-    return {
-      mode: presentation.mode,
-      ...('surface' in presentation && typeof presentation.surface === 'string'
-        ? { surface: presentation.surface }
-        : {}),
-      ...('autoOpen' in presentation && (
-        presentation.autoOpen === 'never'
-        || presentation.autoOpen === 'first-active'
-        || presentation.autoOpen === 'always'
-        || presentation.autoOpen === 'on-error'
-      ) ? { autoOpen: presentation.autoOpen } : {}),
-    };
   }
 
   private runtimeStateAfterError(toolId: string, error: SubappRpcError): SubappRuntimeState {

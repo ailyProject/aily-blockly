@@ -106,12 +106,14 @@ function validateIndex(rawIndex) {
     const defaultLocale = normalizeLocale(i18n.defaultLocale || 'en');
 
     index[id] = {
+      ...rawEntry,
       id,
       titleKey,
       namespace,
       package: validatePackageName(rawEntry.package),
       version: validateVersion(rawEntry.version),
       app: {
+        ...app,
         name: typeof app.name === 'string' && app.name.trim() ? app.name.trim() : titleKey,
         description: typeof app.description === 'string' && app.description.trim()
           ? app.description.trim()
@@ -127,6 +129,7 @@ function validateIndex(rawIndex) {
         ),
       },
       i18n: {
+        ...i18n,
         defaultLocale,
         locales,
       },
@@ -229,6 +232,27 @@ function readRuntimeResourceLifecycleConfig(declaredRuntime) {
     suspendMethod,
     resumeMethod,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
+
+function readRuntimeProcessMessagePortConfig(declaredRuntime) {
+  const declared = declaredRuntime?.processMessagePort;
+  if (declared === undefined) return null;
+  if (!isObject(declared)) {
+    throw new Error('ailySubapp.runtime.processMessagePort must be an object');
+  }
+  if (declared.transport !== 'node-ipc-v1') {
+    throw new Error('ailySubapp.runtime.processMessagePort.transport must be node-ipc-v1');
+  }
+  const maxMessageBytes = optionalBoundedInteger(
+    declared.maxMessageBytes,
+    'ailySubapp.runtime.processMessagePort.maxMessageBytes',
+    1024,
+    8 * 1024 * 1024,
+  );
+  return {
+    transport: 'node-ipc-v1',
+    ...(maxMessageBytes !== undefined ? { maxMessageBytes } : {}),
   };
 }
 
@@ -517,6 +541,11 @@ function readInstalledState(rootDir, entry) {
       2 * 60 * 1000,
     );
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
+    const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);
+    const runtime = {
+      ...(processMessagePort ? { processMessagePort } : {}),
+      ...(resourceLifecycle ? { resourceLifecycle } : {}),
+    };
     let agent = null;
     let agentError = '';
     try {
@@ -541,7 +570,7 @@ function readInstalledState(rootDir, entry) {
         uiIndex,
         routePath: `/child-tool/${toolId}`,
         ...(startupTimeoutMs ? { startupTimeoutMs } : {}),
-        ...(resourceLifecycle ? { runtime: { resourceLifecycle } } : {}),
+        ...(Object.keys(runtime).length ? { runtime } : {}),
         ...(ui ? { ui } : {}),
         ...(agent ? { agent } : {}),
         app: {
@@ -613,6 +642,11 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
             }
           : null;
         return {
+          app: {
+            ...entry.app,
+            name: copy.name,
+            description: copy.description,
+          },
           id: entry.id,
           toolId,
           packageName: entry.package,
@@ -627,6 +661,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           name: copy.name,
           description: copy.description,
           icon: entry.app.icon,
+          ai: entry.app.ai === true,
           enabled: true,
           config: localizedConfig,
           ...(installedState.installError ? { installError: installedState.installError } : {}),

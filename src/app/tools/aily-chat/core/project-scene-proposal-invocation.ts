@@ -16,6 +16,7 @@ interface PendingInvocation {
   readonly resolve: (proposal: Record<string, unknown>) => void;
   readonly reject: (reason: Error) => void;
   settled: boolean;
+  contextRead: boolean;
   removeAbortListener?: () => void;
 }
 
@@ -45,6 +46,7 @@ export function beginProjectSceneProposalInvocation(
     resolve: resolvePromise,
     reject: rejectPromise,
     settled: false,
+    contextRead: false,
   };
   if (signal) {
     const onAbort = () => rejectInvocation(
@@ -77,6 +79,21 @@ export function readProjectSceneProposalInvocation(
   return structuredClone(pending.context);
 }
 
+export function consumeProjectSceneProposalInvocationContext(
+  requestId: unknown,
+): ProjectSceneProposalInvocationInput {
+  const normalizedRequestId = portableIdentifier(requestId, 'requestId');
+  const pending = pendingInvocations.get(normalizedRequestId);
+  if (!pending || pending.settled) {
+    throw new Error('No matching Project Scene proposal invocation is active.');
+  }
+  if (pending.contextRead) {
+    throw new Error('Project Scene proposal generation context was already read.');
+  }
+  pending.contextRead = true;
+  return structuredClone(pending.context);
+}
+
 export function submitProjectSceneProposalInvocation(
   requestId: unknown,
   proposal: Record<string, unknown>,
@@ -85,6 +102,9 @@ export function submitProjectSceneProposalInvocation(
   const pending = pendingInvocations.get(normalizedRequestId);
   if (!pending || pending.settled) {
     throw new Error('No matching Project Scene proposal invocation is active.');
+  }
+  if (!pending.contextRead) {
+    throw new Error('Project Scene proposal generation context must be read before submission.');
   }
   const proposalRecord = record(proposal, 'proposal');
   const target = record(proposalRecord['target'], 'proposal.target');

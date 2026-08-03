@@ -13,6 +13,11 @@ if (-not (Test-Path -LiteralPath $runtimeModule)) {
   throw "Missing Lex execution-host runtime module: $runtimeModule"
 }
 
+$sharpPackageJson = Join-Path $repoRoot 'electron\node_modules\sharp\package.json'
+if (-not (Test-Path -LiteralPath $sharpPackageJson)) {
+  throw 'Missing electron dependency "sharp". Run: npm install --prefix electron'
+}
+
 Push-Location $repoRoot
 try {
   $env:AILY_CHAT_EXECUTION_HOST = $Mode

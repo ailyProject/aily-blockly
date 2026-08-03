@@ -153,6 +153,11 @@
                         <div class="form-row">
                             <input nz-input [(ngModel)]="newModel.apiKey" placeholder="API Key" type="password" />
                         </div>
+                        <div class="form-row">
+                            <label nz-checkbox [(ngModel)]="newModel.supportsImageInput">
+                                支持图片输入（由模型服务能力决定）
+                            </label>
+                        </div>
                         <div class="form-actions">
                             <button nz-button nzSize="small" (click)="toggleAddModelForm()">
                                 取消

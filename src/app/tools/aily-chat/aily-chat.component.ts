@@ -59,6 +59,7 @@ import type {
   ChatVisibleTranscriptDialogItem,
   ChatVisibleTranscriptDialogItemPatch,
 } from './core/chat-visible-transcript-model';
+import { resolveChatImageAttachmentCapabilities } from './core/chat-image-attachment';
 import { ChatTranscriptWindowModel } from './core/chat-transcript-window-model';
 import type { ChatPart } from './core/chat-parts';
 import { resolveChatDialogRevealTargetIndex } from './helpers/chat-dialog-reveal-target';
@@ -533,6 +534,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       getSessionAllowedPaths: () => this.engine.sessionAllowedPaths,
       getSessionId: () => this.vm.sessionId,
       getInputValue: () => this.vm.inputValue,
+      hasImageAttachments: () => this.resourceManager.items.some(item => item.type === 'image' && !!item.imageAttachment),
       isWaiting: (sessionId) => this.requestController.getActionState(sessionId ?? this.vm.sessionId).canStop,
       ensureSession: () => this.engine.ensureSessionReadyForSubmit(),
       hasPendingRequests: (sessionId) => this.hasPendingFollowupRequests(sessionId),
@@ -665,6 +667,9 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     }
 
     const actionState = this.getCurrentSessionActionState();
+    if (this.hasDraftInput() && actionState.activeState === 'idle') {
+      return false;
+    }
     return !actionState.canSend && !actionState.canQueue;
   }
 
@@ -831,7 +836,8 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   private hasDraftInput(): boolean {
-    return this.vm.inputValue.trim().length > 0;
+    return this.vm.inputValue.trim().length > 0
+      || this.resourceManager.items.some(item => item.type === 'image' && !!item.imageAttachment);
   }
 
   ngOnInit() {
@@ -962,17 +968,34 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     return this.viewState.paneStageSurfaceModel;
   }
 
-  async onComposerAddFileOrFolderRequest(): Promise<void> {
-    await this.resourceManager.addFileOrFolderResources();
+  async onComposerAddFileRequest(): Promise<void> {
+    try {
+      await this.resourceManager.addFileResources();
+    } finally {
+      this.cdr.markForCheck();
+    }
+  }
+
+  async onComposerAddFolderRequest(): Promise<void> {
+    try {
+      await this.resourceManager.addFolderResource();
+    } finally {
+      this.cdr.markForCheck();
+    }
   }
 
   get contextMenuItems(): IMenuItem[] {
     const runningProcessCount = this.getRunningProcessCount();
     return [
       {
-        name: this.translate.instant('AILY_CHAT.ADD_FILE_OR_FOLDER'),
-        action: 'context-add-file-or-folder',
-        icon: 'fa-light fa-paperclip',
+        name: this.translate.instant('AILY_CHAT.ADD_FILE'),
+        action: 'context-add-file',
+        icon: 'fa-light fa-file-plus',
+      },
+      {
+        name: this.translate.instant('AILY_CHAT.ADD_FOLDER'),
+        action: 'context-add-folder',
+        icon: 'fa-light fa-folder-plus',
       },
       {
         name: this.translate.instant('AILY_CHAT.PROCESS_TITLE'),
@@ -996,8 +1019,11 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   handleContextMenuClick(item: IMenuItem): void {
     this.menuManager.closeAll();
     switch (item.action) {
-      case 'context-add-file-or-folder':
-        void this.onComposerAddFileOrFolderRequest();
+      case 'context-add-file':
+        void this.onComposerAddFileRequest();
+        return;
+      case 'context-add-folder':
+        void this.onComposerAddFolderRequest();
         return;
       case 'context-open-process-manager':
         this.openProcessManagerDialog();
@@ -2825,6 +2851,28 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
   setComposerFocusState(focused: boolean): void {
     this.isComposerFocused = focused;
+  }
+
+  handleComposerPaste(event: ClipboardEvent): void {
+    const capabilities = resolveChatImageAttachmentCapabilities(this.vm.currentModel);
+    if (!capabilities.canAcquireImages) {
+      return;
+    }
+    const files = Array.from(event.clipboardData?.items ?? [])
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => !!file);
+    if (files.length === 0) {
+      return;
+    }
+    if (!(event.clipboardData?.getData('text/plain') ?? '').trim()) {
+      event.preventDefault();
+    }
+    void this.resourceManager.addClipboardImages(files, {
+      ...(capabilities.maxInputImages !== undefined
+        ? { maxInputImages: capabilities.maxInputImages }
+        : {}),
+    }).then(() => this.cdr.markForCheck());
   }
 
   onUserMessageEditSessionOpened(turnId: string): void {

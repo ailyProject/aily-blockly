@@ -200,14 +200,6 @@ export class ChatVisibleTranscriptModel {
     options: { recordOrder: boolean },
   ): ChatVisibleTranscriptItem {
     const itemId = chatVisibleRequestItemId(turn.turnId);
-    const existing = this.records.get(itemId)?.item;
-    if (existing?.kind === 'request') {
-      if (options.recordOrder) {
-        this.ensureOrderedItem(existing);
-      }
-      return existing;
-    }
-
     const item = this.upsertItem({
       id: itemId,
       kind: 'request',

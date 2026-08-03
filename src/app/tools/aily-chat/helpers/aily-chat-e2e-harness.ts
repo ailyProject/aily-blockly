@@ -74,6 +74,10 @@ export interface AilyChatE2eRenderingDiagnostics {
 
 interface AilyChatE2eHarnessApi {
   installDeterministicRuntime(): Promise<AilyChatE2eSnapshot>;
+  selectVisionModel(connection?: {
+    readonly apiEndpoint?: string;
+    readonly authToken?: string;
+  }): AilyChatE2eSnapshot;
   selectAsk(): Promise<AilyChatE2eSnapshot>;
   selectAgent(): Promise<AilyChatE2eSnapshot>;
   selectPlan(): Promise<AilyChatE2eSnapshot>;
@@ -126,6 +130,15 @@ type EnginePrivateAccess = {
   sessionId: string;
   chatService: {
     currentCustomAgentTarget?: string;
+    currentModel?: {
+      readonly model: string;
+      readonly name: string;
+      readonly family: string;
+      readonly speed: string;
+      readonly inputModalities: readonly ('text' | 'image')[];
+      readonly maxInputImages: number;
+      readonly enabled: boolean;
+    } | null;
   };
   switchToMode: (mode: string) => Promise<void>;
   newChat?: () => Promise<void>;
@@ -632,6 +645,21 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
 
   const api: AilyChatE2eHarnessApi = {
     installDeterministicRuntime,
+    selectVisionModel(connection) {
+      engine.chatService.currentModel = {
+        model: 'auto',
+        name: 'E2E Auto Vision',
+        family: 'auto',
+        speed: 'fast',
+        inputModalities: ['text', 'image'],
+        maxInputImages: 4,
+        enabled: true,
+        ...(connection?.apiEndpoint ? { apiEndpoint: connection.apiEndpoint } : {}),
+        ...(connection?.authToken ? { authToken: connection.authToken } : {}),
+      } as typeof engine.chatService.currentModel;
+      engine.triggerSyncDetectChanges?.();
+      return snapshot();
+    },
     async selectAsk() {
       await installDeterministicRuntime();
       await engine.switchToMode('ask');

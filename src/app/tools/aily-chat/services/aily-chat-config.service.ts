@@ -77,6 +77,8 @@ export interface ModelPresetOption {
     billingLabelOverride?: string;
     billingDescription?: string;
     contextWindowTokens?: number;
+    inputModalities?: ('text' | 'image')[];
+    maxInputImages?: number;
     supportsReasoningEfforts?: ReasoningEffortOption[];
     availableTiers?: string[];
     requiredTier?: string;
@@ -127,6 +129,8 @@ export interface ModelConfigOption {
     billingLabelOverride?: string; // 自定义计费标签（如 Auto 的动态费率）
     billingDescription?: string; // tooltip 中使用的计费说明
     contextWindowTokens?: number; // 上下文窗口长度（用于 tooltip）
+    inputModalities?: ('text' | 'image')[]; // 服务端目录或自定义模型声明的输入模态
+    maxInputImages?: number; // 单次请求允许的图片上限
     enabled: boolean;       // 是否在列表中显示
     isCustom?: boolean;     // 是否是自定义模型
     baseUrl?: string;       // API Base URL
@@ -162,6 +166,8 @@ interface RemoteCatalogPayloadEntry {
     family?: string;
     description?: string;
     context_window_tokens?: number | null;
+    input_modalities?: string[] | null;
+    max_input_images?: number | null;
     supports_reasoning_effort?: string[];
     billing_multiplier?: number | null;
     billing_label_override?: string | null;
@@ -199,6 +205,8 @@ interface RemoteModelCatalogEntry {
     family?: string;
     description?: string;
     contextWindowTokens?: number;
+    inputModalities?: ('text' | 'image')[];
+    maxInputImages?: number;
     supportsReasoningEfforts?: ReasoningEffortOption[];
     billingMultiplier?: number;
     billingLabelOverride?: string;
@@ -227,6 +235,7 @@ interface RemoteModelCatalogMetadata {
     currentTier?: string;
     catalogVersion?: string;
     permissionsHash?: string;
+    multimodalContractVersion?: string;
 }
 
 interface RemoteModelCatalogResponse {
@@ -239,6 +248,7 @@ interface RemoteModelCatalogResponse {
         current_tier?: string | null;
         catalog_version?: string | null;
         permissions_hash?: string | null;
+        multimodal_contract_version?: string | null;
     };
 }
 
@@ -485,6 +495,10 @@ export class AilyChatConfigService implements OnDestroy {
 
     get modelCatalogPermissionsHash(): string | undefined {
         return this.remoteModelCatalogMetadata.permissionsHash;
+    }
+
+    get modelCatalogMultimodalContractVersion(): string | undefined {
+        return this.remoteModelCatalogMetadata.multimodalContractVersion;
     }
 
     constructor(
@@ -1495,6 +1509,10 @@ export class AilyChatConfigService implements OnDestroy {
             billingLabelOverride: preset.billingLabelOverride,
             billingDescription: preset.billingDescription,
             contextWindowTokens: preset.contextWindowTokens ?? resolvedModel?.contextWindowTokens,
+            inputModalities: preset.inputModalities?.length
+                ? [...preset.inputModalities]
+                : resolvedModel?.inputModalities,
+            maxInputImages: preset.maxInputImages ?? resolvedModel?.maxInputImages,
             enabled: true,
             isCustom: false,
             presetId: preset.id,
@@ -1914,6 +1932,8 @@ export class AilyChatConfigService implements OnDestroy {
                 languageModelsGroupName: remoteCatalogEntry.languageModelsGroupName ?? storedModel?.languageModelsGroupName,
                 configurationSchema: remoteCatalogEntry.configurationSchema ?? storedModel?.configurationSchema,
                 contextWindowTokens: remoteCatalogEntry.contextWindowTokens ?? storedModel?.contextWindowTokens,
+                inputModalities: remoteCatalogEntry.inputModalities ?? storedModel?.inputModalities,
+                maxInputImages: remoteCatalogEntry.maxInputImages ?? storedModel?.maxInputImages,
                 enabled: storedModel?.enabled ?? true,
                 isCustom: storedModel?.isCustom ?? false,
                 baseUrl: storedModel?.baseUrl,
@@ -2179,6 +2199,10 @@ export class AilyChatConfigService implements OnDestroy {
             billingLabelOverride: remotePreset.billingLabelOverride ?? fallbackPreset?.billingLabelOverride,
             billingDescription: remotePreset.billingDescription ?? fallbackPreset?.billingDescription,
             contextWindowTokens: remotePreset.contextWindowTokens ?? fallbackPreset?.contextWindowTokens,
+            inputModalities: remotePreset.inputModalities?.length
+                ? [...remotePreset.inputModalities]
+                : fallbackPreset?.inputModalities,
+            maxInputImages: remotePreset.maxInputImages ?? fallbackPreset?.maxInputImages,
             supportsReasoningEfforts: remotePreset.supportsReasoningEfforts?.length
                 ? [...remotePreset.supportsReasoningEfforts]
                 : fallbackPreset?.supportsReasoningEfforts,
@@ -2218,6 +2242,10 @@ export class AilyChatConfigService implements OnDestroy {
                     : undefined,
                 permissionsHash: typeof payload.permissions_hash === 'string' && payload.permissions_hash.trim()
                     ? payload.permissions_hash.trim()
+                    : undefined,
+                multimodalContractVersion: typeof payload.multimodal_contract_version === 'string'
+                    && payload.multimodal_contract_version.trim()
+                    ? payload.multimodal_contract_version.trim()
                     : undefined,
             },
         };
@@ -2314,6 +2342,8 @@ export class AilyChatConfigService implements OnDestroy {
                 contextWindowTokens: typeof entry.context_window_tokens === 'number' && entry.context_window_tokens > 0
                     ? entry.context_window_tokens
                     : undefined,
+                inputModalities: normalizeInputModalities(entry.input_modalities),
+                maxInputImages: normalizeMaxInputImages(entry.max_input_images),
                 supportsReasoningEfforts: normalizeReasoningEfforts(entry.supports_reasoning_effort),
                 billingMultiplier: typeof entry.billing_multiplier === 'number' && Number.isFinite(entry.billing_multiplier)
                     ? entry.billing_multiplier
@@ -2406,6 +2436,8 @@ export class AilyChatConfigService implements OnDestroy {
                 contextWindowTokens: typeof entry.context_window_tokens === 'number' && entry.context_window_tokens > 0
                     ? entry.context_window_tokens
                     : undefined,
+                inputModalities: normalizeInputModalities(entry.input_modalities),
+                maxInputImages: normalizeMaxInputImages(entry.max_input_images),
                 supportsReasoningEfforts: normalizeReasoningEfforts(entry.supports_reasoning_effort),
                 billingMultiplier: typeof entry.billing_multiplier === 'number' && Number.isFinite(entry.billing_multiplier)
                     ? entry.billing_multiplier
@@ -2568,6 +2600,8 @@ export class AilyChatConfigService implements OnDestroy {
                 languageModelsGroupName: remoteModel.languageModelsGroupName ?? override?.languageModelsGroupName,
                 configurationSchema: remoteModel.configurationSchema ?? override?.configurationSchema,
                 contextWindowTokens: remoteModel.contextWindowTokens ?? override?.contextWindowTokens,
+                inputModalities: remoteModel.inputModalities ?? override?.inputModalities,
+                maxInputImages: remoteModel.maxInputImages ?? override?.maxInputImages,
                 enabled: override?.enabled ?? true,
                 isCustom: false,
                 providerContextManagementSupport: remoteModel.providerContextManagementSupport ?? override?.providerContextManagementSupport,
@@ -2884,6 +2918,24 @@ function normalizeReasoningEfforts(value: string[] | null | undefined): Reasonin
     }
 
     return [...new Set(normalized)];
+}
+
+function normalizeInputModalities(value: unknown): ('text' | 'image')[] | undefined {
+    if (!Array.isArray(value)) {
+        return undefined;
+    }
+
+    const allowed = new Set<'text' | 'image'>(['text', 'image']);
+    const normalized = value
+        .map(item => typeof item === 'string' ? item.trim().toLowerCase() : '')
+        .filter((item): item is 'text' | 'image' => allowed.has(item as 'text' | 'image'));
+    return normalized.length > 0 ? [...new Set(normalized)] : undefined;
+}
+
+function normalizeMaxInputImages(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+        ? Math.floor(value)
+        : undefined;
 }
 
 function mergeModelsWithDefaults(models: ModelConfigOption[] | null | undefined): ModelConfigOption[] {

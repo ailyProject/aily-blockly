@@ -44,7 +44,9 @@
                             <button class="placement-main" type="button" (click)="openToolbarApp(app)" nz-tooltip
                                 [nzTooltipTitle]="app.name | translate">
                                 <i class="{{ app.icon }}"></i>
-                                @if (app.more) {
+                                @if (app.ai) {
+                                <span class="app-badge">AI</span>
+                                } @else if (app.more) {
                                 <span class="app-badge">{{ app.more }}</span>
                                 }
                             </button>
@@ -99,7 +101,9 @@
                             [nzTooltipTitle]="app.name | translate">
                             <span class="app-icon" aria-hidden="true">
                                 <i class="{{ app.icon }}"></i>
-                                @if (app.more) {
+                                @if (app.ai) {
+                                <span class="app-badge">AI</span>
+                                } @else if (app.more) {
                                 <span class="app-badge">{{ app.more }}</span>
                                 }
                             </span>

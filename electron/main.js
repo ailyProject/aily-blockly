@@ -1068,23 +1068,45 @@ function getProjectSceneGenerationBroker() {
       return response.snapshot;
     },
     async requestProposal(input, { signal }) {
-      const response = await requestMainWindow(
-        'cli-bridge:blockly-live-operation',
-        'cli-bridge:blockly-live-operation:response',
-        {
-          path: '',
-          operation: 'project_scene_proposal_request',
-          params: input,
-        },
-        10 * 60 * 1000,
-        signal,
-      );
-      if (response?.ok !== true || !response.proposal) {
-        throw new Error(
-          response?.message || 'Project Scene proposal provider is unavailable.',
+      const requestId = typeof input?.request?.requestId === 'string'
+        ? input.request.requestId
+        : '';
+      const cancelProviderRequest = () => {
+        if (!requestId) return;
+        void requestMainWindow(
+          'cli-bridge:blockly-live-operation',
+          'cli-bridge:blockly-live-operation:response',
+          {
+            path: '',
+            operation: 'project_scene_proposal_cancel',
+            params: { requestId },
+          },
+          15000,
+        ).catch(() => undefined);
+      };
+      signal?.addEventListener('abort', cancelProviderRequest, { once: true });
+      if (signal?.aborted) cancelProviderRequest();
+      try {
+        const response = await requestMainWindow(
+          'cli-bridge:blockly-live-operation',
+          'cli-bridge:blockly-live-operation:response',
+          {
+            path: '',
+            operation: 'project_scene_proposal_request',
+            params: input,
+          },
+          10 * 60 * 1000,
+          signal,
         );
+        if (response?.ok !== true || !response.proposal) {
+          throw new Error(
+            response?.message || 'Project Scene proposal provider is unavailable.',
+          );
+        }
+        return response.proposal;
+      } finally {
+        signal?.removeEventListener('abort', cancelProviderRequest);
       }
-      return response.proposal;
     },
     async onProposalReady(candidate) {
       await simulatorSubappHost.defaultHost.stageSceneGenerationCandidate(

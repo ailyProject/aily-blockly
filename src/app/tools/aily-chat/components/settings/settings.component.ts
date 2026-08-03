@@ -117,7 +117,8 @@ export class AilyChatSettingsComponent implements OnInit {
     model: '',
     name: '',
     baseUrl: '',
-    apiKey: ''
+    apiKey: '',
+    supportsImageInput: false,
   };
   showAddModelForm = false;
   editingModel: ModelConfigOption | null = null; // 当前正在编辑的模型
@@ -650,7 +651,8 @@ export class AilyChatSettingsComponent implements OnInit {
       model: '',
       name: '',
       baseUrl: '',
-      apiKey: ''
+      apiKey: '',
+      supportsImageInput: false,
     };
     this.editingModel = null;
   }
@@ -668,7 +670,8 @@ export class AilyChatSettingsComponent implements OnInit {
       model: model.model,
       name: model.name,
       baseUrl: model.baseUrl || '',
-      apiKey: model.apiKey || ''
+      apiKey: model.apiKey || '',
+      supportsImageInput: model.inputModalities?.includes('image') === true,
     };
     this.showAddModelForm = true;
   }
@@ -696,6 +699,8 @@ export class AilyChatSettingsComponent implements OnInit {
       this.editingModel.name = this.newModel.name;
       this.editingModel.baseUrl = this.newModel.baseUrl;
       this.editingModel.apiKey = this.newModel.apiKey;
+      this.editingModel.inputModalities = this.newModel.supportsImageInput ? ['text', 'image'] : ['text'];
+      this.editingModel.maxInputImages = this.newModel.supportsImageInput ? 10 : 0;
 
       this.resetNewModelForm();
       this.showAddModelForm = false;
@@ -718,7 +723,9 @@ export class AilyChatSettingsComponent implements OnInit {
       enabled: true,
       isCustom: true,
       baseUrl: this.newModel.baseUrl,
-      apiKey: this.newModel.apiKey
+      apiKey: this.newModel.apiKey,
+      inputModalities: this.newModel.supportsImageInput ? ['text', 'image'] : ['text'],
+      maxInputImages: this.newModel.supportsImageInput ? 10 : 0,
     };
 
     this.modelList.unshift(newModelConfig);
