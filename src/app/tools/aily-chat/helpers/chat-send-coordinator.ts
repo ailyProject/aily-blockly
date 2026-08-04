@@ -23,6 +23,10 @@ import {
   captureTurnRequestPromptContextSnapshot,
 } from './turn-request-prompt-context';
 import type { PendingFollowupUserSelectedTools, PreparedPendingFollowupRequest } from './chat-pending-request';
+import {
+  normalizeHostSessionProviderOptions,
+  type HostSessionProviderOptions,
+} from './host-session-input-state';
 
 function clonePendingResourceItems(resourceItems?: readonly ResourceItem[]): ResourceItem[] | undefined {
   if (!Array.isArray(resourceItems) || resourceItems.length === 0) {
@@ -75,7 +79,7 @@ type ChatSendCoordinatorContext = Pick<
   'isCancelled' | 'isCompleted' | 'isWaiting' | 'pendingUserInput' | 'activeToolExecutions'
   | 'pendingEditFeedback' | 'readPendingEditFeedback' | 'writePendingEditFeedback'
 > & Pick<ISessionAccess, 'sessionId'>
-  & Pick<IProjectContext, 'currentMode' | 'currentModel'>
+  & Pick<IProjectContext, 'currentMode' | 'currentModel' | 'currentModelName' | 'currentModelBillingLabel'>
   & {
     readonly currentCustomAgentTarget?: string;
     readonly currentSessionPermissionLevel?: string;
@@ -104,6 +108,7 @@ export class ChatSendCoordinator {
     ) => {
       readonly runtimeOwnerSessionId?: string;
       readonly providerOptionsKey?: string;
+      readonly providerOptions?: HostSessionProviderOptions;
       readonly selectedMode?: ChatSelectedMode;
       readonly currentMode?: string;
       readonly currentResolvedMode?: ChatResolvedMode;
@@ -310,6 +315,15 @@ export class ChatSendCoordinator {
     requestMetadata?: UserTurnPayload['requestMetadata'],
   ): UserTurnPayload['requestMetadata'] {
     const rawModelRouting = requestMetadata?.['modelRouting'];
+    const modelDisplayName = typeof this.ctx.currentModelName === 'string' && this.ctx.currentModelName.trim().length > 0
+      ? this.ctx.currentModelName.trim()
+      : typeof this.ctx.currentModel?.name === 'string' && this.ctx.currentModel.name.trim().length > 0
+      ? this.ctx.currentModel.name.trim()
+      : undefined;
+    const modelDisplayBillingLabel = typeof this.ctx.currentModelBillingLabel === 'string'
+      && this.ctx.currentModelBillingLabel.trim().length > 0
+      ? this.ctx.currentModelBillingLabel.trim()
+      : undefined;
     const requestedModel = typeof this.ctx.currentModel?.model === 'string' && this.ctx.currentModel.model.trim().length > 0
       ? this.ctx.currentModel.model.trim()
       : undefined;
@@ -320,11 +334,18 @@ export class ChatSendCoordinator {
       ? rawModelRouting as Record<string, unknown>
       : undefined;
 
-    if (!requestedModel && !requestedPresetId && !existingModelRouting) {
+    if (!modelDisplayName
+      && !modelDisplayBillingLabel
+      && !requestedModel
+      && !requestedPresetId
+      && !existingModelRouting) {
       return requestMetadata;
     }
 
     return {
+      ...(modelDisplayName ? { modelDisplayName } : {}),
+      ...(modelDisplayBillingLabel ? { modelDisplayBillingLabel } : {}),
+      ...(requestedPresetId ? { modelPresetId: requestedPresetId } : {}),
       ...(requestMetadata ?? {}),
       modelRouting: {
         ...(requestedModel ? { requestedModel } : {}),
@@ -437,6 +458,12 @@ export class ChatSendCoordinator {
       && pendingRuntimeSnapshot.providerOptionsKey.trim().length > 0
       ? pendingRuntimeSnapshot.providerOptionsKey.trim()
       : undefined;
+    const providerOptionsSnapshot = pendingRuntimeSnapshot.providerOptions
+      ? normalizeHostSessionProviderOptions(pendingRuntimeSnapshot.providerOptions)
+      : undefined;
+    const selectedModeSnapshot = pendingRuntimeSnapshot.selectedMode
+      ? normalizeChatSelectedMode(pendingRuntimeSnapshot.selectedMode)
+      : undefined;
 
     return {
       ...prepared,
@@ -445,6 +472,8 @@ export class ChatSendCoordinator {
       ...(sessionAllowedPaths ? { sessionAllowedPaths } : {}),
       ...(runtimeOwnerSessionId ? { runtimeOwnerSessionId } : {}),
       ...(providerOptionsKey ? { providerOptionsKey } : {}),
+      ...(providerOptionsSnapshot ? { providerOptionsSnapshot } : {}),
+      ...(selectedModeSnapshot ? { selectedModeSnapshot } : {}),
       ...(requestedModel ? { requestedModel } : {}),
       ...(requestedPresetId ? { requestedPresetId } : {}),
       ...(requestModeId ? { requestModeId } : {}),

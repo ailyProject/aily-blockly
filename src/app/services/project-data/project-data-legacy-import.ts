@@ -1,6 +1,10 @@
 import { PutProjectDataRequest } from './project-data-store';
 import { assertNoOversizedInlineValues } from './project-data-policy';
 import {
+  externalizeGenericProjectDataValues,
+  GenericProjectDataValueEntry,
+} from './project-data-generic-values';
+import {
   AilyDataRef,
   createProjectDataMarker,
   isAilyProjectDataMarker,
@@ -9,7 +13,7 @@ import {
 } from './project-data.types';
 
 interface ProjectDataWriter {
-  put(request: PutProjectDataRequest<Uint8Array>): Promise<AilyDataRef>;
+  put<TValue>(request: PutProjectDataRequest<TValue>): Promise<AilyDataRef>;
 }
 
 interface ProjectDataImportStore extends ProjectDataWriter {
@@ -32,14 +36,16 @@ export interface LegacyProjectDataMigrationResult {
 export interface ExternalProjectDataImportResult {
   readonly document: Record<string, unknown>;
   readonly upgradedLegacyDocument: boolean;
+  readonly documentChanged: boolean;
   readonly migration: LegacyProjectDataMigrationResult;
+  readonly genericExternalized: readonly GenericProjectDataValueEntry[];
 }
 
 /**
- * Converts a markerless legacy ABI into the external-only schema without
- * weakening validation for documents that already declare a Project Data
- * schema. The legacy input is cloned so a failed migration cannot mutate the
- * caller's parsed project document.
+ * Normalizes an ABI into the external-only schema. Known legacy payloads use
+ * specialized codecs; remaining oversized string/JSON field values use the
+ * generic persistence envelope. The input is cloned so a failed migration
+ * cannot mutate the caller's parsed project document.
  */
 export async function ensureExternalProjectDataDocument(
   document: unknown,
@@ -58,10 +64,12 @@ export async function ensureExternalProjectDataDocument(
     );
   }
 
-  const candidate = hasMarker ? source : cloneJsonDocument(source);
-  const migration = hasMarker
-    ? { migrated: [] }
-    : await migrateLegacyInlineProjectData(candidate, store);
+  // Always work on a clone. A failed normalization must not partially mutate a
+  // parsed ABI that may still be displayed or retried by the caller.
+  let candidate = cloneJsonDocument(source);
+  const migration = await migrateLegacyInlineProjectData(candidate, store);
+  const generic = await externalizeGenericProjectDataValues(candidate, store);
+  candidate = generic.document;
 
   await store.flushPending();
   assertNoOversizedInlineValues(candidate);
@@ -79,9 +87,13 @@ export async function ensureExternalProjectDataDocument(
   }
 
   return {
-    document: candidate,
+    document: hasMarker && migration.migrated.length === 0 && generic.externalized.length === 0
+      ? source
+      : candidate,
     upgradedLegacyDocument: !hasMarker,
+    documentChanged: !hasMarker || migration.migrated.length > 0 || generic.externalized.length > 0,
     migration,
+    genericExternalized: generic.externalized,
   };
 }
 

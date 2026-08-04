@@ -49,6 +49,15 @@ declare global {
         update: (options: { id: string; locale?: string }) => Promise<any>;
         uninstall: (options: { id: string; locale?: string }) => Promise<any>;
         onChanged: (callback: (payload: any) => void) => () => void;
+        onProgress: (callback: (payload: {
+          id: string;
+          action: string;
+          phase: string;
+          percent: number;
+          downloadProgress?: number;
+          extractProgress?: number;
+          error?: string;
+        }) => void) => () => void;
       };
       webviewBridge?: {
         fetchPage: (data: any) => Promise<any>;

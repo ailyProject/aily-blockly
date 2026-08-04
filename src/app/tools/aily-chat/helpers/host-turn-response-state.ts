@@ -20,7 +20,6 @@ import type {
 import {
   collectMainTurnResponseText,
   isSubagentScopedTurnResponsePart,
-  projectTurnResponseDisplayParts,
   turnResponsePartsToDisplayChatParts,
 } from '../core/turn-response-part-mapper';
 import {
@@ -1926,16 +1925,16 @@ function buildHostResponseViewParts(
   clearState?: HostTurnResponseClearRuntimeState,
 ): TurnResponsePart[] {
   if (!clearState) {
-    return projectTurnResponseDisplayParts(parts);
+    return [...parts];
   }
 
   const prefixPartCount = Math.max(0, Math.min(clearState.prefixPartCount, parts.length));
   const clearedPartCount = Math.max(prefixPartCount, Math.min(clearState.clearedPartCount, parts.length));
-  return projectTurnResponseDisplayParts([
+  return [
     ...parts.slice(0, prefixPartCount),
     ...(clearState.message ? [{ type: 'markdown', content: clearState.message } satisfies Extract<TurnResponsePart, { type: 'markdown' }>] : []),
     ...parts.slice(clearedPartCount),
-  ]);
+  ];
 }
 
 function deriveHostPendingConfirmationState(
@@ -2702,6 +2701,8 @@ function assignFallbackPartIdsForImportedTurn(
           resolved: part.resolved,
           result: part.result,
           scope: part.scope,
+          selectedActionId: part.selectedActionId,
+          selectedActionLabel: part.selectedActionLabel,
         };
       case 'terminal':
         const terminalSessionKey = getPersistedTerminalSessionKey(part);
@@ -2855,6 +2856,8 @@ function mergePersistedTurnResponsePart(previous: TurnResponsePart, next: TurnRe
         primaryScope: next.primaryScope ?? previousPart.primaryScope,
         result: next.result ?? previousPart.result,
         scope: next.scope ?? previousPart.scope,
+        selectedActionId: next.selectedActionId ?? previousPart.selectedActionId,
+        selectedActionLabel: next.selectedActionLabel ?? previousPart.selectedActionLabel,
       };
     }
     case 'terminal': {
@@ -3404,7 +3407,7 @@ function buildCanonicalResponseDialogItemForEntry(
     return null;
   }
 
-  const assistantProjection = buildTurnResponseAssistantMessageProjection(entry.turnResponse, entry.assistant ?? undefined);
+  const assistantProjection = buildTurnResponseAssistantMessageProjection(entry.turnResponse);
   const assistantTurnContext = buildDialogTurnContext({
     turnResponse: entry.turnResponse,
     requestDisabled,
@@ -3646,6 +3649,9 @@ function buildCanonicalDialogResponseSignature(
   const request = turn?.request;
   const parts = response?.parts ?? [];
   const lastPart = parts.length > 0 ? parts[parts.length - 1] : null;
+  const assistantProjection = turn
+    ? buildTurnResponseAssistantMessageProjection(turn)
+    : null;
 
   return [
     entry.turnId,
@@ -3661,10 +3667,8 @@ function buildCanonicalDialogResponseSignature(
     parts.length,
     getTurnResponsePartProjectionSignature(lastPart),
     response?.progressMessages?.length ?? 0,
-    entry.assistant?.content ?? '',
-    entry.assistant?.state ?? '',
-    entry.assistant?.modelName ?? '',
-    entry.assistant?.modelBillingLabel ?? '',
+    assistantProjection?.modelName ?? '',
+    assistantProjection?.modelBillingLabel ?? '',
     entry.runtimeState?.responseSidecar?.vote ?? '',
   ].join('\u0000');
 }
@@ -3877,7 +3881,7 @@ function buildTurnEntryMessageProjections(
   if (shouldShowAssistant) {
     if (entry.turnResponse) {
       messages.push({
-        ...buildTurnResponseAssistantMessageProjection(entry.turnResponse, entry.assistant ?? undefined),
+        ...buildTurnResponseAssistantMessageProjection(entry.turnResponse),
         responseVote: entry.runtimeState?.responseSidecar?.vote,
       });
     } else {

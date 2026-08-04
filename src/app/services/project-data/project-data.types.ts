@@ -2,6 +2,7 @@ export const AILY_DATA_REF_SCHEMA_VERSION = 1 as const;
 export const AILY_PROJECT_DATA_SCHEMA_VERSION = 1 as const;
 export const AILY_PROJECT_DATA_MODE = 'external-only' as const;
 export const AILY_PROJECT_DATA_ABS_HEADER = '# Project Data Schema: 1 (external-only)' as const;
+export const AILY_PROJECT_DATA_VALUE_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_PROJECT_DATA_THRESHOLD_BYTES = 32 * 1024;
 
 export type AilyDataLogicalType = 'text' | 'json' | 'binary';
@@ -19,6 +20,18 @@ export interface AilyDataRefValue {
 
 export interface AilyDataRef {
   readonly $ailyData: AilyDataRefValue;
+}
+
+/**
+ * Persistence-only envelope for a generic oversized Blockly field value.
+ * Blockly fields and library generators never receive this shape: the host
+ * materializes it back to the original string/JSON value before workspace load.
+ */
+export interface AilyProjectDataValue {
+  readonly $ailyProjectDataValue: {
+    readonly schemaVersion: typeof AILY_PROJECT_DATA_VALUE_SCHEMA_VERSION;
+    readonly ref: AilyDataRef;
+  };
 }
 
 export interface AilyProjectDataMarker {
@@ -132,6 +145,42 @@ export function assertAilyDataRef(value: unknown): asserts value is AilyDataRef 
   if (!isAilyDataRef(value)) {
     throw new ProjectDataError('invalid-ref', 'Invalid AilyDataRef.');
   }
+}
+
+export function isAilyProjectDataValue(value: unknown): value is AilyProjectDataValue {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const outer = value as Record<string, unknown>;
+  if (Object.keys(outer).length !== 1 || !outer['$ailyProjectDataValue']) return false;
+
+  const data = outer['$ailyProjectDataValue'];
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const envelope = data as Record<string, unknown>;
+  if (Object.keys(envelope).length !== 2
+    || envelope['schemaVersion'] !== AILY_PROJECT_DATA_VALUE_SCHEMA_VERSION
+    || !isAilyDataRef(envelope['ref'])) {
+    return false;
+  }
+
+  const ref = envelope['ref'].$ailyData;
+  return (ref.logicalType === 'text' && ref.codec === 'utf8-v1')
+    || (ref.logicalType === 'json' && ref.codec === 'canonical-json-v1');
+}
+
+export function createAilyProjectDataValue(ref: AilyDataRef): AilyProjectDataValue {
+  const data = ref.$ailyData;
+  if (!((data.logicalType === 'text' && data.codec === 'utf8-v1')
+    || (data.logicalType === 'json' && data.codec === 'canonical-json-v1'))) {
+    throw new ProjectDataError(
+      'invalid-ref',
+      `Generic project data values require utf8-v1 or canonical-json-v1, received ${data.codec}.`,
+    );
+  }
+  return {
+    $ailyProjectDataValue: {
+      schemaVersion: AILY_PROJECT_DATA_VALUE_SCHEMA_VERSION,
+      ref,
+    },
+  };
 }
 
 export function areAilyDataRefsEquivalent(left: unknown, right: unknown): boolean {

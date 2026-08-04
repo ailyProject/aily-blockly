@@ -5,6 +5,7 @@ import { AilyHost } from '../core/host';
 import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
 import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
 import { isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
+import { externalizeGenericProjectDataValues } from '../../../services/project-data/project-data-generic-values';
 
 /**
  * ABI文件编辑工具
@@ -357,6 +358,11 @@ export async function editAbiFileTool(
             if (!isAilyProjectDataMarker(parsedAbi?.$ailyProjectData)) {
                 throw new Error('缺少 $ailyProjectData: { schemaVersion: 1, mode: "external-only" }');
             }
+            parsedAbi = (await externalizeGenericProjectDataValues(
+                parsedAbi,
+                projectDataRuntime,
+            )).document;
+            await projectDataRuntime.flushPending();
             assertNoOversizedInlineValues(parsedAbi);
             const refs = projectDataRuntime.getStore().collectReferences(parsedAbi);
             const validation = await projectDataRuntime.getStore().validateReferences(refs);

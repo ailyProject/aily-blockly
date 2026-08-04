@@ -18,8 +18,8 @@ primary_entry: npm run test:e2e
 
 1. 先从第 3 节选择一个操作类型，不得用“跑过一些 E2E”代替明确的测试范围。
 2. 所有命令默认在仓库根目录执行。
-3. 当前代码第一次测试必须使用 `npm run test:e2e` 或带 spec 参数的同类命令重新构建。只有已经确认 `renderer/` 来自当前代码时，后续重跑才能使用 `test:e2e:fast`。
-4. 正式发布验收不得只使用 `test:e2e:fast`。
+3. 所有 E2E 入口都会先重新构建并暂存生产渲染层；不得通过环境变量或手工保留产物绕过构建。
+4. `test:e2e:fast` 仅为历史兼容入口，执行行为与 `test:e2e` 相同，不再复用旧产物。
 5. 必须记录退出码、失败、跳过项和未覆盖项。环境变量未开启而被跳过的测试不算通过。
 6. AI 或 CI 无人值守执行批量全流程时，设置 `AILY_E2E_STOP_ON_ERROR=0`，跑完后统一汇总。
 7. `AILY_E2E_CLEAR_APPDATA=1` 会删除 aily-project 应用数据中的开发板包、编译器、SDK 和工具安装。仅在任务明确要求“全新环境/冷启动/发布完整验收”时使用。
@@ -52,7 +52,6 @@ npm --prefix electron ci --include=dev --force
 
 ```powershell
 Get-ChildItem Env:AILY_E2E_* -ErrorAction SilentlyContinue | Remove-Item
-Remove-Item Env:E2E_SKIP_BUILD -ErrorAction SilentlyContinue
 ```
 
 不要顺带清除用户显式配置的 `AILY_APPDATA_PATH` 或其他非 E2E 环境变量；如存在，必须在结果中记录，因为它会改变测试使用的数据目录。
@@ -62,7 +61,7 @@ Remove-Item Env:E2E_SKIP_BUILD -ErrorAction SilentlyContinue
 | 目的 | 命令 | 使用限制 |
 |---|---|---|
 | 当前代码完整 E2E | `npm run test:e2e` | 会重新构建生产渲染层；正式结论优先使用 |
-| 复用当前构建 | `npm run test:e2e:fast` | 仅用于同一份代码的后续迭代 |
+| 历史兼容入口 | `npm run test:e2e:fast` | 与 `test:e2e` 一样重新构建，不复用旧产物 |
 | 指定 spec | `npm run test:e2e -- smoke.spec.ts` | `--` 后参数透传给 Playwright |
 | 有界面调试 | `npm run test:e2e:headed -- smoke.spec.ts` | 用于定位，不代替无交互验收 |
 | Playwright UI | `npm run test:e2e:ui` | 用于开发测试，不作为最终发布证据 |
@@ -114,7 +113,7 @@ npm run test:e2e
 运行：
 
 ```powershell
-npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
+npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
 npm run test:e2e:fast
 ```
 
@@ -168,7 +167,7 @@ npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts erro
 常规兼容性检查，保留已安装依赖：
 
 ```powershell
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
@@ -184,7 +183,7 @@ npm run test:e2e -- full-flow.spec.ts
 
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\specified-boards.json* -Force -ErrorAction SilentlyContinue
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_CLEAR_APPDATA = '1'
 $env:AILY_E2E_ALLOW_TOOL_REFRESH = '1'
@@ -207,7 +206,7 @@ E2E 默认不自动刷新 `aily-builder` 和 `aily-linter`。本场景显式设�
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\project-plaza.json* -Force -ErrorAction SilentlyContinue
 Get-ChildItem Env:AILY_E2E_* -ErrorAction SilentlyContinue | Remove-Item
-$env:AILY_E2E_PROJECT_PLAZA = '1'
+$env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE = '0.5'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED = [guid]::NewGuid().ToString('N')
 $env:AILY_E2E_STOP_ON_ERROR = '0'
@@ -257,7 +256,7 @@ npm run test:e2e:fast -- full-flow.spec.ts
 ## 8. `OP-BOARD-PACKAGE`：测试某个开发板包
 
 ```powershell
-$env:AILY_E2E_FULLFLOW = '1'
+$env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORD = '<board search keyword>'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
@@ -276,7 +275,7 @@ Remove-Item e2e\.artifacts\full-flow-checkpoints\project-plaza.json* -Force -Err
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE -ErrorAction SilentlyContinue
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED -ErrorAction SilentlyContinue
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS -ErrorAction SilentlyContinue
-$env:AILY_E2E_PROJECT_PLAZA = '1'
+$env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e -- full-flow.spec.ts
 ```
@@ -297,7 +296,7 @@ npm run test:e2e -- full-flow.spec.ts
 4. 删除 `specified-boards` checkpoint，在允许清空应用数据的测试机上，以 `AILY_E2E_CLEAR_APPDATA=1` 对 `uno r4,esp32` 或发布负责人指定的代表板运行 builder 全流程。
 5. 按第 7.5 节从项目广场随机抽取 50%，完成 builder 兼容性验证；项目自身问题可按规则跳过，builder/环境/未知问题不可跳过。
 6. 清除全流程模式变量、抽样变量、项目跳过变量和 `AILY_E2E_CLEAR_APPDATA`。
-7. 删除 `all-boards` checkpoint，设置 `AILY_E2E_ALL_BOARDS=1`、`AILY_E2E_STOP_ON_ERROR=0`，运行 `full-flow.spec.ts`。
+7. 删除 `all-boards` checkpoint，设置 `AILY_E2E_MODE=all-boards`、`AILY_E2E_STOP_ON_ERROR=0`，运行 `full-flow.spec.ts`。
 8. 清除全流程模式变量。
 9. 作为项目广场功能的独立发布验收，删除 `project-plaza` checkpoint、清除抽样/跳过变量，再以 100% 全量运行；此阶段任何项目失败都阻止发布。
 10. 在每个目标 OS/flavor 构建最终安装包，并完成第 10.2 节验收。
@@ -315,7 +314,7 @@ npm run test:e2e -- full-flow.spec.ts
 
 ```powershell
 Remove-Item e2e\.artifacts\full-flow-checkpoints\all-boards.json* -Force -ErrorAction SilentlyContinue
-$env:AILY_E2E_ALL_BOARDS = '1'
+$env:AILY_E2E_MODE = 'all-boards'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 npm run test:e2e:fast -- full-flow.spec.ts
 ```

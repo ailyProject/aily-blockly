@@ -12,7 +12,9 @@
     height: 40px;
     // transition: all 0.3s ease;
     overflow: hidden;
-    z-index: 999;
+    // Keep below active right tool-panel (z-index 100) so aily-chat menus
+    // that extend into the editor are not covered by this floating chrome.
+    z-index: 90;
     cursor: default;
     user-select: none;
     visibility: hidden;

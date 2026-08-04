@@ -41,7 +41,6 @@
         "SERIAL_DESC": "Serieller Monitor",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
-        "FFS_MANAGER_DESC": "ESP32-Dateisystem-Partitionsmanager",
         "AI_DESC": "KI-Assistent",
         "MODEL_STORE_DESC": "KI-Modellspeicher",
         "CLOUD_SPACE_DESC": "Cloud-Speicherplatz",

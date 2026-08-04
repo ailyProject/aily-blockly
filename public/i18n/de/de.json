@@ -30,7 +30,6 @@
         "TOOL_SERIAL": "Serielles Tool",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
-        "FFS_MANAGER": "FFS-Manager",
         "AI": "KI",
         "MODEL_STORE": "Modell Store",
         "APP_STORE": "App Store",

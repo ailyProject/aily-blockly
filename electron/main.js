@@ -921,7 +921,11 @@ const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = requ
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
 const { registerAilyServicesStreamHandlers, cancelAllAilyServicesStreams, getActiveAilyServicesStreams } = require("./aily-services-stream");
-const { registerWebviewBridgeHandlers } = require("./webview-bridge");
+const {
+  executeWebviewFetch,
+  executeWebviewSearch,
+  registerWebviewBridgeHandlers,
+} = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
 const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks } = require("./appdata-resource-lock");
 // debug模块
@@ -933,6 +937,7 @@ const { registerProbeRsHandlers } = require("./probe-rs");
 const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
 const { registerSubappManagerHandlers } = require("./subapp-manager");
 const { resolveAilyAppDataPath } = require("./appdata-path");
+const { shouldBeginRendererGeneration } = require("./renderer-lifecycle");
 
 let mainWindow;
 let userConf;
@@ -1091,6 +1096,8 @@ async function handleCliBridgeCommand(action, payload) {
       if (!dir && !projectOptionalOperations.has(operation)) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       const liveOperationTimeoutMs = operation === 'project_build'
         ? 620000
+        : operation === 'project_upload'
+          ? 920000
         : operation === 'project_create'
           ? 300000
           : operation === 'abs_apply'
@@ -1114,6 +1121,54 @@ async function handleCliBridgeCommand(action, payload) {
         liveOperationTimeoutMs,
       );
       return result && typeof result === 'object' ? result : { ok: false, message: '渲染进程返回了无效结果' };
+    }
+    case 'webview-bridge-fetch': {
+      const sessionId = typeof payload?.sessionId === 'string'
+        ? payload.sessionId.trim()
+        : '';
+      if (!sessionId) {
+        return { ok: false, error: '缺少 sessionId 参数' };
+      }
+
+      const result = await executeWebviewFetch({
+        sessionId,
+        url: payload?.url,
+        timeoutMs: payload?.timeoutMs,
+        waitAfterLoadMs: payload?.waitAfterLoadMs,
+        captureFullContent: true,
+      });
+      if (!result?.ok) {
+        return result && typeof result === 'object'
+          ? result
+          : { ok: false, error: 'WebView fetch 返回了无效结果' };
+      }
+
+      return {
+        ok: true,
+        text: String(result.html || result.text || ''),
+        status: Number.isFinite(result.status) ? Number(result.status) : 200,
+        contentType: typeof result.contentType === 'string'
+          ? result.contentType
+          : 'text/html; charset=utf-8',
+      };
+    }
+    case 'webview-bridge-search': {
+      const sessionId = typeof payload?.sessionId === 'string'
+        ? payload.sessionId.trim()
+        : '';
+      if (!sessionId) {
+        return { ok: false, error: '缺少 sessionId 参数' };
+      }
+
+      const result = await executeWebviewSearch({
+        sessionId,
+        url: payload?.url,
+        timeoutMs: payload?.timeoutMs,
+        captureFullContent: true,
+      });
+      return result && typeof result === 'object'
+        ? result
+        : { ok: false, error: 'WebView search 返回了无效结果' };
     }
     default:
       return { ok: false, message: `未知命令: ${action}` };
@@ -2379,8 +2434,11 @@ function createWindow() {
   });
 
   registerWebBluetoothChooser(mainWindow);
-  mainWindow.webContents.on('did-start-loading', () => {
-    beginRendererGeneration('did-start-loading');
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (!shouldBeginRendererGeneration(details)) {
+      return;
+    }
+    beginRendererGeneration('did-start-navigation');
   });
 
   mainWindow.setBounds(winState.state);

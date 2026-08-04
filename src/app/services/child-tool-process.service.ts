@@ -12,6 +12,7 @@ export interface ChildToolHostInfo {
   shutdownUrl?: string;
   port?: number;
   pid?: number;
+  apiServer?: string;
 }
 
 export type ChildToolRuntimeState = 'unknown' | 'starting' | 'ready' | 'stopped' | 'error';
@@ -396,6 +397,18 @@ export class ChildToolProcessService implements OnDestroy {
       return null;
     }
 
+    const selectedApiServer = this.selectedApiServerFor(config);
+    const sharedApiServer = this.normalizeApiServer(hostInfo.apiServer);
+    if (selectedApiServer && sharedApiServer !== selectedApiServer) {
+      this.log(config, 'discard shared session with stale service region', {
+        selectedApiServer,
+        sharedApiServer: sharedApiServer || null,
+        streamId: String(sharedSession.streamId || ''),
+      });
+      await window['childToolSession']?.restart?.(config.id);
+      return null;
+    }
+
     session.streamId = String(sharedSession.streamId || '');
     session.hostInfo = hostInfo;
     session.running = true;
@@ -432,8 +445,11 @@ export class ChildToolProcessService implements OnDestroy {
     const projectPath = config.packagePath || pathApi.join(childPath, childDir);
     const scriptPath = pathApi.join(projectPath, config.entry || 'index.js');
     const uiPath = pathApi.join(projectPath, config.uiIndex || pathApi.join('ui', 'index.html'));
-    const hostApiServer = String(this.configService.getCurrentApiServer() || '').trim();
+    const hostApiServer = this.normalizeApiServer(this.configService.getCurrentApiServer());
     const parentOrigin = this.resolveParentOrigin();
+    if (this.requiresSelectedApiServer(config) && !hostApiServer) {
+      throw new Error(`${config.id} requires the API server selected by the host service-region dialog`);
+    }
 
     this.log(config, 'resolve paths', {
       childPath,
@@ -525,17 +541,22 @@ export class ChildToolProcessService implements OnDestroy {
       if (session.streamId !== streamId) {
         throw new Error(`${config.id} startup was superseded before registration`);
       }
+      const registeredHostInfo: ChildToolHostInfo = {
+        ...hostInfo,
+        ...(hostApiServer ? { apiServer: hostApiServer } : {}),
+      };
+      session.hostInfo = registeredHostInfo;
       const registered = await window['childToolSession']?.register?.({
         toolId: config.id,
-        hostInfo,
+        hostInfo: registeredHostInfo,
         streamId,
         leaseId: session.leaseId,
       });
       if (registered && registered.success !== true) {
         throw new Error(`${config.id} Runtime registration failed: ${registered.reason || 'unknown error'}`);
       }
-      this.log(config, 'server ready promise resolved', this.sanitizeHostInfo(hostInfo));
-      return hostInfo;
+      this.log(config, 'server ready promise resolved', this.sanitizeHostInfo(registeredHostInfo));
+      return registeredHostInfo;
     } catch (error) {
       this.rejectReady(session, error);
       await readyPromise.catch(() => undefined);
@@ -862,6 +883,22 @@ export class ChildToolProcessService implements OnDestroy {
   private tailText(value: string, maxLength = 4000): string {
     const text = String(value || '');
     return text.length > maxLength ? `...${text.slice(-maxLength)}` : text;
+  }
+
+  private selectedApiServerFor(config: ChildToolConfig): string {
+    return this.requiresSelectedApiServer(config)
+      ? this.normalizeApiServer(this.configService.getCurrentApiServer())
+      : '';
+  }
+
+  private requiresSelectedApiServer(config: ChildToolConfig): boolean {
+    return config.runtime?.apiServer === 'required'
+      || config.id === 'aily-chat'
+      || config.id === 'aily-chat-react';
+  }
+
+  private normalizeApiServer(value: unknown): string {
+    return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
   }
 
   private appendChildToolLog(source: string, message: string, level: ProjectLogLevel): void {

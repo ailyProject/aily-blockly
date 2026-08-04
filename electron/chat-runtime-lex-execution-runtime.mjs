@@ -1395,7 +1395,11 @@ class LexExecutionRuntimeOwner {
       const pending = session.pendingConfirmations?.get(interactionId);
       if (pending) {
         session.pendingConfirmations.delete(interactionId);
-        pending.resolve(normalizeApprovalDecision(request.payload));
+        const decision = normalizeApprovalDecision(request.payload);
+        if (request.kind === 'confirmation.resolve' && pending.interaction?.kind === 'approval') {
+          this.emitApprovalResolution(session, pending.interaction, decision);
+        }
+        pending.resolve(decision);
         return this.createInteractionSnapshot(session);
       }
       session.handle.respondToApproval(interactionId, normalizeApprovalDecision(request.payload).approved, request.payload || undefined);
@@ -1649,11 +1653,7 @@ class LexExecutionRuntimeOwner {
         sessionCompletionCoordinator: this.createSessionCompletionCoordinator(session),
         askUser: this.createAskUserExtension(session),
       },
-      permissionMode: normalizePermissionMode(providerOptions),
-      permissionProfile: normalizePermissionProfile(providerOptions),
-      approvalPolicy: normalizeApprovalPolicy(providerOptions),
-      approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
-      strictAutoReview: normalizeApprovalsReviewer(providerOptions) === 'auto_review',
+      ...createLexApprovalRuntimeConfig(providerOptions),
       hooks: {
         askHandler: request => this.requestConfirmation(session, request),
       },
@@ -1696,11 +1696,7 @@ class LexExecutionRuntimeOwner {
     const hydratedSnapshot = await hydrateChatImageSnapshot(snapshot, this.env);
     session.handlePromise = createAgentHandleAsync(agentBridge, {
       sessionId,
-      permissionMode: normalizePermissionMode(providerOptions),
-      permissionProfile: normalizePermissionProfile(providerOptions),
-      approvalPolicy: normalizeApprovalPolicy(providerOptions),
-      approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
-      strictAutoReview: normalizeApprovalsReviewer(providerOptions) === 'auto_review',
+      ...createLexApprovalRuntimeConfig(providerOptions),
       contextCompactionArchitecture: 'provider',
       summarizerModel: this.createModelConfig(summarizerModel || currentModel),
       inlineSummarization: false,
@@ -1957,8 +1953,9 @@ class LexExecutionRuntimeOwner {
   requestApproval(session, approvalRequest) {
     const interaction = createApprovalInteraction(session, approvalRequest);
     const approvalPromise = new Promise(resolve => {
-      session.pendingConfirmations.set(interaction.id, { resolve });
+      session.pendingConfirmations.set(interaction.id, { interaction, resolve });
     });
+    this.emitApprovalRequest(session, interaction, approvalRequest);
     const snapshot = this.createInteractionSnapshot(session, [interaction]);
     this.emit({
       kind: 'turnInteractionRequested',
@@ -1968,6 +1965,65 @@ class LexExecutionRuntimeOwner {
       interaction: snapshot,
     });
     return approvalPromise;
+  }
+
+  emitApprovalRequest(session, interaction, approvalRequest) {
+    const data = interaction.data || {};
+    this.emit({
+      kind: 'render-event',
+      sessionId: session.sessionId,
+      turnId: session.activeTurnId || interaction.toolCallId || interaction.id,
+      revision: ++session.revision,
+      renderEvent: {
+        type: 'approval_request',
+        approvalTraceId: interaction.approvalTraceId,
+        toolCallId: interaction.toolCallId,
+        toolName: interaction.toolName,
+        input: data.args || {},
+        message: normalizeString(approvalRequest?.message)
+          || normalizeString(approvalRequest?.reason)
+          || normalizeString(data.message)
+          || `${interaction.toolName} requires approval`,
+        ...(normalizeString(data.title) ? { title: normalizeString(data.title) } : {}),
+        ...(normalizeString(data.subtitle) ? { subtitle: normalizeString(data.subtitle) } : {}),
+        ...(normalizeString(approvalRequest?.description)
+          ? { description: normalizeString(approvalRequest.description) }
+          : {}),
+        ...(normalizeString(approvalRequest?.source) ? { source: normalizeString(approvalRequest.source) } : {}),
+        ...(Array.isArray(data.actions) ? { actions: data.actions } : {}),
+        ...(normalizeString(data.primaryScope) ? { primaryScope: normalizeString(data.primaryScope) } : {}),
+        ...(typeof approvalRequest?.allowAutoConfirm === 'boolean'
+          ? { allowAutoConfirm: approvalRequest.allowAutoConfirm }
+          : {}),
+        ...(data.approveCombination ? { approveCombination: data.approveCombination } : {}),
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  emitApprovalResolution(session, interaction, decision) {
+    const selectedAction = interaction.data?.actions?.find(action => (
+      (decision.actionId && action.id === decision.actionId)
+      || (!decision.actionId && decision.scope && action.scope === decision.scope)
+    ));
+    this.emit({
+      kind: 'render-event',
+      sessionId: session.sessionId,
+      turnId: session.activeTurnId || interaction.toolCallId || interaction.id,
+      revision: ++session.revision,
+      renderEvent: {
+        type: 'approval_resolve',
+        approvalTraceId: interaction.approvalTraceId,
+        toolCallId: interaction.toolCallId,
+        result: decision.approved ? 'approved' : 'rejected',
+        ...(decision.scope ? { scope: decision.scope } : {}),
+        ...(decision.actionId ? { selectedActionId: decision.actionId } : {}),
+        ...(normalizeString(selectedAction?.label)
+          ? { selectedActionLabel: normalizeString(selectedAction.label) }
+          : {}),
+        timestamp: Date.now(),
+      },
+    });
   }
 
   requestConfirmation(session, request) {
@@ -5424,8 +5480,9 @@ function resolveConfiguredAppDataPath(env = process.env) {
   try {
     const configPath = path.join(MODULE_DIR, 'config', 'config.json');
     const config = JSON.parse(fsSync.readFileSync(configPath, 'utf-8'));
-    const platform = normalizeString(config.platform) || process.platform;
-    const configured = normalizeString(config.appdata_path?.[platform] || config.appdata_path?.[process.platform]);
+    // Prefer the real process platform. config.platform is a build/product flag and
+    // can be "win32" on macOS/Linux machines, which must not select Windows appdata paths.
+    const configured = normalizeString(config.appdata_path?.[process.platform]);
     if (!configured) {
       return '';
     }
@@ -5556,6 +5613,7 @@ function createApprovalInteraction(session, request) {
   const input = normalizeApprovalInput(request);
   const actions = Array.isArray(request?.actions) && request.actions.length > 0
     ? request.actions.map(action => ({
+      ...(normalizeString(action?.id) ? { id: normalizeString(action.id) } : {}),
       scope: normalizeString(action?.scope) || 'once',
       label: normalizeString(action?.label) || 'Allow',
       ...(normalizeString(action?.description) ? { description: normalizeString(action.description) } : {}),
@@ -5638,9 +5696,14 @@ function createConfirmationInteraction(session, request) {
 function normalizeApprovalDecision(payload) {
   const result = payload?.result && typeof payload.result === 'object' ? payload.result : payload;
   const approved = result?.approved !== false;
-  return approved
-    ? { approved: true }
-    : { approved: false, reason: normalizeString(result?.reason) || 'rejected' };
+  const scope = normalizeString(result?.scope);
+  const actionId = normalizeString(result?.actionId) || normalizeString(result?.selectedActionId);
+  return {
+    approved,
+    ...(scope ? { scope } : {}),
+    ...(actionId ? { actionId } : {}),
+    ...(!approved ? { reason: normalizeString(result?.reason) || 'rejected' } : {}),
+  };
 }
 
 function normalizeRequestMetadata(request) {
@@ -7350,7 +7413,9 @@ export function createElectronBlocklyToolContributions(hostAPI) {
       name: 'boardSearch',
       toolSet: 'blockly-discovery',
       description: 'Board/library search and hardware library search for development boards, hardware modules, and libraries',
-      prompt: 'Use this tool for board library search, hardware library search, and development board/library discovery by keyword or filter. It can get categories or inspect board parameters.',
+      prompt: `Use this tool for board/library discovery by keyword or filter, category lookup, and board parameter inspection.
+
+Search results expose packageName as the canonical npm identity. Once the required library packageName is known, install it directly from the current project root with the terminal command \`npm install <packageName>\`. Do not use tool_search or the project tool to discover an installation mechanism.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -7371,7 +7436,9 @@ export function createElectronBlocklyToolContributions(hostAPI) {
       name: 'search_boards_libraries',
       toolSet: 'blockly-discovery',
       description: 'Search Aily development boards, hardware modules, and libraries by text query',
-      prompt: 'Search development boards, hardware modules, and libraries. Use type="boards", "libraries", or "both".',
+      prompt: `Search development boards, hardware modules, and libraries. Use type="boards", "libraries", or "both".
+
+Each result exposes packageName as the canonical npm identity. Once the required library packageName is known, install it directly from the current project root with the terminal command \`npm install <packageName>\`. Do not use tool_search or the project tool to discover an installation mechanism.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -7593,11 +7660,11 @@ export async function invokeElectronBlocklyTool(toolName, input, hostAPI, contex
       return invokeElectronUploadProjectTool(input, hostAPI, context);
     case 'boardSearch':
       return invokeElectronBoardSearchTool(input, hostAPI);
-    case 'search_boards_libraries':
-      return toolText(formatExternalResult(await hostAPI.boardSearch.search(
-        normalizeSearchQuery(input.query),
-        normalizeBoardSearchType(input.type),
-      )));
+    case 'search_boards_libraries': {
+      const scope = normalizeBoardSearchType(input.type);
+      const result = await hostAPI.boardSearch.search(normalizeSearchQuery(input.query), scope);
+      return toolText(formatExternalResult(enrichElectronBoardLibrarySearchResult(result, scope)));
+    }
     case 'get_hardware_categories':
       return toolText(formatExternalResult(await hostAPI.boardSearch.getCategories(
         normalizeCategoryType(input.type),
@@ -7833,10 +7900,9 @@ async function invokeElectronUploadProjectTool(input, hostAPI, context = {}) {
 async function invokeElectronBoardSearchTool(input, hostAPI) {
   const action = normalizeString(input.action);
   if (action === 'search') {
-    return toolText(formatExternalResult(await hostAPI.boardSearch.search(
-      normalizeSearchQuery(input.query),
-      normalizeBoardSearchType(input.type),
-    )));
+    const scope = normalizeBoardSearchType(input.type);
+    const result = await hostAPI.boardSearch.search(normalizeSearchQuery(input.query), scope);
+    return toolText(formatExternalResult(enrichElectronBoardLibrarySearchResult(result, scope)));
   }
   if (action === 'get_categories') {
     return toolText(formatExternalResult(await hostAPI.boardSearch.getCategories(
@@ -8062,6 +8128,68 @@ function normalizeSearchQuery(value) {
 function normalizeBoardSearchType(value) {
   const normalized = normalizeString(value);
   return normalized === 'boards' || normalized === 'libraries' ? normalized : 'both';
+}
+
+function canonicalElectronAilyPackageName(name, kind) {
+  const normalizedName = normalizeString(name);
+  if (!normalizedName) {
+    return undefined;
+  }
+  if (normalizedName.startsWith('@')) {
+    return normalizedName;
+  }
+
+  const expectedPrefix = kind === 'library' ? 'lib-' : 'board-';
+  return normalizedName.startsWith(expectedPrefix)
+    ? `${AILY_PROJECT_SCOPE}${normalizedName}`
+    : undefined;
+}
+
+function inferElectronBoardLibrarySearchKind(item, scope) {
+  const source = normalizeString(item?.source).toLowerCase();
+  const type = normalizeString(item?.type).toLowerCase();
+  const name = normalizeString(item?.name);
+
+  if (source === 'library' || type === 'library' || name.startsWith('lib-') || name.includes('/lib-')) {
+    return 'library';
+  }
+  if (source === 'board' || type === 'board' || name.startsWith('board-') || name.includes('/board-')) {
+    return 'board';
+  }
+  if (scope === 'libraries') {
+    return 'library';
+  }
+  if (scope === 'boards') {
+    return 'board';
+  }
+  return undefined;
+}
+
+function enrichElectronBoardLibrarySearchResult(value, scope) {
+  if (Array.isArray(value)) {
+    return value.map(item => enrichElectronBoardLibrarySearchResult(item, scope));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const enriched = { ...value };
+  if (Array.isArray(value.boards)) {
+    enriched.boards = enrichElectronBoardLibrarySearchResult(value.boards, 'boards');
+  }
+  if (Array.isArray(value.libraries)) {
+    enriched.libraries = enrichElectronBoardLibrarySearchResult(value.libraries, 'libraries');
+  }
+  if (Array.isArray(value.results)) {
+    enriched.results = enrichElectronBoardLibrarySearchResult(value.results, scope);
+  }
+
+  const kind = inferElectronBoardLibrarySearchKind(value, scope);
+  const packageName = kind ? canonicalElectronAilyPackageName(value.name, kind) : undefined;
+  if (packageName) {
+    enriched.packageName = packageName;
+  }
+  return enriched;
 }
 
 function normalizeCategoryType(value) {
@@ -8835,14 +8963,26 @@ function normalizeApprovalsReviewer(providerOptions) {
   return reviewer === 'auto_review' ? 'auto_review' : 'user';
 }
 
+export function createLexApprovalRuntimeConfig(providerOptions) {
+  return {
+    permissionMode: normalizePermissionMode(providerOptions),
+    permissionProfile: normalizePermissionProfile(providerOptions),
+    approvalPolicy: normalizeApprovalPolicy(providerOptions),
+    approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
+    strictAutoReview: false,
+  };
+}
+
 function createSessionRuntimeConfigKey(providerOptions, currentModel, summarizerModel, cwd) {
+  const approvalConfig = createLexApprovalRuntimeConfig(providerOptions);
   return JSON.stringify({
     cwd: normalizeString(cwd),
     installedSubappInventory: createElectronInstalledSubappInventorySignature(),
-    permissionMode: normalizePermissionMode(providerOptions),
-    permissionProfile: normalizePermissionProfile(providerOptions) || null,
-    approvalPolicy: normalizeApprovalPolicy(providerOptions),
-    approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
+    permissionMode: approvalConfig.permissionMode,
+    permissionProfile: approvalConfig.permissionProfile || null,
+    approvalPolicy: approvalConfig.approvalPolicy,
+    approvalsReviewer: approvalConfig.approvalsReviewer,
+    strictAutoReview: approvalConfig.strictAutoReview,
     model: normalizeString(currentModel?.model || currentModel?.modelId || currentModel?.id),
     summarizerModel: normalizeString(summarizerModel?.model || summarizerModel?.modelId || summarizerModel?.id),
     baseUrl: normalizeString(currentModel?.baseUrl || currentModel?.llmConfig?.baseUrl),

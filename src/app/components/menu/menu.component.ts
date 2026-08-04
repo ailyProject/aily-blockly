@@ -19,6 +19,8 @@ import { PlatformService } from '../../services/platform.service';
 
 const MENU_ANCHOR_ALIGNMENT_EPSILON = 4;
 const CHAT_MODEL_SUBMENU_OPEN_BODY_CLASS = 'aily-chat-model-submenu-open';
+const SUBMENU_HOVER_SCROLL_SPEED_PX_PER_SECOND = 28;
+const SUBMENU_HOVER_SCROLL_MIN_DURATION_SECONDS = 1.2;
 
 @Component({
   selector: 'app-menu',
@@ -105,11 +107,14 @@ export class MenuComponent implements AfterViewChecked {
 
   // 添加子菜单显示状态管理
   activeSubmenuItem: IMenuItem | null = null;
-  submenuTimeout: any = null;
+  submenuTimeout: ReturnType<typeof setTimeout> | null = null;
   submenuPosition = { left: '0px', top: '0px' };
   submenuWidth = 'auto';
+  submenuMaxWidth = 'none';
   submenuMaxHeight = 'none';
   submenuOverflow = 'visible';
+  private submenuInteractionVersion = 0;
+  private submenuGeometryTimeout: ReturnType<typeof setTimeout> | null = null;
   private activeSubmenuAnchor: {
     menuLeft: number;
     menuRight: number;
@@ -343,6 +348,11 @@ export class MenuComponent implements AfterViewChecked {
     if (this.menuGeometryCorrectionTimeout) {
       clearTimeout(this.menuGeometryCorrectionTimeout);
       this.menuGeometryCorrectionTimeout = null;
+    }
+    this.cancelSubmenuClose();
+    if (this.submenuGeometryTimeout) {
+      clearTimeout(this.submenuGeometryTimeout);
+      this.submenuGeometryTimeout = null;
     }
     this.setModelSubmenuBodyState(false);
   }
@@ -799,10 +809,10 @@ export class MenuComponent implements AfterViewChecked {
 
   // 显示子菜单
   showSubMenu(event: MouseEvent, item: IMenuItem) {
+    this.cancelSubmenuClose();
+
     if (!this.hasSubmenuContent(item)) {
-      if (this.activeSubmenuItem === item) {
-        this.activeSubmenuItem = null;
-      }
+      this.activeSubmenuItem = null;
       this.setModelSubmenuBodyState(false);
       this.setSubmenuReady(false);
       this.pendingSubmenuGeometry = false;
@@ -810,12 +820,11 @@ export class MenuComponent implements AfterViewChecked {
       return;
     }
 
-    // 清除之前的延时
-    if (this.submenuTimeout) {
-      clearTimeout(this.submenuTimeout);
-    }
-
     if (this.activeSubmenuItem === item) {
+      const submenuElement = this.submenuBox?.nativeElement as HTMLElement | undefined;
+      if (!submenuElement?.classList.contains('ready')) {
+        this.calculateSubmenuPosition(event.currentTarget as HTMLElement | null);
+      }
       return;
     }
 
@@ -831,7 +840,11 @@ export class MenuComponent implements AfterViewChecked {
       const menuBoxElement = this.menuBox.nativeElement;
       const menuBoxRect = menuBoxElement.getBoundingClientRect();
       const itemRect = menuItemElement.getBoundingClientRect();
-      const estimatedSubmenuWidth = this.estimateSubmenuWidth(this.activeSubmenuItem);
+      const primaryMenuWidth = menuBoxRect.width;
+      const estimatedSubmenuWidth = Math.min(
+        this.estimateSubmenuWidth(this.activeSubmenuItem),
+        primaryMenuWidth,
+      );
       const estimatedSubmenuHeight = this.estimateSubmenuHeight(this.activeSubmenuItem);
 
       const left = this.resolveSubmenuLeft(menuBoxRect.left, menuBoxRect.right, estimatedSubmenuWidth);
@@ -844,7 +857,8 @@ export class MenuComponent implements AfterViewChecked {
         itemHeight: itemRect.height,
       };
 
-      this.submenuWidth = `${estimatedSubmenuWidth}px`;
+      this.submenuWidth = 'max-content';
+      this.submenuMaxWidth = `${primaryMenuWidth}px`;
       this.submenuMaxHeight = 'none';
       this.submenuOverflow = 'visible';
 
@@ -853,7 +867,21 @@ export class MenuComponent implements AfterViewChecked {
         top: top + 'px'
       };
       this.pendingSubmenuGeometry = true;
+      this.scheduleSubmenuGeometryRefinement(this.activeSubmenuItem);
     }
+  }
+
+  private scheduleSubmenuGeometryRefinement(item: IMenuItem | null): void {
+    if (this.submenuGeometryTimeout) {
+      clearTimeout(this.submenuGeometryTimeout);
+    }
+
+    this.submenuGeometryTimeout = setTimeout(() => {
+      this.submenuGeometryTimeout = null;
+      if (this.activeSubmenuItem === item && this.pendingSubmenuGeometry) {
+        this.refineSubmenuPosition();
+      }
+    }, 0);
   }
 
   private estimateSubmenuWidth(item: IMenuItem | null | undefined): number {
@@ -892,9 +920,10 @@ export class MenuComponent implements AfterViewChecked {
 
   private resolveSubmenuLeft(menuLeft: number, menuRight: number, submenuWidth: number): number {
     const viewportPadding = 8;
-    let left = menuRight - 4;
+    const submenuGap = this.usesMainMenuParity() ? 2 : -4;
+    let left = menuRight + submenuGap;
     if (left + submenuWidth > window.innerWidth - viewportPadding) {
-      left = Math.max(viewportPadding, menuLeft - submenuWidth + 4);
+      left = Math.max(viewportPadding, menuLeft - submenuWidth - submenuGap);
     }
     return left;
   }
@@ -902,10 +931,15 @@ export class MenuComponent implements AfterViewChecked {
   private resolveSubmenuTop(itemTop: number, itemHeight: number, submenuHeight: number): number {
     const viewportPadding = 8;
     const viewportHeight = window.innerHeight;
-    const itemCenter = itemTop + itemHeight / 2;
-    const preferredTop = Math.round(itemCenter - submenuHeight / 2);
+    const preferredTop = this.usesMainMenuParity()
+      ? itemTop
+      : Math.round(itemTop + itemHeight / 2 - submenuHeight / 2);
     const maxTop = Math.max(viewportPadding, viewportHeight - submenuHeight - viewportPadding);
     return Math.min(maxTop, Math.max(viewportPadding, preferredTop));
+  }
+
+  private usesMainMenuParity(): boolean {
+    return this.hostRef.nativeElement.classList.contains('main-menu-parity');
   }
 
   private refineSubmenuPosition(): void {
@@ -931,8 +965,27 @@ export class MenuComponent implements AfterViewChecked {
     submenuElement.style.top = `${top}px`;
     submenuElement.style.maxHeight = 'none';
     submenuElement.style.overflowY = 'visible';
+    this.updateSubmenuHoverScrollDistances(submenuElement);
     this.setSubmenuReady(true);
     this.pendingSubmenuGeometry = false;
+  }
+
+  private updateSubmenuHoverScrollDistances(submenuElement: HTMLElement): void {
+    const scrollViewports = submenuElement.querySelectorAll<HTMLElement>('.submenu-hover-scroll');
+    scrollViewports.forEach((viewport) => {
+      const content = viewport.querySelector<HTMLElement>('.submenu-hover-scroll-content');
+      if (!content) {
+        return;
+      }
+
+      const distance = Math.max(0, content.scrollWidth - viewport.clientWidth);
+      const duration = Math.max(
+        SUBMENU_HOVER_SCROLL_MIN_DURATION_SECONDS,
+        distance / SUBMENU_HOVER_SCROLL_SPEED_PX_PER_SECOND,
+      );
+      content.style.setProperty('--submenu-hover-scroll-distance', `${distance}px`);
+      content.style.setProperty('--submenu-hover-scroll-duration', `${duration.toFixed(2)}s`);
+    });
   }
 
   private getSubmenuTooltipLines(item: IMenuItem | null | undefined): string[] {
@@ -974,20 +1027,39 @@ export class MenuComponent implements AfterViewChecked {
 
   // 隐藏子菜单
   hideSubMenu(event: MouseEvent, index: number) {
-    // 延时隐藏，给用户时间移动到子菜单
+    if (this.submenuTimeout) {
+      clearTimeout(this.submenuTimeout);
+    }
+
+    const interactionVersion = ++this.submenuInteractionVersion;
+    const itemToClose = this.activeSubmenuItem;
     this.submenuTimeout = setTimeout(() => {
+      this.submenuTimeout = null;
+      if (
+        interactionVersion !== this.submenuInteractionVersion
+        || this.activeSubmenuItem !== itemToClose
+      ) {
+        return;
+      }
+
       this.activeSubmenuItem = null;
       this.setModelSubmenuBodyState(false);
       this.setSubmenuReady(false);
       this.pendingSubmenuGeometry = false;
       this.activeSubmenuAnchor = null;
-    }, 60);
+    }, 100);
   }
 
   // 保持子菜单打开
   keepSubMenuOpen() {
+    this.cancelSubmenuClose();
+  }
+
+  private cancelSubmenuClose(): void {
+    this.submenuInteractionVersion += 1;
     if (this.submenuTimeout) {
       clearTimeout(this.submenuTimeout);
+      this.submenuTimeout = null;
     }
   }
 

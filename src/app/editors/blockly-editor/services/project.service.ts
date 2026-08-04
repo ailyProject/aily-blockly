@@ -11,6 +11,10 @@ import {
 import { ElectronService } from '../../../services/electron.service';
 import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
 import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
+import {
+  externalizeGenericProjectDataValues,
+  materializePreparedGenericProjectDataValues,
+} from '../../../services/project-data/project-data-generic-values';
 import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 
 
@@ -63,7 +67,13 @@ export class _ProjectService {
 
       // 读取并解析已保存的 JSON 数据
       const savedJsonStr = window['fs'].readFileSync(`${this.currentProjectPath}/project.abi`, 'utf8');
-      const savedJson = this.blocklyService.normalizeProjectAbi(JSON.parse(savedJsonStr));
+      const savedExternalJson = JSON.parse(savedJsonStr);
+      const savedJson = this.blocklyService.normalizeProjectAbi(
+        materializePreparedGenericProjectDataValues(
+          savedExternalJson,
+          (ref) => projectDataRuntime.getPrepared(ref),
+        ),
+      );
 
       // 将当前工作区 JSON 和保存的 JSON 转为字符串进行比较
       const currentJsonStr = JSON.stringify(this.blocklyService.normalizeProjectAbi(currentProjectAbi));
@@ -81,7 +91,12 @@ export class _ProjectService {
   async save(path: string, createHistory: boolean = true) {
     await projectDataRuntime.flushPending();
     const projectDocument = this.blocklyService.getProjectDocument();
-    const jsonData = this.blocklyService.getProjectAbiForSave(projectDocument);
+    const inlineJsonData = this.blocklyService.getProjectAbiForSave(projectDocument);
+    const { document: jsonData } = await externalizeGenericProjectDataValues(
+      inlineJsonData,
+      projectDataRuntime,
+    );
+    await projectDataRuntime.flushPending();
     assertNoOversizedInlineValues(jsonData);
     const refs = projectDataRuntime.getStore().collectReferences(jsonData);
     const validation = await projectDataRuntime.getStore().validateReferences(refs);

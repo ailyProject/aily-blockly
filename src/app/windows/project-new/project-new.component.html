@@ -39,7 +39,7 @@
               <div class="img-box">
                 <img [src]="resourceUrl+board.img" />
               </div>
-              <div class="name">{{ board.nickname }}
+              <div class="name">{{ board._nickname }}
                 @if(board.state){
                 <span>({{board.state}})</span>
                 }
@@ -50,14 +50,14 @@
           @if(currentBoard){
           <div class="desc-box">
             <div class="title">
-              {{currentBoard.nickname}}
+              {{currentBoard._nickname}}
               @if(currentBoard.url){
               <div class="doc btn link" (click)="openUrl(currentBoard.url)">
                 {{ 'PROJECT_NEW.BOARD.READ_DOC' | translate }}
               </div>
               }
             </div>
-            <div class="content">{{ currentBoard.description }}</div>
+            <div class="content">{{ currentBoard._description }}</div>
           </div>
           }
         </div>

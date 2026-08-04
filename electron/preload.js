@@ -492,6 +492,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.on("subapp-manager-changed", listener);
       return () => ipcRenderer.removeListener("subapp-manager-changed", listener);
     },
+    onProgress: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("subapp-manager-progress", listener);
+      return () => ipcRenderer.removeListener("subapp-manager-progress", listener);
+    },
   },
   codeViewer: {
     publishState: (state) => ipcRenderer.send("blockly-code-viewer-state-update", state),

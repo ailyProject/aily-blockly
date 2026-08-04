@@ -7,6 +7,7 @@ export interface IMenuItem {
   icon?: string;
   color?: string;
   more?: string;
+  ai?: boolean;
   sep?: boolean;
   state?: 'default' | 'doing' | 'done' | 'error' | 'warn';
   disabled?: boolean;

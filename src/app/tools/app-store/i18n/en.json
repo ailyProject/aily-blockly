@@ -41,7 +41,6 @@
         "SERIAL_DESC": "Serial monitor tool",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
-        "FFS_MANAGER_DESC": "ESP32 filesystem partition manager",
         "AI_DESC": "AI Assistant",
         "AI_REACT_DESC": "AI assistant experimental version",
         "MODEL_STORE_DESC": "AI Model Store",

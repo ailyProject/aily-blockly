@@ -25,11 +25,19 @@ import { isDefaultAutoPresetSelected } from '../../helpers/model-billing-label';
 import { AilyChatCodeComponent } from './aily-chat-code.component';
 import { XAilyErrorViewerComponent, type ErrorActionItem } from './x-aily-error-viewer/x-aily-error-viewer.component';
 import { XAilyQuestionViewerComponent } from './x-aily-question-viewer/x-aily-question-viewer.component';
+import { ChatInteractionDecisionReceiptComponent } from './chat-interaction-decision-receipt.component';
 import { ChatActivityGroupComponent } from './chat-activity-group.component';
 import { ChatStandaloneToolCallComponent } from './chat-standalone-tool-call.component';
 import { AilyMarkdownExternalLinksDirective } from '../../directives/aily-markdown-external-links.directive';
 import { isGroupableActivityPart, isSubagentToolCall } from './chat-activity-group-projection';
-import { isProgressMessageDisplayPart, type ProgressMessageDisplayPart, type RenderableChatPart } from './chat-render-parts';
+import {
+  isInteractionDecisionDisplayPart,
+  isProgressMessageDisplayPart,
+  isSyntheticChatDisplayPart,
+  type InteractionDecisionDisplayPart,
+  type ProgressMessageDisplayPart,
+  type RenderableChatPart,
+} from './chat-render-parts';
 import { ChatEngineService } from '../../services/chat-engine.service';
 import { ChatRuntimeInteractionHostService } from '../../services/chat-runtime-interaction-host.service';
 import { ChatService, type ModelConfig } from '../../services/chat.service';
@@ -86,6 +94,7 @@ interface MarkdownTextChunk {
     XMarkdownComponent,
     XAilyErrorViewerComponent,
     XAilyQuestionViewerComponent,
+    ChatInteractionDecisionReceiptComponent,
     ChatActivityGroupComponent,
     ChatStandaloneToolCallComponent,
     AilyMarkdownExternalLinksDirective,
@@ -226,6 +235,10 @@ interface MarkdownTextChunk {
           </span>
           <span class="chat-working-progress-text">{{ getProgressData()?.content }}</span>
         </div>
+      }
+      @case ('interaction_decision') {
+        <aily-chat-interaction-decision-receipt
+          [part]="getInteractionDecisionPart()" />
       }
     }
   `,
@@ -559,19 +572,19 @@ export class ChatMessagePartItemComponent implements OnChanges {
   }
 
   getStandaloneActivityParts(): readonly ChatPart[] {
-    return this.part && !isProgressMessageDisplayPart(this.part) ? [this.part] : [];
+    return this.part && !isSyntheticChatDisplayPart(this.part) ? [this.part] : [];
   }
 
   shouldUseStandaloneActivityGroup(): boolean {
-    return !!this.part && !isProgressMessageDisplayPart(this.part) && (this.part.type === 'state' || isGroupableActivityPart(this.part));
+    return !!this.part && !isSyntheticChatDisplayPart(this.part) && (this.part.type === 'state' || isGroupableActivityPart(this.part));
   }
 
   shouldUseStandaloneSubagentGroup(): boolean {
-    return !!this.part && !isProgressMessageDisplayPart(this.part) && this.part.type === 'tool_call' && isSubagentToolCall(this.part);
+    return !!this.part && !isSyntheticChatDisplayPart(this.part) && this.part.type === 'tool_call' && isSubagentToolCall(this.part);
   }
 
   isStandaloneToolCall(): boolean {
-    return !!this.part && !isProgressMessageDisplayPart(this.part) && this.part.type === 'tool_call' && !isSubagentToolCall(this.part);
+    return !!this.part && !isSyntheticChatDisplayPart(this.part) && this.part.type === 'tool_call' && !isSubagentToolCall(this.part);
   }
 
   asToolCall(): any {
@@ -580,6 +593,10 @@ export class ChatMessagePartItemComponent implements OnChanges {
 
   getProgressData(): ProgressMessageDisplayPart | null {
     return isProgressMessageDisplayPart(this.part) ? this.part : null;
+  }
+
+  getInteractionDecisionPart(): InteractionDecisionDisplayPart | null {
+    return isInteractionDecisionDisplayPart(this.part) ? this.part : null;
   }
 
   getPlanData(): PlanPart {

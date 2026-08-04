@@ -31,7 +31,6 @@
         "TOOL_SERIAL": "Serial Tool",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
-        "FFS_MANAGER": "FFS Manager",
         "AI": "AI",
         "AI_NEW": "AI (Beta)",
         "MODEL_STORE": "Model Store",

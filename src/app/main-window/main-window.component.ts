@@ -10,7 +10,6 @@ import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService } from '../services/ui.service';
 import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
-import { FfsManagerComponent } from '../tools/ffs-manager/ffs-manager.component';
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '../services/project.service';
@@ -26,7 +25,6 @@ import { ConfigService } from '../services/config.service';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
-import { ModelStoreComponent } from '../tools/model-store/model-store.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
 import { OnboardingService } from '../services/onboarding.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -41,6 +39,11 @@ import type { DevelopmentModePreference } from '../services/config.service';
 import { ChatRuntimeHostResourceOperationHandlerService } from '../tools/aily-chat/services/chat-runtime-host-resource-operation-handler.service';
 import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-chat-child-protocol.service';
 
+const RIGHT_SIDER_WIDTH_STORAGE_KEY = 'aily-main-window.right-sider-width';
+const RIGHT_SIDER_DEFAULT_WIDTH = 450;
+const RIGHT_SIDER_MIN_WIDTH = 400;
+const RIGHT_SIDER_MAX_WIDTH = 800;
+
 @Component({
   selector: 'app-main-window',
   imports: [
@@ -54,7 +57,6 @@ import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-c
     TerminalComponent,
     LogComponent,
     SerialMonitorComponent,
-    FfsManagerComponent,
     ChildToolHostComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
@@ -65,7 +67,6 @@ import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-c
     NzModalModule,
     CloudSpaceComponent,
     UserCenterComponent,
-    ModelStoreComponent,
     OnboardingComponent,
     TranslateModule,
     LibManagerToolComponent,
@@ -401,10 +402,34 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   bottomHeight = 210;
-  siderWidth = 450;
+  siderWidth = this.readPersistedSiderWidth();
 
   onSideResize({ width }: NzResizeEvent): void {
-    this.siderWidth = width!;
+    if (!Number.isFinite(width)) {
+      return;
+    }
+    this.siderWidth = this.normalizeSiderWidth(width!);
+    try {
+      localStorage.setItem(RIGHT_SIDER_WIDTH_STORAGE_KEY, String(this.siderWidth));
+    } catch (error) {
+      console.warn('[MainWindow] Failed to persist right sider width:', error);
+    }
+  }
+
+  private readPersistedSiderWidth(): number {
+    try {
+      const persistedWidth = Number(localStorage.getItem(RIGHT_SIDER_WIDTH_STORAGE_KEY));
+      return Number.isFinite(persistedWidth) && persistedWidth > 0
+        ? this.normalizeSiderWidth(persistedWidth)
+        : RIGHT_SIDER_DEFAULT_WIDTH;
+    } catch (error) {
+      console.warn('[MainWindow] Failed to restore right sider width:', error);
+      return RIGHT_SIDER_DEFAULT_WIDTH;
+    }
+  }
+
+  private normalizeSiderWidth(width: number): number {
+    return Math.min(RIGHT_SIDER_MAX_WIDTH, Math.max(RIGHT_SIDER_MIN_WIDTH, Math.round(width)));
   }
 
   onContentResize({ height }: NzResizeEvent): void {

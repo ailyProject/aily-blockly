@@ -103,10 +103,13 @@ export class LibManagerComponent implements OnDestroy {
   }
 
   private applyCachedInitialState() {
+    const availableLibraryList = this.getAvailableLibraryList();
     const cachedState = this.libManagerService.getCachedInitialState(
-      this.configService.libraryList,
+      availableLibraryList,
       this.configService.tagList,
       this.translate.currentLang || 'en',
+      10,
+      this.getCurrentBoardType(),
     );
 
     if (!cachedState) {
@@ -123,12 +126,15 @@ export class LibManagerComponent implements OnDestroy {
   private async initializeLibraryData() {
     const loadToken = ++this.initialDataLoadToken;
     let loadedAnyChunk = false;
+    const availableLibraryList = this.getAvailableLibraryList();
 
     try {
       for await (const state of this.libManagerService.buildInitialStateChunks(
-        this.configService.libraryList,
+        availableLibraryList,
         this.configService.tagList,
         this.translate.currentLang || 'en',
+        10,
+        this.getCurrentBoardType(),
       )) {
         if (this.isDestroyed || loadToken !== this.initialDataLoadToken) {
           return;
@@ -166,12 +172,28 @@ export class LibManagerComponent implements OnDestroy {
     const installedLibraryList = await this.npmService.getAllInstalledLibraries(this.projectService.currentProjectPath);
 
     return this.applyLibraryOperationStates(
-      this.libManagerService.mergeInstalledLibraries(
-        targetLibraryList,
-        installedLibraryList,
-        includeInstalledOnlyLibraries,
+      this.libManagerService.filterByBoardType(
+        this.libManagerService.mergeInstalledLibraries(
+          targetLibraryList,
+          installedLibraryList,
+          includeInstalledOnlyLibraries,
+        ),
+        this.getCurrentBoardType(),
       ),
     );
+  }
+
+  private getAvailableLibraryList(): PackageInfo[] {
+    return this.libManagerService.filterByBoardType(
+      this.configService.libraryList,
+      this.getCurrentBoardType(),
+    );
+  }
+
+  private getCurrentBoardType(): string {
+    return typeof this.projectService.currentBoardConfig?.type === 'string'
+      ? this.projectService.currentBoardConfig.type.trim()
+      : '';
   }
 
   private scheduleInstalledStateRefresh() {

@@ -53,7 +53,7 @@ import {
   getTurnResponseResponseText,
 } from '../../core/turn-response-stream-contract';
 import { buildRenderableProgressParts, type RenderableChatPart } from './chat-render-parts';
-import { isInternalDiscoveryToolName, isTerminalSessionToolName } from '../../core/tool-name-normalizer';
+import { isInternalDiscoveryToolName } from '../../core/tool-name-normalizer';
 import type { HostResponseVoteDirection } from '../../helpers/host-turn-response-state';
 import { ChatRuntimeInteractionHostService } from '../../services/chat-runtime-interaction-host.service';
 import type { WorkspaceCheckpointPresentationMode } from '../../services/edit-checkpoint.service';
@@ -370,7 +370,10 @@ export class XDialogComponent implements OnChanges, AfterViewInit, AfterViewChec
     this._effectiveProgressMessagesSource = progressMessages;
     this._effectivePartsDoing = doing;
     this._effectivePartsConfirmationActive = hasActiveConfirmationCarousel;
-    const visibleItemParts = filterTerminalOwnedToolCalls(itemParts.filter(isVisibleResponsePart));
+    // Keep the canonical response list intact through the row boundary.
+    // ChatMessagePartsComponent is the single owner of terminal takeover,
+    // tool-row deduplication, and interaction-decision projection.
+    const visibleItemParts = itemParts.filter(isVisibleResponsePart);
     const assistantFallbackPart = this.createAssistantFallbackMarkdownPart(visibleItemParts);
     this._effectivePartsCache = [
       ...visibleItemParts,
@@ -1578,75 +1581,6 @@ function isVisibleResponsePart(part: ChatPart): boolean {
 export interface ChatDialogItemHeightChange {
   readonly itemId: string;
   readonly height: number;
-}
-
-function filterTerminalOwnedToolCalls(parts: readonly ChatPart[]): ChatPart[] {
-  const terminalOwners = collectTerminalPartOwners(parts);
-  if (terminalOwners.toolCallIds.size === 0 && terminalOwners.sessionIds.size === 0) {
-    return [...parts];
-  }
-
-  return parts.filter(part => {
-    if (part.type !== 'tool_call' || !isTerminalSessionToolName(part.toolName)) {
-      return true;
-    }
-
-    if (terminalOwners.toolCallIds.has(part.toolCallId)) {
-      return false;
-    }
-
-    const args = toObjectRecord(part.args);
-    const metadata = toObjectRecord(part.metadata);
-    const sessionIds = [
-      readString(args?.['processId']),
-      readString(args?.['outputSessionId']),
-      readString(args?.['terminalId']),
-      readString(args?.['id']),
-      readString(metadata?.['processId']),
-      readString(metadata?.['outputSessionId']),
-      readString(metadata?.['terminalId']),
-      readString(metadata?.['id']),
-    ].filter((value): value is string => !!value);
-
-    return !sessionIds.some(sessionId => terminalOwners.sessionIds.has(sessionId));
-  });
-}
-
-function collectTerminalPartOwners(parts: readonly ChatPart[]): { toolCallIds: Set<string>; sessionIds: Set<string> } {
-  const toolCallIds = new Set<string>();
-  const sessionIds = new Set<string>();
-
-  for (const part of parts) {
-    if (part.type !== 'terminal') {
-      continue;
-    }
-
-    if (part.toolCallId) {
-      toolCallIds.add(part.toolCallId);
-    }
-    for (const sourceToolCallId of part.sourceToolCallIds ?? []) {
-      if (sourceToolCallId) {
-        toolCallIds.add(sourceToolCallId);
-      }
-    }
-    for (const sessionId of [part.processId, part.outputSessionId, part.terminalId]) {
-      if (sessionId) {
-        sessionIds.add(sessionId);
-      }
-    }
-  }
-
-  return { toolCallIds, sessionIds };
-}
-
-function toObjectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function readString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 function getOptionalAilyHost(): ReturnType<typeof AilyHost.get> | null {

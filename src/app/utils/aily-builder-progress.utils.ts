@@ -19,6 +19,40 @@ export interface AilyBuilderProgressEvent {
   message: string;
 }
 
+export type AilyBuilderOutputStream = 'stdout' | 'stderr';
+
+export interface AilyBuilderOutputLine {
+  line: string;
+  type: AilyBuilderOutputStream;
+}
+
+/**
+ * Reassembles complete output lines without mixing stdout and stderr chunks.
+ */
+export class AilyBuilderOutputLineBuffer {
+  private readonly buffers: Record<AilyBuilderOutputStream, string> = {
+    stdout: '',
+    stderr: ''
+  };
+
+  append(type: AilyBuilderOutputStream, chunk: string): AilyBuilderOutputLine[] {
+    const lines = (this.buffers[type] + chunk).split(/\r\n|\n|\r/);
+    this.buffers[type] = lines.pop() || '';
+    return lines.map(line => ({ line, type }));
+  }
+
+  flush(): AilyBuilderOutputLine[] {
+    const lines: AilyBuilderOutputLine[] = [];
+    (['stdout', 'stderr'] as const).forEach(type => {
+      if (this.buffers[type]) {
+        lines.push({ line: this.buffers[type], type });
+        this.buffers[type] = '';
+      }
+    });
+    return lines;
+  }
+}
+
 const VALID_STAGES = new Set<AilyBuilderProgressStage>([
   'preparing',
   'sketch',

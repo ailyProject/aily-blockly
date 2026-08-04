@@ -29,11 +29,16 @@ import { CommonModule } from '@angular/common';
 import type { TurnResponseTurn } from 'aily-lex/browser';
 
 import type { ChatPart } from '../../core/chat-parts';
-import { isProgressMessageDisplayPart, type RenderableChatPart } from './chat-render-parts';
+import {
+  isInteractionDecisionDisplayPart,
+  isProgressMessageDisplayPart,
+  type RenderableChatPart,
+} from './chat-render-parts';
 import {
   buildActivityGroupRevision,
   buildActivityPartRevision,
   buildChatRenderItems,
+  buildInteractionDecisionProjectionIdentity,
   normalizePartForProjection,
   type ActivityGroupRenderItem,
   type ChatRenderItem,
@@ -416,7 +421,16 @@ export class ChatMessagePartsComponent implements OnChanges, AfterViewInit, OnDe
     const changedGroupPartIndices = new Map<number, number[]>();
     for (const sourcePartIndex of changedSourcePartIndices) {
       const nextPart = input.parts[sourcePartIndex];
-      if (!nextPart) {
+      const previousPart = previousParts[sourcePartIndex];
+      if (!nextPart || !previousPart) {
+        return null;
+      }
+      // Interaction completion changes the render-item topology: the canonical
+      // part stays mounted in its group while a read-only transcript item is
+      // added or removed. Let the structural reconciler preserve stable item
+      // identities instead of patching only the old group membership.
+      if (buildInteractionDecisionProjectionIdentity(previousPart)
+        || buildInteractionDecisionProjectionIdentity(nextPart)) {
         return null;
       }
       const identity = buildChatPartIdentity(nextPart as any, sourcePartIndex);
@@ -855,6 +869,12 @@ function hasRenderItemRevisionChanged(previous: ChatRenderItem, next: ChatRender
         || !isProgressMessageDisplayPart(next.part)
         || previous.part.progressKind !== next.part.progressKind
         || previous.part.content !== next.part.content;
+    }
+    if (isInteractionDecisionDisplayPart(previous.part) || isInteractionDecisionDisplayPart(next.part)) {
+      return !isInteractionDecisionDisplayPart(previous.part)
+        || !isInteractionDecisionDisplayPart(next.part)
+        || previous.part.interactionKind !== next.part.interactionKind
+        || buildActivityPartRevision(previous.part.source, 0) !== buildActivityPartRevision(next.part.source, 0);
     }
     return buildActivityPartRevision(previous.part, 0) !== buildActivityPartRevision(next.part, 0);
   }

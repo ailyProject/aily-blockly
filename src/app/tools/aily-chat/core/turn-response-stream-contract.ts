@@ -14,7 +14,6 @@ import {
   getTurnResponseResolvedPresetId,
 } from '../helpers/turn-response-response-model';
 import {
-  formatCompactBillingLabel,
   isAutoPresetIdentifier,
   isDefaultAutoPresetIdentifier,
 } from '../helpers/model-billing-label';
@@ -28,6 +27,23 @@ function formatResolvedPresetDisplayName(presetId: string | undefined): string |
   const trimmedPresetId = presetId.trim();
   if (!trimmedPresetId) {
     return undefined;
+  }
+
+  switch (trimmedPresetId) {
+    case 'auto':
+      return 'Auto';
+    case 'auto-max':
+      return 'Aily Max';
+    case 'auto-fast':
+      return 'Aily Fast';
+    case 'auto-vision':
+      return 'Vision';
+    case 'auto-balance':
+    case 'auto-balanced':
+    case 'medium':
+      return 'Auto';
+    default:
+      break;
   }
 
   return trimmedPresetId
@@ -251,39 +267,46 @@ export function buildTurnResponseAssistantEntryProjection(
   const responseModelBillingLabel = getTurnResponseResolvedModelBillingLabel(turn);
   const responseModelSelectedPresetId = getTurnResponseResolvedPresetId(turn);
   const continuationResolvedModelName = getContinuationResolvedModelName(turn.response.continuation);
-  const continuationModelBillingLabel = getContinuationModelBillingLabel(turn.response.continuation);
   const requestModelPresetId = readTurnResponseMetadataText(requestMetadata, 'modelPresetId')
     ?? readTurnResponseMetadataText(requestModelRouting, 'selectedPresetId')
     ?? readTurnResponseMetadataText(requestModelRouting, 'requestedPresetId');
   const requestRoutingModelName = readTurnResponseMetadataText(requestModelRouting, 'selectedModel')
     ?? readTurnResponseMetadataText(requestModelRouting, 'requestedModel');
   const selectedPresetDisplayName = responseModelSelectedPresetId
+    && !isDefaultAutoPresetIdentifier(responseModelSelectedPresetId)
     ? formatResolvedPresetDisplayName(responseModelSelectedPresetId)
+    : undefined;
+  const responseModelPresetDisplayName = responseModelName
+    && isAutoPresetIdentifier(responseModelName)
+    && !isDefaultAutoPresetIdentifier(responseModelName)
+    ? formatResolvedPresetDisplayName(responseModelName)
     : undefined;
   const requestPresetDisplayName = formatResolvedPresetDisplayName(requestModelPresetId);
   const requestRoutingModelDisplayName = formatRequestRoutingModelDisplayName(requestRoutingModelName);
-  const isAutoRequest = isAutoPresetIdentifier(requestModelPresetId)
-    || isAutoPresetIdentifier(requestRoutingModelName);
+  const isDefaultAutoRequest = isDefaultAutoPresetIdentifier(requestModelPresetId)
+    || isDefaultAutoPresetIdentifier(requestRoutingModelName)
+    || isDefaultAutoPresetIdentifier(requestModelDisplayName);
+  const resolvedPublicPresetDisplayName = selectedPresetDisplayName
+    ?? responseModelPresetDisplayName;
   const modelName = overrides.modelName
-    ?? selectedPresetDisplayName
-    ?? continuationResolvedModelName
-    ?? responseModelName
-    ?? requestModelDisplayName
-    ?? (isAutoRequest ? undefined : requestPresetDisplayName)
-    ?? (isAutoRequest ? undefined : requestRoutingModelDisplayName);
+    ?? resolvedPublicPresetDisplayName
+    ?? (isDefaultAutoRequest ? undefined : continuationResolvedModelName)
+    ?? (isDefaultAutoRequest ? undefined : responseModelName)
+    ?? (isDefaultAutoRequest ? undefined : requestModelDisplayName)
+    ?? (isDefaultAutoRequest ? undefined : requestPresetDisplayName)
+    ?? (isDefaultAutoRequest ? undefined : requestRoutingModelDisplayName);
   const modelBillingLabel = overrides.modelBillingLabel
-    ?? continuationModelBillingLabel
-    ?? responseModelBillingLabel
-    ?? requestModelDisplayBillingLabel
-    ?? requestRoutingModelBillingLabel;
+    ?? (isDefaultAutoRequest
+      ? (resolvedPublicPresetDisplayName ? responseModelBillingLabel : undefined)
+      : responseModelBillingLabel
+        ?? requestModelDisplayBillingLabel
+        ?? requestRoutingModelBillingLabel);
   return {
     content: overrides.content ?? '',
     state: overrides.state ?? toTurnResponseHostMessageState(turn.response.status),
     source: overrides.source ?? getTurnResponseParticipant(turn.response.participant),
     modelName,
-    modelBillingLabel: isDefaultAutoPresetIdentifier(requestModelPresetId)
-      ? formatCompactBillingLabel(modelBillingLabel)
-      : modelBillingLabel,
+    modelBillingLabel,
   };
 }
 
@@ -363,7 +386,9 @@ export function isCanonicalTurnResponseAssistantEntryProjection(
   const canonical = buildTurnResponseAssistantEntryProjection(turn);
   return actual.content === canonical.content
     && actual.state === canonical.state
-    && actual.source === canonical.source;
+    && actual.source === canonical.source
+    && actual.modelName === canonical.modelName
+    && actual.modelBillingLabel === canonical.modelBillingLabel;
 }
 
 export function buildTurnResponseTurn(
@@ -483,25 +508,6 @@ function getContinuationResolvedModelName(
   const resolvedModel = 'resolvedModel' in usage ? usage['resolvedModel'] : undefined;
   return typeof resolvedModel === 'string' && resolvedModel.trim()
     ? resolvedModel.trim()
-    : undefined;
-}
-
-function getContinuationModelBillingLabel(
-  continuation: TurnResponseTurn['response']['continuation'] | undefined,
-): string | undefined {
-  const diagnostics = continuation?.diagnostics;
-  if (!diagnostics || typeof diagnostics !== 'object') {
-    return undefined;
-  }
-
-  const usage = 'usage' in diagnostics ? diagnostics['usage'] : undefined;
-  if (!usage || typeof usage !== 'object') {
-    return undefined;
-  }
-
-  const modelBillingLabel = 'modelBillingLabel' in usage ? usage['modelBillingLabel'] : undefined;
-  return typeof modelBillingLabel === 'string' && modelBillingLabel.trim()
-    ? modelBillingLabel.trim()
     : undefined;
 }
 

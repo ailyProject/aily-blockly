@@ -375,7 +375,7 @@ function mergeTerminalSourceToolCallIds(existing: TerminalPart, next: TerminalPa
   return merged.length > 0 ? merged : undefined;
 }
 
-function isReplaceableTerminalToolCall(part: ChatPart, terminal: TerminalPart): part is ToolCallPart {
+function isMatchingTerminalToolCall(part: ChatPart, terminal: TerminalPart): part is ToolCallPart {
   if (part.type !== 'tool_call' || !isTerminalSessionToolName(part.toolName)) {
     return false;
   }
@@ -458,24 +458,15 @@ function mergeTerminalMetadata(
   return merged;
 }
 
-function terminalWithInheritedMetadata(terminal: TerminalPart, sourcePart: ChatPart): TerminalPart {
+function terminalWithInheritedCommand(terminal: TerminalPart, sourcePart: ChatPart): TerminalPart {
   if (sourcePart.type !== 'tool_call' && sourcePart.type !== 'terminal' && sourcePart.type !== 'confirmation') {
     return terminal;
   }
 
-  const metadata = mergeTerminalMetadata(
-    sourcePart.type === 'confirmation'
-      ? confirmationToTerminalMetadata(sourcePart, terminal)
-      : sourcePart.metadata,
-    terminal.metadata,
-  );
   const command = asTerminalCommand(terminal.command)
     ?? extractTerminalCommandFromSourcePart(sourcePart)
     ?? '';
-  const inherited = command === terminal.command ? terminal : { ...terminal, command };
-  return metadata
-    ? { ...inherited, metadata }
-    : inherited;
+  return command === terminal.command ? terminal : { ...terminal, command };
 }
 
 function extractTerminalCommandFromSourcePart(sourcePart: ToolCallPart | TerminalPart | ConfirmationPart): string | undefined {
@@ -509,31 +500,7 @@ function extractTerminalCommandFromMetadata(metadata: unknown): string | undefin
     ?? asTerminalCommand(metadataRecord['cmd']);
 }
 
-function confirmationToTerminalMetadata(
-  confirmation: ConfirmationPart,
-  terminal: TerminalPart,
-): Record<string, unknown> {
-  return {
-    ...(confirmation.metadata ?? {}),
-    approval: {
-      toolCallId: terminal.toolCallId || confirmation.askId,
-      toolName: confirmation.toolName || 'run_in_terminal',
-      title: confirmation.title,
-      subtitle: confirmation.subtitle,
-      message: confirmation.message,
-      description: confirmation.description,
-      source: confirmation.source,
-      actions: confirmation.actions?.map(action => ({ ...action })) ?? [],
-      primaryScope: confirmation.primaryScope,
-      args: confirmation.args,
-      resolved: confirmation.resolved,
-      result: confirmation.result,
-      scope: confirmation.scope,
-    },
-  };
-}
-
-function isReplaceableTerminalConfirmation(part: ChatPart, terminal: TerminalPart): part is ConfirmationPart {
+function isMatchingTerminalConfirmation(part: ChatPart, terminal: TerminalPart): part is ConfirmationPart {
   if (part.type !== 'confirmation' || !isTerminalSessionToolName(part.toolName)) {
     return false;
   }
@@ -547,35 +514,6 @@ function isReplaceableTerminalConfirmation(part: ChatPart, terminal: TerminalPar
   const command = asTerminalCommand(args?.['command']) || asTerminalCommand(args?.['cmd']);
   const terminalCommand = asTerminalCommand(terminal.command);
   return !!command && !!terminalCommand && command === terminalCommand;
-}
-
-function warnTerminalInvocationDuplicates(parts: readonly ChatPart[], terminal: TerminalPart): void {
-  const duplicates = parts.filter(part => isReplaceableTerminalToolCall(part, terminal) || isReplaceableTerminalConfirmation(part, terminal));
-  if (duplicates.length === 0) {
-    return;
-  }
-
-  console.debug('[AilyChat][TerminalInvocationInvariant]', {
-    terminal: {
-      partId: terminal.partId,
-      toolCallId: terminal.toolCallId,
-      sourceToolCallIds: terminal.sourceToolCallIds,
-      processId: terminal.processId,
-      outputSessionId: terminal.outputSessionId,
-      terminalId: terminal.terminalId,
-      hasApproval: !!asRecord(terminal.metadata)?.['approval'],
-    },
-    duplicates: duplicates.map(part => ({
-      type: part.type,
-      partId: part.partId,
-      toolCallId: part.type === 'tool_call' ? part.toolCallId : undefined,
-      toolName: part.toolName,
-      state: part.type === 'tool_call' ? part.state : undefined,
-      hasApproval: !!asRecord(part.metadata)?.['approval'],
-      askId: part.type === 'confirmation' ? part.askId : undefined,
-      resolved: part.type === 'confirmation' ? part.resolved : undefined,
-    })),
-  });
 }
 
 function mergeToolCallMetadata(
@@ -1276,6 +1214,8 @@ export class ChatPartStore {
       resolved: existing?.type === 'confirmation' ? existing.resolved : nextPart.resolved,
       result: existing?.type === 'confirmation' ? existing.result : nextPart.result,
       scope: existing?.type === 'confirmation' ? existing.scope : nextPart.scope,
+      selectedActionId: existing?.type === 'confirmation' ? existing.selectedActionId : nextPart.selectedActionId,
+      selectedActionLabel: existing?.type === 'confirmation' ? existing.selectedActionLabel : nextPart.selectedActionLabel,
     });
     return true;
   }
@@ -1336,17 +1276,12 @@ export class ChatPartStore {
     const normalizedTerminal = normalizeTerminalLivePart(terminal);
     if (existingIndex < 0) {
       const invocationIndex = parts.findIndex(part =>
-        isReplaceableTerminalToolCall(part, normalizedTerminal)
-        || isReplaceableTerminalConfirmation(part, normalizedTerminal));
-      if (invocationIndex >= 0) {
-        const replacement = terminalWithInheritedMetadata(normalizedTerminal, parts[invocationIndex]!);
-        this.updatePart(storeKey, invocationIndex, replacement);
-        warnTerminalInvocationDuplicates(this.getParts(storeKey), replacement);
-        return invocationIndex;
-      }
-      const addedIndex = this.addPart(storeKey, normalizedTerminal);
-      warnTerminalInvocationDuplicates(this.getParts(storeKey), normalizedTerminal);
-      return addedIndex;
+        isMatchingTerminalToolCall(part, normalizedTerminal)
+        || isMatchingTerminalConfirmation(part, normalizedTerminal));
+      const nextTerminal = invocationIndex >= 0
+        ? terminalWithInheritedCommand(normalizedTerminal, parts[invocationIndex]!)
+        : normalizedTerminal;
+      return this.addPart(storeKey, nextTerminal);
     }
 
     const existing = parts[existingIndex] as TerminalPart;
@@ -1389,7 +1324,6 @@ export class ChatPartStore {
       metadata: mergeTerminalMetadata(existing.metadata, terminal.metadata),
     };
     this.updatePart(storeKey, existingIndex, nextTerminal);
-    warnTerminalInvocationDuplicates(this.getParts(storeKey), nextTerminal);
     return existingIndex;
   }
 
@@ -2491,6 +2425,8 @@ export class ChatPartStore {
       resolved: boolean;
       result?: ConfirmationPart['result'];
       scope?: ConfirmationPart['scope'];
+      selectedActionId?: string;
+      selectedActionLabel?: string;
     },
   ): boolean {
     const storeKey = this.resolveStoreKey(handle);
@@ -2511,6 +2447,8 @@ export class ChatPartStore {
         resolved: next.resolved,
         result: next.result,
         scope: next.scope,
+        selectedActionId: next.selectedActionId,
+        selectedActionLabel: next.selectedActionLabel,
       });
       return true;
     }
@@ -2784,7 +2722,7 @@ export class ChatPartStore {
           break;
         case 'confirmation':
           segments.push(
-            `\n\`\`\`aily-confirmation\n${JSON.stringify({ askId: part.askId, partId: part.partId, title: part.title, subtitle: part.subtitle, message: part.message, description: part.description, args: part.args, toolName: part.toolName, source: part.source, actions: part.actions, primaryScope: part.primaryScope, resolved: part.resolved, result: part.result, scope: part.scope })}\n\`\`\`\n`
+            `\n\`\`\`aily-confirmation\n${JSON.stringify({ askId: part.askId, partId: part.partId, title: part.title, subtitle: part.subtitle, message: part.message, description: part.description, args: part.args, toolName: part.toolName, source: part.source, actions: part.actions, primaryScope: part.primaryScope, resolved: part.resolved, result: part.result, scope: part.scope, selectedActionId: part.selectedActionId, selectedActionLabel: part.selectedActionLabel })}\n\`\`\`\n`
           );
           break;
         case 'terminal':

@@ -1,6 +1,6 @@
 .child-tool-host {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
   min-height: 0;
   color: var(--aily-text-primary);
@@ -84,6 +84,7 @@
 
 .iframe-shell {
   position: relative;
+  min-width: 0;
   min-height: 0;
   flex: 1;
 }

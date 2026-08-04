@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, ViewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy } from '@angular/core';
 import { CommonModule, Location } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
@@ -55,8 +55,6 @@ import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialo
   styleUrl: './project-new.component.scss',
 })
 export class ProjectNewComponent implements OnDestroy {
-  @ViewChild('boardSearchInput') boardSearchInput?: ElementRef<HTMLInputElement>;
-
   currentStep = 0;
 
   listMode = 'brand'; // brand | core | function
@@ -126,22 +124,6 @@ export class ProjectNewComponent implements OnDestroy {
 
   get resourceUrl() {
     return this.configService.getCurrentResourceUrl();
-  }
-
-  get searchShortcutHint(): string {
-    return this.platformService.isMac() ? '⌘K' : 'Ctrl+K';
-  }
-
-  @HostListener('document:keydown', ['$event'])
-  onGlobalKeydown(event: KeyboardEvent): void {
-    if (this.currentStep !== 0) {
-      return;
-    }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-      event.preventDefault();
-      this.boardSearchInput?.nativeElement?.focus();
-      this.boardSearchInput?.nativeElement?.select();
-    }
   }
 
   // 获取已定义的品牌列表（排除'all'和'other'）

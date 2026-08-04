@@ -30,7 +30,6 @@
         "TOOL_SERIAL": "Инструмент последовательного порта",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
-        "FFS_MANAGER": "Менеджер FFS",
         "AI": "ИИ",
         "MODEL_STORE": "Магазин моделей",
         "APP_STORE": "Магазин приложений",

@@ -239,7 +239,7 @@ async function main() {
             );
         }
 
-        if (isDevelopmentEnvironment()) {
+        if (isDevelopmentEnvironment() || process.env.AILY_E2E === '1') {
             args.push('--generate-archive-cloud-cache');
         }
 

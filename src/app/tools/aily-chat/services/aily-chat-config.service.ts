@@ -368,6 +368,8 @@ export interface AilyChatConfig {
 const DEFAULT_MODELS: ModelConfigOption[] = [];
 
 const DEFAULT_MODEL_PRESET_ID = 'auto';
+const USER_SELECTABLE_MODEL_PRESET_IDS = ['auto', 'auto-max', 'auto-fast'] as const;
+const USER_SELECTABLE_MODEL_PRESET_ID_SET = new Set<string>(USER_SELECTABLE_MODEL_PRESET_IDS);
 
 /**
  * 本地 core preset 仅作为远端 model catalog 不可用时的兜底。
@@ -376,22 +378,59 @@ const CORE_MODEL_PRESET_OPTIONS: ModelPresetOption[] = [
     {
         id: 'auto',
         name: 'Auto',
+        model: 'auto',
+        family: 'auto',
+        description: '在 Aily Max / Aily Fast 间自动选择；包含图片时由服务端切换到 Vision',
+        contextWindowTokens: 800000,
+        inputModalities: ['text', 'image'],
+        maxInputImages: 10,
+        supportsReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        billingLabelOverride: '10% discount',
+        billingDescription: 'Auto selects the best model for your request based on capacity and performance. Auto is given a 10% discount.',
         enabled: true,
     },
     {
         id: 'auto-max',
-        name: 'Auto-Max',
-        enabled: true,
-    },
-    {
-        id: 'auto-balance',
-        name: 'Auto-Balance',
+        name: 'Aily Max',
+        model: 'auto-max',
+        family: 'glm',
+        description: '高质量优先，适合复杂任务；响应速度相对较慢',
+        billingMultiplier: 1,
+        contextWindowTokens: 800000,
+        inputModalities: ['text', 'image'],
+        maxInputImages: 10,
+        supportsReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
         enabled: true,
     },
     {
         id: 'auto-fast',
-        name: 'Auto-Fast',
+        name: 'Aily Fast',
+        model: 'auto-fast',
+        family: 'deepseek',
+        description: '响应速度优先，同时保持较为均衡的质量',
+        billingMultiplier: 0.5,
+        contextWindowTokens: 800000,
+        inputModalities: ['text', 'image'],
+        maxInputImages: 10,
+        supportsReasoningEfforts: ['high', 'xhigh'],
         enabled: true,
+    },
+];
+
+/** Internal response identity used only when a cached remote catalog is unavailable. */
+const INTERNAL_RESPONSE_PRESET_OPTIONS: ModelPresetOption[] = [
+    {
+        id: 'auto-vision',
+        name: 'Vision',
+        model: 'auto-vision',
+        family: 'glm',
+        description: '支持视觉输入的产品预设',
+        billingMultiplier: 1,
+        contextWindowTokens: 200000,
+        inputModalities: ['text', 'image'],
+        maxInputImages: 10,
+        supportsReasoningEfforts: ['low', 'medium', 'high'],
+        enabled: false,
     },
 ];
 
@@ -1390,13 +1429,15 @@ export class AilyChatConfigService implements OnDestroy {
     getModelPickerControlPresets(): Record<string, ModelPickerControlOption> {
         return Object.entries(this.remoteModelCatalog.pickerControlModelPresets)
             .reduce<Record<string, ModelPickerControlOption>>((acc, [presetId, entry]) => {
-                acc[presetId] = { ...entry };
+                if (USER_SELECTABLE_MODEL_PRESET_ID_SET.has(presetId)) {
+                    acc[presetId] = { ...entry };
+                }
                 return acc;
             }, {});
     }
 
     getModelPickerControlPresetById(presetId: string | null | undefined): ModelPickerControlOption | undefined {
-        const normalizedPresetId = normalizeKnownPresetId(presetId);
+        const normalizedPresetId = normalizeUserPresetId(presetId);
         if (!normalizedPresetId) {
             return undefined;
         }
@@ -1409,13 +1450,18 @@ export class AilyChatConfigService implements OnDestroy {
         return DEFAULT_MODEL_PRESET_ID;
     }
 
+    normalizeUserModelPresetId(presetId: string | null | undefined): string | undefined {
+        return normalizeUserPresetId(presetId);
+    }
+
     getModelPresetById(presetId: string | null | undefined): ModelPresetOption | undefined {
-        const normalizedPresetId = normalizeKnownPresetId(presetId);
+        const normalizedPresetId = normalizeCatalogPresetId(presetId);
         if (!normalizedPresetId) {
             return undefined;
         }
 
-        return this.getModelPresets().find(preset => preset.id === normalizedPresetId);
+        return this.getModelPresets().find(preset => preset.id === normalizedPresetId)
+            ?? INTERNAL_RESPONSE_PRESET_OPTIONS.find(preset => preset.id === normalizedPresetId);
     }
 
     getModelById(modelId: string | null | undefined): ModelConfigOption | undefined {
@@ -1481,7 +1527,7 @@ export class AilyChatConfigService implements OnDestroy {
     }
 
     resolvePresetDisplayModel(presetId: string | null | undefined): ModelConfigOption | null {
-        const normalizedPresetId = normalizeKnownPresetId(presetId);
+        const normalizedPresetId = normalizeCatalogPresetId(presetId);
         if (!normalizedPresetId) {
             return null;
         }
@@ -1526,8 +1572,8 @@ export class AilyChatConfigService implements OnDestroy {
     }
 
     resolveSelectablePresetModel(presetId: string | null | undefined): ModelConfigOption | null {
-        const normalizedPresetId = normalizeKnownPresetId(presetId);
-        if (!normalizedPresetId) {
+        const normalizedPresetId = normalizeUserPresetId(presetId);
+        if (!normalizedPresetId || !USER_SELECTABLE_MODEL_PRESET_ID_SET.has(normalizedPresetId)) {
             return null;
         }
 
@@ -2254,14 +2300,16 @@ export class AilyChatConfigService implements OnDestroy {
     private resolveUserVisiblePresetIds(): string[] {
         const explicitPresetIds = this.getExplicitUserVisiblePresetIds();
         if (explicitPresetIds.length > 0) {
-            return explicitPresetIds;
+            const visiblePresetIds = new Set([DEFAULT_MODEL_PRESET_ID, ...explicitPresetIds]);
+            return USER_SELECTABLE_MODEL_PRESET_IDS.filter(presetId => visiblePresetIds.has(presetId));
         }
 
         const fallbackRemotePresetIds = Object.entries(this.remoteModelCatalog.modelPresets)
             .filter(([, entry]) => entry.userVisible)
             .map(([presetId]) => presetId);
         if (fallbackRemotePresetIds.length > 0) {
-            return fallbackRemotePresetIds;
+            const visiblePresetIds = new Set([DEFAULT_MODEL_PRESET_ID, ...fallbackRemotePresetIds]);
+            return USER_SELECTABLE_MODEL_PRESET_IDS.filter(presetId => visiblePresetIds.has(presetId));
         }
 
         if (this.remoteModelCatalogStatus === 'ready') {
@@ -2320,13 +2368,13 @@ export class AilyChatConfigService implements OnDestroy {
                 return acc;
             }
 
-            const normalizedId = normalizeKnownPresetId(rawId) || rawId;
-            const normalizedCanonicalId = normalizeKnownPresetId(entry.canonical_id)
-                || normalizeKnownPresetId(entry.id)
+            const normalizedId = normalizeCatalogPresetId(rawId) || rawId;
+            const normalizedCanonicalId = normalizeCatalogPresetId(entry.canonical_id)
+                || normalizeCatalogPresetId(entry.id)
                 || normalizedId;
             const normalizedAliases = Array.isArray(entry.aliases)
                 ? [...new Set(entry.aliases
-                    .map(alias => normalizeKnownPresetId(alias) || (typeof alias === 'string' ? alias.trim() : ''))
+                    .map(alias => normalizeCatalogPresetId(alias) || (typeof alias === 'string' ? alias.trim() : ''))
                     .filter((alias): alias is string => typeof alias === 'string' && alias.length > 0))]
                 : undefined;
             acc[normalizedId] = {
@@ -2396,7 +2444,7 @@ export class AilyChatConfigService implements OnDestroy {
                 return acc;
             }
 
-            const normalizedId = normalizeKnownPresetId(rawId) || rawId;
+            const normalizedId = normalizeCatalogPresetId(rawId) || rawId;
             const label = typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : normalizedId;
             acc[normalizedId] = {
                 label,
@@ -2868,8 +2916,9 @@ function normalizeConfiguredToolNames(value: readonly string[] | undefined): str
     }))];
 }
 
-function normalizeKnownPresetId(value: string | null | undefined): string | undefined {
-    switch (value) {
+function normalizeCatalogPresetId(value: string | null | undefined): string | undefined {
+    const normalizedValue = typeof value === 'string' ? value.trim() : '';
+    switch (normalizedValue) {
         case 'auto':
             return 'auto';
         case 'high':
@@ -2877,12 +2926,17 @@ function normalizeKnownPresetId(value: string | null | undefined): string | unde
         case 'medium':
         case 'auto-balanced':
         case 'auto-balance':
-            return 'auto-balance';
+            return 'auto';
         case 'low':
             return 'auto-fast';
         default:
-            return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+            return normalizedValue || undefined;
     }
+}
+
+function normalizeUserPresetId(value: string | null | undefined): string | undefined {
+    const normalizedPresetId = normalizeCatalogPresetId(value);
+    return normalizedPresetId === 'auto-vision' ? DEFAULT_MODEL_PRESET_ID : normalizedPresetId;
 }
 
 function resolveSavedPresetId(
@@ -2890,17 +2944,18 @@ function resolveSavedPresetId(
     presets: readonly ModelPresetOption[],
 ): string | undefined {
     if (savedModel.presetId) {
-        return normalizeKnownPresetId(savedModel.presetId);
+        return normalizeUserPresetId(savedModel.presetId);
     }
 
-    const directPreset = typeof savedModel.model === 'string'
-        ? presets.find(preset => preset.id === savedModel.model)?.id
+    const normalizedModelPresetId = normalizeUserPresetId(savedModel.model);
+    const directPreset = normalizedModelPresetId
+        ? presets.find(preset => preset.id === normalizedModelPresetId)?.id
         : undefined;
     if (directPreset) {
         return directPreset;
     }
 
-    return normalizeKnownPresetId(savedModel.model);
+    return normalizeUserPresetId(savedModel.model);
 }
 
 function normalizeReasoningEfforts(value: string[] | null | undefined): ReasoningEffortOption[] | undefined {

@@ -203,6 +203,8 @@ export class LexUiEventBridge {
     approved: boolean,
     scope?: ConfirmationPart['scope'],
     approvalTraceId?: string,
+    selectedActionId?: string,
+    selectedActionLabel?: string,
   ): void {
     const event = {
       type: 'approval_resolve',
@@ -210,6 +212,8 @@ export class LexUiEventBridge {
       toolCallId,
       result: approved ? 'approved' : 'rejected',
       scope,
+      selectedActionId,
+      selectedActionLabel,
       timestamp: Date.now(),
     } as const;
     const mirrored = this.renderEventBridge?.processInteractionEvent(event as any) ?? false;
@@ -264,6 +268,8 @@ export class LexUiEventBridge {
     askId: string,
     approved: boolean,
     scope?: ConfirmationPart['scope'],
+    selectedActionId?: string,
+    selectedActionLabel?: string,
   ): void {
     void partId;
     if (this.renderEventBridge?.processInteractionEvent({
@@ -271,6 +277,8 @@ export class LexUiEventBridge {
       requestId: askId,
       result: approved ? 'approved' : 'rejected',
       scope,
+      selectedActionId,
+      selectedActionLabel,
       timestamp: Date.now(),
     })) {
       return;

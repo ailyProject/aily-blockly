@@ -52,7 +52,7 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   private requireLogin(): boolean {
     if (!this.authService.isLoggedIn) {
       this.message.warning(this.translate.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
-      this.uiService.openTool('aily-chat');
+      this.uiService.openPreferredAilyChat();
       return false;
     }
     return true;
@@ -175,24 +175,16 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
       ? (window as any).path.join(projectPath, 'arch.md')
       : `${projectPath}/arch.md`;
     if (!this.electronService.exists(archPath)) {
-      this.uiService.openTool('aily-chat');
       const prompt = this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT');
 //       const prompt = `${this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT')}
 
 // Generate a Mermaid project architecture diagram and save it to arch.md. If the architecture save tool is deferred, use tool_search for blockly-architecture or save_arch, then call save_arch with raw Mermaid DSL in code. Do not only print Mermaid source.`;
-      setTimeout(() => {
-        if (this.chatService.isWaiting) {
-          this.message.warning(this.translate.instant('FLOAT_SIDER.ARCH_AI_BUSY'));
-          return;
-        }
-        const hasSession = !!this.chatService.currentSessionId;
-        this.chatService.sendTextToChat(prompt, {
-          sender: 'FloatSider',
-          type: 'arch',
-          autoSend: true,
-          newChatFirst: hasSession
-        });
-      }, 400);
+      this.uiService.openAndSendToChat(prompt, {
+        sender: 'FloatSider',
+        type: 'arch',
+        autoSend: true,
+        newChatFirst: true,
+      });
       return;
     }
     try {

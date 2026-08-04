@@ -132,12 +132,7 @@ function createDialogViewItem(
   const normalizedSource = getTurnResponseParticipant(message.source);
   const trackBase = turnId ?? `${message.role}-${normalizedSource}`;
   const assistantProjection = message.role === 'aily' && turnResponse
-    ? buildTurnResponseAssistantMessageProjection(turnResponse, {
-      ...(message.content ? { content: message.content } : {}),
-      ...(message.source ? { source: message.source } : {}),
-      ...(message.modelName ? { modelName: message.modelName } : {}),
-      ...(message.modelBillingLabel ? { modelBillingLabel: message.modelBillingLabel } : {}),
-    })
+    ? buildTurnResponseAssistantMessageProjection(turnResponse)
     : null;
   const effectiveState = assistantProjection?.state ?? message.state;
   const resolvedContent = message.role === 'aily' && turnResponse
@@ -165,10 +160,10 @@ function createDialogViewItem(
     doing: effectiveState === 'doing',
     source: assistantProjection?.source ?? normalizedSource,
     turnModelName: message.role === 'aily'
-      ? (assistantProjection?.modelName || message.modelName || '')
+      ? (assistantProjection?.modelName || (turnResponse ? '' : message.modelName) || '')
       : '',
     turnModelBillingLabel: message.role === 'aily'
-      ? (assistantProjection?.modelBillingLabel || message.modelBillingLabel)
+      ? (assistantProjection?.modelBillingLabel || (turnResponse ? undefined : message.modelBillingLabel))
       : undefined,
     resolvedTurnId: turnId,
     turnContext,

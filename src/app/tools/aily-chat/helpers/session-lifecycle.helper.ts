@@ -65,6 +65,7 @@ import {
   normalizeHostSessionProviderOptions,
   resolveHostSessionProviderOptions,
   resolveHostSessionSelectedMode,
+  resolveHostSessionSelectedModeFromMetadata,
   type HostSessionProviderOptions,
 } from './host-session-input-state';
 import {
@@ -422,11 +423,9 @@ export class SessionLifecycleHelper {
     }
 
     const forkedSessionId = `lex-${Date.now()}-fork`;
-    const selectedMode = normalizeChatSelectedMode(this.ctx.chatService.selectedMode ?? {
-      modeId: this.ctx.currentMode,
-      customAgentTarget: this.ctx.chatService.currentCustomAgentTarget,
-    });
-    const forkedProviderOptions = this.resolveCurrentSessionProviderOptions();
+    const sourceInputSnapshot = this.resolveSessionInputSnapshot(sourceSessionId);
+    const selectedMode = sourceInputSnapshot.selectedMode;
+    const forkedProviderOptions = sourceInputSnapshot.providerOptions;
     const forkedInputState = buildHostSessionCurrentPickerInputState(selectedMode, forkedProviderOptions);
     const forkedRequestRouting = buildHostSessionCurrentPickerRoutingSummary(
       selectedMode,
@@ -504,6 +503,41 @@ export class SessionLifecycleHelper {
   }
 
   // ==================== 会话持久化 ====================
+
+  private resolveSessionInputSnapshot(sessionId: string): {
+    readonly selectedMode: ChatSelectedMode;
+    readonly providerOptions: HostSessionProviderOptions;
+  } {
+    const modelReference = this.ctx.acquireExistingSessionModel?.(sessionId);
+    if (modelReference) {
+      try {
+        const inputState = modelReference.object.inputState;
+        if (inputState.providerOptions && inputState.selectedMode) {
+          return {
+            providerOptions: normalizeHostSessionProviderOptions(inputState.providerOptions),
+            selectedMode: normalizeChatSelectedMode(inputState.selectedMode),
+          };
+        }
+      } finally {
+        modelReference.dispose();
+      }
+    }
+
+    const historyEntry = this.ctx.chatHistoryService.findEntry(sessionId) ?? null;
+    const sessionContent = this._hostSessionContentProvider.provideChatSessionContent(
+      sessionId,
+      historyEntry?.projectPath ?? null,
+      { metadataFallback: historyEntry },
+    );
+    const selectedMode = sessionContent.hostRecord
+      ? resolveHostSessionSelectedMode(sessionContent.hostRecord)
+      : resolveHostSessionSelectedModeFromMetadata(sessionContent.metadata);
+
+    return {
+      providerOptions: normalizeHostSessionProviderOptions(sessionContent.providerOptions),
+      selectedMode: normalizeChatSelectedMode(selectedMode),
+    };
+  }
 
   saveCurrentSession(options?: {
     hostProjection?: HostResponseProjection | null;

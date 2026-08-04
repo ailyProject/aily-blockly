@@ -199,6 +199,9 @@ export class ChatEditingSessionProjectionService implements OnDestroy {
     }
     record.loading = this.readUntilCurrent(sessionId, record)
       .catch(error => {
+        // Mark the requested revision as failed so a hard host error cannot tight-loop IPC.
+        // Later editing-session events with a higher revision will still schedule a fresh read.
+        record.failedRevision = Math.max(record.failedRevision, record.requestedRevision);
         console.warn('[AilyChat][EditingSessionProjection] Failed to read editing session:', error);
       })
       .finally(() => {

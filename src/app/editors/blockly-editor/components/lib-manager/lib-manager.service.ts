@@ -39,6 +39,7 @@ export interface PackageInfo {
     core?: string[];
     [key: string]: any;
   };
+  spec?: boolean;
   fulltext?: string;
   url?: string;
   tested: boolean;
@@ -63,8 +64,9 @@ export class LibManagerService {
     tagData: any,
     lang: string,
     displayTagCount = 10,
+    cacheContext = '',
   ): LibManagerInitialState | null {
-    const cacheKey = this.getCacheKey(libraryList, tagData, lang, displayTagCount);
+    const cacheKey = this.getCacheKey(libraryList, tagData, lang, displayTagCount, cacheContext);
     if (!this.cachedInitialState || this.cachedInitialState.cacheKey !== cacheKey) {
       return null;
     }
@@ -77,9 +79,16 @@ export class LibManagerService {
     tagData: any,
     lang: string,
     displayTagCount = 10,
+    cacheContext = '',
   ): Promise<LibManagerInitialState> {
     let latestState: LibManagerInitialState | null = null;
-    for await (const state of this.buildInitialStateChunks(libraryList, tagData, lang, displayTagCount)) {
+    for await (const state of this.buildInitialStateChunks(
+      libraryList,
+      tagData,
+      lang,
+      displayTagCount,
+      cacheContext,
+    )) {
       latestState = state;
     }
 
@@ -91,8 +100,9 @@ export class LibManagerService {
     tagData: any,
     lang: string,
     displayTagCount = 10,
+    cacheContext = '',
   ): AsyncGenerator<LibManagerInitialState> {
-    const cacheKey = this.getCacheKey(libraryList, tagData, lang, displayTagCount);
+    const cacheKey = this.getCacheKey(libraryList, tagData, lang, displayTagCount, cacheContext);
     const cachedState = this.cachedInitialState?.cacheKey === cacheKey
       ? this.cachedInitialState.state
       : null;
@@ -171,6 +181,23 @@ export class LibManagerService {
   filterByFulltext(libraryList: PackageInfo[], keyword: string): PackageInfo[] {
     const stripped = keyword.toLowerCase().replace(/\s/g, '');
     return libraryList.filter(item => (item.fulltext || '').indexOf(stripped) !== -1);
+  }
+
+  filterByBoardType(
+    libraryList: PackageInfo[] | null | undefined,
+    boardType: string | null | undefined,
+  ): PackageInfo[] {
+    const normalizedBoardType = typeof boardType === 'string' ? boardType.trim() : '';
+
+    return (Array.isArray(libraryList) ? libraryList : []).filter(lib => {
+      if (lib.spec !== true) {
+        return true;
+      }
+
+      return normalizedBoardType !== ''
+        && Array.isArray(lib.compatibility?.core)
+        && lib.compatibility.core.includes(normalizedBoardType);
+    });
   }
 
   mergeInstalledLibraries(
@@ -327,6 +354,7 @@ export class LibManagerService {
     tagData: any,
     lang: string,
     displayTagCount: number,
+    cacheContext: string,
   ): string {
     const libraries = Array.isArray(libraryList) ? libraryList : [];
     const tags = Array.isArray(tagData?.tags) ? tagData.tags : [];
@@ -337,6 +365,7 @@ export class LibManagerService {
 
     return [
       lang || 'en',
+      cacheContext,
       displayTagCount,
       libraries.length,
       firstLibraryName,

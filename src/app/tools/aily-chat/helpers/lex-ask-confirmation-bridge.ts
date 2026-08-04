@@ -3,6 +3,8 @@ import {
   normalizeToolApprovalRequest,
   normalizeToolApprovalPresentation,
   type ToolApprovalPresentation,
+  type ToolApprovalRequest,
+  type ToolApprovalResult,
 } from './tool-approval-ui';
 
 /** Narrow context: only needs lexStream for presenting/resolving confirmations */
@@ -83,6 +85,15 @@ export class LexAskConfirmationBridge {
           this.resolveInteractionSessionResource(),
           normalizedRequest,
         ).then((result) => {
+          const selectedAction = resolveSelectedAction(normalizedRequest, result);
+          this.ctx.lexStream.ui.resolveToolCallApproval(
+            normalizedRequest.toolCallId,
+            result.approved,
+            result.scope,
+            normalizedRequest.approvalTraceId,
+            selectedAction.id,
+            selectedAction.label,
+          );
           const resolveRef = this.resolveAskConfirmation;
           this.resolveAskConfirmation = null;
           resolveRef?.(!!result.approved);
@@ -141,7 +152,18 @@ export class LexAskConfirmationBridge {
         actions: normalizedPresentation.actions,
         primaryScope: normalizedPresentation.primaryScope,
       }).then((result) => {
-        this.ctx.lexStream.ui.resolveConfirmation(confirmationPartId, askId, !!result.approved, result.scope);
+        const selectedAction = resolveSelectedAction({
+          actions: normalizedPresentation.actions,
+          primaryScope: normalizedPresentation.primaryScope,
+        }, result);
+        this.ctx.lexStream.ui.resolveConfirmation(
+          confirmationPartId,
+          askId,
+          !!result.approved,
+          result.scope,
+          selectedAction.id,
+          selectedAction.label,
+        );
         const resolveRef = this.resolveAskConfirmation;
         this.resolveAskConfirmation = null;
         resolveRef?.(!!result.approved);
@@ -149,4 +171,22 @@ export class LexAskConfirmationBridge {
     });
   }
 
+}
+
+function resolveSelectedAction(
+  request: Pick<ToolApprovalRequest, 'actions' | 'primaryScope'>,
+  result: ToolApprovalResult,
+): { readonly id?: string; readonly label?: string } {
+  const actionId = typeof result.actionId === 'string' && result.actionId.trim().length > 0
+    ? result.actionId.trim()
+    : undefined;
+  const scope = result.scope ?? request.primaryScope;
+  const action = request.actions.find(candidate => (
+    (actionId && candidate.id === actionId)
+    || (!actionId && scope && candidate.scope === scope)
+  ));
+  return {
+    id: actionId ?? action?.id,
+    label: action?.label,
+  };
 }

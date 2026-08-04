@@ -35,6 +35,7 @@ import { Subscription } from 'rxjs';
 import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
 import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
+import { ProjectDataError } from '../../services/project-data/project-data.types';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -53,6 +54,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   showLibraryManager = false;
 
   private readonly packageJsonWatchDebounceMs = 300;
+  /** 会话/检查点恢复会短暂改写 package.json，移除告警需等依赖集合稳定后再确认。 */
+  private readonly removedLibrarySettleMs = 1200;
   private readonly pendingLibraryLoadRetryMs = 1000;
   private readonly maxPendingLibraryLoadAttempts = 120;
   private readonly pendingBoardReloadRetryMs = 1000;
@@ -60,6 +63,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private readonly projectLoadedCodeRefreshDelayMs = 1000;
   private packageJsonWatcherDispose: (() => void) | null = null;
   private packageJsonWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private removedLibrarySettleTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingLibraryLoadTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingBoardReloadTimer: ReturnType<typeof setTimeout> | null = null;
   private projectLoadedCodeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -68,6 +72,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private watchedLibraryDependencies = new Map<string, string>();
   private watchedBoardDependencies = new Map<string, string>();
   private pendingLibraryDependencies = new Set<string>();
+  private pendingRemovedLibraryDependencies = new Set<string>();
   private pendingLibraryLoadAttempts = new Map<string, number>();
   private pendingLibraryLoadInProgress = false;
   private pendingBoardDependencyReload: {
@@ -135,8 +140,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           this.loadedProjectPath = requestedProjectPath;
         } catch (error) {
           console.error('加载项目失败', error);
+          const detail = this.formatProjectLoadError(error);
+          this.abortFailedProjectLoad();
           this.projectService.stateSubject.next('error');
-          this.message.error('加载项目失败，请检查项目文件是否完整');
+          this.message.error(detail);
         }
       } else {
         this.message.error('没有找到项目路径');
@@ -153,6 +160,46 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // 阻止鼠标按键前进后退
     window.history.replaceState(null, '', window.location.href);
     window.history.pushState(null, '', window.location.href);
+  }
+
+  private abortFailedProjectLoad(): void {
+    this.loadedProjectPath = null;
+    this.clearProjectLoadedCodeRefreshTimer();
+    this.stopPackageJsonDependencyWatch();
+    this.localLibrarySyncService.stop();
+    try {
+      // Runtime isolation teardown requires workspace disposal before the host
+      // checkpoint and iframe Realm are released. BlocklyService.reset owns
+      // that ordering and also unregisters project-owned Data Slots.
+      this.blocklyService.reset();
+    } finally {
+      try {
+        // Idempotent safeguard: if a project-defined workspace dispose hook
+        // throws inside reset(), the tainted iframe Realm must still be gone.
+        this.generatorRuntime.destroy();
+      } finally {
+        projectDataRuntime.reset();
+      }
+    }
+  }
+
+  private formatProjectLoadError(error: unknown): string {
+    if (error instanceof ProjectDataError) {
+      const diagnostics = Array.isArray(error.details?.['diagnostics'])
+        ? error.details['diagnostics'] as Array<Record<string, unknown>>
+        : [];
+      const first = diagnostics[0];
+      if (first) {
+        const owner = [first['blockType'], first['fieldName']].filter(Boolean).join('.');
+        const actual = Number(first['canonicalLength']);
+        const threshold = Number(first['threshold']);
+        const size = Number.isFinite(actual) ? `${actual} bytes` : 'unknown size';
+        const limit = Number.isFinite(threshold) ? `${threshold} bytes` : 'the configured limit';
+        return `项目数据加载失败：${owner || first['jsonPointer'] || 'unknown field'} 为 ${size}，超过 ${limit}。`;
+      }
+      return `项目数据加载失败：${error.message}`;
+    }
+    return `加载项目失败：${error instanceof Error ? error.message : String(error)}`;
   }
 
   ngOnDestroy(): void {
@@ -602,6 +649,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       this.packageJsonWatchDebounceTimer = null;
     }
 
+    if (this.removedLibrarySettleTimer) {
+      clearTimeout(this.removedLibrarySettleTimer);
+      this.removedLibrarySettleTimer = null;
+    }
+
     if (this.pendingLibraryLoadTimer) {
       clearTimeout(this.pendingLibraryLoadTimer);
       this.pendingLibraryLoadTimer = null;
@@ -618,6 +670,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.watchedLibraryDependencies.clear();
     this.watchedBoardDependencies.clear();
     this.pendingLibraryDependencies.clear();
+    this.pendingRemovedLibraryDependencies.clear();
     this.pendingLibraryLoadAttempts.clear();
     this.pendingLibraryLoadInProgress = false;
     this.pendingBoardDependencyReload = null;
@@ -688,7 +741,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.watchedLibraryDependencies = nextLibraryDependencies;
 
     if (removedLibraryNames.length > 0) {
-      await this.handleRemovedLibraryDependencies(projectPath, removedLibraryNames);
+      this.handleRemovedLibraryDependencies(projectPath, removedLibraryNames);
     }
 
     if (addedLibraryNames.length === 0) {
@@ -696,6 +749,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
 
     for (const libPackageName of addedLibraryNames) {
+      this.pendingRemovedLibraryDependencies.delete(libPackageName);
       if (this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
         continue;
       }
@@ -715,11 +769,53 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.blocklyService.setToolboxSortOrder(packageJson?.blocklyToolboxOrder);
   }
 
-  private async handleRemovedLibraryDependencies(projectPath: string, removedLibraryNames: string[]): Promise<void> {
-    let shouldRebuildRuntime = false;
+  private handleRemovedLibraryDependencies(projectPath: string, removedLibraryNames: string[]): void {
     for (const libPackageName of removedLibraryNames) {
       this.clearPendingLibrary(libPackageName);
+      this.pendingRemovedLibraryDependencies.add(libPackageName);
+    }
+    this.scheduleRemovedLibrarySettle(projectPath);
+  }
 
+  private scheduleRemovedLibrarySettle(projectPath: string): void {
+    if (this.removedLibrarySettleTimer) {
+      clearTimeout(this.removedLibrarySettleTimer);
+    }
+
+    this.removedLibrarySettleTimer = setTimeout(() => {
+      this.removedLibrarySettleTimer = null;
+      void this.flushRemovedLibraryDependencies(projectPath);
+    }, this.removedLibrarySettleMs);
+  }
+
+  private async flushRemovedLibraryDependencies(projectPath: string): Promise<void> {
+    if (this.watchedPackageJsonProjectPath !== projectPath) {
+      this.pendingRemovedLibraryDependencies.clear();
+      return;
+    }
+
+    const candidateNames = Array.from(this.pendingRemovedLibraryDependencies)
+      .sort((a, b) => this.compareBlocklyLibraryNames(a, b));
+    this.pendingRemovedLibraryDependencies.clear();
+    if (candidateNames.length === 0) {
+      return;
+    }
+
+    // 会话恢复/检查点回放可能先写回旧 package.json 再恢复最终依赖；稳定后再确认是否真的移除。
+    const packageJson = this.readProjectPackageJson(projectPath);
+    if (!packageJson) {
+      return;
+    }
+
+    const currentLibraryDependencies = this.getDeclaredBlocklyLibraryDependencies(packageJson);
+    this.watchedLibraryDependencies = currentLibraryDependencies;
+    const stillRemovedLibraryNames = candidateNames.filter((name) => !currentLibraryDependencies.has(name));
+    if (stillRemovedLibraryNames.length === 0) {
+      return;
+    }
+
+    let shouldRebuildRuntime = false;
+    for (const libPackageName of stillRemovedLibraryNames) {
       if (!this.isBlocklyLibraryLoaded(projectPath, libPackageName)) {
         continue;
       }

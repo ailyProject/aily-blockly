@@ -433,7 +433,9 @@ export function buildToolActivityDisplayItem(
   options?: { id?: string; defaultKicker?: string },
 ): ActivityGroupDisplayItem {
   const approval = projectToolCallApprovalDisplayData(part);
-  const approvalSummary = approval?.resolved ? buildResolvedApprovalSummary(approval) : undefined;
+  const approvalSummary = approval?.resolved && approval.reviewer === 'auto_review'
+    ? buildResolvedApprovalSummary(approval)
+    : undefined;
   const pendingApproval = !!approval && !approval.resolved;
   const preparedDetailSections = getPreparedDetailSections(part);
   const eagerDetailSections = pendingApproval && approval
@@ -564,7 +566,7 @@ function buildConfirmationLikeActivityDisplayItem(
     pill: '',
     pillTone: 'neutral',
     approval,
-    approvalSummary: approval.resolved ? buildResolvedApprovalSummary(approval, 'confirmation') : undefined,
+    approvalSummary: undefined,
     invocationDetail,
     children: undefined,
     detailSections: detailSections.length ? detailSections : undefined,
@@ -719,7 +721,9 @@ export function buildTerminalActivityDisplayItem(
       metadata: part.metadata,
     })
     : undefined;
-  const approvalSummary = approval?.resolved ? buildResolvedApprovalSummary(approval) : undefined;
+  const approvalSummary = approval?.resolved && approval.reviewer === 'auto_review'
+    ? buildResolvedApprovalSummary(approval)
+    : undefined;
   const approvalDetailSections = approval
     ? buildApprovalDetailSections({
       message: approval.message,

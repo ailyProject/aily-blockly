@@ -225,6 +225,13 @@ body.aily-chat-model-submenu-open {
     background: transparent !important;
     opacity: 0 !important;
   }
+
+  // Model submenu lives inside tool-panel (z-index 100). Temporarily demote
+  // floating editor chrome so hover flyouts remain interactive over the seam.
+  .devtool-box {
+    z-index: 0 !important;
+    pointer-events: none !important;
+  }
 }
 
 .cdk-global-scrollblock {

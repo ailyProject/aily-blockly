@@ -698,7 +698,7 @@ class ChatRuntimeHostProcessService {
       throw new Error('[AilyChat][RuntimeHost] readEditingSessionState requires a session id.');
     }
     if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
-      throw new Error('[AilyChat][RuntimeHost] Editing-session state requires the execution host.');
+      return createEmptyEditingSessionState(sessionId);
     }
     const inventory = this.hostSessionStore.buildSessionInventoryItem(sessionId);
     return this.runtimeOwnerController.dispatchCommand('readEditingSessionState', [{
@@ -2093,6 +2093,36 @@ class ChatRuntimeHostProcessService {
         return false;
     }
   }
+}
+
+function createEmptyEditingSessionState(sessionId) {
+  const now = Date.now();
+  return {
+    version: 4,
+    sessionId,
+    workspaceIdentity: '',
+    workspaceRoot: '',
+    revision: 0,
+    checkpoints: [],
+    baselines: [],
+    operations: [],
+    requestScopes: [],
+    currentPointer: {
+      epoch: 0,
+    },
+    epochCounter: 0,
+    createdAt: now,
+    updatedAt: now,
+    entries: [],
+    requestSummaries: [],
+    summary: {
+      checkpointCount: 0,
+      requestCount: 0,
+      entryCount: 0,
+      operationCount: 0,
+      modifiedEntryCount: 0,
+    },
+  };
 }
 
 function resolveEditingSessionInteractionTarget(state, direction) {

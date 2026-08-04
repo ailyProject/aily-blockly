@@ -1,4 +1,4 @@
-import { AfterViewInit, Component, ElementRef, Injector, NgZone, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, NgZone, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
@@ -46,7 +46,6 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private _autoSave = true;
   private loadBoardInfoTimer: ReturnType<typeof setTimeout> | null = null;
-  private chatServicePromise?: Promise<any>;
   private viewportAdjustTimer: ReturnType<typeof setTimeout> | null = null;
   private resizeAnimationFrame: number | null = null;
 
@@ -77,7 +76,6 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     private translate: TranslateService,
     private authService: AuthService,
     private themeService: ThemeService,
-    private injector: Injector,
     private ngZone: NgZone,
     private installedChildTools: InstalledChildToolLauncherService,
   ) { }
@@ -398,14 +396,16 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       : `${projectPath}/arch.md`;
 
     if (!this.electronService.exists(archPath)) {
-      this.uiService.openTool('aily-chat');
       const prompt = this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT');
 //       const prompt = `${this.translate.instant('FLOAT_SIDER.GENERATE_ARCH_PROMPT')}
 
 // Generate a Mermaid project architecture diagram and save it to arch.md. If the architecture save tool is deferred, use tool_search for blockly-architecture or save_arch, then call save_arch with raw Mermaid DSL in code. Do not only print Mermaid source.`;
-      setTimeout(() => {
-        void this.sendArchPrompt(prompt);
-      }, 400);
+      this.uiService.openAndSendToChat(prompt, {
+        sender: 'FloatSider',
+        type: 'arch',
+        autoSend: true,
+        newChatFirst: true,
+      });
       return;
     }
 
@@ -494,7 +494,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   private requireLogin(): boolean {
     if (!this.authService.isLoggedIn) {
       this.messageService.warning(this.translate.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
-      this.uiService.openTool('aily-chat');
+      this.uiService.openPreferredAilyChat();
       return false;
     }
     return true;
@@ -515,28 +515,4 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     return trimmed;
   }
 
-  private async getChatService() {
-    if (!this.chatServicePromise) {
-      this.chatServicePromise = import('../../../../tools/aily-chat/public-api')
-        .then(({ ChatService }) => this.injector.get(ChatService));
-    }
-
-    return this.chatServicePromise;
-  }
-
-  private async sendArchPrompt(prompt: string): Promise<void> {
-    const chatService = await this.getChatService();
-    if (chatService.isWaiting) {
-      this.messageService.warning(this.translate.instant('FLOAT_SIDER.ARCH_AI_BUSY'));
-      return;
-    }
-
-    const hasSession = !!chatService.currentSessionId;
-    chatService.sendTextToChat(prompt, {
-      sender: 'FloatSider',
-      type: 'arch',
-      autoSend: true,
-      newChatFirst: hasSession
-    });
-  }
 }

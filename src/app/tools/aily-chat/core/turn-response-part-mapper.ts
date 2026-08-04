@@ -27,7 +27,6 @@ import {
 import { getMarkdownContent } from './markdown-content-store';
 import { getThinkContent } from './think-content-store';
 import { normalizeChatErrorNotice } from './chat-error-notice-normalizer';
-import { isTerminalSessionToolName } from './tool-name-normalizer';
 
 type MutableQuestionAnswers = Extract<ChatPart, { type: 'question' }>['answers'];
 type ScopedTurnResponsePartMetadata = { readonly metadata?: Record<string, unknown> };
@@ -35,17 +34,6 @@ type ScopedTurnResponsePart = ScopedTurnResponsePartMetadata & ChatPartScope;
 
 export function collectMainTurnResponseText(parts: readonly TurnResponsePart[]): string {
   return collectTurnResponseText(parts.filter(part => !isSubagentScopedTurnResponsePart(part)));
-}
-
-export function projectTurnResponseDisplayParts(parts: readonly TurnResponsePart[]): TurnResponsePart[] {
-  const terminalOwners = collectTerminalInvocationOwners(parts);
-  if (terminalOwners.toolCallIds.size === 0 && terminalOwners.sessionIds.size === 0 && terminalOwners.commands.size === 0) {
-    return [...parts];
-  }
-
-  return parts.filter(part =>
-    !isTerminalOwnedToolCallPart(part, terminalOwners)
-    && !isTerminalOwnedConfirmationPart(part, terminalOwners));
 }
 
 export function turnResponsePartsToDisplayChatParts(
@@ -61,9 +49,10 @@ export interface TurnResponseDisplayChatPartEntry {
 }
 
 /**
- * Projects response parts while retaining VS Code's canonical content index.
- * A response part may expand into several legacy child display parts, but every
- * display part remains owned by its original response index.
+ * Maps every canonical response part while retaining VS Code's content index.
+ * Visual ownership and duplicate suppression belong to the mounted part
+ * renderer, so this boundary must not discard tool calls that own interaction
+ * decisions before the renderer sees the complete response model.
  */
 export function turnResponsePartsToDisplayChatPartEntries(
   parts: readonly TurnResponsePart[] | null | undefined,
@@ -72,17 +61,12 @@ export function turnResponsePartsToDisplayChatPartEntries(
     return [];
   }
 
-  const visibleParts = new Set(projectTurnResponseDisplayParts(parts));
-  return parts.flatMap((part, sourcePartIndex) => {
-    if (!visibleParts.has(part)) {
-      return [];
-    }
-    return turnResponsePartToChatParts(part).map((displayPart, sourcePartOffset) => ({
+  return parts.flatMap((part, sourcePartIndex) =>
+    turnResponsePartToChatParts(part).map((displayPart, sourcePartOffset) => ({
       sourcePartIndex,
       sourcePartOffset,
       part: displayPart,
-    }));
-  });
+    })));
 }
 
 export function isSubagentScopedTurnResponsePart(part: TurnResponsePart): boolean {
@@ -95,165 +79,6 @@ export function isSubagentScopedTurnResponsePart(part: TurnResponsePart): boolea
 function optionalTurnResponsePartId(part: TurnResponsePart): string | undefined {
   const partId = (part as unknown as { readonly partId?: unknown }).partId;
   return typeof partId === 'string' && partId.trim().length > 0 ? partId : undefined;
-}
-
-function collectTerminalInvocationOwners(
-  parts: readonly TurnResponsePart[],
-): { toolCallIds: Set<string>; sessionIds: Set<string>; commands: Set<string> } {
-  const toolCallIds = new Set<string>();
-  const sessionIds = new Set<string>();
-  const commands = new Set<string>();
-
-  for (const part of parts) {
-    if (part.type !== 'terminal') {
-      continue;
-    }
-
-    const terminal = part as TurnResponseTerminalPart;
-    if (terminal.toolCallId) {
-      toolCallIds.add(terminal.toolCallId);
-    }
-    for (const sourceToolCallId of terminal.sourceToolCallIds ?? []) {
-      if (sourceToolCallId) {
-        toolCallIds.add(sourceToolCallId);
-      }
-    }
-    for (const sessionId of [terminal.processId, terminal.outputSessionId, terminal.terminalId]) {
-      if (sessionId) {
-        sessionIds.add(sessionId);
-      }
-    }
-    addTerminalCommandOwner(commands, terminal.command);
-    const metadata = readRecord(terminal.metadata);
-    const approval = readRecord(metadata?.['approval']);
-    const approvalArgs = readRecord(approval?.['args']);
-    addTerminalCommandOwner(commands, approvalArgs?.['command']);
-    addTerminalCommandOwner(commands, approvalArgs?.['cmd']);
-  }
-
-  return { toolCallIds, sessionIds, commands };
-}
-
-function isTerminalOwnedToolCallPart(
-  part: TurnResponsePart,
-  owners: { toolCallIds: ReadonlySet<string>; sessionIds: ReadonlySet<string>; commands: ReadonlySet<string> },
-): boolean {
-  if (part.type !== 'tool_call' || !isTerminalSessionToolName(part.toolName)) {
-    return false;
-  }
-
-  if (owners.toolCallIds.has(part.toolCallId)) {
-    return true;
-  }
-
-  const args = readRecord(part.args);
-  const metadata = readRecord(part.metadata);
-  const approval = readRecord(metadata?.['approval']);
-  const approvalArgs = readRecord(approval?.['args']);
-  const sessionIds = [
-    readString(args?.['processId']),
-    readString(args?.['outputSessionId']),
-    readString(args?.['terminalId']),
-    readString(args?.['id']),
-    readString(metadata?.['processId']),
-    readString(metadata?.['outputSessionId']),
-    readString(metadata?.['terminalId']),
-    readString(metadata?.['id']),
-    readString(approvalArgs?.['processId']),
-    readString(approvalArgs?.['outputSessionId']),
-    readString(approvalArgs?.['terminalId']),
-    readString(approvalArgs?.['id']),
-    ...extractTerminalSessionIdsFromText(part.text),
-  ].filter((value): value is string => !!value);
-
-  if (sessionIds.some(sessionId => owners.sessionIds.has(sessionId))) {
-    return true;
-  }
-
-  const command = readString(args?.['command'])
-    || readString(args?.['cmd'])
-    || readString(approvalArgs?.['command'])
-    || readString(approvalArgs?.['cmd']);
-  return !!command && owners.commands.has(command);
-}
-
-function isTerminalOwnedConfirmationPart(
-  part: TurnResponsePart,
-  owners: { toolCallIds: ReadonlySet<string>; sessionIds: ReadonlySet<string>; commands: ReadonlySet<string> },
-): boolean {
-  if (part.type !== 'confirmation' || !isTerminalSessionToolName(part.toolName)) {
-    return false;
-  }
-
-  const partId = optionalTurnResponsePartId(part)?.replace(/^confirmation:/, '');
-  if ((part.askId && owners.toolCallIds.has(part.askId)) || (partId && owners.toolCallIds.has(partId))) {
-    return true;
-  }
-
-  const args = readRecord(part.args);
-  const metadata = readRecord(part.metadata);
-  const approval = readRecord(metadata?.['approval']);
-  const approvalArgs = readRecord(approval?.['args']);
-  const sessionIds = [
-    readString(args?.['processId']),
-    readString(args?.['outputSessionId']),
-    readString(args?.['terminalId']),
-    readString(args?.['id']),
-    readString(approvalArgs?.['processId']),
-    readString(approvalArgs?.['outputSessionId']),
-    readString(approvalArgs?.['terminalId']),
-    readString(approvalArgs?.['id']),
-  ].filter((value): value is string => !!value);
-
-  if (sessionIds.some(sessionId => owners.sessionIds.has(sessionId))) {
-    return true;
-  }
-
-  const command = readString(args?.['command'])
-    || readString(args?.['cmd'])
-    || readString(approvalArgs?.['command'])
-    || readString(approvalArgs?.['cmd']);
-  return !!command && owners.commands.has(command);
-}
-
-function addTerminalCommandOwner(commands: Set<string>, value: unknown): void {
-  const command = readString(value);
-  if (command) {
-    commands.add(command);
-  }
-}
-
-function extractTerminalSessionIdsFromText(text: unknown): string[] {
-  const raw = readString(text);
-  if (!raw) {
-    return [];
-  }
-
-  const ids: string[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line.trim());
-    if (!match) {
-      continue;
-    }
-    if (match[1] !== 'processId' && match[1] !== 'outputSessionId' && match[1] !== 'terminalId' && match[1] !== 'id') {
-      continue;
-    }
-    const value = readString(match[2]);
-    if (value) {
-      ids.push(value);
-    }
-  }
-  return ids;
-}
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function readString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 export function chatPartToTurnResponsePart(part: ChatPart): TurnResponsePart {
@@ -369,6 +194,8 @@ export function chatPartToTurnResponsePart(part: ChatPart): TurnResponsePart {
         resolved: part.resolved,
         result: part.result,
         scope: part.scope,
+        selectedActionId: part.selectedActionId,
+        selectedActionLabel: part.selectedActionLabel,
         ...(scope ? scope : {}),
         ...(metadata ? { metadata } : {}),
         ...(part.description != null ? { description: part.description } : {}),
@@ -508,6 +335,8 @@ export function turnResponsePartToChatPart(part: TurnResponsePart, existing?: Ch
       confirmation.resolved = part.resolved || existingConfirmation?.resolved || false;
       confirmation.result = part.result ?? existingConfirmation?.result;
       confirmation.scope = part.scope ?? existingConfirmation?.scope;
+      confirmation.selectedActionId = part.selectedActionId ?? existingConfirmation?.selectedActionId;
+      confirmation.selectedActionLabel = part.selectedActionLabel ?? existingConfirmation?.selectedActionLabel;
       return confirmation;
     }
     case 'terminal': {

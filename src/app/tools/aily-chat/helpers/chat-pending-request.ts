@@ -2,6 +2,8 @@ import type { TurnRequest } from 'aily-lex/browser';
 
 import type { ResourceItem } from '../core/chat-types';
 import type { ChatImageAttachmentDraft } from '../core/chat-image-attachment';
+import type { ChatSelectedMode } from '../core/chat-mode';
+import type { HostSessionProviderOptions } from './host-session-input-state';
 
 export type ChatPendingRequestKind = 'queued' | 'steering';
 
@@ -17,6 +19,8 @@ export interface PreparedPendingFollowupRequest {
 	readonly sessionAllowedPaths?: readonly string[];
 	readonly runtimeOwnerSessionId?: string;
 	readonly providerOptionsKey?: string;
+	readonly providerOptionsSnapshot?: HostSessionProviderOptions;
+	readonly selectedModeSnapshot?: ChatSelectedMode;
 	readonly requestedModel?: string;
 	readonly requestedPresetId?: string;
 	readonly requestModeId?: string;

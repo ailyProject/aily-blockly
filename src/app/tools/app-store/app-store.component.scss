@@ -170,27 +170,27 @@
     inset 0 0 0 1px color-mix(in srgb, var(--aily-color-primary) 12%, transparent),
     0 0 18px color-mix(in srgb, var(--aily-color-primary) 12%, transparent);
 
+  // 进度宽度由真实安装百分比驱动（下载 50% + 解压/安装 50%），条纹/高光仅表示仍在进行。
   &::before {
     position: absolute;
     z-index: 0;
     inset: 0;
     content: '';
-    transform: scaleX(0.025);
+    transform: scaleX(var(--install-progress, 0.02));
     transform-origin: left center;
+    transition: transform 0.28s ease-out;
     background:
       linear-gradient(90deg,
-        color-mix(in srgb, var(--aily-color-primary) 10%, transparent),
-        color-mix(in srgb, var(--aily-color-primary) 26%, transparent) 72%,
-        color-mix(in srgb, var(--aily-color-primary) 44%, transparent)),
+        color-mix(in srgb, var(--aily-color-primary) 12%, transparent),
+        color-mix(in srgb, var(--aily-color-primary) 28%, transparent) 72%,
+        color-mix(in srgb, var(--aily-color-primary) 46%, transparent)),
       repeating-linear-gradient(125deg,
         transparent 0 10px,
-        color-mix(in srgb, #fff 12%, transparent) 10px 17px,
+        color-mix(in srgb, #fff 16%, transparent) 10px 17px,
         transparent 17px 28px);
     background-size: 100% 100%, 56px 100%;
     box-shadow: 14px 0 28px color-mix(in srgb, var(--aily-color-primary) 34%, transparent);
-    animation:
-      subapp-install-progress 5.8s cubic-bezier(0.16, 0.78, 0.2, 1) forwards,
-      subapp-install-flow 0.9s linear infinite;
+    animation: subapp-install-flow 0.75s linear infinite;
   }
 
   &::after {
@@ -198,13 +198,13 @@
     z-index: 1;
     top: 0;
     bottom: 0;
-    left: -38%;
-    width: 34%;
+    left: 0;
+    width: 36%;
     content: '';
-    transform: skewX(-18deg);
-    background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 28%, transparent), transparent);
-    filter: blur(1px);
-    animation: subapp-install-shine 1.8s ease-in-out infinite;
+    transform: translate3d(-120%, 0, 0) skewX(-18deg);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 32%, transparent), transparent);
+    pointer-events: none;
+    animation: subapp-install-shine 1.5s ease-in-out infinite;
   }
 
   > * {
@@ -216,24 +216,6 @@
     opacity: 1;
     color: var(--aily-color-primary);
     box-shadow: 0 0 14px color-mix(in srgb, var(--aily-color-primary) 18%, transparent);
-  }
-}
-
-@keyframes subapp-install-progress {
-  0% {
-    transform: scaleX(0.025);
-  }
-
-  24% {
-    transform: scaleX(0.32);
-  }
-
-  64% {
-    transform: scaleX(0.72);
-  }
-
-  100% {
-    transform: scaleX(0.9);
   }
 }
 
@@ -249,12 +231,12 @@
 
 @keyframes subapp-install-shine {
   0% {
-    left: -38%;
+    transform: translate3d(-120%, 0, 0) skewX(-18deg);
     opacity: 0;
   }
 
   18% {
-    opacity: 0.9;
+    opacity: 0.95;
   }
 
   82% {
@@ -262,7 +244,7 @@
   }
 
   100% {
-    left: 112%;
+    transform: translate3d(320%, 0, 0) skewX(-18deg);
     opacity: 0;
   }
 }
@@ -483,7 +465,52 @@
   align-items: center;
   justify-content: center;
   width: 30px;
+  height: 30px;
   color: var(--aily-color-primary);
+  line-height: 1;
+}
+
+.action-progress-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+
+.action-progress-ring > .app-store-spin {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.action-progress-value {
+  position: relative;
+  z-index: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: -0.06em;
+  color: var(--aily-color-primary);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+// 不用 FA 的 fa-spin（默认 2s/圈，Windows 掉帧时像卡住）；改用更快的本地旋转。
+.app-store-spin {
+  display: inline-block;
+  transform-origin: center;
+  animation: app-store-spin 0.75s linear infinite;
+}
+
+@keyframes app-store-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .catalog-state {
@@ -550,10 +577,10 @@
 }
 
 .subapp-more-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 3px);
-  right: 0;
+  position: fixed;
+  z-index: 1200;
+  top: 0;
+  left: 0;
   display: none;
   width: max-content;
   min-width: 118px;
@@ -603,11 +630,21 @@
   }
 
   &.danger {
-    color: var(--aily-color-danger, var(--aily-color-error, #e34d59));
+    // 不用主题里偏暗的 --aily-color-error，菜单里看不清
+    color: #ff6b75;
+  }
+
+  &.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, #ff6b75 18%, transparent);
   }
 
   &.danger.confirm {
-    background: color-mix(in srgb, var(--aily-color-danger, #e34d59) 12%, transparent);
+    color: #fff;
+    background: #e5484d;
+  }
+
+  &.danger.confirm:hover:not(:disabled) {
+    background: #d13c42;
   }
 
   &.danger > i {
@@ -646,15 +683,14 @@
   }
 }
 
+// 安装/卸载进度属于功能性反馈（否则 fa-spinner-third 静止时像卡住的百分比环）。
+// Windows 常因系统「动画效果」关闭而匹配 prefers-reduced-motion，不能因此关掉这些动画。
+// 仅弱化装饰性扫光；旋转与条纹流动继续保留。
 @media (prefers-reduced-motion: reduce) {
   .catalog-card.installing {
-    &::before {
-      transform: scaleX(0.58);
-      animation: none;
-    }
-
     &::after {
-      display: none;
+      animation-duration: 2.4s;
+      opacity: 0.45;
     }
   }
 }

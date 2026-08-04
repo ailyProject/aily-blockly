@@ -36,7 +36,9 @@
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ app.name | translate}}" (click)="onClick(app,$event)"
         [ngStyle]="{ color: app.color ? app.color : '' }" [ngClass]="{ selected: isOpenTool(app) }">
         <i class="{{ app.icon }}"></i>
-        @if (app.more) {
+        @if (app.ai) {
+        <div class="more ccenter">AI</div>
+        } @else if (app.more) {
         <div class="more ccenter">{{ app.more }}</div>
         }
       </div>
@@ -69,12 +71,12 @@
 </div>
 <!-- menu -->
 @if (showMenu) {
-<app-menu [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"
+<app-menu class="main-menu-parity" [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"
   (subItemClickEvent)="onHeaderMenuSubItemClick($event)"></app-menu>
 }
 <!-- device port list -->
 @if (showPortList) {
-<app-menu class="ports" [position]="portListPosition" [width]="260" [menuList]="configList"
+<app-menu class="ports main-menu-parity" [position]="portListPosition" [width]="260" [menuList]="configList"
   (closeEvent)="closePortList()" [keywords]="boardKeywords" (itemClickEvent)="selectPort($event)"
   (subItemClickEvent)="selectSubItem($event)"></app-menu>
 }

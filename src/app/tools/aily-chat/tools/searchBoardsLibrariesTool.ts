@@ -95,6 +95,15 @@ interface StructuredFilters {
     communication?: string[];
 }
 
+interface SearchBoardsLibrariesToolResult {
+    is_error: boolean;
+    content: string;
+    metadata?: {
+        results?: unknown[];
+        [key: string]: unknown;
+    };
+}
+
 /**
  * 搜索开发板和库工具 - 支持结构化索引的高级搜索
  * 
@@ -274,7 +283,7 @@ export const searchBoardsLibrariesTool = {
             maxResults?: number;
         },
         configService: ConfigService
-    ) => {
+    ): Promise<SearchBoardsLibrariesToolResult> => {
         const { query, type = 'both', maxResults = 50 } = params;
         
         // 处理 filters 参数：可能是字符串（LLM 传入的 JSON 字符串）或对象
@@ -428,8 +437,12 @@ export const searchBoardsLibrariesTool = {
             resultContent += `数据格式: ${dataFormat === 'new' ? '新索引（结构化）' : '旧索引（文本）'}\n\n`;
 
             results.forEach((item, index) => {
+                const packageName = toCanonicalAilyPackageName(item.name, item.source);
                 resultContent += `[${index + 1}]\n`;
                 resultContent += `name: ${item.name}\n`;
+                if (packageName) {
+                    resultContent += `packageName: ${packageName}\n`;
+                }
                 resultContent += `displayName: ${item.displayName}\n`;
                 // 始终显示description（新格式从旧数据关联获取）
                 if (item.description) {
@@ -466,6 +479,7 @@ export const searchBoardsLibrariesTool = {
                     results: results.map(r => ({
                         source: r.source,
                         name: r.name,
+                        packageName: toCanonicalAilyPackageName(r.name, r.source),
                         displayName: r.displayName,
                         description: r.description,
                         matchedQueries: r.matchedQueries,
@@ -583,6 +597,17 @@ interface SearchResultItem {
     matchedFields: string[];
     matchedQueries: string[];
     metadata?: any;
+}
+
+function toCanonicalAilyPackageName(name: string, source: SearchResultItem['source']): string | undefined {
+    const normalizedName = name.trim();
+    if (!normalizedName) return undefined;
+    if (normalizedName.startsWith('@')) return normalizedName;
+
+    const expectedPrefix = source === 'library' ? 'lib-' : 'board-';
+    return normalizedName.startsWith(expectedPrefix)
+        ? `@aily-project/${normalizedName}`
+        : undefined;
 }
 
 /** 单词边界匹配 - 检查 query 是否作为独立单词出现在 text 中 */

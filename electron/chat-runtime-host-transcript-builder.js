@@ -702,6 +702,108 @@ function patchToolEnd(parts, event) {
   return nextParts;
 }
 
+function patchToolApprovalRequest(parts, event) {
+  const toolCallId = normalizeOptionalString(event.toolCallId);
+  if (!toolCallId) {
+    return parts;
+  }
+  const index = parts.findIndex(part => part && part.type === 'tool_call' && part.toolCallId === toolCallId);
+  if (index < 0) {
+    return parts;
+  }
+  const current = parts[index];
+  const existingMetadata = current.metadata && typeof current.metadata === 'object'
+    ? current.metadata
+    : {};
+  const actions = Array.isArray(event.actions)
+    ? event.actions.map(action => ({
+      ...(normalizeOptionalString(action && action.id) ? { id: normalizeOptionalString(action.id) } : {}),
+      scope: action.scope,
+      label: action.label,
+      ...(typeof action.description === 'string' ? { description: action.description } : {}),
+      ...(typeof action.tooltip === 'string' ? { tooltip: action.tooltip } : {}),
+      ...(typeof action.disabled === 'boolean' ? { disabled: action.disabled } : {}),
+      ...(typeof action.isSecondary === 'boolean' ? { isSecondary: action.isSecondary } : {}),
+      ...(typeof action.resolves === 'boolean' ? { resolves: action.resolves } : {}),
+    }))
+    : [];
+  const nextParts = [...parts];
+  nextParts[index] = {
+    ...current,
+    state: 'pending_approval',
+    text: normalizeOptionalString(event.message) || current.text,
+    args: event.input && typeof event.input === 'object' ? clonePayload(event.input) : current.args,
+    metadata: {
+      ...existingMetadata,
+      approval: {
+        ...(normalizeOptionalString(event.approvalTraceId)
+          ? { approvalTraceId: normalizeOptionalString(event.approvalTraceId) }
+          : {}),
+        toolCallId,
+        ...(normalizeOptionalString(event.toolName) || current.toolName
+          ? { toolName: normalizeOptionalString(event.toolName) || current.toolName }
+          : {}),
+        ...(normalizeOptionalString(event.message) ? { message: normalizeOptionalString(event.message) } : {}),
+        ...(normalizeOptionalString(event.description)
+          ? { description: normalizeOptionalString(event.description) }
+          : {}),
+        ...(normalizeOptionalString(event.source) ? { source: normalizeOptionalString(event.source) } : {}),
+        ...(normalizeOptionalString(event.title) ? { title: normalizeOptionalString(event.title) } : {}),
+        ...(normalizeOptionalString(event.subtitle) ? { subtitle: normalizeOptionalString(event.subtitle) } : {}),
+        actions,
+        primaryScope: event.primaryScope,
+        args: event.input && typeof event.input === 'object' ? clonePayload(event.input) : current.args,
+        reviewer: 'user',
+        resolved: false,
+      },
+    },
+  };
+  return nextParts;
+}
+
+function patchToolApprovalResolve(parts, event) {
+  const toolCallId = normalizeOptionalString(event.toolCallId);
+  if (!toolCallId) {
+    return parts;
+  }
+  const index = parts.findIndex(part => part && part.type === 'tool_call' && part.toolCallId === toolCallId);
+  if (index < 0) {
+    return parts;
+  }
+  const current = parts[index];
+  const existingMetadata = current.metadata && typeof current.metadata === 'object'
+    ? current.metadata
+    : {};
+  const existingApproval = existingMetadata.approval && typeof existingMetadata.approval === 'object'
+    ? existingMetadata.approval
+    : {};
+  const nextParts = [...parts];
+  nextParts[index] = {
+    ...current,
+    state: event.result === 'approved' ? 'doing' : 'error',
+    metadata: {
+      ...existingMetadata,
+      approval: {
+        ...existingApproval,
+        approvalTraceId: normalizeOptionalString(event.approvalTraceId)
+          || normalizeOptionalString(existingApproval.approvalTraceId),
+        toolCallId,
+        reviewer: 'user',
+        resolved: true,
+        result: event.result,
+        ...(normalizeOptionalString(event.scope) ? { scope: normalizeOptionalString(event.scope) } : {}),
+        ...(normalizeOptionalString(event.selectedActionId)
+          ? { selectedActionId: normalizeOptionalString(event.selectedActionId) }
+          : {}),
+        ...(normalizeOptionalString(event.selectedActionLabel)
+          ? { selectedActionLabel: normalizeOptionalString(event.selectedActionLabel) }
+          : {}),
+      },
+    },
+  };
+  return nextParts;
+}
+
 const TODO_TOOL_NAMES = new Set([
   'todo_manage',
   'manage_todo_list',
@@ -1218,6 +1320,7 @@ function upsertApprovalRequestPart(parts, event) {
   const index = nextParts.findIndex(part => part && part.type === 'confirmation' && part.partId === partId);
   const actions = Array.isArray(event.actions)
     ? event.actions.map(action => ({
+      ...(normalizeOptionalString(action && action.id) ? { id: normalizeOptionalString(action.id) } : {}),
       scope: action.scope,
       label: action.label,
       ...(typeof action.description === 'string' ? { description: action.description } : {}),
@@ -1280,6 +1383,8 @@ function patchApprovalResolvePart(parts, event) {
     resolved: true,
     result: event.result,
     scope: event.scope || current.scope,
+    selectedActionId: normalizeOptionalString(event.selectedActionId) || current.selectedActionId,
+    selectedActionLabel: normalizeOptionalString(event.selectedActionLabel) || current.selectedActionLabel,
     metadata: {
       ...(current.metadata && typeof current.metadata === 'object' ? current.metadata : {}),
       resolvedAt: event.timestamp,
@@ -1794,6 +1899,17 @@ function withResponsePatch(turn, timestamp, patch) {
   };
 }
 
+function mergeResponseModelFromEvent(turn, event) {
+  const responseModel = {
+    ...(turn.responseModel && typeof turn.responseModel === 'object' ? turn.responseModel : {}),
+    ...(event.modelName ? { modelName: event.modelName } : {}),
+    ...(event.modelBillingLabel ? { modelBillingLabel: event.modelBillingLabel } : {}),
+    ...(event.modelRouting ? { modelRouting: clonePayload(event.modelRouting) } : {}),
+    ...(event.quotaSnapshot ? { quotaSnapshot: clonePayload(event.quotaSnapshot) } : {}),
+  };
+  return Object.keys(responseModel).length > 0 ? responseModel : undefined;
+}
+
 function normalizeResponsePartsForStatus(parts, status) {
   if (status !== 'completed' || !Array.isArray(parts) || parts.length === 0) {
     return parts;
@@ -1889,10 +2005,14 @@ function materializeRenderEventTurn(turn, state, event) {
       parts = upsertQuestionPart(parts, event);
       return withResponsePatch(turn, timestamp, { parts, status: 'streaming' });
     case 'approval_request':
-      parts = upsertApprovalRequestPart(parts, event);
+      parts = normalizeOptionalString(event.toolCallId)
+        ? patchToolApprovalRequest(parts, event)
+        : upsertApprovalRequestPart(parts, event);
       return withResponsePatch(turn, timestamp, { parts, status: 'streaming' });
     case 'approval_resolve':
-      parts = patchApprovalResolvePart(parts, event);
+      parts = normalizeOptionalString(event.toolCallId)
+        ? patchToolApprovalResolve(parts, event)
+        : patchApprovalResolvePart(parts, event);
       return withResponsePatch(turn, timestamp, { parts, status: 'streaming' });
     case 'warning_notice':
       parts = appendNoticePart(parts, event, 'warning', event.message);
@@ -1989,10 +2109,12 @@ function materializeRenderEventTurn(turn, state, event) {
       {
         const planResult = materializePlanTurnParts(parts, turn);
         parts = planResult.parts.map(part => completeOpenResponsePart(part, timestamp));
+        const responseModel = mergeResponseModelFromEvent(turn, event);
         return withResponsePatch(turn, timestamp, {
           parts,
           status: 'completed',
           ...(planResult.resultText !== undefined ? { resultText: planResult.resultText } : {}),
+          ...(responseModel ? { responseModel } : {}),
         });
       }
     case 'turn_end':
@@ -2000,6 +2122,7 @@ function materializeRenderEventTurn(turn, state, event) {
       {
         const planResult = materializePlanTurnParts(parts, turn);
         parts = planResult.parts.map(part => completeOpenResponsePart(part, timestamp));
+        const responseModel = mergeResponseModelFromEvent(turn, event);
         responsePatch = {
           parts,
           status: 'completed',
@@ -2007,13 +2130,7 @@ function materializeRenderEventTurn(turn, state, event) {
           usage: event.usage,
           continuation: event.continuation,
           terminationReason: event.terminationReason,
-          responseModel: {
-            ...(turn.responseModel && typeof turn.responseModel === 'object' ? turn.responseModel : {}),
-            ...(event.modelName ? { modelName: event.modelName } : {}),
-            ...(event.modelBillingLabel ? { modelBillingLabel: event.modelBillingLabel } : {}),
-            ...(event.modelRouting ? { modelRouting: clonePayload(event.modelRouting) } : {}),
-            ...(event.quotaSnapshot ? { quotaSnapshot: clonePayload(event.quotaSnapshot) } : {}),
-          },
+          ...(responseModel ? { responseModel } : {}),
         };
         return withResponsePatch(turn, timestamp, responsePatch);
       }
