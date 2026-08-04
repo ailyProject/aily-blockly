@@ -1,7 +1,7 @@
 import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslateService } from '@ngx-translate/core';
-import { combineLatest } from 'rxjs';
+import { combineLatest, startWith } from 'rxjs';
 
 import type { IMenuItem } from '../../../configs/menu.config';
 import { AbsAutoSyncService } from './abs-auto-sync.service';
@@ -176,11 +176,15 @@ export class AilyChatChildProtocolService {
     combineLatest([
       this.blocklyService.selectedBlockIdsSubject,
       this.blocklyService.blockCodeMapSubject,
+      this.uiService.actionSubject.pipe(startWith(null)),
     ])
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(([blockIds]) => {
+        const activeBlockIds = this.uiService.isActiveAilyChatTool('aily-chat-react')
+          ? (blockIds || [])
+          : [];
         this.engine.resourceManager.updateBlockContexts(
-          blockIds || [],
+          activeBlockIds,
           () => this.blocklyService.getSelectedBlockContextLabels(),
         );
         this.emitSnapshot(true);

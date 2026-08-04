@@ -101,6 +101,81 @@ function formatExternalResult(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2);
 }
 
+type BoardLibrarySearchScope = 'boards' | 'libraries' | 'both';
+type BoardLibrarySearchKind = 'board' | 'library';
+
+function canonicalAilyPackageName(name: string, kind: BoardLibrarySearchKind): string | undefined {
+  const normalizedName = name.trim();
+  if (!normalizedName) {
+    return undefined;
+  }
+  if (normalizedName.startsWith('@')) {
+    return normalizedName;
+  }
+
+  const expectedPrefix = kind === 'library' ? 'lib-' : 'board-';
+  return normalizedName.startsWith(expectedPrefix)
+    ? `@aily-project/${normalizedName}`
+    : undefined;
+}
+
+function inferBoardLibrarySearchKind(
+  item: Record<string, unknown>,
+  scope: BoardLibrarySearchScope,
+): BoardLibrarySearchKind | undefined {
+  const source = typeof item['source'] === 'string' ? item['source'].toLowerCase() : '';
+  const type = typeof item['type'] === 'string' ? item['type'].toLowerCase() : '';
+  const name = typeof item['name'] === 'string' ? item['name'].trim() : '';
+
+  if (source === 'library' || type === 'library' || name.startsWith('lib-') || name.includes('/lib-')) {
+    return 'library';
+  }
+  if (source === 'board' || type === 'board' || name.startsWith('board-') || name.includes('/board-')) {
+    return 'board';
+  }
+  if (scope === 'libraries') {
+    return 'library';
+  }
+  if (scope === 'boards') {
+    return 'board';
+  }
+  return undefined;
+}
+
+function enrichBoardLibrarySearchResult(
+  value: unknown,
+  scope: BoardLibrarySearchScope,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map(item => enrichBoardLibrarySearchResult(item, scope));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const source = value as Record<string, unknown>;
+  const enriched: Record<string, unknown> = { ...source };
+
+  if (Array.isArray(source['boards'])) {
+    enriched['boards'] = enrichBoardLibrarySearchResult(source['boards'], 'boards');
+  }
+  if (Array.isArray(source['libraries'])) {
+    enriched['libraries'] = enrichBoardLibrarySearchResult(source['libraries'], 'libraries');
+  }
+  if (Array.isArray(source['results'])) {
+    enriched['results'] = enrichBoardLibrarySearchResult(source['results'], scope);
+  }
+
+  const name = typeof source['name'] === 'string' ? source['name'] : '';
+  const kind = inferBoardLibrarySearchKind(source, scope);
+  const packageName = kind ? canonicalAilyPackageName(name, kind) : undefined;
+  if (packageName) {
+    enriched['packageName'] = packageName;
+  }
+
+  return enriched;
+}
+
 function makeProjectContribution(createDeferred: DeferredFactory): RuntimeScopedToolContribution {
   return {
     name: 'project',
@@ -112,6 +187,8 @@ function makeProjectContribution(createDeferred: DeferredFactory): RuntimeScoped
 - "switch_board": Switch the development board
 - "get_board_config": Get board compile/upload configuration
 - "set_board_config": Modify board compile/upload configuration
+
+This tool does not install libraries. Once discovery returns a library packageName, install it from the current project root with the terminal command \`npm install <packageName>\`. Use action="reload" only after a successful installation when the Blockly project needs to load the new blocks.
 
 Project creation mutates the workspace and may require host-side user confirmation before execution.
 Before action="create" in a no-project request, the agent must have loaded blockly-project-planning, used board/library discovery to produce researched candidate options, and obtained the user's selected/confirmed option. Do not ask the user to choose a board before discovery, and do not use this tool to skip the candidate-plan workflow.
@@ -209,7 +286,9 @@ function makeBoardSearchContribution(createDeferred: DeferredFactory): RuntimeSc
 - Search by name, description, or tags
 - Filter by type: "boards", "libraries", or "both"
 - Get board parameters for a specific board
-- Get hardware categories for browsing`,
+- Get hardware categories for browsing
+
+Search results expose packageName as the canonical npm identity. Once the required library packageName is known, install it directly from the current project root with the terminal command \`npm install <packageName>\`. Do not use tool_search or the project tool to discover an installation mechanism.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -232,7 +311,9 @@ function makeSearchBoardsLibrariesContribution(): RuntimeScopedToolContribution 
     name: 'search_boards_libraries',
     toolSet: 'blockly-discovery',
     description: 'Search Aily development boards and libraries by text query or structured filters',
-    prompt: searchBoardsLibrariesTool.description,
+    prompt: `${searchBoardsLibrariesTool.description}
+
+Each result exposes packageName as the canonical npm identity. Once the required library packageName is known, install it directly from the current project root with the terminal command \`npm install <packageName>\`. Do not use tool_search or the project tool to discover an installation mechanism.`,
     inputSchema: searchBoardsLibrariesTool.parameters,
     annotations: { readOnly: true },
     runtimeModes: ['unbound', 'coder', 'blockly'],
@@ -499,8 +580,9 @@ export function createBlocklyProjectDiscoveryHandlers(): Record<string, InvokeHa
             boards: 'boards', libraries: 'libraries', both: 'both',
           };
           const rawType = (input['type'] as string) || 'both';
-          const result = await hostAPI.boardSearch.search?.(query, typeMap[rawType] ?? 'both');
-          return text(formatExternalResult(result ?? []));
+          const scope = typeMap[rawType] ?? 'both';
+          const result = await hostAPI.boardSearch.search?.(query, scope);
+          return text(formatExternalResult(enrichBoardLibrarySearchResult(result ?? [], scope)));
         }
         case 'get_categories': {
           try {
@@ -534,8 +616,12 @@ export function createBlocklyProjectDiscoveryHandlers(): Record<string, InvokeHa
       if (!hostAPI.boardSearch?.search) return error('Board/library search is not available.');
       const query = typeof input['query'] === 'string' ? input['query'] : '';
       if (!query) return error('query is required.');
-      const result = await hostAPI.boardSearch.search(query, typeof input['type'] === 'string' ? input['type'] : undefined);
-      return text(formatExternalResult(result));
+      const rawType = typeof input['type'] === 'string' ? input['type'] : 'both';
+      const scope: BoardLibrarySearchScope = rawType === 'boards' || rawType === 'libraries'
+        ? rawType
+        : 'both';
+      const result = await hostAPI.boardSearch.search(query, scope);
+      return text(formatExternalResult(enrichBoardLibrarySearchResult(result, scope)));
     },
 
     get_hardware_categories: async (_input, hostAPI) => {

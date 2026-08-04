@@ -342,5 +342,11 @@ function mergeHostSessionRequestRouting(
     ...((primary?.permissionLevel ?? fallback?.permissionLevel) !== undefined
       ? { permissionLevel: primary?.permissionLevel ?? fallback?.permissionLevel }
       : {}),
+    ...((primary?.approvalsReviewer ?? fallback?.approvalsReviewer) !== undefined
+      ? { approvalsReviewer: primary?.approvalsReviewer ?? fallback?.approvalsReviewer }
+      : {}),
+    ...((primary?.approvalPolicy ?? fallback?.approvalPolicy) !== undefined
+      ? { approvalPolicy: primary?.approvalPolicy ?? fallback?.approvalPolicy }
+      : {}),
   };
 }

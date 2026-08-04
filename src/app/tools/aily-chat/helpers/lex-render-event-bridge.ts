@@ -412,7 +412,15 @@ export class LexRenderEventBridge {
     }
 
     if (event.type === 'response_complete') {
-      this.syncCurrentTurn(event.timestamp, 'completed');
+      this.syncCurrentTurn(
+        event.timestamp,
+        'completed',
+        undefined,
+        undefined,
+        undefined,
+        event.modelBillingLabel,
+        event.modelRouting,
+      );
       this.invalidateVisibleProjection();
       this._projectionSync.projectCanonicalChanges(this._currentTurn, this._streamBuilder, lifecycleEvents, {
         syncContent: true,

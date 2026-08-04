@@ -1791,11 +1791,7 @@ class LexExecutionRuntimeOwner {
         sessionCompletionCoordinator: this.createSessionCompletionCoordinator(session),
         askUser: this.createAskUserExtension(session),
       },
-      permissionMode: normalizePermissionMode(providerOptions),
-      permissionProfile: normalizePermissionProfile(providerOptions),
-      approvalPolicy: normalizeApprovalPolicy(providerOptions),
-      approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
-      strictAutoReview: normalizeApprovalsReviewer(providerOptions) === 'auto_review',
+      ...createLexApprovalRuntimeConfig(providerOptions),
       hooks: {
         askHandler: request => this.requestConfirmation(session, request),
       },
@@ -1838,11 +1834,7 @@ class LexExecutionRuntimeOwner {
     const hydratedSnapshot = await hydrateChatImageSnapshot(snapshot, this.env);
     session.handlePromise = createAgentHandleAsync(agentBridge, {
       sessionId,
-      permissionMode: normalizePermissionMode(providerOptions),
-      permissionProfile: normalizePermissionProfile(providerOptions),
-      approvalPolicy: normalizeApprovalPolicy(providerOptions),
-      approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
-      strictAutoReview: normalizeApprovalsReviewer(providerOptions) === 'auto_review',
+      ...createLexApprovalRuntimeConfig(providerOptions),
       contextCompactionArchitecture: 'provider',
       summarizerModel: this.createModelConfig(summarizerModel || currentModel),
       inlineSummarization: false,
@@ -9112,14 +9104,26 @@ function normalizeApprovalsReviewer(providerOptions) {
   return reviewer === 'auto_review' ? 'auto_review' : 'user';
 }
 
+export function createLexApprovalRuntimeConfig(providerOptions) {
+  return {
+    permissionMode: normalizePermissionMode(providerOptions),
+    permissionProfile: normalizePermissionProfile(providerOptions),
+    approvalPolicy: normalizeApprovalPolicy(providerOptions),
+    approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
+    strictAutoReview: false,
+  };
+}
+
 function createSessionRuntimeConfigKey(providerOptions, currentModel, summarizerModel, cwd) {
+  const approvalConfig = createLexApprovalRuntimeConfig(providerOptions);
   return JSON.stringify({
     cwd: normalizeString(cwd),
     installedSubappInventory: createElectronInstalledSubappInventorySignature(),
-    permissionMode: normalizePermissionMode(providerOptions),
-    permissionProfile: normalizePermissionProfile(providerOptions) || null,
-    approvalPolicy: normalizeApprovalPolicy(providerOptions),
-    approvalsReviewer: normalizeApprovalsReviewer(providerOptions),
+    permissionMode: approvalConfig.permissionMode,
+    permissionProfile: approvalConfig.permissionProfile || null,
+    approvalPolicy: approvalConfig.approvalPolicy,
+    approvalsReviewer: approvalConfig.approvalsReviewer,
+    strictAutoReview: approvalConfig.strictAutoReview,
     model: normalizeString(currentModel?.model || currentModel?.modelId || currentModel?.id),
     summarizerModel: normalizeString(summarizerModel?.model || summarizerModel?.modelId || summarizerModel?.id),
     baseUrl: normalizeString(currentModel?.baseUrl || currentModel?.llmConfig?.baseUrl),

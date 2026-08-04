@@ -10,7 +10,6 @@ import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService } from '../services/ui.service';
 import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
-import { FfsManagerComponent } from '../tools/ffs-manager/ffs-manager.component';
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '../services/project.service';
@@ -26,7 +25,6 @@ import { ConfigService } from '../services/config.service';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
-import { ModelStoreComponent } from '../tools/model-store/model-store.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
 import { OnboardingService } from '../services/onboarding.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -60,7 +58,6 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     TerminalComponent,
     LogComponent,
     SerialMonitorComponent,
-    FfsManagerComponent,
     ChildToolHostComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
@@ -71,7 +68,6 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     NzModalModule,
     CloudSpaceComponent,
     UserCenterComponent,
-    ModelStoreComponent,
     OnboardingComponent,
     TranslateModule,
     LibManagerToolComponent,

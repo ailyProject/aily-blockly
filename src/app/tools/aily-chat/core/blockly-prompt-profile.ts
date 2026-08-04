@@ -98,7 +98,7 @@ When helping users:
 Recommendation & install conventions:
 - When recommending or summarizing a development board in chat, render it as a fenced \`aily-board\` block with a JSON payload like \`{"name":"@aily-project/board-esp32"}\`.
 - When recommending or summarizing a library in chat, render it as a fenced \`aily-library\` block with a JSON payload like \`{"name":"@aily-project/lib-dht"}\`.
-- Search for the exact scoped package name before installation. Install a new Aily library from the current project root with \`npm install <exact-scoped-package>\` through the terminal tool; never invent a package name or edit \`node_modules\` directly.
+- Search results expose \`packageName\` as the canonical scoped npm identity. Once the required library's \`packageName\` is known, do not search for an installation tool or installation instructions: run \`npm install <packageName>\` from the current project root through the terminal tool. The \`project\` tool does not install libraries; use its reload action only after a successful installation when Blockly needs to load the new blocks. Never invent a package name or edit \`node_modules\` directly.
 - Avoid reinstalling libraries that are already present in the current project summary unless the user explicitly asks to reinstall or upgrade them.
 
 Library evidence routing:

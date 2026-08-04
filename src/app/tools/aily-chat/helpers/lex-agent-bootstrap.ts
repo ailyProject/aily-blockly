@@ -1534,6 +1534,10 @@ export function buildExternalHostAPI(
               host.config as any,
             );
             if (result.is_error) return [];
+            const structuredResults = (result.metadata as { results?: unknown } | undefined)?.results;
+            if (Array.isArray(structuredResults)) {
+              return structuredResults;
+            }
             try { return JSON.parse(result.content); }
             catch { return result.content; }
           } catch { return []; }
@@ -2185,7 +2189,7 @@ export function bootstrapBlocklyLexAgent(
     permissionProfile: normalizeChatSessionPermissionProfile(runtimeProviderOptions.permissionProfile),
     approvalsReviewer: approvalsReviewer ?? null,
     approvalPolicy: approvalPolicy ?? null,
-    strictAutoReview: approvalsReviewer === 'auto_review',
+    strictAutoReview: false,
   });
   const logApprovalBridge = (
     phase: string,
@@ -2424,7 +2428,7 @@ export function bootstrapBlocklyLexAgent(
     terminalPolicy,
     approvalsReviewer,
     approvalPolicy,
-    strictAutoReview: approvalsReviewer === 'auto_review',
+    strictAutoReview: false,
     metrics,
   });
 

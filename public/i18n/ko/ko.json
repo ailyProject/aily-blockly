@@ -30,7 +30,6 @@
         "TOOL_SERIAL": "시리얼 도구",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
-        "FFS_MANAGER": "FFS 관리자",
         "AI": "AI",
         "MODEL_STORE": "모델 스토어",
         "APP_STORE": "앱 스토어",

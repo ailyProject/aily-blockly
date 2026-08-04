@@ -41,7 +41,6 @@
         "SERIAL_DESC": "串埠監視器工具",
         "MQTT_DEBUGGER_DESC": "MQTT連接、訂閱和發佈調試工具",
         "NETWORK_DEBUGGER_DESC": "HTTP與WebSocket調試工具",
-        "FFS_MANAGER_DESC": "ESP32 檔案系統分區管理工具",
         "AI_DESC": "AI 智能助手",
         "AI_REACT_DESC": "AI 智能助手重構實驗性版本",
         "MODEL_STORE_DESC": "AI 模型商店",

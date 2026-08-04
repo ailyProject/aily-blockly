@@ -41,7 +41,6 @@
         "SERIAL_DESC": "Инструмент серийного монитора",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
-        "FFS_MANAGER_DESC": "Инструмент управления разделами файловой системы ESP32",
         "AI_DESC": "Ассистент ИИ",
         "MODEL_STORE_DESC": "Магазин моделей ИИ",
         "CLOUD_SPACE_DESC": "Облачное хранилище",

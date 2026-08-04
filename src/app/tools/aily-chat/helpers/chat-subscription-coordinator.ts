@@ -1,4 +1,4 @@
-import { Subscription, Observable, of, distinctUntilChanged, combineLatest, map } from 'rxjs';
+import { Subscription, Observable, of, distinctUntilChanged, combineLatest, map, startWith } from 'rxjs';
 import { ConfigService } from '../../../services/config.service';
 
 import type {
@@ -278,9 +278,15 @@ export class ChatSubscriptionCoordinator {
     this.blockSelectionSubscription = combineLatest([
       AilyHost.get().blockly.selectedBlockIdsSubject,
       AilyHost.get().blockly.blockCodeMapSubject,
+      (AilyHost.get().ui?.actionSubject as Observable<unknown> | undefined)?.pipe(startWith(null))
+        ?? of(null),
     ]).subscribe((results: any[]) => {
+      const ui = AilyHost.get().ui;
+      const isLegacyChatActive = typeof ui?.isActiveAilyChatTool === 'function'
+        ? ui.isActiveAilyChatTool('aily-chat') === true
+        : true;
       this.ctx.resourceManager.updateBlockContexts(
-        results[0] || [],
+        isLegacyChatActive ? (results[0] || []) : [],
         () => AilyHost.get().blockly.getSelectedBlockContextLabels(),
       );
       this.ctx.triggerSyncDetectChanges();

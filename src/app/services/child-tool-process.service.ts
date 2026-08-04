@@ -519,9 +519,10 @@ export class ChildToolProcessService implements OnDestroy {
       if (session.streamId !== streamId) {
         throw new Error(`${config.id} startup was superseded before registration`);
       }
-      const registeredHostInfo: ChildToolHostInfo = hostApiServer
-        ? { ...hostInfo, apiServer: hostApiServer }
-        : hostInfo;
+      const registeredHostInfo: ChildToolHostInfo = {
+        ...hostInfo,
+        ...(hostApiServer ? { apiServer: hostApiServer } : {}),
+      };
       session.hostInfo = registeredHostInfo;
       const registered = await window['childToolSession']?.register?.({
         toolId: config.id,
@@ -829,7 +830,9 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   private requiresSelectedApiServer(config: ChildToolConfig): boolean {
-    return config.id === 'aily-chat' || config.id === 'aily-chat-react';
+    return config.runtime?.apiServer === 'required'
+      || config.id === 'aily-chat'
+      || config.id === 'aily-chat-react';
   }
 
   private normalizeApiServer(value: unknown): string {

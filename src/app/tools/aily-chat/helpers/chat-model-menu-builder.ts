@@ -22,6 +22,9 @@ interface ModelMenuPresetEntry {
   readonly item: IMenuItem;
 }
 
+const CORE_PRODUCT_PRESET_ORDER = ['auto', 'auto-max', 'auto-fast'] as const;
+const CORE_PRODUCT_PRESET_ID_SET = new Set<string>(CORE_PRODUCT_PRESET_ORDER);
+
 type NavigationConfigurationMenuAction = LanguageModelConfigurationAction;
 
 type NavigationConfigurationActionGroup = Omit<LanguageModelConfigurationActionGroup, 'actions'> & {
@@ -494,7 +497,7 @@ class ChatModelMenuBuilder {
   }
 
   private createPinAction(modelSelectionId: string, isPinned: boolean): Array<{ icon: string; action: string; title: string }> {
-    if (!modelSelectionId || modelSelectionId === this.deps.ailyChatConfigService.getDefaultModelPresetId()) {
+    if (!modelSelectionId || CORE_PRODUCT_PRESET_ID_SET.has(modelSelectionId)) {
       return [];
     }
 
@@ -593,6 +596,11 @@ class ChatModelMenuBuilder {
 
   private getPromotedPresetIds(defaultPresetId: string, pinnedModelIdSet: ReadonlySet<string>): Set<string> {
     const promotedPresetIds = new Set<string>();
+    for (const presetId of CORE_PRODUCT_PRESET_ORDER) {
+      if (presetId !== defaultPresetId) {
+        promotedPresetIds.add(presetId);
+      }
+    }
     const currentPresetId = typeof this.deps.currentModel?.presetId === 'string'
       ? this.deps.currentModel.presetId.trim()
       : '';
@@ -614,7 +622,9 @@ class ChatModelMenuBuilder {
     return [...new Set(this.deps.pinnedModelIds
       .filter((modelId): modelId is string => typeof modelId === 'string')
       .map((modelId) => modelId.trim())
-      .filter((modelId) => modelId.length > 0 && modelId !== defaultPresetId))];
+      .filter((modelId) => modelId.length > 0
+        && modelId !== defaultPresetId
+        && !CORE_PRODUCT_PRESET_ID_SET.has(modelId)))];
   }
 
   private buildPinnedEntries(
@@ -775,6 +785,19 @@ class ChatModelMenuBuilder {
 
   private sortModelMenuPresetEntries(entries: readonly ModelMenuPresetEntry[]): ModelMenuPresetEntry[] {
     return [...entries].sort((left, right) => {
+      const leftProductIndex = CORE_PRODUCT_PRESET_ORDER.indexOf(
+        left.presetId as typeof CORE_PRODUCT_PRESET_ORDER[number],
+      );
+      const rightProductIndex = CORE_PRODUCT_PRESET_ORDER.indexOf(
+        right.presetId as typeof CORE_PRODUCT_PRESET_ORDER[number],
+      );
+      if (leftProductIndex !== rightProductIndex) {
+        if (leftProductIndex >= 0 && rightProductIndex >= 0) {
+          return leftProductIndex - rightProductIndex;
+        }
+        return leftProductIndex >= 0 ? -1 : 1;
+      }
+
       if (left.enabled !== right.enabled) {
         return left.enabled ? -1 : 1;
       }

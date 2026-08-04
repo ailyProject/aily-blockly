@@ -14,8 +14,13 @@ import { LogService } from './log.service';
 import { getChildToolConfig } from '../configs/tool.config';
 import { ConfigService } from './config.service';
 import { BoardSelectorDialogComponent } from '../main-window/components/board-selector-dialog/board-selector-dialog.component';
-
-const AILY_CHAT_TOOL_IDS = new Set(['aily-chat', 'aily-chat-react']);
+import {
+  findPreferredAilyChatTool,
+  LEGACY_AILY_CHAT_MOUNT_DELAY_MS,
+  resolveAilyChatExternalInputOptions,
+  resolveAilyChatMountDelay,
+  resolvePreferredAilyChatTool,
+} from './aily-chat-tool-routing';
 
 @Injectable({
   providedIn: 'root',
@@ -45,6 +50,7 @@ export class UiService {
   isMainWindow = false;
 
   private modalService: NzModalService | null = null;
+  private legacyAilyChatReadyAt = 0;
 
 
   constructor(
@@ -232,8 +238,6 @@ export class UiService {
     switch (name) {
       case 'code-viewer':
       case 'serial-monitor':
-      case 'ffs-manager':
-      case 'model-store':
         return `/${name}`;
       default:
         return null;
@@ -310,37 +314,64 @@ export class UiService {
    * @param options 发送选项，如 { autoSend: true, cover: true }
    */
   openAndSendToChat(text: string, options?: Record<string, any>): void {
-    const targetToolId = this.resolveMostRecentlyUsedAilyChatTool() || 'aily-chat';
-    this.openTool(targetToolId);
-    console.info('[AilyChat][ExternalInputDelivery]', {
-      phase: 'deliver',
-      target: targetToolId,
-      textLength: typeof text === 'string' ? text.length : 0,
-      autoSend: options?.['autoSend'] === true,
-    });
-    if (targetToolId === 'aily-chat') {
-      this.chatService.sendTextToChat(text, options);
+    const targetToolId = this.openPreferredAilyChat();
+    const deliver = () => {
+      const deliveryOptions = resolveAilyChatExternalInputOptions(
+        targetToolId,
+        options,
+        this.chatService.currentSessionId,
+      );
+      console.info('[AilyChat][ExternalInputDelivery]', {
+        phase: 'deliver',
+        target: targetToolId,
+        textLength: typeof text === 'string' ? text.length : 0,
+        autoSend: deliveryOptions?.['autoSend'] === true,
+      });
+      if (targetToolId === 'aily-chat') {
+        this.chatService.sendTextToChat(text, deliveryOptions);
+        return;
+      }
+
+      this.sendToolSignal(`${targetToolId}:external-input`, {
+        targetToolId,
+        text,
+        options: deliveryOptions || {},
+      });
+    };
+
+    const mountDelay = resolveAilyChatMountDelay(
+      targetToolId,
+      this.legacyAilyChatReadyAt,
+      Date.now(),
+    );
+    if (mountDelay > 0) {
+      setTimeout(deliver, mountDelay);
       return;
     }
 
-    this.sendToolSignal(`${targetToolId}:external-input`, {
-      targetToolId,
-      text,
-      options: options || {},
-    });
+    deliver();
   }
 
-  private resolveMostRecentlyUsedAilyChatTool(): string | null {
-    if (this.topTool && AILY_CHAT_TOOL_IDS.has(this.topTool)) {
-      return this.topTool;
+  /**
+   * Open the Aily Chat surface that is currently highest in the embedded tool
+   * stack. When neither chat is open, retain the legacy chat as the fallback.
+   */
+  openPreferredAilyChat(): string {
+    const targetToolId = resolvePreferredAilyChatTool(this.openToolList);
+    if (targetToolId === 'aily-chat' && !this.openToolList.includes(targetToolId)) {
+      this.legacyAilyChatReadyAt = Date.now() + LEGACY_AILY_CHAT_MOUNT_DELAY_MS;
     }
-    for (let index = this.openToolList.length - 1; index >= 0; index -= 1) {
-      const toolId = this.openToolList[index];
-      if (AILY_CHAT_TOOL_IDS.has(toolId)) {
-        return toolId;
-      }
-    }
-    return null;
+    this.openTool(targetToolId);
+    return targetToolId;
+  }
+
+  /** The highest currently open Aily Chat, or null when neither chat is open. */
+  getActiveAilyChatToolId(): string | null {
+    return findPreferredAilyChatTool(this.openToolList);
+  }
+
+  isActiveAilyChatTool(toolId: string): boolean {
+    return this.getActiveAilyChatToolId() === toolId;
   }
 
   openCodeEditorFile(

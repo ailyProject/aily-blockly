@@ -916,10 +916,17 @@ export class ChatService {
     options?: {
       readonly sessionId?: unknown;
       readonly applyToCurrentSession?: boolean;
+      readonly applyToNewSessionDraft?: boolean;
       readonly fallbackProviderOptions?: ChatServiceSessionProviderOptions | null;
     },
   ): HostSessionProviderOptions {
-    let nextProviderOptions = this.getNewSessionProviderOptions(options?.fallbackProviderOptions);
+    const shouldApplyToNewSessionDraft = options?.applyToNewSessionDraft !== false;
+    let nextProviderOptions = shouldApplyToNewSessionDraft
+      ? this.getNewSessionProviderOptions(options?.fallbackProviderOptions)
+      : normalizeHostSessionProviderOptions(
+          this.normalizeProviderOptionsInput(options?.fallbackProviderOptions),
+          this.getCurrentSessionProviderOptions(),
+        );
     let nextNewSelections = { ...this._newSessionProviderSelections };
     let nextCurrentSelections = { ...this._currentSessionProviderSelections };
     let hadProviderOptionsChange = false;
@@ -957,7 +964,7 @@ export class ChatService {
           };
           hadProviderOptionsChange = true;
         }
-        if (nextNewSelections[optionId] !== selectionValue) {
+        if (shouldApplyToNewSessionDraft && nextNewSelections[optionId] !== selectionValue) {
           nextNewSelections = {
             ...nextNewSelections,
             [optionId]: selectionValue,
@@ -987,7 +994,7 @@ export class ChatService {
           };
           hadProviderOptionsChange = true;
         }
-        if (nextNewSelections[optionId] !== selectionValue) {
+        if (shouldApplyToNewSessionDraft && nextNewSelections[optionId] !== selectionValue) {
           nextNewSelections = {
             ...nextNewSelections,
             [optionId]: selectionValue,
@@ -999,6 +1006,42 @@ export class ChatService {
             ...nextCurrentSelections,
             [optionId]: selectionValue,
           };
+        }
+        continue;
+      }
+
+      if (optionId === 'permissionLevel') {
+        const permissionLevel = normalizeChatSessionPermissionLevel(update.value);
+        if (permissionLevel !== nextProviderOptions.permissionLevel) {
+          nextProviderOptions = permissionLevel
+            ? { ...nextProviderOptions, permissionLevel }
+            : {
+                folderPath: nextProviderOptions.folderPath,
+                permissionMode: nextProviderOptions.permissionMode,
+                permissionProfile: nextProviderOptions.permissionProfile,
+                approvalsReviewer: nextProviderOptions.approvalsReviewer,
+                approvalPolicy: nextProviderOptions.approvalPolicy,
+              };
+          hadProviderOptionsChange = true;
+        }
+        if (permissionLevel) {
+          if (shouldApplyToNewSessionDraft && nextNewSelections[optionId] !== permissionLevel) {
+            nextNewSelections = { ...nextNewSelections, [optionId]: permissionLevel };
+            hadNewSelectionChange = true;
+          }
+          if (shouldApplyToCurrentSession && nextCurrentSelections[optionId] !== permissionLevel) {
+            nextCurrentSelections = { ...nextCurrentSelections, [optionId]: permissionLevel };
+          }
+        } else {
+          if (shouldApplyToNewSessionDraft && Object.prototype.hasOwnProperty.call(nextNewSelections, optionId)) {
+            nextNewSelections = { ...nextNewSelections };
+            delete nextNewSelections[optionId];
+            hadNewSelectionChange = true;
+          }
+          if (shouldApplyToCurrentSession && Object.prototype.hasOwnProperty.call(nextCurrentSelections, optionId)) {
+            nextCurrentSelections = { ...nextCurrentSelections };
+            delete nextCurrentSelections[optionId];
+          }
         }
         continue;
       }
@@ -1017,7 +1060,7 @@ export class ChatService {
           };
           hadProviderOptionsChange = true;
         }
-        if (approvalsReviewer && nextNewSelections[optionId] !== selectionValue) {
+        if (approvalsReviewer && shouldApplyToNewSessionDraft && nextNewSelections[optionId] !== selectionValue) {
           nextNewSelections = {
             ...nextNewSelections,
             [optionId]: selectionValue,
@@ -1047,7 +1090,7 @@ export class ChatService {
           };
           hadProviderOptionsChange = true;
         }
-        if (approvalPolicy && nextNewSelections[optionId] !== selectionValue) {
+        if (approvalPolicy && shouldApplyToNewSessionDraft && nextNewSelections[optionId] !== selectionValue) {
           nextNewSelections = {
             ...nextNewSelections,
             [optionId]: selectionValue,
@@ -1073,7 +1116,7 @@ export class ChatService {
           hadProviderOptionsChange = true;
         }
 
-        if (nextNewSelections[AILY_AGENT_REPOSITORY_OPTION_ID] !== folderPath) {
+        if (shouldApplyToNewSessionDraft && nextNewSelections[AILY_AGENT_REPOSITORY_OPTION_ID] !== folderPath) {
           nextNewSelections = {
             ...nextNewSelections,
             [AILY_AGENT_REPOSITORY_OPTION_ID]: folderPath,
@@ -1095,7 +1138,7 @@ export class ChatService {
       }
 
       const selectionValue = update.value.trim();
-      if (nextNewSelections[optionId] !== selectionValue) {
+      if (shouldApplyToNewSessionDraft && nextNewSelections[optionId] !== selectionValue) {
         nextNewSelections = {
           ...nextNewSelections,
           [optionId]: selectionValue,
@@ -1111,7 +1154,7 @@ export class ChatService {
       }
     }
 
-    if (hadProviderOptionsChange || hadNewSelectionChange) {
+    if (shouldApplyToNewSessionDraft && (hadProviderOptionsChange || hadNewSelectionChange)) {
       this._newSessionFolderPath = nextProviderOptions.folderPath;
       this._newSessionPermissionMode = nextProviderOptions.permissionMode;
       this._newSessionPermissionProfile = nextProviderOptions.permissionProfile;
@@ -1126,7 +1169,7 @@ export class ChatService {
       if (hadProviderOptionsChange || hadCurrentSelectionChange) {
         this._currentSessionProviderSelections = nextCurrentSelections;
         if (hadProviderOptionsChange) {
-          this.applySessionProviderOptions(nextProviderOptions);
+          this.applySessionProviderOptions(nextProviderOptions, { replace: true });
         } else {
           this.notifySessionInputStateChanged();
         }
@@ -1138,6 +1181,7 @@ export class ChatService {
 
   applySessionProviderOptions(
     providerOptions?: ChatServiceSessionProviderOptions | null,
+    options?: { readonly replace?: boolean },
   ): HostSessionProviderOptions {
     const folderPath = typeof providerOptions?.folderPath === 'string'
       ? providerOptions.folderPath.trim()
@@ -1152,13 +1196,13 @@ export class ChatService {
     );
     const permissionLevel = normalizeChatSessionPermissionLevel(
       providerOptions?.permissionLevel,
-    ) ?? this.currentSessionPermissionLevel;
+    ) ?? (options?.replace === true ? undefined : this.currentSessionPermissionLevel);
     const approvalsReviewer = normalizeChatSessionApprovalsReviewer(providerOptions?.approvalsReviewer)
-      ?? this.currentSessionApprovalsReviewer
+      ?? (options?.replace === true ? undefined : this.currentSessionApprovalsReviewer)
       ?? this.ailyChatConfigService.getLexApprovalsReviewer?.();
     const approvalPolicy = normalizeChatSessionApprovalPolicy(providerOptions?.approvalPolicy)
       ?? (permissionMode === 'bypassPermissions' ? 'never' : undefined)
-      ?? this.currentSessionApprovalPolicy
+      ?? (options?.replace === true ? undefined : this.currentSessionApprovalPolicy)
       ?? this.ailyChatConfigService.getLexApprovalPolicy?.();
     const hadProviderOptionsChange = this.currentSessionPath !== folderPath
       || this.currentSessionPermissionMode !== (permissionMode === 'bypassPermissions' ? DEFAULT_CHAT_SESSION_PERMISSION_MODE : permissionMode)
@@ -1837,6 +1881,7 @@ export class ChatService {
     }
 
     this.currentModel = this.applyPersistedLanguageModelConfiguration(this.currentModel);
+    this.migratePersistedModelPresetReferences();
     console.info(
       `[AilyChat][ModelState] loadChatModel resolved currentModel=${this.currentModel?.model ?? ''}/${this.currentModel?.presetId ?? ''}/${this.currentModel?.name ?? ''}`,
     );
@@ -1904,11 +1949,11 @@ export class ChatService {
 
     return [...new Set(rawRecentPresetIds
       .filter((presetId): presetId is string => typeof presetId === 'string')
-      .map(presetId => presetId.trim())
+      .map(presetId => this.ailyChatConfigService.normalizeUserModelPresetId(presetId) ?? '')
       .filter(presetId => presetId.length > 0 && presetId !== this.ailyChatConfigService.getDefaultModelPresetId())
       .filter((presetId) => {
         const preset = this.ailyChatConfigService.getModelPresetById(presetId);
-        return !preset || preset.enabled;
+        return !preset || !!this.ailyChatConfigService.resolveSelectablePresetModel(presetId);
       }))]
       .slice(0, ChatService.maxRecentModelPresetIds);
   }
@@ -1922,12 +1967,26 @@ export class ChatService {
     const defaultPresetId = this.ailyChatConfigService.getDefaultModelPresetId();
     return [...new Set(rawPinnedModelIds
       .filter((modelId): modelId is string => typeof modelId === 'string')
-      .map(modelId => modelId.trim())
+      .map(modelId => this.ailyChatConfigService.normalizeUserModelPresetId(modelId) ?? '')
       .filter(modelId => modelId.length > 0 && modelId !== defaultPresetId)
       .filter((modelId) => {
         const preset = this.ailyChatConfigService.getModelPresetById(modelId);
-        return !preset || preset.enabled;
+        return !preset || !!this.ailyChatConfigService.resolveSelectablePresetModel(modelId);
       }))];
+  }
+
+  private migratePersistedModelPresetReferences(): void {
+    const configData = AilyHost.get().config.data;
+    if (!configData) {
+      return;
+    }
+
+    if (Array.isArray(configData.aiChatRecentModelPresetIds)) {
+      configData.aiChatRecentModelPresetIds = this.getRecentModelPresetIds();
+    }
+    if (Array.isArray(configData.aiChatPinnedModelIds)) {
+      configData.aiChatPinnedModelIds = this.getPinnedModelIds();
+    }
   }
 
   pinModelId(modelId: string): void {

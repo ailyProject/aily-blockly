@@ -1578,13 +1578,21 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
 
     const sessionId = this.resolvePermissionTargetSessionId();
     if (action !== 'permission-full-access') {
-      this.engine.applyComposerPermissionPreset(action, sessionId || undefined);
+      const applied = this.engine.applyComposerPermissionPreset(action, sessionId || undefined);
+      if (!applied) {
+        this.message.error('无法更新当前会话权限，请重新打开会话后再试');
+        return;
+      }
       this.notifyPermissionPresetApplied(action);
       return;
     }
 
     if (sessionId && this.rememberedFullAccessSessions.has(sessionId)) {
-      this.engine.applyComposerPermissionPreset(action, sessionId);
+      const applied = this.engine.applyComposerPermissionPreset(action, sessionId);
+      if (!applied) {
+        this.message.error('无法更新当前会话权限，请重新打开会话后再试');
+        return;
+      }
       this.notifyPermissionPresetApplied(action);
       return;
     }
@@ -1598,7 +1606,11 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
       this.rememberedFullAccessSessions.add(sessionId);
     }
 
-    this.engine.applyComposerPermissionPreset(action, sessionId);
+    const applied = this.engine.applyComposerPermissionPreset(action, sessionId);
+    if (!applied) {
+      this.message.error('无法更新当前会话权限，请重新打开会话后再试');
+      return;
+    }
     this.notifyPermissionPresetApplied(action, { remembered: decision.rememberForSession });
   }
 
@@ -1627,6 +1639,13 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   }
 
   private resolvePermissionTargetSessionId(): string {
+    // VS Code exposes an undefined session resource for a blank chat editor.
+    // Keep Aily's provisional model id behind that provider boundary until the
+    // first request materializes the session in history.
+    if (this.chatService.hasBlankSessionShell) {
+      return '';
+    }
+
     const engineSessionId = typeof this.engine.sessionId === 'string' ? this.engine.sessionId.trim() : '';
     if (engineSessionId) {
       return engineSessionId;

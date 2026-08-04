@@ -14,7 +14,6 @@ test.describe('新版 Aily Chat 的 Blockly AI 操作提示', () => {
     await openBlocklyProject(win, PROJECT_PATH!);
 
     await expect(win.locator('app-blockly-editor .blocklyBox')).toBeVisible({ timeout: 30_000 });
-
     const v2ChatButton = win.locator('app-header .toolbox .btn', {
       has: win.locator('.more', { hasText: 'v2' }),
     });
@@ -39,10 +38,19 @@ test.describe('新版 Aily Chat 的 Blockly AI 操作提示', () => {
       hasText: 'AI正在操作',
     });
     await expect(operationNotice).toBeVisible({ timeout: 15_000 });
+    await expect(operationNotice.locator('.btn.red')).toBeVisible();
 
     await operationNotice.locator('.btn.red').click();
 
     await expect(win.locator('.blockly-spin.show')).toHaveCount(0, { timeout: 30_000 });
     await expect(operationNotice).toHaveCount(0, { timeout: 30_000 });
+    await expect(chat.locator('button.stop-action')).toHaveCount(0, { timeout: 30_000 });
+
+    await composer.fill('只回复“收到”，不要调用任何工具。');
+    await chat.locator('button.send-action').click();
+    await expect(chat.locator('button.stop-action')).toBeVisible({ timeout: 30_000 });
+    await expect(win.locator('.blockly-spin.show')).toHaveCount(0);
+    await expect(operationNotice).toHaveCount(0);
+    await expect(chat.locator('button.stop-action')).toHaveCount(0, { timeout: 60_000 });
   });
 });

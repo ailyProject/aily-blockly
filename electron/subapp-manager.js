@@ -92,9 +92,13 @@ function validateIndex(rawIndex) {
   if (!isObject(rawIndex)) {
     throw new Error('Subapp index must be a JSON object');
   }
+  if (rawIndex.dev !== undefined && typeof rawIndex.dev !== 'boolean') {
+    throw new Error('Subapp index dev flag must be a boolean');
+  }
 
-  const index = {};
+  const index = rawIndex.dev === true ? { dev: true } : {};
   for (const [indexId, rawEntry] of Object.entries(rawIndex)) {
+    if (indexId === 'dev') continue;
     if (!isObject(rawEntry)) throw new Error(`Invalid subapp entry: ${indexId}`);
     const id = validateId(rawEntry.id || indexId);
     if (id !== indexId) throw new Error(`Subapp index key does not match id: ${indexId}`);
@@ -535,6 +539,11 @@ function readInstalledState(rootDir, entry) {
     const declaredRuntime = isObject(packageJson?.ailySubapp?.runtime)
       ? packageJson.ailySubapp.runtime
       : {};
+    const apiServer = declaredRuntime.apiServer === 'required'
+      ? 'required'
+      : declaredRuntime.apiServer === 'optional'
+        ? 'optional'
+        : null;
     const startupTimeoutMs = positiveInteger(
       declaredRuntime.startupTimeoutMs,
       STARTUP_TIMEOUTS[toolId] || 0,
@@ -543,6 +552,7 @@ function readInstalledState(rootDir, entry) {
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
     const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);
     const runtime = {
+      ...(apiServer ? { apiServer } : {}),
       ...(processMessagePort ? { processMessagePort } : {}),
       ...(resourceLifecycle ? { resourceLifecycle } : {}),
     };
@@ -625,7 +635,9 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
     fetchedAt: meta.fetchedAt || new Date().toISOString(),
     warning: meta.warning || null,
     installRoot: rootDir,
-    apps: Object.values(index)
+    apps: Object.entries(index)
+      .filter(([id]) => id !== 'dev')
+      .map(([, entry]) => entry)
       .filter((entry) => entry.app.enabled !== false)
       .map((entry) => {
         const installedState = readInstalledState(rootDir, entry);
@@ -984,6 +996,13 @@ function readIndexCache(rootDir) {
   return fs.existsSync(cachePath) ? validateIndex(readJson(cachePath)) : null;
 }
 
+function readDevelopmentIndexCache(rootDir) {
+  const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
+  if (!fs.existsSync(cachePath)) return null;
+  const rawIndex = readJson(cachePath);
+  return rawIndex?.dev === true ? validateIndex(rawIndex) : null;
+}
+
 function snapshotFile(filePath) {
   return fs.existsSync(filePath)
     ? { exists: true, contents: fs.readFileSync(filePath) }
@@ -1253,6 +1272,21 @@ function createSubappManager(options = {}) {
   let currentMeta = null;
 
   async function loadIndex(forceRefresh = false) {
+    const localIndex = readDevelopmentIndexCache(rootDir);
+    if (localIndex?.dev === true) {
+      currentIndex = localIndex;
+      currentMeta = {
+        indexUrl,
+        source: 'cache',
+        fetchedAt: new Date().toISOString(),
+        warning: null,
+      };
+      return { index: localIndex, meta: currentMeta };
+    }
+    if (currentIndex?.dev === true) {
+      currentIndex = null;
+      currentMeta = null;
+    }
     if (currentIndex && !forceRefresh) return { index: currentIndex, meta: currentMeta };
     try {
       const index = await fetchRemoteIndex(indexUrl, options.fetchImpl);

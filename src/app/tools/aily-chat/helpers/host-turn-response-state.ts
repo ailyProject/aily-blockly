@@ -3404,7 +3404,7 @@ function buildCanonicalResponseDialogItemForEntry(
     return null;
   }
 
-  const assistantProjection = buildTurnResponseAssistantMessageProjection(entry.turnResponse, entry.assistant ?? undefined);
+  const assistantProjection = buildTurnResponseAssistantMessageProjection(entry.turnResponse);
   const assistantTurnContext = buildDialogTurnContext({
     turnResponse: entry.turnResponse,
     requestDisabled,
@@ -3646,6 +3646,9 @@ function buildCanonicalDialogResponseSignature(
   const request = turn?.request;
   const parts = response?.parts ?? [];
   const lastPart = parts.length > 0 ? parts[parts.length - 1] : null;
+  const assistantProjection = turn
+    ? buildTurnResponseAssistantMessageProjection(turn)
+    : null;
 
   return [
     entry.turnId,
@@ -3661,10 +3664,8 @@ function buildCanonicalDialogResponseSignature(
     parts.length,
     getTurnResponsePartProjectionSignature(lastPart),
     response?.progressMessages?.length ?? 0,
-    entry.assistant?.content ?? '',
-    entry.assistant?.state ?? '',
-    entry.assistant?.modelName ?? '',
-    entry.assistant?.modelBillingLabel ?? '',
+    assistantProjection?.modelName ?? '',
+    assistantProjection?.modelBillingLabel ?? '',
     entry.runtimeState?.responseSidecar?.vote ?? '',
   ].join('\u0000');
 }
@@ -3877,7 +3878,7 @@ function buildTurnEntryMessageProjections(
   if (shouldShowAssistant) {
     if (entry.turnResponse) {
       messages.push({
-        ...buildTurnResponseAssistantMessageProjection(entry.turnResponse, entry.assistant ?? undefined),
+        ...buildTurnResponseAssistantMessageProjection(entry.turnResponse),
         responseVote: entry.runtimeState?.responseSidecar?.vote,
       });
     } else {

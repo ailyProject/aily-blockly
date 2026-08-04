@@ -6,7 +6,6 @@ import { _ProjectService } from '../editors/blockly-editor/services/project.serv
 import { BlocklyService } from '../editors/blockly-editor/services/blockly.service';
 import { ConfigService } from './config.service';
 import { ElectronService } from './electron.service';
-import { NoticeService } from './notice.service';
 import { ProjectService } from './project.service';
 import { BuilderService } from './builder.service';
 import { ThemeService } from './theme.service';
@@ -66,7 +65,6 @@ export class BlocklyLiveOperationBridgeService {
     private readonly projectSceneProposalProvider: ProjectSceneProposalProviderService,
     private readonly serialService: SerialService,
     private readonly uploaderService: UploaderService,
-    private readonly noticeService: NoticeService,
     private readonly ngZone: NgZone,
   ) {}
 
@@ -247,7 +245,8 @@ export class BlocklyLiveOperationBridgeService {
 
   /**
    * 与旧版 Angular `aiWriting = true`（BLOCK_TOOLS 执行中）对齐：
-   * 仅在实际改积木的 live 操作期间点亮遮罩与「AI正在操作」通知。
+   * 仅在实际改积木的 live 操作期间点亮遮罩。带终止按钮的
+   * 「AI正在操作」通知由发起本次会话的 Aily Chat surface 负责。
    */
   private async runBlockWritingOperation<T>(operation: () => Promise<T>): Promise<T> {
     this.beginBlockWriting();
@@ -264,13 +263,6 @@ export class BlocklyLiveOperationBridgeService {
       return;
     }
     this.blocklyService.setAiWritingActive('live-blockly-operation', true);
-    this.noticeService.update({
-      title: 'AI正在操作',
-      state: 'doing',
-      showProgress: false,
-      setTimeout: 0,
-      sendToLog: false,
-    });
   }
 
   private endBlockWriting(): void {
@@ -279,9 +271,6 @@ export class BlocklyLiveOperationBridgeService {
       return;
     }
     this.blocklyService.setAiWritingActive('live-blockly-operation', false);
-    if (!this.blocklyService.aiWriting && !this.blocklyService.aiWaitWriting) {
-      this.noticeService.clear();
-    }
   }
 
   private async executeAppInfo(): Promise<Record<string, any>> {

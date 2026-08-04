@@ -1794,6 +1794,17 @@ function withResponsePatch(turn, timestamp, patch) {
   };
 }
 
+function mergeResponseModelFromEvent(turn, event) {
+  const responseModel = {
+    ...(turn.responseModel && typeof turn.responseModel === 'object' ? turn.responseModel : {}),
+    ...(event.modelName ? { modelName: event.modelName } : {}),
+    ...(event.modelBillingLabel ? { modelBillingLabel: event.modelBillingLabel } : {}),
+    ...(event.modelRouting ? { modelRouting: clonePayload(event.modelRouting) } : {}),
+    ...(event.quotaSnapshot ? { quotaSnapshot: clonePayload(event.quotaSnapshot) } : {}),
+  };
+  return Object.keys(responseModel).length > 0 ? responseModel : undefined;
+}
+
 function normalizeResponsePartsForStatus(parts, status) {
   if (status !== 'completed' || !Array.isArray(parts) || parts.length === 0) {
     return parts;
@@ -1989,10 +2000,12 @@ function materializeRenderEventTurn(turn, state, event) {
       {
         const planResult = materializePlanTurnParts(parts, turn);
         parts = planResult.parts.map(part => completeOpenResponsePart(part, timestamp));
+        const responseModel = mergeResponseModelFromEvent(turn, event);
         return withResponsePatch(turn, timestamp, {
           parts,
           status: 'completed',
           ...(planResult.resultText !== undefined ? { resultText: planResult.resultText } : {}),
+          ...(responseModel ? { responseModel } : {}),
         });
       }
     case 'turn_end':
@@ -2000,6 +2013,7 @@ function materializeRenderEventTurn(turn, state, event) {
       {
         const planResult = materializePlanTurnParts(parts, turn);
         parts = planResult.parts.map(part => completeOpenResponsePart(part, timestamp));
+        const responseModel = mergeResponseModelFromEvent(turn, event);
         responsePatch = {
           parts,
           status: 'completed',
@@ -2007,13 +2021,7 @@ function materializeRenderEventTurn(turn, state, event) {
           usage: event.usage,
           continuation: event.continuation,
           terminationReason: event.terminationReason,
-          responseModel: {
-            ...(turn.responseModel && typeof turn.responseModel === 'object' ? turn.responseModel : {}),
-            ...(event.modelName ? { modelName: event.modelName } : {}),
-            ...(event.modelBillingLabel ? { modelBillingLabel: event.modelBillingLabel } : {}),
-            ...(event.modelRouting ? { modelRouting: clonePayload(event.modelRouting) } : {}),
-            ...(event.quotaSnapshot ? { quotaSnapshot: clonePayload(event.quotaSnapshot) } : {}),
-          },
+          ...(responseModel ? { responseModel } : {}),
         };
         return withResponsePatch(turn, timestamp, responsePatch);
       }

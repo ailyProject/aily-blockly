@@ -132,6 +132,52 @@ test('preserves extensible catalog and app metadata', () => {
   assert.deepEqual(validated.futureCatalogField, { channel: 'preview' });
 });
 
+test('accepts the development index flag without treating it as a catalog entry', () => {
+  const validated = validateIndex({ dev: true, ...fixtureIndex() });
+  assert.equal(validated.dev, true);
+  assert.deepEqual(Object.keys(validated), ['dev', 'aily-chat']);
+  assert.throws(
+    () => validateIndex({ dev: 'true', ...fixtureIndex() }),
+    /dev flag must be a boolean/,
+  );
+});
+
+test('does not request or overwrite the remote index while the cached dev flag is enabled', async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-dev-index-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  fs.mkdirSync(rootDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(rootDir, 'subapp-index.json'),
+    `${JSON.stringify({ dev: true, ...fixtureIndex() }, null, 2)}\n`,
+  );
+  let fetchCount = 0;
+  const manager = createSubappManager({
+    rootDir,
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return { ok: true, text: async () => JSON.stringify(fixtureIndex('0.2.0')) };
+    },
+  });
+
+  const first = await manager.list({ locale: 'en', refresh: true });
+  const second = await manager.list({ locale: 'en', refresh: true });
+
+  assert.equal(fetchCount, 0);
+  assert.equal(first.source, 'cache');
+  assert.deepEqual(first.apps.map((app) => app.id), ['aily-chat']);
+  assert.deepEqual(second.apps.map((app) => app.id), ['aily-chat']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(rootDir, 'subapp-index.json'), 'utf8')).dev, true);
+
+  fs.writeFileSync(
+    path.join(rootDir, 'subapp-index.json'),
+    `${JSON.stringify(fixtureIndex(), null, 2)}\n`,
+  );
+  const refreshed = await manager.list({ locale: 'en', refresh: true });
+  assert.equal(fetchCount, 1);
+  assert.equal(refreshed.source, 'network');
+  assert.equal(refreshed.apps[0].availableVersion, '0.2.0');
+});
+
 test('omits disabled catalog entries from the subapp list', async (t) => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-disabled-'));
   const installRoot = path.join(fixtureRoot, 'npm-global', 'app');
@@ -265,6 +311,7 @@ test('treats an npm-linked source package as an installed subapp', async (t) => 
         },
       },
       runtime: {
+        apiServer: 'required',
         startupTimeoutMs: 20000,
         processMessagePort: {
           transport: 'node-ipc-v1',
@@ -302,6 +349,7 @@ test('treats an npm-linked source package as an installed subapp', async (t) => 
   assert.equal(state.apps[0].config.packagePath, linkedDir);
   assert.equal(state.apps[0].config.startupTimeoutMs, 20000);
   assert.deepEqual(state.apps[0].config.runtime, {
+    apiServer: 'required',
     processMessagePort: {
       transport: 'node-ipc-v1',
       maxMessageBytes: 1048576,

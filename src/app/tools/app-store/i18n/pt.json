@@ -41,7 +41,6 @@
         "SERIAL_DESC": "Ferramenta de monitor serial",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
-        "FFS_MANAGER_DESC": "Ferramenta de gerenciamento de partições do sistema de arquivos ESP32",
         "AI_DESC": "Assistente de IA",
         "MODEL_STORE_DESC": "Loja de modelos de IA",
         "CLOUD_SPACE_DESC": "Espaço de armazenamento em nuvem",
