@@ -202,10 +202,10 @@ async function main() {
                 );
             }
         } else {
-            logger.warn(
-                '当前 aily-builder 不支持仿真 Artifact 输出；'
-                + '普通编译继续执行，仿真前请升级 aily-builder。'
-            );
+            // logger.warn(
+            //     '当前 aily-builder 不支持仿真 Artifact 输出；'
+            //     + '普通编译继续执行，仿真前请升级 aily-builder。'
+            // );
         }
 
         if (isDevelopmentEnvironment() || process.env.AILY_E2E === '1') {

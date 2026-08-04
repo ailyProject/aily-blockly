@@ -1,6 +1,6 @@
 import type { TurnResponseTurn } from 'aily-lex/browser';
 
-import type { ChatPart } from '../../core/chat-parts';
+import type { ChatPart, ConfirmationPart, QuestionPart, ToolCallPart } from '../../core/chat-parts';
 
 export interface ProgressMessageDisplayPart {
   type: 'progress';
@@ -10,10 +10,29 @@ export interface ProgressMessageDisplayPart {
   settled: boolean;
 }
 
-export type RenderableChatPart = ChatPart | ProgressMessageDisplayPart;
+export interface InteractionDecisionDisplayPart {
+  type: 'interaction_decision';
+  id: string;
+  interactionKind: 'question' | 'confirmation' | 'approval';
+  source: QuestionPart | ConfirmationPart | ToolCallPart;
+}
+
+export type RenderableChatPart = ChatPart | ProgressMessageDisplayPart | InteractionDecisionDisplayPart;
 
 export function isProgressMessageDisplayPart(part: RenderableChatPart | null | undefined): part is ProgressMessageDisplayPart {
   return !!part && part.type === 'progress';
+}
+
+export function isInteractionDecisionDisplayPart(
+  part: RenderableChatPart | null | undefined,
+): part is InteractionDecisionDisplayPart {
+  return !!part && part.type === 'interaction_decision';
+}
+
+export function isSyntheticChatDisplayPart(
+  part: RenderableChatPart | null | undefined,
+): part is ProgressMessageDisplayPart | InteractionDecisionDisplayPart {
+  return isProgressMessageDisplayPart(part) || isInteractionDecisionDisplayPart(part);
 }
 
 export function mkProgressMessageDisplayPart(

@@ -161,6 +161,8 @@ function mergeInteractiveDisplayState(
       resolved: nextPart.resolved || existingPart.resolved,
       result: nextPart.result ?? existingPart.result,
       scope: nextPart.scope ?? existingPart.scope,
+      selectedActionId: nextPart.selectedActionId ?? existingPart.selectedActionId,
+      selectedActionLabel: nextPart.selectedActionLabel ?? existingPart.selectedActionLabel,
     };
   }
 

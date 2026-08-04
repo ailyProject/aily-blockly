@@ -34,6 +34,55 @@
   -webkit-app-region: no-drag;
 }
 
+.subapp-version-action {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--aily-color-primary) 26%, transparent);
+  border-radius: 4px;
+  color: var(--aily-color-primary-alt);
+  background: color-mix(in srgb, var(--aily-color-primary) 7%, transparent);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  -webkit-app-region: no-drag;
+
+  &:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--aily-color-primary) 42%, transparent);
+    color: var(--aily-color-primary);
+    background: color-mix(in srgb, var(--aily-color-primary) 12%, transparent);
+  }
+
+  &.restart {
+    border-color: color-mix(in srgb, var(--aily-color-success) 30%, transparent);
+    color: var(--aily-color-success);
+    background: color-mix(in srgb, var(--aily-color-success) 7%, transparent);
+
+    &:hover:not(:disabled) {
+      border-color: color-mix(in srgb, var(--aily-color-success) 48%, transparent);
+      color: var(--aily-color-success-alt);
+      background: color-mix(in srgb, var(--aily-color-success) 12%, transparent);
+    }
+  }
+
+  &.busy,
+  &:disabled {
+    cursor: wait;
+    opacity: 0.78;
+  }
+}
+
+.subapp-version-spin {
+  animation: child-host-spin 0.8s linear infinite;
+}
+
 .child-host-header-btn {
   font-size: 13px;
   cursor: pointer;
@@ -133,6 +182,24 @@ iframe {
   border-top-color: var(--aily-primary, #21a67a);
   border-radius: 50%;
   animation: child-host-spin 0.8s linear infinite;
+}
+
+.host-overlay-action {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 13px;
+  border: 1px solid var(--aily-border-primary);
+  border-radius: 6px;
+  color: var(--aily-text-primary);
+  background: var(--aily-bg-tertiary);
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--aily-primary, #21a67a);
+    color: var(--aily-primary, #21a67a);
+  }
 }
 
 .host-loading-text {

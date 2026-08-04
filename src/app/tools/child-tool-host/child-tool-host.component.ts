@@ -1,9 +1,10 @@
 import { CommonModule } from '@angular/common';
-import { Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core';
+import { ChangeDetectorRef, Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Connection, WindowMessenger, connect } from 'penpal';
 import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
@@ -11,7 +12,11 @@ import { SubWindowComponent } from '../../components/sub-window/sub-window.compo
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { ChildToolConfig, getChildToolConfig } from '../../configs/tool.config';
 import { ChildToolHostInfo, ChildToolProcessService } from '../../services/child-tool-process.service';
-import { SubappManagerService } from '../../services/subapp-manager.service';
+import {
+  type SubappCatalogItem,
+  type SubappInstallProgress,
+  SubappManagerService,
+} from '../../services/subapp-manager.service';
 import {
   ChildAppHostRegistryService,
   type ChildAppWindowPlacement,
@@ -37,6 +42,11 @@ import { ChatSubappDockComponent } from '../aily-chat/components/subapp-activity
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
 type ChildLifecycleReason = 'close' | 'restart' | 'destroy';
+
+const CHILD_HEALTH_CHECK_INTERVAL_MS = 5_000;
+const CHILD_HEALTH_CHECK_TIMEOUT_MS = 2_500;
+const CHILD_HEALTH_FAILURE_THRESHOLD = 3;
+const CHILD_HEALTH_RECOVERY_SUCCESS_THRESHOLD = 3;
 
 interface HostProjectContext {
   workspace?: string | null;
@@ -91,6 +101,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   serverInfo: ChildToolHostInfo | null = null;
   childVersion = '';
   closing = false;
+  subappUpdateInProgress = false;
+  subappUpdateProgress = 0;
+  subappRestartInProgress = false;
+  uiHealthFailed = false;
 
   private config: ChildToolConfig | null = null;
   private initialized = false;
@@ -98,6 +112,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private penpalConnection: Connection | null = null;
   private remoteApi: any = null;
   private childReadyTimer: ReturnType<typeof setTimeout> | null = null;
+  private childHealthTimer: ReturnType<typeof setInterval> | null = null;
+  private childHealthCheckInFlight = false;
+  private childHealthFailureCount = 0;
+  private childHealthSuccessCount = 0;
+  private childHealthRecoveryAttempted = false;
+  private childToolUrl = '';
   private penpalRemoteWindow: Window | null = null;
   private penpalState: 'idle' | 'connecting' | 'connected' | 'failed' = 'idle';
   private readonly hostContextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -113,6 +133,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private subappActivitySubscription: Subscription | null = null;
   private configReloadSubscription: Subscription | null = null;
   private aiWritingStateSubscription: Subscription | null = null;
+  private subappCatalogSubscription: Subscription | null = null;
+  private subappProgressSubscription: Subscription | null = null;
+  private subappRestartRequired = false;
   private lastKnownApiServer = '';
   private standaloneWorkspace: string | null | undefined;
   private standaloneWorkspaceVersion = -1;
@@ -133,9 +156,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private processService: ChildToolProcessService,
     private projectService: ProjectService,
     private ngZone: NgZone,
+    private cdr: ChangeDetectorRef,
     private translate: TranslateService,
     private themeService: ThemeService,
     private message: NzMessageService,
+    private modal: NzModalService,
     private logService: LogService,
     private childHostRegistry: ChildAppHostRegistryService,
     private authService: AuthService,
@@ -196,12 +221,91 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return this.hostStatus === 'starting' || (this.hostStatus === 'ready' && !this.frameLoaded);
   }
 
+  get childUiUnavailableText(): string {
+    return this.translateWithFallback(this.key('UI_UNRESPONSIVE'), {
+      zh_cn: '子应用界面无响应，后台任务仍会继续运行。',
+      zh_hk: '子應用介面沒有回應，背景任務仍會繼續執行。',
+      default: 'The child interface is not responding. Background tasks will continue.'
+    });
+  }
+
+  get childUiUnavailableTitle(): string {
+    return this.translateWithFallback(this.key('UI_UNAVAILABLE'), {
+      zh_cn: '子应用界面暂时不可用',
+      zh_hk: '子應用介面暫時不可用',
+      default: 'Child interface is temporarily unavailable'
+    });
+  }
+
+  get canReloadChildUi(): boolean {
+    return !!this.childToolUrl && this.acquired;
+  }
+
+  get reloadChildUiText(): string {
+    return this.translateWithFallback(this.key('RELOAD_UI'), {
+      zh_cn: '重新加载界面',
+      zh_hk: '重新載入介面',
+      default: 'Reload interface'
+    });
+  }
+
   get isAilyChat(): boolean {
     return this.isAilyChatTool();
   }
 
+  get showSubappVersionAction(): boolean {
+    return !!this.currentSubappCatalogItem
+      && (this.subappUpdateInProgress
+        || this.subappRestartInProgress
+        || this.currentSubappCatalogItem.updateAvailable
+        || this.isSubappRestartRequired);
+  }
+
+  get subappVersionActionLabel(): string {
+    if (this.subappUpdateInProgress) {
+      const progress = this.subappUpdateProgress > 0 ? ` ${this.subappUpdateProgress}%` : '';
+      return `${this.translate.instant('APP_STORE.DOWNLOADING_UPDATE')}${progress}`;
+    }
+    if (this.subappRestartInProgress) {
+      return this.translate.instant('APP_STORE.RESTARTING');
+    }
+    if (this.currentSubappCatalogItem?.updateAvailable) {
+      return this.translate.instant('APP_STORE.UPDATE');
+    }
+    return this.translate.instant('APP_STORE.RESTART');
+  }
+
+  get subappVersionActionTooltip(): string {
+    const item = this.currentSubappCatalogItem;
+    if (!this.subappVersionActionBusy && item?.updateAvailable) {
+      return this.translate.instant('APP_STORE.UPDATE_TOOLTIP', {
+        available: item.availableVersion,
+      });
+    }
+    return this.subappVersionActionLabel;
+  }
+
+  get subappVersionActionBusy(): boolean {
+    return this.subappUpdateInProgress || this.subappRestartInProgress;
+  }
+
+  get isSubappRestartRequired(): boolean {
+    const installedVersion = String(this.currentSubappCatalogItem?.installedVersion || '').trim();
+    const runningVersion = String(this.childVersion || '').trim();
+    return this.subappRestartRequired
+      || (!!installedVersion && !!runningVersion && installedVersion !== runningVersion);
+  }
+
   ngOnInit(): void {
     this.initialized = true;
+    this.subappCatalogSubscription = this.subappManager.state$.subscribe(() => {
+      this.syncSubappRestartRequirement();
+      this.cdr.markForCheck();
+    });
+    this.subappProgressSubscription = this.subappManager.progress$.subscribe((progress) => {
+      this.applySubappUpdateProgress(progress);
+      this.cdr.markForCheck();
+    });
     this.toolSignalSubscription = this.uiService.actionSubject.subscribe((action: any) => this.forwardToolSignal(action));
     this.subappActivitySubscription = this.subappActivityService.activities$.subscribe(() => {
       if (this.initialized && this.isAilyChatTool()) {
@@ -218,6 +322,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     if (this.initialized && changes['active']) {
       this.syncHostContext(true);
+      if (this.active) {
+        void this.checkChildHealth();
+      }
     }
   }
 
@@ -238,6 +345,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.configReloadSubscription = null;
     this.aiWritingStateSubscription?.unsubscribe();
     this.aiWritingStateSubscription = null;
+    this.subappCatalogSubscription?.unsubscribe();
+    this.subappCatalogSubscription = null;
+    this.subappProgressSubscription?.unsubscribe();
+    this.subappProgressSubscription = null;
     this.clearAiOperationNotice();
     this.projectContextListenerCleanup?.();
     this.projectContextListenerCleanup = null;
@@ -292,6 +403,29 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     };
     void task.then(clearRestartTask, clearRestartTask);
     return task;
+  }
+
+  async runSubappVersionAction(event: Event): Promise<void> {
+    event.stopPropagation();
+    if (this.subappVersionActionBusy) return;
+
+    const item = this.currentSubappCatalogItem;
+    if (!item) return;
+
+    if (item.updateAvailable) {
+      await this.downloadSubappUpdate(item);
+      return;
+    }
+
+    if (this.isSubappRestartRequired) {
+      this.confirmUpdatedSubappRestart();
+    }
+  }
+
+  async reloadChildUi(): Promise<void> {
+    this.childHealthRecoveryAttempted = false;
+    this.uiHealthFailed = false;
+    await this.reloadChildFrame('manual');
   }
 
   private handleApiServerChange(): void {
@@ -354,9 +488,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.hostStatus = 'closed';
     await this.startServer(true);
     const restartedStatus = this.hostStatus as HostStatus;
-    return restartedStatus === 'ready'
-      ? { ok: true, toolId: this.resolvedToolId, action: 'restart', host: this.hostAutomationStatus() }
-      : { ok: false, toolId: this.resolvedToolId, action: 'restart', message: this.errorMessage || '子应用重启失败' };
+    if (restartedStatus === 'ready') {
+      this.subappRestartRequired = false;
+      return { ok: true, toolId: this.resolvedToolId, action: 'restart', host: this.hostAutomationStatus() };
+    }
+    return { ok: false, toolId: this.resolvedToolId, action: 'restart', message: this.errorMessage || '子应用重启失败' };
   }
 
   async detach(options: ChildAppWindowPlacement = {}): Promise<Record<string, unknown>> {
@@ -450,6 +586,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.config = config;
     this.resolvedToolId = config.id;
     this.childVersion = config.version || '';
+    this.subappRestartRequired = false;
     this.titleKey = config.titleKey;
     this.routePath = config.routePath || `/child-tool/${config.id}`;
     this.currentUrl = this.router.url;
@@ -464,9 +601,106 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       uiIndex: config.uiIndex || 'ui/index.html'
     });
 
-    await this.toolI18n.load(config.id);
+    await Promise.all([
+      this.toolI18n.load(config.id),
+      this.toolI18n.load('app-store'),
+    ]);
     this.log('i18n loaded');
+    this.syncSubappRestartRequirement();
     await this.startServer(false);
+  }
+
+  private get currentSubappCatalogItem(): SubappCatalogItem | null {
+    if (!this.resolvedToolId) return null;
+    return this.subappManager.state.apps.find((item) => item.toolId === this.resolvedToolId) || null;
+  }
+
+  private syncSubappRestartRequirement(): void {
+    const item = this.currentSubappCatalogItem;
+    const installedVersion = String(item?.installedVersion || '').trim();
+    const runningVersion = String(this.childVersion || '').trim();
+    if (item?.installed && installedVersion && runningVersion && installedVersion !== runningVersion) {
+      this.subappRestartRequired = true;
+    }
+  }
+
+  private applySubappUpdateProgress(progress: SubappInstallProgress | null): void {
+    const catalogId = this.currentSubappCatalogItem?.id;
+    if (!catalogId || progress?.id !== catalogId || progress.action !== 'update') {
+      if (!progress || progress?.id !== catalogId) {
+        this.subappUpdateInProgress = false;
+        this.subappUpdateProgress = 0;
+      }
+      return;
+    }
+
+    this.subappUpdateInProgress = progress.phase !== 'complete' && progress.phase !== 'error';
+    this.subappUpdateProgress = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+  }
+
+  private async downloadSubappUpdate(item: SubappCatalogItem): Promise<void> {
+    const previousInstalledVersion = String(item.installedVersion || '').trim();
+    this.subappUpdateInProgress = true;
+    this.subappUpdateProgress = 1;
+    try {
+      await this.subappManager.update(item.id);
+      const updatedItem = this.currentSubappCatalogItem;
+      const updatedInstalledVersion = String(updatedItem?.installedVersion || '').trim();
+      if (updatedItem?.installed
+        && updatedInstalledVersion
+        && updatedInstalledVersion !== previousInstalledVersion) {
+        this.subappRestartRequired = true;
+      }
+      this.message.success(this.translate.instant('APP_STORE.UPDATE_SUCCESS', {
+        name: this.getToolDisplayName(),
+      }));
+    } catch (error) {
+      this.showSubappActionError(error);
+    } finally {
+      this.subappUpdateInProgress = false;
+      this.cdr.markForCheck();
+    }
+  }
+
+  private async restartUpdatedSubapp(): Promise<void> {
+    this.subappRestartInProgress = true;
+    try {
+      const result = await this.mainUiAutomation.controlChildApp({
+        toolId: this.resolvedToolId,
+        action: 'restart',
+      });
+      if (result['ok'] !== true) {
+        throw new Error(String(result['message'] || this.translate.instant('APP_STORE.RESTART_FAILED')));
+      }
+      this.subappRestartRequired = false;
+      this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', {
+        name: this.getToolDisplayName(),
+      }));
+    } catch (error) {
+      this.subappRestartRequired = true;
+      this.showSubappActionError(error);
+    } finally {
+      this.subappRestartInProgress = false;
+      this.cdr.markForCheck();
+    }
+  }
+
+  private confirmUpdatedSubappRestart(): void {
+    const name = this.getToolDisplayName();
+    this.modal.confirm({
+      nzClassName: 'subapp-service-confirm-modal',
+      nzTitle: this.translate.instant('APP_STORE.RESTART_CONFIRM', { name }),
+      nzContent: this.translate.instant('APP_STORE.RESTART_HINT', { name }),
+      nzOkText: this.translate.instant('APP_STORE.CONFIRM_RESTART'),
+      nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+      nzMaskClosable: false,
+      nzOnOk: () => this.restartUpdatedSubapp(),
+    });
+  }
+
+  private showSubappActionError(error: unknown): void {
+    const actionError = error instanceof Error ? error.message : String(error || 'Unknown error');
+    this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message: actionError }));
   }
 
   private registerHostController(): void {
@@ -506,6 +740,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.hostStatus = 'starting';
     this.errorMessage = '';
     this.frameLoaded = false;
+    this.uiHealthFailed = false;
+    this.childToolUrl = '';
     this.destroyPenpalConnection();
     this.log(restart ? 'restart server' : 'start server');
 
@@ -515,6 +751,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         : await this.processService.acquire(this.config.id);
       this.acquired = true;
       const childToolUrl = this.buildChildToolUrl(this.serverInfo.url);
+      this.childToolUrl = childToolUrl;
+      this.resetChildHealthState();
       this.log('server acquired', this.sanitizeHostInfo(this.serverInfo));
       this.log('iframe url prepared', this.sanitizeUrl(childToolUrl));
       this.iframeSrc = this.sanitizer.bypassSecurityTrustResourceUrl(childToolUrl);
@@ -546,6 +784,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       if (!this.frameLoaded) {
         this.ngZone.run(() => {
           this.penpalState = 'failed';
+          this.uiHealthFailed = true;
           this.hostStatus = 'error';
           this.errorMessage = `${this.resolvedToolId} UI did not report ready`;
           this.logError('child ready timeout', this.errorMessage);
@@ -561,6 +800,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
           this.ngZone.run(() => {
             this.log('child ready', payload || {});
             this.frameLoaded = true;
+            this.uiHealthFailed = false;
             this.hostStatus = 'ready';
             this.errorMessage = '';
             if (payload?.pid && this.serverInfo) {
@@ -619,6 +859,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         this.beforeCloseNotified = false;
         this.syncHostContext();
         this.pushChatSubappActivities();
+        this.startChildHealthMonitor();
       })
       .catch(error => {
         this.ngZone.run(() => {
@@ -768,6 +1009,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private destroyPenpalConnection(): void {
     this.clearChildReadyTimer();
+    this.stopChildHealthMonitor();
     this.setAilyChatOperationActive(false);
     this.remoteApi = null;
     if (this.penpalConnection) {
@@ -776,6 +1018,106 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     this.penpalRemoteWindow = null;
     this.penpalState = 'idle';
+  }
+
+  private startChildHealthMonitor(): void {
+    this.stopChildHealthMonitor();
+    if (typeof this.remoteApi?.healthCheck !== 'function') return;
+
+    this.ngZone.runOutsideAngular(() => {
+      this.childHealthTimer = setInterval(() => {
+        void this.checkChildHealth();
+      }, CHILD_HEALTH_CHECK_INTERVAL_MS);
+    });
+  }
+
+  private stopChildHealthMonitor(): void {
+    if (this.childHealthTimer) {
+      clearInterval(this.childHealthTimer);
+      this.childHealthTimer = null;
+    }
+    this.childHealthCheckInFlight = false;
+  }
+
+  private resetChildHealthState(): void {
+    this.childHealthFailureCount = 0;
+    this.childHealthSuccessCount = 0;
+    this.childHealthRecoveryAttempted = false;
+  }
+
+  private async checkChildHealth(): Promise<void> {
+    if (!this.active || this.hostStatus !== 'ready' || this.childHealthCheckInFlight) return;
+    const remote = this.remoteApi;
+    if (typeof remote?.healthCheck !== 'function') return;
+
+    this.childHealthCheckInFlight = true;
+    try {
+      const health = await this.withTimeout(Promise.resolve(remote.healthCheck()), CHILD_HEALTH_CHECK_TIMEOUT_MS);
+      if (remote !== this.remoteApi || this.hostStatus !== 'ready') return;
+      if (this.isRecord(health) && health['ok'] === false) {
+        throw new Error('Child health check returned an unhealthy status');
+      }
+      this.childHealthFailureCount = 0;
+      this.childHealthSuccessCount += 1;
+      if (this.childHealthSuccessCount >= CHILD_HEALTH_RECOVERY_SUCCESS_THRESHOLD) {
+        this.childHealthRecoveryAttempted = false;
+      }
+    } catch (error) {
+      if (remote !== this.remoteApi) return;
+      this.childHealthSuccessCount = 0;
+      this.childHealthFailureCount += 1;
+      this.logError('child health check failed', {
+        attempt: this.childHealthFailureCount,
+        message: error instanceof Error ? error.message : String(error || '')
+      });
+      if (this.childHealthFailureCount < CHILD_HEALTH_FAILURE_THRESHOLD) return;
+
+      this.childHealthFailureCount = 0;
+      this.ngZone.run(() => {
+        if (!this.childHealthRecoveryAttempted) {
+          this.childHealthRecoveryAttempted = true;
+          void this.reloadChildFrame('health-check');
+          return;
+        }
+        this.frameLoaded = false;
+        this.uiHealthFailed = true;
+        this.hostStatus = 'error';
+        this.errorMessage = this.childUiUnavailableText;
+      });
+    } finally {
+      this.childHealthCheckInFlight = false;
+    }
+  }
+
+  private async reloadChildFrame(reason: 'manual' | 'health-check'): Promise<void> {
+    if (!this.childToolUrl || this.hostStatus === 'closed') return;
+
+    this.log('reload child UI', { reason });
+    this.frameLoaded = false;
+    this.uiHealthFailed = false;
+    this.hostStatus = 'starting';
+    this.errorMessage = '';
+    this.destroyPenpalConnection();
+    this.iframeSrc = null;
+    this.cdr.detectChanges();
+
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    const reloadUrl = this.withReloadToken(this.childToolUrl);
+    this.ngZone.run(() => {
+      this.iframeSrc = this.sanitizer.bypassSecurityTrustResourceUrl(reloadUrl);
+      this.cdr.markForCheck();
+    });
+  }
+
+  private withReloadToken(value: string): string {
+    try {
+      const url = new URL(value);
+      url.searchParams.set('_ailyUiReload', String(Date.now()));
+      return url.toString();
+    } catch {
+      const separator = value.includes('?') ? '&' : '?';
+      return `${value}${separator}_ailyUiReload=${Date.now()}`;
+    }
   }
 
   private shouldReusePenpalConnection(contentWindow: Window): boolean {

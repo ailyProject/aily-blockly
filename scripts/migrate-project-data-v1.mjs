@@ -6,6 +6,8 @@ import { dirname, join, resolve } from 'node:path';
 const MAGIC = Buffer.from('AILYDAT1', 'ascii');
 const SCHEMA_MARKER = Object.freeze({ schemaVersion: 1, mode: 'external-only' });
 const STORAGE = 'raw-v1';
+const GENERIC_VALUE_SCHEMA_VERSION = 1;
+const GENERIC_VALUE_THRESHOLD = 32 * 1024;
 
 const projectPath = process.argv[2] ? resolve(process.argv[2]) : '';
 if (!projectPath) {
@@ -18,6 +20,7 @@ const abi = JSON.parse(await readFile(abiPath, 'utf8'));
 const migrated = [];
 
 await visit(abi, '$');
+await externalizeGenericValues(abi, '$');
 abi.$ailyProjectData = SCHEMA_MARKER;
 
 if (!existsSync(backupPath)) await copyFile(abiPath, backupPath);
@@ -88,6 +91,99 @@ async function visit(value, jsonPath) {
     return;
   }
   for (const [key, member] of Object.entries(value)) await visit(member, `${jsonPath}/${escapePointer(key)}`);
+}
+
+async function externalizeGenericValues(value, jsonPath) {
+  if (!value || typeof value !== 'object' || isDataRef(value) || isGenericValue(value)) return;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      await externalizeGenericValues(value[index], `${jsonPath}/${index}`);
+    }
+    return;
+  }
+
+  if (value.fields && typeof value.fields === 'object' && !Array.isArray(value.fields)) {
+    for (const [fieldName, fieldValue] of Object.entries(value.fields)) {
+      value.fields[fieldName] = await externalizeGenericCandidate(
+        fieldValue,
+        `${jsonPath}/fields/${escapePointer(fieldName)}`,
+      );
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'extraState')) {
+    value.extraState = await externalizeGenericCandidate(value.extraState, `${jsonPath}/extraState`);
+  }
+
+  for (const [key, member] of Object.entries(value)) {
+    if (key === 'fields' || key === 'extraState') continue;
+    await externalizeGenericValues(member, `${jsonPath}/${escapePointer(key)}`);
+  }
+}
+
+async function externalizeGenericCandidate(value, jsonPath) {
+  if (value === null || value === undefined || isDataRef(value) || isGenericValue(value)) return value;
+  const codec = typeof value === 'string'
+    ? 'utf8-v1'
+    : isPlainJsonContainer(value)
+      ? 'canonical-json-v1'
+      : '';
+  if (!codec || containsDataRef(value)) return value;
+
+  const canonicalBytes = Buffer.from(
+    codec === 'utf8-v1' ? value : canonicalJsonStringify(value),
+    'utf8',
+  );
+  if (canonicalBytes.byteLength <= GENERIC_VALUE_THRESHOLD) return value;
+
+  const logicalType = codec === 'utf8-v1' ? 'text' : 'json';
+  const ref = await persistResource(projectPath, codec, STORAGE, logicalType, canonicalBytes);
+  migrated.push({ jsonPath, codec, rawLength: canonicalBytes.byteLength, id: ref.$ailyData.id });
+  return {
+    $ailyProjectDataValue: {
+      schemaVersion: GENERIC_VALUE_SCHEMA_VERSION,
+      ref,
+    },
+  };
+}
+
+function canonicalJsonStringify(value) {
+  const normalize = (current) => {
+    if (Array.isArray(current)) return current.map(normalize);
+    if (current && typeof current === 'object') {
+      return Object.fromEntries(Object.keys(current).sort().map((key) => [key, normalize(current[key])]));
+    }
+    return current;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+function isPlainJsonContainer(value) {
+  return Array.isArray(value)
+    || (!!value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype);
+}
+
+function isDataRef(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && !!value.$ailyData;
+}
+
+function isGenericValue(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && value.$ailyProjectDataValue?.schemaVersion === GENERIC_VALUE_SCHEMA_VERSION
+    && isDataRef(value.$ailyProjectDataValue.ref);
+}
+
+function containsDataRef(value) {
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') continue;
+    if (isDataRef(current) || isGenericValue(current)) return true;
+    pending.push(...(Array.isArray(current) ? current : Object.values(current)));
+  }
+  return false;
 }
 
 function isInlineTftAnimation(value) {

@@ -35,6 +35,7 @@ import { Subscription } from 'rxjs';
 import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
 import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
+import { ProjectDataError } from '../../services/project-data/project-data.types';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -139,8 +140,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           this.loadedProjectPath = requestedProjectPath;
         } catch (error) {
           console.error('加载项目失败', error);
+          const detail = this.formatProjectLoadError(error);
+          this.abortFailedProjectLoad();
           this.projectService.stateSubject.next('error');
-          this.message.error('加载项目失败，请检查项目文件是否完整');
+          this.message.error(detail);
         }
       } else {
         this.message.error('没有找到项目路径');
@@ -157,6 +160,46 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // 阻止鼠标按键前进后退
     window.history.replaceState(null, '', window.location.href);
     window.history.pushState(null, '', window.location.href);
+  }
+
+  private abortFailedProjectLoad(): void {
+    this.loadedProjectPath = null;
+    this.clearProjectLoadedCodeRefreshTimer();
+    this.stopPackageJsonDependencyWatch();
+    this.localLibrarySyncService.stop();
+    try {
+      // Runtime isolation teardown requires workspace disposal before the host
+      // checkpoint and iframe Realm are released. BlocklyService.reset owns
+      // that ordering and also unregisters project-owned Data Slots.
+      this.blocklyService.reset();
+    } finally {
+      try {
+        // Idempotent safeguard: if a project-defined workspace dispose hook
+        // throws inside reset(), the tainted iframe Realm must still be gone.
+        this.generatorRuntime.destroy();
+      } finally {
+        projectDataRuntime.reset();
+      }
+    }
+  }
+
+  private formatProjectLoadError(error: unknown): string {
+    if (error instanceof ProjectDataError) {
+      const diagnostics = Array.isArray(error.details?.['diagnostics'])
+        ? error.details['diagnostics'] as Array<Record<string, unknown>>
+        : [];
+      const first = diagnostics[0];
+      if (first) {
+        const owner = [first['blockType'], first['fieldName']].filter(Boolean).join('.');
+        const actual = Number(first['canonicalLength']);
+        const threshold = Number(first['threshold']);
+        const size = Number.isFinite(actual) ? `${actual} bytes` : 'unknown size';
+        const limit = Number.isFinite(threshold) ? `${threshold} bytes` : 'the configured limit';
+        return `项目数据加载失败：${owner || first['jsonPointer'] || 'unknown field'} 为 ${size}，超过 ${limit}。`;
+      }
+      return `项目数据加载失败：${error.message}`;
+    }
+    return `加载项目失败：${error instanceof Error ? error.message : String(error)}`;
   }
 
   ngOnDestroy(): void {

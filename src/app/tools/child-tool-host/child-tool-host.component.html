@@ -3,6 +3,9 @@
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
   </ng-container>
+  <ng-container header-title-suffix>
+    <ng-container *ngTemplateOutlet="subappVersionActionTpl"></ng-container>
+  </ng-container>
   <ng-container header-btns>
     <ng-container *ngTemplateOutlet="headerTpl"></ng-container>
   </ng-container>
@@ -12,6 +15,9 @@
 <app-tool-container [title]="titleKey | translate" [path]="routePath" (closeEvent)="close()">
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
+  </ng-container>
+  <ng-container header-title-suffix>
+    <ng-container *ngTemplateOutlet="subappVersionActionTpl"></ng-container>
   </ng-container>
   <ng-container header-btns>
     <ng-container *ngTemplateOutlet="headerTpl"></ng-container>
@@ -34,12 +40,33 @@
   </div>
 </ng-template>
 
+<ng-template #subappVersionActionTpl>
+  @if (showSubappVersionAction) {
+  <button class="subapp-version-action" type="button"
+    [class.update]="!isSubappRestartRequired"
+    [class.restart]="isSubappRestartRequired"
+    [class.busy]="subappVersionActionBusy"
+    [disabled]="subappVersionActionBusy"
+    (click)="runSubappVersionAction($event)"
+    (dblclick)="$event.stopPropagation()"
+    nz-tooltip nzTooltipPlacement="bottom" [nzTooltipTitle]="subappVersionActionTooltip"
+    [attr.aria-label]="subappVersionActionLabel">
+    @if (subappVersionActionBusy) {
+    <i class="fa-light fa-spinner-third subapp-version-spin" aria-hidden="true"></i>
+    } @else if (isSubappRestartRequired) {
+    <i class="fa-light fa-arrow-rotate-right" aria-hidden="true"></i>
+    }
+    <span>{{ subappVersionActionLabel }}</span>
+  </button>
+  }
+</ng-template>
+
 <ng-template #hostStatusTpl>
   <span class="child-host-status ccenter" nz-tooltip nzTooltipPlacement="bottom"
     [nzTooltipTitle]="(childVersion || serverInfo?.port || serverInfo?.pid) ? hostStatusTooltip : null"
     [attr.aria-label]="hostStatus" role="status">
-    <span class="host-status-dot" [class.ready]="hostStatus === 'ready'"
-      [class.starting]="hostStatus === 'starting'" [class.error]="hostStatus === 'error'"
+    <span class="host-status-dot" [class.ready]="hostStatus === 'ready' && frameLoaded"
+      [class.starting]="hostStatus === 'starting' || (hostStatus === 'ready' && !frameLoaded)" [class.error]="hostStatus === 'error'"
       [class.closed]="hostStatus === 'closed'" [class.idle]="hostStatus === 'idle'"></span>
   </span>
 </ng-template>
@@ -78,8 +105,14 @@
 
       @if (hostStatus === 'error') {
       <div class="host-overlay error">
-        <strong>{{ backendFailedText }}</strong>
+        <strong>{{ uiHealthFailed ? childUiUnavailableTitle : backendFailedText }}</strong>
         <span>{{ errorMessage }}</span>
+        @if (canReloadChildUi) {
+        <button type="button" class="host-overlay-action" (click)="reloadChildUi()">
+          <i class="fa-light fa-rotate-right" aria-hidden="true"></i>
+          <span>{{ reloadChildUiText }}</span>
+        </button>
+        }
       </div>
       }
     </div>

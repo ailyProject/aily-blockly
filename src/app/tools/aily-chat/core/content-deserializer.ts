@@ -213,6 +213,12 @@ export function deserializeContentToParts(content: string): ChatPart[] {
           if (data.scope) {
             p.scope = data.scope as ConfirmationPart['scope'];
           }
+          if (typeof data.selectedActionId === 'string' && data.selectedActionId.trim()) {
+            p.selectedActionId = data.selectedActionId.trim();
+          }
+          if (typeof data.selectedActionLabel === 'string' && data.selectedActionLabel.trim()) {
+            p.selectedActionLabel = data.selectedActionLabel.trim();
+          }
           parts.push(p);
         } catch {}
         pos = fenceEnd;

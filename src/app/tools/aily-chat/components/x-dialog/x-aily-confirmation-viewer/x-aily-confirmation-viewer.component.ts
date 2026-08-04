@@ -177,6 +177,7 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
   resolved = false;
   approved = false;
   resolvedText = '';
+  selectedActionLabel = '';
   approvalActions: readonly ToolApprovalAction[] = [];
   primaryScope: ToolApprovalScope = 'once';
   primaryButtonLabel = '允许';
@@ -204,7 +205,8 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
       return undefined;
     }
 
-    return this.formatScopeMeta(this.data?.scope);
+    const scopeLabel = this.formatScopeMeta(this.data?.scope);
+    return [...new Set([this.selectedActionLabel, scopeLabel].filter((value): value is string => !!value))].join(' / ') || undefined;
   }
 
   get headerPill(): string | undefined {
@@ -314,6 +316,9 @@ export class XAilyConfirmationViewerComponent implements OnChanges {
       this.displayMessage = this.getDisplayMessage(this.toolName, this.message, this.commandPreview);
       this.resolved = !!this.data.resolved;
       this.approved = !!this.data.approved;
+      this.selectedActionLabel = typeof this.data.selectedActionLabel === 'string'
+        ? this.data.selectedActionLabel.trim()
+        : '';
       this.approvalActions = Array.isArray(this.data.actions) ? this.data.actions : [];
       this.primaryScope = this.data.primaryScope || 'once';
       this.customPrimaryButtonLabel = typeof this.data.primaryLabel === 'string' ? this.data.primaryLabel : '';

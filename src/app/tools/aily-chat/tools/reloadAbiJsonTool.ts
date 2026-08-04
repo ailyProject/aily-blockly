@@ -6,6 +6,7 @@ import { AilyHost } from '../core/host';
 import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
 import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
 import { isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
+import { materializeGenericProjectDataValues } from '../../../services/project-data/project-data-generic-values';
 
 export interface ReloadAbiJsonArgs {
   projectPath?: string;
@@ -120,6 +121,7 @@ export class ReloadAbiJsonToolService {
           is_error: true,
         };
       }
+      jsonData = await materializeGenericProjectDataValues(jsonData, projectDataRuntime);
 
       // 使用 BlocklyService 加载 ABI JSON 数据
       this.blocklyService.loadAbiJson(jsonData);
@@ -277,6 +279,7 @@ export async function reloadAbiJsonToolSimple(
         is_error: true,
       };
     }
+    jsonData = await materializeGenericProjectDataValues(jsonData, projectDataRuntime);
 
     // 使用 BlocklyService 加载 ABI JSON 数据
     blocklyService.loadAbiJson(jsonData);

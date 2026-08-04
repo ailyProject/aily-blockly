@@ -11,7 +11,6 @@ import { XAilyThinkViewerComponent } from './x-aily-think-viewer/x-aily-think-vi
 import { XAilyMermaidViewerComponent } from './x-aily-mermaid-viewer/x-aily-mermaid-viewer.component';
 import { AilyMarkdownExternalLinksDirective } from '../../directives/aily-markdown-external-links.directive';
 import type { ActivityGroupDisplayItem, ActivityToolbarActionDisplayData, ActivityToolHeaderDisplayData } from './chat-activity-group.types';
-import { XAilyConfirmationViewerComponent } from './x-aily-confirmation-viewer/x-aily-confirmation-viewer.component';
 import {
   getDiffDisplayLines,
   getDiffOutputHref,
@@ -33,19 +32,16 @@ import { openChatProcessWindow } from '../../helpers/chat-process-window';
 import { resolveChildToolIdFromProcess } from '../../helpers/child-tool-process-summary';
 import { getChildToolConfig } from '../../../../configs/tool.config';
 import { resolveTerminalLifecycleState } from '../../core/terminal-status';
-import { OPEN_MAX_REQUESTS_SETTINGS_ACTION_ID } from '../../core/chat-runtime-confirmation-actions';
 import {
   ChatRuntimeInteractionHostService,
   type RuntimeCommandSessionActionResult,
-  type RuntimeConfirmationDecision,
 } from '../../services/chat-runtime-interaction-host.service';
-import { ChatViewService } from '../../services/chat-view.service';
 import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
 
 @Component({
   selector: 'aily-chat-activity-item',
   standalone: true,
-  imports: [CommonModule, TranslateModule, XMarkdownComponent, XAilyConfirmationViewerComponent, ChatTerminalPartComponent, XAilyThinkViewerComponent, XAilyMermaidViewerComponent, AilyMarkdownExternalLinksDirective, forwardRef(() => ChatActivityItemComponent)],
+  imports: [CommonModule, TranslateModule, XMarkdownComponent, ChatTerminalPartComponent, XAilyThinkViewerComponent, XAilyMermaidViewerComponent, AilyMarkdownExternalLinksDirective, forwardRef(() => ChatActivityItemComponent)],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div
@@ -174,17 +170,6 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
                   ailyMarkdownExternalLinks
                 />
               }
-            </div>
-          }
-
-          @if (shouldRenderInlineApproval()) {
-            <div class="cag-item-confirmation-body" data-detail-kind="invocation">
-              <x-aily-confirmation-viewer
-                class="chat-confirmation-widget2 cag-item-confirmation-widget cag-item-approval"
-                [data]="item.approval"
-                [embedded]="true"
-                [interactive]="isInteractiveInlineApproval()"
-                (decision)="onInlineApprovalDecision($event)" />
             </div>
           }
 
@@ -1068,27 +1053,6 @@ import { ChatPerformanceTracer } from '../../services/chat-perf-tracer';
       word-break: break-word;
       overflow-wrap: anywhere;
       font-family: inherit;
-    }
-
-    .cag-item-approval {
-      display: block;
-      min-width: 0;
-    }
-
-    .cag-item-confirmation-body {
-      margin-top: 6px;
-      min-width: 0;
-    }
-
-    .cag-item-confirmation-widget {
-      border: 1px solid var(--chat-border, rgba(255,255,255,0.10));
-      border-radius: 5px;
-      overflow: hidden;
-      background: rgba(255,255,255,0.02);
-    }
-
-    .cag-item-confirmation-body .cag-item-approval {
-      margin-top: 0;
     }
 
     .cag-item-children {
@@ -2305,7 +2269,6 @@ export class ChatActivityItemComponent implements OnChanges {
 
   readonly componentMap: ComponentMap = { code: AilyChatCodeComponent };
   private readonly runtimeInteractionHost = inject(ChatRuntimeInteractionHostService, { optional: true });
-  private readonly chatViewState = inject(ChatViewService, { optional: true });
   private readonly cdr = inject(ChangeDetectorRef);
 
   detailExpanded = false;
@@ -2318,69 +2281,8 @@ export class ChatActivityItemComponent implements OnChanges {
     this.contentDeltaHandler?.();
   }
 
-  shouldRenderInlineApproval(): boolean {
-    return !!this.item?.approval && (this.item.approval.resolved === true || this.hasActiveInlineApproval());
-  }
-
   isPendingApprovalItem(): boolean {
     return !!this.item?.approval && this.item.approval.resolved !== true;
-  }
-
-  isInteractiveInlineApproval(): boolean {
-    return this.hasActiveInlineApproval();
-  }
-
-  onInlineApprovalDecision(decision: RuntimeConfirmationDecision): void {
-    if (!this.sessionId || !this.hasActiveInlineApproval()) {
-      return;
-    }
-
-    const activeConfirmation = this.runtimeInteractionHost?.getActiveConfirmation(this.sessionId);
-    if (!activeConfirmation) {
-      return;
-    }
-
-    if (decision.sideEffectOnly && typeof decision.actionId === 'string' && decision.actionId.length > 0) {
-      if (decision.actionId === OPEN_MAX_REQUESTS_SETTINGS_ACTION_ID) {
-        this.chatViewState?.openSettings();
-        return;
-      }
-
-      this.runtimeInteractionHost?.triggerConfirmationAction(this.sessionId, activeConfirmation.id, decision.actionId);
-      return;
-    }
-
-    if (activeConfirmation.toolCallId) {
-      this.runtimeInteractionHost?.resolveToolApproval(this.sessionId, activeConfirmation.toolCallId, decision);
-      return;
-    }
-
-    this.runtimeInteractionHost?.resolveConfirmation(this.sessionId, activeConfirmation.id, decision);
-  }
-
-  private hasActiveInlineApproval(): boolean {
-    if (!this.sessionId || !this.item?.approval) {
-      return false;
-    }
-
-    const activeConfirmation = this.runtimeInteractionHost?.getActiveConfirmation(this.sessionId);
-    if (!activeConfirmation) {
-      return false;
-    }
-
-    if (activeConfirmation.partId && this.item.approval.partId) {
-      return activeConfirmation.partId === this.item.approval.partId;
-    }
-
-    if (activeConfirmation.askId && this.item.approval.askId) {
-      return activeConfirmation.askId === this.item.approval.askId;
-    }
-
-    if (activeConfirmation.toolCallId && this.item.approval.toolCallId) {
-      return activeConfirmation.toolCallId === this.item.approval.toolCallId;
-    }
-
-    return false;
   }
 
   selectedInstructionFilter: InstructionDiagnosticFilter = 'all';

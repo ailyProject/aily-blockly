@@ -27,6 +27,8 @@ export interface ToolCallApprovalMetadata {
   resolved?: boolean;
   result?: 'approved' | 'rejected';
   scope?: ToolApprovalScope;
+  selectedActionId?: string;
+  selectedActionLabel?: string;
 }
 
 export interface ToolCallApprovalDisplayData {
@@ -47,6 +49,8 @@ export interface ToolCallApprovalDisplayData {
   resolved?: boolean;
   approved?: boolean;
   scope?: ToolApprovalScope;
+  selectedActionId?: string;
+  selectedActionLabel?: string;
   actions: readonly ToolApprovalAction[];
   primaryScope: ToolApprovalScope;
 }
@@ -107,6 +111,8 @@ export function buildResolvedToolCallApprovalMetadata(input: {
   title?: string;
   message?: string;
   description?: string;
+  selectedActionId?: string;
+  selectedActionLabel?: string;
 }): ToolCallApprovalMetadata {
   return {
     approvalTraceId: input.approvalTraceId,
@@ -124,6 +130,8 @@ export function buildResolvedToolCallApprovalMetadata(input: {
     resolved: true,
     result: input.result,
     ...(input.scope ? { scope: input.scope } : {}),
+    ...(input.selectedActionId ? { selectedActionId: input.selectedActionId } : {}),
+    ...(input.selectedActionLabel ? { selectedActionLabel: input.selectedActionLabel } : {}),
   };
 }
 
@@ -174,6 +182,8 @@ export function projectToolCallApprovalDisplayData(
     resolved: approval?.resolved === true,
     approved: approval?.result === 'approved',
     scope: asApprovalScope(approval?.scope),
+    selectedActionId: asString(approval?.selectedActionId),
+    selectedActionLabel: asString(approval?.selectedActionLabel),
     actions: normalized.actions,
     primaryScope: normalized.primaryScope,
   };
@@ -219,6 +229,8 @@ function asApprovalRecord(value: unknown): ToolCallApprovalMetadata | undefined 
       ? record['result']
       : undefined,
     scope: asApprovalScope(record['scope']),
+    selectedActionId: asString(record['selectedActionId']),
+    selectedActionLabel: asString(record['selectedActionLabel']),
   };
 }
 

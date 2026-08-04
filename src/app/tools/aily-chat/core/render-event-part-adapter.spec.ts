@@ -343,6 +343,11 @@ describe('RenderEventPartAdapter', () => {
 
     const parts = store.getPartsForHandle(currentHandle);
     expect(parts).toEqual([
+      jasmine.objectContaining({
+        type: 'tool_call',
+        toolCallId: 'tc-terminal',
+        state: 'done',
+      }),
       jasmine.objectContaining({ type: 'terminal', command: 'npm test', output: 'done', exitCode: 0 }),
     ]);
   });
@@ -386,6 +391,11 @@ describe('RenderEventPartAdapter', () => {
 
     const parts = store.getPartsForHandle(currentHandle);
     expect(parts).toEqual([
+      jasmine.objectContaining({
+        type: 'tool_call',
+        toolCallId: 'tc-command',
+        state: 'doing',
+      }),
       jasmine.objectContaining({
         type: 'terminal',
         command: 'npm test',
@@ -462,6 +472,11 @@ describe('RenderEventPartAdapter', () => {
 
     expect(store.getPartsForHandle(currentHandle)).toEqual([
       jasmine.objectContaining({
+        type: 'tool_call',
+        toolCallId: 'tc-command-undefined',
+        state: 'doing',
+      }),
+      jasmine.objectContaining({
         type: 'terminal',
         command: 'Get-Location',
         output: 'C:\\workspace\n',
@@ -537,6 +552,11 @@ describe('RenderEventPartAdapter', () => {
     } as RenderEvent);
 
     expect(store.getPartsForHandle(currentHandle)).toEqual([
+      jasmine.objectContaining({
+        type: 'tool_call',
+        toolCallId: 'tc-command-final-undefined',
+        state: 'done',
+      }),
       jasmine.objectContaining({
         type: 'terminal',
         command: 'echo "Command line tool works!" && ver',
@@ -698,8 +718,13 @@ describe('RenderEventPartAdapter', () => {
     });
 
     const parts = store.getPartsForHandle(currentHandle);
-    expect(parts.map(part => part.type)).toEqual(['terminal']);
+    expect(parts.map(part => part.type)).toEqual(['tool_call', 'terminal']);
     expect(parts[0]).toEqual(jasmine.objectContaining({
+      type: 'tool_call',
+      toolCallId: 'tc-command-exec',
+      state: 'done',
+    }));
+    expect(parts[1]).toEqual(jasmine.objectContaining({
       type: 'terminal',
       toolCallId: 'tc-command-exec',
       sourceToolCallIds: ['tc-command-exec', 'tc-command-status'],
@@ -839,6 +864,8 @@ describe('RenderEventPartAdapter', () => {
       toolCallId: 'a1',
       result: 'approved',
       scope: 'session',
+      selectedActionId: 'session',
+      selectedActionLabel: 'Always allow in this chat',
       timestamp: 2,
     });
 
@@ -858,12 +885,14 @@ describe('RenderEventPartAdapter', () => {
           resolved: true,
           result: 'approved',
           scope: 'session',
+          selectedActionId: 'session',
+          selectedActionLabel: 'Always allow in this chat',
         }),
       }),
     }));
   });
 
-  it('should replace an approved terminal tool call with one terminal invocation and preserve approval metadata', () => {
+  it('should keep terminal invocation and approval owner canonical when terminal progress precedes approval resolution', () => {
     processCurrent({
       type: 'tool_call_begin',
       toolCallId: 'terminal-approval-call',
@@ -888,11 +917,28 @@ describe('RenderEventPartAdapter', () => {
     });
 
     processCurrent({
+      type: 'tool_call_progress',
+      toolCallId: 'terminal-approval-call',
+      data: {
+        kind: 'command_output',
+        toolName: 'command_exec',
+        command: 'Get-Location',
+        stream: 'stdout',
+        text: 'done',
+        processId: 'terminal-approved-1',
+        outputSessionId: 'terminal-approved-1',
+        status: 'running',
+        running: true,
+      },
+      timestamp: 2,
+    });
+
+    processCurrent({
       type: 'approval_resolve',
       toolCallId: 'terminal-approval-call',
       result: 'approved',
       scope: 'session-all-terminal',
-      timestamp: 2,
+      timestamp: 3,
     });
 
     processCurrent({
@@ -911,19 +957,15 @@ describe('RenderEventPartAdapter', () => {
       state: 'done',
       isError: false,
       durationMs: 10,
-      timestamp: 3,
+      timestamp: 4,
     });
 
     const parts = store.getPartsForHandle(currentHandle);
-    expect(parts.map(part => part.type)).toEqual(['terminal']);
+    expect(parts.map(part => part.type)).toEqual(['tool_call', 'terminal']);
     expect(parts[0]).toEqual(jasmine.objectContaining({
-      type: 'terminal',
+      type: 'tool_call',
       toolCallId: 'terminal-approval-call',
-      command: 'Get-Location',
-      output: 'done',
-      isRunning: false,
-      status: 'completed',
-      processId: 'terminal-approved-1',
+      state: 'done',
       metadata: jasmine.objectContaining({
         approval: jasmine.objectContaining({
           toolCallId: 'terminal-approval-call',
@@ -936,9 +978,18 @@ describe('RenderEventPartAdapter', () => {
         }),
       }),
     }));
+    expect(parts[1]).toEqual(jasmine.objectContaining({
+      type: 'terminal',
+      toolCallId: 'terminal-approval-call',
+      command: 'Get-Location',
+      output: 'done',
+      isRunning: false,
+      status: 'completed',
+      processId: 'terminal-approved-1',
+    }));
   });
 
-  it('should replace a generic terminal confirmation with one terminal invocation and preserve approval metadata', () => {
+  it('should keep a generic terminal confirmation separate from terminal output', () => {
     processCurrent({
       type: 'approval_request',
       requestId: 'generic-terminal-approval',
@@ -982,8 +1033,15 @@ describe('RenderEventPartAdapter', () => {
     });
 
     const parts = store.getPartsForHandle(currentHandle);
-    expect(parts.map(part => part.type)).toEqual(['terminal']);
+    expect(parts.map(part => part.type)).toEqual(['confirmation', 'terminal']);
     expect(parts[0]).toEqual(jasmine.objectContaining({
+      type: 'confirmation',
+      askId: 'generic-terminal-approval',
+      resolved: true,
+      result: 'approved',
+      scope: 'session-all-terminal',
+    }));
+    expect(parts[1]).toEqual(jasmine.objectContaining({
       type: 'terminal',
       toolCallId: 'terminal-run-call',
       command: 'Get-ChildItem',
@@ -991,21 +1049,10 @@ describe('RenderEventPartAdapter', () => {
       isRunning: false,
       status: 'success',
       terminalId: 'term-generic-1',
-      metadata: jasmine.objectContaining({
-        approval: jasmine.objectContaining({
-          toolCallId: 'terminal-run-call',
-          toolName: 'run_in_terminal',
-          message: 'Allow terminal command?',
-          title: 'Run terminal command',
-          resolved: true,
-          result: 'approved',
-          scope: 'session-all-terminal',
-        }),
-      }),
     }));
   });
 
-  it('should display an approved terminal invocation as one terminal part when raw host stream keeps the approval tool call', () => {
+  it('should preserve the approval owner and terminal as separate canonical parts', () => {
     const visibleParts = turnResponsePartsToDisplayChatParts([
       {
         type: 'tool_call',
@@ -1036,15 +1083,29 @@ describe('RenderEventPartAdapter', () => {
       },
     ] as any);
 
-    expect(visibleParts.map(part => part.type)).toEqual(['terminal']);
+    expect(visibleParts.map(part => part.type)).toEqual(['tool_call', 'terminal']);
     expect(visibleParts[0]).toEqual(jasmine.objectContaining({
+      type: 'tool_call',
+      toolCallId: 'call-command-exec',
+    }));
+    expect(visibleParts[1]).toEqual(jasmine.objectContaining({
       type: 'terminal',
       command: 'Get-Location',
       output: 'done',
     }));
+
+    const renderItems = buildChatRenderItems(visibleParts, false);
+    expect(renderItems.map(item => item.kind)).toEqual(['group', 'part']);
+    expect(renderItems[0].kind === 'group' ? renderItems[0].parts : []).toEqual([visibleParts[1]]);
+    expect(renderItems[1].kind === 'part' ? renderItems[1].part : null).toEqual(jasmine.objectContaining({
+      type: 'interaction_decision',
+      id: 'interaction:approval:call-command-exec',
+      interactionKind: 'approval',
+      source: visibleParts[0],
+    }));
   });
 
-  it('should display a generic terminal confirmation and terminal result as one terminal part by command ownership', () => {
+  it('should preserve a generic terminal confirmation beside the terminal result', () => {
     const visibleParts = turnResponsePartsToDisplayChatParts([
       {
         type: 'confirmation',
@@ -1076,8 +1137,13 @@ describe('RenderEventPartAdapter', () => {
       },
     ] as any);
 
-    expect(visibleParts.map(part => part.type)).toEqual(['terminal']);
+    expect(visibleParts.map(part => part.type)).toEqual(['confirmation', 'terminal']);
     expect(visibleParts[0]).toEqual(jasmine.objectContaining({
+      type: 'confirmation',
+      askId: 'generic-terminal-approval',
+      resolved: true,
+    }));
+    expect(visibleParts[1]).toEqual(jasmine.objectContaining({
       type: 'terminal',
       command: 'Get-ChildItem',
       output: 'done',
@@ -1199,6 +1265,64 @@ describe('RenderEventPartAdapter', () => {
       decisionSource: 'user_override',
       resolved: true,
       result: 'approved',
+    }));
+  });
+
+  it('should keep a user override as the final decision after auto-review denial', () => {
+    processCurrent({
+      type: 'tool_call_begin',
+      toolCallId: 'review-override-1',
+      toolName: 'command_exec',
+      input: { command: 'npm install @aily-project/lib-demo' },
+      timestamp: 0,
+    });
+    processCurrent({
+      type: 'approval_auto_review_start',
+      reviewId: 'review-review-override-1',
+      toolCallId: 'review-override-1',
+      toolName: 'command_exec',
+      reason: 'Review terminal command',
+      source: 'approval',
+      timestamp: 1,
+    });
+    processCurrent({
+      type: 'approval_auto_review_complete',
+      reviewId: 'review-review-override-1',
+      toolCallId: 'review-override-1',
+      toolName: 'command_exec',
+      status: 'denied',
+      riskLevel: 'medium',
+      rationale: 'Requires user confirmation.',
+      decisionSource: 'auto_review',
+      source: 'approval',
+      timestamp: 2,
+    } as any);
+    processCurrent({
+      type: 'approval_request',
+      approvalTraceId: 'approval-review-override-1',
+      toolCallId: 'review-override-1',
+      toolName: 'command_exec',
+      input: { command: 'npm install @aily-project/lib-demo' },
+      message: 'Run npm install?',
+      timestamp: 3,
+    });
+    processCurrent({
+      type: 'approval_resolve',
+      approvalTraceId: 'approval-review-override-1',
+      toolCallId: 'review-override-1',
+      result: 'approved',
+      scope: 'once',
+      selectedActionLabel: 'Approve this run only',
+      timestamp: 4,
+    });
+
+    const parts = store.getPartsForHandle(currentHandle);
+    expect((parts[0] as any).metadata?.approval).toEqual(jasmine.objectContaining({
+      reviewer: 'user',
+      resolved: true,
+      result: 'approved',
+      scope: 'once',
+      selectedActionLabel: 'Approve this run only',
     }));
   });
 

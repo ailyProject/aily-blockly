@@ -71,6 +71,8 @@ export type CanonicalRenderItemStructuredPayload =
       readonly resolved?: boolean;
       readonly result?: 'approved' | 'rejected';
       readonly scope?: string;
+      readonly selectedActionId?: string;
+      readonly selectedActionLabel?: string;
       readonly reviewer?: 'user' | 'auto_review';
       readonly reviewStatus?: 'reviewing' | 'approved' | 'denied' | 'timedOut' | 'aborted';
       readonly reviewRiskLevel?: 'low' | 'medium' | 'high';
@@ -1383,6 +1385,8 @@ function confirmationResolvePayload(event: Extract<RenderEvent, { type: 'approva
     resolved: true,
     result: event.result,
     scope: event.scope,
+    selectedActionId: event.selectedActionId,
+    selectedActionLabel: event.selectedActionLabel,
   };
 }
 

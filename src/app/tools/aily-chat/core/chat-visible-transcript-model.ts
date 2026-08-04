@@ -721,6 +721,7 @@ function createPartRevisionSignature(part: ChatPart): string {
         part.text,
         stableSmallJson(part.args ?? null),
         stableSmallJson(part.metadata?.['toolSpecificData'] ?? null),
+        stableSmallJson(part.metadata?.['approval'] ?? part.metadata?.['approvalRequest'] ?? null),
       ].join(':');
     case 'state':
       return [
@@ -758,6 +759,8 @@ function createPartRevisionSignature(part: ChatPart): string {
         part.resolved ? 'resolved' : 'pending',
         part.result ?? '',
         part.scope ?? '',
+        part.selectedActionId ?? '',
+        part.selectedActionLabel ?? '',
       ].join(':');
     case 'terminal':
       return [

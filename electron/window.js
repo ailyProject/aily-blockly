@@ -259,6 +259,14 @@ function scheduleChildToolRelease(toolId, session) {
         return;
     }
 
+    if (session.hostInfo?.persistent === true) {
+        console.info('[ChildToolSession] Persistent Runtime retained after final lease release', {
+            toolId,
+            streamId: session.streamId,
+        });
+        return;
+    }
+
     console.info('[ChildToolSession] Runtime release scheduled', {
         toolId,
         streamId: session.streamId,

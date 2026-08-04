@@ -9,6 +9,7 @@ export interface ChildToolHostInfo {
   url: string;
   origin?: string;
   wsUrl?: string;
+  persistent?: boolean;
   shutdownUrl?: string;
   port?: number;
   pid?: number;

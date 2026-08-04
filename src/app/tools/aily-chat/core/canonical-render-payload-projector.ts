@@ -243,6 +243,8 @@ function confirmationPayloadToMetadata(
     resolved: payload.resolved === true,
     result: payload.result,
     scope: payload.scope,
+    selectedActionId: payload.selectedActionId,
+    selectedActionLabel: payload.selectedActionLabel,
     reviewer: payload.reviewer,
     reviewStatus: payload.reviewStatus,
     reviewRiskLevel: payload.reviewRiskLevel,

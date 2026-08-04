@@ -89,9 +89,14 @@ child/aily-builder*
 !src/app/tools/aily-chat/components/x-dialog/x-markdown-target-morph.spec.ts
 !src/app/tools/aily-chat/core/blockly-subapp-agent-tools.spec.ts
 !src/app/tools/aily-chat/services/chat-engine-part-progress.spec.ts
+!src/app/tools/aily-chat/helpers/chat-provider-request-snapshot.spec.ts
+!src/app/tools/aily-chat/helpers/host-session-provider-restore.spec.ts
+!src/app/tools/aily-chat/helpers/session-lifecycle-provider-snapshot.spec.ts
+!src/app/tools/aily-chat/services/chat-engine-permission-preset.spec.ts
 !/e2e/tests/**/*.spec.ts
 **/__tests__/**/*
 .tmp
+.temp
 src/app/tools/aily-chat/logs
 src/app/components/float-sider/new_idea
 src/app/tools/aily-chat/docs

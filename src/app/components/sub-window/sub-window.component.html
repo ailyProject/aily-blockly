@@ -3,6 +3,7 @@
     <div class="title" (dblclick)="maximize()">
       <ng-content select="[header-title-prefix]"></ng-content>
       <span class="title-text">{{ title }}</span>
+      <ng-content select="[header-title-suffix]"></ng-content>
     </div>
     <div class="win-btns">
       <div class="header-btns">

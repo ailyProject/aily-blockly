@@ -35,6 +35,7 @@ import {
   ensureExternalProjectDataDocument,
   ExternalProjectDataImportResult,
 } from './project-data/project-data-legacy-import';
+import { materializeGenericProjectDataValues } from './project-data/project-data-generic-values';
 
 interface ProjectPackageData {
   name: string;
@@ -545,16 +546,16 @@ export class ProjectService {
     const store = new ProjectDataStore();
     store.configure(projectPath);
     const result = await ensureExternalProjectDataDocument(abi, store);
-    if (result.upgradedLegacyDocument) {
+    if (result.documentChanged) {
       this.writeProjectAbiAtomically(abiPath, result.document);
       this.logProjectDataMigration(projectPath, result);
     }
   }
 
   /**
-   * Upgrades a markerless pre-Project-Data ABI on first open. Existing marked
-   * documents remain strict: their marker and every referenced resource are
-   * validated, never repaired or silently downgraded.
+   * Normalizes Project Data on open. Markerless internal-test projects gain the
+   * schema marker, while marked documents may externalize a remaining generic
+   * oversized value. Every referenced resource is still strictly validated.
    */
   async ensureProjectDataSchemaForLoad(
     projectPath: string,
@@ -566,18 +567,21 @@ export class ProjectService {
       ? projectDataRuntime.getStore()
       : this.createProjectDataStore(projectPath);
     const result = await ensureExternalProjectDataDocument(document, store);
-    if (!result.upgradedLegacyDocument || originalContent === undefined) {
-      return result.document;
+    if (result.documentChanged && originalContent !== undefined) {
+      const abiPath = window['path'].join(projectPath, 'project.abi');
+      const backupPath = `${abiPath}.pre-project-data.bak`;
+      if (!window['fs'].existsSync(backupPath)) {
+        window['fs'].writeFileSync(backupPath, originalContent);
+      }
+      this.writeProjectAbiAtomically(abiPath, result.document);
+      this.logProjectDataMigration(projectPath, result);
     }
 
-    const abiPath = window['path'].join(projectPath, 'project.abi');
-    const backupPath = `${abiPath}.pre-project-data.bak`;
-    if (!window['fs'].existsSync(backupPath)) {
-      window['fs'].writeFileSync(backupPath, originalContent);
-    }
-    this.writeProjectAbiAtomically(abiPath, result.document);
-    this.logProjectDataMigration(projectPath, result);
-    return result.document;
+    const reader = projectDataRuntime.isConfigured()
+      && projectDataRuntime.getStore().getProjectPath() === projectPath
+      ? projectDataRuntime
+      : store;
+    return materializeGenericProjectDataValues(result.document, reader);
   }
 
   private createProjectDataStore(projectPath: string): ProjectDataStore {
@@ -606,8 +610,9 @@ export class ProjectService {
     result: ExternalProjectDataImportResult,
   ): void {
     console.info(
-      `[ProjectData] Upgraded legacy project.abi for ${projectPath}; `
-      + `migrated ${result.migration.migrated.length} inline field payload(s).`,
+      `[ProjectData] Normalized project.abi for ${projectPath}; `
+      + `migrated ${result.migration.migrated.length} specialized payload(s) and `
+      + `${result.genericExternalized.length} generic oversized value(s).`,
     );
   }
 

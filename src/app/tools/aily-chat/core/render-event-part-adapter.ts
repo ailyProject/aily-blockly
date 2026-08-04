@@ -245,9 +245,7 @@ export class RenderEventPartAdapter {
 
       case 'tool_call_end': {
         const scope = eventScope(event);
-        if (this._appendTerminalPart(handle, event)) {
-          return finish(true, 'terminal_tool_call_end');
-        }
+        const appendedTerminal = this._appendTerminalPart(handle, event);
         const toolHandle = this._findToolCallHandle(event.toolCallId, handle, scope);
         if (!this._hasExactToolCallHandle(event.toolCallId, handle, scope)) {
           recordScopedSubagentToolHandleMiss(event, 'tool_call_end');
@@ -269,7 +267,7 @@ export class RenderEventPartAdapter {
             }), scope),
           },
         );
-        return finish(true);
+        return finish(true, appendedTerminal ? 'terminal_tool_call_end' : event.type);
       }
 
       // ---- State ----
@@ -364,6 +362,8 @@ export class RenderEventPartAdapter {
             resolved: true,
             result: event.result,
             scope: event.scope,
+            selectedActionId: event.selectedActionId,
+            selectedActionLabel: event.selectedActionLabel,
           });
         }
         return true;
@@ -1610,6 +1610,7 @@ function approvalRequestToToolCallPatch(
         actions: event.actions,
         primaryScope: event.primaryScope,
         args: event.input,
+        reviewer: 'user',
       }),
     }, eventScope(event)),
   };
@@ -1626,6 +1627,9 @@ function approvalResolveToToolCallPatch(
         toolCallId: event.toolCallId,
         result: event.result,
         scope: event.scope,
+        selectedActionId: event.selectedActionId,
+        selectedActionLabel: event.selectedActionLabel,
+        reviewer: 'user',
       }),
     }, eventScope(event)),
   };

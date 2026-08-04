@@ -76,6 +76,48 @@ function buildExactTerminalRule(command: string): string {
   return `/^${escapeRegExpCharacters(command)}$/`;
 }
 
+function resolveToolApprovalSelection(
+  request: ToolApprovalRequest,
+  result: ToolApprovalResult,
+): { readonly id?: string; readonly label: string } {
+  if (!result.approved) {
+    return {
+      id: result.actionId,
+      label: chatI18n('AILY_CHAT.PROCESS_CONFIRM_REJECT_REASON', undefined, 'User rejected execution'),
+    };
+  }
+
+  const selectedActionId = typeof result.actionId === 'string' && result.actionId.trim().length > 0
+    ? result.actionId.trim()
+    : undefined;
+  const selectedScope = result.scope ?? request.primaryScope ?? 'once';
+  const selectedAction = request.actions.find(action => (
+    (selectedActionId && action.id === selectedActionId)
+    || (!selectedActionId && action.scope === selectedScope)
+  ));
+
+  return {
+    id: selectedActionId ?? selectedAction?.id,
+    label: selectedAction?.label ?? approvalScopeLabel(selectedScope),
+  };
+}
+
+function approvalScopeLabel(scope: ToolApprovalScope): string {
+  switch (scope) {
+    case 'session':
+      return chatI18n('AILY_CHAT.PROCESS_CONFIRM_SCOPE_SESSION', undefined, 'Auto-run in this chat');
+    case 'workspace':
+      return chatI18n('AILY_CHAT.PROCESS_CONFIRM_SCOPE_WORKSPACE', undefined, 'Auto-run in workspace');
+    case 'session-all-terminal':
+      return chatI18n('AILY_CHAT.PROCESS_CONFIRM_SCOPE_ALL_TERMINAL', undefined, 'Auto-run terminal commands in this chat');
+    case 'session-safe':
+      return chatI18n('AILY_CHAT.PROCESS_CONFIRM_SCOPE_SAFE_TERMINAL', undefined, 'Auto-run safe terminal commands in this chat');
+    case 'once':
+    default:
+      return chatI18n('AILY_CHAT.PROCESS_CONFIRM_SCOPE_ONCE', undefined, 'This time only');
+  }
+}
+
 function compileTerminalPermissionRule(rule: string): RegExp | undefined {
   const trimmed = rule.trim();
   if (!trimmed.startsWith('/')) {
@@ -262,11 +304,20 @@ export class UserInteractionHelper {
 
     this.logToolApprovalTrace('ui-request', normalizedRequest, autoApproval);
     const result = await this._handleToolApproval(normalizedRequest);
+    const selectedAction = resolveToolApprovalSelection(normalizedRequest, result);
     this.logToolApprovalTrace('ui-result', normalizedRequest, autoApproval, {
       approved: result.approved,
       scope: result.scope,
       actionId: result.actionId,
     });
+    this.ctx.lexStream.ui.resolveToolCallApproval(
+      normalizedRequest.toolCallId,
+      result.approved,
+      result.scope,
+      normalizedRequest.approvalTraceId,
+      selectedAction.id,
+      selectedAction.label,
+    );
     if (result.approved) {
       this.rememberApproval(normalizedRequest, result.scope ?? 'once', result.actionId);
     }

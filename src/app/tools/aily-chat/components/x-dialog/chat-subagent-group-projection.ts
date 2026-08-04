@@ -1,5 +1,10 @@
 import { ChatPart, MarkdownPart, getParentToolCallId, getSubAgentInvocationId, isSubagentChildPart } from '../../core/chat-parts';
-import { isProgressMessageDisplayPart, type RenderableChatPart } from './chat-render-parts';
+import {
+  isInteractionDecisionDisplayPart,
+  isProgressMessageDisplayPart,
+  type InteractionDecisionDisplayPart,
+  type RenderableChatPart,
+} from './chat-render-parts';
 import {
   buildActivityGroupIdentity,
   buildSubagentActivityGroupIdentity,
@@ -13,6 +18,8 @@ import {
   normalizeReadSideToolName,
 } from '../../core/tool-name-normalizer';
 import { storeThinkContent } from '../../core/think-content-store';
+import { projectToolCallApprovalDisplayData } from '../../core/tool-call-approval';
+import { projectAskUserToolDecisionData } from '../../core/ask-user-tool-projection';
 
 export interface PartRenderItem {
   kind: 'part';
@@ -121,6 +128,8 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
   let bufferSourcePartIndices: number[] = [];
   let bufferStartIndex = -1;
   const terminalOwnedToolCallIds = collectTerminalOwnedToolCallIds(parts);
+  const terminalOwnedDecisionParts = collectTerminalOwnedDecisionParts(parts, terminalOwnedToolCallIds);
+  const emittedDecisionIds = new Set<string>();
   const subagentGroups = new Map<string, {
     item: ActivityGroupRenderItem;
     parts: ChatPart[];
@@ -142,6 +151,14 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
     buffer = [];
     bufferSourcePartIndices = [];
     bufferStartIndex = -1;
+  };
+
+  const appendDecisionPart = (decision: InteractionDecisionDisplayPart | null): void => {
+    if (!decision || emittedDecisionIds.has(decision.id)) {
+      return;
+    }
+    emittedDecisionIds.add(decision.id);
+    items.push({ kind: 'part', id: decision.id, part: decision });
   };
 
   const appendSubagentPart = (part: RenderableChatPart, index: number): boolean => {
@@ -193,8 +210,21 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
       items.push({ kind: 'part', id: `progress:${part.id}`, part, sourcePartIndex: index });
       continue;
     }
+    if (isInteractionDecisionDisplayPart(part)) {
+      flushBuffer();
+      appendDecisionPart(part);
+      continue;
+    }
 
     if (appendSubagentPart(part, index)) {
+      appendDecisionPart(buildInteractionDecisionDisplayPart(part));
+      continue;
+    }
+
+    const interactionDecision = buildInteractionDecisionDisplayPart(part);
+    if (interactionDecision && part.type !== 'tool_call') {
+      flushBuffer();
+      appendDecisionPart(interactionDecision);
       continue;
     }
 
@@ -208,6 +238,10 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
         }
         buffer.push(part as ChatPart);
         bufferSourcePartIndices.push(index);
+        if (interactionDecision) {
+          flushBuffer();
+          appendDecisionPart(interactionDecision);
+        }
         const mermaidPart = buildSaveArchMermaidDisplayPart(part);
         if (mermaidPart) {
           flushBuffer();
@@ -217,6 +251,7 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
       }
       flushBuffer();
       items.push({ kind: 'part', id: buildChatPartIdentity(part, index), part, sourcePartIndex: index });
+      appendDecisionPart(interactionDecision);
       const mermaidPart = buildSaveArchMermaidDisplayPart(part);
       if (mermaidPart) {
         items.push({ kind: 'part', id: buildChatPartIdentity(mermaidPart, index), part: mermaidPart });
@@ -243,6 +278,13 @@ function buildBaseRenderItems(parts: readonly RenderableChatPart[]): ChatRenderI
       }
       buffer.push(part as ChatPart);
       bufferSourcePartIndices.push(index);
+      for (const toolCallId of terminalDecisionToolCallIds(part)) {
+        const decision = terminalOwnedDecisionParts.get(toolCallId);
+        if (decision) {
+          flushBuffer();
+          appendDecisionPart(decision);
+        }
+      }
       continue;
     }
 
@@ -396,21 +438,116 @@ function isIgnorablePart(part: RenderableChatPart): boolean {
   return part.type === 'markdown' && part.content.trim().length === 0;
 }
 
-function isRuntimeToolCallPart(part: RenderableChatPart): boolean {
-  return toRuntimeToolCallPart(part).type === 'tool_call';
+function isRuntimeToolCallPart(
+  part: RenderableChatPart,
+): part is Extract<ChatPart, { type: 'tool_call' }> {
+  return part.type === 'tool_call';
 }
 
-function isThinkingPart(part: RenderableChatPart): boolean {
-  return (part as { readonly type?: string }).type === 'thinking';
+function isThinkingPart(
+  part: RenderableChatPart,
+): part is Extract<ChatPart, { type: 'thinking' }> {
+  return part.type === 'thinking';
+}
+
+function buildInteractionDecisionDisplayPart(
+  part: RenderableChatPart,
+): InteractionDecisionDisplayPart | null {
+  if (isProgressMessageDisplayPart(part) || isInteractionDecisionDisplayPart(part)) {
+    return null;
+  }
+
+  if (part.type === 'question') {
+    if (!part.answers || Object.keys(part.answers).length === 0) {
+      return null;
+    }
+    return {
+      type: 'interaction_decision',
+      id: `interaction:question:${part.partId || questionDecisionIdentity(part)}`,
+      interactionKind: 'question',
+      source: part,
+    };
+  }
+
+  if (part.type === 'confirmation') {
+    if (!part.resolved) {
+      return null;
+    }
+    return {
+      type: 'interaction_decision',
+      id: `interaction:confirmation:${part.partId || part.askId}`,
+      interactionKind: 'confirmation',
+      source: part,
+    };
+  }
+
+  if (part.type !== 'tool_call') {
+    return null;
+  }
+
+  if (projectAskUserToolDecisionData(part)) {
+    return {
+      type: 'interaction_decision',
+      id: `interaction:question:${part.toolCallId}`,
+      interactionKind: 'question',
+      source: part,
+    };
+  }
+
+  const approval = projectToolCallApprovalDisplayData(part);
+  if (!approval?.resolved || approval.reviewer === 'auto_review') {
+    return null;
+  }
+
+  return {
+    type: 'interaction_decision',
+    id: `interaction:approval:${part.toolCallId}`,
+    interactionKind: 'approval',
+    source: part,
+  };
+}
+
+export function buildInteractionDecisionProjectionIdentity(
+  part: RenderableChatPart,
+): string | null {
+  return buildInteractionDecisionDisplayPart(part)?.id ?? null;
+}
+
+function collectTerminalOwnedDecisionParts(
+  parts: readonly RenderableChatPart[],
+  terminalOwnedToolCallIds: ReadonlySet<string>,
+): ReadonlyMap<string, InteractionDecisionDisplayPart> {
+  const decisions = new Map<string, InteractionDecisionDisplayPart>();
+  for (const part of parts) {
+    if (isProgressMessageDisplayPart(part) || isInteractionDecisionDisplayPart(part)) {
+      continue;
+    }
+
+    if (part.type !== 'tool_call' || !terminalOwnedToolCallIds.has(part.toolCallId)) {
+      continue;
+    }
+    const decision = buildInteractionDecisionDisplayPart(part);
+    if (decision) {
+      decisions.set(part.toolCallId, decision);
+    }
+  }
+  return decisions;
+}
+
+function terminalDecisionToolCallIds(part: Extract<ChatPart, { type: 'terminal' }>): readonly string[] {
+  return [...new Set([
+    ...(part.toolCallId ? [part.toolCallId] : []),
+    ...(part.sourceToolCallIds ?? []),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0))];
+}
+
+function questionDecisionIdentity(part: Extract<ChatPart, { type: 'question' }>): string {
+  return part.questions.map(question => question.id || question.question).join('|');
 }
 
 function shouldPinToolCallToThinking(part: RenderableChatPart): boolean {
   const toolPart = toRuntimeToolCallPart(part);
   if (toolPart.type !== 'tool_call') {
-    return false;
-  }
-
-  if (toolPart.state === 'pending_approval') {
     return false;
   }
 
@@ -486,7 +623,7 @@ function extractMermaidFence(text: string | undefined): string | null {
 }
 
 function getSubagentGroupId(part: RenderableChatPart): string | null {
-  if (isProgressMessageDisplayPart(part)) {
+  if (isProgressMessageDisplayPart(part) || isInteractionDecisionDisplayPart(part)) {
     return null;
   }
 
@@ -556,6 +693,7 @@ export function buildActivityPartRevision(part: ChatPart, index: number): string
         part.subAgentInvocationId ?? '',
         part.parentToolCallId ?? '',
         stableRevisionJson(part.metadata?.['toolSpecificData'] ?? null),
+        stableRevisionJson(part.metadata?.['approval'] ?? part.metadata?.['approvalRequest'] ?? null),
       ].join(':');
     case 'confirmation':
       return [
@@ -565,6 +703,8 @@ export function buildActivityPartRevision(part: ChatPart, index: number): string
         part.resolved ? 'resolved' : 'pending',
         part.result ?? '',
         part.scope ?? '',
+        part.selectedActionId ?? '',
+        part.selectedActionLabel ?? '',
       ].join(':');
     case 'terminal':
       return [
@@ -647,7 +787,7 @@ function countLegacySubagentChildren(parts: readonly RenderableChatPart[]): numb
 function countScopedSubagentChildren(parts: readonly RenderableChatPart[]): number {
   let count = 0;
   for (const part of parts) {
-    if (isProgressMessageDisplayPart(part)) {
+    if (isProgressMessageDisplayPart(part) || isInteractionDecisionDisplayPart(part)) {
       continue;
     }
     if (isSubagentChildPart(part)) {

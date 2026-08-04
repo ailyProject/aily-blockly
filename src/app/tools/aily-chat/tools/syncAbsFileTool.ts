@@ -17,6 +17,10 @@ import {
 } from '../../../services/project-data/project-data.types';
 import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
 import {
+  externalizeGenericProjectDataValues,
+  materializeGenericProjectDataValues,
+} from '../../../services/project-data/project-data-generic-values';
+import {
   normalizeArduinoGeneratedCode,
 } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
 import { runWithPreparedActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
@@ -668,6 +672,7 @@ async function exportToAbs(
     // 方法1：从工作区获取
     const workspace = getActiveWorkspace();
     let abiJson: any;
+    await projectDataRuntime.flushPending();
     
     if (workspace) {
       // 直接从工作区序列化
@@ -685,6 +690,8 @@ async function exportToAbs(
         content: '无法获取 Blockly 工作区或 ABI 文件'
       };
     }
+    abiJson = (await externalizeGenericProjectDataValues(abiJson, projectDataRuntime)).document;
+    await projectDataRuntime.flushPending();
     throwIfSyncAbsCancelled(invocationContext);
     await reportSyncAbsImportProgress(invocationContext, 'Converting Blockly workspace to ABS', 0.5);
 
@@ -842,8 +849,13 @@ async function importFromAbs(
     }
 
     // ABS 导入必须在修改工作区前完成资源和内联大值预检。
-    const candidate = { blocks: { languageVersion: 0, blocks: parseResult.rootBlocks } };
+    const inlineCandidate = { blocks: { languageVersion: 0, blocks: parseResult.rootBlocks } };
     try {
+      const { document: candidate } = await externalizeGenericProjectDataValues(
+        inlineCandidate,
+        projectDataRuntime,
+      );
+      await projectDataRuntime.flushPending();
       assertNoOversizedInlineValues(candidate);
       candidateRefs = projectDataRuntime.getStore().collectReferences(candidate);
       const candidateValidation = await projectDataRuntime.getStore().validateReferences(candidateRefs);
@@ -853,6 +865,11 @@ async function importFromAbs(
           content: `ABS 引用的项目数据无效，未修改工作区: ${candidateValidation.issues.map((issue) => issue.error).join('; ')}`,
         };
       }
+      const materializedCandidate = await materializeGenericProjectDataValues(
+        candidate,
+        projectDataRuntime,
+      );
+      parseResult.rootBlocks = materializedCandidate.blocks.blocks;
     } catch (error) {
       return {
         is_error: true,
@@ -1250,7 +1267,7 @@ async function importFromAbs(
     throwIfSyncAbsCancelled(invocationContext);
     await checkpointSyncAbsFrameBudget(invocationContext, 'workspace-save.before');
     const workspaceSaveStartedAt = performance.now();
-    const abiJson = await ChatPerformanceTracer.runWithSurface(
+    const inlineAbiJson = await ChatPerformanceTracer.runWithSurface(
       'editor_operation',
       () => ({
         ...Blockly.serialization.workspaces.save(workspace),
@@ -1265,6 +1282,11 @@ async function importFromAbs(
       { slowThresholdMs: 16 },
     );
     await checkpointSyncAbsFrameBudget(invocationContext, 'workspace-save.after');
+    await projectDataRuntime.flushPending();
+    const { document: abiJson } = await externalizeGenericProjectDataValues(
+      inlineAbiJson,
+      projectDataRuntime,
+    );
     await projectDataRuntime.flushPending();
     const savedRefs = projectDataRuntime.getStore().collectReferences(abiJson);
     const savedRefsById = new Map(savedRefs.map((ref) => [ref.$ailyData.id, ref]));

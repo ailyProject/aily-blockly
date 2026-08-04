@@ -170,6 +170,8 @@ export interface ConfirmationPart extends ChatPartScope {
   result?: 'approved' | 'rejected';
   /** 可选范围（若 host 需要额外记住本次选择） */
   scope?: ToolApprovalScope;
+  selectedActionId?: string;
+  selectedActionLabel?: string;
   metadata?: Record<string, unknown>;
 }
 

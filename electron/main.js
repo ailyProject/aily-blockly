@@ -950,10 +950,68 @@ let mainWindow;
 let userConf;
 let isProcessCleanupInProgress = false;
 let hasProcessCleanupCompleted = false;
+let processHealthDiagnosticsRegistered = false;
 let projectContextState = {
   workspace: null,
   version: 0,
 };
+
+function registerProcessHealthDiagnostics() {
+  if (processHealthDiagnosticsRegistered) return;
+  processHealthDiagnosticsRegistered = true;
+
+  app.on('render-process-gone', (_event, webContents, details) => {
+    console.error('[ProcessHealth][RendererGone]', JSON.stringify({
+      reason: details.reason,
+      exitCode: details.exitCode,
+      webContentsId: webContents?.id,
+      url: sanitizeDiagnosticUrl(webContents),
+      gpuFeatureStatus: app.getGPUFeatureStatus(),
+      processes: summarizeAppProcessMetrics()
+    }));
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    console.error('[ProcessHealth][ChildGone]', JSON.stringify({
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      serviceName: details.serviceName,
+      name: details.name,
+      gpuFeatureStatus: app.getGPUFeatureStatus(),
+      processes: summarizeAppProcessMetrics()
+    }));
+  });
+
+  console.info('[ProcessHealth][GPUFeatureStatus]', JSON.stringify(app.getGPUFeatureStatus()));
+  void app.getGPUInfo('basic')
+    .then(info => console.info('[ProcessHealth][GPUInfo]', JSON.stringify(info)))
+    .catch(error => console.warn('[ProcessHealth][GPUInfoFailed]', error));
+}
+
+function sanitizeDiagnosticUrl(webContents) {
+  try {
+    const rawUrl = webContents?.getURL?.() || '';
+    if (!rawUrl) return '';
+    const parsed = new URL(rawUrl);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
+function summarizeAppProcessMetrics() {
+  return app.getAppMetrics().map(metric => ({
+    pid: metric.pid,
+    type: metric.type,
+    name: metric.name,
+    serviceName: metric.serviceName,
+    cpuPercent: metric.cpu?.percentCPUUsage,
+    workingSetSize: metric.memory?.workingSetSize,
+    peakWorkingSetSize: metric.memory?.peakWorkingSetSize,
+    privateBytes: metric.memory?.privateBytes
+  }));
+}
 
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
@@ -2232,6 +2290,7 @@ function loadEnv() {
   try {
     initLogger(process.env.AILY_APPDATA_PATH);
     registerLoggerHandlers();
+    registerProcessHealthDiagnostics();
   } catch (error) {
     console.error("initLogger error: ", error);
   }
